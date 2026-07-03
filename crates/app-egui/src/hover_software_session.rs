@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn software_hover_startup_uses_backend_reported_minimum_budget() {
-        let owner = software_owner(8, 6, 2, 3, 6, 3);
+        let owner = software_owner(8, 6, 4, 3, 4, 3);
         let request = SoftwareHoverSessionStartupRequest::new(
             PlayerVideoDecoderThreadConfig::default(),
             FrameServerBudgetConfig::Auto,
@@ -305,7 +305,7 @@ mod tests {
             session
                 .resolved_budget()
                 .budget_for(HoverBudgetResourceClass::SoftwareFramePoolFrames),
-            Some(nz(2))
+            Some(nz(4))
         );
         assert_eq!(
             session
@@ -315,7 +315,7 @@ mod tests {
         );
         assert_eq!(
             session.decoder_thread_config().software_frame_pool_frames,
-            2
+            4
         );
         assert_eq!(
             session
@@ -342,8 +342,8 @@ mod tests {
         let snapshot = decoder_thread.host_upload_resource_snapshot();
         match snapshot {
             video_core::HostUploadResourceSnapshotStatus::Available(snapshot) => {
-                assert_eq!(snapshot.upload_slots_capacity, 2);
-                assert_eq!(snapshot.upload_slots_free, 2);
+                assert_eq!(snapshot.upload_slots_capacity, 4);
+                assert_eq!(snapshot.upload_slots_free, 4);
             }
             other => {
                 panic!("software hover backend must expose HostUpload snapshot, got {other:?}")
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn admission_pressure_is_typed_separately_from_capability_minimum() {
-        let owner = software_owner(8, 6, 2, 2, 1, 1);
+        let owner = software_owner(8, 6, 4, 2, 1, 1);
         let request = SoftwareHoverSessionStartupRequest::new(
             PlayerVideoDecoderThreadConfig::default(),
             FrameServerBudgetConfig::Auto,
@@ -382,7 +382,7 @@ mod tests {
             } => {
                 assert_eq!(
                     resolved_budget.budget_for(HoverBudgetResourceClass::SoftwareFramePoolFrames),
-                    Some(nz(2))
+                    Some(nz(4))
                 );
                 assert_eq!(
                     resolved_budget.budget_for(HoverBudgetResourceClass::SoftwareThreadCount),
@@ -395,8 +395,8 @@ mod tests {
 
     #[test]
     fn context_change_recomputes_backend_minimums_and_surfaces_no_fit() {
-        let first_owner = software_owner(8, 6, 2, 3, 6, 3);
-        let second_owner = software_owner(8, 3, 2, 3, 6, 0);
+        let first_owner = software_owner(8, 6, 4, 3, 4, 3);
+        let second_owner = software_owner(8, 3, 4, 3, 4, 0);
 
         let first_outcome = start_software_hover_session(SoftwareHoverSessionStartupRequest::new(
             PlayerVideoDecoderThreadConfig::default(),
@@ -424,5 +424,41 @@ mod tests {
                 }
             }
         ));
+    }
+
+    #[test]
+    fn small_playback_pool_degrades_hover_without_reserving_or_rewriting_playback_budget() {
+        let owner = software_owner(4, 6, 4, 3, 0, 3);
+        let playback_decoder_config = PlayerVideoDecoderThreadConfig {
+            software_frame_pool_frames: 4,
+            software_decode_thread_budget: video_core::SoftwareDecodeThreadBudget::fixed(nz(6)),
+            ..PlayerVideoDecoderThreadConfig::default()
+        };
+        let request = SoftwareHoverSessionStartupRequest::new(
+            playback_decoder_config,
+            FrameServerBudgetConfig::Auto,
+            FrameServerBudgetConfig::Auto,
+            owner.clone(),
+        );
+
+        let outcome = start_software_hover_session(request);
+
+        assert!(matches!(
+            outcome,
+            SoftwareHoverSessionStartupOutcome::Unavailable {
+                reason: HoverBudgetResolutionUnavailableReason::NoFittingBackendMinimum {
+                    resource_class: HoverBudgetResourceClass::SoftwareFramePoolFrames,
+                    playback_budget,
+                    smallest_positive_minimum,
+                }
+            } if playback_budget == nz(4) && smallest_positive_minimum == nz(4)
+        ));
+
+        let snapshot = owner
+            .snapshot()
+            .expect("test owner mutex must not be poisoned");
+        assert_eq!(snapshot.playback_frame_pool_budget, nz(4));
+        assert_eq!(snapshot.playback_thread_budget, nz(6));
+        assert!(!snapshot.hover_active);
     }
 }

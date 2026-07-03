@@ -165,6 +165,28 @@ fn hover_auto_rejects_when_backend_minimum_does_not_fit_below_playback() {
 }
 
 #[test]
+fn hover_auto_rejects_software_minimum_equal_to_playback_budget() {
+    let request = HoverBudgetRequest::new(vec![auto_requirement(
+        HoverBudgetResourceClass::SoftwareFramePoolFrames,
+        4,
+    )]);
+    let capability = supported_capability(HoverBudgetResourceClass::SoftwareFramePoolFrames, 4);
+
+    let outcome = resolve_hover_budget(&request, &capability);
+
+    assert_eq!(
+        outcome,
+        HoverBudgetResolutionOutcome::Unavailable(
+            HoverBudgetResolutionUnavailableReason::NoFittingBackendMinimum {
+                resource_class: HoverBudgetResourceClass::SoftwareFramePoolFrames,
+                playback_budget: nz(4),
+                smallest_positive_minimum: nz(4),
+            }
+        )
+    );
+}
+
+#[test]
 fn hover_fixed_budget_rejects_zero_and_has_no_static_upper_cap() {
     assert_eq!(
         HoverBudgetSetting::fixed(0),

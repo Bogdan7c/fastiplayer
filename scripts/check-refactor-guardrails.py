@@ -441,6 +441,7 @@ REQUIRED_SOURCE_ANCHORS = (
         (
             "fn hover_auto_selects_smallest_reported_positive_minimum_not_one()",
             "fn hover_auto_does_not_use_playback_minus_one_maximize_policy()",
+            "fn hover_auto_rejects_software_minimum_equal_to_playback_budget()",
             "fn hover_context_change_recomputes_backend_minimum_without_global_cache()",
             "fn hover_fixed_budget_rejects_zero_and_has_no_static_upper_cap()",
             "fn hover_pairwise_requires_hardware_surface_budget_below_playback()",
@@ -471,10 +472,27 @@ REQUIRED_SOURCE_ANCHORS = (
     (
         Path("crates/video-ffmpeg/src/software_hover.rs"),
         (
+            # S30D/S31: FFmpeg software hover auto-minimum теперь осознанно выше
+            # старого pool=2/thread<=2, иначе 4K hover decode жил с одним
+            # свободным буфером после prepared + approximate slots.
+            "const DEFAULT_HOVER_SOFTWARE_FRAME_POOL_MINIMUM: usize = 4;",
+            "const HOVER_THREAD_CAPABILITY_HOST_DIVISOR: usize = 2;",
+            "const HOVER_THREAD_CAPABILITY_MINIMUM: usize = 2;",
+            "const HOVER_THREAD_CAPABILITY_MAXIMUM: usize = 6;",
+            "half_host_parallelism.clamp(",
             "fn capability_reports_current_pool_and_thread_minimums()",
+            "fn default_context_reports_new_auto_minimums()",
+            "fn hover_thread_auto_minimum_uses_half_host_parallelism_clamped_to_two_six()",
             "fn admission_rejects_capacity_pressure_without_rewriting_capability()",
         ),
-        "software hover owner tests должны закреплять current-context minima и pressure split",
+        "software hover owner tests должны закреплять current-context minima, новые auto defaults и pressure split",
+    ),
+    (
+        Path("crates/app-egui/src/hover_software_session.rs"),
+        (
+            "fn small_playback_pool_degrades_hover_without_reserving_or_rewriting_playback_budget()",
+        ),
+        "app software hover startup должен typed-деградировать без reservation/backend, если backend minimum не помещается ниже playback budget",
     ),
     (
         Path("crates/app-egui/src/state/ui_runtime.rs"),

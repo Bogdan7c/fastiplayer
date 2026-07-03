@@ -22,7 +22,16 @@ use video_backend_api::{
 };
 use video_core::{SoftwareDecodeThreadBudget, VideoDecoderThreadConfig};
 
-const DEFAULT_HOVER_SOFTWARE_FRAME_POOL_MINIMUM: usize = 2;
+/// Минимальный software hover pool: 1 prepared entry + 1 approximate слот
+/// визуального keyframe + 2 свободных кадра, чтобы decoder мог идти конвейером.
+const DEFAULT_HOVER_SOFTWARE_FRAME_POOL_MINIMUM: usize = 4;
+
+/// Hover берет половину host parallelism, чтобы не вытеснять playback/render.
+const HOVER_THREAD_CAPABILITY_HOST_DIVISOR: usize = 2;
+/// Ниже двух потоков 4K software hover слишком легко становится однобуферным bottleneck-ом.
+const HOVER_THREAD_CAPABILITY_MINIMUM: usize = 2;
+/// Больше шести hover потоков уже конкурируют с playback SW decode на обычных desktop CPU.
+const HOVER_THREAD_CAPABILITY_MAXIMUM: usize = 6;
 
 /// FFmpeg/software-local context для одного playback/backend/session budget snapshot-а.
 ///
@@ -576,7 +585,17 @@ fn default_hover_thread_capability_minimum() -> NonZeroUsize {
         .map(NonZeroUsize::get)
         .unwrap_or(1);
 
-    non_zero_or_one(host_parallelism.min(2))
+    hover_thread_capability_minimum_for_host_parallelism(host_parallelism)
+}
+
+fn hover_thread_capability_minimum_for_host_parallelism(host_parallelism: usize) -> NonZeroUsize {
+    let half_host_parallelism = host_parallelism / HOVER_THREAD_CAPABILITY_HOST_DIVISOR;
+    let clamped_thread_count = half_host_parallelism.clamp(
+        HOVER_THREAD_CAPABILITY_MINIMUM,
+        HOVER_THREAD_CAPABILITY_MAXIMUM,
+    );
+
+    non_zero_or_one(clamped_thread_count)
 }
 
 const fn non_zero_or_one(value: usize) -> NonZeroUsize {
@@ -634,13 +653,63 @@ mod tests {
     }
 
     #[test]
+    fn default_context_reports_new_auto_minimums() {
+        let playback_config = VideoDecoderThreadConfig {
+            software_frame_pool_frames: 8,
+            software_decode_thread_budget: SoftwareDecodeThreadBudget::fixed(nz(8)),
+            ..VideoDecoderThreadConfig::default()
+        };
+        let owner = FfmpegSoftwareHoverOwner::new(
+            FfmpegSoftwareHoverContext::from_playback_decoder_config(playback_config),
+        );
+        let host_parallelism = std::thread::available_parallelism()
+            .map(NonZeroUsize::get)
+            .unwrap_or(1);
+
+        assert_eq!(
+            reported_minimum(
+                owner.hover_capability_report(),
+                HoverBudgetResourceClass::SoftwareFramePoolFrames,
+            ),
+            DEFAULT_HOVER_SOFTWARE_FRAME_POOL_MINIMUM
+        );
+        assert_eq!(
+            reported_minimum(
+                owner.hover_capability_report(),
+                HoverBudgetResourceClass::SoftwareThreadCount,
+            ),
+            hover_thread_capability_minimum_for_host_parallelism(host_parallelism).get()
+        );
+    }
+
+    #[test]
+    fn hover_thread_auto_minimum_uses_half_host_parallelism_clamped_to_two_six() {
+        assert_eq!(
+            hover_thread_capability_minimum_for_host_parallelism(1),
+            nz(2)
+        );
+        assert_eq!(
+            hover_thread_capability_minimum_for_host_parallelism(4),
+            nz(2)
+        );
+        assert_eq!(
+            hover_thread_capability_minimum_for_host_parallelism(8),
+            nz(4)
+        );
+        assert_eq!(
+            hover_thread_capability_minimum_for_host_parallelism(16),
+            nz(6)
+        );
+    }
+
+    #[test]
     fn capability_reports_current_pool_and_thread_minimums() {
         let first_owner = FfmpegSoftwareHoverOwner::new(FfmpegSoftwareHoverContext::new(
             nz(8),
             nz(6),
-            nz(2),
+            nz(4),
             nz(3),
-            6,
+            4,
             3,
         ));
         let second_owner = FfmpegSoftwareHoverOwner::new(FfmpegSoftwareHoverContext::new(
@@ -657,7 +726,7 @@ mod tests {
                 first_owner.hover_capability_report(),
                 HoverBudgetResourceClass::SoftwareFramePoolFrames,
             ),
-            2
+            4
         );
         assert_eq!(
             reported_minimum(
@@ -680,21 +749,21 @@ mod tests {
         let owner = FfmpegSoftwareHoverOwner::new(FfmpegSoftwareHoverContext::new(
             nz(8),
             nz(6),
-            nz(2),
+            nz(4),
             nz(2),
             1,
             1,
         ));
         let capability = owner.hover_capability_report();
 
-        let admission = owner.admit_hover_reservation(&resolved_software_budget(2, 2));
+        let admission = owner.admit_hover_reservation(&resolved_software_budget(4, 2));
 
         assert_eq!(
             reported_minimum(
                 capability,
                 HoverBudgetResourceClass::SoftwareFramePoolFrames
             ),
-            2
+            4
         );
         assert!(matches!(
             admission,
@@ -709,12 +778,12 @@ mod tests {
         let owner = FfmpegSoftwareHoverOwner::new(FfmpegSoftwareHoverContext::new(
             nz(8),
             nz(6),
+            nz(4),
             nz(2),
-            nz(2),
-            6,
+            4,
             4,
         ));
-        let reservation = match owner.admit_hover_reservation(&resolved_software_budget(2, 2)) {
+        let reservation = match owner.admit_hover_reservation(&resolved_software_budget(4, 2)) {
             FfmpegSoftwareHoverAdmission::Admitted(reservation) => reservation,
             FfmpegSoftwareHoverAdmission::Rejected(reason) => {
                 panic!("first hover reservation must be admitted, got {reason:?}")
@@ -728,7 +797,7 @@ mod tests {
                 .hover_active
         );
         assert!(matches!(
-            owner.admit_hover_reservation(&resolved_software_budget(2, 2)),
+            owner.admit_hover_reservation(&resolved_software_budget(4, 2)),
             FfmpegSoftwareHoverAdmission::Rejected(HoverBudgetAdmissionReport::ResourcePressure(
                 HoverBudgetResourcePressureReason::ExistingHoverReservation
             ))
@@ -754,11 +823,11 @@ mod tests {
 
         let hover_config = hover_decoder_config_from_resolved_budget(
             playback_config,
-            &resolved_software_budget(2, 3),
+            &resolved_software_budget(4, 3),
         )
         .expect("resolved software budget carries both resources");
 
-        assert_eq!(hover_config.software_frame_pool_frames, 2);
+        assert_eq!(hover_config.software_frame_pool_frames, 4);
         assert_eq!(
             hover_config
                 .software_decode_thread_budget
