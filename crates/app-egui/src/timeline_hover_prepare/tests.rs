@@ -200,6 +200,28 @@ fn unresolved_active_target(target_millis: i64) -> TimelineHoverPrepareTarget {
     )
 }
 
+fn controller_with_resolved_active_hover_source(
+    seek_result: DemuxSeekResult,
+) -> (
+    TimelineHoverPrepareController<AppTimelineHoverPrepareExecutor>,
+    Arc<Mutex<Vec<DemuxSeekRequest>>>,
+    Arc<Mutex<usize>>,
+) {
+    let mut controller = TimelineHoverPrepareController::new(AppTimelineHoverPrepareExecutor::new(
+        PlayerTimelineHoverPrepareHandoff::default(),
+    ));
+    let (demuxer, decode_point_before_requests, ordinary_seek_count) =
+        FakeHoverDemuxer::resolved(seek_result);
+    controller.executor.active_hover_source =
+        Some(TimelineHoverOpenedSource::from_demuxer(Box::new(demuxer)));
+
+    (
+        controller,
+        decode_point_before_requests,
+        ordinary_seek_count,
+    )
+}
+
 fn unresolved_paused_target(target_millis: i64) -> TimelineHoverPrepareTarget {
     TimelineHoverPrepareTarget::unresolved(
         context(),
@@ -307,6 +329,115 @@ fn forward_extension_continues_existing_span_without_cancel() {
         TimelineHoverPrepareExecutorTransition::ExtendForward
     );
     assert!(controller.executor().cancellations.is_empty());
+}
+
+#[test]
+fn unresolved_forward_target_inside_threshold_extends_without_reseek() {
+    let (mut controller, decode_point_before_requests, _ordinary_seek_count) =
+        controller_with_resolved_active_hover_source(DemuxSeekResult {
+            requested_position: timestamp(10_000).to_media_time(),
+            actual_position: timestamp(9_000).to_media_time(),
+            actual_track_timestamp: Some(timestamp(9_000)),
+        });
+
+    let first = controller.prepare_hover_target(unresolved_active_target(10_000));
+    let near_forward = controller.prepare_hover_target(unresolved_active_target(12_500));
+
+    assert_eq!(first.span_id, near_forward.span_id);
+    assert_eq!(
+        near_forward.transition,
+        TimelineHoverPrepareControllerTransition::ExtendedForward
+    );
+    assert_eq!(
+        decode_point_before_requests
+            .lock()
+            .expect("request log lock must be available")
+            .as_slice(),
+        &[DemuxSeekRequest::decode_point_before(Duration::from_secs(
+            10
+        ))]
+    );
+}
+
+#[test]
+fn unresolved_forward_target_at_threshold_extends_without_reseek() {
+    let (mut controller, decode_point_before_requests, _ordinary_seek_count) =
+        controller_with_resolved_active_hover_source(DemuxSeekResult {
+            requested_position: timestamp(10_000).to_media_time(),
+            actual_position: timestamp(9_000).to_media_time(),
+            actual_track_timestamp: Some(timestamp(9_000)),
+        });
+
+    let first = controller.prepare_hover_target(unresolved_active_target(10_000));
+    let threshold_forward = controller.prepare_hover_target(unresolved_active_target(13_000));
+
+    assert_eq!(first.span_id, threshold_forward.span_id);
+    assert_eq!(
+        threshold_forward.transition,
+        TimelineHoverPrepareControllerTransition::ExtendedForward
+    );
+    assert_eq!(
+        decode_point_before_requests
+            .lock()
+            .expect("request log lock must be available")
+            .as_slice(),
+        &[DemuxSeekRequest::decode_point_before(Duration::from_secs(
+            10
+        ))]
+    );
+}
+
+#[test]
+fn unresolved_forward_target_beyond_threshold_supersedes_with_new_resolver_seek() {
+    let (mut controller, decode_point_before_requests, _ordinary_seek_count) =
+        controller_with_resolved_active_hover_source(DemuxSeekResult {
+            requested_position: timestamp(10_000).to_media_time(),
+            actual_position: timestamp(9_000).to_media_time(),
+            actual_track_timestamp: Some(timestamp(9_000)),
+        });
+
+    let first = controller.prepare_hover_target(unresolved_active_target(10_000));
+    let far_forward = controller.prepare_hover_target(unresolved_active_target(13_001));
+
+    assert_ne!(first.span_id, far_forward.span_id);
+    assert!(matches!(
+        far_forward.transition,
+        TimelineHoverPrepareControllerTransition::Superseded {
+            cancelled_span_id,
+            reason: TimelineHoverPrepareCancellationReason::ForwardExtensionTooFar,
+        } if cancelled_span_id == first.span_id
+    ));
+    assert_eq!(
+        decode_point_before_requests
+            .lock()
+            .expect("request log lock must be available")
+            .as_slice(),
+        &[
+            DemuxSeekRequest::decode_point_before(Duration::from_secs(10)),
+            DemuxSeekRequest::decode_point_before(Duration::from_millis(13_001)),
+        ]
+    );
+}
+
+#[test]
+fn resolved_forward_span_beyond_threshold_supersedes_instead_of_extending() {
+    let mut controller = TimelineHoverPrepareController::new(FakeExecutor::default());
+
+    let first = controller.prepare_hover_target(target(10_000, 9_000, 10_000));
+    let replacement = controller.prepare_hover_target(target(13_001, 9_000, 13_001));
+
+    assert_ne!(first.span_id, replacement.span_id);
+    assert!(matches!(
+        replacement.transition,
+        TimelineHoverPrepareControllerTransition::Superseded {
+            cancelled_span_id,
+            reason: TimelineHoverPrepareCancellationReason::ForwardExtensionTooFar,
+        } if cancelled_span_id == first.span_id
+    ));
+    assert_eq!(
+        controller.executor().cancellations[0].reason,
+        TimelineHoverPrepareCancellationReason::ForwardExtensionTooFar
+    );
 }
 
 #[test]

@@ -277,7 +277,8 @@ impl AppFrameServerDiagnosticsRecorder {
                     | TimelineHoverPrepareCancellationReason::SourceSwitched
                     | TimelineHoverPrepareCancellationReason::BackendSwitched
                     | TimelineHoverPrepareCancellationReason::SettingsRebuilt
-                    | TimelineHoverPrepareCancellationReason::LiveScrubStarted => {
+                    | TimelineHoverPrepareCancellationReason::LiveScrubStarted
+                    | TimelineHoverPrepareCancellationReason::ForwardExtensionTooFar => {
                         ScrubHoverDependencySpanOutcome::Incomplete(
                             ScrubHoverDependencySpanIncompleteReason::StaleGeneration,
                         )

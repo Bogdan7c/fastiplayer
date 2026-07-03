@@ -4,6 +4,7 @@
 
 use std::cmp::Ordering;
 use std::num::NonZeroUsize;
+use std::time::Duration;
 
 use frame_server_core::{
     BackendRevision, FrameExactnessPolicy, ScrubGenerationToken, ScrubTrackSelection,
@@ -39,6 +40,13 @@ use crate::timeline_hover_source::{
 /// Controller type, которым владеет `AppState`.
 pub(crate) type AppTimelineHoverPrepareController =
     TimelineHoverPrepareController<AppTimelineHoverPrepareExecutor>;
+
+/// Максимальная дистанция, на которую hover decode span продолжается последовательным decode-ом.
+///
+/// Если новый target дальше трёх секунд от текущего хвоста span-а, дешевле
+/// сделать новый `decode_point_before` seek к ближайшему keyframe, чем
+/// последовательно декодировать длинный участок видео ради одного preview.
+const HOVER_SPAN_FORWARD_EXTENSION_MAX: Duration = Duration::from_secs(3);
 
 /// Production executor: проверяет общий working set и владеет app-side hover source.
 pub(crate) struct AppTimelineHoverPrepareExecutor {
@@ -150,6 +158,7 @@ pub(crate) enum TimelineHoverPrepareCancellationReason {
     SettingsRebuilt,
     LiveScrubStarted,
     EarlierDecodeSafeStartRequired,
+    ForwardExtensionTooFar,
     IncompatibleTargetContext,
 }
 
@@ -347,6 +356,7 @@ struct InFlightTimelineHoverPrepareTarget {
 enum DecodeDependencySpanChange {
     Compatible,
     ForwardExtension,
+    ForwardExtensionTooFar,
     RequiresEarlierDecodeSafeStart,
     IncompatibleContext,
 }
@@ -1222,6 +1232,18 @@ where
             .cmp_timeline_position(requested_span.drain_until_pts)
             == Ordering::Greater
         {
+            // Контроллер не видит дешёвую "последнюю реально декодированную PTS":
+            // `span_decode_state` живёт внутри executor-а, а публичная диагностика
+            // `frames_drained` не хранит timestamp. Поэтому используем текущий
+            // `drain_until_pts` активного span-а как консервативный хвост: если
+            // следующий target уже дальше этого хвоста больше чем на лимит,
+            // перескок через resolver/reseek дешевле, чем длинный sequential decode.
+            if hover_span_forward_extension_exceeds_limit(
+                requested_span.drain_until_pts,
+                target.target_pts,
+            ) {
+                return None;
+            }
             requested_span.drain_until_pts = target.target_pts;
         }
         Some(requested_span)
@@ -1272,6 +1294,12 @@ where
                     TimelineHoverPrepareExecutorTransition::ExtendForward,
                 )
             }
+            DecodeDependencySpanChange::ForwardExtensionTooFar => self.supersede_active_span(
+                active_span,
+                target,
+                requested_span,
+                TimelineHoverPrepareCancellationReason::ForwardExtensionTooFar,
+            ),
             DecodeDependencySpanChange::RequiresEarlierDecodeSafeStart => self
                 .supersede_active_span(
                     active_span,
@@ -1600,13 +1628,42 @@ impl DecodeDependencySpan {
             .drain_until_pts
             .cmp_timeline_position(self.drain_until_pts)
             == Ordering::Greater
-            || requested.post_target_reorder_drain_frames > self.post_target_reorder_drain_frames
         {
+            if hover_span_forward_extension_exceeds_limit(
+                self.drain_until_pts,
+                requested.drain_until_pts,
+            ) {
+                return DecodeDependencySpanChange::ForwardExtensionTooFar;
+            }
+            return DecodeDependencySpanChange::ForwardExtension;
+        }
+
+        if requested.post_target_reorder_drain_frames > self.post_target_reorder_drain_frames {
             return DecodeDependencySpanChange::ForwardExtension;
         }
 
         DecodeDependencySpanChange::Compatible
     }
+}
+
+/// Проверяет, не превратится ли same-span continuation в длинный sequential decode.
+///
+/// Сравнение по `TrackTimestamp::cmp_timeline_position` оставляет signed timeline
+/// источником истины, а `Duration` нужен только для понятного порога в секундах.
+/// В нормальном hover path обе точки приходят из UI media-time и неотрицательны.
+fn hover_span_forward_extension_exceeds_limit(
+    current_span_tail_pts: TrackTimestamp,
+    requested_tail_pts: TrackTimestamp,
+) -> bool {
+    if requested_tail_pts.cmp_timeline_position(current_span_tail_pts) != Ordering::Greater {
+        return false;
+    }
+
+    let current_tail_position = current_span_tail_pts.to_media_time().as_duration();
+    let requested_tail_position = requested_tail_pts.to_media_time().as_duration();
+    let forward_extension = requested_tail_position.saturating_sub(current_tail_position);
+
+    forward_extension > HOVER_SPAN_FORWARD_EXTENSION_MAX
 }
 
 impl TimelineHoverPrepareSpanDiagnostics {
