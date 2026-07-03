@@ -426,6 +426,9 @@ pub(crate) enum VideoRenderTargetLoad {
 }
 
 impl VideoRenderTargetLoad {
+    /// Сколько независимых uniform slot-ов нужно на pass-роли одного кадра.
+    pub(crate) const UNIFORM_SLOT_COUNT: usize = 2;
+
     /// Преобразует intent в WGPU attachment load operation.
     pub(crate) const fn as_wgpu_load_op(self) -> wgpu::LoadOp<wgpu::Color> {
         match self {
@@ -433,6 +436,39 @@ impl VideoRenderTargetLoad {
             Self::LoadExisting => wgpu::LoadOp::Load,
         }
     }
+
+    /// Индекс uniform buffer-а для main/overlay pass-а одного кадра.
+    ///
+    /// `queue.write_buffer` исполняется на submit ДО записанного command
+    /// buffer-а, поэтому main video pass и hover-preview overlay pass в одном
+    /// кадре НЕ могут делить один uniform buffer: последняя запись (letterbox
+    /// overlay-я) применилась бы к обоим pass-ам и ломала пропорции основного
+    /// видео. Каждая pass-роль пишет в собственный slot.
+    pub(crate) const fn uniform_slot(self) -> usize {
+        match self {
+            Self::ClearBlack => 0,
+            Self::LoadExisting => 1,
+        }
+    }
+}
+
+/// Создаёт по uniform buffer-у на каждую pass-роль (main/overlay).
+///
+/// См. `VideoRenderTargetLoad::uniform_slot`: общий buffer между pass-ами
+/// одного submit-а недопустим из-за submission-time семантики `write_buffer`.
+pub(crate) fn create_pass_uniform_buffers(
+    device: &wgpu::Device,
+    base_label: &str,
+    size: u64,
+) -> [wgpu::Buffer; VideoRenderTargetLoad::UNIFORM_SLOT_COUNT] {
+    std::array::from_fn(|slot| {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(&format!("{base_label} (pass slot {slot})")),
+            size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    })
 }
 
 /// Контракт одного video render pass-а между shell и renderer.
@@ -1446,6 +1482,24 @@ mod tests {
             VideoRenderTargetLoad::ClearBlack.as_wgpu_load_op(),
             wgpu::LoadOp::Clear(_)
         ));
+    }
+
+    #[test]
+    fn overlay_video_pass_uses_distinct_uniform_slot_from_main_pass() {
+        // Регрессия: main и overlay pass писали letterbox в один uniform buffer,
+        // и submission-time `write_buffer` overlay-я ломал пропорции main видео.
+        assert_ne!(
+            VideoRenderTargetLoad::ClearBlack.uniform_slot(),
+            VideoRenderTargetLoad::LoadExisting.uniform_slot()
+        );
+        assert!(
+            VideoRenderTargetLoad::ClearBlack.uniform_slot()
+                < VideoRenderTargetLoad::UNIFORM_SLOT_COUNT
+        );
+        assert!(
+            VideoRenderTargetLoad::LoadExisting.uniform_slot()
+                < VideoRenderTargetLoad::UNIFORM_SLOT_COUNT
+        );
     }
 
     /// Строит renderer-neutral frame с заданным render-размером для letterbox тестов.

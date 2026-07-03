@@ -84,35 +84,24 @@ pub(crate) enum TimelineHoverApproximatePreviewPublishOutcome {
 #[derive(Clone)]
 pub(crate) struct TimelineHoverApproximatePreviewBorrow {
     lease: VideoFrameLease,
-    span: DecodeDependencySpan,
     actual_pts: TrackTimestamp,
 }
 
 impl TimelineHoverApproximatePreviewBorrow {
     /// Собирает borrow из уже клонированного lease-а.
+    ///
+    /// Span-принадлежность keyframe-а валидируется owner-ом slot-а при выдаче
+    /// borrow-а (`borrow_for_span`); сам borrow span не переносит, потому что
+    /// visual слой показывает кадр по latest-only replace policy.
     #[must_use]
-    pub(crate) const fn new(
-        lease: VideoFrameLease,
-        span: DecodeDependencySpan,
-        actual_pts: TrackTimestamp,
-    ) -> Self {
-        Self {
-            lease,
-            span,
-            actual_pts,
-        }
+    pub(crate) const fn new(lease: VideoFrameLease, actual_pts: TrackTimestamp) -> Self {
+        Self { lease, actual_pts }
     }
 
     /// Возвращает lease, который будет материализован shared helper-ом.
     #[must_use]
     pub(crate) const fn lease(&self) -> &VideoFrameLease {
         &self.lease
-    }
-
-    /// Возвращает resolved span anchor, которому принадлежит keyframe.
-    #[must_use]
-    pub(crate) const fn span(&self) -> DecodeDependencySpan {
-        self.span
     }
 
     /// Actual PTS keyframe-а; это diagnostics metadata, не exact target proof.
@@ -188,7 +177,6 @@ impl TimelineHoverApproximatePreviewSlot {
 
         Some(TimelineHoverApproximatePreviewBorrow::new(
             frame.lease.clone(),
-            frame.span,
             frame.actual_pts,
         ))
     }

@@ -161,7 +161,9 @@ pub(crate) struct P010RenderFrameDiagnostics {
 pub(crate) struct P010VideoRenderer {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
-    uniform_buffer: wgpu::Buffer,
+    /// Отдельный uniform buffer на каждую pass-роль (main/overlay), см.
+    /// `VideoRenderTargetLoad::uniform_slot`.
+    uniform_buffers: [wgpu::Buffer; super::VideoRenderTargetLoad::UNIFORM_SLOT_COUNT],
     sampler: wgpu::Sampler,
     color_settings: ColorPipelineSettings,
     hdr_to_sdr_settings: HdrToSdrSettings,
@@ -182,12 +184,11 @@ impl P010VideoRenderer {
             source: wgpu::ShaderSource::Wgsl(P010_SHADER_SOURCE.into()),
         });
 
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("p010 uniform buffer"),
-            size: HDR_COLOR_PIPELINE_UNIFORM_SIZE,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let uniform_buffers = super::create_pass_uniform_buffers(
+            device,
+            "p010 uniform buffer",
+            HDR_COLOR_PIPELINE_UNIFORM_SIZE,
+        );
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("p010 sampler"),
@@ -291,7 +292,7 @@ impl P010VideoRenderer {
         Self {
             pipeline,
             bind_group_layout,
-            uniform_buffer,
+            uniform_buffers,
             sampler,
             color_settings: ColorPipelineSettings::default(),
             hdr_to_sdr_settings: HdrToSdrSettings::default(),
@@ -324,8 +325,9 @@ impl P010VideoRenderer {
         )?;
         log_first_p010_render_dispatch(frame, &prepared_p010_render);
 
+        let uniform_buffer = &self.uniform_buffers[pass_context.target_load.uniform_slot()];
         pass_context.queue.write_buffer(
-            &self.uniform_buffer,
+            uniform_buffer,
             0,
             bytemuck::bytes_of(&prepared_p010_render.uniforms),
         );
@@ -340,7 +342,7 @@ impl P010VideoRenderer {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: self.uniform_buffer.as_entire_binding(),
+                        resource: uniform_buffer.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,

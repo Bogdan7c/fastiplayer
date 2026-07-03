@@ -115,8 +115,9 @@ pub(crate) struct HostPlanarYuvVideoRenderer {
     /// Bind group layout для R8Unorm Y/U/V textures.
     unorm8_bind_group_layout: wgpu::BindGroupLayout,
 
-    /// Uniform buffer текущего 8-bit SDR path-а.
-    unorm8_uniform_buffer: wgpu::Buffer,
+    /// Uniform buffers 8-bit SDR path-а: отдельный на каждую pass-роль
+    /// (main/overlay), см. `VideoRenderTargetLoad::uniform_slot`.
+    unorm8_uniform_buffers: [wgpu::Buffer; super::VideoRenderTargetLoad::UNIFORM_SLOT_COUNT],
 
     /// Filtering sampler для 8-bit normalized plane textures.
     unorm8_sampler: wgpu::Sampler,
@@ -127,8 +128,8 @@ pub(crate) struct HostPlanarYuvVideoRenderer {
     /// Bind group layout для R16Uint Y/U/V textures.
     uint16_bind_group_layout: wgpu::BindGroupLayout,
 
-    /// Uniform buffer текущего 10/12-bit SDR/HDR path-а.
-    uint16_uniform_buffer: wgpu::Buffer,
+    /// Uniform buffers 10/12-bit SDR/HDR path-а: отдельный на каждую pass-роль.
+    uint16_uniform_buffers: [wgpu::Buffer; super::VideoRenderTargetLoad::UNIFORM_SLOT_COUNT],
 
     /// Live SDR color settings, общие с текущими NV12/P010 renderer-ами.
     color_settings: ColorPipelineSettings,
@@ -148,18 +149,16 @@ impl HostPlanarYuvVideoRenderer {
             label: Some("host yuv420 16-bit to sdr shader"),
             source: wgpu::ShaderSource::Wgsl(HOST_YUV420_16BIT_SHADER_SOURCE.into()),
         });
-        let unorm8_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("host yuv420 8-bit uniform buffer"),
-            size: COLOR_PIPELINE_UNIFORM_SIZE,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let uint16_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("host yuv420 16-bit uniform buffer"),
-            size: HOST_YUV420_HIGH_BIT_UNIFORM_SIZE,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let unorm8_uniform_buffers = super::create_pass_uniform_buffers(
+            device,
+            "host yuv420 8-bit uniform buffer",
+            COLOR_PIPELINE_UNIFORM_SIZE,
+        );
+        let uint16_uniform_buffers = super::create_pass_uniform_buffers(
+            device,
+            "host yuv420 16-bit uniform buffer",
+            HOST_YUV420_HIGH_BIT_UNIFORM_SIZE,
+        );
         let unorm8_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("host yuv420 8-bit sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -192,11 +191,11 @@ impl HostPlanarYuvVideoRenderer {
         Self {
             unorm8_pipeline,
             unorm8_bind_group_layout,
-            unorm8_uniform_buffer,
+            unorm8_uniform_buffers,
             unorm8_sampler,
             uint16_pipeline,
             uint16_bind_group_layout,
-            uint16_uniform_buffer,
+            uint16_uniform_buffers,
             color_settings: ColorPipelineSettings::default(),
             hdr_to_sdr_settings: HdrToSdrSettings::default(),
         }
@@ -260,8 +259,9 @@ impl HostPlanarYuvVideoRenderer {
             orientation_transform,
         );
 
+        let uniform_buffer = &self.unorm8_uniform_buffers[pass_context.target_load.uniform_slot()];
         pass_context.queue.write_buffer(
-            &self.unorm8_uniform_buffer,
+            uniform_buffer,
             0,
             bytemuck::bytes_of(&prepared_color_pipeline.uniforms),
         );
@@ -274,7 +274,7 @@ impl HostPlanarYuvVideoRenderer {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: self.unorm8_uniform_buffer.as_entire_binding(),
+                        resource: uniform_buffer.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
@@ -323,8 +323,9 @@ impl HostPlanarYuvVideoRenderer {
             pass_context.viewport.size(),
         )?;
 
+        let uniform_buffer = &self.uint16_uniform_buffers[pass_context.target_load.uniform_slot()];
         pass_context.queue.write_buffer(
-            &self.uint16_uniform_buffer,
+            uniform_buffer,
             0,
             bytemuck::bytes_of(&prepared_render.uniforms),
         );
@@ -337,7 +338,7 @@ impl HostPlanarYuvVideoRenderer {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: self.uint16_uniform_buffer.as_entire_binding(),
+                        resource: uniform_buffer.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,

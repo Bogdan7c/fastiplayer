@@ -8,7 +8,6 @@ use video_present_core::VideoFrameLease;
 
 use crate::state::RenderablePresentFrame;
 use crate::timeline_hover_approx_preview::TimelineHoverApproximatePreviewBorrow;
-use crate::timeline_hover_prepare::DecodeDependencySpan;
 use crate::ui::timeline::{TimelineHoverTarget, TimelineHoverVisualTarget};
 
 use super::shared_frame_materialization::{
@@ -53,48 +52,15 @@ pub(crate) struct TimelineHoverPreviewRenderDiagnosticsSnapshot {
 }
 
 /// Materialized hover preview frame; ownership остаётся clone lease-а, не branch entry.
+///
+/// Latest-only replace policy: кадр может временно переживать смену hover
+/// target-а (placement обновляется за курсором), пока decode не выдаст замену.
 struct TimelineHoverPreviewReadyFrame {
-    /// Visual target с placement; media target используется для stale/Busy checks.
+    /// Visual target с placement текущего pointer-а.
     visual_target: TimelineHoverVisualTarget,
-
-    /// Источник ready frame-а нужен для безопасного Busy reuse.
-    source: TimelineHoverPreviewReadyFrameSource,
 
     /// Lease + WGPU views, полученные через shared S15 materialization helper.
     renderable_frame: RenderablePresentFrame,
-}
-
-/// Семантика ready preview frame-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TimelineHoverPreviewReadyFrameSource {
-    /// Exact prepared frame валиден только для того же semantic target-а.
-    ExactTargetOrAfter,
-
-    /// Approximate keyframe валиден для span-ов с тем же decode-safe start.
-    ApproximateKeyframe { span: DecodeDependencySpan },
-}
-
-/// Guard, который описывает допустимое переиспользование ready frame-а при Busy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TimelineHoverPreviewReadyReuseGuard {
-    /// Exact кадр нельзя переносить на соседний hover target.
-    ExactTarget,
-
-    /// Approximate кадр можно переносить внутри того же decode-safe span anchor-а.
-    ApproximateSpan { span: DecodeDependencySpan },
-}
-
-impl TimelineHoverPreviewReadyReuseGuard {
-    /// Строит reuse guard из источника нового materialization запроса.
-    #[must_use]
-    const fn from_source(source: TimelineHoverPreviewReadyFrameSource) -> Self {
-        match source {
-            TimelineHoverPreviewReadyFrameSource::ExactTargetOrAfter => Self::ExactTarget,
-            TimelineHoverPreviewReadyFrameSource::ApproximateKeyframe { span } => {
-                Self::ApproximateSpan { span }
-            }
-        }
-    }
 }
 
 /// Borrowed render input одного кадра для shell preview pass-а.
@@ -137,16 +103,17 @@ pub(crate) enum TimelineHoverPreviewUpdateOutcome {
     /// Approximate keyframe готов и заменил пустой/loading preview.
     ApproximateReady,
 
-    /// Materializer занят, но есть ready frame того же target-а.
+    /// Materializer занят; показывается последний ready frame (latest-only replace).
     BusyKeptLastReady,
 
-    /// Materializer занят, а безопасного ready frame для текущего target-а нет.
+    /// Materializer занят, а ни одного materialized кадра ещё нет.
     BusyEmpty,
 
     /// Для borrow-а нет active WGPU materializer-а.
     MissingMaterializer,
 
-    /// Working set не содержит entry для текущего target-а.
+    /// Working set не содержит entry для текущего target-а; последний ready
+    /// кадр (если он есть) остаётся видимым до замены (latest-only replace).
     WorkingSetMiss,
 
     /// Working set отверг entry по timing/exactness guard-ам.
@@ -186,6 +153,9 @@ impl TimelineHoverPreviewRenderState {
         load_state: TimelineHoverPreviewLoadState,
         materializer: Option<&dyn WgpuFrameTextureViewMaterializer>,
     ) -> TimelineHoverPreviewUpdateOutcome {
+        // Loading-индикатор живёт ровно один UI-кадр: любой не-Loading исход
+        // ниже сбрасывает его, а сам Loading path устанавливает заново.
+        self.loading = None;
         let borrowed_frame = match borrow_outcome {
             PlayerTimelineHoverPrepareBorrowOutcome::Borrowed(borrowed_frame) => borrowed_frame,
             PlayerTimelineHoverPrepareBorrowOutcome::Miss(_reason) => {
@@ -207,11 +177,16 @@ impl TimelineHoverPreviewRenderState {
                     return TimelineHoverPreviewUpdateOutcome::Loading;
                 }
 
-                self.clear();
+                // Latest-only replace: пока decode нового target-а не выдал ни
+                // approximate, ни exact кадр, держим последний materialized
+                // кадр за курсором, чтобы превью не мигало пустотой между
+                // bucket-ами. Panel исчезает только через внешний `clear()`
+                // (leave/session end/недопустимый playback mode).
+                self.keep_last_ready_for(visual_target);
                 return TimelineHoverPreviewUpdateOutcome::WorkingSetMiss;
             }
             PlayerTimelineHoverPrepareBorrowOutcome::TimingRejected(_rejection) => {
-                self.clear();
+                self.keep_last_ready_for(visual_target);
                 return TimelineHoverPreviewUpdateOutcome::TimingRejected;
             }
         };
@@ -262,7 +237,6 @@ impl TimelineHoverPreviewRenderState {
         self.materialize_lease(
             visual_target,
             borrowed_frame.lease().clone(),
-            TimelineHoverPreviewReadyFrameSource::ExactTargetOrAfter,
             materializer,
             TimelineHoverPreviewUpdateOutcome::Ready,
         )
@@ -282,9 +256,6 @@ impl TimelineHoverPreviewRenderState {
         self.materialize_lease(
             visual_target,
             approximate_borrow.lease().clone(),
-            TimelineHoverPreviewReadyFrameSource::ApproximateKeyframe {
-                span: approximate_borrow.span(),
-            },
             materializer,
             TimelineHoverPreviewUpdateOutcome::ApproximateReady,
         )
@@ -295,7 +266,6 @@ impl TimelineHoverPreviewRenderState {
         &mut self,
         visual_target: TimelineHoverVisualTarget,
         lease: VideoFrameLease,
-        source: TimelineHoverPreviewReadyFrameSource,
         materializer: &dyn WgpuFrameTextureViewMaterializer,
         ready_outcome: TimelineHoverPreviewUpdateOutcome,
     ) -> TimelineHoverPreviewUpdateOutcome {
@@ -309,25 +279,20 @@ impl TimelineHoverPreviewRenderState {
 
         match materialization.outcome {
             SharedVideoFrameMaterializationOutcome::Ready { materialized_frame } => {
-                self.loading = None;
                 self.ready = Some(TimelineHoverPreviewReadyFrame {
                     visual_target,
-                    source,
                     renderable_frame: materialized_frame.into_renderable_present_frame(),
                 });
                 ready_outcome
             }
             SharedVideoFrameMaterializationOutcome::Busy { .. } => {
-                if self.ready_matches_reuse_guard(
-                    visual_target.target(),
-                    TimelineHoverPreviewReadyReuseGuard::from_source(source),
-                ) {
-                    if let Some(ready) = &mut self.ready {
-                        ready.visual_target = visual_target;
-                    }
+                // Latest-only replace: при materializer backpressure показываем
+                // последний готовый кадр (любого target-а/span-а), пока retry
+                // не заменит его свежим.
+                if self.ready.is_some() {
+                    self.keep_last_ready_for(visual_target);
                     TimelineHoverPreviewUpdateOutcome::BusyKeptLastReady
                 } else {
-                    self.clear();
                     TimelineHoverPreviewUpdateOutcome::BusyEmpty
                 }
             }
@@ -346,26 +311,14 @@ impl TimelineHoverPreviewRenderState {
         }
     }
 
-    /// Busy fallback допускается только для source-specific совместимого ready frame-а.
-    fn ready_matches_reuse_guard(
-        &self,
-        target: TimelineHoverTarget,
-        guard: TimelineHoverPreviewReadyReuseGuard,
-    ) -> bool {
-        self.ready
-            .as_ref()
-            .map(|ready| match (ready.source, guard) {
-                (
-                    TimelineHoverPreviewReadyFrameSource::ExactTargetOrAfter,
-                    TimelineHoverPreviewReadyReuseGuard::ExactTarget,
-                ) => ready.visual_target.target() == target,
-                (
-                    TimelineHoverPreviewReadyFrameSource::ApproximateKeyframe { span: ready_span },
-                    TimelineHoverPreviewReadyReuseGuard::ApproximateSpan { span: guard_span },
-                ) => ready_span.matches_approximate_preview_anchor(guard_span),
-                _ => false,
-            })
-            .unwrap_or(false)
+    /// Держит последний materialized кадр за курсором вместо очистки.
+    ///
+    /// Latest-only replace policy: устаревший preview кадр разрешено показывать
+    /// до появления замены, а его placement обновляется на текущий pointer.
+    fn keep_last_ready_for(&mut self, visual_target: TimelineHoverVisualTarget) {
+        if let Some(ready) = &mut self.ready {
+            ready.visual_target = visual_target;
+        }
     }
 
     fn show_loading(&mut self, visual_target: TimelineHoverVisualTarget) {
@@ -453,28 +406,6 @@ mod tests {
             millis,
             TimeBase::new(1, 1_000).expect("valid millisecond timebase"),
         )
-    }
-
-    fn preview_span(target_millis: i64, decode_safe_start_millis: i64) -> DecodeDependencySpan {
-        let target_context = crate::timeline_hover_prepare::TimelineHoverPrepareTargetContext::new(
-            SourceRevision::new(1),
-            BackendRevision::new(2),
-            ScrubTrackSelection::video_only(TrackId::new(1)),
-            ScrubGenerationToken::new(PlaybackGeneration::new(3), ScrubGeneration::new(4)),
-            FrameExactnessPolicy::TargetOrAfter,
-        );
-        crate::timeline_hover_prepare::TimelineHoverPrepareTarget::new(
-            target_context,
-            timestamp(target_millis),
-            TimelineHoverFrameBucket::new(target_millis),
-            timestamp(decode_safe_start_millis),
-            timestamp(target_millis + 100),
-            0,
-            crate::timeline_hover_prepare::TimelineHoverPreparePlaybackMode::ActivePlayback,
-        )
-        .expect("test target must build")
-        .dependency_span()
-        .expect("test target must be resolved")
     }
 
     fn decoded_frame(pts_millis: u64, resource_handle: u64) -> DecodedFrame {
@@ -603,12 +534,52 @@ mod tests {
     }
 
     #[test]
+    fn miss_with_idle_load_state_clears_stale_network_loading_indicator() {
+        // Latest-only replace больше не делает полный clear() на Miss, поэтому
+        // сброс network loading-индикатора должен происходить явно.
+        let mut state = TimelineHoverPreviewRenderState::default();
+        let visual_target = visual_target(12);
+        let miss = || {
+            PlayerTimelineHoverPrepareBorrowOutcome::Miss(
+                TimelineHoverPrepareLookupMissReason::NoEntryForKey,
+            )
+        };
+
+        let loading_outcome = state.update_from_borrow(
+            visual_target,
+            miss(),
+            None,
+            TimelineHoverPreviewLoadState::NetworkOpening {
+                target: visual_target.target(),
+            },
+            None,
+        );
+        assert_eq!(loading_outcome, TimelineHoverPreviewUpdateOutcome::Loading);
+        assert!(state.is_loading_for_target(visual_target.target()));
+
+        let idle_outcome = state.update_from_borrow(
+            visual_target,
+            miss(),
+            None,
+            TimelineHoverPreviewLoadState::Idle,
+            None,
+        );
+        assert_eq!(
+            idle_outcome,
+            TimelineHoverPreviewUpdateOutcome::WorkingSetMiss
+        );
+        assert!(
+            !state.is_loading_for_target(visual_target.target()),
+            "Idle load state must drop the stale network loading indicator"
+        );
+    }
+
+    #[test]
     fn miss_uses_approximate_borrow_and_exact_hit_takes_priority() {
         let mut state = TimelineHoverPreviewRenderState::default();
         let visual_target = visual_target(12);
-        let span = preview_span(12_000, 9_400);
         let approximate_borrow =
-            TimelineHoverApproximatePreviewBorrow::new(lease(9_400, 77), span, timestamp(9_400));
+            TimelineHoverApproximatePreviewBorrow::new(lease(9_400, 77), timestamp(9_400));
         let looked_up_handles = Arc::new(Mutex::new(Vec::new()));
         let materializer = RecordingBusyMaterializer {
             looked_up_handles: Arc::clone(&looked_up_handles),

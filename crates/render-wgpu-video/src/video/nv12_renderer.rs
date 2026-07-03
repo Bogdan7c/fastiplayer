@@ -11,7 +11,9 @@ use super::VideoRenderPassContext;
 pub(crate) struct Nv12VideoRenderer {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
-    uniform_buffer: wgpu::Buffer,
+    /// Отдельный uniform buffer на каждую pass-роль (main/overlay), см.
+    /// `VideoRenderTargetLoad::uniform_slot`.
+    uniform_buffers: [wgpu::Buffer; super::VideoRenderTargetLoad::UNIFORM_SLOT_COUNT],
     sampler: wgpu::Sampler,
     color_settings: ColorPipelineSettings,
 }
@@ -33,12 +35,11 @@ impl Nv12VideoRenderer {
             ),
         });
 
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("nv12 uniform buffer"),
-            size: COLOR_PIPELINE_UNIFORM_SIZE,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let uniform_buffers = super::create_pass_uniform_buffers(
+            device,
+            "nv12 uniform buffer",
+            COLOR_PIPELINE_UNIFORM_SIZE,
+        );
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("nv12 sampler"),
@@ -149,7 +150,7 @@ impl Nv12VideoRenderer {
         Self {
             pipeline,
             bind_group_layout,
-            uniform_buffer,
+            uniform_buffers,
             sampler,
             color_settings: ColorPipelineSettings::default(),
         }
@@ -183,8 +184,9 @@ impl Nv12VideoRenderer {
             orientation_transform,
         );
 
+        let uniform_buffer = &self.uniform_buffers[pass_context.target_load.uniform_slot()];
         pass_context.queue.write_buffer(
-            &self.uniform_buffer,
+            uniform_buffer,
             0,
             bytemuck::bytes_of(&prepared_color_pipeline.uniforms),
         );
@@ -199,7 +201,7 @@ impl Nv12VideoRenderer {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: self.uniform_buffer.as_entire_binding(),
+                        resource: uniform_buffer.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
