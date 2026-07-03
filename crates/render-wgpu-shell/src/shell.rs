@@ -423,7 +423,6 @@ impl Renderer {
         let RenderFrameInput {
             window,
             video_frame,
-            hover_preview,
             egui_paint_jobs,
             egui_textures_delta,
             screen,
@@ -577,24 +576,6 @@ impl Renderer {
             &screen_descriptor,
         );
         let egui_render_elapsed = stage_started_at.elapsed();
-
-        if let Some(hover_preview) = hover_preview {
-            match self.video_renderer.render_overlay(WgpuVideoRenderInput {
-                frame: Some(hover_preview.frame),
-                video_viewport: hover_preview.viewport,
-                video_exclusion_rects: &[],
-                target: &surface_view,
-                encoder: &mut encoder,
-                device: &self.gpu.device,
-                queue: &self.gpu.queue,
-            }) {
-                Ok(_preview_rendered) => {}
-                Err(error) => {
-                    tracing::error!(error = %error, "Hover preview render failed");
-                    return RenderFrameOutcome::Failed(RenderFrameFailure::new(error.to_string()));
-                }
-            }
-        }
 
         // Отправляем команды на GPU
         let stage_started_at = Instant::now();

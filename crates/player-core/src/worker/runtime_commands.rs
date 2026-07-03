@@ -216,7 +216,7 @@ impl PlayerWorkerRuntime {
         ));
     }
 
-    /// Обновляет session-owned frame-server policy без перезапуска hover/live scrub work.
+    /// Обновляет session-owned frame-server policy без перезапуска live scrub work.
     fn apply_runtime_frame_server_policy(
         &mut self,
         update: PlayerRuntimeFrameServerPolicyUpdate,

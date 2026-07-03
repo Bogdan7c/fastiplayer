@@ -176,16 +176,13 @@ impl SeekLandingRoute {
 pub(crate) enum SeekLandingExecution {
     /// S17A cold route: reused playback decoder должен demux/decode exact frame.
     ReusedDecoderColdDecode,
-
-    /// S17B prepared route: exact frame уже promoted, tick не должен запускать decode.
-    PreparedVisualOverride,
 }
 
 impl SeekLandingExecution {
     /// Разрешает ли route demux/decode loop во время public `Scrubbing`.
     #[must_use]
     pub(crate) const fn decode_active(self) -> bool {
-        matches!(self, Self::ReusedDecoderColdDecode)
+        true
     }
 }
 
@@ -234,12 +231,6 @@ impl ActiveSeekLandingState {
     #[must_use]
     pub(crate) const fn decode_active(self) -> bool {
         self.execution.decode_active()
-    }
-
-    /// Возвращает typed route исполнения без раскрытия layout-а state struct.
-    #[must_use]
-    pub(crate) const fn execution(self) -> SeekLandingExecution {
-        self.execution
     }
 
     /// Возвращает accepted demux position, если demux seek уже состоялся.

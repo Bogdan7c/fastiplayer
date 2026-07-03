@@ -152,15 +152,11 @@ impl ScrubCurrentGuards {
 pub enum ScrubRequestKind {
     SeekLanding,
     LiveScrub,
-    HoverPreview,
-    TimelineHoverPrepareWindow,
 }
 
 /// Приоритет admission/scheduling. Порядок enum-а намеренно от низкого к высокому.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ScrubPriority {
-    BackgroundPrepare,
-    HoverPreview,
     LiveScrub,
     UserCommit,
 }
@@ -171,8 +167,6 @@ impl ScrubPriority {
         match request_kind {
             ScrubRequestKind::SeekLanding => Self::UserCommit,
             ScrubRequestKind::LiveScrub => Self::LiveScrub,
-            ScrubRequestKind::HoverPreview => Self::HoverPreview,
-            ScrubRequestKind::TimelineHoverPrepareWindow => Self::BackgroundPrepare,
         }
     }
 }

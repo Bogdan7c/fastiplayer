@@ -37,9 +37,8 @@ use crate::{
     PlayerRuntimeDefaultVolumeUpdate, PlayerRuntimeFrameServerPolicyUpdate,
     PlayerRuntimeSettingsUpdate, PlayerRuntimeTickConfigUpdate, PlayerRuntimeVideoBackendUpdate,
     PlayerSession, PlayerSnapshot, PlayerTickConfig, PlayerTickContext, PlayerTickResult,
-    PlayerTimelineHoverPrepareHandoff, PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan,
-    PreparedMedia, SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend,
-    scheduler_timing_diagnostics,
+    PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan, PreparedMedia,
+    SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend, scheduler_timing_diagnostics,
 };
 
 mod handle;
@@ -104,9 +103,6 @@ pub struct PlayerWorkerConfig {
     /// Factory audio output-а, которую composition layer устанавливает без CPAL deps в core.
     pub audio_output_factory: Arc<dyn AudioOutputFactory>,
 
-    /// Shared hover prepare storage для app controller и S17 promotion.
-    pub timeline_hover_prepare_handoff: PlayerTimelineHoverPrepareHandoff,
-
     /// Validated S19 scrub/scheduler policy snapshot для session-owned live scrub route.
     pub frame_server_config: ValidatedFrameServerConfig,
 }
@@ -126,7 +122,6 @@ impl fmt::Debug for PlayerWorkerConfig {
             .field("default_volume", &self.default_volume)
             .field("audio_decoder_factory", &"<dyn AudioDecoderFactory>")
             .field("audio_output_factory", &"<dyn AudioOutputFactory>")
-            .field("timeline_hover_prepare_handoff", &"<shared>")
             .field("frame_server_config", &self.frame_server_config)
             .finish()
     }
@@ -144,7 +139,6 @@ impl PlayerWorkerConfig {
             default_volume: 1.0,
             audio_decoder_factory: missing_audio_decoder_factory(),
             audio_output_factory: missing_audio_output_factory(),
-            timeline_hover_prepare_handoff: PlayerTimelineHoverPrepareHandoff::default(),
             frame_server_config: RuntimeFrameServerConfig::default()
                 .validate()
                 .expect("default frame-server config must validate"),
@@ -162,9 +156,6 @@ impl PlayerWorkerConfig {
             default_volume: config.audio.volume as f32,
             audio_decoder_factory: missing_audio_decoder_factory(),
             audio_output_factory: missing_audio_output_factory(),
-            timeline_hover_prepare_handoff: PlayerTimelineHoverPrepareHandoff::from_app_config(
-                config,
-            ),
             frame_server_config: Self::frame_server_config_from_app_config(config),
         }
     }
@@ -186,16 +177,6 @@ impl PlayerWorkerConfig {
         audio_output_factory: Arc<dyn AudioOutputFactory>,
     ) -> Self {
         self.audio_output_factory = audio_output_factory;
-        self
-    }
-
-    /// Подставляет shared hover prepare handoff, которым владеет composition layer.
-    #[must_use]
-    pub fn with_timeline_hover_prepare_handoff(
-        mut self,
-        timeline_hover_prepare_handoff: PlayerTimelineHoverPrepareHandoff,
-    ) -> Self {
-        self.timeline_hover_prepare_handoff = timeline_hover_prepare_handoff;
         self
     }
 
@@ -264,10 +245,6 @@ fn runtime_frame_server_config_from_persisted(
     RuntimeFrameServerConfig {
         live_scrub_max_hz: config.live_scrub_max_hz,
         live_scrub_decode_mode: runtime_live_scrub_decode_mode(config.live_scrub_decode_mode),
-        hover_prepare_window_slots: config.hover_prepare_window_slots,
-        software_hover_prepare_window_slots: config.software_hover_prepare_window_slots,
-        recent_superseded_prepare_slots: config.recent_superseded_prepare_slots,
-        software_recent_superseded_prepare_slots: config.software_recent_superseded_prepare_slots,
         ..RuntimeFrameServerConfig::default()
     }
 }

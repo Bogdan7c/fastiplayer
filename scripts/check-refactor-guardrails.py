@@ -371,23 +371,6 @@ MAIN_VIDEO_SECOND_SESSION_PATTERNS = (
     ),
 )
 
-HARDWARE_HOVER_SHARED_OWNER_SCAN_PATHS = (
-    Path("crates/app-egui/src/timeline_hover_prepare.rs"),
-    Path("crates/app-egui/src/frame_prepare/timeline_hover_preview.rs"),
-    Path("crates/app-egui/src/state/ui_runtime.rs"),
-    Path("crates/frame-server-core/src"),
-)
-
-HARDWARE_HOVER_INDEPENDENT_SESSION_PATTERNS = (
-    (
-        re.compile(
-            r"\b(VaapiVideoBackendFactory|VideoBackendFactory|StartedVideoBackend)\b"
-        ),
-        "active-playback hardware hover должен идти через shared VA owner/resource pool, а не через independent backend session",
-    ),
-    *DIRECT_VAAPI_DISPLAY_PATTERNS,
-)
-
 PREPARED_BRANCH_PROMOTION_ALLOWED_ROOTS = (
     Path("crates/frame-server-core"),
     Path("crates/player-core/src/session/prepared_seek.rs"),
@@ -398,141 +381,9 @@ PREPARED_BRANCH_PROMOTION_PATTERNS = (
         re.compile(r"\bpromote_prepared_frame\s*\("),
         "prepared branch promotion разрешён только frame-server-core boundary и S17 player-core owner-у",
     ),
-    (
-        re.compile(r"\bTimelineHoverPreparePromotionOutcome\b"),
-        "promotion outcome не должен становиться app/render/backend ownership API",
-    ),
 )
 
-HOVER_PREVIEW_OWNERSHIP_SCAN_PATHS = (
-    Path("crates/app-egui/src/frame_prepare/timeline_hover_preview.rs"),
-)
-
-HOVER_PREVIEW_OWNERSHIP_PATTERNS = (
-    (
-        re.compile(r"\bpromote_prepared_frame\s*\("),
-        "HoverPreview может только borrow/materialize prepared frame, но не promote branch ownership",
-    ),
-    (
-        re.compile(r"\btry_demote_promoted_frame_to_recent_superseded\s*\("),
-        "HoverPreview не владеет demote-back/recent-superseded branch ownership",
-    ),
-    (
-        re.compile(r"\brelease_hover_owned_entries_for_session_end\s*\("),
-        "HoverPreview render state не должен release-ить hover-owned branch storage",
-    ),
-    (
-        re.compile(r"\bTimelineHoverPreparePromotionOutcome\b"),
-        "HoverPreview не должен принимать promotion outcome вместо borrow outcome",
-    ),
-)
-
-REQUIRED_SOURCE_ANCHORS = (
-    (
-        Path("crates/config/src/frame_server.rs"),
-        (
-            "hover_pool_frames: FrameServerBudgetConfig::Auto,",
-            "hover_thread_count: FrameServerBudgetConfig::Auto,",
-        ),
-        "hover budget persisted defaults должны оставаться `auto`",
-    ),
-    (
-        Path("crates/frame-server-core/src/hover_budget_tests.rs"),
-        (
-            "fn hover_auto_selects_smallest_reported_positive_minimum_not_one()",
-            "fn hover_auto_does_not_use_playback_minus_one_maximize_policy()",
-            "fn hover_auto_rejects_software_minimum_equal_to_playback_budget()",
-            "fn hover_context_change_recomputes_backend_minimum_without_global_cache()",
-            "fn hover_fixed_budget_rejects_zero_and_has_no_static_upper_cap()",
-            "fn hover_pairwise_requires_hardware_surface_budget_below_playback()",
-            "fn hover_pairwise_requires_software_pool_and_thread_budgets_below_playback()",
-            "fn hover_capability_success_then_admission_pressure_failure_remains_distinct()",
-        ),
-        "frame-server-core hover budget tests должны закреплять auto/fixed/pairwise/admission semantics",
-    ),
-    (
-        Path("crates/app-egui/src/frame_server_budget.rs"),
-        (
-            "fn diagnostics_resolve_auto_from_backend_reported_minimums()",
-            "fn preflight_rejects_changed_fixed_budget_without_rewriting_config()",
-            "fn already_loaded_fixed_too_large_is_diagnostics_only()",
-            "fn admission_pressure_is_reported_without_preflight_reject()",
-        ),
-        "app hover budget preflight не должен clamp/rewrite fixed-too-large config и должен отделять pressure",
-    ),
-    (
-        Path("crates/video-vaapi/src/shared_hardware_owner/tests.rs"),
-        (
-            "fn capability_minimum_uses_context_and_is_not_global_one()",
-            "fn hover_admission_rejects_budget_at_or_above_playback_budget()",
-            "fn hover_admission_rejects_provider_pressure_separately_from_capability()",
-        ),
-        "VAAPI shared owner tests должны закреплять context minima и admission pressure",
-    ),
-    (
-        Path("crates/video-ffmpeg/src/software_hover.rs"),
-        (
-            # S30D/S31: FFmpeg software hover auto-minimum теперь осознанно выше
-            # старого pool=2/thread<=2, иначе 4K hover decode жил с одним
-            # свободным буфером после prepared + approximate slots.
-            "const DEFAULT_HOVER_SOFTWARE_FRAME_POOL_MINIMUM: usize = 4;",
-            "const HOVER_THREAD_CAPABILITY_HOST_DIVISOR: usize = 2;",
-            "const HOVER_THREAD_CAPABILITY_MINIMUM: usize = 2;",
-            "const HOVER_THREAD_CAPABILITY_MAXIMUM: usize = 6;",
-            "half_host_parallelism.clamp(",
-            "fn capability_reports_current_pool_and_thread_minimums()",
-            "fn default_context_reports_new_auto_minimums()",
-            "fn hover_thread_auto_minimum_uses_half_host_parallelism_clamped_to_two_six()",
-            "fn admission_rejects_capacity_pressure_without_rewriting_capability()",
-        ),
-        "software hover owner tests должны закреплять current-context minima, новые auto defaults и pressure split",
-    ),
-    (
-        Path("crates/app-egui/src/hover_software_session.rs"),
-        (
-            "fn small_playback_pool_degrades_hover_without_reserving_or_rewriting_playback_budget()",
-        ),
-        "app software hover startup должен typed-деградировать без reservation/backend, если backend minimum не помещается ниже playback budget",
-    ),
-    (
-        Path("crates/app-egui/src/state/ui_runtime.rs"),
-        (
-            ".borrow_prepared_frame(lookup_request)",
-            "update_from_borrow(",
-        ),
-        "HoverPreview должен брать prepared frame через borrow boundary",
-    ),
-    (
-        Path("crates/app-egui/src/frame_prepare/timeline_hover_preview.rs"),
-        (
-            "SharedVideoFrameLeaseRole::HoverPreview",
-            "materialize_shared_video_frame(",
-        ),
-        "HoverPreview должен materialize borrowed lease через shared helper",
-    ),
-    (
-        Path("crates/render-wgpu-shell/src/frame.rs"),
-        (
-            "hover_preview: Option<RenderVideoOverlayInput",
-            "pub struct RenderVideoOverlayInput",
-        ),
-        "HoverPreview должен идти в отдельный preview render target/overlay input",
-    ),
-    (
-        Path("crates/player-core/src/session/prepared_seek.rs"),
-        (
-            "working_set.promote_prepared_frame(request)",
-        ),
-        "S17 player-core остаётся owner-ом promotion prepared branch into playback ownership",
-    ),
-    (
-        Path("crates/app-egui/src/state/tests.rs"),
-        (
-            "fn state_timeline_hover_preview_disabled_still_emits_invisible_prepare()",
-        ),
-        "`hover_preview_enabled=false` должен выключать только visual preview, не invisible prepare",
-    ),
-)
+REQUIRED_SOURCE_ANCHORS = ()
 
 
 class GuardrailError(RuntimeError):
@@ -851,9 +702,7 @@ def find_source_policy_violations(repo_root: Path) -> list[SourcePolicyViolation
     violations.extend(find_ffmpeg_hardware_decode_violations(repo_root))
     violations.extend(find_direct_vaapi_display_violations(repo_root))
     violations.extend(find_main_video_second_session_violations(repo_root))
-    violations.extend(find_hardware_hover_independent_session_violations(repo_root))
     violations.extend(find_prepared_branch_promotion_violations(repo_root))
-    violations.extend(find_hover_preview_ownership_violations(repo_root))
     violations.extend(find_required_source_anchor_violations(repo_root))
     return sorted(
         violations,
@@ -1004,18 +853,6 @@ def find_main_video_second_session_violations(repo_root: Path) -> list[SourcePol
     )
 
 
-def find_hardware_hover_independent_session_violations(
-    repo_root: Path,
-) -> list[SourcePolicyViolation]:
-    """Запрещает hardware hover backend/session вне shared VA owner/resource pool."""
-
-    return find_regex_violations_in_paths(
-        repo_root,
-        HARDWARE_HOVER_SHARED_OWNER_SCAN_PATHS,
-        HARDWARE_HOVER_INDEPENDENT_SESSION_PATTERNS,
-    )
-
-
 def find_prepared_branch_promotion_violations(repo_root: Path) -> list[SourcePolicyViolation]:
     """Проверяет, что branch promotion не становится app/render/backend API."""
 
@@ -1031,16 +868,6 @@ def find_prepared_branch_promotion_violations(repo_root: Path) -> list[SourcePol
             find_regex_line_violations(repo_root, relative_path, PREPARED_BRANCH_PROMOTION_PATTERNS)
         )
     return violations
-
-
-def find_hover_preview_ownership_violations(repo_root: Path) -> list[SourcePolicyViolation]:
-    """Проверяет, что visual HoverPreview не владеет promotion/release lifecycle."""
-
-    return find_regex_violations_in_paths(
-        repo_root,
-        HOVER_PREVIEW_OWNERSHIP_SCAN_PATHS,
-        HOVER_PREVIEW_OWNERSHIP_PATTERNS,
-    )
 
 
 def find_required_source_anchor_violations(repo_root: Path) -> list[SourcePolicyViolation]:

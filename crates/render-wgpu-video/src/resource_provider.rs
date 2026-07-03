@@ -21,7 +21,6 @@ pub fn wrap_video_backend_for_wgpu_submission(
     queue: &wgpu::Queue,
 ) -> (StartedVideoBackend, PresentFrameResourceProviderHandle) {
     let backend_id = started_backend.backend_id().to_owned();
-    let hover_budget_diagnostics_provider = started_backend.hover_budget_diagnostics_provider();
     let decoder_thread = started_backend.into_decoder_thread();
     let inner_provider = decoder_thread.resource_provider();
     let renderer_provider =
@@ -35,13 +34,6 @@ pub fn wrap_video_backend_for_wgpu_submission(
     };
 
     let wrapped_backend = StartedVideoBackend::from_decoder_thread(backend_id, wrapped_thread);
-    let wrapped_backend = if let Some(hover_budget_diagnostics_provider) =
-        hover_budget_diagnostics_provider
-    {
-        wrapped_backend.with_hover_budget_diagnostics_provider(hover_budget_diagnostics_provider)
-    } else {
-        wrapped_backend
-    };
 
     (wrapped_backend, renderer_provider)
 }

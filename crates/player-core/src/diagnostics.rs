@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use frame_server_core::{
     ScrubDiagnosticsRecorder, ScrubDiagnosticsSnapshot, ScrubEventDiagnostics,
-    ScrubPreparedFrameHitOutcome, ScrubPreparedFrameOwnershipEvent,
 };
 use media_core::{PacketKeyframe, TrackId};
 use video_core::{DecodedFrame, FrameMemoryPath, VideoFramePublishPressureDiagnostics};
@@ -1284,22 +1283,6 @@ impl PlaybackDiagnostics {
     pub(crate) fn record_scrub_event_diagnostics(&mut self, diagnostics: ScrubEventDiagnostics) {
         self.frame_server_scrub
             .record_event_diagnostics(diagnostics);
-    }
-
-    pub(crate) fn record_prepared_frame_hit(&mut self, outcome: ScrubPreparedFrameHitOutcome) {
-        self.frame_server_scrub.record_prepared_frame_hit(outcome);
-    }
-
-    pub(crate) fn record_cold_exact_decode_pending(&mut self) {
-        self.frame_server_scrub.record_cold_exact_decode_pending();
-    }
-
-    pub(crate) fn record_prepared_frame_ownership_event(
-        &mut self,
-        event: ScrubPreparedFrameOwnershipEvent,
-    ) {
-        self.frame_server_scrub
-            .record_prepared_frame_ownership_event(event);
     }
 
     /// Возвращает snapshot с актуальными queue depths.

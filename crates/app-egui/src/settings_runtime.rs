@@ -42,13 +42,10 @@ use settings_core::{
     RollbackResult, SelectDescriptor, SettingEditor, SettingGroupId, SettingId, SettingOption,
     SettingOptionCurrentValue, SettingOptionId, SettingOptionProvider, SettingOptions,
     SettingOptionsError, SettingOptionsRequest, SettingOptionsStatus, SettingRouteId, SettingText,
-    SettingValue, SettingsController, SettingsError, SettingsPersister, SettingsRegistry,
-    SettingsResult, SettingsSurfaceId, SettingsValidator, ValidationReport, ValidationRequest,
+    SettingValue, SettingsController, SettingsPersister, SettingsRegistry, SettingsResult,
+    SettingsSurfaceId, SettingsValidator, ValidationReport, ValidationRequest,
 };
 
-use crate::frame_server_budget::{
-    FrameServerHoverBudgetDiagnosticsSnapshot, FrameServerHoverBudgetPreflightRejection,
-};
 use crate::render_settings::{
     color_pipeline_settings_from_config, hdr_to_sdr_settings_from_config,
 };

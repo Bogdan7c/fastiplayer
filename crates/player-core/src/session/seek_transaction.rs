@@ -25,9 +25,8 @@ use crate::{
 
 use super::audio_runtime::SeekAudioGateStatus;
 use super::prepared_seek::{
-    PreparedSeekLandingStart, SEEK_LANDING_BACKEND_REVISION_UNTRACKED,
-    SEEK_LANDING_FIRST_SCRUB_GENERATION, SEEK_LANDING_SOURCE_REVISION_UNTRACKED,
-    seek_landing_generation_token,
+    SEEK_LANDING_BACKEND_REVISION_UNTRACKED, SEEK_LANDING_FIRST_SCRUB_GENERATION,
+    SEEK_LANDING_SOURCE_REVISION_UNTRACKED, seek_landing_generation_token,
 };
 use super::scrub_driver::{
     PlayerScrubTransactionDriver, default_scrub_execution_policy, scrub_update_guards_for_owner,
@@ -1796,7 +1795,7 @@ impl PlayerSession {
             Some(audio_track_id) => ScrubTrackSelection::with_audio(video_track_id, audio_track_id),
             None => ScrubTrackSelection::video_only(video_track_id),
         };
-        match self.start_prepared_seek_landing_if_available(
+        self.confirm_prepared_seek_landing_unavailable(
             target_position,
             seek_mode,
             resume_intent,
@@ -1806,14 +1805,8 @@ impl PlayerSession {
             route.request_kind(),
             route.commit_allowed(),
             live_scrub_diagnostics,
-        )? {
-            PreparedSeekLandingStart::Started => {
-                return Ok(());
-            }
-            PreparedSeekLandingStart::Unavailable => {}
-        }
+        )?;
 
-        self.record_cold_exact_decode_pending();
         self.enter_seek_landing_public_scrubbing(target_position);
 
         let update = ScrubTargetUpdate::new(
@@ -2068,7 +2061,7 @@ impl PlayerSession {
             ));
         };
         let next_generation = ScrubGenerationToken::new(playback_generation, next_scrub_generation);
-        let release_promoted_to_recent_superseded =
+        let release_prepared_ownership_for_cancel =
             !self.seek_runtime.active_seek_landing_is_live_scrub();
         let active_live_scrub_diagnostics =
             self.seek_runtime.active_seek_landing_live_diagnostics();
@@ -2098,7 +2091,7 @@ impl PlayerSession {
             );
         }
 
-        let release_context = release_promoted_to_recent_superseded
+        let release_context = release_prepared_ownership_for_cancel
             .then_some(active_context)
             .flatten();
         let _release_outcome = self.release_prepared_seek_landing_for_cancel(

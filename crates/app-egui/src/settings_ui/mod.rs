@@ -474,7 +474,7 @@ mod tests {
             ),
             SettingsUiField::new(
                 descriptor(
-                    "frame_server.hover_pool_frames",
+                    "test.auto_fixed_resource_slots",
                     SettingEditor::AutoFixedPositiveInteger(
                         AutoFixedPositiveIntegerDescriptor::new(
                             text("settings.frame_server.budget.auto", "Авто"),

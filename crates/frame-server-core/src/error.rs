@@ -8,12 +8,6 @@ pub enum FrameServerConfigError {
     ZeroResumePendingEventInterval,
     ZeroLiveScrubMaxHz,
     LiveScrubMaxHzTooHigh { max_allowed: u16, actual: u16 },
-    ZeroHoverPrepareWindowSlots,
-    HoverPrepareWindowSlotsTooHigh { max_allowed: u8, actual: u8 },
-    ZeroSoftwareHoverPrepareWindowSlots,
-    SoftwareHoverPrepareWindowSlotsTooHigh { max_allowed: u8, actual: u8 },
-    RecentSupersededPrepareSlotsTooHigh { max_allowed: u8, actual: u8 },
-    SoftwareRecentSupersededPrepareSlotsTooHigh { max_allowed: u8, actual: u8 },
 }
 
 impl fmt::Display for FrameServerConfigError {
@@ -37,40 +31,6 @@ impl fmt::Display for FrameServerConfigError {
             } => write!(
                 formatter,
                 "live_scrub_max_hz must be <= {max_allowed}, got {actual}"
-            ),
-            Self::ZeroHoverPrepareWindowSlots => {
-                formatter.write_str("hover_prepare_window_slots must be greater than zero")
-            }
-            Self::HoverPrepareWindowSlotsTooHigh {
-                max_allowed,
-                actual,
-            } => write!(
-                formatter,
-                "hover_prepare_window_slots must be <= {max_allowed}, got {actual}"
-            ),
-            Self::ZeroSoftwareHoverPrepareWindowSlots => {
-                formatter.write_str("software_hover_prepare_window_slots must be greater than zero")
-            }
-            Self::SoftwareHoverPrepareWindowSlotsTooHigh {
-                max_allowed,
-                actual,
-            } => write!(
-                formatter,
-                "software_hover_prepare_window_slots must be <= {max_allowed}, got {actual}"
-            ),
-            Self::RecentSupersededPrepareSlotsTooHigh {
-                max_allowed,
-                actual,
-            } => write!(
-                formatter,
-                "recent_superseded_prepare_slots must be <= {max_allowed}, got {actual}"
-            ),
-            Self::SoftwareRecentSupersededPrepareSlotsTooHigh {
-                max_allowed,
-                actual,
-            } => write!(
-                formatter,
-                "software_recent_superseded_prepare_slots must be <= {max_allowed}, got {actual}"
             ),
         }
     }

@@ -35,11 +35,14 @@ mod scrub_driver;
 mod seek_transaction;
 mod snapshot_builder;
 mod tick;
-mod timeline_hover_prepare_handoff;
 
+#[cfg(test)]
+use self::audio_runtime::{
+    AudioAutoplayReadiness, AudioDecoderInitSpec, audio_decoder_init_spec_from_tracks,
+    classify_autoplay_audio_readiness, classify_seek_audio_gate,
+};
 use self::eof_drain::EofDrainRuntime;
 use self::media_lifecycle::MediaLifecycleState;
-pub(crate) use self::prepared_seek::PreparedSeekLandingOverrideHandoff;
 use self::prepared_seek::PreparedSeekLandingRuntime;
 pub(crate) use self::render_leases::{LeasedPresentFrame, PresentFrameIdentity};
 pub use self::tick::{
@@ -48,17 +51,6 @@ pub use self::tick::{
 };
 pub(crate) use self::tick::{
     PlayerWorkerWakeupPlan, SchedulerTimingDiagnosticsSnapshot, scheduler_timing_diagnostics,
-};
-pub use self::timeline_hover_prepare_handoff::{
-    PlayerHoverStreamDecodeContext, PlayerTimelineHoverPrepareBorrowOutcome,
-    PlayerTimelineHoverPrepareHandoff, PlayerTimelineHoverPrepareInsertOutcome,
-    PlayerTimelineHoverPrepareRetainedInsertOutcome, PlayerTimelineHoverPreparedFrameBorrow,
-};
-
-#[cfg(test)]
-use self::audio_runtime::{
-    AudioAutoplayReadiness, AudioDecoderInitSpec, audio_decoder_init_spec_from_tracks,
-    classify_autoplay_audio_readiness, classify_seek_audio_gate,
 };
 #[cfg(test)]
 use crate::pipeline::AudioSeekRuntimeState;
@@ -173,25 +165,6 @@ impl PlayerSession {
         Self {
             audio_decoder_factory,
             audio_output_factory,
-            ..Self::default()
-        }
-    }
-
-    /// Создаёт session с app-owned hover prepare handoff для shared S18/S17 storage.
-    #[must_use]
-    pub(crate) fn with_audio_factories_and_timeline_hover_prepare_handoff(
-        audio_decoder_factory: Arc<dyn AudioDecoderFactory>,
-        audio_output_factory: Arc<dyn AudioOutputFactory>,
-        timeline_hover_prepare_handoff: PlayerTimelineHoverPrepareHandoff,
-        frame_server_config: ValidatedFrameServerConfig,
-    ) -> Self {
-        Self {
-            audio_decoder_factory,
-            audio_output_factory,
-            frame_server_config,
-            prepared_seek_landing: PreparedSeekLandingRuntime::from_timeline_hover_prepare_handoff(
-                timeline_hover_prepare_handoff,
-            ),
             ..Self::default()
         }
     }

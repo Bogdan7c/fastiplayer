@@ -7,7 +7,7 @@ use tracing::{info, warn};
 
 use crate::{
     AppConfig, CURRENT_SCHEMA_VERSION, ConfigError, ConfigPaths, ConfigResult,
-    LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3,
+    LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3, LEGACY_SCHEMA_VERSION_4,
 };
 
 /// Сколько разных имён temp-файла пробуем перед явной ошибкой collision-а.
@@ -15,6 +15,19 @@ const MAX_TEMP_CONFIG_CREATE_ATTEMPTS: u32 = 32;
 
 /// Удалённая legacy-галка: сейчас этот смысл задаёт `video.preferred_backend = "hardware"`.
 const REMOVED_HARDWARE_DECODE_ONLY_KEY: &str = "hardware_decode_only";
+
+/// Удалённые hover/predecode настройки frame-server: runtime больше не читает эти ключи.
+const REMOVED_FRAME_SERVER_HOVER_KEYS: &[&str] = &[
+    "hover_preview_enabled",
+    "hover_pool_frames",
+    "hover_thread_count",
+    "hover_prepare_window_slots",
+    "software_hover_prepare_window_slots",
+    "recent_superseded_prepare_slots",
+    "software_recent_superseded_prepare_slots",
+    "hover_leave_grace_ms",
+    "network_hover_prepare_throttle_ms",
+];
 
 /// Config, загруженный из user path или созданный из defaults.
 #[derive(Debug, Clone, PartialEq)]
@@ -347,6 +360,9 @@ fn migrate_loaded_toml_document(toml_document: &mut toml::Value) {
     if legacy_schema_allows_removed_hardware_decode_only(root_table) {
         remove_removed_hardware_decode_only(root_table);
     }
+    if legacy_schema_allows_removed_frame_server_hover_keys(root_table) {
+        remove_removed_frame_server_hover_keys(root_table);
+    }
 }
 
 /// Проверяет, что документ ещё относится к schema, где старая галка могла быть записана.
@@ -355,6 +371,15 @@ fn legacy_schema_allows_removed_hardware_decode_only(root_table: &toml::Table) -
         root_table.get("schema_version"),
         Some(toml::Value::Integer(schema_version))
             if *schema_version >= 0 && *schema_version <= i64::from(LEGACY_SCHEMA_VERSION_3)
+    )
+}
+
+/// Проверяет, что документ относится к schema, где удалённые frame-server knobs могли существовать.
+fn legacy_schema_allows_removed_frame_server_hover_keys(root_table: &toml::Table) -> bool {
+    matches!(
+        root_table.get("schema_version"),
+        Some(toml::Value::Integer(schema_version))
+            if *schema_version >= 0 && *schema_version <= i64::from(LEGACY_SCHEMA_VERSION_4)
     )
 }
 
@@ -367,14 +392,28 @@ fn remove_removed_hardware_decode_only(root_table: &mut toml::Table) {
     video_table.remove(REMOVED_HARDWARE_DECODE_ONLY_KEY);
 }
 
+/// Удаляет только бывшие hover/predecode knobs, сохраняя strict отказ для неизвестных ключей.
+fn remove_removed_frame_server_hover_keys(root_table: &mut toml::Table) {
+    let Some(toml::Value::Table(frame_server_table)) = root_table.get_mut("frame_server") else {
+        return;
+    };
+
+    for removed_key in REMOVED_FRAME_SERVER_HOVER_KEYS {
+        frame_server_table.remove(*removed_key);
+    }
+}
+
 /// Нормализует старые TOML-схемы в текущую in-memory схему перед validation.
 fn migrate_loaded_config(config: &mut AppConfig) {
     if config.schema_version == LEGACY_SCHEMA_VERSION_2
         || config.schema_version == LEGACY_SCHEMA_VERSION_3
+        || config.schema_version == LEGACY_SCHEMA_VERSION_4
     {
         // v2 -> v3 уже выражено типами: `video.preferred_backend = "vaapi"`
         // десериализуется как `Hardware`. v3 -> v4 уже обработано на TOML-уровне:
         // удалённый `video.hardware_decode_only` больше не попадает в `VideoConfig`.
+        // v4 -> v5 тоже обработано на TOML-уровне: удалённые hover/predecode
+        // ключи больше не попадают в `FrameServerConfig`.
         config.schema_version = CURRENT_SCHEMA_VERSION;
     }
 }
@@ -385,9 +424,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        CURRENT_SCHEMA_VERSION, FrameServerBudgetConfig, FrameServerConfig,
-        FrameServerLiveScrubDecodeModeConfig, HdrToSdrOperatorConfig, PausedCommitBehavior,
-        ToneMappingMode, VideoBackendPreference, validation,
+        CURRENT_SCHEMA_VERSION, FrameServerConfig, FrameServerLiveScrubDecodeModeConfig,
+        HdrToSdrOperatorConfig, PausedCommitBehavior, ToneMappingMode, VideoBackendPreference,
+        validation,
     };
 
     /// Проверяет, что default schema остаётся самосогласованной.
@@ -462,13 +501,13 @@ mod tests {
         assert_eq!(config.render.tone_mapping, ToneMappingMode::Disabled);
     }
 
-    /// Проверяет defaults текущей schema version 4.
+    /// Проверяет defaults текущей schema version 5.
     #[test]
-    fn schema_version_4_defaults_include_seek_network_and_ui_skin() {
+    fn schema_version_5_defaults_include_seek_network_and_ui_skin() {
         let config = AppConfig::default();
 
         assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
-        assert_eq!(CURRENT_SCHEMA_VERSION, 4);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 5);
         assert_eq!(config.player.seek.commit_timeout_ms, 10_000);
         assert_eq!(config.player.seek.resume_audio_min_buffer_ms, 50);
         assert_eq!(config.player.seek.resume_audio_gate_timeout_ms, 250);
@@ -612,7 +651,7 @@ mod tests {
         assert!(loaded.config.render.color_adjustment.is_identity());
 
         let created_toml = fs::read_to_string(&loaded.path).expect("created config readable");
-        assert!(created_toml.contains("schema_version = 4"));
+        assert!(created_toml.contains("schema_version = 5"));
         assert!(created_toml.contains("[player.seek]"));
         assert!(created_toml.contains("# Настройки seek commit"));
         assert!(created_toml.contains("commit_timeout_ms = 10000"));
@@ -757,7 +796,7 @@ language = "ru"
             .config
             .to_pretty_toml()
             .expect("defaulted config serializes");
-        assert_generated_frame_server_toml_documents_all_v1_knobs(&generated_toml);
+        assert_generated_frame_server_toml_documents_live_scrub_knobs(&generated_toml);
     }
 
     /// Проверяет strict schema отказ от запрещённых/legacy frame-server knobs.
@@ -765,8 +804,8 @@ language = "ru"
     fn forbidden_frame_server_keys_are_rejected_by_strict_schema() {
         for forbidden_key in [
             "enabled",
-            "network_hover_prepare_enabled",
-            "hover_debounce_ms",
+            "network_prepare_enabled",
+            "preview_debounce_ms",
             "warm_cache_frames",
             "global_cache_frames",
         ] {
@@ -776,7 +815,7 @@ language = "ru"
                 &config_path,
                 format!(
                     r#"
-schema_version = 4
+schema_version = 5
 
 [frame_server]
 {forbidden_key} = true
@@ -793,30 +832,14 @@ schema_version = 4
         }
     }
 
-    /// Проверяет edge values V1 ranges для `[frame_server]`.
+    /// Проверяет edge values live-scrub ranges для `[frame_server]`.
     #[test]
     fn frame_server_range_edges_are_accepted() {
         let mut config = AppConfig::default();
-        config.frame_server.hover_prepare_window_slots =
-            validation::MAX_FRAME_SERVER_HOVER_PREPARE_WINDOW_SLOTS;
-        config.frame_server.software_hover_prepare_window_slots =
-            validation::MAX_FRAME_SERVER_SOFTWARE_HOVER_PREPARE_WINDOW_SLOTS;
-        config.frame_server.recent_superseded_prepare_slots =
-            validation::MAX_FRAME_SERVER_RECENT_SUPERSEDED_PREPARE_SLOTS;
-        config.frame_server.software_recent_superseded_prepare_slots =
-            validation::MAX_FRAME_SERVER_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS;
-        config.frame_server.hover_leave_grace_ms =
-            validation::MIN_FRAME_SERVER_HOVER_LEAVE_GRACE_MS;
-        config.frame_server.network_hover_prepare_throttle_ms =
-            validation::MIN_FRAME_SERVER_NETWORK_HOVER_PREPARE_THROTTLE_MS;
         config.frame_server.live_scrub_max_hz = validation::MIN_FRAME_SERVER_LIVE_SCRUB_MAX_HZ;
 
         config.validate().expect("minimum edge config valid");
 
-        config.frame_server.hover_leave_grace_ms =
-            validation::MAX_FRAME_SERVER_HOVER_LEAVE_GRACE_MS;
-        config.frame_server.network_hover_prepare_throttle_ms =
-            validation::MAX_FRAME_SERVER_NETWORK_HOVER_PREPARE_THROTTLE_MS;
         config.frame_server.live_scrub_max_hz = validation::MAX_FRAME_SERVER_LIVE_SCRUB_MAX_HZ;
 
         config.validate().expect("maximum edge config valid");
@@ -825,18 +848,7 @@ schema_version = 4
     /// Проверяет validation отказ от out-of-range `[frame_server]` значений.
     #[test]
     fn invalid_frame_server_ranges_fail_validation() {
-        let invalid_fields = [
-            ("hover_prepare_window_slots", "0"),
-            ("hover_prepare_window_slots", "4"),
-            ("software_hover_prepare_window_slots", "0"),
-            ("software_hover_prepare_window_slots", "3"),
-            ("recent_superseded_prepare_slots", "4"),
-            ("software_recent_superseded_prepare_slots", "3"),
-            ("hover_leave_grace_ms", "501"),
-            ("network_hover_prepare_throttle_ms", "2001"),
-            ("live_scrub_max_hz", "0"),
-            ("live_scrub_max_hz", "241"),
-        ];
+        let invalid_fields = [("live_scrub_max_hz", "0"), ("live_scrub_max_hz", "241")];
 
         for (field, value) in invalid_fields {
             let temp_dir = tempfile::tempdir().expect("temp dir created");
@@ -845,7 +857,7 @@ schema_version = 4
                 &config_path,
                 format!(
                     r#"
-schema_version = 4
+schema_version = 5
 
 [frame_server]
 {field} = {value}
@@ -860,37 +872,66 @@ schema_version = 4
         }
     }
 
-    /// Проверяет V1 budget semantics: auto или positive fixed, без upper cap.
+    /// Проверяет, что удалённые hover/predecode ключи не ломают загрузку старого файла.
     #[test]
-    fn frame_server_budget_zero_rejects_but_positive_fixed_has_no_static_upper_cap() {
-        for field in ["hover_pool_frames", "hover_thread_count"] {
-            let temp_dir = tempfile::tempdir().expect("temp dir created");
-            let config_path = temp_dir.path().join("config.toml");
-            fs::write(
-                &config_path,
-                format!(
-                    r#"
+    fn removed_frame_server_hover_keys_are_stripped_before_strict_parse() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
 schema_version = 4
 
 [frame_server]
-{field} = 0
-"#
-                ),
-            )
-            .expect("zero budget config written");
+hover_preview_enabled = true
+hover_pool_frames = "auto"
+hover_thread_count = 2
+hover_prepare_window_slots = 1
+software_hover_prepare_window_slots = 1
+recent_superseded_prepare_slots = 1
+software_recent_superseded_prepare_slots = 1
+hover_leave_grace_ms = 500
+network_hover_prepare_throttle_ms = 300
+live_scrub_enabled = true
+"#,
+        )
+        .expect("legacy frame_server config written");
 
-            let error = load_from_path(&config_path).expect_err("zero fixed budget rejected");
+        let loaded = load_from_path(&config_path).expect("removed hover keys are ignored");
+        assert_default_frame_server_config(&loaded.config.frame_server);
 
-            assert!(error.to_string().contains(&format!("frame_server.{field}")));
+        let generated_toml = loaded
+            .config
+            .to_pretty_toml()
+            .expect("cleaned config serializes");
+        for removed_key in REMOVED_FRAME_SERVER_HOVER_KEYS {
+            assert!(
+                !generated_toml.contains(removed_key),
+                "generated TOML must not write removed key {removed_key:?}",
+            );
         }
+    }
 
-        let mut config = AppConfig::default();
-        config.frame_server.hover_pool_frames = FrameServerBudgetConfig::Fixed(1);
-        config.frame_server.hover_thread_count = FrameServerBudgetConfig::Fixed(100_000);
+    /// Проверяет, что текущая schema не принимает удалённые hover/predecode ключи как валидные.
+    #[test]
+    fn removed_frame_server_hover_keys_are_rejected_in_current_schema() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 5
 
-        config
-            .validate()
-            .expect("positive fixed budgets have no static upper cap");
+[frame_server]
+hover_preview_enabled = true
+"#,
+        )
+        .expect("current schema config with removed key written");
+
+        let error = load_from_path(&config_path).expect_err("current schema rejects removed key");
+
+        assert!(error.to_string().contains("TOML-схеме"));
+        assert!(error.to_string().contains("hover_preview_enabled"));
     }
 
     /// Проверяет TOML roundtrip и strict варианты live scrub decode mode.
@@ -912,7 +953,7 @@ schema_version = 4
                 &config_path,
                 format!(
                     r#"
-schema_version = 4
+schema_version = 5
 
 [frame_server]
 live_scrub_decode_mode = "{toml_value}"
@@ -939,7 +980,7 @@ live_scrub_decode_mode = "{toml_value}"
         fs::write(
             &config_path,
             r#"
-schema_version = 4
+schema_version = 5
 
 [frame_server]
 live_scrub_decode_mode = "nearest_frame"
@@ -953,21 +994,6 @@ live_scrub_decode_mode = "nearest_frame"
     }
 
     fn assert_default_frame_server_config(frame_server: &FrameServerConfig) {
-        assert!(frame_server.hover_preview_enabled);
-        assert_eq!(
-            frame_server.hover_pool_frames,
-            FrameServerBudgetConfig::Auto
-        );
-        assert_eq!(
-            frame_server.hover_thread_count,
-            FrameServerBudgetConfig::Auto
-        );
-        assert_eq!(frame_server.hover_prepare_window_slots, 1);
-        assert_eq!(frame_server.software_hover_prepare_window_slots, 1);
-        assert_eq!(frame_server.recent_superseded_prepare_slots, 1);
-        assert_eq!(frame_server.software_recent_superseded_prepare_slots, 1);
-        assert_eq!(frame_server.hover_leave_grace_ms, 500);
-        assert_eq!(frame_server.network_hover_prepare_throttle_ms, 300);
         assert!(frame_server.live_scrub_enabled);
         assert_eq!(
             frame_server.live_scrub_decode_mode,
@@ -976,28 +1002,10 @@ live_scrub_decode_mode = "nearest_frame"
         assert_eq!(frame_server.live_scrub_max_hz, 60);
     }
 
-    fn assert_generated_frame_server_toml_documents_all_v1_knobs(generated_toml: &str) {
+    fn assert_generated_frame_server_toml_documents_live_scrub_knobs(generated_toml: &str) {
         for expected_fragment in [
             "[frame_server]",
-            "# Сохраняемые metadata-ready настройки будущего Frame Server",
-            "hover_preview_enabled = true",
-            "# Включает только визуальный HoverPreview",
-            "hover_pool_frames = \"auto\"",
-            "# Бюджет кадрового пула hover",
-            "hover_thread_count = \"auto\"",
-            "# Бюджет потоков hover",
-            "hover_prepare_window_slots = 1",
-            "# Основные слоты hover prepare window",
-            "software_hover_prepare_window_slots = 1",
-            "# Основные слоты software hover prepare window",
-            "recent_superseded_prepare_slots = 1",
-            "# Удержание недавно заменённых целей для быстрого возврата",
-            "software_recent_superseded_prepare_slots = 1",
-            "# Удержание недавно заменённых software-целей для быстрого возврата",
-            "hover_leave_grace_ms = 500",
-            "# UX grace после ухода hover",
-            "network_hover_prepare_throttle_ms = 300",
-            "# Межстартовый throttle для network hover prepare",
+            "# Настройки Frame Server",
             "live_scrub_enabled = true",
             "# Включает live drag preview updates",
             "live_scrub_decode_mode = \"throttled_latest\"",
@@ -1011,14 +1019,7 @@ live_scrub_decode_mode = "nearest_frame"
             );
         }
 
-        for forbidden_fragment in [
-            "frame_server.enabled",
-            "network_hover_prepare_enabled",
-            "hover_debounce_ms",
-            "warm",
-            "global",
-            "thumbnail_cache",
-        ] {
+        for forbidden_fragment in ["frame_server.enabled", "warm", "global", "thumbnail_cache"] {
             assert!(
                 !generated_toml.contains(forbidden_fragment),
                 "generated frame_server TOML must not contain {forbidden_fragment:?}",

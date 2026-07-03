@@ -82,20 +82,16 @@ pub use runtime_settings::{
 };
 pub use seek_state::PlaybackResumeIntent;
 pub use session::{
-    PlayerHoverStreamDecodeContext, PlayerPipelinePause, PlayerSession, PlayerTickConfig,
-    PlayerTickContext, PlayerTickPacket, PlayerTickResult, PlayerTimelineHoverPrepareBorrowOutcome,
-    PlayerTimelineHoverPrepareHandoff, PlayerTimelineHoverPrepareInsertOutcome,
-    PlayerTimelineHoverPrepareRetainedInsertOutcome, PlayerTimelineHoverPreparedFrameBorrow,
-    PlayerVideoDropReason, PlayerVideoFrameDrop,
+    PlayerPipelinePause, PlayerSession, PlayerTickConfig, PlayerTickContext, PlayerTickPacket,
+    PlayerTickResult, PlayerVideoDropReason, PlayerVideoFrameDrop,
 };
 pub(crate) use session::{
     PlayerWorkerWakeupPlan, SchedulerTimingDiagnosticsSnapshot, scheduler_timing_diagnostics,
 };
-pub(crate) use snapshot::TimelineHoverPrepareSnapshotParts;
 pub use snapshot::{
     AudioBufferSnapshot, BackendSnapshot, FrameCounters, PlayerSnapshot, QualitySummary,
-    QueueSnapshot, TexturePoolSnapshot, TimelineHoverPrepareInteraction,
-    TimelineHoverPrepareSnapshot, TrackSelectionSnapshot, TrackSummarySnapshot, VideoFrameSnapshot,
+    QueueSnapshot, TexturePoolSnapshot, TrackSelectionSnapshot, TrackSummarySnapshot,
+    VideoFrameSnapshot,
 };
 pub use state::PlaybackState;
 pub use worker::{

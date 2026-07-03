@@ -44,12 +44,10 @@ impl VaapiVideoBackendFactory {
         let decoder_thread = VideoDecodeThread::new_with_config(VideoDecodeThreadConfig::from(
             self.decoder_thread_config,
         ))?;
-        let hover_budget_diagnostics_provider = decoder_thread.hover_budget_diagnostics_provider();
         let player_backend = StartedVideoBackend::from_decoder_thread(
             VAAPI_BACKEND_ID,
             VaapiVideoDecoderThreadHandle::new(decoder_thread),
-        )
-        .with_hover_budget_diagnostics_provider(hover_budget_diagnostics_provider);
+        );
 
         Ok(player_backend)
     }

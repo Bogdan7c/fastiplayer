@@ -14,12 +14,11 @@ pub(super) enum MainVisualOverrideKind {
 }
 
 impl MainVisualOverrideKind {
-    /// Мапит neutral scrub request kind в visual override kind; hover в S16 запрещён.
-    fn from_request_kind(request_kind: ScrubRequestKind) -> Option<Self> {
+    /// Мапит neutral scrub request kind в visual override kind.
+    fn from_request_kind(request_kind: ScrubRequestKind) -> Self {
         match request_kind {
-            ScrubRequestKind::SeekLanding => Some(Self::SeekLanding),
-            ScrubRequestKind::LiveScrub => Some(Self::LiveScrub),
-            ScrubRequestKind::HoverPreview | ScrubRequestKind::TimelineHoverPrepareWindow => None,
+            ScrubRequestKind::SeekLanding => Self::SeekLanding,
+            ScrubRequestKind::LiveScrub => Self::LiveScrub,
         }
     }
 }
@@ -35,14 +34,14 @@ pub(crate) struct MainVisualOverrideMetadata {
 
 impl MainVisualOverrideMetadata {
     /// Собирает metadata только для разрешённых main-video override kinds.
-    fn from_preview_frame_event(event: &PreviewFrameReadyEvent) -> Option<Self> {
-        let kind = MainVisualOverrideKind::from_request_kind(event.context.request_kind())?;
-        Some(Self {
+    fn from_preview_frame_event(event: &PreviewFrameReadyEvent) -> Self {
+        let kind = MainVisualOverrideKind::from_request_kind(event.context.request_kind());
+        Self {
             kind,
             context: event.context,
             timing: event.frame.timing,
             frame_identity: event.frame.frame_identity,
-        })
+        }
     }
 
     /// Проверяет, что lease относится к тому же decoded frame, что и scrub event.
@@ -146,9 +145,7 @@ pub(super) struct MainVisualOverrideState {
 impl MainVisualOverrideState {
     /// Запоминает exact preview как candidate для main-video override-а.
     pub(super) fn note_preview_frame_ready(&mut self, event: &PreviewFrameReadyEvent) {
-        let Some(metadata) = MainVisualOverrideMetadata::from_preview_frame_event(event) else {
-            return;
-        };
+        let metadata = MainVisualOverrideMetadata::from_preview_frame_event(event);
         let stale_preview = self.active.as_ref().is_some_and(|active_override| {
             metadata.superseded_by_context(active_override.metadata.context)
         });
@@ -470,17 +467,10 @@ mod tests {
     }
 
     #[test]
-    fn preview_frame_ready_installs_only_main_video_override_kinds() {
+    fn preview_frame_ready_installs_main_video_override_kind() {
         let mut state = MainVisualOverrideState::default();
         let generation = generation_token(1, 1);
-        let hover_context = context_for_tests(ScrubRequestKind::HoverPreview, 10, 20, generation);
         let seek_context = context_for_tests(ScrubRequestKind::SeekLanding, 10, 20, generation);
-
-        state.handle_scrub_event(&ScrubEvent::PreviewFrameReady(preview_event_for_tests(
-            hover_context,
-            FrameResourceHandle(40),
-        )));
-        assert!(state.active.is_none());
 
         state.handle_scrub_event(&ScrubEvent::PreviewFrameReady(preview_event_for_tests(
             seek_context,

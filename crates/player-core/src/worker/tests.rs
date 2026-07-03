@@ -27,7 +27,6 @@ fn worker_config_for_tests() -> PlayerWorkerConfig {
         default_volume: 1.0,
         audio_decoder_factory: missing_audio_decoder_factory(),
         audio_output_factory: missing_audio_output_factory(),
-        timeline_hover_prepare_handoff: PlayerTimelineHoverPrepareHandoff::default(),
         frame_server_config: frame_server_core::FrameServerConfig::default()
             .validate()
             .expect("default frame-server config must validate"),
@@ -560,8 +559,6 @@ fn runtime_apply_frame_server_policy_updates_worker_and_session_owned_config() {
     let mut runtime = runtime_for_tests(Instant::now());
     let requested_frame_server_config = frame_server_core::FrameServerConfig {
         live_scrub_max_hz: 120,
-        hover_prepare_window_slots: 2,
-        recent_superseded_prepare_slots: 0,
         ..frame_server_core::FrameServerConfig::default()
     }
     .validate()
@@ -570,11 +567,7 @@ fn runtime_apply_frame_server_policy_updates_worker_and_session_owned_config() {
     let report = runtime.apply_runtime_settings(
         PlayerRuntimeSettingsUpdate::empty().with_frame_server_policy(
             requested_frame_server_config,
-            [
-                PlayerRuntimeSettingId::FrameServerLiveScrubMaxHz,
-                PlayerRuntimeSettingId::FrameServerHoverPrepareWindowSlots,
-                PlayerRuntimeSettingId::FrameServerRecentSupersededPrepareSlots,
-            ],
+            [PlayerRuntimeSettingId::FrameServerLiveScrubMaxHz],
         ),
     );
 
@@ -594,11 +587,7 @@ fn runtime_apply_frame_server_policy_updates_worker_and_session_owned_config() {
     );
     assert_eq!(
         frame_server_report.affected_settings,
-        vec![
-            PlayerRuntimeSettingId::FrameServerLiveScrubMaxHz,
-            PlayerRuntimeSettingId::FrameServerHoverPrepareWindowSlots,
-            PlayerRuntimeSettingId::FrameServerRecentSupersededPrepareSlots,
-        ]
+        vec![PlayerRuntimeSettingId::FrameServerLiveScrubMaxHz]
     );
 }
 

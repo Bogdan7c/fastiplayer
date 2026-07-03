@@ -16,6 +16,5 @@ mod shell;
 pub use frame::{
     RenderFrameDropReason, RenderFrameFailure, RenderFrameInput, RenderFrameOutcome,
     RenderFrameSlowestStage, RenderFrameStageTimings, RenderFrameTiming, RenderScreenDescriptor,
-    RenderVideoOverlayInput,
 };
 pub use shell::{GpuContext, Renderer, ShellPresentMode, SurfacePresentSettings};

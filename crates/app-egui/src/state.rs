@@ -3,7 +3,6 @@
 /// После worker-сессии этот модуль больше не владеет media pipeline. Demuxer,
 /// audio/video decoder state, очереди и playback errors находятся в playback worker.
 /// `AppState` оставляет у себя только egui/winit state и shell-данные.
-use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -11,15 +10,13 @@ use std::time::{Duration, Instant};
 use animation_core::{Easing, SlideTransition};
 use capability_core::SystemCapabilities;
 use desktop_integration::{DesktopIntegration, DesktopIntegrationEvent};
-use frame_server_core::{TimelineHoverPrepareFrameKey, TimelineHoverRecentSupersededBudget};
 use media_core::TrackKind;
 use player_core::{
     FrameCounters, MediaOpenRequest, MediaSource, PlaybackState, PlayerCommand, PlayerError,
     PlayerErrorKind, PlayerEvent, PlayerRenderError, PlayerRuntimeApplyResult,
-    PlayerRuntimeSettingsUpdate, PlayerSnapshot, PlayerTimelineHoverPrepareHandoff,
-    PlayerVideoDecoderThreadConfig, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent,
-    PreparedMedia, QualitySelection, ScrubCommitPolicy, SeekRequest, VideoBackendSelectionRequest,
-    VideoDecodeRequirement,
+    PlayerRuntimeSettingsUpdate, PlayerSnapshot, PlayerVideoDecoderThreadConfig, PlayerWorker,
+    PlayerWorkerConfig, PlayerWorkerEvent, PreparedMedia, QualitySelection, ScrubCommitPolicy,
+    SeekRequest, VideoBackendSelectionRequest, VideoDecodeRequirement,
 };
 use render_core::RenderDiagnostics;
 use render_wgpu_video::{
@@ -29,19 +26,11 @@ use render_wgpu_video::{
 use rustiplayer_config::{FrameServerLiveScrubDecodeModeConfig, PlayerDemuxConfig};
 use rustiplayer_settings::{AppRouteApplyResult, MediaServiceRuntimeSettingsUpdate};
 use tracing::{debug, info, instrument, warn};
-use video_backend_api::HoverBudgetDiagnosticsProviderHandle;
 use video_ffmpeg::FfmpegSoftwareVideoBackendFactory;
 use video_present_core::VideoFrameLease;
 use video_vaapi::VaapiVideoBackendFactory;
 use winit::window::Window;
 
-use crate::frame_prepare::{
-    TimelineHoverPreviewLoadState, TimelineHoverPreviewRenderInput, TimelineHoverPreviewRenderState,
-};
-use crate::frame_server_budget::{
-    FrameServerHoverBudgetDiagnosticsSnapshot, frame_server_hover_budget_diagnostics,
-    preflight_frame_server_hover_budget_change,
-};
 use crate::local_file_open::{
     LocalFileOpenEvent, LocalFileOpenJob, LocalFileOpenResult, local_file_prepare_error_message,
     preparing_local_file_message,
@@ -50,14 +39,6 @@ use crate::local_media;
 use crate::settings_runtime::CommittedConfigSnapshot;
 use crate::settings_ui::{SettingsUiAction, SettingsUiModel};
 use crate::telemetry::Telemetry;
-use crate::timeline_hover_intent::TimelineHoverIntentState;
-use crate::timeline_hover_prepare::{
-    AppTimelineHoverPrepareController, AppTimelineHoverPrepareExecutor,
-    TimelineHoverPrepareCancellationReason, TimelineHoverPrepareController,
-    TimelineHoverPrepareExecutorNoOpReason, TimelineHoverPrepareExecutorOutcome,
-    TimelineHoverPreparePlaybackMode, TimelineHoverPrepareTarget,
-    TimelineHoverPrepareTargetContext,
-};
 use crate::ui::animation::AnimationState;
 use crate::ui::player_controls::{self, ControlAction};
 use crate::ui::sidebar::{self, AppSidebarContent};
@@ -72,12 +53,10 @@ use crate::video_pipeline_selector::{
     VideoBackendKind, VideoPipelinePlan, select_video_pipeline_plan,
 };
 
-mod frame_server_diagnostics;
 mod main_visual_override;
 mod media_jobs;
 mod present_frame_cache;
 mod telemetry_panel;
-mod timeline_hover_leave_grace;
 mod timeline_inline_status;
 mod ui_runtime;
 mod video_backend;
@@ -92,13 +71,9 @@ pub use present_frame_cache::PresentFrameAcquisition;
 pub use present_frame_cache::RenderablePresentFrame;
 pub(crate) use video_backend::BackendSwapVideoPhase;
 
-use frame_server_diagnostics::{
-    AppFrameServerDiagnosticsRecorder, AppFrameServerDiagnosticsSnapshot,
-};
 use main_visual_override::MainVisualOverrideState;
 use present_frame_cache::CachedRenderablePresentFrame;
 use telemetry_panel::TelemetryPanelCache;
-use timeline_hover_leave_grace::TimelineHoverLeaveGraceState;
 use timeline_inline_status::TimelineInlineStatusState;
 
 /// Immutable данные, зафиксированные один раз для текущего render frame-а.
@@ -193,10 +168,6 @@ pub struct AppState {
     /// Playback worker владеет `PlayerSession` и media pipeline на отдельном thread.
     pub player_worker: PlayerWorker,
 
-    /// S18 app-owned controller для будущего synthetic timeline hover/focus predecode.
-    #[allow(dead_code)]
-    timeline_hover_prepare_controller: AppTimelineHoverPrepareController,
-
     /// Счётчик кадров shell-анимации.
     pub frame_index: u64,
 
@@ -233,23 +204,11 @@ pub struct AppState {
     /// Короткий inline статус timeline для scrub failures, owned только UI-слоем.
     timeline_inline_status: TimelineInlineStatusState,
 
-    /// App-owned diagnostics для hover/preview/grace state, который не живёт в player-core.
-    frame_server_diagnostics: AppFrameServerDiagnosticsRecorder,
-
     /// WGPU video materializer concrete backend-а; `player-core` его не видит.
     wgpu_frame_materializer: Option<Arc<dyn WgpuFrameTextureViewMaterializer>>,
 
-    /// Отдельный WGPU materializer для hover decode session provider-а.
-    ///
-    /// Resource handle валиден только внутри своего provider-а, поэтому hover
-    /// leases нельзя материализовать playback materializer-ом.
-    timeline_hover_decode_materializer: Option<Arc<dyn WgpuFrameTextureViewMaterializer>>,
-
     /// Класс активного video backend-а, чтобы не пересоздавать pipeline без нужды.
     current_video_backend_kind: Option<VideoBackendKind>,
-
-    /// Read-only provider активного backend-а для hover budget diagnostics/preflight.
-    current_hover_budget_diagnostics_provider: Option<HoverBudgetDiagnosticsProviderHandle>,
 
     /// Отложенный запрос player-core на подбор backend-а под текущий стрим (`auto`).
     pending_video_backend_reselection: Option<VideoBackendSelectionRequest>,
@@ -278,15 +237,6 @@ pub struct AppState {
 
     /// Transient pointer state timeline; player position здесь не хранится.
     timeline_ui_state: TimelineUiState,
-
-    /// App-owned latest hover intent + placeholder preview state без player commands.
-    timeline_hover_intent_state: TimelineHoverIntentState,
-
-    /// UX grace после leave: удерживает prepared entries, но не расширяет decode span.
-    timeline_hover_leave_grace_state: TimelineHoverLeaveGraceState,
-
-    /// Materialized hover preview borrow для отдельного render target-а.
-    timeline_hover_preview_render_state: TimelineHoverPreviewRenderState,
 
     /// Кэш строк telemetry panel; живёт в UI-слое и не владеет playback/render state.
     telemetry_panel_cache: TelemetryPanelCache,
@@ -324,24 +274,12 @@ impl AppState {
             Some(winit::window::Theme::Dark),
             None,
         );
-        let timeline_hover_prepare_handoff = PlayerTimelineHoverPrepareHandoff::from_app_config(
-            committed_config_snapshot.as_config(),
-        );
-        let timeline_hover_prepare_controller =
-            TimelineHoverPrepareController::new(AppTimelineHoverPrepareExecutor::with_open_config(
-                timeline_hover_prepare_handoff.clone(),
-                committed_config_snapshot.network_config_for_open(),
-                committed_config_snapshot.youtube_config_for_open(),
-                committed_config_snapshot.demux_config_for_open(),
-                committed_config_snapshot.network_hover_prepare_throttle(),
-            ));
         let worker_config =
             PlayerWorkerConfig::from_app_config(committed_config_snapshot.as_config())
                 .with_audio_decoder_factory(Arc::new(audio::ProductionAudioDecoderFactory))
                 .with_audio_output_factory(Arc::new(audio::CpalAudioOutputFactory::new(
                     audio_output_device_controller,
-                )))
-                .with_timeline_hover_prepare_handoff(timeline_hover_prepare_handoff);
+                )));
         let player_worker = PlayerWorker::spawn(worker_config)?;
         let desktop_integration = match DesktopIntegration::spawn(player_worker.command_sender()) {
             Ok(desktop_integration) => Some(desktop_integration),
@@ -361,7 +299,6 @@ impl AppState {
             egui_winit_state,
             desktop_integration,
             player_worker,
-            timeline_hover_prepare_controller,
             frame_index: 0,
             start_time: std::time::Instant::now(),
             telemetry,
@@ -374,11 +311,8 @@ impl AppState {
             cached_renderable_present_frame: None,
             main_visual_override_state: MainVisualOverrideState::default(),
             timeline_inline_status: TimelineInlineStatusState::default(),
-            frame_server_diagnostics: AppFrameServerDiagnosticsRecorder::default(),
             wgpu_frame_materializer: None,
-            timeline_hover_decode_materializer: None,
             current_video_backend_kind: None,
-            current_hover_budget_diagnostics_provider: None,
             pending_video_backend_reselection: None,
             active_video_stream_requirement: None,
             backend_swap_frozen_frame: None,
@@ -387,66 +321,10 @@ impl AppState {
             active_media_source: None,
             local_file_open_job: None,
             timeline_ui_state: TimelineUiState::default(),
-            timeline_hover_intent_state: TimelineHoverIntentState::default(),
-            timeline_hover_leave_grace_state: TimelineHoverLeaveGraceState::default(),
-            timeline_hover_preview_render_state: TimelineHoverPreviewRenderState::default(),
             telemetry_panel_cache: TelemetryPanelCache::default(),
             sidebar_slide: SlideTransition::closed(),
             sidebar_slide_last_tick: None,
         })
-    }
-
-    /// Internal S18/S24 boundary: сюда позже придёт настоящий timeline hover/focus stream.
-    #[allow(dead_code)]
-    pub(crate) fn timeline_hover_prepare_controller(
-        &mut self,
-    ) -> &mut AppTimelineHoverPrepareController {
-        &mut self.timeline_hover_prepare_controller
-    }
-
-    /// Read-only diagnostics boundary для telemetry без доступа к AppState storage.
-    fn frame_server_diagnostics_snapshot(&self) -> AppFrameServerDiagnosticsSnapshot {
-        self.frame_server_diagnostics.snapshot(
-            self.committed_config_snapshot.hover_leave_grace_duration(),
-            self.timeline_hover_leave_grace_state.is_pending(),
-            self.committed_config_snapshot.hover_preview_enabled(),
-            self.timeline_hover_preview_render_state
-                .diagnostics_snapshot(),
-            self.timeline_hover_prepare_controller
-                .executor()
-                .network_open_diagnostics_snapshot(),
-            self.current_frame_server_hover_budget_diagnostics(),
-        )
-    }
-
-    /// Строит hover budget diagnostics только если active backend дал real provider.
-    fn current_frame_server_hover_budget_diagnostics(
-        &self,
-    ) -> Option<FrameServerHoverBudgetDiagnosticsSnapshot> {
-        let backend_kind = self.current_video_backend_kind?;
-        let provider = self.current_hover_budget_diagnostics_provider.as_ref()?;
-        frame_server_hover_budget_diagnostics(
-            backend_kind,
-            &self.committed_config_snapshot.as_config().frame_server,
-            self.current_decoder_thread_config(),
-            provider,
-        )
-        .ok()
-    }
-
-    /// Собирает borrowed render input текущего hover preview state-а.
-    pub(crate) fn timeline_hover_preview_render_input(
-        &self,
-        screen: render_wgpu_shell::RenderScreenDescriptor,
-    ) -> Result<Option<TimelineHoverPreviewRenderInput<'_>>, PlayerRenderError> {
-        self.timeline_hover_preview_render_state
-            .render_input(screen)
-    }
-
-    /// Помечает preview lease как отправленный renderer-у после successful present.
-    pub(crate) fn mark_timeline_hover_preview_submitted_to_renderer(&self) {
-        self.timeline_hover_preview_render_state
-            .mark_submitted_to_renderer();
     }
 
     /// Продвигает анимацию выезда settings sidebar к runtime open-state.
@@ -480,111 +358,10 @@ impl AppState {
 
     /// Обновляет read-only config snapshot из authoritative settings runtime.
     pub(crate) fn sync_committed_config_snapshot(&mut self, snapshot: CommittedConfigSnapshot) {
-        let previous_demux_config = self.committed_config_snapshot.demux_config_for_open();
-        let previous_network_config = self.committed_config_snapshot.network_config_for_open();
-        let previous_youtube_config = self.committed_config_snapshot.youtube_config_for_open();
-        let previous_network_hover_throttle = self
-            .committed_config_snapshot
-            .network_hover_prepare_throttle();
-        let previous_frame_server_config = self
-            .committed_config_snapshot
-            .as_config()
-            .frame_server
-            .clone();
-        let next_demux_config = snapshot.demux_config_for_open();
-        let next_network_config = snapshot.network_config_for_open();
-        let next_youtube_config = snapshot.youtube_config_for_open();
-        let next_network_hover_throttle = snapshot.network_hover_prepare_throttle();
-        let next_frame_server_config = snapshot.as_config().frame_server.clone();
         self.committed_config_snapshot = snapshot;
-        if previous_frame_server_config.hover_preview_enabled
-            && !next_frame_server_config.hover_preview_enabled
-        {
-            self.timeline_hover_preview_render_state.clear();
-            self.frame_server_diagnostics.record_hover_preview_cleared();
-            self.frame_server_diagnostics
-                .record_hover_preview_disabled_by_config();
-        }
-        if next_demux_config != previous_demux_config
-            || next_network_config != previous_network_config
-            || next_youtube_config != previous_youtube_config
-        {
-            self.timeline_hover_prepare_controller
-                .update_hover_open_config(
-                    next_network_config,
-                    next_youtube_config,
-                    next_demux_config,
-                    next_network_hover_throttle,
-                );
-        } else if next_network_hover_throttle != previous_network_hover_throttle {
-            self.timeline_hover_prepare_controller
-                .update_network_hover_prepare_throttle(next_network_hover_throttle);
-        }
-        self.apply_frame_server_slot_reconfigure(
-            previous_frame_server_config,
-            next_frame_server_config,
-        );
         let live_scrub_settings = self.live_scrub_settings_snapshot();
         self.timeline_ui_state
             .defer_live_scrub_settings_change(live_scrub_settings);
-    }
-
-    /// Применяет live shrink/grow slot policies без refill/restart текущего hover span-а.
-    fn apply_frame_server_slot_reconfigure(
-        &mut self,
-        previous_frame_server_config: rustiplayer_config::FrameServerConfig,
-        next_frame_server_config: rustiplayer_config::FrameServerConfig,
-    ) {
-        let previous_primary_slots =
-            self.hover_prepare_window_slots_for_current_backend(&previous_frame_server_config);
-        let next_primary_slots =
-            self.hover_prepare_window_slots_for_current_backend(&next_frame_server_config);
-        if previous_primary_slots != next_primary_slots {
-            let next_primary_capacity = NonZeroUsize::new(next_primary_slots as usize)
-                .expect("validated hover prepare slots must be non-zero");
-            let protected_key = self.current_timeline_hover_prepare_key();
-            self.timeline_hover_prepare_controller
-                .reconfigure_hover_prepare_primary_capacity(next_primary_capacity, protected_key);
-        }
-
-        if previous_frame_server_config.recent_superseded_prepare_slots
-            != next_frame_server_config.recent_superseded_prepare_slots
-            || previous_frame_server_config.software_recent_superseded_prepare_slots
-                != next_frame_server_config.software_recent_superseded_prepare_slots
-        {
-            let next_recent_budget = TimelineHoverRecentSupersededBudget::from_validated_config(
-                PlayerWorkerConfig::frame_server_config_from_app_config(
-                    self.committed_config_snapshot.as_config(),
-                ),
-            );
-            self.timeline_hover_prepare_controller
-                .reconfigure_recent_superseded_budget(next_recent_budget);
-        }
-    }
-
-    /// Выбирает primary prepare slot knob для текущего backend class-а.
-    fn hover_prepare_window_slots_for_current_backend(
-        &self,
-        frame_server_config: &rustiplayer_config::FrameServerConfig,
-    ) -> u8 {
-        match self.current_video_backend_kind {
-            Some(VideoBackendKind::FfmpegSoftware) => {
-                frame_server_config.software_hover_prepare_window_slots
-            }
-            Some(VideoBackendKind::HardwareZeroCopy) | None => {
-                frame_server_config.hover_prepare_window_slots
-            }
-        }
-    }
-
-    /// Возвращает protected key текущей invisible hover цели, если она есть в snapshot-е.
-    fn current_timeline_hover_prepare_key(&self) -> Option<TimelineHoverPrepareFrameKey> {
-        let active_target = self.timeline_hover_intent_state.active_target()?;
-        let prepare_target = ui_runtime::timeline_hover_prepare_target_from_snapshot(
-            &self.last_player_snapshot,
-            active_target,
-        )?;
-        Some(prepare_target.prepared_key())
     }
 
     /// Применяет player runtime settings через request/reply worker boundary.
@@ -593,24 +370,6 @@ impl AppState {
         update: PlayerRuntimeSettingsUpdate,
     ) -> PlayerRuntimeApplyResult {
         self.player_worker.apply_runtime_settings(update)
-    }
-
-    /// Read-only preflight budget knobs до settings persist/runtime mutation.
-    pub(crate) fn preflight_frame_server_hover_budget_change(
-        &self,
-        current: &rustiplayer_config::FrameServerConfig,
-        draft: &rustiplayer_config::FrameServerConfig,
-    ) -> Result<
-        Option<FrameServerHoverBudgetDiagnosticsSnapshot>,
-        Box<crate::frame_server_budget::FrameServerHoverBudgetPreflightRejection>,
-    > {
-        preflight_frame_server_hover_budget_change(
-            current,
-            draft,
-            self.current_video_backend_kind,
-            self.current_decoder_thread_config(),
-            self.current_hover_budget_diagnostics_provider.as_ref(),
-        )
     }
 
     /// Текущий decoder-thread config worker-а для app-owned pipeline rebuild.
@@ -706,7 +465,6 @@ impl AppState {
             || self.last_player_snapshot.playback_state == PlaybackState::Opening
             || self.last_player_snapshot.playback_state == PlaybackState::Scrubbing
             || self.last_player_snapshot.timeline.scrubbing
-            || self.timeline_hover_leave_grace_state.is_pending()
     }
 
     /// Забирает одноразовый follow-up redraw после асинхронной worker command.

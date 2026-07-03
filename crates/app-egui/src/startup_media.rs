@@ -34,7 +34,7 @@ pub(crate) struct PreparedYoutubeStartupMedia {
     /// Уже открытый demuxer для текущего playback open.
     pub(crate) streaming_media: service_youtube::YoutubeStreamingMedia,
 
-    /// Минимальная identity, по которой hover/reconfigure может восстановить тот же выбор.
+    /// Минимальная identity, по которой повторное открытие может восстановить тот же выбор.
     pub(crate) selected_stream_identity: service_youtube::YoutubeSelectedStreamIdentity,
 }
 

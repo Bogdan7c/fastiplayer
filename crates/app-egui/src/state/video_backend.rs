@@ -99,39 +99,13 @@ impl AppState {
             }
         };
 
-        // Active-playback hover decode session: только software-класс в V1;
-        // hardware playback продолжает деградировать typed-ом через shared VA policy.
-        let (hover_decode_session, hover_decode_materializer) = match plan_backend_kind {
-            VideoBackendKind::FfmpegSoftware => build_software_hover_decode_session(
-                decoder_thread_config,
-                self.committed_config_snapshot
-                    .as_config()
-                    .frame_server
-                    .hover_pool_frames,
-                self.committed_config_snapshot
-                    .as_config()
-                    .frame_server
-                    .hover_thread_count,
-                device,
-                queue,
-            ),
-            VideoBackendKind::HardwareZeroCopy => (None, None),
-        };
-
         let previous_backend_kind = self.current_video_backend_kind;
-        let hover_budget_diagnostics_provider = player_backend.hover_budget_diagnostics_provider();
 
         if let Err(error) = self.player_worker.set_video_backend(player_backend) {
             return Err(format!("video backend command delivery failed: {error}"));
         }
 
         self.clear_main_visual_override();
-        self.timeline_hover_prepare_controller
-            .cancel_active_span(TimelineHoverPrepareCancellationReason::BackendSwitched);
-        self.timeline_hover_prepare_controller
-            .set_decode_session(hover_decode_session);
-        self.timeline_hover_decode_materializer = hover_decode_materializer;
-        self.timeline_hover_preview_render_state.clear();
         self.wgpu_frame_materializer = Some(frame_materializer);
 
         // Живая смена backend-а (класс реально меняется): морозим последний кадр, пока
@@ -141,7 +115,6 @@ impl AppState {
             self.begin_backend_swap_video_freeze();
         }
         self.current_video_backend_kind = Some(plan_backend_kind);
-        self.current_hover_budget_diagnostics_provider = hover_budget_diagnostics_provider;
         info!(plan = plan_label, "Selected video pipeline");
         self.mark_pending_worker_redraw();
         Ok(())
@@ -298,68 +271,5 @@ impl AppState {
         }
 
         self.mark_pending_worker_redraw();
-    }
-}
-
-/// Стартует software hover decode session и matching materializer для software playback.
-///
-/// Ошибки старта деградируют typed-ом: hover просто остаётся без active-playback
-/// executor-а (существующий NoOp путь), playback никак не затрагивается.
-fn build_software_hover_decode_session(
-    playback_decoder_config: player_core::PlayerVideoDecoderThreadConfig,
-    hover_pool_frames: rustiplayer_config::FrameServerBudgetConfig,
-    hover_thread_count: rustiplayer_config::FrameServerBudgetConfig,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-) -> (
-    Option<crate::timeline_hover_decode::TimelineHoverDecodeSession>,
-    Option<Arc<dyn WgpuFrameTextureViewMaterializer>>,
-) {
-    use crate::hover_software_session::{
-        SoftwareHoverSessionStartupOutcome, SoftwareHoverSessionStartupRequest,
-        start_software_hover_session,
-    };
-    use video_ffmpeg::FfmpegSoftwareHoverOwner;
-    use video_ffmpeg::software_hover::FfmpegSoftwareHoverContext;
-
-    let hover_owner = FfmpegSoftwareHoverOwner::new(
-        FfmpegSoftwareHoverContext::from_playback_decoder_config(playback_decoder_config),
-    );
-    let startup = start_software_hover_session(SoftwareHoverSessionStartupRequest::new(
-        playback_decoder_config,
-        hover_pool_frames,
-        hover_thread_count,
-        hover_owner,
-    ));
-
-    match startup {
-        SoftwareHoverSessionStartupOutcome::Started(session) => {
-            let (started_backend, reservation, resolved_budget) = session.into_parts();
-            let (wrapped_backend, hover_provider) =
-                wrap_video_backend_for_wgpu_submission(started_backend, queue);
-            let decode_session = crate::timeline_hover_decode::TimelineHoverDecodeSession::new(
-                wrapped_backend.into_decoder_thread(),
-                hover_provider.clone(),
-                reservation,
-                resolved_budget,
-            );
-            let hover_materializer = Arc::new(HostPlanarWgpuFrameMaterializer::new(
-                device,
-                queue,
-                hover_provider,
-            )) as Arc<dyn WgpuFrameTextureViewMaterializer>;
-            info!(
-                resolved_budget = ?decode_session.resolved_budget(),
-                "Software hover decode session started"
-            );
-            (Some(decode_session), Some(hover_materializer))
-        }
-        other => {
-            info!(
-                outcome = ?other,
-                "Software hover decode session unavailable; hover degrades typed"
-            );
-            (None, None)
-        }
     }
 }

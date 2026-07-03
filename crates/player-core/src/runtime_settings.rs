@@ -105,9 +105,6 @@ pub enum PlayerRuntimeSettingId {
     /// `video.preferred_backend`: применяется через app-owned pipeline rebuild.
     VideoPreferredBackend,
 
-    /// `frame_server.hover_preview_enabled`.
-    FrameServerHoverPreviewEnabled,
-
     /// `frame_server.live_scrub_enabled`.
     FrameServerLiveScrubEnabled,
 
@@ -116,30 +113,6 @@ pub enum PlayerRuntimeSettingId {
 
     /// `frame_server.live_scrub_max_hz`.
     FrameServerLiveScrubMaxHz,
-
-    /// `frame_server.hover_prepare_window_slots`.
-    FrameServerHoverPrepareWindowSlots,
-
-    /// `frame_server.software_hover_prepare_window_slots`.
-    FrameServerSoftwareHoverPrepareWindowSlots,
-
-    /// `frame_server.recent_superseded_prepare_slots`.
-    FrameServerRecentSupersededPrepareSlots,
-
-    /// `frame_server.software_recent_superseded_prepare_slots`.
-    FrameServerSoftwareRecentSupersededPrepareSlots,
-
-    /// `frame_server.hover_leave_grace_ms`.
-    FrameServerHoverLeaveGraceMs,
-
-    /// `frame_server.network_hover_prepare_throttle_ms`.
-    FrameServerNetworkHoverPrepareThrottleMs,
-
-    /// `frame_server.hover_pool_frames`.
-    FrameServerHoverPoolFrames,
-
-    /// `frame_server.hover_thread_count`.
-    FrameServerHoverThreadCount,
 }
 
 impl PlayerRuntimeSettingId {
@@ -188,26 +161,9 @@ impl PlayerRuntimeSettingId {
                 "video.scheduler.surface_free_slots_target"
             }
             Self::VideoPreferredBackend => "video.preferred_backend",
-            Self::FrameServerHoverPreviewEnabled => "frame_server.hover_preview_enabled",
             Self::FrameServerLiveScrubEnabled => "frame_server.live_scrub_enabled",
             Self::FrameServerLiveScrubDecodeMode => "frame_server.live_scrub_decode_mode",
             Self::FrameServerLiveScrubMaxHz => "frame_server.live_scrub_max_hz",
-            Self::FrameServerHoverPrepareWindowSlots => "frame_server.hover_prepare_window_slots",
-            Self::FrameServerSoftwareHoverPrepareWindowSlots => {
-                "frame_server.software_hover_prepare_window_slots"
-            }
-            Self::FrameServerRecentSupersededPrepareSlots => {
-                "frame_server.recent_superseded_prepare_slots"
-            }
-            Self::FrameServerSoftwareRecentSupersededPrepareSlots => {
-                "frame_server.software_recent_superseded_prepare_slots"
-            }
-            Self::FrameServerHoverLeaveGraceMs => "frame_server.hover_leave_grace_ms",
-            Self::FrameServerNetworkHoverPrepareThrottleMs => {
-                "frame_server.network_hover_prepare_throttle_ms"
-            }
-            Self::FrameServerHoverPoolFrames => "frame_server.hover_pool_frames",
-            Self::FrameServerHoverThreadCount => "frame_server.hover_thread_count",
         }
     }
 }

@@ -1,5 +1,3 @@
-use crate::timeline_hover_source::TimelineHoverSourceIdentity;
-
 use super::present_frame_cache::CachedPresentFrameDiscardReason;
 use super::*;
 
@@ -175,8 +173,6 @@ impl AppState {
     }
 
     fn remember_active_media_source(&mut self, source: ActiveMediaSource) {
-        self.timeline_hover_prepare_controller
-            .set_hover_source(hover_source_identity_from_active_source(&source));
         self.active_media_source = Some(source);
     }
 
@@ -295,24 +291,6 @@ impl AppState {
                 warn!(error = %error, "Local file open job завершился ошибкой");
                 self.set_startup_error(format!("Ошибка открытия media-файла: {error}"));
             }
-        }
-    }
-}
-
-fn hover_source_identity_from_active_source(
-    source: &ActiveMediaSource,
-) -> TimelineHoverSourceIdentity {
-    match source {
-        ActiveMediaSource::LocalFile(path) => TimelineHoverSourceIdentity::LocalFile(path.clone()),
-        ActiveMediaSource::YouTubeUrl {
-            source_url,
-            selected_stream_identity,
-        } => TimelineHoverSourceIdentity::YouTubeUrl {
-            source_url: source_url.clone(),
-            selected_stream_identity: selected_stream_identity.clone(),
-        },
-        ActiveMediaSource::DirectMediaUrl(source_url) => {
-            TimelineHoverSourceIdentity::DirectMediaUrl(source_url.clone())
         }
     }
 }

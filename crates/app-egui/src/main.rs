@@ -9,8 +9,6 @@
 
 mod app_shell;
 mod frame_prepare;
-mod frame_server_budget;
-mod hover_software_session;
 mod local_file_open;
 mod local_media;
 mod redraw_pacing;
@@ -21,12 +19,6 @@ mod startup_media;
 mod state;
 mod system_capabilities;
 mod telemetry;
-mod timeline_hover_approx_preview;
-mod timeline_hover_decode;
-mod timeline_hover_intent;
-mod timeline_hover_network;
-mod timeline_hover_prepare;
-mod timeline_hover_source;
 mod ui;
 mod video_pipeline_selector;
 

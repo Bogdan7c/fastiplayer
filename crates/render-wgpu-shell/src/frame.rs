@@ -152,9 +152,6 @@ pub struct RenderFrameInput<'frame> {
     /// Video frame boundary; `None` означает, что target нужно очистить в чёрный.
     pub video_frame: Option<&'frame WgpuRenderableFrame<'frame>>,
 
-    /// Optional hover preview pass поверх timeline.
-    pub hover_preview: Option<RenderVideoOverlayInput<'frame>>,
-
     /// Уже tessellated egui primitives.
     pub egui_paint_jobs: Vec<egui::epaint::ClippedPrimitive>,
 
@@ -169,16 +166,6 @@ pub struct RenderFrameInput<'frame> {
 
     /// Renderer-neutral области, где video pass не должен рисовать кадр.
     pub video_exclusion_rects: Vec<RenderViewport>,
-}
-
-/// Отдельный video overlay input для preview surfaces поверх UI.
-#[derive(Clone, Copy)]
-pub struct RenderVideoOverlayInput<'frame> {
-    /// Frame borrow живёт только на время renderer call-а.
-    pub frame: &'frame WgpuRenderableFrame<'frame>,
-
-    /// Physical viewport overlay surface-а.
-    pub viewport: RenderViewport,
 }
 
 /// Зажимает app-computed video viewport к текущему swapchain target-у.

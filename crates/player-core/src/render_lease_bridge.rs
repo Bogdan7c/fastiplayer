@@ -434,9 +434,6 @@ pub(crate) struct RenderLeaseBridge {
     /// Shared latest-slot для публикации frame lease-а render thread-у.
     latest_present_frame_handoff: Arc<LatestPresentFrameHandoff>,
 
-    /// Shared latest-slot для scrub visual override, отдельный от playback slot-а.
-    latest_scrub_visual_override_handoff: Arc<LatestPresentFrameHandoff>,
-
     /// Sender render lease release ack-ов для новых present frames.
     render_release_tx: Sender<RenderLeaseRelease>,
 
@@ -484,7 +481,6 @@ impl RenderLeaseBridge {
         (
             Self {
                 latest_present_frame_handoff,
-                latest_scrub_visual_override_handoff,
                 render_release_tx,
                 render_release_rx,
                 render_acquire_sample_rx,
@@ -617,16 +613,6 @@ impl RenderLeaseBridge {
 
         let present_frame = self.build_present_frame(session);
         self.latest_present_frame_handoff.publish(present_frame);
-    }
-
-    /// Публикует scrub visual override lease в отдельный latest-slot.
-    pub(crate) fn publish_scrub_visual_override_frame(&mut self, frame: Option<VideoFrameLease>) {
-        self.latest_scrub_visual_override_handoff.publish(frame);
-    }
-
-    /// Чистит scrub visual override slot без воздействия на playback latest frame.
-    pub(crate) fn clear_scrub_visual_override_frame(&mut self) {
-        self.latest_scrub_visual_override_handoff.clear();
     }
 
     /// Возвращает identity текущего present frame без создания нового render lease-а.

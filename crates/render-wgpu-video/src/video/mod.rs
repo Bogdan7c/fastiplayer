@@ -440,7 +440,7 @@ impl VideoRenderTargetLoad {
     /// Индекс uniform buffer-а для main/overlay pass-а одного кадра.
     ///
     /// `queue.write_buffer` исполняется на submit ДО записанного command
-    /// buffer-а, поэтому main video pass и hover-preview overlay pass в одном
+    /// buffer-а, поэтому main video pass и дополнительный overlay pass в одном
     /// кадре НЕ могут делить один uniform buffer: последняя запись (letterbox
     /// overlay-я) применилась бы к обоим pass-ам и ломала пропорции основного
     /// видео. Каждая pass-роль пишет в собственный slot.

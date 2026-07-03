@@ -294,11 +294,11 @@ impl CodecContext {
 
             // Многопоточный software decode. `Auto` сохраняет production path:
             // thread_count = 0 просит libavcodec выбрать число потоков
-            // автоматически по av_cpu_count(). Hover software session после
-            // budget resolution передаёт `Fixed(N)`, и тогда FFmpeg получает
-            // конкретный положительный `thread_count = N`. thread_type разрешает
-            // frame/slice threading, а libavcodec сам маскирует их по
-            // AVCodec.capabilities. Должно быть выставлено до avcodec_open2.
+            // автоматически по av_cpu_count(). `Fixed(N)` используется только
+            // для явного playback/config budget-а и передаёт FFmpeg конкретный
+            // положительный `thread_count = N`. thread_type разрешает frame/slice
+            // threading, а libavcodec сам маскирует их по AVCodec.capabilities.
+            // Должно быть выставлено до avcodec_open2.
             // SAFETY: context owned wrapper-ом и валиден до open; поля
             // thread_count/thread_type читаются FFmpeg только внутри open.
             unsafe {

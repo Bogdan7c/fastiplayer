@@ -79,10 +79,8 @@ fn preview_frame_for_tests(generation: ScrubGenerationToken) -> ScrubPreviewFram
 }
 
 #[test]
-fn priority_ordering_keeps_user_commit_above_live_and_hover_work() {
+fn priority_ordering_keeps_user_commit_above_live_work() {
     assert!(ScrubPriority::UserCommit > ScrubPriority::LiveScrub);
-    assert!(ScrubPriority::LiveScrub > ScrubPriority::HoverPreview);
-    assert!(ScrubPriority::HoverPreview > ScrubPriority::BackgroundPrepare);
     assert_eq!(
         ScrubPriority::for_request_kind(ScrubRequestKind::SeekLanding),
         ScrubPriority::UserCommit
@@ -128,7 +126,7 @@ fn context_scrub_generation_mismatch_marks_intent_stale() {
 
 #[test]
 fn generation_token_mismatch_on_either_field_marks_outcome_frame_and_readiness_stale() {
-    let context = context_for_tests(ScrubRequestKind::HoverPreview);
+    let context = context_for_tests(ScrubRequestKind::LiveScrub);
     let frame = preview_frame_for_tests(context.generation());
     let outcome = ScrubDriverOutcome::ExactFrameReady(ExactFrameReadyOutcome { context, frame });
 
@@ -245,7 +243,7 @@ fn seek_decode_point_before_intent_carries_target_revision_and_generation_only()
 
 #[test]
 fn outcome_to_event_mapping_preserves_reason_categories_in_public_failure() {
-    let context = context_for_tests(ScrubRequestKind::HoverPreview);
+    let context = context_for_tests(ScrubRequestKind::LiveScrub);
     let outcome = ScrubDriverOutcome::DemuxUnsupported(DemuxUnsupportedOutcome {
         context,
         reason: DemuxUnsupportedReason::DecodePointBeforeUnsupported,
@@ -405,7 +403,7 @@ fn public_events_are_normalized_and_driver_details_stay_in_diagnostics() {
 
 #[test]
 fn driver_outcome_variants_use_named_payloads_and_typed_subreasons() {
-    let context = context_for_tests(ScrubRequestKind::HoverPreview);
+    let context = context_for_tests(ScrubRequestKind::LiveScrub);
     let outcomes = [
         ScrubDriverOutcome::AudioResumePending(AudioResumePendingOutcome {
             context,
@@ -580,80 +578,6 @@ fn config_validation_rejects_impossible_values() {
             actual: MAX_LIVE_SCRUB_MAX_HZ + 1,
         })
     );
-    assert_eq!(
-        FrameServerConfig {
-            hover_prepare_window_slots: 0,
-            ..FrameServerConfig::default()
-        }
-        .validate(),
-        Err(FrameServerConfigError::ZeroHoverPrepareWindowSlots)
-    );
-    assert_eq!(
-        FrameServerConfig {
-            hover_prepare_window_slots: MAX_HOVER_PREPARE_WINDOW_SLOTS + 1,
-            ..FrameServerConfig::default()
-        }
-        .validate(),
-        Err(FrameServerConfigError::HoverPrepareWindowSlotsTooHigh {
-            max_allowed: MAX_HOVER_PREPARE_WINDOW_SLOTS,
-            actual: MAX_HOVER_PREPARE_WINDOW_SLOTS + 1,
-        })
-    );
-    assert_eq!(
-        FrameServerConfig {
-            software_hover_prepare_window_slots: 0,
-            ..FrameServerConfig::default()
-        }
-        .validate(),
-        Err(FrameServerConfigError::ZeroSoftwareHoverPrepareWindowSlots)
-    );
-    assert_eq!(
-        FrameServerConfig {
-            software_hover_prepare_window_slots: MAX_SOFTWARE_HOVER_PREPARE_WINDOW_SLOTS + 1,
-            ..FrameServerConfig::default()
-        }
-        .validate(),
-        Err(
-            FrameServerConfigError::SoftwareHoverPrepareWindowSlotsTooHigh {
-                max_allowed: MAX_SOFTWARE_HOVER_PREPARE_WINDOW_SLOTS,
-                actual: MAX_SOFTWARE_HOVER_PREPARE_WINDOW_SLOTS + 1,
-            }
-        )
-    );
-    assert_eq!(
-        FrameServerConfig {
-            recent_superseded_prepare_slots: MAX_RECENT_SUPERSEDED_PREPARE_SLOTS + 1,
-            ..FrameServerConfig::default()
-        }
-        .validate(),
-        Err(
-            FrameServerConfigError::RecentSupersededPrepareSlotsTooHigh {
-                max_allowed: MAX_RECENT_SUPERSEDED_PREPARE_SLOTS,
-                actual: MAX_RECENT_SUPERSEDED_PREPARE_SLOTS + 1,
-            }
-        )
-    );
-    assert_eq!(
-        FrameServerConfig {
-            software_recent_superseded_prepare_slots: MAX_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS
-                + 1,
-            ..FrameServerConfig::default()
-        }
-        .validate(),
-        Err(
-            FrameServerConfigError::SoftwareRecentSupersededPrepareSlotsTooHigh {
-                max_allowed: MAX_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS,
-                actual: MAX_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS + 1,
-            }
-        )
-    );
-    FrameServerConfig {
-        recent_superseded_prepare_slots: 0,
-        software_recent_superseded_prepare_slots: 0,
-        ..FrameServerConfig::default()
-    }
-    .validate()
-    .expect("zero recent retention disables only click-back retention");
     let default_config = FrameServerConfig::default()
         .validate()
         .expect("default frame-server config stays valid");
@@ -664,32 +588,6 @@ fn config_validation_rejects_impossible_values() {
     assert_eq!(
         default_config.live_scrub_decode_mode(),
         LiveScrubDecodeMode::ThrottledLatest
-    );
-    assert_eq!(
-        default_config.hover_prepare_window_slots(),
-        DEFAULT_HOVER_PREPARE_WINDOW_SLOTS
-    );
-    assert_eq!(
-        default_config.software_hover_prepare_window_slots(),
-        DEFAULT_SOFTWARE_HOVER_PREPARE_WINDOW_SLOTS
-    );
-    assert_eq!(
-        default_config.recent_superseded_prepare_slots(),
-        DEFAULT_RECENT_SUPERSEDED_PREPARE_SLOTS
-    );
-    assert_eq!(
-        default_config.software_recent_superseded_prepare_slots(),
-        DEFAULT_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS
-    );
-    let default_recent_budget =
-        TimelineHoverRecentSupersededBudget::from_validated_config(default_config);
-    assert_eq!(
-        default_recent_budget.general_slots(),
-        usize::from(DEFAULT_RECENT_SUPERSEDED_PREPARE_SLOTS)
-    );
-    assert_eq!(
-        default_recent_budget.software_slots(),
-        usize::from(DEFAULT_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS)
     );
     assert!(FrameServerConfig::default().validate().is_ok());
 }

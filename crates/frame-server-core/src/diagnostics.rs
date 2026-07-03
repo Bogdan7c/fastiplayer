@@ -1,22 +1,5 @@
 use std::time::Duration;
 
-mod hover;
-mod prepared;
-
-pub use self::hover::{
-    ScrubHoverDependencySpanDiagnosticsCounters, ScrubHoverDependencySpanIncompleteReason,
-    ScrubHoverDependencySpanIncompleteReasonCounters, ScrubHoverDependencySpanOutcome,
-    ScrubHoverDependencySpanProgress, ScrubHoverNetworkDiagnosticsCounters, ScrubHoverNetworkState,
-    ScrubHoverPrepareAdmissionCounters, ScrubHoverPrepareDiagnosticsCounters,
-};
-pub use self::prepared::{
-    ScrubPreparedFrameDemoteRejectionCounters, ScrubPreparedFrameDemoteRejectionKind,
-    ScrubPreparedFrameDiagnosticsCounters, ScrubPreparedFrameHitOutcome,
-    ScrubPreparedFrameOwnershipCounters, ScrubPreparedFrameOwnershipEvent,
-    ScrubPreparedFrameResumePendingReason, ScrubPreparedFrameResumePendingReasonCounters,
-    ScrubResumeRunwayState, ScrubResumeRunwayStateCounters,
-};
-
 use crate::config::LiveScrubDecodeMode;
 use crate::request::{ScrubRequestKind, ScrubStaleReason, ScrubTargetContext};
 use crate::scheduler::SchedulerDiagnostic;
@@ -24,11 +7,6 @@ use crate::scrub::{
     AudioResumeErrorReason, DecoderBackpressureReason, DemuxUnavailableReason,
     DemuxUnsupportedReason, HostUploadBackpressureReason, ResourceBusyReason, ScrubDriverOutcome,
     ScrubFatalReason, ScrubTargetReachStatus, ScrubTimeoutReason,
-};
-use crate::working_set::{
-    TimelineHoverPrepareAdmissionOutcome, TimelineHoverPrepareInsertOutcome,
-    TimelineHoverPrepareLookupOutcome, TimelineHoverPreparePressureReleaseOutcome,
-    TimelineHoverPreparePromotionOutcome, TimelineHoverPrepareProviderBudget,
 };
 
 /// Driver-only outcome kind, который можно положить в diagnostics без раскрытия payload-а UI.
@@ -229,7 +207,7 @@ pub struct ScrubEventEnvelope {
 /// Snapshot накопленных diagnostics без истории событий.
 ///
 /// Все поля copyable и bounded: такой снимок можно дешёво отдать UI/тестам,
-/// не раскрывая внутренние очереди scheduler-а, decoder-а или working set-а.
+/// не раскрывая внутренние очереди scheduler-а или decoder-а.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ScrubDiagnosticsSnapshot {
     pub requests: ScrubRequestLifecycleCounters,
@@ -242,9 +220,6 @@ pub struct ScrubDiagnosticsSnapshot {
     pub demux_seek_latency: DurationSummary,
     pub packets_from_decode_point_to_target: CountSummary,
     pub pre_target_frame_drops: CountSummary,
-    pub prepared_frames: ScrubPreparedFrameDiagnosticsCounters,
-    pub working_set: ScrubWorkingSetDiagnosticsCounters,
-    pub hover_prepare: ScrubHoverPrepareDiagnosticsCounters,
     pub latest_live_scrub: Option<LiveScrubDiagnostics>,
 }
 
@@ -304,23 +279,6 @@ impl ScrubDiagnosticsRecorder {
 
     pub fn record_pre_target_frame_drops(&mut self, dropped_frames: u64) {
         self.snapshot.pre_target_frame_drops.record(dropped_frames);
-    }
-
-    pub fn record_prepared_frame_hit(&mut self, outcome: ScrubPreparedFrameHitOutcome) {
-        self.snapshot.prepared_frames.record_prepared_hit(outcome);
-    }
-
-    pub fn record_cold_exact_decode_pending(&mut self) {
-        self.snapshot
-            .prepared_frames
-            .record_cold_exact_decode_pending();
-    }
-
-    pub fn record_prepared_frame_ownership_event(
-        &mut self,
-        event: ScrubPreparedFrameOwnershipEvent,
-    ) {
-        self.snapshot.prepared_frames.record_ownership_event(event);
     }
 
     /// Записывает typed driver outcome без нормализации в public UI phase.
@@ -385,120 +343,6 @@ impl ScrubDiagnosticsRecorder {
         self.snapshot.scheduler.increment(diagnostic);
     }
 
-    pub fn record_working_set_lookup_outcome<BranchToken>(
-        &mut self,
-        outcome: &TimelineHoverPrepareLookupOutcome<'_, BranchToken>,
-    ) {
-        self.snapshot.working_set.record_lookup_outcome(outcome);
-    }
-
-    pub fn record_working_set_promotion_outcome<BranchToken>(
-        &mut self,
-        outcome: &TimelineHoverPreparePromotionOutcome<BranchToken>,
-    ) {
-        self.snapshot.working_set.record_promotion_outcome(outcome);
-    }
-
-    pub fn record_working_set_insert_outcome<BranchToken>(
-        &mut self,
-        outcome: &TimelineHoverPrepareInsertOutcome<BranchToken>,
-    ) {
-        self.snapshot.working_set.record_insert_outcome(outcome);
-    }
-
-    pub fn record_working_set_pressure_release_outcome(
-        &mut self,
-        outcome: TimelineHoverPreparePressureReleaseOutcome,
-    ) {
-        self.snapshot
-            .working_set
-            .record_pressure_release_outcome(outcome);
-    }
-
-    pub fn record_working_set_hit(&mut self) {
-        self.snapshot.working_set.record_hit();
-    }
-
-    pub fn record_working_set_miss(&mut self) {
-        self.snapshot.working_set.record_miss();
-    }
-
-    pub fn record_working_set_evictions(&mut self, evicted_entries: u64) {
-        self.snapshot.working_set.record_evictions(evicted_entries);
-    }
-
-    pub fn record_hover_prepare_admission_outcome(
-        &mut self,
-        outcome: &TimelineHoverPrepareAdmissionOutcome,
-    ) {
-        self.snapshot
-            .hover_prepare
-            .admission
-            .record_outcome(outcome);
-    }
-
-    pub fn record_hover_prepare_provider_budget(
-        &mut self,
-        provider_budget: TimelineHoverPrepareProviderBudget,
-    ) {
-        self.snapshot
-            .hover_prepare
-            .admission
-            .record_provider_budget(provider_budget);
-    }
-
-    pub fn record_hover_dependency_span_outcome(
-        &mut self,
-        outcome: ScrubHoverDependencySpanOutcome,
-    ) {
-        self.snapshot
-            .hover_prepare
-            .dependency_span
-            .record_outcome(outcome);
-    }
-
-    pub fn record_hover_dependency_span_progress(
-        &mut self,
-        progress: ScrubHoverDependencySpanProgress,
-    ) {
-        self.snapshot
-            .hover_prepare
-            .dependency_span
-            .record_progress(progress);
-    }
-
-    pub fn record_hover_network_state(&mut self, state: ScrubHoverNetworkState) {
-        self.snapshot.hover_prepare.network.record_state(state);
-    }
-
-    pub fn record_hover_network_zero_throttle_no_delay(&mut self) {
-        self.snapshot
-            .hover_prepare
-            .network
-            .record_zero_throttle_no_delay();
-    }
-
-    pub fn record_hover_network_latest_only_replaced_in_flight(&mut self) {
-        self.snapshot
-            .hover_prepare
-            .network
-            .record_latest_only_replaced_in_flight();
-    }
-
-    pub fn record_hover_network_stale_late_result_ignored(&mut self) {
-        self.snapshot
-            .hover_prepare
-            .network
-            .record_stale_late_result_ignored();
-    }
-
-    pub fn record_hover_network_throttle_delay(&mut self, delay: Duration) {
-        self.snapshot
-            .hover_prepare
-            .network
-            .record_throttle_delay(delay);
-    }
-
     pub fn record_driver_reason(&mut self, reason: ScrubDriverDiagnosticReason) {
         self.snapshot.driver_reasons.increment(reason);
         self.snapshot.resource_pressure.record_driver_reason(reason);
@@ -519,9 +363,6 @@ impl ScrubDiagnosticsSnapshot {
             demux_seek_latency: DurationSummary::new(),
             packets_from_decode_point_to_target: CountSummary::new(),
             pre_target_frame_drops: CountSummary::new(),
-            prepared_frames: ScrubPreparedFrameDiagnosticsCounters::new(),
-            working_set: ScrubWorkingSetDiagnosticsCounters::new(),
-            hover_prepare: ScrubHoverPrepareDiagnosticsCounters::new(),
             latest_live_scrub: None,
         }
     }
@@ -629,8 +470,6 @@ impl ScrubRequestLifecycleCounters {
 pub struct ScrubRequestKindCounters {
     pub seek_landing: u64,
     pub live_scrub: u64,
-    pub hover_preview: u64,
-    pub timeline_hover_prepare_window: u64,
 }
 
 impl ScrubRequestKindCounters {
@@ -639,8 +478,6 @@ impl ScrubRequestKindCounters {
         Self {
             seek_landing: 0,
             live_scrub: 0,
-            hover_preview: 0,
-            timeline_hover_prepare_window: 0,
         }
     }
 
@@ -649,8 +486,6 @@ impl ScrubRequestKindCounters {
         match request_kind {
             ScrubRequestKind::SeekLanding => self.seek_landing,
             ScrubRequestKind::LiveScrub => self.live_scrub,
-            ScrubRequestKind::HoverPreview => self.hover_preview,
-            ScrubRequestKind::TimelineHoverPrepareWindow => self.timeline_hover_prepare_window,
         }
     }
 
@@ -661,13 +496,6 @@ impl ScrubRequestKindCounters {
             }
             ScrubRequestKind::LiveScrub => {
                 self.live_scrub = self.live_scrub.saturating_add(1);
-            }
-            ScrubRequestKind::HoverPreview => {
-                self.hover_preview = self.hover_preview.saturating_add(1);
-            }
-            ScrubRequestKind::TimelineHoverPrepareWindow => {
-                self.timeline_hover_prepare_window =
-                    self.timeline_hover_prepare_window.saturating_add(1);
             }
         }
     }
@@ -888,7 +716,6 @@ impl ScrubDriverDiagnosticReasonCounters {
 pub struct ScrubSchedulerDiagnosticCounters {
     pub live_scrub_throttled: u64,
     pub active_work_cancelled: u64,
-    pub hover_prepare_window_budget_exceeded: u64,
     pub active_completion_ignored: u64,
 }
 
@@ -898,7 +725,6 @@ impl ScrubSchedulerDiagnosticCounters {
         Self {
             live_scrub_throttled: 0,
             active_work_cancelled: 0,
-            hover_prepare_window_budget_exceeded: 0,
             active_completion_ignored: 0,
         }
     }
@@ -910,10 +736,6 @@ impl ScrubSchedulerDiagnosticCounters {
             }
             SchedulerDiagnostic::ActiveWorkCancelled { .. } => {
                 self.active_work_cancelled = self.active_work_cancelled.saturating_add(1);
-            }
-            SchedulerDiagnostic::HoverPrepareWindowBudgetExceeded { .. } => {
-                self.hover_prepare_window_budget_exceeded =
-                    self.hover_prepare_window_budget_exceeded.saturating_add(1);
             }
             SchedulerDiagnostic::ActiveCompletionIgnored { .. } => {
                 self.active_completion_ignored = self.active_completion_ignored.saturating_add(1);
@@ -1063,113 +885,5 @@ impl HostUploadBackpressureReasonCounters {
                     self.upload_control_channel_full.saturating_add(1);
             }
         }
-    }
-}
-
-/// Working-set counters: hit/miss/eviction без хранения frame lease/debug payload.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct ScrubWorkingSetDiagnosticsCounters {
-    pub hits: u64,
-    pub misses: u64,
-    pub timing_rejections: u64,
-    pub evictions: u64,
-    pub promotion_hits: u64,
-    pub promotion_misses: u64,
-    pub pressure_release_misses: u64,
-    pub released_recent_superseded: u64,
-    pub released_primary_byproduct: u64,
-}
-
-impl ScrubWorkingSetDiagnosticsCounters {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            hits: 0,
-            misses: 0,
-            timing_rejections: 0,
-            evictions: 0,
-            promotion_hits: 0,
-            promotion_misses: 0,
-            pressure_release_misses: 0,
-            released_recent_superseded: 0,
-            released_primary_byproduct: 0,
-        }
-    }
-
-    pub fn record_lookup_outcome<BranchToken>(
-        &mut self,
-        outcome: &TimelineHoverPrepareLookupOutcome<'_, BranchToken>,
-    ) {
-        match outcome {
-            TimelineHoverPrepareLookupOutcome::Hit(_) => self.record_hit(),
-            TimelineHoverPrepareLookupOutcome::Miss(_) => self.record_miss(),
-            TimelineHoverPrepareLookupOutcome::TimingRejected(_) => {
-                self.timing_rejections = self.timing_rejections.saturating_add(1);
-            }
-        }
-    }
-
-    pub fn record_promotion_outcome<BranchToken>(
-        &mut self,
-        outcome: &TimelineHoverPreparePromotionOutcome<BranchToken>,
-    ) {
-        match outcome {
-            TimelineHoverPreparePromotionOutcome::PromotedResumeReadyBranch(_)
-            | TimelineHoverPreparePromotionOutcome::PromotedVisualOverrideResumePending(_) => {
-                self.record_hit();
-                self.promotion_hits = self.promotion_hits.saturating_add(1);
-            }
-            TimelineHoverPreparePromotionOutcome::Miss(_) => {
-                self.record_miss();
-                self.promotion_misses = self.promotion_misses.saturating_add(1);
-            }
-            TimelineHoverPreparePromotionOutcome::TimingRejected(_) => {
-                self.timing_rejections = self.timing_rejections.saturating_add(1);
-            }
-        }
-    }
-
-    pub fn record_insert_outcome<BranchToken>(
-        &mut self,
-        outcome: &TimelineHoverPrepareInsertOutcome<BranchToken>,
-    ) {
-        if let TimelineHoverPrepareInsertOutcome::Inserted {
-            evicted_primary_byproducts,
-            ..
-        } = outcome
-        {
-            self.record_evictions(*evicted_primary_byproducts as u64);
-        }
-    }
-
-    pub fn record_pressure_release_outcome(
-        &mut self,
-        outcome: TimelineHoverPreparePressureReleaseOutcome,
-    ) {
-        match outcome {
-            TimelineHoverPreparePressureReleaseOutcome::ReleasedRecentSuperseded { .. } => {
-                self.record_evictions(1);
-                self.released_recent_superseded = self.released_recent_superseded.saturating_add(1);
-            }
-            TimelineHoverPreparePressureReleaseOutcome::ReleasedPrimaryByproduct { .. } => {
-                self.record_evictions(1);
-                self.released_primary_byproduct = self.released_primary_byproduct.saturating_add(1);
-            }
-            TimelineHoverPreparePressureReleaseOutcome::NothingReleased { .. } => {
-                self.pressure_release_misses = self.pressure_release_misses.saturating_add(1);
-            }
-        }
-    }
-
-    pub fn record_hit(&mut self) {
-        self.hits = self.hits.saturating_add(1);
-    }
-
-    pub fn record_miss(&mut self) {
-        self.misses = self.misses.saturating_add(1);
-    }
-
-    pub fn record_evictions(&mut self, evicted_entries: u64) {
-        self.evictions = self.evictions.saturating_add(evicted_entries);
     }
 }

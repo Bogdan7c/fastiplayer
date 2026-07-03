@@ -16,7 +16,6 @@ use codec_core::VideoColorMetadata;
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded, unbounded};
 use media_core::{TrackId, TrackTimestamp};
 use tracing::{info, trace};
-use video_backend_api::HoverBudgetDiagnosticsProviderHandle;
 use video_core::{
     DecodedFrame, VideoDecoderActivityNotifier, VideoDecoderActivitySnapshot,
     VideoDecoderActivitySubscription, VideoDecoderDiagnosticEvent,
@@ -587,7 +586,6 @@ pub struct VideoDecodeThread {
     end_of_stream_drain_state: Arc<Mutex<video_core::VideoDecoderEndOfStreamDrainState>>,
     config: VideoDecodeThreadConfig,
     backend_name: &'static str,
-    hover_budget_diagnostics_provider: HoverBudgetDiagnosticsProviderHandle,
 }
 
 impl VideoDecodeThread {
@@ -617,7 +615,7 @@ impl VideoDecodeThread {
         let thread_diagnostic_tx = diagnostic_tx.clone();
         let (activity_notifier, activity_subscription) = VideoDecoderActivityNotifier::new();
         let decoder_activity_notifier = activity_notifier.clone();
-        let (init_tx, init_rx) = bounded::<anyhow::Result<HoverBudgetDiagnosticsProviderHandle>>(1);
+        let (init_tx, init_rx) = bounded::<anyhow::Result<()>>(1);
         let thread_state = DecoderThreadState::new();
         let decoder_runtime_config = config.vaapi_decoder_config();
         let end_of_stream_drain_state = Arc::new(Mutex::new(
@@ -637,9 +635,7 @@ impl VideoDecodeThread {
                     Some(decoder_activity_notifier),
                 ) {
                     Ok(decoder) => {
-                        let hover_budget_diagnostics_provider =
-                            decoder.hover_budget_diagnostics_provider();
-                        if init_tx.send(Ok(hover_budget_diagnostics_provider)).is_err() {
+                        if init_tx.send(Ok(())).is_err() {
                             trace!("Decoder thread init receiver dropped — exiting");
                             return;
                         }
@@ -674,8 +670,8 @@ impl VideoDecodeThread {
             })
             .map_err(|e| anyhow::anyhow!("Failed to spawn decoder thread: {}", e))?;
 
-        let hover_budget_diagnostics_provider = match init_rx.recv() {
-            Ok(Ok(provider)) => provider,
+        match init_rx.recv() {
+            Ok(Ok(())) => {}
             Ok(Err(error)) => return Err(error),
             Err(error) => {
                 return Err(anyhow::anyhow!(
@@ -683,7 +679,7 @@ impl VideoDecodeThread {
                     error
                 ));
             }
-        };
+        }
 
         Ok(Self {
             packet_tx,
@@ -700,7 +696,6 @@ impl VideoDecodeThread {
             end_of_stream_drain_state,
             config,
             backend_name: "VA-API VP9",
-            hover_budget_diagnostics_provider,
         })
     }
 
@@ -1145,12 +1140,6 @@ impl VideoDecodeThread {
             resource_pool: self.resource_pool.clone(),
             thread_state: self.thread_state.clone(),
         }
-    }
-
-    /// Возвращает backend-owned provider для Frame Server budget diagnostics.
-    #[must_use]
-    pub fn hover_budget_diagnostics_provider(&self) -> HoverBudgetDiagnosticsProviderHandle {
-        self.hover_budget_diagnostics_provider.clone()
     }
 
     /// Возвращает состояние resource pool для backpressure и UI.

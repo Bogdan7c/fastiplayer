@@ -15,7 +15,6 @@ use cros_codecs::libva::{
 };
 use media_core::Packet;
 use tracing::{debug, info, trace, warn};
-use video_backend_api::HoverBudgetDiagnosticsProviderHandle;
 use video_core::{
     DecodedFrame, DecodedPixelFormat, FrameResourceHandle, VideoDecoder,
     VideoDecoderActivityNotifier, VideoDecoderDiagnosticEvent, VideoDecoderDropReason,
@@ -1355,7 +1354,7 @@ pub struct VaapiVideoDecoder {
     /// и из render thread (descriptor lookup / release).
     resource_pool: Arc<Mutex<FrameResourcePool>>,
 
-    /// Shared VA owner boundary для playback/hover branch reservation accounting.
+    /// Shared VA owner boundary для playback branch reservation accounting.
     _shared_hardware_owner: VaapiSharedHardwareOwner,
 
     /// Playback reservation живёт столько же, сколько VA decoder.
@@ -1482,18 +1481,13 @@ impl VaapiVideoDecoder {
         )
         .map_err(|e| anyhow::anyhow!("Failed to create frame pool: {}", e))?;
 
-        // V1 hardware-hover minimum follows the backend ready-publish window:
-        // it is backend-reported context, not a generic hardcoded `1`.
-        let hover_surface_capability_minimum_frames = runtime_config.ready_queue_frames;
         let shared_hardware_context = VaapiSharedHardwareOwnerContext::from_surface_accounting(
             runtime_config.surface_pool_frames,
-            hover_surface_capability_minimum_frames,
         );
         let shared_hardware_owner = VaapiSharedHardwareOwner::new(shared_hardware_context);
         let playback_hardware_reservation = shared_hardware_owner
             .reserve_playback_branch()
             .map_err(|error| anyhow::anyhow!("Failed to reserve VAAPI playback branch: {error}"))?;
-        let hover_capability_report = shared_hardware_owner.hover_capability_report();
 
         info!(
             backend_name,
@@ -1501,12 +1495,6 @@ impl VaapiVideoDecoder {
             surface_pool_frames = runtime_config.surface_pool_frames,
             ready_queue_frames = runtime_config.ready_queue_frames,
             playback_reserved_surface_frames = playback_hardware_reservation.surface_frames().get(),
-            hover_surface_minimum_frames = shared_hardware_context
-                .hover_surface_capability_minimum()
-                .get(),
-            hover_surface_provider_capacity = shared_hardware_context
-                .hover_surface_provider_capacity(),
-            hover_capability_report = ?hover_capability_report,
             max_suppressed_reclaim_frames = runtime_config.max_suppressed_reclaim_frames,
             approximate_available_reclaim_slots =
                 reclaim_capacity.approximate_available_reclaim_slots(0),
@@ -1539,11 +1527,6 @@ impl VaapiVideoDecoder {
             preroll_output_floor: PrerollOutputFloorState::default(),
             preroll_fallback_candidate: None,
         })
-    }
-
-    /// Возвращает cloneable read-only provider для Frame Server budget diagnostics.
-    pub(crate) fn hover_budget_diagnostics_provider(&self) -> HoverBudgetDiagnosticsProviderHandle {
-        HoverBudgetDiagnosticsProviderHandle::new(self._shared_hardware_owner.clone())
     }
 
     /// Освобождает decoder-owned frame, который не был отправлен renderer GPU work-у.

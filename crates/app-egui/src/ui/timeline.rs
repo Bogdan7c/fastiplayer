@@ -274,103 +274,6 @@ pub enum TimelineAction {
     CancelLiveScrub,
 }
 
-/// Единая цель hover над timeline для visual preview и invisible predecode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TimelineHoverTarget {
-    /// Медиа-позиция, выбранная текущим pointer hover.
-    position: MediaTime,
-}
-
-impl TimelineHoverTarget {
-    /// Создаёт hover target из уже нормализованной смысловой timeline-позиции.
-    #[must_use]
-    pub const fn new(position: MediaTime) -> Self {
-        Self { position }
-    }
-
-    /// Возвращает media position, не раскрывая хранение target-а в callsite-ах.
-    #[must_use]
-    pub const fn position(self) -> MediaTime {
-        self.position
-    }
-}
-
-/// Геометрия hover preview в logical egui points.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TimelineHoverPreviewPlacement {
-    /// Pointer position внутри timeline response.
-    pointer_position: Pos2,
-
-    /// Rect timeline widget-а, от которого preview позиционируется вверх.
-    timeline_rect: Rect,
-}
-
-impl TimelineHoverPreviewPlacement {
-    /// Создаёт placement из raw egui geometry текущего response-а.
-    #[must_use]
-    pub const fn new(pointer_position: Pos2, timeline_rect: Rect) -> Self {
-        Self {
-            pointer_position,
-            timeline_rect,
-        }
-    }
-
-    /// Возвращает pointer position в logical points.
-    #[must_use]
-    pub const fn pointer_position(self) -> Pos2 {
-        self.pointer_position
-    }
-
-    /// Возвращает timeline rect в logical points.
-    #[must_use]
-    pub const fn timeline_rect(self) -> Rect {
-        self.timeline_rect
-    }
-}
-
-/// Visual target hover preview-а; semantic target остаётся отдельным decode key.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TimelineHoverVisualTarget {
-    /// Media target для invisible prepare/controller path-а.
-    target: TimelineHoverTarget,
-
-    /// UI geometry для отдельного preview render target-а.
-    placement: TimelineHoverPreviewPlacement,
-}
-
-impl TimelineHoverVisualTarget {
-    /// Создаёт visual target из media target-а и текущей hover geometry.
-    #[must_use]
-    pub const fn new(
-        target: TimelineHoverTarget,
-        placement: TimelineHoverPreviewPlacement,
-    ) -> Self {
-        Self { target, placement }
-    }
-
-    /// Возвращает semantic media target, который участвует в prepare coalescing.
-    #[must_use]
-    pub const fn target(self) -> TimelineHoverTarget {
-        self.target
-    }
-
-    /// Возвращает visual placement без влияния на decode key.
-    #[must_use]
-    pub const fn placement(self) -> TimelineHoverPreviewPlacement {
-        self.placement
-    }
-}
-
-/// Hover intent одного UI frame-а: target под pointer или явный leave/clear.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TimelineHoverIntent {
-    /// Pointer находится над seekable timeline без click/drag gesture.
-    Target(TimelineHoverVisualTarget),
-
-    /// Pointer ушёл или timeline gesture занял pointer, preview slot нужно очистить.
-    Clear,
-}
-
 /// Нормализованный input mapper-а без зависимости от `egui::Response` в тестах.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TimelinePointerInput {
@@ -394,22 +297,6 @@ pub struct TimelinePointerInput {
 
     /// Позиция pointer как доля seekable-диапазона `0.0..=1.0`.
     pub pointer_fraction: Option<f64>,
-
-    /// Позиция чистого hover как доля seekable-диапазона `0.0..=1.0`.
-    pub hover_fraction: Option<f64>,
-}
-
-impl TimelinePointerInput {
-    /// Возвращает true, если pointer уже занят click/drag/live gesture timeline-а.
-    #[must_use]
-    const fn has_timeline_pointer_gesture(self) -> bool {
-        self.clicked
-            || self.pointer_down_on_timeline
-            || self.drag_started
-            || self.dragged
-            || self.drag_stopped
-            || self.lost_focus
-    }
 }
 
 /// Результат обработки одного timeline frame.
@@ -417,9 +304,6 @@ impl TimelinePointerInput {
 pub struct TimelineInteraction {
     /// Действия, которые shell должен отправить в worker.
     pub actions: Vec<TimelineAction>,
-
-    /// Единый hover intent, отдельный от command-oriented timeline actions.
-    pub hover_intent: Option<TimelineHoverIntent>,
 
     /// Позиция, которую UI должен показывать в этот frame.
     pub display_position: MediaTime,
@@ -445,17 +329,8 @@ pub fn render_timeline(
     let desired_size = Vec2::new(ui.available_width(), style.hit_height);
     let (response, painter) = ui.allocate_painter(desired_size, sense);
     let pointer_input = pointer_input_from_response(&response, bounds, style);
-    let hover_preview_placement = response
-        .hover_pos()
-        .map(|hover_position| TimelineHoverPreviewPlacement::new(hover_position, response.rect));
-    let interaction = map_timeline_interaction(
-        timeline,
-        state,
-        bounds,
-        pointer_input,
-        hover_preview_placement,
-        live_scrub_enabled,
-    );
+    let interaction =
+        map_timeline_interaction(timeline, state, bounds, pointer_input, live_scrub_enabled);
 
     if pointer_input.drag_started
         || pointer_input.dragged
@@ -508,7 +383,6 @@ pub fn map_timeline_interaction(
     state: &mut TimelineUiState,
     bounds: Option<TimelineBounds>,
     input: TimelinePointerInput,
-    hover_preview_placement: Option<TimelineHoverPreviewPlacement>,
     live_scrub_enabled: bool,
 ) -> TimelineInteraction {
     let Some(bounds) = bounds else {
@@ -517,7 +391,6 @@ pub fn map_timeline_interaction(
         state.clear_live_scrub_dispatch();
         return TimelineInteraction {
             actions: Vec::new(),
-            hover_intent: None,
             display_position: timeline.current_position,
         };
     };
@@ -533,7 +406,6 @@ pub fn map_timeline_interaction(
         actions.push(TimelineAction::CancelLiveScrub);
         return TimelineInteraction {
             actions,
-            hover_intent: hover_intent_from_input(bounds, input, hover_preview_placement, state),
             display_position: state.display_position(timeline),
         };
     }
@@ -546,7 +418,6 @@ pub fn map_timeline_interaction(
         }
         return TimelineInteraction {
             actions,
-            hover_intent: hover_intent_from_input(bounds, input, hover_preview_placement, state),
             display_position: state.display_position(timeline),
         };
     }
@@ -602,35 +473,8 @@ pub fn map_timeline_interaction(
 
     TimelineInteraction {
         actions,
-        hover_intent: hover_intent_from_input(bounds, input, hover_preview_placement, state),
         display_position: state.display_position(timeline),
     }
-}
-
-/// Строит hover intent из pure-hover input-а, не смешивая его с command actions.
-fn hover_intent_from_input(
-    bounds: TimelineBounds,
-    input: TimelinePointerInput,
-    hover_preview_placement: Option<TimelineHoverPreviewPlacement>,
-    state: &TimelineUiState,
-) -> Option<TimelineHoverIntent> {
-    if input.has_timeline_pointer_gesture()
-        || state.has_active_drag()
-        || state.has_active_live_scrub_gesture()
-    {
-        return Some(TimelineHoverIntent::Clear);
-    }
-
-    let hover_position = input
-        .hover_fraction
-        .map(|fraction| bounds.quantized_hover_position_from_fraction(fraction));
-
-    Some(match (hover_position, hover_preview_placement) {
-        (Some(position), Some(placement)) => TimelineHoverIntent::Target(
-            TimelineHoverVisualTarget::new(TimelineHoverTarget::new(position), placement),
-        ),
-        (Some(_), None) | (None, _) => TimelineHoverIntent::Clear,
-    })
 }
 
 /// Форматирует media time в `MM:SS`, `HH:MM:SS` или `--:--`.
@@ -690,17 +534,6 @@ impl TimelineBounds {
         self.range.start.saturating_add(offset)
     }
 
-    /// Возвращает смысловой hover target, стабилизированный общей prepared-cache сеткой.
-    #[must_use]
-    pub fn quantized_hover_position_from_fraction(self, fraction: f64) -> MediaTime {
-        let raw_position = self.position_from_fraction(fraction);
-
-        player_core::TimelineHoverPrepareSnapshot::quantize_hover_target_position(
-            raw_position,
-            self.range,
-        )
-    }
-
     /// Возвращает долю позиции внутри диапазона.
     #[must_use]
     fn fraction_from_position(self, position: MediaTime) -> f32 {
@@ -747,10 +580,6 @@ fn pointer_input_from_response(
             .map(|(_bounds, pointer_position)| {
                 pointer_fraction(response.rect, style, pointer_position)
             });
-    let hover_fraction = bounds
-        .zip(response.hover_pos())
-        .map(|(_bounds, hover_position)| pointer_fraction(response.rect, style, hover_position));
-
     TimelinePointerInput {
         clicked: response.clicked(),
         pointer_down_on_timeline: response.is_pointer_button_down_on(),
@@ -759,7 +588,6 @@ fn pointer_input_from_response(
         drag_stopped: response.drag_stopped(),
         lost_focus: response.lost_focus(),
         pointer_fraction: interaction_pointer_fraction,
-        hover_fraction,
     }
 }
 
@@ -882,21 +710,14 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use egui::{Color32, Pos2, Rect, Vec2};
-    use media_core::{
-        MediaDuration, MediaTime, TimeBase, TimelineRange, TimelineSnapshot, TrackId,
-        TrackTimestamp,
-    };
+    use media_core::{MediaDuration, MediaTime, TimelineRange, TimelineSnapshot};
 
     use super::{
         DeferredLiveScrubSettingsChange, LIVE_SCRUB_LANDING_FALLBACK_BUDGET, TimelineAction,
-        TimelineBounds, TimelineHoverIntent, TimelineHoverPreviewPlacement, TimelineHoverTarget,
-        TimelineHoverVisualTarget, TimelineLiveScrubDecodeMode, TimelineLiveScrubSettingsSnapshot,
+        TimelineBounds, TimelineLiveScrubDecodeMode, TimelineLiveScrubSettingsSnapshot,
         TimelinePointerInput, TimelineStyle, TimelineUiState, format_seconds,
         live_scrub_min_dispatch_period, pointer_fraction, thumb_outline_radius,
         timeline_track_outline_rect, timeline_track_rect,
-    };
-    use crate::timeline_hover_intent::{
-        TimelineHoverFrameCoalescer, TimelineHoverFrameOutcome, TimelineHoverIntentState,
     };
 
     /// Создаёт seekable VOD timeline для mapper tests.
@@ -913,39 +734,6 @@ mod tests {
         .expect("test timeline is seekable")
     }
 
-    /// Synthetic geometry для mapper tests без настоящего egui Response.
-    fn hover_preview_placement() -> TimelineHoverPreviewPlacement {
-        TimelineHoverPreviewPlacement::new(
-            Pos2::new(50.0, 20.0),
-            Rect::from_min_size(Pos2::new(0.0, 10.0), Vec2::new(100.0, 12.0)),
-        )
-    }
-
-    /// Visual hover target для assertions, где geometry не влияет на prepare key.
-    fn hover_visual_target(seconds: u64) -> TimelineHoverVisualTarget {
-        TimelineHoverVisualTarget::new(
-            TimelineHoverTarget::new(MediaTime::from_secs(seconds)),
-            hover_preview_placement(),
-        )
-    }
-
-    fn hover_bucket(position: MediaTime) -> i64 {
-        let time_base = TimeBase::new(1, 1_000).expect("millisecond timebase must be valid");
-        let units = time_base.duration_to_track_units_saturating(MediaDuration::from_duration(
-            position.as_duration(),
-        ));
-        let target_pts = TrackTimestamp::new(TrackId::new(1), units.get(), time_base);
-
-        player_core::TimelineHoverPrepareSnapshot::target_bucket(target_pts).get()
-    }
-
-    fn target_from_hover_intent(intent: Option<TimelineHoverIntent>) -> TimelineHoverVisualTarget {
-        match intent {
-            Some(TimelineHoverIntent::Target(visual_target)) => visual_target,
-            other => panic!("expected hover target intent, got {other:?}"),
-        }
-    }
-
     /// Старый mapper mode: live scrub выключен, drag release идёт как exact seek.
     fn map_timeline_interaction(
         timeline: &TimelineSnapshot,
@@ -953,14 +741,7 @@ mod tests {
         bounds: Option<TimelineBounds>,
         input: TimelinePointerInput,
     ) -> super::TimelineInteraction {
-        super::map_timeline_interaction(
-            timeline,
-            state,
-            bounds,
-            input,
-            Some(hover_preview_placement()),
-            false,
-        )
+        super::map_timeline_interaction(timeline, state, bounds, input, false)
     }
 
     /// Возвращает стиль timeline с заметной outline-шириной для geometry tests.
@@ -1094,155 +875,6 @@ mod tests {
         assert!(!state.has_active_drag());
     }
 
-    /// Проверяет, что pure hover создаёт один отдельный target без command action.
-    #[test]
-    fn hover_emits_single_target_without_click_or_drag() {
-        let timeline = seekable_timeline();
-        let mut state = TimelineUiState::default();
-
-        let interaction = map_timeline_interaction(
-            &timeline,
-            &mut state,
-            Some(seekable_bounds()),
-            TimelinePointerInput {
-                hover_fraction: Some(0.40),
-                ..TimelinePointerInput::default()
-            },
-        );
-
-        assert!(interaction.actions.is_empty());
-        assert_eq!(
-            match interaction.hover_intent {
-                Some(TimelineHoverIntent::Target(visual_target)) => {
-                    Some(visual_target.target().position())
-                }
-                _ => None,
-            },
-            Some(MediaTime::from_secs(40))
-        );
-        assert_eq!(
-            interaction.hover_intent,
-            Some(TimelineHoverIntent::Target(hover_visual_target(40)))
-        );
-    }
-
-    /// Проверяет, что уход pointer-а с seekable timeline очищает preview intent.
-    #[test]
-    fn hover_leave_clears_preview_intent() {
-        let timeline = seekable_timeline();
-        let mut state = TimelineUiState::default();
-
-        let interaction = map_timeline_interaction(
-            &timeline,
-            &mut state,
-            Some(seekable_bounds()),
-            TimelinePointerInput::default(),
-        );
-
-        assert!(interaction.actions.is_empty());
-        assert_eq!(interaction.hover_intent, Some(TimelineHoverIntent::Clear));
-    }
-
-    /// Non-seekable timeline не должен публиковать hover target или clear intent.
-    #[test]
-    fn non_seekable_timeline_emits_no_hover_intent() {
-        let mut timeline = seekable_timeline();
-        timeline.seekable = false;
-        timeline.seekable_range = None;
-        let mut state = TimelineUiState::default();
-
-        let interaction = map_timeline_interaction(
-            &timeline,
-            &mut state,
-            None,
-            TimelinePointerInput {
-                hover_fraction: Some(0.40),
-                ..TimelinePointerInput::default()
-            },
-        );
-
-        assert!(interaction.actions.is_empty());
-        assert_eq!(interaction.hover_intent, None);
-    }
-
-    /// Один hover target остаётся отдельным intent-ом, а не двумя actions для preview/predecode.
-    #[test]
-    fn same_hover_target_does_not_create_duplicate_timeline_actions() {
-        let timeline = seekable_timeline();
-        let mut state = TimelineUiState::default();
-
-        let interaction = map_timeline_interaction(
-            &timeline,
-            &mut state,
-            Some(seekable_bounds()),
-            TimelinePointerInput {
-                hover_fraction: Some(0.25),
-                ..TimelinePointerInput::default()
-            },
-        );
-
-        assert!(interaction.actions.is_empty());
-        assert_eq!(
-            interaction.hover_intent,
-            Some(TimelineHoverIntent::Target(hover_visual_target(25)))
-        );
-    }
-
-    /// Субпиксельный pointer jitter внутри одной 250 мс ячейки не должен будить prepare заново.
-    #[test]
-    fn subpixel_hover_inside_quantized_cell_reuses_target_bucket_and_prepare_intent() {
-        let timeline = seekable_timeline();
-        let mut mapper_state = TimelineUiState::default();
-        let mut intent_state = TimelineHoverIntentState::default();
-
-        let first_interaction = map_timeline_interaction(
-            &timeline,
-            &mut mapper_state,
-            Some(seekable_bounds()),
-            TimelinePointerInput {
-                hover_fraction: Some(0.100_01),
-                ..TimelinePointerInput::default()
-            },
-        );
-        let second_interaction = map_timeline_interaction(
-            &timeline,
-            &mut mapper_state,
-            Some(seekable_bounds()),
-            TimelinePointerInput {
-                hover_fraction: Some(0.100_02),
-                ..TimelinePointerInput::default()
-            },
-        );
-
-        let first_visual_target = target_from_hover_intent(first_interaction.hover_intent);
-        let second_visual_target = target_from_hover_intent(second_interaction.hover_intent);
-
-        assert_eq!(
-            first_visual_target.target().position(),
-            MediaTime::from_millis(10_250)
-        );
-        assert_eq!(second_visual_target.target(), first_visual_target.target());
-        assert_eq!(
-            hover_bucket(first_visual_target.target().position()),
-            hover_bucket(second_visual_target.target().position())
-        );
-
-        let mut first_coalescer = TimelineHoverFrameCoalescer::default();
-        first_coalescer.record(TimelineHoverIntent::Target(first_visual_target));
-        let first_outcome = first_coalescer.finish(&mut intent_state, true);
-        assert_eq!(
-            first_outcome.invisible_prepare_target,
-            Some(first_visual_target.target())
-        );
-
-        let mut second_coalescer = TimelineHoverFrameCoalescer::default();
-        second_coalescer.record(TimelineHoverIntent::Target(second_visual_target));
-        let second_outcome = second_coalescer.finish(&mut intent_state, true);
-
-        assert_eq!(intent_state.invisible_prepare_target_count(), 1);
-        assert_eq!(second_outcome, TimelineHoverFrameOutcome::default());
-    }
-
     /// Проверяет, что простой click выдаёт только exact seek action.
     #[test]
     fn simple_click_maps_to_click_seek_only() {
@@ -1334,7 +966,6 @@ mod tests {
                 pointer_fraction: Some(0.20),
                 ..TimelinePointerInput::default()
             },
-            Some(hover_preview_placement()),
             true,
         );
         assert_eq!(
@@ -1353,7 +984,6 @@ mod tests {
                 pointer_fraction: Some(0.70),
                 ..TimelinePointerInput::default()
             },
-            Some(hover_preview_placement()),
             true,
         );
         assert_eq!(
@@ -1370,7 +1000,6 @@ mod tests {
                 pointer_fraction: Some(0.90),
                 ..TimelinePointerInput::default()
             },
-            Some(hover_preview_placement()),
             true,
         );
         assert_eq!(
@@ -1400,7 +1029,6 @@ mod tests {
                 pointer_fraction: Some(0.20),
                 ..TimelinePointerInput::default()
             },
-            Some(hover_preview_placement()),
             true,
         );
         assert_eq!(
@@ -1418,7 +1046,6 @@ mod tests {
                 pointer_fraction: Some(0.60),
                 ..TimelinePointerInput::default()
             },
-            Some(hover_preview_placement()),
             false,
         );
         assert_eq!(
@@ -1435,7 +1062,6 @@ mod tests {
                 pointer_fraction: Some(0.80),
                 ..TimelinePointerInput::default()
             },
-            Some(hover_preview_placement()),
             false,
         );
         assert_eq!(
@@ -1461,7 +1087,6 @@ mod tests {
                 pointer_fraction: Some(0.30),
                 ..TimelinePointerInput::default()
             },
-            Some(hover_preview_placement()),
             true,
         );
 

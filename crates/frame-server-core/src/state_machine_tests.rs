@@ -174,65 +174,6 @@ fn new_target_increments_generation_cancels_old_intent_and_ignores_old_outcome()
 }
 
 #[test]
-fn live_scrub_suspends_hover_targets_until_release_or_cancel() {
-    let mut machine = ScrubStateMachine::default();
-
-    let hover_prepare = only_first_intent(
-        machine.submit_target_update(update_for_tests(ScrubRequestKind::HoverPreview, 1_000)),
-    );
-    let hover_context = *hover_prepare.context();
-
-    let live_start =
-        machine.submit_target_update(update_for_tests(ScrubRequestKind::LiveScrub, 2_000));
-    assert_eq!(
-        live_start.first_intent(),
-        Some(ScrubIntent::Cancel(crate::CancelScrubIntent {
-            context: hover_context,
-            reason: CancelScrubReason::SupersededByNewTarget,
-        }))
-    );
-    let live_context = *live_start
-        .second_intent()
-        .expect("live scrub must prepare after cancelling hover")
-        .context();
-    assert_eq!(live_context.request_kind(), ScrubRequestKind::LiveScrub);
-    assert!(machine.live_scrub_owns_target_stream());
-
-    let ignored_hover = machine.submit_target_update(update_for_tests(
-        ScrubRequestKind::TimelineHoverPrepareWindow,
-        3_000,
-    ));
-    assert!(ignored_hover.is_idle());
-    assert_eq!(machine.active_context(), Some(live_context));
-
-    let cancel_live = machine.cancel_active(CancelScrubReason::UserCancelled);
-    assert!(matches!(
-        cancel_live.event(),
-        Some(ScrubEvent::Cancelled(_))
-    ));
-    assert_eq!(
-        cancel_live.first_intent(),
-        Some(ScrubIntent::Cancel(crate::CancelScrubIntent {
-            context: live_context,
-            reason: CancelScrubReason::UserCancelled,
-        }))
-    );
-    assert!(!machine.live_scrub_owns_target_stream());
-
-    let resumed_hover = only_first_intent(
-        machine.submit_target_update(update_for_tests(ScrubRequestKind::HoverPreview, 4_000)),
-    );
-    assert_eq!(
-        resumed_hover.context().request_kind(),
-        ScrubRequestKind::HoverPreview
-    );
-    assert_ne!(
-        resumed_hover.context().generation(),
-        live_context.generation()
-    );
-}
-
-#[test]
 fn cancellation_emits_cancelled_event_and_terminal_cancel_intent() {
     let mut machine = ScrubStateMachine::default();
     let prepare = only_first_intent(

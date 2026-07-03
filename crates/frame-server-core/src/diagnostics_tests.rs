@@ -49,18 +49,6 @@ fn live_scrub_settings_for_tests(
     }
 }
 
-fn working_set_key_for_tests() -> TimelineHoverPrepareFrameKey {
-    let video_track = TrackId::new(7);
-    TimelineHoverPrepareFrameKey::new(
-        SourceRevision::new(10),
-        ScrubTrackSelection::video_only(video_track),
-        BackendRevision::new(20),
-        generation_token(30, 40),
-        FrameExactnessPolicy::TargetOrAfter,
-        TimelineHoverFrameBucket::new(125),
-    )
-}
-
 #[test]
 fn request_lifecycle_counters_are_split_by_request_kind() {
     let mut diagnostics = ScrubDiagnosticsRecorder::new();
@@ -69,8 +57,7 @@ fn request_lifecycle_counters_are_split_by_request_kind() {
     diagnostics.record_request_accepted(ScrubRequestKind::SeekLanding);
     diagnostics.record_request_accepted(ScrubRequestKind::LiveScrub);
     diagnostics.record_request_cancelled(ScrubRequestKind::LiveScrub);
-    diagnostics.record_request_completed(ScrubRequestKind::HoverPreview);
-    diagnostics.record_request_completed(ScrubRequestKind::TimelineHoverPrepareWindow);
+    diagnostics.record_request_completed(ScrubRequestKind::SeekLanding);
 
     let snapshot = diagnostics.snapshot();
 
@@ -93,14 +80,7 @@ fn request_lifecycle_counters_are_split_by_request_kind() {
         snapshot
             .requests
             .completed
-            .get(ScrubRequestKind::HoverPreview),
-        1
-    );
-    assert_eq!(
-        snapshot
-            .requests
-            .completed
-            .get(ScrubRequestKind::TimelineHoverPrepareWindow),
+            .get(ScrubRequestKind::SeekLanding),
         1
     );
     assert_eq!(
@@ -167,82 +147,6 @@ fn cold_decode_progress_is_counted_without_renaming_driver_outcome() {
 
     assert_eq!(snapshot.outcomes.progressed, 2);
     assert_eq!(snapshot.outcomes.cold_decode_in_progress, 1);
-}
-
-#[test]
-fn prepared_hit_diagnostics_keep_resume_ready_runway_pending_and_cold_split() {
-    let mut diagnostics = ScrubDiagnosticsRecorder::new();
-
-    diagnostics.record_prepared_frame_hit(ScrubPreparedFrameHitOutcome::ResumePending {
-        reason: ScrubPreparedFrameResumePendingReason::RunwayPending(
-            ScrubResumeRunwayState::PostTargetPacketAccepted,
-        ),
-    });
-    diagnostics.record_prepared_frame_hit(ScrubPreparedFrameHitOutcome::ResumePending {
-        reason: ScrubPreparedFrameResumePendingReason::AudioGatePending {
-            video_runway: ScrubResumeRunwayState::DisplayableFrameQueued,
-        },
-    });
-    diagnostics.record_prepared_frame_hit(ScrubPreparedFrameHitOutcome::ResumeReady {
-        video_runway: ScrubResumeRunwayState::NextFrameAlmostReady,
-    });
-    diagnostics.record_cold_exact_decode_pending();
-
-    let snapshot = diagnostics.snapshot();
-    let prepared = snapshot.prepared_frames;
-
-    assert_eq!(prepared.prepared_frame_hits, 3);
-    assert_eq!(prepared.resume_ready_prepared_hits, 1);
-    assert_eq!(prepared.prepared_frame_resume_runway_pending, 1);
-    assert_eq!(prepared.prepared_frame_audio_gate_pending, 1);
-    assert_eq!(prepared.cold_exact_decode_pending, 1);
-    assert_eq!(prepared.resume_pending_reasons.runway_pending, 1);
-    assert_eq!(prepared.resume_pending_reasons.audio_gate_pending, 1);
-    assert_eq!(prepared.video_runway.post_target_packet_accepted, 1);
-    assert_eq!(prepared.video_runway.displayable_frame_queued, 1);
-    assert_eq!(prepared.video_runway.next_frame_almost_ready, 1);
-    assert_eq!(prepared.video_runway.progress_only, 1);
-    assert_eq!(prepared.video_runway.commit_ready, 2);
-}
-
-#[test]
-fn prepared_ownership_diagnostics_keep_promotion_demote_and_release_paths() {
-    let mut diagnostics = ScrubDiagnosticsRecorder::new();
-
-    diagnostics.record_prepared_frame_ownership_event(
-        ScrubPreparedFrameOwnershipEvent::PromotedResumeReadyBranch,
-    );
-    diagnostics.record_prepared_frame_ownership_event(
-        ScrubPreparedFrameOwnershipEvent::PromotedVisualOverrideResumePending,
-    );
-    diagnostics.record_prepared_frame_ownership_event(
-        ScrubPreparedFrameOwnershipEvent::DemotedToRecentSuperseded,
-    );
-    diagnostics.record_prepared_frame_ownership_event(
-        ScrubPreparedFrameOwnershipEvent::DemoteRejected(
-            ScrubPreparedFrameDemoteRejectionKind::PromotedKeyNotCurrent,
-        ),
-    );
-    diagnostics.record_prepared_frame_ownership_event(
-        ScrubPreparedFrameOwnershipEvent::ReleasedWithoutDemote,
-    );
-    diagnostics.record_prepared_frame_ownership_event(
-        ScrubPreparedFrameOwnershipEvent::NoPromotedFrameOnRelease,
-    );
-
-    let ownership = diagnostics.snapshot().prepared_frames.ownership;
-
-    assert_eq!(ownership.promoted_to_seek_ownership, 2);
-    assert_eq!(ownership.promoted_resume_ready_branch, 1);
-    assert_eq!(ownership.promoted_visual_override_resume_pending, 1);
-    assert_eq!(ownership.demoted_to_recent_superseded, 1);
-    assert_eq!(ownership.demote_rejected, 1);
-    assert_eq!(
-        ownership.demote_rejection_reasons.promoted_key_not_current,
-        1
-    );
-    assert_eq!(ownership.released_without_demote, 1);
-    assert_eq!(ownership.no_promoted_frame_on_release, 1);
 }
 
 #[test]
@@ -387,7 +291,7 @@ fn live_scrub_event_diagnostics_keep_snapshot_deferred_change_and_throttle_skip(
 }
 
 #[test]
-fn latency_count_and_working_set_summaries_keep_pressure_evidence() {
+fn latency_and_count_summaries_keep_pressure_evidence() {
     let mut diagnostics = ScrubDiagnosticsRecorder::new();
 
     diagnostics.record_queue_age(Duration::from_millis(4));
@@ -398,27 +302,6 @@ fn latency_count_and_working_set_summaries_keep_pressure_evidence() {
     diagnostics.record_packets_from_decode_point_to_target(10);
     diagnostics.record_pre_target_frame_drops(2);
     diagnostics.record_pre_target_frame_drops(5);
-
-    diagnostics.record_working_set_hit();
-    let lookup_miss = TimelineHoverPrepareLookupOutcome::<()>::Miss(
-        TimelineHoverPrepareLookupMissReason::NoEntryForKey,
-    );
-    diagnostics.record_working_set_lookup_outcome(&lookup_miss);
-    let insert_outcome = TimelineHoverPrepareInsertOutcome::<()>::Inserted {
-        slot_plan: TimelineHoverPrepareSlotPlan::EvictOldestPrimaryByproduct,
-        evicted_primary_byproducts: 2,
-    };
-    diagnostics.record_working_set_insert_outcome(&insert_outcome);
-    diagnostics.record_working_set_pressure_release_outcome(
-        TimelineHoverPreparePressureReleaseOutcome::ReleasedRecentSuperseded {
-            released_key: working_set_key_for_tests(),
-        },
-    );
-    diagnostics.record_working_set_pressure_release_outcome(
-        TimelineHoverPreparePressureReleaseOutcome::NothingReleased {
-            reason: TimelineHoverPreparePressureReleaseMissReason::NoHoverOwnedEntries,
-        },
-    );
 
     let snapshot = diagnostics.snapshot();
 
@@ -433,92 +316,4 @@ fn latency_count_and_working_set_summaries_keep_pressure_evidence() {
     assert_eq!(snapshot.packets_from_decode_point_to_target.total, 16);
     assert_eq!(snapshot.pre_target_frame_drops.samples, 2);
     assert_eq!(snapshot.pre_target_frame_drops.max, Some(5));
-
-    assert_eq!(snapshot.working_set.hits, 1);
-    assert_eq!(snapshot.working_set.misses, 1);
-    assert_eq!(snapshot.working_set.evictions, 3);
-    assert_eq!(snapshot.working_set.released_recent_superseded, 1);
-    assert_eq!(snapshot.working_set.pressure_release_misses, 1);
-}
-
-#[test]
-fn hover_prepare_span_and_network_diagnostics_are_typed_and_bounded() {
-    let mut diagnostics = ScrubDiagnosticsRecorder::new();
-
-    diagnostics.record_hover_prepare_provider_budget(
-        TimelineHoverPrepareProviderBudget::SpareSlotAvailable,
-    );
-    diagnostics.record_hover_prepare_admission_outcome(
-        &TimelineHoverPrepareAdmissionOutcome::Admitted {
-            slot_plan: TimelineHoverPrepareSlotPlan::UseSparePrimarySlot,
-        },
-    );
-    diagnostics.record_hover_prepare_admission_outcome(
-        &TimelineHoverPrepareAdmissionOutcome::NoOp {
-            reason: TimelineHoverPrepareNoOpReason::NoSpareHoverSlot {
-                capacity: 1,
-                used_slots: 1,
-                protected_key: working_set_key_for_tests(),
-            },
-        },
-    );
-    diagnostics.record_hover_dependency_span_outcome(ScrubHoverDependencySpanOutcome::Resolved);
-    diagnostics.record_hover_dependency_span_outcome(ScrubHoverDependencySpanOutcome::Incomplete(
-        ScrubHoverDependencySpanIncompleteReason::DecodeExecutionNotWired,
-    ));
-    diagnostics.record_hover_dependency_span_progress(ScrubHoverDependencySpanProgress {
-        packets_decoded_to_target: 11,
-        frames_decoded_to_target: 4,
-        post_target_reorder_drain_frames: 2,
-        prepared_targets_produced: 3,
-    });
-    diagnostics.record_hover_network_state(ScrubHoverNetworkState::Opening);
-    diagnostics.record_hover_network_state(ScrubHoverNetworkState::Throttled);
-    diagnostics.record_hover_network_zero_throttle_no_delay();
-    diagnostics.record_hover_network_latest_only_replaced_in_flight();
-    diagnostics.record_hover_network_stale_late_result_ignored();
-    diagnostics.record_hover_network_throttle_delay(Duration::from_millis(75));
-
-    let snapshot = diagnostics.snapshot();
-    let hover = snapshot.hover_prepare;
-
-    assert_eq!(hover.admission.provider_spare_slot_available, 1);
-    assert_eq!(hover.admission.admitted, 1);
-    assert_eq!(hover.admission.use_spare_primary_slot, 1);
-    assert_eq!(hover.admission.no_op, 1);
-    assert_eq!(hover.admission.no_spare_hover_slot, 1);
-
-    assert_eq!(hover.dependency_span.resolved, 1);
-    assert_eq!(hover.dependency_span.incomplete, 1);
-    assert_eq!(
-        hover
-            .dependency_span
-            .incomplete_reasons
-            .decode_execution_not_wired,
-        1
-    );
-    assert_eq!(hover.dependency_span.packets_decoded_to_target.total, 11);
-    assert_eq!(
-        hover.dependency_span.latest_progress,
-        Some(ScrubHoverDependencySpanProgress {
-            packets_decoded_to_target: 11,
-            frames_decoded_to_target: 4,
-            post_target_reorder_drain_frames: 2,
-            prepared_targets_produced: 3,
-        })
-    );
-
-    assert_eq!(hover.network.opening, 1);
-    assert_eq!(hover.network.throttled, 1);
-    assert_eq!(
-        hover.network.latest_state,
-        Some(ScrubHoverNetworkState::Throttled)
-    );
-    assert_eq!(hover.network.zero_throttle_no_delay, 1);
-    assert_eq!(hover.network.latest_only_replaced_in_flight, 1);
-    assert_eq!(hover.network.stale_late_result_ignored, 1);
-    assert_eq!(
-        hover.network.throttle_delay.max,
-        Some(Duration::from_millis(75))
-    );
 }

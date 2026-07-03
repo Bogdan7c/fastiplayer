@@ -26,8 +26,8 @@ pub fn prepare_local_file(
 
 /// Открывает новый local demuxer вне `player-core`.
 ///
-/// Playback и hover вызывают этот helper отдельно: каждый вызов создаёт свой
-/// demuxer, поэтому hover не двигает playback demuxer и не делит с ним cursor.
+/// Каждый вызов создаёт свой demuxer, поэтому независимые потребители не
+/// двигают playback demuxer и не делят с ним cursor.
 pub(crate) fn open_local_demuxer(
     path: &Path,
     demux_config: &PlayerDemuxConfig,

@@ -9,21 +9,15 @@
 pub mod config;
 pub mod diagnostics;
 pub mod error;
-pub mod hover_budget;
 pub mod request;
 pub mod scheduler;
 pub mod scrub;
 pub mod state_machine;
-pub mod working_set;
 
 pub use config::{
-    DEFAULT_HOVER_PREPARE_WINDOW_SLOTS, DEFAULT_LIVE_SCRUB_MAX_HZ,
-    DEFAULT_MAX_FEED_AND_DRAIN_DRIVER_STEPS, DEFAULT_RECENT_SUPERSEDED_PREPARE_SLOTS,
-    DEFAULT_RESUME_PENDING_EVENT_INTERVAL, DEFAULT_SOFTWARE_HOVER_PREPARE_WINDOW_SLOTS,
-    DEFAULT_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS, DEFAULT_STALE_OUTCOME_CANCEL_THRESHOLD,
-    FrameServerConfig, LiveScrubDecodeMode, MAX_HOVER_PREPARE_WINDOW_SLOTS, MAX_LIVE_SCRUB_MAX_HZ,
-    MAX_RECENT_SUPERSEDED_PREPARE_SLOTS, MAX_SOFTWARE_HOVER_PREPARE_WINDOW_SLOTS,
-    MAX_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS, ValidatedFrameServerConfig,
+    DEFAULT_LIVE_SCRUB_MAX_HZ, DEFAULT_MAX_FEED_AND_DRAIN_DRIVER_STEPS,
+    DEFAULT_RESUME_PENDING_EVENT_INTERVAL, DEFAULT_STALE_OUTCOME_CANCEL_THRESHOLD,
+    FrameServerConfig, LiveScrubDecodeMode, MAX_LIVE_SCRUB_MAX_HZ, ValidatedFrameServerConfig,
 };
 pub use diagnostics::{
     CountSummary, DecoderBackpressureReasonCounters, DeferredLiveScrubSettingsChange,
@@ -31,30 +25,10 @@ pub use diagnostics::{
     LiveScrubSettingsSnapshot, ResourceBusyReasonCounters, ScrubDiagnosticsRecorder,
     ScrubDiagnosticsSnapshot, ScrubDriverDiagnosticReason, ScrubDriverDiagnosticReasonCounters,
     ScrubDriverOutcomeCounters, ScrubDriverOutcomeKind, ScrubEventDiagnostics, ScrubFailureReason,
-    ScrubHoverDependencySpanDiagnosticsCounters, ScrubHoverDependencySpanIncompleteReason,
-    ScrubHoverDependencySpanIncompleteReasonCounters, ScrubHoverDependencySpanOutcome,
-    ScrubHoverDependencySpanProgress, ScrubHoverNetworkDiagnosticsCounters, ScrubHoverNetworkState,
-    ScrubHoverPrepareAdmissionCounters, ScrubHoverPrepareDiagnosticsCounters,
-    ScrubPreparedFrameDemoteRejectionCounters, ScrubPreparedFrameDemoteRejectionKind,
-    ScrubPreparedFrameDiagnosticsCounters, ScrubPreparedFrameHitOutcome,
-    ScrubPreparedFrameOwnershipCounters, ScrubPreparedFrameOwnershipEvent,
-    ScrubPreparedFrameResumePendingReason, ScrubPreparedFrameResumePendingReasonCounters,
     ScrubPublicPhase, ScrubRequestKindCounters, ScrubRequestLifecycleCounters,
-    ScrubResourcePressureCounters, ScrubResumeRunwayState, ScrubResumeRunwayStateCounters,
-    ScrubSchedulerDiagnosticCounters, ScrubWorkingSetDiagnosticsCounters,
+    ScrubResourcePressureCounters, ScrubSchedulerDiagnosticCounters,
 };
 pub use error::FrameServerConfigError;
-pub use hover_budget::{
-    HoverBudgetAdmissionFatalReason, HoverBudgetAdmissionOutcome, HoverBudgetAdmissionRejection,
-    HoverBudgetAdmissionReport, HoverBudgetAdmissionUnavailableReason, HoverBudgetCapability,
-    HoverBudgetCapabilityMinimum, HoverBudgetCapabilityReport,
-    HoverBudgetCapabilityUnavailableReason, HoverBudgetRequest, HoverBudgetRequirement,
-    HoverBudgetResolutionOutcome, HoverBudgetResolutionSource,
-    HoverBudgetResolutionUnavailableReason, HoverBudgetResolutionUnsupportedReason,
-    HoverBudgetResourceClass, HoverBudgetResourcePressureReason, HoverBudgetSetting,
-    HoverBudgetUnsupportedReason, HoverPlaybackResourceBudget, HoverPositiveBudgetError,
-    HoverResolvedBudget, HoverResolvedBudgetResource, admit_hover_budget, resolve_hover_budget,
-};
 pub use request::{
     BackendRevision, CancelScrubIntent, CancelScrubReason, FeedAndDrainIntent,
     FeedAndDrainStopCondition, FinishScrubIntent, FinishScrubPolicy,
@@ -85,33 +59,12 @@ pub use state_machine::{
     ScrubExecutionPolicy, ScrubProtocolPhase, ScrubStateMachine, ScrubStep, ScrubTargetUpdate,
     ScrubTargetUpdateGuards,
 };
-pub use working_set::{
-    FrameExactnessPolicy, TimelineHoverFrameBucket, TimelineHoverPrepareAdmissionMode,
-    TimelineHoverPrepareAdmissionOutcome, TimelineHoverPrepareAdmissionRequest,
-    TimelineHoverPrepareCapacityReconfigureOutcome, TimelineHoverPrepareDemoteBackOutcome,
-    TimelineHoverPrepareDemoteBackRejection, TimelineHoverPrepareFrameKey,
-    TimelineHoverPrepareFrameLookupRequest, TimelineHoverPrepareInsertOutcome,
-    TimelineHoverPrepareLookupMissReason, TimelineHoverPrepareLookupOutcome,
-    TimelineHoverPrepareNoOpReason, TimelineHoverPreparePressureReleaseMissReason,
-    TimelineHoverPreparePressureReleaseOutcome, TimelineHoverPreparePromotionOutcome,
-    TimelineHoverPrepareProviderBudget, TimelineHoverPrepareSessionEndReleaseOutcome,
-    TimelineHoverPrepareSessionEndReleaseReason, TimelineHoverPrepareSlotPlan,
-    TimelineHoverPrepareTimingRejection, TimelineHoverPrepareWorkingSet,
-    TimelineHoverPreparedFrame, TimelineHoverPreparedFrameEntry, TimelineHoverPreparedFrameTiming,
-    TimelineHoverPromotedFrameSeekReuse, TimelineHoverPromotedPreparedFrame,
-    TimelineHoverRecentSupersededBudget, TimelineHoverRecentSupersededClearReason,
-    TimelineHoverRecentSupersededReconfigureOutcome,
-};
 
 #[cfg(test)]
 mod diagnostics_tests;
-#[cfg(test)]
-mod hover_budget_tests;
 #[cfg(test)]
 mod scheduler_tests;
 #[cfg(test)]
 mod state_machine_tests;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod working_set_tests;

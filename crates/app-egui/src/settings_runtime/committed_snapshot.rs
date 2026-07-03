@@ -34,26 +34,6 @@ impl CommittedConfigSnapshot {
         self.config.player.demux
     }
 
-    /// Network settings, которые network source open должен захватить в момент запуска.
-    #[must_use]
-    pub(crate) fn network_config_for_open(&self) -> NetworkConfig {
-        self.config.network.clone()
-    }
-
-    /// YouTube settings, которые YouTube source open должен захватить в момент запуска.
-    #[must_use]
-    pub(crate) fn youtube_config_for_open(&self) -> YoutubeConfig {
-        self.config.youtube.clone()
-    }
-
-    /// Inter-start throttle для network hover open/prepare.
-    #[must_use]
-    pub(crate) fn network_hover_prepare_throttle(&self) -> std::time::Duration {
-        std::time::Duration::from_millis(u64::from(
-            self.config.frame_server.network_hover_prepare_throttle_ms,
-        ))
-    }
-
     /// Committed intent выбора video backend-а для app-owned pipeline selector-а.
     #[must_use]
     pub(crate) fn video_backend_preference(&self) -> VideoBackendPreference {
@@ -94,18 +74,6 @@ impl CommittedConfigSnapshot {
     #[must_use]
     pub(crate) fn live_scrub_max_hz(&self) -> u16 {
         self.config.frame_server.live_scrub_max_hz
-    }
-
-    /// Включена ли visual HoverPreview presentation; invisible prepare остаётся активным.
-    #[must_use]
-    pub(crate) fn hover_preview_enabled(&self) -> bool {
-        self.config.frame_server.hover_preview_enabled
-    }
-
-    /// UX grace после ухода pointer/focus с timeline; `0` означает immediate release.
-    #[must_use]
-    pub(crate) fn hover_leave_grace_duration(&self) -> std::time::Duration {
-        std::time::Duration::from_millis(u64::from(self.config.frame_server.hover_leave_grace_ms))
     }
 
     /// Длительность анимации выезда settings sidebar в секундах; `0` — без анимации.

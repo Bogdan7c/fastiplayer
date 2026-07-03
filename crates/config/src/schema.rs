@@ -8,13 +8,16 @@ use serde::{
 use crate::{ConfigResult, frame_server::FrameServerConfig, validation};
 
 /// Текущая версия TOML-схемы.
-pub const CURRENT_SCHEMA_VERSION: u32 = 4;
+pub const CURRENT_SCHEMA_VERSION: u32 = 5;
 
 /// Старая схема до публичного выбора `auto`/`hardware`/`software`.
 pub(crate) const LEGACY_SCHEMA_VERSION_2: u32 = 2;
 
 /// Старая схема с уже удалённой галкой `video.hardware_decode_only`.
 pub(crate) const LEGACY_SCHEMA_VERSION_3: u32 = 3;
+
+/// Старая схема, где `[frame_server]` ещё содержал hover/predecode knobs.
+pub(crate) const LEGACY_SCHEMA_VERSION_4: u32 = 4;
 
 /// Полная пользовательская конфигурация приложения.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, settings_derive::SettingsSchema)]
@@ -49,7 +52,7 @@ pub struct AppConfig {
     #[setting(nested)]
     pub video: VideoConfig,
 
-    /// Persisted TOML-настройки будущего Frame Server слоя.
+    /// Persisted TOML-настройки Frame Server слоя.
     #[serde(default)]
     #[setting(nested)]
     pub frame_server: FrameServerConfig,
@@ -94,14 +97,14 @@ impl AppConfig {
         if !toml_text.ends_with('\n') {
             toml_text.push('\n');
         }
-        document_schema_version_4_defaults(&mut toml_text);
+        document_schema_version_5_defaults(&mut toml_text);
 
         Ok(toml_text)
     }
 }
 
-/// Добавляет русские комментарии к полям schema version 4 в default TOML.
-fn document_schema_version_4_defaults(toml_text: &mut String) {
+/// Добавляет русские комментарии к полям schema version 5 в default TOML.
+fn document_schema_version_5_defaults(toml_text: &mut String) {
     insert_default_config_comment(
         toml_text,
         "[player.seek]",
@@ -210,52 +213,7 @@ fn document_schema_version_4_defaults(toml_text: &mut String) {
     insert_default_config_comment(
         toml_text,
         "[frame_server]",
-        "# Сохраняемые metadata-ready настройки будущего Frame Server; runtime-подключение появится позже.",
-    );
-    insert_default_config_comment(
-        toml_text,
-        "hover_preview_enabled = true",
-        "# Включает только визуальный HoverPreview; текущий-target prepare не выключается config-ом.",
-    );
-    insert_default_config_comment(
-        toml_text,
-        "hover_pool_frames = \"auto\"",
-        "# Бюджет кадрового пула hover: \"auto\" или положительное число без статического верхнего лимита.",
-    );
-    insert_default_config_comment(
-        toml_text,
-        "hover_thread_count = \"auto\"",
-        "# Бюджет потоков hover: \"auto\" или положительное число без искусственного provider-лимита.",
-    );
-    insert_default_config_comment(
-        toml_text,
-        "hover_prepare_window_slots = 1",
-        "# Основные слоты hover prepare window; допустимо 1..=3.",
-    );
-    insert_default_config_comment(
-        toml_text,
-        "software_hover_prepare_window_slots = 1",
-        "# Основные слоты software hover prepare window; допустимо 1..=2.",
-    );
-    insert_default_config_comment(
-        toml_text,
-        "recent_superseded_prepare_slots = 1",
-        "# Удержание недавно заменённых целей для быстрого возврата; 0 отключает только этот retention path.",
-    );
-    insert_default_config_comment(
-        toml_text,
-        "software_recent_superseded_prepare_slots = 1",
-        "# Удержание недавно заменённых software-целей для быстрого возврата; 0 отключает только этот retention path.",
-    );
-    insert_default_config_comment(
-        toml_text,
-        "hover_leave_grace_ms = 500",
-        "# UX grace после ухода hover; это не decode coverage budget.",
-    );
-    insert_default_config_comment(
-        toml_text,
-        "network_hover_prepare_throttle_ms = 300",
-        "# Межстартовый throttle для network hover prepare; 0 убирает только delay.",
+        "# Настройки Frame Server, которые остаются нужны для live scrub и будущего playback rate.",
     );
     insert_default_config_comment(
         toml_text,
@@ -2332,15 +2290,6 @@ mod settings_metadata_tests {
         "video.scheduler.decode_ahead_target_ms",
         "video.scheduler.surface_free_slots_min",
         "video.scheduler.surface_free_slots_target",
-        "frame_server.hover_preview_enabled",
-        "frame_server.hover_pool_frames",
-        "frame_server.hover_thread_count",
-        "frame_server.hover_prepare_window_slots",
-        "frame_server.software_hover_prepare_window_slots",
-        "frame_server.recent_superseded_prepare_slots",
-        "frame_server.software_recent_superseded_prepare_slots",
-        "frame_server.hover_leave_grace_ms",
-        "frame_server.network_hover_prepare_throttle_ms",
         "frame_server.live_scrub_enabled",
         "frame_server.live_scrub_decode_mode",
         "frame_server.live_scrub_max_hz",
@@ -2694,42 +2643,6 @@ mod settings_metadata_tests {
         );
         assert_integer_range(
             &registry,
-            "frame_server.hover_prepare_window_slots",
-            1_u8,
-            validation::MAX_FRAME_SERVER_HOVER_PREPARE_WINDOW_SLOTS,
-        );
-        assert_integer_range(
-            &registry,
-            "frame_server.software_hover_prepare_window_slots",
-            1_u8,
-            validation::MAX_FRAME_SERVER_SOFTWARE_HOVER_PREPARE_WINDOW_SLOTS,
-        );
-        assert_integer_range(
-            &registry,
-            "frame_server.recent_superseded_prepare_slots",
-            0_u8,
-            validation::MAX_FRAME_SERVER_RECENT_SUPERSEDED_PREPARE_SLOTS,
-        );
-        assert_integer_range(
-            &registry,
-            "frame_server.software_recent_superseded_prepare_slots",
-            0_u8,
-            validation::MAX_FRAME_SERVER_SOFTWARE_RECENT_SUPERSEDED_PREPARE_SLOTS,
-        );
-        assert_integer_range(
-            &registry,
-            "frame_server.hover_leave_grace_ms",
-            validation::MIN_FRAME_SERVER_HOVER_LEAVE_GRACE_MS,
-            validation::MAX_FRAME_SERVER_HOVER_LEAVE_GRACE_MS,
-        );
-        assert_integer_range(
-            &registry,
-            "frame_server.network_hover_prepare_throttle_ms",
-            validation::MIN_FRAME_SERVER_NETWORK_HOVER_PREPARE_THROTTLE_MS,
-            validation::MAX_FRAME_SERVER_NETWORK_HOVER_PREPARE_THROTTLE_MS,
-        );
-        assert_integer_range(
-            &registry,
             "frame_server.live_scrub_max_hz",
             validation::MIN_FRAME_SERVER_LIVE_SCRUB_MAX_HZ,
             validation::MAX_FRAME_SERVER_LIVE_SCRUB_MAX_HZ,
@@ -2914,7 +2827,7 @@ mod settings_metadata_tests {
             .filter(|id| id.starts_with("frame_server."))
             .collect::<Vec<_>>();
 
-        assert_eq!(frame_server_ids.len(), 12);
+        assert_eq!(frame_server_ids.len(), 3);
         for id in frame_server_ids {
             let descriptor = descriptor(&registry, id);
             assert_eq!(descriptor.access, SettingAccess::ReadWrite);
@@ -2940,28 +2853,6 @@ mod settings_metadata_tests {
             assert_russian_fallback(&help.fallback_ru, id);
         }
 
-        for id in [
-            "frame_server.hover_pool_frames",
-            "frame_server.hover_thread_count",
-        ] {
-            let SettingEditor::AutoFixedPositiveInteger(editor) = &descriptor(&registry, id).editor
-            else {
-                panic!("{id} must use Auto/Fixed-positive budget UI");
-            };
-            assert_eq!(editor.auto_label.fallback_ru, "Авто");
-            assert_eq!(editor.fixed_label.fallback_ru, "Фиксированно");
-        }
-
-        assert_eq!(
-            registry
-                .get_value(
-                    &AppConfig::default(),
-                    &SettingId::from("frame_server.hover_pool_frames")
-                )
-                .expect("budget metadata value readable"),
-            SettingValue::Text("auto".to_owned())
-        );
-
         let mut config = AppConfig::default();
         registry
             .set_value(
@@ -2970,18 +2861,7 @@ mod settings_metadata_tests {
                 SettingValue::Bool(false),
             )
             .expect("frame_server bool setting must be writable in S30B");
-        registry
-            .set_value(
-                &mut config,
-                &SettingId::from("frame_server.hover_pool_frames"),
-                SettingValue::Text("12".to_owned()),
-            )
-            .expect("frame_server fixed budget setting must be writable in S30B");
         assert!(!config.frame_server.live_scrub_enabled);
-        assert_eq!(
-            config.frame_server.hover_pool_frames,
-            crate::frame_server::FrameServerBudgetConfig::Fixed(12)
-        );
     }
 
     #[test]

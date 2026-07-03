@@ -6,18 +6,6 @@ use super::*;
 /// Этот trait передаётся только из app composition/frame слоя, где эти owners
 /// реально доступны и где можно сохранить порядок команд.
 pub(crate) trait SettingsRuntimeReconfigureHost {
-    /// Read-only preflight для active backend hover budget до TOML persist.
-    fn preflight_frame_server_hover_budget_change(
-        &mut self,
-        _current: &rustiplayer_config::FrameServerConfig,
-        _draft: &rustiplayer_config::FrameServerConfig,
-    ) -> Result<
-        Option<FrameServerHoverBudgetDiagnosticsSnapshot>,
-        Box<FrameServerHoverBudgetPreflightRejection>,
-    > {
-        Ok(None)
-    }
-
     /// Синхронизирует внешний owner с committed config-ом перед owner-level apply.
     fn sync_committed_config_snapshot(&mut self, _snapshot: CommittedConfigSnapshot) {}
 
@@ -821,11 +809,6 @@ impl SettingsRuntime {
         A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
     {
         self.invalidate_ui_model();
-        if let Some(report) = self.frame_server_hover_budget_preflight_report(runtime_adapter)? {
-            self.latest_apply_report = Some(report.clone());
-            self.status = status_from_apply_report(&report);
-            return Ok(report);
-        }
 
         let mut delegate = SettingsRuntimeApplyDelegate {
             validator: AppConfigValidator,
@@ -838,37 +821,5 @@ impl SettingsRuntime {
         self.status = status_from_apply_report(&report);
 
         Ok(report)
-    }
-
-    fn frame_server_hover_budget_preflight_report<A>(
-        &mut self,
-        runtime_adapter: &mut A,
-    ) -> SettingsResult<Option<ApplyReport>>
-    where
-        A: SettingsRuntimeReconfigureHost,
-    {
-        let changed_settings = self.controller.diff()?;
-        if changed_settings.is_empty() {
-            return Ok(None);
-        }
-
-        match runtime_adapter.preflight_frame_server_hover_budget_change(
-            &self.controller.committed().frame_server,
-            &self.controller.draft().frame_server,
-        ) {
-            Ok(_diagnostics) => Ok(None),
-            Err(rejection) => {
-                let error = SettingsError::access_failed(rejection.message());
-                Ok(Some(ApplyReport {
-                    validation: None,
-                    persistence: None,
-                    routes: Vec::new(),
-                    changed_settings,
-                    final_state: ApplyFinalState::ValidationFailed,
-                    conflicts: Vec::new(),
-                    errors: vec![error],
-                }))
-            }
-        }
     }
 }

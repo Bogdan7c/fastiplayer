@@ -1,24 +1,6 @@
 use super::telemetry_panel::TelemetryPanelState;
-use super::timeline_hover_leave_grace::{
-    TimelineHoverLeaveGraceReleaseReason, TimelineHoverLeaveGraceStartOutcome,
-};
 use super::*;
-use crate::frame_prepare::TimelineHoverPreviewUpdateOutcome;
-use crate::timeline_hover_approx_preview::TimelineHoverApproximatePreviewBorrow;
-use crate::timeline_hover_intent::{TimelineHoverFrameCoalescer, TimelineHoverFrameOutcome};
-use crate::timeline_hover_prepare::{
-    TimelineHoverPrepareCompletionOutcome, TimelineHoverPrepareIncompleteReason,
-    TimelineHoverPreparePressure,
-};
-use crate::ui::timeline::{TimelineHoverTarget, TimelineHoverVisualTarget};
-use frame_server_core::TimelineHoverPrepareSessionEndReleaseReason;
-use tracing::{trace, warn};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TimelineHoverPrepareUiOutcome {
-    request_accepted: bool,
-    preview_load_state: TimelineHoverPreviewLoadState,
-}
+use tracing::warn;
 
 /// Diagnostic route пользовательского timeline intent-а на границе app-egui -> player-core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,211 +54,12 @@ pub(super) fn timeline_command_from_action(
     }
 }
 
-/// Проверяет, что action не принадлежит timeline и должен оборвать pending leave grace.
-pub(super) fn control_action_cancels_timeline_hover_leave_grace(action: &ControlAction) -> bool {
-    !matches!(
-        action,
-        ControlAction::Timeline(_) | ControlAction::TimelineHover(_)
-    )
-}
-
-/// Проверяет, принадлежит ли primary press текущему timeline target-у/seek-у.
-pub(super) fn control_actions_include_timeline_pointer_target(actions: &[ControlAction]) -> bool {
-    actions.iter().any(|action| match action {
-        ControlAction::Timeline(_) => true,
-        ControlAction::TimelineHover(crate::ui::timeline::TimelineHoverIntent::Target(_)) => true,
-        ControlAction::TimelineHover(crate::ui::timeline::TimelineHoverIntent::Clear) => false,
-        _ => false,
-    })
-}
-
-/// Ищет raw primary press, который может быть пассивным click-ом вне timeline.
-pub(super) fn raw_input_has_primary_pointer_press(egui_input: &egui::RawInput) -> bool {
-    egui_input.events.iter().any(|event| {
-        matches!(
-            event,
-            egui::Event::PointerButton {
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                ..
-            }
-        )
-    })
-}
-
-/// Мапит app-owned UX reason в neutral working-set cleanup reason.
-fn timeline_hover_prepare_session_release_reason(
-    reason: TimelineHoverLeaveGraceReleaseReason,
-) -> TimelineHoverPrepareSessionEndReleaseReason {
-    match reason {
-        TimelineHoverLeaveGraceReleaseReason::ImmediateTimelineLeave => {
-            TimelineHoverPrepareSessionEndReleaseReason::ImmediateTimelineLeave
-        }
-        TimelineHoverLeaveGraceReleaseReason::LeaveGraceExpired => {
-            TimelineHoverPrepareSessionEndReleaseReason::LeaveGraceExpired
-        }
-        TimelineHoverLeaveGraceReleaseReason::NonTimelineAction => {
-            TimelineHoverPrepareSessionEndReleaseReason::NonTimelineAction
-        }
-    }
-}
-
 /// Мапит neutral titlebar intent в старый settings UI action boundary.
 pub(super) const fn settings_action_from_titlebar_icon_action(
     action: TitlebarIconAreaAction,
 ) -> SettingsUiAction {
     match action {
         TitlebarIconAreaAction::ToggleSettingsSidebar => SettingsUiAction::ToggleOpen,
-    }
-}
-
-/// Строит S18 prepare target из player-owned guarded snapshot context-а.
-pub(super) fn timeline_hover_prepare_target_from_snapshot(
-    player_snapshot: &PlayerSnapshot,
-    target: TimelineHoverTarget,
-) -> Option<TimelineHoverPrepareTarget> {
-    let prepare_snapshot = player_snapshot.timeline_hover_prepare?;
-    let target_pts = prepare_snapshot.target_pts(target.position());
-    let target_bucket = player_core::TimelineHoverPrepareSnapshot::target_bucket(target_pts);
-    let target_context = TimelineHoverPrepareTargetContext::new(
-        prepare_snapshot.source_revision(),
-        prepare_snapshot.backend_revision(),
-        prepare_snapshot.track_selection(),
-        prepare_snapshot.hover_generation(),
-        prepare_snapshot.exactness_policy(),
-    );
-
-    Some(TimelineHoverPrepareTarget::unresolved(
-        target_context,
-        target_pts,
-        target_bucket,
-        timeline_hover_prepare_playback_mode(
-            player_snapshot.playback_state,
-            prepare_snapshot.interaction(),
-        ),
-    ))
-}
-
-/// Runtime playback mode влияет только на typed executor degrade/admission.
-pub(super) const fn timeline_hover_prepare_playback_mode(
-    playback_state: PlaybackState,
-    interaction: player_core::TimelineHoverPrepareInteraction,
-) -> TimelineHoverPreparePlaybackMode {
-    match interaction {
-        player_core::TimelineHoverPrepareInteraction::LiveScrubActive => {
-            return TimelineHoverPreparePlaybackMode::LiveScrubActive;
-        }
-        player_core::TimelineHoverPrepareInteraction::OneShotSeekLandingResumePending {
-            spare_capacity_available,
-        } => {
-            return TimelineHoverPreparePlaybackMode::ResumePendingAfterSeek {
-                spare_capacity_available,
-            };
-        }
-        player_core::TimelineHoverPrepareInteraction::Ordinary => {}
-    }
-
-    match playback_state {
-        PlaybackState::Paused
-        | PlaybackState::Stopped
-        | PlaybackState::Idle
-        | PlaybackState::Ended => TimelineHoverPreparePlaybackMode::PausedOrStopped,
-        PlaybackState::Scrubbing => TimelineHoverPreparePlaybackMode::LiveScrubActive,
-        PlaybackState::Opening
-        | PlaybackState::Playing
-        | PlaybackState::Buffering
-        | PlaybackState::Seeking
-        | PlaybackState::Draining
-        | PlaybackState::Failed => TimelineHoverPreparePlaybackMode::ActivePlayback,
-    }
-}
-
-/// Проверяет, можно ли visual HoverPreview брать lease из shared prepared working set-а.
-pub(super) const fn timeline_hover_prepare_allows_preview_borrow(
-    playback_mode: TimelineHoverPreparePlaybackMode,
-) -> bool {
-    !matches!(
-        playback_mode,
-        TimelineHoverPreparePlaybackMode::LiveScrubActive
-    )
-}
-
-const fn timeline_hover_preview_load_state(
-    target: TimelineHoverTarget,
-    executor_outcome: TimelineHoverPrepareExecutorOutcome,
-) -> TimelineHoverPreviewLoadState {
-    match executor_outcome {
-        TimelineHoverPrepareExecutorOutcome::NoOp {
-            reason:
-                TimelineHoverPrepareExecutorNoOpReason::ActivePlaybackNetworkSourceOpening { .. },
-        } => TimelineHoverPreviewLoadState::NetworkOpening { target },
-        _ => TimelineHoverPreviewLoadState::Idle,
-    }
-}
-
-/// Решает, нужен ли ещё один UI frame для продолжения hover prepare/preview.
-///
-/// Таблица continuation:
-/// - `AcceptedExactPreparedHit` / `AcceptedWorkingSetHit`: repaint нужен, чтобы
-///   visual preview заново borrowed/materialized уже готовый exact кадр.
-/// - `DecodeBudgetExhausted`: span жив, pump продолжит feed/drain на следующем кадре.
-/// - `DecoderBackpressure`, `HostUploadBackpressure`, `ResourceBusy`: ресурс может
-///   освободиться к следующему UI frame, pump повторит ту же активную работу.
-/// - `ProviderBudgetExhaustedWithPendingInsert`: decoded target-frame сохранён в
-///   `pending_insert`; repaint нужен, чтобы повторить insert без повторного decode.
-/// - `ProviderBudgetExhausted` без pending insert, terminal `IncompleteSpan`,
-///   `NoOp` и rejected completion: repaint не нужен, иначе получим idle loop.
-pub(super) const fn timeline_hover_prepare_outcome_requests_repaint(
-    executor_outcome: TimelineHoverPrepareExecutorOutcome,
-    completion_outcome: TimelineHoverPrepareCompletionOutcome,
-) -> bool {
-    match completion_outcome {
-        TimelineHoverPrepareCompletionOutcome::AcceptedExactPreparedHit { .. }
-        | TimelineHoverPrepareCompletionOutcome::AcceptedWorkingSetHit { .. } => return true,
-        TimelineHoverPrepareCompletionOutcome::RejectedStaleSpan { .. }
-        | TimelineHoverPrepareCompletionOutcome::RejectedStaleTarget { .. }
-        | TimelineHoverPrepareCompletionOutcome::RejectedApproximate { .. }
-        | TimelineHoverPrepareCompletionOutcome::RejectedTiming { .. }
-        | TimelineHoverPrepareCompletionOutcome::NoPreparedHit => {}
-    }
-
-    match executor_outcome {
-        TimelineHoverPrepareExecutorOutcome::IncompleteSpan {
-            reason: TimelineHoverPrepareIncompleteReason::DecodeBudgetExhausted,
-            ..
-        }
-        | TimelineHoverPrepareExecutorOutcome::Pressure {
-            pressure:
-                TimelineHoverPreparePressure::DecoderBackpressure
-                | TimelineHoverPreparePressure::HostUploadBackpressure
-                | TimelineHoverPreparePressure::ResourceBusy
-                | TimelineHoverPreparePressure::ProviderBudgetExhaustedWithPendingInsert,
-        } => true,
-        TimelineHoverPrepareExecutorOutcome::PreparedHit { .. }
-        | TimelineHoverPrepareExecutorOutcome::WorkingSetHit { .. }
-        | TimelineHoverPrepareExecutorOutcome::IncompleteSpan { .. }
-        | TimelineHoverPrepareExecutorOutcome::NoOp { .. }
-        | TimelineHoverPrepareExecutorOutcome::Pressure { .. } => false,
-    }
-}
-
-/// Решает, нужен ли следующий UI frame для повторной materialization preview.
-pub(super) const fn timeline_hover_preview_update_outcome_requests_repaint(
-    update_outcome: TimelineHoverPreviewUpdateOutcome,
-    pending_span_decode_work: bool,
-) -> bool {
-    match update_outcome {
-        TimelineHoverPreviewUpdateOutcome::BusyEmpty
-        | TimelineHoverPreviewUpdateOutcome::BusyKeptLastReady
-        | TimelineHoverPreviewUpdateOutcome::ApproximateReady => true,
-        TimelineHoverPreviewUpdateOutcome::WorkingSetMiss => pending_span_decode_work,
-        TimelineHoverPreviewUpdateOutcome::Loading
-        | TimelineHoverPreviewUpdateOutcome::Ready
-        | TimelineHoverPreviewUpdateOutcome::MissingMaterializer
-        | TimelineHoverPreviewUpdateOutcome::TimingRejected
-        | TimelineHoverPreviewUpdateOutcome::Missing
-        | TimelineHoverPreviewUpdateOutcome::Unsupported
-        | TimelineHoverPreviewUpdateOutcome::Error => false,
     }
 }
 
@@ -340,7 +123,6 @@ impl AppState {
         let titlebar_height_points = self.committed_config_snapshot.titlebar_height_points();
         let window_is_maximized = window.is_maximized();
         let window_is_fullscreen = window.fullscreen().is_some();
-        let primary_pointer_pressed_this_frame = raw_input_has_primary_pointer_press(&egui_input);
         let mut control_actions = Vec::new();
         let mut settings_actions = Vec::new();
         let mut window_chrome_actions = Vec::new();
@@ -349,7 +131,6 @@ impl AppState {
         let mut telemetry_panel_cache_elapsed = Duration::ZERO;
         let telemetry_panel_rows = if show_telemetry {
             let telemetry_panel_cache_started_at = Instant::now();
-            let frame_server_diagnostics = self.frame_server_diagnostics_snapshot();
             let panel_rows = self.telemetry_panel_cache.rows_for_frame(
                 Instant::now(),
                 TelemetryPanelState {
@@ -357,7 +138,6 @@ impl AppState {
                     telemetry: &telemetry,
                     render_diagnostics,
                     timeline_ui_state: &timeline_ui_state,
-                    frame_server_diagnostics,
                     backend_name: &backend_name,
                     start_time,
                     frame_duration_estimate_ms,
@@ -458,17 +238,7 @@ impl AppState {
 
         let post_ui_actions_started_at = Instant::now();
         self.timeline_ui_state = timeline_ui_state;
-        if !settings_actions.is_empty() || !window_chrome_actions.is_empty() {
-            self.release_pending_timeline_hover_leave_grace_for_non_timeline_action();
-        }
-        let primary_pointer_press_outside_timeline = primary_pointer_pressed_this_frame
-            && !control_actions_include_timeline_pointer_target(&control_actions);
-        self.release_expired_timeline_hover_leave_grace(Instant::now());
         self.handle_control_actions(window, player_snapshot, control_actions);
-        if primary_pointer_press_outside_timeline {
-            self.release_pending_timeline_hover_leave_grace_for_non_timeline_action();
-        }
-        self.release_expired_timeline_hover_leave_grace(Instant::now());
         let post_ui_actions_elapsed = post_ui_actions_started_at.elapsed();
 
         RenderedAppUi {
@@ -495,16 +265,10 @@ impl AppState {
     pub(super) fn handle_control_actions(
         &mut self,
         window: &Window,
-        player_snapshot: &PlayerSnapshot,
+        _player_snapshot: &PlayerSnapshot,
         actions: Vec<ControlAction>,
     ) {
-        let mut timeline_hover_coalescer = TimelineHoverFrameCoalescer::default();
-
         for action in actions {
-            if control_action_cancels_timeline_hover_leave_grace(&action) {
-                self.release_pending_timeline_hover_leave_grace_for_non_timeline_action();
-            }
-
             match action {
                 ControlAction::TogglePlayback => self.toggle_playback(),
                 ControlAction::OpenFile => self.open_file(window),
@@ -536,343 +300,7 @@ impl AppState {
                 ControlAction::Timeline(timeline_action) => {
                     self.send_timeline_action(timeline_action);
                 }
-                ControlAction::TimelineHover(hover_intent) => {
-                    timeline_hover_coalescer.record(hover_intent);
-                }
             }
-        }
-
-        let hover_frame_outcome = timeline_hover_coalescer.finish(
-            &mut self.timeline_hover_intent_state,
-            self.committed_config_snapshot.hover_preview_enabled(),
-        );
-        let should_retry_pending_preview = hover_frame_outcome.visual_presentation_target.is_none()
-            && !hover_frame_outcome.visual_presentation_cleared;
-        let prepare_ran_this_frame = hover_frame_outcome.invisible_prepare_target.is_some();
-        self.apply_timeline_hover_frame_outcome(
-            player_snapshot,
-            hover_frame_outcome,
-            Instant::now(),
-        );
-        if !prepare_ran_this_frame {
-            self.pump_timeline_hover_decode_continuation(player_snapshot);
-        }
-        if should_retry_pending_preview
-            && let Some(visual_target) = self.timeline_hover_intent_state.pending_visual_target()
-        {
-            self.update_timeline_hover_preview(
-                player_snapshot,
-                visual_target,
-                TimelineHoverPreviewLoadState::Idle,
-            );
-        }
-    }
-
-    /// Продолжает незавершённый hover decode span в UI-кадрах без hover intent-а.
-    ///
-    /// Incremental feed/drain исполняется по бюджету на кадр, поэтому span может
-    /// не успеть за один вызов; без pump-а неподвижный pointer остановил бы decode.
-    fn pump_timeline_hover_decode_continuation(&mut self, player_snapshot: &PlayerSnapshot) {
-        if !self
-            .timeline_hover_prepare_controller
-            .has_active_span_decode_work()
-        {
-            return;
-        }
-        // Guard по актуальному snapshot-у: активный live scrub или потеря hover
-        // prepare context прекращают continuation typed-ом внутри executor-а.
-        let Some(hover_prepare) = player_snapshot.timeline_hover_prepare.as_ref() else {
-            return;
-        };
-        if matches!(
-            hover_prepare.interaction(),
-            player_core::TimelineHoverPrepareInteraction::LiveScrubActive
-        ) {
-            return;
-        }
-        let Some(target) = self
-            .timeline_hover_prepare_controller
-            .active_span_latest_target()
-        else {
-            return;
-        };
-
-        let controller_outcome = self
-            .timeline_hover_prepare_controller
-            .prepare_hover_target(target);
-        let executor_outcome = controller_outcome.executor_outcome();
-        let completion_outcome = controller_outcome.completion_outcome();
-        // Continuation работает только для local source, network-opening state
-        // здесь невозможен — preview load state остаётся Idle.
-        self.frame_server_diagnostics.record_hover_prepare_outcome(
-            controller_outcome.transition(),
-            executor_outcome,
-            completion_outcome,
-            TimelineHoverPreviewLoadState::Idle,
-        );
-        if timeline_hover_prepare_outcome_requests_repaint(executor_outcome, completion_outcome) {
-            // prepare_ui_frame читает egui repaint flag сразу после render_ui,
-            // поэтому pending hover decode получает следующий UI frame без worker side effect.
-            self.egui_ctx.request_repaint();
-        }
-        trace!(
-            outcome = ?controller_outcome,
-            "Timeline hover decode continuation pumped"
-        );
-    }
-
-    /// Применяет coalesced S24 hover intent к единому S18/S25 prepare+preview path-у.
-    fn apply_timeline_hover_frame_outcome(
-        &mut self,
-        player_snapshot: &PlayerSnapshot,
-        outcome: TimelineHoverFrameOutcome,
-        now: Instant,
-    ) {
-        if outcome.invisible_prepare_cleared {
-            self.timeline_hover_prepare_controller
-                .cancel_active_span(TimelineHoverPrepareCancellationReason::TimelineLeft);
-            self.start_timeline_hover_leave_grace(now);
-        }
-        if outcome.visual_presentation_cleared {
-            self.timeline_hover_preview_render_state.clear();
-            self.frame_server_diagnostics.record_hover_preview_cleared();
-        }
-
-        let mut preview_load_state = TimelineHoverPreviewLoadState::Idle;
-        if let Some(target) = outcome.invisible_prepare_target {
-            if !self.committed_config_snapshot.hover_preview_enabled() {
-                self.frame_server_diagnostics
-                    .record_hover_preview_disabled_by_config();
-            }
-            let prepare_outcome = self.prepare_timeline_hover_target(player_snapshot, target);
-            preview_load_state = prepare_outcome.preview_load_state;
-            if prepare_outcome.request_accepted {
-                self.cancel_timeline_hover_leave_grace_for_reenter();
-            }
-        }
-
-        if let Some(visual_target) = outcome.visual_presentation_target {
-            self.update_timeline_hover_preview(player_snapshot, visual_target, preview_load_state);
-        }
-    }
-
-    /// Запускает controller request для invisible prepare stream-а.
-    fn prepare_timeline_hover_target(
-        &mut self,
-        player_snapshot: &PlayerSnapshot,
-        target: TimelineHoverTarget,
-    ) -> TimelineHoverPrepareUiOutcome {
-        let Some(prepare_target) =
-            timeline_hover_prepare_target_from_snapshot(player_snapshot, target)
-        else {
-            self.timeline_hover_prepare_controller
-                .cancel_active_span(TimelineHoverPrepareCancellationReason::SourceSwitched);
-            return TimelineHoverPrepareUiOutcome {
-                request_accepted: false,
-                preview_load_state: TimelineHoverPreviewLoadState::Idle,
-            };
-        };
-
-        let controller_outcome = self
-            .timeline_hover_prepare_controller
-            .prepare_hover_target(prepare_target);
-        let executor_outcome = controller_outcome.executor_outcome();
-        let completion_outcome = controller_outcome.completion_outcome();
-        let preview_load_state = timeline_hover_preview_load_state(target, executor_outcome);
-        self.frame_server_diagnostics.record_hover_prepare_outcome(
-            controller_outcome.transition(),
-            executor_outcome,
-            completion_outcome,
-            preview_load_state,
-        );
-        if timeline_hover_prepare_outcome_requests_repaint(executor_outcome, completion_outcome) {
-            // Это UI-owned continuation/retry signal: player-core working set
-            // остаётся владельцем prepared frames, app только просит следующий frame.
-            self.egui_ctx.request_repaint();
-        }
-        trace!(
-            outcome = ?controller_outcome,
-            "Timeline hover prepare target processed"
-        );
-        TimelineHoverPrepareUiOutcome {
-            request_accepted: true,
-            preview_load_state,
-        }
-    }
-
-    /// Запускает retention grace после leave; active decode span уже отменён caller-ом.
-    fn start_timeline_hover_leave_grace(&mut self, now: Instant) {
-        let grace_duration = self.committed_config_snapshot.hover_leave_grace_duration();
-        match self
-            .timeline_hover_leave_grace_state
-            .note_timeline_left(now, grace_duration)
-        {
-            TimelineHoverLeaveGraceStartOutcome::Pending { expires_at } => {
-                self.frame_server_diagnostics
-                    .record_hover_leave_grace_started();
-                trace!(
-                    ?grace_duration,
-                    ?expires_at,
-                    "Timeline hover leave grace started"
-                );
-            }
-            TimelineHoverLeaveGraceStartOutcome::ReleaseNow { reason } => {
-                self.release_timeline_hover_owned_entries_for_session_end(reason);
-            }
-        }
-    }
-
-    /// Re-enter до expiry сохраняет prepared entries и отменяет pending release.
-    fn cancel_timeline_hover_leave_grace_for_reenter(&mut self) {
-        if self.timeline_hover_leave_grace_state.cancel_for_reenter() {
-            self.frame_server_diagnostics
-                .record_hover_leave_grace_reentered_before_expiry();
-            trace!("Timeline hover leave grace cancelled by re-enter");
-        }
-    }
-
-    /// Non-timeline action во время grace завершает hover session без ожидания deadline.
-    fn release_pending_timeline_hover_leave_grace_for_non_timeline_action(&mut self) {
-        if let Some(reason) = self
-            .timeline_hover_leave_grace_state
-            .cancel_for_non_timeline_action()
-        {
-            self.release_timeline_hover_owned_entries_for_session_end(reason);
-        }
-    }
-
-    /// Проверяет expiry в обычном UI frame-е; отдельный поток или queue не нужны.
-    fn release_expired_timeline_hover_leave_grace(&mut self, now: Instant) {
-        if let Some(reason) = self.timeline_hover_leave_grace_state.expire_due(now) {
-            self.release_timeline_hover_owned_entries_for_session_end(reason);
-        }
-    }
-
-    /// Освобождает hover-owned entries через handoff, не читая storage напрямую.
-    fn release_timeline_hover_owned_entries_for_session_end(
-        &mut self,
-        reason: TimelineHoverLeaveGraceReleaseReason,
-    ) {
-        let release_reason = timeline_hover_prepare_session_release_reason(reason);
-        let release_outcome = self
-            .timeline_hover_prepare_controller
-            .release_hover_owned_entries_for_session_end(release_reason);
-        trace!(
-            ?reason,
-            primary_entries_released = release_outcome.primary_entries_released(),
-            recent_superseded_entries_released =
-                release_outcome.recent_superseded_entries_released(),
-            total_entries_released = release_outcome.total_entries_released(),
-            "Timeline hover prepared entries released for session end"
-        );
-        self.frame_server_diagnostics
-            .record_hover_leave_grace_release(reason, release_outcome);
-    }
-
-    /// Borrow/materialize visual preview из того же shared prepared working set-а.
-    fn update_timeline_hover_preview(
-        &mut self,
-        player_snapshot: &PlayerSnapshot,
-        visual_target: TimelineHoverVisualTarget,
-        load_state: TimelineHoverPreviewLoadState,
-    ) {
-        let Some(prepare_target) =
-            timeline_hover_prepare_target_from_snapshot(player_snapshot, visual_target.target())
-        else {
-            self.timeline_hover_preview_render_state.clear();
-            self.frame_server_diagnostics.record_hover_preview_cleared();
-            return;
-        };
-        if !timeline_hover_prepare_allows_preview_borrow(prepare_target.playback_mode()) {
-            self.timeline_hover_preview_render_state.clear();
-            self.frame_server_diagnostics.record_hover_preview_cleared();
-            return;
-        }
-        let lookup_request = prepare_target.lookup_request();
-        let borrow_outcome = self
-            .timeline_hover_prepare_controller
-            .executor()
-            .borrow_prepared_frame(lookup_request);
-        let approximate_borrow = match borrow_outcome {
-            player_core::PlayerTimelineHoverPrepareBorrowOutcome::Miss(_) => self
-                .timeline_hover_prepare_controller
-                .borrow_approximate_preview_for_active_span(),
-            player_core::PlayerTimelineHoverPrepareBorrowOutcome::Borrowed(_)
-            | player_core::PlayerTimelineHoverPrepareBorrowOutcome::TimingRejected(_) => None,
-        };
-        let materializer = self.timeline_hover_preview_materializer_for_borrow(
-            &borrow_outcome,
-            approximate_borrow.as_ref(),
-        );
-        let preview_outcome = self.timeline_hover_preview_render_state.update_from_borrow(
-            visual_target,
-            borrow_outcome,
-            approximate_borrow,
-            load_state,
-            materializer.as_deref(),
-        );
-        trace!(
-            outcome = ?preview_outcome,
-            "Timeline hover preview materialization processed"
-        );
-        self.frame_server_diagnostics
-            .record_hover_preview_update(load_state, preview_outcome);
-        let pending_span_decode_work = matches!(
-            preview_outcome,
-            TimelineHoverPreviewUpdateOutcome::WorkingSetMiss
-        ) && self
-            .timeline_hover_prepare_controller
-            .has_active_span_decode_work();
-        if timeline_hover_preview_update_outcome_requests_repaint(
-            preview_outcome,
-            pending_span_decode_work,
-        ) {
-            // request_repaint будит egui под ControlFlow::Wait, чтобы retry
-            // materialization случился без нового pointer event-а.
-            self.egui_ctx.request_repaint();
-        }
-    }
-
-    /// Выбирает materializer с provider-ом, которому принадлежит borrowed lease.
-    ///
-    /// Resource handle валиден только внутри своего provider-а: lease hover
-    /// decode session-а нельзя резолвить playback provider-ом (риск чужого
-    /// кадра при совпадении handle), и наоборот.
-    fn timeline_hover_preview_materializer_for_borrow(
-        &self,
-        borrow_outcome: &player_core::PlayerTimelineHoverPrepareBorrowOutcome,
-        approximate_borrow: Option<&TimelineHoverApproximatePreviewBorrow>,
-    ) -> Option<std::sync::Arc<dyn WgpuFrameTextureViewMaterializer>> {
-        let lease = match borrow_outcome {
-            player_core::PlayerTimelineHoverPrepareBorrowOutcome::Borrowed(borrowed) => {
-                Some(borrowed.lease())
-            }
-            player_core::PlayerTimelineHoverPrepareBorrowOutcome::Miss(_) => {
-                approximate_borrow.map(TimelineHoverApproximatePreviewBorrow::lease)
-            }
-            player_core::PlayerTimelineHoverPrepareBorrowOutcome::TimingRejected(_) => None,
-        };
-
-        let Some(lease) = lease else {
-            return self.wgpu_frame_materializer.clone();
-        };
-
-        let lease_is_hover_owned = match (
-            lease.resource_provider(),
-            self.timeline_hover_prepare_controller
-                .executor()
-                .decode_session_resource_provider(),
-        ) {
-            (Some(lease_provider), Some(session_provider)) => {
-                lease_provider.same_provider(session_provider)
-            }
-            _ => false,
-        };
-
-        if lease_is_hover_owned {
-            self.timeline_hover_decode_materializer.clone()
-        } else {
-            self.wgpu_frame_materializer.clone()
         }
     }
 
@@ -1056,17 +484,14 @@ impl AppState {
 
         match key {
             winit::keyboard::KeyCode::Space => {
-                self.release_pending_timeline_hover_leave_grace_for_non_timeline_action();
                 self.toggle_playback();
                 true
             }
             winit::keyboard::KeyCode::KeyF => {
-                self.release_pending_timeline_hover_leave_grace_for_non_timeline_action();
                 Self::toggle_fullscreen(window);
                 true
             }
             winit::keyboard::KeyCode::KeyM => {
-                self.release_pending_timeline_hover_leave_grace_for_non_timeline_action();
                 let player_snapshot = self.refresh_player_snapshot();
                 self.publish_desktop_snapshot(&player_snapshot);
                 if let Err(error) = self

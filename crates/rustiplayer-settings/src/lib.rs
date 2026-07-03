@@ -1168,32 +1168,11 @@ fn player_runtime_setting_id(setting_id: &str) -> Option<PlayerRuntimeSettingId>
 
 fn frame_server_runtime_setting_id(setting_id: &str) -> Option<PlayerRuntimeSettingId> {
     let runtime_id = match setting_id {
-        "frame_server.hover_preview_enabled" => {
-            PlayerRuntimeSettingId::FrameServerHoverPreviewEnabled
-        }
         "frame_server.live_scrub_enabled" => PlayerRuntimeSettingId::FrameServerLiveScrubEnabled,
         "frame_server.live_scrub_decode_mode" => {
             PlayerRuntimeSettingId::FrameServerLiveScrubDecodeMode
         }
         "frame_server.live_scrub_max_hz" => PlayerRuntimeSettingId::FrameServerLiveScrubMaxHz,
-        "frame_server.hover_prepare_window_slots" => {
-            PlayerRuntimeSettingId::FrameServerHoverPrepareWindowSlots
-        }
-        "frame_server.software_hover_prepare_window_slots" => {
-            PlayerRuntimeSettingId::FrameServerSoftwareHoverPrepareWindowSlots
-        }
-        "frame_server.recent_superseded_prepare_slots" => {
-            PlayerRuntimeSettingId::FrameServerRecentSupersededPrepareSlots
-        }
-        "frame_server.software_recent_superseded_prepare_slots" => {
-            PlayerRuntimeSettingId::FrameServerSoftwareRecentSupersededPrepareSlots
-        }
-        "frame_server.hover_leave_grace_ms" => PlayerRuntimeSettingId::FrameServerHoverLeaveGraceMs,
-        "frame_server.network_hover_prepare_throttle_ms" => {
-            PlayerRuntimeSettingId::FrameServerNetworkHoverPrepareThrottleMs
-        }
-        "frame_server.hover_pool_frames" => PlayerRuntimeSettingId::FrameServerHoverPoolFrames,
-        "frame_server.hover_thread_count" => PlayerRuntimeSettingId::FrameServerHoverThreadCount,
         _ => return None,
     };
 

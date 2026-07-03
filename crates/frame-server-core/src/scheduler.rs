@@ -21,11 +21,8 @@ pub struct FrameScheduler {
     active_work: Option<SchedulerWork>,
     pending_seek_landing: Option<SchedulerWork>,
     pending_live_scrub: Option<SchedulerWork>,
-    pending_hover_preview: Option<SchedulerWork>,
-    pending_hover_prepare_window: Vec<SchedulerWork>,
     deferred_throttled_live_scrub: Option<ScrubTargetContext>,
     latest_live_scrub_target: Option<ScrubTargetContext>,
-    latest_hover_target: Option<ScrubTargetContext>,
     last_live_scrub_started_at: Option<Duration>,
 }
 
@@ -46,11 +43,6 @@ pub enum SchedulerDiagnostic {
         cancelled_context: ScrubTargetContext,
         replacement_context: Option<ScrubTargetContext>,
         reason: CancelScrubReason,
-    },
-    HoverPrepareWindowBudgetExceeded {
-        protected_context: ScrubTargetContext,
-        admitted_targets: u8,
-        rejected_targets: usize,
     },
     ActiveCompletionIgnored {
         completed_context: ScrubTargetContext,
@@ -83,8 +75,6 @@ struct SchedulerWork {
 enum SchedulerLane {
     SeekLanding,
     LiveScrub,
-    HoverPreview,
-    TimelineHoverPrepareWindow,
 }
 
 impl FrameScheduler {
@@ -97,11 +87,8 @@ impl FrameScheduler {
             active_work: None,
             pending_seek_landing: None,
             pending_live_scrub: None,
-            pending_hover_preview: None,
-            pending_hover_prepare_window: Vec::new(),
             deferred_throttled_live_scrub: None,
             latest_live_scrub_target: None,
-            latest_hover_target: None,
             last_live_scrub_started_at: None,
         }
     }
@@ -117,7 +104,6 @@ impl FrameScheduler {
 
         let mut update = SchedulerUpdate::default();
         self.latest_live_scrub_target = Some(context);
-        self.suspend_hover_work_for_live_scrub(context, &mut update);
         self.cancel_active_lane_if_stale(SchedulerLane::LiveScrub, context, &mut update);
 
         match self.config.live_scrub_decode_mode() {
@@ -141,78 +127,6 @@ impl FrameScheduler {
                         });
                 }
             }
-        }
-
-        update
-    }
-
-    pub fn submit_hover_target(&mut self, context: ScrubTargetContext) -> SchedulerUpdate {
-        debug_assert_eq!(context.request_kind(), ScrubRequestKind::HoverPreview);
-
-        let mut update = SchedulerUpdate::default();
-        if self.has_live_scrub_work() {
-            self.latest_hover_target = None;
-            self.pending_hover_preview = None;
-            return update;
-        }
-
-        self.latest_hover_target = Some(context);
-        self.cancel_active_lane_if_stale(SchedulerLane::HoverPreview, context, &mut update);
-        self.pending_hover_preview = Some(self.next_work(context));
-        update
-    }
-
-    pub fn submit_timeline_hover_prepare_window(
-        &mut self,
-        protected_context: ScrubTargetContext,
-        additional_hover_targets: &[ScrubTargetContext],
-    ) -> SchedulerUpdate {
-        debug_assert_eq!(
-            protected_context.request_kind(),
-            ScrubRequestKind::TimelineHoverPrepareWindow
-        );
-
-        let mut update = SchedulerUpdate::default();
-        if self.has_live_scrub_work() {
-            self.pending_hover_prepare_window.clear();
-            return update;
-        }
-
-        self.cancel_active_lane_if_stale(
-            SchedulerLane::TimelineHoverPrepareWindow,
-            protected_context,
-            &mut update,
-        );
-
-        self.pending_hover_prepare_window.clear();
-        let protected_work = self.next_work(protected_context);
-        self.pending_hover_prepare_window.push(protected_work);
-
-        let slot_budget = usize::from(self.config.hover_prepare_window_slots());
-        let optional_slot_budget = slot_budget.saturating_sub(1);
-        let admitted_optional_targets = additional_hover_targets
-            .iter()
-            .take(optional_slot_budget)
-            .copied()
-            .collect::<Vec<_>>();
-
-        for target_context in admitted_optional_targets {
-            debug_assert_eq!(
-                target_context.request_kind(),
-                ScrubRequestKind::TimelineHoverPrepareWindow
-            );
-            let optional_work = self.next_work(target_context);
-            self.pending_hover_prepare_window.push(optional_work);
-        }
-
-        if additional_hover_targets.len() > optional_slot_budget {
-            update
-                .diagnostics
-                .push(SchedulerDiagnostic::HoverPrepareWindowBudgetExceeded {
-                    protected_context,
-                    admitted_targets: self.pending_hover_prepare_window.len() as u8,
-                    rejected_targets: additional_hover_targets.len() - optional_slot_budget,
-                });
         }
 
         update
@@ -271,16 +185,10 @@ impl FrameScheduler {
     }
 
     #[must_use]
-    pub const fn latest_hover_target(&self) -> Option<ScrubTargetContext> {
-        self.latest_hover_target
-    }
-
     #[cfg(test)]
     pub(crate) fn pending_work_count_for_tests(&self) -> usize {
         usize::from(self.pending_seek_landing.is_some())
             + usize::from(self.pending_live_scrub.is_some())
-            + usize::from(self.pending_hover_preview.is_some())
-            + self.pending_hover_prepare_window.len()
     }
 
     fn next_work(&mut self, context: ScrubTargetContext) -> SchedulerWork {
@@ -321,34 +229,6 @@ impl FrameScheduler {
             active_work.lane == lane && active_work.context != replacement_context
         }) {
             self.cancel_active_work(Some(replacement_context), update);
-        }
-    }
-
-    fn has_live_scrub_work(&self) -> bool {
-        self.active_work
-            .is_some_and(|active_work| active_work.lane == SchedulerLane::LiveScrub)
-            || self.pending_live_scrub.is_some()
-            || self.deferred_throttled_live_scrub.is_some()
-    }
-
-    fn suspend_hover_work_for_live_scrub(
-        &mut self,
-        live_context: ScrubTargetContext,
-        update: &mut SchedulerUpdate,
-    ) {
-        // Во время drag-а decoder отдан live scrub, поэтому hover не должен
-        // держать конкурирующую работу для того же timeline gesture.
-        self.latest_hover_target = None;
-        self.pending_hover_preview = None;
-        self.pending_hover_prepare_window.clear();
-
-        if self.active_work.is_some_and(|active_work| {
-            matches!(
-                active_work.lane,
-                SchedulerLane::HoverPreview | SchedulerLane::TimelineHoverPrepareWindow
-            )
-        }) {
-            self.cancel_active_work(Some(live_context), update);
         }
     }
 
@@ -442,12 +322,6 @@ impl FrameScheduler {
         if let Some(work) = self.pending_live_scrub {
             heap.push(work);
         }
-        if let Some(work) = self.pending_hover_preview {
-            heap.push(work);
-        }
-        for work in &self.pending_hover_prepare_window {
-            heap.push(*work);
-        }
 
         heap
     }
@@ -470,23 +344,6 @@ impl FrameScheduler {
                     self.pending_live_scrub = None;
                 }
             }
-            SchedulerLane::HoverPreview => {
-                if self
-                    .pending_hover_preview
-                    .is_some_and(|pending| pending == work)
-                {
-                    self.pending_hover_preview = None;
-                }
-            }
-            SchedulerLane::TimelineHoverPrepareWindow => {
-                if let Some(index) = self
-                    .pending_hover_prepare_window
-                    .iter()
-                    .position(|pending| *pending == work)
-                {
-                    self.pending_hover_prepare_window.remove(index);
-                }
-            }
         }
     }
 }
@@ -496,8 +353,6 @@ impl SchedulerLane {
         match request_kind {
             ScrubRequestKind::SeekLanding => Self::SeekLanding,
             ScrubRequestKind::LiveScrub => Self::LiveScrub,
-            ScrubRequestKind::HoverPreview => Self::HoverPreview,
-            ScrubRequestKind::TimelineHoverPrepareWindow => Self::TimelineHoverPrepareWindow,
         }
     }
 }

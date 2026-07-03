@@ -151,14 +151,6 @@ impl ScrubTargetUpdate {
     pub const fn execution_policy(self) -> ScrubExecutionPolicy {
         self.execution_policy
     }
-
-    #[must_use]
-    const fn is_hover_target(self) -> bool {
-        matches!(
-            self.request_kind,
-            ScrubRequestKind::HoverPreview | ScrubRequestKind::TimelineHoverPrepareWindow
-        )
-    }
 }
 
 /// Текущая protocol phase: это не lifecycle decoder/demux.
@@ -304,10 +296,6 @@ impl ScrubStateMachine {
     }
 
     pub fn submit_target_update(&mut self, update: ScrubTargetUpdate) -> ScrubStep {
-        if self.live_scrub_owns_target_stream() && update.is_hover_target() {
-            return ScrubStep::idle();
-        }
-
         let previous_context = self.active.map(|active| active.context);
         let context = self.context_for_update(update);
         let prepare_intent = ScrubIntent::PrepareTarget(PrepareTargetIntent { context });

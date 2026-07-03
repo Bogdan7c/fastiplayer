@@ -14,9 +14,7 @@ mod store;
 mod validation;
 
 pub use error::{ConfigError, ConfigResult};
-pub use frame_server::{
-    FrameServerBudgetConfig, FrameServerConfig, FrameServerLiveScrubDecodeModeConfig,
-};
+pub use frame_server::{FrameServerConfig, FrameServerLiveScrubDecodeModeConfig};
 pub use paths::{CONFIG_FILE_NAME, ConfigPaths};
 pub use schema::{
     AppConfig, AudioConfig, CURRENT_SCHEMA_VERSION, HdrToSdrConfig, HdrToSdrOperatorConfig,
@@ -25,7 +23,9 @@ pub use schema::{
     UiAnimationsConfig, UiConfig, UiSettingsConfig, UiWindowConfig, VideoBackendPreference,
     VideoCodec, VideoConfig, VideoSchedulerConfig, VulkanConfig, VulkanPresentMode, YoutubeConfig,
 };
-pub(crate) use schema::{LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3};
+pub(crate) use schema::{
+    LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3, LEGACY_SCHEMA_VERSION_4,
+};
 pub use store::{
     LoadedConfig, load_from_path, load_or_create, load_or_create_at, save_validated_atomic_at,
 };

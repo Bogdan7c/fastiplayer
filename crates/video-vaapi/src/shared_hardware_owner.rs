@@ -1,94 +1,46 @@
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
-use frame_server_core::hover_budget::{
-    HoverBudgetAdmissionFatalReason, HoverBudgetAdmissionReport,
-    HoverBudgetAdmissionUnavailableReason, HoverBudgetCapabilityMinimum,
-    HoverBudgetCapabilityReport, HoverBudgetCapabilityUnavailableReason, HoverBudgetResourceClass,
-    HoverBudgetResourcePressureReason, HoverResolvedBudget,
-};
 use tracing::warn;
-use video_backend_api::{
-    BackendHoverBudgetAdmissionFatalReason, BackendHoverBudgetAdmissionReport,
-    BackendHoverBudgetAdmissionUnavailableReason, BackendHoverBudgetCapabilityMinimum,
-    BackendHoverBudgetCapabilityReport, BackendHoverBudgetCapabilityUnavailableReason,
-    BackendHoverBudgetResourceClass, BackendHoverBudgetResourcePressureReason,
-    BackendHoverResolvedBudget, HoverBudgetDiagnosticsProvider,
-};
 
-/// VAAPI-local контекст, из которого owner строит capability/admission решения.
-///
-/// Здесь нет `Display`, surface id или cros типов: raw VA ownership остаётся
-/// внутри decode thread, а этот boundary хранит только reservation accounting.
+/// VAAPI-local контекст для reservation accounting playback decoder-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct VaapiSharedHardwareOwnerContext {
+    /// Сколько VA surfaces принадлежит active playback decoder-у.
     playback_surface_budget: NonZeroUsize,
-    hover_surface_capability_minimum: NonZeroUsize,
-    hover_surface_provider_capacity: usize,
 }
 
 impl VaapiSharedHardwareOwnerContext {
+    /// Создаёт контекст с уже нормализованным playback budget-ом.
     #[must_use]
-    pub(crate) const fn new(
-        playback_surface_budget: NonZeroUsize,
-        hover_surface_capability_minimum: NonZeroUsize,
-        hover_surface_provider_capacity: usize,
-    ) -> Self {
+    pub(crate) const fn new(playback_surface_budget: NonZeroUsize) -> Self {
         Self {
             playback_surface_budget,
-            hover_surface_capability_minimum,
-            hover_surface_provider_capacity,
         }
     }
 
-    /// Строит контекст из текущего runtime accounting-а VA decoder-а.
-    ///
-    /// Hover minimum намеренно берётся из caller-provided backend window, а не
-    /// из глобальной константы. Поэтому смена decoder context пересчитает report.
+    /// Строит контекст из surface pool size, нормализуя ноль до одного surface.
     #[must_use]
-    pub(crate) fn from_surface_accounting(
-        playback_surface_frames: usize,
-        hover_surface_capability_minimum: usize,
-    ) -> Self {
-        let playback_surface_budget = non_zero_or_one(playback_surface_frames);
-        let hover_surface_capability_minimum = non_zero_or_one(hover_surface_capability_minimum);
-        let hover_surface_provider_capacity = playback_surface_budget
-            .get()
-            .saturating_sub(hover_surface_capability_minimum.get());
-
-        Self::new(
-            playback_surface_budget,
-            hover_surface_capability_minimum,
-            hover_surface_provider_capacity,
-        )
+    pub(crate) fn from_surface_accounting(surface_pool_frames: usize) -> Self {
+        Self::new(non_zero_or_one(surface_pool_frames))
     }
 
+    /// Возвращает playback surface budget без раскрытия внутреннего layout-а.
     #[must_use]
     pub(crate) const fn playback_surface_budget(self) -> NonZeroUsize {
         self.playback_surface_budget
     }
-
-    #[must_use]
-    pub(crate) const fn hover_surface_capability_minimum(self) -> NonZeroUsize {
-        self.hover_surface_capability_minimum
-    }
-
-    #[must_use]
-    pub(crate) const fn hover_surface_provider_capacity(self) -> usize {
-        self.hover_surface_provider_capacity
-    }
 }
 
-/// Shared VA hardware owner для playback/hover branch reservations.
-///
-/// V1 hosted внутри существующего decode thread: он не создаёт отдельный
-/// `VADisplay` и не раскрывает VA internals наружу `video-vaapi`.
+/// Owner reservation state для VAAPI playback branch.
 #[derive(Debug, Clone)]
 pub(crate) struct VaapiSharedHardwareOwner {
+    /// Shared state нужен, чтобы reservation token мог release-иться в `Drop`.
     inner: Arc<Mutex<VaapiSharedHardwareOwnerInner>>,
 }
 
 impl VaapiSharedHardwareOwner {
+    /// Создаёт owner для одного VAAPI decoder-а.
     #[must_use]
     pub(crate) fn new(context: VaapiSharedHardwareOwnerContext) -> Self {
         Self {
@@ -96,279 +48,58 @@ impl VaapiSharedHardwareOwner {
         }
     }
 
-    #[must_use]
-    pub(crate) fn hover_capability_report(&self) -> HoverBudgetCapabilityReport {
-        match self.inner.lock() {
-            Ok(inner) => inner.hover_capability_report(),
-            Err(_) => HoverBudgetCapabilityReport::Unavailable(
-                HoverBudgetCapabilityUnavailableReason::ResourceProviderUnavailable,
-            ),
-        }
-    }
-
+    /// Резервирует playback branch ровно один раз на lifetime decoder-а.
     pub(crate) fn reserve_playback_branch(
         &self,
     ) -> Result<VaapiPlaybackHardwareReservation, VaapiPlaybackReservationError> {
-        let active_reservation = self
+        let mut inner = self
             .inner
             .lock()
-            .map_err(|_| VaapiPlaybackReservationError::OwnerUnavailable)?
-            .reserve_playback_branch()?;
-
+            .map_err(|_| VaapiPlaybackReservationError::OwnerUnavailable)?;
+        let active = inner.reserve_playback_branch()?;
         Ok(VaapiPlaybackHardwareReservation::new(
-            self.inner.clone(),
-            active_reservation,
+            Arc::clone(&self.inner),
+            active,
         ))
     }
 
-    // S22 вводит owner boundary до подключения реального hover executor-а.
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[must_use]
-    pub(crate) fn admit_hover_reservation(
-        &self,
-        resolved_budget: &HoverResolvedBudget,
-    ) -> VaapiHoverHardwareAdmission {
-        let Some(requested_surface_frames) =
-            resolved_budget.budget_for(HoverBudgetResourceClass::HardwareSurfaceFrames)
-        else {
-            return VaapiHoverHardwareAdmission::Rejected(HoverBudgetAdmissionReport::Unavailable(
-                HoverBudgetAdmissionUnavailableReason::ResourceProviderUnavailable,
-            ));
-        };
-
-        match self.inner.lock() {
-            Ok(mut inner) => match inner.reserve_hover_branch(requested_surface_frames) {
-                Ok(active_reservation) => VaapiHoverHardwareAdmission::Admitted(
-                    VaapiHoverHardwareReservation::new(self.inner.clone(), active_reservation),
-                ),
-                Err(rejection) => VaapiHoverHardwareAdmission::Rejected(rejection),
-            },
-            Err(_) => VaapiHoverHardwareAdmission::Rejected(HoverBudgetAdmissionReport::Fatal(
-                HoverBudgetAdmissionFatalReason::ProviderInvariantViolated,
-            )),
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn hover_admission_report(
-        &self,
-        resolved_budget: &HoverResolvedBudget,
-    ) -> HoverBudgetAdmissionReport {
-        let Some(requested_surface_frames) =
-            resolved_budget.budget_for(HoverBudgetResourceClass::HardwareSurfaceFrames)
-        else {
-            return HoverBudgetAdmissionReport::Unavailable(
-                HoverBudgetAdmissionUnavailableReason::ResourceProviderUnavailable,
-            );
-        };
-
-        match self.inner.lock() {
-            Ok(inner) => inner.hover_admission_report(requested_surface_frames),
-            Err(_) => HoverBudgetAdmissionReport::Fatal(
-                HoverBudgetAdmissionFatalReason::ProviderInvariantViolated,
-            ),
-        }
-    }
-
+    /// Возвращает snapshot для unit tests без выдачи mutable state наружу.
     #[cfg(test)]
     fn snapshot_for_tests(&self) -> VaapiSharedHardwareOwnerSnapshot {
         let inner = self
             .inner
             .lock()
-            .expect("test owner mutex must not be poisoned");
-
+            .expect("VAAPI shared owner mutex must not be poisoned in tests");
         VaapiSharedHardwareOwnerSnapshot {
             playback_active: inner.playback_reservation.is_some(),
-            hover_active: inner.hover_reservation.is_some(),
             playback_surface_budget: inner.context.playback_surface_budget(),
-            hover_surface_provider_capacity: inner.context.hover_surface_provider_capacity(),
-        }
-    }
-}
-
-impl HoverBudgetDiagnosticsProvider for VaapiSharedHardwareOwner {
-    fn hover_capability_report(&self) -> BackendHoverBudgetCapabilityReport {
-        backend_capability_report_from_core(VaapiSharedHardwareOwner::hover_capability_report(self))
-    }
-
-    fn hover_admission_report(
-        &self,
-        resolved_budget: &BackendHoverResolvedBudget,
-    ) -> BackendHoverBudgetAdmissionReport {
-        let core_budget = core_resolved_budget_from_backend(resolved_budget);
-        backend_admission_report_from_core(VaapiSharedHardwareOwner::hover_admission_report(
-            self,
-            &core_budget,
-        ))
-    }
-}
-
-fn backend_capability_report_from_core(
-    report: HoverBudgetCapabilityReport,
-) -> BackendHoverBudgetCapabilityReport {
-    match report {
-        HoverBudgetCapabilityReport::Supported(capability) => {
-            BackendHoverBudgetCapabilityReport::Supported(
-                capability
-                    .minimums()
-                    .iter()
-                    .copied()
-                    .map(|minimum| {
-                        BackendHoverBudgetCapabilityMinimum::reported(
-                            resource_class_to_backend(minimum.resource_class()),
-                            minimum.reported_minimum(),
-                        )
-                    })
-                    .collect(),
-            )
-        }
-        HoverBudgetCapabilityReport::Unsupported(reason) => {
-            BackendHoverBudgetCapabilityReport::Unsupported(match reason {
-                frame_server_core::HoverBudgetUnsupportedReason::MissingPlayableOutput => {
-                    video_backend_api::BackendHoverBudgetUnsupportedReason::MissingPlayableOutput
-                }
-                frame_server_core::HoverBudgetUnsupportedReason::BackendDoesNotSupportHover => {
-                    video_backend_api::BackendHoverBudgetUnsupportedReason::BackendDoesNotSupportHover
-                }
-                frame_server_core::HoverBudgetUnsupportedReason::UnsupportedResourceClass {
-                    resource_class,
-                } => video_backend_api::BackendHoverBudgetUnsupportedReason::UnsupportedResourceClass {
-                    resource_class: resource_class_to_backend(resource_class),
-                },
-            })
-        }
-        HoverBudgetCapabilityReport::Unavailable(reason) => {
-            BackendHoverBudgetCapabilityReport::Unavailable(match reason {
-                HoverBudgetCapabilityUnavailableReason::BackendNotReady => {
-                    BackendHoverBudgetCapabilityUnavailableReason::BackendNotReady
-                }
-                HoverBudgetCapabilityUnavailableReason::MediaContextUnavailable => {
-                    BackendHoverBudgetCapabilityUnavailableReason::MediaContextUnavailable
-                }
-                HoverBudgetCapabilityUnavailableReason::ResourceProviderUnavailable => {
-                    BackendHoverBudgetCapabilityUnavailableReason::ResourceProviderUnavailable
-                }
-            })
-        }
-    }
-}
-
-fn core_resolved_budget_from_backend(
-    resolved_budget: &BackendHoverResolvedBudget,
-) -> HoverResolvedBudget {
-    HoverResolvedBudget::new(
-        resolved_budget
-            .resources()
-            .iter()
-            .copied()
-            .filter_map(|resource| {
-                NonZeroUsize::new(resource.resolved_budget()).map(|budget| {
-                    frame_server_core::HoverResolvedBudgetResource::new(
-                        resource_class_from_backend(resource.resource_class()),
-                        budget,
-                        frame_server_core::HoverBudgetResolutionSource::FixedConfig,
-                    )
-                })
-            })
-            .collect(),
-    )
-}
-
-fn backend_admission_report_from_core(
-    report: HoverBudgetAdmissionReport,
-) -> BackendHoverBudgetAdmissionReport {
-    match report {
-        HoverBudgetAdmissionReport::Admitted => BackendHoverBudgetAdmissionReport::Admitted,
-        HoverBudgetAdmissionReport::ResourcePressure(reason) => {
-            BackendHoverBudgetAdmissionReport::ResourcePressure(match reason {
-                HoverBudgetResourcePressureReason::ActivePlaybackReservation => {
-                    BackendHoverBudgetResourcePressureReason::ActivePlaybackReservation
-                }
-                HoverBudgetResourcePressureReason::ExistingHoverReservation => {
-                    BackendHoverBudgetResourcePressureReason::ExistingHoverReservation
-                }
-                HoverBudgetResourcePressureReason::ProviderCapacityExhausted => {
-                    BackendHoverBudgetResourcePressureReason::ProviderCapacityExhausted
-                }
-            })
-        }
-        HoverBudgetAdmissionReport::Unavailable(reason) => {
-            BackendHoverBudgetAdmissionReport::Unavailable(match reason {
-                HoverBudgetAdmissionUnavailableReason::ReservationOwnerUnavailable => {
-                    BackendHoverBudgetAdmissionUnavailableReason::ReservationOwnerUnavailable
-                }
-                HoverBudgetAdmissionUnavailableReason::ResourceProviderUnavailable => {
-                    BackendHoverBudgetAdmissionUnavailableReason::ResourceProviderUnavailable
-                }
-            })
-        }
-        HoverBudgetAdmissionReport::Fatal(reason) => {
-            BackendHoverBudgetAdmissionReport::Fatal(match reason {
-                HoverBudgetAdmissionFatalReason::ProviderInvariantViolated => {
-                    BackendHoverBudgetAdmissionFatalReason::ProviderInvariantViolated
-                }
-            })
-        }
-    }
-}
-
-fn resource_class_to_backend(
-    resource_class: HoverBudgetResourceClass,
-) -> BackendHoverBudgetResourceClass {
-    match resource_class {
-        HoverBudgetResourceClass::HardwareSurfaceFrames => {
-            BackendHoverBudgetResourceClass::HardwareSurfaceFrames
-        }
-        HoverBudgetResourceClass::SoftwareFramePoolFrames => {
-            BackendHoverBudgetResourceClass::SoftwareFramePoolFrames
-        }
-        HoverBudgetResourceClass::SoftwareThreadCount => {
-            BackendHoverBudgetResourceClass::SoftwareThreadCount
-        }
-    }
-}
-
-fn resource_class_from_backend(
-    resource_class: BackendHoverBudgetResourceClass,
-) -> HoverBudgetResourceClass {
-    match resource_class {
-        BackendHoverBudgetResourceClass::HardwareSurfaceFrames => {
-            HoverBudgetResourceClass::HardwareSurfaceFrames
-        }
-        BackendHoverBudgetResourceClass::SoftwareFramePoolFrames => {
-            HoverBudgetResourceClass::SoftwareFramePoolFrames
-        }
-        BackendHoverBudgetResourceClass::SoftwareThreadCount => {
-            HoverBudgetResourceClass::SoftwareThreadCount
         }
     }
 }
 
 #[derive(Debug)]
 struct VaapiSharedHardwareOwnerInner {
+    /// Immutable accounting facts для active decoder-а.
     context: VaapiSharedHardwareOwnerContext,
+
+    /// Monotonic id защищает release от stale token-а.
     next_reservation_id: u64,
+
+    /// Active playback reservation, если decoder уже стартовал.
     playback_reservation: Option<ActiveHardwareReservation>,
-    hover_reservation: Option<ActiveHardwareReservation>,
 }
 
 impl VaapiSharedHardwareOwnerInner {
+    /// Создаёт пустой owner state.
     fn new(context: VaapiSharedHardwareOwnerContext) -> Self {
         Self {
             context,
             next_reservation_id: 1,
             playback_reservation: None,
-            hover_reservation: None,
         }
     }
 
-    fn hover_capability_report(&self) -> HoverBudgetCapabilityReport {
-        HoverBudgetCapabilityReport::supported(vec![HoverBudgetCapabilityMinimum::reported(
-            HoverBudgetResourceClass::HardwareSurfaceFrames,
-            self.context.hover_surface_capability_minimum().get(),
-        )])
-    }
-
+    /// Резервирует playback surfaces, если branch ещё не занят.
     fn reserve_playback_branch(
         &mut self,
     ) -> Result<ActiveHardwareReservation, VaapiPlaybackReservationError> {
@@ -376,137 +107,67 @@ impl VaapiSharedHardwareOwnerInner {
             return Err(VaapiPlaybackReservationError::ExistingPlaybackReservation);
         }
 
-        let active_reservation = self.create_active_reservation(
-            VaapiHardwareBranchKind::Playback,
-            self.context.playback_surface_budget(),
-        );
-        self.playback_reservation = Some(active_reservation);
-
-        Ok(active_reservation)
+        let active = self.create_active_reservation(self.context.playback_surface_budget());
+        self.playback_reservation = Some(active);
+        Ok(active)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn reserve_hover_branch(
-        &mut self,
-        requested_surface_frames: NonZeroUsize,
-    ) -> Result<ActiveHardwareReservation, HoverBudgetAdmissionReport> {
-        match self.hover_admission_report(requested_surface_frames) {
-            HoverBudgetAdmissionReport::Admitted => {}
-            rejection => return Err(rejection),
-        }
-
-        let active_reservation = self
-            .create_active_reservation(VaapiHardwareBranchKind::Hover, requested_surface_frames);
-        self.hover_reservation = Some(active_reservation);
-
-        Ok(active_reservation)
-    }
-
-    fn hover_admission_report(
-        &self,
-        requested_surface_frames: NonZeroUsize,
-    ) -> HoverBudgetAdmissionReport {
-        if self.playback_reservation.is_none() {
-            return HoverBudgetAdmissionReport::Unavailable(
-                HoverBudgetAdmissionUnavailableReason::ReservationOwnerUnavailable,
-            );
-        }
-
-        if self.hover_reservation.is_some() {
-            return HoverBudgetAdmissionReport::ResourcePressure(
-                HoverBudgetResourcePressureReason::ExistingHoverReservation,
-            );
-        }
-
-        if requested_surface_frames >= self.context.playback_surface_budget() {
-            return HoverBudgetAdmissionReport::ResourcePressure(
-                HoverBudgetResourcePressureReason::ProviderCapacityExhausted,
-            );
-        }
-
-        if requested_surface_frames.get() > self.context.hover_surface_provider_capacity() {
-            return HoverBudgetAdmissionReport::ResourcePressure(
-                HoverBudgetResourcePressureReason::ProviderCapacityExhausted,
-            );
-        }
-
-        HoverBudgetAdmissionReport::Admitted
-    }
-
+    /// Освобождает playback reservation, если token всё ещё актуален.
     fn release_reservation(
         &mut self,
-        branch_kind: VaapiHardwareBranchKind,
         reservation_id: VaapiHardwareReservationId,
         surface_frames: NonZeroUsize,
     ) -> VaapiHardwareReservationReleaseOutcome {
-        let active_slot = match branch_kind {
-            VaapiHardwareBranchKind::Playback => &mut self.playback_reservation,
-            VaapiHardwareBranchKind::Hover => &mut self.hover_reservation,
+        let descriptor = VaapiHardwareReservationRelease {
+            reservation_id,
+            surface_frames,
         };
 
-        match active_slot {
-            Some(active_reservation)
-                if active_reservation.reservation_id == reservation_id
-                    && active_reservation.branch_kind == branch_kind =>
-            {
-                let release = VaapiHardwareReservationRelease {
-                    branch_kind,
-                    reservation_id,
-                    surface_frames: active_reservation.surface_frames,
-                };
-                *active_slot = None;
-                VaapiHardwareReservationReleaseOutcome::Released(release)
+        match self.playback_reservation {
+            Some(active) if active.reservation_id == reservation_id => {
+                self.playback_reservation = None;
+                VaapiHardwareReservationReleaseOutcome::Released(descriptor)
             }
-            Some(_) | None => VaapiHardwareReservationReleaseOutcome::StaleReservation(
-                VaapiHardwareReservationRelease {
-                    branch_kind,
-                    reservation_id,
-                    surface_frames,
-                },
-            ),
+            Some(_) | None => VaapiHardwareReservationReleaseOutcome::StaleReservation(descriptor),
         }
     }
 
+    /// Создаёт active reservation с новым monotonically increasing id.
     fn create_active_reservation(
         &mut self,
-        branch_kind: VaapiHardwareBranchKind,
         surface_frames: NonZeroUsize,
     ) -> ActiveHardwareReservation {
         let reservation_id = VaapiHardwareReservationId(self.next_reservation_id);
-        self.next_reservation_id = self.next_reservation_id.saturating_add(1);
-
+        self.next_reservation_id = self.next_reservation_id.saturating_add(1).max(1);
         ActiveHardwareReservation {
-            branch_kind,
             reservation_id,
             surface_frames,
         }
     }
 }
 
-/// Branch kind намеренно типизирован: release/admission код не передаёт мутный bool.
-#[cfg_attr(not(test), allow(dead_code))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum VaapiHardwareBranchKind {
-    Playback,
-    Hover,
-}
-
+/// Internal id active VAAPI reservation-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct VaapiHardwareReservationId(u64);
 
+/// Active reservation descriptor, хранимый owner-ом.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ActiveHardwareReservation {
-    branch_kind: VaapiHardwareBranchKind,
+    /// Guard против stale release token-а.
     reservation_id: VaapiHardwareReservationId,
+
+    /// Сколько surfaces удерживает branch.
     surface_frames: NonZeroUsize,
 }
 
-#[derive(Debug)]
+/// RAII reservation playback branch-а.
 pub(crate) struct VaapiPlaybackHardwareReservation {
+    /// Token release-ит owner state при drop-е.
     token: VaapiHardwareReservationToken,
 }
 
 impl VaapiPlaybackHardwareReservation {
+    /// Создаёт reservation из owner-issued descriptor-а.
     fn new(
         owner: Arc<Mutex<VaapiSharedHardwareOwnerInner>>,
         active: ActiveHardwareReservation,
@@ -516,8 +177,9 @@ impl VaapiPlaybackHardwareReservation {
         }
     }
 
+    /// Возвращает число зарезервированных playback surfaces.
     #[must_use]
-    pub(crate) fn surface_frames(&self) -> NonZeroUsize {
+    pub(crate) const fn surface_frames(&self) -> NonZeroUsize {
         self.token.surface_frames()
     }
 }
@@ -528,62 +190,41 @@ impl Drop for VaapiPlaybackHardwareReservation {
     }
 }
 
-// S22 owner умеет выдавать hover reservation, но реальный executor появится позже.
-#[cfg_attr(not(test), allow(dead_code))]
-#[derive(Debug)]
-pub(crate) struct VaapiHoverHardwareReservation {
-    token: VaapiHardwareReservationToken,
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-impl VaapiHoverHardwareReservation {
-    fn new(
-        owner: Arc<Mutex<VaapiSharedHardwareOwnerInner>>,
-        active: ActiveHardwareReservation,
-    ) -> Self {
-        Self {
-            token: VaapiHardwareReservationToken::new(owner, active),
-        }
-    }
-
-    pub(crate) fn release(&mut self) -> VaapiHardwareReservationReleaseOutcome {
-        self.token.release()
-    }
-}
-
-impl Drop for VaapiHoverHardwareReservation {
-    fn drop(&mut self) {
-        self.token.release_for_drop();
-    }
-}
-
-#[derive(Debug)]
+/// Shared RAII token, который знает, как release-ить owner state.
 struct VaapiHardwareReservationToken {
+    /// Owner state, где хранится active reservation.
     owner: Arc<Mutex<VaapiSharedHardwareOwnerInner>>,
-    branch_kind: VaapiHardwareBranchKind,
+
+    /// Guard id reservation-а.
     reservation_id: VaapiHardwareReservationId,
+
+    /// Зарезервированное число surfaces.
     surface_frames: NonZeroUsize,
+
+    /// Защита от double release.
     released: bool,
 }
 
 impl VaapiHardwareReservationToken {
+    /// Создаёт token из active descriptor-а.
     fn new(
         owner: Arc<Mutex<VaapiSharedHardwareOwnerInner>>,
         active: ActiveHardwareReservation,
     ) -> Self {
         Self {
             owner,
-            branch_kind: active.branch_kind,
             reservation_id: active.reservation_id,
             surface_frames: active.surface_frames,
             released: false,
         }
     }
 
-    fn surface_frames(&self) -> NonZeroUsize {
+    /// Возвращает число surfaces, не раскрывая token internals.
+    const fn surface_frames(&self) -> NonZeroUsize {
         self.surface_frames
     }
 
+    /// Освобождает reservation явно или из `Drop`.
     fn release(&mut self) -> VaapiHardwareReservationReleaseOutcome {
         if self.released {
             return VaapiHardwareReservationReleaseOutcome::AlreadyReleased(
@@ -591,21 +232,16 @@ impl VaapiHardwareReservationToken {
             );
         }
 
-        let outcome = match self.owner.lock() {
-            Ok(mut owner) => owner.release_reservation(
-                self.branch_kind,
-                self.reservation_id,
-                self.surface_frames,
-            ),
+        self.released = true;
+        match self.owner.lock() {
+            Ok(mut owner) => owner.release_reservation(self.reservation_id, self.surface_frames),
             Err(_) => {
                 VaapiHardwareReservationReleaseOutcome::OwnerUnavailable(self.release_descriptor())
             }
-        };
-        self.released = true;
-
-        outcome
+        }
     }
 
+    /// Release из `Drop` не может вернуть ошибку caller-у, поэтому только логирует abnormal state.
     fn release_for_drop(&mut self) {
         match self.release() {
             VaapiHardwareReservationReleaseOutcome::Released(_)
@@ -613,31 +249,33 @@ impl VaapiHardwareReservationToken {
             VaapiHardwareReservationReleaseOutcome::OwnerUnavailable(release)
             | VaapiHardwareReservationReleaseOutcome::StaleReservation(release) => {
                 warn!(
-                    branch_kind = ?release.branch_kind,
-                    reservation_id = release.reservation_id.0,
-                    surface_frames = release.surface_frames.get(),
-                    "VAAPI hardware reservation drop could not release active reservation"
+                    ?release,
+                    "VAAPI playback hardware reservation release did not reach active owner state"
                 );
             }
         }
     }
 
+    /// Собирает release descriptor из immutable token fields.
     fn release_descriptor(&self) -> VaapiHardwareReservationRelease {
         VaapiHardwareReservationRelease {
-            branch_kind: self.branch_kind,
             reservation_id: self.reservation_id,
             surface_frames: self.surface_frames,
         }
     }
 }
 
+/// Descriptor release попытки, пригодный для diagnostics/tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct VaapiHardwareReservationRelease {
-    pub(crate) branch_kind: VaapiHardwareBranchKind,
+    /// Reservation id, который пытались освободить.
     pub(crate) reservation_id: VaapiHardwareReservationId,
+
+    /// Число surfaces в reservation-е.
     pub(crate) surface_frames: NonZeroUsize,
 }
 
+/// Итог release-а playback reservation-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VaapiHardwareReservationReleaseOutcome {
     Released(VaapiHardwareReservationRelease),
@@ -646,13 +284,7 @@ pub(crate) enum VaapiHardwareReservationReleaseOutcome {
     StaleReservation(VaapiHardwareReservationRelease),
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-#[derive(Debug)]
-pub(crate) enum VaapiHoverHardwareAdmission {
-    Admitted(VaapiHoverHardwareReservation),
-    Rejected(HoverBudgetAdmissionReport),
-}
-
+/// Ошибка создания playback reservation-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VaapiPlaybackReservationError {
     OwnerUnavailable,
@@ -662,9 +294,9 @@ pub(crate) enum VaapiPlaybackReservationError {
 impl std::fmt::Display for VaapiPlaybackReservationError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::OwnerUnavailable => formatter.write_str("VAAPI hardware owner is unavailable"),
+            Self::OwnerUnavailable => write!(formatter, "VAAPI reservation owner unavailable"),
             Self::ExistingPlaybackReservation => {
-                formatter.write_str("VAAPI playback reservation already exists")
+                write!(formatter, "VAAPI playback reservation already exists")
             }
         }
     }
@@ -672,18 +304,76 @@ impl std::fmt::Display for VaapiPlaybackReservationError {
 
 impl std::error::Error for VaapiPlaybackReservationError {}
 
-fn non_zero_or_one(value: usize) -> NonZeroUsize {
-    NonZeroUsize::new(value).unwrap_or(NonZeroUsize::MIN)
-}
-
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct VaapiSharedHardwareOwnerSnapshot {
     playback_active: bool,
-    hover_active: bool,
     playback_surface_budget: NonZeroUsize,
-    hover_surface_provider_capacity: usize,
+}
+
+/// Нормализует `usize` budget в positive non-zero значение.
+fn non_zero_or_one(value: usize) -> NonZeroUsize {
+    NonZeroUsize::new(value).unwrap_or_else(|| NonZeroUsize::new(1).expect("1 is non-zero"))
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+
+    fn owner(surface_frames: usize) -> VaapiSharedHardwareOwner {
+        VaapiSharedHardwareOwner::new(VaapiSharedHardwareOwnerContext::from_surface_accounting(
+            surface_frames,
+        ))
+    }
+
+    #[test]
+    fn surface_accounting_normalizes_zero_to_one() {
+        let context = VaapiSharedHardwareOwnerContext::from_surface_accounting(0);
+
+        assert_eq!(context.playback_surface_budget().get(), 1);
+    }
+
+    #[test]
+    fn playback_reservation_is_single_owner_until_drop() {
+        let owner = owner(8);
+        let reservation = owner
+            .reserve_playback_branch()
+            .expect("first playback reservation must fit");
+
+        assert_eq!(reservation.surface_frames().get(), 8);
+        assert!(matches!(
+            owner.reserve_playback_branch(),
+            Err(VaapiPlaybackReservationError::ExistingPlaybackReservation)
+        ));
+        assert!(owner.snapshot_for_tests().playback_active);
+
+        drop(reservation);
+
+        assert!(!owner.snapshot_for_tests().playback_active);
+        let second_reservation = owner
+            .reserve_playback_branch()
+            .expect("drop must release playback reservation");
+        assert_eq!(second_reservation.surface_frames().get(), 8);
+    }
+
+    #[test]
+    fn release_is_idempotent_for_token_owner() {
+        let owner = owner(4);
+        let mut reservation = owner
+            .reserve_playback_branch()
+            .expect("playback reservation must fit");
+
+        let released = reservation.token.release();
+        assert!(matches!(
+            released,
+            VaapiHardwareReservationReleaseOutcome::Released(_)
+        ));
+        assert!(!owner.snapshot_for_tests().playback_active);
+
+        let repeated = reservation.token.release();
+        assert!(matches!(
+            repeated,
+            VaapiHardwareReservationReleaseOutcome::AlreadyReleased(_)
+        ));
+    }
+}

@@ -1150,9 +1150,8 @@ pub struct VideoDecoderThreadConfig {
     /// Thread budget только для software decoder backends.
     ///
     /// Playback default остаётся `Auto`, чтобы FFmpeg мог выбирать число потоков
-    /// сам (`thread_count = 0`). Active hover после `HoverBudgetCapability` /
-    /// `HoverBudgetAdmission` передаёт сюда `Fixed`, если budget разрешён и
-    /// строго меньше matching playback thread budget-а.
+    /// сам (`thread_count = 0`). Независимые decode-потребители могут передать
+    /// сюда `Fixed`, если их budget уже проверен на уровне владельца runtime.
     pub software_decode_thread_budget: SoftwareDecodeThreadBudget,
 
     /// Zero-copy external import slot capacity.

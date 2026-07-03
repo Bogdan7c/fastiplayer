@@ -1,13 +1,6 @@
-use super::frame_server_diagnostics::AppFrameServerDiagnosticsSnapshot;
-use super::timeline_hover_leave_grace::TimelineHoverLeaveGraceReleaseReason;
 use super::*;
-use crate::frame_prepare::{TimelineHoverPreviewLoadState, TimelineHoverPreviewUpdateOutcome};
-use crate::frame_server_budget::{
-    admission_outcome_label, budget_setting_label, resource_class_label,
-};
 use frame_server_core::{
-    CountSummary, DurationSummary, HoverBudgetResolutionOutcome, LiveScrubDecodeMode,
-    ScrubDiagnosticsSnapshot, ScrubHoverNetworkState,
+    CountSummary, DurationSummary, LiveScrubDecodeMode, ScrubDiagnosticsSnapshot,
 };
 
 /// Частота обновления тяжёлого текста telemetry panel.
@@ -32,9 +25,6 @@ pub(super) struct TelemetryPanelState<'panel> {
 
     /// Transient состояние timeline UI.
     pub(super) timeline_ui_state: &'panel TimelineUiState,
-
-    /// App-owned frame-server diagnostics, которых нет в player snapshot.
-    pub(super) frame_server_diagnostics: AppFrameServerDiagnosticsSnapshot,
 
     /// Имя активного backend-а для diagnostics.
     pub(super) backend_name: &'panel str,
@@ -435,42 +425,16 @@ impl AppState {
         )));
     }
 
-    /// Добавляет S29B frame-server diagnostics из player snapshot и app-owned boundary.
+    /// Добавляет frame-server diagnostics из player snapshot.
     fn append_frame_server_rows(
         panel_rows: &mut Vec<TelemetryPanelRow>,
         panel_state: &TelemetryPanelState<'_>,
     ) {
         let player_scrub = &panel_state.player_snapshot.diagnostics.frame_server_scrub;
-        let app_frame_server = &panel_state.frame_server_diagnostics;
-        let app_scrub = &app_frame_server.scrub;
-        let player_prepared = player_scrub.prepared_frames;
-        let app_hover_preview = app_frame_server.hover_preview;
 
         panel_rows.push(TelemetryPanelRow::spacer());
         panel_rows.push(TelemetryPanelRow::heading("Frame Server"));
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "FS shared prepared branch: hover_preview_ready_borrow={} s17_promoted_branch={}",
-            app_hover_preview.ready_count, player_prepared.ownership.promoted_to_seek_ownership
-        )));
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "FS preview vs S17: preview_updates={} preview_ready={} promotion_hits={}",
-            app_hover_preview.update_count,
-            app_hover_preview.ready_count,
-            player_scrub.working_set.promotion_hits
-        )));
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "FS superseded prepared: demoted_recent_superseded={} demote_rejected={} released_without_demote={}",
-            player_prepared.ownership.demoted_to_recent_superseded,
-            player_prepared.ownership.demote_rejected,
-            player_prepared.ownership.released_without_demote
-        )));
-
         Self::append_frame_server_scrub_rows(panel_rows, "FS player", player_scrub);
-        Self::append_frame_server_scrub_rows(panel_rows, "FS app", app_scrub);
-        Self::append_frame_server_hover_preview_rows(panel_rows, panel_state);
-        Self::append_frame_server_hover_leave_grace_rows(panel_rows, panel_state);
-        Self::append_frame_server_network_rows(panel_rows, panel_state);
-        Self::append_frame_server_hover_budget_rows(panel_rows, panel_state);
         Self::append_frame_server_live_scrub_rows(panel_rows, player_scrub);
     }
 
@@ -482,22 +446,10 @@ impl AppState {
     ) {
         let requests = scrub.requests;
         let outcomes = scrub.outcomes;
-        let prepared = scrub.prepared_frames;
-        let runway = prepared.video_runway;
-        let ownership = prepared.ownership;
-        let demote_rejections = ownership.demote_rejection_reasons;
-        let working_set = scrub.working_set;
-        let hover_admission = scrub.hover_prepare.admission;
-        let hover_span = scrub.hover_prepare.dependency_span;
-        let hover_incomplete = hover_span.incomplete_reasons;
-        let hover_network = scrub.hover_prepare.network;
 
         panel_rows.push(TelemetryPanelRow::normal(format!(
-            "{prefix} requests: seek={} live={} hover_preview={} hover_prepare={}",
-            requests.accepted.seek_landing,
-            requests.accepted.live_scrub,
-            requests.accepted.hover_preview,
-            requests.accepted.timeline_hover_prepare_window
+            "{prefix} requests: seek={} live={}",
+            requests.accepted.seek_landing, requests.accepted.live_scrub
         )));
         panel_rows.push(TelemetryPanelRow::normal(format!(
             "{prefix} outcomes: cold_progress={} exact_ready={} resume_pending={} audio_timeout={} audio_error={} cancelled={} stale={} timeout={} fatal={}",
@@ -525,251 +477,6 @@ impl AppState {
             Self::duration_summary_for_telemetry(scrub.decode_latency),
             Self::count_summary_for_telemetry(scrub.packets_from_decode_point_to_target)
         )));
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "{prefix} prepared: hits={} resume_ready={} resume_runway_pending={} commit_gate_pending={} audio_gate_pending={} cold_exact_pending={}",
-            prepared.prepared_frame_hits,
-            prepared.resume_ready_prepared_hits,
-            prepared.prepared_frame_resume_runway_pending,
-            prepared.prepared_frame_commit_gate_pending,
-            prepared.prepared_frame_audio_gate_pending,
-            prepared.cold_exact_decode_pending
-        )));
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "{prefix} prepared pending reasons: frame_only={} continuation_missing={} runway={} commit_gate={} audio_gate={}",
-            prepared.resume_pending_reasons.frame_only,
-            prepared.resume_pending_reasons.continuation_missing,
-            prepared.resume_pending_reasons.runway_pending,
-            prepared.resume_pending_reasons.commit_gate_pending,
-            prepared.resume_pending_reasons.audio_gate_pending
-        )));
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "{prefix} runway: pending={} repositioned={} post_target_packet={} displayable_queued={} next_almost_ready={} progress_only={} commit_ready={}",
-            runway.pending,
-            runway.repositioned,
-            runway.post_target_packet_accepted,
-            runway.displayable_frame_queued,
-            runway.next_frame_almost_ready,
-            runway.progress_only,
-            runway.commit_ready
-        )));
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "{prefix} prepared ownership: promoted={} resume_ready_branch={} visual_override_resume_pending={} demoted_recent_superseded={} demote_rejected={} released_without_demote={} no_promoted_on_release={}",
-            ownership.promoted_to_seek_ownership,
-            ownership.promoted_resume_ready_branch,
-            ownership.promoted_visual_override_resume_pending,
-            ownership.demoted_to_recent_superseded,
-            ownership.demote_rejected,
-            ownership.released_without_demote,
-            ownership.no_promoted_frame_on_release
-        )));
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "{prefix} demote rejections: cancel_reason={} promoted_key_not_current={} timing={} recent_disabled={}",
-            demote_rejections.cancel_reason_does_not_allow_demote,
-            demote_rejections.promoted_key_not_current,
-            demote_rejections.timing_rejected,
-            demote_rejections.recent_superseded_retention_disabled
-        )));
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "{prefix} working set: hit={} miss={} timing_reject={} evict={} promotion_hit={} promotion_miss={} pressure_recent={} pressure_primary={} pressure_miss={}",
-            working_set.hits,
-            working_set.misses,
-            working_set.timing_rejections,
-            working_set.evictions,
-            working_set.promotion_hits,
-            working_set.promotion_misses,
-            working_set.released_recent_superseded,
-            working_set.released_primary_byproduct,
-            working_set.pressure_release_misses
-        )));
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "{prefix} hover admission: admitted={} no_op={} spare_slot={} replace_primary={} evict_byproduct={} provider_spare={} provider_pressure={} no_spare_slot={} live_suspended={}",
-            hover_admission.admitted,
-            hover_admission.no_op,
-            hover_admission.use_spare_primary_slot,
-            hover_admission.replace_existing_primary,
-            hover_admission.evict_oldest_primary_byproduct,
-            hover_admission.provider_spare_slot_available,
-            hover_admission.provider_resource_pressure,
-            hover_admission.no_spare_hover_slot,
-            hover_admission.active_live_scrub_suspends_hover_prepare
-        )));
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "{prefix} hover span: resolved={} incomplete={} retarget={} extend={} restart={} superseded={}",
-            hover_span.resolved,
-            hover_span.incomplete,
-            hover_span.same_span_retarget,
-            hover_span.span_tail_extension,
-            hover_span.span_restart,
-            hover_span.span_superseded
-        )));
-        if let Some(progress) = hover_span.latest_progress {
-            panel_rows.push(TelemetryPanelRow::normal(format!(
-                "{prefix} hover span latest: packets={} frames={} post_target_drain={} prepared_targets={}",
-                progress.packets_decoded_to_target,
-                progress.frames_decoded_to_target,
-                progress.post_target_reorder_drain_frames,
-                progress.prepared_targets_produced
-            )));
-        }
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "{prefix} hover incomplete: decode_not_wired={} resolver_not_wired={} seek_unsupported={} seek_unavailable={} resolve_failed={} network_opening={} network_throttled={} network_failed_no_retry={} source_unavailable={} stale_generation={} resource_pressure={} fatal={}",
-            hover_incomplete.decode_execution_not_wired,
-            hover_incomplete.resolver_not_wired,
-            hover_incomplete.seek_unsupported,
-            hover_incomplete.seek_unavailable,
-            hover_incomplete.resolve_failed,
-            hover_incomplete.network_opening,
-            hover_incomplete.network_throttled,
-            hover_incomplete.network_failed_no_retry,
-            hover_incomplete.source_unavailable,
-            hover_incomplete.stale_generation,
-            hover_incomplete.resource_pressure,
-            hover_incomplete.fatal
-        )));
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "{prefix} hover network counters: opening={} opened={} throttled={} failed_held={} zero_throttle_no_delay={} latest_only_replaced={} stale_late_ignored={} throttle_delay={} latest_state={}",
-            hover_network.opening,
-            hover_network.opened,
-            hover_network.throttled,
-            hover_network.failed_target_held,
-            hover_network.zero_throttle_no_delay,
-            hover_network.latest_only_replaced_in_flight,
-            hover_network.stale_late_result_ignored,
-            Self::duration_summary_for_telemetry(hover_network.throttle_delay),
-            Self::hover_network_state_label(hover_network.latest_state)
-        )));
-    }
-
-    /// Добавляет app-owned visual HoverPreview строки: visual suppression != invisible prepare.
-    fn append_frame_server_hover_preview_rows(
-        panel_rows: &mut Vec<TelemetryPanelRow>,
-        panel_state: &TelemetryPanelState<'_>,
-    ) {
-        let hover_preview = panel_state.frame_server_diagnostics.hover_preview;
-        let invisible_prepare_requests = panel_state
-            .frame_server_diagnostics
-            .scrub
-            .requests
-            .accepted
-            .timeline_hover_prepare_window;
-
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "FS hover preview visual: enabled={} disabled_visual_only={} invisible_prepare_requests={}",
-            hover_preview.visual_preview_enabled,
-            hover_preview.disabled_by_config_count,
-            invisible_prepare_requests
-        )));
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "FS hover preview borrow: updates={} ready={} loading={} busy_kept={} unavailable={} clear={} latest_update={} latest_load={}",
-            hover_preview.update_count,
-            hover_preview.ready_count,
-            hover_preview.loading_count,
-            hover_preview.busy_kept_last_ready_count,
-            hover_preview.unavailable_count,
-            hover_preview.clear_count,
-            Self::hover_preview_update_label(hover_preview.latest_update_outcome),
-            Self::hover_preview_load_state_label(hover_preview.latest_load_state)
-        )));
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "FS hover preview render: ready={} loading_preview_only={}",
-            hover_preview.render_state.ready, hover_preview.render_state.loading_preview_only
-        )));
-    }
-
-    /// Добавляет UX lifetime grace diagnostics, не смешивая их с decode span coverage.
-    fn append_frame_server_hover_leave_grace_rows(
-        panel_rows: &mut Vec<TelemetryPanelRow>,
-        panel_state: &TelemetryPanelState<'_>,
-    ) {
-        let leave_grace = panel_state.frame_server_diagnostics.hover_leave_grace;
-        let latest_release_outcome = leave_grace.latest_release_outcome;
-        let latest_primary_release = latest_release_outcome
-            .map(|outcome| outcome.primary_entries_released())
-            .unwrap_or(0);
-        let latest_recent_release = latest_release_outcome
-            .map(|outcome| outcome.recent_superseded_entries_released())
-            .unwrap_or(0);
-
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "FS hover leave grace: configured={} pending={} started={} reentered={} zero_grace_immediate={} expired={} non_timeline_cancel={} latest_reason={}",
-            Self::duration_for_telemetry(leave_grace.configured_grace),
-            leave_grace.pending,
-            leave_grace.started_count,
-            leave_grace.reentered_before_expiry_count,
-            leave_grace.zero_grace_immediate_release_count,
-            leave_grace.expired_release_count,
-            leave_grace.non_timeline_cancel_release_count,
-            Self::hover_leave_grace_reason_label(leave_grace.latest_release_reason)
-        )));
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "FS recent-superseded lifetime: latest_release_primary={} latest_release_recent={} pressure_recent_releases={} demoted_recent_superseded={}",
-            latest_primary_release,
-            latest_recent_release,
-            panel_state
-                .player_snapshot
-                .diagnostics
-                .frame_server_scrub
-                .working_set
-                .released_recent_superseded,
-            panel_state
-                .player_snapshot
-                .diagnostics
-                .frame_server_scrub
-                .prepared_frames
-                .ownership
-                .demoted_to_recent_superseded
-        )));
-    }
-
-    /// Добавляет network hover open diagnostics из app-owned controller snapshot.
-    fn append_frame_server_network_rows(
-        panel_rows: &mut Vec<TelemetryPanelRow>,
-        panel_state: &TelemetryPanelState<'_>,
-    ) {
-        let network_open = panel_state.frame_server_diagnostics.network_open;
-
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "FS network open: throttle={} generation={} in_flight={} failed_target_held={} zero_throttle_no_delay={} latest_only_replaced={} stale_late_ignored={} throttle_delay_count={} latest_delay={}",
-            Self::duration_for_telemetry(network_open.inter_start_throttle),
-            network_open.source_generation,
-            network_open.in_flight_count,
-            network_open.failed_target_held,
-            network_open.zero_throttle_no_delay_count,
-            network_open.latest_only_replaced_in_flight_count,
-            network_open.stale_late_result_ignored_count,
-            network_open.throttle_delay_count,
-            Self::optional_duration_for_telemetry(network_open.latest_throttle_delay)
-        )));
-    }
-
-    /// Добавляет active-hover budget resolver/admission diagnostics из backend provider-а.
-    fn append_frame_server_hover_budget_rows(
-        panel_rows: &mut Vec<TelemetryPanelRow>,
-        panel_state: &TelemetryPanelState<'_>,
-    ) {
-        let Some(hover_budget) = &panel_state.frame_server_diagnostics.hover_budget else {
-            panel_rows.push(TelemetryPanelRow::normal(
-                "FS hover budget: provider=unavailable",
-            ));
-            return;
-        };
-
-        panel_rows.push(TelemetryPanelRow::normal(format!(
-            "FS hover budget: backend={} resolution={} admission={}",
-            hover_budget.backend_kind.label(),
-            Self::hover_budget_resolution_label(&hover_budget.resolution_outcome),
-            admission_outcome_label(&hover_budget.admission_outcome)
-        )));
-        for resource in &hover_budget.resources {
-            panel_rows.push(TelemetryPanelRow::normal(format!(
-                "FS hover budget resource: class={} setting={} playback={} backend_min={} resolved={}",
-                resource_class_label(resource.resource_class),
-                budget_setting_label(resource.setting),
-                Self::optional_non_zero_for_telemetry(resource.playback_budget),
-                Self::optional_non_zero_for_telemetry(resource.backend_reported_minimum),
-                Self::optional_non_zero_for_telemetry(resource.resolved_hover_budget)
-            )));
-        }
     }
 
     /// Добавляет latest-only live scrub settings diagnostics без user-facing hint/status.
@@ -820,20 +527,6 @@ impl AppState {
             .unwrap_or_else(|| "none".to_string())
     }
 
-    fn hover_budget_resolution_label(outcome: &HoverBudgetResolutionOutcome) -> &'static str {
-        match outcome {
-            HoverBudgetResolutionOutcome::Resolved(_) => "resolved",
-            HoverBudgetResolutionOutcome::Unsupported(_) => "unsupported",
-            HoverBudgetResolutionOutcome::Unavailable(_) => "unavailable",
-        }
-    }
-
-    fn optional_non_zero_for_telemetry(value: Option<NonZeroUsize>) -> String {
-        value
-            .map(|value| value.get().to_string())
-            .unwrap_or_else(|| "n/a".to_string())
-    }
-
     /// Форматирует bounded duration summary в одну compact строку.
     fn duration_summary_for_telemetry(summary: DurationSummary) -> String {
         if summary.is_empty() {
@@ -868,64 +561,6 @@ impl AppState {
         match mode {
             LiveScrubDecodeMode::ThrottledLatest => "throttled_latest",
             LiveScrubDecodeMode::EveryDragEvent => "every_drag_event",
-        }
-    }
-
-    /// Стабильный label для latest network hover state.
-    const fn hover_network_state_label(state: Option<ScrubHoverNetworkState>) -> &'static str {
-        match state {
-            Some(ScrubHoverNetworkState::NonNetworkSource) => "non_network_source",
-            Some(ScrubHoverNetworkState::Opening) => "opening",
-            Some(ScrubHoverNetworkState::Opened) => "opened",
-            Some(ScrubHoverNetworkState::Throttled) => "throttled",
-            Some(ScrubHoverNetworkState::MissingActiveSource) => "missing_active_source",
-            Some(ScrubHoverNetworkState::Unsupported) => "unsupported",
-            Some(ScrubHoverNetworkState::OpenFailed) => "open_failed",
-            Some(ScrubHoverNetworkState::Disconnected) => "disconnected",
-            Some(ScrubHoverNetworkState::FailedTargetHeld) => "failed_target_held",
-            None => "none",
-        }
-    }
-
-    /// Стабильный label для visual preview materialization outcome.
-    const fn hover_preview_update_label(
-        outcome: Option<TimelineHoverPreviewUpdateOutcome>,
-    ) -> &'static str {
-        match outcome {
-            Some(TimelineHoverPreviewUpdateOutcome::Loading) => "loading",
-            Some(TimelineHoverPreviewUpdateOutcome::Ready) => "ready",
-            Some(TimelineHoverPreviewUpdateOutcome::ApproximateReady) => "approximate_ready",
-            Some(TimelineHoverPreviewUpdateOutcome::BusyKeptLastReady) => "busy_kept_last_ready",
-            Some(TimelineHoverPreviewUpdateOutcome::BusyEmpty) => "busy_empty",
-            Some(TimelineHoverPreviewUpdateOutcome::MissingMaterializer) => "missing_materializer",
-            Some(TimelineHoverPreviewUpdateOutcome::WorkingSetMiss) => "working_set_miss",
-            Some(TimelineHoverPreviewUpdateOutcome::TimingRejected) => "timing_rejected",
-            Some(TimelineHoverPreviewUpdateOutcome::Missing) => "missing",
-            Some(TimelineHoverPreviewUpdateOutcome::Unsupported) => "unsupported",
-            Some(TimelineHoverPreviewUpdateOutcome::Error) => "error",
-            None => "none",
-        }
-    }
-
-    /// Стабильный label для preview-only loading state.
-    const fn hover_preview_load_state_label(state: TimelineHoverPreviewLoadState) -> &'static str {
-        match state {
-            TimelineHoverPreviewLoadState::Idle => "idle",
-            TimelineHoverPreviewLoadState::NetworkOpening { .. } => "network_opening",
-        }
-    }
-
-    /// Стабильный label для причины release-а hover leave grace.
-    const fn hover_leave_grace_reason_label(
-        reason: Option<TimelineHoverLeaveGraceReleaseReason>,
-    ) -> &'static str {
-        match reason {
-            Some(TimelineHoverLeaveGraceReleaseReason::ImmediateTimelineLeave) => {
-                "immediate_timeline_leave"
-            }
-            Some(TimelineHoverLeaveGraceReleaseReason::LeaveGraceExpired) => "leave_grace_expired",
-            Some(TimelineHoverLeaveGraceReleaseReason::NonTimelineAction) => "non_timeline_action",
-            None => "none",
         }
     }
 

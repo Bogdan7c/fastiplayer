@@ -1,6 +1,6 @@
 //! Общий helper materialization-а для shared `VideoFrameLease`.
 //!
-//! Модуль намеренно не выбирает playback/scrub/hover priority и не трогает UI layout.
+//! Модуль намеренно не выбирает playback/scrub priority и не трогает UI layout.
 //! Он только связывает shared lease, renderer materializer lookup и typed app policy.
 
 use std::time::{Duration, Instant};
@@ -23,21 +23,17 @@ pub(super) enum SharedVideoFrameLeaseRole {
 
     /// Временный visual override во время scrub transaction.
     ScrubOverride,
-
-    /// Prepared hover preview frame из будущего frame server working set.
-    HoverPreview,
 }
 
 impl SharedVideoFrameLeaseRole {
     /// Все роли, которые этот helper должен принимать без playback-specific assumptions.
-    const ALL: [Self; 3] = [Self::Playback, Self::ScrubOverride, Self::HoverPreview];
+    const ALL: [Self; 2] = [Self::Playback, Self::ScrubOverride];
 
     /// Возвращает короткую диагностическую метку роли lease-а.
     const fn as_str(self) -> &'static str {
         match self {
             Self::Playback => "playback",
             Self::ScrubOverride => "scrub_override",
-            Self::HoverPreview => "hover_preview",
         }
     }
 
@@ -477,12 +473,6 @@ mod tests {
     #[test]
     fn scrub_override_lease_ready_materializes() {
         assert_ready_materializes_for_role(SharedVideoFrameLeaseRole::ScrubOverride);
-    }
-
-    /// Hover preview Ready не требует зависимости на `frame-server-core`.
-    #[test]
-    fn hover_lease_ready_materializes() {
-        assert_ready_materializes_for_role(SharedVideoFrameLeaseRole::HoverPreview);
     }
 
     /// Busy остаётся typed Busy и просит previous-frame reuse только если caller дал cache.

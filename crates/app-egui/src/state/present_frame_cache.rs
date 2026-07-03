@@ -123,45 +123,6 @@ pub(super) enum CachedPresentFrameDiscardReason {
     PlayerFatalError,
 }
 
-/// Как очистка cached present frame-а должна затронуть source context hover preview.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum TimelineHoverSourceContextReset {
-    /// Cached frame чистится без вмешательства в hover source lifecycle.
-    None,
-
-    /// Уже открытый hover demuxer/span устарел, но media source identity всё ещё текущая.
-    DropOpenedSourcePreservingIdentity,
-
-    /// Текущий media source больше нельзя считать восстановимым для hover opens.
-    ForgetSourceIdentity,
-}
-
-impl CachedPresentFrameDiscardReason {
-    /// Возвращает intent для hover source lifecycle при очистке cached frame-а.
-    pub(super) const fn timeline_hover_source_context_reset(
-        self,
-    ) -> TimelineHoverSourceContextReset {
-        match self {
-            Self::MediaOpenBoundary
-            | Self::PlayerFailed
-            | Self::PlayerShutdownRequested
-            | Self::PlayerFatalError => TimelineHoverSourceContextReset::ForgetSourceIdentity,
-            Self::CurrentVideoFrameMissing
-            | Self::SourceLabelChanged
-            | Self::RenderGenerationChanged
-            | Self::PlayerMediaOpenRequested
-            | Self::PlayerMediaOpened
-            | Self::PlayerStopped => {
-                TimelineHoverSourceContextReset::DropOpenedSourcePreservingIdentity
-            }
-            Self::RuntimeDrop
-            | Self::SurfaceLifecycleBreak
-            | Self::RenderFailure
-            | Self::WorkerRenderError => TimelineHoverSourceContextReset::None,
-        }
-    }
-}
-
 /// Данные для pure-проверки, остаётся ли cached frame валидным для текущего player snapshot-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct CachedPresentFrameValidationState {
@@ -444,22 +405,6 @@ impl AppState {
         if self.cached_renderable_present_frame.is_some() {
             debug!(?reason, "Clearing cached present frame");
         }
-        match reason.timeline_hover_source_context_reset() {
-            TimelineHoverSourceContextReset::None => {}
-            TimelineHoverSourceContextReset::DropOpenedSourcePreservingIdentity => {
-                self.timeline_hover_prepare_controller
-                    .cancel_active_span(TimelineHoverPrepareCancellationReason::SourceSwitched);
-                self.timeline_hover_prepare_controller
-                    .reset_opened_hover_source_preserving_identity();
-            }
-            TimelineHoverSourceContextReset::ForgetSourceIdentity => {
-                self.timeline_hover_prepare_controller
-                    .cancel_active_span(TimelineHoverPrepareCancellationReason::SourceSwitched);
-                self.timeline_hover_prepare_controller
-                    .invalidate_hover_source();
-            }
-        }
-        self.timeline_hover_preview_render_state.clear();
         self.cached_renderable_present_frame = None;
     }
 

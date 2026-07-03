@@ -430,11 +430,11 @@ fn select_list_validation_rejects_unknown_duplicate_and_out_of_range_items() {
 #[test]
 fn auto_fixed_positive_integer_validation_accepts_only_auto_or_positive_fixed() {
     let descriptor = SettingDescriptor {
-        id: SettingId::from("frame_server.hover_pool_frames"),
-        path: "frame_server.hover_pool_frames".into(),
+        id: SettingId::from("test.auto_fixed_resource_slots"),
+        path: "test.auto_fixed_resource_slots".into(),
         text: SettingDescriptorText::new(SettingText::new(
-            "settings.frame_server.hover_pool_frames.label",
-            "Бюджет hover-кадров",
+            "settings.test.auto_fixed_resource_slots.label",
+            "Ресурсный бюджет",
         )),
         placement: SettingPlacement::new("frame_server", "resources", "main-settings-window")
             .with_group_default_open(false),
