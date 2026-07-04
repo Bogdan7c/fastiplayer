@@ -99,16 +99,21 @@ impl TimelineUiState {
     /// Снимает completion-gate, когда worker подтвердил presented landing frame.
     ///
     /// Вызывается на `PlayerEvent::SeekTargetFramePresented`: как только landing
-    /// для dispatched target (или более поздней позиции) показан, следующий newest
-    /// target может уйти в decode. Это и даёт frame-by-frame перемотку: один target
-    /// доезжает до кадра, потом стартует следующий, без supersede-голодания.
+    /// именно dispatched target показан, следующий newest target может уйти в
+    /// decode. Это и даёт frame-by-frame перемотку: один target доезжает до
+    /// кадра, потом стартует следующий, без supersede-голодания.
+    ///
+    /// Сравнение строго exact: `>=` снимал бы gate устаревшим landing-ом
+    /// предыдущего (большего) target при обратной перемотке, из-за чего decode
+    /// назад суперседился и голодал. Если landing потерян (supersede), gate
+    /// открывает `LIVE_SCRUB_LANDING_FALLBACK_BUDGET`.
     pub fn note_live_scrub_landing_presented(&mut self, presented_target: MediaTime) {
         let Some(dispatch) = self.live_scrub_dispatch.as_mut() else {
             return;
         };
         if dispatch
             .awaiting_landing_for_target
-            .is_some_and(|awaiting| presented_target >= awaiting)
+            .is_some_and(|awaiting| presented_target == awaiting)
         {
             dispatch.awaiting_landing_for_target = None;
         }
@@ -151,6 +156,15 @@ impl TimelineUiState {
             return Some(target);
         };
 
+        // Неподвижный курсор: egui шлёт drag-события каждый кадр даже без
+        // движения. Повторный dispatch того же target перезапустил бы exact
+        // decode транзакцию, и preroll-прокат снова поехал бы от keyframe —
+        // картинка «едет», хотя курсор стоит. Target уже в decode или показан.
+        if dispatch.last_dispatched_target == Some(target) {
+            dispatch.pending_throttled_target = None;
+            return None;
+        }
+
         match dispatch.diagnostics.settings_snapshot.decode_mode {
             TimelineLiveScrubDecodeMode::EveryDragEvent => {
                 dispatch.last_decode_dispatch_at = Some(now);
@@ -172,8 +186,10 @@ impl TimelineUiState {
                                 < LIVE_SCRUB_LANDING_FALLBACK_BUDGET
                         });
                 if awaiting_landing {
-                    dispatch.pending_throttled_target = Some(target);
-                    dispatch.diagnostics.record_throttled_latest_skip();
+                    if dispatch.pending_throttled_target != Some(target) {
+                        dispatch.pending_throttled_target = Some(target);
+                        dispatch.diagnostics.record_throttled_latest_skip();
+                    }
                     return None;
                 }
 
@@ -186,14 +202,19 @@ impl TimelineUiState {
                     });
 
                 if can_dispatch {
-                    let newest_target = dispatch.pending_throttled_target.take().unwrap_or(target);
+                    // Текущий drag event — самый свежий pointer state: pending
+                    // хранит прошлое и не должен побеждать, иначе decode уходит
+                    // на устаревшую позицию при смене направления.
+                    dispatch.pending_throttled_target = None;
                     dispatch.last_decode_dispatch_at = Some(now);
-                    dispatch.last_dispatched_target = Some(newest_target);
-                    dispatch.awaiting_landing_for_target = Some(newest_target);
-                    Some(newest_target)
+                    dispatch.last_dispatched_target = Some(target);
+                    dispatch.awaiting_landing_for_target = Some(target);
+                    Some(target)
                 } else {
-                    dispatch.pending_throttled_target = Some(target);
-                    dispatch.diagnostics.record_throttled_latest_skip();
+                    if dispatch.pending_throttled_target != Some(target) {
+                        dispatch.pending_throttled_target = Some(target);
+                        dispatch.diagnostics.record_throttled_latest_skip();
+                    }
                     None
                 }
             }
@@ -1096,7 +1117,8 @@ mod tests {
         );
     }
 
-    /// Throttled snapshot схлопывает skipped targets, но release exact target проходит всегда.
+    /// Throttle схлопывает skipped targets, dispatch уходит на newest позицию
+    /// курсора (не на устаревший pending), а release exact target проходит всегда.
     #[test]
     fn live_scrub_throttled_snapshot_drops_intermediate_and_release_uses_exact_target() {
         let mut state = TimelineUiState::default();
@@ -1126,18 +1148,120 @@ mod tests {
             1
         );
 
+        // Newest-wins: после throttle-окна decode уходит на текущую позицию
+        // курсора, а не на устаревший skipped target.
         let on_time = started_at + live_scrub_min_dispatch_period(60);
         assert_eq!(
             state.live_scrub_preview_dispatch_target(on_time, MediaTime::from_secs(30)),
-            Some(MediaTime::from_secs(20))
+            Some(MediaTime::from_secs(30))
         );
 
+        // Последний drag event скипнут completion-gate-ом → release добивает exact.
+        let gated = on_time + Duration::from_millis(1);
+        assert_eq!(
+            state.live_scrub_preview_dispatch_target(gated, MediaTime::from_secs(40)),
+            None
+        );
         assert_eq!(
             state.live_scrub_release_dispatch_target(
-                on_time + Duration::from_millis(1),
-                MediaTime::from_secs(30),
+                gated + Duration::from_millis(1),
+                MediaTime::from_secs(40),
             ),
-            Some(MediaTime::from_secs(30))
+            Some(MediaTime::from_secs(40))
+        );
+    }
+
+    /// Неподвижный курсор (drag events без движения) не перезапускает exact decode:
+    /// повторный target равный last dispatched — no-op в обоих режимах.
+    #[test]
+    fn live_scrub_stationary_pointer_does_not_redispatch_same_target_every_drag_event() {
+        let mut state = TimelineUiState::default();
+        let started_at = Instant::now();
+        state.begin_live_scrub_dispatch(
+            TimelineLiveScrubSettingsSnapshot {
+                decode_mode: TimelineLiveScrubDecodeMode::EveryDragEvent,
+                max_hz: 60,
+            },
+            started_at,
+            MediaTime::from_secs(10),
+        );
+
+        // egui шлёт dragged=true каждый кадр даже при неподвижной мыши.
+        assert_eq!(
+            state.live_scrub_preview_dispatch_target(
+                started_at + Duration::from_millis(16),
+                MediaTime::from_secs(10),
+            ),
+            None
+        );
+        assert_eq!(
+            state.live_scrub_preview_dispatch_target(
+                started_at + Duration::from_millis(32),
+                MediaTime::from_secs(10),
+            ),
+            None
+        );
+
+        // Реальное движение диспатчится сразу, повтор новой позиции — снова no-op.
+        assert_eq!(
+            state.live_scrub_preview_dispatch_target(
+                started_at + Duration::from_millis(48),
+                MediaTime::from_secs(20),
+            ),
+            Some(MediaTime::from_secs(20))
+        );
+        assert_eq!(
+            state.live_scrub_preview_dispatch_target(
+                started_at + Duration::from_millis(64),
+                MediaTime::from_secs(20),
+            ),
+            None
+        );
+    }
+
+    /// ThrottledLatest: после показанного landing неподвижный курсор не уходит
+    /// в повторный decode того же target (иначе прокат от keyframe повторяется).
+    #[test]
+    fn live_scrub_stationary_pointer_does_not_redispatch_same_target_throttled() {
+        let mut state = TimelineUiState::default();
+        let started_at = Instant::now();
+        state.begin_live_scrub_dispatch(
+            TimelineLiveScrubSettingsSnapshot {
+                decode_mode: TimelineLiveScrubDecodeMode::ThrottledLatest,
+                max_hz: 60,
+            },
+            started_at,
+            MediaTime::from_secs(10),
+        );
+        state.note_live_scrub_landing_presented(MediaTime::from_secs(10));
+
+        let period = live_scrub_min_dispatch_period(60);
+        assert_eq!(
+            state.live_scrub_preview_dispatch_target(started_at + period, MediaTime::from_secs(10)),
+            None
+        );
+        assert_eq!(
+            state.live_scrub_preview_dispatch_target(
+                started_at + period * 2,
+                MediaTime::from_secs(10),
+            ),
+            None
+        );
+        // Дедуп неподвижного курсора — не throttle skip.
+        assert_eq!(
+            state
+                .live_scrub_diagnostics()
+                .expect("active live scrub diagnostics")
+                .throttled_latest_skip_count,
+            0
+        );
+        // Release того же target тоже не дублирует decode.
+        assert_eq!(
+            state.live_scrub_release_dispatch_target(
+                started_at + period * 3,
+                MediaTime::from_secs(10),
+            ),
+            None
         );
     }
 
@@ -1261,6 +1385,51 @@ mod tests {
         assert_eq!(
             state.live_scrub_preview_dispatch_target(after_landing, MediaTime::from_secs(30)),
             Some(MediaTime::from_secs(30))
+        );
+    }
+
+    /// Обратная перемотка: устаревший landing предыдущего (большего) target не
+    /// открывает completion-gate — иначе in-flight decode назад суперседился бы.
+    #[test]
+    fn live_scrub_stale_forward_landing_does_not_open_gate_for_backward_target() {
+        let mut state = TimelineUiState::default();
+        let started_at = Instant::now();
+        state.begin_live_scrub_dispatch(
+            TimelineLiveScrubSettingsSnapshot {
+                decode_mode: TimelineLiveScrubDecodeMode::ThrottledLatest,
+                max_hz: 60,
+            },
+            started_at,
+            MediaTime::from_secs(30),
+        );
+        state.note_live_scrub_landing_presented(MediaTime::from_secs(30));
+
+        // Пользователь тянет назад: dispatched target 10 уходит в decode.
+        let period = live_scrub_min_dispatch_period(60);
+        assert_eq!(
+            state.live_scrub_preview_dispatch_target(started_at + period, MediaTime::from_secs(10)),
+            Some(MediaTime::from_secs(10))
+        );
+
+        // Поздний/повторный landing старого target 30 (больше awaiting 10) —
+        // gate должен остаться закрытым до landing именно target 10.
+        state.note_live_scrub_landing_presented(MediaTime::from_secs(30));
+        assert_eq!(
+            state.live_scrub_preview_dispatch_target(
+                started_at + period * 2,
+                MediaTime::from_secs(5),
+            ),
+            None
+        );
+
+        // Exact landing target 10 открывает gate, уходит newest backward target.
+        state.note_live_scrub_landing_presented(MediaTime::from_secs(10));
+        assert_eq!(
+            state.live_scrub_preview_dispatch_target(
+                started_at + period * 3,
+                MediaTime::from_secs(5),
+            ),
+            Some(MediaTime::from_secs(5))
         );
     }
 
