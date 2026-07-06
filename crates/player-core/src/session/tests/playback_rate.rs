@@ -20,6 +20,20 @@ fn fake_prepared_media(label: &str) -> PreparedMedia {
     PreparedMedia::from_external_label(label, Box::new(demuxer))
 }
 
+fn fake_prepared_media_with_seek_log(label: &str) -> (PreparedMedia, Arc<Mutex<Vec<Duration>>>) {
+    let seek_log = Arc::new(Mutex::new(Vec::new()));
+    let demuxer = FakeDemuxer::new(
+        Vec::new(),
+        Some(Duration::from_secs(30)),
+        Arc::clone(&seek_log),
+    );
+
+    (
+        PreparedMedia::from_external_label(label, Box::new(demuxer)),
+        seek_log,
+    )
+}
+
 #[test]
 fn default_playback_rate_is_one_x() {
     let session = PlayerSession::new();
@@ -67,6 +81,67 @@ fn playback_rate_command_updates_snapshot_while_playing() {
     );
 
     assert_eq!(session.snapshot().playback_rate, requested_rate);
+}
+
+#[test]
+fn playing_playback_rate_change_reanchors_no_audio_clock_without_seek_transaction() {
+    let mut session = PlayerSession::new();
+    let requested_rate = playback_rate(2.0);
+    let initial_position = Duration::from_millis(100);
+    let (prepared_media, seek_log) = fake_prepared_media_with_seek_log("rate-change media");
+
+    session.load_prepared_media_with_autoplay(prepared_media, false);
+    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.update_current_position(initial_position);
+    let seek_generation_before_command = session.pipeline.seek_generation();
+
+    assert_rate_command_applied(
+        session.dispatch_command(PlayerCommand::SetPlaybackRate(requested_rate)),
+    );
+
+    let position_after_forty_wall_ms =
+        session.presentation_clock_position_at(Instant::now() + Duration::from_millis(40));
+
+    assert_eq!(session.snapshot().playback_rate, requested_rate);
+    assert!(
+        position_after_forty_wall_ms >= initial_position + Duration::from_millis(80),
+        "2x no-audio clock must advance by at least the scaled wall delta: {position_after_forty_wall_ms:?}"
+    );
+    assert_eq!(
+        session.pipeline.seek_generation(),
+        seek_generation_before_command
+    );
+    assert!(
+        seek_log
+            .lock()
+            .expect("seek log mutex should not be poisoned")
+            .is_empty()
+    );
+}
+
+#[test]
+fn playing_half_rate_change_reanchors_no_audio_clock_slower_than_wall_time() {
+    let mut session = PlayerSession::new();
+    let requested_rate = playback_rate(0.5);
+    let initial_position = Duration::from_millis(100);
+
+    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session.update_current_position(initial_position);
+    assert_rate_command_applied(
+        session.dispatch_command(PlayerCommand::SetPlaybackRate(requested_rate)),
+    );
+
+    let position_after_one_wall_sec =
+        session.presentation_clock_position_at(Instant::now() + Duration::from_secs(1));
+
+    assert!(
+        position_after_one_wall_sec < initial_position + Duration::from_secs(1),
+        "0.5x no-audio clock must advance slower than raw wall time: {position_after_one_wall_sec:?}"
+    );
+    assert!(
+        position_after_one_wall_sec >= initial_position + Duration::from_millis(500),
+        "0.5x no-audio clock must still advance by the scaled wall delta: {position_after_one_wall_sec:?}"
+    );
 }
 
 #[test]

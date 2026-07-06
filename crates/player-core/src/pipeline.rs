@@ -21,7 +21,7 @@ use video_frame_contract::{DmaBufImageLayout, VideoFramePixelLayout};
 
 use crate::{
     DecodeSendError, DecodeThreadError, DecoderControlChannelPressureSnapshot,
-    DecoderResourceSnapshot, PlayerAudioClock, PlayerAudioOutput, PlayerDecodePacket,
+    DecoderResourceSnapshot, PlaybackRate, PlayerAudioClock, PlayerAudioOutput, PlayerDecodePacket,
     PlayerVideoDecoderThreadHandle, PresentFrameResourceProviderHandle,
     VideoDecoderEndOfStreamDrainResult, VideoDecoderEndOfStreamDrainState, VideoPrerollOutputFloor,
     VideoPrerollOutputFloorClear, VideoPrerollOutputFloorResult, VideoStreamConfigResult,
@@ -187,23 +187,36 @@ struct MonotonicMediaClockAnchor {
 
     /// Монотонный момент, от которого считается fallback media time.
     anchored_at: Instant,
+
+    /// Playback rate, с которым wall-time превращается в media-time.
+    playback_rate: PlaybackRate,
 }
 
 impl MonotonicMediaClockAnchor {
     /// Создаёт anchor без привязки к video FPS или worker tick cadence.
     #[must_use]
-    const fn new(media_position: Duration, anchored_at: Instant) -> Self {
+    const fn new(
+        media_position: Duration,
+        anchored_at: Instant,
+        playback_rate: PlaybackRate,
+    ) -> Self {
         Self {
             media_position,
             anchored_at,
+            playback_rate,
         }
     }
 
     /// Возвращает media position на заданный monotonic момент.
     #[must_use]
     fn position_at(self, now: Instant) -> Duration {
+        let elapsed_wall_time = now.saturating_duration_since(self.anchored_at);
+        let elapsed_media_time = self
+            .playback_rate
+            .scale_wall_delta_to_media_delta(elapsed_wall_time);
+
         self.media_position
-            .checked_add(now.saturating_duration_since(self.anchored_at))
+            .checked_add(elapsed_media_time)
             .unwrap_or(Duration::MAX)
     }
 }

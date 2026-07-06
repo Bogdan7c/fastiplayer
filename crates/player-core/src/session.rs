@@ -350,8 +350,11 @@ impl PlayerSession {
         if self.snapshot.playback_state == PlaybackState::Playing
             && !self.pipeline.has_audio_clock()
         {
-            self.pipeline
-                .start_monotonic_media_clock(position, Instant::now());
+            self.pipeline.start_monotonic_media_clock(
+                position,
+                Instant::now(),
+                self.snapshot.playback_rate,
+            );
         }
     }
 
@@ -400,8 +403,11 @@ impl PlayerSession {
             return;
         }
 
-        self.pipeline
-            .start_monotonic_media_clock(self.snapshot.current_position, now);
+        self.pipeline.start_monotonic_media_clock(
+            self.snapshot.current_position,
+            now,
+            self.snapshot.playback_rate,
+        );
     }
 
     /// Останавливает no-audio media clock, предварительно сохранив актуальную позицию.

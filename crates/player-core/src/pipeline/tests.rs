@@ -750,11 +750,61 @@ fn no_audio_monotonic_fallback_counts_position_from_anchor() {
     let anchored_at = Instant::now();
     let initial_position = Duration::from_millis(100);
 
-    pipeline.start_monotonic_media_clock(initial_position, anchored_at);
+    pipeline.start_monotonic_media_clock(initial_position, anchored_at, PlaybackRate::NORMAL);
 
     assert_eq!(
         pipeline.monotonic_media_position(anchored_at + Duration::from_millis(40)),
         Some(Duration::from_millis(140))
+    );
+}
+
+#[test]
+fn no_audio_monotonic_fallback_scales_position_by_playback_rate() {
+    let anchored_at = Instant::now();
+    let initial_position = Duration::from_millis(100);
+    let two_x_rate = PlaybackRate::new(2.0).expect("2x playback rate must validate");
+    let half_x_rate = PlaybackRate::new(0.5).expect("0.5x playback rate must validate");
+
+    let mut fast_pipeline = PlaybackPipeline::default();
+    fast_pipeline.start_monotonic_media_clock(initial_position, anchored_at, two_x_rate);
+
+    assert_eq!(
+        fast_pipeline.monotonic_media_position(anchored_at + Duration::from_millis(40)),
+        Some(Duration::from_millis(180))
+    );
+
+    let mut slow_pipeline = PlaybackPipeline::default();
+    slow_pipeline.start_monotonic_media_clock(initial_position, anchored_at, half_x_rate);
+
+    assert_eq!(
+        slow_pipeline.monotonic_media_position(anchored_at + Duration::from_millis(40)),
+        Some(Duration::from_millis(120))
+    );
+}
+
+#[test]
+fn no_audio_monotonic_fallback_boundary_rates_saturate_without_wrapping() {
+    let anchored_at = Instant::now();
+    let near_max_position = Duration::MAX.saturating_sub(Duration::from_nanos(1));
+
+    let mut max_rate_pipeline = PlaybackPipeline::default();
+    max_rate_pipeline.start_monotonic_media_clock(
+        near_max_position,
+        anchored_at,
+        PlaybackRate::MAX,
+    );
+
+    assert_eq!(
+        max_rate_pipeline.monotonic_media_position(anchored_at + Duration::from_secs(1)),
+        Some(Duration::MAX)
+    );
+
+    let mut min_rate_pipeline = PlaybackPipeline::default();
+    min_rate_pipeline.start_monotonic_media_clock(Duration::ZERO, anchored_at, PlaybackRate::MIN);
+
+    assert_eq!(
+        min_rate_pipeline.monotonic_media_position(anchored_at + Duration::from_millis(4)),
+        Some(Duration::from_millis(1))
     );
 }
 
@@ -764,7 +814,7 @@ fn installing_audio_clock_clears_monotonic_fallback_anchor() {
     let anchored_at = Instant::now();
     let clock = Arc::new(FixedAudioClock::new(Duration::from_millis(12), 3));
 
-    pipeline.start_monotonic_media_clock(Duration::from_secs(3), anchored_at);
+    pipeline.start_monotonic_media_clock(Duration::from_secs(3), anchored_at, PlaybackRate::NORMAL);
     assert!(pipeline.monotonic_media_position(anchored_at).is_some());
 
     pipeline.install_audio_clock(Arc::clone(&clock) as Arc<dyn PlayerAudioClock>);
@@ -785,7 +835,7 @@ fn seek_clock_reset_restores_base_and_clears_fallback_sample_window() {
     let target_position = Duration::from_secs(9);
 
     pipeline.set_media_clock_base(Duration::from_secs(2));
-    pipeline.start_monotonic_media_clock(Duration::from_secs(4), anchored_at);
+    pipeline.start_monotonic_media_clock(Duration::from_secs(4), anchored_at, PlaybackRate::NORMAL);
     pipeline.reset_audio_clock_sample(Duration::from_secs(3), anchored_at);
 
     pipeline.reset_clocks_for_seek(target_position);

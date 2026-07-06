@@ -263,8 +263,8 @@ pub enum PlayerCommand {
 
     /// Установить runtime-only playback rate.
     ///
-    /// S33 только сохраняет checked value в snapshot. Non-1x ещё не является
-    /// рабочим runtime behavior, пока scheduler/audio/tempo path не подключены.
+    /// S34 подключает no-audio clock/scheduler groundwork. Audio tempo и внешние
+    /// control surfaces ещё не подключены, поэтому release всё ещё gated.
     SetPlaybackRate(PlaybackRate),
 
     /// Установить громкость в диапазоне `0.0..=1.0`.

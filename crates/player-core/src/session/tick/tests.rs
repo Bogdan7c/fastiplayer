@@ -16,7 +16,7 @@ use super::*;
 use super::{demux_admission::*, presentation_scheduler::*, wakeup::*};
 use crate::{
     DecodeBackpressureReason, DecodeSendError, DecodeThreadError, FrameCounters,
-    PendingAudioPacket, PendingVideoPacket, PlaybackPipeline, PlaybackResumeIntent,
+    PendingAudioPacket, PendingVideoPacket, PlaybackPipeline, PlaybackRate, PlaybackResumeIntent,
     PlayerAudioClock, PlayerAudioOutput, PlayerCommand, PlayerDecodePacket, PlayerErrorKind,
     PlayerSession, PresentFrameResourceProviderHandle, WorkerWakeupReason,
 };
@@ -736,6 +736,120 @@ fn worker_wakeup_for_24_and_30_fps_is_not_fixed_60hz_polling() {
                 .is_some_and(|delay| delay > Duration::from_millis(20))
         );
     }
+}
+
+#[test]
+fn worker_wakeup_scales_no_audio_frame_deadline_by_playback_rate() {
+    let tick_config = PlayerTickConfig {
+        video_present_lead_frames: 0.0,
+        ..PlayerTickConfig::default()
+    };
+    let cases = [
+        (
+            PlaybackRate::MIN,
+            Duration::from_millis(3_900),
+            Duration::from_millis(4_100),
+        ),
+        (
+            PlaybackRate::new(2.0).expect("2x playback rate must validate"),
+            Duration::from_millis(450),
+            Duration::from_millis(550),
+        ),
+        (
+            PlaybackRate::new(0.5).expect("0.5x playback rate must validate"),
+            Duration::from_millis(1_900),
+            Duration::from_millis(2_100),
+        ),
+        (
+            PlaybackRate::MAX,
+            Duration::from_millis(200),
+            Duration::from_millis(300),
+        ),
+    ];
+
+    for (playback_rate, min_delay, max_delay) in cases {
+        let mut session = PlayerSession::new();
+        session.dispatch_command(PlayerCommand::Play).unwrap();
+        session.update_current_position(Duration::ZERO);
+        session
+            .dispatch_command(PlayerCommand::SetPlaybackRate(playback_rate))
+            .unwrap();
+        session
+            .pipeline
+            .enqueue_queued_video_frame(decoded_frame(Duration::from_secs(1), 1));
+
+        let plan = session.worker_wakeup_plan(
+            Instant::now(),
+            &tick_config,
+            Duration::from_millis(2),
+            Duration::from_millis(250),
+        );
+        let planned_delay = plan.delay.expect("future frame must create deadline");
+
+        assert_eq!(plan.reason, WorkerWakeupReason::FramePtsDeadline);
+        assert!(
+            (min_delay..=max_delay).contains(&planned_delay),
+            "rate-aware no-audio deadline {planned_delay:?} was outside {min_delay:?}..={max_delay:?}"
+        );
+    }
+}
+
+#[test]
+fn front_frame_scheduler_delay_keeps_positive_deadline_nonzero_at_max_rate() {
+    let mut session = PlayerSession::new();
+    let now = Instant::now();
+    let tick_config = PlayerTickConfig {
+        video_present_lead_frames: 0.0,
+        ..PlayerTickConfig::default()
+    };
+
+    session.set_playback_state(PlaybackState::Playing);
+    session
+        .dispatch_command(PlayerCommand::SetPlaybackRate(PlaybackRate::MAX))
+        .unwrap();
+    session.pipeline.start_monotonic_media_clock(
+        Duration::ZERO,
+        now + Duration::from_secs(1),
+        PlaybackRate::MAX,
+    );
+    session
+        .pipeline
+        .enqueue_queued_video_frame(decoded_frame(Duration::from_nanos(1), 1));
+
+    let delay = front_frame_scheduler_delay(&session, &tick_config, now)
+        .expect("queued future frame must create scheduler delay");
+
+    assert_eq!(delay, Duration::from_nanos(1));
+}
+
+#[test]
+fn front_frame_scheduler_delay_keeps_audio_clock_deadline_unscaled_by_playback_rate() {
+    fn audio_clock_scheduler_delay_for(playback_rate: PlaybackRate) -> Duration {
+        let mut session = PlayerSession::new();
+        let tick_config = PlayerTickConfig {
+            video_present_lead_frames: 0.0,
+            ..PlayerTickConfig::default()
+        };
+
+        session.set_playback_state(PlaybackState::Playing);
+        session
+            .pipeline
+            .install_audio_clock(Arc::new(FixedAudioClock) as Arc<dyn PlayerAudioClock>);
+        session
+            .dispatch_command(PlayerCommand::SetPlaybackRate(playback_rate))
+            .unwrap();
+        session
+            .pipeline
+            .enqueue_queued_video_frame(decoded_frame(Duration::from_secs(1), 1));
+
+        front_frame_scheduler_delay(&session, &tick_config, Instant::now())
+            .expect("queued future frame must create scheduler delay")
+    }
+
+    assert_eq!(
+        audio_clock_scheduler_delay_for(PlaybackRate::MAX),
+        audio_clock_scheduler_delay_for(PlaybackRate::NORMAL)
+    );
 }
 
 #[test]

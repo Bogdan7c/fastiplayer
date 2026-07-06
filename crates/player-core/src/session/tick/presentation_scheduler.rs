@@ -356,6 +356,30 @@ pub(super) fn saturating_duration_add(timestamp: Duration, offset: Duration) -> 
     timestamp.checked_add(offset).unwrap_or(Duration::MAX)
 }
 
+/// Переводит wall lead scheduler-а в media lead текущего clock source.
+fn scheduler_wall_delta_to_media_delta(session: &PlayerSession, wall_delta: Duration) -> Duration {
+    if session.pipeline.has_audio_clock() {
+        return wall_delta;
+    }
+
+    session
+        .snapshot()
+        .playback_rate
+        .scale_wall_delta_to_media_delta(wall_delta)
+}
+
+/// Переводит future media deadline в wall delay для worker-а.
+fn scheduler_media_delta_to_wall_delay(session: &PlayerSession, media_delta: Duration) -> Duration {
+    if session.pipeline.has_audio_clock() {
+        return media_delta;
+    }
+
+    session
+        .snapshot()
+        .playback_rate
+        .scale_media_delta_to_wall_delay(media_delta)
+}
+
 /// Возвращает безопасный неотрицательный множитель для `Duration::mul_f64`.
 pub(super) fn finite_non_negative_factor(value: f64, fallback: f64) -> f64 {
     if value.is_finite() && value >= 0.0 {
@@ -387,7 +411,8 @@ pub(super) fn target_media_time_for_present(
     tick_config: &PlayerTickConfig,
     presentation_now: Duration,
 ) -> Duration {
-    let present_lead = video_present_lead(session, tick_config);
+    let present_lead =
+        scheduler_wall_delta_to_media_delta(session, video_present_lead(session, tick_config));
 
     saturating_duration_add(presentation_now, present_lead)
 }
@@ -466,11 +491,15 @@ pub(super) fn front_frame_scheduler_delay(
 ) -> Option<Duration> {
     let front_frame = session.pipeline.front_queued_video_frame()?;
     let presentation_now = session.presentation_clock_position_at(now);
-    let scheduler_media_deadline = front_frame
-        .pts
-        .saturating_sub(video_present_lead(session, tick_config));
+    let scheduler_media_lead =
+        scheduler_wall_delta_to_media_delta(session, video_present_lead(session, tick_config));
+    let scheduler_media_deadline = front_frame.pts.saturating_sub(scheduler_media_lead);
+    let media_delta_until_deadline = scheduler_media_deadline.saturating_sub(presentation_now);
 
-    Some(scheduler_media_deadline.saturating_sub(presentation_now))
+    Some(scheduler_media_delta_to_wall_delay(
+        session,
+        media_delta_until_deadline,
+    ))
 }
 
 /// Возвращает допустимое окно выбора кадра вокруг target media time.

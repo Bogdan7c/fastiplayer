@@ -256,9 +256,15 @@ impl PlaybackPipeline {
             .unwrap_or(Duration::MAX)
     }
 
-    /// Запускает monotonic fallback clock от заданной media position.
-    pub(crate) fn start_monotonic_media_clock(&mut self, position: Duration, now: Instant) {
-        self.monotonic_media_clock_anchor = Some(MonotonicMediaClockAnchor::new(position, now));
+    /// Запускает monotonic fallback clock от заданной media position и playback rate.
+    pub(crate) fn start_monotonic_media_clock(
+        &mut self,
+        position: Duration,
+        now: Instant,
+        playback_rate: PlaybackRate,
+    ) {
+        self.monotonic_media_clock_anchor =
+            Some(MonotonicMediaClockAnchor::new(position, now, playback_rate));
     }
 
     /// Очищает monotonic fallback clock для pause/seek/audio-clock paths.
