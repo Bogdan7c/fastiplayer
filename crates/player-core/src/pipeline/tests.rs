@@ -136,6 +136,14 @@ impl FixedAudioClock {
     fn reset_count(&self) -> usize {
         self.reset_count.load(Ordering::Relaxed)
     }
+
+    /// Меняет scripted playback позицию без обращения к concrete audio backend-у.
+    fn set_now(&self, now: Duration) {
+        *self
+            .now
+            .lock()
+            .expect("fake clock mutex не должен ломаться") = now;
+    }
 }
 
 impl PlayerAudioClock for FixedAudioClock {
@@ -826,6 +834,24 @@ fn installing_audio_clock_clears_monotonic_fallback_anchor() {
     assert!(pipeline.reset_audio_clock());
     assert_eq!(clock.reset_count(), 1);
     assert_eq!(pipeline.audio_clock_now(), Duration::ZERO);
+}
+
+#[test]
+fn audio_clock_mapping_scales_output_progress_by_playback_rate() {
+    let mut pipeline = PlaybackPipeline::default();
+    let clock = Arc::new(FixedAudioClock::new(Duration::ZERO, 0));
+    pipeline.install_audio_clock(Arc::clone(&clock) as Arc<dyn PlayerAudioClock>);
+    pipeline.reanchor_audio_clock_media_mapping(
+        Duration::from_secs(10),
+        PlaybackRate::new(2.0).expect("2x playback rate should be valid"),
+    );
+
+    clock.set_now(Duration::from_secs(1));
+
+    assert_eq!(
+        pipeline.media_position_from_audio_clock(),
+        Duration::from_secs(12)
+    );
 }
 
 #[test]

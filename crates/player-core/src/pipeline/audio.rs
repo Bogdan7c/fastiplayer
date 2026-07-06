@@ -91,6 +91,7 @@ impl PlaybackPipeline {
     /// Удаляет audio output runtime slot без изменения decoder/track selection.
     pub(crate) fn clear_audio_output(&mut self) {
         self.audio_output = None;
+        self.clear_audio_tempo_processor();
         self.audio_output_play_requested = false;
     }
 
@@ -107,6 +108,84 @@ impl PlaybackPipeline {
         self.audio_output
             .as_mut()
             .map(|output| output.write_samples(samples))
+    }
+
+    /// Устанавливает tempo processor, которым pipeline владеет между decoder и output.
+    pub(crate) fn install_audio_tempo_processor(
+        &mut self,
+        processor: AudioTempoProcessorHandle,
+        pcm_format: AudioTempoPcmFormat,
+    ) {
+        self.audio_tempo_processor = Some(processor);
+        self.audio_tempo_pcm_format = Some(pcm_format);
+    }
+
+    /// Очищает tempo processor так, чтобы `1.0x` снова был прямым PCM passthrough.
+    pub(crate) fn clear_audio_tempo_processor(&mut self) {
+        self.audio_tempo_processor = None;
+        self.audio_tempo_pcm_format = None;
+    }
+
+    /// Проверяет, активен ли tempo processor для non-1x audio path.
+    #[must_use]
+    pub(crate) fn has_audio_tempo_processor(&self) -> bool {
+        self.audio_tempo_processor.is_some()
+    }
+
+    /// Возвращает PCM format активного tempo processor-а без доступа к processor storage.
+    #[must_use]
+    pub(crate) const fn audio_tempo_pcm_format(&self) -> Option<AudioTempoPcmFormat> {
+        self.audio_tempo_pcm_format
+    }
+
+    /// Создаёт новый neutral tempo segment id для accepted playback-rate boundary.
+    pub(crate) fn next_audio_tempo_segment(
+        &mut self,
+        playback_rate: PlaybackRate,
+    ) -> anyhow::Result<AudioTempoSegment> {
+        let segment_id = AudioTempoSegmentId::new(self.next_audio_tempo_segment_id);
+        self.next_audio_tempo_segment_id = self.next_audio_tempo_segment_id.saturating_add(1);
+        let ratio = AudioTempoRatio::new(f64::from(playback_rate.as_f32()))?;
+        Ok(AudioTempoSegment::new(segment_id, ratio))
+    }
+
+    /// Меняет tempo segment внутри активного processor-а; absent processor остаётся no-op.
+    pub(crate) fn set_audio_tempo_segment(
+        &mut self,
+        segment: AudioTempoSegment,
+    ) -> Option<anyhow::Result<AudioTempoProcessReport>> {
+        self.audio_tempo_processor
+            .as_mut()
+            .map(|processor| processor.set_segment(segment))
+    }
+
+    /// Обрабатывает decoded PCM через активный tempo processor.
+    pub(crate) fn process_audio_tempo_samples(
+        &mut self,
+        samples: &[f32],
+    ) -> Option<anyhow::Result<AudioTempoStretchedOutput>> {
+        let processor = self.audio_tempo_processor.as_mut()?;
+        let Some(pcm_format) = self.audio_tempo_pcm_format else {
+            return Some(Err(anyhow::anyhow!(
+                "audio tempo processor is installed without its PCM format"
+            )));
+        };
+        let decoded_media =
+            match AudioTempoDecodedMedia::from_interleaved_samples(samples, pcm_format) {
+                Ok(decoded_media) => decoded_media,
+                Err(error) => return Some(Err(error)),
+            };
+
+        Some(processor.process_decoded_media(decoded_media))
+    }
+
+    /// Дренирует pending output tempo processor-а один раз и очищает processor slot.
+    pub(crate) fn flush_and_clear_audio_tempo_processor(
+        &mut self,
+    ) -> Option<anyhow::Result<AudioTempoStretchedOutput>> {
+        let mut processor = self.audio_tempo_processor.take()?;
+        self.audio_tempo_pcm_format = None;
+        Some(processor.flush())
     }
 
     /// Запускает audio output stream без смешивания absent output и CPAL error.
@@ -134,9 +213,12 @@ impl PlaybackPipeline {
         &mut self,
         generation: u64,
     ) -> Option<anyhow::Result<u64>> {
-        self.audio_output
+        let clear_result = self
+            .audio_output
             .as_mut()
-            .map(|output| output.clear_buffer_for_seek(generation))
+            .map(|output| output.clear_buffer_for_seek(generation));
+        self.clear_audio_tempo_processor();
+        clear_result
     }
 
     /// Устанавливает громкость output-а, если runtime output уже существует.
@@ -200,7 +282,13 @@ impl PlaybackPipeline {
 
     /// Устанавливает audio clock handle и отключает no-audio monotonic fallback.
     pub(crate) fn install_audio_clock(&mut self, clock: Arc<dyn PlayerAudioClock>) {
+        let output_clock_position = clock.now();
         self.audio_clock = Some(clock);
+        self.audio_clock_media_mapping_anchor = AudioClockMediaMappingAnchor::new(
+            self.media_clock_base,
+            output_clock_position,
+            self.audio_clock_media_mapping_anchor.playback_rate,
+        );
         self.clear_monotonic_media_clock();
     }
 
@@ -210,12 +298,17 @@ impl PlaybackPipeline {
     }
 
     /// Сбрасывает установленный audio clock; absent clock остаётся явным no-op.
-    pub(crate) fn reset_audio_clock(&self) -> bool {
+    pub(crate) fn reset_audio_clock(&mut self) -> bool {
         let Some(clock) = self.audio_clock.as_ref() else {
             return false;
         };
 
         clock.reset();
+        self.audio_clock_media_mapping_anchor = AudioClockMediaMappingAnchor::new(
+            self.audio_clock_media_mapping_anchor.media_position,
+            Duration::ZERO,
+            self.audio_clock_media_mapping_anchor.playback_rate,
+        );
         true
     }
 
@@ -237,23 +330,39 @@ impl PlaybackPipeline {
             .unwrap_or(0)
     }
 
-    /// Возвращает media base, соответствующий нулю текущего audio clock.
+    /// Возвращает media base для seek/preroll trimming.
     #[must_use]
     pub(crate) const fn media_clock_base(&self) -> Duration {
         self.media_clock_base
     }
 
-    /// Устанавливает media base без изменения audio clock handle или sample accounting.
+    /// Устанавливает media base и перепривязывает output-clock mapping к текущему clock.
     pub(crate) fn set_media_clock_base(&mut self, position: Duration) {
-        self.media_clock_base = position;
+        self.reanchor_audio_clock_media_mapping(
+            position,
+            self.audio_clock_media_mapping_anchor.playback_rate,
+        );
     }
 
-    /// Возвращает абсолютную media position, вычисленную от audio clock и media base.
+    /// Перепривязывает media position к текущему output clock и playback rate.
+    pub(crate) fn reanchor_audio_clock_media_mapping(
+        &mut self,
+        media_position: Duration,
+        playback_rate: PlaybackRate,
+    ) {
+        self.media_clock_base = media_position;
+        self.audio_clock_media_mapping_anchor = AudioClockMediaMappingAnchor::new(
+            media_position,
+            self.audio_clock_now(),
+            playback_rate,
+        );
+    }
+
+    /// Возвращает absolute media position, mapped from output-clock progress.
     #[must_use]
     pub(crate) fn media_position_from_audio_clock(&self) -> Duration {
-        self.media_clock_base
-            .checked_add(self.audio_clock_now())
-            .unwrap_or(Duration::MAX)
+        self.audio_clock_media_mapping_anchor
+            .media_position_at_output_clock(self.audio_clock_now())
     }
 
     /// Запускает monotonic fallback clock от заданной media position и playback rate.

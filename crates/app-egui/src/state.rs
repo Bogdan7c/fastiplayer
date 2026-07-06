@@ -279,7 +279,10 @@ impl AppState {
                 .with_audio_decoder_factory(Arc::new(audio::ProductionAudioDecoderFactory))
                 .with_audio_output_factory(Arc::new(audio::CpalAudioOutputFactory::new(
                     audio_output_device_controller,
-                )));
+                )))
+                .with_audio_tempo_processor_factory(Arc::new(
+                    audio_timestretch::TimestretchTempoProcessorFactory::default(),
+                ));
         let player_worker = PlayerWorker::spawn(worker_config)?;
         let desktop_integration = match DesktopIntegration::spawn(player_worker.command_sender()) {
             Ok(desktop_integration) => Some(desktop_integration),

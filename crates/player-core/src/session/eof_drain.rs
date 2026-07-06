@@ -162,6 +162,12 @@ impl PlayerSession {
             return false;
         }
 
+        if let Err(error) = self.flush_audio_tempo_processor_for_eof() {
+            warn!(error = %error, "Не удалось дренировать audio tempo tail после EOF");
+            self.disable_selected_audio_path();
+            self.record_recoverable_error(error);
+        }
+
         if !self.eof_drain_ready_to_end(now, audio_stall_timeout) {
             let blocker = self.eof_drain_blocker(now, audio_stall_timeout);
             trace!(

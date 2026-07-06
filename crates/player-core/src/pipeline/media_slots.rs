@@ -446,6 +446,7 @@ impl PlaybackPipeline {
         self.clear_audio_decoder();
         self.clear_deferred_audio_decoder_config();
         self.clear_audio_output();
+        self.next_audio_tempo_segment_id = 1;
         self.clear_selected_tracks();
         self.clear_pending_audio_packets();
         self.clear_pending_video_packets();
@@ -458,7 +459,7 @@ impl PlaybackPipeline {
         );
         self.seek_preroll_fallback_video_frame = None;
         self.clear_audio_clock();
-        self.set_media_clock_base(Duration::ZERO);
+        self.reanchor_audio_clock_media_mapping(Duration::ZERO, PlaybackRate::NORMAL);
         self.clear_monotonic_media_clock();
         self.seek_generation = 0;
         self.mark_audio_buffer_clear_ack(0);

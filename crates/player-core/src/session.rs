@@ -14,14 +14,18 @@ use tracing::{debug, info, warn};
 #[cfg(test)]
 use video_core::VideoDecoderThreadHandle;
 
-use crate::audio_boundary::{missing_audio_decoder_factory, missing_audio_output_factory};
+use crate::audio_boundary::{
+    missing_audio_decoder_factory, missing_audio_output_factory,
+    missing_audio_tempo_processor_factory,
+};
 #[cfg(test)]
 use crate::decoder_boundary::PresentFrameResourceProviderHandle;
 use crate::seek_state::{PlaybackResumeIntent, SeekRuntimeState};
 use crate::{
-    AudioDecoderFactory, AudioOutputFactory, FrameCounters, PlaybackDiagnostics, PlaybackPipeline,
-    PlaybackState, PlayerCommand, PlayerCommandOutcome, PlayerError, PlayerErrorKind, PlayerEvent,
-    PlayerResult, PlayerSnapshot, QualitySelection, SeekRequest, StartedVideoBackend, TrackId,
+    AudioDecoderFactory, AudioOutputFactory, AudioTempoProcessorFactory, FrameCounters,
+    PlaybackDiagnostics, PlaybackPipeline, PlaybackState, PlayerCommand, PlayerCommandOutcome,
+    PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSnapshot, QualitySelection,
+    SeekRequest, StartedVideoBackend, TrackId,
 };
 
 mod audio_runtime;
@@ -71,6 +75,9 @@ pub struct PlayerSession {
 
     /// Factory, через которую session лениво создаёт audio output после decoded spec.
     audio_output_factory: Arc<dyn AudioOutputFactory>,
+
+    /// Factory, через которую session создаёт tempo processor для non-1x decoded PCM.
+    audio_tempo_processor_factory: Arc<dyn AudioTempoProcessorFactory>,
 
     /// Последняя громкость, которая реально могла быть слышимой.
     ///
@@ -168,6 +175,16 @@ impl PlayerSession {
             audio_output_factory,
             ..Self::default()
         }
+    }
+
+    /// Подставляет tempo processor factory, которой владеет composition layer.
+    #[must_use]
+    pub fn with_audio_tempo_processor_factory(
+        mut self,
+        audio_tempo_processor_factory: Arc<dyn AudioTempoProcessorFactory>,
+    ) -> Self {
+        self.audio_tempo_processor_factory = audio_tempo_processor_factory;
+        self
     }
 
     /// Возвращает последний базовый immutable snapshot.
@@ -952,6 +969,7 @@ impl Default for PlayerSession {
             pipeline: PlaybackPipeline::default(),
             audio_decoder_factory: missing_audio_decoder_factory(),
             audio_output_factory: missing_audio_output_factory(),
+            audio_tempo_processor_factory: missing_audio_tempo_processor_factory(),
             last_nonzero_volume: None,
             diagnostics: PlaybackDiagnostics::default(),
             pending_events: Vec::new(),

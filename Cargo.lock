@@ -134,6 +134,7 @@ dependencies = [
  "animation-core",
  "anyhow",
  "audio",
+ "audio-timestretch",
  "capability-core",
  "codec-core",
  "desktop-integration",

@@ -18,6 +18,7 @@ impl PlayerWorker {
         let decoder_thread_config = config.decoder_thread_config;
         let audio_decoder_factory = Arc::clone(&config.audio_decoder_factory);
         let audio_output_factory = Arc::clone(&config.audio_output_factory);
+        let audio_tempo_processor_factory = Arc::clone(&config.audio_tempo_processor_factory);
         let frame_server_config = config.frame_server_config;
 
         let command_sender = PlayerCommandSender { command_tx };
@@ -30,7 +31,8 @@ impl PlayerWorker {
                 let mut session = PlayerSession::with_audio_factories(
                     audio_decoder_factory,
                     audio_output_factory,
-                );
+                )
+                .with_audio_tempo_processor_factory(audio_tempo_processor_factory);
                 session.apply_frame_server_policy_config(frame_server_config);
                 if let Err(error) =
                     session.dispatch_command(PlayerCommand::SetVolume(config.default_volume))

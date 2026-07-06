@@ -27,6 +27,7 @@ fn worker_config_for_tests() -> PlayerWorkerConfig {
         default_volume: 1.0,
         audio_decoder_factory: missing_audio_decoder_factory(),
         audio_output_factory: missing_audio_output_factory(),
+        audio_tempo_processor_factory: missing_audio_tempo_processor_factory(),
         frame_server_config: frame_server_core::FrameServerConfig::default()
             .validate()
             .expect("default frame-server config must validate"),

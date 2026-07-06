@@ -590,6 +590,9 @@ pub type AudioTempoProcessorHandle = Box<dyn AudioTempoProcessor + Send>;
 
 /// Нейтральный audio tempo processor без знания о concrete tempo crate.
 pub trait AudioTempoProcessor: Send {
+    /// Меняет active tempo segment без пересоздания processor-а и без output samples.
+    fn set_segment(&mut self, segment: AudioTempoSegment) -> Result<AudioTempoProcessReport>;
+
     /// Принимает decoded media PCM и возвращает stretched output PCM.
     fn process_decoded_media(
         &mut self,

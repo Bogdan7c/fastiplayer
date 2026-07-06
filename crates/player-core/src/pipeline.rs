@@ -20,12 +20,14 @@ use video_frame_contract::VideoFrameContract;
 use video_frame_contract::{DmaBufImageLayout, VideoFramePixelLayout};
 
 use crate::{
-    DecodeSendError, DecodeThreadError, DecoderControlChannelPressureSnapshot,
-    DecoderResourceSnapshot, PlaybackRate, PlayerAudioClock, PlayerAudioOutput, PlayerDecodePacket,
-    PlayerVideoDecoderThreadHandle, PresentFrameResourceProviderHandle,
-    VideoDecoderEndOfStreamDrainResult, VideoDecoderEndOfStreamDrainState, VideoPrerollOutputFloor,
-    VideoPrerollOutputFloorClear, VideoPrerollOutputFloorResult, VideoStreamConfigResult,
-    VideoStreamDecodeConfig,
+    AudioTempoDecodedMedia, AudioTempoPcmFormat, AudioTempoProcessReport,
+    AudioTempoProcessorHandle, AudioTempoRatio, AudioTempoSegment, AudioTempoSegmentId,
+    AudioTempoStretchedOutput, DecodeSendError, DecodeThreadError,
+    DecoderControlChannelPressureSnapshot, DecoderResourceSnapshot, PlaybackRate, PlayerAudioClock,
+    PlayerAudioOutput, PlayerDecodePacket, PlayerVideoDecoderThreadHandle,
+    PresentFrameResourceProviderHandle, VideoDecoderEndOfStreamDrainResult,
+    VideoDecoderEndOfStreamDrainState, VideoPrerollOutputFloor, VideoPrerollOutputFloorClear,
+    VideoPrerollOutputFloorResult, VideoStreamConfigResult, VideoStreamDecodeConfig,
 };
 #[cfg(test)]
 use video_core::VideoDecoderThreadHandle;
@@ -221,6 +223,48 @@ impl MonotonicMediaClockAnchor {
     }
 }
 
+/// Anchor перевода audio output clock progress в media progress.
+#[derive(Debug, Clone, Copy)]
+struct AudioClockMediaMappingAnchor {
+    /// Media position, которая соответствовала `output_clock_position`.
+    media_position: Duration,
+
+    /// Значение `PlayerAudioClock::now()` в момент re-anchor.
+    output_clock_position: Duration,
+
+    /// Media-progress per output-clock-progress для текущего tempo segment-а.
+    playback_rate: PlaybackRate,
+}
+
+impl AudioClockMediaMappingAnchor {
+    /// Создаёт mapping anchor без доступа к concrete audio output/backend state.
+    #[must_use]
+    const fn new(
+        media_position: Duration,
+        output_clock_position: Duration,
+        playback_rate: PlaybackRate,
+    ) -> Self {
+        Self {
+            media_position,
+            output_clock_position,
+            playback_rate,
+        }
+    }
+
+    /// Возвращает media position для текущего output clock.
+    #[must_use]
+    fn media_position_at_output_clock(self, output_clock_position: Duration) -> Duration {
+        let output_delta = output_clock_position.saturating_sub(self.output_clock_position);
+        let media_delta = self
+            .playback_rate
+            .scale_wall_delta_to_media_delta(output_delta);
+
+        self.media_position
+            .checked_add(media_delta)
+            .unwrap_or(Duration::MAX)
+    }
+}
+
 /// Сырой audio packet, который ждёт decode из-за backpressure audio buffer.
 pub(crate) struct PendingAudioPacket {
     /// Track ID нужен, чтобы не отправить packet неактивного audio track в decoder.
@@ -377,6 +421,15 @@ pub(crate) struct PlaybackPipeline {
     /// Audio output за нейтральным boundary trait-ом: production adapter или test fake.
     audio_output: Option<Box<dyn PlayerAudioOutput>>,
 
+    /// Optional tempo processor для non-1x decoded PCM; `1.0x` остаётся passthrough.
+    audio_tempo_processor: Option<AudioTempoProcessorHandle>,
+
+    /// PCM format, под который создан текущий tempo processor.
+    audio_tempo_pcm_format: Option<AudioTempoPcmFormat>,
+
+    /// Следующий monotonic tempo segment id внутри текущего media pipeline.
+    next_audio_tempo_segment_id: u64,
+
     /// Был ли текущий audio output успешно запущен через boundary `play`.
     audio_output_play_requested: bool,
 
@@ -447,6 +500,9 @@ pub(crate) struct PlaybackPipeline {
 
     /// Абсолютная media-позиция, соответствующая нулю текущего audio clock.
     media_clock_base: Duration,
+
+    /// Rate-aware mapping от output clock к media timeline.
+    audio_clock_media_mapping_anchor: AudioClockMediaMappingAnchor,
 
     /// Внутренний monotonic clock для playback без доступного audio clock.
     monotonic_media_clock_anchor: Option<MonotonicMediaClockAnchor>,
@@ -519,6 +575,9 @@ impl Default for PlaybackPipeline {
             audio_decoder: None,
             deferred_audio_decoder_config: None,
             audio_output: None,
+            audio_tempo_processor: None,
+            audio_tempo_pcm_format: None,
+            next_audio_tempo_segment_id: 1,
             audio_output_play_requested: false,
             audio_track_id: None,
             pending_audio_packets: VecDeque::new(),
@@ -538,6 +597,11 @@ impl Default for PlaybackPipeline {
             pending_video_packets: VecDeque::new(),
             audio_clock: None,
             media_clock_base: Duration::ZERO,
+            audio_clock_media_mapping_anchor: AudioClockMediaMappingAnchor::new(
+                Duration::ZERO,
+                Duration::ZERO,
+                PlaybackRate::NORMAL,
+            ),
             monotonic_media_clock_anchor: None,
             seek_generation: 0,
             audio_buffer_clear_generation: 0,

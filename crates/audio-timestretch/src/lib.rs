@@ -21,5 +21,6 @@ mod adapter;
 
 pub use adapter::{
     TimestretchOutputCapacityBudget, TimestretchQualityMode, TimestretchRatioSnapshot,
-    TimestretchTempoError, TimestretchTempoProcessor, TimestretchTempoSettings,
+    TimestretchTempoError, TimestretchTempoProcessor, TimestretchTempoProcessorFactory,
+    TimestretchTempoSettings,
 };

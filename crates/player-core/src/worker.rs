@@ -18,7 +18,10 @@ use video_core::{
 };
 use video_present_core::VideoFrameLease;
 
-use crate::audio_boundary::{missing_audio_decoder_factory, missing_audio_output_factory};
+use crate::audio_boundary::{
+    missing_audio_decoder_factory, missing_audio_output_factory,
+    missing_audio_tempo_processor_factory,
+};
 use crate::pipeline::VideoDecoderActivityStatus;
 #[cfg(test)]
 use crate::render_lease_bridge::{
@@ -29,16 +32,17 @@ use crate::render_lease_bridge::{RenderLeaseBridge, RenderLeaseBridgeClient};
 use crate::runtime_settings::{validate_runtime_default_volume, validate_runtime_tick_config};
 use crate::worker_scheduler::{PlannedWorkerWakeup, WorkerScheduler, WorkerWakeupDeadline};
 use crate::{
-    ActiveSeekDiagnosticsSnapshot, AudioDecoderFactory, AudioOutputFactory, FrameCounters,
-    LatencyCounterSnapshot, MediaOpenRequest, MediaSource, PlayerCommand, PlayerCommandOutcome,
-    PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, PlayerRuntimeAcceptedChange,
-    PlayerRuntimeApplyError, PlayerRuntimeApplyGroup, PlayerRuntimeApplyGroupReport,
-    PlayerRuntimeApplyReport, PlayerRuntimeApplyResult, PlayerRuntimeDecoderThreadConfigUpdate,
-    PlayerRuntimeDefaultVolumeUpdate, PlayerRuntimeFrameServerPolicyUpdate,
-    PlayerRuntimeSettingsUpdate, PlayerRuntimeTickConfigUpdate, PlayerRuntimeVideoBackendUpdate,
-    PlayerSession, PlayerSnapshot, PlayerTickConfig, PlayerTickContext, PlayerTickResult,
-    PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan, PreparedMedia,
-    SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend, scheduler_timing_diagnostics,
+    ActiveSeekDiagnosticsSnapshot, AudioDecoderFactory, AudioOutputFactory,
+    AudioTempoProcessorFactory, FrameCounters, LatencyCounterSnapshot, MediaOpenRequest,
+    MediaSource, PlayerCommand, PlayerCommandOutcome, PlayerError, PlayerErrorKind, PlayerEvent,
+    PlayerResult, PlayerRuntimeAcceptedChange, PlayerRuntimeApplyError, PlayerRuntimeApplyGroup,
+    PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyReport, PlayerRuntimeApplyResult,
+    PlayerRuntimeDecoderThreadConfigUpdate, PlayerRuntimeDefaultVolumeUpdate,
+    PlayerRuntimeFrameServerPolicyUpdate, PlayerRuntimeSettingsUpdate,
+    PlayerRuntimeTickConfigUpdate, PlayerRuntimeVideoBackendUpdate, PlayerSession, PlayerSnapshot,
+    PlayerTickConfig, PlayerTickContext, PlayerTickResult, PlayerVideoDecoderThreadConfig,
+    PlayerWorkerWakeupPlan, PreparedMedia, SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend,
+    scheduler_timing_diagnostics,
 };
 
 mod handle;
@@ -103,6 +107,9 @@ pub struct PlayerWorkerConfig {
     /// Factory audio output-а, которую composition layer устанавливает без CPAL deps в core.
     pub audio_output_factory: Arc<dyn AudioOutputFactory>,
 
+    /// Factory tempo processor-а, которую composition layer устанавливает без timestretch deps в core.
+    pub audio_tempo_processor_factory: Arc<dyn AudioTempoProcessorFactory>,
+
     /// Validated S19 scrub/scheduler policy snapshot для session-owned live scrub route.
     pub frame_server_config: ValidatedFrameServerConfig,
 }
@@ -122,6 +129,10 @@ impl fmt::Debug for PlayerWorkerConfig {
             .field("default_volume", &self.default_volume)
             .field("audio_decoder_factory", &"<dyn AudioDecoderFactory>")
             .field("audio_output_factory", &"<dyn AudioOutputFactory>")
+            .field(
+                "audio_tempo_processor_factory",
+                &"<dyn AudioTempoProcessorFactory>",
+            )
             .field("frame_server_config", &self.frame_server_config)
             .finish()
     }
@@ -139,6 +150,7 @@ impl PlayerWorkerConfig {
             default_volume: 1.0,
             audio_decoder_factory: missing_audio_decoder_factory(),
             audio_output_factory: missing_audio_output_factory(),
+            audio_tempo_processor_factory: missing_audio_tempo_processor_factory(),
             frame_server_config: RuntimeFrameServerConfig::default()
                 .validate()
                 .expect("default frame-server config must validate"),
@@ -156,6 +168,7 @@ impl PlayerWorkerConfig {
             default_volume: config.audio.volume as f32,
             audio_decoder_factory: missing_audio_decoder_factory(),
             audio_output_factory: missing_audio_output_factory(),
+            audio_tempo_processor_factory: missing_audio_tempo_processor_factory(),
             frame_server_config: Self::frame_server_config_from_app_config(config),
         }
     }
@@ -177,6 +190,16 @@ impl PlayerWorkerConfig {
         audio_output_factory: Arc<dyn AudioOutputFactory>,
     ) -> Self {
         self.audio_output_factory = audio_output_factory;
+        self
+    }
+
+    /// Подставляет tempo processor factory, которой владеет composition layer.
+    #[must_use]
+    pub fn with_audio_tempo_processor_factory(
+        mut self,
+        audio_tempo_processor_factory: Arc<dyn AudioTempoProcessorFactory>,
+    ) -> Self {
+        self.audio_tempo_processor_factory = audio_tempo_processor_factory;
         self
     }
 

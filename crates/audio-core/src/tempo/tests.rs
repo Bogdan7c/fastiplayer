@@ -91,6 +91,11 @@ impl FakeTempoProcessor {
 }
 
 impl AudioTempoProcessor for FakeTempoProcessor {
+    fn set_segment(&mut self, segment: AudioTempoSegment) -> Result<AudioTempoProcessReport> {
+        self.segment = segment;
+        Ok(self.report_for_operation(AudioTempoFrameCount::ZERO, AudioTempoFrameCount::ZERO))
+    }
+
     fn process_decoded_media(
         &mut self,
         decoded_media: AudioTempoDecodedMedia<'_>,
@@ -325,6 +330,29 @@ fn non_normal_ratio_distinguishes_consumed_media_from_produced_output_duration()
     assert_ne!(
         output.report().consumed_decoded_media().duration(),
         output.report().produced_stretched_output().duration()
+    );
+}
+
+#[test]
+fn set_segment_updates_ratio_without_consuming_or_producing_frames() {
+    let initial_ratio = AudioTempoRatio::NORMAL;
+    let updated_ratio = AudioTempoRatio::new(0.5).expect("ratio should be valid");
+    let updated_segment = AudioTempoSegment::new(AudioTempoSegmentId::new(8), updated_ratio);
+    let mut processor = FakeTempoProcessor::new(config_for_ratio(initial_ratio));
+
+    let report = processor
+        .set_segment(updated_segment)
+        .expect("fake segment update should succeed");
+
+    assert_eq!(report.segment_id(), updated_segment.segment_id());
+    assert_eq!(report.effective_ratio(), updated_ratio);
+    assert_eq!(
+        report.consumed_decoded_media().frame_count(),
+        AudioTempoFrameCount::ZERO
+    );
+    assert_eq!(
+        report.produced_stretched_output().frame_count(),
+        AudioTempoFrameCount::ZERO
     );
 }
 

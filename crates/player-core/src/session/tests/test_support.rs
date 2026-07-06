@@ -434,6 +434,9 @@ pub(super) struct ScriptedAudioOutputHandle {
     /// Shared уровень buffer-а, видимый через output boundary.
     pub(super) buffer_level_ms: Arc<Mutex<f64>>,
 
+    /// Samples, которые session записала через neutral output boundary.
+    pub(super) written_samples: Arc<Mutex<Vec<f32>>>,
+
     /// Сколько раз session попросила запустить stream.
     pub(super) play_count: Arc<AtomicUsize>,
 
@@ -450,6 +453,7 @@ impl ScriptedAudioOutputHandle {
         Self {
             clock: Arc::new(ScriptedAudioClock::new()),
             buffer_level_ms: Arc::new(Mutex::new(buffer_level_ms)),
+            written_samples: Arc::new(Mutex::new(Vec::new())),
             play_count: Arc::new(AtomicUsize::new(0)),
             pause_count: Arc::new(AtomicUsize::new(0)),
             clear_count: Arc::new(AtomicUsize::new(0)),
@@ -470,6 +474,14 @@ impl ScriptedAudioOutputHandle {
             .buffer_level_ms
             .lock()
             .expect("audio buffer level mutex should not be poisoned")
+    }
+
+    /// Возвращает samples, записанные в fake output.
+    pub(super) fn written_samples(&self) -> Vec<f32> {
+        self.written_samples
+            .lock()
+            .expect("written audio samples mutex should not be poisoned")
+            .clone()
     }
 
     /// Возвращает neutral clock handle для установки в pipeline/assertions.
@@ -507,6 +519,11 @@ impl ScriptedAudioOutput {
 impl PlayerAudioOutput for ScriptedAudioOutput {
     /// Fake принимает все samples и возвращает их количество как written count.
     fn write_samples(&mut self, samples: &[f32]) -> u64 {
+        self.handle
+            .written_samples
+            .lock()
+            .expect("written audio samples mutex should not be poisoned")
+            .extend_from_slice(samples);
         samples.len() as u64
     }
 

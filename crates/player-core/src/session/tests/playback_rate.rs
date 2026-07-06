@@ -145,6 +145,46 @@ fn playing_half_rate_change_reanchors_no_audio_clock_slower_than_wall_time() {
 }
 
 #[test]
+fn playing_playback_rate_change_reanchors_audio_clock_mapping_without_seek_transaction() {
+    let mut session = PlayerSession::new();
+    let requested_rate = playback_rate(2.0);
+    let initial_position = Duration::from_secs(5);
+    let audio_clock = Arc::new(ScriptedAudioClock::new());
+    let (prepared_media, seek_log) = fake_prepared_media_with_seek_log("audio rate-change media");
+
+    session.load_prepared_media_with_autoplay(prepared_media, false);
+    session.dispatch_command(PlayerCommand::Play).unwrap();
+    session
+        .pipeline
+        .install_audio_clock(audio_clock.as_player_clock());
+    session
+        .pipeline
+        .reanchor_audio_clock_media_mapping(initial_position, PlaybackRate::NORMAL);
+    session.update_current_position(initial_position);
+    let seek_generation_before_command = session.pipeline.seek_generation();
+
+    assert_rate_command_applied(
+        session.dispatch_command(PlayerCommand::SetPlaybackRate(requested_rate)),
+    );
+    audio_clock.record_played(96_000);
+
+    assert_eq!(
+        session.presentation_clock_position_at(Instant::now()),
+        Duration::from_secs(7)
+    );
+    assert_eq!(
+        session.pipeline.seek_generation(),
+        seek_generation_before_command
+    );
+    assert!(
+        seek_log
+            .lock()
+            .expect("seek log mutex should not be poisoned")
+            .is_empty()
+    );
+}
+
+#[test]
 fn paused_playback_rate_command_updates_snapshot_without_advancing_media_time() {
     let mut session = PlayerSession::new();
     let requested_rate = playback_rate(0.75);

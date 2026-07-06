@@ -5,10 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
 audio-core = { workspace = true }
 thiserror = { workspace = true }
 timestretch = "0.4"
 
 [dev-dependencies]
-anyhow = { workspace = true }
 symphonia = { workspace = true }

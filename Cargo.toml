@@ -102,6 +102,7 @@ directories = "6.0"
 rustiplayer-config = { path = "crates/config" }
 animation-core = { path = "crates/animation-core" }
 audio-core = { path = "crates/audio-core" }
+audio-timestretch = { path = "crates/audio-timestretch" }
 audio = { path = "crates/audio" }
 capability-core = { path = "crates/capability-core" }
 codec-core = { path = "crates/codec-core" }

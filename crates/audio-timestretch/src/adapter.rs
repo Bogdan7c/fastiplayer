@@ -1,7 +1,8 @@
 use audio_core::{
     AudioTempoChannelCount, AudioTempoDecodedMedia, AudioTempoFrameCount, AudioTempoPcmFormat,
-    AudioTempoProcessReport, AudioTempoProcessorConfig, AudioTempoRatio,
-    AudioTempoReportFrameCounts, AudioTempoSegment,
+    AudioTempoProcessReport, AudioTempoProcessor, AudioTempoProcessorConfig,
+    AudioTempoProcessorFactory, AudioTempoProcessorHandle, AudioTempoRatio,
+    AudioTempoReportFrameCounts, AudioTempoSegment, AudioTempoStretchedOutput,
 };
 use thiserror::Error;
 use timestretch::{QualityMode, StreamProcessor, StretchError, StretchParams};
@@ -146,6 +147,38 @@ impl TimestretchOutputCapacityBudget {
     pub fn additional_output_capacity_samples(self) -> usize {
         self.ratio_limited_output_samples
             .saturating_add(self.pending_output_capacity_samples)
+    }
+}
+
+/// Factory concrete timestretch processor-а для composition layer-а.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TimestretchTempoProcessorFactory {
+    settings: TimestretchTempoSettings,
+}
+
+impl TimestretchTempoProcessorFactory {
+    /// Создаёт factory с явно выбранным runtime profile.
+    #[must_use]
+    pub const fn with_settings(settings: TimestretchTempoSettings) -> Self {
+        Self { settings }
+    }
+
+    /// Возвращает settings, которые получит каждый новый processor.
+    #[must_use]
+    pub const fn settings(self) -> TimestretchTempoSettings {
+        self.settings
+    }
+}
+
+impl AudioTempoProcessorFactory for TimestretchTempoProcessorFactory {
+    fn create_processor(
+        &self,
+        config: AudioTempoProcessorConfig,
+    ) -> anyhow::Result<AudioTempoProcessorHandle> {
+        Ok(Box::new(TimestretchTempoProcessor::with_settings(
+            config,
+            self.settings,
+        )?))
     }
 }
 
@@ -347,6 +380,48 @@ impl TimestretchTempoProcessor {
     }
 }
 
+impl AudioTempoProcessor for TimestretchTempoProcessor {
+    fn set_segment(
+        &mut self,
+        segment: AudioTempoSegment,
+    ) -> anyhow::Result<AudioTempoProcessReport> {
+        TimestretchTempoProcessor::set_segment(self, segment)?;
+        Ok(self.report_from_counts(
+            AudioTempoFrameCount::ZERO,
+            AudioTempoFrameCount::ZERO,
+            self.current_pending_output_frames()?,
+        )?)
+    }
+
+    fn process_decoded_media(
+        &mut self,
+        decoded_media: AudioTempoDecodedMedia<'_>,
+    ) -> anyhow::Result<AudioTempoStretchedOutput> {
+        let capacity_budget =
+            self.output_capacity_budget(decoded_media.interleaved_samples().len());
+        let mut interleaved_samples =
+            Vec::with_capacity(capacity_budget.additional_output_capacity_samples());
+        let report = self.process_decoded_media_into(decoded_media, &mut interleaved_samples)?;
+
+        AudioTempoStretchedOutput::new(interleaved_samples, report, self.pcm_format)
+    }
+
+    fn flush(&mut self) -> anyhow::Result<AudioTempoStretchedOutput> {
+        let (_, pending_output_samples, _, pending_output_capacity_samples) =
+            self.backend_capacities();
+        let mut interleaved_samples = Vec::with_capacity(
+            pending_output_samples.saturating_add(pending_output_capacity_samples),
+        );
+        let report = self.flush_into(&mut interleaved_samples)?;
+
+        AudioTempoStretchedOutput::new(interleaved_samples, report, self.pcm_format)
+    }
+
+    fn reset(&mut self) -> anyhow::Result<AudioTempoProcessReport> {
+        Ok(TimestretchTempoProcessor::reset(self)?)
+    }
+}
+
 fn build_backend_params(
     pcm_format: AudioTempoPcmFormat,
     project_ratio: AudioTempoRatio,
@@ -470,6 +545,48 @@ mod tests {
         assert_eq!(
             processor.ratio_snapshot().unwrap().target_project_ratio,
             initial_segment.ratio()
+        );
+    }
+
+    #[test]
+    fn factory_creates_neutral_processor_trait_object() {
+        let pcm_format = AudioTempoPcmFormat::new(
+            AudioTempoSampleRateHz::new(48_000).unwrap(),
+            AudioTempoChannelCount::new(2).unwrap(),
+        );
+        let initial_segment =
+            AudioTempoSegment::new(AudioTempoSegmentId::new(1), AudioTempoRatio::NORMAL);
+        let config = AudioTempoProcessorConfig::new(pcm_format, initial_segment);
+        let factory = TimestretchTempoProcessorFactory::default();
+
+        let mut processor = factory.create_processor(config).unwrap();
+        let report = processor.reset().unwrap();
+
+        assert_eq!(report.segment_id(), initial_segment.segment_id());
+        assert_eq!(report.effective_ratio(), AudioTempoRatio::NORMAL);
+    }
+
+    #[test]
+    fn trait_set_segment_updates_target_ratio_without_recreating_processor() {
+        let pcm_format = AudioTempoPcmFormat::new(
+            AudioTempoSampleRateHz::new(48_000).unwrap(),
+            AudioTempoChannelCount::new(2).unwrap(),
+        );
+        let initial_segment =
+            AudioTempoSegment::new(AudioTempoSegmentId::new(1), AudioTempoRatio::NORMAL);
+        let updated_segment = AudioTempoSegment::new(
+            AudioTempoSegmentId::new(2),
+            AudioTempoRatio::new(2.0).unwrap(),
+        );
+        let config = AudioTempoProcessorConfig::new(pcm_format, initial_segment);
+        let mut processor = TimestretchTempoProcessor::new(config).unwrap();
+
+        let report = AudioTempoProcessor::set_segment(&mut processor, updated_segment).unwrap();
+
+        assert_eq!(report.segment_id(), updated_segment.segment_id());
+        assert_eq!(
+            processor.ratio_snapshot().unwrap().target_project_ratio,
+            updated_segment.ratio()
         );
     }
 }

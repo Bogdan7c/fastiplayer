@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use media_core::MediaTime;
+use tracing::warn;
 
 use crate::{
     PlaybackRate, PlaybackState, PlayerCommandOutcome, PlayerCommandReject, PlayerSession,
@@ -39,6 +40,9 @@ impl PlayerSession {
 
         self.snapshot.playback_rate = playback_rate;
         self.set_snapshot_position_for_playback_rate(current_media_position);
+        self.pipeline
+            .reanchor_audio_clock_media_mapping(current_media_position, playback_rate);
+        self.apply_audio_tempo_rate_change();
 
         if !self.pipeline.has_audio_clock() {
             self.pipeline.start_monotonic_media_clock(
@@ -54,7 +58,19 @@ impl PlayerSession {
     /// Применяет rate на pause без движения media clock.
     fn apply_paused_playback_rate(&mut self, playback_rate: PlaybackRate) -> PlayerCommandOutcome {
         self.snapshot.playback_rate = playback_rate;
+        self.pipeline
+            .reanchor_audio_clock_media_mapping(self.snapshot.current_position, playback_rate);
+        self.apply_audio_tempo_rate_change();
         PlayerCommandOutcome::Applied
+    }
+
+    /// Синхронизирует audio tempo segment и явно отключает audio path при ошибке processor-а.
+    fn apply_audio_tempo_rate_change(&mut self) {
+        if let Err(error) = self.sync_audio_tempo_processor_to_playback_rate() {
+            warn!(error = %error, "Не удалось применить playback rate к audio tempo processor");
+            self.disable_selected_audio_path();
+            self.record_recoverable_error(error);
+        }
     }
 
     /// Обновляет snapshot position без side-effect re-anchor внутри `update_current_position`.

@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use audio_core::{
     AudioDecoderConfig, AudioDecoderFactory, AudioDecoderHandle, AudioOutputFactory,
-    AudioOutputSpec, PlayerAudioOutput,
+    AudioOutputSpec, AudioTempoProcessorConfig, AudioTempoProcessorFactory,
+    AudioTempoProcessorHandle, PlayerAudioOutput,
 };
 
 /// Factory по умолчанию для tests/manual `PlayerSession::new` без concrete audio crate.
@@ -38,6 +39,27 @@ pub(crate) fn missing_audio_output_factory() -> Arc<dyn AudioOutputFactory> {
     Arc::new(MissingAudioOutputFactory)
 }
 
+/// Factory по умолчанию для tests/manual `PlayerSession::new` без concrete tempo backend-а.
+pub(crate) struct MissingAudioTempoProcessorFactory;
+
+impl AudioTempoProcessorFactory for MissingAudioTempoProcessorFactory {
+    /// Явно сообщает, что production tempo adapter не был установлен composition layer-ом.
+    fn create_processor(
+        &self,
+        config: AudioTempoProcessorConfig,
+    ) -> anyhow::Result<AudioTempoProcessorHandle> {
+        anyhow::bail!(
+            "audio tempo processor factory is not installed for ratio {}",
+            config.initial_segment().ratio()
+        )
+    }
+}
+
+/// Создаёт shared missing tempo factory для default-конструкторов без backend deps.
+pub(crate) fn missing_audio_tempo_processor_factory() -> Arc<dyn AudioTempoProcessorFactory> {
+    Arc::new(MissingAudioTempoProcessorFactory)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -67,6 +89,11 @@ mod tests {
     }
 
     impl AudioTempoProcessor for CompileOnlyTempoProcessor {
+        fn set_segment(&mut self, segment: AudioTempoSegment) -> Result<AudioTempoProcessReport> {
+            self.config = AudioTempoProcessorConfig::new(self.config.pcm_format(), segment);
+            Ok(self.zero_report())
+        }
+
         fn process_decoded_media(
             &mut self,
             _decoded_media: AudioTempoDecodedMedia<'_>,
@@ -116,6 +143,12 @@ mod tests {
         let reset_report = processor
             .reset()
             .expect("compile-only processor reset should succeed");
+        let updated_report = processor
+            .set_segment(AudioTempoSegment::new(
+                AudioTempoSegmentId::new(2),
+                AudioTempoRatio::new(2.0).expect("ratio should be valid"),
+            ))
+            .expect("compile-only processor segment update should succeed");
         let _created_processor = factory
             .create_processor(config)
             .expect("compile-only factory should create neutral trait object");
@@ -124,5 +157,6 @@ mod tests {
             reset_report.produced_stretched_output().frame_count(),
             AudioTempoFrameCount::ZERO
         );
+        assert_eq!(updated_report.segment_id(), AudioTempoSegmentId::new(2));
     }
 }
