@@ -30,8 +30,8 @@ use crate::runtime_settings::{validate_runtime_default_volume, validate_runtime_
 use crate::worker_scheduler::{PlannedWorkerWakeup, WorkerScheduler, WorkerWakeupDeadline};
 use crate::{
     ActiveSeekDiagnosticsSnapshot, AudioDecoderFactory, AudioOutputFactory, FrameCounters,
-    LatencyCounterSnapshot, MediaOpenRequest, MediaSource, PlayerCommand, PlayerError,
-    PlayerErrorKind, PlayerEvent, PlayerResult, PlayerRuntimeAcceptedChange,
+    LatencyCounterSnapshot, MediaOpenRequest, MediaSource, PlayerCommand, PlayerCommandOutcome,
+    PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, PlayerRuntimeAcceptedChange,
     PlayerRuntimeApplyError, PlayerRuntimeApplyGroup, PlayerRuntimeApplyGroupReport,
     PlayerRuntimeApplyReport, PlayerRuntimeApplyResult, PlayerRuntimeDecoderThreadConfigUpdate,
     PlayerRuntimeDefaultVolumeUpdate, PlayerRuntimeFrameServerPolicyUpdate,

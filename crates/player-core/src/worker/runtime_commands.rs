@@ -283,11 +283,17 @@ impl PlayerWorkerRuntime {
         self.dispatch_player_command(PlayerCommand::Shutdown);
     }
 
-    /// Безопасно вызывает `PlayerSession::dispatch_command` и сохраняет ошибку в session.
+    /// Безопасно вызывает `PlayerSession::dispatch_command`, не смешивая reject и fatal error.
     fn dispatch_player_command(&mut self, command: PlayerCommand) {
-        if let Err(error) = self.session.dispatch_command(command) {
-            warn!(error = %error, "Player worker command failed");
-            self.session.mark_fatal_error(error);
+        match self.session.dispatch_command(command) {
+            Ok(PlayerCommandOutcome::Applied) => {}
+            Ok(PlayerCommandOutcome::Rejected(rejection)) => {
+                debug!(rejection = ?rejection, "Player worker command rejected non-fatally");
+            }
+            Err(error) => {
+                warn!(error = %error, "Player worker command failed");
+                self.session.mark_fatal_error(error);
+            }
         }
     }
 }

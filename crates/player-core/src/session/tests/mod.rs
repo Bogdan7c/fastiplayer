@@ -50,6 +50,7 @@ mod diagnostics_sink;
 mod eof_drain;
 mod media_lifecycle;
 mod playback;
+mod playback_rate;
 mod scrub;
 mod scrub_driver;
 mod seek_regressions;

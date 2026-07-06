@@ -20,8 +20,8 @@ use crate::decoder_boundary::PresentFrameResourceProviderHandle;
 use crate::seek_state::{PlaybackResumeIntent, SeekRuntimeState};
 use crate::{
     AudioDecoderFactory, AudioOutputFactory, FrameCounters, PlaybackDiagnostics, PlaybackPipeline,
-    PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult,
-    PlayerSnapshot, QualitySelection, SeekRequest, StartedVideoBackend, TrackId,
+    PlaybackState, PlayerCommand, PlayerCommandOutcome, PlayerError, PlayerErrorKind, PlayerEvent,
+    PlayerResult, PlayerSnapshot, QualitySelection, SeekRequest, StartedVideoBackend, TrackId,
 };
 
 mod audio_runtime;
@@ -29,6 +29,7 @@ mod capability_selection;
 mod diagnostics_sink;
 mod eof_drain;
 mod media_lifecycle;
+mod playback_rate;
 mod prepared_seek;
 mod render_leases;
 mod scrub_driver;
@@ -276,7 +277,10 @@ impl PlayerSession {
     }
 
     /// Применяет команду к state machine.
-    pub fn dispatch_command(&mut self, command: PlayerCommand) -> PlayerResult<()> {
+    pub fn dispatch_command(
+        &mut self,
+        command: PlayerCommand,
+    ) -> PlayerResult<PlayerCommandOutcome> {
         debug!(
             command = ?command,
             playback_state = ?self.playback_state(),
@@ -289,7 +293,7 @@ impl PlayerSession {
             "Player command received"
         );
 
-        match command {
+        let command_result = match command {
             PlayerCommand::OpenMedia(request) => self.open_media(request),
             PlayerCommand::Play => self.play(),
             PlayerCommand::Pause => self.pause(),
@@ -306,6 +310,9 @@ impl PlayerSession {
                 live_scrub,
             } => self.end_scrub(live_scrub),
             PlayerCommand::Stop => self.stop(),
+            PlayerCommand::SetPlaybackRate(playback_rate) => {
+                return Ok(self.set_playback_rate(playback_rate));
+            }
             PlayerCommand::SetVolume(volume) => self.set_volume(volume),
             PlayerCommand::ToggleMute { fallback_volume } => self.toggle_mute(fallback_volume),
             PlayerCommand::SelectVideoTrack(track_id) => self.select_video_track(track_id),
@@ -314,7 +321,9 @@ impl PlayerSession {
             PlayerCommand::SelectQuality(selection) => self.select_quality(selection),
             PlayerCommand::ReloadConfig => self.reload_config(),
             PlayerCommand::Shutdown => self.shutdown(),
-        }
+        };
+
+        command_result.map(|()| PlayerCommandOutcome::Applied)
     }
 
     /// Переключает playback между пользовательскими смыслами "сейчас слышно/идёт" и "пауза".

@@ -5,7 +5,9 @@ use media_core::{
 };
 use video_core::{DecodedPixelFormat, FrameMemoryPath};
 
-use crate::{PlaybackDiagnosticsSnapshot, PlaybackState, PlayerError, QualityId, TrackId};
+use crate::{
+    PlaybackDiagnosticsSnapshot, PlaybackRate, PlaybackState, PlayerError, QualityId, TrackId,
+};
 
 /// Read-only snapshot player state для UI, renderer и desktop integration.
 #[derive(Debug, Clone, PartialEq)]
@@ -33,6 +35,9 @@ pub struct PlayerSnapshot {
 
     /// Флаг mute, отделённый от числовой громкости.
     pub muted: bool,
+
+    /// Runtime-only playback rate multiplier; `1.0x` сохраняет прежнее поведение.
+    pub playback_rate: PlaybackRate,
 
     /// Выбранные треки.
     pub selected_tracks: TrackSelectionSnapshot,
@@ -125,6 +130,7 @@ impl Default for PlayerSnapshot {
             timeline: TimelineSnapshot::default(),
             volume: 1.0,
             muted: false,
+            playback_rate: PlaybackRate::NORMAL,
             selected_tracks: TrackSelectionSnapshot::default(),
             tracks: Vec::new(),
             available_qualities: Vec::new(),

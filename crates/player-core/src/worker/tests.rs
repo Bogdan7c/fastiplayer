@@ -14,7 +14,7 @@ use video_present_core::VideoFrameLeaseConfig;
 
 use super::*;
 use crate::{
-    MediaSource, PlaybackState, PlayerRuntimeApplyOutcome, PlayerRuntimeSettingId,
+    MediaSource, PlaybackRate, PlaybackState, PlayerRuntimeApplyOutcome, PlayerRuntimeSettingId,
     ScrubCommitPolicy, SeekRequest,
 };
 
@@ -610,6 +610,34 @@ fn runtime_apply_default_volume_does_not_mutate_current_playback_volume() {
     assert_eq!(
         volume_report.outcome,
         PlayerRuntimeApplyOutcome::Accepted(PlayerRuntimeAcceptedChange::Applied)
+    );
+}
+
+#[test]
+fn worker_playback_rate_reject_stays_non_fatal_on_direct_command_path() {
+    let mut runtime = runtime_for_tests(Instant::now());
+    let requested_rate =
+        PlaybackRate::new(1.5).expect("worker playback-rate test value must validate");
+
+    runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::SetPlaybackRate(
+        requested_rate,
+    )));
+
+    assert_eq!(
+        runtime.session.snapshot().playback_state,
+        PlaybackState::Idle
+    );
+    assert_eq!(
+        runtime.session.snapshot().playback_rate,
+        PlaybackRate::NORMAL
+    );
+    assert!(runtime.session.snapshot().last_error.is_none());
+    assert!(
+        !runtime
+            .session
+            .take_events()
+            .iter()
+            .any(|event| matches!(event, PlayerEvent::FatalError(_)))
     );
 }
 

@@ -5,8 +5,8 @@ use tracing::{debug, info, warn};
 use crate::media_opening::PreparedMedia;
 use crate::seek_state::SeekCommitState;
 use crate::{
-    MediaOpenRequest, MediaSource, MediaSummary, PlaybackState, PlayerCommand, PlayerError,
-    PlayerEvent, PlayerResult, TrackSelectionSnapshot,
+    MediaOpenRequest, MediaSource, MediaSummary, PlaybackState, PlayerCommand,
+    PlayerCommandOutcome, PlayerError, PlayerEvent, PlayerResult, TrackSelectionSnapshot,
 };
 
 use super::PlayerSession;
@@ -95,12 +95,20 @@ impl PlayerSession {
         self.reset_media_state();
 
         let open_request = MediaOpenRequest::new(media_source, autoplay);
-        if let Err(error) = self.dispatch_command(PlayerCommand::OpenMedia(open_request)) {
-            self.record_recoverable_error(error);
-            return false;
+        match self.dispatch_command(PlayerCommand::OpenMedia(open_request)) {
+            Ok(PlayerCommandOutcome::Applied) => true,
+            Ok(PlayerCommandOutcome::Rejected(rejection)) => {
+                debug!(
+                    rejection = ?rejection,
+                    "Prepared media open command rejected before install"
+                );
+                false
+            }
+            Err(error) => {
+                self.record_recoverable_error(error);
+                false
+            }
         }
-
-        true
     }
 
     /// Подключает уже открытый media к pipeline и публикует успешный open transition.
@@ -314,6 +322,7 @@ impl PlayerSession {
     /// Принимает open request и переводит session в `Opening`.
     pub(super) fn open_media(&mut self, request: MediaOpenRequest) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
+        self.apply_playback_rate_media_load_policy();
         self.media_lifecycle
             .remember_open_autoplay(request.autoplay);
         self.snapshot.source_label = Some(request.source.label());

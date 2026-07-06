@@ -4,6 +4,8 @@ use std::time::Duration;
 use frame_server_core::LiveScrubDiagnostics;
 use media_core::{MediaTime, TrackId};
 
+use crate::{PlaybackRate, PlaybackState};
+
 /// Идентификатор качества или варианта потока.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct QualityId(String);
@@ -178,6 +180,29 @@ pub enum QualitySelection {
     Specific(QualityId),
 }
 
+/// Итог применения команды внутри `PlayerSession`.
+///
+/// Это boundary между нормальными semantic reject-ами и fatal/runtime ошибками:
+/// `Rejected` не должен проходить через worker fatal path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerCommandOutcome {
+    /// Команда применена к session state.
+    Applied,
+
+    /// Команда корректна по типам, но недоступна в текущем состоянии session.
+    Rejected(PlayerCommandReject),
+}
+
+/// Typed semantic reject для public player command-ов.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerCommandReject {
+    /// Playback rate V1 можно менять только во время `Playing` или `Paused`.
+    PlaybackRateUnavailableForState {
+        /// Public state, из-за которого команда не была применена.
+        state: PlaybackState,
+    },
+}
+
 /// Команда, которую UI или внешняя интеграция отправляет player state machine.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlayerCommand {
@@ -235,6 +260,12 @@ pub enum PlayerCommand {
 
     /// Остановить текущий media без завершения всей session.
     Stop,
+
+    /// Установить runtime-only playback rate.
+    ///
+    /// S33 только сохраняет checked value в snapshot. Non-1x ещё не является
+    /// рабочим runtime behavior, пока scheduler/audio/tempo path не подключены.
+    SetPlaybackRate(PlaybackRate),
 
     /// Установить громкость в диапазоне `0.0..=1.0`.
     SetVolume(f32),

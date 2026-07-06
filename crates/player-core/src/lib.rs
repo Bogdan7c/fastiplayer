@@ -13,6 +13,7 @@ mod error;
 mod event;
 mod media_opening;
 mod pipeline;
+mod playback_rate;
 mod render_lease_bridge;
 mod runtime_settings;
 mod seek_state;
@@ -29,8 +30,8 @@ pub use audio_core::{
 };
 pub use codec_core::VideoDecodeRequirement;
 pub use command::{
-    MediaOpenRequest, MediaSource, PlayerCommand, QualityId, QualitySelection, ScrubCommitPolicy,
-    SeekMode, SeekRequest, SeekTarget,
+    MediaOpenRequest, MediaSource, PlayerCommand, PlayerCommandOutcome, PlayerCommandReject,
+    QualityId, QualitySelection, ScrubCommitPolicy, SeekMode, SeekRequest, SeekTarget,
 };
 #[cfg(test)]
 pub(crate) use decoder_boundary::DecodeBackpressureReason;
@@ -73,6 +74,7 @@ pub use frame_server_core::{
 pub use media_core::TrackId;
 pub use media_opening::{PreparedMedia, PreparedMediaSource};
 pub(crate) use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};
+pub use playback_rate::{PlaybackRate, PlaybackRateValidationError};
 pub use runtime_settings::{
     PlayerRuntimeAcceptedChange, PlayerRuntimeApplyError, PlayerRuntimeApplyGroup,
     PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyOutcome, PlayerRuntimeApplyReport,
