@@ -120,6 +120,10 @@ FFMPEG_FORBIDDEN_DEPENDENCIES = frozenset(
     }
 )
 
+TEMPO_FORBIDDEN_DEPENDENCIES = frozenset({"timestretch"})
+
+TEMPO_NEUTRAL_CRATES = frozenset({"audio-core", "player-core"})
+
 CONTRACT_FORBIDDEN_DEPENDENCIES = frozenset(
     {
         "app-egui",
@@ -601,6 +605,14 @@ def find_dependency_violations(
                 rule="FFmpeg/libav crates не должны быть общими workspace dependencies",
             )
         )
+    for dependency in sorted(workspace_dependencies.intersection(TEMPO_FORBIDDEN_DEPENDENCIES)):
+        violations.append(
+            DependencyViolation(
+                owner="workspace.dependencies",
+                dependency=dependency,
+                rule="tempo backend crates не должны быть общими workspace dependencies до concrete adapter boundary",
+            )
+        )
     violations.extend(
         find_disallowed_dependencies(
             dependency_map,
@@ -631,6 +643,14 @@ def find_dependency_violations(
             frozenset(all_dependency_map).difference({"video-ffmpeg"}),
             FFMPEG_FORBIDDEN_DEPENDENCIES,
             "FFmpeg/libav crates разрешены только внутри video-ffmpeg",
+        )
+    )
+    violations.extend(
+        find_forbidden_dependencies(
+            all_dependency_map,
+            TEMPO_NEUTRAL_CRATES,
+            TEMPO_FORBIDDEN_DEPENDENCIES,
+            "audio-core/player-core видят только neutral tempo boundary, без direct concrete tempo dependency",
         )
     )
     violations.extend(

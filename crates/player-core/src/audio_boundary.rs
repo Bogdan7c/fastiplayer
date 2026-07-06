@@ -37,3 +37,92 @@ impl AudioOutputFactory for MissingAudioOutputFactory {
 pub(crate) fn missing_audio_output_factory() -> Arc<dyn AudioOutputFactory> {
     Arc::new(MissingAudioOutputFactory)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use anyhow::Result;
+
+    use crate::{
+        AudioTempoChannelCount, AudioTempoDecodedMedia, AudioTempoFrameCount, AudioTempoPcmFormat,
+        AudioTempoProcessReport, AudioTempoProcessor, AudioTempoProcessorConfig,
+        AudioTempoProcessorFactory, AudioTempoProcessorHandle, AudioTempoRatio,
+        AudioTempoReportFrameCounts, AudioTempoSampleRateHz, AudioTempoSegment,
+        AudioTempoSegmentId, AudioTempoStretchedOutput,
+    };
+
+    struct CompileOnlyTempoProcessor {
+        config: AudioTempoProcessorConfig,
+    }
+
+    impl CompileOnlyTempoProcessor {
+        fn zero_report(&self) -> AudioTempoProcessReport {
+            AudioTempoProcessReport::from_frame_counts(
+                self.config.pcm_format(),
+                self.config.initial_segment(),
+                AudioTempoReportFrameCounts::ZERO,
+            )
+        }
+    }
+
+    impl AudioTempoProcessor for CompileOnlyTempoProcessor {
+        fn process_decoded_media(
+            &mut self,
+            _decoded_media: AudioTempoDecodedMedia<'_>,
+        ) -> Result<AudioTempoStretchedOutput> {
+            AudioTempoStretchedOutput::new(Vec::new(), self.zero_report(), self.config.pcm_format())
+        }
+
+        fn flush(&mut self) -> Result<AudioTempoStretchedOutput> {
+            AudioTempoStretchedOutput::new(Vec::new(), self.zero_report(), self.config.pcm_format())
+        }
+
+        fn reset(&mut self) -> Result<AudioTempoProcessReport> {
+            Ok(self.zero_report())
+        }
+    }
+
+    struct CompileOnlyTempoFactory;
+
+    impl AudioTempoProcessorFactory for CompileOnlyTempoFactory {
+        fn create_processor(
+            &self,
+            config: AudioTempoProcessorConfig,
+        ) -> Result<AudioTempoProcessorHandle> {
+            Ok(Box::new(CompileOnlyTempoProcessor { config }))
+        }
+    }
+
+    fn compile_only_config() -> AudioTempoProcessorConfig {
+        let pcm_format = AudioTempoPcmFormat::new(
+            AudioTempoSampleRateHz::new(48_000).expect("sample rate should be valid"),
+            AudioTempoChannelCount::new(2).expect("channel count should be valid"),
+        );
+
+        AudioTempoProcessorConfig::new(
+            pcm_format,
+            AudioTempoSegment::new(AudioTempoSegmentId::new(1), AudioTempoRatio::NORMAL),
+        )
+    }
+
+    #[test]
+    fn audio_tempo_boundary_is_visible_as_neutral_trait_objects() {
+        let config = compile_only_config();
+        let mut processor: AudioTempoProcessorHandle =
+            Box::new(CompileOnlyTempoProcessor { config });
+        let factory: Arc<dyn AudioTempoProcessorFactory> = Arc::new(CompileOnlyTempoFactory);
+
+        let reset_report = processor
+            .reset()
+            .expect("compile-only processor reset should succeed");
+        let _created_processor = factory
+            .create_processor(config)
+            .expect("compile-only factory should create neutral trait object");
+
+        assert_eq!(
+            reset_report.produced_stretched_output().frame_count(),
+            AudioTempoFrameCount::ZERO
+        );
+    }
+}

@@ -6,11 +6,22 @@
 
 #![forbid(unsafe_code)]
 
+mod tempo;
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use thiserror::Error;
+
+pub use tempo::{
+    AudioTempoChannelCount, AudioTempoDecodedMedia, AudioTempoFrameCount, AudioTempoFrameSpan,
+    AudioTempoOutputProgressMapping, AudioTempoPcmFormat, AudioTempoProcessReport,
+    AudioTempoProcessor, AudioTempoProcessorConfig, AudioTempoProcessorError,
+    AudioTempoProcessorFactory, AudioTempoProcessorHandle, AudioTempoRatio,
+    AudioTempoRatioInvalidReason, AudioTempoReportFrameCounts, AudioTempoSampleRateHz,
+    AudioTempoSegment, AudioTempoSegmentId, AudioTempoStretchedOutput,
+};
 
 /// Codec-neutral параметры audio track-а, по которым factory создаёт decoder.
 #[derive(Debug, Clone, PartialEq, Eq)]
