@@ -8,7 +8,7 @@ use frame_server_core::{
 };
 use media_core::MediaTime;
 use player_core::{
-    MediaOpenRequest, MediaSource, MediaSummary, PlaybackResumeIntent, PlaybackState,
+    MediaOpenRequest, MediaSource, MediaSummary, PlaybackRate, PlaybackResumeIntent, PlaybackState,
     PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerSnapshot, SeekCommitInfo,
     SeekRequest,
 };
@@ -29,9 +29,10 @@ use super::present_frame_cache::{
 use super::telemetry_panel::{
     TELEMETRY_PANEL_REFRESH_INTERVAL, TelemetryPanelCache, TelemetryPanelRow, TelemetryPanelState,
 };
-use super::ui_runtime::timeline_command_from_action;
+use super::ui_runtime::{playback_rate_command_from_action, timeline_command_from_action};
 use super::{AppFrameContext, AppState};
 use crate::telemetry::Telemetry;
+use crate::ui::player_controls::ControlAction;
 use crate::ui::timeline::{TimelineAction, TimelineUiState};
 
 /// Собирает source `state` и child-модулей для guard-тестов после split-а.
@@ -156,6 +157,84 @@ fn timeline_live_scrub_actions_do_not_map_to_exact_seek_route() {
     ] {
         assert_eq!(timeline_command_from_action(action), None);
     }
+}
+
+/// Playback-rate UI разрешён в Paused: скорость применится при следующем Play без движения времени.
+#[test]
+fn playback_rate_ui_allows_paused_state() {
+    let mut player_snapshot = PlayerSnapshot::empty();
+    player_snapshot.playback_state = PlaybackState::Paused;
+
+    let command = playback_rate_command_from_action(
+        &player_snapshot,
+        &ControlAction::AdjustPlaybackRateSteps(1),
+    )
+    .expect("paused playback-rate action must map to command");
+
+    assert_eq!(
+        command,
+        PlayerCommand::SetPlaybackRate(PlaybackRate::new(1.10).expect("valid test rate"))
+    );
+}
+
+/// Buffering намеренно пропускается, даже если он пришёл из Playing.
+#[test]
+fn playback_rate_ui_skips_buffering_state() {
+    let mut player_snapshot = PlayerSnapshot::empty();
+    player_snapshot.playback_state = PlaybackState::Buffering;
+
+    assert_eq!(
+        playback_rate_command_from_action(
+            &player_snapshot,
+            &ControlAction::AdjustPlaybackRateSteps(1),
+        ),
+        None
+    );
+}
+
+/// Reset на `1.0x` не должен слать повторный no-op command.
+#[test]
+fn playback_rate_ui_skips_normal_reset_noop() {
+    let mut player_snapshot = PlayerSnapshot::empty();
+    player_snapshot.playback_state = PlaybackState::Playing;
+    player_snapshot.playback_rate = PlaybackRate::NORMAL;
+
+    assert_eq!(
+        playback_rate_command_from_action(&player_snapshot, &ControlAction::ResetPlaybackRate),
+        None
+    );
+}
+
+/// Clamp на верхней границе не должен повторно отправлять no-op command.
+#[test]
+fn playback_rate_ui_skips_clamped_edge_noop() {
+    let mut player_snapshot = PlayerSnapshot::empty();
+    player_snapshot.playback_state = PlaybackState::Playing;
+    player_snapshot.playback_rate = PlaybackRate::MAX;
+
+    assert_eq!(
+        playback_rate_command_from_action(
+            &player_snapshot,
+            &ControlAction::AdjustPlaybackRateSteps(1),
+        ),
+        None
+    );
+}
+
+/// UI-шаги квантуются по 0.10x и clamp-ятся в public `PlaybackRate` range.
+#[test]
+fn playback_rate_ui_clamps_adjustment_to_public_range() {
+    let mut player_snapshot = PlayerSnapshot::empty();
+    player_snapshot.playback_state = PlaybackState::Playing;
+    player_snapshot.playback_rate = PlaybackRate::new(3.95).expect("valid test rate");
+
+    let command = playback_rate_command_from_action(
+        &player_snapshot,
+        &ControlAction::AdjustPlaybackRateSteps(2),
+    )
+    .expect("clamped adjustment must still send one command");
+
+    assert_eq!(command, PlayerCommand::SetPlaybackRate(PlaybackRate::MAX));
 }
 
 /// Проверяет, что UI diagnostics получает active path как renderer-neutral данные.

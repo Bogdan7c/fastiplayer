@@ -12,8 +12,8 @@ use capability_core::SystemCapabilities;
 use desktop_integration::{DesktopIntegration, DesktopIntegrationEvent};
 use media_core::TrackKind;
 use player_core::{
-    FrameCounters, MediaOpenRequest, MediaSource, PlaybackState, PlayerCommand, PlayerError,
-    PlayerErrorKind, PlayerEvent, PlayerRenderError, PlayerRuntimeApplyResult,
+    FrameCounters, MediaOpenRequest, MediaSource, PlaybackRate, PlaybackState, PlayerCommand,
+    PlayerError, PlayerErrorKind, PlayerEvent, PlayerRenderError, PlayerRuntimeApplyResult,
     PlayerRuntimeSettingsUpdate, PlayerSnapshot, PlayerVideoDecoderThreadConfig, PlayerWorker,
     PlayerWorkerConfig, PlayerWorkerEvent, PreparedMedia, QualitySelection, ScrubCommitPolicy,
     SeekRequest, VideoBackendSelectionRequest, VideoDecodeRequirement,

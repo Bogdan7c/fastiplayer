@@ -63,6 +63,67 @@ pub(super) const fn settings_action_from_titlebar_icon_action(
     }
 }
 
+/// Возвращает player command для playback-rate UI intent-а или `None` для silent skip/no-op.
+pub(super) fn playback_rate_command_from_action(
+    player_snapshot: &PlayerSnapshot,
+    action: &ControlAction,
+) -> Option<PlayerCommand> {
+    if !playback_rate_ui_accepts_state(player_snapshot.playback_state) {
+        return None;
+    }
+
+    let target_rate = match action {
+        ControlAction::AdjustPlaybackRateSteps(step_count) => {
+            playback_rate_from_step_count(player_snapshot.playback_rate, *step_count)?
+        }
+        ControlAction::ResetPlaybackRate => {
+            if player_snapshot.playback_rate == PlaybackRate::NORMAL {
+                return None;
+            }
+
+            PlaybackRate::NORMAL
+        }
+        _ => return None,
+    };
+
+    if target_rate == player_snapshot.playback_rate {
+        return None;
+    }
+
+    Some(PlayerCommand::SetPlaybackRate(target_rate))
+}
+
+/// S38 разрешает только стабильные public states, а не широкий active-playback predicate.
+const fn playback_rate_ui_accepts_state(playback_state: PlaybackState) -> bool {
+    matches!(
+        playback_state,
+        PlaybackState::Playing | PlaybackState::Paused
+    )
+}
+
+/// Преобразует UI-шаги в typed `PlaybackRate`, сохраняя 0.10x сетку и public clamp.
+fn playback_rate_from_step_count(
+    current_rate: PlaybackRate,
+    step_count: i32,
+) -> Option<PlaybackRate> {
+    if step_count == 0 {
+        return None;
+    }
+
+    let requested_rate =
+        current_rate.as_f32() + step_count as f32 * player_controls::PLAYBACK_RATE_STEP_X;
+    let rounded_rate = (requested_rate * 100.0).round() / 100.0;
+    let clamped_rate = rounded_rate.clamp(PlaybackRate::MIN.as_f32(), PlaybackRate::MAX.as_f32());
+
+    match PlaybackRate::new(clamped_rate) {
+        Ok(playback_rate) => Some(playback_rate),
+        Err(error) => {
+            warn!(error = %error, clamped_rate, "UI сформировал некорректную скорость playback");
+            None
+        }
+    }
+}
+
 impl AppState {
     /// Рендерит egui UI поверх видео.
     ///
@@ -265,7 +326,7 @@ impl AppState {
     pub(super) fn handle_control_actions(
         &mut self,
         window: &Window,
-        _player_snapshot: &PlayerSnapshot,
+        player_snapshot: &PlayerSnapshot,
         actions: Vec<ControlAction>,
     ) {
         for action in actions {
@@ -292,6 +353,18 @@ impl AppState {
                             })
                     {
                         warn!(error = %error, "Не удалось переключить mute из UI");
+                    } else {
+                        self.mark_pending_worker_redraw();
+                    }
+                }
+                ControlAction::AdjustPlaybackRateSteps(_) | ControlAction::ResetPlaybackRate => {
+                    let Some(command) = playback_rate_command_from_action(player_snapshot, &action)
+                    else {
+                        continue;
+                    };
+
+                    if let Err(error) = self.player_worker.try_send_command(command) {
+                        warn!(error = %error, "Не удалось изменить скорость playback из UI");
                     } else {
                         self.mark_pending_worker_redraw();
                     }

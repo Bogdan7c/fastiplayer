@@ -7,6 +7,9 @@ use crate::ui::assets::IconId;
 use crate::ui::skin::{ControlsStyle, PlayerSkin, SkinId};
 use crate::ui::timeline::{self, TimelineAction, TimelineUiState};
 
+mod playback_rate;
+pub(crate) use playback_rate::PLAYBACK_RATE_STEP_X;
+
 const VOLUME_SEPARATOR_WIDTH: f32 = 1.0;
 const VOLUME_SEPARATOR_HEIGHT_FACTOR: f32 = 0.68;
 const VOLUME_TRACK_HEIGHT: f32 = 3.0;
@@ -27,6 +30,12 @@ pub enum ControlAction {
 
     /// Переключить mute/unmute.
     ToggleMute,
+
+    /// Изменить скорость playback на N UI-шагов.
+    AdjustPlaybackRateSteps(i32),
+
+    /// Вернуть скорость playback к нормальной `1.0x`.
+    ResetPlaybackRate,
 
     /// Переключить fullscreen.
     ToggleFullscreen,
@@ -102,6 +111,13 @@ fn render_button_row(
     let open_file_button_rect = open_file_button_anchor_rect(row_rect, controls_style);
     let playback_button_rect = playback_button_anchor_rect(row_rect, controls_style);
     let fullscreen_button_rect = fullscreen_button_anchor_rect(row_rect, controls_style);
+    let playback_rate_button_rect = playback_rate::button_rect(
+        row_rect,
+        playback_button_rect,
+        fullscreen_button_rect,
+        controls_style,
+        ui.spacing().item_spacing.x,
+    );
     let volume_to_playback_gap = ui.spacing().item_spacing.x;
     let volume_zone = volume_controls_zone_rect(
         row_rect,
@@ -116,8 +132,18 @@ fn render_button_row(
 
     render_volume_controls(ui, player_snapshot, controls_style, volume_zone, actions);
 
-    if render_playback_toggle_button_at(ui, playback_button_rect, play_icon, skin).clicked() {
+    let playback_button_response =
+        render_playback_toggle_button_at(ui, playback_button_rect, play_icon, skin);
+    playback_rate::collect_input_actions(ui, &playback_button_response, actions);
+
+    if playback_button_response.clicked() {
         actions.push(ControlAction::TogglePlayback);
+    }
+
+    if playback_rate::render_reset_button_at(ui, playback_rate_button_rect, player_snapshot)
+        .clicked()
+    {
+        actions.push(ControlAction::ResetPlaybackRate);
     }
 
     if render_fullscreen_toggle_button_at(ui, fullscreen_button_rect, is_window_fullscreen, skin)
@@ -521,6 +547,10 @@ fn render_playback_toggle_button_at(
     let button_response = ui.allocate_rect(button_rect, Sense::click());
     let accessible_label = skin.icon_text(icon_id);
     let button_response = button_response.on_hover_text(accessible_label);
+
+    if button_response.clicked() {
+        button_response.request_focus();
+    }
 
     button_response
         .widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), accessible_label));
