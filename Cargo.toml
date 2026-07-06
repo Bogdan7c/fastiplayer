@@ -3,6 +3,7 @@ members = [
     "crates/animation-core",
     "crates/app-egui",
     "crates/audio-core",
+    "crates/audio-timestretch",
     "crates/capability-core",
     "crates/codec-core",
     "crates/config",

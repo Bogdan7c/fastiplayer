@@ -1,8 +1,8 @@
 # Playback Rate Command/Snapshot + S34 No-Audio Clock Groundwork
 
 - S32 gate decision remains: playback rate V1 uses the existing async `PlayerCommand` queue. Do not add a request/reply public command path just to surface `SetPlaybackRate` rejects.
-- S33 landed command/snapshot groundwork. S34 added internal no-audio video clock/scheduler groundwork. Playback rate is still not a shipped user-facing feature until audio tempo/timestretch and minimum ship path land.
-- Do not expose UI, desktop/MPRIS, external controls, TOML, Settings metadata, persistent default, or media-history restore from this groundwork. Release remains blocked until S37 `timestretch` tempo path passes the minimum ship bar.
+- S33 landed command/snapshot groundwork. S34 added internal no-audio video clock/scheduler groundwork. S36 passed the isolated `timestretch 0.4.0` minimum ship gate, but playback rate is still not a shipped user-facing feature until the concrete audio tempo runtime path and A/V accounting land.
+- Do not expose UI, desktop/MPRIS, external controls, TOML, Settings metadata, persistent default, or media-history restore from this groundwork. S36 minimum ship gate for the selected `timestretch 0.4.0` backend passed in isolated crate `audio-timestretch`, but playback-rate release remains blocked until the concrete tempo path is integrated into audio runtime and A/V accounting without fake audio support or fallbacks.
 - Public value boundary: `PlaybackRate` is a validated newtype exported by `player-core`. Inclusive range is `0.25x..=4.0x`; `PlaybackRate::new` rejects NaN/infinity as `NotFinite`, zero/negative as `NonPositive`, below-minimum, and above-maximum. `PlaybackRate::NORMAL`/`Default` is `1.0x`.
 - `PlaybackRate` owns crate-internal checked/saturating conversion helpers between wall-clock deltas and media deltas. Keep positive future scheduler deadlines from collapsing into `Duration::ZERO` spin.
 - Public command/read model: `PlayerCommand::SetPlaybackRate(PlaybackRate)` and `PlayerSnapshot.playback_rate`. Default worker/session snapshot stays `1.0x` for behavior parity.
