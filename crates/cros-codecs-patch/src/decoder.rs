@@ -201,6 +201,19 @@ pub trait DecodedHandle {
     fn dma_buf_image(&self) -> anyhow::Result<Option<DecodedDmaBufImage>> {
         Ok(None)
     }
+
+    /// Optionally exports the decoded surface with the requested DMA-BUF layout.
+    ///
+    /// The default keeps older backend implementations compatible: if a backend
+    /// cannot choose an export layout, it returns the same result as
+    /// [`Self::dma_buf_image`]. VA-API overrides this to honor the frame contract
+    /// selected by capability scanning.
+    fn dma_buf_image_with_layout(
+        &self,
+        _preferred_layout: DecodedDmaBufExportLayout,
+    ) -> anyhow::Result<Option<DecodedDmaBufImage>> {
+        self.dma_buf_image()
+    }
 }
 
 /// Implementation for any boxed [`DecodedHandle`], including trait objects.
@@ -244,6 +257,13 @@ where
 
     fn dma_buf_image(&self) -> anyhow::Result<Option<DecodedDmaBufImage>> {
         self.as_ref().dma_buf_image()
+    }
+
+    fn dma_buf_image_with_layout(
+        &self,
+        preferred_layout: DecodedDmaBufExportLayout,
+    ) -> anyhow::Result<Option<DecodedDmaBufImage>> {
+        self.as_ref().dma_buf_image_with_layout(preferred_layout)
     }
 }
 

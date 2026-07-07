@@ -1894,9 +1894,10 @@ impl RenderCapabilities {
     /// Создаёт capabilities для текущего WGPU MVP backend-а.
     #[must_use]
     pub fn wgpu_nv12(max_texture_size: Option<u32>) -> Self {
-        let mut supported_frame_contracts = vec![VideoFrameContract::dma_buf_nv12(
-            DmaBufImageLayout::ComposedLayers,
-        )];
+        let mut supported_frame_contracts = vec![
+            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
+            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+        ];
         supported_frame_contracts.extend(wgpu_host_upload_frame_contracts());
 
         Self {
@@ -1933,9 +1934,10 @@ impl RenderCapabilities {
         max_texture_size: Option<u32>,
         supported_p010_dma_buf_image_layouts: Vec<DmaBufImageLayout>,
     ) -> Self {
-        let mut supported_frame_contracts = vec![VideoFrameContract::dma_buf_nv12(
-            DmaBufImageLayout::ComposedLayers,
-        )];
+        let mut supported_frame_contracts = vec![
+            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
+            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+        ];
         supported_frame_contracts.extend(
             supported_p010_dma_buf_image_layouts
                 .into_iter()
@@ -2768,6 +2770,11 @@ mod tests {
                 DmaBufImageLayout::ComposedLayers
             ))
         );
+        assert!(
+            capabilities.supports_frame_contract(VideoFrameContract::dma_buf_nv12(
+                DmaBufImageLayout::SeparateLayers
+            ))
+        );
         assert!(capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar8()));
         assert!(capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar10le()));
         assert!(capabilities.supports_frame_contract(VideoFrameContract::host_yuv420_planar12le()));
@@ -2832,6 +2839,7 @@ mod tests {
             nv12_capabilities.supported_frame_contracts,
             vec![
                 VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
+                VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
                 VideoFrameContract::host_yuv420_planar8(),
                 VideoFrameContract::host_yuv420_planar10le(),
                 VideoFrameContract::host_yuv420_planar12le(),
@@ -2846,6 +2854,7 @@ mod tests {
             p010_capabilities.supported_frame_contracts,
             vec![
                 VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
+                VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
                 VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers),
                 VideoFrameContract::dma_buf_p010(DmaBufImageLayout::ComposedLayers),
                 VideoFrameContract::host_yuv420_planar8(),

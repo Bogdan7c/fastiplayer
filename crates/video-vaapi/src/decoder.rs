@@ -22,7 +22,9 @@ use video_core::{
     VideoPrerollOutputFloorClear, VideoPrerollOutputFloorResult, VideoResourcePoolDiagnostics,
     VideoStreamDecodeConfig,
 };
-use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
+use video_frame_contract::{
+    DmaBufImageLayout, HardwareFrameHandle, VideoFrameContract, VideoFrameTransferPath,
+};
 
 use crate::codec_adapter::{
     VaapiAdapterDecodeError, VaapiCodecAdapter, VaapiCodecAdapterFactory, VaapiDecodedFormat,
@@ -967,6 +969,29 @@ fn dma_buf_image_layout_from_export_layout(
     match export_layout {
         DecodedDmaBufExportLayout::ComposedLayers => DmaBufImageLayout::ComposedLayers,
         DecodedDmaBufExportLayout::SeparateLayers => DmaBufImageLayout::SeparateLayers,
+    }
+}
+
+fn dma_buf_export_layout_from_image_layout(
+    image_layout: DmaBufImageLayout,
+) -> DecodedDmaBufExportLayout {
+    match image_layout {
+        DmaBufImageLayout::ComposedLayers => DecodedDmaBufExportLayout::ComposedLayers,
+        DmaBufImageLayout::SeparateLayers => DecodedDmaBufExportLayout::SeparateLayers,
+    }
+}
+
+fn dma_buf_export_layout_from_frame_contract(
+    frame_contract: VideoFrameContract,
+) -> Result<DecodedDmaBufExportLayout> {
+    match frame_contract.transfer_path {
+        VideoFrameTransferPath::HardwareZeroCopy {
+            handle: HardwareFrameHandle::DmaBuf { image_layout },
+        } => Ok(dma_buf_export_layout_from_image_layout(image_layout)),
+        other_transfer_path => Err(anyhow::anyhow!(
+            "VA-API decoder requires a DMA-BUF frame contract, got {}",
+            other_transfer_path.diagnostic_label()
+        )),
     }
 }
 
@@ -2148,7 +2173,9 @@ impl VaapiVideoDecoder {
 
         // Шаг 2: Экспортируем VA surface как DMA-BUF. Отсутствие export-а — fatal contract error.
         let export_start = std::time::Instant::now();
-        let dma_buf_image = match handle.dma_buf_image() {
+        let preferred_export_layout =
+            dma_buf_export_layout_from_frame_contract(self.expected_frame_contract)?;
+        let dma_buf_image = match handle.dma_buf_image_with_layout(preferred_export_layout) {
             Ok(Some(dma_buf_image)) => dma_buf_image,
             Ok(None) => {
                 return Err(zero_copy_contract_violation(format!(
@@ -3574,6 +3601,38 @@ mod tests {
         assert_eq!(contract.format, DecodedPixelFormat::P010);
         assert_eq!(contract.bit_depth, BitDepth::Ten);
         assert_eq!(contract.chroma, ChromaSubsampling::Yuv420);
+    }
+
+    /// Проверяет, что выбранный frame contract прямо задаёт VA export layout.
+    #[test]
+    fn frame_contract_maps_to_preferred_dma_buf_export_layout() {
+        assert_eq!(
+            dma_buf_export_layout_from_frame_contract(VideoFrameContract::dma_buf_nv12(
+                DmaBufImageLayout::ComposedLayers
+            ))
+            .unwrap(),
+            DecodedDmaBufExportLayout::ComposedLayers
+        );
+        assert_eq!(
+            dma_buf_export_layout_from_frame_contract(VideoFrameContract::dma_buf_p010(
+                DmaBufImageLayout::SeparateLayers
+            ))
+            .unwrap(),
+            DecodedDmaBufExportLayout::SeparateLayers
+        );
+    }
+
+    /// Проверяет, что VAAPI decoder не принимает non-DMA-BUF contract для export-а.
+    #[test]
+    fn non_dma_buf_frame_contract_is_rejected_for_vaapi_export_layout() {
+        let error =
+            dma_buf_export_layout_from_frame_contract(VideoFrameContract::host_yuv420_planar8())
+                .unwrap_err();
+
+        assert!(
+            error.to_string().contains("DMA-BUF"),
+            "unexpected error: {error}"
+        );
     }
 
     /// Проверяет `cros-codecs` I010 alias, который VA-API отдаёт для P010 FourCC.

@@ -244,11 +244,11 @@ impl<V: VideoFrame> StatelessVp9DecoderBackend for VaapiBackend<V> {
             <<Self as StatelessDecoderBackend>::Handle as DecodedHandle>::Frame,
         >,
     ) -> NewPictureResult<Self::Picture> {
-        let context = &self.context;
+        let context = self.active_context()?;
 
         Ok(VaapiPicture::new(
             timestamp,
-            Rc::clone(context),
+            context,
             alloc_cb().ok_or(NewPictureError::OutOfOutputBuffers)?,
         ))
     }
@@ -261,7 +261,7 @@ impl<V: VideoFrame> StatelessVp9DecoderBackend for VaapiBackend<V> {
         bitstream: &[u8],
         segmentation: &[Segmentation; MAX_SEGMENTS],
     ) -> StatelessBackendResult<Self::Handle> {
-        let context = &self.context;
+        let context = self.active_context()?;
 
         let reference_frames: [u32; NUM_REF_FRAMES] =
             reference_frames.iter().map(va_surface_id).collect::<Vec<_>>().try_into().unwrap();

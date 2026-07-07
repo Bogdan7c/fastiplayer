@@ -502,9 +502,11 @@ impl<V: VideoFrame> StatelessAV1DecoderBackend for VaapiBackend<V> {
         timestamp: u64,
         alloc_cb: &mut dyn FnMut() -> Option<V>,
     ) -> NewPictureResult<Self::Picture> {
+        let context = self.active_context()?;
+
         Ok(VaapiPicture::new(
             timestamp,
-            Rc::clone(&self.context),
+            context,
             alloc_cb().ok_or(NewPictureError::OutOfOutputBuffers)?,
         ))
     }
@@ -518,8 +520,8 @@ impl<V: VideoFrame> StatelessAV1DecoderBackend for VaapiBackend<V> {
     ) -> StatelessBackendResult<()> {
         let pic_param = build_pic_param(hdr, stream_info, picture.surface().id(), reference_frames)
             .context("Failed to build picture parameter")?;
-        let pic_param = self
-            .context
+        let context = self.active_context()?;
+        let pic_param = context
             .create_buffer(pic_param)
             .context("Failed to create picture parameter buffer")?;
         picture.add_buffer(pic_param);
@@ -535,7 +537,7 @@ impl<V: VideoFrame> StatelessAV1DecoderBackend for VaapiBackend<V> {
         let slice_params = build_slice_params_for_tg(&tile_group)?;
         let slice_data = build_slice_data_for_tg(tile_group);
 
-        let context = &self.context;
+        let context = self.active_context()?;
 
         let buffer = context
             .create_buffer(slice_params)

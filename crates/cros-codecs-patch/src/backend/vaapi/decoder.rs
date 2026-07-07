@@ -150,6 +150,19 @@ impl<V: VideoFrame> DecodedHandleTrait for DecodedHandle<V> {
             .context("while syncing picture before VA surface DMA-BUF export")?;
         borrowed_handle.export_dma_buf_image().map(Some)
     }
+
+    fn dma_buf_image_with_layout(
+        &self,
+        preferred_layout: DecodedDmaBufExportLayout,
+    ) -> anyhow::Result<Option<DecodedDmaBufImage>> {
+        let mut borrowed_handle = self.borrow_mut();
+        borrowed_handle
+            .sync()
+            .context("while syncing picture before VA surface DMA-BUF export")?;
+        borrowed_handle
+            .export_dma_buf_image_with_layout(preferred_layout)
+            .map(Some)
+    }
 }
 
 /// A trait for providing the basic information needed to setup libva for decoding.
@@ -577,14 +590,31 @@ impl<V: VideoFrame> VaapiDecodedHandle<V> {
         }
     }
 
-    /// Экспортирует decoded VA surface как DRM PRIME/DMA-BUF.
-    fn export_dma_buf_image(&self) -> anyhow::Result<DecodedDmaBufImage> {
-        let (exported_surface, export_layout) = if self.prefers_separate_dma_buf_export() {
-            self.export_dma_buf_image_separate_first()?
-        } else {
-            self.export_dma_buf_image_composed_first()?
-        };
+    /// Экспортирует decoded VA surface строго в layout, выбранный верхним frame contract-ом.
+    fn export_dma_buf_surface_with_layout(
+        &self,
+        preferred_layout: DecodedDmaBufExportLayout,
+    ) -> anyhow::Result<(libva::DrmPrimeSurfaceDescriptor, DecodedDmaBufExportLayout)> {
+        match preferred_layout {
+            DecodedDmaBufExportLayout::ComposedLayers => self
+                .surface()
+                .export_prime()
+                .map(|surface| (surface, DecodedDmaBufExportLayout::ComposedLayers))
+                .with_context(|| "while exporting decoded VA surface as composed DRM PRIME"),
+            DecodedDmaBufExportLayout::SeparateLayers => self
+                .surface()
+                .export_prime_separate_layers()
+                .map(|surface| (surface, DecodedDmaBufExportLayout::SeparateLayers))
+                .with_context(|| "while exporting decoded VA surface as separate-layer DRM PRIME"),
+        }
+    }
 
+    /// Упаковывает VA DRM PRIME descriptor в нейтральный decoded DMA-BUF descriptor.
+    fn decoded_dma_buf_image_from_export(
+        &self,
+        exported_surface: libva::DrmPrimeSurfaceDescriptor,
+        export_layout: DecodedDmaBufExportLayout,
+    ) -> DecodedDmaBufImage {
         let objects = exported_surface
             .objects
             .into_iter()
@@ -607,7 +637,7 @@ impl<V: VideoFrame> VaapiDecodedHandle<V> {
             })
             .collect();
 
-        Ok(DecodedDmaBufImage {
+        DecodedDmaBufImage {
             surface_id: u64::from(self.surface().id()),
             fourcc: exported_surface.fourcc,
             export_layout,
@@ -615,13 +645,35 @@ impl<V: VideoFrame> VaapiDecodedHandle<V> {
             height: exported_surface.height,
             objects,
             layers,
-        })
+        }
+    }
+
+    /// Экспортирует decoded VA surface как DRM PRIME/DMA-BUF.
+    fn export_dma_buf_image(&self) -> anyhow::Result<DecodedDmaBufImage> {
+        let (exported_surface, export_layout) = if self.prefers_separate_dma_buf_export() {
+            self.export_dma_buf_image_separate_first()?
+        } else {
+            self.export_dma_buf_image_composed_first()?
+        };
+
+        Ok(self.decoded_dma_buf_image_from_export(exported_surface, export_layout))
+    }
+
+    /// Экспортирует decoded VA surface как DRM PRIME/DMA-BUF в выбранном layout-е.
+    fn export_dma_buf_image_with_layout(
+        &self,
+        preferred_layout: DecodedDmaBufExportLayout,
+    ) -> anyhow::Result<DecodedDmaBufImage> {
+        let (exported_surface, export_layout) =
+            self.export_dma_buf_surface_with_layout(preferred_layout)?;
+
+        Ok(self.decoded_dma_buf_image_from_export(exported_surface, export_layout))
     }
 }
 
 pub struct VaapiBackend<V: VideoFrame> {
     pub display: Rc<Display>,
-    pub context: Rc<Context>,
+    pub context: Option<Rc<Context>>,
     stream_info: StreamInfo,
     // TODO: We should try to support context reuse
     _supports_context_reuse: bool,
@@ -636,32 +688,19 @@ impl<V: VideoFrame> VaapiBackend<V> {
             display_resolution: Resolution::from((16, 16)),
             min_num_frames: 1,
         };
-        let config = display
-            .create_config(
-                vec![libva::VAConfigAttrib {
-                    type_: libva::VAConfigAttribType::VAConfigAttribRTFormat,
-                    value: libva::VA_RT_FORMAT_YUV420,
-                }],
-                libva::VAProfile::VAProfileH264Main,
-                libva::VAEntrypoint::VAEntrypointVLD,
-            )
-            .expect("Could not create initial VAConfig!");
-        let context = display
-            .create_context::<<V as VideoFrame>::MemDescriptor>(
-                &config,
-                init_stream_info.coded_resolution.width,
-                init_stream_info.coded_resolution.height,
-                None,
-                true,
-            )
-            .expect("Could not create initial VAContext!");
         Self {
             display: display,
-            context: context,
+            context: None,
             _supports_context_reuse: supports_context_reuse,
             stream_info: init_stream_info,
             _phantom_data: Default::default(),
         }
+    }
+
+    pub(crate) fn active_context(&self) -> anyhow::Result<Rc<Context>> {
+        self.context.as_ref().cloned().context(
+            "VA context is not initialized for the current stream sequence",
+        )
     }
 
     pub(crate) fn new_sequence<StreamData>(
@@ -703,7 +742,7 @@ impl<V: VideoFrame> VaapiBackend<V> {
                 true,
             )
             .map_err(|_| anyhow!("Could not create VAContext!"))?;
-        self.context = context;
+        self.context = Some(context);
 
         Ok(())
     }

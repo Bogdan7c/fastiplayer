@@ -171,16 +171,18 @@ pub fn probe_vaapi_capabilities() -> BackendCapabilities {
         "VA-API capability probe completed"
     );
 
+    let driver_name = driver.driver_name.as_deref();
     let raw_supported_outputs = supported_formats
         .into_iter()
-        .filter_map(|decode_format| {
-            vaapi_output_contract_for_format(&decode_format).map(|frame_contract| {
-                SupportedVideoOutput {
+        .flat_map(|decode_format| {
+            let backend_id = backend_id.clone();
+            vaapi_output_contracts_for_format(&decode_format, driver_name)
+                .into_iter()
+                .map(move |frame_contract| SupportedVideoOutput {
                     backend: backend_id.clone(),
-                    decode_format,
+                    decode_format: decode_format.clone(),
                     frame_contract,
-                }
-            })
+                })
         })
         .collect();
 
@@ -198,31 +200,48 @@ pub fn probe_vaapi_capabilities() -> BackendCapabilities {
     }
 }
 
-/// Возвращает VAAPI production output contract для одного codec-level decode format-а.
-fn vaapi_output_contract_for_format(
+/// Возвращает VAAPI production output contracts для одного codec-level decode format-а.
+fn vaapi_output_contracts_for_format(
     format: &SupportedVideoDecodeFormat,
-) -> Option<VideoFrameContract> {
+    driver_name: Option<&str>,
+) -> Vec<VideoFrameContract> {
     let frame_bit_depth = match format.bit_depth {
         BitDepth::Eight => video_frame_contract::FrameBitDepth::Eight,
         BitDepth::Ten => video_frame_contract::FrameBitDepth::Ten,
-        BitDepth::Twelve => return None,
+        BitDepth::Twelve => return Vec::new(),
     };
     let frame_chroma = match format.chroma {
         ChromaSubsampling::Yuv420 => video_frame_contract::FrameChromaSubsampling::Yuv420,
-        ChromaSubsampling::Yuv422 | ChromaSubsampling::Yuv444 => return None,
+        ChromaSubsampling::Yuv422 | ChromaSubsampling::Yuv444 => return Vec::new(),
     };
 
     match video_frame_contract::VideoFramePixelLayout::hardware_baseline_from_frame_bit_depth_and_chroma(
         frame_bit_depth,
         frame_chroma,
-    )? {
-        VideoFramePixelLayout::Nv12 => Some(VideoFrameContract::dma_buf_nv12(
+    ) {
+        Some(VideoFramePixelLayout::Nv12) => vec![
+            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
+            VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+        ],
+        Some(VideoFramePixelLayout::P010) => p010_dma_buf_layout_preference(driver_name)
+            .into_iter()
+            .map(VideoFrameContract::dma_buf_p010)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Возвращает порядок P010 DMA-BUF layouts для VAAPI provider-а.
+fn p010_dma_buf_layout_preference(driver_name: Option<&str>) -> [DmaBufImageLayout; 2] {
+    match driver_name {
+        Some("mesa") => [
             DmaBufImageLayout::ComposedLayers,
-        )),
-        VideoFramePixelLayout::P010 => Some(VideoFrameContract::dma_buf_p010(
             DmaBufImageLayout::SeparateLayers,
-        )),
-        _ => None,
+        ],
+        _ => [
+            DmaBufImageLayout::SeparateLayers,
+            DmaBufImageLayout::ComposedLayers,
+        ],
     }
 }
 
@@ -815,10 +834,11 @@ mod tests {
         assert_eq!(formats[0].bit_depth, BitDepth::Eight);
         assert_eq!(formats[0].chroma, ChromaSubsampling::Yuv420);
         assert_eq!(
-            vaapi_output_contract_for_format(&formats[0]),
-            Some(VideoFrameContract::dma_buf_nv12(
-                DmaBufImageLayout::ComposedLayers
-            ))
+            vaapi_output_contracts_for_format(&formats[0], Some("mesa")),
+            vec![
+                VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers),
+                VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
+            ]
         );
     }
 
@@ -839,10 +859,25 @@ mod tests {
         assert_eq!(formats[0].bit_depth, BitDepth::Ten);
         assert_eq!(formats[0].chroma, ChromaSubsampling::Yuv420);
         assert_eq!(
-            vaapi_output_contract_for_format(&formats[0]),
-            Some(VideoFrameContract::dma_buf_p010(
-                DmaBufImageLayout::SeparateLayers
-            ))
+            vaapi_output_contracts_for_format(&formats[0], Some("intel-i965")),
+            vec![
+                VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers),
+                VideoFrameContract::dma_buf_p010(DmaBufImageLayout::ComposedLayers),
+            ]
+        );
+        assert_eq!(
+            vaapi_output_contracts_for_format(&formats[0], None),
+            vec![
+                VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers),
+                VideoFrameContract::dma_buf_p010(DmaBufImageLayout::ComposedLayers),
+            ]
+        );
+        assert_eq!(
+            vaapi_output_contracts_for_format(&formats[0], Some("mesa")),
+            vec![
+                VideoFrameContract::dma_buf_p010(DmaBufImageLayout::ComposedLayers),
+                VideoFrameContract::dma_buf_p010(DmaBufImageLayout::SeparateLayers),
+            ]
         );
     }
 

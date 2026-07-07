@@ -18,7 +18,8 @@ use cros_codecs::decoder::stateless::h264::H264;
 use cros_codecs::decoder::stateless::h265::H265;
 use cros_codecs::decoder::stateless::{DecodeError, StatelessDecoder, StatelessVideoDecoder};
 use cros_codecs::decoder::{
-    BlockingMode, DecodedDmaBufImage, DecodedHandle, DecoderEvent, DynDecodedHandle, StreamInfo,
+    BlockingMode, DecodedDmaBufExportLayout, DecodedDmaBufImage, DecodedHandle, DecoderEvent,
+    DynDecodedHandle, StreamInfo,
 };
 use cros_codecs::libva::Display;
 use video_core::{VideoStreamConfigRejection, VideoStreamDecodeConfig, VideoStreamPacketization};
@@ -171,9 +172,12 @@ impl VaapiDecodedFrameHandle {
         self.inner.try_is_ready()
     }
 
-    /// Экспортирует VA surface как DMA-BUF descriptor.
-    pub(crate) fn dma_buf_image(&self) -> Result<Option<DecodedDmaBufImage>> {
-        self.inner.dma_buf_image()
+    /// Экспортирует VA surface как DMA-BUF descriptor в layout-е выбранного frame contract-а.
+    pub(crate) fn dma_buf_image_with_layout(
+        &self,
+        preferred_layout: DecodedDmaBufExportLayout,
+    ) -> Result<Option<DecodedDmaBufImage>> {
+        self.inner.dma_buf_image_with_layout(preferred_layout)
     }
 
     /// Достаёт backing frame для возврата в surface pool после release.
