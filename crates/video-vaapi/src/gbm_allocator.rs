@@ -1,4 +1,8 @@
-use std::fs::{File, OpenOptions};
+use std::{
+    error::Error,
+    fmt,
+    fs::{File, OpenOptions},
+};
 
 use cros_codecs::PlaneLayout;
 use gbm::{BufferObjectFlags, Device, Format, Modifier};
@@ -10,6 +14,23 @@ const RENDER_DRI_PATH: &str = "/dev/dri/renderD128";
 ///
 /// Не экспортирован gbm crate, но присутствует в заголовках libgbm.
 const GBM_BO_USE_HW_VIDEO_DECODER: u32 = 1 << 13;
+
+#[derive(Debug)]
+struct NonLinearGbmBufferError {
+    modifier: Modifier,
+}
+
+impl fmt::Display for NonLinearGbmBufferError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "GBM returned non-linear buffer {:?}; CPU texture upload requires linear DMA-BUF",
+            self.modifier
+        )
+    }
+}
+
+impl Error for NonLinearGbmBufferError {}
 
 /// Выделяет DMA-BUF через GBM (Generic Buffer Management).
 ///
@@ -39,6 +60,7 @@ pub struct GbmAllocatedBuffer {
 /// - `/dev/dri/renderD128` недоступен
 /// - GBM device не создался
 /// - NV12 buffer object не создался
+/// - драйвер вернул non-linear modifier для CPU texture upload пути
 pub fn allocate_gbm_buffer(width: u32, height: u32) -> anyhow::Result<GbmAllocatedBuffer> {
     // Открываем DRI render node на чтение и запись.
     // renderD128 не требует root, в отличие от dma-heap.
@@ -95,10 +117,7 @@ pub fn allocate_gbm_buffer(width: u32, height: u32) -> anyhow::Result<GbmAllocat
         .modifier()
         .map_err(|e| anyhow::anyhow!("GBM bo.modifier() failed: {}", e))?;
     if modifier != Modifier::Linear {
-        return Err(anyhow::anyhow!(
-            "GBM returned non-linear buffer {:?}; CPU texture upload requires linear DMA-BUF",
-            modifier
-        ));
+        return Err(NonLinearGbmBufferError { modifier }.into());
     }
     let plane_layouts = read_nv12_plane_layouts(&bo, stride, height as usize)?;
 
@@ -216,7 +235,14 @@ mod tests {
             eprintln!("Skipping test: {} not available", RENDER_DRI_PATH);
             return;
         }
-        let allocated_buffer = allocate_gbm_buffer(1920, 1080).expect("GBM alloc failed");
+        let allocated_buffer = match allocate_gbm_buffer(1920, 1080) {
+            Ok(allocated_buffer) => allocated_buffer,
+            Err(error) if error.downcast_ref::<NonLinearGbmBufferError>().is_some() => {
+                eprintln!("Skipping test: {error:#}");
+                return;
+            }
+            Err(error) => panic!("GBM alloc failed: {error:#}"),
+        };
         let metadata = allocated_buffer.file.metadata().expect("metadata failed");
         assert!(
             metadata.len() as usize >= allocated_buffer.total_size,

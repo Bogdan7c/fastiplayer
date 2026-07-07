@@ -28,7 +28,7 @@ pub struct FfmpegCodecContextRequest {
     /// Ограничение внутренней задержки decoder-а в кадрах, если backend его поддерживает.
     max_frame_delay: Option<u32>,
 
-    /// Software decoder thread budget; `Auto` маппится на FFmpeg `thread_count = 0`.
+    /// Software decoder thread budget без raw FFmpeg `thread_count` sentinel-ов.
     software_decode_thread_budget: SoftwareDecodeThreadBudget,
 
     /// Codec-private global headers (например MP4 `avcC`/`hvcC`), которые
@@ -292,13 +292,14 @@ impl CodecContext {
             let ffmpeg_thread_count =
                 ffmpeg_thread_count_from_budget(request.software_decode_thread_budget())?;
 
-            // Многопоточный software decode. `Auto` сохраняет production path:
-            // thread_count = 0 просит libavcodec выбрать число потоков
-            // автоматически по av_cpu_count(). `Fixed(N)` используется только
-            // для явного playback/config budget-а и передаёт FFmpeg конкретный
-            // положительный `thread_count = N`. thread_type разрешает frame/slice
-            // threading, а libavcodec сам маскирует их по AVCodec.capabilities.
-            // Должно быть выставлено до avcodec_open2.
+            // Многопоточный software decode. Project-level `Auto` уже
+            // резолвится в явное положительное число потоков, чтобы FFmpeg не
+            // занимал все ядра и оставлял CPU headroom для render/upload/worker
+            // путей. `Fixed(N)` используется только для явного playback/config
+            // budget-а и передаёт FFmpeg конкретный `thread_count = N`.
+            // thread_type разрешает frame/slice threading, а libavcodec сам
+            // маскирует их по AVCodec.capabilities. Должно быть выставлено до
+            // avcodec_open2.
             // SAFETY: context owned wrapper-ом и валиден до open; поля
             // thread_count/thread_type читаются FFmpeg только внутри open.
             unsafe {
@@ -778,10 +779,13 @@ mod tests {
     #[test]
     fn software_decode_thread_budget_maps_to_ffmpeg_thread_count_values() {
         let thread_count = std::num::NonZeroUsize::new(3).expect("test value is positive");
+        let auto_budget = SoftwareDecodeThreadBudget::auto();
+        let expected_auto_thread_count = i32::try_from(auto_budget.resolved_thread_count().get())
+            .expect("resolved auto thread count fits FFmpeg thread_count");
 
         assert_eq!(
-            ffmpeg_thread_count_from_budget(SoftwareDecodeThreadBudget::auto()).unwrap(),
-            0
+            ffmpeg_thread_count_from_budget(auto_budget).unwrap(),
+            expected_auto_thread_count
         );
         assert_eq!(
             ffmpeg_thread_count_from_budget(SoftwareDecodeThreadBudget::fixed(thread_count))

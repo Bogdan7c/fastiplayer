@@ -1052,10 +1052,11 @@ const DEFAULT_DECODER_FLUSH_TIMEOUT_MS: u64 = 2_000;
 
 /// Software decoder thread budget в нейтральной форме.
 ///
-/// `Auto` сохраняет текущую production-семантику backend-а: concrete decoder
-/// сам выбирает число потоков. `Fixed` используется только там, где caller уже
-/// разрешил budget policy и доказал, что значение положительное и меньше
-/// matching playback budget-а. Это намеренно не `usize` в config-структуре,
+/// `Auto` хранит намерение "подобрать безопасное число потоков автоматически".
+/// Его нужно резолвить через `resolved_thread_count()`, чтобы оставить CPU
+/// headroom под render/upload/worker пути. `Fixed` используется только там, где
+/// caller уже разрешил budget policy и доказал, что значение положительное и
+/// меньше matching playback budget-а. Это намеренно не `usize` в config-структуре,
 /// чтобы callsite явно показывал смысл числа.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SoftwareDecodeThreadBudget {
