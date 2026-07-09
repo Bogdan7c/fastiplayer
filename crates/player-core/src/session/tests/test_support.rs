@@ -1,4 +1,5 @@
 use super::*;
+use audio_core::{AudioOutputClockTiming, AudioOutputWriteIntent};
 
 // Общие test doubles и builders остаются в одном месте, чтобы доменные тесты
 // проверяли поведение `PlayerSession`, а не дублировали setup-код.
@@ -367,11 +368,20 @@ pub(super) struct ScriptedAudioClock {
     /// Текущая playback позиция, которую увидит session.
     pub(super) now: Mutex<Duration>,
 
+    /// Конец PCM, уже принятого fake output-ом.
+    pub(super) submitted_output_end_position: Mutex<Duration>,
+
+    /// Snapshot, который fake output удерживает неизменным между pause/play.
+    frozen_output_timing: Mutex<Option<AudioOutputClockTiming>>,
+
     /// Количество reset-вызовов через neutral boundary.
     pub(super) reset_count: AtomicUsize,
 
     /// Scripted underrun callbacks для diagnostics path.
     pub(super) underrun_callbacks: AtomicU64,
+
+    /// Количество neutral timing captures для single-snapshot assertions.
+    output_timing_read_count: AtomicUsize,
 }
 
 impl ScriptedAudioClock {
@@ -379,8 +389,11 @@ impl ScriptedAudioClock {
     pub(super) fn new() -> Self {
         Self {
             now: Mutex::new(Duration::ZERO),
+            submitted_output_end_position: Mutex::new(Duration::ZERO),
+            frozen_output_timing: Mutex::new(None),
             reset_count: AtomicUsize::new(0),
             underrun_callbacks: AtomicU64::new(0),
+            output_timing_read_count: AtomicUsize::new(0),
         }
     }
 
@@ -394,20 +407,89 @@ impl ScriptedAudioClock {
     pub(super) fn record_played(&self, samples: u64) {
         let frames = samples / 2;
         let nanos = frames.saturating_mul(1_000_000_000) / 48_000;
+        let output_position = Duration::from_nanos(nanos);
+        self.set_output_timing(output_position, output_position);
+    }
+
+    /// Задаёт audible/submitted позиции независимо для lifecycle/tail тестов.
+    pub(super) fn set_output_timing(
+        &self,
+        audible_output_position: Duration,
+        submitted_output_end_position: Duration,
+    ) {
         *self
             .now
             .lock()
-            .expect("fake clock mutex не должен ломаться") = Duration::from_nanos(nanos);
+            .expect("fake clock mutex не должен ломаться") = audible_output_position;
+        *self
+            .submitted_output_end_position
+            .lock()
+            .expect("fake submitted position mutex не должен ломаться") =
+            submitted_output_end_position;
+    }
+
+    /// Фиксирует один timing snapshot как production output boundary.
+    fn freeze_output_timing(&self) -> AudioOutputClockTiming {
+        let output_timing = self.active_output_timing();
+        *self
+            .frozen_output_timing
+            .lock()
+            .expect("fake frozen timing mutex не должен ломаться") = Some(output_timing);
+        output_timing
+    }
+
+    /// Возобновляет fake clock с зафиксированной позиции без pause-time jump.
+    fn resume_output_timing(&self) {
+        let frozen_output_timing = self
+            .frozen_output_timing
+            .lock()
+            .expect("fake frozen timing mutex не должен ломаться")
+            .take();
+        if let Some(output_timing) = frozen_output_timing {
+            self.set_output_timing(
+                output_timing.audible_output_position(),
+                output_timing.submitted_output_end_position(),
+            );
+        }
+    }
+
+    /// Читает underlying scripted coordinate без frozen override.
+    fn active_output_timing(&self) -> AudioOutputClockTiming {
+        let audible_output_position = *self
+            .now
+            .lock()
+            .expect("fake clock mutex не должен ломаться");
+        let submitted_output_end_position = *self
+            .submitted_output_end_position
+            .lock()
+            .expect("fake submitted position mutex не должен ломаться");
+        AudioOutputClockTiming::new(audible_output_position, submitted_output_end_position)
+    }
+
+    /// Возвращает количество вызовов neutral output timing boundary.
+    pub(super) fn output_timing_read_count(&self) -> usize {
+        self.output_timing_read_count.load(Ordering::Relaxed)
     }
 }
 
 impl PlayerAudioClock for ScriptedAudioClock {
     /// Возвращает scripted playback позицию.
     fn now(&self) -> Duration {
-        *self
-            .now
+        self.output_timing().audible_output_position()
+    }
+
+    /// Возвращает scripted audible/submitted snapshot.
+    fn output_timing(&self) -> AudioOutputClockTiming {
+        self.output_timing_read_count
+            .fetch_add(1, Ordering::Relaxed);
+        if let Some(output_timing) = *self
+            .frozen_output_timing
             .lock()
-            .expect("fake clock mutex не должен ломаться")
+            .expect("fake frozen timing mutex не должен ломаться")
+        {
+            return output_timing;
+        }
+        self.active_output_timing()
     }
 
     /// Сбрасывает позицию и отмечает reset.
@@ -417,6 +499,18 @@ impl PlayerAudioClock for ScriptedAudioClock {
             .now
             .lock()
             .expect("fake clock mutex не должен ломаться") = Duration::ZERO;
+        *self
+            .submitted_output_end_position
+            .lock()
+            .expect("fake submitted position mutex не должен ломаться") = Duration::ZERO;
+        let mut frozen_output_timing = self
+            .frozen_output_timing
+            .lock()
+            .expect("fake frozen timing mutex не должен ломаться");
+        if frozen_output_timing.is_some() {
+            *frozen_output_timing =
+                Some(AudioOutputClockTiming::new(Duration::ZERO, Duration::ZERO));
+        }
     }
 
     /// Возвращает scripted underrun callbacks.
@@ -437,6 +531,9 @@ pub(super) struct ScriptedAudioOutputHandle {
     /// Samples, которые session записала через neutral output boundary.
     pub(super) written_samples: Arc<Mutex<Vec<f32>>>,
 
+    /// Typed intents для проверки direct/tempo output routing.
+    pub(super) written_intents: Arc<Mutex<Vec<AudioOutputWriteIntent>>>,
+
     /// Сколько раз session попросила запустить stream.
     pub(super) play_count: Arc<AtomicUsize>,
 
@@ -454,6 +551,7 @@ impl ScriptedAudioOutputHandle {
             clock: Arc::new(ScriptedAudioClock::new()),
             buffer_level_ms: Arc::new(Mutex::new(buffer_level_ms)),
             written_samples: Arc::new(Mutex::new(Vec::new())),
+            written_intents: Arc::new(Mutex::new(Vec::new())),
             play_count: Arc::new(AtomicUsize::new(0)),
             pause_count: Arc::new(AtomicUsize::new(0)),
             clear_count: Arc::new(AtomicUsize::new(0)),
@@ -484,6 +582,14 @@ impl ScriptedAudioOutputHandle {
             .clone()
     }
 
+    /// Возвращает intents в том же порядке, в котором fake принял PCM blocks.
+    pub(super) fn written_intents(&self) -> Vec<AudioOutputWriteIntent> {
+        self.written_intents
+            .lock()
+            .expect("written audio intents mutex should not be poisoned")
+            .clone()
+    }
+
     /// Возвращает neutral clock handle для установки в pipeline/assertions.
     pub(super) fn clock(&self) -> Arc<dyn PlayerAudioClock> {
         self.clock.as_player_clock()
@@ -497,6 +603,9 @@ pub(super) struct ScriptedAudioOutput {
 
     /// Ошибка, которую fake вернёт из play, если сценарий её задаёт.
     pub(super) play_error: Option<&'static str>,
+
+    /// Ошибка, которую fake вернёт из pause, если сценарий её задаёт.
+    pub(super) pause_error: Option<&'static str>,
 }
 
 impl ScriptedAudioOutput {
@@ -505,6 +614,16 @@ impl ScriptedAudioOutput {
         Self {
             handle: ScriptedAudioOutputHandle::new(buffer_level_ms),
             play_error,
+            pause_error: None,
+        }
+    }
+
+    /// Создаёт fake с настоящей pause error для lifecycle transaction test-а.
+    pub(super) fn with_pause_error(buffer_level_ms: f64, pause_error: &'static str) -> Self {
+        Self {
+            handle: ScriptedAudioOutputHandle::new(buffer_level_ms),
+            play_error: None,
+            pause_error: Some(pause_error),
         }
     }
 
@@ -518,12 +637,17 @@ impl ScriptedAudioOutput {
 
 impl PlayerAudioOutput for ScriptedAudioOutput {
     /// Fake принимает все samples и возвращает их количество как written count.
-    fn write_samples(&mut self, samples: &[f32]) -> u64 {
+    fn write_samples(&mut self, samples: &[f32], intent: AudioOutputWriteIntent) -> u64 {
         self.handle
             .written_samples
             .lock()
             .expect("written audio samples mutex should not be poisoned")
             .extend_from_slice(samples);
+        self.handle
+            .written_intents
+            .lock()
+            .expect("written audio intents mutex should not be poisoned")
+            .push(intent);
         samples.len() as u64
     }
 
@@ -532,14 +656,20 @@ impl PlayerAudioOutput for ScriptedAudioOutput {
         self.handle.play_count.fetch_add(1, Ordering::Relaxed);
         match self.play_error {
             Some(error) => Err(anyhow::anyhow!(error)),
-            None => Ok(()),
+            None => {
+                self.handle.clock.resume_output_timing();
+                Ok(())
+            }
         }
     }
 
-    /// Записывает pause attempt; seek pause в этих тестах всегда успешен.
-    fn pause(&mut self) -> anyhow::Result<()> {
+    /// Записывает pause attempt и возвращает clock snapshot того же fake output-а.
+    fn pause_and_freeze_clock(&mut self) -> anyhow::Result<AudioOutputClockTiming> {
         self.handle.pause_count.fetch_add(1, Ordering::Relaxed);
-        Ok(())
+        match self.pause_error {
+            Some(error) => Err(anyhow::anyhow!(error)),
+            None => Ok(self.handle.clock.freeze_output_timing()),
+        }
     }
 
     /// Подтверждает очистку buffer-а ровно тем generation, который запросила session.

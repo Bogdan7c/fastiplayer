@@ -3,8 +3,8 @@
 
 Скрипт намеренно проверяет direct manifest-dependencies из
 `cargo metadata --no-deps --format-version 1`. Boundary rules смотрят normal
-dependencies, а explicit non-goals вроде FFmpeg/libav проверяются по всем
-direct dependency kinds.
+dependencies, а isolation rules для FFmpeg/libav и neutral tempo crates
+проверяются по всем direct dependency kinds.
 """
 
 from __future__ import annotations
@@ -120,7 +120,19 @@ FFMPEG_FORBIDDEN_DEPENDENCIES = frozenset(
     }
 )
 
-TEMPO_FORBIDDEN_DEPENDENCIES = frozenset({"timestretch"})
+TEMPO_WORKSPACE_FORBIDDEN_DEPENDENCIES = frozenset({"timestretch"})
+
+# Нейтральные crates не должны обходить `audio-core` boundary ни через внешний
+# DSP crate, ни через локальный concrete adapter; composition root при этом
+# по-прежнему вправе собирать runtime graph через `audio-signalsmith`.
+TEMPO_NEUTRAL_FORBIDDEN_DEPENDENCIES = frozenset(
+    {
+        "audio-signalsmith",
+        "audio-timestretch",
+        "signalsmith-stretch",
+        "timestretch",
+    }
+)
 
 TEMPO_NEUTRAL_CRATES = frozenset({"audio-core", "player-core"})
 
@@ -605,7 +617,9 @@ def find_dependency_violations(
                 rule="FFmpeg/libav crates не должны быть общими workspace dependencies",
             )
         )
-    for dependency in sorted(workspace_dependencies.intersection(TEMPO_FORBIDDEN_DEPENDENCIES)):
+    for dependency in sorted(
+        workspace_dependencies.intersection(TEMPO_WORKSPACE_FORBIDDEN_DEPENDENCIES)
+    ):
         violations.append(
             DependencyViolation(
                 owner="workspace.dependencies",
@@ -649,7 +663,7 @@ def find_dependency_violations(
         find_forbidden_dependencies(
             all_dependency_map,
             TEMPO_NEUTRAL_CRATES,
-            TEMPO_FORBIDDEN_DEPENDENCIES,
+            TEMPO_NEUTRAL_FORBIDDEN_DEPENDENCIES,
             "audio-core/player-core видят только neutral tempo boundary, без direct concrete tempo dependency",
         )
     )

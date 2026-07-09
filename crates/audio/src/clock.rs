@@ -8,6 +8,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+mod lifecycle;
+
 /// Clock для audio playback.
 ///
 /// Основные счётчики:
@@ -34,6 +36,21 @@ pub struct AudioClock {
 
     /// Последняя монотонная оценка media sample index, безопасная для `now()`.
     last_stable_played_samples: AtomicU64,
+
+    /// Logical freeze: clock не интерполирует wall-time, пока output на паузе.
+    playback_frozen: AtomicBool,
+
+    /// Audible sample index, атомарно зафиксированный владельцем output-а.
+    frozen_audible_samples: AtomicU64,
+
+    /// Конец принятого PCM, зафиксированный в том же pause snapshot-е.
+    frozen_submitted_end_samples: AtomicU64,
+
+    /// Реальный monotonic момент freeze в наносекундах от `origin`.
+    frozen_at_origin_ns: AtomicU64,
+
+    /// Суммарный wall-time пауз, исключённый из clock interpolation.
+    paused_origin_offset_ns: AtomicU64,
 
     /// Флаг: есть валидный CPAL playback anchor.
     playback_anchor_valid: AtomicBool,
@@ -85,6 +102,11 @@ impl AudioClock {
             samples_written: AtomicU64::new(0),
             samples_played: AtomicU64::new(0),
             last_stable_played_samples: AtomicU64::new(0),
+            playback_frozen: AtomicBool::new(false),
+            frozen_audible_samples: AtomicU64::new(0),
+            frozen_submitted_end_samples: AtomicU64::new(0),
+            frozen_at_origin_ns: AtomicU64::new(0),
+            paused_origin_offset_ns: AtomicU64::new(0),
             playback_anchor_valid: AtomicBool::new(false),
             playback_anchor_generation: AtomicU64::new(0),
             previous_playback_anchor_valid: AtomicBool::new(false),
@@ -99,18 +121,6 @@ impl AudioClock {
             underrun_callbacks: AtomicU64::new(0),
             underrun_samples: AtomicU64::new(0),
         }
-    }
-
-    /// Возвращает текущее время воспроизведения.
-    ///
-    /// Основано на стабильной оценке CPAL playback anchor, а не на конце
-    /// свежего callback-buffer. Это не даёт video scheduler увидеть будущее
-    /// audio-время и массово сбросить ещё не опоздавшие кадры.
-    ///
-    /// stable samples = total interleaved samples (frames * channels).
-    /// time = stable samples / (sample_rate * channels).
-    pub fn now(&self) -> Duration {
-        self.samples_to_duration(self.smoothed_played_samples())
     }
 
     /// Возвращает плавную оценку media sample index, который сейчас слышит пользователь.
@@ -146,7 +156,7 @@ impl AudioClock {
             output_end_ns: self.playback_anchor_output_end_ns.load(Ordering::Relaxed),
         };
         let generation_after = self.playback_anchor_generation.load(Ordering::Acquire);
-        let current_ns = self.origin.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        let current_ns = self.current_logical_origin_ns();
 
         let estimated_samples = estimate_samples_from_anchor_snapshot(
             generation_before,
@@ -268,10 +278,7 @@ impl AudioClock {
         let playback_at = callback_observed_at
             .checked_add(playback_delay)
             .unwrap_or(callback_observed_at);
-        let reported_playback_ns = playback_at
-            .saturating_duration_since(self.origin)
-            .as_nanos()
-            .min(u64::MAX as u128) as u64;
+        let reported_playback_ns = self.logical_origin_ns_for_instant(playback_at);
         let callback_output_samples = played_samples.saturating_add(silence_samples);
         let callback_output_duration_ns =
             samples_to_nanos(callback_output_samples, self.samples_per_second());
@@ -349,6 +356,9 @@ impl AudioClock {
         self.samples_written.store(0, Ordering::Relaxed);
         self.samples_played.store(0, Ordering::Relaxed);
         self.last_stable_played_samples.store(0, Ordering::Release);
+        self.frozen_audible_samples.store(0, Ordering::Relaxed);
+        self.frozen_submitted_end_samples
+            .store(0, Ordering::Relaxed);
 
         self.begin_playback_anchor_write();
         self.playback_anchor_valid.store(false, Ordering::Relaxed);
@@ -505,10 +515,12 @@ fn nanos_to_samples(nanos: u64, samples_per_sec: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::Ordering;
+    use std::time::Duration;
 
     use super::{
         AudioClock, PlaybackAnchor, chain_reported_playback_ns,
-        estimate_samples_from_anchor_snapshot, interpolate_anchor_samples, select_playback_anchor,
+        estimate_samples_from_anchor_snapshot, interpolate_anchor_samples, samples_to_nanos,
+        select_playback_anchor,
     };
 
     #[test]
@@ -683,13 +695,78 @@ mod tests {
     }
 
     #[test]
+    fn output_timing_includes_ring_and_pcm_waiting_for_future_dac_playback() {
+        let clock = AudioClock::new(48_000, 2);
+        let samples_per_second = 96_000u64;
+        let callback_pcm_samples = 4_800u64;
+        let ring_pcm_samples = 4_800u64;
+        let submitted_pcm_samples = callback_pcm_samples + ring_pcm_samples;
+        let future_playback_ns = clock
+            .origin
+            .elapsed()
+            .saturating_add(Duration::from_secs(1))
+            .as_nanos() as u64;
+
+        clock.record_written(submitted_pcm_samples);
+        clock
+            .samples_played
+            .store(callback_pcm_samples, Ordering::Relaxed);
+        clock.playback_anchor_samples.store(0, Ordering::Relaxed);
+        clock
+            .playback_anchor_end_samples
+            .store(callback_pcm_samples, Ordering::Relaxed);
+        clock
+            .playback_anchor_ns
+            .store(future_playback_ns, Ordering::Relaxed);
+        clock.playback_anchor_output_end_ns.store(
+            future_playback_ns
+                .saturating_add(samples_to_nanos(callback_pcm_samples, samples_per_second)),
+            Ordering::Relaxed,
+        );
+        clock.playback_anchor_valid.store(true, Ordering::Relaxed);
+
+        let timing = clock.output_timing();
+
+        assert_eq!(timing.audible_output_position(), Duration::ZERO);
+        assert_eq!(
+            timing.submitted_output_end_position(),
+            Duration::from_millis(100)
+        );
+        assert_eq!(timing.submitted_output_tail(), Duration::from_millis(100));
+    }
+
+    #[test]
+    fn callback_silence_does_not_extend_submitted_pcm_end() {
+        let clock = AudioClock::new(48_000, 2);
+        let real_pcm_samples = 4_800u64;
+
+        clock.record_written(real_pcm_samples);
+        clock.underrun_callbacks.store(1, Ordering::Relaxed);
+        clock.underrun_samples.store(9_600, Ordering::Relaxed);
+
+        // Callback silence никогда не проходит через `record_written`: даже
+        // полный будущий callback interval не является media PCM tail.
+        let timing = clock.output_timing();
+
+        assert_eq!(
+            timing.submitted_output_end_position(),
+            Duration::from_millis(50)
+        );
+    }
+
+    #[test]
     fn reset_clears_stable_played_samples() {
         let clock = AudioClock::new(48_000, 2);
+        clock.record_written(9_600);
         clock.record_played(9_600);
 
         clock.reset();
 
         assert_eq!(clock.smoothed_played_samples(), 0);
+        let timing = clock.output_timing();
+        assert_eq!(timing.audible_output_position(), Duration::ZERO);
+        assert_eq!(timing.submitted_output_end_position(), Duration::ZERO);
+        assert_eq!(timing.submitted_output_tail(), Duration::ZERO);
     }
 
     #[test]

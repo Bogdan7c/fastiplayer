@@ -29,6 +29,8 @@ use crate::{
 };
 
 mod audio_runtime;
+mod audio_tempo_rate_change;
+mod audio_tempo_runtime;
 mod capability_selection;
 mod diagnostics_sink;
 mod eof_drain;
@@ -373,19 +375,31 @@ impl PlayerSession {
 
     /// Обновляет позицию playback из clock/UI без накопления high-frequency событий.
     pub fn update_current_position(&mut self, position: Duration) {
+        // Публичный setter остаётся явной lifecycle-операцией: caller меняет
+        // позицию и тем самым создаёт новый no-audio anchor в одной точке времени.
+        let observed_at = Instant::now();
+        self.publish_clock_sample(position);
+        self.reanchor_no_audio_clock(position, observed_at);
+    }
+
+    /// Публикует измеренную clock position без изменения clock ownership или anchor-а.
+    fn publish_clock_sample(&mut self, position: Duration) {
         if self.snapshot.current_position == position {
             return;
         }
 
         self.snapshot
             .set_timeline_position(MediaTime::from_duration(position));
+    }
 
+    /// Явно перепривязывает только no-audio clock на lifecycle boundary.
+    fn reanchor_no_audio_clock(&mut self, position: Duration, observed_at: Instant) {
         if self.snapshot.playback_state == PlaybackState::Playing
             && !self.pipeline.has_audio_clock()
         {
             self.pipeline.start_monotonic_media_clock(
                 position,
-                Instant::now(),
+                observed_at,
                 self.snapshot.playback_rate,
             );
         }
@@ -414,6 +428,67 @@ impl PlayerSession {
         self.snapshot.current_position
     }
 
+    /// Проецирует ближайшую wall-задержку в media position выбранного clock source.
+    #[must_use]
+    pub(crate) fn presentation_media_position_after_wall_delay(
+        &self,
+        now: Instant,
+        wall_delay: Duration,
+    ) -> Duration {
+        if self.pipeline.has_audio_clock() {
+            return self
+                .pipeline
+                .media_position_after_audio_output_delay(wall_delay);
+        }
+
+        if self.seek_presentation_clock_override().is_none()
+            && self.monotonic_media_clock_drives_position()
+            && let Some(position) = self
+                .pipeline
+                .monotonic_media_position_after_wall_delay(now, wall_delay)
+        {
+            return position;
+        }
+
+        let current_media_position = self.presentation_clock_position_at(now);
+        let media_delta = self
+            .snapshot
+            .playback_rate
+            .scale_wall_delta_to_media_delta(wall_delay);
+        current_media_position
+            .checked_add(media_delta)
+            .unwrap_or(Duration::MAX)
+    }
+
+    /// Переводит absolute media deadline в wall delay без clock-эвристик scheduler-а.
+    #[must_use]
+    pub(crate) fn wall_delay_until_media_deadline(
+        &self,
+        now: Instant,
+        media_deadline: Duration,
+    ) -> Duration {
+        if self.pipeline.has_audio_clock() {
+            return self
+                .pipeline
+                .audio_output_delay_until_media_deadline(media_deadline);
+        }
+
+        if self.seek_presentation_clock_override().is_none()
+            && self.monotonic_media_clock_drives_position()
+            && let Some(wall_delay) = self
+                .pipeline
+                .monotonic_wall_delay_until_media_deadline(now, media_deadline)
+        {
+            return wall_delay;
+        }
+
+        let current_media_position = self.presentation_clock_position_at(now);
+        let media_delta = media_deadline.saturating_sub(current_media_position);
+        self.snapshot
+            .playback_rate
+            .scale_media_delta_to_wall_delay(media_delta)
+    }
+
     /// Проверяет, может ли no-audio monotonic clock сейчас двигать user-visible position.
     fn monotonic_media_clock_drives_position(&self) -> bool {
         self.snapshot.playback_state == PlaybackState::Playing || self.eof_drain_needs_progress()
@@ -426,7 +501,7 @@ impl PlayerSession {
         }
 
         let position = self.presentation_clock_position_at(now);
-        self.update_current_position(position);
+        self.publish_clock_sample(position);
     }
 
     /// Запускает или перезапускает no-audio media clock от текущей snapshot position.
@@ -446,6 +521,12 @@ impl PlayerSession {
     /// Останавливает no-audio media clock, предварительно сохранив актуальную позицию.
     fn clear_monotonic_media_clock_anchor(&mut self, now: Instant) {
         self.sync_monotonic_media_clock_position(now);
+        self.pipeline.clear_monotonic_media_clock();
+    }
+
+    /// Публикует уже frozen presentation position перед обычной Pause.
+    fn freeze_current_position_for_pause(&mut self, current_position: Duration) {
+        self.publish_clock_sample(current_position);
         self.pipeline.clear_monotonic_media_clock();
     }
 
@@ -729,7 +810,6 @@ impl PlayerSession {
     fn pause(&mut self) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
         self.cancel_active_scrub_for_external_command(CancelScrubReason::UserCancelled);
-        self.clear_monotonic_media_clock_anchor(Instant::now());
         if let Some(seek_commit) = self.seek_runtime.active_commit_mut() {
             seek_commit.resume_intent = PlaybackResumeIntent::Pause;
             self.pause_audio_output_for_seek();
@@ -737,13 +817,23 @@ impl PlayerSession {
             return Ok(());
         }
 
+        // Output owner возвращает timing, зафиксированный под callback mutex.
+        // Для video-only тот же lifecycle фиксируется по monotonic anchor-у.
+        let audio_pause_result = self.pipeline.pause_audio_output_and_capture_clock();
+        let paused_media_position = match audio_pause_result {
+            Some(Ok(captured_clock)) => captured_clock.media_position(),
+            Some(Err(error)) => {
+                warn!(error = %error, "Не удалось остановить audio");
+                return Err(PlayerError::new(
+                    PlayerErrorKind::RuntimeError,
+                    format!("Audio pause error: {error}"),
+                ));
+            }
+            None => self.presentation_clock_position_at(Instant::now()),
+        };
+        self.freeze_current_position_for_pause(paused_media_position);
         self.set_playback_state(PlaybackState::Paused);
         self.clear_queued_video_frames();
-
-        if let Some(Err(error)) = self.pipeline.pause_audio_output() {
-            warn!(error = %error, "Не удалось остановить audio");
-            self.set_runtime_error(format!("Audio pause error: {error}"));
-        }
 
         Ok(())
     }

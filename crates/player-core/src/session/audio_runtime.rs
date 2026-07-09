@@ -1,13 +1,13 @@
 use std::time::{Duration, Instant};
 
 use media_core::{TrackInfo, TrackKind};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::pipeline::AudioSeekRuntimeState;
 use crate::seek_state::{PlaybackResumeIntent, SeekCommitState};
 use crate::{
-    AudioOutputSpec, AudioTempoPcmFormat, AudioTempoProcessorConfig, PlaybackRate, PlaybackState,
-    PlayerError, PlayerErrorKind, PlayerResult, SeekProgressBlocker, TrackId,
+    AudioOutputSpec, PlaybackState, PlayerError, PlayerErrorKind, PlayerResult,
+    SeekProgressBlocker, TrackId,
 };
 
 use super::{PlayerSession, tick::PlayerTickConfig};
@@ -187,8 +187,9 @@ impl PlayerSession {
                         decoded_audio.channels,
                     ) {
                         warn!(error = %error, "Ошибка audio tempo/output path");
-                        self.disable_selected_audio_path();
-                        self.record_recoverable_error(error);
+                        // После успешного rate commit PCM уже мог попасть в output;
+                        // rollback невозможен, поэтому запрещён video-only fallback.
+                        self.mark_fatal_error(error);
                     }
                 }
                 Ok(_) => {}
@@ -304,173 +305,10 @@ impl PlayerSession {
         Ok(())
     }
 
-    /// Пишет decoded PCM напрямую для чистого 1.0x или через уже активный tempo processor.
-    pub(super) fn write_decoded_audio_samples_at_current_rate(
-        &mut self,
-        samples: &[f32],
-        sample_rate: u32,
-        channels: u32,
-    ) -> PlayerResult<()> {
-        let needs_tempo_processor = self.snapshot.playback_rate != PlaybackRate::NORMAL
-            || self.pipeline.has_audio_tempo_processor();
-        if !needs_tempo_processor {
-            self.pipeline
-                .record_passthrough_audio_history(samples, sample_rate, channels);
-            let _written_samples = self.pipeline.write_audio_output_samples(samples);
-            return Ok(());
-        }
-
-        self.ensure_audio_tempo_processor_for_decoded_spec(sample_rate, channels)?;
-        let Some(process_result) = self.pipeline.process_audio_tempo_samples(samples) else {
-            return Err(PlayerError::new(
-                PlayerErrorKind::RuntimeError,
-                "Audio tempo processor is missing for rate-aware playback".to_string(),
-            ));
-        };
-        let stretched_output = process_result.map_err(player_error_from_audio_tempo_error)?;
-
-        if !stretched_output.interleaved_samples().is_empty() {
-            let _written_samples = self
-                .pipeline
-                .write_audio_output_samples(stretched_output.interleaved_samples());
-        }
-
-        Ok(())
-    }
-
-    /// Создаёт или синхронизирует tempo processor под текущий decoded PCM format/rate.
-    pub(super) fn ensure_audio_tempo_processor_for_decoded_spec(
-        &mut self,
-        sample_rate: u32,
-        channels: u32,
-    ) -> PlayerResult<()> {
-        let output_spec = AudioOutputSpec {
-            sample_rate,
-            channels,
-        };
-        let pcm_format = AudioTempoPcmFormat::from_audio_output_spec(output_spec)
-            .map_err(player_error_from_audio_tempo_error)?;
-
-        if self.pipeline.audio_tempo_pcm_format() == Some(pcm_format)
-            && self.pipeline.has_audio_tempo_processor()
-        {
-            return Ok(());
-        }
-
-        // Смена PCM format у активного processor-а: output уже пересоздан под
-        // новый spec, pending хвост старого формата некуда корректно дописать.
-        // Отбрасываем его явно и с диагностикой, а не молчаливым drop-ом.
-        if self.pipeline.has_audio_tempo_processor() {
-            match self.pipeline.flush_and_clear_audio_tempo_processor() {
-                Some(Ok(flushed_tail)) => {
-                    let dropped_samples = flushed_tail.interleaved_samples().len();
-                    if dropped_samples > 0 {
-                        warn!(
-                            dropped_samples,
-                            "Смена decoded PCM format: pending tempo output старого формата отброшен"
-                        );
-                    }
-                }
-                Some(Err(error)) => {
-                    warn!(error = %error, "Flush tempo processor-а при смене PCM format не удался");
-                }
-                None => {}
-            }
-        }
-
-        let segment = self
-            .pipeline
-            .next_audio_tempo_segment(self.snapshot.playback_rate)
-            .map_err(player_error_from_audio_tempo_error)?;
-        let config = AudioTempoProcessorConfig::new(pcm_format, segment);
-        let processor = self
-            .audio_tempo_processor_factory
-            .create_processor(config)
-            .map_err(player_error_from_audio_tempo_error)?;
-        self.pipeline
-            .install_audio_tempo_processor(processor, pcm_format);
-        self.prime_audio_tempo_processor_from_passthrough_history(sample_rate, channels);
-        Ok(())
-    }
-
-    /// Праймит свежий tempo processor хвостом passthrough PCM и отбрасывает warmup output.
-    ///
-    /// Warmup output дублирует уже проигранную через passthrough media, поэтому
-    /// в output он не пишется. Прайминг закрывает startup latency phase
-    /// vocoder-а: первый настоящий stretched output продолжает волну без клика.
-    fn prime_audio_tempo_processor_from_passthrough_history(
-        &mut self,
-        sample_rate: u32,
-        channels: u32,
-    ) {
-        let history = self
-            .pipeline
-            .take_passthrough_audio_history_for_priming(sample_rate, channels);
-        if history.is_empty() {
-            return;
-        }
-
-        match self.pipeline.process_audio_tempo_samples(&history) {
-            Some(Ok(warmup_output)) => {
-                debug!(
-                    primed_samples = history.len(),
-                    discarded_warmup_samples = warmup_output.interleaved_samples().len(),
-                    "Tempo processor праймлен passthrough историей"
-                );
-            }
-            Some(Err(error)) => {
-                warn!(error = %error, "Прайминг tempo processor-а историей не удался");
-            }
-            None => {}
-        }
-    }
-
-    /// Применяет текущий playback rate к активному tempo processor-у или passthrough path.
-    pub(super) fn sync_audio_tempo_processor_to_playback_rate(&mut self) -> PlayerResult<()> {
-        if !self.pipeline.has_audio_tempo_processor() {
-            return Ok(());
-        }
-
-        let segment = self
-            .pipeline
-            .next_audio_tempo_segment(self.snapshot.playback_rate)
-            .map_err(player_error_from_audio_tempo_error)?;
-        match self.pipeline.set_audio_tempo_segment(segment) {
-            Some(Ok(report)) => {
-                debug!(
-                    segment_id = report.segment_id().get(),
-                    effective_ratio = %report.effective_ratio(),
-                    pending_output_frames = report.pending_processor_output().frame_count().get(),
-                    pending_output_ms = report.pending_processor_output().duration().as_millis(),
-                    processor_latency_ms = report.processor_latency().duration().as_millis(),
-                    "Audio tempo segment применён: bounded tail accounting"
-                );
-                Ok(())
-            }
-            Some(Err(error)) => Err(player_error_from_audio_tempo_error(error)),
-            None => Ok(()),
-        }
-    }
-
-    /// Дренирует tempo processor tail при EOF, чтобы не потерять buffered stretched output.
-    pub(super) fn flush_audio_tempo_processor_for_eof(&mut self) -> PlayerResult<()> {
-        let Some(flush_result) = self.pipeline.flush_and_clear_audio_tempo_processor() else {
-            return Ok(());
-        };
-        let stretched_output = flush_result.map_err(player_error_from_audio_tempo_error)?;
-        if !stretched_output.interleaved_samples().is_empty() {
-            let _written_samples = self
-                .pipeline
-                .write_audio_output_samples(stretched_output.interleaved_samples());
-        }
-        Ok(())
-    }
-
     /// Отключает audio path после unrecoverable lazy-init ошибки, не трогая video state.
     pub(super) fn disable_selected_audio_path(&mut self) {
         self.pipeline.clear_audio_decoder();
         self.pipeline.clear_audio_output();
-        self.pipeline.clear_audio_clock();
         self.pipeline.clear_selected_audio_track();
         self.pipeline.clear_pending_audio_packets();
         self.snapshot.selected_tracks.audio_track = None;
@@ -817,14 +655,6 @@ fn player_error_from_audio_decoder_factory_error(error: anyhow::Error) -> Player
     PlayerError::new(
         PlayerErrorKind::RuntimeError,
         format!("Audio error: {error}"),
-    )
-}
-
-/// Преобразует neutral tempo/backend failures в runtime audio error без direct PCM fallback.
-fn player_error_from_audio_tempo_error(error: anyhow::Error) -> PlayerError {
-    PlayerError::new(
-        PlayerErrorKind::RuntimeError,
-        format!("Audio tempo error: {error}"),
     )
 }
 

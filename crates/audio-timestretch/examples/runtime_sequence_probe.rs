@@ -69,8 +69,11 @@ fn run_scenario(quality: TimestretchQualityMode) -> Result<()> {
     )?;
 
     let history = next_packet(SAMPLE_RATE as usize / 5); // 200 ms
-    let warmup = processor.process_decoded_media(
+    let mut tempo_output = Vec::new();
+    let warmup = AudioTempoProcessor::process_decoded_media_into(
+        &mut processor,
         AudioTempoDecodedMedia::from_interleaved_samples(&history, pcm_format)?,
+        &mut tempo_output,
     )?;
     println!(
         "warmup: primed {} frames -> discarded {} samples",
@@ -85,8 +88,10 @@ fn run_scenario(quality: TimestretchQualityMode) -> Result<()> {
     while rate < 1.999 {
         for _ in 0..2 {
             let packet = next_packet(PACKET_FRAMES);
-            let out = processor.process_decoded_media(
+            let out = AudioTempoProcessor::process_decoded_media_into(
+                &mut processor,
                 AudioTempoDecodedMedia::from_interleaved_samples(&packet, pcm_format)?,
+                &mut tempo_output,
             )?;
             output.extend_from_slice(out.interleaved_samples());
         }
@@ -108,8 +113,10 @@ fn run_scenario(quality: TimestretchQualityMode) -> Result<()> {
         size_index += 1;
         let packet = next_packet(frames);
         media_frames += frames;
-        let out = processor.process_decoded_media(
+        let out = AudioTempoProcessor::process_decoded_media_into(
+            &mut processor,
             AudioTempoDecodedMedia::from_interleaved_samples(&packet, pcm_format)?,
+            &mut tempo_output,
         )?;
         output.extend_from_slice(out.interleaved_samples());
     }

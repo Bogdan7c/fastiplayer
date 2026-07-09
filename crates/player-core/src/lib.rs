@@ -25,19 +25,20 @@ mod worker_scheduler;
 
 pub use audio_core::{
     AudioDecoder, AudioDecoderConfig, AudioDecoderError, AudioDecoderFactory, AudioDecoderHandle,
-    AudioOutputFactory, AudioOutputSpec, AudioPacketTimeBase, AudioPacketTiming,
-    AudioTempoChannelCount, AudioTempoDecodedMedia, AudioTempoFrameCount, AudioTempoFrameSpan,
-    AudioTempoOutputProgressMapping, AudioTempoPcmFormat, AudioTempoProcessReport,
-    AudioTempoProcessor, AudioTempoProcessorConfig, AudioTempoProcessorError,
-    AudioTempoProcessorFactory, AudioTempoProcessorHandle, AudioTempoRatio,
-    AudioTempoRatioInvalidReason, AudioTempoReportFrameCounts, AudioTempoSampleRateHz,
-    AudioTempoSegment, AudioTempoSegmentId, AudioTempoStretchedOutput, EncodedAudioPacket,
-    PlayerAudioClock, PlayerAudioOutput,
+    AudioOutputClockTiming, AudioOutputFactory, AudioOutputSpec, AudioOutputWriteIntent,
+    AudioPacketTimeBase, AudioPacketTiming, AudioTempoChannelCount, AudioTempoDecodedMedia,
+    AudioTempoFrameCount, AudioTempoFrameSpan, AudioTempoOutputProgressMapping,
+    AudioTempoPcmFormat, AudioTempoProcessReport, AudioTempoProcessor, AudioTempoProcessorConfig,
+    AudioTempoProcessorError, AudioTempoProcessorFactory, AudioTempoProcessorHandle,
+    AudioTempoRatio, AudioTempoRatioInvalidReason, AudioTempoReportFrameCounts,
+    AudioTempoSampleRateHz, AudioTempoSegment, AudioTempoSegmentId, AudioTempoStretchedOutput,
+    EncodedAudioPacket, PlayerAudioClock, PlayerAudioOutput,
 };
 pub use codec_core::VideoDecodeRequirement;
 pub use command::{
-    MediaOpenRequest, MediaSource, PlayerCommand, PlayerCommandOutcome, PlayerCommandReject,
-    QualityId, QualitySelection, ScrubCommitPolicy, SeekMode, SeekRequest, SeekTarget,
+    MediaOpenRequest, MediaSource, PlaybackRateAudioTempoRejectReason, PlayerCommand,
+    PlayerCommandOutcome, PlayerCommandReject, QualityId, QualitySelection, ScrubCommitPolicy,
+    SeekMode, SeekRequest, SeekTarget,
 };
 #[cfg(test)]
 pub(crate) use decoder_boundary::DecodeBackpressureReason;

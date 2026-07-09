@@ -4,6 +4,7 @@ use std::sync::{
 };
 
 use super::*;
+use audio_core::{AudioOutputClockTiming, AudioOutputWriteIntent};
 use codec_core::VideoCodec;
 use media_core::{MediaTime, TrackKind};
 
@@ -115,6 +116,9 @@ struct FixedAudioClock {
     /// Текущее значение, которое clock отдаёт pipeline.
     now: Mutex<Duration>,
 
+    /// Конец всего PCM, принятого fake output-ом.
+    submitted_output_end_position: Mutex<Duration>,
+
     /// Счётчик reset-вызовов, чтобы тест видел side effect boundary.
     reset_count: AtomicUsize,
 
@@ -127,6 +131,7 @@ impl FixedAudioClock {
     fn new(now: Duration, underrun_callbacks: u64) -> Self {
         Self {
             now: Mutex::new(now),
+            submitted_output_end_position: Mutex::new(now),
             reset_count: AtomicUsize::new(0),
             underrun_callbacks: AtomicU64::new(underrun_callbacks),
         }
@@ -143,6 +148,27 @@ impl FixedAudioClock {
             .now
             .lock()
             .expect("fake clock mutex не должен ломаться") = now;
+        *self
+            .submitted_output_end_position
+            .lock()
+            .expect("fake submitted position mutex не должен ломаться") = now;
+    }
+
+    /// Задаёт отдельные audible/submitted позиции для tail-aware тестов.
+    fn set_output_timing(
+        &self,
+        audible_output_position: Duration,
+        submitted_output_end_position: Duration,
+    ) {
+        *self
+            .now
+            .lock()
+            .expect("fake clock mutex не должен ломаться") = audible_output_position;
+        *self
+            .submitted_output_end_position
+            .lock()
+            .expect("fake submitted position mutex не должен ломаться") =
+            submitted_output_end_position;
     }
 }
 
@@ -155,6 +181,16 @@ impl PlayerAudioClock for FixedAudioClock {
             .expect("fake clock mutex не должен ломаться")
     }
 
+    /// Возвращает scripted audible/submitted snapshot.
+    fn output_timing(&self) -> AudioOutputClockTiming {
+        let audible_output_position = self.now();
+        let submitted_output_end_position = *self
+            .submitted_output_end_position
+            .lock()
+            .expect("fake submitted position mutex не должен ломаться");
+        AudioOutputClockTiming::new(audible_output_position, submitted_output_end_position)
+    }
+
     /// Сбрасывает позицию и отмечает reset-вызов.
     fn reset(&self) {
         self.reset_count.fetch_add(1, Ordering::Relaxed);
@@ -162,6 +198,10 @@ impl PlayerAudioClock for FixedAudioClock {
             .now
             .lock()
             .expect("fake clock mutex не должен ломаться") = Duration::ZERO;
+        *self
+            .submitted_output_end_position
+            .lock()
+            .expect("fake submitted position mutex не должен ломаться") = Duration::ZERO;
     }
 
     /// Возвращает scripted underrun count.
@@ -222,7 +262,7 @@ impl FixedAudioOutput {
 
 impl PlayerAudioOutput for FixedAudioOutput {
     /// Записывает все samples как успешно принятые.
-    fn write_samples(&mut self, samples: &[f32]) -> u64 {
+    fn write_samples(&mut self, samples: &[f32], _intent: AudioOutputWriteIntent) -> u64 {
         samples.len() as u64
     }
 
@@ -234,11 +274,11 @@ impl PlayerAudioOutput for FixedAudioOutput {
         }
     }
 
-    /// Fake stream всегда успешно ставится на паузу.
-    fn pause(&mut self) -> anyhow::Result<()> {
+    /// Fake pause возвращает timing того же output clock-а.
+    fn pause_and_freeze_clock(&mut self) -> anyhow::Result<AudioOutputClockTiming> {
         match self.pause_error {
             Some(error) => Err(anyhow::anyhow!(error)),
-            None => Ok(()),
+            None => Ok(self.clock.output_timing()),
         }
     }
 
@@ -619,9 +659,12 @@ fn absent_audio_output_boundaries_are_noop_without_losing_absent_state() {
     let mut pipeline = PlaybackPipeline::default();
 
     assert!(!pipeline.has_audio_output());
-    assert_eq!(pipeline.write_audio_output_samples(&[0.0, 0.1]), None);
+    assert_eq!(
+        pipeline.write_audio_output_samples(&[0.0, 0.1], AudioOutputWriteIntent::DirectDecodedPcm,),
+        None
+    );
     assert!(pipeline.play_audio_output().is_none());
-    assert!(pipeline.pause_audio_output().is_none());
+    assert!(pipeline.pause_audio_output_and_capture_clock().is_none());
     assert!(pipeline.clear_audio_output_for_seek(1).is_none());
     assert!(pipeline.audio_output_buffer_level_ms().is_none());
     assert!(pipeline.audio_output_clock().is_none());
@@ -645,7 +688,11 @@ fn installed_audio_output_boundary_forwards_calls_and_neutral_clock() {
 
     assert!(pipeline.has_audio_output());
     assert!(pipeline.audio_output_clock().is_some());
-    assert_eq!(pipeline.write_audio_output_samples(&[0.1, -0.1]), Some(2));
+    assert_eq!(
+        pipeline
+            .write_audio_output_samples(&[0.1, -0.1], AudioOutputWriteIntent::DirectDecodedPcm,),
+        Some(2)
+    );
     assert_eq!(pipeline.audio_output_buffer_level_ms(), Some(42.0));
     assert_eq!(
         pipeline
@@ -680,7 +727,7 @@ fn audio_output_boundary_preserves_play_pause_errors() {
     assert_eq!(play_error.to_string(), "play failed");
 
     let pause_error = pipeline
-        .pause_audio_output()
+        .pause_audio_output_and_capture_clock()
         .expect("installed output должен вернуть pause result")
         .expect_err("pause error должен пройти через boundary");
     assert_eq!(pause_error.to_string(), "pause failed");
@@ -742,6 +789,33 @@ fn audio_eof_drain_state_preserves_queue_output_and_playback_distinctions() {
 }
 
 #[test]
+fn audio_eof_drain_waits_for_pcm_already_submitted_to_dac() {
+    let mut pipeline = PlaybackPipeline::default();
+    pipeline.select_audio_track(TrackId::new(2));
+
+    let output = FixedAudioOutput::new(0.0);
+    let output_clock = output.clock_handle();
+    output_clock.set_output_timing(Duration::ZERO, Duration::from_millis(100));
+    pipeline.install_audio_output_for_tests(Box::new(output));
+
+    assert_eq!(
+        pipeline.audio_eof_drain_state(),
+        AudioEofDrainState::DrainingOutput {
+            buffer_level_ms: 100.0,
+            playback_requested: false,
+        }
+    );
+
+    output_clock.set_output_timing(Duration::from_millis(100), Duration::from_millis(100));
+    assert_eq!(
+        pipeline.audio_eof_drain_state(),
+        AudioEofDrainState::DrainedOutput {
+            playback_requested: false,
+        }
+    );
+}
+
+#[test]
 fn audio_buffer_clear_generation_boundary_records_ack_generation() {
     let mut pipeline = PlaybackPipeline::default();
 
@@ -787,6 +861,38 @@ fn no_audio_monotonic_fallback_scales_position_by_playback_rate() {
     assert_eq!(
         slow_pipeline.monotonic_media_position(anchored_at + Duration::from_millis(40)),
         Some(Duration::from_millis(120))
+    );
+}
+
+#[test]
+fn no_audio_monotonic_deadline_mapping_preserves_anchor_rounding_phase() {
+    let empty_pipeline = PlaybackPipeline::default();
+    let now = Instant::now();
+    assert_eq!(
+        empty_pipeline.monotonic_media_position_after_wall_delay(now, Duration::from_nanos(1)),
+        None
+    );
+    assert_eq!(
+        empty_pipeline.monotonic_wall_delay_until_media_deadline(now, Duration::from_nanos(1)),
+        None
+    );
+
+    let one_and_half_rate = PlaybackRate::new(1.5).expect("1.5x playback rate must validate");
+    let mut pipeline = PlaybackPipeline::default();
+    pipeline.start_monotonic_media_clock(Duration::ZERO, now, one_and_half_rate);
+    let current_time = now + Duration::from_nanos(1);
+
+    assert_eq!(
+        pipeline.monotonic_media_position(current_time),
+        Some(Duration::from_nanos(1))
+    );
+    assert_eq!(
+        pipeline.monotonic_media_position_after_wall_delay(current_time, Duration::from_nanos(1)),
+        Some(Duration::from_nanos(3))
+    );
+    assert_eq!(
+        pipeline.monotonic_wall_delay_until_media_deadline(current_time, Duration::from_nanos(3)),
+        Some(Duration::from_nanos(1))
     );
 }
 
@@ -866,13 +972,14 @@ fn assert_media_position_close(actual: Duration, expected: Duration) {
 #[test]
 fn rate_change_reanchor_accounts_written_output_tail_at_old_rate() {
     let mut pipeline = PlaybackPipeline::default();
-    let output = FixedAudioOutput::new(200.0);
+    // Ring уже пуст, но 200 ms submitted PCM находятся между callback и DAC.
+    let output = FixedAudioOutput::new(0.0);
     let clock = output.clock_handle();
     pipeline.install_audio_output_for_tests(Box::new(output));
     pipeline.install_audio_clock(clock.clone() as Arc<dyn PlayerAudioClock>);
 
     // Играем на 1.0x: anchor media 10s на output 60s.
-    clock.set_now(Duration::from_secs(60));
+    clock.set_output_timing(Duration::from_secs(60), Duration::from_millis(60_200));
     pipeline.reanchor_audio_clock_media_mapping(Duration::from_secs(10), PlaybackRate::NORMAL);
 
     // Смена на 2.0x при 200 ms записанного, но не проигранного output-а.
@@ -934,12 +1041,12 @@ fn rate_change_reanchor_without_buffered_output_matches_plain_reanchor() {
 #[test]
 fn repeated_rate_change_inside_tail_keeps_mapping_monotonic_and_bounded() {
     let mut pipeline = PlaybackPipeline::default();
-    let output = FixedAudioOutput::new(200.0);
+    let output = FixedAudioOutput::new(0.0);
     let clock = output.clock_handle();
     pipeline.install_audio_output_for_tests(Box::new(output));
     pipeline.install_audio_clock(clock.clone() as Arc<dyn PlayerAudioClock>);
 
-    clock.set_now(Duration::from_secs(60));
+    clock.set_output_timing(Duration::from_secs(60), Duration::from_millis(60_200));
     pipeline.reanchor_audio_clock_media_mapping(Duration::from_secs(10), PlaybackRate::NORMAL);
     pipeline.reanchor_audio_clock_media_mapping_for_rate_change(
         Duration::from_secs(10),
@@ -947,7 +1054,7 @@ fn repeated_rate_change_inside_tail_keeps_mapping_monotonic_and_bounded() {
     );
 
     // Вторая смена в середине ещё не проигранного хвоста.
-    clock.set_now(Duration::from_millis(60_100));
+    clock.set_output_timing(Duration::from_millis(60_100), Duration::from_millis(60_300));
     let mid_tail_position = pipeline.media_position_from_audio_clock();
     pipeline.reanchor_audio_clock_media_mapping_for_rate_change(
         mid_tail_position,

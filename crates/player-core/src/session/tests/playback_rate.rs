@@ -162,9 +162,15 @@ fn playing_playback_rate_change_reanchors_audio_clock_mapping_without_seek_trans
         .reanchor_audio_clock_media_mapping(initial_position, PlaybackRate::NORMAL);
     session.update_current_position(initial_position);
     let seek_generation_before_command = session.pipeline.seek_generation();
+    let timing_reads_before_command = audio_clock.output_timing_read_count();
 
     assert_rate_command_applied(
         session.dispatch_command(PlayerCommand::SetPlaybackRate(requested_rate)),
+    );
+    assert_eq!(
+        audio_clock.output_timing_read_count(),
+        timing_reads_before_command + 1,
+        "rate transaction должна использовать один timing snapshot для current media и tail"
     );
     audio_clock.record_played(96_000);
 
@@ -202,6 +208,82 @@ fn paused_playback_rate_command_updates_snapshot_without_advancing_media_time() 
         session.snapshot().timeline.current_position,
         MediaTime::from_duration(position_before_command)
     );
+}
+
+#[test]
+fn play_audio_clock_advance_pause_rate_change_play_preserves_frozen_position() {
+    let mut session = PlayerSession::new();
+    let audio_output = ScriptedAudioOutput::new(0.0, None);
+    let audio_output_handle = audio_output.handle.clone();
+    let audio_clock = Arc::clone(&audio_output_handle.clock);
+    let initial_media_position = Duration::from_secs(5);
+    let requested_rate = playback_rate(2.0);
+
+    session.load_prepared_media_with_autoplay(fake_prepared_media("pause clock regression"), false);
+    session
+        .dispatch_command(PlayerCommand::Play)
+        .expect("play command should succeed");
+    session
+        .pipeline
+        .install_audio_output_for_tests(Box::new(audio_output));
+    session
+        .pipeline
+        .install_audio_clock(audio_clock.as_player_clock());
+    session
+        .pipeline
+        .reanchor_audio_clock_media_mapping(initial_media_position, PlaybackRate::NORMAL);
+    session.update_current_position(initial_media_position);
+
+    // 96 000 interleaved stereo samples соответствуют одной секунде output clock.
+    audio_clock.record_played(96_000);
+    session
+        .dispatch_command(PlayerCommand::Pause)
+        .expect("pause command should succeed");
+
+    let frozen_pause_position = Duration::from_secs(6);
+    assert_eq!(session.snapshot().current_position, frozen_pause_position);
+
+    // Даже если scripted source пытается продвинуться во время pause, output
+    // boundary продолжает возвращать атомарно frozen coordinate.
+    audio_clock.record_played(192_000);
+    assert_eq!(audio_clock.now(), Duration::from_secs(1));
+    assert_rate_command_applied(
+        session.dispatch_command(PlayerCommand::SetPlaybackRate(requested_rate)),
+    );
+    assert_eq!(session.snapshot().current_position, frozen_pause_position);
+
+    session
+        .dispatch_command(PlayerCommand::Play)
+        .expect("resume command should succeed");
+    // Ещё 0.5 секунды output clock после re-anchor дают ровно 1 секунду media при 2x.
+    audio_clock.record_played(144_000);
+    assert_eq!(
+        session.presentation_clock_position_at(Instant::now()),
+        Duration::from_secs(7)
+    );
+}
+
+#[test]
+fn pause_backend_error_does_not_publish_paused_snapshot() {
+    let mut session = PlayerSession::new();
+    let initial_media_position = Duration::from_secs(5);
+
+    session.load_prepared_media_with_autoplay(fake_prepared_media("pause error"), false);
+    session
+        .dispatch_command(PlayerCommand::Play)
+        .expect("play command should succeed");
+    session.pipeline.install_audio_output_for_tests(Box::new(
+        ScriptedAudioOutput::with_pause_error(0.0, "scripted pause failure"),
+    ));
+    session.update_current_position(initial_media_position);
+
+    let pause_error = session
+        .dispatch_command(PlayerCommand::Pause)
+        .expect_err("real backend pause error должна выйти из session transaction");
+
+    assert_eq!(pause_error.kind, PlayerErrorKind::RuntimeError);
+    assert_eq!(session.playback_state(), PlaybackState::Playing);
+    assert_eq!(session.snapshot().current_position, initial_media_position);
 }
 
 #[test]

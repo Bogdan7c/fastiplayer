@@ -21,8 +21,9 @@ mod output_adapter;
 
 pub use audio_core::{
     AudioDecoder, AudioDecoderConfig, AudioDecoderError, AudioDecoderFactory, AudioDecoderHandle,
-    AudioOutputFactory, AudioOutputSpec, AudioPacketTimeBase, AudioPacketTiming,
-    EncodedAudioPacket, PlayerAudioClock, PlayerAudioOutput,
+    AudioOutputClockTiming, AudioOutputFactory, AudioOutputSpec, AudioOutputWriteIntent,
+    AudioPacketTimeBase, AudioPacketTiming, EncodedAudioPacket, PlayerAudioClock,
+    PlayerAudioOutput,
 };
 pub use clock::AudioClock;
 pub use decoder::{ProductionAudioDecoderFactory, SymphoniaAudioDecoder, create_audio_decoder};

@@ -136,7 +136,6 @@ impl PlayerSession {
                 warn!(error = %error, "Не удалось запустить audio tail после EOF");
                 self.set_runtime_error(format!("Audio EOF drain play error: {error}"));
                 self.pipeline.clear_audio_output();
-                self.pipeline.clear_audio_clock();
                 return;
             }
 
@@ -164,8 +163,11 @@ impl PlayerSession {
 
         if let Err(error) = self.flush_audio_tempo_processor_for_eof() {
             warn!(error = %error, "Не удалось дренировать audio tempo tail после EOF");
-            self.disable_selected_audio_path();
-            self.record_recoverable_error(error);
+            // После committed tempo processing backend уже нельзя откатить к
+            // direct PCM. Потеря EOF tail-а — fatal session failure, а не
+            // разрешение молча завершить оставшееся видео без audio.
+            self.mark_fatal_error(error);
+            return false;
         }
 
         if !self.eof_drain_ready_to_end(now, audio_stall_timeout) {

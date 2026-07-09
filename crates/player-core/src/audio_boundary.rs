@@ -65,13 +65,14 @@ mod tests {
     use std::sync::Arc;
 
     use anyhow::Result;
+    use audio_core::AudioTempoOutputSegmentSpans;
 
     use crate::{
-        AudioTempoChannelCount, AudioTempoDecodedMedia, AudioTempoFrameCount, AudioTempoPcmFormat,
-        AudioTempoProcessReport, AudioTempoProcessor, AudioTempoProcessorConfig,
-        AudioTempoProcessorFactory, AudioTempoProcessorHandle, AudioTempoRatio,
-        AudioTempoReportFrameCounts, AudioTempoSampleRateHz, AudioTempoSegment,
-        AudioTempoSegmentId, AudioTempoStretchedOutput,
+        AudioTempoChannelCount, AudioTempoDecodedMedia, AudioTempoFrameCount,
+        AudioTempoOutputProgressMapping, AudioTempoPcmFormat, AudioTempoProcessReport,
+        AudioTempoProcessor, AudioTempoProcessorConfig, AudioTempoProcessorFactory,
+        AudioTempoProcessorHandle, AudioTempoRatio, AudioTempoReportFrameCounts,
+        AudioTempoSampleRateHz, AudioTempoSegment, AudioTempoSegmentId, AudioTempoStretchedOutput,
     };
 
     struct CompileOnlyTempoProcessor {
@@ -79,34 +80,63 @@ mod tests {
     }
 
     impl CompileOnlyTempoProcessor {
-        fn zero_report(&self) -> AudioTempoProcessReport {
+        fn zero_report(&self) -> Result<AudioTempoProcessReport> {
             AudioTempoProcessReport::from_frame_counts(
                 self.config.pcm_format(),
                 self.config.initial_segment(),
                 AudioTempoReportFrameCounts::ZERO,
+                AudioTempoOutputProgressMapping::new(
+                    AudioTempoOutputSegmentSpans::Empty,
+                    AudioTempoOutputSegmentSpans::Empty,
+                ),
             )
         }
     }
 
     impl AudioTempoProcessor for CompileOnlyTempoProcessor {
+        fn pcm_format(&self) -> AudioTempoPcmFormat {
+            self.config.pcm_format()
+        }
+
+        fn prime_decoded_history(
+            &mut self,
+            _decoded_history: AudioTempoDecodedMedia<'_>,
+        ) -> Result<AudioTempoProcessReport> {
+            self.zero_report()
+        }
+
         fn set_segment(&mut self, segment: AudioTempoSegment) -> Result<AudioTempoProcessReport> {
             self.config = AudioTempoProcessorConfig::new(self.config.pcm_format(), segment);
-            Ok(self.zero_report())
+            self.zero_report()
         }
 
-        fn process_decoded_media(
+        fn process_decoded_media_into<'output>(
             &mut self,
             _decoded_media: AudioTempoDecodedMedia<'_>,
-        ) -> Result<AudioTempoStretchedOutput> {
-            AudioTempoStretchedOutput::new(Vec::new(), self.zero_report(), self.config.pcm_format())
+            output_buffer: &'output mut Vec<f32>,
+        ) -> Result<AudioTempoStretchedOutput<'output>> {
+            output_buffer.clear();
+            AudioTempoStretchedOutput::new(
+                output_buffer.as_slice(),
+                self.zero_report()?,
+                self.config.pcm_format(),
+            )
         }
 
-        fn flush(&mut self) -> Result<AudioTempoStretchedOutput> {
-            AudioTempoStretchedOutput::new(Vec::new(), self.zero_report(), self.config.pcm_format())
+        fn finish_stream_into<'output>(
+            &mut self,
+            output_buffer: &'output mut Vec<f32>,
+        ) -> Result<AudioTempoStretchedOutput<'output>> {
+            output_buffer.clear();
+            AudioTempoStretchedOutput::new(
+                output_buffer.as_slice(),
+                self.zero_report()?,
+                self.config.pcm_format(),
+            )
         }
 
         fn reset(&mut self) -> Result<AudioTempoProcessReport> {
-            Ok(self.zero_report())
+            self.zero_report()
         }
     }
 

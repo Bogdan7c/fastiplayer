@@ -7,7 +7,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use audio_core::{AudioOutputFactory, AudioOutputSpec, PlayerAudioClock, PlayerAudioOutput};
+use audio_core::{
+    AudioOutputClockTiming, AudioOutputFactory, AudioOutputSpec, AudioOutputWriteIntent,
+    PlayerAudioClock, PlayerAudioOutput,
+};
 
 use crate::{AudioClock, AudioOutput, AudioOutputDeviceController};
 
@@ -50,9 +53,9 @@ impl AudioOutputFactory for CpalAudioOutputFactory {
 }
 
 impl PlayerAudioOutput for AudioOutput {
-    /// Записывает PCM samples напрямую в concrete ring buffer output-а.
-    fn write_samples(&mut self, samples: &[f32]) -> u64 {
-        AudioOutput::write_samples(self, samples)
+    /// Записывает PCM samples с явным direct/tempo output intent.
+    fn write_samples(&mut self, samples: &[f32], intent: AudioOutputWriteIntent) -> u64 {
+        AudioOutput::write_samples(self, samples, intent)
     }
 
     /// Запускает CPAL stream и возвращает backend error без сокрытия.
@@ -60,9 +63,9 @@ impl PlayerAudioOutput for AudioOutput {
         AudioOutput::play(self)
     }
 
-    /// Ставит CPAL stream на паузу и возвращает backend error без сокрытия.
-    fn pause(&mut self) -> anyhow::Result<()> {
-        AudioOutput::pause(self)
+    /// Ставит stream на паузу и фиксирует neutral clock под callback mutex.
+    fn pause_and_freeze_clock(&mut self) -> anyhow::Result<AudioOutputClockTiming> {
+        AudioOutput::pause_and_freeze_clock(self)
     }
 
     /// Очищает buffer/resampler state на владельце concrete output-а.
@@ -91,6 +94,11 @@ impl PlayerAudioClock for AudioClock {
     /// Возвращает playback позицию concrete clock-а.
     fn now(&self) -> Duration {
         AudioClock::now(self)
+    }
+
+    /// Возвращает согласованный audible/submitted snapshot без CPAL типов.
+    fn output_timing(&self) -> AudioOutputClockTiming {
+        AudioClock::output_timing(self)
     }
 
     /// Сбрасывает concrete clock при seek/reset playback.

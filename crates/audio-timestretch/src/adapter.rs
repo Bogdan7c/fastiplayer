@@ -1,11 +1,21 @@
+use std::collections::VecDeque;
+
 use audio_core::{
-    AudioTempoChannelCount, AudioTempoDecodedMedia, AudioTempoFrameCount, AudioTempoPcmFormat,
+    AudioTempoChannelCount, AudioTempoDecodedMedia, AudioTempoFrameCount,
+    AudioTempoOutputProgressMapping, AudioTempoOutputSegmentSpans, AudioTempoPcmFormat,
     AudioTempoProcessReport, AudioTempoProcessor, AudioTempoProcessorConfig,
-    AudioTempoProcessorFactory, AudioTempoProcessorHandle, AudioTempoRatio,
-    AudioTempoReportFrameCounts, AudioTempoSegment, AudioTempoStretchedOutput,
+    AudioTempoProcessorError, AudioTempoProcessorFactory, AudioTempoProcessorHandle,
+    AudioTempoRatio, AudioTempoReportFrameCounts, AudioTempoSegment, AudioTempoStretchedOutput,
 };
 use thiserror::Error;
 use timestretch::{QualityMode, StreamProcessor, StretchError, StretchParams};
+
+mod pending;
+
+use pending::{
+    TimestretchPendingOutputSpan, drain_timestretch_pending_spans, push_timestretch_pending_span,
+    sum_timestretch_pending_frames, timestretch_pending_spans_view,
+};
 
 /// Такой же realtime FFT, как в `StreamProcessor::try_from_tempo_low_latency`.
 ///
@@ -116,6 +126,17 @@ pub enum TimestretchTempoError {
     #[error("failed to build project tempo ratio {multiplier}: {message}")]
     InvalidProjectRatio { multiplier: f64, message: String },
 
+    /// Decoded packet не совпал с format-ом concrete processor-а.
+    #[error("timestretch PCM format mismatch: expected {expected:?}, got {actual:?}")]
+    PcmFormatMismatch {
+        expected: AudioTempoPcmFormat,
+        actual: AudioTempoPcmFormat,
+    },
+
+    /// Adapter обнаружил нарушение собственного pending/report accounting.
+    #[error("timestretch tempo boundary invariant failed: {message}")]
+    BoundaryInvariant { message: String },
+
     /// Concrete backend сохранил typed `timestretch` error для диагностики.
     #[error("timestretch backend failed: {source}")]
     Backend {
@@ -210,6 +231,8 @@ pub struct TimestretchTempoProcessor {
     settings: TimestretchTempoSettings,
     active_segment: AudioTempoSegment,
     processor: StreamProcessor,
+    pending_output_segments: VecDeque<TimestretchPendingOutputSpan>,
+    stream_started: bool,
 }
 
 impl TimestretchTempoProcessor {
@@ -238,6 +261,8 @@ impl TimestretchTempoProcessor {
             settings,
             active_segment,
             processor,
+            pending_output_segments: VecDeque::new(),
+            stream_started: false,
         })
     }
 
@@ -321,9 +346,13 @@ impl TimestretchTempoProcessor {
         decoded_media: AudioTempoDecodedMedia<'_>,
         output: &mut Vec<f32>,
     ) -> Result<AudioTempoProcessReport, TimestretchTempoError> {
+        self.validate_decoded_media_format(decoded_media)?;
         let output_len_before = output.len();
         self.processor
             .process_into(decoded_media.interleaved_samples(), output)?;
+        if decoded_media.frame_count() != AudioTempoFrameCount::ZERO {
+            self.stream_started = true;
+        }
         self.report_for_operation(decoded_media.frame_count(), output_len_before, output.len())
     }
 
@@ -334,7 +363,10 @@ impl TimestretchTempoProcessor {
     ) -> Result<AudioTempoProcessReport, TimestretchTempoError> {
         let output_len_before = output.len();
         self.processor.flush_into(output)?;
-        self.report_for_operation(AudioTempoFrameCount::ZERO, output_len_before, output.len())
+        let report =
+            self.report_for_operation(AudioTempoFrameCount::ZERO, output_len_before, output.len())?;
+        self.stream_started = false;
+        Ok(report)
     }
 
     /// Сбрасывает algorithmic state после seek/discontinuity и сохраняет текущий target segment.
@@ -344,28 +376,63 @@ impl TimestretchTempoProcessor {
             self.active_segment.ratio(),
             self.settings,
         ));
+        self.pending_output_segments.clear();
+        self.stream_started = false;
         self.report_from_counts(
             AudioTempoFrameCount::ZERO,
             AudioTempoFrameCount::ZERO,
-            self.current_pending_output_frames()?,
+            AudioTempoFrameCount::ZERO,
+            AudioTempoOutputSegmentSpans::default(),
+            AudioTempoOutputSegmentSpans::default(),
         )
     }
 
-    fn report_for_operation(
+    /// Проверяет format до передачи samples concrete backend-у.
+    fn validate_decoded_media_format(
         &self,
+        decoded_media: AudioTempoDecodedMedia<'_>,
+    ) -> Result<(), TimestretchTempoError> {
+        if decoded_media.pcm_format() != self.pcm_format {
+            return Err(TimestretchTempoError::PcmFormatMismatch {
+                expected: self.pcm_format,
+                actual: decoded_media.pcm_format(),
+            });
+        }
+        Ok(())
+    }
+
+    fn report_for_operation(
+        &mut self,
         consumed_decoded_media: AudioTempoFrameCount,
         output_len_before: usize,
         output_len_after: usize,
     ) -> Result<AudioTempoProcessReport, TimestretchTempoError> {
-        let produced_sample_count = output_len_after.saturating_sub(output_len_before);
+        let produced_sample_count =
+            output_len_after
+                .checked_sub(output_len_before)
+                .ok_or_else(|| TimestretchTempoError::BoundaryInvariant {
+                    message: "backend output length regressed".to_owned(),
+                })?;
         let produced_stretched_output =
             frame_count_from_interleaved_samples(produced_sample_count, self.channel_count())?;
         let pending_processor_output = self.current_pending_output_frames()?;
+        let report_segment = AudioTempoSegment::new(
+            self.active_segment.segment_id(),
+            project_ratio_from_backend_stretch_ratio(self.processor.current_stretch_ratio())?,
+        );
+        let (produced_output_segments, pending_output_segments) = self
+            .reconcile_pending_output_segments(
+                report_segment,
+                produced_stretched_output,
+                pending_processor_output,
+            )?;
 
         self.report_from_counts(
             consumed_decoded_media,
             produced_stretched_output,
             pending_processor_output,
+            produced_output_segments,
+            pending_output_segments,
         )
     }
 
@@ -374,22 +441,99 @@ impl TimestretchTempoProcessor {
         consumed_decoded_media: AudioTempoFrameCount,
         produced_stretched_output: AudioTempoFrameCount,
         pending_processor_output: AudioTempoFrameCount,
+        produced_output_segments: AudioTempoOutputSegmentSpans,
+        pending_output_segments: AudioTempoOutputSegmentSpans,
     ) -> Result<AudioTempoProcessReport, TimestretchTempoError> {
-        let effective_ratio =
-            project_ratio_from_backend_stretch_ratio(self.processor.current_stretch_ratio())?;
-        let report_segment =
-            AudioTempoSegment::new(self.active_segment.segment_id(), effective_ratio);
+        self.report_from_counts_for_active_segment(
+            self.active_segment,
+            consumed_decoded_media,
+            produced_stretched_output,
+            pending_processor_output,
+            produced_output_segments,
+            pending_output_segments,
+        )
+    }
 
-        Ok(AudioTempoProcessReport::from_frame_counts(
+    /// Строит planned report до atomic backend segment commit.
+    fn report_from_counts_for_active_segment(
+        &self,
+        active_segment: AudioTempoSegment,
+        consumed_decoded_media: AudioTempoFrameCount,
+        produced_stretched_output: AudioTempoFrameCount,
+        pending_processor_output: AudioTempoFrameCount,
+        produced_output_segments: AudioTempoOutputSegmentSpans,
+        pending_output_segments: AudioTempoOutputSegmentSpans,
+    ) -> Result<AudioTempoProcessReport, TimestretchTempoError> {
+        AudioTempoProcessReport::from_frame_counts(
             self.pcm_format,
-            report_segment,
+            active_segment,
             AudioTempoReportFrameCounts {
                 consumed_decoded_media,
                 produced_stretched_output,
                 pending_processor_output,
-                processor_latency: self.processor_latency_frames()?,
+                // `timestretch` не разделяет latency; probe трактует её как output delay.
+                input_latency: AudioTempoFrameCount::ZERO,
+                output_latency: self.processor_latency_frames()?,
             },
-        ))
+            AudioTempoOutputProgressMapping::new(produced_output_segments, pending_output_segments),
+        )
+        .map_err(|error| TimestretchTempoError::BoundaryInvariant {
+            message: error.to_string(),
+        })
+    }
+
+    /// Согласует backend produced/pending counts с ordered segment queue.
+    fn reconcile_pending_output_segments(
+        &mut self,
+        produced_segment: AudioTempoSegment,
+        produced_stretched_output: AudioTempoFrameCount,
+        pending_processor_output: AudioTempoFrameCount,
+    ) -> Result<(AudioTempoOutputSegmentSpans, AudioTempoOutputSegmentSpans), TimestretchTempoError>
+    {
+        let pending_before = sum_timestretch_pending_frames(&self.pending_output_segments)?;
+        let total_after_accepting_input = produced_stretched_output
+            .get()
+            .checked_add(pending_processor_output.get())
+            .ok_or_else(|| TimestretchTempoError::BoundaryInvariant {
+                message: "produced + pending frame count overflow".to_owned(),
+            })?;
+        let newly_scheduled_output = total_after_accepting_input
+            .checked_sub(pending_before)
+            .ok_or_else(|| TimestretchTempoError::BoundaryInvariant {
+                message: format!(
+                    "backend discarded pending output: before={pending_before}, produced={}, pending={}",
+                    produced_stretched_output.get(),
+                    pending_processor_output.get()
+                ),
+            })?;
+        push_timestretch_pending_span(
+            &mut self.pending_output_segments,
+            produced_segment,
+            newly_scheduled_output,
+        )?;
+
+        let produced_output_segments = drain_timestretch_pending_spans(
+            &mut self.pending_output_segments,
+            produced_stretched_output.get(),
+            self.pcm_format,
+        )?;
+        let actual_pending_after = sum_timestretch_pending_frames(&self.pending_output_segments)?;
+        if actual_pending_after != pending_processor_output.get() {
+            return Err(TimestretchTempoError::BoundaryInvariant {
+                message: format!(
+                    "pending segment queue has {actual_pending_after} frames, backend reports {}",
+                    pending_processor_output.get()
+                ),
+            });
+        }
+        let pending_output_segments =
+            timestretch_pending_spans_view(&self.pending_output_segments, self.pcm_format);
+        Ok((produced_output_segments, pending_output_segments))
+    }
+
+    /// Возвращает pending mapping без изменения queue.
+    fn pending_output_segments_view(&self) -> AudioTempoOutputSegmentSpans {
+        timestretch_pending_spans_view(&self.pending_output_segments, self.pcm_format)
     }
 
     fn current_pending_output_frames(&self) -> Result<AudioTempoFrameCount, TimestretchTempoError> {
@@ -403,40 +547,102 @@ impl TimestretchTempoProcessor {
 }
 
 impl AudioTempoProcessor for TimestretchTempoProcessor {
+    fn pcm_format(&self) -> AudioTempoPcmFormat {
+        self.pcm_format
+    }
+
+    fn prime_decoded_history(
+        &mut self,
+        decoded_history: AudioTempoDecodedMedia<'_>,
+    ) -> anyhow::Result<AudioTempoProcessReport> {
+        if decoded_history.pcm_format() != self.pcm_format {
+            return Err(AudioTempoProcessorError::PcmFormatMismatch {
+                expected: self.pcm_format,
+                actual: decoded_history.pcm_format(),
+            }
+            .into());
+        }
+        if self.stream_started
+            || self.current_pending_output_frames()? != AudioTempoFrameCount::ZERO
+        {
+            return Err(AudioTempoProcessorError::HistoryPrimeAfterStreamStart.into());
+        }
+
+        // У probe backend-а нет position-free seek API: безопасный no-op лучше duplicate PCM.
+        Ok(self.report_from_counts(
+            AudioTempoFrameCount::ZERO,
+            AudioTempoFrameCount::ZERO,
+            AudioTempoFrameCount::ZERO,
+            AudioTempoOutputSegmentSpans::default(),
+            AudioTempoOutputSegmentSpans::default(),
+        )?)
+    }
+
     fn set_segment(
         &mut self,
         segment: AudioTempoSegment,
     ) -> anyhow::Result<AudioTempoProcessReport> {
-        TimestretchTempoProcessor::set_segment(self, segment)?;
-        Ok(self.report_from_counts(
+        // Planned report строится до backend call: любой report Err сохраняет old state.
+        let pending_output_segments = self.pending_output_segments_view();
+        let report = self.report_from_counts_for_active_segment(
+            segment,
             AudioTempoFrameCount::ZERO,
             AudioTempoFrameCount::ZERO,
             self.current_pending_output_frames()?,
-        )?)
+            AudioTempoOutputSegmentSpans::default(),
+            pending_output_segments,
+        )?;
+        // Concrete setter валидирует ratio до мутации; active segment меняется только после Ok.
+        TimestretchTempoProcessor::set_segment(self, segment)?;
+        Ok(report)
     }
 
-    fn process_decoded_media(
+    fn process_decoded_media_into<'output>(
         &mut self,
         decoded_media: AudioTempoDecodedMedia<'_>,
-    ) -> anyhow::Result<AudioTempoStretchedOutput> {
+        output_buffer: &'output mut Vec<f32>,
+    ) -> anyhow::Result<AudioTempoStretchedOutput<'output>> {
+        if decoded_media.pcm_format() != self.pcm_format {
+            return Err(AudioTempoProcessorError::PcmFormatMismatch {
+                expected: self.pcm_format,
+                actual: decoded_media.pcm_format(),
+            }
+            .into());
+        }
         let capacity_budget =
             self.output_capacity_budget(decoded_media.interleaved_samples().len());
-        let mut interleaved_samples =
-            Vec::with_capacity(capacity_budget.additional_output_capacity_samples());
-        let report = self.process_decoded_media_into(decoded_media, &mut interleaved_samples)?;
+        output_buffer.clear();
+        let additional_capacity = capacity_budget.additional_output_capacity_samples();
+        if output_buffer.capacity() < additional_capacity {
+            output_buffer.reserve(additional_capacity - output_buffer.capacity());
+        }
+        let report = TimestretchTempoProcessor::process_decoded_media_into(
+            self,
+            decoded_media,
+            output_buffer,
+        )?;
 
-        AudioTempoStretchedOutput::new(interleaved_samples, report, self.pcm_format)
+        AudioTempoStretchedOutput::new(output_buffer, report, self.pcm_format)
     }
 
-    fn flush(&mut self) -> anyhow::Result<AudioTempoStretchedOutput> {
+    fn finish_stream_into<'output>(
+        &mut self,
+        output_buffer: &'output mut Vec<f32>,
+    ) -> anyhow::Result<AudioTempoStretchedOutput<'output>> {
         let (_, pending_output_samples, _, pending_output_capacity_samples) =
             self.backend_capacities();
-        let mut interleaved_samples = Vec::with_capacity(
-            pending_output_samples.saturating_add(pending_output_capacity_samples),
-        );
-        let report = self.flush_into(&mut interleaved_samples)?;
+        let required_capacity = pending_output_samples
+            .checked_add(pending_output_capacity_samples)
+            .ok_or_else(|| TimestretchTempoError::BoundaryInvariant {
+                message: "finish output capacity overflow".to_owned(),
+            })?;
+        output_buffer.clear();
+        if output_buffer.capacity() < required_capacity {
+            output_buffer.reserve(required_capacity - output_buffer.capacity());
+        }
+        let report = self.flush_into(output_buffer)?;
 
-        AudioTempoStretchedOutput::new(interleaved_samples, report, self.pcm_format)
+        AudioTempoStretchedOutput::new(output_buffer, report, self.pcm_format)
     }
 
     fn reset(&mut self) -> anyhow::Result<AudioTempoProcessReport> {
@@ -536,98 +742,4 @@ fn latency_frames_from_secs(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use audio_core::{
-        AudioTempoChannelCount, AudioTempoPcmFormat, AudioTempoSampleRateHz, AudioTempoSegmentId,
-    };
-
-    #[test]
-    fn default_settings_use_quality_first_balanced_profile() {
-        assert_eq!(
-            TimestretchTempoSettings::default().quality_mode(),
-            TimestretchQualityMode::Balanced
-        );
-        assert_eq!(
-            TimestretchTempoSettings::SESSION_THREAD_DEFAULT.quality_mode(),
-            TimestretchQualityMode::Balanced
-        );
-        assert_eq!(
-            TimestretchTempoSettings::REALTIME_DEFAULT.quality_mode(),
-            TimestretchQualityMode::LowLatency
-        );
-    }
-
-    #[test]
-    fn project_ratio_is_inverted_for_backend_stretch_ratio() {
-        let double_speed = AudioTempoRatio::new(2.0).unwrap();
-        let half_speed = AudioTempoRatio::new(0.5).unwrap();
-
-        assert_eq!(backend_stretch_ratio_for_project_ratio(double_speed), 0.5);
-        assert_eq!(backend_stretch_ratio_for_project_ratio(half_speed), 2.0);
-    }
-
-    #[test]
-    fn reset_preserves_active_segment_ratio() {
-        let pcm_format = AudioTempoPcmFormat::new(
-            AudioTempoSampleRateHz::new(48_000).unwrap(),
-            AudioTempoChannelCount::new(2).unwrap(),
-        );
-        let initial_segment = AudioTempoSegment::new(
-            AudioTempoSegmentId::new(1),
-            AudioTempoRatio::new(2.0).unwrap(),
-        );
-        let config = AudioTempoProcessorConfig::new(pcm_format, initial_segment);
-        let mut processor = TimestretchTempoProcessor::new(config).unwrap();
-
-        let report = processor.reset().unwrap();
-
-        assert_eq!(report.effective_ratio(), initial_segment.ratio());
-        assert_eq!(
-            processor.ratio_snapshot().unwrap().target_project_ratio,
-            initial_segment.ratio()
-        );
-    }
-
-    #[test]
-    fn factory_creates_neutral_processor_trait_object() {
-        let pcm_format = AudioTempoPcmFormat::new(
-            AudioTempoSampleRateHz::new(48_000).unwrap(),
-            AudioTempoChannelCount::new(2).unwrap(),
-        );
-        let initial_segment =
-            AudioTempoSegment::new(AudioTempoSegmentId::new(1), AudioTempoRatio::NORMAL);
-        let config = AudioTempoProcessorConfig::new(pcm_format, initial_segment);
-        let factory = TimestretchTempoProcessorFactory::default();
-
-        let mut processor = factory.create_processor(config).unwrap();
-        let report = processor.reset().unwrap();
-
-        assert_eq!(report.segment_id(), initial_segment.segment_id());
-        assert_eq!(report.effective_ratio(), AudioTempoRatio::NORMAL);
-    }
-
-    #[test]
-    fn trait_set_segment_updates_target_ratio_without_recreating_processor() {
-        let pcm_format = AudioTempoPcmFormat::new(
-            AudioTempoSampleRateHz::new(48_000).unwrap(),
-            AudioTempoChannelCount::new(2).unwrap(),
-        );
-        let initial_segment =
-            AudioTempoSegment::new(AudioTempoSegmentId::new(1), AudioTempoRatio::NORMAL);
-        let updated_segment = AudioTempoSegment::new(
-            AudioTempoSegmentId::new(2),
-            AudioTempoRatio::new(2.0).unwrap(),
-        );
-        let config = AudioTempoProcessorConfig::new(pcm_format, initial_segment);
-        let mut processor = TimestretchTempoProcessor::new(config).unwrap();
-
-        let report = AudioTempoProcessor::set_segment(&mut processor, updated_segment).unwrap();
-
-        assert_eq!(report.segment_id(), updated_segment.segment_id());
-        assert_eq!(
-            processor.ratio_snapshot().unwrap().target_project_ratio,
-            updated_segment.ratio()
-        );
-    }
-}
+mod tests;

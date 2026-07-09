@@ -92,7 +92,8 @@ impl PlayerSession {
             self.pipeline
                 .note_audio_clock_sample(self.audio_clock_now(), now);
         }
-        self.update_current_position(playback_position);
+        // Tick публикует clock sample, но не владеет lifecycle re-anchor-ом.
+        self.publish_clock_sample(playback_position);
     }
 }
 

@@ -1,19 +1,31 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
 use super::test_support::*;
 use super::*;
 use crate::{
-    AudioTempoDecodedMedia, AudioTempoFrameCount, AudioTempoPcmFormat, AudioTempoProcessReport,
-    AudioTempoProcessor, AudioTempoProcessorConfig, AudioTempoProcessorFactory,
-    AudioTempoProcessorHandle, AudioTempoReportFrameCounts, AudioTempoSegment, AudioTempoSegmentId,
-    AudioTempoStretchedOutput, PlaybackRate,
+    AudioOutputWriteIntent, AudioTempoDecodedMedia, AudioTempoFrameCount,
+    AudioTempoOutputProgressMapping, AudioTempoPcmFormat, AudioTempoProcessReport,
+    AudioTempoProcessor, AudioTempoProcessorConfig, AudioTempoProcessorError,
+    AudioTempoProcessorFactory, AudioTempoProcessorHandle, AudioTempoReportFrameCounts,
+    AudioTempoSegment, AudioTempoSegmentId, AudioTempoStretchedOutput, PlaybackRate,
+    PlaybackRateAudioTempoRejectReason, PlayerCommandReject,
 };
+use audio_core::{AudioTempoOutputSegmentSpan, AudioTempoOutputSegmentSpans};
 
 #[derive(Clone)]
 struct FakeTempoFactoryHandle {
     created_segments: Arc<Mutex<Vec<AudioTempoSegmentId>>>,
     set_segments: Arc<Mutex<Vec<AudioTempoSegmentId>>>,
+    primed_inputs: Arc<Mutex<Vec<Vec<f32>>>>,
     processed_inputs: Arc<Mutex<Vec<Vec<f32>>>>,
+    finish_call_count: Arc<AtomicUsize>,
+    reject_segment_changes: Arc<AtomicBool>,
+    reject_finish: Arc<AtomicBool>,
+    reject_next_factory_creation: Arc<AtomicBool>,
+    reject_next_prime: Arc<AtomicBool>,
 }
 
 impl FakeTempoFactoryHandle {
@@ -21,8 +33,21 @@ impl FakeTempoFactoryHandle {
         Self {
             created_segments: Arc::new(Mutex::new(Vec::new())),
             set_segments: Arc::new(Mutex::new(Vec::new())),
+            primed_inputs: Arc::new(Mutex::new(Vec::new())),
             processed_inputs: Arc::new(Mutex::new(Vec::new())),
+            finish_call_count: Arc::new(AtomicUsize::new(0)),
+            reject_segment_changes: Arc::new(AtomicBool::new(false)),
+            reject_finish: Arc::new(AtomicBool::new(false)),
+            reject_next_factory_creation: Arc::new(AtomicBool::new(false)),
+            reject_next_prime: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    fn primed_inputs(&self) -> Vec<Vec<f32>> {
+        self.primed_inputs
+            .lock()
+            .expect("primed inputs mutex should not be poisoned")
+            .clone()
     }
 
     fn processed_inputs(&self) -> Vec<Vec<f32>> {
@@ -44,6 +69,27 @@ impl FakeTempoFactoryHandle {
             .lock()
             .expect("set segments mutex should not be poisoned")
             .clone()
+    }
+
+    fn finish_call_count(&self) -> usize {
+        self.finish_call_count.load(Ordering::SeqCst)
+    }
+
+    fn reject_future_segment_changes(&self) {
+        self.reject_segment_changes.store(true, Ordering::SeqCst);
+    }
+
+    fn reject_finish(&self) {
+        self.reject_finish.store(true, Ordering::SeqCst);
+    }
+
+    fn reject_next_factory_creation(&self) {
+        self.reject_next_factory_creation
+            .store(true, Ordering::SeqCst);
+    }
+
+    fn reject_next_prime(&self) {
+        self.reject_next_prime.store(true, Ordering::SeqCst);
     }
 }
 
@@ -68,6 +114,13 @@ impl AudioTempoProcessorFactory for FakeTempoFactory {
         &self,
         config: AudioTempoProcessorConfig,
     ) -> anyhow::Result<AudioTempoProcessorHandle> {
+        if self
+            .handle
+            .reject_next_factory_creation
+            .swap(false, Ordering::SeqCst)
+        {
+            anyhow::bail!("scripted tempo factory failure");
+        }
         self.handle
             .created_segments
             .lock()
@@ -92,7 +145,17 @@ impl FakeTempoProcessor {
         &self,
         consumed_decoded_media: AudioTempoFrameCount,
         produced_stretched_output: AudioTempoFrameCount,
-    ) -> AudioTempoProcessReport {
+    ) -> anyhow::Result<AudioTempoProcessReport> {
+        let produced_segments = if produced_stretched_output == AudioTempoFrameCount::ZERO {
+            AudioTempoOutputSegmentSpans::Empty
+        } else {
+            AudioTempoOutputSegmentSpans::One(AudioTempoOutputSegmentSpan::new(
+                self.pcm_format,
+                self.segment,
+                produced_stretched_output,
+            ))
+        };
+
         AudioTempoProcessReport::from_frame_counts(
             self.pcm_format,
             self.segment,
@@ -100,51 +163,108 @@ impl FakeTempoProcessor {
                 consumed_decoded_media,
                 produced_stretched_output,
                 pending_processor_output: AudioTempoFrameCount::ZERO,
-                processor_latency: AudioTempoFrameCount::ZERO,
+                input_latency: AudioTempoFrameCount::ZERO,
+                output_latency: AudioTempoFrameCount::ZERO,
             },
+            AudioTempoOutputProgressMapping::new(
+                produced_segments,
+                AudioTempoOutputSegmentSpans::Empty,
+            ),
         )
+    }
+
+    fn ensure_pcm_format(&self, decoded_media: AudioTempoDecodedMedia<'_>) -> anyhow::Result<()> {
+        if decoded_media.pcm_format() == self.pcm_format {
+            return Ok(());
+        }
+
+        Err(AudioTempoProcessorError::PcmFormatMismatch {
+            expected: self.pcm_format,
+            actual: decoded_media.pcm_format(),
+        }
+        .into())
     }
 }
 
 impl AudioTempoProcessor for FakeTempoProcessor {
+    fn pcm_format(&self) -> AudioTempoPcmFormat {
+        self.pcm_format
+    }
+
+    fn prime_decoded_history(
+        &mut self,
+        decoded_history: AudioTempoDecodedMedia<'_>,
+    ) -> anyhow::Result<AudioTempoProcessReport> {
+        self.ensure_pcm_format(decoded_history)?;
+        if self.handle.reject_next_prime.swap(false, Ordering::SeqCst) {
+            anyhow::bail!("scripted tempo prime failure");
+        }
+        self.handle
+            .primed_inputs
+            .lock()
+            .expect("primed inputs mutex should not be poisoned")
+            .push(decoded_history.interleaved_samples().to_vec());
+        self.report(AudioTempoFrameCount::ZERO, AudioTempoFrameCount::ZERO)
+    }
+
     fn set_segment(
         &mut self,
         segment: AudioTempoSegment,
     ) -> anyhow::Result<AudioTempoProcessReport> {
+        if self.handle.reject_segment_changes.load(Ordering::SeqCst) {
+            return Err(AudioTempoProcessorError::BackendFailure {
+                message: "scripted segment rejection".to_string(),
+            }
+            .into());
+        }
+
         self.segment = segment;
         self.handle
             .set_segments
             .lock()
             .expect("set segments mutex should not be poisoned")
             .push(segment.segment_id());
-        Ok(self.report(AudioTempoFrameCount::ZERO, AudioTempoFrameCount::ZERO))
+        self.report(AudioTempoFrameCount::ZERO, AudioTempoFrameCount::ZERO)
     }
 
-    fn process_decoded_media(
+    fn process_decoded_media_into<'output>(
         &mut self,
         decoded_media: AudioTempoDecodedMedia<'_>,
-    ) -> anyhow::Result<AudioTempoStretchedOutput> {
+        output_buffer: &'output mut Vec<f32>,
+    ) -> anyhow::Result<AudioTempoStretchedOutput<'output>> {
+        self.ensure_pcm_format(decoded_media)?;
         self.handle
             .processed_inputs
             .lock()
             .expect("processed inputs mutex should not be poisoned")
             .push(decoded_media.interleaved_samples().to_vec());
         let produced_stretched_output = AudioTempoFrameCount::new(1);
-        let report = self.report(decoded_media.frame_count(), produced_stretched_output);
-        AudioTempoStretchedOutput::new(vec![9.0, 10.0], report, self.pcm_format)
+        let report = self.report(decoded_media.frame_count(), produced_stretched_output)?;
+        output_buffer.clear();
+        output_buffer.extend_from_slice(&[9.0, 10.0]);
+        AudioTempoStretchedOutput::new(output_buffer.as_slice(), report, self.pcm_format)
     }
 
-    fn flush(&mut self) -> anyhow::Result<AudioTempoStretchedOutput> {
+    fn finish_stream_into<'output>(
+        &mut self,
+        output_buffer: &'output mut Vec<f32>,
+    ) -> anyhow::Result<AudioTempoStretchedOutput<'output>> {
+        self.handle.finish_call_count.fetch_add(1, Ordering::SeqCst);
+        if self.handle.reject_finish.load(Ordering::SeqCst) {
+            anyhow::bail!("scripted tempo finish failure");
+        }
         let produced_stretched_output = AudioTempoFrameCount::new(1);
+        output_buffer.clear();
+        output_buffer.extend_from_slice(&[7.0, 8.0]);
         AudioTempoStretchedOutput::new(
-            vec![7.0, 8.0],
-            self.report(AudioTempoFrameCount::ZERO, produced_stretched_output),
+            output_buffer.as_slice(),
+            self.report(AudioTempoFrameCount::ZERO, produced_stretched_output)?,
             self.pcm_format,
         )
     }
 
     fn reset(&mut self) -> anyhow::Result<AudioTempoProcessReport> {
-        Ok(self.report(AudioTempoFrameCount::ZERO, AudioTempoFrameCount::ZERO))
+        self.report(AudioTempoFrameCount::ZERO, AudioTempoFrameCount::ZERO)
     }
 }
 
@@ -390,6 +510,10 @@ fn normal_rate_audio_runtime_writes_decoded_pcm_without_tempo_processor() {
         .last_output_handle()
         .expect("output should be created");
     assert_eq!(output_handle.written_samples(), samples);
+    assert_eq!(
+        output_handle.written_intents(),
+        vec![AudioOutputWriteIntent::DirectDecodedPcm]
+    );
     assert!(!session.pipeline.has_audio_tempo_processor());
     assert!(tempo_factory_handle.created_segments().is_empty());
 }
@@ -401,6 +525,13 @@ fn non_normal_rate_audio_runtime_writes_tempo_processor_output() {
     let mut session = PlayerSession::with_audio_output_factory(output_factory)
         .with_audio_tempo_processor_factory(tempo_factory);
 
+    session.pipeline.select_audio_track(TrackId::new(2));
+    session
+        .ensure_audio_output_for_decoded_spec(48_000, 2)
+        .expect("audio output should be created");
+    session
+        .write_decoded_audio_samples_at_current_rate(&[0.25, 0.5], 48_000, 2)
+        .expect("direct PCM should establish the format and warmup history");
     session.set_playback_state(PlaybackState::Paused);
     assert_eq!(
         session
@@ -411,16 +542,20 @@ fn non_normal_rate_audio_runtime_writes_tempo_processor_output() {
         PlayerCommandOutcome::Applied
     );
     session
-        .ensure_audio_output_for_decoded_spec(48_000, 2)
-        .expect("audio output should be created");
-    session
         .write_decoded_audio_samples_at_current_rate(&[1.0, 2.0, 3.0, 4.0], 48_000, 2)
         .expect("non-normal-rate audio write should succeed");
 
     let output_handle = output_factory_handle
         .last_output_handle()
         .expect("output should be created");
-    assert_eq!(output_handle.written_samples(), vec![9.0, 10.0]);
+    assert_eq!(output_handle.written_samples(), vec![0.25, 0.5, 9.0, 10.0]);
+    assert_eq!(
+        output_handle.written_intents(),
+        vec![
+            AudioOutputWriteIntent::DirectDecodedPcm,
+            AudioOutputWriteIntent::TempoProcessed,
+        ]
+    );
     assert!(session.pipeline.has_audio_tempo_processor());
     assert_eq!(
         tempo_factory_handle.created_segments(),
@@ -456,6 +591,243 @@ fn non_normal_rate_audio_runtime_writes_tempo_processor_output() {
         tempo_factory_handle.set_segments(),
         vec![AudioTempoSegmentId::new(2), AudioTempoSegmentId::new(3)]
     );
+    session
+        .write_decoded_audio_samples_at_current_rate(&[5.0, 6.0], 48_000, 2)
+        .expect("1x transition must keep old DSP tail continuous");
+    assert_eq!(
+        output_handle.written_intents(),
+        vec![
+            AudioOutputWriteIntent::DirectDecodedPcm,
+            AudioOutputWriteIntent::TempoProcessed,
+            AudioOutputWriteIntent::TempoProcessed,
+        ]
+    );
+}
+
+#[test]
+fn selected_audio_without_output_rejects_rate_change_atomically() {
+    let (tempo_factory, tempo_factory_handle) = FakeTempoFactory::new();
+    let selected_audio_track = TrackId::new(2);
+    let mut session = PlayerSession::new().with_audio_tempo_processor_factory(tempo_factory);
+
+    session.pipeline.select_audio_track(selected_audio_track);
+    session.set_playback_state(PlaybackState::Paused);
+
+    let outcome = session
+        .dispatch_command(PlayerCommand::SetPlaybackRate(
+            PlaybackRate::new(2.0).expect("2x playback rate should be valid"),
+        ))
+        .expect("missing audio output should be a semantic reject, not fatal error");
+
+    assert_eq!(
+        outcome,
+        PlayerCommandOutcome::Rejected(PlayerCommandReject::PlaybackRateAudioTempoUnavailable {
+            reason: PlaybackRateAudioTempoRejectReason::AudioOutputUnavailable,
+        })
+    );
+    assert_eq!(session.snapshot().playback_rate, PlaybackRate::NORMAL);
+    assert_eq!(session.playback_state(), PlaybackState::Paused);
+    assert_eq!(
+        session.pipeline.selected_audio_track_id(),
+        Some(selected_audio_track)
+    );
+    assert!(!session.pipeline.has_audio_tempo_processor());
+    assert!(!session.pipeline.has_audio_output());
+    assert!(tempo_factory_handle.created_segments().is_empty());
+}
+
+#[test]
+fn selected_audio_without_pcm_format_rejects_rate_change_atomically() {
+    let (output_factory, _output_factory_handle) = ScriptedAudioOutputFactory::success(0.0, None);
+    let (tempo_factory, tempo_factory_handle) = FakeTempoFactory::new();
+    let selected_audio_track = TrackId::new(2);
+    let mut session = PlayerSession::with_audio_output_factory(output_factory)
+        .with_audio_tempo_processor_factory(tempo_factory);
+
+    session.pipeline.select_audio_track(selected_audio_track);
+    session
+        .ensure_audio_output_for_decoded_spec(48_000, 2)
+        .expect("audio output should exist before the PCM-format preflight");
+    session.set_playback_state(PlaybackState::Paused);
+
+    let outcome = session
+        .dispatch_command(PlayerCommand::SetPlaybackRate(
+            PlaybackRate::new(2.0).expect("2x playback rate should be valid"),
+        ))
+        .expect("missing PCM format should be a semantic reject, not fatal error");
+
+    assert_eq!(
+        outcome,
+        PlayerCommandOutcome::Rejected(PlayerCommandReject::PlaybackRateAudioTempoUnavailable {
+            reason: PlaybackRateAudioTempoRejectReason::PcmFormatNotReady,
+        })
+    );
+    assert_eq!(session.snapshot().playback_rate, PlaybackRate::NORMAL);
+    assert_eq!(session.playback_state(), PlaybackState::Paused);
+    assert_eq!(
+        session.pipeline.selected_audio_track_id(),
+        Some(selected_audio_track)
+    );
+    assert!(!session.pipeline.has_audio_tempo_processor());
+    assert!(session.pipeline.has_audio_output());
+    assert!(tempo_factory_handle.created_segments().is_empty());
+}
+
+fn selected_audio_session_with_passthrough_history()
+-> (PlayerSession, FakeTempoFactoryHandle, Vec<f32>) {
+    let (output_factory, _output_factory_handle) = ScriptedAudioOutputFactory::success(0.0, None);
+    let (tempo_factory, tempo_factory_handle) = FakeTempoFactory::new();
+    let selected_audio_track = TrackId::new(2);
+    let passthrough_history = vec![1.0, 2.0, 3.0, 4.0];
+    let mut session = PlayerSession::with_audio_output_factory(output_factory)
+        .with_audio_tempo_processor_factory(tempo_factory);
+
+    session.pipeline.select_audio_track(selected_audio_track);
+    session
+        .ensure_audio_output_for_decoded_spec(48_000, 2)
+        .expect("audio output should be created");
+    session
+        .write_decoded_audio_samples_at_current_rate(&passthrough_history, 48_000, 2)
+        .expect("direct PCM should establish format and warmup history");
+    session.set_playback_state(PlaybackState::Paused);
+
+    (session, tempo_factory_handle, passthrough_history)
+}
+
+#[test]
+fn fresh_tempo_factory_rejection_preserves_rate_and_warmup_history_for_retry() {
+    let (mut session, tempo_factory_handle, passthrough_history) =
+        selected_audio_session_with_passthrough_history();
+    let requested_rate = PlaybackRate::new(2.0).expect("2x playback rate should be valid");
+    tempo_factory_handle.reject_next_factory_creation();
+
+    let rejected_outcome = session
+        .dispatch_command(PlayerCommand::SetPlaybackRate(requested_rate))
+        .expect("factory rejection should be non-fatal");
+
+    assert_eq!(
+        rejected_outcome,
+        PlayerCommandOutcome::Rejected(PlayerCommandReject::PlaybackRateAudioTempoUnavailable {
+            reason: PlaybackRateAudioTempoRejectReason::BackendRejected,
+        })
+    );
+    assert_eq!(session.snapshot().playback_rate, PlaybackRate::NORMAL);
+    assert_eq!(session.playback_state(), PlaybackState::Paused);
+    assert!(!session.pipeline.has_audio_tempo_processor());
+    assert!(session.pipeline.has_audio_output());
+    assert!(
+        session
+            .pipeline
+            .passthrough_audio_history_pcm_format()
+            .is_some()
+    );
+    assert!(tempo_factory_handle.created_segments().is_empty());
+
+    assert_eq!(
+        session
+            .dispatch_command(PlayerCommand::SetPlaybackRate(requested_rate))
+            .expect("retry should create processor from preserved history"),
+        PlayerCommandOutcome::Applied
+    );
+    assert_eq!(
+        tempo_factory_handle.primed_inputs(),
+        vec![passthrough_history]
+    );
+}
+
+#[test]
+fn fresh_tempo_prime_rejection_restores_history_and_segment_id_for_retry() {
+    let (mut session, tempo_factory_handle, passthrough_history) =
+        selected_audio_session_with_passthrough_history();
+    let requested_rate = PlaybackRate::new(2.0).expect("2x playback rate should be valid");
+    tempo_factory_handle.reject_next_prime();
+
+    let rejected_outcome = session
+        .dispatch_command(PlayerCommand::SetPlaybackRate(requested_rate))
+        .expect("prime rejection should be non-fatal");
+
+    assert_eq!(
+        rejected_outcome,
+        PlayerCommandOutcome::Rejected(PlayerCommandReject::PlaybackRateAudioTempoUnavailable {
+            reason: PlaybackRateAudioTempoRejectReason::BackendRejected,
+        })
+    );
+    assert_eq!(session.snapshot().playback_rate, PlaybackRate::NORMAL);
+    assert!(!session.pipeline.has_audio_tempo_processor());
+    assert!(
+        session
+            .pipeline
+            .passthrough_audio_history_pcm_format()
+            .is_some()
+    );
+    assert!(tempo_factory_handle.primed_inputs().is_empty());
+    assert_eq!(
+        tempo_factory_handle.created_segments(),
+        vec![AudioTempoSegmentId::new(1)]
+    );
+
+    assert_eq!(
+        session
+            .dispatch_command(PlayerCommand::SetPlaybackRate(requested_rate))
+            .expect("retry should reuse restored history and segment id"),
+        PlayerCommandOutcome::Applied
+    );
+    assert_eq!(
+        tempo_factory_handle.created_segments(),
+        vec![AudioTempoSegmentId::new(1), AudioTempoSegmentId::new(1)]
+    );
+    assert_eq!(
+        tempo_factory_handle.primed_inputs(),
+        vec![passthrough_history]
+    );
+}
+
+#[test]
+fn active_tempo_processor_rejection_preserves_old_rate_and_audio_path() {
+    let (output_factory, _output_factory_handle) = ScriptedAudioOutputFactory::success(0.0, None);
+    let (tempo_factory, tempo_factory_handle) = FakeTempoFactory::new();
+    let selected_audio_track = TrackId::new(2);
+    let accepted_rate = PlaybackRate::new(2.0).expect("2x playback rate should be valid");
+    let rejected_rate = PlaybackRate::new(0.5).expect("0.5x playback rate should be valid");
+    let mut session = PlayerSession::with_audio_output_factory(output_factory)
+        .with_audio_tempo_processor_factory(tempo_factory);
+
+    session.pipeline.select_audio_track(selected_audio_track);
+    session
+        .ensure_audio_output_for_decoded_spec(48_000, 2)
+        .expect("audio output should be created");
+    session
+        .write_decoded_audio_samples_at_current_rate(&[1.0, 2.0, 3.0, 4.0], 48_000, 2)
+        .expect("direct PCM should establish the format and warmup history");
+    session.set_playback_state(PlaybackState::Paused);
+    assert_eq!(
+        session
+            .dispatch_command(PlayerCommand::SetPlaybackRate(accepted_rate))
+            .expect("initial processor creation should succeed"),
+        PlayerCommandOutcome::Applied
+    );
+    assert!(session.pipeline.has_audio_tempo_processor());
+
+    tempo_factory_handle.reject_future_segment_changes();
+    let outcome = session
+        .dispatch_command(PlayerCommand::SetPlaybackRate(rejected_rate))
+        .expect("backend rejection should stay a non-fatal command outcome");
+
+    assert_eq!(
+        outcome,
+        PlayerCommandOutcome::Rejected(PlayerCommandReject::PlaybackRateAudioTempoUnavailable {
+            reason: PlaybackRateAudioTempoRejectReason::BackendRejected,
+        })
+    );
+    assert_eq!(session.snapshot().playback_rate, accepted_rate);
+    assert_eq!(session.playback_state(), PlaybackState::Paused);
+    assert_eq!(
+        session.pipeline.selected_audio_track_id(),
+        Some(selected_audio_track)
+    );
+    assert!(session.pipeline.has_audio_tempo_processor());
+    assert!(session.pipeline.has_audio_output());
+    assert!(tempo_factory_handle.set_segments().is_empty());
 }
 
 #[test]
@@ -490,10 +862,14 @@ fn fresh_tempo_processor_is_primed_with_passthrough_history_and_warmup_output_is
         .write_decoded_audio_samples_at_current_rate(&packet_samples, 48_000, 2)
         .expect("non-normal-rate audio write should succeed");
 
-    // Processor сначала праймится историей, затем обрабатывает настоящий packet.
+    // Processor праймится position-free boundary, затем обрабатывает настоящий packet.
+    assert_eq!(
+        tempo_factory_handle.primed_inputs(),
+        vec![passthrough_samples.clone()]
+    );
     assert_eq!(
         tempo_factory_handle.processed_inputs(),
-        vec![passthrough_samples.clone(), packet_samples]
+        vec![packet_samples]
     );
 
     // Warmup output отброшен: в output ушли passthrough PCM и один stretched блок.
@@ -537,6 +913,7 @@ fn passthrough_history_is_not_used_for_priming_after_seek_clear() {
         .expect("non-normal-rate audio write should succeed");
 
     // PCM до discontinuity не должен праймить processor после неё.
+    assert!(tempo_factory_handle.primed_inputs().is_empty());
     assert_eq!(
         tempo_factory_handle.processed_inputs(),
         vec![vec![5.0, 6.0, 7.0, 8.0]]
@@ -546,7 +923,7 @@ fn passthrough_history_is_not_used_for_priming_after_seek_clear() {
 #[test]
 fn eof_flush_writes_tempo_processor_tail_once_and_clears_processor() {
     let (output_factory, output_factory_handle) = ScriptedAudioOutputFactory::success(0.0, None);
-    let (tempo_factory, _tempo_factory_handle) = FakeTempoFactory::new();
+    let (tempo_factory, tempo_factory_handle) = FakeTempoFactory::new();
     let mut session = PlayerSession::with_audio_output_factory(output_factory)
         .with_audio_tempo_processor_factory(tempo_factory);
 
@@ -577,7 +954,54 @@ fn eof_flush_writes_tempo_processor_tail_once_and_clears_processor() {
         .last_output_handle()
         .expect("output should be created");
     assert_eq!(output_handle.written_samples(), vec![9.0, 10.0, 7.0, 8.0]);
+    assert_eq!(
+        output_handle.written_intents(),
+        vec![
+            AudioOutputWriteIntent::TempoProcessed,
+            AudioOutputWriteIntent::TempoProcessed,
+        ]
+    );
     assert!(!session.pipeline.has_audio_tempo_processor());
+    assert_eq!(tempo_factory_handle.finish_call_count(), 1);
+}
+
+#[test]
+fn eof_tempo_finish_failure_is_fatal_and_never_falls_back_to_video_only() {
+    let (output_factory, _output_factory_handle) = ScriptedAudioOutputFactory::success(0.0, None);
+    let (tempo_factory, tempo_factory_handle) = FakeTempoFactory::new();
+    let mut session = PlayerSession::with_audio_output_factory(output_factory)
+        .with_audio_tempo_processor_factory(tempo_factory);
+
+    session.set_playback_state(PlaybackState::Paused);
+    assert_eq!(
+        session
+            .dispatch_command(PlayerCommand::SetPlaybackRate(
+                PlaybackRate::new(2.0).expect("2x playback rate should be valid"),
+            ))
+            .expect("rate command should not be fatal"),
+        PlayerCommandOutcome::Applied
+    );
+    session
+        .ensure_audio_output_for_decoded_spec(48_000, 2)
+        .expect("audio output should be created");
+    session
+        .write_decoded_audio_samples_at_current_rate(&[1.0, 2.0, 3.0, 4.0], 48_000, 2)
+        .expect("non-normal-rate audio write should succeed");
+    tempo_factory_handle.reject_finish();
+
+    session.enter_eof_drain();
+    let drain_completed =
+        session.finish_eof_drain_if_ready(Instant::now(), Duration::from_millis(250));
+
+    assert!(!drain_completed);
+    assert_eq!(session.playback_state(), PlaybackState::Failed);
+    assert!(session.pipeline.has_audio_output());
+    assert!(
+        session
+            .take_events()
+            .iter()
+            .any(|event| matches!(event, PlayerEvent::FatalError(_)))
+    );
 }
 
 #[test]

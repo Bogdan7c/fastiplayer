@@ -146,7 +146,7 @@ fn shift_left_saturating(value: u128, shift: u32) -> u128 {
         return u128::MAX;
     };
 
-    value.checked_mul(multiplier).unwrap_or(u128::MAX)
+    value.saturating_mul(multiplier)
 }
 
 /// Делит с округлением вверх и saturating поведением при переполнении округления.

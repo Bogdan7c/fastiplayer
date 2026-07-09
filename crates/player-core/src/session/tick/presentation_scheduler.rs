@@ -44,8 +44,7 @@ pub(crate) fn scheduler_timing_diagnostics(
     now: Instant,
 ) -> SchedulerTimingDiagnosticsSnapshot {
     let presentation_clock_position = session.presentation_clock_position_at(now);
-    let target_media_time_for_present =
-        target_media_time_for_present(session, tick_config, presentation_clock_position);
+    let target_media_time_for_present = target_media_time_for_present(session, tick_config, now);
 
     SchedulerTimingDiagnosticsSnapshot {
         audio_clock: session.audio_clock_now(),
@@ -356,30 +355,6 @@ pub(super) fn saturating_duration_add(timestamp: Duration, offset: Duration) -> 
     timestamp.checked_add(offset).unwrap_or(Duration::MAX)
 }
 
-/// Переводит wall lead scheduler-а в media lead текущего clock source.
-fn scheduler_wall_delta_to_media_delta(session: &PlayerSession, wall_delta: Duration) -> Duration {
-    if session.pipeline.has_audio_clock() {
-        return wall_delta;
-    }
-
-    session
-        .snapshot()
-        .playback_rate
-        .scale_wall_delta_to_media_delta(wall_delta)
-}
-
-/// Переводит future media deadline в wall delay для worker-а.
-fn scheduler_media_delta_to_wall_delay(session: &PlayerSession, media_delta: Duration) -> Duration {
-    if session.pipeline.has_audio_clock() {
-        return media_delta;
-    }
-
-    session
-        .snapshot()
-        .playback_rate
-        .scale_media_delta_to_wall_delay(media_delta)
-}
-
 /// Возвращает безопасный неотрицательный множитель для `Duration::mul_f64`.
 pub(super) fn finite_non_negative_factor(value: f64, fallback: f64) -> f64 {
     if value.is_finite() && value >= 0.0 {
@@ -409,12 +384,10 @@ pub(super) fn duration_delta_micros(left: Duration, right: Duration) -> i128 {
 pub(super) fn target_media_time_for_present(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
-    presentation_now: Duration,
+    now: Instant,
 ) -> Duration {
-    let present_lead =
-        scheduler_wall_delta_to_media_delta(session, video_present_lead(session, tick_config));
-
-    saturating_duration_add(presentation_now, present_lead)
+    session
+        .presentation_media_position_after_wall_delay(now, video_present_lead(session, tick_config))
 }
 
 /// Возвращает lead scheduler-а перед PTS кадра.
@@ -443,8 +416,7 @@ pub(super) fn front_frame_timing(
     now: Instant,
 ) -> Option<WorkerFrameTimingSnapshot> {
     let front_frame = session.pipeline.front_queued_video_frame()?;
-    let presentation_now = session.presentation_clock_position_at(now);
-    let target_media_time = target_media_time_for_present(session, tick_config, presentation_now);
+    let target_media_time = target_media_time_for_present(session, tick_config, now);
 
     Some(WorkerFrameTimingSnapshot {
         front_frame_pts: front_frame.pts,
@@ -467,8 +439,7 @@ pub(super) fn front_frame_ready_for_scheduler(
         return true;
     }
 
-    let presentation_now = session.presentation_clock_position_at(now);
-    let target_media_time = target_media_time_for_present(session, tick_config, presentation_now);
+    let target_media_time = target_media_time_for_present(session, tick_config, now);
     let present_window = video_present_window(session, tick_config);
     let late_drop_grace = video_late_drop_grace(session, tick_config);
 
@@ -490,16 +461,9 @@ pub(super) fn front_frame_scheduler_delay(
     now: Instant,
 ) -> Option<Duration> {
     let front_frame = session.pipeline.front_queued_video_frame()?;
-    let presentation_now = session.presentation_clock_position_at(now);
-    let scheduler_media_lead =
-        scheduler_wall_delta_to_media_delta(session, video_present_lead(session, tick_config));
-    let scheduler_media_deadline = front_frame.pts.saturating_sub(scheduler_media_lead);
-    let media_delta_until_deadline = scheduler_media_deadline.saturating_sub(presentation_now);
+    let wall_delay_until_pts = session.wall_delay_until_media_deadline(now, front_frame.pts);
 
-    Some(scheduler_media_delta_to_wall_delay(
-        session,
-        media_delta_until_deadline,
-    ))
+    Some(wall_delay_until_pts.saturating_sub(video_present_lead(session, tick_config)))
 }
 
 /// Возвращает допустимое окно выбора кадра вокруг target media time.
@@ -1132,8 +1096,8 @@ pub(super) fn process_pending_video_packets(
         return;
     }
 
-    let presentation_now = session.presentation_clock_position_at(tick_context.now);
-    let target_media_time = target_media_time_for_present(session, tick_config, presentation_now);
+    let presentation_clock_position = session.presentation_clock_position_at(tick_context.now);
+    let target_media_time = target_media_time_for_present(session, tick_config, tick_context.now);
     let present_window = video_present_window(session, tick_config);
     let late_drop_grace = video_late_drop_grace(session, tick_config);
 
@@ -1199,7 +1163,7 @@ pub(super) fn process_pending_video_packets(
     tracing::debug!(
         pts_ms = frame.pts.as_millis(),
         audio_ms = audio_now.as_millis(),
-        clock_ms = presentation_now.as_millis(),
+        clock_ms = presentation_clock_position.as_millis(),
         target_ms = target_media_time.as_millis(),
         diff_ms,
         window_ms = present_window.as_millis(),

@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use audio_core::AudioOutputWriteIntent;
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
@@ -25,6 +26,8 @@ use tracing::{info, warn};
 
 use crate::clock::AudioClock;
 use crate::devices::{DEFAULT_AUDIO_OUTPUT_DEVICE_ID, output_device_from_stable_id};
+
+mod lifecycle;
 
 /// Аудиовыход с CPAL stream и ring buffer.
 pub struct AudioOutput {
@@ -51,6 +54,9 @@ pub struct AudioOutput {
 
     /// Флаг: stream запущен или нет.
     is_playing: bool,
+
+    /// Фактическое состояние backend stream-а отдельно от logical playback.
+    backend_stream_state: BackendStreamState,
 
     /// Linear resampler для случая, когда decoder rate отличается от output rate.
     resampler: Option<LinearResampler>,
@@ -94,6 +100,15 @@ enum PauseStreamOutcome {
     Paused,
     /// Backend не умеет hardware pause; для player-а это штатный logical pause.
     UnsupportedByBackend,
+}
+
+/// Физическое состояние backend stream-а, не смешанное с logical pause gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackendStreamState {
+    /// Backend stream остановлен и требует `Stream::play` для resume.
+    Paused,
+    /// Backend продолжает callbacks; logical pause удерживается clock gate-ом.
+    Running,
 }
 
 /// Политика обработки ошибки `StreamTrait::pause`.
@@ -310,8 +325,7 @@ where
 ///
 /// Прямое совпадение stream rate с decoder rate убирает linear resampler из
 /// hot path целиком: без него нет aliasing-потрескивания (у ресемплера нет
-/// анти-алиас фильтра), особенно заметного на timestretch-выходе при
-/// ускоренном playback rate.
+/// анти-алиас фильтра), особенно заметного на tempo-output.
 fn choose_supported_output_config(
     device: &cpal::Device,
     decoder_rate: u32,
@@ -463,6 +477,27 @@ fn soft_clip_sample(sample: f32) -> f32 {
     compressed.copysign(sample)
 }
 
+/// Применяет защиту только к samples, произведённым tempo processor-ом.
+fn output_sample_for_intent(
+    sample: f32,
+    volume: f32,
+    limiter_gain: f32,
+    intent: AudioOutputWriteIntent,
+) -> f32 {
+    let volume_adjusted_sample = sample * volume;
+    match intent {
+        AudioOutputWriteIntent::DirectDecodedPcm => volume_adjusted_sample,
+        AudioOutputWriteIntent::TempoProcessed => {
+            soft_clip_sample(volume_adjusted_sample * limiter_gain)
+        }
+    }
+}
+
+/// Обнуляет history-dependent protection state на lifecycle boundary.
+fn reset_output_protection(limiter_envelope: &mut f32) {
+    *limiter_envelope = 0.0;
+}
+
 /// Классифицирует pause error по CPAL 0.15 contract.
 ///
 /// В 0.15.3 нет отдельного typed `UnsupportedOperation`, поэтому backend может
@@ -597,6 +632,7 @@ impl AudioOutput {
             decoder_channels,
             volume: 1.0,
             is_playing: false,
+            backend_stream_state: BackendStreamState::Paused,
             resampler: needs_resample
                 .then(|| LinearResampler::new(decoder_rate, stream_rate, stream_channels)),
             limiter_envelope: 0.0,
@@ -608,11 +644,18 @@ impl AudioOutput {
     /// Записывает samples в ring buffer.
     ///
     /// Если decoder_rate != stream_rate, делает простой linear resample.
-    /// Каждый sample проходит через `soft_clip_sample`: timestretch
-    /// overlap-add может превышать full scale на громком материале, а
-    /// device/BT-квантование превращает over-range в слышимый треск.
+    /// Tempo-output проходит через limiter/soft-clip: overlap-add может
+    /// превышать full scale, а device/BT-квантование превращает over-range
+    /// в слышимый треск. Direct decoded PCM остаётся bit-transparent при
+    /// совпадающем формате, `volume = 1.0` и диапазоне `[-1.0, 1.0]`.
     /// Возвращает количество записанных samples.
-    pub fn write_samples(&mut self, samples: &[f32]) -> u64 {
+    pub fn write_samples(&mut self, samples: &[f32], intent: AudioOutputWriteIntent) -> u64 {
+        if intent == AudioOutputWriteIntent::DirectDecodedPcm {
+            // Direct PCM не использует protection state. Сброс не позволяет
+            // старому tempo peak позднее приглушить новый tempo segment.
+            reset_output_protection(&mut self.limiter_envelope);
+        }
+
         if samples.is_empty() {
             return 0;
         }
@@ -633,26 +676,28 @@ impl AudioOutput {
 
         let requested = samples_for_output.len() as u64;
         let mut written = 0u64;
-        // Пик-лимитер по кадрам: огибающая общая для каналов, чтобы gain не
-        // сдвигал стереообраз; `writable` frame-aligned, chunks_exact полон.
+        // Пик-лимитер tempo-output работает по кадрам: общая для каналов
+        // огибающая не сдвигает стереообраз. Direct PCM обходит этот branch.
         'frames: for frame in samples_for_output[..writable].chunks_exact(channels) {
-            let mut frame_peak = 0.0f32;
-            for sample in frame {
-                frame_peak = frame_peak.max((sample * self.volume).abs());
-            }
-            self.limiter_envelope = advance_limiter_envelope(
-                self.limiter_envelope,
-                frame_peak,
-                self.limiter_release_decay,
-            );
-            let limiter_gain = limiter_gain_for_envelope(self.limiter_envelope);
+            let limiter_gain = match intent {
+                AudioOutputWriteIntent::DirectDecodedPcm => 1.0,
+                AudioOutputWriteIntent::TempoProcessed => {
+                    let frame_peak = frame.iter().fold(0.0f32, |peak, sample| {
+                        peak.max((sample * self.volume).abs())
+                    });
+                    self.limiter_envelope = advance_limiter_envelope(
+                        self.limiter_envelope,
+                        frame_peak,
+                        self.limiter_release_decay,
+                    );
+                    limiter_gain_for_envelope(self.limiter_envelope)
+                }
+            };
 
             for sample in frame {
-                if self
-                    .producer
-                    .try_push(soft_clip_sample(sample * self.volume * limiter_gain))
-                    .is_err()
-                {
+                let protected_sample =
+                    output_sample_for_intent(*sample, self.volume, limiter_gain, intent);
+                if self.producer.try_push(protected_sample).is_err() {
                     break 'frames;
                 }
                 written += 1;
@@ -692,18 +737,21 @@ impl AudioOutput {
     /// Метод синхронный: player-core может продолжать seek commit только после
     /// возврата ack, поэтому старый звук не остаётся в ring buffer.
     pub fn clear_buffer_for_seek(&mut self, generation: u64) -> Result<u64> {
-        let cleared_samples = self
+        let mut consumer = self
             .consumer
             .lock()
-            .map_err(|error| anyhow::anyhow!("Audio buffer mutex poisoned: {error}"))?
-            .clear();
+            .map_err(|error| anyhow::anyhow!("Audio buffer mutex poisoned: {error}"))?;
+        let cleared_samples = consumer.clear();
 
         if let Some(resampler) = self.resampler.as_mut() {
             resampler.reset();
         }
-        self.limiter_envelope = 0.0;
+        reset_output_protection(&mut self.limiter_envelope);
+        // Consumer lock остаётся захваченным до reset: callback не сможет
+        // опубликовать старый playback anchor после возврата seek clear ack.
         self.clock.reset();
         self.clear_ack_generation = generation;
+        drop(consumer);
         tracing::debug!(generation, cleared_samples, "Audio buffer cleared for seek");
 
         Ok(self.clear_ack_generation)
@@ -712,37 +760,6 @@ impl AudioOutput {
     /// Возвращает последнее подтверждённое поколение очистки audio buffer.
     pub fn clear_ack_generation(&self) -> u64 {
         self.clear_ack_generation
-    }
-
-    /// Запускает playback.
-    pub fn play(&mut self) -> Result<()> {
-        if self.is_playing {
-            return Ok(());
-        }
-        self.stream
-            .play()
-            .context("Не удалось запустить audio stream")?;
-        self.is_playing = true;
-        info!("Audio stream started");
-        Ok(())
-    }
-
-    /// Останавливает playback.
-    pub fn pause(&mut self) -> Result<()> {
-        if !self.is_playing {
-            return Ok(());
-        }
-        let pause_outcome = pause_stream_with_policy(&self.stream)?;
-        self.is_playing = false;
-        match pause_outcome {
-            PauseStreamOutcome::Paused => {
-                info!("Audio stream paused");
-            }
-            PauseStreamOutcome::UnsupportedByBackend => {
-                warn!("CPAL backend не поддерживает pause; AudioOutput переходит в logical pause");
-            }
-        }
-        Ok(())
     }
 
     /// Возвращает уровень заполнения buffer в миллисекундах.
@@ -874,6 +891,13 @@ impl AudioOutput {
 
         match consumer.lock() {
             Ok(mut consumer) => {
+                // Logical pause нужен даже для backend-ов без CPAL pause:
+                // callback выдаёт silence, но не расходует ring PCM и clock.
+                if clock.output_timing_is_frozen() {
+                    data.fill(T::EQUILIBRIUM);
+                    return;
+                }
+
                 // Underrun не должен рвать interleaved кадр: чтение, оборванное
                 // посреди кадра, сдвигает каналы всего последующего потока
                 // (звук «прыгает» между левым и правым). Читаем целые кадры,
@@ -899,14 +923,23 @@ impl AudioOutput {
                     *sample = T::EQUILIBRIUM;
                     silence += 1;
                 }
+
+                // Clock publication входит в ту же critical section, что и
+                // consumer read. Seek clear поэтому либо увидит весь callback,
+                // либо сбросит его целиком, но не получит поздний старый anchor.
+                clock.record_output_callback(filled, silence, callback_info, callback_observed_at);
+                drop(consumer);
             }
             Err(_) => {
                 data.fill(T::EQUILIBRIUM);
+                if clock.output_timing_is_frozen() {
+                    return;
+                }
                 silence = data.len() as u64;
+                clock.record_output_callback(filled, silence, callback_info, callback_observed_at);
             }
         }
 
-        clock.record_output_callback(filled, silence, callback_info, callback_observed_at);
         if filled == 0 && silence > 0 {
             tracing::debug!(
                 silence,
@@ -942,6 +975,7 @@ impl Drop for AudioOutput {
 mod tests {
     use std::fmt::Debug;
 
+    use audio_core::AudioOutputWriteIntent;
     use cpal::{
         BackendSpecificError, FromSample, PauseStreamError, Sample, SampleFormat, SampleRate,
         SupportedBufferSize, SupportedStreamConfigRange,
@@ -950,7 +984,8 @@ mod tests {
     use super::{
         LinearResampler, PEAK_LIMITER_CEILING, PauseErrorPolicy, advance_limiter_envelope,
         classify_pause_error, convert_sample_for_output, limiter_gain_for_envelope,
-        limiter_release_decay_for_rate, output_sample_format_is_supported, sample_format_priority,
+        limiter_release_decay_for_rate, output_sample_for_intent,
+        output_sample_format_is_supported, reset_output_protection, sample_format_priority,
         select_supported_output_config, soft_clip_sample,
     };
 
@@ -964,7 +999,7 @@ mod tests {
         envelope = advance_limiter_envelope(envelope, 0.5, release_decay);
         assert_eq!(limiter_gain_for_envelope(envelope), 1.0);
 
-        // Пик 2.0 (timestretch gain-компенсация): мгновенная атака давит его к потолку.
+        // Пик 2.0 после tempo overlap-add: мгновенная атака давит его к потолку.
         envelope = advance_limiter_envelope(envelope, 2.0, release_decay);
         let ducked_gain = limiter_gain_for_envelope(envelope);
         assert!((2.0 * ducked_gain - PEAK_LIMITER_CEILING).abs() < 1e-3);
@@ -1003,6 +1038,62 @@ mod tests {
         // Non-finite сэмплы не должны попадать в устройство.
         assert_eq!(soft_clip_sample(f32::NAN), 0.0);
         assert_eq!(soft_clip_sample(f32::INFINITY), 0.0);
+    }
+
+    #[test]
+    fn direct_pcm_intent_is_bit_transparent_at_unity_volume() {
+        let direct_samples = [-1.0f32, -0.95, -0.25, -0.0, 0.0, 0.25, 0.95, 1.0];
+
+        for input_sample in direct_samples {
+            let output_sample = output_sample_for_intent(
+                input_sample,
+                1.0,
+                0.25,
+                AudioOutputWriteIntent::DirectDecodedPcm,
+            );
+
+            assert_eq!(
+                output_sample.to_bits(),
+                input_sample.to_bits(),
+                "direct PCM должен игнорировать tempo limiter gain"
+            );
+            assert_eq!(
+                convert_sample_for_output::<f32>(output_sample).to_bits(),
+                input_sample.to_bits(),
+                "same-format CPAL conversion не должна менять normal PCM"
+            );
+        }
+    }
+
+    #[test]
+    fn tempo_processed_intent_applies_existing_output_protection() {
+        let overshoot = 1.4f32;
+        let limiter_gain = limiter_gain_for_envelope(overshoot);
+
+        let protected_sample = output_sample_for_intent(
+            overshoot,
+            1.0,
+            limiter_gain,
+            AudioOutputWriteIntent::TempoProcessed,
+        );
+        let direct_sample = output_sample_for_intent(
+            overshoot,
+            1.0,
+            limiter_gain,
+            AudioOutputWriteIntent::DirectDecodedPcm,
+        );
+
+        assert!(protected_sample.abs() <= 1.0);
+        assert!(protected_sample.abs() < direct_sample.abs());
+    }
+
+    #[test]
+    fn lifecycle_reset_clears_tempo_protection_history() {
+        let mut limiter_envelope = 1.75f32;
+
+        reset_output_protection(&mut limiter_envelope);
+
+        assert_eq!(limiter_envelope, 0.0);
     }
 
     /// Проверяет floating-point samples с небольшим допуском.

@@ -253,7 +253,9 @@ fn final_seek_audio_gate_wait_keeps_target_frames_on_target_clock_base() {
         .session
         .tick(PlayerTickContext::with_config(Instant::now(), tick_config));
 
-    assert_eq!(second_tick.video_frames_presented, 1);
+    // Output clock остаётся frozen до seek commit: попытка test source-а
+    // продвинуть его не должна проталкивать следующий video frame.
+    assert_eq!(second_tick.video_frames_presented, 0);
     assert!(second_tick.dropped_video_frames.is_empty());
     assert_eq!(
         harness
@@ -261,9 +263,9 @@ fn final_seek_audio_gate_wait_keeps_target_frames_on_target_clock_base() {
             .pipeline
             .present_video_frame()
             .map(|frame| frame.pts),
-        Some(target + Duration::from_millis(16))
+        Some(target)
     );
-    assert_eq!(harness.session.pipeline.video_present_queue_len(), 1);
+    assert_eq!(harness.session.pipeline.video_present_queue_len(), 2);
 
     let soft_fallback_tick = harness.session.tick(PlayerTickContext::with_config(
         Instant::now(),

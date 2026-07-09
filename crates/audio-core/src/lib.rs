@@ -16,11 +16,12 @@ use thiserror::Error;
 
 pub use tempo::{
     AudioTempoChannelCount, AudioTempoDecodedMedia, AudioTempoFrameCount, AudioTempoFrameSpan,
-    AudioTempoOutputProgressMapping, AudioTempoPcmFormat, AudioTempoProcessReport,
-    AudioTempoProcessor, AudioTempoProcessorConfig, AudioTempoProcessorError,
-    AudioTempoProcessorFactory, AudioTempoProcessorHandle, AudioTempoRatio,
-    AudioTempoRatioInvalidReason, AudioTempoReportFrameCounts, AudioTempoSampleRateHz,
-    AudioTempoSegment, AudioTempoSegmentId, AudioTempoStretchedOutput,
+    AudioTempoOutputProgressMapping, AudioTempoOutputSegmentCollection,
+    AudioTempoOutputSegmentSpan, AudioTempoOutputSegmentSpans, AudioTempoPcmFormat,
+    AudioTempoProcessReport, AudioTempoProcessor, AudioTempoProcessorConfig,
+    AudioTempoProcessorError, AudioTempoProcessorFactory, AudioTempoProcessorHandle,
+    AudioTempoRatio, AudioTempoRatioInvalidReason, AudioTempoReportFrameCounts,
+    AudioTempoSampleRateHz, AudioTempoSegment, AudioTempoSegmentId, AudioTempoStretchedOutput,
 };
 
 /// Codec-neutral параметры audio track-а, по которым factory создаёт decoder.
@@ -341,6 +342,64 @@ pub struct AudioOutputSpec {
     pub channels: u32,
 }
 
+/// Намерение записи PCM, по которому output выбирает обработку амплитуды.
+///
+/// Тип не содержит playback rate или имя tempo backend-а: concrete output
+/// знает только происхождение samples, необходимое для своей output policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioOutputWriteIntent {
+    /// PCM пришёл напрямую от decoder-а и не должен меняться защитой tempo-output.
+    DirectDecodedPcm,
+
+    /// PCM произведён tempo processor-ом и требует limiter/soft-clip защиты.
+    TempoProcessed,
+}
+
+/// Нейтральный snapshot audible progress и конца уже переданного output PCM.
+///
+/// `submitted_output_end_position` включает samples в ring buffer и samples,
+/// которые callback уже передал устройству, но DAC ещё не воспроизвёл. Silence,
+/// которым callback закрывает underrun, не является submitted media PCM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioOutputClockTiming {
+    /// Output-clock позиция, которая уже предположительно дошла до DAC.
+    audible_output_position: Duration,
+
+    /// Output-clock позиция конца всего реально принятого output PCM.
+    submitted_output_end_position: Duration,
+}
+
+impl AudioOutputClockTiming {
+    /// Создаёт согласованный snapshot и не допускает отрицательный output tail.
+    #[must_use]
+    pub fn new(audible_output_position: Duration, submitted_output_end_position: Duration) -> Self {
+        Self {
+            audible_output_position,
+            submitted_output_end_position: submitted_output_end_position
+                .max(audible_output_position),
+        }
+    }
+
+    /// Возвращает позицию output clock, уже дошедшую до DAC.
+    #[must_use]
+    pub fn audible_output_position(self) -> Duration {
+        self.audible_output_position
+    }
+
+    /// Возвращает позицию конца всего принятого output PCM.
+    #[must_use]
+    pub fn submitted_output_end_position(self) -> Duration {
+        self.submitted_output_end_position
+    }
+
+    /// Возвращает длительность принятого, но ещё не слышимого PCM tail.
+    #[must_use]
+    pub fn submitted_output_tail(self) -> Duration {
+        self.submitted_output_end_position
+            .saturating_sub(self.audible_output_position)
+    }
+}
+
 /// Нейтральная фабрика audio output-а без знания о CPAL или concrete backend-е.
 pub trait AudioOutputFactory: Send + Sync {
     /// Создаёт output под decoded audio spec.
@@ -353,14 +412,21 @@ pub trait AudioOutputFactory: Send + Sync {
 /// Этот contract поэтому не требует `Send`: concrete backend вроде CPAL может
 /// владеть `!Send` stream-ом, не добавляя proxy thread в горячий путь записи PCM.
 pub trait PlayerAudioOutput {
-    /// Записывает interleaved PCM samples в output buffer.
-    fn write_samples(&mut self, samples: &[f32]) -> u64;
+    /// Записывает interleaved PCM samples согласно явной output policy.
+    fn write_samples(&mut self, samples: &[f32], intent: AudioOutputWriteIntent) -> u64;
 
-    /// Запускает output stream.
+    /// Запускает output stream и снимает lifecycle freeze без clock jump-а.
+    ///
+    /// Если backend фактически продолжал работать в logical pause, concrete
+    /// output не должен повторно вызывать несовместимый backend `play`.
     fn play(&mut self) -> Result<()>;
 
-    /// Ставит output stream на паузу.
-    fn pause(&mut self) -> Result<()>;
+    /// Ставит output stream на паузу и атомарно фиксирует его clock snapshot.
+    ///
+    /// Concrete output обязан сериализовать freeze с data callback-ом. После
+    /// успешного возврата `PlayerAudioClock::now` и `output_timing` не должны
+    /// продвигаться до следующего успешного `play`.
+    fn pause_and_freeze_clock(&mut self) -> Result<AudioOutputClockTiming>;
 
     /// Очищает queued samples для seek generation и возвращает ack generation.
     fn clear_buffer_for_seek(&mut self, generation: u64) -> Result<u64>;
@@ -380,6 +446,9 @@ pub trait PlayerAudioClock: Send + Sync {
     /// Возвращает текущую playback позицию относительно clock base.
     fn now(&self) -> Duration;
 
+    /// Возвращает audible clock и конец всего уже принятого output PCM.
+    fn output_timing(&self) -> AudioOutputClockTiming;
+
     /// Сбрасывает clock state после seek/output clear.
     fn reset(&self);
 
@@ -389,10 +458,24 @@ pub trait PlayerAudioClock: Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::{
-        AudioDecoderConfig, AudioDecoderError, AudioPacketTimeBase, AudioPacketTiming,
-        EncodedAudioPacket,
+        AudioDecoderConfig, AudioDecoderError, AudioOutputClockTiming, AudioPacketTimeBase,
+        AudioPacketTiming, EncodedAudioPacket,
     };
+
+    #[test]
+    fn output_clock_timing_preserves_non_negative_submitted_tail() {
+        let audible_position = Duration::from_millis(75);
+        let stale_submitted_position = Duration::from_millis(50);
+
+        let timing = AudioOutputClockTiming::new(audible_position, stale_submitted_position);
+
+        assert_eq!(timing.audible_output_position(), audible_position);
+        assert_eq!(timing.submitted_output_end_position(), audible_position);
+        assert_eq!(timing.submitted_output_tail(), Duration::ZERO);
+    }
 
     #[test]
     fn decoder_config_accepts_missing_probe_values_but_rejects_zero_values() {

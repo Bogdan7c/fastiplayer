@@ -2579,7 +2579,7 @@ impl PlayerSession {
 
     /// Останавливает audio stream для seek, не меняя high-level playback state.
     pub(super) fn pause_audio_output_for_seek(&mut self) {
-        if let Some(Err(error)) = self.pipeline.pause_audio_output() {
+        if let Some(Err(error)) = self.pipeline.pause_audio_output_and_capture_clock() {
             warn!(error = %error, "Не удалось остановить audio перед seek");
             self.set_runtime_error(format!("Audio pause before seek error: {error}"));
         }

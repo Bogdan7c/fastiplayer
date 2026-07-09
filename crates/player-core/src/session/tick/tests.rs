@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use audio_core::{AudioOutputClockTiming, AudioOutputWriteIntent};
 use bytes::Bytes;
 use codec_core::{VideoCodec, VideoDecodeRequirement};
 use media_core::{PacketKeyframe, TrackId, TrackKind};
@@ -69,6 +70,11 @@ impl PlayerAudioClock for FixedAudioClock {
         Duration::ZERO
     }
 
+    /// Admission fake не моделирует queued или callback PCM tail.
+    fn output_timing(&self) -> AudioOutputClockTiming {
+        AudioOutputClockTiming::new(Duration::ZERO, Duration::ZERO)
+    }
+
     /// Reset не имеет side effects для admission policy.
     fn reset(&self) {}
 
@@ -99,7 +105,7 @@ impl FixedAudioOutput {
 
 impl PlayerAudioOutput for FixedAudioOutput {
     /// Тестовый output принимает samples и сообщает количество записанных значений.
-    fn write_samples(&mut self, samples: &[f32]) -> u64 {
+    fn write_samples(&mut self, samples: &[f32], _intent: AudioOutputWriteIntent) -> u64 {
         samples.len() as u64
     }
 
@@ -108,9 +114,9 @@ impl PlayerAudioOutput for FixedAudioOutput {
         Ok(())
     }
 
-    /// Pause в admission tests не имеет side effects.
-    fn pause(&mut self) -> anyhow::Result<()> {
-        Ok(())
+    /// Pause в admission tests возвращает нейтральный нулевой snapshot.
+    fn pause_and_freeze_clock(&mut self) -> anyhow::Result<AudioOutputClockTiming> {
+        Ok(self.clock.output_timing())
     }
 
     /// Clear подтверждает ровно тот generation, который попросил caller.
@@ -807,11 +813,9 @@ fn front_frame_scheduler_delay_keeps_positive_deadline_nonzero_at_max_rate() {
     session
         .dispatch_command(PlayerCommand::SetPlaybackRate(PlaybackRate::MAX))
         .unwrap();
-    session.pipeline.start_monotonic_media_clock(
-        Duration::ZERO,
-        now + Duration::from_secs(1),
-        PlaybackRate::MAX,
-    );
+    session
+        .pipeline
+        .start_monotonic_media_clock(Duration::ZERO, now, PlaybackRate::MAX);
     session
         .pipeline
         .enqueue_queued_video_frame(decoded_frame(Duration::from_nanos(1), 1));
@@ -823,7 +827,7 @@ fn front_frame_scheduler_delay_keeps_positive_deadline_nonzero_at_max_rate() {
 }
 
 #[test]
-fn front_frame_scheduler_delay_keeps_audio_clock_deadline_unscaled_by_playback_rate() {
+fn front_frame_scheduler_delay_uses_audio_media_mapping_for_playback_rate() {
     fn audio_clock_scheduler_delay_for(playback_rate: PlaybackRate) -> Duration {
         let mut session = PlayerSession::new();
         let tick_config = PlayerTickConfig {
@@ -847,8 +851,18 @@ fn front_frame_scheduler_delay_keeps_audio_clock_deadline_unscaled_by_playback_r
     }
 
     assert_eq!(
+        audio_clock_scheduler_delay_for(PlaybackRate::NORMAL),
+        Duration::from_secs(1)
+    );
+    assert_eq!(
         audio_clock_scheduler_delay_for(PlaybackRate::MAX),
-        audio_clock_scheduler_delay_for(PlaybackRate::NORMAL)
+        Duration::from_millis(250)
+    );
+    assert_eq!(
+        audio_clock_scheduler_delay_for(
+            PlaybackRate::new(0.5).expect("0.5x rate должен быть валиден")
+        ),
+        Duration::from_secs(2)
     );
 }
 

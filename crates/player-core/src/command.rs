@@ -201,6 +201,25 @@ pub enum PlayerCommandReject {
         /// Public state, из-за которого команда не была применена.
         state: PlaybackState,
     },
+
+    /// Выбранный audio path не смог атомарно подготовить новый tempo segment.
+    PlaybackRateAudioTempoUnavailable {
+        /// Typed причина, по которой старый rate был сохранён без мутации session.
+        reason: PlaybackRateAudioTempoRejectReason,
+    },
+}
+
+/// Причина атомарного отказа rate-команды на neutral player boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackRateAudioTempoRejectReason {
+    /// Audio track выбран, но его output/clock boundary ещё не готов или уже потерян.
+    AudioOutputUnavailable,
+
+    /// Decoder ещё не сообщил надёжный PCM format для создания processor-а.
+    PcmFormatNotReady,
+
+    /// Factory или активный processor отклонили новый tempo segment.
+    BackendRejected,
 }
 
 /// Команда, которую UI или внешняя интеграция отправляет player state machine.

@@ -1,138 +1,236 @@
 use super::{
     AudioTempoChannelCount, AudioTempoDecodedMedia, AudioTempoFrameCount,
-    AudioTempoOutputProgressMapping, AudioTempoPcmFormat, AudioTempoProcessReport,
-    AudioTempoProcessor, AudioTempoProcessorConfig, AudioTempoProcessorError,
-    AudioTempoProcessorFactory, AudioTempoProcessorHandle, AudioTempoRatio,
-    AudioTempoReportFrameCounts, AudioTempoSampleRateHz, AudioTempoSegment, AudioTempoSegmentId,
-    AudioTempoStretchedOutput,
+    AudioTempoOutputProgressMapping, AudioTempoOutputSegmentSpan, AudioTempoPcmFormat,
+    AudioTempoProcessReport, AudioTempoProcessor, AudioTempoProcessorConfig,
+    AudioTempoProcessorError, AudioTempoProcessorFactory, AudioTempoProcessorHandle,
+    AudioTempoRatio, AudioTempoReportFrameCounts, AudioTempoSampleRateHz, AudioTempoSegment,
+    AudioTempoSegmentId, AudioTempoStretchedOutput,
 };
 use anyhow::Result;
-use std::time::Duration;
 
-#[derive(Debug)]
+/// Fake хранит ровно те состояния, которые должен различать neutral boundary.
 struct FakeTempoProcessor {
     pcm_format: AudioTempoPcmFormat,
-    segment: AudioTempoSegment,
+    active_segment: AudioTempoSegment,
+    pending_segment: AudioTempoSegment,
     pending_processor_output: AudioTempoFrameCount,
-    processor_latency: AudioTempoFrameCount,
+    input_latency: AudioTempoFrameCount,
+    output_latency: AudioTempoFrameCount,
     process_error: Option<AudioTempoProcessorError>,
+    rejected_segment: Option<AudioTempoSegmentId>,
+    processed_packet_count: usize,
+    primed_history_frames: AudioTempoFrameCount,
 }
 
 impl FakeTempoProcessor {
+    /// Создаёт чистый processor без фактически pending output после reset/start.
     fn new(config: AudioTempoProcessorConfig) -> Self {
         Self {
             pcm_format: config.pcm_format(),
-            segment: config.initial_segment(),
+            active_segment: config.initial_segment(),
+            pending_segment: config.initial_segment(),
             pending_processor_output: AudioTempoFrameCount::ZERO,
-            processor_latency: AudioTempoFrameCount::ZERO,
+            input_latency: AudioTempoFrameCount::new(96),
+            output_latency: AudioTempoFrameCount::new(48),
             process_error: None,
+            rejected_segment: None,
+            processed_packet_count: 0,
+            primed_history_frames: AudioTempoFrameCount::ZERO,
         }
     }
 
-    fn with_internal_state(
-        mut self,
-        pending_processor_output: AudioTempoFrameCount,
-        processor_latency: AudioTempoFrameCount,
-    ) -> Self {
+    /// Настраивает фактический pending tail независимо от static latency.
+    fn with_pending_output(mut self, pending_processor_output: AudioTempoFrameCount) -> Self {
         self.pending_processor_output = pending_processor_output;
-        self.processor_latency = processor_latency;
         self
     }
 
+    /// Настраивает typed process failure для проверки downcast boundary.
     fn with_process_error(mut self, process_error: AudioTempoProcessorError) -> Self {
         self.process_error = Some(process_error);
         self
     }
 
+    /// Настраивает segment, который fake обязан отклонить атомарно.
+    fn rejecting_segment(mut self, segment_id: AudioTempoSegmentId) -> Self {
+        self.rejected_segment = Some(segment_id);
+        self
+    }
+
+    /// Строит report и сохраняет раздельные produced/pending ordered spans.
     fn report_for_operation(
         &self,
         consumed_decoded_media: AudioTempoFrameCount,
-        produced_stretched_output: AudioTempoFrameCount,
-    ) -> AudioTempoProcessReport {
+        produced_spans: Vec<AudioTempoOutputSegmentSpan>,
+        pending_spans: Vec<AudioTempoOutputSegmentSpan>,
+    ) -> Result<AudioTempoProcessReport> {
+        self.report_for_active_segment(
+            self.active_segment,
+            consumed_decoded_media,
+            produced_spans,
+            pending_spans,
+        )
+    }
+
+    /// Строит planned report до atomic segment commit.
+    fn report_for_active_segment(
+        &self,
+        active_segment: AudioTempoSegment,
+        consumed_decoded_media: AudioTempoFrameCount,
+        produced_spans: Vec<AudioTempoOutputSegmentSpan>,
+        pending_spans: Vec<AudioTempoOutputSegmentSpan>,
+    ) -> Result<AudioTempoProcessReport> {
+        let produced_stretched_output = sum_span_frames(&produced_spans);
+        let pending_processor_output = sum_span_frames(&pending_spans);
+
         AudioTempoProcessReport::from_frame_counts(
             self.pcm_format,
-            self.segment,
+            active_segment,
             AudioTempoReportFrameCounts {
                 consumed_decoded_media,
                 produced_stretched_output,
-                pending_processor_output: self.pending_processor_output,
-                processor_latency: self.processor_latency,
+                pending_processor_output,
+                input_latency: self.input_latency,
+                output_latency: self.output_latency,
             },
+            AudioTempoOutputProgressMapping::new(produced_spans, pending_spans),
         )
     }
 
+    /// Считает output frames из decoded media frames для fake ratio.
     fn produced_frames_for(
         &self,
-        consumed_decoded_media: AudioTempoFrameCount,
+        decoded_media_frames: AudioTempoFrameCount,
     ) -> AudioTempoFrameCount {
-        if self.segment.ratio().is_normal() {
-            return consumed_decoded_media;
-        }
-
         AudioTempoFrameCount::new(
-            (consumed_decoded_media.get() as f64 / self.segment.ratio().as_f64()).round() as u64,
+            (decoded_media_frames.get() as f64 / self.active_segment.ratio().as_f64()).round()
+                as u64,
         )
     }
 
-    fn output_samples_for(
+    /// Возвращает один span только для ненулевого количества frames.
+    fn span_for(
         &self,
-        decoded_media: AudioTempoDecodedMedia<'_>,
-        produced_stretched_output: AudioTempoFrameCount,
-    ) -> Vec<f32> {
-        if self.segment.ratio().is_normal() {
-            return decoded_media.interleaved_samples().to_vec();
+        segment: AudioTempoSegment,
+        frame_count: AudioTempoFrameCount,
+    ) -> Vec<AudioTempoOutputSegmentSpan> {
+        if frame_count == AudioTempoFrameCount::ZERO {
+            Vec::new()
+        } else {
+            vec![AudioTempoOutputSegmentSpan::new(
+                self.pcm_format,
+                segment,
+                frame_count,
+            )]
         }
-
-        let output_sample_count = produced_stretched_output
-            .interleaved_sample_len(self.pcm_format.channel_count())
-            .expect("fake output frame count should fit usize");
-        vec![0.0; output_sample_count]
     }
 }
 
 impl AudioTempoProcessor for FakeTempoProcessor {
-    fn set_segment(&mut self, segment: AudioTempoSegment) -> Result<AudioTempoProcessReport> {
-        self.segment = segment;
-        Ok(self.report_for_operation(AudioTempoFrameCount::ZERO, AudioTempoFrameCount::ZERO))
+    fn pcm_format(&self) -> AudioTempoPcmFormat {
+        self.pcm_format
     }
 
-    fn process_decoded_media(
+    fn prime_decoded_history(
+        &mut self,
+        decoded_history: AudioTempoDecodedMedia<'_>,
+    ) -> Result<AudioTempoProcessReport> {
+        if decoded_history.pcm_format() != self.pcm_format {
+            return Err(AudioTempoProcessorError::PcmFormatMismatch {
+                expected: self.pcm_format,
+                actual: decoded_history.pcm_format(),
+            }
+            .into());
+        }
+        if self.processed_packet_count > 0
+            || self.pending_processor_output != AudioTempoFrameCount::ZERO
+        {
+            return Err(AudioTempoProcessorError::HistoryPrimeAfterStreamStart.into());
+        }
+
+        self.primed_history_frames = decoded_history.frame_count();
+        self.report_for_operation(AudioTempoFrameCount::ZERO, Vec::new(), Vec::new())
+    }
+
+    fn set_segment(&mut self, segment: AudioTempoSegment) -> Result<AudioTempoProcessReport> {
+        if self.rejected_segment == Some(segment.segment_id()) {
+            return Err(AudioTempoProcessorError::UnsupportedRatio {
+                requested_ratio: segment.ratio(),
+            }
+            .into());
+        }
+
+        // Pending PCM уже принадлежит старому segment-у и не переименовывается.
+        let pending_spans = self.span_for(self.pending_segment, self.pending_processor_output);
+        let report = self.report_for_active_segment(
+            segment,
+            AudioTempoFrameCount::ZERO,
+            Vec::new(),
+            pending_spans,
+        )?;
+        self.active_segment = segment;
+        Ok(report)
+    }
+
+    fn process_decoded_media_into<'output>(
         &mut self,
         decoded_media: AudioTempoDecodedMedia<'_>,
-    ) -> Result<AudioTempoStretchedOutput> {
+        output_buffer: &'output mut Vec<f32>,
+    ) -> Result<AudioTempoStretchedOutput<'output>> {
+        // Format mismatch проверяется до ошибки backend-а и до очистки caller buffer-а.
+        if decoded_media.pcm_format() != self.pcm_format {
+            return Err(AudioTempoProcessorError::PcmFormatMismatch {
+                expected: self.pcm_format,
+                actual: decoded_media.pcm_format(),
+            }
+            .into());
+        }
         if let Some(process_error) = self.process_error.take() {
             return Err(process_error.into());
         }
 
-        let consumed_decoded_media = decoded_media.frame_count();
-        let produced_stretched_output = self.produced_frames_for(consumed_decoded_media);
-        let report = self.report_for_operation(consumed_decoded_media, produced_stretched_output);
-        let interleaved_samples = self.output_samples_for(decoded_media, produced_stretched_output);
+        let produced_frames = self.produced_frames_for(decoded_media.frame_count());
+        let output_sample_count =
+            produced_frames.interleaved_sample_len(self.pcm_format.channel_count())?;
+        output_buffer.clear();
+        output_buffer.resize(output_sample_count, 0.0);
+        if self.active_segment.ratio().is_normal() {
+            output_buffer.copy_from_slice(decoded_media.interleaved_samples());
+        }
 
-        AudioTempoStretchedOutput::new(interleaved_samples, report, self.pcm_format)
+        self.processed_packet_count += 1;
+        self.pending_segment = self.active_segment;
+        let produced_spans = self.span_for(self.active_segment, produced_frames);
+        let pending_spans = self.span_for(self.pending_segment, self.pending_processor_output);
+        let report =
+            self.report_for_operation(decoded_media.frame_count(), produced_spans, pending_spans)?;
+        AudioTempoStretchedOutput::new(output_buffer, report, self.pcm_format)
     }
 
-    fn flush(&mut self) -> Result<AudioTempoStretchedOutput> {
-        let produced_stretched_output = self.pending_processor_output;
+    fn finish_stream_into<'output>(
+        &mut self,
+        output_buffer: &'output mut Vec<f32>,
+    ) -> Result<AudioTempoStretchedOutput<'output>> {
+        let produced_frames = self.pending_processor_output;
+        let produced_spans = self.span_for(self.pending_segment, produced_frames);
+        let output_sample_count =
+            produced_frames.interleaved_sample_len(self.pcm_format.channel_count())?;
+        output_buffer.clear();
+        output_buffer.resize(output_sample_count, 0.0);
         self.pending_processor_output = AudioTempoFrameCount::ZERO;
-
         let report =
-            self.report_for_operation(AudioTempoFrameCount::ZERO, produced_stretched_output);
-        let output_sample_count = produced_stretched_output
-            .interleaved_sample_len(self.pcm_format.channel_count())
-            .expect("fake output frame count should fit usize");
-
-        AudioTempoStretchedOutput::new(vec![0.0; output_sample_count], report, self.pcm_format)
+            self.report_for_operation(AudioTempoFrameCount::ZERO, produced_spans, Vec::new())?;
+        AudioTempoStretchedOutput::new(output_buffer, report, self.pcm_format)
     }
 
     fn reset(&mut self) -> Result<AudioTempoProcessReport> {
         self.pending_processor_output = AudioTempoFrameCount::ZERO;
-        self.processor_latency = AudioTempoFrameCount::ZERO;
-
-        Ok(self.report_for_operation(AudioTempoFrameCount::ZERO, AudioTempoFrameCount::ZERO))
+        self.processed_packet_count = 0;
+        self.report_for_operation(AudioTempoFrameCount::ZERO, Vec::new(), Vec::new())
     }
 }
 
+/// Factory failure проверяет, что anyhow не стирает typed tempo error.
 struct FailingTempoProcessorFactory {
     error: AudioTempoProcessorError,
 }
@@ -146,13 +244,23 @@ impl AudioTempoProcessorFactory for FailingTempoProcessorFactory {
     }
 }
 
+/// Возвращает общий stereo 48 kHz format focused tests.
 fn stereo_48k_format() -> AudioTempoPcmFormat {
     AudioTempoPcmFormat::new(
-        AudioTempoSampleRateHz::new(48_000).expect("sample rate should be valid"),
-        AudioTempoChannelCount::new(2).expect("channel count should be valid"),
+        AudioTempoSampleRateHz::new(48_000).expect("valid sample rate"),
+        AudioTempoChannelCount::new(2).expect("valid channel count"),
     )
 }
 
+/// Возвращает mono format для typed mismatch test-а.
+fn mono_48k_format() -> AudioTempoPcmFormat {
+    AudioTempoPcmFormat::new(
+        AudioTempoSampleRateHz::new(48_000).expect("valid sample rate"),
+        AudioTempoChannelCount::new(1).expect("valid channel count"),
+    )
+}
+
+/// Собирает config с предсказуемым segment id.
 fn config_for_ratio(ratio: AudioTempoRatio) -> AudioTempoProcessorConfig {
     AudioTempoProcessorConfig::new(
         stereo_48k_format(),
@@ -160,255 +268,328 @@ fn config_for_ratio(ratio: AudioTempoRatio) -> AudioTempoProcessorConfig {
     )
 }
 
-fn decoded_media_for_frames(interleaved_samples: &[f32]) -> AudioTempoDecodedMedia<'_> {
+/// Создаёт stereo decoded packet и сохраняет format внутри value object-а.
+fn decoded_stereo(interleaved_samples: &[f32]) -> AudioTempoDecodedMedia<'_> {
     AudioTempoDecodedMedia::from_interleaved_samples(interleaved_samples, stereo_48k_format())
-        .expect("fake samples should describe whole PCM frames")
+        .expect("frame-aligned stereo PCM")
+}
+
+/// Складывает frames ordered spans для тестовой сборки report-а.
+fn sum_span_frames(spans: &[AudioTempoOutputSegmentSpan]) -> AudioTempoFrameCount {
+    AudioTempoFrameCount::new(
+        spans
+            .iter()
+            .map(|span| span.stretched_output().frame_count().get())
+            .sum(),
+    )
 }
 
 #[test]
-fn passthrough_ratio_preserves_samples_and_equal_media_output_durations() {
-    let mut processor = FakeTempoProcessor::new(config_for_ratio(AudioTempoRatio::NORMAL));
-    let samples = vec![0.25; 960];
+fn passthrough_ratio_preserves_samples_and_reuses_caller_buffer() {
+    let config = config_for_ratio(AudioTempoRatio::NORMAL);
+    let mut processor = FakeTempoProcessor::new(config);
+    let samples = [0.25, -0.25, 0.5, -0.5];
+    let decoded = decoded_stereo(&samples);
+    let mut output_buffer = Vec::with_capacity(32);
+    let allocation_address = output_buffer.as_ptr();
 
     let output = processor
-        .process_decoded_media(decoded_media_for_frames(&samples))
-        .expect("fake 1x process should succeed");
+        .process_decoded_media_into(decoded, &mut output_buffer)
+        .expect("passthrough process should succeed");
 
-    assert_eq!(output.interleaved_samples(), samples.as_slice());
+    assert_eq!(output.interleaved_samples(), samples);
     assert_eq!(
-        output.report().consumed_decoded_media().frame_count(),
-        AudioTempoFrameCount::new(480)
+        output.report().consumed_decoded_media().frame_count().get(),
+        2
     );
     assert_eq!(
-        output.report().produced_stretched_output().frame_count(),
-        AudioTempoFrameCount::new(480)
+        output
+            .report()
+            .produced_stretched_output()
+            .frame_count()
+            .get(),
+        2
     );
     assert_eq!(
-        output.report().consumed_decoded_media().duration(),
-        Duration::from_millis(10)
+        output
+            .report()
+            .output_progress_mapping()
+            .produced_output_segments()
+            .len(),
+        1
+    );
+    drop(output);
+    assert_eq!(output_buffer.as_ptr(), allocation_address);
+}
+
+#[test]
+fn decoded_media_preserves_format_and_mismatch_is_non_mutating() {
+    let config = config_for_ratio(AudioTempoRatio::NORMAL);
+    let mut processor = FakeTempoProcessor::new(config);
+    let mono_samples = [0.25, -0.25];
+    let decoded =
+        AudioTempoDecodedMedia::from_interleaved_samples(&mono_samples, mono_48k_format())
+            .expect("valid mono packet");
+    let mut output_buffer = vec![91.0, 92.0];
+
+    let error = processor
+        .process_decoded_media_into(decoded, &mut output_buffer)
+        .expect_err("format mismatch must fail");
+
+    assert_eq!(
+        error.downcast_ref::<AudioTempoProcessorError>(),
+        Some(&AudioTempoProcessorError::PcmFormatMismatch {
+            expected: stereo_48k_format(),
+            actual: mono_48k_format(),
+        })
+    );
+    assert_eq!(decoded.pcm_format(), mono_48k_format());
+    assert_eq!(output_buffer, [91.0, 92.0]);
+    assert_eq!(processor.processed_packet_count, 0);
+}
+
+#[test]
+fn history_prime_has_no_output_or_pending_accounting() {
+    let config = config_for_ratio(AudioTempoRatio::NORMAL);
+    let mut processor = FakeTempoProcessor::new(config);
+    let history_samples = vec![0.25f32; 960 * 2];
+    let history = decoded_stereo(&history_samples);
+
+    let report = processor
+        .prime_decoded_history(history)
+        .expect("fresh processor should accept history");
+
+    assert_eq!(
+        processor.primed_history_frames,
+        AudioTempoFrameCount::new(960)
     );
     assert_eq!(
-        output.report().produced_stretched_output().duration(),
-        Duration::from_millis(10)
-    );
-    assert_eq!(
-        output.report().pending_processor_output().frame_count(),
+        report.consumed_decoded_media().frame_count(),
         AudioTempoFrameCount::ZERO
     );
     assert_eq!(
-        output.report().processor_latency().frame_count(),
+        report.produced_stretched_output().frame_count(),
         AudioTempoFrameCount::ZERO
+    );
+    assert_eq!(
+        report.pending_processor_output().frame_count(),
+        AudioTempoFrameCount::ZERO
+    );
+    assert!(
+        report
+            .output_progress_mapping()
+            .produced_output_segments()
+            .is_empty()
+    );
+    assert!(
+        report
+            .output_progress_mapping()
+            .pending_output_segments()
+            .is_empty()
     );
 }
 
 #[test]
-fn reset_clears_buffered_output_and_processor_latency_state() {
-    let mut processor = FakeTempoProcessor::new(config_for_ratio(AudioTempoRatio::NORMAL))
-        .with_internal_state(
-            AudioTempoFrameCount::new(120),
-            AudioTempoFrameCount::new(24),
-        );
+fn reset_keeps_static_latencies_but_clears_actual_pending_output() {
+    let config = config_for_ratio(AudioTempoRatio::NORMAL);
+    let mut processor =
+        FakeTempoProcessor::new(config).with_pending_output(AudioTempoFrameCount::new(144));
 
-    let report = processor.reset().expect("fake reset should succeed");
+    let report = processor.reset().expect("reset should succeed");
 
     assert_eq!(
         report.pending_processor_output().frame_count(),
         AudioTempoFrameCount::ZERO
     );
     assert_eq!(
-        report.processor_latency().frame_count(),
-        AudioTempoFrameCount::ZERO
+        report.input_latency().frame_count(),
+        AudioTempoFrameCount::new(96)
     );
     assert_eq!(
-        report.consumed_decoded_media().frame_count(),
-        AudioTempoFrameCount::ZERO
+        report.output_latency().frame_count(),
+        AudioTempoFrameCount::new(48)
     );
-    assert_eq!(
-        report.produced_stretched_output().frame_count(),
-        AudioTempoFrameCount::ZERO
+    assert!(
+        report
+            .output_progress_mapping()
+            .pending_output_segments()
+            .is_empty()
     );
 }
 
 #[test]
-fn flush_drains_buffered_output_without_consuming_decoded_media() {
-    let pending_processor_output = AudioTempoFrameCount::new(120);
-    let mut processor = FakeTempoProcessor::new(config_for_ratio(AudioTempoRatio::NORMAL))
-        .with_internal_state(pending_processor_output, AudioTempoFrameCount::new(24));
+fn finish_returns_all_pending_pcm_once_and_reports_zero_pending_afterward() {
+    let config = config_for_ratio(AudioTempoRatio::NORMAL);
+    let mut processor =
+        FakeTempoProcessor::new(config).with_pending_output(AudioTempoFrameCount::new(3));
+    let mut output_buffer = Vec::with_capacity(16);
 
-    let output = processor.flush().expect("fake flush should succeed");
-    let second_output = processor
-        .flush()
-        .expect("second fake flush should see drained pending output");
+    let output = processor
+        .finish_stream_into(&mut output_buffer)
+        .expect("finish should succeed");
 
+    assert_eq!(output.interleaved_samples().len(), 6);
     assert_eq!(
-        output.report().consumed_decoded_media().frame_count(),
-        AudioTempoFrameCount::ZERO
-    );
-    assert_eq!(
-        output.report().produced_stretched_output().frame_count(),
-        pending_processor_output
-    );
-    assert_eq!(
-        output.report().produced_stretched_output().duration(),
-        Duration::from_millis(2) + Duration::from_micros(500)
-    );
-    assert_eq!(
-        second_output
+        output
             .report()
             .produced_stretched_output()
-            .frame_count(),
+            .frame_count()
+            .get(),
+        3
+    );
+    assert_eq!(
+        output.report().pending_processor_output().frame_count(),
         AudioTempoFrameCount::ZERO
     );
-    assert!(second_output.interleaved_samples().is_empty());
+    assert_eq!(
+        output
+            .report()
+            .output_progress_mapping()
+            .produced_output_segments()[0]
+            .stretched_output()
+            .frame_count()
+            .get(),
+        3
+    );
+}
+
+#[test]
+fn rejected_segment_change_is_atomic_and_preserves_old_pending_span() {
+    let initial_segment = config_for_ratio(AudioTempoRatio::NORMAL).initial_segment();
+    let rejected_segment = AudioTempoSegment::new(
+        AudioTempoSegmentId::new(8),
+        AudioTempoRatio::new(2.0).expect("valid ratio"),
+    );
+    let mut processor = FakeTempoProcessor::new(config_for_ratio(AudioTempoRatio::NORMAL))
+        .with_pending_output(AudioTempoFrameCount::new(24))
+        .rejecting_segment(rejected_segment.segment_id());
+
+    let error = processor
+        .set_segment(rejected_segment)
+        .expect_err("configured segment must be rejected");
+
+    assert!(error.downcast_ref::<AudioTempoProcessorError>().is_some());
+    assert_eq!(processor.active_segment, initial_segment);
+    assert_eq!(processor.pending_segment, initial_segment);
+    assert_eq!(
+        processor.pending_processor_output,
+        AudioTempoFrameCount::new(24)
+    );
+}
+
+#[test]
+fn accepted_segment_change_reports_old_pending_tail_in_order() {
+    let initial_segment = config_for_ratio(AudioTempoRatio::NORMAL).initial_segment();
+    let updated_segment = AudioTempoSegment::new(
+        AudioTempoSegmentId::new(8),
+        AudioTempoRatio::new(2.0).expect("valid ratio"),
+    );
+    let mut processor = FakeTempoProcessor::new(config_for_ratio(AudioTempoRatio::NORMAL))
+        .with_pending_output(AudioTempoFrameCount::new(24));
+
+    let report = processor
+        .set_segment(updated_segment)
+        .expect("segment change should succeed");
+
+    assert_eq!(report.active_segment(), updated_segment);
+    let pending_spans = report.output_progress_mapping().pending_output_segments();
+    assert_eq!(pending_spans.len(), 1);
+    assert_eq!(pending_spans[0].segment(), initial_segment);
+    assert_eq!(pending_spans[0].stretched_output().frame_count().get(), 24);
+}
+
+#[test]
+fn report_validates_ordered_span_totals() {
+    let format = stereo_48k_format();
+    let segment = config_for_ratio(AudioTempoRatio::NORMAL).initial_segment();
+    let mapping = AudioTempoOutputProgressMapping::new(
+        vec![AudioTempoOutputSegmentSpan::new(
+            format,
+            segment,
+            AudioTempoFrameCount::new(3),
+        )],
+        Vec::new(),
+    );
+
+    let error = AudioTempoProcessReport::from_frame_counts(
+        format,
+        segment,
+        AudioTempoReportFrameCounts {
+            consumed_decoded_media: AudioTempoFrameCount::new(3),
+            produced_stretched_output: AudioTempoFrameCount::new(4),
+            pending_processor_output: AudioTempoFrameCount::ZERO,
+            input_latency: AudioTempoFrameCount::new(96),
+            output_latency: AudioTempoFrameCount::new(48),
+        },
+        mapping,
+    )
+    .expect_err("aggregate and ordered spans must agree");
+
+    assert!(matches!(
+        error.downcast_ref::<AudioTempoProcessorError>(),
+        Some(AudioTempoProcessorError::OutputSegmentFrameCountMismatch { .. })
+    ));
 }
 
 #[test]
 fn processor_and_factory_errors_stay_typed_for_downcast() {
-    let requested_ratio = AudioTempoRatio::new(4.0).expect("ratio should be valid");
+    let requested_ratio = AudioTempoRatio::new(4.0).expect("valid ratio");
     let factory_error = AudioTempoProcessorError::UnsupportedRatio { requested_ratio };
     let factory = FailingTempoProcessorFactory {
         error: factory_error.clone(),
     };
 
     let error = match factory.create_processor(config_for_ratio(requested_ratio)) {
-        Ok(_) => panic!("factory should reject unsupported ratio"),
+        Ok(_) => panic!("factory must fail"),
         Err(error) => error,
     };
-
     assert_eq!(
-        error
-            .downcast_ref::<AudioTempoProcessorError>()
-            .expect("factory error should stay typed"),
-        &factory_error
+        error.downcast_ref::<AudioTempoProcessorError>(),
+        Some(&factory_error)
     );
 
     let process_error = AudioTempoProcessorError::BackendFailure {
-        message: "synthetic processor failure".to_string(),
+        message: "fake process failure".to_owned(),
     };
     let mut processor = FakeTempoProcessor::new(config_for_ratio(AudioTempoRatio::NORMAL))
         .with_process_error(process_error.clone());
-    let samples = vec![0.0; 96];
-
+    let mut output_buffer = vec![5.0];
     let error = processor
-        .process_decoded_media(decoded_media_for_frames(&samples))
-        .expect_err("processor should return the synthetic typed error");
-
+        .process_decoded_media_into(decoded_stereo(&[0.0, 0.0]), &mut output_buffer)
+        .expect_err("process must fail");
     assert_eq!(
-        error
-            .downcast_ref::<AudioTempoProcessorError>()
-            .expect("processor error should stay typed"),
-        &process_error
+        error.downcast_ref::<AudioTempoProcessorError>(),
+        Some(&process_error)
     );
+    assert_eq!(output_buffer, [5.0]);
 }
 
 #[test]
-fn non_normal_ratio_distinguishes_consumed_media_from_produced_output_duration() {
-    let double_speed = AudioTempoRatio::new(2.0).expect("ratio should be valid");
+fn non_normal_ratio_separates_media_and_output_durations() {
+    let double_speed = AudioTempoRatio::new(2.0).expect("valid ratio");
     let mut processor = FakeTempoProcessor::new(config_for_ratio(double_speed));
-    let samples = vec![1.0; 960];
+    let samples = vec![0.0; 960 * 2];
+    let mut output_buffer = Vec::new();
 
     let output = processor
-        .process_decoded_media(decoded_media_for_frames(&samples))
-        .expect("fake 2x process should succeed");
+        .process_decoded_media_into(decoded_stereo(&samples), &mut output_buffer)
+        .expect("process should succeed");
 
     assert_eq!(
-        output.report().consumed_decoded_media().frame_count(),
-        AudioTempoFrameCount::new(480)
+        output
+            .report()
+            .consumed_decoded_media()
+            .duration()
+            .as_millis(),
+        20
     );
     assert_eq!(
-        output.report().produced_stretched_output().frame_count(),
-        AudioTempoFrameCount::new(240)
+        output
+            .report()
+            .produced_stretched_output()
+            .duration()
+            .as_millis(),
+        10
     );
-    assert_eq!(
-        output.report().consumed_decoded_media().duration(),
-        Duration::from_millis(10)
-    );
-    assert_eq!(
-        output.report().produced_stretched_output().duration(),
-        Duration::from_millis(5)
-    );
-    assert_ne!(
-        output.report().consumed_decoded_media().duration(),
-        output.report().produced_stretched_output().duration()
-    );
-}
-
-#[test]
-fn set_segment_updates_ratio_without_consuming_or_producing_frames() {
-    let initial_ratio = AudioTempoRatio::NORMAL;
-    let updated_ratio = AudioTempoRatio::new(0.5).expect("ratio should be valid");
-    let updated_segment = AudioTempoSegment::new(AudioTempoSegmentId::new(8), updated_ratio);
-    let mut processor = FakeTempoProcessor::new(config_for_ratio(initial_ratio));
-
-    let report = processor
-        .set_segment(updated_segment)
-        .expect("fake segment update should succeed");
-
-    assert_eq!(report.segment_id(), updated_segment.segment_id());
-    assert_eq!(report.effective_ratio(), updated_ratio);
-    assert_eq!(
-        report.consumed_decoded_media().frame_count(),
-        AudioTempoFrameCount::ZERO
-    );
-    assert_eq!(
-        report.produced_stretched_output().frame_count(),
-        AudioTempoFrameCount::ZERO
-    );
-}
-
-#[test]
-fn report_keeps_processor_pending_and_latency_separate_from_output_device_tail() {
-    let output_device_tail_after_write =
-        stereo_48k_format().frame_span(AudioTempoFrameCount::new(960));
-    let processor_pending = AudioTempoFrameCount::new(120);
-    let processor_latency = AudioTempoFrameCount::new(48);
-    let mut processor = FakeTempoProcessor::new(config_for_ratio(AudioTempoRatio::NORMAL))
-        .with_internal_state(processor_pending, processor_latency);
-    let samples = vec![0.5; 960];
-
-    let output = processor
-        .process_decoded_media(decoded_media_for_frames(&samples))
-        .expect("fake process should succeed");
-
-    assert_eq!(
-        output.report().pending_processor_output().frame_count(),
-        processor_pending
-    );
-    assert_eq!(
-        output.report().processor_latency().frame_count(),
-        processor_latency
-    );
-    assert_ne!(
-        output.report().pending_processor_output().duration(),
-        output_device_tail_after_write.duration()
-    );
-    assert_ne!(
-        output.report().processor_latency().duration(),
-        output_device_tail_after_write.duration()
-    );
-}
-
-#[test]
-fn report_exposes_mapping_data_for_output_progress_to_media_progress() {
-    let double_speed = AudioTempoRatio::new(2.0).expect("ratio should be valid");
-    let mut processor = FakeTempoProcessor::new(config_for_ratio(double_speed));
-    let samples = vec![0.0; 960];
-
-    let output = processor
-        .process_decoded_media(decoded_media_for_frames(&samples))
-        .expect("fake 2x process should succeed");
-    let mapping: AudioTempoOutputProgressMapping = output.report().output_progress_mapping();
-
-    assert_eq!(output.report().segment_id(), AudioTempoSegmentId::new(7));
     assert_eq!(output.report().effective_ratio(), double_speed);
-    assert_eq!(mapping.segment_id(), AudioTempoSegmentId::new(7));
-    assert_eq!(mapping.effective_ratio(), double_speed);
-    assert_eq!(
-        mapping.consumed_decoded_media().duration(),
-        Duration::from_millis(10)
-    );
-    assert_eq!(
-        mapping.produced_stretched_output().duration(),
-        Duration::from_millis(5)
-    );
 }

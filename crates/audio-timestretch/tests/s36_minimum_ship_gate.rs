@@ -410,7 +410,7 @@ fn process_one_chunk(
         report.produced_stretched_output().frame_count(),
         produced_frames
     );
-    assert!(report.processor_latency().frame_count().get() > 0);
+    assert!(report.output_latency().frame_count().get() > 0);
     assert!(report.effective_ratio().as_f64().is_finite());
 
     Ok(())

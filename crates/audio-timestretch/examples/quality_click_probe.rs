@@ -92,15 +92,20 @@ fn run_rate(
     // Прайминг как в рантайме: 200 ms истории, warmup output отбрасывается.
     let history_len = (sample.sample_rate as usize / 5) * channels;
     let history = &sample.samples[..history_len.min(sample.samples.len())];
-    let _warmup = processor.process_decoded_media(
+    let mut tempo_output = Vec::new();
+    let _warmup = AudioTempoProcessor::process_decoded_media_into(
+        &mut processor,
         AudioTempoDecodedMedia::from_interleaved_samples(history, pcm_format)?,
+        &mut tempo_output,
     )?;
 
     let mut output: Vec<f32> = Vec::new();
     let started = Instant::now();
     for chunk in sample.samples[history.len()..].chunks(chunk_len) {
-        let out = processor.process_decoded_media(
+        let out = AudioTempoProcessor::process_decoded_media_into(
+            &mut processor,
             AudioTempoDecodedMedia::from_interleaved_samples(chunk, pcm_format)?,
+            &mut tempo_output,
         )?;
         output.extend_from_slice(out.interleaved_samples());
     }

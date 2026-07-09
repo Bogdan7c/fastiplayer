@@ -13,9 +13,16 @@ use std::fmt;
 use std::time::Duration;
 
 use anyhow::Result;
-use thiserror::Error;
 
 use crate::AudioOutputSpec;
+
+mod report;
+
+pub use report::{
+    AudioTempoFrameSpan, AudioTempoOutputProgressMapping, AudioTempoOutputSegmentCollection,
+    AudioTempoOutputSegmentSpan, AudioTempoOutputSegmentSpans, AudioTempoProcessReport,
+    AudioTempoProcessorError, AudioTempoReportFrameCounts, AudioTempoStretchedOutput,
+};
 
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
 
@@ -339,6 +346,7 @@ impl AudioTempoProcessorConfig {
 pub struct AudioTempoDecodedMedia<'a> {
     interleaved_samples: &'a [f32],
     frame_count: AudioTempoFrameCount,
+    pcm_format: AudioTempoPcmFormat,
 }
 
 impl<'a> AudioTempoDecodedMedia<'a> {
@@ -353,6 +361,7 @@ impl<'a> AudioTempoDecodedMedia<'a> {
                 interleaved_samples.len(),
                 pcm_format.channel_count(),
             )?,
+            pcm_format,
         })
     }
 
@@ -367,222 +376,14 @@ impl<'a> AudioTempoDecodedMedia<'a> {
     pub const fn frame_count(self) -> AudioTempoFrameCount {
         self.frame_count
     }
-}
 
-/// Pair frame-count + duration в конкретной PCM timeline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AudioTempoFrameSpan {
-    frame_count: AudioTempoFrameCount,
-    duration: Duration,
-}
-
-impl AudioTempoFrameSpan {
-    /// Возвращает frame count span-а.
+    /// Возвращает PCM format, в котором были интерпретированы samples.
+    ///
+    /// Processor обязан сравнить его со своей конфигурацией до изменения
+    /// backend state или caller-owned output buffer.
     #[must_use]
-    pub const fn frame_count(self) -> AudioTempoFrameCount {
-        self.frame_count
-    }
-
-    /// Возвращает duration span-а.
-    #[must_use]
-    pub const fn duration(self) -> Duration {
-        self.duration
-    }
-}
-
-/// Named frame-counts, из которых строится report без позиционных bool/чисел.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AudioTempoReportFrameCounts {
-    /// Decoded media frames, реально принятые processor-ом в этой операции.
-    pub consumed_decoded_media: AudioTempoFrameCount,
-
-    /// Stretched output frames, произведённые processor-ом в этой операции.
-    pub produced_stretched_output: AudioTempoFrameCount,
-
-    /// Output frames, которые остались внутри tempo processor-а после операции.
-    pub pending_processor_output: AudioTempoFrameCount,
-
-    /// Algorithmic latency tempo processor-а после операции.
-    pub processor_latency: AudioTempoFrameCount,
-}
-
-impl AudioTempoReportFrameCounts {
-    /// Создаёт полностью нулевой report frame-count set.
-    pub const ZERO: Self = Self {
-        consumed_decoded_media: AudioTempoFrameCount::ZERO,
-        produced_stretched_output: AudioTempoFrameCount::ZERO,
-        pending_processor_output: AudioTempoFrameCount::ZERO,
-        processor_latency: AudioTempoFrameCount::ZERO,
-    };
-}
-
-/// Данные, по которым caller может связать output progress с media progress.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct AudioTempoOutputProgressMapping {
-    segment_id: AudioTempoSegmentId,
-    effective_ratio: AudioTempoRatio,
-    consumed_decoded_media: AudioTempoFrameSpan,
-    produced_stretched_output: AudioTempoFrameSpan,
-}
-
-impl AudioTempoOutputProgressMapping {
-    /// Возвращает tempo segment, к которому относится mapping.
-    #[must_use]
-    pub const fn segment_id(self) -> AudioTempoSegmentId {
-        self.segment_id
-    }
-
-    /// Возвращает media-progress per output-progress ratio.
-    #[must_use]
-    pub const fn effective_ratio(self) -> AudioTempoRatio {
-        self.effective_ratio
-    }
-
-    /// Возвращает decoded media span, накопленный в этой processor operation.
-    #[must_use]
-    pub const fn consumed_decoded_media(self) -> AudioTempoFrameSpan {
-        self.consumed_decoded_media
-    }
-
-    /// Возвращает stretched output span, накопленный в этой processor operation.
-    #[must_use]
-    pub const fn produced_stretched_output(self) -> AudioTempoFrameSpan {
-        self.produced_stretched_output
-    }
-}
-
-/// Report одной tempo processor operation и processor state на конец операции.
-///
-/// Report не моделирует tail уже записанного `PlayerAudioOutput::write_samples`.
-/// Этот tail принадлежит audio output/clock boundary и не должен смешиваться с
-/// `processor_latency` или `pending_processor_output`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct AudioTempoProcessReport {
-    segment_id: AudioTempoSegmentId,
-    effective_ratio: AudioTempoRatio,
-    consumed_decoded_media: AudioTempoFrameSpan,
-    produced_stretched_output: AudioTempoFrameSpan,
-    pending_processor_output: AudioTempoFrameSpan,
-    processor_latency: AudioTempoFrameSpan,
-    output_progress_mapping: AudioTempoOutputProgressMapping,
-}
-
-impl AudioTempoProcessReport {
-    /// Строит report из named frame-counts и PCM format-а.
-    #[must_use]
-    pub fn from_frame_counts(
-        pcm_format: AudioTempoPcmFormat,
-        segment: AudioTempoSegment,
-        frame_counts: AudioTempoReportFrameCounts,
-    ) -> Self {
-        let consumed_decoded_media = pcm_format.frame_span(frame_counts.consumed_decoded_media);
-        let produced_stretched_output =
-            pcm_format.frame_span(frame_counts.produced_stretched_output);
-
-        Self {
-            segment_id: segment.segment_id(),
-            effective_ratio: segment.ratio(),
-            consumed_decoded_media,
-            produced_stretched_output,
-            pending_processor_output: pcm_format.frame_span(frame_counts.pending_processor_output),
-            processor_latency: pcm_format.frame_span(frame_counts.processor_latency),
-            output_progress_mapping: AudioTempoOutputProgressMapping {
-                segment_id: segment.segment_id(),
-                effective_ratio: segment.ratio(),
-                consumed_decoded_media,
-                produced_stretched_output,
-            },
-        }
-    }
-
-    /// Возвращает tempo segment id report-а.
-    #[must_use]
-    pub const fn segment_id(self) -> AudioTempoSegmentId {
-        self.segment_id
-    }
-
-    /// Возвращает effective ratio, реально связанный с report-ом.
-    #[must_use]
-    pub const fn effective_ratio(self) -> AudioTempoRatio {
-        self.effective_ratio
-    }
-
-    /// Возвращает consumed decoded media span этой processor operation.
-    #[must_use]
-    pub const fn consumed_decoded_media(self) -> AudioTempoFrameSpan {
-        self.consumed_decoded_media
-    }
-
-    /// Возвращает produced stretched output span этой processor operation.
-    #[must_use]
-    pub const fn produced_stretched_output(self) -> AudioTempoFrameSpan {
-        self.produced_stretched_output
-    }
-
-    /// Возвращает output, buffered внутри tempo processor-а после operation.
-    #[must_use]
-    pub const fn pending_processor_output(self) -> AudioTempoFrameSpan {
-        self.pending_processor_output
-    }
-
-    /// Возвращает algorithmic latency tempo processor-а после operation.
-    #[must_use]
-    pub const fn processor_latency(self) -> AudioTempoFrameSpan {
-        self.processor_latency
-    }
-
-    /// Возвращает минимальный mapping для output-progress -> media-progress.
-    #[must_use]
-    pub const fn output_progress_mapping(self) -> AudioTempoOutputProgressMapping {
-        self.output_progress_mapping
-    }
-}
-
-/// Stretched PCM output вместе с report-ом той же processor operation.
-#[derive(Debug, Clone, PartialEq)]
-pub struct AudioTempoStretchedOutput {
-    interleaved_samples: Vec<f32>,
-    report: AudioTempoProcessReport,
-}
-
-impl AudioTempoStretchedOutput {
-    /// Создаёт output и проверяет, что samples соответствуют produced output frames.
-    pub fn new(
-        interleaved_samples: Vec<f32>,
-        report: AudioTempoProcessReport,
-        pcm_format: AudioTempoPcmFormat,
-    ) -> Result<Self> {
-        let expected_sample_count = report
-            .produced_stretched_output()
-            .frame_count()
-            .interleaved_sample_len(pcm_format.channel_count())?;
-
-        if interleaved_samples.len() != expected_sample_count {
-            return Err(AudioTempoProcessorError::OutputFrameCountMismatch {
-                expected_sample_count,
-                actual_sample_count: interleaved_samples.len(),
-                reported_output_frames: report.produced_stretched_output().frame_count().get(),
-                channel_count: pcm_format.channel_count().get(),
-            }
-            .into());
-        }
-
-        Ok(Self {
-            interleaved_samples,
-            report,
-        })
-    }
-
-    /// Возвращает interleaved stretched PCM samples.
-    #[must_use]
-    pub fn interleaved_samples(&self) -> &[f32] {
-        &self.interleaved_samples
-    }
-
-    /// Возвращает report той же processor operation.
-    #[must_use]
-    pub const fn report(&self) -> AudioTempoProcessReport {
-        self.report
+    pub const fn pcm_format(self) -> AudioTempoPcmFormat {
+        self.pcm_format
     }
 }
 
@@ -591,17 +392,43 @@ pub type AudioTempoProcessorHandle = Box<dyn AudioTempoProcessor + Send>;
 
 /// Нейтральный audio tempo processor без знания о concrete tempo crate.
 pub trait AudioTempoProcessor: Send {
+    /// Возвращает единственный PCM format, которым владеет processor.
+    ///
+    /// Caller использует этот intent getter вместо дублирующего side field.
+    fn pcm_format(&self) -> AudioTempoPcmFormat;
+
+    /// Праймит DSP предыдущим decoded PCM без продвижения stream position.
+    ///
+    /// Успех не производит output и оставляет actual pending равным нулю:
+    /// history уже был воспроизведён direct 1x path-ом и не должен попасть в
+    /// output/accounting повторно. Format/lifecycle error не меняет DSP state.
+    fn prime_decoded_history(
+        &mut self,
+        decoded_history: AudioTempoDecodedMedia<'_>,
+    ) -> Result<AudioTempoProcessReport>;
+
     /// Меняет active tempo segment без пересоздания processor-а и без output samples.
+    ///
+    /// При `Ok` report обязан сохранить ordered pending tail старых segment-ов.
+    /// При `Err` implementation не имеет права менять segment, DSP state или
+    /// accounting: caller может безопасно продолжить со старым rate.
     fn set_segment(&mut self, segment: AudioTempoSegment) -> Result<AudioTempoProcessReport>;
 
-    /// Принимает decoded media PCM и возвращает stretched output PCM.
-    fn process_decoded_media(
+    /// Принимает decoded media PCM и пишет результат в reusable caller buffer.
+    ///
+    /// Успешный вызов очищает старое содержимое `output_buffer`. Format mismatch
+    /// возвращается до изменения processor state и buffer-а.
+    fn process_decoded_media_into<'output>(
         &mut self,
         decoded_media: AudioTempoDecodedMedia<'_>,
-    ) -> Result<AudioTempoStretchedOutput>;
+        output_buffer: &'output mut Vec<f32>,
+    ) -> Result<AudioTempoStretchedOutput<'output>>;
 
-    /// Дренирует buffered output processor-а без принятия новых decoded media frames.
-    fn flush(&mut self) -> Result<AudioTempoStretchedOutput>;
+    /// Завершает stream: продвигает processing time и дренирует весь DSP tail.
+    fn finish_stream_into<'output>(
+        &mut self,
+        output_buffer: &'output mut Vec<f32>,
+    ) -> Result<AudioTempoStretchedOutput<'output>>;
 
     /// Сбрасывает algorithmic state после seek/discontinuity и не пишет output samples.
     fn reset(&mut self) -> Result<AudioTempoProcessReport>;
@@ -614,64 +441,6 @@ pub trait AudioTempoProcessorFactory: Send + Sync {
         &self,
         config: AudioTempoProcessorConfig,
     ) -> Result<AudioTempoProcessorHandle>;
-}
-
-/// Typed errors tempo boundary, которые caller может downcast-ить из anyhow.
-#[derive(Debug, Clone, Error, PartialEq)]
-pub enum AudioTempoProcessorError {
-    /// Sample rate равен нулю и не может задавать PCM timeline.
-    #[error("Invalid audio tempo sample rate {sample_rate_hz}: sample rate must be greater than 0")]
-    InvalidSampleRate { sample_rate_hz: u32 },
-
-    /// Channel count равен нулю и не позволяет отличить frames от samples.
-    #[error(
-        "Invalid audio tempo channel count {channel_count}: channel count must be greater than 0"
-    )]
-    InvalidChannelCount { channel_count: u32 },
-
-    /// Ratio не finite positive.
-    #[error("Invalid audio tempo ratio {multiplier}: {reason}")]
-    InvalidRatio {
-        multiplier: f64,
-        reason: AudioTempoRatioInvalidReason,
-    },
-
-    /// Interleaved sample count не делится на channel count без остатка.
-    #[error(
-        "Interleaved PCM sample count {sample_count} is not divisible by channel count {channel_count}"
-    )]
-    InvalidInterleavedSampleCount {
-        sample_count: usize,
-        channel_count: u32,
-    },
-
-    /// Frame count нельзя безопасно перевести в количество interleaved samples.
-    #[error(
-        "Audio tempo sample count overflows for {frame_count} frames and {channel_count} channels"
-    )]
-    SampleCountOverflow {
-        frame_count: u64,
-        channel_count: u32,
-    },
-
-    /// Backend/factory не поддерживает запрошенный ratio.
-    #[error("Audio tempo ratio {requested_ratio} is not supported by this processor")]
-    UnsupportedRatio { requested_ratio: AudioTempoRatio },
-
-    /// Processor вернул samples, которые не совпадают с reported produced frames.
-    #[error(
-        "Audio tempo output mismatch: reported {reported_output_frames} frames with {channel_count} channels expects {expected_sample_count} samples, got {actual_sample_count}"
-    )]
-    OutputFrameCountMismatch {
-        expected_sample_count: usize,
-        actual_sample_count: usize,
-        reported_output_frames: u64,
-        channel_count: u32,
-    },
-
-    /// Concrete backend сообщил failure без потери typed tempo boundary.
-    #[error("Audio tempo backend failed: {message}")]
-    BackendFailure { message: String },
 }
 
 #[cfg(test)]
