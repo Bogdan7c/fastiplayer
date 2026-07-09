@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use media_core::{TrackInfo, TrackKind};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::pipeline::AudioSeekRuntimeState;
 use crate::seek_state::{PlaybackResumeIntent, SeekCommitState};
@@ -314,6 +314,8 @@ impl PlayerSession {
         let needs_tempo_processor = self.snapshot.playback_rate != PlaybackRate::NORMAL
             || self.pipeline.has_audio_tempo_processor();
         if !needs_tempo_processor {
+            self.pipeline
+                .record_passthrough_audio_history(samples, sample_rate, channels);
             let _written_samples = self.pipeline.write_audio_output_samples(samples);
             return Ok(());
         }
@@ -355,6 +357,27 @@ impl PlayerSession {
             return Ok(());
         }
 
+        // Смена PCM format у активного processor-а: output уже пересоздан под
+        // новый spec, pending хвост старого формата некуда корректно дописать.
+        // Отбрасываем его явно и с диагностикой, а не молчаливым drop-ом.
+        if self.pipeline.has_audio_tempo_processor() {
+            match self.pipeline.flush_and_clear_audio_tempo_processor() {
+                Some(Ok(flushed_tail)) => {
+                    let dropped_samples = flushed_tail.interleaved_samples().len();
+                    if dropped_samples > 0 {
+                        warn!(
+                            dropped_samples,
+                            "Смена decoded PCM format: pending tempo output старого формата отброшен"
+                        );
+                    }
+                }
+                Some(Err(error)) => {
+                    warn!(error = %error, "Flush tempo processor-а при смене PCM format не удался");
+                }
+                None => {}
+            }
+        }
+
         let segment = self
             .pipeline
             .next_audio_tempo_segment(self.snapshot.playback_rate)
@@ -366,7 +389,40 @@ impl PlayerSession {
             .map_err(player_error_from_audio_tempo_error)?;
         self.pipeline
             .install_audio_tempo_processor(processor, pcm_format);
+        self.prime_audio_tempo_processor_from_passthrough_history(sample_rate, channels);
         Ok(())
+    }
+
+    /// Праймит свежий tempo processor хвостом passthrough PCM и отбрасывает warmup output.
+    ///
+    /// Warmup output дублирует уже проигранную через passthrough media, поэтому
+    /// в output он не пишется. Прайминг закрывает startup latency phase
+    /// vocoder-а: первый настоящий stretched output продолжает волну без клика.
+    fn prime_audio_tempo_processor_from_passthrough_history(
+        &mut self,
+        sample_rate: u32,
+        channels: u32,
+    ) {
+        let history = self
+            .pipeline
+            .take_passthrough_audio_history_for_priming(sample_rate, channels);
+        if history.is_empty() {
+            return;
+        }
+
+        match self.pipeline.process_audio_tempo_samples(&history) {
+            Some(Ok(warmup_output)) => {
+                debug!(
+                    primed_samples = history.len(),
+                    discarded_warmup_samples = warmup_output.interleaved_samples().len(),
+                    "Tempo processor праймлен passthrough историей"
+                );
+            }
+            Some(Err(error)) => {
+                warn!(error = %error, "Прайминг tempo processor-а историей не удался");
+            }
+            None => {}
+        }
     }
 
     /// Применяет текущий playback rate к активному tempo processor-у или passthrough path.
@@ -380,7 +436,17 @@ impl PlayerSession {
             .next_audio_tempo_segment(self.snapshot.playback_rate)
             .map_err(player_error_from_audio_tempo_error)?;
         match self.pipeline.set_audio_tempo_segment(segment) {
-            Some(Ok(_report)) => Ok(()),
+            Some(Ok(report)) => {
+                debug!(
+                    segment_id = report.segment_id().get(),
+                    effective_ratio = %report.effective_ratio(),
+                    pending_output_frames = report.pending_processor_output().frame_count().get(),
+                    pending_output_ms = report.pending_processor_output().duration().as_millis(),
+                    processor_latency_ms = report.processor_latency().duration().as_millis(),
+                    "Audio tempo segment применён: bounded tail accounting"
+                );
+                Ok(())
+            }
             Some(Err(error)) => Err(player_error_from_audio_tempo_error(error)),
             None => Ok(()),
         }
@@ -414,6 +480,64 @@ impl PlayerSession {
     pub fn process_pending_audio_packets(&mut self) {
         self.process_pending_audio_packets_with_buffer_limit(
             PlayerTickConfig::default().audio_buffer_high_water_mark_ms,
+        );
+    }
+
+    /// Диагностирует слышимые пропуски звука при активном playback.
+    ///
+    /// Проверка уровня буфера в конце tick-а слепа к голоданию, которое тот же
+    /// tick уже залатал, поэтому основной сигнал — дельта CPAL underrun
+    /// callbacks: она растёт при каждом реальном device-side разрыве. Лог несёт
+    /// глубины очередей и паузу между tick-ами, чтобы разграничить
+    /// video-starved demux, стопор worker-треда и деградацию audio путей.
+    pub(super) fn diagnose_audio_output_starvation(&mut self, now: Instant) {
+        const STARVATION_LEVEL_MS: f64 = 1.0;
+        const WARN_INTERVAL: Duration = Duration::from_secs(2);
+
+        let previous_tick_at = self.last_tick_observed_at.replace(now);
+
+        if self.snapshot.playback_state != PlaybackState::Playing
+            || !self.pipeline.has_audio_clock()
+            || self.eof_drain_needs_progress()
+        {
+            self.last_seen_audio_underrun_callbacks =
+                self.pipeline.audio_clock_underrun_callbacks();
+            return;
+        }
+
+        let underrun_callbacks = self.pipeline.audio_clock_underrun_callbacks();
+        let new_underruns =
+            underrun_callbacks.saturating_sub(self.last_seen_audio_underrun_callbacks);
+        self.last_seen_audio_underrun_callbacks = underrun_callbacks;
+
+        let buffer_level_ms = self.audio_buffer_level_ms().unwrap_or(0.0);
+        let buffer_starved = buffer_level_ms.is_finite() && buffer_level_ms <= STARVATION_LEVEL_MS;
+
+        if new_underruns == 0 && !buffer_starved {
+            return;
+        }
+
+        let warn_is_due = self
+            .last_audio_starvation_warn_at
+            .is_none_or(|last| now.saturating_duration_since(last) >= WARN_INTERVAL);
+        if !warn_is_due {
+            return;
+        }
+        self.last_audio_starvation_warn_at = Some(now);
+
+        let tick_gap_ms = previous_tick_at
+            .map(|at| now.saturating_duration_since(at).as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+
+        warn!(
+            new_underrun_callbacks = new_underruns,
+            buffer_level_ms,
+            tick_gap_ms,
+            pending_audio_packets = self.pipeline.pending_audio_packet_len(),
+            pending_video_packets = self.pipeline.pending_video_packet_len(),
+            video_present_queue = self.pipeline.video_present_queue_len(),
+            playback_rate = %self.snapshot.playback_rate,
+            "Слышимый пропуск звука: CPAL underrun или осушенный buffer при Playing"
         );
     }
 

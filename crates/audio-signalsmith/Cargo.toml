@@ -1,0 +1,9 @@
+[package]
+name = "audio-signalsmith"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+audio-core = { workspace = true }
+signalsmith-stretch = "0.1.3"

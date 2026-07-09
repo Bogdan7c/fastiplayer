@@ -854,6 +854,180 @@ fn audio_clock_mapping_scales_output_progress_by_playback_rate() {
     );
 }
 
+/// Помогает сравнивать mapping позиции с допуском на f64 интерполяцию хвоста.
+fn assert_media_position_close(actual: Duration, expected: Duration) {
+    let delta = actual.abs_diff(expected);
+    assert!(
+        delta <= Duration::from_millis(1),
+        "media position {actual:?} должна быть близка к {expected:?}"
+    );
+}
+
+#[test]
+fn rate_change_reanchor_accounts_written_output_tail_at_old_rate() {
+    let mut pipeline = PlaybackPipeline::default();
+    let output = FixedAudioOutput::new(200.0);
+    let clock = output.clock_handle();
+    pipeline.install_audio_output_for_tests(Box::new(output));
+    pipeline.install_audio_clock(clock.clone() as Arc<dyn PlayerAudioClock>);
+
+    // Играем на 1.0x: anchor media 10s на output 60s.
+    clock.set_now(Duration::from_secs(60));
+    pipeline.reanchor_audio_clock_media_mapping(Duration::from_secs(10), PlaybackRate::NORMAL);
+
+    // Смена на 2.0x при 200 ms записанного, но не проигранного output-а.
+    pipeline.reanchor_audio_clock_media_mapping_for_rate_change(
+        Duration::from_secs(10),
+        PlaybackRate::new(2.0).expect("2x playback rate should be valid"),
+    );
+
+    // В момент смены позиция не прыгает.
+    assert_media_position_close(
+        pipeline.media_position_from_audio_clock(),
+        Duration::from_secs(10),
+    );
+
+    // Внутри хвоста media идёт со СТАРЫМ темпом: +100 ms output = +100 ms media.
+    clock.set_now(Duration::from_millis(60_100));
+    assert_media_position_close(
+        pipeline.media_position_from_audio_clock(),
+        Duration::from_millis(10_100),
+    );
+
+    // Конец хвоста точен: 200 ms output старого rate = +200 ms media.
+    clock.set_now(Duration::from_millis(60_200));
+    assert_media_position_close(
+        pipeline.media_position_from_audio_clock(),
+        Duration::from_millis(10_200),
+    );
+
+    // После хвоста работает новый rate: ещё +1s output = +2s media,
+    // а не замороженная ошибка `tail × (new − old)`.
+    clock.set_now(Duration::from_millis(61_200));
+    assert_media_position_close(
+        pipeline.media_position_from_audio_clock(),
+        Duration::from_millis(12_200),
+    );
+}
+
+#[test]
+fn rate_change_reanchor_without_buffered_output_matches_plain_reanchor() {
+    let mut pipeline = PlaybackPipeline::default();
+    let output = FixedAudioOutput::new(0.0);
+    let clock = output.clock_handle();
+    pipeline.install_audio_output_for_tests(Box::new(output));
+    pipeline.install_audio_clock(clock.clone() as Arc<dyn PlayerAudioClock>);
+
+    clock.set_now(Duration::from_secs(5));
+    pipeline.reanchor_audio_clock_media_mapping_for_rate_change(
+        Duration::from_secs(10),
+        PlaybackRate::new(2.0).expect("2x playback rate should be valid"),
+    );
+
+    clock.set_now(Duration::from_secs(6));
+    assert_eq!(
+        pipeline.media_position_from_audio_clock(),
+        Duration::from_secs(12)
+    );
+}
+
+#[test]
+fn repeated_rate_change_inside_tail_keeps_mapping_monotonic_and_bounded() {
+    let mut pipeline = PlaybackPipeline::default();
+    let output = FixedAudioOutput::new(200.0);
+    let clock = output.clock_handle();
+    pipeline.install_audio_output_for_tests(Box::new(output));
+    pipeline.install_audio_clock(clock.clone() as Arc<dyn PlayerAudioClock>);
+
+    clock.set_now(Duration::from_secs(60));
+    pipeline.reanchor_audio_clock_media_mapping(Duration::from_secs(10), PlaybackRate::NORMAL);
+    pipeline.reanchor_audio_clock_media_mapping_for_rate_change(
+        Duration::from_secs(10),
+        PlaybackRate::new(2.0).expect("2x playback rate should be valid"),
+    );
+
+    // Вторая смена в середине ещё не проигранного хвоста.
+    clock.set_now(Duration::from_millis(60_100));
+    let mid_tail_position = pipeline.media_position_from_audio_clock();
+    pipeline.reanchor_audio_clock_media_mapping_for_rate_change(
+        mid_tail_position,
+        PlaybackRate::new(4.0).expect("4x playback rate should be valid"),
+    );
+
+    // Позиция в момент смены сохраняется.
+    assert_media_position_close(
+        pipeline.media_position_from_audio_clock(),
+        mid_tail_position,
+    );
+
+    // Хвост (ещё 200 ms output) заканчивается на значении старого mapping,
+    // а не прыгает на новый rate сразу.
+    clock.set_now(Duration::from_millis(60_300));
+    let tail_end_position = pipeline.media_position_from_audio_clock();
+    assert!(tail_end_position >= mid_tail_position);
+    assert!(
+        tail_end_position <= Duration::from_millis(10_500),
+        "конец хвоста {tail_end_position:?} не должен применять 4x к старому output-у"
+    );
+
+    // После хвоста media идёт с новым 4x темпом.
+    clock.set_now(Duration::from_millis(61_300));
+    assert_media_position_close(
+        pipeline.media_position_from_audio_clock(),
+        tail_end_position + Duration::from_secs(4),
+    );
+}
+
+#[test]
+fn passthrough_audio_history_is_bounded_and_keeps_latest_samples() {
+    let mut pipeline = PlaybackPipeline::default();
+    // 100 Hz stereo: бюджет 600 ms = 60 frames = 120 samples.
+    let sample_rate = 100;
+    let channels = 2;
+
+    let old_chunk: Vec<f32> = (0..100).map(|i| i as f32).collect();
+    let new_chunk: Vec<f32> = (100..160).map(|i| i as f32).collect();
+    pipeline.record_passthrough_audio_history(&old_chunk, sample_rate, channels);
+    pipeline.record_passthrough_audio_history(&new_chunk, sample_rate, channels);
+
+    let history = pipeline.take_passthrough_audio_history_for_priming(sample_rate, channels);
+    assert_eq!(
+        history.len(),
+        120,
+        "история должна быть обрезана до бюджета"
+    );
+    assert_eq!(
+        history.last().copied(),
+        Some(159.0),
+        "история должна хранить последние samples"
+    );
+    assert_eq!(
+        history.len() % channels as usize,
+        0,
+        "история frame-aligned"
+    );
+
+    // Повторный take пуст: история одноразовая для одного прайминга.
+    assert!(
+        pipeline
+            .take_passthrough_audio_history_for_priming(sample_rate, channels)
+            .is_empty()
+    );
+}
+
+#[test]
+fn passthrough_audio_history_with_mismatched_spec_is_not_used_for_priming() {
+    let mut pipeline = PlaybackPipeline::default();
+    pipeline.record_passthrough_audio_history(&[1.0, 2.0, 3.0, 4.0], 48_000, 2);
+
+    assert!(
+        pipeline
+            .take_passthrough_audio_history_for_priming(44_100, 2)
+            .is_empty(),
+        "история чужого PCM format не должна праймить processor"
+    );
+}
+
 #[test]
 fn seek_clock_reset_restores_base_and_clears_fallback_sample_window() {
     let mut pipeline = PlaybackPipeline::default();

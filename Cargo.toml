@@ -3,6 +3,7 @@ members = [
     "crates/animation-core",
     "crates/app-egui",
     "crates/audio-core",
+    "crates/audio-signalsmith",
     "crates/audio-timestretch",
     "crates/capability-core",
     "crates/codec-core",
@@ -102,7 +103,8 @@ directories = "6.0"
 rustiplayer-config = { path = "crates/config" }
 animation-core = { path = "crates/animation-core" }
 audio-core = { path = "crates/audio-core" }
-audio-timestretch = { path = "crates/audio-timestretch" }
+audio-signalsmith = { path = "crates/audio-signalsmith" }
+
 audio = { path = "crates/audio" }
 capability-core = { path = "crates/capability-core" }
 codec-core = { path = "crates/codec-core" }

@@ -1639,6 +1639,88 @@ fn audio_demux_catchup_uses_bounded_video_packet_limit() {
 }
 
 #[test]
+fn audio_catchup_backlog_shed_clears_video_queue_and_waits_for_keyframe() {
+    let mut session = PlayerSession::new();
+
+    for packet_index in 0..5u64 {
+        session
+            .pipeline
+            .enqueue_pending_video_packet(PendingVideoPacket::new(
+                TrackId::new(1),
+                Duration::from_millis(packet_index),
+                session.pipeline.seek_generation(),
+                Bytes::new(),
+                false,
+            ));
+    }
+
+    let shed_packets = session
+        .pipeline
+        .shed_pending_video_backlog_for_audio_catchup();
+    assert_eq!(shed_packets, 5);
+    assert!(session.pipeline.pending_video_packet_is_empty());
+
+    // После shed non-keyframe packets отбрасываются до первого keyframe.
+    assert!(
+        session
+            .pipeline
+            .video_admission_should_drop_for_keyframe_resync(PacketKeyframe::NotKeyframe)
+    );
+    assert!(
+        session
+            .pipeline
+            .video_admission_should_drop_for_keyframe_resync(PacketKeyframe::NotKeyframe)
+    );
+    assert!(
+        !session
+            .pipeline
+            .video_admission_should_drop_for_keyframe_resync(PacketKeyframe::Keyframe)
+    );
+
+    // Keyframe закрыл resync: обычный поток снова не фильтруется.
+    assert!(
+        !session
+            .pipeline
+            .video_admission_should_drop_for_keyframe_resync(PacketKeyframe::NotKeyframe)
+    );
+}
+
+#[test]
+fn keyframe_resync_accepts_unknown_classification_to_avoid_frozen_video() {
+    let mut session = PlayerSession::new();
+    session
+        .pipeline
+        .shed_pending_video_backlog_for_audio_catchup();
+
+    assert!(
+        !session
+            .pipeline
+            .video_admission_should_drop_for_keyframe_resync(PacketKeyframe::Unknown)
+    );
+    assert!(
+        !session
+            .pipeline
+            .video_admission_should_drop_for_keyframe_resync(PacketKeyframe::NotKeyframe)
+    );
+}
+
+#[test]
+fn clear_pending_video_packets_resets_keyframe_resync_wait() {
+    let mut session = PlayerSession::new();
+    session
+        .pipeline
+        .shed_pending_video_backlog_for_audio_catchup();
+
+    // Seek/media reset проходят через clear_pending_video_packets и снимают ожидание.
+    session.pipeline.clear_pending_video_packets();
+    assert!(
+        !session
+            .pipeline
+            .video_admission_should_drop_for_keyframe_resync(PacketKeyframe::NotKeyframe)
+    );
+}
+
+#[test]
 fn selected_audio_without_output_allows_demux_until_first_audio_packet() {
     let mut session = PlayerSession::new();
     let audio_track_id = TrackId::new(2);

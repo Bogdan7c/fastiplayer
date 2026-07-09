@@ -320,6 +320,43 @@ impl PlaybackPipeline {
     /// Очищает очередь pending video packets через единый pipeline boundary.
     pub(crate) fn clear_pending_video_packets(&mut self) {
         self.pending_video_packets.clear();
+        // Seek/media reset репозиционируют demux на keyframe сами: ожидание
+        // keyframe-а после audio catch-up shed здесь больше не актуально.
+        self.video_admission_waits_for_keyframe = false;
+    }
+
+    /// Сбрасывает video backlog ради audio catch-up и ждёт следующий keyframe.
+    ///
+    /// Декодер к этому моменту на секунды позади live-позиции: backlog всё
+    /// равно был бы отброшен как late после декода, но пока он занимает
+    /// очередь, demux стоит и audio-пакеты не поступают. После сброса admission
+    /// пропускает только следующий keyframe, чтобы декодер остался decodable.
+    pub(crate) fn shed_pending_video_backlog_for_audio_catchup(&mut self) -> usize {
+        let shed_packets = self.pending_video_packets.len();
+        self.pending_video_packets.clear();
+        self.video_admission_waits_for_keyframe = true;
+        shed_packets
+    }
+
+    /// Решает, должен ли admission отбросить video packet до keyframe-resync.
+    ///
+    /// `Unknown` пропускается: контейнер без keyframe-классификации иначе
+    /// заморозил бы видео навсегда, а decoder восстанавливается сам.
+    pub(crate) fn video_admission_should_drop_for_keyframe_resync(
+        &mut self,
+        keyframe: media_core::PacketKeyframe,
+    ) -> bool {
+        if !self.video_admission_waits_for_keyframe {
+            return false;
+        }
+
+        match keyframe {
+            media_core::PacketKeyframe::NotKeyframe => true,
+            media_core::PacketKeyframe::Keyframe | media_core::PacketKeyframe::Unknown => {
+                self.video_admission_waits_for_keyframe = false;
+                false
+            }
+        }
     }
 
     /// Забирает первый pending audio packet для декодирования.

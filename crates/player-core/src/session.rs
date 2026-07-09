@@ -127,6 +127,22 @@ pub struct PlayerSession {
     /// Хранит requirement и track id, чтобы после `set_video_backend` активировать
     /// трек уже на новом backend-е без переоткрытия media.
     pending_video_backend_reselection: Option<PendingVideoBackendReselection>,
+
+    /// Rate limit для warn о полностью осушенном audio output buffer.
+    ///
+    /// Осушение при Playing — это слышимый пропуск звука; лог обязан показать
+    /// глубины очередей, чтобы отличить video-starved demux от audio-путей.
+    last_audio_starvation_warn_at: Option<Instant>,
+
+    /// Последний увиденный счётчик CPAL underrun callbacks.
+    ///
+    /// Проверка уровня буфера в конце tick-а слепа к голоданию, которое тот же
+    /// tick уже успел залатать; дельта device-side underruns ловит каждый
+    /// реальный разрыв независимо от момента refill.
+    last_seen_audio_underrun_callbacks: u64,
+
+    /// Момент предыдущего tick-а для диагностики стопора worker-треда.
+    last_tick_observed_at: Option<Instant>,
 }
 
 /// Отложенный выбор video-трека до установки совместимого decode backend-а.
@@ -985,6 +1001,9 @@ impl Default for PlayerSession {
             seek_runtime: SeekRuntimeState::default(),
             prepared_seek_landing: PreparedSeekLandingRuntime::default(),
             pending_video_backend_reselection: None,
+            last_audio_starvation_warn_at: None,
+            last_seen_audio_underrun_callbacks: 0,
+            last_tick_observed_at: None,
         }
     }
 }

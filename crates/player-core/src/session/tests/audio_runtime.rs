@@ -13,6 +13,7 @@ use crate::{
 struct FakeTempoFactoryHandle {
     created_segments: Arc<Mutex<Vec<AudioTempoSegmentId>>>,
     set_segments: Arc<Mutex<Vec<AudioTempoSegmentId>>>,
+    processed_inputs: Arc<Mutex<Vec<Vec<f32>>>>,
 }
 
 impl FakeTempoFactoryHandle {
@@ -20,7 +21,15 @@ impl FakeTempoFactoryHandle {
         Self {
             created_segments: Arc::new(Mutex::new(Vec::new())),
             set_segments: Arc::new(Mutex::new(Vec::new())),
+            processed_inputs: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    fn processed_inputs(&self) -> Vec<Vec<f32>> {
+        self.processed_inputs
+            .lock()
+            .expect("processed inputs mutex should not be poisoned")
+            .clone()
     }
 
     fn created_segments(&self) -> Vec<AudioTempoSegmentId> {
@@ -115,6 +124,11 @@ impl AudioTempoProcessor for FakeTempoProcessor {
         &mut self,
         decoded_media: AudioTempoDecodedMedia<'_>,
     ) -> anyhow::Result<AudioTempoStretchedOutput> {
+        self.handle
+            .processed_inputs
+            .lock()
+            .expect("processed inputs mutex should not be poisoned")
+            .push(decoded_media.interleaved_samples().to_vec());
         let produced_stretched_output = AudioTempoFrameCount::new(1);
         let report = self.report(decoded_media.frame_count(), produced_stretched_output);
         AudioTempoStretchedOutput::new(vec![9.0, 10.0], report, self.pcm_format)
@@ -441,6 +455,91 @@ fn non_normal_rate_audio_runtime_writes_tempo_processor_output() {
     assert_eq!(
         tempo_factory_handle.set_segments(),
         vec![AudioTempoSegmentId::new(2), AudioTempoSegmentId::new(3)]
+    );
+}
+
+#[test]
+fn fresh_tempo_processor_is_primed_with_passthrough_history_and_warmup_output_is_discarded() {
+    let (output_factory, output_factory_handle) = ScriptedAudioOutputFactory::success(0.0, None);
+    let (tempo_factory, tempo_factory_handle) = FakeTempoFactory::new();
+    let mut session = PlayerSession::with_audio_output_factory(output_factory)
+        .with_audio_tempo_processor_factory(tempo_factory);
+
+    session
+        .ensure_audio_output_for_decoded_spec(48_000, 2)
+        .expect("audio output should be created");
+
+    // Passthrough на 1.0x пишет PCM в output и в warmup историю.
+    let passthrough_samples = vec![1.0, 2.0, 3.0, 4.0];
+    session
+        .write_decoded_audio_samples_at_current_rate(&passthrough_samples, 48_000, 2)
+        .expect("passthrough write should succeed");
+
+    session.set_playback_state(PlaybackState::Paused);
+    assert_eq!(
+        session
+            .dispatch_command(PlayerCommand::SetPlaybackRate(
+                PlaybackRate::new(2.0).expect("2x playback rate should be valid"),
+            ))
+            .expect("rate command should not be fatal"),
+        PlayerCommandOutcome::Applied
+    );
+
+    let packet_samples = vec![5.0, 6.0, 7.0, 8.0];
+    session
+        .write_decoded_audio_samples_at_current_rate(&packet_samples, 48_000, 2)
+        .expect("non-normal-rate audio write should succeed");
+
+    // Processor сначала праймится историей, затем обрабатывает настоящий packet.
+    assert_eq!(
+        tempo_factory_handle.processed_inputs(),
+        vec![passthrough_samples.clone(), packet_samples]
+    );
+
+    // Warmup output отброшен: в output ушли passthrough PCM и один stretched блок.
+    let output_handle = output_factory_handle
+        .last_output_handle()
+        .expect("output should be created");
+    assert_eq!(
+        output_handle.written_samples(),
+        vec![1.0, 2.0, 3.0, 4.0, 9.0, 10.0]
+    );
+}
+
+#[test]
+fn passthrough_history_is_not_used_for_priming_after_seek_clear() {
+    let (output_factory, _output_factory_handle) = ScriptedAudioOutputFactory::success(0.0, None);
+    let (tempo_factory, tempo_factory_handle) = FakeTempoFactory::new();
+    let mut session = PlayerSession::with_audio_output_factory(output_factory)
+        .with_audio_tempo_processor_factory(tempo_factory);
+
+    session
+        .ensure_audio_output_for_decoded_spec(48_000, 2)
+        .expect("audio output should be created");
+    session
+        .write_decoded_audio_samples_at_current_rate(&[1.0, 2.0, 3.0, 4.0], 48_000, 2)
+        .expect("passthrough write should succeed");
+
+    // Seek boundary очищает processor slot вместе с warmup историей.
+    session.pipeline.clear_audio_output_for_seek(1);
+
+    session.set_playback_state(PlaybackState::Paused);
+    assert_eq!(
+        session
+            .dispatch_command(PlayerCommand::SetPlaybackRate(
+                PlaybackRate::new(2.0).expect("2x playback rate should be valid"),
+            ))
+            .expect("rate command should not be fatal"),
+        PlayerCommandOutcome::Applied
+    );
+    session
+        .write_decoded_audio_samples_at_current_rate(&[5.0, 6.0, 7.0, 8.0], 48_000, 2)
+        .expect("non-normal-rate audio write should succeed");
+
+    // PCM до discontinuity не должен праймить processor после неё.
+    assert_eq!(
+        tempo_factory_handle.processed_inputs(),
+        vec![vec![5.0, 6.0, 7.0, 8.0]]
     );
 }
 

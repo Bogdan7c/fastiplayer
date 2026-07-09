@@ -67,6 +67,8 @@ impl PlayerSession {
             self.start_eof_audio_tail_if_needed();
         }
 
+        self.diagnose_audio_output_starvation(tick_context.now);
+
         process_pending_video_packets(self, tick_context, &mut tick_result);
         self.finish_seek_commit_if_ready(tick_context.now, &tick_context.config);
         if let Err(error) =

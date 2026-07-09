@@ -19,7 +19,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample};
-use ringbuf::traits::{Consumer, Producer, Split};
+use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tracing::{info, warn};
 
@@ -54,6 +54,12 @@ pub struct AudioOutput {
 
     /// Linear resampler для случая, когда decoder rate отличается от output rate.
     resampler: Option<LinearResampler>,
+
+    /// Огибающая пик-лимитера (мгновенная атака, экспоненциальный release).
+    limiter_envelope: f32,
+
+    /// Per-frame затухание огибающей лимитера, посчитанное от stream rate.
+    limiter_release_decay: f32,
 
     /// Последнее поколение seek, для которого audio buffer был очищен.
     clear_ack_generation: u64,
@@ -300,8 +306,16 @@ where
         .map(|config_range| config_from_supported_range(config_range, preferred_sample_rate))
 }
 
-/// Возвращает default output config или безопасный supported fallback.
-fn choose_supported_output_config(device: &cpal::Device) -> Result<cpal::SupportedStreamConfig> {
+/// Возвращает output config, предпочитая частоту декодера, затем default/fallback.
+///
+/// Прямое совпадение stream rate с decoder rate убирает linear resampler из
+/// hot path целиком: без него нет aliasing-потрескивания (у ресемплера нет
+/// анти-алиас фильтра), особенно заметного на timestretch-выходе при
+/// ускоренном playback rate.
+fn choose_supported_output_config(
+    device: &cpal::Device,
+    decoder_rate: u32,
+) -> Result<cpal::SupportedStreamConfig> {
     let default_config = match device.default_output_config() {
         Ok(config) => Some(config),
         Err(error) => {
@@ -309,6 +323,34 @@ fn choose_supported_output_config(device: &cpal::Device) -> Result<cpal::Support
             None
         }
     };
+
+    // Default уже на частоте декодера — берём его без сканирования ranges.
+    if let Some(config) = default_config.as_ref().filter(|config| {
+        output_sample_format_is_supported(config.sample_format())
+            && config.sample_rate().0 == decoder_rate
+    }) {
+        return Ok(config.clone());
+    }
+
+    // Ищем supported config ровно на частоте декодера.
+    if decoder_rate > 0 {
+        if let Ok(supported_ranges) = device.supported_output_configs() {
+            let decoder_rate_config = select_supported_output_config(
+                supported_ranges,
+                Some(cpal::SampleRate(decoder_rate)),
+            )
+            .filter(|config| config.sample_rate().0 == decoder_rate);
+            if let Some(config) = decoder_rate_config {
+                info!(
+                    decoder_rate,
+                    channels = config.channels(),
+                    format = ?config.sample_format(),
+                    "Output stream открыт на частоте декодера без ресемплера"
+                );
+                return Ok(config);
+            }
+        }
+    }
 
     if let Some(config) = default_config
         .as_ref()
@@ -366,6 +408,59 @@ where
     T: Sample + FromSample<f32>,
 {
     T::from_sample(normalize_decoder_sample(sample))
+}
+
+/// Потолок пик-лимитера: выше него огибающая давится к потолку.
+const PEAK_LIMITER_CEILING: f32 = 0.98;
+
+/// Release пик-лимитера в секундах: восстановление gain после пика.
+const PEAK_LIMITER_RELEASE_SECS: f32 = 0.150;
+
+/// Считает per-frame затухание огибающей лимитера для stream rate.
+fn limiter_release_decay_for_rate(sample_rate: u32) -> f32 {
+    if sample_rate == 0 {
+        return 0.0;
+    }
+    (-1.0 / (PEAK_LIMITER_RELEASE_SECS * sample_rate as f32)).exp()
+}
+
+/// Продвигает огибающую лимитера: мгновенная атака, экспоненциальный release.
+fn advance_limiter_envelope(envelope: f32, frame_peak: f32, release_decay: f32) -> f32 {
+    frame_peak.max(envelope * release_decay)
+}
+
+/// Возвращает gain, удерживающий огибающую под потолком лимитера.
+///
+/// Timestretch gain-компенсация разгоняет пики громкого материала до ~2x над
+/// full scale; обычное насыщение/клиппинг на таких уровнях — слышимый треск.
+/// Плавный gain с release вместо этого коротко приглушает пик.
+fn limiter_gain_for_envelope(envelope: f32) -> f32 {
+    if envelope <= PEAK_LIMITER_CEILING {
+        return 1.0;
+    }
+    PEAK_LIMITER_CEILING / envelope
+}
+
+/// Мягко ограничивает sample до (-1.0, 1.0) без жёстких клиппинг-фронтов.
+///
+/// Сигнал до колена 0.95 проходит линейно; выше — плавно насыщается к 1.0
+/// через tanh. Жёсткий clamp дал бы те же щелчки, что и клиппинг на device.
+/// Работает как последний рубеж после пик-лимитера.
+fn soft_clip_sample(sample: f32) -> f32 {
+    const KNEE: f32 = 0.95;
+
+    if !sample.is_finite() {
+        return 0.0;
+    }
+
+    let magnitude = sample.abs();
+    if magnitude <= KNEE {
+        return sample;
+    }
+
+    let headroom = 1.0 - KNEE;
+    let compressed = KNEE + headroom * ((magnitude - KNEE) / headroom).tanh();
+    compressed.copysign(sample)
 }
 
 /// Классифицирует pause error по CPAL 0.15 contract.
@@ -436,7 +531,7 @@ impl AudioOutput {
         let device = output_device_from_stable_id(&host, output_device_id)
             .with_context(|| format!("Audio output device `{output_device_id}` is unavailable"))?;
 
-        let output_config = choose_supported_output_config(&device)?;
+        let output_config = choose_supported_output_config(&device, decoder_rate)?;
 
         let device_name = device.name().unwrap_or_else(|_| "unknown".to_string());
         info!(
@@ -504,6 +599,8 @@ impl AudioOutput {
             is_playing: false,
             resampler: needs_resample
                 .then(|| LinearResampler::new(decoder_rate, stream_rate, stream_channels)),
+            limiter_envelope: 0.0,
+            limiter_release_decay: limiter_release_decay_for_rate(stream_rate),
             clear_ack_generation: 0,
         })
     }
@@ -511,6 +608,9 @@ impl AudioOutput {
     /// Записывает samples в ring buffer.
     ///
     /// Если decoder_rate != stream_rate, делает простой linear resample.
+    /// Каждый sample проходит через `soft_clip_sample`: timestretch
+    /// overlap-add может превышать full scale на громком материале, а
+    /// device/BT-квантование превращает over-range в слышимый треск.
     /// Возвращает количество записанных samples.
     pub fn write_samples(&mut self, samples: &[f32]) -> u64 {
         if samples.is_empty() {
@@ -523,12 +623,51 @@ impl AudioOutput {
             None => stream_layout_samples,
         };
 
+        // Ring buffer обязан оставаться frame-aligned: запись, оборванная
+        // посреди interleaved кадра, навсегда меняет каналы местами для всего
+        // последующего потока (правый канал играет слева).
+        let channels = self.stream_channels.max(1);
+        let vacant = self.producer.vacant_len();
+        let frame_aligned_vacant = vacant - (vacant % channels);
+        let writable = samples_for_output.len().min(frame_aligned_vacant);
+
+        let requested = samples_for_output.len() as u64;
         let mut written = 0u64;
-        for sample in samples_for_output {
-            if self.producer.try_push(sample * self.volume).is_err() {
-                break;
+        // Пик-лимитер по кадрам: огибающая общая для каналов, чтобы gain не
+        // сдвигал стереообраз; `writable` frame-aligned, chunks_exact полон.
+        'frames: for frame in samples_for_output[..writable].chunks_exact(channels) {
+            let mut frame_peak = 0.0f32;
+            for sample in frame {
+                frame_peak = frame_peak.max((sample * self.volume).abs());
             }
-            written += 1;
+            self.limiter_envelope = advance_limiter_envelope(
+                self.limiter_envelope,
+                frame_peak,
+                self.limiter_release_decay,
+            );
+            let limiter_gain = limiter_gain_for_envelope(self.limiter_envelope);
+
+            for sample in frame {
+                if self
+                    .producer
+                    .try_push(soft_clip_sample(sample * self.volume * limiter_gain))
+                    .is_err()
+                {
+                    break 'frames;
+                }
+                written += 1;
+            }
+        }
+
+        if written < requested {
+            // Потерянные samples — это слышимый разрыв и разрыв continuity
+            // clock mapping; потеря обязана быть видимой, а не молчаливой.
+            warn!(
+                requested,
+                written,
+                dropped = requested - written,
+                "Audio ring buffer переполнен: часть samples отброшена"
+            );
         }
 
         if written > 0 {
@@ -562,6 +701,7 @@ impl AudioOutput {
         if let Some(resampler) = self.resampler.as_mut() {
             resampler.reset();
         }
+        self.limiter_envelope = 0.0;
         self.clock.reset();
         self.clear_ack_generation = generation;
         tracing::debug!(generation, cleared_samples, "Audio buffer cleared for seek");
@@ -723,7 +863,7 @@ impl AudioOutput {
         data: &mut [T],
         consumer: &Arc<Mutex<HeapCons<f32>>>,
         clock: &AudioClock,
-        _channels: usize,
+        channels: usize,
         callback_info: &cpal::OutputCallbackInfo,
         callback_observed_at: Instant,
     ) where
@@ -734,7 +874,16 @@ impl AudioOutput {
 
         match consumer.lock() {
             Ok(mut consumer) => {
-                for sample in data.iter_mut() {
+                // Underrun не должен рвать interleaved кадр: чтение, оборванное
+                // посреди кадра, сдвигает каналы всего последующего потока
+                // (звук «прыгает» между левым и правым). Читаем целые кадры,
+                // неполный хвост оставляем в ring buffer до следующего callback.
+                let channels = channels.max(1);
+                let occupied = consumer.occupied_len();
+                let frame_aligned_occupied = occupied - (occupied % channels);
+                let to_fill = data.len().min(frame_aligned_occupied);
+
+                for sample in data[..to_fill].iter_mut() {
                     match consumer.try_pop() {
                         Some(value) => {
                             *sample = convert_sample_for_output(value);
@@ -745,6 +894,10 @@ impl AudioOutput {
                             silence += 1;
                         }
                     }
+                }
+                for sample in data[to_fill..].iter_mut() {
+                    *sample = T::EQUILIBRIUM;
+                    silence += 1;
                 }
             }
             Err(_) => {
@@ -795,9 +948,62 @@ mod tests {
     };
 
     use super::{
-        LinearResampler, PauseErrorPolicy, classify_pause_error, convert_sample_for_output,
-        output_sample_format_is_supported, sample_format_priority, select_supported_output_config,
+        LinearResampler, PEAK_LIMITER_CEILING, PauseErrorPolicy, advance_limiter_envelope,
+        classify_pause_error, convert_sample_for_output, limiter_gain_for_envelope,
+        limiter_release_decay_for_rate, output_sample_format_is_supported, sample_format_priority,
+        select_supported_output_config, soft_clip_sample,
     };
+
+    #[test]
+    fn peak_limiter_ducks_overshoot_and_releases_smoothly() {
+        let release_decay = limiter_release_decay_for_rate(48_000);
+        assert!(release_decay > 0.999 && release_decay < 1.0);
+
+        // Обычный сигнал: gain единичный.
+        let mut envelope = 0.0f32;
+        envelope = advance_limiter_envelope(envelope, 0.5, release_decay);
+        assert_eq!(limiter_gain_for_envelope(envelope), 1.0);
+
+        // Пик 2.0 (timestretch gain-компенсация): мгновенная атака давит его к потолку.
+        envelope = advance_limiter_envelope(envelope, 2.0, release_decay);
+        let ducked_gain = limiter_gain_for_envelope(envelope);
+        assert!((2.0 * ducked_gain - PEAK_LIMITER_CEILING).abs() < 1e-3);
+
+        // Release: gain восстанавливается монотонно, без ступеней.
+        let mut previous_gain = ducked_gain;
+        for _ in 0..48_000 {
+            envelope = advance_limiter_envelope(envelope, 0.1, release_decay);
+            let gain = limiter_gain_for_envelope(envelope);
+            assert!(gain >= previous_gain);
+            previous_gain = gain;
+        }
+        assert_eq!(
+            previous_gain, 1.0,
+            "через секунду gain должен вернуться к 1"
+        );
+    }
+
+    #[test]
+    fn soft_clip_passes_normal_signal_and_bounds_overshoot() {
+        // Обычный сигнал до колена проходит бит-в-бит.
+        assert_eq!(soft_clip_sample(0.0), 0.0);
+        assert_eq!(soft_clip_sample(0.5), 0.5);
+        assert_eq!(soft_clip_sample(-0.95), -0.95);
+
+        // Over-range плавно насыщается ниже full scale, знак сохраняется.
+        let clipped = soft_clip_sample(1.1);
+        assert!(clipped > 0.95 && clipped < 1.0, "clipped={clipped}");
+        assert_eq!(soft_clip_sample(-1.1), -clipped);
+
+        // Монотонность выше колена: сильнее вход — не меньше выход,
+        // асимптота — ровно full scale.
+        assert!(soft_clip_sample(1.5) >= clipped);
+        assert!(soft_clip_sample(10.0) <= 1.0);
+
+        // Non-finite сэмплы не должны попадать в устройство.
+        assert_eq!(soft_clip_sample(f32::NAN), 0.0);
+        assert_eq!(soft_clip_sample(f32::INFINITY), 0.0);
+    }
 
     /// Проверяет floating-point samples с небольшим допуском.
     fn assert_samples_close(actual_samples: &[f32], expected_samples: &[f32]) {

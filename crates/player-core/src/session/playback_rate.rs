@@ -41,7 +41,10 @@ impl PlayerSession {
         self.snapshot.playback_rate = playback_rate;
         self.set_snapshot_position_for_playback_rate(current_media_position);
         self.pipeline
-            .reanchor_audio_clock_media_mapping(current_media_position, playback_rate);
+            .reanchor_audio_clock_media_mapping_for_rate_change(
+                current_media_position,
+                playback_rate,
+            );
         self.apply_audio_tempo_rate_change();
 
         if !self.pipeline.has_audio_clock() {
@@ -59,7 +62,10 @@ impl PlayerSession {
     fn apply_paused_playback_rate(&mut self, playback_rate: PlaybackRate) -> PlayerCommandOutcome {
         self.snapshot.playback_rate = playback_rate;
         self.pipeline
-            .reanchor_audio_clock_media_mapping(self.snapshot.current_position, playback_rate);
+            .reanchor_audio_clock_media_mapping_for_rate_change(
+                self.snapshot.current_position,
+                playback_rate,
+            );
         self.apply_audio_tempo_rate_change();
         PlayerCommandOutcome::Applied
     }

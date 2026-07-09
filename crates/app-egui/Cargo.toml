@@ -45,7 +45,7 @@ rfd = "0.15"
 
 # Композиция audio backend-а.
 audio.workspace = true
-audio-timestretch.workspace = true
+audio-signalsmith.workspace = true
 
 # Композиция video decode/render.
 video-core.workspace = true

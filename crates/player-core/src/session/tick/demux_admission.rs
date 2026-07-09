@@ -35,6 +35,9 @@ pub(super) enum DemuxPacketRouteOutcome {
 
     /// Packet был полностью отброшен как audio preroll active accurate seek-а.
     DroppedSeekAudioPreroll,
+
+    /// Video packet отброшен до keyframe-resync после audio catch-up backlog shed.
+    DroppedVideoKeyframeResync,
 }
 
 impl DemuxPacketRouteOutcome {
@@ -46,6 +49,9 @@ impl DemuxPacketRouteOutcome {
             // tick имеет time deadline; без deadline zero-config тесты и ручные вызовы
             // остаются bounded обычным budget-ом.
             Self::DroppedSeekAudioPreroll => catch_up_deadline.is_none(),
+            // Keyframe-resync drop остаётся bounded обычным budget-ом: audio
+            // catch-up продолжается немедленными следующими tick-ами.
+            Self::DroppedVideoKeyframeResync => true,
         }
     }
 }
@@ -220,6 +226,26 @@ pub(super) fn read_demux_packets(
             );
         }
 
+        // Video decode не успевает за playback rate: backlog упёрся в catch-up
+        // лимит и полностью останавливает demux, а значит и приток audio
+        // packets. Audio-приоритет: сбрасываем backlog (декодер всё равно
+        // позади live-позиции) и продолжаем читать, пропуская video только
+        // со следующего keyframe.
+        if prioritize_audio_catchup
+            && !audio_priority_pending_video_limit_allows_demux(session, tick_config)
+        {
+            let shed_packets = session
+                .pipeline
+                .shed_pending_video_backlog_for_audio_catchup();
+            warn!(
+                shed_packets,
+                catchup_video_packet_limit = audio_catchup_pending_video_limit(tick_config),
+                audio_buffer_ms = session.audio_buffer_level_ms().unwrap_or(0.0),
+                playback_rate = %session.snapshot().playback_rate,
+                "Audio catch-up: video backlog сброшен до следующего keyframe, чтобы не голодал звук"
+            );
+        }
+
         if !can_read_next_demux_packet_with_audio_priority(
             session,
             tick_config,
@@ -366,6 +392,13 @@ pub(super) fn route_demuxed_packet(
             DemuxPacketRouteOutcome::Queued
         }
         TrackKind::Video => {
+            if session
+                .pipeline
+                .video_admission_should_drop_for_keyframe_resync(packet.keyframe)
+            {
+                return DemuxPacketRouteOutcome::DroppedVideoKeyframeResync;
+            }
+
             let pending_packet = PendingVideoPacket::new_with_decode_timestamps(
                 packet.track_id,
                 packet.pts,

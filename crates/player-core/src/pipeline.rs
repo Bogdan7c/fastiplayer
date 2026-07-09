@@ -223,6 +223,20 @@ impl MonotonicMediaClockAnchor {
     }
 }
 
+/// Конец записанного output-а прежнего rate в момент re-anchor.
+///
+/// `end_media_position` берётся из старого mapping в точке
+/// `end_output_clock_position`, поэтому граница хвоста точна даже при
+/// повторных сменах rate внутри ещё не проигранного хвоста.
+#[derive(Debug, Clone, Copy)]
+struct AudioClockMappingOutputTail {
+    /// Output clock, на котором заканчивается уже записанный старый output.
+    end_output_clock_position: Duration,
+
+    /// Media position, которая реально будет играть на конце хвоста.
+    end_media_position: Duration,
+}
+
 /// Anchor перевода audio output clock progress в media progress.
 #[derive(Debug, Clone, Copy)]
 struct AudioClockMediaMappingAnchor {
@@ -234,6 +248,12 @@ struct AudioClockMediaMappingAnchor {
 
     /// Media-progress per output-clock-progress для текущего tempo segment-а.
     playback_rate: PlaybackRate,
+
+    /// Уже записанный, но не проигранный output tail, растянутый под прежний rate.
+    ///
+    /// Без него смена rate замораживает ошибку `tail × (new − old)` в mapping:
+    /// хвост в ring buffer играет со старым темпом, а mapping считает его новым.
+    output_tail: Option<AudioClockMappingOutputTail>,
 }
 
 impl AudioClockMediaMappingAnchor {
@@ -248,12 +268,45 @@ impl AudioClockMediaMappingAnchor {
             media_position,
             output_clock_position,
             playback_rate,
+            output_tail: None,
+        }
+    }
+
+    /// Создаёт anchor со связанным output tail-ом прежнего rate.
+    #[must_use]
+    const fn with_output_tail(
+        media_position: Duration,
+        output_clock_position: Duration,
+        playback_rate: PlaybackRate,
+        output_tail: AudioClockMappingOutputTail,
+    ) -> Self {
+        Self {
+            media_position,
+            output_clock_position,
+            playback_rate,
+            output_tail: Some(output_tail),
         }
     }
 
     /// Возвращает media position для текущего output clock.
     #[must_use]
     fn media_position_at_output_clock(self, output_clock_position: Duration) -> Duration {
+        if let Some(tail) = self.output_tail {
+            if output_clock_position < tail.end_output_clock_position {
+                return self.media_position_inside_output_tail(tail, output_clock_position);
+            }
+
+            let post_tail_delta =
+                output_clock_position.saturating_sub(tail.end_output_clock_position);
+            let media_delta = self
+                .playback_rate
+                .scale_wall_delta_to_media_delta(post_tail_delta);
+            return tail
+                .end_media_position
+                .checked_add(media_delta)
+                .unwrap_or(Duration::MAX);
+        }
+
         let output_delta = output_clock_position.saturating_sub(self.output_clock_position);
         let media_delta = self
             .playback_rate
@@ -261,6 +314,34 @@ impl AudioClockMediaMappingAnchor {
 
         self.media_position
             .checked_add(media_delta)
+            .unwrap_or(Duration::MAX)
+    }
+
+    /// Линейно интерполирует media position внутри записанного output tail-а.
+    ///
+    /// Хвост точен на обоих концах: в момент re-anchor и на границе, где
+    /// начинается output нового rate. Внутри допускается bounded ошибка
+    /// интерполяции, если старый mapping сам был кусочным.
+    #[must_use]
+    fn media_position_inside_output_tail(
+        self,
+        tail: AudioClockMappingOutputTail,
+        output_clock_position: Duration,
+    ) -> Duration {
+        let tail_output_span = tail
+            .end_output_clock_position
+            .saturating_sub(self.output_clock_position);
+        if tail_output_span.is_zero() {
+            return self.media_position;
+        }
+
+        let elapsed_output = output_clock_position.saturating_sub(self.output_clock_position);
+        let fraction =
+            (elapsed_output.as_secs_f64() / tail_output_span.as_secs_f64()).clamp(0.0, 1.0);
+        let tail_media_span = tail.end_media_position.saturating_sub(self.media_position);
+
+        self.media_position
+            .checked_add(tail_media_span.mul_f64(fraction))
             .unwrap_or(Duration::MAX)
     }
 }
@@ -430,6 +511,19 @@ pub(crate) struct PlaybackPipeline {
     /// Следующий monotonic tempo segment id внутри текущего media pipeline.
     next_audio_tempo_segment_id: u64,
 
+    /// Bounded история последнего passthrough PCM для warmup нового tempo processor-а.
+    ///
+    /// Phase vocoder имеет startup latency (~FFT window): без прайминга первый
+    /// stretched output не продолжает волну последнего passthrough sample —
+    /// слышимый клик на первом переходе 1.0x -> non-1x.
+    passthrough_audio_history: Vec<f32>,
+
+    /// `(sample_rate, channels)` decoded PCM, под который записана история.
+    passthrough_audio_history_spec: Option<(u32, u32)>,
+
+    /// Admission ждёт следующий video keyframe после audio catch-up backlog shed.
+    video_admission_waits_for_keyframe: bool,
+
     /// Был ли текущий audio output успешно запущен через boundary `play`.
     audio_output_play_requested: bool,
 
@@ -578,6 +672,9 @@ impl Default for PlaybackPipeline {
             audio_tempo_processor: None,
             audio_tempo_pcm_format: None,
             next_audio_tempo_segment_id: 1,
+            passthrough_audio_history: Vec::new(),
+            passthrough_audio_history_spec: None,
+            video_admission_waits_for_keyframe: false,
             audio_output_play_requested: false,
             audio_track_id: None,
             pending_audio_packets: VecDeque::new(),

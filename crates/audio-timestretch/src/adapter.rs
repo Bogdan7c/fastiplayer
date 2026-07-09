@@ -14,6 +14,15 @@ use timestretch::{QualityMode, StreamProcessor, StretchError, StretchParams};
 const LOW_LATENCY_STREAM_FFT_SIZE: usize = 1024;
 const LOW_LATENCY_STREAM_HOP_SIZE: usize = LOW_LATENCY_STREAM_FFT_SIZE / 4;
 
+/// Balanced-геометрия по замерам на громком brick-wall треке
+/// (`examples/fft_geometry_probe.rs`, `timestretch 0.5.0`): 0 клик-швов на
+/// 1.05x-1.25x и ~19 за 30 s на 2x-4x против 36-45 у библиотечного default
+/// 4096/512, при ~3x меньшем CPU (44x realtime). Замедление 0.25x-0.5x
+/// остаётся артефактным у всех геометрий — R10 edge-rate follow-up.
+/// Цена окна — внутренний lag вокодера ~256 ms и мягче атаки на перкуссии.
+const BALANCED_STREAM_FFT_SIZE: usize = 8192;
+const BALANCED_STREAM_HOP_SIZE: usize = BALANCED_STREAM_FFT_SIZE / 2;
+
 /// Runtime profile concrete backend-а без протаскивания `timestretch` types наружу.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimestretchQualityMode {
@@ -21,6 +30,8 @@ pub enum TimestretchQualityMode {
     LowLatency,
     /// Оставляет более качественный default profile backend-а для offline/sanity checks.
     Balanced,
+    /// Включает HPSS, adaptive phase locking и residual branch backend-а.
+    MaxQuality,
 }
 
 impl TimestretchQualityMode {
@@ -28,6 +39,7 @@ impl TimestretchQualityMode {
         match self {
             Self::LowLatency => QualityMode::LowLatency,
             Self::Balanced => QualityMode::Balanced,
+            Self::MaxQuality => QualityMode::MaxQuality,
         }
     }
 }
@@ -39,9 +51,19 @@ pub struct TimestretchTempoSettings {
 }
 
 impl TimestretchTempoSettings {
-    /// Realtime-oriented default для будущей audio callback интеграции.
+    /// Realtime-oriented profile для будущей audio callback интеграции.
     pub const REALTIME_DEFAULT: Self = Self {
         quality_mode: TimestretchQualityMode::LowLatency,
+    };
+
+    /// Quality-first default для текущего session-thread pipeline.
+    ///
+    /// Tempo processing идёт на session thread с ~200 ms output ring buffer
+    /// запаса, а не в realtime callback, поэтому low latency здесь не нужна.
+    /// `LowLatency` в `timestretch 0.4.0` дополнительно отключает HPSS,
+    /// adaptive phase locking и residual branch — это слышимые PV-артефакты.
+    pub const SESSION_THREAD_DEFAULT: Self = Self {
+        quality_mode: TimestretchQualityMode::Balanced,
     };
 
     /// Создаёт settings с явно выбранным quality mode.
@@ -59,7 +81,7 @@ impl TimestretchTempoSettings {
 
 impl Default for TimestretchTempoSettings {
     fn default() -> Self {
-        Self::REALTIME_DEFAULT
+        Self::SESSION_THREAD_DEFAULT
     }
 }
 
@@ -436,7 +458,10 @@ fn build_backend_params(
         TimestretchQualityMode::LowLatency => params
             .with_fft_size(LOW_LATENCY_STREAM_FFT_SIZE)
             .with_hop_size(LOW_LATENCY_STREAM_HOP_SIZE),
-        TimestretchQualityMode::Balanced => params,
+        TimestretchQualityMode::Balanced => params
+            .with_fft_size(BALANCED_STREAM_FFT_SIZE)
+            .with_hop_size(BALANCED_STREAM_HOP_SIZE),
+        TimestretchQualityMode::MaxQuality => params,
     }
 }
 
@@ -516,6 +541,22 @@ mod tests {
     use audio_core::{
         AudioTempoChannelCount, AudioTempoPcmFormat, AudioTempoSampleRateHz, AudioTempoSegmentId,
     };
+
+    #[test]
+    fn default_settings_use_quality_first_balanced_profile() {
+        assert_eq!(
+            TimestretchTempoSettings::default().quality_mode(),
+            TimestretchQualityMode::Balanced
+        );
+        assert_eq!(
+            TimestretchTempoSettings::SESSION_THREAD_DEFAULT.quality_mode(),
+            TimestretchQualityMode::Balanced
+        );
+        assert_eq!(
+            TimestretchTempoSettings::REALTIME_DEFAULT.quality_mode(),
+            TimestretchQualityMode::LowLatency
+        );
+    }
 
     #[test]
     fn project_ratio_is_inverted_for_backend_stretch_ratio() {

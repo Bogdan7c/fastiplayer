@@ -4,8 +4,9 @@
 //! vocabulary для `player-core`: decoded media frames на входе, stretched output
 //! frames на выходе, latency/pending state внутри processor-а и mapping data,
 //! по которым позже можно связать output-progress с media-progress.
-//! Concrete adapter лучше добавлять отдельным crate-ом `audio-timestretch`.
-//! В concrete `audio` crate это допустимо только если tempo ownership не
+//! Concrete adapter живёт отдельным crate-ом: runtime backend —
+//! `audio-signalsmith`; `audio-timestretch` остаётся evaluation/probe host-ом.
+//! В concrete `audio` crate adapter допустим только если tempo ownership не
 //! смешивается с decoder и CPAL output ownership.
 
 use std::fmt;
