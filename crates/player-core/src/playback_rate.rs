@@ -2,8 +2,8 @@ use std::{fmt, time::Duration};
 
 /// Скорость воспроизведения как проверенный multiplier, а не сырой `f32`.
 ///
-/// S34 использует значение во внутреннем no-audio clock/scheduler path. Audio tempo
-/// и внешнее управление пока не подключены, поэтому это всё ещё internal groundwork.
+/// Один typed rate связывает audio tempo, media-clock mapping и video scheduler.
+/// Значение остаётся runtime-only и не переносится в Settings/history/startup restore.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlaybackRate(f32);
 
@@ -61,6 +61,14 @@ impl PlaybackRate {
     #[must_use]
     pub const fn as_f32(self) -> f32 {
         self.0
+    }
+
+    /// Проверяет eligibility ускоренного video-overload recovery path-а.
+    ///
+    /// `1.0x` и замедление сохраняют обычный FIFO без намеренных compressed skips.
+    #[must_use]
+    pub(crate) fn is_faster_than_normal(self) -> bool {
+        self.0 > Self::NORMAL.0
     }
 
     /// Переводит elapsed wall-time в media delta для no-audio monotonic clock.

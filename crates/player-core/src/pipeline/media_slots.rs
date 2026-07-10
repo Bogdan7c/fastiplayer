@@ -59,6 +59,9 @@ impl PlaybackPipeline {
         requirement: VideoDecodeRequirement,
         frame_contract: VideoFrameContract,
     ) {
+        if self.video_track_id != Some(track_id) {
+            self.reset_video_backlog_recovery_for_selected_track_change();
+        }
         self.video_track_id = Some(track_id);
         self.active_video_requirement = Some(requirement);
         self.active_video_frame_contract = Some(frame_contract);
@@ -79,6 +82,7 @@ impl PlaybackPipeline {
     pub(crate) fn clear_selected_tracks(&mut self) {
         self.audio_track_id = None;
         self.video_track_id = None;
+        self.reset_video_backlog_recovery_for_selected_track_change();
         self.active_video_requirement = None;
         self.active_video_frame_contract = None;
     }
@@ -123,6 +127,9 @@ impl PlaybackPipeline {
     /// Saturating increment оставляет поведение прежним: после переполнения
     /// generation фиксируется на `u64::MAX`, а не делает wrap в старые packets.
     pub(crate) fn begin_seek_generation(&mut self) -> u64 {
+        // Новая generation является настоящим lifecycle discontinuity. Старый
+        // recovery scan больше не может принять keyframe из нового segment-а.
+        self.cancel_video_backlog_recovery_scan_for_discontinuity();
         self.seek_generation = self.seek_generation.saturating_add(1);
         self.seek_generation
     }
@@ -165,6 +172,7 @@ impl PlaybackPipeline {
     /// Устанавливает generation для edge-case тестов saturation без обхода boundary чтения.
     #[cfg(test)]
     pub(crate) fn set_seek_generation_for_tests(&mut self, generation: u64) {
+        self.cancel_video_backlog_recovery_scan_for_discontinuity();
         self.seek_generation = generation;
     }
 
@@ -176,6 +184,7 @@ impl PlaybackPipeline {
 
     /// Сбрасывает decoder-side состояние, которое становится невалидным после seek.
     pub(crate) fn reset_decoder_state_for_seek(&mut self, has_video: bool) {
+        self.cancel_video_backlog_recovery_scan_for_discontinuity();
         if has_video {
             self.require_video_decoder_keyframe();
         } else {
@@ -295,70 +304,6 @@ impl PlaybackPipeline {
         self.pending_audio_packets.push_back(packet);
     }
 
-    /// Добавляет video packet в pending queue текущего pipeline.
-    pub(crate) fn enqueue_pending_video_packet(&mut self, packet: PendingVideoPacket) {
-        self.pending_video_packets.push_back(packet);
-    }
-
-    /// Забирает первый pending video packet для drop или отправки в decoder.
-    pub(crate) fn pop_pending_video_packet_front(&mut self) -> Option<PendingVideoPacket> {
-        self.pending_video_packets.pop_front()
-    }
-
-    /// Возвращает первый pending video packet без снятия его с очереди.
-    #[must_use]
-    pub(crate) fn front_pending_video_packet(&self) -> Option<&PendingVideoPacket> {
-        self.pending_video_packets.front()
-    }
-
-    /// Проверяет, пуста ли очередь pending video packets.
-    #[must_use]
-    pub(crate) fn pending_video_packet_is_empty(&self) -> bool {
-        self.pending_video_packets.is_empty()
-    }
-
-    /// Очищает очередь pending video packets через единый pipeline boundary.
-    pub(crate) fn clear_pending_video_packets(&mut self) {
-        self.pending_video_packets.clear();
-        // Seek/media reset репозиционируют demux на keyframe сами: ожидание
-        // keyframe-а после audio catch-up shed здесь больше не актуально.
-        self.video_admission_waits_for_keyframe = false;
-    }
-
-    /// Сбрасывает video backlog ради audio catch-up и ждёт следующий keyframe.
-    ///
-    /// Декодер к этому моменту на секунды позади live-позиции: backlog всё
-    /// равно был бы отброшен как late после декода, но пока он занимает
-    /// очередь, demux стоит и audio-пакеты не поступают. После сброса admission
-    /// пропускает только следующий keyframe, чтобы декодер остался decodable.
-    pub(crate) fn shed_pending_video_backlog_for_audio_catchup(&mut self) -> usize {
-        let shed_packets = self.pending_video_packets.len();
-        self.pending_video_packets.clear();
-        self.video_admission_waits_for_keyframe = true;
-        shed_packets
-    }
-
-    /// Решает, должен ли admission отбросить video packet до keyframe-resync.
-    ///
-    /// `Unknown` пропускается: контейнер без keyframe-классификации иначе
-    /// заморозил бы видео навсегда, а decoder восстанавливается сам.
-    pub(crate) fn video_admission_should_drop_for_keyframe_resync(
-        &mut self,
-        keyframe: media_core::PacketKeyframe,
-    ) -> bool {
-        if !self.video_admission_waits_for_keyframe {
-            return false;
-        }
-
-        match keyframe {
-            media_core::PacketKeyframe::NotKeyframe => true,
-            media_core::PacketKeyframe::Keyframe | media_core::PacketKeyframe::Unknown => {
-                self.video_admission_waits_for_keyframe = false;
-                false
-            }
-        }
-    }
-
     /// Забирает первый pending audio packet для декодирования.
     pub(crate) fn pop_pending_audio_packet_front(&mut self) -> Option<PendingAudioPacket> {
         self.pending_audio_packets.pop_front()
@@ -441,12 +386,6 @@ impl PlaybackPipeline {
     #[must_use]
     pub(crate) fn video_present_queue_len(&self) -> usize {
         self.video_frame_queue.len()
-    }
-
-    /// Возвращает глубину pending video queue без раскрытия поля очереди.
-    #[must_use]
-    pub(crate) fn pending_video_packet_len(&self) -> usize {
-        self.pending_video_packets.len()
     }
 
     /// Проверяет, ждёт ли video decoder первый keyframe после bootstrap/flush.

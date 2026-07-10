@@ -37,9 +37,15 @@ mod media_slots;
 mod render_resources;
 #[cfg(test)]
 mod tests;
+mod video_backlog_recovery;
 mod video_decoder;
 
 use audio_clock_mapping::{AudioClockMediaMapping, PlannedAudioOutputSpan};
+use video_backlog_recovery::VideoBacklogRecoveryState;
+pub(crate) use video_backlog_recovery::{
+    VideoBacklogRecoveryRouteOutcome, VideoBacklogRecoveryScanLimit,
+    VideoBacklogRecoveryScanLimits, VideoBacklogRecoveryScanStart,
+};
 
 /// Bootstrap-оценка длительности frame до первых PTS observations; не worker cadence.
 pub(crate) const DEFAULT_VIDEO_FRAME_DURATION: Duration = Duration::from_micros(16_667);
@@ -502,8 +508,17 @@ pub(crate) struct PlaybackPipeline {
     /// Полный decoded PCM spec, под который записана passthrough история.
     passthrough_audio_history_spec: Option<audio_core::AudioOutputSpec>,
 
-    /// Admission ждёт следующий video keyframe после audio catch-up backlog shed.
-    video_admission_waits_for_keyframe: bool,
+    /// Pipeline-owned фаза поиска безопасной точки переключения video backlog.
+    video_backlog_recovery_state: VideoBacklogRecoveryState,
+
+    /// Bounded continuation, который либо отбрасывается на proven keyframe, либо восстанавливается.
+    video_backlog_recovery_staged_packets: VecDeque<PendingVideoPacket>,
+
+    /// Суммарный compressed payload staging-а без повторного обхода очереди на hot path.
+    video_backlog_recovery_staged_bytes: usize,
+
+    /// Track, для которого container уже доказал хотя бы один video keyframe.
+    video_proven_keyframe_observed_for_track: Option<TrackId>,
 
     /// Был ли текущий audio output успешно запущен через boundary `play`.
     audio_output_play_requested: bool,
@@ -656,7 +671,10 @@ impl Default for PlaybackPipeline {
             next_audio_tempo_segment_id: 1,
             passthrough_audio_history: Vec::new(),
             passthrough_audio_history_spec: None,
-            video_admission_waits_for_keyframe: false,
+            video_backlog_recovery_state: VideoBacklogRecoveryState::Inactive,
+            video_backlog_recovery_staged_packets: VecDeque::new(),
+            video_backlog_recovery_staged_bytes: 0,
+            video_proven_keyframe_observed_for_track: None,
             audio_output_play_requested: false,
             audio_track_id: None,
             pending_audio_packets: VecDeque::new(),

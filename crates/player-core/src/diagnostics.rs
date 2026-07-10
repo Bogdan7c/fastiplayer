@@ -210,6 +210,12 @@ pub struct PipelineQueueDepthSnapshot {
     /// Video packets перед decoder thread.
     pub pending_video_packets: usize,
 
+    /// Compressed video packets, временно удерживаемые bounded recovery scan-ом.
+    pub staged_video_backlog_recovery_packets: usize,
+
+    /// Retained compressed payload bounded recovery scan-а.
+    pub staged_video_backlog_recovery_bytes: usize,
+
     /// Player presentation queue depth.
     pub present_queue_depth: usize,
 

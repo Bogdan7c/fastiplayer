@@ -176,6 +176,10 @@ impl PlayerWorkerRuntime {
             wake_late_ms,
             pts_target_ms = ?pts_target_ms,
             pending_video_packets = summary.queues.pending_video_packets,
+            staged_video_backlog_recovery_packets = summary
+                .queues
+                .staged_video_backlog_recovery_packets,
+            staged_video_backlog_recovery_bytes = summary.queues.staged_video_backlog_recovery_bytes,
             present_queue_depth = summary.queues.present_queue_depth,
             decoder_in_flight_packets = summary.queues.decoder_in_flight_packets,
             decoder_control_channel_len = ?control_channel.map(|pressure| pressure.control_channel_len),
@@ -323,6 +327,8 @@ fn log_active_seek_stall(
             preroll_counters.decoder_backpressure_pauses,
         pending_audio_packets = queues.pending_audio_packets,
         pending_video_packets = queues.pending_video_packets,
+        staged_video_backlog_recovery_packets = queues.staged_video_backlog_recovery_packets,
+        staged_video_backlog_recovery_bytes = queues.staged_video_backlog_recovery_bytes,
         present_queue_depth = queues.present_queue_depth,
         decoder_send_queue_depth = queues.decoder_send_queue_depth,
         decoder_in_flight_packets = queues.decoder_in_flight_packets,

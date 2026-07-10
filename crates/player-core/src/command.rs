@@ -282,8 +282,8 @@ pub enum PlayerCommand {
 
     /// Установить runtime-only playback rate.
     ///
-    /// S34 подключает no-audio clock/scheduler groundwork. Audio tempo и внешние
-    /// control surfaces ещё не подключены, поэтому release всё ещё gated.
+    /// Значение применяется единым media/audio-clock contract-ом и не сохраняется
+    /// в Settings/history/startup restore. Нейтральный `1.0x` остаётся PCM passthrough.
     SetPlaybackRate(PlaybackRate),
 
     /// Установить громкость в диапазоне `0.0..=1.0`.

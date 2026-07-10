@@ -12,6 +12,7 @@ use crate::{PipelinePauseReason, PlaybackState};
 mod demux_admission;
 mod presentation_scheduler;
 mod types;
+mod video_backlog_recovery_admission;
 mod video_decoder_io;
 mod wakeup;
 

@@ -78,6 +78,53 @@ fn playback_pipeline_decoder_boundary_absent_thread_is_noop() {
 }
 
 #[test]
+fn decoder_replacement_cancels_video_backlog_recovery_scan_without_clearing_packets() {
+    let mut pipeline = PlaybackPipeline::default();
+    let selected_video_track_id = TrackId::new(1);
+    pipeline.set_video_decoder_thread(SharedFakeVideoDecoderThread::new());
+    pipeline.select_video_track(
+        selected_video_track_id,
+        VideoDecodeRequirement::new(VideoCodec::Av1),
+    );
+    pipeline.enqueue_pending_video_packet(PendingVideoPacket::new(
+        selected_video_track_id,
+        Duration::ZERO,
+        pipeline.seek_generation(),
+        Bytes::from_static(b"decoder-replacement-proof"),
+        PacketKeyframe::Keyframe,
+    ));
+    pipeline.mark_video_decoder_bootstrapped();
+    assert_eq!(
+        pipeline.begin_video_backlog_recovery_scan(
+            crate::pipeline::VideoBacklogRecoveryScanLimits::for_tests()
+        ),
+        crate::pipeline::VideoBacklogRecoveryScanStart::Started
+    );
+    let pending_packets_before_replacement = pipeline.pending_video_packet_len();
+    assert_eq!(
+        pipeline.route_pending_video_packet_for_backlog_recovery(PendingVideoPacket::new(
+            selected_video_track_id,
+            Duration::from_millis(10),
+            pipeline.seek_generation(),
+            Bytes::from_static(b"old-decoder-staged-continuation"),
+            PacketKeyframe::NotKeyframe,
+        )),
+        crate::pipeline::VideoBacklogRecoveryRouteOutcome::StagedWhileScanning
+    );
+    assert_eq!(pipeline.video_backlog_recovery_staged_packet_len(), 1);
+
+    pipeline.set_video_decoder_thread(SharedFakeVideoDecoderThread::new());
+
+    assert!(!pipeline.video_backlog_recovery_scan_allows_demux());
+    assert_eq!(pipeline.video_backlog_recovery_staged_packet_len(), 0);
+    assert_eq!(
+        pipeline.pending_video_packet_len(),
+        pending_packets_before_replacement,
+        "decoder replacement не владеет очисткой compressed backlog"
+    );
+}
+
+#[test]
 fn playback_pipeline_decoder_boundary_forwards_preroll_output_floor_results() {
     let mut pipeline = PlaybackPipeline::default();
     let fake_decoder = SharedFakeVideoDecoderThread::new();

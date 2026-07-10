@@ -575,6 +575,10 @@ fn record_player_tick_result(telemetry: &Telemetry, tick_result: &PlayerTickResu
         media_core::TrackKind::Audio,
         tick_result.dropped_seek_audio_preroll_packets,
     );
+    telemetry.record_packets(
+        media_core::TrackKind::Video,
+        tick_result.staged_video_backlog_recovery_packets,
+    );
 
     for packet in &tick_result.demuxed_packets {
         telemetry.record_packet(packet.kind);
@@ -1356,6 +1360,9 @@ fn log_render_frame_timings(
         playback_repeated_frames = frame_counters.repeated,
         queue_pending_audio_packets = queues.pending_audio_packets,
         queue_pending_video_packets = queues.pending_video_packets,
+        queue_staged_video_backlog_recovery_packets = queues
+            .staged_video_backlog_recovery_packets,
+        queue_staged_video_backlog_recovery_bytes = queues.staged_video_backlog_recovery_bytes,
         queue_present_depth = queues.present_queue_depth,
         queue_decoder_send_depth = queues.decoder_send_queue_depth,
         queue_decoder_in_flight_packets = queues.decoder_in_flight_packets,
@@ -1942,6 +1949,21 @@ mod tests {
         assert_eq!(telemetry.seek_discarded_frames(), 2);
         assert_eq!(telemetry.seek_preroll_discarded(), 1);
         assert_eq!(telemetry.stale_generation_discarded(), 1);
+    }
+
+    /// Проверяет bounded scalar telemetry для dense video recovery scan-а.
+    #[test]
+    fn staged_video_recovery_packets_count_as_read_without_packet_vec_entries() {
+        let telemetry = Telemetry::new();
+        let tick_result = PlayerTickResult {
+            staged_video_backlog_recovery_packets: 420,
+            ..PlayerTickResult::default()
+        };
+
+        record_player_tick_result(&telemetry, &tick_result);
+
+        assert_eq!(telemetry.packets_read(), 420);
+        assert!(tick_result.demuxed_packets.is_empty());
     }
 
     /// Проверяет, что playback причины не смешиваются с seek или surface taxonomy.

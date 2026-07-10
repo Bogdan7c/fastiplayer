@@ -69,6 +69,7 @@ impl PlayerSession {
 
         let previous_playback_rate = self.snapshot.playback_rate;
         self.snapshot.playback_rate = playback_rate;
+        self.reconcile_video_backlog_recovery_after_rate_change(playback_rate);
         self.publish_clock_sample(current_media_position);
 
         if !self.pipeline.has_audio_clock() {
@@ -111,6 +112,7 @@ impl PlayerSession {
 
         let previous_playback_rate = self.snapshot.playback_rate;
         self.snapshot.playback_rate = playback_rate;
+        self.reconcile_video_backlog_recovery_after_rate_change(playback_rate);
         log_committed_playback_rate(
             previous_playback_rate,
             playback_rate,
@@ -119,6 +121,21 @@ impl PlayerSession {
             &prepared_audio_change,
         );
         PlayerCommandOutcome::Applied
+    }
+
+    /// Синхронизирует video overload lifecycle только после успешного rate commit-а.
+    fn reconcile_video_backlog_recovery_after_rate_change(&mut self, playback_rate: PlaybackRate) {
+        let recovery_report = self
+            .pipeline
+            .reconcile_video_backlog_recovery_after_rate_change(playback_rate);
+        if recovery_report.restored_staged_packets > 0 {
+            debug!(
+                restored_staged_video_packets = recovery_report.restored_staged_packets,
+                pending_video_packets = self.pipeline.pending_video_packet_len(),
+                playback_rate = %playback_rate,
+                "Playback-rate downshift восстановил video recovery continuation"
+            );
+        }
     }
 
     /// Фиксирует clock mapping только после подтверждения audio backend-а.

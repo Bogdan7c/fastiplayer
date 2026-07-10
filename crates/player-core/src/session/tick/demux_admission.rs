@@ -16,14 +16,18 @@ use super::{
         video_decoder_texture_limits,
     },
     record_pipeline_pause,
+    video_backlog_recovery_admission::{
+        log_video_backlog_recovery_outcome, try_begin_video_backlog_recovery_scan,
+    },
     video_decoder_io::{
         decoder_send_backpressure_pause_reason, has_texture_capacity_for_decode,
         texture_capacity_backpressure_reason,
     },
 };
+use crate::pipeline::{VideoBacklogRecoveryRouteOutcome, VideoBacklogRecoveryScanLimit};
 use crate::{
     PendingAudioPacket, PendingVideoPacket, PipelineLatencyStage, PipelinePauseReason, PlayerError,
-    PlayerErrorKind, session::PlayerSession,
+    PlayerErrorKind, PlayerTickPacket, session::PlayerSession,
     session::audio_runtime::sanitize_audio_high_water_mark,
 };
 
@@ -36,8 +40,35 @@ pub(super) enum DemuxPacketRouteOutcome {
     /// Packet был полностью отброшен как audio preroll active accurate seek-а.
     DroppedSeekAudioPreroll,
 
-    /// Video packet отброшен до keyframe-resync после audio catch-up backlog shed.
-    DroppedVideoKeyframeResync,
+    /// Video packet удержан в bounded staging до keyframe/rollback/EOF.
+    StagedVideoBacklogRecoveryPacket,
+
+    /// Staging достиг общего packet limit и безопасно восстановлен в pending FIFO.
+    VideoBacklogRecoveryScanLimitReached {
+        /// Allocation boundary, остановивший scan.
+        limit: VideoBacklogRecoveryScanLimit,
+
+        /// Число staged packets, возвращённых после старого backlog.
+        restored_staged_packets: usize,
+
+        /// Compressed payload, возвращённый после старого backlog.
+        restored_staged_bytes: usize,
+
+        /// Размер pending FIFO после восстановления continuation.
+        pending_packets_after_restore: usize,
+    },
+
+    /// Proven keyframe атомарно заменил старый pending backlog.
+    SwitchedVideoBacklogAtKeyframe {
+        /// Сколько pending packets было удалено в момент безопасного switch-а.
+        discarded_pending_packets: usize,
+
+        /// Сколько video packets scan отбросил до найденного keyframe-а.
+        discarded_staged_packets: usize,
+
+        /// PTS keyframe-а, который начинает новый decodable segment.
+        recovery_keyframe_pts: std::time::Duration,
+    },
 }
 
 impl DemuxPacketRouteOutcome {
@@ -49,10 +80,28 @@ impl DemuxPacketRouteOutcome {
             // tick имеет time deadline; без deadline zero-config тесты и ручные вызовы
             // остаются bounded обычным budget-ом.
             Self::DroppedSeekAudioPreroll => catch_up_deadline.is_none(),
-            // Keyframe-resync drop остаётся bounded обычным budget-ом: audio
-            // catch-up продолжается немедленными следующими tick-ами.
-            Self::DroppedVideoKeyframeResync => true,
+            // Recovery scan может пройти dense interleave сверх packet count
+            // только внутри явного time deadline. Zero-budget tests остаются bounded.
+            Self::StagedVideoBacklogRecoveryPacket => catch_up_deadline.is_none(),
+            Self::VideoBacklogRecoveryScanLimitReached { .. } => true,
+            Self::SwitchedVideoBacklogAtKeyframe { .. } => true,
         }
+    }
+
+    /// Dense scan packets агрегируются и не попадают в per-packet telemetry `Vec`.
+    #[must_use]
+    const fn uses_aggregated_recovery_telemetry(self) -> bool {
+        matches!(
+            self,
+            Self::StagedVideoBacklogRecoveryPacket
+                | Self::VideoBacklogRecoveryScanLimitReached { .. }
+        )
+    }
+
+    /// Bounded rollback завершает текущий demux pass, чтобы decoder разгрузил FIFO.
+    #[must_use]
+    const fn ends_current_demux_pass(self) -> bool {
+        matches!(self, Self::VideoBacklogRecoveryScanLimitReached { .. })
     }
 }
 
@@ -105,12 +154,19 @@ pub(super) fn demux_catch_up_deadline_for_tick(
     tick_config: &PlayerTickConfig,
     now: Instant,
 ) -> Option<Instant> {
-    if tick_config.seek_fast_preroll_time_budget.is_zero() {
-        return None;
+    if active_seek_fast_video_preroll_active(session, tick_config)
+        && !tick_config.seek_fast_preroll_time_budget.is_zero()
+    {
+        return Some(now + tick_config.seek_fast_preroll_time_budget);
     }
 
-    active_seek_fast_video_preroll_active(session, tick_config)
-        .then_some(now + tick_config.seek_fast_preroll_time_budget)
+    if session.pipeline.video_backlog_recovery_scan_allows_demux()
+        && !tick_config.adaptive_catch_up_time_budget.is_zero()
+    {
+        return Some(now + tick_config.adaptive_catch_up_time_budget);
+    }
+
+    None
 }
 
 /// Проверяет session-owned intent fast preroll без раскрытия seek storage tick-модулям.
@@ -184,7 +240,9 @@ pub(super) fn audio_priority_pending_video_limit_allows_demux(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
 ) -> bool {
-    session.pipeline.pending_video_packet_len() < audio_catchup_pending_video_limit(tick_config)
+    session.pipeline.video_backlog_recovery_scan_allows_demux()
+        || session.pipeline.pending_video_packet_len()
+            < audio_catchup_pending_video_limit(tick_config)
 }
 
 /// Проверяет, исчерпано ли bounded окно adaptive catch-up.
@@ -202,6 +260,7 @@ pub(super) fn read_demux_packets(
 ) -> usize {
     let mut packets_read = 0usize;
     let mut dropped_seek_audio_preroll_packets = 0usize;
+    let mut staged_video_recovery_packets = 0usize;
     let mut last_dropped_seek_audio_preroll_pts = None;
     let mut last_dropped_seek_audio_preroll_duration = None;
 
@@ -226,25 +285,7 @@ pub(super) fn read_demux_packets(
             );
         }
 
-        // Video decode не успевает за playback rate: backlog упёрся в catch-up
-        // лимит и полностью останавливает demux, а значит и приток audio
-        // packets. Audio-приоритет: сбрасываем backlog (декодер всё равно
-        // позади live-позиции) и продолжаем читать, пропуская video только
-        // со следующего keyframe.
-        if prioritize_audio_catchup
-            && !audio_priority_pending_video_limit_allows_demux(session, tick_config)
-        {
-            let shed_packets = session
-                .pipeline
-                .shed_pending_video_backlog_for_audio_catchup();
-            warn!(
-                shed_packets,
-                catchup_video_packet_limit = audio_catchup_pending_video_limit(tick_config),
-                audio_buffer_ms = session.audio_buffer_level_ms().unwrap_or(0.0),
-                playback_rate = %session.snapshot().playback_rate,
-                "Audio catch-up: video backlog сброшен до следующего keyframe, чтобы не голодал звук"
-            );
-        }
+        try_begin_video_backlog_recovery_scan(session, tick_config, prioritize_audio_catchup);
 
         if !can_read_next_demux_packet_with_audio_priority(
             session,
@@ -286,13 +327,17 @@ pub(super) fn read_demux_packets(
                     && packet.kind == TrackKind::Audio
                     && session
                         .should_drop_demuxed_audio_packet_for_seek(packet_pts, packet_duration);
+                let packet_telemetry = (!aggregate_seek_audio_preroll)
+                    .then(|| PlayerTickPacket::from_demuxed_packet(&packet));
+                let route_outcome = route_demuxed_packet(session, packet);
                 if aggregate_seek_audio_preroll {
                     tick_result.record_dropped_seek_audio_preroll_packet();
-                } else {
-                    tick_result.record_demuxed_packet(&packet);
+                } else if route_outcome.uses_aggregated_recovery_telemetry() {
+                    staged_video_recovery_packets = staged_video_recovery_packets.saturating_add(1);
+                    tick_result.record_staged_video_backlog_recovery_packet();
+                } else if let Some(packet_telemetry) = packet_telemetry {
+                    tick_result.record_demuxed_packet(packet_telemetry);
                 }
-
-                let route_outcome = route_demuxed_packet(session, packet);
                 if matches!(
                     route_outcome,
                     DemuxPacketRouteOutcome::DroppedSeekAudioPreroll
@@ -303,8 +348,18 @@ pub(super) fn read_demux_packets(
                     last_dropped_seek_audio_preroll_pts = Some(packet_pts);
                     last_dropped_seek_audio_preroll_duration = packet_duration;
                 }
+                log_video_backlog_recovery_outcome(session, route_outcome);
                 if route_outcome.consumes_demux_budget(catch_up_deadline) {
                     packets_read += 1;
+                }
+                if route_outcome.ends_current_demux_pass() {
+                    tick_result.demux_backpressured = true;
+                    record_pipeline_pause(
+                        session,
+                        tick_result,
+                        PipelinePauseReason::WaitingForDemuxAudioPriority,
+                    );
+                    break;
                 }
             }
             Ok(DemuxReadEvent::EndOfStream) => {
@@ -317,6 +372,8 @@ pub(super) fn read_demux_packets(
                         .map(|duration| duration.as_secs_f64() * 1000.0),
                     pending_audio_packets = session.pipeline.pending_audio_packet_len(),
                     pending_video_packets = session.pipeline.pending_video_packet_len(),
+                    staged_video_recovery_packets =
+                        session.pipeline.video_backlog_recovery_staged_packet_len(),
                     queued_video_frames = session.pipeline.video_present_queue_len(),
                     video_decode_in_flight = session.pipeline.video_decode_in_flight_packets(),
                     audio_buffer_ms = ?session.audio_buffer_level_ms(),
@@ -359,6 +416,17 @@ pub(super) fn read_demux_packets(
         );
     }
 
+    if staged_video_recovery_packets > 0 {
+        debug!(
+            staged_video_recovery_packets,
+            staged_packets_retained = session.pipeline.video_backlog_recovery_staged_packet_len(),
+            packets_read_budget = packets_read,
+            packet_budget,
+            catch_up_deadline_active = catch_up_deadline.is_some(),
+            "Video backlog recovery packets агрегированы без per-packet telemetry"
+        );
+    }
+
     packets_read
 }
 
@@ -392,13 +460,6 @@ pub(super) fn route_demuxed_packet(
             DemuxPacketRouteOutcome::Queued
         }
         TrackKind::Video => {
-            if session
-                .pipeline
-                .video_admission_should_drop_for_keyframe_resync(packet.keyframe)
-            {
-                return DemuxPacketRouteOutcome::DroppedVideoKeyframeResync;
-            }
-
             let pending_packet = PendingVideoPacket::new_with_decode_timestamps(
                 packet.track_id,
                 packet.pts,
@@ -408,10 +469,35 @@ pub(super) fn route_demuxed_packet(
                 packet.data,
                 packet.keyframe,
             );
-            session
+            match session
                 .pipeline
-                .enqueue_pending_video_packet(pending_packet);
-            DemuxPacketRouteOutcome::Queued
+                .route_pending_video_packet_for_backlog_recovery(pending_packet)
+            {
+                VideoBacklogRecoveryRouteOutcome::QueuedNormally => DemuxPacketRouteOutcome::Queued,
+                VideoBacklogRecoveryRouteOutcome::StagedWhileScanning => {
+                    DemuxPacketRouteOutcome::StagedVideoBacklogRecoveryPacket
+                }
+                VideoBacklogRecoveryRouteOutcome::ScanLimitReached {
+                    limit,
+                    restored_staged_packets,
+                    restored_staged_bytes,
+                    pending_packets_after_restore,
+                } => DemuxPacketRouteOutcome::VideoBacklogRecoveryScanLimitReached {
+                    limit,
+                    restored_staged_packets,
+                    restored_staged_bytes,
+                    pending_packets_after_restore,
+                },
+                VideoBacklogRecoveryRouteOutcome::SwitchedAtKeyframe {
+                    discarded_pending_packets,
+                    discarded_staged_packets,
+                    recovery_keyframe_pts,
+                } => DemuxPacketRouteOutcome::SwitchedVideoBacklogAtKeyframe {
+                    discarded_pending_packets,
+                    discarded_staged_packets,
+                    recovery_keyframe_pts,
+                },
+            }
         }
     }
 }
@@ -512,6 +598,14 @@ pub(super) fn can_read_next_demux_packet_with_audio_priority(
     let seek_fast_preroll = active_seek_fast_video_preroll_active(session, tick_config);
     if !seek_fast_preroll && audio_read_ahead_blocks_demux(session, tick_config) {
         return false;
+    }
+
+    // После первого dropped scan-packet reference chain уже нельзя продолжить
+    // обычными interframes. Scan обязан дойти до proven keyframe даже если
+    // audio временно вышел из low-water; текущий backlog при этом остаётся
+    // bounded и продолжает питать decoder.
+    if !seek_fast_preroll && session.pipeline.video_backlog_recovery_scan_allows_demux() {
+        return true;
     }
 
     if !seek_fast_preroll

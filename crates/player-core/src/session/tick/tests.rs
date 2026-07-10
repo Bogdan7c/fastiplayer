@@ -1,6 +1,9 @@
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use audio_core::{
@@ -25,20 +28,48 @@ use crate::{
     PlayerSession, PresentFrameResourceProviderHandle, WorkerWakeupReason,
 };
 
-/// Empty demuxer для проверки admission без реального container backend-а.
-struct EmptyDemuxer {
+/// Scripted demuxer для focused admission tests без реального container backend-а.
+struct AdmissionTestDemuxer {
     /// Track list хранится внутри fake, чтобы выполнить `Demuxer::tracks` contract.
     tracks: Vec<media_core::TrackInfo>,
+
+    /// Packet FIFO позволяет проверить настоящий `read_demux_packets` route.
+    packets: VecDeque<media_core::Packet>,
+
+    /// Optional counter доказывает, что admission остановился до demux boundary.
+    packet_read_count: Option<Arc<AtomicUsize>>,
 }
 
-impl EmptyDemuxer {
+impl AdmissionTestDemuxer {
     /// Создаёт demuxer без packets: admission tests не читают из него данные.
     fn new() -> Self {
-        Self { tracks: Vec::new() }
+        Self {
+            tracks: Vec::new(),
+            packets: VecDeque::new(),
+            packet_read_count: None,
+        }
+    }
+
+    /// Создаёт demuxer с заданным interleave packet-ов для route integration test.
+    fn with_packets(
+        tracks: Vec<media_core::TrackInfo>,
+        packets: impl IntoIterator<Item = media_core::Packet>,
+    ) -> Self {
+        Self {
+            tracks,
+            packets: packets.into_iter().collect(),
+            packet_read_count: None,
+        }
+    }
+
+    /// Подключает shared счётчик вызовов packet-read boundary.
+    fn with_packet_read_count(mut self, packet_read_count: Arc<AtomicUsize>) -> Self {
+        self.packet_read_count = Some(packet_read_count);
+        self
     }
 }
 
-impl media_core::Demuxer for EmptyDemuxer {
+impl media_core::Demuxer for AdmissionTestDemuxer {
     /// Возвращает стабильный track list для boundary contract-а.
     fn tracks(&self) -> &[media_core::TrackInfo] {
         &self.tracks
@@ -49,9 +80,12 @@ impl media_core::Demuxer for EmptyDemuxer {
         None
     }
 
-    /// Packet-ов нет: тесты проверяют только `demux_work_available`.
+    /// Возвращает scripted packet FIFO, а после него — штатный EOF.
     fn next_packet(&mut self) -> anyhow::Result<Option<media_core::Packet>> {
-        Ok(None)
+        if let Some(packet_read_count) = &self.packet_read_count {
+            packet_read_count.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(self.packets.pop_front())
     }
 
     /// Seek возвращает requested point, чтобы fake оставался честным `Demuxer`.
@@ -151,9 +185,12 @@ impl PlayerAudioOutput for FixedAudioOutput {
 
 /// Подключает empty demuxer и оставляет track selection под контролем теста.
 fn install_empty_demuxer(session: &mut PlayerSession) {
-    session
-        .pipeline
-        .install_opened_media(Box::new(EmptyDemuxer::new()), None, None, Vec::new());
+    session.pipeline.install_opened_media(
+        Box::new(AdmissionTestDemuxer::new()),
+        None,
+        None,
+        Vec::new(),
+    );
 }
 
 /// Подключает fake output с явно заданным buffer level.
@@ -1663,85 +1700,736 @@ fn audio_demux_catchup_uses_bounded_video_packet_limit() {
 }
 
 #[test]
-fn audio_catchup_backlog_shed_clears_video_queue_and_waits_for_keyframe() {
+fn audio_catchup_recovery_keeps_runway_until_proven_keyframe() {
     let mut session = PlayerSession::new();
+    let selected_video_track_id = TrackId::new(1);
+    let generation = session.pipeline.seek_generation();
+    let tick_config = PlayerTickConfig {
+        max_pending_video_packets: 2,
+        max_pending_video_packets_during_audio_catchup: 5,
+        ..PlayerTickConfig::default()
+    };
+    session.pipeline.select_video_track(
+        selected_video_track_id,
+        VideoDecodeRequirement::new(VideoCodec::Av1),
+    );
+    session.pipeline.mark_video_decoder_bootstrapped();
 
     for packet_index in 0..5u64 {
         session
             .pipeline
             .enqueue_pending_video_packet(PendingVideoPacket::new(
-                TrackId::new(1),
+                selected_video_track_id,
+                Duration::from_millis(packet_index),
+                generation,
+                Bytes::new(),
+                packet_index == 0,
+            ));
+    }
+    let preserved_backlog_len = session.pipeline.pending_video_packet_len();
+
+    assert!(!can_read_next_demux_packet_with_audio_priority(
+        &session,
+        &tick_config,
+        true
+    ));
+    assert_eq!(
+        session.pipeline.begin_video_backlog_recovery_scan(
+            crate::pipeline::VideoBacklogRecoveryScanLimits::for_tests()
+        ),
+        crate::pipeline::VideoBacklogRecoveryScanStart::Started
+    );
+    assert_eq!(
+        session.pipeline.pending_video_packet_len(),
+        preserved_backlog_len
+    );
+
+    session.pipeline.select_audio_track(TrackId::new(2));
+    install_fixed_audio_output(&mut session, 1_000.0);
+    assert!(
+        !can_read_next_demux_packet_with_audio_priority(&session, &tick_config, false),
+        "audio high-water обязан приостановить даже уже активный recovery scan"
+    );
+    install_fixed_audio_output(&mut session, 40.0);
+    assert!(can_read_next_demux_packet_with_audio_priority(
+        &session,
+        &tick_config,
+        false
+    ));
+
+    let unknown_packet = PendingVideoPacket::new_with_decode_timestamps(
+        selected_video_track_id,
+        Duration::from_millis(10),
+        None,
+        None,
+        generation,
+        Bytes::new(),
+        PacketKeyframe::Unknown,
+    );
+    assert_eq!(
+        session
+            .pipeline
+            .route_pending_video_packet_for_backlog_recovery(unknown_packet),
+        crate::pipeline::VideoBacklogRecoveryRouteOutcome::StagedWhileScanning
+    );
+    assert_eq!(
+        session.pipeline.pending_video_packet_len(),
+        preserved_backlog_len
+    );
+
+    let recovery_keyframe_pts = Duration::from_millis(20);
+    assert_eq!(
+        session
+            .pipeline
+            .route_pending_video_packet_for_backlog_recovery(PendingVideoPacket::new(
+                selected_video_track_id,
+                recovery_keyframe_pts,
+                generation,
+                Bytes::new(),
+                true,
+            )),
+        crate::pipeline::VideoBacklogRecoveryRouteOutcome::SwitchedAtKeyframe {
+            discarded_pending_packets: preserved_backlog_len,
+            discarded_staged_packets: 1,
+            recovery_keyframe_pts,
+        }
+    );
+    assert_eq!(session.pipeline.pending_video_packet_len(), 1);
+    assert_eq!(
+        session.pipeline.front_pending_video_packet().unwrap().pts,
+        recovery_keyframe_pts
+    );
+    assert!(!session.pipeline.video_backlog_recovery_scan_allows_demux());
+}
+
+#[test]
+fn active_video_backlog_recovery_uses_adaptive_deadline_and_zero_disables_it() {
+    let mut session = PlayerSession::new();
+    let selected_video_track_id = TrackId::new(1);
+    session.pipeline.select_video_track(
+        selected_video_track_id,
+        VideoDecodeRequirement::new(VideoCodec::Av1),
+    );
+    session
+        .pipeline
+        .enqueue_pending_video_packet(PendingVideoPacket::new(
+            selected_video_track_id,
+            Duration::ZERO,
+            session.pipeline.seek_generation(),
+            Bytes::from_static(b"deadline-proof-keyframe"),
+            PacketKeyframe::Keyframe,
+        ));
+    session.pipeline.mark_video_decoder_bootstrapped();
+    assert_eq!(
+        session.pipeline.begin_video_backlog_recovery_scan(
+            crate::pipeline::VideoBacklogRecoveryScanLimits::for_tests()
+        ),
+        crate::pipeline::VideoBacklogRecoveryScanStart::Started
+    );
+    let now = Instant::now();
+    let adaptive_budget = Duration::from_millis(7);
+    let tick_config = PlayerTickConfig {
+        adaptive_catch_up_time_budget: adaptive_budget,
+        ..PlayerTickConfig::default()
+    };
+
+    assert_eq!(
+        demux_catch_up_deadline_for_tick(&session, &tick_config, now),
+        Some(now + adaptive_budget)
+    );
+    assert_eq!(
+        demux_catch_up_deadline_for_tick(
+            &session,
+            &PlayerTickConfig {
+                adaptive_catch_up_time_budget: Duration::ZERO,
+                ..tick_config
+            },
+            now,
+        ),
+        None
+    );
+}
+
+#[test]
+fn pause_and_rate_changes_preserve_accelerated_scan_and_restore_on_slowdown() {
+    let mut session = PlayerSession::new();
+    let selected_video_track_id = TrackId::new(1);
+    session.pipeline.select_video_track(
+        selected_video_track_id,
+        VideoDecodeRequirement::new(VideoCodec::Av1),
+    );
+    session
+        .pipeline
+        .enqueue_pending_video_packet(PendingVideoPacket::new(
+            selected_video_track_id,
+            Duration::ZERO,
+            session.pipeline.seek_generation(),
+            Bytes::from_static(b"recovery-proof-keyframe"),
+            PacketKeyframe::Keyframe,
+        ));
+    let proof_keyframe = session
+        .pipeline
+        .pop_pending_video_packet_front()
+        .expect("proof keyframe должен считаться уже переданным decoder-у");
+    assert_eq!(
+        proof_keyframe.encoded_bytes,
+        Bytes::from_static(b"recovery-proof-keyframe")
+    );
+    session
+        .pipeline
+        .enqueue_pending_video_packet(PendingVideoPacket::new(
+            selected_video_track_id,
+            Duration::from_millis(5),
+            session.pipeline.seek_generation(),
+            Bytes::from_static(b"old-decoder-runway"),
+            PacketKeyframe::NotKeyframe,
+        ));
+    session.pipeline.mark_video_decoder_bootstrapped();
+    session.set_playback_state(PlaybackState::Paused);
+    assert_eq!(
+        session
+            .dispatch_command(PlayerCommand::SetPlaybackRate(PlaybackRate::MAX))
+            .unwrap(),
+        crate::PlayerCommandOutcome::Applied
+    );
+    session.dispatch_command(PlayerCommand::Play).unwrap();
+    assert_eq!(
+        session.pipeline.begin_video_backlog_recovery_scan(
+            crate::pipeline::VideoBacklogRecoveryScanLimits::for_tests()
+        ),
+        crate::pipeline::VideoBacklogRecoveryScanStart::Started
+    );
+    assert_eq!(
+        session
+            .pipeline
+            .route_pending_video_packet_for_backlog_recovery(PendingVideoPacket::new(
+                selected_video_track_id,
+                Duration::from_millis(10),
+                session.pipeline.seek_generation(),
+                Bytes::from_static(b"staged-before-pause"),
+                PacketKeyframe::NotKeyframe,
+            )),
+        crate::pipeline::VideoBacklogRecoveryRouteOutcome::StagedWhileScanning
+    );
+    assert_eq!(
+        session.pipeline.video_backlog_recovery_staged_packet_len(),
+        1
+    );
+
+    session.dispatch_command(PlayerCommand::Pause).unwrap();
+    assert_eq!(session.playback_state(), PlaybackState::Paused);
+    assert!(session.pipeline.video_backlog_recovery_scan_allows_demux());
+    assert_eq!(
+        session.pipeline.video_backlog_recovery_staged_packet_len(),
+        1
+    );
+
+    let changed_rate = PlaybackRate::new(2.0).expect("2x должен входить в validated range");
+    assert_eq!(
+        session
+            .dispatch_command(PlayerCommand::SetPlaybackRate(changed_rate))
+            .unwrap(),
+        crate::PlayerCommandOutcome::Applied
+    );
+    assert_eq!(session.snapshot().playback_rate, changed_rate);
+    assert!(session.pipeline.video_backlog_recovery_scan_allows_demux());
+    assert_eq!(
+        session.pipeline.video_backlog_recovery_staged_packet_len(),
+        1
+    );
+
+    let slow_rate = PlaybackRate::new(0.5).expect("0.5x должен входить в validated range");
+    assert_eq!(
+        session
+            .dispatch_command(PlayerCommand::SetPlaybackRate(slow_rate))
+            .unwrap(),
+        crate::PlayerCommandOutcome::Applied
+    );
+    assert_eq!(session.snapshot().playback_rate, slow_rate);
+    assert!(!session.pipeline.video_backlog_recovery_scan_allows_demux());
+    assert_eq!(
+        session.pipeline.video_backlog_recovery_staged_packet_len(),
+        0
+    );
+    assert_eq!(session.pipeline.pending_video_packet_len(), 2);
+
+    let old_runway_packet = session
+        .pipeline
+        .pop_pending_video_packet_front()
+        .expect("старый decoder runway должен остаться первым");
+    let restored_staged_packet = session
+        .pipeline
+        .pop_pending_video_packet_front()
+        .expect("staged continuation должен быть восстановлен после runway");
+    assert_eq!(
+        old_runway_packet.encoded_bytes,
+        Bytes::from_static(b"old-decoder-runway")
+    );
+    assert_eq!(
+        restored_staged_packet.encoded_bytes,
+        Bytes::from_static(b"staged-before-pause")
+    );
+
+    let later_keyframe_outcome = session
+        .pipeline
+        .route_pending_video_packet_for_backlog_recovery(PendingVideoPacket::new(
+            selected_video_track_id,
+            Duration::from_millis(20),
+            session.pipeline.seek_generation(),
+            Bytes::from_static(b"later-normal-rate-keyframe"),
+            PacketKeyframe::Keyframe,
+        ));
+    assert_eq!(
+        later_keyframe_outcome,
+        crate::pipeline::VideoBacklogRecoveryRouteOutcome::QueuedNormally
+    );
+
+    session.dispatch_command(PlayerCommand::Play).unwrap();
+    assert_eq!(session.playback_state(), PlaybackState::Playing);
+    assert!(!session.pipeline.video_backlog_recovery_scan_allows_demux());
+    assert_eq!(session.pipeline.pending_video_packet_len(), 1);
+}
+
+#[test]
+fn demux_audio_catchup_preserves_runway_until_stream_provides_proven_keyframe() {
+    let mut session = PlayerSession::new();
+    let selected_video_track_id = TrackId::new(1);
+    let selected_audio_track_id = TrackId::new(2);
+    let video_track = video_track_for_tests(selected_video_track_id.get());
+    let audio_track = media_core::TrackInfo {
+        id: selected_audio_track_id,
+        kind: TrackKind::Audio,
+        codec_id: "A_AAC".to_string(),
+        codec_private: None,
+        time_base: media_core::TimeBase::new(1, 1_000),
+        duration: Some(Duration::from_secs(30)),
+        sample_rate: None,
+        channels: None,
+        video: None,
+    };
+    let tracks = vec![video_track, audio_track];
+    let recovery_keyframe_pts = Duration::from_millis(20);
+    let demuxer = AdmissionTestDemuxer::with_packets(
+        tracks.clone(),
+        [
+            media_core::Packet::new(
+                selected_video_track_id,
+                TrackKind::Video,
+                Duration::from_millis(10),
+                None,
+                false,
+                Bytes::from_static(b"scan-interframe-1"),
+            ),
+            media_core::Packet::new(
+                selected_video_track_id,
+                TrackKind::Video,
+                Duration::from_millis(11),
+                None,
+                false,
+                Bytes::from_static(b"scan-interframe-2"),
+            ),
+            media_core::Packet::new(
+                selected_audio_track_id,
+                TrackKind::Audio,
+                Duration::from_millis(12),
+                None,
+                false,
+                Bytes::from_static(b"catchup-audio"),
+            ),
+            media_core::Packet::new(
+                selected_video_track_id,
+                TrackKind::Video,
+                recovery_keyframe_pts,
+                None,
+                true,
+                Bytes::from_static(b"recovery-keyframe"),
+            ),
+        ],
+    );
+    session
+        .pipeline
+        .install_opened_media(Box::new(demuxer), None, None, tracks);
+    session.pipeline.select_video_track(
+        selected_video_track_id,
+        VideoDecodeRequirement::new(VideoCodec::Av1),
+    );
+    session.set_playback_state(PlaybackState::Paused);
+    assert_eq!(
+        session
+            .dispatch_command(PlayerCommand::SetPlaybackRate(PlaybackRate::MAX))
+            .unwrap(),
+        crate::PlayerCommandOutcome::Applied
+    );
+    session.pipeline.select_audio_track(selected_audio_track_id);
+    session.pipeline.mark_video_decoder_bootstrapped();
+    install_fixed_audio_output(&mut session, 40.0);
+
+    let tick_config = PlayerTickConfig {
+        max_pending_video_packets: 2,
+        max_pending_video_packets_during_audio_catchup: 5,
+        ..PlayerTickConfig::default()
+    };
+    let generation = session.pipeline.seek_generation();
+    session
+        .pipeline
+        .enqueue_pending_video_packet(PendingVideoPacket::new(
+            selected_video_track_id,
+            Duration::ZERO,
+            generation,
+            Bytes::from_static(b"already-sent-proof-keyframe"),
+            PacketKeyframe::Keyframe,
+        ));
+    session
+        .pipeline
+        .pop_pending_video_packet_front()
+        .expect("proof keyframe должен моделировать уже отправленный decoder packet");
+    for packet_index in 0..5u64 {
+        session
+            .pipeline
+            .enqueue_pending_video_packet(PendingVideoPacket::new(
+                selected_video_track_id,
+                Duration::from_millis(packet_index + 1),
+                generation,
+                Bytes::new(),
+                PacketKeyframe::NotKeyframe,
+            ));
+    }
+    let preserved_backlog_len = session.pipeline.pending_video_packet_len();
+    let mut tick_result = PlayerTickResult::default();
+
+    assert_eq!(
+        read_demux_packets(&mut session, &tick_config, &mut tick_result, 1, None),
+        1
+    );
+    assert_eq!(
+        session.pipeline.pending_video_packet_len(),
+        preserved_backlog_len,
+        "первый scanned interframe не должен очищать decodable runway"
+    );
+    assert_eq!(
+        session.pipeline.video_backlog_recovery_staged_packet_len(),
+        1
+    );
+    assert!(tick_result.demuxed_packets.is_empty());
+    assert!(session.pipeline.video_backlog_recovery_scan_allows_demux());
+
+    assert_eq!(
+        read_demux_packets(
+            &mut session,
+            &tick_config,
+            &mut tick_result,
+            2,
+            Some(Instant::now() + Duration::from_secs(1)),
+        ),
+        2
+    );
+    assert_eq!(session.pipeline.pending_audio_packet_len(), 1);
+    assert_eq!(session.pipeline.pending_video_packet_len(), 1);
+    assert_eq!(
+        session.pipeline.video_backlog_recovery_staged_packet_len(),
+        0
+    );
+    assert_eq!(tick_result.demuxed_packets.len(), 2);
+    assert_eq!(tick_result.staged_video_backlog_recovery_packets, 2);
+    assert_eq!(
+        session.pipeline.front_pending_video_packet().unwrap().pts,
+        recovery_keyframe_pts
+    );
+    assert!(!session.pipeline.video_backlog_recovery_scan_allows_demux());
+}
+
+#[test]
+fn normal_rate_audio_pressure_never_enters_video_backlog_recovery() {
+    let mut session = PlayerSession::new();
+    let selected_video_track_id = TrackId::new(1);
+    let selected_audio_track_id = TrackId::new(2);
+    let packet_read_count = Arc::new(AtomicUsize::new(0));
+    let demuxer = AdmissionTestDemuxer::with_packets(
+        Vec::new(),
+        [media_core::Packet::new(
+            selected_video_track_id,
+            TrackKind::Video,
+            Duration::from_millis(10),
+            None,
+            false,
+            Bytes::from_static(b"normal-rate-video-head"),
+        )],
+    )
+    .with_packet_read_count(Arc::clone(&packet_read_count));
+    session
+        .pipeline
+        .install_opened_media(Box::new(demuxer), None, None, Vec::new());
+    session.pipeline.select_video_track(
+        selected_video_track_id,
+        VideoDecodeRequirement::new(VideoCodec::Av1),
+    );
+    session.pipeline.select_audio_track(selected_audio_track_id);
+    session.pipeline.mark_video_decoder_bootstrapped();
+    install_fixed_audio_output(&mut session, 40.0);
+    let tick_config = PlayerTickConfig {
+        max_pending_video_packets: 2,
+        max_pending_video_packets_during_audio_catchup: 5,
+        ..PlayerTickConfig::default()
+    };
+    for packet_index in 0..5u64 {
+        session
+            .pipeline
+            .enqueue_pending_video_packet(PendingVideoPacket::new(
+                selected_video_track_id,
                 Duration::from_millis(packet_index),
                 session.pipeline.seek_generation(),
                 Bytes::new(),
-                false,
+                packet_index == 0,
             ));
     }
+    let mut tick_result = PlayerTickResult::default();
 
-    let shed_packets = session
-        .pipeline
-        .shed_pending_video_backlog_for_audio_catchup();
-    assert_eq!(shed_packets, 5);
-    assert!(session.pipeline.pending_video_packet_is_empty());
-
-    // После shed non-keyframe packets отбрасываются до первого keyframe.
-    assert!(
-        session
-            .pipeline
-            .video_admission_should_drop_for_keyframe_resync(PacketKeyframe::NotKeyframe)
+    assert_eq!(
+        read_demux_packets(&mut session, &tick_config, &mut tick_result, 1, None),
+        0
     );
-    assert!(
-        session
-            .pipeline
-            .video_admission_should_drop_for_keyframe_resync(PacketKeyframe::NotKeyframe)
+    assert_eq!(session.snapshot().playback_rate, PlaybackRate::NORMAL);
+    assert_eq!(packet_read_count.load(Ordering::Relaxed), 0);
+    assert_eq!(session.pipeline.pending_video_packet_len(), 5);
+    assert_eq!(
+        session.pipeline.video_backlog_recovery_staged_packet_len(),
+        0
     );
-    assert!(
-        !session
-            .pipeline
-            .video_admission_should_drop_for_keyframe_resync(PacketKeyframe::Keyframe)
-    );
-
-    // Keyframe закрыл resync: обычный поток снова не фильтруется.
-    assert!(
-        !session
-            .pipeline
-            .video_admission_should_drop_for_keyframe_resync(PacketKeyframe::NotKeyframe)
-    );
+    assert!(!session.pipeline.video_backlog_recovery_scan_allows_demux());
+    assert!(tick_result.demux_backpressured);
+    assert!(tick_result.demuxed_packets.is_empty());
 }
 
 #[test]
-fn keyframe_resync_accepts_unknown_classification_to_avoid_frozen_video() {
+fn video_backlog_recovery_scan_limit_bounds_packets_and_tick_telemetry() {
     let mut session = PlayerSession::new();
+    let selected_video_track_id = TrackId::new(1);
+    let selected_audio_track_id = TrackId::new(2);
+    let packet_read_count = Arc::new(AtomicUsize::new(0));
+    let demux_packets = (0..100u64).map(|packet_index| {
+        media_core::Packet::new(
+            selected_video_track_id,
+            TrackKind::Video,
+            Duration::from_millis(100 + packet_index),
+            None,
+            false,
+            Bytes::from_static(b"bounded-scan-interframe"),
+        )
+    });
+    let demuxer = AdmissionTestDemuxer::with_packets(Vec::new(), demux_packets)
+        .with_packet_read_count(Arc::clone(&packet_read_count));
     session
         .pipeline
-        .shed_pending_video_backlog_for_audio_catchup();
+        .install_opened_media(Box::new(demuxer), None, None, Vec::new());
+    session.pipeline.select_video_track(
+        selected_video_track_id,
+        VideoDecodeRequirement::new(VideoCodec::Av1),
+    );
+    session.set_playback_state(PlaybackState::Paused);
+    assert_eq!(
+        session
+            .dispatch_command(PlayerCommand::SetPlaybackRate(PlaybackRate::MAX))
+            .unwrap(),
+        crate::PlayerCommandOutcome::Applied
+    );
+    session.pipeline.select_audio_track(selected_audio_track_id);
+    session.pipeline.mark_video_decoder_bootstrapped();
+    install_fixed_audio_output(&mut session, 40.0);
+    let generation = session.pipeline.seek_generation();
+    session
+        .pipeline
+        .enqueue_pending_video_packet(PendingVideoPacket::new(
+            selected_video_track_id,
+            Duration::ZERO,
+            generation,
+            Bytes::from_static(b"already-sent-proof-keyframe"),
+            PacketKeyframe::Keyframe,
+        ));
+    session
+        .pipeline
+        .pop_pending_video_packet_front()
+        .expect("proof keyframe должен моделировать уже отправленный decoder packet");
+    for packet_index in 0..5u64 {
+        session
+            .pipeline
+            .enqueue_pending_video_packet(PendingVideoPacket::new(
+                selected_video_track_id,
+                Duration::from_millis(packet_index + 1),
+                generation,
+                Bytes::new(),
+                PacketKeyframe::NotKeyframe,
+            ));
+    }
+    let tick_config = PlayerTickConfig {
+        max_pending_video_packets: 2,
+        max_pending_video_packets_during_audio_catchup: 5,
+        max_video_backlog_recovery_scan_packets: 5,
+        max_video_backlog_recovery_scan_bytes: usize::MAX,
+        adaptive_catch_up_time_budget: Duration::from_secs(1),
+        ..PlayerTickConfig::default()
+    };
+    let mut tick_result = PlayerTickResult::default();
 
-    assert!(
-        !session
-            .pipeline
-            .video_admission_should_drop_for_keyframe_resync(PacketKeyframe::Unknown)
+    assert_eq!(
+        read_demux_packets(
+            &mut session,
+            &tick_config,
+            &mut tick_result,
+            100,
+            Some(Instant::now() + Duration::from_secs(1)),
+        ),
+        1
     );
-    assert!(
-        !session
-            .pipeline
-            .video_admission_should_drop_for_keyframe_resync(PacketKeyframe::NotKeyframe)
+    assert_eq!(packet_read_count.load(Ordering::Relaxed), 5);
+    assert_eq!(
+        session.pipeline.video_backlog_recovery_staged_packet_len(),
+        0
     );
+    assert_eq!(session.pipeline.video_backlog_recovery_staged_bytes(), 0);
+    assert_eq!(session.pipeline.pending_video_packet_len(), 10);
+    assert!(!session.pipeline.video_backlog_recovery_scan_allows_demux());
+    assert!(tick_result.demuxed_packets.is_empty());
+    assert_eq!(tick_result.staged_video_backlog_recovery_packets, 5);
+    assert!(tick_result.demux_backpressured);
+    assert!(
+        tick_result
+            .pipeline_pauses
+            .iter()
+            .any(|pause| { pause.reason == PipelinePauseReason::WaitingForDemuxAudioPriority })
+    );
+
+    let mut next_tick_result = PlayerTickResult::default();
+    assert_eq!(
+        read_demux_packets(
+            &mut session,
+            &tick_config,
+            &mut next_tick_result,
+            100,
+            Some(Instant::now() + Duration::from_secs(1)),
+        ),
+        0
+    );
+    assert_eq!(packet_read_count.load(Ordering::Relaxed), 5);
+    assert!(next_tick_result.demux_backpressured);
 }
 
 #[test]
-fn clear_pending_video_packets_resets_keyframe_resync_wait() {
+fn production_recovery_scan_reaches_keyframe_after_target_asset_long_gop() {
+    const TARGET_ASSET_MAX_GOP_COMPRESSED_BYTES: usize = 21_627_929;
+
     let mut session = PlayerSession::new();
+    let selected_video_track_id = TrackId::new(1);
+    let selected_audio_track_id = TrackId::new(2);
+    let packet_read_count = Arc::new(AtomicUsize::new(0));
+    let mut demux_packets = (0..420u64)
+        .map(|packet_index| {
+            media_core::Packet::new(
+                selected_video_track_id,
+                TrackKind::Video,
+                Duration::from_millis(100 + packet_index),
+                None,
+                false,
+                Bytes::from_static(b"long-gop-interframe"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let recovery_keyframe_pts = Duration::from_millis(520);
+    demux_packets.push(media_core::Packet::new(
+        selected_video_track_id,
+        TrackKind::Video,
+        recovery_keyframe_pts,
+        None,
+        true,
+        Bytes::from_static(b"long-gop-recovery-keyframe"),
+    ));
+    let demuxer = AdmissionTestDemuxer::with_packets(Vec::new(), demux_packets)
+        .with_packet_read_count(Arc::clone(&packet_read_count));
     session
         .pipeline
-        .shed_pending_video_backlog_for_audio_catchup();
-
-    // Seek/media reset проходят через clear_pending_video_packets и снимают ожидание.
-    session.pipeline.clear_pending_video_packets();
-    assert!(
-        !session
-            .pipeline
-            .video_admission_should_drop_for_keyframe_resync(PacketKeyframe::NotKeyframe)
+        .install_opened_media(Box::new(demuxer), None, None, Vec::new());
+    session.pipeline.select_video_track(
+        selected_video_track_id,
+        VideoDecodeRequirement::new(VideoCodec::Av1),
     );
+    session.set_playback_state(PlaybackState::Paused);
+    assert_eq!(
+        session
+            .dispatch_command(PlayerCommand::SetPlaybackRate(PlaybackRate::MAX))
+            .unwrap(),
+        crate::PlayerCommandOutcome::Applied
+    );
+    session.pipeline.select_audio_track(selected_audio_track_id);
+    session.pipeline.mark_video_decoder_bootstrapped();
+    install_fixed_audio_output(&mut session, 40.0);
+    let generation = session.pipeline.seek_generation();
+    session
+        .pipeline
+        .enqueue_pending_video_packet(PendingVideoPacket::new(
+            selected_video_track_id,
+            Duration::ZERO,
+            generation,
+            Bytes::from_static(b"already-sent-proof-keyframe"),
+            PacketKeyframe::Keyframe,
+        ));
+    session
+        .pipeline
+        .pop_pending_video_packet_front()
+        .expect("proof keyframe должен моделировать уже отправленный decoder packet");
+    for packet_index in 0..5u64 {
+        session
+            .pipeline
+            .enqueue_pending_video_packet(PendingVideoPacket::new(
+                selected_video_track_id,
+                Duration::from_millis(packet_index + 1),
+                generation,
+                Bytes::new(),
+                PacketKeyframe::NotKeyframe,
+            ));
+    }
+    let tick_config = PlayerTickConfig {
+        max_pending_video_packets: 2,
+        max_pending_video_packets_during_audio_catchup: 5,
+        adaptive_catch_up_time_budget: Duration::from_secs(1),
+        ..PlayerTickConfig::default()
+    };
+    assert!(
+        tick_config.max_video_backlog_recovery_scan_packets > 420,
+        "production scan limit обязан покрывать измеренный 420-frame GOP"
+    );
+    assert!(
+        tick_config.max_video_backlog_recovery_scan_bytes > TARGET_ASSET_MAX_GOP_COMPRESSED_BYTES,
+        "production byte limit обязан покрывать измеренный 20.63 MiB GOP payload"
+    );
+    let mut tick_result = PlayerTickResult::default();
+
+    assert_eq!(
+        read_demux_packets(
+            &mut session,
+            &tick_config,
+            &mut tick_result,
+            1,
+            Some(Instant::now() + Duration::from_secs(1)),
+        ),
+        1
+    );
+    assert_eq!(packet_read_count.load(Ordering::Relaxed), 421);
+    assert_eq!(tick_result.staged_video_backlog_recovery_packets, 420);
+    assert_eq!(tick_result.demuxed_packets.len(), 1);
+    assert_eq!(
+        tick_result.demuxed_packets[0].keyframe,
+        PacketKeyframe::Keyframe
+    );
+    assert_eq!(session.pipeline.pending_video_packet_len(), 1);
+    assert_eq!(
+        session.pipeline.video_backlog_recovery_staged_packet_len(),
+        0
+    );
+    assert_eq!(
+        session.pipeline.front_pending_video_packet().unwrap().pts,
+        recovery_keyframe_pts
+    );
+    assert!(!session.pipeline.video_backlog_recovery_scan_allows_demux());
+    assert!(!tick_result.demux_backpressured);
 }
 
 #[test]

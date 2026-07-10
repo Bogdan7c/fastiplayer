@@ -85,6 +85,15 @@ pub struct PlayerTickConfig {
     /// Временный bounded лимит video packets, пока audio buffer догоняет low-watermark.
     pub max_pending_video_packets_during_audio_catchup: usize,
 
+    /// Максимум compressed video packets в recovery staging до safe rollback-а.
+    ///
+    /// Это отдельный лимит от decoder-facing backlog: длинный GOP может быть
+    /// больше обычной catch-up очереди, но staging всё равно обязан быть bounded.
+    pub max_video_backlog_recovery_scan_packets: usize,
+
+    /// Максимум retained compressed payload recovery staging-а в bytes.
+    pub max_video_backlog_recovery_scan_bytes: usize,
+
     /// Максимум video packets, отправляемых decoder thread за один tick.
     pub max_video_packets_sent_per_tick: usize,
 
@@ -156,6 +165,11 @@ impl Default for PlayerTickConfig {
             max_pending_video_packets: 32,
             decoder_ready_queue_frames: 8,
             max_pending_video_packets_during_audio_catchup: 240,
+            // Target HDR AV1 asset имеет до 420 frames между keyframes; 512
+            // оставляет bounded запас без добавления playback-rate TOML knob-а.
+            max_video_backlog_recovery_scan_packets: 512,
+            // Измеренный максимум GOP payload для target asset равен 20.63 MiB.
+            max_video_backlog_recovery_scan_bytes: 32 * 1024 * 1024,
             max_video_packets_sent_per_tick: 8,
             max_decoded_video_frames_drained_per_tick: 8,
             max_video_decode_ahead: Duration::from_millis(500),
@@ -255,6 +269,10 @@ pub struct PlayerTickResult {
     /// unbounded per-packet telemetry allocations.
     pub dropped_seek_audio_preroll_packets: u64,
 
+    /// Video packets, удержанные recovery staging-ом и агрегированные без
+    /// per-packet `demuxed_packets` allocations.
+    pub staged_video_backlog_recovery_packets: u64,
+
     /// Количество decoded frames, принятых из decoder thread.
     pub decoded_video_frames: u64,
 
@@ -274,10 +292,10 @@ pub struct PlayerTickResult {
     pub demux_backpressured: bool,
 }
 
-impl PlayerTickResult {
-    /// Запоминает packet для внешней телеметрии без передачи codec bytes наружу.
-    pub(super) fn record_demuxed_packet(&mut self, packet: &media_core::Packet) {
-        self.demuxed_packets.push(PlayerTickPacket {
+impl PlayerTickPacket {
+    /// Отделяет bounded telemetry от codec payload до передачи packet-а pipeline-у.
+    pub(super) fn from_demuxed_packet(packet: &media_core::Packet) -> Self {
+        Self {
             track_id: packet.track_id,
             kind: packet.kind,
             pts: packet.pts,
@@ -286,7 +304,20 @@ impl PlayerTickResult {
             size: packet.data.len(),
             byte_offset: packet.byte_offset,
             keyframe: packet.keyframe,
-        });
+        }
+    }
+}
+
+impl PlayerTickResult {
+    /// Запоминает уже отделённую от codec payload packet telemetry.
+    pub(super) fn record_demuxed_packet(&mut self, packet: PlayerTickPacket) {
+        self.demuxed_packets.push(packet);
+    }
+
+    /// Учитывает один staged recovery packet bounded scalar-ом.
+    pub(super) fn record_staged_video_backlog_recovery_packet(&mut self) {
+        self.staged_video_backlog_recovery_packets =
+            self.staged_video_backlog_recovery_packets.saturating_add(1);
     }
 
     /// Учитывает dropped audio preroll без создания `PlayerTickPacket`.

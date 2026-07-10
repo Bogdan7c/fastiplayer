@@ -57,6 +57,61 @@ fn diagnostics_queue_snapshot_does_not_mutate_pipeline() {
 }
 
 #[test]
+fn diagnostics_queue_snapshot_reports_video_recovery_staging_without_mutation() {
+    let mut session = PlayerSession::default();
+    let selected_video_track = TrackId::new(2);
+    session.pipeline.select_video_track(
+        selected_video_track,
+        VideoDecodeRequirement::new(VideoCodec::Av1),
+    );
+    session
+        .pipeline
+        .enqueue_pending_video_packet(PendingVideoPacket::new(
+            selected_video_track,
+            Duration::ZERO,
+            session.pipeline.seek_generation(),
+            Bytes::from_static(b"recovery-proof-keyframe"),
+            PacketKeyframe::Keyframe,
+        ));
+    let _proof_keyframe = session
+        .pipeline
+        .pop_pending_video_packet_front()
+        .expect("proof keyframe должен считаться уже переданным decoder-у");
+    session.pipeline.mark_video_decoder_bootstrapped();
+    assert_eq!(
+        session.pipeline.begin_video_backlog_recovery_scan(
+            crate::pipeline::VideoBacklogRecoveryScanLimits::for_tests()
+        ),
+        crate::pipeline::VideoBacklogRecoveryScanStart::Started
+    );
+    assert_eq!(
+        session
+            .pipeline
+            .route_pending_video_packet_for_backlog_recovery(PendingVideoPacket::new(
+                selected_video_track,
+                Duration::from_millis(10),
+                session.pipeline.seek_generation(),
+                Bytes::from_static(b"staged-diagnostics-packet"),
+                PacketKeyframe::NotKeyframe,
+            )),
+        crate::pipeline::VideoBacklogRecoveryRouteOutcome::StagedWhileScanning
+    );
+
+    let diagnostics = session.diagnostics_snapshot();
+
+    assert_eq!(diagnostics.queues.staged_video_backlog_recovery_packets, 1);
+    assert_eq!(
+        diagnostics.queues.staged_video_backlog_recovery_bytes,
+        b"staged-diagnostics-packet".len()
+    );
+    assert!(session.pipeline.video_backlog_recovery_scan_allows_demux());
+    assert_eq!(
+        session.pipeline.video_backlog_recovery_staged_packet_len(),
+        1
+    );
+}
+
+#[test]
 fn diagnostics_records_latency_drop_and_wakeup_with_queue_attribution() {
     let mut session = PlayerSession::default();
     enqueue_diagnostics_probe_packets(&mut session);

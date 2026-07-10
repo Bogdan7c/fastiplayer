@@ -17,6 +17,7 @@ impl PlaybackPipeline {
         &mut self,
         decoder_thread: Box<PlayerVideoDecoderThreadHandle>,
     ) {
+        self.cancel_video_backlog_recovery_scan_for_decoder_replacement();
         self.video_backend = decoder_thread.backend_name();
         self.video_decoder_thread = Some(decoder_thread);
         self.reset_video_decode_in_flight();

@@ -925,6 +925,53 @@ fn active_tempo_processor_rejection_preserves_old_rate_and_audio_path() {
     );
     assert!(session.pipeline.has_audio_tempo_processor());
 
+    let selected_video_track = TrackId::new(1);
+    session.pipeline.select_video_track(
+        selected_video_track,
+        VideoDecodeRequirement::new(VideoCodec::Av1),
+    );
+    session
+        .pipeline
+        .enqueue_pending_video_packet(PendingVideoPacket::new(
+            selected_video_track,
+            Duration::ZERO,
+            session.pipeline.seek_generation(),
+            Bytes::from_static(b"recovery-proof-keyframe"),
+            PacketKeyframe::Keyframe,
+        ));
+    let _proof_keyframe = session
+        .pipeline
+        .pop_pending_video_packet_front()
+        .expect("proof keyframe должен считаться уже переданным decoder-у");
+    session
+        .pipeline
+        .enqueue_pending_video_packet(PendingVideoPacket::new(
+            selected_video_track,
+            Duration::from_millis(5),
+            session.pipeline.seek_generation(),
+            Bytes::from_static(b"old-decoder-runway"),
+            PacketKeyframe::NotKeyframe,
+        ));
+    session.pipeline.mark_video_decoder_bootstrapped();
+    assert_eq!(
+        session.pipeline.begin_video_backlog_recovery_scan(
+            crate::pipeline::VideoBacklogRecoveryScanLimits::for_tests()
+        ),
+        crate::pipeline::VideoBacklogRecoveryScanStart::Started
+    );
+    assert_eq!(
+        session
+            .pipeline
+            .route_pending_video_packet_for_backlog_recovery(PendingVideoPacket::new(
+                selected_video_track,
+                Duration::from_millis(10),
+                session.pipeline.seek_generation(),
+                Bytes::from_static(b"staged-before-rejected-rate"),
+                PacketKeyframe::NotKeyframe,
+            )),
+        crate::pipeline::VideoBacklogRecoveryRouteOutcome::StagedWhileScanning
+    );
+
     tempo_factory_handle.reject_future_segment_changes();
     let outcome = session
         .dispatch_command(PlayerCommand::SetPlaybackRate(rejected_rate))
@@ -945,6 +992,20 @@ fn active_tempo_processor_rejection_preserves_old_rate_and_audio_path() {
     assert!(session.pipeline.has_audio_tempo_processor());
     assert!(session.pipeline.has_audio_output());
     assert!(tempo_factory_handle.set_segments().is_empty());
+    assert!(session.pipeline.video_backlog_recovery_scan_allows_demux());
+    assert_eq!(
+        session.pipeline.video_backlog_recovery_staged_packet_len(),
+        1
+    );
+    assert_eq!(session.pipeline.pending_video_packet_len(), 1);
+    assert_eq!(
+        session
+            .pipeline
+            .front_pending_video_packet()
+            .expect("rejected rate не должен менять старый runway")
+            .encoded_bytes,
+        Bytes::from_static(b"old-decoder-runway")
+    );
 }
 
 #[test]

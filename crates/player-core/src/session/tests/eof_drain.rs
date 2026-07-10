@@ -97,6 +97,101 @@ fn eof_drain_starts_decoder_drain_without_seek_flush_or_generation_change() {
 }
 
 #[test]
+fn eof_finishes_video_backlog_recovery_scan_without_discarding_tail() {
+    let mut session = PlayerSession::new();
+    let selected_video_track_id = TrackId::new(1);
+    let decoder = SharedFakeVideoDecoderThread::new();
+    session.pipeline.set_video_decoder_thread(decoder.clone());
+    session.pipeline.select_video_track(
+        selected_video_track_id,
+        VideoDecodeRequirement::new(VideoCodec::Av1),
+    );
+    let generation = session.pipeline.seek_generation();
+    session
+        .pipeline
+        .enqueue_pending_video_packet(PendingVideoPacket::new(
+            selected_video_track_id,
+            Duration::ZERO,
+            generation,
+            Bytes::from_static(b"eof-proof-keyframe"),
+            PacketKeyframe::Keyframe,
+        ));
+    session
+        .pipeline
+        .pop_pending_video_packet_front()
+        .expect("proof keyframe должен моделировать уже отправленный decoder packet");
+    session
+        .pipeline
+        .enqueue_pending_video_packet(PendingVideoPacket::new(
+            selected_video_track_id,
+            Duration::from_millis(17),
+            generation,
+            Bytes::from_static(b"eof-video-tail"),
+            PacketKeyframe::NotKeyframe,
+        ));
+    session.pipeline.mark_video_decoder_bootstrapped();
+    assert_eq!(
+        session.pipeline.begin_video_backlog_recovery_scan(
+            crate::pipeline::VideoBacklogRecoveryScanLimits::for_tests()
+        ),
+        crate::pipeline::VideoBacklogRecoveryScanStart::Started
+    );
+    for continuation_pts_ms in [34, 51] {
+        assert_eq!(
+            session
+                .pipeline
+                .route_pending_video_packet_for_backlog_recovery(PendingVideoPacket::new(
+                    selected_video_track_id,
+                    Duration::from_millis(continuation_pts_ms),
+                    generation,
+                    Bytes::from_static(b"staged-eof-continuation"),
+                    PacketKeyframe::NotKeyframe,
+                )),
+            crate::pipeline::VideoBacklogRecoveryRouteOutcome::StagedWhileScanning
+        );
+    }
+    assert_eq!(session.pipeline.pending_video_packet_len(), 1);
+    assert_eq!(
+        session.pipeline.video_backlog_recovery_staged_packet_len(),
+        2
+    );
+
+    session.enter_eof_drain();
+
+    assert!(!session.pipeline.video_backlog_recovery_scan_allows_demux());
+    assert_eq!(
+        session.pipeline.video_backlog_recovery_staged_packet_len(),
+        0
+    );
+    assert_eq!(
+        session.pipeline.pending_video_packet_len(),
+        3,
+        "EOF обязан вернуть staged continuation после сохранённого backlog"
+    );
+    assert!(
+        decoder.eof_drain_requests().is_empty(),
+        "decoder drain должен дождаться отправки восстановленного tail"
+    );
+    let restored_pts = (0..3)
+        .map(|_| {
+            session
+                .pipeline
+                .pop_pending_video_packet_front()
+                .expect("EOF tail packet должен сохраниться")
+                .pts
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        restored_pts,
+        vec![
+            Duration::from_millis(17),
+            Duration::from_millis(34),
+            Duration::from_millis(51),
+        ]
+    );
+}
+
+#[test]
 fn audio_only_eof_after_buffered_samples_keeps_bounded_wakeup_until_drain() {
     let mut session = PlayerSession::new();
     install_fake_media(&mut session, vec![fake_track(2, TrackKind::Audio)]);

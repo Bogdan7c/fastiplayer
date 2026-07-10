@@ -25,6 +25,14 @@
 - Первый переход direct 1x -> tempo создаёт Signalsmith processor, prime-ит не более 600 ms history и отбрасывает только duplicate warmup output. Factory/prime failure возвращает history и segment proposal, поэтому retry возможен.
 - Clean startup 1x идёт как `DirectDecodedPcm` без protection. После появления processor возврат к 1x сохраняет DSP continuity до EOF/reset и пишет `TempoProcessed`.
 
+## Accelerated video overload policy (choice 1)
+
+- Exact requested audio/media clock remains authoritative at `>1x`; scheduler may reduce video smoothness only through a codec-safe compressed backlog recovery. It must not silently slow audio, pause playback, or report a fake applied rate.
+- `PlaybackPipeline` owns a two-phase AV1/VP9 recovery state machine. Existing pending packets remain decoder runway while new video packets are staged. Only a proven keyframe for the selected track/current seek generation commits the switch; packet metadata is preserved and decoder/generation are not flushed or recreated.
+- EOF, bounded scan rollback, and a successfully committed downshift to `<=1x` append staged continuation after old pending FIFO. A tempo-backend rejection happens before reconciliation and preserves old rate, scan and staging atomically. Seek/media/track/generation/decoder replacement cancel staging; Pause and accelerated-to-accelerated transitions preserve it.
+- Default allocation guard is 512 compressed packets plus 32 MiB retained payload. The target HDR AV1 4K60 asset has a measured maximum 420-frame / 20.63 MiB GOP. Packet- and byte-limit rollback are typed; current staging packet/byte depth is in queue diagnostics; dense scan packet telemetry uses a scalar rather than growing `PlayerTickResult.demuxed_packets`.
+- No-flush recovery is deliberately restricted to AV1/VP9. H.264/H.265/VP8 remain ordinary FIFO because generic `PacketKeyframe` does not prove all required random-access/leading-picture semantics. `1x` and slow playback never start the recovery scan.
+
 ## Pause lifecycle
 
 - Pause сначала атомарно вызывает output `pause_and_freeze_clock`, затем вычисляет media position из того же captured timing и только после успеха публикует `Paused`.

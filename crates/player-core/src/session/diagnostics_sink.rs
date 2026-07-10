@@ -200,6 +200,12 @@ impl PlayerSession {
         PipelineQueueDepthSnapshot {
             pending_audio_packets: self.pipeline.pending_audio_packet_len(),
             pending_video_packets: self.pipeline.pending_video_packet_len(),
+            staged_video_backlog_recovery_packets: self
+                .pipeline
+                .video_backlog_recovery_staged_packet_len(),
+            staged_video_backlog_recovery_bytes: self
+                .pipeline
+                .video_backlog_recovery_staged_bytes(),
             present_queue_depth: self.pipeline.video_present_queue_len(),
             decoder_send_queue_depth,
             decoder_in_flight_packets: self.pipeline.video_decode_in_flight_packets(),

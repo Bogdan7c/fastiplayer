@@ -86,6 +86,16 @@ impl PlayerSession {
     /// Переводит session в EOF-drain, сохраняя demuxer открытым для replay/seek.
     pub fn enter_eof_drain(&mut self) {
         let previous_state = self.playback_state();
+        // На EOF следующего recovery keyframe уже не будет. Сохранённый backlog
+        // вместе со staged continuation целиком проходит обычный drain.
+        let recovery_report = self.pipeline.finish_video_backlog_recovery_scan_at_eof();
+        if recovery_report.restored_staged_packets > 0 {
+            debug!(
+                restored_staged_video_packets = recovery_report.restored_staged_packets,
+                pending_video_packets = self.pipeline.pending_video_packet_len(),
+                "EOF восстановил незавершённый video recovery continuation"
+            );
+        }
         debug!(
             previous_state = ?previous_state,
             current_position_ms = self.snapshot.current_position.as_secs_f64() * 1000.0,
