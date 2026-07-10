@@ -20,14 +20,14 @@ use video_frame_contract::VideoFrameContract;
 use video_frame_contract::{DmaBufImageLayout, VideoFramePixelLayout};
 
 use crate::{
-    AudioOutputClockTiming, AudioTempoDecodedMedia, AudioTempoPcmFormat, AudioTempoProcessReport,
-    AudioTempoProcessorHandle, AudioTempoRatio, AudioTempoSegment, AudioTempoSegmentId,
-    DecodeSendError, DecodeThreadError, DecoderControlChannelPressureSnapshot,
-    DecoderResourceSnapshot, PlaybackRate, PlayerAudioClock, PlayerAudioOutput, PlayerDecodePacket,
-    PlayerVideoDecoderThreadHandle, PresentFrameResourceProviderHandle,
-    VideoDecoderEndOfStreamDrainResult, VideoDecoderEndOfStreamDrainState, VideoPrerollOutputFloor,
-    VideoPrerollOutputFloorClear, VideoPrerollOutputFloorResult, VideoStreamConfigResult,
-    VideoStreamDecodeConfig,
+    AudioOutputClockTiming, AudioOutputWriteError, AudioOutputWriteReport, AudioTempoDecodedMedia,
+    AudioTempoPcmFormat, AudioTempoProcessReport, AudioTempoProcessorHandle, AudioTempoRatio,
+    AudioTempoSegment, AudioTempoSegmentId, DecodeSendError, DecodeThreadError,
+    DecoderControlChannelPressureSnapshot, DecoderResourceSnapshot, PlaybackRate, PlayerAudioClock,
+    PlayerAudioOutput, PlayerDecodePacket, PlayerVideoDecoderThreadHandle,
+    PresentFrameResourceProviderHandle, VideoDecoderEndOfStreamDrainResult,
+    VideoDecoderEndOfStreamDrainState, VideoPrerollOutputFloor, VideoPrerollOutputFloorClear,
+    VideoPrerollOutputFloorResult, VideoStreamConfigResult, VideoStreamDecodeConfig,
 };
 #[cfg(test)]
 use video_core::VideoDecoderThreadHandle;
@@ -208,17 +208,17 @@ impl CapturedAudioClockMapping {
     }
 }
 
-/// Typed итог маршрутизации tempo PCM без смешивания absent/output/drop состояний.
+/// Typed итог маршрутизации PCM без смешивания absent/error/partial состояний.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AudioTempoOutputWriteStatus {
-    /// Tempo processor активен, но audio output slot отсутствует.
+pub(crate) enum AudioOutputRoutingStatus {
+    /// Audio output slot отсутствует.
     AudioOutputAbsent,
 
-    /// Output принял указанное количество interleaved samples.
-    Written {
-        requested_samples: usize,
-        written_samples: u64,
-    },
+    /// Concrete output отклонил некорректный PCM/accounting до успешной записи.
+    WriteFailed(AudioOutputWriteError),
+
+    /// Concrete output вернул frame accounting после своих преобразований.
+    Written(AudioOutputWriteReport),
 }
 
 /// Report tempo operation вместе с явным результатом output routing.
@@ -228,20 +228,23 @@ pub(crate) struct RoutedAudioTempoOutput {
     pub(crate) report: AudioTempoProcessReport,
 
     /// Что произошло с произведённым PCM после processor boundary.
-    pub(crate) write_status: AudioTempoOutputWriteStatus,
+    pub(crate) write_status: AudioOutputRoutingStatus,
 }
 
-/// Успешный результат audio decode вместе с параметрами decoder-а для clock trimming.
+/// Успешный результат audio decode без невозможного «PCM без format» состояния.
 #[derive(Debug)]
-pub(crate) struct DecodedAudioPacket {
-    /// Interleaved PCM samples, которые вернул codec-neutral decoder.
-    pub(crate) samples: Vec<f32>,
+pub(crate) enum DecodedAudioPacket {
+    /// Decoder штатно пропустил corrupted/reset packet без PCM output-а.
+    Empty,
 
-    /// Sample rate decoded PCM на момент decode.
-    pub(crate) sample_rate: u32,
+    /// Непустой interleaved PCM и authoritative format именно этого buffer-а.
+    Pcm {
+        /// Interleaved PCM samples, которые вернул codec-neutral decoder.
+        samples: Vec<f32>,
 
-    /// Количество interleaved audio channels на момент decode.
-    pub(crate) channels: u32,
+        /// Atomic sample-rate/layout spec decoded buffer-а.
+        output_spec: audio_core::AudioOutputSpec,
+    },
 }
 
 /// Anchor внутреннего monotonic media clock для media без audio clock.
@@ -477,6 +480,9 @@ pub(crate) struct PlaybackPipeline {
     /// Audio output за нейтральным boundary trait-ом: production adapter или test fake.
     audio_output: Option<Box<dyn PlayerAudioOutput>>,
 
+    /// Decoded PCM spec, принятый установленным audio output-ом.
+    audio_output_input_spec: Option<audio_core::AudioOutputSpec>,
+
     /// Optional tempo processor для non-1x decoded PCM; `1.0x` остаётся passthrough.
     audio_tempo_processor: Option<AudioTempoProcessorHandle>,
 
@@ -493,8 +499,8 @@ pub(crate) struct PlaybackPipeline {
     /// слышимый клик на первом переходе 1.0x -> non-1x.
     passthrough_audio_history: Vec<f32>,
 
-    /// `(sample_rate, channels)` decoded PCM, под который записана история.
-    passthrough_audio_history_spec: Option<(u32, u32)>,
+    /// Полный decoded PCM spec, под который записана passthrough история.
+    passthrough_audio_history_spec: Option<audio_core::AudioOutputSpec>,
 
     /// Admission ждёт следующий video keyframe после audio catch-up backlog shed.
     video_admission_waits_for_keyframe: bool,
@@ -644,6 +650,7 @@ impl Default for PlaybackPipeline {
             audio_decoder: None,
             deferred_audio_decoder_config: None,
             audio_output: None,
+            audio_output_input_spec: None,
             audio_tempo_processor: None,
             audio_tempo_output_buffer: Vec::new(),
             next_audio_tempo_segment_id: 1,

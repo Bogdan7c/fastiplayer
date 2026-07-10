@@ -21,8 +21,9 @@ use symphonia::core::units::{Duration as SymphoniaDuration, Timestamp as Symphon
 use tracing::{info, warn};
 
 pub use audio_core::{
-    AudioDecoder, AudioDecoderConfig, AudioDecoderError, AudioDecoderFactory, AudioDecoderHandle,
-    AudioPacketTimeBase, AudioPacketTiming, EncodedAudioPacket,
+    AudioChannelLayout, AudioChannelPosition, AudioDecoder, AudioDecoderConfig, AudioDecoderError,
+    AudioDecoderFactory, AudioDecoderHandle, AudioPacketTimeBase, AudioPacketTiming,
+    EncodedAudioPacket,
 };
 
 /// Максимальное количество samples на packet для Opus fallback (120ms @ 48kHz stereo).
@@ -70,6 +71,9 @@ pub struct SymphoniaAudioDecoder {
 
     /// Последнее известное количество decoded PCM каналов.
     channels: u32,
+
+    /// Neutral layout последнего decoded PCM buffer-а.
+    channel_layout: Option<AudioChannelLayout>,
 }
 
 impl SymphoniaAudioDecoder {
@@ -103,12 +107,22 @@ impl SymphoniaAudioDecoder {
             "Symphonia audio decoder создан"
         );
 
+        let channel_layout = config
+            .channels()
+            .map(AudioChannelLayout::from_channel_count)
+            .transpose()
+            .map_err(|error| AudioDecoderError::InvalidConfig {
+                codec_id: config.codec_id().to_string(),
+                reason: error.to_string(),
+            })?;
+
         Ok(Self {
             track_id: config.track_id(),
             codec_id: config.codec_id().to_string(),
             decoder,
             sample_rate: config.sample_rate().unwrap_or(0),
             channels: config.channels().unwrap_or(0),
+            channel_layout,
         })
     }
 
@@ -135,9 +149,20 @@ impl AudioDecoder for SymphoniaAudioDecoder {
 
         match self.decoder.decode_ref(&symphonia_packet) {
             Ok(decoded_audio) => {
-                self.sample_rate = decoded_audio.spec().rate();
-                self.channels = decoded_audio.spec().channels().count() as u32;
-                Ok(decoded_audio_to_interleaved_f32(decoded_audio))
+                let decoded_sample_rate = decoded_audio.spec().rate();
+                let decoded_channels = decoded_audio.spec().channels().count() as u32;
+                let decoded_channel_layout = audio_channel_layout_from_symphonia(
+                    decoded_audio.spec().channels(),
+                    &self.codec_id,
+                )?;
+                let interleaved_samples = decoded_audio_to_interleaved_f32(decoded_audio);
+
+                // Публикуем spec только после успешного layout mapping и copy:
+                // ошибка packet-а не должна оставить decoder с частично новым format.
+                self.sample_rate = decoded_sample_rate;
+                self.channels = decoded_channels;
+                self.channel_layout = Some(decoded_channel_layout);
+                Ok(interleaved_samples)
             }
             Err(SymphoniaError::DecodeError(message)) => {
                 warn!(
@@ -182,6 +207,11 @@ impl AudioDecoder for SymphoniaAudioDecoder {
     fn channels(&self) -> u32 {
         self.channels
     }
+
+    /// Возвращает layout последнего decoded PCM без Symphonia types в boundary.
+    fn channel_layout(&self) -> Option<AudioChannelLayout> {
+        self.channel_layout
+    }
 }
 
 /// Приватный Opus fallback adapter поверх `opus` crate.
@@ -197,6 +227,9 @@ struct OpusFallbackDecoder {
 
     /// Количество каналов decoded audio.
     channels: u32,
+
+    /// Neutral mono/stereo layout fallback decoder-а.
+    channel_layout: AudioChannelLayout,
 
     /// Reusable buffer для i16 samples из opus decoder.
     i16_buffer: Vec<i16>,
@@ -228,6 +261,12 @@ impl OpusFallbackDecoder {
             decoder,
             sample_rate,
             channels,
+            channel_layout: AudioChannelLayout::from_channel_count(channels).map_err(|error| {
+                AudioDecoderError::InvalidConfig {
+                    codec_id: config.codec_id().to_string(),
+                    reason: error.to_string(),
+                }
+            })?,
             i16_buffer: vec![0i16; MAX_OPUS_SAMPLES_PER_PACKET],
         })
     }
@@ -288,6 +327,11 @@ impl AudioDecoder for OpusFallbackDecoder {
     fn channels(&self) -> u32 {
         self.channels
     }
+
+    /// Возвращает однозначный mono/stereo layout fallback decoder-а.
+    fn channel_layout(&self) -> Option<AudioChannelLayout> {
+        Some(self.channel_layout)
+    }
 }
 
 /// Проверяет базовые инварианты decoder config-а до обращения к backend registry.
@@ -345,6 +389,116 @@ fn channels_from_count(channel_count: u32, codec_id: &str) -> Result<Channels> {
         }
         .into()),
     }
+}
+
+/// Переводит Symphonia channel representation в neutral decoded PCM layout.
+///
+/// `Positioned` buffer-ы Symphonia всегда используют canonical order младших
+/// position bits. `Discrete` сохраняется как unknown semantics; Ambisonic и
+/// custom order нельзя безопасно свести к текущему neutral positional contract.
+fn audio_channel_layout_from_symphonia(
+    channels: &Channels,
+    codec_id: &str,
+) -> Result<AudioChannelLayout> {
+    let layout_result = match channels {
+        Channels::Positioned(positions) => {
+            let mut neutral_positions = [AudioChannelPosition::FrontLeft; 26];
+            let mut position_count = 0_usize;
+
+            for position in positions.iter() {
+                let Some(neutral_position) = audio_channel_position_from_symphonia(position) else {
+                    return Err(AudioDecoderError::UnsupportedDecodedChannelLayout {
+                        codec_id: codec_id.to_string(),
+                        layout: channels.to_string(),
+                    }
+                    .into());
+                };
+                neutral_positions[position_count] = neutral_position;
+                position_count += 1;
+            }
+
+            AudioChannelLayout::positioned(&neutral_positions[..position_count])
+        }
+        Channels::Discrete(channel_count) => {
+            AudioChannelLayout::discrete(u32::from(*channel_count))
+        }
+        _ => {
+            return Err(AudioDecoderError::UnsupportedDecodedChannelLayout {
+                codec_id: codec_id.to_string(),
+                layout: channels.to_string(),
+            }
+            .into());
+        }
+    };
+
+    layout_result.map_err(|_| {
+        AudioDecoderError::UnsupportedDecodedChannelLayout {
+            codec_id: codec_id.to_string(),
+            layout: channels.to_string(),
+        }
+        .into()
+    })
+}
+
+/// Переводит одну Symphonia position в нейтральную позицию audio-core.
+fn audio_channel_position_from_symphonia(position: Position) -> Option<AudioChannelPosition> {
+    let neutral_position = if position == Position::FRONT_LEFT {
+        AudioChannelPosition::FrontLeft
+    } else if position == Position::FRONT_RIGHT {
+        AudioChannelPosition::FrontRight
+    } else if position == Position::FRONT_CENTER {
+        AudioChannelPosition::FrontCenter
+    } else if position == Position::LFE1 {
+        AudioChannelPosition::LowFrequencyEffects
+    } else if position == Position::REAR_LEFT {
+        AudioChannelPosition::RearLeft
+    } else if position == Position::REAR_RIGHT {
+        AudioChannelPosition::RearRight
+    } else if position == Position::FRONT_LEFT_CENTER {
+        AudioChannelPosition::FrontLeftOfCenter
+    } else if position == Position::FRONT_RIGHT_CENTER {
+        AudioChannelPosition::FrontRightOfCenter
+    } else if position == Position::REAR_CENTER {
+        AudioChannelPosition::RearCenter
+    } else if position == Position::SIDE_LEFT {
+        AudioChannelPosition::SideLeft
+    } else if position == Position::SIDE_RIGHT {
+        AudioChannelPosition::SideRight
+    } else if position == Position::TOP_CENTER {
+        AudioChannelPosition::TopCenter
+    } else if position == Position::TOP_FRONT_LEFT {
+        AudioChannelPosition::TopFrontLeft
+    } else if position == Position::TOP_FRONT_CENTER {
+        AudioChannelPosition::TopFrontCenter
+    } else if position == Position::TOP_FRONT_RIGHT {
+        AudioChannelPosition::TopFrontRight
+    } else if position == Position::TOP_REAR_LEFT {
+        AudioChannelPosition::TopRearLeft
+    } else if position == Position::TOP_REAR_CENTER {
+        AudioChannelPosition::TopRearCenter
+    } else if position == Position::TOP_REAR_RIGHT {
+        AudioChannelPosition::TopRearRight
+    } else if position == Position::LFE2 {
+        AudioChannelPosition::LowFrequencyEffects2
+    } else if position == Position::TOP_SIDE_LEFT {
+        AudioChannelPosition::TopSideLeft
+    } else if position == Position::TOP_SIDE_RIGHT {
+        AudioChannelPosition::TopSideRight
+    } else if position == Position::BOTTOM_FRONT_CENTER {
+        AudioChannelPosition::BottomFrontCenter
+    } else if position == Position::BOTTOM_FRONT_LEFT {
+        AudioChannelPosition::BottomFrontLeft
+    } else if position == Position::BOTTOM_FRONT_RIGHT {
+        AudioChannelPosition::BottomFrontRight
+    } else if position == Position::FRONT_LEFT_WIDE {
+        AudioChannelPosition::FrontLeftWide
+    } else if position == Position::FRONT_RIGHT_WIDE {
+        AudioChannelPosition::FrontRightWide
+    } else {
+        return None;
+    };
+
+    Some(neutral_position)
 }
 
 /// Преобразует neutral packet в zero-copy Symphonia `PacketRef`.
@@ -501,12 +655,15 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
-    use symphonia::core::audio::{AudioBuffer, AudioSpec, GenericAudioBufferRef};
+    use symphonia::core::audio::{
+        AudioBuffer, AudioSpec, Channels, GenericAudioBufferRef, layouts,
+    };
 
     use super::symphonia_audio_codec;
     use super::{
-        AudioDecoder, AudioDecoderConfig, AudioDecoderError, AudioDecoderHandle,
-        AudioPacketTimeBase, AudioPacketTiming, EncodedAudioPacket, audio_codec_parameters,
+        AudioChannelLayout, AudioChannelPosition, AudioDecoder, AudioDecoderConfig,
+        AudioDecoderError, AudioDecoderHandle, AudioPacketTimeBase, AudioPacketTiming,
+        EncodedAudioPacket, audio_channel_layout_from_symphonia, audio_codec_parameters,
         create_audio_decoder, decoded_audio_to_interleaved_f32, symphonia_codec_id_from_container,
         symphonia_packet_ref_from_encoded_packet, validate_audio_decoder_config,
     };
@@ -544,6 +701,11 @@ mod tests {
         fn channels(&self) -> u32 {
             self.channels
         }
+
+        /// Возвращает однозначный fake layout из channel count-а.
+        fn channel_layout(&self) -> Option<AudioChannelLayout> {
+            AudioChannelLayout::from_channel_count(self.channels).ok()
+        }
     }
 
     /// Создаёт минимальный Opus config для factory tests.
@@ -565,8 +727,48 @@ mod tests {
 
         assert_eq!(mono_decoder.sample_rate(), 48_000);
         assert_eq!(mono_decoder.channels(), 1);
+        assert_eq!(
+            mono_decoder.channel_layout(),
+            Some(AudioChannelLayout::mono())
+        );
         assert_eq!(stereo_decoder.sample_rate(), 48_000);
         assert_eq!(stereo_decoder.channels(), 2);
+        assert_eq!(
+            stereo_decoder.channel_layout(),
+            Some(AudioChannelLayout::stereo())
+        );
+    }
+
+    #[test]
+    fn symphonia_positioned_5_1_maps_to_exact_neutral_canonical_layout() {
+        let layout =
+            audio_channel_layout_from_symphonia(&layouts::CHANNEL_LAYOUT_5P1, "A_AAC").unwrap();
+
+        assert_eq!(layout.channel_count(), 6);
+        assert_eq!(layout.position_at(0), Some(AudioChannelPosition::FrontLeft));
+        assert_eq!(
+            layout.position_at(1),
+            Some(AudioChannelPosition::FrontRight)
+        );
+        assert_eq!(
+            layout.position_at(2),
+            Some(AudioChannelPosition::FrontCenter)
+        );
+        assert_eq!(
+            layout.position_at(3),
+            Some(AudioChannelPosition::LowFrequencyEffects)
+        );
+        assert_eq!(layout.position_at(4), Some(AudioChannelPosition::RearLeft));
+        assert_eq!(layout.position_at(5), Some(AudioChannelPosition::RearRight));
+    }
+
+    #[test]
+    fn symphonia_discrete_multichannel_never_becomes_guessed_5_1() {
+        let layout =
+            audio_channel_layout_from_symphonia(&Channels::Discrete(6), "A_UNKNOWN").unwrap();
+
+        assert_eq!(layout, AudioChannelLayout::discrete(6).unwrap());
+        assert!(!layout.is_positioned());
     }
 
     #[test]

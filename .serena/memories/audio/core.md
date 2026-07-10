@@ -7,6 +7,7 @@
 - `AudioTempoDecodedMedia` всегда несёт `AudioTempoPcmFormat`; processor сравнивает его со своей конфигурацией и возвращает typed `PcmFormatMismatch`. Нельзя принимать PCM без доказанного sample rate/channel count.
 - Нейтральный `AudioTempoProcessor` предоставляет `pcm_format`, `prime_decoded_history`, атомарный `set_segment`, `process_decoded_media_into`, `finish_stream_into` и `reset`. Produced PCM заимствует reusable output `Vec<f32>`, которым владеет caller; обязательной allocation внутри boundary на каждый packet нет.
 - Accounting не смешивается: decoded-media input, реально produced output, actual processor-pending output, static input latency и static output latency — разные величины/оси. Static `output_latency` нельзя выдавать за actual pending после reset/flush.
+- `PlayerAudioOutput::write_samples` возвращает typed `AudioOutputWriteReport`, а не неоднозначный scalar sample count. `AudioOutputInputFrameCount` относится к PCM до channel conversion; `AudioOutputStreamFrameCount` — к prepared/queued PCM после channel conversion и resampling. Полнота определяется только как `prepared_output_frames == queued_output_frames`; различие input/output counts законно. Malformed frame alignment возвращает `AudioOutputWriteError`, а настоящий partial output остаётся fatal в player-core для direct, tempo и tempo EOF paths.
 - Signalsmith EOF lifecycle: сначала продвинуть processing time вызовом `process` с `input_latency` frames тишины, затем извлечь хвост через `flush` минимум на `output_latency`. Оба куска возвращаются одним учтённым результатом; после завершения actual pending равен нулю.
 - Rate automation привязана к processing time. Если один input/EOF проход пересекает границу старого и нового DSP segment, adapter вызывает backend отдельными упорядоченными chunks, а report сохраняет ordered segment spans. Нельзя заменять это одним process-вызовом со средним ratio.
 - `reset` очищает DSP/history/pending; prime-only finish также возвращает processor в чистое состояние. Waveform tests проверяют сохранность последних samples и переходы для 0.25x, 0.5x, 1x, 2x и 4x, а не только длину.
@@ -16,12 +17,16 @@
 - Pause boundary: `PlayerAudioOutput::pause_and_freeze_clock` атомарно сериализуется с callback consumer, возвращает `AudioOutputClockTiming` и замораживает clock. Resume компенсирует wall pause duration. Если устройство не поддерживает physical pause, concrete output использует logical silence gate; настоящая ошибка pause не маскируется.
 - EOF считается завершённым только после submitted DAC tail, а не только после опустевшего ring buffer.
 - Frame alignment остаётся обязательным: interleaved ring producer/callback работают только целыми frames; split frame может навсегда поменять каналы местами.
-- Известное ограничение allocation: нейтральный tempo boundary переиспользует output buffer, но существующий concrete `AudioOutput::convert_decoder_samples_to_stream_layout` всё ещё создаёт `Vec` на write. Это отдельный future optimization, не нарушение tempo boundary.
+- Allocation bounds: neutral tempo boundary и concrete channel mixer переиспользуют caller/output-owned buffers. Matching-rate channel conversion больше не создаёт обязательный packet-local `Vec`; существующий linear resampler при отличающемся device rate пока возвращает новый `Vec` и остаётся отдельной future optimization.
+- Multichannel boundary: `AudioChannelLayout`/`AudioChannelPosition` в `audio-core` выражают neutral canonical speaker positions; `AudioOutputSpec` хранит sample rate + layout, а channel count вычисляется. `AudioDecoder::decoded_output_spec` атомарно связывает непустой PCM buffer с его format; player/output не получают Symphonia или CPAL types.
+- Concrete `ChannelMixer` строит матрицу один раз при создании output. Same-count PCM копируется bit-for-bit; mono дублируется; positional 5.1 rear/side и 7.1-family сводятся в stereo с FL/FR=0 dB до нормализации, center/surround=−3 dB, LFE=0. Каждый stereo row статически нормализован по сумме модулей до full scale; dynamic limiter direct PCM не включается. `Discrete(n)` при изменении count и unsupported height layout дают typed `UnsupportedChannelConversion`, а не guessed downmix.
+- Локальный `symphonia-codec-aac` patch обязан преобразовывать AAC coded element order в canonical Symphonia planes по element type/tag. Для AAC 5.1 coded `FC,FL,FR,RL,RR,LFE` отображается в plane indices `[2,0,1,4,5,3]`, после чего interleaved PCM имеет `FL,FR,FC,LFE,RL,RR`. Config 3–7 mapping закреплён patch tests.
 
 ## Проверки
 
 - `cargo test -p audio-core`
 - `cargo test -p audio-signalsmith`
 - `cargo test -p audio`
+- `cargo test -p 'path+file://<REPO_ROOT>/crates/symphonia-codec-aac-patch#symphonia-codec-aac@0.6.0'`
 - `cargo test -p audio-timestretch`
 - Полный release gate дополнительно описан в `mem:task_completion` и `mem:player-core/playback-rate-contract-s32`.

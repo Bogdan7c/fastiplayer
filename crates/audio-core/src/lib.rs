@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+mod channel_layout;
 mod tempo;
 
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use std::time::Duration;
 use anyhow::Result;
 use thiserror::Error;
 
+pub use channel_layout::{AudioChannelLayout, AudioChannelLayoutError, AudioChannelPosition};
 pub use tempo::{
     AudioTempoChannelCount, AudioTempoDecodedMedia, AudioTempoFrameCount, AudioTempoFrameSpan,
     AudioTempoOutputProgressMapping, AudioTempoOutputSegmentCollection,
@@ -300,6 +302,23 @@ pub trait AudioDecoder: Send {
 
     /// Возвращает количество interleaved channels decoded PCM.
     fn channels(&self) -> u32;
+
+    /// Возвращает neutral layout interleaved decoded PCM.
+    ///
+    /// После успешного непустого decode layout обязан описывать lanes именно
+    /// того buffer-а, который вернул [`Self::decode`].
+    fn channel_layout(&self) -> Option<AudioChannelLayout>;
+
+    /// Возвращает атомарный spec последнего decoded PCM buffer-а.
+    ///
+    /// До первого decode backend может ещё не знать sample rate. `None`
+    /// сохраняет это состояние отдельно от ошибочного или пустого packet-а.
+    fn decoded_output_spec(&self) -> Option<AudioOutputSpec> {
+        let sample_rate = self.sample_rate();
+        let channel_layout = self.channel_layout()?;
+        (sample_rate > 0 && channel_layout.channel_count() == self.channels())
+            .then(|| AudioOutputSpec::new(sample_rate, channel_layout))
+    }
 }
 
 /// Владеющий handle codec-neutral decoder-а, который можно хранить в player pipeline.
@@ -330,6 +349,17 @@ pub enum AudioDecoderError {
         /// Человекочитаемая причина отказа.
         reason: String,
     },
+
+    /// Backend декодировал PCM, но его channel semantics нельзя безопасно
+    /// выразить или преобразовать через neutral positional layout.
+    #[error("Unsupported decoded PCM channel layout for {codec_id}: {layout}")]
+    UnsupportedDecodedChannelLayout {
+        /// Container codec id активного decoder-а.
+        codec_id: String,
+
+        /// Диагностическое описание concrete layout-а без concrete type в API.
+        layout: String,
+    },
 }
 
 /// Decoded PCM spec, по которому composition layer создаёт audio output.
@@ -338,8 +368,25 @@ pub struct AudioOutputSpec {
     /// Sample rate decoded PCM, полученный только после первого decode.
     pub sample_rate: u32,
 
-    /// Количество interleaved channels в decoded PCM.
-    pub channels: u32,
+    /// Позиции и канонический порядок interleaved channels decoded PCM.
+    pub channel_layout: AudioChannelLayout,
+}
+
+impl AudioOutputSpec {
+    /// Создаёт единый decoded PCM spec без дублирования channel count-а.
+    #[must_use]
+    pub const fn new(sample_rate: u32, channel_layout: AudioChannelLayout) -> Self {
+        Self {
+            sample_rate,
+            channel_layout,
+        }
+    }
+
+    /// Возвращает количество scalar lanes в interleaved frame.
+    #[must_use]
+    pub const fn channels(self) -> u32 {
+        self.channel_layout.channel_count()
+    }
 }
 
 /// Намерение записи PCM, по которому output выбирает обработку амплитуды.
@@ -353,6 +400,202 @@ pub enum AudioOutputWriteIntent {
 
     /// PCM произведён tempo processor-ом и требует limiter/soft-clip защиты.
     TempoProcessed,
+}
+
+/// Количество PCM frames на входной оси concrete audio output-а.
+///
+/// Один frame содержит `AudioOutputSpec::channels` interleaved samples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AudioOutputInputFrameCount(usize);
+
+impl AudioOutputInputFrameCount {
+    /// Создаёт typed input-frame count.
+    #[must_use]
+    pub const fn new(frame_count: usize) -> Self {
+        Self(frame_count)
+    }
+
+    /// Возвращает количество input frames.
+    #[must_use]
+    pub const fn get(self) -> usize {
+        self.0
+    }
+}
+
+/// Количество PCM frames на оси output stream-а после channel conversion/resampling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AudioOutputStreamFrameCount(usize);
+
+impl AudioOutputStreamFrameCount {
+    /// Создаёт typed output-stream frame count.
+    #[must_use]
+    pub const fn new(frame_count: usize) -> Self {
+        Self(frame_count)
+    }
+
+    /// Возвращает количество output-stream frames.
+    #[must_use]
+    pub const fn get(self) -> usize {
+        self.0
+    }
+}
+
+/// Результат одной записи PCM после всех преобразований concrete output-а.
+///
+/// Input и output counts намеренно имеют разные типы: channel conversion и
+/// resampling могут менять число scalar samples и frames, поэтому caller не
+/// должен сравнивать исходный `samples.len()` с количеством samples в ring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioOutputWriteReport {
+    /// Сколько input PCM frames было передано output-у.
+    submitted_input_frames: AudioOutputInputFrameCount,
+
+    /// Сколько output-stream frames подготовлено после conversion/resampling.
+    prepared_output_frames: AudioOutputStreamFrameCount,
+
+    /// Сколько полных output-stream frames фактически поставлено в очередь.
+    queued_output_frames: AudioOutputStreamFrameCount,
+}
+
+impl AudioOutputWriteReport {
+    /// Создаёт отчёт и проверяет, что queued output не превышает prepared output.
+    pub fn try_new(
+        submitted_input_frames: AudioOutputInputFrameCount,
+        prepared_output_frames: AudioOutputStreamFrameCount,
+        queued_output_frames: AudioOutputStreamFrameCount,
+    ) -> std::result::Result<Self, AudioOutputWriteError> {
+        if queued_output_frames > prepared_output_frames {
+            return Err(AudioOutputWriteError::InvalidFrameAccounting {
+                prepared_output_frames: prepared_output_frames.get(),
+                queued_output_frames: queued_output_frames.get(),
+            });
+        }
+
+        Ok(Self {
+            submitted_input_frames,
+            prepared_output_frames,
+            queued_output_frames,
+        })
+    }
+
+    /// Создаёт отчёт о полной записи всех подготовленных output frames.
+    #[must_use]
+    pub const fn complete(
+        submitted_input_frames: AudioOutputInputFrameCount,
+        output_frames: AudioOutputStreamFrameCount,
+    ) -> Self {
+        Self {
+            submitted_input_frames,
+            prepared_output_frames: output_frames,
+            queued_output_frames: output_frames,
+        }
+    }
+
+    /// Возвращает количество переданных input frames.
+    #[must_use]
+    pub const fn submitted_input_frames(self) -> AudioOutputInputFrameCount {
+        self.submitted_input_frames
+    }
+
+    /// Возвращает количество подготовленных output-stream frames.
+    #[must_use]
+    pub const fn prepared_output_frames(self) -> AudioOutputStreamFrameCount {
+        self.prepared_output_frames
+    }
+
+    /// Возвращает количество поставленных в очередь output-stream frames.
+    #[must_use]
+    pub const fn queued_output_frames(self) -> AudioOutputStreamFrameCount {
+        self.queued_output_frames
+    }
+
+    /// Подтверждает, что output поставил в очередь все подготовленные frames.
+    #[must_use]
+    pub const fn is_complete(self) -> bool {
+        self.prepared_output_frames.0 == self.queued_output_frames.0
+    }
+
+    /// Возвращает число потерянных output-stream frames.
+    #[must_use]
+    pub const fn dropped_output_frames(self) -> AudioOutputStreamFrameCount {
+        AudioOutputStreamFrameCount(
+            self.prepared_output_frames
+                .0
+                .saturating_sub(self.queued_output_frames.0),
+        )
+    }
+}
+
+/// Ошибки neutral output-write boundary до принятия PCM устройством.
+#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
+pub enum AudioOutputWriteError {
+    /// Concrete output получил невозможное нулевое число каналов.
+    #[error("Audio output {boundary} channel count must be greater than zero")]
+    InvalidChannelCount {
+        /// Имя input/output границы с некорректным channel count.
+        boundary: &'static str,
+    },
+
+    /// Output не может безопасно преобразовать известный input layout в
+    /// channel count выбранного stream-а.
+    #[error(
+        "Audio output cannot convert input layout {input_layout} to {output_channels} output channels"
+    )]
+    UnsupportedChannelConversion {
+        /// Authoritative layout decoded PCM.
+        input_layout: AudioChannelLayout,
+
+        /// Число interleaved lanes, которое запросил concrete output stream.
+        output_channels: u32,
+    },
+
+    /// Input interleaved slice заканчивается посреди PCM frame.
+    #[error(
+        "Audio output input has {input_samples} samples, which is not divisible by {input_channels} input channels"
+    )]
+    InputNotFrameAligned {
+        /// Число scalar samples во входном slice.
+        input_samples: usize,
+
+        /// Число каналов одного input frame.
+        input_channels: usize,
+    },
+
+    /// Подготовленный output заканчивается посреди stream frame.
+    #[error(
+        "Audio output prepared {prepared_output_samples} samples, which is not divisible by {output_channels} output channels"
+    )]
+    PreparedOutputNotFrameAligned {
+        /// Число scalar samples после conversion/resampling.
+        prepared_output_samples: usize,
+
+        /// Число каналов output stream-а.
+        output_channels: usize,
+    },
+
+    /// Фактически queued output заканчивается посреди stream frame.
+    #[error(
+        "Audio output queued {queued_output_samples} samples, which is not divisible by {output_channels} output channels"
+    )]
+    QueuedOutputNotFrameAligned {
+        /// Число scalar samples, фактически поставленных в ring.
+        queued_output_samples: usize,
+
+        /// Число каналов output stream-а.
+        output_channels: usize,
+    },
+
+    /// Concrete output сообщил невозможное количество queued frames.
+    #[error(
+        "Audio output queued {queued_output_frames} frames after preparing only {prepared_output_frames} frames"
+    )]
+    InvalidFrameAccounting {
+        /// Число подготовленных output-stream frames.
+        prepared_output_frames: usize,
+
+        /// Число поставленных в очередь output-stream frames.
+        queued_output_frames: usize,
+    },
 }
 
 /// Нейтральный snapshot audible progress и конца уже переданного output PCM.
@@ -412,8 +655,12 @@ pub trait AudioOutputFactory: Send + Sync {
 /// Этот contract поэтому не требует `Send`: concrete backend вроде CPAL может
 /// владеть `!Send` stream-ом, не добавляя proxy thread в горячий путь записи PCM.
 pub trait PlayerAudioOutput {
-    /// Записывает interleaved PCM samples согласно явной output policy.
-    fn write_samples(&mut self, samples: &[f32], intent: AudioOutputWriteIntent) -> u64;
+    /// Записывает interleaved PCM согласно policy и возвращает counts в обеих осях.
+    fn write_samples(
+        &mut self,
+        samples: &[f32],
+        intent: AudioOutputWriteIntent,
+    ) -> std::result::Result<AudioOutputWriteReport, AudioOutputWriteError>;
 
     /// Запускает output stream и снимает lifecycle freeze без clock jump-а.
     ///
@@ -461,8 +708,9 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        AudioDecoderConfig, AudioDecoderError, AudioOutputClockTiming, AudioPacketTimeBase,
-        AudioPacketTiming, EncodedAudioPacket,
+        AudioDecoderConfig, AudioDecoderError, AudioOutputClockTiming, AudioOutputInputFrameCount,
+        AudioOutputStreamFrameCount, AudioOutputWriteError, AudioOutputWriteReport,
+        AudioPacketTimeBase, AudioPacketTiming, EncodedAudioPacket,
     };
 
     #[test]
@@ -475,6 +723,59 @@ mod tests {
         assert_eq!(timing.audible_output_position(), audible_position);
         assert_eq!(timing.submitted_output_end_position(), audible_position);
         assert_eq!(timing.submitted_output_tail(), Duration::ZERO);
+    }
+
+    #[test]
+    fn output_write_report_keeps_input_and_stream_frame_domains_separate() {
+        let input_frames = AudioOutputInputFrameCount::new(1_024);
+        let resampled_output_frames = AudioOutputStreamFrameCount::new(1_115);
+        let complete_report =
+            AudioOutputWriteReport::complete(input_frames, resampled_output_frames);
+
+        assert_eq!(complete_report.submitted_input_frames(), input_frames);
+        assert_eq!(
+            complete_report.prepared_output_frames(),
+            resampled_output_frames
+        );
+        assert_eq!(
+            complete_report.queued_output_frames(),
+            resampled_output_frames
+        );
+        assert!(complete_report.is_complete());
+        assert_eq!(
+            complete_report.dropped_output_frames(),
+            AudioOutputStreamFrameCount::new(0)
+        );
+
+        let partial_report = AudioOutputWriteReport::try_new(
+            input_frames,
+            resampled_output_frames,
+            AudioOutputStreamFrameCount::new(1_114),
+        )
+        .expect("queued output below prepared output should form a partial report");
+        assert!(!partial_report.is_complete());
+        assert_eq!(
+            partial_report.dropped_output_frames(),
+            AudioOutputStreamFrameCount::new(1)
+        );
+    }
+
+    #[test]
+    fn output_write_report_rejects_impossible_frame_accounting() {
+        let error = AudioOutputWriteReport::try_new(
+            AudioOutputInputFrameCount::new(1_024),
+            AudioOutputStreamFrameCount::new(1_024),
+            AudioOutputStreamFrameCount::new(1_025),
+        )
+        .expect_err("queued output cannot exceed prepared output");
+
+        assert_eq!(
+            error,
+            AudioOutputWriteError::InvalidFrameAccounting {
+                prepared_output_frames: 1_024,
+                queued_output_frames: 1_025,
+            }
+        );
     }
 
     #[test]

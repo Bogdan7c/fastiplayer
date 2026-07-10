@@ -6,7 +6,8 @@ use std::sync::{
 use super::test_support::*;
 use super::*;
 use crate::{
-    AudioOutputWriteIntent, AudioTempoDecodedMedia, AudioTempoFrameCount,
+    AudioOutputInputFrameCount, AudioOutputStreamFrameCount, AudioOutputWriteError,
+    AudioOutputWriteIntent, AudioOutputWriteReport, AudioTempoDecodedMedia, AudioTempoFrameCount,
     AudioTempoOutputProgressMapping, AudioTempoPcmFormat, AudioTempoProcessReport,
     AudioTempoProcessor, AudioTempoProcessorConfig, AudioTempoProcessorError,
     AudioTempoProcessorFactory, AudioTempoProcessorHandle, AudioTempoReportFrameCounts,
@@ -268,6 +269,16 @@ impl AudioTempoProcessor for FakeTempoProcessor {
     }
 }
 
+/// Возвращает стандартный stereo decoded PCM spec для focused runtime tests.
+fn stereo_output_spec() -> AudioOutputSpec {
+    AudioOutputSpec::new(48_000, audio_core::AudioChannelLayout::stereo())
+}
+
+/// Возвращает canonical rear-surround 5.1 spec для multichannel focused tests.
+fn surround_5_1_output_spec() -> AudioOutputSpec {
+    AudioOutputSpec::new(48_000, audio_core::AudioChannelLayout::surround_5_1())
+}
+
 #[test]
 fn audio_decoder_init_spec_maps_opus_track_without_cpal_device() {
     let tracks = vec![
@@ -476,19 +487,38 @@ fn audio_output_factory_success_installs_output_and_clock() {
     let mut session = PlayerSession::with_audio_output_factory(factory);
 
     session
-        .ensure_audio_output_for_decoded_spec(48_000, 2)
+        .ensure_audio_output_for_decoded_spec(stereo_output_spec())
         .expect("successful factory должен установить output");
 
     assert!(session.pipeline.has_audio_output());
     assert!(session.pipeline.has_audio_clock());
-    assert_eq!(
-        factory_handle.created_specs(),
-        vec![AudioOutputSpec {
-            sample_rate: 48_000,
-            channels: 2,
-        }]
-    );
+    assert_eq!(factory_handle.created_specs(), vec![stereo_output_spec()]);
     assert_eq!(session.audio_buffer_level_ms(), Some(25.0));
+}
+
+#[test]
+fn active_audio_output_rejects_same_count_layout_change_without_mutation() {
+    let (factory, factory_handle) = ScriptedAudioOutputFactory::success(25.0, None);
+    let mut session = PlayerSession::with_audio_output_factory(factory);
+    let active_spec = stereo_output_spec();
+    session
+        .ensure_audio_output_for_decoded_spec(active_spec)
+        .expect("first decoded spec should install output");
+    let changed_layout =
+        AudioOutputSpec::new(48_000, audio_core::AudioChannelLayout::discrete(2).unwrap());
+
+    let error = session
+        .ensure_audio_output_for_decoded_spec(changed_layout)
+        .expect_err("same channel count with different semantics must be rejected");
+
+    assert_eq!(error.kind, PlayerErrorKind::RuntimeError);
+    assert!(error.message.contains("format changed"));
+    assert_eq!(factory_handle.created_specs(), vec![active_spec]);
+    assert_eq!(
+        session.pipeline.audio_output_input_spec(),
+        Some(active_spec)
+    );
+    assert!(!session.pipeline.has_audio_tempo_processor());
 }
 
 #[test]
@@ -500,10 +530,10 @@ fn normal_rate_audio_runtime_writes_decoded_pcm_without_tempo_processor() {
     let samples = vec![1.0, 2.0, 3.0, 4.0];
 
     session
-        .ensure_audio_output_for_decoded_spec(48_000, 2)
+        .ensure_audio_output_for_decoded_spec(stereo_output_spec())
         .expect("audio output should be created");
     session
-        .write_decoded_audio_samples_at_current_rate(&samples, 48_000, 2)
+        .write_decoded_audio_samples_at_current_rate(&samples, stereo_output_spec())
         .expect("normal-rate audio write should succeed");
 
     let output_handle = output_factory_handle
@@ -519,6 +549,93 @@ fn normal_rate_audio_runtime_writes_decoded_pcm_without_tempo_processor() {
 }
 
 #[test]
+fn normal_rate_multichannel_write_accepts_complete_remapped_output_frames() {
+    let (output_factory, output_factory_handle) = ScriptedAudioOutputFactory::success(0.0, None);
+    let mut session = PlayerSession::with_audio_output_factory(output_factory);
+    let multichannel_samples = vec![0.25; 6_144];
+
+    session
+        .ensure_audio_output_for_decoded_spec(surround_5_1_output_spec())
+        .expect("5.1 audio output should be created");
+    let output_handle = output_factory_handle
+        .last_output_handle()
+        .expect("output should be created");
+
+    session
+        .write_decoded_audio_samples_at_current_rate(
+            &multichannel_samples,
+            surround_5_1_output_spec(),
+        )
+        .expect("1024 complete 5.1 frames remapped to stereo must not look partial");
+
+    assert_eq!(output_handle.written_samples(), multichannel_samples);
+    assert_eq!(
+        output_handle.written_intents(),
+        vec![AudioOutputWriteIntent::DirectDecodedPcm]
+    );
+}
+
+#[test]
+fn real_partial_output_frames_remain_fatal_after_typed_accounting() {
+    let (output_factory, output_factory_handle) = ScriptedAudioOutputFactory::success(0.0, None);
+    let mut session = PlayerSession::with_audio_output_factory(output_factory);
+    let stereo_samples = vec![0.25; 2_048];
+
+    session
+        .ensure_audio_output_for_decoded_spec(stereo_output_spec())
+        .expect("stereo audio output should be created");
+    let output_handle = output_factory_handle
+        .last_output_handle()
+        .expect("output should be created");
+    output_handle.set_write_result_override(Ok(AudioOutputWriteReport::try_new(
+        AudioOutputInputFrameCount::new(1_024),
+        AudioOutputStreamFrameCount::new(1_024),
+        AudioOutputStreamFrameCount::new(1_023),
+    )
+    .expect("one dropped output frame should form a valid partial report")));
+
+    let error = session
+        .write_decoded_audio_samples_at_current_rate(&stereo_samples, stereo_output_spec())
+        .expect_err("a genuinely partial output write must remain fatal");
+
+    assert_eq!(error.kind, PlayerErrorKind::RuntimeError);
+    assert!(
+        error
+            .message
+            .contains("queued only 1023 of 1024 output frames converted from 1024 input frames")
+    );
+}
+
+#[test]
+fn malformed_output_input_stays_a_typed_fatal_write_error() {
+    let (output_factory, output_factory_handle) = ScriptedAudioOutputFactory::success(0.0, None);
+    let mut session = PlayerSession::with_audio_output_factory(output_factory);
+
+    session
+        .ensure_audio_output_for_decoded_spec(stereo_output_spec())
+        .expect("stereo audio output should be created");
+    let output_handle = output_factory_handle
+        .last_output_handle()
+        .expect("output should be created");
+    output_handle.set_write_result_override(Err(AudioOutputWriteError::InputNotFrameAligned {
+        input_samples: 3,
+        input_channels: 2,
+    }));
+
+    let error = session
+        .write_decoded_audio_samples_at_current_rate(&[0.1, 0.2, 0.3], stereo_output_spec())
+        .expect_err("malformed interleaved PCM must not be silently truncated");
+
+    assert_eq!(error.kind, PlayerErrorKind::RuntimeError);
+    assert!(
+        error
+            .message
+            .contains("Audio output rejected direct decoded PCM")
+    );
+    assert!(error.message.contains("not divisible by 2 input channels"));
+}
+
+#[test]
 fn non_normal_rate_audio_runtime_writes_tempo_processor_output() {
     let (output_factory, output_factory_handle) = ScriptedAudioOutputFactory::success(0.0, None);
     let (tempo_factory, tempo_factory_handle) = FakeTempoFactory::new();
@@ -527,10 +644,10 @@ fn non_normal_rate_audio_runtime_writes_tempo_processor_output() {
 
     session.pipeline.select_audio_track(TrackId::new(2));
     session
-        .ensure_audio_output_for_decoded_spec(48_000, 2)
+        .ensure_audio_output_for_decoded_spec(stereo_output_spec())
         .expect("audio output should be created");
     session
-        .write_decoded_audio_samples_at_current_rate(&[0.25, 0.5], 48_000, 2)
+        .write_decoded_audio_samples_at_current_rate(&[0.25, 0.5], stereo_output_spec())
         .expect("direct PCM should establish the format and warmup history");
     session.set_playback_state(PlaybackState::Paused);
     assert_eq!(
@@ -542,7 +659,7 @@ fn non_normal_rate_audio_runtime_writes_tempo_processor_output() {
         PlayerCommandOutcome::Applied
     );
     session
-        .write_decoded_audio_samples_at_current_rate(&[1.0, 2.0, 3.0, 4.0], 48_000, 2)
+        .write_decoded_audio_samples_at_current_rate(&[1.0, 2.0, 3.0, 4.0], stereo_output_spec())
         .expect("non-normal-rate audio write should succeed");
 
     let output_handle = output_factory_handle
@@ -592,7 +709,7 @@ fn non_normal_rate_audio_runtime_writes_tempo_processor_output() {
         vec![AudioTempoSegmentId::new(2), AudioTempoSegmentId::new(3)]
     );
     session
-        .write_decoded_audio_samples_at_current_rate(&[5.0, 6.0], 48_000, 2)
+        .write_decoded_audio_samples_at_current_rate(&[5.0, 6.0], stereo_output_spec())
         .expect("1x transition must keep old DSP tail continuous");
     assert_eq!(
         output_handle.written_intents(),
@@ -646,7 +763,7 @@ fn selected_audio_without_pcm_format_rejects_rate_change_atomically() {
 
     session.pipeline.select_audio_track(selected_audio_track);
     session
-        .ensure_audio_output_for_decoded_spec(48_000, 2)
+        .ensure_audio_output_for_decoded_spec(stereo_output_spec())
         .expect("audio output should exist before the PCM-format preflight");
     session.set_playback_state(PlaybackState::Paused);
 
@@ -684,10 +801,10 @@ fn selected_audio_session_with_passthrough_history()
 
     session.pipeline.select_audio_track(selected_audio_track);
     session
-        .ensure_audio_output_for_decoded_spec(48_000, 2)
+        .ensure_audio_output_for_decoded_spec(stereo_output_spec())
         .expect("audio output should be created");
     session
-        .write_decoded_audio_samples_at_current_rate(&passthrough_history, 48_000, 2)
+        .write_decoded_audio_samples_at_current_rate(&passthrough_history, stereo_output_spec())
         .expect("direct PCM should establish format and warmup history");
     session.set_playback_state(PlaybackState::Paused);
 
@@ -794,10 +911,10 @@ fn active_tempo_processor_rejection_preserves_old_rate_and_audio_path() {
 
     session.pipeline.select_audio_track(selected_audio_track);
     session
-        .ensure_audio_output_for_decoded_spec(48_000, 2)
+        .ensure_audio_output_for_decoded_spec(stereo_output_spec())
         .expect("audio output should be created");
     session
-        .write_decoded_audio_samples_at_current_rate(&[1.0, 2.0, 3.0, 4.0], 48_000, 2)
+        .write_decoded_audio_samples_at_current_rate(&[1.0, 2.0, 3.0, 4.0], stereo_output_spec())
         .expect("direct PCM should establish the format and warmup history");
     session.set_playback_state(PlaybackState::Paused);
     assert_eq!(
@@ -838,13 +955,13 @@ fn fresh_tempo_processor_is_primed_with_passthrough_history_and_warmup_output_is
         .with_audio_tempo_processor_factory(tempo_factory);
 
     session
-        .ensure_audio_output_for_decoded_spec(48_000, 2)
+        .ensure_audio_output_for_decoded_spec(stereo_output_spec())
         .expect("audio output should be created");
 
     // Passthrough на 1.0x пишет PCM в output и в warmup историю.
     let passthrough_samples = vec![1.0, 2.0, 3.0, 4.0];
     session
-        .write_decoded_audio_samples_at_current_rate(&passthrough_samples, 48_000, 2)
+        .write_decoded_audio_samples_at_current_rate(&passthrough_samples, stereo_output_spec())
         .expect("passthrough write should succeed");
 
     session.set_playback_state(PlaybackState::Paused);
@@ -859,7 +976,7 @@ fn fresh_tempo_processor_is_primed_with_passthrough_history_and_warmup_output_is
 
     let packet_samples = vec![5.0, 6.0, 7.0, 8.0];
     session
-        .write_decoded_audio_samples_at_current_rate(&packet_samples, 48_000, 2)
+        .write_decoded_audio_samples_at_current_rate(&packet_samples, stereo_output_spec())
         .expect("non-normal-rate audio write should succeed");
 
     // Processor праймится position-free boundary, затем обрабатывает настоящий packet.
@@ -890,10 +1007,10 @@ fn passthrough_history_is_not_used_for_priming_after_seek_clear() {
         .with_audio_tempo_processor_factory(tempo_factory);
 
     session
-        .ensure_audio_output_for_decoded_spec(48_000, 2)
+        .ensure_audio_output_for_decoded_spec(stereo_output_spec())
         .expect("audio output should be created");
     session
-        .write_decoded_audio_samples_at_current_rate(&[1.0, 2.0, 3.0, 4.0], 48_000, 2)
+        .write_decoded_audio_samples_at_current_rate(&[1.0, 2.0, 3.0, 4.0], stereo_output_spec())
         .expect("passthrough write should succeed");
 
     // Seek boundary очищает processor slot вместе с warmup историей.
@@ -909,7 +1026,7 @@ fn passthrough_history_is_not_used_for_priming_after_seek_clear() {
         PlayerCommandOutcome::Applied
     );
     session
-        .write_decoded_audio_samples_at_current_rate(&[5.0, 6.0, 7.0, 8.0], 48_000, 2)
+        .write_decoded_audio_samples_at_current_rate(&[5.0, 6.0, 7.0, 8.0], stereo_output_spec())
         .expect("non-normal-rate audio write should succeed");
 
     // PCM до discontinuity не должен праймить processor после неё.
@@ -937,10 +1054,17 @@ fn eof_flush_writes_tempo_processor_tail_once_and_clears_processor() {
         PlayerCommandOutcome::Applied
     );
     session
-        .ensure_audio_output_for_decoded_spec(48_000, 2)
+        .ensure_audio_output_for_decoded_spec(stereo_output_spec())
         .expect("audio output should be created");
+    let output_handle = output_factory_handle
+        .last_output_handle()
+        .expect("output should be created");
+    output_handle.set_write_result_override(Ok(AudioOutputWriteReport::complete(
+        AudioOutputInputFrameCount::new(1),
+        AudioOutputStreamFrameCount::new(2),
+    )));
     session
-        .write_decoded_audio_samples_at_current_rate(&[1.0, 2.0, 3.0, 4.0], 48_000, 2)
+        .write_decoded_audio_samples_at_current_rate(&[1.0, 2.0, 3.0, 4.0], stereo_output_spec())
         .expect("non-normal-rate audio write should succeed");
 
     session
@@ -950,9 +1074,6 @@ fn eof_flush_writes_tempo_processor_tail_once_and_clears_processor() {
         .flush_audio_tempo_processor_for_eof()
         .expect("second tempo EOF flush should be no-op");
 
-    let output_handle = output_factory_handle
-        .last_output_handle()
-        .expect("output should be created");
     assert_eq!(output_handle.written_samples(), vec![9.0, 10.0, 7.0, 8.0]);
     assert_eq!(
         output_handle.written_intents(),
@@ -982,10 +1103,10 @@ fn eof_tempo_finish_failure_is_fatal_and_never_falls_back_to_video_only() {
         PlayerCommandOutcome::Applied
     );
     session
-        .ensure_audio_output_for_decoded_spec(48_000, 2)
+        .ensure_audio_output_for_decoded_spec(stereo_output_spec())
         .expect("audio output should be created");
     session
-        .write_decoded_audio_samples_at_current_rate(&[1.0, 2.0, 3.0, 4.0], 48_000, 2)
+        .write_decoded_audio_samples_at_current_rate(&[1.0, 2.0, 3.0, 4.0], stereo_output_spec())
         .expect("non-normal-rate audio write should succeed");
     tempo_factory_handle.reject_finish();
 
@@ -1010,7 +1131,7 @@ fn audio_output_factory_creation_error_becomes_audio_device_unavailable() {
     let mut session = PlayerSession::with_audio_output_factory(factory);
 
     let error = session
-        .ensure_audio_output_for_decoded_spec(48_000, 2)
+        .ensure_audio_output_for_decoded_spec(stereo_output_spec())
         .expect_err("factory error должен стать player error");
 
     assert_eq!(error.kind, PlayerErrorKind::AudioDeviceUnavailable);
@@ -1027,7 +1148,7 @@ fn lazy_audio_output_init_while_playing_calls_play() {
 
     session.dispatch_command(PlayerCommand::Play).unwrap();
     session
-        .ensure_audio_output_for_decoded_spec(48_000, 2)
+        .ensure_audio_output_for_decoded_spec(stereo_output_spec())
         .expect("lazy init during Playing должен запустить output");
 
     let output_handle = factory_handle
@@ -1045,7 +1166,7 @@ fn lazy_audio_output_play_error_stays_audio_device_unavailable() {
 
     session.dispatch_command(PlayerCommand::Play).unwrap();
     let error = session
-        .ensure_audio_output_for_decoded_spec(48_000, 2)
+        .ensure_audio_output_for_decoded_spec(stereo_output_spec())
         .expect_err("play error после lazy init должен быть видимым");
 
     let output_handle = factory_handle

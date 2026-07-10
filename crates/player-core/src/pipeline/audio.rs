@@ -61,10 +61,20 @@ impl PlaybackPipeline {
     ) -> Option<anyhow::Result<DecodedAudioPacket>> {
         let decoder = self.audio_decoder.as_mut()?;
         let decode_result = decoder.decode(encoded_audio_packet);
-        Some(decode_result.map(|samples| DecodedAudioPacket {
-            samples,
-            sample_rate: decoder.sample_rate(),
-            channels: decoder.channels(),
+        Some(decode_result.and_then(|samples| {
+            if samples.is_empty() {
+                return Ok(DecodedAudioPacket::Empty);
+            }
+
+            let output_spec = decoder.decoded_output_spec().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Audio decoder produced PCM without a complete sample-rate/channel-layout spec"
+                )
+            })?;
+            Ok(DecodedAudioPacket::Pcm {
+                samples,
+                output_spec,
+            })
         }))
     }
 
@@ -76,21 +86,34 @@ impl PlaybackPipeline {
     }
 
     /// Устанавливает audio output, созданный composition/session boundary.
-    pub(crate) fn install_audio_output(&mut self, output: Box<dyn PlayerAudioOutput>) {
+    pub(crate) fn install_audio_output(
+        &mut self,
+        output: Box<dyn PlayerAudioOutput>,
+        input_spec: audio_core::AudioOutputSpec,
+    ) {
         self.audio_output = Some(output);
+        self.audio_output_input_spec = Some(input_spec);
         self.audio_output_play_requested = false;
+    }
+
+    /// Возвращает spec, который принял установленный production output.
+    #[must_use]
+    pub(crate) const fn audio_output_input_spec(&self) -> Option<audio_core::AudioOutputSpec> {
+        self.audio_output_input_spec
     }
 
     /// Устанавливает fake/stub output для unit-тестов без CPAL device side effects.
     #[cfg(test)]
     pub(crate) fn install_audio_output_for_tests(&mut self, output: Box<dyn PlayerAudioOutput>) {
         self.audio_output = Some(output);
+        self.audio_output_input_spec = None;
         self.audio_output_play_requested = false;
     }
 
     /// Удаляет audio output и принадлежащий ему clock без изменения decoder/track selection.
     pub(crate) fn clear_audio_output(&mut self) {
         self.audio_output = None;
+        self.audio_output_input_spec = None;
         self.clear_audio_tempo_processor();
         self.clear_audio_clock();
         self.audio_output_play_requested = false;
@@ -102,17 +125,13 @@ impl PlaybackPipeline {
         self.audio_output.is_some()
     }
 
-    /// Записывает samples в output ring buffer, если output установлен.
-    ///
-    /// Возвращает `None` для absent output и `Some(written_samples)` для активного output.
+    /// Записывает samples в output и сохраняет typed absent/error/frame accounting.
     pub(crate) fn write_audio_output_samples(
         &mut self,
         samples: &[f32],
         intent: audio_core::AudioOutputWriteIntent,
-    ) -> Option<u64> {
-        self.audio_output
-            .as_mut()
-            .map(|output| output.write_samples(samples, intent))
+    ) -> AudioOutputRoutingStatus {
+        route_audio_output_samples(&mut self.audio_output, samples, intent)
     }
 
     /// Устанавливает tempo processor, которым pipeline владеет между decoder и output.
@@ -195,9 +214,10 @@ impl PlaybackPipeline {
             Err(error) => return Some(Err(error)),
         };
         let report = stretched_output.report().clone();
-        let write_status = route_audio_tempo_samples(
+        let write_status = route_audio_output_samples(
             &mut self.audio_output,
             stretched_output.interleaved_samples(),
+            audio_core::AudioOutputWriteIntent::TempoProcessed,
         );
 
         Some(Ok(RoutedAudioTempoOutput {
@@ -229,17 +249,17 @@ impl PlaybackPipeline {
     pub(crate) fn record_passthrough_audio_history(
         &mut self,
         samples: &[f32],
-        sample_rate: u32,
-        channels: u32,
+        output_spec: audio_core::AudioOutputSpec,
     ) {
+        let sample_rate = output_spec.sample_rate;
+        let channels = output_spec.channels();
         if sample_rate == 0 || channels == 0 || samples.is_empty() {
             return;
         }
 
-        let spec = (sample_rate, channels);
-        if self.passthrough_audio_history_spec != Some(spec) {
+        if self.passthrough_audio_history_spec != Some(output_spec) {
             self.passthrough_audio_history.clear();
-            self.passthrough_audio_history_spec = Some(spec);
+            self.passthrough_audio_history_spec = Some(output_spec);
         }
 
         self.passthrough_audio_history.extend_from_slice(samples);
@@ -262,11 +282,10 @@ impl PlaybackPipeline {
     /// PCM format нельзя.
     pub(crate) fn take_passthrough_audio_history_for_priming(
         &mut self,
-        sample_rate: u32,
-        channels: u32,
+        output_spec: audio_core::AudioOutputSpec,
     ) -> Vec<f32> {
         let history = std::mem::take(&mut self.passthrough_audio_history);
-        let matches_spec = self.passthrough_audio_history_spec == Some((sample_rate, channels));
+        let matches_spec = self.passthrough_audio_history_spec == Some(output_spec);
         self.passthrough_audio_history_spec = None;
         if matches_spec { history } else { Vec::new() }
     }
@@ -274,12 +293,15 @@ impl PlaybackPipeline {
     /// Возвращает typed PCM format доступной warmup истории без чтения storage tuple снаружи.
     #[must_use]
     pub(crate) fn passthrough_audio_history_pcm_format(&self) -> Option<AudioTempoPcmFormat> {
-        let (sample_rate, channels) = self.passthrough_audio_history_spec?;
-        AudioTempoPcmFormat::from_audio_output_spec(audio_core::AudioOutputSpec {
-            sample_rate,
-            channels,
-        })
-        .ok()
+        AudioTempoPcmFormat::from_audio_output_spec(self.passthrough_audio_history_spec?).ok()
+    }
+
+    /// Возвращает полный decoded PCM spec warmup истории для layout-safe rollback-а.
+    #[must_use]
+    pub(crate) const fn passthrough_audio_history_output_spec(
+        &self,
+    ) -> Option<audio_core::AudioOutputSpec> {
+        self.passthrough_audio_history_spec
     }
 
     /// Сбрасывает warmup историю на seek/media boundary.
@@ -299,9 +321,10 @@ impl PlaybackPipeline {
                 Err(error) => return Some(Err(error)),
             };
         let report = stretched_output.report().clone();
-        let write_status = route_audio_tempo_samples(
+        let write_status = route_audio_output_samples(
             &mut self.audio_output,
             stretched_output.interleaved_samples(),
+            audio_core::AudioOutputWriteIntent::TempoProcessed,
         );
 
         Some(Ok(RoutedAudioTempoOutput {
@@ -731,19 +754,19 @@ impl PlaybackPipeline {
     }
 }
 
-/// Маршрутизирует borrowed tempo PCM до освобождения reusable output buffer-а.
-fn route_audio_tempo_samples(
+/// Маршрутизирует borrowed PCM, пока reusable buffer остаётся заимствованным.
+fn route_audio_output_samples(
     audio_output: &mut Option<Box<dyn PlayerAudioOutput>>,
     samples: &[f32],
-) -> AudioTempoOutputWriteStatus {
+    intent: audio_core::AudioOutputWriteIntent,
+) -> AudioOutputRoutingStatus {
     let Some(output) = audio_output.as_mut() else {
-        return AudioTempoOutputWriteStatus::AudioOutputAbsent;
+        return AudioOutputRoutingStatus::AudioOutputAbsent;
     };
-    let written_samples =
-        output.write_samples(samples, audio_core::AudioOutputWriteIntent::TempoProcessed);
-    AudioTempoOutputWriteStatus::Written {
-        requested_samples: samples.len(),
-        written_samples,
+
+    match output.write_samples(samples, intent) {
+        Ok(report) => AudioOutputRoutingStatus::Written(report),
+        Err(error) => AudioOutputRoutingStatus::WriteFailed(error),
     }
 }
 

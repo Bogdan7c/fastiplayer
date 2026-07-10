@@ -1,7 +1,7 @@
 use audio_core::AudioOutputWriteIntent;
 use tracing::debug;
 
-use crate::pipeline::AudioTempoOutputWriteStatus;
+use crate::pipeline::AudioOutputRoutingStatus;
 use crate::{
     AudioOutputSpec, AudioTempoPcmFormat, AudioTempoProcessorConfig, AudioTempoProcessorError,
     PlaybackRate, PlayerError, PlayerErrorKind, PlayerResult,
@@ -18,31 +18,22 @@ impl PlayerSession {
     pub(super) fn write_decoded_audio_samples_at_current_rate(
         &mut self,
         samples: &[f32],
-        sample_rate: u32,
-        channels: u32,
+        output_spec: AudioOutputSpec,
     ) -> PlayerResult<()> {
         let needs_tempo_processor = self.snapshot.playback_rate != PlaybackRate::NORMAL
             || self.pipeline.has_audio_tempo_processor();
         if !needs_tempo_processor {
             self.pipeline
-                .record_passthrough_audio_history(samples, sample_rate, channels);
-            let written_samples = self
+                .record_passthrough_audio_history(samples, output_spec);
+            let write_status = self
                 .pipeline
-                .write_audio_output_samples(samples, AudioOutputWriteIntent::DirectDecodedPcm)
-                .ok_or_else(|| missing_audio_output_error("direct decoded PCM"))?;
-            return ensure_all_audio_samples_written(
-                "direct decoded PCM",
-                samples.len(),
-                written_samples,
-            );
+                .write_audio_output_samples(samples, AudioOutputWriteIntent::DirectDecodedPcm);
+            return ensure_audio_output_written("direct decoded PCM", write_status);
         }
 
-        let pcm_format = AudioTempoPcmFormat::from_audio_output_spec(AudioOutputSpec {
-            sample_rate,
-            channels,
-        })
-        .map_err(player_error_from_audio_tempo_error)?;
-        self.ensure_audio_tempo_processor_for_decoded_spec(sample_rate, channels)?;
+        let pcm_format = AudioTempoPcmFormat::from_audio_output_spec(output_spec)
+            .map_err(player_error_from_audio_tempo_error)?;
+        self.ensure_audio_tempo_processor_for_decoded_spec(output_spec)?;
         let Some(process_result) = self
             .pipeline
             .process_audio_tempo_samples(samples, pcm_format)
@@ -53,7 +44,7 @@ impl PlayerSession {
             ));
         };
         let routed_output = process_result.map_err(player_error_from_audio_tempo_error)?;
-        ensure_routed_tempo_output_written(routed_output.write_status)?;
+        ensure_audio_output_written("tempo-processed PCM", routed_output.write_status)?;
 
         Ok(())
     }
@@ -61,13 +52,8 @@ impl PlayerSession {
     /// Создаёт или синхронизирует tempo processor под текущий decoded PCM format/rate.
     pub(super) fn ensure_audio_tempo_processor_for_decoded_spec(
         &mut self,
-        sample_rate: u32,
-        channels: u32,
+        output_spec: AudioOutputSpec,
     ) -> PlayerResult<()> {
-        let output_spec = AudioOutputSpec {
-            sample_rate,
-            channels,
-        };
         let pcm_format = AudioTempoPcmFormat::from_audio_output_spec(output_spec)
             .map_err(player_error_from_audio_tempo_error)?;
 
@@ -97,7 +83,7 @@ impl PlayerSession {
             .create_processor(config)
             .map_err(player_error_from_audio_tempo_error)?;
         self.pipeline.install_audio_tempo_processor(processor);
-        self.prime_audio_tempo_processor_from_passthrough_history(sample_rate, channels)?;
+        self.prime_audio_tempo_processor_from_passthrough_history(output_spec)?;
         self.pipeline.commit_audio_tempo_segment(segment);
         Ok(())
     }
@@ -105,21 +91,17 @@ impl PlayerSession {
     /// Праймит свежий tempo processor хвостом passthrough PCM без duplicate output.
     fn prime_audio_tempo_processor_from_passthrough_history(
         &mut self,
-        sample_rate: u32,
-        channels: u32,
+        output_spec: AudioOutputSpec,
     ) -> PlayerResult<()> {
         let history = self
             .pipeline
-            .take_passthrough_audio_history_for_priming(sample_rate, channels);
+            .take_passthrough_audio_history_for_priming(output_spec);
         if history.is_empty() {
             return Ok(());
         }
 
-        let pcm_format = AudioTempoPcmFormat::from_audio_output_spec(AudioOutputSpec {
-            sample_rate,
-            channels,
-        })
-        .map_err(player_error_from_audio_tempo_error)?;
+        let pcm_format = AudioTempoPcmFormat::from_audio_output_spec(output_spec)
+            .map_err(player_error_from_audio_tempo_error)?;
         let prime_result = self
             .pipeline
             .prime_audio_tempo_history(&history, pcm_format)
@@ -135,7 +117,7 @@ impl PlayerSession {
             Err(error) => {
                 self.pipeline.clear_audio_tempo_processor();
                 self.pipeline
-                    .record_passthrough_audio_history(&history, sample_rate, channels);
+                    .record_passthrough_audio_history(&history, output_spec);
                 return Err(error);
             }
         };
@@ -155,7 +137,7 @@ impl PlayerSession {
             return Ok(());
         };
         let routed_output = finish_result.map_err(player_error_from_audio_tempo_error)?;
-        ensure_routed_tempo_output_written(routed_output.write_status)?;
+        ensure_audio_output_written("tempo EOF PCM", routed_output.write_status)?;
 
         let pending_output_frames = routed_output
             .report
@@ -199,37 +181,26 @@ fn missing_audio_output_error(context: &'static str) -> PlayerError {
     )
 }
 
-/// Запрещает молчаливую потерю PCM при частичной записи в ring buffer.
-fn ensure_all_audio_samples_written(
+/// Запрещает молчаливую потерю PCM, не смешивая input/output frame domains.
+fn ensure_audio_output_written(
     context: &'static str,
-    requested_samples: usize,
-    written_samples: u64,
+    status: AudioOutputRoutingStatus,
 ) -> PlayerResult<()> {
-    if written_samples == requested_samples as u64 {
-        return Ok(());
-    }
-
-    Err(PlayerError::new(
-        PlayerErrorKind::RuntimeError,
-        format!(
-            "Audio output accepted only {written_samples} of {requested_samples} samples for {context}"
-        ),
-    ))
-}
-
-/// Проверяет typed routing result tempo PCM без слияния absent/partial/discard paths.
-fn ensure_routed_tempo_output_written(status: AudioTempoOutputWriteStatus) -> PlayerResult<()> {
     match status {
-        AudioTempoOutputWriteStatus::Written {
-            requested_samples,
-            written_samples,
-        } => ensure_all_audio_samples_written(
-            "tempo-processed PCM",
-            requested_samples,
-            written_samples,
-        ),
-        AudioTempoOutputWriteStatus::AudioOutputAbsent => {
-            Err(missing_audio_output_error("tempo-processed PCM"))
-        }
+        AudioOutputRoutingStatus::Written(report) if report.is_complete() => Ok(()),
+        AudioOutputRoutingStatus::Written(report) => Err(PlayerError::new(
+            PlayerErrorKind::RuntimeError,
+            format!(
+                "Audio output queued only {} of {} output frames converted from {} input frames for {context}",
+                report.queued_output_frames().get(),
+                report.prepared_output_frames().get(),
+                report.submitted_input_frames().get(),
+            ),
+        )),
+        AudioOutputRoutingStatus::WriteFailed(error) => Err(PlayerError::new(
+            PlayerErrorKind::RuntimeError,
+            format!("Audio output rejected {context}: {error}"),
+        )),
+        AudioOutputRoutingStatus::AudioOutputAbsent => Err(missing_audio_output_error(context)),
     }
 }

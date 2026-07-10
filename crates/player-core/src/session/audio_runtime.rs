@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use media_core::{TrackInfo, TrackKind};
 use tracing::{info, warn};
 
-use crate::pipeline::AudioSeekRuntimeState;
+use crate::pipeline::{AudioSeekRuntimeState, DecodedAudioPacket};
 use crate::seek_state::{PlaybackResumeIntent, SeekCommitState};
 use crate::{
     AudioOutputSpec, PlaybackState, PlayerError, PlayerErrorKind, PlayerResult,
@@ -159,40 +159,45 @@ impl PlayerSession {
 
         if let Some(decode_result) = self.pipeline.decode_audio_packet(&encoded_audio_packet) {
             match decode_result {
-                Ok(decoded_audio) if !decoded_audio.samples.is_empty() => {
-                    if let Err(error) = self.ensure_audio_output_for_decoded_spec(
-                        decoded_audio.sample_rate,
-                        decoded_audio.channels,
-                    ) {
+                Ok(DecodedAudioPacket::Pcm {
+                    samples: decoded_samples,
+                    output_spec,
+                }) => {
+                    if let Err(error) = self.ensure_audio_output_for_decoded_spec(output_spec) {
                         warn!(error = %error, "Не удалось подготовить audio output");
-                        self.disable_selected_audio_path();
-                        self.record_recoverable_error(error);
+                        if error.kind == PlayerErrorKind::AudioDeviceUnavailable {
+                            self.disable_selected_audio_path();
+                            self.record_recoverable_error(error);
+                        } else {
+                            // Format/layout mismatch означает, что уже активный
+                            // audio path нельзя продолжить корректно. Video-only
+                            // fallback здесь скрыл бы потерю звука.
+                            self.mark_fatal_error(error);
+                        }
                         return;
                     }
 
                     let samples = trim_decoded_audio_to_clock_base(
-                        &decoded_audio.samples,
+                        &decoded_samples,
                         packet_pts,
                         self.pipeline.media_clock_base(),
-                        decoded_audio.sample_rate,
-                        decoded_audio.channels,
+                        output_spec.sample_rate,
+                        output_spec.channels(),
                     );
                     if samples.is_empty() {
                         return;
                     }
 
-                    if let Err(error) = self.write_decoded_audio_samples_at_current_rate(
-                        samples,
-                        decoded_audio.sample_rate,
-                        decoded_audio.channels,
-                    ) {
+                    if let Err(error) =
+                        self.write_decoded_audio_samples_at_current_rate(samples, output_spec)
+                    {
                         warn!(error = %error, "Ошибка audio tempo/output path");
                         // После успешного rate commit PCM уже мог попасть в output;
                         // rollback невозможен, поэтому запрещён video-only fallback.
                         self.mark_fatal_error(error);
                     }
                 }
-                Ok(_) => {}
+                Ok(DecodedAudioPacket::Empty) => {}
                 Err(error) => {
                     warn!(error = %error, "Ошибка декодирования audio packet");
                     self.set_runtime_error(format!("Audio decode error: {error}"));
@@ -242,10 +247,21 @@ impl PlayerSession {
     /// Создаёт audio output только после того, как decoder сообщил реальный decoded spec.
     pub(super) fn ensure_audio_output_for_decoded_spec(
         &mut self,
-        sample_rate: u32,
-        channels: u32,
+        output_spec: AudioOutputSpec,
     ) -> PlayerResult<()> {
+        let sample_rate = output_spec.sample_rate;
+        let channels = output_spec.channels();
         if self.pipeline.has_audio_output() {
+            if let Some(active_spec) = self.pipeline.audio_output_input_spec() {
+                if active_spec != output_spec {
+                    return Err(PlayerError::new(
+                        PlayerErrorKind::RuntimeError,
+                        format!(
+                            "Decoded audio format changed while output is active: active={active_spec:?}, decoded={output_spec:?}"
+                        ),
+                    ));
+                }
+            }
             return Ok(());
         }
 
@@ -258,10 +274,6 @@ impl PlayerSession {
             ));
         }
 
-        let output_spec = AudioOutputSpec {
-            sample_rate,
-            channels,
-        };
         let mut output = self
             .audio_output_factory
             .create_output(output_spec)
@@ -273,7 +285,7 @@ impl PlayerSession {
             })?;
 
         output.set_volume(self.snapshot.volume);
-        self.pipeline.install_audio_output(output);
+        self.pipeline.install_audio_output(output, output_spec);
 
         if let Some(clock) = self.pipeline.audio_output_clock() {
             self.pipeline.install_audio_clock(clock);
@@ -299,7 +311,9 @@ impl PlayerSession {
 
         info!(
             sample_rate,
-            channels, "Audio output создан после первого decoded AudioSpec"
+            channels,
+            channel_layout = %output_spec.channel_layout,
+            "Audio output создан после первого decoded AudioSpec"
         );
 
         Ok(())

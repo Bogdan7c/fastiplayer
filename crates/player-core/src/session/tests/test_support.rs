@@ -1,5 +1,8 @@
 use super::*;
-use audio_core::{AudioOutputClockTiming, AudioOutputWriteIntent};
+use audio_core::{
+    AudioOutputClockTiming, AudioOutputInputFrameCount, AudioOutputStreamFrameCount,
+    AudioOutputWriteError, AudioOutputWriteIntent, AudioOutputWriteReport,
+};
 
 // Общие test doubles и builders остаются в одном месте, чтобы доменные тесты
 // проверяли поведение `PlayerSession`, а не дублировали setup-код.
@@ -250,6 +253,11 @@ impl audio_core::AudioDecoder for CountingAudioDecoder {
     /// Возвращает стабильный channel count для boundary contract-а.
     fn channels(&self) -> u32 {
         2
+    }
+
+    /// Возвращает стабильный stereo layout fake decoder-а.
+    fn channel_layout(&self) -> Option<audio_core::AudioChannelLayout> {
+        Some(audio_core::AudioChannelLayout::stereo())
     }
 }
 
@@ -534,6 +542,10 @@ pub(super) struct ScriptedAudioOutputHandle {
     /// Typed intents для проверки direct/tempo output routing.
     pub(super) written_intents: Arc<Mutex<Vec<AudioOutputWriteIntent>>>,
 
+    /// Необязательный typed write result для multichannel/partial/error сценариев.
+    pub(super) write_result_override:
+        Arc<Mutex<Option<std::result::Result<AudioOutputWriteReport, AudioOutputWriteError>>>>,
+
     /// Сколько раз session попросила запустить stream.
     pub(super) play_count: Arc<AtomicUsize>,
 
@@ -552,6 +564,7 @@ impl ScriptedAudioOutputHandle {
             buffer_level_ms: Arc::new(Mutex::new(buffer_level_ms)),
             written_samples: Arc::new(Mutex::new(Vec::new())),
             written_intents: Arc::new(Mutex::new(Vec::new())),
+            write_result_override: Arc::new(Mutex::new(None)),
             play_count: Arc::new(AtomicUsize::new(0)),
             pause_count: Arc::new(AtomicUsize::new(0)),
             clear_count: Arc::new(AtomicUsize::new(0)),
@@ -582,6 +595,17 @@ impl ScriptedAudioOutputHandle {
             .clone()
     }
 
+    /// Задаёт production-like typed write result для следующих fake writes.
+    pub(super) fn set_write_result_override(
+        &self,
+        write_result: std::result::Result<AudioOutputWriteReport, AudioOutputWriteError>,
+    ) {
+        *self
+            .write_result_override
+            .lock()
+            .expect("write result override mutex should not be poisoned") = Some(write_result);
+    }
+
     /// Возвращает intents в том же порядке, в котором fake принял PCM blocks.
     pub(super) fn written_intents(&self) -> Vec<AudioOutputWriteIntent> {
         self.written_intents
@@ -606,6 +630,9 @@ pub(super) struct ScriptedAudioOutput {
 
     /// Ошибка, которую fake вернёт из pause, если сценарий её задаёт.
     pub(super) pause_error: Option<&'static str>,
+
+    /// Число interleaved input channels для production-like frame accounting.
+    pub(super) input_channels: usize,
 }
 
 impl ScriptedAudioOutput {
@@ -615,7 +642,15 @@ impl ScriptedAudioOutput {
             handle: ScriptedAudioOutputHandle::new(buffer_level_ms),
             play_error,
             pause_error: None,
+            input_channels: 2,
         }
+    }
+
+    /// Задаёт channel count, полученный factory из decoded PCM spec.
+    #[must_use]
+    pub(super) fn with_input_channels(mut self, input_channels: usize) -> Self {
+        self.input_channels = input_channels;
+        self
     }
 
     /// Создаёт fake с настоящей pause error для lifecycle transaction test-а.
@@ -624,6 +659,7 @@ impl ScriptedAudioOutput {
             handle: ScriptedAudioOutputHandle::new(buffer_level_ms),
             play_error: None,
             pause_error: Some(pause_error),
+            input_channels: 2,
         }
     }
 
@@ -636,8 +672,12 @@ impl ScriptedAudioOutput {
 }
 
 impl PlayerAudioOutput for ScriptedAudioOutput {
-    /// Fake принимает все samples и возвращает их количество как written count.
-    fn write_samples(&mut self, samples: &[f32], intent: AudioOutputWriteIntent) -> u64 {
+    /// Fake принимает все samples и возвращает полный typed frame report.
+    fn write_samples(
+        &mut self,
+        samples: &[f32],
+        intent: AudioOutputWriteIntent,
+    ) -> std::result::Result<AudioOutputWriteReport, AudioOutputWriteError> {
         self.handle
             .written_samples
             .lock()
@@ -648,7 +688,26 @@ impl PlayerAudioOutput for ScriptedAudioOutput {
             .lock()
             .expect("written audio intents mutex should not be poisoned")
             .push(intent);
-        samples.len() as u64
+        self.handle
+            .write_result_override
+            .lock()
+            .expect("write result override mutex should not be poisoned")
+            .unwrap_or_else(|| {
+                if self.input_channels == 0 {
+                    return Err(AudioOutputWriteError::InvalidChannelCount { boundary: "input" });
+                }
+                if samples.len() % self.input_channels != 0 {
+                    return Err(AudioOutputWriteError::InputNotFrameAligned {
+                        input_samples: samples.len(),
+                        input_channels: self.input_channels,
+                    });
+                }
+                let input_frames = samples.len() / self.input_channels;
+                Ok(AudioOutputWriteReport::complete(
+                    AudioOutputInputFrameCount::new(input_frames),
+                    AudioOutputStreamFrameCount::new(input_frames),
+                ))
+            })
     }
 
     /// Записывает play attempt и возвращает scripted success/error.
@@ -798,7 +857,8 @@ impl AudioOutputFactory for ScriptedAudioOutputFactory {
             anyhow::bail!(error);
         }
 
-        let output = ScriptedAudioOutput::new(self.buffer_level_ms, self.play_error);
+        let output = ScriptedAudioOutput::new(self.buffer_level_ms, self.play_error)
+            .with_input_channels(spec.channels() as usize);
         let (output, output_handle) = output.into_parts();
         *self
             .handle

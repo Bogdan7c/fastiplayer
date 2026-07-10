@@ -170,7 +170,7 @@ impl AudioTempoPcmFormat {
     pub fn from_audio_output_spec(spec: AudioOutputSpec) -> Result<Self> {
         Ok(Self::new(
             AudioTempoSampleRateHz::new(spec.sample_rate)?,
-            AudioTempoChannelCount::new(spec.channels)?,
+            AudioTempoChannelCount::new(spec.channels())?,
         ))
     }
 

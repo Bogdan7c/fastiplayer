@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use audio_core::{
-    AudioOutputClockTiming, AudioOutputFactory, AudioOutputSpec, AudioOutputWriteIntent,
-    PlayerAudioClock, PlayerAudioOutput,
+    AudioOutputClockTiming, AudioOutputFactory, AudioOutputSpec, AudioOutputWriteError,
+    AudioOutputWriteIntent, AudioOutputWriteReport, PlayerAudioClock, PlayerAudioOutput,
 };
 
 use crate::{AudioClock, AudioOutput, AudioOutputDeviceController};
@@ -46,15 +46,22 @@ impl AudioOutputFactory for CpalAudioOutputFactory {
     /// Создаёт concrete output и отдаёт его как neutral trait object.
     fn create_output(&self, spec: AudioOutputSpec) -> anyhow::Result<Box<dyn PlayerAudioOutput>> {
         let output_device_id = self.output_device_controller.selected_device_id()?;
-        let output =
-            AudioOutput::new_with_device_id(spec.sample_rate, spec.channels, &output_device_id)?;
+        let output = AudioOutput::new_with_device_id(
+            spec.sample_rate,
+            spec.channel_layout,
+            &output_device_id,
+        )?;
         Ok(Box::new(output))
     }
 }
 
 impl PlayerAudioOutput for AudioOutput {
     /// Записывает PCM samples с явным direct/tempo output intent.
-    fn write_samples(&mut self, samples: &[f32], intent: AudioOutputWriteIntent) -> u64 {
+    fn write_samples(
+        &mut self,
+        samples: &[f32],
+        intent: AudioOutputWriteIntent,
+    ) -> std::result::Result<AudioOutputWriteReport, AudioOutputWriteError> {
         AudioOutput::write_samples(self, samples, intent)
     }
 

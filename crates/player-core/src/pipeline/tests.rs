@@ -4,7 +4,10 @@ use std::sync::{
 };
 
 use super::*;
-use audio_core::{AudioOutputClockTiming, AudioOutputWriteIntent};
+use audio_core::{
+    AudioOutputClockTiming, AudioOutputInputFrameCount, AudioOutputStreamFrameCount,
+    AudioOutputWriteIntent,
+};
 use codec_core::VideoCodec;
 use media_core::{MediaTime, TrackKind};
 
@@ -25,6 +28,15 @@ fn decoded_frame_for_tests(pts: Duration, resource_handle: u64) -> video_core::D
         resource_handle: video_core::FrameResourceHandle(resource_handle),
         diagnostics: video_core::VideoFrameDiagnostics::default(),
     }
+}
+
+/// Создаёт neutral test spec из legacy rate/count параметров focused tests.
+fn audio_output_spec_for_tests(sample_rate: u32, channels: u32) -> audio_core::AudioOutputSpec {
+    audio_core::AudioOutputSpec::new(
+        sample_rate,
+        audio_core::AudioChannelLayout::from_channel_count(channels)
+            .expect("test channel count must form a valid neutral layout"),
+    )
 }
 
 /// Управляемый fake decoder для проверки audio boundary без CPAL и codec side effects.
@@ -108,6 +120,11 @@ impl audio_core::AudioDecoder for FakeAudioDecoder {
     /// Возвращает channel count fake decoder-а.
     fn channels(&self) -> u32 {
         self.channels
+    }
+
+    /// Возвращает neutral fake layout, согласованный с channel count-ом.
+    fn channel_layout(&self) -> Option<audio_core::AudioChannelLayout> {
+        audio_core::AudioChannelLayout::from_channel_count(self.channels).ok()
     }
 }
 
@@ -261,9 +278,16 @@ impl FixedAudioOutput {
 }
 
 impl PlayerAudioOutput for FixedAudioOutput {
-    /// Записывает все samples как успешно принятые.
-    fn write_samples(&mut self, samples: &[f32], _intent: AudioOutputWriteIntent) -> u64 {
-        samples.len() as u64
+    /// Записывает все samples как одноканальные frames, принятые полностью.
+    fn write_samples(
+        &mut self,
+        samples: &[f32],
+        _intent: AudioOutputWriteIntent,
+    ) -> std::result::Result<AudioOutputWriteReport, AudioOutputWriteError> {
+        Ok(AudioOutputWriteReport::complete(
+            AudioOutputInputFrameCount::new(samples.len()),
+            AudioOutputStreamFrameCount::new(samples.len()),
+        ))
     }
 
     /// Fake stream всегда успешно стартует.
@@ -537,9 +561,19 @@ fn audio_decoder_boundaries_preserve_absent_success_and_error_states() {
         .decode_audio_packet(&packet)
         .expect("installed decoder должен вернуть decode result")
         .expect("successful fake decoder не должен падать");
-    assert_eq!(decoded_audio.samples, vec![0.25, -0.25]);
-    assert_eq!(decoded_audio.sample_rate, 44_100);
-    assert_eq!(decoded_audio.channels, 2);
+    let DecodedAudioPacket::Pcm {
+        samples,
+        output_spec,
+    } = decoded_audio
+    else {
+        panic!("non-empty fake PCM must carry its atomic output spec");
+    };
+    assert_eq!(samples, vec![0.25, -0.25]);
+    assert_eq!(output_spec.sample_rate, 44_100);
+    assert_eq!(
+        output_spec.channel_layout,
+        audio_core::AudioChannelLayout::stereo()
+    );
 
     pipeline.clear_audio_decoder();
     assert!(!pipeline.has_audio_decoder());
@@ -661,7 +695,7 @@ fn absent_audio_output_boundaries_are_noop_without_losing_absent_state() {
     assert!(!pipeline.has_audio_output());
     assert_eq!(
         pipeline.write_audio_output_samples(&[0.0, 0.1], AudioOutputWriteIntent::DirectDecodedPcm,),
-        None
+        AudioOutputRoutingStatus::AudioOutputAbsent
     );
     assert!(pipeline.play_audio_output().is_none());
     assert!(pipeline.pause_audio_output_and_capture_clock().is_none());
@@ -691,7 +725,10 @@ fn installed_audio_output_boundary_forwards_calls_and_neutral_clock() {
     assert_eq!(
         pipeline
             .write_audio_output_samples(&[0.1, -0.1], AudioOutputWriteIntent::DirectDecodedPcm,),
-        Some(2)
+        AudioOutputRoutingStatus::Written(AudioOutputWriteReport::complete(
+            AudioOutputInputFrameCount::new(2),
+            AudioOutputStreamFrameCount::new(2),
+        ))
     );
     assert_eq!(pipeline.audio_output_buffer_level_ms(), Some(42.0));
     assert_eq!(
@@ -1091,13 +1128,14 @@ fn passthrough_audio_history_is_bounded_and_keeps_latest_samples() {
     // 100 Hz stereo: бюджет 600 ms = 60 frames = 120 samples.
     let sample_rate = 100;
     let channels = 2;
+    let output_spec = audio_output_spec_for_tests(sample_rate, channels);
 
     let old_chunk: Vec<f32> = (0..100).map(|i| i as f32).collect();
     let new_chunk: Vec<f32> = (100..160).map(|i| i as f32).collect();
-    pipeline.record_passthrough_audio_history(&old_chunk, sample_rate, channels);
-    pipeline.record_passthrough_audio_history(&new_chunk, sample_rate, channels);
+    pipeline.record_passthrough_audio_history(&old_chunk, output_spec);
+    pipeline.record_passthrough_audio_history(&new_chunk, output_spec);
 
-    let history = pipeline.take_passthrough_audio_history_for_priming(sample_rate, channels);
+    let history = pipeline.take_passthrough_audio_history_for_priming(output_spec);
     assert_eq!(
         history.len(),
         120,
@@ -1117,7 +1155,7 @@ fn passthrough_audio_history_is_bounded_and_keeps_latest_samples() {
     // Повторный take пуст: история одноразовая для одного прайминга.
     assert!(
         pipeline
-            .take_passthrough_audio_history_for_priming(sample_rate, channels)
+            .take_passthrough_audio_history_for_priming(output_spec)
             .is_empty()
     );
 }
@@ -1125,11 +1163,16 @@ fn passthrough_audio_history_is_bounded_and_keeps_latest_samples() {
 #[test]
 fn passthrough_audio_history_with_mismatched_spec_is_not_used_for_priming() {
     let mut pipeline = PlaybackPipeline::default();
-    pipeline.record_passthrough_audio_history(&[1.0, 2.0, 3.0, 4.0], 48_000, 2);
+    let stereo_spec = audio_output_spec_for_tests(48_000, 2);
+    let same_count_unknown_layout = audio_core::AudioOutputSpec::new(
+        48_000,
+        audio_core::AudioChannelLayout::discrete(2).unwrap(),
+    );
+    pipeline.record_passthrough_audio_history(&[1.0, 2.0, 3.0, 4.0], stereo_spec);
 
     assert!(
         pipeline
-            .take_passthrough_audio_history_for_priming(44_100, 2)
+            .take_passthrough_audio_history_for_priming(same_count_unknown_layout)
             .is_empty(),
         "история чужого PCM format не должна праймить processor"
     );

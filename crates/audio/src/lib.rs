@@ -13,6 +13,7 @@
 //!
 //! AudioClock отслеживает время воспроизведения для A/V sync.
 
+mod channel_mixer;
 pub mod clock;
 pub mod decoder;
 pub mod devices;
@@ -20,10 +21,12 @@ pub mod output;
 mod output_adapter;
 
 pub use audio_core::{
-    AudioDecoder, AudioDecoderConfig, AudioDecoderError, AudioDecoderFactory, AudioDecoderHandle,
-    AudioOutputClockTiming, AudioOutputFactory, AudioOutputSpec, AudioOutputWriteIntent,
-    AudioPacketTimeBase, AudioPacketTiming, EncodedAudioPacket, PlayerAudioClock,
-    PlayerAudioOutput,
+    AudioChannelLayout, AudioChannelLayoutError, AudioChannelPosition, AudioDecoder,
+    AudioDecoderConfig, AudioDecoderError, AudioDecoderFactory, AudioDecoderHandle,
+    AudioOutputClockTiming, AudioOutputFactory, AudioOutputInputFrameCount, AudioOutputSpec,
+    AudioOutputStreamFrameCount, AudioOutputWriteError, AudioOutputWriteIntent,
+    AudioOutputWriteReport, AudioPacketTimeBase, AudioPacketTiming, EncodedAudioPacket,
+    PlayerAudioClock, PlayerAudioOutput,
 };
 pub use clock::AudioClock;
 pub use decoder::{ProductionAudioDecoderFactory, SymphoniaAudioDecoder, create_audio_decoder};

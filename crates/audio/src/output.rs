@@ -17,13 +17,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use audio_core::AudioOutputWriteIntent;
+use audio_core::{
+    AudioChannelLayout, AudioOutputInputFrameCount, AudioOutputStreamFrameCount,
+    AudioOutputWriteError, AudioOutputWriteIntent, AudioOutputWriteReport,
+};
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tracing::{info, warn};
 
+use crate::channel_mixer::ChannelMixer;
 use crate::clock::AudioClock;
 use crate::devices::{DEFAULT_AUDIO_OUTPUT_DEVICE_ID, output_device_from_stable_id};
 
@@ -48,6 +52,12 @@ pub struct AudioOutput {
 
     /// Количество каналов decoded audio.
     decoder_channels: usize,
+
+    /// Предвычисленная layout-aware политика channel conversion.
+    channel_mixer: ChannelMixer,
+
+    /// Reusable storage channel mixer-а без packet-local allocation.
+    channel_mix_buffer: Vec<f32>,
 
     /// Громкость playback. 0.0 = silence, 1.0 = исходная амплитуда.
     volume: f32,
@@ -541,23 +551,20 @@ fn pause_stream_with_policy(stream: &cpal::Stream) -> Result<PauseStreamOutcome>
 
 impl AudioOutput {
     /// Создаёт audio output на системном output device по умолчанию.
-    pub fn new(decoder_rate: u32, decoder_channels: u32) -> Result<Self> {
-        Self::new_with_device_id(
-            decoder_rate,
-            decoder_channels,
-            DEFAULT_AUDIO_OUTPUT_DEVICE_ID,
-        )
+    pub fn new(decoder_rate: u32, decoder_layout: AudioChannelLayout) -> Result<Self> {
+        Self::new_with_device_id(decoder_rate, decoder_layout, DEFAULT_AUDIO_OUTPUT_DEVICE_ID)
     }
 
     /// Создаёт audio output на выбранном stable device id.
     ///
     /// decoder_rate — sample rate декодера (48000 для Opus).
-    /// decoder_channels — количество каналов декодера.
+    /// decoder_layout — authoritative layout interleaved decoded PCM.
     pub fn new_with_device_id(
         decoder_rate: u32,
-        decoder_channels: u32,
+        decoder_layout: AudioChannelLayout,
         output_device_id: &str,
     ) -> Result<Self> {
+        let decoder_channels = decoder_layout.channel_count();
         if decoder_channels == 0 {
             anyhow::bail!("Количество каналов декодера не может быть 0");
         }
@@ -630,6 +637,8 @@ impl AudioOutput {
             clock,
             stream_channels,
             decoder_channels,
+            channel_mixer: ChannelMixer::new(decoder_layout, stream_channels),
+            channel_mix_buffer: Vec::new(),
             volume: 1.0,
             is_playing: false,
             backend_stream_state: BackendStreamState::Paused,
@@ -648,8 +657,15 @@ impl AudioOutput {
     /// превышать full scale, а device/BT-квантование превращает over-range
     /// в слышимый треск. Direct decoded PCM остаётся bit-transparent при
     /// совпадающем формате, `volume = 1.0` и диапазоне `[-1.0, 1.0]`.
-    /// Возвращает количество записанных samples.
-    pub fn write_samples(&mut self, samples: &[f32], intent: AudioOutputWriteIntent) -> u64 {
+    /// Возвращает typed frame accounting до и после concrete преобразований.
+    pub fn write_samples(
+        &mut self,
+        samples: &[f32],
+        intent: AudioOutputWriteIntent,
+    ) -> std::result::Result<AudioOutputWriteReport, AudioOutputWriteError> {
+        let submitted_input_frames =
+            audio_output_input_frame_count(samples.len(), self.decoder_channels)?;
+
         if intent == AudioOutputWriteIntent::DirectDecodedPcm {
             // Direct PCM не использует protection state. Сброс не позволяет
             // старому tempo peak позднее приглушить новый tempo segment.
@@ -657,14 +673,22 @@ impl AudioOutput {
         }
 
         if samples.is_empty() {
-            return 0;
+            return Ok(AudioOutputWriteReport::complete(
+                submitted_input_frames,
+                AudioOutputStreamFrameCount::new(0),
+            ));
         }
 
-        let stream_layout_samples = self.convert_decoder_samples_to_stream_layout(samples);
-        let samples_for_output = match self.resampler.as_mut() {
-            Some(resampler) => resampler.resample_interleaved(&stream_layout_samples),
-            None => stream_layout_samples,
-        };
+        let stream_layout_samples = self
+            .channel_mixer
+            .mix_interleaved_into(samples, &mut self.channel_mix_buffer)?;
+        let resampled_samples = self
+            .resampler
+            .as_mut()
+            .map(|resampler| resampler.resample_interleaved(stream_layout_samples));
+        let samples_for_output = resampled_samples
+            .as_deref()
+            .unwrap_or(stream_layout_samples);
 
         // Ring buffer обязан оставаться frame-aligned: запись, оборванная
         // посреди interleaved кадра, навсегда меняет каналы местами для всего
@@ -674,8 +698,8 @@ impl AudioOutput {
         let frame_aligned_vacant = vacant - (vacant % channels);
         let writable = samples_for_output.len().min(frame_aligned_vacant);
 
-        let requested = samples_for_output.len() as u64;
-        let mut written = 0u64;
+        let requested = samples_for_output.len();
+        let mut written = 0usize;
         // Пик-лимитер tempo-output работает по кадрам: общая для каналов
         // огибающая не сдвигает стереообраз. Direct PCM обходит этот branch.
         'frames: for frame in samples_for_output[..writable].chunks_exact(channels) {
@@ -715,11 +739,18 @@ impl AudioOutput {
             );
         }
 
+        let write_report = build_audio_output_write_report(
+            submitted_input_frames,
+            requested,
+            written,
+            self.stream_channels,
+        )?;
+
         if written > 0 {
-            self.clock.record_written(written);
+            self.clock.record_written(written as u64);
         }
 
-        written
+        Ok(write_report)
     }
 
     /// Устанавливает громкость для последующих samples.
@@ -771,34 +802,6 @@ impl AudioOutput {
             return 0.0;
         }
         (level / channels / sample_rate) * 1000.0
-    }
-
-    /// Преобразует interleaved samples декодера в interleaved layout output stream.
-    fn convert_decoder_samples_to_stream_layout(&self, decoder_samples: &[f32]) -> Vec<f32> {
-        let decoder_frame_count = decoder_samples.len() / self.decoder_channels;
-        let mut stream_samples = Vec::with_capacity(decoder_frame_count * self.stream_channels);
-
-        for decoder_frame in decoder_samples
-            .chunks_exact(self.decoder_channels)
-            .take(decoder_frame_count)
-        {
-            for stream_channel_index in 0..self.stream_channels {
-                let sample = if self.decoder_channels == self.stream_channels {
-                    decoder_frame[stream_channel_index]
-                } else if self.decoder_channels == 1 {
-                    decoder_frame[0]
-                } else if stream_channel_index < self.decoder_channels {
-                    decoder_frame[stream_channel_index]
-                } else {
-                    // Для дополнительных каналов устройства используем downmix L/R.
-                    let sum: f32 = decoder_frame.iter().copied().sum();
-                    sum / self.decoder_channels as f32
-                };
-                stream_samples.push(sample);
-            }
-        }
-
-        stream_samples
     }
 
     /// Создаёт typed CPAL stream для выбранного runtime sample format.
@@ -950,6 +953,56 @@ impl AudioOutput {
     }
 }
 
+/// Переводит scalar input samples в typed input frames без потери хвоста.
+fn audio_output_input_frame_count(
+    input_samples: usize,
+    input_channels: usize,
+) -> std::result::Result<AudioOutputInputFrameCount, AudioOutputWriteError> {
+    if input_channels == 0 {
+        return Err(AudioOutputWriteError::InvalidChannelCount { boundary: "input" });
+    }
+    if input_samples % input_channels != 0 {
+        return Err(AudioOutputWriteError::InputNotFrameAligned {
+            input_samples,
+            input_channels,
+        });
+    }
+
+    Ok(AudioOutputInputFrameCount::new(
+        input_samples / input_channels,
+    ))
+}
+
+/// Строит neutral write report в frame units после conversion/resampling.
+fn build_audio_output_write_report(
+    submitted_input_frames: AudioOutputInputFrameCount,
+    prepared_output_samples: usize,
+    queued_output_samples: usize,
+    output_channels: usize,
+) -> std::result::Result<AudioOutputWriteReport, AudioOutputWriteError> {
+    if output_channels == 0 {
+        return Err(AudioOutputWriteError::InvalidChannelCount { boundary: "output" });
+    }
+    if prepared_output_samples % output_channels != 0 {
+        return Err(AudioOutputWriteError::PreparedOutputNotFrameAligned {
+            prepared_output_samples,
+            output_channels,
+        });
+    }
+    if queued_output_samples % output_channels != 0 {
+        return Err(AudioOutputWriteError::QueuedOutputNotFrameAligned {
+            queued_output_samples,
+            output_channels,
+        });
+    }
+
+    AudioOutputWriteReport::try_new(
+        submitted_input_frames,
+        AudioOutputStreamFrameCount::new(prepared_output_samples / output_channels),
+        AudioOutputStreamFrameCount::new(queued_output_samples / output_channels),
+    )
+}
+
 /// Корректная остановка stream перед уничтожением.
 impl Drop for AudioOutput {
     fn drop(&mut self) {
@@ -975,19 +1028,99 @@ impl Drop for AudioOutput {
 mod tests {
     use std::fmt::Debug;
 
-    use audio_core::AudioOutputWriteIntent;
+    use audio_core::{
+        AudioChannelLayout, AudioOutputInputFrameCount, AudioOutputStreamFrameCount,
+        AudioOutputWriteError, AudioOutputWriteIntent,
+    };
     use cpal::{
         BackendSpecificError, FromSample, PauseStreamError, Sample, SampleFormat, SampleRate,
         SupportedBufferSize, SupportedStreamConfigRange,
     };
 
     use super::{
-        LinearResampler, PEAK_LIMITER_CEILING, PauseErrorPolicy, advance_limiter_envelope,
+        ChannelMixer, LinearResampler, PEAK_LIMITER_CEILING, PauseErrorPolicy,
+        advance_limiter_envelope, audio_output_input_frame_count, build_audio_output_write_report,
         classify_pause_error, convert_sample_for_output, limiter_gain_for_envelope,
         limiter_release_decay_for_rate, output_sample_for_intent,
         output_sample_format_is_supported, reset_output_protection, sample_format_priority,
         select_supported_output_config, soft_clip_sample,
     };
+
+    #[test]
+    fn multichannel_to_stereo_write_accounting_is_complete_in_frame_domain() {
+        let input_samples = vec![0.0_f32; 6_144];
+        let mixer = ChannelMixer::new(AudioChannelLayout::surround_5_1(), 2);
+        let mut stereo_samples = Vec::new();
+        mixer
+            .mix_interleaved_into(&input_samples, &mut stereo_samples)
+            .expect("canonical 5.1 must downmix to stereo");
+        assert_eq!(stereo_samples.len(), 2_048);
+
+        let submitted_input_frames = audio_output_input_frame_count(6_144, 6)
+            .expect("1024 complete 5.1 frames should be accepted");
+        let report = build_audio_output_write_report(
+            submitted_input_frames,
+            stereo_samples.len(),
+            stereo_samples.len(),
+            2,
+        )
+        .expect("1024 prepared stereo frames should be fully queued");
+
+        assert_eq!(
+            report.submitted_input_frames(),
+            AudioOutputInputFrameCount::new(1_024)
+        );
+        assert_eq!(
+            report.prepared_output_frames(),
+            AudioOutputStreamFrameCount::new(1_024)
+        );
+        assert_eq!(
+            report.queued_output_frames(),
+            AudioOutputStreamFrameCount::new(1_024)
+        );
+        assert!(report.is_complete());
+    }
+
+    #[test]
+    fn resampled_complete_write_and_real_partial_keep_output_frame_units() {
+        let submitted_input_frames = audio_output_input_frame_count(2_048, 2)
+            .expect("1024 complete stereo input frames should be accepted");
+        let complete_report =
+            build_audio_output_write_report(submitted_input_frames, 2_230, 2_230, 2)
+                .expect("resampled output can have a different complete frame count");
+        assert_eq!(
+            complete_report.prepared_output_frames(),
+            AudioOutputStreamFrameCount::new(1_115)
+        );
+        assert!(complete_report.is_complete());
+
+        let partial_report =
+            build_audio_output_write_report(submitted_input_frames, 2_048, 2_046, 2)
+                .expect("frame-aligned ring pressure should produce a typed partial report");
+        assert_eq!(
+            partial_report.queued_output_frames(),
+            AudioOutputStreamFrameCount::new(1_023)
+        );
+        assert_eq!(
+            partial_report.dropped_output_frames(),
+            AudioOutputStreamFrameCount::new(1)
+        );
+        assert!(!partial_report.is_complete());
+    }
+
+    #[test]
+    fn malformed_multichannel_input_is_rejected_before_conversion() {
+        let error = audio_output_input_frame_count(6_143, 6)
+            .expect_err("an interleaved 5.1 slice must end on a complete frame");
+
+        assert_eq!(
+            error,
+            AudioOutputWriteError::InputNotFrameAligned {
+                input_samples: 6_143,
+                input_channels: 6,
+            }
+        );
+    }
 
     #[test]
     fn peak_limiter_ducks_overshoot_and_releases_smoothly() {

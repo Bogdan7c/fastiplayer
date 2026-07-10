@@ -3,7 +3,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use audio_core::{AudioOutputClockTiming, AudioOutputWriteIntent};
+use audio_core::{
+    AudioOutputClockTiming, AudioOutputInputFrameCount, AudioOutputStreamFrameCount,
+    AudioOutputWriteError, AudioOutputWriteIntent, AudioOutputWriteReport,
+};
 use bytes::Bytes;
 use codec_core::{VideoCodec, VideoDecodeRequirement};
 use media_core::{PacketKeyframe, TrackId, TrackKind};
@@ -104,9 +107,16 @@ impl FixedAudioOutput {
 }
 
 impl PlayerAudioOutput for FixedAudioOutput {
-    /// Тестовый output принимает samples и сообщает количество записанных значений.
-    fn write_samples(&mut self, samples: &[f32], _intent: AudioOutputWriteIntent) -> u64 {
-        samples.len() as u64
+    /// Тестовый output принимает samples как полностью записанные frames.
+    fn write_samples(
+        &mut self,
+        samples: &[f32],
+        _intent: AudioOutputWriteIntent,
+    ) -> std::result::Result<AudioOutputWriteReport, AudioOutputWriteError> {
+        Ok(AudioOutputWriteReport::complete(
+            AudioOutputInputFrameCount::new(samples.len()),
+            AudioOutputStreamFrameCount::new(samples.len()),
+        ))
     }
 
     /// Запуск stream-а в admission tests не имеет side effects.

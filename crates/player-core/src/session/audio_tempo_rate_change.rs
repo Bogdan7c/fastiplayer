@@ -92,6 +92,10 @@ impl PlayerSession {
         &mut self,
         playback_rate: PlaybackRate,
     ) -> Result<PreparedAudioTempoRateChange, PlayerCommandReject> {
+        let output_spec = self
+            .pipeline
+            .passthrough_audio_history_output_spec()
+            .ok_or_else(pcm_format_not_ready_reject)?;
         let pcm_format = self
             .pipeline
             .passthrough_audio_history_pcm_format()
@@ -105,11 +109,9 @@ impl PlayerSession {
             .create_processor(AudioTempoProcessorConfig::new(pcm_format, segment))
             .map_err(|error| self.reject_audio_tempo_rate_change(error))?;
 
-        let sample_rate = pcm_format.sample_rate_hz().get();
-        let channels = pcm_format.channel_count().get();
         let warmup_history = self
             .pipeline
-            .take_passthrough_audio_history_for_priming(sample_rate, channels);
+            .take_passthrough_audio_history_for_priming(output_spec);
         self.pipeline.install_audio_tempo_processor(processor);
 
         let prime_result = self.prime_new_audio_tempo_processor(&warmup_history, pcm_format);
@@ -119,11 +121,8 @@ impl PlayerSession {
                 // Новый processor ещё не опубликован clock/snapshot слоям: его можно
                 // безопасно отбросить и вернуть direct-PCM history без потери данных.
                 self.pipeline.clear_audio_tempo_processor();
-                self.pipeline.record_passthrough_audio_history(
-                    &warmup_history,
-                    sample_rate,
-                    channels,
-                );
+                self.pipeline
+                    .record_passthrough_audio_history(&warmup_history, output_spec);
                 return Err(self.reject_audio_tempo_rate_change(error));
             }
         };

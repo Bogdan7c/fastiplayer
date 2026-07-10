@@ -24,15 +24,18 @@ mod worker;
 mod worker_scheduler;
 
 pub use audio_core::{
-    AudioDecoder, AudioDecoderConfig, AudioDecoderError, AudioDecoderFactory, AudioDecoderHandle,
-    AudioOutputClockTiming, AudioOutputFactory, AudioOutputSpec, AudioOutputWriteIntent,
-    AudioPacketTimeBase, AudioPacketTiming, AudioTempoChannelCount, AudioTempoDecodedMedia,
-    AudioTempoFrameCount, AudioTempoFrameSpan, AudioTempoOutputProgressMapping,
-    AudioTempoPcmFormat, AudioTempoProcessReport, AudioTempoProcessor, AudioTempoProcessorConfig,
-    AudioTempoProcessorError, AudioTempoProcessorFactory, AudioTempoProcessorHandle,
-    AudioTempoRatio, AudioTempoRatioInvalidReason, AudioTempoReportFrameCounts,
-    AudioTempoSampleRateHz, AudioTempoSegment, AudioTempoSegmentId, AudioTempoStretchedOutput,
-    EncodedAudioPacket, PlayerAudioClock, PlayerAudioOutput,
+    AudioChannelLayout, AudioChannelLayoutError, AudioChannelPosition, AudioDecoder,
+    AudioDecoderConfig, AudioDecoderError, AudioDecoderFactory, AudioDecoderHandle,
+    AudioOutputClockTiming, AudioOutputFactory, AudioOutputInputFrameCount, AudioOutputSpec,
+    AudioOutputStreamFrameCount, AudioOutputWriteError, AudioOutputWriteIntent,
+    AudioOutputWriteReport, AudioPacketTimeBase, AudioPacketTiming, AudioTempoChannelCount,
+    AudioTempoDecodedMedia, AudioTempoFrameCount, AudioTempoFrameSpan,
+    AudioTempoOutputProgressMapping, AudioTempoPcmFormat, AudioTempoProcessReport,
+    AudioTempoProcessor, AudioTempoProcessorConfig, AudioTempoProcessorError,
+    AudioTempoProcessorFactory, AudioTempoProcessorHandle, AudioTempoRatio,
+    AudioTempoRatioInvalidReason, AudioTempoReportFrameCounts, AudioTempoSampleRateHz,
+    AudioTempoSegment, AudioTempoSegmentId, AudioTempoStretchedOutput, EncodedAudioPacket,
+    PlayerAudioClock, PlayerAudioOutput,
 };
 pub use codec_core::VideoDecodeRequirement;
 pub use command::{

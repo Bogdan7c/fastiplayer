@@ -12,14 +12,14 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use symphonia_core::audio::{
-    AsGenericAudioBufferRef, AudioBuffer, AudioSpec, GenericAudioBufferRef,
+    AsGenericAudioBufferRef, AudioBuffer, AudioSpec, Channels, GenericAudioBufferRef, layouts,
 };
 use symphonia_core::codecs::CodecInfo;
 use symphonia_core::codecs::audio::well_known::CODEC_ID_AAC;
 use symphonia_core::codecs::audio::{AudioCodecParameters, AudioDecoderOptions};
 use symphonia_core::codecs::audio::{AudioDecoder, FinalizeResult};
 use symphonia_core::codecs::registry::{RegisterableAudioDecoder, SupportedAudioCodec};
-use symphonia_core::errors::{Result, unsupported_error};
+use symphonia_core::errors::{Result, decode_error, unsupported_error};
 use symphonia_core::io::{BitReaderLtr, FiniteBitStream, ReadBitsLtr};
 use symphonia_core::packet::PacketRef;
 use symphonia_core::{codec_profile, support_audio_codec};
@@ -35,6 +35,125 @@ mod window;
 
 use common::*;
 
+/// Тип одного channel element в AAC raw_data_block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AacChannelElementKind {
+    /// Single Channel Element для center/rear-center.
+    Single,
+    /// Channel Pair Element для left/right пары.
+    Pair,
+    /// Low Frequency Effects element.
+    LowFrequencyEffects,
+}
+
+/// Каноническая destination plane для одного AAC channel element.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AacChannelElement {
+    /// Ожидаемый тип coded element-а.
+    kind: AacChannelElementKind,
+    /// `element_instance_tag`, связывающий element с channel configuration.
+    tag: u32,
+    /// Первая destination plane; pair занимает также следующую plane.
+    first_plane: usize,
+}
+
+impl AacChannelElement {
+    /// Создаёт mapping для Single Channel Element.
+    const fn single(tag: u32, first_plane: usize) -> Self {
+        Self {
+            kind: AacChannelElementKind::Single,
+            tag,
+            first_plane,
+        }
+    }
+
+    /// Создаёт mapping для Channel Pair Element.
+    const fn pair(tag: u32, first_plane: usize) -> Self {
+        Self {
+            kind: AacChannelElementKind::Pair,
+            tag,
+            first_plane,
+        }
+    }
+
+    /// Создаёт mapping для LFE element-а.
+    const fn lfe(tag: u32, first_plane: usize) -> Self {
+        Self {
+            kind: AacChannelElementKind::LowFrequencyEffects,
+            tag,
+            first_plane,
+        }
+    }
+}
+
+/// AAC coded element order → canonical Symphonia plane mapping.
+const AAC_MONO_ELEMENTS: &[AacChannelElement] = &[AacChannelElement::single(0, 0)];
+const AAC_STEREO_ELEMENTS: &[AacChannelElement] = &[AacChannelElement::pair(0, 0)];
+const AAC_3P0_ELEMENTS: &[AacChannelElement] = &[
+    AacChannelElement::single(0, 2),
+    AacChannelElement::pair(0, 0),
+];
+const AAC_4P0_ELEMENTS: &[AacChannelElement] = &[
+    AacChannelElement::single(0, 2),
+    AacChannelElement::pair(0, 0),
+    AacChannelElement::single(1, 3),
+];
+const AAC_QUADRAPHONIC_ELEMENTS: &[AacChannelElement] = &[
+    AacChannelElement::pair(0, 0),
+    AacChannelElement::pair(1, 2),
+];
+const AAC_5P0_ELEMENTS: &[AacChannelElement] = &[
+    AacChannelElement::single(0, 2),
+    AacChannelElement::pair(0, 0),
+    AacChannelElement::pair(1, 3),
+];
+const AAC_5P1_ELEMENTS: &[AacChannelElement] = &[
+    AacChannelElement::single(0, 2),
+    AacChannelElement::pair(0, 0),
+    AacChannelElement::pair(1, 4),
+    AacChannelElement::lfe(0, 3),
+];
+const AAC_7P1_ELEMENTS: &[AacChannelElement] = &[
+    AacChannelElement::single(0, 2),
+    AacChannelElement::pair(0, 6),
+    AacChannelElement::pair(1, 0),
+    AacChannelElement::pair(2, 4),
+    AacChannelElement::lfe(0, 3),
+];
+
+/// Возвращает mapping стандартного AAC channel configuration.
+fn canonical_aac_channel_elements(channels: &Channels) -> Option<&'static [AacChannelElement]> {
+    if channels == &layouts::CHANNEL_LAYOUT_MONO {
+        Some(AAC_MONO_ELEMENTS)
+    } else if channels == &layouts::CHANNEL_LAYOUT_STEREO {
+        Some(AAC_STEREO_ELEMENTS)
+    } else if channels == &layouts::CHANNEL_LAYOUT_AAC_3P0 {
+        Some(AAC_3P0_ELEMENTS)
+    } else if channels == &layouts::CHANNEL_LAYOUT_AAC_4P0 {
+        Some(AAC_4P0_ELEMENTS)
+    } else if channels == &layouts::CHANNEL_LAYOUT_AAC_QUADRAPHONIC {
+        Some(AAC_QUADRAPHONIC_ELEMENTS)
+    } else if channels == &layouts::CHANNEL_LAYOUT_AAC_5P0 {
+        Some(AAC_5P0_ELEMENTS)
+    } else if channels == &layouts::CHANNEL_LAYOUT_AAC_5P1 {
+        Some(AAC_5P1_ELEMENTS)
+    } else if channels == &layouts::CHANNEL_LAYOUT_AAC_7P1 {
+        Some(AAC_7P1_ELEMENTS)
+    } else {
+        None
+    }
+}
+
+/// Отмечает decoded element и отвергает повтор одного type/tag в том же frame.
+fn mark_decoded_channel_element(mask: &mut u16, element_index: usize) -> Result<()> {
+    let element_bit = 1_u16 << element_index;
+    if *mask & element_bit != 0 {
+        return decode_error("aac: duplicate channel element in one frame");
+    }
+    *mask |= element_bit;
+    Ok(())
+}
+
 /// Advanced Audio Coding (AAC) decoder.
 ///
 /// Implements a decoder for Advanced Audio Decoding Low-Complexity (AAC-LC) as defined in
@@ -44,9 +163,10 @@ pub struct AacDecoder {
     asc: AudioSpecificConfig,
     pairs: Vec<cpe::ChannelPair>,
     dsp: dsp::Dsp,
-    sbinfo: GASubbandInfo,
     params: AudioCodecParameters,
     buf: AudioBuffer<f32>,
+    /// Coded AAC element order → canonical Symphonia plane mapping.
+    channel_elements: &'static [AacChannelElement],
 }
 
 impl AacDecoder {
@@ -86,13 +206,16 @@ impl AacDecoder {
             Some(channels) => channels.clone(),
             _ => return unsupported_error("aac: channels or channel layout is required"),
         };
+        let channel_elements = match canonical_aac_channel_elements(&channels) {
+            Some(channel_elements) => channel_elements,
+            None => return unsupported_error("aac: unsupported channel layout"),
+        };
 
         // Check complexity.
         //
-        // rustiplayer patch: убрали ограничение `channels.count() > 2`. Декодер уже
-        // многоканален: decode_ga обходит все SCE/CPE/LFE-элементы, а synth_audio пишет
-        // в plane_mut(channel)/(channel+1), поэтому AAC-LC 5.1 (channel_config 6)
-        // декодируется корректно. Upstream guard отсекал это без технической причины.
+        // rustiplayer patch: убрали ограничение `channels.count() > 2` и явно
+        // сопоставляем AAC element tags с canonical Symphonia planes. Поэтому
+        // multichannel synthesis не путает coded AAC order с buffer lane order.
         if asc.object_type != AudioObjectType::Lc || asc.sbr_present || asc.samples != 1024 {
             return unsupported_error("aac: aac too complex");
         }
@@ -105,47 +228,76 @@ impl AacDecoder {
         let sbinfo = GASubbandInfo::find(asc.sample_rate);
 
         let buf = AudioBuffer::new(AudioSpec::new(asc.sample_rate, channels), asc.samples);
+        let pairs = channel_elements
+            .iter()
+            .map(|element| {
+                cpe::ChannelPair::new(
+                    element.kind == AacChannelElementKind::Pair,
+                    element.first_plane,
+                    sbinfo,
+                )
+            })
+            .collect();
 
-        Ok(AacDecoder { asc, pairs: Vec::new(), dsp: dsp::Dsp::new(), sbinfo, params, buf })
+        Ok(AacDecoder {
+            asc,
+            pairs,
+            dsp: dsp::Dsp::new(),
+            params,
+            buf,
+            channel_elements,
+        })
     }
 
-    fn set_pair(&mut self, pair_no: usize, channel: usize, pair: bool) -> Result<()> {
-        if self.pairs.len() <= pair_no {
-            self.pairs.push(cpe::ChannelPair::new(pair, channel, self.sbinfo));
+    /// Связывает coded element type/tag с canonical configured element index.
+    fn channel_element_index(
+        &self,
+        expected_kind: AacChannelElementKind,
+        tag: u32,
+    ) -> Result<usize> {
+        match self
+            .channel_elements
+            .iter()
+            .position(|element| element.kind == expected_kind && element.tag == tag)
+        {
+            Some(element_index) => Ok(element_index),
+            None => decode_error("aac: channel element tag does not match configured layout"),
         }
-        else {
-            validate!(self.pairs[pair_no].channel == channel);
-            validate!(self.pairs[pair_no].is_pair == pair);
-        }
-
-        let max_channels = self.asc.channels.as_ref().map_or(0, |channels| channels.count());
-        validate!(if pair { channel + 1 } else { channel } < max_channels);
-
-        Ok(())
     }
 
     fn decode_ga<B: ReadBitsLtr + FiniteBitStream>(&mut self, bs: &mut B) -> Result<()> {
-        let mut cur_pair = 0;
-        let mut cur_ch = 0;
+        let mut decoded_channel_element_mask = 0_u16;
         while bs.bits_left() > 3 {
             let id = bs.read_bits_leq32(3)?;
 
             match id {
                 0 => {
                     // ID_SCE
-                    let _tag = bs.read_bits_leq32(4)?;
-                    self.set_pair(cur_pair, cur_ch, false)?;
-                    self.pairs[cur_pair].decode_ga_sce(bs, self.asc.object_type)?;
-                    cur_pair += 1;
-                    cur_ch += 1;
+                    let tag = bs.read_bits_leq32(4)?;
+                    let channel_element_index = self.channel_element_index(
+                        AacChannelElementKind::Single,
+                        tag,
+                    )?;
+                    mark_decoded_channel_element(
+                        &mut decoded_channel_element_mask,
+                        channel_element_index,
+                    )?;
+                    self.pairs[channel_element_index]
+                        .decode_ga_sce(bs, self.asc.object_type)?;
                 }
                 1 => {
                     // ID_CPE
-                    let _tag = bs.read_bits_leq32(4)?;
-                    self.set_pair(cur_pair, cur_ch, true)?;
-                    self.pairs[cur_pair].decode_ga_cpe(bs, self.asc.object_type)?;
-                    cur_pair += 1;
-                    cur_ch += 2;
+                    let tag = bs.read_bits_leq32(4)?;
+                    let channel_element_index = self.channel_element_index(
+                        AacChannelElementKind::Pair,
+                        tag,
+                    )?;
+                    mark_decoded_channel_element(
+                        &mut decoded_channel_element_mask,
+                        channel_element_index,
+                    )?;
+                    self.pairs[channel_element_index]
+                        .decode_ga_cpe(bs, self.asc.object_type)?;
                 }
                 2 => {
                     // ID_CCE
@@ -153,11 +305,17 @@ impl AacDecoder {
                 }
                 3 => {
                     // ID_LFE
-                    let _tag = bs.read_bits_leq32(4)?;
-                    self.set_pair(cur_pair, cur_ch, false)?;
-                    self.pairs[cur_pair].decode_ga_sce(bs, self.asc.object_type)?;
-                    cur_pair += 1;
-                    cur_ch += 1;
+                    let tag = bs.read_bits_leq32(4)?;
+                    let channel_element_index = self.channel_element_index(
+                        AacChannelElementKind::LowFrequencyEffects,
+                        tag,
+                    )?;
+                    mark_decoded_channel_element(
+                        &mut decoded_channel_element_mask,
+                        channel_element_index,
+                    )?;
+                    self.pairs[channel_element_index]
+                        .decode_ga_sce(bs, self.asc.object_type)?;
                 }
                 4 => {
                     // ID_DSE
@@ -215,9 +373,13 @@ impl AacDecoder {
                 _ => unreachable!(),
             };
         }
+        let expected_channel_element_mask = (1_u16 << self.channel_elements.len()) - 1;
+        if decoded_channel_element_mask != expected_channel_element_mask {
+            return decode_error("aac: decoded channel elements do not fill configured layout");
+        }
         let rate_idx = GASubbandInfo::find_idx(self.asc.sample_rate);
-        for pair in 0..cur_pair {
-            self.pairs[pair].synth_audio(&mut self.dsp, &mut self.buf, rate_idx);
+        for pair in &mut self.pairs {
+            pair.synth_audio(&mut self.dsp, &mut self.buf, rate_idx);
         }
         Ok(())
     }
@@ -301,5 +463,98 @@ impl RegisterableAudioDecoder for AacDecoder {
             "Advanced Audio Coding",
             &[codec_profile!(CODEC_PROFILE_AAC_LC, "aac-lc", "Low Complexity"),]
         )]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Разворачивает SCE/CPE/LFE mapping в coded-lane → canonical-plane list.
+    fn expanded_destination_planes(elements: &[AacChannelElement]) -> Vec<usize> {
+        let mut planes = Vec::new();
+        for element in elements {
+            planes.push(element.first_plane);
+            if element.kind == AacChannelElementKind::Pair {
+                planes.push(element.first_plane + 1);
+            }
+        }
+        planes
+    }
+
+    #[test]
+    fn standard_multichannel_configs_map_coded_order_to_canonical_planes() {
+        let cases = [
+            (&layouts::CHANNEL_LAYOUT_AAC_3P0, vec![2, 0, 1]),
+            (&layouts::CHANNEL_LAYOUT_AAC_4P0, vec![2, 0, 1, 3]),
+            (&layouts::CHANNEL_LAYOUT_AAC_5P0, vec![2, 0, 1, 3, 4]),
+            (
+                &layouts::CHANNEL_LAYOUT_AAC_5P1,
+                vec![2, 0, 1, 4, 5, 3],
+            ),
+            (
+                &layouts::CHANNEL_LAYOUT_AAC_7P1,
+                vec![2, 6, 7, 0, 1, 4, 5, 3],
+            ),
+        ];
+
+        for (layout, expected_planes) in cases {
+            let elements = canonical_aac_channel_elements(layout).unwrap();
+            assert_eq!(expanded_destination_planes(elements), expected_planes);
+        }
+    }
+
+    #[test]
+    fn five_point_one_element_tags_select_their_canonical_destinations() {
+        let elements = canonical_aac_channel_elements(&layouts::CHANNEL_LAYOUT_AAC_5P1).unwrap();
+
+        assert_eq!(
+            elements
+                .iter()
+                .find(|element| {
+                    element.kind == AacChannelElementKind::Single && element.tag == 0
+                })
+                .unwrap()
+                .first_plane,
+            2
+        );
+        assert_eq!(
+            elements
+                .iter()
+                .find(|element| {
+                    element.kind == AacChannelElementKind::Pair && element.tag == 0
+                })
+                .unwrap()
+                .first_plane,
+            0
+        );
+        assert_eq!(
+            elements
+                .iter()
+                .find(|element| {
+                    element.kind == AacChannelElementKind::Pair && element.tag == 1
+                })
+                .unwrap()
+                .first_plane,
+            4
+        );
+        assert_eq!(
+            elements
+                .iter()
+                .find(|element| {
+                    element.kind == AacChannelElementKind::LowFrequencyEffects && element.tag == 0
+                })
+                .unwrap()
+                .first_plane,
+            3
+        );
+    }
+
+    #[test]
+    fn duplicate_element_is_rejected_before_synthesis() {
+        let mut decoded_mask = 0_u16;
+        mark_decoded_channel_element(&mut decoded_mask, 1).unwrap();
+
+        assert!(mark_decoded_channel_element(&mut decoded_mask, 1).is_err());
     }
 }
