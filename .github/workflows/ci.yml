@@ -30,6 +30,57 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Coverage является отдельным измеримым gate и не смешивает instrumented artifacts с tests job.
+  coverage:
+    # Стабильное имя используется будущей branch protection.
+    name: Coverage ratchet
+    # Тот же Ubuntu ABI сохраняет baseline сопоставимым с hermetic workspace tests.
+    runs-on: ubuntu-24.04
+    steps:
+      # Полная история нужна только для сравнения baseline PR с целевой веткой.
+      - uses: actions/checkout@v4
+        with:
+          # Нулевой fetch-depth предоставляет origin/base без отдельного API token flow.
+          fetch-depth: 0
+      # Native headers совпадают с all-features workspace test boundary.
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libavcodec-dev libavutil-dev libgbm-dev libva-dev pkg-config
+      # LLVM tools предоставляют llvm-profdata и llvm-cov exact primary toolchain release.
+      - name: Install LLVM coverage tools
+        run: rustup component add llvm-tools-preview
+      # Exact release закреплён одновременно workflow, runner и versioned policy.
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --version 0.8.7 --locked
+      # PR не может снизить versioned baseline без точечной bounded exception.
+      - name: Validate baseline update policy
+        if: github.event_name == 'pull_request'
+        run: |
+          if git cat-file -e "origin/${{ github.base_ref }}:coverage/baseline.json"; then
+            git show "origin/${{ github.base_ref }}:coverage/baseline.json" > /tmp/coverage-previous-baseline.json
+            python3 scripts/coverage_metrics.py check-baseline-update --previous /tmp/coverage-previous-baseline.json
+          else
+            echo "Base branch не содержит coverage baseline; принимается первичное введение policy."
+          fi
+      # Clean runner строит artifacts и применяет workspace/pure-crate ratchet.
+      - name: Run clean coverage suite and ratchet
+        run: scripts/coverage.sh check
+      # Report публикуется даже при regression, чтобы сразу видеть непокрытые owners.
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # Стабильное имя упрощает поиск report-а в любом run.
+          name: coverage-report
+          # Raw summary, compact risk map, LCOV и HTML не попадают в Git.
+          path: |
+            target/coverage/
+            target/llvm-cov-target/*.profraw
+            target/llvm-cov-target/*.profdata
+          # Отсутствующий artifact означает поломку coverage workflow и должен быть видимым failure.
+          if-no-files-found: error
+
   # Каждый matrix entry является отдельным GitHub Actions job для одного standalone fork.
   dependency-patch-tests:
     # Имя status check показывает конкретный patch manifest.

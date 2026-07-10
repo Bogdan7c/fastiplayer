@@ -1,0 +1,11 @@
+# Coverage baseline and ratchet (Session 07B, 2026-07-10)
+
+- Standard tool is exact `cargo-llvm-cov 0.8.7` plus primary-toolchain `llvm-tools-preview`. Policy/classification lives in `coverage/policy.json`; compact versioned counters live in `coverage/baseline.json`; bounded exceptions live in `coverage/exceptions.json`.
+- Local/CI entrypoint is `scripts/coverage.sh check`. It always runs `cargo llvm-cov clean --workspace`, then the hermetic `--workspace --all-features --locked --no-fail-fast` suite once, and emits summary JSON, LCOV and HTML report-only artifacts.
+- Blocking ratchet compares exact integer fractions (covered/total), never rounded percentages, for lines/functions/regions at three levels: first-party workspace, aggregate pure contract/business group, and every pure crate. Any decrease fails.
+- Hardware/FFI/UI-shell crates are separately listed as informational. Their per-crate metrics do not block until the path becomes hermetic, but their measured files remain part of the workspace aggregate ratchet.
+- PR baseline changes are compared with the target branch. Every decreased `scope/metric` requires an exact non-expired exception containing previous/allowed counters, reason, review date and bounded follow-up. A baseline edit without it fails.
+- No source exclusions currently exist. Generated cros-libva raw bindings are in a non-workspace patch crate; build scripts are not included; manual hardware/runtime paths remain visible as informational coverage.
+- CI check name is `Coverage ratchet`; artifact `coverage-report` contains `target/coverage/` plus raw `*.profraw`/`*.profdata` from `target/llvm-cov-target`.
+- Human documentation is `docs/code-coverage.md`; focused policy tests are `scripts/tests/test_coverage_metrics.py`.
+- Initial line baseline: workspace 58,981/81,342 (72.5099%); pure blocking group 36,977/43,992 (84.0544%). Low line-coverage owners visible in initial map include `service-direct-media` 370/489, `settings-derive` 702/899, and informational `desktop-integration` 303/818, `render-wgpu-shell` 200/496, `app-egui` 5,944/11,318.

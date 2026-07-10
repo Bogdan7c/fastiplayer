@@ -1,0 +1,473 @@
+{
+  "blocking_crates": {
+    "animation-core": {
+      "functions": {
+        "covered": 13,
+        "total": 14
+      },
+      "lines": {
+        "covered": 103,
+        "total": 109
+      },
+      "regions": {
+        "covered": 177,
+        "total": 181
+      }
+    },
+    "audio-core": {
+      "functions": {
+        "covered": 119,
+        "total": 131
+      },
+      "lines": {
+        "covered": 722,
+        "total": 845
+      },
+      "regions": {
+        "covered": 786,
+        "total": 924
+      }
+    },
+    "capability-core": {
+      "functions": {
+        "covered": 97,
+        "total": 124
+      },
+      "lines": {
+        "covered": 1248,
+        "total": 1492
+      },
+      "regions": {
+        "covered": 1464,
+        "total": 1735
+      }
+    },
+    "codec-core": {
+      "functions": {
+        "covered": 389,
+        "total": 434
+      },
+      "lines": {
+        "covered": 4162,
+        "total": 5240
+      },
+      "regions": {
+        "covered": 5327,
+        "total": 6599
+      }
+    },
+    "config": {
+      "functions": {
+        "covered": 186,
+        "total": 228
+      },
+      "lines": {
+        "covered": 2390,
+        "total": 2624
+      },
+      "regions": {
+        "covered": 3048,
+        "total": 3315
+      }
+    },
+    "frame-server-core": {
+      "functions": {
+        "covered": 179,
+        "total": 195
+      },
+      "lines": {
+        "covered": 1711,
+        "total": 1962
+      },
+      "regions": {
+        "covered": 1838,
+        "total": 2079
+      }
+    },
+    "media-core": {
+      "functions": {
+        "covered": 106,
+        "total": 129
+      },
+      "lines": {
+        "covered": 735,
+        "total": 820
+      },
+      "regions": {
+        "covered": 1027,
+        "total": 1139
+      }
+    },
+    "media-prefetch": {
+      "functions": {
+        "covered": 103,
+        "total": 109
+      },
+      "lines": {
+        "covered": 1027,
+        "total": 1091
+      },
+      "regions": {
+        "covered": 1542,
+        "total": 1634
+      }
+    },
+    "player-core": {
+      "functions": {
+        "covered": 1280,
+        "total": 1474
+      },
+      "lines": {
+        "covered": 12553,
+        "total": 15157
+      },
+      "regions": {
+        "covered": 14592,
+        "total": 17943
+      }
+    },
+    "render-core": {
+      "functions": {
+        "covered": 147,
+        "total": 170
+      },
+      "lines": {
+        "covered": 1476,
+        "total": 1635
+      },
+      "regions": {
+        "covered": 1810,
+        "total": 1998
+      }
+    },
+    "rustiplayer-settings": {
+      "functions": {
+        "covered": 77,
+        "total": 88
+      },
+      "lines": {
+        "covered": 890,
+        "total": 1026
+      },
+      "regions": {
+        "covered": 1204,
+        "total": 1387
+      }
+    },
+    "service-direct-media": {
+      "functions": {
+        "covered": 42,
+        "total": 59
+      },
+      "lines": {
+        "covered": 370,
+        "total": 489
+      },
+      "regions": {
+        "covered": 551,
+        "total": 733
+      }
+    },
+    "settings-core": {
+      "functions": {
+        "covered": 144,
+        "total": 174
+      },
+      "lines": {
+        "covered": 1096,
+        "total": 1395
+      },
+      "regions": {
+        "covered": 1273,
+        "total": 1621
+      }
+    },
+    "settings-derive": {
+      "functions": {
+        "covered": 67,
+        "total": 79
+      },
+      "lines": {
+        "covered": 702,
+        "total": 899
+      },
+      "regions": {
+        "covered": 1098,
+        "total": 1329
+      }
+    },
+    "source-core": {
+      "functions": {
+        "covered": 114,
+        "total": 144
+      },
+      "lines": {
+        "covered": 1011,
+        "total": 1163
+      },
+      "regions": {
+        "covered": 1642,
+        "total": 1818
+      }
+    },
+    "symphonia-demux": {
+      "functions": {
+        "covered": 382,
+        "total": 456
+      },
+      "lines": {
+        "covered": 3923,
+        "total": 4817
+      },
+      "regions": {
+        "covered": 5177,
+        "total": 6319
+      }
+    },
+    "video-backend-api": {
+      "functions": {
+        "covered": 33,
+        "total": 46
+      },
+      "lines": {
+        "covered": 340,
+        "total": 405
+      },
+      "regions": {
+        "covered": 312,
+        "total": 364
+      }
+    },
+    "video-core": {
+      "functions": {
+        "covered": 132,
+        "total": 170
+      },
+      "lines": {
+        "covered": 1491,
+        "total": 1697
+      },
+      "regions": {
+        "covered": 1457,
+        "total": 1721
+      }
+    },
+    "video-frame-contract": {
+      "functions": {
+        "covered": 36,
+        "total": 42
+      },
+      "lines": {
+        "covered": 299,
+        "total": 331
+      },
+      "regions": {
+        "covered": 305,
+        "total": 351
+      }
+    },
+    "video-present-core": {
+      "functions": {
+        "covered": 63,
+        "total": 66
+      },
+      "lines": {
+        "covered": 458,
+        "total": 469
+      },
+      "regions": {
+        "covered": 558,
+        "total": 576
+      }
+    },
+    "vp9-parser": {
+      "functions": {
+        "covered": 23,
+        "total": 24
+      },
+      "lines": {
+        "covered": 270,
+        "total": 326
+      },
+      "regions": {
+        "covered": 463,
+        "total": 592
+      }
+    }
+  },
+  "blocking_group": {
+    "functions": {
+      "covered": 3732,
+      "total": 4356
+    },
+    "lines": {
+      "covered": 36977,
+      "total": 43992
+    },
+    "regions": {
+      "covered": 45651,
+      "total": 54358
+    }
+  },
+  "informational_crates": {
+    "app-egui": {
+      "functions": {
+        "covered": 584,
+        "total": 1011
+      },
+      "lines": {
+        "covered": 5944,
+        "total": 11318
+      },
+      "regions": {
+        "covered": 7767,
+        "total": 15192
+      }
+    },
+    "audio": {
+      "functions": {
+        "covered": 175,
+        "total": 255
+      },
+      "lines": {
+        "covered": 1719,
+        "total": 2609
+      },
+      "regions": {
+        "covered": 2495,
+        "total": 3824
+      }
+    },
+    "audio-signalsmith": {
+      "functions": {
+        "covered": 36,
+        "total": 45
+      },
+      "lines": {
+        "covered": 520,
+        "total": 586
+      },
+      "regions": {
+        "covered": 696,
+        "total": 787
+      }
+    },
+    "audio-timestretch": {
+      "functions": {
+        "covered": 36,
+        "total": 57
+      },
+      "lines": {
+        "covered": 353,
+        "total": 529
+      },
+      "regions": {
+        "covered": 411,
+        "total": 612
+      }
+    },
+    "desktop-integration": {
+      "functions": {
+        "covered": 34,
+        "total": 120
+      },
+      "lines": {
+        "covered": 303,
+        "total": 818
+      },
+      "regions": {
+        "covered": 422,
+        "total": 1092
+      }
+    },
+    "render-wgpu-shell": {
+      "functions": {
+        "covered": 23,
+        "total": 47
+      },
+      "lines": {
+        "covered": 200,
+        "total": 496
+      },
+      "regions": {
+        "covered": 226,
+        "total": 576
+      }
+    },
+    "render-wgpu-video": {
+      "functions": {
+        "covered": 283,
+        "total": 431
+      },
+      "lines": {
+        "covered": 3525,
+        "total": 5904
+      },
+      "regions": {
+        "covered": 4020,
+        "total": 6312
+      }
+    },
+    "service-youtube": {
+      "functions": {
+        "covered": 210,
+        "total": 278
+      },
+      "lines": {
+        "covered": 1952,
+        "total": 2545
+      },
+      "regions": {
+        "covered": 2651,
+        "total": 3571
+      }
+    },
+    "video-ffmpeg": {
+      "functions": {
+        "covered": 308,
+        "total": 454
+      },
+      "lines": {
+        "covered": 2765,
+        "total": 4258
+      },
+      "regions": {
+        "covered": 3228,
+        "total": 4993
+      }
+    },
+    "video-vaapi": {
+      "functions": {
+        "covered": 394,
+        "total": 721
+      },
+      "lines": {
+        "covered": 4723,
+        "total": 8287
+      },
+      "regions": {
+        "covered": 5465,
+        "total": 9864
+      }
+    }
+  },
+  "schema_version": 1,
+  "tool": {
+    "name": "cargo-llvm-cov",
+    "version": "0.8.7"
+  },
+  "workspace": {
+    "functions": {
+      "covered": 5815,
+      "total": 7775
+    },
+    "lines": {
+      "covered": 58981,
+      "total": 81342
+    },
+    "regions": {
+      "covered": 73032,
+      "total": 101181
+    }
+  }
+}

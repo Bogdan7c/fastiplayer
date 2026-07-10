@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "tool": {
+    "name": "cargo-llvm-cov",
+    "version": "0.8.7"
+  },
+  "metrics": [
+    "lines",
+    "functions",
+    "regions"
+  ],
+  "blocking_crates": [
+    "animation-core",
+    "audio-core",
+    "capability-core",
+    "codec-core",
+    "config",
+    "frame-server-core",
+    "media-core",
+    "media-prefetch",
+    "player-core",
+    "render-core",
+    "rustiplayer-settings",
+    "service-direct-media",
+    "settings-core",
+    "settings-derive",
+    "source-core",
+    "symphonia-demux",
+    "video-backend-api",
+    "video-core",
+    "video-frame-contract",
+    "video-present-core",
+    "vp9-parser"
+  ],
+  "informational_crates": [
+    "app-egui",
+    "audio",
+    "audio-signalsmith",
+    "audio-timestretch",
+    "desktop-integration",
+    "render-wgpu-shell",
+    "render-wgpu-video",
+    "service-youtube",
+    "video-ffmpeg",
+    "video-vaapi"
+  ],
+  "excluded_source_paths": []
+}
