@@ -401,6 +401,8 @@ PREPARED_BRANCH_PROMOTION_PATTERNS = (
 
 REQUIRED_SOURCE_ANCHORS = ()
 
+RequiredSourceAnchor = tuple[Path, tuple[str, ...], str]
+
 
 class GuardrailError(RuntimeError):
     """Ошибка входных данных или запуска Cargo, а не нарушение архитектурной policy."""
@@ -423,6 +425,15 @@ class SourcePolicyViolation:
     line_number: int
     rule: str
     matched_text: str
+
+
+@dataclass(frozen=True)
+class DependencyGraphPolicyResult:
+    """Полный результат policies, которым нужен только Cargo dependency graph."""
+
+    missing_role_crates: list[str]
+    reintroduced_workspace_crates: list[str]
+    dependency_violations: list[DependencyViolation]
 
 
 def repository_root() -> Path:
@@ -726,7 +737,30 @@ def find_dependency_violations(
     return sorted(violations, key=lambda violation: (violation.owner, violation.dependency))
 
 
-def find_source_policy_violations(repo_root: Path) -> list[SourcePolicyViolation]:
+def evaluate_dependency_graph_policies(
+    packages: dict[str, dict[str, Any]],
+    workspace_dependencies: frozenset[str],
+) -> DependencyGraphPolicyResult:
+    """Проверяет единым entrypoint только manifest/dependency-graph policies."""
+
+    dependency_map = direct_normal_dependencies(packages)
+    all_dependency_map = direct_all_manifest_dependencies(packages)
+    return DependencyGraphPolicyResult(
+        missing_role_crates=find_missing_role_crates(packages),
+        reintroduced_workspace_crates=find_reintroduced_workspace_crates(packages),
+        dependency_violations=find_dependency_violations(
+            dependency_map,
+            all_dependency_map,
+            workspace_dependencies,
+        ),
+    )
+
+
+def find_source_policy_violations(
+    repo_root: Path,
+    *,
+    required_source_anchors: tuple[RequiredSourceAnchor, ...] = REQUIRED_SOURCE_ANCHORS,
+) -> list[SourcePolicyViolation]:
     """Проверяет source-level guardrails, которые нельзя выразить Cargo graph-ом."""
 
     violations: list[SourcePolicyViolation] = []
@@ -737,7 +771,9 @@ def find_source_policy_violations(repo_root: Path) -> list[SourcePolicyViolation
     violations.extend(find_direct_vaapi_display_violations(repo_root))
     violations.extend(find_main_video_second_session_violations(repo_root))
     violations.extend(find_prepared_branch_promotion_violations(repo_root))
-    violations.extend(find_required_source_anchor_violations(repo_root))
+    violations.extend(
+        find_required_source_anchor_violations(repo_root, required_source_anchors)
+    )
     return sorted(
         violations,
         key=lambda violation: (str(violation.path), violation.line_number, violation.rule),
@@ -904,11 +940,14 @@ def find_prepared_branch_promotion_violations(repo_root: Path) -> list[SourcePol
     return violations
 
 
-def find_required_source_anchor_violations(repo_root: Path) -> list[SourcePolicyViolation]:
+def find_required_source_anchor_violations(
+    repo_root: Path,
+    required_source_anchors: tuple[RequiredSourceAnchor, ...] = REQUIRED_SOURCE_ANCHORS,
+) -> list[SourcePolicyViolation]:
     """Проверяет наличие focused тестов и boundary callsites, закрепляющих S31 policy."""
 
     violations: list[SourcePolicyViolation] = []
-    for relative_path, required_anchors, rule in REQUIRED_SOURCE_ANCHORS:
+    for relative_path, required_anchors, rule in required_source_anchors:
         path = repo_root / relative_path
         if not path.is_file():
             violations.append(
@@ -1151,32 +1190,28 @@ def run() -> int:
     repo_root = repository_root()
     metadata = load_cargo_metadata(repo_root)
     packages = workspace_packages(metadata)
-    dependency_map = direct_normal_dependencies(packages)
-    all_dependency_map = direct_all_manifest_dependencies(packages)
     workspace_dependencies = workspace_dependency_names(repo_root)
 
-    missing_role_crates = find_missing_role_crates(packages)
-    reintroduced_workspace_crates = find_reintroduced_workspace_crates(packages)
-    violations = find_dependency_violations(
-        dependency_map,
-        all_dependency_map,
+    dependency_policy_result = evaluate_dependency_graph_policies(
+        packages,
         workspace_dependencies,
     )
     source_policy_violations = find_source_policy_violations(repo_root)
     if (
-        missing_role_crates
-        or reintroduced_workspace_crates
-        or violations
+        dependency_policy_result.missing_role_crates
+        or dependency_policy_result.reintroduced_workspace_crates
+        or dependency_policy_result.dependency_violations
         or source_policy_violations
     ):
         print_failures(
-            missing_role_crates,
-            reintroduced_workspace_crates,
-            violations,
+            dependency_policy_result.missing_role_crates,
+            dependency_policy_result.reintroduced_workspace_crates,
+            dependency_policy_result.dependency_violations,
             source_policy_violations,
         )
         return 1
 
+    dependency_map = direct_normal_dependencies(packages)
     print_success(find_known_debt_edges(dependency_map))
     return 0
 

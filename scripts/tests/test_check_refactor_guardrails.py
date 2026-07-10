@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import sys
+import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from types import ModuleType
 
@@ -55,6 +58,38 @@ def package_with_dependencies(
             for dependency_name, dependency_kind in dependencies
         ],
     }
+
+
+def complete_workspace_packages() -> dict[str, dict[str, object]]:
+    """Строит минимальный полный workspace graph для pass-сценариев."""
+
+    return {
+        crate_name: package_with_dependencies(crate_name, ())
+        for crate_name in GUARDRAIL.REQUIRED_ROLE_CRATES
+    }
+
+
+class TemporaryPolicyRepository:
+    """Создаёт герметичный source tree, достаточный для всех source policies."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.write("Cargo.toml", "[workspace]\nmembers = []\n[workspace.dependencies]\n")
+        for relative_root in GUARDRAIL.PUBLIC_CONFIG_SCAN_ROOTS:
+            (root / relative_root).mkdir(parents=True, exist_ok=True)
+        for relative_path in GUARDRAIL.MAIN_VIDEO_REUSED_DECODER_SCAN_PATHS:
+            self.write(relative_path, "// playback decoder reuse remains explicit\n")
+        self.write("crates/app-egui/src/lib.rs", "// composition root\n")
+        self.write("crates/video-ffmpeg/src/lib.rs", "pub struct AVFrame;\n")
+        self.write("crates/video-vaapi/src/lib.rs", "fn open_owned_display() {}\n")
+
+    def write(self, relative_path: str | Path, text: str) -> Path:
+        """Пишет один fixture-файл и возвращает его абсолютный путь."""
+
+        fixture_path = self.root / relative_path
+        fixture_path.parent.mkdir(parents=True, exist_ok=True)
+        fixture_path.write_text(text, encoding="utf-8")
+        return fixture_path
 
 
 class TempoDependencyGuardrailTests(unittest.TestCase):
@@ -124,6 +159,212 @@ class TempoDependencyGuardrailTests(unittest.TestCase):
         )
 
         self.assertEqual([], violations)
+
+
+class DependencyGraphPolicyTests(unittest.TestCase):
+    """Доказывает pass/fail поведение manifest/dependency-graph policies."""
+
+    def test_forbidden_direction_allows_forward_edge_and_rejects_reverse_edge(self) -> None:
+        """Neutral backend API direction разрешена, backend -> player-core запрещена."""
+
+        packages = complete_workspace_packages()
+        packages["player-core"] = package_with_dependencies(
+            "player-core", (("video-backend-api", None),)
+        )
+        packages["video-vaapi"] = package_with_dependencies(
+            "video-vaapi", (("video-backend-api", None),)
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertEqual([], passing_result.dependency_violations)
+
+        packages["video-vaapi"] = package_with_dependencies(
+            "video-vaapi", (("player-core", None),)
+        )
+        failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertTrue(
+            any(
+                violation.owner == "video-vaapi"
+                and violation.dependency == "player-core"
+                for violation in failing_result.dependency_violations
+            )
+        )
+
+    def test_required_role_crates_report_only_missing_role(self) -> None:
+        """Полный fixture проходит, а удалённая роль называется в результате."""
+
+        packages = complete_workspace_packages()
+        self.assertEqual([], GUARDRAIL.find_missing_role_crates(packages))
+        del packages["render-core"]
+        self.assertEqual(["render-core"], GUARDRAIL.find_missing_role_crates(packages))
+
+    def test_removed_workspace_crate_is_rejected_when_reintroduced(self) -> None:
+        """Обычный workspace проходит, но video-vulkan снова вводить нельзя."""
+
+        packages = complete_workspace_packages()
+        self.assertEqual([], GUARDRAIL.find_reintroduced_workspace_crates(packages))
+        packages["video-vulkan"] = package_with_dependencies("video-vulkan", ())
+        self.assertEqual(
+            ["video-vulkan"], GUARDRAIL.find_reintroduced_workspace_crates(packages)
+        )
+
+    def test_ffmpeg_isolation_allows_owner_and_rejects_other_crate_and_workspace(self) -> None:
+        """FFmpeg dependency допустима только внутри video-ffmpeg manifest."""
+
+        packages = complete_workspace_packages()
+        packages["video-ffmpeg"] = package_with_dependencies(
+            "video-ffmpeg", (("ffmpeg-sys-next", None),)
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertEqual([], passing_result.dependency_violations)
+
+        packages["app-egui"] = package_with_dependencies(
+            "app-egui", (("ffmpeg-sys-next", "build"),)
+        )
+        failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset({"ffmpeg-next"})
+        )
+        observed_edges = {
+            (violation.owner, violation.dependency)
+            for violation in failing_result.dependency_violations
+        }
+        self.assertIn(("app-egui", "ffmpeg-sys-next"), observed_edges)
+        self.assertIn(("workspace.dependencies", "ffmpeg-next"), observed_edges)
+
+    def test_workspace_dependency_manifest_fixture_is_parsed(self) -> None:
+        """Temporary Cargo.toml проверяет реальный TOML seam, а не только set fixture."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = TemporaryPolicyRepository(Path(temporary_directory))
+            repository.write(
+                "Cargo.toml",
+                "[workspace]\nmembers = []\n[workspace.dependencies]\nffmpeg-next = \"7\"\n",
+            )
+            self.assertEqual(
+                frozenset({"ffmpeg-next"}),
+                GUARDRAIL.workspace_dependency_names(repository.root),
+            )
+
+
+class SourceTextPolicyTests(unittest.TestCase):
+    """Запускает source policies на временных repositories без production tree."""
+
+    def setUp(self) -> None:
+        """Создаёт новый независимый repository fixture для каждого теста."""
+
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.repository = TemporaryPolicyRepository(Path(self.temporary_directory.name))
+
+    def assert_single_policy_failure(
+        self,
+        relative_path: str | Path,
+        source_text: str,
+        expected_rule_fragment: str,
+    ) -> None:
+        """Проверяет pass fixture, затем одно actionable нарушение в заданном файле."""
+
+        self.assertEqual([], GUARDRAIL.find_source_policy_violations(self.repository.root))
+        self.repository.write(relative_path, source_text)
+        violations = GUARDRAIL.find_source_policy_violations(self.repository.root)
+        matching_violations = [
+            violation
+            for violation in violations
+            if violation.path == Path(relative_path)
+            and expected_rule_fragment in violation.rule
+        ]
+        self.assertTrue(matching_violations, msg=f"violations: {violations!r}")
+        self.assertGreater(matching_violations[0].line_number, 0)
+
+    def test_public_backend_options_pass_and_fail(self) -> None:
+        """Public auto/hardware/software проходит, отдельный ffmpeg_sw падает."""
+
+        self.repository.write(
+            "crates/config/src/options.toml",
+            'preferred_backend = "software"\n',
+        )
+        self.assert_single_policy_failure(
+            "crates/config/src/options.toml",
+            'preferred_backend = "ffmpeg_sw"\n',
+            "public config/UI option",
+        )
+
+    def test_cpu_rgb_conversion_pass_and_fail(self) -> None:
+        """GPU conversion wording проходит, прямой swscale call падает."""
+
+        self.assert_single_policy_failure(
+            "crates/render-wgpu-video/src/upload.rs",
+            "let converted = sws_scale(context);\n",
+            "swscale CPU conversion",
+        )
+
+    def test_direct_va_display_pass_and_fail(self) -> None:
+        """VA owner может открыть display, внешний crate — нет."""
+
+        owner_violations = GUARDRAIL.find_direct_vaapi_display_violations(
+            self.repository.root
+        )
+        self.assertEqual([], owner_violations)
+        self.assert_single_policy_failure(
+            "crates/app-egui/src/va_probe.rs",
+            "let display: VADisplay = vaGetDisplay(native);\n",
+            "video-vaapi boundary",
+        )
+
+    def test_second_main_video_session_pass_and_fail(self) -> None:
+        """Decoder reuse проходит, создание второго PlayerSession падает."""
+
+        self.assert_single_policy_failure(
+            "crates/player-core/src/session/scrub_driver.rs",
+            "let preview = PlayerSession::new(factory);\n",
+            "reuse playback session/decoder",
+        )
+
+    def test_required_source_anchors_pass_and_fail(self) -> None:
+        """Инъекция anchors проверяет и наличие, и точную диагностику отсутствия."""
+
+        anchor_path = Path("crates/player-core/src/session/anchor.rs")
+        rule = "player-core должен сохранять required decoder reuse anchor"
+        anchors = ((anchor_path, ("reuse_main_decoder",), rule),)
+        self.repository.write(anchor_path, "fn reuse_main_decoder() {}\n")
+        self.assertEqual(
+            [],
+            GUARDRAIL.find_source_policy_violations(
+                self.repository.root,
+                required_source_anchors=anchors,
+            ),
+        )
+
+        self.repository.write(anchor_path, "fn unrelated() {}\n")
+        violations = GUARDRAIL.find_source_policy_violations(
+            self.repository.root,
+            required_source_anchors=anchors,
+        )
+        self.assertEqual(1, len(violations))
+        self.assertEqual(anchor_path, violations[0].path)
+        self.assertEqual(rule, violations[0].rule)
+        self.assertIn("reuse_main_decoder", violations[0].matched_text)
+
+    def test_failure_output_contains_file_and_rule(self) -> None:
+        """CLI diagnostic остаётся actionable: path и policy rule печатаются вместе."""
+
+        violation = GUARDRAIL.SourcePolicyViolation(
+            path=Path("crates/app-egui/src/va_probe.rs"),
+            line_number=7,
+            rule="VA display принадлежит video-vaapi",
+            matched_text="vaGetDisplay(native)",
+        )
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            GUARDRAIL.print_failures([], [], [], [violation])
+        diagnostic = stderr.getvalue()
+        self.assertIn("crates/app-egui/src/va_probe.rs:7", diagnostic)
+        self.assertIn("VA display принадлежит video-vaapi", diagnostic)
 
 
 if __name__ == "__main__":
