@@ -520,20 +520,20 @@ fn handle_decoder_control_message(
             keep_running
         }
         ThreadControlMsg::BeginEndOfStreamDrain(generation, done_tx) => {
-            if let Ok(state) = decoder_eof_drain_state(end_of_stream_drain_state) {
-                if decoder_eof_drain_state_matches_generation(&state, generation) {
-                    if done_tx
-                        .send(video_core::VideoDecoderEndOfStreamDrainResult::Unchanged(
-                            state,
-                        ))
-                        .is_err()
-                    {
-                        tracing::warn!(
-                            "Decoder thread: EOF drain unchanged, but caller dropped receiver"
-                        );
-                    }
-                    return true;
+            if let Ok(state) = decoder_eof_drain_state(end_of_stream_drain_state)
+                && decoder_eof_drain_state_matches_generation(&state, generation)
+            {
+                if done_tx
+                    .send(video_core::VideoDecoderEndOfStreamDrainResult::Unchanged(
+                        state,
+                    ))
+                    .is_err()
+                {
+                    tracing::warn!(
+                        "Decoder thread: EOF drain unchanged, but caller dropped receiver"
+                    );
                 }
+                return true;
             }
 
             if let Err(error) = set_decoder_eof_drain_state(

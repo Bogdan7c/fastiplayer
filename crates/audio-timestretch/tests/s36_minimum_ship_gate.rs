@@ -424,7 +424,7 @@ fn frames_from_samples(
     pcm_format: AudioTempoPcmFormat,
 ) -> Result<AudioTempoFrameCount> {
     let channel_count = pcm_format.channel_count().get() as usize;
-    if sample_count % channel_count != 0 {
+    if !sample_count.is_multiple_of(channel_count) {
         bail!("sample count {sample_count} is not divisible by channel count {channel_count}");
     }
     Ok(AudioTempoFrameCount::new(

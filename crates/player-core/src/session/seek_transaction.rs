@@ -62,6 +62,24 @@ pub(super) struct SeekProgressGateSnapshot {
     pub(super) required_video_frames: usize,
 }
 
+/// Собирает намерение запуска reused-decoder SeekLanding в один именованный контракт.
+struct ReusedDecoderScrubLandingRequest {
+    /// Финальная позиция, которую должен показать SeekLanding.
+    target_position: MediaTime,
+    /// Режим demux seek для поиска decode point.
+    seek_mode: SeekMode,
+    /// Намерение восстановить playback после завершения seek.
+    resume_intent: PlaybackResumeIntent,
+    /// Маршрут отличает one-shot seek от live scrub preview.
+    route: SeekLandingRoute,
+    /// Диагностика конкретного live scrub запроса, если маршрут её поддерживает.
+    live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
+    /// Проверенная конфигурация frame-server для создаваемого driver-а.
+    config: ValidatedFrameServerConfig,
+    /// Политика завершения определяет допустимый визуальный commit.
+    finish_policy: FinishScrubPolicy,
+}
+
 /// Side effects выхода из lightweight scrub после восстановления public state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SimpleScrubExitMode {
@@ -1741,15 +1759,15 @@ impl PlayerSession {
             );
         }
 
-        self.start_reused_decoder_scrub_landing_transaction(
+        self.start_reused_decoder_scrub_landing_transaction(ReusedDecoderScrubLandingRequest {
             target_position,
-            request.mode,
+            seek_mode: request.mode,
             resume_intent,
-            SeekLandingRoute::OneShot,
-            None,
-            self.frame_server_config,
-            FinishScrubPolicy::CommitVisiblePreview,
-        )
+            route: SeekLandingRoute::OneShot,
+            live_scrub_diagnostics: None,
+            config: self.frame_server_config,
+            finish_policy: FinishScrubPolicy::CommitVisiblePreview,
+        })
     }
 
     /// Выполняет no-video/audio-only SeekLanding через существующую single seek transaction.
@@ -1770,14 +1788,17 @@ impl PlayerSession {
     /// текущего playback decoder-а.
     fn start_reused_decoder_scrub_landing_transaction(
         &mut self,
-        target_position: MediaTime,
-        seek_mode: SeekMode,
-        resume_intent: PlaybackResumeIntent,
-        route: SeekLandingRoute,
-        live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
-        config: ValidatedFrameServerConfig,
-        finish_policy: FinishScrubPolicy,
+        request: ReusedDecoderScrubLandingRequest,
     ) -> PlayerResult<()> {
+        let ReusedDecoderScrubLandingRequest {
+            target_position,
+            seek_mode,
+            resume_intent,
+            route,
+            live_scrub_diagnostics,
+            config,
+            finish_policy,
+        } = request;
         if !self.snapshot.timeline.seekable {
             let reason = self
                 .snapshot
@@ -2077,15 +2098,15 @@ impl PlayerSession {
             return Ok(());
         }
 
-        self.start_reused_decoder_scrub_landing_transaction(
+        self.start_reused_decoder_scrub_landing_transaction(ReusedDecoderScrubLandingRequest {
             target_position,
-            request.mode,
+            seek_mode: request.mode,
             resume_intent,
-            SeekLandingRoute::live_scrub_preview(live_scrub_diagnostics),
+            route: SeekLandingRoute::live_scrub_preview(live_scrub_diagnostics),
             live_scrub_diagnostics,
-            self.frame_server_config,
-            FinishScrubPolicy::CommitVisiblePreview,
-        )?;
+            config: self.frame_server_config,
+            finish_policy: FinishScrubPolicy::CommitVisiblePreview,
+        })?;
         Ok(())
     }
 

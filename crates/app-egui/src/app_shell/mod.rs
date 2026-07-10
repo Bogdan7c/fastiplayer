@@ -36,7 +36,7 @@ use crate::telemetry::Telemetry;
 /// Winit shell приложения.
 ///
 /// Владеет:
-/// - окном (Arc<Window>)
+/// - окном (`Arc<Window>`)
 /// - рендерером (`render-wgpu-shell` backend)
 /// - состоянием приложения (egui + player state)
 /// - телеметрией
@@ -187,10 +187,10 @@ impl AppShell {
     ) {
         event_loop.set_control_flow(action.control_flow);
 
-        if action.request_redraw {
-            if let Some(window) = window {
-                window.request_redraw();
-            }
+        if action.request_redraw
+            && let Some(window) = window
+        {
+            window.request_redraw();
         }
     }
 

@@ -82,13 +82,13 @@ impl SettingsSchema for FrameServerConfig {
                 "false отключает live drag/main-preview updates, но не точный seek по click/release.",
             ),
             |config| SettingValue::Bool(config.live_scrub_enabled),
-            FrameServerField::LiveScrubEnabled,
+            FrameServerField::Enabled,
         )?;
         register_frame_server_setting(
             &mut registry,
             frame_server_live_mode_descriptor(),
             |config| SettingValue::Select(config.live_scrub_decode_mode.stable_id().into()),
-            FrameServerField::LiveScrubDecodeMode,
+            FrameServerField::DecodeMode,
         )?;
         register_frame_server_setting(
             &mut registry,
@@ -104,7 +104,7 @@ impl SettingsSchema for FrameServerConfig {
                 "hz",
             ),
             |config| SettingValue::Integer(i64::from(config.live_scrub_max_hz)),
-            FrameServerField::LiveScrubMaxHz,
+            FrameServerField::MaxHz,
         )?;
 
         Ok(registry)
@@ -113,9 +113,9 @@ impl SettingsSchema for FrameServerConfig {
 
 #[derive(Debug, Clone, Copy)]
 enum FrameServerField {
-    LiveScrubEnabled,
-    LiveScrubDecodeMode,
-    LiveScrubMaxHz,
+    Enabled,
+    DecodeMode,
+    MaxHz,
 }
 
 struct FrameServerAccessor {
@@ -145,13 +145,13 @@ impl SettingAccessor<FrameServerConfig> for FrameServerAccessor {
 impl FrameServerField {
     fn set(self, config: &mut FrameServerConfig, value: SettingValue) -> SettingsResult<()> {
         match self {
-            Self::LiveScrubEnabled => {
+            Self::Enabled => {
                 config.live_scrub_enabled = bool_from_setting_value(value)?;
             }
-            Self::LiveScrubDecodeMode => {
+            Self::DecodeMode => {
                 config.live_scrub_decode_mode = live_mode_from_setting_value(value)?;
             }
-            Self::LiveScrubMaxHz => {
+            Self::MaxHz => {
                 config.live_scrub_max_hz = u16_from_setting_value(value)?;
             }
         }
@@ -161,13 +161,13 @@ impl FrameServerField {
 
     fn reset(self, config: &mut FrameServerConfig, default_config: &FrameServerConfig) {
         match self {
-            Self::LiveScrubEnabled => {
+            Self::Enabled => {
                 config.live_scrub_enabled = default_config.live_scrub_enabled;
             }
-            Self::LiveScrubDecodeMode => {
+            Self::DecodeMode => {
                 config.live_scrub_decode_mode = default_config.live_scrub_decode_mode;
             }
-            Self::LiveScrubMaxHz => {
+            Self::MaxHz => {
                 config.live_scrub_max_hz = default_config.live_scrub_max_hz;
             }
         }

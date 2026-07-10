@@ -490,24 +490,24 @@ fn validate_requirement_format_fields(
         }
     }
 
-    if let Some(expected_bit_depth) = requirement.bit_depth {
-        if expected_bit_depth != layout_bit_depth {
-            return Err(FfmpegCodecAdapterError::BitDepthMismatch {
-                pixel_layout,
-                expected: expected_bit_depth,
-                actual: layout_bit_depth,
-            });
-        }
+    if let Some(expected_bit_depth) = requirement.bit_depth
+        && expected_bit_depth != layout_bit_depth
+    {
+        return Err(FfmpegCodecAdapterError::BitDepthMismatch {
+            pixel_layout,
+            expected: expected_bit_depth,
+            actual: layout_bit_depth,
+        });
     }
 
-    if let Some(expected_chroma) = requirement.chroma {
-        if expected_chroma != layout_chroma {
-            return Err(FfmpegCodecAdapterError::ChromaMismatch {
-                pixel_layout,
-                expected: expected_chroma,
-                actual: layout_chroma,
-            });
-        }
+    if let Some(expected_chroma) = requirement.chroma
+        && expected_chroma != layout_chroma
+    {
+        return Err(FfmpegCodecAdapterError::ChromaMismatch {
+            pixel_layout,
+            expected: expected_chroma,
+            actual: layout_chroma,
+        });
     }
 
     if let (Some(bit_depth), Some(chroma)) = (requirement.bit_depth, requirement.chroma) {

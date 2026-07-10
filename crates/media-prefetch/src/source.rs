@@ -204,18 +204,18 @@ impl Drop for PrefetchingByteSource {
         self.worker_cancellation.cancel();
         self.shared.notify_all();
 
-        if let Some(worker_handle) = self.worker_handle.take() {
-            if let Err(panic_payload) = worker_handle.join() {
-                let panic_message = panic_payload
-                    .downcast_ref::<&'static str>()
-                    .copied()
-                    .or_else(|| panic_payload.downcast_ref::<String>().map(String::as_str))
-                    .unwrap_or("panic payload не является строкой");
-                tracing::error!(
-                    panic_message,
-                    "media-prefetch worker thread завершился panic-ом"
-                );
-            }
+        if let Some(worker_handle) = self.worker_handle.take()
+            && let Err(panic_payload) = worker_handle.join()
+        {
+            let panic_message = panic_payload
+                .downcast_ref::<&'static str>()
+                .copied()
+                .or_else(|| panic_payload.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("panic payload не является строкой");
+            tracing::error!(
+                panic_message,
+                "media-prefetch worker thread завершился panic-ом"
+            );
         }
     }
 }
@@ -490,12 +490,12 @@ mod tests {
                 .lock()
                 .expect("fake state mutex не должен быть poisoned");
 
-            if let Seekability::NotSeekable { reason } = &state.seekability {
-                if offset != state.position {
-                    return Err(SourceError::NotSeekable {
-                        reason: reason.clone(),
-                    });
-                }
+            if let Seekability::NotSeekable { reason } = &state.seekability
+                && offset != state.position
+            {
+                return Err(SourceError::NotSeekable {
+                    reason: reason.clone(),
+                });
             }
 
             state.position = offset;

@@ -282,11 +282,11 @@ impl CodecContext {
             // Codec-private global headers (avcC/hvcC) должны попасть в decoder до
             // open: иначе H.264/H.265 length-prefixed packets парсятся как Annex B
             // и FFmpeg отвечает AVERROR_INVALIDDATA ("No start code is found").
-            if let Some(extradata) = request.extradata() {
-                if let Err(error) = assign_codec_context_extradata(raw_context, extradata) {
-                    free_context(raw_context);
-                    return Err(error);
-                }
+            if let Some(extradata) = request.extradata()
+                && let Err(error) = assign_codec_context_extradata(raw_context, extradata)
+            {
+                free_context(raw_context);
+                return Err(error);
             }
 
             let ffmpeg_thread_count =

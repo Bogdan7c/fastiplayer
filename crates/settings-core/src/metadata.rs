@@ -642,14 +642,14 @@ impl SelectListDescriptor {
             });
         }
 
-        if let Some(max_len) = self.max_len {
-            if selected_ids.len() > max_len {
-                return Err(SettingValueError::InvalidListLength {
-                    limit: ListLengthLimitKind::Maximum,
-                    expected: max_len,
-                    actual: selected_ids.len(),
-                });
-            }
+        if let Some(max_len) = self.max_len
+            && selected_ids.len() > max_len
+        {
+            return Err(SettingValueError::InvalidListLength {
+                limit: ListLengthLimitKind::Maximum,
+                expected: max_len,
+                actual: selected_ids.len(),
+            });
         }
 
         let mut seen_ids = HashSet::new();
@@ -785,23 +785,23 @@ impl TextDescriptor {
         };
 
         let length = text.chars().count();
-        if let Some(min_len) = self.min_len {
-            if length < min_len {
-                return Err(SettingValueError::InvalidTextLength {
-                    limit: TextLengthLimitKind::Minimum,
-                    expected: min_len,
-                    actual: length,
-                });
-            }
+        if let Some(min_len) = self.min_len
+            && length < min_len
+        {
+            return Err(SettingValueError::InvalidTextLength {
+                limit: TextLengthLimitKind::Minimum,
+                expected: min_len,
+                actual: length,
+            });
         }
-        if let Some(max_len) = self.max_len {
-            if length > max_len {
-                return Err(SettingValueError::InvalidTextLength {
-                    limit: TextLengthLimitKind::Maximum,
-                    expected: max_len,
-                    actual: length,
-                });
-            }
+        if let Some(max_len) = self.max_len
+            && length > max_len
+        {
+            return Err(SettingValueError::InvalidTextLength {
+                limit: TextLengthLimitKind::Maximum,
+                expected: max_len,
+                actual: length,
+            });
         }
 
         Ok(())

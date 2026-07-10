@@ -1055,9 +1055,7 @@ fn prepare_main_visual_override_frame(
             let texture_view_materializer = app_state.wgpu_frame_materializer();
             timings.materializer_access = stage_started_at.elapsed();
 
-            let Some(texture_view_materializer) = texture_view_materializer else {
-                return None;
-            };
+            let texture_view_materializer = texture_view_materializer?;
 
             let materialization = materialize_shared_video_frame(
                 SharedVideoFrameMaterializationRequest::new(

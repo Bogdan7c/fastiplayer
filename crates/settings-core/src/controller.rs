@@ -859,11 +859,11 @@ where
         if !report.result.keeps_pending() {
             self.preview.pending.remove(route);
         }
-        if report.result.makes_update_active() {
-            if let Some(route_state) = self.preview.routes.get_mut(route) {
-                route_state.active_document = update.document;
-                route_state.affected_settings = update.affected_settings.clone();
-            }
+        if report.result.makes_update_active()
+            && let Some(route_state) = self.preview.routes.get_mut(route)
+        {
+            route_state.active_document = update.document;
+            route_state.affected_settings = update.affected_settings.clone();
         }
 
         Ok(Some(report))

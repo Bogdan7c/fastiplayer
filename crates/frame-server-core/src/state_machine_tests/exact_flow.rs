@@ -32,11 +32,11 @@ enum FakeLifecycleStep {
     Cancel,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum FakeDriverRejection {
     ContextMismatch {
-        expected: ScrubTargetContext,
-        actual: ScrubTargetContext,
+        expected: Box<ScrubTargetContext>,
+        actual: Box<ScrubTargetContext>,
     },
     DemuxSeekBeforePrepareLifecycle,
     StaleGuard(ScrubStaleReason),
@@ -103,8 +103,8 @@ impl FakeScrubTransactionDriver {
         let actual_context = *intent.context();
         if actual_context != self.expected_context {
             return Err(FakeDriverRejection::ContextMismatch {
-                expected: self.expected_context,
-                actual: actual_context,
+                expected: Box::new(self.expected_context),
+                actual: Box::new(actual_context),
             });
         }
 

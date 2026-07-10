@@ -84,7 +84,7 @@ impl ChannelMixer {
         if self.output_channels == 0 {
             return Err(AudioOutputWriteError::InvalidChannelCount { boundary: "output" });
         }
-        if input_samples.len() % input_channels != 0 {
+        if !input_samples.len().is_multiple_of(input_channels) {
             return Err(AudioOutputWriteError::InputNotFrameAligned {
                 input_samples: input_samples.len(),
                 input_channels,

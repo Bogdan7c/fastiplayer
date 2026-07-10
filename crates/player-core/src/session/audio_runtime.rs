@@ -252,15 +252,15 @@ impl PlayerSession {
         let sample_rate = output_spec.sample_rate;
         let channels = output_spec.channels();
         if self.pipeline.has_audio_output() {
-            if let Some(active_spec) = self.pipeline.audio_output_input_spec() {
-                if active_spec != output_spec {
-                    return Err(PlayerError::new(
-                        PlayerErrorKind::RuntimeError,
-                        format!(
-                            "Decoded audio format changed while output is active: active={active_spec:?}, decoded={output_spec:?}"
-                        ),
-                    ));
-                }
+            if let Some(active_spec) = self.pipeline.audio_output_input_spec()
+                && active_spec != output_spec
+            {
+                return Err(PlayerError::new(
+                    PlayerErrorKind::RuntimeError,
+                    format!(
+                        "Decoded audio format changed while output is active: active={active_spec:?}, decoded={output_spec:?}"
+                    ),
+                ));
             }
             return Ok(());
         }

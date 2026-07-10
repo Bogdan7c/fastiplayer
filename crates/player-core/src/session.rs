@@ -1089,7 +1089,7 @@ impl Default for PlayerSession {
                 .validate()
                 .expect("default frame-server config must validate"),
             seek_runtime: SeekRuntimeState::default(),
-            prepared_seek_landing: PreparedSeekLandingRuntime::default(),
+            prepared_seek_landing: PreparedSeekLandingRuntime,
             pending_video_backend_reselection: None,
             last_audio_starvation_warn_at: None,
             last_seen_audio_underrun_callbacks: 0,

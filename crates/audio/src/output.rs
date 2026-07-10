@@ -307,10 +307,10 @@ fn config_from_supported_range(
     config_range: cpal::SupportedStreamConfigRange,
     preferred_sample_rate: Option<cpal::SampleRate>,
 ) -> cpal::SupportedStreamConfig {
-    if let Some(sample_rate) = preferred_sample_rate {
-        if let Some(config) = config_range.try_with_sample_rate(sample_rate) {
-            return config;
-        }
+    if let Some(sample_rate) = preferred_sample_rate
+        && let Some(config) = config_range.try_with_sample_rate(sample_rate)
+    {
+        return config;
     }
 
     config_range.with_max_sample_rate()
@@ -357,22 +357,20 @@ fn choose_supported_output_config(
     }
 
     // Ищем supported config ровно на частоте декодера.
-    if decoder_rate > 0 {
-        if let Ok(supported_ranges) = device.supported_output_configs() {
-            let decoder_rate_config = select_supported_output_config(
-                supported_ranges,
-                Some(cpal::SampleRate(decoder_rate)),
-            )
-            .filter(|config| config.sample_rate().0 == decoder_rate);
-            if let Some(config) = decoder_rate_config {
-                info!(
-                    decoder_rate,
-                    channels = config.channels(),
-                    format = ?config.sample_format(),
-                    "Output stream открыт на частоте декодера без ресемплера"
-                );
-                return Ok(config);
-            }
+    if decoder_rate > 0
+        && let Ok(supported_ranges) = device.supported_output_configs()
+    {
+        let decoder_rate_config =
+            select_supported_output_config(supported_ranges, Some(cpal::SampleRate(decoder_rate)))
+                .filter(|config| config.sample_rate().0 == decoder_rate);
+        if let Some(config) = decoder_rate_config {
+            info!(
+                decoder_rate,
+                channels = config.channels(),
+                format = ?config.sample_format(),
+                "Output stream открыт на частоте декодера без ресемплера"
+            );
+            return Ok(config);
         }
     }
 
@@ -961,7 +959,7 @@ fn audio_output_input_frame_count(
     if input_channels == 0 {
         return Err(AudioOutputWriteError::InvalidChannelCount { boundary: "input" });
     }
-    if input_samples % input_channels != 0 {
+    if !input_samples.is_multiple_of(input_channels) {
         return Err(AudioOutputWriteError::InputNotFrameAligned {
             input_samples,
             input_channels,
@@ -983,13 +981,13 @@ fn build_audio_output_write_report(
     if output_channels == 0 {
         return Err(AudioOutputWriteError::InvalidChannelCount { boundary: "output" });
     }
-    if prepared_output_samples % output_channels != 0 {
+    if !prepared_output_samples.is_multiple_of(output_channels) {
         return Err(AudioOutputWriteError::PreparedOutputNotFrameAligned {
             prepared_output_samples,
             output_channels,
         });
     }
-    if queued_output_samples % output_channels != 0 {
+    if !queued_output_samples.is_multiple_of(output_channels) {
         return Err(AudioOutputWriteError::QueuedOutputNotFrameAligned {
             queued_output_samples,
             output_channels,

@@ -709,7 +709,7 @@ fn frame_count_from_interleaved_samples(
         }
     })?;
 
-    if sample_count % channel_count_usize != 0 {
+    if !sample_count.is_multiple_of(channel_count_usize) {
         return Err(TimestretchTempoError::OutputSampleCountNotFrameAligned {
             sample_count,
             channel_count: channel_count.get(),

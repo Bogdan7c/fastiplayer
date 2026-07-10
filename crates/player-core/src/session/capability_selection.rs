@@ -515,11 +515,10 @@ impl PlayerSession {
                 if self
                     .video_backend_reselection_candidate(&requirement)
                     .is_some()
+                    && let Some(track_id) = self.pipeline.selected_video_track_id()
                 {
-                    if let Some(track_id) = self.pipeline.selected_video_track_id() {
-                        self.request_video_backend_reselection(requirement, track_id);
-                        return Ok(());
-                    }
+                    self.request_video_backend_reselection(requirement, track_id);
+                    return Ok(());
                 }
                 return Err(error);
             }
@@ -534,21 +533,19 @@ impl PlayerSession {
             None => true,
         };
 
-        if contract_changed {
-            if let Some(track_id) = self.pipeline.selected_video_track_id() {
-                let Some(track) = self
-                    .pipeline
-                    .tracks()
-                    .iter()
-                    .find(|track| track.id == track_id && track.kind == TrackKind::Video)
-                else {
-                    return Err(PlayerError::new(
-                        PlayerErrorKind::InvalidCommand,
-                        format!("Active video track `{track_id}` отсутствует в текущем media"),
-                    ));
-                };
-                self.configure_decoder_stream_for_track(track, &requirement, frame_contract)?;
-            }
+        if contract_changed && let Some(track_id) = self.pipeline.selected_video_track_id() {
+            let Some(track) = self
+                .pipeline
+                .tracks()
+                .iter()
+                .find(|track| track.id == track_id && track.kind == TrackKind::Video)
+            else {
+                return Err(PlayerError::new(
+                    PlayerErrorKind::InvalidCommand,
+                    format!("Active video track `{track_id}` отсутствует в текущем media"),
+                ));
+            };
+            self.configure_decoder_stream_for_track(track, &requirement, frame_contract)?;
         }
 
         self.pipeline

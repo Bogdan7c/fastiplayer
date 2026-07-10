@@ -602,10 +602,10 @@ mod tests {
                 eprintln!("test HTTP server shutdown connect failed: {error}");
             }
 
-            if let Some(join_handle) = self.join_handle.take() {
-                if join_handle.join().is_err() {
-                    eprintln!("test HTTP server thread panicked during shutdown");
-                }
+            if let Some(join_handle) = self.join_handle.take()
+                && join_handle.join().is_err()
+            {
+                eprintln!("test HTTP server thread panicked during shutdown");
             }
         }
     }

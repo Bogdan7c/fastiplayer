@@ -621,10 +621,10 @@ impl PrerollOutputFloorState {
         self.counters.candidate_promoted_count =
             self.counters.candidate_promoted_count.saturating_add(1);
 
-        if let Some(active_floor) = self.active.as_mut() {
-            if active_floor.generation == generation {
-                active_floor.target_or_after_published = true;
-            }
+        if let Some(active_floor) = self.active.as_mut()
+            && active_floor.generation == generation
+        {
+            active_floor.target_or_after_published = true;
         }
     }
 }

@@ -80,7 +80,7 @@ impl AudioTempoFrameCount {
             }
         })?;
 
-        if sample_count % channel_count_usize != 0 {
+        if !sample_count.is_multiple_of(channel_count_usize) {
             return Err(AudioTempoProcessorError::InvalidInterleavedSampleCount {
                 sample_count,
                 channel_count: channel_count.get(),

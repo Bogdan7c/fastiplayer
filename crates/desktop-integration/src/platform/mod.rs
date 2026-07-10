@@ -84,10 +84,10 @@ impl BackendHandle {
 
     /// Штатно завершает backend thread.
     pub(crate) fn shutdown(&mut self) -> DesktopIntegrationResult<()> {
-        if let Some(control_tx) = self.control_tx.take() {
-            if let Err(error) = control_tx.try_send(BackendControlCommand::Shutdown) {
-                debug!(error = %error, "Desktop integration backend shutdown channel is closed");
-            }
+        if let Some(control_tx) = self.control_tx.take()
+            && let Err(error) = control_tx.try_send(BackendControlCommand::Shutdown)
+        {
+            debug!(error = %error, "Desktop integration backend shutdown channel is closed");
         }
 
         if let Some(join_handle) = self.join_handle.take() {

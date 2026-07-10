@@ -696,7 +696,7 @@ impl PlayerAudioOutput for ScriptedAudioOutput {
                 if self.input_channels == 0 {
                     return Err(AudioOutputWriteError::InvalidChannelCount { boundary: "input" });
                 }
-                if samples.len() % self.input_channels != 0 {
+                if !samples.len().is_multiple_of(self.input_channels) {
                     return Err(AudioOutputWriteError::InputNotFrameAligned {
                         input_samples: samples.len(),
                         input_channels: self.input_channels,
@@ -1007,16 +1007,15 @@ impl SharedFakeVideoDecoderThread {
 
     /// Публикует frame так, как production decoder thread сделал бы после seek decode.
     pub(super) fn push_decoded_frame(&self, mut frame: video_core::DecodedFrame) {
-        if frame.generation == 0 {
-            if let Some(generation) = self
+        if frame.generation == 0
+            && let Some(generation) = self
                 .sent_packets
                 .lock()
                 .expect("fake decoder sent packet log lock")
                 .last()
                 .map(|packet| packet.generation)
-            {
-                frame.generation = generation;
-            }
+        {
+            frame.generation = generation;
         }
 
         self.decoded_frames

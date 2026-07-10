@@ -68,6 +68,12 @@ run_toolchain_policy_guard() {
     python3 "${SCRIPT_DIRECTORY}/check-toolchain-policy.py"
 }
 
+# Функция запускает unit-тесты Python guardrails до проверки реального workspace.
+run_guardrail_unit_tests() {
+    # Discover автоматически включает каждый versioned test_*.py из единого каталога.
+    python3 -m unittest discover -s "${SCRIPT_DIRECTORY}/tests" -p 'test_*.py'
+}
+
 # Функция запускает архитектурные dependency guardrails.
 run_refactor_guardrails() {
     # Policy живёт в Python-скрипте, чтобы shell-wrapper не дублировал правила.
@@ -88,8 +94,20 @@ run_workspace_check() {
 
 # Функция запускает Clippy по workspace и test/example/bin targets.
 run_workspace_clippy() {
-    # --all-targets ловит предупреждения в tests/examples, которые cargo check может не покрыть.
-    cargo clippy --workspace --all-targets --locked
+    # Полная feature/target matrix не позволяет warning-у спрятаться в optional коде или тесте.
+    cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+}
+
+# Функция проверяет rustdoc всего workspace в строгом режиме без документации dependencies.
+run_workspace_rustdoc() {
+    # RUSTDOCFLAGS превращает broken links и invalid markup в блокирующие ошибки.
+    RUSTDOCFLAGS="-Dwarnings" cargo doc --workspace --all-features --no-deps --locked
+}
+
+# Функция запускает герметичные workspace tests, подготовленные Сессией 02.
+run_workspace_tests() {
+    # --no-fail-fast показывает все независимые падения одного полного local gate run-а.
+    cargo test --workspace --all-features --locked --no-fail-fast
 }
 
 # Главная функция фиксирует порядок pre-PR шагов в одном месте.
@@ -109,6 +127,9 @@ main() {
     # Проверяем policy до compile шагов, чтобы manifest/toolchain drift останавливался быстро.
     run_step "scripts/check-toolchain-policy.py" run_toolchain_policy_guard
 
+    # Unit-тесты защищают сами policy scripts от регрессии до их применения к репозиторию.
+    run_step "Python guardrail unit tests" run_guardrail_unit_tests
+
     # Проверяем архитектурные границы до долгих compile/clippy шагов.
     run_step "scripts/check-refactor-guardrails.py" run_refactor_guardrails
 
@@ -119,7 +140,13 @@ main() {
     run_step "cargo check --workspace --locked" run_workspace_check
 
     # Проверяем Clippy для всех targets workspace.
-    run_step "cargo clippy --workspace --all-targets --locked" run_workspace_clippy
+    run_step "cargo clippy strict" run_workspace_clippy
+
+    # Документация является частью production API и не должна накапливать warnings.
+    run_step "cargo doc strict" run_workspace_rustdoc
+
+    # Default workspace tests герметичны после Сессии 02 и входят в обязательный gate.
+    run_step "cargo test --workspace --all-features --locked --no-fail-fast" run_workspace_tests
 }
 
 # Запуск main сохраняет функции пригодными для будущего точечного тестирования.

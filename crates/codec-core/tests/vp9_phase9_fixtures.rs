@@ -574,7 +574,7 @@ fn golden_headers_by_name() -> BTreeMap<String, GoldenHeaderFixture> {
 /// Декодирует compact hex payload без дополнительной runtime dependency.
 fn decode_hex_payload(packet_hex: &str) -> Vec<u8> {
     assert!(
-        packet_hex.len() % 2 == 0,
+        packet_hex.len().is_multiple_of(2),
         "VP9 fixture hex payload должен иметь чётную длину"
     );
 

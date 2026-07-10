@@ -131,7 +131,7 @@ impl AudioClock {
         }
 
         let generation_before = self.playback_anchor_generation.load(Ordering::Acquire);
-        if generation_before % 2 != 0 {
+        if !generation_before.is_multiple_of(2) {
             return self.stable_played_samples();
         }
 
@@ -386,7 +386,7 @@ impl AudioClock {
     fn begin_playback_anchor_write(&self) {
         loop {
             let generation = self.playback_anchor_generation.load(Ordering::Acquire);
-            if generation % 2 != 0 {
+            if !generation.is_multiple_of(2) {
                 std::hint::spin_loop();
                 continue;
             }
@@ -464,7 +464,7 @@ fn estimate_samples_from_anchor_snapshot(
     samples_per_sec: u64,
     stable_fallback_samples: u64,
 ) -> u64 {
-    if generation_before % 2 != 0 || generation_before != generation_after {
+    if !generation_before.is_multiple_of(2) || generation_before != generation_after {
         return stable_fallback_samples;
     }
 
