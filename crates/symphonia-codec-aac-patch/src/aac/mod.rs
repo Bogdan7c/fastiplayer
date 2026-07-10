@@ -46,79 +46,85 @@ enum AacChannelElementKind {
     LowFrequencyEffects,
 }
 
+impl AacChannelElementKind {
+    /// Возвращает отдельное пространство 4-bit tags для каждого типа element-а.
+    const fn tag_namespace_index(self) -> usize {
+        match self {
+            Self::Single => 0,
+            Self::Pair => 1,
+            Self::LowFrequencyEffects => 2,
+        }
+    }
+}
+
 /// Каноническая destination plane для одного AAC channel element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AacChannelElement {
     /// Ожидаемый тип coded element-а.
     kind: AacChannelElementKind,
-    /// `element_instance_tag`, связывающий element с channel configuration.
-    tag: u32,
     /// Первая destination plane; pair занимает также следующую plane.
     first_plane: usize,
 }
 
 impl AacChannelElement {
     /// Создаёт mapping для Single Channel Element.
-    const fn single(tag: u32, first_plane: usize) -> Self {
+    const fn single_at_plane(first_plane: usize) -> Self {
         Self {
             kind: AacChannelElementKind::Single,
-            tag,
             first_plane,
         }
     }
 
     /// Создаёт mapping для Channel Pair Element.
-    const fn pair(tag: u32, first_plane: usize) -> Self {
+    const fn pair_at_plane(first_plane: usize) -> Self {
         Self {
             kind: AacChannelElementKind::Pair,
-            tag,
             first_plane,
         }
     }
 
     /// Создаёт mapping для LFE element-а.
-    const fn lfe(tag: u32, first_plane: usize) -> Self {
+    const fn lfe_at_plane(first_plane: usize) -> Self {
         Self {
             kind: AacChannelElementKind::LowFrequencyEffects,
-            tag,
             first_plane,
         }
     }
 }
 
 /// AAC coded element order → canonical Symphonia plane mapping.
-const AAC_MONO_ELEMENTS: &[AacChannelElement] = &[AacChannelElement::single(0, 0)];
-const AAC_STEREO_ELEMENTS: &[AacChannelElement] = &[AacChannelElement::pair(0, 0)];
+const AAC_MONO_ELEMENTS: &[AacChannelElement] = &[AacChannelElement::single_at_plane(0)];
+const AAC_STEREO_ELEMENTS: &[AacChannelElement] = &[AacChannelElement::pair_at_plane(0)];
 const AAC_3P0_ELEMENTS: &[AacChannelElement] = &[
-    AacChannelElement::single(0, 2),
-    AacChannelElement::pair(0, 0),
+    AacChannelElement::single_at_plane(2),
+    AacChannelElement::pair_at_plane(0),
 ];
 const AAC_4P0_ELEMENTS: &[AacChannelElement] = &[
-    AacChannelElement::single(0, 2),
-    AacChannelElement::pair(0, 0),
-    AacChannelElement::single(1, 3),
+    AacChannelElement::single_at_plane(2),
+    AacChannelElement::pair_at_plane(0),
+    AacChannelElement::single_at_plane(3),
 ];
 const AAC_QUADRAPHONIC_ELEMENTS: &[AacChannelElement] = &[
-    AacChannelElement::pair(0, 0),
-    AacChannelElement::pair(1, 2),
+    AacChannelElement::pair_at_plane(0),
+    AacChannelElement::pair_at_plane(2),
 ];
 const AAC_5P0_ELEMENTS: &[AacChannelElement] = &[
-    AacChannelElement::single(0, 2),
-    AacChannelElement::pair(0, 0),
-    AacChannelElement::pair(1, 3),
+    AacChannelElement::single_at_plane(2),
+    AacChannelElement::pair_at_plane(0),
+    AacChannelElement::pair_at_plane(3),
 ];
 const AAC_5P1_ELEMENTS: &[AacChannelElement] = &[
-    AacChannelElement::single(0, 2),
-    AacChannelElement::pair(0, 0),
-    AacChannelElement::pair(1, 4),
-    AacChannelElement::lfe(0, 3),
+    AacChannelElement::single_at_plane(2),
+    AacChannelElement::pair_at_plane(0),
+    AacChannelElement::pair_at_plane(4),
+    AacChannelElement::lfe_at_plane(3),
 ];
 const AAC_7P1_ELEMENTS: &[AacChannelElement] = &[
-    AacChannelElement::single(0, 2),
-    AacChannelElement::pair(0, 6),
-    AacChannelElement::pair(1, 0),
-    AacChannelElement::pair(2, 4),
-    AacChannelElement::lfe(0, 3),
+    AacChannelElement::single_at_plane(2),
+    AacChannelElement::pair_at_plane(6),
+    AacChannelElement::pair_at_plane(0),
+    AacChannelElement::pair_at_plane(4),
+    AacChannelElement::lfe_at_plane(3),
 ];
 
 /// Возвращает mapping стандартного AAC channel configuration.
@@ -144,14 +150,65 @@ fn canonical_aac_channel_elements(channels: &Channels) -> Option<&'static [AacCh
     }
 }
 
-/// Отмечает decoded element и отвергает повтор одного type/tag в том же frame.
-fn mark_decoded_channel_element(mask: &mut u16, element_index: usize) -> Result<()> {
-    let element_bit = 1_u16 << element_index;
-    if *mask & element_bit != 0 {
-        return decode_error("aac: duplicate channel element in one frame");
+/// Per-frame cursor стандартного indexed AAC channel configuration.
+///
+/// Для `channel_configuration != 0` пространственную роль задаёт coded position,
+/// а `element_instance_tag` только идентифицирует element внутри его type namespace.
+/// Поэтому tag проверяется на повтор, но не выбирает destination plane.
+struct IndexedChannelElementCursor {
+    configured_elements: &'static [AacChannelElement],
+    next_coded_element_index: usize,
+    decoded_tags_by_kind: [u16; 3],
+}
+
+impl IndexedChannelElementCursor {
+    /// Начинает проверку одного raw_data_block без сохранения packet-local state в decoder-е.
+    fn new(configured_elements: &'static [AacChannelElement]) -> Self {
+        Self {
+            configured_elements,
+            next_coded_element_index: 0,
+            decoded_tags_by_kind: [0; 3],
+        }
     }
-    *mask |= element_bit;
-    Ok(())
+
+    /// Сопоставляет следующий coded element с canonical destination по позиции.
+    fn consume(
+        &mut self,
+        actual_kind: AacChannelElementKind,
+        element_instance_tag: u32,
+    ) -> Result<usize> {
+        let Some(configured_element) = self
+            .configured_elements
+            .get(self.next_coded_element_index)
+        else {
+            return decode_error("aac: too many channel elements for indexed layout");
+        };
+        if configured_element.kind != actual_kind {
+            return decode_error("aac: channel element order does not match indexed layout");
+        }
+        if element_instance_tag >= 16 {
+            return decode_error("aac: channel element tag exceeds its 4-bit field");
+        }
+
+        let tag_namespace = actual_kind.tag_namespace_index();
+        let tag_bit = 1_u16 << element_instance_tag;
+        if self.decoded_tags_by_kind[tag_namespace] & tag_bit != 0 {
+            return decode_error("aac: duplicate channel element tag in one frame");
+        }
+
+        self.decoded_tags_by_kind[tag_namespace] |= tag_bit;
+        let configured_element_index = self.next_coded_element_index;
+        self.next_coded_element_index += 1;
+        Ok(configured_element_index)
+    }
+
+    /// Не позволяет синтезировать неполный configured layout.
+    fn finish(self) -> Result<()> {
+        if self.next_coded_element_index != self.configured_elements.len() {
+            return decode_error("aac: decoded channel elements do not fill configured layout");
+        }
+        Ok(())
+    }
 }
 
 /// Advanced Audio Coding (AAC) decoder.
@@ -249,24 +306,9 @@ impl AacDecoder {
         })
     }
 
-    /// Связывает coded element type/tag с canonical configured element index.
-    fn channel_element_index(
-        &self,
-        expected_kind: AacChannelElementKind,
-        tag: u32,
-    ) -> Result<usize> {
-        match self
-            .channel_elements
-            .iter()
-            .position(|element| element.kind == expected_kind && element.tag == tag)
-        {
-            Some(element_index) => Ok(element_index),
-            None => decode_error("aac: channel element tag does not match configured layout"),
-        }
-    }
-
     fn decode_ga<B: ReadBitsLtr + FiniteBitStream>(&mut self, bs: &mut B) -> Result<()> {
-        let mut decoded_channel_element_mask = 0_u16;
+        let mut channel_element_cursor =
+            IndexedChannelElementCursor::new(self.channel_elements);
         while bs.bits_left() > 3 {
             let id = bs.read_bits_leq32(3)?;
 
@@ -274,28 +316,16 @@ impl AacDecoder {
                 0 => {
                     // ID_SCE
                     let tag = bs.read_bits_leq32(4)?;
-                    let channel_element_index = self.channel_element_index(
-                        AacChannelElementKind::Single,
-                        tag,
-                    )?;
-                    mark_decoded_channel_element(
-                        &mut decoded_channel_element_mask,
-                        channel_element_index,
-                    )?;
+                    let channel_element_index = channel_element_cursor
+                        .consume(AacChannelElementKind::Single, tag)?;
                     self.pairs[channel_element_index]
                         .decode_ga_sce(bs, self.asc.object_type)?;
                 }
                 1 => {
                     // ID_CPE
                     let tag = bs.read_bits_leq32(4)?;
-                    let channel_element_index = self.channel_element_index(
-                        AacChannelElementKind::Pair,
-                        tag,
-                    )?;
-                    mark_decoded_channel_element(
-                        &mut decoded_channel_element_mask,
-                        channel_element_index,
-                    )?;
+                    let channel_element_index = channel_element_cursor
+                        .consume(AacChannelElementKind::Pair, tag)?;
                     self.pairs[channel_element_index]
                         .decode_ga_cpe(bs, self.asc.object_type)?;
                 }
@@ -306,14 +336,8 @@ impl AacDecoder {
                 3 => {
                     // ID_LFE
                     let tag = bs.read_bits_leq32(4)?;
-                    let channel_element_index = self.channel_element_index(
-                        AacChannelElementKind::LowFrequencyEffects,
-                        tag,
-                    )?;
-                    mark_decoded_channel_element(
-                        &mut decoded_channel_element_mask,
-                        channel_element_index,
-                    )?;
+                    let channel_element_index = channel_element_cursor
+                        .consume(AacChannelElementKind::LowFrequencyEffects, tag)?;
                     self.pairs[channel_element_index]
                         .decode_ga_sce(bs, self.asc.object_type)?;
                 }
@@ -373,10 +397,7 @@ impl AacDecoder {
                 _ => unreachable!(),
             };
         }
-        let expected_channel_element_mask = (1_u16 << self.channel_elements.len()) - 1;
-        if decoded_channel_element_mask != expected_channel_element_mask {
-            return decode_error("aac: decoded channel elements do not fill configured layout");
-        }
+        channel_element_cursor.finish()?;
         let rate_idx = GASubbandInfo::find_idx(self.asc.sample_rate);
         for pair in &mut self.pairs {
             pair.synth_audio(&mut self.dsp, &mut self.buf, rate_idx);
@@ -505,56 +526,62 @@ mod tests {
     }
 
     #[test]
-    fn five_point_one_element_tags_select_their_canonical_destinations() {
+    fn five_point_one_accepts_arbitrary_unique_tags_without_changing_destinations() {
         let elements = canonical_aac_channel_elements(&layouts::CHANNEL_LAYOUT_AAC_5P1).unwrap();
+        let coded_elements = [
+            (AacChannelElementKind::Single, 15),
+            (AacChannelElementKind::Pair, 9),
+            (AacChannelElementKind::Pair, 3),
+            (AacChannelElementKind::LowFrequencyEffects, 12),
+        ];
+        let mut cursor = IndexedChannelElementCursor::new(elements);
+        let destination_planes = coded_elements
+            .into_iter()
+            .map(|(kind, tag)| {
+                let element_index = cursor.consume(kind, tag).unwrap();
+                elements[element_index].first_plane
+            })
+            .collect::<Vec<_>>();
 
-        assert_eq!(
-            elements
-                .iter()
-                .find(|element| {
-                    element.kind == AacChannelElementKind::Single && element.tag == 0
-                })
-                .unwrap()
-                .first_plane,
-            2
-        );
-        assert_eq!(
-            elements
-                .iter()
-                .find(|element| {
-                    element.kind == AacChannelElementKind::Pair && element.tag == 0
-                })
-                .unwrap()
-                .first_plane,
-            0
-        );
-        assert_eq!(
-            elements
-                .iter()
-                .find(|element| {
-                    element.kind == AacChannelElementKind::Pair && element.tag == 1
-                })
-                .unwrap()
-                .first_plane,
-            4
-        );
-        assert_eq!(
-            elements
-                .iter()
-                .find(|element| {
-                    element.kind == AacChannelElementKind::LowFrequencyEffects && element.tag == 0
-                })
-                .unwrap()
-                .first_plane,
-            3
-        );
+        cursor.finish().unwrap();
+        assert_eq!(destination_planes, vec![2, 0, 4, 3]);
     }
 
     #[test]
-    fn duplicate_element_is_rejected_before_synthesis() {
-        let mut decoded_mask = 0_u16;
-        mark_decoded_channel_element(&mut decoded_mask, 1).unwrap();
+    fn duplicate_type_tag_is_rejected_before_synthesis() {
+        let mut cursor = IndexedChannelElementCursor::new(AAC_5P1_ELEMENTS);
+        cursor.consume(AacChannelElementKind::Single, 7).unwrap();
+        cursor.consume(AacChannelElementKind::Pair, 11).unwrap();
 
-        assert!(mark_decoded_channel_element(&mut decoded_mask, 1).is_err());
+        assert!(cursor.consume(AacChannelElementKind::Pair, 11).is_err());
+    }
+
+    #[test]
+    fn indexed_layout_rejects_wrong_order_missing_and_extra_elements() {
+        let mut wrong_order_cursor = IndexedChannelElementCursor::new(AAC_5P1_ELEMENTS);
+        assert!(
+            wrong_order_cursor
+                .consume(AacChannelElementKind::Pair, 5)
+                .is_err()
+        );
+        assert_eq!(
+            wrong_order_cursor
+                .consume(AacChannelElementKind::Single, 5)
+                .unwrap(),
+            0
+        );
+
+        let missing_element_cursor = IndexedChannelElementCursor::new(AAC_STEREO_ELEMENTS);
+        assert!(missing_element_cursor.finish().is_err());
+
+        let mut extra_element_cursor = IndexedChannelElementCursor::new(AAC_MONO_ELEMENTS);
+        extra_element_cursor
+            .consume(AacChannelElementKind::Single, 1)
+            .unwrap();
+        assert!(
+            extra_element_cursor
+                .consume(AacChannelElementKind::Single, 2)
+                .is_err()
+        );
     }
 }

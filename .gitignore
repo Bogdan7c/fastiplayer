@@ -15,6 +15,10 @@ target/
 *.log
 *.tmp
 
+# Python test/runtime bytecode is generated locally and must not enter Git.
+__pycache__/
+*.py[cod]
+
 
 # Large local media fixtures must stay outside Git history.
 test-assets/
