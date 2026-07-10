@@ -30,6 +30,58 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Каждый matrix entry является отдельным GitHub Actions job для одного standalone fork.
+  dependency-patch-tests:
+    # Имя status check показывает конкретный patch manifest.
+    name: Dependency patch (${{ matrix.patch }})
+    # Native libva headers нужны cros-libva, а остальные entries остаются hermetic.
+    runs-on: ubuntu-24.04
+    strategy:
+      # Один сломанный fork не скрывает результаты остальных независимых forks.
+      fail-fast: false
+      matrix:
+        # Пути совпадают с root workspace.exclude и checked inventory.
+        patch: [cros-libva, cros-codecs, symphonia-format-isomp4, symphonia-codec-aac]
+        include:
+          # Каждый entry хранит собственный manifest и Cargo.lock.
+          - patch: cros-libva
+            manifest: crates/cros-libva-patch/Cargo.toml
+          - patch: cros-codecs
+            manifest: crates/cros-codecs-patch/Cargo.toml
+          - patch: symphonia-format-isomp4
+            manifest: crates/symphonia-format-isomp4-patch/Cargo.toml
+          - patch: symphonia-codec-aac
+            manifest: crates/symphonia-codec-aac-patch/Cargo.toml
+    steps:
+      # Checkout предоставляет standalone crates и их lock-файлы.
+      - uses: actions/checkout@v4
+      # libva/bindgen dependencies нужны только cros entries, но единый image упрощает matrix.
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev libgbm-dev libva-dev pkg-config
+      # Direct manifest command доказывает независимость fork-а от workspace membership.
+      - name: Run standalone locked tests
+        run: cargo test --manifest-path "${{ matrix.manifest }}" --locked
+
+  # Focused suite подтверждает, что root replace реально интегрированы в workspace dependents.
+  dependency-patch-integration:
+    # Стабильное имя отделяет integration contracts от direct upstream fork tests.
+    name: Dependency patch integration
+    # Workspace dependent crates требуют native audio/VA build headers.
+    runs-on: ubuntu-24.04
+    steps:
+      # Read-only checkout достаточен для inventory и tests.
+      - uses: actions/checkout@v4
+      # Заголовки покрывают audio, cros-codecs VA-API и bindgen paths.
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libgbm-dev libva-dev pkg-config
+      # Repo runner сначала валидирует inventory, затем запускает focused dependents.
+      - name: Run dependency patch integration suite
+        run: scripts/ci-checks.sh dependency-patches
+
   # Dependency policy отделён от compile jobs и не требует native media headers.
   dependencies:
     # Стабильное имя можно включить в required checks branch protection.

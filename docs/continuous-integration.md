@@ -17,6 +17,12 @@ scripts/pre-pr-checks.sh
 Отдельный CI job можно воспроизвести, передав runner-у имя проверки из
 `scripts/ci-checks.sh --help`. Все Cargo-команды используют `--locked`.
 
+Четыре local dependency patches остаются вне workspace и проверяются своими
+manifest/lock парами. Их exact direct-команды и removal gates перечислены в
+`docs/dependency-patches.toml`; workspace integration воспроизводится командой
+`scripts/ci-checks.sh dependency-patches`. Реальные media cases по-прежнему
+получают только явный local path через `scripts/media-regression.sh`.
+
 Clean Ubuntu 24.04 runner явно устанавливает только native build dependencies:
 `clang`, `libclang-dev`, `libasound2-dev`, `libavcodec-dev`, `libavutil-dev`,
 `libgbm-dev`, `libva-dev` и `pkg-config`. Они нужны для bindgen, CPAL/ALSA,
@@ -41,11 +47,16 @@ GitHub не предоставляет rulesets/branch protection для дан�
 - `Workspace tests (all features)`
 - `app-egui (no default features)`
 - `MSRV (Rust 1.92.0)`
+- `Dependency patch (cros-libva)`
+- `Dependency patch (cros-codecs)`
+- `Dependency patch (symphonia-format-isomp4)`
+- `Dependency patch (symphonia-codec-aac)`
+- `Dependency patch integration`
 
 Operational checklist:
 
 1. Требовать pull request перед merge в `main`.
-2. Требовать все шесть status checks выше.
+2. Требовать все одиннадцать status checks выше.
 3. Требовать актуальную ветку перед merge (`Require branches to be up to date`).
 4. Запретить merge при failed, pending или stale required checks.
 5. Не добавлять `Real playback smoke (manual, non-blocking)` в required checks.

@@ -1,0 +1,59 @@
+# Версия схемы позволяет checker-у явно отклонять неизвестный формат inventory.
+schema_version = 1
+
+# Запись связывает local fork с точным опубликованным архивом cros-libva 0.0.12.
+[[patch]]
+path = "crates/cros-libva-patch"
+package = "cros-libva"
+version = "0.0.12"
+upstream_repository = "https://github.com/chromeos/cros-libva"
+# Для registry dependency checksum является воспроизводимой upstream revision архива.
+upstream_revision = "crates.io:sha256:902c9726e953b678595456bd38f95f31aaf1947c56dd9f4a2290f3f1eca4d228"
+reason = "Совместимость с новыми libva headers, version cfg/check-cfg, VP9 encoder ABI и fallible VA surface query paths."
+owned_diff_areas = ["build.rs", "src/bindings.rs", "src/buffer/vp9.rs", "src/display.rs", "src/surface.rs"]
+dependent_crates = ["cros-codecs", "video-vaapi"]
+focused_automated_tests = ["cargo test --manifest-path crates/cros-libva-patch/Cargo.toml --locked", "cargo test -p video-vaapi --locked"]
+manual_media_matrix = ["VP9 Profile 0 SDR через VA-API/DMA-BUF", "VP9 Profile 2 HDR/P010 через VA-API/DMA-BUF", "H.264 и H.265 VA surface readiness/error paths"]
+removal_gate = "Удалять только после проверки upstream libva header compatibility и эквивалентной fallible surface readiness семантики с полным VA-API media regression matrix."
+
+# Запись связывает codec fork с точным опубликованным архивом cros-codecs 0.0.6.
+[[patch]]
+path = "crates/cros-codecs-patch"
+package = "cros-codecs"
+version = "0.0.6"
+upstream_repository = "https://github.com/chromeos/cros-codecs"
+upstream_revision = "crates.io:sha256:80f7441b4f31c17b6b6b7f57f6c202944aad11d0ab23739a9ff88d8d34dec621"
+reason = "H.265 RPU/unspecified NAL, dynamic WPP offsets, seek/flush POC semantics, diagnostics и fallible decoded-surface readiness."
+owned_diff_areas = ["src/codec/h265", "src/decoder", "src/backend/vaapi.rs"]
+dependent_crates = ["video-vaapi"]
+focused_automated_tests = ["cargo test --manifest-path crates/cros-codecs-patch/Cargo.toml --locked", "cargo test -p video-vaapi --locked"]
+manual_media_matrix = ["H.265 Dolby Vision RPU", "H.265 4K WPP", "H.265 CRA/open-GOP seek", "H.264 seek", "VP9 SDR/HDR VA-API"]
+removal_gate = "Удалять только когда upstream содержит все перечисленные parser/seek/readiness контракты и проходит video-vaapi focused suite плюс H.264/H.265/VP9 hardware matrix."
+
+# Запись связывает MP4 fork с точным опубликованным архивом Symphonia 0.6.0.
+[[patch]]
+path = "crates/symphonia-format-isomp4-patch"
+package = "symphonia-format-isomp4"
+version = "0.6.0"
+upstream_repository = "https://github.com/pdeljanov/Symphonia"
+upstream_revision = "crates.io:sha256:2d179a01305b3505940135a9f0180d6ef4b487912748fe97554756f120fbd05e"
+reason = "MP4 composition offsets, sync-sample seeks, orientation, HDR/color tags и QuickTime/iOS PCM packet coalescing."
+owned_diff_areas = ["src/atoms/ctts.rs", "src/atoms/stss.rs", "src/atoms/tkhd.rs", "src/atoms/stsd.rs", "src/atoms/trun.rs", "src/demuxer.rs", "src/stream.rs"]
+dependent_crates = ["symphonia-demux", "audio"]
+focused_automated_tests = ["cargo test --manifest-path crates/symphonia-format-isomp4-patch/Cargo.toml --locked", "cargo test -p symphonia-demux -p audio --locked"]
+manual_media_matrix = ["H.264 MP4 B-frame PTS/DTS и signed ctts", "H.264/H.265 MP4 stss seek", "вертикальный MOV", "MP4 HDR colr/mdcv/clli", "QuickTime/iOS LPCM seek/playback"]
+removal_gate = "Удалять только после upstream-эквивалента всех container contracts и прохождения hermetic suite плюс явных local-path scenarios из manual media matrix."
+
+# Запись связывает AAC fork с точным опубликованным архивом Symphonia 0.6.0.
+[[patch]]
+path = "crates/symphonia-codec-aac-patch"
+package = "symphonia-codec-aac"
+version = "0.6.0"
+upstream_repository = "https://github.com/pdeljanov/Symphonia"
+upstream_revision = "crates.io:sha256:f1979c515a76371b186aad2feff5f23e21cbec775bf95de08bf1e3af92a2ad76"
+reason = "AAC-LC multichannel acceptance и coded-order to canonical-plane mapping с полной element identity validation."
+owned_diff_areas = ["src/aac/mod.rs", "tests/tests.rs"]
+dependent_crates = ["audio"]
+focused_automated_tests = ["cargo test --manifest-path crates/symphonia-codec-aac-patch/Cargo.toml --locked", "cargo test -p audio --locked"]
+manual_media_matrix = ["AAC-LC 3.0/4.0/5.0/5.1/7.1", "AAC-LC 5.1 dialogue/LFE/surround channel identity", "AAC arbitrary unique element tags"]
+removal_gate = "Удалять только когда upstream принимает multichannel AAC-LC, сохраняет каноническую раскладку и проходит direct mapping tests, audio suite и 5.1 listening matrix."

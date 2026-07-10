@@ -2,6 +2,7 @@
 
 - Blocking CI definition lives in `.github/workflows/ci.yml`; exact commands are owned only by `scripts/ci-checks.sh`. `scripts/pre-pr-checks.sh` is a compatibility wrapper that invokes `scripts/ci-checks.sh all`.
 - Stable blocking check names are: `Format and guardrails`, `Strict Clippy`, `Documentation`, `Workspace tests (all features)`, `app-egui (no default features)`, and `MSRV (Rust 1.92.0)`.
+- Session 06 adds four independent matrix statuses `Dependency patch (cros-libva)`, `Dependency patch (cros-codecs)`, `Dependency patch (symphonia-format-isomp4)`, `Dependency patch (symphonia-codec-aac)`, plus `Dependency patch integration`. Direct jobs run each standalone manifest/lock; integration invokes `scripts/ci-checks.sh dependency-patches`.
 - CI uses Ubuntu 24.04, `actions/checkout@v4`, `actions/cache@v4`, exact cache identities by OS/arch/toolchain/check/manifests, locked Cargo commands, and explicit native build packages: clang, libclang-dev, libasound2-dev, libavcodec-dev, libavutil-dev, libgbm-dev, libva-dev, pkg-config.
 - Real GPU/VA-API/audio/display acceptance is not a blocking hosted-runner test. `.github/workflows/hardware-acceptance.yml` is manual and targets `[self-hosted, linux, x64, rustiplayer-hardware]`; it invokes the existing `scripts/playback-smoke.sh --mode full` with explicit real fixture paths. Local and workflow acceptance therefore share the same runner and no software stub substitutes for hardware.
 - Human documentation and exact branch-protection checklist live in `docs/continuous-integration.md`.

@@ -25,6 +25,7 @@ Usage: scripts/ci-checks.sh CHECK
 
 Checks:
   format-guardrails        Locked metadata, policy tests, guardrails and rustfmt.
+  dependency-patches       Проверить inventory и integration suite local patches.
   dependencies             Advisories, licenses, sources and unused direct dependencies.
   clippy                   Strict workspace/all-targets/all-features Clippy.
   docs                     Strict workspace/all-features rustdoc.
@@ -85,12 +86,22 @@ run_format_guardrails() {
     run_step "cargo metadata" run_cargo_metadata
     # Policy guard сверяет primary toolchain, MSRV и inheritance manifests.
     run_step "toolchain policy" python3 "${SCRIPT_DIRECTORY}/check-toolchain-policy.py"
+    # Inventory guard связывает четыре root replace с standalone manifests и lock-файлами.
+    run_step "dependency patch inventory" python3 "${SCRIPT_DIRECTORY}/check-dependency-patches.py"
     # Unit-тесты не позволяют самим policy scripts незаметно сломаться.
     run_step "guardrail unit tests" python3 -m unittest discover -s "${SCRIPT_DIRECTORY}/tests" -p 'test_*.py'
     # Архитектурные guardrails проверяются до дорогой компиляции.
     run_step "refactor guardrails" "${SCRIPT_DIRECTORY}/check-refactor-guardrails.py"
     # rustfmt работает в read-only check mode для всего workspace.
     run_step "rustfmt" cargo fmt --all --check
+}
+
+# Функция проверяет workspace integration contracts всех четырёх local patches.
+run_dependency_patches() {
+    # Inventory проверяется до compile, чтобы structural failure был понятнее Cargo errors.
+    run_step "dependency patch inventory" python3 "${SCRIPT_DIRECTORY}/check-dependency-patches.py"
+    # Три dependent crates покрывают VA-API, MP4 demux и AAC audio integration boundaries.
+    run_step "dependency patch integration tests" cargo test -p video-vaapi -p symphonia-demux -p audio --locked
 }
 
 # Функция запускает единый dependency-health boundary.
@@ -191,6 +202,12 @@ main() {
         dependencies)
             # Оба Cargo plugins валидируются внутри режима.
             run_dependencies
+            ;;
+        dependency-patches)
+            # Python проверяет machine-readable inventory перед focused Cargo suite.
+            require_command python3
+            # Запускаем отдельный integration boundary dependency patches.
+            run_dependency_patches
             ;;
         clippy)
             # Запускаем строгий lint gate.

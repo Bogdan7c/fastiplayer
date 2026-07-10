@@ -14,6 +14,9 @@
 ## Verification Before Removal Or Major Bump
 
 - Run at least `cargo check --workspace` and `cargo clippy --workspace --all-targets`.
+- Since Session 06 (2026-07-10), all four patch directories are explicit `workspace.exclude` entries with their own `Cargo.toml` and `Cargo.lock`. Each must pass `cargo test --manifest-path <patch>/Cargo.toml --locked`; never add them to `workspace.members` or make them inherit first-party workspace metadata/lints.
+- `docs/dependency-patches.toml` is the checked machine-readable inventory: crates.io archive SHA-256 upstream identity, reason, owned diff areas, dependents, focused tests, manual media matrix, and removal gate. `scripts/check-dependency-patches.py` validates it against root `[replace]`, manifests, locks, excludes, and the no-membership rule.
+- `scripts/ci-checks.sh dependency-patches` runs the checked inventory plus `cargo test -p video-vaapi -p symphonia-demux -p audio --locked`. CI also has four independent matrix jobs running the exact direct locked test for each patch.
 - Run focused tests for dependent crates touched by the patch behavior (`video-vaapi`, `symphonia-demux`, `audio`, plus neighboring crates when contracts move). Direct `cargo test -p cros-codecs-patch`/similar is not currently reliable under the workspace layout; use dependents unless workspace membership is intentionally changed.
 - Manual media regression should cover H.264 MP4 with B-frames and seek, H.265/HEVC MOV/MP4 including iOS/Dolby Vision RPU and CRA/open-GOP seek, VP9 SDR/HDR VA-API DMA-BUF export, MP4 HDR/color metadata, QuickTime/iOS LPCM seek/playback, and AAC-LC 5.1 playback.
 
