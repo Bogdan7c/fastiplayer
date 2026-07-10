@@ -1,0 +1,61 @@
+# Проверяет owner-approved MSRV и основной development toolchain по отдельности.
+name: Toolchain policy
+
+# Policy нужна и для pull requests, и для прямых изменений main.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Workflow читает repository, но не публикует артефакты и не меняет GitHub state.
+permissions:
+  contents: read
+
+jobs:
+  static-policy:
+    # Linux runner даёт Python 3 и среду для Cargo metadata.
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout предоставляет root manifests, lockfile и policy scripts.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Последующие шаги не обращаются к GitHub API, поэтому токен не хранится в Git config.
+          persist-credentials: false
+      # Статический guard запускает Cargo metadata через root-pinned rustup.
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # 2026-06-30
+        with:
+          toolchain: 1.96.0
+      # Focused tests проверяют чистую логику guard без компиляции workspace.
+      - name: Test toolchain policy guard
+        run: python3 -m unittest scripts/tests/test_check_toolchain_policy.py
+      # Guard проверяет pin, inheritance member-крейтов и полный locked Cargo metadata.
+      - name: Check toolchain policy
+        run: python3 scripts/check-toolchain-policy.py
+
+  workspace-check:
+    # Обе точные версии toolchain — обязательные CI-проверки, а не fallback aliases.
+    name: Workspace check on Rust ${{ matrix.toolchain }}
+    runs-on: ubuntu-latest
+    strategy:
+      # Do not stop MSRV evidence when primary-toolchain check independently fails.
+      fail-fast: false
+      matrix:
+        toolchain: [1.92.0, 1.96.0]
+    steps:
+      # Checkout включает Cargo.lock, который каждая Cargo-команда сохраняет locked.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Проверка workspace не выполняет Git-команды после checkout и не хранит токен.
+          persist-credentials: false
+      # Значение matrix устанавливается явно, а не берётся из Rust по умолчанию у runner.
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # 2026-06-30
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      # Default features app-egui компилируют ffmpeg-sys-next и требуют Linux development headers.
+      - name: Install FFmpeg development prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes pkg-config ffmpeg libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev
+      # Явный +version сохраняет раздельное доказательство MSRV и основного toolchain.
+      - name: Check locked workspace
+        run: cargo +${{ matrix.toolchain }} check --workspace --locked

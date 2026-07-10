@@ -1,6 +1,6 @@
 # Tech Stack
 
-- Language: Rust, workspace edition `2024`, workspace `rust-version = "1.85"`, Cargo resolver `2`.
+- Language: Rust, workspace edition `2024`, workspace MSRV `rust-version = "1.92"`, Cargo resolver `2`. Development and CI are pinned to Rust `1.96.0`, while CI validates both Rust `1.92.0` (MSRV) and `1.96.0` separately.
 - Main UI/window stack: `winit 0.30`, `egui 0.34`, `egui-winit 0.34`, `egui-wgpu 0.34`.
 - Render/GPU: `wgpu 29` with `vulkan` feature; production renderer crates are `render-wgpu-video` (pure WGPU NV12/P010 video renderer/materializer boundary) and `render-wgpu-shell` (WGPU device/surface/egui composition shell).
 - Media/container/audio dependencies: upstream `symphonia 0.6` with `all-formats`, `all-codecs`, `all-meta`; `cpal 0.15`; `opus 0.3`; `bytes`; `ringbuf`; `crossbeam-channel`; neutral audio contracts live in local `audio-core`.

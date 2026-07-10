@@ -1,13 +1,14 @@
 # Suggested Commands
 
-- Build/check whole workspace: `cargo check --workspace`.
+- Build/check whole workspace on the pinned primary toolchain: `cargo +1.96.0 check --workspace --locked` (plain `cargo` also selects root `rust-toolchain.toml`). Verify the supported MSRV separately with `cargo +1.92.0 check --workspace --locked`.
 - Run app shell: `cargo run -p app-egui` (single binary target `rustiplayer`; explicit form: `cargo run -p app-egui --bin rustiplayer`).
 - Run app with media path or URL: `cargo run -p app-egui -- /path/to/media.webm` or `cargo run -p app-egui -- 'https://www.youtube.com/watch?v=VIDEO_ID'`.
 - Focused tests: `cargo test -p frame-server-core` for scrub/frame-server protocol contracts; `cargo test -p player-core`; direct HTTP media opener tests: `cargo test -p service-direct-media`; prefetch buffer/config tests: `cargo test -p media-prefetch`; capability/codec policy tests: `cargo test -p capability-core -p codec-core`; render split checks: `cargo test -p render-wgpu-video`, `cargo test -p render-wgpu-shell`, then `cargo check -p app-egui`.
 - Broad tests when behavior may cross crates: `cargo test --workspace`.
 - Clippy for local quality/Sonar input: `cargo clippy --workspace --all-targets`.
 - Refactor dependency guardrails: `scripts/check-refactor-guardrails.py`.
-- Local pre-PR path: `scripts/pre-pr-checks.sh` (runs `cargo metadata --no-deps --format-version 1`, guardrails, `cargo fmt --all --check`, `cargo check --workspace`, `cargo clippy --workspace --all-targets`).
+- Toolchain policy guard: `python3 scripts/check-toolchain-policy.py`; it verifies exact MSRV 1.92, primary pin 1.96.0, workspace inheritance, and `cargo metadata --locked`. Its focused tests are `python3 -m unittest scripts/tests/test_check_toolchain_policy.py`.
+- Local pre-PR path: `scripts/pre-pr-checks.sh` (runs locked metadata, toolchain policy, guardrails, `cargo fmt --all --check`, locked workspace check, and locked Clippy).
 - Optional runtime playback acceptance smoke (not CI/pre-PR): `scripts/playback-smoke.sh --mode probe-only` for FFmpeg runtime probe checks, `scripts/playback-smoke.sh --dry-run --mode full` to inspect the release playback matrix, and `scripts/playback-smoke.sh --mode full` for full local acceptance. See `mem:testing/playback-smoke`.
 - Format check: `cargo fmt --all --check`; apply formatting with `cargo fmt --all` when editing Rust.
 - Render frame timing trace (perf analysis closed/open settings, segment parser idea in user memory project_settings_sidebar_perf.md): `RUST_LOG=info,rustiplayer::render_frame_timing=trace cargo run --release -p app-egui -- /path/to/media.webm > /tmp/timing.log 2>&1`; log lines are ANSI-colored even when redirected.

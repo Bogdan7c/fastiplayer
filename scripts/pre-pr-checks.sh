@@ -59,7 +59,13 @@ run_step() {
 # Функция проверяет, что Cargo видит workspace metadata в ожидаемом формате.
 run_cargo_metadata_sanity() {
     # JSON большой и здесь нужен только exit code, поэтому stdout подавляется.
-    cargo metadata --no-deps --format-version 1 >/dev/null
+    cargo metadata --locked --no-deps --format-version 1 >/dev/null
+}
+
+# Функция проверяет единый MSRV, pinned development toolchain и manifest inheritance.
+run_toolchain_policy_guard() {
+    # Python-guard сам читает полный locked graph через cargo metadata.
+    python3 "${SCRIPT_DIRECTORY}/check-toolchain-policy.py"
 }
 
 # Функция запускает архитектурные dependency guardrails.
@@ -77,13 +83,13 @@ run_format_check() {
 # Функция выполняет быстрый compile/type check всего workspace.
 run_workspace_check() {
     # --workspace нужен, чтобы локальный PR не проверял только default package.
-    cargo check --workspace
+    cargo check --workspace --locked
 }
 
 # Функция запускает Clippy по workspace и test/example/bin targets.
 run_workspace_clippy() {
     # --all-targets ловит предупреждения в tests/examples, которые cargo check может не покрыть.
-    cargo clippy --workspace --all-targets
+    cargo clippy --workspace --all-targets --locked
 }
 
 # Главная функция фиксирует порядок pre-PR шагов в одном месте.
@@ -98,7 +104,10 @@ main() {
     require_command "python3"
 
     # Проверяем metadata отдельно, чтобы pre-PR путь явно закреплял Cargo graph sanity.
-    run_step "cargo metadata --no-deps --format-version 1" run_cargo_metadata_sanity
+    run_step "cargo metadata --locked --no-deps --format-version 1" run_cargo_metadata_sanity
+
+    # Проверяем policy до compile шагов, чтобы manifest/toolchain drift останавливался быстро.
+    run_step "scripts/check-toolchain-policy.py" run_toolchain_policy_guard
 
     # Проверяем архитектурные границы до долгих compile/clippy шагов.
     run_step "scripts/check-refactor-guardrails.py" run_refactor_guardrails
@@ -107,10 +116,10 @@ main() {
     run_step "cargo fmt --all --check" run_format_check
 
     # Проверяем компиляцию всего workspace.
-    run_step "cargo check --workspace" run_workspace_check
+    run_step "cargo check --workspace --locked" run_workspace_check
 
     # Проверяем Clippy для всех targets workspace.
-    run_step "cargo clippy --workspace --all-targets" run_workspace_clippy
+    run_step "cargo clippy --workspace --all-targets --locked" run_workspace_clippy
 }
 
 # Запуск main сохраняет функции пригодными для будущего точечного тестирования.
