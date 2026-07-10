@@ -1,0 +1,60 @@
+# Workflow не входит в required checks и запускается только человеком.
+name: Hardware acceptance
+
+# Ручной запуск требует осознанно выбрать реальные media fixtures.
+on:
+  # workflow_dispatch не добавляет автоматический blocking status к PR.
+  workflow_dispatch:
+    inputs:
+      # VP9 fixture должен существовать локально на self-hosted runner-е.
+      vp9_path:
+        # Подсказка фиксирует ожидаемый профиль и нагрузку.
+        description: Absolute path to a VP9 Profile 0 4K60 fixture
+        # Full hardware matrix без VP9 недостоверна.
+        required: true
+        # Строковый тип сохраняет путь без скрытой интерпретации.
+        type: string
+      # AV1 fixture проверяет software fallback и hardware rejection.
+      av1_path:
+        # Подсказка фиксирует назначение файла.
+        description: Absolute path to an AV1 4K60 fixture
+        # Full matrix без AV1 недостоверна.
+        required: true
+        # Строковый тип сохраняет путь без скрытой интерпретации.
+        type: string
+      # H.264 fixture проверяет FFmpeg host-upload path.
+      h264_path:
+        # Подсказка фиксирует container/codec ожидание.
+        description: Absolute path to an H.264 MP4 4K60 fixture
+        # Full matrix без H.264 недостоверна.
+        required: true
+        # Строковый тип сохраняет путь без скрытой интерпретации.
+        type: string
+
+# Read-only token достаточен для получения исходников.
+permissions:
+  # Repository contents нужны checkout action.
+  contents: read
+
+jobs:
+  # Job существует отдельно и никогда не должен становиться required check.
+  playback-smoke:
+    # Видимое имя подчёркивает реальный hardware acceptance.
+    name: Real playback smoke (manual, non-blocking)
+    # Labels требуют подготовленный Linux host с GPU/VA-API/audio/display.
+    runs-on: [self-hosted, linux, x64, rustiplayer-hardware]
+    steps:
+      # Checkout major закреплён, как и в blocking workflow.
+      - uses: actions/checkout@v4
+      # Существующий repo runner владеет всей runtime acceptance логикой.
+      - name: Run real hardware and runtime matrix
+        # Inputs передаются через env, чтобы shell не исполнял содержимое пути как код.
+        env:
+          # Имя переменной явно связывает input с VP9 аргументом runner-а.
+          VP9_FIXTURE_PATH: ${{ inputs.vp9_path }}
+          # Имя переменной явно связывает input с AV1 аргументом runner-а.
+          AV1_FIXTURE_PATH: ${{ inputs.av1_path }}
+          # Имя переменной явно связывает input с H.264 аргументом runner-а.
+          H264_FIXTURE_PATH: ${{ inputs.h264_path }}
+        # Quoted variables сохраняют пробелы в путях и не допускают shell injection.
+        run: scripts/playback-smoke.sh --mode full --vp9 "${VP9_FIXTURE_PATH}" --av1 "${AV1_FIXTURE_PATH}" --h264 "${H264_FIXTURE_PATH}"

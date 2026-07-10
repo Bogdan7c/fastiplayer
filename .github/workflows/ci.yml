@@ -1,0 +1,187 @@
+# Стабильное имя workflow входит в публичный контракт required checks.
+name: CI
+
+# Blocking checks публикуются для каждого pull request и обновления main.
+on:
+  # Pull request status используется branch protection до merge.
+  pull_request:
+  # Push в main подтверждает состояние уже защищённой ветки.
+  push:
+    # Другие ветки проверяются через pull_request и не дублируют CI run.
+    branches: [main]
+
+# Read-only token достаточен для checkout и не расширяет права build-кода.
+permissions:
+  # Repository contents нужны checkout action.
+  contents: read
+
+# Новый commit отменяет устаревший run того же PR/branch.
+concurrency:
+  # PR number отделяет pull requests, ref отделяет push runs.
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Stale run не должен расходовать runner после появления нового commit.
+  cancel-in-progress: true
+
+# Общие значения делают Cargo execution воспроизводимым во всех jobs.
+env:
+  # Отключённый incremental уменьшает нестабильность и размер CI cache.
+  CARGO_INCREMENTAL: "0"
+  # Цветной вывод остаётся читаемым в GitHub Actions log.
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Имя job намеренно стабильно: его настраивают как required check.
+  format-guardrails:
+    # Видимое имя status check зафиксировано документацией.
+    name: Format and guardrails
+    # Ubuntu 24.04 фиксирует системный ABI вместо плавающего ubuntu-latest.
+    runs-on: ubuntu-24.04
+    steps:
+      # Checkout major закреплён, чтобы minor/security updates приходили автоматически.
+      - uses: actions/checkout@v4
+      # Repo runner содержит единственную реализацию этой группы команд.
+      - name: Run format and guardrails
+        run: scripts/ci-checks.sh format-guardrails
+
+  # Имя job намеренно стабильно: его настраивают как required check.
+  clippy:
+    # Видимое имя status check зафиксировано документацией.
+    name: Strict Clippy
+    # Ubuntu 24.04 фиксирует системный ABI вместо плавающего ubuntu-latest.
+    runs-on: ubuntu-24.04
+    steps:
+      # Checkout major закреплён, чтобы minor/security updates приходили автоматически.
+      - uses: actions/checkout@v4
+      # Native headers нужны FFmpeg, VA-API и CPAL compile paths; GPU не запускается.
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libavcodec-dev libavutil-dev libgbm-dev libva-dev pkg-config
+      # Cache major закреплён; mode и manifests исключают несовместимые artifacts.
+      - uses: actions/cache@v4
+        with:
+          # Registry/git экономят download, target экономит повторную компиляцию.
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          # Toolchain, job boundary, lockfile и manifests образуют точный cache key.
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-1.96.0-clippy-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', 'crates/*/Cargo.toml') }}
+      # Repo runner содержит единственную реализацию strict lint команды.
+      - name: Run strict Clippy
+        run: scripts/ci-checks.sh clippy
+
+  # Имя job намеренно стабильно: его настраивают как required check.
+  docs:
+    # Видимое имя status check зафиксировано документацией.
+    name: Documentation
+    # Ubuntu 24.04 фиксирует системный ABI вместо плавающего ubuntu-latest.
+    runs-on: ubuntu-24.04
+    steps:
+      # Checkout major закреплён, чтобы minor/security updates приходили автоматически.
+      - uses: actions/checkout@v4
+      # Rustdoc компилирует native-dependent crates, поэтому headers те же, что для Clippy.
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libavcodec-dev libavutil-dev libgbm-dev libva-dev pkg-config
+      # Cache не смешивается с Clippy и test artifacts.
+      - uses: actions/cache@v4
+        with:
+          # Registry/git и отдельный target ускоряют повторный rustdoc.
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          # docs mode входит в key, чтобы artifact ownership был однозначным.
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-1.96.0-docs-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', 'crates/*/Cargo.toml') }}
+      # Repo runner содержит единственную реализацию strict rustdoc команды.
+      - name: Build strict documentation
+        run: scripts/ci-checks.sh docs
+
+  # Имя job намеренно стабильно: его настраивают как required check.
+  tests:
+    # Видимое имя status check зафиксировано документацией.
+    name: Workspace tests (all features)
+    # Ubuntu 24.04 фиксирует системный ABI вместо плавающего ubuntu-latest.
+    runs-on: ubuntu-24.04
+    steps:
+      # Checkout major закреплён, чтобы minor/security updates приходили автоматически.
+      - uses: actions/checkout@v4
+      # Пакеты дают compile/link dependencies, но не эмулируют GPU, VA display или DAC.
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libavcodec-dev libavutil-dev libgbm-dev libva-dev pkg-config
+      # Test artifacts хранятся отдельно от lint/docs modes.
+      - uses: actions/cache@v4
+        with:
+          # Registry/git и target ускоряют повторный all-features test build.
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          # tests mode входит в key и предотвращает cache collision jobs.
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-1.96.0-tests-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', 'crates/*/Cargo.toml') }}
+      # Герметичные tests не требуют реального media hardware.
+      - name: Run all-features workspace tests
+        run: scripts/ci-checks.sh tests
+
+  # Имя job намеренно стабильно: его настраивают как required check.
+  app-no-default-features:
+    # Видимое имя status check зафиксировано документацией.
+    name: app-egui (no default features)
+    # Ubuntu 24.04 фиксирует системный ABI вместо плавающего ubuntu-latest.
+    runs-on: ubuntu-24.04
+    steps:
+      # Checkout major закреплён, чтобы minor/security updates приходили автоматически.
+      - uses: actions/checkout@v4
+      # FFmpeg headers здесь не нужны, но VA-API/CPAL и bindgen остаются в app graph.
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libgbm-dev libva-dev pkg-config
+      # Feature-off build получает собственный target cache.
+      - uses: actions/cache@v4
+        with:
+          # Registry/git и target ускоряют повторную проверку boundary.
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          # Feature mode входит в key, чтобы не маскировать её all-features artifacts.
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-1.96.0-app-no-default-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', 'crates/*/Cargo.toml') }}
+      # Repo runner закрепляет точную feature-off Cargo команду.
+      - name: Check app-egui without default features
+        run: scripts/ci-checks.sh app-no-default-features
+
+  # Имя job намеренно стабильно: его настраивают как required check.
+  msrv:
+    # Видимое имя status check зафиксировано документацией.
+    name: MSRV (Rust 1.92.0)
+    # Ubuntu 24.04 фиксирует системный ABI вместо плавающего ubuntu-latest.
+    runs-on: ubuntu-24.04
+    steps:
+      # Checkout major закреплён, чтобы minor/security updates приходили автоматически.
+      - uses: actions/checkout@v4
+      # Default workspace features включают FFmpeg, VA-API и CPAL build paths.
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang libclang-dev libasound2-dev libavcodec-dev libavutil-dev libgbm-dev libva-dev pkg-config
+      # Rustup устанавливает exact MSRV, не меняя primary repo pin.
+      - name: Install MSRV toolchain
+        run: rustup toolchain install 1.92.0 --profile minimal
+      # MSRV artifacts изолированы exact версией toolchain.
+      - uses: actions/cache@v4
+        with:
+          # Registry/git и target ускоряют повторную compatibility сборку.
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          # Exact MSRV и manifests входят в cache identity.
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-1.92.0-msrv-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', 'crates/*/Cargo.toml') }}
+      # Repo runner содержит единственную реализацию MSRV compile команды.
+      - name: Check workspace on MSRV
+        run: scripts/ci-checks.sh msrv
