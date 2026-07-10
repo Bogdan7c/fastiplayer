@@ -13,6 +13,9 @@ repo_root="$(cd -- "${script_directory}/.." >/dev/null 2>&1 && pwd)"
 # readonly защищает вычисленные пути от случайного изменения.
 readonly SCRIPT_DIRECTORY="${script_directory}"
 readonly REPO_ROOT="${repo_root}"
+# Exact pins делают локальный и CI policy engine воспроизводимыми.
+readonly CARGO_DENY_VERSION="0.20.2"
+readonly CARGO_MACHETE_VERSION="0.9.2"
 
 # Функция печатает поддерживаемые стабильные имена проверок.
 print_help() {
@@ -22,6 +25,7 @@ Usage: scripts/ci-checks.sh CHECK
 
 Checks:
   format-guardrails        Locked metadata, policy tests, guardrails and rustfmt.
+  dependencies             Advisories, licenses, sources and unused direct dependencies.
   clippy                   Strict workspace/all-targets/all-features Clippy.
   docs                     Strict workspace/all-features rustdoc.
   tests                    Workspace/all-features tests without fail-fast.
@@ -41,6 +45,24 @@ require_command() {
         # Диагностика явно называет отсутствующую системную зависимость runner-а.
         printf 'Ошибка: команда `%s` не найдена в PATH\n' "${required_command}" >&2
         # Без обязательного инструмента заявленная проверка недостоверна.
+        exit 1
+    fi
+}
+
+# Функция не позволяет незаметно запустить policy другим release инструмента.
+require_exact_version() {
+    # Человекочитаемое имя инструмента используется в диагностике.
+    local tool_name="$1"
+    # Ожидаемая полная строка версии исключает неоднозначный substring match.
+    local expected_version_output="$2"
+    # Остальные аргументы образуют безопасную команду получения версии.
+    shift 2
+    # Реальный stdout сохраняется, чтобы показать установленную версию при ошибке.
+    local actual_version_output
+    actual_version_output="$("$@")"
+    if [[ "${actual_version_output}" != "${expected_version_output}" ]]; then
+        printf 'Ошибка: %s должен иметь версию `%s`, установлена `%s`\n' \
+            "${tool_name}" "${expected_version_output}" "${actual_version_output}" >&2
         exit 1
     fi
 }
@@ -69,6 +91,44 @@ run_format_guardrails() {
     run_step "refactor guardrails" "${SCRIPT_DIRECTORY}/check-refactor-guardrails.py"
     # rustfmt работает в read-only check mode для всего workspace.
     run_step "rustfmt" cargo fmt --all --check
+}
+
+# Функция запускает единый dependency-health boundary.
+run_dependencies() {
+    # Оба инструмента должны быть установлены exact версиями из README/CI.
+    require_exact_version "cargo-deny" "cargo-deny ${CARGO_DENY_VERSION}" cargo deny --version
+    require_exact_version "cargo-machete" "${CARGO_MACHETE_VERSION}" cargo machete --version
+
+    # Blocking advisory status сохраняется, чтобы warnings были видимы даже при failure.
+    local blocking_advisory_status=0
+    cargo deny check advisories || blocking_advisory_status=$?
+    # cargo-deny 0.20 не умеет lint-level warn для unmaintained; второй прогон
+    # публикует их diagnostics, но только первый status управляет security gate.
+    if ! cargo deny --config deny.warnings.toml check advisories; then
+        printf 'Примечание: non-blocking advisory report содержит findings; см. diagnostics выше.\n' >&2
+    fi
+    # Один policy tool владеет license/source и duplicate visibility.
+    local dependency_policy_status=0
+    run_step "licenses, sources and duplicate inventory" \
+        cargo deny check licenses bans sources || dependency_policy_status=$?
+    # Явный список workspace members исключает четыре upstream patch directories.
+    local unused_dependencies_status=0
+    run_step "unused direct dependencies" cargo machete --with-metadata \
+        crates/animation-core crates/app-egui crates/audio-core crates/audio-signalsmith \
+        crates/audio-timestretch crates/audio crates/capability-core crates/codec-core \
+        crates/config crates/desktop-integration crates/frame-server-core crates/media-core \
+        crates/media-prefetch crates/player-core crates/render-core crates/render-wgpu-shell \
+        crates/render-wgpu-video crates/rustiplayer-settings crates/service-direct-media \
+        crates/service-youtube crates/settings-core crates/settings-derive crates/source-core \
+        crates/symphonia-demux crates/video-backend-api crates/video-core crates/video-ffmpeg \
+        crates/video-frame-contract crates/video-present-core crates/video-vaapi crates/vp9-parser \
+        || unused_dependencies_status=$?
+
+    # Все независимые diagnostics публикуются за один запуск; любой blocking status
+    # возвращает общий failure только после завершения полного dependency audit.
+    if ((blocking_advisory_status != 0 || dependency_policy_status != 0 || unused_dependencies_status != 0)); then
+        return 1
+    fi
 }
 
 # Функция сохраняет только exit status большого Cargo metadata JSON.
@@ -128,6 +188,10 @@ main() {
             # Запускаем объединённый быстрый gate.
             run_format_guardrails
             ;;
+        dependencies)
+            # Оба Cargo plugins валидируются внутри режима.
+            run_dependencies
+            ;;
         clippy)
             # Запускаем строгий lint gate.
             run_clippy
@@ -153,6 +217,8 @@ main() {
             require_command python3
             # Порядок начинает с самых дешёвых и понятных failures.
             run_format_guardrails
+            # Dependency policy выполняется до дорогой компиляции.
+            run_dependencies
             # Основной workspace compile покрывается Clippy all-features.
             run_clippy
             # Документация проверяется независимо от test compilation.

@@ -48,8 +48,10 @@ def write_policy_fixture(
     workspace_msrv: str = "1.92",
     member_edition: str = "edition.workspace = true",
     member_rust_version: str = "rust-version.workspace = true",
+    member_license: str = "license.workspace = true",
     metadata_edition: str = "2024",
     metadata_rust_version: str = "1.92",
+    metadata_license: str = "MIT",
 ) -> dict[str, object]:
     """Создаёт минимальный workspace и соответствующий Cargo metadata fixture."""
 
@@ -61,7 +63,8 @@ def write_policy_fixture(
         "[workspace]\nmembers = [\"crates/policy-fixture\"]\n\n"
         "[workspace.package]\n"
         'edition = "2024"\n'
-        f'rust-version = "{workspace_msrv}"\n',
+        f'rust-version = "{workspace_msrv}"\n'
+        'license = "MIT"\n',
         encoding="utf-8",
     )
     # Toolchain file повторяет expected production pin и required quality components.
@@ -79,7 +82,8 @@ def write_policy_fixture(
         'name = "policy-fixture"\n'
         'version = "0.1.0"\n'
         f"{member_edition}\n"
-        f"{member_rust_version}\n",
+        f"{member_rust_version}\n"
+        f"{member_license}\n",
         encoding="utf-8",
     )
     # Cargo package ID достаточно стабилен для проверки member filtering.
@@ -94,6 +98,7 @@ def write_policy_fixture(
                 "manifest_path": str(member_manifest),
                 "edition": metadata_edition,
                 "rust_version": metadata_rust_version,
+                "license": metadata_license,
             }
         ],
     }
@@ -144,6 +149,25 @@ class ToolchainPolicyTests(unittest.TestCase):
             messages = [violation.render() for violation in POLICY.validate_policy(repository_root, metadata)]
             self.assertTrue(any("package.edition" in message for message in messages))
             self.assertTrue(any("package.rust-version" in message for message in messages))
+
+    def test_member_must_inherit_mit_license(self) -> None:
+        """Literal или отсутствующая license не обходят first-party owner."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository_root = Path(temporary_directory)
+            metadata = write_policy_fixture(
+                repository_root,
+                member_license='license = "Apache-2.0"',
+                metadata_license="Apache-2.0",
+            )
+
+            messages = [
+                violation.render()
+                for violation in POLICY.validate_policy(repository_root, metadata)
+            ]
+
+            self.assertTrue(any("package.license" in message for message in messages))
+            self.assertTrue(any("Cargo metadata license" in message for message in messages))
 
     def test_effective_metadata_must_match_workspace_msrv(self) -> None:
         """Resolved Cargo value drift не маскируется корректным raw TOML syntax."""

@@ -3,6 +3,7 @@ name = "service-direct-media"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [lib]
 name = "service_direct_media"

@@ -16,3 +16,10 @@
 - Run at least `cargo check --workspace` and `cargo clippy --workspace --all-targets`.
 - Run focused tests for dependent crates touched by the patch behavior (`video-vaapi`, `symphonia-demux`, `audio`, plus neighboring crates when contracts move). Direct `cargo test -p cros-codecs-patch`/similar is not currently reliable under the workspace layout; use dependents unless workspace membership is intentionally changed.
 - Manual media regression should cover H.264 MP4 with B-frames and seek, H.265/HEVC MOV/MP4 including iOS/Dolby Vision RPU and CRA/open-GOP seek, VP9 SDR/HDR VA-API DMA-BUF export, MP4 HDR/color metadata, QuickTime/iOS LPCM seek/playback, and AAC-LC 5.1 playback.
+
+
+## Repository dependency policy (Session 05, 2026-07-10)
+- Four local `[replace]` crates are explicitly listed in workspace `exclude` and remain upstream-licensed: cros patches BSD-3-Clause, Symphonia patches MPL-2.0. They must never inherit workspace MIT metadata.
+- First-party workspace packages inherit `license = "MIT"`; root `LICENSE` is standard MIT copyright 2026 Bogdan7c.
+- `deny.toml` is the blocking cargo-deny policy. MPL-2.0 is allowed only by named Symphonia exceptions. Unknown registries/Git and unlisted licenses fail; Git sources require a separately reviewed pinned revision plus owner/reason/removal criterion.
+- `directories 6` was replaced by permissive `etcetera 0.11` because `option-ext` introduced non-inventoried MPL-2.0.

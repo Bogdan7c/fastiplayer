@@ -1,0 +1,112 @@
+# Проверяем полный Linux-граф проекта, включая optional FFmpeg feature.
+[graph]
+targets = ["x86_64-unknown-linux-gnu"]
+all-features = true
+
+# Security gate: обычные vulnerability advisories и unsound блокируют CI.
+# Unmaintained здесь выключены только потому, что cargo-deny не умеет назначить
+# им уровень warn; отдельный non-blocking прогон использует deny.warnings.toml.
+[advisories]
+yanked = "warn"
+unmaintained = "none"
+unsound = "all"
+ignore = []
+
+# Дубли остаются видимыми, но не блокируют: решение требует анализа каждого дерева.
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "simplest-path"
+
+# crates.io разрешён cargo-deny по умолчанию. Любой другой registry или Git source
+# блокируется; Git dependency добавляется только отдельным policy-изменением.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+required-git-spec = "rev"
+
+# Общий allowlist содержит только permissive SPDX-лицензии текущего графа.
+# MPL-2.0 разрешена ниже поимённо исключительно upstream-крейтам Symphonia.
+[licenses]
+confidence-threshold = 0.93
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "WTFPL",
+    "Zlib",
+]
+
+[[licenses.exceptions]]
+name = "symphonia"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "symphonia-bundle-flac"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "symphonia-bundle-mp3"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "symphonia-codec-aac"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "symphonia-codec-adpcm"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "symphonia-codec-alac"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "symphonia-codec-pcm"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "symphonia-codec-vorbis"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "symphonia-common"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "symphonia-core"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "symphonia-format-caf"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "symphonia-format-isomp4"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "symphonia-format-mkv"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "symphonia-format-ogg"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "symphonia-format-riff"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "symphonia-metadata"
+allow = ["MPL-2.0"]

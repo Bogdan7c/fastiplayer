@@ -24,6 +24,8 @@ APPROVED_MSRV = "1.92"
 APPROVED_PRIMARY_TOOLCHAIN = "1.96.0"
 # Единая edition должна наследоваться каждым workspace member из root manifest.
 APPROVED_EDITION = "2024"
+# First-party workspace members наследуют единый SPDX identifier владельца.
+APPROVED_LICENSE = "MIT"
 # Компоненты нужны существующим format и Clippy quality gates.
 REQUIRED_TOOLCHAIN_COMPONENTS = frozenset({"clippy", "rustfmt"})
 # --locked запрещает этой read-only проверке незаметно менять Cargo.lock.
@@ -100,7 +102,7 @@ def package_relative_path(repository_root: Path, manifest_path: Path) -> str:
 
 
 def check_root_manifest(repository_root: Path) -> tuple[PolicyViolation, ...]:
-    """Проверяет root owner для workspace MSRV и edition."""
+    """Проверяет root owner для workspace MSRV, edition и license."""
 
     # Корневой Cargo.toml — единственный владелец shared package policy.
     root_manifest = load_toml(repository_root / "Cargo.toml")
@@ -128,6 +130,15 @@ def check_root_manifest(repository_root: Path) -> tuple[PolicyViolation, ...]:
             PolicyViolation(
                 "Cargo.toml [workspace.package]",
                 f'`edition` должна быть ровно "{APPROVED_EDITION}"',
+            )
+        )
+
+    # License задаётся только стандартным SPDX identifier без дополнительных условий.
+    if workspace_package.get("license") != APPROVED_LICENSE:
+        violations.append(
+            PolicyViolation(
+                "Cargo.toml [workspace.package]",
+                f'`license` должна быть ровно "{APPROVED_LICENSE}"',
             )
         )
 
@@ -230,8 +241,8 @@ def check_workspace_members(
             )
             continue
 
-        # Оба поля обязаны быть именно inheritance syntax, не одинаковыми literal strings.
-        for inherited_field in ("edition", "rust-version"):
+        # Все shared поля обязаны наследоваться, а не повторяться literal strings.
+        for inherited_field in ("edition", "rust-version", "license"):
             if not is_workspace_inheritance(package_table, inherited_field):
                 violations.append(
                     PolicyViolation(
@@ -254,6 +265,15 @@ def check_workspace_members(
                 PolicyViolation(
                     relative_manifest_path,
                     f'Cargo metadata rust_version должен быть "{APPROVED_MSRV}"',
+                )
+            )
+
+        # Effective metadata не должно ошибочно маркировать first-party crate другой лицензией.
+        if package.get("license") != APPROVED_LICENSE:
+            violations.append(
+                PolicyViolation(
+                    relative_manifest_path,
+                    f'Cargo metadata license должна быть "{APPROVED_LICENSE}"',
                 )
             )
 

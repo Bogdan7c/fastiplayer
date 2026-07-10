@@ -3,13 +3,14 @@ name = "rustiplayer-config"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [lib]
 name = "rustiplayer_config"
 path = "src/lib.rs"
 
 [dependencies]
-directories.workspace = true
+etcetera.workspace = true
 serde.workspace = true
 settings-core.workspace = true
 settings-derive.workspace = true

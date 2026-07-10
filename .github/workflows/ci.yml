@@ -30,6 +30,25 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Dependency policy отделён от compile jobs и не требует native media headers.
+  dependencies:
+    # Стабильное имя можно включить в required checks branch protection.
+    name: Dependency policy
+    # Ubuntu 24.04 фиксирует runner ABI и primary rust-toolchain из репозитория.
+    runs-on: ubuntu-24.04
+    steps:
+      # Read-only checkout достаточен policy scanner-ам.
+      - uses: actions/checkout@v4
+      # Exact tool release и --locked делают scanner supply chain воспроизводимым.
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --version 0.20.2 --locked
+      # Отдельный узкий scanner проверяет только unused direct dependencies.
+      - name: Install cargo-machete
+        run: cargo install cargo-machete --version 0.9.2 --locked
+      # Repo runner одинаков для CI и локального pre-PR path.
+      - name: Run dependency policy
+        run: scripts/ci-checks.sh dependencies
+
   # Имя job намеренно стабильно: его настраивают как required check.
   format-guardrails:
     # Видимое имя status check зафиксировано документацией.

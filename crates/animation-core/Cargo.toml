@@ -3,6 +3,7 @@ name = "animation-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 # Нейтральная математика анимаций: без egui, WGPU и других крейтов проекта.
 [dependencies]

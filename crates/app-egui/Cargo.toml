@@ -3,6 +3,7 @@ name = "app-egui"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "rustiplayer"
@@ -49,7 +50,6 @@ audio-signalsmith.workspace = true
 
 # Композиция video decode/render.
 video-core.workspace = true
-video-backend-api.workspace = true
 video-frame-contract.workspace = true
 video-present-core.workspace = true
 video-ffmpeg.workspace = true

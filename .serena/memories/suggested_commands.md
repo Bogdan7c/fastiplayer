@@ -17,3 +17,4 @@
 - Seek diagnostics parser: `scripts/parse-seek-diagnostics.py --scenario "<name>" /tmp/rustiplayer-seek.log`; supports `--format csv` and `--format json`.
 - Local Sonar scan only on explicit request and with token in env, not files/history: `SONAR_USER_HOME=/tmp/rustiplayer-sonar-user-home scripts/sonar-local-analysis.sh`.
 - After Sonar scanner success, wait for the printed `/api/ce/task?id=...` background task before reading issues.
+- Dependency health: install exact `cargo-deny 0.20.2` and `cargo-machete 0.9.2` with `cargo install <tool> --version <version> --locked`, then run `scripts/ci-checks.sh dependencies`. The command currently returns failure for the tracked quick-xml/Wayland RustSec blocker while still running licenses/sources/duplicates and unused-deps checks.

@@ -1,20 +1,14 @@
 use std::path::PathBuf;
 
-use directories::ProjectDirs;
+use etcetera::{BaseStrategy, choose_base_strategy};
 
 use crate::{ConfigError, ConfigResult};
 
 /// Имя TOML-файла пользовательской конфигурации.
 pub const CONFIG_FILE_NAME: &str = "config.toml";
 
-/// Qualifier для `directories::ProjectDirs`; на Linux не влияет на `~/.config/rustiplayer`.
-const APP_QUALIFIER: &str = "org";
-
-/// Organization для Windows/macOS путей.
-const APP_ORGANIZATION: &str = "Rustiplayer";
-
-/// Application name; на Linux превращается в `rustiplayer`.
-const APP_NAME: &str = "Rustiplayer";
+/// Имя каталога приложения внутри платформенного config-dir.
+const APP_CONFIG_DIRECTORY_NAME: &str = "rustiplayer";
 
 /// Стандартные пути config-слоя для текущего пользователя.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,12 +21,13 @@ pub struct ConfigPaths {
 }
 
 impl ConfigPaths {
-    /// Определяет платформенный config-dir через `directories::ProjectDirs`.
+    /// Определяет платформенный config-dir через permissive `etcetera`.
     pub fn discover() -> ConfigResult<Self> {
-        let project_dirs = ProjectDirs::from(APP_QUALIFIER, APP_ORGANIZATION, APP_NAME)
-            .ok_or(ConfigError::ProjectDirsUnavailable)?;
+        let base_strategy =
+            choose_base_strategy().map_err(|_| ConfigError::ProjectDirsUnavailable)?;
+        let config_dir = base_strategy.config_dir().join(APP_CONFIG_DIRECTORY_NAME);
 
-        Ok(Self::from_config_dir(project_dirs.config_dir()))
+        Ok(Self::from_config_dir(config_dir))
     }
 
     /// Собирает пути от уже известной config-директории.

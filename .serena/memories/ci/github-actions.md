@@ -7,3 +7,8 @@
 - Human documentation and exact branch-protection checklist live in `docs/continuous-integration.md`.
 - Operational decision 2026-07-10: the repository intentionally remains private without GitHub Pro. GitHub API returned HTTP 403 `Upgrade to GitHub Pro or make this repository public` for both repository rulesets and `main` branch protection. Required-check enforcement is explicitly disabled/deferred; workflow failures remain visible but merge control is manual. Session 04 is accepted complete under this owner-approved limitation. When the repository becomes public, enable PR-required/up-to-date required checks using the documented exact names.
 - Full `scripts/pre-pr-checks.sh` passed outside sandbox after the CI runner refactor, including guardrails, rustfmt, strict all-features/all-targets Clippy, strict rustdoc, all-features workspace tests, `app-egui --no-default-features`, and Rust 1.92.0 MSRV check.
+
+## Dependency policy (Session 05, 2026-07-10)
+- CI has a stable blocking `Dependency policy` job that installs exact `cargo-deny 0.20.2` and `cargo-machete 0.9.2`, then runs `scripts/ci-checks.sh dependencies`.
+- The runner always executes blocking advisories, non-blocking yanked/unmaintained visibility, licenses/sources/duplicate inventory, and unused direct-dependency analysis before returning aggregate status.
+- Current gate is intentionally blocked by RUSTSEC-2026-0194/0195: `wayland-scanner 0.31.10 -> quick-xml 0.39.3`; no ignore or policy weakening was added. See `docs/dependency-report-2026-07-10.md`.

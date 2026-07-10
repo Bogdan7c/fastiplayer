@@ -1,0 +1,12 @@
+# Этот overlay намеренно повторяет только advisory policy: cargo-deny 0.20
+# не поддерживает уровень warn для unmaintained, поэтому результат публикуется,
+# но его exit code не участвует в blocking gate.
+[graph]
+targets = ["x86_64-unknown-linux-gnu"]
+all-features = true
+
+[advisories]
+yanked = "warn"
+unmaintained = "all"
+unsound = "all"
+ignore = []
