@@ -1,17 +1,14 @@
 use std::collections::{HashMap, VecDeque};
-use std::fs::File;
 use std::io;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use codec_core::{
-    ColorPrimaries, ColorRange, H265Profile, MatrixCoefficients, TransferFunction,
-    VideoDisplayOrientation, VideoProfile,
+    ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction, VideoDisplayOrientation,
 };
 use media_core::{
     DemuxReadEvent, DemuxSeekRequest, DemuxSeekability, DemuxTrackListUpdate, Demuxer,
-    MediaDemuxError, PacketKeyframe, TimelineNotSeekableReason, TrackId, TrackKind,
+    PacketKeyframe, TrackId, TrackKind,
 };
 use symphonia::core::audio::{Channels, Position};
 use symphonia::core::codecs::CodecParameters;
@@ -52,8 +49,6 @@ use crate::error::DemuxError;
 use crate::matroska_metadata::{MatroskaCueIndex, MatroskaVideoTrack};
 use crate::options::DemuxerOptions;
 
-const MAX_UNIT_EVENTS_BEFORE_EOF: usize = 16_384;
-const MAX_UNIT_EVENTS_AFTER_SEEK: usize = 512;
 const FAKE_METADATA_INFO: MetadataInfo = MetadataInfo {
     metadata: METADATA_ID_NULL,
     short_name: "fake",
@@ -334,85 +329,6 @@ fn required_seek_timestamp(tracks: &[Track], target: &SeekTo) -> Timestamp {
     }
 }
 
-fn test_webm_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-assets/VP9/test.webm")
-}
-
-fn audio_fixture_path(file_name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../test-assets/audio")
-        .join(file_name)
-}
-
-fn optional_fixture_path(path: PathBuf, fixture_label: &str) -> Option<PathBuf> {
-    if path.exists() {
-        return Some(path);
-    }
-
-    eprintln!(
-        "skipping {fixture_label} test fixture: {} is absent",
-        path.display()
-    );
-    None
-}
-
-fn open_optional_demuxer_fixture(path: PathBuf, fixture_label: &str) -> Option<SymphoniaDemuxer> {
-    let path = optional_fixture_path(path, fixture_label)?;
-
-    Some(SymphoniaDemuxer::from_file(&path).unwrap_or_else(|error| {
-        panic!(
-            "{fixture_label} fixture должен открыться через Symphonia: {error}; path: {}",
-            path.display()
-        )
-    }))
-}
-
-fn open_optional_file_fixture(path: PathBuf, fixture_label: &str) -> Option<File> {
-    let path = optional_fixture_path(path, fixture_label)?;
-
-    Some(File::open(&path).unwrap_or_else(|error| {
-        panic!(
-            "{fixture_label} fixture должен открыться как файл: {error}; path: {}",
-            path.display()
-        )
-    }))
-}
-
-fn ios_h265_mov_fixture_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../<MEDIA_DIR>/ios-hevc-main10-aac-4k60.mov")
-}
-
-fn drain_demuxer_to_eof_for_unit_test(demuxer: &mut SymphoniaDemuxer) {
-    for event_index in 0..MAX_UNIT_EVENTS_BEFORE_EOF {
-        match demuxer
-            .next_event()
-            .unwrap_or_else(|error| panic!("EOF drain event #{event_index} failed: {error}"))
-        {
-            DemuxReadEvent::EndOfStream => return,
-            DemuxReadEvent::Packet(_) | DemuxReadEvent::TracksChanged(_) => {}
-        }
-    }
-
-    panic!("demuxer did not reach EOF within {MAX_UNIT_EVENTS_BEFORE_EOF} events in unit test");
-}
-
-fn assert_first_packet_after_seek_for_unit_test(demuxer: &mut SymphoniaDemuxer) {
-    for event_index in 0..MAX_UNIT_EVENTS_AFTER_SEEK {
-        match demuxer.next_event().unwrap_or_else(|error| {
-            panic!("post-seek event #{event_index} failed in unit test: {error}")
-        }) {
-            DemuxReadEvent::Packet(_) => return,
-            DemuxReadEvent::TracksChanged(_) => {}
-            DemuxReadEvent::EndOfStream => {
-                panic!("post-seek EOF arrived before any packet in unit test")
-            }
-        }
-    }
-
-    panic!("demuxer did not return a packet within {MAX_UNIT_EVENTS_AFTER_SEEK} post-seek events");
-}
-
 fn vp9_video_track(track_id: u32) -> Track {
     let mut video_params = VideoCodecParameters::default();
     video_params.for_codec(video_codec::CODEC_ID_VP9);
@@ -593,19 +509,6 @@ fn assert_symphonia_seek_mode(request: DemuxSeekRequest, expected_mode: SeekMode
     );
 }
 
-fn next_video_packet(demuxer: &mut SymphoniaDemuxer) -> media_core::Packet {
-    loop {
-        let packet = demuxer
-            .next_packet()
-            .expect("packet read должен завершиться без ошибки")
-            .expect("test asset должен содержать video packet");
-
-        if packet.kind == TrackKind::Video {
-            return packet;
-        }
-    }
-}
-
 struct BoundedPrefixReader {
     bytes_remaining: usize,
     bytes_read: usize,
@@ -695,57 +598,6 @@ fn audio_only_demuxer_opens_and_uses_track_duration_metadata() {
     assert_eq!(demuxer.tracks()[0].channels, Some(2));
     assert_eq!(demuxer.duration(), Some(Duration::from_secs(30)));
     assert_eq!(demuxer.seekability(), DemuxSeekability::Seekable);
-}
-
-#[test]
-fn ios_quicktime_h265_mov_fixture_opens_supported_tracks() {
-    let fixture_path = ios_h265_mov_fixture_path();
-    if !fixture_path.exists() {
-        eprintln!(
-            "skipping iOS QuickTime HEVC fixture test: {} is absent",
-            fixture_path.display()
-        );
-        return;
-    }
-
-    let demuxer = SymphoniaDemuxer::from_file(&fixture_path)
-        .expect("iOS QuickTime .mov fixture должен открыться через Symphonia");
-
-    assert_eq!(demuxer.tracks().len(), 2);
-    assert!(demuxer.duration().is_some());
-
-    let video_track = demuxer
-        .tracks()
-        .iter()
-        .find(|track| track.kind == TrackKind::Video)
-        .expect("iOS .mov fixture должен содержать поддерживаемый HEVC video track");
-    assert_eq!(video_track.codec_id, "V_MPEGH/ISO/HEVC");
-    assert!(
-        video_track
-            .codec_private
-            .as_ref()
-            .is_some_and(|codec_private| !codec_private.is_empty())
-    );
-
-    let video_metadata = video_track
-        .video
-        .as_ref()
-        .expect("HEVC video track должен сохранить container metadata");
-    assert_eq!(video_metadata.coded_width, Some(3840));
-    assert_eq!(video_metadata.coded_height, Some(2160));
-    assert_eq!(
-        video_metadata.profile,
-        Some(VideoProfile::H265(H265Profile::Main10))
-    );
-
-    let audio_track = demuxer
-        .tracks()
-        .iter()
-        .find(|track| track.kind == TrackKind::Audio)
-        .expect("iOS .mov fixture должен содержать поддерживаемый AAC audio track");
-    assert_eq!(audio_track.codec_id, "A_AAC");
-    assert_eq!(audio_track.sample_rate, Some(48_000));
-    assert_eq!(audio_track.channels, Some(2));
 }
 
 #[test]
@@ -2043,106 +1895,27 @@ fn normal_eof_returns_none_without_error() {
 }
 
 #[test]
-fn seek_after_eof_rebuilds_seekable_reader_and_preserves_track_layout() {
-    let Some(mut demuxer) =
-        open_optional_demuxer_fixture(audio_fixture_path("music_sample.m4a"), "seekable m4a")
-    else {
-        return;
-    };
-    let tracks_before_eof = demuxer.tracks().to_vec();
-    let duration_before_eof = demuxer.duration();
-
-    drain_demuxer_to_eof_for_unit_test(&mut demuxer);
-
-    assert!(demuxer.end_of_stream_reached);
-    assert!(demuxer.format.is_some());
-
-    demuxer
-        .seek_with_request(DemuxSeekRequest::accurate(Duration::ZERO))
-        .expect("seek after EOF должен rebuild-ить seekable reader");
-
-    assert!(!demuxer.end_of_stream_reached);
-    assert_eq!(demuxer.tracks(), tracks_before_eof.as_slice());
-    assert_eq!(demuxer.duration(), duration_before_eof);
-    assert!(demuxer.format.is_some());
-
-    assert_first_packet_after_seek_for_unit_test(&mut demuxer);
-}
-
-#[test]
-fn unseekable_stream_seek_after_eof_does_not_rebuild_or_become_seekable() {
-    let Some(fixture_file) =
-        open_optional_file_fixture(audio_fixture_path("music_sample.mp3"), "mp3")
-    else {
-        return;
-    };
-    let mut demuxer = SymphoniaDemuxer::from_stream(fixture_file, "mp3", "unit unseekable mp3")
-        .expect("unseekable stream fixture должен открыться");
-    let tracks_before_eof = demuxer.tracks().to_vec();
-    let duration_before_eof = demuxer.duration();
-
-    assert!(matches!(
-        demuxer.seekability(),
-        DemuxSeekability::NotSeekable {
-            reason: TimelineNotSeekableReason::SourceNotSeekable
-        }
-    ));
-
-    drain_demuxer_to_eof_for_unit_test(&mut demuxer);
-
-    let seek_error = demuxer
-        .seek_with_request(DemuxSeekRequest::accurate(Duration::ZERO))
-        .expect_err("unseekable stream не должен превращаться в seekable после EOF");
-
-    assert!(
-        seek_error.downcast_ref::<MediaDemuxError>().is_some()
-            || seek_error.downcast_ref::<DemuxError>().is_some(),
-        "seek failure должен остаться typed demux error: {seek_error}"
-    );
-    assert!(demuxer.end_of_stream_reached);
-    assert!(demuxer.format.is_some());
-    assert_eq!(demuxer.tracks(), tracks_before_eof.as_slice());
-    assert_eq!(demuxer.duration(), duration_before_eof);
-    assert!(matches!(
-        demuxer.seekability(),
-        DemuxSeekability::NotSeekable {
-            reason: TimelineNotSeekableReason::SourceNotSeekable
-        }
-    ));
-}
-
-#[test]
-fn seek_reprobe_preserves_pending_tracks_changed_event() {
-    let Some(mut demuxer) =
-        open_optional_demuxer_fixture(audio_fixture_path("music_sample.m4a"), "seekable m4a")
-    else {
-        return;
-    };
-
-    drain_demuxer_to_eof_for_unit_test(&mut demuxer);
-
+fn seek_preserves_pending_tracks_changed_event_with_fake_reader() {
+    // Fake reader делает lifecycle contract hermetic: для проверки не нужен media asset или filesystem.
+    let mut demuxer =
+        fake_demuxer_with_options(Vec::new(), HashMap::new(), DemuxerOptions::default());
+    // Событие имитирует lifecycle update, который уже был поставлен в очередь до следующего seek.
     let retained_update = DemuxTrackListUpdate::new(demuxer.tracks().to_vec(), demuxer.duration());
     demuxer
         .pending_events
         .push_back(DemuxReadEvent::TracksChanged(retained_update.clone()));
-
+    // Seek обязан временно снять lifecycle events, затем вернуть их перед результатами format reader-а.
     demuxer
         .seek_with_request(DemuxSeekRequest::accurate(Duration::ZERO))
-        .expect("seek after EOF должен сохранить pending lifecycle event");
-
+        .expect("fake seek must preserve pending lifecycle event");
+    // Первый observed event доказывает порядок и отсутствие тихой потери queued update.
     match demuxer
         .next_event()
-        .expect("retained TracksChanged должен читаться после seek")
+        .expect("retained TracksChanged must be readable after fake seek")
     {
-        DemuxReadEvent::TracksChanged(actual_update) => {
-            assert_eq!(actual_update, retained_update);
-        }
-        unexpected_event => {
-            panic!("ожидали retained TracksChanged, получили {unexpected_event:?}")
-        }
+        DemuxReadEvent::TracksChanged(actual_update) => assert_eq!(actual_update, retained_update),
+        unexpected_event => panic!("expected retained TracksChanged, got {unexpected_event:?}"),
     }
-
-    assert_first_packet_after_seek_for_unit_test(&mut demuxer);
 }
 
 #[test]
@@ -2297,62 +2070,4 @@ fn uncertain_vp9_keyframe_probe_is_returned_without_demux_error() {
     assert_eq!(first_packet.keyframe, PacketKeyframe::Unknown);
     assert_eq!(second_packet.pts, Duration::from_millis(10));
     assert_eq!(second_packet.keyframe, PacketKeyframe::Unknown);
-}
-
-#[test]
-fn decode_point_before_seek_starts_video_before_target() {
-    let Some(mut demuxer) =
-        open_optional_demuxer_fixture(test_webm_path(), "VP9 WebM decode-point")
-    else {
-        return;
-    };
-    let target = Duration::from_millis(500);
-
-    let seek_result = demuxer
-        .seek_with_request(DemuxSeekRequest::decode_point_before(target))
-        .expect("decode-point seek должен завершиться без ошибки");
-    let packet = next_video_packet(&mut demuxer);
-
-    assert_eq!(
-        seek_result.requested_position,
-        media_core::MediaTime::from_duration(target)
-    );
-    assert!(
-        seek_result.actual_position.as_duration() <= target,
-        "container должен поставить чтение не позже user target"
-    );
-    assert!(
-        packet.pts <= target,
-        "первый video packet после bootstrap seek должен быть pre-roll кадром"
-    );
-    // Keyframe flag теперь восстанавливается только codec-aware packet mapper-ом:
-    // Symphonia 0.6 больше не отдаёт container keyframe flag в public Packet.
-}
-
-#[test]
-fn decode_point_before_seek_actual_position_stays_before_video_targets() {
-    let targets = [
-        Duration::ZERO,
-        Duration::from_secs(106),
-        Duration::from_millis(212_500),
-    ];
-
-    for target in targets {
-        let Some(mut demuxer) =
-            open_optional_demuxer_fixture(test_webm_path(), "VP9 WebM decode-point")
-        else {
-            return;
-        };
-
-        let seek_result = demuxer
-            .seek_with_request(DemuxSeekRequest::decode_point_before(target))
-            .expect("decode-point seek должен завершиться без ошибки");
-
-        assert!(
-            seek_result.actual_position.as_duration() <= target,
-            "actual demux position {:?} не должна быть после requested target {:?}",
-            seek_result.actual_position.as_duration(),
-            target
-        );
-    }
 }

@@ -520,7 +520,7 @@ mod tests {
     use std::fs;
     use std::io::{Read, Write};
     use std::net::{SocketAddr, TcpListener, TcpStream};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread::{self, JoinHandle};
@@ -738,29 +738,80 @@ mod tests {
         Some((start.parse().ok()?, end.parse().ok()?))
     }
 
-    /// Возвращает путь к fixture относительно workspace root.
-    fn workspace_fixture_path(relative_path: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join(relative_path)
+    /// Возвращает минимальный структурированный PCM WAV для HTTP Range regression.
+    fn minimal_pcm_wav() -> Vec<u8> {
+        let sample_rate_hz = 8_000_u32;
+        let channel_count = 1_u16;
+        let bits_per_sample = 16_u16;
+        let samples = [0_i16, 1_024, -1_024, 0_i16];
+        let data_length = u32::try_from(samples.len() * std::mem::size_of::<i16>())
+            .expect("test WAV data length fits u32");
+        let block_alignment = channel_count * (bits_per_sample / 8);
+        let mut bytes = Vec::with_capacity(44 + data_length as usize);
+
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36_u32 + data_length).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&channel_count.to_le_bytes());
+        bytes.extend_from_slice(&sample_rate_hz.to_le_bytes());
+        bytes.extend_from_slice(&(sample_rate_hz * u32::from(block_alignment)).to_le_bytes());
+        bytes.extend_from_slice(&block_alignment.to_le_bytes());
+        bytes.extend_from_slice(&bits_per_sample.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_length.to_le_bytes());
+        for sample in samples {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+
+        bytes
     }
 
-    /// Читает optional media fixture, если он есть в локальном checkout-е.
-    fn read_optional_fixture(relative_path: &str) -> Option<Vec<u8>> {
-        let fixture_path = workspace_fixture_path(relative_path);
-        match fs::read(&fixture_path) {
-            Ok(bytes) => Some(bytes),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                eprintln!("skipping optional media fixture {}", fixture_path.display());
-                None
-            }
-            Err(error) => {
-                panic!(
-                    "fixture {} должен читаться: {error}",
-                    fixture_path.display()
-                );
-            }
+    /// Читает один explicit local media path для ignored manual acceptance test-а.
+    fn selected_manual_media_path() -> PathBuf {
+        let path = std::env::var_os("RUSTIPLAYER_MEDIA_PATH")
+            .map(PathBuf::from)
+            .expect("RUSTIPLAYER_MEDIA_PATH must select a local file");
+        assert!(
+            path.is_file(),
+            "selected media path is not a regular file: {}",
+            path.display()
+        );
+        path
+    }
+
+    /// Выводит поддерживаемое direct-media расширение выбранного файла без угадывания имени.
+    fn selected_direct_extension(path: &Path) -> &str {
+        let extension = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .expect("selected direct-media path must have a UTF-8 extension");
+        match extension.to_ascii_lowercase().as_str() {
+            "mp4" => "mp4",
+            "mov" => "mov",
+            "mkv" => "mkv",
+            "webm" => "webm",
+            _ => panic!("selected direct-media extension is unsupported: {extension}"),
         }
+    }
+
+    /// Проверяет real selected media через тот же HTTP Range -> Symphonia путь, что и production.
+    fn assert_selected_media_opens_over_http_range(path: &Path) {
+        let bytes = fs::read(path)
+            .unwrap_or_else(|error| panic!("read selected media {}: {error}", path.display()));
+        let extension = selected_direct_extension(path);
+        let server = TestHttpServer::spawn(bytes, TestHttpBehavior::ServeRange);
+        let opened_media = open_direct_media_url(
+            &server.url(&format!("/selected.{extension}")),
+            &NetworkConfig::default(),
+            &PlayerDemuxConfig::default(),
+        )
+        .expect("selected Range-backed media must open through Symphonia");
+        assert!(
+            !opened_media.tracks().is_empty(),
+            "selected Range-backed media must expose at least one public track"
+        );
     }
 
     #[test]
@@ -837,26 +888,28 @@ mod tests {
     }
 
     #[test]
-    fn range_backed_mp4_opens_h264_tracks_through_symphonia() {
-        let Some(media_bytes) =
-            read_optional_fixture("<MEDIA_DIR>/h264-720p-baseline-no-bframes.mp4")
-        else {
-            return;
-        };
-        let server = TestHttpServer::spawn(media_bytes, TestHttpBehavior::ServeRange);
+    fn range_backed_http_source_opens_structured_wav_through_symphonia() {
+        let server = TestHttpServer::spawn(minimal_pcm_wav(), TestHttpBehavior::ServeRange);
         let opened_media = open_direct_media_url(
-            &server.url("/h264/720p_baseline_nobframes.mp4"),
+            &server.url("/media.mp4"),
             &NetworkConfig::default(),
             &PlayerDemuxConfig::default(),
         )
-        .expect("Range-backed MP4 fixture должен открыться через Symphonia");
+        .expect("Range-backed structured WAV должен открыться через Symphonia");
 
         assert!(
             opened_media.tracks().iter().any(|track| {
                 let codec_id = track.codec_id.to_ascii_lowercase();
-                codec_id.contains("avc") || codec_id.contains("h264")
+                codec_id.contains("pcm")
             }),
-            "direct MP4 должен вернуть H.264 video track"
+            "direct Range source должен вернуть PCM audio track"
         );
+    }
+
+    #[test]
+    #[ignore = "manual media regression; use scripts/media-regression.sh"]
+    fn selected_media_opens_over_direct_http_range() {
+        let path = selected_manual_media_path();
+        assert_selected_media_opens_over_http_range(&path);
     }
 }

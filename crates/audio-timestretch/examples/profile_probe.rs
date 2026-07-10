@@ -34,8 +34,10 @@ struct ProfileSpec {
 }
 
 fn main() -> Result<()> {
-    let root = repository_root();
-    let sample = decode(&root.join("test-assets/audio/music_sample.wav"))?;
+    let source_path = std::env::args().nth(1).map(PathBuf::from).context(
+        "usage: cargo run -p audio-timestretch --example profile_probe --release -- <audio-file>",
+    )?;
+    let sample = decode(&source_path)?;
     println!(
         "input: {} frames @ {} Hz, {} ch",
         sample.samples.len() / sample.channels as usize,
@@ -299,12 +301,4 @@ fn decode(path: &Path) -> Result<Sample> {
         sample_rate: sample_rate.context("no rate")?,
         channels: channels.context("no channels")?,
     })
-}
-
-fn repository_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("crate under crates/")
-        .to_path_buf()
 }

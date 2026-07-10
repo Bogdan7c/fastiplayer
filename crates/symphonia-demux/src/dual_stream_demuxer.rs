@@ -400,7 +400,6 @@ impl Demuxer for DualStreamDemuxer {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -539,30 +538,6 @@ mod tests {
         {
             unreachable!("fake reader не возвращает MediaSourceStream")
         }
-    }
-
-    fn test_webm_path() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-assets/VP9/test.webm")
-    }
-
-    fn optional_fixture_path(path: PathBuf, fixture_label: &str) -> Option<PathBuf> {
-        if path.exists() {
-            return Some(path);
-        }
-
-        eprintln!(
-            "skipping {fixture_label} test fixture: {} is absent",
-            path.display()
-        );
-        None
-    }
-
-    fn open_dual_demuxer_from_test_asset() -> Option<DualStreamDemuxer> {
-        let path = optional_fixture_path(test_webm_path(), "VP9 WebM dual-stream")?;
-        let video_demuxer = SymphoniaDemuxer::from_file(&path).expect("video demuxer opens");
-        let audio_demuxer = SymphoniaDemuxer::from_file(&path).expect("audio demuxer opens");
-
-        Some(DualStreamDemuxer::new(video_demuxer, audio_demuxer).expect("dual demuxer opens"))
     }
 
     fn marker_packet(kind: TrackKind) -> Packet {
@@ -741,9 +716,7 @@ mod tests {
 
     #[test]
     fn seek_seeks_both_streams_and_clears_pending_state() {
-        let Some(mut demuxer) = open_dual_demuxer_from_test_asset() else {
-            return;
-        };
+        let (mut demuxer, _video_seek_log, _audio_seek_log) = fake_dual_stream_demuxer(500, 500);
         demuxer.pending_video_packet = Some(marker_packet(TrackKind::Video));
         demuxer.pending_audio_packet = Some(marker_packet(TrackKind::Audio));
         demuxer.video_eof = true;

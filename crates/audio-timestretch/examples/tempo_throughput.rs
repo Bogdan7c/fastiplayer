@@ -26,8 +26,11 @@ struct Sample {
 }
 
 fn main() -> Result<()> {
-    let root = repository_root();
-    let sample = decode(&root.join("test-assets/audio/music_sample.wav"))?;
+    let source_path = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .context("usage: cargo run -p audio-timestretch --example tempo_throughput --release -- <audio-file>")?;
+    let sample = decode(&source_path)?;
     let input_secs =
         (sample.samples.len() / sample.channels as usize) as f64 / sample.sample_rate as f64;
     println!(
@@ -82,14 +85,6 @@ fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-fn repository_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("crate должен лежать в workspace/crates")
-        .to_path_buf()
 }
 
 fn decode(path: &Path) -> Result<Sample> {

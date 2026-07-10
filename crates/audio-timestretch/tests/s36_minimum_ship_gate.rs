@@ -1,7 +1,6 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::fs::File;
-use std::path::{Path, PathBuf};
+use std::io::Cursor;
 
 use anyhow::{Context, Result, bail};
 use audio_core::{
@@ -286,11 +285,8 @@ fn undersized_output_capacity_returns_typed_buffer_overflow() -> Result<()> {
 }
 
 #[test]
-fn real_audio_wav_sanity_is_finite_non_silent_and_rate_directed() -> Result<()> {
-    let sample = decode_real_audio_sample(
-        &repository_root().join("test-assets/audio/music_sample.wav"),
-        REAL_AUDIO_SANITY_FRAMES,
-    )?;
+fn generated_wav_sanity_is_finite_non_silent_and_rate_directed() -> Result<()> {
+    let sample = decode_generated_wav_audio_sample(REAL_AUDIO_SANITY_FRAMES)?;
 
     assert_eq!(sample.sample_rate_hz, 44_100);
     assert_eq!(sample.channel_count, 2);
@@ -512,8 +508,8 @@ impl RealAudioSample {
     }
 }
 
-fn decode_real_audio_sample(path: &Path, max_frames: usize) -> Result<RealAudioSample> {
-    let source = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+fn decode_generated_wav_audio_sample(max_frames: usize) -> Result<RealAudioSample> {
+    let source = Cursor::new(generated_stereo_wav_bytes(max_frames));
     let media_source_stream = MediaSourceStream::new(Box::new(source), Default::default());
     let mut hint = Hint::new();
     hint.with_extension("wav");
@@ -526,13 +522,13 @@ fn decode_real_audio_sample(path: &Path, max_frames: usize) -> Result<RealAudioS
     )?;
     let track = format
         .default_track(TrackType::Audio)
-        .context("real-audio sample has no default audio track")?;
+        .context("generated WAV has no default audio track")?;
     let codec_params = track
         .codec_params
         .as_ref()
-        .context("real-audio sample is missing codec parameters")?
+        .context("generated WAV is missing codec parameters")?
         .audio()
-        .context("real-audio sample track has no audio codec parameters")?;
+        .context("generated WAV track has no audio codec parameters")?;
     let mut decoder = symphonia::default::get_codecs()
         .make_audio_decoder(codec_params, &AudioDecoderOptions::default())?;
     let track_id = track.id;
@@ -548,7 +544,7 @@ fn decode_real_audio_sample(path: &Path, max_frames: usize) -> Result<RealAudioS
             Err(SymphoniaError::ResetRequired) => {
                 bail!("unexpected Symphonia reset while decoding")
             }
-            Err(error) => return Err(error).context("failed to read real-audio packet"),
+            Err(error) => return Err(error).context("failed to read generated WAV packet"),
         };
 
         if packet.track_id != track_id {
@@ -558,7 +554,7 @@ fn decode_real_audio_sample(path: &Path, max_frames: usize) -> Result<RealAudioS
         let decoded = match decoder.decode(&packet) {
             Ok(decoded) => decoded,
             Err(SymphoniaError::DecodeError(_)) | Err(SymphoniaError::IoError(_)) => continue,
-            Err(error) => return Err(error).context("failed to decode real-audio packet"),
+            Err(error) => return Err(error).context("failed to decode generated WAV packet"),
         };
 
         let spec = decoded.spec();
@@ -576,8 +572,8 @@ fn decode_real_audio_sample(path: &Path, max_frames: usize) -> Result<RealAudioS
         }
     }
 
-    let sample_rate_hz = sample_rate_hz.context("real-audio sample produced no decoded audio")?;
-    let channel_count = channel_count.context("real-audio sample produced no channel count")?;
+    let sample_rate_hz = sample_rate_hz.context("generated WAV produced no decoded audio")?;
+    let channel_count = channel_count.context("generated WAV produced no channel count")?;
     let requested_samples = max_frames.saturating_mul(channel_count as usize);
     decoded_samples.truncate(requested_samples);
 
@@ -588,10 +584,56 @@ fn decode_real_audio_sample(path: &Path, max_frames: usize) -> Result<RealAudioS
     })
 }
 
-fn repository_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("audio-timestretch crate should live under crates/")
-        .to_path_buf()
+fn generated_stereo_wav_bytes(frame_count: usize) -> Vec<u8> {
+    let sample_rate_hz = 44_100_u32;
+    let channel_count = 2_u16;
+    let bits_per_sample = 16_u16;
+    let bytes_per_sample = usize::from(bits_per_sample / 8);
+    let block_alignment = channel_count * (bits_per_sample / 8);
+    let data_length = frame_count
+        .checked_mul(usize::from(block_alignment))
+        .expect("test WAV data length should fit into usize");
+    let riff_length = 36_usize
+        .checked_add(data_length)
+        .expect("test WAV RIFF length should fit into usize");
+    let mut bytes = Vec::with_capacity(
+        44_usize
+            .checked_add(data_length)
+            .expect("test WAV capacity should fit into usize"),
+    );
+
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(
+        &u32::try_from(riff_length)
+            .expect("test WAV RIFF length fits u32")
+            .to_le_bytes(),
+    );
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16_u32.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&channel_count.to_le_bytes());
+    bytes.extend_from_slice(&sample_rate_hz.to_le_bytes());
+    bytes.extend_from_slice(&(sample_rate_hz * u32::from(block_alignment)).to_le_bytes());
+    bytes.extend_from_slice(&block_alignment.to_le_bytes());
+    bytes.extend_from_slice(&bits_per_sample.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(
+        &u32::try_from(data_length)
+            .expect("test WAV data length fits u32")
+            .to_le_bytes(),
+    );
+
+    for frame_index in 0..frame_count {
+        let seconds = frame_index as f32 / sample_rate_hz as f32;
+        let left_sample = sine_sample(seconds, 220.0, 0.32);
+        let right_sample = sine_sample(seconds, 330.0, 0.28);
+        for sample in [left_sample, right_sample] {
+            let pcm = (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)).round() as i16;
+            bytes.extend_from_slice(&pcm.to_le_bytes());
+        }
+    }
+
+    debug_assert_eq!(bytes.len(), 44 + data_length);
+    debug_assert_eq!(bytes_per_sample, 2);
+    bytes
 }

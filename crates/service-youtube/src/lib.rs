@@ -600,9 +600,10 @@ fn build_header_map(headers: &[HttpHeader]) -> Result<HeaderMap> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::fs;
     use std::io::{BufRead, BufReader, Write};
     use std::net::{SocketAddr, TcpListener, TcpStream};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread;
@@ -855,17 +856,67 @@ mod tests {
         }
     }
 
-    fn test_webm_bytes() -> Option<Arc<Vec<u8>>> {
-        let path =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-assets/VP9/test.webm");
-        match std::fs::read(&path) {
-            Ok(bytes) => Some(Arc::new(bytes)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                eprintln!("skipping optional media fixture {}", path.display());
-                None
-            }
-            Err(error) => panic!("test webm bytes {}: {error}", path.display()),
-        }
+    fn structured_webm_bytes() -> Arc<Vec<u8>> {
+        let ebml_header = vec![
+            0x1A, 0x45, 0xDF, 0xA3, 0x93, 0x42, 0x86, 0x81, 0x01, 0x42, 0xF7, 0x81, 0x01, 0x42,
+            0xF2, 0x81, 0x04, 0x42, 0x82, 0x84, b'w', b'e', b'b', b'm',
+        ];
+        let info = vec![
+            0x15, 0x49, 0xA9, 0x66, 0x8F, 0x2A, 0xD7, 0xB1, 0x83, 0x0F, 0x42, 0x40, 0x4D, 0x80,
+            0x81, b't', 0x57, 0x41, 0x81, b't',
+        ];
+        let video_track = vec![
+            0xAE, 0x99, 0xD7, 0x81, 0x01, 0x73, 0xC5, 0x81, 0x01, 0x83, 0x81, 0x01, 0x86, 0x85,
+            b'V', b'_', b'V', b'P', b'9', 0xE0, 0x86, 0xB0, 0x81, 0x01, 0xBA, 0x81, 0x01,
+        ];
+        let audio_track = vec![
+            0xAE, 0x9A, 0xD7, 0x81, 0x02, 0x73, 0xC5, 0x81, 0x02, 0x83, 0x81, 0x02, 0x86, 0x86,
+            b'A', b'_', b'O', b'P', b'U', b'S', 0xE1, 0x86, 0xB5, 0x84, 0x47, 0x3B, 0x80, 0x00,
+        ];
+        let mut tracks = vec![0x16, 0x54, 0xAE, 0x6B, 0xB7];
+        tracks.extend_from_slice(&video_track);
+        tracks.extend_from_slice(&audio_track);
+        let cluster = vec![
+            0x1F, 0x43, 0xB6, 0x75, 0x8A, 0xE7, 0x81, 0x00, 0xA3, 0x85, 0x81, 0x00, 0x00, 0x80,
+            0x00,
+        ];
+        let segment_length = info.len() + tracks.len() + cluster.len();
+        let segment_size = u8::try_from(segment_length)
+            .expect("structured WebM segment length fits one-byte EBML vint");
+        let mut bytes = ebml_header;
+        bytes.extend_from_slice(&[0x18, 0x53, 0x80, 0x67, 0x80 | segment_size]);
+        bytes.extend_from_slice(&info);
+        bytes.extend_from_slice(&tracks);
+        bytes.extend_from_slice(&cluster);
+        Arc::new(bytes)
+    }
+
+    /// Читает explicit WebM path для ignored manual YouTube transport acceptance test-ов.
+    fn selected_manual_webm_path() -> PathBuf {
+        let path = std::env::var_os("RUSTIPLAYER_MEDIA_PATH")
+            .map(PathBuf::from)
+            .expect("RUSTIPLAYER_MEDIA_PATH must select a local WebM file");
+        assert!(
+            path.is_file(),
+            "selected YouTube media path is not a regular file: {}",
+            path.display()
+        );
+        assert!(
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("webm")),
+            "selected YouTube media must be a WebM file: {}",
+            path.display()
+        );
+        path
+    }
+
+    /// Читает bytes selected файла, не связывая test с именем или каталогом local asset-а.
+    fn selected_manual_webm_bytes(path: &Path) -> Arc<Vec<u8>> {
+        Arc::new(
+            fs::read(path)
+                .unwrap_or_else(|error| panic!("read selected WebM {}: {error}", path.display())),
+        )
     }
 
     fn read_test_request(stream: &TcpStream) -> std::io::Result<TestRequest> {
@@ -1028,9 +1079,7 @@ mod tests {
 
     #[test]
     fn range_backed_demuxer_opens_dual_http_sources() {
-        let Some(media) = test_webm_bytes() else {
-            return;
-        };
+        let media = structured_webm_bytes();
         let video_media = Arc::clone(&media);
         let audio_media = Arc::clone(&media);
         let video_server = TestHttpServer::spawn(move |_index, request, stream| {
@@ -1080,9 +1129,7 @@ mod tests {
 
     #[test]
     fn selected_candidate_open_path_builds_range_backed_demuxer() {
-        let Some(media) = test_webm_bytes() else {
-            return;
-        };
+        let media = structured_webm_bytes();
         let video_media = Arc::clone(&media);
         let audio_media = Arc::clone(&media);
         let video_server = TestHttpServer::spawn(move |_index, request, stream| {
@@ -1195,9 +1242,7 @@ mod tests {
 
     #[test]
     fn range_unsupported_falls_back_to_playback_only_streaming() {
-        let Some(media) = test_webm_bytes() else {
-            return;
-        };
+        let media = structured_webm_bytes();
         let video_media = Arc::clone(&media);
         let audio_media = Arc::clone(&media);
         let video_server = TestHttpServer::spawn(move |_index, _request, stream| {
@@ -1247,9 +1292,7 @@ mod tests {
 
     #[test]
     fn range_unsupported_is_typed_unsupported_for_seekable_vod() {
-        let Some(media) = test_webm_bytes() else {
-            return;
-        };
+        let media = structured_webm_bytes();
         let video_media = Arc::clone(&media);
         let audio_media = Arc::clone(&media);
         let video_server = TestHttpServer::spawn(move |_index, _request, stream| {
@@ -1280,9 +1323,7 @@ mod tests {
 
     #[test]
     fn live_streams_are_opened_as_not_seekable() {
-        let Some(media) = test_webm_bytes() else {
-            return;
-        };
+        let media = structured_webm_bytes();
         let video_media = Arc::clone(&media);
         let audio_media = Arc::clone(&media);
         let video_server = TestHttpServer::spawn(move |_index, _request, stream| {
@@ -1320,14 +1361,127 @@ mod tests {
     }
 
     #[test]
-    fn real_youtube_smoke_is_env_gated() {
-        let Ok(url) = std::env::var("RUSTIPLAYER_REAL_YOUTUBE_SMOKE_URL") else {
-            return;
-        };
+    #[ignore = "manual network acceptance requires RUSTIPLAYER_REAL_YOUTUBE_SMOKE_URL"]
+    fn real_youtube_smoke_requires_explicit_url() -> Result<()> {
+        let url = std::env::var("RUSTIPLAYER_REAL_YOUTUBE_SMOKE_URL")
+            .context("RUSTIPLAYER_REAL_YOUTUBE_SMOKE_URL must select a YouTube URL")?;
 
-        let media = open_streaming_media(&url, &NetworkConfig::default())
-            .expect("env-gated real YouTube smoke opens");
+        let media = open_streaming_media(&url, &NetworkConfig::default())?;
 
         assert!(media.demuxer.duration().is_some() || media.direct_streams.live);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "manual media regression; use scripts/media-regression.sh"]
+    fn selected_webm_opens_over_youtube_range_sources() {
+        let path = selected_manual_webm_path();
+        let media = selected_manual_webm_bytes(&path);
+        let video_media = Arc::clone(&media);
+        let audio_media = Arc::clone(&media);
+        let video_server = TestHttpServer::spawn(move |_index, request, stream| {
+            respond_with_range(stream, &request, &video_media);
+        });
+        let audio_server = TestHttpServer::spawn(move |_index, request, stream| {
+            respond_with_range(stream, &request, &audio_media);
+        });
+        let mut streams = direct_streams(video_server.url.clone(), audio_server.url.clone());
+        let resolver = Arc::new(FakeResolver::new(streams.clone()));
+
+        let demuxer = open_range_backed_demuxer(
+            "http://youtube.test/watch",
+            &mut streams,
+            test_source_config(),
+            test_prefetch_config(),
+            resolver,
+            DemuxerOptions::default(),
+        )
+        .expect("selected YouTube Range demuxer attempt succeeds")
+        .expect("selected YouTube Range source is seekable");
+
+        assert_eq!(demuxer.seekability(), DemuxSeekability::Seekable);
+        assert!(streams.video.has_persistent_validators());
+        assert!(streams.audio.has_persistent_validators());
+    }
+
+    #[test]
+    #[ignore = "manual media regression; use scripts/media-regression.sh"]
+    fn selected_webm_falls_back_when_youtube_range_is_rejected() {
+        let path = selected_manual_webm_path();
+        let media = selected_manual_webm_bytes(&path);
+        let video_media = Arc::clone(&media);
+        let audio_media = Arc::clone(&media);
+        let video_server = TestHttpServer::spawn(move |_index, _request, stream| {
+            respond_with_full_body(stream, &video_media);
+        });
+        let audio_server = TestHttpServer::spawn(move |_index, _request, stream| {
+            respond_with_full_body(stream, &audio_media);
+        });
+        let mut streams = direct_streams(video_server.url.clone(), audio_server.url.clone());
+        let resolver = Arc::new(FakeResolver::new(streams.clone()));
+
+        let mut demuxer = build_demuxer_from_direct_streams(
+            "http://youtube.test/watch",
+            &mut streams,
+            test_source_config(),
+            test_prefetch_config(),
+            resolver,
+            DemuxerOptions::default(),
+        )
+        .expect("selected YouTube fallback demuxer opens");
+
+        assert!(matches!(
+            demuxer.seekability(),
+            DemuxSeekability::NotSeekable {
+                reason: TimelineNotSeekableReason::SourceNotSeekable
+            }
+        ));
+        assert!(
+            demuxer
+                .next_packet()
+                .expect("selected fallback reads packets")
+                .is_some()
+        );
+    }
+
+    #[test]
+    #[ignore = "manual media regression; use scripts/media-regression.sh"]
+    fn selected_webm_live_source_skips_youtube_range_probe() {
+        let path = selected_manual_webm_path();
+        let media = selected_manual_webm_bytes(&path);
+        let video_media = Arc::clone(&media);
+        let audio_media = Arc::clone(&media);
+        let video_server = TestHttpServer::spawn(move |_index, _request, stream| {
+            respond_with_full_body(stream, &video_media);
+        });
+        let audio_server = TestHttpServer::spawn(move |_index, _request, stream| {
+            respond_with_full_body(stream, &audio_media);
+        });
+        let mut streams = direct_streams(video_server.url.clone(), audio_server.url.clone());
+        streams.live = true;
+        streams.video.live = true;
+        streams.audio.live = true;
+        let resolver = Arc::new(FakeResolver::new(streams.clone()));
+
+        let demuxer = build_demuxer_from_direct_streams(
+            "http://youtube.test/watch",
+            &mut streams,
+            test_source_config(),
+            test_prefetch_config(),
+            resolver,
+            DemuxerOptions::default(),
+        )
+        .expect("selected YouTube live demuxer opens");
+
+        assert!(matches!(
+            demuxer.seekability(),
+            DemuxSeekability::NotSeekable { .. }
+        ));
+        assert!(
+            video_server
+                .requests()
+                .iter()
+                .all(|request| !request.headers.contains_key("range"))
+        );
     }
 }

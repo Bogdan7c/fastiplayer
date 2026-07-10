@@ -13,15 +13,6 @@ readonly DEFAULT_DURATION_SECONDS=20
 # Лог-фильтр включает info markers и debug summary с `drops_decoder_starvation`.
 readonly DEFAULT_SMOKE_RUST_LOG="info,player_core::worker::runtime_publish=debug"
 
-# VP9 Profile 0 SDR 4K60 должен идти через текущий hardware zero-copy path.
-readonly VP9_PROFILE0_ASSET="test-assets/VP9/4k60fps/DVTRklHhEsU_2160p60_sdr_vp9_profile0_opus.mkv"
-
-# AV1 4K60 нужен для проверки auto fallback и hardware-only typed rejection.
-readonly AV1_4K60_ASSET="<MEDIA_DIR>/av1-4k60-sdr.mp4"
-
-# H.264 MP4 4K60 нужен для проверки software host-upload без start-code regressions.
-readonly H264_4K60_MP4_ASSET="test-assets/H264/4k60fps/DVTRklHhEsU_2160p60_sdr_h264_main_l52_bframes_aac.mp4"
-
 # Positive playback scenarios не должны встречать эти известные fatal/regression markers.
 readonly POSITIVE_FORBIDDEN_REGEX="InvalidData|Error parsing OBU data|No start code|resource table is full|Decoder thread disconnected|panicked at|thread .* panicked|panic in a function that cannot unwind|UnsupportedRenderFormat|missing render resources|PlayerEvent::FatalError"
 
@@ -44,8 +35,17 @@ readonly RUSTIPLAYER_BINARY="${REPO_ROOT}/target/release/rustiplayer"
 # Пользовательский override оставлен отдельной переменной, чтобы обычный RUST_LOG не ломал checks.
 readonly SMOKE_RUST_LOG="${RUSTIPLAYER_SMOKE_RUST_LOG:-${DEFAULT_SMOKE_RUST_LOG}}"
 
-# Режим запуска: full, software-only или probe-only.
-smoke_mode="full"
+# Режим запуска задаётся явно, чтобы script не угадывал media matrix пользователя.
+smoke_mode=""
+
+# Явно выбранный VP9 Profile 0 local path для hardware и software stress scenarios.
+vp9_profile0_path=""
+
+# Явно выбранный AV1 local path для auto fallback и hardware rejection scenarios.
+av1_path=""
+
+# Явно выбранный H.264 ISO BMFF local path для software host-upload scenario.
+h264_path=""
 
 # Длительность одного playback-сценария в секундах.
 duration_seconds="${DEFAULT_DURATION_SECONDS}"
@@ -88,6 +88,15 @@ Options:
   --duration SECONDS
       Per-scenario playback timeout. Default: 20.
 
+  --vp9 FILE
+      VP9 Profile 0 SDR file for full/software-only scenarios; a 4K60 stream is recommended.
+
+  --av1 FILE
+      AV1 SDR file for full mode; it must exercise software fallback and hardware rejection.
+
+  --h264 FILE
+      H.264 ISO BMFF file for full/software-only software host-upload scenario.
+
   --dry-run
       Print planned commands and scenario checks without executing them.
 
@@ -112,6 +121,12 @@ print_command() {
 
     # Завершаем строку команды.
     printf '\n' >&2
+}
+
+# Функция печатает обязательный статус, когда runner не получил required selection.
+print_not_run_missing_selection() {
+    # Контракт отличает отсутствие выбора от failed playback assertion.
+    printf 'NOT RUN: missing selection\n' >&2
 }
 
 # Функция проверяет наличие внешней команды перед runtime-прогоном.
@@ -236,6 +251,30 @@ parse_arguments() {
                 duration_seconds="$2"
                 shift 2
                 ;;
+            --vp9)
+                if (($# < 2)); then
+                    print_error "--vp9 требует путь к media file"
+                    exit 1
+                fi
+                vp9_profile0_path="$2"
+                shift 2
+                ;;
+            --av1)
+                if (($# < 2)); then
+                    print_error "--av1 требует путь к media file"
+                    exit 1
+                fi
+                av1_path="$2"
+                shift 2
+                ;;
+            --h264)
+                if (($# < 2)); then
+                    print_error "--h264 требует путь к media file"
+                    exit 1
+                fi
+                h264_path="$2"
+                shift 2
+                ;;
             *)
                 print_error "неизвестный аргумент '$1'"
                 exit 1
@@ -337,18 +376,74 @@ reject_log_regex() {
     fi
 }
 
-# Функция проверяет, что asset существует перед реальным playback.
+# Функция проверяет, что explicit selected asset существует перед реальным playback.
 require_asset_file() {
-    # Относительный путь к asset-у передаётся первым аргументом.
-    local asset_relative_path="$1"
+    # Выбранный пользователем путь к asset-у передаётся первым аргументом.
+    local asset_path="$1"
 
-    # Абсолютный путь строится от корня repo.
-    local asset_path="${REPO_ROOT}/${asset_relative_path}"
-
-    # Отсутствующий asset делает сценарий невалидным, а не skipped.
+    # Нечитаемый или несуществующий selected file остаётся failed local acceptance.
     if [[ ! -f "${asset_path}" ]]; then
-        print_error "media asset не найден: ${asset_relative_path}"
+        print_error "выбранный media file не найден: ${asset_path}"
         exit 1
+    fi
+}
+
+# Функция нормализует existing selected path до абсолютного до смены cwd на repo root.
+absolute_selected_path() {
+    # Пользовательский path передаётся первым аргументом.
+    local selected_path="$1"
+
+    # dirname/basename сохраняют filename с пробелами без shell word splitting.
+    local selected_directory
+    selected_directory="$(cd -- "$(dirname -- "${selected_path}")" && pwd -P)"
+
+    # Возвращаем canonical directory и исходное basename без угадывания media файла.
+    printf '%s/%s\n' "${selected_directory}" "$(basename -- "${selected_path}")"
+}
+
+# Функция проверяет, что mode получил все required explicit paths до expensive Cargo шагов.
+validate_media_selection() {
+    # Полное отсутствие выбора означает, что пользователь не запросил scenario.
+    if [[ -z "${smoke_mode}" && -z "${vp9_profile0_path}" && -z "${av1_path}" && -z "${h264_path}" ]]; then
+        print_not_run_missing_selection
+        exit "${SUCCESS_EXIT_CODE}"
+    fi
+
+    # Path без mode не даёт script-у права угадывать scenario matrix.
+    if [[ -z "${smoke_mode}" ]]; then
+        print_not_run_missing_selection
+        exit 1
+    fi
+
+    # Probe-only не использует реальные media files.
+    if [[ "${smoke_mode}" == "probe-only" ]]; then
+        return
+    fi
+
+    # Full matrix требует один path на каждое distinct media property.
+    if [[ "${smoke_mode}" == "full" && ( -z "${vp9_profile0_path}" || -z "${av1_path}" || -z "${h264_path}" ) ]]; then
+        print_not_run_missing_selection
+        exit 1
+    fi
+
+    # Software-only использует H.264 и VP9, но не AV1 hardware rejection matrix.
+    if [[ "${smoke_mode}" == "software-only" && ( -z "${vp9_profile0_path}" || -z "${h264_path}" ) ]]; then
+        print_not_run_missing_selection
+        exit 1
+    fi
+
+    # Проверяем selected paths здесь, чтобы invalid input не маскировался Cargo failure-ом.
+    if [[ -n "${vp9_profile0_path}" ]]; then
+        require_asset_file "${vp9_profile0_path}"
+        vp9_profile0_path="$(absolute_selected_path "${vp9_profile0_path}")"
+    fi
+    if [[ -n "${av1_path}" ]]; then
+        require_asset_file "${av1_path}"
+        av1_path="$(absolute_selected_path "${av1_path}")"
+    fi
+    if [[ -n "${h264_path}" ]]; then
+        require_asset_file "${h264_path}"
+        h264_path="$(absolute_selected_path "${h264_path}")"
     fi
 }
 
@@ -384,11 +479,8 @@ run_playback_scenario() {
     # Public config preference для сценария.
     local backend_preference="$2"
 
-    # Относительный путь к media asset-у.
-    local asset_relative_path="$3"
-
-    # Абсолютный путь к media asset-у.
-    local asset_path="${REPO_ROOT}/${asset_relative_path}"
+    # Явно выбранный путь к media asset-у.
+    local asset_path="$3"
 
     # Dry-run печатает команду и не требует существования binary/logs.
     if [[ "${dry_run}" == "true" ]]; then
@@ -406,9 +498,6 @@ run_playback_scenario() {
         last_scenario_log="<dry-run>/logs/${scenario_name}.log"
         return
     fi
-
-    # Отсутствующий asset должен упасть до запуска GUI.
-    require_asset_file "${asset_relative_path}"
 
     # Release binary должен быть результатом предыдущего cargo build шага.
     if [[ ! -x "${RUSTIPLAYER_BINARY}" ]]; then
@@ -430,7 +519,7 @@ run_playback_scenario() {
 
     # Сообщаем, какой сценарий стартует.
     printf '\n==> playback scenario: %s\n' "${scenario_name}" >&2
-    printf '    asset: %s\n' "${asset_relative_path}" >&2
+    printf '    selected path: %s\n' "${asset_path}" >&2
     printf '    backend preference: %s\n' "${backend_preference}" >&2
     printf '    log: %s\n' "${log_path}" >&2
 
@@ -470,8 +559,8 @@ run_positive_playback_scenario() {
     # Public backend preference.
     local backend_preference="$2"
 
-    # Media asset.
-    local asset_relative_path="$3"
+    # Явно выбранный media path.
+    local selected_media_path="$3"
 
     # Ожидаемый `VideoPipelinePlan::diagnostic_label`.
     local expected_plan="$4"
@@ -483,7 +572,7 @@ run_positive_playback_scenario() {
     local stress_check="$6"
 
     # Запускаем сценарий или печатаем dry-run команду.
-    run_playback_scenario "${scenario_name}" "${backend_preference}" "${asset_relative_path}"
+    run_playback_scenario "${scenario_name}" "${backend_preference}" "${selected_media_path}"
 
     # Dry-run не создаёт log, поэтому marker checks только описываем.
     if [[ "${dry_run}" == "true" ]]; then
@@ -527,7 +616,7 @@ run_positive_playback_scenario() {
 # Функция проверяет expected typed rejection для hardware-only AV1.
 run_hardware_av1_rejection_scenario() {
     # Сценарий должен использовать public hardware preference.
-    run_playback_scenario "hardware-av1-4k60-reject" "hardware" "${AV1_4K60_ASSET}"
+    run_playback_scenario "hardware-av1-4k60-reject" "hardware" "${av1_path}"
 
     # Dry-run не создаёт log, поэтому marker checks только описываем.
     if [[ "${dry_run}" == "true" ]]; then
@@ -596,7 +685,7 @@ run_full_scenarios() {
     run_positive_playback_scenario \
         "auto-vp9-profile0-4k60" \
         "auto" \
-        "${VP9_PROFILE0_ASSET}" \
+        "${vp9_profile0_path}" \
         "vaapi-dmabuf-wgpu" \
         "false" \
         "false"
@@ -605,7 +694,7 @@ run_full_scenarios() {
     run_positive_playback_scenario \
         "auto-av1-4k60-fallback" \
         "auto" \
-        "${AV1_4K60_ASSET}" \
+        "${av1_path}" \
         "ffmpeg-host-upload-wgpu" \
         "true" \
         "false"
@@ -614,7 +703,7 @@ run_full_scenarios() {
     run_positive_playback_scenario \
         "software-h264-mp4-4k60" \
         "software" \
-        "${H264_4K60_MP4_ASSET}" \
+        "${h264_path}" \
         "ffmpeg-host-upload-wgpu" \
         "false" \
         "false"
@@ -626,7 +715,7 @@ run_full_scenarios() {
     run_positive_playback_scenario \
         "software-vp9-profile0-4k60-stress" \
         "software" \
-        "${VP9_PROFILE0_ASSET}" \
+        "${vp9_profile0_path}" \
         "ffmpeg-host-upload-wgpu" \
         "false" \
         "true"
@@ -638,7 +727,7 @@ run_software_only_scenarios() {
     run_positive_playback_scenario \
         "software-h264-mp4-4k60" \
         "software" \
-        "${H264_4K60_MP4_ASSET}" \
+        "${h264_path}" \
         "ffmpeg-host-upload-wgpu" \
         "false" \
         "false"
@@ -647,7 +736,7 @@ run_software_only_scenarios() {
     run_positive_playback_scenario \
         "software-vp9-profile0-4k60-stress" \
         "software" \
-        "${VP9_PROFILE0_ASSET}" \
+        "${vp9_profile0_path}" \
         "ffmpeg-host-upload-wgpu" \
         "false" \
         "true"
@@ -657,6 +746,9 @@ run_software_only_scenarios() {
 main() {
     # Разбираем аргументы до любых проверок окружения.
     parse_arguments "$@"
+
+    # Required local paths валидируются до probe/build, чтобы missing selection был однозначным.
+    validate_media_selection
 
     # Все относительные пути сценариев считаются от корня repo.
     cd "${REPO_ROOT}"

@@ -1,117 +1,88 @@
-use std::path::{Path, PathBuf};
+mod support;
+
+use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use codec_core::{VideoCodec, parse_hevc_decoder_configuration_record};
 use media_core::{
     DemuxReadEvent, DemuxSeekRequest, Demuxer, Packet, PacketKeyframe, TrackId, TrackInfo,
     TrackKind,
 };
+use support::manual_media::{report_selected_media, selected_media_path};
 use symphonia_demux::SymphoniaDemuxer;
 
 #[test]
-fn h265_ios_mov_decode_point_before_seek_starts_on_sync_sample() -> Result<()> {
-    let fixture_name = "4k60fps/ios-hevc-main10-aac-4k60.mov";
-    let Some(mut demuxer) = open_optional_h265_fixture(fixture_name)? else {
-        return Ok(());
-    };
-    let video_track = first_h265_video_track(&mut demuxer)
-        .with_context(|| format!("{fixture_name}: expected H.265 video track"))?;
+#[ignore = "manual media regression; use scripts/media-regression.sh"]
+fn h265_iso_bmff_decode_point_before_starts_on_sync_sample() -> Result<()> {
+    let path = selected_media_path()?;
+    let mut demuxer = open_h265_media(&path, "h265-mov-sync-sample")?;
+    let video_track =
+        first_h265_video_track(&demuxer).context("selected file has no H.265 video track")?;
     let target = Duration::from_secs(8);
-
-    let seek_result = demuxer
-        .seek_with_request(DemuxSeekRequest::decode_point_before(target))
-        .with_context(|| {
-            format!("{fixture_name}: DecodePointBefore seek should find MP4 sync sample")
-        })?;
-    let first_video_packet = collect_video_packets(&mut demuxer, video_track.id, 1)?
+    let seek_result = demuxer.seek_with_request(DemuxSeekRequest::decode_point_before(target))?;
+    let first_packet = collect_video_packets(&mut demuxer, video_track.id, 1)?
         .into_iter()
         .next()
-        .with_context(|| format!("{fixture_name}: expected post-seek video packet"))?;
-
-    assert!(
+        .context("selected H.265 stream has no packet after seek")?;
+    ensure!(
         seek_result.actual_position.as_duration() <= target,
-        "{fixture_name}: DecodePointBefore actual position must not pass target"
+        "H.265 sync seek passed target"
     );
-    assert_eq!(
-        seek_result.actual_position.as_duration(),
-        first_video_packet.pts,
-        "{fixture_name}: seek actual should match verified first video packet"
+    ensure!(
+        seek_result.actual_position.as_duration() == first_packet.pts,
+        "H.265 sync seek actual position does not match first packet PTS"
     );
-    assert_eq!(
-        first_video_packet.keyframe,
-        PacketKeyframe::Keyframe,
-        "{fixture_name}: first video packet after seek should be proven HEVC decode-start"
+    ensure!(
+        first_packet.keyframe == PacketKeyframe::Keyframe,
+        "H.265 sync seek did not start on a proven keyframe"
     );
-    // RC1: seek должен якориться на БЛИЖАЙШИЙ sync sample перед target (iOS HEVC GOP ~1 c),
-    // а не на keyframe за несколько секунд раньше из-за избыточного 5-секундного pre-roll.
-    assert!(
+    ensure!(
         seek_result.actual_position.as_duration()
             >= target.saturating_sub(Duration::from_millis(1_500)),
-        "{fixture_name}: DecodePointBefore должен якориться на ближайший keyframe перед target, \
-         а не на дальний GOP (actual={:?}, target={target:?})",
-        seek_result.actual_position.as_duration(),
+        "H.265 sync seek selected a distant GOP"
     );
-
     Ok(())
 }
 
 #[test]
-fn h265_ios_mov_track_exposes_hvcc_codec_private() -> Result<()> {
-    let fixture_name = "4k60fps/ios-hevc-main10-aac-4k60.mov";
-    let Some(mut demuxer) = open_optional_h265_fixture(fixture_name)? else {
-        return Ok(());
-    };
-    let video_track = first_h265_video_track(&mut demuxer)
-        .with_context(|| format!("{fixture_name}: expected H.265 video track"))?;
+#[ignore = "manual media regression; use scripts/media-regression.sh"]
+fn h265_iso_bmff_track_exposes_hvcc_codec_private() -> Result<()> {
+    let path = selected_media_path()?;
+    let demuxer = open_h265_media(&path, "h265-hvcc")?;
+    let video_track =
+        first_h265_video_track(&demuxer).context("selected file has no H.265 video track")?;
     let codec_private = video_track
         .codec_private
         .as_deref()
-        .with_context(|| format!("{fixture_name}: expected H.265 codec_private/hvcC"))?;
-
+        .context("selected H.265 track has no hvcC codec private")?;
     parse_hevc_decoder_configuration_record(codec_private)
-        .with_context(|| format!("{fixture_name}: codec_private should be hvcC"))?;
-
+        .context("selected H.265 codec private is not hvcC")?;
     Ok(())
 }
 
 #[test]
-fn h265_mkv_decode_point_before_seek_uses_near_cue_anchor() -> Result<()> {
-    let fixture_name = "4k60fps/LXb3EKWsInQ_2160p60_sdr_hevc_main_8bit_mkv_118mbps_aac_20s.mkv";
-
+#[ignore = "manual media regression; use scripts/media-regression.sh"]
+fn h265_matroska_cue_seek_uses_near_decode_anchor() -> Result<()> {
+    let path = selected_media_path()?;
     for target in [
         Duration::from_secs(3),
         Duration::from_secs(5),
         Duration::from_secs(10),
     ] {
-        assert_h265_decode_point_before_uses_near_mkv_cue(fixture_name, target)?;
+        assert_h265_decode_point_before_uses_near_mkv_cue(&path, target)?;
     }
-
     Ok(())
 }
 
-fn open_h265_fixture(fixture_name: &str) -> Result<SymphoniaDemuxer> {
-    let fixture_path = h265_fixture_path(fixture_name);
-    SymphoniaDemuxer::from_file(&fixture_path)
-        .with_context(|| format!("open H.265 fixture {}", fixture_path.display()))
+fn open_h265_media(path: &Path, scenario: &str) -> Result<SymphoniaDemuxer> {
+    let demuxer = SymphoniaDemuxer::from_file(path)
+        .with_context(|| format!("open selected H.265 media: {}", path.display()))?;
+    report_selected_media(scenario, path, demuxer.tracks())?;
+    Ok(demuxer)
 }
 
-fn open_optional_h265_fixture(fixture_name: &str) -> Result<Option<SymphoniaDemuxer>> {
-    let fixture_path = h265_fixture_path(fixture_name);
-    if !fixture_path.exists() {
-        eprintln!(
-            "skipping H.265 fixture {fixture_name}: {} is absent",
-            fixture_path.display()
-        );
-        return Ok(None);
-    }
-
-    SymphoniaDemuxer::from_file(&fixture_path)
-        .with_context(|| format!("open H.265 fixture {}", fixture_path.display()))
-        .map(Some)
-}
-
-fn first_h265_video_track(demuxer: &mut SymphoniaDemuxer) -> Option<TrackInfo> {
+fn first_h265_video_track(demuxer: &SymphoniaDemuxer) -> Option<TrackInfo> {
     demuxer
         .tracks()
         .iter()
@@ -122,81 +93,51 @@ fn first_h265_video_track(demuxer: &mut SymphoniaDemuxer) -> Option<TrackInfo> {
         .cloned()
 }
 
-fn assert_h265_decode_point_before_uses_near_mkv_cue(
-    fixture_name: &str,
-    target: Duration,
-) -> Result<()> {
-    let mut demuxer = open_h265_fixture(fixture_name)?;
-    let video_track = first_h265_video_track(&mut demuxer)
-        .with_context(|| format!("{fixture_name}: expected H.265 video track"))?;
-
-    let seek_result = demuxer
-        .seek_with_request(DemuxSeekRequest::decode_point_before(target))
-        .with_context(|| {
-            format!("{fixture_name}: DecodePointBefore seek should use Matroska video cue")
-        })?;
-    let first_video_packet = collect_video_packets(&mut demuxer, video_track.id, 1)?
+fn assert_h265_decode_point_before_uses_near_mkv_cue(path: &Path, target: Duration) -> Result<()> {
+    let mut demuxer = open_h265_media(path, "h265-mkv-cue")?;
+    let video_track =
+        first_h265_video_track(&demuxer).context("selected file has no H.265 video track")?;
+    let seek_result = demuxer.seek_with_request(DemuxSeekRequest::decode_point_before(target))?;
+    let first_packet = collect_video_packets(&mut demuxer, video_track.id, 1)?
         .into_iter()
         .next()
-        .with_context(|| format!("{fixture_name}: expected post-seek video packet"))?;
-
-    assert!(
+        .context("selected H.265 stream has no packet after cue seek")?;
+    ensure!(
         seek_result.actual_position.as_duration() <= target,
-        "{fixture_name}: DecodePointBefore actual position must not pass target"
+        "H.265 cue seek passed target"
     );
-    assert_eq!(
-        seek_result.actual_position.as_duration(),
-        first_video_packet.pts,
-        "{fixture_name}: seek actual should match verified first video packet"
+    ensure!(
+        seek_result.actual_position.as_duration() == first_packet.pts,
+        "H.265 cue seek actual position does not match first packet PTS"
     );
-    assert_eq!(
-        first_video_packet.keyframe,
-        PacketKeyframe::Keyframe,
-        "{fixture_name}: first video packet after seek should be proven HEVC decode-start"
+    ensure!(
+        first_packet.keyframe == PacketKeyframe::Keyframe,
+        "H.265 cue seek did not start on a proven keyframe"
     );
-    assert!(
+    ensure!(
         seek_result.actual_position.as_duration()
             >= target.saturating_sub(Duration::from_millis(2_500)),
-        "{fixture_name}: MKV DecodePointBefore должен выбрать ближайший cue перед target, \
-         а не старый 5s backoff (actual={:?}, target={target:?})",
-        seek_result.actual_position.as_duration(),
+        "H.265 cue seek selected a distant anchor"
     );
-
     Ok(())
 }
 
 fn collect_video_packets(
     demuxer: &mut SymphoniaDemuxer,
     video_track_id: TrackId,
-    max_video_packets: usize,
+    maximum_packets: usize,
 ) -> Result<Vec<Packet>> {
-    let mut video_packets = Vec::new();
-
-    while video_packets.len() < max_video_packets {
+    let mut packets = Vec::new();
+    while packets.len() < maximum_packets {
         match demuxer.next_event()? {
             DemuxReadEvent::Packet(packet)
                 if packet.kind == TrackKind::Video && packet.track_id == video_track_id =>
             {
-                video_packets.push(packet);
+                packets.push(packet)
             }
             DemuxReadEvent::Packet(_) | DemuxReadEvent::TracksChanged(_) => {}
             DemuxReadEvent::EndOfStream => break,
         }
     }
-
-    Ok(video_packets)
-}
-
-fn h265_fixture_path(fixture_name: &str) -> PathBuf {
-    repo_root()
-        .join("test-assets")
-        .join("h265")
-        .join(fixture_name)
-}
-
-fn repo_root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("symphonia-demux crate must live under crates/")
+    Ok(packets)
 }

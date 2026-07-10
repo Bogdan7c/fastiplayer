@@ -1084,21 +1084,6 @@ mod tests {
         assert!(cue_index.is_none());
     }
 
-    #[test]
-    fn extracts_external_cues_from_h265_mkv_fixture() {
-        let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(
-            "../../test-assets/h265/4k60fps/LXb3EKWsInQ_2160p60_sdr_hevc_main_8bit_mkv_118mbps_aac_20s.mkv",
-        );
-
-        let cue_index =
-            extract_cue_index_from_file(&fixture_path).expect("real H.265 MKV cues should parse");
-
-        assert_eq!(
-            cue_index.nearest_cue_before_or_at(TrackId::new(1), Duration::from_millis(9_999),),
-            Some(Duration::from_millis(8_045))
-        );
-    }
-
     fn master(id: u64, children: Vec<Vec<u8>>) -> Vec<u8> {
         let payload = children.into_iter().flatten().collect::<Vec<_>>();
         element(id, &payload)

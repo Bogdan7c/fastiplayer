@@ -25,11 +25,10 @@ struct Sample {
 }
 
 fn main() -> Result<()> {
-    let root = repository_root();
     let source_path = std::env::args()
         .nth(1)
         .map(PathBuf::from)
-        .unwrap_or_else(|| root.join("test-assets/audio/music_sample.wav"));
+        .context("usage: cargo run -p audio-timestretch --example fft_geometry_probe --release -- <audio-file>")?;
     let sample = decode(&source_path)?;
     let input_secs =
         (sample.samples.len() / sample.channels as usize) as f64 / sample.sample_rate as f64;
@@ -97,14 +96,6 @@ fn per_channel_deltas<'a>(samples: &'a [f32], channels: usize) -> impl Iterator<
         .windows(channels * 2)
         .step_by(channels)
         .flat_map(move |w| (0..channels).map(move |c| (w[channels + c] - w[c]).abs()))
-}
-
-fn repository_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("crate должен лежать в workspace/crates")
-        .to_path_buf()
 }
 
 fn decode(path: &Path) -> Result<Sample> {
