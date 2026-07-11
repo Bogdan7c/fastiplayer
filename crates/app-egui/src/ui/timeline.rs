@@ -288,8 +288,11 @@ pub enum TimelineAction {
     /// Drag frame обновляет latest target live scrub-а.
     PreviewLiveScrub(MediaTime),
 
-    /// Release завершает active live scrub без ordinary seek command.
-    EndLiveScrub(MediaTime),
+    /// Короткий click завершает active live scrub точным commit-ом в release target.
+    EndLiveScrubAtLatestTarget(MediaTime),
+
+    /// Release после drag фиксирует последний действительно показанный preview frame.
+    EndLiveScrubAtVisiblePreview(MediaTime),
 
     /// Focus/cancel закрывает active live scrub без нового target-а.
     CancelLiveScrub,
@@ -475,7 +478,12 @@ pub fn map_timeline_interaction(
         state.clear_transient_drag();
         state.clear_live_scrub_gesture();
         if let Some(position) = release_position {
-            actions.push(TimelineAction::EndLiveScrub(position));
+            let release_action = if input.drag_stopped {
+                TimelineAction::EndLiveScrubAtVisiblePreview(position)
+            } else {
+                TimelineAction::EndLiveScrubAtLatestTarget(position)
+            };
+            actions.push(release_action);
         } else {
             actions.push(TimelineAction::CancelLiveScrub);
         }
@@ -1025,7 +1033,9 @@ mod tests {
         );
         assert_eq!(
             end.actions,
-            vec![TimelineAction::EndLiveScrub(MediaTime::from_secs(90))]
+            vec![TimelineAction::EndLiveScrubAtVisiblePreview(
+                MediaTime::from_secs(90)
+            )]
         );
         assert!(!state.has_active_live_scrub_gesture());
         assert!(
@@ -1033,6 +1043,49 @@ mod tests {
                 .iter()
                 .all(|action| !matches!(action, TimelineAction::CommitDragSeek(_)))
         );
+    }
+
+    /// Live mode не должен подменять координату короткого click-а видимым keyframe preview.
+    #[test]
+    fn live_scrub_click_releases_at_exact_latest_target() {
+        let timeline = seekable_timeline();
+        let mut state = TimelineUiState::default();
+
+        let pointer_down = super::map_timeline_interaction(
+            &timeline,
+            &mut state,
+            Some(seekable_bounds()),
+            TimelinePointerInput {
+                pointer_down_on_timeline: true,
+                pointer_fraction: Some(0.25),
+                ..TimelinePointerInput::default()
+            },
+            true,
+        );
+        assert_eq!(
+            pointer_down.actions,
+            vec![TimelineAction::BeginLiveScrub(MediaTime::from_secs(25))]
+        );
+
+        let click = super::map_timeline_interaction(
+            &timeline,
+            &mut state,
+            Some(seekable_bounds()),
+            TimelinePointerInput {
+                clicked: true,
+                pointer_fraction: Some(0.25),
+                ..TimelinePointerInput::default()
+            },
+            true,
+        );
+
+        assert_eq!(
+            click.actions,
+            vec![TimelineAction::EndLiveScrubAtLatestTarget(
+                MediaTime::from_secs(25)
+            )]
+        );
+        assert!(!state.has_active_live_scrub_gesture());
     }
 
     /// Live-scrub enable switch влияет на новые gestures, но не меняет уже захваченный drag.
@@ -1087,7 +1140,9 @@ mod tests {
         );
         assert_eq!(
             end_after_disable.actions,
-            vec![TimelineAction::EndLiveScrub(MediaTime::from_secs(80))]
+            vec![TimelineAction::EndLiveScrubAtVisiblePreview(
+                MediaTime::from_secs(80)
+            )]
         );
         assert!(!state.has_active_live_scrub_gesture());
     }

@@ -49,7 +49,27 @@ pub(super) fn timeline_command_from_action(
         )),
         TimelineAction::BeginLiveScrub(_)
         | TimelineAction::PreviewLiveScrub(_)
-        | TimelineAction::EndLiveScrub(_)
+        | TimelineAction::EndLiveScrubAtLatestTarget(_)
+        | TimelineAction::EndLiveScrubAtVisiblePreview(_)
+        | TimelineAction::CancelLiveScrub => None,
+    }
+}
+
+/// Возвращает player-owned commit policy для конкретного release intent-а timeline.
+pub(super) const fn live_scrub_release_policy_from_action(
+    action: TimelineAction,
+) -> Option<ScrubCommitPolicy> {
+    match action {
+        TimelineAction::EndLiveScrubAtLatestTarget(_) => {
+            Some(ScrubCommitPolicy::CommitLatestTarget)
+        }
+        TimelineAction::EndLiveScrubAtVisiblePreview(_) => {
+            Some(ScrubCommitPolicy::CommitVisiblePreview)
+        }
+        TimelineAction::ClickSeek(_)
+        | TimelineAction::CommitDragSeek(_)
+        | TimelineAction::BeginLiveScrub(_)
+        | TimelineAction::PreviewLiveScrub(_)
         | TimelineAction::CancelLiveScrub => None,
     }
 }
@@ -444,7 +464,10 @@ impl AppState {
                     },
                 );
             }
-            TimelineAction::EndLiveScrub(position) => {
+            TimelineAction::EndLiveScrubAtLatestTarget(position)
+            | TimelineAction::EndLiveScrubAtVisiblePreview(position) => {
+                let commit_policy = live_scrub_release_policy_from_action(action)
+                    .expect("release action всегда содержит typed scrub commit policy");
                 if let Some(target) = self
                     .timeline_ui_state
                     .live_scrub_release_dispatch_target(Instant::now(), position)
@@ -465,11 +488,10 @@ impl AppState {
                     action,
                     TimelineCommandRoute::LiveScrubEnd,
                     match self.timeline_ui_state.live_scrub_diagnostics() {
-                        Some(live_scrub) => PlayerCommand::end_live_scrub(
-                            ScrubCommitPolicy::CommitVisiblePreview,
-                            live_scrub,
-                        ),
-                        None => PlayerCommand::end_scrub(ScrubCommitPolicy::CommitVisiblePreview),
+                        Some(live_scrub) => {
+                            PlayerCommand::end_live_scrub(commit_policy, live_scrub)
+                        }
+                        None => PlayerCommand::end_scrub(commit_policy),
                     },
                 );
                 self.timeline_ui_state.clear_live_scrub_dispatch();

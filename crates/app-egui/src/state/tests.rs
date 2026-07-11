@@ -9,8 +9,8 @@ use frame_server_core::{
 use media_core::MediaTime;
 use player_core::{
     MediaOpenRequest, MediaSource, MediaSummary, PlaybackRate, PlaybackResumeIntent, PlaybackState,
-    PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerSnapshot, SeekCommitInfo,
-    SeekRequest,
+    PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerSnapshot, ScrubCommitPolicy,
+    SeekCommitInfo, SeekRequest,
 };
 use render_core::{
     ActiveColorPath, ColorPipelineSettings, HdrMetadataDiagnosticMarker,
@@ -29,7 +29,10 @@ use super::present_frame_cache::{
 use super::telemetry_panel::{
     TELEMETRY_PANEL_REFRESH_INTERVAL, TelemetryPanelCache, TelemetryPanelRow, TelemetryPanelState,
 };
-use super::ui_runtime::{playback_rate_command_from_action, timeline_command_from_action};
+use super::ui_runtime::{
+    live_scrub_release_policy_from_action, playback_rate_command_from_action,
+    timeline_command_from_action,
+};
 use super::{AppFrameContext, AppState};
 use crate::telemetry::Telemetry;
 use crate::ui::player_controls::ControlAction;
@@ -152,11 +155,31 @@ fn timeline_live_scrub_actions_do_not_map_to_exact_seek_route() {
     for action in [
         TimelineAction::BeginLiveScrub(target_position),
         TimelineAction::PreviewLiveScrub(target_position),
-        TimelineAction::EndLiveScrub(target_position),
+        TimelineAction::EndLiveScrubAtLatestTarget(target_position),
+        TimelineAction::EndLiveScrubAtVisiblePreview(target_position),
         TimelineAction::CancelLiveScrub,
     ] {
         assert_eq!(timeline_command_from_action(action), None);
     }
+}
+
+/// Короткий click и настоящий drag сохраняют разные release semantics на app boundary.
+#[test]
+fn timeline_live_scrub_release_actions_map_to_intended_commit_policies() {
+    let target_position = MediaTime::from_secs(12);
+
+    assert_eq!(
+        live_scrub_release_policy_from_action(TimelineAction::EndLiveScrubAtLatestTarget(
+            target_position,
+        )),
+        Some(ScrubCommitPolicy::CommitLatestTarget)
+    );
+    assert_eq!(
+        live_scrub_release_policy_from_action(TimelineAction::EndLiveScrubAtVisiblePreview(
+            target_position,
+        )),
+        Some(ScrubCommitPolicy::CommitVisiblePreview)
+    );
 }
 
 /// Playback-rate UI разрешён в Paused: скорость применится при следующем Play без движения времени.
