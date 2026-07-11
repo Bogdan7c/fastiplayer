@@ -21,7 +21,8 @@ use player_core::{
 use render_core::RenderDiagnostics;
 use render_wgpu_video::{
     DmaBufWgpuFrameMaterializer, HostPlanarWgpuFrameMaterializer, WgpuFrameTextureViewMaterializer,
-    WgpuFrameTextureViews, wrap_video_backend_for_wgpu_submission,
+    WgpuFrameTextureViews, WgpuSubmissionQueueBinding, WgpuSubmissionQueueRebindError,
+    wrap_video_backend_for_wgpu_submission,
 };
 use rustiplayer_config::FrameServerLiveScrubDecodeModeConfig;
 use rustiplayer_settings::{AppRouteApplyResult, MediaServiceRuntimeSettingsUpdate};
@@ -209,6 +210,9 @@ pub struct AppState {
     /// WGPU video materializer concrete backend-а; `player-core` его не видит.
     wgpu_frame_materializer: Option<Arc<dyn WgpuFrameTextureViewMaterializer>>,
 
+    /// Queue binding release path-а, переключаемый только controlled renderer recreation-ом.
+    wgpu_submission_queue_binding: Option<WgpuSubmissionQueueBinding>,
+
     /// Класс активного video backend-а, чтобы не пересоздавать pipeline без нужды.
     current_video_backend_kind: Option<VideoBackendKind>,
 
@@ -317,6 +321,7 @@ impl AppState {
             main_visual_override_state: MainVisualOverrideState::default(),
             timeline_inline_status: TimelineInlineStatusState::default(),
             wgpu_frame_materializer: None,
+            wgpu_submission_queue_binding: None,
             current_video_backend_kind: None,
             pending_video_backend_reselection: None,
             active_video_stream_requirement: None,

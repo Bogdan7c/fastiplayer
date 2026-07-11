@@ -9,6 +9,13 @@ pub(crate) trait SettingsRuntimeReconfigureHost {
     /// Синхронизирует внешний owner с committed config-ом перед owner-level apply.
     fn sync_committed_config_snapshot(&mut self, _snapshot: CommittedConfigSnapshot) {}
 
+    /// Транзакционно пересоздаёт renderer/surface path у shell lifecycle owner-а.
+    fn recreate_renderer(
+        &mut self,
+        previous: &RenderCommittedSettingsUpdate,
+        next: &RenderCommittedSettingsUpdate,
+    ) -> AppRouteApplyResult;
+
     /// Применяет typed player update через owner-level worker boundary.
     fn apply_player_runtime_settings(
         &mut self,
@@ -27,6 +34,14 @@ pub(crate) trait SettingsRuntimeReconfigureHost {
 pub(super) struct NoopSettingsRuntimeReconfigureHost;
 
 impl SettingsRuntimeReconfigureHost for NoopSettingsRuntimeReconfigureHost {
+    fn recreate_renderer(
+        &mut self,
+        _previous: &RenderCommittedSettingsUpdate,
+        _next: &RenderCommittedSettingsUpdate,
+    ) -> AppRouteApplyResult {
+        AppRouteApplyResult::Applied
+    }
+
     fn apply_player_runtime_settings(
         &mut self,
         update: &PlayerCommittedSettingsUpdate,
@@ -103,6 +118,15 @@ impl<A> SettingsRuntimeReconfigureHost for RenderOnlySettingsRuntimeAdapter<'_, 
 where
     A: RenderLiveSettingsAdapter,
 {
+    fn recreate_renderer(
+        &mut self,
+        previous: &RenderCommittedSettingsUpdate,
+        next: &RenderCommittedSettingsUpdate,
+    ) -> AppRouteApplyResult {
+        let mut host = NoopSettingsRuntimeReconfigureHost;
+        host.recreate_renderer(previous, next)
+    }
+
     fn apply_player_runtime_settings(
         &mut self,
         update: &PlayerCommittedSettingsUpdate,
@@ -372,14 +396,12 @@ impl SettingsRuntimeRouteAppliers {
                 Ok(Self::route_report(route, result, ApplyMechanism::InPlace))
             }
             RuntimeCommittedUpdate::RenderCommitted(update) => {
-                let result = self.apply_render_committed_update(&update);
-                let mechanism =
-                    if matches!(result, AppRouteApplyResult::DeferredTechnicalDebt { .. }) {
-                        ApplyMechanism::DeferredTechnicalDebt
-                    } else {
-                        ApplyMechanism::RendererRecreate
-                    };
-                Ok(Self::route_report(route, result, mechanism))
+                let result = self.apply_render_committed_update(&update, reconfigure_host);
+                Ok(Self::route_report(
+                    route,
+                    result,
+                    ApplyMechanism::RendererRecreate,
+                ))
             }
             RuntimeCommittedUpdate::Player(update) => {
                 Ok(self.apply_player_route(route, &update, reconfigure_host))
@@ -460,21 +482,23 @@ impl SettingsRuntimeRouteAppliers {
         combine_player_in_place_results([local_snapshot_result, player_result])
     }
 
-    /// Фиксирует committed render lifecycle snapshot без пересоздания renderer-а в S09.
+    /// Применяет committed render lifecycle snapshot только после успешного recreation commit-а.
     fn apply_render_committed_update(
         &mut self,
         update: &RenderCommittedSettingsUpdate,
+        reconfigure_host: &mut dyn SettingsRuntimeReconfigureHost,
     ) -> AppRouteApplyResult {
         let next_snapshot = RenderCommittedRuntimeSnapshot::from_update(update);
         if self.render_committed == next_snapshot {
             return AppRouteApplyResult::Noop;
         }
 
-        self.render_committed = next_snapshot;
-        AppRouteApplyResult::DeferredTechnicalDebt {
-            message: "Render lifecycle settings сохранены, но controlled renderer rebuild будет добавлен отдельной фазой"
-                .to_string(),
+        let previous_update = self.render_committed.to_update();
+        let result = reconfigure_host.recreate_renderer(&previous_update, update);
+        if result.is_success() {
+            self.render_committed = next_snapshot;
         }
+        result
     }
 
     fn apply_player_route(
@@ -758,6 +782,9 @@ fn combine_player_in_place_results(
             AppRouteApplyResult::Failed { message }
             | AppRouteApplyResult::PartialFailure { message }
             | AppRouteApplyResult::DeferredTechnicalDebt { message } => failures.push(message),
+            AppRouteApplyResult::RendererRecreationFailed { failure } => {
+                failures.push(format!("renderer recreation failed: {failure:?}"));
+            }
             AppRouteApplyResult::Conflict { baseline, current } => failures.push(format!(
                 "conflict: baseline {}, current {}",
                 baseline.value(),
@@ -847,6 +874,16 @@ impl RenderCommittedRuntimeSnapshot {
             tone_mapping: update.tone_mapping,
             vulkan: update.vulkan.clone(),
             opengles: update.opengles.clone(),
+        }
+    }
+
+    /// Восстанавливает typed payload предыдущей конфигурации для compensating rollback-а.
+    fn to_update(&self) -> RenderCommittedSettingsUpdate {
+        RenderCommittedSettingsUpdate {
+            profile: self.profile,
+            tone_mapping: self.tone_mapping,
+            vulkan: self.vulkan.clone(),
+            opengles: self.opengles.clone(),
         }
     }
 }

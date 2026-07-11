@@ -28,6 +28,7 @@ use crate::frame_prepare::render_frame;
 use crate::redraw_pacing::{
     BackgroundPollScheduler, RedrawControlAction, should_request_redraw_after_window_event,
 };
+use crate::renderer_recreation::RendererLifecycleCoordinator;
 use crate::settings_runtime::SettingsRuntime;
 use crate::startup_media::{InitialMedia, StartupMediaController};
 use crate::state::AppState;
@@ -62,6 +63,9 @@ pub(crate) struct AppShell {
 
     /// Scheduler idle wakeup-ов для shell background jobs.
     background_poll_scheduler: BackgroundPollScheduler,
+
+    /// Сериализатор renderer recreation и surface resize lifecycle-а.
+    renderer_lifecycle: RendererLifecycleCoordinator,
 }
 
 impl AppShell {
@@ -81,6 +85,7 @@ impl AppShell {
             startup_media: StartupMediaController::new(initial_media, startup_error),
             settings_runtime: SettingsRuntime::from_loaded_config(loaded_config)?,
             background_poll_scheduler: BackgroundPollScheduler::new(),
+            renderer_lifecycle: RendererLifecycleCoordinator::default(),
         })
     }
 
@@ -297,7 +302,8 @@ impl ApplicationHandler for AppShell {
 
             WindowEvent::Resized(PhysicalSize { width, height }) => {
                 debug!(width, height, "Изменение размера окна");
-                renderer.resize(width, height);
+                self.renderer_lifecycle
+                    .resize_renderer(renderer, width, height);
             }
 
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -332,6 +338,7 @@ impl ApplicationHandler for AppShell {
                     renderer,
                     app_state,
                     &mut self.settings_runtime,
+                    &mut self.renderer_lifecycle,
                 );
                 if frame_result.close_requested {
                     self.close_runtime_and_exit(

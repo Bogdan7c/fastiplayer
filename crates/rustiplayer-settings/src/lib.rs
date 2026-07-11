@@ -8,6 +8,8 @@
 mod application_contract;
 
 pub use application_contract::{
+    RendererRecreationApplyError, RendererRecreationApplyErrorKind, RendererRecreationFailure,
+    RendererRecreationRollbackError, RendererRecreationRollbackErrorKind,
     SettingApplicationContract, SettingApplyMechanism, SettingApplyTestScenario, SettingStateOwner,
     SettingsApplyFailure, SettingsApplyOutcome, SettingsBoundaryActivity,
     setting_application_contract,
@@ -467,6 +469,12 @@ pub enum AppRouteApplyResult {
     /// Route failed before applying the requested update.
     Failed { message: String },
 
+    /// Renderer recreation failed; apply/rollback causes остаются typed и раздельными.
+    RendererRecreationFailed {
+        /// Полная typed failure без string flattening owner boundary.
+        failure: RendererRecreationFailure,
+    },
+
     /// Runtime owner boundary временно занята; update не применён и не поставлен в очередь.
     RuntimeBusy {
         /// Активная non-interruptible operation.
@@ -546,6 +554,9 @@ impl AppRouteApplyReport {
                 ApplyRouteResult::PartialFailure { message }
             }
             AppRouteApplyResult::Failed { message } => ApplyRouteResult::Failed { message },
+            AppRouteApplyResult::RendererRecreationFailed { failure } => ApplyRouteResult::Failed {
+                message: renderer_recreation_failure_message(&failure),
+            },
             AppRouteApplyResult::RuntimeBusy { activity } => ApplyRouteResult::Failed {
                 message: format!(
                     "runtime boundary is busy ({activity:?}); settings update was not queued"
@@ -565,6 +576,23 @@ impl AppRouteApplyReport {
             mechanism: self.mechanism,
             affected_settings: self.affected_settings,
         }
+    }
+}
+
+/// Формирует UI/core diagnostic, сохраняя typed failure в project route report-е.
+fn renderer_recreation_failure_message(failure: &RendererRecreationFailure) -> String {
+    match failure {
+        SettingsApplyFailure::ApplyFailed { error, .. } => {
+            format!("renderer recreation {:?}: {}", error.kind, error.message)
+        }
+        SettingsApplyFailure::ApplyAndRollbackFailed {
+            apply_error,
+            rollback_error,
+            ..
+        } => format!(
+            "renderer recreation {:?}: {}; rollback {:?}: {}",
+            apply_error.kind, apply_error.message, rollback_error.kind, rollback_error.message
+        ),
     }
 }
 

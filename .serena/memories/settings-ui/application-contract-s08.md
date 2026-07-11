@@ -19,3 +19,10 @@
 - Retryable seek/scrub/pipeline busy проходит через `AppRouteApplyResult::RuntimeBusy` и player group report без hidden apply queue.
 - Event-scoped `start_paused` и seek-hotkey policy принимаются немедленно; codec/demux/network changes при active remote/local media используют controlled source reopen, а YouTube codec order выбирает первый поддержанный configured codec.
 - Renderer recreation не входит в S08B; cross-route persistence ordering и удаление transitional debt остаются задачей S08D.
+
+## Session 08C — controlled live renderer recreation (2026-07-11)
+
+- `RenderCommitted` больше не возвращает `DeferredTechnicalDebt`: shell-owned coordinator транзакционно recreates renderer/materializer, сериализуется с surface events и возвращает typed busy/apply/rollback failures.
+- Render committed snapshot меняется только после owner success; failure сохраняет old snapshot и допускает retry того же draft.
+- Typed lifecycle и release invariants находятся в `mem:render-video/controlled-renderer-recreation-s08c`.
+- Persistence-before-runtime и generic deferred cleanup остаются scoped задачей Session 08D.

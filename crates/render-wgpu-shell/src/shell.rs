@@ -16,7 +16,7 @@
 /// 2. Рендерим decoded video frame или чёрный фон
 /// 3. Рендерим egui overlay поверх видео
 /// 4. Present на экран
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -193,7 +193,57 @@ pub struct GpuContext {
 
     /// Формат surface, выбранный из поддерживаемых адаптером.
     pub surface_format: wgpu::TextureFormat,
+
+    /// Typed device-lost state, который callback WGPU публикует lifecycle owner-у.
+    device_lost: Arc<Mutex<Option<GpuDeviceLost>>>,
 }
+
+/// Доказанный WGPU device-lost cause без string flattening lifecycle state-а.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuDeviceLost {
+    /// Причина, сообщённая WGPU backend-ом.
+    pub reason: wgpu::DeviceLostReason,
+
+    /// Backend diagnostic message для логов и UI failure report-а.
+    pub message: String,
+}
+
+/// Ошибка ожидания старой GPU queue перед renderer commit-ом.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RendererGpuDrainError {
+    /// WGPU callback доказал потерю device-а.
+    DeviceLost(GpuDeviceLost),
+
+    /// GPU work не завершилась за bounded lifecycle timeout.
+    Timeout,
+
+    /// WGPU отклонил submission index при ожидании.
+    WrongSubmissionIndex,
+
+    /// Device-lost state mutex poisoned, поэтому lifecycle state недостоверен.
+    DeviceLostStatePoisoned,
+}
+
+impl std::fmt::Display for RendererGpuDrainError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DeviceLost(device_lost) => write!(
+                formatter,
+                "WGPU device lost ({:?}): {}",
+                device_lost.reason, device_lost.message
+            ),
+            Self::Timeout => formatter.write_str("ожидание старой GPU queue завершилось timeout"),
+            Self::WrongSubmissionIndex => {
+                formatter.write_str("WGPU отклонил submission index при ожидании GPU queue")
+            }
+            Self::DeviceLostStatePoisoned => {
+                formatter.write_str("device-lost lifecycle state poisoned")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RendererGpuDrainError {}
 
 impl GpuContext {
     /// Создаёт GPU контекст асинхронно через стандартный WGPU Vulkan instance.
@@ -258,6 +308,19 @@ impl GpuContext {
             .await
             .context("Не удалось создать wgpu device с video texture features")?;
 
+        let device_lost = Arc::new(Mutex::new(None));
+        let device_lost_callback_state = device_lost.clone();
+        device.set_device_lost_callback(move |reason, message| {
+            match device_lost_callback_state.lock() {
+                Ok(mut state) => {
+                    *state = Some(GpuDeviceLost { reason, message });
+                }
+                Err(_) => {
+                    tracing::error!("Не удалось записать WGPU device-lost state: mutex poisoned");
+                }
+            }
+        });
+
         let surface_caps = surface.get_capabilities(&adapter);
 
         // Предпочитаем 8-bit формат: текущий SDR/NV12 shader пишет обычный RGBA.
@@ -301,6 +364,7 @@ impl GpuContext {
             queue,
             surface_config,
             surface_format,
+            device_lost,
         })
     }
 
@@ -381,6 +445,50 @@ impl Renderer {
     #[must_use]
     pub const fn queue(&self) -> &wgpu::Queue {
         &self.gpu.queue
+    }
+
+    /// Возвращает live render snapshot, который candidate обязан сохранить при recreation.
+    #[must_use]
+    pub fn live_settings(&self) -> RenderLiveSettings {
+        self.video_renderer.live_settings().clone()
+    }
+
+    /// Дожидается завершения уже submitted GPU work перед заменой device/surface.
+    pub fn wait_for_gpu_idle(
+        &self,
+        timeout: Duration,
+    ) -> std::result::Result<(), RendererGpuDrainError> {
+        if let Some(device_lost) = self.device_lost_state()? {
+            return Err(RendererGpuDrainError::DeviceLost(device_lost));
+        }
+
+        let poll_result = self.gpu.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(timeout),
+        });
+
+        if let Some(device_lost) = self.device_lost_state()? {
+            return Err(RendererGpuDrainError::DeviceLost(device_lost));
+        }
+
+        match poll_result {
+            Ok(_) => Ok(()),
+            Err(wgpu::PollError::Timeout) => Err(RendererGpuDrainError::Timeout),
+            Err(wgpu::PollError::WrongSubmissionIndex(_, _)) => {
+                Err(RendererGpuDrainError::WrongSubmissionIndex)
+            }
+        }
+    }
+
+    /// Читает callback state без предположений о причине poll error-а.
+    fn device_lost_state(
+        &self,
+    ) -> std::result::Result<Option<GpuDeviceLost>, RendererGpuDrainError> {
+        self.gpu
+            .device_lost
+            .lock()
+            .map(|state| state.clone())
+            .map_err(|_| RendererGpuDrainError::DeviceLostStatePoisoned)
     }
 
     /// Пересоздаёт surface configuration при изменении размера окна.

@@ -58,6 +58,20 @@ impl WgpuFrameTextureViewMaterializer for HostPlanarWgpuFrameMaterializer {
     fn try_texture_view_lookup(&self, frame: &DecodedFrame) -> WgpuFrameTextureViewLookup {
         common_lookup_from_host_planar_lookup(self.try_host_planar_texture_view_lookup(frame))
     }
+
+    fn recreate_for_renderer(
+        &self,
+        _instance: &wgpu::Instance,
+        _adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Arc<dyn WgpuFrameTextureViewMaterializer> {
+        Arc::new(Self::new(
+            device,
+            queue,
+            self.inner.resource_provider.clone(),
+        ))
+    }
 }
 
 /// WGPU texture views, загруженные из HostPlanar Y/U/V planes.

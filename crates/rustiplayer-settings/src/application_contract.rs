@@ -140,6 +140,58 @@ pub enum SettingsBoundaryActivity {
     RendererLifecycle,
 }
 
+/// Typed stage исходной renderer recreation failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RendererRecreationApplyErrorKind {
+    /// Выбранный renderer profile не реализован текущим runtime-ом.
+    UnsupportedProfile,
+    /// Candidate device/surface/renderer создать не удалось.
+    CandidateCreation,
+    /// Candidate не смог восстановить live render state или materializer compatibility.
+    CandidatePreparation,
+    /// Старую GPU work не удалось безопасно завершить.
+    GpuDrain,
+    /// WGPU callback доказал device lost.
+    DeviceLost,
+    /// Финальный owner commit candidate-а не завершился.
+    Commit,
+}
+
+/// Typed apply error controlled renderer recreation-а.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RendererRecreationApplyError {
+    /// Lifecycle stage, на котором остановилась транзакция.
+    pub kind: RendererRecreationApplyErrorKind,
+
+    /// Диагностический контекст без потери typed kind-а.
+    pub message: String,
+}
+
+/// Typed cause доказанного restore failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RendererRecreationRollbackErrorKind {
+    /// Старый device потерян, а fresh renderer старой конфигурации создать не удалось.
+    DeviceLost,
+    /// Surface старой конфигурации доказанно невозможно восстановить.
+    SurfaceInvalidated,
+    /// Renderer/materializer старой конфигурации не удалось восстановить.
+    ResourceRestore,
+}
+
+/// Отдельная rollback error controlled renderer recreation-а.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RendererRecreationRollbackError {
+    /// Конкретный класс restore failure.
+    pub kind: RendererRecreationRollbackErrorKind,
+
+    /// Диагностический контекст restore attempt-а.
+    pub message: String,
+}
+
+/// Typed renderer failure сохраняет исходную apply error рядом с rollback error.
+pub type RendererRecreationFailure =
+    SettingsApplyFailure<RendererRecreationApplyError, RendererRecreationRollbackError>;
+
 /// Typed failure, не теряющий исходную apply error при rollback failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingsApplyFailure<ApplyError, RollbackError> {

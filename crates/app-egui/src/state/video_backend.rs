@@ -105,9 +105,10 @@ impl AppState {
         let plan_label = plan.diagnostic_label();
         let plan_backend_kind = plan.backend_kind();
 
-        let (player_backend, frame_materializer): (
+        let (player_backend, frame_materializer, submission_queue_binding): (
             player_core::StartedVideoBackend,
             Arc<dyn WgpuFrameTextureViewMaterializer>,
+            WgpuSubmissionQueueBinding,
         ) = match plan {
             VideoPipelinePlan::VaapiDmaBufWgpu {
                 decoder_thread_config,
@@ -119,7 +120,7 @@ impl AppState {
                         "video backend startup failed for {plan_label}: {error}"
                     ))
                 })?;
-                let (player_backend, frame_resource_provider) =
+                let (player_backend, frame_resource_provider, submission_queue_binding) =
                     wrap_video_backend_for_wgpu_submission(started_backend, queue);
                 let frame_materializer: Arc<dyn WgpuFrameTextureViewMaterializer> =
                     Arc::new(DmaBufWgpuFrameMaterializer::new(
@@ -129,7 +130,7 @@ impl AppState {
                         frame_resource_provider,
                     ));
 
-                (player_backend, frame_materializer)
+                (player_backend, frame_materializer, submission_queue_binding)
             }
             VideoPipelinePlan::FfmpegHostUploadWgpu {
                 decoder_thread_config,
@@ -142,7 +143,7 @@ impl AppState {
                         "video backend startup failed for {plan_label}: {error}"
                     ))
                 })?;
-                let (player_backend, frame_resource_provider) =
+                let (player_backend, frame_resource_provider, submission_queue_binding) =
                     wrap_video_backend_for_wgpu_submission(started_backend, queue);
                 let frame_materializer = Arc::new(HostPlanarWgpuFrameMaterializer::new(
                     device,
@@ -151,7 +152,7 @@ impl AppState {
                 ))
                     as Arc<dyn WgpuFrameTextureViewMaterializer>;
 
-                (player_backend, frame_materializer)
+                (player_backend, frame_materializer, submission_queue_binding)
             }
         };
 
@@ -168,6 +169,7 @@ impl AppState {
 
         self.clear_main_visual_override();
         self.wgpu_frame_materializer = Some(frame_materializer);
+        self.wgpu_submission_queue_binding = Some(submission_queue_binding);
 
         // Живая смена backend-а (класс реально меняется): морозим последний кадр, пока
         // worker не переключится и не выдаст первый кадр нового backend-а, иначе кадры
@@ -271,6 +273,85 @@ impl AppState {
         &self,
     ) -> Option<Arc<dyn WgpuFrameTextureViewMaterializer>> {
         self.wgpu_frame_materializer.clone()
+    }
+
+    /// Готовит materializer для candidate renderer-а без изменения active GPU path-а.
+    pub(crate) fn prepare_materializer_for_renderer(
+        &self,
+        renderer: &render_wgpu_shell::Renderer,
+    ) -> Option<Arc<dyn WgpuFrameTextureViewMaterializer>> {
+        self.wgpu_frame_materializer.as_ref().map(|materializer| {
+            materializer.recreate_for_renderer(
+                renderer.instance(),
+                renderer.adapter(),
+                renderer.device(),
+                renderer.queue(),
+            )
+        })
+    }
+
+    /// Проверяет, что candidate renderer сохраняет контракт уже установленного backend-а.
+    ///
+    /// Renderer recreation не имеет права молча превратить DMA-BUF path в HostPlanar
+    /// или наоборот: такой переход требует отдельного transactional backend rebuild-а.
+    pub(crate) fn validate_renderer_candidate_capabilities(
+        &self,
+        capabilities: &SystemCapabilities,
+    ) -> Result<(), VideoPipelineRebuildError> {
+        let Some(current_backend_kind) = self.current_video_backend_kind else {
+            return Ok(());
+        };
+        let candidate_plan = select_video_pipeline_plan(
+            self.video_backend_preference(),
+            Some(capabilities),
+            self.current_decoder_thread_config(),
+            self.active_video_stream_requirement.as_ref(),
+        )
+        .map_err(|error| {
+            VideoPipelineRebuildError::Preparation(format!(
+                "candidate renderer incompatible with active video requirement: {error}"
+            ))
+        })?;
+        let candidate_backend_kind = candidate_plan.backend_kind();
+        if candidate_backend_kind != current_backend_kind {
+            return Err(VideoPipelineRebuildError::Preparation(format!(
+                "candidate renderer requires backend transition {current_backend_kind:?} -> {candidate_backend_kind:?}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Освобождает все visual leases/views, привязанные к старому WGPU device.
+    pub(crate) fn release_renderer_bound_visual_state(&mut self) {
+        self.clear_main_visual_override();
+        self.finish_backend_swap_video_freeze();
+        self.clear_cached_present_frame_for_runtime_drop();
+    }
+
+    /// Commit-ит materializer и completion queue нового renderer-а одним owner method-ом.
+    pub(crate) fn commit_recreated_materializer(
+        &mut self,
+        materializer: Option<Arc<dyn WgpuFrameTextureViewMaterializer>>,
+        queue: &wgpu::Queue,
+    ) -> Result<(), WgpuSubmissionQueueRebindError> {
+        if let Some(submission_queue_binding) = &self.wgpu_submission_queue_binding {
+            submission_queue_binding.rebind(queue)?;
+        }
+        self.wgpu_frame_materializer = materializer;
+        self.mark_pending_worker_redraw();
+        Ok(())
+    }
+
+    /// Завершает submitted releases старого device-а после доказанного device lost.
+    ///
+    /// Exactly-once guards внутри queue binding-а не допускают double release, если
+    /// поздний WGPU callback всё же будет доставлен.
+    pub(crate) fn release_submitted_frames_after_device_lost(
+        &self,
+    ) -> Result<usize, WgpuSubmissionQueueRebindError> {
+        self.wgpu_submission_queue_binding
+            .as_ref()
+            .map_or(Ok(0), WgpuSubmissionQueueBinding::release_after_device_lost)
     }
 
     /// Начинает заморозку последнего кадра на время живой смены backend-а.

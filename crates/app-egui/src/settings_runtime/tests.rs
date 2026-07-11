@@ -16,8 +16,10 @@ use rustiplayer_config::{AppConfig, LoadedConfig};
 use rustiplayer_settings::{
     AppRouteApplyResult, AppRuntimeRoute, AppRuntimeRouteApplier, AppRuntimeRouteGroup,
     AppRuntimeRouteGroupUpdate, FrameServerRuntimeSettingsUpdate,
-    MediaServiceRuntimeSettingsUpdate, PlayerCommittedSettingsUpdate, RuntimeCommittedRoute,
-    RuntimeCommittedUpdate, render_live_settings_from_config,
+    MediaServiceRuntimeSettingsUpdate, PlayerCommittedSettingsUpdate,
+    RenderCommittedSettingsUpdate, RendererRecreationApplyError, RendererRecreationApplyErrorKind,
+    RuntimeCommittedRoute, RuntimeCommittedUpdate, SettingStateOwner, SettingsApplyFailure,
+    render_live_settings_from_config,
 };
 use settings_core::{
     ApplyFinalState, ApplyMechanism, OptionProviderId, SettingId, SettingOption,
@@ -251,6 +253,9 @@ struct RecordingRuntimeAdapter {
     media_updates: usize,
     fail_player: bool,
     fail_media: bool,
+    renderer_recreation_result: AppRouteApplyResult,
+    renderer_recreation_updates:
+        Vec<(RenderCommittedSettingsUpdate, RenderCommittedSettingsUpdate)>,
 }
 
 impl RecordingRuntimeAdapter {
@@ -261,6 +266,8 @@ impl RecordingRuntimeAdapter {
             media_updates: 0,
             fail_player: false,
             fail_media: false,
+            renderer_recreation_result: AppRouteApplyResult::Applied,
+            renderer_recreation_updates: Vec::new(),
         })
     }
 }
@@ -289,6 +296,16 @@ impl RenderLiveSettingsAdapter for RecordingRuntimeAdapter {
 }
 
 impl SettingsRuntimeReconfigureHost for RecordingRuntimeAdapter {
+    fn recreate_renderer(
+        &mut self,
+        previous: &RenderCommittedSettingsUpdate,
+        next: &RenderCommittedSettingsUpdate,
+    ) -> AppRouteApplyResult {
+        self.renderer_recreation_updates
+            .push((previous.clone(), next.clone()));
+        self.renderer_recreation_result.clone()
+    }
+
     fn apply_player_runtime_settings(
         &mut self,
         update: &PlayerCommittedSettingsUpdate,
@@ -568,6 +585,97 @@ fn player_decoder_route_uses_runtime_host_without_deferred_debt() {
     assert_eq!(report.result, AppRouteApplyResult::Applied);
     assert_eq!(report.mechanism, ApplyMechanism::PipelineRebuild);
     assert_eq!(report.groups[0].result, AppRouteApplyResult::Applied);
+}
+
+fn render_recreation_route(next: RenderCommittedSettingsUpdate) -> RuntimeCommittedRoute {
+    RuntimeCommittedRoute {
+        route: AppRuntimeRoute::RenderCommitted,
+        source_routes: vec![SettingRouteId::from("render")],
+        affected_settings: vec![SettingId::from("render.vulkan.max_frame_latency")],
+        groups: vec![AppRuntimeRouteGroupUpdate {
+            group: AppRuntimeRouteGroup::RenderBackendLifecycle,
+            affected_settings: vec![SettingId::from("render.vulkan.max_frame_latency")],
+        }],
+        update: RuntimeCommittedUpdate::RenderCommitted(RenderCommittedSettingsUpdate {
+            profile: next.profile,
+            tone_mapping: next.tone_mapping,
+            vulkan: next.vulkan,
+            opengles: next.opengles,
+        }),
+    }
+}
+
+fn render_update_from_config(config: &AppConfig) -> RenderCommittedSettingsUpdate {
+    RenderCommittedSettingsUpdate {
+        profile: config.render.profile,
+        tone_mapping: config.render.tone_mapping,
+        vulkan: config.render.vulkan.clone(),
+        opengles: config.render.opengles.clone(),
+    }
+}
+
+#[test]
+fn render_recreation_commits_snapshot_only_after_owner_success() {
+    let config = custom_config_for_test();
+    let mut next = render_update_from_config(&config);
+    next.vulkan.max_frame_latency += 1;
+    let route = render_recreation_route(next.clone());
+    let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
+        .expect("route appliers должны принять валидированный config");
+    let mut runtime_adapter =
+        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+
+    let first_report = appliers
+        .apply_committed_route_with_render_adapter(route.clone(), &mut runtime_adapter)
+        .expect("renderer route должен примениться");
+    let second_report = appliers
+        .apply_committed_route_with_render_adapter(route, &mut runtime_adapter)
+        .expect("повторный renderer route должен быть noop");
+
+    assert_eq!(first_report.result, AppRouteApplyResult::Applied);
+    assert_eq!(first_report.mechanism, ApplyMechanism::RendererRecreate);
+    assert_eq!(second_report.result, AppRouteApplyResult::Noop);
+    assert_eq!(runtime_adapter.renderer_recreation_updates.len(), 1);
+    assert_eq!(runtime_adapter.renderer_recreation_updates[0].1, next);
+}
+
+#[test]
+fn render_recreation_failure_keeps_old_snapshot_for_same_draft_retry() {
+    let config = custom_config_for_test();
+    let original = render_update_from_config(&config);
+    let mut next = original.clone();
+    next.vulkan.max_frame_latency += 1;
+    let route = render_recreation_route(next.clone());
+    let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
+        .expect("route appliers должны принять валидированный config");
+    let mut runtime_adapter =
+        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+    runtime_adapter.renderer_recreation_result = AppRouteApplyResult::RendererRecreationFailed {
+        failure: SettingsApplyFailure::ApplyFailed {
+            owner: SettingStateOwner::RendererLifecycle,
+            error: RendererRecreationApplyError {
+                kind: RendererRecreationApplyErrorKind::CandidateCreation,
+                message: "fake renderer creation failure".into(),
+            },
+        },
+    };
+
+    let failed_report = appliers
+        .apply_committed_route_with_render_adapter(route.clone(), &mut runtime_adapter)
+        .expect("renderer failure должен остаться typed report-ом");
+    runtime_adapter.renderer_recreation_result = AppRouteApplyResult::Applied;
+    let retry_report = appliers
+        .apply_committed_route_with_render_adapter(route, &mut runtime_adapter)
+        .expect("тот же renderer draft должен повторно примениться");
+
+    assert!(matches!(
+        failed_report.result,
+        AppRouteApplyResult::RendererRecreationFailed { .. }
+    ));
+    assert_eq!(retry_report.result, AppRouteApplyResult::Applied);
+    assert_eq!(runtime_adapter.renderer_recreation_updates.len(), 2);
+    assert_eq!(runtime_adapter.renderer_recreation_updates[1].0, original);
+    assert_eq!(runtime_adapter.renderer_recreation_updates[1].1, next);
 }
 
 #[test]

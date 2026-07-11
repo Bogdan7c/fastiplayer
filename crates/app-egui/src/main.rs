@@ -13,6 +13,7 @@ mod local_file_open;
 mod local_media;
 mod redraw_pacing;
 mod render_settings;
+mod renderer_recreation;
 mod settings_runtime;
 pub mod settings_ui;
 mod startup_media;

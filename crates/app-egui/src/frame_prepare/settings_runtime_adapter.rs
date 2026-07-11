@@ -4,19 +4,32 @@ use super::*;
 
 /// Runtime adapter одного frame-а: render live preview + committed runtime owners.
 pub(super) struct FrameSettingsRuntimeAdapter<'frame> {
+    /// Native window target нужен только renderer lifecycle owner-у.
+    window: Arc<Window>,
+
     /// App state владеет player worker и app-level media/source identity.
     app_state: &'frame mut AppState,
 
     /// Renderer владеет WGPU context и live render settings.
     renderer: &'frame mut Renderer,
+
+    /// Shell-level serializer renderer/surface lifecycle operations.
+    renderer_lifecycle: &'frame mut RendererLifecycleCoordinator,
 }
 
 impl<'frame> FrameSettingsRuntimeAdapter<'frame> {
     /// Создаёт короткоживущий adapter без передачи ownership UI layer-у.
-    pub(super) fn new(app_state: &'frame mut AppState, renderer: &'frame mut Renderer) -> Self {
+    pub(super) fn new(
+        window: Arc<Window>,
+        app_state: &'frame mut AppState,
+        renderer: &'frame mut Renderer,
+        renderer_lifecycle: &'frame mut RendererLifecycleCoordinator,
+    ) -> Self {
         Self {
+            window,
             app_state,
             renderer,
+            renderer_lifecycle,
         }
     }
 }
@@ -213,6 +226,17 @@ impl RenderLiveSettingsAdapter for FrameSettingsRuntimeAdapter<'_> {
 }
 
 impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
+    fn recreate_renderer(
+        &mut self,
+        previous: &RenderCommittedSettingsUpdate,
+        next: &RenderCommittedSettingsUpdate,
+    ) -> AppRouteApplyResult {
+        let mut lifecycle =
+            LiveRendererRecreation::new(self.window.clone(), self.renderer, self.app_state);
+        self.renderer_lifecycle
+            .recreate(&mut lifecycle, previous, next)
+    }
+
     fn sync_committed_config_snapshot(&mut self, snapshot: CommittedConfigSnapshot) {
         self.app_state.sync_committed_config_snapshot(snapshot);
     }
@@ -325,6 +349,14 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
                         PlayerRuntimeApplyGroup::MediaPipeline,
                         affected_settings,
                         message,
+                    ));
+                    return Ok(report);
+                }
+                AppRouteApplyResult::RendererRecreationFailed { failure } => {
+                    report.push(PlayerRuntimeApplyGroupReport::fatal(
+                        PlayerRuntimeApplyGroup::MediaPipeline,
+                        affected_settings,
+                        format!("unexpected renderer recreation failure: {failure:?}"),
                     ));
                     return Ok(report);
                 }

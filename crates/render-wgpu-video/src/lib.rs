@@ -14,7 +14,10 @@ mod video;
 #[cfg(test)]
 mod bt2446c_reference;
 
-pub use resource_provider::wrap_video_backend_for_wgpu_submission;
+pub use resource_provider::{
+    WgpuSubmissionQueueBinding, WgpuSubmissionQueueRebindError,
+    wrap_video_backend_for_wgpu_submission,
+};
 pub use video::{
     DmaBufWgpuFrameMaterializer, HostPlanarWgpuFrameMaterializer, HostPlanarWgpuTextureViewLookup,
     HostPlanarWgpuTextureViews, WgpuFrameMaterializationUnsupportedReason, WgpuFramePlanes,

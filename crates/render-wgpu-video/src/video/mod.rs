@@ -211,6 +211,17 @@ impl WgpuFrameTextureViewLookup {
 pub trait WgpuFrameTextureViewMaterializer: Send + Sync {
     /// Пытается materialize frame resource без ожидания backend texture pool mutex-а.
     fn try_texture_view_lookup(&self, frame: &DecodedFrame) -> WgpuFrameTextureViewLookup;
+
+    /// Готовит новый materializer для другого WGPU device, сохраняя neutral provider.
+    ///
+    /// Метод не меняет active materializer и поэтому безопасен до transactional commit-а.
+    fn recreate_for_renderer(
+        &self,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Arc<dyn WgpuFrameTextureViewMaterializer>;
 }
 
 /// Renderer-side materializer, который импортирует neutral DMA-BUF descriptors в WGPU.
@@ -301,6 +312,21 @@ impl WgpuFrameTextureViewMaterializer for DmaBufWgpuFrameMaterializer {
             },
             Err(error) => texture_view_lookup_after_import_failure(handle, error, total_lock_wait),
         }
+    }
+
+    fn recreate_for_renderer(
+        &self,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+    ) -> Arc<dyn WgpuFrameTextureViewMaterializer> {
+        Arc::new(Self::new(
+            instance,
+            adapter,
+            device,
+            self.resource_provider.clone(),
+        ))
     }
 }
 
@@ -799,6 +825,12 @@ impl WgpuVideoRenderer {
     #[must_use]
     pub const fn capabilities(&self) -> &RenderCapabilities {
         &self.capabilities
+    }
+
+    /// Возвращает текущий renderer-neutral live snapshot для нового renderer candidate-а.
+    #[must_use]
+    pub const fn live_settings(&self) -> &RenderLiveSettings {
+        &self.live_settings
     }
 
     /// Возвращает последнюю диагностику renderer-а без backend-specific handles.

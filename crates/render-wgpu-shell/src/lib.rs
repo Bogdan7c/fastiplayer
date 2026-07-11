@@ -17,4 +17,7 @@ pub use frame::{
     RenderFrameDropReason, RenderFrameFailure, RenderFrameInput, RenderFrameOutcome,
     RenderFrameSlowestStage, RenderFrameStageTimings, RenderFrameTiming, RenderScreenDescriptor,
 };
-pub use shell::{GpuContext, Renderer, ShellPresentMode, SurfacePresentSettings};
+pub use shell::{
+    GpuContext, GpuDeviceLost, Renderer, RendererGpuDrainError, ShellPresentMode,
+    SurfacePresentSettings,
+};

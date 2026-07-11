@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -15,7 +16,7 @@ use render_wgpu_shell::{RenderFrameDropReason, RenderFrameOutcome, RenderFrameTi
 use render_wgpu_video::WgpuRenderableFrame;
 use rustiplayer_settings::{
     AppRouteApplyResult, MediaServiceRuntimeSettingsUpdate, PlayerCommittedSettingsUpdate,
-    SettingsBoundaryActivity,
+    RenderCommittedSettingsUpdate, SettingsBoundaryActivity,
 };
 use settings_core::SettingId;
 use tracing::{debug, error, instrument, trace, warn};
@@ -23,6 +24,7 @@ use video_core::DecodedPixelFormat;
 use winit::window::{ResizeDirection, Window};
 
 use crate::redraw_pacing::RedrawPacing;
+use crate::renderer_recreation::{LiveRendererRecreation, RendererLifecycleCoordinator};
 use crate::settings_runtime::{
     CommittedConfigSnapshot, SettingsRuntime, SettingsRuntimeReconfigureHost,
 };
@@ -1352,10 +1354,11 @@ fn render_outcome_marks_video_submitted(
 #[instrument(skip(telemetry, window, renderer, app_state, settings_runtime))]
 pub(crate) fn render_frame(
     telemetry: &Telemetry,
-    window: &Window,
+    window: &Arc<Window>,
     renderer: &mut Renderer,
     app_state: &mut AppState,
     settings_runtime: &mut SettingsRuntime,
+    renderer_lifecycle: &mut RendererLifecycleCoordinator,
 ) -> AppRenderFrameResult {
     let frame_start = Instant::now();
 
@@ -1417,7 +1420,21 @@ pub(crate) fn render_frame(
     ui_prepare_timings.total = stage_started_at.elapsed();
 
     let settings_action_requested_repaint = {
-        let mut runtime_adapter = FrameSettingsRuntimeAdapter::new(app_state, renderer);
+        let surface_event_pending = window_chrome_actions.iter().any(|action| {
+            matches!(
+                action,
+                WindowChromeAction::Minimize
+                    | WindowChromeAction::ToggleMaximize
+                    | WindowChromeAction::BeginResize(_)
+            )
+        });
+        renderer_lifecycle.set_surface_event_pending(surface_event_pending);
+        let mut runtime_adapter = FrameSettingsRuntimeAdapter::new(
+            window.clone(),
+            app_state,
+            renderer,
+            renderer_lifecycle,
+        );
         match settings_runtime
             .handle_ui_actions_with_runtime_adapter(settings_actions, &mut runtime_adapter)
         {
@@ -1430,6 +1447,7 @@ pub(crate) fn render_frame(
         }
     };
     let chrome_close_requested = apply_window_chrome_actions(window, window_chrome_actions);
+    renderer_lifecycle.set_surface_event_pending(false);
 
     let settings_preview_tick = match settings_runtime.apply_due_preview(renderer, Instant::now()) {
         Ok(tick) => tick,

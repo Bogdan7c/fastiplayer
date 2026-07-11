@@ -1,3 +1,7 @@
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
 use video_backend_api::{
     PresentFrameResourceDescriptorLookup, PresentFrameResourceProvider,
     PresentFrameResourceProviderHandle, PresentFrameResourceProviderLookup, StartedVideoBackend,
@@ -19,14 +23,19 @@ use video_core::{
 pub fn wrap_video_backend_for_wgpu_submission(
     started_backend: StartedVideoBackend,
     queue: &wgpu::Queue,
-) -> (StartedVideoBackend, PresentFrameResourceProviderHandle) {
+) -> (
+    StartedVideoBackend,
+    PresentFrameResourceProviderHandle,
+    WgpuSubmissionQueueBinding,
+) {
     let backend_id = started_backend.backend_id().to_owned();
     let decoder_thread = started_backend.into_decoder_thread();
     let inner_provider = decoder_thread.resource_provider();
+    let submission_queue = WgpuSubmissionQueueBinding::new(queue);
     let renderer_provider =
         PresentFrameResourceProviderHandle::new(WgpuSubmittedResourceProvider {
             inner_provider,
-            queue: queue.clone(),
+            submission_queue: submission_queue.clone(),
         });
     let wrapped_thread = WgpuReleaseVideoDecoderThreadHandle {
         inner: decoder_thread,
@@ -35,16 +44,207 @@ pub fn wrap_video_backend_for_wgpu_submission(
 
     let wrapped_backend = StartedVideoBackend::from_decoder_thread(backend_id, wrapped_thread);
 
-    (wrapped_backend, renderer_provider)
+    (wrapped_backend, renderer_provider, submission_queue)
 }
+
+/// Переключаемая queue-привязка provider-а к активному renderer lifecycle.
+///
+/// Один handle разделяется decoder wrapper-ом и app-owned materializer-ом. Queue можно
+/// заменить только после остановки новых submissions, освобождения frame leases и
+/// ожидания завершения старой GPU queue.
+#[derive(Clone)]
+pub struct WgpuSubmissionQueueBinding {
+    /// Queue state и exactly-once submitted releases разделяются всеми provider handles.
+    inner: Arc<WgpuSubmissionQueueBindingInner>,
+}
+
+/// Shared mutable state queue binding-а.
+struct WgpuSubmissionQueueBindingInner {
+    /// Active/lost queue и pending releases меняются одной критической секцией.
+    state: Mutex<WgpuSubmissionQueueState>,
+
+    /// Монотонный id не влияет на frame handle/generation semantics.
+    next_release_id: AtomicU64,
+}
+
+/// State queue вместе с callbacks, которые ещё не подтвердили completion.
+struct WgpuSubmissionQueueState {
+    /// None означает доказанный device lost: future releases безопасно идут сразу.
+    active_queue: Option<wgpu::Queue>,
+
+    /// Exactly-once guards submitted releases старого или нового renderer-а.
+    pending_releases: BTreeMap<u64, Arc<PendingSubmittedRelease>>,
+}
+
+/// Один decoder resource, который должен быть возвращён provider-у ровно один раз.
+struct PendingSubmittedRelease {
+    /// Backend provider остаётся владельцем фактического resource release-а.
+    inner_provider: PresentFrameResourceProviderHandle,
+
+    /// Opaque resource handle release boundary-а.
+    handle: video_core::FrameResourceHandle,
+
+    /// Callback и device-lost recovery соревнуются через exactly-once CAS.
+    released: AtomicBool,
+}
+
+impl PendingSubmittedRelease {
+    /// Возвращает resource provider-у только победителем exactly-once CAS.
+    fn release_once(&self) {
+        if self
+            .released
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            self.inner_provider.release_frame(self.handle);
+        }
+    }
+}
+
+impl WgpuSubmissionQueueBinding {
+    /// Создаёт привязку к queue первоначального renderer-а.
+    fn new(queue: &wgpu::Queue) -> Self {
+        Self {
+            inner: Arc::new(WgpuSubmissionQueueBindingInner {
+                state: Mutex::new(WgpuSubmissionQueueState {
+                    active_queue: Some(queue.clone()),
+                    pending_releases: BTreeMap::new(),
+                }),
+                next_release_id: AtomicU64::new(0),
+            }),
+        }
+    }
+
+    /// Атомарно переводит будущие release callbacks на queue нового renderer-а.
+    ///
+    /// Poison возвращается как typed commit failure: продолжать частичную замену
+    /// renderer-а после потери доверия к binding state нельзя.
+    pub fn rebind(&self, queue: &wgpu::Queue) -> Result<(), WgpuSubmissionQueueRebindError> {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .map_err(|_| WgpuSubmissionQueueRebindError::Poisoned)?;
+        state.active_queue = Some(queue.clone());
+        Ok(())
+    }
+
+    /// Завершает pending releases после доказанного device lost ровно по одному разу.
+    pub fn release_after_device_lost(&self) -> Result<usize, WgpuSubmissionQueueRebindError> {
+        let pending_releases = {
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .map_err(|_| WgpuSubmissionQueueRebindError::Poisoned)?;
+            state.active_queue = None;
+            std::mem::take(&mut state.pending_releases)
+        };
+        let release_count = pending_releases.len();
+        for pending_release in pending_releases.into_values() {
+            pending_release.release_once();
+        }
+        Ok(release_count)
+    }
+
+    /// Регистрирует release callback либо release-ит сразу после proven device lost.
+    fn schedule_release(
+        &self,
+        inner_provider: PresentFrameResourceProviderHandle,
+        handle: video_core::FrameResourceHandle,
+    ) {
+        let release_id = self.inner.next_release_id.fetch_add(1, Ordering::Relaxed);
+        let pending_release = Arc::new(PendingSubmittedRelease {
+            inner_provider,
+            handle,
+            released: AtomicBool::new(false),
+        });
+
+        let active_queue = match self.inner.state.lock() {
+            Ok(mut state) => match &state.active_queue {
+                Some(active_queue) => {
+                    let active_queue = active_queue.clone();
+                    state
+                        .pending_releases
+                        .insert(release_id, pending_release.clone());
+                    Some(active_queue)
+                }
+                None => None,
+            },
+            Err(poisoned_state) => {
+                tracing::error!(
+                    "WGPU submission queue binding poisoned; используем последнее доступное состояние для safe release"
+                );
+                let mut state = poisoned_state.into_inner();
+                match &state.active_queue {
+                    Some(active_queue) => {
+                        let active_queue = active_queue.clone();
+                        state
+                            .pending_releases
+                            .insert(release_id, pending_release.clone());
+                        Some(active_queue)
+                    }
+                    None => None,
+                }
+            }
+        };
+
+        let Some(active_queue) = active_queue else {
+            pending_release.release_once();
+            return;
+        };
+
+        let binding = self.clone();
+        active_queue.on_submitted_work_done(move || {
+            pending_release.release_once();
+            binding.complete_release(release_id);
+        });
+    }
+
+    /// Удаляет завершённый callback из bounded pending registry.
+    fn complete_release(&self, release_id: u64) {
+        match self.inner.state.lock() {
+            Ok(mut state) => {
+                state.pending_releases.remove(&release_id);
+            }
+            Err(poisoned_state) => {
+                tracing::error!(
+                    release_id,
+                    "WGPU submission release registry poisoned при callback cleanup"
+                );
+                poisoned_state
+                    .into_inner()
+                    .pending_releases
+                    .remove(&release_id);
+            }
+        }
+    }
+}
+
+/// Ошибка commit-а переключаемой WGPU queue-привязки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WgpuSubmissionQueueRebindError {
+    /// Mutex был poisoned паникой внутри критической секции binding-а.
+    Poisoned,
+}
+
+impl std::fmt::Display for WgpuSubmissionQueueRebindError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Poisoned => formatter.write_str("WGPU submission queue binding poisoned"),
+        }
+    }
+}
+
+impl std::error::Error for WgpuSubmissionQueueRebindError {}
 
 /// Provider wrapper, который добавляет WGPU completion wait к submitted release path.
 struct WgpuSubmittedResourceProvider {
     /// Concrete backend provider с нейтральными descriptors и VA release path.
     inner_provider: PresentFrameResourceProviderHandle,
 
-    /// Renderer-owned queue, на которой уже отправлен video render work.
-    queue: wgpu::Queue,
+    /// Renderer-owned queue binding, переключаемый только controlled recreation-ом.
+    submission_queue: WgpuSubmissionQueueBinding,
 }
 
 impl PresentFrameResourceProvider for WgpuSubmittedResourceProvider {
@@ -77,13 +277,11 @@ impl PresentFrameResourceProvider for WgpuSubmittedResourceProvider {
     }
 
     fn release_frame(&self, handle: video_core::FrameResourceHandle) {
-        let inner_provider = self.inner_provider.clone();
         // Контракт submitted release: player-core уже передал frame в render submission,
         // поэтому decoder resource можно вернуть inner provider-у только после того,
         // как WGPU подтвердит завершение ранее отправленной работы очереди.
-        self.queue.on_submitted_work_done(move || {
-            inner_provider.release_frame(handle);
-        });
+        self.submission_queue
+            .schedule_release(self.inner_provider.clone(), handle);
     }
 }
 
@@ -183,5 +381,50 @@ impl VideoDecoderThreadHandle for WgpuReleaseVideoDecoderThreadHandle {
 
     fn drain_completed_packet_count(&self) -> usize {
         self.inner.drain_completed_packet_count()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    /// Provider fake считает фактические releases без GPU queue.
+    struct CountingResourceProvider {
+        release_count: Arc<AtomicUsize>,
+    }
+
+    impl PresentFrameResourceProvider for CountingResourceProvider {
+        fn resource_lookup(
+            &self,
+            _handle: video_core::FrameResourceHandle,
+        ) -> PresentFrameResourceProviderLookup {
+            PresentFrameResourceProviderLookup::Missing {
+                resource_pool_lock_wait: std::time::Duration::ZERO,
+            }
+        }
+
+        fn release_frame(&self, _handle: video_core::FrameResourceHandle) {
+            self.release_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn submitted_release_guard_prevents_callback_and_device_lost_double_release() {
+        let release_count = Arc::new(AtomicUsize::new(0));
+        let provider = PresentFrameResourceProviderHandle::new(CountingResourceProvider {
+            release_count: release_count.clone(),
+        });
+        let pending_release = PendingSubmittedRelease {
+            inner_provider: provider,
+            handle: video_core::FrameResourceHandle(41),
+            released: AtomicBool::new(false),
+        };
+
+        pending_release.release_once();
+        pending_release.release_once();
+
+        assert_eq!(release_count.load(Ordering::Relaxed), 1);
     }
 }
