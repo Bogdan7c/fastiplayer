@@ -5,6 +5,14 @@
 
 #![forbid(unsafe_code)]
 
+mod application_contract;
+
+pub use application_contract::{
+    SettingApplicationContract, SettingApplyMechanism, SettingApplyTestScenario, SettingStateOwner,
+    SettingsApplyFailure, SettingsApplyOutcome, SettingsBoundaryActivity,
+    setting_application_contract,
+};
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -931,11 +939,28 @@ fn player_update_from_settings(
 fn runtime_route_from_descriptor(
     descriptor: &SettingDescriptor,
 ) -> SettingsResult<AppRuntimeRoute> {
-    runtime_route_from_metadata(
+    let metadata_route = runtime_route_from_metadata(
         &descriptor.route,
         descriptor.id.as_str(),
         descriptor.apply_mode,
-    )
+    )?;
+    let contract = setting_application_contract(&descriptor.id).ok_or_else(|| {
+        SettingsError::access_failed(format!(
+            "редактируемый setting `{}` не имеет checked live application contract",
+            descriptor.id.as_str()
+        ))
+    })?;
+
+    if contract.route != metadata_route {
+        return Err(SettingsError::access_failed(format!(
+            "setting `{}`: metadata route {:?} расходится с application contract route {:?}",
+            descriptor.id.as_str(),
+            metadata_route,
+            contract.route
+        )));
+    }
+
+    Ok(metadata_route)
 }
 
 fn runtime_route_from_update_setting(

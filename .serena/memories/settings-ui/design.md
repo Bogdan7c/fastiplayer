@@ -33,3 +33,6 @@
 - Implemented settings crates: reusable `settings-core`, proc-macro `settings-derive`, and project binding `rustiplayer-settings`; `app-egui` keeps visual settings UI separate from runtime bridge and still owns future concrete settings runtime/UI wiring.
 - Required refactors captured in doc/plan: single authoritative runtime config owner at `AppShell` level, atomic save API in `rustiplayer-config`, generated settings registry/accessors, renderer-neutral live settings adapter in `render-core`-level contracts, typed player runtime config apply boundary instead of relying on `ReloadConfig`, controlled pipeline/source reconfigure without app restart, dynamic option providers.
 - Renderer live settings must be backend-neutral and contain no WGPU types in `settings-core`, `rustiplayer-settings`, `render-core`, or visual UI; WGPU-specific mapping stays in WGPU crates.
+
+
+- Session 08 checked live-apply contract scaffold (2026-07-11): see `mem:settings-ui/application-contract-s08`. It adds the exhaustive editable-setting application matrix and typed outcome vocabulary without yet replacing the existing 08B-08D runtime executor debt paths.
