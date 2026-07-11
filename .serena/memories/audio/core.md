@@ -30,3 +30,11 @@
 - `cargo test -p 'path+file://<REPO_ROOT>/crates/symphonia-codec-aac-patch#symphonia-codec-aac@0.6.0'`
 - `cargo test -p audio-timestretch`
 - Полный release gate дополнительно описан в `mem:task_completion` и `mem:player-core/playback-rate-contract-s32`.
+
+
+## Session 27C decomposition (2026-07-11)
+
+- `crates/audio/src/decoder.rs` теперь владеет только production factory и lifecycle Symphonia/Opus decoder-ов; neutral↔Symphonia codec/channel metadata mapping, packet adaptation и decoded PCM interleaving находятся в crate-private `decoder/conversion.rs`.
+- `crates/audio/src/output.rs` остаётся facade/runtime owner-ом `AudioOutput`, CPAL stream и ring-buffer callback. Device capability/fallback selection находится в `output/configuration.rs`, pause/resume stream lifecycle — в `output/lifecycle.rs`, sample conversion + tempo output protection — в `output/processing.rs`, stateful packet-boundary linear resampling — в `output/resampler.rs`.
+- Public API не изменился. Channel order/downmix, CPAL format/rate fallback, buffer targets, clock anchors/underrun accounting, direct/tempo protection policy, resampler carry/reset и tempo latency сохранены behavior-neutral.
+- Полный census и два bounded follow-up prompt-а (`audio-core` facade и evaluation `audio-timestretch` adapter) находятся в `user/session_27c_audio_census_and_followups_2026-07-11.md`.

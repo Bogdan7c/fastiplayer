@@ -9,7 +9,7 @@ use audio_core::AudioOutputClockTiming;
 use cpal::traits::StreamTrait;
 use tracing::{info, warn};
 
-use super::{AudioOutput, BackendStreamState, PauseStreamOutcome, pause_stream_with_policy};
+use super::{AudioOutput, BackendStreamState, PauseStreamOutcome};
 
 impl AudioOutput {
     /// Запускает stream и только после успеха возобновляет frozen clock.
@@ -76,5 +76,55 @@ impl AudioOutput {
         }
 
         Ok(frozen_timing)
+    }
+}
+
+/// Политика обработки ошибки `StreamTrait::pause`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PauseErrorPolicy {
+    /// Ошибка означает, что backend не поддерживает pause, но stream остаётся usable.
+    NonFatalUnsupportedOperation,
+    /// Ошибка означает реальную проблему stream/device и должна выйти наружу.
+    Fatal,
+}
+
+/// Классифицирует pause error по CPAL 0.15 contract.
+///
+/// В 0.15.3 нет отдельного typed `UnsupportedOperation`, поэтому backend может
+/// спрятать такую причину в `BackendSpecific.description`.
+pub(super) fn classify_pause_error(error: &cpal::PauseStreamError) -> PauseErrorPolicy {
+    match error {
+        cpal::PauseStreamError::DeviceNotAvailable => PauseErrorPolicy::Fatal,
+        cpal::PauseStreamError::BackendSpecific { err } => {
+            if backend_pause_error_is_unsupported_operation(&err.description) {
+                PauseErrorPolicy::NonFatalUnsupportedOperation
+            } else {
+                PauseErrorPolicy::Fatal
+            }
+        }
+    }
+}
+
+/// Распознаёт распространённые backend descriptions для неподдерживаемой pause.
+pub(super) fn backend_pause_error_is_unsupported_operation(description: &str) -> bool {
+    let normalized_description = description.to_ascii_lowercase();
+
+    normalized_description.contains("unsupportedoperation")
+        || normalized_description.contains("unsupported operation")
+        || normalized_description.contains("operation is not supported")
+        || normalized_description.contains("operation not supported")
+        || normalized_description.contains("not supported")
+}
+
+/// Останавливает CPAL stream с non-fatal policy для unsupported pause.
+pub(super) fn pause_stream_with_policy(stream: &cpal::Stream) -> Result<PauseStreamOutcome> {
+    match stream.pause() {
+        Ok(()) => Ok(PauseStreamOutcome::Paused),
+        Err(error)
+            if classify_pause_error(&error) == PauseErrorPolicy::NonFatalUnsupportedOperation =>
+        {
+            Ok(PauseStreamOutcome::UnsupportedByBackend)
+        }
+        Err(error) => Err(error).context("Не удалось остановить audio stream"),
     }
 }

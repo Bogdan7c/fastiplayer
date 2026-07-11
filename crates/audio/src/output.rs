@@ -12,7 +12,6 @@
 //! в 48kHz, поэтому мы делаем простой linear resample если device
 //! использует другой rate.
 
-use std::cmp::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -21,7 +20,7 @@ use audio_core::{
     AudioChannelLayout, AudioOutputInputFrameCount, AudioOutputStreamFrameCount,
     AudioOutputWriteError, AudioOutputWriteIntent, AudioOutputWriteReport,
 };
-use cpal::traits::{DeviceTrait, StreamTrait};
+use cpal::traits::DeviceTrait;
 use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
@@ -31,7 +30,26 @@ use crate::channel_mixer::ChannelMixer;
 use crate::clock::AudioClock;
 use crate::devices::{DEFAULT_AUDIO_OUTPUT_DEVICE_ID, output_device_from_stable_id};
 
+mod configuration;
 mod lifecycle;
+mod processing;
+mod resampler;
+
+use configuration::choose_supported_output_config;
+#[cfg(test)]
+use configuration::{
+    output_sample_format_is_supported, sample_format_priority, select_supported_output_config,
+};
+use lifecycle::pause_stream_with_policy;
+#[cfg(test)]
+use lifecycle::{PauseErrorPolicy, classify_pause_error};
+#[cfg(test)]
+use processing::{PEAK_LIMITER_CEILING, soft_clip_sample};
+use processing::{
+    advance_limiter_envelope, convert_sample_for_output, limiter_gain_for_envelope,
+    limiter_release_decay_for_rate, output_sample_for_intent, reset_output_protection,
+};
+use resampler::LinearResampler;
 
 /// Аудиовыход с CPAL stream и ring buffer.
 pub struct AudioOutput {
@@ -81,28 +99,6 @@ pub struct AudioOutput {
     clear_ack_generation: u64,
 }
 
-/// Состояние linear resampling между decoded audio packets.
-///
-/// Opus отдаёт audio chunks пакетами, а output device может работать не на 48 kHz.
-/// Чтобы на границе packets не было слышимого скачка, ресемплер хранит последний
-/// source frame предыдущего packet-а и продолжает fractional позицию на следующем.
-struct LinearResampler {
-    /// Sample rate декодированного audio.
-    source_rate: u32,
-
-    /// Sample rate output stream.
-    output_rate: u32,
-
-    /// Количество interleaved каналов в stream layout.
-    channel_count: usize,
-
-    /// Следующая source-позиция относительно начала нового input chunk.
-    next_source_frame_offset: f64,
-
-    /// Последний frame предыдущего input chunk для интерполяции через boundary.
-    previous_source_frame: Vec<f32>,
-}
-
 /// Результат низкоуровневой попытки остановить CPAL stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PauseStreamOutcome {
@@ -119,432 +115,6 @@ enum BackendStreamState {
     Paused,
     /// Backend продолжает callbacks; logical pause удерживается clock gate-ом.
     Running,
-}
-
-/// Политика обработки ошибки `StreamTrait::pause`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PauseErrorPolicy {
-    /// Ошибка означает, что backend не поддерживает pause, но stream остаётся usable.
-    NonFatalUnsupportedOperation,
-    /// Ошибка означает реальную проблему stream/device и должна выйти наружу.
-    Fatal,
-}
-
-impl LinearResampler {
-    /// Создаёт linear resampler с явным соотношением частот.
-    fn new(source_rate: u32, output_rate: u32, channel_count: usize) -> Self {
-        Self {
-            source_rate,
-            output_rate,
-            channel_count: channel_count.max(1),
-            next_source_frame_offset: 0.0,
-            previous_source_frame: Vec::new(),
-        }
-    }
-
-    /// Возвращает шаг source frames на один output frame.
-    fn source_frames_per_output_frame(&self) -> f64 {
-        self.source_rate as f64 / self.output_rate as f64
-    }
-
-    /// Делает linear resample interleaved samples без смешивания каналов.
-    fn resample_interleaved(&mut self, source_samples: &[f32]) -> Vec<f32> {
-        if self.source_rate == 0 || self.output_rate == 0 {
-            return Vec::new();
-        }
-
-        let source_frame_count = source_samples.len() / self.channel_count;
-        if source_frame_count == 0 {
-            return Vec::new();
-        }
-
-        let source_samples = &source_samples[..source_frame_count * self.channel_count];
-        let carry_frame_count = usize::from(!self.previous_source_frame.is_empty());
-        let combined_frame_count = source_frame_count + carry_frame_count;
-        let mut combined_samples = Vec::with_capacity(combined_frame_count * self.channel_count);
-
-        combined_samples.extend_from_slice(&self.previous_source_frame);
-        combined_samples.extend_from_slice(source_samples);
-
-        let mut source_frame_index =
-            (self.next_source_frame_offset + carry_frame_count as f64).max(0.0);
-        let source_frame_step = self.source_frames_per_output_frame();
-        let mut resampled_samples = Vec::new();
-
-        while source_frame_index.is_finite()
-            && (source_frame_index as usize) + 1 < combined_frame_count
-        {
-            let frame_index = source_frame_index as usize;
-            let frame_fraction = source_frame_index - frame_index as f64;
-
-            for channel_index in 0..self.channel_count {
-                let current_sample =
-                    combined_samples[frame_index * self.channel_count + channel_index] as f64;
-                let next_sample =
-                    combined_samples[(frame_index + 1) * self.channel_count + channel_index] as f64;
-                let interpolated_sample =
-                    current_sample + frame_fraction * (next_sample - current_sample);
-                resampled_samples.push(interpolated_sample as f32);
-            }
-
-            source_frame_index += source_frame_step;
-        }
-
-        self.next_source_frame_offset =
-            source_frame_index - carry_frame_count as f64 - source_frame_count as f64;
-        self.remember_last_source_frame(source_samples, source_frame_count);
-
-        resampled_samples
-    }
-
-    /// Запоминает последний complete frame текущего chunk для следующего boundary.
-    fn remember_last_source_frame(&mut self, source_samples: &[f32], source_frame_count: usize) {
-        let last_frame_start = (source_frame_count - 1) * self.channel_count;
-        let last_frame_end = last_frame_start + self.channel_count;
-
-        self.previous_source_frame.clear();
-        self.previous_source_frame
-            .extend_from_slice(&source_samples[last_frame_start..last_frame_end]);
-    }
-
-    /// Сбрасывает carry state, чтобы после seek не смешивать старый и новый audio chunks.
-    fn reset(&mut self) {
-        self.next_source_frame_offset = 0.0;
-        self.previous_source_frame.clear();
-    }
-}
-
-/// Проверяет, что sample format можно отдать в typed CPAL output callback.
-///
-/// CPAL 0.15.3 объявляет `SampleFormat` как `non_exhaustive`, поэтому wildcard
-/// остаётся явной защитой от будущих форматов, которые нельзя silently принять.
-fn output_sample_format_is_supported(sample_format: SampleFormat) -> bool {
-    matches!(
-        sample_format,
-        SampleFormat::I8
-            | SampleFormat::I16
-            | SampleFormat::I32
-            | SampleFormat::I64
-            | SampleFormat::U8
-            | SampleFormat::U16
-            | SampleFormat::U32
-            | SampleFormat::U64
-            | SampleFormat::F32
-            | SampleFormat::F64
-    )
-}
-
-/// Даёт стабильный приоритет fallback-формату, когда default config unusable.
-///
-/// Обычно используется `default_output_config`; этот порядок нужен только для
-/// редкого fallback path-а через `supported_output_configs`.
-fn sample_format_priority(sample_format: SampleFormat) -> u8 {
-    match sample_format {
-        SampleFormat::F64 => 100,
-        SampleFormat::F32 => 95,
-        SampleFormat::I64 => 90,
-        SampleFormat::I32 => 80,
-        SampleFormat::I16 => 70,
-        SampleFormat::I8 => 60,
-        SampleFormat::U64 => 50,
-        SampleFormat::U32 => 40,
-        SampleFormat::U16 => 30,
-        SampleFormat::U8 => 20,
-        _ => 0,
-    }
-}
-
-/// Проверяет, попадает ли желаемая частота в range CPAL config-а.
-fn sample_rate_is_supported(
-    config_range: &cpal::SupportedStreamConfigRange,
-    sample_rate: cpal::SampleRate,
-) -> bool {
-    config_range.min_sample_rate() <= sample_rate && sample_rate <= config_range.max_sample_rate()
-}
-
-/// Сравнивает два supported ranges для fallback config selection.
-fn compare_output_config_ranges(
-    left: &cpal::SupportedStreamConfigRange,
-    right: &cpal::SupportedStreamConfigRange,
-    preferred_sample_rate: Option<cpal::SampleRate>,
-) -> Ordering {
-    let stereo_order = (left.channels() == 2).cmp(&(right.channels() == 2));
-    if stereo_order != Ordering::Equal {
-        return stereo_order;
-    }
-
-    let mono_order = (left.channels() == 1).cmp(&(right.channels() == 1));
-    if mono_order != Ordering::Equal {
-        return mono_order;
-    }
-
-    let channel_order = left.channels().cmp(&right.channels());
-    if channel_order != Ordering::Equal {
-        return channel_order;
-    }
-
-    let format_order = sample_format_priority(left.sample_format())
-        .cmp(&sample_format_priority(right.sample_format()));
-    if format_order != Ordering::Equal {
-        return format_order;
-    }
-
-    let preferred_rate_order = preferred_sample_rate
-        .map(|sample_rate| {
-            sample_rate_is_supported(left, sample_rate)
-                .cmp(&sample_rate_is_supported(right, sample_rate))
-        })
-        .unwrap_or(Ordering::Equal);
-    if preferred_rate_order != Ordering::Equal {
-        return preferred_rate_order;
-    }
-
-    left.max_sample_rate().cmp(&right.max_sample_rate())
-}
-
-/// Превращает supported range в concrete config без panic на sample rate.
-fn config_from_supported_range(
-    config_range: cpal::SupportedStreamConfigRange,
-    preferred_sample_rate: Option<cpal::SampleRate>,
-) -> cpal::SupportedStreamConfig {
-    if let Some(sample_rate) = preferred_sample_rate
-        && let Some(config) = config_range.try_with_sample_rate(sample_rate)
-    {
-        return config;
-    }
-
-    config_range.with_max_sample_rate()
-}
-
-/// Выбирает fallback output config только из форматов, которые умеет `AudioOutput`.
-fn select_supported_output_config<I>(
-    supported_ranges: I,
-    preferred_sample_rate: Option<cpal::SampleRate>,
-) -> Option<cpal::SupportedStreamConfig>
-where
-    I: IntoIterator<Item = cpal::SupportedStreamConfigRange>,
-{
-    supported_ranges
-        .into_iter()
-        .filter(|config_range| output_sample_format_is_supported(config_range.sample_format()))
-        .max_by(|left, right| compare_output_config_ranges(left, right, preferred_sample_rate))
-        .map(|config_range| config_from_supported_range(config_range, preferred_sample_rate))
-}
-
-/// Возвращает output config, предпочитая частоту декодера, затем default/fallback.
-///
-/// Прямое совпадение stream rate с decoder rate убирает linear resampler из
-/// hot path целиком: без него нет aliasing-потрескивания (у ресемплера нет
-/// анти-алиас фильтра), особенно заметного на tempo-output.
-fn choose_supported_output_config(
-    device: &cpal::Device,
-    decoder_rate: u32,
-) -> Result<cpal::SupportedStreamConfig> {
-    let default_config = match device.default_output_config() {
-        Ok(config) => Some(config),
-        Err(error) => {
-            warn!(error = %error, "CPAL default output config недоступен, пробуем supported list");
-            None
-        }
-    };
-
-    // Default уже на частоте декодера — берём его без сканирования ranges.
-    if let Some(config) = default_config.as_ref().filter(|config| {
-        output_sample_format_is_supported(config.sample_format())
-            && config.sample_rate().0 == decoder_rate
-    }) {
-        return Ok(config.clone());
-    }
-
-    // Ищем supported config ровно на частоте декодера.
-    if decoder_rate > 0
-        && let Ok(supported_ranges) = device.supported_output_configs()
-    {
-        let decoder_rate_config =
-            select_supported_output_config(supported_ranges, Some(cpal::SampleRate(decoder_rate)))
-                .filter(|config| config.sample_rate().0 == decoder_rate);
-        if let Some(config) = decoder_rate_config {
-            info!(
-                decoder_rate,
-                channels = config.channels(),
-                format = ?config.sample_format(),
-                "Output stream открыт на частоте декодера без ресемплера"
-            );
-            return Ok(config);
-        }
-    }
-
-    if let Some(config) = default_config
-        .as_ref()
-        .filter(|config| output_sample_format_is_supported(config.sample_format()))
-    {
-        return Ok(config.clone());
-    }
-
-    let preferred_sample_rate = default_config.as_ref().map(|config| config.sample_rate());
-    let supported_ranges = device
-        .supported_output_configs()
-        .context("Не удалось получить supported output configs")?;
-    let fallback_error_context = match default_config.as_ref() {
-        Some(config) => format!(
-            "Default CPAL output format {:?} не поддерживается AudioOutput, fallback не найден",
-            config.sample_format()
-        ),
-        None => "CPAL не вернул ни одного поддерживаемого output config".to_string(),
-    };
-    let fallback_config = select_supported_output_config(supported_ranges, preferred_sample_rate)
-        .context(fallback_error_context)?;
-
-    if let Some(config) = default_config {
-        warn!(
-            default_format = ?config.sample_format(),
-            fallback_format = ?fallback_config.sample_format(),
-            fallback_rate = fallback_config.sample_rate().0,
-            fallback_channels = fallback_config.channels(),
-            "Default CPAL output config заменён supported fallback"
-        );
-    } else {
-        info!(
-            format = ?fallback_config.sample_format(),
-            rate = fallback_config.sample_rate().0,
-            channels = fallback_config.channels(),
-            "Выбран CPAL output config из supported list"
-        );
-    }
-
-    Ok(fallback_config)
-}
-
-/// Нормализует decoder sample перед CPAL conversion.
-fn normalize_decoder_sample(sample: f32) -> f32 {
-    if sample.is_finite() {
-        sample.clamp(-1.0, 1.0)
-    } else {
-        0.0
-    }
-}
-
-/// Конвертирует внутренний f32 sample в concrete CPAL stream sample.
-fn convert_sample_for_output<T>(sample: f32) -> T
-where
-    T: Sample + FromSample<f32>,
-{
-    T::from_sample(normalize_decoder_sample(sample))
-}
-
-/// Потолок пик-лимитера: выше него огибающая давится к потолку.
-const PEAK_LIMITER_CEILING: f32 = 0.98;
-
-/// Release пик-лимитера в секундах: восстановление gain после пика.
-const PEAK_LIMITER_RELEASE_SECS: f32 = 0.150;
-
-/// Считает per-frame затухание огибающей лимитера для stream rate.
-fn limiter_release_decay_for_rate(sample_rate: u32) -> f32 {
-    if sample_rate == 0 {
-        return 0.0;
-    }
-    (-1.0 / (PEAK_LIMITER_RELEASE_SECS * sample_rate as f32)).exp()
-}
-
-/// Продвигает огибающую лимитера: мгновенная атака, экспоненциальный release.
-fn advance_limiter_envelope(envelope: f32, frame_peak: f32, release_decay: f32) -> f32 {
-    frame_peak.max(envelope * release_decay)
-}
-
-/// Возвращает gain, удерживающий огибающую под потолком лимитера.
-///
-/// Timestretch gain-компенсация разгоняет пики громкого материала до ~2x над
-/// full scale; обычное насыщение/клиппинг на таких уровнях — слышимый треск.
-/// Плавный gain с release вместо этого коротко приглушает пик.
-fn limiter_gain_for_envelope(envelope: f32) -> f32 {
-    if envelope <= PEAK_LIMITER_CEILING {
-        return 1.0;
-    }
-    PEAK_LIMITER_CEILING / envelope
-}
-
-/// Мягко ограничивает sample до (-1.0, 1.0) без жёстких клиппинг-фронтов.
-///
-/// Сигнал до колена 0.95 проходит линейно; выше — плавно насыщается к 1.0
-/// через tanh. Жёсткий clamp дал бы те же щелчки, что и клиппинг на device.
-/// Работает как последний рубеж после пик-лимитера.
-fn soft_clip_sample(sample: f32) -> f32 {
-    const KNEE: f32 = 0.95;
-
-    if !sample.is_finite() {
-        return 0.0;
-    }
-
-    let magnitude = sample.abs();
-    if magnitude <= KNEE {
-        return sample;
-    }
-
-    let headroom = 1.0 - KNEE;
-    let compressed = KNEE + headroom * ((magnitude - KNEE) / headroom).tanh();
-    compressed.copysign(sample)
-}
-
-/// Применяет защиту только к samples, произведённым tempo processor-ом.
-fn output_sample_for_intent(
-    sample: f32,
-    volume: f32,
-    limiter_gain: f32,
-    intent: AudioOutputWriteIntent,
-) -> f32 {
-    let volume_adjusted_sample = sample * volume;
-    match intent {
-        AudioOutputWriteIntent::DirectDecodedPcm => volume_adjusted_sample,
-        AudioOutputWriteIntent::TempoProcessed => {
-            soft_clip_sample(volume_adjusted_sample * limiter_gain)
-        }
-    }
-}
-
-/// Обнуляет history-dependent protection state на lifecycle boundary.
-fn reset_output_protection(limiter_envelope: &mut f32) {
-    *limiter_envelope = 0.0;
-}
-
-/// Классифицирует pause error по CPAL 0.15 contract.
-///
-/// В 0.15.3 нет отдельного typed `UnsupportedOperation`, поэтому backend может
-/// спрятать такую причину в `BackendSpecific.description`.
-fn classify_pause_error(error: &cpal::PauseStreamError) -> PauseErrorPolicy {
-    match error {
-        cpal::PauseStreamError::DeviceNotAvailable => PauseErrorPolicy::Fatal,
-        cpal::PauseStreamError::BackendSpecific { err } => {
-            if backend_pause_error_is_unsupported_operation(&err.description) {
-                PauseErrorPolicy::NonFatalUnsupportedOperation
-            } else {
-                PauseErrorPolicy::Fatal
-            }
-        }
-    }
-}
-
-/// Распознаёт распространённые backend descriptions для неподдерживаемой pause.
-fn backend_pause_error_is_unsupported_operation(description: &str) -> bool {
-    let normalized_description = description.to_ascii_lowercase();
-
-    normalized_description.contains("unsupportedoperation")
-        || normalized_description.contains("unsupported operation")
-        || normalized_description.contains("operation is not supported")
-        || normalized_description.contains("operation not supported")
-        || normalized_description.contains("not supported")
-}
-
-/// Останавливает CPAL stream с non-fatal policy для unsupported pause.
-fn pause_stream_with_policy(stream: &cpal::Stream) -> Result<PauseStreamOutcome> {
-    match stream.pause() {
-        Ok(()) => Ok(PauseStreamOutcome::Paused),
-        Err(error)
-            if classify_pause_error(&error) == PauseErrorPolicy::NonFatalUnsupportedOperation =>
-        {
-            Ok(PauseStreamOutcome::UnsupportedByBackend)
-        }
-        Err(error) => Err(error).context("Не удалось остановить audio stream"),
-    }
 }
 
 impl AudioOutput {
