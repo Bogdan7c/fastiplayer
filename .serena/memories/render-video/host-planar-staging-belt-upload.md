@@ -1,5 +1,7 @@
 # HostPlanar upload через StagingBelt + polосная параллельная копия (2026-07-03)
 
+> **Superseded notice (2026-07-03):** любые упоминания hover preview, hover predecode, hover budget/reservation, timeline-hover prepare или hover overlay ниже являются историческими и не описывают активный контракт. Актуальные owners и запреты: `mem:core` и `mem:frame-server/core`. Остальная non-hover информация этой memory остаётся действующей.
+
 ## Что сделано
 `render-wgpu-video::video/host_planar_upload.rs` (`WgpuHostPlanarUploadBackend`):
 - `Queue::write_texture` заменён на `wgpu::util::StagingBelt::allocate` + полосная

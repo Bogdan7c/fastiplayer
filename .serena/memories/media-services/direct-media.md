@@ -1,5 +1,7 @@
 # Direct Media Service
 
+> **Superseded notice (2026-07-03):** любые упоминания hover preview, hover predecode, hover budget/reservation, timeline-hover prepare или hover overlay ниже являются историческими и не описывают активный контракт. Актуальные owners и запреты: `mem:core` и `mem:frame-server/core`. Остальная non-hover информация этой memory остаётся действующей.
+
 - `service-direct-media` is the generic direct media URL opener. It must stay neutral: no `player-core`, no UI, no renderer/backend, no YouTube candidate/capability semantics.
 - v1 URL policy: only absolute `http(s)` URLs whose URL path has explicit `.mp4`, `.mov`, `.mkv`, or `.webm` extension. Query/fragment do not count for extension detection. IP URLs with supported extension are allowed; IP/hostname URLs without supported extension are typed unsupported. `.mov` is treated as a QuickTime/ISO BMFF extension hint and still relies on Symphonia probing for real container/track support. `rtsp`, HLS `.m3u8`, DASH `.mpd`, unsupported extensions, missing host, and parse failures are typed startup/open errors. No `HEAD`, Content-Type mapping, or byte sniffing in v1.
 - Open flow: `Url` parse/classify -> `SourceRuntimeConfig::from_network_config` -> `HttpRangeSource::open` -> require `source_core::Seekability::Seekable` -> wrap in `media_prefetch::PrefetchingByteSource` using network prefetch fields -> `SymphoniaDemuxer::from_byte_source_with_options(extension_hint, source_label, demuxer_options)` -> `DirectMediaOpenResult` with demuxer/tracks/duration/seekability/source label.

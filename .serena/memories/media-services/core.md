@@ -1,5 +1,7 @@
 # Media Services
 
+> **Superseded notice (2026-07-03):** любые упоминания hover preview, hover predecode, hover budget/reservation, timeline-hover prepare или hover overlay ниже являются историческими и не описывают активный контракт. Актуальные owners и запреты: `mem:core` и `mem:frame-server/core`. Остальная non-hover информация этой memory остаётся действующей.
+
 - `media-core` owns neutral `Packet`, `TrackInfo`, `MediaTime`, timeline/snapshot contracts. Packet payload uses `bytes::Bytes`; cloning shares payload ownership.
 - `codec-core` owns canonical codec/profile/color stream requirement types and codec adapters. Codec-specific parsing belongs here; VP9 parser is wrapped via `vp9-parser`. Concrete output ownership/transfer belongs to provider-declared `SupportedVideoOutput.frame_contract`, not to `VideoDecodeRequirement`.
 - `capability-core::SystemCapabilities::select_best_video_stream()` is the selection gate and returns a selected stream with `matched_output: SupportedVideoOutput`. Use typed `VideoCapabilityRejection` when rejection affects behavior/diagnostics; report code should distinguish unsupported decode format, backend transfer absence, renderer transfer/layout absence, and HDR/P010 policy rejects.

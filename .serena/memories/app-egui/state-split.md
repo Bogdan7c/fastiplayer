@@ -1,5 +1,7 @@
 # app-egui state split
 
+> **Superseded notice (2026-07-03):** любые упоминания hover preview, hover predecode, hover budget/reservation, timeline-hover prepare или hover overlay ниже являются историческими и не описывают активный контракт. Актуальные owners и запреты: `mem:core` и `mem:frame-server/core`. Остальная non-hover информация этой memory остаётся действующей.
+
 S14 refactor-only split moved `crates/app-egui/src/state.rs` implementation details into private child modules under `crates/app-egui/src/state/` while preserving `AppState` as the owner and preserving existing external paths through re-exports where needed.
 
 - `state.rs`: keeps `AppState` fields/constructor, frame context/timing/output structs, committed snapshot/player snapshot/redraw/desktop integration core helpers, and declares private child modules.

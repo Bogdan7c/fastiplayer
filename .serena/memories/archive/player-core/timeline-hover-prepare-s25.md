@@ -1,4 +1,6 @@
-# Obsolete: Player Core Timeline Hover Prepare
+# Archived: Player Core Timeline Hover Prepare
+
+> Superseded since 2026-07-03. Актуальные player/frame-server boundaries: `mem:player-core/core` и `mem:frame-server/core`.
 
 - OBSOLETE since 2026-07-03: timeline hover prepare, hover predecode, prepared hover working-set promotion, hover snapshot DTOs, `PlayerTimelineHoverPrepareHandoff`, and related app/player boundaries were removed from the codebase.
 - Do not use the old S25/S28 notes as implementation guidance. `PlayerSnapshot` no longer exposes timeline-hover-prepare state. `player-core` no longer owns a hover working-set handoff or hover stream decode context.

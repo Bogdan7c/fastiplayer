@@ -1,4 +1,6 @@
-# Obsolete: Hover Budget Diagnostics
+# Archived: Hover Budget Diagnostics
+
+> Superseded since 2026-07-03. Актуальный owner и действующие инварианты: `mem:frame-server/core`.
 
 - OBSOLETE since 2026-07-03: hover budget settings, resolver/admission DTOs, backend diagnostics providers, app preflight telemetry, FFmpeg software-hover budget ownership, and VA shared-hover admission were removed.
 - `video-backend-api::StartedVideoBackend` no longer carries a hover budget diagnostics provider. `frame-server-core` no longer exports hover budget types.
