@@ -56,3 +56,9 @@
 
 
 - Session 09 implements both real public scrub release policies with player-owned visible-frame stable identity/timing, strict stale guards, exact latest-target fallback, and typed command outcomes. See `mem:player-core/scrub-commit-policy-s09`.
+
+
+## Dormant scrub-driver cleanup (2026-07-11, maintenance Session 12)
+
+- `session/scrub_driver.rs` не имеет module-wide `dead_code` suppression. Production driver сохраняет только реально вызываемый `submit_target_update -> drive_step` path; безссылочный `cancel_active` route и lifecycle result/error variants, которые production implementation не мог построить, удалены без подключения нового lifecycle behavior.
+- `AudioResumeTimingInput::known` и `PlaybackPipeline::can_send_video_decode_packets` являются focused test helpers и компилируются только под `cfg(test)`. Media load по-прежнему всегда сбрасывает playback rate в `1.0x`; future-only `PreserveAcrossPlaylist` и одно-вариантная policy abstraction удалены.

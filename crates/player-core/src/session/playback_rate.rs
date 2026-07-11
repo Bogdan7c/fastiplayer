@@ -11,17 +11,6 @@ use crate::{
 use super::audio_tempo_rate_change::PreparedAudioTempoRateChange;
 use super::audio_tempo_rate_change::audio_output_unavailable_reject;
 
-/// Политика скорости при новом media load.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PlaybackRateMediaLoadPolicy {
-    /// V1 всегда возвращает новое media к прежнему `1.0x` поведению.
-    ResetOnMediaLoad,
-
-    /// Future extension point для playlist/session-preserve сценариев без TOML/UI wiring в S33.
-    #[allow(dead_code)]
-    PreserveAcrossPlaylist,
-}
-
 impl PlayerSession {
     /// Применяет checked playback rate только в состояниях, где S33 разрешает mutation.
     pub(super) fn set_playback_rate(
@@ -190,19 +179,9 @@ impl PlayerSession {
         Ok(())
     }
 
-    /// Возвращает текущую internal policy без чтения config/settings.
-    fn playback_rate_media_load_policy(&self) -> PlaybackRateMediaLoadPolicy {
-        PlaybackRateMediaLoadPolicy::ResetOnMediaLoad
-    }
-
-    /// Применяет media-load policy к session-owned snapshot storage.
-    pub(super) fn apply_playback_rate_media_load_policy(&mut self) {
-        match self.playback_rate_media_load_policy() {
-            PlaybackRateMediaLoadPolicy::ResetOnMediaLoad => {
-                self.snapshot.playback_rate = PlaybackRate::NORMAL;
-            }
-            PlaybackRateMediaLoadPolicy::PreserveAcrossPlaylist => {}
-        }
+    /// Возвращает новое media к поддерживаемому начальному состоянию `1.0x`.
+    pub(super) fn reset_playback_rate_for_media_load(&mut self) {
+        self.snapshot.playback_rate = PlaybackRate::NORMAL;
     }
 }
 

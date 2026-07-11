@@ -31,3 +31,7 @@
 - Playback-rate overload finding (2026-07-10): the 4K60 HDR AV1 asset `<MEDIA_DIR>/av1-4k60-hdr-pq.mp4` has measured gaps up to 420 frames / about 7.01 s media and 20.63 MiB compressed payload between keyframes. Bare software decode has only narrow headroom over the 239.76 fps needed at `4x`, so exact-clock playback may require visible video skips. This is not fixed with FFmpeg/libdav1d `skip_frame`: runtime discard semantics and H.265 CRA/RASL-style random access are not safely expressible through the generic player contract. `video-ffmpeg` remains a normal neutral decoder backend. The player-owned compressed backlog state machine in `player-core` may perform no-flush recovery only for AV1/VP9 proven keyframes; it never exposes FFmpeg types or moves queue ownership into this crate.
 
 Source doc: `user/ffmpeg_backend_design.md` and `user/ffmpeg_sw_implementation_sessions_plan.md`.
+
+## Dormant error cleanup (2026-07-11, maintenance Session 12)
+
+- `FfmpegDecoderThreadError` больше не содержит future-only `DecodeNotImplemented`: production decoder path полностью реализован, variant не имел constructors/references и не являлся serialized/wire contract. Поддерживаемые состояния остаются typed (`FeatureDisabled`, `ThreadSpawn`, `DecoderNotConfigured`, `ProtocolViolation`, `Ffi`); новый runtime caller ради сохранения dormant variant не добавлялся.

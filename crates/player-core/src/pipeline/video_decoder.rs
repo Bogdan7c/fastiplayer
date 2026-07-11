@@ -46,11 +46,9 @@ impl PlaybackPipeline {
 
     /// Проверяет, можно ли отправлять encoded packets через decoder I/O boundary.
     ///
-    /// Tick-код использует этот метод как send-side readiness и не зависит от
-    /// того, каким полем pipeline владеет активным decoder backend-ом.
-    // Send-side readiness boundary; сейчас зафиксирован только focused tests
-    // (decoder_boundary), поэтому в non-test сборке метод не имеет вызовов.
-    #[allow(dead_code)]
+    /// Focused boundary-тесты проверяют через него send-side readiness, не читая
+    /// внутреннее поле активного decoder backend-а.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn can_send_video_decode_packets(&self) -> bool {
         self.video_decoder_send_backpressure(usize::MAX).is_none()

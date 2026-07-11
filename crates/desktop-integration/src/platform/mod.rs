@@ -4,9 +4,11 @@ use std::thread;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use tracing::debug;
 
+#[cfg(not(target_os = "linux"))]
+use crate::DesktopBackendKind;
 use crate::{
-    DesktopBackendKind, DesktopCommandSink, DesktopIntegrationError, DesktopIntegrationEvent,
-    DesktopIntegrationResult, DesktopSnapshotChange, LatestSnapshotHandle,
+    DesktopCommandSink, DesktopIntegrationError, DesktopIntegrationEvent, DesktopIntegrationResult,
+    DesktopSnapshotChange, LatestSnapshotHandle,
 };
 
 #[cfg(target_os = "linux")]
@@ -55,6 +57,7 @@ impl BackendHandle {
     }
 
     /// Создаёт no-op handle для platform stubs.
+    #[cfg(not(target_os = "linux"))]
     pub(crate) fn stub(command_sink: Arc<dyn DesktopCommandSink>) -> Self {
         Self {
             command_sink,
@@ -123,7 +126,7 @@ pub(crate) fn spawn_backend(
 }
 
 /// Helper для stub modules.
-#[allow(dead_code)]
+#[cfg(not(target_os = "linux"))]
 pub(crate) fn spawn_stub_backend(
     command_sink: Arc<dyn DesktopCommandSink>,
     _snapshot_source: LatestSnapshotHandle,

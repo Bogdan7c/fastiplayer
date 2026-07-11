@@ -329,7 +329,7 @@ impl PlayerSession {
     /// Принимает open request и переводит session в `Opening`.
     pub(super) fn open_media(&mut self, request: MediaOpenRequest) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        self.apply_playback_rate_media_load_policy();
+        self.reset_playback_rate_for_media_load();
         self.media_lifecycle
             .remember_open_autoplay(request.autoplay);
         self.snapshot.source_label = Some(request.source.label());

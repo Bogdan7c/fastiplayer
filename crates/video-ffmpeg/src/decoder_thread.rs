@@ -117,10 +117,6 @@ pub enum FfmpegDecoderThreadError {
     #[error("FFmpeg decoder thread unavailable because feature `ffmpeg` is disabled")]
     FeatureDisabled,
 
-    /// Crate scaffold уже существует, но конкретная часть backend-а ещё не подключена.
-    #[error("FFmpeg decoder thread operation is not implemented yet")]
-    DecodeNotImplemented,
-
     /// OS не смогла создать decoder thread.
     #[error("failed to spawn FFmpeg decoder thread: {reason}")]
     ThreadSpawn {

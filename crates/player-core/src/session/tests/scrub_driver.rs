@@ -1,11 +1,11 @@
 use std::path::Path;
 
 use frame_server_core::{
-    AudioResumeBudgetSource, CancelScrubReason, DecoderBackpressureReason, DemuxUnavailableReason,
-    DemuxUnsupportedReason, FeedAndDrainStopCondition, FinishScrubPolicy, FrameServerConfig,
-    HostUploadBackpressureReason, PlaybackGeneration, ResourceBusyReason, ScrubDriverOutcome,
-    ScrubExactnessPolicy, ScrubGeneration, ScrubGenerationToken, ScrubIntentKind, ScrubRequestKind,
-    ScrubStaleReason, ScrubTarget, ScrubTargetUpdate, ScrubTimeoutReason, ScrubTrackSelection,
+    AudioResumeBudgetSource, CancelScrubReason, DemuxUnavailableReason, DemuxUnsupportedReason,
+    FeedAndDrainStopCondition, FinishScrubPolicy, FrameServerConfig, PlaybackGeneration,
+    ScrubDriverOutcome, ScrubExactnessPolicy, ScrubGeneration, ScrubGenerationToken,
+    ScrubIntentKind, ScrubRequestKind, ScrubStaleReason, ScrubTarget, ScrubTargetUpdate,
+    ScrubTrackSelection,
 };
 
 use super::super::scrub_driver::{
@@ -213,38 +213,11 @@ fn scrub_lifecycle_errors_map_to_typed_driver_outcomes() {
             ScrubDriverOutcomeKindForTest::DemuxUnsupported,
         ),
         (
-            ScrubLifecycleError::DecoderBackpressure(
-                DecoderBackpressureReason::DecoderControlChannelFull,
-            ),
-            ScrubDriverOutcomeKindForTest::DecoderBackpressure,
-        ),
-        (
-            ScrubLifecycleError::HostUploadBackpressure(
-                HostUploadBackpressureReason::UploadSlotsExhausted,
-            ),
-            ScrubDriverOutcomeKindForTest::HostUploadBackpressure,
-        ),
-        (
-            ScrubLifecycleError::ResourceBusy(ResourceBusyReason::PlaybackOwnsDecoder),
-            ScrubDriverOutcomeKindForTest::ResourceBusy,
-        ),
-        (
             ScrubLifecycleError::StaleGeneration(ScrubStaleReason::ScrubGenerationMismatch {
                 context_generation: ScrubGeneration::new(1),
                 current_generation: ScrubGeneration::new(2),
             }),
             ScrubDriverOutcomeKindForTest::StaleGeneration,
-        ),
-        (
-            ScrubLifecycleError::Cancelled(CancelScrubReason::UserCancelled),
-            ScrubDriverOutcomeKindForTest::Cancelled,
-        ),
-        (
-            ScrubLifecycleError::TimedOut {
-                reason: ScrubTimeoutReason::DriverStepBudgetExceeded,
-                elapsed: Duration::from_millis(42),
-            },
-            ScrubDriverOutcomeKindForTest::TimedOut,
         ),
         (
             ScrubLifecycleError::Fatal(

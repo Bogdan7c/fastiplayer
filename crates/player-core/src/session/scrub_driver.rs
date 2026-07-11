@@ -1,22 +1,15 @@
-#![allow(dead_code)]
-// S13B добавляет driver skeleton до публичного command/UI wiring.
-// Следующая сессия должна убрать этот allow, когда driver начнёт вызываться из session flow.
-
 use std::collections::VecDeque;
 use std::time::Duration;
 
 use frame_server_core::{
-    AudioResumeBudgetMetadata, AudioResumeErrorReason, CancelScrubReason, CancelledOutcome,
-    DecodePointSeekedOutcome, DecoderBackpressureOutcome, DecoderBackpressureReason,
+    AudioResumeBudgetMetadata, CancelScrubReason, CancelledOutcome, DecodePointSeekedOutcome,
     DemuxUnavailableOutcome, DemuxUnavailableReason, DemuxUnsupportedOutcome,
-    DemuxUnsupportedReason, ExactFrameReadyOutcome, FatalOutcome, FeedAndDrainStopCondition,
-    FinishScrubPolicy, FinishedOutcome, HostUploadBackpressureOutcome,
-    HostUploadBackpressureReason, MatchedPlaybackOutcome, PlaybackGeneration, PreparedOutcome,
-    PreviewFrameReadyOutcome, ProgressedOutcome, ResourceBusyOutcome, ResourceBusyReason,
+    DemuxUnsupportedReason, FatalOutcome, FeedAndDrainStopCondition, FinishScrubPolicy,
+    FinishedOutcome, MatchedPlaybackOutcome, PlaybackGeneration, PreparedOutcome,
     ScrubDriverOutcome, ScrubEvent, ScrubEventFrameIdentity, ScrubExecutionPolicy,
     ScrubFatalReason, ScrubFrameTiming, ScrubGeneration, ScrubGenerationToken, ScrubIntent,
-    ScrubIntentKind, ScrubNoVideoFrameReason, ScrubProgress, ScrubStaleReason, ScrubStateMachine,
-    ScrubStep, ScrubTargetContext, ScrubTargetUpdate, ScrubTimedOutOutcome, ScrubTimeoutReason,
+    ScrubIntentKind, ScrubNoVideoFrameReason, ScrubStaleReason, ScrubStateMachine, ScrubStep,
+    ScrubTargetContext, ScrubTargetUpdate, ScrubTimedOutOutcome, ScrubTimeoutReason,
     SourceRevision, StaleGenerationOutcome, ValidatedFrameServerConfig,
 };
 use media_core::{DemuxSeekRequest, MediaDemuxError, MediaTime, TrackTimestamp};
@@ -62,15 +55,6 @@ impl PlayerScrubTransactionDriver {
         update: ScrubTargetUpdate,
     ) -> ScrubDriverRun {
         let step = self.state_machine.submit_target_update(update);
-        self.drive_step(lifecycle, step)
-    }
-
-    pub(super) fn cancel_active(
-        &mut self,
-        lifecycle: &mut impl ScrubTransactionLifecycle,
-        reason: CancelScrubReason,
-    ) -> ScrubDriverRun {
-        let step = self.state_machine.cancel_active(reason);
         self.drive_step(lifecycle, step)
     }
 
@@ -185,9 +169,6 @@ pub(super) struct ScrubDemuxSeekAccepted {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ScrubFeedDrainResult {
-    Progressed(ScrubProgress),
-    ExactFrameReady(frame_server_core::ScrubPreviewFrame),
-    PreviewFrameReady(frame_server_core::ScrubPreviewFrame),
     AudioResumePending(AudioResumeBudgetMetadata),
 }
 
@@ -208,22 +189,9 @@ pub(super) enum ScrubFinishResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ScrubLifecycleError {
-    AudioResumeTimedOut(AudioResumeBudgetMetadata),
-    AudioResumeFailed {
-        reason: AudioResumeErrorReason,
-        budget: Option<AudioResumeBudgetMetadata>,
-    },
-    Cancelled(CancelScrubReason),
     StaleGeneration(ScrubStaleReason),
-    ResourceBusy(ResourceBusyReason),
     DemuxUnavailable(DemuxUnavailableReason),
     DemuxUnsupported(DemuxUnsupportedReason),
-    DecoderBackpressure(DecoderBackpressureReason),
-    HostUploadBackpressure(HostUploadBackpressureReason),
-    TimedOut {
-        reason: ScrubTimeoutReason,
-        elapsed: Duration,
-    },
     Fatal(ScrubFatalReason),
 }
 
@@ -238,6 +206,7 @@ pub(super) struct AudioResumeTimingInput {
 }
 
 impl AudioResumeTimingInput {
+    #[cfg(test)]
     #[must_use]
     pub(super) const fn known(
         current_output_buffer: Duration,
@@ -328,49 +297,14 @@ pub(super) fn derive_audio_resume_timeout_budget(
 impl ScrubLifecycleError {
     pub(super) fn into_outcome(self, context: ScrubTargetContext) -> ScrubDriverOutcome {
         match self {
-            Self::AudioResumeTimedOut(budget) => ScrubDriverOutcome::AudioResumeTimedOut(
-                frame_server_core::AudioResumeTimedOutOutcome { context, budget },
-            ),
-            Self::AudioResumeFailed { reason, budget } => {
-                ScrubDriverOutcome::AudioResumeFailed(frame_server_core::AudioResumeFailedOutcome {
-                    context,
-                    reason,
-                    budget,
-                })
-            }
-            Self::Cancelled(reason) => {
-                ScrubDriverOutcome::Cancelled(CancelledOutcome { context, reason })
-            }
             Self::StaleGeneration(reason) => {
                 ScrubDriverOutcome::StaleGeneration(StaleGenerationOutcome { context, reason })
-            }
-            Self::ResourceBusy(reason) => {
-                ScrubDriverOutcome::ResourceBusy(ResourceBusyOutcome { context, reason })
             }
             Self::DemuxUnavailable(reason) => {
                 ScrubDriverOutcome::DemuxUnavailable(DemuxUnavailableOutcome { context, reason })
             }
             Self::DemuxUnsupported(reason) => {
                 ScrubDriverOutcome::DemuxUnsupported(DemuxUnsupportedOutcome { context, reason })
-            }
-            Self::DecoderBackpressure(reason) => {
-                ScrubDriverOutcome::DecoderBackpressure(DecoderBackpressureOutcome {
-                    context,
-                    reason,
-                })
-            }
-            Self::HostUploadBackpressure(reason) => {
-                ScrubDriverOutcome::HostUploadBackpressure(HostUploadBackpressureOutcome {
-                    context,
-                    reason,
-                })
-            }
-            Self::TimedOut { reason, elapsed } => {
-                ScrubDriverOutcome::TimedOut(ScrubTimedOutOutcome {
-                    context,
-                    reason,
-                    elapsed,
-                })
             }
             Self::Fatal(reason) => ScrubDriverOutcome::Fatal(FatalOutcome { context, reason }),
         }
@@ -656,15 +590,6 @@ fn execute_feed_and_drain(
     stop_condition: FeedAndDrainStopCondition,
 ) -> ScrubDriverOutcome {
     match lifecycle.feed_and_drain(context, stop_condition) {
-        Ok(ScrubFeedDrainResult::Progressed(progress)) => {
-            ScrubDriverOutcome::Progressed(ProgressedOutcome { context, progress })
-        }
-        Ok(ScrubFeedDrainResult::ExactFrameReady(frame)) => {
-            ScrubDriverOutcome::ExactFrameReady(ExactFrameReadyOutcome { context, frame })
-        }
-        Ok(ScrubFeedDrainResult::PreviewFrameReady(frame)) => {
-            ScrubDriverOutcome::PreviewFrameReady(PreviewFrameReadyOutcome { context, frame })
-        }
         Ok(ScrubFeedDrainResult::AudioResumePending(budget)) => {
             ScrubDriverOutcome::AudioResumePending(frame_server_core::AudioResumePendingOutcome {
                 context,
