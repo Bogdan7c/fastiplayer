@@ -1,0 +1,171 @@
+schema_version = 5
+
+[player]
+start_paused = true
+resume_last_position = true
+preferred_video_codec_order = [
+    "vp9",
+    "av1",
+    "h264",
+    "h265",
+    "vp8",
+]
+
+# Настройки seek commit, resume после seek и hotkey-шагов.
+[player.seek]
+# Timeout финального seek/scrub commit-а.
+commit_timeout_ms = 10000
+# Минимальный audio buffer перед resume после commit-а.
+resume_audio_min_buffer_ms = 50
+# Soft timeout audio gate-а после показанного target video frame.
+resume_audio_gate_timeout_ms = 250
+# Минимальный запас готовых video frames перед resume после commit-а.
+resume_video_min_ready_frames = 3
+# Bounded окно worker work для accurate seek decode-preroll до target frame.
+fast_preroll_budget_ms = 48
+# Burst-лимит video packets/frames для accurate seek GOP preroll.
+fast_preroll_video_packet_burst = 512
+# Поведение seek commit-а, начатого из paused состояния.
+paused_commit_behavior = "stay_paused"
+# Малый шаг seek hotkey в секундах.
+hotkey_small_step_secs = 5
+# Большой шаг seek hotkey в секундах.
+hotkey_large_step_secs = 30
+
+# Fail-safe настройки demuxer-а.
+[player.demux]
+# Сколько corrupted packets подряд можно пропустить до fatal ошибки.
+max_consecutive_corrupted_packets = 64
+
+[video]
+preferred_backend = "auto"
+max_decode_ahead_ms = 500
+present_queue_frames = 8
+# Bounded очередь packets между worker и decoder thread.
+decoder_packet_channel_frames = 32
+# Bounded очередь decoded frames между decoder thread и worker.
+decoder_frame_channel_frames = 8
+# Backend-local ready queue для burst FrameReady events.
+decoder_ready_queue_frames = 8
+# VA output surface descriptors для hardware decoder-а.
+decoder_surface_pool_frames = 24
+# Сколько software (FFmpeg host RAM) кадров держать одновременно; меньше = стабильнее FPS на 4K.
+sw_decoder_surface_pool_frames = 8
+# Потоки software-декода; 0 = авто (ядра − 2, чтобы render-поток не голодал).
+sw_decode_threads = 0
+# Zero-copy external import slots; CPU fallback всё равно запрещён.
+zero_copy_surface_pool_slots = 24
+
+# Настройки worker scheduler-а для bounded catch-up после latency spike.
+[video.scheduler]
+# Базовый budget чтения container packets за один worker tick.
+demux_packets_per_tick = 12
+# Базовый budget отправки video packets в decoder thread за tick.
+video_packets_per_tick = 8
+# Базовый budget приёма decoded frames из decoder thread за tick.
+decoded_frames_per_tick = 8
+# Дополнительное bounded окно catch-up work после обычного tick.
+catch_up_budget_ms = 4
+# Минимальный запас ready frames, ниже которого diagnostics считает starvation.
+present_queue_min_frames = 2
+# Целевой запас ready frames; максимум задаёт video.present_queue_frames.
+present_queue_target_frames = 4
+# Целевой video decode-ahead; максимум задаёт video.max_decode_ahead_ms.
+decode_ahead_target_ms = 250
+# Минимальный резерв свободных zero-copy surface/import slots перед decode.
+surface_free_slots_min = 2
+# Целевой резерв surface/import slots для adaptive catch-up.
+surface_free_slots_target = 4
+
+# Настройки Frame Server, которые остаются нужны для live scrub и будущего playback rate.
+[frame_server]
+# Включает live drag preview updates; точный seek по click/release остаётся активным.
+live_scrub_enabled = true
+# Политика live scrub: throttled_latest или every_drag_event, оба latest-only.
+live_scrub_decode_mode = "throttled_latest"
+# Максимальная частота live scrub decode-work для throttled_latest; допустимо 1..=240.
+live_scrub_max_hz = 60
+
+[render]
+profile = "vulkan"
+tone_mapping = "disabled"
+
+[render.hdr_to_sdr]
+enabled = true
+operator = "bt2446_c"
+sdr_reference_white_nits = 100.0
+hdr_reference_peak_nits = 1000.0
+
+[render.color_adjustment]
+brightness = 0.0
+contrast = 1.0
+saturation = 1.0
+exposure = 0.0
+rgb_gain = [
+    1.0,
+    1.0,
+    1.0,
+]
+rgb_offset = [
+    0.0,
+    0.0,
+    0.0,
+]
+
+[render.vulkan]
+present_mode = "fifo"
+max_frame_latency = 2
+
+[render.opengles]
+enabled = false
+simple_ui = true
+
+[audio]
+volume = 0.8
+output_device = "default"
+buffer_target_ms = 200
+
+# Настройки будущего source/network cache слоя.
+[network]
+# RAM cache budget; 0 явно отключает RAM cache.
+memory_cache_mb = 128
+# RAM window, которое prefetch держит впереди foreground cursor-а.
+read_ahead_mb = 256
+# Размер ПЕРВОГО prefetch-чтения (slow-start), КиБ.
+prefetch_initial_chunk_kb = 64
+# Максимальный размер одного фонового prefetch-чтения.
+prefetch_chunk_mb = 8
+# Timeout подключения к сетевому источнику.
+connect_timeout_ms = 15000
+# Timeout чтения из сетевого источника.
+read_timeout_ms = 15000
+
+# Настройки YouTube/service adapter-а.
+[youtube]
+enabled = true
+prefer_account_session = true
+# Политика YouTube dynamic range: только SDR или HDR с автоматическим SDR fallback.
+hdr_selection = "sdr_only"
+# Timeout подготовки YouTube metadata через yt-dlp.
+resolve_timeout_ms = 30000
+
+[ui]
+show_telemetry = true
+language = "ru"
+# UI skin id; unknown id является config error.
+skin = "minimal"
+
+# Настройки кастомного заголовка окна Rustiplayer.
+[ui.window]
+# Высота кастомного titlebar в логических UI px.
+titlebar_height_px = 40
+
+# Настройки поведения окна Settings UI.
+[ui.settings]
+# Максимальная частота live preview updates в Settings UI.
+live_preview_max_hz = 60
+
+# Настройки UI-анимаций.
+[ui.animations]
+# Длительность выезда settings sidebar и сжатия видео, мс; 0 отключает анимацию.
+sidebar_slide_duration_ms = 500
