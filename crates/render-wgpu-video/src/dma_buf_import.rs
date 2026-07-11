@@ -15,6 +15,8 @@ use anyhow::Context;
 use ash::vk;
 use video_core::{DmaBufFrameDescriptor, DmaBufFrameExportLayout, DmaBufLayerDescriptor};
 
+mod safety;
+
 /// Значение VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT из Vulkan headers.
 /// ash 0.38 не экспортирует эту константу напрямую.
 const VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT: i32 = 1000158000;
@@ -69,6 +71,11 @@ impl DmaBufFrameFormat {
         image_fourcc: u32,
         layers: &[DmaBufLayerDescriptor],
     ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            layers.len() == 2,
+            "separate-layer DMA-BUF descriptor must contain exactly 2 layers, got {}",
+            layers.len()
+        );
         let y_layer = layers
             .first()
             .context("separate-layer DMA-BUF image has no luma layer")?;
@@ -243,35 +250,6 @@ pub(crate) const fn plane_view_contract_for_imported_format(
     }
 }
 
-/// Дублирует DMA-BUF fd перед передачей во Vulkan import.
-///
-/// Исходный `source_fd` принадлежит нейтральному descriptor/provider, поэтому
-/// Vulkan получает отдельный duplicate. До успешного `vkAllocateMemory` этот
-/// duplicate принадлежит этому helper-у; после успешного import его владельцем
-/// становится Vulkan implementation.
-fn duplicate_fd_for_vulkan_import(
-    source_fd: RawFd,
-    import_context: &'static str,
-) -> anyhow::Result<RawFd> {
-    nix::unistd::dup(source_fd)
-        .with_context(|| format!("{import_context}: dup dma-buf fd for Vulkan import failed"))
-}
-
-/// Закрывает fd, который Vulkan не принял из-за ошибки import.
-///
-/// Вызывать это можно только после failed `vkAllocateMemory`: успешный import
-/// уже передал fd драйверу, и ручной `close` стал бы double-close чужого ресурса.
-fn close_unimported_fd(vulkan_fd: RawFd, import_context: &'static str) {
-    if let Err(error) = nix::unistd::close(vulkan_fd) {
-        tracing::warn!(
-            error = %error,
-            fd = vulkan_fd,
-            import_context,
-            "Failed to close DMA-BUF fd during import cleanup"
-        );
-    }
-}
-
 /// Аллоцирует `VkDeviceMemory`, импортируя DMA-BUF fd.
 ///
 /// Важное правило Vulkan: при успешном импорте fd становится собственностью
@@ -284,11 +262,11 @@ fn allocate_dma_buf_memory_for_image(
     source_fd: RawFd,
     import_context: &'static str,
 ) -> anyhow::Result<vk::DeviceMemory> {
-    let vulkan_fd = duplicate_fd_for_vulkan_import(source_fd, import_context)?;
+    let vulkan_fd = safety::duplicate_fd_for_vulkan_import(source_fd, import_context)?;
     let mut dedicated_info = vk::MemoryDedicatedAllocateInfo::default().image(image);
     let mut import_info = vk::ImportMemoryFdInfoKHR::default()
         .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
-        .fd(vulkan_fd);
+        .fd(vulkan_fd.as_raw_fd());
     let allocate_info = vk::MemoryAllocateInfo::default()
         .allocation_size(mem_requirements.size)
         .memory_type_index(memory_type_index)
@@ -298,17 +276,21 @@ fn allocate_dma_buf_memory_for_image(
     // SAFETY: `raw_device` пришёл из активного Vulkan backend wgpu-hal, а
     // `allocate_info` держит живую pNext-цепочку (`dedicated_info` +
     // `import_info`) на время синхронного вызова. `image` создан на том же
-    // устройстве и ещё не уничтожен. `vulkan_fd` — наш duplicate; при успехе
-    // Vulkan забирает ownership fd, при ошибке ownership остаётся у нас и
-    // закрывается ниже через `close_unimported_fd`.
+    // устройстве и ещё не уничтожен. `vulkan_fd` — наш duplicate; Vulkan
+    // забирает ownership fd только при успехе, а при ошибке ownership
+    // остаётся у `OwnedFd`, который закроет duplicate при выходе из scope.
     match unsafe { raw_device.allocate_memory(&allocate_info, None) } {
-        Ok(memory) => Ok(memory),
-        Err(error) => {
-            close_unimported_fd(vulkan_fd, import_context);
-            Err(anyhow::anyhow!(
-                "{import_context}: vkAllocateMemory failed for DMA-BUF import: {error:?}"
-            ))
+        Ok(memory) => {
+            // Успешный Vulkan import забрал ownership fd. `forget` запрещает
+            // Rust закрыть descriptor, который теперь принадлежит драйверу.
+            std::mem::forget(vulkan_fd);
+            Ok(memory)
         }
+        // При ошибке ownership не передан: `OwnedFd` закрывает duplicate ровно
+        // один раз на выходе из ветки без ручного close/double-close риска.
+        Err(error) => Err(anyhow::anyhow!(
+            "{import_context}: vkAllocateMemory failed for DMA-BUF import: {error:?}"
+        )),
     }
 }
 
@@ -328,15 +310,13 @@ fn bind_imported_memory_to_image(
     match unsafe { raw_device.bind_image_memory(image, memory, memory_offset) } {
         Ok(()) => Ok(()),
         Err(error) => {
-            // SAFETY: bind не состоялся, поэтому `memory` ещё не принадлежит
-            // wgpu texture wrapper-у и не используется image-ом. Память была
-            // выделена на этом же устройстве и ещё не освобождалась; её
-            // освобождение также отпускает Vulkan reference на imported fd.
-            unsafe { raw_device.free_memory(memory, None) };
             // SAFETY: после failed bind `image` остаётся нашим локальным
             // Vulkan handle-ом, не переданным в wgpu-hal. Memory к нему не
             // привязана, поэтому image можно уничтожить отдельно.
             unsafe { raw_device.destroy_image(image, None) };
+            // SAFETY: image уже уничтожен, а memory не была успешно bound и
+            // не передавалась WGPU. Это единственный cleanup owner allocation.
+            unsafe { raw_device.free_memory(memory, None) };
             Err(anyhow::anyhow!(
                 "{bind_context}: bind_image_memory failed: {error:?}"
             ))
@@ -455,19 +435,22 @@ pub(crate) enum ImportedDmaBufStorage {
 
 /// Результат zero-copy импорта multi-planar DMA-BUF.
 ///
-/// Хранит texture storage и два typed plane view.
+/// Хранит два typed plane view и texture storage.
 pub(crate) struct ImportedDmaBufTexture {
     /// Формат decoded frame, выбранный из DRM fourcc descriptor-а.
     pub(crate) frame_format: DmaBufFrameFormat,
-
-    /// Imported texture storage, который владеет raw VkImage/VkDeviceMemory.
-    pub(crate) storage: ImportedDmaBufStorage,
 
     /// View первой plane: luma/Y.
     pub(crate) y_view: wgpu::TextureView,
 
     /// View второй plane: interleaved chroma/UV.
     pub(crate) uv_view: wgpu::TextureView,
+
+    /// Imported texture storage, который владеет raw VkImage/VkDeviceMemory.
+    ///
+    /// Поле объявлено после views намеренно: Rust уничтожает поля по порядку
+    /// объявления, поэтому view handles отпускаются до storage/drop callback.
+    pub(crate) storage: ImportedDmaBufStorage,
 }
 
 impl ImportedDmaBufStorage {
@@ -506,6 +489,9 @@ struct DmaBufPlaneImport {
     /// Offset plane внутри DMA-BUF object.
     offset: u64,
 
+    /// Полный размер DMA-BUF object-а для bounds validation.
+    object_size: u64,
+
     /// Ширина plane texture.
     width: u32,
 
@@ -542,16 +528,20 @@ impl DmaBufImporter {
     ) -> anyhow::Result<ImportedDmaBufTexture> {
         match image.export_layout {
             DmaBufFrameExportLayout::ComposedLayers => {
+                anyhow::ensure!(
+                    image.layers.len() == 1,
+                    "composed-layer DMA-BUF descriptor must contain exactly 1 layer, got {}",
+                    image.layers.len()
+                );
                 let layer = image
                     .layers
                     .first()
                     .context("exported DMA-BUF image has no DRM PRIME layers")?;
-                if layer.num_planes < 2 {
-                    anyhow::bail!(
-                        "exported DMA-BUF layer has fewer than 2 planes: {}",
-                        layer.num_planes
-                    );
-                }
+                anyhow::ensure!(
+                    layer.num_planes == 2,
+                    "composed-layer DMA-BUF descriptor must contain exactly 2 planes, got {}",
+                    layer.num_planes
+                );
 
                 let frame_format = DmaBufFrameFormat::from_fourcc(image.fourcc, layer.drm_format)?;
 
@@ -613,6 +603,29 @@ impl DmaBufImporter {
             )
         })?;
 
+        let bytes_per_component = match frame_format {
+            DmaBufFrameFormat::Nv12 => 1,
+            DmaBufFrameFormat::P010 => 2,
+        };
+        safety::validate_plane_bounds(
+            u64::from(object.size),
+            u64::from(layer.offset[0]),
+            layer.pitch[0],
+            image.width,
+            image.height,
+            bytes_per_component,
+            "multi-planar luma plane",
+        )?;
+        safety::validate_plane_bounds(
+            u64::from(object.size),
+            u64::from(layer.offset[1]),
+            layer.pitch[1],
+            image.width.div_ceil(2),
+            image.height.div_ceil(2),
+            bytes_per_component * 2,
+            "multi-planar chroma plane",
+        )?;
+
         let modifier = object.drm_format_modifier;
         let use_drm_modifier = modifier != DRM_FORMAT_MOD_LINEAR;
         let tiling = if use_drm_modifier {
@@ -663,6 +676,22 @@ impl DmaBufImporter {
         let hal_adapter = unsafe { self.adapter.as_hal::<wgpu::hal::vulkan::Api>() }
             .context("Zero-copy import requires Vulkan backend")?;
         let physical_device = hal_adapter.raw_physical_device();
+        let fd_memory_type_bits = safety::query_dma_buf_memory_type_bits(
+            raw_instance,
+            raw_device,
+            object.fd.as_raw_fd(),
+            "multi-planar DMA-BUF import",
+        )?;
+        if use_drm_modifier {
+            safety::validate_drm_modifier_plane_count(
+                raw_instance,
+                physical_device,
+                frame_format.vulkan_texture_format(),
+                modifier,
+                layer.num_planes,
+                "multi-planar DMA-BUF import",
+            )?;
+        }
 
         let mut external_memory_info = vk::ExternalMemoryImageCreateInfo::default()
             .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
@@ -710,19 +739,16 @@ impl DmaBufImporter {
         // вызов только читает immutable memory properties драйвера.
         let mem_properties =
             unsafe { raw_instance.get_physical_device_memory_properties(physical_device) };
-
-        let memory_type_index = match (0..mem_properties.memory_type_count)
-            .find(|i| {
-                let type_bits = mem_requirements.memory_type_bits;
-                type_bits & (1 << i) != 0
-                    && mem_properties.memory_types[*i as usize]
-                        .property_flags
-                        .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
-            })
+        let memory_type_count = mem_properties.memory_type_count as usize;
+        let memory_type_index = match safety::select_import_memory_type_index(
+            mem_requirements.memory_type_bits,
+            fd_memory_type_bits,
+            &mem_properties.memory_types[..memory_type_count],
+        )
             .with_context(|| {
                 format!(
-                    "No suitable Vulkan memory type for multi-planar {} DMA-BUF import",
-                    frame_format.diagnostic_label()
+                    "No Vulkan memory type shared by multi-planar {} image requirements and DMA-BUF fd properties",
+                    frame_format.diagnostic_label(),
                 )
             }) {
             Ok(memory_type_index) => memory_type_index,
@@ -892,6 +918,7 @@ impl DmaBufImporter {
             .import_plane(DmaBufPlaneImport {
                 fd: y_object.fd.as_raw_fd(),
                 offset: u64::from(y_layer.offset[0]),
+                object_size: u64::from(y_object.size),
                 width: image.width,
                 height: image.height,
                 pitch: y_layer.pitch[0],
@@ -904,8 +931,9 @@ impl DmaBufImporter {
             .import_plane(DmaBufPlaneImport {
                 fd: uv_object.fd.as_raw_fd(),
                 offset: u64::from(uv_layer.offset[0]),
-                width: image.width / 2,
-                height: image.height / 2,
+                object_size: u64::from(uv_object.size),
+                width: image.width.div_ceil(2),
+                height: image.height.div_ceil(2),
                 pitch: uv_layer.pitch[0],
                 modifier: uv_object.drm_format_modifier,
                 format: view_contract.uv_plane.format,
@@ -936,6 +964,22 @@ impl DmaBufImporter {
 
     /// Импортирует одну плоскость (fd + offset) в wgpu texture.
     fn import_plane(&self, plane: DmaBufPlaneImport) -> anyhow::Result<wgpu::Texture> {
+        let bytes_per_texel = match plane.format {
+            wgpu::TextureFormat::R8Unorm => 1,
+            wgpu::TextureFormat::Rg8Unorm | wgpu::TextureFormat::R16Unorm => 2,
+            wgpu::TextureFormat::Rg16Unorm => 4,
+            _ => anyhow::bail!("Unsupported format for DMA-BUF import: {:?}", plane.format),
+        };
+        safety::validate_plane_bounds(
+            plane.object_size,
+            plane.offset,
+            plane.pitch,
+            plane.width,
+            plane.height,
+            bytes_per_texel,
+            "separate-layer DMA-BUF plane",
+        )?;
+
         // Получаем HAL-level Vulkan handles через wgpu's `as_hal()` API.
         // SAFETY: importer создаётся из `instance`/`adapter`/`device` одного renderer
         // WGPU context-а. `as_hal` только выдаёт guard на Vulkan device; мы не
@@ -956,6 +1000,12 @@ impl DmaBufImporter {
         let hal_adapter = unsafe { self.adapter.as_hal::<wgpu::hal::vulkan::Api>() }
             .context("Zero-copy import requires Vulkan backend")?;
         let physical_device = hal_adapter.raw_physical_device();
+        let fd_memory_type_bits = safety::query_dma_buf_memory_type_bits(
+            raw_instance,
+            raw_device,
+            plane.fd,
+            "single-plane DMA-BUF import",
+        )?;
 
         // 1. Создаём VkImage с external memory handle type.
         let mut external_memory_info = vk::ExternalMemoryImageCreateInfo::default()
@@ -984,6 +1034,16 @@ impl DmaBufImporter {
             tracing::debug!("Using VK_IMAGE_TILING_LINEAR for DMA-BUF import (modifier=0)");
             vk::ImageTiling::LINEAR
         };
+        if use_drm_modifier {
+            safety::validate_drm_modifier_plane_count(
+                raw_instance,
+                physical_device,
+                vk_format,
+                plane.modifier,
+                1,
+                "separate-layer DMA-BUF plane import",
+            )?;
+        }
 
         // Подготавливаем plane layout для DRM modifier.
         // size=0 требуется спецификацией (драйвер вычисляет сам).
@@ -1050,21 +1110,18 @@ impl DmaBufImporter {
             "Vulkan memory requirements"
         );
 
-        // 3. Находим подходящий memory type (device-local).
+        // 3. Находим общий для image и DMA-BUF fd memory type.
         // SAFETY: `physical_device` получен из adapter-а того же Vulkan instance-а;
         // вызов только читает immutable memory properties драйвера.
         let mem_properties =
             unsafe { raw_instance.get_physical_device_memory_properties(physical_device) };
-
-        let memory_type_index = match (0..mem_properties.memory_type_count)
-            .find(|i| {
-                let type_bits = mem_requirements.memory_type_bits;
-                type_bits & (1 << i) != 0
-                    && mem_properties.memory_types[*i as usize]
-                        .property_flags
-                        .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
-            })
-            .context("No suitable Vulkan memory type for DMA-BUF import")
+        let memory_type_count = mem_properties.memory_type_count as usize;
+        let memory_type_index = match safety::select_import_memory_type_index(
+            mem_requirements.memory_type_bits,
+            fd_memory_type_bits,
+            &mem_properties.memory_types[..memory_type_count],
+        )
+        .context("No Vulkan memory type shared by image requirements and DMA-BUF fd properties")
         {
             Ok(memory_type_index) => memory_type_index,
             Err(error) => {
@@ -1242,6 +1299,39 @@ mod tests {
             .expect("separate-layer P010 descriptor must be supported");
 
         assert_eq!(frame_format, DmaBufFrameFormat::P010);
+    }
+
+    /// Проверяет, что лишний layer не игнорируется при построении Vulkan layout.
+    #[test]
+    fn separate_layer_format_rejects_unrepresented_extra_layer() {
+        let layers = vec![
+            DmaBufLayerDescriptor {
+                drm_format: DRM_FORMAT_R16,
+                num_planes: 1,
+                object_index: [0, 0, 0, 0],
+                offset: [0, 0, 0, 0],
+                pitch: [7_680, 0, 0, 0],
+            },
+            DmaBufLayerDescriptor {
+                drm_format: DRM_FORMAT_GR1616,
+                num_planes: 1,
+                object_index: [0, 0, 0, 0],
+                offset: [16_588_800, 0, 0, 0],
+                pitch: [7_680, 0, 0, 0],
+            },
+            DmaBufLayerDescriptor {
+                drm_format: DRM_FORMAT_R8,
+                num_planes: 1,
+                object_index: [0, 0, 0, 0],
+                offset: [20_000_000, 0, 0, 0],
+                pitch: [1_024, 0, 0, 0],
+            },
+        ];
+
+        let error = DmaBufFrameFormat::from_separate_layers(DRM_FORMAT_P010, &layers)
+            .expect_err("unrepresented extra layer must be rejected");
+
+        assert!(error.to_string().contains("exactly 2 layers"));
     }
 
     /// Проверяет, что separate-layer P010 требует 16-bit normalized plane formats.
