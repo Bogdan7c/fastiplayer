@@ -4943,6 +4943,7 @@ dependencies = [
  "libloading",
  "media-core",
  "pkg-config",
+ "static_assertions",
  "thiserror 2.0.18",
  "video-backend-api",
  "video-core",

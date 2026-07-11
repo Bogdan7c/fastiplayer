@@ -28,9 +28,10 @@ pub struct OwnedAvFrame {
 #[cfg(feature = "ffmpeg")]
 // SAFETY: `OwnedAvFrame` является exclusive RAII owner-ом. Safe access, который
 // может mutate/unref frame, требует `&mut self`, а shared row borrows требуют
-// `&self` и не раскрывают raw pointer-ы. Перенос owner-а в decoder thread
-// безопасен; concurrent shared mutation остаётся невозможной, потому что тип
-// не реализует `Sync`.
+// `&self` и не раскрывает raw pointer-ы. В production refcounted frame один раз
+// перемещается с decoder owner thread в immutable host-resource owner; FFmpeg
+// гарантирует thread-safe ref/unref AVBuffer references. Concurrent доступ к
+// mutable `AVFrame` запрещён отсутствием `Sync`.
 unsafe impl Send for OwnedAvFrame {}
 
 /// Backward-compatible alias для старого scaffold имени.
@@ -773,6 +774,15 @@ impl Drop for OwnedAvFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "ffmpeg")]
+    use static_assertions::{assert_impl_all, assert_not_impl_any};
+
+    // AVFrame owner можно передать ровно одному следующему owner-у, но нельзя
+    // разделять для concurrent доступа к mutable FFmpeg state.
+    #[cfg(feature = "ffmpeg")]
+    assert_impl_all!(OwnedAvFrame: Send);
+    #[cfg(feature = "ffmpeg")]
+    assert_not_impl_any!(OwnedAvFrame: Sync);
 
     #[test]
     fn frame_allocation_reports_feature_disabled_without_ffmpeg() {

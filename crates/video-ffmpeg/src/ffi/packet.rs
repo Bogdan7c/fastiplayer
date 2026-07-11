@@ -240,13 +240,15 @@ impl OwnedAvPacket {
         let raw_packet = NonNull::new(raw_packet).ok_or(FfmpegError::AllocationFailed {
             operation: "av_packet_alloc",
         })?;
+        let packet_owner = Self { raw_packet };
 
         // SAFETY: packet pointer valid и принадлежит wrapper-у. FFmpeg выделяет
         // payload buffer размером `packet_size + AV_INPUT_BUFFER_PADDING_SIZE`
         // и zeroes padding по контракту `av_new_packet`.
-        let status = unsafe { ffmpeg_sys_next::av_new_packet(raw_packet.as_ptr(), packet_size) };
+        let status = unsafe {
+            ffmpeg_sys_next::av_new_packet(packet_owner.raw_packet.as_ptr(), packet_size)
+        };
         if status < 0 {
-            free_packet(raw_packet);
             return Err(FfmpegError::from_averror("av_new_packet", status));
         }
 
@@ -257,13 +259,13 @@ impl OwnedAvPacket {
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     encoded_payload.as_ptr(),
-                    (*raw_packet.as_ptr()).data,
+                    (*packet_owner.raw_packet.as_ptr()).data,
                     encoded_payload.len(),
                 );
             }
         }
 
-        Ok(Self { raw_packet })
+        Ok(packet_owner)
     }
 
     #[cfg(feature = "ffmpeg")]
@@ -299,6 +301,12 @@ fn free_packet(raw_packet: NonNull<ffmpeg_sys_next::AVPacket>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "ffmpeg")]
+    use static_assertions::assert_not_impl_any;
+
+    // AVPacket создаётся, отправляется и освобождается на decoder owner thread.
+    #[cfg(feature = "ffmpeg")]
+    assert_not_impl_any!(OwnedAvPacket: Send, Sync);
 
     #[test]
     fn padded_packet_keeps_payload_and_zero_padding_separate() {

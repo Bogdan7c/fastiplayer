@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[test]
-fn public_non_ffi_modules_do_not_expose_raw_ffmpeg_types() {
+fn raw_ffmpeg_types_stay_inside_ffi_module() {
     let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut violations = Vec::new();
 
@@ -39,7 +39,26 @@ fn collect_public_raw_ffmpeg_exposures(
             continue;
         }
 
+        inspect_direct_ffi_dependency(source_root, &path, violations);
         inspect_public_lines(source_root, &path, violations);
+    }
+}
+
+fn inspect_direct_ffi_dependency(source_root: &Path, path: &Path, violations: &mut Vec<String>) {
+    let source = fs::read_to_string(path).expect("source file should be readable");
+    let relative_path = path
+        .strip_prefix(source_root)
+        .expect("path should be under source root")
+        .display();
+
+    for (line_index, source_line) in source.lines().enumerate() {
+        if source_line.contains("ffmpeg_sys_next") {
+            violations.push(format!(
+                "{relative_path}:{}: direct ffmpeg_sys_next use outside ffi: {}",
+                line_index + 1,
+                source_line.trim()
+            ));
+        }
     }
 }
 

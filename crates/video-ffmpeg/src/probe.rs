@@ -454,6 +454,10 @@ mod runtime_loader {
 
     /// Загружает libav* runtime и выполняет минимальный version/API smoke check.
     pub(super) fn probe_runtime() -> Result<FfmpegLibraryVersions, FfmpegProbeFailure> {
+        // libavutil загружается первым намеренно: Rust освобождает local values
+        // в обратном порядке, поэтому зависимый libavcodec выгружается раньше.
+        // `Symbol` не выходит из helper-вызовов ниже и всегда drop-ается раньше
+        // соответствующей `Library`.
         let avutil = load_library(FfmpegRuntimeLibrary::LibAvUtil, AVUTIL_LIBRARY_CANDIDATES)?;
         let avcodec = load_library(FfmpegRuntimeLibrary::LibAvCodec, AVCODEC_LIBRARY_CANDIDATES)?;
 

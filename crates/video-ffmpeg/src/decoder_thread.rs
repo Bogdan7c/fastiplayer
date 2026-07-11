@@ -235,22 +235,32 @@ impl FfmpegVideoDecoderThread {
             thread_config.software_frame_pool_frames,
             release_notify_tx,
         );
-        let worker = FfmpegDecoderWorker {
-            active_decoder: None,
-            activity_notifier,
-            eof_drain_state: eof_drain_state.clone(),
-            frame_tx,
-            resource_provider: host_resource_provider.clone(),
-            release_notify_rx,
-            pending_packet: None,
-            packet_ack_tx,
-            error_tx,
-            software_decode_thread_budget: thread_config.software_decode_thread_budget,
-        };
+        let worker_activity_notifier = activity_notifier.clone();
+        let worker_eof_drain_state = eof_drain_state.clone();
+        let worker_resource_provider = host_resource_provider.clone();
+        let worker_software_decode_thread_budget = thread_config.software_decode_thread_budget;
 
         std::thread::Builder::new()
             .name("ffmpeg-video-decoder".to_owned())
-            .spawn(move || worker.run(packet_rx, control_rx))
+            .spawn(move || {
+                // Worker и все raw FFmpeg owners создаются уже на owner thread.
+                // Через thread boundary проходят только нейтральные channels,
+                // handles и immutable configuration, а не codec/frame/packet state.
+                let worker = FfmpegDecoderWorker {
+                    active_decoder: None,
+                    activity_notifier: worker_activity_notifier,
+                    eof_drain_state: worker_eof_drain_state,
+                    frame_tx,
+                    resource_provider: worker_resource_provider,
+                    release_notify_rx,
+                    pending_packet: None,
+                    packet_ack_tx,
+                    error_tx,
+                    software_decode_thread_budget: worker_software_decode_thread_budget,
+                };
+
+                worker.run(packet_rx, control_rx);
+            })
             .map_err(|error| FfmpegDecoderThreadError::ThreadSpawn {
                 reason: error.to_string(),
             })?;

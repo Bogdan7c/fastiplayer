@@ -30,6 +30,7 @@ optional = true
 [dev-dependencies]
 bytes.workspace = true
 media-core.workspace = true
+static_assertions = "1.1"
 
 [build-dependencies]
 pkg-config = "0.3"

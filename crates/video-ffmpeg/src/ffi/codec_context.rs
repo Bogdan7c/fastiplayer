@@ -233,13 +233,6 @@ impl Drop for CodecOpenOptionsDictionary {
     }
 }
 
-#[cfg(feature = "ffmpeg")]
-// SAFETY: `CodecContext` единолично владеет `AVCodecContext`, а safe API
-// требует `&mut self` для send/receive/flush операций. Перенос owner-а в
-// decoder thread безопасен; concurrent shared access по-прежнему запрещён,
-// потому что тип не реализует `Sync`.
-unsafe impl Send for CodecContext {}
-
 /// Backward-compatible alias для старого scaffold имени.
 pub type FfmpegCodecContext = CodecContext;
 
@@ -265,9 +258,15 @@ impl CodecContext {
                 operation: "avcodec_alloc_context3",
             })?;
 
-            let mut format_negotiator = Box::new(FormatNegotiator::new(
-                request.accepted_pixel_formats.clone(),
-            ));
+            let mut context_owner = Self {
+                raw_context,
+                _format_negotiator: Box::new(FormatNegotiator::new(
+                    request.accepted_pixel_formats.clone(),
+                )),
+            };
+
+            #[cfg(test)]
+            LIVE_CODEC_CONTEXT_ALLOCATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
             // SAFETY: context принадлежит wrapper-у. `format_negotiator` находится
             // в Box, поэтому address стабилен до Drop. FFmpeg может вызывать
@@ -275,7 +274,7 @@ impl CodecContext {
             // что не одновременно; state immutable, дополнительных locks не нужно.
             unsafe {
                 let context = raw_context.as_ptr();
-                (*context).opaque = format_negotiator.as_mut_ptr();
+                (*context).opaque = context_owner._format_negotiator.as_mut_ptr();
                 (*context).get_format = Some(select_software_pixel_format);
             }
 
@@ -283,9 +282,9 @@ impl CodecContext {
             // open: иначе H.264/H.265 length-prefixed packets парсятся как Annex B
             // и FFmpeg отвечает AVERROR_INVALIDDATA ("No start code is found").
             if let Some(extradata) = request.extradata()
-                && let Err(error) = assign_codec_context_extradata(raw_context, extradata)
+                && let Err(error) =
+                    assign_codec_context_extradata(context_owner.raw_context, extradata)
             {
-                free_context(raw_context);
                 return Err(error);
             }
 
@@ -303,7 +302,7 @@ impl CodecContext {
             // SAFETY: context owned wrapper-ом и валиден до open; поля
             // thread_count/thread_type читаются FFmpeg только внутри open.
             unsafe {
-                let context = raw_context.as_ptr();
+                let context = context_owner.raw_context.as_ptr();
                 (*context).thread_count = ffmpeg_thread_count;
                 (*context).thread_type =
                     ffmpeg_sys_next::FF_THREAD_FRAME | ffmpeg_sys_next::FF_THREAD_SLICE;
@@ -316,20 +315,18 @@ impl CodecContext {
             // если задан, живёт до конца вызова. Context остаётся owned wrapper-ом.
             let status = unsafe {
                 ffmpeg_sys_next::avcodec_open2(
-                    raw_context.as_ptr(),
+                    context_owner.raw_context.as_ptr(),
                     decoder,
                     open_options.as_mut_ptr(),
                 )
             };
 
             if status < 0 {
-                free_context(raw_context);
                 return Err(FfmpegError::from_averror("avcodec_open2", status));
             }
 
             let unused_option_count = open_options.unused_option_count();
             if unused_option_count > 0 {
-                free_context(raw_context);
                 return Err(FfmpegError::InvalidInput {
                     operation: "avcodec_open2",
                     details: format!(
@@ -338,10 +335,7 @@ impl CodecContext {
                 });
             }
 
-            Ok(Self {
-                raw_context,
-                _format_negotiator: format_negotiator,
-            })
+            Ok(context_owner)
         }
     }
 
@@ -484,7 +478,19 @@ impl CodecContext {
 impl Drop for CodecContext {
     fn drop(&mut self) {
         free_context(self.raw_context);
+
+        #[cfg(test)]
+        LIVE_CODEC_CONTEXT_ALLOCATIONS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+#[cfg(all(test, feature = "ffmpeg"))]
+static LIVE_CODEC_CONTEXT_ALLOCATIONS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(all(test, feature = "ffmpeg"))]
+fn live_codec_context_allocations_for_test() -> usize {
+    LIVE_CODEC_CONTEXT_ALLOCATIONS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg(feature = "ffmpeg")]
@@ -718,6 +724,12 @@ fn ffmpeg_thread_count_from_budget(budget: SoftwareDecodeThreadBudget) -> FfiRes
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "ffmpeg")]
+    use static_assertions::assert_not_impl_any;
+
+    // Raw mutable codec state остаётся строго на decoder owner thread.
+    #[cfg(feature = "ffmpeg")]
+    assert_not_impl_any!(CodecContext: Send, Sync);
 
     #[test]
     fn codec_context_request_preserves_codec_name_for_diagnostics() {
@@ -736,6 +748,30 @@ mod tests {
         let error = CodecContext::open(&request).expect_err("default build has no FFmpeg FFI");
 
         assert_eq!(error, FfmpegError::FeatureDisabled);
+    }
+
+    #[cfg(feature = "ffmpeg")]
+    #[test]
+    fn post_allocation_validation_error_releases_codec_context_and_extradata() {
+        use std::num::NonZeroUsize;
+
+        let live_allocations_before = live_codec_context_allocations_for_test();
+        let impossible_thread_budget = SoftwareDecodeThreadBudget::Fixed(
+            NonZeroUsize::new(usize::MAX).expect("usize::MAX is non-zero"),
+        );
+        let request = FfmpegCodecContextRequest::new("h264")
+            .with_extradata(vec![1, 2, 3, 4])
+            .with_software_decode_thread_budget(impossible_thread_budget);
+
+        let error = CodecContext::open(&request)
+            .expect_err("thread budget that does not fit c_int must be rejected");
+
+        assert!(matches!(error, FfmpegError::InvalidInput { .. }));
+        assert_eq!(
+            live_codec_context_allocations_for_test(),
+            live_allocations_before,
+            "every post-allocation error must release the context-owned extradata and callback state"
+        );
     }
 
     #[test]
