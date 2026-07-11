@@ -394,9 +394,11 @@ fn open_range_backed_demuxer(
     }
 
     let video_source =
-        media_prefetch::PrefetchingByteSource::new(Box::new(video_source), prefetch_config);
+        media_prefetch::PrefetchingByteSource::new(Box::new(video_source), prefetch_config)
+            .context("Не удалось запустить prefetch worker для YouTube video source")?;
     let audio_source =
-        media_prefetch::PrefetchingByteSource::new(Box::new(audio_source), prefetch_config);
+        media_prefetch::PrefetchingByteSource::new(Box::new(audio_source), prefetch_config)
+            .context("Не удалось запустить prefetch worker для YouTube audio source")?;
     let video_demuxer = symphonia_demux::SymphoniaDemuxer::from_byte_source_with_options(
         video_source,
         "webm",

@@ -254,6 +254,17 @@ pub enum DirectMediaOpenError {
         source: media_prefetch::PrefetchConfigError,
     },
 
+    /// Background prefetch worker не удалось создать до передачи source demuxer-у.
+    #[error("не удалось запустить prefetch для direct media `{url}`: {source}")]
+    PrefetchStartup {
+        /// Direct URL сохраняет service-level контекст открытия.
+        url: String,
+
+        /// Исходная typed ошибка startup boundary из `media-prefetch`.
+        #[source]
+        source: media_prefetch::PrefetchStartupError,
+    },
+
     /// Demux config не может быть представлен безопасными runtime options.
     #[error("player.demux.max_consecutive_corrupted_packets должен быть положительным: {value}")]
     DemuxConfig {
@@ -361,7 +372,12 @@ pub fn open_direct_media_url_with_options(
     let extension_hint = direct_url.extension().as_extension_hint();
     let source_label = direct_url.source_label().to_string();
     let prefetch_source =
-        media_prefetch::PrefetchingByteSource::new(Box::new(source), prefetch_config);
+        media_prefetch::PrefetchingByteSource::new(Box::new(source), prefetch_config).map_err(
+            |source| DirectMediaOpenError::PrefetchStartup {
+                url: direct_url.url().to_string(),
+                source,
+            },
+        )?;
     let demuxer = symphonia_demux::SymphoniaDemuxer::from_byte_source_with_options(
         prefetch_source,
         extension_hint,

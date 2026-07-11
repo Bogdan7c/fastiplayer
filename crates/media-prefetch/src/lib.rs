@@ -13,4 +13,4 @@ mod worker;
 
 pub use config::{PrefetchConfig, PrefetchConfigError};
 pub use shared::PrefetchDiagnostics;
-pub use source::PrefetchingByteSource;
+pub use source::{PrefetchStartupError, PrefetchingByteSource};

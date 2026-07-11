@@ -1,3 +1,4 @@
+use std::io;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
@@ -10,6 +11,35 @@ use crate::buffer::PrefetchBufferState;
 use crate::config::PrefetchConfig;
 use crate::shared::{PrefetchDiagnostics, PrefetchShared};
 use crate::worker::PrefetchWorker;
+
+/// Стабильное имя единственного background worker-а этого source wrapper-а.
+const PREFETCH_WORKER_THREAD_NAME: &str = "media-prefetch";
+
+/// Ошибка запуска background worker-а до публикации готового byte source вызывающему коду.
+#[derive(Debug, thiserror::Error)]
+#[error("не удалось запустить worker thread `{thread_name}`: {source}")]
+pub struct PrefetchStartupError {
+    /// Имя потока сохраняет контекст fallible OS boundary.
+    thread_name: &'static str,
+
+    /// Исходная ошибка создания потока от стандартной библиотеки.
+    #[source]
+    source: io::Error,
+}
+
+impl PrefetchStartupError {
+    /// Возвращает имя worker-а для typed diagnostics и focused tests.
+    #[must_use]
+    pub const fn thread_name(&self) -> &'static str {
+        self.thread_name
+    }
+
+    /// Возвращает исходную OS error без string flattening.
+    #[must_use]
+    pub const fn io_error(&self) -> &io::Error {
+        &self.source
+    }
+}
 
 /// `ByteSource`, который отдаёт foreground-чтение из RAM, пока worker читает inner source наперёд.
 pub struct PrefetchingByteSource {
@@ -40,8 +70,29 @@ pub struct PrefetchingByteSource {
 
 impl PrefetchingByteSource {
     /// Забирает inner source во владение worker thread-а и готовит RAM-window с текущей позиции.
-    #[must_use]
-    pub fn new(inner: Box<dyn ByteSource>, config: PrefetchConfig) -> Self {
+    ///
+    /// При ошибке создания потока wrapper не публикуется, а захваченный inner source
+    /// освобождается вместе с worker closure.
+    pub fn new(
+        inner: Box<dyn ByteSource>,
+        config: PrefetchConfig,
+    ) -> Result<Self, PrefetchStartupError> {
+        Self::new_with_spawner(inner, config, |worker_main| {
+            thread::Builder::new()
+                .name(PREFETCH_WORKER_THREAD_NAME.to_owned())
+                .spawn(worker_main)
+        })
+    }
+
+    /// Собирает source через узкую injectable spawn boundary для детерминированного failure test-а.
+    fn new_with_spawner<SpawnWorker>(
+        inner: Box<dyn ByteSource>,
+        config: PrefetchConfig,
+        spawn_worker: SpawnWorker,
+    ) -> Result<Self, PrefetchStartupError>
+    where
+        SpawnWorker: FnOnce(Box<dyn FnOnce() + Send + 'static>) -> io::Result<JoinHandle<()>>,
+    {
         let start_position = inner.position();
         let seekability = inner.seekability();
         let validators = inner.validators();
@@ -58,12 +109,14 @@ impl PrefetchingByteSource {
             config,
             seekability.clone(),
         );
-        let worker_handle = thread::Builder::new()
-            .name("media-prefetch".to_owned())
-            .spawn(move || worker.run())
-            .expect("не удалось запустить media-prefetch worker thread");
+        let worker_handle = spawn_worker(Box::new(move || worker.run())).map_err(|source| {
+            PrefetchStartupError {
+                thread_name: PREFETCH_WORKER_THREAD_NAME,
+                source,
+            }
+        })?;
 
-        Self {
+        Ok(Self {
             shared,
             worker_cancellation,
             worker_handle: Some(worker_handle),
@@ -72,7 +125,7 @@ impl PrefetchingByteSource {
             content_length,
             fingerprint,
             logical_position: start_position,
-        }
+        })
     }
 
     /// Возвращает атомарный snapshot counters без доступа к inner source-у.
@@ -222,6 +275,7 @@ impl Drop for PrefetchingByteSource {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
@@ -305,6 +359,9 @@ mod tests {
     struct FakeByteSource {
         /// Shared state нужен только тестам; production source таким образом не шарится.
         state: Arc<Mutex<FakeInnerState>>,
+
+        /// Optional observer доказывает release inner source при неудачном spawn.
+        dropped: Option<Arc<AtomicBool>>,
     }
 
     impl FakeByteSource {
@@ -329,9 +386,16 @@ mod tests {
             (
                 Self {
                     state: Arc::clone(&state),
+                    dropped: None,
                 },
                 FakeByteSourceHandle { state },
             )
+        }
+
+        /// Подключает observer освобождения ownership для startup failure test-а.
+        fn with_drop_observer(mut self, dropped: Arc<AtomicBool>) -> Self {
+            self.dropped = Some(dropped);
+            self
         }
 
         /// Настраивает искусственную задержку read-а.
@@ -359,6 +423,14 @@ mod tests {
                 .expect("fake state mutex не должен быть poisoned")
                 .fail_on_read_call = Some(read_call);
             self
+        }
+    }
+
+    impl Drop for FakeByteSource {
+        fn drop(&mut self) {
+            if let Some(dropped) = &self.dropped {
+                dropped.store(true, Ordering::SeqCst);
+            }
         }
     }
 
@@ -545,6 +617,15 @@ mod tests {
             .expect("test config должен сохранять инварианты prefetch buffer")
     }
 
+    /// Запускает production spawner и делает startup failure явной причиной падения success-path теста.
+    fn start_test_source(
+        inner: Box<dyn ByteSource>,
+        config: PrefetchConfig,
+    ) -> PrefetchingByteSource {
+        PrefetchingByteSource::new(inner, config)
+            .expect("production thread spawner должен запускаться в success-path тесте")
+    }
+
     /// Данные с предсказуемым содержимым, где byte равен offset modulo 251.
     fn sample_bytes(len: usize) -> Vec<u8> {
         (0..len).map(|index| (index % 251) as u8).collect()
@@ -618,11 +699,40 @@ mod tests {
         }
     }
 
+    /// Spawn failure возвращает typed error и не оставляет частично созданный source.
+    #[test]
+    fn worker_spawn_failure_releases_inner_source_without_running_worker() {
+        let source_dropped = Arc::new(AtomicBool::new(false));
+        let (inner, handle) = FakeByteSource::seekable(sample_bytes(32));
+        let inner = inner.with_drop_observer(Arc::clone(&source_dropped));
+
+        let startup_result = PrefetchingByteSource::new_with_spawner(
+            Box::new(inner),
+            test_config(8, 8, 16),
+            |worker_main| {
+                drop(worker_main);
+                Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "deterministic test thread limit",
+                ))
+            },
+        );
+        let startup_error = match startup_result {
+            Ok(_) => panic!("fake spawner обязан вернуть startup error"),
+            Err(startup_error) => startup_error,
+        };
+
+        assert_eq!(startup_error.thread_name(), PREFETCH_WORKER_THREAD_NAME);
+        assert_eq!(startup_error.io_error().kind(), io::ErrorKind::WouldBlock);
+        assert!(source_dropped.load(Ordering::SeqCst));
+        assert!(handle.read_records().is_empty());
+    }
+
     #[test]
     fn sequential_read_returns_all_bytes_and_inner_reads_large_chunks() {
         let bytes = sample_bytes(50);
         let (inner, handle) = FakeByteSource::seekable(bytes.clone());
-        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(16, 16, 32));
+        let mut source = start_test_source(Box::new(inner), test_config(16, 16, 32));
 
         let actual = read_all(&mut source, 5);
 
@@ -639,7 +749,7 @@ mod tests {
     #[test]
     fn worker_doubles_chunk_len_until_configured_ceiling() {
         let (inner, handle) = FakeByteSource::seekable(sample_bytes(256));
-        let _source = PrefetchingByteSource::new(Box::new(inner), test_config(4, 32, 128));
+        let _source = start_test_source(Box::new(inner), test_config(4, 32, 128));
 
         wait_for_read_count(&handle, 5);
 
@@ -656,7 +766,7 @@ mod tests {
     #[test]
     fn small_window_stops_worker_until_foreground_consumes_bytes() {
         let (inner, handle) = FakeByteSource::seekable(sample_bytes(128));
-        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 8, 16));
+        let mut source = start_test_source(Box::new(inner), test_config(8, 8, 16));
 
         wait_for_read_count(&handle, 2);
         thread::sleep(Duration::from_millis(30));
@@ -674,7 +784,7 @@ mod tests {
     fn seek_inside_window_reuses_buffer_without_refetching_from_seek_offset() {
         let bytes = sample_bytes(64);
         let (inner, handle) = FakeByteSource::seekable(bytes.clone());
-        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 8, 16));
+        let mut source = start_test_source(Box::new(inner), test_config(8, 8, 16));
 
         wait_for_read_count(&handle, 2);
         source
@@ -702,7 +812,7 @@ mod tests {
     fn seek_outside_window_resets_buffer_and_refetches_from_requested_offset() {
         let bytes = sample_bytes(96);
         let (inner, handle) = FakeByteSource::seekable(bytes.clone());
-        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(4, 8, 16));
+        let mut source = start_test_source(Box::new(inner), test_config(4, 8, 16));
 
         wait_for_read_count(&handle, 2);
         source
@@ -733,7 +843,7 @@ mod tests {
         let seek_offset = 96;
         let (inner, handle) = FakeByteSource::seekable(bytes.clone());
         let inner = inner.with_read_delay(read_delay);
-        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 64, 128));
+        let mut source = start_test_source(Box::new(inner), test_config(8, 64, 128));
 
         wait_for_read_count(&handle, 1);
         let seek_started = Instant::now();
@@ -771,7 +881,7 @@ mod tests {
         let seek_offset = 64;
         let (inner, handle) = FakeByteSource::seekable(bytes.clone());
         let inner = inner.with_read_delay(Duration::from_millis(80));
-        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 32, 64));
+        let mut source = start_test_source(Box::new(inner), test_config(8, 32, 64));
 
         wait_for_read_count(&handle, 1);
         source
@@ -798,7 +908,7 @@ mod tests {
             reason: NotSeekableReason::Unknown,
         };
         let (inner, handle) = FakeByteSource::new(bytes.clone(), seekability);
-        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(4, 4, 8));
+        let mut source = start_test_source(Box::new(inner), test_config(4, 4, 8));
         let mut output = [0; 12];
 
         wait_for_read_count(&handle, 2);
@@ -818,7 +928,7 @@ mod tests {
     fn eof_returns_short_tail_and_then_zero() {
         let bytes = sample_bytes(10);
         let (inner, handle) = FakeByteSource::seekable(bytes.clone());
-        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(4, 4, 8));
+        let mut source = start_test_source(Box::new(inner), test_config(4, 4, 8));
         let actual = read_all(&mut source, 3);
 
         assert_eq!(actual, bytes);
@@ -840,7 +950,7 @@ mod tests {
     fn inner_error_is_returned_to_foreground_read() {
         let (inner, _handle) = FakeByteSource::seekable(sample_bytes(32));
         let inner = inner.with_fail_on_read_call(1);
-        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 8, 16));
+        let mut source = start_test_source(Box::new(inner), test_config(8, 8, 16));
         let mut output = [0; 4];
 
         let error = source
@@ -856,7 +966,7 @@ mod tests {
         let inner = inner
             .with_read_delay(Duration::from_millis(10))
             .with_wait_until_cancelled();
-        let source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 8, 16));
+        let source = start_test_source(Box::new(inner), test_config(8, 8, 16));
 
         wait_for_read_count(&handle, 1);
         let started = Instant::now();
@@ -871,7 +981,7 @@ mod tests {
     #[test]
     fn metadata_methods_return_constructor_snapshots() {
         let (inner, handle) = FakeByteSource::seekable(sample_bytes(16));
-        let source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 8, 16));
+        let source = start_test_source(Box::new(inner), test_config(8, 8, 16));
 
         assert_eq!(source.seekability(), Seekability::Seekable);
         assert_eq!(source.content_length(), Some(16));
@@ -884,7 +994,7 @@ mod tests {
     fn foreground_cancellation_interrupts_wait_without_reporting_worker_error() {
         let (inner, _handle) = FakeByteSource::seekable(sample_bytes(32));
         let inner = inner.with_read_delay(Duration::from_millis(80));
-        let mut source = PrefetchingByteSource::new(Box::new(inner), test_config(8, 8, 16));
+        let mut source = start_test_source(Box::new(inner), test_config(8, 8, 16));
         let cancellation = CancellationToken::new();
         let cancellation_for_thread = cancellation.clone();
         let canceller = thread::spawn(move || {
