@@ -6,11 +6,11 @@ use player_core::{
     LatencyCounterSnapshot, PlayerError, PlayerEvent, PlayerRenderError, PlayerRuntimeApplyError,
     PlayerRuntimeApplyGroup, PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyReport,
     PlayerRuntimeApplyResult, PlayerRuntimeSettingsUpdate, PlayerSnapshot, PlayerTickResult,
-    PlayerVideoDropReason, PlayerWorkerEvent, PreparedMedia,
+    PlayerWorkerEvent, PreparedMedia,
 };
 use render_core::{
     RenderLiveApplyReport, RenderLiveSettings, RenderLiveSettingsAdapter, RenderLiveSettingsError,
-    RenderLiveSettingsUpdate, RenderViewport,
+    RenderLiveSettingsUpdate,
 };
 use render_wgpu_shell::{RenderFrameDropReason, RenderFrameOutcome, RenderFrameTiming, Renderer};
 use render_wgpu_video::WgpuRenderableFrame;
@@ -32,54 +32,40 @@ use crate::startup_media::{
     resolve_direct_media_startup_media, resolve_youtube_startup_media, runtime_video_codec,
 };
 use crate::state::{
-    ActiveMediaSource, AppFrameContext, AppState, AppUiRenderTimings, BackendSwapVideoPhase,
-    MainVisualOverrideAcquisition, RenderablePresentFrame, VideoPipelineRebuildError,
-    VideoPipelineRebuildRequest,
+    ActiveMediaSource, AppState, BackendSwapVideoPhase, MainVisualOverrideAcquisition,
+    RenderablePresentFrame, VideoPipelineRebuildError, VideoPipelineRebuildRequest,
 };
 use crate::system_capabilities::probe_system_capabilities;
-use crate::telemetry::{SeekDiscardReason, Telemetry, VideoDropReason, VideoFrameTelemetryEvent};
+use crate::telemetry::{Telemetry, VideoFrameTelemetryEvent};
 use crate::ui::window_chrome::{WindowChromeAction, WindowChromeResizeDirection};
 
+#[path = "frame_prepare/geometry.rs"]
+mod geometry;
+#[path = "frame_prepare/input_snapshot.rs"]
+mod input_snapshot;
+#[path = "frame_prepare/sequence.rs"]
+mod sequence;
 #[path = "frame_prepare/settings_runtime_adapter.rs"]
 mod settings_runtime_adapter;
 #[path = "frame_prepare/shared_frame_materialization.rs"]
 mod shared_frame_materialization;
+#[path = "frame_prepare/submit.rs"]
+mod submit;
+#[path = "frame_prepare/telemetry_mapping.rs"]
+mod telemetry_mapping;
+#[path = "frame_prepare/ui_prepare.rs"]
+mod ui_prepare;
+use input_snapshot::{AppFrameInputTimings, prepare_frame_input};
+use sequence::{FrameSequenceContract, FrameSequenceObserver, FrameSequenceStage};
 use settings_runtime_adapter::FrameSettingsRuntimeAdapter;
 use shared_frame_materialization::{
     SharedMaterializationUnsupportedReason, SharedVideoFrameLeaseRole,
     SharedVideoFrameMaterializationOutcome, SharedVideoFrameMaterializationRequest,
     materialize_shared_video_frame,
 };
-
-/// Результат UI stage до входа в renderer/surface critical path.
-struct PreparedUiFrame {
-    /// Уже tessellated egui primitives для `egui-wgpu`.
-    paint_jobs: Vec<egui::epaint::ClippedPrimitive>,
-
-    /// Изменения egui texture atlas-а, которые renderer должен применить до pass-а.
-    textures_delta: egui::TexturesDelta,
-
-    /// Размер surface target-а и UI scale без раскрытия `egui-wgpu` наружу.
-    screen: render_wgpu_shell::RenderScreenDescriptor,
-
-    /// Физическая область, по которой renderer сохраняет video aspect ratio.
-    video_viewport: RenderViewport,
-
-    /// Физические области UI, из которых video pass должен быть исключён.
-    video_exclusion_rects: Vec<RenderViewport>,
-
-    /// Признак, что egui попросил следующий repaint.
-    requested_repaint: bool,
-
-    /// Visual settings actions, собранные в egui frame-е.
-    settings_actions: Vec<crate::settings_ui::SettingsUiAction>,
-
-    /// Window chrome actions, собранные в egui frame-е.
-    window_chrome_actions: Vec<WindowChromeAction>,
-
-    /// Подробная CPU-разбивка app-owned UI stage.
-    timings: UiPrepareTimings,
-}
+use submit::submit_render_frame;
+use telemetry_mapping::map_video_frame_telemetry_event;
+use ui_prepare::{UiPrepareTimings, prepare_ui_frame};
 
 /// Результат полного render frame-а с shell-level запросами от window chrome.
 pub(crate) struct AppRenderFrameResult {
@@ -90,67 +76,8 @@ pub(crate) struct AppRenderFrameResult {
     pub(crate) close_requested: bool,
 }
 
-/// Переводит egui coordinate в physical pixel с защитой от невалидного scale.
-fn physical_pixel_floor(point: f32, pixels_per_point: f32) -> u32 {
-    let scaled_point = point.max(0.0) * pixels_per_point;
-    scaled_point.floor() as u32
-}
-
-/// Верхнюю/правую границу округляем вверх, чтобы viewport не терял крайний pixel.
-fn physical_pixel_ceil(point: f32, pixels_per_point: f32) -> u32 {
-    let scaled_point = point.max(0.0) * pixels_per_point;
-    scaled_point.ceil() as u32
-}
-
-/// Возвращает безопасный UI scale для конвертации egui points в physical pixels.
-fn safe_pixels_per_point(pixels_per_point: f32) -> f32 {
-    if pixels_per_point.is_finite() && pixels_per_point > 0.0 {
-        pixels_per_point
-    } else {
-        1.0
-    }
-}
-
-/// Конвертирует egui rect в renderer-neutral physical viewport без surface fallback-а.
-fn raw_viewport_from_ui_rect(video_rect: egui::Rect, pixels_per_point: f32) -> RenderViewport {
-    let safe_scale = safe_pixels_per_point(pixels_per_point);
-    let min_x = physical_pixel_floor(video_rect.min.x, safe_scale);
-    let min_y = physical_pixel_floor(video_rect.min.y, safe_scale);
-    let max_x = physical_pixel_ceil(video_rect.max.x, safe_scale);
-    let max_y = physical_pixel_ceil(video_rect.max.y, safe_scale);
-
-    RenderViewport::new(
-        min_x,
-        min_y,
-        max_x.saturating_sub(min_x),
-        max_y.saturating_sub(min_y),
-    )
-}
-
-/// Конвертирует app-owned video underlay rect в renderer-neutral physical viewport.
-fn video_viewport_from_ui_rect(
-    video_rect: egui::Rect,
-    screen_size_in_pixels: [u32; 2],
-    pixels_per_point: f32,
-) -> RenderViewport {
-    raw_viewport_from_ui_rect(video_rect, pixels_per_point)
-        .clamp_to_surface(screen_size_in_pixels[0], screen_size_in_pixels[1])
-}
-
-/// Конвертирует UI exclusion rect в physical viewport; невалидный rect просто игнорируется.
-fn video_exclusion_from_ui_rect(
-    exclusion_rect: egui::Rect,
-    screen_size_in_pixels: [u32; 2],
-    pixels_per_point: f32,
-) -> Option<RenderViewport> {
-    let full_surface =
-        RenderViewport::full_surface(screen_size_in_pixels[0], screen_size_in_pixels[1]);
-
-    raw_viewport_from_ui_rect(exclusion_rect, pixels_per_point).intersection(full_surface)
-}
-
 /// Video stage, подготовленный до финального `render_wgpu_shell::RenderFrameInput`.
-struct PreparedVideoFrame {
+pub(super) struct PreparedVideoFrame {
     /// Lease и texture views живут вместе, чтобы `WgpuRenderableFrame` не пережил owner-а.
     renderable_frame: Option<RenderablePresentFrame>,
 
@@ -172,53 +99,6 @@ const DEFAULT_RENDER_FRAME_BUDGET: Duration = Duration::from_nanos(16_666_667);
 
 /// Небольшой допуск, чтобы debug log показывал именно подозрительные кадры, а не шум таймера.
 const SLOW_RENDER_FRAME_SLACK: Duration = Duration::from_millis(2);
-
-/// Timings app-owned input/snapshot stage до UI подготовки.
-#[derive(Debug, Clone, Copy, Default)]
-struct AppFrameInputTimings {
-    /// Полная длительность input/snapshot stage.
-    total: Duration,
-
-    /// Забор egui input из winit state.
-    egui_input: Duration,
-
-    /// Non-blocking drain worker events из player worker.
-    worker_event_drain: Duration,
-
-    /// Перенос worker tick/events в app telemetry/cache lifecycle.
-    worker_event_record: Duration,
-
-    /// Количество worker events, обработанных в этом кадре.
-    worker_event_count: usize,
-
-    /// Обновление `PlayerSnapshot` и фиксация render diagnostics.
-    frame_context: Duration,
-
-    /// Публикация snapshot в desktop integration.
-    desktop_publish: Duration,
-}
-
-/// Timings app-owned UI подготовки до renderer boundary.
-#[derive(Debug, Clone, Copy, Default)]
-struct UiPrepareTimings {
-    /// Полная длительность UI prepare stage.
-    total: Duration,
-
-    /// CPU-разбивка `AppState::render_ui`.
-    app_ui: AppUiRenderTimings,
-
-    /// Проверка repaint request после egui frame-а.
-    repaint_query: Duration,
-
-    /// Обработка platform output после egui frame-а.
-    platform_output: Duration,
-
-    /// Tessellation egui shapes в paint jobs.
-    tessellate: Duration,
-
-    /// Сбор surface size и pixels_per_point.
-    screen_descriptor: Duration,
-}
 
 /// Timings app-owned video подготовки до renderer boundary.
 #[derive(Debug, Clone, Copy, Default)]
@@ -307,7 +187,7 @@ impl PreparedVideoFrame {
     }
 
     /// Собирает video boundary frame на время одного `render-wgpu-shell` call-а.
-    fn render_input_video_frame(
+    pub(super) fn render_input_video_frame(
         &self,
     ) -> Result<Option<WgpuRenderableFrame<'_>>, PlayerRenderError> {
         self.renderable_frame
@@ -319,7 +199,7 @@ impl PreparedVideoFrame {
     }
 
     /// Отмечает, что подготовленный video frame реально попал в renderer submit.
-    fn mark_submitted_to_renderer(&self) {
+    pub(super) fn mark_submitted_to_renderer(&self) {
         if let Some(renderable_frame) = &self.renderable_frame {
             renderable_frame.present_frame.mark_submitted_to_renderer();
         }
@@ -514,7 +394,9 @@ fn log_player_fatal_error(fatal_error: &PlayerError) {
 }
 
 /// Возвращает `true`, если surface drop означает разрыв lifecycle для cached texture.
-fn render_drop_reason_invalidates_cached_present_frame(reason: RenderFrameDropReason) -> bool {
+pub(super) fn render_drop_reason_invalidates_cached_present_frame(
+    reason: RenderFrameDropReason,
+) -> bool {
     matches!(
         reason,
         RenderFrameDropReason::SurfaceOccluded
@@ -522,118 +404,6 @@ fn render_drop_reason_invalidates_cached_present_frame(reason: RenderFrameDropRe
             | RenderFrameDropReason::SurfaceValidation
             | RenderFrameDropReason::SurfaceOutdatedRecoveryFailed
     )
-}
-
-/// Классифицирует core-причину удаления кадра для пользовательской telemetry.
-fn map_video_frame_telemetry_event(reason: PlayerVideoDropReason) -> VideoFrameTelemetryEvent {
-    match reason {
-        PlayerVideoDropReason::Late => {
-            VideoFrameTelemetryEvent::PlaybackDrop(VideoDropReason::Late)
-        }
-        PlayerVideoDropReason::QueueOverflow => {
-            VideoFrameTelemetryEvent::PlaybackDrop(VideoDropReason::QueueOverflow)
-        }
-        PlayerVideoDropReason::Paused => {
-            VideoFrameTelemetryEvent::PlaybackDrop(VideoDropReason::Paused)
-        }
-        PlayerVideoDropReason::SeekPreroll => {
-            VideoFrameTelemetryEvent::SeekDiscard(SeekDiscardReason::SeekPreroll)
-        }
-        PlayerVideoDropReason::StaleGeneration => {
-            VideoFrameTelemetryEvent::SeekDiscard(SeekDiscardReason::StaleGeneration)
-        }
-        PlayerVideoDropReason::DecoderStarvation => {
-            VideoFrameTelemetryEvent::PlaybackDrop(VideoDropReason::DecoderStarvation)
-        }
-        PlayerVideoDropReason::RenderAcquisitionTimeout => {
-            VideoFrameTelemetryEvent::PlaybackDrop(VideoDropReason::Other)
-        }
-    }
-}
-
-/// Готовит egui output до входа в renderer/surface critical path.
-fn prepare_ui_frame(
-    window: &Window,
-    app_state: &mut AppState,
-    settings_runtime: &mut SettingsRuntime,
-    egui_input: egui::RawInput,
-    frame_context: &AppFrameContext,
-) -> PreparedUiFrame {
-    let ui_prepare_started_at = Instant::now();
-
-    // Фоновый refresh dynamic options подбирается до сборки ui_model,
-    // чтобы готовые списки попали в model этого же кадра.
-    settings_runtime.poll_dynamic_options_refresh();
-
-    // Анимация sidebar продвигается до сборки ui_model: visual hold должен знать,
-    // видна ли ещё закрытая панель, чтобы field list не пропадал во время закрытия.
-    let settings_panel_open = settings_runtime.is_settings_window_open();
-    app_state.advance_sidebar_slide(settings_panel_open, Instant::now());
-    settings_runtime
-        .set_visual_hold(!settings_panel_open && app_state.sidebar_slide_is_animating());
-
-    let settings_ui_model = settings_runtime.ui_model();
-    let rendered_app_ui = app_state.render_ui(window, egui_input, frame_context, settings_ui_model);
-    let crate::state::RenderedAppUi {
-        full_output: egui_full_output,
-        settings_actions,
-        window_chrome_actions,
-        video_viewport_rect,
-        video_exclusion_rects,
-        timings: app_ui_timings,
-    } = rendered_app_ui;
-
-    let stage_started_at = Instant::now();
-    let requested_repaint = app_state.egui_ctx.has_requested_repaint();
-    let repaint_query_elapsed = stage_started_at.elapsed();
-
-    let stage_started_at = Instant::now();
-    app_state
-        .egui_winit_state
-        .handle_platform_output(window, egui_full_output.platform_output);
-    let platform_output_elapsed = stage_started_at.elapsed();
-
-    let stage_started_at = Instant::now();
-    let pixels_per_point = app_state.egui_ctx.pixels_per_point();
-    let size = window.inner_size();
-    let screen_size_in_pixels = [size.width.max(1), size.height.max(1)];
-    let video_viewport =
-        video_viewport_from_ui_rect(video_viewport_rect, screen_size_in_pixels, pixels_per_point);
-    let video_exclusion_rects = video_exclusion_rects
-        .into_iter()
-        .filter_map(|exclusion_rect| {
-            video_exclusion_from_ui_rect(exclusion_rect, screen_size_in_pixels, pixels_per_point)
-        })
-        .collect();
-    let screen_descriptor_elapsed = stage_started_at.elapsed();
-
-    let stage_started_at = Instant::now();
-    let paint_jobs = app_state
-        .egui_ctx
-        .tessellate(egui_full_output.shapes, pixels_per_point);
-    let tessellate_elapsed = stage_started_at.elapsed();
-
-    PreparedUiFrame {
-        paint_jobs,
-        textures_delta: egui_full_output.textures_delta,
-        screen: render_wgpu_shell::RenderScreenDescriptor {
-            size_in_pixels: screen_size_in_pixels,
-            pixels_per_point,
-        },
-        video_viewport,
-        video_exclusion_rects,
-        requested_repaint,
-        settings_actions,
-        window_chrome_actions,
-        timings: UiPrepareTimings {
-            total: ui_prepare_started_at.elapsed(),
-            app_ui: app_ui_timings,
-            repaint_query: repaint_query_elapsed,
-            platform_output: platform_output_elapsed,
-            tessellate: tessellate_elapsed,
-            screen_descriptor: screen_descriptor_elapsed,
-        },
-    }
 }
 
 /// Применяет window chrome actions, которые не владеют lifecycle закрытия приложения.
@@ -969,7 +739,10 @@ fn prepare_main_visual_override_frame(
 }
 
 /// Передаёт render boundary error в player и сбрасывает cached frame lease.
-fn report_video_render_boundary_error(app_state: &mut AppState, error: PlayerRenderError) {
+pub(super) fn report_video_render_boundary_error(
+    app_state: &mut AppState,
+    error: PlayerRenderError,
+) {
     app_state.clear_cached_present_frame_after_render_failure();
     app_state.report_render_error(error);
     tracing::debug!(
@@ -1308,64 +1081,8 @@ fn log_render_frame_timings(
     );
 }
 
-/// Собирает финальный GPU input и передаёт кадр в renderer-owned present path.
-fn submit_render_frame(
-    telemetry: &Telemetry,
-    window: &Window,
-    renderer: &mut Renderer,
-    app_state: &mut AppState,
-    prepared_ui_frame: PreparedUiFrame,
-    prepared_video_frame: PreparedVideoFrame,
-) -> Option<RenderFrameTiming> {
-    let video_frame = match prepared_video_frame.render_input_video_frame() {
-        Ok(video_frame) => video_frame,
-        Err(error) => {
-            report_video_render_boundary_error(app_state, error);
-            None
-        }
-    };
-    let submitted_video_frame = video_frame.is_some();
-
-    let render_frame_outcome = renderer.render_frame(render_wgpu_shell::RenderFrameInput {
-        window,
-        video_frame: video_frame.as_ref(),
-        egui_paint_jobs: prepared_ui_frame.paint_jobs,
-        egui_textures_delta: prepared_ui_frame.textures_delta,
-        screen: prepared_ui_frame.screen,
-        video_viewport: prepared_ui_frame.video_viewport,
-        video_exclusion_rects: prepared_ui_frame.video_exclusion_rects,
-    });
-    if render_outcome_marks_video_submitted(&render_frame_outcome, submitted_video_frame) {
-        prepared_video_frame.mark_submitted_to_renderer();
-    }
-
-    match render_frame_outcome {
-        RenderFrameOutcome::Presented(timing) => {
-            telemetry.record_frame_presented_to_surface();
-            app_state.report_gpu_submit_present_latency(timing.submit_present_elapsed);
-            Some(timing)
-        }
-        RenderFrameOutcome::Dropped(reason) => {
-            telemetry.record_surface_dropped_frame();
-            if render_drop_reason_invalidates_cached_present_frame(reason) {
-                app_state.clear_cached_present_frame_after_surface_lifecycle_break();
-            }
-            None
-        }
-        RenderFrameOutcome::Failed(failure) => {
-            telemetry.record_surface_dropped_frame();
-            app_state.clear_cached_present_frame_after_render_failure();
-            app_state.report_render_error(PlayerRenderError::render_device_lost(format!(
-                "Video render failed: {}",
-                failure.message
-            )));
-            None
-        }
-    }
-}
-
 /// Возвращает `true`, только если renderer реально принял video input в presented frame.
-fn render_outcome_marks_video_submitted(
+pub(super) fn render_outcome_marks_video_submitted(
     render_frame_outcome: &RenderFrameOutcome,
     submitted_video_frame: bool,
 ) -> bool {
@@ -1386,49 +1103,13 @@ pub(crate) fn render_frame(
     renderer_lifecycle: &mut RendererLifecycleCoordinator,
 ) -> AppRenderFrameResult {
     let frame_start = Instant::now();
+    let mut frame_sequence = FrameSequenceContract::default();
 
-    let input_snapshot_started_at = Instant::now();
-    let stage_started_at = Instant::now();
-    let egui_input = app_state.egui_winit_state.take_egui_input(window);
-    let egui_input_elapsed = stage_started_at.elapsed();
-
-    let stage_started_at = Instant::now();
-    let worker_events = app_state.drain_worker_events();
-    let worker_event_count = worker_events.len();
-    let worker_event_drain_elapsed = stage_started_at.elapsed();
-
-    let stage_started_at = Instant::now();
-    record_worker_events(telemetry, app_state, worker_events);
-    // Бесшовный подбор decode backend-а под текущий стрим (`auto`): выполняется здесь,
-    // потому что только тут доступен renderer для пересоздания WGPU materializer-а.
-    if let Some(request) = app_state.take_pending_video_backend_reselection() {
-        app_state.apply_video_backend_reselection(
-            &request,
-            renderer.instance(),
-            renderer.adapter(),
-            renderer.device(),
-            renderer.queue(),
-        );
-    }
-    let worker_event_record_elapsed = stage_started_at.elapsed();
-
-    let stage_started_at = Instant::now();
-    let frame_context = app_state.begin_frame_context(renderer.diagnostics());
-    let frame_context_elapsed = stage_started_at.elapsed();
-
-    let stage_started_at = Instant::now();
-    app_state.publish_desktop_snapshot(frame_context.player_snapshot());
-    let desktop_publish_elapsed = stage_started_at.elapsed();
-
-    let input_snapshot_timings = AppFrameInputTimings {
-        total: input_snapshot_started_at.elapsed(),
-        egui_input: egui_input_elapsed,
-        worker_event_drain: worker_event_drain_elapsed,
-        worker_event_record: worker_event_record_elapsed,
-        worker_event_count,
-        frame_context: frame_context_elapsed,
-        desktop_publish: desktop_publish_elapsed,
-    };
+    let prepared_frame_input =
+        prepare_frame_input(telemetry, window, renderer, app_state, &mut frame_sequence);
+    let input_snapshot_timings = prepared_frame_input.timings;
+    let egui_input = prepared_frame_input.egui_input;
+    let frame_context = prepared_frame_input.frame_context;
 
     let stage_started_at = Instant::now();
     let mut prepared_ui_frame = prepare_ui_frame(
@@ -1438,6 +1119,7 @@ pub(crate) fn render_frame(
         egui_input,
         &frame_context,
     );
+    frame_sequence.reached(FrameSequenceStage::EguiOutput);
     let egui_requested_repaint = prepared_ui_frame.requested_repaint;
     let settings_actions = std::mem::take(&mut prepared_ui_frame.settings_actions);
     let window_chrome_actions = std::mem::take(&mut prepared_ui_frame.window_chrome_actions);
@@ -1488,6 +1170,7 @@ pub(crate) fn render_frame(
     let stage_started_at = Instant::now();
     let prepared_video_frame =
         prepare_video_frame(telemetry, app_state, frame_context.player_snapshot());
+    frame_sequence.reached(FrameSequenceStage::MaterializerLookup);
     if let Err(fallback_failure) = app_state.apply_pending_dma_buf_runtime_fallback(
         renderer.instance(),
         renderer.adapter(),
@@ -1503,6 +1186,7 @@ pub(crate) fn render_frame(
     let texture_view_lookup_state = prepared_video_frame.texture_view_lookup_state;
 
     let stage_started_at = Instant::now();
+    frame_sequence.reached(FrameSequenceStage::RendererSubmit);
     let renderer_timing = submit_render_frame(
         telemetry,
         window,
@@ -1551,46 +1235,8 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    use player_core::{PlayerRenderErrorKind, PlayerVideoFrameDrop};
+    use player_core::{PlayerRenderErrorKind, PlayerVideoDropReason, PlayerVideoFrameDrop};
     use render_wgpu_shell::{RenderFrameDropReason, RenderFrameFailure, RenderFrameStageTimings};
-
-    #[test]
-    fn video_viewport_from_ui_rect_converts_points_to_physical_pixels() {
-        let video_rect =
-            egui::Rect::from_min_max(egui::pos2(100.25, 50.25), egui::pos2(300.5, 250.5));
-
-        let viewport = video_viewport_from_ui_rect(video_rect, [1000, 800], 2.0);
-
-        assert_eq!(viewport, RenderViewport::new(200, 100, 401, 401));
-    }
-
-    #[test]
-    fn invalid_video_viewport_from_ui_rect_defaults_to_full_surface() {
-        let empty_rect = egui::Rect::from_min_max(egui::pos2(40.0, 40.0), egui::pos2(40.0, 80.0));
-
-        let viewport = video_viewport_from_ui_rect(empty_rect, [640, 360], f32::NAN);
-
-        assert_eq!(viewport, RenderViewport::full_surface(640, 360));
-    }
-
-    #[test]
-    fn video_exclusion_from_ui_rect_converts_sidebar_to_physical_pixels() {
-        let sidebar_rect =
-            egui::Rect::from_min_max(egui::pos2(0.0, 64.0), egui::pos2(420.0, 640.0));
-
-        let exclusion = video_exclusion_from_ui_rect(sidebar_rect, [1280, 720], 1.0);
-
-        assert_eq!(exclusion, Some(RenderViewport::new(0, 64, 420, 576)));
-    }
-
-    #[test]
-    fn invalid_video_exclusion_from_ui_rect_is_ignored() {
-        let empty_rect = egui::Rect::from_min_max(egui::pos2(40.0, 40.0), egui::pos2(40.0, 80.0));
-
-        let exclusion = video_exclusion_from_ui_rect(empty_rect, [640, 360], f32::NAN);
-
-        assert_eq!(exclusion, None);
-    }
 
     /// Проверяет, что renderer error становится fatal media error, а не silent fallback.
     #[test]

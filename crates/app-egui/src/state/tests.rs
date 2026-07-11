@@ -543,6 +543,7 @@ fn app_layout_shrinks_video_viewport_by_sidebar_without_exclusion_rects() {
 fn app_state_player_snapshot_boundary_stays_explicit() {
     let state_source = state_source_for_architecture_tests();
     let frame_prepare_source = include_str!("../frame_prepare.rs");
+    let input_snapshot_source = include_str!("../frame_prepare/input_snapshot.rs");
     let removed_getter_signature = concat!("fn ", "player_snapshot", "(&mut self)");
     let refresh_signature = concat!(
         "pub(crate) fn ",
@@ -596,19 +597,22 @@ fn app_state_player_snapshot_boundary_stays_explicit() {
         "publish_desktop_snapshot() не должен зависеть от worker storage"
     );
 
-    let begin_frame_position = frame_prepare_source
+    let begin_frame_position = input_snapshot_source
         .find("let frame_context = app_state.begin_frame_context(renderer.diagnostics());")
-        .expect("render_frame должен создавать AppFrameContext перед публикацией");
-    let publish_position = frame_prepare_source
+        .expect("input snapshot adapter должен создавать AppFrameContext перед публикацией");
+    let publish_position = input_snapshot_source
         .find("app_state.publish_desktop_snapshot(frame_context.player_snapshot());")
-        .expect("render_frame должен явно публиковать snapshot текущего frame-а");
+        .expect("input snapshot adapter должен явно публиковать snapshot текущего frame-а");
+    let input_prepare_position = frame_prepare_source
+        .find("prepare_frame_input(telemetry, window, renderer, app_state, &mut frame_sequence)")
+        .expect("render_frame должен делегировать input snapshot отдельному adapter-у");
     let ui_prepare_position = frame_prepare_source
         .find("let mut prepared_ui_frame = prepare_ui_frame(")
         .expect("render_frame должен готовить UI через тот же AppFrameContext");
 
     assert!(
-        begin_frame_position < publish_position && publish_position < ui_prepare_position,
-        "render_frame должен публиковать snapshot из AppFrameContext до UI/render подготовки"
+        begin_frame_position < publish_position && input_prepare_position < ui_prepare_position,
+        "input adapter должен публиковать AppFrameContext до UI/render подготовки"
     );
 }
 
