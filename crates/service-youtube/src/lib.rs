@@ -6,20 +6,13 @@
 //! selection policy с neutral capability snapshot, а затем открывает demuxer
 //! только для выбранной adaptive пары.
 
-use std::io::Read;
 use std::sync::Arc;
-use std::thread;
 
 use anyhow::{Context, Result};
-use bytes::Bytes;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, YoutubeConfig};
-use source_core::{ByteSource, HttpHeader, SourceRuntimeConfig};
+use source_core::{ByteSource, SourceRuntimeConfig};
 use symphonia_demux::DemuxerOptions;
 use url::Url;
-
-/// Размер HTTP chunk, который fetcher передаёт demuxer-у.
-const HTTP_READ_CHUNK_SIZE: usize = 64 * 1024;
 
 /// Один кибибайт в bytes для slow-start prefetch policy.
 const KIB_BYTES: u64 = 1024;
@@ -29,6 +22,7 @@ const MIB_BYTES: u64 = KIB_BYTES * 1024;
 
 mod dto;
 mod http_refresh;
+mod http_stream;
 mod process;
 mod resolver;
 mod selection;
@@ -48,6 +42,7 @@ pub use selection::{
 };
 
 use http_refresh::{RefreshContext, YoutubeRefreshingRangeSource};
+use http_stream::spawn_http_fetcher;
 use resolver::{
     YoutubeDirectStreamResolver, YtDlpDirectStreamResolver, YtDlpSelectedStreamResolver,
     build_streaming_description, direct_streams_from_matching_candidate,
@@ -59,7 +54,7 @@ use dto::{YtDlpFormat, YtDlpMetadata, YtDlpRequestedDownload};
 #[cfg(test)]
 use resolver::select_direct_media_streams;
 #[cfg(test)]
-use source_core::{CancellationToken, SourceValidators};
+use source_core::{CancellationToken, HttpHeader, SourceValidators};
 #[cfg(test)]
 use std::time::Duration;
 
@@ -512,96 +507,6 @@ fn open_unseekable_streaming_demuxer(
 fn demuxer_options_from_config(config: &PlayerDemuxConfig) -> DemuxerOptions {
     DemuxerOptions::from_max_consecutive_corrupted_packets(config.max_consecutive_corrupted_packets)
         .expect("validated AppConfig must provide positive demux corrupted packet limit")
-}
-
-/// Запускает потоковую загрузку одного direct media URL.
-fn spawn_http_fetcher(
-    thread_name: &'static str,
-    stream: YoutubeDirectStreamDescriptor,
-    source_config: SourceRuntimeConfig,
-    writer: symphonia_demux::StreamingByteWriter,
-) -> Result<()> {
-    thread::Builder::new()
-        .name(thread_name.to_string())
-        .spawn(move || {
-            if let Err(fetch_error) = fetch_stream_to_writer(&stream, &source_config, &writer) {
-                let fail_message = format!("{thread_name}: {fetch_error}");
-                if let Err(writer_error) = writer.fail(fail_message) {
-                    tracing::warn!(
-                        error = %writer_error,
-                        "Не удалось передать ошибку HTTP fetcher-а в streaming reader"
-                    );
-                }
-            }
-        })
-        .with_context(|| format!("Не удалось запустить HTTP fetcher thread: {thread_name}"))?;
-
-    Ok(())
-}
-
-/// Качает HTTP response body и пишет bytes в streaming writer.
-fn fetch_stream_to_writer(
-    stream: &YoutubeDirectStreamDescriptor,
-    source_config: &SourceRuntimeConfig,
-    writer: &symphonia_demux::StreamingByteWriter,
-) -> Result<()> {
-    tracing::info!(description = %stream.description, "HTTP streaming fetch started");
-
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(source_config.connect_timeout())
-        .timeout(source_config.read_timeout())
-        .build()
-        .context("Не удалось создать reqwest blocking client")?;
-
-    let headers = build_header_map(&stream.headers)?;
-
-    // Выполняем GET и проверяем HTTP status.
-    let mut response = client
-        .get(&stream.url)
-        .headers(headers)
-        .send()
-        .context("HTTP запрос direct media stream не удался")?
-        .error_for_status()
-        .context("YouTube direct media stream вернул HTTP ошибку")?;
-
-    // Переиспользуем буфер, чтобы не аллоцировать на каждый read.
-    let mut read_buffer = vec![0u8; HTTP_READ_CHUNK_SIZE];
-
-    loop {
-        // blocking read естественно ждёт сеть.
-        let bytes_read = response
-            .read(&mut read_buffer)
-            .context("Ошибка чтения HTTP stream")?;
-
-        // EOF response body.
-        if bytes_read == 0 {
-            writer.finish()?;
-            tracing::info!(description = %stream.description, "HTTP streaming fetch finished");
-            return Ok(());
-        }
-
-        // Bytes копирует только прочитанную часть буфера.
-        writer.send_chunk(Bytes::copy_from_slice(&read_buffer[..bytes_read]))?;
-    }
-}
-
-/// Конвертирует normalized service headers в reqwest HeaderMap.
-fn build_header_map(headers: &[HttpHeader]) -> Result<HeaderMap> {
-    let mut header_map = HeaderMap::new();
-
-    for header in headers {
-        let header_name = HeaderName::from_bytes(header.name.as_bytes())
-            .with_context(|| format!("Некорректный HTTP header name от yt-dlp: {}", header.name))?;
-        let header_value = HeaderValue::from_str(&header.value).with_context(|| {
-            format!(
-                "Некорректное значение HTTP header от yt-dlp: {}",
-                header.name
-            )
-        })?;
-        header_map.insert(header_name, header_value);
-    }
-
-    Ok(header_map)
 }
 
 #[cfg(test)]
