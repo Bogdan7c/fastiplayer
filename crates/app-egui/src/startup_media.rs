@@ -4,14 +4,14 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use capability_core::{SelectedVideoStream, StreamSelectionError, SystemCapabilities};
+use capability_core::{SelectedVideoStream, SystemCapabilities};
 use codec_core::VideoCodec as RuntimeVideoCodec;
 use player_core::PreparedMedia;
 use rustiplayer_config::{
     AppConfig, NetworkConfig, PlayerDemuxConfig, VideoCodec as ConfigVideoCodec, YoutubeConfig,
+    YoutubeHdrSelection,
 };
 use service_youtube::YoutubeStreamCandidates;
-use thiserror::Error;
 use tracing::{debug, info, warn};
 
 use crate::state::AppState;
@@ -353,18 +353,6 @@ impl StartupMediaController {
     }
 }
 
-/// Ошибка выбора YouTube stream-а до открытия demuxer-а.
-#[derive(Debug, Error)]
-enum YoutubeStartupSelectionError {
-    /// Service candidates есть, но ни один не содержит полной metadata для capability-core.
-    #[error("YouTube stream candidates не содержат ready video metadata: {0}")]
-    NoReadyVideoCandidates(String),
-
-    /// Capability-core отклонил все ready candidates с typed причиной.
-    #[error("YouTube stream rejected by current hardware/render capabilities: {0}")]
-    Capability(#[from] StreamSelectionError),
-}
-
 /// Выполняет production chain: service candidates -> capability selection -> demux open.
 pub(crate) fn resolve_youtube_startup_media(
     source_url: &str,
@@ -380,6 +368,7 @@ pub(crate) fn resolve_youtube_startup_media(
     let selected_stream = select_youtube_startup_candidate_with_codec_order(
         &stream_candidates,
         preferred_video_codec_order,
+        youtube_config.hdr_selection,
         system_capabilities,
     )
     .context("Не удалось выбрать YouTube stream по codec policy и system capabilities")?;
@@ -420,84 +409,38 @@ pub(crate) fn resolve_direct_media_startup_media(
         .context("Не удалось открыть direct media URL")
 }
 
-/// Временная политика: HDR-потоки YouTube не выбираются, пока в UI нет
-/// переключателя HDR.
-///
-/// HDR decode/render path (VP9 Profile 2 -> P010 -> BT.2446-C HDR→SDR) уже
-/// реализован и сам gated в `capability-core`/`render-wgpu-video`. Когда в UI
-/// появится кнопка, этот `const` станет runtime-значением из UI/config, и
-/// HDR-кандидаты (детальный тег `vp09.02.*`) станут выбираемыми без других
-/// изменений в этом модуле.
-const ALLOW_YOUTUBE_HDR: bool = false;
-
-/// Сообщает, что ready requirement кандидата требует HDR-обработки.
-///
-/// Использует намерение `VideoDecodeRequirement::requires_hdr_processing`, а не
-/// читает поля `hdr`/`color` напрямую. Insufficient-кандидаты HDR не требуют
-/// (их и так нельзя выбрать), поэтому возвращаем `false`.
-fn youtube_candidate_requires_hdr(candidate: &service_youtube::YoutubeStreamCandidate) -> bool {
-    candidate
-        .video_requirement
-        .as_requirement()
-        .is_some_and(|requirement| requirement.requires_hdr_processing())
-}
-
-/// Выбирает лучший YouTube candidate строго до открытия media bytes.
+/// Делегирует service-owned policy выбор до открытия media bytes.
 fn select_youtube_startup_candidate_with_codec_order(
     stream_candidates: &YoutubeStreamCandidates,
     preferred_video_codec_order: &[ConfigVideoCodec],
+    hdr_selection: YoutubeHdrSelection,
     system_capabilities: &SystemCapabilities,
-) -> std::result::Result<SelectedVideoStream, YoutubeStartupSelectionError> {
-    let capability_candidates = stream_candidates
-        .candidates
+) -> std::result::Result<SelectedVideoStream, service_youtube::YoutubeStreamSelectionError> {
+    let preferred_runtime_codecs = preferred_video_codec_order
         .iter()
-        .filter(|candidate| candidate.audio.is_some())
-        // ВРЕМЕННО: пока в UI нет HDR-переключателя, отбираем только SDR-потоки;
-        // HDR-кандидаты исключаются ещё до capability selection.
-        .filter(|candidate| ALLOW_YOUTUBE_HDR || !youtube_candidate_requires_hdr(candidate))
-        .filter_map(service_youtube::YoutubeStreamCandidate::to_capability_candidate)
+        .copied()
+        .map(runtime_video_codec)
         .collect::<Vec<_>>();
 
-    if capability_candidates.is_empty() {
-        return Err(YoutubeStartupSelectionError::NoReadyVideoCandidates(
-            youtube_no_ready_candidates_reason(stream_candidates),
-        ));
-    }
-
-    let mut first_selection_error = None;
-    for preferred_codec in preferred_video_codec_order {
-        let runtime_codec = runtime_video_codec(*preferred_codec);
-        let codec_candidates = capability_candidates
-            .iter()
-            .filter(|candidate| candidate.requirement.codec == runtime_codec)
-            .cloned()
-            .collect::<Vec<_>>();
-        if codec_candidates.is_empty() {
-            continue;
-        }
-
-        match system_capabilities.select_best_video_stream(&codec_candidates) {
-            Ok(selected_stream) => return Ok(selected_stream),
-            Err(error) => {
-                first_selection_error.get_or_insert(error);
-            }
-        }
-    }
-
-    Err(first_selection_error
-        .unwrap_or(StreamSelectionError::EmptyCandidates)
-        .into())
+    service_youtube::select_youtube_stream(
+        stream_candidates,
+        &preferred_runtime_codecs,
+        hdr_selection,
+        system_capabilities,
+    )
 }
 
-/// Test/compatibility helper с default codec policy.
+/// Test helper с default codec policy и явной HDR policy.
 #[cfg(test)]
 fn select_youtube_startup_candidate(
     stream_candidates: &YoutubeStreamCandidates,
+    hdr_selection: YoutubeHdrSelection,
     system_capabilities: &SystemCapabilities,
-) -> std::result::Result<SelectedVideoStream, YoutubeStartupSelectionError> {
+) -> std::result::Result<SelectedVideoStream, service_youtube::YoutubeStreamSelectionError> {
     select_youtube_startup_candidate_with_codec_order(
         stream_candidates,
         &AppConfig::default().player.preferred_video_codec_order,
+        hdr_selection,
         system_capabilities,
     )
 }
@@ -511,39 +454,6 @@ pub(crate) const fn runtime_video_codec(codec: ConfigVideoCodec) -> RuntimeVideo
         ConfigVideoCodec::H265 => RuntimeVideoCodec::H265,
         ConfigVideoCodec::Vp8 => RuntimeVideoCodec::Vp8,
     }
-}
-
-/// Формирует короткую причину, почему service candidates нельзя передать в capability-core.
-fn youtube_no_ready_candidates_reason(stream_candidates: &YoutubeStreamCandidates) -> String {
-    if stream_candidates.candidates.is_empty() {
-        return "yt-dlp не вернул WebM VP9/Opus candidates для текущего production path"
-            .to_string();
-    }
-
-    let reasons = stream_candidates
-        .candidates
-        .iter()
-        .filter_map(|candidate| {
-            if candidate.audio.is_none() {
-                return Some(format!(
-                    "{}: отсутствует WebM/Opus audio companion",
-                    candidate.stream_id
-                ));
-            }
-
-            candidate
-                .video_requirement
-                .insufficient_reason()
-                .map(|reason| format!("{}: {reason}", candidate.stream_id))
-        })
-        .take(3)
-        .collect::<Vec<_>>();
-
-    if reasons.is_empty() {
-        return "все candidates были отфильтрованы до capability selection".to_string();
-    }
-
-    reasons.join("; ")
 }
 
 /// Забирает готовый результат фоновой подготовки YouTube и доставляет его в UI/player.
@@ -695,13 +605,15 @@ mod tests {
         SystemCapabilities,
     };
     use codec_core::{
-        BitDepth, ChromaSubsampling, DecodeBackendId, SupportedVideoDecodeFormat, VideoCodec,
-        VideoDecodeRequirement, VideoProfile, Vp9Profile,
+        BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, DecodeBackendId,
+        MatrixCoefficients, SupportedVideoDecodeFormat, TransferFunction, VideoCodec,
+        VideoColorMetadata, VideoDecodeRequirement, VideoProfile, Vp9Profile,
     };
     use render_core::RenderCapabilities;
     use service_youtube::{
-        YoutubeDirectStreamDescriptor, YoutubeInsufficientVideoMetadata, YoutubeStreamCandidate,
-        YoutubeStreamCandidates, YoutubeStreamKind, YoutubeVideoRequirement,
+        YoutubeDirectStreamDescriptor, YoutubeDynamicRange, YoutubeInsufficientVideoMetadata,
+        YoutubeStreamCandidate, YoutubeStreamCandidates, YoutubeStreamKind,
+        YoutubeVideoRequirement,
     };
     use source_core::SourceValidators;
     use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
@@ -768,12 +680,24 @@ mod tests {
     }
 
     fn vp9_requirement(profile: Vp9Profile, bit_depth: BitDepth) -> VideoDecodeRequirement {
+        let color = match profile {
+            Vp9Profile::Profile2 | Vp9Profile::Profile3 => VideoColorMetadata::container(
+                ColorRange::Limited,
+                MatrixCoefficients::Bt2020,
+                ColorPrimaries::Bt2020,
+                TransferFunction::Pq,
+                None,
+            ),
+            Vp9Profile::Profile0 | Vp9Profile::Profile1 => VideoColorMetadata::sdr_bt709_limited(),
+        };
+
         VideoDecodeRequirement::new(VideoCodec::Vp9)
             .with_profile(VideoProfile::Vp9(profile))
             .with_bit_depth(bit_depth)
             .with_chroma(ChromaSubsampling::Yuv420)
             .with_resolution(1920, 1080)
             .with_frame_rate(60.0)
+            .with_color(color)
     }
 
     fn ready_youtube_candidate(
@@ -782,6 +706,11 @@ mod tests {
         requirement: VideoDecodeRequirement,
         quality_score: i64,
     ) -> YoutubeStreamCandidate {
+        let dynamic_range = if requirement.requires_hdr_processing() {
+            YoutubeDynamicRange::Hdr
+        } else {
+            YoutubeDynamicRange::Sdr
+        };
         YoutubeStreamCandidate {
             stream_id: stream_id.to_string(),
             format_id: Some(format!("{format_id}+251")),
@@ -791,6 +720,7 @@ mod tests {
             fps: requirement.fps,
             vcodec: Some("vp09.00.10.08".to_string()),
             acodec: Some("opus".to_string()),
+            dynamic_range,
             video_requirement: YoutubeVideoRequirement::Ready(requirement),
             quality_score,
         }
@@ -960,9 +890,12 @@ mod tests {
             ),
         ]);
 
-        let selected =
-            select_youtube_startup_candidate(&candidates, &capabilities_with_vp9_profile0())
-                .expect("supported SDR candidate is selected");
+        let selected = select_youtube_startup_candidate(
+            &candidates,
+            YoutubeHdrSelection::SdrOnly,
+            &capabilities_with_vp9_profile0(),
+        )
+        .expect("supported SDR candidate is selected");
 
         assert_eq!(selected.stream_id, "sdr-nv12");
     }
@@ -980,6 +913,7 @@ mod tests {
         let selected = select_youtube_startup_candidate_with_codec_order(
             &candidates,
             &[ConfigVideoCodec::Av1, ConfigVideoCodec::Vp9],
+            YoutubeHdrSelection::SdrOnly,
             &capabilities,
         )
         .expect("policy must continue to the first supported configured codec");
@@ -988,12 +922,13 @@ mod tests {
         let error = select_youtube_startup_candidate_with_codec_order(
             &candidates,
             &[ConfigVideoCodec::Av1],
+            YoutubeHdrSelection::SdrOnly,
             &capabilities,
         )
         .expect_err("codec omitted from policy must not be selected");
         assert!(matches!(
             error,
-            YoutubeStartupSelectionError::Capability(StreamSelectionError::EmptyCandidates)
+            service_youtube::YoutubeStreamSelectionError::NoPlayableSdr { .. }
         ));
     }
 
@@ -1006,12 +941,20 @@ mod tests {
             1_000,
         )]);
 
-        let error = select_youtube_startup_candidate(&candidates, &SystemCapabilities::empty(1))
-            .expect_err("empty capabilities reject ready candidate");
+        let error = select_youtube_startup_candidate(
+            &candidates,
+            YoutubeHdrSelection::SdrOnly,
+            &SystemCapabilities::empty(1),
+        )
+        .expect_err("empty capabilities reject ready candidate");
 
         assert!(matches!(
             error,
-            YoutubeStartupSelectionError::Capability(StreamSelectionError::Unsupported(_))
+            service_youtube::YoutubeStreamSelectionError::NoPlayableSdr { rejections }
+                if rejections.iter().any(|rejection| matches!(
+                    rejection.reason,
+                    service_youtube::YoutubeCandidateRejectionReason::Capability(_)
+                ))
         ));
     }
 
@@ -1030,14 +973,24 @@ mod tests {
             });
         let candidates = youtube_candidates(vec![candidate]);
 
-        let error =
-            select_youtube_startup_candidate(&candidates, &capabilities_with_vp9_profile0())
-                .expect_err("insufficient service metadata is rejected before selection");
+        let error = select_youtube_startup_candidate(
+            &candidates,
+            YoutubeHdrSelection::SdrOnly,
+            &capabilities_with_vp9_profile0(),
+        )
+        .expect_err("insufficient service metadata is rejected before selection");
 
         assert!(matches!(
             error,
-            YoutubeStartupSelectionError::NoReadyVideoCandidates(reason)
-                if reason.contains("plain-vp9") && reason.contains("missing VP9 profile metadata")
+            service_youtube::YoutubeStreamSelectionError::NoPlayableSdr { rejections }
+                if rejections.iter().any(|rejection| {
+                    rejection.stream_id == "plain-vp9"
+                        && matches!(
+                            &rejection.reason,
+                            service_youtube::YoutubeCandidateRejectionReason::InsufficientVideoMetadata { reason }
+                                if reason.contains("missing VP9 profile metadata")
+                        )
+                })
         ));
     }
 
@@ -1052,22 +1005,28 @@ mod tests {
         candidate.audio = None;
         let candidates = youtube_candidates(vec![candidate]);
 
-        let error =
-            select_youtube_startup_candidate(&candidates, &capabilities_with_vp9_profile0())
-                .expect_err("video-only candidate is not openable by current service path");
+        let error = select_youtube_startup_candidate(
+            &candidates,
+            YoutubeHdrSelection::SdrOnly,
+            &capabilities_with_vp9_profile0(),
+        )
+        .expect_err("video-only candidate is not openable by current service path");
 
         assert!(matches!(
             error,
-            YoutubeStartupSelectionError::NoReadyVideoCandidates(reason)
-                if reason.contains("video-without-audio")
-                    && reason.contains("audio companion")
+            service_youtube::YoutubeStreamSelectionError::NoPlayableSdr { rejections }
+                if rejections.iter().any(|rejection| {
+                    rejection.stream_id == "video-without-audio"
+                        && rejection.reason
+                            == service_youtube::YoutubeCandidateRejectionReason::MissingAudioCompanion
+                })
         ));
     }
 
     #[test]
-    fn youtube_startup_selection_temporarily_skips_hdr_candidate() {
-        // HDR-кандидат с самым высоким quality_score: без временного фильтра он
-        // был бы предпочтён, но пока в UI нет HDR-переключателя выбираем SDR.
+    fn youtube_startup_sdr_only_selects_sdr_candidate() {
+        // Явная пользовательская политика SdrOnly не допускает HDR даже при
+        // более высоком quality score.
         let mut hdr_requirement = vp9_requirement(Vp9Profile::Profile2, BitDepth::Ten);
         hdr_requirement.hdr = true;
         let candidates = youtube_candidates(vec![
@@ -1080,18 +1039,20 @@ mod tests {
             ),
         ]);
 
-        let selected =
-            select_youtube_startup_candidate(&candidates, &capabilities_with_vp9_profile0())
-                .expect("SDR candidate остаётся выбираемым при отключённом HDR");
+        let selected = select_youtube_startup_candidate(
+            &candidates,
+            YoutubeHdrSelection::SdrOnly,
+            &capabilities_with_vp9_profile0(),
+        )
+        .expect("SDR candidate остаётся выбираемым при отключённом HDR");
 
         assert_eq!(selected.stream_id, "sdr-nv12");
     }
 
     #[test]
-    fn youtube_startup_hdr_only_is_filtered_before_capability_selection() {
-        // Единственный кандидат — HDR. Временный фильтр убирает его ещё до
-        // capability selection, поэтому ошибка именно NoReadyVideoCandidates
-        // (отфильтрован), а не типизированный Capability rejection.
+    fn youtube_startup_sdr_only_reports_no_playable_sdr_for_hdr_only_list() {
+        // Единственный кандидат — HDR, поэтому SdrOnly возвращает отдельную
+        // typed ошибку отсутствия playable SDR.
         let mut hdr_requirement = vp9_requirement(Vp9Profile::Profile2, BitDepth::Ten);
         hdr_requirement.hdr = true;
         let candidates = youtube_candidates(vec![ready_youtube_candidate(
@@ -1101,13 +1062,16 @@ mod tests {
             10_000,
         )]);
 
-        let error =
-            select_youtube_startup_candidate(&candidates, &capabilities_with_vp9_profile0())
-                .expect_err("HDR-only кандидат отфильтрован до capability selection");
+        let error = select_youtube_startup_candidate(
+            &candidates,
+            YoutubeHdrSelection::SdrOnly,
+            &capabilities_with_vp9_profile0(),
+        )
+        .expect_err("HDR-only кандидат отфильтрован до capability selection");
 
         assert!(matches!(
             error,
-            YoutubeStartupSelectionError::NoReadyVideoCandidates(_)
+            service_youtube::YoutubeStreamSelectionError::NoPlayableSdr { .. }
         ));
     }
 }

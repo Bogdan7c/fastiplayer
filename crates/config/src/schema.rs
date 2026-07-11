@@ -312,6 +312,11 @@ fn document_schema_version_5_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "hdr_selection = \"sdr_only\"",
+        "# Политика YouTube dynamic range: только SDR или HDR с автоматическим SDR fallback.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "resolve_timeout_ms = 30000",
         "# Timeout подготовки YouTube metadata через yt-dlp.",
     );
@@ -740,6 +745,19 @@ pub enum VideoCodec {
 
     /// VP8.
     Vp8,
+}
+
+/// Пользовательская политика выбора dynamic range для YouTube video stream-а.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum YoutubeHdrSelection {
+    /// Выбирать только кандидаты с достоверно подтверждённым SDR dynamic range.
+    #[default]
+    SdrOnly,
+
+    /// Сначала искать playable HDR, затем автоматически переходить к лучшему SDR.
+    #[serde(rename = "prefer_hdr")]
+    PreferHdrWhenAvailable,
 }
 
 /// Decode-настройки video pipeline.
@@ -2004,6 +2022,26 @@ pub struct YoutubeConfig {
     )]
     pub prefer_account_session: bool,
 
+    /// Политика выбора SDR/HDR stream-а до открытия media bytes.
+    #[setting(
+        id = "youtube.hdr_selection",
+        path = "youtube.hdr_selection",
+        section = "youtube",
+        group = "service",
+        surface = "main-settings-window",
+        label_id = "settings.youtube.hdr_selection.label",
+        label_ru = "Динамический диапазон YouTube",
+        description_id = "settings.youtube.hdr_selection.description",
+        description_ru = "Выбирать только SDR или предпочитать HDR при полной поддержке decoder и renderer с автоматическим SDR fallback.",
+        editor = "select",
+        apply = "youtube.apply",
+        options(
+            option(id = "sdr_only", label_id = "settings.youtube.hdr_selection.sdr_only", label_ru = "Только SDR", value = YoutubeHdrSelection::SdrOnly),
+            option(id = "prefer_hdr", label_id = "settings.youtube.hdr_selection.prefer_hdr", label_ru = "Предпочитать HDR", value = YoutubeHdrSelection::PreferHdrWhenAvailable),
+        )
+    )]
+    pub hdr_selection: YoutubeHdrSelection,
+
     /// Максимальное время подготовки direct stream metadata через `yt-dlp`.
     #[setting(
         id = "youtube.resolve_timeout_ms",
@@ -2031,6 +2069,7 @@ impl Default for YoutubeConfig {
         Self {
             enabled: true,
             prefer_account_session: true,
+            hdr_selection: YoutubeHdrSelection::SdrOnly,
             resolve_timeout_ms: 30_000,
         }
     }
@@ -2320,6 +2359,7 @@ mod settings_metadata_tests {
         "network.read_timeout_ms",
         "youtube.enabled",
         "youtube.prefer_account_session",
+        "youtube.hdr_selection",
         "youtube.resolve_timeout_ms",
         "ui.show_telemetry",
         "ui.language",
@@ -2814,6 +2854,11 @@ mod settings_metadata_tests {
             &registry,
             "frame_server.live_scrub_decode_mode",
             &["throttled_latest", "every_drag_event"],
+        );
+        assert_select_options(
+            &registry,
+            "youtube.hdr_selection",
+            &["sdr_only", "prefer_hdr"],
         );
         assert_select_options(&registry, "ui.skin", &[validation::DEFAULT_UI_SKIN]);
     }

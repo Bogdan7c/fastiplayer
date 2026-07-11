@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use capability_core::VideoStreamCandidate as CapabilityVideoStreamCandidate;
 use codec_core::VideoDecodeRequirement;
 use serde::Deserialize;
 use source_core::{HttpHeader, SourceValidators};
@@ -251,6 +250,9 @@ pub struct YoutubeStreamCandidate {
     /// Raw audio codec tag выбранного companion stream-а.
     pub acodec: Option<String>,
 
+    /// Нормализованный dynamic range из отдельного service metadata field-а.
+    pub dynamic_range: YoutubeDynamicRange,
+
     /// Требование к capability-core или typed причина, почему metadata недостаточна.
     pub video_requirement: YoutubeVideoRequirement,
 
@@ -258,20 +260,17 @@ pub struct YoutubeStreamCandidate {
     pub quality_score: i64,
 }
 
-impl YoutubeStreamCandidate {
-    /// Возвращает capability-core candidate только при достаточной video metadata.
-    #[must_use]
-    pub fn to_capability_candidate(&self) -> Option<CapabilityVideoStreamCandidate> {
-        let YoutubeVideoRequirement::Ready(requirement) = &self.video_requirement else {
-            return None;
-        };
+/// Достоверность dynamic range, которую service adapter получил из manifest metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum YoutubeDynamicRange {
+    /// Manifest явно классифицировал stream как SDR.
+    Sdr,
 
-        Some(CapabilityVideoStreamCandidate {
-            stream_id: self.stream_id.clone(),
-            requirement: requirement.clone(),
-            quality_score: self.quality_score,
-        })
-    }
+    /// Manifest явно классифицировал stream как HDR/PQ/HLG.
+    Hdr,
+
+    /// Поле отсутствует, неизвестно или противоречит typed color metadata.
+    Unknown,
 }
 
 /// Состояние конвертации service metadata в codec/capability requirement.

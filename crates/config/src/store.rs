@@ -426,7 +426,7 @@ mod tests {
     use crate::{
         CURRENT_SCHEMA_VERSION, FrameServerConfig, FrameServerLiveScrubDecodeModeConfig,
         HdrToSdrOperatorConfig, PausedCommitBehavior, ToneMappingMode, VideoBackendPreference,
-        validation,
+        YoutubeHdrSelection, validation,
     };
 
     /// Проверяет, что default schema остаётся самосогласованной.
@@ -435,6 +435,67 @@ mod tests {
         AppConfig::default()
             .validate()
             .expect("default config valid");
+    }
+
+    /// Старый schema v5 без нового ключа сохраняет прежнее SDR-only поведение.
+    #[test]
+    fn schema_v5_without_youtube_hdr_selection_defaults_to_sdr_only() {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+schema_version = 5
+
+[youtube]
+enabled = true
+prefer_account_session = true
+resolve_timeout_ms = 30000
+"#,
+        )
+        .expect("old schema v5 config written");
+
+        let loaded = load_from_path(&config_path).expect("old schema v5 config loads");
+
+        assert_eq!(
+            loaded.config.youtube.hdr_selection,
+            YoutubeHdrSelection::SdrOnly
+        );
+        assert_eq!(loaded.config.schema_version, 5);
+    }
+
+    /// Оба стабильных id читаются и записываются без изменения schema version.
+    #[test]
+    fn youtube_hdr_selection_stable_ids_roundtrip() {
+        for (stable_id, expected_selection) in [
+            ("sdr_only", YoutubeHdrSelection::SdrOnly),
+            ("prefer_hdr", YoutubeHdrSelection::PreferHdrWhenAvailable),
+        ] {
+            let temp_dir = tempfile::tempdir().expect("temp dir created");
+            let config_path = temp_dir.path().join("config.toml");
+            fs::write(
+                &config_path,
+                format!(
+                    r#"
+schema_version = 5
+
+[youtube]
+hdr_selection = "{stable_id}"
+"#
+                ),
+            )
+            .expect("HDR selection config written");
+
+            let loaded = load_from_path(&config_path).expect("HDR selection config loads");
+            assert_eq!(loaded.config.youtube.hdr_selection, expected_selection);
+
+            let generated = loaded
+                .config
+                .to_pretty_toml()
+                .expect("HDR selection config serializes");
+            assert!(generated.contains(&format!("hdr_selection = \"{stable_id}\"")));
+            assert!(generated.contains("schema_version = 5"));
+        }
     }
 
     /// Проверяет, что render.color_adjustment defaults являются identity.

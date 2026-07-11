@@ -22,6 +22,7 @@ pub use schema::{
     PlayerSeekConfig, RenderColorAdjustmentConfig, RenderConfig, RenderProfile, ToneMappingMode,
     UiAnimationsConfig, UiConfig, UiSettingsConfig, UiWindowConfig, VideoBackendPreference,
     VideoCodec, VideoConfig, VideoSchedulerConfig, VulkanConfig, VulkanPresentMode, YoutubeConfig,
+    YoutubeHdrSelection,
 };
 pub(crate) use schema::{
     LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3, LEGACY_SCHEMA_VERSION_4,

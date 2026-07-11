@@ -441,15 +441,16 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
             SettingApplyMechanism::MediaSourceRebuild,
             PIPELINE_TESTS,
         ),
-        "youtube.enabled" | "youtube.prefer_account_session" | "youtube.resolve_timeout_ms" => {
-            SettingApplicationContract::new(
-                setting_name,
-                AppRuntimeRoute::MediaService,
-                SettingStateOwner::MediaOpenPolicy,
-                SettingApplyMechanism::PolicyUpdateInPlace,
-                POLICY_TESTS,
-            )
-        }
+        "youtube.enabled"
+        | "youtube.prefer_account_session"
+        | "youtube.hdr_selection"
+        | "youtube.resolve_timeout_ms" => SettingApplicationContract::new(
+            setting_name,
+            AppRuntimeRoute::MediaService,
+            SettingStateOwner::MediaOpenPolicy,
+            SettingApplyMechanism::PolicyUpdateInPlace,
+            POLICY_TESTS,
+        ),
         "frame_server.live_scrub_enabled"
         | "frame_server.live_scrub_decode_mode"
         | "frame_server.live_scrub_max_hz" => SettingApplicationContract::new(

@@ -2,9 +2,9 @@
 //!
 //! Этот crate является service boundary: он знает про YouTube/yt-dlp format
 //! selection и HTTP headers, но не знает про UI, renderer или внутренний state
-//! player-а. Production startup получает candidates, выбирает stream через
-//! capability layer в `app-egui`, а затем возвращается сюда только для открытия
-//! demuxer-а выбранной пары.
+//! player-а. Production startup получает candidates, вызывает service-owned
+//! selection policy с neutral capability snapshot, а затем открывает demuxer
+//! только для выбранной adaptive пары.
 
 use std::io::Read;
 use std::sync::Arc;
@@ -31,15 +31,20 @@ mod dto;
 mod http_refresh;
 mod process;
 mod resolver;
+mod selection;
 
 pub use dto::{
-    YoutubeDirectStreamDescriptor, YoutubeDirectStreams, YoutubeInsufficientVideoMetadata,
-    YoutubeStreamCandidate, YoutubeStreamCandidates, YoutubeStreamKind, YoutubeStreamingMedia,
-    YoutubeVideoRequirement,
+    YoutubeDirectStreamDescriptor, YoutubeDirectStreams, YoutubeDynamicRange,
+    YoutubeInsufficientVideoMetadata, YoutubeStreamCandidate, YoutubeStreamCandidates,
+    YoutubeStreamKind, YoutubeStreamingMedia, YoutubeVideoRequirement,
 };
 pub use resolver::{
     YoutubeSelectedStreamIdentity, resolve_youtube_direct_streams,
     resolve_youtube_stream_candidates, resolve_youtube_stream_candidates_with_config,
+};
+pub use selection::{
+    YoutubeCandidateRejection, YoutubeCandidateRejectionReason, YoutubeStreamSelectionError,
+    select_youtube_stream,
 };
 
 use http_refresh::{RefreshContext, YoutubeRefreshingRangeSource};
@@ -146,7 +151,7 @@ pub fn open_streaming_media_with_demux_config(
     })
 }
 
-/// Открывает YouTube URL по candidate-у, выбранному внешним capability layer-ом.
+/// Открывает YouTube URL по candidate-у, выбранному service selection boundary.
 ///
 /// Этот API является production path для startup/playback: service уже не
 /// применяет legacy SDR-safe selector до открытия bytes, а только строит source
@@ -852,6 +857,7 @@ mod tests {
                 fps: direct_streams.fps,
                 vcodec: direct_streams.vcodec.clone(),
                 acodec: direct_streams.acodec.clone(),
+                dynamic_range: YoutubeDynamicRange::Hdr,
                 video_requirement: YoutubeVideoRequirement::Ready(vp9_profile2_requirement()),
                 quality_score: 1,
             }],

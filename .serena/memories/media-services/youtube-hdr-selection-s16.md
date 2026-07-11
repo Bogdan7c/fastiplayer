@@ -1,0 +1,10 @@
+# YouTube HDR selection — Session 16 (2026-07-11)
+
+- Public config schema остаётся version 5. Поле `youtube.hdr_selection` имеет typed enum `YoutubeHdrSelection::{SdrOnly, PreferHdrWhenAvailable}`, stable ids `sdr_only` / `prefer_hdr`, default `SdrOnly`. Старый schema v5 без ключа загружается как `SdrOnly`; writer всегда сохраняет актуальное значение.
+- Metadata/settings owner: `rustiplayer-config::YoutubeConfig`; generated settings metadata создаёт select в YouTube/service group, а `rustiplayer-settings` относит setting к `MediaService` / media-source rebuild route.
+- Service selection owner: `crates/service-youtube/src/selection.rs`. `app-egui::startup_media` только переводит config codec order в runtime codec ids и выполняет цепочку resolve candidates -> `select_youtube_stream` -> open ровно выбранного stream id.
+- `YoutubeStreamCandidate` сохраняет video/audio descriptors, codec/profile/bit-depth/chroma/color requirement, quality score и typed `YoutubeDynamicRange::{Sdr, Hdr, Unknown}`. Dynamic range нормализуется только из отдельного yt-dlp `dynamic_range` field; quality label/description не участвуют.
+- Кандидат считается SDR/HDR только когда manifest dynamic range согласован с typed `VideoDecodeRequirement.color`. Отсутствующая, неизвестная или противоречивая color/dynamic-range metadata даёт `YoutubeCandidateRejectionReason::UnknownDynamicRange`; selection продолжает следующий candidate.
+- `SdrOnly` рассматривает только SDR и возвращает typed `NoPlayableSdr`. `PreferHdrWhenAvailable` сначала перебирает HDR по codec order и проверяет полный `SystemCapabilities::check_video_requirement` intersection (decoder + frame contract + renderer + HDR-to-SDR), затем автоматически переходит к SDR; strict HDR-required режима нет.
+- Старый public helper `YoutubeStreamCandidate::to_capability_candidate` удалён, чтобы внешний код не мог обойти dynamic-range policy.
+- Focused tests находятся в `service-youtube/src/selection.rs`; config compatibility/roundtrip tests — в `config/src/store.rs`; app integration tests — в `app-egui/src/startup_media.rs`.

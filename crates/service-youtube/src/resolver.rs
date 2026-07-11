@@ -10,9 +10,9 @@ use rustiplayer_config::YoutubeConfig;
 use source_core::{HttpHeader, SourceValidators};
 
 use crate::dto::{
-    YoutubeDirectStreamDescriptor, YoutubeDirectStreams, YoutubeInsufficientVideoMetadata,
-    YoutubeStreamCandidate, YoutubeStreamCandidates, YoutubeStreamKind, YoutubeVideoRequirement,
-    YtDlpFormat, YtDlpMetadata,
+    YoutubeDirectStreamDescriptor, YoutubeDirectStreams, YoutubeDynamicRange,
+    YoutubeInsufficientVideoMetadata, YoutubeStreamCandidate, YoutubeStreamCandidates,
+    YoutubeStreamKind, YoutubeVideoRequirement, YtDlpFormat, YtDlpMetadata,
 };
 use crate::process::{
     YtDlpProcessConfig, resolve_youtube_candidate_metadata, resolve_youtube_metadata,
@@ -255,6 +255,7 @@ pub(crate) fn build_stream_candidates(metadata: &YtDlpMetadata) -> Result<Youtub
             acodec: audio_format
                 .as_ref()
                 .and_then(|format| format.acodec.clone()),
+            dynamic_range: youtube_dynamic_range(video_format),
             video_requirement: video_requirement_from_format(video_format),
             quality_score: video_quality_score(video_format),
         });
@@ -267,6 +268,19 @@ pub(crate) fn build_stream_candidates(metadata: &YtDlpMetadata) -> Result<Youtub
         live,
         candidates,
     })
+}
+
+/// Нормализует только отдельное поле `dynamic_range`, не читая quality label/description.
+fn youtube_dynamic_range(format: &YtDlpFormat) -> YoutubeDynamicRange {
+    let Some(dynamic_range) = format.dynamic_range.as_deref() else {
+        return YoutubeDynamicRange::Unknown;
+    };
+
+    match dynamic_range.trim().to_ascii_lowercase().as_str() {
+        "sdr" => YoutubeDynamicRange::Sdr,
+        "hdr" | "hdr10" | "hdr10+" | "hlg" | "pq" => YoutubeDynamicRange::Hdr,
+        _ => YoutubeDynamicRange::Unknown,
+    }
 }
 
 /// Берёт выбранный stream id из service candidates и строит pair descriptors.
@@ -562,10 +576,7 @@ fn video_requirement_from_format(format: &YtDlpFormat) -> YoutubeVideoRequiremen
         return insufficient_requirement("yt-dlp не сообщил video codec", None);
     };
 
-    let parsed_requirement = if codec_tag == "vp9"
-        || codec_tag.starts_with("vp9.")
-        || codec_tag.starts_with("vp09.")
-    {
+    if codec_tag == "vp9" || codec_tag.starts_with("vp9.") || codec_tag.starts_with("vp09.") {
         vp9_requirement_from_codec_tag(&codec_tag, format)
     } else if codec_tag.starts_with("av01.") {
         av1_requirement_from_codec_tag(&codec_tag, format)
@@ -585,9 +596,7 @@ fn video_requirement_from_format(format: &YtDlpFormat) -> YoutubeVideoRequiremen
             ),
             partial_requirement,
         )
-    };
-
-    reject_hdr_hint_without_resolved_hdr_metadata(parsed_requirement, format)
+    }
 }
 
 /// Нормализует raw vcodec, отбрасывая `none` и пустые значения.
@@ -596,40 +605,6 @@ fn normalized_video_codec_tag(format: &YtDlpFormat) -> Option<String> {
 
     (!codec_tag.is_empty() && !codec_tag.eq_ignore_ascii_case("none"))
         .then(|| codec_tag.to_ascii_lowercase())
-}
-
-/// Не даёт HDR manifest hint пройти как SDR-ready requirement без color metadata.
-fn reject_hdr_hint_without_resolved_hdr_metadata(
-    requirement: YoutubeVideoRequirement,
-    format: &YtDlpFormat,
-) -> YoutubeVideoRequirement {
-    if !format_has_hdr_dynamic_range_hint(format) {
-        return requirement;
-    }
-
-    match requirement {
-        YoutubeVideoRequirement::Ready(requirement) if !requirement.hdr => {
-            insufficient_requirement(
-                "yt-dlp сообщил HDR dynamic_range, но codec tag не содержит HDR color metadata",
-                Some(requirement),
-            )
-        }
-        other_requirement => other_requirement,
-    }
-}
-
-/// Проверяет текстовый yt-dlp dynamic_range hint без принятия решения о HDR path.
-fn format_has_hdr_dynamic_range_hint(format: &YtDlpFormat) -> bool {
-    format
-        .dynamic_range
-        .as_deref()
-        .is_some_and(|dynamic_range| {
-            let normalized_dynamic_range = dynamic_range.to_ascii_lowercase();
-
-            normalized_dynamic_range.contains("hdr")
-                || normalized_dynamic_range.contains("hlg")
-                || normalized_dynamic_range.contains("pq")
-        })
 }
 
 /// Строит VP9 requirement из простого `vp9` или ISO BMFF `vp09.*` tag.
@@ -1365,25 +1340,28 @@ mod tests {
     }
 
     #[test]
-    fn plain_vp9_with_hdr_dynamic_range_hint_stays_insufficient() {
-        // Голый `vp9` сам по себе раскрывается в SDR Profile 0, но если manifest
-        // помечает формат как HDR, мы не имеем resolved HDR color metadata и не
-        // должны выдавать его за SDR-ready: guard возвращает Insufficient.
+    fn plain_vp9_hdr_hint_remains_unresolved_until_typed_selection() {
+        // Resolver сохраняет codec/profile/chroma, но не выдумывает color metadata.
+        // Service selection сопоставит typed dynamic range с этим отсутствующим
+        // color requirement и вернёт UnknownDynamicRange.
         let mut format = video_format("248", "vp9");
         format.dynamic_range = Some("HDR".to_string());
 
         let requirement = video_requirement_from_format(&format);
 
-        let YoutubeVideoRequirement::Insufficient(metadata) = requirement else {
-            panic!("HDR-намёк на голом `vp9` не должен проходить как SDR-ready requirement");
+        let YoutubeVideoRequirement::Ready(requirement) = requirement else {
+            panic!("codec metadata должна сохраниться для typed selection rejection");
         };
-        assert!(metadata.reason.to_ascii_lowercase().contains("hdr"));
+        assert_eq!(youtube_dynamic_range(&format), YoutubeDynamicRange::Hdr);
+        assert!(requirement.color.is_none());
     }
 
     #[test]
-    fn stream_candidates_preserve_direct_descriptors_and_capability_candidate() {
+    fn stream_candidates_preserve_descriptors_and_typed_metadata() {
+        let mut video = video_format("315", "vp09.02.10.10.01.09.16.09.00");
+        video.dynamic_range = Some("HDR".to_string());
         let metadata = metadata_with_formats(vec![
-            video_format("315", "vp09.02.10.10.01.09.16.09.00"),
+            video,
             audio_format("250", 70.0),
             audio_format("251", 160.0),
         ]);
@@ -1409,12 +1387,12 @@ mod tests {
             Some("vp09.02.10.10.01.09.16.09.00")
         );
         assert_eq!(candidate.acodec.as_deref(), Some("opus"));
-        assert!(candidate.video_requirement.is_ready());
-        let capability_candidate = candidate
-            .to_capability_candidate()
-            .expect("ready metadata converts to capability candidate");
-        assert_eq!(capability_candidate.stream_id, "abc123:v315:a251");
-        assert_eq!(capability_candidate.quality_score, candidate.quality_score);
+        assert_eq!(candidate.dynamic_range, YoutubeDynamicRange::Hdr);
+        let requirement = candidate
+            .video_requirement
+            .as_requirement()
+            .expect("typed video requirement preserved");
+        assert!(requirement.requires_hdr_processing());
     }
 
     #[test]

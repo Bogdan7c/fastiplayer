@@ -3870,8 +3870,10 @@ dependencies = [
  "serde_json",
  "source-core",
  "symphonia-demux",
+ "thiserror 2.0.18",
  "tracing",
  "url",
+ "video-frame-contract",
 ]
 
 [[package]]
