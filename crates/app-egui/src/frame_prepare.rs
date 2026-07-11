@@ -46,8 +46,9 @@ mod settings_runtime_adapter;
 mod shared_frame_materialization;
 use settings_runtime_adapter::FrameSettingsRuntimeAdapter;
 use shared_frame_materialization::{
-    SharedVideoFrameLeaseRole, SharedVideoFrameMaterializationOutcome,
-    SharedVideoFrameMaterializationRequest, materialize_shared_video_frame,
+    SharedMaterializationUnsupportedReason, SharedVideoFrameLeaseRole,
+    SharedVideoFrameMaterializationOutcome, SharedVideoFrameMaterializationRequest,
+    materialize_shared_video_frame,
 };
 
 /// Результат UI stage до входа в renderer/surface critical path.
@@ -482,6 +483,9 @@ fn record_worker_events(
                 app_state.handle_cached_present_frame_player_event(&player_event);
                 app_state.handle_main_visual_override_player_event(&player_event);
                 match player_event {
+                    PlayerEvent::MediaOpenRequested(_) => {
+                        app_state.reset_dma_buf_runtime_fallback_for_new_media();
+                    }
                     PlayerEvent::FatalError(fatal_error) => {
                         log_player_fatal_error(&fatal_error);
                     }
@@ -836,7 +840,10 @@ fn prepare_video_frame(
             timings.total = video_prepare_started_at.elapsed();
             PreparedVideoFrame::empty(acquisition_state).with_diagnostics("missing", timings)
         }
-        SharedVideoFrameMaterializationOutcome::Unsupported { present_frame } => {
+        SharedVideoFrameMaterializationOutcome::Unsupported {
+            present_frame,
+            reason,
+        } => {
             let stage_started_at = Instant::now();
             let preparation_action = video_frame_texture_preparation_action(
                 TextureViewLookupKind::Unsupported,
@@ -844,10 +851,28 @@ fn prepare_video_frame(
                 acquisition_reused_previous_frame,
             );
             debug_assert!(preparation_action.clears_cached_renderable_frame());
-            report_video_render_boundary_error(
-                app_state,
-                PlayerRenderError::render_resource_lookup_failed(&present_frame),
-            );
+            match reason {
+                SharedMaterializationUnsupportedReason::Wgpu(
+                    render_wgpu_video::WgpuFrameMaterializationUnsupportedReason::DmaBufDescriptorRejected(
+                        layout_rejection,
+                    ),
+                ) => {
+                    let render_generation = present_frame.render_generation();
+                    let player_error = PlayerRenderError::unsupported_frame_format(
+                        &present_frame,
+                        layout_rejection.to_string(),
+                    );
+                    app_state.note_dma_buf_layout_rejection(
+                        layout_rejection,
+                        render_generation,
+                        player_error,
+                    );
+                }
+                _ => report_video_render_boundary_error(
+                    app_state,
+                    PlayerRenderError::render_resource_lookup_failed(&present_frame),
+                ),
+            }
             timings.lookup_action = stage_started_at.elapsed();
             timings.total = video_prepare_started_at.elapsed();
             PreparedVideoFrame::empty(acquisition_state).with_diagnostics("unsupported", timings)
@@ -930,7 +955,7 @@ fn prepare_main_visual_override_frame(
                     app_state.clear_main_visual_override();
                     None
                 }
-                SharedVideoFrameMaterializationOutcome::Unsupported { present_frame }
+                SharedVideoFrameMaterializationOutcome::Unsupported { present_frame, .. }
                 | SharedVideoFrameMaterializationOutcome::Error { present_frame } => {
                     app_state.report_render_error(
                         PlayerRenderError::render_resource_lookup_failed(&present_frame),
@@ -1463,6 +1488,15 @@ pub(crate) fn render_frame(
     let stage_started_at = Instant::now();
     let prepared_video_frame =
         prepare_video_frame(telemetry, app_state, frame_context.player_snapshot());
+    if let Err(fallback_failure) = app_state.apply_pending_dma_buf_runtime_fallback(
+        renderer.instance(),
+        renderer.adapter(),
+        renderer.device(),
+        renderer.queue(),
+    ) {
+        warn!(error = %fallback_failure.error, "Runtime DMA-BUF layout recovery rejected");
+        report_video_render_boundary_error(app_state, fallback_failure.player_error);
+    }
     let mut video_prepare_timings = prepared_video_frame.timings;
     video_prepare_timings.total = stage_started_at.elapsed();
     let video_acquisition_state = prepared_video_frame.acquisition_state;

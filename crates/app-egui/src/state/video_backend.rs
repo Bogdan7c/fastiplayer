@@ -5,6 +5,13 @@ use super::*;
 pub(crate) enum VideoPipelineRebuildError {
     /// Новый backend/materializer не удалось подготовить до runtime mutation.
     Preparation(String),
+    /// Concrete backend factory не смог запустить выбранный plan.
+    BackendStartup {
+        /// Stable diagnostic label выбранного plan-а.
+        plan_label: &'static str,
+        /// Backend-owned startup detail без стирания failure category.
+        message: String,
+    },
     /// Worker отклонил commit или сообщил apply/rollback failure.
     Worker(player_core::PlayerRuntimeApplyError),
 }
@@ -13,6 +20,13 @@ impl std::fmt::Display for VideoPipelineRebuildError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Preparation(message) => formatter.write_str(message),
+            Self::BackendStartup {
+                plan_label,
+                message,
+            } => write!(
+                formatter,
+                "video backend startup failed for {plan_label}: {message}"
+            ),
             Self::Worker(error) => write!(formatter, "video backend worker commit failed: {error}"),
         }
     }
@@ -81,29 +95,48 @@ impl AppState {
         &mut self,
         request: VideoPipelineRebuildRequest<'_>,
     ) -> Result<(), VideoPipelineRebuildError> {
-        let VideoPipelineRebuildRequest {
-            backend_preference,
-            install_intent,
-            decoder_thread_config,
-            stream_requirement,
-            instance,
-            adapter,
-            device,
-            queue,
-        } = request;
         let plan = select_video_pipeline_plan(
-            backend_preference,
+            request.backend_preference,
             self.system_capabilities_snapshot.as_ref(),
-            decoder_thread_config,
-            stream_requirement,
+            request.decoder_thread_config,
+            request.stream_requirement,
         )
         .map_err(|error| {
             VideoPipelineRebuildError::Preparation(format!(
                 "video pipeline selection failed: {error}"
             ))
         })?;
+
+        self.install_video_pipeline_plan(
+            plan,
+            request.install_intent,
+            request.instance,
+            request.adapter,
+            request.device,
+            request.queue,
+        )
+    }
+
+    /// Запускает уже выбранный plan и атомарно устанавливает backend/materializer pair.
+    fn install_video_pipeline_plan(
+        &mut self,
+        plan: VideoPipelinePlan,
+        install_intent: player_core::PlayerVideoBackendInstallIntent,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Result<(), VideoPipelineRebuildError> {
         let plan_label = plan.diagnostic_label();
         let plan_backend_kind = plan.backend_kind();
+        let decoder_thread_config = match plan {
+            VideoPipelinePlan::VaapiDmaBufWgpu {
+                decoder_thread_config,
+            }
+            | VideoPipelinePlan::FfmpegHostUploadWgpu {
+                decoder_thread_config,
+            } => decoder_thread_config,
+        };
 
         let (player_backend, frame_materializer, submission_queue_binding): (
             player_core::StartedVideoBackend,
@@ -116,9 +149,10 @@ impl AppState {
                 let backend_factory =
                     VaapiVideoBackendFactory::new_with_decoder_config(decoder_thread_config);
                 let started_backend = backend_factory.start_for_composition().map_err(|error| {
-                    VideoPipelineRebuildError::Preparation(format!(
-                        "video backend startup failed for {plan_label}: {error}"
-                    ))
+                    VideoPipelineRebuildError::BackendStartup {
+                        plan_label,
+                        message: error.to_string(),
+                    }
                 })?;
                 let (player_backend, frame_resource_provider, submission_queue_binding) =
                     wrap_video_backend_for_wgpu_submission(started_backend, queue);
@@ -139,9 +173,10 @@ impl AppState {
                     decoder_thread_config,
                 );
                 let started_backend = backend_factory.start_for_composition().map_err(|error| {
-                    VideoPipelineRebuildError::Preparation(format!(
-                        "video backend startup failed for {plan_label}: {error}"
-                    ))
+                    VideoPipelineRebuildError::BackendStartup {
+                        plan_label,
+                        message: error.to_string(),
+                    }
                 })?;
                 let (player_backend, frame_resource_provider, submission_queue_binding) =
                     wrap_video_backend_for_wgpu_submission(started_backend, queue);
@@ -158,22 +193,22 @@ impl AppState {
 
         let previous_backend_kind = self.current_video_backend_kind;
 
-        if let Err(error) = self.player_worker.set_video_backend(
-            player_backend,
-            install_intent,
-            (install_intent == player_core::PlayerVideoBackendInstallIntent::SettingsReconfigure)
-                .then_some(decoder_thread_config),
-        ) {
-            return Err(VideoPipelineRebuildError::Worker(error));
-        }
+        self.player_worker
+            .set_video_backend(
+                player_backend,
+                install_intent,
+                (install_intent
+                    == player_core::PlayerVideoBackendInstallIntent::SettingsReconfigure)
+                    .then_some(decoder_thread_config),
+            )
+            .map_err(VideoPipelineRebuildError::Worker)?;
 
         self.clear_main_visual_override();
         self.wgpu_frame_materializer = Some(frame_materializer);
         self.wgpu_submission_queue_binding = Some(submission_queue_binding);
 
-        // Живая смена backend-а (класс реально меняется): морозим последний кадр, пока
-        // worker не переключится и не выдаст первый кадр нового backend-а, иначе кадры
-        // старого backend-а уйдут в новый materializer → `Missing render resources`.
+        // Живая смена backend-а: сохраняем последний кадр до первого кадра нового
+        // generation, а worker-owned install boundary сохраняет position/playback intent.
         if previous_backend_kind.is_some_and(|previous| previous != plan_backend_kind) {
             self.begin_backend_swap_video_freeze();
         }
@@ -257,6 +292,112 @@ impl AppState {
                 if !request.decodable_by_active_backend {
                     self.reject_pending_video_backend(error.to_string());
                 }
+            }
+        }
+    }
+
+    /// Ставит typed runtime layout rejection в очередь до app composition boundary.
+    pub(crate) fn note_dma_buf_layout_rejection(
+        &mut self,
+        layout_rejection: video_core::DmaBufDescriptorRejection,
+        render_generation: u64,
+        player_error: PlayerRenderError,
+    ) {
+        if self.pending_dma_buf_layout_rejection.is_none() {
+            self.pending_dma_buf_layout_rejection = Some(PendingDmaBufLayoutRejection {
+                layout_rejection,
+                render_generation,
+                player_error,
+            });
+        }
+    }
+
+    /// Начинает новый exactly-once recovery scope при открытии другого media.
+    pub(crate) fn reset_dma_buf_runtime_fallback_for_new_media(&mut self) {
+        self.dma_buf_runtime_fallback.reset_for_new_media();
+        self.pending_dma_buf_layout_rejection = None;
+    }
+
+    /// Выполняет exactly-once auto fallback либо возвращает исходную typed layout
+    /// rejection вместе с typed policy/startup/restore failure context.
+    pub(crate) fn apply_pending_dma_buf_runtime_fallback(
+        &mut self,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Result<(), Box<DmaBufRuntimeFallbackFailure>> {
+        let Some(pending_rejection) = self.pending_dma_buf_layout_rejection.take() else {
+            return Ok(());
+        };
+        let PendingDmaBufLayoutRejection {
+            layout_rejection,
+            render_generation,
+            mut player_error,
+        } = pending_rejection;
+
+        if !matches!(
+            layout_rejection,
+            video_core::DmaBufDescriptorRejection::UnsupportedComposedMultiObject { .. }
+        ) {
+            let policy_error =
+                DmaBufRuntimeFallbackError::FallbackNotApplicable { layout_rejection };
+            player_error.message = policy_error.to_string();
+            return Err(Box::new(DmaBufRuntimeFallbackFailure {
+                error: policy_error,
+                player_error,
+            }));
+        }
+
+        let decoder_thread_config = self.current_decoder_thread_config();
+        let stream_requirement = self.active_video_stream_requirement.as_ref();
+        let software_plan = select_confirmed_software_fallback_plan(
+            self.system_capabilities_snapshot.as_ref(),
+            decoder_thread_config,
+            stream_requirement,
+        );
+        let original_layout_rejection = layout_rejection.clone();
+        let plan = match self.dma_buf_runtime_fallback.begin(
+            self.committed_config_snapshot.video_backend_preference(),
+            render_generation,
+            layout_rejection,
+            software_plan,
+        ) {
+            Ok(plan) => plan,
+            Err(policy_error) => {
+                player_error.message = policy_error.to_string();
+                return Err(Box::new(DmaBufRuntimeFallbackFailure {
+                    error: policy_error,
+                    player_error,
+                }));
+            }
+        };
+
+        match self.install_video_pipeline_plan(
+            plan,
+            player_core::PlayerVideoBackendInstallIntent::PipelineDemand,
+            instance,
+            adapter,
+            device,
+            queue,
+        ) {
+            Ok(()) => {
+                info!(
+                    render_generation,
+                    "Runtime DMA-BUF layout rejected; controlled software fallback applied"
+                );
+                Ok(())
+            }
+            Err(fallback_failure) => {
+                let policy_error = DmaBufRuntimeFallbackController::fallback_failed(
+                    original_layout_rejection,
+                    fallback_failure,
+                );
+                player_error.message = policy_error.to_string();
+                Err(Box::new(DmaBufRuntimeFallbackFailure {
+                    error: policy_error,
+                    player_error,
+                }))
             }
         }
     }

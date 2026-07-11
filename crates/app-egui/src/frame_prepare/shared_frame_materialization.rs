@@ -6,7 +6,8 @@
 use std::time::{Duration, Instant};
 
 use render_wgpu_video::{
-    WgpuFrameTextureViewLookup, WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews,
+    WgpuFrameMaterializationUnsupportedReason, WgpuFrameTextureViewLookup,
+    WgpuFrameTextureViewMaterializer, WgpuFrameTextureViews,
 };
 use video_core::DecodedFrame;
 use video_present_core::VideoFrameLease;
@@ -95,6 +96,8 @@ pub(super) enum SharedTextureViewLookup<TextureViews> {
 
     /// Materializer не поддерживает такой resource kind.
     Unsupported {
+        /// Типизированная причина отказа production materializer-а.
+        reason: SharedMaterializationUnsupportedReason,
         /// Время lookup попытки.
         texture_pool_lock_wait: Duration,
     },
@@ -104,6 +107,15 @@ pub(super) enum SharedTextureViewLookup<TextureViews> {
         /// Время lookup попытки.
         texture_pool_lock_wait: Duration,
     },
+}
+
+/// Причина unsupported lookup-а без потери production payload в общей testable стадии.
+pub(super) enum SharedMaterializationUnsupportedReason {
+    /// Причина, возвращённая concrete WGPU materializer-ом.
+    Wgpu(WgpuFrameMaterializationUnsupportedReason),
+    /// Синтетический отказ unit-test-а без renderer objects.
+    #[cfg(test)]
+    SyntheticTest,
 }
 
 impl<TextureViews> SharedTextureViewLookup<TextureViews> {
@@ -133,6 +145,7 @@ impl<TextureViews> SharedTextureViewLookup<TextureViews> {
             }
             | Self::Unsupported {
                 texture_pool_lock_wait,
+                ..
             }
             | Self::Error {
                 texture_pool_lock_wait,
@@ -167,9 +180,10 @@ impl From<WgpuFrameTextureViewLookup> for SharedTextureViewLookup<WgpuFrameTextu
                 texture_pool_lock_wait,
             },
             WgpuFrameTextureViewLookup::Unsupported {
+                reason,
                 texture_pool_lock_wait,
-                ..
             } => Self::Unsupported {
+                reason: SharedMaterializationUnsupportedReason::Wgpu(reason),
                 texture_pool_lock_wait,
             },
             WgpuFrameTextureViewLookup::Error {
@@ -221,6 +235,8 @@ pub(super) enum SharedVideoFrameMaterializationOutcome<TextureViews> {
     Unsupported {
         /// Lease, по которому строится typed render error.
         present_frame: VideoFrameLease,
+        /// Причина, которую app-level policy должна разобрать до generic render error.
+        reason: SharedMaterializationUnsupportedReason,
     },
 
     /// Fatal/error lookup state на render boundary.
@@ -304,8 +320,11 @@ fn materialize_shared_video_frame_with_lookup<TextureViews>(
         SharedTextureViewLookup::Missing { .. } => {
             SharedVideoFrameMaterializationOutcome::Missing { present_frame }
         }
-        SharedTextureViewLookup::Unsupported { .. } => {
-            SharedVideoFrameMaterializationOutcome::Unsupported { present_frame }
+        SharedTextureViewLookup::Unsupported { reason, .. } => {
+            SharedVideoFrameMaterializationOutcome::Unsupported {
+                present_frame,
+                reason,
+            }
         }
         SharedTextureViewLookup::Error { .. } => {
             SharedVideoFrameMaterializationOutcome::Error { present_frame }
@@ -545,6 +564,7 @@ mod tests {
             ),
             (
                 SharedTextureViewLookup::Unsupported {
+                    reason: SharedMaterializationUnsupportedReason::SyntheticTest,
                     texture_pool_lock_wait: Duration::ZERO,
                 },
                 TextureViewLookupKind::Unsupported,

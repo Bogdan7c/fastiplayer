@@ -428,6 +428,139 @@ pub struct DmaBufFrameDescriptor {
     pub layers: Vec<DmaBufLayerDescriptor>,
 }
 
+/// Типизированная причина, по которой DMA-BUF descriptor нельзя передать import boundary.
+///
+/// Ошибка остаётся renderer-neutral: здесь нет Vulkan/WGPU типов, только нарушение
+/// нейтрального descriptor contract-а. Это позволяет app-layer применить выбранную
+/// `auto`/`hardware` policy до попытки создать Vulkan image/memory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DmaBufDescriptorRejection {
+    /// Provider вернул descriptor без экспортированных DMA-BUF objects.
+    AbsentObjects,
+    /// Provider вернул descriptor без DRM PRIME layers.
+    AbsentLayers,
+    /// Layer объявил недопустимое число активных planes.
+    InvalidPlaneCount {
+        /// Индекс layer в descriptor-е.
+        layer_index: usize,
+        /// Объявленное число planes.
+        plane_count: u32,
+    },
+    /// Plane ссылается на object, которого нет в descriptor-е.
+    ObjectIndexOutOfBounds {
+        /// Индекс layer в descriptor-е.
+        layer_index: usize,
+        /// Индекс plane внутри layer.
+        plane_index: usize,
+        /// Запрошенный индекс object-а.
+        object_index: usize,
+        /// Фактическое число objects.
+        object_count: usize,
+    },
+    /// Один composed multi-planar image распределён по нескольким DMA-BUF objects.
+    ///
+    /// Текущий Vulkan importer поддерживает composed image только в одном object-е;
+    /// separate-layer descriptor остаётся отдельным поддерживаемым contract-ом.
+    UnsupportedComposedMultiObject {
+        /// Первый object, используемый composed layer-ом.
+        first_object_index: usize,
+        /// Следующий plane ссылается уже на другой object.
+        conflicting_object_index: usize,
+    },
+}
+
+impl fmt::Display for DmaBufDescriptorRejection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AbsentObjects => formatter.write_str("DMA-BUF descriptor has no objects"),
+            Self::AbsentLayers => formatter.write_str("DMA-BUF descriptor has no DRM PRIME layers"),
+            Self::InvalidPlaneCount {
+                layer_index,
+                plane_count,
+            } => write!(
+                formatter,
+                "DMA-BUF layer {layer_index} has invalid plane count {plane_count}; expected 1..=4"
+            ),
+            Self::ObjectIndexOutOfBounds {
+                layer_index,
+                plane_index,
+                object_index,
+                object_count,
+            } => write!(
+                formatter,
+                "DMA-BUF layer {layer_index} plane {plane_index} references object {object_index}, but descriptor contains {object_count} objects"
+            ),
+            Self::UnsupportedComposedMultiObject {
+                first_object_index,
+                conflicting_object_index,
+            } => write!(
+                formatter,
+                "composed multi-planar DMA-BUF spans objects {first_object_index} and {conflicting_object_index}; multi-object Vulkan import is unsupported"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DmaBufDescriptorRejection {}
+
+/// Проверяет object/layer topology до late renderer import-а.
+///
+/// `SeparateLayers` намеренно допускает разные objects у разных layers: renderer
+/// импортирует такие luma/chroma layers независимо. Ограничение относится только к
+/// composed multi-planar image, planes которого требуют нескольких memory binds.
+pub fn validate_dma_buf_descriptor_import_topology(
+    descriptor: &DmaBufFrameDescriptor,
+) -> Result<(), DmaBufDescriptorRejection> {
+    if descriptor.objects.is_empty() {
+        return Err(DmaBufDescriptorRejection::AbsentObjects);
+    }
+    if descriptor.layers.is_empty() {
+        return Err(DmaBufDescriptorRejection::AbsentLayers);
+    }
+
+    let mut composed_first_object_index = None;
+    for (layer_index, layer) in descriptor.layers.iter().enumerate() {
+        let plane_count = usize::try_from(layer.num_planes).unwrap_or(usize::MAX);
+        if !(1..=layer.object_index.len()).contains(&plane_count) {
+            return Err(DmaBufDescriptorRejection::InvalidPlaneCount {
+                layer_index,
+                plane_count: layer.num_planes,
+            });
+        }
+
+        for (plane_index, raw_object_index) in layer.object_index[..plane_count]
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            let object_index = usize::from(raw_object_index);
+            if object_index >= descriptor.objects.len() {
+                return Err(DmaBufDescriptorRejection::ObjectIndexOutOfBounds {
+                    layer_index,
+                    plane_index,
+                    object_index,
+                    object_count: descriptor.objects.len(),
+                });
+            }
+
+            if descriptor.export_layout == DmaBufFrameExportLayout::ComposedLayers {
+                match composed_first_object_index {
+                    Some(first_object_index) if first_object_index != object_index => {
+                        return Err(DmaBufDescriptorRejection::UnsupportedComposedMultiObject {
+                            first_object_index,
+                            conflicting_object_index: object_index,
+                        });
+                    }
+                    Some(_) => {}
+                    None => composed_first_object_index = Some(object_index),
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 impl DmaBufFrameDescriptor {
     /// Дублирует все object fd для materializer lookup-а.
     pub fn try_clone_for_lookup(&self) -> io::Result<Self> {
@@ -506,6 +639,8 @@ fn validate_dma_buf_descriptor_against_contract(
     coded_height: u32,
     descriptor: &DmaBufFrameDescriptor,
 ) -> anyhow::Result<()> {
+    validate_dma_buf_descriptor_import_topology(descriptor)
+        .context("DMA-BUF descriptor import topology is unsupported")?;
     let actual_layout = dma_buf_export_layout_to_image_layout(descriptor.export_layout);
     ensure!(
         actual_layout == expected_layout,
@@ -938,6 +1073,111 @@ mod tests {
             descriptor.objects[0].identity
         );
         assert_eq!(cloned_descriptor.layers, descriptor.layers);
+    }
+
+    /// Поддерживаемый composed multi-planar descriptor использует один object для всех planes.
+    #[test]
+    fn dma_buf_import_topology_accepts_multiplanar_single_object() {
+        let descriptor = sample_dma_buf_descriptor();
+
+        validate_dma_buf_descriptor_import_topology(&descriptor)
+            .expect("single-object composed descriptor must remain supported");
+    }
+
+    /// Separate layers остаются отдельным supported path и могут ссылаться на разные objects.
+    #[test]
+    fn dma_buf_import_topology_accepts_separate_layers_with_distinct_objects() {
+        let mut descriptor = sample_dma_buf_descriptor();
+        descriptor.export_layout = DmaBufFrameExportLayout::SeparateLayers;
+        descriptor.objects.push(DmaBufObjectDescriptor {
+            fd: open_test_dma_buf_fd(),
+            size: 2048,
+            drm_format_modifier: 7,
+            identity: DmaBufObjectIdentity {
+                device: 11,
+                inode: 19,
+                special_device: 17,
+            },
+        });
+        descriptor.layers = vec![
+            DmaBufLayerDescriptor {
+                drm_format: 0x2020_3852,
+                num_planes: 1,
+                object_index: [0, 0, 0, 0],
+                offset: [0, 0, 0, 0],
+                pitch: [1920, 0, 0, 0],
+            },
+            DmaBufLayerDescriptor {
+                drm_format: 0x3838_5247,
+                num_planes: 1,
+                object_index: [1, 0, 0, 0],
+                offset: [0, 0, 0, 0],
+                pitch: [1920, 0, 0, 0],
+            },
+        ];
+
+        validate_dma_buf_descriptor_import_topology(&descriptor)
+            .expect("separate layers may be imported from distinct objects");
+    }
+
+    /// Некорректный object index диагностируется до доступа importer-а к objects vector.
+    #[test]
+    fn dma_buf_import_topology_rejects_out_of_bounds_object_index() {
+        let mut descriptor = sample_dma_buf_descriptor();
+        descriptor.layers[0].object_index[1] = 3;
+
+        assert_eq!(
+            validate_dma_buf_descriptor_import_topology(&descriptor),
+            Err(DmaBufDescriptorRejection::ObjectIndexOutOfBounds {
+                layer_index: 0,
+                plane_index: 1,
+                object_index: 3,
+                object_count: 1,
+            })
+        );
+    }
+
+    /// Composed image с planes в разных objects — именно unsupported layout, не import error.
+    #[test]
+    fn dma_buf_import_topology_rejects_composed_multi_object_layout() {
+        let mut descriptor = sample_dma_buf_descriptor();
+        descriptor.objects.push(DmaBufObjectDescriptor {
+            fd: open_test_dma_buf_fd(),
+            size: 2048,
+            drm_format_modifier: 7,
+            identity: DmaBufObjectIdentity {
+                device: 11,
+                inode: 23,
+                special_device: 17,
+            },
+        });
+        descriptor.layers[0].object_index[1] = 1;
+
+        assert_eq!(
+            validate_dma_buf_descriptor_import_topology(&descriptor),
+            Err(DmaBufDescriptorRejection::UnsupportedComposedMultiObject {
+                first_object_index: 0,
+                conflicting_object_index: 1,
+            })
+        );
+    }
+
+    /// Пустой descriptor сохраняет absent state отдельно от unsupported multi-object.
+    #[test]
+    fn dma_buf_import_topology_rejects_absent_objects_and_layers_separately() {
+        let mut descriptor_without_objects = sample_dma_buf_descriptor();
+        descriptor_without_objects.objects.clear();
+        assert_eq!(
+            validate_dma_buf_descriptor_import_topology(&descriptor_without_objects),
+            Err(DmaBufDescriptorRejection::AbsentObjects)
+        );
+
+        let mut descriptor_without_layers = sample_dma_buf_descriptor();
+        descriptor_without_layers.layers.clear();
+        assert_eq!(
+            validate_dma_buf_descriptor_import_topology(&descriptor_without_layers),
+            Err(DmaBufDescriptorRejection::AbsentLayers)
+        );
     }
 
     /// Проверяет, что drop cloned descriptor-а не закрывает provider-owned fd.

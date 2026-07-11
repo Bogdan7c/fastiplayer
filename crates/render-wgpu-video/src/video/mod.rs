@@ -11,7 +11,10 @@ use render_core::{
     RenderableFrame, SwapchainTransferMode, ToneMappingMode,
 };
 use video_backend_api::{PresentFrameResourceDescriptorLookup, PresentFrameResourceProviderHandle};
-use video_core::{DecodedFrame, DecodedPixelFormat, FrameResourceDescriptor, FrameResourceHandle};
+use video_core::{
+    DecodedFrame, DecodedPixelFormat, DmaBufDescriptorRejection, FrameResourceDescriptor,
+    FrameResourceHandle, validate_dma_buf_descriptor_import_topology,
+};
 use video_frame_contract::{HardwareFrameHandle, VideoFramePixelLayout, VideoFrameTransferPath};
 
 use crate::capabilities::wgpu_capabilities_from_features;
@@ -100,7 +103,7 @@ impl WgpuFrameTextureViews {
 }
 
 /// Почему конкретный descriptor не подходит этому WGPU materializer-у.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WgpuFrameMaterializationUnsupportedReason {
     /// Descriptor содержит CPU-visible host planes, а этот materializer импортирует только DMA-BUF.
     HostPlanarRequiresUploadMaterializer,
@@ -113,12 +116,15 @@ pub enum WgpuFrameMaterializationUnsupportedReason {
 
     /// HostPlanar layout пока не входит в минимальный upload subset.
     HostPlanarLayoutNotSupportedByUploadMaterializer,
+
+    /// DMA-BUF object/layer topology отклонена до Vulkan import-а.
+    DmaBufDescriptorRejected(DmaBufDescriptorRejection),
 }
 
 impl WgpuFrameMaterializationUnsupportedReason {
     /// Stable diagnostic label без user-facing текста.
     #[must_use]
-    pub const fn diagnostic_label(self) -> &'static str {
+    pub const fn diagnostic_label(&self) -> &'static str {
         match self {
             Self::HostPlanarRequiresUploadMaterializer => {
                 "host planar descriptor requires upload materializer"
@@ -131,6 +137,9 @@ impl WgpuFrameMaterializationUnsupportedReason {
             }
             Self::HostPlanarLayoutNotSupportedByUploadMaterializer => {
                 "host planar layout is not supported by upload materializer"
+            }
+            Self::DmaBufDescriptorRejected(_) => {
+                "DMA-BUF descriptor topology is unsupported by Vulkan importer"
             }
         }
     }
@@ -284,6 +293,18 @@ impl WgpuFrameTextureViewMaterializer for DmaBufWgpuFrameMaterializer {
             unsupported_lookup_for_non_dma_buf_descriptor(&descriptor, provider_wait)
         {
             return unsupported_lookup;
+        }
+
+        let FrameResourceDescriptor::DmaBuf(dma_buf_descriptor) = &descriptor else {
+            unreachable!("non-DMA-BUF descriptor was rejected above");
+        };
+        if let Err(rejection) = validate_dma_buf_descriptor_import_topology(dma_buf_descriptor) {
+            return WgpuFrameTextureViewLookup::Unsupported {
+                reason: WgpuFrameMaterializationUnsupportedReason::DmaBufDescriptorRejected(
+                    rejection,
+                ),
+                texture_pool_lock_wait: provider_wait,
+            };
         }
 
         let cache_lock_started_at = Instant::now();

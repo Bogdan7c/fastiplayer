@@ -825,12 +825,7 @@ fn render_video_output_rejection_to_capability(
 ) -> VideoCapabilityRejection {
     match rejection {
         RenderVideoOutputRejection::FrameContract { reason } => {
-            render_frame_contract_rejection_to_capability(
-                reason,
-                frame_format,
-                frame_contract,
-                backend,
-            )
+            render_frame_contract_rejection_to_capability(reason, frame_contract, backend)
         }
         RenderVideoOutputRejection::P010NotRenderable { readiness } => {
             VideoCapabilityRejection::P010NotRenderable { readiness }
@@ -853,7 +848,6 @@ fn render_video_output_rejection_to_capability(
 /// Переводит frame-contract-only отказ renderer-а в capability rejection.
 fn render_frame_contract_rejection_to_capability(
     rejection: RenderFrameContractRejection,
-    frame_format: VideoFramePixelLayout,
     frame_contract: VideoFrameContract,
     backend: &DecodeBackendId,
 ) -> VideoCapabilityRejection {
@@ -863,13 +857,11 @@ fn render_frame_contract_rejection_to_capability(
                 frame_format: pixel_layout,
             }
         }
-        RenderFrameContractRejection::UnsupportedDmaBufImageLayout { image_layout, .. }
-            if frame_format == VideoFramePixelLayout::P010 =>
-        {
+        RenderFrameContractRejection::UnsupportedDmaBufImageLayout { image_layout, .. } => {
             VideoCapabilityRejection::UnsupportedDmaBufImageLayout {
                 backend: backend.clone(),
                 storage_layout: image_layout,
-                required_wgpu_feature: p010_dma_buf_layout_required_wgpu_feature_label(
+                required_wgpu_feature: dma_buf_layout_required_import_capability_label(
                     image_layout,
                 )
                 .to_string(),
@@ -877,18 +869,18 @@ fn render_frame_contract_rejection_to_capability(
         }
         RenderFrameContractRejection::InvalidContract { .. }
         | RenderFrameContractRejection::UnsupportedTransferPath { .. }
-        | RenderFrameContractRejection::UnsupportedDmaBufImageLayout { .. }
         | RenderFrameContractRejection::UnsupportedContractCombination { .. } => {
             VideoCapabilityRejection::UnsupportedRenderFrameTransfer { frame_contract }
         }
     }
 }
 
-/// Возвращает WGPU feature, без которого текущий renderer не импортирует P010 DMA-BUF layout.
-fn p010_dma_buf_layout_required_wgpu_feature_label(layout: DmaBufImageLayout) -> &'static str {
+/// Возвращает import capability, без которой renderer не принимает DMA-BUF layout.
+fn dma_buf_layout_required_import_capability_label(layout: DmaBufImageLayout) -> &'static str {
     match layout {
         DmaBufImageLayout::SeparateLayers => "TEXTURE_FORMAT_16BIT_NORM",
         DmaBufImageLayout::ComposedLayers => "TEXTURE_FORMAT_P010",
+        DmaBufImageLayout::ComposedMultiObject => "MULTI_OBJECT_DMA_BUF_IMPORT",
     }
 }
 
@@ -1512,6 +1504,43 @@ mod tests {
                 required_wgpu_feature,
                 ..
             }) if required_wgpu_feature == "TEXTURE_FORMAT_P010"
+        ));
+    }
+
+    #[test]
+    fn known_multi_object_contract_is_rejected_before_decode_start() {
+        let capabilities = capabilities_with_outputs(
+            vec![SupportedVideoOutput {
+                backend: DecodeBackendId::vaapi(),
+                decode_format: vp9_format(
+                    Vp9Profile::Profile0,
+                    BitDepth::Eight,
+                    ChromaSubsampling::Yuv420,
+                    false,
+                ),
+                frame_contract: VideoFrameContract::dma_buf_nv12(
+                    DmaBufImageLayout::ComposedMultiObject,
+                ),
+            }],
+            vec![RenderCapabilities::wgpu_nv12(Some(4096))],
+        );
+        let requirement = vp9_requirement(
+            Vp9Profile::Profile0,
+            BitDepth::Eight,
+            ChromaSubsampling::Yuv420,
+        );
+
+        let error = capabilities
+            .check_video_requirement(&requirement)
+            .expect_err("known multi-object output must not enter the playable capability set");
+
+        assert!(matches!(
+            error.rejections.first(),
+            Some(VideoCapabilityRejection::UnsupportedDmaBufImageLayout {
+                storage_layout: DmaBufImageLayout::ComposedMultiObject,
+                required_wgpu_feature,
+                ..
+            }) if required_wgpu_feature == "MULTI_OBJECT_DMA_BUF_IMPORT"
         ));
     }
 

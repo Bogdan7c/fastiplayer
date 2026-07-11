@@ -32,6 +32,10 @@ use video_present_core::VideoFrameLease;
 use video_vaapi::VaapiVideoBackendFactory;
 use winit::window::Window;
 
+use crate::dma_buf_runtime_fallback::{
+    DmaBufRuntimeFallbackController, DmaBufRuntimeFallbackError, DmaBufRuntimeFallbackFailure,
+    PendingDmaBufLayoutRejection,
+};
 use crate::local_file_open::{
     LocalFileOpenEvent, LocalFileOpenJob, LocalFileOpenResult, local_file_prepare_error_message,
     preparing_local_file_message,
@@ -51,7 +55,8 @@ use crate::ui::timeline::{
 use crate::ui::titlebar_icon_area::TitlebarIconAreaAction;
 use crate::ui::window_chrome::{self, WindowChromeAction, WindowChromeInput, WindowChromeStyle};
 use crate::video_pipeline_selector::{
-    VideoBackendKind, VideoPipelinePlan, select_video_pipeline_plan,
+    VideoBackendKind, VideoPipelinePlan, select_confirmed_software_fallback_plan,
+    select_video_pipeline_plan,
 };
 
 mod main_visual_override;
@@ -231,6 +236,10 @@ pub struct AppState {
     /// render generation на момент свапа; пока snapshot его не превысил, worker ещё не
     /// переключился, и кадры старого backend-а нельзя материализовать новым materializer-ом.
     backend_swap_from_generation: Option<u64>,
+    /// Exactly-once policy state runtime DMA-BUF -> software fallback-а.
+    dma_buf_runtime_fallback: DmaBufRuntimeFallbackController,
+    /// Layout rejection, ожидающая обработки на app composition boundary.
+    pending_dma_buf_layout_rejection: Option<PendingDmaBufLayoutRejection>,
 
     /// Последний локальный файл, открытый shell-ом, для восстановления после suspend.
     current_local_file: Option<PathBuf>,
@@ -327,6 +336,8 @@ impl AppState {
             active_video_stream_requirement: None,
             backend_swap_frozen_frame: None,
             backend_swap_from_generation: None,
+            dma_buf_runtime_fallback: DmaBufRuntimeFallbackController::default(),
+            pending_dma_buf_layout_rejection: None,
             current_local_file: None,
             active_media_source: None,
             local_file_open_job: None,

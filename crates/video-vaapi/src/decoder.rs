@@ -1010,10 +1010,13 @@ fn dma_buf_image_layout_from_export_layout(
 
 fn dma_buf_export_layout_from_image_layout(
     image_layout: DmaBufImageLayout,
-) -> DecodedDmaBufExportLayout {
+) -> Result<DecodedDmaBufExportLayout> {
     match image_layout {
-        DmaBufImageLayout::ComposedLayers => DecodedDmaBufExportLayout::ComposedLayers,
-        DmaBufImageLayout::SeparateLayers => DecodedDmaBufExportLayout::SeparateLayers,
+        DmaBufImageLayout::ComposedLayers => Ok(DecodedDmaBufExportLayout::ComposedLayers),
+        DmaBufImageLayout::SeparateLayers => Ok(DecodedDmaBufExportLayout::SeparateLayers),
+        DmaBufImageLayout::ComposedMultiObject => Err(anyhow::anyhow!(
+            "VA-API multi-object DMA-BUF export contract is unsupported by the Vulkan importer"
+        )),
     }
 }
 
@@ -1023,7 +1026,7 @@ fn dma_buf_export_layout_from_frame_contract(
     match frame_contract.transfer_path {
         VideoFrameTransferPath::HardwareZeroCopy {
             handle: HardwareFrameHandle::DmaBuf { image_layout },
-        } => Ok(dma_buf_export_layout_from_image_layout(image_layout)),
+        } => dma_buf_export_layout_from_image_layout(image_layout),
         other_transfer_path => Err(anyhow::anyhow!(
             "VA-API decoder requires a DMA-BUF frame contract, got {}",
             other_transfer_path.diagnostic_label()

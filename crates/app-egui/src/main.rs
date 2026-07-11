@@ -8,6 +8,7 @@
 //! - запуск `AppShell`.
 
 mod app_shell;
+mod dma_buf_runtime_fallback;
 mod frame_prepare;
 mod local_file_open;
 mod local_media;

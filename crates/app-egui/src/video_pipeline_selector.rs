@@ -136,6 +136,25 @@ pub(crate) fn select_video_pipeline_plan(
     }
 }
 
+/// Выбирает только заранее renderer-intersected software plan для controlled runtime fallback-а.
+///
+/// В отличие от обычного `auto` selector-а функция намеренно не рассматривает hardware снова:
+/// вызывающий код уже получил runtime-only DMA-BUF layout rejection и обязан исключить loop.
+pub(crate) fn select_confirmed_software_fallback_plan(
+    system_capabilities: Option<&SystemCapabilities>,
+    decoder_thread_config: PlayerVideoDecoderThreadConfig,
+    stream_requirement: Option<&VideoDecodeRequirement>,
+) -> Result<VideoPipelinePlan, VideoPipelineSelectionError> {
+    let system_capabilities =
+        system_capabilities.ok_or(VideoPipelineSelectionError::MissingCapabilities)?;
+    select_software_plan(
+        VideoBackendPreference::Auto,
+        system_capabilities.playable_video_outputs.as_slice(),
+        decoder_thread_config,
+        stream_requirement,
+    )
+}
+
 /// Сообщает, обслуживает ли output текущий стрим (или фильтр выключен при `None`).
 fn output_serves_requirement(
     output: &SupportedVideoOutput,

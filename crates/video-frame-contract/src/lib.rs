@@ -234,8 +234,14 @@ impl fmt::Display for VideoFramePixelLayout {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DmaBufImageLayout {
-    /// Image приходит как composed multi-plane image на стороне importer-а.
+    /// Image приходит как composed multi-plane image в одном DMA-BUF object-е.
     ComposedLayers,
+
+    /// Composed multi-plane image требует нескольких DMA-BUF objects/memory binds.
+    ///
+    /// Variant существует для точной capability rejection; текущий Vulkan importer
+    /// намеренно его не поддерживает и renderer не рекламирует такой contract.
+    ComposedMultiObject,
 
     /// Image приходит как отдельные importable layers/planes.
     SeparateLayers,
@@ -247,6 +253,7 @@ impl DmaBufImageLayout {
     pub const fn diagnostic_label(self) -> &'static str {
         match self {
             Self::ComposedLayers => "composed DMA-BUF layers",
+            Self::ComposedMultiObject => "composed multi-object DMA-BUF layers",
             Self::SeparateLayers => "separate DMA-BUF layers",
         }
     }
