@@ -69,3 +69,9 @@
 - `session/seek_diagnostics.rs` owns active-seek observation, trace counters and diagnostics snapshot assembly; mutable seek state remains in `SeekRuntimeState` and lifecycle remains in `PlayerSession`.
 - `session/seek_commit_gates.rs` owns read-only commit-gate evaluation, typed soft-audio fallback decision, target/generation matching, EOF fallback readiness and progress-blocker classification. Public API and seek semantics are unchanged.
 - Focused characterization tests are split into `session/tests/seek_diagnostics.rs` and `session/tests/seek_commit_gates.rs`; transaction/start/scrub/cleanup tests remain in their existing responsibility modules.
+
+## Session 19 seek flow decomposition (2026-07-11)
+
+- `session/seek_start.rs` owns one-shot SeekLanding start plus the explicit decoder/audio/demux seek transaction ordering; `session/scrub_orchestration.rs` owns live/simple scrub begin/update/preview/end/cancel orchestration; `session/seek_completion.rs` owns commit completion, timeout failure, audio resume and final cleanup.
+- `session/seek_transaction.rs` remains the shared seek predicate/gate facade and test seams; `PlayerSession`, `SeekRuntimeState`, `PlaybackPipeline` and the existing decoder lifecycle remain the only owners—no second session/state machine or decoder lifecycle was introduced.
+- Cross-flow helpers use private session-module `pub(super)` boundaries only. Focused tests are split into `session/tests/seek_start.rs`, `session/tests/seek_completion.rs`, and the existing `session/tests/scrub.rs`; assertions and public API paths are unchanged.
