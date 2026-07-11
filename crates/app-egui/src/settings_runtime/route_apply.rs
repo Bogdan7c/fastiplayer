@@ -1,11 +1,25 @@
 use super::*;
 
+/// Typed read-only preflight rejection tied to the owner that is busy.
+pub(crate) struct SettingsRuntimePreflightFailure {
+    pub(crate) route: rustiplayer_settings::AppRuntimeRoute,
+    pub(crate) result: AppRouteApplyResult,
+}
+
 /// Boundary для runtime owners, которые живут снаружи settings controller-а.
 ///
 /// Visual settings UI не знает про worker, source jobs или concrete backend.
 /// Этот trait передаётся только из app composition/frame слоя, где эти owners
 /// реально доступны и где можно сохранить порядок команд.
 pub(crate) trait SettingsRuntimeReconfigureHost {
+    /// Проверяет все затронутые lifecycle boundaries до первой owner mutation.
+    fn preflight_settings_transaction(
+        &mut self,
+        _routes: &[RuntimeCommittedRoute],
+    ) -> Result<(), SettingsRuntimePreflightFailure> {
+        Ok(())
+    }
+
     /// Синхронизирует внешний owner с committed config-ом перед owner-level apply.
     fn sync_committed_config_snapshot(&mut self, _snapshot: CommittedConfigSnapshot) {}
 
@@ -179,14 +193,6 @@ pub(super) fn simulated_player_runtime_report(
             "frame-server policy accepted by test host",
         ));
     }
-    if !update.unsupported_settings.is_empty() {
-        report.push(PlayerRuntimeApplyGroupReport::unsupported(
-            PlayerRuntimeApplyGroup::UnsupportedSettings,
-            update.unsupported_settings,
-            "test host preserves unsupported player settings as owner failure",
-        ));
-    }
-
     if report.groups.is_empty() {
         report.push(PlayerRuntimeApplyGroupReport::accepted(
             PlayerRuntimeApplyGroup::Request,
@@ -212,78 +218,6 @@ fn simulated_player_group(
         message,
     )
 }
-/// Delegate, который позволяет controller-у использовать store/appliers без передачи ownership.
-pub(super) struct SettingsRuntimeApplyDelegate<'runtime, A> {
-    /// Authoritative AppConfig validator из settings binding crate.
-    validator: AppConfigValidator,
-
-    /// Store остаётся owned by `SettingsRuntime`.
-    store: &'runtime mut AppConfigStore,
-
-    /// Route appliers остаются owned by `SettingsRuntime`.
-    route_appliers: &'runtime mut SettingsRuntimeRouteAppliers,
-
-    /// Renderer/player/media owners проходят только через narrow runtime traits.
-    runtime_adapter: &'runtime mut A,
-}
-
-impl<A> SettingsValidator<AppConfig> for SettingsRuntimeApplyDelegate<'_, A> {
-    fn validate(
-        &mut self,
-        request: ValidationRequest<'_, AppConfig>,
-    ) -> SettingsResult<ValidationReport> {
-        self.validator.validate(request)
-    }
-}
-
-impl<A> SettingsPersister<AppConfig> for SettingsRuntimeApplyDelegate<'_, A> {
-    fn persist(&mut self, request: PersistRequest<'_, AppConfig>) -> SettingsResult<PersistReport> {
-        self.store.persist(request)
-    }
-}
-
-impl<A> CommittedSettingsApplier<AppConfig> for SettingsRuntimeApplyDelegate<'_, A>
-where
-    A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
-{
-    fn apply_committed(
-        &mut self,
-        request: CommittedApplyRequest<'_, AppConfig>,
-    ) -> SettingsResult<Vec<ApplyRouteReport>> {
-        let mut reports = Vec::with_capacity(request.route_updates.len());
-        let next_committed_snapshot = CommittedConfigSnapshot::from_config(request.persisted);
-
-        for update in request.route_updates {
-            let routes = committed_routes_from_update(
-                request.previous_committed,
-                request.persisted,
-                update,
-            )?;
-            for route in routes {
-                reports.push(
-                    self.route_appliers
-                        .apply_committed_route_with_render_adapter(route, self.runtime_adapter)?
-                        .into_core_report(),
-                );
-            }
-        }
-
-        if reports.iter().all(|report| {
-            matches!(
-                report.result,
-                ApplyRouteResult::Applied
-                    | ApplyRouteResult::Noop
-                    | ApplyRouteResult::PreviewPromoted
-            )
-        }) {
-            self.runtime_adapter
-                .sync_committed_config_snapshot(next_committed_snapshot);
-        }
-
-        Ok(reports)
-    }
-}
-
 /// Concrete route appliers/status snapshots for settings runtime.
 pub(super) struct SettingsRuntimeRouteAppliers {
     /// Последний UI runtime snapshot.
@@ -325,7 +259,7 @@ impl SettingsRuntimeRouteAppliers {
     }
 
     /// Единый helper для route report-а с одинаковым результатом по всем groups.
-    fn route_report(
+    pub(super) fn route_report(
         route: RuntimeCommittedRoute,
         result: AppRouteApplyResult,
         mechanism: ApplyMechanism,
@@ -342,6 +276,13 @@ impl SettingsRuntimeRouteAppliers {
 }
 
 impl AppRuntimeRouteApplier for SettingsRuntimeRouteAppliers {
+    fn preflight_committed_routes(
+        &mut self,
+        _routes: &[RuntimeCommittedRoute],
+    ) -> SettingsResult<Option<AppRouteApplyReport>> {
+        Ok(None)
+    }
+
     fn apply_committed_route(
         &mut self,
         route: RuntimeCommittedRoute,
@@ -357,6 +298,13 @@ impl AppRuntimeRouteApplier for SettingsRuntimeRouteAppliers {
 
         let mut reconfigure_host = NoopSettingsRuntimeReconfigureHost;
         self.apply_committed_route_with_reconfigure_host(route, &mut reconfigure_host)
+    }
+
+    fn rollback_committed_route(
+        &mut self,
+        route: RuntimeCommittedRoute,
+    ) -> SettingsResult<AppRouteApplyReport> {
+        self.apply_committed_route(route)
     }
 }
 
@@ -374,6 +322,31 @@ impl SettingsRuntimeRouteAppliers {
             RuntimeCommittedUpdate::RenderPreview(update) => {
                 let result = self
                     .commit_render_preview_update(&update.live_settings.settings, runtime_adapter);
+                Ok(Self::route_report(
+                    route,
+                    result,
+                    ApplyMechanism::PreviewPromoted,
+                ))
+            }
+            _ => self.apply_committed_route_with_reconfigure_host(route, runtime_adapter),
+        }
+    }
+
+    /// Компенсирует committed route; preview использует rollback, а не повторный commit.
+    pub(super) fn rollback_committed_route_with_render_adapter<A>(
+        &mut self,
+        route: RuntimeCommittedRoute,
+        runtime_adapter: &mut A,
+    ) -> SettingsResult<AppRouteApplyReport>
+    where
+        A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
+    {
+        match route.update.clone() {
+            RuntimeCommittedUpdate::RenderPreview(update) => {
+                let result = self.rollback_committed_render_preview_update(
+                    &update.live_settings.settings,
+                    runtime_adapter,
+                );
                 Ok(Self::route_report(
                     route,
                     result,
@@ -465,7 +438,6 @@ impl SettingsRuntimeRouteAppliers {
             audio_output_device_id: None,
             event_policy_settings: Vec::new(),
             media_pipeline: None,
-            deferred_boundary_settings: Vec::new(),
         };
 
         let player_result = match reconfigure_host.apply_player_runtime_settings(&player_update) {
@@ -551,8 +523,7 @@ impl SettingsRuntimeRouteAppliers {
             player_core_result.clone(),
             audio_output_device_result.clone(),
         ]);
-        let deferred_message = player_deferred_message(update);
-        let route_result = player_route_result(in_place_result, deferred_message.as_deref());
+        let route_result = in_place_result;
         let mechanism = if route_result.is_success() {
             player_apply_mechanism(update)
         } else {
@@ -661,30 +632,6 @@ impl SettingsRuntimeRouteAppliers {
         result
     }
 }
-/// Возвращает причину для явно будущих player/backend settings.
-fn player_deferred_message(update: &PlayerCommittedSettingsUpdate) -> Option<String> {
-    if !update.deferred_boundary_settings.is_empty() {
-        return Some(format!(
-            "Player settings требуют будущего backend boundary: {}",
-            setting_ids_text(&update.deferred_boundary_settings)
-        ));
-    }
-    if !update.player_core.unsupported_settings.is_empty() {
-        return Some(format!(
-            "Player settings пока не поддержаны player-core: {}",
-            update
-                .player_core
-                .unsupported_settings
-                .iter()
-                .map(|setting| format!("{setting:?}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-
-    None
-}
-
 /// Выбирает mechanism по самому тяжёлому player operation в route.
 fn player_apply_mechanism(update: &PlayerCommittedSettingsUpdate) -> ApplyMechanism {
     if update.player_core.decoder_thread_config.is_some()
@@ -700,22 +647,6 @@ fn player_apply_mechanism(update: &PlayerCommittedSettingsUpdate) -> ApplyMechan
         ApplyMechanism::WorkerReconfigure
     } else {
         ApplyMechanism::InPlace
-    }
-}
-
-/// Вычисляет route-level result с честным partial status.
-fn player_route_result(
-    in_place_result: AppRouteApplyResult,
-    deferred_message: Option<&str>,
-) -> AppRouteApplyResult {
-    match deferred_message {
-        Some(message) if in_place_result.is_success() => AppRouteApplyResult::PartialFailure {
-            message: message.to_string(),
-        },
-        Some(message) => AppRouteApplyResult::DeferredTechnicalDebt {
-            message: message.to_string(),
-        },
-        None => in_place_result,
     }
 }
 
@@ -735,12 +666,6 @@ fn player_runtime_group_report_result(
         PlayerRuntimeApplyOutcome::Accepted(PlayerRuntimeAcceptedChange::Unchanged) => {
             AppRouteApplyResult::Noop
         }
-        PlayerRuntimeApplyOutcome::RequiresControlledRebuild => AppRouteApplyResult::Failed {
-            message: format!(
-                "player-core still requires controlled rebuild for {:?}: {}",
-                report.group, report.message
-            ),
-        },
         PlayerRuntimeApplyOutcome::RuntimeBusy(activity) => AppRouteApplyResult::RuntimeBusy {
             activity: match activity {
                 PlayerRuntimeBoundaryActivity::Seek => SettingsBoundaryActivity::Seek,
@@ -780,8 +705,7 @@ fn combine_player_in_place_results(
             }
             AppRouteApplyResult::Noop => {}
             AppRouteApplyResult::Failed { message }
-            | AppRouteApplyResult::PartialFailure { message }
-            | AppRouteApplyResult::DeferredTechnicalDebt { message } => failures.push(message),
+            | AppRouteApplyResult::PartialFailure { message } => failures.push(message),
             AppRouteApplyResult::RendererRecreationFailed { failure } => {
                 failures.push(format!("renderer recreation failed: {failure:?}"));
             }
@@ -933,40 +857,5 @@ impl MediaServiceRuntimeSnapshot {
             network: update.network.clone(),
             youtube: update.youtube.clone(),
         }
-    }
-}
-
-impl SettingsRuntime {
-    /// Apply path для settings UI: validate -> persist -> route apply.
-    #[cfg(test)]
-    pub(crate) fn apply_draft<A>(&mut self, render_adapter: &mut A) -> SettingsResult<ApplyReport>
-    where
-        A: RenderLiveSettingsAdapter,
-    {
-        let mut runtime_adapter = RenderOnlySettingsRuntimeAdapter { render_adapter };
-        self.apply_draft_with_runtime_adapter(&mut runtime_adapter)
-    }
-
-    /// Apply path для production runtime owners.
-    pub(crate) fn apply_draft_with_runtime_adapter<A>(
-        &mut self,
-        runtime_adapter: &mut A,
-    ) -> SettingsResult<ApplyReport>
-    where
-        A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
-    {
-        self.invalidate_ui_model();
-
-        let mut delegate = SettingsRuntimeApplyDelegate {
-            validator: AppConfigValidator,
-            store: &mut self.store,
-            route_appliers: &mut self.route_appliers,
-            runtime_adapter,
-        };
-        let report = self.controller.apply(&mut delegate)?;
-        self.latest_apply_report = Some(report.clone());
-        self.status = status_from_apply_report(&report);
-
-        Ok(report)
     }
 }

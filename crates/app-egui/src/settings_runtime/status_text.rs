@@ -75,6 +75,14 @@ pub(super) fn status_from_apply_report(report: &ApplyReport) -> SettingsUiStatus
     for route in &report.routes {
         details.push(route_report_text(route));
     }
+    for rollback in &report.rollback {
+        details.push(format!(
+            "Rollback `{}`: {:?}; settings {}",
+            rollback.route,
+            rollback.result,
+            setting_ids_text(&rollback.affected_settings)
+        ));
+    }
     for conflict in &report.conflicts {
         details.push(format!(
             "Conflict route `{}`: baseline {}, current {}, settings {}",
@@ -86,6 +94,15 @@ pub(super) fn status_from_apply_report(report: &ApplyReport) -> SettingsUiStatus
     }
     for error in &report.errors {
         details.push(error.to_string());
+    }
+    if matches!(
+        report.final_state,
+        ApplyFinalState::RuntimeBlocked | ApplyFinalState::BlockedByConflicts
+    ) {
+        details.push(
+            "Черновик сохранён. После завершения активной операции нажмите «Применить» ещё раз."
+                .to_string(),
+        );
     }
 
     SettingsUiStatus {
@@ -101,9 +118,9 @@ fn apply_final_state_text(final_state: ApplyFinalState) -> &'static str {
         ApplyFinalState::ValidationFailed => "Настройки не прошли полную проверку",
         ApplyFinalState::PersistFailed => "Не удалось сохранить TOML",
         ApplyFinalState::BlockedByConflicts => "Применение заблокировано конфликтом runtime route",
-        ApplyFinalState::PersistedRuntimeDiverged => {
-            "TOML сохранён, но runtime применился не полностью"
-        }
+        ApplyFinalState::RuntimeBlocked => "Runtime временно занят; черновик сохранён",
+        ApplyFinalState::RuntimeApplyFailed => "Runtime отклонил настройки; изменения отменены",
+        ApplyFinalState::RollbackFailed => "Не удалось полностью восстановить runtime",
         ApplyFinalState::FullyApplied => "Настройки сохранены и применены",
     }
 }
@@ -148,6 +165,9 @@ fn apply_route_result_text(result: &ApplyRouteResult) -> String {
         ApplyRouteResult::PreviewPromoted => "preview promoted".to_string(),
         ApplyRouteResult::PartialFailure { message } => format!("partial failure: {message}"),
         ApplyRouteResult::Failed { message } => format!("failed: {message}"),
+        ApplyRouteResult::RuntimeBusy { activity } => {
+            format!("runtime busy ({activity}); update was not queued")
+        }
         ApplyRouteResult::Conflict { baseline, current } => {
             format!(
                 "conflict: baseline {}, current {}",
@@ -185,22 +205,13 @@ pub(super) fn group_reports(
         .collect()
 }
 
-/// Корректирует route-level result для no-op/deferred player groups.
+/// Сохраняет route-level result для owner group без compatibility aliases.
 pub(super) fn group_result(
     group: &AppRuntimeRouteGroup,
     route_result: &AppRouteApplyResult,
 ) -> AppRouteApplyResult {
-    match (group, route_result) {
-        (
-            AppRuntimeRouteGroup::PlayerDefaultVolume,
-            AppRouteApplyResult::DeferredTechnicalDebt { .. },
-        ) => AppRouteApplyResult::DeferredTechnicalDebt {
-            message:
-                "Default volume policy сохранён как committed setting; current volume не меняется"
-                    .to_string(),
-        },
-        _ => route_result.clone(),
-    }
+    let _ = group;
+    route_result.clone()
 }
 
 /// Форматирует setting ids для report-а без потери конкретики.

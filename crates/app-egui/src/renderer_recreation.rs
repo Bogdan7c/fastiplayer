@@ -37,6 +37,15 @@ pub(crate) struct RendererLifecycleCoordinator {
 }
 
 impl RendererLifecycleCoordinator {
+    /// Read-only preflight for a settings transaction before any owner is mutated.
+    pub(crate) fn settings_recreation_activity(&self) -> Option<SettingsBoundaryActivity> {
+        if self.surface_event_pending || self.activity.is_some() {
+            Some(SettingsBoundaryActivity::RendererLifecycle)
+        } else {
+            None
+        }
+    }
+
     /// Помечает resize/maximize/minimize action текущего UI tick-а.
     pub(crate) fn set_surface_event_pending(&mut self, pending: bool) {
         self.surface_event_pending = pending;

@@ -1,6 +1,7 @@
 //! Runtime settings adapter, который связывает UI transaction с app/player/media owners.
 
 use super::*;
+use crate::settings_runtime::SettingsRuntimePreflightFailure;
 
 /// Runtime adapter одного frame-а: render live preview + committed runtime owners.
 pub(super) struct FrameSettingsRuntimeAdapter<'frame> {
@@ -226,6 +227,57 @@ impl RenderLiveSettingsAdapter for FrameSettingsRuntimeAdapter<'_> {
 }
 
 impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
+    fn preflight_settings_transaction(
+        &mut self,
+        routes: &[rustiplayer_settings::RuntimeCommittedRoute],
+    ) -> Result<(), SettingsRuntimePreflightFailure> {
+        let touches_renderer = routes
+            .iter()
+            .any(|route| route.route == rustiplayer_settings::AppRuntimeRoute::RenderCommitted);
+        if touches_renderer
+            && let Some(activity) = self.renderer_lifecycle.settings_recreation_activity()
+        {
+            return Err(SettingsRuntimePreflightFailure {
+                route: rustiplayer_settings::AppRuntimeRoute::RenderCommitted,
+                result: AppRouteApplyResult::RuntimeBusy { activity },
+            });
+        }
+
+        let touches_player_boundary = routes.iter().any(|route| {
+            matches!(
+                route.route,
+                rustiplayer_settings::AppRuntimeRoute::Player
+                    | rustiplayer_settings::AppRuntimeRoute::MediaService
+                    | rustiplayer_settings::AppRuntimeRoute::FrameServer
+            )
+        });
+        if !touches_player_boundary {
+            return Ok(());
+        }
+
+        match self.app_state.runtime_reconfigure_boundary_activity() {
+            Ok(Some(activity)) => Err(SettingsRuntimePreflightFailure {
+                route: first_player_route(routes),
+                result: AppRouteApplyResult::RuntimeBusy {
+                    activity: settings_boundary_activity_from_player(activity),
+                },
+            }),
+            Ok(None) => Ok(()),
+            Err(PlayerRuntimeApplyError::Backpressure) => Err(SettingsRuntimePreflightFailure {
+                route: first_player_route(routes),
+                result: AppRouteApplyResult::RuntimeBusy {
+                    activity: SettingsBoundaryActivity::PipelineLifecycle,
+                },
+            }),
+            Err(error) => Err(SettingsRuntimePreflightFailure {
+                route: first_player_route(routes),
+                result: AppRouteApplyResult::Failed {
+                    message: format!("settings transaction preflight failed: {error}"),
+                },
+            }),
+        }
+    }
+
     fn recreate_renderer(
         &mut self,
         previous: &RenderCommittedSettingsUpdate,
@@ -343,8 +395,7 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
                     return Ok(report);
                 }
                 AppRouteApplyResult::Failed { message }
-                | AppRouteApplyResult::PartialFailure { message }
-                | AppRouteApplyResult::DeferredTechnicalDebt { message } => {
+                | AppRouteApplyResult::PartialFailure { message } => {
                     report.push(PlayerRuntimeApplyGroupReport::fatal(
                         PlayerRuntimeApplyGroup::MediaPipeline,
                         affected_settings,
@@ -475,6 +526,24 @@ const fn settings_boundary_activity_from_player(
             SettingsBoundaryActivity::PipelineLifecycle
         }
     }
+}
+
+/// Находит первый затронутый player/media owner для точного preflight report-а.
+fn first_player_route(
+    routes: &[rustiplayer_settings::RuntimeCommittedRoute],
+) -> rustiplayer_settings::AppRuntimeRoute {
+    routes
+        .iter()
+        .map(|route| route.route)
+        .find(|route| {
+            matches!(
+                route,
+                rustiplayer_settings::AppRuntimeRoute::Player
+                    | rustiplayer_settings::AppRuntimeRoute::MediaService
+                    | rustiplayer_settings::AppRuntimeRoute::FrameServer
+            )
+        })
+        .unwrap_or(rustiplayer_settings::AppRuntimeRoute::Player)
 }
 
 /// Строит typed player report, если app-owned pipeline rebuild не стартовал.

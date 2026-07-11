@@ -1,10 +1,10 @@
 use crate::{
     ApplyFinalState, ApplyRouteReport, ApplyRouteResult, AutoFixedPositiveIntegerDescriptor,
-    CommittedApplyRequest, CommittedSettingsApplier, DefaultBehavior, ListLengthLimitKind,
-    NumericDescriptor, NumericRange, NumericStep, PersistReport, PersistRequest,
-    PreviewApplyReport, PreviewApplyRequest, PreviewApplyResult, PreviewRollbackRequest,
-    PreviewRollbacker, PreviewSettingsApplier, RollbackReport, RouteGeneration,
-    SelectListDescriptor, SettingAccess, SettingApplyMode, SettingDescriptor,
+    CommittedApplyRequest, CommittedRollbackRequest, CommittedSettingsApplier, DefaultBehavior,
+    ListLengthLimitKind, NumericDescriptor, NumericRange, NumericStep, PersistReport,
+    PersistRequest, PreviewApplyReport, PreviewApplyRequest, PreviewApplyResult,
+    PreviewRollbackRequest, PreviewRollbacker, PreviewSettingsApplier, RollbackReport,
+    RouteGeneration, SelectListDescriptor, SettingAccess, SettingApplyMode, SettingDescriptor,
     SettingDescriptorText, SettingEditor, SettingId, SettingOption, SettingOptionCurrentValue,
     SettingOptionId, SettingOptions, SettingPlacement, SettingRouteId, SettingText, SettingValue,
     SettingValueError, SettingValueType, SettingsController, SettingsError, SettingsPersister,
@@ -140,6 +140,9 @@ struct RecordingApplyDelegate {
     persist_error: Option<SettingsError>,
     apply_error: Option<SettingsError>,
     route_reports: Option<Vec<ApplyRouteReport>>,
+    preflight_reports: Option<Vec<ApplyRouteReport>>,
+    rollback_error: Option<SettingsError>,
+    rollback_reports: Option<Vec<RollbackReport>>,
 }
 
 impl SettingsValidator<TestDocument> for RecordingApplyDelegate {
@@ -178,6 +181,14 @@ impl SettingsPersister<TestDocument> for RecordingApplyDelegate {
 }
 
 impl CommittedSettingsApplier<TestDocument> for RecordingApplyDelegate {
+    fn preflight_committed(
+        &mut self,
+        _request: CommittedApplyRequest<'_, TestDocument>,
+    ) -> crate::SettingsResult<Vec<ApplyRouteReport>> {
+        self.calls.push("preflight");
+        Ok(self.preflight_reports.clone().unwrap_or_default())
+    }
+
     fn apply_committed(
         &mut self,
         request: CommittedApplyRequest<'_, TestDocument>,
@@ -195,6 +206,27 @@ impl CommittedSettingsApplier<TestDocument> for RecordingApplyDelegate {
             .iter()
             .map(|update| {
                 ApplyRouteReport::applied(update.route.clone(), update.affected_settings.clone())
+            })
+            .collect())
+    }
+
+    fn rollback_committed(
+        &mut self,
+        request: CommittedRollbackRequest<'_, TestDocument>,
+    ) -> crate::SettingsResult<Vec<RollbackReport>> {
+        self.calls.push("rollback");
+        if let Some(error) = self.rollback_error.clone() {
+            return Err(error);
+        }
+        if let Some(reports) = self.rollback_reports.clone() {
+            return Ok(reports);
+        }
+        Ok(request
+            .route_updates
+            .iter()
+            .rev()
+            .map(|update| {
+                RollbackReport::rolled_back(update.route.clone(), update.affected_settings.clone())
             })
             .collect())
     }
@@ -693,7 +725,7 @@ fn controller_reset_all_replaces_draft_with_default_document() {
 }
 
 #[test]
-fn controller_apply_runs_validate_persist_then_runtime_apply() {
+fn controller_apply_runs_validate_preflight_runtime_then_persist() {
     let registry = controller_registry();
     let mut controller = SettingsController::new(TestDocument::default(), registry);
     let ui_route = SettingRouteId::from("ui");
@@ -709,7 +741,10 @@ fn controller_apply_runs_validate_persist_then_runtime_apply() {
         .apply(&mut delegate)
         .expect("apply should return a detailed report");
 
-    assert_eq!(delegate.calls, vec!["validate", "persist", "apply"]);
+    assert_eq!(
+        delegate.calls,
+        vec!["validate", "preflight", "apply", "persist"]
+    );
     assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
     assert_eq!(controller.committed().title, "Применённое имя");
     assert_eq!(controller.draft(), controller.committed());
@@ -720,7 +755,7 @@ fn controller_apply_runs_validate_persist_then_runtime_apply() {
 }
 
 #[test]
-fn controller_persist_failure_stops_runtime_apply() {
+fn controller_persist_failure_compensates_runtime_apply() {
     let registry = controller_registry();
     let mut controller = SettingsController::new(TestDocument::default(), registry);
     controller
@@ -738,14 +773,17 @@ fn controller_persist_failure_stops_runtime_apply() {
         .apply(&mut delegate)
         .expect("persist failure should be represented as apply report");
 
-    assert_eq!(delegate.calls, vec!["validate", "persist"]);
+    assert_eq!(
+        delegate.calls,
+        vec!["validate", "preflight", "apply", "persist", "rollback"]
+    );
     assert_eq!(report.final_state, ApplyFinalState::PersistFailed);
     assert_eq!(controller.committed().title, "Исходное имя");
     assert_eq!(controller.draft().title, "Не сохранено");
 }
 
 #[test]
-fn controller_runtime_partial_failure_reports_persisted_runtime_divergence() {
+fn controller_runtime_partial_failure_rolls_back_without_persistence() {
     let registry = controller_registry();
     let mut controller = SettingsController::new(TestDocument::default(), registry);
     controller
@@ -767,25 +805,19 @@ fn controller_runtime_partial_failure_reports_persisted_runtime_divergence() {
         .apply(&mut delegate)
         .expect("partial runtime failure should be reported");
 
-    assert_eq!(
-        report.final_state,
-        ApplyFinalState::PersistedRuntimeDiverged
-    );
-    assert_eq!(controller.committed().title, "Сохранено частично");
-    assert_eq!(controller.draft(), controller.committed());
-    let divergence = controller
-        .runtime_divergence()
-        .expect("controller should retain explicit divergence state");
-    assert_eq!(divergence.persisted_document.title, "Сохранено частично");
-    assert_eq!(divergence.last_fully_active_document.title, "Исходное имя");
+    assert_eq!(report.final_state, ApplyFinalState::RuntimeApplyFailed);
+    assert_eq!(controller.committed().title, "Исходное имя");
+    assert_eq!(controller.draft().title, "Сохранено частично");
+    assert!(report.persistence.is_none());
+    assert_eq!(report.rollback.len(), 1);
     assert!(matches!(
-        divergence.route_reports[0].result,
+        report.routes[0].result,
         ApplyRouteResult::PartialFailure { .. }
     ));
 }
 
 #[test]
-fn controller_runtime_divergence_retry_reapplies_saved_document() {
+fn controller_runtime_failure_preserves_same_draft_for_retry() {
     let registry = controller_registry();
     let mut controller = SettingsController::new(TestDocument::default(), registry);
     controller
@@ -804,33 +836,30 @@ fn controller_runtime_divergence_retry_reapplies_saved_document() {
     };
     controller
         .apply(&mut first_delegate)
-        .expect("first apply should persist and report runtime divergence");
-    controller.begin_edit();
-    assert!(
-        controller.runtime_divergence().is_some(),
-        "opening a fresh edit transaction must keep saved/runtime divergence"
-    );
+        .expect("first apply should fail and compensate runtime");
 
     let mut retry_delegate = RecordingApplyDelegate::default();
     let retry_report = controller
         .apply(&mut retry_delegate)
         .expect("retry should apply saved document to runtime");
 
-    assert_eq!(retry_delegate.calls, vec!["validate", "apply"]);
+    assert_eq!(
+        retry_delegate.calls,
+        vec!["validate", "preflight", "apply", "persist"]
+    );
     assert_eq!(retry_report.final_state, ApplyFinalState::FullyApplied);
     assert_eq!(
         retry_report
             .persistence
             .expect("retry should still report persistence state")
             .outcome,
-        crate::PersistOutcome::SkippedNoChanges
+        crate::PersistOutcome::Persisted
     );
-    assert!(controller.runtime_divergence().is_none());
     assert_eq!(controller.committed().title, "Нужно применить повторно");
 }
 
 #[test]
-fn controller_preview_baseline_after_divergence_uses_last_fully_active_runtime() {
+fn controller_preview_baseline_after_failed_apply_uses_committed_runtime() {
     let registry = controller_registry();
     let mut controller = SettingsController::new(TestDocument::default(), registry);
     let render_route = SettingRouteId::from("render");
@@ -850,9 +879,9 @@ fn controller_preview_baseline_after_divergence_uses_last_fully_active_runtime()
     };
     controller
         .apply(&mut delegate)
-        .expect("partial render apply should create runtime divergence");
+        .expect("partial render apply should be compensated");
 
-    assert_eq!(controller.committed().brightness, 0.8);
+    assert_eq!(controller.committed().brightness, 0.5);
     controller.begin_edit();
     controller
         .set_value(
@@ -937,6 +966,168 @@ fn controller_preview_coalescing_keeps_latest_update_per_route() {
             SettingId::from("render.brightness"),
             SettingId::from("render.rgb")
         ]
+    );
+}
+
+/// Проверяет общий preflight: busy блокирует apply/persist/rollback до мутаций.
+#[test]
+fn controller_runtime_busy_preflight_does_not_mutate_or_queue_transaction() {
+    let registry = controller_registry();
+    let mut controller = SettingsController::new(TestDocument::default(), registry);
+    controller
+        .set_value(
+            SettingId::from("ui.title"),
+            SettingValue::Text("Черновик для retry".to_owned()),
+        )
+        .expect("draft edit should succeed");
+    let mut delegate = RecordingApplyDelegate {
+        preflight_reports: Some(vec![ApplyRouteReport {
+            route: SettingRouteId::from("ui"),
+            result: ApplyRouteResult::RuntimeBusy {
+                activity: "PipelineLifecycle".to_owned(),
+            },
+            mechanism: crate::ApplyMechanism::InPlace,
+            affected_settings: vec![SettingId::from("ui.title")],
+        }]),
+        ..RecordingApplyDelegate::default()
+    };
+
+    let report = controller
+        .apply(&mut delegate)
+        .expect("busy preflight should return a retryable report");
+
+    assert_eq!(report.final_state, ApplyFinalState::RuntimeBlocked);
+    assert_eq!(delegate.calls, vec!["validate", "preflight"]);
+    assert!(report.persistence.is_none());
+    assert!(report.rollback.is_empty());
+    assert_eq!(controller.committed().title, "Исходное имя");
+    assert_eq!(controller.draft().title, "Черновик для retry");
+}
+
+/// Проверяет reverse-order compensation после failure второй owner group.
+#[test]
+fn controller_second_route_failure_rolls_back_completed_routes_in_reverse_order() {
+    let registry = controller_registry();
+    let mut controller = SettingsController::new(TestDocument::default(), registry);
+    controller
+        .set_value(
+            SettingId::from("render.brightness"),
+            SettingValue::Float(0.8),
+        )
+        .expect("render draft edit should succeed");
+    controller
+        .set_value(
+            SettingId::from("ui.title"),
+            SettingValue::Text("Новый заголовок".to_owned()),
+        )
+        .expect("ui draft edit should succeed");
+    let mut delegate = RecordingApplyDelegate {
+        route_reports: Some(vec![
+            ApplyRouteReport::applied(
+                SettingRouteId::from("render"),
+                vec![SettingId::from("render.brightness")],
+            ),
+            ApplyRouteReport::failed(
+                SettingRouteId::from("ui"),
+                vec![SettingId::from("ui.title")],
+                "second owner failed",
+            ),
+        ]),
+        ..RecordingApplyDelegate::default()
+    };
+
+    let report = controller
+        .apply(&mut delegate)
+        .expect("owner failure should be represented in the report");
+
+    assert_eq!(report.final_state, ApplyFinalState::RuntimeApplyFailed);
+    assert_eq!(
+        delegate.calls,
+        vec!["validate", "preflight", "apply", "rollback"]
+    );
+    assert_eq!(
+        report
+            .rollback
+            .iter()
+            .map(|rollback| rollback.route.as_str())
+            .collect::<Vec<_>>(),
+        vec!["ui", "render"]
+    );
+    assert!(report.persistence.is_none());
+    assert_eq!(controller.committed().title, "Исходное имя");
+}
+
+/// Проверяет отдельный fatal result, когда compensation тоже завершилась ошибкой.
+#[test]
+fn controller_rollback_failure_keeps_original_apply_failure_visible() {
+    let registry = controller_registry();
+    let mut controller = SettingsController::new(TestDocument::default(), registry);
+    controller
+        .set_value(
+            SettingId::from("ui.title"),
+            SettingValue::Text("Новый заголовок".to_owned()),
+        )
+        .expect("draft edit should succeed");
+    let mut delegate = RecordingApplyDelegate {
+        route_reports: Some(vec![ApplyRouteReport::failed(
+            SettingRouteId::from("ui"),
+            vec![SettingId::from("ui.title")],
+            "original apply failure",
+        )]),
+        rollback_reports: Some(vec![RollbackReport::failed(
+            SettingRouteId::from("ui"),
+            vec![SettingId::from("ui.title")],
+            "compensating rollback failure",
+        )]),
+        ..RecordingApplyDelegate::default()
+    };
+
+    let report = controller
+        .apply(&mut delegate)
+        .expect("combined failure should remain a report");
+
+    assert_eq!(report.final_state, ApplyFinalState::RollbackFailed);
+    assert!(matches!(
+        report.routes[0].result,
+        ApplyRouteResult::Failed { ref message } if message == "original apply failure"
+    ));
+    assert!(matches!(
+        report.rollback[0].result,
+        crate::RollbackResult::Failed { ref message }
+            if message == "compensating rollback failure"
+    ));
+    assert!(report.persistence.is_none());
+}
+
+/// Проверяет, что повторный apply уже committed draft-а является no-op.
+#[test]
+fn controller_repeated_apply_after_success_is_noop() {
+    let registry = controller_registry();
+    let mut controller = SettingsController::new(TestDocument::default(), registry);
+    controller
+        .set_value(
+            SettingId::from("ui.title"),
+            SettingValue::Text("Стабильный заголовок".to_owned()),
+        )
+        .expect("draft edit should succeed");
+    let mut first_delegate = RecordingApplyDelegate::default();
+    controller
+        .apply(&mut first_delegate)
+        .expect("first apply should succeed");
+
+    let mut repeated_delegate = RecordingApplyDelegate::default();
+    let report = controller
+        .apply(&mut repeated_delegate)
+        .expect("repeated apply should return no-op");
+
+    assert_eq!(report.final_state, ApplyFinalState::NoChanges);
+    assert!(repeated_delegate.calls.is_empty());
+    assert_eq!(
+        report
+            .persistence
+            .expect("no-op persistence report")
+            .outcome,
+        crate::PersistOutcome::SkippedNoChanges
     );
 }
 

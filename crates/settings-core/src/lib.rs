@@ -18,12 +18,13 @@ mod tests;
 
 pub use controller::{
     ApplyFinalState, ApplyMechanism, ApplyReport, ApplyRouteReport, ApplyRouteResult, CancelReport,
-    CommittedApplyRequest, CommittedSettingsApplier, PendingPreviewUpdate, PersistOutcome,
-    PersistReport, PersistRequest, PreviewApplyReport, PreviewApplyRequest, PreviewApplyResult,
-    PreviewRollbackRequest, PreviewRollbacker, PreviewRouteState, PreviewSettingsApplier,
-    PreviewTransactionState, ResetReport, ResetScope, RollbackReport, RollbackResult,
-    RouteApplyUpdate, RouteGeneration, RouteGenerationConflict, RuntimeDivergence, SetValueReport,
-    SettingsController, SettingsPersister, SettingsValidator, ValidationReport, ValidationRequest,
+    CommittedApplyRequest, CommittedRollbackRequest, CommittedSettingsApplier,
+    PendingPreviewUpdate, PersistOutcome, PersistReport, PersistRequest, PreviewApplyReport,
+    PreviewApplyRequest, PreviewApplyResult, PreviewRollbackRequest, PreviewRollbacker,
+    PreviewRouteState, PreviewSettingsApplier, PreviewTransactionState, ResetReport, ResetScope,
+    RollbackReport, RollbackResult, RouteApplyUpdate, RouteGeneration, RouteGenerationConflict,
+    SetValueReport, SettingsController, SettingsPersister, SettingsValidator, ValidationReport,
+    ValidationRequest,
 };
 pub use diff::{SettingChange, SettingsDiff};
 pub use error::{

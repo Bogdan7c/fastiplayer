@@ -9,7 +9,16 @@
 - Current executor behavior was intentionally not rewritten in Session 08: existing `DeferredTechnicalDebt`, `deferred_boundary_settings`, persistence order, and unsupported-player plumbing remain until their scoped implementation/removal sessions.
 - Session 08B input: implement Player/MediaService/FrameServer rows through owner boundaries, including event-policy updates, worker reconfigure, audio/source recreation, and video pipeline rebuild with rollback and retryable busy/conflict.
 - Session 08C input: implement RenderCommitted rows via controlled renderer recreation; preserve live-render preview rows and cover active leases/device-lost/restore failure.
-- Session 08D input: make the typed outcome transactional end-to-end, move persistence after successful runtime commit, compensate earlier owner commits in reverse order, then remove deferred debt vocabulary and UI string-based status plumbing.
+## Session 08D — end-to-end settings transaction (2026-07-11)
+
+- `SettingsController::apply` теперь выполняет validate -> generation/runtime preflight -> ordered runtime commit -> atomic TOML persistence -> final committed document/generation update.
+- Runtime owners применяются в стабильном `AppRuntimeRoute` order; при failure completed prefix компенсируется в обратном порядке. Apply report хранит исходные route reports и отдельные typed rollback reports; rollback failure имеет `ApplyFinalState::RollbackFailed` и не скрывает исходную ошибку.
+- Generation conflict и app/player/renderer busy preflight происходят до первой owner mutation, ничего не persist-ят и не создают hidden retry queue. Draft остаётся неизменным для явного повторного Apply.
+- Persistence failure после полного runtime commit вызывает compensating runtime rollback; app-owned committed config snapshot синхронизируется только после успешной atomic TOML записи.
+- `DeferredTechnicalDebt`, `deferred_boundary_settings`, `PersistedRuntimeDiverged`, generic player `unsupported_settings` и unreachable `RequiresControlledRebuild` удалены без compatibility aliases.
+- `crates/app-egui/src/settings_runtime/transaction.rs` владеет end-to-end orchestration; route owners остаются в `route_apply.rs`, renderer lifecycle — в `renderer_recreation.rs`, visual UI получает только progress/success/failure status.
+- Apply/OK сначала публикует busy/progress model на один UI frame, затем выполняет transaction. Retryable busy/conflict сохраняет draft и показывает явную подсказку повторить Apply; автоматического retry/hidden queue нет.
+- End-to-end tests покрывают multi-group success, second-group failure, reverse rollback, rollback failure, preflight busy без persistence/queue, same-draft retry, preview promotion, persistence failure с compensation и repeated no-op.
 
 
 ## Session 08B — live apply player/media/decoder (2026-07-11)

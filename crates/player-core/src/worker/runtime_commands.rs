@@ -143,14 +143,6 @@ impl PlayerWorkerRuntime {
             self.apply_runtime_frame_server_policy(frame_server_policy_update, &mut report);
         }
 
-        if !update.unsupported_settings.is_empty() {
-            report.push(PlayerRuntimeApplyGroupReport::unsupported(
-                PlayerRuntimeApplyGroup::UnsupportedSettings,
-                update.unsupported_settings,
-                "player-core has no runtime apply boundary for these settings yet",
-            ));
-        }
-
         report
     }
 

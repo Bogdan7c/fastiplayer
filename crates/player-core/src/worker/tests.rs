@@ -660,34 +660,21 @@ fn worker_playback_rate_reject_stays_non_fatal_on_direct_command_path() {
 }
 
 #[test]
-fn runtime_apply_invalid_and_unsupported_settings_are_reported() {
+fn runtime_apply_invalid_settings_are_reported_without_mutation() {
     let mut runtime = runtime_for_tests(Instant::now());
     let original_tick_config = runtime.config.tick_config;
     let mut invalid_tick_config = original_tick_config;
     invalid_tick_config.max_demux_packets_per_tick = 0;
 
-    let report = runtime.apply_runtime_settings(
-        PlayerRuntimeSettingsUpdate::empty()
-            .with_tick_config(
-                invalid_tick_config,
-                [PlayerRuntimeSettingId::VideoSchedulerDemuxPacketsPerTick],
-            )
-            .with_unsupported_settings([PlayerRuntimeSettingId::PlayerPreferredVideoCodecOrder]),
-    );
+    let report =
+        runtime.apply_runtime_settings(PlayerRuntimeSettingsUpdate::empty().with_tick_config(
+            invalid_tick_config,
+            [PlayerRuntimeSettingId::VideoSchedulerDemuxPacketsPerTick],
+        ));
 
     assert_eq!(runtime.config.tick_config, original_tick_config);
     let tick_report = apply_group_report(&report, PlayerRuntimeApplyGroup::TickConfig);
     assert_eq!(tick_report.outcome, PlayerRuntimeApplyOutcome::Invalid);
-    let unsupported_report =
-        apply_group_report(&report, PlayerRuntimeApplyGroup::UnsupportedSettings);
-    assert_eq!(
-        unsupported_report.outcome,
-        PlayerRuntimeApplyOutcome::Unsupported
-    );
-    assert_eq!(
-        unsupported_report.affected_settings,
-        vec![PlayerRuntimeSettingId::PlayerPreferredVideoCodecOrder]
-    );
 }
 
 #[test]

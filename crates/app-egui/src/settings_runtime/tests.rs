@@ -19,18 +19,18 @@ use rustiplayer_settings::{
     MediaServiceRuntimeSettingsUpdate, PlayerCommittedSettingsUpdate,
     RenderCommittedSettingsUpdate, RendererRecreationApplyError, RendererRecreationApplyErrorKind,
     RuntimeCommittedRoute, RuntimeCommittedUpdate, SettingStateOwner, SettingsApplyFailure,
-    render_live_settings_from_config,
+    SettingsBoundaryActivity, render_live_settings_from_config,
 };
 use settings_core::{
-    ApplyFinalState, ApplyMechanism, OptionProviderId, SettingId, SettingOption,
-    SettingOptionCurrentValue, SettingOptionId, SettingOptions, SettingOptionsError,
+    ApplyFinalState, ApplyMechanism, ApplyRouteResult, OptionProviderId, RollbackResult, SettingId,
+    SettingOption, SettingOptionCurrentValue, SettingOptionId, SettingOptions, SettingOptionsError,
     SettingOptionsRequest, SettingOptionsStatus, SettingRouteId, SettingText, SettingValue,
     SettingsResult, SettingsSurfaceId,
 };
 
 use super::{
-    CommittedConfigSnapshot, SettingsRuntime, SettingsRuntimeReconfigureHost,
-    SettingsRuntimeRouteAppliers, current_option_value,
+    CommittedConfigSnapshot, SettingsRuntime, SettingsRuntimePreflightFailure,
+    SettingsRuntimeReconfigureHost, SettingsRuntimeRouteAppliers, current_option_value,
 };
 use crate::render_settings::{
     color_pipeline_settings_from_config, hdr_to_sdr_settings_from_config,
@@ -72,6 +72,22 @@ fn brightness_action(value: f64) -> SettingsUiAction {
     SettingsUiAction::SetValue {
         setting_id: SettingId::from("render.color_adjustment.brightness"),
         value: SettingValue::Float(value),
+    }
+}
+
+/// Выполняет visual action frame и следующий explicit transaction frame в production adapter path.
+fn run_runtime_actions(
+    runtime: &mut SettingsRuntime,
+    actions: Vec<SettingsUiAction>,
+    adapter: &mut RecordingRuntimeAdapter,
+) {
+    runtime
+        .handle_ui_actions_with_runtime_adapter(actions, adapter)
+        .expect("visual action frame должен обработаться");
+    if runtime.pending_apply.is_some() {
+        runtime
+            .handle_ui_actions_with_runtime_adapter(Vec::new(), adapter)
+            .expect("transaction frame должен обработаться");
     }
 }
 
@@ -166,6 +182,7 @@ struct RecordingRenderAdapter {
     commits: Vec<RenderLiveSettings>,
     rollbacks: Vec<RenderLiveSettings>,
     fail_commit: bool,
+    fail_rollback: bool,
     backpressured_preview_attempts: usize,
 }
 
@@ -177,6 +194,7 @@ impl RecordingRenderAdapter {
             commits: Vec::new(),
             rollbacks: Vec::new(),
             fail_commit: false,
+            fail_rollback: false,
             backpressured_preview_attempts: 0,
         })
     }
@@ -237,6 +255,12 @@ impl RenderLiveSettingsAdapter for RecordingRenderAdapter {
         &mut self,
         baseline: &RenderLiveSettings,
     ) -> Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+        if self.fail_rollback {
+            return Err(RenderLiveSettingsError::fatal(
+                RenderLiveApplyPhase::Rollback,
+                "test rollback failure",
+            ));
+        }
         let changed_fields: Vec<RenderLiveSettingId> = self.active.changed_fields_from(baseline);
         self.rollbacks.push(baseline.clone());
         self.active = baseline.clone();
@@ -256,6 +280,9 @@ struct RecordingRuntimeAdapter {
     renderer_recreation_result: AppRouteApplyResult,
     renderer_recreation_updates:
         Vec<(RenderCommittedSettingsUpdate, RenderCommittedSettingsUpdate)>,
+    preflight_failure: Option<(rustiplayer_settings::AppRuntimeRoute, AppRouteApplyResult)>,
+    preflight_calls: usize,
+    committed_snapshots: Vec<CommittedConfigSnapshot>,
 }
 
 impl RecordingRuntimeAdapter {
@@ -268,6 +295,9 @@ impl RecordingRuntimeAdapter {
             fail_media: false,
             renderer_recreation_result: AppRouteApplyResult::Applied,
             renderer_recreation_updates: Vec::new(),
+            preflight_failure: None,
+            preflight_calls: 0,
+            committed_snapshots: Vec::new(),
         })
     }
 }
@@ -296,6 +326,21 @@ impl RenderLiveSettingsAdapter for RecordingRuntimeAdapter {
 }
 
 impl SettingsRuntimeReconfigureHost for RecordingRuntimeAdapter {
+    fn preflight_settings_transaction(
+        &mut self,
+        _routes: &[RuntimeCommittedRoute],
+    ) -> Result<(), SettingsRuntimePreflightFailure> {
+        self.preflight_calls += 1;
+        match self.preflight_failure.clone() {
+            Some((route, result)) => Err(SettingsRuntimePreflightFailure { route, result }),
+            None => Ok(()),
+        }
+    }
+
+    fn sync_committed_config_snapshot(&mut self, snapshot: CommittedConfigSnapshot) {
+        self.committed_snapshots.push(snapshot);
+    }
+
     fn recreate_renderer(
         &mut self,
         previous: &RenderCommittedSettingsUpdate,
@@ -495,7 +540,6 @@ fn player_default_volume_route_updates_policy_snapshot_only() {
             audio_output_device_id: None,
             event_policy_settings: Vec::new(),
             media_pipeline: None,
-            deferred_boundary_settings: Vec::new(),
         })),
     };
 
@@ -527,7 +571,6 @@ fn selected_available_audio_device_is_passed_to_audio_owner() {
             audio_output_device_id: Some(selected_device_id.clone()),
             event_policy_settings: Vec::new(),
             media_pipeline: None,
-            deferred_boundary_settings: Vec::new(),
         })),
     };
 
@@ -547,7 +590,7 @@ fn selected_available_audio_device_is_passed_to_audio_owner() {
 }
 
 #[test]
-fn player_decoder_route_uses_runtime_host_without_deferred_debt() {
+fn player_decoder_route_uses_live_pipeline_rebuild() {
     let config = custom_config_for_test();
     let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
         .expect("route appliers должны принять валидированный config");
@@ -573,7 +616,6 @@ fn player_decoder_route_uses_runtime_host_without_deferred_debt() {
             audio_output_device_id: None,
             event_policy_settings: Vec::new(),
             media_pipeline: None,
-            deferred_boundary_settings: Vec::new(),
         })),
     };
 
@@ -679,7 +721,7 @@ fn render_recreation_failure_keeps_old_snapshot_for_same_draft_retry() {
 }
 
 #[test]
-fn media_service_route_uses_app_owner_without_deferred_debt() {
+fn media_service_route_uses_live_app_owner() {
     let config = custom_config_for_test();
     let mut appliers = SettingsRuntimeRouteAppliers::from_config(&config)
         .expect("route appliers должны принять валидированный config");
@@ -1127,7 +1169,6 @@ fn reset_surface_resets_settings_from_all_sections_because_surface_is_global() {
                     value: SettingValue::Float(default_volume / 2.0 + 0.01),
                 },
                 brightness_action(0.40),
-                // «Сбросить экран» из заголовка ЛЮБОЙ секции шлёт общий surface.
                 SettingsUiAction::ResetSurface {
                     surface: SettingsSurfaceId::from("main-settings-window"),
                 },
@@ -1147,8 +1188,6 @@ fn reset_surface_resets_settings_from_all_sections_because_surface_is_global() {
             &SettingId::from("render.color_adjustment.brightness"),
         )
         .expect("brightness должен читаться");
-    // Документируем текущее поведение: один surface на всю панель, поэтому
-    // section header reset сбрасывает настройки ВСЕХ секций, не только своей.
     assert_eq!(audio_value, SettingValue::Float(default_volume));
     assert_eq!(brightness_value, SettingValue::Float(0.0));
 }
@@ -1173,8 +1212,6 @@ fn reset_group_profile_hits_both_visual_profile_groups() {
                     setting_id: SettingId::from("render.tone_mapping"),
                     value: SettingValue::Select(SettingOptionId::from("auto")),
                 },
-                // UI кнопка «Сбросить группу» у ЛЮБОГО из двух визуальных
-                // заголовков "profile" шлёт один и тот же group id.
                 SettingsUiAction::ResetGroup {
                     section: settings_core::SettingSectionId::from("render"),
                     group: settings_core::SettingGroupId::from("profile"),
@@ -1198,9 +1235,6 @@ fn reset_group_profile_hits_both_visual_profile_groups() {
             &SettingId::from("render.tone_mapping"),
         )
         .expect("render.tone_mapping должен читаться");
-    // Документируем текущее поведение: render.profile и render.tone_mapping
-    // делят group id "profile", поэтому один reset бьёт по обоим визуальным
-    // группам сразу. Дефолты: profile=vulkan, tone_mapping=disabled.
     assert_eq!(
         profile_value,
         SettingValue::Select(SettingOptionId::from("vulkan"))
@@ -1567,10 +1601,356 @@ fn ok_closes_only_after_full_success() {
             .latest_apply_report()
             .expect("failure должен сохранить apply report")
             .final_state,
-        ApplyFinalState::PersistedRuntimeDiverged
+        ApplyFinalState::RuntimeApplyFailed
     );
     remove_file_if_exists(&success_path);
     remove_file_if_exists(&failure_path);
+}
+
+/// Проверяет отдельный UI frame для progress до синхронного runtime commit-а.
+#[test]
+fn apply_progress_is_visible_before_transaction_starts() {
+    let config = custom_config_for_test();
+    let path = temp_config_path("transaction-progress");
+    remove_file_if_exists(&path);
+    let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
+        config.clone(),
+        path.clone(),
+    ))
+    .expect("settings runtime должен построиться");
+    let mut adapter =
+        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+
+    runtime
+        .handle_ui_actions_with_runtime_adapter(
+            vec![
+                SettingsUiAction::Open,
+                SettingsUiAction::SetValue {
+                    setting_id: SettingId::from("ui.language"),
+                    value: SettingValue::Text("en".to_string()),
+                },
+                SettingsUiAction::Apply,
+            ],
+            &mut adapter,
+        )
+        .expect("первый frame должен только запланировать apply");
+
+    let progress_model = runtime.ui_model().clone();
+    assert!(progress_model.command_state.is_busy);
+    assert_eq!(
+        progress_model.status.summary.as_deref(),
+        Some("Применение настроек…")
+    );
+    assert_eq!(adapter.preflight_calls, 0);
+    assert!(!path.exists());
+
+    runtime
+        .handle_ui_actions_with_runtime_adapter(Vec::new(), &mut adapter)
+        .expect("следующий frame должен выполнить transaction");
+    assert_eq!(
+        runtime
+            .latest_apply_report()
+            .expect("apply report должен сохраниться")
+            .final_state,
+        ApplyFinalState::FullyApplied
+    );
+    assert!(path.exists());
+    remove_file_if_exists(&path);
+}
+
+/// Проверяет multi-owner success и persistence только после обоих commits.
+#[test]
+fn transaction_multi_group_success_commits_runtime_and_toml() {
+    let config = custom_config_for_test();
+    let path = temp_config_path("transaction-multi-success");
+    remove_file_if_exists(&path);
+    let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
+        config.clone(),
+        path.clone(),
+    ))
+    .expect("settings runtime должен построиться");
+    let mut adapter =
+        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+
+    run_runtime_actions(
+        &mut runtime,
+        vec![
+            SettingsUiAction::Open,
+            SettingsUiAction::SetValue {
+                setting_id: SettingId::from("ui.language"),
+                value: SettingValue::Text("en".to_string()),
+            },
+            SettingsUiAction::SetValue {
+                setting_id: SettingId::from("network.read_ahead_mb"),
+                value: SettingValue::Integer(config.network.read_ahead_mb as i64 + 1),
+            },
+            SettingsUiAction::Apply,
+        ],
+        &mut adapter,
+    );
+
+    let report = runtime
+        .latest_apply_report()
+        .expect("успешный report должен сохраниться");
+    assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
+    assert_eq!(report.routes.len(), 2);
+    assert_eq!(adapter.media_updates, 1);
+    assert_eq!(adapter.committed_snapshots.len(), 1);
+    assert!(path.exists());
+    remove_file_if_exists(&path);
+}
+
+/// Проверяет failure второй owner group и reverse rollback первой без TOML.
+#[test]
+fn transaction_second_group_failure_rolls_back_first_group_without_persistence() {
+    let config = custom_config_for_test();
+    let path = temp_config_path("transaction-second-failure");
+    remove_file_if_exists(&path);
+    let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
+        config.clone(),
+        path.clone(),
+    ))
+    .expect("settings runtime должен построиться");
+    let mut adapter =
+        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+    adapter.fail_media = true;
+
+    run_runtime_actions(
+        &mut runtime,
+        vec![
+            SettingsUiAction::Open,
+            SettingsUiAction::SetValue {
+                setting_id: SettingId::from("ui.language"),
+                value: SettingValue::Text("en".to_string()),
+            },
+            SettingsUiAction::SetValue {
+                setting_id: SettingId::from("network.read_ahead_mb"),
+                value: SettingValue::Integer(config.network.read_ahead_mb as i64 + 1),
+            },
+            SettingsUiAction::Apply,
+        ],
+        &mut adapter,
+    );
+
+    let report = runtime
+        .latest_apply_report()
+        .expect("failure report должен сохраниться");
+    assert_eq!(report.final_state, ApplyFinalState::RuntimeApplyFailed);
+    assert_eq!(report.rollback.len(), 1);
+    assert!(report.persistence.is_none());
+    assert!(!path.exists());
+    assert_eq!(runtime.committed_config().ui.language, config.ui.language);
+    assert_eq!(runtime.controller.draft().ui.language, "en");
+}
+
+/// Проверяет, что rollback failure не скрывает исходный failure второй группы.
+#[test]
+fn transaction_rollback_failure_keeps_apply_and_rollback_results() {
+    let config = custom_config_for_test();
+    let path = temp_config_path("transaction-rollback-failure");
+    remove_file_if_exists(&path);
+    let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
+        config.clone(),
+        path.clone(),
+    ))
+    .expect("settings runtime должен построиться");
+    let mut adapter =
+        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+    adapter.fail_media = true;
+    adapter.render.fail_rollback = true;
+
+    run_runtime_actions(
+        &mut runtime,
+        vec![
+            SettingsUiAction::Open,
+            brightness_action(0.30),
+            SettingsUiAction::SetValue {
+                setting_id: SettingId::from("network.read_ahead_mb"),
+                value: SettingValue::Integer(config.network.read_ahead_mb as i64 + 1),
+            },
+            SettingsUiAction::Apply,
+        ],
+        &mut adapter,
+    );
+
+    let report = runtime
+        .latest_apply_report()
+        .expect("combined failure report должен сохраниться");
+    assert_eq!(report.final_state, ApplyFinalState::RollbackFailed);
+    assert!(matches!(
+        report.routes.last().map(|route| &route.result),
+        Some(ApplyRouteResult::Failed { message }) if message.contains("media owner failed")
+    ));
+    assert!(matches!(
+        report.rollback.first().map(|rollback| &rollback.result),
+        Some(RollbackResult::Failed { message }) if message.contains("test rollback failure")
+    ));
+    assert!(!path.exists());
+}
+
+/// Проверяет retryable preflight conflict, отсутствие hidden queue и retry того же draft.
+#[test]
+fn transaction_preflight_busy_preserves_draft_and_retries_only_on_explicit_apply() {
+    let config = custom_config_for_test();
+    let path = temp_config_path("transaction-busy-retry");
+    remove_file_if_exists(&path);
+    let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
+        config.clone(),
+        path.clone(),
+    ))
+    .expect("settings runtime должен построиться");
+    let mut adapter =
+        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+    adapter.preflight_failure = Some((
+        AppRuntimeRoute::Player,
+        AppRouteApplyResult::RuntimeBusy {
+            activity: SettingsBoundaryActivity::Seek,
+        },
+    ));
+
+    runtime
+        .handle_ui_actions_with_runtime_adapter(
+            vec![
+                SettingsUiAction::Open,
+                SettingsUiAction::SetValue {
+                    setting_id: SettingId::from("player.start_paused"),
+                    value: SettingValue::Bool(!config.player.start_paused),
+                },
+                SettingsUiAction::Apply,
+            ],
+            &mut adapter,
+        )
+        .expect("первый frame должен запланировать apply");
+    runtime
+        .handle_ui_actions_with_runtime_adapter(Vec::new(), &mut adapter)
+        .expect("busy preflight должен вернуть report");
+
+    assert_eq!(
+        runtime
+            .latest_apply_report()
+            .expect("busy report должен сохраниться")
+            .final_state,
+        ApplyFinalState::RuntimeBlocked
+    );
+    assert_eq!(adapter.preflight_calls, 1);
+    assert!(adapter.player_updates.is_empty());
+    assert!(!path.exists());
+    assert_eq!(
+        runtime.controller.draft().player.start_paused,
+        !config.player.start_paused
+    );
+    assert!(
+        runtime
+            .ui_model()
+            .status
+            .details
+            .iter()
+            .any(|detail| detail.contains("Черновик сохранён"))
+    );
+
+    runtime
+        .handle_ui_actions_with_runtime_adapter(Vec::new(), &mut adapter)
+        .expect("idle frame не должен ставить hidden retry в очередь");
+    assert_eq!(adapter.preflight_calls, 1);
+
+    adapter.preflight_failure = None;
+    runtime
+        .handle_ui_actions_with_runtime_adapter(vec![SettingsUiAction::Apply], &mut adapter)
+        .expect("explicit retry должен запланироваться");
+    runtime
+        .handle_ui_actions_with_runtime_adapter(Vec::new(), &mut adapter)
+        .expect("explicit retry должен применить тот же draft");
+
+    assert_eq!(
+        runtime
+            .latest_apply_report()
+            .expect("retry report должен сохраниться")
+            .final_state,
+        ApplyFinalState::FullyApplied
+    );
+    assert_eq!(
+        runtime.committed_config().player.start_paused,
+        !config.player.start_paused
+    );
+    assert!(path.exists());
+    remove_file_if_exists(&path);
+}
+
+/// Проверяет persistence failure после runtime commit и compensating rollback.
+#[test]
+fn transaction_persistence_failure_rolls_runtime_back() {
+    let config = custom_config_for_test();
+    let path = temp_config_path("transaction-persist-failure");
+    remove_file_if_exists(&path);
+    fs::create_dir_all(&path).expect("target directory создаёт deterministic rename failure");
+    let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
+        config.clone(),
+        path.clone(),
+    ))
+    .expect("settings runtime должен построиться");
+    let mut adapter =
+        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+
+    run_runtime_actions(
+        &mut runtime,
+        vec![
+            SettingsUiAction::Open,
+            SettingsUiAction::SetValue {
+                setting_id: SettingId::from("network.read_ahead_mb"),
+                value: SettingValue::Integer(config.network.read_ahead_mb as i64 + 1),
+            },
+            SettingsUiAction::Apply,
+        ],
+        &mut adapter,
+    );
+
+    let report = runtime
+        .latest_apply_report()
+        .expect("persistence failure report должен сохраниться");
+    assert_eq!(report.final_state, ApplyFinalState::PersistFailed);
+    assert_eq!(report.rollback.len(), 1);
+    assert_eq!(adapter.media_updates, 2);
+    assert!(adapter.committed_snapshots.is_empty());
+    assert_eq!(runtime.committed_config().network, config.network);
+    fs::remove_dir_all(&path).expect("test target directory должна удалиться");
+}
+
+/// Проверяет no-op повторного apply после полного success.
+#[test]
+fn transaction_repeated_apply_is_noop() {
+    let config = custom_config_for_test();
+    let path = temp_config_path("transaction-repeated-noop");
+    remove_file_if_exists(&path);
+    let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
+        config.clone(),
+        path.clone(),
+    ))
+    .expect("settings runtime должен построиться");
+    let mut adapter =
+        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+
+    run_runtime_actions(
+        &mut runtime,
+        vec![
+            SettingsUiAction::Open,
+            SettingsUiAction::SetValue {
+                setting_id: SettingId::from("ui.language"),
+                value: SettingValue::Text("en".to_string()),
+            },
+            SettingsUiAction::Apply,
+        ],
+        &mut adapter,
+    );
+    let preflight_calls_after_first_apply = adapter.preflight_calls;
+
+    run_runtime_actions(&mut runtime, vec![SettingsUiAction::Apply], &mut adapter);
+
+    let report = runtime
+        .latest_apply_report()
+        .expect("no-op report должен сохраниться");
+    assert_eq!(report.final_state, ApplyFinalState::NoChanges);
+    assert_eq!(adapter.preflight_calls, preflight_calls_after_first_apply);
+    remove_file_if_exists(&path);
 }
 
 #[test]

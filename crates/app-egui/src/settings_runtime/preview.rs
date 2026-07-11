@@ -138,6 +138,26 @@ impl SettingsRuntimeRouteAppliers {
             },
         }
     }
+
+    /// Компенсирует committed preview promotion через отдельный rollback intent.
+    pub(super) fn rollback_committed_render_preview_update<A>(
+        &mut self,
+        settings: &RenderLiveSettings,
+        render_adapter: &mut A,
+    ) -> AppRouteApplyResult
+    where
+        A: RenderLiveSettingsAdapter,
+    {
+        match render_adapter.rollback_live_settings(settings) {
+            Ok(_) => {
+                self.render_live = settings.clone();
+                AppRouteApplyResult::Applied
+            }
+            Err(error) => AppRouteApplyResult::Failed {
+                message: error.to_string(),
+            },
+        }
+    }
 }
 /// Delegate preview-а: controller отвечает за coalescing, runtime - за renderer boundary.
 struct SettingsRuntimePreviewDelegate<'runtime, A> {

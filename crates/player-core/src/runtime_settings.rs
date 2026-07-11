@@ -390,9 +390,6 @@ pub struct PlayerRuntimeSettingsUpdate {
 
     /// Session-owned frame-server policy для SeekLanding/LiveScrub/prepare snapshot.
     pub frame_server_policy: Option<PlayerRuntimeFrameServerPolicyUpdate>,
-
-    /// Settings, которые player-core пока не умеет применять.
-    pub unsupported_settings: Vec<PlayerRuntimeSettingId>,
 }
 
 impl PlayerRuntimeSettingsUpdate {
@@ -495,16 +492,6 @@ impl PlayerRuntimeSettingsUpdate {
         self
     }
 
-    /// Добавляет settings, для которых в S07 нет runtime owner boundary.
-    #[must_use]
-    pub fn with_unsupported_settings<I>(mut self, affected_settings: I) -> Self
-    where
-        I: IntoIterator<Item = PlayerRuntimeSettingId>,
-    {
-        self.unsupported_settings.extend(affected_settings);
-        self
-    }
-
     /// Проверяет, содержит ли update хотя бы одну meaningful group.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -514,7 +501,6 @@ impl PlayerRuntimeSettingsUpdate {
             && self.decoder_thread_config.is_none()
             && self.video_backend.is_none()
             && self.frame_server_policy.is_none()
-            && self.unsupported_settings.is_empty()
     }
 
     /// Возвращает все setting ids request-а без знания config schema внутри worker-а.
@@ -547,8 +533,6 @@ impl PlayerRuntimeSettingsUpdate {
         if let Some(update) = &self.frame_server_policy {
             extend_unique(&update.affected_settings);
         }
-        extend_unique(&self.unsupported_settings);
-
         affected_settings
     }
 
@@ -590,9 +574,6 @@ pub enum PlayerRuntimeApplyGroup {
 
     /// Session-owned frame-server policy.
     FrameServerPolicy,
-
-    /// Неподдержанные в S07 player settings.
-    UnsupportedSettings,
 }
 
 /// Non-interruptible player operation, которая временно владеет reconfigure boundary.
@@ -623,9 +604,6 @@ pub enum PlayerRuntimeAcceptedChange {
 pub enum PlayerRuntimeApplyOutcome {
     /// Group принята и обработана в рамках текущего worker state.
     Accepted(PlayerRuntimeAcceptedChange),
-
-    /// Нужен owner-level controlled rebuild/reconfigure; прямой мутации не было.
-    RequiresControlledRebuild,
 
     /// Нужная owner boundary занята; update не был применён и не поставлен в очередь.
     RuntimeBusy(PlayerRuntimeBoundaryActivity),
@@ -686,24 +664,6 @@ impl PlayerRuntimeApplyGroupReport {
             group,
             affected_settings: affected_settings.into_iter().collect(),
             outcome: PlayerRuntimeApplyOutcome::Accepted(change),
-            message: message.into(),
-        }
-    }
-
-    /// Controlled-rebuild result без прямой мутации runtime internals.
-    #[must_use]
-    pub fn requires_controlled_rebuild<I>(
-        group: PlayerRuntimeApplyGroup,
-        affected_settings: I,
-        message: impl Into<String>,
-    ) -> Self
-    where
-        I: IntoIterator<Item = PlayerRuntimeSettingId>,
-    {
-        Self {
-            group,
-            affected_settings: affected_settings.into_iter().collect(),
-            outcome: PlayerRuntimeApplyOutcome::RequiresControlledRebuild,
             message: message.into(),
         }
     }

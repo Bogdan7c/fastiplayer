@@ -249,9 +249,6 @@ pub enum ApplyMechanism {
 
     /// Previously active preview became committed runtime state.
     PreviewPromoted,
-
-    /// Temporary honest marker for known unimplemented runtime boundary.
-    DeferredTechnicalDebt,
 }
 
 /// Runtime result for one owner-level apply route.
@@ -271,6 +268,9 @@ pub enum ApplyRouteResult {
 
     /// Route failed without applying the requested update.
     Failed { message: String },
+
+    /// Runtime owner boundary is temporarily busy; the update was not queued.
+    RuntimeBusy { activity: String },
 
     /// Route generation conflict blocked the update.
     Conflict {
@@ -360,14 +360,20 @@ pub enum ApplyFinalState {
     /// Validation delegate rejected the draft before persistence.
     ValidationFailed,
 
-    /// Persistence delegate failed; runtime apply was not attempted.
+    /// Persistence failed after runtime commit, and runtime compensation succeeded.
     PersistFailed,
+
+    /// Runtime preflight rejected the transaction before the first owner mutation.
+    RuntimeBlocked,
+
+    /// Runtime apply failed, and every completed owner mutation was compensated.
+    RuntimeApplyFailed,
+
+    /// Compensating rollback failed; the original error remains in the route reports.
+    RollbackFailed,
 
     /// Route generation conflicts blocked persistence/runtime apply.
     BlockedByConflicts,
-
-    /// Persistence succeeded, but runtime apply failed or partially applied.
-    PersistedRuntimeDiverged,
 
     /// Persisted document and runtime state are fully aligned.
     FullyApplied,
@@ -401,6 +407,9 @@ pub struct ApplyReport {
     /// Owner-level route reports.
     pub routes: Vec<ApplyRouteReport>,
 
+    /// Compensating rollback reports in the order they were executed.
+    pub rollback: Vec<RollbackReport>,
+
     /// Diff between committed and draft at apply start.
     pub changed_settings: SettingsDiff,
 
@@ -412,19 +421,6 @@ pub struct ApplyReport {
 
     /// Delegate errors converted into report-visible diagnostics.
     pub errors: Vec<SettingsError>,
-}
-
-/// Runtime divergence stored after successful persist plus failed/partial runtime apply.
-#[derive(Clone)]
-pub struct RuntimeDivergence<D> {
-    /// Document that was persisted and is now durable committed state.
-    pub persisted_document: D,
-
-    /// Last document known to be fully active before the diverged apply attempt.
-    pub last_fully_active_document: D,
-
-    /// Route reports that prevented full runtime alignment.
-    pub route_reports: Vec<ApplyRouteReport>,
 }
 
 /// Request passed to the validation delegate.
@@ -466,10 +462,25 @@ pub struct CommittedApplyRequest<'a, D> {
     /// Last fully committed document before this apply attempt.
     pub previous_committed: &'a D,
 
-    /// Persisted draft document that runtime should apply.
-    pub persisted: &'a D,
+    /// Validated draft document that runtime should apply.
+    pub requested: &'a D,
 
     /// Grouped owner-level route updates.
+    pub route_updates: &'a [RouteApplyUpdate],
+
+    /// Changed registered settings between committed and draft.
+    pub changed_settings: &'a SettingsDiff,
+}
+
+/// Request passed to compensating committed-runtime rollback.
+pub struct CommittedRollbackRequest<'a, D> {
+    /// Last fully committed document that runtime must restore.
+    pub previous_committed: &'a D,
+
+    /// Draft document whose runtime mutations are being compensated.
+    pub attempted: &'a D,
+
+    /// Original grouped route updates; the delegate rolls completed owners back in reverse order.
     pub route_updates: &'a [RouteApplyUpdate],
 
     /// Changed registered settings between committed and draft.
@@ -562,6 +573,9 @@ pub enum RollbackResult {
 
     /// Runtime was already at the baseline.
     Noop,
+
+    /// Runtime owner could not restore its previous committed state.
+    Failed { message: String },
 }
 
 /// Report for one preview rollback route.
@@ -584,6 +598,22 @@ impl RollbackReport {
         Self {
             route,
             result: RollbackResult::RolledBack,
+            affected_settings,
+        }
+    }
+
+    /// Creates a failed rollback report without hiding the original apply error.
+    #[must_use]
+    pub fn failed(
+        route: SettingRouteId,
+        affected_settings: Vec<SettingId>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            route,
+            result: RollbackResult::Failed {
+                message: message.into(),
+            },
             affected_settings,
         }
     }
@@ -613,11 +643,23 @@ pub trait SettingsPersister<D> {
 
 /// Delegate responsible for committed runtime apply.
 pub trait CommittedSettingsApplier<D> {
+    /// Checks every affected owner before the first mutation.
+    fn preflight_committed(
+        &mut self,
+        request: CommittedApplyRequest<'_, D>,
+    ) -> SettingsResult<Vec<ApplyRouteReport>>;
+
     /// Applies grouped route updates to concrete runtime owners.
     fn apply_committed(
         &mut self,
         request: CommittedApplyRequest<'_, D>,
     ) -> SettingsResult<Vec<ApplyRouteReport>>;
+
+    /// Restores completed owner mutations in reverse order.
+    fn rollback_committed(
+        &mut self,
+        request: CommittedRollbackRequest<'_, D>,
+    ) -> SettingsResult<Vec<RollbackReport>>;
 }
 
 /// Delegate responsible for sending live preview updates.
@@ -650,7 +692,6 @@ where
     preview: PreviewTransactionState<D>,
     route_generation_baselines: BTreeMap<SettingRouteId, RouteGeneration>,
     route_generations: BTreeMap<SettingRouteId, RouteGeneration>,
-    runtime_divergence: Option<RuntimeDivergence<D>>,
 }
 
 impl<D> SettingsController<D>
@@ -678,7 +719,6 @@ where
             preview: PreviewTransactionState::default(),
             route_generation_baselines: BTreeMap::new(),
             route_generations: BTreeMap::new(),
-            runtime_divergence: None,
         }
     }
 
@@ -706,19 +746,11 @@ where
         &self.preview
     }
 
-    /// Returns persisted/runtime divergence after a partial apply.
-    #[must_use]
-    pub fn runtime_divergence(&self) -> Option<&RuntimeDivergence<D>> {
-        self.runtime_divergence.as_ref()
-    }
-
     /// Starts a fresh edit transaction from the current committed document.
     pub fn begin_edit(&mut self) {
         self.draft = self.committed.clone();
         self.preview.clear();
-        if self.runtime_divergence.is_none() {
-            self.route_generation_baselines.clear();
-        }
+        self.route_generation_baselines.clear();
     }
 
     /// Returns the current known generation for one route.
@@ -869,23 +901,18 @@ where
         Ok(Some(report))
     }
 
-    /// Applies the draft through validate -> persist -> committed runtime apply.
+    /// Applies the draft through validate -> preflight -> runtime commit -> persist.
     pub fn apply<A>(&mut self, delegate: &mut A) -> SettingsResult<ApplyReport>
     where
         A: SettingsValidator<D> + SettingsPersister<D> + CommittedSettingsApplier<D>,
     {
-        let durable_changes = self.diff()?;
-        let changed_settings = if let Some(divergence) = &self.runtime_divergence {
-            self.registry
-                .diff(&divergence.last_fully_active_document, &self.draft)?
-        } else {
-            durable_changes.clone()
-        };
+        let changed_settings = self.diff()?;
         if changed_settings.is_empty() {
             return Ok(ApplyReport {
                 validation: None,
                 persistence: Some(PersistReport::skipped_no_changes()),
                 routes: Vec::new(),
+                rollback: Vec::new(),
                 changed_settings,
                 final_state: ApplyFinalState::NoChanges,
                 conflicts: Vec::new(),
@@ -912,6 +939,7 @@ where
                 validation: None,
                 persistence: None,
                 routes,
+                rollback: Vec::new(),
                 changed_settings,
                 final_state: ApplyFinalState::BlockedByConflicts,
                 conflicts,
@@ -930,6 +958,7 @@ where
                     validation: None,
                     persistence: None,
                     routes: Vec::new(),
+                    rollback: Vec::new(),
                     changed_settings,
                     final_state: ApplyFinalState::ValidationFailed,
                     conflicts: Vec::new(),
@@ -938,37 +967,44 @@ where
             }
         };
 
-        let persistence = if durable_changes.is_empty() {
-            PersistReport::skipped_no_changes()
-        } else {
-            match delegate.persist(PersistRequest {
-                document: &self.draft,
-                changed_settings: &durable_changes,
-            }) {
-                Ok(report) => report,
-                Err(error) => {
-                    return Ok(ApplyReport {
-                        validation: Some(validation),
-                        persistence: None,
-                        routes: Vec::new(),
-                        changed_settings,
-                        final_state: ApplyFinalState::PersistFailed,
-                        conflicts: Vec::new(),
-                        errors: vec![error],
-                    });
-                }
+        let apply_request = CommittedApplyRequest {
+            previous_committed: &self.committed,
+            requested: &self.draft,
+            route_updates: &route_updates,
+            changed_settings: &changed_settings,
+        };
+        let preflight_routes = match delegate.preflight_committed(apply_request) {
+            Ok(reports) => reports,
+            Err(error) => {
+                return Ok(ApplyReport {
+                    validation: Some(validation),
+                    persistence: None,
+                    routes: Vec::new(),
+                    rollback: Vec::new(),
+                    changed_settings,
+                    final_state: ApplyFinalState::RuntimeBlocked,
+                    conflicts: Vec::new(),
+                    errors: vec![error],
+                });
             }
         };
+        if !preflight_routes.is_empty() {
+            return Ok(ApplyReport {
+                validation: Some(validation),
+                persistence: None,
+                routes: preflight_routes,
+                rollback: Vec::new(),
+                changed_settings,
+                final_state: ApplyFinalState::RuntimeBlocked,
+                conflicts: Vec::new(),
+                errors: Vec::new(),
+            });
+        }
 
-        let previous_committed = self
-            .runtime_divergence
-            .as_ref()
-            .map(|divergence| divergence.last_fully_active_document.clone())
-            .unwrap_or_else(|| self.committed.clone());
         let mut errors = Vec::new();
         let routes = match delegate.apply_committed(CommittedApplyRequest {
-            previous_committed: &previous_committed,
-            persisted: &self.draft,
+            previous_committed: &self.committed,
+            requested: &self.draft,
             route_updates: &route_updates,
             changed_settings: &changed_settings,
         }) {
@@ -989,27 +1025,91 @@ where
             }
         };
 
-        let full_success = routes.iter().all(|report| report.result.is_full_success());
-        if full_success {
-            self.commit_full_success(route_updates.iter().map(|update| update.route.clone()));
+        let runtime_commit_succeeded =
+            !routes.is_empty() && routes.iter().all(|report| report.result.is_full_success());
+        if !runtime_commit_succeeded {
+            let (rollback, rollback_delegate_failed) =
+                match delegate.rollback_committed(CommittedRollbackRequest {
+                    previous_committed: &self.committed,
+                    attempted: &self.draft,
+                    route_updates: &route_updates,
+                    changed_settings: &changed_settings,
+                }) {
+                    Ok(reports) => (reports, false),
+                    Err(error) => {
+                        errors.push(error);
+                        (Vec::new(), true)
+                    }
+                };
+            let rollback_failed = rollback_delegate_failed
+                || rollback
+                    .iter()
+                    .any(|report| matches!(report.result, RollbackResult::Failed { .. }));
             return Ok(ApplyReport {
                 validation: Some(validation),
-                persistence: Some(persistence),
+                persistence: None,
                 routes,
+                rollback,
                 changed_settings,
-                final_state: ApplyFinalState::FullyApplied,
+                final_state: if rollback_failed {
+                    ApplyFinalState::RollbackFailed
+                } else {
+                    ApplyFinalState::RuntimeApplyFailed
+                },
                 conflicts: Vec::new(),
                 errors,
             });
         }
 
-        self.commit_persisted_runtime_divergence(previous_committed, routes.clone());
+        let persistence = match delegate.persist(PersistRequest {
+            document: &self.draft,
+            changed_settings: &changed_settings,
+        }) {
+            Ok(report) => report,
+            Err(persist_error) => {
+                errors.push(persist_error);
+                let (rollback, rollback_delegate_failed) =
+                    match delegate.rollback_committed(CommittedRollbackRequest {
+                        previous_committed: &self.committed,
+                        attempted: &self.draft,
+                        route_updates: &route_updates,
+                        changed_settings: &changed_settings,
+                    }) {
+                        Ok(reports) => (reports, false),
+                        Err(rollback_error) => {
+                            errors.push(rollback_error);
+                            (Vec::new(), true)
+                        }
+                    };
+                let rollback_failed = rollback_delegate_failed
+                    || rollback
+                        .iter()
+                        .any(|report| matches!(report.result, RollbackResult::Failed { .. }));
+                return Ok(ApplyReport {
+                    validation: Some(validation),
+                    persistence: None,
+                    routes,
+                    rollback,
+                    changed_settings,
+                    final_state: if rollback_failed {
+                        ApplyFinalState::RollbackFailed
+                    } else {
+                        ApplyFinalState::PersistFailed
+                    },
+                    conflicts: Vec::new(),
+                    errors,
+                });
+            }
+        };
+
+        self.commit_full_success(route_updates.iter().map(|update| update.route.clone()));
         Ok(ApplyReport {
             validation: Some(validation),
             persistence: Some(persistence),
             routes,
+            rollback: Vec::new(),
             changed_settings,
-            final_state: ApplyFinalState::PersistedRuntimeDiverged,
+            final_state: ApplyFinalState::FullyApplied,
             conflicts: Vec::new(),
             errors,
         })
@@ -1172,10 +1272,7 @@ where
     }
 
     fn runtime_document_for_preview_baseline(&self) -> D {
-        self.runtime_divergence
-            .as_ref()
-            .map(|divergence| divergence.last_fully_active_document.clone())
-            .unwrap_or_else(|| self.committed.clone())
+        self.committed.clone()
     }
 
     fn preview_affected_settings_for_route(
@@ -1259,25 +1356,11 @@ where
         self.committed = self.draft.clone();
         self.preview.clear();
         self.route_generation_baselines.clear();
-        self.runtime_divergence = None;
 
         for route in routes {
             let next_generation = self.route_generation(&route).next();
             self.route_generations.insert(route, next_generation);
         }
-    }
-
-    fn commit_persisted_runtime_divergence(
-        &mut self,
-        previous_committed: D,
-        route_reports: Vec<ApplyRouteReport>,
-    ) {
-        self.committed = self.draft.clone();
-        self.runtime_divergence = Some(RuntimeDivergence {
-            persisted_document: self.committed.clone(),
-            last_fully_active_document: previous_committed,
-            route_reports,
-        });
     }
 }
 

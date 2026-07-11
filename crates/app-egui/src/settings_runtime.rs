@@ -32,25 +32,33 @@ use rustiplayer_settings::{
     FrameServerRuntimeSettingsUpdate, MediaServiceRuntimeSettingsUpdate,
     PlayerCommittedSettingsUpdate, RENDER_PREVIEW_ROUTE_ID, RenderCommittedSettingsUpdate,
     RuntimeCommittedRoute, RuntimeCommittedUpdate, SettingsBoundaryActivity,
-    UiRuntimeSettingsUpdate, app_config_registry, committed_routes_from_update,
+    UiRuntimeSettingsUpdate, app_config_registry, committed_routes_for_updates,
     render_live_settings_from_config,
 };
 use settings_core::{
     ApplyFinalState, ApplyMechanism, ApplyReport, ApplyRouteReport, ApplyRouteResult, CancelReport,
-    CommittedApplyRequest, CommittedSettingsApplier, OptionProviderId, PersistOutcome,
-    PersistReport, PersistRequest, PreviewApplyReport, PreviewApplyRequest, PreviewApplyResult,
-    PreviewRollbackRequest, PreviewRollbacker, PreviewSettingsApplier, ResetReport, RollbackReport,
-    RollbackResult, SelectDescriptor, SettingEditor, SettingGroupId, SettingId, SettingOption,
-    SettingOptionCurrentValue, SettingOptionId, SettingOptionProvider, SettingOptions,
-    SettingOptionsError, SettingOptionsRequest, SettingOptionsStatus, SettingRouteId, SettingText,
-    SettingValue, SettingsController, SettingsPersister, SettingsRegistry, SettingsResult,
-    SettingsSurfaceId, SettingsValidator, ValidationReport, ValidationRequest,
+    CommittedApplyRequest, CommittedRollbackRequest, CommittedSettingsApplier, OptionProviderId,
+    PersistOutcome, PersistReport, PersistRequest, PreviewApplyReport, PreviewApplyRequest,
+    PreviewApplyResult, PreviewRollbackRequest, PreviewRollbacker, PreviewSettingsApplier,
+    ResetReport, RollbackReport, RollbackResult, SelectDescriptor, SettingEditor, SettingGroupId,
+    SettingId, SettingOption, SettingOptionCurrentValue, SettingOptionId, SettingOptionProvider,
+    SettingOptions, SettingOptionsError, SettingOptionsRequest, SettingOptionsStatus,
+    SettingRouteId, SettingText, SettingValue, SettingsController, SettingsPersister,
+    SettingsRegistry, SettingsResult, SettingsSurfaceId, SettingsValidator, ValidationReport,
+    ValidationRequest,
 };
 
 use crate::render_settings::{
     color_pipeline_settings_from_config, hdr_to_sdr_settings_from_config,
 };
 use crate::settings_ui::{SettingsUiAction, SettingsUiField, SettingsUiModel, SettingsUiStatus};
+
+/// Явно запланированный apply между двумя UI frames, чтобы progress успел отрисоваться.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingSettingsApply {
+    /// Закрыть settings sidebar только после полного success/no-op.
+    close_on_success: bool,
+}
 
 mod committed_snapshot;
 mod dynamic_options;
@@ -59,6 +67,7 @@ mod route_apply;
 mod status_text;
 #[cfg(test)]
 mod tests;
+mod transaction;
 
 pub(crate) use committed_snapshot::CommittedConfigSnapshot;
 #[allow(unused_imports)]
@@ -69,13 +78,14 @@ use dynamic_options::default_option_providers;
 pub(crate) use preview::SettingsPreviewTick;
 #[cfg(test)]
 use route_apply::RenderOnlySettingsRuntimeAdapter;
+pub(crate) use route_apply::SettingsRuntimePreflightFailure;
 pub(crate) use route_apply::SettingsRuntimeReconfigureHost;
 use route_apply::SettingsRuntimeRouteAppliers;
 #[cfg(test)]
 use route_apply::{MediaServiceRuntimeSnapshot, simulated_player_runtime_report};
 use status_text::{
-    group_reports, setting_ids_text, status_from_apply_report, status_from_cancel,
-    status_from_preview_reports, status_from_reset,
+    group_reports, status_from_apply_report, status_from_cancel, status_from_preview_reports,
+    status_from_reset,
 };
 
 /// Единый owner runtime settings state для `app-egui`.
@@ -97,6 +107,9 @@ pub(crate) struct SettingsRuntime {
 
     /// Последний apply report остаётся в runtime, чтобы будущий UI мог показать статус.
     latest_apply_report: Option<ApplyReport>,
+
+    /// Apply, который стартует на следующем frame после показа progress state.
+    pending_apply: Option<PendingSettingsApply>,
 
     /// Открыто ли visual settings window; draft transaction начинается при `Open`.
     settings_window_open: bool,
@@ -148,6 +161,7 @@ impl SettingsRuntime {
             store,
             route_appliers,
             latest_apply_report: None,
+            pending_apply: None,
             settings_window_open: false,
             field_validation_errors: BTreeMap::new(),
             status: SettingsUiStatus::default(),
@@ -253,19 +267,18 @@ impl SettingsRuntime {
         // поэтому diff/клоны descriptors не выполняем. Исключение — visual hold:
         // панель ещё видна во время анимации закрытия и должна показывать поля.
         if !self.is_settings_window_open() && !self.visual_hold {
-            return SettingsUiModel::new(false, Vec::new(), false).with_status(self.status.clone());
+            return SettingsUiModel::new(false, Vec::new(), self.pending_apply.is_some())
+                .with_status(self.status.clone());
         }
         let is_open = self.is_settings_window_open();
         match self.ui_fields() {
-            Ok(fields) => {
-                SettingsUiModel::new(is_open, fields, false).with_status(self.status.clone())
-            }
-            Err(error) => {
-                SettingsUiModel::new(is_open, Vec::new(), false).with_status(SettingsUiStatus {
+            Ok(fields) => SettingsUiModel::new(is_open, fields, self.pending_apply.is_some())
+                .with_status(self.status.clone()),
+            Err(error) => SettingsUiModel::new(is_open, Vec::new(), self.pending_apply.is_some())
+                .with_status(SettingsUiStatus {
                     summary: Some("Не удалось собрать модель настроек".to_string()),
                     details: vec![error.to_string()],
-                })
-            }
+                }),
         }
     }
 
@@ -280,7 +293,13 @@ impl SettingsRuntime {
         A: RenderLiveSettingsAdapter,
     {
         let mut runtime_adapter = RenderOnlySettingsRuntimeAdapter { render_adapter };
-        self.handle_ui_actions_with_runtime_adapter(actions, &mut runtime_adapter)
+        let mut needs_redraw =
+            self.handle_ui_actions_with_runtime_adapter(actions, &mut runtime_adapter)?;
+        if self.pending_apply.is_some() {
+            needs_redraw |=
+                self.handle_ui_actions_with_runtime_adapter(Vec::new(), &mut runtime_adapter)?;
+        }
+        Ok(needs_redraw)
     }
 
     /// Обрабатывает visual actions с доступом к runtime owners для committed apply.
@@ -292,11 +311,27 @@ impl SettingsRuntime {
     where
         A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
     {
+        let mut needs_redraw = false;
+        if let Some(pending_apply) = self.pending_apply.take() {
+            self.invalidate_ui_model();
+            let report = self.apply_draft_with_runtime_adapter(runtime_adapter)?;
+            if pending_apply.close_on_success
+                && matches!(
+                    report.final_state,
+                    ApplyFinalState::FullyApplied | ApplyFinalState::NoChanges
+                )
+            {
+                self.settings_window_open = false;
+            }
+            needs_redraw = true;
+        }
         if !actions.is_empty() {
             self.invalidate_ui_model();
         }
-        let mut needs_redraw = false;
         for action in actions {
+            if self.pending_apply.is_some() {
+                break;
+            }
             needs_redraw |= self.handle_ui_action(action, runtime_adapter)?;
         }
         Ok(needs_redraw)
@@ -380,22 +415,31 @@ impl SettingsRuntime {
                 if self.block_apply_when_field_errors_exist() {
                     return Ok(true);
                 }
-                self.apply_draft_with_runtime_adapter(runtime_adapter)?;
+                self.schedule_apply(false);
                 Ok(true)
             }
             SettingsUiAction::Ok => {
                 if self.block_apply_when_field_errors_exist() {
                     return Ok(true);
                 }
-                let report = self.apply_draft_with_runtime_adapter(runtime_adapter)?;
-                if report.final_state == ApplyFinalState::FullyApplied
-                    || report.final_state == ApplyFinalState::NoChanges
-                {
-                    self.settings_window_open = false;
-                }
+                self.schedule_apply(true);
                 Ok(true)
             }
         }
+    }
+
+    /// Публикует progress status и переносит runtime transaction на следующий frame.
+    fn schedule_apply(&mut self, close_on_success: bool) {
+        self.pending_apply = Some(PendingSettingsApply { close_on_success });
+        self.latest_apply_report = None;
+        self.status = SettingsUiStatus {
+            summary: Some("Применение настроек…".to_string()),
+            details: vec![
+                "Проверяем runtime owners; TOML будет записан только после полного commit-а."
+                    .to_string(),
+            ],
+        };
+        self.invalidate_ui_model();
     }
 
     /// Блокирует программный Apply/OK, если field-level validation уже нашла ошибки.
