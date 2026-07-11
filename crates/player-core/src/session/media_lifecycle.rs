@@ -97,6 +97,13 @@ impl PlayerSession {
         let open_request = MediaOpenRequest::new(media_source, autoplay);
         match self.dispatch_command(PlayerCommand::OpenMedia(open_request)) {
             Ok(PlayerCommandOutcome::Applied) => true,
+            Ok(PlayerCommandOutcome::ScrubCommit(outcome)) => {
+                debug!(
+                    outcome = ?outcome,
+                    "Prepared media open неожиданно вернул scrub-specific outcome"
+                );
+                false
+            }
             Ok(PlayerCommandOutcome::Rejected(rejection)) => {
                 debug!(
                     rejection = ?rejection,

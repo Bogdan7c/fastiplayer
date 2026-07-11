@@ -53,3 +53,6 @@
 - Accepted decoder-thread config фиксируется в worker config только после успешного backend commit.
 - Audio output device live apply сначала создаёт/запускает replacement output, затем атомарно заменяет active output/clock; failure оставляет прежний output рабочим.
 - `PlayerRuntimeSettingsUpdate::requires_pipeline_lifecycle_boundary` обеспечивает preflight до mutation смешанного request-а, поэтому busy не успевает изменить default-volume/tick owners.
+
+
+- Session 09 implements both real public scrub release policies with player-owned visible-frame stable identity/timing, strict stale guards, exact latest-target fallback, and typed command outcomes. See `mem:player-core/scrub-commit-policy-s09`.

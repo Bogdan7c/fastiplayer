@@ -2,8 +2,9 @@ use std::time::{Duration, Instant};
 
 use frame_server_core::{
     CancelScrubReason, CancelledOutcome, FinishScrubPolicy, LiveScrubDiagnostics,
-    ScrubDriverOutcome, ScrubEvent, ScrubExactnessPolicy, ScrubGeneration, ScrubGenerationToken,
-    ScrubTarget, ScrubTargetUpdate, ScrubTrackSelection, ValidatedFrameServerConfig,
+    ScrubCurrentGuards, ScrubDriverOutcome, ScrubEvent, ScrubExactnessPolicy, ScrubFrameTiming,
+    ScrubGeneration, ScrubGenerationToken, ScrubRequestKind, ScrubTarget, ScrubTargetUpdate,
+    ScrubTrackSelection, ValidatedFrameServerConfig,
 };
 use media_core::{
     MediaDemuxError, MediaDuration, MediaTime, TimeBase, TimelineNotSeekableReason,
@@ -13,14 +14,16 @@ use tracing::{debug, trace, warn};
 
 use crate::seek_state::{
     AccuratePrerollDemuxEventKind, FinalSeekCommitPosition, PlaybackResumeIntent, SeekCommitState,
-    SeekDemuxRequestError, SeekLandingRoute, demux_seek_request_for_transaction,
+    SeekDemuxRequestError, SeekLandingRoute, VisibleScrubPreview,
+    demux_seek_request_for_transaction,
 };
 use crate::{
     ActiveSeekDiagnosticsSnapshot, PipelineQueueDepthSnapshot, PlaybackState, PlayerError,
-    PlayerErrorKind, PlayerEvent, PlayerResult, SeekAudioResumeInfo,
-    SeekBootstrapDiagnosticsSnapshot, SeekCommitInfo, SeekMode, SeekProgressBlocker, SeekRequest,
-    SeekTargetFramePresentation, VideoPrerollOutputFloor, VideoPrerollOutputFloorClear,
-    VideoPrerollOutputFloorResult,
+    PlayerErrorKind, PlayerEvent, PlayerResult, ScrubCommitOutcome, ScrubCommitPolicy,
+    SeekAudioResumeInfo, SeekBootstrapDiagnosticsSnapshot, SeekCommitInfo, SeekMode,
+    SeekProgressBlocker, SeekRequest, SeekTargetFramePresentation, VideoPrerollOutputFloor,
+    VideoPrerollOutputFloorClear, VideoPrerollOutputFloorResult,
+    VisibleScrubPreviewUnavailableReason,
 };
 
 use super::audio_runtime::SeekAudioGateStatus;
@@ -929,6 +932,43 @@ impl PlayerSession {
         self.snapshot.timeline.stale_frame = false;
     }
 
+    /// Запоминает live-scrub preview только в момент, когда scheduler уже сделал frame текущим.
+    fn note_visible_live_scrub_preview_for_release(
+        &mut self,
+        seek_commit: SeekCommitState,
+        frame_pts: Duration,
+        frame_generation: u64,
+    ) {
+        if frame_generation != seek_commit.generation {
+            return;
+        }
+
+        let Some(context) = self.active_seek_landing_context(seek_commit) else {
+            return;
+        };
+        if context.request_kind() != ScrubRequestKind::LiveScrub {
+            return;
+        }
+
+        let Some(frame_identity) = self.current_present_frame_identity() else {
+            return;
+        };
+        if frame_identity.decoded_generation() != frame_generation
+            || frame_identity.pts() != frame_pts
+        {
+            return;
+        }
+
+        let media_time = MediaTime::from_duration(frame_pts);
+        let pts = self.seek_landing_target_pts(context.track_selection().video_track, media_time);
+        self.seek_runtime
+            .note_visible_scrub_preview(VisibleScrubPreview {
+                context,
+                timing: ScrubFrameTiming::new(media_time, pts),
+                frame_identity,
+            });
+    }
+
     /// Отмечает, что свежий video frame текущего seek-а уже стал текущим кадром presentation.
     pub(crate) fn note_presented_frame_for_seek(&mut self, frame_pts: Duration) {
         let Some(seek_commit) = self.seek_runtime.active_commit() else {
@@ -943,6 +983,11 @@ impl PlayerSession {
         let Some(present_frame_generation) = present_frame_generation else {
             return;
         };
+        self.note_visible_live_scrub_preview_for_release(
+            seek_commit,
+            frame_pts,
+            present_frame_generation,
+        );
         // Только что показанный frame уже заменил старый кадр; stale flag очищаем только после guard.
         if !self.seek_landing_frame_matches_active_commit(
             seek_commit,
@@ -2131,17 +2176,109 @@ impl PlayerSession {
         }
     }
 
-    /// Завершает compatibility scrub и передаёт latest target в единый SeekLanding route.
-    pub(super) fn end_scrub(
+    /// Проверяет stable visible-preview DTO против текущего player-owned route/frame state.
+    fn validated_visible_scrub_preview(
+        &self,
+    ) -> Result<VisibleScrubPreview, VisibleScrubPreviewUnavailableReason> {
+        let preview = self
+            .seek_runtime
+            .visible_scrub_preview()
+            .ok_or(VisibleScrubPreviewUnavailableReason::Missing)?;
+        let seek_commit = self
+            .seek_runtime
+            .active_commit()
+            .ok_or(VisibleScrubPreviewUnavailableReason::NoActiveLiveScrub)?;
+        let current_context = self
+            .active_seek_landing_context(seek_commit)
+            .filter(|context| context.request_kind() == ScrubRequestKind::LiveScrub)
+            .ok_or(VisibleScrubPreviewUnavailableReason::NoActiveLiveScrub)?;
+
+        let current_guards = ScrubCurrentGuards::new(
+            current_context.source_revision(),
+            current_context.backend_revision(),
+            current_context.generation(),
+        );
+        if let Some(stale_reason) = preview.context.stale_reason_against(current_guards) {
+            return Err(VisibleScrubPreviewUnavailableReason::StaleContext(
+                stale_reason,
+            ));
+        }
+
+        if preview.context.track_selection() != current_context.track_selection() {
+            return Err(
+                VisibleScrubPreviewUnavailableReason::TrackSelectionChanged {
+                    preview: preview.context.track_selection(),
+                    current: current_context.track_selection(),
+                },
+            );
+        }
+
+        if preview.context.target() != current_context.target()
+            || preview.context.exactness_policy() != current_context.exactness_policy()
+            || preview.context.request_kind() != current_context.request_kind()
+        {
+            return Err(VisibleScrubPreviewUnavailableReason::TargetChanged);
+        }
+
+        let identity_media_time = MediaTime::from_duration(preview.frame_identity.pts());
+        let identity_track_pts = self.seek_landing_target_pts(
+            preview.context.track_selection().video_track,
+            identity_media_time,
+        );
+        if preview.timing.media_time != identity_media_time
+            || preview.timing.pts != identity_track_pts
+        {
+            return Err(VisibleScrubPreviewUnavailableReason::TimingIdentityMismatch);
+        }
+
+        if self.current_present_frame_identity() != Some(preview.frame_identity) {
+            return Err(VisibleScrubPreviewUnavailableReason::PresentedFrameChanged);
+        }
+
+        Ok(preview)
+    }
+
+    /// Запускает exact commit, переиспользуя active live route только при полном совпадении цели.
+    fn start_resolved_scrub_commit(
         &mut self,
+        request: SeekRequest,
+        target: MediaTime,
+        resume_intent: PlaybackResumeIntent,
         live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
     ) -> PlayerResult<()> {
+        let active_live_target_matches = self.seek_runtime.active_seek_landing_is_live_scrub()
+            && self
+                .seek_runtime
+                .active_commit()
+                .is_some_and(|seek_commit| {
+                    seek_commit.target_position == target && seek_commit.seek_mode == request.mode
+                });
+
+        if active_live_target_matches {
+            self.seek_runtime
+                .update_active_live_scrub_diagnostics(live_scrub_diagnostics);
+            self.seek_runtime.request_live_scrub_commit(Instant::now());
+            self.snapshot.timeline.scrubbing = true;
+            self.snapshot.timeline.target_position = Some(target);
+            return Ok(());
+        }
+
+        self.finish_simple_scrub_without_seek(None, SimpleScrubExitMode::RestoreStateOnly);
+        self.start_one_shot_seek_landing_from_request(request, resume_intent)
+    }
+
+    /// Завершает scrub gesture по выбранной public commit policy.
+    pub(super) fn end_scrub(
+        &mut self,
+        policy: ScrubCommitPolicy,
+        live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
+    ) -> PlayerResult<ScrubCommitOutcome> {
         self.ensure_not_shutdown()?;
         self.seek_runtime
             .update_active_live_scrub_diagnostics(live_scrub_diagnostics);
         if !self.seek_runtime.simple_scrub_active() {
             self.finish_simple_scrub_without_seek(None, SimpleScrubExitMode::RestoreStateOnly);
-            return Ok(());
+            return Ok(ScrubCommitOutcome::NoActiveGesture);
         }
 
         let finished_scrub = self
@@ -2153,37 +2290,85 @@ impl PlayerSession {
         let live_scrub_diagnostics =
             live_scrub_diagnostics.or_else(|| finished_scrub.live_scrub_diagnostics());
 
-        if self.seek_runtime.active_seek_landing_is_live_scrub() {
-            self.seek_runtime
-                .update_active_live_scrub_diagnostics(live_scrub_diagnostics);
-            self.seek_runtime.request_live_scrub_commit(Instant::now());
-            debug!(
-                kind = "seek",
-                target_ms = latest_request
-                    .map(|request| self.resolve_seek_target(request).as_duration().as_millis()),
-                "EndScrub: live scrub commit запрошен"
-            );
-            self.snapshot.timeline.scrubbing = true;
-            if let Some(request) = latest_request {
-                self.snapshot.timeline.target_position = Some(self.resolve_seek_target(request));
-            }
-            return Ok(());
-        }
-
-        self.invalidate_in_flight_scrub_outputs_after_exit("end scrub");
-        if latest_request.is_none() {
+        let Some(latest_request) = latest_request else {
+            self.invalidate_in_flight_scrub_outputs_after_exit("end scrub without target");
             self.finish_simple_scrub_without_seek(
                 Some(confirmed_playback_state),
                 SimpleScrubExitMode::ResumeConfirmedPlayback,
             );
-            return Ok(());
-        }
+            return Ok(ScrubCommitOutcome::NoCommitTarget {
+                requested_policy: policy,
+            });
+        };
 
-        self.finish_simple_scrub_without_seek(None, SimpleScrubExitMode::RestoreStateOnly);
-        let request = latest_request.expect("checked latest_request is_some");
+        let latest_target = self.resolve_seek_target(latest_request);
         let resume_intent = PlaybackResumeIntent::from_playback_state(confirmed_playback_state);
-        self.start_one_shot_seek_landing_from_request(request, resume_intent)?;
-        Ok(())
+
+        match policy {
+            ScrubCommitPolicy::CommitLatestTarget => {
+                self.start_resolved_scrub_commit(
+                    latest_request,
+                    latest_target,
+                    resume_intent,
+                    live_scrub_diagnostics,
+                )?;
+                debug!(
+                    kind = "seek",
+                    target_ms = latest_target.as_duration().as_millis(),
+                    "EndScrub: exact latest-target commit запущен"
+                );
+                Ok(ScrubCommitOutcome::LatestTarget {
+                    target: latest_target,
+                })
+            }
+            ScrubCommitPolicy::CommitVisiblePreview => {
+                match self.validated_visible_scrub_preview() {
+                    Ok(visible_preview) => {
+                        let visible_request =
+                            SeekRequest::absolute(visible_preview.timing.media_time);
+                        self.start_resolved_scrub_commit(
+                            visible_request,
+                            visible_preview.timing.media_time,
+                            resume_intent,
+                            live_scrub_diagnostics,
+                        )?;
+                        debug!(
+                            kind = "seek",
+                            visible_media_time_ms =
+                                visible_preview.timing.media_time.as_duration().as_millis(),
+                            visible_pts = ?visible_preview.timing.pts,
+                            latest_target_ms = latest_target.as_duration().as_millis(),
+                            frame_identity = ?visible_preview.frame_identity,
+                            "EndScrub: exact visible-preview commit запущен"
+                        );
+                        Ok(ScrubCommitOutcome::VisiblePreview {
+                            timing: visible_preview.timing,
+                            frame_identity: visible_preview.frame_identity,
+                        })
+                    }
+                    Err(reason) => {
+                        self.start_resolved_scrub_commit(
+                            latest_request,
+                            latest_target,
+                            resume_intent,
+                            live_scrub_diagnostics,
+                        )?;
+                        debug!(
+                            kind = "seek",
+                            target_ms = latest_target.as_duration().as_millis(),
+                            reason = ?reason,
+                            "EndScrub: visible preview недоступен, запущен exact latest-target fallback"
+                        );
+                        Ok(
+                            ScrubCommitOutcome::VisiblePreviewUnavailableFallbackToLatestTarget {
+                                target: latest_target,
+                                reason,
+                            },
+                        )
+                    }
+                }
+            }
+        }
     }
 
     /// Сбрасывает только lightweight scrub-флаги, не трогая текущий active seek.

@@ -1,10 +1,11 @@
 use std::time::{Duration, Instant};
 
 use frame_server_core::{
-    LiveScrubDiagnostics, PlaybackGeneration, ScrubGeneration, ScrubGenerationToken,
-    ScrubRequestKind, ScrubStaleReason,
+    LiveScrubDiagnostics, PlaybackGeneration, ScrubFrameTiming, ScrubGeneration,
+    ScrubGenerationToken, ScrubRequestKind, ScrubStaleReason, ScrubTargetContext,
 };
 use media_core::{DemuxSeekRequest, MediaTime, TrackKind};
+use video_present_core::VideoPresentFrameIdentity;
 
 use crate::diagnostics::{
     AccurateSeekPrerollDiagnosticsSnapshot, SeekPrerollCountersSnapshot,
@@ -107,6 +108,22 @@ pub(crate) struct ActiveSeekLandingState {
     /// Prepared visual override не декодирует новый frame, поэтому не имеет
     /// отдельного decoder generation.
     decode_seek_generation: Option<u64>,
+}
+
+/// Последний live-scrub кадр, который player-owned scheduler сделал текущим presented frame.
+///
+/// Context, timing и stable identity хранятся вместе: release не должен собирать
+/// позицию заново из UI cursor-а или принимать совпавший только по PTS stale frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct VisibleScrubPreview {
+    /// Полный source/backend/track/generation context active live target-а.
+    pub context: ScrubTargetContext,
+
+    /// Media timing реально представленного кадра.
+    pub timing: ScrubFrameTiming,
+
+    /// Stable render/decoder/resource/PTS identity того же кадра.
+    pub frame_identity: VideoPresentFrameIdentity,
 }
 
 /// Commit ownership active SeekLanding route-а.
@@ -808,6 +825,9 @@ pub(crate) struct SeekRuntimeState {
     /// Active one-shot SeekLanding transaction: cold decode или prepared override route.
     active_seek_landing: Option<ActiveSeekLandingState>,
 
+    /// Последний действительно представленный и ещё проверяемый live-scrub preview.
+    visible_scrub_preview: Option<VisibleScrubPreview>,
+
     /// PTS свежего near-EOF fallback frame-а, который уже был представлен.
     eof_fallback_video_position: Option<MediaTime>,
 }
@@ -1017,8 +1037,20 @@ impl SeekRuntimeState {
         confirmed_playback_state: PlaybackState,
         live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
     ) {
+        self.visible_scrub_preview = None;
         self.simple_scrub
             .begin(confirmed_playback_state, live_scrub_diagnostics);
+    }
+
+    /// Запоминает stable identity/timing кадра в момент player-owned presentation.
+    pub(crate) fn note_visible_scrub_preview(&mut self, preview: VisibleScrubPreview) {
+        self.visible_scrub_preview = Some(preview);
+    }
+
+    /// Возвращает последний presented live-scrub preview без изменения lifecycle.
+    #[must_use]
+    pub(crate) const fn visible_scrub_preview(&self) -> Option<VisibleScrubPreview> {
+        self.visible_scrub_preview
     }
 
     /// Запоминает latest scrub request по latest-wins policy.

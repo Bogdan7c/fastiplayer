@@ -363,10 +363,11 @@ impl PlayerSession {
                 request,
                 live_scrub,
             } => self.preview_scrub(request, live_scrub),
-            PlayerCommand::EndScrub {
-                policy: _,
-                live_scrub,
-            } => self.end_scrub(live_scrub),
+            PlayerCommand::EndScrub { policy, live_scrub } => {
+                return self
+                    .end_scrub(policy, live_scrub)
+                    .map(PlayerCommandOutcome::ScrubCommit);
+            }
             PlayerCommand::Stop => self.stop(),
             PlayerCommand::SetPlaybackRate(playback_rate) => {
                 return Ok(self.set_playback_rate(playback_rate));

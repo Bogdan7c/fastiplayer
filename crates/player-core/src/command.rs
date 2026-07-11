@@ -1,8 +1,11 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use frame_server_core::LiveScrubDiagnostics;
+use frame_server_core::{
+    LiveScrubDiagnostics, ScrubFrameTiming, ScrubStaleReason, ScrubTrackSelection,
+};
 use media_core::{MediaTime, TrackId};
+use video_present_core::VideoPresentFrameIdentity;
 
 use crate::{PlaybackRate, PlaybackState};
 
@@ -164,10 +167,82 @@ pub enum ScrubCommitPolicy {
 
 impl ScrubCommitPolicy {
     /// UX policy по умолчанию для отпускания pointer-а на timeline.
-    ///
-    /// Значение сохранено только для source/binary compatibility существующих callers.
-    /// До будущей переписи preview-пайплайна session трактует оба enum-варианта одинаково.
     pub const DEFAULT_TIMELINE_RELEASE: Self = Self::CommitVisiblePreview;
+}
+
+/// Typed причина, по которой `CommitVisiblePreview` не принял сохранённый preview.
+///
+/// Любая причина из этого enum приводит к одному заранее определённому поведению:
+/// точному fallback seek-у в последнюю pointer target. Ни один stale frame не
+/// превращается в commit только потому, что его timing всё ещё выглядит правдоподобно.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisibleScrubPreviewUnavailableReason {
+    /// За время gesture-а presentation scheduler не показал ни одного live-scrub кадра.
+    Missing,
+
+    /// На release больше нет active live-scrub route-а, которому принадлежал preview.
+    NoActiveLiveScrub,
+
+    /// Source/backend/playback/scrub generation guard уже не совпадает.
+    StaleContext(ScrubStaleReason),
+
+    /// Между presentation и release изменился выбранный video/audio track set.
+    TrackSelectionChanged {
+        /// Track set, с которым кадр стал видимым.
+        preview: ScrubTrackSelection,
+
+        /// Track set active player route-а на release.
+        current: ScrubTrackSelection,
+    },
+
+    /// Active live target уже supersede-ил context показанного кадра.
+    TargetChanged,
+
+    /// Stable identity больше не совпадает с текущим presented frame.
+    PresentedFrameChanged,
+
+    /// Timing DTO и stable frame identity содержат разные PTS.
+    TimingIdentityMismatch,
+}
+
+/// Семантический результат применения `EndScrub`.
+///
+/// Outcome описывает выбранную точную commit-цель, а не завершение асинхронного
+/// SeekLanding: decoder/audio gates по-прежнему закрывают transaction позже.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrubCommitOutcome {
+    /// Команда пришла без active gesture-а и не меняла seek lifecycle.
+    NoActiveGesture,
+
+    /// Gesture не получил ни одной pointer target, поэтому commit не запускался.
+    NoCommitTarget {
+        /// Policy исходной команды сохраняется для diagnostics.
+        requested_policy: ScrubCommitPolicy,
+    },
+
+    /// Запущен точный commit в последнюю pointer target.
+    LatestTarget {
+        /// Абсолютная media target после разрешения relative request-а.
+        target: MediaTime,
+    },
+
+    /// Запущен точный commit по timing действительно показанного preview frame-а.
+    VisiblePreview {
+        /// Stable timing кадра, записанный player-owned presentation boundary.
+        timing: ScrubFrameTiming,
+
+        /// Stable identity того же presented frame-а.
+        frame_identity: VideoPresentFrameIdentity,
+    },
+
+    /// Visible preview отсутствовал или устарел, поэтому выбран точный latest-target fallback.
+    VisiblePreviewUnavailableFallbackToLatestTarget {
+        /// Абсолютная fallback target последнего pointer request-а.
+        target: MediaTime,
+
+        /// Typed причина отказа от visible preview.
+        reason: VisibleScrubPreviewUnavailableReason,
+    },
 }
 
 /// Выбор качества потока для локального файла или сетевого сервиса.
@@ -188,6 +263,9 @@ pub enum QualitySelection {
 pub enum PlayerCommandOutcome {
     /// Команда применена к session state.
     Applied,
+
+    /// `EndScrub` применён с явно разрешённой commit policy.
+    ScrubCommit(ScrubCommitOutcome),
 
     /// Команда корректна по типам, но недоступна в текущем состоянии session.
     Rejected(PlayerCommandReject),

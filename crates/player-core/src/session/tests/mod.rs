@@ -20,8 +20,9 @@ use crate::{
     PipelineQueueDepthSnapshot, PlayerAudioClock, PlayerAudioOutput, PlayerCommand,
     PlayerDecodePacket, PlayerError, PlayerErrorKind, PlayerEvent, PlayerTickConfig,
     PlayerTickContext, PlayerTickResult, PlayerVideoFrameDrop, PreparedMedia,
-    PresentFrameResourceProviderHandle, ScrubCommitPolicy, SeekBootstrapDiagnosticsSnapshot,
-    SeekMode, SeekProgressBlocker, SeekTarget,
+    PresentFrameResourceProviderHandle, ScrubCommitOutcome, ScrubCommitPolicy,
+    SeekBootstrapDiagnosticsSnapshot, SeekMode, SeekProgressBlocker, SeekTarget,
+    VisibleScrubPreviewUnavailableReason,
 };
 use bytes::Bytes;
 use capability_core::{

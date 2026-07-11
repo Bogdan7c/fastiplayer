@@ -337,6 +337,9 @@ impl PlayerWorkerRuntime {
     fn dispatch_player_command(&mut self, command: PlayerCommand) {
         match self.session.dispatch_command(command) {
             Ok(PlayerCommandOutcome::Applied) => {}
+            Ok(PlayerCommandOutcome::ScrubCommit(outcome)) => {
+                debug!(outcome = ?outcome, "Player worker resolved scrub commit policy");
+            }
             Ok(PlayerCommandOutcome::Rejected(rejection)) => {
                 debug!(rejection = ?rejection, "Player worker command rejected non-fatally");
             }

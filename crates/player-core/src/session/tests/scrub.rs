@@ -36,7 +36,9 @@ fn inactive_end_scrub_clears_simple_state_without_resetting_unrelated_seek_state
         resume_intent: PlaybackResumeIntent::Pause,
     }));
 
-    session.end_scrub(None).unwrap();
+    session
+        .end_scrub(ScrubCommitPolicy::CommitLatestTarget, None)
+        .unwrap();
 
     assert!(!session.simple_scrub_active_for_tests());
     assert_eq!(session.simple_scrub_latest_request_for_tests(), None);
@@ -77,11 +79,20 @@ fn direct_dispatch_scrub_api_remains_session_compatibility_path() {
         Some(MediaTime::from_secs(3))
     );
 
-    session
+    let outcome = session
         .dispatch_command(PlayerCommand::end_scrub(
             ScrubCommitPolicy::DEFAULT_TIMELINE_RELEASE,
         ))
         .unwrap();
+    assert_eq!(
+        outcome,
+        crate::PlayerCommandOutcome::ScrubCommit(
+            ScrubCommitOutcome::VisiblePreviewUnavailableFallbackToLatestTarget {
+                target: MediaTime::from_secs(3),
+                reason: VisibleScrubPreviewUnavailableReason::Missing,
+            }
+        )
+    );
     assert!(!session.snapshot().timeline.scrubbing);
 }
 
@@ -325,6 +336,56 @@ fn seek_during_scrub_cancels_latest_target_before_one_shot_landing_route() {
         event,
         PlayerEvent::SeekRequested(seek_request) if *seek_request == preview_request
     )));
+}
+
+/// Fallback сохраняет typed policy resolution и существующую decoder error semantics.
+#[test]
+fn visible_preview_fallback_flush_error_does_not_hide_driver_failure() {
+    let mut session = PlayerSession::new();
+    let seek_log = install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+    session
+        .pipeline
+        .set_video_decoder_thread(FailingFlushVideoDecoderThread::new("flush failed"));
+    let initial_generation = session.pipeline.seek_generation();
+    let target = MediaTime::from_secs(5);
+
+    session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
+    session
+        .dispatch_command(PlayerCommand::UpdateScrub(SeekRequest::absolute(target)))
+        .unwrap();
+    let outcome = session
+        .dispatch_command(PlayerCommand::end_scrub(
+            ScrubCommitPolicy::CommitVisiblePreview,
+        ))
+        .unwrap();
+
+    assert_eq!(
+        outcome,
+        crate::PlayerCommandOutcome::ScrubCommit(
+            ScrubCommitOutcome::VisiblePreviewUnavailableFallbackToLatestTarget {
+                target,
+                reason: VisibleScrubPreviewUnavailableReason::Missing,
+            }
+        )
+    );
+    assert!(
+        seek_log
+            .lock()
+            .expect("seek log mutex should not be poisoned")
+            .is_empty()
+    );
+    assert_eq!(session.pipeline.seek_generation(), initial_generation);
+    assert!(session.seek_commit().is_none());
+    assert!(matches!(
+        session
+            .snapshot()
+            .last_error
+            .as_ref()
+            .map(|error| &error.kind),
+        Some(PlayerErrorKind::DecoderFlushFailed)
+    ));
 }
 
 #[test]
@@ -579,9 +640,9 @@ fn live_scrub_command_diagnostics_are_attached_to_events_and_supersede_cancel() 
     );
 }
 
-/// EndScrub release разрешает commit active live route-а без второго demux seek.
+/// Missing visible preview использует active latest route без второго demux seek.
 #[test]
-fn end_scrub_commits_active_live_preview_without_second_demux_seek() {
+fn end_scrub_missing_visible_preview_falls_back_without_second_demux_seek() {
     let mut session = PlayerSession::new();
     let seek_request_log = install_fake_media_with_seek_request_log(
         &mut session,
@@ -601,11 +662,20 @@ fn end_scrub_commits_active_live_preview_without_second_demux_seek() {
         .dispatch_command(PlayerCommand::preview_scrub(latest_request))
         .unwrap();
     let _ = session.take_events();
-    session
+    let outcome = session
         .dispatch_command(PlayerCommand::end_scrub(
             ScrubCommitPolicy::CommitVisiblePreview,
         ))
         .unwrap();
+    assert_eq!(
+        outcome,
+        crate::PlayerCommandOutcome::ScrubCommit(
+            ScrubCommitOutcome::VisiblePreviewUnavailableFallbackToLatestTarget {
+                target: MediaTime::from_secs(9),
+                reason: VisibleScrubPreviewUnavailableReason::Missing,
+            }
+        )
+    );
 
     let requests = seek_request_log.lock().expect("seek request log lock");
     assert_eq!(requests.len(), 1);
@@ -667,12 +737,23 @@ fn end_scrub_without_latest_target_clears_simple_state_without_seek() {
     );
 }
 
-/// ScrubCommitPolicy сохранён в API, но simple fallback временно его игнорирует.
+/// Simple route различает latest policy и typed visible-preview fallback.
 #[test]
-fn scrub_commit_policy_is_ignored_for_simple_fallback() {
-    for policy in [
-        ScrubCommitPolicy::CommitVisiblePreview,
-        ScrubCommitPolicy::CommitLatestTarget,
+fn simple_scrub_reports_policy_specific_resolution() {
+    for (policy, expected_outcome) in [
+        (
+            ScrubCommitPolicy::CommitVisiblePreview,
+            ScrubCommitOutcome::VisiblePreviewUnavailableFallbackToLatestTarget {
+                target: MediaTime::from_secs(6),
+                reason: VisibleScrubPreviewUnavailableReason::Missing,
+            },
+        ),
+        (
+            ScrubCommitPolicy::CommitLatestTarget,
+            ScrubCommitOutcome::LatestTarget {
+                target: MediaTime::from_secs(6),
+            },
+        ),
     ] {
         let mut session = PlayerSession::new();
         let seek_request_log = install_fake_media_with_seek_request_log(
@@ -685,24 +766,23 @@ fn scrub_commit_policy_is_ignored_for_simple_fallback() {
             .dispatch_command(PlayerCommand::begin_scrub())
             .unwrap();
         session
-            .dispatch_command(PlayerCommand::UpdateScrub(SeekRequest::absolute(
-                MediaTime::from_secs(3),
-            )))
+            .dispatch_command(PlayerCommand::UpdateScrub(latest_request))
             .unwrap();
-        session
-            .dispatch_command(PlayerCommand::preview_scrub(latest_request))
-            .unwrap();
-        session
+        let outcome = session
             .dispatch_command(PlayerCommand::end_scrub(policy))
             .unwrap();
 
+        assert_eq!(
+            outcome,
+            crate::PlayerCommandOutcome::ScrubCommit(expected_outcome)
+        );
         let requests = seek_request_log.lock().expect("seek request log lock");
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].timestamp, Duration::from_secs(6));
         assert_eq!(requests[0].mode, DemuxSeekMode::DecodePointBefore);
         let seek_commit = session
             .seek_commit()
-            .expect("оба policy должны запускать одинаковый final seek");
+            .expect("policy resolution должен открыть exact final seek");
         assert_eq!(seek_commit.target_position, MediaTime::from_secs(6));
         let _events = session.take_events();
     }
@@ -847,6 +927,263 @@ fn preview_scrub_does_not_feed_scheduler_preroll_frame() {
     assert!(session.pipeline.present_video_frame().is_none());
     assert!(!session.snapshot().timeline.stale_frame);
     assert!(session.seek_commit().is_some());
+}
+
+/// Строит active live-scrub route и показывает pre-target frame через real scheduler path.
+fn live_scrub_harness_with_visible_preview() -> SeekRegressionHarness {
+    let video_track = fake_track(1, TrackKind::Video);
+    let target = Duration::from_secs(8);
+    let actual = Duration::from_millis(7_700);
+    let visible = Duration::from_millis(7_900);
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone()],
+        target,
+        actual,
+        vec![
+            fake_video_packet_with_keyframe(video_track.id, actual, PacketKeyframe::Keyframe),
+            fake_video_packet_with_keyframe(video_track.id, visible, PacketKeyframe::NotKeyframe),
+        ],
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track], demuxer);
+
+    harness
+        .session
+        .dispatch_command(PlayerCommand::begin_scrub())
+        .unwrap();
+    harness
+        .session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
+            MediaTime::from_duration(target),
+        )))
+        .unwrap();
+    let _ = harness.tick_once_fast_preroll();
+    harness.push_decoded_frame(visible, 120, 1);
+    let presented_tick = harness.tick_once_fast_preroll();
+    assert_eq!(presented_tick.video_frames_presented, 1);
+    assert_eq!(
+        harness
+            .session
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.pts),
+        Some(visible)
+    );
+
+    harness
+}
+
+/// Valid visible preview коммитится по frame timing, а не по более новой pointer target.
+#[test]
+fn commit_visible_preview_and_latest_target_produce_different_exact_targets() {
+    let latest_target = MediaTime::from_secs(10);
+
+    let mut visible_harness = live_scrub_harness_with_visible_preview();
+    visible_harness
+        .session
+        .dispatch_command(PlayerCommand::UpdateScrub(SeekRequest::absolute(
+            latest_target,
+        )))
+        .unwrap();
+    let visible_identity = visible_harness
+        .session
+        .current_present_frame_identity()
+        .expect("scheduler уже показал stable live-scrub frame");
+    let visible_outcome = visible_harness
+        .session
+        .dispatch_command(PlayerCommand::end_scrub(
+            ScrubCommitPolicy::CommitVisiblePreview,
+        ))
+        .unwrap();
+
+    assert!(matches!(
+        visible_outcome,
+        crate::PlayerCommandOutcome::ScrubCommit(ScrubCommitOutcome::VisiblePreview {
+            timing,
+            frame_identity,
+        }) if timing.media_time == MediaTime::from_millis(7_900)
+            && frame_identity == visible_identity
+    ));
+    assert_eq!(
+        visible_harness
+            .session
+            .seek_commit()
+            .expect("visible preview должен открыть exact SeekLanding")
+            .target_position,
+        MediaTime::from_millis(7_900)
+    );
+
+    let mut latest_harness = live_scrub_harness_with_visible_preview();
+    latest_harness
+        .session
+        .dispatch_command(PlayerCommand::UpdateScrub(SeekRequest::absolute(
+            latest_target,
+        )))
+        .unwrap();
+    let latest_outcome = latest_harness
+        .session
+        .dispatch_command(PlayerCommand::end_scrub(
+            ScrubCommitPolicy::CommitLatestTarget,
+        ))
+        .unwrap();
+
+    assert_eq!(
+        latest_outcome,
+        crate::PlayerCommandOutcome::ScrubCommit(ScrubCommitOutcome::LatestTarget {
+            target: latest_target,
+        })
+    );
+    assert_eq!(
+        latest_harness
+            .session
+            .seek_commit()
+            .expect("latest policy должен открыть exact SeekLanding")
+            .target_position,
+        latest_target
+    );
+}
+
+/// Superseded nested generation запрещает commit ранее показанного frame-а.
+#[test]
+fn stale_visible_preview_generation_falls_back_to_latest_target() {
+    let mut harness = live_scrub_harness_with_visible_preview();
+    let latest_target = MediaTime::from_secs(12);
+    harness
+        .session
+        .dispatch_command(PlayerCommand::preview_scrub(SeekRequest::absolute(
+            latest_target,
+        )))
+        .unwrap();
+
+    let outcome = harness
+        .session
+        .dispatch_command(PlayerCommand::end_scrub(
+            ScrubCommitPolicy::CommitVisiblePreview,
+        ))
+        .unwrap();
+
+    assert!(matches!(
+        outcome,
+        crate::PlayerCommandOutcome::ScrubCommit(
+            ScrubCommitOutcome::VisiblePreviewUnavailableFallbackToLatestTarget {
+                target,
+                reason: VisibleScrubPreviewUnavailableReason::StaleContext(_),
+            }
+        ) if target == latest_target
+    ));
+    assert_eq!(
+        harness
+            .session
+            .seek_commit()
+            .expect("stale preview fallback должен сохранить active exact latest route")
+            .target_position,
+        latest_target
+    );
+}
+
+/// Source/backend/track switch guards отклоняют stable identity до commit-а.
+#[test]
+fn visible_preview_rejects_source_backend_and_track_switches() {
+    #[derive(Debug, Clone, Copy)]
+    enum GuardMutation {
+        Source,
+        Backend,
+        Track,
+    }
+
+    for mutation in [
+        GuardMutation::Source,
+        GuardMutation::Backend,
+        GuardMutation::Track,
+    ] {
+        let mut harness = live_scrub_harness_with_visible_preview();
+        let seek_commit = harness
+            .session
+            .seek_commit()
+            .expect("live scrub должен держать active commit");
+        let current_context = harness
+            .session
+            .active_seek_landing_context(seek_commit)
+            .expect("live scrub должен иметь active context");
+        let visible_preview = harness
+            .session
+            .seek_runtime
+            .visible_scrub_preview()
+            .expect("scheduler должен сохранить visible preview");
+
+        let (source_revision, backend_revision, track_selection) = match mutation {
+            GuardMutation::Source => (
+                frame_server_core::SourceRevision::new(1),
+                current_context.backend_revision(),
+                current_context.track_selection(),
+            ),
+            GuardMutation::Backend => (
+                current_context.source_revision(),
+                frame_server_core::BackendRevision::new(1),
+                current_context.track_selection(),
+            ),
+            GuardMutation::Track => (
+                current_context.source_revision(),
+                current_context.backend_revision(),
+                frame_server_core::ScrubTrackSelection::video_only(TrackId::new(99)),
+            ),
+        };
+        let mutated_context = frame_server_core::ScrubTargetContext::new(
+            source_revision,
+            backend_revision,
+            track_selection,
+            current_context.target(),
+            current_context.exactness_policy(),
+            current_context.request_kind(),
+            current_context.generation(),
+        );
+        harness.session.seek_runtime.note_visible_scrub_preview(
+            crate::seek_state::VisibleScrubPreview {
+                context: mutated_context,
+                ..visible_preview
+            },
+        );
+
+        let outcome = harness
+            .session
+            .dispatch_command(PlayerCommand::end_scrub(
+                ScrubCommitPolicy::CommitVisiblePreview,
+            ))
+            .unwrap();
+
+        let crate::PlayerCommandOutcome::ScrubCommit(
+            ScrubCommitOutcome::VisiblePreviewUnavailableFallbackToLatestTarget { target, reason },
+        ) = outcome
+        else {
+            panic!("{mutation:?} должен вернуть typed latest-target fallback: {outcome:?}");
+        };
+        assert_eq!(target, MediaTime::from_secs(8));
+        match mutation {
+            GuardMutation::Source => assert!(matches!(
+                reason,
+                VisibleScrubPreviewUnavailableReason::StaleContext(
+                    frame_server_core::ScrubStaleReason::SourceRevisionMismatch { .. }
+                )
+            )),
+            GuardMutation::Backend => assert!(matches!(
+                reason,
+                VisibleScrubPreviewUnavailableReason::StaleContext(
+                    frame_server_core::ScrubStaleReason::BackendRevisionMismatch { .. }
+                )
+            )),
+            GuardMutation::Track => assert!(matches!(
+                reason,
+                VisibleScrubPreviewUnavailableReason::TrackSelectionChanged { .. }
+            )),
+        }
+        assert_eq!(
+            harness
+                .session
+                .seek_commit()
+                .expect("guard fallback должен сохранить exact latest route")
+                .target_position,
+            MediaTime::from_secs(8)
+        );
+    }
 }
 
 /// Прокат live scrub: pre-target кадры показываются latest-wins, не открывая commit gates.

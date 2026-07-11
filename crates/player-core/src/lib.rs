@@ -40,8 +40,8 @@ pub use audio_core::{
 pub use codec_core::VideoDecodeRequirement;
 pub use command::{
     MediaOpenRequest, MediaSource, PlaybackRateAudioTempoRejectReason, PlayerCommand,
-    PlayerCommandOutcome, PlayerCommandReject, QualityId, QualitySelection, ScrubCommitPolicy,
-    SeekMode, SeekRequest, SeekTarget,
+    PlayerCommandOutcome, PlayerCommandReject, QualityId, QualitySelection, ScrubCommitOutcome,
+    ScrubCommitPolicy, SeekMode, SeekRequest, SeekTarget, VisibleScrubPreviewUnavailableReason,
 };
 #[cfg(test)]
 pub(crate) use decoder_boundary::DecodeBackpressureReason;
