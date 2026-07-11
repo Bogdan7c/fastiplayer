@@ -80,10 +80,13 @@ Usage: scripts/playback-smoke.sh [OPTIONS]
 Optional local runtime playback acceptance smoke. This is not a CI/pre-PR gate.
 
 Options:
-  --mode full|software-only|probe-only
+  --mode full|software-only|hardware-only|probe-only|legacy-migration
       full          Run FFmpeg probe tests, release build, and the full scenario matrix.
       software-only Run FFmpeg probe tests, release build, and FFmpeg software scenarios.
+      hardware-only Run release VA-API playback/rejection scenarios without FFmpeg probes.
       probe-only    Run only the focused video-ffmpeg runtime probe tests.
+      legacy-migration
+                    Run the explicitly named legacy config migration smoke only.
 
   --duration SECONDS
       Per-scenario playback timeout. Default: 20.
@@ -193,7 +196,7 @@ validate_mode() {
 
     # Поддерживаем только явно описанные режимы.
     case "${candidate_mode}" in
-        full | software-only | probe-only)
+        full | software-only | hardware-only | probe-only | legacy-migration)
             return
             ;;
         *)
@@ -415,8 +418,8 @@ validate_media_selection() {
         exit 1
     fi
 
-    # Probe-only не использует реальные media files.
-    if [[ "${smoke_mode}" == "probe-only" ]]; then
+    # Config-only modes не используют реальные media files.
+    if [[ "${smoke_mode}" == "probe-only" || "${smoke_mode}" == "legacy-migration" ]]; then
         return
     fi
 
@@ -428,6 +431,12 @@ validate_media_selection() {
 
     # Software-only использует H.264 и VP9, но не AV1 hardware rejection matrix.
     if [[ "${smoke_mode}" == "software-only" && ( -z "${vp9_profile0_path}" || -z "${h264_path}" ) ]]; then
+        print_not_run_missing_selection
+        exit 1
+    fi
+
+    # Hardware-only использует VP9 success и AV1 typed rejection scenarios.
+    if [[ "${smoke_mode}" == "hardware-only" && ( -z "${vp9_profile0_path}" || -z "${av1_path}" ) ]]; then
         print_not_run_missing_selection
         exit 1
     fi
@@ -447,7 +456,7 @@ validate_media_selection() {
     fi
 }
 
-# Функция пишет минимальный isolated config для одного playback-сценария.
+# Функция пишет полный current-schema config для одного playback-сценария.
 write_scenario_config() {
     # XDG_CONFIG_HOME для сценария передаётся первым аргументом.
     local config_home="$1"
@@ -461,14 +470,13 @@ write_scenario_config() {
     # Создаём только isolated config tree текущего сценария.
     mkdir -p -- "$(dirname -- "${config_file}")"
 
-    # Минимальный TOML полагается на serde defaults для остальных секций.
-    {
-        printf 'schema_version = 4\n\n'
-        printf '[player]\n'
-        printf 'start_paused = false\n\n'
-        printf '[video]\n'
-        printf 'preferred_backend = "%s"\n' "${backend_preference}"
-    } >"${config_file}"
+    # Config-crate остаётся единственным владельцем полного набора schema v5 fields/defaults.
+    cargo run --quiet --locked -p rustiplayer-config --example smoke_config -- \
+        generate-current "${config_file}" "${backend_preference}"
+
+    # Тем же production loader-ом доказываем strict current parse до запуска GUI.
+    cargo run --quiet --locked -p rustiplayer-config --example smoke_config -- \
+        parse-current "${config_file}"
 }
 
 # Функция запускает один playback-сценарий под timeout и сохраняет общий stdout/stderr log.
@@ -485,7 +493,7 @@ run_playback_scenario() {
     # Dry-run печатает команду и не требует существования binary/logs.
     if [[ "${dry_run}" == "true" ]]; then
         printf '\n==> playback scenario: %s\n' "${scenario_name}" >&2
-        printf 'Would write isolated config: video.preferred_backend = "%s", player.start_paused = false\n' "${backend_preference}" >&2
+        printf 'Would write full current config: schema v5, video.preferred_backend = "%s", player.start_paused = false, youtube.hdr_selection = "sdr_only"\n' "${backend_preference}" >&2
         print_command env \
             "XDG_CONFIG_HOME=<tmp>/configs/${scenario_name}" \
             "RUST_LOG=${SMOKE_RUST_LOG}" \
@@ -663,12 +671,25 @@ run_probe_steps() {
     # Unit/fake probe tests покрывают missing/too-old FFmpeg без runtime override.
     run_step \
         "cargo test -p video-ffmpeg --features ffmpeg probe::tests" \
-        cargo test -p video-ffmpeg --features ffmpeg probe::tests
+        cargo test -p video-ffmpeg --features ffmpeg --locked probe::tests
 
     # Ignored real-runtime probe проверяет локально установленный FFmpeg runtime.
     run_step \
         "cargo test -p video-ffmpeg --features ffmpeg -- --ignored" \
-        cargo test -p video-ffmpeg --features ffmpeg -- --ignored
+        cargo test -p video-ffmpeg --features ffmpeg --locked -- --ignored
+
+    # Явный PASS не позволяет перепутать реально выполненный runtime probe с ignored listing.
+    printf 'PASS: FFmpeg runtime probe acceptance\n' >&2
+}
+
+# Функция запускает legacy migration отдельно от current playback smoke.
+run_legacy_migration_smoke() {
+    # Названные focused tests закрепляют v2/v3/v4 migration, не участвуя в generated config path.
+    run_step \
+        "legacy config migration smoke" \
+        cargo test -p rustiplayer-config --locked legacy_
+    # Отдельный marker делает legacy outcome заметным в acceptance log.
+    printf 'PASS: explicitly selected legacy config migration smoke\n' >&2
 }
 
 # Функция собирает release app binary для playback acceptance.
@@ -676,7 +697,7 @@ run_release_build() {
     # Playback smoke всегда использует release binary, потому что perf/debug профиль не является acceptance.
     run_step \
         "cargo build --release -p app-egui" \
-        cargo build --release -p app-egui
+        cargo build --release -p app-egui --locked
 }
 
 # Функция запускает full hardware+software сценарии.
@@ -742,6 +763,21 @@ run_software_only_scenarios() {
         "true"
 }
 
+# Функция запускает только сценарии, принадлежащие VA-API hardware acceptance.
+run_hardware_only_scenarios() {
+    # VP9 Profile 0 подтверждает основной VA-API DMA-BUF playback path.
+    run_positive_playback_scenario \
+        "auto-vp9-profile0-4k60" \
+        "auto" \
+        "${vp9_profile0_path}" \
+        "vaapi-dmabuf-wgpu" \
+        "false" \
+        "false"
+
+    # AV1 подтверждает typed hardware-only rejection без software fallback.
+    run_hardware_av1_rejection_scenario
+}
+
 # Главная функция фиксирует acceptance workflow в одном месте.
 main() {
     # Разбираем аргументы до любых проверок окружения.
@@ -763,13 +799,21 @@ main() {
         require_cargo_commands
     fi
 
-    # Probe-only не требует timeout/mktemp/playback tools.
-    if [[ "${dry_run}" != "true" && "${smoke_mode}" != "probe-only" ]]; then
+    # Config-only modes не требуют timeout/mktemp/playback tools.
+    if [[ "${dry_run}" != "true" && "${smoke_mode}" != "probe-only" && "${smoke_mode}" != "legacy-migration" ]]; then
         require_playback_commands
     fi
 
-    # FFmpeg probe steps запускаются во всех режимах.
-    run_probe_steps
+    # Legacy migration является отдельным сценарием и не запускает FFmpeg или GUI.
+    if [[ "${smoke_mode}" == "legacy-migration" ]]; then
+        run_legacy_migration_smoke
+        exit "${SUCCESS_EXIT_CODE}"
+    fi
+
+    # FFmpeg probe принадлежит software/full acceptance, но не VA-API-only сценарию.
+    if [[ "${smoke_mode}" != "hardware-only" ]]; then
+        run_probe_steps
+    fi
 
     # probe-only намеренно не собирает app и не запускает playback.
     if [[ "${smoke_mode}" == "probe-only" ]]; then
@@ -786,6 +830,9 @@ main() {
             ;;
         software-only)
             run_software_only_scenarios
+            ;;
+        hardware-only)
+            run_hardware_only_scenarios
             ;;
     esac
 }

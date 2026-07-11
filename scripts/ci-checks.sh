@@ -90,6 +90,14 @@ run_format_guardrails() {
     run_step "dependency patch inventory" python3 "${SCRIPT_DIRECTORY}/check-dependency-patches.py"
     # Unit-тесты не позволяют самим policy scripts незаметно сломаться.
     run_step "guardrail unit tests" python3 -m unittest discover -s "${SCRIPT_DIRECTORY}/tests" -p 'test_*.py'
+    # Shell syntax gate проверяет runtime runners до их неграфических self-tests.
+    run_step "runtime script syntax" bash -n \
+        "${SCRIPT_DIRECTORY}/playback-smoke.sh" \
+        "${SCRIPT_DIRECTORY}/runtime-acceptance.sh" \
+        "${SCRIPT_DIRECTORY}/tests/playback-smoke-self-test.sh"
+    # Parser/config generation проверяются production config loader-ом без запуска GUI.
+    run_step "playback smoke script self-tests" \
+        "${SCRIPT_DIRECTORY}/tests/playback-smoke-self-test.sh"
     # Архитектурные guardrails проверяются до дорогой компиляции.
     run_step "refactor guardrails" "${SCRIPT_DIRECTORY}/check-refactor-guardrails.py"
     # rustfmt работает в read-only check mode для всего workspace.
