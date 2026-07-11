@@ -40,6 +40,8 @@ mod playback_rate;
 mod prepared_seek;
 mod render_leases;
 mod scrub_driver;
+mod seek_commit_gates;
+mod seek_diagnostics;
 mod seek_transaction;
 mod snapshot_builder;
 mod tick;

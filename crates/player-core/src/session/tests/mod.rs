@@ -7,7 +7,7 @@ use std::sync::{
 use codec_core::{ColorPrimaries, ColorRange, MatrixCoefficients, TransferFunction};
 
 use super::audio_runtime::SeekAudioGateStatus;
-use super::seek_transaction::SeekProgressGateSnapshot;
+use super::seek_commit_gates::SeekProgressGateSnapshot;
 use super::*;
 use crate::seek_state::{
     AccuratePrerollDemuxEventKind, POST_SEEK_PACKET_TRACE_LIMIT, PlaybackResumeIntent,
@@ -54,6 +54,8 @@ mod playback;
 mod playback_rate;
 mod scrub;
 mod scrub_driver;
+mod seek_commit_gates;
+mod seek_diagnostics;
 mod seek_regressions;
 mod seek_trace;
 mod seek_transaction;

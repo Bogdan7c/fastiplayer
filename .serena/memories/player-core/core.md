@@ -62,3 +62,10 @@
 
 - `session/scrub_driver.rs` не имеет module-wide `dead_code` suppression. Production driver сохраняет только реально вызываемый `submit_target_update -> drive_step` path; безссылочный `cancel_active` route и lifecycle result/error variants, которые production implementation не мог построить, удалены без подключения нового lifecycle behavior.
 - `AudioResumeTimingInput::known` и `PlaybackPipeline::can_send_video_decode_packets` являются focused test helpers и компилируются только под `cfg(test)`. Media load по-прежнему всегда сбрасывает playback rate в `1.0x`; future-only `PreserveAcrossPlaylist` и одно-вариантная policy abstraction удалены.
+
+
+## Session 18 seek decomposition (2026-07-11)
+
+- `session/seek_diagnostics.rs` owns active-seek observation, trace counters and diagnostics snapshot assembly; mutable seek state remains in `SeekRuntimeState` and lifecycle remains in `PlayerSession`.
+- `session/seek_commit_gates.rs` owns read-only commit-gate evaluation, typed soft-audio fallback decision, target/generation matching, EOF fallback readiness and progress-blocker classification. Public API and seek semantics are unchanged.
+- Focused characterization tests are split into `session/tests/seek_diagnostics.rs` and `session/tests/seek_commit_gates.rs`; transaction/start/scrub/cleanup tests remain in their existing responsibility modules.
