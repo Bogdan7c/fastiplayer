@@ -1,12 +1,8 @@
-use std::cell::RefCell;
 use std::fs::File;
 use std::iter::zip;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::path::Path;
-use std::ptr;
 use std::rc::Rc;
-use std::slice;
-use std::sync::Arc;
 
 use cros_codecs::libva::{
     Display, ExternalBufferDescriptor, MemoryType, Surface, UsageHint, VADRMPRIMESurfaceDescriptor,
@@ -17,8 +13,7 @@ use cros_codecs::{DecodedFormat, Fourcc, Resolution};
 use gbm_sys::{
     gbm_bo, gbm_bo_create, gbm_bo_destroy, gbm_bo_flags, gbm_bo_get_fd, gbm_bo_get_height,
     gbm_bo_get_modifier, gbm_bo_get_offset, gbm_bo_get_plane_count, gbm_bo_get_stride_for_plane,
-    gbm_bo_get_width, gbm_bo_map, gbm_bo_transfer_flags, gbm_bo_unmap, gbm_create_device,
-    gbm_device, gbm_device_destroy,
+    gbm_bo_get_width, gbm_create_device, gbm_device, gbm_device_destroy,
 };
 use nix::libc;
 
@@ -39,20 +34,22 @@ pub struct LinearGbmDevice {
 
 impl LinearGbmDevice {
     /// Открывает render node и создаёт GBM device.
-    pub fn open_default() -> anyhow::Result<Arc<Self>> {
+    pub fn open_default() -> anyhow::Result<Rc<Self>> {
         let device_file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(Path::new(RENDER_DRI_PATH))
             .map_err(|e| anyhow::anyhow!("Failed to open {}: {}", RENDER_DRI_PATH, e))?;
 
-        // SAFETY: fd валиден, потому что `device_file` открыт успешно и хранится в структуре.
+        // SAFETY: `device_file` содержит открытый DRM render-node fd. `Self`
+        // сохраняет `File` дольше raw `gbm_device*`, а null-result обрабатывается
+        // до создания Rust owner-а.
         let device = unsafe { gbm_create_device(device_file.as_raw_fd()) };
         if device.is_null() {
             anyhow::bail!("Failed to create GBM device from {}", RENDER_DRI_PATH);
         }
 
-        Ok(Arc::new(Self {
+        Ok(Rc::new(Self {
             device,
             _device_file: device_file,
         }))
@@ -60,7 +57,7 @@ impl LinearGbmDevice {
 
     /// Создаёт linear NV12 frame для VA-API decode output.
     pub fn new_nv12_frame(
-        self: &Arc<Self>,
+        self: &Rc<Self>,
         resolution: Resolution,
     ) -> anyhow::Result<LinearGbmVideoFrame> {
         LinearGbmVideoFrame::new(self.clone(), resolution)
@@ -69,19 +66,19 @@ impl LinearGbmDevice {
 
 impl Drop for LinearGbmDevice {
     fn drop(&mut self) {
-        // SAFETY: `device` создан через `gbm_create_device` и освобождается ровно один раз.
+        // SAFETY: `device` создан единственным успешным `gbm_create_device` и
+        // освобождается только здесь. `Rc` запрещает межпоточную передачу и
+        // гарантирует, что все `LinearGbmVideoFrame` уже уничтожены. Поле
+        // `_device_file` закрывается автоматически только после этого вызова.
         unsafe { gbm_device_destroy(self.device) };
     }
 }
 
-// SAFETY: device используется только decoder thread'ом, а lifetime защищён `Arc`.
-unsafe impl Send for LinearGbmDevice {}
-unsafe impl Sync for LinearGbmDevice {}
-
 /// Output frame, который VA-API импортирует как DRM PRIME surface.
 ///
-/// Отличие от `GenericDmaVideoFrame`: CPU readback выполняется через `gbm_bo_map`,
-/// поэтому драйвер корректно обрабатывает выбранный layout буфера.
+/// Кадр предназначен только для owner-thread VA import. CPU mapping намеренно
+/// не предоставляется: GBM не документирует размер многоплоскостного mapping,
+/// достаточный для безопасного создания Rust slices.
 #[derive(Debug)]
 pub struct LinearGbmVideoFrame {
     /// Формат кадра. Для текущего decoder path всегда NV12.
@@ -91,12 +88,12 @@ pub struct LinearGbmVideoFrame {
     /// Raw GBM buffer object с linear layout.
     bo: *mut gbm_bo,
     /// GBM device должен жить дольше BO.
-    _device: Arc<LinearGbmDevice>,
+    _device: Rc<LinearGbmDevice>,
 }
 
 impl LinearGbmVideoFrame {
     /// Создаёт linear NV12 BO с флагами, совместимыми с Intel VA-API decode.
-    fn new(device: Arc<LinearGbmDevice>, resolution: Resolution) -> anyhow::Result<Self> {
+    fn new(device: Rc<LinearGbmDevice>, resolution: Resolution) -> anyhow::Result<Self> {
         let usage = gbm_bo_flags::GBM_BO_USE_LINEAR | GBM_BO_USE_HW_VIDEO_DECODER;
         let fourcc = Fourcc::from(b"NV12");
 
@@ -128,25 +125,26 @@ impl LinearGbmVideoFrame {
 
     /// Возвращает ширину BO, фактически выбранную GBM.
     fn bo_width(&self) -> u32 {
-        // SAFETY: `bo` валиден пока жив self.
+        // SAFETY: `bo` принадлежит `self`, тип закреплён за одним потоком, а
+        // активная операция destroy невозможна до завершения `&self`.
         unsafe { gbm_bo_get_width(self.bo) }
     }
 
     /// Возвращает высоту BO, фактически выбранную GBM.
     fn bo_height(&self) -> u32 {
-        // SAFETY: `bo` валиден пока жив self.
+        // SAFETY: те же owner-thread и lifetime инварианты, что у `bo_width`.
         unsafe { gbm_bo_get_height(self.bo) }
     }
 
     /// Возвращает DRM modifier BO.
     fn modifier(&self) -> u64 {
-        // SAFETY: `bo` валиден пока жив self.
+        // SAFETY: те же owner-thread и lifetime инварианты, что у `bo_width`.
         unsafe { gbm_bo_get_modifier(self.bo) }
     }
 
     /// Возвращает количество плоскостей, которое сообщает GBM.
     fn plane_count(&self) -> usize {
-        // SAFETY: `bo` валиден пока жив self.
+        // SAFETY: те же owner-thread и lifetime инварианты, что у `bo_width`.
         let count = unsafe { gbm_bo_get_plane_count(self.bo) };
         count.max(1) as usize
     }
@@ -156,7 +154,9 @@ impl LinearGbmVideoFrame {
         if self.plane_count() >= 2 {
             return (0..self.num_planes())
                 .map(|plane_index| {
-                    // SAFETY: `bo` валиден, plane index ограничен `num_planes`.
+                    // SAFETY: owner-thread/lifetime инварианты сохраняют `bo`.
+                    // Эта ветка выполняется только когда GBM сообщил минимум
+                    // две плоскости; NV12 `num_planes()` возвращает ровно две.
                     unsafe { gbm_bo_get_offset(self.bo, plane_index as libc::c_int) as usize }
                 })
                 .collect();
@@ -164,54 +164,6 @@ impl LinearGbmVideoFrame {
 
         let y_stride = self.get_plane_pitch()[0];
         vec![0, y_stride * self.resolution.height as usize]
-    }
-
-    /// Маппит BO через GBM и возвращает указатели на начало каждой плоскости.
-    fn map_helper(&self, is_writable: bool) -> Result<LinearGbmMapping<'_>, String> {
-        let permissions = if is_writable {
-            gbm_bo_transfer_flags::GBM_BO_TRANSFER_READ_WRITE
-        } else {
-            gbm_bo_transfer_flags::GBM_BO_TRANSFER_READ
-        };
-
-        let mut mapped_stride = 0;
-        let mut map_data = ptr::null_mut();
-
-        // SAFETY: `bo` валиден; GBM возвращает map pointer или null при ошибке.
-        let mapped_memory = unsafe {
-            gbm_bo_map(
-                self.bo,
-                0,
-                0,
-                self.bo_width(),
-                self.bo_height(),
-                permissions,
-                &mut mapped_stride,
-                &mut map_data,
-            )
-        };
-        if mapped_memory.is_null() {
-            return Err("Failed to map linear GBM buffer".to_string());
-        }
-
-        let plane_offsets = self.plane_offsets();
-        let plane_sizes = self.get_plane_size();
-        let plane_ptrs = plane_offsets
-            .iter()
-            .map(|offset| {
-                // SAFETY: offset получен из GBM или рассчитан внутри размера BO.
-                unsafe { (mapped_memory as *mut u8).add(*offset) }
-            })
-            .collect();
-
-        Ok(LinearGbmMapping {
-            bo: self.bo,
-            map_data,
-            plane_ptrs,
-            plane_sizes,
-            is_writable,
-            _frame: self,
-        })
     }
 }
 
@@ -226,7 +178,9 @@ fn allocate_linear_decode_bo(
     fourcc: Fourcc,
     usage: u32,
 ) -> anyhow::Result<*mut gbm_bo> {
-    // SAFETY: GBM device валиден; width/height/fourcc/usage передаются как plain values.
+    // SAFETY: `device.device` принадлежит текущему owner thread и удерживается
+    // `Rc` дольше результата. Остальные аргументы — значения; null-result
+    // обрабатывается до создания Rust owner-а.
     let nv12_bo = unsafe {
         gbm_bo_create(
             device.device,
@@ -248,7 +202,8 @@ fn allocate_linear_decode_bo(
         .checked_mul(2)
         .ok_or_else(|| anyhow::anyhow!("GBM R8 fallback height overflow"))?;
 
-    // SAFETY: GBM device валиден; R8 BO используется как contiguous byte storage.
+    // SAFETY: тот же owner-thread/lifetime contract, что у первой попытки.
+    // R8 dimensions описывают полный contiguous storage; null обрабатывается.
     let r8_bo = unsafe {
         gbm_bo_create(
             device.device,
@@ -277,14 +232,12 @@ fn allocate_linear_decode_bo(
 
 impl Drop for LinearGbmVideoFrame {
     fn drop(&mut self) {
-        // SAFETY: `bo` создан через `gbm_bo_create` и освобождается ровно один раз.
+        // SAFETY: `bo` создан единственным успешным `gbm_bo_create` и не
+        // копируется. Тип не `Send`/`Sync`, активные mappings не выдаются, а
+        // `_device` удерживает GBM device до завершения этого Drop.
         unsafe { gbm_bo_destroy(self.bo) };
     }
 }
-
-// SAFETY: кадр используется decoder thread'ом; raw BO живёт внутри self и не копируется.
-unsafe impl Send for LinearGbmVideoFrame {}
-unsafe impl Sync for LinearGbmVideoFrame {}
 
 /// VA-API external descriptor для `LinearGbmVideoFrame`.
 pub struct LinearGbmExternalBufferDescriptor {
@@ -294,10 +247,14 @@ pub struct LinearGbmExternalBufferDescriptor {
     modifier: u64,
     /// Разрешение кадра.
     resolution: Resolution,
-    /// Pitch плоскостей.
-    pitches: Vec<usize>,
-    /// Offset плоскостей.
-    offsets: Vec<usize>,
+    /// Число значимых плоскостей в массивах descriptor-а.
+    num_planes: u32,
+    /// Проверенные pitch плоскостей; неиспользуемые элементы равны нулю.
+    pitches: [u32; 4],
+    /// Проверенные offset плоскостей; неиспользуемые элементы равны нулю.
+    offsets: [u32; 4],
+    /// Размер DMA-BUF object, проверенный до вызова libva.
+    object_size: u32,
     /// Exported DMA-BUF fd. Должен жить пока libva создаёт surface.
     export_file: File,
 }
@@ -310,7 +267,7 @@ impl ExternalBufferDescriptor for LinearGbmExternalBufferDescriptor {
         let objects = [
             VADRMPRIMESurfaceDescriptorObject {
                 fd: self.export_file.as_raw_fd(),
-                size: self.export_file.metadata().map(|m| m.len()).unwrap_or(0) as u32,
+                size: self.object_size,
                 drm_format_modifier: self.modifier,
             },
             Default::default(),
@@ -321,26 +278,10 @@ impl ExternalBufferDescriptor for LinearGbmExternalBufferDescriptor {
         let layers = [
             VADRMPRIMESurfaceDescriptorLayer {
                 drm_format: u32::from(self.fourcc),
-                num_planes: self.pitches.len() as u32,
+                num_planes: self.num_planes,
                 object_index: [0, 0, 0, 0],
-                offset: self
-                    .offsets
-                    .iter()
-                    .map(|offset| *offset as u32)
-                    .chain(std::iter::repeat(0))
-                    .take(4)
-                    .collect::<Vec<_>>()
-                    .try_into()
-                    .unwrap(),
-                pitch: self
-                    .pitches
-                    .iter()
-                    .map(|pitch| *pitch as u32)
-                    .chain(std::iter::repeat(0))
-                    .take(4)
-                    .collect::<Vec<_>>()
-                    .try_into()
-                    .unwrap(),
+                offset: self.offsets,
+                pitch: self.pitches,
             },
             Default::default(),
             Default::default(),
@@ -382,7 +323,8 @@ impl VideoFrame for LinearGbmVideoFrame {
         if self.plane_count() >= 2 {
             return (0..self.num_planes())
                 .map(|plane_index| {
-                    // SAFETY: `bo` валиден, plane index ограничен `num_planes`.
+                    // SAFETY: owner-thread/lifetime инварианты сохраняют `bo`;
+                    // индекс ограничен двумя плоскостями, подтверждёнными GBM.
                     unsafe {
                         gbm_bo_get_stride_for_plane(self.bo, plane_index as libc::c_int) as usize
                     }
@@ -390,17 +332,21 @@ impl VideoFrame for LinearGbmVideoFrame {
                 .collect();
         }
 
-        // SAFETY: для single-plane fallback stride plane 0 валиден.
+        // SAFETY: owner-thread/lifetime инварианты сохраняют `bo`; plane 0
+        // существует у каждого успешно созданного BO, включая R8 fallback.
         let y_stride = unsafe { gbm_bo_get_stride_for_plane(self.bo, 0) as usize };
         vec![y_stride, y_stride]
     }
 
     fn map<'a>(&'a self) -> Result<Box<dyn ReadMapping<'a> + 'a>, String> {
-        Ok(Box::new(self.map_helper(false)?))
+        Err(
+            "Linear GBM VA output is owner-thread zero-copy only; CPU mapping is not exposed"
+                .to_string(),
+        )
     }
 
     fn map_mut<'a>(&'a mut self) -> Result<Box<dyn WriteMapping<'a> + 'a>, String> {
-        Ok(Box::new(self.map_helper(true)?))
+        Err("Linear GBM VA output is not CPU-writable through VideoFrame::map_mut()".to_string())
     }
 
     fn to_native_handle(&self, display: &Rc<Display>) -> Result<Self::NativeHandle, String> {
@@ -408,22 +354,48 @@ impl VideoFrame for LinearGbmVideoFrame {
             return Err("Only NV12 VA-API export is supported".to_string());
         }
 
-        // SAFETY: `gbm_bo_get_fd` возвращает новый owned fd для валидного BO.
+        let plane_pitches = self.get_plane_pitch();
+        let plane_offsets = self.plane_offsets();
+        if plane_pitches.len() != plane_offsets.len() {
+            return Err(format!(
+                "Linear GBM layout mismatch: {} pitches for {} offsets",
+                plane_pitches.len(),
+                plane_offsets.len()
+            ));
+        }
+        let num_planes = u32::try_from(plane_pitches.len())
+            .map_err(|_| "Linear GBM plane count does not fit VA descriptor".to_string())?;
+        let descriptor_pitches = checked_descriptor_plane_values(&plane_pitches, "pitch")?;
+        let descriptor_offsets = checked_descriptor_plane_values(&plane_offsets, "offset")?;
+
+        // SAFETY: `bo` остаётся валиден благодаря `&self`. Mesa документирует,
+        // что каждый `gbm_bo_get_fd` возвращает новый fd, который обязан закрыть
+        // caller; отрицательный результат обрабатывается до принятия ownership.
         let exported_fd = unsafe { gbm_bo_get_fd(self.bo) };
         if exported_fd < 0 {
             return Err("Failed to export GBM BO fd".to_string());
         }
 
+        // SAFETY: это новый положительный owned fd из `gbm_bo_get_fd`.
+        // До этой строки его никто не закрыл; после неё exactly-once close
+        // обеспечивает `File`, включая все дальнейшие error paths.
+        let export_file = unsafe { File::from_raw_fd(exported_fd) };
+        let object_size = checked_dma_buf_object_size(&export_file)?;
+
         let descriptor = LinearGbmExternalBufferDescriptor {
             fourcc: self.fourcc,
             modifier: self.modifier(),
             resolution: self.resolution,
-            pitches: self.get_plane_pitch(),
-            offsets: self.plane_offsets(),
-            // SAFETY: fd новый и owned, теперь им владеет `File`.
-            export_file: unsafe { File::from_raw_fd(exported_fd) },
+            num_planes,
+            pitches: descriptor_pitches,
+            offsets: descriptor_offsets,
+            object_size,
+            export_file,
         };
 
+        // `Surface` сохраняет `Rc<Display>` и descriptor внутри себя. Поэтому
+        // `vaDestroySurfaces` выполняется до возможного `vaTerminate`, а owned
+        // export fd остаётся жив как минимум весь VA surface lifecycle.
         let mut surfaces = display
             .create_surfaces(
                 cros_codecs::libva::VA_RT_FORMAT_YUV420,
@@ -435,55 +407,110 @@ impl VideoFrame for LinearGbmVideoFrame {
             )
             .map_err(|e| format!("Failed to import linear GBM frame to VA-API: {e:?}"))?;
 
-        Ok(surfaces.pop().unwrap())
+        surfaces
+            .pop()
+            .ok_or_else(|| "VA driver returned no imported linear GBM surface".to_string())
     }
 }
 
-/// Активный GBM mapping одного кадра.
-pub struct LinearGbmMapping<'a> {
-    /// BO, который нужно unmap при drop.
-    bo: *mut gbm_bo,
-    /// Opaque GBM map token.
-    map_data: *mut libc::c_void,
-    /// Указатели на начала плоскостей.
-    plane_ptrs: Vec<*mut u8>,
-    /// Размеры плоскостей.
-    plane_sizes: Vec<usize>,
-    /// Разрешает mutable доступ.
-    is_writable: bool,
-    /// Привязывает lifetime mapping к frame.
-    _frame: &'a LinearGbmVideoFrame,
-}
-
-impl<'a> ReadMapping<'a> for LinearGbmMapping<'a> {
-    fn get(&self) -> Vec<&[u8]> {
-        // SAFETY: mapping жив до drop self; pointers и sizes рассчитаны из валидного BO layout.
-        unsafe {
-            zip(self.plane_ptrs.iter(), self.plane_sizes.iter())
-                .map(|(ptr, len)| slice::from_raw_parts(*ptr as *const u8, *len))
-                .collect()
-        }
+/// Переводит backend layout в фиксированный VA descriptor без truncation.
+fn checked_descriptor_plane_values(
+    values: &[usize],
+    field_name: &'static str,
+) -> Result<[u32; 4], String> {
+    if values.len() > 4 {
+        return Err(format!(
+            "Linear GBM {field_name} count {} exceeds VA descriptor capacity 4",
+            values.len()
+        ));
     }
-}
 
-impl<'a> WriteMapping<'a> for LinearGbmMapping<'a> {
-    fn get(&self) -> Vec<RefCell<&'a mut [u8]>> {
-        if !self.is_writable {
-            panic!("Attempted to get writable slices from read-only GBM mapping");
-        }
-
-        // SAFETY: caller requested writable mapping; lifetime привязан к self/_frame.
-        unsafe {
-            zip(self.plane_ptrs.iter(), self.plane_sizes.iter())
-                .map(|(ptr, len)| RefCell::new(slice::from_raw_parts_mut(*ptr, *len)))
-                .collect()
-        }
+    let mut descriptor_values = [0; 4];
+    for (index, value) in values.iter().copied().enumerate() {
+        descriptor_values[index] = u32::try_from(value).map_err(|_| {
+            format!("Linear GBM {field_name}[{index}] does not fit VA descriptor: {value}")
+        })?;
     }
+    Ok(descriptor_values)
 }
 
-impl Drop for LinearGbmMapping<'_> {
-    fn drop(&mut self) {
-        // SAFETY: `map_data` получен из `gbm_bo_map` для этого BO.
-        unsafe { gbm_bo_unmap(self.bo, self.map_data) };
+/// Читает размер owned DMA-BUF fd и запрещает молчаливое `u64 -> u32` truncation.
+fn checked_dma_buf_object_size(export_file: &File) -> Result<u32, String> {
+    let object_size = export_file
+        .metadata()
+        .map_err(|error| format!("Failed to query exported GBM DMA-BUF size: {error}"))?
+        .len();
+
+    u32::try_from(object_size)
+        .map_err(|_| format!("Exported GBM DMA-BUF size does not fit VA descriptor: {object_size}"))
+}
+
+#[cfg(test)]
+mod safety_tests {
+    use super::*;
+    use static_assertions::{assert_impl_all, assert_not_impl_any};
+
+    // Raw GBM owners закреплены за одним decoder/VA owner thread через `Rc`.
+    // Ни lifetime refcount, ни immutable Rust reference не сериализуют GBM calls.
+    assert_not_impl_any!(LinearGbmDevice: Send, Sync);
+    assert_not_impl_any!(LinearGbmVideoFrame: Send, Sync);
+
+    // VA display/surface wrappers тоже остаются на owner thread: `Surface`
+    // удерживает `Rc<Display>`, поэтому Drop surface не может пересечься с
+    // `vaTerminate` на другом потоке.
+    assert_not_impl_any!(Display: Send, Sync);
+    assert_not_impl_any!(Surface<LinearGbmExternalBufferDescriptor>: Send, Sync);
+
+    // Descriptor содержит только owned `File` и value metadata. Он может быть
+    // передан как значение; это не делает исходный `gbm_bo*` разделяемым.
+    assert_impl_all!(LinearGbmExternalBufferDescriptor: Send, Sync);
+
+    #[test]
+    fn descriptor_plane_values_reject_more_than_four_planes() {
+        let error = checked_descriptor_plane_values(&[0, 1, 2, 3, 4], "offset").unwrap_err();
+
+        assert!(error.contains("exceeds VA descriptor capacity 4"));
+    }
+
+    #[test]
+    fn descriptor_plane_values_reject_u32_truncation() {
+        let overflowing_value = u32::MAX as usize + 1;
+
+        let error = checked_descriptor_plane_values(&[overflowing_value], "pitch").unwrap_err();
+
+        assert!(error.contains("does not fit VA descriptor"));
+    }
+
+    #[test]
+    fn frame_keeps_owner_device_alive_and_cpu_mapping_fails_closed() {
+        let Ok(device) = LinearGbmDevice::open_default() else {
+            eprintln!("Skipping test: GBM render node is unavailable");
+            return;
+        };
+        let weak_device = Rc::downgrade(&device);
+        let Ok(mut frame) = device.new_nv12_frame(Resolution {
+            width: 64,
+            height: 64,
+        }) else {
+            eprintln!("Skipping test: linear GBM allocation is unsupported");
+            return;
+        };
+
+        let read_error = frame
+            .map()
+            .err()
+            .expect("CPU read mapping must fail closed");
+        assert!(read_error.contains("zero-copy only"));
+        let write_error = frame
+            .map_mut()
+            .err()
+            .expect("CPU write mapping must fail closed");
+        assert!(write_error.contains("not CPU-writable"));
+
+        drop(device);
+        assert!(weak_device.upgrade().is_some());
+
+        drop(frame);
+        assert!(weak_device.upgrade().is_none());
     }
 }

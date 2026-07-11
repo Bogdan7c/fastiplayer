@@ -57,7 +57,7 @@ pub struct C2DecodeJob<V: VideoFrame> {
 
 impl<V> Job for C2DecodeJob<V>
 where
-    V: VideoFrame,
+    V: VideoFrame + Send + Sync,
 {
     type Frame = V;
 
@@ -113,7 +113,7 @@ impl<V: VideoFrame> Default for C2EncodeJob<V> {
 
 impl<V> Job for C2EncodeJob<V>
 where
-    V: VideoFrame,
+    V: VideoFrame + Send,
 {
     type Frame = V;
 

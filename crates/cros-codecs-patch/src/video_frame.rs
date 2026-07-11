@@ -68,7 +68,10 @@ impl<A> Equivalent<A> for A {
 }
 
 // Unified abstraction for any kind of frame data that might be sent to the hardware.
-pub trait VideoFrame: Send + Sync + Sized + Debug + 'static {
+// Потоковые гарантии задаются на границе, которая действительно передаёт кадр
+// между потоками. Сам trait описывает операции с кадром и не обещает, что
+// backend-разделяемый raw resource допускает конкурентный доступ через `&V`.
+pub trait VideoFrame: Sized + Debug + 'static {
     #[cfg(feature = "v4l2")]
     type NativeHandle: PlaneHandle;
 

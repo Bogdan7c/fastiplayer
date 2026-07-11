@@ -78,7 +78,9 @@ enum C2Decoder<V: VideoFrame> {
 
 pub struct C2DecoderWorker<V, B>
 where
-    V: VideoFrame,
+    // C2 действительно переносит job и `Arc<V>` через worker boundary, поэтому
+    // более сильные traits требуются здесь, а не у всех `VideoFrame` backend-ов.
+    V: VideoFrame + Send + Sync,
     B: C2DecoderBackend,
 {
     decoder: C2Decoder<V>,
@@ -97,7 +99,7 @@ where
 
 impl<V, B> C2DecoderWorker<V, B>
 where
-    V: VideoFrame,
+    V: VideoFrame + Send + Sync,
     B: C2DecoderBackend,
 {
     // Processes events from the decoder. Primarily these are frame decoded events and DRCs.
@@ -162,7 +164,7 @@ where
 
 impl<V, B> C2Worker<C2DecodeJob<V>> for C2DecoderWorker<V, B>
 where
-    V: VideoFrame,
+    V: VideoFrame + Send + Sync,
     B: C2DecoderBackend,
 {
     type Options = <B as C2DecoderBackend>::DecoderOptions;

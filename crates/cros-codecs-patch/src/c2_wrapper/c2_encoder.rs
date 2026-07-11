@@ -66,7 +66,9 @@ pub trait C2EncoderBackend {
 
 pub struct C2EncoderWorker<V, B>
 where
-    V: VideoFrame,
+    // C2 переносит owned input frame в worker thread, поэтому Send относится к
+    // этой command boundary, а не к базовому `VideoFrame` trait.
+    V: VideoFrame + Send,
     B: C2EncoderBackend,
 {
     #[cfg(feature = "vaapi")]
@@ -88,7 +90,7 @@ where
 
 impl<V, B> C2EncoderWorker<V, B>
 where
-    V: VideoFrame,
+    V: VideoFrame + Send,
     B: C2EncoderBackend,
 {
     fn poll_complete_frames(&mut self) {
@@ -113,7 +115,7 @@ where
 
 impl<V, B> C2Worker<C2EncodeJob<V>> for C2EncoderWorker<V, B>
 where
-    V: VideoFrame,
+    V: VideoFrame + Send,
     B: C2EncoderBackend,
 {
     type Options = B::EncoderOptions;

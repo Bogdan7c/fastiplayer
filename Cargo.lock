@@ -4980,6 +4980,7 @@ dependencies = [
  "gbm-sys",
  "media-core",
  "nix 0.29.0",
+ "static_assertions",
  "tracing",
  "video-backend-api",
  "video-core",

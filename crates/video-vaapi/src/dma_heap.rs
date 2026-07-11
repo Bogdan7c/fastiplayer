@@ -1,5 +1,5 @@
 use std::fs::{File, OpenOptions};
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 
 use nix::ioctl_readwrite;
 use nix::libc;
@@ -74,28 +74,54 @@ pub fn allocate_dma_buffer(size: usize) -> anyhow::Result<File> {
         heap_flags: 0,
     };
 
-    // SAFETY: `allocation_request` — корректно размещённая структура, `heap` — валидный fd.
+    // SAFETY: macro ожидает writable pointer на структуру kernel UAPI точного
+    // `#[repr(C)]` layout-а; `allocation_request` живёт весь ioctl. `heap`
+    // содержит открытый dma-heap fd, а ioctl не сохраняет переданный pointer.
     unsafe {
         dma_heap_ioctl_alloc(heap.as_raw_fd(), &mut allocation_request)
             .map_err(|e| anyhow::anyhow!("DMA_HEAP_IOCTL_ALLOC failed: {}", e))?;
     }
 
-    // Проверяем что ядро вернуло валидный fd.
-    if allocation_request.fd == 0 {
-        return Err(anyhow::anyhow!(
-            "DMA_HEAP_IOCTL_ALLOC returned invalid fd (0)"
-        ));
-    }
+    // Нулевой fd валиден, если до ioctl был закрыт stdin. Проверяем только
+    // представимость kernel `u32` в пользовательском `RawFd` (`c_int`).
+    let allocated_raw_fd = dma_heap_fd_to_raw_fd(allocation_request.fd)?;
 
-    // SAFETY: ядро вернуло валидный fd, мы берём на него владение.
-    let file = unsafe { File::from_raw_fd(allocation_request.fd as i32) };
+    // SAFETY: успешный DMA_HEAP_IOCTL_ALLOC возвращает новый owned fd в поле
+    // `fd`. До этой строки его не оборачивают и не закрывают; после неё
+    // единственным владельцем становится `File`.
+    let file = unsafe { File::from_raw_fd(allocated_raw_fd) };
     Ok(file)
+}
+
+/// Проверяет, что беззнаковое поле kernel UAPI представимо как Linux `RawFd`.
+fn dma_heap_fd_to_raw_fd(kernel_fd: u32) -> anyhow::Result<RawFd> {
+    RawFd::try_from(kernel_fd).map_err(|_| {
+        anyhow::anyhow!("DMA_HEAP_IOCTL_ALLOC returned fd outside RawFd range: {kernel_fd}")
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use static_assertions::assert_impl_all;
     use std::path::Path;
+
+    // `File` является единственным RAII-owner DMA-BUF fd. Его можно передать
+    // между потоками без дублирования ownership; закрытие остаётся exactly-once.
+    assert_impl_all!(File: Send, Sync);
+
+    #[test]
+    fn dma_heap_fd_zero_is_a_valid_raw_fd_value() {
+        assert_eq!(dma_heap_fd_to_raw_fd(0).unwrap(), 0);
+    }
+
+    #[test]
+    fn dma_heap_fd_rejects_values_outside_signed_raw_fd_range() {
+        let invalid_kernel_fd = i32::MAX as u32 + 1;
+        let error = dma_heap_fd_to_raw_fd(invalid_kernel_fd).unwrap_err();
+
+        assert!(error.to_string().contains("outside RawFd range"));
+    }
 
     /// Проверяем доступность `/dev/dma_heap/system`.
     ///
