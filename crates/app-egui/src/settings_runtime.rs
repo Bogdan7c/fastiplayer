@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use player_core::{
     PlayerRuntimeAcceptedChange, PlayerRuntimeApplyError, PlayerRuntimeApplyGroup,
     PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyOutcome, PlayerRuntimeApplyReport,
-    PlayerRuntimeApplyResult, PlayerRuntimeSettingsUpdate,
+    PlayerRuntimeApplyResult, PlayerRuntimeBoundaryActivity, PlayerRuntimeSettingsUpdate,
 };
 use render_core::{
     ColorPipelineSettings, HdrToSdrSettings, RenderLiveApplyOutcome, RenderLiveSettings,
@@ -31,8 +31,9 @@ use rustiplayer_settings::{
     AppRouteGroupReport, AppRuntimeRouteApplier, AppRuntimeRouteGroup, AppRuntimeRouteGroupUpdate,
     FrameServerRuntimeSettingsUpdate, MediaServiceRuntimeSettingsUpdate,
     PlayerCommittedSettingsUpdate, RENDER_PREVIEW_ROUTE_ID, RenderCommittedSettingsUpdate,
-    RuntimeCommittedRoute, RuntimeCommittedUpdate, UiRuntimeSettingsUpdate, app_config_registry,
-    committed_routes_from_update, render_live_settings_from_config,
+    RuntimeCommittedRoute, RuntimeCommittedUpdate, SettingsBoundaryActivity,
+    UiRuntimeSettingsUpdate, app_config_registry, committed_routes_from_update,
+    render_live_settings_from_config,
 };
 use settings_core::{
     ApplyFinalState, ApplyMechanism, ApplyReport, ApplyRouteReport, ApplyRouteResult, CancelReport,

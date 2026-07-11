@@ -59,11 +59,11 @@ impl AppState {
     }
 
     /// Доставляет уже подготовленный локальный media в worker после async UI opening-а.
-    pub(super) fn load_prepared_local_file(
+    pub(crate) fn load_prepared_local_file(
         &mut self,
         path: PathBuf,
         prepared_media: PreparedMedia,
-    ) {
+    ) -> bool {
         let autoplay = self.committed_config_snapshot.autoplay_for_new_media();
 
         if let Err(error) = self
@@ -75,7 +75,7 @@ impl AppState {
                 "Ошибка открытия media-файла {}: worker недоступен: {error}",
                 path.display()
             ));
-            return;
+            return false;
         }
 
         self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
@@ -83,6 +83,7 @@ impl AppState {
         self.current_local_file = Some(path.clone());
         self.remember_active_media_source(ActiveMediaSource::LocalFile(path));
         self.mark_pending_worker_redraw();
+        true
     }
 
     /// Загружает YouTube demuxer без долговременного database/cache слоя.
@@ -164,12 +165,6 @@ impl AppState {
     #[must_use]
     pub(crate) fn active_media_source(&self) -> Option<ActiveMediaSource> {
         self.active_media_source.clone()
-    }
-
-    /// Возвращает текущий demux config snapshot для повторного открытия source.
-    #[must_use]
-    pub(crate) fn demux_config_for_open(&self) -> PlayerDemuxConfig {
-        self.committed_config_snapshot.demux_config_for_open()
     }
 
     fn remember_active_media_source(&mut self, source: ActiveMediaSource) {

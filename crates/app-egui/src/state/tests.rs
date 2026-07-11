@@ -457,7 +457,7 @@ fn video_pipeline_rebuild_stops_before_vaapi_startup_when_selector_rejects() {
         "/// Возвращает WGPU materializer текущего concrete video backend-а.",
     );
     let selector_error_return = rebuild_section
-        .find(".map_err(|error| format!(\"video pipeline selection failed: {error}\"))?;")
+        .find("video pipeline selection failed: {error}")
         .expect("rebuild должен возвращать selection error через ? до backend startup");
     let vaapi_factory_start = rebuild_section
         .find("VaapiVideoBackendFactory::new_with_decoder_config")
@@ -596,7 +596,7 @@ fn app_state_player_snapshot_boundary_stays_explicit() {
 #[test]
 fn live_settings_rebuild_passes_active_stream_requirement() {
     let state_source = state_source_for_architecture_tests();
-    let frame_prepare_source = include_str!("../frame_prepare.rs");
+    let frame_prepare_source = include_str!("../frame_prepare/settings_runtime_adapter.rs");
 
     // AppState кэширует requirement активного стрима и отдаёт его по boundary-методу.
     assert!(
@@ -616,7 +616,7 @@ fn live_settings_rebuild_passes_active_stream_requirement() {
     let apply_section = source_section_between(
         frame_prepare_source,
         "fn apply_player_runtime_settings(",
-        "self.app_state.apply_player_runtime_settings(update)",
+        "fn apply_media_service_runtime_settings(",
     );
     assert!(
         apply_section.contains("self.app_state.active_video_stream_requirement()"),

@@ -544,6 +544,33 @@ impl AppState {
         }
     }
 
+    /// Выполняет configured hotkey seek без дублирования timeline business logic.
+    fn seek_by_hotkey(&mut self, step: Duration, forward: bool) {
+        let snapshot = self.refresh_player_snapshot();
+        let target = if forward {
+            snapshot.current_position.checked_add(step).map_or(
+                snapshot.current_position,
+                |position| {
+                    snapshot
+                        .duration
+                        .filter(|duration| !duration.is_zero())
+                        .map_or(position, |duration| position.min(duration))
+                },
+            )
+        } else {
+            snapshot.current_position.saturating_sub(step)
+        };
+
+        if let Err(error) = self
+            .player_worker
+            .try_send_command(PlayerCommand::Seek(SeekRequest::absolute(target.into())))
+        {
+            warn!(error = %error, "Не удалось отправить configured hotkey seek");
+        } else {
+            self.mark_pending_worker_redraw();
+        }
+    }
+
     /// Обрабатывает горячие клавиши shell и отправляет команды в playback worker.
     pub fn handle_hotkeys(
         &mut self,
@@ -579,6 +606,34 @@ impl AppState {
                 } else {
                     self.mark_pending_worker_redraw();
                 }
+                true
+            }
+            winit::keyboard::KeyCode::ArrowLeft | winit::keyboard::KeyCode::KeyJ => {
+                self.seek_by_hotkey(
+                    self.committed_config_snapshot.hotkey_small_seek_step(),
+                    false,
+                );
+                true
+            }
+            winit::keyboard::KeyCode::ArrowRight | winit::keyboard::KeyCode::KeyL => {
+                self.seek_by_hotkey(
+                    self.committed_config_snapshot.hotkey_small_seek_step(),
+                    true,
+                );
+                true
+            }
+            winit::keyboard::KeyCode::PageUp => {
+                self.seek_by_hotkey(
+                    self.committed_config_snapshot.hotkey_large_seek_step(),
+                    false,
+                );
+                true
+            }
+            winit::keyboard::KeyCode::PageDown => {
+                self.seek_by_hotkey(
+                    self.committed_config_snapshot.hotkey_large_seek_step(),
+                    true,
+                );
                 true
             }
             _ => false,

@@ -1,0 +1,498 @@
+//! Runtime settings adapter, который связывает UI transaction с app/player/media owners.
+
+use super::*;
+
+/// Runtime adapter одного frame-а: render live preview + committed runtime owners.
+pub(super) struct FrameSettingsRuntimeAdapter<'frame> {
+    /// App state владеет player worker и app-level media/source identity.
+    app_state: &'frame mut AppState,
+
+    /// Renderer владеет WGPU context и live render settings.
+    renderer: &'frame mut Renderer,
+}
+
+impl<'frame> FrameSettingsRuntimeAdapter<'frame> {
+    /// Создаёт короткоживущий adapter без передачи ownership UI layer-у.
+    pub(super) fn new(app_state: &'frame mut AppState, renderer: &'frame mut Renderer) -> Self {
+        Self {
+            app_state,
+            renderer,
+        }
+    }
+}
+
+/// Полный config snapshot для staged active-media reopen-а.
+struct ActiveMediaReconfigureConfig {
+    network: rustiplayer_config::NetworkConfig,
+    youtube: rustiplayer_config::YoutubeConfig,
+    demux: rustiplayer_config::PlayerDemuxConfig,
+    preferred_video_codec_order: Vec<rustiplayer_config::VideoCodec>,
+    reselect_youtube_stream: bool,
+    rebuild_local_source: bool,
+}
+
+impl FrameSettingsRuntimeAdapter<'_> {
+    /// Перестраивает только reconstructible active source после read-only busy preflight.
+    fn reconfigure_active_media(
+        &mut self,
+        config: ActiveMediaReconfigureConfig,
+    ) -> AppRouteApplyResult {
+        let Some(active_source) = self.app_state.active_media_source() else {
+            return AppRouteApplyResult::Applied;
+        };
+        if matches!(&active_source, ActiveMediaSource::LocalFile(_)) && !config.rebuild_local_source
+        {
+            return AppRouteApplyResult::Applied;
+        }
+
+        match self.app_state.runtime_reconfigure_boundary_activity() {
+            Ok(Some(activity)) => {
+                return AppRouteApplyResult::RuntimeBusy {
+                    activity: settings_boundary_activity_from_player(activity),
+                };
+            }
+            Ok(None) => {}
+            Err(PlayerRuntimeApplyError::Backpressure) => {
+                return AppRouteApplyResult::RuntimeBusy {
+                    activity: SettingsBoundaryActivity::PipelineLifecycle,
+                };
+            }
+            Err(error) => {
+                return AppRouteApplyResult::Failed {
+                    message: format!("media reconfigure preflight failed: {error}"),
+                };
+            }
+        }
+
+        let playback_snapshot = self.app_state.refresh_player_snapshot();
+        let preferred_runtime_codecs = config
+            .preferred_video_codec_order
+            .iter()
+            .copied()
+            .map(runtime_video_codec)
+            .collect::<Vec<_>>();
+        let rebuild_result = match active_source {
+            ActiveMediaSource::LocalFile(path) => {
+                match crate::local_media::prepare_local_file(&path, &config.demux) {
+                    Ok(prepared_media) => {
+                        let prepared_media =
+                            prepared_media.with_preferred_video_codecs(&preferred_runtime_codecs);
+                        if self
+                            .app_state
+                            .load_prepared_local_file(path, prepared_media)
+                        {
+                            Ok(())
+                        } else {
+                            Err("local media rebuild failed while sending media to worker"
+                                .to_string())
+                        }
+                    }
+                    Err(error) => Err(format!("local media rebuild failed: {error:#}")),
+                }
+            }
+            ActiveMediaSource::DirectMediaUrl(source_url) => {
+                match resolve_direct_media_startup_media(
+                    &source_url,
+                    &config.network,
+                    &config.demux,
+                ) {
+                    Ok(opened_media) => {
+                        let source_label = opened_media.source_label().to_string();
+                        let prepared_media = PreparedMedia::from_external_label(
+                            source_label.clone(),
+                            opened_media.into_demuxer(),
+                        )
+                        .with_preferred_video_codecs(&preferred_runtime_codecs);
+                        if self.app_state.load_prepared_direct_media(
+                            source_url,
+                            source_label,
+                            prepared_media,
+                        ) {
+                            Ok(())
+                        } else {
+                            Err("direct media rebuild failed while sending media to worker"
+                                .to_string())
+                        }
+                    }
+                    Err(error) => Err(format!("direct media rebuild failed: {error:#}")),
+                }
+            }
+            ActiveMediaSource::YouTubeUrl {
+                source_url,
+                selected_stream_identity,
+            } => {
+                if config.reselect_youtube_stream {
+                    let system_capabilities =
+                        probe_system_capabilities(self.renderer.render_capabilities());
+                    match resolve_youtube_startup_media(
+                        &source_url,
+                        &config.network,
+                        &config.youtube,
+                        &config.demux,
+                        &config.preferred_video_codec_order,
+                        &system_capabilities,
+                    ) {
+                        Ok(prepared) => {
+                            if self.app_state.load_youtube_demuxer(
+                                source_url,
+                                prepared.streaming_media.description,
+                                prepared.streaming_media.demuxer,
+                                prepared.selected_stream_identity,
+                            ) {
+                                Ok(())
+                            } else {
+                                Err(
+                                    "YouTube media rebuild failed while sending demuxer to worker"
+                                        .to_string(),
+                                )
+                            }
+                        }
+                        Err(error) => Err(format!("YouTube media rebuild failed: {error:#}")),
+                    }
+                } else {
+                    match service_youtube::open_seekable_vod_from_selected_identity_with_demux_config(
+                        &source_url,
+                        &selected_stream_identity,
+                        &config.network,
+                        &config.youtube,
+                        &config.demux,
+                    ) {
+                        Ok(streaming_media) => {
+                            if self.app_state.load_youtube_demuxer(
+                                source_url,
+                                streaming_media.description,
+                                streaming_media.demuxer,
+                                selected_stream_identity,
+                            ) {
+                                Ok(())
+                            } else {
+                                Err("YouTube media rebuild failed while sending demuxer to worker"
+                                    .to_string())
+                            }
+                        }
+                        Err(error) => Err(format!(
+                            "selected YouTube media rebuild failed without changing stream: {error}"
+                        )),
+                    }
+                }
+            }
+        };
+
+        match rebuild_result {
+            Ok(()) => {
+                self.app_state
+                    .restore_playback_after_media_reconfigure(&playback_snapshot);
+                AppRouteApplyResult::Applied
+            }
+            Err(message) => AppRouteApplyResult::Failed { message },
+        }
+    }
+}
+
+impl RenderLiveSettingsAdapter for FrameSettingsRuntimeAdapter<'_> {
+    fn preview_live_settings(
+        &mut self,
+        update: &RenderLiveSettingsUpdate,
+    ) -> std::result::Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+        self.renderer.preview_live_settings(update)
+    }
+
+    fn commit_live_settings(
+        &mut self,
+        settings: &RenderLiveSettings,
+    ) -> std::result::Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+        self.renderer.commit_live_settings(settings)
+    }
+
+    fn rollback_live_settings(
+        &mut self,
+        baseline: &RenderLiveSettings,
+    ) -> std::result::Result<RenderLiveApplyReport, RenderLiveSettingsError> {
+        self.renderer.rollback_live_settings(baseline)
+    }
+}
+
+impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
+    fn sync_committed_config_snapshot(&mut self, snapshot: CommittedConfigSnapshot) {
+        self.app_state.sync_committed_config_snapshot(snapshot);
+    }
+
+    fn apply_player_runtime_settings(
+        &mut self,
+        update: &PlayerCommittedSettingsUpdate,
+    ) -> PlayerRuntimeApplyResult {
+        let mut report = PlayerRuntimeApplyReport::empty();
+        let player_update = &update.player_core;
+        let mut remaining_player_update = player_update.clone();
+
+        if player_update.decoder_thread_config.is_some() || player_update.video_backend.is_some() {
+            let backend_preference = player_update.video_backend.as_ref().map_or_else(
+                || self.app_state.video_backend_preference(),
+                |backend_update| match backend_update.preference {
+                    player_core::PlayerRuntimeVideoBackendPreference::Auto => {
+                        rustiplayer_config::VideoBackendPreference::Auto
+                    }
+                    player_core::PlayerRuntimeVideoBackendPreference::Hardware => {
+                        rustiplayer_config::VideoBackendPreference::Hardware
+                    }
+                    player_core::PlayerRuntimeVideoBackendPreference::Software => {
+                        rustiplayer_config::VideoBackendPreference::Software
+                    }
+                },
+            );
+            let decoder_thread_config = player_update.decoder_thread_config.as_ref().map_or_else(
+                || self.app_state.current_decoder_thread_config(),
+                |decoder_update| decoder_update.decoder_thread_config,
+            );
+            let stream_requirement = self.app_state.active_video_stream_requirement().cloned();
+            if let Err(error) = self.app_state.rebuild_video_pipeline_with_decoder_config(
+                VideoPipelineRebuildRequest {
+                    backend_preference,
+                    install_intent:
+                        player_core::PlayerVideoBackendInstallIntent::SettingsReconfigure,
+                    decoder_thread_config,
+                    stream_requirement: stream_requirement.as_ref(),
+                    instance: self.renderer.instance(),
+                    adapter: self.renderer.adapter(),
+                    device: self.renderer.device(),
+                    queue: self.renderer.queue(),
+                },
+            ) {
+                return Ok(player_pipeline_rebuild_failure_report(player_update, error));
+            }
+
+            if let Some(decoder_update) = &player_update.decoder_thread_config {
+                report.push(PlayerRuntimeApplyGroupReport::accepted(
+                    PlayerRuntimeApplyGroup::DecoderThreadConfig,
+                    decoder_update.affected_settings.clone(),
+                    player_core::PlayerRuntimeAcceptedChange::Applied,
+                    "decoder config committed with controlled backend rebuild",
+                ));
+            }
+            if let Some(backend_update) = &player_update.video_backend {
+                report.push(PlayerRuntimeApplyGroupReport::accepted(
+                    PlayerRuntimeApplyGroup::VideoBackend,
+                    backend_update.affected_settings.clone(),
+                    player_core::PlayerRuntimeAcceptedChange::Applied,
+                    "video backend policy committed with controlled pipeline rebuild",
+                ));
+            }
+            remaining_player_update.decoder_thread_config = None;
+            remaining_player_update.video_backend = None;
+        }
+
+        if let Some(media_update) = &update.media_pipeline {
+            let mut app_config = self.app_state.committed_app_config();
+            app_config.player.demux = media_update.demux;
+            app_config.player.preferred_video_codec_order =
+                media_update.preferred_video_codec_order.clone();
+            let reselect_youtube_stream = media_update
+                .affected_settings
+                .iter()
+                .any(|setting_id| setting_id.as_str() == "player.preferred_video_codec_order");
+            let media_result = self.reconfigure_active_media(ActiveMediaReconfigureConfig {
+                network: app_config.network,
+                youtube: app_config.youtube,
+                demux: app_config.player.demux,
+                preferred_video_codec_order: app_config.player.preferred_video_codec_order,
+                reselect_youtube_stream,
+                rebuild_local_source: true,
+            });
+            let affected_settings =
+                player_runtime_ids_from_setting_ids(&media_update.affected_settings);
+            match media_result {
+                AppRouteApplyResult::Applied | AppRouteApplyResult::Noop => {
+                    report.push(PlayerRuntimeApplyGroupReport::accepted(
+                        PlayerRuntimeApplyGroup::MediaPipeline,
+                        affected_settings,
+                        player_core::PlayerRuntimeAcceptedChange::Applied,
+                        "active media pipeline rebuilt with committed demux/codec policy",
+                    ));
+                }
+                AppRouteApplyResult::RuntimeBusy { activity } => {
+                    report.push(PlayerRuntimeApplyGroupReport::runtime_busy(
+                        PlayerRuntimeApplyGroup::MediaPipeline,
+                        affected_settings,
+                        player_activity_from_settings(activity),
+                        "active media pipeline boundary is busy",
+                    ));
+                    return Ok(report);
+                }
+                AppRouteApplyResult::Failed { message }
+                | AppRouteApplyResult::PartialFailure { message }
+                | AppRouteApplyResult::DeferredTechnicalDebt { message } => {
+                    report.push(PlayerRuntimeApplyGroupReport::fatal(
+                        PlayerRuntimeApplyGroup::MediaPipeline,
+                        affected_settings,
+                        message,
+                    ));
+                    return Ok(report);
+                }
+                AppRouteApplyResult::Conflict { .. } | AppRouteApplyResult::PreviewPromoted => {
+                    report.push(PlayerRuntimeApplyGroupReport::fatal(
+                        PlayerRuntimeApplyGroup::MediaPipeline,
+                        affected_settings,
+                        "unexpected media-pipeline route outcome",
+                    ));
+                    return Ok(report);
+                }
+            }
+        }
+
+        if !remaining_player_update.is_empty() {
+            let worker_report = self
+                .app_state
+                .apply_player_runtime_settings(remaining_player_update)?;
+            for group in worker_report.groups {
+                report.push(group);
+            }
+        }
+
+        if !update.event_policy_settings.is_empty() {
+            report.push(PlayerRuntimeApplyGroupReport::accepted(
+                PlayerRuntimeApplyGroup::EventPolicy,
+                player_runtime_ids_from_setting_ids(&update.event_policy_settings),
+                player_core::PlayerRuntimeAcceptedChange::Applied,
+                "event-scoped player policy accepted for the next natural event",
+            ));
+        }
+
+        Ok(report)
+    }
+
+    fn apply_media_service_runtime_settings(
+        &mut self,
+        update: &MediaServiceRuntimeSettingsUpdate,
+        affected_settings: &[SettingId],
+    ) -> AppRouteApplyResult {
+        if affected_settings
+            .iter()
+            .all(|setting_id| setting_id.as_str().starts_with("youtube."))
+        {
+            return self.app_state.apply_media_service_runtime_settings(update);
+        }
+
+        let mut app_config = self.app_state.committed_app_config();
+        app_config.network = update.network.clone();
+        app_config.youtube = update.youtube.clone();
+        self.reconfigure_active_media(ActiveMediaReconfigureConfig {
+            network: app_config.network,
+            youtube: app_config.youtube,
+            demux: app_config.player.demux,
+            preferred_video_codec_order: app_config.player.preferred_video_codec_order,
+            reselect_youtube_stream: false,
+            rebuild_local_source: false,
+        })
+    }
+}
+
+/// Конвертирует project setting ids в typed player report ids.
+fn player_runtime_ids_from_setting_ids(
+    setting_ids: &[SettingId],
+) -> Vec<player_core::PlayerRuntimeSettingId> {
+    setting_ids
+        .iter()
+        .filter_map(|setting_id| match setting_id.as_str() {
+            "player.start_paused" => Some(player_core::PlayerRuntimeSettingId::PlayerStartPaused),
+            "player.resume_last_position" => {
+                Some(player_core::PlayerRuntimeSettingId::PlayerResumeLastPosition)
+            }
+            "player.seek.paused_commit_behavior" => {
+                Some(player_core::PlayerRuntimeSettingId::PlayerSeekPausedCommitBehavior)
+            }
+            "player.seek.hotkey_small_step_secs" => {
+                Some(player_core::PlayerRuntimeSettingId::PlayerSeekHotkeySmallStepSecs)
+            }
+            "player.seek.hotkey_large_step_secs" => {
+                Some(player_core::PlayerRuntimeSettingId::PlayerSeekHotkeyLargeStepSecs)
+            }
+            "player.preferred_video_codec_order" => {
+                Some(player_core::PlayerRuntimeSettingId::PlayerPreferredVideoCodecOrder)
+            }
+            "player.demux.max_consecutive_corrupted_packets" => {
+                Some(player_core::PlayerRuntimeSettingId::PlayerDemuxMaxConsecutiveCorruptedPackets)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Возвращает neutral player activity для worker-level report-а.
+const fn player_activity_from_settings(
+    activity: SettingsBoundaryActivity,
+) -> player_core::PlayerRuntimeBoundaryActivity {
+    match activity {
+        SettingsBoundaryActivity::Seek => player_core::PlayerRuntimeBoundaryActivity::Seek,
+        SettingsBoundaryActivity::Scrub => player_core::PlayerRuntimeBoundaryActivity::Scrub,
+        SettingsBoundaryActivity::SettingsTransaction
+        | SettingsBoundaryActivity::PipelineLifecycle
+        | SettingsBoundaryActivity::RendererLifecycle => {
+            player_core::PlayerRuntimeBoundaryActivity::PipelineLifecycle
+        }
+    }
+}
+
+/// Сопоставляет neutral player busy activity с project settings contract.
+const fn settings_boundary_activity_from_player(
+    activity: player_core::PlayerRuntimeBoundaryActivity,
+) -> SettingsBoundaryActivity {
+    match activity {
+        player_core::PlayerRuntimeBoundaryActivity::Seek => SettingsBoundaryActivity::Seek,
+        player_core::PlayerRuntimeBoundaryActivity::Scrub => SettingsBoundaryActivity::Scrub,
+        player_core::PlayerRuntimeBoundaryActivity::PipelineLifecycle => {
+            SettingsBoundaryActivity::PipelineLifecycle
+        }
+    }
+}
+
+/// Строит typed player report, если app-owned pipeline rebuild не стартовал.
+fn player_pipeline_rebuild_failure_report(
+    update: &PlayerRuntimeSettingsUpdate,
+    error: VideoPipelineRebuildError,
+) -> PlayerRuntimeApplyReport {
+    let mut report = PlayerRuntimeApplyReport::empty();
+    let message = error.to_string();
+    let runtime_busy = match &error {
+        VideoPipelineRebuildError::Worker(PlayerRuntimeApplyError::RuntimeBusy(activity)) => {
+            Some(*activity)
+        }
+        _ => None,
+    };
+    let apply_and_rollback_failed = matches!(
+        error,
+        VideoPipelineRebuildError::Worker(PlayerRuntimeApplyError::ApplyAndRollbackFailed { .. })
+    );
+    let group_report = |group, affected_settings, group_message: String| {
+        if let Some(activity) = runtime_busy {
+            PlayerRuntimeApplyGroupReport::runtime_busy(
+                group,
+                affected_settings,
+                activity,
+                group_message,
+            )
+        } else if apply_and_rollback_failed {
+            PlayerRuntimeApplyGroupReport::apply_and_rollback_failed(
+                group,
+                affected_settings,
+                group_message,
+            )
+        } else {
+            PlayerRuntimeApplyGroupReport::fatal(group, affected_settings, group_message)
+        }
+    };
+    if let Some(decoder_update) = &update.decoder_thread_config {
+        report.push(group_report(
+            PlayerRuntimeApplyGroup::DecoderThreadConfig,
+            decoder_update.affected_settings.clone(),
+            message.clone(),
+        ));
+    }
+    if let Some(backend_update) = &update.video_backend {
+        report.push(group_report(
+            PlayerRuntimeApplyGroup::VideoBackend,
+            backend_update.affected_settings.clone(),
+            message,
+        ));
+    }
+    report
+}

@@ -23,7 +23,7 @@ use render_wgpu_video::{
     DmaBufWgpuFrameMaterializer, HostPlanarWgpuFrameMaterializer, WgpuFrameTextureViewMaterializer,
     WgpuFrameTextureViews, wrap_video_backend_for_wgpu_submission,
 };
-use rustiplayer_config::{FrameServerLiveScrubDecodeModeConfig, PlayerDemuxConfig};
+use rustiplayer_config::FrameServerLiveScrubDecodeModeConfig;
 use rustiplayer_settings::{AppRouteApplyResult, MediaServiceRuntimeSettingsUpdate};
 use tracing::{debug, info, instrument, warn};
 use video_ffmpeg::FfmpegSoftwareVideoBackendFactory;
@@ -69,7 +69,9 @@ pub(crate) use media_jobs::ActiveMediaSource;
 #[allow(unused_imports)]
 pub use present_frame_cache::PresentFrameAcquisition;
 pub use present_frame_cache::RenderablePresentFrame;
-pub(crate) use video_backend::BackendSwapVideoPhase;
+pub(crate) use video_backend::{
+    BackendSwapVideoPhase, VideoPipelineRebuildError, VideoPipelineRebuildRequest,
+};
 
 use main_visual_override::MainVisualOverrideState;
 use present_frame_cache::CachedRenderablePresentFrame;
@@ -375,9 +377,29 @@ impl AppState {
         self.player_worker.apply_runtime_settings(update)
     }
 
+    /// Read-only preflight settings lifecycle boundary через worker owner.
+    pub(crate) fn runtime_reconfigure_boundary_activity(
+        &self,
+    ) -> Result<
+        Option<player_core::PlayerRuntimeBoundaryActivity>,
+        player_core::PlayerRuntimeApplyError,
+    > {
+        self.player_worker.runtime_reconfigure_boundary_activity()
+    }
+
     /// Текущий decoder-thread config worker-а для app-owned pipeline rebuild.
     pub(crate) fn current_decoder_thread_config(&self) -> PlayerVideoDecoderThreadConfig {
         self.player_worker.decoder_thread_config()
+    }
+
+    /// Возвращает committed backend policy для rebuild-ов, не вызванных её изменением.
+    pub(crate) fn video_backend_preference(&self) -> rustiplayer_config::VideoBackendPreference {
+        self.committed_config_snapshot.video_backend_preference()
+    }
+
+    /// Клонирует committed config только для staged owner rebuild-а.
+    pub(crate) fn committed_app_config(&self) -> rustiplayer_config::AppConfig {
+        self.committed_config_snapshot.as_config().clone()
     }
 
     /// Применяет media/source policy через app-level owner.

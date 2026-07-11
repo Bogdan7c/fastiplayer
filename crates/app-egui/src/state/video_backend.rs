@@ -1,5 +1,43 @@
 use super::*;
 
+/// Typed failure controlled video-pipeline rebuild-а.
+#[derive(Debug)]
+pub(crate) enum VideoPipelineRebuildError {
+    /// Новый backend/materializer не удалось подготовить до runtime mutation.
+    Preparation(String),
+    /// Worker отклонил commit или сообщил apply/rollback failure.
+    Worker(player_core::PlayerRuntimeApplyError),
+}
+
+impl std::fmt::Display for VideoPipelineRebuildError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Preparation(message) => formatter.write_str(message),
+            Self::Worker(error) => write!(formatter, "video backend worker commit failed: {error}"),
+        }
+    }
+}
+
+/// Именованный request controlled video-pipeline rebuild-а.
+pub(crate) struct VideoPipelineRebuildRequest<'resource> {
+    /// User policy выбора backend-а.
+    pub(crate) backend_preference: rustiplayer_config::VideoBackendPreference,
+    /// Lifecycle intent, определяющий retryable busy semantics.
+    pub(crate) install_intent: player_core::PlayerVideoBackendInstallIntent,
+    /// Queue/pool/thread config нового decoder-а.
+    pub(crate) decoder_thread_config: PlayerVideoDecoderThreadConfig,
+    /// Requirement текущего stream-а, если media уже активно.
+    pub(crate) stream_requirement: Option<&'resource VideoDecodeRequirement>,
+    /// WGPU instance для backend startup.
+    pub(crate) instance: &'resource wgpu::Instance,
+    /// WGPU adapter для materializer selection.
+    pub(crate) adapter: &'resource wgpu::Adapter,
+    /// WGPU device для materializer creation.
+    pub(crate) device: &'resource wgpu::Device,
+    /// WGPU queue для frame-resource bridge.
+    pub(crate) queue: &'resource wgpu::Queue,
+}
+
 /// Решение video-пайплайна на время живой смены backend-а.
 pub(crate) enum BackendSwapVideoPhase<'frame> {
     /// Свап не идёт — обычный путь acquire/materialize.
@@ -21,14 +59,19 @@ impl AppState {
         queue: &wgpu::Queue,
     ) {
         let decoder_thread_config = self.player_worker.decoder_thread_config();
-        if let Err(error) = self.rebuild_video_pipeline_with_decoder_config(
-            decoder_thread_config,
-            None,
-            instance,
-            adapter,
-            device,
-            queue,
-        ) {
+        let backend_preference = self.committed_config_snapshot.video_backend_preference();
+        if let Err(error) =
+            self.rebuild_video_pipeline_with_decoder_config(VideoPipelineRebuildRequest {
+                backend_preference,
+                install_intent: player_core::PlayerVideoBackendInstallIntent::PipelineDemand,
+                decoder_thread_config,
+                stream_requirement: None,
+                instance,
+                adapter,
+                device,
+                queue,
+            })
+        {
             warn!(error = %error, "Video pipeline unavailable");
         }
     }
@@ -36,20 +79,29 @@ impl AppState {
     /// Пересоздаёт concrete video backend через app-owned composition boundary.
     pub(crate) fn rebuild_video_pipeline_with_decoder_config(
         &mut self,
-        decoder_thread_config: PlayerVideoDecoderThreadConfig,
-        stream_requirement: Option<&VideoDecodeRequirement>,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) -> Result<(), String> {
+        request: VideoPipelineRebuildRequest<'_>,
+    ) -> Result<(), VideoPipelineRebuildError> {
+        let VideoPipelineRebuildRequest {
+            backend_preference,
+            install_intent,
+            decoder_thread_config,
+            stream_requirement,
+            instance,
+            adapter,
+            device,
+            queue,
+        } = request;
         let plan = select_video_pipeline_plan(
-            self.committed_config_snapshot.video_backend_preference(),
+            backend_preference,
             self.system_capabilities_snapshot.as_ref(),
             decoder_thread_config,
             stream_requirement,
         )
-        .map_err(|error| format!("video pipeline selection failed: {error}"))?;
+        .map_err(|error| {
+            VideoPipelineRebuildError::Preparation(format!(
+                "video pipeline selection failed: {error}"
+            ))
+        })?;
         let plan_label = plan.diagnostic_label();
         let plan_backend_kind = plan.backend_kind();
 
@@ -63,7 +115,9 @@ impl AppState {
                 let backend_factory =
                     VaapiVideoBackendFactory::new_with_decoder_config(decoder_thread_config);
                 let started_backend = backend_factory.start_for_composition().map_err(|error| {
-                    format!("video backend startup failed for {plan_label}: {error}")
+                    VideoPipelineRebuildError::Preparation(format!(
+                        "video backend startup failed for {plan_label}: {error}"
+                    ))
                 })?;
                 let (player_backend, frame_resource_provider) =
                     wrap_video_backend_for_wgpu_submission(started_backend, queue);
@@ -84,7 +138,9 @@ impl AppState {
                     decoder_thread_config,
                 );
                 let started_backend = backend_factory.start_for_composition().map_err(|error| {
-                    format!("video backend startup failed for {plan_label}: {error}")
+                    VideoPipelineRebuildError::Preparation(format!(
+                        "video backend startup failed for {plan_label}: {error}"
+                    ))
                 })?;
                 let (player_backend, frame_resource_provider) =
                     wrap_video_backend_for_wgpu_submission(started_backend, queue);
@@ -101,8 +157,13 @@ impl AppState {
 
         let previous_backend_kind = self.current_video_backend_kind;
 
-        if let Err(error) = self.player_worker.set_video_backend(player_backend) {
-            return Err(format!("video backend command delivery failed: {error}"));
+        if let Err(error) = self.player_worker.set_video_backend(
+            player_backend,
+            install_intent,
+            (install_intent == player_core::PlayerVideoBackendInstallIntent::SettingsReconfigure)
+                .then_some(decoder_thread_config),
+        ) {
+            return Err(VideoPipelineRebuildError::Worker(error));
         }
 
         self.clear_main_visual_override();
@@ -167,14 +228,19 @@ impl AppState {
                 if self.current_video_backend_kind == Some(plan.backend_kind()) {
                     return;
                 }
-                if let Err(error) = self.rebuild_video_pipeline_with_decoder_config(
-                    decoder_thread_config,
-                    Some(&request.requirement),
-                    instance,
-                    adapter,
-                    device,
-                    queue,
-                ) {
+                if let Err(error) =
+                    self.rebuild_video_pipeline_with_decoder_config(VideoPipelineRebuildRequest {
+                        backend_preference: preference,
+                        install_intent:
+                            player_core::PlayerVideoBackendInstallIntent::PipelineDemand,
+                        decoder_thread_config,
+                        stream_requirement: Some(&request.requirement),
+                        instance,
+                        adapter,
+                        device,
+                        queue,
+                    })
+                {
                     warn!(error = %error, "Не удалось переключить video backend под текущий стрим");
                     if !request.decodable_by_active_backend {
                         self.reject_pending_video_backend(format!(

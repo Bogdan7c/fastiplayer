@@ -933,6 +933,61 @@ fn switching_to_hardware_backend_recomputes_active_frame_contract() {
 }
 
 #[test]
+fn failed_settings_backend_rebuild_restores_previous_decoder_and_track_selection() {
+    let mut session = PlayerSession::new();
+    session.set_system_capabilities(capabilities_with_hardware_and_ffmpeg_outputs());
+
+    let previous_decoder = SharedFakeVideoDecoderThread::new();
+    session.set_video_backend(crate::StartedVideoBackend::from_decoder_thread(
+        "ffmpeg-sw",
+        previous_decoder.clone(),
+    ));
+    install_fake_media_with_seekability(
+        &mut session,
+        vec![vp9_full_track(1)],
+        DemuxSeekability::Seekable,
+    );
+    let previous_requirement = session
+        .pipeline
+        .active_video_requirement()
+        .expect("active media должен сохранить video requirement")
+        .clone();
+    let previous_configure_count = previous_decoder.configured_streams().len();
+
+    let failing_decoder = SharedFakeVideoDecoderThread::new();
+    failing_decoder.push_configure_result(video_core::VideoStreamConfigResult::Fatal(
+        DecodeThreadError::new("replacement configure failed"),
+    ));
+
+    let error = session
+        .install_video_backend_with_intent(
+            crate::StartedVideoBackend::from_decoder_thread("vaapi", failing_decoder),
+            crate::PlayerVideoBackendInstallIntent::SettingsReconfigure,
+        )
+        .expect_err("невалидный replacement decoder должен запустить rollback");
+
+    assert!(matches!(error, crate::PlayerRuntimeApplyError::Fatal(_)));
+    assert_eq!(session.pipeline.video_backend_name(), "Shared fake decoder");
+    assert_eq!(
+        session.snapshot().selected_tracks.video_track,
+        Some(TrackId::new(1))
+    );
+    assert_eq!(
+        session.pipeline.active_video_requirement(),
+        Some(&previous_requirement)
+    );
+    assert_eq!(
+        previous_decoder.configured_streams().len(),
+        previous_configure_count,
+        "rollback не должен повторно мутировать уже сконфигурированный прежний decoder"
+    );
+    assert!(
+        previous_decoder.stream_config().is_some(),
+        "прежний decoder должен сохранить рабочую stream configuration"
+    );
+}
+
+#[test]
 fn swapping_active_backend_advances_render_generation_but_first_install_does_not() {
     // Живой свап backend-а обязан продвинуть render generation, чтобы удержанные
     // present-кадры/lease старого backend-а (например P010 DMA-BUF от VA-API) отсеклись

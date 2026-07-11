@@ -30,6 +30,7 @@ rustiplayer-settings.workspace = true
 settings-core.workspace = true
 source-core.workspace = true
 capability-core.workspace = true
+codec-core.workspace = true
 service-direct-media.workspace = true
 service-youtube.workspace = true
 desktop-integration.workspace = true

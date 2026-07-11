@@ -5,8 +5,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use capability_core::{SelectedVideoStream, StreamSelectionError, SystemCapabilities};
+use codec_core::VideoCodec as RuntimeVideoCodec;
 use player_core::PreparedMedia;
-use rustiplayer_config::{AppConfig, NetworkConfig, PlayerDemuxConfig, YoutubeConfig};
+use rustiplayer_config::{
+    AppConfig, NetworkConfig, PlayerDemuxConfig, VideoCodec as ConfigVideoCodec, YoutubeConfig,
+};
 use service_youtube::YoutubeStreamCandidates;
 use thiserror::Error;
 use tracing::{debug, info, warn};
@@ -72,6 +75,7 @@ impl YoutubeStartupJob {
         let network_config = app_config.network.clone();
         let youtube_config = app_config.youtube.clone();
         let demux_config = app_config.player.demux;
+        let preferred_video_codec_order = app_config.player.preferred_video_codec_order;
         let join_handle = thread::Builder::new()
             .name("youtube-startup-resolver".to_string())
             .spawn(move || {
@@ -80,6 +84,7 @@ impl YoutubeStartupJob {
                     &network_config,
                     &youtube_config,
                     &demux_config,
+                    &preferred_video_codec_order,
                     &system_capabilities,
                 )
                 .map_err(|error| format!("{error:#}"));
@@ -366,13 +371,18 @@ pub(crate) fn resolve_youtube_startup_media(
     network_config: &NetworkConfig,
     youtube_config: &YoutubeConfig,
     demux_config: &PlayerDemuxConfig,
+    preferred_video_codec_order: &[ConfigVideoCodec],
     system_capabilities: &SystemCapabilities,
 ) -> Result<PreparedYoutubeStartupMedia> {
     let stream_candidates =
         service_youtube::resolve_youtube_stream_candidates_with_config(source_url, youtube_config)
             .context("Не удалось получить YouTube stream candidates")?;
-    let selected_stream = select_youtube_startup_candidate(&stream_candidates, system_capabilities)
-        .context("Не удалось выбрать YouTube stream по system capabilities")?;
+    let selected_stream = select_youtube_startup_candidate_with_codec_order(
+        &stream_candidates,
+        preferred_video_codec_order,
+        system_capabilities,
+    )
+    .context("Не удалось выбрать YouTube stream по codec policy и system capabilities")?;
 
     let selected_stream_identity = service_youtube::YoutubeSelectedStreamIdentity::from_candidates(
         &stream_candidates,
@@ -433,8 +443,9 @@ fn youtube_candidate_requires_hdr(candidate: &service_youtube::YoutubeStreamCand
 }
 
 /// Выбирает лучший YouTube candidate строго до открытия media bytes.
-fn select_youtube_startup_candidate(
+fn select_youtube_startup_candidate_with_codec_order(
     stream_candidates: &YoutubeStreamCandidates,
+    preferred_video_codec_order: &[ConfigVideoCodec],
     system_capabilities: &SystemCapabilities,
 ) -> std::result::Result<SelectedVideoStream, YoutubeStartupSelectionError> {
     let capability_candidates = stream_candidates
@@ -453,7 +464,53 @@ fn select_youtube_startup_candidate(
         ));
     }
 
-    Ok(system_capabilities.select_best_video_stream(&capability_candidates)?)
+    let mut first_selection_error = None;
+    for preferred_codec in preferred_video_codec_order {
+        let runtime_codec = runtime_video_codec(*preferred_codec);
+        let codec_candidates = capability_candidates
+            .iter()
+            .filter(|candidate| candidate.requirement.codec == runtime_codec)
+            .cloned()
+            .collect::<Vec<_>>();
+        if codec_candidates.is_empty() {
+            continue;
+        }
+
+        match system_capabilities.select_best_video_stream(&codec_candidates) {
+            Ok(selected_stream) => return Ok(selected_stream),
+            Err(error) => {
+                first_selection_error.get_or_insert(error);
+            }
+        }
+    }
+
+    Err(first_selection_error
+        .unwrap_or(StreamSelectionError::EmptyCandidates)
+        .into())
+}
+
+/// Test/compatibility helper с default codec policy.
+#[cfg(test)]
+fn select_youtube_startup_candidate(
+    stream_candidates: &YoutubeStreamCandidates,
+    system_capabilities: &SystemCapabilities,
+) -> std::result::Result<SelectedVideoStream, YoutubeStartupSelectionError> {
+    select_youtube_startup_candidate_with_codec_order(
+        stream_candidates,
+        &AppConfig::default().player.preferred_video_codec_order,
+        system_capabilities,
+    )
+}
+
+/// Сопоставляет user-facing codec policy с нейтральным capability vocabulary.
+pub(crate) const fn runtime_video_codec(codec: ConfigVideoCodec) -> RuntimeVideoCodec {
+    match codec {
+        ConfigVideoCodec::Vp9 => RuntimeVideoCodec::Vp9,
+        ConfigVideoCodec::Av1 => RuntimeVideoCodec::Av1,
+        ConfigVideoCodec::H264 => RuntimeVideoCodec::H264,
+        ConfigVideoCodec::H265 => RuntimeVideoCodec::H265,
+        ConfigVideoCodec::Vp8 => RuntimeVideoCodec::Vp8,
+    }
 }
 
 /// Формирует короткую причину, почему service candidates нельзя передать в capability-core.
@@ -908,6 +965,36 @@ mod tests {
                 .expect("supported SDR candidate is selected");
 
         assert_eq!(selected.stream_id, "sdr-nv12");
+    }
+
+    #[test]
+    fn youtube_startup_codec_policy_uses_first_supported_configured_codec() {
+        let candidates = youtube_candidates(vec![ready_youtube_candidate(
+            "vp9-video",
+            "247",
+            vp9_requirement(Vp9Profile::Profile0, BitDepth::Eight),
+            100,
+        )]);
+        let capabilities = capabilities_with_vp9_profile0();
+
+        let selected = select_youtube_startup_candidate_with_codec_order(
+            &candidates,
+            &[ConfigVideoCodec::Av1, ConfigVideoCodec::Vp9],
+            &capabilities,
+        )
+        .expect("policy must continue to the first supported configured codec");
+        assert_eq!(selected.stream_id, "vp9-video");
+
+        let error = select_youtube_startup_candidate_with_codec_order(
+            &candidates,
+            &[ConfigVideoCodec::Av1],
+            &capabilities,
+        )
+        .expect_err("codec omitted from policy must not be selected");
+        assert!(matches!(
+            error,
+            YoutubeStartupSelectionError::Capability(StreamSelectionError::EmptyCandidates)
+        ));
     }
 
     #[test]

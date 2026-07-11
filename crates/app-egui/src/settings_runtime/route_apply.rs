@@ -12,13 +12,14 @@ pub(crate) trait SettingsRuntimeReconfigureHost {
     /// Применяет typed player update через owner-level worker boundary.
     fn apply_player_runtime_settings(
         &mut self,
-        update: PlayerRuntimeSettingsUpdate,
+        update: &PlayerCommittedSettingsUpdate,
     ) -> PlayerRuntimeApplyResult;
 
     /// Применяет media/source policy и при необходимости запускает controlled rebuild.
     fn apply_media_service_runtime_settings(
         &mut self,
         update: &MediaServiceRuntimeSettingsUpdate,
+        affected_settings: &[SettingId],
     ) -> AppRouteApplyResult;
 }
 
@@ -28,14 +29,36 @@ pub(super) struct NoopSettingsRuntimeReconfigureHost;
 impl SettingsRuntimeReconfigureHost for NoopSettingsRuntimeReconfigureHost {
     fn apply_player_runtime_settings(
         &mut self,
-        update: PlayerRuntimeSettingsUpdate,
+        update: &PlayerCommittedSettingsUpdate,
     ) -> PlayerRuntimeApplyResult {
-        Ok(simulated_player_runtime_report(update))
+        let mut report = if update.player_core.is_empty() {
+            PlayerRuntimeApplyReport::empty()
+        } else {
+            simulated_player_runtime_report(update.player_core.clone())
+        };
+        if update.media_pipeline.is_some() {
+            report.push(PlayerRuntimeApplyGroupReport::accepted(
+                PlayerRuntimeApplyGroup::MediaPipeline,
+                std::iter::empty(),
+                PlayerRuntimeAcceptedChange::Applied,
+                "simulated app-owned media pipeline rebuild",
+            ));
+        }
+        if !update.event_policy_settings.is_empty() {
+            report.push(PlayerRuntimeApplyGroupReport::accepted(
+                PlayerRuntimeApplyGroup::EventPolicy,
+                std::iter::empty(),
+                PlayerRuntimeAcceptedChange::Applied,
+                "simulated event policy update",
+            ));
+        }
+        Ok(report)
     }
 
     fn apply_media_service_runtime_settings(
         &mut self,
         _update: &MediaServiceRuntimeSettingsUpdate,
+        _affected_settings: &[SettingId],
     ) -> AppRouteApplyResult {
         AppRouteApplyResult::Applied
     }
@@ -82,7 +105,7 @@ where
 {
     fn apply_player_runtime_settings(
         &mut self,
-        update: PlayerRuntimeSettingsUpdate,
+        update: &PlayerCommittedSettingsUpdate,
     ) -> PlayerRuntimeApplyResult {
         let mut host = NoopSettingsRuntimeReconfigureHost;
         host.apply_player_runtime_settings(update)
@@ -91,9 +114,10 @@ where
     fn apply_media_service_runtime_settings(
         &mut self,
         update: &MediaServiceRuntimeSettingsUpdate,
+        affected_settings: &[SettingId],
     ) -> AppRouteApplyResult {
         let mut host = NoopSettingsRuntimeReconfigureHost;
-        host.apply_media_service_runtime_settings(update)
+        host.apply_media_service_runtime_settings(update, affected_settings)
     }
 }
 
@@ -203,10 +227,7 @@ where
         request: CommittedApplyRequest<'_, AppConfig>,
     ) -> SettingsResult<Vec<ApplyRouteReport>> {
         let mut reports = Vec::with_capacity(request.route_updates.len());
-        self.runtime_adapter
-            .sync_committed_config_snapshot(CommittedConfigSnapshot::from_config(
-                request.persisted,
-            ));
+        let next_committed_snapshot = CommittedConfigSnapshot::from_config(request.persisted);
 
         for update in request.route_updates {
             let routes = committed_routes_from_update(
@@ -221,6 +242,18 @@ where
                         .into_core_report(),
                 );
             }
+        }
+
+        if reports.iter().all(|report| {
+            matches!(
+                report.result,
+                ApplyRouteResult::Applied
+                    | ApplyRouteResult::Noop
+                    | ApplyRouteResult::PreviewPromoted
+            )
+        }) {
+            self.runtime_adapter
+                .sync_committed_config_snapshot(next_committed_snapshot);
         }
 
         Ok(reports)
@@ -352,11 +385,23 @@ impl SettingsRuntimeRouteAppliers {
                 Ok(self.apply_player_route(route, &update, reconfigure_host))
             }
             RuntimeCommittedUpdate::MediaService(update) => {
-                let result = self.apply_media_service_update(&update, reconfigure_host);
+                let policy_only = route
+                    .affected_settings
+                    .iter()
+                    .all(|setting_id| setting_id.as_str().starts_with("youtube."));
+                let result = self.apply_media_service_update(
+                    &update,
+                    &route.affected_settings,
+                    reconfigure_host,
+                );
                 Ok(Self::route_report(
                     route,
                     result,
-                    ApplyMechanism::WorkerReconfigure,
+                    if policy_only {
+                        ApplyMechanism::InPlace
+                    } else {
+                        ApplyMechanism::PipelineRebuild
+                    },
                 ))
             }
             RuntimeCommittedUpdate::FrameServer(update) => {
@@ -393,14 +438,20 @@ impl SettingsRuntimeRouteAppliers {
             return AppRouteApplyResult::Noop;
         }
         let local_snapshot_result = AppRouteApplyResult::Applied;
+        let player_update = PlayerCommittedSettingsUpdate {
+            player_core: update.player_core.clone(),
+            audio_output_device_id: None,
+            event_policy_settings: Vec::new(),
+            media_pipeline: None,
+            deferred_boundary_settings: Vec::new(),
+        };
 
-        let player_result =
-            match reconfigure_host.apply_player_runtime_settings(update.player_core.clone()) {
-                Ok(report) => player_runtime_report_result(&report),
-                Err(error) => AppRouteApplyResult::Failed {
-                    message: player_runtime_error_message(error),
-                },
-            };
+        let player_result = match reconfigure_host.apply_player_runtime_settings(&player_update) {
+            Ok(report) => player_runtime_report_result(&report),
+            Err(error) => AppRouteApplyResult::Failed {
+                message: player_runtime_error_message(error),
+            },
+        };
         if !player_result.is_success() {
             return player_result;
         }
@@ -426,18 +477,52 @@ impl SettingsRuntimeRouteAppliers {
         }
     }
 
-    /// Строит player route report, не смешивая default volume policy и current volume.
     fn apply_player_route(
         &mut self,
         route: RuntimeCommittedRoute,
         update: &PlayerCommittedSettingsUpdate,
         reconfigure_host: &mut dyn SettingsRuntimeReconfigureHost,
     ) -> AppRouteApplyReport {
-        let player_core_result = self.apply_player_core_update(update, reconfigure_host);
-        if player_core_result.is_success() {
-            self.commit_player_default_volume_snapshot(update);
+        let previous_audio_output_device_id = self.player.audio_output_device_id.clone();
+        let requested_audio_device_change = update
+            .audio_output_device_id
+            .as_ref()
+            .is_some_and(|next_device_id| next_device_id != &previous_audio_output_device_id);
+        let mut audio_output_device_result = self.apply_player_audio_output_device(update);
+
+        let player_core_result = if audio_output_device_result.is_success() {
+            self.apply_player_core_update(update, reconfigure_host)
+        } else {
+            AppRouteApplyResult::Failed {
+                message: "player owner apply was not started because audio device policy failed"
+                    .to_string(),
+            }
+        };
+
+        if !player_core_result.is_success() && requested_audio_device_change {
+            audio_output_device_result = match self
+                .audio_output_device_controller
+                .select_output_device(previous_audio_output_device_id.clone())
+            {
+                Ok(_) => AppRouteApplyResult::Failed {
+                    message: "active audio output recreation failed; device policy was rolled back"
+                        .to_string(),
+                },
+                Err(rollback_error) => AppRouteApplyResult::PartialFailure {
+                    message: format!(
+                        "active audio output recreation failed and device policy rollback failed: {rollback_error}"
+                    ),
+                },
+            };
         }
-        let audio_output_device_result = self.apply_player_audio_output_device(update);
+
+        if player_core_result.is_success() && audio_output_device_result.is_success() {
+            self.commit_player_default_volume_snapshot(update);
+            if let Some(next_device_id) = &update.audio_output_device_id {
+                self.player.audio_output_device_id = next_device_id.clone();
+            }
+        }
+
         let in_place_result = combine_player_in_place_results([
             player_core_result.clone(),
             audio_output_device_result.clone(),
@@ -480,11 +565,14 @@ impl SettingsRuntimeRouteAppliers {
         update: &PlayerCommittedSettingsUpdate,
         reconfigure_host: &mut dyn SettingsRuntimeReconfigureHost,
     ) -> AppRouteApplyResult {
-        if update.player_core.is_empty() {
+        if update.player_core.is_empty()
+            && update.event_policy_settings.is_empty()
+            && update.media_pipeline.is_none()
+        {
             return AppRouteApplyResult::Noop;
         };
 
-        match reconfigure_host.apply_player_runtime_settings(update.player_core.clone()) {
+        match reconfigure_host.apply_player_runtime_settings(update) {
             Ok(report) => player_runtime_report_result(&report),
             Err(error) => AppRouteApplyResult::Failed {
                 message: player_runtime_error_message(error),
@@ -519,14 +607,8 @@ impl SettingsRuntimeRouteAppliers {
             .audio_output_device_controller
             .select_output_device(next_device_id.clone())
         {
-            Ok(audio::AudioOutputDeviceSelectionChange::Applied) => {
-                self.player.audio_output_device_id = next_device_id.clone();
-                AppRouteApplyResult::Applied
-            }
-            Ok(audio::AudioOutputDeviceSelectionChange::Noop) => {
-                self.player.audio_output_device_id = next_device_id.clone();
-                AppRouteApplyResult::Noop
-            }
+            Ok(audio::AudioOutputDeviceSelectionChange::Applied) => AppRouteApplyResult::Applied,
+            Ok(audio::AudioOutputDeviceSelectionChange::Noop) => AppRouteApplyResult::Noop,
             Err(error) => AppRouteApplyResult::Failed {
                 message: error.to_string(),
             },
@@ -537,6 +619,7 @@ impl SettingsRuntimeRouteAppliers {
     fn apply_media_service_update(
         &mut self,
         update: &MediaServiceRuntimeSettingsUpdate,
+        affected_settings: &[SettingId],
         reconfigure_host: &mut dyn SettingsRuntimeReconfigureHost,
     ) -> AppRouteApplyResult {
         let next_snapshot = MediaServiceRuntimeSnapshot::from_update(update);
@@ -544,7 +627,8 @@ impl SettingsRuntimeRouteAppliers {
             return AppRouteApplyResult::Noop;
         }
 
-        let result = reconfigure_host.apply_media_service_runtime_settings(update);
+        let result =
+            reconfigure_host.apply_media_service_runtime_settings(update, affected_settings);
         if !result.is_success() {
             return result;
         }
@@ -581,10 +665,12 @@ fn player_deferred_message(update: &PlayerCommittedSettingsUpdate) -> Option<Str
 fn player_apply_mechanism(update: &PlayerCommittedSettingsUpdate) -> ApplyMechanism {
     if update.player_core.decoder_thread_config.is_some()
         || update.player_core.video_backend.is_some()
+        || update.media_pipeline.is_some()
     {
         ApplyMechanism::PipelineRebuild
     } else if update.player_core.tick_config.is_some()
         || update.player_core.default_volume.is_some()
+        || update.player_core.audio_output_recreate.is_some()
         || update.audio_output_device_id.is_some()
     {
         ApplyMechanism::WorkerReconfigure
@@ -631,10 +717,20 @@ fn player_runtime_group_report_result(
                 report.group, report.message
             ),
         },
+        PlayerRuntimeApplyOutcome::RuntimeBusy(activity) => AppRouteApplyResult::RuntimeBusy {
+            activity: match activity {
+                PlayerRuntimeBoundaryActivity::Seek => SettingsBoundaryActivity::Seek,
+                PlayerRuntimeBoundaryActivity::Scrub => SettingsBoundaryActivity::Scrub,
+                PlayerRuntimeBoundaryActivity::PipelineLifecycle => {
+                    SettingsBoundaryActivity::PipelineLifecycle
+                }
+            },
+        },
         PlayerRuntimeApplyOutcome::Unsupported
         | PlayerRuntimeApplyOutcome::AbsentResource
         | PlayerRuntimeApplyOutcome::Invalid
-        | PlayerRuntimeApplyOutcome::Fatal => AppRouteApplyResult::Failed {
+        | PlayerRuntimeApplyOutcome::Fatal
+        | PlayerRuntimeApplyOutcome::ApplyAndRollbackFailed => AppRouteApplyResult::Failed {
             message: format!("{:?}: {}", report.group, report.message),
         },
     }
@@ -651,6 +747,7 @@ fn combine_player_in_place_results(
 ) -> AppRouteApplyResult {
     let mut applied = false;
     let mut failures = Vec::new();
+    let mut runtime_busy = None;
 
     for result in results {
         match result {
@@ -666,7 +763,20 @@ fn combine_player_in_place_results(
                 baseline.value(),
                 current.value()
             )),
+            AppRouteApplyResult::RuntimeBusy { activity } => {
+                runtime_busy.get_or_insert(activity);
+            }
         }
+    }
+
+    if let Some(activity) = runtime_busy
+        && failures.is_empty()
+        && !applied
+    {
+        return AppRouteApplyResult::RuntimeBusy { activity };
+    }
+    if let Some(activity) = runtime_busy {
+        failures.push(format!("runtime boundary is busy ({activity:?})"));
     }
 
     if failures.is_empty() {

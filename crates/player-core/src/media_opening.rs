@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use media_core::{DemuxSeekability, Demuxer, TrackInfo};
+use media_core::{DemuxSeekability, Demuxer, TrackInfo, TrackKind};
 
 use crate::MediaSource;
 
@@ -24,6 +24,31 @@ pub struct PreparedMedia {
 }
 
 impl PreparedMedia {
+    /// Упорядочивает только video-track candidates по explicit codec policy.
+    ///
+    /// Demuxer, track ids и non-video порядок не меняются; default selection выше
+    /// видит preferred video track первым, а packet routing остаётся id-based.
+    #[must_use]
+    pub fn with_preferred_video_codecs(
+        mut self,
+        preferred_codecs: &[codec_core::VideoCodec],
+    ) -> Self {
+        self.tracks.sort_by_key(|track| {
+            if track.kind != TrackKind::Video {
+                return usize::MAX;
+            }
+
+            codec_core::VideoCodec::from_container_codec_id(&track.codec_id)
+                .and_then(|codec| {
+                    preferred_codecs
+                        .iter()
+                        .position(|preferred| *preferred == codec)
+                })
+                .unwrap_or(preferred_codecs.len())
+        });
+        self
+    }
+
     /// Создаёт prepared-media contract для локального файла, уже открытого shell/adapter слоем.
     #[must_use]
     pub fn from_local_file(path: impl Into<PathBuf>, demuxer: Box<dyn Demuxer + Send>) -> Self {

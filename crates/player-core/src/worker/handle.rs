@@ -105,6 +105,24 @@ impl PlayerWorker {
         self.command_sender.apply_runtime_settings(update)
     }
 
+    /// Проверяет exclusive pipeline boundary без mutation, reservation или hidden queue.
+    pub fn runtime_reconfigure_boundary_activity(
+        &self,
+    ) -> Result<Option<PlayerRuntimeBoundaryActivity>, PlayerRuntimeApplyError> {
+        let (response_tx, response_rx) = bounded(1);
+        self.command_sender
+            .command_tx
+            .try_send(WorkerCommand::CheckRuntimeReconfigureBoundary { response_tx })
+            .map_err(|error| match error {
+                TrySendError::Full(_) => PlayerRuntimeApplyError::Backpressure,
+                TrySendError::Disconnected(_) => PlayerRuntimeApplyError::Disconnected,
+            })?;
+
+        response_rx
+            .recv()
+            .map_err(|_| PlayerRuntimeApplyError::Disconnected)
+    }
+
     /// Передаёт уже подготовленный media во владение worker thread.
     pub fn load_prepared_media(
         &self,
@@ -143,15 +161,30 @@ impl PlayerWorker {
             .map_err(PlayerWorkerSendError::from)
     }
 
-    /// Устанавливает video decoder backend, уже запущенный shell composition root-ом.
+    /// Устанавливает video backend и ждёт фактический worker-side commit/rollback.
     pub fn set_video_backend(
         &self,
         started_backend: StartedVideoBackend,
-    ) -> Result<(), PlayerWorkerSendError> {
+        intent: PlayerVideoBackendInstallIntent,
+        accepted_decoder_config: Option<PlayerVideoDecoderThreadConfig>,
+    ) -> Result<(), PlayerRuntimeApplyError> {
+        let (response_tx, response_rx) = bounded(1);
         self.command_sender
             .command_tx
-            .try_send(WorkerCommand::SetVideoBackend { started_backend })
-            .map_err(PlayerWorkerSendError::from)
+            .try_send(WorkerCommand::SetVideoBackend {
+                started_backend,
+                intent,
+                accepted_decoder_config,
+                response_tx,
+            })
+            .map_err(|error| match error {
+                TrySendError::Full(_) => PlayerRuntimeApplyError::Backpressure,
+                TrySendError::Disconnected(_) => PlayerRuntimeApplyError::Disconnected,
+            })?;
+
+        response_rx
+            .recv()
+            .map_err(|_| PlayerRuntimeApplyError::Disconnected)?
     }
 
     /// Сообщает worker-у, что shell не нашёл совместимый backend для отложенного видео.

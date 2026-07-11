@@ -15,8 +15,26 @@ pub enum PlayerRuntimeSettingId {
     /// Весь worker-owned `PlayerTickConfig` как internal atomic group.
     PlayerTickConfig,
 
+    /// `player.start_paused` app/player open policy.
+    PlayerStartPaused,
+
+    /// `player.resume_last_position` future media-open policy.
+    PlayerResumeLastPosition,
+
+    /// `player.seek.paused_commit_behavior`.
+    PlayerSeekPausedCommitBehavior,
+
+    /// `player.seek.hotkey_small_step_secs`.
+    PlayerSeekHotkeySmallStepSecs,
+
+    /// `player.seek.hotkey_large_step_secs`.
+    PlayerSeekHotkeyLargeStepSecs,
+
     /// Default volume для startup/future-media policy, не текущая runtime громкость.
     AudioDefaultVolume,
+
+    /// `audio.output_device`: выбран app-owned controller-ом, active output пересоздаёт worker.
+    AudioOutputDevice,
 
     /// Весь decoder-thread config как internal controlled-rebuild group.
     PlayerDecoderThreadConfig,
@@ -121,7 +139,13 @@ impl PlayerRuntimeSettingId {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::PlayerTickConfig => "player.runtime.tick_config",
+            Self::PlayerStartPaused => "player.start_paused",
+            Self::PlayerResumeLastPosition => "player.resume_last_position",
+            Self::PlayerSeekPausedCommitBehavior => "player.seek.paused_commit_behavior",
+            Self::PlayerSeekHotkeySmallStepSecs => "player.seek.hotkey_small_step_secs",
+            Self::PlayerSeekHotkeyLargeStepSecs => "player.seek.hotkey_large_step_secs",
             Self::AudioDefaultVolume => "audio.volume",
+            Self::AudioOutputDevice => "audio.output_device",
             Self::PlayerDecoderThreadConfig => "player.runtime.decoder_thread_config",
             Self::PlayerPreferredVideoCodecOrder => "player.preferred_video_codec_order",
             Self::PlayerDemuxMaxConsecutiveCorruptedPackets => {
@@ -252,25 +276,65 @@ impl PlayerRuntimeDecoderThreadConfigUpdate {
     }
 }
 
+/// Нейтральная backend policy без зависимости player-core от config schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerRuntimeVideoBackendPreference {
+    /// Выбрать лучший поддержанный backend автоматически.
+    Auto,
+    /// Разрешить только hardware decode backend.
+    Hardware,
+    /// Разрешить только software decode backend.
+    Software,
+}
+
+/// Причина установки уже подготовленного backend-а на worker boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerVideoBackendInstallIntent {
+    /// Startup или stream-driven reselection, которая сама владеет lifecycle boundary.
+    PipelineDemand,
+    /// Settings apply: при занятости boundary обязан немедленно вернуть retryable busy.
+    SettingsReconfigure,
+}
+
 /// Backend preference change, применяемый через app-owned video pipeline rebuild.
-///
-/// Само значение backend-а worker не хранит: его читает app composition layer из
-/// committed config snapshot во время rebuild-а. Здесь нужен только сигнал и список
-/// затронутых settings для честного apply report-а.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerRuntimeVideoBackendUpdate {
+    /// Новая policy, которую composition layer обязан применить к rebuild plan.
+    pub preference: PlayerRuntimeVideoBackendPreference,
+
     /// Конкретные settings ids, которые потребовали смену backend-а.
     pub affected_settings: Vec<PlayerRuntimeSettingId>,
 }
 
-impl PlayerRuntimeVideoBackendUpdate {
-    /// Создаёт backend update с явным списком затронутых settings.
+/// Intent пересоздать active audio output после app-owned device selection update.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerRuntimeAudioOutputRecreateUpdate {
+    /// Concrete settings, запросившие recreation.
+    pub affected_settings: Vec<PlayerRuntimeSettingId>,
+}
+
+impl PlayerRuntimeAudioOutputRecreateUpdate {
+    /// Создаёт typed audio-output recreation intent.
     #[must_use]
     pub fn new<I>(affected_settings: I) -> Self
     where
         I: IntoIterator<Item = PlayerRuntimeSettingId>,
     {
         Self {
+            affected_settings: affected_settings.into_iter().collect(),
+        }
+    }
+}
+
+impl PlayerRuntimeVideoBackendUpdate {
+    /// Создаёт backend update с явным значением policy и setting ids.
+    #[must_use]
+    pub fn new<I>(preference: PlayerRuntimeVideoBackendPreference, affected_settings: I) -> Self
+    where
+        I: IntoIterator<Item = PlayerRuntimeSettingId>,
+    {
+        Self {
+            preference,
             affected_settings: collect_or_default(
                 affected_settings,
                 &[PlayerRuntimeSettingId::VideoPreferredBackend],
@@ -314,6 +378,9 @@ pub struct PlayerRuntimeSettingsUpdate {
 
     /// Worker-owned default volume policy; не меняет current session volume.
     pub default_volume: Option<PlayerRuntimeDefaultVolumeUpdate>,
+
+    /// Active audio output recreation после смены app-owned device policy.
+    pub audio_output_recreate: Option<PlayerRuntimeAudioOutputRecreateUpdate>,
 
     /// Decoder/channel/pool settings, которые применяются через controlled rebuild.
     pub decoder_thread_config: Option<PlayerRuntimeDecoderThreadConfigUpdate>,
@@ -365,6 +432,18 @@ impl PlayerRuntimeSettingsUpdate {
         self
     }
 
+    /// Добавляет intent пересоздать active audio output.
+    #[must_use]
+    pub fn with_audio_output_recreate<I>(mut self, affected_settings: I) -> Self
+    where
+        I: IntoIterator<Item = PlayerRuntimeSettingId>,
+    {
+        self.audio_output_recreate = Some(PlayerRuntimeAudioOutputRecreateUpdate::new(
+            affected_settings,
+        ));
+        self
+    }
+
     /// Добавляет decoder-thread settings, которые требуют controlled rebuild.
     #[must_use]
     pub fn with_decoder_thread_config<I>(
@@ -384,11 +463,18 @@ impl PlayerRuntimeSettingsUpdate {
 
     /// Добавляет backend preference change, требующий app-owned pipeline rebuild.
     #[must_use]
-    pub fn with_video_backend<I>(mut self, affected_settings: I) -> Self
+    pub fn with_video_backend<I>(
+        mut self,
+        preference: PlayerRuntimeVideoBackendPreference,
+        affected_settings: I,
+    ) -> Self
     where
         I: IntoIterator<Item = PlayerRuntimeSettingId>,
     {
-        self.video_backend = Some(PlayerRuntimeVideoBackendUpdate::new(affected_settings));
+        self.video_backend = Some(PlayerRuntimeVideoBackendUpdate::new(
+            preference,
+            affected_settings,
+        ));
         self
     }
 
@@ -424,10 +510,54 @@ impl PlayerRuntimeSettingsUpdate {
     pub fn is_empty(&self) -> bool {
         self.tick_config.is_none()
             && self.default_volume.is_none()
+            && self.audio_output_recreate.is_none()
             && self.decoder_thread_config.is_none()
             && self.video_backend.is_none()
             && self.frame_server_policy.is_none()
             && self.unsupported_settings.is_empty()
+    }
+
+    /// Возвращает все setting ids request-а без знания config schema внутри worker-а.
+    #[must_use]
+    pub fn affected_settings(&self) -> Vec<PlayerRuntimeSettingId> {
+        let mut affected_settings = Vec::new();
+        let mut extend_unique = |setting_ids: &[PlayerRuntimeSettingId]| {
+            for setting_id in setting_ids {
+                if !affected_settings.contains(setting_id) {
+                    affected_settings.push(*setting_id);
+                }
+            }
+        };
+
+        if let Some(update) = &self.tick_config {
+            extend_unique(&update.affected_settings);
+        }
+        if let Some(update) = &self.default_volume {
+            extend_unique(&update.affected_settings);
+        }
+        if let Some(update) = &self.audio_output_recreate {
+            extend_unique(&update.affected_settings);
+        }
+        if let Some(update) = &self.decoder_thread_config {
+            extend_unique(&update.affected_settings);
+        }
+        if let Some(update) = &self.video_backend {
+            extend_unique(&update.affected_settings);
+        }
+        if let Some(update) = &self.frame_server_policy {
+            extend_unique(&update.affected_settings);
+        }
+        extend_unique(&self.unsupported_settings);
+
+        affected_settings
+    }
+
+    /// Требует ли request эксклюзивного доступа к decoder/pipeline lifecycle.
+    #[must_use]
+    pub const fn requires_pipeline_lifecycle_boundary(&self) -> bool {
+        self.audio_output_recreate.is_some()
+            || self.decoder_thread_config.is_some()
+            || self.video_backend.is_some()
     }
 }
 
@@ -443,6 +573,15 @@ pub enum PlayerRuntimeApplyGroup {
     /// Default-volume policy для startup/future media.
     DefaultVolume,
 
+    /// Active audio output lifecycle.
+    AudioOutput,
+
+    /// App/player event-scoped policy snapshot.
+    EventPolicy,
+
+    /// Active source/demux/codec-selection pipeline lifecycle.
+    MediaPipeline,
+
     /// Decoder thread/channel/pool limits.
     DecoderThreadConfig,
 
@@ -454,6 +593,19 @@ pub enum PlayerRuntimeApplyGroup {
 
     /// Неподдержанные в S07 player settings.
     UnsupportedSettings,
+}
+
+/// Non-interruptible player operation, которая временно владеет reconfigure boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerRuntimeBoundaryActivity {
+    /// Выполняется seek/SeekLanding transaction.
+    Seek,
+
+    /// Выполняется pointer scrub transaction.
+    Scrub,
+
+    /// Выполняется media/backend lifecycle transition.
+    PipelineLifecycle,
 }
 
 /// Результат accepted group: реально изменили runtime или это no-op.
@@ -475,6 +627,9 @@ pub enum PlayerRuntimeApplyOutcome {
     /// Нужен owner-level controlled rebuild/reconfigure; прямой мутации не было.
     RequiresControlledRebuild,
 
+    /// Нужная owner boundary занята; update не был применён и не поставлен в очередь.
+    RuntimeBusy(PlayerRuntimeBoundaryActivity),
+
     /// Для setting пока нет supported runtime boundary.
     Unsupported,
 
@@ -486,6 +641,9 @@ pub enum PlayerRuntimeApplyOutcome {
 
     /// Runtime owner встретил fatal condition.
     Fatal,
+
+    /// Apply и compensating rollback оба завершились ошибкой; message хранит обе причины.
+    ApplyAndRollbackFailed,
 }
 
 impl PlayerRuntimeApplyOutcome {
@@ -546,6 +704,25 @@ impl PlayerRuntimeApplyGroupReport {
             group,
             affected_settings: affected_settings.into_iter().collect(),
             outcome: PlayerRuntimeApplyOutcome::RequiresControlledRebuild,
+            message: message.into(),
+        }
+    }
+
+    /// Retryable busy result: owner не мутировал state и не поставил update в очередь.
+    #[must_use]
+    pub fn runtime_busy<I>(
+        group: PlayerRuntimeApplyGroup,
+        affected_settings: I,
+        activity: PlayerRuntimeBoundaryActivity,
+        message: impl Into<String>,
+    ) -> Self
+    where
+        I: IntoIterator<Item = PlayerRuntimeSettingId>,
+    {
+        Self {
+            group,
+            affected_settings: affected_settings.into_iter().collect(),
+            outcome: PlayerRuntimeApplyOutcome::RuntimeBusy(activity),
             message: message.into(),
         }
     }
@@ -621,6 +798,24 @@ impl PlayerRuntimeApplyGroupReport {
             message: message.into(),
         }
     }
+
+    /// Combined apply+rollback failure без потери исходной apply error.
+    #[must_use]
+    pub fn apply_and_rollback_failed<I>(
+        group: PlayerRuntimeApplyGroup,
+        affected_settings: I,
+        message: impl Into<String>,
+    ) -> Self
+    where
+        I: IntoIterator<Item = PlayerRuntimeSettingId>,
+    {
+        Self {
+            group,
+            affected_settings: affected_settings.into_iter().collect(),
+            outcome: PlayerRuntimeApplyOutcome::ApplyAndRollbackFailed,
+            message: message.into(),
+        }
+    }
 }
 
 /// Полный report по player runtime apply request.
@@ -665,6 +860,17 @@ pub enum PlayerRuntimeApplyError {
     /// Worker уже завершён или response channel был закрыт.
     Disconnected,
 
+    /// Pipeline boundary занята; update не был применён или поставлен в очередь.
+    RuntimeBusy(PlayerRuntimeBoundaryActivity),
+
+    /// Apply и compensating rollback завершились разными ошибками.
+    ApplyAndRollbackFailed {
+        /// Исходная apply error.
+        apply_error: String,
+        /// Отдельная rollback error.
+        rollback_error: String,
+    },
+
     /// Непредвиденная ошибка boundary, которую нельзя описать group report-ом.
     Fatal(String),
 }
@@ -674,6 +880,16 @@ impl fmt::Display for PlayerRuntimeApplyError {
         match self {
             Self::Backpressure => write!(formatter, "player runtime apply queue is full"),
             Self::Disconnected => write!(formatter, "player runtime apply worker is disconnected"),
+            Self::RuntimeBusy(activity) => {
+                write!(formatter, "player runtime boundary is busy: {activity:?}")
+            }
+            Self::ApplyAndRollbackFailed {
+                apply_error,
+                rollback_error,
+            } => write!(
+                formatter,
+                "player runtime apply failed: {apply_error}; rollback failed: {rollback_error}"
+            ),
             Self::Fatal(message) => write!(formatter, "player runtime apply failed: {message}"),
         }
     }

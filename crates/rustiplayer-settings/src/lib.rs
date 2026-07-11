@@ -17,7 +17,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use player_core::{
-    PlayerRuntimeSettingId, PlayerRuntimeSettingsUpdate, PlayerTickConfig, PlayerWorkerConfig,
+    PlayerRuntimeSettingId, PlayerRuntimeSettingsUpdate, PlayerRuntimeVideoBackendPreference,
+    PlayerTickConfig, PlayerWorkerConfig,
 };
 use render_core::{
     ColorAdjustment, ColorPipelineSettings, HdrOutputMode, HdrToSdrSettings,
@@ -25,7 +26,8 @@ use render_core::{
 };
 use rustiplayer_config::{
     AppConfig, FrameServerConfig, HdrToSdrOperatorConfig, NetworkConfig, OpenGlesConfig,
-    RenderProfile, ToneMappingMode as ConfigToneMappingMode, UiConfig, VulkanConfig, YoutubeConfig,
+    PlayerDemuxConfig, RenderProfile, ToneMappingMode as ConfigToneMappingMode, UiConfig,
+    VideoBackendPreference, VideoCodec as ConfigVideoCodec, VulkanConfig, YoutubeConfig,
     save_validated_atomic_at,
 };
 use settings_core::{
@@ -397,8 +399,25 @@ pub struct PlayerCommittedSettingsUpdate {
     /// Stable audio output device id selected through the audio owner boundary.
     pub audio_output_device_id: Option<String>,
 
+    /// App-owned policy settings, которые начинают действовать на следующем событии.
+    pub event_policy_settings: Vec<SettingId>,
+
+    /// Active media/pipeline rebuild intent для demux и codec-selection policy.
+    pub media_pipeline: Option<PlayerMediaPipelineSettingsUpdate>,
+
     /// Settings in this route without a concrete S07 player-core update group.
     pub deferred_boundary_settings: Vec<SettingId>,
+}
+
+/// Config snapshot для controlled active-media rebuild-а на app composition boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerMediaPipelineSettingsUpdate {
+    /// Новая demux error policy.
+    pub demux: PlayerDemuxConfig,
+    /// Новый порядок codec candidates.
+    pub preferred_video_codec_order: Vec<ConfigVideoCodec>,
+    /// Concrete setting ids, потребовавшие rebuild.
+    pub affected_settings: Vec<SettingId>,
 }
 
 /// Media/service route payload without concrete service crate dependencies.
@@ -447,6 +466,12 @@ pub enum AppRouteApplyResult {
 
     /// Route failed before applying the requested update.
     Failed { message: String },
+
+    /// Runtime owner boundary временно занята; update не применён и не поставлен в очередь.
+    RuntimeBusy {
+        /// Активная non-interruptible operation.
+        activity: SettingsBoundaryActivity,
+    },
 
     /// Route generation conflict blocked apply.
     Conflict {
@@ -521,6 +546,11 @@ impl AppRouteApplyReport {
                 ApplyRouteResult::PartialFailure { message }
             }
             AppRouteApplyResult::Failed { message } => ApplyRouteResult::Failed { message },
+            AppRouteApplyResult::RuntimeBusy { activity } => ApplyRouteResult::Failed {
+                message: format!(
+                    "runtime boundary is busy ({activity:?}); settings update was not queued"
+                ),
+            },
             AppRouteApplyResult::Conflict { baseline, current } => {
                 ApplyRouteResult::Conflict { baseline, current }
             }
@@ -871,6 +901,8 @@ fn player_update_from_settings(
     let mut tick_settings = Vec::new();
     let mut decoder_settings = Vec::new();
     let mut deferred_settings = Vec::new();
+    let mut event_policy_settings = Vec::new();
+    let mut media_pipeline_settings = Vec::new();
     let mut default_volume_changed = false;
     let mut audio_output_device_changed = false;
     let mut video_backend_changed = false;
@@ -883,6 +915,24 @@ fn player_update_from_settings(
         }
         if setting_name == "video.preferred_backend" {
             video_backend_changed = true;
+            continue;
+        }
+        if matches!(
+            setting_name,
+            "player.start_paused"
+                | "player.resume_last_position"
+                | "player.seek.paused_commit_behavior"
+                | "player.seek.hotkey_small_step_secs"
+                | "player.seek.hotkey_large_step_secs"
+        ) {
+            event_policy_settings.push(setting_id.clone());
+            continue;
+        }
+        if matches!(
+            setting_name,
+            "player.preferred_video_codec_order" | "player.demux.max_consecutive_corrupted_packets"
+        ) {
+            media_pipeline_settings.push(setting_id.clone());
             continue;
         }
 
@@ -917,6 +967,10 @@ fn player_update_from_settings(
             [PlayerRuntimeSettingId::AudioDefaultVolume],
         );
     }
+    if audio_output_device_changed {
+        player_core =
+            player_core.with_audio_output_recreate([PlayerRuntimeSettingId::AudioOutputDevice]);
+    }
     if !decoder_settings.is_empty() {
         player_core = player_core.with_decoder_thread_config(
             PlayerWorkerConfig::decoder_thread_config_from_app_config(current),
@@ -924,14 +978,27 @@ fn player_update_from_settings(
         );
     }
     if video_backend_changed {
-        player_core =
-            player_core.with_video_backend([PlayerRuntimeSettingId::VideoPreferredBackend]);
+        let preference = match current.video.preferred_backend {
+            VideoBackendPreference::Auto => PlayerRuntimeVideoBackendPreference::Auto,
+            VideoBackendPreference::Hardware => PlayerRuntimeVideoBackendPreference::Hardware,
+            VideoBackendPreference::Software => PlayerRuntimeVideoBackendPreference::Software,
+        };
+        player_core = player_core
+            .with_video_backend(preference, [PlayerRuntimeSettingId::VideoPreferredBackend]);
     }
 
     PlayerCommittedSettingsUpdate {
         player_core,
         audio_output_device_id: audio_output_device_changed
             .then(|| current.audio.output_device.clone()),
+        event_policy_settings,
+        media_pipeline: (!media_pipeline_settings.is_empty()).then(|| {
+            PlayerMediaPipelineSettingsUpdate {
+                demux: current.player.demux,
+                preferred_video_codec_order: current.player.preferred_video_codec_order.clone(),
+                affected_settings: media_pipeline_settings,
+            }
+        }),
         deferred_boundary_settings: deferred_settings,
     }
 }
@@ -1531,6 +1598,36 @@ mod tests {
             vec![PlayerRuntimeSettingId::VideoPreferredBackend]
         );
         assert!(update.deferred_boundary_settings.is_empty());
+    }
+
+    #[test]
+    fn session_08b_player_policy_and_media_pipeline_settings_have_live_payloads() {
+        let mut config = AppConfig::default();
+        config.player.start_paused = !config.player.start_paused;
+        config.player.demux.max_consecutive_corrupted_packets += 1;
+        config.player.preferred_video_codec_order.swap(0, 1);
+        let affected_settings = vec![
+            SettingId::from("player.start_paused"),
+            SettingId::from("player.demux.max_consecutive_corrupted_packets"),
+            SettingId::from("player.preferred_video_codec_order"),
+        ];
+
+        let update = player_update_from_settings(&config, &affected_settings);
+
+        assert!(update.deferred_boundary_settings.is_empty());
+        assert_eq!(
+            update.event_policy_settings,
+            vec![SettingId::from("player.start_paused")]
+        );
+        let media_update = update
+            .media_pipeline
+            .expect("demux/codec policy must request controlled active-media rebuild");
+        assert_eq!(media_update.demux, config.player.demux);
+        assert_eq!(
+            media_update.preferred_video_codec_order,
+            config.player.preferred_video_codec_order
+        );
+        assert_eq!(media_update.affected_settings.len(), 2);
     }
 
     #[test]

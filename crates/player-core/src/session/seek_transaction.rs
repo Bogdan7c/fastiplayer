@@ -2620,7 +2620,7 @@ impl PlayerSession {
 
     /// Устанавливает simple scrub state напрямую только для focused boundary tests.
     #[cfg(test)]
-    pub(super) fn set_simple_scrub_state_for_tests(
+    pub(crate) fn set_simple_scrub_state_for_tests(
         &mut self,
         active: bool,
         latest_request: Option<SeekRequest>,

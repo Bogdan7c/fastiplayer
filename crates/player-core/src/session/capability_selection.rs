@@ -9,7 +9,7 @@ use codec_core::{
     video_requirement_needs_packet_refinement,
 };
 use media_core::{TrackInfo, TrackKind};
-use tracing::{info, warn};
+use tracing::info;
 use video_core::{
     VideoStreamConfigRejection, VideoStreamConfigResult, VideoStreamDecodeConfig,
     VideoStreamPacketization,
@@ -253,66 +253,45 @@ impl PlayerSession {
     }
 
     /// Активирует отложенный video-трек на только что установленном совместимом backend-е.
-    pub(super) fn retry_pending_video_backend_reselection(&mut self) {
+    pub(super) fn retry_pending_video_backend_reselection(&mut self) -> PlayerResult<()> {
         let Some(pending) = self.pending_video_backend_reselection.take() else {
-            return;
+            return Ok(());
         };
 
-        let Some(track) = self
+        let track = self
             .pipeline
             .tracks()
             .iter()
             .find(|track| track.id == pending.track_id && track.kind == TrackKind::Video)
             .cloned()
-        else {
-            self.record_recoverable_error(PlayerError::new(
-                PlayerErrorKind::InvalidCommand,
-                format!(
-                    "Отложенный video track `{}` отсутствует после backend reselection",
-                    pending.track_id
-                ),
-            ));
-            return;
-        };
+            .ok_or_else(|| {
+                PlayerError::new(
+                    PlayerErrorKind::InvalidCommand,
+                    format!(
+                        "Отложенный video track {} отсутствует после backend reselection",
+                        pending.track_id
+                    ),
+                )
+            })?;
 
-        match self.validate_video_decode_requirement(&pending.requirement) {
-            Ok(matched_output) => {
-                let requirement = pending.requirement.clone();
-                let selection = AcceptedVideoSelection {
-                    requirement: pending.requirement,
-                    matched_output,
-                };
-                if let Err(error) = self.activate_video_track(&track, selection) {
-                    self.mark_fatal_error(error);
-                    return;
-                }
-                self.note_active_video_stream_requirement(requirement, true);
-                self.reseek_to_current_position_after_backend_swap();
-            }
-            Err(error) => self.mark_fatal_error(error),
-        }
+        let matched_output = self.validate_video_decode_requirement(&pending.requirement)?;
+        let requirement = pending.requirement.clone();
+        let selection = AcceptedVideoSelection {
+            requirement: pending.requirement,
+            matched_output,
+        };
+        self.activate_video_track(&track, selection)?;
+        self.note_active_video_stream_requirement(requirement, true);
+        self.reseek_to_current_position_after_backend_swap()
     }
 
-    /// Перечитывает поток с keyframe до текущей позиции после бесшовного backend-swap.
-    ///
-    /// Во время deferral (пока совместимый backend ещё не выбран) demuxer уже
-    /// прочитал и отбросил video-пакеты, включая keyframe в текущей позиции (они
-    /// дропаются, т.к. video track ещё не выбран). Новый decoder обязан стартовать
-    /// строго с KEY_FRAME — иначе AV1/libdav1d получает кадр без sequence header
-    /// (`Error parsing OBU data`), а ожидание следующего keyframe даёт многосекундную
-    /// чёрную задержку. Accurate re-seek на текущую позицию заставляет demuxer
-    /// перечитать поток с ближайшего keyframe до неё, не сдвигая audio gate.
-    fn reseek_to_current_position_after_backend_swap(&mut self) {
+    fn reseek_to_current_position_after_backend_swap(&mut self) -> PlayerResult<()> {
         if !self.pipeline.has_demuxer() {
-            return;
+            return Ok(());
         }
+
         let current_position = self.snapshot.current_position;
-        if let Err(error) = self.seek(SeekRequest::accurate(current_position)) {
-            warn!(
-                error = %error,
-                "Re-seek после backend swap не удался; видео стартует со следующего keyframe"
-            );
-        }
+        self.seek(SeekRequest::accurate(current_position))
     }
 
     /// Отклоняет отложенный video-трек, когда shell не может предоставить совместимый backend.
@@ -420,7 +399,7 @@ impl PlayerSession {
         self.configure_decoder_stream_for_track(&track, &requirement, frame_contract)?;
         self.pipeline
             .set_active_video_selection(requirement, frame_contract);
-        self.reseek_to_current_position_after_backend_swap();
+        self.reseek_to_current_position_after_backend_swap()?;
         Ok(())
     }
 

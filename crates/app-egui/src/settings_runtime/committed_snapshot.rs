@@ -46,6 +46,18 @@ impl CommittedConfigSnapshot {
         self.config.audio.volume as f32
     }
 
+    /// Малый relative seek step для следующего hotkey event-а.
+    #[must_use]
+    pub(crate) fn hotkey_small_seek_step(&self) -> Duration {
+        Duration::from_secs(self.config.player.seek.hotkey_small_step_secs)
+    }
+
+    /// Большой relative seek step для следующего hotkey event-а.
+    #[must_use]
+    pub(crate) fn hotkey_large_seek_step(&self) -> Duration {
+        Duration::from_secs(self.config.player.seek.hotkey_large_step_secs)
+    }
+
     /// Stable skin id из последнего committed config-а.
     #[must_use]
     pub(crate) fn ui_skin(&self) -> &str {

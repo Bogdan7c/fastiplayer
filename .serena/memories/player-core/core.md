@@ -44,3 +44,12 @@
 
 - Capability selection must include selected track display orientation when building `VideoStreamDecodeConfig`. `player-core` only transports `VideoDisplayOrientation` from `TrackInfo.video.orientation` into the neutral decoder config and diagnostics; it must not apply renderer-specific rotation or inspect container matrices directly.
 - Session E hardware Accurate seek validation on Intel i965 confirmed the current seek policy resumes and commits after all parsed manual seeks on H.265/VP9/H.264 stress assets, with target-or-after presentation and no never-resume case. Residual latency risk remains outside the player-side commit guard: heavy/random seeks can still stall on decoder output for roughly 0.5-2.0 s, so future seek-policy work should distinguish decoder-output latency from reclaim/backpressure failures before changing commit or fallback semantics. Session F narrowed one player-side latency source: active Accurate seek now keeps feeding the target-or-after DPB/reorder tail without audio-clock decode-ahead pacing until the first landing frame, and worker WARN diagnostics include total/pre-target/target-or-after seek video packet counters to prove whether delay is feed starvation or decoder throughput/long-GOP distance.
+
+
+## Session 08B runtime reconfigure boundary (2026-07-11)
+
+- `PlayerWorker::set_video_backend` — request/reply commit boundary с `PlayerVideoBackendInstallIntent`; settings intent немедленно возвращает typed busy при active seek/scrub/pipeline lifecycle.
+- Session backend swap временно устанавливает staged decoder handle и восстанавливает прежний handle/backend id при configure/re-seek failure; двойная apply+rollback ошибка остаётся отдельной `ApplyAndRollbackFailed`.
+- Accepted decoder-thread config фиксируется в worker config только после успешного backend commit.
+- Audio output device live apply сначала создаёт/запускает replacement output, затем атомарно заменяет active output/clock; failure оставляет прежний output рабочим.
+- `PlayerRuntimeSettingsUpdate::requires_pipeline_lifecycle_boundary` обеспечивает preflight до mutation смешанного request-а, поэтому busy не успевает изменить default-volume/tick owners.

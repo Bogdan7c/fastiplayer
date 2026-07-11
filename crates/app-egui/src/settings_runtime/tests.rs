@@ -291,18 +291,21 @@ impl RenderLiveSettingsAdapter for RecordingRuntimeAdapter {
 impl SettingsRuntimeReconfigureHost for RecordingRuntimeAdapter {
     fn apply_player_runtime_settings(
         &mut self,
-        update: PlayerRuntimeSettingsUpdate,
+        update: &PlayerCommittedSettingsUpdate,
     ) -> PlayerRuntimeApplyResult {
-        self.player_updates.push(update.clone());
+        self.player_updates.push(update.player_core.clone());
         if self.fail_player {
             return Err(player_core::PlayerRuntimeApplyError::Backpressure);
         }
-        Ok(super::simulated_player_runtime_report(update))
+        Ok(super::simulated_player_runtime_report(
+            update.player_core.clone(),
+        ))
     }
 
     fn apply_media_service_runtime_settings(
         &mut self,
         _update: &MediaServiceRuntimeSettingsUpdate,
+        _affected_settings: &[SettingId],
     ) -> AppRouteApplyResult {
         self.media_updates += 1;
         if self.fail_media {
@@ -411,6 +414,18 @@ fn committed_snapshot_maps_titlebar_height_to_points() {
 }
 
 #[test]
+fn committed_snapshot_updates_hotkey_seek_policy_without_synthetic_event() {
+    let mut config = AppConfig::default();
+    config.player.seek.hotkey_small_step_secs = 7;
+    config.player.seek.hotkey_large_step_secs = 45;
+
+    let snapshot = CommittedConfigSnapshot::from_config(&config);
+
+    assert_eq!(snapshot.hotkey_small_seek_step(), Duration::from_secs(7));
+    assert_eq!(snapshot.hotkey_large_seek_step(), Duration::from_secs(45));
+}
+
+#[test]
 fn local_open_snapshot_uses_current_committed_config() {
     let config = custom_config_for_test();
     let snapshot = CommittedConfigSnapshot::from_config(&config);
@@ -461,6 +476,8 @@ fn player_default_volume_route_updates_policy_snapshot_only() {
             player_core: PlayerRuntimeSettingsUpdate::empty()
                 .with_default_volume(0.25, [PlayerRuntimeSettingId::AudioDefaultVolume]),
             audio_output_device_id: None,
+            event_policy_settings: Vec::new(),
+            media_pipeline: None,
             deferred_boundary_settings: Vec::new(),
         })),
     };
@@ -491,6 +508,8 @@ fn selected_available_audio_device_is_passed_to_audio_owner() {
         update: RuntimeCommittedUpdate::Player(Box::new(PlayerCommittedSettingsUpdate {
             player_core: PlayerRuntimeSettingsUpdate::empty(),
             audio_output_device_id: Some(selected_device_id.clone()),
+            event_policy_settings: Vec::new(),
+            media_pipeline: None,
             deferred_boundary_settings: Vec::new(),
         })),
     };
@@ -535,6 +554,8 @@ fn player_decoder_route_uses_runtime_host_without_deferred_debt() {
                 [PlayerRuntimeSettingId::VideoDecoderPacketChannelFrames],
             ),
             audio_output_device_id: None,
+            event_policy_settings: Vec::new(),
+            media_pipeline: None,
             deferred_boundary_settings: Vec::new(),
         })),
     };
@@ -578,7 +599,7 @@ fn media_service_route_uses_app_owner_without_deferred_debt() {
 
     assert_eq!(runtime_adapter.media_updates, 1);
     assert_eq!(report.result, AppRouteApplyResult::Applied);
-    assert_eq!(report.mechanism, ApplyMechanism::WorkerReconfigure);
+    assert_eq!(report.mechanism, ApplyMechanism::PipelineRebuild);
     assert_eq!(report.groups[0].result, AppRouteApplyResult::Applied);
 }
 
@@ -618,7 +639,7 @@ fn media_service_route_keeps_snapshot_when_owner_rebuild_fails() {
             message: "media owner failed".to_string()
         }
     );
-    assert_eq!(report.mechanism, ApplyMechanism::WorkerReconfigure);
+    assert_eq!(report.mechanism, ApplyMechanism::PipelineRebuild);
     assert_eq!(report.groups[0].result, report.result);
     assert_eq!(appliers.media_service, original_snapshot);
 }

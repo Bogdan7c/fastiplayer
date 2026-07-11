@@ -19,3 +19,10 @@
 - YouTube cookies/session data must not be stored in TOML config. Future persistent credentials need a separate OS credential/session boundary.
 - Settings runtime media reconfigure is app-owned, not service-owned: `app-egui::AppState` records active reconstructible source identity for local/direct/YouTube opens, and `frame_prepare::FrameSettingsRuntimeAdapter` rebuilds active direct/YouTube sources with current network/youtube config plus capability selection, then restores playback controls from `PlayerSnapshot` where the source can be reconstructed. Service crates still only open/resolve media and must not know settings UI, playback state, or `AppState`.
 - Future services should return normalized candidates with source descriptors, headers, codec hints, then let `capability-core` select before demux/player open.
+
+## Session 08B active-source settings rebuild (2026-07-11)
+
+- App composition layer сохраняет `ActiveMediaSource` и для network/demux changes повторно открывает тот же local/direct/YouTube source; YouTube без codec-policy change сохраняет exact selected stream identity.
+- Preferred codec order применяется до capability selection для YouTube и как stable video-track ordering для prepared local/direct media.
+- Перед active-source rebuild выполняется read-only player lifecycle preflight; seek/scrub/pipeline busy возвращается retryable и не ставит rebuild в скрытую очередь.
+- После успешной доставки rebuilt media app восстанавливает volume, selected tracks/quality, current position и play/pause intent.

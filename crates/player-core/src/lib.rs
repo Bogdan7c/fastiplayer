@@ -88,9 +88,12 @@ pub use playback_rate::{PlaybackRate, PlaybackRateValidationError};
 pub use runtime_settings::{
     PlayerRuntimeAcceptedChange, PlayerRuntimeApplyError, PlayerRuntimeApplyGroup,
     PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyOutcome, PlayerRuntimeApplyReport,
-    PlayerRuntimeApplyResult, PlayerRuntimeDecoderThreadConfigUpdate,
+    PlayerRuntimeApplyResult, PlayerRuntimeAudioOutputRecreateUpdate,
+    PlayerRuntimeBoundaryActivity, PlayerRuntimeDecoderThreadConfigUpdate,
     PlayerRuntimeDefaultVolumeUpdate, PlayerRuntimeFrameServerPolicyUpdate, PlayerRuntimeSettingId,
-    PlayerRuntimeSettingsUpdate, PlayerRuntimeTickConfigUpdate, PlayerRuntimeVideoBackendUpdate,
+    PlayerRuntimeSettingsUpdate, PlayerRuntimeTickConfigUpdate,
+    PlayerRuntimeVideoBackendPreference, PlayerRuntimeVideoBackendUpdate,
+    PlayerVideoBackendInstallIntent,
 };
 pub use seek_state::PlaybackResumeIntent;
 pub use session::{

@@ -37,12 +37,13 @@ use crate::{
     MediaSource, PlayerCommand, PlayerCommandOutcome, PlayerError, PlayerErrorKind, PlayerEvent,
     PlayerResult, PlayerRuntimeAcceptedChange, PlayerRuntimeApplyError, PlayerRuntimeApplyGroup,
     PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyReport, PlayerRuntimeApplyResult,
+    PlayerRuntimeAudioOutputRecreateUpdate, PlayerRuntimeBoundaryActivity,
     PlayerRuntimeDecoderThreadConfigUpdate, PlayerRuntimeDefaultVolumeUpdate,
     PlayerRuntimeFrameServerPolicyUpdate, PlayerRuntimeSettingsUpdate,
     PlayerRuntimeTickConfigUpdate, PlayerRuntimeVideoBackendUpdate, PlayerSession, PlayerSnapshot,
-    PlayerTickConfig, PlayerTickContext, PlayerTickResult, PlayerVideoDecoderThreadConfig,
-    PlayerWorkerWakeupPlan, PreparedMedia, SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend,
-    scheduler_timing_diagnostics,
+    PlayerTickConfig, PlayerTickContext, PlayerTickResult, PlayerVideoBackendInstallIntent,
+    PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan, PreparedMedia,
+    SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend, scheduler_timing_diagnostics,
 };
 
 mod handle;
@@ -512,6 +513,15 @@ enum WorkerCommand {
     SetVideoBackend {
         /// Started backend содержит только playback-facing decoder handle.
         started_backend: StartedVideoBackend,
+
+        /// Lifecycle intent определяет busy policy без позиционного bool.
+        intent: PlayerVideoBackendInstallIntent,
+
+        /// Decoder config commit, связанный с settings rebuild-ом.
+        accepted_decoder_config: Option<PlayerVideoDecoderThreadConfig>,
+
+        /// One-shot подтверждение фактического worker-side commit/rollback.
+        response_tx: Sender<Result<(), PlayerRuntimeApplyError>>,
     },
 
     /// Shell не смог подобрать совместимый backend под отложенный стрим (например
@@ -529,6 +539,12 @@ enum WorkerCommand {
 
     /// Typed render bridge error.
     RenderError(PlayerRenderError),
+
+    /// Read-only preflight exclusive pipeline boundary перед expensive staged rebuild.
+    CheckRuntimeReconfigureBoundary {
+        /// One-shot activity snapshot; request никогда не резервирует и не ставит apply в очередь.
+        response_tx: Sender<Option<crate::PlayerRuntimeBoundaryActivity>>,
+    },
 
     /// Settings-specific command с обязательным response/report.
     ApplyRuntimeSettings {

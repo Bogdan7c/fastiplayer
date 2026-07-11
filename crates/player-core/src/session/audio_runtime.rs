@@ -7,7 +7,7 @@ use crate::pipeline::{AudioSeekRuntimeState, DecodedAudioPacket};
 use crate::seek_state::{PlaybackResumeIntent, SeekCommitState};
 use crate::{
     AudioOutputSpec, PlaybackState, PlayerError, PlayerErrorKind, PlayerResult,
-    SeekProgressBlocker, TrackId,
+    PlayerRuntimeAcceptedChange, SeekProgressBlocker, TrackId,
 };
 
 use super::{PlayerSession, tick::PlayerTickConfig};
@@ -317,6 +317,55 @@ impl PlayerSession {
         );
 
         Ok(())
+    }
+
+    /// Пересоздаёт active audio output, не уничтожая старый до успешного startup.
+    ///
+    /// App-owned device controller уже содержит новый stable id. Factory читает
+    /// его при создании output-а; ошибка create/play оставляет старый output и clock
+    /// полностью рабочими.
+    pub(crate) fn recreate_active_audio_output(
+        &mut self,
+    ) -> PlayerResult<PlayerRuntimeAcceptedChange> {
+        let Some(output_spec) = self.pipeline.audio_output_input_spec() else {
+            return Ok(PlayerRuntimeAcceptedChange::Unchanged);
+        };
+
+        let mut replacement_output = self
+            .audio_output_factory
+            .create_output(output_spec)
+            .map_err(|error| {
+                PlayerError::new(
+                    PlayerErrorKind::AudioDeviceUnavailable,
+                    format!("Audio output recreation failed during staged startup: {error}"),
+                )
+            })?;
+        replacement_output.set_volume(self.snapshot.volume);
+
+        let should_play = matches!(
+            self.playback_state(),
+            PlaybackState::Playing | PlaybackState::Buffering | PlaybackState::Draining
+        );
+        if should_play {
+            replacement_output.play().map_err(|error| {
+                PlayerError::new(
+                    PlayerErrorKind::AudioDeviceUnavailable,
+                    format!("Replacement audio output failed to start: {error}"),
+                )
+            })?;
+        }
+
+        let replacement_clock = replacement_output.clock();
+        let media_position = self.snapshot.current_position;
+        self.pipeline
+            .install_audio_output(replacement_output, output_spec);
+        self.pipeline.install_audio_clock(replacement_clock);
+        self.pipeline
+            .reanchor_audio_clock_media_mapping(media_position, self.snapshot.playback_rate);
+        self.pipeline
+            .reset_audio_clock_sample(self.audio_clock_now(), Instant::now());
+
+        Ok(PlayerRuntimeAcceptedChange::Applied)
     }
 
     /// Отключает audio path после unrecoverable lazy-init ошибки, не трогая video state.

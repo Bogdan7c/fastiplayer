@@ -12,15 +12,24 @@ impl PlaybackPipeline {
         self.set_video_decoder_thread_handle(Box::new(decoder_thread));
     }
 
-    /// Сохраняет decoder handle, который уже прошёл backend startup boundary.
+    #[cfg(test)]
     pub(crate) fn set_video_decoder_thread_handle(
         &mut self,
         decoder_thread: Box<PlayerVideoDecoderThreadHandle>,
     ) {
+        let _previous_decoder = self.replace_video_decoder_thread_handle(decoder_thread);
+    }
+
+    /// Атомарно заменяет decoder handle и возвращает прежний для compensating rollback.
+    pub(crate) fn replace_video_decoder_thread_handle(
+        &mut self,
+        decoder_thread: Box<PlayerVideoDecoderThreadHandle>,
+    ) -> Option<Box<PlayerVideoDecoderThreadHandle>> {
         self.cancel_video_backlog_recovery_scan_for_decoder_replacement();
         self.video_backend = decoder_thread.backend_name();
-        self.video_decoder_thread = Some(decoder_thread);
+        let previous_decoder = self.video_decoder_thread.replace(decoder_thread);
         self.reset_video_decode_in_flight();
+        previous_decoder
     }
 
     /// Проверяет, есть ли active decoder для операций presentation/render handoff.

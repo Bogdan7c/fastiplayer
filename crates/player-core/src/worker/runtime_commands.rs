@@ -42,8 +42,23 @@ impl PlayerWorkerRuntime {
             WorkerCommand::MediaOpenFailed { request, error } => {
                 self.session.fail_media_open_with_error(request, error);
             }
-            WorkerCommand::SetVideoBackend { started_backend } => {
-                self.session.set_video_backend(started_backend);
+            WorkerCommand::SetVideoBackend {
+                started_backend,
+                intent,
+                accepted_decoder_config,
+                response_tx,
+            } => {
+                let result = self
+                    .session
+                    .install_video_backend_with_intent(started_backend, intent);
+                if result.is_ok()
+                    && let Some(decoder_config) = accepted_decoder_config
+                {
+                    self.config.decoder_thread_config = decoder_config;
+                }
+                if response_tx.send(result).is_err() {
+                    warn!("Video backend commit receiver was dropped");
+                }
             }
             WorkerCommand::RejectPendingVideoBackend { reason } => {
                 self.session
@@ -57,6 +72,12 @@ impl PlayerWorkerRuntime {
             }
             WorkerCommand::RenderError(error) => {
                 self.handle_render_error(error);
+            }
+            WorkerCommand::CheckRuntimeReconfigureBoundary { response_tx } => {
+                let activity = self.session.runtime_reconfigure_boundary_activity();
+                if response_tx.send(activity).is_err() {
+                    warn!("Runtime reconfigure preflight receiver was dropped");
+                }
             }
             WorkerCommand::ApplyRuntimeSettings {
                 update,
@@ -86,12 +107,28 @@ impl PlayerWorkerRuntime {
             return report;
         }
 
+        if update.requires_pipeline_lifecycle_boundary()
+            && let Some(activity) = self.session.runtime_reconfigure_boundary_activity()
+        {
+            report.push(PlayerRuntimeApplyGroupReport::runtime_busy(
+                PlayerRuntimeApplyGroup::Request,
+                update.affected_settings(),
+                activity,
+                "player pipeline boundary is busy; settings update was not queued or applied",
+            ));
+            return report;
+        }
+
         if let Some(tick_update) = update.tick_config {
             self.apply_runtime_tick_config(tick_update, &mut report);
         }
 
         if let Some(default_volume_update) = update.default_volume {
             self.apply_runtime_default_volume(default_volume_update, &mut report);
+        }
+
+        if let Some(audio_output_update) = update.audio_output_recreate {
+            self.apply_runtime_audio_output_recreate(audio_output_update, &mut report);
         }
 
         if let Some(decoder_thread_update) = update.decoder_thread_config {
@@ -175,6 +212,27 @@ impl PlayerWorkerRuntime {
             change,
             "player default volume policy updated; current playback volume is unchanged",
         ));
+    }
+
+    /// Пересоздаёт active audio output после app-owned device policy commit-а.
+    fn apply_runtime_audio_output_recreate(
+        &mut self,
+        update: PlayerRuntimeAudioOutputRecreateUpdate,
+        report: &mut PlayerRuntimeApplyReport,
+    ) {
+        match self.session.recreate_active_audio_output() {
+            Ok(change) => report.push(PlayerRuntimeApplyGroupReport::accepted(
+                PlayerRuntimeApplyGroup::AudioOutput,
+                update.affected_settings,
+                change,
+                "audio output device policy applied and active output recreated",
+            )),
+            Err(error) => report.push(PlayerRuntimeApplyGroupReport::fatal(
+                PlayerRuntimeApplyGroup::AudioOutput,
+                update.affected_settings,
+                format!("audio output recreation failed before owner commit: {error}"),
+            )),
+        }
     }
 
     /// Принимает новый decoder-thread config после app-owned backend rebuild.

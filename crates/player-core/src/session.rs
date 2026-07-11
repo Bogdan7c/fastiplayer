@@ -24,8 +24,9 @@ use crate::seek_state::{PlaybackResumeIntent, SeekRuntimeState};
 use crate::{
     AudioDecoderFactory, AudioOutputFactory, AudioTempoProcessorFactory, FrameCounters,
     PlaybackDiagnostics, PlaybackPipeline, PlaybackState, PlayerCommand, PlayerCommandOutcome,
-    PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, PlayerSnapshot, QualitySelection,
-    SeekRequest, StartedVideoBackend, TrackId,
+    PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, PlayerRuntimeApplyError,
+    PlayerRuntimeBoundaryActivity, PlayerSnapshot, PlayerVideoBackendInstallIntent,
+    QualitySelection, SeekRequest, StartedVideoBackend, TrackId,
 };
 
 mod audio_runtime;
@@ -264,6 +265,28 @@ impl PlayerSession {
     #[must_use]
     pub fn has_loaded_media_pipeline(&self) -> bool {
         self.pipeline.has_demuxer()
+    }
+
+    /// Сообщает, какая операция сейчас эксклюзивно владеет pipeline reconfigure boundary.
+    #[must_use]
+    pub(crate) fn runtime_reconfigure_boundary_activity(
+        &self,
+    ) -> Option<PlayerRuntimeBoundaryActivity> {
+        if self.seek_runtime.simple_scrub_active()
+            || self.seek_runtime.active_seek_landing_is_live_scrub()
+        {
+            return Some(PlayerRuntimeBoundaryActivity::Scrub);
+        }
+        if self.seek_runtime.has_active_commit() || self.seek_runtime.seek_landing_active() {
+            return Some(PlayerRuntimeBoundaryActivity::Seek);
+        }
+        if matches!(self.playback_state(), PlaybackState::Opening)
+            || self.has_pending_video_backend_reselection()
+        {
+            return Some(PlayerRuntimeBoundaryActivity::PipelineLifecycle);
+        }
+
+        None
     }
 
     /// Возвращает neutral decoder activity status без раскрытия `PlaybackPipeline` worker-у.
@@ -679,46 +702,83 @@ impl PlayerSession {
         true
     }
 
-    /// Устанавливает video backend, уже запущенный shell composition root-ом.
-    pub fn set_video_backend(&mut self, started_backend: StartedVideoBackend) {
-        let backend_id = started_backend.backend_id().to_owned();
-        if let Err(error) = self.clear_active_seek_decoder_output_floor("video backend replacement")
+    /// Устанавливает video backend через transactional decoder-handle swap.
+    ///
+    /// Новый handle становится active только на время проверки stream config/re-seek.
+    /// При ошибке прежний handle возвращается в pipeline и повторно конфигурируется;
+    /// исходная и rollback ошибки остаются раздельными в boundary error.
+    pub fn install_video_backend_with_intent(
+        &mut self,
+        started_backend: StartedVideoBackend,
+        intent: PlayerVideoBackendInstallIntent,
+    ) -> Result<(), PlayerRuntimeApplyError> {
+        if intent == PlayerVideoBackendInstallIntent::SettingsReconfigure
+            && let Some(activity) = self.runtime_reconfigure_boundary_activity()
         {
-            self.mark_fatal_error(error);
-            return;
+            return Err(PlayerRuntimeApplyError::RuntimeBusy(activity));
         }
 
-        // Перед подменой backend-а освобождаем video-кадры старого backend-а через ЕГО
-        // resource provider и продвигаем render generation. Иначе удержанный present-кадр
-        // (например P010 DMA-BUF от VA-API) пережил бы свап и был бы отдан новому
-        // materializer-у другого класса (host-upload) → `Missing render resources`. Бамп
-        // render generation помечает кадры/lease нового backend-а свежим поколением, а
-        // старые отсекаются штатной generation-проверкой на renderer boundary. Делается
-        // только при уже активном decoder-е, чтобы первый install при старте не плодил
-        // лишний generation bump.
+        let backend_id = started_backend.backend_id().to_owned();
+        self.clear_active_seek_decoder_output_floor("video backend replacement")
+            .map_err(|error| PlayerRuntimeApplyError::Fatal(error.to_string()))?;
+
         if self.pipeline.has_active_video_decoder() {
             self.clear_video_frames();
             self.advance_render_generation();
         }
 
+        let previous_backend_id = self.active_video_backend_id.clone();
+        let previous_decoder = self
+            .pipeline
+            .replace_video_decoder_thread_handle(started_backend.into_decoder_thread());
         self.active_video_backend_id = Some(backend_id);
-        self.pipeline
-            .set_video_decoder_thread_handle(started_backend.into_decoder_thread());
+
+        let configure_result = if self.has_pending_video_backend_reselection() {
+            self.retry_pending_video_backend_reselection()
+        } else {
+            self.configure_active_video_decoder_stream()
+        };
+
+        if let Err(apply_error) = configure_result {
+            let rollback_result = match previous_decoder {
+                Some(previous_decoder) => {
+                    self.pipeline
+                        .replace_video_decoder_thread_handle(previous_decoder);
+                    self.active_video_backend_id = previous_backend_id;
+                    self.configure_active_video_decoder_stream()
+                }
+                None => {
+                    self.active_video_backend_id = previous_backend_id;
+                    Ok(())
+                }
+            };
+
+            return match rollback_result {
+                Ok(()) => Err(PlayerRuntimeApplyError::Fatal(apply_error.to_string())),
+                Err(rollback_error) => Err(PlayerRuntimeApplyError::ApplyAndRollbackFailed {
+                    apply_error: apply_error.to_string(),
+                    rollback_error: rollback_error.to_string(),
+                }),
+            };
+        }
+
         info!(
             backend = self.pipeline.video_backend_name(),
             "Video backend started"
         );
+        Ok(())
+    }
 
-        // Если видео ждало совместимого backend-а — активируем отложенный трек на новом
-        // backend-е; иначе переконфигурируем уже выбранный active stream (горячая смена).
-        if self.has_pending_video_backend_reselection() {
-            self.retry_pending_video_backend_reselection();
-        } else if let Err(error) = self.configure_active_video_decoder_stream() {
-            warn!(
-                error = %error,
-                "Video backend failed to configure active stream after startup"
-            );
-            self.mark_fatal_error(error);
+    /// Compatibility/startup boundary для обычной pipeline-demand установки backend-а.
+    pub fn set_video_backend(&mut self, started_backend: StartedVideoBackend) {
+        if let Err(error) = self.install_video_backend_with_intent(
+            started_backend,
+            PlayerVideoBackendInstallIntent::PipelineDemand,
+        ) {
+            self.mark_fatal_error(PlayerError::new(
+                PlayerErrorKind::RuntimeError,
+                error.to_string(),
+            ));
         }
     }
 

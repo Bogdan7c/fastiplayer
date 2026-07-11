@@ -615,6 +615,23 @@ fn runtime_apply_default_volume_does_not_mutate_current_playback_volume() {
 }
 
 #[test]
+fn runtime_audio_output_recreate_without_active_media_updates_no_unrelated_owner() {
+    let mut runtime = runtime_for_tests(Instant::now());
+    let original_tick_config = runtime.config.tick_config;
+    let report = runtime.apply_runtime_settings(
+        PlayerRuntimeSettingsUpdate::empty()
+            .with_audio_output_recreate([PlayerRuntimeSettingId::AudioOutputDevice]),
+    );
+
+    assert_eq!(runtime.config.tick_config, original_tick_config);
+    let audio_report = apply_group_report(&report, PlayerRuntimeApplyGroup::AudioOutput);
+    assert_eq!(
+        audio_report.outcome,
+        PlayerRuntimeApplyOutcome::Accepted(PlayerRuntimeAcceptedChange::Unchanged)
+    );
+}
+
+#[test]
 fn worker_playback_rate_reject_stays_non_fatal_on_direct_command_path() {
     let mut runtime = runtime_for_tests(Instant::now());
     let requested_rate =
@@ -697,6 +714,45 @@ fn runtime_apply_decoder_thread_config_accepts_controlled_rebuild() {
     assert_eq!(
         decoder_report.outcome,
         PlayerRuntimeApplyOutcome::Accepted(PlayerRuntimeAcceptedChange::Applied)
+    );
+}
+
+#[test]
+fn runtime_pipeline_reconfigure_returns_scrub_busy_before_any_owner_mutation() {
+    let mut runtime = runtime_for_tests(Instant::now());
+    let original_decoder_thread_config = runtime.config.decoder_thread_config;
+    let original_default_volume = runtime.config.default_volume;
+    runtime.session.set_simple_scrub_state_for_tests(
+        true,
+        Some(SeekRequest::absolute(MediaTime::from_secs(3))),
+    );
+
+    let requested_decoder_thread_config = PlayerVideoDecoderThreadConfig {
+        packet_channel_frames: original_decoder_thread_config.packet_channel_frames + 1,
+        ..original_decoder_thread_config
+    };
+    let report = runtime.apply_runtime_settings(
+        PlayerRuntimeSettingsUpdate::empty()
+            .with_default_volume(
+                (original_default_volume - 0.1).max(0.0),
+                [PlayerRuntimeSettingId::AudioDefaultVolume],
+            )
+            .with_decoder_thread_config(
+                requested_decoder_thread_config,
+                [PlayerRuntimeSettingId::VideoDecoderPacketChannelFrames],
+            ),
+    );
+
+    assert_eq!(
+        runtime.config.decoder_thread_config,
+        original_decoder_thread_config
+    );
+    assert_eq!(runtime.config.default_volume, original_default_volume);
+    assert_eq!(report.groups.len(), 1);
+    assert_eq!(report.groups[0].group, PlayerRuntimeApplyGroup::Request);
+    assert_eq!(
+        report.groups[0].outcome,
+        PlayerRuntimeApplyOutcome::RuntimeBusy(PlayerRuntimeBoundaryActivity::Scrub)
     );
 }
 

@@ -10,3 +10,12 @@
 - Session 08B input: implement Player/MediaService/FrameServer rows through owner boundaries, including event-policy updates, worker reconfigure, audio/source recreation, and video pipeline rebuild with rollback and retryable busy/conflict.
 - Session 08C input: implement RenderCommitted rows via controlled renderer recreation; preserve live-render preview rows and cover active leases/device-lost/restore failure.
 - Session 08D input: make the typed outcome transactional end-to-end, move persistence after successful runtime commit, compensate earlier owner commits in reverse order, then remove deferred debt vocabulary and UI string-based status plumbing.
+
+
+## Session 08B — live apply player/media/decoder (2026-07-11)
+
+- Player committed route теперь различает event policy, media-pipeline rebuild, audio-output recreate, decoder config и backend policy; прежний `deferred_boundary_settings` оставлен только как transitional S08D cleanup surface.
+- App-owned committed snapshot синхронизируется только после полного успеха route reports; при owner failure snapshot сохраняет последнюю рабочую policy.
+- Retryable seek/scrub/pipeline busy проходит через `AppRouteApplyResult::RuntimeBusy` и player group report без hidden apply queue.
+- Event-scoped `start_paused` и seek-hotkey policy принимаются немедленно; codec/demux/network changes при active remote/local media используют controlled source reopen, а YouTube codec order выбирает первый поддержанный configured codec.
+- Renderer recreation не входит в S08B; cross-route persistence ordering и удаление transitional debt остаются задачей S08D.
