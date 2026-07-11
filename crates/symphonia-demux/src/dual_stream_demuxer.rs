@@ -351,32 +351,21 @@ impl Demuxer for DualStreamDemuxer {
             return Ok(DemuxReadEvent::Packet(audio_packet));
         }
 
-        match (&self.pending_video_packet, &self.pending_audio_packet) {
+        match (
+            self.pending_video_packet.take(),
+            self.pending_audio_packet.take(),
+        ) {
             (Some(video_packet), Some(audio_packet)) => {
-                if video_packet.presentation_order_cmp(audio_packet) != Ordering::Greater {
-                    Ok(DemuxReadEvent::Packet(
-                        self.pending_video_packet
-                            .take()
-                            .expect("pending video packet checked above"),
-                    ))
+                if video_packet.presentation_order_cmp(&audio_packet) != Ordering::Greater {
+                    self.pending_audio_packet = Some(audio_packet);
+                    Ok(DemuxReadEvent::Packet(video_packet))
                 } else {
-                    Ok(DemuxReadEvent::Packet(
-                        self.pending_audio_packet
-                            .take()
-                            .expect("pending audio packet checked above"),
-                    ))
+                    self.pending_video_packet = Some(video_packet);
+                    Ok(DemuxReadEvent::Packet(audio_packet))
                 }
             }
-            (Some(_), None) => Ok(DemuxReadEvent::Packet(
-                self.pending_video_packet
-                    .take()
-                    .expect("pending video packet checked above"),
-            )),
-            (None, Some(_)) => Ok(DemuxReadEvent::Packet(
-                self.pending_audio_packet
-                    .take()
-                    .expect("pending audio packet checked above"),
-            )),
+            (Some(video_packet), None) => Ok(DemuxReadEvent::Packet(video_packet)),
+            (None, Some(audio_packet)) => Ok(DemuxReadEvent::Packet(audio_packet)),
             (None, None) => Ok(DemuxReadEvent::EndOfStream),
         }
     }

@@ -2,7 +2,7 @@ use std::any::Any;
 use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -859,6 +859,17 @@ struct VaapiSurfaceLifecycleError {
     detail: String,
 }
 
+/// Fatal ошибка доступа к poisoned zero-copy resource pool.
+///
+/// После poison содержимое пула нельзя считать согласованным: guard намеренно
+/// не извлекается через `PoisonError::into_inner`, поэтому backend останавливает
+/// текущий lifecycle вместо попытки продолжить работу с недостоверным state.
+#[derive(Debug)]
+struct VaapiResourcePoolPoisonError {
+    /// Lifecycle operation, на которой обнаружена потеря инвариантов пула.
+    operation: &'static str,
+}
+
 impl ZeroCopyContractViolation {
     /// Создаёт ошибку zero-copy boundary с понятной причиной для лога/UI.
     fn new(detail: impl Into<String>) -> Self {
@@ -893,10 +904,35 @@ impl std::fmt::Display for VaapiSurfaceLifecycleError {
 
 impl std::error::Error for VaapiSurfaceLifecycleError {}
 
+impl std::fmt::Display for VaapiResourcePoolPoisonError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "zero-copy resource pool mutex poisoned during {}",
+            self.operation
+        )
+    }
+}
+
+impl std::error::Error for VaapiResourcePoolPoisonError {}
+
+/// Захватывает resource-pool lock без controlled recovery poisoned state.
+fn lock_resource_pool<'a>(
+    resource_pool: &'a Mutex<FrameResourcePool>,
+    operation: &'static str,
+) -> Result<MutexGuard<'a, FrameResourcePool>> {
+    resource_pool
+        .lock()
+        .map_err(|_| VaapiResourcePoolPoisonError { operation }.into())
+}
+
 /// Проверяет, что decode error требует остановить decoder thread.
 pub(crate) fn is_fatal_decoder_error(error: &anyhow::Error) -> bool {
     error.downcast_ref::<ZeroCopyContractViolation>().is_some()
         || error.downcast_ref::<VaapiSurfaceLifecycleError>().is_some()
+        || error
+            .downcast_ref::<VaapiResourcePoolPoisonError>()
+            .is_some()
 }
 
 /// Создаёт typed anyhow error для фатальной zero-copy boundary ошибки.
@@ -1469,7 +1505,8 @@ impl VaapiVideoDecoder {
         let runtime_config = runtime_config.normalized();
         let reclaim_capacity = SuppressedReclaimCapacity::from_runtime_config(runtime_config);
         info!("Opening VA-API display");
-        if let Ok(resource_pool) = resource_pool.lock() {
+        {
+            let resource_pool = lock_resource_pool(&resource_pool, "decoder initialization")?;
             let reuse_contract = resource_pool.reuse_contract();
             info!(
                 backend_contract = reuse_contract.backend_name,
@@ -1567,11 +1604,7 @@ impl VaapiVideoDecoder {
             handle_id = resource_handle.0,
             "Releasing decoder-owned zero-copy frame"
         );
-        self.resource_pool
-            .lock()
-            .map_err(|error| {
-                anyhow::anyhow!("zero-copy resource pool mutex poisoned during release: {error}")
-            })?
+        lock_resource_pool(&self.resource_pool, "decoder-owned frame release")?
             .release_without_gpu_submission(resource_handle)
             .map_err(anyhow::Error::from)?;
 
@@ -1579,9 +1612,9 @@ impl VaapiVideoDecoder {
     }
 
     /// Возвращает статистику resource pool для отладки.
-    pub fn resource_pool_stats(&self) -> (usize, usize) {
-        let resource_pool = self.resource_pool.lock().unwrap();
-        (resource_pool.num_slots(), resource_pool.num_in_use())
+    pub fn resource_pool_stats(&self) -> Result<(usize, usize)> {
+        let resource_pool = lock_resource_pool(&self.resource_pool, "statistics read")?;
+        Ok((resource_pool.num_slots(), resource_pool.num_in_use()))
     }
 
     /// Забирает следующий backend-ready frame без submit-а нового packet-а.
@@ -1686,7 +1719,7 @@ impl VaapiVideoDecoder {
         }
         self.force_drain_preroll_candidate_and_suppressed_surfaces("configure_stream")?;
         self.release_decoder_owned_ready_frames("configure_stream")?;
-        self.invalidate_idle_resource_pool_after_format_change();
+        self.invalidate_idle_resource_pool_after_format_change()?;
 
         let adapter =
             VaapiCodecAdapterFactory::create_adapter_for_config(self.display.clone(), config)?;
@@ -1718,13 +1751,7 @@ impl VaapiVideoDecoder {
         };
 
         self.return_frame_from_handle(handle);
-        self.resource_pool
-            .lock()
-            .map_err(|error| {
-                anyhow::anyhow!(
-                    "zero-copy resource pool mutex poisoned during decoder reuse ack: {error}"
-                )
-            })?
+        lock_resource_pool(&self.resource_pool, "decoder reuse acknowledgement")?
             .acknowledge_decoder_reuse(resource_handle)
             .map_err(anyhow::Error::from)?;
         Ok(())
@@ -1862,10 +1889,14 @@ impl VaapiVideoDecoder {
                 Ok(())
             }
             PrerollFallbackCandidateDecision::ReplaceExisting => {
-                let replaced_candidate = self
-                    .preroll_fallback_candidate
-                    .replace(incoming_candidate)
-                    .expect("candidate exists when replacement was selected");
+                let Some(replaced_candidate) =
+                    self.preroll_fallback_candidate.replace(incoming_candidate)
+                else {
+                    return Err(VaapiSurfaceLifecycleError::new(
+                        "preroll candidate replacement selected without an existing candidate",
+                    )
+                    .into());
+                };
                 let replaced_metadata = replaced_candidate.metadata;
                 self.preroll_output_floor.record_candidate_replaced();
                 debug!(
@@ -2114,8 +2145,9 @@ impl VaapiVideoDecoder {
     /// seek или dynamic format change. Полный `invalidate_all()` в такой момент
     /// удалит handle mapping раньше обычного release и оставит zero-copy guard
     /// без пути возврата VA surface в pool.
-    fn invalidate_idle_resource_pool_after_format_change(&mut self) {
-        let mut resource_pool = self.resource_pool.lock().unwrap();
+    fn invalidate_idle_resource_pool_after_format_change(&mut self) -> Result<()> {
+        let mut resource_pool =
+            lock_resource_pool(&self.resource_pool, "format-change invalidation")?;
         let live_resource_count = resource_pool.num_in_use();
 
         if live_resource_count == 0 {
@@ -2125,13 +2157,14 @@ impl VaapiVideoDecoder {
                     "Failed to invalidate idle zero-copy resource pool after format change"
                 );
             }
-            return;
+            return Ok(());
         }
 
         debug!(
             live_resource_count,
             "Keeping resource pool entries because render-owned frames are still live"
         );
+        Ok(())
     }
 
     /// Обрабатывает готовый кадр от decoder: sync, DMA-BUF export и resource registration.
@@ -2211,11 +2244,8 @@ impl VaapiVideoDecoder {
 
         // Шаг 3: Регистрируем descriptor; renderer сам выполнит graphics import.
         let (resource_handle, resource_pool_diagnostics) = {
-            let mut resource_pool = self.resource_pool.lock().map_err(|error| {
-                zero_copy_contract_violation(format!(
-                    "Zero-copy resource pool mutex is poisoned during DMA-BUF registration: {error}"
-                ))
-            })?;
+            let mut resource_pool =
+                lock_resource_pool(&self.resource_pool, "DMA-BUF registration")?;
             let resource_handle = match resource_pool.register_dma_buf_image(dma_buf_image) {
                 Ok(resource_handle) => resource_handle,
                 Err(registration_error) => {
@@ -2348,7 +2378,7 @@ impl VaapiVideoDecoder {
         // Иначе `invalidate_all()` удалит mappings, а VA handles,
         // удерживаемые этими кадрами, останутся без release path.
         self.release_decoder_owned_ready_frames("format_changed")?;
-        self.invalidate_idle_resource_pool_after_format_change();
+        self.invalidate_idle_resource_pool_after_format_change()?;
 
         // Пересоздаём frame pool под новое разрешение/формат.
         // `stream_info()` уже обновлён внутри cros-codecs перед event-ом.
@@ -2659,6 +2689,35 @@ mod tests {
     use super::*;
 
     use crate::codec_adapter::test_support::{FakeSurfaceReadiness, fake_decoded_frame_handle};
+
+    /// Проверяет fail-closed policy на локально poisoned pool без hardware/global state.
+    #[test]
+    fn poisoned_resource_pool_returns_typed_fatal_error_on_every_lock_attempt() {
+        let resource_pool = Mutex::new(FrameResourcePool::default());
+
+        std::thread::scope(|scope| {
+            let poison_thread = scope.spawn(|| {
+                let _resource_pool_guard = resource_pool
+                    .lock()
+                    .expect("fresh test mutex must be lockable before deliberate poison");
+                panic!("deliberately poison local resource-pool mutex");
+            });
+            assert!(poison_thread.join().is_err());
+        });
+
+        for operation in ["first test access", "cleanup test access"] {
+            let error = match lock_resource_pool(&resource_pool, operation) {
+                Ok(_) => panic!("poisoned resource pool must never be recovered"),
+                Err(error) => error,
+            };
+            let poison_error = error
+                .downcast_ref::<VaapiResourcePoolPoisonError>()
+                .expect("resource-pool poison must preserve its typed root cause");
+
+            assert_eq!(poison_error.operation, operation);
+            assert!(is_fatal_decoder_error(&error));
+        }
+    }
 
     /// Создаёт neutral decoded frame без реального VA resource-а для ownership tests.
     fn decoded_frame_for_tests(resource_handle: FrameResourceHandle) -> DecodedFrame {

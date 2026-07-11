@@ -578,10 +578,11 @@ impl VaapiCodecAdapter for H264VaapiCodecAdapter {
             );
         }
 
-        let pending_access_unit = self
-            .pending_access_unit
-            .as_mut()
-            .expect("pending access unit was just created");
+        let Some(pending_access_unit) = self.pending_access_unit.as_mut() else {
+            return Err(VaapiAdapterDecodeError::Backend(
+                "H.264 pending access unit missing after preparation".to_string(),
+            ));
+        };
         let feed_result = pending_access_unit.feed_until_blocked(|remaining_bytes| {
             let mut alloc_cb = || {
                 let frame = frame_pool.alloc_or_allocate();
@@ -598,10 +599,11 @@ impl VaapiCodecAdapter for H264VaapiCodecAdapter {
 
         match feed_result {
             Ok(Some(source_packet_len)) => {
-                let completed_access_unit = self
-                    .pending_access_unit
-                    .take()
-                    .expect("completed H.264 access unit must still be pending");
+                let Some(completed_access_unit) = self.pending_access_unit.take() else {
+                    return Err(VaapiAdapterDecodeError::Backend(
+                        "H.264 completed access unit missing from adapter state".to_string(),
+                    ));
+                };
                 self.access_unit_preparer
                     .recycle_completed_access_unit(completed_access_unit);
                 Ok(source_packet_len)
@@ -999,10 +1001,11 @@ impl VaapiCodecAdapter for H265VaapiCodecAdapter {
             );
         }
 
-        let pending_access_unit = self
-            .pending_access_unit
-            .as_mut()
-            .expect("pending access unit was just created");
+        let Some(pending_access_unit) = self.pending_access_unit.as_mut() else {
+            return Err(VaapiAdapterDecodeError::Backend(
+                "H.265 pending access unit missing after preparation".to_string(),
+            ));
+        };
         let feed_result = pending_access_unit.feed_until_blocked(|remaining_bytes| {
             let mut alloc_cb = || {
                 let frame = frame_pool.alloc_or_allocate();
@@ -1019,10 +1022,11 @@ impl VaapiCodecAdapter for H265VaapiCodecAdapter {
 
         match feed_result {
             Ok(Some(source_packet_len)) => {
-                let completed_access_unit = self
-                    .pending_access_unit
-                    .take()
-                    .expect("completed H.265 access unit must still be pending");
+                let Some(completed_access_unit) = self.pending_access_unit.take() else {
+                    return Err(VaapiAdapterDecodeError::Backend(
+                        "H.265 completed access unit missing from adapter state".to_string(),
+                    ));
+                };
                 self.access_unit_preparer
                     .recycle_completed_access_unit(completed_access_unit);
                 Ok(source_packet_len)

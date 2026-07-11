@@ -1147,7 +1147,14 @@ impl VideoDecodeThread {
         match self.resource_pool.lock() {
             Ok(resource_pool) => Some(resource_pool.stats()),
             Err(error) => {
-                tracing::warn!(error = %error, "Resource pool mutex poisoned during stats read");
+                let fatal_error = self.thread_state.mark_fatal(DecodeThreadError::new(format!(
+                    "Zero-copy resource pool mutex poisoned during stats read: {error}"
+                )));
+                tracing::warn!(
+                    error = %error,
+                    fatal = %fatal_error,
+                    "Resource pool mutex poisoned during stats read"
+                );
                 None
             }
         }

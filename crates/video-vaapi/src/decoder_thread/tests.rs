@@ -383,6 +383,34 @@ fn decoder_thread_for_control_tests(
     }
 }
 
+/// Poisoned stats lock переводит весь backend handle в sticky fatal state.
+#[test]
+fn poisoned_resource_pool_stats_marks_decoder_thread_fatal() {
+    let (control_tx, _control_rx) = bounded(1);
+    let decoder_thread = decoder_thread_for_control_tests(
+        control_tx,
+        Arc::new(DecoderControlChannelPressureCounters::default()),
+        DecoderThreadState::new(),
+    );
+    let resource_pool = Arc::clone(&decoder_thread.resource_pool);
+
+    std::thread::scope(|scope| {
+        let poison_thread = scope.spawn(|| {
+            let _resource_pool_guard = resource_pool
+                .lock()
+                .expect("fresh test mutex must be lockable before deliberate poison");
+            panic!("deliberately poison decoder-thread resource pool");
+        });
+        assert!(poison_thread.join().is_err());
+    });
+
+    assert!(decoder_thread.resource_pool_stats().is_none());
+    let fatal_error = decoder_thread
+        .try_recv_error()
+        .expect("poisoned stats boundary must publish sticky fatal error");
+    assert!(fatal_error.message().contains("poisoned during stats read"));
+}
+
 /// Проверяет, что concrete VAAPI thread отдаёт neutral activity snapshot.
 #[test]
 fn decoder_thread_activity_snapshot_is_available() {

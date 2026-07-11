@@ -2281,10 +2281,10 @@ impl PlayerSession {
             return Ok(ScrubCommitOutcome::NoActiveGesture);
         }
 
-        let finished_scrub = self
-            .seek_runtime
-            .finish_active_simple_scrub()
-            .expect("simple scrub active должен вернуть finished state");
+        let Some(finished_scrub) = self.seek_runtime.finish_active_simple_scrub() else {
+            self.finish_simple_scrub_without_seek(None, SimpleScrubExitMode::RestoreStateOnly);
+            return Ok(ScrubCommitOutcome::NoActiveGesture);
+        };
         let confirmed_playback_state = finished_scrub.confirmed_playback_state();
         let latest_request = finished_scrub.latest_request();
         let live_scrub_diagnostics =

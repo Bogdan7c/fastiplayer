@@ -631,14 +631,10 @@ fn probe_h264_packet_requirement(
         .and_then(|packetization| h264_sps_metadata_from_packet(packet_bytes, packetization))
     {
         Ok(metadata) => VideoRequirementProbe::Candidate(h264_candidate(metadata)),
-        Err(error)
-            if matches!(error, H264RequirementError::ByteStream(_))
-                && deferred_private_error.is_some() =>
-        {
-            map_h264_requirement_error(
-                deferred_private_error.expect("checked by deferred_private_error.is_some()"),
-            )
-        }
+        Err(error @ H264RequirementError::ByteStream(_)) => match deferred_private_error {
+            Some(private_error) => map_h264_requirement_error(private_error),
+            None => map_h264_requirement_error(error),
+        },
         Err(error) => map_h264_requirement_error(error),
     }
 }
@@ -710,22 +706,20 @@ fn probe_h265_packet_requirement(
         Ok(requirement) => {
             VideoRequirementProbe::Candidate(VideoRequirementCandidate::generic(requirement))
         }
-        Err(H265RequirementError::MissingSequenceParameterSet)
-        | Err(H265RequirementError::ByteStream(_))
-            if fallback_private_requirement.is_some() =>
-        {
-            VideoRequirementProbe::Candidate(VideoRequirementCandidate::generic(
-                fallback_private_requirement
-                    .expect("checked by fallback_private_requirement.is_some()"),
-            ))
-        }
-        Err(error)
-            if matches!(error, H265RequirementError::ByteStream(_))
-                && deferred_private_error.is_some() =>
-        {
-            map_h265_requirement_error(
-                deferred_private_error.expect("checked by deferred_private_error.is_some()"),
-            )
+        Err(error @ H265RequirementError::MissingSequenceParameterSet)
+        | Err(error @ H265RequirementError::ByteStream(_)) => {
+            if let Some(private_requirement) = fallback_private_requirement {
+                VideoRequirementProbe::Candidate(VideoRequirementCandidate::generic(
+                    private_requirement,
+                ))
+            } else if matches!(error, H265RequirementError::ByteStream(_)) {
+                match deferred_private_error {
+                    Some(private_error) => map_h265_requirement_error(private_error),
+                    None => map_h265_requirement_error(error),
+                }
+            } else {
+                map_h265_requirement_error(error)
+            }
         }
         Err(error) => map_h265_requirement_error(error),
     }
