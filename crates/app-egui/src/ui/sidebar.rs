@@ -97,7 +97,9 @@ fn remembered_width(ui: &Ui) -> f32 {
         .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH)
 }
 
-/// Open/close сохраняет целевую ширину и только обрезает содержимое host rect.
+/// В fully-open состоянии содержимое рисуется прямо в Panel UI, чтобы его
+/// текущий max rect не превращался в minimum width и не блокировал resize.
+/// Fixed child используется только во время open/close animation.
 fn render_open_content(
     ui: &mut Ui,
     panel_rect: egui::Rect,
@@ -106,16 +108,28 @@ fn render_open_content(
     fully_open: bool,
     context: &mut SidebarRenderContext<'_>,
 ) {
-    let content_rect = if fully_open {
-        panel_rect
-    } else {
+    let Some(content_rect) = animated_content_rect(panel_rect, target_width, fully_open) else {
+        render_section(ui, section, context);
+        return;
+    };
+    let mut child = content_child(ui, panel_rect, content_rect, ("open", section as u8));
+    child.disable();
+    render_section(&mut child, section, context);
+}
+
+/// `None` означает direct rendering в resizable host. Fixed rect разрешён
+/// только для промежуточной open/close animation.
+fn animated_content_rect(
+    panel_rect: egui::Rect,
+    target_width: f32,
+    fully_open: bool,
+) -> Option<egui::Rect> {
+    (!fully_open).then(|| {
         egui::Rect::from_min_max(
             egui::pos2(panel_rect.right() - target_width, panel_rect.top()),
             panel_rect.max,
         )
-    };
-    let mut child = content_child(ui, panel_rect, content_rect, ("open", section as u8));
-    render_section(&mut child, section, context);
+    })
 }
 
 /// Рисует outgoing/incoming content внутри того же Panel.
@@ -255,6 +269,13 @@ mod tests {
         assert_eq!(DEFAULT_SIDEBAR_WIDTH, 420.0);
         assert_eq!(MIN_SIDEBAR_WIDTH, 320.0);
         assert_eq!(MAX_SIDEBAR_WIDTH, 560.0);
+    }
+
+    #[test]
+    fn fully_open_content_does_not_create_width_locking_child_rect() {
+        let panel_rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(420.0, 700.0));
+        assert_eq!(animated_content_rect(panel_rect, 420.0, true), None);
+        assert!(animated_content_rect(panel_rect, 420.0, false).is_some());
     }
 
     #[test]
