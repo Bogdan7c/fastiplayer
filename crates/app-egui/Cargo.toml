@@ -20,6 +20,7 @@ animation-core.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 egui.workspace = true
+ui-artwork-egui.workspace = true
 egui-winit.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true

@@ -3,9 +3,8 @@
 //! Модуль остаётся визуальным boundary: он знает только egui geometry/style,
 //! возвращает намерения пользователя и не вызывает winit lifecycle напрямую.
 
-use egui::{
-    Align2, Color32, CursorIcon, FontId, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
-};
+use egui::{Color32, CursorIcon, Rect, Sense, Stroke, Ui, pos2, vec2};
+use ui_artwork_egui::{ArtworkPainter, ButtonVisualState, WindowControlGlyph, WindowControlStyle};
 
 use crate::ui::skin::ControlsStyle;
 use crate::ui::titlebar_icon_area::{self, TitlebarIconAreaAction, TitlebarIconAreaStyle};
@@ -279,16 +278,8 @@ fn optional_rect(left: f32, right: f32, chrome_rect: Rect) -> Option<Rect> {
     })
 }
 
-/// Рисует текст title внутри clipping rect-а.
 fn paint_title(ui: &Ui, title: &str, style: WindowChromeStyle, title_rect: Rect) {
-    let painter = ui.painter().with_clip_rect(title_rect);
-    painter.text(
-        title_rect.center(),
-        Align2::CENTER_CENTER,
-        title,
-        FontId::proportional(15.0),
-        style.title_color,
-    );
+    ArtworkPainter::new(ui.painter()).window_title(title_rect, title, style.title_color);
 }
 
 /// Собирает drag/double-click actions из всей свободной части titlebar.
@@ -353,7 +344,6 @@ fn collect_button_action(
     }
 }
 
-/// Рисует фон hover-а и stroke-icon кнопки.
 fn paint_button(
     ui: &Ui,
     button_rect: Rect,
@@ -361,82 +351,32 @@ fn paint_button(
     input: WindowChromeInput<'_>,
     hovered: bool,
 ) {
-    let painter = ui.painter();
-    if hovered {
-        let fill = if button_kind == WindowChromeButtonKind::Close {
-            input.style.close_hover_fill
-        } else {
-            input.style.button_hover_fill
-        };
-        painter.rect_filled(button_rect, 0.0, fill);
-    }
-
-    match button_kind {
-        WindowChromeButtonKind::Minimize => paint_minimize_icon(painter, button_rect, input.style),
+    let glyph = match button_kind {
+        WindowChromeButtonKind::Minimize => WindowControlGlyph::Minimize,
         WindowChromeButtonKind::MaximizeRestore if input.is_maximized => {
-            paint_restore_icon(painter, button_rect, input.style);
+            WindowControlGlyph::Restore
         }
-        WindowChromeButtonKind::MaximizeRestore => {
-            paint_maximize_icon(painter, button_rect, input.style);
-        }
-        WindowChromeButtonKind::Close => paint_close_icon(painter, button_rect, input.style),
-    }
-}
-
-/// Рисует minimize icon.
-fn paint_minimize_icon(painter: &egui::Painter, button_rect: Rect, style: WindowChromeStyle) {
-    let center = button_rect.center();
-    painter.line_segment(
-        [
-            pos2(center.x - 6.0, center.y + 5.0),
-            pos2(center.x + 6.0, center.y + 5.0),
-        ],
-        style.icon_stroke,
-    );
-}
-
-/// Рисует maximize icon.
-fn paint_maximize_icon(painter: &egui::Painter, button_rect: Rect, style: WindowChromeStyle) {
-    let icon_rect = Rect::from_center_size(button_rect.center(), Vec2::new(12.0, 10.0));
-    painter.rect_stroke(icon_rect, 0.0, style.icon_stroke, StrokeKind::Inside);
-}
-
-/// Рисует restore icon для maximized window.
-fn paint_restore_icon(painter: &egui::Painter, button_rect: Rect, style: WindowChromeStyle) {
-    let center = button_rect.center();
-    let back_rect =
-        Rect::from_center_size(pos2(center.x + 2.0, center.y - 2.0), Vec2::new(10.0, 8.0));
-    let front_rect =
-        Rect::from_center_size(pos2(center.x - 2.0, center.y + 2.0), Vec2::new(10.0, 8.0));
-
-    painter.rect_stroke(back_rect, 0.0, style.icon_stroke, StrokeKind::Inside);
-    painter.rect_filled(
-        Rect::from_min_max(
-            pos2(front_rect.left() - 1.0, front_rect.top() - 1.0),
-            pos2(front_rect.right() + 1.0, front_rect.bottom() + 1.0),
-        ),
-        0.0,
-        style.fill,
-    );
-    painter.rect_stroke(front_rect, 0.0, style.icon_stroke, StrokeKind::Inside);
-}
-
-/// Рисует close icon.
-fn paint_close_icon(painter: &egui::Painter, button_rect: Rect, style: WindowChromeStyle) {
-    let center = button_rect.center();
-    painter.line_segment(
-        [
-            pos2(center.x - 5.0, center.y - 5.0),
-            pos2(center.x + 5.0, center.y + 5.0),
-        ],
-        style.icon_stroke,
-    );
-    painter.line_segment(
-        [
-            pos2(center.x + 5.0, center.y - 5.0),
-            pos2(center.x - 5.0, center.y + 5.0),
-        ],
-        style.icon_stroke,
+        WindowChromeButtonKind::MaximizeRestore => WindowControlGlyph::Maximize,
+        WindowChromeButtonKind::Close => WindowControlGlyph::Close,
+    };
+    let hover_fill = if button_kind == WindowChromeButtonKind::Close {
+        input.style.close_hover_fill
+    } else {
+        input.style.button_hover_fill
+    };
+    ArtworkPainter::new(ui.painter()).window_control(
+        button_rect,
+        glyph,
+        if hovered {
+            ButtonVisualState::Hovered
+        } else {
+            ButtonVisualState::Idle
+        },
+        WindowControlStyle {
+            fill: input.style.fill,
+            stroke: input.style.icon_stroke,
+            hover_fill,
+        },
     );
 }
 

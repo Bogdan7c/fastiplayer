@@ -15,3 +15,4 @@
 - New Rust boundary/internal APIs should be self-documenting at the callsite. Avoid positional `bool`, ambiguous `Option`, and unclear numeric/string literals when an `enum`, newtype, named method, or intent-method can express the meaning; when an old API forces an opaque literal, add a short parameter-name comment at the callsite.
 - Do not bundle cosmetic refactors with feature work or architecture boundary changes.
 - Refactoring must preserve behavior parity: playback/render/seek/scrub semantics, HDR/P010/NV12 output, zero-copy path, queue limits, error policy, diagnostics, and config defaults stay stable unless separately decided.
+- Любая новая custom-рисовка egui создаётся отдельным `.rs` в `ui-artwork-egui` и вызывается через `ArtworkPainter`; `app-egui` не реализует Painter-примитивы. См. `mem:app-egui/artwork-boundary`.

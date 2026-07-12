@@ -27,3 +27,5 @@
 - Session 16 YouTube HDR selection policy, schema-v5 setting ids, typed UnknownDynamicRange rejection and service-owned selection boundary are documented in `mem:media-services/youtube-hdr-selection-s16`.
 
 - Session 28 readiness audit (2026-07-12) verdict is `NOT READY` for an unrestricted feature roadmap: correctness/domain boundaries largely pass, but foundation remains blocked by quick-xml RUSTSEC-2026-0194/0195 and the coverage ratchet/test-relocation classification problem. Full reproducible evidence and allowed work directions are in root `readiness_report_2026-07-12.md`; details live in `mem:ci/github-actions` and `mem:testing/coverage`. All historical hover memories are already under `archive/...`; hover lanes remain removed.
+
+- Custom egui artwork boundary: see `mem:app-egui/artwork-boundary`; `ui-artwork-egui` owns Painter primitives and shared visual geometry, while `app-egui` owns interaction/accessibility/actions.

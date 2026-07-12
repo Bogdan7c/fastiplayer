@@ -4,12 +4,10 @@
 //! hover-отрисовкой и glyph-ом, а наружу отдаёт только нейтральный intent.
 
 use egui::{Color32, Rect, Sense, Stroke, Ui, WidgetInfo, WidgetType, vec2};
+use ui_artwork_egui::{ArtworkPainter, ButtonVisualState};
 
 /// Stable id кнопки, чтобы egui не смешивал её состояние с другими controls.
 const SETTINGS_BUTTON_ID: &str = "titlebar_icon_area_settings";
-
-/// Количество зубцов у hand-drawn gear icon.
-const GEAR_TOOTH_COUNT: usize = 8;
 
 /// Действие, которое левая icon-area отдаёт владельцу runtime semantics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,37 +79,17 @@ pub(crate) fn actions_for_settings_button(clicked: bool) -> Vec<TitlebarIconArea
         .collect()
 }
 
-/// Рисует hover background и hand-drawn gear icon без новой icon dependency.
 fn paint_settings_button(ui: &Ui, button_rect: Rect, style: TitlebarIconAreaStyle, hovered: bool) {
-    let painter = ui.painter();
-    if hovered {
-        painter.rect_filled(button_rect, 0.0, style.button_hover_fill);
-    }
-
-    paint_gear_icon(painter, button_rect, style.icon_stroke);
-}
-
-/// Рисует gear из окружностей и коротких radial strokes.
-fn paint_gear_icon(painter: &egui::Painter, button_rect: Rect, stroke: Stroke) {
-    let center = button_rect.center();
-    let icon_radius = (button_rect.width().min(button_rect.height()) * 0.22).max(5.0);
-    let tooth_inner_radius = icon_radius * 1.12;
-    let tooth_outer_radius = icon_radius * 1.42;
-
-    painter.circle_stroke(center, icon_radius, stroke);
-    painter.circle_stroke(center, icon_radius * 0.38, stroke);
-
-    for tooth_index in 0..GEAR_TOOTH_COUNT {
-        let angle = std::f32::consts::TAU * tooth_index as f32 / GEAR_TOOTH_COUNT as f32;
-        let direction = vec2(angle.cos(), angle.sin());
-        painter.line_segment(
-            [
-                center + direction * tooth_inner_radius,
-                center + direction * tooth_outer_radius,
-            ],
-            stroke,
-        );
-    }
+    ArtworkPainter::new(ui.painter()).settings_button(
+        button_rect,
+        if hovered {
+            ButtonVisualState::Hovered
+        } else {
+            ButtonVisualState::Idle
+        },
+        style.icon_stroke,
+        style.button_hover_fill,
+    );
 }
 
 #[cfg(test)]

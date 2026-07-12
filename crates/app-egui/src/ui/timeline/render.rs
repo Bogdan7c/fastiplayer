@@ -1,14 +1,14 @@
 //! Egui adapter и painting timeline; gesture policy остаётся в соседнем pure module.
 
-use egui::{Color32, Pos2, Rect, Response, Sense, StrokeKind, Ui, Vec2};
+use egui::{Color32, Pos2, Rect, Response, Sense, Ui, Vec2};
 use media_core::TimelineSnapshot;
+use ui_artwork_egui::{ArtworkPainter, TimelinePaintState};
 
 use crate::ui::skin::{PlayerSkin, TimelineStyle};
 
 use super::geometry::{
-    TimelineBounds, format_media_duration, format_media_time, rect_from_fraction,
-    thumb_outline_radius, timeline_bounds, timeline_track_outline_radius,
-    timeline_track_outline_rect, timeline_track_rect,
+    TimelineBounds, artwork_timeline_style, format_media_duration, format_media_time,
+    timeline_bounds, timeline_track_rect,
 };
 use super::gesture::{
     TimelineInteraction, TimelinePointerInput, TimelineUiState, map_timeline_interaction,
@@ -113,57 +113,16 @@ fn paint_timeline(
     style: TimelineStyle,
     enabled: bool,
 ) {
-    let track_rect = timeline_track_rect(rect, style);
-    let track_radius = style.track_height / 2.0;
-    painter.rect_filled(
-        timeline_track_outline_rect(track_rect, style),
-        timeline_track_outline_radius(style),
-        style.track_outline_fill,
-    );
-    painter.rect_filled(
-        track_rect,
-        track_radius,
-        if enabled {
-            style.track_fill
-        } else {
-            style.disabled_fill
+    let paint_state = match bounds {
+        Some(bounds) => TimelinePaintState::Enabled {
+            current_fraction: bounds.fraction_from_position(timeline.current_position),
+            display_fraction: bounds.fraction_from_position(state.display_position(timeline)),
+            target: state.has_active_drag() || timeline.scrubbing,
         },
-    );
-    let Some(bounds) = bounds else {
-        painter.rect_stroke(
-            track_rect,
-            track_radius,
-            (1.0, Color32::from_gray(72)),
-            StrokeKind::Inside,
-        );
-        return;
+        None => TimelinePaintState::Disabled,
     };
-
-    let current_fraction = bounds.fraction_from_position(timeline.current_position);
-    let display_position = state.display_position(timeline);
-    let display_fraction = bounds.fraction_from_position(display_position);
-    painter.rect_filled(
-        rect_from_fraction(track_rect, current_fraction),
-        track_radius,
-        style.played_fill,
-    );
-    if state.has_active_drag() || timeline.scrubbing {
-        painter.rect_filled(
-            rect_from_fraction(track_rect, display_fraction),
-            track_radius,
-            style.target_fill,
-        );
-    }
-    let thumb_center = Pos2::new(
-        egui::lerp(track_rect.left()..=track_rect.right(), display_fraction),
-        track_rect.center().y,
-    );
-    painter.circle_filled(
-        thumb_center,
-        thumb_outline_radius(style),
-        style.thumb_outline_fill,
-    );
-    painter.circle_filled(thumb_center, style.thumb_radius, style.thumb_fill);
+    debug_assert_eq!(enabled, bounds.is_some());
+    ArtworkPainter::new(painter).timeline(rect, paint_state, artwork_timeline_style(style));
 }
 
 #[cfg(test)]
@@ -203,15 +162,12 @@ mod tests {
             pointer_fraction(hit_rect, style, track_rect.right_center()),
             1.0
         );
-        assert!(timeline_track_outline_rect(track_rect, style).width() > track_rect.width());
+        assert!(track_rect.expand(style.track_outline_width).width() > track_rect.width());
     }
 
     #[test]
     fn thumb_outline_remains_larger_than_thumb() {
         let style = style();
-        assert_eq!(
-            thumb_outline_radius(style),
-            style.thumb_radius + style.thumb_outline_width
-        );
+        assert!(style.thumb_radius + style.thumb_outline_width > style.thumb_radius);
     }
 }

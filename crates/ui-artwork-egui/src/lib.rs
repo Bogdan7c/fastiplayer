@@ -1,0 +1,310 @@
+//! Переиспользуемая ручная отрисовка интерфейса rustiplayer на `egui`.
+//!
+//! Crate не знает о событиях, playback-состоянии и виджетах: вызывающая сторона
+//! передаёт только painter, прямоугольники и типизированное визуальное состояние.
+
+mod fullscreen_button;
+mod open_media_button;
+mod playback_button;
+mod settings_button;
+mod timeline;
+mod video_dim_overlay;
+mod volume_button;
+mod volume_separator;
+mod volume_slider;
+mod window_controls;
+mod window_title;
+
+use egui::Painter;
+
+pub use fullscreen_button::{FullscreenGlyph, FullscreenStyle};
+pub use playback_button::{ButtonVisualState, PlaybackGlyph, PlaybackStyle};
+pub use timeline::{TimelinePaintState, TimelineStyle, timeline_track_rect};
+pub use volume_button::VolumeGlyph;
+pub use volume_slider::{THUMB_RADIUS as VOLUME_THUMB_RADIUS, TRACK_HEIGHT as VOLUME_TRACK_HEIGHT};
+pub use window_controls::{WindowControlGlyph, WindowControlStyle};
+
+/// Стабильный facade всей ручной отрисовки.
+#[derive(Clone, Copy)]
+pub struct ArtworkPainter<'a> {
+    painter: &'a Painter,
+}
+
+impl<'a> ArtworkPainter<'a> {
+    /// Создаёт facade поверх painter-а, принадлежащего вызывающему UI.
+    #[must_use]
+    pub const fn new(painter: &'a Painter) -> Self {
+        Self { painter }
+    }
+
+    /// Рисует центральную кнопку воспроизведения.
+    pub fn playback_button(
+        self,
+        rect: egui::Rect,
+        glyph: PlaybackGlyph,
+        state: ButtonVisualState,
+        style: PlaybackStyle,
+    ) {
+        playback_button::paint(self.painter, rect, glyph, state, style);
+    }
+
+    /// Рисует кнопку открытия медиа.
+    pub fn open_media_button(
+        self,
+        rect: egui::Rect,
+        state: ButtonVisualState,
+        stroke: egui::Stroke,
+        hover_fill: egui::Color32,
+    ) {
+        open_media_button::paint(self.painter, rect, state, stroke, hover_fill);
+    }
+
+    /// Рисует кнопку полноэкранного режима.
+    pub fn fullscreen_button(
+        self,
+        rect: egui::Rect,
+        glyph: FullscreenGlyph,
+        state: ButtonVisualState,
+        style: FullscreenStyle,
+    ) {
+        fullscreen_button::paint(self.painter, rect, glyph, state, style);
+    }
+
+    /// Рисует кнопку громкости.
+    pub fn volume_button(
+        self,
+        rect: egui::Rect,
+        glyph: VolumeGlyph,
+        state: ButtonVisualState,
+        stroke: egui::Stroke,
+        hover_fill: egui::Color32,
+    ) {
+        volume_button::paint(self.painter, rect, glyph, state, stroke, hover_fill);
+    }
+
+    /// Рисует ползунок громкости.
+    pub fn volume_slider(
+        self,
+        rect: egui::Rect,
+        volume: f32,
+        state: ButtonVisualState,
+        active_fill: egui::Color32,
+        stroke_width: f32,
+    ) {
+        volume_slider::paint(self.painter, rect, volume, state, active_fill, stroke_width);
+    }
+
+    /// Рисует разделитель блока громкости.
+    pub fn volume_separator(self, rect: egui::Rect, color: egui::Color32) {
+        volume_separator::paint(self.painter, rect, color);
+    }
+
+    /// Рисует settings-кнопку titlebar-а.
+    pub fn settings_button(
+        self,
+        rect: egui::Rect,
+        state: ButtonVisualState,
+        stroke: egui::Stroke,
+        hover_fill: egui::Color32,
+    ) {
+        settings_button::paint(self.painter, rect, state, stroke, hover_fill);
+    }
+
+    /// Рисует timeline по уже вычисленным долям.
+    pub fn timeline(self, rect: egui::Rect, state: TimelinePaintState, style: TimelineStyle) {
+        timeline::paint(self.painter, rect, state, style);
+    }
+
+    /// Рисует заголовок окна внутри заданного clip rect.
+    pub fn window_title(self, rect: egui::Rect, title: &str, color: egui::Color32) {
+        window_title::paint(self.painter, rect, title, color);
+    }
+
+    /// Рисует системную кнопку titlebar-а.
+    pub fn window_control(
+        self,
+        rect: egui::Rect,
+        glyph: WindowControlGlyph,
+        state: ButtonVisualState,
+        style: WindowControlStyle,
+    ) {
+        window_controls::paint(self.painter, rect, glyph, state, style);
+    }
+
+    /// Затемняет видео сплошной полупрозрачной заливкой.
+    pub fn video_dim_overlay(self, rect: egui::Rect, color: egui::Color32) {
+        video_dim_overlay::paint(self.painter, rect, color);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::{Color32, Context, RawInput, Rect, Stroke, Vec2, pos2};
+
+    use super::*;
+
+    fn painted_shape_count(mut paint: impl FnMut(ArtworkPainter<'_>)) -> usize {
+        let context = Context::default();
+        let output = context.run_ui(RawInput::default(), |ui| {
+            paint(ArtworkPainter::new(ui.painter()));
+        });
+        output.shapes.len()
+    }
+
+    fn rect() -> Rect {
+        Rect::from_min_size(pos2(10.0, 20.0), Vec2::splat(40.0))
+    }
+
+    fn playback_style() -> PlaybackStyle {
+        PlaybackStyle {
+            diameter: 36.0,
+            icon_extent: 14.0,
+            stroke_width: 2.0,
+            color: Color32::WHITE,
+            hover_fill: Color32::GRAY,
+        }
+    }
+
+    #[test]
+    fn playback_states_have_stable_shape_counts() {
+        assert_eq!(
+            painted_shape_count(|p| p.playback_button(
+                rect(),
+                PlaybackGlyph::Play,
+                ButtonVisualState::Idle,
+                playback_style()
+            )),
+            2
+        );
+        assert_eq!(
+            painted_shape_count(|p| p.playback_button(
+                rect(),
+                PlaybackGlyph::Pause,
+                ButtonVisualState::Hovered,
+                playback_style()
+            )),
+            4
+        );
+    }
+
+    #[test]
+    fn volume_and_fullscreen_variants_remain_distinct() {
+        let stroke = Stroke::new(2.0, Color32::WHITE);
+        let audible = painted_shape_count(|p| {
+            p.volume_button(
+                rect(),
+                VolumeGlyph::Audible,
+                ButtonVisualState::Idle,
+                stroke,
+                Color32::GRAY,
+            )
+        });
+        let muted = painted_shape_count(|p| {
+            p.volume_button(
+                rect(),
+                VolumeGlyph::Muted,
+                ButtonVisualState::Idle,
+                stroke,
+                Color32::GRAY,
+            )
+        });
+        assert_eq!((audible, muted), (3, 2));
+        let style = FullscreenStyle {
+            icon_extent: 16.0,
+            stroke,
+            hover_fill: Color32::GRAY,
+        };
+        assert_eq!(
+            painted_shape_count(|p| p.fullscreen_button(
+                rect(),
+                FullscreenGlyph::Enter,
+                ButtonVisualState::Idle,
+                style
+            )),
+            8
+        );
+        assert_eq!(
+            painted_shape_count(|p| p.fullscreen_button(
+                rect(),
+                FullscreenGlyph::Exit,
+                ButtonVisualState::Hovered,
+                style
+            )),
+            9
+        );
+    }
+
+    #[test]
+    fn timeline_geometry_and_states_are_deterministic() {
+        let style = TimelineStyle {
+            track_height: 5.0,
+            thumb_radius: 6.0,
+            horizontal_padding: 8.0,
+            track_fill: Color32::GRAY,
+            played_fill: Color32::WHITE,
+            target_fill: Color32::LIGHT_BLUE,
+            thumb_fill: Color32::WHITE,
+            track_outline_width: 3.0,
+            track_outline_fill: Color32::BLACK,
+            thumb_outline_width: 2.0,
+            thumb_outline_fill: Color32::BLACK,
+            disabled_fill: Color32::DARK_GRAY,
+        };
+        let track = timeline_track_rect(
+            Rect::from_min_size(pos2(0.0, 0.0), Vec2::new(100.0, 28.0)),
+            style,
+        );
+        assert_eq!(
+            (track.left(), track.right(), track.height()),
+            (8.0, 92.0, 5.0)
+        );
+        assert_eq!(
+            painted_shape_count(|p| p.timeline(rect(), TimelinePaintState::Disabled, style)),
+            3
+        );
+        assert_eq!(
+            painted_shape_count(|p| p.timeline(
+                rect(),
+                TimelinePaintState::Enabled {
+                    current_fraction: 0.25,
+                    display_fraction: 0.75,
+                    target: true
+                },
+                style
+            )),
+            6
+        );
+    }
+
+    #[test]
+    fn every_window_control_and_hover_state_paints() {
+        let style = WindowControlStyle {
+            fill: Color32::BLACK,
+            stroke: Stroke::new(1.0, Color32::WHITE),
+            hover_fill: Color32::GRAY,
+        };
+        for glyph in [
+            WindowControlGlyph::Minimize,
+            WindowControlGlyph::Maximize,
+            WindowControlGlyph::Restore,
+            WindowControlGlyph::Close,
+        ] {
+            assert!(
+                painted_shape_count(|p| p.window_control(
+                    rect(),
+                    glyph,
+                    ButtonVisualState::Idle,
+                    style
+                )) > 0
+            );
+            assert!(
+                painted_shape_count(|p| p.window_control(
+                    rect(),
+                    glyph,
+                    ButtonVisualState::Hovered,
+                    style
+                )) > 1
+            );
+        }
+    }
+}

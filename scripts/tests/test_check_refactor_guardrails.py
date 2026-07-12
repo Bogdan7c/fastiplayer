@@ -103,6 +103,33 @@ class TempoDependencyGuardrailTests(unittest.TestCase):
             EXPECTED_CONCRETE_TEMPO_DEPENDENCIES,
             GUARDRAIL.TEMPO_NEUTRAL_FORBIDDEN_DEPENDENCIES,
         )
+
+
+class ArtworkBoundaryGuardrailTests(unittest.TestCase):
+    """Закрепляет визуальную boundary между app-egui и ui-artwork-egui."""
+
+    def test_facade_call_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = TemporaryPolicyRepository(Path(temporary_directory))
+            repository.write(
+                "crates/app-egui/src/ui.rs",
+                "ArtworkPainter::new(ui.painter()).video_dim_overlay(rect, color);\n",
+            )
+            self.assertEqual(
+                [],
+                GUARDRAIL.find_app_egui_custom_paint_violations(repository.root),
+            )
+
+    def test_direct_painter_primitive_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = TemporaryPolicyRepository(Path(temporary_directory))
+            repository.write(
+                "crates/app-egui/src/ui.rs",
+                "ui.painter().rect_filled(rect, 0.0, color);\n",
+            )
+            violations = GUARDRAIL.find_app_egui_custom_paint_violations(repository.root)
+            self.assertEqual(1, len(violations))
+            self.assertIn("ui-artwork-egui", violations[0].rule)
         dependency_kinds: tuple[tuple[str, str | None], ...] = (
             ("normal", None),
             ("dev", "dev"),

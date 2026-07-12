@@ -1,7 +1,11 @@
 //! Player controls поверх command/snapshot boundary.
 
-use egui::{Color32, Rect, Sense, Shape, Stroke, Ui, Vec2, WidgetInfo, WidgetType, pos2, vec2};
+use egui::{Rect, Sense, Stroke, Ui, Vec2, WidgetInfo, WidgetType, pos2, vec2};
 use player_core::{PlaybackState, PlayerSnapshot};
+use ui_artwork_egui::{
+    ArtworkPainter, ButtonVisualState, FullscreenGlyph, FullscreenStyle, PlaybackGlyph,
+    PlaybackStyle, VOLUME_THUMB_RADIUS, VOLUME_TRACK_HEIGHT, VolumeGlyph,
+};
 
 use crate::ui::assets::IconId;
 use crate::ui::skin::{ControlsStyle, PlayerSkin, SkinId};
@@ -12,9 +16,15 @@ pub(crate) use playback_rate::PLAYBACK_RATE_STEP_X;
 
 const VOLUME_SEPARATOR_WIDTH: f32 = 1.0;
 const VOLUME_SEPARATOR_HEIGHT_FACTOR: f32 = 0.68;
-const VOLUME_TRACK_HEIGHT: f32 = 3.0;
-const VOLUME_THUMB_RADIUS: f32 = 5.0;
-const VOLUME_WAVE_SEGMENTS: usize = 8;
+
+/// Преобразует egui hover/drag flag в нейтральное visual state.
+fn button_visual_state(interactive: bool) -> ButtonVisualState {
+    if interactive {
+        ButtonVisualState::Hovered
+    } else {
+        ButtonVisualState::Idle
+    }
+}
 
 /// Действие controls, которое shell должен применить после egui pass.
 #[derive(Debug, Clone, PartialEq)]
@@ -339,15 +349,9 @@ fn volume_from_pointer_x(track_rect: Rect, pointer_x: f32) -> f32 {
     ((pointer_x - track_rect.left()) / track_width).clamp(0.0, 1.0)
 }
 
-/// Возвращает x-позицию thumb-а по тому же track-у, по которому работает pointer mapping.
-fn volume_thumb_center_x(track_rect: Rect, volume: f32) -> f32 {
-    track_rect.left() + track_rect.width() * volume.clamp(0.0, 1.0)
-}
-
 fn paint_volume_separator(ui: &Ui, separator_rect: Rect, controls_style: ControlsStyle) {
-    ui.painter().rect_filled(
+    ArtworkPainter::new(ui.painter()).volume_separator(
         separator_rect,
-        VOLUME_SEPARATOR_WIDTH * 0.5,
         controls_style.text_color.gamma_multiply(0.45),
     );
 }
@@ -413,69 +417,19 @@ fn paint_volume_icon_button(
     icon_state: VolumeIconState,
     button_response: &egui::Response,
 ) {
-    if button_response.hovered() {
-        ui.painter()
-            .rect_filled(button_rect, 0.0, controls_style.playback_button_hover_fill);
-    }
-
-    let icon_stroke = Stroke::new(
-        controls_style.playback_button_stroke_width,
-        controls_style.text_color,
+    ArtworkPainter::new(ui.painter()).volume_button(
+        button_rect,
+        match icon_state {
+            VolumeIconState::Audible => VolumeGlyph::Audible,
+            VolumeIconState::Muted => VolumeGlyph::Muted,
+        },
+        button_visual_state(button_response.hovered()),
+        Stroke::new(
+            controls_style.playback_button_stroke_width,
+            controls_style.text_color,
+        ),
+        controls_style.playback_button_hover_fill,
     );
-    paint_speaker_glyph(ui.painter(), button_rect, icon_state, icon_stroke);
-}
-
-fn paint_speaker_glyph(
-    painter: &egui::Painter,
-    button_rect: Rect,
-    icon_state: VolumeIconState,
-    stroke: Stroke,
-) {
-    let icon_side = button_rect.width().min(button_rect.height()) * 0.68;
-    let icon_rect = Rect::from_center_size(button_rect.center(), Vec2::splat(icon_side));
-    let center = icon_rect.center();
-    let speaker_points = vec![
-        pos2(icon_rect.left(), center.y - icon_side * 0.14),
-        pos2(center.x - icon_side * 0.18, center.y - icon_side * 0.14),
-        pos2(center.x + icon_side * 0.06, icon_rect.top()),
-        pos2(center.x + icon_side * 0.06, icon_rect.bottom()),
-        pos2(center.x - icon_side * 0.18, center.y + icon_side * 0.14),
-        pos2(icon_rect.left(), center.y + icon_side * 0.14),
-        pos2(icon_rect.left(), center.y - icon_side * 0.14),
-    ];
-
-    painter.add(Shape::line(speaker_points, stroke));
-
-    match icon_state {
-        VolumeIconState::Audible => {
-            let wave_origin = pos2(center.x + icon_side * 0.05, center.y);
-            paint_volume_wave(painter, wave_origin, icon_side * 0.25, stroke);
-            paint_volume_wave(painter, wave_origin, icon_side * 0.39, stroke);
-        }
-        VolumeIconState::Muted => {
-            painter.line_segment(
-                [
-                    pos2(icon_rect.right(), icon_rect.top() + icon_side * 0.08),
-                    pos2(icon_rect.left() + icon_side * 0.08, icon_rect.bottom()),
-                ],
-                stroke,
-            );
-        }
-    }
-}
-
-fn paint_volume_wave(painter: &egui::Painter, origin: egui::Pos2, radius: f32, stroke: Stroke) {
-    let mut points = Vec::with_capacity(VOLUME_WAVE_SEGMENTS + 1);
-    for segment_index in 0..=VOLUME_WAVE_SEGMENTS {
-        let progress = segment_index as f32 / VOLUME_WAVE_SEGMENTS as f32;
-        let angle = -0.72 + progress * 1.44;
-        points.push(pos2(
-            origin.x + radius * angle.cos(),
-            origin.y + radius * angle.sin(),
-        ));
-    }
-
-    painter.add(Shape::line(points, stroke));
 }
 
 fn paint_volume_slider(
@@ -485,37 +439,12 @@ fn paint_volume_slider(
     volume: f32,
     is_interactive: bool,
 ) {
-    let painter = ui.painter();
-    let track_radius = VOLUME_TRACK_HEIGHT * 0.5;
-    let track_fill = Color32::from_rgba_unmultiplied(255, 255, 255, 52);
-    let active_fill = controls_style.text_color;
-    let thumb_center_x = volume_thumb_center_x(track_rect, volume);
-    let active_rect = Rect::from_min_max(
-        track_rect.left_top(),
-        pos2(thumb_center_x.max(track_rect.left()), track_rect.bottom()),
-    );
-    let thumb_radius = if is_interactive {
-        VOLUME_THUMB_RADIUS + 1.0
-    } else {
-        VOLUME_THUMB_RADIUS
-    };
-
-    painter.rect_filled(track_rect, track_radius, track_fill);
-    if active_rect.width() > f32::EPSILON {
-        painter.rect_filled(active_rect, track_radius, active_fill.gamma_multiply(0.85));
-    }
-    painter.circle_filled(
-        pos2(thumb_center_x, track_rect.center().y),
-        thumb_radius,
-        active_fill,
-    );
-    painter.circle_stroke(
-        pos2(thumb_center_x, track_rect.center().y),
-        thumb_radius,
-        Stroke::new(
-            controls_style.playback_button_stroke_width,
-            Color32::from_rgba_unmultiplied(0, 0, 0, 130),
-        ),
+    ArtworkPainter::new(ui.painter()).volume_slider(
+        track_rect,
+        volume,
+        button_visual_state(is_interactive),
+        controls_style.text_color,
+        controls_style.playback_button_stroke_width,
     );
 }
 
@@ -629,8 +558,6 @@ fn fullscreen_toggle_presentation(is_window_fullscreen: bool) -> FullscreenToggl
     }
 }
 
-/// Рисует квадратную fullscreen-кнопку в стиле settings-кнопки: фон только на hover,
-/// hand-drawn glyph строится stroke-линиями без зависимости от asset pack.
 fn paint_fullscreen_toggle_button(
     ui: &Ui,
     button_rect: Rect,
@@ -638,214 +565,37 @@ fn paint_fullscreen_toggle_button(
     skin: &impl PlayerSkin,
     button_response: &egui::Response,
 ) {
-    let controls_style = skin.controls_style();
-    let painter = ui.painter();
-    let icon_stroke = Stroke::new(
-        controls_style.playback_button_stroke_width,
-        controls_style.text_color,
-    );
-
-    if button_response.hovered() {
-        painter.rect_filled(button_rect, 0.0, controls_style.playback_button_hover_fill);
-    }
-
-    paint_fullscreen_corners_icon(
-        painter,
+    let style = skin.controls_style();
+    ArtworkPainter::new(ui.painter()).fullscreen_button(
         button_rect,
-        controls_style.fullscreen_icon_extent,
-        icon,
-        icon_stroke,
+        match icon {
+            FullscreenToggleIcon::EnterFullscreen => FullscreenGlyph::Enter,
+            FullscreenToggleIcon::ExitFullscreen => FullscreenGlyph::Exit,
+        },
+        button_visual_state(button_response.hovered()),
+        FullscreenStyle {
+            icon_extent: style.fullscreen_icon_extent,
+            stroke: Stroke::new(style.playback_button_stroke_width, style.text_color),
+            hover_fill: style.playback_button_hover_fill,
+        },
     );
 }
 
-/// Рисует квадратную open-file кнопку: hover-фон общий с fullscreen,
-/// glyph полностью векторный и не зависит от asset pack.
 fn paint_open_file_button(
     ui: &Ui,
     button_rect: Rect,
     skin: &impl PlayerSkin,
     button_response: &egui::Response,
 ) {
-    let controls_style = skin.controls_style();
-    let painter = ui.painter();
-    let icon_stroke = Stroke::new(
-        controls_style.playback_button_stroke_width,
-        controls_style.text_color,
+    let style = skin.controls_style();
+    ArtworkPainter::new(ui.painter()).open_media_button(
+        button_rect,
+        button_visual_state(button_response.hovered()),
+        Stroke::new(style.playback_button_stroke_width, style.text_color),
+        style.playback_button_hover_fill,
     );
-
-    if button_response.hovered() {
-        painter.rect_filled(button_rect, 0.0, controls_style.playback_button_hover_fill);
-    }
-
-    paint_open_file_concept_icon(painter, button_rect, icon_stroke);
 }
 
-/// Рисует hand-drawn glyph "media file": контур файла, play-треугольник
-/// и три короткие строки справа, чтобы кнопка читалась как открытие media.
-fn paint_open_file_concept_icon(painter: &egui::Painter, button_rect: Rect, stroke: Stroke) {
-    let icon_side = button_rect.width().min(button_rect.height()) * 0.64;
-    let icon_rect = Rect::from_center_size(button_rect.center(), vec2(icon_side * 1.12, icon_side));
-    let file_rect = Rect::from_min_size(
-        icon_rect.left_top(),
-        vec2(icon_rect.width() * 0.58, icon_rect.height()),
-    );
-    let fold_size = file_rect.width() * 0.24;
-    let file_top_right_before_fold = pos2(file_rect.right() - fold_size, file_rect.top());
-    let file_fold_corner = pos2(file_rect.right(), file_rect.top() + fold_size);
-
-    painter.line_segment([file_rect.left_top(), file_top_right_before_fold], stroke);
-    painter.line_segment([file_top_right_before_fold, file_fold_corner], stroke);
-    painter.line_segment([file_fold_corner, file_rect.right_bottom()], stroke);
-    painter.line_segment([file_rect.right_bottom(), file_rect.left_bottom()], stroke);
-    painter.line_segment([file_rect.left_bottom(), file_rect.left_top()], stroke);
-
-    let play_center = pos2(
-        file_rect.center().x - file_rect.width() * 0.03,
-        file_rect.center().y + file_rect.height() * 0.04,
-    );
-    let play_half_height = file_rect.height() * 0.19;
-    let play_half_width = file_rect.width() * 0.17;
-    let play_points = vec![
-        pos2(
-            play_center.x - play_half_width,
-            play_center.y - play_half_height,
-        ),
-        pos2(
-            play_center.x - play_half_width,
-            play_center.y + play_half_height,
-        ),
-        pos2(play_center.x + play_half_width, play_center.y),
-    ];
-    painter.add(Shape::convex_polygon(
-        play_points,
-        stroke.color,
-        Stroke::NONE,
-    ));
-
-    let detail_dot_x = file_rect.right() + icon_rect.width() * 0.12;
-    let detail_line_start_x = detail_dot_x + icon_rect.width() * 0.08;
-    let detail_line_end_x = icon_rect.right();
-    for detail_line_y in [
-        icon_rect.center().y - icon_rect.height() * 0.24,
-        icon_rect.center().y,
-        icon_rect.center().y + icon_rect.height() * 0.24,
-    ] {
-        painter.circle_filled(
-            pos2(detail_dot_x, detail_line_y),
-            stroke.width * 0.55,
-            stroke.color,
-        );
-        painter.line_segment(
-            [
-                pos2(detail_line_start_x, detail_line_y),
-                pos2(detail_line_end_x, detail_line_y),
-            ],
-            stroke,
-        );
-    }
-}
-
-/// Рисует четыре corner-segment glyph: outward corners для входа в fullscreen,
-/// inward corners для выхода из него.
-fn paint_fullscreen_corners_icon(
-    painter: &egui::Painter,
-    button_rect: Rect,
-    icon_extent: f32,
-    icon: FullscreenToggleIcon,
-    stroke: Stroke,
-) {
-    let icon_rect = Rect::from_center_size(button_rect.center(), Vec2::splat(icon_extent));
-    let corner_leg = icon_extent * 0.38;
-
-    match icon {
-        FullscreenToggleIcon::EnterFullscreen => {
-            paint_enter_fullscreen_corners(painter, icon_rect, corner_leg, stroke);
-        }
-        FullscreenToggleIcon::ExitFullscreen => {
-            paint_exit_fullscreen_corners(painter, icon_rect, corner_leg, stroke);
-        }
-    }
-}
-
-/// Рисует outward-corners: углы стоят на внешней рамке glyph и раскрываются наружу.
-fn paint_enter_fullscreen_corners(
-    painter: &egui::Painter,
-    icon_rect: Rect,
-    corner_leg: f32,
-    stroke: Stroke,
-) {
-    let left = icon_rect.left();
-    let right = icon_rect.right();
-    let top = icon_rect.top();
-    let bottom = icon_rect.bottom();
-
-    for (corner, horizontal_end, vertical_end) in [
-        (
-            pos2(left, top),
-            pos2(left + corner_leg, top),
-            pos2(left, top + corner_leg),
-        ),
-        (
-            pos2(right, top),
-            pos2(right - corner_leg, top),
-            pos2(right, top + corner_leg),
-        ),
-        (
-            pos2(left, bottom),
-            pos2(left + corner_leg, bottom),
-            pos2(left, bottom - corner_leg),
-        ),
-        (
-            pos2(right, bottom),
-            pos2(right - corner_leg, bottom),
-            pos2(right, bottom - corner_leg),
-        ),
-    ] {
-        painter.line_segment([corner, horizontal_end], stroke);
-        painter.line_segment([corner, vertical_end], stroke);
-    }
-}
-
-/// Рисует inward-corners: вершины углов смещены внутрь glyph и визуально показывают выход.
-fn paint_exit_fullscreen_corners(
-    painter: &egui::Painter,
-    icon_rect: Rect,
-    corner_leg: f32,
-    stroke: Stroke,
-) {
-    let left = icon_rect.left();
-    let right = icon_rect.right();
-    let top = icon_rect.top();
-    let bottom = icon_rect.bottom();
-
-    for (corner, horizontal_end, vertical_end) in [
-        (
-            pos2(left + corner_leg, top + corner_leg),
-            pos2(left, top + corner_leg),
-            pos2(left + corner_leg, top),
-        ),
-        (
-            pos2(right - corner_leg, top + corner_leg),
-            pos2(right, top + corner_leg),
-            pos2(right - corner_leg, top),
-        ),
-        (
-            pos2(left + corner_leg, bottom - corner_leg),
-            pos2(left, bottom - corner_leg),
-            pos2(left + corner_leg, bottom),
-        ),
-        (
-            pos2(right - corner_leg, bottom - corner_leg),
-            pos2(right, bottom - corner_leg),
-            pos2(right - corner_leg, bottom),
-        ),
-    ] {
-        painter.line_segment([corner, horizontal_end], stroke);
-        painter.line_segment([corner, vertical_end], stroke);
-    }
-}
-
-/// Рисует круг, hover-заливку и glyph центральной play/pause-кнопки.
 fn paint_playback_button(
     ui: &Ui,
     button_rect: Rect,
@@ -853,84 +603,22 @@ fn paint_playback_button(
     skin: &impl PlayerSkin,
     button_response: &egui::Response,
 ) {
-    let controls_style = skin.controls_style();
-    let button_center = button_rect.center();
-    let button_radius = (controls_style.playback_button_diameter * 0.5)
-        - (controls_style.playback_button_stroke_width * 0.5);
-    let button_stroke = Stroke::new(
-        controls_style.playback_button_stroke_width,
-        controls_style.text_color,
+    let style = skin.controls_style();
+    ArtworkPainter::new(ui.painter()).playback_button(
+        button_rect,
+        match icon_id {
+            IconId::Play => PlaybackGlyph::Play,
+            IconId::Pause => PlaybackGlyph::Pause,
+        },
+        button_visual_state(button_response.hovered()),
+        PlaybackStyle {
+            diameter: style.playback_button_diameter,
+            icon_extent: style.playback_button_icon_extent,
+            stroke_width: style.playback_button_stroke_width,
+            color: style.text_color,
+            hover_fill: style.playback_button_hover_fill,
+        },
     );
-    let painter = ui.painter();
-
-    if button_response.hovered() {
-        painter.circle_filled(
-            button_center,
-            button_radius,
-            controls_style.playback_button_hover_fill,
-        );
-    }
-    painter.circle_stroke(button_center, button_radius, button_stroke);
-
-    match icon_id {
-        IconId::Play => paint_play_glyph(
-            painter,
-            button_rect,
-            controls_style.playback_button_icon_extent,
-            button_stroke,
-        ),
-        IconId::Pause => paint_pause_glyph(
-            painter,
-            button_rect,
-            controls_style.playback_button_icon_extent,
-            button_stroke,
-        ),
-    }
-}
-
-/// Рисует play glyph как треугольник, чтобы он был независим от текстовой fallback-иконки.
-fn paint_play_glyph(
-    painter: &egui::Painter,
-    button_rect: Rect,
-    icon_extent: f32,
-    button_stroke: Stroke,
-) {
-    let center = button_rect.center();
-    let half_extent = icon_extent * 0.5;
-    let points = vec![
-        pos2(center.x - half_extent * 0.45, center.y - half_extent),
-        pos2(center.x - half_extent * 0.45, center.y + half_extent),
-        pos2(center.x + half_extent * 0.75, center.y),
-    ];
-
-    painter.add(Shape::convex_polygon(
-        points,
-        button_stroke.color,
-        Stroke::NONE,
-    ));
-}
-
-/// Рисует pause glyph двумя вертикальными линиями.
-fn paint_pause_glyph(
-    painter: &egui::Painter,
-    button_rect: Rect,
-    icon_extent: f32,
-    button_stroke: Stroke,
-) {
-    let center = button_rect.center();
-    let half_height = icon_extent * 0.5;
-    let half_gap = icon_extent * 0.16;
-    let line_offset = half_gap + button_stroke.width;
-
-    for x in [center.x - line_offset, center.x + line_offset] {
-        painter.line_segment(
-            [
-                pos2(x, center.y - half_height),
-                pos2(x, center.y + half_height),
-            ],
-            button_stroke,
-        );
-    }
 }
 
 /// Возвращает panel id нижней панели для выбранного skin-а.

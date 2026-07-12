@@ -697,7 +697,8 @@ impl AppState {
             .frame(egui::Frame::NONE)
             .show_inside(ui, |ui| {
                 if let Some(dim_color) = skin.stale_frame_dim_color(animation_state) {
-                    ui.painter().rect_filled(ui.max_rect(), 0.0, dim_color);
+                    ui_artwork_egui::ArtworkPainter::new(ui.painter())
+                        .video_dim_overlay(ui.max_rect(), dim_color);
                 }
 
                 if let Some(error) = error_message {

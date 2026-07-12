@@ -2,10 +2,11 @@
 
 use std::time::Duration;
 
-use egui::{Pos2, Rect};
+use egui::Rect;
 use media_core::{MediaDuration, MediaTime, TimelineRange, TimelineSnapshot};
 
 use crate::ui::skin::TimelineStyle;
+use ui_artwork_egui::TimelineStyle as ArtworkTimelineStyle;
 
 /// Seekable bounds timeline-а, общие для gesture mapper-а и renderer-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,35 +85,25 @@ pub fn format_seconds(seconds: Option<f64>) -> String {
 }
 
 pub(super) fn timeline_track_rect(rect: Rect, style: TimelineStyle) -> Rect {
-    let horizontal_padding = style.horizontal_padding.min(rect.width() / 2.0);
-    let left = rect.left() + horizontal_padding;
-    let right = rect.right() - horizontal_padding;
-    let center_y = rect.center().y;
-    let half_height = style.track_height / 2.0;
-    Rect::from_min_max(
-        Pos2::new(left, center_y - half_height),
-        Pos2::new(right.max(left), center_y + half_height),
-    )
+    ui_artwork_egui::timeline_track_rect(rect, artwork_timeline_style(style))
 }
 
-pub(super) fn timeline_track_outline_rect(track_rect: Rect, style: TimelineStyle) -> Rect {
-    track_rect.expand(style.track_outline_width.max(0.0))
-}
-
-pub(super) fn timeline_track_outline_radius(style: TimelineStyle) -> f32 {
-    style.track_height / 2.0 + style.track_outline_width.max(0.0)
-}
-
-pub(super) fn thumb_outline_radius(style: TimelineStyle) -> f32 {
-    style.thumb_radius + style.thumb_outline_width.max(0.0)
-}
-
-pub(super) fn rect_from_fraction(track_rect: Rect, fraction: f32) -> Rect {
-    let right = egui::lerp(
-        track_rect.left()..=track_rect.right(),
-        fraction.clamp(0.0, 1.0),
-    );
-    Rect::from_min_max(track_rect.left_top(), Pos2::new(right, track_rect.bottom()))
+/// Преобразует skin-стиль приложения в проектно-нейтральный artwork-стиль.
+pub(super) fn artwork_timeline_style(style: TimelineStyle) -> ArtworkTimelineStyle {
+    ArtworkTimelineStyle {
+        track_height: style.track_height,
+        thumb_radius: style.thumb_radius,
+        horizontal_padding: style.horizontal_padding,
+        track_fill: style.track_fill,
+        played_fill: style.played_fill,
+        target_fill: style.target_fill,
+        thumb_fill: style.thumb_fill,
+        track_outline_width: style.track_outline_width,
+        track_outline_fill: style.track_outline_fill,
+        thumb_outline_width: style.thumb_outline_width,
+        thumb_outline_fill: style.thumb_outline_fill,
+        disabled_fill: style.disabled_fill,
+    }
 }
 
 fn duration_mul_fraction(duration: MediaDuration, fraction: f64) -> MediaDuration {

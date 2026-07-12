@@ -771,6 +771,7 @@ def find_source_policy_violations(
     violations.extend(find_direct_vaapi_display_violations(repo_root))
     violations.extend(find_main_video_second_session_violations(repo_root))
     violations.extend(find_prepared_branch_promotion_violations(repo_root))
+    violations.extend(find_app_egui_custom_paint_violations(repo_root))
     violations.extend(
         find_required_source_anchor_violations(repo_root, required_source_anchors)
     )
@@ -778,6 +779,31 @@ def find_source_policy_violations(
         violations,
         key=lambda violation: (str(violation.path), violation.line_number, violation.rule),
     )
+
+
+def find_app_egui_custom_paint_violations(repo_root: Path) -> list[SourcePolicyViolation]:
+    """Запрещает ручные Painter-примитивы вне специализированного artwork crate."""
+
+    paint_call = re.compile(
+        r"\.(?:rect_filled|rect_stroke|circle_filled|circle_stroke|line_segment)\s*\("
+    )
+    violations: list[SourcePolicyViolation] = []
+    source_root = repo_root / "crates/app-egui/src"
+    if not source_root.exists():
+        return violations
+    for source_path in sorted(source_root.rglob("*.rs")):
+        relative_path = source_path.relative_to(repo_root)
+        for line_number, line in enumerate(read_text_lossy(source_path).splitlines(), start=1):
+            if paint_call.search(line):
+                violations.append(
+                    SourcePolicyViolation(
+                        path=relative_path,
+                        line_number=line_number,
+                        rule="custom-рисовка app-egui должна проходить через ui-artwork-egui",
+                        matched_text=line.strip(),
+                    )
+                )
+    return violations
 
 
 def find_public_video_backend_option_violations(repo_root: Path) -> list[SourcePolicyViolation]:

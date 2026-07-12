@@ -2,6 +2,7 @@
 members = [
     "crates/animation-core",
     "crates/app-egui",
+    "crates/ui-artwork-egui",
     "crates/audio-core",
     "crates/audio-signalsmith",
     "crates/audio-timestretch",
@@ -104,6 +105,7 @@ license = "MIT"
 wgpu = { version = "29", features = ["vulkan"] }
 winit = "0.30"
 egui = "0.34"
+ui-artwork-egui = { version = "0.1.0", path = "crates/ui-artwork-egui" }
 egui-winit = "0.34"
 egui-wgpu = "0.34"
 pollster = "0.4"
