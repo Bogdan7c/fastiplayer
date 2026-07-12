@@ -16,3 +16,4 @@
 - Do not bundle cosmetic refactors with feature work or architecture boundary changes.
 - Refactoring must preserve behavior parity: playback/render/seek/scrub semantics, HDR/P010/NV12 output, zero-copy path, queue limits, error policy, diagnostics, and config defaults stay stable unless separately decided.
 - Любая новая custom-рисовка egui создаётся отдельным `.rs` в `ui-artwork-egui` и вызывается через `ArtworkPainter`; `app-egui` не реализует Painter-примитивы. См. `mem:app-egui/artwork-boundary`.
+- Для любых новых сущностей в sidebar/inspector/drawer/dock/overlay и других UI-областях обязателен принцип «один host — сменяемое содержимое»: geometry/resize/persisted size/animation/clip принадлежат host, сущности не создают дубликаты container state. Перед такими изменениями читать `mem:app-egui/reusable-ui-regions`.
