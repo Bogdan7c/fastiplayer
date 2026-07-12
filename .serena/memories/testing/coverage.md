@@ -8,4 +8,10 @@
 - No source exclusions currently exist. Generated cros-libva raw bindings are in a non-workspace patch crate; build scripts are not included; manual hardware/runtime paths remain visible as informational coverage.
 - CI check name is `Coverage ratchet`; artifact `coverage-report` contains `target/coverage/` plus raw `*.profraw`/`*.profdata` from `target/llvm-cov-target`.
 - Human documentation is `docs/code-coverage.md`; focused policy tests are `scripts/tests/test_coverage_metrics.py`.
-- Initial line baseline: workspace 58,981/81,342 (72.5099%); pure blocking group 36,977/43,992 (84.0544%). Low line-coverage owners visible in initial map include `service-direct-media` 370/489, `settings-derive` 702/899, and informational `desktop-integration` 303/818, `render-wgpu-shell` 200/496, `app-egui` 5,944/11,318.
+- Initial line baseline: workspace 58,981/81,342 (72.5099%); pure blocking group 36,977/43,992 (84.0539%). Low line-coverage owners visible in initial map include `service-direct-media` 370/489, `settings-derive` 702/899, and informational `desktop-integration` 303/818, `render-wgpu-shell` 200/496, `app-egui` 5,944/11,318.
+
+## Session 28 readiness audit (2026-07-12)
+
+- `scripts/coverage.sh check` currently fails after Sessions 22–27E: workspace lines 58,981/81,342 -> 57,050/80,520; blocking-group lines 36,977/43,992 -> 34,353/41,510, with functions/regions also decreased.
+- Root cause is metric instability under behavior-neutral test relocation: cargo-llvm-cov default filename regex excludes separate `tests/`, `tests.rs`, and `*_tests.rs`, while the versioned baseline counted the same tests when they were inline inside production files. Tests still execute; the ratchet correctly refuses an unexplained baseline decrease.
+- Do not run `scripts/coverage.sh baseline` as a shortcut. A separate policy package must choose stable test-code classification, add inline-vs-external characterization tests, and migrate every decreased scope through exact non-expired exceptions. Evidence and prompt: root `readiness_report_2026-07-12.md` and `user/session_28_followup_coverage_baseline_after_decomposition_2026-07-12.md`.

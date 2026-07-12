@@ -9,3 +9,8 @@
 - Scenario matrix remains: auto+VP9 Profile 0 expects `vaapi-dmabuf-wgpu`; auto+AV1 expects reselection and `ffmpeg-host-upload-wgpu`; software+H.264 expects FFmpeg host upload; hardware+AV1 expects typed `UnsupportedVideoCodec` without fallback; software+VP9 stress rejects resource exhaustion/starvation markers.
 - Positive playback scenarios reject known fatal regressions: InvalidData/OBU/start-code/resource-table/decoder-disconnect/panic/render-resource/app fatal markers. Full playback acceptance must not run unless the owner explicitly supplies local asset paths and the runtime/hardware preflight succeeds.
 - First-party ignored runtime inventory at Session 17: one FFmpeg installed-runtime probe; 17 symphonia-demux local-media regressions (6 H.264, 3 H.265, 1 VP9, 6 audio, 1 inspection); one direct HTTP Range; four YouTube/network regressions. Fixture scenarios remain individually runnable through `scripts/media-regression.sh --scenario <name> --path <file>`.
+
+## Session 28 readiness audit (2026-07-12)
+
+- Real `scripts/playback-smoke.sh --mode probe-only` passed, including the installed FFmpeg runtime probe. Full hardware/media playback was not run because no explicit owner fixture paths were supplied.
+- Canonical `scripts/runtime-acceptance.sh ... --dry-run` correctly returns `NOT RUN: ... acceptance not satisfied`. Direct `playback-smoke.sh --mode full --dry-run`, however, still prints an intermediate `PASS: FFmpeg runtime probe acceptance` for commands it only planned. Treat the wrapper as authoritative until the bounded workflow fix in `user/session_28_followup_smoke_dry_run_outcome_2026-07-12.md`; no dry-run is acceptance.
