@@ -871,6 +871,10 @@ fn installing_compatible_backend_activates_pending_video_track() {
         Some(TrackId::new(1)),
         "VP9 трек должен активироваться на совместимом backend-е"
     );
+    assert!(
+        session.snapshot().last_error.is_none(),
+        "штатный reseek после backend swap не должен публиковать recoverable error"
+    );
 }
 
 #[test]

@@ -13,6 +13,7 @@ use media_core::{
 use source_core::{
     ByteSource, CancellationToken, Seekability as SourceSeekability, SourceError, SourceResult,
 };
+use symphonia::core::units::Timestamp;
 use tracing::{debug, info, trace, warn};
 
 mod decode_point_before;
@@ -685,6 +686,14 @@ impl SymphoniaDemuxer {
             Ok(seeked_to) => Ok(seeked_to),
             Err(error)
                 if is_symphonia_out_of_range_seek_error(&error)
+                    && backend_request.mode == DemuxSeekMode::DecodePointBefore
+                    && backend_request.timestamp.is_zero()
+                    && self.can_reprobe_current_source() =>
+            {
+                self.reset_decode_point_before_to_source_start(seek_track_id)
+            }
+            Err(error)
+                if is_symphonia_out_of_range_seek_error(&error)
                     && self.can_reprobe_current_source()
                     && in_range_out_of_range_seek_can_retry(
                         backend_request.timestamp,
@@ -854,6 +863,24 @@ impl SymphoniaDemuxer {
             seek_track_id,
             "seek_in_range_out_of_range_retry",
         )
+    }
+
+    /// Возвращает seekable source к физическому началу для `DecodePointBefore(0)`.
+    ///
+    /// Некоторые Matroska reader-ы Symphonia отклоняют timestamp `0` как out-of-range,
+    /// когда первый cluster/track timestamp начинается чуть позже нуля. Reprobe из
+    /// source start выражает нужное намерение без выдуманного положительного timestamp;
+    /// последующая packet verification по-прежнему проверяет keyframe и startup lead.
+    fn reset_decode_point_before_to_source_start(
+        &mut self,
+        seek_track_id: Option<TrackId>,
+    ) -> Result<SeekedTo> {
+        self.rebuild_format_reader_from_source_start()?;
+        Ok(SeekedTo {
+            track_id: seek_track_id.map_or(0, TrackId::get),
+            required_ts: Timestamp::ZERO,
+            actual_ts: Timestamp::ZERO,
+        })
     }
 
     /// Восстанавливает `DecodePointBefore`: успешный result не должен быть после requested target.

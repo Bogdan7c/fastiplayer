@@ -66,6 +66,7 @@ fn h265_iso_bmff_track_exposes_hvcc_codec_private() -> Result<()> {
 fn h265_matroska_cue_seek_uses_near_decode_anchor() -> Result<()> {
     let path = selected_media_path()?;
     for target in [
+        Duration::ZERO,
         Duration::from_secs(3),
         Duration::from_secs(5),
         Duration::from_secs(10),
@@ -102,9 +103,14 @@ fn assert_h265_decode_point_before_uses_near_mkv_cue(path: &Path, target: Durati
         .into_iter()
         .next()
         .context("selected H.265 stream has no packet after cue seek")?;
+    let latest_accepted_position = if target.is_zero() {
+        Duration::from_millis(250)
+    } else {
+        target
+    };
     ensure!(
-        seek_result.actual_position.as_duration() <= target,
-        "H.265 cue seek passed target"
+        seek_result.actual_position.as_duration() <= latest_accepted_position,
+        "H.265 cue seek passed target/startup tolerance"
     );
     ensure!(
         seek_result.actual_position.as_duration() == first_packet.pts,
