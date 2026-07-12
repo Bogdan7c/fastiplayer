@@ -353,7 +353,7 @@ fn telemetry_panel_cache_reuses_rows_until_refresh_deadline() {
     ));
 }
 
-/// Проверяет empty snapshot path без player/render side effects.
+/// Проверяет, что отсутствие файла не скрывает runtime diagnostics.
 #[test]
 fn telemetry_panel_rows_keep_empty_media_state_explicit() {
     let player_snapshot = PlayerSnapshot::empty();
@@ -370,9 +370,10 @@ fn telemetry_panel_rows_keep_empty_media_state_explicit() {
         started_at,
     ));
 
-    assert!(telemetry_rows_contain(&panel_rows, "[Media Info]"));
-    assert!(telemetry_rows_contain(&panel_rows, "No file loaded"));
-    assert!(!telemetry_rows_contain(&panel_rows, "[Video]"));
+    assert!(!telemetry_rows_contain(&panel_rows, "[Media Info]"));
+    assert!(!telemetry_rows_contain(&panel_rows, "No file loaded"));
+    assert!(telemetry_rows_contain(&panel_rows, "[Swapchain]"));
+    assert!(telemetry_rows_contain(&panel_rows, "[Video]"));
 }
 
 /// Проверяет explicit telemetry mapping нового public Scrubbing state.

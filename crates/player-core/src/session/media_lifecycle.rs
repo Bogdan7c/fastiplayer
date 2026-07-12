@@ -145,10 +145,17 @@ impl PlayerSession {
             duration: prepared_media.duration(),
         };
         let seekability = prepared_media.seekability();
-        let (demuxer, file_path, source_label, tracks) = prepared_media.into_pipeline_slots();
+        let crate::media_opening::PreparedMediaSlots {
+            demuxer,
+            file_path,
+            source_label,
+            tracks,
+            source_info,
+        } = prepared_media.into_pipeline_slots();
 
         self.pipeline
             .install_opened_media(demuxer, file_path, source_label, tracks);
+        self.pipeline.update_media_source_info(source_info);
         self.clear_error();
 
         if let Err(error) = self.mark_media_opened(summary) {

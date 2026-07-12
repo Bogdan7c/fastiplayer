@@ -82,7 +82,7 @@ pub use frame_server_core::{
     SourceRevision,
 };
 pub use media_core::TrackId;
-pub use media_opening::{PreparedMedia, PreparedMediaSource};
+pub use media_opening::{MediaSourceInfo, MediaSourceKind, PreparedMedia, PreparedMediaSource};
 pub(crate) use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};
 pub use playback_rate::{PlaybackRate, PlaybackRateValidationError};
 pub use runtime_settings::{
@@ -104,9 +104,9 @@ pub(crate) use session::{
     PlayerWorkerWakeupPlan, SchedulerTimingDiagnosticsSnapshot, scheduler_timing_diagnostics,
 };
 pub use snapshot::{
-    AudioBufferSnapshot, BackendSnapshot, FrameCounters, PlayerSnapshot, QualitySummary,
-    QueueSnapshot, TexturePoolSnapshot, TrackSelectionSnapshot, TrackSummarySnapshot,
-    VideoFrameSnapshot,
+    AudioBufferSnapshot, BackendSnapshot, FrameCounters, MediaInfoSnapshot, PlayerSnapshot,
+    QualitySummary, QueueSnapshot, TexturePoolSnapshot, TrackSelectionSnapshot,
+    TrackSummarySnapshot, VideoFrameSnapshot,
 };
 pub use state::PlaybackState;
 pub use worker::{

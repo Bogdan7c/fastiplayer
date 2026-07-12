@@ -80,7 +80,9 @@ fn collect_verified_anchor_packet(
                     return Ok(Some(packet));
                 }
             }
-            DemuxReadEvent::Packet(_) | DemuxReadEvent::TracksChanged(_) => {}
+            DemuxReadEvent::Packet(_)
+            | DemuxReadEvent::TracksChanged(_)
+            | DemuxReadEvent::MediaMetadataChanged(_) => {}
             DemuxReadEvent::EndOfStream => break,
         }
     }

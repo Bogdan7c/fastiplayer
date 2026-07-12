@@ -448,9 +448,10 @@ impl PlaybackPipeline {
         self.file_path = None;
         self.tracks.clear();
         self.source_label = None;
+        self.media_source_info = None;
+        self.media_metadata = None;
     }
 
-    /// Подключает уже открытый demuxer и source identity к текущему pipeline.
     pub(crate) fn install_opened_media(
         &mut self,
         demuxer: Box<dyn Demuxer + Send>,
@@ -458,10 +459,49 @@ impl PlaybackPipeline {
         source_label: Option<String>,
         tracks: Vec<TrackInfo>,
     ) {
+        let display_location = file_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .or_else(|| source_label.clone())
+            .unwrap_or_default();
+        let kind = if file_path.is_some() {
+            crate::MediaSourceKind::LocalFile
+        } else if display_location.starts_with("http://")
+            || display_location.starts_with("https://")
+        {
+            crate::MediaSourceKind::Remote
+        } else {
+            crate::MediaSourceKind::External
+        };
+        let source_info = crate::MediaSourceInfo {
+            kind,
+            display_location: display_location
+                .split(['?', '#'])
+                .next()
+                .unwrap_or(&display_location)
+                .to_owned(),
+            size_bytes: None,
+        };
+        let media_metadata = demuxer.media_metadata();
         self.demuxer = Some(demuxer);
         self.file_path = file_path;
         self.source_label = source_label;
         self.tracks = tracks;
+        self.media_source_info = Some(source_info);
+        self.media_metadata = media_metadata;
+    }
+
+    pub(crate) fn media_source_info(&self) -> Option<&crate::MediaSourceInfo> {
+        self.media_source_info.as_ref()
+    }
+    pub(crate) fn update_media_source_info(&mut self, source_info: crate::MediaSourceInfo) {
+        self.media_source_info = Some(source_info);
+    }
+    pub(crate) fn media_metadata(&self) -> Option<&media_core::MediaMetadata> {
+        self.media_metadata.as_ref()
+    }
+    pub(crate) fn update_media_metadata(&mut self, metadata: media_core::MediaMetadata) {
+        self.media_metadata = Some(metadata);
     }
 
     /// Применяет новый track list после demux lifecycle reset.

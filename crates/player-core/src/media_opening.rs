@@ -5,6 +5,32 @@ use media_core::{DemuxSeekability, Demuxer, TrackInfo, TrackKind};
 
 use crate::MediaSource;
 
+/// Безопасная, UI-ready информация об источнике без reopen credentials.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaSourceInfo {
+    /// Нейтральный вид источника.
+    pub kind: MediaSourceKind,
+    /// Отображаемая локация; URL очищается от query/fragment на service boundary.
+    pub display_location: String,
+    /// Размер только когда opener уже знает его без дополнительного I/O.
+    pub size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaSourceKind {
+    LocalFile,
+    Remote,
+    External,
+}
+
+pub(crate) struct PreparedMediaSlots {
+    pub(crate) demuxer: Box<dyn Demuxer + Send>,
+    pub(crate) file_path: Option<PathBuf>,
+    pub(crate) source_label: Option<String>,
+    pub(crate) tracks: Vec<TrackInfo>,
+    pub(crate) source_info: MediaSourceInfo,
+}
+
 /// Подготовленный media source, который уже открыт за границей `player-core`.
 pub struct PreparedMedia {
     /// Источник media: локальный файл или внешний streaming label.
@@ -21,6 +47,9 @@ pub struct PreparedMedia {
 
     /// Seekability container-а, которую session публикует в timeline snapshot.
     pub(crate) seekability: DemuxSeekability,
+
+    /// Typed source snapshot, подготовленный opener-слоем для Info.
+    pub(crate) source_info: MediaSourceInfo,
 }
 
 impl PreparedMedia {
@@ -110,18 +139,17 @@ impl PreparedMedia {
     }
 
     /// Разбирает prepared media на slots, которые `PlaybackPipeline` устанавливает как владелец.
-    pub(crate) fn into_pipeline_slots(
-        self,
-    ) -> (
-        Box<dyn Demuxer + Send>,
-        Option<PathBuf>,
-        Option<String>,
-        Vec<TrackInfo>,
-    ) {
+    pub(crate) fn into_pipeline_slots(self) -> PreparedMediaSlots {
         let file_path = self.source.pipeline_file_path();
         let source_label = self.source.pipeline_source_label();
 
-        (self.demuxer, file_path, source_label, self.tracks)
+        PreparedMediaSlots {
+            demuxer: self.demuxer,
+            file_path,
+            source_label,
+            tracks: self.tracks,
+            source_info: self.source_info,
+        }
     }
 
     /// Снимает metadata с demuxer один раз и сохраняет её рядом с owned demuxer.
@@ -129,6 +157,7 @@ impl PreparedMedia {
         let tracks = demuxer.tracks().to_vec();
         let duration = demuxer.duration();
         let seekability = demuxer.seekability();
+        let source_info = source.source_info();
 
         Self {
             source,
@@ -136,6 +165,7 @@ impl PreparedMedia {
             tracks,
             duration,
             seekability,
+            source_info,
         }
     }
 }
@@ -150,6 +180,22 @@ pub enum PreparedMediaSource {
 }
 
 impl PreparedMediaSource {
+    fn source_info(&self) -> MediaSourceInfo {
+        match self {
+            Self::LocalFile(path) => MediaSourceInfo {
+                kind: MediaSourceKind::LocalFile,
+                display_location: path.display().to_string(),
+                size_bytes: std::fs::metadata(path).map(|metadata| metadata.len()).map_err(|error| {
+                    tracing::warn!(path = %path.display(), error = %error, "Не удалось прочитать размер media source для Info");
+                }).ok(),
+            },
+            Self::ExternalLabel(label) => MediaSourceInfo {
+                kind: if label.starts_with("http://") || label.starts_with("https://") { MediaSourceKind::Remote } else { MediaSourceKind::External },
+                display_location: label.split(['?', '#']).next().unwrap_or(label).to_owned(),
+                size_bytes: None,
+            },
+        }
+    }
     /// Возвращает public open-request source для session state machine.
     pub(crate) fn media_source(&self) -> MediaSource {
         match self {

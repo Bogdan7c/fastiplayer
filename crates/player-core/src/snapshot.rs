@@ -6,7 +6,8 @@ use media_core::{
 use video_core::{DecodedPixelFormat, FrameMemoryPath};
 
 use crate::{
-    PlaybackDiagnosticsSnapshot, PlaybackRate, PlaybackState, PlayerError, QualityId, TrackId,
+    MediaSourceInfo, PlaybackDiagnosticsSnapshot, PlaybackRate, PlaybackState, PlayerError,
+    QualityId, TrackId,
 };
 
 /// Read-only snapshot player state для UI, renderer и desktop integration.
@@ -20,6 +21,9 @@ pub struct PlayerSnapshot {
 
     /// Заголовок media, если он известен после demux/probe.
     pub media_title: Option<String>,
+
+    /// Практическая read-only информация для самостоятельной Info-панели.
+    pub media_info: Option<MediaInfoSnapshot>,
 
     /// Полная длительность media, если контейнер её сообщил.
     pub duration: Option<Duration>,
@@ -125,6 +129,7 @@ impl Default for PlayerSnapshot {
             playback_state: PlaybackState::default(),
             source_label: None,
             media_title: None,
+            media_info: None,
             duration: None,
             current_position: Duration::ZERO,
             timeline: TimelineSnapshot::default(),
@@ -162,7 +167,7 @@ pub struct TrackSelectionSnapshot {
 }
 
 /// Snapshot media track для UI и диагностики.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TrackSummarySnapshot {
     /// Уникальный ID трека внутри текущего media.
     pub id: TrackId,
@@ -179,8 +184,23 @@ pub struct TrackSummarySnapshot {
     /// Количество audio-каналов, если оно известно.
     pub channels: Option<u32>,
 
+    /// Длительность конкретного трека.
+    pub duration: Option<Duration>,
+
+    /// Полная нейтральная video metadata без codec_private.
+    pub video: Option<media_core::VideoTrackMetadata>,
+
     /// Compact summary video color metadata для diagnostics panel.
     pub video_color_summary: Option<String>,
+}
+
+/// Snapshot Info-панели, не дающий UI доступ к demuxer/session internals.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MediaInfoSnapshot {
+    pub source: MediaSourceInfo,
+    pub metadata: Option<media_core::MediaMetadata>,
+    pub duration: Option<Duration>,
+    pub seekable: bool,
 }
 
 /// Описание качества, которое UI может показать в списке.

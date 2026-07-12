@@ -4,8 +4,8 @@ use codec_core::{
     ColorPrimaries, ColorRange, HdrMetadata, MatrixCoefficients, TransferFunction,
     VideoColorMetadata, VideoDisplayOrientation,
 };
-use media_core::TrackId;
-use symphonia::core::meta::RawValue;
+use media_core::{MediaMetadata, MediaTagMetadata, TrackId};
+use symphonia::core::meta::{RawValue, StandardTag};
 use tracing::debug;
 
 use crate::symphonia_api::FormatReaderBox;
@@ -40,6 +40,37 @@ pub(super) struct SymphoniaFormatMetadataSummary {
 
     /// Есть ли текущая metadata revision в Symphonia metadata log.
     pub(super) has_metadata_revision: bool,
+}
+
+/// Применяет все доступные format-level revisions как upsert.
+pub(super) fn consume_media_metadata(
+    format: &mut FormatReaderBox<'static>,
+    current: &mut MediaMetadata,
+) -> bool {
+    let before = current.clone();
+    loop {
+        if let Some(revision) = format.metadata().current() {
+            let mut tags = MediaTagMetadata::default();
+            for tag in &revision.media.tags {
+                match tag.std.as_ref() {
+                    Some(StandardTag::TrackTitle(value)) | Some(StandardTag::MovieTitle(value)) => {
+                        tags.title = Some(value.to_string())
+                    }
+                    Some(StandardTag::Artist(value)) | Some(StandardTag::AlbumArtist(value)) => {
+                        tags.artists.push(value.to_string())
+                    }
+                    Some(StandardTag::Album(value)) => tags.album = Some(value.to_string()),
+                    _ => {}
+                }
+            }
+            current.tags.upsert(tags);
+        }
+        if format.metadata().is_latest() {
+            break;
+        }
+        format.metadata().pop();
+    }
+    *current != before
 }
 
 /// Снимает format-level diagnostics до построения neutral track model.

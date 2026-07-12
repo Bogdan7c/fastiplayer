@@ -74,15 +74,6 @@ pub(super) const fn live_scrub_release_policy_from_action(
     }
 }
 
-/// Мапит neutral titlebar intent в старый settings UI action boundary.
-pub(super) const fn settings_action_from_titlebar_icon_action(
-    action: TitlebarIconAreaAction,
-) -> SettingsUiAction {
-    match action {
-        TitlebarIconAreaAction::ToggleSettingsSidebar => SettingsUiAction::ToggleOpen,
-    }
-}
-
 /// Возвращает player command для playback-rate UI intent-а или `None` для silent skip/no-op.
 pub(super) fn playback_rate_command_from_action(
     player_snapshot: &PlayerSnapshot,
@@ -199,13 +190,14 @@ impl AppState {
         });
         let animation_state = AnimationState::from_timeline(&player_snapshot.timeline);
         // Позиция анимации продвинута раньше в prepare_ui_frame; здесь только чтение.
-        let sidebar_slide_progress = self.sidebar_slide.eased_progress(Easing::EaseInOutCubic);
+        let sidebar_slide_progress = self.sidebar_controller.open_progress();
         let show_telemetry = self.committed_config_snapshot.show_telemetry();
         let titlebar_height_points = self.committed_config_snapshot.titlebar_height_points();
         let window_is_maximized = window.is_maximized();
         let window_is_fullscreen = window.fullscreen().is_some();
         let mut control_actions = Vec::new();
         let mut settings_actions = Vec::new();
+        let mut sidebar_close_requested = false;
         let mut window_chrome_actions = Vec::new();
         let mut timeline_ui_state = std::mem::take(&mut self.timeline_ui_state);
         let pre_ui_setup_elapsed = pre_ui_setup_started_at.elapsed();
@@ -252,15 +244,22 @@ impl AppState {
                     height_points: titlebar_height_points,
                     is_maximized: window_is_maximized,
                     style: WindowChromeStyle::from_controls_style(selected_skin.controls_style()),
+                    active_sidebar_section: self.sidebar_controller.target(),
                 },
             );
             window_chrome_actions = window_chrome_output.window_actions;
-            settings_actions.extend(
-                window_chrome_output
-                    .titlebar_icon_actions
-                    .into_iter()
-                    .map(settings_action_from_titlebar_icon_action),
-            );
+            for titlebar_action in window_chrome_output.titlebar_icon_actions {
+                let TitlebarIconAreaAction::SelectSidebarSection(section) = titlebar_action;
+                let outcome = self.sidebar_controller.select(section);
+                if matches!(
+                    outcome,
+                    super::sidebar_controller::SidebarSelectionOutcome::Opened(
+                        crate::state::SidebarSection::Settings
+                    )
+                ) {
+                    settings_actions.push(SettingsUiAction::Open);
+                }
+            }
             top_bar_elapsed = stage_started_at.elapsed();
 
             let stage_started_at = Instant::now();
@@ -277,11 +276,15 @@ impl AppState {
 
             let sidebar_rect = sidebar::show(
                 ui,
-                AppSidebarContent::Settings {
-                    model: settings_ui_model,
-                },
+                self.sidebar_controller.displayed(),
                 sidebar_slide_progress,
-                &mut settings_actions,
+                self.sidebar_controller.content_transition(),
+                SidebarRenderContext {
+                    model: settings_ui_model,
+                    snapshot: player_snapshot,
+                    settings_actions: &mut settings_actions,
+                    close_requested: &mut sidebar_close_requested,
+                },
             );
             if let Some(sidebar_rect) = sidebar_rect {
                 // Sidebar вытесняет видео: content viewport начинается от правого
@@ -309,9 +312,12 @@ impl AppState {
             );
             center_overlay_elapsed = stage_started_at.elapsed();
         });
+        if sidebar_close_requested {
+            self.sidebar_controller.hide();
+        }
         let egui_run_elapsed = egui_run_started_at.elapsed();
 
-        if self.sidebar_slide.is_animating() {
+        if self.sidebar_controller.is_animating() {
             // Пока анимация sidebar активна, просим следующий кадр явно:
             // без playback нет другого источника непрерывных redraw-ов.
             self.egui_ctx.request_repaint();

@@ -7,10 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use animation_core::{Easing, SlideTransition};
 use capability_core::SystemCapabilities;
 use desktop_integration::{DesktopIntegration, DesktopIntegrationEvent};
-use media_core::TrackKind;
 use player_core::{
     FrameCounters, MediaOpenRequest, MediaSource, PlaybackRate, PlaybackState, PlayerCommand,
     PlayerError, PlayerErrorKind, PlayerEvent, PlayerRenderError, PlayerRuntimeApplyResult,
@@ -46,7 +44,7 @@ use crate::settings_ui::{SettingsUiAction, SettingsUiModel};
 use crate::telemetry::Telemetry;
 use crate::ui::animation::AnimationState;
 use crate::ui::player_controls::{self, ControlAction};
-use crate::ui::sidebar::{self, AppSidebarContent};
+use crate::ui::sidebar::{self, SidebarRenderContext};
 use crate::ui::skin::{self, PlayerSkin};
 use crate::ui::timeline::{
     self, TimelineAction, TimelineLiveScrubDecodeMode, TimelineLiveScrubSettingsSnapshot,
@@ -62,6 +60,7 @@ use crate::video_pipeline_selector::{
 mod main_visual_override;
 mod media_jobs;
 mod present_frame_cache;
+mod sidebar_controller;
 mod telemetry_panel;
 mod timeline_inline_status;
 mod ui_runtime;
@@ -81,6 +80,10 @@ pub(crate) use video_backend::{
 
 use main_visual_override::MainVisualOverrideState;
 use present_frame_cache::CachedRenderablePresentFrame;
+use sidebar_controller::SidebarController;
+pub(crate) use sidebar_controller::{
+    ContentSlideDirection, SidebarContentTransition, SidebarSection,
+};
 use telemetry_panel::TelemetryPanelCache;
 use timeline_inline_status::TimelineInlineStatusState;
 
@@ -257,7 +260,7 @@ pub struct AppState {
     telemetry_panel_cache: TelemetryPanelCache,
 
     /// Анимация выезда settings sidebar; runtime open-state остаётся целью перехода.
-    sidebar_slide: SlideTransition,
+    sidebar_controller: SidebarController,
 
     /// Момент последнего advance анимации sidebar для вычисления дельты времени кадра.
     sidebar_slide_last_tick: Option<Instant>,
@@ -343,7 +346,7 @@ impl AppState {
             local_file_open_job: None,
             timeline_ui_state: TimelineUiState::default(),
             telemetry_panel_cache: TelemetryPanelCache::default(),
-            sidebar_slide: SlideTransition::closed(),
+            sidebar_controller: SidebarController::default(),
             sidebar_slide_last_tick: None,
         })
     }
@@ -352,9 +355,9 @@ impl AppState {
     ///
     /// Вызывается один раз за кадр до сборки settings UI model, чтобы видимость
     /// панели и video viewport считались по уже актуальной позиции анимации.
-    pub(crate) fn advance_sidebar_slide(&mut self, settings_open: bool, now: Instant) {
-        self.sidebar_slide.set_target_open(settings_open);
-
+    pub(crate) fn advance_sidebar_slide(&mut self, settings_visible: bool, now: Instant) {
+        self.sidebar_controller
+            .reconcile_settings_visibility(settings_visible);
         let dt_seconds = self
             .sidebar_slide_last_tick
             .map(|last_tick| {
@@ -368,13 +371,14 @@ impl AppState {
         let duration_seconds = self
             .committed_config_snapshot
             .sidebar_slide_duration_seconds();
-        self.sidebar_slide.advance(dt_seconds, duration_seconds);
+        self.sidebar_controller
+            .advance(dt_seconds, duration_seconds);
     }
 
     /// `true`, пока анимация sidebar не достигла цели (нужен visual hold и repaint).
     #[must_use]
     pub(crate) fn sidebar_slide_is_animating(&self) -> bool {
-        self.sidebar_slide.is_animating()
+        self.sidebar_controller.is_animating()
     }
 
     /// Обновляет read-only config snapshot из authoritative settings runtime.

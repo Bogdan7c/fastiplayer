@@ -470,7 +470,9 @@ impl SettingsRuntime {
 
     /// Открывает settings window: fresh draft transaction + фоновый refresh options.
     fn open_settings(&mut self) -> SettingsResult<bool> {
-        self.begin_edit();
+        if !self.settings_window_open {
+            self.begin_edit();
+        }
         self.refresh_all_dynamic_options()?;
         Ok(true)
     }

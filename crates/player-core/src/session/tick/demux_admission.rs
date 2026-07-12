@@ -391,6 +391,11 @@ pub(super) fn read_demux_packets(
                 // demux pass должен видеть уже стабилизированное lifecycle state.
                 break;
             }
+            Ok(DemuxReadEvent::MediaMetadataChanged(metadata)) => {
+                // Metadata не потребляет packet budget и не меняет decoder topology.
+                session.pipeline.update_media_metadata(metadata);
+                continue;
+            }
             Err(error) => {
                 session.note_demux_error_for_seek_preroll_diagnostics();
                 tracing::warn!(error = %error, "Ошибка чтения packet");

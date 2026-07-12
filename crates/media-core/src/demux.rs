@@ -149,6 +149,9 @@ pub enum DemuxReadEvent {
 
     /// Container изменил track list, и decoder configs нужно построить заново.
     TracksChanged(DemuxTrackListUpdate),
+
+    /// Нормализованные теги/контейнер изменились без изменения decoder topology.
+    MediaMetadataChanged(crate::MediaMetadata),
 }
 
 /// Trait, абстрагирующий источник media packets.
@@ -161,6 +164,11 @@ pub trait Demuxer: Send {
 
     /// Длительность контента, если она известна из контейнера или manifest-а.
     fn duration(&self) -> Option<Duration>;
+
+    /// Текущий полный metadata snapshot; fake/legacy demuxer по умолчанию ничего не сообщает.
+    fn media_metadata(&self) -> Option<crate::MediaMetadata> {
+        None
+    }
 
     /// Возвращает seekability текущего demuxer/source stack-а.
     fn seekability(&self) -> DemuxSeekability {

@@ -6,6 +6,7 @@
 
 pub mod animation;
 pub mod assets;
+pub mod media_info;
 pub mod player_controls;
 pub mod sidebar;
 pub mod skin;

@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 mod demux;
+mod metadata;
 mod packet;
 mod time;
 mod track;
@@ -15,6 +16,7 @@ pub use demux::{
     DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
     DemuxTrackListUpdate, Demuxer, MediaDemuxError,
 };
+pub use metadata::{MediaContainerMetadata, MediaMetadata, MediaTagMetadata};
 pub use packet::{Packet, PacketKeyframe};
 pub use time::{
     MediaDuration, MediaTime, TimeBase, TimelineNotSeekableReason, TimelinePreviewState,

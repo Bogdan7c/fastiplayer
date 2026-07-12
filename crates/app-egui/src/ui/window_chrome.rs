@@ -6,6 +6,7 @@
 use egui::{Color32, CursorIcon, Rect, Sense, Stroke, Ui, pos2, vec2};
 use ui_artwork_egui::{ArtworkPainter, ButtonVisualState, WindowControlGlyph, WindowControlStyle};
 
+use crate::state::SidebarSection;
 use crate::ui::skin::ControlsStyle;
 use crate::ui::titlebar_icon_area::{self, TitlebarIconAreaAction, TitlebarIconAreaStyle};
 
@@ -35,6 +36,9 @@ pub(crate) struct WindowChromeInput<'title> {
 
     /// Цвета и stroke-и, полученные от текущего UI skin-а.
     pub(crate) style: WindowChromeStyle,
+
+    /// Секция, для которой titlebar показывает постоянную active-заливку.
+    pub(crate) active_sidebar_section: Option<SidebarSection>,
 }
 
 /// Визуальный стиль кастомного titlebar.
@@ -194,6 +198,7 @@ pub(crate) fn show(ui: &mut Ui, input: WindowChromeInput<'_>) -> WindowChromeOut
                     icon_stroke: input.style.icon_stroke,
                     button_hover_fill: input.style.button_hover_fill,
                 },
+                input.active_sidebar_section,
             );
             let layout = WindowChromeLayout::new(chrome_rect, icon_output.reserved_rect);
             output.titlebar_icon_actions.extend(icon_output.actions);

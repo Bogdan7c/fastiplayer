@@ -42,6 +42,17 @@ impl<'session> PlayerSnapshotBuilder<'session> {
         snapshot.playback_state = self.session.playback_state();
         snapshot.source_label = self.source_label();
         snapshot.media_title = self.media_title();
+        snapshot.media_info = self
+            .session
+            .pipeline
+            .media_source_info()
+            .cloned()
+            .map(|source| crate::MediaInfoSnapshot {
+                source,
+                metadata: self.session.pipeline.media_metadata().cloned(),
+                duration: snapshot.duration,
+                seekable: self.session.snapshot.timeline.not_seekable_reason.is_none(),
+            });
         snapshot.selected_tracks = self.track_selection_snapshot();
         snapshot.tracks = self.track_summary_snapshot();
         snapshot.active_backend = self.backend_snapshot();
@@ -96,6 +107,8 @@ impl<'session> PlayerSnapshotBuilder<'session> {
                 codec_id: track.codec_id.clone(),
                 sample_rate: track.sample_rate,
                 channels: track.channels,
+                duration: track.duration,
+                video: track.video.clone(),
                 video_color_summary: video_color_summary(track),
             });
         }

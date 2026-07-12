@@ -238,6 +238,7 @@ impl SymphoniaDemuxer {
                         video_track_id = updated_video_track_id;
                     }
                 }
+                DemuxReadEvent::MediaMetadataChanged(_) => continue,
                 DemuxReadEvent::EndOfStream => {
                     buffered_events.push_back(event);
 

@@ -331,57 +331,13 @@ impl AppState {
         )));
     }
 
-    /// Добавляет media/player diagnostics в cached строки telemetry panel.
     fn append_media_info_rows(
         panel_rows: &mut Vec<TelemetryPanelRow>,
         panel_state: &TelemetryPanelState<'_>,
     ) {
         let player_snapshot = panel_state.player_snapshot;
-        let telemetry = panel_state.telemetry;
-
         panel_rows.push(TelemetryPanelRow::spacer());
-        panel_rows.push(TelemetryPanelRow::heading("Media Info"));
-
-        if player_snapshot.source_label.is_none() {
-            panel_rows.push(TelemetryPanelRow::normal("No file loaded"));
-            return;
-        }
-
-        for track in &player_snapshot.tracks {
-            match track.kind {
-                TrackKind::Video => {
-                    panel_rows.push(TelemetryPanelRow::normal(format!(
-                        "Video: {}",
-                        track.codec_id
-                    )));
-                    if let Some(color_summary) = &track.video_color_summary {
-                        panel_rows.push(TelemetryPanelRow::normal(format!(
-                            "  Color: {color_summary}"
-                        )));
-                    }
-                }
-                TrackKind::Audio => {
-                    panel_rows.push(TelemetryPanelRow::normal(format!(
-                        "Audio: {}",
-                        track.codec_id
-                    )));
-                }
-            };
-        }
-
-        if let Some(duration) = player_snapshot.duration {
-            panel_rows.push(TelemetryPanelRow::normal(format!(
-                "Duration: {}",
-                timeline::format_seconds(Some(duration.as_secs_f64()))
-            )));
-        }
-
-        if let Some(source_label) = &player_snapshot.media_title {
-            panel_rows.push(TelemetryPanelRow::normal(format!("File: {source_label}")));
-        }
-
-        panel_rows.push(TelemetryPanelRow::spacer());
-        Self::append_packet_rows(panel_rows, telemetry);
+        Self::append_packet_rows(panel_rows, panel_state.telemetry);
         Self::append_timeline_rows(panel_rows, panel_state);
         Self::append_audio_rows(panel_rows, player_snapshot);
         Self::append_video_rows(panel_rows, panel_state);

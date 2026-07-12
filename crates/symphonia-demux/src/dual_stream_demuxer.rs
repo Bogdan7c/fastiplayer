@@ -22,6 +22,30 @@ const REMAPPED_VIDEO_TRACK_ID: u32 = 1;
 /// Track id для audio после remap.
 const REMAPPED_AUDIO_TRACK_ID: u32 = 2;
 
+fn merge_media_metadata(
+    video: Option<media_core::MediaMetadata>,
+    audio: Option<media_core::MediaMetadata>,
+) -> media_core::MediaMetadata {
+    let mut merged = video.unwrap_or_default();
+    if let Some(audio) = audio {
+        if merged.container.is_none() {
+            merged.container = audio.container;
+        }
+        let mut missing_only = media_core::MediaTagMetadata::default();
+        if merged.tags.title.is_none() {
+            missing_only.title = audio.tags.title;
+        }
+        if merged.tags.artists.is_empty() {
+            missing_only.artists = audio.tags.artists;
+        }
+        if merged.tags.album.is_none() {
+            missing_only.album = audio.tags.album;
+        }
+        merged.tags.upsert(missing_only);
+    }
+    merged
+}
+
 /// Результат заполнения pending slot-а из одного stream demuxer-а.
 enum PendingFillOutcome {
     /// Pending slot заполнен packet-ом, stream дошёл до EOF или уже был готов.
@@ -29,6 +53,7 @@ enum PendingFillOutcome {
 
     /// Внутренний demuxer сообщил новый track list, и composite boundary должен отдать event.
     TracksChanged(DemuxTrackListUpdate),
+    MediaMetadataChanged(media_core::MediaMetadata),
 }
 
 /// Одноразовая post-seek policy для вывода audio после video-safe seek-а.
@@ -86,6 +111,7 @@ pub struct DualStreamDemuxer {
 
     /// Bounded policy, которая не даёт первому audio после seek-а застрять за video preroll.
     post_seek_audio_bootstrap: PostSeekAudioBootstrap,
+    media_metadata: media_core::MediaMetadata,
 }
 
 impl DualStreamDemuxer {
@@ -120,6 +146,10 @@ impl DualStreamDemuxer {
             .or_else(|| video_demuxer.duration())
             .or_else(|| audio_demuxer.duration());
 
+        let media_metadata = merge_media_metadata(
+            video_demuxer.media_metadata(),
+            audio_demuxer.media_metadata(),
+        );
         Ok(Self {
             video_demuxer,
             audio_demuxer,
@@ -130,6 +160,7 @@ impl DualStreamDemuxer {
             video_eof: false,
             audio_eof: false,
             post_seek_audio_bootstrap: PostSeekAudioBootstrap::Inactive,
+            media_metadata,
         })
     }
 
@@ -165,6 +196,15 @@ impl DualStreamDemuxer {
                 DemuxReadEvent::TracksChanged(_) => {
                     return self.refresh_tracks_after_inner_reset();
                 }
+                DemuxReadEvent::MediaMetadataChanged(_) => {
+                    self.media_metadata = merge_media_metadata(
+                        self.video_demuxer.media_metadata(),
+                        self.audio_demuxer.media_metadata(),
+                    );
+                    return Ok(PendingFillOutcome::MediaMetadataChanged(
+                        self.media_metadata.clone(),
+                    ));
+                }
             }
         }
     }
@@ -191,6 +231,15 @@ impl DualStreamDemuxer {
                 }
                 DemuxReadEvent::TracksChanged(_) => {
                     return self.refresh_tracks_after_inner_reset();
+                }
+                DemuxReadEvent::MediaMetadataChanged(_) => {
+                    self.media_metadata = merge_media_metadata(
+                        self.video_demuxer.media_metadata(),
+                        self.audio_demuxer.media_metadata(),
+                    );
+                    return Ok(PendingFillOutcome::MediaMetadataChanged(
+                        self.media_metadata.clone(),
+                    ));
                 }
             }
         }
@@ -313,6 +362,10 @@ impl Demuxer for DualStreamDemuxer {
         self.duration
     }
 
+    fn media_metadata(&self) -> Option<media_core::MediaMetadata> {
+        Some(self.media_metadata.clone())
+    }
+
     fn seekability(&self) -> DemuxSeekability {
         match (
             self.video_demuxer.seekability(),
@@ -334,17 +387,29 @@ impl Demuxer for DualStreamDemuxer {
                 DemuxReadEvent::Packet(packet) => return Ok(Some(packet)),
                 DemuxReadEvent::EndOfStream => return Ok(None),
                 DemuxReadEvent::TracksChanged(_) => continue,
+                DemuxReadEvent::MediaMetadataChanged(_) => continue,
             }
         }
     }
 
     fn next_event(&mut self) -> Result<DemuxReadEvent> {
-        // Подготавливаем по одному packet с каждой стороны, чтобы выбрать ранний PTS.
-        if let PendingFillOutcome::TracksChanged(track_update) = self.fill_pending_video_event()? {
-            return Ok(DemuxReadEvent::TracksChanged(track_update));
+        match self.fill_pending_video_event()? {
+            PendingFillOutcome::TracksChanged(update) => {
+                return Ok(DemuxReadEvent::TracksChanged(update));
+            }
+            PendingFillOutcome::MediaMetadataChanged(metadata) => {
+                return Ok(DemuxReadEvent::MediaMetadataChanged(metadata));
+            }
+            PendingFillOutcome::Ready => {}
         }
-        if let PendingFillOutcome::TracksChanged(track_update) = self.fill_pending_audio_event()? {
-            return Ok(DemuxReadEvent::TracksChanged(track_update));
+        match self.fill_pending_audio_event()? {
+            PendingFillOutcome::TracksChanged(update) => {
+                return Ok(DemuxReadEvent::TracksChanged(update));
+            }
+            PendingFillOutcome::MediaMetadataChanged(metadata) => {
+                return Ok(DemuxReadEvent::MediaMetadataChanged(metadata));
+            }
+            PendingFillOutcome::Ready => {}
         }
 
         if let Some(audio_packet) = self.take_post_seek_audio_bootstrap_packet() {
@@ -932,6 +997,7 @@ mod tests {
                     panic!("unexpected packet kind after seek: {:?}", packet.kind);
                 }
                 DemuxReadEvent::TracksChanged(_) => continue,
+                DemuxReadEvent::MediaMetadataChanged(_) => continue,
                 DemuxReadEvent::EndOfStream => panic!("audio bootstrap ended before audio packet"),
             }
         }

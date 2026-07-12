@@ -141,7 +141,9 @@ fn collect_video_packets(
             {
                 packets.push(packet)
             }
-            DemuxReadEvent::Packet(_) | DemuxReadEvent::TracksChanged(_) => {}
+            DemuxReadEvent::Packet(_)
+            | DemuxReadEvent::TracksChanged(_)
+            | DemuxReadEvent::MediaMetadataChanged(_) => {}
             DemuxReadEvent::EndOfStream => break,
         }
     }

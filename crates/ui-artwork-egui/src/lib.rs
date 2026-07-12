@@ -7,6 +7,7 @@ mod fullscreen_button;
 mod open_media_button;
 mod playback_button;
 mod settings_button;
+mod sidebar_buttons;
 mod timeline;
 mod video_dim_overlay;
 mod volume_button;
@@ -19,6 +20,7 @@ use egui::Painter;
 
 pub use fullscreen_button::{FullscreenGlyph, FullscreenStyle};
 pub use playback_button::{ButtonVisualState, PlaybackGlyph, PlaybackStyle};
+pub use sidebar_buttons::SidebarButtonGlyph;
 pub use timeline::{TimelinePaintState, TimelineStyle, timeline_track_rect};
 pub use volume_button::VolumeGlyph;
 pub use volume_slider::{THUMB_RADIUS as VOLUME_THUMB_RADIUS, TRACK_HEIGHT as VOLUME_TRACK_HEIGHT};
@@ -108,6 +110,23 @@ impl<'a> ArtworkPainter<'a> {
         hover_fill: egui::Color32,
     ) {
         settings_button::paint(self.painter, rect, state, stroke, hover_fill);
+    }
+
+    /// Рисует одну из нейтральных иконок переключателя sidebar.
+    pub fn sidebar_button(
+        self,
+        rect: egui::Rect,
+        glyph: SidebarButtonGlyph,
+        state: ButtonVisualState,
+        stroke: egui::Stroke,
+        hover_fill: egui::Color32,
+    ) {
+        sidebar_buttons::paint(self.painter, rect, glyph, state, stroke, hover_fill);
+    }
+
+    /// Рисует постоянный active-фон titlebar-кнопки.
+    pub fn sidebar_button_active_background(self, rect: egui::Rect, fill: egui::Color32) {
+        sidebar_buttons::paint_active_background(self.painter, rect, fill);
     }
 
     /// Рисует timeline по уже вычисленным долям.

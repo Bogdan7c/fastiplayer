@@ -96,6 +96,7 @@ pub struct SymphoniaDemuxer {
     seekability: DemuxSeekability,
     options: DemuxerOptions,
     pending_events: VecDeque<DemuxReadEvent>,
+    media_metadata: media_core::MediaMetadata,
     end_of_stream_reached: bool,
 }
 
@@ -303,6 +304,8 @@ impl SymphoniaDemuxer {
             "Symphonia media source открыт"
         );
 
+        let mut media_metadata = media_core::MediaMetadata::default();
+        metadata::consume_media_metadata(&mut format, &mut media_metadata);
         Ok(Self {
             format: Some(format),
             probe_hint,
@@ -315,6 +318,7 @@ impl SymphoniaDemuxer {
             seekability,
             options,
             pending_events: VecDeque::new(),
+            media_metadata,
             end_of_stream_reached: false,
         })
     }
@@ -462,6 +466,24 @@ impl SymphoniaDemuxer {
                 Ok(Some(packet)) => match convert_packet(packet, &self.track_map) {
                     Ok(our_packet) => {
                         self.record_successful_packet();
+                        let metadata_changed = {
+                            let mut metadata_snapshot = self.media_metadata.clone();
+                            let changed = metadata::consume_media_metadata(
+                                self.format_mut("metadata")?,
+                                &mut metadata_snapshot,
+                            );
+                            if changed {
+                                self.media_metadata = metadata_snapshot;
+                            }
+                            changed
+                        };
+                        if metadata_changed {
+                            self.pending_events
+                                .push_back(DemuxReadEvent::Packet(our_packet));
+                            return Ok(DemuxReadEvent::MediaMetadataChanged(
+                                self.media_metadata.clone(),
+                            ));
+                        }
                         return Ok(DemuxReadEvent::Packet(our_packet));
                     }
                     Err(PacketConvertError::UnknownTrack { track_id }) => {
@@ -564,6 +586,10 @@ impl Demuxer for SymphoniaDemuxer {
         self.duration
     }
 
+    fn media_metadata(&self) -> Option<media_core::MediaMetadata> {
+        Some(self.media_metadata.clone())
+    }
+
     fn seekability(&self) -> DemuxSeekability {
         self.seekability
     }
@@ -574,6 +600,7 @@ impl Demuxer for SymphoniaDemuxer {
                 DemuxReadEvent::Packet(packet) => return Ok(Some(packet)),
                 DemuxReadEvent::EndOfStream => return Ok(None),
                 DemuxReadEvent::TracksChanged(_) => continue,
+                DemuxReadEvent::MediaMetadataChanged(_) => continue,
             }
         }
     }

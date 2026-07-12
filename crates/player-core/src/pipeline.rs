@@ -477,6 +477,10 @@ pub(crate) struct PlaybackPipeline {
     /// User-facing label для streaming source без локального path.
     source_label: Option<String>,
 
+    /// Read-only media information, обновляемая metadata events без decoder rebuild.
+    media_source_info: Option<crate::MediaSourceInfo>,
+    media_metadata: Option<media_core::MediaMetadata>,
+
     /// Codec-neutral audio decoder для выбранного audio трека.
     audio_decoder: Option<audio_core::AudioDecoderHandle>,
 
@@ -662,6 +666,8 @@ impl Default for PlaybackPipeline {
             file_path: None,
             tracks: Vec::new(),
             source_label: None,
+            media_source_info: None,
+            media_metadata: None,
             audio_decoder: None,
             deferred_audio_decoder_config: None,
             audio_output: None,

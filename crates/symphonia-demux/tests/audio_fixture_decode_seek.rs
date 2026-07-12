@@ -243,7 +243,9 @@ fn drain_demuxer_to_real_eof(
             {
                 selected_packets += 1
             }
-            DemuxReadEvent::Packet(_) | DemuxReadEvent::TracksChanged(_) => {}
+            DemuxReadEvent::Packet(_)
+            | DemuxReadEvent::TracksChanged(_)
+            | DemuxReadEvent::MediaMetadataChanged(_) => {}
             DemuxReadEvent::EndOfStream => {
                 ensure!(
                     selected_packets > 0,
@@ -274,7 +276,9 @@ fn first_selected_audio_packet_after_replay(
             {
                 return Ok(packet);
             }
-            DemuxReadEvent::Packet(_) | DemuxReadEvent::TracksChanged(_) => {}
+            DemuxReadEvent::Packet(_)
+            | DemuxReadEvent::TracksChanged(_)
+            | DemuxReadEvent::MediaMetadataChanged(_) => {}
             DemuxReadEvent::EndOfStream => bail!(
                 "{}: EOF arrived before selected audio replay packet",
                 path.display()
@@ -309,7 +313,9 @@ fn first_selected_audio_packet_covering_target(
                     return Ok(packet);
                 }
             }
-            DemuxReadEvent::Packet(_) | DemuxReadEvent::TracksChanged(_) => {}
+            DemuxReadEvent::Packet(_)
+            | DemuxReadEvent::TracksChanged(_)
+            | DemuxReadEvent::MediaMetadataChanged(_) => {}
             DemuxReadEvent::EndOfStream => {
                 bail!("{}: EOF arrived before target audio packet", path.display())
             }
@@ -381,7 +387,9 @@ fn decode_next_audio_samples(
                     "too many empty decode results {phase}"
                 );
             }
-            DemuxReadEvent::Packet(_) | DemuxReadEvent::TracksChanged(_) => {}
+            DemuxReadEvent::Packet(_)
+            | DemuxReadEvent::TracksChanged(_)
+            | DemuxReadEvent::MediaMetadataChanged(_) => {}
             DemuxReadEvent::EndOfStream => {
                 bail!("EOF arrived before decoded audio samples {phase}")
             }
