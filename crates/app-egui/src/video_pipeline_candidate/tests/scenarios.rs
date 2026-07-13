@@ -119,6 +119,40 @@ fn candidate_success_does_not_change_active_pointers_until_infallible_commit() {
 }
 
 #[test]
+fn missing_or_mismatched_app_half_after_installed_is_a_fatal_invariant() {
+    // Player `Installed` означает, что rollback к старому player instance уже запрещён.
+    let mut empty_slot = StagedVideoPipelineCandidateSlot::<DropProbe, DropProbe>::new();
+    let Err(missing_error) =
+        empty_slot.prepare_post_installed_commit(request_id(11), renderer_generation(3))
+    else {
+        panic!("Installed без app half-а обязан быть fatal invariant");
+    };
+    assert_eq!(
+        missing_error.match_error(),
+        StagedVideoPipelineCandidateMatchError::NoCandidate
+    );
+
+    // Exact admitted candidate остаётся staged, если Installed относится к чужому request-у.
+    let mut slot = StagedVideoPipelineCandidateSlot::new();
+    let mut driver = FakeCandidateDriver::successful();
+    let admitted_request_id = request_id(12);
+    let generation = renderer_generation(3);
+    let reply = slot.prepare_and_stage(admitted_request_id, generation, ffmpeg_plan(), &mut driver);
+    let Err(mismatch_error) = slot.prepare_post_installed_commit(request_id(13), generation) else {
+        panic!("mismatched Installed обязан быть fatal invariant");
+    };
+    assert_eq!(
+        mismatch_error.match_error(),
+        StagedVideoPipelineCandidateMatchError::RequestMismatch
+    );
+    assert!(slot.candidate_descriptor().is_some());
+
+    // Test cleanup освобождает обе ещё не установленные halves без active mutation.
+    drop(available_backend(reply, admitted_request_id));
+    drop(slot);
+}
+
+#[test]
 fn every_preparation_stage_failure_leaves_active_pair_untouched() {
     // Каждый stage проверяется независимо, включая resource exhaustion.
     let failures = [

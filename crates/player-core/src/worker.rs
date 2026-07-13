@@ -35,10 +35,11 @@ use crate::runtime_settings::{validate_runtime_default_volume, validate_runtime_
 use crate::worker_scheduler::{PlannedWorkerWakeup, WorkerScheduler, WorkerWakeupDeadline};
 use crate::{
     ActiveSeekDiagnosticsSnapshot, AudioDecoderFactory, AudioOutputFactory,
-    AudioTempoProcessorFactory, AuthorizeInstallCommit, CorrelatedPlayerEvent, FrameCounters,
-    LatencyCounterSnapshot, MediaInstallPhaseCompletionPort, MediaInstallReceipt,
-    MediaInstallRequestId, MediaOpenRequest, MediaSource, PlayerCommand, PlayerCommandOutcome,
-    PlayerError, PlayerErrorKind, PlayerResult, PlayerRuntimeAcceptedChange,
+    AudioTempoProcessorFactory, AuthorizeInstallCommit, CancelMediaInstall, CorrelatedPlayerEvent,
+    FrameCounters, LatencyCounterSnapshot, MediaInstallCancellationCause, MediaInstallControl,
+    MediaInstallPhaseCompletionPort, MediaInstallReceipt, MediaInstallRequestId,
+    MediaInstallVideoResourcePort, MediaOpenRequest, MediaSource, PlayerCommand,
+    PlayerCommandOutcome, PlayerError, PlayerErrorKind, PlayerResult, PlayerRuntimeAcceptedChange,
     PlayerRuntimeApplyError, PlayerRuntimeApplyGroup, PlayerRuntimeApplyGroupReport,
     PlayerRuntimeApplyReport, PlayerRuntimeApplyResult, PlayerRuntimeAudioOutputRecreateUpdate,
     PlayerRuntimeBoundaryActivity, PlayerRuntimeDecoderThreadConfigUpdate,
@@ -56,8 +57,12 @@ mod runtime_commands;
 mod runtime_publish;
 mod runtime_wait;
 mod sender;
+mod staged_media_install;
 #[cfg(test)]
 mod tests;
+
+use staged_media_install::{MediaInstallControlCommand, StagePreparedMediaInstallCommand};
+pub use staged_media_install::{MediaInstallControlReceipt, MediaInstallControlReceiptError};
 
 /// Редкий fallback wakeup активного pipeline, когда нет точного media deadline-а.
 const DEFAULT_WORKER_COARSE_WAKEUP_INTERVAL: Duration = Duration::from_millis(250);
@@ -510,6 +515,12 @@ enum WorkerCommand {
         /// Request-owned phase/completion port, не зависящий от lossy worker event channel.
         install_port: Arc<dyn MediaInstallPhaseCompletionPort>,
     },
+
+    /// Stage-ит strong media transaction без мутации active session/pipeline.
+    StagePreparedMediaInstall(Box<StagePreparedMediaInstallCommand>),
+
+    /// Применяет authorization/cancel к единственному staged request-у.
+    MediaInstallControl(MediaInstallControlCommand),
 
     /// Зафиксировать ошибку подготовки media, не скрывая open-request transition.
     MediaOpenFailed {

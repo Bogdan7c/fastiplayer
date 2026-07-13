@@ -1,12 +1,11 @@
 //! Renderer-bound candidate video pipeline resources для strong media install.
 //!
-//! Session 00C создаёт только bounded resource boundary. Active player/backend
-//! migration, `ReadyToCommit` state machine и media ownership switch остаются
-//! задачей Session 00C1.
+//! Session 00C создаёт bounded resource boundary, а Session 00C1 использует его
+//! после player `Installed` только для exact infallible pointer commit-а.
 
 #![allow(
     dead_code,
-    reason = "Session 00C intentionally prepares the boundary before Session 00C1 call-site wiring"
+    reason = "Session 00C1 validates the boundary before later coordinator call-site migration"
 )]
 
 use std::num::NonZeroU64;
@@ -169,6 +168,25 @@ pub(crate) enum StagedVideoPipelineCandidateMatchError {
 
     /// Matching Installed barrier уже принят, поэтому pre-barrier cancel запрещён.
     PostInstalledCommitRequired,
+}
+
+/// Fatal protocol invariant после принятого player `Installed` barrier-а.
+///
+/// До `Installed` matching error остаётся обычным candidate rejection. После
+/// `Installed` player ownership уже переключён, поэтому отсутствие exact app half-а
+/// нельзя маскировать recoverable install failure или попыткой rollback-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PostInstalledVideoPipelineInvariantViolation {
+    /// Точная причина нарушения split-resource agreement.
+    match_error: StagedVideoPipelineCandidateMatchError,
+}
+
+impl PostInstalledVideoPipelineInvariantViolation {
+    /// Возвращает typed причину для fatal diagnostics owner-а.
+    #[must_use]
+    pub(crate) const fn match_error(self) -> StagedVideoPipelineCandidateMatchError {
+        self.match_error
+    }
 }
 
 /// Ошибка применения player status после обязательного terminal cleanup.
@@ -479,23 +497,31 @@ impl<Materializer, SubmissionBinding>
         current_renderer_generation: RendererGeneration,
     ) -> Result<
         PreparedPostInstalledVideoPipelineCommit<'_, Materializer, SubmissionBinding>,
-        StagedVideoPipelineCandidateMatchError,
+        PostInstalledVideoPipelineInvariantViolation,
     > {
         // Installed без admitted candidate является stale protocol event-ом.
         let Some(candidate) = self.candidate.as_ref() else {
-            return Err(StagedVideoPipelineCandidateMatchError::NoCandidate);
+            return Err(PostInstalledVideoPipelineInvariantViolation {
+                match_error: StagedVideoPipelineCandidateMatchError::NoCandidate,
+            });
         };
         // Installed другого request-а не меняет current candidate.
         if candidate.request_id != request_id {
-            return Err(StagedVideoPipelineCandidateMatchError::RequestMismatch);
+            return Err(PostInstalledVideoPipelineInvariantViolation {
+                match_error: StagedVideoPipelineCandidateMatchError::RequestMismatch,
+            });
         }
         // Stale renderer resources нельзя переместить в active pointers.
         if candidate.renderer_generation != current_renderer_generation {
-            return Err(StagedVideoPipelineCandidateMatchError::RendererGenerationMismatch);
+            return Err(PostInstalledVideoPipelineInvariantViolation {
+                match_error: StagedVideoPipelineCandidateMatchError::RendererGenerationMismatch,
+            });
         }
         // Player configuration обязана завершиться до Installed pointer commit.
         if candidate.state == StagedVideoPipelineCandidateState::AwaitingPlayer {
-            return Err(StagedVideoPipelineCandidateMatchError::NotStreamConfigured);
+            return Err(PostInstalledVideoPipelineInvariantViolation {
+                match_error: StagedVideoPipelineCandidateMatchError::NotStreamConfigured,
+            });
         }
 
         // Barrier marker устанавливается до извлечения pointers в linear commit token.

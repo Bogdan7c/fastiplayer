@@ -19,6 +19,7 @@ use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 use crate::event::VideoBackendSelectionRequest;
 use crate::{PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, SeekRequest, TrackId};
 
+use super::staged_media_install::StagedVideoTrackPlan;
 use super::{PendingVideoBackendReselection, PlayerSession};
 
 /// Принятый video stream после capability validation.
@@ -56,6 +57,76 @@ pub(crate) enum DefaultVideoTrackOutcome {
 }
 
 impl PlayerSession {
+    /// Строит default video plan для detached candidate, не читая active backend state.
+    ///
+    /// Strong media transaction выбирает output из общего playable capability report-а:
+    /// прежний active backend не должен влиять на candidate и не получает configure.
+    pub(super) fn plan_staged_video_track(
+        &self,
+        tracks: &[TrackInfo],
+        missing_message: &str,
+    ) -> PlayerResult<Option<StagedVideoTrackPlan>> {
+        let video_tracks = tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Video)
+            .collect::<Vec<_>>();
+        if video_tracks.is_empty() {
+            return Ok(None);
+        }
+
+        let mut last_rejection = None;
+        for track in video_tracks {
+            let Some(requirement) = video_requirement_from_track(track) else {
+                last_rejection = Some(PlayerError::new(
+                    PlayerErrorKind::UnsupportedVideoCodec,
+                    format!(
+                        "Video codec `{}` не поддерживается candidate capability model",
+                        track.codec_id
+                    ),
+                ));
+                continue;
+            };
+
+            let playable_output = match self.capabilities.as_ref() {
+                Some(capabilities) => match capabilities.check_video_requirement(&requirement) {
+                    Ok(output) => Some(output.clone()),
+                    Err(_error) if self.can_defer_packet_refinement(&requirement) => None,
+                    Err(error) => {
+                        last_rejection = Some(player_error_from_unsupported_requirement(error));
+                        continue;
+                    }
+                },
+                None => None,
+            };
+            let frame_contract = playable_output.as_ref().map_or_else(
+                || fallback_frame_contract_for_unprobed_requirement(&requirement),
+                |output| output.frame_contract,
+            );
+            let stream_config =
+                match video_stream_decode_config_from_track(track, &requirement, frame_contract) {
+                    Ok(stream_config) => stream_config,
+                    Err(error) if can_try_next_video_track_after_error(&error.kind) => {
+                        last_rejection = Some(error);
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+
+            return Ok(Some(StagedVideoTrackPlan {
+                track_id: track.id,
+                requirement,
+                frame_contract,
+                stream_config,
+                expected_backend_id: playable_output
+                    .map(|output| output.backend.as_str().to_owned()),
+            }));
+        }
+
+        Err(last_rejection.unwrap_or_else(|| {
+            PlayerError::new(PlayerErrorKind::UnsupportedVideoCodec, missing_message)
+        }))
+    }
+
     /// Устанавливает capability report и публикует событие для UI/log layer.
     pub fn set_system_capabilities(&mut self, capabilities: SystemCapabilities) {
         let summary = capabilities.detailed_report_text();

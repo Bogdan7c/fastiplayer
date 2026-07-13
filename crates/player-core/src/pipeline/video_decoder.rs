@@ -1,6 +1,26 @@
 use super::*;
 
 impl PlaybackPipeline {
+    /// Устанавливает уже сконфигурированный decoder нового media без fallible control work.
+    ///
+    /// Метод вызывается только после `retire_media_resource_owners`, поэтому прежний
+    /// decoder здесь отсутствует и не может быть случайно освобождён до switch.
+    pub(crate) fn install_staged_video_decoder(
+        &mut self,
+        decoder_thread: Option<Box<PlayerVideoDecoderThreadHandle>>,
+    ) {
+        debug_assert!(
+            self.video_decoder_thread.is_none(),
+            "staged media decoder устанавливается только после retirement прежнего owner-а"
+        );
+        self.cancel_video_backlog_recovery_scan_for_decoder_replacement();
+        self.video_backend = decoder_thread
+            .as_ref()
+            .map_or("No video backend", |decoder| decoder.backend_name());
+        self.video_decoder_thread = decoder_thread;
+        self.reset_video_decode_in_flight();
+    }
+
     /// Сохраняет запущенный video backend без раскрытия backend-specific init в session.
     #[cfg(test)]
     pub(crate) fn set_video_decoder_thread(

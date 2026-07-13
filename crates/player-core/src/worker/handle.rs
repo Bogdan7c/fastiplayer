@@ -152,6 +152,38 @@ impl PlayerWorker {
             .load_prepared_media_compatibility_with_receipt(request_id, prepared_media, autoplay)
     }
 
+    /// Ставит strong staged media transaction поверх exact Session 00C resource port-а.
+    pub fn stage_prepared_media_install(
+        &self,
+        request_id: MediaInstallRequestId,
+        prepared_media: PreparedMedia,
+        autoplay: bool,
+        video_resource_port: MediaInstallVideoResourcePort,
+    ) -> Result<MediaInstallReceipt, PlayerWorkerSendError> {
+        self.command_sender.stage_prepared_media_install(
+            request_id,
+            prepared_media,
+            autoplay,
+            video_resource_port,
+        )
+    }
+
+    /// Доставляет authorization без превращения queue acceptance в install outcome.
+    pub fn authorize_install_commit(
+        &self,
+        authorization: AuthorizeInstallCommit,
+    ) -> Result<MediaInstallControlReceipt, PlayerWorkerSendError> {
+        self.command_sender.authorize_install_commit(authorization)
+    }
+
+    /// Доставляет exact typed cancellation до commit barrier.
+    pub fn cancel_media_install(
+        &self,
+        cancellation: CancelMediaInstall,
+    ) -> Result<MediaInstallControlReceipt, PlayerWorkerSendError> {
+        self.command_sender.cancel_media_install(cancellation)
+    }
+
     /// Передаёт уже открытый streaming demuxer во владение worker thread.
     pub fn load_demuxer(
         &self,

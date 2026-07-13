@@ -5,8 +5,8 @@
 //! turn, который заменяет active ownership и публикует `Installed` в request-owned slot.
 //! Existing single-media adapter пока destructive: reset seek floor/decoder, open transition,
 //! audio plan, video configuration и post-ownership `MediaOpened` перечислены как отдельные
-//! characterization stages. Session 00C/00C1 обязана перенести ordinary failures до ready;
-//! этот модуль намеренно не владеет backend/materializer или playlist lineage.
+//! characterization stages. Session 00C1 strong path переносит ordinary failures до ready;
+//! protocol остаётся queue-neutral и не владеет playlist lineage.
 
 use std::fmt;
 use std::num::NonZeroU64;
@@ -158,22 +158,47 @@ pub enum MediaInstallFailureStage {
     /// Выбор/configure video stream завершился typed ошибкой.
     VideoStreamConfiguration,
 
+    /// App resource owner не выдал matching detached backend/materializer pair.
+    CandidateVideoResourceAcquisition,
+
+    /// Полученный backend ID не совпал с pure capability plan candidate-а.
+    CandidateVideoBackendMatching,
+
+    /// Detached decoder отверг candidate stream config до commit barrier-а.
+    CandidateVideoBackendConfiguration,
+
+    /// Configured/cancelled status не доставлен app resource owner-у.
+    CandidateVideoStatusPublication,
+
     /// Ownership уже перемещён, но `MediaOpened` transition не завершился.
     LegacyMediaOpenedTransition,
 }
 
 impl MediaInstallFailureStage {
-    /// Полный ordered inventory fallible stages, зафиксированный Session 00B.
-    pub const ALL: [Self; 7] = [
+    /// Полный ordered inventory legacy и strong candidate stages после Session 00C1.
+    pub const ALL: [Self; 11] = [
         Self::LegacyResetSeekFloor,
         Self::LegacyResetDecoderFlush,
         Self::LegacyResetDecoderStream,
         Self::OpenTransition,
         Self::AudioTrackPlanning,
         Self::VideoStreamConfiguration,
+        Self::CandidateVideoResourceAcquisition,
+        Self::CandidateVideoBackendMatching,
+        Self::CandidateVideoBackendConfiguration,
+        Self::CandidateVideoStatusPublication,
         Self::LegacyMediaOpenedTransition,
     ];
 }
+
+/// Player-side port к заранее staged app half video candidate-а.
+///
+/// `Send` требуется только потому, что owner перемещается в player worker thread;
+/// concrete renderer/materializer pointers через этот trait в player не проходят.
+pub type MediaInstallVideoResourcePort = Box<
+    dyn video_backend_api::DetachedVideoBackendResourcePort<RequestId = MediaInstallRequestId>
+        + Send,
+>;
 
 /// Единственная будущая atomic commit point strong media transaction.
 ///
@@ -252,6 +277,55 @@ pub enum MediaInstallCompletion {
         cause: MediaInstallCancellationCause,
     },
 }
+
+/// Fatal нарушение terminal guarantee после `AuthorizationAccepted`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AcceptedMediaInstallTerminalError {
+    /// Owner outcome принят, но request-owned terminal slot остался пустым.
+    MissingInstalled {
+        /// Exact request, для которого terminal был обязательным.
+        request_id: MediaInstallRequestId,
+    },
+
+    /// Terminal `Installed` принадлежит другому request-у.
+    InstalledRequestMismatch {
+        /// Request receipt-а.
+        expected_request_id: MediaInstallRequestId,
+
+        /// Request фактически опубликованного terminal-а.
+        installed_request_id: MediaInstallRequestId,
+    },
+
+    /// После accepted authorization опубликован pre-barrier terminal variant.
+    UnexpectedCompletion(MediaInstallCompletion),
+}
+
+impl fmt::Display for AcceptedMediaInstallTerminalError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingInstalled { request_id } => write!(
+                formatter,
+                "accepted media install request {} не содержит обязательный Installed terminal",
+                request_id.get()
+            ),
+            Self::InstalledRequestMismatch {
+                expected_request_id,
+                installed_request_id,
+            } => write!(
+                formatter,
+                "Installed terminal request {} не совпал с expected request {}",
+                installed_request_id.get(),
+                expected_request_id.get()
+            ),
+            Self::UnexpectedCompletion(completion) => write!(
+                formatter,
+                "accepted authorization завершилась unexpected terminal: {completion:?}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AcceptedMediaInstallTerminalError {}
 
 impl MediaInstallCompletion {
     /// Возвращает request identity независимо от terminal variant-а.
@@ -425,6 +499,35 @@ impl MediaInstallReceipt {
             .terminal
             .take()
     }
+
+    /// Требует exact `Installed` после уже полученного `AuthorizationAccepted`.
+    ///
+    /// `None`, cancellation или ordinary failure здесь являются fatal protocol invariant,
+    /// а не recoverable candidate failure: player ownership уже обязан быть переключён.
+    pub fn take_required_installed_after_authorization(
+        &self,
+    ) -> Result<MediaInstanceId, AcceptedMediaInstallTerminalError> {
+        let Some(completion) = self.try_take_completion() else {
+            return Err(AcceptedMediaInstallTerminalError::MissingInstalled {
+                request_id: self.request_id,
+            });
+        };
+        match completion {
+            MediaInstallCompletion::Installed {
+                request_id,
+                media_instance_id,
+            } if request_id == self.request_id => Ok(media_instance_id),
+            MediaInstallCompletion::Installed { request_id, .. } => Err(
+                AcceptedMediaInstallTerminalError::InstalledRequestMismatch {
+                    expected_request_id: self.request_id,
+                    installed_request_id: request_id,
+                },
+            ),
+            unexpected_completion => Err(AcceptedMediaInstallTerminalError::UnexpectedCompletion(
+                unexpected_completion,
+            )),
+        }
+    }
 }
 
 /// Внутренняя request-owned phase state.
@@ -442,8 +545,8 @@ enum MediaInstallProtocolState {
 
 /// Маленькая owner state machine install barrier-а.
 ///
-/// В production её compatibility usage завершается в одном worker turn. Session 00C/00C1
-/// подключит реальный staged resource owner, не меняя публичный phase/completion vocabulary.
+/// Compatibility path завершает её в одном worker turn, а Session 00C1 strong path
+/// удерживает state machine рядом с bounded staged resource owner-ом до control barrier-а.
 #[derive(Debug)]
 pub(crate) struct MediaInstallProtocol {
     /// Exact request, которой принадлежит state machine.
@@ -478,6 +581,11 @@ impl MediaInstallProtocol {
                 request_id: self.request_id,
             });
         self.state = MediaInstallProtocolState::ReadyToCommit;
+    }
+
+    /// Сообщает owner-у, что authorization уже может безопасно потребить staged payload.
+    pub(crate) fn is_ready_to_commit(&self) -> bool {
+        self.state == MediaInstallProtocolState::ReadyToCommit
     }
 
     /// Публикует ordinary failure только до accepted authorization.

@@ -45,6 +45,31 @@ impl PlayerWorkerRuntime {
                     install_port,
                 );
             }
+            WorkerCommand::StagePreparedMediaInstall(command) => {
+                let StagePreparedMediaInstallCommand {
+                    request_id,
+                    prepared_media,
+                    autoplay,
+                    install_port,
+                    video_resource_port,
+                } = *command;
+                self.session.stage_prepared_media_install(
+                    request_id,
+                    prepared_media,
+                    autoplay,
+                    install_port,
+                    video_resource_port,
+                );
+            }
+            WorkerCommand::MediaInstallControl(MediaInstallControlCommand {
+                control,
+                outcome_tx,
+            }) => {
+                let outcome = self.session.apply_staged_media_install_control(control);
+                if outcome_tx.send(outcome).is_err() {
+                    warn!("Media install control outcome receiver was dropped");
+                }
+            }
             WorkerCommand::MediaOpenFailed { request, error } => {
                 self.session.fail_media_open_with_error(request, error);
             }
@@ -331,11 +356,15 @@ impl PlayerWorkerRuntime {
 
     /// Stop закрывает текущий media через обычный public command без worker-side seek-а.
     fn handle_stop_command(&mut self) {
+        self.session
+            .cancel_active_staged_media_install(MediaInstallCancellationCause::TransportStop);
         self.dispatch_player_command(PlayerCommand::Stop);
     }
 
     /// Shutdown закрывает session через обычный public command.
     pub(super) fn handle_shutdown_request(&mut self) {
+        self.session
+            .cancel_active_staged_media_install(MediaInstallCancellationCause::LifecycleShutdown);
         self.dispatch_player_command(PlayerCommand::Shutdown);
     }
 

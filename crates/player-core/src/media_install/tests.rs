@@ -35,10 +35,52 @@ fn fallible_stage_inventory_and_future_atomic_commit_point_are_explicit() {
             MediaInstallFailureStage::OpenTransition,
             MediaInstallFailureStage::AudioTrackPlanning,
             MediaInstallFailureStage::VideoStreamConfiguration,
+            MediaInstallFailureStage::CandidateVideoResourceAcquisition,
+            MediaInstallFailureStage::CandidateVideoBackendMatching,
+            MediaInstallFailureStage::CandidateVideoBackendConfiguration,
+            MediaInstallFailureStage::CandidateVideoStatusPublication,
             MediaInstallFailureStage::LegacyMediaOpenedTransition,
         ]
     );
     let _future_commit_point = MediaInstallCommitPoint::ReplaceActiveOwnershipAndPublishInstalled;
+}
+
+#[test]
+fn accepted_authorization_requires_exact_installed_terminal_as_fatal_invariant() {
+    let request_id = test_request_id(80);
+    let (missing_receipt, _missing_port) = MediaInstallReceipt::new(request_id);
+    assert_eq!(
+        missing_receipt.take_required_installed_after_authorization(),
+        Err(AcceptedMediaInstallTerminalError::MissingInstalled { request_id })
+    );
+
+    let (unexpected_receipt, unexpected_port) = MediaInstallReceipt::new(request_id);
+    unexpected_port.publish_terminal(MediaInstallCompletion::Cancelled {
+        request_id,
+        cause: MediaInstallCancellationCause::LifecycleShutdown,
+    });
+    assert!(matches!(
+        unexpected_receipt.take_required_installed_after_authorization(),
+        Err(AcceptedMediaInstallTerminalError::UnexpectedCompletion(
+            MediaInstallCompletion::Cancelled { .. }
+        ))
+    ));
+
+    let installed_instance_id = instance_id(81);
+    let (installed_receipt, install_port) = MediaInstallReceipt::new(request_id);
+    let mut protocol = MediaInstallProtocol::accept(request_id, install_port);
+    protocol.mark_ready_to_commit();
+    assert_eq!(
+        protocol.apply_control(
+            MediaInstallControl::Authorize(AuthorizeInstallCommit { request_id }),
+            || installed_instance_id,
+        ),
+        MediaInstallControlOutcome::AuthorizationAccepted
+    );
+    assert_eq!(
+        installed_receipt.take_required_installed_after_authorization(),
+        Ok(installed_instance_id)
+    );
 }
 
 #[test]

@@ -17,6 +17,8 @@ impl PlayerWorkerRuntime {
         autoplay: bool,
         install_port: Arc<dyn MediaInstallPhaseCompletionPort>,
     ) {
+        self.session
+            .cancel_active_staged_media_install(crate::MediaInstallCancellationCause::Superseded);
         let mut protocol = MediaInstallProtocol::accept(request_id, install_port);
 
         match self

@@ -159,8 +159,13 @@ impl PlayerSession {
     ) {
         if submitted_to_renderer && let Some(resource_provider) = resource_provider {
             resource_provider.release_frame(resource_handle);
+            self.pipeline
+                .release_retired_video_decoder_if_idle(render_generation);
         } else if render_generation == self.pipeline.render_generation() {
             self.release_video_texture_now(resource_handle);
+        } else {
+            self.pipeline
+                .release_retired_video_frame(render_generation, resource_handle);
         }
     }
 

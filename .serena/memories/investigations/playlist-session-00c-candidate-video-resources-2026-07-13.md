@@ -33,4 +33,4 @@ Existing `WgpuSubmissionQueueBinding`/submitted release CAS ownership не ме�
 - targeted strict Clippy, fmt, locked workspace check, refactor guardrails, git diff check, Serena references/diagnostics: PASS.
 - Context7 pinned WGPU 29.0.3/winit 0.30.13 verified callback/poll and suspended-surface lifecycle assumptions.
 
-Next: Session 00C1 only. Wire existing `MediaInstallProtocol` to this resource port and implement staged media/player atomic ownership switch. Do not move concrete factories/render types into player-core/video-backend-api and do not add D52/playlist semantics.
+Session 00C1 выполнена; актуальный ownership/worker/commit handoff находится в `mem:investigations/playlist-session-00c1-staged-media-transaction-2026-07-13`. Next: Session 00D only. Concrete factories/render types по-прежнему не переносить в player-core/video-backend-api.

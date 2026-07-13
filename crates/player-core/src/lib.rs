@@ -85,10 +85,11 @@ pub use frame_server_core::{
 };
 pub use media_core::TrackId;
 pub use media_install::{
-    AuthorizeInstallCommit, CancelMediaInstall, MediaInstallCancellationCause,
-    MediaInstallCommitPoint, MediaInstallCompletion, MediaInstallControl,
-    MediaInstallControlOutcome, MediaInstallFailure, MediaInstallFailureStage, MediaInstallPhase,
-    MediaInstallPhaseCompletionPort, MediaInstallReceipt, MediaInstallRequestId, MediaInstanceId,
+    AcceptedMediaInstallTerminalError, AuthorizeInstallCommit, CancelMediaInstall,
+    MediaInstallCancellationCause, MediaInstallCommitPoint, MediaInstallCompletion,
+    MediaInstallControl, MediaInstallControlOutcome, MediaInstallFailure, MediaInstallFailureStage,
+    MediaInstallPhase, MediaInstallPhaseCompletionPort, MediaInstallReceipt, MediaInstallRequestId,
+    MediaInstallVideoResourcePort, MediaInstanceId,
 };
 pub use media_opening::{MediaSourceInfo, MediaSourceKind, PreparedMedia, PreparedMediaSource};
 pub(crate) use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};
@@ -118,6 +119,7 @@ pub use snapshot::{
 };
 pub use state::PlaybackState;
 pub use worker::{
-    PlayerCommandSender, PlayerRenderError, PlayerRenderErrorKind, PlayerWorker,
-    PlayerWorkerConfig, PlayerWorkerEvent, PlayerWorkerJoinError, PlayerWorkerSendError,
+    MediaInstallControlReceipt, MediaInstallControlReceiptError, PlayerCommandSender,
+    PlayerRenderError, PlayerRenderErrorKind, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent,
+    PlayerWorkerJoinError, PlayerWorkerSendError,
 };

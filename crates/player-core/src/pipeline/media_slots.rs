@@ -1,6 +1,21 @@
 use super::*;
 
 impl PlaybackPipeline {
+    /// Извлекает только resource owners прежнего media перед atomic install commit.
+    ///
+    /// Render-lease maps намеренно остаются в pipeline: поздний renderer ack должен
+    /// завершить accounting прежнего поколения даже после установки нового media.
+    pub(crate) fn retire_media_resource_owners(&mut self) -> RetiredMediaResourceOwners {
+        RetiredMediaResourceOwners {
+            demuxer: self.demuxer.take(),
+            audio_decoder: self.audio_decoder.take(),
+            audio_output: self.audio_output.take(),
+            audio_tempo_processor: self.audio_tempo_processor.take(),
+            audio_clock: self.audio_clock.take(),
+            video_decoder_thread: self.video_decoder_thread.take(),
+        }
+    }
+
     /// Возвращает выбранный video track id без раскрытия storage поля.
     #[must_use]
     pub(crate) fn selected_video_track_id(&self) -> Option<TrackId> {

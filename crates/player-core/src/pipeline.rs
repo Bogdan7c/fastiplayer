@@ -35,6 +35,7 @@ mod audio;
 mod audio_clock_mapping;
 mod media_slots;
 mod render_resources;
+mod retired_video_decoders;
 #[cfg(test)]
 mod tests;
 mod video_backlog_recovery;
@@ -83,6 +84,64 @@ pub(crate) enum VideoTextureReleaseEffect {
 
     /// Активных render leases нет, texture handle можно сразу вернуть decoder-у.
     ReleaseNow,
+}
+
+/// Владельцы ресурсов прежнего media, извлечённые перед atomic install commit.
+///
+/// Структура намеренно не содержит render-lease accounting: outstanding leases
+/// продолжают жить в `PlaybackPipeline` и завершаются через provider либо retained decoder.
+pub(crate) struct RetiredMediaResourceOwners {
+    /// Demuxer прежнего media остаётся жив до завершения ownership switch.
+    demuxer: Option<Box<dyn media_core::Demuxer + Send>>,
+
+    /// Уже созданный audio decoder прежнего media.
+    audio_decoder: Option<audio_core::AudioDecoderHandle>,
+
+    /// Audio output прежнего media; его drop выполняется после switch.
+    audio_output: Option<Box<dyn PlayerAudioOutput>>,
+
+    /// Tempo processor прежнего media, если rate был отличен от `1.0x`.
+    audio_tempo_processor: Option<AudioTempoProcessorHandle>,
+
+    /// Audio clock прежнего output-а, удерживаемый до release остальных audio owners.
+    audio_clock: Option<Arc<dyn PlayerAudioClock>>,
+
+    /// Decoder handle прежнего video backend-а.
+    video_decoder_thread: Option<Box<PlayerVideoDecoderThreadHandle>>,
+}
+
+impl RetiredMediaResourceOwners {
+    /// Возвращает texture slot строго прежнему decoder-у после ownership switch.
+    pub(crate) fn release_video_frame(&self, resource_handle: video_core::FrameResourceHandle) {
+        if let Some(decoder_thread) = self.video_decoder_thread.as_ref() {
+            decoder_thread.release_frame(resource_handle);
+        }
+    }
+
+    /// Освобождает non-video owners и отдаёт decoder deferred lease registry.
+    pub(crate) fn release_non_video_owners_and_take_decoder(
+        mut self,
+    ) -> Option<Box<PlayerVideoDecoderThreadHandle>> {
+        let video_decoder_thread = self.video_decoder_thread.take();
+        let Self {
+            demuxer,
+            audio_decoder,
+            audio_output,
+            audio_tempo_processor,
+            audio_clock,
+            video_decoder_thread: _,
+        } = self;
+
+        // Tuple drop сохраняет non-video owners живыми до вызова этого boundary method.
+        drop((
+            demuxer,
+            audio_decoder,
+            audio_output,
+            audio_tempo_processor,
+            audio_clock,
+        ));
+        video_decoder_thread
+    }
 }
 
 /// Typed причина, по которой tick не должен отправлять новый packet в decoder.
@@ -583,6 +642,9 @@ pub(crate) struct PlaybackPipeline {
     rendered_video_texture_release_providers:
         HashMap<(u64, u64), PresentFrameResourceProviderHandle>,
 
+    /// Старые decoder owner-ы, которые ещё нужны outstanding lease-ам их generation.
+    retired_video_decoders: HashMap<u64, Box<PlayerVideoDecoderThreadHandle>>,
+
     /// Track ID выбранного video трека.
     video_track_id: Option<TrackId>,
 
@@ -696,6 +758,7 @@ impl Default for PlaybackPipeline {
             leased_video_textures: HashMap::new(),
             deferred_video_texture_releases: HashSet::new(),
             rendered_video_texture_release_providers: HashMap::new(),
+            retired_video_decoders: HashMap::new(),
             video_track_id: None,
             pending_video_packets: VecDeque::new(),
             audio_clock: None,

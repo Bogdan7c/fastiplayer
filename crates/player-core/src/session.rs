@@ -47,6 +47,7 @@ mod seek_diagnostics;
 mod seek_start;
 mod seek_transaction;
 mod snapshot_builder;
+mod staged_media_install;
 mod tick;
 
 #[cfg(test)]
@@ -59,6 +60,7 @@ pub(crate) use self::media_lifecycle::CompatibilityMediaInstallOutcome;
 use self::media_lifecycle::MediaLifecycleState;
 use self::prepared_seek::PreparedSeekLandingRuntime;
 pub(crate) use self::render_leases::{LeasedPresentFrame, PresentFrameIdentity};
+use self::staged_media_install::StagedMediaInstallRegistry;
 pub use self::tick::{
     PlayerPipelinePause, PlayerTickConfig, PlayerTickContext, PlayerTickPacket, PlayerTickResult,
     PlayerVideoDropReason, PlayerVideoFrameDrop,
@@ -105,6 +107,9 @@ pub struct PlayerSession {
 
     /// State, принадлежащий media lifecycle boundary.
     media_lifecycle: MediaLifecycleState,
+
+    /// Единственная bounded strong media transaction либо её last terminal tombstone.
+    staged_media_install: StagedMediaInstallRegistry,
 
     /// Был ли принят shutdown-запрос.
     shutdown_requested: bool,
@@ -1160,6 +1165,7 @@ impl Default for PlayerSession {
             pending_events: Vec::new(),
             pending_scrub_events: Vec::new(),
             media_lifecycle: MediaLifecycleState::default(),
+            staged_media_install: StagedMediaInstallRegistry::default(),
             shutdown_requested: false,
             eof_drain: EofDrainRuntime::default(),
             capabilities: None,
