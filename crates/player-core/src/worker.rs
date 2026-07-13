@@ -24,6 +24,7 @@ use crate::audio_boundary::{
     missing_audio_decoder_factory, missing_audio_output_factory,
     missing_audio_tempo_processor_factory,
 };
+use crate::media_install::{AcceptedPlaybackIntent, PlaybackIntentControl};
 use crate::pipeline::VideoDecoderActivityStatus;
 #[cfg(test)]
 use crate::render_lease_bridge::{
@@ -38,7 +39,8 @@ use crate::{
     AudioTempoProcessorFactory, AuthorizeInstallCommit, CancelMediaInstall, CorrelatedPlayerEvent,
     FrameCounters, LatencyCounterSnapshot, MediaInstallCancellationCause, MediaInstallControl,
     MediaInstallPhaseCompletionPort, MediaInstallReceipt, MediaInstallRequestId,
-    MediaInstallVideoResourcePort, MediaOpenRequest, MediaSource, PlayerCommand,
+    MediaInstallVideoResourcePort, MediaOpenRequest, MediaSource, PlaybackIntent,
+    PlaybackIntentRevision, PlaybackIntentUpdate, PlaybackIntentUpdateReceipt, PlayerCommand,
     PlayerCommandOutcome, PlayerError, PlayerErrorKind, PlayerResult, PlayerRuntimeAcceptedChange,
     PlayerRuntimeApplyError, PlayerRuntimeApplyGroup, PlayerRuntimeApplyGroupReport,
     PlayerRuntimeApplyReport, PlayerRuntimeApplyResult, PlayerRuntimeAudioOutputRecreateUpdate,
@@ -467,6 +469,12 @@ impl PlayerRenderError {
 pub struct PlayerCommandSender {
     /// Единственная bounded очередь команд worker-а.
     command_tx: Sender<WorkerCommand>,
+
+    /// Shared latest-only D52 state, независимый от заполненности ordinary queue.
+    playback_intent_control: Arc<PlaybackIntentControl>,
+
+    /// Coalesced capacity-one wake player owner-а для post-commit exact apply.
+    playback_intent_wake_tx: Sender<()>,
 }
 
 /// Playback worker boundary, которым владеет app shell.
@@ -673,6 +681,15 @@ struct PlayerWorkerRuntime {
 
     /// Receiver основной очереди команд.
     command_rx: Receiver<WorkerCommand>,
+
+    /// Shared D52 state для drain exact installed updates.
+    playback_intent_control: Arc<PlaybackIntentControl>,
+
+    /// Отдельный coalesced wake channel не конкурирует с ordinary command capacity.
+    playback_intent_wake_rx: Receiver<()>,
+
+    /// Runtime guard не даёт wake receiver-у стать permanently-ready до shutdown.
+    _playback_intent_wake_tx_guard: Sender<()>,
 
     /// Latest snapshot publisher.
     snapshot_publisher: LatestSnapshotPublisher,

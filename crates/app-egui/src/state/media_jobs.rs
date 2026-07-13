@@ -98,7 +98,11 @@ impl AppState {
         self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
         self.clear_startup_status();
         self.current_local_file = None;
-        if let Err(error) = self.player_worker.load_demuxer(label, demuxer, autoplay) {
+        let prepared_media = PreparedMedia::from_external_label(label, demuxer);
+        if let Err(error) = self
+            .player_worker
+            .load_prepared_media(prepared_media, autoplay)
+        {
             warn!(error = %error, "Не удалось отправить YouTube demuxer в worker");
             self.set_startup_error(format!(
                 "WorkerUnavailable: YouTube worker недоступен для {source_url}: {error}"

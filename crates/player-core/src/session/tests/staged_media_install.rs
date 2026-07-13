@@ -19,7 +19,8 @@ use crate::{
     AuthorizeInstallCommit, CancelMediaInstall, DecodeThreadError, MediaInstallCancellationCause,
     MediaInstallCompletion, MediaInstallControl, MediaInstallControlOutcome,
     MediaInstallFailureStage, MediaInstallReceipt, MediaInstallRequestId, MediaInstanceId,
-    PlaybackState, PlayerError, PlayerErrorKind, PreparedMedia, StartedVideoBackend,
+    PlaybackIntent, PlaybackIntentRevision, PlaybackState, PlayerError, PlayerErrorKind,
+    PreparedMedia, StartedVideoBackend,
 };
 
 /// Shared observable state fake resource port-а после передачи его player owner-у.
@@ -207,7 +208,8 @@ fn ready_to_commit_preserves_old_playing_until_atomic_authorization_switch() {
     session.stage_prepared_media_install(
         request_id,
         prepared_media(&[TrackKind::Video, TrackKind::Audio]),
-        true,
+        PlaybackIntent::StartPlaying,
+        PlaybackIntentRevision::INITIAL,
         install_port,
         Box::new(resource_port),
     );
@@ -239,6 +241,7 @@ fn ready_to_commit_preserves_old_playing_until_atomic_authorization_switch() {
     let MediaInstallCompletion::Installed {
         request_id: installed_request_id,
         media_instance_id,
+        ..
     } = completion
     else {
         panic!("accepted authorization must publish Installed");
@@ -279,7 +282,8 @@ fn cancel_while_ready_preserves_old_paused_and_duplicate_control_is_typed() {
     session.stage_prepared_media_install(
         request_id,
         prepared_media(&[TrackKind::Video]),
-        false,
+        PlaybackIntent::StartPaused,
+        PlaybackIntentRevision::INITIAL,
         install_port,
         Box::new(resource_port),
     );
@@ -345,7 +349,8 @@ fn resource_and_configuration_failures_are_pre_ready_and_preserve_old_playing() 
     resource_failure_session.stage_prepared_media_install(
         resource_request_id,
         prepared_media(&[TrackKind::Video]),
-        true,
+        PlaybackIntent::StartPlaying,
+        PlaybackIntentRevision::INITIAL,
         install_port,
         Box::new(resource_port),
     );
@@ -379,7 +384,8 @@ fn resource_and_configuration_failures_are_pre_ready_and_preserve_old_playing() 
     configure_failure_session.stage_prepared_media_install(
         configure_request_id,
         prepared_media(&[TrackKind::Video]),
-        true,
+        PlaybackIntent::StartPlaying,
+        PlaybackIntentRevision::INITIAL,
         install_port,
         Box::new(resource_port),
     );
@@ -425,7 +431,8 @@ fn reply_matching_failure_never_crosses_ready_barrier() {
     matching_session.stage_prepared_media_install(
         request_id,
         prepared_media(&[TrackKind::Video]),
-        false,
+        PlaybackIntent::StartPaused,
+        PlaybackIntentRevision::INITIAL,
         install_port,
         Box::new(resource_port.with_reply_request_id(wrong_request_id)),
     );
@@ -467,7 +474,8 @@ fn status_publication_failure_never_crosses_ready_barrier() {
     status_session.stage_prepared_media_install(
         request_id,
         prepared_media(&[TrackKind::Video]),
-        true,
+        PlaybackIntent::StartPlaying,
+        PlaybackIntentRevision::INITIAL,
         install_port,
         Box::new(resource_port.with_status_disconnect()),
     );
@@ -500,7 +508,8 @@ fn pure_track_reselection_failure_never_requests_candidate_resources() {
     planning_session.stage_prepared_media_install(
         request_id,
         prepared_media_from_tracks(vec![unsupported_track]),
-        false,
+        PlaybackIntent::StartPaused,
+        PlaybackIntentRevision::INITIAL,
         install_port,
         Box::new(resource_port),
     );
@@ -539,7 +548,8 @@ fn media_without_audio_or_video_never_requests_backend_and_commits_paused() {
     session.stage_prepared_media_install(
         request_id,
         prepared_media(&[]),
-        false,
+        PlaybackIntent::StartPaused,
+        PlaybackIntentRevision::INITIAL,
         install_port,
         Box::new(resource_port),
     );
@@ -587,7 +597,8 @@ fn supersede_and_shutdown_cancel_only_the_exact_pre_barrier_candidate() {
     session.stage_prepared_media_install(
         first_request_id,
         prepared_media(&[TrackKind::Video]),
-        true,
+        PlaybackIntent::StartPlaying,
+        PlaybackIntentRevision::INITIAL,
         first_install_port,
         Box::new(first_port),
     );
@@ -599,7 +610,8 @@ fn supersede_and_shutdown_cancel_only_the_exact_pre_barrier_candidate() {
     session.stage_prepared_media_install(
         second_request_id,
         prepared_media(&[TrackKind::Video]),
-        false,
+        PlaybackIntent::StartPaused,
+        PlaybackIntentRevision::INITIAL,
         second_install_port,
         Box::new(second_port),
     );
@@ -687,7 +699,8 @@ fn atomic_switch_defers_leased_old_frame_to_old_decoder_and_never_uses_new_decod
     session.stage_prepared_media_install(
         request_id,
         prepared_media(&[TrackKind::Video]),
-        true,
+        PlaybackIntent::StartPlaying,
+        PlaybackIntentRevision::INITIAL,
         install_port,
         Box::new(resource_port),
     );
@@ -722,7 +735,8 @@ fn post_commit_runtime_error_stays_on_new_instance_without_hidden_rollback() {
     session.stage_prepared_media_install(
         request_id,
         prepared_media(&[TrackKind::Audio]),
-        false,
+        PlaybackIntent::StartPaused,
+        PlaybackIntentRevision::INITIAL,
         install_port,
         Box::new(resource_port),
     );

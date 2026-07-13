@@ -11,6 +11,8 @@ impl PlayerWorker {
         })?;
 
         let (command_tx, command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
+        let playback_intent_control = Arc::new(PlaybackIntentControl::default());
+        let (playback_intent_wake_tx, playback_intent_wake_rx) = bounded(1);
         let (snapshot_tx, snapshot_rx) = bounded(SNAPSHOT_CHANNEL_CAPACITY);
         let (event_tx, event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
         let (render_bridge, render_bridge_client) = RenderLeaseBridge::new();
@@ -21,7 +23,11 @@ impl PlayerWorker {
         let audio_tempo_processor_factory = Arc::clone(&config.audio_tempo_processor_factory);
         let frame_server_config = config.frame_server_config;
 
-        let command_sender = PlayerCommandSender { command_tx };
+        let command_sender = PlayerCommandSender {
+            command_tx,
+            playback_intent_control: Arc::clone(&playback_intent_control),
+            playback_intent_wake_tx: playback_intent_wake_tx.clone(),
+        };
         let snapshot_rx_for_worker = snapshot_rx.clone();
 
         let worker_started_at = Instant::now();
@@ -32,7 +38,8 @@ impl PlayerWorker {
                     audio_decoder_factory,
                     audio_output_factory,
                 )
-                .with_audio_tempo_processor_factory(audio_tempo_processor_factory);
+                .with_audio_tempo_processor_factory(audio_tempo_processor_factory)
+                .with_playback_intent_control(Arc::clone(&playback_intent_control));
                 session.apply_frame_server_policy_config(frame_server_config);
                 if let Err(error) =
                     session.dispatch_command(PlayerCommand::SetVolume(config.default_volume))
@@ -46,6 +53,9 @@ impl PlayerWorker {
                     worker_scheduler: WorkerScheduler,
                     decoder_activity: WorkerDecoderActivityState::default(),
                     command_rx,
+                    playback_intent_control,
+                    playback_intent_wake_rx,
+                    _playback_intent_wake_tx_guard: playback_intent_wake_tx,
                     snapshot_publisher: LatestSnapshotPublisher::new(
                         snapshot_tx,
                         snapshot_rx_for_worker,
@@ -123,33 +133,20 @@ impl PlayerWorker {
             .map_err(|_| PlayerRuntimeApplyError::Disconnected)
     }
 
-    /// Передаёт уже подготовленный media во владение worker thread.
+    /// Единственный временный app compatibility facade до Session 10D.
+    ///
+    /// Facade возвращает typed completion receipt и внутри вызывает тот же strong player
+    /// install algorithm. Caller обязан различать command acceptance и фактический terminal.
     pub fn load_prepared_media(
         &self,
         prepared_media: PreparedMedia,
         autoplay: bool,
-    ) -> Result<(), PlayerWorkerSendError> {
-        self.load_prepared_media_compatibility_with_receipt(
+    ) -> Result<MediaInstallReceipt, PlayerWorkerSendError> {
+        self.command_sender.load_prepared_media_compatibility(
             MediaInstallRequestId::new_unique(),
             prepared_media,
             autoplay,
         )
-        .map(|_receipt| ())
-    }
-
-    /// Ставит прежний destructive single-media load и возвращает correlated completion receipt.
-    ///
-    /// Метод назван compatibility явно: до Session 00C/00C1 он сохраняет старый lifecycle и
-    /// внутренне auto-authorize-ит только уже завершившийся legacy install. Это ещё не strong
-    /// transaction и не обещает preservation старого resource ownership при player-side failure.
-    pub fn load_prepared_media_compatibility_with_receipt(
-        &self,
-        request_id: MediaInstallRequestId,
-        prepared_media: PreparedMedia,
-        autoplay: bool,
-    ) -> Result<MediaInstallReceipt, PlayerWorkerSendError> {
-        self.command_sender
-            .load_prepared_media_compatibility_with_receipt(request_id, prepared_media, autoplay)
     }
 
     /// Ставит strong staged media transaction поверх exact Session 00C resource port-а.
@@ -157,15 +154,25 @@ impl PlayerWorker {
         &self,
         request_id: MediaInstallRequestId,
         prepared_media: PreparedMedia,
-        autoplay: bool,
+        initial_intent: PlaybackIntent,
+        initial_intent_revision: PlaybackIntentRevision,
         video_resource_port: MediaInstallVideoResourcePort,
     ) -> Result<MediaInstallReceipt, PlayerWorkerSendError> {
         self.command_sender.stage_prepared_media_install(
             request_id,
             prepared_media,
-            autoplay,
+            initial_intent,
+            initial_intent_revision,
             video_resource_port,
         )
+    }
+
+    /// Обновляет staged либо exact just-installed playback intent через отдельный D52 path.
+    pub fn update_playback_intent(
+        &self,
+        update: PlaybackIntentUpdate,
+    ) -> Result<PlaybackIntentUpdateReceipt, PlayerWorkerSendError> {
+        self.command_sender.update_playback_intent(update)
     }
 
     /// Доставляет authorization без превращения queue acceptance в install outcome.
@@ -182,17 +189,6 @@ impl PlayerWorker {
         cancellation: CancelMediaInstall,
     ) -> Result<MediaInstallControlReceipt, PlayerWorkerSendError> {
         self.command_sender.cancel_media_install(cancellation)
-    }
-
-    /// Передаёт уже открытый streaming demuxer во владение worker thread.
-    pub fn load_demuxer(
-        &self,
-        label: String,
-        demuxer: Box<dyn media_core::Demuxer + Send>,
-        autoplay: bool,
-    ) -> Result<(), PlayerWorkerSendError> {
-        let prepared_media = PreparedMedia::from_external_label(label, demuxer);
-        self.load_prepared_media(prepared_media, autoplay)
     }
 
     /// Публикует ошибку adapter-а, который не смог подготовить media.

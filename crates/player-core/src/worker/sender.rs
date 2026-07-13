@@ -4,25 +4,41 @@ impl PlayerCommandSender {
     /// Ставит strong staged media transaction без блокировки caller thread-а.
     ///
     /// Caller обязан заранее stage-ить exact Session 00C app half за переданным port-ом.
+    /// Reversible registration закрывает race, где быстрый owner успевает завершить preparation
+    /// до возврата try_send; transport Full/Disconnected восстанавливает прежний staged slot.
     pub fn stage_prepared_media_install(
         &self,
         request_id: MediaInstallRequestId,
         prepared_media: PreparedMedia,
-        autoplay: bool,
+        initial_intent: PlaybackIntent,
+        initial_intent_revision: PlaybackIntentRevision,
         video_resource_port: MediaInstallVideoResourcePort,
     ) -> Result<MediaInstallReceipt, PlayerWorkerSendError> {
         let (receipt, install_port) = MediaInstallReceipt::new(request_id);
-        self.command_tx
+        let registration = self.playback_intent_control.begin_staged_registration(
+            request_id,
+            AcceptedPlaybackIntent {
+                revision: initial_intent_revision,
+                intent: initial_intent,
+            },
+        );
+        let send_result = self
+            .command_tx
             .try_send(WorkerCommand::StagePreparedMediaInstall(Box::new(
                 StagePreparedMediaInstallCommand {
                     request_id,
                     prepared_media,
-                    autoplay,
+                    initial_intent,
+                    initial_intent_revision,
                     install_port,
                     video_resource_port,
                 },
-            )))
-            .map_err(PlayerWorkerSendError::from)?;
+            )));
+        if let Err(error) = send_result {
+            self.playback_intent_control
+                .rollback_staged_registration(registration);
+            return Err(PlayerWorkerSendError::from(error));
+        }
         Ok(receipt)
     }
 
@@ -70,7 +86,7 @@ impl PlayerCommandSender {
     ///
     /// Успешный return означает только command acceptance. Фактический lifecycle outcome
     /// приходит через отдельный request-owned receipt и не теряется при event backpressure.
-    pub fn load_prepared_media_compatibility_with_receipt(
+    pub(super) fn load_prepared_media_compatibility(
         &self,
         request_id: MediaInstallRequestId,
         prepared_media: PreparedMedia,
@@ -86,6 +102,41 @@ impl PlayerCommandSender {
             })
             .map_err(PlayerWorkerSendError::from)?;
         Ok(receipt)
+    }
+
+    /// Линеаризует D52 update независимо от capacity ordinary worker queue.
+    ///
+    /// Capacity-one wake может быть full только когда owner уже гарантированно проснётся;
+    /// payload при этом не теряется, потому что хранится в shared latest-only slot-е.
+    pub fn update_playback_intent(
+        &self,
+        update: PlaybackIntentUpdate,
+    ) -> Result<PlaybackIntentUpdateReceipt, PlayerWorkerSendError> {
+        let submitted = self.playback_intent_control.submit_update(update);
+        if submitted.wake_player_owner {
+            match self.playback_intent_wake_tx.try_send(()) {
+                Ok(()) | Err(TrySendError::Full(())) => {}
+                Err(TrySendError::Disconnected(())) => {
+                    return Err(PlayerWorkerSendError::Disconnected);
+                }
+            }
+        }
+        Ok(submitted.receipt)
+    }
+
+    /// Собирает sender fixture с отдельным D52 wake channel.
+    #[cfg(test)]
+    pub(super) fn for_tests(command_tx: Sender<WorkerCommand>) -> (Self, Receiver<()>) {
+        let playback_intent_control = Arc::new(PlaybackIntentControl::default());
+        let (playback_intent_wake_tx, playback_intent_wake_rx) = bounded(1);
+        (
+            Self {
+                command_tx,
+                playback_intent_control,
+                playback_intent_wake_tx,
+            },
+            playback_intent_wake_rx,
+        )
     }
 
     /// Отправляет команду без блокировки render/UI thread.

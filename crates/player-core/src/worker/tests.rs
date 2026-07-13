@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -259,14 +258,20 @@ fn runtime_for_tests_with_command_sender(
     let (event_tx, _event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
     let (render_bridge, _render_bridge_client) = RenderLeaseBridge::new();
     let (_shutdown_tx, shutdown_rx) = bounded(1);
+    let playback_intent_control = Arc::new(PlaybackIntentControl::default());
+    let (playback_intent_wake_tx, playback_intent_wake_rx) = bounded(1);
     let config = worker_config_for_tests();
 
     (
         PlayerWorkerRuntime {
-            session: PlayerSession::new(),
+            session: PlayerSession::new()
+                .with_playback_intent_control(Arc::clone(&playback_intent_control)),
             worker_scheduler: WorkerScheduler,
             decoder_activity: WorkerDecoderActivityState::default(),
             command_rx,
+            playback_intent_control,
+            playback_intent_wake_rx,
+            _playback_intent_wake_tx_guard: playback_intent_wake_tx,
             snapshot_publisher: LatestSnapshotPublisher::new(snapshot_tx, snapshot_rx),
             event_tx,
             render_bridge,
@@ -294,14 +299,20 @@ fn runtime_for_tests_with_wakeup_handles(
     let (event_tx, _event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
     let (render_bridge, render_bridge_client) = RenderLeaseBridge::new();
     let (shutdown_tx, shutdown_rx) = bounded(1);
+    let playback_intent_control = Arc::new(PlaybackIntentControl::default());
+    let (playback_intent_wake_tx, playback_intent_wake_rx) = bounded(1);
     let config = worker_config_for_tests();
 
     (
         PlayerWorkerRuntime {
-            session: PlayerSession::new(),
+            session: PlayerSession::new()
+                .with_playback_intent_control(Arc::clone(&playback_intent_control)),
             worker_scheduler: WorkerScheduler,
             decoder_activity: WorkerDecoderActivityState::default(),
             command_rx,
+            playback_intent_control,
+            playback_intent_wake_rx,
+            _playback_intent_wake_tx_guard: playback_intent_wake_tx,
             snapshot_publisher: LatestSnapshotPublisher::new(snapshot_tx, snapshot_rx),
             event_tx,
             render_bridge,
@@ -364,7 +375,7 @@ fn install_worker_video_media(
 
 fn command_sender_for_tests() -> (PlayerCommandSender, Receiver<WorkerCommand>) {
     let (command_tx, command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
-    let command_sender = PlayerCommandSender { command_tx };
+    let command_sender = PlayerCommandSender::for_tests(command_tx).0;
 
     (command_sender, command_rx)
 }
@@ -464,7 +475,7 @@ fn worker_with_latest_handoffs_for_tests(
         latest_scrub_visual_override_handoff,
     );
     let (shutdown_tx, _shutdown_rx) = bounded(1);
-    let command_sender = PlayerCommandSender { command_tx };
+    let command_sender = PlayerCommandSender::for_tests(command_tx).0;
 
     (
         PlayerWorker {
@@ -499,17 +510,13 @@ fn worker_starts_accepts_commands_publishes_snapshot_and_shutdowns() {
 #[test]
 fn compatibility_media_install_preserves_snapshot_and_correlates_completion_and_event() {
     let mut worker = PlayerWorker::spawn(worker_config_for_tests()).unwrap();
-    let request_id = MediaInstallRequestId::from_non_zero(
-        NonZeroU64::new(700).expect("test request identity must be non-zero"),
-    );
     let demuxer =
         WorkerFakeDemuxer::seekable_with_tracks(Vec::new(), Arc::new(Mutex::new(Vec::new())));
     let prepared_media =
         PreparedMedia::from_external_label("compatibility-media".to_owned(), Box::new(demuxer));
 
-    let receipt = worker
-        .load_prepared_media_compatibility_with_receipt(request_id, prepared_media, false)
-        .unwrap();
+    let receipt = worker.load_prepared_media(prepared_media, false).unwrap();
+    let request_id = receipt.request_id();
     let snapshot = wait_for_snapshot(&mut worker, |snapshot| {
         snapshot.source_label.as_deref() == Some("compatibility-media")
             && snapshot.media_instance_id.is_some()
@@ -525,6 +532,7 @@ fn compatibility_media_install_preserves_snapshot_and_correlates_completion_and_
         MediaInstallCompletion::Installed {
             request_id: completed_request_id,
             media_instance_id,
+            ..
         } => {
             assert_eq!(completed_request_id, request_id);
             media_instance_id
@@ -568,7 +576,7 @@ fn compatibility_media_install_sender_preserves_backpressure_and_disconnect() {
     }
 
     let full_error = command_sender
-        .load_prepared_media_compatibility_with_receipt(
+        .load_prepared_media_compatibility(
             MediaInstallRequestId::new_unique(),
             PreparedMedia::from_external_label(
                 "full".to_owned(),
@@ -586,7 +594,7 @@ fn compatibility_media_install_sender_preserves_backpressure_and_disconnect() {
     let (disconnected_sender, disconnected_rx) = command_sender_for_tests();
     drop(disconnected_rx);
     let disconnected_error = disconnected_sender
-        .load_prepared_media_compatibility_with_receipt(
+        .load_prepared_media_compatibility(
             MediaInstallRequestId::new_unique(),
             PreparedMedia::from_external_label(
                 "disconnected".to_owned(),
@@ -873,9 +881,7 @@ fn worker_apply_runtime_settings_command_sends_real_report_response() {
 #[test]
 fn apply_runtime_settings_sender_distinguishes_backpressure_and_disconnected() {
     let (full_command_tx, _full_command_rx) = bounded(1);
-    let full_command_sender = PlayerCommandSender {
-        command_tx: full_command_tx,
-    };
+    let full_command_sender = PlayerCommandSender::for_tests(full_command_tx).0;
     full_command_sender.try_send(PlayerCommand::Play).unwrap();
 
     let update = PlayerRuntimeSettingsUpdate::empty()
@@ -886,9 +892,7 @@ fn apply_runtime_settings_sender_distinguishes_backpressure_and_disconnected() {
 
     let (disconnected_command_tx, disconnected_command_rx) = bounded(1);
     drop(disconnected_command_rx);
-    let disconnected_command_sender = PlayerCommandSender {
-        command_tx: disconnected_command_tx,
-    };
+    let disconnected_command_sender = PlayerCommandSender::for_tests(disconnected_command_tx).0;
 
     let disconnected_result = disconnected_command_sender.apply_runtime_settings(update);
 

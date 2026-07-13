@@ -28,6 +28,41 @@ impl PlayerWorkerRuntime {
         }
     }
 
+    /// Drain-ит coalesced D52 wake и применяет latest exact-instance updates.
+    pub(super) fn drain_playback_intent_updates(&mut self) {
+        while self.playback_intent_wake_rx.try_recv().is_ok() {}
+
+        while let Some(pending) = self
+            .playback_intent_control
+            .take_pending_current_for_staged()
+        {
+            self.session
+                .apply_playback_intent_to_exact_installed_instance(
+                    pending.media_instance_id,
+                    pending.intent,
+                );
+            self.publish_session_outputs();
+        }
+
+        while let Some(pending) = self.playback_intent_control.take_pending_installed_update() {
+            let exact_instance_was_applied = self
+                .session
+                .apply_playback_intent_to_exact_installed_instance(
+                    pending.media_instance_id,
+                    pending.update.intent,
+                );
+            self.playback_intent_control
+                .finish_installed_update(pending, exact_instance_was_applied);
+            self.publish_session_outputs();
+        }
+    }
+
+    /// Обрабатывает readiness отдельного D52 wake receiver-а.
+    pub(super) fn handle_playback_intent_wakeup(&mut self) -> bool {
+        self.drain_playback_intent_updates();
+        self.session.is_shutdown_requested()
+    }
+
     /// Обрабатывает одну worker command.
     pub(super) fn handle_worker_command(&mut self, command: WorkerCommand) {
         match command {
@@ -49,14 +84,16 @@ impl PlayerWorkerRuntime {
                 let StagePreparedMediaInstallCommand {
                     request_id,
                     prepared_media,
-                    autoplay,
+                    initial_intent,
+                    initial_intent_revision,
                     install_port,
                     video_resource_port,
                 } = *command;
-                self.session.stage_prepared_media_install(
+                self.session.stage_registered_prepared_media_install(
                     request_id,
                     prepared_media,
-                    autoplay,
+                    initial_intent,
+                    initial_intent_revision,
                     install_port,
                     video_resource_port,
                 );

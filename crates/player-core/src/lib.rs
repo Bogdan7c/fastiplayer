@@ -89,7 +89,8 @@ pub use media_install::{
     MediaInstallCancellationCause, MediaInstallCommitPoint, MediaInstallCompletion,
     MediaInstallControl, MediaInstallControlOutcome, MediaInstallFailure, MediaInstallFailureStage,
     MediaInstallPhase, MediaInstallPhaseCompletionPort, MediaInstallReceipt, MediaInstallRequestId,
-    MediaInstallVideoResourcePort, MediaInstanceId,
+    MediaInstallVideoResourcePort, MediaInstanceId, PlaybackIntent, PlaybackIntentRevision,
+    PlaybackIntentUpdate, PlaybackIntentUpdateOutcome, PlaybackIntentUpdateReceipt,
 };
 pub use media_opening::{MediaSourceInfo, MediaSourceKind, PreparedMedia, PreparedMediaSource};
 pub(crate) use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};

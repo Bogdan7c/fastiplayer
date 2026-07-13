@@ -141,6 +141,7 @@ impl PlayerWorkerRuntime {
 
         loop {
             self.drain_render_feedback();
+            self.drain_playback_intent_updates();
 
             if self.shutdown_rx.try_recv().is_ok() {
                 self.handle_shutdown_request();
@@ -178,6 +179,7 @@ impl PlayerWorkerRuntime {
         let mut processed_commands = 0;
 
         for _ in 0..MAX_COMMANDS_PER_LOOP {
+            self.drain_playback_intent_updates();
             let Some(command) = self.receive_next_command() else {
                 break;
             };
@@ -265,6 +267,9 @@ impl PlayerWorkerRuntime {
 
     /// Даёт command/shutdown приоритет над decoder activity, пришедшей после planning.
     fn handle_ready_command_or_shutdown_before_select(&mut self) -> Option<bool> {
+        if !self.playback_intent_wake_rx.is_empty() {
+            return Some(self.handle_playback_intent_wakeup());
+        }
         if let Some(command) = self.receive_next_command() {
             self.handle_worker_command(command);
             self.publish_session_outputs();
@@ -303,6 +308,11 @@ impl PlayerWorkerRuntime {
         let decoder_pulse_receiver = decoder_activity.pulse_receiver.clone();
 
         crossbeam_channel::select_biased! {
+            recv(self.playback_intent_wake_rx) -> _ => {
+                WorkerTimedWaitOutcome::Finished {
+                    shutdown_requested: self.handle_playback_intent_wakeup(),
+                }
+            }
             recv(self.command_rx) -> command_result => {
                 WorkerTimedWaitOutcome::Finished {
                     shutdown_requested: self.handle_command_wakeup(command_result),
@@ -379,6 +389,11 @@ impl PlayerWorkerRuntime {
         timeout: Duration,
     ) -> WorkerTimedWaitOutcome {
         crossbeam_channel::select_biased! {
+            recv(self.playback_intent_wake_rx) -> _ => {
+                WorkerTimedWaitOutcome::Finished {
+                    shutdown_requested: self.handle_playback_intent_wakeup(),
+                }
+            }
             recv(self.command_rx) -> command_result => {
                 WorkerTimedWaitOutcome::Finished {
                     shutdown_requested: self.handle_command_wakeup(command_result),
@@ -464,7 +479,10 @@ impl PlayerWorkerRuntime {
 
     /// Блокируется без timeout, когда playback idle.
     fn wait_for_worker_wakeup_until_event(&mut self) -> bool {
-        crossbeam_channel::select! {
+        crossbeam_channel::select_biased! {
+            recv(self.playback_intent_wake_rx) -> _ => {
+                self.handle_playback_intent_wakeup()
+            }
             recv(self.command_rx) -> command_result => {
                 self.handle_command_wakeup(command_result)
             }

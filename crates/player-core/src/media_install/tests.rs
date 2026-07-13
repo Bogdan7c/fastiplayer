@@ -16,6 +16,18 @@ fn instance_id(raw_identity: u64) -> MediaInstanceId {
     )
 }
 
+fn installed_commit(
+    media_instance_id: MediaInstanceId,
+) -> (MediaInstanceId, AcceptedPlaybackIntent) {
+    (
+        media_instance_id,
+        AcceptedPlaybackIntent {
+            revision: PlaybackIntentRevision::INITIAL,
+            intent: PlaybackIntent::StartPaused,
+        },
+    )
+}
+
 /// Создаёт accepted protocol и caller receipt для focused state tests.
 fn accepted_protocol(
     request_id: MediaInstallRequestId,
@@ -73,7 +85,7 @@ fn accepted_authorization_requires_exact_installed_terminal_as_fatal_invariant()
     assert_eq!(
         protocol.apply_control(
             MediaInstallControl::Authorize(AuthorizeInstallCommit { request_id }),
-            || installed_instance_id,
+            || installed_commit(installed_instance_id),
         ),
         MediaInstallControlOutcome::AuthorizationAccepted
     );
@@ -102,7 +114,7 @@ fn command_acceptance_ready_and_installed_are_distinct_phases() {
 
     let outcome = protocol.apply_control(
         MediaInstallControl::Authorize(AuthorizeInstallCommit { request_id }),
-        || installed_instance_id,
+        || installed_commit(installed_instance_id),
     );
 
     assert_eq!(outcome, MediaInstallControlOutcome::AuthorizationAccepted);
@@ -111,6 +123,8 @@ fn command_acceptance_ready_and_installed_are_distinct_phases() {
         Some(MediaInstallCompletion::Installed {
             request_id,
             media_instance_id: installed_instance_id,
+            applied_intent_revision: PlaybackIntentRevision::INITIAL,
+            applied_intent: PlaybackIntent::StartPaused,
         })
     );
 }
@@ -125,7 +139,7 @@ fn authorization_requires_matching_ready_request_and_rejects_duplicates() {
     assert_eq!(
         protocol.apply_control(
             MediaInstallControl::Authorize(AuthorizeInstallCommit { request_id }),
-            || installed_instance_id,
+            || installed_commit(installed_instance_id),
         ),
         MediaInstallControlOutcome::NotReady
     );
@@ -134,7 +148,7 @@ fn authorization_requires_matching_ready_request_and_rejects_duplicates() {
             MediaInstallControl::Authorize(AuthorizeInstallCommit {
                 request_id: stale_request_id,
             }),
-            || installed_instance_id,
+            || installed_commit(installed_instance_id),
         ),
         MediaInstallControlOutcome::StaleRequest
     );
@@ -143,7 +157,7 @@ fn authorization_requires_matching_ready_request_and_rejects_duplicates() {
     assert_eq!(
         protocol.apply_control(
             MediaInstallControl::Authorize(AuthorizeInstallCommit { request_id }),
-            || installed_instance_id,
+            || installed_commit(installed_instance_id),
         ),
         MediaInstallControlOutcome::AuthorizationAccepted
     );
@@ -246,7 +260,7 @@ fn authorize_and_each_cancel_cause_follow_ordered_winner() {
                 MediaInstallControl::Authorize(AuthorizeInstallCommit {
                     request_id: authorize_first_request_id,
                 }),
-                || installed_instance_id,
+                || installed_commit(installed_instance_id),
             ),
             MediaInstallControlOutcome::AuthorizationAccepted
         );
@@ -298,8 +312,14 @@ fn receipts_keep_request_and_completion_correlation_separate() {
     let (mut first_protocol, first_receipt) = accepted_protocol(first_request_id);
     let (mut second_protocol, second_receipt) = accepted_protocol(second_request_id);
 
-    first_protocol.complete_failed(MediaInstallFailure::legacy_open_rejected("first"));
-    second_protocol.complete_failed(MediaInstallFailure::legacy_open_rejected("second"));
+    first_protocol.complete_failed(MediaInstallFailure::new(
+        MediaInstallFailureStage::OpenTransition,
+        PlayerError::new(PlayerErrorKind::DemuxError, "first"),
+    ));
+    second_protocol.complete_failed(MediaInstallFailure::new(
+        MediaInstallFailureStage::OpenTransition,
+        PlayerError::new(PlayerErrorKind::DemuxError, "second"),
+    ));
 
     assert_eq!(first_receipt.request_id(), first_request_id);
     assert_eq!(second_receipt.request_id(), second_request_id);

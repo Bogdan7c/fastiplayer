@@ -290,7 +290,7 @@ impl PlayerSession {
     }
 
     /// Запоминает отложенный выбор и эмитит запрос shell-у на смену backend-а.
-    fn request_video_backend_reselection(
+    pub(super) fn request_video_backend_reselection(
         &mut self,
         requirement: VideoDecodeRequirement,
         track_id: TrackId,

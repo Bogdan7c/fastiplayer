@@ -20,6 +20,7 @@ use crate::audio_boundary::{
 };
 #[cfg(test)]
 use crate::decoder_boundary::PresentFrameResourceProviderHandle;
+use crate::media_install::PlaybackIntentControl;
 use crate::seek_state::{PlaybackResumeIntent, SeekRuntimeState};
 use crate::{
     AudioDecoderFactory, AudioOutputFactory, AudioTempoProcessorFactory, CorrelatedPlayerEvent,
@@ -56,7 +57,6 @@ use self::audio_runtime::{
     classify_autoplay_audio_readiness, classify_seek_audio_gate,
 };
 use self::eof_drain::EofDrainRuntime;
-pub(crate) use self::media_lifecycle::CompatibilityMediaInstallOutcome;
 use self::media_lifecycle::MediaLifecycleState;
 use self::prepared_seek::PreparedSeekLandingRuntime;
 pub(crate) use self::render_leases::{LeasedPresentFrame, PresentFrameIdentity};
@@ -110,6 +110,9 @@ pub struct PlayerSession {
 
     /// Единственная bounded strong media transaction либо её last terminal tombstone.
     staged_media_install: StagedMediaInstallRegistry,
+
+    /// Shared D52 linearization state между sender boundary и player owner turn-ом.
+    playback_intent_control: Arc<PlaybackIntentControl>,
 
     /// Был ли принят shutdown-запрос.
     shutdown_requested: bool,
@@ -205,6 +208,16 @@ impl PlayerSession {
             audio_output_factory,
             ..Self::default()
         }
+    }
+
+    /// Подключает worker-shared D52 control state без передачи session ownership наружу.
+    #[must_use]
+    pub(crate) fn with_playback_intent_control(
+        mut self,
+        playback_intent_control: Arc<PlaybackIntentControl>,
+    ) -> Self {
+        self.playback_intent_control = playback_intent_control;
+        self
     }
 
     /// Подставляет tempo processor factory, которой владеет composition layer.
@@ -1166,6 +1179,7 @@ impl Default for PlayerSession {
             pending_scrub_events: Vec::new(),
             media_lifecycle: MediaLifecycleState::default(),
             staged_media_install: StagedMediaInstallRegistry::default(),
+            playback_intent_control: Arc::new(PlaybackIntentControl::default()),
             shutdown_requested: false,
             eof_drain: EofDrainRuntime::default(),
             capabilities: None,

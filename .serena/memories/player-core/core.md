@@ -93,3 +93,11 @@
 - `MediaInstallFailureStage::ALL` now has 11 entries, including candidate resource acquisition, matching, backend configuration and status publication.
 - App `prepare_post_installed_commit` returns `PostInstalledVideoPipelineInvariantViolation` for missing/mismatched post-Installed halves. Production callsite migration and D52 remain Session 00D scope.
 - Detailed handoff and verification: `mem:investigations/playlist-session-00c1-staged-media-transaction-2026-07-13` and `user/playlist_queue_implementation_plan.md`.
+
+
+## Session 00D exact-instance intent / internal install (2026-07-13)
+
+- Актуальный D52 boundary и linearization описаны в `mem:investigations/playlist-session-00d-exact-instance-intent-2026-07-13`.
+- `PlaybackIntentControl` владеет latest revision, staged correlation и exact installed correlation; commit меняет ownership и публикует Installed под одним control turn.
+- Обычная worker command queue не является transport-ом intent: payload хранится отдельно, capacity-one wake только будит owner.
+- Внутри player остаётся один strong install algorithm. Единственный временный app facade — `PlayerWorker::load_prepared_media -> MediaInstallReceipt`; startup/settings strong orchestration принадлежит Session 10D.

@@ -96,7 +96,7 @@ impl PreparedMedia {
         self.source.display_label()
     }
 
-    /// Возвращает public open-request source для session state machine.
+    /// Восстанавливает neutral source только для player lifecycle event-а.
     #[must_use]
     pub(crate) fn media_source(&self) -> MediaSource {
         self.source.media_source()
@@ -112,12 +112,6 @@ impl PreparedMedia {
     #[must_use]
     pub fn tracks(&self) -> &[TrackInfo] {
         &self.tracks
-    }
-
-    /// Возвращает количество tracks без передачи доступа к storage.
-    #[must_use]
-    pub(crate) fn track_count(&self) -> usize {
-        self.tracks.len()
     }
 
     /// Возвращает duration, снятую во время подготовки media.
@@ -196,19 +190,20 @@ impl PreparedMediaSource {
             },
         }
     }
-    /// Возвращает public open-request source для session state machine.
-    pub(crate) fn media_source(&self) -> MediaSource {
-        match self {
-            Self::LocalFile(path) => MediaSource::LocalFile(path.clone()),
-            Self::ExternalLabel(label) => MediaSource::ExternalLabel(label.clone()),
-        }
-    }
 
     /// Возвращает label для snapshot/event слоя.
     pub(crate) fn display_label(&self) -> String {
         match self {
             Self::LocalFile(path) => path.display().to_string(),
             Self::ExternalLabel(label) => label.clone(),
+        }
+    }
+
+    /// Преобразует prepared source в существующий neutral player command contract.
+    fn media_source(&self) -> MediaSource {
+        match self {
+            Self::LocalFile(path) => MediaSource::LocalFile(path.clone()),
+            Self::ExternalLabel(label) => MediaSource::ExternalLabel(label.clone()),
         }
     }
 

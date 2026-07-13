@@ -12,9 +12,10 @@ use video_backend_api::{
 use super::{MediaInstallControlReceipt, MediaInstallControlReceiptError};
 use crate::worker::{COMMAND_CHANNEL_CAPACITY, PlayerCommandSender, WorkerCommand};
 use crate::{
-    AuthorizeInstallCommit, MediaInstallCompletion, MediaInstallControlOutcome,
-    MediaInstallRequestId, PlayerCommand, PlayerWorker, PlayerWorkerConfig, PlayerWorkerSendError,
-    PreparedMedia,
+    AuthorizeInstallCommit, CancelMediaInstall, MediaInstallCancellationCause,
+    MediaInstallCompletion, MediaInstallControlOutcome, MediaInstallRequestId, PlaybackIntent,
+    PlaybackIntentRevision, PlaybackIntentUpdate, PlaybackIntentUpdateOutcome, PlaybackState,
+    PlayerCommand, PlayerWorker, PlayerWorkerConfig, PlayerWorkerSendError, PreparedMedia,
 };
 
 /// Empty prepared demuxer для no-audio/no-video worker transaction.
@@ -99,6 +100,13 @@ fn wait_until<T>(mut poll: impl FnMut() -> Option<T>) -> T {
     }
 }
 
+/// Создаёт deterministic non-zero D52 revision.
+fn intent_revision(raw: u64) -> PlaybackIntentRevision {
+    PlaybackIntentRevision::from_non_zero(
+        NonZeroU64::new(raw).expect("test playback intent revision is non-zero"),
+    )
+}
+
 #[test]
 fn public_worker_api_separates_enqueue_ready_authorization_and_installed() {
     let mut worker = PlayerWorker::spawn(PlayerWorkerConfig::default())
@@ -112,7 +120,8 @@ fn public_worker_api_separates_enqueue_ready_authorization_and_installed() {
         .stage_prepared_media_install(
             request_id,
             prepared_media,
-            false,
+            PlaybackIntent::StartPaused,
+            PlaybackIntentRevision::INITIAL,
             Box::new(NoVideoResourcePort),
         )
         .expect("staged command должна войти в пустую worker queue");
@@ -143,11 +152,248 @@ fn public_worker_api_separates_enqueue_ready_authorization_and_installed() {
 }
 
 #[test]
+fn intent_update_before_ready_ignores_full_ordinary_queue() {
+    let (command_tx, _command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
+    let (sender, _intent_wake_rx) = PlayerCommandSender::for_tests(command_tx.clone());
+    let request_id = MediaInstallRequestId::from_non_zero(
+        NonZeroU64::new(704).expect("test request id is non-zero"),
+    );
+    let receipt = sender
+        .stage_prepared_media_install(
+            request_id,
+            PreparedMedia::from_external_label("pre-ready intent", Box::new(EmptyDemuxer)),
+            PlaybackIntent::StartPlaying,
+            intent_revision(1),
+            Box::new(NoVideoResourcePort),
+        )
+        .expect("stage command должна занять первый ordinary queue slot");
+
+    for _ in 1..COMMAND_CHANNEL_CAPACITY {
+        command_tx
+            .try_send(WorkerCommand::Player(PlayerCommand::Pause))
+            .expect("test должен заполнить ordinary command queue");
+    }
+
+    let update_receipt = sender
+        .update_playback_intent(PlaybackIntentUpdate {
+            request_id,
+            revision: intent_revision(2),
+            intent: PlaybackIntent::StartPaused,
+        })
+        .expect("D52 update не зависит от full ordinary queue");
+
+    assert_eq!(
+        update_receipt.try_outcome(),
+        Some(PlaybackIntentUpdateOutcome::AppliedToStaged)
+    );
+    assert!(receipt.try_take_ready_to_commit().is_none());
+}
+
+#[test]
+fn staged_pause_updates_old_current_and_cancel_preserves_latest_state() {
+    let mut worker = PlayerWorker::spawn(PlayerWorkerConfig::default())
+        .expect("player worker должен запуститься");
+    let old_receipt = worker
+        .load_prepared_media(
+            PreparedMedia::from_external_label("old current", Box::new(EmptyDemuxer)),
+            false,
+        )
+        .expect("old compatibility install должен быть принят");
+    wait_until(|| old_receipt.try_take_completion());
+    wait_until(|| {
+        let snapshot = worker.latest_snapshot(crate::FrameCounters::default());
+        (snapshot.playback_state == PlaybackState::Paused).then_some(())
+    });
+
+    let request_id = MediaInstallRequestId::from_non_zero(
+        NonZeroU64::new(707).expect("test request id is non-zero"),
+    );
+    let candidate_receipt = worker
+        .stage_prepared_media_install(
+            request_id,
+            PreparedMedia::from_external_label("candidate", Box::new(EmptyDemuxer)),
+            PlaybackIntent::StartPlaying,
+            intent_revision(1),
+            Box::new(NoVideoResourcePort),
+        )
+        .expect("candidate stage должен быть принят");
+    wait_until(|| candidate_receipt.try_take_ready_to_commit());
+
+    let pause_receipt = worker
+        .update_playback_intent(PlaybackIntentUpdate {
+            request_id,
+            revision: intent_revision(2),
+            intent: PlaybackIntent::StartPaused,
+        })
+        .expect("staged pause должен быть принят");
+    assert_eq!(
+        pause_receipt.try_outcome(),
+        Some(PlaybackIntentUpdateOutcome::AppliedToStaged)
+    );
+    wait_until(|| {
+        let snapshot = worker.latest_snapshot(crate::FrameCounters::default());
+        (snapshot.playback_state == PlaybackState::Paused).then_some(())
+    });
+
+    let cancel_receipt = worker
+        .cancel_media_install(CancelMediaInstall {
+            request_id,
+            cause: MediaInstallCancellationCause::UserCancelled,
+        })
+        .expect("pre-barrier cancel должен быть принят");
+    assert_eq!(
+        wait_until(|| match cancel_receipt.try_take_outcome() {
+            Ok(outcome) => outcome,
+            Err(error) => panic!("cancel потерял owner outcome: {error}"),
+        }),
+        MediaInstallControlOutcome::CancellationAccepted
+    );
+    assert_eq!(
+        worker
+            .latest_snapshot(crate::FrameCounters::default())
+            .playback_state,
+        PlaybackState::Paused
+    );
+
+    worker
+        .shutdown()
+        .expect("worker shutdown должен завершиться");
+}
+
+#[test]
+fn highest_intent_commits_without_wrong_state_and_post_barrier_update_is_exact() {
+    let mut worker = PlayerWorker::spawn(PlayerWorkerConfig::default())
+        .expect("player worker должен запуститься");
+    let first_request_id = MediaInstallRequestId::from_non_zero(
+        NonZeroU64::new(705).expect("test request id is non-zero"),
+    );
+    let first_receipt = worker
+        .stage_prepared_media_install(
+            first_request_id,
+            PreparedMedia::from_external_label(
+                "intent-linearization-first",
+                Box::new(EmptyDemuxer),
+            ),
+            PlaybackIntent::StartPlaying,
+            intent_revision(1),
+            Box::new(NoVideoResourcePort),
+        )
+        .expect("first staged request должен быть принят");
+    wait_until(|| first_receipt.try_take_ready_to_commit());
+
+    let staged_update = worker
+        .update_playback_intent(PlaybackIntentUpdate {
+            request_id: first_request_id,
+            revision: intent_revision(3),
+            intent: PlaybackIntent::StartPaused,
+        })
+        .expect("pre-authorization update должен быть принят");
+    assert_eq!(
+        staged_update.try_outcome(),
+        Some(PlaybackIntentUpdateOutcome::AppliedToStaged)
+    );
+
+    let authorization = worker
+        .authorize_install_commit(AuthorizeInstallCommit {
+            request_id: first_request_id,
+        })
+        .expect("authorization должна войти в ordinary queue");
+    let authorization_outcome = wait_until(|| match authorization.try_take_outcome() {
+        Ok(outcome) => outcome,
+        Err(error) => panic!("authorization потеряла owner outcome: {error}"),
+    });
+    assert_eq!(
+        authorization_outcome,
+        MediaInstallControlOutcome::AuthorizationAccepted
+    );
+
+    let paused_snapshot = wait_until(|| {
+        let snapshot = worker.latest_snapshot(crate::FrameCounters::default());
+        (snapshot.playback_state == PlaybackState::Paused && snapshot.media_instance_id.is_some())
+            .then(|| snapshot.clone())
+    });
+    let first_instance_id = paused_snapshot
+        .media_instance_id
+        .expect("paused installed snapshot обязан нести exact instance");
+    assert_eq!(paused_snapshot.playback_state, PlaybackState::Paused);
+
+    let post_barrier_update = worker
+        .update_playback_intent(PlaybackIntentUpdate {
+            request_id: first_request_id,
+            revision: intent_revision(4),
+            intent: PlaybackIntent::StartPlaying,
+        })
+        .expect("post-barrier exact update должен использовать отдельный control path");
+    assert_eq!(
+        wait_until(|| post_barrier_update.try_outcome()),
+        PlaybackIntentUpdateOutcome::AppliedToInstalled {
+            media_instance_id: first_instance_id,
+        }
+    );
+
+    let installed_completion = first_receipt
+        .try_take_completion()
+        .expect("Installed terminal всё ещё обязан ждать explicit drain");
+    let MediaInstallCompletion::Installed {
+        media_instance_id: completed_instance_id,
+        applied_intent_revision,
+        applied_intent,
+        ..
+    } = installed_completion
+    else {
+        panic!("authorization должна завершиться Installed");
+    };
+    assert_eq!(completed_instance_id, first_instance_id);
+    assert_eq!(applied_intent_revision, intent_revision(3));
+    assert_eq!(applied_intent, PlaybackIntent::StartPaused);
+
+    let second_request_id = MediaInstallRequestId::from_non_zero(
+        NonZeroU64::new(706).expect("test request id is non-zero"),
+    );
+    let second_receipt = worker
+        .stage_prepared_media_install(
+            second_request_id,
+            PreparedMedia::from_external_label(
+                "intent-linearization-second",
+                Box::new(EmptyDemuxer),
+            ),
+            PlaybackIntent::StartPaused,
+            intent_revision(1),
+            Box::new(NoVideoResourcePort),
+        )
+        .expect("second staged request должен быть принят");
+    wait_until(|| second_receipt.try_take_ready_to_commit());
+    let second_authorization = worker
+        .authorize_install_commit(AuthorizeInstallCommit {
+            request_id: second_request_id,
+        })
+        .expect("second authorization должна быть принята");
+    wait_until(|| match second_authorization.try_take_outcome() {
+        Ok(outcome) => outcome,
+        Err(error) => panic!("second authorization потеряла outcome: {error}"),
+    });
+
+    let stale_update = worker
+        .update_playback_intent(PlaybackIntentUpdate {
+            request_id: first_request_id,
+            revision: intent_revision(5),
+            intent: PlaybackIntent::StartPaused,
+        })
+        .expect("stale exact update получает typed owner outcome");
+    assert_eq!(
+        stale_update.try_outcome(),
+        Some(PlaybackIntentUpdateOutcome::StaleInstance)
+    );
+
+    worker
+        .shutdown()
+        .expect("worker shutdown должен завершиться");
+}
+
+#[test]
 fn authorization_queue_backpressure_returns_command_without_false_acceptance() {
     let (command_tx, _command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
-    let sender = PlayerCommandSender {
-        command_tx: command_tx.clone(),
-    };
+    let sender = PlayerCommandSender::for_tests(command_tx.clone()).0;
     for _ in 0..COMMAND_CHANNEL_CAPACITY {
         command_tx
             .try_send(WorkerCommand::Player(PlayerCommand::Pause))
@@ -167,7 +413,7 @@ fn authorization_queue_backpressure_returns_command_without_false_acceptance() {
 fn authorization_disconnect_is_transport_failure_not_install_rejection() {
     let (command_tx, command_rx) = bounded(COMMAND_CHANNEL_CAPACITY);
     drop(command_rx);
-    let sender = PlayerCommandSender { command_tx };
+    let sender = PlayerCommandSender::for_tests(command_tx).0;
     let request_id = MediaInstallRequestId::from_non_zero(
         NonZeroU64::new(703).expect("test request id is non-zero"),
     );

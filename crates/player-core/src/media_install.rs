@@ -3,17 +3,25 @@
 //! Порядок strong protocol фиксирован типами: transport acceptance → ordinary fallible
 //! preparation → `ReadyToCommit` → matching `AuthorizeInstallCommit` → один infallible owner
 //! turn, который заменяет active ownership и публикует `Installed` в request-owned slot.
-//! Existing single-media adapter пока destructive: reset seek floor/decoder, open transition,
-//! audio plan, video configuration и post-ownership `MediaOpened` перечислены как отдельные
-//! characterization stages. Session 00C1 strong path переносит ordinary failures до ready;
+//! D52 playback intent линеаризуется отдельным latest-only control state относительно commit;
 //! protocol остаётся queue-neutral и не владеет playlist lineage.
+
+mod playback_intent;
+
+pub(crate) use playback_intent::{AcceptedPlaybackIntent, PlaybackIntentControl};
+pub use playback_intent::{
+    PlaybackIntent, PlaybackIntentRevision, PlaybackIntentUpdate, PlaybackIntentUpdateOutcome,
+    PlaybackIntentUpdateReceipt,
+};
 
 use std::fmt;
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::{PlayerError, PlayerErrorKind};
+use crate::PlayerError;
+#[cfg(test)]
+use crate::PlayerErrorKind;
 
 /// Общий process-local allocator request identities.
 static NEXT_MEDIA_INSTALL_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -226,15 +234,6 @@ impl MediaInstallFailure {
     pub const fn new(stage: MediaInstallFailureStage, error: PlayerError) -> Self {
         Self { stage, error }
     }
-
-    /// Создаёт typed failure для legacy command rejection, который ранее был только debug event.
-    #[must_use]
-    pub(crate) fn legacy_open_rejected(message: impl Into<String>) -> Self {
-        Self::new(
-            MediaInstallFailureStage::OpenTransition,
-            PlayerError::new(PlayerErrorKind::InvalidCommand, message),
-        )
-    }
 }
 
 /// Non-terminal phase, опубликованная после всех ordinary fallible candidate stages.
@@ -257,6 +256,12 @@ pub enum MediaInstallCompletion {
 
         /// Точная identity установленного player instance.
         media_instance_id: MediaInstanceId,
+
+        /// Highest intent revision, применённая внутри atomic commit owner turn-а.
+        applied_intent_revision: PlaybackIntentRevision,
+
+        /// Playback intent, с которым новый instance был опубликован.
+        applied_intent: PlaybackIntent,
     },
 
     /// Ordinary fallible stage завершил запрос до accepted authorization.
@@ -516,6 +521,7 @@ impl MediaInstallReceipt {
             MediaInstallCompletion::Installed {
                 request_id,
                 media_instance_id,
+                ..
             } if request_id == self.request_id => Ok(media_instance_id),
             MediaInstallCompletion::Installed { request_id, .. } => Err(
                 AcceptedMediaInstallTerminalError::InstalledRequestMismatch {
@@ -605,7 +611,7 @@ impl MediaInstallProtocol {
     pub(crate) fn apply_control(
         &mut self,
         control: MediaInstallControl,
-        commit_media_instance: impl FnOnce() -> MediaInstanceId,
+        commit_media_instance: impl FnOnce() -> (MediaInstanceId, AcceptedPlaybackIntent),
     ) -> MediaInstallControlOutcome {
         let control_request_id = match control {
             MediaInstallControl::Authorize(authorization) => authorization.request_id,
@@ -625,11 +631,13 @@ impl MediaInstallProtocol {
                     return MediaInstallControlOutcome::NotReady;
                 }
 
-                let media_instance_id = commit_media_instance();
+                let (media_instance_id, applied_intent) = commit_media_instance();
                 self.port
                     .publish_terminal(MediaInstallCompletion::Installed {
                         request_id: self.request_id,
                         media_instance_id,
+                        applied_intent_revision: applied_intent.revision,
+                        applied_intent: applied_intent.intent,
                     });
                 self.state = MediaInstallProtocolState::Terminal;
                 MediaInstallControlOutcome::AuthorizationAccepted

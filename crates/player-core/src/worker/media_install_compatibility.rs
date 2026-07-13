@@ -1,15 +1,15 @@
 use super::*;
-use crate::media_install::MediaInstallProtocol;
-use crate::session::CompatibilityMediaInstallOutcome;
-use crate::{MediaInstallControl, MediaInstallControlOutcome};
+use crate::{
+    AuthorizeInstallCommit, MediaInstallControl, MediaInstallControlOutcome, PlaybackIntent,
+    PlaybackIntentRevision,
+};
 
 impl PlayerWorkerRuntime {
-    /// Адаптирует существующий destructive single-media call graph к новому completion port.
+    /// Тонко адаптирует startup/settings callsites к единому strong player install algorithm.
     ///
-    /// Важное ограничение: legacy lifecycle сначала выполняется целиком. Только successful
-    /// outcome ретроспективно проходит ready + internal authorization в том же worker turn.
-    /// Поэтому adapter сохраняет observable single-media behavior, но не называется strong
-    /// transaction и не используется как доказательство old-resource preservation.
+    /// Facade создаёт typed initial intent и auto-authorize-ит только matching ready request.
+    /// До Session 10D app ещё не передаёт detached candidate port, поэтому video backend
+    /// поднимается существующим post-install app adapter-ом; destructive player path удалён.
     pub(super) fn handle_compatibility_media_install(
         &mut self,
         request_id: MediaInstallRequestId,
@@ -17,28 +17,24 @@ impl PlayerWorkerRuntime {
         autoplay: bool,
         install_port: Arc<dyn MediaInstallPhaseCompletionPort>,
     ) {
-        self.session
-            .cancel_active_staged_media_install(crate::MediaInstallCancellationCause::Superseded);
-        let mut protocol = MediaInstallProtocol::accept(request_id, install_port);
+        self.session.stage_prepared_media_install_compatibility(
+            request_id,
+            prepared_media,
+            PlaybackIntent::from_autoplay(autoplay),
+            PlaybackIntentRevision::INITIAL,
+            install_port,
+        );
 
-        match self
-            .session
-            .load_prepared_media_compatibility(prepared_media, autoplay)
-        {
-            CompatibilityMediaInstallOutcome::Installed(media_instance_id) => {
-                protocol.mark_ready_to_commit();
-                let authorization_outcome = protocol.apply_control(
-                    MediaInstallControl::Authorize(AuthorizeInstallCommit { request_id }),
-                    || media_instance_id,
-                );
-                debug_assert_eq!(
-                    authorization_outcome,
-                    MediaInstallControlOutcome::AuthorizationAccepted
-                );
-            }
-            CompatibilityMediaInstallOutcome::Failed(failure) => {
-                protocol.complete_failed(failure);
-            }
+        if self.session.has_staged_media_install() {
+            let authorization_outcome =
+                self.session
+                    .apply_staged_media_install_control(MediaInstallControl::Authorize(
+                        AuthorizeInstallCommit { request_id },
+                    ));
+            debug_assert_eq!(
+                authorization_outcome,
+                MediaInstallControlOutcome::AuthorizationAccepted
+            );
         }
     }
 }
