@@ -8,8 +8,12 @@ import contextlib
 import io
 # importlib загружает repo script без превращения scripts/ в package.
 import importlib.util
+# json читает versioned coverage policy без запуска production CLI.
+import json
 # pathlib вычисляет стабильные пути относительно этого test-файла.
 from pathlib import Path
+# tomllib читает workspace/package manifests стандартной библиотекой Python 3.11+.
+import tomllib
 # unittest предоставляет hermetic stdlib test runner проекта.
 import unittest
 
@@ -119,6 +123,40 @@ class CoverageRatchetTests(unittest.TestCase):
         COVERAGE_METRICS.validate_baseline_update(
             previous, proposed, [exception], ["lines", "functions", "regions"]
         )
+
+
+# Тесты инвентаря не позволяют workspace и coverage policy снова разойтись.
+class CoveragePolicyInventoryTests(unittest.TestCase):
+    # Каждый workspace crate обязан иметь ровно одну осознанную coverage-классификацию.
+    def test_every_workspace_crate_is_classified_by_coverage_policy(self):
+        # Root manifest является каноническим владельцем workspace membership.
+        with (REPO_ROOT / "Cargo.toml").open("rb") as manifest_file:
+            # tomllib сохраняет точные относительные пути workspace members.
+            workspace_manifest = tomllib.load(manifest_file)
+        # Policy читается отдельно, чтобы тест проверял versioned production input.
+        with (REPO_ROOT / "coverage" / "policy.json").open(encoding="utf-8") as policy_file:
+            # JSON parser возвращает те же группы, которые использует coverage_metrics.py.
+            coverage_policy = json.load(policy_file)
+        # Aggregator идентифицирует crate по первому каталогу внутри crates/.
+        workspace_crates = set()
+        # Явный members list не включает standalone patch crates вне workspace.
+        for member_path in workspace_manifest["workspace"]["members"]:
+            # Path разбирается тем же pathlib vocabulary, что и production parser.
+            member_parts = Path(member_path).parts
+            # Coverage policy управляет только first-party members внутри crates/.
+            self.assertEqual(member_parts[0], "crates")
+            # Второй компонент совпадает с crate_name_for_file для LLVM source path.
+            workspace_crates.add(member_parts[1])
+        # Группы извлекаются отдельно, чтобы дешёво проверить их непересечение.
+        blocking_crates = set(coverage_policy["blocking_crates"])
+        # Informational inventory имеет ту же identity vocabulary каталогов.
+        informational_crates = set(coverage_policy["informational_crates"])
+        # Один crate не может одновременно блокировать и только информировать.
+        self.assertTrue(blocking_crates.isdisjoint(informational_crates))
+        # Объединение групп является полным ожидаемым coverage inventory.
+        classified_crates = blocking_crates | informational_crates
+        # Exact equality ловит как новый неклассифицированный crate, так и stale policy entry.
+        self.assertEqual(classified_crates, workspace_crates)
 
 
 # Прямой запуск файла остаётся удобным вне unittest discovery.

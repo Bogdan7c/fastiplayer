@@ -24,6 +24,10 @@ VA-API, FFmpeg runtime, audio device или окна. При этом их из�
 в общий workspace ratchet, поэтому уже полученное hermetic покрытие нельзя
 молча потерять.
 
+`ui-artwork-egui` относится к informational UI surface: crate владеет отрисовкой
+через `egui::Painter` и не является neutral business/contract boundary. Его
+hermetic tests и production-файлы всё равно входят в общий workspace ratchet.
+
 ## Локальный запуск
 
 Нужны exact tool и LLVM component:

@@ -41,6 +41,7 @@
     "render-wgpu-shell",
     "render-wgpu-video",
     "service-youtube",
+    "ui-artwork-egui",
     "video-ffmpeg",
     "video-vaapi"
   ],
