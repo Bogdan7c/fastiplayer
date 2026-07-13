@@ -29,3 +29,8 @@ Pinned zbus 5.15 builder всегда использует DoNotQueue, но defa
 
 - `cargo test -p player-core failed_prepared_media_open_publishes_error_without_resetting_old_playback` PASS: доказывает только adapter failure до destructive player install.
 - `cargo test -p player-core playback_pipeline_decoder_boundary_preserves_config_error_states` PASS: подтверждает fallible singleton decoder configure outcomes.
+
+
+## Progress update 2026-07-13
+
+Session 00C завершена PASS: bounded detached backend/materializer boundary реализована без player ownership switch. Следующая разрешённая session — только 00C1. Детали: `mem:investigations/playlist-session-00c-candidate-video-resources-2026-07-13`.

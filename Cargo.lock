@@ -159,6 +159,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ui-artwork-egui",
+ "video-backend-api",
  "video-core",
  "video-ffmpeg",
  "video-frame-contract",
@@ -4924,7 +4925,10 @@ name = "video-backend-api"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "codec-core",
+ "media-core",
  "video-core",
+ "video-frame-contract",
 ]
 
 [[package]]

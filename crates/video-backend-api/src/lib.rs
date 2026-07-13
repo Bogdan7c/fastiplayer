@@ -6,8 +6,18 @@
 
 #![forbid(unsafe_code)]
 
+mod detached_backend;
+
 use std::sync::Arc;
 use std::time::Duration;
+
+pub use detached_backend::{
+    ConfiguredDetachedVideoBackend, DetachedVideoBackend,
+    DetachedVideoBackendCandidateCancellationCause, DetachedVideoBackendCandidateStatus,
+    DetachedVideoBackendConfigurationError, DetachedVideoBackendPortError,
+    DetachedVideoBackendReply, DetachedVideoBackendRequest, DetachedVideoBackendResourceError,
+    DetachedVideoBackendResourcePort,
+};
 
 /// Decoder-thread handle, специализированный на renderer-neutral provider этого crate-а.
 pub type VideoBackendDecoderThreadHandle =

@@ -8,3 +8,8 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 video-core.workspace = true
+
+[dev-dependencies]
+codec-core.workspace = true
+media-core.workspace = true
+video-frame-contract.workspace = true

@@ -22,6 +22,7 @@ mod state;
 mod system_capabilities;
 mod telemetry;
 mod ui;
+mod video_pipeline_candidate;
 mod video_pipeline_selector;
 
 use anyhow::{Context, Result};
