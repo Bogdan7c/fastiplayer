@@ -1,0 +1,15 @@
+[package]
+name = "playlist-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "playlist_core"
+path = "src/lib.rs"
+
+[dependencies]
+# Playlist cache использует ровно те же нейтральные duration/sequence-типы,
+# которые уже принадлежат media-core; второй набор metadata semantics запрещён.
+media-core.workspace = true

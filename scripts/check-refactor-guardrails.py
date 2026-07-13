@@ -25,6 +25,7 @@ CONTRACT_CRATES = frozenset(
     {
         "audio-core",
         "media-core",
+        "playlist-core",
         "codec-core",
         "settings-core",
         "video-frame-contract",
@@ -50,6 +51,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "media-prefetch",
         "media-core",
         "player-core",
+        "playlist-core",
         "render-core",
         "render-wgpu-shell",
         "render-wgpu-video",
@@ -92,6 +94,10 @@ FRAME_SERVER_CORE_ALLOWED_DEPENDENCIES = frozenset(
         "video-present-core",
     }
 )
+
+# Playlist domain переиспользует только neutral media metadata vocabulary.
+# UI/player/filesystem/serde/service edges должны появляться в верхних owners.
+PLAYLIST_CORE_ALLOWED_DEPENDENCIES = frozenset({"media-core"})
 
 FFMPEG_FORBIDDEN_DEPENDENCIES = frozenset(
     {
@@ -660,6 +666,14 @@ def find_dependency_violations(
             frozenset({"frame-server-core"}),
             FRAME_SERVER_CORE_ALLOWED_DEPENDENCIES,
             "frame-server-core остаётся нейтральным frame-server boundary без player/app/render/backend/service deps",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"playlist-core"}),
+            PLAYLIST_CORE_ALLOWED_DEPENDENCIES,
+            "playlist-core зависит только от neutral media-core metadata contract",
         )
     )
     violations.extend(

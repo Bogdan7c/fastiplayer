@@ -3116,6 +3116,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "playlist-core"
+version = "0.1.0"
+dependencies = [
+ "media-core",
+]
+
+[[package]]
 name = "png"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -220,6 +220,37 @@ class DependencyGraphPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_playlist_core_allows_only_media_core_normal_dependency(self) -> None:
+        """Playlist domain не получает UI/player/serde/service dependencies."""
+
+        packages = complete_workspace_packages()
+        packages["playlist-core"] = package_with_dependencies(
+            "playlist-core", (("media-core", None),)
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "playlist-core"
+                for violation in passing_result.dependency_violations
+            )
+        )
+
+        packages["playlist-core"] = package_with_dependencies(
+            "playlist-core", (("media-core", None), ("serde", None))
+        )
+        failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertTrue(
+            any(
+                violation.owner == "playlist-core"
+                and violation.dependency == "serde"
+                for violation in failing_result.dependency_violations
+            )
+        )
+
     def test_required_role_crates_report_only_missing_role(self) -> None:
         """Полный fixture проходит, а удалённая роль называется в результате."""
 
