@@ -3,6 +3,8 @@
 //! YouTube отдаёт video-only и audio-only WebM отдельно. Этот demuxer объединяет два
 //! независимых `SymphoniaDemuxer` в один поток packets, чтобы app layer мог остаться простым.
 
+mod media_metadata;
+
 use std::cmp::Ordering;
 use std::time::Duration;
 
@@ -15,36 +17,13 @@ use media_core::{
 use tracing::debug;
 
 use crate::symphonia_demuxer::SymphoniaDemuxer;
+use media_metadata::merge_media_metadata;
 
 /// Track id для video после remap.
 const REMAPPED_VIDEO_TRACK_ID: u32 = 1;
 
 /// Track id для audio после remap.
 const REMAPPED_AUDIO_TRACK_ID: u32 = 2;
-
-fn merge_media_metadata(
-    video: Option<media_core::MediaMetadata>,
-    audio: Option<media_core::MediaMetadata>,
-) -> media_core::MediaMetadata {
-    let mut merged = video.unwrap_or_default();
-    if let Some(audio) = audio {
-        if merged.container.is_none() {
-            merged.container = audio.container;
-        }
-        let mut missing_only = media_core::MediaTagMetadata::default();
-        if merged.tags.title.is_none() {
-            missing_only.title = audio.tags.title;
-        }
-        if merged.tags.artists.is_empty() {
-            missing_only.artists = audio.tags.artists;
-        }
-        if merged.tags.album.is_none() {
-            missing_only.album = audio.tags.album;
-        }
-        merged.tags.upsert(missing_only);
-    }
-    merged
-}
 
 /// Результат заполнения pending slot-а из одного stream demuxer-а.
 enum PendingFillOutcome {

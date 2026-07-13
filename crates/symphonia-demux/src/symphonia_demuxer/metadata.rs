@@ -4,7 +4,10 @@ use codec_core::{
     ColorPrimaries, ColorRange, HdrMetadata, MatrixCoefficients, TransferFunction,
     VideoColorMetadata, VideoDisplayOrientation,
 };
-use media_core::{MediaMetadata, MediaTagMetadata, TrackId};
+use media_core::{
+    DiscNumber, MediaMetadata, MediaTagMetadata, TrackId, TrackNumber, TvEpisodeNumber,
+    TvSeasonNumber,
+};
 use symphonia::core::meta::{RawValue, StandardTag};
 use tracing::debug;
 
@@ -52,15 +55,8 @@ pub(super) fn consume_media_metadata(
         if let Some(revision) = format.metadata().current() {
             let mut tags = MediaTagMetadata::default();
             for tag in &revision.media.tags {
-                match tag.std.as_ref() {
-                    Some(StandardTag::TrackTitle(value)) | Some(StandardTag::MovieTitle(value)) => {
-                        tags.title = Some(value.to_string())
-                    }
-                    Some(StandardTag::Artist(value)) | Some(StandardTag::AlbumArtist(value)) => {
-                        tags.artists.push(value.to_string())
-                    }
-                    Some(StandardTag::Album(value)) => tags.album = Some(value.to_string()),
-                    _ => {}
+                if let Some(standard_tag) = tag.std.as_ref() {
+                    apply_standard_tag(&mut tags, standard_tag);
                 }
             }
             current.tags.upsert(tags);
@@ -71,6 +67,34 @@ pub(super) fn consume_media_metadata(
         format.metadata().pop();
     }
     *current != before
+}
+
+/// Адаптирует один уже типизированный Symphonia tag в нейтральный media contract.
+fn apply_standard_tag(tags: &mut MediaTagMetadata, standard_tag: &StandardTag) {
+    match standard_tag {
+        StandardTag::TrackTitle(value) | StandardTag::MovieTitle(value) => {
+            tags.title = Some(value.to_string());
+        }
+        StandardTag::Artist(value) | StandardTag::AlbumArtist(value) => {
+            tags.artists.push(value.to_string());
+        }
+        StandardTag::Album(value) => {
+            tags.album = Some(value.to_string());
+        }
+        StandardTag::DiscNumber(value) => {
+            tags.disc_number = Some(DiscNumber::new(*value));
+        }
+        StandardTag::TrackNumber(value) => {
+            tags.track_number = Some(TrackNumber::new(*value));
+        }
+        StandardTag::TvSeasonNumber(value) => {
+            tags.tv_season_number = Some(TvSeasonNumber::new(*value));
+        }
+        StandardTag::TvEpisodeNumber(value) => {
+            tags.tv_episode_number = Some(TvEpisodeNumber::new(*value));
+        }
+        _ => {}
+    }
 }
 
 /// Снимает format-level diagnostics до построения neutral track model.
@@ -391,5 +415,64 @@ fn f32_from_raw_value(raw_value: &RawValue) -> Option<f32> {
         RawValue::SignedInt(value) => u64::try_from(*value).ok().map(|value| value as f32),
         RawValue::UnsignedInt(value) => Some(*value as f32),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[test]
+    fn typed_sequence_standard_tags_map_to_distinct_neutral_types() {
+        let mut tags = MediaTagMetadata::default();
+
+        apply_standard_tag(&mut tags, &StandardTag::DiscNumber(2));
+        apply_standard_tag(&mut tags, &StandardTag::TrackNumber(8));
+        apply_standard_tag(&mut tags, &StandardTag::TvSeasonNumber(3));
+        apply_standard_tag(&mut tags, &StandardTag::TvEpisodeNumber(11));
+
+        assert_eq!(tags.disc_number, Some(DiscNumber::new(2)));
+        assert_eq!(tags.track_number, Some(TrackNumber::new(8)));
+        assert_eq!(tags.tv_season_number, Some(TvSeasonNumber::new(3)));
+        assert_eq!(tags.tv_episode_number, Some(TvEpisodeNumber::new(11)));
+    }
+
+    #[test]
+    fn existing_textual_standard_tag_mappings_remain_unchanged() {
+        let mut tags = MediaTagMetadata::default();
+
+        apply_standard_tag(
+            &mut tags,
+            &StandardTag::TrackTitle(Arc::new("Track title".into())),
+        );
+        apply_standard_tag(
+            &mut tags,
+            &StandardTag::MovieTitle(Arc::new("Movie title".into())),
+        );
+        apply_standard_tag(&mut tags, &StandardTag::Artist(Arc::new("Artist".into())));
+        apply_standard_tag(
+            &mut tags,
+            &StandardTag::AlbumArtist(Arc::new("Album artist".into())),
+        );
+        apply_standard_tag(&mut tags, &StandardTag::Album(Arc::new("Album".into())));
+
+        assert_eq!(tags.title.as_deref(), Some("Movie title"));
+        assert_eq!(tags.artists, ["Artist", "Album artist"]);
+        assert_eq!(tags.album.as_deref(), Some("Album"));
+    }
+
+    #[test]
+    fn unrelated_standard_tag_is_a_no_op() {
+        let mut tags = MediaTagMetadata {
+            track_number: Some(TrackNumber::new(4)),
+            ..Default::default()
+        };
+        let before = tags.clone();
+
+        apply_standard_tag(&mut tags, &StandardTag::Bpm(120));
+
+        assert_eq!(tags, before);
     }
 }

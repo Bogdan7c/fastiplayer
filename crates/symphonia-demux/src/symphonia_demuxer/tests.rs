@@ -24,8 +24,8 @@ use symphonia::core::formats::{
 };
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::{
-    METADATA_ID_NULL, Metadata, MetadataBuilder, MetadataInfo, MetadataLog,
-    PerTrackMetadataBuilder, Tag,
+    METADATA_ID_NULL, Metadata, MetadataBuilder, MetadataInfo, MetadataLog, MetadataRevision,
+    PerTrackMetadataBuilder, StandardTag, Tag,
 };
 use symphonia::core::packet::Packet;
 use symphonia::core::units::{Duration as SymphoniaDuration, TimeBase, Timestamp};
@@ -61,6 +61,7 @@ struct FakeFormatReader {
     tracks: Vec<Track>,
     reset_track_updates: VecDeque<Vec<Track>>,
     metadata: MetadataLog,
+    metadata_revisions_after_packets: VecDeque<MetadataRevision>,
     packets: VecDeque<std::result::Result<Packet, SymphoniaError>>,
     seek_packet_scripts: VecDeque<VecDeque<std::result::Result<Packet, SymphoniaError>>>,
     seek_mode_log: Option<Arc<Mutex<Vec<SeekMode>>>>,
@@ -88,6 +89,7 @@ impl FakeFormatReader {
             tracks,
             reset_track_updates: VecDeque::new(),
             metadata: MetadataLog::default(),
+            metadata_revisions_after_packets: VecDeque::new(),
             packets: VecDeque::from(packets),
             seek_packet_scripts: VecDeque::new(),
             seek_mode_log: None,
@@ -136,6 +138,12 @@ impl FakeFormatReader {
 
     fn with_media_info(mut self, media_info: MediaInfo) -> Self {
         self.media_info = media_info;
+        self
+    }
+
+    /// Публикует по одной metadata revision после чтения каждого следующего packet-а.
+    fn with_metadata_revisions_after_packets(mut self, revisions: Vec<MetadataRevision>) -> Self {
+        self.metadata_revisions_after_packets = VecDeque::from(revisions);
         self
     }
 
@@ -286,7 +294,14 @@ impl FormatReader for FakeFormatReader {
         }
 
         match self.packets.pop_front() {
-            Some(Ok(packet)) => Ok(Some(packet)),
+            Some(Ok(packet)) => {
+                if let Some(revision) = self.metadata_revisions_after_packets.pop_front() {
+                    // Live revision добавляется в конец time-ordered log-а; `current()` остаётся
+                    // на старой revision, пока adapter не вызовет `pop()`.
+                    self.metadata.push(revision);
+                }
+                Ok(Some(packet))
+            }
             Some(Err(SymphoniaError::ResetRequired)) => {
                 if let Some(next_tracks) = self.reset_track_updates.pop_front() {
                     self.tracks = next_tracks;
@@ -382,6 +397,19 @@ fn fake_packet(track_id: u32, timestamp: i64, packet_bytes: Vec<u8>) -> Packet {
         SymphoniaDuration::new(1),
         packet_bytes,
     )
+}
+
+/// Собирает media-level revision из typed Symphonia tags; raw payload намеренно не парсится.
+fn metadata_revision(standard_tags: Vec<StandardTag>) -> MetadataRevision {
+    let mut metadata = MetadataBuilder::new(FAKE_METADATA_INFO);
+    for (index, standard_tag) in standard_tags.into_iter().enumerate() {
+        metadata.add_tag(Tag::new_from_parts(
+            format!("test-tag-{index}"),
+            "ignored raw value",
+            Some(standard_tag),
+        ));
+    }
+    metadata.build()
 }
 
 fn small_vp9_keyframe_packet(track_id: u32, timestamp: i64) -> Packet {
@@ -1880,6 +1908,98 @@ fn decode_point_before_uses_video_packet_when_audio_actual_is_earlier() {
             ..
         }
     ));
+}
+
+#[test]
+fn metadata_revisions_precede_packets_without_changing_packet_order() {
+    let first_revision = metadata_revision(vec![
+        StandardTag::TrackTitle(Arc::new("Episode title".into())),
+        StandardTag::DiscNumber(2),
+        StandardTag::TrackNumber(8),
+    ]);
+    let second_revision = metadata_revision(vec![
+        StandardTag::Album(Arc::new("Series collection".into())),
+        StandardTag::TrackNumber(9),
+        StandardTag::TvSeasonNumber(3),
+        StandardTag::TvEpisodeNumber(11),
+    ]);
+    let reader = FakeFormatReader::new(
+        vec![vp9_video_track(1)],
+        vec![
+            Ok(small_vp9_keyframe_packet(1, 10)),
+            Ok(small_vp9_keyframe_packet(1, 20)),
+        ],
+    )
+    .with_metadata_revisions_after_packets(vec![first_revision, second_revision]);
+    let mut demuxer = SymphoniaDemuxer::from_format_reader(
+        Box::new(reader),
+        "fake",
+        HashMap::new(),
+        DemuxSeekability::Seekable,
+        DemuxerOptions::default(),
+    )
+    .expect("fake demuxer должен открыться");
+
+    let first_metadata = demuxer
+        .next_event()
+        .expect("первая metadata revision должна читаться");
+    let first_packet = demuxer
+        .next_event()
+        .expect("первый packet должен сохраниться после metadata event");
+    let second_metadata = demuxer
+        .next_event()
+        .expect("вторая metadata revision должна читаться");
+    let second_packet = demuxer
+        .next_event()
+        .expect("второй packet должен сохранить исходный порядок");
+
+    let DemuxReadEvent::MediaMetadataChanged(first_metadata) = first_metadata else {
+        panic!("ожидалась первая metadata revision");
+    };
+    assert_eq!(first_metadata.tags.title.as_deref(), Some("Episode title"));
+    assert_eq!(
+        first_metadata.tags.disc_number,
+        Some(media_core::DiscNumber::new(2))
+    );
+    assert_eq!(
+        first_metadata.tags.track_number,
+        Some(media_core::TrackNumber::new(8))
+    );
+
+    let DemuxReadEvent::Packet(first_packet) = first_packet else {
+        panic!("ожидался первый packet после первой metadata revision");
+    };
+    assert_eq!(first_packet.pts, Duration::from_millis(10));
+
+    let DemuxReadEvent::MediaMetadataChanged(second_metadata) = second_metadata else {
+        panic!("ожидалась вторая metadata revision");
+    };
+    assert_eq!(second_metadata.tags.title.as_deref(), Some("Episode title"));
+    assert_eq!(
+        second_metadata.tags.album.as_deref(),
+        Some("Series collection")
+    );
+    assert_eq!(
+        second_metadata.tags.disc_number,
+        Some(media_core::DiscNumber::new(2))
+    );
+    assert_eq!(
+        second_metadata.tags.track_number,
+        Some(media_core::TrackNumber::new(9))
+    );
+    assert_eq!(
+        second_metadata.tags.tv_season_number,
+        Some(media_core::TvSeasonNumber::new(3))
+    );
+    assert_eq!(
+        second_metadata.tags.tv_episode_number,
+        Some(media_core::TvEpisodeNumber::new(11))
+    );
+
+    let DemuxReadEvent::Packet(second_packet) = second_packet else {
+        panic!("ожидался второй packet после второй metadata revision");
+    };
+    assert_eq!(second_packet.pts, Duration::from_millis(20));
 }
 
 #[test]

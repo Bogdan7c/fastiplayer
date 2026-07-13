@@ -16,7 +16,10 @@ pub use demux::{
     DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
     DemuxTrackListUpdate, Demuxer, MediaDemuxError,
 };
-pub use metadata::{MediaContainerMetadata, MediaMetadata, MediaTagMetadata};
+pub use metadata::{
+    DiscNumber, MediaContainerMetadata, MediaMetadata, MediaTagMetadata, TrackNumber,
+    TvEpisodeNumber, TvSeasonNumber,
+};
 pub use packet::{Packet, PacketKeyframe};
 pub use time::{
     MediaDuration, MediaTime, TimeBase, TimelineNotSeekableReason, TimelinePreviewState,

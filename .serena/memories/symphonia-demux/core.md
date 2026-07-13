@@ -1,6 +1,6 @@
 # Symphonia Demux Core
 
-- `symphonia-demux` owns the concrete Symphonia `FormatReader` state and maps container read results into neutral `media_core::DemuxReadEvent` / typed `DemuxError`.
+- `symphonia-demux` owns the concrete Symphonia `FormatReader` state and maps container read results into neutral `media_core::DemuxReadEvent` / typed `DemuxError`. Its format-level metadata adapter maps exact Symphonia 0.6 typed `StandardTag::{DiscNumber, TrackNumber, TvSeasonNumber, TvEpisodeNumber}` values into the corresponding `media-core` newtypes and never parses raw tag strings; dual video/audio metadata merge lives in `dual_stream_demuxer/media_metadata.rs` and remains video-primary/audio-fallback.
 - `FormatReader::next_packet()` taxonomy follows Symphonia 0.6 docs: `Ok(Some(packet))` returns a packet, `Ok(None)` is EOF, `Err(ResetRequired)` is handled as `DemuxReadEvent::TracksChanged`, and all other errors are structural/fatal demux read errors.
 - Defensive compatibility is preserved for `SymphoniaError::IoError(UnexpectedEof)`: it maps to `EndOfStream` for legacy/current tests.
 - Do not treat `SymphoniaError::DecodeError` from `FormatReader::next_packet()` as recoverable corrupted packet skip. The original Symphonia reason should be preserved in `DemuxError::Parse`; e.g. `isomp4: no atom pending read` must fail immediately, not loop until `max_consecutive_corrupted_packets`.
