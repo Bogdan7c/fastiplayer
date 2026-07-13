@@ -41,7 +41,15 @@ Session 02 completed PASS on 2026-07-13. This memory complements `mem:core` and 
 - Each `PlaylistMetadataPatch` carries Item ID, expected locator, expected fingerprint, and replacement cache.
 - Batch outcomes distinguish Applied/NoChange/NotFound/SourceMismatch. Matching updates publish atomically with one metadata revision and do not alter order, current, or structural/traversal revisions.
 
+## Canonical navigation and repeat (Session 03)
+- `RepeatMode` is `StopAtEnd`, `RepeatQueue`, or `RepeatOne`; it remains domain state, while stop-after-current, Play/Pause intent, D17 restart threshold, active identity, and player snapshots stay outside `playlist-core`.
+- Automatic clean `Ended` uses `AutomaticEndedIntent` and returns typed `OpenItem`, `ReplayCurrent`, or `Stop`. `RepeatOne` always produces `ReplayCurrent` for the validated current ID without locator reopen; `StopAtEnd` stops at last, `RepeatQueue` wraps last to first, and persisted `current=None` produces a typed stop rather than inventing an active item.
+- Manual `Next`/`Previous` use `ManualNavigationIntent` and return `OpenItem` with an opaque `ManualNavigationPreview` or typed `NoItem`. Manual traversal ignores `RepeatOne` inside canonical order, wraps only for `RepeatQueue`, maps idle `Next` to first and idle `Previous` to no-item, and reports speculative return to committed origin separately so the controller cancels pending install.
+- `ManualNavigationPreview` is runtime-only and non-Clone. It stores committed origin, latest desired target, structural/traversal revision base, and typed D55 failed-target state. A→B→C/backtrack queries, failure marking, and discard do not mutate committed traversal.
+- Manual install reuses the existing D08 reservation owner. `prepare_manual_navigation` wraps `PreparedQueueMutationToken`; prepare failure returns both the exact typed D08 reason and the preview, abort returns the preview, failure returns it with an awaiting-user marker, and only `commit_manual_navigation` after correlated external success publishes the latest target current.
+- Structural/traversal changes invalidate a preview; metadata-only revision changes do not. No shuffle/RNG/history/upcoming behavior is present yet.
+
 ## Verification and next scope
-- 23 playlist-core tests, strict crate Clippy, fmt, Rust 1.96 locked workspace check, guardrails, git diff check, and Serena diagnostics passed.
-- All production modules remain below 800 lines; the largest is the typed outcomes module at 779 lines.
-- Next allowed work is Session 03 canonical navigation/repeat. Do not infer shuffle or sorting behavior from Session 02.
+- 33 playlist-core tests, strict crate Clippy, fmt, Rust 1.96 locked workspace check, refactor guardrails, and git diff check passed for Session 03.
+- All production modules remain below 800 lines: navigation is 586 lines, central queue/mod.rs is 682, and the pre-existing typed outcomes module remains 779.
+- Next allowed work is Session 04 deterministic shuffle traversal on top of the opaque preview boundary. Do not begin sorting or app/player integration.

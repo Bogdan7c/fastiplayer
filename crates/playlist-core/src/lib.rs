@@ -2,13 +2,14 @@
 //!
 //! Crate намеренно не знает про UI, player, I/O, serde и filesystem discovery.
 //! Он владеет стабильной идентичностью строк, allocator high-watermark,
-//! canonical order и атомарными mutation boundaries Session 02.
+//! canonical order, repeat/navigation policy и атомарными mutation boundaries.
 
 mod id;
 mod item;
 mod locator;
 mod metadata;
 mod queue;
+mod repeat;
 
 pub use id::{
     AllocatorRestoreError, NextPlaylistItemId, PlaylistItemId, PlaylistItemIdAllocator,
@@ -24,12 +25,19 @@ pub use metadata::{
     PlaylistMediaKind,
 };
 pub use queue::{
-    AddItemsError, AddItemsOutcome, AllocatedPlaylistItemIds, ClearQueueOutcome,
-    MAX_PLAYLIST_ITEMS, MetadataPatchBatchError, MetadataPatchBatchOutcome,
-    MetadataPatchItemOutcome, MoveItemIntent, MoveItemOutcome, PlaylistMetadataPatch,
-    PlaylistQueue, PlaylistQueueRestore, PrepareReservedMutationError, PreparedQueueMutationToken,
-    QueueRestoreError, QueueRevision, QueueRevisionSnapshot, RemoveItemOutcome, ReplaceQueueError,
-    ReplaceQueueOutcome, ReservedMutationCommit, ReservedQueueMutation, TraversalCurrentEffect,
-    TraversalCurrentItemId, TraversalCurrentMutationError, TraversalCurrentMutationOutcome,
+    AddItemsError, AddItemsOutcome, AllocatedPlaylistItemIds, AutomaticEndedIntent,
+    AutomaticNavigationOutcome, AutomaticStopReason, ClearQueueOutcome,
+    DiscardedManualNavigationPreview, FailedManualNavigationTarget, MAX_PLAYLIST_ITEMS,
+    ManualNavigationCommit, ManualNavigationDirection, ManualNavigationIntent,
+    ManualNavigationNoItem, ManualNavigationOrigin, ManualNavigationOutcome,
+    ManualNavigationPreview, ManualNavigationPreviewError, ManualNavigationPreviewState,
+    MetadataPatchBatchError, MetadataPatchBatchOutcome, MetadataPatchItemOutcome, MoveItemIntent,
+    MoveItemOutcome, PlaylistMetadataPatch, PlaylistQueue, PlaylistQueueRestore,
+    PrepareManualNavigationFailure, PrepareReservedMutationError, PreparedManualNavigationToken,
+    PreparedQueueMutationToken, QueueRestoreError, QueueRevision, QueueRevisionSnapshot,
+    RemoveItemOutcome, ReplaceQueueError, ReplaceQueueOutcome, ReservedMutationCommit,
+    ReservedQueueMutation, TraversalCurrentEffect, TraversalCurrentItemId,
+    TraversalCurrentMutationError, TraversalCurrentMutationOutcome,
     TraversalCurrentValidationError,
 };
+pub use repeat::RepeatMode;

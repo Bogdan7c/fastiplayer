@@ -1,6 +1,7 @@
 //! Canonical queue owner и атомарные structural/traversal boundaries.
 
 mod metadata_patch;
+mod navigation;
 mod outcomes;
 mod reservation;
 
@@ -19,6 +20,14 @@ use crate::{
 pub use metadata_patch::{
     MetadataPatchBatchError, MetadataPatchBatchOutcome, MetadataPatchItemOutcome,
     PlaylistMetadataPatch,
+};
+pub use navigation::{
+    AutomaticEndedIntent, AutomaticNavigationOutcome, AutomaticStopReason,
+    DiscardedManualNavigationPreview, FailedManualNavigationTarget, ManualNavigationCommit,
+    ManualNavigationDirection, ManualNavigationIntent, ManualNavigationNoItem,
+    ManualNavigationOrigin, ManualNavigationOutcome, ManualNavigationPreview,
+    ManualNavigationPreviewError, ManualNavigationPreviewState, PrepareManualNavigationFailure,
+    PreparedManualNavigationToken,
 };
 pub use outcomes::{
     AddItemsError, AddItemsOutcome, AllocatedPlaylistItemIds, ClearQueueOutcome, MoveItemIntent,
