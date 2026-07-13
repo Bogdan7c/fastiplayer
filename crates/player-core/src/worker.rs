@@ -18,6 +18,8 @@ use video_core::{
 };
 use video_present_core::VideoFrameLease;
 
+#[cfg(test)]
+use crate::PlayerEvent;
 use crate::audio_boundary::{
     missing_audio_decoder_factory, missing_audio_output_factory,
     missing_audio_tempo_processor_factory,
@@ -33,20 +35,23 @@ use crate::runtime_settings::{validate_runtime_default_volume, validate_runtime_
 use crate::worker_scheduler::{PlannedWorkerWakeup, WorkerScheduler, WorkerWakeupDeadline};
 use crate::{
     ActiveSeekDiagnosticsSnapshot, AudioDecoderFactory, AudioOutputFactory,
-    AudioTempoProcessorFactory, FrameCounters, LatencyCounterSnapshot, MediaOpenRequest,
-    MediaSource, PlayerCommand, PlayerCommandOutcome, PlayerError, PlayerErrorKind, PlayerEvent,
-    PlayerResult, PlayerRuntimeAcceptedChange, PlayerRuntimeApplyError, PlayerRuntimeApplyGroup,
-    PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyReport, PlayerRuntimeApplyResult,
-    PlayerRuntimeAudioOutputRecreateUpdate, PlayerRuntimeBoundaryActivity,
-    PlayerRuntimeDecoderThreadConfigUpdate, PlayerRuntimeDefaultVolumeUpdate,
-    PlayerRuntimeFrameServerPolicyUpdate, PlayerRuntimeSettingsUpdate,
-    PlayerRuntimeTickConfigUpdate, PlayerRuntimeVideoBackendUpdate, PlayerSession, PlayerSnapshot,
-    PlayerTickConfig, PlayerTickContext, PlayerTickResult, PlayerVideoBackendInstallIntent,
-    PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan, PreparedMedia,
-    SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend, scheduler_timing_diagnostics,
+    AudioTempoProcessorFactory, AuthorizeInstallCommit, CorrelatedPlayerEvent, FrameCounters,
+    LatencyCounterSnapshot, MediaInstallPhaseCompletionPort, MediaInstallReceipt,
+    MediaInstallRequestId, MediaOpenRequest, MediaSource, PlayerCommand, PlayerCommandOutcome,
+    PlayerError, PlayerErrorKind, PlayerResult, PlayerRuntimeAcceptedChange,
+    PlayerRuntimeApplyError, PlayerRuntimeApplyGroup, PlayerRuntimeApplyGroupReport,
+    PlayerRuntimeApplyReport, PlayerRuntimeApplyResult, PlayerRuntimeAudioOutputRecreateUpdate,
+    PlayerRuntimeBoundaryActivity, PlayerRuntimeDecoderThreadConfigUpdate,
+    PlayerRuntimeDefaultVolumeUpdate, PlayerRuntimeFrameServerPolicyUpdate,
+    PlayerRuntimeSettingsUpdate, PlayerRuntimeTickConfigUpdate, PlayerRuntimeVideoBackendUpdate,
+    PlayerSession, PlayerSnapshot, PlayerTickConfig, PlayerTickContext, PlayerTickResult,
+    PlayerVideoBackendInstallIntent, PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan,
+    PreparedMedia, SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend,
+    scheduler_timing_diagnostics,
 };
 
 mod handle;
+mod media_install_compatibility;
 mod runtime_commands;
 mod runtime_publish;
 mod runtime_wait;
@@ -333,8 +338,8 @@ impl std::error::Error for PlayerWorkerJoinError {}
 /// Событие worker boundary: core event или tick telemetry.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlayerWorkerEvent {
-    /// Событие из `PlayerSession`.
-    Player(PlayerEvent),
+    /// Событие из `PlayerSession` с exact media-instance correlation.
+    Player(CorrelatedPlayerEvent),
 
     /// Normalized scrub state-machine event для app-owned visual override/diagnostics.
     Scrub(frame_server_core::ScrubEvent),
@@ -493,11 +498,17 @@ enum WorkerCommand {
 
     /// Подключить уже подготовленный media к worker-owned session.
     LoadPreparedMedia {
+        /// Neutral request identity compatibility install-а.
+        request_id: MediaInstallRequestId,
+
         /// Prepared-media contract, открытый container adapter-ом вне `player-core`.
         prepared_media: PreparedMedia,
 
         /// Нужно ли начать playback после успешного открытия.
         autoplay: bool,
+
+        /// Request-owned phase/completion port, не зависящий от lossy worker event channel.
+        install_port: Arc<dyn MediaInstallPhaseCompletionPort>,
     },
 
     /// Зафиксировать ошибку подготовки media, не скрывая open-request transition.

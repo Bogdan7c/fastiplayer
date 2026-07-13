@@ -152,12 +152,11 @@ impl PlayerSession {
         self.pipeline.set_media_clock_base(playback_position);
         self.pipeline.clear_monotonic_media_clock();
         self.publish_position_changed(playback_position);
-        self.pending_events
-            .push(PlayerEvent::SeekCommitted(SeekCommitInfo {
-                target_position: seek_commit.target_position.as_duration(),
-                actual_position: seek_commit.actual_position.as_duration(),
-                resume_intent: seek_commit.resume_intent,
-            }));
+        self.push_player_event(PlayerEvent::SeekCommitted(SeekCommitInfo {
+            target_position: seek_commit.target_position.as_duration(),
+            actual_position: seek_commit.actual_position.as_duration(),
+            resume_intent: seek_commit.resume_intent,
+        }));
 
         match seek_commit.resume_intent {
             PlaybackResumeIntent::Pause => {
@@ -197,10 +196,9 @@ impl PlayerSession {
 
         match play_result {
             Ok(()) => {
-                self.pending_events
-                    .push(PlayerEvent::AudioResumedAfterSeek(SeekAudioResumeInfo {
-                        target_position,
-                    }));
+                self.push_player_event(PlayerEvent::AudioResumedAfterSeek(SeekAudioResumeInfo {
+                    target_position,
+                }));
             }
             Err(error) => {
                 warn!(error = %error, "Не удалось запустить audio после seek");

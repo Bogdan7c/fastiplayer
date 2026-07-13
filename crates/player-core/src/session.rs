@@ -22,11 +22,11 @@ use crate::audio_boundary::{
 use crate::decoder_boundary::PresentFrameResourceProviderHandle;
 use crate::seek_state::{PlaybackResumeIntent, SeekRuntimeState};
 use crate::{
-    AudioDecoderFactory, AudioOutputFactory, AudioTempoProcessorFactory, FrameCounters,
-    PlaybackDiagnostics, PlaybackPipeline, PlaybackState, PlayerCommand, PlayerCommandOutcome,
-    PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, PlayerRuntimeApplyError,
-    PlayerRuntimeBoundaryActivity, PlayerSnapshot, PlayerVideoBackendInstallIntent,
-    QualitySelection, SeekRequest, StartedVideoBackend, TrackId,
+    AudioDecoderFactory, AudioOutputFactory, AudioTempoProcessorFactory, CorrelatedPlayerEvent,
+    FrameCounters, PlaybackDiagnostics, PlaybackPipeline, PlaybackState, PlayerCommand,
+    PlayerCommandOutcome, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult,
+    PlayerRuntimeApplyError, PlayerRuntimeBoundaryActivity, PlayerSnapshot,
+    PlayerVideoBackendInstallIntent, QualitySelection, SeekRequest, StartedVideoBackend, TrackId,
 };
 
 mod audio_runtime;
@@ -55,6 +55,7 @@ use self::audio_runtime::{
     classify_autoplay_audio_readiness, classify_seek_audio_gate,
 };
 use self::eof_drain::EofDrainRuntime;
+pub(crate) use self::media_lifecycle::CompatibilityMediaInstallOutcome;
 use self::media_lifecycle::MediaLifecycleState;
 use self::prepared_seek::PreparedSeekLandingRuntime;
 pub(crate) use self::render_leases::{LeasedPresentFrame, PresentFrameIdentity};
@@ -97,7 +98,7 @@ pub struct PlayerSession {
     diagnostics: PlaybackDiagnostics,
 
     /// События, накопленные после последнего drain.
-    pending_events: Vec<PlayerEvent>,
+    pending_events: Vec<CorrelatedPlayerEvent>,
 
     /// Scrub/SeekLanding события для отдельного S16 worker boundary.
     pending_scrub_events: Vec<ScrubEvent>,
@@ -578,13 +579,33 @@ impl PlayerSession {
     pub fn mark_fatal_error(&mut self, error: PlayerError) {
         self.snapshot.last_error = Some(error.clone());
         self.set_playback_state(PlaybackState::Failed);
-        self.pending_events.push(PlayerEvent::FatalError(error));
+        self.push_player_event(PlayerEvent::FatalError(error));
     }
 
-    /// Забирает накопленные события и очищает внутреннюю очередь.
+    /// Забирает накопленные события без correlation envelope для direct-session compatibility.
+    ///
+    /// Worker boundary использует `take_correlated_events`; этот метод сохраняет прежний
+    /// single-session test/API contract.
     #[must_use]
     pub fn take_events(&mut self) -> Vec<PlayerEvent> {
+        self.take_correlated_events()
+            .into_iter()
+            .map(|correlated_event| correlated_event.event)
+            .collect()
+    }
+
+    /// Забирает события вместе с immutable media-instance correlation.
+    #[must_use]
+    pub(crate) fn take_correlated_events(&mut self) -> Vec<CorrelatedPlayerEvent> {
         std::mem::take(&mut self.pending_events)
+    }
+
+    /// Фиксирует current instance identity в момент создания player event-а.
+    pub(super) fn push_player_event(&mut self, event: PlayerEvent) {
+        self.pending_events.push(CorrelatedPlayerEvent::new(
+            self.snapshot.media_instance_id,
+            event,
+        ));
     }
 
     /// Забирает normalized scrub events, не смешивая их с обычными player events.
@@ -985,8 +1006,7 @@ impl PlayerSession {
     fn select_video_track(&mut self, track_id: TrackId) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
         self.select_requested_video_track(track_id)?;
-        self.pending_events
-            .push(PlayerEvent::VideoTrackSelected(track_id));
+        self.push_player_event(PlayerEvent::VideoTrackSelected(track_id));
         Ok(())
     }
 
@@ -995,8 +1015,7 @@ impl PlayerSession {
         self.ensure_not_shutdown()?;
         self.pipeline.select_audio_track(track_id);
         self.snapshot.selected_tracks.audio_track = Some(track_id);
-        self.pending_events
-            .push(PlayerEvent::AudioTrackSelected(track_id));
+        self.push_player_event(PlayerEvent::AudioTrackSelected(track_id));
         Ok(())
     }
 
@@ -1004,23 +1023,21 @@ impl PlayerSession {
     fn select_subtitle_track(&mut self, track_id: Option<TrackId>) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
         self.snapshot.selected_tracks.subtitle_track = track_id;
-        self.pending_events
-            .push(PlayerEvent::SubtitleTrackSelected(track_id));
+        self.push_player_event(PlayerEvent::SubtitleTrackSelected(track_id));
         Ok(())
     }
 
     /// Фиксирует выбор качества как событие для будущего source/service слоя.
     fn select_quality(&mut self, selection: QualitySelection) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        self.pending_events
-            .push(PlayerEvent::QualitySelectionChanged(selection));
+        self.push_player_event(PlayerEvent::QualitySelectionChanged(selection));
         Ok(())
     }
 
     /// Запрашивает reload config без чтения файлов внутри player-core.
     fn reload_config(&mut self) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        self.pending_events.push(PlayerEvent::ConfigReloadRequested);
+        self.push_player_event(PlayerEvent::ConfigReloadRequested);
         Ok(())
     }
 
@@ -1041,7 +1058,7 @@ impl PlayerSession {
     /// Переводит session в stopped state.
     fn shutdown(&mut self) -> PlayerResult<()> {
         self.shutdown_requested = true;
-        self.pending_events.push(PlayerEvent::ShutdownRequested);
+        self.push_player_event(PlayerEvent::ShutdownRequested);
         self.set_playback_state(PlaybackState::Stopped);
         Ok(())
     }
@@ -1082,22 +1099,19 @@ impl PlayerSession {
             "Playback state changed"
         );
 
-        self.pending_events
-            .push(PlayerEvent::PlaybackStateChanged(playback_state));
+        self.push_player_event(PlayerEvent::PlaybackStateChanged(playback_state));
     }
 
     /// Сохраняет recoverable error в snapshot и event queue.
     fn record_recoverable_error(&mut self, error: PlayerError) {
         self.snapshot.last_error = Some(error.clone());
-        self.pending_events
-            .push(PlayerEvent::RecoverableError(error));
+        self.push_player_event(PlayerEvent::RecoverableError(error));
     }
 
     /// Публикует редкое явное изменение позиции, например seek.
     fn publish_position_changed(&mut self, position: Duration) {
         self.update_current_position(position);
-        self.pending_events
-            .push(PlayerEvent::PositionChanged(position));
+        self.push_player_event(PlayerEvent::PositionChanged(position));
     }
 
     /// Разрешает seek target в абсолютную media-позицию без изменения runtime seek policy.
@@ -1123,8 +1137,7 @@ impl PlayerSession {
     fn set_runtime_error(&mut self, message: String) {
         let error = PlayerError::new(PlayerErrorKind::RuntimeError, message);
         self.snapshot.last_error = Some(error.clone());
-        self.pending_events
-            .push(PlayerEvent::RecoverableError(error));
+        self.push_player_event(PlayerEvent::RecoverableError(error));
     }
 
     /// Очищает последнюю ошибку после успешного media action.

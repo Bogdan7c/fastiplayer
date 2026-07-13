@@ -275,6 +275,55 @@ fn prepared_media_install_publishes_open_snapshot_and_events() {
 }
 
 #[test]
+fn pending_old_event_is_not_relabelled_after_new_media_install() {
+    let mut session = PlayerSession::new();
+    let old_demuxer = FakeDemuxer::new(
+        Vec::new(),
+        Some(Duration::from_secs(10)),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    session.load_prepared_media_with_autoplay(
+        PreparedMedia::from_external_label("old-instance".to_owned(), Box::new(old_demuxer)),
+        false,
+    );
+    let old_instance_id = session
+        .snapshot()
+        .media_instance_id
+        .expect("old media must have exact instance identity");
+    let _ = session.take_correlated_events();
+
+    session.push_player_event(PlayerEvent::PositionChanged(Duration::from_secs(1)));
+
+    let new_demuxer = FakeDemuxer::new(
+        Vec::new(),
+        Some(Duration::from_secs(20)),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    session.load_prepared_media_with_autoplay(
+        PreparedMedia::from_external_label("new-instance".to_owned(), Box::new(new_demuxer)),
+        false,
+    );
+    let new_instance_id = session
+        .snapshot()
+        .media_instance_id
+        .expect("new media must have exact instance identity");
+    let correlated_events = session.take_correlated_events();
+
+    assert_ne!(old_instance_id, new_instance_id);
+    assert!(correlated_events.iter().any(|correlated_event| {
+        correlated_event.media_instance_id == Some(old_instance_id)
+            && correlated_event.event == PlayerEvent::PositionChanged(Duration::from_secs(1))
+    }));
+    assert!(correlated_events.iter().any(|correlated_event| {
+        correlated_event.media_instance_id == Some(new_instance_id)
+            && matches!(
+                &correlated_event.event,
+                PlayerEvent::MediaOpened(summary) if summary.source_label == "new-instance"
+            )
+    }));
+}
+
+#[test]
 fn audio_only_prepared_media_opens_without_missing_video_fatal() {
     let mut session = PlayerSession::new();
     let tracks = vec![fake_audio_track_with_codec(2, "A_FLAC")];

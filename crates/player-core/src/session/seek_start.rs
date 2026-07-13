@@ -60,8 +60,7 @@ impl PlayerSession {
         resume_intent: PlaybackResumeIntent,
     ) -> PlayerResult<()> {
         let target_position = self.resolve_seek_target(request);
-        self.pending_events
-            .push(PlayerEvent::SeekRequested(request));
+        self.push_player_event(PlayerEvent::SeekRequested(request));
         self.seek_runtime.clear_simple_scrub();
         self.snapshot.timeline.scrubbing = false;
 

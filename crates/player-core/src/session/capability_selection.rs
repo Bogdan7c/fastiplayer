@@ -60,10 +60,9 @@ impl PlayerSession {
     pub fn set_system_capabilities(&mut self, capabilities: SystemCapabilities) {
         let summary = capabilities.detailed_report_text();
         self.snapshot.capability_summary = Some(summary.clone());
-        self.pending_events
-            .push(PlayerEvent::CapabilityScanCompleted(
-                crate::CapabilitySummary { summary },
-            ));
+        self.push_player_event(PlayerEvent::CapabilityScanCompleted(
+            crate::CapabilitySummary { summary },
+        ));
         self.capabilities = Some(capabilities);
     }
 
@@ -243,13 +242,12 @@ impl PlayerSession {
         requirement: VideoDecodeRequirement,
         decodable_by_active_backend: bool,
     ) {
-        self.pending_events
-            .push(PlayerEvent::VideoBackendSelectionRequested(
-                VideoBackendSelectionRequest {
-                    requirement,
-                    decodable_by_active_backend,
-                },
-            ));
+        self.push_player_event(PlayerEvent::VideoBackendSelectionRequested(
+            VideoBackendSelectionRequest {
+                requirement,
+                decodable_by_active_backend,
+            },
+        ));
     }
 
     /// Активирует отложенный video-трек на только что установленном совместимом backend-е.

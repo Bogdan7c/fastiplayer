@@ -129,13 +129,27 @@ impl PlayerWorker {
         prepared_media: PreparedMedia,
         autoplay: bool,
     ) -> Result<(), PlayerWorkerSendError> {
+        self.load_prepared_media_compatibility_with_receipt(
+            MediaInstallRequestId::new_unique(),
+            prepared_media,
+            autoplay,
+        )
+        .map(|_receipt| ())
+    }
+
+    /// Ставит прежний destructive single-media load и возвращает correlated completion receipt.
+    ///
+    /// Метод назван compatibility явно: до Session 00C/00C1 он сохраняет старый lifecycle и
+    /// внутренне auto-authorize-ит только уже завершившийся legacy install. Это ещё не strong
+    /// transaction и не обещает preservation старого resource ownership при player-side failure.
+    pub fn load_prepared_media_compatibility_with_receipt(
+        &self,
+        request_id: MediaInstallRequestId,
+        prepared_media: PreparedMedia,
+        autoplay: bool,
+    ) -> Result<MediaInstallReceipt, PlayerWorkerSendError> {
         self.command_sender
-            .command_tx
-            .try_send(WorkerCommand::LoadPreparedMedia {
-                prepared_media,
-                autoplay,
-            })
-            .map_err(PlayerWorkerSendError::from)
+            .load_prepared_media_compatibility_with_receipt(request_id, prepared_media, autoplay)
     }
 
     /// Передаёт уже открытый streaming demuxer во владение worker thread.

@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -14,8 +15,8 @@ use video_present_core::VideoFrameLeaseConfig;
 
 use super::*;
 use crate::{
-    MediaSource, PlaybackRate, PlaybackState, PlayerRuntimeApplyOutcome, PlayerRuntimeSettingId,
-    ScrubCommitPolicy, SeekRequest,
+    MediaInstallCompletion, MediaInstallPhase, MediaSource, PlaybackRate, PlaybackState,
+    PlayerRuntimeApplyOutcome, PlayerRuntimeSettingId, ScrubCommitPolicy, SeekRequest,
 };
 
 fn worker_config_for_tests() -> PlayerWorkerConfig {
@@ -496,6 +497,111 @@ fn worker_starts_accepts_commands_publishes_snapshot_and_shutdowns() {
 }
 
 #[test]
+fn compatibility_media_install_preserves_snapshot_and_correlates_completion_and_event() {
+    let mut worker = PlayerWorker::spawn(worker_config_for_tests()).unwrap();
+    let request_id = MediaInstallRequestId::from_non_zero(
+        NonZeroU64::new(700).expect("test request identity must be non-zero"),
+    );
+    let demuxer =
+        WorkerFakeDemuxer::seekable_with_tracks(Vec::new(), Arc::new(Mutex::new(Vec::new())));
+    let prepared_media =
+        PreparedMedia::from_external_label("compatibility-media".to_owned(), Box::new(demuxer));
+
+    let receipt = worker
+        .load_prepared_media_compatibility_with_receipt(request_id, prepared_media, false)
+        .unwrap();
+    let snapshot = wait_for_snapshot(&mut worker, |snapshot| {
+        snapshot.source_label.as_deref() == Some("compatibility-media")
+            && snapshot.media_instance_id.is_some()
+    });
+
+    let ready_phase = receipt
+        .try_take_ready_to_commit()
+        .expect("compatibility adapter must publish ready before terminal");
+    let completion = receipt
+        .try_take_completion()
+        .expect("compatibility adapter must preserve terminal completion");
+    let installed_instance_id = match completion {
+        MediaInstallCompletion::Installed {
+            request_id: completed_request_id,
+            media_instance_id,
+        } => {
+            assert_eq!(completed_request_id, request_id);
+            media_instance_id
+        }
+        other => panic!("expected installed completion, got {other:?}"),
+    };
+
+    assert_eq!(ready_phase, MediaInstallPhase::ReadyToCommit { request_id });
+    assert_eq!(snapshot.media_instance_id, Some(installed_instance_id));
+    assert_eq!(snapshot.playback_state, PlaybackState::Paused);
+    assert_eq!(snapshot.duration, Some(Duration::from_secs(30)));
+
+    let events = drain_events_until(&worker, |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                PlayerWorkerEvent::Player(CorrelatedPlayerEvent {
+                    event: PlayerEvent::MediaOpened(_),
+                    ..
+                })
+            )
+        })
+    });
+    let media_opened_instance_id = events.iter().find_map(|event| match event {
+        PlayerWorkerEvent::Player(CorrelatedPlayerEvent {
+            media_instance_id,
+            event: PlayerEvent::MediaOpened(_),
+        }) => *media_instance_id,
+        _ => None,
+    });
+    assert_eq!(media_opened_instance_id, Some(installed_instance_id));
+
+    worker.shutdown().unwrap();
+}
+
+#[test]
+fn compatibility_media_install_sender_preserves_backpressure_and_disconnect() {
+    let (command_sender, command_rx) = command_sender_for_tests();
+    for _ in 0..COMMAND_CHANNEL_CAPACITY {
+        command_sender.try_send(PlayerCommand::Play).unwrap();
+    }
+
+    let full_error = command_sender
+        .load_prepared_media_compatibility_with_receipt(
+            MediaInstallRequestId::new_unique(),
+            PreparedMedia::from_external_label(
+                "full".to_owned(),
+                Box::new(WorkerFakeDemuxer::seekable_with_tracks(
+                    Vec::new(),
+                    Arc::new(Mutex::new(Vec::new())),
+                )),
+            ),
+            false,
+        )
+        .expect_err("full command queue must reject install acceptance");
+    assert_eq!(full_error, PlayerWorkerSendError::Full);
+
+    drop(command_rx);
+    let (disconnected_sender, disconnected_rx) = command_sender_for_tests();
+    drop(disconnected_rx);
+    let disconnected_error = disconnected_sender
+        .load_prepared_media_compatibility_with_receipt(
+            MediaInstallRequestId::new_unique(),
+            PreparedMedia::from_external_label(
+                "disconnected".to_owned(),
+                Box::new(WorkerFakeDemuxer::seekable_with_tracks(
+                    Vec::new(),
+                    Arc::new(Mutex::new(Vec::new())),
+                )),
+            ),
+            false,
+        )
+        .expect_err("disconnected command queue must reject install acceptance");
+    assert_eq!(disconnected_error, PlayerWorkerSendError::Disconnected);
+}
+
+#[test]
 fn player_worker_exposes_decoder_thread_config_for_backend_factory() {
     let decoder_thread_config = PlayerVideoDecoderThreadConfig {
         packet_channel_frames: 2,
@@ -809,14 +915,17 @@ fn command_ordering_for_play_pause_stop_open_shutdown_is_preserved() {
         events.iter().any(|event| {
             matches!(
                 event,
-                PlayerWorkerEvent::Player(PlayerEvent::ShutdownRequested)
+                PlayerWorkerEvent::Player(CorrelatedPlayerEvent {
+                    event: PlayerEvent::ShutdownRequested,
+                    ..
+                })
             )
         })
     });
     let player_events = events
         .iter()
         .filter_map(|event| match event {
-            PlayerWorkerEvent::Player(event) => Some(event),
+            PlayerWorkerEvent::Player(event) => Some(&event.event),
             PlayerWorkerEvent::Scrub(_) => None,
             PlayerWorkerEvent::RenderError(_) => None,
             PlayerWorkerEvent::Tick(_) => None,

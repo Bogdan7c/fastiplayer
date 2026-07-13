@@ -11,6 +11,7 @@ mod decoder_boundary;
 mod diagnostics;
 mod error;
 mod event;
+mod media_install;
 mod media_opening;
 mod pipeline;
 mod playback_rate;
@@ -69,8 +70,9 @@ pub use diagnostics::{
 };
 pub use error::{PlayerError, PlayerErrorKind, PlayerResult};
 pub use event::{
-    BufferingState, CapabilitySummary, FramePresentationInfo, MediaSummary, PlayerEvent,
-    SeekAudioResumeInfo, SeekCommitInfo, SeekTargetFramePresentation, VideoBackendSelectionRequest,
+    BufferingState, CapabilitySummary, CorrelatedPlayerEvent, FramePresentationInfo, MediaSummary,
+    PlayerEvent, SeekAudioResumeInfo, SeekCommitInfo, SeekTargetFramePresentation,
+    VideoBackendSelectionRequest,
 };
 pub use frame_server_core::{
     BackendRevision, DeferredLiveScrubSettingsChange, LiveScrubDiagnostics,
@@ -82,6 +84,12 @@ pub use frame_server_core::{
     SourceRevision,
 };
 pub use media_core::TrackId;
+pub use media_install::{
+    AuthorizeInstallCommit, CancelMediaInstall, MediaInstallCancellationCause,
+    MediaInstallCommitPoint, MediaInstallCompletion, MediaInstallControl,
+    MediaInstallControlOutcome, MediaInstallFailure, MediaInstallFailureStage, MediaInstallPhase,
+    MediaInstallPhaseCompletionPort, MediaInstallReceipt, MediaInstallRequestId, MediaInstanceId,
+};
 pub use media_opening::{MediaSourceInfo, MediaSourceKind, PreparedMedia, PreparedMediaSource};
 pub(crate) use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};
 pub use playback_rate::{PlaybackRate, PlaybackRateValidationError};

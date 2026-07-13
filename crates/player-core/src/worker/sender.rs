@@ -1,6 +1,28 @@
 use super::*;
 
 impl PlayerCommandSender {
+    /// Ставит compatibility media install без блокировки caller thread-а.
+    ///
+    /// Успешный return означает только command acceptance. Фактический lifecycle outcome
+    /// приходит через отдельный request-owned receipt и не теряется при event backpressure.
+    pub fn load_prepared_media_compatibility_with_receipt(
+        &self,
+        request_id: MediaInstallRequestId,
+        prepared_media: PreparedMedia,
+        autoplay: bool,
+    ) -> Result<MediaInstallReceipt, PlayerWorkerSendError> {
+        let (receipt, install_port) = MediaInstallReceipt::new(request_id);
+        self.command_tx
+            .try_send(WorkerCommand::LoadPreparedMedia {
+                request_id,
+                prepared_media,
+                autoplay,
+                install_port,
+            })
+            .map_err(PlayerWorkerSendError::from)?;
+        Ok(receipt)
+    }
+
     /// Отправляет команду без блокировки render/UI thread.
     pub fn try_send(&self, command: PlayerCommand) -> Result<(), PlayerWorkerSendError> {
         self.command_tx

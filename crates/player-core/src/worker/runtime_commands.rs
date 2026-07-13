@@ -33,11 +33,17 @@ impl PlayerWorkerRuntime {
         match command {
             WorkerCommand::Player(player_command) => self.handle_player_command(player_command),
             WorkerCommand::LoadPreparedMedia {
+                request_id,
                 prepared_media,
                 autoplay,
+                install_port,
             } => {
-                self.session
-                    .load_prepared_media_with_autoplay(prepared_media, autoplay);
+                self.handle_compatibility_media_install(
+                    request_id,
+                    prepared_media,
+                    autoplay,
+                    install_port,
+                );
             }
             WorkerCommand::MediaOpenFailed { request, error } => {
                 self.session.fail_media_open_with_error(request, error);

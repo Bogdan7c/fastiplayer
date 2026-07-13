@@ -359,7 +359,8 @@ fn record_worker_events(
             PlayerWorkerEvent::RenderError(_) => {
                 app_state.clear_cached_present_frame_after_worker_render_error();
             }
-            PlayerWorkerEvent::Player(player_event) => {
+            PlayerWorkerEvent::Player(correlated_event) => {
+                let player_event = correlated_event.event;
                 app_state.handle_cached_present_frame_player_event(&player_event);
                 app_state.handle_main_visual_override_player_event(&player_event);
                 match player_event {

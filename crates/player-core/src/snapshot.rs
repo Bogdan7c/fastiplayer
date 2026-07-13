@@ -6,13 +6,16 @@ use media_core::{
 use video_core::{DecodedPixelFormat, FrameMemoryPath};
 
 use crate::{
-    MediaSourceInfo, PlaybackDiagnosticsSnapshot, PlaybackRate, PlaybackState, PlayerError,
-    QualityId, TrackId,
+    MediaInstanceId, MediaSourceInfo, PlaybackDiagnosticsSnapshot, PlaybackRate, PlaybackState,
+    PlayerError, QualityId, TrackId,
 };
 
 /// Read-only snapshot player state для UI, renderer и desktop integration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlayerSnapshot {
+    /// Точная identity установленного media; source label для correlation не используется.
+    pub media_instance_id: Option<MediaInstanceId>,
+
     /// Текущее состояние воспроизведения.
     pub playback_state: PlaybackState,
 
@@ -126,6 +129,7 @@ impl Default for PlayerSnapshot {
     /// Создаёт безопасные default-значения для первого кадра UI.
     fn default() -> Self {
         Self {
+            media_instance_id: None,
             playback_state: PlaybackState::default(),
             source_label: None,
             media_title: None,

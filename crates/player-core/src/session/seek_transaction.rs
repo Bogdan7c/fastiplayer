@@ -604,13 +604,12 @@ impl PlayerSession {
         self.seek_runtime.clear_eof_fallback_video_position();
         self.snapshot.timeline.stale_frame = false;
         if first_post_seek_presented_frame {
-            self.pending_events
-                .push(PlayerEvent::SeekTargetFramePresented(
-                    SeekTargetFramePresentation {
-                        target_position: seek_commit.target_position.as_duration(),
-                        frame_pts,
-                    },
-                ));
+            self.push_player_event(PlayerEvent::SeekTargetFramePresented(
+                SeekTargetFramePresentation {
+                    target_position: seek_commit.target_position.as_duration(),
+                    frame_pts,
+                },
+            ));
         }
     }
 

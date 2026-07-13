@@ -210,7 +210,7 @@ impl PlayerWorkerRuntime {
             .snapshot_with_frame_counters(FrameCounters::default());
         self.snapshot_publisher.publish(snapshot);
 
-        for event in self.session.take_events() {
+        for event in self.session.take_correlated_events() {
             self.publish_worker_event(PlayerWorkerEvent::Player(event));
         }
         for event in self.session.take_scrub_events() {

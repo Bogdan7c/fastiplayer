@@ -3,8 +3,8 @@ use std::time::Duration;
 use codec_core::VideoDecodeRequirement;
 
 use crate::{
-    MediaOpenRequest, PlaybackResumeIntent, PlaybackState, PlayerError, QualitySelection,
-    SeekRequest, TrackId,
+    MediaInstanceId, MediaOpenRequest, PlaybackResumeIntent, PlaybackState, PlayerError,
+    QualitySelection, SeekRequest, TrackId,
 };
 
 /// Требование текущего активного video-стрима, под которое shell должен подобрать backend.
@@ -95,6 +95,30 @@ pub struct SeekAudioResumeInfo {
 pub struct CapabilitySummary {
     /// Текстовая сводка для UI или логов.
     pub summary: String,
+}
+
+/// Player event вместе с exact media instance, активным в момент создания события.
+///
+/// `None` означает session-level transition без установленного media. Wrapper не вычисляет
+/// identity по source label и не перелабеливает уже накопленное событие после следующего load.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CorrelatedPlayerEvent {
+    /// Точная identity media instance либо отсутствие active media в момент события.
+    pub media_instance_id: Option<MediaInstanceId>,
+
+    /// Исходное player событие без изменения его payload/семантики.
+    pub event: PlayerEvent,
+}
+
+impl CorrelatedPlayerEvent {
+    /// Фиксирует event и instance identity одним immutable envelope.
+    #[must_use]
+    pub const fn new(media_instance_id: Option<MediaInstanceId>, event: PlayerEvent) -> Self {
+        Self {
+            media_instance_id,
+            event,
+        }
+    }
 }
 
 /// Событие, которое player-core отдаёт shell-слою после обработки команд или tick.

@@ -5,8 +5,9 @@ use tracing::{debug, info, warn};
 use crate::media_opening::PreparedMedia;
 use crate::seek_state::SeekCommitState;
 use crate::{
-    MediaOpenRequest, MediaSource, MediaSummary, PlaybackState, PlayerCommand,
-    PlayerCommandOutcome, PlayerError, PlayerEvent, PlayerResult, TrackSelectionSnapshot,
+    MediaInstallFailure, MediaInstallFailureStage, MediaInstanceId, MediaOpenRequest, MediaSource,
+    MediaSummary, PlaybackState, PlayerCommand, PlayerCommandOutcome, PlayerError, PlayerEvent,
+    PlayerResult, TrackSelectionSnapshot,
 };
 
 use super::PlayerSession;
@@ -16,6 +17,19 @@ use super::PlayerSession;
 pub(super) struct MediaLifecycleState {
     /// Autoplay-флаг принятого open request до успешного `MediaOpened`.
     pending_autoplay: bool,
+}
+
+/// Characterization outcome прежнего destructive single-media adapter-а.
+///
+/// Это не strong transaction: Session 00C/00C1 перенесёт fallible preparation до реального
+/// `ReadyToCommit`, сохранив публичный completion contract из `media_install`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum CompatibilityMediaInstallOutcome {
+    /// Existing call graph завершил установку и создал точный media instance.
+    Installed(MediaInstanceId),
+
+    /// Existing call graph завершился на явно названном fallible stage.
+    Failed(MediaInstallFailure),
 }
 
 impl MediaLifecycleState {
@@ -63,11 +77,23 @@ impl PlayerSession {
         prepared_media: PreparedMedia,
         autoplay: bool,
     ) {
-        if !self.begin_media_open(prepared_media.media_source(), autoplay) {
-            return;
+        let _ = self.load_prepared_media_compatibility(prepared_media, autoplay);
+    }
+
+    /// Запускает прежний single-media lifecycle и возвращает typed characterization outcome.
+    ///
+    /// Метод существует только как временный compatibility seam: он по-прежнему выполняет
+    /// destructive reset до части fallible work и потому не является strong transaction.
+    pub(crate) fn load_prepared_media_compatibility(
+        &mut self,
+        prepared_media: PreparedMedia,
+        autoplay: bool,
+    ) -> CompatibilityMediaInstallOutcome {
+        if let Err(failure) = self.begin_media_open(prepared_media.media_source(), autoplay) {
+            return CompatibilityMediaInstallOutcome::Failed(failure);
         }
 
-        self.install_prepared_media(prepared_media);
+        self.install_prepared_media(prepared_media)
     }
 
     /// Публикует ошибку adapter-а без сброса уже работающего media pipeline-а.
@@ -85,41 +111,55 @@ impl PlayerSession {
             return;
         }
 
-        self.pending_events
-            .push(PlayerEvent::MediaOpenRequested(request));
+        self.push_player_event(PlayerEvent::MediaOpenRequested(request));
         self.record_recoverable_error(error);
     }
 
     /// Переводит state machine в `Opening` перед передачей prepared media в pipeline.
-    fn begin_media_open(&mut self, media_source: MediaSource, autoplay: bool) -> bool {
+    fn begin_media_open(
+        &mut self,
+        media_source: MediaSource,
+        autoplay: bool,
+    ) -> Result<(), MediaInstallFailure> {
         self.reset_media_state();
 
         let open_request = MediaOpenRequest::new(media_source, autoplay);
         match self.dispatch_command(PlayerCommand::OpenMedia(open_request)) {
-            Ok(PlayerCommandOutcome::Applied) => true,
+            Ok(PlayerCommandOutcome::Applied) => Ok(()),
             Ok(PlayerCommandOutcome::ScrubCommit(outcome)) => {
                 debug!(
                     outcome = ?outcome,
                     "Prepared media open неожиданно вернул scrub-specific outcome"
                 );
-                false
+                Err(MediaInstallFailure::legacy_open_rejected(format!(
+                    "prepared media open returned scrub-specific outcome: {outcome:?}"
+                )))
             }
             Ok(PlayerCommandOutcome::Rejected(rejection)) => {
                 debug!(
                     rejection = ?rejection,
                     "Prepared media open command rejected before install"
                 );
-                false
+                Err(MediaInstallFailure::legacy_open_rejected(format!(
+                    "prepared media open command rejected: {rejection:?}"
+                )))
             }
             Err(error) => {
+                let failure = MediaInstallFailure::new(
+                    MediaInstallFailureStage::OpenTransition,
+                    error.clone(),
+                );
                 self.record_recoverable_error(error);
-                false
+                Err(failure)
             }
         }
     }
 
     /// Подключает уже открытый media к pipeline и публикует успешный open transition.
-    fn install_prepared_media(&mut self, prepared_media: PreparedMedia) {
+    fn install_prepared_media(
+        &mut self,
+        prepared_media: PreparedMedia,
+    ) -> CompatibilityMediaInstallOutcome {
         info!(
             source = %prepared_media.source_label(),
             tracks = prepared_media.track_count(),
@@ -135,8 +175,12 @@ impl PlayerSession {
             prepared_media.missing_video_track_message(),
         ) {
             warn!(error = %error, "Video track rejected during media load");
+            let failure = MediaInstallFailure::new(
+                MediaInstallFailureStage::VideoStreamConfiguration,
+                error.clone(),
+            );
             self.mark_fatal_error(error);
-            return;
+            return CompatibilityMediaInstallOutcome::Failed(failure);
         }
 
         let summary = MediaSummary {
@@ -153,15 +197,26 @@ impl PlayerSession {
             source_info,
         } = prepared_media.into_pipeline_slots();
 
+        // Identity создаётся только после fallible video selection и перед фактическим
+        // ownership move, чтобы MediaOpened/playback events уже несли exact new instance.
+        let media_instance_id = MediaInstanceId::new_unique();
+        self.snapshot.media_instance_id = Some(media_instance_id);
+
         self.pipeline
             .install_opened_media(demuxer, file_path, source_label, tracks);
         self.pipeline.update_media_source_info(source_info);
         self.clear_error();
 
         if let Err(error) = self.mark_media_opened(summary) {
+            let failure = MediaInstallFailure::new(
+                MediaInstallFailureStage::LegacyMediaOpenedTransition,
+                error.clone(),
+            );
             self.record_recoverable_error(error);
+            return CompatibilityMediaInstallOutcome::Failed(failure);
         }
         self.apply_demux_seekability(seekability);
+        CompatibilityMediaInstallOutcome::Installed(media_instance_id)
     }
 
     /// Применяет lifecycle update от demuxer-а после container discontinuity.
@@ -260,7 +315,7 @@ impl PlayerSession {
         self.set_snapshot_duration(summary.duration);
         self.snapshot.source_label = Some(summary.source_label.clone());
         self.clear_error();
-        self.pending_events.push(PlayerEvent::MediaOpened(summary));
+        self.push_player_event(PlayerEvent::MediaOpened(summary));
 
         if self.media_lifecycle.pending_autoplay() {
             self.begin_autoplay_preroll()?;
@@ -316,6 +371,7 @@ impl PlayerSession {
         self.discard_pending_decoded_video_frames();
 
         self.pipeline.reset_media_slots();
+        self.snapshot.media_instance_id = None;
         self.reset_diagnostics_for_media();
 
         self.clear_pending_video_backend_reselection();
@@ -343,8 +399,7 @@ impl PlayerSession {
         self.snapshot.media_title = None;
         self.snapshot.clear_timeline();
         self.clear_error();
-        self.pending_events
-            .push(PlayerEvent::MediaOpenRequested(request));
+        self.push_player_event(PlayerEvent::MediaOpenRequested(request));
         self.set_playback_state(PlaybackState::Opening);
         Ok(())
     }
