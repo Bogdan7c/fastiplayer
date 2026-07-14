@@ -67,4 +67,4 @@ Session 05 completed PASS on 2026-07-14. This memory complements `mem:core` and 
 
 ## Verification and next scope
 - 60 playlist-core tests, strict crate Clippy, fmt, Rust 1.96 and MSRV 1.92 locked workspace checks, and refactor guardrails passed for Session 05. Tests include every key/direction, non-UTF, missing/partial tuples, current/shuffle preservation, no-op/lock accounting, 10k deterministic characterization, one preparation per item, and comparator total-order laws.
-- Next allowed work is Session 06 only: `playlist-state` versioned DTO/load/quarantine. Probe/UI/config/persistence/app-player integration were not started in Session 05.
+- Session 06 persistence boundaries now live in `mem:playlist/state`; `playlist-core` itself remains serde/I/O-neutral. Next allowed work is Session 07 only: latest-only atomic save worker/durability lifecycle. Probe/UI/config/app-player integration remains outside the completed core sessions.

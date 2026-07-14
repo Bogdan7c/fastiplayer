@@ -26,6 +26,7 @@ CONTRACT_CRATES = frozenset(
         "audio-core",
         "media-core",
         "playlist-core",
+        "playlist-state",
         "codec-core",
         "settings-core",
         "video-frame-contract",
@@ -52,6 +53,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "media-core",
         "player-core",
         "playlist-core",
+        "playlist-state",
         "render-core",
         "render-wgpu-shell",
         "render-wgpu-video",
@@ -98,6 +100,12 @@ FRAME_SERVER_CORE_ALLOWED_DEPENDENCIES = frozenset(
 # Playlist domain переиспользует neutral media metadata vocabulary и RNG.
 # UI/player/filesystem/serde/service edges должны появляться в верхних owners.
 PLAYLIST_CORE_ALLOWED_DEPENDENCIES = frozenset({"media-core", "rand"})
+
+# Persistence owner может видеть только neutral playlist/media contracts и
+# минимальный набор serde/hash/platform dependencies для bounded JSON I/O.
+PLAYLIST_STATE_ALLOWED_DEPENDENCIES = frozenset(
+    {"libc", "media-core", "playlist-core", "serde", "serde_json", "sha2"}
+)
 
 FFMPEG_FORBIDDEN_DEPENDENCIES = frozenset(
     {
@@ -674,6 +682,14 @@ def find_dependency_violations(
             frozenset({"playlist-core"}),
             PLAYLIST_CORE_ALLOWED_DEPENDENCIES,
             "playlist-core зависит только от neutral media-core metadata contract и rand",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"playlist-state"}),
+            PLAYLIST_STATE_ALLOWED_DEPENDENCIES,
+            "playlist-state остаётся отдельным JSON/I/O owner без app/player/UI/service dependencies",
         )
     )
     violations.extend(

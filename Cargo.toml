@@ -19,6 +19,7 @@ members = [
     "crates/rustiplayer-settings",
     "crates/player-core",
     "crates/playlist-core",
+    "crates/playlist-state",
     "crates/media-core",
     "crates/symphonia-demux",
     "crates/audio",
@@ -121,6 +122,9 @@ audio = { version = "0.1.0", path = "crates/audio" }
 capability-core = { version = "0.1.0", path = "crates/capability-core" }
 codec-core = { version = "0.1.0", path = "crates/codec-core" }
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+libc = "0.2"
 thiserror = "2.0"
 toml = "0.9"
 tracing = "0.1"
@@ -143,6 +147,7 @@ render-wgpu-video = { version = "0.1.0", path = "crates/render-wgpu-video" }
 render-wgpu-shell = { version = "0.1.0", path = "crates/render-wgpu-shell" }
 player-core = { version = "0.1.0", path = "crates/player-core" }
 playlist-core = { version = "0.1.0", path = "crates/playlist-core" }
+playlist-state = { version = "0.1.0", path = "crates/playlist-state" }
 desktop-integration = { version = "0.1.0", path = "crates/desktop-integration" }
 frame-server-core = { version = "0.1.0", path = "crates/frame-server-core" }
 media-core = { version = "0.1.0", path = "crates/media-core" }

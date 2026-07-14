@@ -1,0 +1,28 @@
+[package]
+name = "playlist-state"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "playlist_state"
+path = "src/lib.rs"
+
+[dependencies]
+# Domain crate остаётся serde/I/O-neutral; persistence зависит от него только
+# через публичные snapshot/restore boundaries.
+playlist-core.workspace = true
+# Exact duration и sequence newtypes принадлежат neutral media-core contract.
+media-core.workspace = true
+# Derive используется исключительно private versioned disk DTO.
+serde.workspace = true
+# JSON parser/serializer принадлежит только persistence owner crate.
+serde_json.workspace = true
+# Inspected-content digest защищает explicit quarantine revalidation.
+sha2.workspace = true
+# Linux использует renameat2(RENAME_NOREPLACE) как более сильный no-clobber primitive.
+libc.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

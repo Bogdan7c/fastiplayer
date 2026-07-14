@@ -136,7 +136,8 @@ run_dependencies() {
         crates/animation-core crates/app-egui crates/audio-core crates/audio-signalsmith \
         crates/audio-timestretch crates/audio crates/capability-core crates/codec-core \
         crates/config crates/desktop-integration crates/frame-server-core crates/media-core \
-        crates/media-prefetch crates/player-core crates/render-core crates/render-wgpu-shell \
+        crates/media-prefetch crates/player-core crates/playlist-core crates/playlist-state \
+        crates/render-core crates/render-wgpu-shell \
         crates/render-wgpu-video crates/rustiplayer-settings crates/service-direct-media \
         crates/service-youtube crates/settings-core crates/settings-derive crates/source-core \
         crates/symphonia-demux crates/video-backend-api crates/video-core crates/video-ffmpeg \
