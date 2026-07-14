@@ -1,4 +1,4 @@
-//! Process-lifetime shell для будущего playlist controller/coordinators.
+//! Process-lifetime shell playlist controller-а и reusable coordinators.
 //!
 //! Runtime владеет reusable media-open coordinator-ом, но по-прежнему не знает queue policy.
 //! Он живёт в `AppShell`, а renderer-bound `AppState` получает короткоживущий binding
@@ -10,6 +10,25 @@ use std::time::Instant;
 
 use crate::app_wake::{AppWakePort, OwnerMailboxPublisher, OwnerMailboxReceiver, owner_mailbox};
 use crate::media_open::MediaOpenCoordinator;
+
+#[allow(
+    dead_code,
+    reason = "Session 11A publishes controller foundation before Session 11B/12 UI callsites"
+)]
+mod controller;
+#[allow(
+    dead_code,
+    reason = "Session 11A identities become production callsite inputs in subsequent sessions"
+)]
+mod identity;
+#[allow(
+    dead_code,
+    reason = "Session 11A read-only snapshot is attached by later playlist UI integration"
+)]
+mod view;
+
+pub(crate) use controller::PlaylistController;
+pub(crate) use view::PlaylistViewSnapshot;
 
 /// Generation любого lifecycle transition runtime-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -24,6 +43,41 @@ pub(crate) struct PlaylistBindingGeneration(u64);
 pub(crate) struct PlaylistRuntimeBinding {
     lifecycle_generation: PlaylistLifecycleGeneration,
     binding_generation: PlaylistBindingGeneration,
+}
+
+/// Renderer-bound attachment: exact port identity плюс immutable controller view.
+#[derive(Debug, Clone)]
+pub(crate) struct PlaylistAppStateAttachment {
+    binding: PlaylistRuntimeBinding,
+    view_snapshot: Arc<PlaylistViewSnapshot>,
+}
+
+impl PlaylistAppStateAttachment {
+    /// Возвращает exact binding для correlation callbacks текущего `AppState`.
+    pub(crate) const fn binding(&self) -> PlaylistRuntimeBinding {
+        self.binding
+    }
+
+    /// Возвращает cheap-clone read-only snapshot без mutable доступа к controller-у.
+    pub(crate) fn view_snapshot(&self) -> Arc<PlaylistViewSnapshot> {
+        self.view_snapshot.clone()
+    }
+
+    /// Заменяет только immutable view при сохранении exact binding identity.
+    pub(crate) fn replace_view_snapshot(&mut self, view_snapshot: Arc<PlaylistViewSnapshot>) {
+        self.view_snapshot = view_snapshot;
+    }
+}
+
+impl PlaylistRuntimeBinding {
+    /// Передаёт controller-у exact player binding generation после `Installed`.
+    #[allow(
+        dead_code,
+        reason = "used by playlist install orchestration in the next session"
+    )]
+    pub(crate) const fn binding_generation(self) -> PlaylistBindingGeneration {
+        self.binding_generation
+    }
 }
 
 /// Почему callback нельзя применять к текущему runtime binding-у.
@@ -105,7 +159,7 @@ impl PlaylistOwnerPorts {
     }
 }
 
-/// Process-lifetime owner mechanism-ов до появления controller-а в Session 11A.
+/// Process-lifetime owner canonical controller-а и policy-neutral mechanism-ов.
 pub(crate) struct PlaylistRuntime {
     lifecycle_generation: PlaylistLifecycleGeneration,
     next_binding_generation: PlaylistBindingGeneration,
@@ -116,6 +170,12 @@ pub(crate) struct PlaylistRuntime {
     #[allow(dead_code)] // Поле удерживает worker-side ports process lifetime.
     owner_ports: PlaylistOwnerPorts,
     owner_receiver: OwnerMailboxReceiver<PlaylistOwnerProgress, PlaylistOwnerCompletion>,
+    /// Canonical queue, identities и D08 guard живут независимо от renderer recreation.
+    #[allow(
+        dead_code,
+        reason = "Session 11A foundation is attached by later UI orchestration"
+    )]
+    controller: PlaylistController,
     /// Process-lifetime reusable preparation/install mechanism Session 10C.
     media_open: MediaOpenCoordinator,
 }
@@ -149,6 +209,7 @@ impl PlaylistRuntime {
             },
             admission_open,
             owner_receiver,
+            controller: PlaylistController::new(),
             media_open,
         }
     }
@@ -219,6 +280,36 @@ impl PlaylistRuntime {
         let owner_changed = self.owner_receiver.drain().has_payload();
         let media_open_changed = self.media_open.drain();
         owner_changed || media_open_changed
+    }
+
+    /// Cheap-clone read-only snapshot для renderer-bound AppState/будущего UI port-а.
+    #[allow(
+        dead_code,
+        reason = "read-only AppState attachment lands with playlist UI"
+    )]
+    pub(crate) fn playlist_view_snapshot(&self) -> Arc<PlaylistViewSnapshot> {
+        self.controller.view_snapshot()
+    }
+
+    /// Создаёт renderer-bound attachment только для текущего exact binding-а.
+    pub(crate) fn app_state_attachment(
+        &self,
+        binding: PlaylistRuntimeBinding,
+    ) -> Result<PlaylistAppStateAttachment, PlaylistBindingRejection> {
+        self.validate_binding(binding)?;
+        Ok(PlaylistAppStateAttachment {
+            binding,
+            view_snapshot: self.playlist_view_snapshot(),
+        })
+    }
+
+    /// Controller остаётся process owner-ом; mutable facade нужен orchestration layer-у.
+    #[allow(
+        dead_code,
+        reason = "controller facade is consumed by Session 11B orchestration"
+    )]
+    pub(crate) fn playlist_controller(&mut self) -> &mut PlaylistController {
+        &mut self.controller
     }
 
     /// Закрывает admission ровно один раз и не выдаёт скрытых обещаний о join/I/O.
@@ -394,6 +485,7 @@ mod tests {
     #[test]
     fn suspend_resume_preserves_runtime_and_rejects_stale_binding() {
         let mut runtime = runtime();
+        let initial_view = runtime.playlist_view_snapshot();
         let first = runtime.bind_resumed_app_state().unwrap();
         assert_eq!(runtime.validate_binding(first), Ok(()));
 
@@ -411,6 +503,19 @@ mod tests {
         );
         assert_eq!(runtime.validate_binding(second), Ok(()));
         assert_eq!(runtime.load_gate(), PlaylistLoadGateState::Pending);
+
+        let attachment = runtime
+            .app_state_attachment(second)
+            .expect("current binding attachment");
+        assert_eq!(attachment.binding(), second);
+        assert_eq!(
+            attachment.view_snapshot().revision(),
+            initial_view.revision()
+        );
+        assert!(matches!(
+            runtime.app_state_attachment(first),
+            Err(PlaylistBindingRejection::StaleGeneration)
+        ));
     }
 
     #[test]

@@ -61,6 +61,7 @@ use crate::video_pipeline_selector::{
 mod main_visual_override;
 mod media_jobs;
 pub(crate) use media_jobs::playback_intent_from_snapshot;
+mod playlist_attachment;
 mod present_frame_cache;
 mod sidebar_controller;
 mod strong_media_open;
@@ -199,6 +200,9 @@ pub struct AppState {
 
     /// Read-only snapshot последнего capability report-а для app-owned selector-а.
     system_capabilities_snapshot: Option<SystemCapabilities>,
+
+    /// Exact renderer binding и immutable playlist view без controller ownership.
+    playlist_attachment: Option<crate::playlist_runtime::PlaylistAppStateAttachment>,
 
     /// Startup-ошибка shell-слоя, которую нужно показать без перевода player в Failed.
     pub startup_error: Option<String>,
@@ -344,6 +348,7 @@ impl AppState {
             telemetry,
             committed_config_snapshot,
             system_capabilities_snapshot: None,
+            playlist_attachment: None,
             startup_error,
             startup_pending: None,
             last_player_snapshot: PlayerSnapshot::empty(),

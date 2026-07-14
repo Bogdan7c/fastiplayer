@@ -34,3 +34,6 @@
 
 
 - Sessions 10C/10D completed 2026-07-14: process-lifetime `PlaylistRuntime` owns policy-neutral bounded `app-egui::media_open`; D64/D75 local preparation remains single-handle/single-demux, and startup/local/settings production callsites now use one strong completion adapter. Ready never auto-authorizes, Enqueued is only a barrier, exact Installed is route success. Player-selected video candidate mapping, exact-instance position/track restore, D52 confirmation, lossless pre-barrier rejection cleanup and settings correlated reinstall compensation are active. One compatibility facade remains only in focused player tests with TODO removal. Details: `mem:app-egui/media-open-coordinator-s10c`, `mem:settings-ui/application-contract-s08`, `mem:player-core/core`.
+
+
+- Session 11A completed 2026-07-14: process-lifetime `PlaylistRuntime` now owns modular `PlaylistController`, canonical queue identities, D08/D39 three-phase reservation guard, bounded runtime row errors, dirty signals, stop-after-current storage shell, and Arc-backed revision-stable view snapshots. Renderer-bound `AppState` receives only a validated exact binding plus immutable snapshot attachment. Navigation/Ended/tombstone/discovery/persistence/UI remain out of scope; next allowed work is Session 11B. Details: `mem:app-egui/playlist-controller-s11a`.

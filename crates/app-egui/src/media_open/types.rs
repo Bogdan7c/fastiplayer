@@ -34,7 +34,9 @@ impl MediaOpenClientKey {
 pub(crate) struct MediaOpenRequestId(NonZeroU64);
 
 impl MediaOpenRequestId {
-    pub(super) const fn from_non_zero(value: NonZeroU64) -> Self {
+    /// Crate-internal constructor также нужен controller protocol fixtures;
+    /// production coordinator по-прежнему остаётся единственным allocator owner-ом.
+    pub(crate) const fn from_non_zero(value: NonZeroU64) -> Self {
         Self(value)
     }
 }

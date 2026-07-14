@@ -1,0 +1,250 @@
+//! Runtime-identities playlist controller-а, независимые от canonical queue cursor-а.
+
+use std::num::NonZeroU64;
+use std::sync::Arc;
+
+use player_core::{MediaInstanceId, PlaybackIntentRevision};
+use playlist_core::PlaylistItemId;
+
+use crate::media_open::MediaOpenRequestId;
+use crate::playlist_runtime::PlaylistBindingGeneration;
+
+/// Runtime badge не удерживает неограниченный service/backend text.
+const MAX_RUNTIME_ERROR_SUMMARY_CHARS: usize = 240;
+
+/// Process-lifetime identity одного логического active media.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ActiveMediaLineageId(NonZeroU64);
+
+impl ActiveMediaLineageId {
+    /// Создаёт identity только из controller-owned checked allocator-а.
+    pub(super) const fn from_non_zero(identity: NonZeroU64) -> Self {
+        Self(identity)
+    }
+
+    /// Возвращает число только для diagnostics и focused tests.
+    #[cfg(test)]
+    pub(crate) const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+/// Active identity не выводится ни из selection, ни из traversal current.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ActiveMediaIdentity {
+    item_id: Option<PlaylistItemId>,
+    lineage_id: ActiveMediaLineageId,
+    media_instance_id: MediaInstanceId,
+    player_binding_generation: PlaylistBindingGeneration,
+}
+
+impl ActiveMediaIdentity {
+    /// Публикует exact identity после matching `Installed` и domain commit-а.
+    pub(super) const fn installed(
+        item_id: Option<PlaylistItemId>,
+        lineage_id: ActiveMediaLineageId,
+        media_instance_id: MediaInstanceId,
+        player_binding_generation: PlaylistBindingGeneration,
+    ) -> Self {
+        Self {
+            item_id,
+            lineage_id,
+            media_instance_id,
+            player_binding_generation,
+        }
+    }
+
+    pub(crate) const fn item_id(self) -> Option<PlaylistItemId> {
+        self.item_id
+    }
+
+    pub(crate) const fn lineage_id(self) -> ActiveMediaLineageId {
+        self.lineage_id
+    }
+
+    pub(crate) const fn media_instance_id(self) -> MediaInstanceId {
+        self.media_instance_id
+    }
+
+    pub(crate) const fn player_binding_generation(self) -> PlaylistBindingGeneration {
+        self.player_binding_generation
+    }
+}
+
+/// Источник intent-а нужен для diagnostics, но не сообщает coordinator-у priority policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PendingTargetOrigin {
+    ExplicitRowPlay,
+    ExplicitOpen,
+    RestoredCurrent,
+    ControlledResume,
+}
+
+/// Pending target остаётся отдельным от active/current до exact install commit-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingTarget {
+    request_id: MediaOpenRequestId,
+    item_id: Option<PlaylistItemId>,
+    origin: PendingTargetOrigin,
+    intent_revision: PlaybackIntentRevision,
+}
+
+impl PendingTarget {
+    pub(super) const fn new(
+        request_id: MediaOpenRequestId,
+        item_id: Option<PlaylistItemId>,
+        origin: PendingTargetOrigin,
+        intent_revision: PlaybackIntentRevision,
+    ) -> Self {
+        Self {
+            request_id,
+            item_id,
+            origin,
+            intent_revision,
+        }
+    }
+
+    pub(crate) const fn request_id(self) -> MediaOpenRequestId {
+        self.request_id
+    }
+
+    pub(crate) const fn item_id(self) -> Option<PlaylistItemId> {
+        self.item_id
+    }
+
+    pub(crate) const fn origin(self) -> PendingTargetOrigin {
+        self.origin
+    }
+
+    pub(crate) const fn intent_revision(self) -> PlaybackIntentRevision {
+        self.intent_revision
+    }
+}
+
+/// Этап runtime-ошибки строки остаётся app-owned и не попадает в persistence DTO.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaylistItemErrorPhase {
+    Preparation,
+    Install,
+    Playback,
+    SourceUnavailable,
+}
+
+/// Bounded категория ошибки без concrete backend/service details.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaylistItemErrorCategory {
+    Unavailable,
+    Unsupported,
+    Rejected,
+    Runtime,
+}
+
+/// Одна latest runtime error запись на stable Item ID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlaylistItemRuntimeError {
+    phase: PlaylistItemErrorPhase,
+    category: PlaylistItemErrorCategory,
+    safe_summary: Arc<str>,
+    request_id: Option<MediaOpenRequestId>,
+    media_instance_id: Option<MediaInstanceId>,
+    occurrence_count: u32,
+}
+
+impl PlaylistItemRuntimeError {
+    pub(super) fn first(
+        phase: PlaylistItemErrorPhase,
+        category: PlaylistItemErrorCategory,
+        safe_summary: Arc<str>,
+        request_id: Option<MediaOpenRequestId>,
+        media_instance_id: Option<MediaInstanceId>,
+    ) -> Self {
+        Self {
+            phase,
+            category,
+            safe_summary: bounded_safe_summary(safe_summary),
+            request_id,
+            media_instance_id,
+            occurrence_count: 1,
+        }
+    }
+
+    pub(super) fn replace_with_latest(
+        &mut self,
+        phase: PlaylistItemErrorPhase,
+        category: PlaylistItemErrorCategory,
+        safe_summary: Arc<str>,
+        request_id: Option<MediaOpenRequestId>,
+        media_instance_id: Option<MediaInstanceId>,
+    ) {
+        self.phase = phase;
+        self.category = category;
+        self.safe_summary = bounded_safe_summary(safe_summary);
+        self.request_id = request_id;
+        self.media_instance_id = media_instance_id;
+        self.occurrence_count = self.occurrence_count.saturating_add(1);
+    }
+
+    pub(crate) const fn phase(&self) -> PlaylistItemErrorPhase {
+        self.phase
+    }
+
+    pub(crate) const fn category(&self) -> PlaylistItemErrorCategory {
+        self.category
+    }
+
+    pub(crate) fn safe_summary(&self) -> &str {
+        &self.safe_summary
+    }
+
+    pub(crate) const fn request_id(&self) -> Option<MediaOpenRequestId> {
+        self.request_id
+    }
+
+    pub(crate) const fn media_instance_id(&self) -> Option<MediaInstanceId> {
+        self.media_instance_id
+    }
+
+    pub(crate) const fn occurrence_count(&self) -> u32 {
+        self.occurrence_count
+    }
+}
+
+fn bounded_safe_summary(summary: Arc<str>) -> Arc<str> {
+    if summary
+        .chars()
+        .nth(MAX_RUNTIME_ERROR_SUMMARY_CHARS)
+        .is_none()
+    {
+        return summary;
+    }
+    Arc::from(
+        summary
+            .chars()
+            .take(MAX_RUNTIME_ERROR_SUMMARY_CHARS)
+            .collect::<String>(),
+    )
+}
+
+/// Runtime-only latch shell; `Ended` execution появится только в последующей session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StopAfterCurrentLatch {
+    item_id: Option<PlaylistItemId>,
+    lineage_id: ActiveMediaLineageId,
+}
+
+impl StopAfterCurrentLatch {
+    pub(super) const fn new(active: ActiveMediaIdentity) -> Self {
+        Self {
+            item_id: active.item_id(),
+            lineage_id: active.lineage_id(),
+        }
+    }
+
+    pub(crate) const fn item_id(self) -> Option<PlaylistItemId> {
+        self.item_id
+    }
+
+    pub(crate) const fn lineage_id(self) -> ActiveMediaLineageId {
+        self.lineage_id
+    }
+}

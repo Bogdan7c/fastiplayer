@@ -308,3 +308,134 @@ fn map_reservation_allocation_error(error: ItemIdAllocationError) -> PrepareRese
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use crate::{
+        CachedPlaylistMetadata, LocalLocator, NextPlaylistItemId, PlaylistItemDraft,
+        PlaylistMediaKind, PlaylistQueueRestore,
+    };
+
+    use super::*;
+
+    fn draft(index: usize) -> PlaylistItemDraft {
+        let display_name = format!("reservation-{index}.mkv");
+        PlaylistItemDraft::local(
+            LocalLocator::Native(PathBuf::from(&display_name)),
+            None,
+            CachedPlaylistMetadata::new(display_name, PlaylistMediaKind::Video),
+        )
+    }
+
+    fn appended_item_id(queue: &mut PlaylistQueue) -> PlaylistItemId {
+        match queue.append_one(draft(0)).expect("fixture append") {
+            crate::AddItemsOutcome::Added(item_ids) => item_ids.as_slice()[0],
+            crate::AddItemsOutcome::NoItemsProvided => panic!("one draft cannot be empty"),
+        }
+    }
+
+    #[test]
+    fn every_fallible_reservation_preflight_has_exact_typed_outcome() {
+        let mut locked_queue = PlaylistQueue::new();
+        let locked_item_id = appended_item_id(&mut locked_queue);
+        let first_token = locked_queue
+            .prepare_reserved_mutation(
+                locked_queue.revision_snapshot(),
+                ReservedQueueMutation::select_committed(locked_item_id),
+            )
+            .expect("first reservation");
+        assert!(matches!(
+            locked_queue.prepare_reserved_mutation(
+                locked_queue.revision_snapshot(),
+                ReservedQueueMutation::select_committed(locked_item_id),
+            ),
+            Err(PrepareReservedMutationError::InstallCommitLinearizing)
+        ));
+        locked_queue.abort_reserved(first_token);
+
+        let mut revision_queue = PlaylistQueue::new();
+        let stale_revision = revision_queue.revision_snapshot();
+        let committed_item_id = appended_item_id(&mut revision_queue);
+        assert!(matches!(
+            revision_queue.prepare_reserved_mutation(
+                stale_revision,
+                ReservedQueueMutation::select_committed(committed_item_id),
+            ),
+            Err(PrepareReservedMutationError::RevisionMismatch { .. })
+        ));
+        let missing_item_id =
+            PlaylistItemId::from_persistence_value(99).expect("non-zero missing fixture identity");
+        assert!(matches!(
+            revision_queue.prepare_reserved_mutation(
+                revision_queue.revision_snapshot(),
+                ReservedQueueMutation::select_committed(missing_item_id),
+            ),
+            Err(PrepareReservedMutationError::ItemNotCommitted { item_id })
+                if item_id == missing_item_id
+        ));
+
+        let mut capacity_queue = PlaylistQueue::new();
+        let capacity_watermark = capacity_queue.next_item_id_snapshot();
+        let over_capacity = vec![draft(1); MAX_PLAYLIST_ITEMS];
+        assert!(matches!(
+            capacity_queue.prepare_reserved_mutation(
+                capacity_queue.revision_snapshot(),
+                ReservedQueueMutation::replace_with_current(
+                    over_capacity,
+                    draft(2),
+                    Vec::new(),
+                ),
+            ),
+            Err(PrepareReservedMutationError::CapacityExceeded {
+                requested,
+                maximum: MAX_PLAYLIST_ITEMS,
+            }) if requested == MAX_PLAYLIST_ITEMS + 1
+        ));
+        assert_eq!(capacity_queue.next_item_id_snapshot(), capacity_watermark);
+
+        let max_watermark = NextPlaylistItemId::from_persistence_value(u64::MAX)
+            .expect("non-zero maximum watermark");
+        let mut exhausted_queue =
+            PlaylistQueue::restore(PlaylistQueueRestore::new(Vec::new(), max_watermark, None))
+                .expect("valid empty queue with exhausted allocator");
+        assert!(matches!(
+            exhausted_queue.prepare_reserved_mutation(
+                exhausted_queue.revision_snapshot(),
+                ReservedQueueMutation::replace_with_current(Vec::new(), draft(3), Vec::new(),),
+            ),
+            Err(PrepareReservedMutationError::ItemIdExhausted)
+        ));
+
+        let mut structural_exhausted = PlaylistQueue::new();
+        structural_exhausted.structural_revision = QueueRevision(u64::MAX);
+        assert!(matches!(
+            structural_exhausted.prepare_reserved_mutation(
+                structural_exhausted.revision_snapshot(),
+                ReservedQueueMutation::replace_with_current(Vec::new(), draft(4), Vec::new(),),
+            ),
+            Err(PrepareReservedMutationError::StructuralRevisionExhausted)
+        ));
+
+        let mut traversal_exhausted = PlaylistQueue::new();
+        traversal_exhausted.traversal_revision = QueueRevision(u64::MAX);
+        assert!(matches!(
+            traversal_exhausted.prepare_reserved_mutation(
+                traversal_exhausted.revision_snapshot(),
+                ReservedQueueMutation::replace_with_current(Vec::new(), draft(5), Vec::new(),),
+            ),
+            Err(PrepareReservedMutationError::TraversalRevisionExhausted)
+        ));
+
+        let collision_item_id = appended_item_id(&mut PlaylistQueue::new());
+        assert_eq!(
+            map_reservation_allocation_error(ItemIdAllocationError::Collision {
+                item_id: collision_item_id,
+            }),
+            PrepareReservedMutationError::ItemIdCollision {
+                item_id: collision_item_id,
+            }
+        );
+    }
+}

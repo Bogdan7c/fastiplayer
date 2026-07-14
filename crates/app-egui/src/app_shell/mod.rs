@@ -182,11 +182,24 @@ impl AppShell {
             renderer.queue(),
         );
 
-        if self.playlist_runtime.bind_resumed_app_state().is_none() {
+        let Some(playlist_binding) = self.playlist_runtime.bind_resumed_app_state() else {
             tracing::error!("Playlist runtime уже закрыт и не принимает новый AppState binding");
             event_loop.exit();
             return;
-        }
+        };
+        let playlist_attachment = match self.playlist_runtime.app_state_attachment(playlist_binding)
+        {
+            Ok(attachment) => attachment,
+            Err(error) => {
+                tracing::error!(
+                    ?error,
+                    "Playlist runtime не создал exact AppState attachment"
+                );
+                event_loop.exit();
+                return;
+            }
+        };
+        app_state.attach_playlist_runtime(playlist_attachment);
         self.playlist_runtime
             .attach_player_sender(app_state.player_command_sender());
 
