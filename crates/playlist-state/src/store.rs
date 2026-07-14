@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use crate::dto::{self, DtoLoadError};
 use crate::envelope::scan_envelope;
@@ -32,6 +32,11 @@ impl PlaylistStateStore {
     /// Возвращает configured target без попытки вычислить config directory.
     pub fn state_path(&self) -> &Path {
         &self.state_path
+    }
+
+    /// Сериализует writer/quarantine/inspection operations одним owner lock.
+    pub(crate) fn lock_operations(&self) -> Result<MutexGuard<'_, ()>, ()> {
+        self.operation_lock.lock().map_err(|_| ())
     }
 
     /// Выполняет только read-only inspection и никогда не quarantine-ит source.

@@ -43,6 +43,15 @@ struct PlaylistStateV1Dto {
     shuffle_upcoming: Vec<u64>,
 }
 
+/// Opaque owned DTO одной согласованной committed domain revision.
+///
+/// Тип намеренно не раскрывает поля writer-у: allocator watermark уже снят
+/// вместе с canonical items внутри `capture_owned_state` и не может быть
+/// заменён либо вычислен отдельно перед записью.
+pub(crate) struct OwnedPlaylistStateSnapshot {
+    dto: PlaylistStateV1Dto,
+}
+
 /// Одна canonical row в exact persisted order.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -123,17 +132,32 @@ pub(crate) enum DtoLoadError {
 pub(crate) fn serialize_state(
     snapshot: PlaylistStateSnapshot<'_>,
 ) -> Result<Vec<u8>, StateSerializationError> {
+    let owned_snapshot = capture_owned_state(snapshot)?;
+    serialize_owned_state(&owned_snapshot)
+}
+
+/// Атомарно на уровне immutable borrow снимает весь persisted domain state.
+pub(crate) fn capture_owned_state(
+    snapshot: PlaylistStateSnapshot<'_>,
+) -> Result<OwnedPlaylistStateSnapshot, StateSerializationError> {
     validate_domain_snapshot(snapshot)?;
     let dto = PlaylistStateV1Dto::from_domain(snapshot)?;
     dto.validate_resource_limits()
         .map_err(|_| StateSerializationError::ResourceLimitExceeded)?;
 
+    Ok(OwnedPlaylistStateSnapshot { dto })
+}
+
+/// Выполняет тяжёлую JSON-сериализацию уже owned snapshot на writer thread.
+pub(crate) fn serialize_owned_state(
+    snapshot: &OwnedPlaylistStateSnapshot,
+) -> Result<Vec<u8>, StateSerializationError> {
     let maximum_json_bytes = usize::try_from(MAX_SUPPORTED_V1_STATE_BYTES)
         .map_err(|_| StateSerializationError::SerializedStateTooLarge)?;
     let mut output = LimitedJsonBuffer::new(maximum_json_bytes.saturating_sub(1));
     let serialization_result = {
         let mut serializer = serde_json::Serializer::pretty(&mut output);
-        dto.serialize(&mut serializer)
+        snapshot.dto.serialize(&mut serializer)
     };
     if output.exceeded_limit {
         return Err(StateSerializationError::SerializedStateTooLarge);

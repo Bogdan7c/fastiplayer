@@ -4,22 +4,37 @@
 //! Read-only inspection никогда не переименовывает источник; destructive
 //! quarantine выполняется только отдельным policy-вызовом с matching identity.
 
+mod atomic_write;
 mod dto;
 mod envelope;
 mod identity;
 mod quarantine;
+mod snapshot;
 mod store;
 mod types;
+mod worker;
 
 #[cfg(test)]
 mod tests;
 
+pub use atomic_write::{
+    AtomicWriteOutcome, DurabilityRetryOutcome, DurabilityUnconfirmedCause, NotReplacedCause,
+    NotReplacedFailure, NotReplacedStage,
+};
 pub use quarantine::QuarantineFileName;
+pub use snapshot::{ImmutableSaveSnapshot, SaveRevision, SaveRevisionExhausted};
 pub use store::PlaylistStateStore;
 pub use types::{
     CorruptStateCause, InspectedFileIdentity, InspectionOutcome, LoadedPlaylistState,
     PlaylistStateSnapshot, ProtectedStateCause, QuarantineFailureCause, QuarantineOutcome,
     StateSerializationError,
+};
+pub use worker::{
+    SaveAttemptOutcome, SaveAttemptReport, SaveBlockReason, SaveControlError, SaveDebounce,
+    SaveDebounceValidationError, SaveWakePort, SaveWarning, SaveWarningFailure, SaveWorker,
+    SaveWorkerAccess, SaveWorkerEvent, SaveWorkerShutdownOutcome, SaveWorkerStartError,
+    SaveWorkerStartOutcome, ShutdownCompletion, ShutdownPersistenceOutcome, ShutdownTimeoutPhase,
+    SubmitSnapshotError, SubmitSnapshotOutcome, WakePortDisconnected, WorkerDisconnectReason,
 };
 
 /// Стабильное имя playlist state рядом с application config.
