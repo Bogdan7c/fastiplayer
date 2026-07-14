@@ -17,3 +17,10 @@
 
 
 - Local `symphonia-format-isomp4-patch` fixes QuickTime/iOS MOV LPCM packet granularity below `symphonia-demux`: `IsoMp4Reader` coalesces only PCM/LPCM MP4 samples whose own `dur == 1` track unit (one audio frame). The reader uses the sample entry `max_frames_per_packet` when it is greater than 1, otherwise chunks into `1024`-frame packets, bounded to that reader chunk size; PCM samples already lasting more than one frame are not coalesced. The patch preserves first-sample `pts/dts`, sums `dur`, reads contiguous data only within the current segment/chunk, and advances `TrackState` by the grouped sample count. `packet_mapper`, seek mapper, and player scheduler must not compensate for one-frame MOV/PCM packets.
+
+
+## Session 08 local container probe boundary
+- `symphonia-demux::probe_open_local_media_file` is the additive Symphonia 0.6 static snapshot boundary used by `playlist-discovery`: already-opened `File` + optional extension Hint + `source-core::CancellationToken` -> typed container topology, duration and initial neutral metadata.
+- It classifies topology from `CodecParameters::{Audio,Video}` rather than decoder availability, so null/unknown codec IDs retain their known track type. It never calls `next_packet`, creates no decoder, and does not run playback-specific Matroska video/cue pre-scans.
+- Probe errors preserve `UnsupportedContainer`, I/O, malformed/other `ProbeFailure`, and confirmed cancellation. Symphonia `Interrupted` is cancellation only when the token confirms it; probe-time `IoError(UnexpectedEof)` means a truncated header and maps to `ProbeFailure`. This is intentionally separate from the legacy playback `next_packet` EOF fallback above. Existing `SymphoniaDemuxer` playback probe/error mapping is unchanged.
+- Full discovery ownership, explicit-Play prohibition and verification are in `mem:playlist/discovery`.

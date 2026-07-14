@@ -53,6 +53,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "media-core",
         "player-core",
         "playlist-core",
+        "playlist-discovery",
         "playlist-state",
         "render-core",
         "render-wgpu-shell",
@@ -100,6 +101,12 @@ FRAME_SERVER_CORE_ALLOWED_DEPENDENCIES = frozenset(
 # Playlist domain переиспользует neutral media metadata vocabulary и RNG.
 # UI/player/filesystem/serde/service edges должны появляться в верхних owners.
 PLAYLIST_CORE_ALLOWED_DEPENDENCIES = frozenset({"media-core", "rand"})
+
+# Single-file discovery владеет filesystem/cancellation orchestration, но видит
+# Symphonia только через узкий neutral snapshot boundary в symphonia-demux.
+PLAYLIST_DISCOVERY_ALLOWED_DEPENDENCIES = frozenset(
+    {"media-core", "source-core", "symphonia-demux", "thiserror"}
+)
 
 # Persistence owner может видеть только neutral playlist/media contracts и
 # минимальный набор serde/hash/platform dependencies для bounded JSON I/O.
@@ -682,6 +689,14 @@ def find_dependency_violations(
             frozenset({"playlist-core"}),
             PLAYLIST_CORE_ALLOWED_DEPENDENCIES,
             "playlist-core зависит только от neutral media-core metadata contract и rand",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"playlist-discovery"}),
+            PLAYLIST_DISCOVERY_ALLOWED_DEPENDENCIES,
+            "playlist-discovery остаётся UI/player/config-neutral local probe owner",
         )
     )
     violations.extend(

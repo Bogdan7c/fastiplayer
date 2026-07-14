@@ -7,3 +7,8 @@
 - `PlaybackPipeline` owns the current metadata/source-info slots. Metadata events update only that slot and do not alter decoder topology, queues, generations, or packet accounting.
 - `PlayerSnapshot::media_info` is the read-only UI boundary. `TrackSummarySnapshot` carries track duration and neutral `VideoTrackMetadata`; raw `codec_private` is not exposed.
 - `app-egui::ui::media_info` hides unknown optional fields and shows `Медиафайл не открыт` when absent. Static source/media rows were removed from telemetry; runtime diagnostics are still built without open media.
+
+## Session 08 discovery metadata snapshot
+- `playlist-discovery::probe_one_local_media` now returns the same normalized `MediaTagMetadata` vocabulary (title, artists, album, disc/track, season/episode), optional reliable container/track duration, display filename and exact opened-handle size+mtime fingerprint for local siblings/Add/demand refresh.
+- Initial Symphonia metadata revisions are consumed through the existing `symphonia-demux` adapter; discovery does not parse raw tag strings or create a second normalization policy. Missing tags/duration remain absent.
+- Explicit Play D64/D75 does not call this primitive: Session 10C must capture target metadata/fingerprint from the single prepared/open envelope. Details: `mem:playlist/discovery`.

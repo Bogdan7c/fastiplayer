@@ -2,6 +2,7 @@ mod byte_source;
 pub mod demuxer;
 pub mod dual_stream_demuxer;
 pub mod error;
+mod local_probe;
 mod matroska_metadata;
 mod options;
 mod packet_mapper;
@@ -17,6 +18,10 @@ pub use demuxer::{
 };
 pub use dual_stream_demuxer::DualStreamDemuxer;
 pub use error::DemuxError;
+pub use local_probe::{
+    ContainerProbeError, ContainerProbeSnapshot, ContainerTrackTopology,
+    probe_open_local_media_file,
+};
 pub use media_core::{Packet, TimeBase, TrackId, TrackInfo, TrackKind};
 pub use options::{
     DEFAULT_DECODE_POINT_BEFORE_PREROLL, DEFAULT_DECODE_POINT_BEFORE_VERIFICATION_PACKET_LIMIT,

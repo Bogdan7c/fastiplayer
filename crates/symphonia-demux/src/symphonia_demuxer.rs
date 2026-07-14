@@ -17,7 +17,7 @@ use symphonia::core::units::Timestamp;
 use tracing::{debug, info, trace, warn};
 
 mod decode_point_before;
-mod metadata;
+pub(crate) mod metadata;
 
 use crate::byte_source::ByteSourceMediaSource;
 use crate::error::DemuxError;

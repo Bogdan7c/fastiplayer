@@ -3193,6 +3193,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "playlist-discovery"
+version = "0.1.0"
+dependencies = [
+ "media-core",
+ "source-core",
+ "symphonia-demux",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "playlist-state"
 version = "0.1.0"
 dependencies = [

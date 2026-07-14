@@ -46,8 +46,8 @@ pub(super) struct SymphoniaFormatMetadataSummary {
 }
 
 /// Применяет все доступные format-level revisions как upsert.
-pub(super) fn consume_media_metadata(
-    format: &mut FormatReaderBox<'static>,
+pub(crate) fn consume_media_metadata(
+    format: &mut FormatReaderBox<'_>,
     current: &mut MediaMetadata,
 ) -> bool {
     let before = current.clone();

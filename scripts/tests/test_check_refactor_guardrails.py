@@ -252,6 +252,44 @@ class DependencyGraphPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_playlist_discovery_rejects_player_and_ui_dependencies(self) -> None:
+        """Local probe owner видит только neutral metadata/source/demux boundaries."""
+
+        packages = complete_workspace_packages()
+        packages["playlist-discovery"] = package_with_dependencies(
+            "playlist-discovery",
+            (
+                ("media-core", None),
+                ("source-core", None),
+                ("symphonia-demux", None),
+                ("thiserror", None),
+            ),
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "playlist-discovery"
+                for violation in passing_result.dependency_violations
+            )
+        )
+
+        packages["playlist-discovery"] = package_with_dependencies(
+            "playlist-discovery",
+            (("media-core", None), ("source-core", None), ("player-core", None)),
+        )
+        failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertTrue(
+            any(
+                violation.owner == "playlist-discovery"
+                and violation.dependency == "player-core"
+                for violation in failing_result.dependency_violations
+            )
+        )
+
     def test_required_role_crates_report_only_missing_role(self) -> None:
         """Полный fixture проходит, а удалённая роль называется в результате."""
 
