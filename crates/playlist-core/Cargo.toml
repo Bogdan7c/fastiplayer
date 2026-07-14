@@ -13,3 +13,6 @@ path = "src/lib.rs"
 # Playlist cache использует ровно те же нейтральные duration/sequence-типы,
 # которые уже принадлежат media-core; второй набор metadata semantics запрещён.
 media-core.workspace = true
+# Production shuffle получает системную entropy через rand::rng(), а focused
+# tests внедряют seeded RNG через отдельные `*_with_rng` boundary methods.
+rand.workspace = true

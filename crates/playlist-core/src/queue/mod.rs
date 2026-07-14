@@ -4,6 +4,7 @@ mod metadata_patch;
 mod navigation;
 mod outcomes;
 mod reservation;
+mod shuffle;
 
 #[cfg(test)]
 mod tests;
@@ -37,6 +38,11 @@ pub use outcomes::{
     TraversalCurrentValidationError,
 };
 pub use reservation::{PreparedQueueMutationToken, ReservedQueueMutation};
+pub use shuffle::{
+    BulkRemoveError, BulkRemoveOutcome, MAX_SHUFFLE_HISTORY_ENTRIES, ShuffleHistoryCursor,
+    ShuffleQueueRestoreError, ShuffleToggleError, ShuffleToggleOutcome,
+    ShuffleTraversalRestoreError, ShuffleTraversalSnapshot,
+};
 
 /// Hard safety cap любой committed/candidate queue.
 pub const MAX_PLAYLIST_ITEMS: usize = 50_000;
@@ -189,6 +195,7 @@ pub struct PlaylistQueue {
     traversal_revision: QueueRevision,
     metadata_revision: QueueRevision,
     active_reservation: Option<reservation::ReservationKey>,
+    shuffle_traversal: Option<shuffle::ShuffleTraversal>,
 }
 
 impl PlaylistQueue {
@@ -202,6 +209,7 @@ impl PlaylistQueue {
             traversal_revision: QueueRevision::INITIAL,
             metadata_revision: QueueRevision::INITIAL,
             active_reservation: None,
+            shuffle_traversal: None,
         }
     }
 
@@ -249,6 +257,7 @@ impl PlaylistQueue {
             traversal_revision: QueueRevision::INITIAL,
             metadata_revision: QueueRevision::INITIAL,
             active_reservation: None,
+            shuffle_traversal: None,
         })
     }
 
@@ -314,6 +323,16 @@ impl PlaylistQueue {
         &mut self,
         drafts: Vec<PlaylistItemDraft>,
     ) -> Result<AddItemsOutcome, AddItemsError> {
+        let mut random = rand::rng();
+        self.append_batch_with_rng(drafts, &mut random)
+    }
+
+    /// Вариант batch append с injectable RNG для deterministic shuffle tests.
+    pub fn append_batch_with_rng<R: rand::Rng + ?Sized>(
+        &mut self,
+        drafts: Vec<PlaylistItemDraft>,
+        random: &mut R,
+    ) -> Result<AddItemsOutcome, AddItemsError> {
         if self.active_reservation.is_some() {
             return Err(AddItemsError::InstallCommitLinearizing);
         }
@@ -347,6 +366,9 @@ impl PlaylistQueue {
             .zip(allocated_item_ids.iter().copied())
             .map(|(draft, item_id)| draft.into_item(item_id));
 
+        if let Some(shuffle_traversal) = &mut self.shuffle_traversal {
+            shuffle_traversal.merge_new_items(&allocated_item_ids, random);
+        }
         self.item_id_allocator.commit_allocation(&allocation_plan);
         self.items.extend(new_items);
         self.structural_revision = next_structural_revision;
@@ -360,6 +382,16 @@ impl PlaylistQueue {
     pub fn replace_all(
         &mut self,
         drafts: Vec<PlaylistItemDraft>,
+    ) -> Result<ReplaceQueueOutcome, ReplaceQueueError> {
+        let mut random = rand::rng();
+        self.replace_all_with_rng(drafts, &mut random)
+    }
+
+    /// Вариант atomic replace с injectable RNG для enabled shuffle cycle.
+    pub fn replace_all_with_rng<R: rand::Rng + ?Sized>(
+        &mut self,
+        drafts: Vec<PlaylistItemDraft>,
+        random: &mut R,
     ) -> Result<ReplaceQueueOutcome, ReplaceQueueError> {
         if self.active_reservation.is_some() {
             return Err(ReplaceQueueError::InstallCommitLinearizing);
@@ -394,8 +426,13 @@ impl PlaylistQueue {
 
         if drafts.is_empty() {
             let removed_item_count = self.items.len();
+            let replacement_shuffle = self
+                .shuffle_traversal
+                .as_ref()
+                .map(|_| shuffle::ShuffleTraversal::fresh(&[], None, random));
             self.items.clear();
             self.traversal_current = None;
+            self.shuffle_traversal = replacement_shuffle;
             self.structural_revision = next_structural_revision;
             if let Some(next_revision) = next_traversal_revision {
                 self.traversal_revision = next_revision;
@@ -417,10 +454,15 @@ impl PlaylistQueue {
             .zip(allocated_item_ids.iter().copied())
             .map(|(draft, item_id)| draft.into_item(item_id))
             .collect();
+        let replacement_shuffle = self
+            .shuffle_traversal
+            .as_ref()
+            .map(|_| shuffle::ShuffleTraversal::fresh(&allocated_item_ids, None, random));
 
         self.item_id_allocator.commit_allocation(&allocation_plan);
         self.items = replacement_items;
         self.traversal_current = None;
+        self.shuffle_traversal = replacement_shuffle;
         self.structural_revision = next_structural_revision;
         if let Some(next_revision) = next_traversal_revision {
             self.traversal_revision = next_revision;
@@ -455,6 +497,20 @@ impl PlaylistQueue {
             None
         };
 
+        if let Some(shuffle_traversal) = &mut self.shuffle_traversal {
+            let removed_item_ids = HashSet::from([item_id]);
+            let remaining_canonical_item_ids: Vec<_> = self
+                .items
+                .iter()
+                .filter(|item| item.item_id() != item_id)
+                .map(|item| item.item_id())
+                .collect();
+            shuffle_traversal.remove_items(
+                &removed_item_ids,
+                &remaining_canonical_item_ids,
+                clears_current,
+            );
+        }
         self.items.remove(item_index);
         self.structural_revision = next_structural_revision;
         let traversal_current_effect = if clears_current {
@@ -531,6 +587,9 @@ impl PlaylistQueue {
 
         self.items.clear();
         self.traversal_current = None;
+        if self.shuffle_traversal.is_some() {
+            self.shuffle_traversal = Some(shuffle::ShuffleTraversal::empty_idle());
+        }
         self.structural_revision = next_structural_revision;
         if let Some(next_revision) = next_traversal_revision {
             self.traversal_revision = next_revision;
@@ -561,6 +620,9 @@ impl PlaylistQueue {
             .checked_next()
             .ok_or(TraversalCurrentMutationError::TraversalRevisionExhausted)?;
 
+        if let Some(shuffle_traversal) = &mut self.shuffle_traversal {
+            shuffle_traversal.commit_direct_transition(item_id);
+        }
         self.traversal_current = Some(validated);
         self.traversal_revision = next_revision;
         Ok(TraversalCurrentMutationOutcome::Set(validated))
@@ -581,6 +643,10 @@ impl PlaylistQueue {
             .checked_next()
             .ok_or(TraversalCurrentMutationError::TraversalRevisionExhausted)?;
 
+        if let Some(shuffle_traversal) = &mut self.shuffle_traversal {
+            let canonical_item_ids: Vec<_> = self.items.iter().map(|item| item.item_id()).collect();
+            shuffle_traversal.make_idle(&canonical_item_ids);
+        }
         self.traversal_current = None;
         self.traversal_revision = next_revision;
         Ok(TraversalCurrentMutationOutcome::Cleared)
@@ -646,6 +712,7 @@ impl fmt::Debug for PlaylistQueue {
             .field("next_item_id", &self.item_id_allocator.snapshot())
             .field("traversal_current", &self.traversal_current)
             .field("revisions", &self.revision_snapshot())
+            .field("shuffle_enabled", &self.shuffle_traversal.is_some())
             .field("has_active_reservation", &self.active_reservation.is_some())
             .finish()
     }

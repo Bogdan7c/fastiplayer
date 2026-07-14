@@ -4,9 +4,9 @@ Session 02 completed PASS on 2026-07-13. This memory complements `mem:core` and 
 
 ## Ownership and dependency boundary
 - `playlist-core` is the neutral domain owner for stable playlist row identity, canonical order, the monotonic allocator, validated traversal current, and atomic queue mutations.
-- It has exactly one normal dependency: `media-core`, solely to reuse `MediaDuration`, `DiscNumber`, `TrackNumber`, `TvSeasonNumber`, and `TvEpisodeNumber`.
+- It has exactly two normal dependencies: `media-core` for neutral metadata vocabulary and `rand` for production shuffle entropy plus injectable deterministic RNG boundaries.
 - It does not depend on serde, UI/egui, player-core, filesystem I/O/discovery, service crates, config, async runtimes, demuxers, or concrete backends.
-- `scripts/check-refactor-guardrails.py` treats it as a required contract crate and allows only `media-core`.
+- `scripts/check-refactor-guardrails.py` treats it as a required contract crate and allows only `media-core` plus `rand`.
 
 ## Stable identity and allocator
 - `PlaylistItemId` is an opaque `NonZeroU64`; zero is reserved. The first ID of a new lineage is 1.
@@ -49,7 +49,14 @@ Session 02 completed PASS on 2026-07-13. This memory complements `mem:core` and 
 - Manual install reuses the existing D08 reservation owner. `prepare_manual_navigation` wraps `PreparedQueueMutationToken`; prepare failure returns both the exact typed D08 reason and the preview, abort returns the preview, failure returns it with an awaiting-user marker, and only `commit_manual_navigation` after correlated external success publishes the latest target current.
 - Structural/traversal changes invalidate a preview; metadata-only revision changes do not. No shuffle/RNG/history/upcoming behavior is present yet.
 
+## Deterministic shuffle traversal (Session 04)
+- `PlaylistQueue` keeps canonical order unchanged and owns optional enabled `ShuffleTraversal`; Off discards it, On preserves current and starts a new permutation of the other IDs. Persisted-idle enabled state (`current=None`) requires every canonical ID exactly once in upcoming, uses first upcoming for manual Next, and returns typed no-item for Previous.
+- `ShuffleTraversal` owns Arc-backed ordered upcoming, factual repeated-visit history, back/forward cursor, and `MAX_SHUFFLE_HISTORY_ENTRIES = 1024`. Manual Play creates a factual visit and branches away from the forward tail; Previous/forward cursor moves do not create fake visits. RepeatQueue makes a new permutation and avoids last→same first when len>1.
+- Production methods use automatically seeded `rand::rng()`; `*_with_rng` variants accept deterministic seeded sources. Batch add performs one O(N+K) random merge preserving old-upcoming relative order. `remove_batch`/`remove_others`, Clear, and current removal use bounded retain/rebuild paths and repair history/upcoming/cursor together; canonical reorder leaves traversal untouched.
+- `ManualNavigationPreview` owns a shared/COW shuffle base plus bounded speculative path. Fast Next consumes candidates only inside preview; successful latest commit publishes intermediate consumption but only origin→latest factual history. Backtrack restores speculative candidates. D55 failure retains the same uncommitted preview/target; retry, Next, Previous, and discard preserve exact committed base until success.
+- Serde/I/O-neutral `ShuffleTraversalSnapshot`, typed `ShuffleHistoryCursor`, and `PlaylistQueue::restore_with_shuffle` validate history cap, committed references, repeated factual history, cursor/current agreement, duplicate-free upcoming/current exclusion, and exact idle canonical coverage.
+
 ## Verification and next scope
-- 33 playlist-core tests, strict crate Clippy, fmt, Rust 1.96 locked workspace check, refactor guardrails, and git diff check passed for Session 03.
-- All production modules remain below 800 lines: navigation is 586 lines, central queue/mod.rs is 682, and the pre-existing typed outcomes module remains 779.
-- Next allowed work is Session 04 deterministic shuffle traversal on top of the opaque preview boundary. Do not begin sorting or app/player integration.
+- 46 playlist-core tests, strict crate Clippy, fmt, Rust 1.96 and MSRV 1.92 locked workspace checks, guardrail tests/script, git diff check, and Serena diagnostics passed for Session 04.
+- Production modules remain below 800 lines: queue/mod.rs 749, navigation 757, shuffle/runtime 688, shuffle/types 235.
+- Next allowed work is Session 05 only. Sorting, UI/player integration, persistence I/O/save worker, tombstone active removal, and player Ended coordination were not started.

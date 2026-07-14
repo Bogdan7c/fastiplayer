@@ -195,6 +195,9 @@ impl PlaylistQueue {
                 traversal_current,
                 traversal_revision_after_commit,
             } => {
+                if let Some(shuffle_traversal) = &mut self.shuffle_traversal {
+                    shuffle_traversal.commit_direct_transition(traversal_current.item_id());
+                }
                 self.traversal_current = Some(traversal_current);
                 if let Some(next_revision) = traversal_revision_after_commit {
                     self.traversal_revision = next_revision;
@@ -211,10 +214,21 @@ impl PlaylistQueue {
                 structural_revision_after_commit,
                 traversal_revision_after_commit,
             } => {
+                let shuffle_was_enabled = self.shuffle_traversal.is_some();
                 let allocated_item_ids = allocation_plan.allocated_item_ids.clone();
                 self.item_id_allocator.commit_allocation(&allocation_plan);
                 self.items = replacement_items;
                 self.traversal_current = Some(traversal_current);
+                if shuffle_was_enabled {
+                    let canonical_item_ids: Vec<_> =
+                        self.items.iter().map(|item| item.item_id()).collect();
+                    let mut random = rand::rng();
+                    self.shuffle_traversal = Some(super::shuffle::ShuffleTraversal::fresh(
+                        &canonical_item_ids,
+                        Some(traversal_current),
+                        &mut random,
+                    ));
+                }
                 self.structural_revision = structural_revision_after_commit;
                 self.traversal_revision = traversal_revision_after_commit;
                 ReservedMutationCommit {

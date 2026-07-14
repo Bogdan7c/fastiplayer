@@ -2,11 +2,14 @@
 
 use std::fmt;
 
+use rand::Rng;
+
 use crate::{PlaylistItemId, RepeatMode};
 
 use super::{
     PlaylistQueue, PrepareReservedMutationError, PreparedQueueMutationToken, QueueRevisionSnapshot,
     ReservedQueueMutation, TraversalCurrentItemId,
+    shuffle::{ShuffleManualPreview, ShufflePreviewStep},
 };
 
 /// Intent обработки одного подтверждённого clean `Ended` текущего элемента.
@@ -147,6 +150,7 @@ pub struct ManualNavigationPreview {
     latest_target_item_id: PlaylistItemId,
     has_left_committed_origin: bool,
     state: ManualNavigationPreviewState,
+    shuffle_preview: Option<ShuffleManualPreview>,
 }
 
 impl ManualNavigationPreview {
@@ -268,7 +272,7 @@ impl fmt::Debug for PreparedManualNavigationToken {
 
 /// Typed prepare failure, возвращающий caller-у некоммиченный preview.
 pub struct PrepareManualNavigationFailure {
-    preview: ManualNavigationPreview,
+    preview: Box<ManualNavigationPreview>,
     reason: PrepareReservedMutationError,
 }
 
@@ -280,7 +284,7 @@ impl PrepareManualNavigationFailure {
 
     /// Возвращает preview для re-evaluation, retry или explicit discard.
     pub fn into_preview(self) -> ManualNavigationPreview {
-        self.preview
+        *self.preview
     }
 }
 
@@ -341,6 +345,16 @@ impl DiscardedManualNavigationPreview {
 impl PlaylistQueue {
     /// Вычисляет automatic clean `Ended` transition без queue mutation.
     pub fn automatic_navigation(&self, intent: AutomaticEndedIntent) -> AutomaticNavigationOutcome {
+        let mut random = rand::rng();
+        self.automatic_navigation_with_rng(intent, &mut random)
+    }
+
+    /// Deterministic automatic query с injectable RNG на shuffle cycle boundary.
+    pub fn automatic_navigation_with_rng<R: Rng + ?Sized>(
+        &self,
+        intent: AutomaticEndedIntent,
+        random: &mut R,
+    ) -> AutomaticNavigationOutcome {
         if self.is_empty() {
             return AutomaticNavigationOutcome::Stop(AutomaticStopReason::EmptyQueue);
         }
@@ -351,6 +365,14 @@ impl PlaylistQueue {
         if intent.repeat_mode() == RepeatMode::RepeatOne {
             return AutomaticNavigationOutcome::ReplayCurrent {
                 item_id: current_item_id,
+            };
+        }
+        if self.shuffle_enabled() {
+            return match self.shuffle_next_target_with_rng(intent.repeat_mode(), random) {
+                Some(item_id) => AutomaticNavigationOutcome::OpenItem { item_id },
+                None => AutomaticNavigationOutcome::Stop(AutomaticStopReason::EndOfQueue {
+                    current_item_id,
+                }),
             };
         }
         let current_index = self
@@ -374,6 +396,16 @@ impl PlaylistQueue {
         &self,
         intent: ManualNavigationIntent,
     ) -> ManualNavigationOutcome {
+        let mut random = rand::rng();
+        self.begin_manual_navigation_with_rng(intent, &mut random)
+    }
+
+    /// Начинает manual preview с injectable RNG для exact shuffle outcomes.
+    pub fn begin_manual_navigation_with_rng<R: Rng + ?Sized>(
+        &self,
+        intent: ManualNavigationIntent,
+        random: &mut R,
+    ) -> ManualNavigationOutcome {
         if self.is_empty() {
             return ManualNavigationOutcome::NoItem(ManualNavigationNoItem::EmptyQueue);
         }
@@ -383,6 +415,25 @@ impl PlaylistQueue {
             },
             None => ManualNavigationOrigin::PersistedIdle,
         };
+        if let Some(shuffle_traversal) = &self.shuffle_traversal {
+            let mut shuffle_preview = ShuffleManualPreview::new(shuffle_traversal);
+            let canonical_item_ids: Vec<_> =
+                self.items().iter().map(|item| item.item_id()).collect();
+            let step = shuffle_preview.step(
+                intent.direction(),
+                intent.repeat_mode(),
+                &canonical_item_ids,
+                self.traversal_current()
+                    .map(TraversalCurrentItemId::item_id),
+                random,
+            );
+            return self.build_initial_shuffle_preview_outcome(
+                origin,
+                intent.direction(),
+                shuffle_preview,
+                step,
+            );
+        }
         let current_index = match origin {
             ManualNavigationOrigin::PersistedIdle => {
                 if intent.direction() == ManualNavigationDirection::Previous {
@@ -420,6 +471,7 @@ impl PlaylistQueue {
             latest_target_item_id: target_item_id,
             has_left_committed_origin,
             state: ManualNavigationPreviewState::Ready,
+            shuffle_preview: None,
         };
         ManualNavigationOutcome::OpenItem {
             item_id: target_item_id,
@@ -430,10 +482,39 @@ impl PlaylistQueue {
     /// Продолжает D53 cursor от latest desired target, а не от committed current.
     pub fn continue_manual_navigation(
         &self,
-        mut preview: ManualNavigationPreview,
+        preview: ManualNavigationPreview,
         intent: ManualNavigationIntent,
     ) -> Result<ManualNavigationOutcome, ManualNavigationPreviewError> {
+        let mut random = rand::rng();
+        self.continue_manual_navigation_with_rng(preview, intent, &mut random)
+    }
+
+    /// Продолжает preview с тем же COW base и injectable shuffle RNG.
+    pub fn continue_manual_navigation_with_rng<R: Rng + ?Sized>(
+        &self,
+        mut preview: ManualNavigationPreview,
+        intent: ManualNavigationIntent,
+        random: &mut R,
+    ) -> Result<ManualNavigationOutcome, ManualNavigationPreviewError> {
         self.validate_manual_preview(&preview)?;
+        if let Some(mut shuffle_preview) = preview.shuffle_preview.take() {
+            let canonical_item_ids: Vec<_> =
+                self.items().iter().map(|item| item.item_id()).collect();
+            let step = shuffle_preview.step(
+                intent.direction(),
+                intent.repeat_mode(),
+                &canonical_item_ids,
+                self.traversal_current()
+                    .map(TraversalCurrentItemId::item_id),
+                random,
+            );
+            return Ok(self.build_continued_shuffle_preview_outcome(
+                preview,
+                intent.direction(),
+                shuffle_preview,
+                step,
+            ));
+        }
         let latest_index = self
             .canonical_index_of(preview.latest_target_item_id)
             .ok_or(ManualNavigationPreviewError::TargetNotCommitted {
@@ -485,7 +566,10 @@ impl PlaylistQueue {
                 preview,
                 reservation_token,
             }),
-            Err(reason) => Err(PrepareManualNavigationFailure { preview, reason }),
+            Err(reason) => Err(PrepareManualNavigationFailure {
+                preview: Box::new(preview),
+                reason,
+            }),
         }
     }
 
@@ -512,14 +596,27 @@ impl PlaylistQueue {
         &mut self,
         token: PreparedManualNavigationToken,
     ) -> ManualNavigationCommit {
-        let committed_target = token.preview.latest_target_item_id;
-        let reservation_commit = self.commit_reserved(token.reservation_token);
+        let PreparedManualNavigationToken {
+            preview,
+            reservation_token,
+        } = token;
+        let committed_target = preview.latest_target_item_id;
+        let shuffle_preview = preview.shuffle_preview;
+        let reservation_commit = self.commit_reserved(reservation_token);
         let traversal_current = reservation_commit.traversal_current();
         assert_eq!(
             traversal_current.item_id(),
             committed_target,
             "manual navigation reservation must commit its exact preview target"
         );
+        if let Some(shuffle_preview) = shuffle_preview {
+            shuffle_preview.commit_into(
+                self.shuffle_traversal
+                    .as_mut()
+                    .expect("validated shuffle preview requires enabled traversal"),
+                committed_target,
+            );
+        }
         ManualNavigationCommit { traversal_current }
     }
 
@@ -531,6 +628,80 @@ impl PlaylistQueue {
         DiscardedManualNavigationPreview {
             latest_target_item_id: preview.latest_target_item_id,
             state: preview.state,
+        }
+    }
+
+    /// Преобразует первый shuffle step в существующий opaque manual boundary.
+    fn build_initial_shuffle_preview_outcome(
+        &self,
+        origin: ManualNavigationOrigin,
+        direction: ManualNavigationDirection,
+        shuffle_preview: ShuffleManualPreview,
+        step: ShufflePreviewStep,
+    ) -> ManualNavigationOutcome {
+        match step {
+            ShufflePreviewStep::Target(item_id) => ManualNavigationOutcome::OpenItem {
+                item_id,
+                preview: ManualNavigationPreview {
+                    expected_revision: self.revision_snapshot(),
+                    origin,
+                    latest_target_item_id: item_id,
+                    has_left_committed_origin: true,
+                    state: ManualNavigationPreviewState::Ready,
+                    shuffle_preview: Some(shuffle_preview),
+                },
+            },
+            ShufflePreviewStep::PreviousFromPersistedIdle => {
+                ManualNavigationOutcome::NoItem(ManualNavigationNoItem::PreviousFromPersistedIdle)
+            }
+            ShufflePreviewStep::Boundary => match origin {
+                ManualNavigationOrigin::PersistedIdle => ManualNavigationOutcome::NoItem(
+                    ManualNavigationNoItem::PreviousFromPersistedIdle,
+                ),
+                ManualNavigationOrigin::CommittedItem { item_id } => {
+                    ManualNavigationOutcome::NoItem(ManualNavigationNoItem::QueueBoundary {
+                        current_item_id: item_id,
+                        direction,
+                    })
+                }
+            },
+            ShufflePreviewStep::ReturnedToCommittedOrigin(item_id) => {
+                ManualNavigationOutcome::NoItem(ManualNavigationNoItem::ReturnedToCommittedOrigin {
+                    item_id,
+                })
+            }
+        }
+    }
+
+    /// Возвращает обновлённый preview либо typed no-item без committed mutation.
+    fn build_continued_shuffle_preview_outcome(
+        &self,
+        mut preview: ManualNavigationPreview,
+        direction: ManualNavigationDirection,
+        shuffle_preview: ShuffleManualPreview,
+        step: ShufflePreviewStep,
+    ) -> ManualNavigationOutcome {
+        match step {
+            ShufflePreviewStep::Target(item_id) => {
+                preview.latest_target_item_id = item_id;
+                preview.state = ManualNavigationPreviewState::Ready;
+                preview.shuffle_preview = Some(shuffle_preview);
+                ManualNavigationOutcome::OpenItem { item_id, preview }
+            }
+            ShufflePreviewStep::PreviousFromPersistedIdle => {
+                ManualNavigationOutcome::NoItem(ManualNavigationNoItem::PreviousFromPersistedIdle)
+            }
+            ShufflePreviewStep::Boundary => {
+                ManualNavigationOutcome::NoItem(ManualNavigationNoItem::QueueBoundary {
+                    current_item_id: preview.latest_target_item_id,
+                    direction,
+                })
+            }
+            ShufflePreviewStep::ReturnedToCommittedOrigin(item_id) => {
+                ManualNavigationOutcome::NoItem(ManualNavigationNoItem::ReturnedToCommittedOrigin {
+                    item_id,
+                })
+            }
         }
     }
 

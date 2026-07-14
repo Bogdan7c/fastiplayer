@@ -220,12 +220,12 @@ class DependencyGraphPolicyTests(unittest.TestCase):
             )
         )
 
-    def test_playlist_core_allows_only_media_core_normal_dependency(self) -> None:
-        """Playlist domain не получает UI/player/serde/service dependencies."""
+    def test_playlist_core_allows_only_media_core_and_rand_dependencies(self) -> None:
+        """Playlist domain получает только metadata и production RNG boundary."""
 
         packages = complete_workspace_packages()
         packages["playlist-core"] = package_with_dependencies(
-            "playlist-core", (("media-core", None),)
+            "playlist-core", (("media-core", None), ("rand", None))
         )
         passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
             packages, frozenset()
@@ -238,7 +238,8 @@ class DependencyGraphPolicyTests(unittest.TestCase):
         )
 
         packages["playlist-core"] = package_with_dependencies(
-            "playlist-core", (("media-core", None), ("serde", None))
+            "playlist-core",
+            (("media-core", None), ("rand", None), ("serde", None)),
         )
         failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
             packages, frozenset()

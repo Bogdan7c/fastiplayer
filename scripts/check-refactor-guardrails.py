@@ -95,9 +95,9 @@ FRAME_SERVER_CORE_ALLOWED_DEPENDENCIES = frozenset(
     }
 )
 
-# Playlist domain переиспользует только neutral media metadata vocabulary.
+# Playlist domain переиспользует neutral media metadata vocabulary и RNG.
 # UI/player/filesystem/serde/service edges должны появляться в верхних owners.
-PLAYLIST_CORE_ALLOWED_DEPENDENCIES = frozenset({"media-core"})
+PLAYLIST_CORE_ALLOWED_DEPENDENCIES = frozenset({"media-core", "rand"})
 
 FFMPEG_FORBIDDEN_DEPENDENCIES = frozenset(
     {
@@ -673,7 +673,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"playlist-core"}),
             PLAYLIST_CORE_ALLOWED_DEPENDENCIES,
-            "playlist-core зависит только от neutral media-core metadata contract",
+            "playlist-core зависит только от neutral media-core metadata contract и rand",
         )
     )
     violations.extend(

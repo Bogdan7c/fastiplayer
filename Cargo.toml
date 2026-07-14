@@ -129,6 +129,7 @@ symphonia = { version = "0.6", features = ["all-formats", "all-codecs", "all-met
 bytes = "1.0"
 crossbeam-channel = "0.5"
 ringbuf = "0.4"
+rand = "0.10.2"
 libloading = "0.8"
 vp9-parser = { version = "0.1.0", path = "crates/vp9-parser" }
 video-frame-contract = { version = "0.1.0", path = "crates/video-frame-contract" }
