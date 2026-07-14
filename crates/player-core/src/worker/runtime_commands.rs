@@ -116,6 +116,15 @@ impl PlayerWorkerRuntime {
                     warn!("Installed media restore outcome receiver was dropped");
                 }
             }
+            WorkerCommand::ExactMediaTransport {
+                request,
+                outcome_tx,
+            } => {
+                let outcome = self.session.apply_exact_media_transport(request);
+                if outcome_tx.send(outcome).is_err() {
+                    warn!("Exact media transport outcome receiver was dropped");
+                }
+            }
             WorkerCommand::MediaOpenFailed { request, error } => {
                 self.session.fail_media_open_with_error(request, error);
             }

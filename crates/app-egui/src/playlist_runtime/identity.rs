@@ -75,9 +75,19 @@ impl ActiveMediaIdentity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PendingTargetOrigin {
     ExplicitRowPlay,
+    ManualNavigation { origin: TransportActionOrigin },
     ExplicitOpen,
     RestoredCurrent,
     ControlledResume,
+}
+
+/// Источник transport action остаётся typed до будущего UI/MPRIS wiring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TransportActionOrigin {
+    /// Основной UI, keyboard shortcut или hardware media key.
+    Ui,
+    /// Process-lifetime MPRIS adapter; Stopped disposition сохраняется отдельно.
+    Mpris,
 }
 
 /// Pending target остаётся отдельным от active/current до exact install commit-а.

@@ -37,6 +37,7 @@ use crate::worker_scheduler::{PlannedWorkerWakeup, WorkerScheduler, WorkerWakeup
 use crate::{
     ActiveSeekDiagnosticsSnapshot, AudioDecoderFactory, AudioOutputFactory,
     AudioTempoProcessorFactory, AuthorizeInstallCommit, CancelMediaInstall, CorrelatedPlayerEvent,
+    ExactMediaTransportOutcome, ExactMediaTransportReceipt, ExactMediaTransportRequest,
     FrameCounters, InstalledMediaStateRestore, InstalledMediaStateRestoreOutcome,
     InstalledMediaStateRestoreReceipt, LatencyCounterSnapshot, MediaInstallCancellationCause,
     MediaInstallControl, MediaInstallPhaseCompletionPort, MediaInstallReceipt,
@@ -537,6 +538,14 @@ enum WorkerCommand {
         restore: InstalledMediaStateRestore,
         /// Request-owned authoritative owner outcome.
         outcome_tx: Sender<InstalledMediaStateRestoreOutcome>,
+    },
+
+    /// Выполняет transport только над exact current media instance.
+    ExactMediaTransport {
+        /// Intent с exact instance и недеструктивной transport semantics.
+        request: ExactMediaTransportRequest,
+        /// Request-owned authoritative owner outcome.
+        outcome_tx: Sender<ExactMediaTransportOutcome>,
     },
 
     /// Зафиксировать ошибку подготовки media, не скрывая open-request transition.

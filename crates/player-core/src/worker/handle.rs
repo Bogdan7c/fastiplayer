@@ -322,6 +322,14 @@ impl PlayerWorker {
             .report_resource_previous_frame_reuse();
     }
 
+    /// Ставит exact-instance restart/neutral Stop с authoritative owner receipt-ом.
+    pub fn exact_media_transport(
+        &self,
+        request: ExactMediaTransportRequest,
+    ) -> Result<ExactMediaTransportReceipt, PlayerWorkerSendError> {
+        self.command_sender.exact_media_transport(request)
+    }
+
     /// Запрашивает shutdown и ждёт завершения worker thread.
     pub fn shutdown(&mut self) -> Result<(), PlayerWorkerJoinError> {
         let _ = self.try_send_command(PlayerCommand::Shutdown);

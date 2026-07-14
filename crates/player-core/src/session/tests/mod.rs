@@ -49,6 +49,7 @@ mod capability_selection;
 mod decoder_boundary;
 mod diagnostics_sink;
 mod eof_drain;
+mod exact_media_transport;
 mod media_lifecycle;
 mod playback;
 mod playback_rate;

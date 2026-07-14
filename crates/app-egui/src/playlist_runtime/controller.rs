@@ -1,6 +1,7 @@
 //! Process-lifetime playlist controller: queue ownership, presentation state и typed outcomes.
 
 mod install;
+mod transport;
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -24,9 +25,18 @@ use super::view::{
 pub(crate) use install::{
     AuthorizationDispatchStart, BarrierRaceIntent, ControllerInstallPhase,
     ControllerMediaOpenCommand, ControllerMediaOpenCommandError, ControllerMediaOpenDisposition,
-    ControllerTerminalDrain, DeferredControllerIntent, DesiredQueueModes, InstallReadyOutcome,
-    LifecycleIntentOutcome, PlaylistControllerInvariantViolation, PlaylistInstallAdmissionError,
+    ControllerTerminalDrain, ControllerTerminalResolution, DeferredControllerIntent,
+    DesiredQueueModes, InstallReadyOutcome, LifecycleIntentOutcome,
+    PlaylistControllerInvariantViolation, PlaylistInstallAdmissionError, PlaylistInstallMutation,
     PlaylistInstallRequest,
+};
+#[allow(unused_imports)]
+pub(crate) use transport::{
+    AppTransportDisposition, ControllerManualNavigationOutcome, ControllerPlayItemOutcome,
+    ControllerStableIntentDispatch, DeferredTransportExecutionContext,
+    DeferredTransportExecutionOutcome, DiscoveryManualWaitAvailability, ManualNavigationWaitId,
+    PlannedPlaylistInstall, PreviousRestartThreshold, SiblingDiscoveryScopeId,
+    StablePlaybackIntent, StopAfterCurrentOutcome, TransportGuardOutcome,
 };
 
 /// Typed append результат сохраняет distinction между mutation и no-op.
@@ -94,6 +104,11 @@ pub(crate) struct PlaylistController {
     install_state: Option<install::InstallState>,
     pub(super) protected_modes_generation: u64,
     pub(super) stop_after_current: Option<StopAfterCurrentLatch>,
+    pub(super) stable_playback_intent: transport::StablePlaybackIntent,
+    pub(super) stable_intent_revision: u64,
+    pub(super) transport_disposition: transport::AppTransportDisposition,
+    pending_manual_traversal: Option<transport::PendingManualTraversal>,
+    pub(super) next_manual_wait_identity: u64,
     pub(super) worker_availability: PlaylistWorkerAvailability,
     pub(super) fatal_invariant: Option<PlaylistControllerInvariantViolation>,
     view_snapshot: Arc<PlaylistViewSnapshot>,
@@ -118,6 +133,11 @@ impl PlaylistController {
             install_state: None,
             protected_modes_generation: 0,
             stop_after_current: None,
+            stable_playback_intent: transport::StablePlaybackIntent::Paused,
+            stable_intent_revision: 1,
+            transport_disposition: transport::AppTransportDisposition::Active,
+            pending_manual_traversal: None,
+            next_manual_wait_identity: 1,
             worker_availability: PlaylistWorkerAvailability::Available,
             fatal_invariant: None,
             view_snapshot,

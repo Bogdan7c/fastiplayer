@@ -134,16 +134,20 @@ impl PlaylistQueue {
                 let traversal_current = self
                     .validate_traversal_current(item_id)
                     .map_err(|_| PrepareReservedMutationError::ItemNotCommitted { item_id })?;
-                let traversal_revision_after_commit =
-                    if self.traversal_current == Some(traversal_current) {
-                        None
-                    } else {
-                        Some(
-                            self.traversal_revision
-                                .checked_next()
-                                .ok_or(PrepareReservedMutationError::TraversalRevisionExhausted)?,
-                        )
-                    };
+                let records_same_item_shuffle_visit = self.shuffle_traversal.is_some()
+                    && self.traversal_current == Some(traversal_current);
+                let traversal_revision_after_commit = if self.traversal_current
+                    == Some(traversal_current)
+                    && !records_same_item_shuffle_visit
+                {
+                    None
+                } else {
+                    Some(
+                        self.traversal_revision
+                            .checked_next()
+                            .ok_or(PrepareReservedMutationError::TraversalRevisionExhausted)?,
+                    )
+                };
 
                 PreparedMutation::SelectCommitted {
                     traversal_current,
@@ -436,6 +440,42 @@ mod tests {
             PrepareReservedMutationError::ItemIdCollision {
                 item_id: collision_item_id,
             }
+        );
+    }
+
+    #[test]
+    fn reserved_same_item_reinstall_advances_shuffle_factual_visit_revision() {
+        let mut queue = PlaylistQueue::new();
+        let item_id = appended_item_id(&mut queue);
+        queue
+            .commit_manual_play(item_id)
+            .expect("establish current item");
+        queue.enable_shuffle().expect("enable shuffle");
+        let revision_before = queue.revision_snapshot();
+        let history_before = queue
+            .shuffle_traversal_snapshot()
+            .expect("shuffle snapshot")
+            .history()
+            .len();
+
+        let token = queue
+            .prepare_reserved_mutation(
+                revision_before,
+                ReservedQueueMutation::select_committed(item_id),
+            )
+            .expect("same-item reinstall reservation");
+        queue.commit_reserved(token);
+
+        let revision_after = queue.revision_snapshot();
+        assert_eq!(revision_after.structural(), revision_before.structural());
+        assert!(revision_after.traversal() > revision_before.traversal());
+        assert_eq!(
+            queue
+                .shuffle_traversal_snapshot()
+                .expect("updated shuffle snapshot")
+                .history()
+                .len(),
+            history_before + 1
         );
     }
 }

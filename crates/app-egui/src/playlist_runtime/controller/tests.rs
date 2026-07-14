@@ -16,11 +16,12 @@ use crate::media_open::{
 use crate::playlist_runtime::PlaylistBindingGeneration;
 use crate::playlist_runtime::controller::install::{
     ControllerInstallPhase, ControllerMediaOpenCommandError, ControllerMediaOpenDisposition,
-    DeferredControllerIntent, DesiredQueueModes, InstallReadyOutcome, LifecycleIntentOutcome,
-    PlaylistInstallAdmissionError, PlaylistInstallRequest,
+    DeferredControllerIntent, DeferredTransportIntent, DesiredQueueModes, InstallReadyOutcome,
+    LifecycleIntentOutcome, PlaylistInstallAdmissionError, PlaylistInstallMutation,
+    PlaylistInstallRequest,
 };
 use crate::playlist_runtime::identity::{
-    PendingTargetOrigin, PlaylistItemErrorCategory, PlaylistItemErrorPhase,
+    PendingTargetOrigin, PlaylistItemErrorCategory, PlaylistItemErrorPhase, TransportActionOrigin,
 };
 use crate::playlist_runtime::view::PlaylistWorkerAvailability;
 
@@ -70,7 +71,9 @@ fn install_request(
         origin: PendingTargetOrigin::ExplicitRowPlay,
         intent_revision: PlaybackIntentRevision::INITIAL,
         expected_queue_revision: controller.queue().revision_snapshot(),
-        mutation: ReservedQueueMutation::select_committed(item_id),
+        mutation: PlaylistInstallMutation::Reserved(ReservedQueueMutation::select_committed(
+            item_id,
+        )),
     }
 }
 
@@ -156,7 +159,9 @@ fn ready_reservation_failure_preserves_queue_allocator_and_dirty_state() {
     let dirty_before = controller.dirty_revision();
     let watermark_before = controller.queue().next_item_id_snapshot();
     let request = PlaylistInstallRequest {
-        mutation: ReservedQueueMutation::select_committed(missing_id),
+        mutation: PlaylistInstallMutation::Reserved(ReservedQueueMutation::select_committed(
+            missing_id,
+        )),
         target_item_id: Some(missing_id),
         ..install_request(&controller, 1, 11, item_id)
     };
@@ -217,7 +222,11 @@ fn coordinator_acceptance_is_distinct_from_barrier_and_delayed_resolution_keeps_
         Some(ControllerInstallPhase::AuthorizationDispatchPending)
     );
     assert_eq!(
-        controller.request_lifecycle_intent(DeferredControllerIntent::Stop),
+        controller.request_lifecycle_intent(DeferredControllerIntent::Transport(
+            DeferredTransportIntent::Stop {
+                origin: TransportActionOrigin::Ui,
+            },
+        )),
         Ok(LifecycleIntentOutcome::AwaitAuthorizationResolution {
             request_id: request_id(3)
         })
@@ -330,11 +339,11 @@ fn replacement_ids_and_rows_stay_private_until_exact_installed_commit() {
         origin: PendingTargetOrigin::ExplicitOpen,
         intent_revision: PlaybackIntentRevision::INITIAL,
         expected_queue_revision: controller.queue().revision_snapshot(),
-        mutation: ReservedQueueMutation::replace_with_current(
+        mutation: PlaylistInstallMutation::Reserved(ReservedQueueMutation::replace_with_current(
             vec![draft(10)],
             draft(11),
             vec![draft(12)],
-        ),
+        )),
     };
     controller.accept_install_request(request).unwrap();
     assert!(matches!(
@@ -416,7 +425,12 @@ fn modes_drain_after_abort_and_commit_with_runtime_generation_not_dirty_by_itsel
     assert_eq!(
         aborting.request_lifecycle_intent(DeferredControllerIntent::Suspend),
         Ok(LifecycleIntentOutcome::Immediate {
-            intent: DeferredControllerIntent::Suspend
+            intent: DeferredControllerIntent::Suspend,
+            aborted_request_id: Some(request_id(60)),
+            cancellation_cause: Some(
+                player_core::MediaInstallCancellationCause::LifecycleSuspended,
+            ),
+            mode_dirty: aborting.latest_dirty_signal(),
         })
     );
     assert_eq!(aborting.repeat_mode, RepeatMode::RepeatQueue);
@@ -475,7 +489,11 @@ fn lifecycle_intents_are_bounded_in_every_install_phase() {
         .accept_install_request(install_request(&awaiting, 90, 100, awaiting_item))
         .unwrap();
     assert!(matches!(
-        awaiting.request_lifecycle_intent(DeferredControllerIntent::Stop),
+        awaiting.request_lifecycle_intent(DeferredControllerIntent::Transport(
+            DeferredTransportIntent::Stop {
+                origin: TransportActionOrigin::Ui,
+            },
+        )),
         Ok(LifecycleIntentOutcome::CancelPendingRequest { .. })
     ));
 
@@ -486,7 +504,11 @@ fn lifecycle_intents_are_bounded_in_every_install_phase() {
         .begin_authorization_dispatch(request_id(91))
         .unwrap();
     dispatching
-        .request_lifecycle_intent(DeferredControllerIntent::Stop)
+        .request_lifecycle_intent(DeferredControllerIntent::Transport(
+            DeferredTransportIntent::Stop {
+                origin: TransportActionOrigin::Ui,
+            },
+        ))
         .unwrap();
     dispatching
         .request_lifecycle_intent(DeferredControllerIntent::Shutdown)

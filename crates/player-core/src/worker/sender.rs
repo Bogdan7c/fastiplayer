@@ -1,6 +1,25 @@
 use super::*;
 
 impl PlayerCommandSender {
+    /// Ставит exact-instance transport и возвращает receipt фактического owner apply.
+    pub fn exact_media_transport(
+        &self,
+        request: ExactMediaTransportRequest,
+    ) -> Result<ExactMediaTransportReceipt, PlayerWorkerSendError> {
+        // Capacity-one reply хранит ровно один authoritative outcome без polling/FIFO.
+        let (outcome_tx, outcome_rx) = bounded(1);
+        self.command_tx
+            .try_send(WorkerCommand::ExactMediaTransport {
+                request,
+                outcome_tx,
+            })
+            .map_err(PlayerWorkerSendError::from)?;
+        Ok(ExactMediaTransportReceipt::new(
+            request.media_instance_id,
+            outcome_rx,
+        ))
+    }
+
     /// Ставит exact-instance restore и возвращает receipt, а не ложный success по enqueue.
     pub fn restore_installed_media_state(
         &self,

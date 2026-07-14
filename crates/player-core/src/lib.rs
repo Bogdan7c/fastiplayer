@@ -86,6 +86,8 @@ pub use frame_server_core::{
 pub use media_core::TrackId;
 pub use media_install::{
     AcceptedMediaInstallTerminalError, AuthorizeInstallCommit, CancelMediaInstall,
+    ExactMediaTransportAction, ExactMediaTransportFailureStage, ExactMediaTransportOutcome,
+    ExactMediaTransportReceipt, ExactMediaTransportReceiptError, ExactMediaTransportRequest,
     InstalledMediaRestoreFailureStage, InstalledMediaStateRestore,
     InstalledMediaStateRestoreOutcome, InstalledMediaStateRestoreReceipt,
     InstalledMediaStateRestoreReceiptError, InstalledPositionRestore, InstalledSubtitleRestore,

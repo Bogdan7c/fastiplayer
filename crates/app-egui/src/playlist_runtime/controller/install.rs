@@ -1,8 +1,18 @@
 //! D08/D39 reservation/authorization state machine playlist controller-а.
 
+mod intents;
+mod token;
+
+use intents::select_intent;
+pub(crate) use intents::{
+    BarrierRaceIntent, ControllerTerminalDrain, ControllerTerminalResolution,
+    DeferredControllerIntent, DeferredTransportIntent, DesiredQueueModes, LifecycleIntentOutcome,
+};
+use token::GuardedInstallToken;
+
 use player_core::{MediaInstallRequestId, MediaInstanceId, PlaybackIntentRevision};
 use playlist_core::{
-    PrepareReservedMutationError, PreparedQueueMutationToken, QueueRevisionSnapshot, RepeatMode,
+    ManualNavigationPreview, PrepareReservedMutationError, QueueRevisionSnapshot,
     ReservedQueueMutation, ShuffleToggleError,
 };
 
@@ -61,43 +71,15 @@ pub(crate) struct PlaylistInstallRequest {
     pub origin: PendingTargetOrigin,
     pub intent_revision: PlaybackIntentRevision,
     pub expected_queue_revision: QueueRevisionSnapshot,
-    pub mutation: ReservedQueueMutation,
+    pub mutation: PlaylistInstallMutation,
 }
 
-/// Persistent queue modes и runtime protected generation coalesce-ятся в один value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DesiredQueueModes {
-    pub repeat_mode: RepeatMode,
-    pub shuffle_enabled: bool,
-    pub protected_runtime_generation: u64,
-}
-
-/// Один deferred intent вместо command FIFO.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DeferredControllerIntent {
-    Stop,
-    Suspend,
-    Shutdown,
-}
-
-impl DeferredControllerIntent {
-    fn priority(self) -> u8 {
-        match self {
-            Self::Stop => 0,
-            Self::Suspend => 1,
-            Self::Shutdown => 2,
-        }
-    }
-}
-
-/// Dispatch-pending slot подчёркивает, что barrier winner ещё неизвестен.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct BarrierRaceIntent(DeferredControllerIntent);
-
-impl BarrierRaceIntent {
-    pub(crate) const fn intent(self) -> DeferredControllerIntent {
-        self.0
-    }
+/// Controller сохраняет domain-owned manual preview вплоть до exact Installed.
+pub(crate) enum PlaylistInstallMutation {
+    /// Обычный explicit select/replacement reservation.
+    Reserved(ReservedQueueMutation),
+    /// One-step manual navigation, включая private shuffle history/upcoming preview.
+    ManualNavigation(ManualNavigationPreview),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,34 +126,6 @@ impl AuthorizationDispatchStart {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LifecycleIntentOutcome {
-    Immediate {
-        intent: DeferredControllerIntent,
-    },
-    CancelPendingRequest {
-        request_id: MediaOpenRequestId,
-        intent: DeferredControllerIntent,
-    },
-    AwaitAuthorizationResolution {
-        request_id: MediaOpenRequestId,
-    },
-    AwaitInstalled {
-        request_id: MediaOpenRequestId,
-    },
-    NoPendingInstall,
-    Fatal(PlaylistControllerInvariantViolation),
-}
-
-/// Результат terminal drain уже соблюдает commit/abort -> modes -> intent ordering.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ControllerTerminalDrain {
-    pub request_id: MediaOpenRequestId,
-    pub active_media: Option<ActiveMediaIdentity>,
-    pub dirty: Option<PlaylistDirtySignal>,
-    pub deferred_intent: Option<DeferredControllerIntent>,
-}
-
 pub(super) enum InstallState {
     AwaitingReady(AwaitingReady),
     ReservedAwaitingAuthorization(GuardedInstall),
@@ -211,6 +165,15 @@ impl InstallState {
             | Self::AuthorizationInFlight { guarded: state, .. } => state.request_id,
         }
     }
+
+    pub(super) const fn player_request_id(&self) -> MediaInstallRequestId {
+        match self {
+            Self::AwaitingReady(state) => state.request.player_request_id,
+            Self::ReservedAwaitingAuthorization(state)
+            | Self::AuthorizationDispatchPending { guarded: state, .. }
+            | Self::AuthorizationInFlight { guarded: state, .. } => state.player_request_id,
+        }
+    }
 }
 
 pub(super) struct AwaitingReady {
@@ -221,7 +184,7 @@ pub(super) struct GuardedInstall {
     request_id: MediaOpenRequestId,
     player_request_id: MediaInstallRequestId,
     target_item_id: Option<playlist_core::PlaylistItemId>,
-    token: PreparedQueueMutationToken,
+    token: GuardedInstallToken,
     desired_modes: Option<DesiredQueueModes>,
     queue_revision_before_commit: QueueRevisionSnapshot,
 }
@@ -361,10 +324,18 @@ impl PlaylistController {
             mutation,
             ..
         } = awaiting.request;
-        let token = match self
-            .queue
-            .prepare_reserved_mutation(expected_queue_revision, mutation)
-        {
+        let token_result = match mutation {
+            PlaylistInstallMutation::Reserved(mutation) => self
+                .queue
+                .prepare_reserved_mutation(expected_queue_revision, mutation)
+                .map(GuardedInstallToken::Queue),
+            PlaylistInstallMutation::ManualNavigation(preview) => self
+                .queue
+                .prepare_manual_navigation(preview)
+                .map(GuardedInstallToken::ManualNavigation)
+                .map_err(|failure| failure.reason()),
+        };
+        let token = match token_result {
             Ok(token) => token,
             Err(error) => {
                 self.pending_target = None;
@@ -451,8 +422,12 @@ impl PlaylistController {
                 self.publish_view(false);
                 Ok(None)
             }
-            AuthorizationDispatchResolution::CancelWonBeforePlayerEnqueue { .. }
-            | AuthorizationDispatchResolution::DownstreamRejectedBeforeEnqueue { .. } => {
+            resolution @ (AuthorizationDispatchResolution::CancelWonBeforePlayerEnqueue {
+                ..
+            }
+            | AuthorizationDispatchResolution::DownstreamRejectedBeforeEnqueue {
+                ..
+            }) => {
                 let GuardedInstall {
                     request_id,
                     token,
@@ -460,7 +435,7 @@ impl PlaylistController {
                     queue_revision_before_commit: _,
                     ..
                 } = guarded;
-                self.queue.abort_reserved(token);
+                token.abort(&mut self.queue);
                 self.pending_target = None;
                 let dirty = self.apply_desired_modes(desired_modes)?;
                 let deferred_intent = race_intent.map(BarrierRaceIntent::intent);
@@ -470,6 +445,19 @@ impl PlaylistController {
                     active_media: self.active_media,
                     dirty,
                     deferred_intent,
+                    resolution: match resolution {
+                        AuthorizationDispatchResolution::CancelWonBeforePlayerEnqueue { cause } => {
+                            ControllerTerminalResolution::CancelWonBeforePlayerEnqueue { cause }
+                        }
+                        AuthorizationDispatchResolution::DownstreamRejectedBeforeEnqueue {
+                            rejection,
+                        } => ControllerTerminalResolution::DownstreamRejectedBeforeEnqueue {
+                            rejection,
+                        },
+                        AuthorizationDispatchResolution::EnqueuedAtPlayerOwner => {
+                            unreachable!("pre-barrier branch excludes enqueue winner")
+                        }
+                    },
                 }))
             }
         }
@@ -554,10 +542,10 @@ impl PlaylistController {
             queue_revision_before_commit,
             ..
         } = guarded;
-        let commit = self.queue.commit_reserved(token);
-        let structural_changed = !commit.allocated_item_ids().as_slice().is_empty();
+        let commit = token.commit(&mut self.queue);
+        let structural_changed = commit.structural_changed;
         let queue_changed = self.queue.revision_snapshot() != queue_revision_before_commit;
-        let committed_item_id = Some(commit.traversal_current().item_id());
+        let committed_item_id = Some(commit.traversal_current.item_id());
         if target_item_id.is_some() && target_item_id != committed_item_id {
             self.set_fatal(PlaylistControllerInvariantViolation::TerminalRequestMismatch);
             return Err(PlaylistControllerInvariantViolation::TerminalRequestMismatch);
@@ -591,6 +579,7 @@ impl PlaylistController {
             active_media: Some(active_media),
             dirty,
             deferred_intent: post_commit_intent,
+            resolution: ControllerTerminalResolution::Installed,
         })
     }
 
@@ -616,6 +605,14 @@ impl PlaylistController {
         &mut self,
         intent: DeferredControllerIntent,
     ) -> Result<LifecycleIntentOutcome, PlaylistControllerInvariantViolation> {
+        self.request_deferred_intent(intent)
+    }
+
+    /// Единый pre-dispatch abort / barrier-race / post-commit latest slot для transport/lifecycle.
+    pub(super) fn request_deferred_intent(
+        &mut self,
+        intent: DeferredControllerIntent,
+    ) -> Result<LifecycleIntentOutcome, PlaylistControllerInvariantViolation> {
         if let Some(violation) = self.fatal_invariant {
             return Err(violation);
         }
@@ -627,20 +624,30 @@ impl PlaylistController {
                 let request_id = awaiting.request.request_id;
                 self.pending_target = None;
                 self.publish_view(false);
-                Ok(LifecycleIntentOutcome::CancelPendingRequest { request_id, intent })
+                Ok(LifecycleIntentOutcome::CancelPendingRequest {
+                    request_id,
+                    cause: intent.cancellation_cause(),
+                    intent,
+                })
             }
             InstallState::ReservedAwaitingAuthorization(guarded) => {
                 let GuardedInstall {
+                    request_id,
                     token,
                     desired_modes,
                     queue_revision_before_commit: _,
                     ..
                 } = guarded;
-                self.queue.abort_reserved(token);
+                token.abort(&mut self.queue);
                 self.pending_target = None;
-                self.apply_desired_modes(desired_modes)?;
+                let mode_dirty = self.apply_desired_modes(desired_modes)?;
                 self.publish_view(false);
-                Ok(LifecycleIntentOutcome::Immediate { intent })
+                Ok(LifecycleIntentOutcome::Immediate {
+                    intent,
+                    aborted_request_id: Some(request_id),
+                    cancellation_cause: Some(intent.cancellation_cause()),
+                    mode_dirty,
+                })
             }
             InstallState::AuthorizationDispatchPending {
                 guarded,
@@ -756,15 +763,5 @@ impl PlaylistController {
     ) -> Result<T, PlaylistControllerInvariantViolation> {
         self.set_fatal(violation);
         Err(violation)
-    }
-}
-
-fn select_intent(
-    existing: Option<DeferredControllerIntent>,
-    incoming: DeferredControllerIntent,
-) -> DeferredControllerIntent {
-    match existing {
-        Some(current) if current.priority() >= incoming.priority() => current,
-        _ => incoming,
     }
 }

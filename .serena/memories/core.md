@@ -37,3 +37,5 @@
 
 
 - Session 11A completed 2026-07-14: process-lifetime `PlaylistRuntime` now owns modular `PlaylistController`, canonical queue identities, D08/D39 three-phase reservation guard, bounded runtime row errors, dirty signals, stop-after-current storage shell, and Arc-backed revision-stable view snapshots. Renderer-bound `AppState` receives only a validated exact binding plus immutable snapshot attachment. Navigation/Ended/tombstone/discovery/persistence/UI remain out of scope; next allowed work is Session 11B. Details: `mem:app-egui/playlist-controller-s11a`.
+
+- Session 11B completed 2026-07-14: `PlaylistController` now owns manual Play/Next/Previous, stable intent/origin, one D50 wait, D17 restart-first, D58-D60 coalescing and exact guard transport drain. `player-core` exposes exact-instance restart/neutral Stop receipts with typed stale/partial failures; manual shuffle token remains domain-owned until Installed and no dirty/current/history changes occur pre-commit. Fast traversal preview, Ended execution, discovery/config/UI/MPRIS wiring remain out of scope; next allowed work is Session 11C. Details: `mem:app-egui/playlist-controller-s11b`.
