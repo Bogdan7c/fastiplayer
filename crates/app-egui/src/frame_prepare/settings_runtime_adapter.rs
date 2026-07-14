@@ -104,9 +104,9 @@ impl FrameSettingsRuntimeAdapter<'_> {
                     Err(error) => Err(format!("local media rebuild failed: {error:#}")),
                 }
             }
-            ActiveMediaSource::DirectMediaUrl(source_url) => {
+            ActiveMediaSource::DirectMediaUrl(source_locator) => {
                 match resolve_direct_media_startup_media(
-                    &source_url,
+                    &source_locator,
                     &config.network,
                     &config.demux,
                 ) {
@@ -118,7 +118,7 @@ impl FrameSettingsRuntimeAdapter<'_> {
                         )
                         .with_preferred_video_codecs(&preferred_runtime_codecs);
                         if self.app_state.load_prepared_direct_media(
-                            source_url,
+                            source_locator,
                             source_label,
                             prepared_media,
                         ) {
@@ -132,14 +132,14 @@ impl FrameSettingsRuntimeAdapter<'_> {
                 }
             }
             ActiveMediaSource::YouTubeUrl {
-                source_url,
+                source_locator,
                 selected_stream_identity,
             } => {
                 if config.reselect_youtube_stream {
                     let system_capabilities =
                         probe_system_capabilities(self.renderer.render_capabilities());
                     match resolve_youtube_startup_media(
-                        &source_url,
+                        &source_locator,
                         &config.network,
                         &config.youtube,
                         &config.demux,
@@ -148,7 +148,7 @@ impl FrameSettingsRuntimeAdapter<'_> {
                     ) {
                         Ok(prepared) => {
                             if self.app_state.load_youtube_demuxer(
-                                source_url,
+                                source_locator,
                                 prepared.streaming_media.description,
                                 prepared.streaming_media.demuxer,
                                 prepared.selected_stream_identity,
@@ -165,7 +165,7 @@ impl FrameSettingsRuntimeAdapter<'_> {
                     }
                 } else {
                     match service_youtube::open_seekable_vod_from_selected_identity_with_demux_config(
-                        &source_url,
+                        &source_locator,
                         &selected_stream_identity,
                         &config.network,
                         &config.youtube,
@@ -173,7 +173,7 @@ impl FrameSettingsRuntimeAdapter<'_> {
                     ) {
                         Ok(streaming_media) => {
                             if self.app_state.load_youtube_demuxer(
-                                source_url,
+                                source_locator,
                                 streaming_media.description,
                                 streaming_media.demuxer,
                                 selected_stream_identity,

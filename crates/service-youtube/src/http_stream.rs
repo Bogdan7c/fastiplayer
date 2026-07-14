@@ -52,11 +52,13 @@ fn fetch_stream_to_writer(
         .context("Не удалось создать reqwest blocking client")?;
     let headers = build_header_map(&stream.headers)?;
     let mut response = client
-        .get(&stream.url)
+        .get(stream.url.expose_secret_for_open())
         .headers(headers)
         .send()
+        .map_err(reqwest::Error::without_url)
         .context("HTTP запрос direct media stream не удался")?
         .error_for_status()
+        .map_err(reqwest::Error::without_url)
         .context("YouTube direct media stream вернул HTTP ошибку")?;
     let mut read_buffer = vec![0u8; HTTP_READ_CHUNK_SIZE];
 

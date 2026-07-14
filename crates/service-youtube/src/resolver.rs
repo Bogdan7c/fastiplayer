@@ -9,6 +9,7 @@ use codec_core::{
 use rustiplayer_config::YoutubeConfig;
 use source_core::{HttpHeader, SourceValidators};
 
+use crate::YoutubeMediaLocator;
 use crate::dto::{
     YoutubeDirectStreamDescriptor, YoutubeDirectStreams, YoutubeDynamicRange,
     YoutubeInsufficientVideoMetadata, YoutubeStreamCandidate, YoutubeStreamCandidates,
@@ -21,7 +22,8 @@ use crate::process::{
 /// Resolver direct stream descriptors для production и тестового refresh path.
 pub(crate) trait YoutubeDirectStreamResolver: Send + Sync {
     /// Возвращает свежую пару direct stream descriptors для исходного YouTube URL.
-    fn resolve_direct_streams(&self, video_url: &str) -> Result<YoutubeDirectStreams>;
+    fn resolve_direct_streams(&self, locator: &YoutubeMediaLocator)
+    -> Result<YoutubeDirectStreams>;
 }
 
 /// Production resolver на базе `yt-dlp`.
@@ -65,8 +67,11 @@ impl YtDlpDirectStreamResolver {
 }
 
 impl YoutubeDirectStreamResolver for YtDlpDirectStreamResolver {
-    fn resolve_direct_streams(&self, video_url: &str) -> Result<YoutubeDirectStreams> {
-        resolve_youtube_direct_streams_with_process_config(video_url, &self.process_config)
+    fn resolve_direct_streams(
+        &self,
+        locator: &YoutubeMediaLocator,
+    ) -> Result<YoutubeDirectStreams> {
+        resolve_youtube_direct_streams_with_process_config(locator, &self.process_config)
     }
 }
 
@@ -144,52 +149,60 @@ impl YtDlpSelectedStreamResolver {
 }
 
 impl YoutubeDirectStreamResolver for YtDlpSelectedStreamResolver {
-    fn resolve_direct_streams(&self, video_url: &str) -> Result<YoutubeDirectStreams> {
+    fn resolve_direct_streams(
+        &self,
+        locator: &YoutubeMediaLocator,
+    ) -> Result<YoutubeDirectStreams> {
         let stream_candidates =
-            resolve_youtube_stream_candidates_with_process_config(video_url, &self.process_config)?;
+            resolve_youtube_stream_candidates_with_process_config(locator, &self.process_config)?;
 
         direct_streams_from_matching_candidate(&stream_candidates, &self.selected_stream)
     }
 }
 
 /// Получает normalized descriptors через `yt-dlp`, не открывая media bytes.
-pub fn resolve_youtube_direct_streams(video_url: &str) -> Result<YoutubeDirectStreams> {
+pub fn resolve_youtube_direct_streams(
+    locator: &YoutubeMediaLocator,
+) -> Result<YoutubeDirectStreams> {
     let process_config = YtDlpProcessConfig::from_youtube_config(&YoutubeConfig::default())?;
 
-    resolve_youtube_direct_streams_with_process_config(video_url, &process_config)
+    resolve_youtube_direct_streams_with_process_config(locator, &process_config)
 }
 
 /// Получает capability-aware stream candidates через `yt-dlp`, не открывая media bytes.
-pub fn resolve_youtube_stream_candidates(video_url: &str) -> Result<YoutubeStreamCandidates> {
-    resolve_youtube_stream_candidates_with_config(video_url, &YoutubeConfig::default())
+pub fn resolve_youtube_stream_candidates(
+    locator: &YoutubeMediaLocator,
+) -> Result<YoutubeStreamCandidates> {
+    resolve_youtube_stream_candidates_with_config(locator, &YoutubeConfig::default())
 }
 
 /// Получает capability-aware stream candidates с явной process policy.
 pub fn resolve_youtube_stream_candidates_with_config(
-    video_url: &str,
+    locator: &YoutubeMediaLocator,
     youtube_config: &YoutubeConfig,
 ) -> Result<YoutubeStreamCandidates> {
     let process_config = YtDlpProcessConfig::from_youtube_config(youtube_config)?;
 
-    resolve_youtube_stream_candidates_with_process_config(video_url, &process_config)
+    resolve_youtube_stream_candidates_with_process_config(locator, &process_config)
 }
 
 /// Получает normalized descriptors через `yt-dlp` с уже валидированной process policy.
 fn resolve_youtube_direct_streams_with_process_config(
-    video_url: &str,
+    locator: &YoutubeMediaLocator,
     process_config: &YtDlpProcessConfig,
 ) -> Result<YoutubeDirectStreams> {
-    let metadata = resolve_youtube_metadata(video_url, process_config)?;
+    let metadata = resolve_youtube_metadata(locator.expose_secret_for_open(), process_config)?;
 
     select_direct_media_streams(&metadata)
 }
 
 /// Получает full manifest metadata и строит service candidates.
 fn resolve_youtube_stream_candidates_with_process_config(
-    video_url: &str,
+    locator: &YoutubeMediaLocator,
     process_config: &YtDlpProcessConfig,
 ) -> Result<YoutubeStreamCandidates> {
-    let metadata = resolve_youtube_candidate_metadata(video_url, process_config)?;
+    let metadata =
+        resolve_youtube_candidate_metadata(locator.expose_secret_for_open(), process_config)?;
 
     build_stream_candidates(&metadata)
 }
@@ -1118,7 +1131,7 @@ fn direct_stream_from_format(
 
     YoutubeDirectStreamDescriptor {
         kind,
-        url: format.url,
+        url: crate::YoutubeDirectStreamUrl::from_secret_for_open(format.url),
         headers,
         format_id: format.format_id,
         service_media_id,

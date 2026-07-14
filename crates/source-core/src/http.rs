@@ -1,3 +1,4 @@
+use std::fmt;
 use std::io::Read;
 
 use reqwest::StatusCode;
@@ -7,18 +8,28 @@ use reqwest::header::{
 };
 
 use crate::{
-    ByteSource, CancellationToken, NotSeekableReason, RangeDiagnostics, Seekability, SourceError,
-    SourceFingerprint, SourceResult, SourceRuntimeConfig, SourceValidators,
+    ByteSource, CancellationToken, NotSeekableReason, RangeDiagnostics, SecretHttpUrl, Seekability,
+    SourceError, SourceFingerprint, SourceResult, SourceRuntimeConfig, SourceValidators,
 };
 
 /// HTTP header, который внешний service layer передал как данные direct URL-а.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct HttpHeader {
     /// Имя HTTP header-а.
     pub name: String,
 
     /// Значение HTTP header-а.
     pub value: String,
+}
+
+impl fmt::Debug for HttpHeader {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpHeader")
+            .field("name", &self.name)
+            .field("value", &"<redacted>")
+            .finish()
+    }
 }
 
 impl HttpHeader {
@@ -36,25 +47,25 @@ impl HttpHeader {
 #[derive(Debug, Clone)]
 pub struct HttpRangeSourceConfig {
     /// Direct media URL.
-    pub url: String,
+    url: SecretHttpUrl,
 
     /// Headers direct URL-а, полученные от caller-а.
-    pub headers: Vec<HttpHeader>,
+    headers: Vec<HttpHeader>,
 
     /// Runtime-настройки, полученные из пользовательского config.
-    pub source_config: SourceRuntimeConfig,
+    source_config: SourceRuntimeConfig,
 }
 
 impl HttpRangeSourceConfig {
     /// Создаёт конфигурацию HTTP source без hardcoded service headers.
     #[must_use]
     pub fn new(
-        url: impl Into<String>,
+        url: SecretHttpUrl,
         headers: Vec<HttpHeader>,
         source_config: SourceRuntimeConfig,
     ) -> Self {
         Self {
-            url: url.into(),
+            url,
             headers,
             source_config,
         }
@@ -62,13 +73,12 @@ impl HttpRangeSourceConfig {
 }
 
 /// HTTP byte source, который читает только через Range requests.
-#[derive(Debug)]
 pub struct HttpRangeSource {
     /// Reqwest blocking client с timeout-ами из config.
     client: Client,
 
     /// Direct media URL.
-    url: String,
+    url: SecretHttpUrl,
 
     /// Базовые headers direct URL-а.
     headers: HeaderMap,
@@ -90,6 +100,22 @@ pub struct HttpRangeSource {
 
     /// Range diagnostics для telemetry panel.
     diagnostics: RangeDiagnostics,
+}
+
+impl fmt::Debug for HttpRangeSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpRangeSource")
+            .field("url", &self.url)
+            .field("headers", &"<redacted>")
+            .field("position", &self.position)
+            .field("seekability", &self.seekability)
+            .field("validators", &self.validators)
+            .field("content_length", &self.content_length)
+            .field("fingerprint", &self.fingerprint)
+            .field("diagnostics", &self.diagnostics)
+            .finish_non_exhaustive()
+    }
 }
 
 impl HttpRangeSource {
@@ -142,7 +168,7 @@ impl HttpRangeSource {
                     self.record_range_error(&error);
                     attempts = attempts.saturating_add(1);
                     tracing::warn!(
-                        url = %self.url,
+                        source = %self.url,
                         offset,
                         length,
                         error = %error,
@@ -318,7 +344,11 @@ struct ParsedContentRange {
 }
 
 /// Выполняет `Range: bytes=0-0` и подтверждает seekability только через 206.
-fn probe_seekability(client: &Client, url: &str, headers: &HeaderMap) -> SourceResult<ProbeResult> {
+fn probe_seekability(
+    client: &Client,
+    url: &SecretHttpUrl,
+    headers: &HeaderMap,
+) -> SourceResult<ProbeResult> {
     let probe_range = ByteRange::new(0, 1);
     let response = send_range_request(client, url, headers, &probe_range, "range-probe")?;
     let validators = validators_from_headers(response.headers());
@@ -352,7 +382,7 @@ fn probe_seekability(client: &Client, url: &str, headers: &HeaderMap) -> SourceR
 
     Err(SourceError::HttpStatus {
         operation: "range-probe",
-        url: url.to_string(),
+        url: url.clone(),
         status: response.status(),
     })
 }
@@ -360,7 +390,7 @@ fn probe_seekability(client: &Client, url: &str, headers: &HeaderMap) -> SourceR
 /// Отправляет GET с Range header, сохраняя service-provided headers как данные.
 fn send_range_request(
     client: &Client,
-    url: &str,
+    url: &SecretHttpUrl,
     headers: &HeaderMap,
     range: &ByteRange,
     operation: &'static str,
@@ -377,24 +407,23 @@ fn send_range_request(
     );
 
     client
-        .get(url)
+        .get(url.expose_secret_for_open())
         .headers(request_headers)
         .send()
         .map_err(|source| map_reqwest_error(operation, url, source))
 }
 
 /// Валидирует, что `Content-Range` соответствует запрошенному range.
-fn validate_content_range(url: &str, headers: &HeaderMap, range: &ByteRange) -> SourceResult<()> {
+fn validate_content_range(
+    url: &SecretHttpUrl,
+    headers: &HeaderMap,
+    range: &ByteRange,
+) -> SourceResult<()> {
     let parsed_range = parse_content_range_header(url, headers)?;
     if parsed_range.start != range.start || parsed_range.end_inclusive != range.end_inclusive() {
-        let header = headers
-            .get(CONTENT_RANGE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("<invalid utf-8>")
-            .to_string();
         return Err(SourceError::InvalidContentRange {
-            url: url.to_string(),
-            header,
+            url: url.clone(),
+            header: "<unexpected range>".to_string(),
         });
     }
 
@@ -403,7 +432,7 @@ fn validate_content_range(url: &str, headers: &HeaderMap, range: &ByteRange) -> 
 
 /// Читает ровно ожидаемое количество bytes из response body в caller buffer.
 fn read_response_body_into(
-    url: &str,
+    url: &SecretHttpUrl,
     mut response: reqwest::blocking::Response,
     offset: u64,
     output: &mut [u8],
@@ -425,13 +454,13 @@ fn read_response_body_into(
             Err(source) if source.kind() == std::io::ErrorKind::TimedOut => {
                 return Err(SourceError::HttpTimeout {
                     operation: "range-read",
-                    url: url.to_string(),
+                    url: url.clone(),
                 });
             }
             Err(source) => {
                 return Err(SourceError::HttpBodyRead {
                     operation: "range-read",
-                    url: url.to_string(),
+                    url: url.clone(),
                     source,
                 });
             }
@@ -485,18 +514,21 @@ fn validators_from_headers(headers: &HeaderMap) -> SourceValidators {
 }
 
 /// Парсит обязательный для 206 response header `Content-Range`.
-fn parse_content_range_header(url: &str, headers: &HeaderMap) -> SourceResult<ParsedContentRange> {
+fn parse_content_range_header(
+    url: &SecretHttpUrl,
+    headers: &HeaderMap,
+) -> SourceResult<ParsedContentRange> {
     let header = headers
         .get(CONTENT_RANGE)
         .and_then(|value| value.to_str().ok())
         .ok_or_else(|| SourceError::InvalidContentRange {
-            url: url.to_string(),
+            url: url.clone(),
             header: "<missing>".to_string(),
         })?;
 
     parse_content_range_value(header).ok_or_else(|| SourceError::InvalidContentRange {
-        url: url.to_string(),
-        header: header.to_string(),
+        url: url.clone(),
+        header: "<invalid>".to_string(),
     })
 }
 
@@ -533,30 +565,35 @@ fn bounded_read_length(offset: u64, requested_length: usize, content_length: Opt
 }
 
 /// Нормализует reqwest errors в player/UI-friendly source errors.
-fn map_reqwest_error(operation: &'static str, url: &str, source: reqwest::Error) -> SourceError {
+fn map_reqwest_error(
+    operation: &'static str,
+    url: &SecretHttpUrl,
+    source: reqwest::Error,
+) -> SourceError {
     if source.is_timeout() {
         SourceError::HttpTimeout {
             operation,
-            url: url.to_string(),
+            url: url.clone(),
         }
     } else {
         SourceError::HttpRequest {
             operation,
-            url: url.to_string(),
-            source,
+            url: url.clone(),
+            source: source.without_url(),
         }
     }
 }
 
 /// Строит fingerprint из URL, validators и длины, не добавляя service-specific logic.
 fn build_http_fingerprint(
-    url: &str,
+    url: &SecretHttpUrl,
     content_length: Option<u64>,
     validators: &SourceValidators,
 ) -> SourceFingerprint {
+    let identity_hash = url.stable_identity_hash();
+
     SourceFingerprint::new(format!(
-        "http:{}:{}:{}:{}",
-        url,
+        "http:{identity_hash:016x}:{}:{}:{}",
         content_length
             .map(|length| length.to_string())
             .unwrap_or_else(|| "unknown-length".to_string()),
@@ -645,7 +682,7 @@ mod tests {
 
         fn config(&self, headers: Vec<HttpHeader>) -> HttpRangeSourceConfig {
             HttpRangeSourceConfig::new(
-                self.url.clone(),
+                SecretHttpUrl::from_secret_for_open(self.url.clone()),
                 headers,
                 SourceRuntimeConfig::for_tests(
                     1024 * 1024,
@@ -862,7 +899,7 @@ mod tests {
             thread::sleep(Duration::from_millis(250));
         });
         let config = HttpRangeSourceConfig::new(
-            server.url.clone(),
+            SecretHttpUrl::from_secret_for_open(server.url.clone()),
             Vec::new(),
             SourceRuntimeConfig::for_tests(
                 1024,

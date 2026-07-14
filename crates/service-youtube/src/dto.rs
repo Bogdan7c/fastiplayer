@@ -5,6 +5,8 @@ use codec_core::VideoDecodeRequirement;
 use serde::Deserialize;
 use source_core::{HttpHeader, SourceValidators};
 
+use crate::YoutubeDirectStreamUrl;
+
 /// Минимальная metadata по выбранному YouTube формату.
 #[derive(Debug, Deserialize)]
 pub(crate) struct YtDlpMetadata {
@@ -56,7 +58,7 @@ pub(crate) struct YtDlpRequestedDownload {
 }
 
 /// Один конкретный media stream от `yt-dlp`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub(crate) struct YtDlpFormat {
     /// Прямой media URL.
     pub(crate) url: String,
@@ -107,6 +109,27 @@ pub(crate) struct YtDlpFormat {
     pub(crate) http_headers: Option<BTreeMap<String, String>>,
 }
 
+impl std::fmt::Debug for YtDlpFormat {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("YtDlpFormat")
+            .field("url", &"<redacted>")
+            .field("format_id", &self.format_id)
+            .field("ext", &self.ext)
+            .field("vcodec", &self.vcodec)
+            .field("acodec", &self.acodec)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("fps", &self.fps)
+            .field("dynamic_range", &self.dynamic_range)
+            .field(
+                "http_headers",
+                &self.http_headers.as_ref().map(|headers| headers.keys()),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
 /// Вид adaptive stream-а внутри YouTube media.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum YoutubeStreamKind {
@@ -135,7 +158,7 @@ pub struct YoutubeDirectStreamDescriptor {
     pub kind: YoutubeStreamKind,
 
     /// Прямой media URL.
-    pub url: String,
+    pub url: YoutubeDirectStreamUrl,
 
     /// HTTP headers, которые service layer получил от yt-dlp.
     pub headers: Vec<HttpHeader>,

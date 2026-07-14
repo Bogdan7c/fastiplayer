@@ -11,6 +11,7 @@ mod cancellation;
 mod config;
 mod error;
 mod http;
+mod http_locator;
 mod local;
 mod metadata;
 
@@ -21,6 +22,7 @@ pub use cancellation::CancellationToken;
 pub use config::SourceRuntimeConfig;
 pub use error::{SourceError, SourceResult};
 pub use http::{HttpHeader, HttpRangeSource, HttpRangeSourceConfig};
+pub use http_locator::SecretHttpUrl;
 pub use local::LocalFileSource;
 pub use metadata::{
     ByteSource, NotSeekableReason, Seekability, SourceFingerprint, SourceValidators,

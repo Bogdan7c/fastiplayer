@@ -371,7 +371,9 @@ mod tests {
     fn descriptor(kind: YoutubeStreamKind, format_id: &str) -> YoutubeDirectStreamDescriptor {
         YoutubeDirectStreamDescriptor {
             kind,
-            url: format!("https://media.invalid/{format_id}"),
+            url: crate::YoutubeDirectStreamUrl::from_secret_for_open(format!(
+                "https://media.invalid/{format_id}"
+            )),
             headers: Vec::new(),
             format_id: Some(format_id.to_string()),
             service_media_id: Some("media".to_string()),

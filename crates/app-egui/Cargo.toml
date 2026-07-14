@@ -34,6 +34,7 @@ capability-core.workspace = true
 codec-core.workspace = true
 service-direct-media.workspace = true
 service-youtube.workspace = true
+playlist-core.workspace = true
 desktop-integration.workspace = true
 
 # Композиция playback/media boundary.

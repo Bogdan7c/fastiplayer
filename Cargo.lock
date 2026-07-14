@@ -143,6 +143,7 @@ dependencies = [
  "frame-server-core",
  "media-core",
  "player-core",
+ "playlist-core",
  "pollster",
  "render-core",
  "render-wgpu-shell",

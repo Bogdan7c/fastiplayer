@@ -9,12 +9,12 @@ pub(crate) enum ActiveMediaSource {
 
     /// YouTube URL переоткрывается через service-youtube по сохранённой выбранной stream-паре.
     YouTubeUrl {
-        source_url: String,
+        source_locator: service_youtube::YoutubeMediaLocator,
         selected_stream_identity: service_youtube::YoutubeSelectedStreamIdentity,
     },
 
     /// Direct HTTP media URL переоткрывается через service-direct-media flow.
-    DirectMediaUrl(String),
+    DirectMediaUrl(service_direct_media::DirectMediaUrl),
 }
 
 impl AppState {
@@ -89,7 +89,7 @@ impl AppState {
     /// Загружает YouTube demuxer без долговременного database/cache слоя.
     pub fn load_youtube_demuxer(
         &mut self,
-        source_url: String,
+        source_locator: service_youtube::YoutubeMediaLocator,
         label: String,
         demuxer: Box<dyn symphonia_demux::Demuxer + Send>,
         selected_stream_identity: service_youtube::YoutubeSelectedStreamIdentity,
@@ -105,13 +105,13 @@ impl AppState {
         {
             warn!(error = %error, "Не удалось отправить YouTube demuxer в worker");
             self.set_startup_error(format!(
-                "WorkerUnavailable: YouTube worker недоступен для {source_url}: {error}"
+                "WorkerUnavailable: YouTube worker недоступен для {source_locator}: {error}"
             ));
             return false;
         }
 
         self.remember_active_media_source(ActiveMediaSource::YouTubeUrl {
-            source_url,
+            source_locator,
             selected_stream_identity,
         });
         self.mark_pending_worker_redraw();
@@ -147,12 +147,12 @@ impl AppState {
     /// Загружает подготовленный direct media URL и запоминает восстановимый source intent.
     pub fn load_prepared_direct_media(
         &mut self,
-        source_url: String,
+        source_locator: service_direct_media::DirectMediaUrl,
         label: String,
         prepared_media: PreparedMedia,
     ) -> bool {
         if self.load_prepared_external_media(label, prepared_media) {
-            self.remember_active_media_source(ActiveMediaSource::DirectMediaUrl(source_url));
+            self.remember_active_media_source(ActiveMediaSource::DirectMediaUrl(source_locator));
             true
         } else {
             false

@@ -3,10 +3,12 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use reqwest::StatusCode;
 use source_core::{
-    ByteSource, CancellationToken, HttpRangeSource, HttpRangeSourceConfig, Seekability,
-    SourceError, SourceFingerprint, SourceResult, SourceRuntimeConfig, SourceValidators,
+    ByteSource, CancellationToken, HttpRangeSource, HttpRangeSourceConfig, SecretHttpUrl,
+    Seekability, SourceError, SourceFingerprint, SourceResult, SourceRuntimeConfig,
+    SourceValidators,
 };
 
+use crate::YoutubeMediaLocator;
 use crate::dto::{YoutubeDirectStreamDescriptor, YoutubeStreamKind};
 use crate::resolver::YoutubeDirectStreamResolver;
 
@@ -14,7 +16,7 @@ use crate::resolver::YoutubeDirectStreamResolver;
 #[derive(Clone)]
 pub(crate) struct RefreshContext {
     /// Исходный URL страницы/ролика, который понимает yt-dlp.
-    pub(crate) original_video_url: String,
+    pub(crate) original_locator: YoutubeMediaLocator,
 
     /// Какой stream нужно достать из свежей пары descriptors.
     pub(crate) stream_kind: YoutubeStreamKind,
@@ -165,7 +167,7 @@ fn open_http_range_source(
     source_config: SourceRuntimeConfig,
 ) -> SourceResult<HttpRangeSource> {
     HttpRangeSource::open(HttpRangeSourceConfig::new(
-        descriptor.url.clone(),
+        SecretHttpUrl::from_secret_for_open(descriptor.url.expose_secret_for_open()),
         descriptor.headers.clone(),
         source_config,
     ))
@@ -175,7 +177,7 @@ fn open_http_range_source(
 fn refresh_descriptor(refresh_context: &RefreshContext) -> Result<YoutubeDirectStreamDescriptor> {
     let refreshed_streams = refresh_context
         .resolver
-        .resolve_direct_streams(&refresh_context.original_video_url)?;
+        .resolve_direct_streams(&refresh_context.original_locator)?;
 
     Ok(match refresh_context.stream_kind {
         YoutubeStreamKind::Video => refreshed_streams.video,

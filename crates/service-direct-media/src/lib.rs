@@ -8,13 +8,17 @@ use std::time::Duration;
 
 use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig};
 use source_core::{
-    ByteSource, HttpRangeSource, HttpRangeSourceConfig, NotSeekableReason, Seekability,
-    SourceError, SourceRuntimeConfig,
+    ByteSource, HttpRangeSource, HttpRangeSourceConfig, NotSeekableReason, SecretHttpUrl,
+    Seekability, SourceError, SourceRuntimeConfig,
 };
 use symphonia_demux::{DemuxSeekability, Demuxer, DemuxerOptions, TrackInfo};
 use thiserror::Error;
 use tracing::debug;
 use url::Url;
+
+mod locator;
+
+pub use locator::DirectMediaUrl;
 
 /// Один кибибайт в bytes для явного mapping-а network config.
 const KIB_BYTES: u64 = 1024;
@@ -70,39 +74,6 @@ impl DirectMediaExtension {
         }
 
         None
-    }
-}
-
-/// Уже классифицированный direct media URL.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DirectMediaUrl {
-    /// Нормализованный URL, который можно передать в HTTP source.
-    url: String,
-
-    /// Container extension из URL path.
-    extension: DirectMediaExtension,
-
-    /// User-facing label без попытки скрывать, что источник сетевой.
-    source_label: String,
-}
-
-impl DirectMediaUrl {
-    /// Возвращает URL для открытия HTTP Range source.
-    #[must_use]
-    pub fn url(&self) -> &str {
-        &self.url
-    }
-
-    /// Возвращает container extension, доказанный URL path-ом.
-    #[must_use]
-    pub const fn extension(&self) -> DirectMediaExtension {
-        self.extension
-    }
-
-    /// Возвращает label, который можно показать в UI/player snapshot.
-    #[must_use]
-    pub fn source_label(&self) -> &str {
-        &self.source_label
     }
 }
 
@@ -172,11 +143,8 @@ impl DirectMediaOpenResult {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum DirectMediaUrlUnsupportedReason {
     /// Поддерживаются только `http` и `https`.
-    #[error("protocol `{scheme}` не поддерживается; direct media v1 принимает только http(s)")]
-    UnsupportedProtocol {
-        /// Scheme из URL.
-        scheme: String,
-    },
+    #[error("protocol не поддерживается; direct media v1 принимает только http(s)")]
+    UnsupportedProtocol,
 
     /// HTTP URL без host нельзя открыть через Range source.
     #[error("http(s) URL не содержит host")]
@@ -187,40 +155,28 @@ pub enum DirectMediaUrlUnsupportedReason {
     MissingExtension,
 
     /// HLS/DASH manifest остаются future feature и не открываются как файл.
-    #[error("manifest extension `.{extension}` пока не поддерживается direct media v1")]
-    ManifestUnsupported {
-        /// Manifest extension из URL path.
-        extension: String,
-    },
+    #[error("manifest URL пока не поддерживается direct media v1")]
+    ManifestUnsupported,
 
     /// Extension есть, но v1 opener его не поддерживает.
-    #[error("extension `.{extension}` не поддерживается direct media v1")]
-    UnsupportedExtension {
-        /// Extension из URL path.
-        extension: String,
-    },
+    #[error("URL extension не поддерживается direct media v1")]
+    UnsupportedExtension,
 }
 
 /// Типизированные ошибки direct media open path.
 #[derive(Debug, Error)]
 pub enum DirectMediaOpenError {
     /// URL parser не смог разобрать CLI аргумент как absolute URL.
-    #[error("некорректный direct media URL `{url}`: {source}")]
+    #[error("некорректный direct media URL: {source}")]
     InvalidUrl {
-        /// Исходный аргумент.
-        url: String,
-
         /// Ошибка `url` crate.
         #[source]
         source: url::ParseError,
     },
 
     /// URL валиден синтаксически, но не входит в v1 policy.
-    #[error("unsupported direct media URL `{url}`: {reason}")]
+    #[error("unsupported direct media URL: {reason}")]
     UnsupportedUrl {
-        /// Исходный или нормализованный URL.
-        url: String,
-
         /// Стабильная причина rejection-а.
         reason: DirectMediaUrlUnsupportedReason,
     },
@@ -255,10 +211,10 @@ pub enum DirectMediaOpenError {
     },
 
     /// Background prefetch worker не удалось создать до передачи source demuxer-у.
-    #[error("не удалось запустить prefetch для direct media `{url}`: {source}")]
+    #[error("не удалось запустить prefetch для {locator}: {source}")]
     PrefetchStartup {
-        /// Direct URL сохраняет service-level контекст открытия.
-        url: String,
+        /// Redacted typed locator сохраняет service-level контекст открытия.
+        locator: DirectMediaUrl,
 
         /// Исходная typed ошибка startup boundary из `media-prefetch`.
         #[source]
@@ -273,10 +229,10 @@ pub enum DirectMediaOpenError {
     },
 
     /// HTTP Range source не открылся или упал на probe/read boundary.
-    #[error("HTTP Range source error для `{url}`: {source}")]
+    #[error("HTTP Range source error для {locator}: {source}")]
     Source {
-        /// Direct URL.
-        url: String,
+        /// Redacted typed locator.
+        locator: DirectMediaUrl,
 
         /// Ошибка source-core.
         #[source]
@@ -284,20 +240,20 @@ pub enum DirectMediaOpenError {
     },
 
     /// Source открылся, но не доказал обязательный byte seek.
-    #[error("direct media source `{url}` не поддерживает обязательный Range seek: {reason:?}")]
+    #[error("direct media source {locator} не поддерживает обязательный Range seek: {reason:?}")]
     NonSeekable {
-        /// Direct URL.
-        url: String,
+        /// Redacted typed locator.
+        locator: DirectMediaUrl,
 
         /// Причина из source-core probe.
         reason: NotSeekableReason,
     },
 
     /// Symphonia не смогла открыть container по явному extension hint.
-    #[error("demux/probe error для `{url}` как .{extension_hint}: {source}")]
+    #[error("demux/probe error для {locator} как .{extension_hint}: {source}")]
     Demux {
-        /// Direct URL.
-        url: String,
+        /// Redacted typed locator.
+        locator: DirectMediaUrl,
 
         /// Extension hint, переданный demuxer-у.
         extension_hint: &'static str,
@@ -316,17 +272,15 @@ pub fn looks_like_url(argument: &str) -> bool {
 
 /// Классифицирует URL как supported direct media URL без сетевых запросов.
 pub fn parse_direct_media_url(argument: &str) -> Result<DirectMediaUrl, DirectMediaOpenError> {
-    let parsed_url = Url::parse(argument).map_err(|source| DirectMediaOpenError::InvalidUrl {
-        url: argument.to_string(),
-        source,
-    })?;
+    let parsed_url =
+        Url::parse(argument).map_err(|source| DirectMediaOpenError::InvalidUrl { source })?;
 
-    direct_media_url_from_parsed(parsed_url)
+    direct_media_url_from_parsed(argument, parsed_url)
 }
 
 /// Открывает seekable direct media URL через default app configs.
 pub fn open_direct_media_url(
-    url: &str,
+    locator: &DirectMediaUrl,
     network_config: &NetworkConfig,
     demux_config: &PlayerDemuxConfig,
 ) -> Result<DirectMediaOpenResult, DirectMediaOpenError> {
@@ -335,46 +289,45 @@ pub fn open_direct_media_url(
     let prefetch_config = prefetch_config_from_network_config(network_config)?;
     let demuxer_options = demuxer_options_from_config(demux_config)?;
 
-    open_direct_media_url_with_options(url, source_config, prefetch_config, demuxer_options)
+    open_direct_media_url_with_options(locator, source_config, prefetch_config, demuxer_options)
 }
 
 /// Открывает seekable direct media URL с уже нормализованными runtime options.
 pub fn open_direct_media_url_with_options(
-    url: &str,
+    direct_url: &DirectMediaUrl,
     source_config: SourceRuntimeConfig,
     prefetch_config: media_prefetch::PrefetchConfig,
     demuxer_options: DemuxerOptions,
 ) -> Result<DirectMediaOpenResult, DirectMediaOpenError> {
-    let direct_url = parse_direct_media_url(url)?;
     let source = HttpRangeSource::open(HttpRangeSourceConfig::new(
-        direct_url.url(),
+        SecretHttpUrl::from_secret_for_open(direct_url.expose_secret_for_open()),
         Vec::new(),
         source_config,
     ))
     .map_err(|source| DirectMediaOpenError::Source {
-        url: direct_url.url().to_string(),
+        locator: direct_url.clone(),
         source,
     })?;
 
     if let Seekability::NotSeekable { reason } = source.seekability() {
         return Err(DirectMediaOpenError::NonSeekable {
-            url: direct_url.url().to_string(),
+            locator: direct_url.clone(),
             reason,
         });
     }
 
     debug!(
-        url = %direct_url.url(),
+        source = %direct_url,
         extension = direct_url.extension().as_extension_hint(),
         "Direct media HTTP Range source открыт как seekable"
     );
 
     let extension_hint = direct_url.extension().as_extension_hint();
-    let source_label = direct_url.source_label().to_string();
+    let source_label = direct_url.safe_label().to_string();
     let prefetch_source =
         media_prefetch::PrefetchingByteSource::new(Box::new(source), prefetch_config).map_err(
             |source| DirectMediaOpenError::PrefetchStartup {
-                url: direct_url.url().to_string(),
+                locator: direct_url.clone(),
                 source,
             },
         )?;
@@ -385,7 +338,7 @@ pub fn open_direct_media_url_with_options(
         demuxer_options,
     )
     .map_err(|source| DirectMediaOpenError::Demux {
-        url: direct_url.url().to_string(),
+        locator: direct_url.clone(),
         extension_hint,
         source,
     })?;
@@ -403,40 +356,33 @@ pub fn open_direct_media_url_with_options(
 }
 
 /// Валидирует URL components и извлекает supported extension из path.
-fn direct_media_url_from_parsed(parsed_url: Url) -> Result<DirectMediaUrl, DirectMediaOpenError> {
+fn direct_media_url_from_parsed(
+    original_argument: &str,
+    parsed_url: Url,
+) -> Result<DirectMediaUrl, DirectMediaOpenError> {
     if !matches!(parsed_url.scheme(), "http" | "https") {
         return Err(unsupported_url(
-            parsed_url.as_str(),
-            DirectMediaUrlUnsupportedReason::UnsupportedProtocol {
-                scheme: parsed_url.scheme().to_string(),
-            },
+            DirectMediaUrlUnsupportedReason::UnsupportedProtocol,
         ));
     }
 
     if parsed_url.host_str().is_none() {
         return Err(unsupported_url(
-            parsed_url.as_str(),
             DirectMediaUrlUnsupportedReason::MissingHost,
         ));
     }
 
-    let extension = path_extension(&parsed_url).ok_or_else(|| {
-        unsupported_url(
-            parsed_url.as_str(),
-            DirectMediaUrlUnsupportedReason::MissingExtension,
-        )
-    })?;
-    let media_extension =
-        DirectMediaExtension::from_path_extension(extension).ok_or_else(|| {
-            unsupported_url(parsed_url.as_str(), unsupported_extension_reason(extension))
-        })?;
-    let normalized_url = parsed_url.as_str().to_string();
+    let extension = path_extension(&parsed_url)
+        .ok_or_else(|| unsupported_url(DirectMediaUrlUnsupportedReason::MissingExtension))?;
+    let media_extension = DirectMediaExtension::from_path_extension(extension)
+        .ok_or_else(|| unsupported_url(unsupported_extension_reason(extension)))?;
+    let safe_label = direct_media_safe_label(&parsed_url, media_extension);
 
-    Ok(DirectMediaUrl {
-        url: normalized_url.clone(),
-        extension: media_extension,
-        source_label: normalized_url,
-    })
+    Ok(DirectMediaUrl::new(
+        original_argument.to_string(),
+        media_extension,
+        safe_label,
+    ))
 }
 
 /// Извлекает extension только из последнего сегмента path, игнорируя query/fragment.
@@ -454,24 +400,35 @@ fn path_extension(parsed_url: &Url) -> Option<&str> {
 }
 
 /// Создаёт typed unsupported URL error без потери исходной причины.
-fn unsupported_url(url: &str, reason: DirectMediaUrlUnsupportedReason) -> DirectMediaOpenError {
-    DirectMediaOpenError::UnsupportedUrl {
-        url: url.to_string(),
-        reason,
-    }
+fn unsupported_url(reason: DirectMediaUrlUnsupportedReason) -> DirectMediaOpenError {
+    DirectMediaOpenError::UnsupportedUrl { reason }
+}
+
+/// Строит bounded label только из scheme, host, optional port и extension.
+fn direct_media_safe_label(url: &Url, extension: DirectMediaExtension) -> String {
+    const MAX_HOST_LABEL_BYTES: usize = 253;
+
+    let host = url
+        .host_str()
+        .filter(|host| host.len() <= MAX_HOST_LABEL_BYTES)
+        .unwrap_or("<redacted-host>");
+    let port = url
+        .port()
+        .map_or_else(String::new, |value| format!(":{value}"));
+    format!(
+        "direct media {}://{host}{port}/<redacted>.{}",
+        url.scheme(),
+        extension.as_extension_hint()
+    )
 }
 
 /// Отделяет будущие manifest protocols от обычного unsupported extension.
 fn unsupported_extension_reason(extension: &str) -> DirectMediaUrlUnsupportedReason {
     if extension.eq_ignore_ascii_case("m3u8") || extension.eq_ignore_ascii_case("mpd") {
-        return DirectMediaUrlUnsupportedReason::ManifestUnsupported {
-            extension: extension.to_ascii_lowercase(),
-        };
+        return DirectMediaUrlUnsupportedReason::ManifestUnsupported;
     }
 
-    DirectMediaUrlUnsupportedReason::UnsupportedExtension {
-        extension: extension.to_ascii_lowercase(),
-    }
+    DirectMediaUrlUnsupportedReason::UnsupportedExtension
 }
 
 /// Строит нейтральный `media-prefetch` config из пользовательской network-секции.
@@ -818,8 +775,10 @@ mod tests {
             .unwrap_or_else(|error| panic!("read selected media {}: {error}", path.display()));
         let extension = selected_direct_extension(path);
         let server = TestHttpServer::spawn(bytes, TestHttpBehavior::ServeRange);
+        let locator = parse_direct_media_url(&server.url(&format!("/selected.{extension}")))
+            .expect("selected test URL должен пройти pure classification");
         let opened_media = open_direct_media_url(
-            &server.url(&format!("/selected.{extension}")),
+            &locator,
             &NetworkConfig::default(),
             &PlayerDemuxConfig::default(),
         )
@@ -832,10 +791,17 @@ mod tests {
 
     #[test]
     fn direct_url_accepts_supported_extension_on_ip() {
-        let parsed = parse_direct_media_url("http://127.0.0.1:9001/media/video.MP4?token=1")
+        let secret = "http://user:password@127.0.0.1:9001/media/video.MP4?token=1#private";
+        let parsed = parse_direct_media_url(secret)
             .expect("IP URL с supported extension должен пройти классификацию");
 
         assert_eq!(parsed.extension(), DirectMediaExtension::Mp4);
+        assert_eq!(parsed.expose_secret_for_open(), secret);
+        assert_eq!(parsed.expose_secret_for_persistence(), secret);
+        let formatted = format!("{parsed:?} {parsed}");
+        assert!(!formatted.contains("password"));
+        assert!(!formatted.contains("token"));
+        assert!(!formatted.contains("/media/video"));
     }
 
     #[test]
@@ -849,16 +815,32 @@ mod tests {
 
     #[test]
     fn direct_url_rejects_hostname_without_extension() {
-        let error = parse_direct_media_url("https://media.example.test/video")
-            .expect_err("URL без extension должен быть rejected");
+        let error =
+            parse_direct_media_url("https://user:password@media.example.test/private?token=secret")
+                .expect_err("URL без extension должен быть rejected");
 
         assert!(matches!(
-            error,
+            &error,
             DirectMediaOpenError::UnsupportedUrl {
                 reason: DirectMediaUrlUnsupportedReason::MissingExtension,
                 ..
             }
         ));
+        let formatted = format!("{error:?} {error}");
+        assert!(!formatted.contains("password"));
+        assert!(!formatted.contains("secret"));
+        assert!(!formatted.contains("private"));
+    }
+
+    #[test]
+    fn invalid_syntax_error_does_not_reflect_secret_input() {
+        let error = parse_direct_media_url("https://user:password@[invalid]?token=secret")
+            .expect_err("invalid syntax должна возвращать typed error");
+        let formatted = format!("{error:?} {error}");
+
+        assert!(!formatted.contains("password"));
+        assert!(!formatted.contains("secret"));
+        assert!(matches!(error, DirectMediaOpenError::InvalidUrl { .. }));
     }
 
     #[test]
@@ -869,7 +851,7 @@ mod tests {
         assert!(matches!(
             error,
             DirectMediaOpenError::UnsupportedUrl {
-                reason: DirectMediaUrlUnsupportedReason::UnsupportedProtocol { .. },
+                reason: DirectMediaUrlUnsupportedReason::UnsupportedProtocol,
                 ..
             }
         ));
@@ -883,18 +865,42 @@ mod tests {
         assert!(matches!(
             error,
             DirectMediaOpenError::UnsupportedUrl {
-                reason: DirectMediaUrlUnsupportedReason::ManifestUnsupported { .. },
+                reason: DirectMediaUrlUnsupportedReason::ManifestUnsupported,
                 ..
             }
         ));
     }
 
     #[test]
+    fn unsupported_extension_error_does_not_reflect_path_payload() {
+        let error = parse_direct_media_url(
+            "https://media.example.test/private/password.token?signature=secret",
+        )
+        .expect_err("unsupported extension должна вернуть typed rejection");
+        let formatted = format!("{error:?} {error}");
+
+        assert!(matches!(
+            error,
+            DirectMediaOpenError::UnsupportedUrl {
+                reason: DirectMediaUrlUnsupportedReason::UnsupportedExtension,
+                ..
+            }
+        ));
+        assert!(!formatted.contains("private"));
+        assert!(!formatted.contains("password"));
+        assert!(!formatted.contains("token"));
+        assert!(!formatted.contains("secret"));
+        assert!(formatted.len() < 512);
+    }
+
+    #[test]
     fn non_range_http_source_returns_typed_non_seekable_error() {
         let server =
             TestHttpServer::spawn(b"not a real mp4".to_vec(), TestHttpBehavior::IgnoreRange);
+        let locator = parse_direct_media_url(&server.url("/video.mp4"))
+            .expect("test URL должен пройти pure classification");
         let error = open_direct_media_url(
-            &server.url("/video.mp4"),
+            &locator,
             &NetworkConfig::default(),
             &PlayerDemuxConfig::default(),
         )
@@ -906,8 +912,10 @@ mod tests {
     #[test]
     fn range_backed_http_source_opens_structured_wav_through_symphonia() {
         let server = TestHttpServer::spawn(minimal_pcm_wav(), TestHttpBehavior::ServeRange);
+        let locator = parse_direct_media_url(&server.url("/media.mp4"))
+            .expect("test URL должен пройти pure classification");
         let opened_media = open_direct_media_url(
-            &server.url("/media.mp4"),
+            &locator,
             &NetworkConfig::default(),
             &PlayerDemuxConfig::default(),
         )

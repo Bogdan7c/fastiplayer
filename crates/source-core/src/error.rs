@@ -3,6 +3,8 @@ use std::io;
 use reqwest::StatusCode;
 use thiserror::Error;
 
+use crate::SecretHttpUrl;
+
 use crate::NotSeekableReason;
 
 /// Результат операций source слоя.
@@ -65,7 +67,7 @@ pub enum SourceError {
         operation: &'static str,
 
         /// URL источника.
-        url: String,
+        url: SecretHttpUrl,
     },
 
     /// HTTP request не дошёл до успешного response.
@@ -75,7 +77,7 @@ pub enum SourceError {
         operation: &'static str,
 
         /// URL источника.
-        url: String,
+        url: SecretHttpUrl,
 
         /// Исходная ошибка reqwest.
         #[source]
@@ -89,7 +91,7 @@ pub enum SourceError {
         operation: &'static str,
 
         /// URL источника.
-        url: String,
+        url: SecretHttpUrl,
 
         /// Исходная ошибка чтения.
         #[source]
@@ -103,7 +105,7 @@ pub enum SourceError {
         operation: &'static str,
 
         /// URL источника.
-        url: String,
+        url: SecretHttpUrl,
 
         /// Полученный HTTP status.
         status: StatusCode,
@@ -120,7 +122,7 @@ pub enum SourceError {
     #[error("некорректный Content-Range от HTTP source {url}: {header}")]
     InvalidContentRange {
         /// URL источника.
-        url: String,
+        url: SecretHttpUrl,
 
         /// Значение header-а или marker отсутствия.
         header: String,

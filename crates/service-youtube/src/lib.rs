@@ -12,7 +12,6 @@ use anyhow::{Context, Result};
 use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, YoutubeConfig};
 use source_core::{ByteSource, SourceRuntimeConfig};
 use symphonia_demux::DemuxerOptions;
-use url::Url;
 
 /// Один кибибайт в bytes для slow-start prefetch policy.
 const KIB_BYTES: u64 = 1024;
@@ -23,6 +22,7 @@ const MIB_BYTES: u64 = KIB_BYTES * 1024;
 mod dto;
 mod http_refresh;
 mod http_stream;
+mod locator;
 mod process;
 mod resolver;
 mod selection;
@@ -31,6 +31,10 @@ pub use dto::{
     YoutubeDirectStreamDescriptor, YoutubeDirectStreams, YoutubeDynamicRange,
     YoutubeInsufficientVideoMetadata, YoutubeStreamCandidate, YoutubeStreamCandidates,
     YoutubeStreamKind, YoutubeStreamingMedia, YoutubeVideoRequirement,
+};
+pub use locator::{
+    YoutubeDirectStreamUrl, YoutubeLocatorParseError, YoutubeMediaLocator,
+    parse_youtube_media_locator,
 };
 pub use resolver::{
     YoutubeSelectedStreamIdentity, resolve_youtube_direct_streams,
@@ -68,23 +72,7 @@ pub fn is_probably_url(argument: &str) -> bool {
 /// Проверяет, принадлежит ли web URL YouTube route allowlist.
 #[must_use]
 pub fn is_supported_youtube_url(argument: &str) -> bool {
-    let Ok(parsed_url) = Url::parse(argument) else {
-        return false;
-    };
-
-    if !matches!(parsed_url.scheme(), "http" | "https") {
-        return false;
-    }
-
-    let Some(host) = parsed_url.host_str() else {
-        return false;
-    };
-    let normalized_host = host.trim_end_matches('.').to_ascii_lowercase();
-
-    matches!(
-        normalized_host.as_str(),
-        "youtube.com" | "www.youtube.com" | "m.youtube.com" | "music.youtube.com" | "youtu.be"
-    )
+    parse_youtube_media_locator(argument).is_ok()
 }
 
 /// Открывает YouTube URL старым compatibility path-ом без внешнего capability selection.
@@ -93,20 +81,20 @@ pub fn is_supported_youtube_url(argument: &str) -> bool {
 /// `resolve_youtube_stream_candidates_with_config` и затем
 /// `open_streaming_media_from_candidates_with_demux_config`.
 pub fn open_streaming_media(
-    video_url: &str,
+    locator: &YoutubeMediaLocator,
     network_config: &NetworkConfig,
 ) -> Result<YoutubeStreamingMedia> {
-    open_streaming_media_with_config(video_url, network_config, &YoutubeConfig::default())
+    open_streaming_media_with_config(locator, network_config, &YoutubeConfig::default())
 }
 
 /// Открывает YouTube URL старым compatibility path-ом с явной service policy.
 pub fn open_streaming_media_with_config(
-    video_url: &str,
+    locator: &YoutubeMediaLocator,
     network_config: &NetworkConfig,
     youtube_config: &YoutubeConfig,
 ) -> Result<YoutubeStreamingMedia> {
     open_streaming_media_with_demux_config(
-        video_url,
+        locator,
         network_config,
         youtube_config,
         &PlayerDemuxConfig::default(),
@@ -115,7 +103,7 @@ pub fn open_streaming_media_with_config(
 
 /// Открывает YouTube URL старым compatibility path-ом с явной demux fail-safe политикой.
 pub fn open_streaming_media_with_demux_config(
-    video_url: &str,
+    locator: &YoutubeMediaLocator,
     network_config: &NetworkConfig,
     youtube_config: &YoutubeConfig,
     demux_config: &PlayerDemuxConfig,
@@ -128,10 +116,10 @@ pub fn open_streaming_media_with_demux_config(
     let resolver: Arc<dyn YoutubeDirectStreamResolver> = Arc::new(
         YtDlpDirectStreamResolver::from_youtube_config(youtube_config)?,
     );
-    let mut direct_streams = resolver.resolve_direct_streams(video_url)?;
+    let mut direct_streams = resolver.resolve_direct_streams(locator)?;
     let description = build_streaming_description(&direct_streams);
     let demuxer = build_demuxer_from_direct_streams(
-        video_url,
+        locator,
         &mut direct_streams,
         source_config,
         prefetch_config,
@@ -152,7 +140,7 @@ pub fn open_streaming_media_with_demux_config(
 /// применяет legacy SDR-safe selector до открытия bytes, а только строит source
 /// для выбранной `stream_id` пары.
 pub fn open_streaming_media_from_candidates_with_demux_config(
-    video_url: &str,
+    locator: &YoutubeMediaLocator,
     stream_candidates: &YoutubeStreamCandidates,
     selected_stream_id: &str,
     network_config: &NetworkConfig,
@@ -180,7 +168,7 @@ pub fn open_streaming_media_from_candidates_with_demux_config(
         direct_streams_from_selected_candidate(stream_candidates, selected_stream_id)?;
     let description = build_streaming_description(&direct_streams);
     let demuxer = build_demuxer_from_direct_streams(
-        video_url,
+        locator,
         &mut direct_streams,
         source_config,
         prefetch_config,
@@ -242,7 +230,7 @@ impl From<anyhow::Error> for YoutubeSeekableVodOpenError {
 /// В отличие от playback API, этот путь не fallback-ит на streaming reader:
 /// source обязан быть exact-seekable или вернуть typed unsupported.
 pub fn open_seekable_vod_from_selected_identity_with_demux_config(
-    video_url: &str,
+    locator: &YoutubeMediaLocator,
     selected_stream_identity: &YoutubeSelectedStreamIdentity,
     network_config: &NetworkConfig,
     youtube_config: &YoutubeConfig,
@@ -253,9 +241,8 @@ pub fn open_seekable_vod_from_selected_identity_with_demux_config(
     let prefetch_config = prefetch_config_from_network_config(network_config)
         .context("Network config нельзя использовать для YouTube seekable VOD prefetch")?;
     let demuxer_options = demuxer_options_from_config(demux_config);
-    let stream_candidates =
-        resolve_youtube_stream_candidates_with_config(video_url, youtube_config)
-            .context("Не удалось refresh-нуть YouTube stream candidates для seekable VOD")?;
+    let stream_candidates = resolve_youtube_stream_candidates_with_config(locator, youtube_config)
+        .context("Не удалось refresh-нуть YouTube stream candidates для seekable VOD")?;
     let mut direct_streams =
         direct_streams_from_matching_candidate(&stream_candidates, selected_stream_identity)
             .context("Не удалось восстановить выбранный YouTube stream для seekable VOD")?;
@@ -269,7 +256,7 @@ pub fn open_seekable_vod_from_selected_identity_with_demux_config(
     );
 
     let demuxer = build_seekable_vod_demuxer_from_direct_streams(
-        video_url,
+        locator,
         &mut direct_streams,
         source_config,
         prefetch_config,
@@ -285,7 +272,7 @@ pub fn open_seekable_vod_from_selected_identity_with_demux_config(
 }
 
 fn build_seekable_vod_demuxer_from_direct_streams(
-    original_video_url: &str,
+    locator: &YoutubeMediaLocator,
     direct_streams: &mut YoutubeDirectStreams,
     source_config: SourceRuntimeConfig,
     prefetch_config: media_prefetch::PrefetchConfig,
@@ -297,7 +284,7 @@ fn build_seekable_vod_demuxer_from_direct_streams(
     }
 
     let Some(demuxer) = open_range_backed_demuxer(
-        original_video_url,
+        locator,
         direct_streams,
         source_config,
         prefetch_config,
@@ -314,7 +301,7 @@ fn build_seekable_vod_demuxer_from_direct_streams(
 
 /// Строит seekable Range demuxer для VOD или unseekable streaming fallback.
 fn build_demuxer_from_direct_streams(
-    original_video_url: &str,
+    locator: &YoutubeMediaLocator,
     direct_streams: &mut YoutubeDirectStreams,
     source_config: SourceRuntimeConfig,
     prefetch_config: media_prefetch::PrefetchConfig,
@@ -327,7 +314,7 @@ fn build_demuxer_from_direct_streams(
     }
 
     match open_range_backed_demuxer(
-        original_video_url,
+        locator,
         direct_streams,
         source_config.clone(),
         prefetch_config,
@@ -341,7 +328,7 @@ fn build_demuxer_from_direct_streams(
 
 /// Открывает pair demuxer-ов поверх HTTP Range sources, если оба source seekable.
 fn open_range_backed_demuxer(
-    original_video_url: &str,
+    locator: &YoutubeMediaLocator,
     direct_streams: &mut YoutubeDirectStreams,
     source_config: SourceRuntimeConfig,
     prefetch_config: media_prefetch::PrefetchConfig,
@@ -352,7 +339,7 @@ fn open_range_backed_demuxer(
         direct_streams.video.clone(),
         source_config.clone(),
         RefreshContext {
-            original_video_url: original_video_url.to_string(),
+            original_locator: locator.clone(),
             stream_kind: YoutubeStreamKind::Video,
             resolver: Arc::clone(&resolver),
         },
@@ -367,7 +354,7 @@ fn open_range_backed_demuxer(
         direct_streams.audio.clone(),
         source_config.clone(),
         RefreshContext {
-            original_video_url: original_video_url.to_string(),
+            original_locator: locator.clone(),
             stream_kind: YoutubeStreamKind::Audio,
             resolver,
         },
@@ -627,10 +614,19 @@ mod tests {
     }
 
     impl YoutubeDirectStreamResolver for FakeResolver {
-        fn resolve_direct_streams(&self, _video_url: &str) -> Result<YoutubeDirectStreams> {
+        fn resolve_direct_streams(
+            &self,
+            _locator: &YoutubeMediaLocator,
+        ) -> Result<YoutubeDirectStreams> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.streams.lock().expect("streams lock").clone())
         }
+    }
+
+    /// Создаёт service-owned page locator для hermetic transport tests.
+    fn test_youtube_locator() -> YoutubeMediaLocator {
+        parse_youtube_media_locator("https://www.youtube.com/watch?v=hermetic-test")
+            .expect("canonical test locator должен проходить service parse")
     }
 
     fn test_network_config(
@@ -682,6 +678,27 @@ mod tests {
     }
 
     #[test]
+    fn direct_stream_descriptor_debug_redacts_url_and_header_values() {
+        let mut stream = descriptor(
+            YoutubeStreamKind::Video,
+            "https://user:password@media.example.test/video?signature=secret".to_string(),
+        );
+        stream
+            .headers
+            .push(HttpHeader::new("Authorization", "Bearer private-cookie"));
+        let formatted = format!("{stream:?}");
+
+        assert!(!formatted.contains("password"));
+        assert!(!formatted.contains("signature"));
+        assert!(!formatted.contains("private-cookie"));
+        assert!(formatted.contains("redacted"));
+        assert_eq!(
+            stream.url.expose_secret_for_open(),
+            "https://user:password@media.example.test/video?signature=secret"
+        );
+    }
+
+    #[test]
     fn prefetch_config_uses_network_chunk_and_readahead_window() {
         let network_config = test_network_config(9, 128, 3);
 
@@ -708,7 +725,7 @@ mod tests {
     fn descriptor(kind: YoutubeStreamKind, url: String) -> YoutubeDirectStreamDescriptor {
         YoutubeDirectStreamDescriptor {
             kind,
-            url,
+            url: YoutubeDirectStreamUrl::from_secret_for_open(url),
             headers: vec![HttpHeader::new("X-Test-Header", kind.as_str())],
             format_id: Some(kind.as_str().to_string()),
             service_media_id: Some("media-id".to_string()),
@@ -1013,7 +1030,7 @@ mod tests {
         let resolver = Arc::new(FakeResolver::new(streams.clone()));
 
         let demuxer = open_range_backed_demuxer(
-            "http://youtube.test/watch",
+            &test_youtube_locator(),
             &mut streams,
             test_source_config(),
             test_prefetch_config(),
@@ -1063,7 +1080,7 @@ mod tests {
         let candidates = stream_candidates_from_streams("selected-vp9-p010", &direct_streams);
 
         let media = open_streaming_media_from_candidates_with_demux_config(
-            "http://youtube.test/watch",
+            &test_youtube_locator(),
             &candidates,
             "selected-vp9-p010",
             &NetworkConfig::default(),
@@ -1101,7 +1118,7 @@ mod tests {
         candidates.candidates[0].audio = None;
 
         let open_result = open_streaming_media_from_candidates_with_demux_config(
-            "http://youtube.test/watch",
+            &test_youtube_locator(),
             &candidates,
             "video-only",
             &NetworkConfig::default(),
@@ -1135,7 +1152,7 @@ mod tests {
             descriptor(YoutubeStreamKind::Video, expired_server.url.clone()),
             test_source_config(),
             RefreshContext {
-                original_video_url: "http://youtube.test/watch".to_string(),
+                original_locator: test_youtube_locator(),
                 stream_kind: YoutubeStreamKind::Video,
                 resolver: Arc::new(fake_resolver.clone()),
             },
@@ -1168,7 +1185,7 @@ mod tests {
         let resolver = Arc::new(FakeResolver::new(streams.clone()));
 
         let mut demuxer = build_demuxer_from_direct_streams(
-            "http://youtube.test/watch",
+            &test_youtube_locator(),
             &mut streams,
             test_source_config(),
             test_prefetch_config(),
@@ -1218,7 +1235,7 @@ mod tests {
         let resolver = Arc::new(FakeResolver::new(streams.clone()));
 
         let error = build_seekable_vod_demuxer_from_direct_streams(
-            "http://youtube.test/watch",
+            &test_youtube_locator(),
             &mut streams,
             test_source_config(),
             test_prefetch_config(),
@@ -1252,7 +1269,7 @@ mod tests {
         let resolver = Arc::new(FakeResolver::new(streams.clone()));
 
         let demuxer = build_demuxer_from_direct_streams(
-            "http://youtube.test/watch",
+            &test_youtube_locator(),
             &mut streams,
             test_source_config(),
             test_prefetch_config(),
@@ -1279,7 +1296,8 @@ mod tests {
         let url = std::env::var("RUSTIPLAYER_REAL_YOUTUBE_SMOKE_URL")
             .context("RUSTIPLAYER_REAL_YOUTUBE_SMOKE_URL must select a YouTube URL")?;
 
-        let media = open_streaming_media(&url, &NetworkConfig::default())?;
+        let locator = parse_youtube_media_locator(&url)?;
+        let media = open_streaming_media(&locator, &NetworkConfig::default())?;
 
         assert!(media.demuxer.duration().is_some() || media.direct_streams.live);
         Ok(())
@@ -1302,7 +1320,7 @@ mod tests {
         let resolver = Arc::new(FakeResolver::new(streams.clone()));
 
         let demuxer = open_range_backed_demuxer(
-            "http://youtube.test/watch",
+            &test_youtube_locator(),
             &mut streams,
             test_source_config(),
             test_prefetch_config(),
@@ -1334,7 +1352,7 @@ mod tests {
         let resolver = Arc::new(FakeResolver::new(streams.clone()));
 
         let mut demuxer = build_demuxer_from_direct_streams(
-            "http://youtube.test/watch",
+            &test_youtube_locator(),
             &mut streams,
             test_source_config(),
             test_prefetch_config(),
@@ -1377,7 +1395,7 @@ mod tests {
         let resolver = Arc::new(FakeResolver::new(streams.clone()));
 
         let demuxer = build_demuxer_from_direct_streams(
-            "http://youtube.test/watch",
+            &test_youtube_locator(),
             &mut streams,
             test_source_config(),
             test_prefetch_config(),

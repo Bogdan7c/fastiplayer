@@ -36,6 +36,9 @@ const DEFAULT_FORMAT_SELECTOR: &str = concat!(
     "bestaudio[ext=webm][acodec=opus]"
 );
 
+/// Верхняя граница счётчика stderr в safe diagnostic context.
+const MAX_REPORTED_STDERR_BYTES: usize = 1_048_576;
+
 /// Runtime policy запуска `yt-dlp`, отделённая от parsing/selection логики.
 #[derive(Debug, Clone)]
 pub(crate) struct YtDlpProcessConfig {
@@ -61,7 +64,6 @@ impl YtDlpProcessConfig {
 }
 
 /// Собранный stdout/stderr внешнего процесса.
-#[derive(Debug)]
 struct ProcessOutput {
     /// Exit status, полученный от OS.
     status: ExitStatus,
@@ -71,6 +73,23 @@ struct ProcessOutput {
 
     /// Полный stderr процесса.
     stderr: Vec<u8>,
+}
+
+impl std::fmt::Debug for ProcessOutput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProcessOutput")
+            .field("status", &self.status)
+            .field(
+                "stdout",
+                &format_args!("<redacted:{} bytes>", self.stdout.len()),
+            )
+            .field(
+                "stderr",
+                &format_args!("<redacted:{} bytes>", self.stderr.len()),
+            )
+            .finish()
+    }
 }
 
 /// Результат ожидания child process.
@@ -185,22 +204,11 @@ fn run_process_with_timeout(
             stdout,
             stderr,
         }),
-        ProcessWaitOutcome::TimedOut => {
-            let stderr_text = String::from_utf8_lossy(&stderr);
-            let trimmed_stderr = stderr_text.trim();
-            if trimmed_stderr.is_empty() {
-                bail!(
-                    "yt-dlp не завершился за {} мс и был остановлен",
-                    timeout.as_millis()
-                );
-            }
-
-            bail!(
-                "yt-dlp не завершился за {} мс и был остановлен; stderr: {}",
-                timeout.as_millis(),
-                trimmed_stderr
-            );
-        }
+        ProcessWaitOutcome::TimedOut => bail!(
+            "yt-dlp не завершился за {} мс и был остановлен; {}",
+            timeout.as_millis(),
+            safe_stderr_context(&stderr)
+        ),
     }
 }
 
@@ -293,12 +301,9 @@ fn ensure_yt_dlp_success(status: ExitStatus, stderr_bytes: &[u8]) -> Result<()> 
         return Ok(());
     }
 
-    // stderr сохраняем максимально информативным, но не паникуем на битом UTF-8.
-    let stderr_text = String::from_utf8_lossy(stderr_bytes);
-
     anyhow::bail!(
-        "yt-dlp не смог выбрать поддерживаемый SDR VP9/Opus WebM поток (4K60, 4K30, 1080p60 или 1080p): {}",
-        stderr_text.trim()
+        "yt-dlp не смог выбрать поддерживаемый SDR VP9/Opus WebM поток (4K60, 4K30, 1080p60 или 1080p); {}",
+        safe_stderr_context(stderr_bytes)
     );
 }
 
@@ -308,12 +313,21 @@ fn ensure_yt_dlp_candidate_success(status: ExitStatus, stderr_bytes: &[u8]) -> R
         return Ok(());
     }
 
-    let stderr_text = String::from_utf8_lossy(stderr_bytes);
-
     anyhow::bail!(
-        "yt-dlp не смог получить YouTube stream candidates: {}",
-        stderr_text.trim()
+        "yt-dlp не смог получить YouTube stream candidates; {}",
+        safe_stderr_context(stderr_bytes)
     );
+}
+
+/// Возвращает bounded metadata о stderr без копирования потенциальных URL/cookies.
+fn safe_stderr_context(stderr_bytes: &[u8]) -> String {
+    let bounded_length = stderr_bytes.len().min(MAX_REPORTED_STDERR_BYTES);
+    let truncation_marker = if stderr_bytes.len() > MAX_REPORTED_STDERR_BYTES {
+        "+"
+    } else {
+        ""
+    };
+    format!("stderr redacted ({bounded_length}{truncation_marker} bytes)")
 }
 
 #[cfg(test)]
@@ -338,9 +352,44 @@ mod tests {
     /// Проверяет, что зависший process ограничивается timeout-ом.
     #[test]
     fn process_timeout_stops_slow_child() {
-        let error = run_process_with_timeout("sh", &["-c", "sleep 1"], Duration::from_millis(25))
-            .expect_err("slow process times out");
+        let error = run_process_with_timeout(
+            "sh",
+            &[
+                "-c",
+                "printf 'https://user:password@example.test?v=secret' >&2; sleep 1",
+            ],
+            Duration::from_millis(25),
+        )
+        .expect_err("slow process times out");
 
         assert!(error.to_string().contains("не завершился"));
+        assert!(!error.to_string().contains("password"));
+        assert!(!error.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn failed_process_error_redacts_and_bounds_stderr() {
+        let output = run_process_with_timeout(
+            "sh",
+            &[
+                "-c",
+                "printf 'https://user:password@example.test/watch?v=secret' >&2; exit 1",
+            ],
+            Duration::from_secs(1),
+        )
+        .expect("test process должен завершиться обычным non-zero status");
+
+        let output_debug = format!("{output:?}");
+        assert!(!output_debug.contains("password"));
+        assert!(!output_debug.contains("secret"));
+
+        let error = ensure_yt_dlp_candidate_success(output.status, &output.stderr)
+            .expect_err("non-zero status должен стать typed anyhow error");
+        let formatted = format!("{error:?} {error}");
+        assert!(!formatted.contains("password"));
+        assert!(!formatted.contains("secret"));
+        assert!(!formatted.contains("example.test"));
+        assert!(formatted.contains("stderr redacted"));
+        assert!(formatted.len() < 512);
     }
 }

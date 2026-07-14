@@ -24,6 +24,7 @@ mod state;
 mod system_capabilities;
 mod telemetry;
 mod ui;
+mod url_service_adapter;
 mod video_pipeline_candidate;
 mod video_pipeline_selector;
 
