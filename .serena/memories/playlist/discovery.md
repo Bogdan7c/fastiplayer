@@ -1,33 +1,34 @@
 # Playlist discovery
 
-Session 09 completed PASS on 2026-07-14. This memory complements `mem:core`, `mem:playlist/core`, and the handoff in `user/playlist_queue_implementation_plan.md`.
+Session 09A completed PASS on 2026-07-14. This memory complements `mem:core`, `mem:playlist/core`, and the handoff in `user/playlist_queue_implementation_plan.md`.
 
 ## Ownership and dependencies
-- `playlist-discovery` is the UI/player/config-neutral owner of single-local-file probe plus bounded deterministic non-recursive directory manifests.
-- Normal dependencies are `media-core`, std-only `natural-sort-key`, `source-core`, `symphonia-demux`, and `thiserror`. It does not depend on `playlist-core`, app/UI/player/config/service crates, async runtimes, or concrete backends.
-- The shared `natural-sort-key` crate owns only compact prepared natural comparison. Discovery owns native filename/path tie-breakers; playlist-core owns its locator/Item ID tie-breakers.
+- `playlist-discovery` is the UI/player/config-neutral owner of single-local-file probe, bounded deterministic non-recursive directory manifests, immutable discovery requests/policy, one shared bounded executor, D43/D74 frontiers, and job-owned result delivery.
+- Normal dependencies remain `media-core`, std-only `natural-sort-key`, `source-core`, `symphonia-demux`, and `thiserror`. It does not depend on `playlist-core`, app/UI/player/config/service crates, winit, async runtimes, or concrete backends.
+- The crate never mutates `PlaylistQueue`, allocates Item IDs, opens playback, selects shuffle targets, or decides app commit/supersede. App wiring begins in Session 10A+.
+- Session 09A modules are `policy`, `cancellation`, `request`, `executor`, `frontier`, `mailbox`, bounded `readiness_ack`, `stream`, `job`, and the small app-facing `handle`. After self-review the largest new production owner is `job.rs` at 792 lines.
 
-## Session 08 single-file probe
-- Public `probe_one_local_media(&Path, &CancellationToken)` returns immutable `ProbedLocalMedia` or typed `ProbeOneLocalMediaError`.
-- Success contains `LocalMediaKind::{VideoContaining, AudioOnly}`, optional `MediaDuration`, normalized `MediaTagMetadata`, lossy-safe display filename, and best-effort size + `SystemTime` mtime fingerprint.
-- Errors remain distinct: `UnsupportedContainer`, `NoAudioVideoTracks`, `IoFailure`, malformed/other `ProbeFailure`, and `Cancelled`.
-- `symphonia-demux::probe_open_local_media_file` owns Symphonia probing of an already opened `File`; extension is Hint only, topology includes null/unknown codec IDs, and no packet/decode loop runs. Explicit Play D64/D75 must use the later single prepared/open envelope instead of probe-first.
+## Probe and manifest foundation
+- Public `probe_one_local_media(&Path, &CancellationToken)` returns immutable `ProbedLocalMedia` or typed `ProbeOneLocalMediaError`; topology admission includes null/unknown codec IDs and runs no packet/decode loop. Explicit Play D64/D75 must use the later single prepared/open envelope instead of probe-first.
+- `build_directory_manifest` fixes D63 immediate-parent membership before scheduling. Records expose job-local key, original locator, natural position, and bounded alias diagnostics; canonical identity remains private dedup/validation state.
+- D73 limits remain `RAW_MANIFEST_MAX_ENTRIES = 100_000` and `RAW_MANIFEST_MAX_PATH_KEY_BYTES = 64 MiB`; overflow returns no arbitrary prefix.
 
-## Session 09 deterministic manifest boundary
-- Public `build_directory_manifest(explicit_target)` creates an immutable `DirectoryManifest` before probe scheduling. It enumerates only the immediate parent; dot-hidden automatic siblings and directories are skipped, while an explicit hidden target is retained.
-- Enumeration streams observations directly into `ManifestBuilder`; it never collects an unbounded `read_dir` vector. Skipped hidden/non-file/error entries still consume the raw entry count. Enumeration diagnostics retain at most 64 details plus one omitted-count summary.
-- Records are natural ordered and contain only job-local `ManifestCandidateKey`, original locator, `NaturalPosition`, and bounded `ManifestAliasDiagnostics`. They contain no PlaylistItemId, probe result, player/app state, queue mutation, scheduler/admission state, or public canonical fallback.
-- D63 membership is fixed after build. Later creates do not appear. `validate_candidate_source` checks one original locator without rescan and reports typed unknown-key, missing, source-changed, or unavailable diagnostics for delete/rename/symlink-retarget cases.
-- Canonical-path dedup merges symlink aliases; hardlinks with different canonical paths remain distinct. D45 selection is explicit original path, otherwise direct non-symlink, otherwise deterministic natural + exact original alias. Canonicalization failure retains the absolute original locator with typed `io::ErrorKind`; making it absolute does not lexically collapse `..` after a symlink, so open semantics stay intact.
-- Canonical identities are private transient dedup/validation state and are never returned as a hidden open fallback.
+## Session 09A policy, requests, and executor
+- `SiblingFilter::{VideoOnly, AllMedia, AudioOnly, SameAsOpened}` is topology-only. `SiblingDiscoveryPolicySnapshot` captures load/filter/revision once. Freeze, resume, cancel, ACK, admission flush, and event drain share one per-job linearization boundary.
+- Request kinds are Sibling, ManualBatch, VisibleRefresh, and MetadataSortPreparation. The named request-item limit is 100,000 and Batch keys are constructed only after checked admission. `load_siblings=false` creates zero work and completes without probe I/O. VisibleRefresh expects caller-side D31 dedup by row identity/revision and deliberately preserves duplicate paths as distinct ordinals because this crate has no Item ID.
+- Work units, not whole jobs, carry scheduling class: initial nearest-forward sibling and reprioritized manifest keys use the foreground lane; sibling tail/visible/sort work stays speculative. Neutral hints contain no repeat/shuffle types and promote already-queued keys as well as job-local pending keys.
+- Executor budgets: `available_parallelism().clamp(2, 4)`, one foreground-only worker, input 256 with 16 foreground-reserved slots, max 16 active jobs/max 15 speculative jobs, per-job queued share 16. The production frontier intent method enforces a 256-offset lookahead independently per direction relative to its contiguous cursor; reprioritize cannot bypass it, and frontier advance reopens/reschedules the next window. Per-job execution permits leave a general worker available on hosts with at least three general workers.
+- Dispatch rotates fairly by job within each lane. Cancel/shutdown removes queued units and releases accounting before they can probe; already-running blocking calls remain honest/cooperative. A panicking probe is contained and completes the job exactly once as `ExecutorDisconnected`.
 
-## Natural order and D73 bounds
-- `natural-sort-key::PreparedNaturalKey` is std-only and holds one compact folded buffer (bytes, wide units, or Unicode u32 units), not an allocation-heavy token tree. Numeric runs compare without integer parsing; valid UTF-8 uses Unicode lowercase; non-UTF native/foreign units use exact ASCII fold.
-- `RAW_MANIFEST_MAX_ENTRIES = 100_000`.
-- `RAW_MANIFEST_MAX_PATH_KEY_BYTES = 64 * 1024 * 1024`; checked accounting includes retained original native paths, compact natural keys, and unique canonical identity paths.
-- Entry, byte, or checked-arithmetic overflow returns typed `RawManifestLimitReached { limit, observed_at_least }`. The partial builder is dropped and no arbitrary read_dir prefix is returned.
+## D43/D74 frontier and stream
+- Before/After frontiers release only contiguous terminal prefixes. Base quotas are 24,999/25,000 with total automatic sibling limit 49,999 excluding target. Unused quota transfers only after terminal side exhaustion; failures/ineligible candidates consume no quota.
+- Named bounds: directional lookahead 256, verified/job-owned records 512, batch 32 records, diagnostics 64 plus omitted count, event envelope 1,024.
+- `AdmittedBatch` carries job/request/policy correlation, frontier revision, optional D43 side accounting, and typed apply semantics. Sibling chunks support progressive atomic commit; ManualBatch and MetadataSortPreparation chunks must accumulate until terminal success and then apply once atomically; VisibleRefresh chunks are metadata refreshes.
+- `AdmissionAdvanced` is marker-only. `FrontierReady` is exact-nearest non-shuffle readiness after ACK of the matching batch and reuses the actual frontier revision (not a hardcoded value). ACK while frozen is non-consuming and typed `AdmissionFrozen`. ACK state is readiness-only and bounded by construction to at most two entries (Before/After); manual/sort/visible and later sibling batches retain no ACK entry and return the documented stale/not-required outcome.
+- Cancel clears all stale batch/marker/readiness events still owned by the job. Only one `AdmittedBatch` owns each released record.
 
-## Verification and next scope
-- PASS: 3 natural-sort-key, 60 playlist-core, and 24 playlist-discovery tests. Coverage includes comparator parity/total order, numeric/case/Unicode/non-UTF, shuffled input, hidden/non-recursive, create/delete/rename/retarget after snapshot, symlink/direct/alias-only/hardlink selection including mixed fallback/success aliases and preserved `symlink/../target` semantics, canonical fallback, exact 100k/100001 and 64 MiB/+1 limits, oversized path, checked overflow, no-prefix failure, and retained accounting. Main review also removed a duplicate retained canonical-path allocation so the counter matches actual builder storage.
-- PASS: strict focused Clippy with `-D warnings`, fmt, Rust 1.96 and MSRV 1.92 locked workspace checks, guardrail unit tests/script, git diff check, and Serena diagnostics/references.
-- Next allowed scope is Session 09A only: bounded executor/jobs/probe admission/readiness/result stream. App commit remains Session 15; executor/jobs were not started in Session 09.
+## Wake, completion, and verification
+- One `WakeCoordinator` belongs to the whole executor, not to individual jobs. All mailboxes share one false→true edge with clear/scan/re-arm. Progress remains latest-only and every job owns a lossless terminal slot from construction.
+- PASS: 52 `playlist-discovery` tests and 60 neighboring `playlist-core` tests. Focused tests are split into a small shared harness plus executor/lifecycle and job/frontier/stream modules. Added review coverage includes per-job fair rotation, queued cancel suppression, work-unit promotion, shared multi-job wake edge, panic/disconnect terminal ownership, request cap, duplicate-visible ordinal preservation, apply semantics, deterministic D43 completion/flush interleavings with identical capped set/side counts, manual cancel disposal of job-owned successful chunks, the enforced 256-offset near-hole window, 100k non-readiness ACK characterization, disabled-policy no-probe, frozen ACK, and exact readiness revision.
+- PASS: strict focused Clippy with `-D warnings`, fmt, Rust 1.96 and MSRV 1.92 locked workspace checks, rustdoc `-D warnings`, toolchain policy, 18 guardrail tests plus production script, `git diff --check`, and Serena diagnostics.
+- Next allowed scope is Session 10A only: app wake bridge and process-lifetime `PlaylistRuntime` shell. Do not wire app discovery jobs as part of Session 09A.

@@ -1,8 +1,8 @@
-//! UI/player/config-neutral owner локального probe и bounded directory manifest.
+//! UI/player/config-neutral owner локального probe, manifest и bounded jobs.
 //!
 //! Crate строит immutable non-recursive manifest до probe scheduling и отдельно
-//! умеет выполнить один cooperative container probe. Executor, batch admission,
-//! progress и app commit policy принадлежат следующим сессиям/слоям.
+//! умеет выполнить один cooperative container probe. Shared executor владеет
+//! bounded scheduling/result delivery, но не мутирует queue и не выделяет Item ID.
 
 use std::fs::File;
 use std::io;
@@ -16,14 +16,50 @@ use symphonia_demux::{
     probe_open_local_media_file,
 };
 
+mod cancellation;
+mod executor;
+mod frontier;
+mod handle;
+mod job;
+mod mailbox;
 mod manifest;
+mod policy;
+mod readiness_ack;
+mod request;
+mod stream;
 
+pub use cancellation::{DiscoveryCancellation, DiscoveryCancellationCause};
+pub use executor::{
+    ACTIVE_DISCOVERY_JOB_LIMIT, DISCOVERY_INPUT_LIMIT, DiscoveryExecutor, DiscoveryProbe,
+    DiscoveryShutdownReport, DiscoverySubmitError, FOREGROUND_ONLY_WORKER_COUNT,
+    FOREGROUND_RESERVED_INPUT_SLOTS, LocalMediaProbe, MAX_DISCOVERY_WORKER_THREADS,
+    MIN_DISCOVERY_WORKER_THREADS, PER_JOB_INPUT_LIMIT, SPECULATIVE_ACTIVE_JOB_LIMIT,
+};
+pub use frontier::{
+    AUTOMATIC_SIBLING_AFTER_QUOTA, AUTOMATIC_SIBLING_BEFORE_QUOTA, AUTOMATIC_SIBLING_RECORD_LIMIT,
+    DIRECTIONAL_LOOKAHEAD_LIMIT,
+};
+pub use handle::DiscoveryJobHandle;
+pub use mailbox::{DISCOVERY_EVENT_LIMIT, DiscoveryWakePort, WakeDisconnected};
 pub use manifest::{
     AliasPresentationChoice, CandidateSourceDiagnostic, DirectoryManifest,
     DirectoryManifestBuildError, DirectoryManifestDiagnostic, ManifestAliasDiagnostics,
     ManifestCandidateKey, ManifestRecord, NaturalPosition, RAW_MANIFEST_MAX_ENTRIES,
     RAW_MANIFEST_MAX_PATH_KEY_BYTES, RawManifestLimit, RawManifestLimitReached,
     build_directory_manifest,
+};
+pub use policy::{SiblingDiscoveryPolicySnapshot, SiblingFilter, SiblingPolicyRevision};
+pub use request::{
+    DISCOVERY_REQUEST_ITEM_LIMIT, DiscoveryRequest, ReprioritizeHint, ReprioritizeOutcome,
+    SiblingDiscoveryRequest,
+};
+pub use stream::{
+    ADMITTED_BATCH_RECORD_LIMIT, AdmissionAckOutcome, AdmissionAdvanced, AdmissionBatchId,
+    AdmissionDirection, AdmissionSideAccounting, AdmittedBatch, BatchApplySemantics,
+    DISCOVERY_DIAGNOSTIC_LIMIT, DiscoveryDiagnostic, DiscoveryEvent, DiscoveryFinalOutcome,
+    DiscoveryFinalSummary, DiscoveryJobId, DiscoveryJobKind, DiscoveryPriority, DiscoveryProgress,
+    DiscoveryRecord, DiscoveryRecordKey, DiscoveryRequestRevision, FrontierReady,
+    ProbeDiagnosticKind, VERIFIED_RECORD_BUFFER_LIMIT,
 };
 
 /// Media-категория, определённая только по container track topology.
@@ -45,6 +81,15 @@ pub struct LocalMediaFingerprint {
 }
 
 impl LocalMediaFingerprint {
+    /// Создаёт neutral fingerprint из результатов exact opened handle-а.
+    #[must_use]
+    pub const fn new(file_size_bytes: u64, modified_at: SystemTime) -> Self {
+        Self {
+            file_size_bytes,
+            modified_at,
+        }
+    }
+
     /// Возвращает размер открытого файла в байтах.
     #[must_use]
     pub const fn file_size_bytes(self) -> u64 {
@@ -69,6 +114,23 @@ pub struct ProbedLocalMedia {
 }
 
 impl ProbedLocalMedia {
+    /// Создаёт immutable success record для injectable probe adapters/tests.
+    #[must_use]
+    pub fn new(
+        display_filename: String,
+        media_kind: LocalMediaKind,
+        duration: Option<MediaDuration>,
+        metadata: MediaTagMetadata,
+        fingerprint: LocalMediaFingerprint,
+    ) -> Self {
+        Self {
+            display_filename,
+            media_kind,
+            duration,
+            metadata,
+            fingerprint,
+        }
+    }
     /// Возвращает lossy-safe имя файла для display fallback.
     #[must_use]
     pub fn display_filename(&self) -> &str {
@@ -417,3 +479,6 @@ mod tests {
         wav
     }
 }
+
+#[cfg(test)]
+mod session09a_tests;
