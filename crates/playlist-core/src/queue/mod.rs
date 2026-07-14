@@ -5,6 +5,7 @@ mod navigation;
 mod outcomes;
 mod reservation;
 mod shuffle;
+mod sort;
 
 #[cfg(test)]
 mod tests;
@@ -43,6 +44,7 @@ pub use shuffle::{
     ShuffleQueueRestoreError, ShuffleToggleError, ShuffleToggleOutcome,
     ShuffleTraversalRestoreError, ShuffleTraversalSnapshot,
 };
+pub use sort::{PlaylistSortKey, SortCanonicalQueue, SortCanonicalQueueOutcome, SortDirection};
 
 /// Hard safety cap любой committed/candidate queue.
 pub const MAX_PLAYLIST_ITEMS: usize = 50_000;

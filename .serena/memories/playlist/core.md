@@ -1,6 +1,6 @@
 # Playlist core
 
-Session 02 completed PASS on 2026-07-13. This memory complements `mem:core` and the handoff in `user/playlist_queue_implementation_plan.md`.
+Session 05 completed PASS on 2026-07-14. This memory complements `mem:core` and the handoff in `user/playlist_queue_implementation_plan.md`.
 
 ## Ownership and dependency boundary
 - `playlist-core` is the neutral domain owner for stable playlist row identity, canonical order, the monotonic allocator, validated traversal current, and atomic queue mutations.
@@ -56,7 +56,15 @@ Session 02 completed PASS on 2026-07-13. This memory complements `mem:core` and 
 - `ManualNavigationPreview` owns a shared/COW shuffle base plus bounded speculative path. Fast Next consumes candidates only inside preview; successful latest commit publishes intermediate consumption but only origin→latest factual history. Backtrack restores speculative candidates. D55 failure retains the same uncommitted preview/target; retry, Next, Previous, and discard preserve exact committed base until success.
 - Serde/I/O-neutral `ShuffleTraversalSnapshot`, typed `ShuffleHistoryCursor`, and `PlaylistQueue::restore_with_shuffle` validate history cap, committed references, repeated factual history, cursor/current agreement, duplicate-free upcoming/current exclusion, and exact idle canonical coverage.
 
+## Deterministic canonical sorting (Session 05)
+- Public vocabulary is `PlaylistSortKey::{NaturalFilename, Title, Artist, Album, Duration, SmartSequence}`, `SortDirection`, intent `SortCanonicalQueue`, typed `SortCanonicalQueueOutcome`, and the sole mutation boundary `PlaylistQueue::sort_canonical`.
+- Sorting is one-shot persistent canonical reorder only. It consumes cached metadata without probe/I/O/async/UI/config, prepares the selected normalized primary key plus natural fallback exactly once per item, and applies one in-place permutation only after the final order and next structural revision are known.
+- A real reorder advances exactly one structural revision. Empty/single/already-sorted return `AlreadyInCanonicalOrder` without revision; D08 reservation returns `InstallCommitLinearizing`. Item IDs, allocator, optional traversal current, traversal/metadata revisions, and exact shuffle history/cursor/upcoming stay unchanged.
+- Natural policy uses maximal ASCII digit runs without integer parsing (`2 < 10`; leading zeroes tie numerically), Unicode lowercase for valid UTF-8, and exact ASCII-folded native/foreign units for non-UTF values. Total fallback is natural tokens, exact filename units, exact locator identity, then Item ID. No natural-sort dependency was added.
+- Title/artist/album use cached normalized strings with case-insensitive primary and exact fallback; artist is the ordered artists vector; duration is typed `MediaDuration`. Known values precede missing in both directions, and missing ties use ascending natural fallback.
+- Smart Audio tuple is album/disc/track/title; Smart Video tuple is season/episode/title. Known tuple components precede missing components independently of direction. Ascending mixed smart order is Audio then Video, descending reverses those known groups; Unknown is always the missing group.
+- Production ownership is split into `queue/sort.rs` (public boundary, metadata/smart comparator, permutation) and `queue/sort/natural.rs` (natural/non-UTF total key); both remain below the 700-800 line threshold.
+
 ## Verification and next scope
-- 46 playlist-core tests, strict crate Clippy, fmt, Rust 1.96 and MSRV 1.92 locked workspace checks, guardrail tests/script, git diff check, and Serena diagnostics passed for Session 04.
-- Production modules remain below 800 lines: queue/mod.rs 749, navigation 757, shuffle/runtime 688, shuffle/types 235.
-- Next allowed work is Session 05 only. Sorting, UI/player integration, persistence I/O/save worker, tombstone active removal, and player Ended coordination were not started.
+- 60 playlist-core tests, strict crate Clippy, fmt, Rust 1.96 and MSRV 1.92 locked workspace checks, and refactor guardrails passed for Session 05. Tests include every key/direction, non-UTF, missing/partial tuples, current/shuffle preservation, no-op/lock accounting, 10k deterministic characterization, one preparation per item, and comparator total-order laws.
+- Next allowed work is Session 06 only: `playlist-state` versioned DTO/load/quarantine. Probe/UI/config/persistence/app-player integration were not started in Session 05.
