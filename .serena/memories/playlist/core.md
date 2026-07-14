@@ -4,9 +4,9 @@ Session 05 completed PASS on 2026-07-14. This memory complements `mem:core` and 
 
 ## Ownership and dependency boundary
 - `playlist-core` is the neutral domain owner for stable playlist row identity, canonical order, the monotonic allocator, validated traversal current, and atomic queue mutations.
-- It has exactly two normal dependencies: `media-core` for neutral metadata vocabulary and `rand` for production shuffle entropy plus injectable deterministic RNG boundaries.
+- It has exactly three normal dependencies: `media-core` for neutral metadata vocabulary, std-only `natural-sort-key` for the shared compact prepared filename comparator, and `rand` for production shuffle entropy plus injectable deterministic RNG boundaries.
 - It does not depend on serde, UI/egui, player-core, filesystem I/O/discovery, service crates, config, async runtimes, demuxers, or concrete backends.
-- `scripts/check-refactor-guardrails.py` treats it as a required contract crate and allows only `media-core` plus `rand`.
+- `scripts/check-refactor-guardrails.py` treats it as a required contract crate and allows only `media-core`, `natural-sort-key`, and `rand`.
 
 ## Stable identity and allocator
 - `PlaylistItemId` is an opaque `NonZeroU64`; zero is reserved. The first ID of a new lineage is 1.
@@ -60,11 +60,11 @@ Session 05 completed PASS on 2026-07-14. This memory complements `mem:core` and 
 - Public vocabulary is `PlaylistSortKey::{NaturalFilename, Title, Artist, Album, Duration, SmartSequence}`, `SortDirection`, intent `SortCanonicalQueue`, typed `SortCanonicalQueueOutcome`, and the sole mutation boundary `PlaylistQueue::sort_canonical`.
 - Sorting is one-shot persistent canonical reorder only. It consumes cached metadata without probe/I/O/async/UI/config, prepares the selected normalized primary key plus natural fallback exactly once per item, and applies one in-place permutation only after the final order and next structural revision are known.
 - A real reorder advances exactly one structural revision. Empty/single/already-sorted return `AlreadyInCanonicalOrder` without revision; D08 reservation returns `InstallCommitLinearizing`. Item IDs, allocator, optional traversal current, traversal/metadata revisions, and exact shuffle history/cursor/upcoming stay unchanged.
-- Natural policy uses maximal ASCII digit runs without integer parsing (`2 < 10`; leading zeroes tie numerically), Unicode lowercase for valid UTF-8, and exact ASCII-folded native/foreign units for non-UTF values. Total fallback is natural tokens, exact filename units, exact locator identity, then Item ID. No natural-sort dependency was added.
+- Natural policy uses maximal ASCII digit runs without integer parsing (`2 < 10`; leading zeroes tie numerically), Unicode lowercase for valid UTF-8, and exact ASCII-folded native/foreign units for non-UTF values. Session 09 extracted this prepared comparison into the std-only `natural-sort-key` contract shared with discovery; exact filename units, exact locator identity, then Item ID remain `playlist-core`-owned tie-breakers.
 - Title/artist/album use cached normalized strings with case-insensitive primary and exact fallback; artist is the ordered artists vector; duration is typed `MediaDuration`. Known values precede missing in both directions, and missing ties use ascending natural fallback.
 - Smart Audio tuple is album/disc/track/title; Smart Video tuple is season/episode/title. Known tuple components precede missing components independently of direction. Ascending mixed smart order is Audio then Video, descending reverses those known groups; Unknown is always the missing group.
 - Production ownership is split into `queue/sort.rs` (public boundary, metadata/smart comparator, permutation) and `queue/sort/natural.rs` (natural/non-UTF total key); both remain below the 700-800 line threshold.
 
 ## Verification and next scope
 - 60 playlist-core tests, strict crate Clippy, fmt, Rust 1.96 and MSRV 1.92 locked workspace checks, and refactor guardrails passed for Session 05. Tests include every key/direction, non-UTF, missing/partial tuples, current/shuffle preservation, no-op/lock accounting, 10k deterministic characterization, one preparation per item, and comparator total-order laws.
-- Session 06 persistence boundaries now live in `mem:playlist/state`; `playlist-core` itself remains serde/I/O-neutral. Next allowed work is Session 07 only: latest-only atomic save worker/durability lifecycle. Probe/UI/config/app-player integration remains outside the completed core sessions.
+- Session 06 persistence boundaries live in `mem:playlist/state`; Session 07 atomic save/durability, Session 08 single-file discovery probe, and Session 09 deterministic bounded directory manifest are complete. `playlist-core` itself remains serde/I/O-neutral. Next allowed work is Session 09A only: discovery executor/jobs/admission/readiness; UI/config and app-player integration remain outside the completed scope.

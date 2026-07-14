@@ -3,6 +3,8 @@
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
+use natural_sort_key::PreparedNaturalKey;
+
 use crate::{
     ForeignPathEncoding, ForeignPathPlatform, LocalLocator, PlaylistItem, PlaylistItemId,
     PlaylistLocator,
@@ -10,7 +12,7 @@ use crate::{
 
 /// Полный total fallback natural name -> exact name -> locator -> Item ID.
 pub(super) struct NaturalSortKey {
-    tokens: Vec<NaturalToken>,
+    natural_name: PreparedNaturalKey,
     exact_name: ExactNameKey,
     exact_locator: ExactLocatorKey,
     item_id: PlaylistItemId,
@@ -18,8 +20,8 @@ pub(super) struct NaturalSortKey {
 
 impl Ord for NaturalSortKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.tokens
-            .cmp(&other.tokens)
+        self.natural_name
+            .cmp(&other.natural_name)
             .then_with(|| self.exact_name.cmp(&other.exact_name))
             .then_with(|| self.exact_locator.cmp(&other.exact_locator))
             .then_with(|| self.item_id.cmp(&other.item_id))
@@ -39,34 +41,6 @@ impl PartialEq for NaturalSortKey {
 }
 
 impl Eq for NaturalSortKey {}
-
-/// Максимальные alternating text/numeric runs natural name.
-#[derive(PartialEq, Eq)]
-enum NaturalToken {
-    /// ASCII numeric run без leading zeroes; all-zero run представлен одним zero.
-    Number(Vec<u32>),
-    /// Case-folded Unicode scalar или exact non-UTF platform units.
-    Text(Vec<u32>),
-}
-
-impl Ord for NaturalToken {
-    fn cmp(&self, other: &Self) -> Ordering {
-        match (self, other) {
-            (Self::Number(left), Self::Number(right)) => {
-                left.len().cmp(&right.len()).then_with(|| left.cmp(right))
-            }
-            (Self::Text(left), Self::Text(right)) => left.cmp(right),
-            (Self::Number(_), Self::Text(_)) => Ordering::Less,
-            (Self::Text(_), Self::Number(_)) => Ordering::Greater,
-        }
-    }
-}
-
-impl PartialOrd for NaturalToken {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
 
 /// Exact filename units без lossy UTF-8 conversion.
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
@@ -135,10 +109,10 @@ pub(super) fn prepare_natural_sort_key(item: &PlaylistItem) -> NaturalSortKey {
             ExactLocatorKey::Url(secret_url.expose_secret_for_persistence().to_owned()),
         ),
     };
-    let tokens = tokenize_exact_name(&name_units);
+    let natural_name = prepare_neutral_natural_key(&name_units);
 
     NaturalSortKey {
-        tokens,
+        natural_name,
         exact_name: name_units,
         exact_locator,
         item_id: item.item_id(),
@@ -159,127 +133,21 @@ fn exact_name_from_native(filename: &std::ffi::OsStr, fallback_name: &str) -> Ex
     }
 }
 
-/// Tokenization dispatch без lossy conversion.
-fn tokenize_exact_name(exact_name: &ExactNameKey) -> Vec<NaturalToken> {
+/// Делегирует единую natural semantics neutral std-only crate-у.
+fn prepare_neutral_natural_key(exact_name: &ExactNameKey) -> PreparedNaturalKey {
     match exact_name {
-        ExactNameKey::Utf8(name) => tokenize_utf8(name),
-        ExactNameKey::Native(name) => tokenize_native_os_string(name),
-        ExactNameKey::Foreign(units) => tokenize_foreign_units(units),
-    }
-}
-
-/// Unicode-valid filename: lowercase один раз, numeric policy остаётся ASCII-defined.
-fn tokenize_utf8(name: &str) -> Vec<NaturalToken> {
-    let folded_units = name
-        .chars()
-        .flat_map(char::to_lowercase)
-        .map(u32::from)
-        .collect::<Vec<_>>();
-    tokenize_units(&folded_units)
-}
-
-#[cfg(unix)]
-fn tokenize_native_os_string(name: &std::ffi::OsStr) -> Vec<NaturalToken> {
-    use std::os::unix::ffi::OsStrExt;
-
-    let folded_units = name
-        .as_bytes()
-        .iter()
-        .map(|byte| u32::from(byte.to_ascii_lowercase()))
-        .collect::<Vec<_>>();
-    tokenize_units(&folded_units)
-}
-
-#[cfg(windows)]
-fn tokenize_native_os_string(name: &std::ffi::OsStr) -> Vec<NaturalToken> {
-    use std::os::windows::ffi::OsStrExt;
-
-    let folded_units = name
-        .encode_wide()
-        .map(|unit| ascii_lowercase_unit(u32::from(unit)))
-        .collect::<Vec<_>>();
-    tokenize_units(&folded_units)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn tokenize_native_os_string(name: &std::ffi::OsStr) -> Vec<NaturalToken> {
-    tokenize_utf8(&name.to_string_lossy())
-}
-
-/// Foreign UTF-8 получает Unicode policy, остальные encodings — ASCII fold exact units.
-fn tokenize_foreign_units(units: &ExactForeignUnits) -> Vec<NaturalToken> {
-    match units {
-        ExactForeignUnits::Utf8(name) => tokenize_utf8(name),
-        ExactForeignUnits::Bytes(bytes) => {
-            let folded_units = bytes
-                .iter()
-                .map(|byte| u32::from(byte.to_ascii_lowercase()))
-                .collect::<Vec<_>>();
-            tokenize_units(&folded_units)
+        ExactNameKey::Utf8(name) => PreparedNaturalKey::from_utf8(name),
+        ExactNameKey::Native(name) => PreparedNaturalKey::from_os_str(name),
+        ExactNameKey::Foreign(ExactForeignUnits::Utf8(name)) => PreparedNaturalKey::from_utf8(name),
+        ExactNameKey::Foreign(ExactForeignUnits::Bytes(units)) => {
+            PreparedNaturalKey::from_bytes(units)
         }
-        ExactForeignUnits::Wide(units) => {
-            let folded_units = units
-                .iter()
-                .map(|unit| ascii_lowercase_unit(u32::from(*unit)))
-                .collect::<Vec<_>>();
-            tokenize_units(&folded_units)
+        ExactNameKey::Foreign(ExactForeignUnits::Wide(units)) => {
+            PreparedNaturalKey::from_wide_units(units)
         }
-        ExactForeignUnits::Opaque { raw_units, .. } => {
-            let folded_units = raw_units
-                .iter()
-                .copied()
-                .map(ascii_lowercase_unit)
-                .collect::<Vec<_>>();
-            tokenize_units(&folded_units)
+        ExactNameKey::Foreign(ExactForeignUnits::Opaque { raw_units, .. }) => {
+            PreparedNaturalKey::from_opaque_units(raw_units)
         }
-    }
-}
-
-/// Делит units на maximal ASCII digit и non-digit runs.
-fn tokenize_units(units: &[u32]) -> Vec<NaturalToken> {
-    let mut tokens = Vec::new();
-    let mut run_start = 0;
-
-    while run_start < units.len() {
-        let run_is_numeric = is_ascii_digit(units[run_start]);
-        let mut run_end = run_start + 1;
-        while run_end < units.len() && is_ascii_digit(units[run_end]) == run_is_numeric {
-            run_end += 1;
-        }
-
-        if run_is_numeric {
-            tokens.push(NaturalToken::Number(normalize_numeric_run(
-                &units[run_start..run_end],
-            )));
-        } else {
-            tokens.push(NaturalToken::Text(units[run_start..run_end].to_vec()));
-        }
-        run_start = run_end;
-    }
-
-    tokens
-}
-
-/// Убирает leading zeroes без integer parsing и риска overflow.
-fn normalize_numeric_run(run: &[u32]) -> Vec<u32> {
-    let first_significant = run.iter().position(|unit| *unit != u32::from(b'0'));
-    match first_significant {
-        Some(index) => run[index..].to_vec(),
-        None => vec![u32::from(b'0')],
-    }
-}
-
-/// ASCII digit policy одинаков для UTF-8, bytes, wide и opaque units.
-const fn is_ascii_digit(unit: u32) -> bool {
-    unit >= b'0' as u32 && unit <= b'9' as u32
-}
-
-/// Lowercase только ASCII code points внутри non-UTF encodings.
-const fn ascii_lowercase_unit(unit: u32) -> u32 {
-    if unit >= b'A' as u32 && unit <= b'Z' as u32 {
-        unit + (b'a' - b'A') as u32
-    } else {
-        unit
     }
 }
 

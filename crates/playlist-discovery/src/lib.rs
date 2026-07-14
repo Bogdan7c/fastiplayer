@@ -1,7 +1,8 @@
-//! UI/player/config-neutral primitive для probe одного локального media-файла.
+//! UI/player/config-neutral owner локального probe и bounded directory manifest.
 //!
-//! Directory traversal, batch admission, progress и app commit policy принадлежат
-//! следующим слоям. Этот crate делает ровно один cooperative container probe.
+//! Crate строит immutable non-recursive manifest до probe scheduling и отдельно
+//! умеет выполнить один cooperative container probe. Executor, batch admission,
+//! progress и app commit policy принадлежат следующим сессиям/слоям.
 
 use std::fs::File;
 use std::io;
@@ -13,6 +14,16 @@ use source_core::CancellationToken;
 use symphonia_demux::{
     ContainerProbeError, ContainerProbeSnapshot, ContainerTrackTopology,
     probe_open_local_media_file,
+};
+
+mod manifest;
+
+pub use manifest::{
+    AliasPresentationChoice, CandidateSourceDiagnostic, DirectoryManifest,
+    DirectoryManifestBuildError, DirectoryManifestDiagnostic, ManifestAliasDiagnostics,
+    ManifestCandidateKey, ManifestRecord, NaturalPosition, RAW_MANIFEST_MAX_ENTRIES,
+    RAW_MANIFEST_MAX_PATH_KEY_BYTES, RawManifestLimit, RawManifestLimitReached,
+    build_directory_manifest,
 };
 
 /// Media-категория, определённая только по container track topology.

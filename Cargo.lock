@@ -2510,6 +2510,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "natural-sort-key"
+version = "0.1.0"
+
+[[package]]
 name = "ndk"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3189,6 +3193,7 @@ name = "playlist-core"
 version = "0.1.0"
 dependencies = [
  "media-core",
+ "natural-sort-key",
  "rand 0.10.2",
 ]
 
@@ -3197,6 +3202,7 @@ name = "playlist-discovery"
 version = "0.1.0"
 dependencies = [
  "media-core",
+ "natural-sort-key",
  "source-core",
  "symphonia-demux",
  "thiserror 2.0.18",

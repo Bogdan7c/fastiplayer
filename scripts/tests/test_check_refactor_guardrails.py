@@ -225,7 +225,8 @@ class DependencyGraphPolicyTests(unittest.TestCase):
 
         packages = complete_workspace_packages()
         packages["playlist-core"] = package_with_dependencies(
-            "playlist-core", (("media-core", None), ("rand", None))
+            "playlist-core",
+            (("media-core", None), ("natural-sort-key", None), ("rand", None)),
         )
         passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
             packages, frozenset()
@@ -239,7 +240,12 @@ class DependencyGraphPolicyTests(unittest.TestCase):
 
         packages["playlist-core"] = package_with_dependencies(
             "playlist-core",
-            (("media-core", None), ("rand", None), ("serde", None)),
+            (
+                ("media-core", None),
+                ("natural-sort-key", None),
+                ("rand", None),
+                ("serde", None),
+            ),
         )
         failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
             packages, frozenset()
@@ -252,6 +258,37 @@ class DependencyGraphPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_natural_sort_key_rejects_every_normal_dependency(self) -> None:
+        """Общий prepared comparator остаётся строго std-only."""
+
+        packages = complete_workspace_packages()
+        packages["natural-sort-key"] = package_with_dependencies(
+            "natural-sort-key", ()
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "natural-sort-key"
+                for violation in passing_result.dependency_violations
+            )
+        )
+
+        packages["natural-sort-key"] = package_with_dependencies(
+            "natural-sort-key", (("unicode-normalization", None),)
+        )
+        failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertTrue(
+            any(
+                violation.owner == "natural-sort-key"
+                and violation.dependency == "unicode-normalization"
+                for violation in failing_result.dependency_violations
+            )
+        )
+
     def test_playlist_discovery_rejects_player_and_ui_dependencies(self) -> None:
         """Local probe owner видит только neutral metadata/source/demux boundaries."""
 
@@ -260,6 +297,7 @@ class DependencyGraphPolicyTests(unittest.TestCase):
             "playlist-discovery",
             (
                 ("media-core", None),
+                ("natural-sort-key", None),
                 ("source-core", None),
                 ("symphonia-demux", None),
                 ("thiserror", None),

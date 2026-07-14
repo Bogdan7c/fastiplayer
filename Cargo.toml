@@ -18,6 +18,7 @@ members = [
     "crates/settings-derive",
     "crates/rustiplayer-settings",
     "crates/player-core",
+    "crates/natural-sort-key",
     "crates/playlist-core",
     "crates/playlist-discovery",
     "crates/playlist-state",
@@ -147,6 +148,7 @@ render-core = { version = "0.1.0", path = "crates/render-core" }
 render-wgpu-video = { version = "0.1.0", path = "crates/render-wgpu-video" }
 render-wgpu-shell = { version = "0.1.0", path = "crates/render-wgpu-shell" }
 player-core = { version = "0.1.0", path = "crates/player-core" }
+natural-sort-key = { version = "0.1.0", path = "crates/natural-sort-key" }
 playlist-core = { version = "0.1.0", path = "crates/playlist-core" }
 playlist-discovery = { version = "0.1.0", path = "crates/playlist-discovery" }
 playlist-state = { version = "0.1.0", path = "crates/playlist-state" }

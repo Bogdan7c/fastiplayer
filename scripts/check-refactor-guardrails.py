@@ -25,6 +25,7 @@ CONTRACT_CRATES = frozenset(
     {
         "audio-core",
         "media-core",
+        "natural-sort-key",
         "playlist-core",
         "playlist-state",
         "codec-core",
@@ -51,6 +52,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "frame-server-core",
         "media-prefetch",
         "media-core",
+        "natural-sort-key",
         "player-core",
         "playlist-core",
         "playlist-discovery",
@@ -100,12 +102,23 @@ FRAME_SERVER_CORE_ALLOWED_DEPENDENCIES = frozenset(
 
 # Playlist domain переиспользует neutral media metadata vocabulary и RNG.
 # UI/player/filesystem/serde/service edges должны появляться в верхних owners.
-PLAYLIST_CORE_ALLOWED_DEPENDENCIES = frozenset({"media-core", "rand"})
+PLAYLIST_CORE_ALLOWED_DEPENDENCIES = frozenset(
+    {"media-core", "natural-sort-key", "rand"}
+)
+
+# Общий natural comparator остаётся std-only и не знает path/domain owners.
+NATURAL_SORT_KEY_ALLOWED_DEPENDENCIES = frozenset()
 
 # Single-file discovery владеет filesystem/cancellation orchestration, но видит
 # Symphonia только через узкий neutral snapshot boundary в symphonia-demux.
 PLAYLIST_DISCOVERY_ALLOWED_DEPENDENCIES = frozenset(
-    {"media-core", "source-core", "symphonia-demux", "thiserror"}
+    {
+        "media-core",
+        "natural-sort-key",
+        "source-core",
+        "symphonia-demux",
+        "thiserror",
+    }
 )
 
 # Persistence owner может видеть только neutral playlist/media contracts и
@@ -686,9 +699,17 @@ def find_dependency_violations(
     violations.extend(
         find_disallowed_dependencies(
             dependency_map,
+            frozenset({"natural-sort-key"}),
+            NATURAL_SORT_KEY_ALLOWED_DEPENDENCIES,
+            "natural-sort-key остаётся std-only neutral comparator",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
             frozenset({"playlist-core"}),
             PLAYLIST_CORE_ALLOWED_DEPENDENCIES,
-            "playlist-core зависит только от neutral media-core metadata contract и rand",
+            "playlist-core зависит только от neutral metadata/natural-key contracts и rand",
         )
     )
     violations.extend(

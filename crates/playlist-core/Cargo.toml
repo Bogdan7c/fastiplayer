@@ -10,6 +10,9 @@ name = "playlist_core"
 path = "src/lib.rs"
 
 [dependencies]
+# Compact natural key остаётся neutral и переиспользуется discovery без
+# обратной filesystem -> playlist-domain зависимости.
+natural-sort-key.workspace = true
 # Playlist cache использует ровно те же нейтральные duration/sequence-типы,
 # которые уже принадлежат media-core; второй набор metadata semantics запрещён.
 media-core.workspace = true
