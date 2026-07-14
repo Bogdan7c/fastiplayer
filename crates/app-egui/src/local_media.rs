@@ -39,7 +39,9 @@ pub(crate) fn open_local_demuxer(
 }
 
 /// Конвертирует validated TOML config приложения в options Symphonia demux adapter-а.
-fn demuxer_options_from_config(config: &PlayerDemuxConfig) -> symphonia_demux::DemuxerOptions {
+pub(crate) fn demuxer_options_from_config(
+    config: &PlayerDemuxConfig,
+) -> symphonia_demux::DemuxerOptions {
     symphonia_demux::DemuxerOptions::from_max_consecutive_corrupted_packets(
         config.max_consecutive_corrupted_packets,
     )

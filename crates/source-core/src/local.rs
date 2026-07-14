@@ -1,12 +1,22 @@
 use std::fs::{File, Metadata};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     ByteSource, CancellationToken, Seekability, SourceError, SourceFingerprint, SourceResult,
     SourceValidators,
 };
+
+/// Снимок filesystem identity, снятый с того же открытого handle, что читает demuxer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalFileMetadataSnapshot {
+    /// Размер файла в момент успешного `File::metadata`.
+    pub file_size_bytes: u64,
+
+    /// Modification time в native `SystemTime`, без потери точности при конвертации.
+    pub modified_at: SystemTime,
+}
 
 /// Seekable byte source поверх локального файла.
 pub struct LocalFileSource {
@@ -24,6 +34,9 @@ pub struct LocalFileSource {
 
     /// Fingerprint, привязанный к path/size/mtime.
     fingerprint: SourceFingerprint,
+
+    /// Neutral filesystem snapshot для D64/D75 envelope до ownership transfer.
+    metadata_snapshot: LocalFileMetadataSnapshot,
 }
 
 impl LocalFileSource {
@@ -43,6 +56,10 @@ impl LocalFileSource {
             .canonicalize()
             .unwrap_or_else(|_| original_path.to_path_buf());
         let fingerprint = build_local_fingerprint(&normalized_path, &metadata);
+        let modified_at = metadata.modified().map_err(|source| SourceError::LocalIo {
+            context: "metadata.modified",
+            source,
+        })?;
 
         Ok(Self {
             file,
@@ -50,6 +67,10 @@ impl LocalFileSource {
             content_length: metadata.len(),
             position: 0,
             fingerprint,
+            metadata_snapshot: LocalFileMetadataSnapshot {
+                file_size_bytes: metadata.len(),
+                modified_at,
+            },
         })
     }
 
@@ -57,6 +78,12 @@ impl LocalFileSource {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Возвращает exact size/mtime того же opened handle до передачи source demuxer-у.
+    #[must_use]
+    pub const fn metadata_snapshot(&self) -> LocalFileMetadataSnapshot {
+        self.metadata_snapshot
     }
 }
 
@@ -143,6 +170,9 @@ mod tests {
         file.write_all(b"abcdef").expect("sample file written");
 
         let mut source = LocalFileSource::open(&file_path).expect("local source opened");
+        let metadata_snapshot = source.metadata_snapshot();
+        assert_eq!(metadata_snapshot.file_size_bytes, 6);
+        assert!(metadata_snapshot.modified_at <= std::time::SystemTime::now());
         let token = CancellationToken::never_cancelled();
         let mut output = [0_u8; 3];
 

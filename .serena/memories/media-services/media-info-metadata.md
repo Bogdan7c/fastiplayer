@@ -11,4 +11,4 @@
 ## Session 08 discovery metadata snapshot
 - `playlist-discovery::probe_one_local_media` now returns the same normalized `MediaTagMetadata` vocabulary (title, artists, album, disc/track, season/episode), optional reliable container/track duration, display filename and exact opened-handle size+mtime fingerprint for local siblings/Add/demand refresh.
 - Initial Symphonia metadata revisions are consumed through the existing `symphonia-demux` adapter; discovery does not parse raw tag strings or create a second normalization policy. Missing tags/duration remain absent.
-- Explicit Play D64/D75 does not call this primitive: Session 10C must capture target metadata/fingerprint from the single prepared/open envelope. Details: `mem:playlist/discovery`.
+- Explicit Play D64/D75 does not call this primitive: Session 10C captures target metadata/fingerprint from one `LocalFileSource` handle and the same prepared demux open before ownership transfer. Cached mismatch uses that envelope as source of truth; second change is typed failure. Details: `mem:app-egui/media-open-coordinator-s10c` and `mem:playlist/discovery`.

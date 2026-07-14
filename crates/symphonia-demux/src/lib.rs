@@ -22,7 +22,7 @@ pub use local_probe::{
     ContainerProbeError, ContainerProbeSnapshot, ContainerTrackTopology,
     probe_open_local_media_file,
 };
-pub use media_core::{Packet, TimeBase, TrackId, TrackInfo, TrackKind};
+pub use media_core::{MediaMetadata, Packet, TimeBase, TrackId, TrackInfo, TrackKind};
 pub use options::{
     DEFAULT_DECODE_POINT_BEFORE_PREROLL, DEFAULT_DECODE_POINT_BEFORE_VERIFICATION_PACKET_LIMIT,
     DEFAULT_MAX_CONSECUTIVE_CORRUPTED_PACKETS, DemuxerOptions,

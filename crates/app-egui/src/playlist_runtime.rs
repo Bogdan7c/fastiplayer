@@ -1,14 +1,15 @@
 //! Process-lifetime shell для будущего playlist controller/coordinators.
 //!
-//! Этот модуль пока не реализует queue policy и media open. Он закрепляет только
-//! правильный уровень ownership: runtime живёт в `AppShell`, а renderer-bound
-//! `AppState` получает короткоживущий binding с новой generation после resume.
+//! Runtime владеет reusable media-open coordinator-ом, но по-прежнему не знает queue policy.
+//! Он живёт в `AppShell`, а renderer-bound `AppState` получает короткоживущий binding
+//! с новой generation и exact ordered player port после resume.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::app_wake::{AppWakePort, OwnerMailboxPublisher, OwnerMailboxReceiver, owner_mailbox};
+use crate::media_open::MediaOpenCoordinator;
 
 /// Generation любого lifecycle transition runtime-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -104,7 +105,7 @@ impl PlaylistOwnerPorts {
     }
 }
 
-/// Минимальный process-lifetime owner до появления controller-а в Session 11A.
+/// Process-lifetime owner mechanism-ов до появления controller-а в Session 11A.
 pub(crate) struct PlaylistRuntime {
     lifecycle_generation: PlaylistLifecycleGeneration,
     next_binding_generation: PlaylistBindingGeneration,
@@ -115,11 +116,14 @@ pub(crate) struct PlaylistRuntime {
     #[allow(dead_code)] // Поле удерживает worker-side ports process lifetime.
     owner_ports: PlaylistOwnerPorts,
     owner_receiver: OwnerMailboxReceiver<PlaylistOwnerProgress, PlaylistOwnerCompletion>,
+    /// Process-lifetime reusable preparation/install mechanism Session 10C.
+    media_open: MediaOpenCoordinator,
 }
 
 impl PlaylistRuntime {
     /// Создаёт runtime один раз вместе с `AppShell`, до любого `AppState`.
     pub(crate) fn new(wake_port: AppWakePort) -> Self {
+        let media_open = MediaOpenCoordinator::new(wake_port.clone());
         let (publisher, owner_receiver) = owner_mailbox(wake_port);
         let admission_open = Arc::new(AtomicBool::new(true));
         Self {
@@ -133,6 +137,7 @@ impl PlaylistRuntime {
             },
             admission_open,
             owner_receiver,
+            media_open,
         }
     }
 
@@ -172,7 +177,13 @@ impl PlaylistRuntime {
                 .checked_add(1)
                 .expect("playlist lifecycle generation overflow during suspend");
             self.lifecycle = PlaylistRuntimeLifecycle::Suspended;
+            self.media_open.suspend_player_binding();
         }
+    }
+
+    /// Привязывает exact ordered player control stream нового renderer-bound AppState.
+    pub(crate) fn attach_player_sender(&mut self, sender: player_core::PlayerCommandSender) {
+        self.media_open.attach_player(sender);
     }
 
     /// Проверяет exact generation до применения будущего callback-а.
@@ -192,8 +203,10 @@ impl PlaylistRuntime {
     }
 
     /// Неблокирующе опустошает process owner slots; UI payload здесь пока отсутствует.
-    pub(crate) fn drain_owner_mailbox(&self) -> bool {
-        self.owner_receiver.drain().has_payload()
+    pub(crate) fn drain_owner_mailbox(&mut self) -> bool {
+        let owner_changed = self.owner_receiver.drain().has_payload();
+        let media_open_changed = self.media_open.drain();
+        owner_changed || media_open_changed
     }
 
     /// Закрывает admission ровно один раз и не выдаёт скрытых обещаний о join/I/O.
@@ -207,6 +220,7 @@ impl PlaylistRuntime {
 
         self.admission_open.store(false, Ordering::Release);
         self.lifecycle = PlaylistRuntimeLifecycle::ShuttingDown;
+        self.media_open.shutdown();
 
         // В Session 10A blocking owners ещё нет: deadline уже является частью API,
         // но shell может подтвердить закрытие немедленно, не выполняя sleep/join.
@@ -224,6 +238,100 @@ impl PlaylistRuntime {
     #[cfg(test)]
     fn load_gate(&self) -> PlaylistLoadGateState {
         self.load_gate
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "Session 10C publishes intent API before callsite migration in Session 10D"
+)]
+impl PlaylistRuntime {
+    /// Запускает source preparation по explicit caller command без queue policy внутри runtime.
+    pub(crate) fn start_media_open(
+        &mut self,
+        client_key: crate::media_open::MediaOpenClientKey,
+        source_request: crate::media_open::MediaOpenSourceRequest,
+        mode: crate::media_open::MediaOpenStartMode,
+    ) -> Result<crate::media_open::MediaOpenStartOutcome, crate::media_open::MediaOpenStartError>
+    {
+        self.media_open.start(client_key, source_request, mode)
+    }
+
+    /// Supersede-ит только exact pre-player request по решению caller-а.
+    pub(crate) fn supersede_media_open_before_player_staging(
+        &mut self,
+        expected_request_id: crate::media_open::MediaOpenRequestId,
+        client_key: crate::media_open::MediaOpenClientKey,
+        source_request: crate::media_open::MediaOpenSourceRequest,
+    ) -> Result<crate::media_open::MediaOpenStartOutcome, crate::media_open::MediaOpenStartError>
+    {
+        self.media_open.supersede_prepared_or_preparing(
+            expected_request_id,
+            client_key,
+            source_request,
+        )
+    }
+
+    /// Передаёт prepared media exact player request-у после app-owned resource staging.
+    pub(crate) fn stage_media_open_at_player(
+        &mut self,
+        request_id: crate::media_open::MediaOpenRequestId,
+        intent: crate::media_open::MediaOpenInstallIntent,
+        video_resource_port: player_core::MediaInstallVideoResourcePort,
+    ) -> Result<player_core::MediaInstallRequestId, crate::media_open::MediaOpenCommandError> {
+        self.media_open
+            .stage_at_player(request_id, intent, video_resource_port)
+    }
+
+    /// Немедленно dispatch-ит matching authorization без второго buffer-а.
+    pub(crate) fn authorize_ready_media_open(
+        &mut self,
+        request_id: crate::media_open::MediaOpenRequestId,
+    ) -> Result<
+        crate::media_open::AuthorizationDispatchResolution,
+        crate::media_open::MediaOpenCommandError,
+    > {
+        self.media_open.authorize_ready(request_id)
+    }
+
+    /// Отправляет exact typed cancel либо сообщает, что enqueue barrier уже выиграл.
+    pub(crate) fn cancel_media_open(
+        &mut self,
+        request_id: crate::media_open::MediaOpenRequestId,
+        cause: player_core::MediaInstallCancellationCause,
+    ) -> Result<
+        crate::media_open::CancellationDispatchOutcome,
+        crate::media_open::MediaOpenCommandError,
+    > {
+        self.media_open.cancel_request(request_id, cause)
+    }
+
+    /// Forward-ит D52 update только в matching player request/instance boundary.
+    pub(crate) fn update_media_open_playback_intent(
+        &self,
+        request_id: crate::media_open::MediaOpenRequestId,
+        revision: player_core::PlaybackIntentRevision,
+        intent: player_core::PlaybackIntent,
+    ) -> Result<player_core::PlaybackIntentUpdateReceipt, crate::media_open::MediaOpenCommandError>
+    {
+        self.media_open
+            .update_playback_intent(request_id, revision, intent)
+    }
+
+    /// Возвращает read-only snapshot typed phase для caller orchestration.
+    pub(crate) fn media_open_snapshot(&self) -> Option<crate::media_open::MediaOpenSnapshot> {
+        self.media_open.snapshot()
+    }
+
+    /// Забирает request-owned terminal exactly once после полного caller commit/abort flow.
+    pub(crate) fn take_media_open_terminal(
+        &mut self,
+        request_id: crate::media_open::MediaOpenRequestId,
+    ) -> Result<
+        Option<crate::media_open::MediaOpenTerminalOutcome>,
+        crate::media_open::MediaOpenCommandError,
+    > {
+        self.media_open.take_terminal(request_id)
     }
 }
 

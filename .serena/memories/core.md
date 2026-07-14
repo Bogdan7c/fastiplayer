@@ -31,3 +31,6 @@
 - Custom egui artwork boundary: see `mem:app-egui/artwork-boundary`; `ui-artwork-egui` owns Painter primitives and shared visual geometry, while `app-egui` owns interaction/accessibility/actions.
 
 - Session 10A typed winit wake bridge, race-safe owner mailboxes и process-lifetime `PlaylistRuntime` lifecycle/shutdown shell документированы в `mem:app-egui/wake-runtime-s10a`; defensive polling больше не является условием доставки startup/local/settings completions.
+
+
+- Session 10C completed 2026-07-14: process-lifetime `PlaylistRuntime` now owns policy-neutral bounded `app-egui::media_open`; local D64/D75 playback preparation produces one same-handle/single-demux envelope with full metadata/fingerprint/reconstructible source, while direct/YouTube reuse typed secret-safe service owners. Authorization dispatch goes immediately into the existing ordered player stream, Ready never auto-authorizes, and exact cancel/D52/terminal APIs preserve stale/barrier outcomes. Startup/settings callsites and `player-core` remain unchanged until Session 10D. Details: `mem:app-egui/media-open-coordinator-s10c`.

@@ -1,23 +1,15 @@
 use super::present_frame_cache::CachedPresentFrameDiscardReason;
 use super::*;
 
-/// Восстановимый пользовательский source intent для controlled media rebuild.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ActiveMediaSource {
-    /// Локальный файл можно переоткрыть через local media owner.
-    LocalFile(PathBuf),
-
-    /// YouTube URL переоткрывается через service-youtube по сохранённой выбранной stream-паре.
-    YouTubeUrl {
-        source_locator: service_youtube::YoutubeMediaLocator,
-        selected_stream_identity: service_youtube::YoutubeSelectedStreamIdentity,
-    },
-
-    /// Direct HTTP media URL переоткрывается через service-direct-media flow.
-    DirectMediaUrl(service_direct_media::DirectMediaUrl),
-}
+/// Сохраняет прежний state-module import path до миграции callsites в Session 10D.
+pub(crate) use crate::media_open::ActiveMediaSource;
 
 impl AppState {
+    /// Возвращает cloneable ordered player control stream для process-lifetime owner-а.
+    pub(crate) fn player_command_sender(&self) -> player_core::PlayerCommandSender {
+        self.player_worker.command_sender()
+    }
+
     /// Загружает локальный файл через playback worker.
     pub fn load_file(&mut self, path: &Path) {
         let autoplay = self.committed_config_snapshot.autoplay_for_new_media();

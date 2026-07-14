@@ -195,6 +195,8 @@ impl AppShell {
             event_loop.exit();
             return;
         }
+        self.playlist_runtime
+            .attach_player_sender(app_state.player_command_sender());
 
         // Shell явно разделяет обновление snapshot и публикацию в desktop integration.
         let player_snapshot = app_state.refresh_player_snapshot();

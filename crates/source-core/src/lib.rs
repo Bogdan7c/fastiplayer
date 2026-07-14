@@ -23,7 +23,7 @@ pub use config::SourceRuntimeConfig;
 pub use error::{SourceError, SourceResult};
 pub use http::{HttpHeader, HttpRangeSource, HttpRangeSourceConfig};
 pub use http_locator::SecretHttpUrl;
-pub use local::LocalFileSource;
+pub use local::{LocalFileMetadataSnapshot, LocalFileSource};
 pub use metadata::{
     ByteSource, NotSeekableReason, Seekability, SourceFingerprint, SourceValidators,
 };

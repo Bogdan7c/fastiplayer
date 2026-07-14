@@ -27,3 +27,9 @@
 - Preferred codec order применяется до capability selection для YouTube и как stable video-track ordering для prepared local/direct media.
 - Перед active-source rebuild выполняется read-only player lifecycle preflight; seek/scrub/pipeline busy возвращается retryable и не ставит rebuild в скрытую очередь.
 - После успешной доставки rebuilt media app восстанавливает volume, selected tracks/quality, current position и play/pause intent.
+
+
+## Session 10C reusable app media-open mechanism (2026-07-14)
+- `app-egui::media_open` reuses existing local/direct/YouTube owners without moving service policy into coordinator. Direct uses `DirectMediaOpenResult::media_metadata`; YouTube keeps capability selection and exact `YoutubeSelectedStreamIdentity`.
+- `ActiveMediaSource` is now the single reconstructible app vocabulary owned by media-open and re-exported through the old state path until Session 10D.
+- Local D64/D75 preparation uses one `LocalFileSource` handle and one demux open; `source-core::LocalFileMetadataSnapshot` exposes same-handle size/mtime before transfer. Full invariants: `mem:app-egui/media-open-coordinator-s10c`.

@@ -6,7 +6,7 @@ Session 10A завершена PASS 2026-07-14. Детальный handoff на�
 - `main.rs` создаёт `EventLoop<AppWakeEvent>` через winit 0.30 `with_user_event().build()`, затем ровно один `EventLoopProxy<AppWakeEvent>` и передаёт его в `AppShell` через `AppWakeProxy`.
 - `AppWakeEvent` содержит только `AppWakeOwner`; payload никогда не переносится через winit event и остаётся в bounded owner mailbox.
 - `AppShell` реализует `ApplicationHandler<AppWakeEvent>` и является единственным UI-thread drain owner. Redraw запрашивается только после реально видимой мутации; queued/no-op wake и idle state redraw не создают.
-- `PlaylistRuntime` принадлежит `AppShell`, а не renderer-bound `AppState`, поэтому переживает `suspended -> resumed` и recreation renderer/player state. Controller, media-open coordinator, MPRIS и persistence wiring в Session 10A отсутствуют.
+- `PlaylistRuntime` принадлежит `AppShell`, а не renderer-bound `AppState`, поэтому переживает `suspended -> resumed` и recreation renderer/player state. После Session 10C он владеет policy-neutral media-open coordinator-ом и привязывает exact ordered player sender на resume; controller, MPRIS и persistence wiring всё ещё отсутствуют. Полный контракт: `mem:app-egui/media-open-coordinator-s10c`.
 
 ## Wake/mailbox invariant
 - `app_wake.rs` владеет per-owner `wake_pending`, sticky `EventLoopClosed`, latest progress slot, lossless completion slot и отдельным producer-disconnect outcome.
@@ -18,7 +18,7 @@ Session 10A завершена PASS 2026-07-14. Детальный handoff на�
 
 ## Lifecycle/shutdown
 - Каждый успешный resume создаёт новый typed `PlaylistRuntimeBinding` с lifecycle/binding generations. Suspend снимает только binding и сохраняет process owner/ports/load-gate shape; stale binding отвергается.
-- Process exit закрывает admission через idempotent bounded `PlaylistRuntime::shutdown`. В Session 10A blocking playlist owners ещё отсутствуют, поэтому `Completed` означает только закрытие minimal shell/admission и не обещает завершение будущего I/O.
+- Process exit закрывает admission через idempotent bounded `PlaylistRuntime::shutdown`. После Session 10C runtime также cooperative-cancel-ит media-open preparation; уже running blocking I/O может завершиться позднее, но budget ограничен одним stale work. `Completed` означает закрытие admission/coordinator scheduling, а не синхронный join внешнего blocking I/O.
 - Defensive 50-ms polling для startup/local/settings jobs остаётся fallback, но correctness delivery теперь обеспечивается wake ports. Continuous playback pacing остаётся `ControlFlow::Wait + request_redraw`; idle остаётся `Wait` без spin.
 
 ## Current migrated owners and tests
@@ -27,4 +27,4 @@ Session 10A завершена PASS 2026-07-14. Детальный handoff на�
 - Итог Session 10A: 9 wake tests, 3 runtime lifecycle/shutdown tests, 2 no-idle-redraw tests и полный `app-egui` suite 282 tests PASS; strict app Clippy, fmt, Rust 1.96 locked workspace check, diff check и Serena diagnostics PASS.
 
 ## Next scope
-- Следующая разрешённая session: только 10B (secret-safe URL/service locator boundaries). Session 10C media-open mechanism, 10D strong startup/settings adapters, 11A controller и Session 14 persistence/load wiring не начаты.
+- Sessions 10B и 10C завершены. Следующая разрешённая session: только 10D strong startup/settings adapters; 11A controller и Session 14 persistence/load wiring не начаты.

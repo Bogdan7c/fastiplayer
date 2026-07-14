@@ -162,7 +162,7 @@ impl AppWakePort {
     }
 
     /// Поднимает только false→true edge; payload должен быть опубликован раньше.
-    fn request_wake(&self) -> WakeDelivery {
+    pub(crate) fn request_wake(&self) -> WakeDelivery {
         if self.inner.event_loop_closed.load(Ordering::Acquire) {
             return WakeDelivery::EventLoopClosed;
         }

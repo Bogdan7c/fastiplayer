@@ -11,7 +11,7 @@ use source_core::{
     ByteSource, HttpRangeSource, HttpRangeSourceConfig, NotSeekableReason, SecretHttpUrl,
     Seekability, SourceError, SourceRuntimeConfig,
 };
-use symphonia_demux::{DemuxSeekability, Demuxer, DemuxerOptions, TrackInfo};
+use symphonia_demux::{DemuxSeekability, Demuxer, DemuxerOptions, MediaMetadata, TrackInfo};
 use thiserror::Error;
 use tracing::debug;
 use url::Url;
@@ -130,6 +130,14 @@ impl DirectMediaOpenResult {
     #[must_use]
     pub const fn seekability(&self) -> DemuxSeekability {
         self.seekability
+    }
+
+    /// Возвращает полный read-only metadata snapshot до ownership transfer demuxer-а.
+    ///
+    /// Это позволяет app-owned prepared envelope-у не выполнять второй target open/probe.
+    #[must_use]
+    pub fn media_metadata(&self) -> Option<MediaMetadata> {
+        self.demuxer.media_metadata()
     }
 
     /// Передаёт demuxer во владение app/player boundary.

@@ -35,6 +35,7 @@ codec-core.workspace = true
 service-direct-media.workspace = true
 service-youtube.workspace = true
 playlist-core.workspace = true
+playlist-discovery.workspace = true
 desktop-integration.workspace = true
 
 # Композиция playback/media boundary.
@@ -64,3 +65,4 @@ render-wgpu-video.workspace = true
 
 [dev-dependencies]
 codec-core.workspace = true
+tempfile = "3"

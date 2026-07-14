@@ -9,7 +9,7 @@ use std::io;
 use std::path::Path;
 use std::time::SystemTime;
 
-use media_core::{MediaDuration, MediaTagMetadata};
+use media_core::{MediaDuration, MediaTagMetadata, TrackInfo, TrackKind};
 use source_core::CancellationToken;
 use symphonia_demux::{
     ContainerProbeError, ContainerProbeSnapshot, ContainerTrackTopology,
@@ -69,6 +69,22 @@ pub enum LocalMediaKind {
     VideoContaining,
     /// Контейнер содержит audio track(s), но не содержит video tracks.
     AudioOnly,
+}
+
+/// Классифицирует уже открытый playback demuxer по immutable track snapshot-у.
+///
+/// Boundary намеренно не выполняет I/O и нужен D75 prepared envelope-у: explicit target
+/// не должен проходить второй discovery probe только ради общей category vocabulary.
+pub fn classify_local_media_tracks(
+    tracks: &[TrackInfo],
+) -> Result<LocalMediaKind, ProbeOneLocalMediaError> {
+    if tracks.iter().any(|track| track.kind == TrackKind::Video) {
+        Ok(LocalMediaKind::VideoContaining)
+    } else if tracks.iter().any(|track| track.kind == TrackKind::Audio) {
+        Ok(LocalMediaKind::AudioOnly)
+    } else {
+        Err(ProbeOneLocalMediaError::NoAudioVideoTracks)
+    }
 }
 
 /// Best-effort cache invalidation fingerprint из exact file size + mtime.
