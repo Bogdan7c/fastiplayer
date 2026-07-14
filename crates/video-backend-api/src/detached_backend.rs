@@ -11,6 +11,7 @@ use video_core::{
     DecodeThreadError, VideoDecoderControlBackpressureReason, VideoStreamConfigRejection,
     VideoStreamConfigResult, VideoStreamDecodeConfig,
 };
+use video_frame_contract::VideoFrameContract;
 
 use crate::StartedVideoBackend;
 
@@ -151,19 +152,69 @@ impl fmt::Display for DetachedVideoBackendConfigurationError {
 
 impl std::error::Error for DetachedVideoBackendConfigurationError {}
 
+/// Точный renderer-neutral выбор video output-а, сделанный player preflight-ом.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetachedVideoBackendSelection {
+    /// Canonical backend ID выбранного playable output-а.
+    expected_backend_id: Option<String>,
+
+    /// Exact decoder-to-renderer contract выбранного stream plan-а.
+    frame_contract: VideoFrameContract,
+}
+
+impl DetachedVideoBackendSelection {
+    /// Создаёт exact selection из capability-intersected player plan-а.
+    #[must_use]
+    pub fn selected(
+        expected_backend_id: impl Into<String>,
+        frame_contract: VideoFrameContract,
+    ) -> Self {
+        Self {
+            expected_backend_id: Some(expected_backend_id.into()),
+            frame_contract,
+        }
+    }
+
+    /// Сохраняет contract для legacy/unprobed player plan-а без самостоятельного выбора backend-а.
+    #[must_use]
+    pub const fn unprobed(frame_contract: VideoFrameContract) -> Self {
+        Self {
+            expected_backend_id: None,
+            frame_contract,
+        }
+    }
+
+    /// Возвращает canonical backend ID только когда его действительно выбрал player.
+    #[must_use]
+    pub fn expected_backend_id(&self) -> Option<&str> {
+        self.expected_backend_id.as_deref()
+    }
+
+    /// Возвращает exact frame contract выбранного stream plan-а.
+    #[must_use]
+    pub const fn frame_contract(&self) -> VideoFrameContract {
+        self.frame_contract
+    }
+}
+
 /// Запрос player-side candidate-а на detached decoder half.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetachedVideoBackendRequest<RequestId> {
     /// Correlation ID принадлежит caller-у и остаётся generic для neutral crate-а.
     request_id: RequestId,
+
+    /// Player-selected output/stream intent запрещает app делать независимый выбор.
+    selection: DetachedVideoBackendSelection,
 }
 
 impl<RequestId> DetachedVideoBackendRequest<RequestId> {
     /// Создаёт request без playlist/app-specific payload-а.
     #[must_use]
-    pub const fn new(request_id: RequestId) -> Self {
-        // Player half передаёт только correlation identity.
-        Self { request_id }
+    pub const fn new(request_id: RequestId, selection: DetachedVideoBackendSelection) -> Self {
+        Self {
+            request_id,
+            selection,
+        }
     }
 
     /// Возвращает исходную correlation identity.
@@ -171,6 +222,18 @@ impl<RequestId> DetachedVideoBackendRequest<RequestId> {
     pub const fn request_id(&self) -> &RequestId {
         // Ссылка не требует от generic ID свойства Copy.
         &self.request_id
+    }
+
+    /// Возвращает exact player-selected output/stream intent.
+    #[must_use]
+    pub const fn selection(&self) -> &DetachedVideoBackendSelection {
+        &self.selection
+    }
+
+    /// Разделяет correlation ID и selection без повторного планирования.
+    #[must_use]
+    pub fn into_parts(self) -> (RequestId, DetachedVideoBackendSelection) {
+        (self.request_id, self.selection)
     }
 }
 
@@ -675,9 +738,15 @@ mod tests {
             cancellation: None,
         };
 
-        // Player запрашивает resource plan только по neutral correlation ID.
+        // Player передаёт exact renderer-neutral selection вместе с correlation ID.
         let reply = port
-            .request_detached_backend(DetachedVideoBackendRequest::new(41))
+            .request_detached_backend(DetachedVideoBackendRequest::new(
+                41,
+                DetachedVideoBackendSelection::selected(
+                    "ffmpeg-sw",
+                    VideoFrameContract::host_yuv420_planar8(),
+                ),
+            ))
             .expect("prebuilt reply must be available");
         // Exact ID ответа совпадает с request ID.
         assert_eq!(*reply.request_id(), 41);

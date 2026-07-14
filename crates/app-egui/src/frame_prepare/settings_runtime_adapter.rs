@@ -14,6 +14,9 @@ pub(super) struct FrameSettingsRuntimeAdapter<'frame> {
     /// Renderer владеет WGPU context и live render settings.
     renderer: &'frame mut Renderer,
 
+    /// Process-lifetime coordinator проводит settings reinstall до exact terminal.
+    playlist_runtime: &'frame mut crate::playlist_runtime::PlaylistRuntime,
+
     /// Shell-level serializer renderer/surface lifecycle operations.
     renderer_lifecycle: &'frame mut RendererLifecycleCoordinator,
 }
@@ -24,12 +27,14 @@ impl<'frame> FrameSettingsRuntimeAdapter<'frame> {
         window: Arc<Window>,
         app_state: &'frame mut AppState,
         renderer: &'frame mut Renderer,
+        playlist_runtime: &'frame mut crate::playlist_runtime::PlaylistRuntime,
         renderer_lifecycle: &'frame mut RendererLifecycleCoordinator,
     ) -> Self {
         Self {
             window,
             app_state,
             renderer,
+            playlist_runtime,
             renderer_lifecycle,
         }
     }
@@ -45,8 +50,21 @@ struct ActiveMediaReconfigureConfig {
     rebuild_local_source: bool,
 }
 
+/// Сохраняет различие между доказанным pre-barrier failure и mutation, требующей rollback.
+fn media_reconfigure_install_failure(
+    error: crate::state::StrongMediaOpenError,
+) -> AppRouteApplyResult {
+    let message =
+        format!("media rebuild failed while waiting for strong install completion: {error}");
+    if error.may_have_crossed_install_barrier() {
+        AppRouteApplyResult::PartialFailure { message }
+    } else {
+        AppRouteApplyResult::Failed { message }
+    }
+}
+
 impl FrameSettingsRuntimeAdapter<'_> {
-    /// Перестраивает только reconstructible active source после read-only busy preflight.
+    /// Перестраивает reconstructible source и завершает route только после exact Installed/restore.
     fn reconfigure_active_media(
         &mut self,
         config: ActiveMediaReconfigureConfig,
@@ -79,127 +97,150 @@ impl FrameSettingsRuntimeAdapter<'_> {
         }
 
         let playback_snapshot = self.app_state.refresh_player_snapshot();
+        let desired_intent = crate::state::playback_intent_from_snapshot(&playback_snapshot);
         let preferred_runtime_codecs = config
             .preferred_video_codec_order
             .iter()
             .copied()
             .map(runtime_video_codec)
             .collect::<Vec<_>>();
-        let rebuild_result = match active_source {
-            ActiveMediaSource::LocalFile(path) => {
-                match crate::local_media::prepare_local_file(&path, &config.demux) {
-                    Ok(prepared_media) => {
-                        let prepared_media =
-                            prepared_media.with_preferred_video_codecs(&preferred_runtime_codecs);
-                        if self
-                            .app_state
-                            .load_prepared_local_file(path, prepared_media)
-                        {
-                            Ok(())
-                        } else {
-                            Err("local media rebuild failed while sending media to worker"
-                                .to_string())
+
+        let prepared_result: Result<crate::state::PreparedSingleMediaOpen, String> =
+            match active_source {
+                ActiveMediaSource::LocalFile(path) => {
+                    match crate::local_media::prepare_local_file(&path, &config.demux) {
+                        Ok(prepared_media) => {
+                            let prepared_media = prepared_media
+                                .with_preferred_video_codecs(&preferred_runtime_codecs);
+                            let source = ActiveMediaSource::LocalFile(path.clone());
+                            Ok(crate::state::PreparedSingleMediaOpen::new(
+                                prepared_media,
+                                source,
+                                crate::media_open::SafeMediaLabel::from_local_path(&path),
+                            ))
                         }
+                        Err(error) => Err(format!("local media rebuild failed: {error:#}")),
                     }
-                    Err(error) => Err(format!("local media rebuild failed: {error:#}")),
                 }
-            }
-            ActiveMediaSource::DirectMediaUrl(source_locator) => {
-                match resolve_direct_media_startup_media(
-                    &source_locator,
-                    &config.network,
-                    &config.demux,
-                ) {
-                    Ok(opened_media) => {
-                        let source_label = opened_media.source_label().to_string();
-                        let prepared_media = PreparedMedia::from_external_label(
-                            source_label.clone(),
-                            opened_media.into_demuxer(),
-                        )
-                        .with_preferred_video_codecs(&preferred_runtime_codecs);
-                        if self.app_state.load_prepared_direct_media(
-                            source_locator,
-                            source_label,
-                            prepared_media,
+                ActiveMediaSource::DirectMediaUrl(source_locator) => {
+                    match resolve_direct_media_startup_media(
+                        &source_locator,
+                        &config.network,
+                        &config.demux,
+                    ) {
+                        Ok(opened_media) => {
+                            let source_label = opened_media.source_label().to_string();
+                            let prepared_media = PreparedMedia::from_external_label(
+                                source_label,
+                                opened_media.into_demuxer(),
+                            )
+                            .with_preferred_video_codecs(&preferred_runtime_codecs);
+                            let safe_label =
+                                crate::media_open::SafeMediaLabel::from_service_safe_label(
+                                    source_locator.safe_label(),
+                                );
+                            Ok(crate::state::PreparedSingleMediaOpen::new(
+                                prepared_media,
+                                ActiveMediaSource::DirectMediaUrl(source_locator),
+                                safe_label,
+                            ))
+                        }
+                        Err(error) => Err(format!("direct media rebuild failed: {error:#}")),
+                    }
+                }
+                ActiveMediaSource::YouTubeUrl {
+                    source_locator,
+                    selected_stream_identity,
+                } => {
+                    if config.reselect_youtube_stream {
+                        let system_capabilities =
+                            probe_system_capabilities(self.renderer.render_capabilities());
+                        match resolve_youtube_startup_media(
+                            &source_locator,
+                            &config.network,
+                            &config.youtube,
+                            &config.demux,
+                            &config.preferred_video_codec_order,
+                            &system_capabilities,
                         ) {
-                            Ok(())
-                        } else {
-                            Err("direct media rebuild failed while sending media to worker"
-                                .to_string())
-                        }
-                    }
-                    Err(error) => Err(format!("direct media rebuild failed: {error:#}")),
-                }
-            }
-            ActiveMediaSource::YouTubeUrl {
-                source_locator,
-                selected_stream_identity,
-            } => {
-                if config.reselect_youtube_stream {
-                    let system_capabilities =
-                        probe_system_capabilities(self.renderer.render_capabilities());
-                    match resolve_youtube_startup_media(
-                        &source_locator,
-                        &config.network,
-                        &config.youtube,
-                        &config.demux,
-                        &config.preferred_video_codec_order,
-                        &system_capabilities,
-                    ) {
-                        Ok(prepared) => {
-                            if self.app_state.load_youtube_demuxer(
-                                source_locator,
-                                prepared.streaming_media.description,
-                                prepared.streaming_media.demuxer,
-                                prepared.selected_stream_identity,
-                            ) {
-                                Ok(())
-                            } else {
-                                Err(
-                                    "YouTube media rebuild failed while sending demuxer to worker"
-                                        .to_string(),
-                                )
+                            Ok(prepared) => {
+                                let prepared_media = PreparedMedia::from_external_label(
+                                    prepared.streaming_media.description,
+                                    prepared.streaming_media.demuxer,
+                                );
+                                let safe_label =
+                                    crate::media_open::SafeMediaLabel::from_service_safe_label(
+                                        source_locator.safe_label(),
+                                    );
+                                Ok(crate::state::PreparedSingleMediaOpen::new(
+                                    prepared_media,
+                                    ActiveMediaSource::YouTubeUrl {
+                                        source_locator,
+                                        selected_stream_identity: prepared.selected_stream_identity,
+                                    },
+                                    safe_label,
+                                ))
                             }
+                            Err(error) => Err(format!("YouTube media rebuild failed: {error:#}")),
                         }
-                        Err(error) => Err(format!("YouTube media rebuild failed: {error:#}")),
-                    }
-                } else {
-                    match service_youtube::open_seekable_vod_from_selected_identity_with_demux_config(
-                        &source_locator,
-                        &selected_stream_identity,
-                        &config.network,
-                        &config.youtube,
-                        &config.demux,
-                    ) {
-                        Ok(streaming_media) => {
-                            if self.app_state.load_youtube_demuxer(
-                                source_locator,
-                                streaming_media.description,
-                                streaming_media.demuxer,
-                                selected_stream_identity,
-                            ) {
-                                Ok(())
-                            } else {
-                                Err("YouTube media rebuild failed while sending demuxer to worker"
-                                    .to_string())
+                    } else {
+                        match service_youtube::open_seekable_vod_from_selected_identity_with_demux_config(
+                            &source_locator,
+                            &selected_stream_identity,
+                            &config.network,
+                            &config.youtube,
+                            &config.demux,
+                        ) {
+                            Ok(streaming_media) => {
+                                let prepared_media = PreparedMedia::from_external_label(
+                                    streaming_media.description,
+                                    streaming_media.demuxer,
+                                );
+                                let safe_label =
+                                    crate::media_open::SafeMediaLabel::from_service_safe_label(
+                                        source_locator.safe_label(),
+                                    );
+                                Ok(crate::state::PreparedSingleMediaOpen::new(
+                                    prepared_media,
+                                    ActiveMediaSource::YouTubeUrl {
+                                        source_locator,
+                                        selected_stream_identity,
+                                    },
+                                    safe_label,
+                                ))
                             }
+                            Err(error) => Err(format!(
+                                "selected YouTube media rebuild failed without changing stream: {error}"
+                            )),
                         }
-                        Err(error) => Err(format!(
-                            "selected YouTube media rebuild failed without changing stream: {error}"
-                        )),
                     }
                 }
+            };
+
+        let prepared_input = match prepared_result {
+            Ok(prepared_input) => prepared_input,
+            Err(message) => return AppRouteApplyResult::Failed { message },
+        };
+        let installed = match self.app_state.install_prepared_media_strong(
+            self.playlist_runtime,
+            self.renderer,
+            prepared_input,
+            desired_intent,
+        ) {
+            Ok(installed) => installed,
+            Err(error) => {
+                return media_reconfigure_install_failure(error);
             }
         };
-
-        match rebuild_result {
-            Ok(()) => {
-                self.app_state
-                    .restore_playback_after_media_reconfigure(&playback_snapshot);
-                AppRouteApplyResult::Applied
-            }
-            Err(message) => AppRouteApplyResult::Failed { message },
+        self.app_state
+            .record_installed_media_source(installed.source.clone());
+        if let Err(message) = self
+            .app_state
+            .restore_playback_after_media_reconfigure(&playback_snapshot, &installed)
+        {
+            return AppRouteApplyResult::PartialFailure { message };
         }
+        AppRouteApplyResult::Applied
     }
 }
 
@@ -596,4 +637,26 @@ fn player_pipeline_rebuild_failure_report(
         ));
     }
     report
+}
+
+#[cfg(test)]
+mod strong_completion_tests {
+    use super::*;
+
+    #[test]
+    fn install_barrier_failure_enters_settings_compensation() {
+        let result =
+            media_reconfigure_install_failure(crate::state::StrongMediaOpenError::MissingTerminal);
+
+        assert!(matches!(result, AppRouteApplyResult::PartialFailure { .. }));
+    }
+
+    #[test]
+    fn proven_pre_barrier_failure_does_not_request_settings_compensation() {
+        let result = media_reconfigure_install_failure(crate::state::StrongMediaOpenError::Start(
+            crate::media_open::MediaOpenStartError::Busy,
+        ));
+
+        assert!(matches!(result, AppRouteApplyResult::Failed { .. }));
+    }
 }

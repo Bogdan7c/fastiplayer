@@ -10,11 +10,11 @@ use std::time::{Duration, Instant};
 use capability_core::SystemCapabilities;
 use desktop_integration::{DesktopIntegration, DesktopIntegrationEvent};
 use player_core::{
-    FrameCounters, MediaOpenRequest, MediaSource, PlaybackRate, PlaybackState, PlayerCommand,
-    PlayerError, PlayerErrorKind, PlayerEvent, PlayerRenderError, PlayerRuntimeApplyResult,
-    PlayerRuntimeSettingsUpdate, PlayerSnapshot, PlayerVideoDecoderThreadConfig, PlayerWorker,
-    PlayerWorkerConfig, PlayerWorkerEvent, PreparedMedia, QualitySelection, ScrubCommitPolicy,
-    SeekRequest, VideoBackendSelectionRequest, VideoDecodeRequirement,
+    FrameCounters, PlaybackRate, PlaybackState, PlayerCommand, PlayerEvent, PlayerRenderError,
+    PlayerRuntimeApplyResult, PlayerRuntimeSettingsUpdate, PlayerSnapshot,
+    PlayerVideoDecoderThreadConfig, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent,
+    PreparedMedia, QualitySelection, ScrubCommitPolicy, SeekRequest, VideoBackendSelectionRequest,
+    VideoDecodeRequirement,
 };
 use render_core::RenderDiagnostics;
 use render_wgpu_video::{
@@ -60,8 +60,13 @@ use crate::video_pipeline_selector::{
 
 mod main_visual_override;
 mod media_jobs;
+pub(crate) use media_jobs::playback_intent_from_snapshot;
 mod present_frame_cache;
 mod sidebar_controller;
+mod strong_media_open;
+pub(crate) use strong_media_open::{
+    InstalledSingleMediaOpen, PreparedSingleMediaOpen, StrongMediaOpenError,
+};
 mod telemetry_panel;
 mod timeline_inline_status;
 mod ui_runtime;
@@ -225,6 +230,9 @@ pub struct AppState {
     /// Класс активного video backend-а, чтобы не пересоздавать pipeline без нужды.
     current_video_backend_kind: Option<VideoBackendKind>,
 
+    /// Exact identity renderer lifetime для app-side staged video candidate-а.
+    renderer_generation: crate::video_pipeline_candidate::RendererGeneration,
+
     /// Отложенный запрос player-core на подбор backend-а под текущий стрим (`auto`).
     pending_video_backend_reselection: Option<VideoBackendSelectionRequest>,
 
@@ -346,6 +354,7 @@ impl AppState {
             wgpu_frame_materializer: None,
             wgpu_submission_queue_binding: None,
             current_video_backend_kind: None,
+            renderer_generation: crate::video_pipeline_candidate::RendererGeneration::new_unique(),
             pending_video_backend_reselection: None,
             active_video_stream_requirement: None,
             backend_swap_frozen_frame: None,

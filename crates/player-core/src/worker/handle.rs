@@ -133,10 +133,11 @@ impl PlayerWorker {
             .map_err(|_| PlayerRuntimeApplyError::Disconnected)
     }
 
-    /// Единственный временный app compatibility facade до Session 10D.
+    /// Единственный временный compatibility facade остался только для focused tests.
     ///
     /// Facade возвращает typed completion receipt и внутри вызывает тот же strong player
     /// install algorithm. Caller обязан различать command acceptance и фактический terminal.
+    /// TODO(Session 11 cleanup): удалить после перевода test fixtures на staged test helper.
     pub fn load_prepared_media(
         &self,
         prepared_media: PreparedMedia,
@@ -165,6 +166,14 @@ impl PlayerWorker {
             initial_intent_revision,
             video_resource_port,
         )
+    }
+
+    /// Ставит exact-instance position/track restore с authoritative owner receipt-ом.
+    pub fn restore_installed_media_state(
+        &self,
+        restore: InstalledMediaStateRestore,
+    ) -> Result<InstalledMediaStateRestoreReceipt, PlayerWorkerSendError> {
+        self.command_sender.restore_installed_media_state(restore)
     }
 
     /// Обновляет staged либо exact just-installed playback intent через отдельный D52 path.

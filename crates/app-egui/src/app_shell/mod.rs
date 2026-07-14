@@ -182,14 +182,6 @@ impl AppShell {
             renderer.queue(),
         );
 
-        self.startup_media.start_pending_initial_media(
-            &mut app_state,
-            self.settings_runtime.committed_config(),
-            &system_capabilities,
-        );
-        self.startup_media.poll_startup_jobs(&mut app_state);
-        app_state.poll_local_file_open_job();
-
         if self.playlist_runtime.bind_resumed_app_state().is_none() {
             tracing::error!("Playlist runtime уже закрыт и не принимает новый AppState binding");
             event_loop.exit();
@@ -197,6 +189,17 @@ impl AppShell {
         }
         self.playlist_runtime
             .attach_player_sender(app_state.player_command_sender());
+
+        self.startup_media.start_pending_initial_media(
+            &mut app_state,
+            &mut self.playlist_runtime,
+            &renderer,
+            self.settings_runtime.committed_config(),
+            &system_capabilities,
+        );
+        self.startup_media
+            .poll_startup_jobs(&mut app_state, &mut self.playlist_runtime, &renderer);
+        app_state.poll_local_file_open_job(&mut self.playlist_runtime, &renderer);
 
         // Shell явно разделяет обновление snapshot и публикацию в desktop integration.
         let player_snapshot = app_state.refresh_player_snapshot();
@@ -282,17 +285,24 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
     /// Неблокирующе опустошает ровно одного owner-а и redraw-ит только mutation.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppWakeEvent) {
         let visible_mutation = match event.owner() {
-            AppWakeOwner::StartupMedia => self
-                .app_state
-                .as_mut()
-                .is_some_and(|app_state| self.startup_media.poll_startup_jobs(app_state)),
+            AppWakeOwner::StartupMedia => match (self.app_state.as_mut(), self.renderer.as_ref()) {
+                (Some(app_state), Some(renderer)) => self.startup_media.poll_startup_jobs(
+                    app_state,
+                    &mut self.playlist_runtime,
+                    renderer,
+                ),
+                _ => false,
+            },
             AppWakeOwner::LocalFileOpen => {
-                if let Some(app_state) = self.app_state.as_mut() {
-                    app_state.poll_local_file_open_job()
-                } else {
-                    self.local_file_open_wake_port
-                        .acknowledge_abandoned_mailbox();
-                    false
+                match (self.app_state.as_mut(), self.renderer.as_ref()) {
+                    (Some(app_state), Some(renderer)) => {
+                        app_state.poll_local_file_open_job(&mut self.playlist_runtime, renderer)
+                    }
+                    _ => {
+                        self.local_file_open_wake_port
+                            .acknowledge_abandoned_mailbox();
+                        false
+                    }
                 }
             }
             AppWakeOwner::SettingsDynamicOptions => {
@@ -425,13 +435,18 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
             },
 
             WindowEvent::RedrawRequested => {
-                self.startup_media.poll_startup_jobs(app_state);
-                app_state.poll_local_file_open_job();
+                self.startup_media.poll_startup_jobs(
+                    app_state,
+                    &mut self.playlist_runtime,
+                    renderer,
+                );
+                app_state.poll_local_file_open_job(&mut self.playlist_runtime, renderer);
                 let frame_result = render_frame(
                     &self.telemetry,
                     &window,
                     renderer,
                     app_state,
+                    &mut self.playlist_runtime,
                     &mut self.settings_runtime,
                     &mut self.renderer_lifecycle,
                 );

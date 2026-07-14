@@ -1,7 +1,7 @@
 # Session 10C: reusable media-open coordinator и single-open envelope (2026-07-14)
 
 ## Итог и scope
-- Session 10C завершена без миграции startup/settings callsites и без изменений `player-core`; следующий scope остаётся Session 10D.
+- Session 10C была завершена без миграции startup/settings callsites; последующая Session 10D выполнила production migration и добавила необходимые player/app completion boundaries, описанные ниже.
 - Новый `app-egui::media_open` — policy-neutral mechanism owner. Он не знает Item ID, queue reservation token, navigation, repeat/shuffle, manual/automatic priority или confirmation policy.
 - `PlaylistRuntime` владеет одним coordinator на весь process lifetime и на resume привязывает clone существующего ordered `PlayerCommandSender`.
 
@@ -34,3 +34,12 @@
 - Strict touched-crate Clippy, fmt, Rust 1.96 locked workspace check, refactor guardrails и diff check PASS.
 - Полный `app-egui --no-default-features`: 302 PASS / 1 unrelated pre-existing failure `startup_media::tests::cli_route_rejects_unsupported_media_protocol`; Session 10C не меняла этот route или `startup_media.rs`.
 - Serena existing-file diagnostics чисты; новые linked `media_open` files временно получают stale rust-analyzer `unlinked-file` hint, тогда как Cargo build/test/check доказывают module linkage.
+
+
+## Session 10D production migration (2026-07-14)
+- `crates/app-egui/src/state/strong_media_open.rs` — единый owner-focused adapter startup/local/settings: caller-prepared media входит без повторного demux open, проходит Prepared -> PlayerStaging -> ReadyToCommit -> explicit authorize -> EnqueuedAtPlayerOwner -> Installed. Только exact Installed завершает success.
+- `DetachedVideoBackendSelection` переносит player-selected backend ID + exact frame contract через `video-backend-api`; app candidate port создаёт matching renderer/materializer half и коммитит pointers только после Installed. Renderer recreation продвигает app renderer generation.
+- Production callsites больше не вызывают `PlayerWorker::load_prepared_media` напрямую; facade остался один только для focused player tests и помечен TODO. Direct stage/authorize app calls ограничены `media_open/player_port.rs`.
+- Exact settings restore использует request + `MediaInstanceId` для position/video/audio/subtitle tracks и D52 exact intent receipt. Post-barrier failure классифицируется как `PartialFailure`, поэтому settings transaction correlated reinstall rollback также ждёт Installed; pre-barrier failure остаётся `Failed`.
+- Authorization backpressure остаётся pre-barrier rejection, после которого strong adapter использует lossless cancel delivery в том же ordered player stream. Missing owner resolution/Installed остаётся fatal.
+- PASS: 309 app no-default, 516 player-core, 14 coordinator, 43 settings-runtime, strict app/player Clippy, fmt, Rust 1.96 locked workspace check, guardrails, diff check и Serena reference/diagnostic audit. Startup protocol-message regression исправлен secret-safe. Следующий scope — Session 11A.

@@ -1,6 +1,24 @@
 use super::*;
 
 impl PlayerCommandSender {
+    /// Ставит exact-instance restore и возвращает receipt, а не ложный success по enqueue.
+    pub fn restore_installed_media_state(
+        &self,
+        restore: InstalledMediaStateRestore,
+    ) -> Result<InstalledMediaStateRestoreReceipt, PlayerWorkerSendError> {
+        let request_id = restore.request_id;
+        let (outcome_tx, outcome_rx) = bounded(1);
+        self.command_tx
+            .try_send(WorkerCommand::RestoreInstalledMediaState {
+                restore,
+                outcome_tx,
+            })
+            .map_err(PlayerWorkerSendError::from)?;
+        Ok(InstalledMediaStateRestoreReceipt::new(
+            request_id, outcome_rx,
+        ))
+    }
+
     /// Ставит strong staged media transaction без блокировки caller thread-а.
     ///
     /// Caller обязан заранее stage-ить exact Session 00C app half за переданным port-ом.
@@ -64,6 +82,20 @@ impl PlayerCommandSender {
         )
     }
 
+    /// Lossless ставит exact pre-barrier cancel после уже доказанного dispatch rejection-а.
+    ///
+    /// Этот cleanup path использует тот же ordered owner stream и отличается только тем, что
+    /// ждёт свободное место в bounded channel вместо повторного `try_send`/polling-а.
+    pub fn cancel_media_install_lossless(
+        &self,
+        cancellation: CancelMediaInstall,
+    ) -> Result<MediaInstallControlReceipt, PlayerWorkerSendError> {
+        self.send_media_install_control_lossless(
+            MediaInstallControl::Cancel(cancellation),
+            cancellation.request_id,
+        )
+    }
+
     /// Общий bounded request/reply boundary control-команд install transaction-а.
     fn send_media_install_control(
         &self,
@@ -79,6 +111,24 @@ impl PlayerCommandSender {
                 },
             ))
             .map_err(PlayerWorkerSendError::from)?;
+        Ok(receipt)
+    }
+
+    /// Доставляет cleanup control без потери на временном backpressure.
+    fn send_media_install_control_lossless(
+        &self,
+        control: MediaInstallControl,
+        request_id: MediaInstallRequestId,
+    ) -> Result<MediaInstallControlReceipt, PlayerWorkerSendError> {
+        let (receipt, outcome_tx) = MediaInstallControlReceipt::new(request_id);
+        self.command_tx
+            .send(WorkerCommand::MediaInstallControl(
+                MediaInstallControlCommand {
+                    control,
+                    outcome_tx,
+                },
+            ))
+            .map_err(|_| PlayerWorkerSendError::Disconnected)?;
         Ok(receipt)
     }
 

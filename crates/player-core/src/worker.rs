@@ -37,20 +37,21 @@ use crate::worker_scheduler::{PlannedWorkerWakeup, WorkerScheduler, WorkerWakeup
 use crate::{
     ActiveSeekDiagnosticsSnapshot, AudioDecoderFactory, AudioOutputFactory,
     AudioTempoProcessorFactory, AuthorizeInstallCommit, CancelMediaInstall, CorrelatedPlayerEvent,
-    FrameCounters, LatencyCounterSnapshot, MediaInstallCancellationCause, MediaInstallControl,
-    MediaInstallPhaseCompletionPort, MediaInstallReceipt, MediaInstallRequestId,
-    MediaInstallVideoResourcePort, MediaOpenRequest, MediaSource, PlaybackIntent,
-    PlaybackIntentRevision, PlaybackIntentUpdate, PlaybackIntentUpdateReceipt, PlayerCommand,
-    PlayerCommandOutcome, PlayerError, PlayerErrorKind, PlayerResult, PlayerRuntimeAcceptedChange,
-    PlayerRuntimeApplyError, PlayerRuntimeApplyGroup, PlayerRuntimeApplyGroupReport,
-    PlayerRuntimeApplyReport, PlayerRuntimeApplyResult, PlayerRuntimeAudioOutputRecreateUpdate,
-    PlayerRuntimeBoundaryActivity, PlayerRuntimeDecoderThreadConfigUpdate,
-    PlayerRuntimeDefaultVolumeUpdate, PlayerRuntimeFrameServerPolicyUpdate,
-    PlayerRuntimeSettingsUpdate, PlayerRuntimeTickConfigUpdate, PlayerRuntimeVideoBackendUpdate,
-    PlayerSession, PlayerSnapshot, PlayerTickConfig, PlayerTickContext, PlayerTickResult,
-    PlayerVideoBackendInstallIntent, PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan,
-    PreparedMedia, SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend,
-    scheduler_timing_diagnostics,
+    FrameCounters, InstalledMediaStateRestore, InstalledMediaStateRestoreOutcome,
+    InstalledMediaStateRestoreReceipt, LatencyCounterSnapshot, MediaInstallCancellationCause,
+    MediaInstallControl, MediaInstallPhaseCompletionPort, MediaInstallReceipt,
+    MediaInstallRequestId, MediaInstallVideoResourcePort, MediaOpenRequest, MediaSource,
+    PlaybackIntent, PlaybackIntentRevision, PlaybackIntentUpdate, PlaybackIntentUpdateReceipt,
+    PlayerCommand, PlayerCommandOutcome, PlayerError, PlayerErrorKind, PlayerResult,
+    PlayerRuntimeAcceptedChange, PlayerRuntimeApplyError, PlayerRuntimeApplyGroup,
+    PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyReport, PlayerRuntimeApplyResult,
+    PlayerRuntimeAudioOutputRecreateUpdate, PlayerRuntimeBoundaryActivity,
+    PlayerRuntimeDecoderThreadConfigUpdate, PlayerRuntimeDefaultVolumeUpdate,
+    PlayerRuntimeFrameServerPolicyUpdate, PlayerRuntimeSettingsUpdate,
+    PlayerRuntimeTickConfigUpdate, PlayerRuntimeVideoBackendUpdate, PlayerSession, PlayerSnapshot,
+    PlayerTickConfig, PlayerTickContext, PlayerTickResult, PlayerVideoBackendInstallIntent,
+    PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan, PreparedMedia,
+    SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend, scheduler_timing_diagnostics,
 };
 
 mod handle;
@@ -529,6 +530,14 @@ enum WorkerCommand {
 
     /// Применяет authorization/cancel к единственному staged request-у.
     MediaInstallControl(MediaInstallControlCommand),
+
+    /// Применяет position/track restore только к exact installed request/instance.
+    RestoreInstalledMediaState {
+        /// Correlated restore intent без uncorrelated fallback commands.
+        restore: InstalledMediaStateRestore,
+        /// Request-owned authoritative owner outcome.
+        outcome_tx: Sender<InstalledMediaStateRestoreOutcome>,
+    },
 
     /// Зафиксировать ошибку подготовки media, не скрывая open-request transition.
     MediaOpenFailed {

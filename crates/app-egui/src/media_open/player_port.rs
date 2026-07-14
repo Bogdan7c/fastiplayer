@@ -12,6 +12,9 @@ use super::{MediaOpenInstallIntent, PlayerDispatchRejection};
 pub(super) trait InstallReceiptPort: Send {
     fn take_ready(&self) -> Option<MediaInstallPhase>;
     fn take_completion(&self) -> Option<MediaInstallCompletion>;
+    fn wait_until_signal_available(&self) -> Result<(), ()> {
+        Err(())
+    }
 }
 
 impl InstallReceiptPort for player_core::MediaInstallReceipt {
@@ -22,15 +25,26 @@ impl InstallReceiptPort for player_core::MediaInstallReceipt {
     fn take_completion(&self) -> Option<MediaInstallCompletion> {
         self.try_take_completion()
     }
+
+    fn wait_until_signal_available(&self) -> Result<(), ()> {
+        player_core::MediaInstallReceipt::wait_until_signal_available(self).map_err(|_| ())
+    }
 }
 
 pub(super) trait ControlReceiptPort: Send {
     fn take_outcome(&self) -> Result<Option<MediaInstallControlOutcome>, ()>;
+    fn wait_until_outcome_available(&self) -> Result<(), ()> {
+        Err(())
+    }
 }
 
 impl ControlReceiptPort for player_core::MediaInstallControlReceipt {
     fn take_outcome(&self) -> Result<Option<MediaInstallControlOutcome>, ()> {
         self.try_take_outcome().map_err(|_| ())
+    }
+
+    fn wait_until_outcome_available(&self) -> Result<(), ()> {
+        player_core::MediaInstallControlReceipt::wait_until_outcome_available(self).map_err(|_| ())
     }
 }
 
@@ -52,6 +66,13 @@ pub(super) trait MediaOpenPlayerPort: Send + Sync {
         request_id: MediaInstallRequestId,
         cause: MediaInstallCancellationCause,
     ) -> Result<Box<dyn ControlReceiptPort>, PlayerDispatchRejection>;
+    fn cancel_lossless(
+        &self,
+        request_id: MediaInstallRequestId,
+        cause: MediaInstallCancellationCause,
+    ) -> Result<Box<dyn ControlReceiptPort>, PlayerDispatchRejection> {
+        self.cancel(request_id, cause)
+    }
     fn update_intent(
         &self,
         update: PlaybackIntentUpdate,
@@ -92,6 +113,16 @@ impl MediaOpenPlayerPort for PlayerCommandSender {
         cause: MediaInstallCancellationCause,
     ) -> Result<Box<dyn ControlReceiptPort>, PlayerDispatchRejection> {
         self.cancel_media_install(CancelMediaInstall { request_id, cause })
+            .map(|receipt| Box::new(receipt) as Box<dyn ControlReceiptPort>)
+            .map_err(map_player_send_error)
+    }
+
+    fn cancel_lossless(
+        &self,
+        request_id: MediaInstallRequestId,
+        cause: MediaInstallCancellationCause,
+    ) -> Result<Box<dyn ControlReceiptPort>, PlayerDispatchRejection> {
+        self.cancel_media_install_lossless(CancelMediaInstall { request_id, cause })
             .map(|receipt| Box::new(receipt) as Box<dyn ControlReceiptPort>)
             .map_err(map_player_send_error)
     }

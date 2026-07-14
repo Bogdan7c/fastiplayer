@@ -9,12 +9,16 @@
 )]
 
 use std::num::NonZeroU64;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
-use player_core::MediaInstallRequestId;
+use player_core::{
+    MediaInstallRequestId, MediaInstallVideoResourcePort, PlayerVideoDecoderThreadConfig,
+};
 use video_backend_api::{
     DetachedVideoBackendCandidateCancellationCause, DetachedVideoBackendCandidateStatus,
-    DetachedVideoBackendPortError, DetachedVideoBackendReply, DetachedVideoBackendResourceError,
-    DetachedVideoBackendResourcePort,
+    DetachedVideoBackendPortError, DetachedVideoBackendReply, DetachedVideoBackendRequest,
+    DetachedVideoBackendResourceError, DetachedVideoBackendResourcePort,
 };
 
 use crate::video_pipeline_selector::{VideoBackendKind, VideoPipelinePlan};
@@ -23,7 +27,20 @@ use crate::video_pipeline_selector::{VideoBackendKind, VideoPipelinePlan};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct RendererGeneration(NonZeroU64);
 
+/// Process-local allocator не позволяет двум renderer lifetimes разделить identity.
+static NEXT_RENDERER_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 impl RendererGeneration {
+    /// Выдаёт новую renderer identity для resume/recreation owner-а.
+    #[must_use]
+    pub(crate) fn new_unique() -> Self {
+        // Relaxed достаточно: allocator задаёт identity, а не публикует renderer resources.
+        let raw = NEXT_RENDERER_GENERATION.fetch_add(1, Ordering::Relaxed);
+        let generation =
+            NonZeroU64::new(raw).expect("renderer generation identity space exhausted");
+        Self(generation)
+    }
+
     /// Создаёт generation из explicit non-zero значения owner-а.
     #[must_use]
     pub(crate) const fn from_non_zero(generation: NonZeroU64) -> Self {
@@ -41,10 +58,194 @@ impl RendererGeneration {
 
 mod resource_driver;
 
+#[allow(
+    unused_imports,
+    reason = "production callsite подключается в Session 10D"
+)]
+pub(crate) use resource_driver::WgpuCandidateVideoPipelineResourceDriver;
 use resource_driver::{
     CandidateVideoPipelineDescriptor, CandidateVideoPipelinePreparationError,
     CandidateVideoPipelineResourceDriver,
 };
+
+/// App-owned shared handle exact candidate slot-а; player видит только neutral port.
+pub(crate) struct AppVideoPipelineCandidateOwner<Materializer, SubmissionBinding> {
+    slot: Arc<Mutex<StagedVideoPipelineCandidateSlot<Materializer, SubmissionBinding>>>,
+}
+
+impl<Materializer, SubmissionBinding>
+    AppVideoPipelineCandidateOwner<Materializer, SubmissionBinding>
+{
+    /// После exact `Installed` infallibly переключает только заранее подготовленные app pointers.
+    pub(crate) fn commit_installed(
+        &self,
+        request_id: MediaInstallRequestId,
+        renderer_generation: RendererGeneration,
+        active: &mut ActiveVideoPipelinePointers<Materializer, SubmissionBinding>,
+    ) -> Result<(), PostInstalledVideoPipelineInvariantViolation> {
+        let mut slot = self
+            .slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let token = slot.prepare_post_installed_commit(request_id, renderer_generation)?;
+        token.commit(active);
+        Ok(())
+    }
+
+    /// Неблокирующе забирает app-half terminal outcome exactly once.
+    pub(crate) fn drain_terminal_outcome(
+        &self,
+    ) -> Option<StagedVideoPipelineCandidateTerminalOutcome> {
+        self.slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain_terminal_outcome()
+    }
+
+    /// Показывает, удерживает ли owner ровно один staged candidate.
+    pub(crate) fn has_candidate(&self) -> bool {
+        self.slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .has_candidate()
+    }
+}
+
+/// Создаёт paired production boundary: app удерживает slot, player получает только port.
+pub(crate) fn player_selected_video_candidate_boundary<Driver>(
+    renderer_generation: RendererGeneration,
+    decoder_thread_config: PlayerVideoDecoderThreadConfig,
+    driver: Driver,
+) -> (
+    AppVideoPipelineCandidateOwner<Driver::Materializer, Driver::SubmissionBinding>,
+    MediaInstallVideoResourcePort,
+)
+where
+    Driver: CandidateVideoPipelineResourceDriver + Send + 'static,
+    Driver::Materializer: Send + 'static,
+    Driver::SubmissionBinding: Send + 'static,
+{
+    let slot = Arc::new(Mutex::new(StagedVideoPipelineCandidateSlot::new()));
+    let owner = AppVideoPipelineCandidateOwner {
+        slot: Arc::clone(&slot),
+    };
+    let port = PlayerSelectedVideoCandidatePort {
+        slot,
+        renderer_generation,
+        decoder_thread_config,
+        driver,
+    };
+    (owner, Box::new(port))
+}
+
+/// Player-side adapter concrete app resource owner-а.
+struct PlayerSelectedVideoCandidatePort<Driver>
+where
+    Driver: CandidateVideoPipelineResourceDriver,
+{
+    slot: Arc<
+        Mutex<StagedVideoPipelineCandidateSlot<Driver::Materializer, Driver::SubmissionBinding>>,
+    >,
+    renderer_generation: RendererGeneration,
+    decoder_thread_config: PlayerVideoDecoderThreadConfig,
+    driver: Driver,
+}
+
+impl<Driver> DetachedVideoBackendResourcePort for PlayerSelectedVideoCandidatePort<Driver>
+where
+    Driver: CandidateVideoPipelineResourceDriver + Send,
+    Driver::Materializer: Send,
+    Driver::SubmissionBinding: Send,
+{
+    type RequestId = MediaInstallRequestId;
+
+    fn request_detached_backend(
+        &mut self,
+        request: DetachedVideoBackendRequest<Self::RequestId>,
+    ) -> Result<DetachedVideoBackendReply<Self::RequestId>, DetachedVideoBackendPortError> {
+        let (request_id, selection) = request.into_parts();
+        let plan = match VideoPipelinePlan::from_player_selection(
+            &selection,
+            self.decoder_thread_config,
+        ) {
+            Ok(plan) => plan,
+            Err(error) => {
+                return Ok(DetachedVideoBackendReply::unavailable(
+                    request_id,
+                    DetachedVideoBackendResourceError::Unavailable {
+                        reason: error.to_string(),
+                    },
+                ));
+            }
+        };
+        let mut slot = self
+            .slot
+            .lock()
+            .map_err(|_| DetachedVideoBackendPortError)?;
+        Ok(slot.prepare_and_stage(request_id, self.renderer_generation, plan, &mut self.driver))
+    }
+
+    fn publish_candidate_status(
+        &mut self,
+        status: DetachedVideoBackendCandidateStatus<Self::RequestId>,
+    ) -> Result<(), DetachedVideoBackendPortError> {
+        let mut slot = self
+            .slot
+            .lock()
+            .map_err(|_| DetachedVideoBackendPortError)?;
+        let mut player_owner_abort = PlayerOwnerAbortAcknowledgement;
+        slot.record_player_status(status, self.renderer_generation, &mut player_owner_abort)
+            .map_err(|_| DetachedVideoBackendPortError)
+    }
+
+    fn cancel_candidate(
+        &mut self,
+        request_id: Self::RequestId,
+        cause: DetachedVideoBackendCandidateCancellationCause,
+    ) -> Result<(), DetachedVideoBackendPortError> {
+        let mut slot = self
+            .slot
+            .lock()
+            .map_err(|_| DetachedVideoBackendPortError)?;
+        let Some(candidate) = slot.candidate.as_ref() else {
+            return Err(DetachedVideoBackendPortError);
+        };
+        if candidate.request_id != request_id {
+            return Err(DetachedVideoBackendPortError);
+        }
+        slot.finish_cancelled(cause);
+        Ok(())
+    }
+}
+
+/// В production status callback уже выполняется player owner-ом: ошибка вернётся ему напрямую.
+struct PlayerOwnerAbortAcknowledgement;
+
+impl DetachedVideoBackendResourcePort for PlayerOwnerAbortAcknowledgement {
+    type RequestId = MediaInstallRequestId;
+
+    fn request_detached_backend(
+        &mut self,
+        _request: DetachedVideoBackendRequest<Self::RequestId>,
+    ) -> Result<DetachedVideoBackendReply<Self::RequestId>, DetachedVideoBackendPortError> {
+        Err(DetachedVideoBackendPortError)
+    }
+
+    fn publish_candidate_status(
+        &mut self,
+        _status: DetachedVideoBackendCandidateStatus<Self::RequestId>,
+    ) -> Result<(), DetachedVideoBackendPortError> {
+        Err(DetachedVideoBackendPortError)
+    }
+
+    fn cancel_candidate(
+        &mut self,
+        _request_id: Self::RequestId,
+        _cause: DetachedVideoBackendCandidateCancellationCause,
+    ) -> Result<(), DetachedVideoBackendPortError> {
+        Ok(())
+    }
+}
 
 /// App-owned renderer half одного admitted candidate-а.
 struct StagedVideoPipelineCandidate<Materializer, SubmissionBinding> {
@@ -663,6 +864,15 @@ impl<Materializer, SubmissionBinding> ActiveVideoPipelinePointers<Materializer, 
     pub(crate) const fn submission_binding(&self) -> &SubmissionBinding {
         // Borrow не запускает queue wait или callback drain.
         &self.submission_binding
+    }
+
+    /// Возвращает ownership aggregate app owner-у после infallible pointer commit-а.
+    pub(crate) fn into_parts(self) -> (VideoBackendKind, Materializer, SubmissionBinding) {
+        (
+            self.backend_kind,
+            self.materializer,
+            self.submission_binding,
+        )
     }
 }
 

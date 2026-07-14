@@ -101,3 +101,11 @@
 - `PlaybackIntentControl` владеет latest revision, staged correlation и exact installed correlation; commit меняет ownership и публикует Installed под одним control turn.
 - Обычная worker command queue не является transport-ом intent: payload хранится отдельно, capacity-one wake только будит owner.
 - Внутри player остаётся один strong install algorithm. Единственный временный app facade — `PlayerWorker::load_prepared_media -> MediaInstallReceipt`; startup/settings strong orchestration принадлежит Session 10D.
+
+
+## Session 10D strong callsite support (2026-07-14)
+- `DetachedVideoBackendRequest` теперь несёт renderer-neutral `DetachedVideoBackendSelection` (expected backend ID + exact `VideoFrameContract`), выбранный player preflight-ом; app не перепланирует backend независимо.
+- `MediaInstallReceipt` и `MediaInstallControlReceipt` имеют blocking-without-polling availability waits поверх request-owned lossless slots. Enqueue всё ещё не означает Ready/Installed.
+- `PlayerWorker::restore_installed_media_state` принимает exact request + `MediaInstanceId` и typed video/audio/subtitle/position intents; owner outcome различает Applied, NotInstalledYet, UnknownOrSupersededRequest, StaleInstance и stage-specific failure. Проверка и restore выполняются в одном ordered player-owner turn.
+- `PlayerCommandSender::cancel_media_install_lossless` предназначен только для cleanup после доказанного pre-barrier dispatch rejection; он использует тот же bounded ordered stream и не является вторым install algorithm.
+- Единственный compatibility facade `PlayerWorker::load_prepared_media` остался только для focused tests с TODO удаления; production app references отсутствуют. Focused player suite: 516 PASS.

@@ -27,4 +27,4 @@ Session 10A завершена PASS 2026-07-14. Детальный handoff на�
 - Итог Session 10A: 9 wake tests, 3 runtime lifecycle/shutdown tests, 2 no-idle-redraw tests и полный `app-egui` suite 282 tests PASS; strict app Clippy, fmt, Rust 1.96 locked workspace check, diff check и Serena diagnostics PASS.
 
 ## Next scope
-- Sessions 10B и 10C завершены. Следующая разрешённая session: только 10D strong startup/settings adapters; 11A controller и Session 14 persistence/load wiring не начаты.
+- Sessions 10B, 10C и 10D завершены. Следующая разрешённая session: только 11A controller foundation; Session 14 persistence/load wiring не начата.

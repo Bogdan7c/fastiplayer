@@ -193,3 +193,23 @@ fn newer_sender_registration_supersedes_queued_old_request_and_rollback_restores
     assert!(!control.staged_request_is_latest(first_request));
     assert!(control.staged_request_is_latest(latest_request));
 }
+
+#[test]
+fn synchronous_receipt_wait_returns_only_authoritative_owner_outcome() {
+    let outcome_slot = Arc::new(PlaybackIntentOutcomeSlot::default());
+    let receipt = PlaybackIntentUpdateReceipt {
+        request_id: request(41),
+        revision: revision(2),
+        outcome: Arc::clone(&outcome_slot),
+    };
+    outcome_slot.publish(PlaybackIntentUpdateOutcome::AppliedToInstalled {
+        media_instance_id: instance(42),
+    });
+
+    assert_eq!(
+        receipt.wait_for_outcome(),
+        PlaybackIntentUpdateOutcome::AppliedToInstalled {
+            media_instance_id: instance(42),
+        }
+    );
+}

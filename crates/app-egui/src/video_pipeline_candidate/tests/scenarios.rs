@@ -3,6 +3,92 @@
 use super::*;
 
 #[test]
+fn production_port_uses_exact_player_selection_and_rejects_mismatched_pair() {
+    let generation = renderer_generation(1);
+    let candidate_request_id = request_id(900);
+    let (owner, mut port) = player_selected_video_candidate_boundary(
+        generation,
+        PlayerVideoDecoderThreadConfig::default(),
+        FakeCandidateDriver::successful(),
+    );
+
+    let reply = port
+        .request_detached_backend(DetachedVideoBackendRequest::new(
+            candidate_request_id,
+            DetachedVideoBackendSelection::selected(
+                video_ffmpeg::FFMPEG_SOFTWARE_BACKEND_ID,
+                VideoFrameContract::host_yuv420_planar8(),
+            ),
+        ))
+        .expect("production port must stay connected");
+    let backend = available_backend(reply, candidate_request_id);
+    assert_eq!(
+        backend.backend_id(),
+        video_ffmpeg::FFMPEG_SOFTWARE_BACKEND_ID
+    );
+    assert!(owner.has_candidate());
+
+    port.publish_candidate_status(DetachedVideoBackendCandidateStatus::StreamConfigured {
+        request_id: candidate_request_id,
+        backend_id: video_ffmpeg::FFMPEG_SOFTWARE_BACKEND_ID.to_owned(),
+    })
+    .expect("matching player status must configure app half");
+    drop(backend);
+
+    let mismatched_request_id = request_id(901);
+    let (mismatched_owner, mut mismatched_port) = player_selected_video_candidate_boundary(
+        generation,
+        PlayerVideoDecoderThreadConfig::default(),
+        FakeCandidateDriver::successful(),
+    );
+    let mismatched_reply = mismatched_port
+        .request_detached_backend(DetachedVideoBackendRequest::new(
+            mismatched_request_id,
+            DetachedVideoBackendSelection::selected(
+                "vaapi",
+                VideoFrameContract::host_yuv420_planar8(),
+            ),
+        ))
+        .expect("typed selection rejection is a resource reply, not disconnect");
+    assert!(matches!(
+        mismatched_reply.into_parts().1,
+        Err(DetachedVideoBackendResourceError::Unavailable { .. })
+    ));
+    assert!(!mismatched_owner.has_candidate());
+}
+
+#[test]
+fn production_port_preserves_candidate_preparation_failure() {
+    let request_id = request_id(902);
+    let (owner, mut port) = player_selected_video_candidate_boundary(
+        renderer_generation(2),
+        PlayerVideoDecoderThreadConfig::default(),
+        FakeCandidateDriver::failing(CandidateVideoPipelinePreparationError::at_stage(
+            CandidateVideoPipelinePreparationStage::BackendStartup,
+            "candidate backend startup failed",
+        )),
+    );
+    let reply = port
+        .request_detached_backend(DetachedVideoBackendRequest::new(
+            request_id,
+            DetachedVideoBackendSelection::selected(
+                video_ffmpeg::FFMPEG_SOFTWARE_BACKEND_ID,
+                VideoFrameContract::host_yuv420_planar8(),
+            ),
+        ))
+        .expect("preparation failure must stay a typed resource reply");
+    assert!(matches!(
+        reply.into_parts().1,
+        Err(DetachedVideoBackendResourceError::StartupFailed { .. })
+    ));
+    assert!(!owner.has_candidate());
+    assert!(matches!(
+        owner.drain_terminal_outcome(),
+        Some(StagedVideoPipelineCandidateTerminalOutcome::PreparationFailed { .. })
+    ));
+}
+
+#[test]
 fn vaapi_and_ffmpeg_fake_paths_keep_decoder_materializer_pairing_exact() {
     // Проверяем оба selectable production plan-а через один fake driver boundary.
     let cases = [

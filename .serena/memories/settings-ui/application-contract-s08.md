@@ -35,3 +35,10 @@
 - Render committed snapshot меняется только после owner success; failure сохраняет old snapshot и допускает retry того же draft.
 - Typed lifecycle и release invariants находятся в `mem:render-video/controlled-renderer-recreation-s08c`.
 - Persistence-before-runtime и generic deferred cleanup остаются scoped задачей Session 08D.
+
+
+## Session 10D — strong media reconfigure completion (2026-07-14)
+- Active media reconfigure больше не считает command enqueue/Ready/authorization acceptance успехом: route ждёт correlated `Installed`, затем exact request/`MediaInstanceId` position+track restore и D52 intent outcome.
+- `state::strong_media_open` коммитит app video pointers сразу после exact Installed, до fallible restore. Active source публикуется только после Installed.
+- Любая ошибка после возможного install barrier возвращает `AppRouteApplyResult::PartialFailure`, включая post-Installed D52 dispatch/outcome, pointer invariant и restore failures. Поэтому `AppConfigSettingsDelegate::applied_route_count` включает failing route в reverse compensation; rollback повторно проходит тот же strong reinstall и ждёт terminal Installed. Доказанный pre-barrier failure возвращает `Failed` и не запускает лишний rollback.
+- Focused classification tests закрепляют PartialFailure vs Failed; существующая transaction matrix сохраняет separate apply/rollback reports и persistence-failure compensation.

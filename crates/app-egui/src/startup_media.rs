@@ -319,6 +319,8 @@ impl StartupMediaController {
     pub(crate) fn start_pending_initial_media(
         &mut self,
         app_state: &mut AppState,
+        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+        renderer: &render_wgpu_shell::Renderer,
         app_config: &AppConfig,
         system_capabilities: &SystemCapabilities,
     ) {
@@ -333,7 +335,7 @@ impl StartupMediaController {
         match initial_media {
             InitialMedia::File(path) => {
                 info!(path = %path.display(), "Автозагрузка файла из CLI");
-                app_state.load_file(&path);
+                app_state.load_file(&path, playlist_runtime, renderer);
             }
             InitialMedia::Url(locator) => {
                 info!(source = %locator.safe_label(), "Автозагрузка service URL из CLI");
@@ -343,21 +345,35 @@ impl StartupMediaController {
     }
 
     /// Неблокирующе опрашивает результаты фоновой подготовки startup URL-ов.
-    pub(crate) fn poll_startup_jobs(&mut self, app_state: &mut AppState) -> bool {
-        let youtube_changed = self.poll_youtube_job(app_state);
+    pub(crate) fn poll_startup_jobs(
+        &mut self,
+        app_state: &mut AppState,
+        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+        renderer: &render_wgpu_shell::Renderer,
+    ) -> bool {
+        let youtube_changed = self.poll_youtube_job(app_state, playlist_runtime, renderer);
         let direct_changed = poll_direct_media_startup_job(
             &mut self.direct_media_startup_job,
             app_state,
+            playlist_runtime,
+            renderer,
             &mut self.startup_error,
         );
         youtube_changed || direct_changed
     }
 
     /// Неблокирующе опрашивает результат фоновой подготовки YouTube URL.
-    pub(crate) fn poll_youtube_job(&mut self, app_state: &mut AppState) -> bool {
+    pub(crate) fn poll_youtube_job(
+        &mut self,
+        app_state: &mut AppState,
+        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+        renderer: &render_wgpu_shell::Renderer,
+    ) -> bool {
         poll_youtube_startup_job(
             &mut self.youtube_startup_job,
             app_state,
+            playlist_runtime,
+            renderer,
             &mut self.startup_error,
         )
     }
@@ -526,6 +542,8 @@ pub(crate) const fn runtime_video_codec(codec: ConfigVideoCodec) -> RuntimeVideo
 fn poll_youtube_startup_job(
     job_slot: &mut Option<YoutubeStartupJob>,
     app_state: &mut AppState,
+    playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+    renderer: &render_wgpu_shell::Renderer,
     startup_error_slot: &mut Option<String>,
 ) -> bool {
     let Some(job) = job_slot.as_mut() else {
@@ -550,6 +568,8 @@ fn poll_youtube_startup_job(
                 prepared_youtube_media.streaming_media.description,
                 prepared_youtube_media.streaming_media.demuxer,
                 prepared_youtube_media.selected_stream_identity,
+                playlist_runtime,
+                renderer,
             );
         }
         Err(error) => {
@@ -566,6 +586,8 @@ fn poll_youtube_startup_job(
 fn poll_direct_media_startup_job(
     job_slot: &mut Option<DirectMediaStartupJob>,
     app_state: &mut AppState,
+    playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+    renderer: &render_wgpu_shell::Renderer,
     startup_error_slot: &mut Option<String>,
 ) -> bool {
     let Some(job) = job_slot.as_mut() else {
@@ -590,7 +612,13 @@ fn poll_direct_media_startup_job(
                 label = %source_label,
                 "Direct media URL подготовлен для playback"
             );
-            app_state.load_prepared_direct_media(source_locator, source_label, prepared_media);
+            app_state.load_prepared_direct_media(
+                source_locator,
+                source_label,
+                prepared_media,
+                playlist_runtime,
+                renderer,
+            );
         }
         Err(error) => {
             warn!(source = %source_locator, error = %error, "Не удалось подготовить direct media URL");

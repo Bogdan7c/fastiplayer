@@ -145,12 +145,31 @@ pub(crate) enum PreparedMediaDescriptor {
         source: ActiveMediaSource,
         safe_label: SafeMediaLabel,
     },
+    /// Prepared-by-caller ingress сохраняет single-open ownership без повторного I/O.
+    CallerPrepared {
+        source: ActiveMediaSource,
+        safe_label: SafeMediaLabel,
+    },
 }
 
 /// Подготовленный demuxer плюс immutable descriptor до ownership transfer.
 pub(crate) struct PreparedMediaOpen {
     pub(super) prepared_media: player_core::PreparedMedia,
     pub(super) descriptor: PreparedMediaDescriptor,
+}
+
+impl PreparedMediaOpen {
+    /// Принимает demuxer, который уже открыл правильный startup/settings source owner.
+    pub(crate) fn from_caller_prepared(
+        prepared_media: player_core::PreparedMedia,
+        source: ActiveMediaSource,
+        safe_label: SafeMediaLabel,
+    ) -> Self {
+        Self {
+            prepared_media,
+            descriptor: PreparedMediaDescriptor::CallerPrepared { source, safe_label },
+        }
+    }
 }
 
 /// Набор production source parameters; выбор момента запуска остаётся у caller-а.
@@ -265,6 +284,20 @@ pub(crate) enum MediaOpenCommandError {
     PlayerDispatch(PlayerDispatchRejection),
 }
 
+/// Synchronous completion driver failure; timeout никогда не считается success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum MediaOpenCompletionDriveError {
+    /// Exact request lookup/phase rejection.
+    #[error(transparent)]
+    Command(#[from] MediaOpenCommandError),
+    /// Request-owned preparation result был потерян.
+    #[error("request-owned media preparation result потерян")]
+    MissingPreparationResolution,
+    /// Player staging/control owner исчез без required outcome-а.
+    #[error("request-owned player completion resolution потерян")]
+    MissingPlayerResolution,
+}
+
 /// Почему media preparation завершилась без secret-bearing context-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MediaPreparationFailureKind {
@@ -282,6 +315,8 @@ pub(crate) enum MediaPreparationFailureKind {
 pub(crate) enum MediaOpenInvariantViolation {
     PreparationStateLost,
     LifecycleCancellationDispatchFailed,
+    LosslessCancellationDispatchFailed,
+    MissingPlayerInstallResolution,
     MissingPlayerControlResolution,
     MissingTerminalAfterPlayerControl,
     UnexpectedAuthorizationOutcome,

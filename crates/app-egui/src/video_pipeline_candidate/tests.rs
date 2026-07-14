@@ -11,7 +11,7 @@ use video_backend_api::{
     DetachedVideoBackend, DetachedVideoBackendCandidateCancellationCause,
     DetachedVideoBackendCandidateStatus, DetachedVideoBackendConfigurationError,
     DetachedVideoBackendPortError, DetachedVideoBackendReply, DetachedVideoBackendRequest,
-    DetachedVideoBackendResourcePort, StartedVideoBackend,
+    DetachedVideoBackendResourcePort, DetachedVideoBackendSelection, StartedVideoBackend,
 };
 use video_core::{DecodeThreadError, VideoStreamConfigResult, VideoStreamDecodeConfig};
 use video_frame_contract::VideoFrameContract;
@@ -214,8 +214,8 @@ impl CandidateVideoPipelineResourceDriver for FakeCandidateDriver {
 
         // Canonical fake backend ID обязан совпасть с выбранным plan path.
         let backend_id = match descriptor.backend_kind() {
-            VideoBackendKind::HardwareZeroCopy => "fake-hardware-candidate",
-            VideoBackendKind::FfmpegSoftware => "fake-software-candidate",
+            VideoBackendKind::HardwareZeroCopy => "vaapi",
+            VideoBackendKind::FfmpegSoftware => video_ffmpeg::FFMPEG_SOFTWARE_BACKEND_ID,
         };
         // Decoder wrapper моделирует отдельный started backend factory result.
         let started_backend = StartedVideoBackend::from_decoder_thread(

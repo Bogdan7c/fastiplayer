@@ -2,7 +2,7 @@ use std::num::NonZeroU64;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::bounded;
-use media_core::{DemuxSeekResult, DemuxSeekability, Demuxer};
+use media_core::{DemuxSeekResult, DemuxSeekability, Demuxer, TrackId};
 use video_backend_api::{
     DetachedVideoBackendCandidateCancellationCause, DetachedVideoBackendCandidateStatus,
     DetachedVideoBackendPortError, DetachedVideoBackendReply, DetachedVideoBackendRequest,
@@ -12,10 +12,13 @@ use video_backend_api::{
 use super::{MediaInstallControlReceipt, MediaInstallControlReceiptError};
 use crate::worker::{COMMAND_CHANNEL_CAPACITY, PlayerCommandSender, WorkerCommand};
 use crate::{
-    AuthorizeInstallCommit, CancelMediaInstall, MediaInstallCancellationCause,
-    MediaInstallCompletion, MediaInstallControlOutcome, MediaInstallRequestId, PlaybackIntent,
-    PlaybackIntentRevision, PlaybackIntentUpdate, PlaybackIntentUpdateOutcome, PlaybackState,
-    PlayerCommand, PlayerWorker, PlayerWorkerConfig, PlayerWorkerSendError, PreparedMedia,
+    AuthorizeInstallCommit, CancelMediaInstall, InstalledMediaStateRestore,
+    InstalledMediaStateRestoreOutcome, InstalledPositionRestore, InstalledSubtitleRestore,
+    InstalledTrackRestore, MediaInstallCancellationCause, MediaInstallCompletion,
+    MediaInstallControlOutcome, MediaInstallReceiptSignal, MediaInstallRequestId, MediaInstanceId,
+    PlaybackIntent, PlaybackIntentRevision, PlaybackIntentUpdate, PlaybackIntentUpdateOutcome,
+    PlaybackState, PlayerCommand, PlayerWorker, PlayerWorkerConfig, PlayerWorkerSendError,
+    PreparedMedia,
 };
 
 /// Empty prepared demuxer для no-audio/no-video worker transaction.
@@ -42,9 +45,13 @@ impl Demuxer for EmptyDemuxer {
         Ok(None)
     }
 
-    /// Seek не относится к transport test-у и возвращает явную ошибку.
-    fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
-        Err(anyhow::anyhow!("empty worker test demuxer does not seek"))
+    /// Seek возвращает exact target для focused restore boundary test-а.
+    fn seek(&mut self, timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+        Ok(DemuxSeekResult {
+            requested_position: timestamp.into(),
+            actual_position: timestamp.into(),
+            actual_track_timestamp: None,
+        })
     }
 }
 
@@ -146,6 +153,163 @@ fn public_worker_api_separates_enqueue_ready_authorization_and_installed() {
             ..
         }) if completion_request_id == request_id
     ));
+    worker
+        .shutdown()
+        .expect("worker shutdown должен завершиться");
+}
+
+#[test]
+fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_installed() {
+    let mut worker = PlayerWorker::spawn(PlayerWorkerConfig::default())
+        .expect("player worker должен запуститься");
+    let request_id = MediaInstallRequestId::from_non_zero(
+        NonZeroU64::new(760).expect("test request id is non-zero"),
+    );
+    let placeholder_instance =
+        MediaInstanceId::from_non_zero(NonZeroU64::new(760).expect("test instance id is non-zero"));
+    let receipt = worker
+        .stage_prepared_media_install(
+            request_id,
+            PreparedMedia::from_external_label("restore candidate", Box::new(EmptyDemuxer)),
+            PlaybackIntent::StartPaused,
+            PlaybackIntentRevision::INITIAL,
+            Box::new(NoVideoResourcePort),
+        )
+        .expect("stage command должна быть принята");
+    wait_until(|| receipt.try_take_ready_to_commit());
+
+    let precommit_restore = worker
+        .restore_installed_media_state(InstalledMediaStateRestore {
+            request_id,
+            media_instance_id: placeholder_instance,
+            video_track: InstalledTrackRestore::KeepDefault,
+            audio_track: InstalledTrackRestore::KeepDefault,
+            subtitle_track: InstalledSubtitleRestore::KeepDefault,
+            position: InstalledPositionRestore::KeepStart,
+        })
+        .expect("restore transport должен принять command");
+    assert_eq!(
+        precommit_restore
+            .wait_for_outcome()
+            .expect("precommit restore должен получить owner outcome"),
+        InstalledMediaStateRestoreOutcome::NotInstalledYet
+    );
+
+    let authorization = worker
+        .authorize_install_commit(AuthorizeInstallCommit { request_id })
+        .expect("authorization должна быть enqueued");
+    assert_eq!(
+        authorization
+            .wait_for_outcome()
+            .expect("authorization owner outcome обязателен"),
+        MediaInstallControlOutcome::AuthorizationAccepted
+    );
+    let installed_instance = match receipt
+        .wait_for_signal()
+        .expect("Installed terminal обязателен после authorization")
+    {
+        MediaInstallReceiptSignal::Terminal(MediaInstallCompletion::Installed {
+            media_instance_id,
+            ..
+        }) => media_instance_id,
+        unexpected => panic!("ожидался Installed terminal, получено {unexpected:?}"),
+    };
+
+    let exact_restore = worker
+        .restore_installed_media_state(InstalledMediaStateRestore {
+            request_id,
+            media_instance_id: installed_instance,
+            video_track: InstalledTrackRestore::KeepDefault,
+            audio_track: InstalledTrackRestore::KeepDefault,
+            subtitle_track: InstalledSubtitleRestore::Select(TrackId::new(99)),
+            position: InstalledPositionRestore::SeekTo(Duration::from_secs(2)),
+        })
+        .expect("exact restore transport должен принять command");
+    assert_eq!(
+        exact_restore
+            .wait_for_outcome()
+            .expect("exact restore owner outcome обязателен"),
+        InstalledMediaStateRestoreOutcome::Applied {
+            media_instance_id: installed_instance,
+        }
+    );
+
+    let failed_track_restore = worker
+        .restore_installed_media_state(InstalledMediaStateRestore {
+            request_id,
+            media_instance_id: installed_instance,
+            video_track: InstalledTrackRestore::Select(TrackId::new(100)),
+            audio_track: InstalledTrackRestore::KeepDefault,
+            subtitle_track: InstalledSubtitleRestore::KeepDefault,
+            position: InstalledPositionRestore::KeepStart,
+        })
+        .expect("track restore transport должен принять command");
+    assert!(matches!(
+        failed_track_restore
+            .wait_for_outcome()
+            .expect("track restore failure должен быть authoritative owner outcome"),
+        InstalledMediaStateRestoreOutcome::Failed {
+            stage: crate::InstalledMediaRestoreFailureStage::VideoTrack,
+            ..
+        }
+    ));
+
+    let newer_request_id = MediaInstallRequestId::from_non_zero(
+        NonZeroU64::new(761).expect("newer test request id is non-zero"),
+    );
+    let newer_receipt = worker
+        .stage_prepared_media_install(
+            newer_request_id,
+            PreparedMedia::from_external_label("newer candidate", Box::new(EmptyDemuxer)),
+            PlaybackIntent::StartPaused,
+            PlaybackIntentRevision::INITIAL,
+            Box::new(NoVideoResourcePort),
+        )
+        .expect("newer stage command должна быть принята");
+    assert!(matches!(
+        newer_receipt
+            .wait_for_signal()
+            .expect("newer candidate должен достичь ReadyToCommit"),
+        MediaInstallReceiptSignal::ReadyToCommit(_)
+    ));
+    let newer_authorization = worker
+        .authorize_install_commit(AuthorizeInstallCommit {
+            request_id: newer_request_id,
+        })
+        .expect("newer authorization должна быть enqueued");
+    assert_eq!(
+        newer_authorization
+            .wait_for_outcome()
+            .expect("newer authorization owner outcome обязателен"),
+        MediaInstallControlOutcome::AuthorizationAccepted
+    );
+    assert!(matches!(
+        newer_receipt
+            .wait_for_signal()
+            .expect("newer Installed terminal обязателен"),
+        MediaInstallReceiptSignal::Terminal(MediaInstallCompletion::Installed {
+            request_id: completion_request_id,
+            ..
+        }) if completion_request_id == newer_request_id
+    ));
+
+    let stale_restore = worker
+        .restore_installed_media_state(InstalledMediaStateRestore {
+            request_id,
+            media_instance_id: installed_instance,
+            video_track: InstalledTrackRestore::KeepDefault,
+            audio_track: InstalledTrackRestore::KeepDefault,
+            subtitle_track: InstalledSubtitleRestore::KeepDefault,
+            position: InstalledPositionRestore::KeepStart,
+        })
+        .expect("stale restore transport всё ещё может быть принят");
+    assert_eq!(
+        stale_restore
+            .wait_for_outcome()
+            .expect("stale restore должен получить typed owner outcome"),
+        InstalledMediaStateRestoreOutcome::StaleInstance
+    );
+
     worker
         .shutdown()
         .expect("worker shutdown должен завершиться");

@@ -7,7 +7,7 @@ use media_core::TrackId;
 use video_backend_api::{
     DetachedVideoBackendCandidateCancellationCause, DetachedVideoBackendCandidateStatus,
     DetachedVideoBackendConfigurationError, DetachedVideoBackendPortError,
-    DetachedVideoBackendRequest, DetachedVideoBackendResourceError,
+    DetachedVideoBackendRequest, DetachedVideoBackendResourceError, DetachedVideoBackendSelection,
 };
 use video_core::VideoStreamDecodeConfig;
 use video_frame_contract::VideoFrameContract;
@@ -488,8 +488,14 @@ fn prepare_detached_video_backend(
         return Ok(None);
     };
 
+    let selection = match video_plan.expected_backend_id.as_deref() {
+        Some(expected_backend_id) => {
+            DetachedVideoBackendSelection::selected(expected_backend_id, video_plan.frame_contract)
+        }
+        None => DetachedVideoBackendSelection::unprobed(video_plan.frame_contract),
+    };
     let reply = video_resource_port
-        .request_detached_backend(DetachedVideoBackendRequest::new(request_id))
+        .request_detached_backend(DetachedVideoBackendRequest::new(request_id, selection))
         .map_err(|error| media_install_port_failure(error, "detached backend request"))?;
     let (reply_request_id, detached_backend_result) = reply.into_parts();
     if reply_request_id != request_id {

@@ -6,8 +6,16 @@
 //! D52 playback intent линеаризуется отдельным latest-only control state относительно commit;
 //! protocol остаётся queue-neutral и не владеет playlist lineage.
 
+mod installed_state_restore;
 mod playback_intent;
 
+pub(crate) use installed_state_restore::InstalledMediaTargetMatch;
+pub use installed_state_restore::{
+    InstalledMediaRestoreFailureStage, InstalledMediaStateRestore,
+    InstalledMediaStateRestoreOutcome, InstalledMediaStateRestoreReceipt,
+    InstalledMediaStateRestoreReceiptError, InstalledPositionRestore, InstalledSubtitleRestore,
+    InstalledTrackRestore,
+};
 pub(crate) use playback_intent::{AcceptedPlaybackIntent, PlaybackIntentControl};
 pub use playback_intent::{
     PlaybackIntent, PlaybackIntentRevision, PlaybackIntentUpdate, PlaybackIntentUpdateOutcome,
@@ -18,6 +26,8 @@ use std::fmt;
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 
 use crate::PlayerError;
 #[cfg(test)]
@@ -415,10 +425,13 @@ struct MediaInstallSignalSlots {
 }
 
 /// Production request-owned port с lossless single-assignment slots.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct RequestOwnedMediaInstallPort {
     /// Mutex задаёт linearizable publication/take без blocking I/O.
-    slots: Mutex<MediaInstallSignalSlots>,
+    slots: Arc<Mutex<MediaInstallSignalSlots>>,
+
+    /// Capacity-one edge будит synchronous driver; payload остаётся в typed slots.
+    signal_tx: Sender<()>,
 }
 
 impl MediaInstallPhaseCompletionPort for RequestOwnedMediaInstallPort {
@@ -436,6 +449,10 @@ impl MediaInstallPhaseCompletionPort for RequestOwnedMediaInstallPort {
             "ready phase published after terminal"
         );
         slots.ready_to_commit = Some(phase);
+        drop(slots);
+        match self.signal_tx.try_send(()) {
+            Ok(()) | Err(TrySendError::Full(())) | Err(TrySendError::Disconnected(())) => {}
+        }
     }
 
     fn publish_terminal(&self, completion: MediaInstallCompletion) {
@@ -448,6 +465,10 @@ impl MediaInstallPhaseCompletionPort for RequestOwnedMediaInstallPort {
             "terminal completion published twice"
         );
         slots.terminal = Some(completion);
+        drop(slots);
+        match self.signal_tx.try_send(()) {
+            Ok(()) | Err(TrySendError::Full(())) | Err(TrySendError::Disconnected(())) => {}
+        }
     }
 }
 
@@ -461,18 +482,55 @@ pub struct MediaInstallReceipt {
     request_id: MediaInstallRequestId,
 
     /// Shared request-owned storage остаётся живым до drain или drop receipt-а.
-    port: Arc<RequestOwnedMediaInstallPort>,
+    slots: Arc<Mutex<MediaInstallSignalSlots>>,
+
+    /// Disconnect означает потерю единственного owner writer-а без terminal outcome-а.
+    signal_rx: Receiver<()>,
 }
+
+/// Следующий exact request-owned protocol signal для event/synchronous drivers.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MediaInstallReceiptSignal {
+    /// Candidate завершил fallible stages, но ownership ещё не переключён.
+    ReadyToCommit(MediaInstallPhase),
+    /// Terminal outcome, где только `Installed` является route success.
+    Terminal(MediaInstallCompletion),
+}
+
+/// Fatal потеря accepted install owner-а без request-owned terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaInstallReceiptWaitError {
+    /// Все completion writers исчезли до очередного required signal-а.
+    MissingOwnerOutcome,
+}
+
+impl fmt::Display for MediaInstallReceiptWaitError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingOwnerOutcome => {
+                formatter.write_str("player owner завершился без media install phase outcome")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MediaInstallReceiptWaitError {}
 
 impl MediaInstallReceipt {
     /// Создаёт receipt и writer port до неблокирующего command enqueue.
     pub(crate) fn new(
         request_id: MediaInstallRequestId,
     ) -> (Self, Arc<dyn MediaInstallPhaseCompletionPort>) {
-        let port = Arc::new(RequestOwnedMediaInstallPort::default());
+        let slots = Arc::new(Mutex::new(MediaInstallSignalSlots::default()));
+        let (signal_tx, signal_rx) = bounded(1);
+        let port = Arc::new(RequestOwnedMediaInstallPort {
+            slots: Arc::clone(&slots),
+            signal_tx,
+        });
         let receipt = Self {
             request_id,
-            port: Arc::clone(&port),
+            slots,
+            signal_rx,
         };
         (receipt, port)
     }
@@ -486,8 +544,7 @@ impl MediaInstallReceipt {
     /// Неблокирующе забирает `ReadyToCommit` exactly once.
     #[must_use]
     pub fn try_take_ready_to_commit(&self) -> Option<MediaInstallPhase> {
-        self.port
-            .slots
+        self.slots
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .ready_to_commit
@@ -497,8 +554,7 @@ impl MediaInstallReceipt {
     /// Неблокирующе забирает terminal completion exactly once.
     #[must_use]
     pub fn try_take_completion(&self) -> Option<MediaInstallCompletion> {
-        self.port
-            .slots
+        self.slots
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .terminal
@@ -532,6 +588,42 @@ impl MediaInstallReceipt {
             unexpected_completion => Err(AcceptedMediaInstallTerminalError::UnexpectedCompletion(
                 unexpected_completion,
             )),
+        }
+    }
+
+    /// Блокируется без polling spin до следующей exact phase/terminal публикации.
+    pub fn wait_for_signal(
+        &self,
+    ) -> Result<MediaInstallReceiptSignal, MediaInstallReceiptWaitError> {
+        loop {
+            if let Some(phase) = self.try_take_ready_to_commit() {
+                return Ok(MediaInstallReceiptSignal::ReadyToCommit(phase));
+            }
+            if let Some(completion) = self.try_take_completion() {
+                return Ok(MediaInstallReceiptSignal::Terminal(completion));
+            }
+            self.signal_rx
+                .recv()
+                .map_err(|_| MediaInstallReceiptWaitError::MissingOwnerOutcome)?;
+        }
+    }
+
+    /// Ждёт только availability, оставляя typed payload обычному event-driven drain-у.
+    pub fn wait_until_signal_available(&self) -> Result<(), MediaInstallReceiptWaitError> {
+        loop {
+            let has_signal = {
+                let slots = self
+                    .slots
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                slots.terminal.is_some() || slots.ready_to_commit.is_some()
+            };
+            if has_signal {
+                return Ok(());
+            }
+            self.signal_rx
+                .recv()
+                .map_err(|_| MediaInstallReceiptWaitError::MissingOwnerOutcome)?;
         }
     }
 }

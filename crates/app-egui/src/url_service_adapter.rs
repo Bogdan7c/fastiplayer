@@ -241,6 +241,18 @@ fn classify_direct_media_startup_url(argument: &str) -> ServiceClassifierResult 
                 locator,
             }))
         }
+        Err(service_direct_media::DirectMediaOpenError::UnsupportedUrl {
+            reason: service_direct_media::DirectMediaUrlUnsupportedReason::UnsupportedProtocol,
+        }) => {
+            let protocol = argument
+                .split_once("://")
+                .map_or("unknown", |(protocol, _)| protocol);
+            ServiceClassifierResult::UnclaimedUrl {
+                safe_error: Some(format!(
+                    "NetworkError: protocol `{protocol}` не поддерживается; direct media v1 принимает только http(s)"
+                )),
+            }
+        }
         Err(error) => ServiceClassifierResult::UnclaimedUrl {
             safe_error: Some(format!(
                 "NetworkError: Direct media URL unsupported: {error}"

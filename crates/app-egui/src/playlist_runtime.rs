@@ -121,6 +121,18 @@ pub(crate) struct PlaylistRuntime {
 }
 
 impl PlaylistRuntime {
+    /// Вводит уже подготовленное source-owner-ом media без повторного demux open.
+    pub(crate) fn start_prepared_media_open(
+        &mut self,
+        client_key: crate::media_open::MediaOpenClientKey,
+        prepared_open: crate::media_open::PreparedMediaOpen,
+        safe_label: crate::media_open::SafeMediaLabel,
+    ) -> Result<crate::media_open::MediaOpenStartOutcome, crate::media_open::MediaOpenStartError>
+    {
+        self.media_open
+            .start_prepared(client_key, prepared_open, safe_label)
+    }
+
     /// Создаёт runtime один раз вместе с `AppShell`, до любого `AppState`.
     pub(crate) fn new(wake_port: AppWakePort) -> Self {
         let media_open = MediaOpenCoordinator::new(wake_port.clone());
@@ -306,6 +318,18 @@ impl PlaylistRuntime {
         self.media_open.cancel_request(request_id, cause)
     }
 
+    /// Cleanup после pre-barrier dispatch rejection не теряется на повторном backpressure.
+    pub(crate) fn cancel_media_open_lossless(
+        &mut self,
+        request_id: crate::media_open::MediaOpenRequestId,
+        cause: player_core::MediaInstallCancellationCause,
+    ) -> Result<
+        crate::media_open::CancellationDispatchOutcome,
+        crate::media_open::MediaOpenCommandError,
+    > {
+        self.media_open.cancel_request_lossless(request_id, cause)
+    }
+
     /// Forward-ит D52 update только в matching player request/instance boundary.
     pub(crate) fn update_media_open_playback_intent(
         &self,
@@ -321,6 +345,15 @@ impl PlaylistRuntime {
     /// Возвращает read-only snapshot typed phase для caller orchestration.
     pub(crate) fn media_open_snapshot(&self) -> Option<crate::media_open::MediaOpenSnapshot> {
         self.media_open.snapshot()
+    }
+
+    /// Синхронно ждёт только exact request-owned protocol progress без timeout-as-success.
+    pub(crate) fn wait_for_media_open_progress(
+        &mut self,
+        request_id: crate::media_open::MediaOpenRequestId,
+    ) -> Result<crate::media_open::MediaOpenPhase, crate::media_open::MediaOpenCompletionDriveError>
+    {
+        self.media_open.wait_for_progress(request_id)
     }
 
     /// Забирает request-owned terminal exactly once после полного caller commit/abort flow.

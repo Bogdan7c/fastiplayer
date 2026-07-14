@@ -291,6 +291,7 @@ impl<'runtime> LiveRendererRecreation<'runtime> {
         self.app_state
             .set_system_capabilities(candidate.system_capabilities);
         *self.renderer = candidate.renderer;
+        self.app_state.advance_renderer_generation();
         Ok(())
     }
 }

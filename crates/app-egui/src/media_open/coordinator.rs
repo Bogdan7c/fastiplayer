@@ -20,10 +20,11 @@ use super::player_port::{ControlReceiptPort, InstallReceiptPort, MediaOpenPlayer
 
 use super::{
     AuthorizationDispatchResolution, CancellationDispatchOutcome, MediaOpenClientKey,
-    MediaOpenCommandError, MediaOpenInstallIntent, MediaOpenInvariantViolation, MediaOpenPhase,
-    MediaOpenRequestId, MediaOpenSnapshot, MediaOpenSourceRequest, MediaOpenStartError,
-    MediaOpenStartMode, MediaOpenStartOutcome, MediaOpenTerminalOutcome,
-    MediaPreparationFailureKind, PreparedMediaDescriptor, PreparedMediaOpen, SafeMediaLabel,
+    MediaOpenCommandError, MediaOpenCompletionDriveError, MediaOpenInstallIntent,
+    MediaOpenInvariantViolation, MediaOpenPhase, MediaOpenRequestId, MediaOpenSnapshot,
+    MediaOpenSourceRequest, MediaOpenStartError, MediaOpenStartMode, MediaOpenStartOutcome,
+    MediaOpenTerminalOutcome, MediaPreparationFailureKind, PreparedMediaDescriptor,
+    PreparedMediaOpen, SafeMediaLabel,
 };
 
 enum PendingControl {
@@ -32,6 +33,22 @@ enum PendingControl {
         cause: MediaInstallCancellationCause,
         receipt: Box<dyn ControlReceiptPort>,
     },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CancellationDispatchMode {
+    NonBlocking,
+    LosslessCleanup,
+}
+
+impl PendingControl {
+    fn wait_until_outcome_available(&self) -> Result<(), ()> {
+        match self {
+            Self::Authorization(receipt) | Self::Cancellation { receipt, .. } => {
+                receipt.wait_until_outcome_available()
+            }
+        }
+    }
 }
 
 struct CurrentRequest {
@@ -96,6 +113,39 @@ impl MediaOpenCoordinator {
         self.start_with_task(client_key, mode, safe_label, move |cancellation| {
             super::preparation::prepare_source(source_request, || cancellation.is_cancelled())
         })
+    }
+
+    /// Принимает уже подготовленный source-owner-ом demuxer в тот же strong protocol.
+    pub(crate) fn start_prepared(
+        &mut self,
+        client_key: MediaOpenClientKey,
+        prepared_open: PreparedMediaOpen,
+        safe_label: SafeMediaLabel,
+    ) -> Result<MediaOpenStartOutcome, MediaOpenStartError> {
+        if self.shutting_down {
+            return Err(MediaOpenStartError::ShuttingDown);
+        }
+        if self.current.is_some() {
+            return Err(MediaOpenStartError::Busy);
+        }
+
+        let request_id = self.allocate_request_id();
+        self.current = Some(CurrentRequest {
+            client_key,
+            request_id,
+            phase: MediaOpenPhase::Prepared,
+            cancellation: Arc::new(PreparationCancellation::new()),
+            preparation_slot: Arc::new(PreparationResultSlot::new()),
+            prepared_open: Some(prepared_open),
+            descriptor: None,
+            player_request_id: None,
+            install_receipt: None,
+            pending_control: None,
+            authorization_resolution: None,
+            terminal: None,
+            safe_label,
+        });
+        Ok(MediaOpenStartOutcome::Accepted { request_id })
     }
 
     fn start_with_task(
@@ -264,6 +314,28 @@ impl MediaOpenCoordinator {
         request_id: MediaOpenRequestId,
         cause: MediaInstallCancellationCause,
     ) -> Result<CancellationDispatchOutcome, MediaOpenCommandError> {
+        self.cancel_request_with_dispatch(request_id, cause, CancellationDispatchMode::NonBlocking)
+    }
+
+    /// После доказанного pre-barrier rejection доставляет cleanup без повторной потери на Full.
+    pub(crate) fn cancel_request_lossless(
+        &mut self,
+        request_id: MediaOpenRequestId,
+        cause: MediaInstallCancellationCause,
+    ) -> Result<CancellationDispatchOutcome, MediaOpenCommandError> {
+        self.cancel_request_with_dispatch(
+            request_id,
+            cause,
+            CancellationDispatchMode::LosslessCleanup,
+        )
+    }
+
+    fn cancel_request_with_dispatch(
+        &mut self,
+        request_id: MediaOpenRequestId,
+        cause: MediaInstallCancellationCause,
+        dispatch_mode: CancellationDispatchMode,
+    ) -> Result<CancellationDispatchOutcome, MediaOpenCommandError> {
         let current = self.matching_current(request_id)?;
         if current.phase == MediaOpenPhase::EnqueuedAtPlayerOwner {
             return Ok(CancellationDispatchOutcome::CommitMustFinish);
@@ -294,13 +366,26 @@ impl MediaOpenCoordinator {
             .clone();
         let current = self.matching_current_mut(request_id)?;
         current.cancellation.cancel(cause);
-        match player_port.cancel(player_request_id, cause) {
+        let dispatch_result = match dispatch_mode {
+            CancellationDispatchMode::NonBlocking => player_port.cancel(player_request_id, cause),
+            CancellationDispatchMode::LosslessCleanup => {
+                player_port.cancel_lossless(player_request_id, cause)
+            }
+        };
+        match dispatch_result {
             Ok(receipt) => {
                 current.phase = MediaOpenPhase::AuthorizationDispatchPending;
                 current.pending_control = Some(PendingControl::Cancellation { cause, receipt });
                 Ok(CancellationDispatchOutcome::DispatchPending)
             }
-            Err(rejection) => Err(MediaOpenCommandError::PlayerDispatch(rejection)),
+            Err(rejection) => {
+                if dispatch_mode == CancellationDispatchMode::LosslessCleanup {
+                    self.publish_fatal(
+                        MediaOpenInvariantViolation::LosslessCancellationDispatchFailed,
+                    );
+                }
+                Err(MediaOpenCommandError::PlayerDispatch(rejection))
+            }
         }
     }
 
@@ -335,6 +420,60 @@ impl MediaOpenCoordinator {
         changed |= self.drain_player_staging();
         changed |= self.drain_control();
         changed
+    }
+
+    /// Ждёт один request-owned progress edge без polling spin и без auto-authorization.
+    pub(crate) fn wait_for_progress(
+        &mut self,
+        request_id: MediaOpenRequestId,
+    ) -> Result<MediaOpenPhase, MediaOpenCompletionDriveError> {
+        let phase = self.matching_current(request_id)?.phase;
+        let wait_result = {
+            let current = self.matching_current(request_id)?;
+            match phase {
+                MediaOpenPhase::Preparing => current
+                    .preparation_slot
+                    .wait_until_result_available()
+                    .map_err(|_| MediaOpenCompletionDriveError::MissingPreparationResolution),
+                MediaOpenPhase::PlayerStaging => current
+                    .install_receipt
+                    .as_ref()
+                    .expect("PlayerStaging must own install receipt")
+                    .wait_until_signal_available()
+                    .map_err(|_| MediaOpenCompletionDriveError::MissingPlayerResolution),
+                MediaOpenPhase::AuthorizationDispatchPending
+                | MediaOpenPhase::EnqueuedAtPlayerOwner => current
+                    .pending_control
+                    .as_ref()
+                    .expect("dispatch phase must own control receipt")
+                    .wait_until_outcome_available()
+                    .map_err(|_| MediaOpenCompletionDriveError::MissingPlayerResolution),
+                MediaOpenPhase::Accepted
+                | MediaOpenPhase::Prepared
+                | MediaOpenPhase::ReadyToCommit
+                | MediaOpenPhase::Installed
+                | MediaOpenPhase::Failed => Ok(()),
+            }
+        };
+        if let Err(error) = wait_result {
+            let violation = match error {
+                MediaOpenCompletionDriveError::MissingPreparationResolution => {
+                    MediaOpenInvariantViolation::PreparationStateLost
+                }
+                MediaOpenCompletionDriveError::MissingPlayerResolution => {
+                    if phase == MediaOpenPhase::PlayerStaging {
+                        MediaOpenInvariantViolation::MissingPlayerInstallResolution
+                    } else {
+                        MediaOpenInvariantViolation::MissingPlayerControlResolution
+                    }
+                }
+                MediaOpenCompletionDriveError::Command(_) => unreachable!(),
+            };
+            self.publish_fatal(violation);
+            return Err(error);
+        }
+        self.drain();
+        Ok(self.matching_current(request_id)?.phase)
     }
 
     pub(crate) fn snapshot(&self) -> Option<MediaOpenSnapshot> {
@@ -772,6 +911,15 @@ mod tests {
         fn take_completion(&self) -> Option<MediaInstallCompletion> {
             self.slots.lock().expect("install slots").completion.take()
         }
+
+        fn wait_until_signal_available(&self) -> Result<(), ()> {
+            let slots = self.slots.lock().expect("install slots");
+            if slots.ready.is_some() || slots.completion.is_some() {
+                Ok(())
+            } else {
+                Err(())
+            }
+        }
     }
 
     enum FakeControlState {
@@ -791,6 +939,13 @@ mod tests {
                 FakeControlState::Pending => Ok(None),
                 FakeControlState::Outcome(outcome) => Ok(Some(outcome)),
                 FakeControlState::Missing => Err(()),
+            }
+        }
+
+        fn wait_until_outcome_available(&self) -> Result<(), ()> {
+            match *self.state.lock().expect("control state") {
+                FakeControlState::Outcome(_) => Ok(()),
+                FakeControlState::Pending | FakeControlState::Missing => Err(()),
             }
         }
     }
@@ -1004,7 +1159,10 @@ mod tests {
             .ready = Some(MediaInstallPhase::ReadyToCommit {
             request_id: player_request_id,
         });
-        coordinator.drain();
+        assert_eq!(
+            coordinator.wait_for_progress(request_id),
+            Ok(MediaOpenPhase::ReadyToCommit)
+        );
         assert_eq!(
             coordinator.snapshot().expect("snapshot").phase,
             MediaOpenPhase::ReadyToCommit
@@ -1049,10 +1207,49 @@ mod tests {
             .completion = Some(installed);
         *authorization_state.lock().expect("authorization state") =
             FakeControlState::Outcome(MediaInstallControlOutcome::AuthorizationAccepted);
-        assert!(coordinator.drain());
+        assert_eq!(
+            coordinator.wait_for_progress(request_id),
+            Ok(MediaOpenPhase::Installed)
+        );
         assert!(matches!(
             coordinator.take_terminal(request_id),
             Ok(Some(MediaOpenTerminalOutcome::Installed { .. }))
+        ));
+    }
+
+    #[test]
+    fn missing_player_install_resolution_is_fatal_before_ready() {
+        let mut coordinator = coordinator();
+        coordinator
+            .start_fake(
+                client(15),
+                SafeMediaLabel::from_service_safe_label("missing-install.test"),
+                || Ok(fake_prepared()),
+            )
+            .expect("start accepted");
+        let request_id = wait_until_prepared(&mut coordinator);
+        attach_fake_player(&mut coordinator, None, Vec::new());
+        coordinator
+            .stage_at_player(
+                request_id,
+                MediaOpenInstallIntent {
+                    intent: player_core::PlaybackIntent::StartPaused,
+                    revision: player_core::PlaybackIntentRevision::INITIAL,
+                },
+                Box::new(UnusedVideoResourcePort),
+            )
+            .expect("stage accepted");
+
+        assert_eq!(
+            coordinator.wait_for_progress(request_id),
+            Err(MediaOpenCompletionDriveError::MissingPlayerResolution)
+        );
+        assert!(matches!(
+            coordinator.take_terminal(request_id),
+            Ok(Some(MediaOpenTerminalOutcome::FatalInvariant {
+                violation: MediaOpenInvariantViolation::MissingPlayerInstallResolution,
+                ..
+            }))
         ));
     }
 
@@ -1073,6 +1270,34 @@ mod tests {
         let snapshot = coordinator.snapshot().expect("accepted request snapshot");
         assert_eq!(snapshot.request_id, request_id);
         assert_eq!(snapshot.phase, MediaOpenPhase::Accepted);
+    }
+
+    #[test]
+    fn caller_prepared_ingress_enters_same_protocol_without_auto_authorization() {
+        let mut coordinator = coordinator();
+        let safe_label = SafeMediaLabel::from_service_safe_label("fixture.wav");
+        let prepared_open = PreparedMediaOpen::from_caller_prepared(
+            player_core::PreparedMedia::from_external_label("fixture.wav", Box::new(FakeDemuxer)),
+            ActiveMediaSource::LocalFile("fixture.wav".into()),
+            safe_label.clone(),
+        );
+
+        let accepted = coordinator
+            .start_prepared(client(1), prepared_open, safe_label)
+            .expect("caller-prepared request accepted");
+        let MediaOpenStartOutcome::Accepted { request_id } = accepted else {
+            panic!("idle coordinator cannot coalesce prepared compatibility request");
+        };
+        let snapshot = coordinator.snapshot().expect("prepared request snapshot");
+
+        assert_eq!(snapshot.request_id, request_id);
+        assert_eq!(snapshot.phase, MediaOpenPhase::Prepared);
+        assert!(snapshot.authorization_resolution.is_none());
+        assert!(matches!(
+            snapshot.descriptor,
+            Some(PreparedMediaDescriptor::CallerPrepared { .. })
+        ));
+        assert!(coordinator.take_terminal(request_id).unwrap().is_none());
     }
 
     #[test]
@@ -1165,10 +1390,11 @@ mod tests {
             )
             .expect("start accepted");
         let request_id = wait_until_prepared(&mut coordinator);
+        let cancellation_state = Arc::new(Mutex::new(FakeControlState::Pending));
         let player_state = attach_fake_player(
             &mut coordinator,
             Some(PlayerDispatchRejection::Backpressure),
-            Vec::new(),
+            vec![Arc::clone(&cancellation_state)],
         );
         let player_request_id = coordinator
             .stage_at_player(
@@ -1207,6 +1433,37 @@ mod tests {
                 }
             )
         );
+
+        assert_eq!(
+            coordinator.cancel_request_lossless(
+                request_id,
+                MediaInstallCancellationCause::StructuralInvalidation,
+            ),
+            Ok(CancellationDispatchOutcome::DispatchPending)
+        );
+        player_state
+            .lock()
+            .expect("player state")
+            .install_slots
+            .lock()
+            .expect("install slots")
+            .completion = Some(MediaInstallCompletion::Cancelled {
+            request_id: player_request_id,
+            cause: MediaInstallCancellationCause::StructuralInvalidation,
+        });
+        *cancellation_state.lock().expect("cancellation state") =
+            FakeControlState::Outcome(MediaInstallControlOutcome::CancellationAccepted);
+        assert_eq!(
+            coordinator.wait_for_progress(request_id),
+            Ok(MediaOpenPhase::Failed)
+        );
+        assert!(matches!(
+            coordinator.take_terminal(request_id),
+            Ok(Some(MediaOpenTerminalOutcome::Cancelled {
+                cause: MediaInstallCancellationCause::StructuralInvalidation,
+                ..
+            }))
+        ));
     }
 
     #[test]
@@ -1456,7 +1713,10 @@ mod tests {
         });
         *cancel_state.lock().expect("cancel state") =
             FakeControlState::Outcome(MediaInstallControlOutcome::CancellationAccepted);
-        assert!(cancel_coordinator.drain());
+        assert_eq!(
+            cancel_coordinator.wait_for_progress(request_id),
+            Ok(MediaOpenPhase::Failed)
+        );
         assert!(matches!(
             cancel_coordinator.take_terminal(request_id),
             Ok(Some(MediaOpenTerminalOutcome::Cancelled {
@@ -1489,7 +1749,10 @@ mod tests {
         missing
             .cancel_request(request_id, MediaInstallCancellationCause::UserCancelled)
             .expect("cancel dispatched");
-        assert!(missing.drain());
+        assert_eq!(
+            missing.wait_for_progress(request_id),
+            Err(MediaOpenCompletionDriveError::MissingPlayerResolution)
+        );
         assert!(matches!(
             missing.take_terminal(request_id),
             Ok(Some(MediaOpenTerminalOutcome::FatalInvariant {

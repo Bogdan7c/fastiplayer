@@ -208,40 +208,39 @@ pub(crate) trait CandidateVideoPipelineResourceDriver {
 }
 
 /// Production driver сохраняет concrete backend/render knowledge в composition root-е.
-pub(crate) struct WgpuCandidateVideoPipelineResourceDriver<'renderer> {
+pub(crate) struct WgpuCandidateVideoPipelineResourceDriver {
     /// WGPU instance принадлежит exact renderer generation.
-    instance: &'renderer wgpu::Instance,
+    instance: wgpu::Instance,
 
     /// WGPU adapter принадлежит тому же renderer generation.
-    adapter: &'renderer wgpu::Adapter,
+    adapter: wgpu::Adapter,
 
     /// WGPU device используется только во время fallible preparation.
-    device: &'renderer wgpu::Device,
+    device: wgpu::Device,
 
     /// WGPU queue связывает submitted release callbacks exact renderer-а.
-    queue: &'renderer wgpu::Queue,
+    queue: wgpu::Queue,
 }
 
-impl<'renderer> WgpuCandidateVideoPipelineResourceDriver<'renderer> {
-    /// Создаёт driver view поверх уже существующего renderer owner-а.
+impl WgpuCandidateVideoPipelineResourceDriver {
+    /// Создаёт owned ref-counted driver handles exact renderer generation-а.
     #[must_use]
-    pub(crate) const fn new(
-        instance: &'renderer wgpu::Instance,
-        adapter: &'renderer wgpu::Adapter,
-        device: &'renderer wgpu::Device,
-        queue: &'renderer wgpu::Queue,
+    pub(crate) fn new(
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
     ) -> Self {
-        // Driver не клонирует GPU handles до фактической candidate preparation.
         Self {
-            instance,
-            adapter,
-            device,
-            queue,
+            instance: instance.clone(),
+            adapter: adapter.clone(),
+            device: device.clone(),
+            queue: queue.clone(),
         }
     }
 }
 
-impl CandidateVideoPipelineResourceDriver for WgpuCandidateVideoPipelineResourceDriver<'_> {
+impl CandidateVideoPipelineResourceDriver for WgpuCandidateVideoPipelineResourceDriver {
     type Materializer = Arc<dyn WgpuFrameTextureViewMaterializer>;
     type SubmissionBinding = WgpuSubmissionQueueBinding;
 
@@ -269,13 +268,13 @@ impl CandidateVideoPipelineResourceDriver for WgpuCandidateVideoPipelineResource
                         })?;
                 // Wrapper связывает releases candidate provider-а только с candidate queue.
                 let (wrapped_backend, resource_provider, submission_binding) =
-                    wrap_video_backend_for_wgpu_submission(started_backend, self.queue);
+                    wrap_video_backend_for_wgpu_submission(started_backend, &self.queue);
                 // DMA-BUF materializer получает provider именно этого wrapped backend-а.
                 let materializer: Arc<dyn WgpuFrameTextureViewMaterializer> =
                     Arc::new(DmaBufWgpuFrameMaterializer::new(
-                        self.instance,
-                        self.adapter,
-                        self.device,
+                        &self.instance,
+                        &self.adapter,
+                        &self.device,
                         resource_provider,
                     ));
 
@@ -302,11 +301,11 @@ impl CandidateVideoPipelineResourceDriver for WgpuCandidateVideoPipelineResource
                 })?;
                 // Тот же submission wrapper удерживает HostPlanar releases до queue callback.
                 let (wrapped_backend, resource_provider, submission_binding) =
-                    wrap_video_backend_for_wgpu_submission(started_backend, self.queue);
+                    wrap_video_backend_for_wgpu_submission(started_backend, &self.queue);
                 // HostPlanar materializer использует exact provider и queue этого pair-а.
                 let materializer = Arc::new(HostPlanarWgpuFrameMaterializer::new(
-                    self.device,
-                    self.queue,
+                    &self.device,
+                    &self.queue,
                     resource_provider,
                 )) as Arc<dyn WgpuFrameTextureViewMaterializer>;
 

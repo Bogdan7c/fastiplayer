@@ -36,6 +36,7 @@ mod audio_tempo_runtime;
 mod capability_selection;
 mod diagnostics_sink;
 mod eof_drain;
+mod installed_media_restore;
 mod media_lifecycle;
 mod playback_rate;
 mod prepared_seek;

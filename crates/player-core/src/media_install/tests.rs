@@ -338,3 +338,50 @@ fn receipts_keep_request_and_completion_correlation_separate() {
         second_request_id
     );
 }
+
+#[test]
+fn synchronous_receipt_wait_reports_missing_owner_without_timeout_success() {
+    let request_id = test_request_id(905);
+    let (receipt, owner_port) = MediaInstallReceipt::new(request_id);
+    drop(owner_port);
+
+    assert_eq!(
+        receipt.wait_until_signal_available(),
+        Err(MediaInstallReceiptWaitError::MissingOwnerOutcome)
+    );
+}
+
+#[test]
+fn synchronous_receipt_preserves_ready_before_already_published_terminal() {
+    let request_id = test_request_id(906);
+    let installed_instance_id = instance_id(906);
+    let (mut protocol, receipt) = accepted_protocol(request_id);
+
+    protocol.mark_ready_to_commit();
+    assert_eq!(
+        protocol.apply_control(
+            MediaInstallControl::Authorize(AuthorizeInstallCommit { request_id }),
+            || installed_commit(installed_instance_id),
+        ),
+        MediaInstallControlOutcome::AuthorizationAccepted
+    );
+
+    assert!(matches!(
+        receipt
+            .wait_for_signal()
+            .expect("ReadyToCommit signal должен сохраниться"),
+        MediaInstallReceiptSignal::ReadyToCommit(MediaInstallPhase::ReadyToCommit {
+            request_id: ready_request_id,
+        }) if ready_request_id == request_id
+    ));
+    assert!(matches!(
+        receipt
+            .wait_for_signal()
+            .expect("Installed signal должен следовать после ReadyToCommit"),
+        MediaInstallReceiptSignal::Terminal(MediaInstallCompletion::Installed {
+            request_id: installed_request_id,
+            media_instance_id,
+            ..
+        }) if installed_request_id == request_id && media_instance_id == installed_instance_id
+    ));
+}

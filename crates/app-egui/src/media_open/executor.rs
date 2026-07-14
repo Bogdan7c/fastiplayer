@@ -63,6 +63,7 @@ impl PreparationCancellation {
 pub(super) struct PreparationResultSlot {
     state_lost: AtomicBool,
     result: Mutex<Option<PreparationResult>>,
+    ready: Condvar,
 }
 
 impl PreparationResultSlot {
@@ -70,6 +71,7 @@ impl PreparationResultSlot {
         Self {
             state_lost: AtomicBool::new(false),
             result: Mutex::new(None),
+            ready: Condvar::new(),
         }
     }
 
@@ -77,9 +79,11 @@ impl PreparationResultSlot {
         match self.result.lock() {
             Ok(mut slot) if slot.is_none() => {
                 *slot = Some(result);
+                self.ready.notify_all();
             }
             Ok(_) | Err(_) => {
                 self.state_lost.store(true, Ordering::Release);
+                self.ready.notify_all();
             }
         }
     }
@@ -92,6 +96,20 @@ impl PreparationResultSlot {
             .lock()
             .map(|mut result| result.take())
             .map_err(|_| ())
+    }
+
+    /// Ждёт availability без polling spin и оставляет payload coordinator drain-у.
+    pub(super) fn wait_until_result_available(&self) -> Result<(), ()> {
+        let mut result = self.result.lock().map_err(|_| ())?;
+        loop {
+            if self.state_lost.load(Ordering::Acquire) {
+                return Err(());
+            }
+            if result.is_some() {
+                return Ok(());
+            }
+            result = self.ready.wait(result).map_err(|_| ())?;
+        }
     }
 }
 

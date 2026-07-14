@@ -11,42 +11,32 @@ impl AppState {
     }
 
     /// Загружает локальный файл через playback worker.
-    pub fn load_file(&mut self, path: &Path) {
-        let autoplay = self.committed_config_snapshot.autoplay_for_new_media();
-        self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
-        self.clear_startup_status();
-        self.current_local_file = Some(path.to_path_buf());
-
+    pub fn load_file(
+        &mut self,
+        path: &Path,
+        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+        renderer: &render_wgpu_shell::Renderer,
+    ) {
         match local_media::prepare_local_file(
             path,
             &self.committed_config_snapshot.demux_config_for_open(),
         ) {
             Ok(prepared_media) => {
-                if let Err(error) = self
-                    .player_worker
-                    .load_prepared_media(prepared_media, autoplay)
-                {
-                    warn!(error = %error, "Не удалось отправить подготовленный файл в worker");
-                    return;
-                }
-                self.remember_active_media_source(ActiveMediaSource::LocalFile(path.to_path_buf()));
+                self.load_prepared_local_file(
+                    path.to_path_buf(),
+                    prepared_media,
+                    playlist_runtime,
+                    renderer,
+                );
             }
             Err(error) => {
                 warn!(error = %error, "Не удалось открыть файл");
-                let open_request =
-                    MediaOpenRequest::new(MediaSource::LocalFile(path.to_path_buf()), autoplay);
-                let player_error =
-                    PlayerError::new(PlayerErrorKind::DemuxError, format!("Ошибка: {error}"));
-                if let Err(send_error) = self
-                    .player_worker
-                    .fail_media_open(open_request, player_error)
-                {
-                    warn!(error = %send_error, "Не удалось отправить ошибку открытия файла в worker");
-                    return;
-                }
+                self.set_startup_error(format!(
+                    "Ошибка открытия media-файла {}: {error}",
+                    path.display()
+                ));
             }
         }
-
         self.mark_pending_worker_redraw();
     }
 
@@ -55,13 +45,22 @@ impl AppState {
         &mut self,
         path: PathBuf,
         prepared_media: PreparedMedia,
+        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+        renderer: &render_wgpu_shell::Renderer,
     ) -> bool {
         let autoplay = self.committed_config_snapshot.autoplay_for_new_media();
-
-        if let Err(error) = self
-            .player_worker
-            .load_prepared_media(prepared_media, autoplay)
-        {
+        let source = ActiveMediaSource::LocalFile(path.clone());
+        let prepared_input = PreparedSingleMediaOpen::new(
+            prepared_media,
+            source.clone(),
+            crate::media_open::SafeMediaLabel::from_local_path(&path),
+        );
+        if let Err(error) = self.install_prepared_media_strong(
+            playlist_runtime,
+            renderer,
+            prepared_input,
+            player_core::PlaybackIntent::from_autoplay(autoplay),
+        ) {
             warn!(error = %error, path = %path.display(), "Не удалось отправить подготовленный файл в worker");
             self.set_startup_error(format!(
                 "Ошибка открытия media-файла {}: worker недоступен: {error}",
@@ -70,11 +69,7 @@ impl AppState {
             return false;
         }
 
-        self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
-        self.clear_startup_status();
-        self.current_local_file = Some(path.clone());
-        self.remember_active_media_source(ActiveMediaSource::LocalFile(path));
-        self.mark_pending_worker_redraw();
+        self.record_installed_media_source(source);
         true
     }
 
@@ -85,16 +80,26 @@ impl AppState {
         label: String,
         demuxer: Box<dyn symphonia_demux::Demuxer + Send>,
         selected_stream_identity: service_youtube::YoutubeSelectedStreamIdentity,
+        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+        renderer: &render_wgpu_shell::Renderer,
     ) -> bool {
         let autoplay = self.committed_config_snapshot.autoplay_for_new_media();
-        self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
-        self.clear_startup_status();
-        self.current_local_file = None;
         let prepared_media = PreparedMedia::from_external_label(label, demuxer);
-        if let Err(error) = self
-            .player_worker
-            .load_prepared_media(prepared_media, autoplay)
-        {
+        let source = ActiveMediaSource::YouTubeUrl {
+            source_locator: source_locator.clone(),
+            selected_stream_identity,
+        };
+        let prepared_input = PreparedSingleMediaOpen::new(
+            prepared_media,
+            source.clone(),
+            crate::media_open::SafeMediaLabel::from_service_safe_label(source_locator.safe_label()),
+        );
+        if let Err(error) = self.install_prepared_media_strong(
+            playlist_runtime,
+            renderer,
+            prepared_input,
+            player_core::PlaybackIntent::from_autoplay(autoplay),
+        ) {
             warn!(error = %error, "Не удалось отправить YouTube demuxer в worker");
             self.set_startup_error(format!(
                 "WorkerUnavailable: YouTube worker недоступен для {source_locator}: {error}"
@@ -102,37 +107,7 @@ impl AppState {
             return false;
         }
 
-        self.remember_active_media_source(ActiveMediaSource::YouTubeUrl {
-            source_locator,
-            selected_stream_identity,
-        });
-        self.mark_pending_worker_redraw();
-        true
-    }
-
-    /// Загружает уже подготовленный внешний media source через PreparedMedia boundary.
-    pub fn load_prepared_external_media(
-        &mut self,
-        label: String,
-        prepared_media: PreparedMedia,
-    ) -> bool {
-        let autoplay = self.committed_config_snapshot.autoplay_for_new_media();
-        self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
-        self.clear_startup_status();
-        self.current_local_file = None;
-
-        if let Err(error) = self
-            .player_worker
-            .load_prepared_media(prepared_media, autoplay)
-        {
-            warn!(error = %error, label = %label, "Не удалось отправить внешний media source в worker");
-            self.set_startup_error(format!(
-                "WorkerUnavailable: direct media worker недоступен для {label}: {error}"
-            ));
-            return false;
-        }
-
-        self.mark_pending_worker_redraw();
+        self.record_installed_media_source(source);
         true
     }
 
@@ -142,13 +117,31 @@ impl AppState {
         source_locator: service_direct_media::DirectMediaUrl,
         label: String,
         prepared_media: PreparedMedia,
+        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+        renderer: &render_wgpu_shell::Renderer,
     ) -> bool {
-        if self.load_prepared_external_media(label, prepared_media) {
-            self.remember_active_media_source(ActiveMediaSource::DirectMediaUrl(source_locator));
-            true
-        } else {
-            false
+        let autoplay = self.committed_config_snapshot.autoplay_for_new_media();
+        let source = ActiveMediaSource::DirectMediaUrl(source_locator.clone());
+        let prepared_input = PreparedSingleMediaOpen::new(
+            prepared_media,
+            source.clone(),
+            crate::media_open::SafeMediaLabel::from_service_safe_label(source_locator.safe_label()),
+        );
+        if let Err(error) = self.install_prepared_media_strong(
+            playlist_runtime,
+            renderer,
+            prepared_input,
+            player_core::PlaybackIntent::from_autoplay(autoplay),
+        ) {
+            warn!(error = %error, label = %label, "Не удалось отправить внешний media source в worker");
+            self.set_startup_error(format!(
+                "WorkerUnavailable: direct media worker недоступен для {label}: {error}"
+            ));
+            return false;
         }
+
+        self.record_installed_media_source(source);
+        true
     }
 
     /// Возвращает последний локальный файл, открытый shell-ом.
@@ -163,60 +156,98 @@ impl AppState {
         self.active_media_source.clone()
     }
 
-    fn remember_active_media_source(&mut self, source: ActiveMediaSource) {
+    pub(crate) fn remember_active_media_source(&mut self, source: ActiveMediaSource) {
         self.active_media_source = Some(source);
     }
 
-    /// Восстанавливает runtime playback controls после controlled media reopen.
-    pub(crate) fn restore_playback_after_media_reconfigure(&mut self, snapshot: &PlayerSnapshot) {
-        self.send_restore_command(PlayerCommand::SetVolume(snapshot.volume));
+    /// Публикует app observable state только после exact player Installed.
+    pub(crate) fn record_installed_media_source(&mut self, source: ActiveMediaSource) {
+        self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
+        self.clear_startup_status();
+        self.current_local_file = match &source {
+            ActiveMediaSource::LocalFile(path) => Some(path.clone()),
+            ActiveMediaSource::DirectMediaUrl(_) | ActiveMediaSource::YouTubeUrl { .. } => None,
+        };
+        self.remember_active_media_source(source);
+        self.mark_pending_worker_redraw();
+    }
 
-        if let Some(track_id) = snapshot.selected_tracks.video_track {
-            self.send_restore_command(PlayerCommand::SelectVideoTrack(track_id));
+    /// Восстанавливает controls только через exact request/instance boundaries после Installed.
+    pub(crate) fn restore_playback_after_media_reconfigure(
+        &mut self,
+        snapshot: &PlayerSnapshot,
+        installed: &InstalledSingleMediaOpen,
+    ) -> Result<(), String> {
+        let player_core::MediaInstallCompletion::Installed {
+            media_instance_id,
+            applied_intent,
+            ..
+        } = installed.completion
+        else {
+            return Err("media reconfigure completion was not Installed".to_string());
+        };
+        let desired_intent = playback_intent_from_snapshot(snapshot);
+        if applied_intent != desired_intent {
+            return Err(format!(
+                "Installed applied unexpected playback intent: {applied_intent:?}"
+            ));
         }
-        if let Some(track_id) = snapshot.selected_tracks.audio_track {
-            self.send_restore_command(PlayerCommand::SelectAudioTrack(track_id));
-        }
-        if let Some(track_id) = snapshot.selected_tracks.subtitle_track {
-            self.send_restore_command(PlayerCommand::SelectSubtitleTrack(Some(track_id)));
-        }
+
+        self.player_worker
+            .try_send_command(PlayerCommand::SetVolume(snapshot.volume))
+            .map_err(|error| format!("volume restore dispatch failed: {error}"))?;
         if let Some(selected_quality) = snapshot
             .available_qualities
             .iter()
             .find(|quality| quality.selected)
         {
-            self.send_restore_command(PlayerCommand::SelectQuality(QualitySelection::Specific(
-                selected_quality.id.clone(),
-            )));
+            self.player_worker
+                .try_send_command(PlayerCommand::SelectQuality(QualitySelection::Specific(
+                    selected_quality.id.clone(),
+                )))
+                .map_err(|error| format!("quality restore dispatch failed: {error}"))?;
         }
 
-        if snapshot.current_position > Duration::ZERO {
-            self.send_restore_command(PlayerCommand::Seek(SeekRequest::absolute(
-                snapshot.current_position.into(),
-            )));
-        }
-
-        match snapshot.playback_state {
-            PlaybackState::Playing
-            | PlaybackState::Buffering
-            | PlaybackState::Seeking
-            | PlaybackState::Draining => self.send_restore_command(PlayerCommand::Play),
-            PlaybackState::Scrubbing | PlaybackState::Paused => {
-                self.send_restore_command(PlayerCommand::Pause);
+        let restore = player_core::InstalledMediaStateRestore {
+            request_id: installed.player_request_id,
+            media_instance_id,
+            video_track: snapshot.selected_tracks.video_track.map_or(
+                player_core::InstalledTrackRestore::KeepDefault,
+                player_core::InstalledTrackRestore::Select,
+            ),
+            audio_track: snapshot.selected_tracks.audio_track.map_or(
+                player_core::InstalledTrackRestore::KeepDefault,
+                player_core::InstalledTrackRestore::Select,
+            ),
+            subtitle_track: snapshot.selected_tracks.subtitle_track.map_or(
+                player_core::InstalledSubtitleRestore::KeepDefault,
+                player_core::InstalledSubtitleRestore::Select,
+            ),
+            position: if snapshot.current_position > Duration::ZERO {
+                player_core::InstalledPositionRestore::SeekTo(snapshot.current_position)
+            } else {
+                player_core::InstalledPositionRestore::KeepStart
+            },
+        };
+        let restore_receipt = self
+            .player_worker
+            .restore_installed_media_state(restore)
+            .map_err(|error| format!("exact position/track restore dispatch failed: {error}"))?;
+        match restore_receipt
+            .wait_for_outcome()
+            .map_err(|error| format!("exact position/track restore outcome missing: {error}"))?
+        {
+            player_core::InstalledMediaStateRestoreOutcome::Applied {
+                media_instance_id: applied_instance,
+            } if applied_instance == media_instance_id => {}
+            outcome => {
+                return Err(format!(
+                    "exact position/track restore was rejected: {outcome:?}"
+                ));
             }
-            PlaybackState::Idle
-            | PlaybackState::Opening
-            | PlaybackState::Stopped
-            | PlaybackState::Ended
-            | PlaybackState::Failed => {}
         }
-    }
 
-    /// Отправляет restore command, сохраняя ошибки доставки видимыми в логах.
-    pub(super) fn send_restore_command(&mut self, command: PlayerCommand) {
-        if let Err(error) = self.player_worker.try_send_command(command) {
-            warn!(error = %error, "Не удалось восстановить playback state после media reconfigure");
-        }
+        Ok(())
     }
 
     /// Возвращает `true`, пока shell ждёт file dialog или подготовку локального media.
@@ -226,7 +257,11 @@ impl AppState {
     }
 
     /// Неблокирующе забирает события async открытия локального файла.
-    pub fn poll_local_file_open_job(&mut self) -> bool {
+    pub fn poll_local_file_open_job(
+        &mut self,
+        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+        renderer: &render_wgpu_shell::Renderer,
+    ) -> bool {
         let Some(job) = self.local_file_open_job.as_mut() else {
             self.local_file_open_wake_port
                 .acknowledge_abandoned_mailbox();
@@ -241,14 +276,19 @@ impl AppState {
 
         if let Some(result) = drain.completion {
             self.local_file_open_job = None;
-            self.apply_local_file_open_result(result);
+            self.apply_local_file_open_result(result, playlist_runtime, renderer);
         }
 
         had_visible_mutation
     }
 
     /// Применяет финальный результат local open job-а к shell и worker boundary.
-    pub(super) fn apply_local_file_open_result(&mut self, result: LocalFileOpenResult) {
+    pub(super) fn apply_local_file_open_result(
+        &mut self,
+        result: LocalFileOpenResult,
+        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+        renderer: &render_wgpu_shell::Renderer,
+    ) {
         match result {
             LocalFileOpenResult::Cancelled => {
                 self.startup_pending = None;
@@ -258,7 +298,7 @@ impl AppState {
                 path,
                 prepared_media,
             } => {
-                self.load_prepared_local_file(path, prepared_media);
+                self.load_prepared_local_file(path, prepared_media, playlist_runtime, renderer);
             }
             LocalFileOpenResult::PrepareFailed { path, error } => {
                 warn!(path = %path.display(), error = %error, "Не удалось подготовить локальный файл");
@@ -269,5 +309,25 @@ impl AppState {
                 self.set_startup_error(format!("Ошибка открытия media-файла: {error}"));
             }
         }
+    }
+}
+
+/// Переводит snapshot state в stable D52 intent без positional bool.
+pub(crate) fn playback_intent_from_snapshot(
+    snapshot: &PlayerSnapshot,
+) -> player_core::PlaybackIntent {
+    match snapshot.playback_state {
+        PlaybackState::Playing
+        | PlaybackState::Buffering
+        | PlaybackState::Seeking
+        | PlaybackState::Draining => player_core::PlaybackIntent::StartPlaying,
+        PlaybackState::Scrubbing | PlaybackState::Paused => {
+            player_core::PlaybackIntent::StartPaused
+        }
+        PlaybackState::Idle
+        | PlaybackState::Opening
+        | PlaybackState::Stopped
+        | PlaybackState::Ended
+        | PlaybackState::Failed => player_core::PlaybackIntent::StartPaused,
     }
 }

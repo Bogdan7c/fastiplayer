@@ -8,6 +8,7 @@ use capability_core::{SupportedVideoOutput, SystemCapabilities};
 use player_core::{PlayerVideoDecoderThreadConfig, VideoDecodeRequirement};
 use rustiplayer_config::VideoBackendPreference;
 use thiserror::Error;
+use video_backend_api::DetachedVideoBackendSelection;
 use video_ffmpeg::FFMPEG_SOFTWARE_BACKEND_ID;
 use video_frame_contract::{HardwareFrameHandle, VideoFrameTransferPath};
 
@@ -42,6 +43,35 @@ pub(crate) enum VideoPipelinePlan {
 }
 
 impl VideoPipelinePlan {
+    /// Строит concrete app plan только из exact selection, уже сделанного player-ом.
+    pub(crate) fn from_player_selection(
+        selection: &DetachedVideoBackendSelection,
+        decoder_thread_config: PlayerVideoDecoderThreadConfig,
+    ) -> Result<Self, PlayerSelectedVideoPipelineError> {
+        match (
+            selection.expected_backend_id(),
+            selection.frame_contract().transfer_path,
+        ) {
+            (Some(VAAPI_BACKEND_ID), VideoFrameTransferPath::HardwareZeroCopy { .. }) => {
+                Ok(Self::VaapiDmaBufWgpu {
+                    decoder_thread_config,
+                })
+            }
+            (Some(FFMPEG_SOFTWARE_BACKEND_ID), VideoFrameTransferPath::SoftwareHostUpload) => {
+                Ok(Self::FfmpegHostUploadWgpu {
+                    decoder_thread_config,
+                })
+            }
+            (None, _) => Err(PlayerSelectedVideoPipelineError::MissingBackendSelection),
+            (Some(backend_id), transfer_path) => Err(
+                PlayerSelectedVideoPipelineError::UnsupportedOrMismatchedSelection {
+                    backend_id: backend_id.to_owned(),
+                    transfer_path,
+                },
+            ),
+        }
+    }
+
     /// Короткая stable метка для startup diagnostics.
     pub const fn diagnostic_label(self) -> &'static str {
         match self {
@@ -57,6 +87,24 @@ impl VideoPipelinePlan {
             Self::FfmpegHostUploadWgpu { .. } => VideoBackendKind::FfmpegSoftware,
         }
     }
+}
+
+/// Ошибка mapping-а exact player selection в concrete app composition plan.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub(crate) enum PlayerSelectedVideoPipelineError {
+    /// Unprobed legacy plan не даёт app права самостоятельно выбрать backend.
+    #[error("player не выбрал exact video backend для candidate")]
+    MissingBackendSelection,
+
+    /// Backend и transfer contract не образуют поддерживаемую production pair.
+    #[error("player selection `{backend_id}` несовместим с transfer path {transfer_path:?}")]
+    UnsupportedOrMismatchedSelection {
+        /// Canonical backend ID из player plan-а.
+        backend_id: String,
+
+        /// Exact transfer path того же player plan-а.
+        transfer_path: VideoFrameTransferPath,
+    },
 }
 
 /// Ошибка pure selection до запуска backend-а.

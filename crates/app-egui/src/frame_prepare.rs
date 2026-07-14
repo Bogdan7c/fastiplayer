@@ -1094,12 +1094,20 @@ pub(super) fn render_outcome_marks_video_submitted(
 ///
 /// Измеряет время кадра, обновляет телеметрию,
 /// и вызывает renderer.render_frame().
-#[instrument(skip(telemetry, window, renderer, app_state, settings_runtime))]
+#[instrument(skip(
+    telemetry,
+    window,
+    renderer,
+    app_state,
+    playlist_runtime,
+    settings_runtime
+))]
 pub(crate) fn render_frame(
     telemetry: &Telemetry,
     window: &Arc<Window>,
     renderer: &mut Renderer,
     app_state: &mut AppState,
+    playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
     settings_runtime: &mut SettingsRuntime,
     renderer_lifecycle: &mut RendererLifecycleCoordinator,
 ) -> AppRenderFrameResult {
@@ -1141,6 +1149,7 @@ pub(crate) fn render_frame(
             window.clone(),
             app_state,
             renderer,
+            playlist_runtime,
             renderer_lifecycle,
         );
         match settings_runtime

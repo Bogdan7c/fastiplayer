@@ -107,6 +107,15 @@ impl PlayerWorkerRuntime {
                     warn!("Media install control outcome receiver was dropped");
                 }
             }
+            WorkerCommand::RestoreInstalledMediaState {
+                restore,
+                outcome_tx,
+            } => {
+                let outcome = self.session.restore_installed_media_state(restore);
+                if outcome_tx.send(outcome).is_err() {
+                    warn!("Installed media restore outcome receiver was dropped");
+                }
+            }
             WorkerCommand::MediaOpenFailed { request, error } => {
                 self.session.fail_media_open_with_error(request, error);
             }

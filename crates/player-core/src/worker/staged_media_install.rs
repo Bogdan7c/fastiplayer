@@ -67,6 +67,9 @@ pub struct MediaInstallControlReceipt {
 
     /// Capacity-one terminal channel не зависит от lossy event stream-а.
     outcome_rx: Receiver<MediaInstallControlOutcome>,
+
+    /// Synchronous waiter может сохранить payload для обычного event-driven drain-а.
+    cached_outcome: std::sync::Mutex<Option<MediaInstallControlOutcome>>,
 }
 
 impl MediaInstallControlReceipt {
@@ -79,6 +82,7 @@ impl MediaInstallControlReceipt {
             Self {
                 request_id,
                 outcome_rx,
+                cached_outcome: std::sync::Mutex::new(None),
             },
             outcome_tx,
         )
@@ -94,6 +98,14 @@ impl MediaInstallControlReceipt {
     pub fn try_take_outcome(
         &self,
     ) -> Result<Option<MediaInstallControlOutcome>, MediaInstallControlReceiptError> {
+        if let Some(outcome) = self
+            .cached_outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            return Ok(Some(outcome));
+        }
         match self.outcome_rx.try_recv() {
             Ok(outcome) => Ok(Some(outcome)),
             Err(TryRecvError::Empty) => Ok(None),
@@ -101,6 +113,44 @@ impl MediaInstallControlReceipt {
                 Err(MediaInstallControlReceiptError::MissingOwnerOutcome)
             }
         }
+    }
+
+    /// Блокируется без polling spin до authoritative owner outcome-а.
+    pub fn wait_for_outcome(
+        &self,
+    ) -> Result<MediaInstallControlOutcome, MediaInstallControlReceiptError> {
+        if let Some(outcome) = self
+            .cached_outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            return Ok(outcome);
+        }
+        self.outcome_rx
+            .recv()
+            .map_err(|_| MediaInstallControlReceiptError::MissingOwnerOutcome)
+    }
+
+    /// Ждёт availability и сохраняет outcome для последующего coordinator drain-а.
+    pub fn wait_until_outcome_available(&self) -> Result<(), MediaInstallControlReceiptError> {
+        if self
+            .cached_outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+        {
+            return Ok(());
+        }
+        let outcome = self
+            .outcome_rx
+            .recv()
+            .map_err(|_| MediaInstallControlReceiptError::MissingOwnerOutcome)?;
+        *self
+            .cached_outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(outcome);
+        Ok(())
     }
 }
 

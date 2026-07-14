@@ -6,8 +6,9 @@
 
 use std::fmt;
 use std::num::NonZeroU64;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
+use super::InstalledMediaTargetMatch;
 use super::{MediaInstallRequestId, MediaInstanceId};
 
 /// Typed playback intent нового media без позиционного `bool autoplay`.
@@ -103,6 +104,8 @@ pub enum PlaybackIntentUpdateOutcome {
 struct PlaybackIntentOutcomeSlot {
     /// Outcome остаётся доступным всем idempotent receipt clone-ам.
     outcome: Mutex<Option<PlaybackIntentUpdateOutcome>>,
+    /// Будит synchronous transaction adapter только после authoritative owner outcome.
+    outcome_available: Condvar,
 }
 
 impl PlaybackIntentOutcomeSlot {
@@ -114,6 +117,7 @@ impl PlaybackIntentOutcomeSlot {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if slot.is_none() {
             *slot = Some(outcome);
+            self.outcome_available.notify_all();
         }
     }
 
@@ -123,6 +127,19 @@ impl PlaybackIntentOutcomeSlot {
             .outcome
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Блокируется только на request-owned outcome, не на worker queue capacity.
+    fn wait(&self) -> PlaybackIntentUpdateOutcome {
+        let slot = self
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let slot = self
+            .outcome_available
+            .wait_while(slot, |outcome| outcome.is_none())
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        slot.expect("playback intent outcome predicate guarantees a value")
     }
 }
 
@@ -156,6 +173,12 @@ impl PlaybackIntentUpdateReceipt {
     #[must_use]
     pub fn try_outcome(&self) -> Option<PlaybackIntentUpdateOutcome> {
         self.outcome.get()
+    }
+
+    /// Ждёт exact owner outcome; enqueue acceptance не завершает update.
+    #[must_use]
+    pub fn wait_for_outcome(&self) -> PlaybackIntentUpdateOutcome {
+        self.outcome.wait()
     }
 }
 
@@ -284,6 +307,38 @@ pub(crate) struct PlaybackIntentControl {
 }
 
 impl PlaybackIntentControl {
+    /// Классифицирует exact request/instance restore target под owner correlation lock.
+    pub(crate) fn match_installed_target(
+        &self,
+        request_id: MediaInstallRequestId,
+        media_instance_id: MediaInstanceId,
+    ) -> InstalledMediaTargetMatch {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state
+            .staged
+            .is_some_and(|staged| staged.request_id == request_id)
+        {
+            return InstalledMediaTargetMatch::NotInstalledYet;
+        }
+        if let Some(installed) = state.installed.as_ref()
+            && installed.request_id == request_id
+        {
+            return if installed.media_instance_id == media_instance_id {
+                InstalledMediaTargetMatch::Matching
+            } else {
+                InstalledMediaTargetMatch::StaleInstance
+            };
+        }
+        if state.stale_installed_request_id == Some(request_id) {
+            InstalledMediaTargetMatch::StaleInstance
+        } else {
+            InstalledMediaTargetMatch::UnknownOrSupersededRequest
+        }
+    }
+
     /// Проверяет, остаётся ли sender-registered request latest staged intent-ом.
     pub(crate) fn staged_request_is_latest(&self, request_id: MediaInstallRequestId) -> bool {
         self.state

@@ -16,7 +16,7 @@ pub use detached_backend::{
     DetachedVideoBackendCandidateCancellationCause, DetachedVideoBackendCandidateStatus,
     DetachedVideoBackendConfigurationError, DetachedVideoBackendPortError,
     DetachedVideoBackendReply, DetachedVideoBackendRequest, DetachedVideoBackendResourceError,
-    DetachedVideoBackendResourcePort,
+    DetachedVideoBackendResourcePort, DetachedVideoBackendSelection,
 };
 
 /// Decoder-thread handle, специализированный на renderer-neutral provider этого crate-а.

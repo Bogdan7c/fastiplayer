@@ -43,9 +43,9 @@ pub(crate) use executor::MAX_NON_CANCELLABLE_STALE_PREPARATIONS;
 pub(crate) use local::{LocalFingerprintValidation, PreparedLocalOpenResult};
 pub(crate) use types::{
     ActiveMediaSource, AuthorizationDispatchResolution, CancellationDispatchOutcome,
-    MediaOpenClientKey, MediaOpenCommandError, MediaOpenInstallIntent, MediaOpenInvariantViolation,
-    MediaOpenPhase, MediaOpenRequestId, MediaOpenSnapshot, MediaOpenSourceRequest,
-    MediaOpenStartError, MediaOpenStartMode, MediaOpenStartOutcome, MediaOpenTerminalOutcome,
-    MediaPreparationFailureKind, PlayerDispatchRejection, PreparedMediaDescriptor,
-    PreparedMediaOpen, SafeMediaLabel,
+    MediaOpenClientKey, MediaOpenCommandError, MediaOpenCompletionDriveError,
+    MediaOpenInstallIntent, MediaOpenInvariantViolation, MediaOpenPhase, MediaOpenRequestId,
+    MediaOpenSnapshot, MediaOpenSourceRequest, MediaOpenStartError, MediaOpenStartMode,
+    MediaOpenStartOutcome, MediaOpenTerminalOutcome, MediaPreparationFailureKind,
+    PlayerDispatchRejection, PreparedMediaDescriptor, PreparedMediaOpen, SafeMediaLabel,
 };
