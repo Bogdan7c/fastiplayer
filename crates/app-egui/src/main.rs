@@ -8,10 +8,12 @@
 //! - запуск `AppShell`.
 
 mod app_shell;
+mod app_wake;
 mod dma_buf_runtime_fallback;
 mod frame_prepare;
 mod local_file_open;
 mod local_media;
+mod playlist_runtime;
 mod redraw_pacing;
 mod render_settings;
 mod renderer_recreation;
@@ -30,6 +32,7 @@ use tracing::info;
 use winit::event_loop::{ControlFlow, EventLoop};
 
 use crate::app_shell::AppShell;
+use crate::app_wake::{AppWakeEvent, AppWakeProxy};
 use crate::startup_media::{InitialMedia, resolve_initial_media_from_cli};
 
 /// Точка входа приложения.
@@ -57,10 +60,12 @@ fn main() -> Result<()> {
         "Config rustiplayer готов"
     );
 
-    // Создаём event loop.
-    let event_loop = EventLoop::builder()
+    // Один typed event loop принимает только лёгкие owner wake events.
+    let event_loop = EventLoop::<AppWakeEvent>::with_user_event()
         .build()
         .context("Не удалось создать event loop")?;
+    // Ровно один process proxy передаётся shell-у через cloneable owner ports.
+    let wake_proxy = AppWakeProxy::new(event_loop.create_proxy());
 
     // Idle default — Wait; playback включает Poll только на активном render loop-е.
     event_loop.set_control_flow(ControlFlow::Wait);
@@ -70,7 +75,7 @@ fn main() -> Result<()> {
         info!(path = %path.display(), "CLI аргумент: файл для воспроизведения");
     }
 
-    let mut app = AppShell::new(initial_media, cli_startup_error, loaded_config)
+    let mut app = AppShell::new(initial_media, cli_startup_error, loaded_config, wake_proxy)
         .context("Не удалось создать settings runtime app shell")?;
     event_loop.run_app(&mut app)?;
 

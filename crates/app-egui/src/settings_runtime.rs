@@ -7,7 +7,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use player_core::{
@@ -48,6 +47,9 @@ use settings_core::{
     ValidationRequest,
 };
 
+#[cfg(test)]
+use crate::app_wake::AppWakeOwner;
+use crate::app_wake::{AppWakePort, OwnerMailboxReceiver};
 use crate::render_settings::{
     color_pipeline_settings_from_config, hdr_to_sdr_settings_from_config,
 };
@@ -130,10 +132,14 @@ pub(crate) struct SettingsRuntime {
     /// Cached provider snapshots, которые можно безопасно читать во время egui rendering.
     option_cache: BTreeMap<OptionProviderId, SettingOptions>,
 
+    /// Wake port process shell-а для каждого нового options refresh mailbox-а.
+    dynamic_options_wake_port: AppWakePort,
+
     /// Активный фоновый refresh dynamic options. Опрос провайдеров (например,
     /// CPAL/ALSA устройств) занимает сотни мс и НЕ должен блокировать UI-поток
     /// в кадре открытия панели; результат подбирается poll-ом перед сборкой model.
-    pending_options_refresh: Option<mpsc::Receiver<Vec<(OptionProviderId, SettingOptions)>>>,
+    pending_options_refresh:
+        Option<OwnerMailboxReceiver<(), Vec<(OptionProviderId, SettingOptions)>>>,
 
     /// Последняя попытка отправить preview update; pacing берётся из committed config.
     last_preview_sent_at: Option<Instant>,
@@ -144,7 +150,19 @@ pub(crate) struct SettingsRuntime {
 
 impl SettingsRuntime {
     /// Создаёт runtime owner из startup config-а и забирает ownership у bootstrap-а.
+    #[cfg(test)]
     pub(crate) fn from_loaded_config(loaded_config: LoadedConfig) -> SettingsResult<Self> {
+        Self::from_loaded_config_with_wake_port(
+            loaded_config,
+            AppWakePort::disconnected(AppWakeOwner::SettingsDynamicOptions),
+        )
+    }
+
+    /// Production constructor связывает completion refresh-а с typed winit bridge.
+    pub(crate) fn from_loaded_config_with_wake_port(
+        loaded_config: LoadedConfig,
+        dynamic_options_wake_port: AppWakePort,
+    ) -> SettingsResult<Self> {
         let LoadedConfig { config, path, .. } = loaded_config;
         let controller_registry = app_config_registry()?;
         let registry = app_config_registry()?;
@@ -167,6 +185,7 @@ impl SettingsRuntime {
             status: SettingsUiStatus::default(),
             option_providers,
             option_cache: BTreeMap::new(),
+            dynamic_options_wake_port,
             pending_options_refresh: None,
             last_preview_sent_at: None,
             ui_model_cache: None,

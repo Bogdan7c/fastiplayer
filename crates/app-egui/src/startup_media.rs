@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -14,6 +13,11 @@ use rustiplayer_config::{
 use service_youtube::YoutubeStreamCandidates;
 use tracing::{debug, info, warn};
 
+#[cfg(test)]
+use crate::app_wake::AppWakeOwner;
+use crate::app_wake::{
+    AppWakePort, CompletionPublishError, OwnerMailboxReceiver, WakeDelivery, owner_mailbox,
+};
 use crate::state::AppState;
 
 /// Интервал polling-а фоновой подготовки startup media, когда playback ещё не активен.
@@ -56,8 +60,8 @@ struct YoutubeStartupJob {
     /// Текст pending-состояния для центрального overlay.
     pending_message: String,
 
-    /// Receiver одноразового результата background resolver-а.
-    result_rx: Receiver<YoutubeStartupResult>,
+    /// Exactly-once completion mailbox background resolver-а.
+    result_receiver: OwnerMailboxReceiver<(), YoutubeStartupResult>,
 
     /// JoinHandle нужен для cleanup после получения результата.
     join_handle: Option<JoinHandle<()>>,
@@ -69,8 +73,9 @@ impl YoutubeStartupJob {
         source_url: String,
         app_config: AppConfig,
         system_capabilities: SystemCapabilities,
+        wake_port: AppWakePort,
     ) -> std::result::Result<Self, String> {
-        let (result_tx, result_rx) = mpsc::channel();
+        let (result_publisher, result_receiver) = owner_mailbox(wake_port);
         let thread_url = source_url.clone();
         let network_config = app_config.network.clone();
         let youtube_config = app_config.youtube.clone();
@@ -89,8 +94,16 @@ impl YoutubeStartupJob {
                 )
                 .map_err(|error| format!("{error:#}"));
 
-                if result_tx.send(resolve_result).is_err() {
-                    debug!("UI больше не ждёт результат YouTube startup resolver-а");
+                match result_publisher.publish_completion(resolve_result) {
+                    Ok(WakeDelivery::EventLoopClosed) => {
+                        debug!("Event loop закрыт; YouTube terminal оставлен без wake retry");
+                    }
+                    Ok(WakeDelivery::Armed | WakeDelivery::Coalesced) => {}
+                    Err(CompletionPublishError::AlreadyPublished) => {
+                        warn!(
+                            "YouTube startup resolver попытался опубликовать второй terminal result"
+                        );
+                    }
                 }
             })
             .map_err(|error| format!("Не удалось запустить YouTube startup resolver: {error}"))?;
@@ -98,7 +111,7 @@ impl YoutubeStartupJob {
         Ok(Self {
             source_url,
             pending_message: "Подготовка YouTube stream...".to_string(),
-            result_rx,
+            result_receiver,
             join_handle: Some(join_handle),
         })
     }
@@ -110,23 +123,28 @@ impl YoutubeStartupJob {
 
     /// Неблокирующе забирает результат resolver-а, если он уже готов.
     fn try_take_result(&mut self) -> Option<YoutubeStartupResult> {
-        let result = match self.result_rx.try_recv() {
-            Ok(result) => result,
-            Err(TryRecvError::Empty) => return None,
-            Err(TryRecvError::Disconnected) => {
-                Err("YouTube startup resolver завершился без результата".to_string())
-            }
-        };
-
+        let drain = self.result_receiver.drain();
+        let result = drain.completion;
+        if result.is_none()
+            && !drain.producer_disconnected_without_completion
+            && !self
+                .join_handle
+                .as_ref()
+                .is_some_and(JoinHandle::is_finished)
+        {
+            return None;
+        }
         if let Some(join_handle) = self.join_handle.take()
+            && join_handle.is_finished()
             && join_handle.join().is_err()
         {
-            return Some(Err(
-                "YouTube startup resolver завершился panic после результата".to_string(),
-            ));
+            return Some(Err("YouTube startup resolver завершился panic".to_string()));
         }
-
-        Some(result)
+        result.or_else(|| {
+            Some(Err(
+                "YouTube startup resolver завершился без результата".to_string()
+            ))
+        })
     }
 }
 
@@ -138,8 +156,8 @@ struct DirectMediaStartupJob {
     /// Текст pending-состояния для центрального overlay.
     pending_message: String,
 
-    /// Receiver одноразового результата background opener-а.
-    result_rx: Receiver<DirectMediaStartupResult>,
+    /// Exactly-once completion mailbox background opener-а.
+    result_receiver: OwnerMailboxReceiver<(), DirectMediaStartupResult>,
 
     /// JoinHandle нужен для cleanup после получения результата.
     join_handle: Option<JoinHandle<()>>,
@@ -147,8 +165,12 @@ struct DirectMediaStartupJob {
 
 impl DirectMediaStartupJob {
     /// Запускает подготовку direct media на отдельном thread-е.
-    fn spawn(source_url: String, app_config: AppConfig) -> std::result::Result<Self, String> {
-        let (result_tx, result_rx) = mpsc::channel();
+    fn spawn(
+        source_url: String,
+        app_config: AppConfig,
+        wake_port: AppWakePort,
+    ) -> std::result::Result<Self, String> {
+        let (result_publisher, result_receiver) = owner_mailbox(wake_port);
         let thread_url = source_url.clone();
         let network_config = app_config.network.clone();
         let demux_config = app_config.player.demux;
@@ -159,8 +181,16 @@ impl DirectMediaStartupJob {
                     resolve_direct_media_startup_media(&thread_url, &network_config, &demux_config)
                         .map_err(|error| format!("{error:#}"));
 
-                if result_tx.send(open_result).is_err() {
-                    debug!("UI больше не ждёт результат direct media startup opener-а");
+                match result_publisher.publish_completion(open_result) {
+                    Ok(WakeDelivery::EventLoopClosed) => {
+                        debug!("Event loop закрыт; direct-media terminal оставлен без wake retry");
+                    }
+                    Ok(WakeDelivery::Armed | WakeDelivery::Coalesced) => {}
+                    Err(CompletionPublishError::AlreadyPublished) => {
+                        warn!(
+                            "Direct media startup opener попытался опубликовать второй terminal result"
+                        );
+                    }
                 }
             })
             .map_err(|error| {
@@ -170,7 +200,7 @@ impl DirectMediaStartupJob {
         Ok(Self {
             source_url,
             pending_message: "Подготовка direct media URL...".to_string(),
-            result_rx,
+            result_receiver,
             join_handle: Some(join_handle),
         })
     }
@@ -182,28 +212,38 @@ impl DirectMediaStartupJob {
 
     /// Неблокирующе забирает результат opener-а, если он уже готов.
     fn try_take_result(&mut self) -> Option<DirectMediaStartupResult> {
-        let result = match self.result_rx.try_recv() {
-            Ok(result) => result,
-            Err(TryRecvError::Empty) => return None,
-            Err(TryRecvError::Disconnected) => {
-                Err("Direct media startup opener завершился без результата".to_string())
-            }
-        };
-
+        let drain = self.result_receiver.drain();
+        let result = drain.completion;
+        if result.is_none()
+            && !drain.producer_disconnected_without_completion
+            && !self
+                .join_handle
+                .as_ref()
+                .is_some_and(JoinHandle::is_finished)
+        {
+            return None;
+        }
         if let Some(join_handle) = self.join_handle.take()
+            && join_handle.is_finished()
             && join_handle.join().is_err()
         {
             return Some(Err(
-                "Direct media startup opener завершился panic после результата".to_string(),
+                "Direct media startup opener завершился panic".to_string()
             ));
         }
-
-        Some(result)
+        result.or_else(|| {
+            Some(Err(
+                "Direct media startup opener завершился без результата".to_string()
+            ))
+        })
     }
 }
 
 /// Владеет shell-состоянием стартового media без знания о renderer/GPU.
 pub(crate) struct StartupMediaController {
+    /// Process-lifetime wake port общий для mutually-exclusive startup jobs.
+    wake_port: AppWakePort,
+
     /// Media, переданное через CLI или восстановленное после suspend.
     initial_media: Option<InitialMedia>,
 
@@ -219,8 +259,23 @@ pub(crate) struct StartupMediaController {
 
 impl StartupMediaController {
     /// Создаёт controller из startup-состояния, которое было собрано до запуска окна.
+    #[cfg(test)]
     pub(crate) fn new(initial_media: Option<InitialMedia>, startup_error: Option<String>) -> Self {
+        Self::with_wake_port(
+            initial_media,
+            startup_error,
+            AppWakePort::disconnected(AppWakeOwner::StartupMedia),
+        )
+    }
+
+    /// Production constructor получает process-lifetime wake port от `AppShell`.
+    pub(crate) fn with_wake_port(
+        initial_media: Option<InitialMedia>,
+        startup_error: Option<String>,
+        wake_port: AppWakePort,
+    ) -> Self {
         Self {
+            wake_port,
             initial_media,
             youtube_startup_job: None,
             direct_media_startup_job: None,
@@ -288,22 +343,23 @@ impl StartupMediaController {
     }
 
     /// Неблокирующе опрашивает результаты фоновой подготовки startup URL-ов.
-    pub(crate) fn poll_startup_jobs(&mut self, app_state: &mut AppState) {
-        self.poll_youtube_job(app_state);
-        poll_direct_media_startup_job(
+    pub(crate) fn poll_startup_jobs(&mut self, app_state: &mut AppState) -> bool {
+        let youtube_changed = self.poll_youtube_job(app_state);
+        let direct_changed = poll_direct_media_startup_job(
             &mut self.direct_media_startup_job,
             app_state,
             &mut self.startup_error,
         );
+        youtube_changed || direct_changed
     }
 
     /// Неблокирующе опрашивает результат фоновой подготовки YouTube URL.
-    pub(crate) fn poll_youtube_job(&mut self, app_state: &mut AppState) {
+    pub(crate) fn poll_youtube_job(&mut self, app_state: &mut AppState) -> bool {
         poll_youtube_startup_job(
             &mut self.youtube_startup_job,
             app_state,
             &mut self.startup_error,
-        );
+        )
     }
 
     /// Запускает background resolve для CLI YouTube URL и сразу обновляет UI state.
@@ -315,8 +371,12 @@ impl StartupMediaController {
         system_capabilities: &SystemCapabilities,
     ) {
         app_state.set_startup_pending("Подготовка YouTube stream...".to_string());
-        match YoutubeStartupJob::spawn(source_url, app_config.clone(), system_capabilities.clone())
-        {
+        match YoutubeStartupJob::spawn(
+            source_url,
+            app_config.clone(),
+            system_capabilities.clone(),
+            self.wake_port.clone(),
+        ) {
             Ok(job) => {
                 self.startup_error = None;
                 self.youtube_startup_job = Some(job);
@@ -338,7 +398,7 @@ impl StartupMediaController {
         app_config: &AppConfig,
     ) {
         app_state.set_startup_pending("Подготовка direct media URL...".to_string());
-        match DirectMediaStartupJob::spawn(source_url, app_config.clone()) {
+        match DirectMediaStartupJob::spawn(source_url, app_config.clone(), self.wake_port.clone()) {
             Ok(job) => {
                 self.startup_error = None;
                 self.direct_media_startup_job = Some(job);
@@ -461,12 +521,12 @@ fn poll_youtube_startup_job(
     job_slot: &mut Option<YoutubeStartupJob>,
     app_state: &mut AppState,
     startup_error_slot: &mut Option<String>,
-) {
+) -> bool {
     let Some(job) = job_slot.as_mut() else {
-        return;
+        return false;
     };
     let Some(resolve_result) = job.try_take_result() else {
-        return;
+        return false;
     };
     let source_url = job.source_url.clone();
     *job_slot = None;
@@ -493,6 +553,7 @@ fn poll_youtube_startup_job(
             app_state.set_startup_error(startup_error);
         }
     }
+    true
 }
 
 /// Забирает готовый результат фоновой подготовки direct media и доставляет его в UI/player.
@@ -500,12 +561,12 @@ fn poll_direct_media_startup_job(
     job_slot: &mut Option<DirectMediaStartupJob>,
     app_state: &mut AppState,
     startup_error_slot: &mut Option<String>,
-) {
+) -> bool {
     let Some(job) = job_slot.as_mut() else {
-        return;
+        return false;
     };
     let Some(open_result) = job.try_take_result() else {
-        return;
+        return false;
     };
     let source_url = job.source_url.clone();
     *job_slot = None;
@@ -532,6 +593,7 @@ fn poll_direct_media_startup_job(
             app_state.set_startup_error(startup_error);
         }
     }
+    true
 }
 
 /// Подготавливает стартовый media-файл из CLI-аргумента.
@@ -597,7 +659,6 @@ fn resolve_direct_media_initial_url(argument: String) -> (Option<InitialMedia>, 
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    use std::sync::mpsc;
     use std::time::Duration;
 
     use capability_core::{
@@ -767,13 +828,15 @@ mod tests {
 
     #[test]
     fn pending_message_reports_existing_youtube_job() {
-        let (_result_tx, result_rx) = mpsc::channel();
+        let wake_port = AppWakePort::disconnected(AppWakeOwner::StartupMedia);
+        let (_result_publisher, result_receiver) = owner_mailbox(wake_port.clone());
         let controller = StartupMediaController {
+            wake_port,
             initial_media: None,
             youtube_startup_job: Some(YoutubeStartupJob {
                 source_url: "https://example.test/video".to_string(),
                 pending_message: "Подготовка YouTube stream...".to_string(),
-                result_rx,
+                result_receiver,
                 join_handle: None,
             }),
             direct_media_startup_job: None,

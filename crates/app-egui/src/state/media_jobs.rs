@@ -234,39 +234,25 @@ impl AppState {
     }
 
     /// Неблокирующе забирает события async открытия локального файла.
-    pub fn poll_local_file_open_job(&mut self) {
-        let mut finished_result = None;
-
-        while let Some(event) = self
-            .local_file_open_job
-            .as_mut()
-            .and_then(LocalFileOpenJob::try_take_event)
-        {
-            match event {
-                LocalFileOpenEvent::Preparing { path } => {
-                    self.set_startup_pending(preparing_local_file_message(&path));
-                }
-                LocalFileOpenEvent::Finished(result) => {
-                    finished_result = Some(result);
-                    break;
-                }
-            }
-        }
-
-        let Some(mut result) = finished_result else {
-            return;
+    pub fn poll_local_file_open_job(&mut self) -> bool {
+        let Some(job) = self.local_file_open_job.as_mut() else {
+            self.local_file_open_wake_port
+                .acknowledge_abandoned_mailbox();
+            return false;
         };
+        let drain = job.drain();
+        let had_visible_mutation = drain.has_payload();
 
-        if let Some(join_error) = self
-            .local_file_open_job
-            .as_mut()
-            .and_then(LocalFileOpenJob::join_after_finished)
-        {
-            result = LocalFileOpenResult::JobFailed { error: join_error };
+        if let Some(path) = drain.preparing_path {
+            self.set_startup_pending(preparing_local_file_message(&path));
         }
-        self.local_file_open_job = None;
 
-        self.apply_local_file_open_result(result);
+        if let Some(result) = drain.completion {
+            self.local_file_open_job = None;
+            self.apply_local_file_open_result(result);
+        }
+
+        had_visible_mutation
     }
 
     /// Применяет финальный результат local open job-а к shell и worker boundary.

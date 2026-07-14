@@ -228,7 +228,8 @@ impl SettingsRuntime {
             refresh_jobs.push((provider_id, request, provider));
         }
 
-        let (result_sender, result_receiver) = mpsc::channel();
+        let (result_publisher, result_receiver) =
+            crate::app_wake::owner_mailbox(self.dynamic_options_wake_port.clone());
         std::thread::Builder::new()
             .name("settings-options-refresh".to_string())
             .spawn(move || {
@@ -239,8 +240,22 @@ impl SettingsRuntime {
                         (provider_id, snapshot)
                     })
                     .collect::<Vec<_>>();
-                // Получатель мог исчезнуть (новый refresh заменил этот) — не ошибка.
-                let _ = result_sender.send(snapshots);
+                match result_publisher.publish_completion(snapshots) {
+                    Ok(crate::app_wake::WakeDelivery::EventLoopClosed) => {
+                        tracing::debug!(
+                            "Event loop закрыт; settings terminal оставлен без wake retry"
+                        );
+                    }
+                    Ok(
+                        crate::app_wake::WakeDelivery::Armed
+                        | crate::app_wake::WakeDelivery::Coalesced,
+                    ) => {}
+                    Err(crate::app_wake::CompletionPublishError::AlreadyPublished) => {
+                        tracing::warn!(
+                            "dynamic options refresh попытался опубликовать второй terminal result"
+                        );
+                    }
+                }
             })
             .map_err(|error| {
                 settings_core::SettingsError::access_failed(format!(
@@ -265,25 +280,21 @@ impl SettingsRuntime {
     /// Вызывается на каждом кадре перед сборкой `ui_model`; `try_recv` дешёвый.
     pub(crate) fn poll_dynamic_options_refresh(&mut self) -> bool {
         let Some(result_receiver) = self.pending_options_refresh.as_ref() else {
+            self.dynamic_options_wake_port
+                .acknowledge_abandoned_mailbox();
             return false;
         };
-        match result_receiver.try_recv() {
-            Ok(snapshots) => {
+        let drain = result_receiver.drain();
+        let Some(snapshots) = drain.completion else {
+            if drain.producer_disconnected_without_completion {
                 self.pending_options_refresh = None;
-                self.apply_dynamic_options_snapshots(snapshots);
-                true
+                tracing::warn!("фоновый refresh dynamic options завершился без terminal result");
             }
-            Err(mpsc::TryRecvError::Empty) => false,
-            Err(mpsc::TryRecvError::Disconnected) => {
-                // Поток умер, не отправив результат (panic). Pending снимаем,
-                // чтобы не будить idle loop вечно; старый cache остаётся валидным.
-                self.pending_options_refresh = None;
-                tracing::warn!(
-                    "фоновый refresh dynamic options завершился без результата (panic потока?)"
-                );
-                false
-            }
-        }
+            return false;
+        };
+        self.pending_options_refresh = None;
+        self.apply_dynamic_options_snapshots(snapshots);
+        true
     }
 
     /// Кладёт готовые snapshots провайдеров в cache и инвалидирует visual model.
@@ -300,11 +311,20 @@ impl SettingsRuntime {
     /// Блокирующее ожидание фонового refresh-а для детерминированных тестов.
     #[cfg(test)]
     pub(crate) fn wait_for_options_refresh_for_test(&mut self) {
-        if let Some(result_receiver) = self.pending_options_refresh.take() {
-            let snapshots = result_receiver
-                .recv_timeout(Duration::from_secs(5))
-                .expect("фоновый refresh dynamic options должен завершиться в тесте");
-            self.apply_dynamic_options_snapshots(snapshots);
+        let Some(result_receiver) = self.pending_options_refresh.take() else {
+            return;
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(snapshots) = result_receiver.drain().completion {
+                self.apply_dynamic_options_snapshots(snapshots);
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "фоновый refresh dynamic options должен завершиться в тесте"
+            );
+            std::thread::yield_now();
         }
     }
 

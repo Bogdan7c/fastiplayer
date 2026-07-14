@@ -678,6 +678,7 @@ impl AppState {
         match LocalFileOpenJob::spawn(
             window,
             self.committed_config_snapshot.demux_config_for_open(),
+            self.local_file_open_wake_port.clone(),
         ) {
             Ok(job) => {
                 self.local_file_open_job = Some(job);

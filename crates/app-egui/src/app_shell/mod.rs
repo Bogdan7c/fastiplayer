@@ -12,6 +12,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::app_wake::{AppWakeEvent, AppWakeOwner, AppWakeProxy};
 use crate::render_settings::{
     surface_present_settings_from_config, warn_legacy_tone_mapping_config,
 };
@@ -25,6 +26,7 @@ use winit::{
 };
 
 use crate::frame_prepare::render_frame;
+use crate::playlist_runtime::{PlaylistRuntime, PlaylistShutdownDeadline, PlaylistShutdownOutcome};
 use crate::redraw_pacing::{
     BackgroundPollScheduler, RedrawControlAction, should_request_redraw_after_window_event,
 };
@@ -33,6 +35,19 @@ use crate::settings_runtime::SettingsRuntime;
 use crate::startup_media::{InitialMedia, StartupMediaController};
 use crate::state::AppState;
 use crate::telemetry::Telemetry;
+
+/// Применяет redraw только когда drain действительно изменил видимый state.
+fn request_redraw_for_visible_wake(window: Option<&Window>, visible_mutation: bool) -> bool {
+    let should_redraw = should_request_redraw_for_wake(window.is_some(), visible_mutation);
+    if should_redraw && let Some(window) = window {
+        window.request_redraw();
+    }
+    should_redraw
+}
+
+const fn should_request_redraw_for_wake(has_window: bool, visible_mutation: bool) -> bool {
+    has_window && visible_mutation
+}
 
 /// Winit shell приложения.
 ///
@@ -58,6 +73,12 @@ pub(crate) struct AppShell {
     /// Controller стартового media и фоновой подготовки CLI YouTube URL.
     startup_media: StartupMediaController,
 
+    /// Process-lifetime playlist owner переживает renderer-bound AppState recreation.
+    playlist_runtime: PlaylistRuntime,
+
+    /// Port копируется в каждый renderer-bound AppState при resume.
+    local_file_open_wake_port: crate::app_wake::AppWakePort,
+
     /// Authoritative runtime owner пользовательских настроек.
     settings_runtime: SettingsRuntime,
 
@@ -76,14 +97,28 @@ impl AppShell {
         initial_media: Option<InitialMedia>,
         startup_error: Option<String>,
         loaded_config: LoadedConfig,
+        wake_proxy: AppWakeProxy,
     ) -> anyhow::Result<Self> {
+        let startup_wake_port = wake_proxy.port(AppWakeOwner::StartupMedia);
+        let local_file_wake_port = wake_proxy.port(AppWakeOwner::LocalFileOpen);
+        let settings_wake_port = wake_proxy.port(AppWakeOwner::SettingsDynamicOptions);
+        let playlist_wake_port = wake_proxy.port(AppWakeOwner::PlaylistRuntime);
         Ok(Self {
             window: None,
             renderer: None,
             app_state: None,
             telemetry: Arc::new(Telemetry::new()),
-            startup_media: StartupMediaController::new(initial_media, startup_error),
-            settings_runtime: SettingsRuntime::from_loaded_config(loaded_config)?,
+            startup_media: StartupMediaController::with_wake_port(
+                initial_media,
+                startup_error,
+                startup_wake_port,
+            ),
+            playlist_runtime: PlaylistRuntime::new(playlist_wake_port),
+            local_file_open_wake_port: local_file_wake_port,
+            settings_runtime: SettingsRuntime::from_loaded_config_with_wake_port(
+                loaded_config,
+                settings_wake_port,
+            )?,
             background_poll_scheduler: BackgroundPollScheduler::new(),
             renderer_lifecycle: RendererLifecycleCoordinator::default(),
         })
@@ -128,6 +163,7 @@ impl AppShell {
             self.settings_runtime.committed_snapshot(),
             self.settings_runtime.audio_output_device_controller(),
             self.startup_media.startup_error_message(),
+            self.local_file_open_wake_port.clone(),
         ) {
             Ok(app_state) => app_state,
             Err(error) => {
@@ -154,6 +190,12 @@ impl AppShell {
         self.startup_media.poll_startup_jobs(&mut app_state);
         app_state.poll_local_file_open_job();
 
+        if self.playlist_runtime.bind_resumed_app_state().is_none() {
+            tracing::error!("Playlist runtime уже закрыт и не принимает новый AppState binding");
+            event_loop.exit();
+            return;
+        }
+
         // Shell явно разделяет обновление snapshot и публикацию в desktop integration.
         let player_snapshot = app_state.refresh_player_snapshot();
         app_state.publish_desktop_snapshot(&player_snapshot);
@@ -173,6 +215,7 @@ impl AppShell {
             }
         }
 
+        self.playlist_runtime.suspend_app_state_binding();
         self.app_state = None;
         self.renderer = None;
     }
@@ -181,7 +224,23 @@ impl AppShell {
     fn close_runtime_and_exit(&mut self, event_loop: &ActiveEventLoop, reason: &'static str) {
         info!("{reason}");
         self.drop_runtime();
+        self.shutdown_playlist_runtime();
         event_loop.exit();
+    }
+
+    /// Закрывает process-lifetime admission через единый idempotent boundary.
+    fn shutdown_playlist_runtime(&mut self) {
+        let shutdown_outcome = self
+            .playlist_runtime
+            .shutdown(PlaylistShutdownDeadline::at(Instant::now()));
+        match shutdown_outcome {
+            PlaylistShutdownOutcome::Completed => {
+                info!("Playlist runtime bounded shutdown завершён");
+            }
+            PlaylistShutdownOutcome::AlreadyCompleted => {
+                debug!("Playlist runtime уже был закрыт");
+            }
+        }
     }
 
     /// Применяет уже принятое scheduler-ом решение к winit и окну.
@@ -217,7 +276,41 @@ impl AppShell {
     }
 }
 
-impl ApplicationHandler for AppShell {
+impl ApplicationHandler<AppWakeEvent> for AppShell {
+    /// Неблокирующе опустошает ровно одного owner-а и redraw-ит только mutation.
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppWakeEvent) {
+        let visible_mutation = match event.owner() {
+            AppWakeOwner::StartupMedia => self
+                .app_state
+                .as_mut()
+                .is_some_and(|app_state| self.startup_media.poll_startup_jobs(app_state)),
+            AppWakeOwner::LocalFileOpen => {
+                if let Some(app_state) = self.app_state.as_mut() {
+                    app_state.poll_local_file_open_job()
+                } else {
+                    self.local_file_open_wake_port
+                        .acknowledge_abandoned_mailbox();
+                    false
+                }
+            }
+            AppWakeOwner::SettingsDynamicOptions => {
+                self.settings_runtime.poll_dynamic_options_refresh()
+            }
+            AppWakeOwner::PlaylistRuntime => {
+                self.playlist_runtime.drain_owner_mailbox();
+                false
+            }
+        };
+
+        request_redraw_for_visible_wake(self.window.as_deref(), visible_mutation);
+    }
+
+    /// Гарантирует process-owner shutdown и для exit путей вне window callbacks.
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.drop_runtime();
+        self.shutdown_playlist_runtime();
+    }
+
     /// Вызывается при приостановке приложения (сворачивание, смена TTY).
     ///
     /// Освобождаем GPU ресурсы — surface может стать невалидным.
@@ -379,5 +472,22 @@ impl ApplicationHandler for AppShell {
         );
 
         Self::apply_redraw_control_action(event_loop, self.window.as_deref(), action);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_request_redraw_for_wake;
+
+    #[test]
+    fn idle_and_noop_wakes_never_request_redraw() {
+        assert!(!should_request_redraw_for_wake(true, false));
+        assert!(!should_request_redraw_for_wake(false, false));
+    }
+
+    #[test]
+    fn visible_wake_requires_live_window() {
+        assert!(should_request_redraw_for_wake(true, true));
+        assert!(!should_request_redraw_for_wake(false, true));
     }
 }

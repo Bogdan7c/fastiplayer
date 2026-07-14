@@ -1,23 +1,16 @@
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 
 use player_core::PreparedMedia;
 use pollster::FutureExt as _;
 use rustiplayer_config::PlayerDemuxConfig;
-use tracing::debug;
+use tracing::{debug, warn};
 use winit::window::Window;
 
+use crate::app_wake::{
+    AppWakePort, CompletionPublishError, OwnerMailboxReceiver, WakeDelivery, owner_mailbox,
+};
 use crate::local_media;
-
-/// Событие фонового открытия локального файла для shell polling-а.
-pub(crate) enum LocalFileOpenEvent {
-    /// Пользователь выбрал файл, и background thread перешёл к подготовке demuxer-а.
-    Preparing { path: PathBuf },
-
-    /// Диалог и подготовка завершились финальным результатом.
-    Finished(LocalFileOpenResult),
-}
 
 /// Финальный результат async file dialog-а и подготовки локального media.
 pub(crate) enum LocalFileOpenResult {
@@ -37,10 +30,25 @@ pub(crate) enum LocalFileOpenResult {
     JobFailed { error: String },
 }
 
+/// Один UI drain latest progress и exactly-once completion.
+pub(crate) struct LocalFileOpenDrain {
+    /// Последний выбранный path, для которого background job начал preparation.
+    pub(crate) preparing_path: Option<PathBuf>,
+    /// Финальный результат, если worker уже завершил job.
+    pub(crate) completion: Option<LocalFileOpenResult>,
+}
+
+impl LocalFileOpenDrain {
+    /// `true` означает реальную видимую мутацию shell status/media state.
+    pub(crate) fn has_payload(&self) -> bool {
+        self.preparing_path.is_some() || self.completion.is_some()
+    }
+}
+
 /// Фоновый job выбора и подготовки локального файла.
 pub(crate) struct LocalFileOpenJob {
-    /// Receiver событий, которые UI забирает только неблокирующим polling-ом.
-    event_rx: Receiver<LocalFileOpenEvent>,
+    /// Owner mailbox хранит latest path отдельно от lossless terminal result.
+    mailbox_receiver: OwnerMailboxReceiver<PathBuf, LocalFileOpenResult>,
 
     /// JoinHandle нужен для cleanup после финального результата.
     join_handle: Option<JoinHandle<()>>,
@@ -51,8 +59,9 @@ impl LocalFileOpenJob {
     pub(crate) fn spawn(
         window: &Window,
         demux_config: PlayerDemuxConfig,
+        wake_port: AppWakePort,
     ) -> std::result::Result<Self, String> {
-        let (event_tx, event_rx) = mpsc::channel();
+        let (mailbox_publisher, mailbox_receiver) = owner_mailbox(wake_port);
         let file_dialog_future = rfd::AsyncFileDialog::new()
             .set_parent(window)
             .add_filter(
@@ -67,20 +76,18 @@ impl LocalFileOpenJob {
             .name("local-file-open".to_string())
             .spawn(move || {
                 let Some(file_handle) = file_dialog_future.block_on() else {
-                    send_local_file_open_event(
-                        &event_tx,
-                        LocalFileOpenEvent::Finished(LocalFileOpenResult::Cancelled),
+                    publish_local_file_completion(
+                        &mailbox_publisher,
+                        LocalFileOpenResult::Cancelled,
                     );
                     return;
                 };
 
                 let selected_path = file_handle.path().to_path_buf();
-                send_local_file_open_event(
-                    &event_tx,
-                    LocalFileOpenEvent::Preparing {
-                        path: selected_path.clone(),
-                    },
-                );
+                let progress_outcome = mailbox_publisher.publish_progress(selected_path.clone());
+                if progress_outcome.wake_delivery == WakeDelivery::EventLoopClosed {
+                    debug!("Event loop закрыт; local-file progress оставлен без wake retry");
+                }
 
                 let prepare_result = local_media::prepare_local_file(&selected_path, &demux_config)
                     .map(|prepared_media| LocalFileOpenResult::Prepared {
@@ -92,33 +99,55 @@ impl LocalFileOpenJob {
                         error: format!("{error:#}"),
                     });
 
-                send_local_file_open_event(&event_tx, LocalFileOpenEvent::Finished(prepare_result));
+                publish_local_file_completion(&mailbox_publisher, prepare_result);
             })
             .map_err(|error| format!("Не удалось запустить local file open job: {error}"))?;
 
         Ok(Self {
-            event_rx,
+            mailbox_receiver,
             join_handle: Some(join_handle),
         })
     }
 
-    /// Неблокирующе забирает следующее событие job-а.
-    pub(crate) fn try_take_event(&mut self) -> Option<LocalFileOpenEvent> {
-        match self.event_rx.try_recv() {
-            Ok(event) => Some(event),
-            Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => Some(LocalFileOpenEvent::Finished(
-                LocalFileOpenResult::JobFailed {
-                    error: "Local file open job завершился без результата".to_string(),
-                },
-            )),
+    /// Неблокирующе забирает оба независимых slot-а и никогда не ждёт join.
+    pub(crate) fn drain(&mut self) -> LocalFileOpenDrain {
+        let mailbox_drain = self.mailbox_receiver.drain();
+        let mut completion = mailbox_drain.completion;
+
+        if completion.is_none()
+            && (mailbox_drain.producer_disconnected_without_completion
+                || self
+                    .join_handle
+                    .as_ref()
+                    .is_some_and(JoinHandle::is_finished))
+        {
+            completion = Some(LocalFileOpenResult::JobFailed {
+                error: self
+                    .take_finished_join_error()
+                    .unwrap_or_else(|| "Local file open job завершился без результата".to_string()),
+            });
+        } else if completion.is_some() {
+            // Publish выполняется перед return worker-а. JoinHandle может ещё не успеть
+            // стать finished, поэтому UI либо join-ит готовый thread, либо detach-ит его.
+            if let Some(join_error) = self.take_finished_join_error() {
+                completion = Some(LocalFileOpenResult::JobFailed { error: join_error });
+            }
+            self.join_handle = None;
+        }
+
+        LocalFileOpenDrain {
+            preparing_path: mailbox_drain.latest_progress,
+            completion,
         }
     }
 
-    /// Дожидается thread cleanup-а после финального результата без повторного join-а.
-    pub(crate) fn join_after_finished(&mut self) -> Option<String> {
+    /// Join-ит только уже завершившийся thread, поэтому UI callback не блокируется.
+    fn take_finished_join_error(&mut self) -> Option<String> {
         let join_handle = self.join_handle.take()?;
-
+        if !join_handle.is_finished() {
+            self.join_handle = Some(join_handle);
+            return None;
+        }
         join_handle
             .join()
             .err()
@@ -126,10 +155,19 @@ impl LocalFileOpenJob {
     }
 }
 
-/// Отправляет event в UI и логирует ситуацию, когда receiver уже сброшен.
-fn send_local_file_open_event(event_tx: &Sender<LocalFileOpenEvent>, event: LocalFileOpenEvent) {
-    if event_tx.send(event).is_err() {
-        debug!("UI больше не ждёт результат local file open job-а");
+/// Публикует terminal без blocking send; повторный terminal является invariant error.
+fn publish_local_file_completion(
+    publisher: &crate::app_wake::OwnerMailboxPublisher<PathBuf, LocalFileOpenResult>,
+    completion: LocalFileOpenResult,
+) {
+    match publisher.publish_completion(completion) {
+        Ok(WakeDelivery::EventLoopClosed) => {
+            debug!("Event loop закрыт; local-file terminal оставлен без wake retry");
+        }
+        Ok(WakeDelivery::Armed | WakeDelivery::Coalesced) => {}
+        Err(CompletionPublishError::AlreadyPublished) => {
+            warn!("Local file open job попытался опубликовать второй terminal result");
+        }
     }
 }
 
@@ -146,32 +184,24 @@ pub(crate) fn local_file_prepare_error_message(path: &std::path::Path, error: &s
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::mpsc;
 
     use super::{
-        LocalFileOpenEvent, LocalFileOpenJob, LocalFileOpenResult,
-        local_file_prepare_error_message, preparing_local_file_message,
+        LocalFileOpenDrain, LocalFileOpenResult, local_file_prepare_error_message,
+        preparing_local_file_message,
     };
 
-    /// Проверяет, что cancel остаётся shell-level результатом без пути и PreparedMedia.
+    /// Проверяет, что terminal cancel считается видимой exactly-once мутацией.
     #[test]
-    fn cancelled_result_is_delivered_without_media() {
-        let (event_tx, event_rx) = mpsc::channel();
-        event_tx
-            .send(LocalFileOpenEvent::Finished(LocalFileOpenResult::Cancelled))
-            .expect("test channel должен принять cancel event");
-        let mut job = LocalFileOpenJob {
-            event_rx,
-            join_handle: None,
+    fn cancelled_result_is_visible_completion_without_media() {
+        let drain = LocalFileOpenDrain {
+            preparing_path: None,
+            completion: Some(LocalFileOpenResult::Cancelled),
         };
 
-        let event = job
-            .try_take_event()
-            .expect("cancel event должен быть готов");
-
+        assert!(drain.has_payload());
         assert!(matches!(
-            event,
-            LocalFileOpenEvent::Finished(LocalFileOpenResult::Cancelled)
+            drain.completion,
+            Some(LocalFileOpenResult::Cancelled)
         ));
     }
 
@@ -196,23 +226,14 @@ mod tests {
         );
     }
 
-    /// Проверяет, что disconnected channel превращается в явную shell error.
+    /// Пустой queued wake event не должен объявлять видимую мутацию.
     #[test]
-    fn disconnected_job_is_reported_as_job_failure() {
-        let (event_tx, event_rx) = mpsc::channel();
-        drop(event_tx);
-        let mut job = LocalFileOpenJob {
-            event_rx,
-            join_handle: None,
+    fn empty_drain_is_not_visible_mutation() {
+        let drain = LocalFileOpenDrain {
+            preparing_path: None,
+            completion: None,
         };
 
-        let event = job
-            .try_take_event()
-            .expect("disconnect должен дать failure");
-
-        assert!(matches!(
-            event,
-            LocalFileOpenEvent::Finished(LocalFileOpenResult::JobFailed { .. })
-        ));
+        assert!(!drain.has_payload());
     }
 }

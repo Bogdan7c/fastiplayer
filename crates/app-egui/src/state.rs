@@ -30,12 +30,13 @@ use video_present_core::VideoFrameLease;
 use video_vaapi::VaapiVideoBackendFactory;
 use winit::window::Window;
 
+use crate::app_wake::AppWakePort;
 use crate::dma_buf_runtime_fallback::{
     DmaBufRuntimeFallbackController, DmaBufRuntimeFallbackError, DmaBufRuntimeFallbackFailure,
     PendingDmaBufLayoutRejection,
 };
 use crate::local_file_open::{
-    LocalFileOpenEvent, LocalFileOpenJob, LocalFileOpenResult, local_file_prepare_error_message,
+    LocalFileOpenJob, LocalFileOpenResult, local_file_prepare_error_message,
     preparing_local_file_message,
 };
 use crate::local_media;
@@ -253,6 +254,9 @@ pub struct AppState {
     /// Активный async dialog/prepare job для локального файла.
     local_file_open_job: Option<LocalFileOpenJob>,
 
+    /// Process-lifetime owner wake port для каждого нового local-file job-а.
+    local_file_open_wake_port: AppWakePort,
+
     /// Transient pointer state timeline; player position здесь не хранится.
     timeline_ui_state: TimelineUiState,
 
@@ -272,13 +276,20 @@ const MAX_SIDEBAR_SLIDE_FRAME_DT_SECONDS: f32 = 0.1;
 
 impl AppState {
     /// Создаёт новое состояние приложения и запускает playback worker.
-    #[instrument(skip(window, telemetry, committed_config_snapshot, startup_error))]
+    #[instrument(skip(
+        window,
+        telemetry,
+        committed_config_snapshot,
+        startup_error,
+        local_file_open_wake_port
+    ))]
     pub fn new(
         window: &Window,
         telemetry: Arc<Telemetry>,
         committed_config_snapshot: CommittedConfigSnapshot,
         audio_output_device_controller: audio::AudioOutputDeviceController,
         startup_error: Option<String>,
+        local_file_open_wake_port: AppWakePort,
     ) -> anyhow::Result<Self> {
         let egui_ctx = egui::Context::default();
         egui_ctx.set_theme(egui::Theme::Dark);
@@ -344,6 +355,7 @@ impl AppState {
             current_local_file: None,
             active_media_source: None,
             local_file_open_job: None,
+            local_file_open_wake_port,
             timeline_ui_state: TimelineUiState::default(),
             telemetry_panel_cache: TelemetryPanelCache::default(),
             sidebar_controller: SidebarController::default(),
