@@ -1,19 +1,18 @@
 //! D08/D39 reservation/authorization state machine playlist controller-а.
 
 mod intents;
+mod manual;
 mod token;
 
-use intents::select_intent;
 pub(crate) use intents::{
     BarrierRaceIntent, ControllerTerminalDrain, ControllerTerminalResolution,
     DeferredControllerIntent, DeferredTransportIntent, DesiredQueueModes, LifecycleIntentOutcome,
 };
-use token::GuardedInstallToken;
+use token::{GuardedInstallAbort, GuardedInstallToken};
 
 use player_core::{MediaInstallRequestId, MediaInstanceId, PlaybackIntentRevision};
 use playlist_core::{
-    ManualNavigationPreview, PrepareReservedMutationError, QueueRevisionSnapshot,
-    ReservedQueueMutation, ShuffleToggleError,
+    PrepareReservedMutationError, QueueRevisionSnapshot, ReservedQueueMutation, ShuffleToggleError,
 };
 
 use super::PlaylistController;
@@ -79,7 +78,7 @@ pub(crate) enum PlaylistInstallMutation {
     /// Обычный explicit select/replacement reservation.
     Reserved(ReservedQueueMutation),
     /// One-step manual navigation, включая private shuffle history/upcoming preview.
-    ManualNavigation(ManualNavigationPreview),
+    ManualNavigation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +110,9 @@ pub(crate) enum InstallReadyOutcome {
     ReservationRejected {
         request_id: MediaOpenRequestId,
         error: PrepareReservedMutationError,
+    },
+    StaleManualNavigationResult {
+        request_id: MediaOpenRequestId,
     },
     Fatal(PlaylistControllerInvariantViolation),
 }
@@ -157,7 +159,7 @@ impl InstallState {
         }
     }
 
-    const fn request_id(&self) -> MediaOpenRequestId {
+    pub(super) const fn request_id(&self) -> MediaOpenRequestId {
         match self {
             Self::AwaitingReady(state) => state.request.request_id,
             Self::ReservedAwaitingAuthorization(state)
@@ -236,6 +238,16 @@ impl PlaylistController {
                 PlaylistInstallAdmissionError::Busy
             });
         }
+        if matches!(request.mutation, PlaylistInstallMutation::ManualNavigation)
+            && (!self
+                .manual_navigation_cursor
+                .matches_target(request.target_item_id)
+                || !self
+                    .manual_navigation_cursor
+                    .bind_request(request.request_id))
+        {
+            return Err(PlaylistInstallAdmissionError::StaleSupersede);
+        }
         self.replace_awaiting_ready(request);
         Ok(())
     }
@@ -257,6 +269,19 @@ impl PlaylistController {
             return Err(PlaylistInstallAdmissionError::InstallCommitLinearizing);
         };
         if awaiting.request.request_id != expected_request_id {
+            self.install_state = Some(InstallState::AwaitingReady(awaiting));
+            return Err(PlaylistInstallAdmissionError::StaleSupersede);
+        }
+        if matches!(
+            replacement.mutation,
+            PlaylistInstallMutation::ManualNavigation
+        ) && (!self
+            .manual_navigation_cursor
+            .matches_target(replacement.target_item_id)
+            || !self
+                .manual_navigation_cursor
+                .bind_request(replacement.request_id))
+        {
             self.install_state = Some(InstallState::AwaitingReady(awaiting));
             return Err(PlaylistInstallAdmissionError::StaleSupersede);
         }
@@ -305,6 +330,9 @@ impl PlaylistController {
         if let Some(violation) = self.fatal_invariant {
             return InstallReadyOutcome::Fatal(violation);
         }
+        if self.manual_navigation_cursor.is_retired_request(request_id) {
+            return InstallReadyOutcome::StaleManualNavigationResult { request_id };
+        }
         let Some(state) = self.install_state.take() else {
             return self.fatal_ready(PlaylistControllerInvariantViolation::StaleReadyToCommit);
         };
@@ -329,11 +357,27 @@ impl PlaylistController {
                 .queue
                 .prepare_reserved_mutation(expected_queue_revision, mutation)
                 .map(GuardedInstallToken::Queue),
-            PlaylistInstallMutation::ManualNavigation(preview) => self
-                .queue
-                .prepare_manual_navigation(preview)
-                .map(GuardedInstallToken::ManualNavigation)
-                .map_err(|failure| failure.reason()),
+            PlaylistInstallMutation::ManualNavigation => {
+                if !self.manual_navigation_cursor.matches_target(target_item_id) {
+                    self.pending_target = None;
+                    self.publish_view(false);
+                    return InstallReadyOutcome::StaleManualNavigationResult { request_id };
+                }
+                let Some(preview) = self.manual_navigation_cursor.take_for_prepare() else {
+                    self.pending_target = None;
+                    self.publish_view(false);
+                    return InstallReadyOutcome::StaleManualNavigationResult { request_id };
+                };
+                match self.queue.prepare_manual_navigation(preview) {
+                    Ok(token) => Ok(GuardedInstallToken::ManualNavigation(token)),
+                    Err(failure) => {
+                        let reason = failure.reason();
+                        self.manual_navigation_cursor
+                            .restore_after_abort(failure.into_preview());
+                        Err(reason)
+                    }
+                }
+            }
         };
         let token = match token_result {
             Ok(token) => token,
@@ -435,7 +479,31 @@ impl PlaylistController {
                     queue_revision_before_commit: _,
                     ..
                 } = guarded;
-                token.abort(&mut self.queue);
+                match token.abort(&mut self.queue) {
+                    GuardedInstallAbort::Queue => {}
+                    GuardedInstallAbort::ManualNavigation(preview) => match resolution {
+                        AuthorizationDispatchResolution::DownstreamRejectedBeforeEnqueue {
+                            ..
+                        } => self
+                            .manual_navigation_cursor
+                            .mark_failed_after_abort(preview),
+                        AuthorizationDispatchResolution::CancelWonBeforePlayerEnqueue {
+                            ..
+                        } => self.manual_navigation_cursor.restore_after_abort(preview),
+                        AuthorizationDispatchResolution::EnqueuedAtPlayerOwner => {
+                            unreachable!("pre-barrier branch excludes enqueue winner")
+                        }
+                    },
+                }
+                if let Some(deferred) = race_intent.map(BarrierRaceIntent::intent)
+                    && !matches!(deferred, DeferredControllerIntent::Transport(_))
+                {
+                    let _discarded = self.manual_navigation_cursor.discard(
+                        &self.queue,
+                        deferred.cancellation_cause(),
+                        Some(request_id),
+                    );
+                }
                 self.pending_target = None;
                 let dirty = self.apply_desired_modes(desired_modes)?;
                 let deferred_intent = race_intent.map(BarrierRaceIntent::intent);
@@ -544,6 +612,9 @@ impl PlaylistController {
         } = guarded;
         let commit = token.commit(&mut self.queue);
         let structural_changed = commit.structural_changed;
+        if commit.manual_navigation {
+            self.manual_navigation_cursor.commit_finished();
+        }
         let queue_changed = self.queue.revision_snapshot() != queue_revision_before_commit;
         let committed_item_id = Some(commit.traversal_current.item_id());
         if target_item_id.is_some() && target_item_id != committed_item_id {
@@ -606,78 +677,6 @@ impl PlaylistController {
         intent: DeferredControllerIntent,
     ) -> Result<LifecycleIntentOutcome, PlaylistControllerInvariantViolation> {
         self.request_deferred_intent(intent)
-    }
-
-    /// Единый pre-dispatch abort / barrier-race / post-commit latest slot для transport/lifecycle.
-    pub(super) fn request_deferred_intent(
-        &mut self,
-        intent: DeferredControllerIntent,
-    ) -> Result<LifecycleIntentOutcome, PlaylistControllerInvariantViolation> {
-        if let Some(violation) = self.fatal_invariant {
-            return Err(violation);
-        }
-        let Some(state) = self.install_state.take() else {
-            return Ok(LifecycleIntentOutcome::NoPendingInstall);
-        };
-        match state {
-            InstallState::AwaitingReady(awaiting) => {
-                let request_id = awaiting.request.request_id;
-                self.pending_target = None;
-                self.publish_view(false);
-                Ok(LifecycleIntentOutcome::CancelPendingRequest {
-                    request_id,
-                    cause: intent.cancellation_cause(),
-                    intent,
-                })
-            }
-            InstallState::ReservedAwaitingAuthorization(guarded) => {
-                let GuardedInstall {
-                    request_id,
-                    token,
-                    desired_modes,
-                    queue_revision_before_commit: _,
-                    ..
-                } = guarded;
-                token.abort(&mut self.queue);
-                self.pending_target = None;
-                let mode_dirty = self.apply_desired_modes(desired_modes)?;
-                self.publish_view(false);
-                Ok(LifecycleIntentOutcome::Immediate {
-                    intent,
-                    aborted_request_id: Some(request_id),
-                    cancellation_cause: Some(intent.cancellation_cause()),
-                    mode_dirty,
-                })
-            }
-            InstallState::AuthorizationDispatchPending {
-                guarded,
-                race_intent,
-            } => {
-                let request_id = guarded.request_id;
-                let race_intent = Some(BarrierRaceIntent(select_intent(
-                    race_intent.map(BarrierRaceIntent::intent),
-                    intent,
-                )));
-                self.install_state = Some(InstallState::AuthorizationDispatchPending {
-                    guarded,
-                    race_intent,
-                });
-                self.publish_view(false);
-                Ok(LifecycleIntentOutcome::AwaitAuthorizationResolution { request_id })
-            }
-            InstallState::AuthorizationInFlight {
-                guarded,
-                post_commit_intent,
-            } => {
-                let request_id = guarded.request_id;
-                self.install_state = Some(InstallState::AuthorizationInFlight {
-                    guarded,
-                    post_commit_intent: Some(select_intent(post_commit_intent, intent)),
-                });
-                self.publish_view(false);
-                Ok(LifecycleIntentOutcome::AwaitInstalled { request_id })
-            }
-        }
     }
 
     /// D52 update остаётся разрешённым: controller только подтверждает exact request correlation.

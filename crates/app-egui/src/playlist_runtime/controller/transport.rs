@@ -12,13 +12,16 @@ use player_core::{
 };
 use playlist_core::{
     ManualNavigationDirection, ManualNavigationIntent, ManualNavigationNoItem,
-    ManualNavigationOutcome, ManualNavigationPreview, PlaylistItemId, ReservedQueueMutation,
+    ManualNavigationOutcome, PlaylistItemId, ReservedQueueMutation,
 };
 
 use super::PlaylistController;
 use super::install::{
     DeferredControllerIntent, DeferredTransportIntent, LifecycleIntentOutcome,
     PlaylistInstallMutation,
+};
+use super::manual_navigation::{
+    CursorStepOutcome, ManualNavigationCancelOutcome, ManualNavigationInvalidation,
 };
 use crate::media_open::MediaOpenRequestId;
 use crate::playlist_runtime::identity::{
@@ -98,11 +101,11 @@ pub(crate) struct ManualNavigationWaitId(NonZeroU64);
 /// Runtime-only one-slot wait; queue/traversal остаются неизменными.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PendingManualTraversal {
-    wait_id: ManualNavigationWaitId,
-    direction: ManualNavigationDirection,
-    origin: TransportActionOrigin,
-    active_media: ActiveMediaIdentity,
-    scope_id: SiblingDiscoveryScopeId,
+    pub(super) wait_id: ManualNavigationWaitId,
+    pub(super) direction: ManualNavigationDirection,
+    pub(super) origin: TransportActionOrigin,
+    pub(super) active_media: ActiveMediaIdentity,
+    pub(super) scope_id: SiblingDiscoveryScopeId,
 }
 
 /// Полностью domain-owned mutation будущего install-а.
@@ -147,6 +150,18 @@ pub(crate) enum ControllerManualNavigationOutcome {
     StartInstall {
         install: PlannedPlaylistInstall,
     },
+    SupersedeInstall {
+        expected_request_id: MediaOpenRequestId,
+        cause: player_core::MediaInstallCancellationCause,
+        install: PlannedPlaylistInstall,
+    },
+    AbortedBeforeDispatch {
+        request_id: MediaOpenRequestId,
+        cause: player_core::MediaInstallCancellationCause,
+        next: Option<PlannedPlaylistInstall>,
+        no_item: Option<ManualNavigationNoItem>,
+    },
+    PreviewInvalidated(ManualNavigationInvalidation),
     Waiting {
         wait_id: ManualNavigationWaitId,
         direction: ManualNavigationDirection,
@@ -210,6 +225,7 @@ pub(crate) enum DeferredTransportExecutionOutcome {
     Navigation(ControllerManualNavigationOutcome),
     NeutralStop(Option<Result<ExactMediaTransportRequest, TransportGuardOutcome>>),
     StopAfterCurrent(StopAfterCurrentOutcome),
+    CancelManualNavigation(ManualNavigationCancelOutcome),
 }
 
 impl PlaylistController {
@@ -278,6 +294,13 @@ impl PlaylistController {
             return ControllerPlayItemOutcome::ItemNotCommitted { item_id };
         }
         self.pending_manual_traversal = None;
+        if self.install_state.is_none() {
+            let _discarded = self.manual_navigation_cursor.discard(
+                &self.queue,
+                player_core::MediaInstallCancellationCause::Superseded,
+                None,
+            );
+        }
         let Some(intent_dispatch) =
             self.record_stable_transport_intent(StablePlaybackIntent::Playing, origin)
         else {
@@ -353,6 +376,25 @@ impl PlaylistController {
         wait_availability: DiscoveryManualWaitAvailability,
     ) -> ControllerManualNavigationOutcome {
         self.pending_manual_traversal = None;
+        if let Some((phase, request_id)) = self.manual_navigation_install_phase() {
+            match phase {
+                super::install::ControllerInstallPhase::AwaitingReady => {
+                    return self.continue_manual_cursor(direction, Some((request_id, false)));
+                }
+                super::install::ControllerInstallPhase::ReservedAwaitingAuthorization => {
+                    if let Err(violation) =
+                        self.abort_reserved_manual_navigation_before_dispatch(request_id)
+                    {
+                        return ControllerManualNavigationOutcome::Guarded(
+                            TransportGuardOutcome::Fatal(violation),
+                        );
+                    }
+                    return self.continue_manual_cursor(direction, Some((request_id, true)));
+                }
+                super::install::ControllerInstallPhase::AuthorizationDispatchPending
+                | super::install::ControllerInstallPhase::AuthorizationInFlight => {}
+            }
+        }
         if self.install_state.is_some() {
             return ControllerManualNavigationOutcome::Guarded(
                 self.request_transport_guard(DeferredTransportIntent::Navigate {
@@ -360,6 +402,14 @@ impl PlaylistController {
                     origin,
                 }),
             );
+        }
+
+        if self
+            .manual_navigation_cursor
+            .latest_target_item_id()
+            .is_some()
+        {
+            return self.continue_manual_cursor(direction, None);
         }
 
         if direction == ManualNavigationDirection::Previous
@@ -422,12 +472,97 @@ impl PlaylistController {
         match self.queue.begin_manual_navigation(domain_intent) {
             ManualNavigationOutcome::OpenItem { item_id, preview } => {
                 self.stop_after_current = None;
+                self.manual_navigation_cursor
+                    .begin(preview, origin, self.active_media);
                 ControllerManualNavigationOutcome::StartInstall {
-                    install: self.planned_manual_install(item_id, preview, origin),
+                    install: self.planned_manual_install(item_id, origin),
                 }
             }
             ManualNavigationOutcome::NoItem(reason) => {
                 self.manual_no_item(direction, origin, reason, wait_availability)
+            }
+        }
+    }
+
+    fn continue_manual_cursor(
+        &mut self,
+        direction: ManualNavigationDirection,
+        superseded: Option<(MediaOpenRequestId, bool)>,
+    ) -> ControllerManualNavigationOutcome {
+        let origin = self
+            .manual_navigation_cursor
+            .origin()
+            .expect("manual install phase always has cursor context");
+        match self.manual_navigation_cursor.continue_in_direction(
+            &self.queue,
+            direction,
+            self.repeat_mode,
+        ) {
+            CursorStepOutcome::OpenItem { item_id } => {
+                self.stop_after_current = None;
+                let install = self.planned_manual_install(item_id, origin);
+                match superseded {
+                    Some((expected_request_id, false)) => {
+                        ControllerManualNavigationOutcome::SupersedeInstall {
+                            expected_request_id,
+                            cause: player_core::MediaInstallCancellationCause::Superseded,
+                            install,
+                        }
+                    }
+                    Some((request_id, true)) => {
+                        ControllerManualNavigationOutcome::AbortedBeforeDispatch {
+                            request_id,
+                            cause: player_core::MediaInstallCancellationCause::Superseded,
+                            next: Some(install),
+                            no_item: None,
+                        }
+                    }
+                    None => ControllerManualNavigationOutcome::StartInstall { install },
+                }
+            }
+            CursorStepOutcome::NoItem(reason) => {
+                let returned_to_origin = matches!(
+                    reason,
+                    ManualNavigationNoItem::ReturnedToCommittedOrigin { .. }
+                );
+                if returned_to_origin && let Some((request_id, was_reserved)) = superseded {
+                    if !was_reserved
+                        && let Err(violation) =
+                            self.retire_awaiting_manual_navigation_request(request_id)
+                    {
+                        return ControllerManualNavigationOutcome::Guarded(
+                            TransportGuardOutcome::Fatal(violation),
+                        );
+                    }
+                    return ControllerManualNavigationOutcome::AbortedBeforeDispatch {
+                        request_id,
+                        cause: player_core::MediaInstallCancellationCause::Superseded,
+                        next: None,
+                        no_item: Some(reason),
+                    };
+                }
+                ControllerManualNavigationOutcome::NoItem(reason)
+            }
+            CursorStepOutcome::Invalidated {
+                error: _error,
+                terminal_action,
+            } => {
+                let request_id = superseded.map(|(request_id, _)| request_id);
+                if let Some((request_id, false)) = superseded
+                    && let Err(violation) =
+                        self.retire_awaiting_manual_navigation_request(request_id)
+                {
+                    return ControllerManualNavigationOutcome::Guarded(
+                        TransportGuardOutcome::Fatal(violation),
+                    );
+                }
+                ControllerManualNavigationOutcome::PreviewInvalidated(
+                    ManualNavigationInvalidation {
+                        cause: player_core::MediaInstallCancellationCause::StructuralInvalidation,
+                        request_id,
+                        terminal_action,
+                    },
+                )
             }
         }
     }
@@ -470,10 +605,9 @@ impl PlaylistController {
         }
     }
 
-    fn planned_manual_install(
+    pub(super) fn planned_manual_install(
         &self,
         item_id: PlaylistItemId,
-        preview: ManualNavigationPreview,
         origin: TransportActionOrigin,
     ) -> PlannedPlaylistInstall {
         PlannedPlaylistInstall {
@@ -485,7 +619,7 @@ impl PlaylistController {
             ),
             pending_origin: PendingTargetOrigin::ManualNavigation { origin },
             expected_queue_revision: self.queue.revision_snapshot(),
-            mutation: PlaylistInstallMutation::ManualNavigation(preview),
+            mutation: PlaylistInstallMutation::ManualNavigation,
         }
     }
 
@@ -511,6 +645,11 @@ impl PlaylistController {
                 self.request_transport_guard(DeferredTransportIntent::Stop { origin })
             ));
         }
+        let _discarded = self.manual_navigation_cursor.discard(
+            &self.queue,
+            player_core::MediaInstallCancellationCause::TransportStop,
+            None,
+        );
         self.active_media.map(|active| {
             Ok(ExactMediaTransportRequest {
                 media_instance_id: active.media_instance_id(),
@@ -555,6 +694,11 @@ impl PlaylistController {
                 DeferredTransportIntent::StopAfterCurrent { enabled, origin },
             ));
         }
+        let _discarded = self.manual_navigation_cursor.discard(
+            &self.queue,
+            player_core::MediaInstallCancellationCause::StopAfterCurrent,
+            None,
+        );
         if self.active_media.is_none() {
             return StopAfterCurrentOutcome::NoActiveMedia;
         }
@@ -589,10 +733,15 @@ impl PlaylistController {
                     self.toggle_stop_after_current(enabled, origin),
                 )
             }
+            DeferredTransportIntent::CancelManualNavigation => {
+                DeferredTransportExecutionOutcome::CancelManualNavigation(
+                    self.cancel_manual_navigation(),
+                )
+            }
         }
     }
 
-    fn request_transport_guard(
+    pub(super) fn request_transport_guard(
         &mut self,
         intent: DeferredTransportIntent,
     ) -> TransportGuardOutcome {

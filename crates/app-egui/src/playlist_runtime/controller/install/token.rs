@@ -7,17 +7,26 @@ pub(super) enum GuardedInstallToken {
     ManualNavigation(PreparedManualNavigationToken),
 }
 
+pub(super) enum GuardedInstallAbort {
+    Queue,
+    ManualNavigation(playlist_core::ManualNavigationPreview),
+}
+
 pub(super) struct GuardedInstallCommit {
     pub traversal_current: playlist_core::TraversalCurrentItemId,
     pub structural_changed: bool,
+    pub manual_navigation: bool,
 }
 
 impl GuardedInstallToken {
-    pub(super) fn abort(self, queue: &mut playlist_core::PlaylistQueue) {
+    pub(super) fn abort(self, queue: &mut playlist_core::PlaylistQueue) -> GuardedInstallAbort {
         match self {
-            Self::Queue(token) => queue.abort_reserved(token),
+            Self::Queue(token) => {
+                queue.abort_reserved(token);
+                GuardedInstallAbort::Queue
+            }
             Self::ManualNavigation(token) => {
-                let _discarded_preview = queue.abort_manual_navigation(token);
+                GuardedInstallAbort::ManualNavigation(queue.abort_manual_navigation(token))
             }
         }
     }
@@ -29,6 +38,7 @@ impl GuardedInstallToken {
                 GuardedInstallCommit {
                     traversal_current: commit.traversal_current(),
                     structural_changed: !commit.allocated_item_ids().as_slice().is_empty(),
+                    manual_navigation: false,
                 }
             }
             Self::ManualNavigation(token) => {
@@ -36,6 +46,7 @@ impl GuardedInstallToken {
                 GuardedInstallCommit {
                     traversal_current: commit.traversal_current(),
                     structural_changed: false,
+                    manual_navigation: true,
                 }
             }
         }

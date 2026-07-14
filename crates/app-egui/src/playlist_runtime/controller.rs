@@ -1,6 +1,7 @@
 //! Process-lifetime playlist controller: queue ownership, presentation state и typed outcomes.
 
 mod install;
+mod manual_navigation;
 mod transport;
 
 use std::collections::HashMap;
@@ -31,6 +32,12 @@ pub(crate) use install::{
     PlaylistInstallRequest,
 };
 #[allow(unused_imports)]
+pub(crate) use manual_navigation::{
+    ManualNavigationCancelOutcome, ManualNavigationFailureOutcome, ManualNavigationInvalidation,
+    ManualNavigationOriginState, ManualNavigationRetryOutcome, ManualNavigationTerminalAction,
+    PreConcreteProbeRejectionOutcome,
+};
+#[allow(unused_imports)]
 pub(crate) use transport::{
     AppTransportDisposition, ControllerManualNavigationOutcome, ControllerPlayItemOutcome,
     ControllerStableIntentDispatch, DeferredTransportExecutionContext,
@@ -45,6 +52,7 @@ pub(crate) enum ControllerAppendOutcome {
     Added {
         item_ids: Vec<PlaylistItemId>,
         dirty: PlaylistDirtySignal,
+        manual_navigation_invalidation: Option<ManualNavigationInvalidation>,
     },
     NoItemsProvided,
 }
@@ -66,6 +74,7 @@ pub(crate) enum ControllerRemoveOutcome {
         selected_item_id: Option<PlaylistItemId>,
         traversal_current_effect: TraversalCurrentEffect,
         dirty: PlaylistDirtySignal,
+        manual_navigation_invalidation: Option<ManualNavigationInvalidation>,
     },
     NotFound {
         item_id: PlaylistItemId,
@@ -108,6 +117,7 @@ pub(crate) struct PlaylistController {
     pub(super) stable_intent_revision: u64,
     pub(super) transport_disposition: transport::AppTransportDisposition,
     pending_manual_traversal: Option<transport::PendingManualTraversal>,
+    manual_navigation_cursor: manual_navigation::ManualNavigationCursor,
     pub(super) next_manual_wait_identity: u64,
     pub(super) worker_availability: PlaylistWorkerAvailability,
     pub(super) fatal_invariant: Option<PlaylistControllerInvariantViolation>,
@@ -137,6 +147,7 @@ impl PlaylistController {
             stable_intent_revision: 1,
             transport_disposition: transport::AppTransportDisposition::Active,
             pending_manual_traversal: None,
+            manual_navigation_cursor: manual_navigation::ManualNavigationCursor::default(),
             next_manual_wait_identity: 1,
             worker_availability: PlaylistWorkerAvailability::Available,
             fatal_invariant: None,
@@ -206,10 +217,16 @@ impl PlaylistController {
         match self.queue.append_batch(drafts) {
             Ok(AddItemsOutcome::Added(item_ids)) => {
                 let item_ids = item_ids.into_vec();
+                let manual_navigation_invalidation =
+                    self.invalidate_manual_navigation_after_structural_mutation();
                 self.structural_revision = next_structural;
                 let dirty = self.commit_dirty(next_dirty);
                 self.publish_view(true);
-                Ok(ControllerAppendOutcome::Added { item_ids, dirty })
+                Ok(ControllerAppendOutcome::Added {
+                    item_ids,
+                    dirty,
+                    manual_navigation_invalidation,
+                })
             }
             Ok(AddItemsOutcome::NoItemsProvided) => Ok(ControllerAppendOutcome::NoItemsProvided),
             Err(error) => Err(ControllerAppendError::Domain(error)),
@@ -258,6 +275,8 @@ impl PlaylistController {
                         .map(|item| item.item_id());
                 }
                 self.runtime_errors.remove(&item_id);
+                let manual_navigation_invalidation =
+                    self.invalidate_manual_navigation_after_structural_mutation();
                 self.structural_revision = next_structural;
                 let dirty = self.commit_dirty(next_dirty);
                 self.publish_view(true);
@@ -266,6 +285,7 @@ impl PlaylistController {
                     selected_item_id: self.selected_item_id,
                     traversal_current_effect,
                     dirty,
+                    manual_navigation_invalidation,
                 }
             }
             RemoveItemOutcome::NotFound { .. } => ControllerRemoveOutcome::NotFound { item_id },
@@ -422,6 +442,31 @@ impl PlaylistController {
         Some(super::identity::ActiveMediaLineageId::from_non_zero(
             identity,
         ))
+    }
+
+    fn invalidate_manual_navigation_after_structural_mutation(
+        &mut self,
+    ) -> Option<ManualNavigationInvalidation> {
+        let request_id = self
+            .manual_navigation_install_phase()
+            .and_then(|(phase, request_id)| {
+                (phase == ControllerInstallPhase::AwaitingReady).then_some(request_id)
+            });
+        if let Some(request_id) = request_id {
+            // Structural mutation уже committed; старый coordinator result теперь только stale.
+            if self
+                .retire_awaiting_manual_navigation_request(request_id)
+                .is_err()
+            {
+                self.set_fatal(PlaylistControllerInvariantViolation::UnexpectedInstallPhase);
+                return None;
+            }
+        }
+        self.manual_navigation_cursor.discard(
+            &self.queue,
+            player_core::MediaInstallCancellationCause::StructuralInvalidation,
+            request_id,
+        )
     }
 
     pub(super) fn install_linearizing(&self) -> bool {

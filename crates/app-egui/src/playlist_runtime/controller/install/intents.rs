@@ -3,7 +3,9 @@
 use playlist_core::{ManualNavigationDirection, PlaylistItemId, RepeatMode};
 
 use super::PlaylistControllerInvariantViolation;
+use super::{GuardedInstall, GuardedInstallAbort, InstallState};
 use crate::media_open::{MediaOpenRequestId, PlayerDispatchRejection};
+use crate::playlist_runtime::controller::PlaylistController;
 use crate::playlist_runtime::identity::{ActiveMediaIdentity, TransportActionOrigin};
 use crate::playlist_runtime::view::PlaylistDirtySignal;
 
@@ -41,6 +43,7 @@ pub(crate) enum DeferredTransportIntent {
         enabled: bool,
         origin: TransportActionOrigin,
     },
+    CancelManualNavigation,
 }
 
 impl DeferredTransportIntent {
@@ -52,6 +55,9 @@ impl DeferredTransportIntent {
             }
             Self::PlayItem { .. } | Self::Navigate { .. } => {
                 player_core::MediaInstallCancellationCause::Superseded
+            }
+            Self::CancelManualNavigation => {
+                player_core::MediaInstallCancellationCause::UserCancelled
             }
         }
     }
@@ -142,5 +148,98 @@ pub(super) fn select_intent(
         }
         Some(current) if current.priority() >= incoming.priority() => current,
         _ => incoming,
+    }
+}
+
+impl PlaylistController {
+    /// Единый pre-dispatch abort / barrier-race / post-commit latest slot для transport/lifecycle.
+    pub(crate) fn request_deferred_intent(
+        &mut self,
+        intent: DeferredControllerIntent,
+    ) -> Result<LifecycleIntentOutcome, PlaylistControllerInvariantViolation> {
+        if let Some(violation) = self.fatal_invariant {
+            return Err(violation);
+        }
+        let Some(state) = self.install_state.take() else {
+            return Ok(LifecycleIntentOutcome::NoPendingInstall);
+        };
+        match state {
+            InstallState::AwaitingReady(awaiting) => {
+                let request_id = awaiting.request.request_id;
+                if !matches!(intent, DeferredControllerIntent::Transport(_)) {
+                    let _discarded = self.manual_navigation_cursor.discard(
+                        &self.queue,
+                        intent.cancellation_cause(),
+                        Some(request_id),
+                    );
+                }
+                self.pending_target = None;
+                self.publish_view(false);
+                Ok(LifecycleIntentOutcome::CancelPendingRequest {
+                    request_id,
+                    cause: intent.cancellation_cause(),
+                    intent,
+                })
+            }
+            InstallState::ReservedAwaitingAuthorization(guarded) => {
+                let GuardedInstall {
+                    request_id,
+                    token,
+                    desired_modes,
+                    queue_revision_before_commit: _,
+                    ..
+                } = guarded;
+                match token.abort(&mut self.queue) {
+                    GuardedInstallAbort::Queue => {}
+                    GuardedInstallAbort::ManualNavigation(preview) => {
+                        self.manual_navigation_cursor.restore_after_abort(preview)
+                    }
+                }
+                if !matches!(intent, DeferredControllerIntent::Transport(_)) {
+                    let _discarded = self.manual_navigation_cursor.discard(
+                        &self.queue,
+                        intent.cancellation_cause(),
+                        Some(request_id),
+                    );
+                }
+                self.pending_target = None;
+                let mode_dirty = self.apply_desired_modes(desired_modes)?;
+                self.publish_view(false);
+                Ok(LifecycleIntentOutcome::Immediate {
+                    intent,
+                    aborted_request_id: Some(request_id),
+                    cancellation_cause: Some(intent.cancellation_cause()),
+                    mode_dirty,
+                })
+            }
+            InstallState::AuthorizationDispatchPending {
+                guarded,
+                race_intent,
+            } => {
+                let request_id = guarded.request_id;
+                let race_intent = Some(BarrierRaceIntent(select_intent(
+                    race_intent.map(BarrierRaceIntent::intent),
+                    intent,
+                )));
+                self.install_state = Some(InstallState::AuthorizationDispatchPending {
+                    guarded,
+                    race_intent,
+                });
+                self.publish_view(false);
+                Ok(LifecycleIntentOutcome::AwaitAuthorizationResolution { request_id })
+            }
+            InstallState::AuthorizationInFlight {
+                guarded,
+                post_commit_intent,
+            } => {
+                let request_id = guarded.request_id;
+                self.install_state = Some(InstallState::AuthorizationInFlight {
+                    guarded,
+                    post_commit_intent: Some(select_intent(post_commit_intent, intent)),
+                });
+                self.publish_view(false);
+                Ok(LifecycleIntentOutcome::AwaitInstalled { request_id })
+            }
+        }
     }
 }
