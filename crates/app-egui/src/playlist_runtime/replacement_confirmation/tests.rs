@@ -72,7 +72,7 @@ fn pending_model(
 }
 
 #[test]
-fn empty_queue_admits_local_direct_and_youtube_without_confirmation() {
+fn empty_queue_gates_sensitive_direct_but_admits_local_and_youtube() {
     let mut local_runtime = runtime_with_queue(0);
     assert!(matches!(
         local_runtime
@@ -89,8 +89,18 @@ fn empty_queue_admits_local_direct_and_youtube_without_confirmation() {
         direct_runtime
             .admit_in_app_queue_replacement(InAppQueueReplacementIntent::service_url(direct))
             .expect("empty direct admission"),
-        InAppQueueReplacementAdmission::StartNow(AdmittedQueueReplacementIntent::ServiceUrl(_))
+        InAppQueueReplacementAdmission::AwaitingConfirmation
     ));
+    let direct_model = direct_runtime
+        .pending_playlist_confirmation()
+        .expect("D15 sensitive-only confirmation");
+    assert!(!direct_model.reasons().queue_replacement());
+    assert!(direct_model.reasons().sensitive_url_persistence());
+    assert!(
+        direct_runtime
+            .pending_queue_replacement_confirmation()
+            .is_none()
+    );
 
     let mut youtube_runtime = runtime_with_queue(0);
     let youtube = classified_url("https://www.youtube.com/watch?v=abcdefghijk");
@@ -100,6 +110,24 @@ fn empty_queue_admits_local_direct_and_youtube_without_confirmation() {
             .expect("empty YouTube admission"),
         InAppQueueReplacementAdmission::StartNow(AdmittedQueueReplacementIntent::ServiceUrl(_))
     ));
+}
+
+#[test]
+fn pre_load_sensitive_direct_open_is_gated_after_superseding_restore_apply() {
+    let mut runtime =
+        PlaylistRuntime::new(AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime));
+    let direct = classified_url("https://media.example.test/movie.mp4?token=secret");
+    assert!(matches!(
+        runtime
+            .admit_in_app_queue_replacement(InAppQueueReplacementIntent::service_url(direct))
+            .expect("pre-load sensitive direct admission"),
+        InAppQueueReplacementAdmission::AwaitingConfirmation
+    ));
+    let model = runtime
+        .pending_sensitive_url_persistence_decision()
+        .expect("process-lifetime D15 decision");
+    assert!(!model.reasons().queue_replacement());
+    assert!(model.reasons().sensitive_url_persistence());
 }
 
 #[test]
@@ -136,8 +164,17 @@ fn nonempty_local_and_url_do_not_reach_lower_layer_before_matching_confirm() {
     let url_admission = runtime
         .admit_in_app_queue_replacement(InAppQueueReplacementIntent::service_url(secret_url))
         .expect("URL admission");
-    let url_model = pending_model(&runtime, url_admission);
+    assert!(matches!(
+        url_admission,
+        InAppQueueReplacementAdmission::AwaitingConfirmation
+    ));
+    assert!(runtime.pending_queue_replacement_confirmation().is_none());
+    let url_model = runtime
+        .pending_playlist_confirmation()
+        .expect("composed confirmation must use generalized model");
     assert_ne!(local_model.intent_id(), url_model.intent_id());
+    assert!(url_model.reasons().queue_replacement());
+    assert!(url_model.reasons().sensitive_url_persistence());
     assert_eq!(runtime.controller.dirty_revision(), dirty_before);
     assert!(matches!(
         runtime.respond_to_queue_replacement_confirmation(confirmation_action(
@@ -371,7 +408,14 @@ fn trusted_cli_origin_bypasses_dialog_by_type_and_redaction_never_exposes_locato
     let url_admission = runtime
         .admit_in_app_queue_replacement(intent)
         .expect("URL confirmation");
-    let model = pending_model(&runtime, url_admission);
+    assert!(matches!(
+        url_admission,
+        InAppQueueReplacementAdmission::AwaitingConfirmation
+    ));
+    assert!(runtime.pending_queue_replacement_confirmation().is_none());
+    let model = runtime
+        .pending_playlist_confirmation()
+        .expect("sensitive replacement uses generalized model");
     let model_debug = format!("{model:?}");
     for secret in ["password", "private/movie", "token=secret", "fragment"] {
         assert!(!model_debug.contains(secret));

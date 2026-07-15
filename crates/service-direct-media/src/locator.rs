@@ -14,6 +14,7 @@ struct DirectMediaUrlInner {
     secret_identity: String,
     extension: DirectMediaExtension,
     safe_label: String,
+    requires_sensitive_persistence_acknowledgement: bool,
 }
 
 impl DirectMediaUrl {
@@ -21,12 +22,14 @@ impl DirectMediaUrl {
         secret_identity: String,
         extension: DirectMediaExtension,
         safe_label: String,
+        requires_sensitive_persistence_acknowledgement: bool,
     ) -> Self {
         Self {
             inner: Arc::new(DirectMediaUrlInner {
                 secret_identity,
                 extension,
                 safe_label,
+                requires_sensitive_persistence_acknowledgement,
             }),
         }
     }
@@ -53,6 +56,15 @@ impl DirectMediaUrl {
     #[must_use]
     pub fn safe_label(&self) -> &str {
         &self.inner.safe_label
+    }
+
+    /// Сообщает app policy, что exact reopenable identity содержит userinfo/query.
+    ///
+    /// Проверка выполняется владельцем parsed URL и не требует повторного раскрытия
+    /// secret identity на app boundary.
+    #[must_use]
+    pub fn requires_sensitive_persistence_acknowledgement(&self) -> bool {
+        self.inner.requires_sensitive_persistence_acknowledgement
     }
 }
 

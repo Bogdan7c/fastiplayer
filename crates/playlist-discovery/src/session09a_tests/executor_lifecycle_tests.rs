@@ -31,7 +31,12 @@ fn reserved_foreground_worker_starts_while_all_speculative_workers_block() {
                 .submit(DiscoveryRequest::VisibleRefresh {
                     locators: (0..PER_JOB_INPUT_LIMIT)
                         .map(|unit_index| {
-                            PathBuf::from(format!("block-speculative-{job_index}-{unit_index}"))
+                            VisibleRefreshLocator::new(
+                                PathBuf::from(format!(
+                                    "block-speculative-{job_index}-{unit_index}"
+                                )),
+                                None,
+                            )
                         })
                         .collect(),
                     request_revision: DiscoveryRequestRevision::new(job_index as u64),
@@ -193,7 +198,9 @@ fn diagnostics_are_capped_and_wake_disconnect_keeps_terminal_ownership() {
     let handle = executor
         .submit(DiscoveryRequest::VisibleRefresh {
             locators: (0..DISCOVERY_DIAGNOSTIC_LIMIT + 7)
-                .map(|index| PathBuf::from(format!("fail-{index}")))
+                .map(|index| {
+                    VisibleRefreshLocator::new(PathBuf::from(format!("fail-{index}")), None)
+                })
                 .collect(),
             request_revision: DiscoveryRequestRevision::new(11),
         })
@@ -201,6 +208,10 @@ fn diagnostics_are_capped_and_wake_disconnect_keeps_terminal_ownership() {
     let summary = wait_for_final(&handle);
     assert_eq!(summary.diagnostics.len(), DISCOVERY_DIAGNOSTIC_LIMIT);
     assert_eq!(summary.omitted_diagnostics, 7);
+    assert_eq!(
+        summary.failure_counts.probe_failed,
+        DISCOVERY_DIAGNOSTIC_LIMIT + 7
+    );
     assert!(handle.is_wake_disconnected());
 }
 
@@ -209,7 +220,7 @@ fn shutdown_cancels_jobs_and_rejects_new_submission() {
     let (executor, started, gate) = fake_executor();
     let handle = executor
         .submit(DiscoveryRequest::VisibleRefresh {
-            locators: vec!["block-shutdown".into()],
+            locators: vec![VisibleRefreshLocator::new("block-shutdown".into(), None)],
             request_revision: DiscoveryRequestRevision::new(1),
         })
         .unwrap();
@@ -240,7 +251,9 @@ fn cancelling_blocked_job_removes_queued_work_before_probe_start() {
     let handle = executor
         .submit(DiscoveryRequest::VisibleRefresh {
             locators: (0..PER_JOB_INPUT_LIMIT)
-                .map(|index| PathBuf::from(format!("block-cancel-{index}")))
+                .map(|index| {
+                    VisibleRefreshLocator::new(PathBuf::from(format!("block-cancel-{index}")), None)
+                })
                 .collect(),
             request_revision: DiscoveryRequestRevision::new(21),
         })
@@ -282,7 +295,10 @@ fn request_limit_is_explicit_and_visible_duplicates_keep_distinct_ordinals() {
     let duplicate = PathBuf::from("video-visible-once");
     let visible = executor
         .submit(DiscoveryRequest::VisibleRefresh {
-            locators: vec![duplicate.clone(), duplicate],
+            locators: vec![
+                VisibleRefreshLocator::new(duplicate.clone(), None),
+                VisibleRefreshLocator::new(duplicate, None),
+            ],
             request_revision: DiscoveryRequestRevision::new(23),
         })
         .unwrap();

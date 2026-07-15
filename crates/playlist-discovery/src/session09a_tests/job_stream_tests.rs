@@ -59,6 +59,7 @@ fn mixed_manual_failures_publish_success_once_and_bounded_summary() {
     assert_eq!(summary.outcome, DiscoveryFinalOutcome::Completed);
     assert_eq!(summary.verified, 2);
     assert_eq!(summary.failed, 1);
+    assert_eq!(summary.failure_counts.probe_failed, 1);
     let events = handle.drain_events();
     assert_eq!(
         events

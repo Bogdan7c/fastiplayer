@@ -115,8 +115,13 @@ impl PlaylistItem {
         &self.payload.cached_metadata
     }
 
-    /// Меняет только metadata cache после полного batch preflight.
-    pub(crate) fn replace_cached_metadata(&mut self, metadata: CachedPlaylistMetadata) {
+    /// Атомарно заменяет local freshness fingerprint и связанный metadata cache.
+    pub(crate) fn replace_local_cache(
+        &mut self,
+        local_fingerprint: Option<LocalSourceFingerprint>,
+        metadata: CachedPlaylistMetadata,
+    ) {
+        self.local_fingerprint = local_fingerprint;
         Arc::make_mut(&mut self.payload).cached_metadata = metadata;
     }
 

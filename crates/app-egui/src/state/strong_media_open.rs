@@ -17,8 +17,8 @@ use super::AppState;
 use crate::media_open::{
     ActiveMediaSource, AuthorizationDispatchResolution, MediaOpenClientKey, MediaOpenCommandError,
     MediaOpenCompletionDriveError, MediaOpenInstallIntent, MediaOpenPhase, MediaOpenRequestId,
-    MediaOpenStartError, MediaOpenStartOutcome, MediaOpenTerminalOutcome, PreparedMediaOpen,
-    SafeMediaLabel,
+    MediaOpenStartError, MediaOpenStartOutcome, MediaOpenTerminalOutcome, PreparedMediaDescriptor,
+    PreparedMediaOpen, SafeMediaLabel,
 };
 use crate::playlist_runtime::{PlaylistMediaOpenGateError, PlaylistRuntime};
 use crate::video_pipeline_candidate::{
@@ -77,6 +77,7 @@ pub(crate) struct InstalledSingleMediaOpen {
     pub(crate) player_request_id: MediaInstallRequestId,
     pub(crate) completion: MediaInstallCompletion,
     pub(crate) source: ActiveMediaSource,
+    descriptor: Box<PreparedMediaDescriptor>,
 }
 
 /// Typed failure не смешивает transport acceptance с terminal install outcome.
@@ -322,7 +323,7 @@ impl AppState {
                             crate::playlist_runtime::ResumeCheckpointError::StalePlayerBinding,
                         ),
                     )?;
-                    playlist_runtime
+                    let active_media = playlist_runtime
                         .register_successful_strong_install(
                             request_id,
                             installed.player_request_id,
@@ -332,6 +333,14 @@ impl AppState {
                             intent,
                         )
                         .map_err(StrongMediaOpenError::LineageRegistration)?;
+                    if let Some(item_id) = active_media.item_id() {
+                        let cache_outcome = playlist_runtime
+                            .record_successful_item_open_metadata(item_id, &installed.descriptor);
+                        tracing::debug!(
+                            ?cache_outcome,
+                            "Exact Installed обновил last-known playlist metadata cache"
+                        );
+                    }
                     return Ok(installed);
                 }
                 MediaOpenPhase::Failed => {
@@ -378,8 +387,8 @@ impl AppState {
         let MediaOpenTerminalOutcome::Installed {
             request_id: _,
             player_request_id,
+            descriptor,
             completion,
-            ..
         } = terminal
         else {
             return Err(StrongMediaOpenError::Terminal(terminal));
@@ -390,6 +399,7 @@ impl AppState {
             player_request_id,
             completion,
             source,
+            descriptor,
         })
     }
 

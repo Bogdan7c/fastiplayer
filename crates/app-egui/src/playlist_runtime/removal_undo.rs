@@ -161,6 +161,7 @@ impl PlaylistRuntime {
     /// Clear использует тот же last-action slot; empty no-op сохраняет прежний Undo.
     pub(crate) fn clear_playlist(&mut self, now: Instant) -> RuntimeRemovalOutcome {
         self.cancel_queue_replacement_confirmation_for_structural_replacement();
+        self.supersede_manual_add_queue_generation();
         let Some(controller) = self.controller.as_mut() else {
             return RuntimeRemovalOutcome::LoadDecisionPending;
         };

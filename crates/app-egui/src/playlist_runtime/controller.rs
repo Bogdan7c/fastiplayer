@@ -13,7 +13,8 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use playlist_core::{
-    AddItemsError, AddItemsOutcome, PlaylistItemDraft, PlaylistItemId, PlaylistQueue, RepeatMode,
+    AddItemsError, AddItemsOutcome, MetadataPatchBatchError, MetadataPatchBatchOutcome,
+    PlaylistItemDraft, PlaylistItemId, PlaylistMetadataPatch, PlaylistQueue, RepeatMode,
     ShuffleToggleError,
 };
 
@@ -81,6 +82,30 @@ pub(crate) enum ControllerAppendError {
     DirtyRevisionExhausted,
     StructuralRevisionExhausted,
     Domain(AddItemsError),
+}
+
+/// D67 controller outcome сохраняет cap accounting рядом с exact committed IDs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ControllerCappedAppendOutcome {
+    pub(crate) item_ids: Vec<PlaylistItemId>,
+    pub(crate) capacity_rejected: usize,
+    pub(crate) dirty: Option<PlaylistDirtySignal>,
+    pub(crate) manual_navigation_invalidation: Option<ManualNavigationInvalidation>,
+}
+
+/// Metadata cache mutation не смешивает domain revision и app dirty failures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ControllerMetadataPatchError {
+    FatalInvariant,
+    DirtyRevisionExhausted,
+    Domain(MetadataPatchBatchError),
+}
+
+/// Metadata patch публикует dirty signal только при реальном cache изменении.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ControllerMetadataPatchOutcome {
+    pub(crate) domain: MetadataPatchBatchOutcome,
+    pub(crate) dirty: Option<PlaylistDirtySignal>,
 }
 
 /// Ошибка correlation не изменяет badge и не dirty-ит persisted state.
@@ -303,6 +328,84 @@ impl PlaylistController {
             Ok(AddItemsOutcome::NoItemsProvided) => Ok(ControllerAppendOutcome::NoItemsProvided),
             Err(error) => Err(ControllerAppendError::Domain(error)),
         }
+    }
+
+    /// D67 append-ит только доступный deterministic prefix одной mutation.
+    pub(crate) fn append_capped_tail(
+        &mut self,
+        drafts: Vec<PlaylistItemDraft>,
+    ) -> Result<ControllerCappedAppendOutcome, ControllerAppendError> {
+        if self.fatal_invariant.is_some() {
+            return Err(ControllerAppendError::FatalInvariant);
+        }
+        let accepted = drafts
+            .len()
+            .min(playlist_core::MAX_PLAYLIST_ITEMS.saturating_sub(self.queue.len()));
+        if accepted == 0 {
+            return Ok(ControllerCappedAppendOutcome {
+                item_ids: Vec::new(),
+                capacity_rejected: drafts.len(),
+                dirty: None,
+                manual_navigation_invalidation: None,
+            });
+        }
+        let next_dirty = self
+            .dirty_revision
+            .checked_next()
+            .ok_or(ControllerAppendError::DirtyRevisionExhausted)?;
+        let next_structural = self
+            .structural_revision
+            .checked_next()
+            .ok_or(ControllerAppendError::StructuralRevisionExhausted)?;
+        let (item_ids, capacity_rejected) = self
+            .queue
+            .append_capped_tail(drafts)
+            .map_err(ControllerAppendError::Domain)?
+            .into_parts();
+        let manual_navigation_invalidation =
+            self.invalidate_manual_navigation_after_structural_mutation();
+        self.structural_revision = next_structural;
+        let dirty = self.commit_dirty(next_dirty);
+        self.publish_view(true);
+        Ok(ControllerCappedAppendOutcome {
+            item_ids,
+            capacity_rejected,
+            dirty: Some(dirty),
+            manual_navigation_invalidation,
+        })
+    }
+
+    /// Применяет stale-safe cache patches без structural/traversal side effects.
+    pub(crate) fn apply_metadata_patches(
+        &mut self,
+        patches: Vec<PlaylistMetadataPatch>,
+    ) -> Result<ControllerMetadataPatchOutcome, ControllerMetadataPatchError> {
+        if self.fatal_invariant.is_some() {
+            return Err(ControllerMetadataPatchError::FatalInvariant);
+        }
+        let has_changes = self.queue.metadata_patch_batch_has_changes(&patches);
+        let next_dirty = has_changes
+            .then(|| self.dirty_revision.checked_next())
+            .flatten()
+            .ok_or(ControllerMetadataPatchError::DirtyRevisionExhausted)
+            .or_else(|error| {
+                if has_changes {
+                    Err(error)
+                } else {
+                    Ok(self.dirty_revision)
+                }
+            })?;
+        let domain = self
+            .queue
+            .apply_metadata_patch_batch(patches)
+            .map_err(ControllerMetadataPatchError::Domain)?;
+        let dirty = domain
+            .changed_metadata()
+            .then(|| self.commit_dirty(next_dirty));
+        if dirty.is_some() {
+            self.publish_view(true);
+        }
+        Ok(ControllerMetadataPatchOutcome { domain, dirty })
     }
 
     /// Retry start не очищает старый badge: D49 ждёт exact same-item Installed.

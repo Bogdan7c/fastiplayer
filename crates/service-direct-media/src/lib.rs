@@ -385,11 +385,15 @@ fn direct_media_url_from_parsed(
     let media_extension = DirectMediaExtension::from_path_extension(extension)
         .ok_or_else(|| unsupported_url(unsupported_extension_reason(extension)))?;
     let safe_label = direct_media_safe_label(&parsed_url, media_extension);
+    let requires_sensitive_persistence_acknowledgement = !parsed_url.username().is_empty()
+        || parsed_url.password().is_some()
+        || parsed_url.query().is_some_and(|query| !query.is_empty());
 
     Ok(DirectMediaUrl::new(
         original_argument.to_string(),
         media_extension,
         safe_label,
+        requires_sensitive_persistence_acknowledgement,
     ))
 }
 
@@ -806,6 +810,7 @@ mod tests {
         assert_eq!(parsed.extension(), DirectMediaExtension::Mp4);
         assert_eq!(parsed.expose_secret_for_open(), secret);
         assert_eq!(parsed.expose_secret_for_persistence(), secret);
+        assert!(parsed.requires_sensitive_persistence_acknowledgement());
         let formatted = format!("{parsed:?} {parsed}");
         assert!(!formatted.contains("password"));
         assert!(!formatted.contains("token"));
@@ -819,6 +824,7 @@ mod tests {
 
         assert_eq!(parsed.extension(), DirectMediaExtension::Mov);
         assert_eq!(parsed.extension().as_extension_hint(), "mov");
+        assert!(!parsed.requires_sensitive_persistence_acknowledgement());
     }
 
     #[test]

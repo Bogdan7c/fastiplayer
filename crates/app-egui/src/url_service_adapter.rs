@@ -43,6 +43,11 @@ impl StartupUrlLocator {
     ) -> Result<playlist_core::SecretUrlLocator, playlist_core::PlaylistLocatorBuildError> {
         playlist_core::SecretUrlLocator::from_reopenable_url(self.0.expose_secret_for_persistence())
     }
+
+    /// D15 требует acknowledgement только для exact persisted direct URL identity.
+    pub(crate) fn requires_sensitive_persistence_acknowledgement(&self) -> bool {
+        self.0.requires_sensitive_persistence_acknowledgement()
+    }
 }
 
 impl fmt::Debug for StartupUrlLocator {
@@ -71,6 +76,10 @@ trait StartupUrlServiceAdapter: Send {
 
     #[allow(dead_code)] // Используется только intent-named domain mapping-ом выше.
     fn expose_secret_for_persistence(&self) -> &str;
+
+    fn requires_sensitive_persistence_acknowledgement(&self) -> bool {
+        false
+    }
 }
 
 struct YoutubeStartupAdapter {
@@ -131,6 +140,11 @@ impl StartupUrlServiceAdapter for DirectMediaStartupAdapter {
 
     fn expose_secret_for_persistence(&self) -> &str {
         self.locator.expose_secret_for_persistence()
+    }
+
+    fn requires_sensitive_persistence_acknowledgement(&self) -> bool {
+        self.locator
+            .requires_sensitive_persistence_acknowledgement()
     }
 }
 

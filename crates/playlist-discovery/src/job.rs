@@ -14,8 +14,8 @@ use crate::{
     AdmissionAckOutcome, AdmissionAdvanced, AdmissionBatchId, AdmissionDirection, AdmittedBatch,
     BatchApplySemantics, CandidateSourceDiagnostic, DISCOVERY_DIAGNOSTIC_LIMIT, DirectoryManifest,
     DiscoveryCancellation, DiscoveryCancellationCause, DiscoveryDiagnostic, DiscoveryEvent,
-    DiscoveryFinalOutcome, DiscoveryFinalSummary, DiscoveryJobId, DiscoveryJobKind,
-    DiscoveryPriority, DiscoveryProgress, DiscoveryRecord, DiscoveryRecordKey,
+    DiscoveryFailureCounts, DiscoveryFinalOutcome, DiscoveryFinalSummary, DiscoveryJobId,
+    DiscoveryJobKind, DiscoveryPriority, DiscoveryProgress, DiscoveryRecord, DiscoveryRecordKey,
     DiscoveryRequestRevision, FrontierReady, LocalMediaKind, ManifestCandidateKey,
     ProbeDiagnosticKind, ProbeOneLocalMediaError, ProbedLocalMedia, SiblingDiscoveryPolicySnapshot,
     VERIFIED_RECORD_BUFFER_LIMIT,
@@ -38,6 +38,7 @@ struct JobState {
     processed: usize,
     verified: usize,
     failed: usize,
+    failure_counts: DiscoveryFailureCounts,
     owned_uncommitted_records: usize,
     diagnostics: Vec<DiscoveryDiagnostic>,
     omitted_diagnostics: usize,
@@ -109,6 +110,7 @@ impl JobInner {
                 processed: 0,
                 verified: 0,
                 failed: 0,
+                failure_counts: DiscoveryFailureCounts::default(),
                 owned_uncommitted_records: 0,
                 diagnostics: Vec::new(),
                 omitted_diagnostics: 0,
@@ -299,6 +301,28 @@ impl JobInner {
             state.nondirectional_buffer.push_back(*record);
         }
         state.completion_flushes_pending += 1;
+        drop(state);
+        self.flush_admission_locked();
+        self.finish_completion_flush();
+        self.publish_progress();
+        self.publish_terminal_if_complete();
+    }
+
+    /// Matching fingerprint завершает visible work без container/demux probe.
+    pub(crate) fn complete_fingerprint_unchanged(&self, _work: WorkUnit) {
+        let _linearization = self
+            .admission_flush
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.active_work = state.active_work.saturating_sub(1);
+        state.processed += 1;
+        if self.cancellation.cause().is_none() && state.forced_outcome.is_none() {
+            state.completion_flushes_pending += 1;
+        }
         drop(state);
         self.flush_admission_locked();
         self.finish_completion_flush();
@@ -648,6 +672,7 @@ impl JobInner {
             outcome,
             verified: state.verified,
             failed: state.failed,
+            failure_counts: state.failure_counts,
             diagnostics: state.diagnostics.clone().into_boxed_slice(),
             omitted_diagnostics: state.omitted_diagnostics,
         };
@@ -772,6 +797,7 @@ impl JobInner {
 }
 
 fn retain_diagnostic(state: &mut JobState, key: DiscoveryRecordKey, kind: ProbeDiagnosticKind) {
+    state.failure_counts.record(&kind);
     if state.diagnostics.len() < DISCOVERY_DIAGNOSTIC_LIMIT {
         state.diagnostics.push(DiscoveryDiagnostic { key, kind });
     } else {

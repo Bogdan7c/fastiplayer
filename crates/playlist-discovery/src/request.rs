@@ -7,7 +7,8 @@ use std::sync::Arc;
 use crate::frontier::SiblingAdmissionFrontier;
 use crate::{
     AdmissionDirection, DirectoryManifest, DiscoveryJobKind, DiscoveryPriority, DiscoveryRecordKey,
-    DiscoveryRequestRevision, LocalMediaKind, ManifestCandidateKey, SiblingDiscoveryPolicySnapshot,
+    DiscoveryRequestRevision, LocalMediaFingerprint, LocalMediaKind, ManifestCandidateKey,
+    SiblingDiscoveryPolicySnapshot,
 };
 
 /// Любой request обязан быть representable job-local `u32` key-ом и bounded memory.
@@ -39,6 +40,26 @@ impl SiblingDiscoveryRequest {
     }
 }
 
+/// Один visible-row locator с optional fingerprint, который можно проверить без demux probe.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VisibleRefreshLocator {
+    /// Exact native path; row identity остаётся у app owner-а.
+    pub locator: PathBuf,
+    /// Persisted/cache fingerprint; `None` требует полного metadata probe.
+    pub expected_fingerprint: Option<LocalMediaFingerprint>,
+}
+
+impl VisibleRefreshLocator {
+    /// Создаёт demand без filesystem I/O.
+    #[must_use]
+    pub fn new(locator: PathBuf, expected_fingerprint: Option<LocalMediaFingerprint>) -> Self {
+        Self {
+            locator,
+            expected_fingerprint,
+        }
+    }
+}
+
 /// Один из reusable operation kinds поверх общего probe executor-а.
 pub enum DiscoveryRequest {
     /// Automatic sibling discovery с D43/D74 frontier.
@@ -54,7 +75,7 @@ pub enum DiscoveryRequest {
     VisibleRefresh {
         /// Caller уже D31-deduplicated demands по своей row identity/revision.
         /// Одинаковые locators остаются разными ordinal-ами: path не является row ID.
-        locators: Vec<PathBuf>,
+        locators: Vec<VisibleRefreshLocator>,
         /// App-owned structural/source revision.
         request_revision: DiscoveryRequestRevision,
     },
@@ -104,9 +125,10 @@ impl DiscoveryRequest {
     pub(crate) fn item_count(&self) -> usize {
         match self {
             Self::Sibling(request) => request.manifest.records().len().saturating_sub(1),
-            Self::ManualBatch { locators, .. }
-            | Self::VisibleRefresh { locators, .. }
-            | Self::MetadataSortPreparation { locators, .. } => locators.len(),
+            Self::ManualBatch { locators, .. } | Self::MetadataSortPreparation { locators, .. } => {
+                locators.len()
+            }
+            Self::VisibleRefresh { locators, .. } => locators.len(),
         }
     }
 
@@ -161,6 +183,7 @@ pub(crate) struct WorkUnit {
     pub directional_offset: usize,
     pub key: DiscoveryRecordKey,
     pub locator: PathBuf,
+    pub expected_fingerprint: Option<LocalMediaFingerprint>,
 }
 
 pub(crate) struct WorkPlan {
@@ -232,6 +255,7 @@ pub(crate) fn build_work_plan(request: DiscoveryRequest) -> WorkPlan {
                     directional_offset: index,
                     key: DiscoveryRecordKey::Batch(checked_batch_key(index)),
                     locator,
+                    expected_fingerprint: None,
                 })
                 .collect();
             WorkPlan {
@@ -242,9 +266,7 @@ pub(crate) fn build_work_plan(request: DiscoveryRequest) -> WorkPlan {
                 opened_media_kind: None,
             }
         }
-        DiscoveryRequest::VisibleRefresh { locators, .. } => {
-            nondirectional_work_plan(locators, DiscoveryPriority::Speculative)
-        }
+        DiscoveryRequest::VisibleRefresh { locators, .. } => visible_refresh_work_plan(locators),
         DiscoveryRequest::MetadataSortPreparation { locators, .. } => {
             nondirectional_work_plan(locators, DiscoveryPriority::Speculative)
         }
@@ -264,6 +286,7 @@ fn work_from_manifest(
         directional_offset,
         key: DiscoveryRecordKey::Manifest(candidate_key),
         locator: locator.to_path_buf(),
+        expected_fingerprint: None,
     }
 }
 
@@ -277,6 +300,29 @@ fn nondirectional_work_plan(locators: Vec<PathBuf>, priority: DiscoveryPriority)
             directional_offset: index,
             key: DiscoveryRecordKey::Batch(checked_batch_key(index)),
             locator,
+            expected_fingerprint: None,
+        })
+        .collect();
+    WorkPlan {
+        pending_work,
+        frontier: None,
+        manifest: None,
+        policy: None,
+        opened_media_kind: None,
+    }
+}
+
+fn visible_refresh_work_plan(locators: Vec<VisibleRefreshLocator>) -> WorkPlan {
+    let pending_work = locators
+        .into_iter()
+        .enumerate()
+        .map(|(index, locator)| WorkUnit {
+            priority: DiscoveryPriority::Speculative,
+            direction: AdmissionDirection::NonDirectional,
+            directional_offset: index,
+            key: DiscoveryRecordKey::Batch(checked_batch_key(index)),
+            locator: locator.locator,
+            expected_fingerprint: locator.expected_fingerprint,
         })
         .collect();
     WorkPlan {

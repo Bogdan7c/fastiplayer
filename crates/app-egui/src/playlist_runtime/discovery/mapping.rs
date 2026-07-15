@@ -98,7 +98,7 @@ pub(super) fn draft_from_record(
     ))
 }
 
-fn cached_metadata(
+pub(crate) fn cached_metadata(
     fallback_name: &str,
     kind: LocalMediaKind,
     duration: Option<MediaDuration>,

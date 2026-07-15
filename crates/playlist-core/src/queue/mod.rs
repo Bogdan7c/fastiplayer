@@ -38,11 +38,11 @@ pub use navigation::{
     PreparedManualNavigationToken,
 };
 pub use outcomes::{
-    AddItemsError, AddItemsOutcome, AllocatedPlaylistItemIds, ClearQueueOutcome, MoveItemIntent,
-    MoveItemOutcome, PrepareReservedMutationError, QueueRestoreError, RemoveItemOutcome,
-    ReplaceQueueError, ReplaceQueueOutcome, ReservedMutationCommit, TraversalCurrentEffect,
-    TraversalCurrentMutationError, TraversalCurrentMutationOutcome,
-    TraversalCurrentValidationError,
+    AddItemsError, AddItemsOutcome, AllocatedPlaylistItemIds, CappedTailAppendOutcome,
+    ClearQueueOutcome, MoveItemIntent, MoveItemOutcome, PrepareReservedMutationError,
+    QueueRestoreError, RemoveItemOutcome, ReplaceQueueError, ReplaceQueueOutcome,
+    ReservedMutationCommit, TraversalCurrentEffect, TraversalCurrentMutationError,
+    TraversalCurrentMutationOutcome, TraversalCurrentValidationError,
 };
 pub use removal::{
     PlaylistRemovalSnapshot, RemovalCurrentOutcome, RemovalSnapshotRestoreError,
@@ -388,6 +388,29 @@ impl PlaylistQueue {
         Ok(AddItemsOutcome::Added(AllocatedPlaylistItemIds(
             allocated_item_ids,
         )))
+    }
+
+    /// D67 атомарно добавляет caller-ordered prefix, который помещается в hard cap.
+    ///
+    /// Rejected tail не получает Item ID и не меняет allocator/revisions.
+    pub fn append_capped_tail(
+        &mut self,
+        mut drafts: Vec<PlaylistItemDraft>,
+    ) -> Result<CappedTailAppendOutcome, AddItemsError> {
+        let requested = drafts.len();
+        let remaining_capacity = MAX_PLAYLIST_ITEMS.saturating_sub(self.items.len());
+        let accepted = requested.min(remaining_capacity);
+        let capacity_rejected = requested.saturating_sub(accepted);
+        drafts.truncate(accepted);
+
+        let allocated_item_ids = match self.append_batch(drafts)? {
+            AddItemsOutcome::Added(item_ids) => item_ids,
+            AddItemsOutcome::NoItemsProvided => AllocatedPlaylistItemIds(Vec::new()),
+        };
+        Ok(CappedTailAppendOutcome {
+            allocated_item_ids,
+            capacity_rejected,
+        })
     }
 
     /// Атомарно заменяет canonical queue новыми ID-less drafts и очищает current.

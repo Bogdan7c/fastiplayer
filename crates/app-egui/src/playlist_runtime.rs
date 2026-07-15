@@ -17,6 +17,11 @@ use crate::process_shutdown::{ProcessOwnerShutdownOutcome, ShutdownDeadline};
 
 #[allow(
     dead_code,
+    reason = "Session 16 action API is rendered by Session 19 UI"
+)]
+mod actions;
+#[allow(
+    dead_code,
     reason = "Session 11A publishes controller foundation before Session 11B/12 UI callsites"
 )]
 mod controller;
@@ -33,6 +38,10 @@ mod persistence_runtime;
     reason = "Session 12A publishes runtime Undo boundary before Session 20 UI wiring"
 )]
 mod removal_undo;
+#[allow(
+    dead_code,
+    reason = "Session 16 generalized model is rendered by Session 19 UI"
+)]
 mod replacement_confirmation;
 mod settings;
 mod suspend_resume;
@@ -58,6 +67,14 @@ pub(crate) use startup::{
 )]
 mod view;
 
+#[allow(
+    unused_imports,
+    reason = "Session 19 consumes typed Session 16 actions"
+)]
+pub(crate) use actions::{
+    InstalledMetadataCacheOutcome, PlaylistConfirmationApplyOutcome, UrlAppendActionOutcome,
+    UrlAppendValidationError,
+};
 pub(crate) use controller::PlaylistController;
 #[allow(
     unused_imports,
@@ -68,14 +85,35 @@ pub(crate) use persistence::{
 };
 #[allow(unused_imports)]
 pub(crate) use removal_undo::{RemovalUndoOutcome, RemovalUndoStatus, RuntimeRemovalOutcome};
+#[allow(
+    unused_imports,
+    reason = "Session 19 consumes generalized confirmation model"
+)]
 pub(crate) use replacement_confirmation::{
     AdmittedLocalFileOpen, AdmittedQueueReplacementIntent, InAppQueueReplacementAdmission,
-    InAppQueueReplacementIntent, PendingQueueReplacementConfirmation,
-    QueueReplacementConfirmationAction, QueueReplacementConfirmationDecision,
-    QueueReplacementConfirmationOutcome, TrustedStartupQueueReplacementIntent,
-    safe_local_open_label,
+    InAppQueueReplacementIntent, PendingPlaylistConfirmation, PendingQueueReplacementConfirmation,
+    PendingSensitiveUrlPersistenceDecision, PlaylistConfirmationAction,
+    PlaylistConfirmationReasons, QueueReplacementConfirmationAction,
+    QueueReplacementConfirmationDecision, QueueReplacementConfirmationOutcome,
+    TrustedStartupQueueReplacementIntent, safe_local_open_label,
 };
 pub(crate) use view::PlaylistViewSnapshot;
+
+/// D66 generation меняется только при queue-identity replacement boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ManualAddQueueGeneration(u64);
+
+impl ManualAddQueueGeneration {
+    const INITIAL: Self = Self(1);
+
+    const fn value(self) -> u64 {
+        self.0
+    }
+
+    fn advance(&mut self) {
+        self.0 = self.0.saturating_add(1);
+    }
+}
 
 /// Generation любого lifecycle transition runtime-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -322,6 +360,8 @@ pub(crate) struct PlaylistRuntime {
     removal_undo: Option<removal_undo::RemovalUndoState>,
     /// D79 confirmation хранит secret-bearing intent вне renderer-bound `AppState`.
     replacement_confirmation: replacement_confirmation::QueueReplacementConfirmationState,
+    /// D66 stale guard для uncommitted Manual Add completions.
+    manual_add_queue_generation: ManualAddQueueGeneration,
     /// Target-first sibling scope/executor переживает player advance и AppState recreation.
     discovery: discovery::PlaylistDiscoveryCoordinator,
     /// Process-lifetime reusable preparation/install mechanism Session 10C.
@@ -382,6 +422,7 @@ impl PlaylistRuntime {
             removal_undo: None,
             replacement_confirmation:
                 replacement_confirmation::QueueReplacementConfirmationState::new(),
+            manual_add_queue_generation: ManualAddQueueGeneration::INITIAL,
             discovery,
             media_open,
             suspended_media: suspend_resume::SuspendedMediaState::default(),

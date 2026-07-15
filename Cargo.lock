@@ -143,6 +143,7 @@ dependencies = [
  "frame-server-core",
  "libc",
  "media-core",
+ "natural-sort-key",
  "player-core",
  "playlist-core",
  "playlist-discovery",

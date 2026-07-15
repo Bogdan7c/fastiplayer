@@ -47,6 +47,14 @@ struct FakeProbe {
 }
 
 impl DiscoveryProbe for FakeProbe {
+    fn read_fingerprint(
+        &self,
+        _locator: &Path,
+        _cancellation: &source_core::CancellationToken,
+    ) -> Result<LocalMediaFingerprint, ProbeOneLocalMediaError> {
+        Ok(LocalMediaFingerprint::new(1, SystemTime::UNIX_EPOCH))
+    }
+
     fn probe(
         &self,
         locator: &Path,

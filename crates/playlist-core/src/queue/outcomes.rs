@@ -22,6 +22,30 @@ impl AllocatedPlaylistItemIds {
     }
 }
 
+/// Результат D67 append-а, который атомарно принимает только доступный prefix.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CappedTailAppendOutcome {
+    pub(super) allocated_item_ids: AllocatedPlaylistItemIds,
+    pub(super) capacity_rejected: usize,
+}
+
+impl CappedTailAppendOutcome {
+    /// Передаёт ownership только действительно committed IDs и rejected count.
+    pub fn into_parts(self) -> (Vec<PlaylistItemId>, usize) {
+        (self.allocated_item_ids.into_vec(), self.capacity_rejected)
+    }
+}
+
+impl fmt::Debug for CappedTailAppendOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CappedTailAppendOutcome")
+            .field("allocated_item_ids", &self.allocated_item_ids)
+            .field("capacity_rejected", &self.capacity_rejected)
+            .finish()
+    }
+}
+
 impl fmt::Debug for AllocatedPlaylistItemIds {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter

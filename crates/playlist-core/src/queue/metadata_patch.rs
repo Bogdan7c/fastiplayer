@@ -13,6 +13,7 @@ pub struct PlaylistMetadataPatch {
     item_id: PlaylistItemId,
     expected_locator: PlaylistLocator,
     expected_local_fingerprint: Option<LocalSourceFingerprint>,
+    refreshed_local_fingerprint: Option<LocalSourceFingerprint>,
     cached_metadata: CachedPlaylistMetadata,
 }
 
@@ -28,6 +29,24 @@ impl PlaylistMetadataPatch {
             item_id,
             expected_locator,
             expected_local_fingerprint,
+            refreshed_local_fingerprint: expected_local_fingerprint,
+            cached_metadata,
+        }
+    }
+
+    /// Создаёт D31 patch, который заменяет fingerprint вместе с cache.
+    pub fn refreshed_local(
+        item_id: PlaylistItemId,
+        expected_locator: PlaylistLocator,
+        expected_local_fingerprint: Option<LocalSourceFingerprint>,
+        refreshed_local_fingerprint: LocalSourceFingerprint,
+        cached_metadata: CachedPlaylistMetadata,
+    ) -> Self {
+        Self {
+            item_id,
+            expected_locator,
+            expected_local_fingerprint,
+            refreshed_local_fingerprint: Some(refreshed_local_fingerprint),
             cached_metadata,
         }
     }
@@ -42,6 +61,10 @@ impl fmt::Debug for PlaylistMetadataPatch {
             .field(
                 "expected_local_fingerprint",
                 &self.expected_local_fingerprint,
+            )
+            .field(
+                "refreshed_local_fingerprint",
+                &self.refreshed_local_fingerprint,
             )
             .field("cached_metadata", &self.cached_metadata)
             .finish()
@@ -164,6 +187,18 @@ impl fmt::Display for MetadataPatchBatchError {
 impl std::error::Error for MetadataPatchBatchError {}
 
 impl PlaylistQueue {
+    /// Проверяет, создаст ли matching batch реальное cache изменение.
+    pub fn metadata_patch_batch_has_changes(&self, patches: &[PlaylistMetadataPatch]) -> bool {
+        patches.iter().any(|patch| {
+            self.item(patch.item_id).is_some_and(|item| {
+                item.locator() == &patch.expected_locator
+                    && item.local_fingerprint() == patch.expected_local_fingerprint
+                    && (item.local_fingerprint() != patch.refreshed_local_fingerprint
+                        || item.cached_metadata() != &patch.cached_metadata)
+            })
+        })
+    }
+
     /// Строит весь patch plan и только затем публикует matching changes.
     ///
     /// Metadata mutation разрешена при active reservation, потому что она не
@@ -172,7 +207,7 @@ impl PlaylistQueue {
         &mut self,
         patches: Vec<PlaylistMetadataPatch>,
     ) -> Result<MetadataPatchBatchOutcome, MetadataPatchBatchError> {
-        let mut staged_metadata_by_index = HashMap::new();
+        let mut staged_cache_by_index = HashMap::new();
         let mut item_outcomes = Vec::with_capacity(patches.len());
         let mut applied_count = 0usize;
 
@@ -192,24 +227,30 @@ impl PlaylistQueue {
                 });
                 continue;
             }
-            let effective_metadata = staged_metadata_by_index
+            let effective_cache = staged_cache_by_index
                 .get(&item_index)
-                .unwrap_or_else(|| item.cached_metadata());
-            if effective_metadata == &patch.cached_metadata {
+                .cloned()
+                .unwrap_or_else(|| (item.local_fingerprint(), item.cached_metadata().clone()));
+            if effective_cache.0 == patch.refreshed_local_fingerprint
+                && effective_cache.1 == patch.cached_metadata
+            {
                 item_outcomes.push(MetadataPatchItemOutcome::NoChange {
                     item_id: patch.item_id,
                 });
                 continue;
             }
 
-            staged_metadata_by_index.insert(item_index, patch.cached_metadata);
+            staged_cache_by_index.insert(
+                item_index,
+                (patch.refreshed_local_fingerprint, patch.cached_metadata),
+            );
             item_outcomes.push(MetadataPatchItemOutcome::Applied {
                 item_id: patch.item_id,
             });
             applied_count += 1;
         }
 
-        let next_metadata_revision = if staged_metadata_by_index.is_empty() {
+        let next_metadata_revision = if staged_cache_by_index.is_empty() {
             None
         } else {
             Some(
@@ -219,8 +260,8 @@ impl PlaylistQueue {
             )
         };
 
-        for (item_index, cached_metadata) in staged_metadata_by_index {
-            self.items[item_index].replace_cached_metadata(cached_metadata);
+        for (item_index, (local_fingerprint, cached_metadata)) in staged_cache_by_index {
+            self.items[item_index].replace_local_cache(local_fingerprint, cached_metadata);
         }
         if let Some(next_revision) = next_metadata_revision {
             self.metadata_revision = next_revision;

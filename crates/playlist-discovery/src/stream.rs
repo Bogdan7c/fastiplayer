@@ -453,6 +453,37 @@ pub struct DiscoveryDiagnostic {
     pub kind: ProbeDiagnosticKind,
 }
 
+/// Lossless category counters отдельно от bounded diagnostic details.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DiscoveryFailureCounts {
+    /// Container reader отсутствует.
+    pub unsupported_container: usize,
+    /// Container не содержит A/V tracks.
+    pub no_audio_video_tracks: usize,
+    /// I/O, malformed и source-race failures.
+    pub probe_failed: usize,
+}
+
+impl DiscoveryFailureCounts {
+    pub(crate) fn record(&mut self, kind: &ProbeDiagnosticKind) {
+        match kind {
+            ProbeDiagnosticKind::UnsupportedContainer => {
+                self.unsupported_container = self.unsupported_container.saturating_add(1);
+            }
+            ProbeDiagnosticKind::NoAudioVideoTracks => {
+                self.no_audio_video_tracks = self.no_audio_video_tracks.saturating_add(1);
+            }
+            ProbeDiagnosticKind::IoFailure(_)
+            | ProbeDiagnosticKind::ProbeFailure
+            | ProbeDiagnosticKind::MissingAfterSnapshot
+            | ProbeDiagnosticKind::SourceChangedAfterSnapshot
+            | ProbeDiagnosticKind::UnavailableAfterSnapshot(_) => {
+                self.probe_failed = self.probe_failed.saturating_add(1);
+            }
+        }
+    }
+}
+
 /// Почему job больше не публикует новые batches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiscoveryFinalOutcome {
@@ -483,6 +514,8 @@ pub struct DiscoveryFinalSummary {
     pub verified: usize,
     /// Probe/source failures.
     pub failed: usize,
+    /// Exact typed category counts; details below остаются bounded.
+    pub failure_counts: DiscoveryFailureCounts,
     /// Retained bounded diagnostics.
     pub diagnostics: Box<[DiscoveryDiagnostic]>,
     /// Число дополнительных diagnostics, не удержанных в памяти.

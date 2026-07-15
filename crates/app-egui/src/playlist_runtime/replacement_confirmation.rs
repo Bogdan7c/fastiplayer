@@ -14,6 +14,52 @@ use crate::url_service_adapter::StartupUrlLocator;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct QueueReplacementIntentId(u64);
 
+/// Typed reason set единственного generalized confirmation slot-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlaylistConfirmationReasons {
+    queue_replacement: bool,
+    sensitive_url_persistence: bool,
+}
+
+impl PlaylistConfirmationReasons {
+    pub(crate) const fn queue_replacement(self) -> bool {
+        self.queue_replacement
+    }
+
+    pub(crate) const fn sensitive_url_persistence(self) -> bool {
+        self.sensitive_url_persistence
+    }
+
+    const fn replacement_only(self) -> bool {
+        self.queue_replacement && !self.sensitive_url_persistence
+    }
+}
+
+/// Session 19-safe model: только opaque ID, redacted label и typed reason set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingPlaylistConfirmation {
+    intent_id: QueueReplacementIntentId,
+    safe_label: SafeMediaLabel,
+    reasons: PlaylistConfirmationReasons,
+}
+
+/// D15 name для того же generalized entity; отдельного race-prone slot-а нет.
+pub(crate) type PendingSensitiveUrlPersistenceDecision = PendingPlaylistConfirmation;
+
+impl PendingPlaylistConfirmation {
+    pub(crate) const fn intent_id(&self) -> QueueReplacementIntentId {
+        self.intent_id
+    }
+
+    pub(crate) fn safe_label(&self) -> &str {
+        self.safe_label.as_str()
+    }
+
+    pub(crate) const fn reasons(&self) -> PlaylistConfirmationReasons {
+        self.reasons
+    }
+}
+
 /// Единственная безопасная модель, которую разрешено передавать renderer-bound UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PendingQueueReplacementConfirmation {
@@ -43,6 +89,13 @@ pub(crate) enum QueueReplacementConfirmationDecision {
 /// Correlated UI action для единственного process-lifetime slot-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct QueueReplacementConfirmationAction {
+    pub(crate) intent_id: QueueReplacementIntentId,
+    pub(crate) decision: QueueReplacementConfirmationDecision,
+}
+
+/// Generalized exact response; decision vocabulary остаётся общей и typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlaylistConfirmationAction {
     pub(crate) intent_id: QueueReplacementIntentId,
     pub(crate) decision: QueueReplacementConfirmationDecision,
 }
@@ -192,7 +245,7 @@ pub(crate) enum QueueReplacementAdmissionError {
 }
 
 /// Secret-bearing payload никогда не реализует automatic `Debug`/`Display`.
-enum QueueReplacementTarget {
+pub(super) enum QueueReplacementTarget {
     LocalFile(PathBuf),
     ServiceUrl(StartupUrlLocator),
 }
@@ -205,7 +258,15 @@ impl QueueReplacementTarget {
         }
     }
 
-    fn admit(self) -> AdmittedQueueReplacementIntent {
+    fn requires_sensitive_persistence_acknowledgement(&self) -> bool {
+        matches!(
+            self,
+            Self::ServiceUrl(locator)
+                if locator.requires_sensitive_persistence_acknowledgement()
+        )
+    }
+
+    pub(super) fn admit(self) -> AdmittedQueueReplacementIntent {
         match self {
             Self::LocalFile(path) => {
                 AdmittedQueueReplacementIntent::LocalFile(AdmittedLocalFileOpen { path })
@@ -224,8 +285,19 @@ pub(super) struct QueueReplacementConfirmationState {
 }
 
 struct PendingQueueReplacementIntent {
-    model: PendingQueueReplacementConfirmation,
-    target: QueueReplacementTarget,
+    model: PendingPlaylistConfirmation,
+    target: PendingConfirmationTarget,
+}
+
+pub(super) enum PendingConfirmationTarget {
+    QueueReplacement(QueueReplacementTarget),
+    SensitiveUrlAppend(Box<playlist_core::PlaylistItemDraft>),
+}
+
+pub(super) enum PlaylistConfirmationResolution {
+    Confirmed(PendingConfirmationTarget),
+    Cancelled,
+    Stale,
 }
 
 impl QueueReplacementConfirmationState {
@@ -239,7 +311,8 @@ impl QueueReplacementConfirmationState {
     fn replace_with_confirmation(
         &mut self,
         intent: InAppQueueReplacementIntent,
-    ) -> Result<PendingQueueReplacementConfirmation, QueueReplacementAdmissionError> {
+        requires_queue_replacement: bool,
+    ) -> Result<(), QueueReplacementAdmissionError> {
         // Сам факт нового explicit intent supersede-ит старый slot даже при редком
         // identity overflow: response к прежнему intent больше не должен ожить.
         self.pending = None;
@@ -248,19 +321,63 @@ impl QueueReplacementConfirmationState {
             .next_intent_id
             .checked_add(1)
             .ok_or(QueueReplacementAdmissionError::IntentIdentityExhausted)?;
-        let model = PendingQueueReplacementConfirmation {
+        let reasons = PlaylistConfirmationReasons {
+            queue_replacement: requires_queue_replacement,
+            sensitive_url_persistence: intent
+                .target
+                .requires_sensitive_persistence_acknowledgement(),
+        };
+        let model = PendingPlaylistConfirmation {
             intent_id,
             safe_label: intent.safe_label,
+            reasons,
         };
         self.pending = Some(PendingQueueReplacementIntent {
-            model: model.clone(),
-            target: intent.target,
+            model,
+            target: PendingConfirmationTarget::QueueReplacement(intent.target),
         });
-        Ok(model)
+        Ok(())
     }
 
-    fn model(&self) -> Option<PendingQueueReplacementConfirmation> {
+    fn replacement_only_model(&self) -> Option<PendingQueueReplacementConfirmation> {
+        let pending = self.pending.as_ref()?;
+        pending
+            .model
+            .reasons
+            .replacement_only()
+            .then(|| PendingQueueReplacementConfirmation {
+                intent_id: pending.model.intent_id,
+                safe_label: pending.model.safe_label.clone(),
+            })
+    }
+
+    fn model(&self) -> Option<PendingPlaylistConfirmation> {
         self.pending.as_ref().map(|pending| pending.model.clone())
+    }
+
+    pub(super) fn replace_with_sensitive_url_append(
+        &mut self,
+        safe_label: SafeMediaLabel,
+        draft: playlist_core::PlaylistItemDraft,
+    ) -> Result<(), QueueReplacementAdmissionError> {
+        self.pending = None;
+        let intent_id = QueueReplacementIntentId(self.next_intent_id);
+        self.next_intent_id = self
+            .next_intent_id
+            .checked_add(1)
+            .ok_or(QueueReplacementAdmissionError::IntentIdentityExhausted)?;
+        self.pending = Some(PendingQueueReplacementIntent {
+            model: PendingPlaylistConfirmation {
+                intent_id,
+                safe_label,
+                reasons: PlaylistConfirmationReasons {
+                    queue_replacement: false,
+                    sensitive_url_persistence: true,
+                },
+            },
+            target: PendingConfirmationTarget::SensitiveUrlAppend(Box::new(draft)),
+        });
+        Ok(())
     }
 
     fn respond(
@@ -273,6 +390,9 @@ impl QueueReplacementConfirmationState {
         if pending.model.intent_id != action.intent_id {
             return QueueReplacementConfirmationOutcome::Stale;
         }
+        if !pending.model.reasons.replacement_only() {
+            return QueueReplacementConfirmationOutcome::Stale;
+        }
 
         let pending = self
             .pending
@@ -280,10 +400,37 @@ impl QueueReplacementConfirmationState {
             .expect("matching confirmation must remain present until atomic consume");
         match action.decision {
             QueueReplacementConfirmationDecision::Confirm => {
-                QueueReplacementConfirmationOutcome::Confirmed(pending.target.admit())
+                let PendingConfirmationTarget::QueueReplacement(target) = pending.target else {
+                    unreachable!("replacement-only model always owns replacement target")
+                };
+                QueueReplacementConfirmationOutcome::Confirmed(target.admit())
             }
             QueueReplacementConfirmationDecision::Cancel => {
                 QueueReplacementConfirmationOutcome::Cancelled
+            }
+        }
+    }
+
+    pub(super) fn respond_generalized(
+        &mut self,
+        action: PlaylistConfirmationAction,
+    ) -> PlaylistConfirmationResolution {
+        let Some(pending) = self.pending.as_ref() else {
+            return PlaylistConfirmationResolution::Stale;
+        };
+        if pending.model.intent_id != action.intent_id {
+            return PlaylistConfirmationResolution::Stale;
+        }
+        let pending = self
+            .pending
+            .take()
+            .expect("matching generalized confirmation remains present until consume");
+        match action.decision {
+            QueueReplacementConfirmationDecision::Confirm => {
+                PlaylistConfirmationResolution::Confirmed(pending.target)
+            }
+            QueueReplacementConfirmationDecision::Cancel => {
+                PlaylistConfirmationResolution::Cancelled
             }
         }
     }
@@ -299,16 +446,25 @@ impl PlaylistRuntime {
         &mut self,
         intent: InAppQueueReplacementIntent,
     ) -> Result<InAppQueueReplacementAdmission, QueueReplacementAdmissionError> {
+        self.supersede_manual_add_queue_generation();
         if !self
             .admission_open
             .load(std::sync::atomic::Ordering::Acquire)
         {
             return Err(QueueReplacementAdmissionError::RuntimeShuttingDown);
         }
+        let requires_sensitive_persistence_acknowledgement = intent
+            .target
+            .requires_sensitive_persistence_acknowledgement();
         let Some(controller) = self.controller.as_ref() else {
             // До load decision committed queue ещё отсутствует. D65 supersede-ит только
             // restore apply, после чего этот explicit open может готовиться без Item ID.
             self.record_startup_media_replacement()?;
+            if requires_sensitive_persistence_acknowledgement {
+                self.replacement_confirmation
+                    .replace_with_confirmation(intent, false)?;
+                return Ok(InAppQueueReplacementAdmission::AwaitingConfirmation);
+            }
             self.replacement_confirmation.cancel();
             return Ok(InAppQueueReplacementAdmission::StartNow(
                 intent.target.admit(),
@@ -316,6 +472,11 @@ impl PlaylistRuntime {
         };
 
         if controller.queue().is_empty() {
+            if requires_sensitive_persistence_acknowledgement {
+                self.replacement_confirmation
+                    .replace_with_confirmation(intent, false)?;
+                return Ok(InAppQueueReplacementAdmission::AwaitingConfirmation);
+            }
             self.replacement_confirmation.cancel();
             return Ok(InAppQueueReplacementAdmission::StartNow(
                 intent.target.admit(),
@@ -323,7 +484,7 @@ impl PlaylistRuntime {
         }
 
         self.replacement_confirmation
-            .replace_with_confirmation(intent)?;
+            .replace_with_confirmation(intent, true)?;
         Ok(InAppQueueReplacementAdmission::AwaitingConfirmation)
     }
 
@@ -346,7 +507,20 @@ impl PlaylistRuntime {
     pub(crate) fn pending_queue_replacement_confirmation(
         &self,
     ) -> Option<PendingQueueReplacementConfirmation> {
+        self.replacement_confirmation.replacement_only_model()
+    }
+
+    /// Generalized model — единственный accessor для sensitive/composed Session 19 UI.
+    pub(crate) fn pending_playlist_confirmation(&self) -> Option<PendingPlaylistConfirmation> {
         self.replacement_confirmation.model()
+    }
+
+    /// Compatibility-free typed D15 view остаётся тем же generalized entity.
+    pub(crate) fn pending_sensitive_url_persistence_decision(
+        &self,
+    ) -> Option<PendingSensitiveUrlPersistenceDecision> {
+        self.pending_playlist_confirmation()
+            .filter(|model| model.reasons().sensitive_url_persistence())
     }
 
     /// Exact response сначала атомарно consumes slot и только затем возвращает original intent.

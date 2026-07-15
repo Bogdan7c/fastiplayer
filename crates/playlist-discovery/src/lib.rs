@@ -51,15 +51,15 @@ pub use manifest::{
 pub use policy::{SiblingDiscoveryPolicySnapshot, SiblingFilter, SiblingPolicyRevision};
 pub use request::{
     DISCOVERY_REQUEST_ITEM_LIMIT, DiscoveryRequest, ReprioritizeHint, ReprioritizeOutcome,
-    SiblingDiscoveryRequest,
+    SiblingDiscoveryRequest, VisibleRefreshLocator,
 };
 pub use stream::{
     ADMITTED_BATCH_RECORD_LIMIT, AdmissionAckOutcome, AdmissionAdvanced, AdmissionBatchId,
     AdmissionDirection, AdmissionSideAccounting, AdmittedBatch, BatchApplySemantics,
-    DISCOVERY_DIAGNOSTIC_LIMIT, DiscoveryDiagnostic, DiscoveryEvent, DiscoveryFinalOutcome,
-    DiscoveryFinalSummary, DiscoveryJobId, DiscoveryJobKind, DiscoveryPriority, DiscoveryProgress,
-    DiscoveryRecord, DiscoveryRecordKey, DiscoveryRequestRevision, FrontierReady,
-    ProbeDiagnosticKind, VERIFIED_RECORD_BUFFER_LIMIT,
+    DISCOVERY_DIAGNOSTIC_LIMIT, DiscoveryDiagnostic, DiscoveryEvent, DiscoveryFailureCounts,
+    DiscoveryFinalOutcome, DiscoveryFinalSummary, DiscoveryJobId, DiscoveryJobKind,
+    DiscoveryPriority, DiscoveryProgress, DiscoveryRecord, DiscoveryRecordKey,
+    DiscoveryRequestRevision, FrontierReady, ProbeDiagnosticKind, VERIFIED_RECORD_BUFFER_LIMIT,
 };
 
 /// Media-категория, определённая только по container track topology.
@@ -240,6 +240,23 @@ pub fn probe_one_local_media(
     ensure_not_cancelled(cancellation)?;
 
     build_success_record(path, container_snapshot, fingerprint)
+}
+
+/// Читает только size+mtime для demand refresh cache validation без demux probe.
+pub fn read_local_media_fingerprint(
+    path: &Path,
+    cancellation: &CancellationToken,
+) -> Result<LocalMediaFingerprint, ProbeOneLocalMediaError> {
+    ensure_not_cancelled(cancellation)?;
+    let file = File::open(path).map_err(ProbeOneLocalMediaError::IoFailure)?;
+    let file_metadata = file
+        .metadata()
+        .map_err(ProbeOneLocalMediaError::IoFailure)?;
+    let modified_at = file_metadata
+        .modified()
+        .map_err(ProbeOneLocalMediaError::IoFailure)?;
+    ensure_not_cancelled(cancellation)?;
+    Ok(LocalMediaFingerprint::new(file_metadata.len(), modified_at))
 }
 
 fn build_success_record(

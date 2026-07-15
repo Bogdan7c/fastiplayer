@@ -16,8 +16,8 @@ use crate::request::DISCOVERY_REQUEST_ITEM_LIMIT;
 use crate::request::WorkUnit;
 use crate::{
     DiscoveryCancellationCause, DiscoveryJobId, DiscoveryPriority, DiscoveryRecordKey,
-    DiscoveryRequest, ManifestCandidateKey, ProbeOneLocalMediaError, ProbedLocalMedia,
-    ReprioritizeOutcome, probe_one_local_media,
+    DiscoveryRequest, LocalMediaFingerprint, ManifestCandidateKey, ProbeOneLocalMediaError,
+    ProbedLocalMedia, ReprioritizeOutcome, probe_one_local_media, read_local_media_fingerprint,
 };
 
 /// Общая bounded input capacity work units.
@@ -46,6 +46,13 @@ pub const FOREGROUND_ONLY_WORKER_COUNT: usize = 1;
 
 /// Single-file I/O owner, заменяемый deterministic fake-ом в focused tests.
 pub trait DiscoveryProbe: Send + Sync + 'static {
+    /// Читает только fingerprint; matching cache не должен запускать demux probe.
+    fn read_fingerprint(
+        &self,
+        locator: &Path,
+        cancellation: &CancellationToken,
+    ) -> Result<LocalMediaFingerprint, ProbeOneLocalMediaError>;
+
     /// Выполняет один cooperative probe без app/domain side effects.
     fn probe(
         &self,
@@ -59,6 +66,14 @@ pub trait DiscoveryProbe: Send + Sync + 'static {
 pub struct LocalMediaProbe;
 
 impl DiscoveryProbe for LocalMediaProbe {
+    fn read_fingerprint(
+        &self,
+        locator: &Path,
+        cancellation: &CancellationToken,
+    ) -> Result<LocalMediaFingerprint, ProbeOneLocalMediaError> {
+        read_local_media_fingerprint(locator, cancellation)
+    }
+
     fn probe(
         &self,
         locator: &Path,
@@ -588,20 +603,36 @@ fn worker_loop(scheduler: Arc<Scheduler>, probe: Arc<dyn DiscoveryProbe>, foregr
             scheduled
                 .job
                 .record_source_failure(scheduled.work, diagnostic);
-        } else {
-            let probe_result = catch_unwind(AssertUnwindSafe(|| {
-                probe.probe(
+        } else if let Some(expected_fingerprint) = scheduled.work.expected_fingerprint {
+            let fingerprint_result = catch_unwind(AssertUnwindSafe(|| {
+                probe.read_fingerprint(
                     &scheduled.work.locator,
                     scheduled.job.cancellation().probe_token(),
                 )
             }));
-            match probe_result {
-                Ok(result) => scheduled.job.complete_work(scheduled.work, result),
+            match fingerprint_result {
+                Ok(Ok(actual_fingerprint)) if actual_fingerprint == expected_fingerprint => {
+                    scheduled.job.complete_fingerprint_unchanged(scheduled.work);
+                }
+                Ok(Ok(_)) => run_probe(&scheduled.job, scheduled.work, probe.as_ref()),
+                Ok(Err(error)) => scheduled.job.complete_work(scheduled.work, Err(error)),
                 Err(_) => scheduled.job.fail_executor_disconnected(),
             }
+        } else {
+            run_probe(&scheduled.job, scheduled.work, probe.as_ref());
         }
         scheduler.finish_work(scheduled.job.id(), work_priority);
         scheduler.refill_job(&scheduled.job);
+    }
+}
+
+fn run_probe(job: &Arc<JobInner>, work: WorkUnit, probe: &dyn DiscoveryProbe) {
+    let probe_result = catch_unwind(AssertUnwindSafe(|| {
+        probe.probe(&work.locator, job.cancellation().probe_token())
+    }));
+    match probe_result {
+        Ok(result) => job.complete_work(work, result),
+        Err(_) => job.fail_executor_disconnected(),
     }
 }
 

@@ -41,11 +41,16 @@ pub(crate) use executor::MAX_NON_CANCELLABLE_STALE_PREPARATIONS;
 #[allow(unused_imports)]
 // Prepared envelope is intentionally introduced before callsite migration.
 pub(crate) use local::{LocalFingerprintValidation, PreparedLocalOpenResult, prepare_local_open};
+#[allow(
+    unused_imports,
+    reason = "cache snapshot is consumed through descriptor intent method"
+)]
 pub(crate) use types::{
     ActiveMediaSource, AuthorizationDispatchResolution, CancellationDispatchOutcome,
     MediaOpenClientKey, MediaOpenCommandError, MediaOpenCompletionDriveError,
     MediaOpenInstallIntent, MediaOpenInvariantViolation, MediaOpenPhase, MediaOpenRequestId,
     MediaOpenSnapshot, MediaOpenSourceRequest, MediaOpenStartError, MediaOpenStartMode,
     MediaOpenStartOutcome, MediaOpenTerminalOutcome, MediaPreparationFailureKind,
-    PlayerDispatchRejection, PreparedMediaDescriptor, PreparedMediaOpen, SafeMediaLabel,
+    PlayerDispatchRejection, PreparedMediaDescriptor, PreparedMediaOpen,
+    PreparedPlaylistCacheUpdate, SafeMediaLabel,
 };

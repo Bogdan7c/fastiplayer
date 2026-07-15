@@ -5,7 +5,7 @@ use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use media_core::{MediaTagMetadata, TrackInfo};
+use media_core::{MediaTagMetadata, TrackInfo, TrackKind};
 use player_core::{
     MediaInstallCancellationCause, MediaInstallCompletion, MediaInstallRequestId, PlaybackIntent,
     PlaybackIntentRevision,
@@ -152,6 +152,61 @@ pub(crate) enum PreparedMediaDescriptor {
         source: ActiveMediaSource,
         safe_label: SafeMediaLabel,
     },
+}
+
+/// Cache-only snapshot, который app action применяет только после exact Installed.
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedPlaylistCacheUpdate {
+    pub(crate) media_kind: LocalMediaKind,
+    pub(crate) duration: Option<Duration>,
+    pub(crate) metadata: MediaTagMetadata,
+    pub(crate) fingerprint: Option<LocalMediaFingerprint>,
+}
+
+impl PreparedMediaDescriptor {
+    /// Извлекает last-known metadata без demuxer ownership и без нового I/O.
+    pub(crate) fn playlist_cache_update(&self) -> Option<PreparedPlaylistCacheUpdate> {
+        match self {
+            Self::Local {
+                media_kind,
+                duration,
+                metadata,
+                fingerprint,
+                ..
+            } => Some(PreparedPlaylistCacheUpdate {
+                media_kind: *media_kind,
+                duration: *duration,
+                metadata: metadata.clone(),
+                fingerprint: Some(*fingerprint),
+            }),
+            Self::Direct {
+                tracks,
+                duration,
+                metadata,
+                ..
+            }
+            | Self::YouTube {
+                tracks,
+                duration,
+                metadata,
+                ..
+            } => Some(PreparedPlaylistCacheUpdate {
+                media_kind: media_kind_from_tracks(tracks),
+                duration: *duration,
+                metadata: metadata.clone(),
+                fingerprint: None,
+            }),
+            Self::CallerPrepared { .. } => None,
+        }
+    }
+}
+
+fn media_kind_from_tracks(tracks: &[TrackInfo]) -> LocalMediaKind {
+    if tracks.iter().any(|track| track.kind == TrackKind::Video) {
+        LocalMediaKind::VideoContaining
+    } else {
+        LocalMediaKind::AudioOnly
+    }
 }
 
 impl PreparedMediaDescriptor {

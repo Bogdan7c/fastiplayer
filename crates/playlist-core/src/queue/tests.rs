@@ -61,9 +61,13 @@ fn first_id_empty_one_and_capacity_boundary_are_exact() {
     assert_eq!(initial_ids.last(), Some(&item_id(49_999)));
     assert_eq!(queue.len(), 49_999);
 
-    // Последняя разрешённая строка получает ID 50_000.
-    let final_id = appended_ids(queue.append_one(local_draft("last")).expect("at cap"));
+    // D67 принимает только natural-prefix caller batch и не выдаёт ID rejected tail.
+    let (final_id, capacity_rejected) = queue
+        .append_capped_tail(vec![local_draft("last"), local_draft("rejected")])
+        .expect("capped prefix")
+        .into_parts();
     assert_eq!(final_id, vec![item_id(50_000)]);
+    assert_eq!(capacity_rejected, 1);
     assert_eq!(queue.len(), MAX_PLAYLIST_ITEMS);
 
     // Следующий append typed-reject-ится без size/watermark mutation.
@@ -73,6 +77,13 @@ fn first_id_empty_one_and_capacity_boundary_are_exact() {
         Err(AddItemsError::CapacityExceeded { .. })
     ));
     assert_eq!(queue.len(), MAX_PLAYLIST_ITEMS);
+    assert_eq!(queue.next_item_id_snapshot(), watermark_before_rejection);
+    let (none, rejected) = queue
+        .append_capped_tail(vec![local_draft("still-overflow")])
+        .expect("zero-capacity outcome remains a no-op")
+        .into_parts();
+    assert!(none.is_empty());
+    assert_eq!(rejected, 1);
     assert_eq!(queue.next_item_id_snapshot(), watermark_before_rejection);
 }
 

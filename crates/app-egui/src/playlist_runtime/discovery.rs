@@ -1,9 +1,24 @@
 //! Target-first local replacement и process-lifetime sibling discovery orchestration.
 
+mod action_api;
+#[allow(
+    dead_code,
+    reason = "Session 16 action API is rendered by Session 19 UI"
+)]
+mod action_jobs;
 mod manifest_worker;
 mod mapping;
 mod navigation;
 mod settings_port;
+
+#[allow(
+    unused_imports,
+    reason = "Session 19 consumes Session 16 job read models"
+)]
+pub(crate) use action_jobs::{
+    ManualAddJobId, ManualAddStartError, PlaylistDiscoveryJobsReadModel,
+    VisibleRefreshRequestOutcome,
+};
 
 #[allow(unused_imports)]
 pub(crate) use navigation::{PlaylistDiscoveryNavigationAction, PlaylistDiscoveryNavigationStatus};
@@ -35,6 +50,7 @@ use super::{PlaylistMediaOpenGateError, PlaylistRuntime};
 use crate::app_wake::{AppWakePort, WakeDelivery};
 use crate::media_open::{AuthorizationDispatchResolution, MediaOpenRequestId};
 use manifest_worker::{ManifestWork, ManifestWorker};
+pub(crate) use mapping::cached_metadata;
 pub(crate) use mapping::target_draft_from_prepared;
 use mapping::{
     batch_matches, draft_from_record, insertion_anchor, manifest_priority_hint, sibling_filter,
@@ -159,7 +175,9 @@ impl PlaylistRuntime {
             return false;
         };
         let dirty_before = controller.dirty_revision();
-        let visible = self.discovery.drain(controller);
+        let visible = self
+            .discovery
+            .drain(controller, self.manual_add_queue_generation.value());
         let dirty_after = controller.dirty_revision();
         if dirty_after != dirty_before {
             self.publish_controller_mutation_if_dirty(dirty_before);
@@ -267,6 +285,7 @@ struct ActiveDiscoveryScope {
 /// Process-lifetime owner manifest stage, executor, scope registry и terminal model.
 pub(super) struct PlaylistDiscoveryCoordinator {
     executor: Option<DiscoveryExecutor>,
+    action_jobs: action_jobs::DiscoveryActionJobs,
     manifest_worker: Option<ManifestWorker>,
     settings_control: SharedDiscoverySettingsControl,
     next_scope_id: u64,
@@ -287,6 +306,7 @@ impl PlaylistDiscoveryCoordinator {
         let manifest_worker = ManifestWorker::start(wake_port.clone());
         Self {
             executor,
+            action_jobs: action_jobs::DiscoveryActionJobs::new(),
             manifest_worker,
             settings_control: SharedDiscoverySettingsControl::default(),
             next_scope_id: 1,
@@ -314,6 +334,7 @@ impl PlaylistDiscoveryCoordinator {
     /// Неблокирующе закрывает discovery admission перед общим committed-state flush.
     pub(super) fn begin_shutdown(&mut self) {
         self.cancel_active(DiscoveryCancellationCause::LifecycleShutdown);
+        self.action_jobs.begin_shutdown();
         if let Some(manifest_worker) = &mut self.manifest_worker {
             manifest_worker.close_admission();
         }
@@ -390,8 +411,15 @@ impl PlaylistDiscoveryCoordinator {
         self.status = PlaylistDiscoveryStatus::Enumerating { scope_id };
     }
 
-    pub(super) fn drain(&mut self, controller: &mut super::controller::PlaylistController) -> bool {
-        let mut visible_change = self.finish_manifest_if_ready(controller);
+    pub(super) fn drain(
+        &mut self,
+        controller: &mut super::controller::PlaylistController,
+        queue_generation: u64,
+    ) -> bool {
+        let mut visible_change =
+            self.action_jobs
+                .drain(self.executor.as_ref(), controller, queue_generation);
+        visible_change |= self.finish_manifest_if_ready(controller);
         let Some(mut active) = self.active_scope.take() else {
             return visible_change;
         };
