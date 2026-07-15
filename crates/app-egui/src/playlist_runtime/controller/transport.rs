@@ -16,6 +16,10 @@ use playlist_core::{
 };
 
 use super::PlaylistController;
+pub(super) use super::discovery_navigation::PendingManualTraversal;
+pub(crate) use super::discovery_navigation::{
+    DiscoveryManualWaitAvailability, ManualNavigationWaitId, SiblingDiscoveryScopeId,
+};
 use super::install::{
     DeferredControllerIntent, DeferredTransportIntent, LifecycleIntentOutcome,
     PlaylistInstallMutation,
@@ -25,7 +29,7 @@ use super::manual_navigation::{
 };
 use crate::media_open::MediaOpenRequestId;
 use crate::playlist_runtime::identity::{
-    ActiveMediaIdentity, PendingTargetOrigin, PlaylistItemErrorPhase, TransportActionOrigin,
+    PendingTargetOrigin, PlaylistItemErrorPhase, TransportActionOrigin,
 };
 use crate::playlist_runtime::view::PlaylistDirtySignal;
 
@@ -75,42 +79,6 @@ impl PreviousRestartThreshold {
     fn should_restart(self, current_position: Duration) -> bool {
         !self.0.is_zero() && current_position > self.0
     }
-}
-
-/// Opaque discovery scope identity; controller не знает filesystem/probe internals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct SiblingDiscoveryScopeId(NonZeroU64);
-
-impl SiblingDiscoveryScopeId {
-    pub(crate) const fn from_non_zero(identity: NonZeroU64) -> Self {
-        Self(identity)
-    }
-
-    /// Возвращает process-local число только для корреляции app-owned ports и request revisions.
-    pub(crate) const fn get(self) -> u64 {
-        self.0.get()
-    }
-}
-
-/// D50 получает только readiness fact, не discovery wiring или candidate path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DiscoveryManualWaitAvailability {
-    Exhausted,
-    MayProduceCandidate { scope_id: SiblingDiscoveryScopeId },
-}
-
-/// Монотонная identity одного latest-only D50 wait-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct ManualNavigationWaitId(NonZeroU64);
-
-/// Runtime-only one-slot wait; queue/traversal остаются неизменными.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct PendingManualTraversal {
-    pub(super) wait_id: ManualNavigationWaitId,
-    pub(super) direction: ManualNavigationDirection,
-    pub(super) origin: TransportActionOrigin,
-    pub(super) active_media: ActiveMediaIdentity,
-    pub(super) scope_id: SiblingDiscoveryScopeId,
 }
 
 /// Полностью domain-owned mutation будущего install-а.
@@ -391,7 +359,17 @@ impl PlaylistController {
         wait_availability: DiscoveryManualWaitAvailability,
     ) -> ControllerManualNavigationOutcome {
         self.cancel_automatic_continuation_for_manual_intent();
-        self.pending_manual_traversal = None;
+        if let Some(wait) = self.pending_manual_traversal {
+            if wait.direction == direction {
+                return ControllerManualNavigationOutcome::Waiting {
+                    wait_id: wait.wait_id,
+                    direction: wait.direction,
+                    scope_id: wait.scope_id,
+                };
+            }
+            // Противоположное нажатие supersede-ит logical wait, но не bulk discovery scope.
+            self.pending_manual_traversal = None;
+        }
         if let Some((phase, request_id)) = self.manual_navigation_install_phase() {
             match phase {
                 super::install::ControllerInstallPhase::AwaitingReady => {
@@ -445,35 +423,7 @@ impl PlaylistController {
         self.begin_manual_step(direction, origin, wait_availability)
     }
 
-    /// Readiness event переоценивает queue и dispatch-ит ровно один transition.
-    pub(crate) fn resume_manual_navigation_wait(
-        &mut self,
-        wait_id: ManualNavigationWaitId,
-        scope_id: SiblingDiscoveryScopeId,
-        exhausted: bool,
-    ) -> ControllerManualNavigationOutcome {
-        let Some(wait) = self.pending_manual_traversal else {
-            return ControllerManualNavigationOutcome::StaleWait { wait_id };
-        };
-        if wait.wait_id != wait_id
-            || wait.scope_id != scope_id
-            || self.active_media != Some(wait.active_media)
-        {
-            return ControllerManualNavigationOutcome::StaleWait { wait_id };
-        }
-        self.pending_manual_traversal = None;
-        self.begin_manual_step(
-            wait.direction,
-            wait.origin,
-            if exhausted {
-                DiscoveryManualWaitAvailability::Exhausted
-            } else {
-                DiscoveryManualWaitAvailability::MayProduceCandidate { scope_id }
-            },
-        )
-    }
-
-    fn begin_manual_step(
+    pub(super) fn begin_manual_step(
         &mut self,
         direction: ManualNavigationDirection,
         origin: TransportActionOrigin,

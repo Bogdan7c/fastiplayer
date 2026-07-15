@@ -92,7 +92,7 @@ pub(crate) enum AutomaticTargetFailureOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EndedDisposition {
+pub(super) enum EndedDisposition {
     Held,
     Handled,
     Deferred,
@@ -100,21 +100,21 @@ enum EndedDisposition {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ObservedEndedEdge {
-    active: ActiveMediaIdentity,
-    disposition: EndedDisposition,
+pub(super) struct ObservedEndedEdge {
+    pub(super) active: ActiveMediaIdentity,
+    pub(super) disposition: EndedDisposition,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DeferredAdvanceLatch {
-    active: ActiveMediaIdentity,
-    scope_id: super::transport::SiblingDiscoveryScopeId,
+pub(super) struct DeferredAdvanceLatch {
+    pub(super) active: ActiveMediaIdentity,
+    pub(super) scope_id: super::transport::SiblingDiscoveryScopeId,
 }
 
 #[derive(Default)]
 pub(super) struct AutomaticLifecycle {
-    observed_ended: Option<ObservedEndedEdge>,
-    deferred_advance: Option<DeferredAdvanceLatch>,
+    pub(super) observed_ended: Option<ObservedEndedEdge>,
+    pub(super) deferred_advance: Option<DeferredAdvanceLatch>,
     released_plan: Option<(MediaOpenRequestId, PlaylistItemId, AutomaticTraversalPlan)>,
 }
 
@@ -511,7 +511,7 @@ impl PlaylistController {
         }
     }
 
-    fn planned_automatic_install(
+    pub(super) fn planned_automatic_install(
         &self,
         item_id: PlaylistItemId,
         plan: Box<AutomaticTraversalPlan>,
@@ -563,7 +563,7 @@ impl PlaylistController {
         }
     }
 
-    fn stop_for_active(
+    pub(super) fn stop_for_active(
         &self,
         active: ActiveMediaIdentity,
         cause: AutomaticStopCause,
@@ -579,7 +579,7 @@ impl PlaylistController {
         }
     }
 
-    fn mark_current_edge_automatic_pending(&mut self, active: ActiveMediaIdentity) {
+    pub(super) fn mark_current_edge_automatic_pending(&mut self, active: ActiveMediaIdentity) {
         self.automatic_lifecycle.observed_ended = Some(ObservedEndedEdge {
             active,
             disposition: EndedDisposition::AutomaticPending,

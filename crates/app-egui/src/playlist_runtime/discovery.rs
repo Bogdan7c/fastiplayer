@@ -2,7 +2,11 @@
 
 mod manifest_worker;
 mod mapping;
+mod navigation;
 mod settings_port;
+
+#[allow(unused_imports)]
+pub(crate) use navigation::{PlaylistDiscoveryNavigationAction, PlaylistDiscoveryNavigationStatus};
 
 use std::collections::BTreeMap;
 use std::num::NonZeroU64;
@@ -12,12 +16,13 @@ use std::sync::{Arc, mpsc};
 use player_core::{MediaInstallRequestId, PlaybackIntentRevision};
 use playlist_core::{PlaylistItemDraft, PlaylistItemId, ReservedQueueMutation};
 use playlist_discovery::{
-    AdmissionAckOutcome, AdmissionBatchId, BatchApplySemantics, DirectoryManifestBuildError,
-    DiscoveryCancellationCause, DiscoveryEvent, DiscoveryExecutor, DiscoveryFinalOutcome,
-    DiscoveryJobHandle, DiscoveryRecord, DiscoveryRecordKey, DiscoveryRequest,
-    DiscoveryRequestRevision, DiscoveryWakePort, LocalMediaKind, ManifestCandidateKey,
-    RawManifestLimitReached, ReprioritizeHint, SiblingDiscoveryPolicySnapshot,
-    SiblingDiscoveryRequest, SiblingPolicyRevision, WakeDisconnected,
+    AdmissionAckOutcome, AdmissionBatchId, BatchApplySemantics, DirectoryManifest,
+    DirectoryManifestBuildError, DiscoveryCancellationCause, DiscoveryEvent, DiscoveryExecutor,
+    DiscoveryFinalOutcome, DiscoveryJobHandle, DiscoveryRecord, DiscoveryRecordKey,
+    DiscoveryRequest, DiscoveryRequestRevision, DiscoveryWakePort, LocalMediaKind,
+    ManifestCandidateKey, RawManifestLimitReached, ReprioritizeHint,
+    SiblingDiscoveryPolicySnapshot, SiblingDiscoveryRequest, SiblingPolicyRevision,
+    WakeDisconnected,
 };
 
 use super::controller::{
@@ -245,6 +250,18 @@ struct ActiveDiscoveryScope {
     job: DiscoveryJobHandle,
     committed_ids_by_key: BTreeMap<ManifestCandidateKey, PlaylistItemId>,
     pending_readiness_acks: Vec<AdmissionBatchId>,
+    #[allow(
+        dead_code,
+        reason = "read by Session 15A action boundary before UI wiring"
+    )]
+    manifest: Arc<DirectoryManifest>,
+    #[allow(
+        dead_code,
+        reason = "read by Session 15A action boundary before UI wiring"
+    )]
+    target_key: ManifestCandidateKey,
+    admission_revisions: [u64; 2],
+    readiness_revisions: [u64; 2],
 }
 
 /// Process-lifetime owner manifest stage, executor, scope registry и terminal model.
@@ -257,6 +274,8 @@ pub(super) struct PlaylistDiscoveryCoordinator {
     active_scope: Option<ActiveDiscoveryScope>,
     status: PlaylistDiscoveryStatus,
     last_insertion_hint: Option<PlaylistDiscoveryInsertionHint>,
+    navigation_action: Option<navigation::PlaylistDiscoveryNavigationAction>,
+    navigation_status: navigation::PlaylistDiscoveryNavigationStatus,
 }
 
 impl PlaylistDiscoveryCoordinator {
@@ -275,6 +294,8 @@ impl PlaylistDiscoveryCoordinator {
             active_scope: None,
             status: PlaylistDiscoveryStatus::Idle,
             last_insertion_hint: None,
+            navigation_action: None,
+            navigation_status: navigation::PlaylistDiscoveryNavigationStatus::Idle,
         }
     }
 
@@ -472,8 +493,10 @@ impl PlaylistDiscoveryCoordinator {
                         }
                     }
                 }
-                DiscoveryEvent::AdmissionAdvanced(_) | DiscoveryEvent::FrontierReady(_) => {
-                    // Marker-only events intentionally never carry/commit records.
+                marker @ (DiscoveryEvent::AdmissionAdvanced(_)
+                | DiscoveryEvent::FrontierReady(_)) => {
+                    // Marker-only events меняют только wait/action state, но не queue records.
+                    self.route_navigation_event(controller, &mut active, marker);
                 }
             }
         }
@@ -486,6 +509,7 @@ impl PlaylistDiscoveryCoordinator {
             visible_change = true;
         }
         if let Some(summary) = active.job.take_final_summary() {
+            self.finish_navigation_scope(controller, &active, summary.outcome);
             self.status = PlaylistDiscoveryStatus::Completed {
                 scope_id: active.scope_id,
                 outcome: summary.outcome,
@@ -596,6 +620,10 @@ impl PlaylistDiscoveryCoordinator {
             job: job.clone(),
             committed_ids_by_key,
             pending_readiness_acks: Vec::with_capacity(2),
+            manifest,
+            target_key,
+            admission_revisions: [0; 2],
+            readiness_revisions: [0; 2],
         };
         let frozen = self.settings_control.is_frozen();
         if frozen && !job.freeze_admission() {

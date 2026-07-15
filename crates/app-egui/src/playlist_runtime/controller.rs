@@ -2,6 +2,7 @@
 
 mod automatic_lifecycle;
 mod discovery;
+mod discovery_navigation;
 mod install;
 mod manual_navigation;
 mod removal;
@@ -31,6 +32,7 @@ pub(crate) use automatic_lifecycle::{
     AutomaticTargetFailureOutcome, EndedSnapshotKind, PlaylistErrorBehavior,
 };
 pub(crate) use discovery::{DiscoveryContinuation, DiscoveryContinuationRevision};
+pub(crate) use discovery_navigation::{AutomaticDiscoveryReadiness, DiscoveryNavigationInterest};
 #[allow(unused_imports)]
 pub(crate) use install::{
     AuthorizationDispatchStart, BarrierRaceIntent, ControllerInstallPhase,
