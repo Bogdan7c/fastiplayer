@@ -31,6 +31,7 @@
 - Custom egui artwork boundary: see `mem:app-egui/artwork-boundary`; `ui-artwork-egui` owns Painter primitives and shared visual geometry, while `app-egui` owns interaction/accessibility/actions.
 
 - Session 10A typed winit wake bridge, race-safe owner mailboxes и process-lifetime `PlaylistRuntime` lifecycle/shutdown shell документированы в `mem:app-egui/wake-runtime-s10a`; defensive polling больше не является условием доставки startup/local/settings completions.
+- Session 15 target-first local open и process-lifetime sibling discovery orchestration документированы в `mem:app-egui/playlist-discovery-s15`; `playlist-core` атомарно выделяет stable IDs только при accepted batch commit, а `playlist-discovery` остаётся policy/queue-neutral.
 
 
 - Sessions 10C/10D completed 2026-07-14: process-lifetime `PlaylistRuntime` owns policy-neutral bounded `app-egui::media_open`; D64/D75 local preparation remains single-handle/single-demux, and startup/local/settings production callsites now use one strong completion adapter. Ready never auto-authorizes, Enqueued is only a barrier, exact Installed is route success. Player-selected video candidate mapping, exact-instance position/track restore, D52 confirmation, lossless pre-barrier rejection cleanup and settings correlated reinstall compensation are active. One compatibility facade remains only in focused player tests with TODO removal. Details: `mem:app-egui/media-open-coordinator-s10c`, `mem:settings-ui/application-contract-s08`, `mem:player-core/core`.

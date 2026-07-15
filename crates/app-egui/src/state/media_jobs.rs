@@ -14,47 +14,41 @@ impl AppState {
     pub fn load_file(
         &mut self,
         admitted_open: crate::playlist_runtime::AdmittedLocalFileOpen,
-        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
+        _playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+        _renderer: &render_wgpu_shell::Renderer,
     ) {
-        let path = admitted_open.into_path();
-        match local_media::prepare_local_file(
-            &path,
-            &self.committed_config_snapshot.demux_config_for_open(),
-        ) {
-            Ok(prepared_media) => {
-                self.load_prepared_local_file(
-                    path.clone(),
-                    prepared_media,
-                    playlist_runtime,
-                    renderer,
-                );
-            }
-            Err(error) => {
-                let safe_label = crate::playlist_runtime::safe_local_open_label(&path);
-                warn!(error = %error, source = %safe_label, "Не удалось открыть файл");
-                self.set_startup_error(format!(
-                    "Ошибка открытия media-файла {safe_label}: {error}"
-                ));
-            }
-        }
+        self.start_admitted_queue_replacement(
+            crate::playlist_runtime::AdmittedQueueReplacementIntent::LocalFile(admitted_open),
+        );
         self.mark_pending_worker_redraw();
     }
 
     /// Доставляет уже подготовленный локальный media в worker после async UI opening-а.
     pub(crate) fn load_prepared_local_file(
         &mut self,
-        path: PathBuf,
-        prepared_media: PreparedMedia,
+        prepared: crate::media_open::PreparedLocalOpenResult,
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
         renderer: &render_wgpu_shell::Renderer,
     ) -> bool {
+        let path = prepared.source_path.clone();
+        let opened_media_kind = prepared.media_kind;
+        let target_draft =
+            match crate::playlist_runtime::discovery::target_draft_from_prepared(&prepared) {
+                Ok(target_draft) => target_draft,
+                Err(error) => {
+                    self.set_startup_error(format!(
+                        "Не удалось подготовить metadata очереди для target: {error}"
+                    ));
+                    return false;
+                }
+            };
         let autoplay = self.committed_config_snapshot.autoplay_for_new_media();
         let source = ActiveMediaSource::LocalFile(path.clone());
-        let prepared_input = PreparedSingleMediaOpen::new(
-            prepared_media,
+        let prepared_input = PreparedSingleMediaOpen::target_replacement(
+            prepared.prepared_media,
             source.clone(),
-            crate::playlist_runtime::safe_local_open_label(&path),
+            prepared.safe_label,
+            target_draft,
         );
         if let Err(error) = self.install_prepared_media_strong(
             playlist_runtime,
@@ -71,6 +65,11 @@ impl AppState {
         }
 
         self.record_installed_media_source(source);
+        if let Err(error) = playlist_runtime
+            .start_sibling_discovery_for_installed_target(path.clone(), opened_media_kind)
+        {
+            warn!(error, "Target установлен, но sibling discovery не запущен");
+        }
         true
     }
 
@@ -330,11 +329,8 @@ impl AppState {
                     }
                 }
             }
-            LocalFileOpenResult::Prepared {
-                path,
-                prepared_media,
-            } => {
-                self.load_prepared_local_file(path, prepared_media, playlist_runtime, renderer);
+            LocalFileOpenResult::Prepared { prepared } => {
+                self.load_prepared_local_file(*prepared, playlist_runtime, renderer);
             }
             LocalFileOpenResult::PrepareFailed { path, error } => {
                 let safe_label = crate::playlist_runtime::safe_local_open_label(&path);
@@ -349,7 +345,7 @@ impl AppState {
     }
 
     /// Запускает нижний local preparation owner только после typed admission.
-    fn start_admitted_queue_replacement(
+    pub(crate) fn start_admitted_queue_replacement(
         &mut self,
         admitted: crate::playlist_runtime::AdmittedQueueReplacementIntent,
     ) {

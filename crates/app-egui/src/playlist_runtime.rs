@@ -20,6 +20,7 @@ use crate::process_shutdown::{ProcessOwnerShutdownOutcome, ShutdownDeadline};
     reason = "Session 11A publishes controller foundation before Session 11B/12 UI callsites"
 )]
 mod controller;
+pub(crate) mod discovery;
 #[allow(
     dead_code,
     reason = "Session 11A identities become production callsite inputs in subsequent sessions"
@@ -192,6 +193,9 @@ pub(crate) enum StartupDraftAdmissionError {
 pub(crate) enum PlaylistMediaOpenGateError {
     LoadDecisionPending,
     Coordinator(crate::media_open::MediaOpenCommandError),
+    InstallAdmission(controller::PlaylistInstallAdmissionError),
+    InstallReservation(playlist_core::PrepareReservedMutationError),
+    ControllerInvariant(controller::PlaylistControllerInvariantViolation),
 }
 
 /// Текущая lifecycle фаза process owner-а.
@@ -318,6 +322,8 @@ pub(crate) struct PlaylistRuntime {
     removal_undo: Option<removal_undo::RemovalUndoState>,
     /// D79 confirmation хранит secret-bearing intent вне renderer-bound `AppState`.
     replacement_confirmation: replacement_confirmation::QueueReplacementConfirmationState,
+    /// Target-first sibling scope/executor переживает player advance и AppState recreation.
+    discovery: discovery::PlaylistDiscoveryCoordinator,
     /// Process-lifetime reusable preparation/install mechanism Session 10C.
     media_open: MediaOpenCoordinator,
     /// Runtime-only active source/checkpoint переживают renderer-bound `AppState` recreation.
@@ -351,12 +357,14 @@ impl PlaylistRuntime {
     ) -> Self {
         let media_open = MediaOpenCoordinator::new(wake_port.clone());
         let startup = startup::PlaylistStartupOwner::new(wake_port.clone());
+        let discovery = discovery::PlaylistDiscoveryCoordinator::new(wake_port.clone());
         let (publisher, owner_receiver) = owner_mailbox(wake_port);
         let admission_open = Arc::new(AtomicBool::new(true));
         let persistence =
             persistence::PlaylistPersistenceOwner::new(playlist_config.state_save_debounce_ms);
         let mut settings = settings::PlaylistSettingsOwner::new(playlist_config);
         settings.install_save_debounce_port(persistence.debounce_port());
+        settings.install_discovery_port(discovery.settings_port());
         Self {
             lifecycle_generation: PlaylistLifecycleGeneration(0),
             next_binding_generation: PlaylistBindingGeneration(0),
@@ -374,6 +382,7 @@ impl PlaylistRuntime {
             removal_undo: None,
             replacement_confirmation:
                 replacement_confirmation::QueueReplacementConfirmationState::new(),
+            discovery,
             media_open,
             suspended_media: suspend_resume::SuspendedMediaState::default(),
             settings,
@@ -540,6 +549,7 @@ impl PlaylistRuntime {
         if let Some(controller) = self.controller.as_mut() {
             controller.release_detached_tombstone_for_shutdown();
         }
+        self.discovery.begin_shutdown();
 
         let media_open = self.media_open.shutdown_until(deadline);
         let startup = self.startup.shutdown_until(deadline);

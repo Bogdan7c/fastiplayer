@@ -38,6 +38,7 @@ pub(crate) struct PreparedSingleMediaOpen {
     prepared_media: PreparedMedia,
     source: ActiveMediaSource,
     safe_label: SafeMediaLabel,
+    queue_replacement: Option<playlist_core::PlaylistItemDraft>,
 }
 
 impl PreparedSingleMediaOpen {
@@ -51,6 +52,22 @@ impl PreparedSingleMediaOpen {
             prepared_media,
             source,
             safe_label,
+            queue_replacement: None,
+        }
+    }
+
+    /// Explicit local target обязан пройти D08 target-only replacement reservation.
+    pub(crate) fn target_replacement(
+        prepared_media: PreparedMedia,
+        source: ActiveMediaSource,
+        safe_label: SafeMediaLabel,
+        target_draft: playlist_core::PlaylistItemDraft,
+    ) -> Self {
+        Self {
+            prepared_media,
+            source,
+            safe_label,
+            queue_replacement: Some(target_draft),
         }
     }
 }
@@ -129,6 +146,7 @@ impl AppState {
         self.cancel_suspended_media_resume_for_explicit_open(playlist_runtime)
             .map_err(StrongMediaOpenError::LineageRegistration)?;
         let source = prepared_input.source.clone();
+        let queue_replacement = prepared_input.queue_replacement;
         let prepared_open = PreparedMediaOpen::from_caller_prepared(
             prepared_input.prepared_media,
             prepared_input.source,
@@ -160,7 +178,7 @@ impl AppState {
         let initial_revision = PlaybackIntentRevision::from_non_zero(
             NonZeroU64::new(1).expect("revision is non-zero"),
         );
-        if let Err(error) = playlist_runtime.stage_media_open_at_player(
+        let player_request_id = match playlist_runtime.stage_media_open_at_player(
             request_id,
             MediaOpenInstallIntent {
                 intent,
@@ -168,18 +186,32 @@ impl AppState {
             },
             video_resource_port,
         ) {
-            if playlist_runtime
-                .take_media_open_terminal(request_id)?
-                .is_none()
-            {
-                playlist_runtime.cancel_media_open(
-                    request_id,
-                    MediaInstallCancellationCause::StructuralInvalidation,
-                )?;
-                let _terminal = playlist_runtime
+            Ok(player_request_id) => player_request_id,
+            Err(error) => {
+                if playlist_runtime
                     .take_media_open_terminal(request_id)?
-                    .ok_or(StrongMediaOpenError::MissingTerminal)?;
+                    .is_none()
+                {
+                    playlist_runtime.cancel_media_open(
+                        request_id,
+                        MediaInstallCancellationCause::StructuralInvalidation,
+                    )?;
+                    let _terminal = playlist_runtime
+                        .take_media_open_terminal(request_id)?
+                        .ok_or(StrongMediaOpenError::MissingTerminal)?;
+                }
+                return Err(StrongMediaOpenError::PlaylistGate(error));
             }
+        };
+        if let Some(target_draft) = queue_replacement
+            && let Err(error) = playlist_runtime.accept_explicit_target_install(
+                request_id,
+                player_request_id,
+                target_draft,
+                initial_revision,
+            )
+        {
+            self.cancel_rejected_media_open(playlist_runtime, request_id)?;
             return Err(StrongMediaOpenError::PlaylistGate(error));
         }
 
@@ -227,7 +259,12 @@ impl AppState {
                     ));
                 }
                 MediaOpenPhase::ReadyToCommit => {
-                    match playlist_runtime.authorize_ready_media_open(request_id) {
+                    let authorization = if playlist_runtime.playlist_install_matches(request_id) {
+                        playlist_runtime.authorize_ready_target_install(request_id)
+                    } else {
+                        playlist_runtime.authorize_ready_media_open(request_id)
+                    };
+                    match authorization {
                         Ok(AuthorizationDispatchResolution::EnqueuedAtPlayerOwner) => {}
                         Ok(_) => return Err(StrongMediaOpenError::MissingAuthorizationBarrier),
                         Err(error) => {

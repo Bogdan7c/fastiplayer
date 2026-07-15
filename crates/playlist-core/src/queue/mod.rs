@@ -1,6 +1,7 @@
 //! Canonical queue owner и атомарные structural/traversal boundaries.
 
 mod automatic;
+mod discovery;
 mod metadata_patch;
 mod navigation;
 mod outcomes;
@@ -21,6 +22,9 @@ use crate::{
     RestoredPlaylistItem,
 };
 
+pub use discovery::{
+    DiscoveryBatchInsertError, DiscoveryBatchInsertOutcome, StableInsertionAnchor,
+};
 pub use metadata_patch::{
     MetadataPatchBatchError, MetadataPatchBatchOutcome, MetadataPatchItemOutcome,
     PlaylistMetadataPatch,

@@ -85,6 +85,11 @@ impl SiblingDiscoveryScopeId {
     pub(crate) const fn from_non_zero(identity: NonZeroU64) -> Self {
         Self(identity)
     }
+
+    /// Возвращает process-local число только для корреляции app-owned ports и request revisions.
+    pub(crate) const fn get(self) -> u64 {
+        self.0.get()
+    }
 }
 
 /// D50 получает только readiness fact, не discovery wiring или candidate path.

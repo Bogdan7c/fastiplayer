@@ -528,6 +528,7 @@ impl AppShell {
                 false
             }
         };
+        let discovery_changed = self.playlist_runtime.drain_playlist_discovery();
         let resume_changed = match (self.app_state.as_mut(), self.renderer.as_ref()) {
             (Some(app_state), Some(renderer)) => {
                 app_state.drive_suspended_media_resume(&mut self.playlist_runtime, renderer)
@@ -535,7 +536,7 @@ impl AppShell {
             _ => false,
         };
         let _resume_status = self.playlist_runtime.suspended_media_status();
-        persistence_changed || resume_changed
+        persistence_changed || discovery_changed || resume_changed
     }
 }
 

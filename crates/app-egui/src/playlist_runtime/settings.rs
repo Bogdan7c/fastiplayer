@@ -16,6 +16,12 @@ pub(crate) enum PlaylistSettingsStageError {
 pub(super) struct PlaylistDiscoveryPolicyRevision(u64);
 
 impl PlaylistDiscoveryPolicyRevision {
+    pub(super) const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl PlaylistDiscoveryPolicyRevision {
     /// Начальная revision startup policy.
     const INITIAL: Self = Self(0);
 
@@ -39,6 +45,16 @@ pub(crate) struct FutureDiscoveryPolicy {
 /// Exact frozen discovery scope returned by the discovery owner port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct FrozenDiscoveryScope(u64);
+
+impl FrozenDiscoveryScope {
+    pub(super) const fn new(scope_id: u64) -> Self {
+        Self(scope_id)
+    }
+
+    pub(super) const fn get(self) -> u64 {
+        self.0
+    }
+}
 
 /// Узкий D62 boundary к текущему discovery job.
 pub(super) trait PlaylistDiscoverySettingsPort {
@@ -280,6 +296,14 @@ impl PlaylistSettingsOwner {
         save_debounce_port: Box<dyn PlaylistSaveDebouncePort>,
     ) {
         self.save_debounce_port = save_debounce_port;
+    }
+
+    /// Подключает production D62 port process-lifetime discovery coordinator-а.
+    pub(super) fn install_discovery_port(
+        &mut self,
+        discovery_port: Box<dyn PlaylistDiscoverySettingsPort>,
+    ) {
+        self.discovery_port = discovery_port;
     }
 
     #[cfg(test)]

@@ -5,7 +5,6 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 
-use player_core::PreparedMedia;
 use pollster::FutureExt as _;
 use rustiplayer_config::PlayerDemuxConfig;
 use tracing::{debug, warn};
@@ -15,6 +14,7 @@ use crate::app_wake::{
     AppWakePort, CompletionPublishError, OwnerMailboxReceiver, WakeDelivery, owner_mailbox,
 };
 use crate::local_media;
+use crate::media_open::{PreparedLocalOpenResult, prepare_local_open};
 use crate::process_shutdown::{
     FinishedThreadJoin, ProcessOwnerShutdownOutcome, ShutdownDeadline, join_finished_thread,
     join_thread_until,
@@ -30,8 +30,7 @@ pub(crate) enum LocalFileOpenResult {
 
     /// Файл выбран и успешно подготовлен вне UI thread-а.
     Prepared {
-        path: PathBuf,
-        prepared_media: PreparedMedia,
+        prepared: Box<PreparedLocalOpenResult>,
     },
 
     /// Файл выбран, но adapter не смог подготовить demuxer.
@@ -163,14 +162,18 @@ impl LocalFileOpenJob {
                     debug!("Event loop закрыт; local-file progress оставлен без wake retry");
                 }
 
-                let prepare_result = local_media::prepare_local_file(&selected_path, &demux_config)
-                    .map(|prepared_media| LocalFileOpenResult::Prepared {
-                        path: selected_path.clone(),
-                        prepared_media,
+                let prepare_result =
+                    prepare_local_open(&selected_path, &demux_config, None, || {
+                        worker_cancellation_requested.load(Ordering::Acquire)
                     })
-                    .unwrap_or_else(|error| LocalFileOpenResult::PrepareFailed {
-                        path: selected_path,
-                        error: format!("{error:#}"),
+                    .map(|prepared| LocalFileOpenResult::Prepared {
+                        prepared: Box::new(prepared),
+                    })
+                    .unwrap_or_else(|error| {
+                        LocalFileOpenResult::PrepareFailed {
+                            path: selected_path,
+                            error: format!("{error:#}"),
+                        }
                     });
 
                 if worker_cancellation_requested.load(Ordering::Acquire) {

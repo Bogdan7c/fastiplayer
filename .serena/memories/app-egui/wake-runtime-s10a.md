@@ -28,7 +28,7 @@ Session 10A завершена PASS 2026-07-14. Детальный handoff на�
 
 ## Next scope
 - Sessions 11A–14A завершены. Process-lifetime runtime теперь также сохраняет D79 confirmation через suspend/resume; renderer-bound AppState читает только immutable safe model. Полный контракт: `mem:app-egui/queue-replacement-confirmation-s14a`.
-- Следующая разрешённая session — 14B media resume checkpoint; restore-open остаётся Session 17.
+- Session 15 target-first sibling discovery завершена. Manifest worker и shared discovery executor подключены к тому же event-driven AppWake drain без обязательного 50-ms polling; redraw возникает только при visible progress/status/batch change. Полный контракт: `mem:app-egui/playlist-discovery-s15`. Следующая разрешённая session — 15A; restore-open остаётся Session 17.
 
 ## Session 14 persistence wake integration (2026-07-15)
 

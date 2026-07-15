@@ -41,7 +41,6 @@ use crate::local_file_open::{
     LocalFileOpenJob, LocalFileOpenRestoreOutcome, LocalFileOpenResult,
     local_file_prepare_error_message, preparing_local_file_message,
 };
-use crate::local_media;
 use crate::settings_runtime::CommittedConfigSnapshot;
 use crate::settings_ui::{SettingsUiAction, SettingsUiModel};
 use crate::telemetry::Telemetry;

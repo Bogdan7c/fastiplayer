@@ -40,7 +40,7 @@ pub(crate) use coordinator::MediaOpenCoordinator;
 pub(crate) use executor::MAX_NON_CANCELLABLE_STALE_PREPARATIONS;
 #[allow(unused_imports)]
 // Prepared envelope is intentionally introduced before callsite migration.
-pub(crate) use local::{LocalFingerprintValidation, PreparedLocalOpenResult};
+pub(crate) use local::{LocalFingerprintValidation, PreparedLocalOpenResult, prepare_local_open};
 pub(crate) use types::{
     ActiveMediaSource, AuthorizationDispatchResolution, CancellationDispatchOutcome,
     MediaOpenClientKey, MediaOpenCommandError, MediaOpenCompletionDriveError,

@@ -1,6 +1,7 @@
 //! Process-lifetime playlist controller: queue ownership, presentation state и typed outcomes.
 
 mod automatic_lifecycle;
+mod discovery;
 mod install;
 mod manual_navigation;
 mod removal;
@@ -29,6 +30,7 @@ pub(crate) use automatic_lifecycle::{
     AutomaticDeferredAvailability, AutomaticLifecycleOutcome, AutomaticStopCause,
     AutomaticTargetFailureOutcome, EndedSnapshotKind, PlaylistErrorBehavior,
 };
+pub(crate) use discovery::{DiscoveryContinuation, DiscoveryContinuationRevision};
 #[allow(unused_imports)]
 pub(crate) use install::{
     AuthorizationDispatchStart, BarrierRaceIntent, ControllerInstallPhase,
@@ -128,6 +130,7 @@ pub(crate) struct PlaylistController {
     pub(super) detached_active_tombstone: Option<DetachedActiveTombstone>,
     error_behavior: automatic_lifecycle::PlaylistErrorBehavior,
     pub(super) next_manual_wait_identity: u64,
+    discovery_continuation_revision: DiscoveryContinuationRevision,
     pub(super) worker_availability: PlaylistWorkerAvailability,
     pub(super) fatal_invariant: Option<PlaylistControllerInvariantViolation>,
     view_snapshot: Arc<PlaylistViewSnapshot>,
@@ -161,6 +164,7 @@ impl PlaylistController {
             detached_active_tombstone: None,
             error_behavior: automatic_lifecycle::PlaylistErrorBehavior::Stop,
             next_manual_wait_identity: 1,
+            discovery_continuation_revision: DiscoveryContinuationRevision::INITIAL,
             worker_availability: PlaylistWorkerAvailability::Available,
             fatal_invariant: None,
             view_snapshot,
@@ -222,6 +226,11 @@ impl PlaylistController {
 
     pub(crate) fn queue(&self) -> &PlaylistQueue {
         &self.queue
+    }
+
+    /// Возвращает committed repeat policy для app-owned neutral discovery priority mapping.
+    pub(crate) const fn repeat_mode(&self) -> RepeatMode {
+        self.repeat_mode
     }
 
     pub(crate) const fn active_media(&self) -> Option<ActiveMediaIdentity> {
