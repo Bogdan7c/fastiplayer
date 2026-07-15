@@ -2,14 +2,46 @@
 
 use crate::media_install::InstalledMediaTargetMatch;
 use crate::{
-    InstalledMediaRestoreFailureStage, InstalledMediaStateRestore,
-    InstalledMediaStateRestoreOutcome, InstalledPositionRestore, InstalledSubtitleRestore,
-    InstalledTrackRestore, PlayerCommand, SeekRequest,
+    InstalledMediaRelease, InstalledMediaReleaseOutcome, InstalledMediaRestoreFailureStage,
+    InstalledMediaStateRestore, InstalledMediaStateRestoreOutcome, InstalledPositionRestore,
+    InstalledPositionUnavailableReason, InstalledSubtitleRestore, InstalledTrackRestore,
+    PlayerCommand, SeekRequest,
 };
 
 use super::PlayerSession;
 
 impl PlayerSession {
+    /// Освобождает current media только при exact request+instance совпадении.
+    pub(crate) fn release_installed_media(
+        &mut self,
+        release: InstalledMediaRelease,
+    ) -> InstalledMediaReleaseOutcome {
+        match self
+            .playback_intent_control
+            .match_installed_target(release.request_id, release.media_instance_id)
+        {
+            InstalledMediaTargetMatch::Matching => {}
+            InstalledMediaTargetMatch::NotInstalledYet
+            | InstalledMediaTargetMatch::UnknownOrSupersededRequest => {
+                return InstalledMediaReleaseOutcome::Absent;
+            }
+            InstalledMediaTargetMatch::StaleInstance => {
+                return InstalledMediaReleaseOutcome::StaleInstance;
+            }
+        }
+
+        if self.snapshot.media_instance_id != Some(release.media_instance_id) {
+            return InstalledMediaReleaseOutcome::StaleInstance;
+        }
+
+        match self.stop() {
+            Ok(_) => InstalledMediaReleaseOutcome::Applied {
+                media_instance_id: release.media_instance_id,
+            },
+            Err(error) => InstalledMediaReleaseOutcome::Failed { error },
+        }
+    }
+
     /// Применяет restore одним owner turn-ом только к correlated current instance.
     pub(crate) fn restore_installed_media_state(
         &mut self,
@@ -44,7 +76,9 @@ impl PlayerSession {
         if let Err(outcome) = self.restore_subtitle_track(restore.subtitle_track) {
             return outcome;
         }
-        if let Err(outcome) = self.restore_media_position(restore.position) {
+        if let Err(outcome) =
+            self.restore_media_position(restore.media_instance_id, restore.position)
+        {
             return outcome;
         }
 
@@ -102,16 +136,29 @@ impl PlayerSession {
 
     fn restore_media_position(
         &mut self,
+        media_instance_id: crate::MediaInstanceId,
         restore: InstalledPositionRestore,
     ) -> Result<(), InstalledMediaStateRestoreOutcome> {
         let InstalledPositionRestore::SeekTo(position) = restore else {
             return Ok(());
         };
-        self.dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(position.into())))
-            .map(|_| ())
-            .map_err(|error| InstalledMediaStateRestoreOutcome::Failed {
+        if !self.snapshot.timeline.seekable
+            && self.snapshot.timeline.not_seekable_reason
+                == Some(media_core::TimelineNotSeekableReason::SourceNotSeekable)
+        {
+            return Err(InstalledMediaStateRestoreOutcome::PositionUnavailable {
+                media_instance_id,
+                requested_position: position,
+                available_position: self.snapshot.current_position,
+                reason: InstalledPositionUnavailableReason::SourceNotSeekable,
+            });
+        }
+        match self.dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(position.into()))) {
+            Ok(_) => Ok(()),
+            Err(error) => Err(InstalledMediaStateRestoreOutcome::Failed {
                 stage: InstalledMediaRestoreFailureStage::Position,
                 error,
-            })
+            }),
+        }
     }
 }

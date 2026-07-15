@@ -145,12 +145,6 @@ impl AppState {
         true
     }
 
-    /// Возвращает последний локальный файл, открытый shell-ом.
-    #[must_use]
-    pub fn current_local_file(&self) -> Option<&Path> {
-        self.current_local_file.as_deref()
-    }
-
     /// Возвращает восстановимый active source intent для controlled media rebuild.
     #[must_use]
     pub(crate) fn active_media_source(&self) -> Option<ActiveMediaSource> {

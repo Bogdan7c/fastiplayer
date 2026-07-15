@@ -49,3 +49,5 @@
 
 
 - Session 14A completed 2026-07-15: process-lifetime `PlaylistRuntime` owns D79 destructive replacement confirmation; local picker is separated from media preparation, in-app/trusted startup origins are distinct types, and the safe entity reuses the existing center overlay. No in-app local/URL media or discovery I/O reaches lower layers before matching Confirm on a nonempty committed queue. Details: `mem:app-egui/queue-replacement-confirmation-s14a`.
+
+- Session 14B completed 2026-07-15: process-lifetime `PlaylistRuntime` owns the non-persistent active-media checkpoint; resume is strictly StartPaused -> exact seek/typed non-seekable -> stable intent -> same-lineage rebind. Exact player release and external strong-install lineage registration prevent stale cleanup/identity commits. Details: `mem:app-egui/suspend-resume-checkpoint-s14b`.

@@ -3,7 +3,7 @@
 /// После worker-сессии этот модуль больше не владеет media pipeline. Demuxer,
 /// audio/video decoder state, очереди и playback errors находятся в playback worker.
 /// `AppState` оставляет у себя только egui/winit state и shell-данные.
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -67,6 +67,7 @@ mod playlist_attachment;
 mod present_frame_cache;
 mod sidebar_controller;
 mod strong_media_open;
+mod suspended_media_resume;
 pub(crate) use strong_media_open::{
     InstalledSingleMediaOpen, PreparedSingleMediaOpen, StrongMediaOpenError,
 };
@@ -268,6 +269,8 @@ pub struct AppState {
 
     /// Последний восстановимый media source intent для runtime source rebuild.
     active_media_source: Option<ActiveMediaSource>,
+    /// Renderer-bound receipts/candidate одной resume attempt; checkpoint остаётся в runtime.
+    suspended_media_resume: Option<suspended_media_resume::SuspendedMediaResume>,
 
     /// Активный async dialog/prepare job для локального файла.
     local_file_open_job: Option<LocalFileOpenJob>,
@@ -395,6 +398,7 @@ impl AppState {
             pending_dma_buf_layout_rejection: None,
             current_local_file: None,
             active_media_source: None,
+            suspended_media_resume: None,
             local_file_open_job: None,
             local_file_open_wake_port,
             timeline_ui_state: TimelineUiState::default(),

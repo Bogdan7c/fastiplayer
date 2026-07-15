@@ -363,6 +363,11 @@ impl PlaylistController {
         self.install_state.as_ref().map(InstallState::phase)
     }
 
+    /// Возвращает exact coordinator request текущего install guard-а без раскрытия token-а.
+    pub(crate) fn install_request_id(&self) -> Option<MediaOpenRequestId> {
+        self.install_state.as_ref().map(InstallState::request_id)
+    }
+
     /// Structural removal retires only a pre-Ready request; guarded phases remain immutable.
     pub(super) fn retire_awaiting_install_for_removal(
         &mut self,
@@ -737,6 +742,37 @@ impl PlaylistController {
             deferred_intent: post_commit_intent,
             resolution: ControllerTerminalResolution::Installed,
         })
+    }
+
+    /// Регистрирует successful strong install, который не владел playlist reservation.
+    ///
+    /// Такой explicit open создаёт новую app lineage, но не выдумывает committed Item ID.
+    pub(crate) fn register_external_strong_install(
+        &mut self,
+        media_instance_id: MediaInstanceId,
+        binding_generation: PlaylistBindingGeneration,
+        stable_intent: super::StablePlaybackIntent,
+    ) -> Result<ActiveMediaIdentity, PlaylistControllerInvariantViolation> {
+        if self.install_state.is_some() {
+            return self.fatal_result(PlaylistControllerInvariantViolation::UnexpectedInstallPhase);
+        }
+        let Some(lineage_id) = self.allocate_lineage() else {
+            return self
+                .fatal_result(PlaylistControllerInvariantViolation::LineageIdentityExhausted);
+        };
+        let active_media =
+            ActiveMediaIdentity::installed(None, lineage_id, media_instance_id, binding_generation);
+        self.active_media = Some(active_media);
+        self.stable_playback_intent = stable_intent;
+        if stable_intent == super::StablePlaybackIntent::Playing {
+            self.transport_disposition = super::AppTransportDisposition::Active;
+        }
+        self.release_detached_tombstone_for_new_lineage(active_media);
+        self.automatic_install_committed(active_media);
+        self.stop_after_current = None;
+        self.pending_target = None;
+        self.publish_view(false);
+        Ok(active_media)
     }
 
     /// Любой non-Installed terminal после enqueue barrier-а является fatal invariant.

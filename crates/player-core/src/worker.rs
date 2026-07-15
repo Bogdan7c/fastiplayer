@@ -39,7 +39,8 @@ use crate::{
     ActiveSeekDiagnosticsSnapshot, AudioDecoderFactory, AudioOutputFactory,
     AudioTempoProcessorFactory, AuthorizeInstallCommit, CancelMediaInstall, CorrelatedPlayerEvent,
     ExactMediaTransportOutcome, ExactMediaTransportReceipt, ExactMediaTransportRequest,
-    FrameCounters, InstalledMediaStateRestore, InstalledMediaStateRestoreOutcome,
+    FrameCounters, InstalledMediaRelease, InstalledMediaReleaseOutcome,
+    InstalledMediaReleaseReceipt, InstalledMediaStateRestore, InstalledMediaStateRestoreOutcome,
     InstalledMediaStateRestoreReceipt, LatencyCounterSnapshot, MediaInstallCancellationCause,
     MediaInstallControl, MediaInstallPhaseCompletionPort, MediaInstallReceipt,
     MediaInstallRequestId, MediaInstallVideoResourcePort, MediaOpenRequest, MediaSource,
@@ -550,6 +551,14 @@ enum WorkerCommand {
         restore: InstalledMediaStateRestore,
         /// Request-owned authoritative owner outcome.
         outcome_tx: Sender<InstalledMediaStateRestoreOutcome>,
+    },
+
+    /// Освобождает exact installed request/instance после post-install lifecycle failure.
+    ReleaseInstalledMedia {
+        /// Correlated release intent без destructive fallback на более новый current.
+        release: InstalledMediaRelease,
+        /// Request-owned authoritative owner outcome.
+        outcome_tx: Sender<InstalledMediaReleaseOutcome>,
     },
 
     /// Выполняет transport только над exact current media instance.

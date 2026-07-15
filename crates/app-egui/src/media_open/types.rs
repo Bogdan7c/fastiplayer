@@ -154,6 +154,18 @@ pub(crate) enum PreparedMediaDescriptor {
     },
 }
 
+impl PreparedMediaDescriptor {
+    /// Возвращает reconstructible source без раскрытия variant-specific storage.
+    pub(crate) fn active_source(&self) -> ActiveMediaSource {
+        match self {
+            Self::Local { source, .. }
+            | Self::Direct { source, .. }
+            | Self::YouTube { source, .. }
+            | Self::CallerPrepared { source, .. } => source.clone(),
+        }
+    }
+}
+
 /// Подготовленный demuxer плюс immutable descriptor до ownership transfer.
 pub(crate) struct PreparedMediaOpen {
     pub(super) prepared_media: player_core::PreparedMedia,
@@ -189,6 +201,7 @@ pub(crate) enum MediaOpenSourceRequest {
     },
     YouTube {
         locator: service_youtube::YoutubeMediaLocator,
+        required_stream_identity: Option<Box<service_youtube::YoutubeSelectedStreamIdentity>>,
         network_config: rustiplayer_config::NetworkConfig,
         youtube_config: rustiplayer_config::YoutubeConfig,
         demux_config: rustiplayer_config::PlayerDemuxConfig,

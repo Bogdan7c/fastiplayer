@@ -120,3 +120,9 @@
 
 - `PlayerWorker::shutdown_before(Instant)` is the typed process-owner boundary. It preserves the join handle on timeout and distinguishes request failure, completion, panic and timeout; Drop must not perform a second unbounded join after typed timeout.
 - AppShell uses the same absolute shutdown deadline for MPRIS and all other process owners, and releases `AppInstanceLease` only after terminal owner outcomes. Details: `mem:app-egui/playlist-persistence-s14`.
+
+
+## Session 14B exact installed-media release and non-seekable restore (2026-07-15)
+- Public `InstalledMediaRelease` targets exact `MediaInstallRequestId` + `MediaInstanceId`; its request-owned receipt distinguishes Applied, Absent, StaleInstance, Failed and MissingOwnerOutcome. Matching validation and media reset execute in one serialized owner turn, so stale cleanup cannot destroy newer media.
+- `InstalledMediaStateRestoreOutcome::PositionUnavailable` is the non-terminal typed outcome for `SourceNotSeekable` and carries requested/available positions. Other seek errors remain `Failed(Position)`; callers must not parse error strings.
+- App resume ordering and ownership: `mem:app-egui/suspend-resume-checkpoint-s14b`.

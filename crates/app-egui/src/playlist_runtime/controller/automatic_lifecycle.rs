@@ -119,6 +119,46 @@ pub(super) struct AutomaticLifecycle {
 }
 
 impl PlaylistController {
+    /// Suspend consumes an already observed terminal edge without navigation/error policy.
+    pub(crate) fn consume_terminal_edge_for_suspend(
+        &mut self,
+        expected_active: ActiveMediaIdentity,
+        playback_state: PlaybackState,
+    ) -> bool {
+        if self.active_media != Some(expected_active)
+            || !matches!(playback_state, PlaybackState::Ended | PlaybackState::Failed)
+        {
+            return false;
+        }
+        self.automatic_lifecycle.observed_ended = Some(ObservedEndedEdge {
+            active: expected_active,
+            disposition: EndedDisposition::Handled,
+        });
+        self.automatic_lifecycle.deferred_advance = None;
+        self.publish_view(false);
+        true
+    }
+
+    /// Ended checkpoint переносит consumed edge на same-lineage rebound instance.
+    pub(crate) fn carry_consumed_eof_edge_after_rebind(
+        &mut self,
+        previous_active: ActiveMediaIdentity,
+        rebound_active: ActiveMediaIdentity,
+    ) -> bool {
+        if self.active_media != Some(rebound_active)
+            || !self.automatic_lifecycle.observed_ended.is_some_and(|edge| {
+                edge.active == previous_active && edge.disposition == EndedDisposition::Handled
+            })
+        {
+            return false;
+        }
+        self.automatic_lifecycle.observed_ended = Some(ObservedEndedEdge {
+            active: rebound_active,
+            disposition: EndedDisposition::Handled,
+        });
+        true
+    }
+
     pub(crate) const fn error_behavior(&self) -> PlaylistErrorBehavior {
         self.error_behavior
     }

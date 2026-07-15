@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -351,12 +351,6 @@ impl StartupMediaController {
     /// Сообщает shell scheduler-у, нужно ли продолжать polling startup jobs.
     pub(crate) fn has_pending_startup_job(&self) -> bool {
         self.youtube_startup_job.is_some() || self.direct_media_startup_job.is_some()
-    }
-
-    /// Запоминает текущий локальный файл для повторного открытия после следующего resume.
-    pub(crate) fn restore_file_on_next_resume(&mut self, path: &Path) {
-        self.initial_media = Some(InitialMedia::File(path.to_path_buf()));
-        self.startup_error = None;
     }
 
     /// Запускает отложенное стартовое media после того, как `AppState` уже создан.
@@ -900,28 +894,6 @@ mod tests {
             controller.startup_error_message(),
             Some("startup failure".to_string())
         );
-    }
-
-    #[test]
-    fn restore_file_on_next_resume_replaces_initial_media_and_clears_error() {
-        let restored_path = Path::new("/tmp/restored.webm");
-        let StartupUrlClassification::Supported(locator) =
-            classify_startup_url("https://www.youtube.com/watch?v=test")
-        else {
-            panic!("test URL должен проходить service registry");
-        };
-        let mut controller = StartupMediaController::new(
-            Some(InitialMedia::Url(locator)),
-            Some("old error".to_string()),
-        );
-
-        controller.restore_file_on_next_resume(restored_path);
-
-        assert!(controller.startup_error_message().is_none());
-        assert!(matches!(
-            controller.initial_media.as_ref(),
-            Some(InitialMedia::File(path)) if path.as_path() == restored_path
-        ));
     }
 
     #[test]

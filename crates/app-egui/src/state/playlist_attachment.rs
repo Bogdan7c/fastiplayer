@@ -13,6 +13,15 @@ impl AppState {
         self.playlist_attachment = Some(attachment);
     }
 
+    /// Exact process-runtime binding текущего renderer-bound AppState.
+    pub(crate) fn playlist_runtime_binding(
+        &self,
+    ) -> Option<crate::playlist_runtime::PlaylistRuntimeBinding> {
+        self.playlist_attachment
+            .as_ref()
+            .map(PlaylistAppStateAttachment::binding)
+    }
+
     /// Обновляет только read-only view; mutable controller остаётся в `PlaylistRuntime`.
     #[allow(
         dead_code,

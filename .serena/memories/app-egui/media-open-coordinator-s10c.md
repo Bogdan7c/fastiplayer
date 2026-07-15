@@ -48,3 +48,9 @@
 - Coordinator остаётся policy-neutral и не видит unconfirmed in-app intent. `PlaylistRuntime`-owned D79 boundary находится выше него; matching Confirm атомарно consumes slot и только затем выдаёт admitted original intent в существующий preparation/strong-open route.
 - Local picker больше не вызывает demux/path preparation: выбранный target возвращается runtime-у, а отдельный preparation job создаётся только после empty-queue admission либо Confirm. Trusted CLI/startup использует отдельный typed origin.
 - Полный контракт: `mem:app-egui/queue-replacement-confirmation-s14a`.
+
+
+## Session 14B suspend/resume continuation (2026-07-15)
+- `PlaylistRuntime` uses the same coordinator for runtime-only active-media reopen. Suspend terminal-resolves pre-dispatch work and waits authoritative dispatch winner; enqueue winner drains exact Installed before checkpoint capture.
+- Resume stages `StartPaused`, then exact seek/non-seekable resolution and stable intent occur outside coordinator before same-lineage controller rebind. Pre-Installed resume failures consume/cancel the terminal so explicit Retry never inherits a hidden Busy slot.
+- Exact YouTube selected-stream identity can be reopened through the service adapter without silently reselecting another stream. Full ownership/order contract: `mem:app-egui/suspend-resume-checkpoint-s14b`.

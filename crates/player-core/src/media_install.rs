@@ -7,6 +7,7 @@
 //! protocol остаётся queue-neutral и не владеет playlist lineage.
 
 mod exact_media_transport;
+mod installed_media_release;
 mod installed_state_restore;
 mod playback_intent;
 
@@ -14,12 +15,16 @@ pub use exact_media_transport::{
     ExactMediaTransportAction, ExactMediaTransportFailureStage, ExactMediaTransportOutcome,
     ExactMediaTransportReceipt, ExactMediaTransportReceiptError, ExactMediaTransportRequest,
 };
+pub use installed_media_release::{
+    InstalledMediaRelease, InstalledMediaReleaseOutcome, InstalledMediaReleaseReceipt,
+    InstalledMediaReleaseReceiptError,
+};
 pub(crate) use installed_state_restore::InstalledMediaTargetMatch;
 pub use installed_state_restore::{
     InstalledMediaRestoreFailureStage, InstalledMediaStateRestore,
     InstalledMediaStateRestoreOutcome, InstalledMediaStateRestoreReceipt,
-    InstalledMediaStateRestoreReceiptError, InstalledPositionRestore, InstalledSubtitleRestore,
-    InstalledTrackRestore,
+    InstalledMediaStateRestoreReceiptError, InstalledPositionRestore,
+    InstalledPositionUnavailableReason, InstalledSubtitleRestore, InstalledTrackRestore,
 };
 pub(crate) use playback_intent::{AcceptedPlaybackIntent, PlaybackIntentControl};
 pub use playback_intent::{

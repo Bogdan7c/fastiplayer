@@ -11,6 +11,7 @@ use super::controller::{
     PlaylistControllerInvariantViolation,
 };
 use super::identity::ActiveMediaIdentity;
+use super::identity::ActiveMediaLineageId;
 use super::view::{PlaylistDirtyRevision, PlaylistDirtySignal};
 use super::{PlaylistBindingGeneration, PlaylistRuntime};
 use crate::media_open::{CancellationDispatchOutcome, MediaOpenCommandError, MediaOpenRequestId};
@@ -26,6 +27,13 @@ pub(super) struct RemovalUndoState {
     removal: ControllerDestructiveRemoval,
     expected_dirty_revision: PlaylistDirtyRevision,
     deadline: Instant,
+}
+
+impl RemovalUndoState {
+    /// Lineage correlation нужна lifecycle owner-у без раскрытия removal snapshot internals.
+    pub(super) fn active_lineage_at_removal(&self) -> Option<ActiveMediaLineageId> {
+        self.removal.active_lineage_at_removal
+    }
 }
 
 /// Read-only модель будущей prototype UI без UI wiring в Session 12A.

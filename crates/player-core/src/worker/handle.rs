@@ -178,6 +178,14 @@ impl PlayerWorker {
         self.command_sender.restore_installed_media_state(restore)
     }
 
+    /// Освобождает только exact request+instance и не затрагивает более новый current.
+    pub fn release_installed_media(
+        &self,
+        release: InstalledMediaRelease,
+    ) -> Result<InstalledMediaReleaseReceipt, PlayerWorkerSendError> {
+        self.command_sender.release_installed_media(release)
+    }
+
     /// Обновляет staged либо exact just-installed playback intent через отдельный D52 path.
     pub fn update_playback_intent(
         &self,

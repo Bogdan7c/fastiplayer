@@ -271,6 +271,47 @@ pub fn open_seekable_vod_from_selected_identity_with_demux_config(
     })
 }
 
+/// Повторно открывает exact selected stream identity, сохраняя live/non-seekable fallback.
+pub fn open_streaming_media_from_selected_identity_with_demux_config(
+    locator: &YoutubeMediaLocator,
+    selected_stream_identity: &YoutubeSelectedStreamIdentity,
+    network_config: &NetworkConfig,
+    youtube_config: &YoutubeConfig,
+    demux_config: &PlayerDemuxConfig,
+) -> Result<YoutubeStreamingMedia> {
+    let source_config = SourceRuntimeConfig::from_network_config(network_config)
+        .context("Network config нельзя использовать для YouTube resume source")?;
+    let prefetch_config = prefetch_config_from_network_config(network_config)
+        .context("Network config нельзя использовать для YouTube resume prefetch")?;
+    let demuxer_options = demuxer_options_from_config(demux_config);
+    let stream_candidates = resolve_youtube_stream_candidates_with_config(locator, youtube_config)
+        .context("Не удалось refresh-нуть YouTube stream candidates для resume")?;
+    let mut direct_streams =
+        direct_streams_from_matching_candidate(&stream_candidates, selected_stream_identity)
+            .context("Не удалось восстановить exact selected YouTube stream")?;
+    let description = build_streaming_description(&direct_streams);
+    let resolver: Arc<dyn YoutubeDirectStreamResolver> = Arc::new(
+        YtDlpSelectedStreamResolver::from_youtube_config(
+            youtube_config,
+            selected_stream_identity.clone(),
+        )
+        .context("Не удалось создать YouTube selected-stream resolver для resume")?,
+    );
+    let demuxer = build_demuxer_from_direct_streams(
+        locator,
+        &mut direct_streams,
+        source_config,
+        prefetch_config,
+        resolver,
+        demuxer_options,
+    )?;
+    Ok(YoutubeStreamingMedia {
+        demuxer,
+        description,
+        direct_streams,
+    })
+}
+
 fn build_seekable_vod_demuxer_from_direct_streams(
     locator: &YoutubeMediaLocator,
     direct_streams: &mut YoutubeDirectStreams,

@@ -67,11 +67,25 @@ pub enum InstalledMediaRestoreFailureStage {
     Position,
 }
 
+/// Typed причина, по которой exact resume position недоступна без terminal failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstalledPositionUnavailableReason {
+    /// Reopened source не поддерживает absolute seek (например live stream).
+    SourceNotSeekable,
+}
+
 /// Authoritative owner outcome exact restore-а.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstalledMediaStateRestoreOutcome {
     /// Все requested actions применены к exact instance.
     Applied { media_instance_id: MediaInstanceId },
+    /// Media установлено, но exact requested position недоступна у этого source.
+    PositionUnavailable {
+        media_instance_id: MediaInstanceId,
+        requested_position: Duration,
+        available_position: Duration,
+        reason: InstalledPositionUnavailableReason,
+    },
     /// Request ещё staged и не имеет installed instance.
     NotInstalledYet,
     /// Request никогда не был известен либо уже superseded до install.

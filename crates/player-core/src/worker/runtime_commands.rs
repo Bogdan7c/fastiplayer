@@ -116,6 +116,15 @@ impl PlayerWorkerRuntime {
                     warn!("Installed media restore outcome receiver was dropped");
                 }
             }
+            WorkerCommand::ReleaseInstalledMedia {
+                release,
+                outcome_tx,
+            } => {
+                let outcome = self.session.release_installed_media(release);
+                if outcome_tx.send(outcome).is_err() {
+                    warn!("Installed media release outcome receiver was dropped");
+                }
+            }
             WorkerCommand::ExactMediaTransport {
                 request,
                 outcome_tx,

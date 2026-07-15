@@ -79,6 +79,7 @@ pub(super) fn prepare_source(
         }
         MediaOpenSourceRequest::YouTube {
             locator,
+            required_stream_identity,
             network_config,
             youtube_config,
             demux_config,
@@ -86,18 +87,37 @@ pub(super) fn prepare_source(
             system_capabilities,
         } => {
             let safe_label = SafeMediaLabel::from_service_safe_label(locator.safe_label());
-            let prepared = crate::startup_media::resolve_youtube_startup_media(
-                &locator,
-                &network_config,
-                &youtube_config,
-                &demux_config,
-                &preferred_video_codec_order,
-                &system_capabilities,
-            )
-            .map_err(|error| {
-                tracing::warn!(source = %safe_label, error = %error, "Подготовка YouTube media завершилась ошибкой");
-                MediaPreparationFailureKind::YouTubeOpen
-            })?;
+            let prepared = match required_stream_identity {
+                Some(selected_stream_identity) => {
+                    let streaming_media = service_youtube::open_streaming_media_from_selected_identity_with_demux_config(
+                        &locator,
+                        &selected_stream_identity,
+                        &network_config,
+                        &youtube_config,
+                        &demux_config,
+                    )
+                    .map_err(|error| {
+                        tracing::warn!(source = %safe_label, error = %error, "Повторная подготовка exact YouTube media завершилась ошибкой");
+                        MediaPreparationFailureKind::YouTubeOpen
+                    })?;
+                    crate::startup_media::PreparedYoutubeStartupMedia {
+                        streaming_media,
+                        selected_stream_identity: *selected_stream_identity,
+                    }
+                }
+                None => crate::startup_media::resolve_youtube_startup_media(
+                    &locator,
+                    &network_config,
+                    &youtube_config,
+                    &demux_config,
+                    &preferred_video_codec_order,
+                    &system_capabilities,
+                )
+                .map_err(|error| {
+                    tracing::warn!(source = %safe_label, error = %error, "Подготовка YouTube media завершилась ошибкой");
+                    MediaPreparationFailureKind::YouTubeOpen
+                })?,
+            };
             if is_cancelled() {
                 return Err(MediaPreparationFailureKind::Cancelled);
             }

@@ -34,7 +34,11 @@ mod persistence_runtime;
 mod removal_undo;
 mod replacement_confirmation;
 mod settings;
+mod suspend_resume;
 pub(crate) use settings::{FutureDiscoveryPolicy, PlaylistSettingsStageError};
+pub(crate) use suspend_resume::{
+    ResumeAttempt, ResumeCheckpointError, ResumePlaybackIntent, ResumePositionWarning,
+};
 #[allow(
     dead_code,
     reason = "Session 14 bootstrap/save-worker integration consumes this startup boundary"
@@ -316,6 +320,8 @@ pub(crate) struct PlaylistRuntime {
     replacement_confirmation: replacement_confirmation::QueueReplacementConfirmationState,
     /// Process-lifetime reusable preparation/install mechanism Session 10C.
     media_open: MediaOpenCoordinator,
+    /// Runtime-only active source/checkpoint переживают renderer-bound `AppState` recreation.
+    suspended_media: suspend_resume::SuspendedMediaState,
     settings: settings::PlaylistSettingsOwner,
 }
 
@@ -369,6 +375,7 @@ impl PlaylistRuntime {
             replacement_confirmation:
                 replacement_confirmation::QueueReplacementConfirmationState::new(),
             media_open,
+            suspended_media: suspend_resume::SuspendedMediaState::default(),
             settings,
         }
     }

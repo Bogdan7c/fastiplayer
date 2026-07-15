@@ -87,6 +87,8 @@ pub(crate) enum StrongMediaOpenError {
     MissingActiveVideoPointers,
     #[error("post-Installed app video pointer commit violated correlation: {0:?}")]
     PostInstalledVideo(PostInstalledVideoPipelineInvariantViolation),
+    #[error("successful strong install could not be registered in app lineage owner: {0:?}")]
+    LineageRegistration(crate::playlist_runtime::ResumeCheckpointError),
 }
 
 impl StrongMediaOpenError {
@@ -110,7 +112,7 @@ impl From<PostInstalledVideoPipelineInvariantViolation> for StrongMediaOpenError
     }
 }
 
-type ProductionCandidateOwner = AppVideoPipelineCandidateOwner<
+pub(super) type ProductionCandidateOwner = AppVideoPipelineCandidateOwner<
     Arc<dyn WgpuFrameTextureViewMaterializer>,
     WgpuSubmissionQueueBinding,
 >;
@@ -124,6 +126,8 @@ impl AppState {
         prepared_input: PreparedSingleMediaOpen,
         intent: PlaybackIntent,
     ) -> Result<InstalledSingleMediaOpen, StrongMediaOpenError> {
+        self.cancel_suspended_media_resume_for_explicit_open(playlist_runtime)
+            .map_err(StrongMediaOpenError::LineageRegistration)?;
         let source = prepared_input.source.clone();
         let prepared_open = PreparedMediaOpen::from_caller_prepared(
             prepared_input.prepared_media,
@@ -276,6 +280,21 @@ impl AppState {
                             player_core::PlaybackIntentUpdateOutcome::StaleInstance,
                         ));
                     }
+                    let binding = self.playlist_runtime_binding().ok_or(
+                        StrongMediaOpenError::LineageRegistration(
+                            crate::playlist_runtime::ResumeCheckpointError::StalePlayerBinding,
+                        ),
+                    )?;
+                    playlist_runtime
+                        .register_successful_strong_install(
+                            request_id,
+                            installed.player_request_id,
+                            media_instance_id,
+                            binding,
+                            installed.source.clone(),
+                            intent,
+                        )
+                        .map_err(StrongMediaOpenError::LineageRegistration)?;
                     return Ok(installed);
                 }
                 MediaOpenPhase::Failed => {
@@ -338,7 +357,7 @@ impl AppState {
     }
 
     /// Переключает renderer pointers после player Installed, сохраняя old aggregate при mismatch.
-    fn commit_installed_video_candidate(
+    pub(super) fn commit_installed_video_candidate(
         &mut self,
         candidate_owner: &ProductionCandidateOwner,
         player_request_id: MediaInstallRequestId,

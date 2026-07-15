@@ -2,7 +2,7 @@ use std::num::NonZeroU64;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::bounded;
-use media_core::{DemuxSeekResult, DemuxSeekability, Demuxer, TrackId};
+use media_core::{DemuxSeekResult, DemuxSeekability, Demuxer, TimelineNotSeekableReason, TrackId};
 use video_backend_api::{
     DetachedVideoBackendCandidateCancellationCause, DetachedVideoBackendCandidateStatus,
     DetachedVideoBackendPortError, DetachedVideoBackendReply, DetachedVideoBackendRequest,
@@ -12,13 +12,13 @@ use video_backend_api::{
 use super::{MediaInstallControlReceipt, MediaInstallControlReceiptError};
 use crate::worker::{COMMAND_CHANNEL_CAPACITY, PlayerCommandSender, WorkerCommand};
 use crate::{
-    AuthorizeInstallCommit, CancelMediaInstall, InstalledMediaStateRestore,
-    InstalledMediaStateRestoreOutcome, InstalledPositionRestore, InstalledSubtitleRestore,
-    InstalledTrackRestore, MediaInstallCancellationCause, MediaInstallCompletion,
-    MediaInstallControlOutcome, MediaInstallReceiptSignal, MediaInstallRequestId, MediaInstanceId,
-    PlaybackIntent, PlaybackIntentRevision, PlaybackIntentUpdate, PlaybackIntentUpdateOutcome,
-    PlaybackState, PlayerCommand, PlayerWorker, PlayerWorkerConfig, PlayerWorkerSendError,
-    PreparedMedia,
+    AuthorizeInstallCommit, CancelMediaInstall, InstalledMediaRelease,
+    InstalledMediaReleaseOutcome, InstalledMediaStateRestore, InstalledMediaStateRestoreOutcome,
+    InstalledPositionRestore, InstalledSubtitleRestore, InstalledTrackRestore,
+    MediaInstallCancellationCause, MediaInstallCompletion, MediaInstallControlOutcome,
+    MediaInstallReceiptSignal, MediaInstallRequestId, MediaInstanceId, PlaybackIntent,
+    PlaybackIntentRevision, PlaybackIntentUpdate, PlaybackIntentUpdateOutcome, PlaybackState,
+    PlayerCommand, PlayerWorker, PlayerWorkerConfig, PlayerWorkerSendError, PreparedMedia,
 };
 
 /// Empty prepared demuxer для no-audio/no-video worker transaction.
@@ -52,6 +52,33 @@ impl Demuxer for EmptyDemuxer {
             actual_position: timestamp.into(),
             actual_track_timestamp: None,
         })
+    }
+}
+
+/// Live-like fake доказывает typed position-unavailable outcome без fake seek success.
+struct UnseekableDemuxer;
+
+impl Demuxer for UnseekableDemuxer {
+    fn tracks(&self) -> &[media_core::TrackInfo] {
+        &[]
+    }
+
+    fn duration(&self) -> Option<Duration> {
+        None
+    }
+
+    fn seekability(&self) -> DemuxSeekability {
+        DemuxSeekability::NotSeekable {
+            reason: TimelineNotSeekableReason::SourceNotSeekable,
+        }
+    }
+
+    fn next_packet(&mut self) -> anyhow::Result<Option<media_core::Packet>> {
+        Ok(None)
+    }
+
+    fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+        anyhow::bail!("unseekable fake must never receive seek")
     }
 }
 
@@ -254,6 +281,41 @@ fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_install
         }
     ));
 
+    let stale_release = worker
+        .release_installed_media(InstalledMediaRelease {
+            request_id,
+            media_instance_id: placeholder_instance,
+        })
+        .expect("stale exact release transport должен быть принят");
+    assert_eq!(
+        stale_release
+            .wait_for_outcome()
+            .expect("stale release должен получить owner outcome"),
+        InstalledMediaReleaseOutcome::StaleInstance
+    );
+
+    let exact_release = worker
+        .release_installed_media(InstalledMediaRelease {
+            request_id,
+            media_instance_id: installed_instance,
+        })
+        .expect("exact release transport должен быть принят");
+    assert_eq!(
+        exact_release
+            .wait_for_outcome()
+            .expect("exact release owner outcome обязателен"),
+        InstalledMediaReleaseOutcome::Applied {
+            media_instance_id: installed_instance,
+        }
+    );
+    wait_until(|| {
+        worker
+            .latest_snapshot(crate::FrameCounters::default())
+            .media_instance_id
+            .is_none()
+            .then_some(())
+    });
+
     let newer_request_id = MediaInstallRequestId::from_non_zero(
         NonZeroU64::new(761).expect("newer test request id is non-zero"),
     );
@@ -313,6 +375,83 @@ fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_install
     worker
         .shutdown()
         .expect("worker shutdown должен завершиться");
+}
+
+#[test]
+fn exact_restore_reports_typed_position_unavailable_for_non_seekable_source() {
+    let mut worker = PlayerWorker::spawn(PlayerWorkerConfig::default())
+        .expect("player worker должен запуститься");
+    let request_id = MediaInstallRequestId::from_non_zero(
+        NonZeroU64::new(762).expect("test request id is non-zero"),
+    );
+    let receipt = worker
+        .stage_prepared_media_install(
+            request_id,
+            PreparedMedia::from_external_label("live candidate", Box::new(UnseekableDemuxer)),
+            PlaybackIntent::StartPaused,
+            PlaybackIntentRevision::INITIAL,
+            Box::new(NoVideoResourcePort),
+        )
+        .expect("stage command должна быть принята");
+    wait_until(|| receipt.try_take_ready_to_commit());
+    let authorization = worker
+        .authorize_install_commit(AuthorizeInstallCommit { request_id })
+        .expect("authorization должна быть принята");
+    assert_eq!(
+        authorization
+            .wait_for_outcome()
+            .expect("authorization owner outcome обязателен"),
+        MediaInstallControlOutcome::AuthorizationAccepted
+    );
+    let installed_instance = match receipt
+        .wait_for_signal()
+        .expect("Installed terminal обязателен")
+    {
+        MediaInstallReceiptSignal::Terminal(MediaInstallCompletion::Installed {
+            media_instance_id,
+            ..
+        }) => media_instance_id,
+        unexpected => panic!("ожидался Installed terminal, получено {unexpected:?}"),
+    };
+    let installed_snapshot = wait_until(|| {
+        let snapshot = worker.latest_snapshot(crate::FrameCounters::default());
+        (snapshot.media_instance_id == Some(installed_instance)).then_some(snapshot)
+    });
+    assert_eq!(installed_snapshot.playback_state, PlaybackState::Paused);
+    let requested_position = Duration::from_secs(40);
+    let restore = worker
+        .restore_installed_media_state(InstalledMediaStateRestore {
+            request_id,
+            media_instance_id: installed_instance,
+            video_track: InstalledTrackRestore::KeepDefault,
+            audio_track: InstalledTrackRestore::KeepDefault,
+            subtitle_track: InstalledSubtitleRestore::KeepDefault,
+            position: InstalledPositionRestore::SeekTo(requested_position),
+        })
+        .expect("restore command должна быть принята");
+    let restore_outcome = restore
+        .wait_for_outcome()
+        .expect("position unavailable outcome обязателен");
+    assert!(
+        matches!(
+            restore_outcome,
+            InstalledMediaStateRestoreOutcome::PositionUnavailable {
+                media_instance_id,
+                requested_position: requested,
+                reason: crate::InstalledPositionUnavailableReason::SourceNotSeekable,
+                ..
+            } if media_instance_id == installed_instance && requested == requested_position
+        ),
+        "unexpected restore outcome: {restore_outcome:?}"
+    );
+    assert_eq!(
+        worker
+            .latest_snapshot(crate::FrameCounters::default())
+            .playback_state,
+        PlaybackState::Paused,
+        "non-seekable outcome не может кратковременно включить Playing до post-seek intent"
+    );
+    worker.shutdown().expect("worker shutdown");
 }
 
 #[test]

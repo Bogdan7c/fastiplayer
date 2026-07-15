@@ -16,7 +16,7 @@
 - Read model различает `NotReplaced`, `ReplacedDurabilityUnconfirmed` и `Durable`; post-rename directory-sync failure не маскируется как старый target. D69 latest revision, bounded retry/backoff и manual Retry сохранены.
 - Полный process shutdown использует один absolute `ShutdownDeadline`. Actions закрываются, pending owners отменяются, затем terminal join/flush выполняется для MPRIS, PlayerWorker, local-file, startup media, media preparation, settings dynamic jobs, playlist inspection/quarantine и state writer.
 - Lease — последний process owner: освобождается только после terminal owners. Если deadline истёк и writable/live thread ещё существует, UI не возобновляется: процесс немедленно выходит non-zero, пока lease всё ещё удерживается.
-- Renderer suspend лишь detach-ит renderer/player binding по generation и переносит app-owned local job обратно в `AppShell`; playlist queue/draft/Undo/dirty, startup owner, store worker и lease сохраняются. Media checkpoint/reopen остаётся Session 14B.
+- Renderer suspend detach-ит renderer/player binding по generation, но Session 14B теперь сначала lossless-resolve-ит pending media и сохраняет runtime-only active-media checkpoint в `PlaylistRuntime`. Queue/draft/Undo/dirty, startup owner, store worker, confirmation and lease сохраняются; checkpoint никогда не входит в disk DTO. Full contract: `mem:app-egui/suspend-resume-checkpoint-s14b`.
 - AppShell terminal helpers вынесены в `app_shell/shutdown.rs`; app-instance в отдельном `app_instance`, startup persistence в `playlist_runtime/startup*`, save wiring в `playlist_runtime/persistence*`, общий deadline в `process_shutdown.rs`.
 
 ## Проверки и дальнейший scope

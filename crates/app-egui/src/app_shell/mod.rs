@@ -249,6 +249,7 @@ impl AppShell {
         app_state.attach_playlist_runtime(playlist_attachment);
         self.playlist_runtime
             .attach_player_sender(app_state.player_command_sender());
+        let _resume_started = app_state.start_suspended_media_resume(&mut self.playlist_runtime);
 
         if let Some(transferred_job) = self.suspended_local_file_open_job.take() {
             match app_state.restore_local_file_open_job_after_resume(transferred_job) {
@@ -284,12 +285,34 @@ impl AppShell {
     fn suspend_runtime(&mut self) {
         let mut transferred_local_file_open_job = None;
         if let Some(app_state) = &mut self.app_state {
+            let binding = app_state.playlist_runtime_binding();
+            let resume_checkpoint_already_exists =
+                self.playlist_runtime.has_suspended_media_checkpoint();
+            let lifecycle_result = app_state
+                .cancel_suspended_media_resume_for_suspend(&mut self.playlist_runtime)
+                .and_then(|()| self.playlist_runtime.resolve_pending_media_for_suspend())
+                .and_then(|()| {
+                    if resume_checkpoint_already_exists {
+                        // Mid-resume suspend уже re-arm-нул прежний process checkpoint;
+                        // released candidate больше не обязан совпадать со старым instance.
+                        return Ok(());
+                    }
+                    let snapshot = app_state.refresh_player_snapshot();
+                    let binding = binding.ok_or(
+                        crate::playlist_runtime::ResumeCheckpointError::StalePlayerBinding,
+                    )?;
+                    self.playlist_runtime
+                        .capture_suspended_media_checkpoint(binding, &snapshot)
+                        .map(|_| ())
+                });
+            if let Err(error) = lifecycle_result {
+                tracing::error!(
+                    ?error,
+                    "Suspend active-media checkpoint завершился lifecycle invariant failure"
+                );
+            }
             app_state.clear_cached_present_frame_for_runtime_drop();
             transferred_local_file_open_job = app_state.take_local_file_open_job_for_suspend();
-
-            if let Some(path) = app_state.current_local_file() {
-                self.startup_media.restore_file_on_next_resume(path);
-            }
         }
 
         if let Some(mut transferred_job) = transferred_local_file_open_job {
@@ -487,6 +510,10 @@ impl AppShell {
                 .is_some_and(AppState::has_pending_local_file_open)
             || self.settings_runtime.has_pending_options_refresh()
             || self
+                .app_state
+                .as_ref()
+                .is_some_and(AppState::has_pending_suspended_media_resume)
+            || self
                 .playlist_runtime
                 .has_pending_playlist_persistence_work()
     }
@@ -494,13 +521,21 @@ impl AppShell {
     /// Единая PlaylistRuntime wake точка применяет startup/save outcomes на UI thread.
     fn drain_playlist_persistence(&mut self) -> bool {
         self.playlist_runtime.drain_owner_mailbox();
-        match self.playlist_runtime.drain_playlist_persistence() {
+        let persistence_changed = match self.playlist_runtime.drain_playlist_persistence() {
             Ok(visible_change) => visible_change,
             Err(error) => {
                 tracing::error!(error = %error, "Не удалось применить playlist persistence event");
                 false
             }
-        }
+        };
+        let resume_changed = match (self.app_state.as_mut(), self.renderer.as_ref()) {
+            (Some(app_state), Some(renderer)) => {
+                app_state.drive_suspended_media_resume(&mut self.playlist_runtime, renderer)
+            }
+            _ => false,
+        };
+        let _resume_status = self.playlist_runtime.suspended_media_status();
+        persistence_changed || resume_changed
     }
 }
 

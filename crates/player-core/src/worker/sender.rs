@@ -53,6 +53,20 @@ impl PlayerCommandSender {
         ))
     }
 
+    /// Ставит exact request+instance release и возвращает owner receipt.
+    pub fn release_installed_media(
+        &self,
+        release: InstalledMediaRelease,
+    ) -> Result<InstalledMediaReleaseReceipt, PlayerWorkerSendError> {
+        let request_id = release.request_id;
+        let (outcome_tx, outcome_rx) = bounded(1);
+        self.try_send_worker_command(WorkerCommand::ReleaseInstalledMedia {
+            release,
+            outcome_tx,
+        })?;
+        Ok(InstalledMediaReleaseReceipt::new(request_id, outcome_rx))
+    }
+
     /// Ставит strong staged media transaction без блокировки caller thread-а.
     ///
     /// Caller обязан заранее stage-ить exact Session 00C app half за переданным port-ом.
