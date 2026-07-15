@@ -1,15 +1,20 @@
 //! Opaque domain token adapter: обычная reservation и manual shuffle preview.
 
-use playlist_core::{PreparedManualNavigationToken, PreparedQueueMutationToken};
+use playlist_core::{
+    AutomaticTraversalPlan, PreparedAutomaticTraversalToken, PreparedManualNavigationToken,
+    PreparedQueueMutationToken,
+};
 
 pub(super) enum GuardedInstallToken {
     Queue(PreparedQueueMutationToken),
     ManualNavigation(PreparedManualNavigationToken),
+    AutomaticTraversal(PreparedAutomaticTraversalToken),
 }
 
 pub(super) enum GuardedInstallAbort {
     Queue,
     ManualNavigation(playlist_core::ManualNavigationPreview),
+    AutomaticTraversal(AutomaticTraversalPlan),
 }
 
 pub(super) struct GuardedInstallCommit {
@@ -27,6 +32,9 @@ impl GuardedInstallToken {
             }
             Self::ManualNavigation(token) => {
                 GuardedInstallAbort::ManualNavigation(queue.abort_manual_navigation(token))
+            }
+            Self::AutomaticTraversal(token) => {
+                GuardedInstallAbort::AutomaticTraversal(queue.abort_automatic_traversal(token))
             }
         }
     }
@@ -47,6 +55,14 @@ impl GuardedInstallToken {
                     traversal_current: commit.traversal_current(),
                     structural_changed: false,
                     manual_navigation: true,
+                }
+            }
+            Self::AutomaticTraversal(token) => {
+                let commit = queue.commit_automatic_traversal(token);
+                GuardedInstallCommit {
+                    traversal_current: commit.traversal_current(),
+                    structural_changed: false,
+                    manual_navigation: false,
                 }
             }
         }

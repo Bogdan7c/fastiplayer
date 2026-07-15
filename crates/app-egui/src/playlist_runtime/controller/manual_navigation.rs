@@ -119,6 +119,9 @@ pub(super) struct ManualNavigationCursor {
 }
 
 impl ManualNavigationCursor {
+    pub(super) fn has_state(&self) -> bool {
+        self.preview.is_some() || self.prepared_context.is_some()
+    }
     pub(super) fn begin(
         &mut self,
         preview: ManualNavigationPreview,
@@ -412,6 +415,26 @@ impl PlaylistController {
 
     /// Explicit Cancel использует отдельную cause и не arm-ит future stop для active origin.
     pub(crate) fn cancel_manual_navigation(&mut self) -> ManualNavigationCancelOutcome {
+        let outcome = self.cancel_manual_navigation_inner();
+        let terminal_action = match &outcome {
+            ManualNavigationCancelOutcome::Discarded(invalidation) => {
+                Some(invalidation.terminal_action)
+            }
+            ManualNavigationCancelOutcome::CancelPending {
+                terminal_action, ..
+            } => Some(*terminal_action),
+            _ => None,
+        };
+        if let Some(action) = terminal_action {
+            self.consume_manual_terminal_action(
+                action,
+                super::automatic_lifecycle::AutomaticStopCause::ManualTraversalCancelled,
+            );
+        }
+        outcome
+    }
+
+    fn cancel_manual_navigation_inner(&mut self) -> ManualNavigationCancelOutcome {
         if let Some((phase, request_id)) = self.manual_navigation_install_phase() {
             match phase {
                 ControllerInstallPhase::AwaitingReady => {

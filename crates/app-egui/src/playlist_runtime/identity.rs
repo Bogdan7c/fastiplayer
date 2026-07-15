@@ -75,10 +75,14 @@ impl ActiveMediaIdentity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PendingTargetOrigin {
     ExplicitRowPlay,
-    ManualNavigation { origin: TransportActionOrigin },
+    ManualNavigation {
+        origin: TransportActionOrigin,
+    },
     ExplicitOpen,
     RestoredCurrent,
     ControlledResume,
+    /// Automatic clean Ended/error traversal всегда стартует Playing.
+    AutomaticAdvance,
 }
 
 /// Источник transport action остаётся typed до будущего UI/MPRIS wiring.

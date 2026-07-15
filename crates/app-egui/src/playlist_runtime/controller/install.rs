@@ -12,7 +12,8 @@ use token::{GuardedInstallAbort, GuardedInstallToken};
 
 use player_core::{MediaInstallRequestId, MediaInstanceId, PlaybackIntentRevision};
 use playlist_core::{
-    PrepareReservedMutationError, QueueRevisionSnapshot, ReservedQueueMutation, ShuffleToggleError,
+    AutomaticTraversalPlan, PrepareReservedMutationError, QueueRevisionSnapshot,
+    ReservedQueueMutation, ShuffleToggleError,
 };
 
 use super::PlaylistController;
@@ -79,6 +80,8 @@ pub(crate) enum PlaylistInstallMutation {
     Reserved(ReservedQueueMutation),
     /// One-step manual navigation, включая private shuffle history/upcoming preview.
     ManualNavigation,
+    /// Opaque fixed-snapshot automatic traversal plan.
+    AutomaticTraversal(Box<AutomaticTraversalPlan>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -318,6 +321,43 @@ impl PlaylistController {
         self.publish_view(false);
     }
 
+    pub(super) fn take_awaiting_automatic_failure(
+        &mut self,
+        request_id: MediaOpenRequestId,
+    ) -> Option<(playlist_core::PlaylistItemId, AutomaticTraversalPlan)> {
+        let state = self.install_state.take()?;
+        let InstallState::AwaitingReady(awaiting) = state else {
+            self.install_state = Some(state);
+            return None;
+        };
+        if awaiting.request.request_id != request_id {
+            self.install_state = Some(InstallState::AwaitingReady(awaiting));
+            return None;
+        }
+        if !matches!(
+            awaiting.request.mutation,
+            PlaylistInstallMutation::AutomaticTraversal(_)
+        ) {
+            self.install_state = Some(InstallState::AwaitingReady(awaiting));
+            return None;
+        }
+        let PlaylistInstallRequest {
+            target_item_id,
+            mutation,
+            ..
+        } = awaiting.request;
+        let PlaylistInstallMutation::AutomaticTraversal(plan) = mutation else {
+            return None;
+        };
+        let item_id = target_item_id?;
+        if plan.target_item_id() != item_id {
+            return None;
+        }
+        self.pending_target = None;
+        self.publish_view(false);
+        Some((item_id, *plan))
+    }
+
     pub(crate) fn install_phase(&self) -> Option<ControllerInstallPhase> {
         self.install_state.as_ref().map(InstallState::phase)
     }
@@ -378,6 +418,22 @@ impl PlaylistController {
                     }
                 }
             }
+            PlaylistInstallMutation::AutomaticTraversal(plan) => {
+                match self.queue.prepare_automatic_traversal(*plan) {
+                    Ok(token) => Ok(GuardedInstallToken::AutomaticTraversal(token)),
+                    Err(failure) => {
+                        let reason = failure.reason();
+                        if let Some(item_id) = target_item_id {
+                            self.retain_released_automatic_plan(
+                                request_id,
+                                item_id,
+                                failure.into_plan(),
+                            );
+                        }
+                        Err(reason)
+                    }
+                }
+            }
         };
         let token = match token_result {
             Ok(token) => token,
@@ -394,7 +450,7 @@ impl PlaylistController {
                 target_item_id,
                 token,
                 desired_modes: None,
-                queue_revision_before_commit: expected_queue_revision,
+                queue_revision_before_commit: self.queue.revision_snapshot(),
             },
         ));
         self.publish_view(false);
@@ -474,6 +530,7 @@ impl PlaylistController {
             }) => {
                 let GuardedInstall {
                     request_id,
+                    target_item_id,
                     token,
                     desired_modes,
                     queue_revision_before_commit: _,
@@ -494,6 +551,15 @@ impl PlaylistController {
                             unreachable!("pre-barrier branch excludes enqueue winner")
                         }
                     },
+                    GuardedInstallAbort::AutomaticTraversal(plan) => {
+                        if matches!(
+                            resolution,
+                            AuthorizationDispatchResolution::DownstreamRejectedBeforeEnqueue { .. }
+                        ) && let Some(item_id) = target_item_id
+                        {
+                            self.retain_released_automatic_plan(request_id, item_id, plan);
+                        }
+                    }
                 }
                 if let Some(deferred) = race_intent.map(BarrierRaceIntent::intent)
                     && !matches!(deferred, DeferredControllerIntent::Transport(_))
@@ -628,6 +694,7 @@ impl PlaylistController {
             binding_generation,
         );
         self.active_media = Some(active_media);
+        self.automatic_install_committed(active_media);
         self.stop_after_current = None;
         self.pending_target = None;
         if let Some(item_id) = committed_item_id {

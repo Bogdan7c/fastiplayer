@@ -207,8 +207,17 @@ pub(crate) enum StopAfterCurrentOutcome {
         enabled: bool,
         wait_id: ManualNavigationWaitId,
     },
+    ClearedManualWaitAndStoppedEndedCurrent {
+        wait_id: ManualNavigationWaitId,
+        item_id: PlaylistItemId,
+        media_instance_id: player_core::MediaInstanceId,
+    },
     Guarded(TransportGuardOutcome),
     NoActiveMedia,
+    StoppedEndedCurrent {
+        item_id: PlaylistItemId,
+        media_instance_id: player_core::MediaInstanceId,
+    },
 }
 
 /// Контекст повторной оценки ровно одного transport-intent после terminal drain.
@@ -293,6 +302,7 @@ impl PlaylistController {
         if self.queue.item(item_id).is_none() {
             return ControllerPlayItemOutcome::ItemNotCommitted { item_id };
         }
+        self.cancel_automatic_continuation_for_manual_intent();
         self.pending_manual_traversal = None;
         if self.install_state.is_none() {
             let _discarded = self.manual_navigation_cursor.discard(
@@ -375,6 +385,7 @@ impl PlaylistController {
         restart_threshold: PreviousRestartThreshold,
         wait_availability: DiscoveryManualWaitAvailability,
     ) -> ControllerManualNavigationOutcome {
+        self.cancel_automatic_continuation_for_manual_intent();
         self.pending_manual_traversal = None;
         if let Some((phase, request_id)) = self.manual_navigation_install_phase() {
             match phase {
@@ -684,6 +695,22 @@ impl PlaylistController {
     ) -> StopAfterCurrentOutcome {
         if let Some(wait) = self.pending_manual_traversal.take() {
             self.set_stop_after_current(enabled);
+            if enabled
+                && let super::automatic_lifecycle::AutomaticLifecycleOutcome::Stop {
+                    item_id: Some(item_id),
+                    media_instance_id,
+                    ..
+                } = self.stop_held_ended_without_reevaluation(
+                    super::automatic_lifecycle::AutomaticStopCause::StopAfterCurrent,
+                )
+            {
+                self.stop_after_current = None;
+                return StopAfterCurrentOutcome::ClearedManualWaitAndStoppedEndedCurrent {
+                    wait_id: wait.wait_id,
+                    item_id,
+                    media_instance_id,
+                };
+            }
             return StopAfterCurrentOutcome::ClearedManualWait {
                 enabled,
                 wait_id: wait.wait_id,
@@ -703,6 +730,21 @@ impl PlaylistController {
             return StopAfterCurrentOutcome::NoActiveMedia;
         }
         self.set_stop_after_current(enabled);
+        if enabled
+            && let super::automatic_lifecycle::AutomaticLifecycleOutcome::Stop {
+                item_id: Some(item_id),
+                media_instance_id,
+                ..
+            } = self.stop_held_ended_without_reevaluation(
+                super::automatic_lifecycle::AutomaticStopCause::StopAfterCurrent,
+            )
+        {
+            self.stop_after_current = None;
+            return StopAfterCurrentOutcome::StoppedEndedCurrent {
+                item_id,
+                media_instance_id,
+            };
+        }
         StopAfterCurrentOutcome::AppliedToCurrent { enabled }
     }
 

@@ -194,6 +194,7 @@ impl PlaylistController {
                     GuardedInstallAbort::ManualNavigation(preview) => {
                         self.manual_navigation_cursor.restore_after_abort(preview)
                     }
+                    GuardedInstallAbort::AutomaticTraversal(_plan) => {}
                 }
                 if !matches!(intent, DeferredControllerIntent::Transport(_)) {
                     let _discarded = self.manual_navigation_cursor.discard(

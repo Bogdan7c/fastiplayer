@@ -36,7 +36,7 @@ impl PlaylistController {
             GuardedInstallAbort::ManualNavigation(preview) => {
                 self.manual_navigation_cursor.restore_after_abort(preview)
             }
-            GuardedInstallAbort::Queue => {
+            GuardedInstallAbort::Queue | GuardedInstallAbort::AutomaticTraversal(_) => {
                 return self
                     .fatal_result(PlaylistControllerInvariantViolation::TerminalRequestMismatch);
             }

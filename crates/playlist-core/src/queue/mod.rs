@@ -1,5 +1,6 @@
 //! Canonical queue owner и атомарные structural/traversal boundaries.
 
+mod automatic;
 mod metadata_patch;
 mod navigation;
 mod outcomes;
@@ -749,3 +750,7 @@ fn items_from_drafts(
         .map(|(draft, item_id)| draft.into_item(item_id))
         .collect()
 }
+pub use automatic::{
+    AutomaticTraversalAdvance, AutomaticTraversalCommit, AutomaticTraversalPlan,
+    AutomaticTraversalStart, PrepareAutomaticTraversalFailure, PreparedAutomaticTraversalToken,
+};

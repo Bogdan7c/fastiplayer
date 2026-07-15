@@ -1,5 +1,6 @@
 //! Process-lifetime playlist controller: queue ownership, presentation state и typed outcomes.
 
+mod automatic_lifecycle;
 mod install;
 mod manual_navigation;
 mod transport;
@@ -22,6 +23,11 @@ use super::view::{
     PlaylistViewState, PlaylistWorkerAvailability, rebuild_snapshot,
 };
 
+#[allow(unused_imports)]
+pub(crate) use automatic_lifecycle::{
+    AutomaticDeferredAvailability, AutomaticLifecycleOutcome, AutomaticStopCause,
+    AutomaticTargetFailureOutcome, EndedSnapshotKind, PlaylistErrorBehavior,
+};
 #[allow(unused_imports)]
 pub(crate) use install::{
     AuthorizationDispatchStart, BarrierRaceIntent, ControllerInstallPhase,
@@ -118,6 +124,8 @@ pub(crate) struct PlaylistController {
     pub(super) transport_disposition: transport::AppTransportDisposition,
     pending_manual_traversal: Option<transport::PendingManualTraversal>,
     manual_navigation_cursor: manual_navigation::ManualNavigationCursor,
+    automatic_lifecycle: automatic_lifecycle::AutomaticLifecycle,
+    error_behavior: automatic_lifecycle::PlaylistErrorBehavior,
     pub(super) next_manual_wait_identity: u64,
     pub(super) worker_availability: PlaylistWorkerAvailability,
     pub(super) fatal_invariant: Option<PlaylistControllerInvariantViolation>,
@@ -148,6 +156,8 @@ impl PlaylistController {
             transport_disposition: transport::AppTransportDisposition::Active,
             pending_manual_traversal: None,
             manual_navigation_cursor: manual_navigation::ManualNavigationCursor::default(),
+            automatic_lifecycle: automatic_lifecycle::AutomaticLifecycle::default(),
+            error_behavior: automatic_lifecycle::PlaylistErrorBehavior::Stop,
             next_manual_wait_identity: 1,
             worker_availability: PlaylistWorkerAvailability::Available,
             fatal_invariant: None,
@@ -462,11 +472,18 @@ impl PlaylistController {
                 return None;
             }
         }
-        self.manual_navigation_cursor.discard(
+        let invalidation = self.manual_navigation_cursor.discard(
             &self.queue,
             player_core::MediaInstallCancellationCause::StructuralInvalidation,
             request_id,
-        )
+        );
+        if let Some(invalidation) = invalidation {
+            self.consume_manual_terminal_action(
+                invalidation.terminal_action,
+                automatic_lifecycle::AutomaticStopCause::StructuralInvalidation,
+            );
+        }
+        invalidation
     }
 
     pub(super) fn install_linearizing(&self) -> bool {

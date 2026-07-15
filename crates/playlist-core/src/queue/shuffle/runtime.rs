@@ -193,6 +193,47 @@ impl ShuffleManualPreview {
             traversal.append_factual_visit(latest_target_item_id);
         }
     }
+
+    /// Удаляет из snapshot-preview строки, которых больше нет в зафиксированной automatic chain.
+    ///
+    /// Это позволяет structural removal пропустить ровно прежний Item ID, не подмешивая поздно
+    /// добавленные строки и не воскрешая удалённые history/upcoming entries при success commit.
+    pub(in crate::queue) fn retain_automatic_snapshot(
+        &mut self,
+        retained_item_ids: &HashSet<PlaylistItemId>,
+    ) {
+        let retained_base_cursor = retained_cursor_after_filter(
+            self.base_history.as_slice(),
+            self.base_history_cursor,
+            retained_item_ids,
+        );
+        let retained_logical_cursor = retained_cursor_after_filter(
+            self.base_history.as_slice(),
+            self.logical_history_cursor,
+            retained_item_ids,
+        );
+        Arc::make_mut(&mut self.base_history).retain(|item_id| retained_item_ids.contains(item_id));
+        self.base_history_cursor = retained_base_cursor;
+        self.logical_history_cursor = retained_logical_cursor;
+        Arc::make_mut(&mut self.working_upcoming)
+            .retain(|item_id| retained_item_ids.contains(item_id));
+        self.upcoming_steps
+            .retain(|step| retained_item_ids.contains(&step.item_id));
+    }
+}
+
+fn retained_cursor_after_filter(
+    history: &[PlaylistItemId],
+    cursor: Option<usize>,
+    retained_item_ids: &HashSet<PlaylistItemId>,
+) -> Option<usize> {
+    let cursor = cursor?;
+    let retained_through_cursor = history
+        .iter()
+        .take(cursor.saturating_add(1))
+        .filter(|item_id| retained_item_ids.contains(item_id))
+        .count();
+    retained_through_cursor.checked_sub(1)
 }
 
 impl ShuffleTraversal {
