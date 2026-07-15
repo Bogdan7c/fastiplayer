@@ -272,6 +272,18 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
         &mut self,
         routes: &[rustiplayer_settings::RuntimeCommittedRoute],
     ) -> Result<(), SettingsRuntimePreflightFailure> {
+        if routes
+            .iter()
+            .any(|route| route.route == rustiplayer_settings::AppRuntimeRoute::Playlist)
+        {
+            self.playlist_runtime
+                .preflight_playlist_settings()
+                .map_err(|message| SettingsRuntimePreflightFailure {
+                    route: rustiplayer_settings::AppRuntimeRoute::Playlist,
+                    result: AppRouteApplyResult::Failed { message },
+                })?;
+        }
+
         let touches_renderer = routes
             .iter()
             .any(|route| route.route == rustiplayer_settings::AppRuntimeRoute::RenderCommitted);
@@ -332,6 +344,37 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
 
     fn sync_committed_config_snapshot(&mut self, snapshot: CommittedConfigSnapshot) {
         self.app_state.sync_committed_config_snapshot(snapshot);
+    }
+
+    fn finalize_settings_transaction(&mut self) {
+        self.playlist_runtime.finalize_playlist_settings();
+    }
+
+    fn apply_playlist_runtime_settings(
+        &mut self,
+        update: &rustiplayer_settings::PlaylistRuntimeSettingsUpdate,
+    ) -> AppRouteApplyResult {
+        match self
+            .playlist_runtime
+            .stage_playlist_settings(update.playlist)
+        {
+            Ok(true) => AppRouteApplyResult::Applied,
+            Ok(false) => AppRouteApplyResult::Noop,
+            Err(crate::playlist_runtime::PlaylistSettingsStageError::Failed(message)) => {
+                AppRouteApplyResult::Failed { message }
+            }
+            Err(crate::playlist_runtime::PlaylistSettingsStageError::PartialFailure(message)) => {
+                AppRouteApplyResult::PartialFailure { message }
+            }
+        }
+    }
+
+    fn rollback_playlist_runtime_settings(&mut self) -> AppRouteApplyResult {
+        match self.playlist_runtime.rollback_playlist_settings() {
+            Ok(true) => AppRouteApplyResult::Applied,
+            Ok(false) => AppRouteApplyResult::Noop,
+            Err(message) => AppRouteApplyResult::Failed { message },
+        }
     }
 
     fn apply_player_runtime_settings(

@@ -19,10 +19,11 @@ pub use paths::{CONFIG_FILE_NAME, ConfigPaths};
 pub use schema::{
     AppConfig, AudioConfig, CURRENT_SCHEMA_VERSION, HdrToSdrConfig, HdrToSdrOperatorConfig,
     NetworkConfig, OpenGlesConfig, PausedCommitBehavior, PlayerConfig, PlayerDemuxConfig,
-    PlayerSeekConfig, RenderColorAdjustmentConfig, RenderConfig, RenderProfile, ToneMappingMode,
-    UiAnimationsConfig, UiConfig, UiSettingsConfig, UiWindowConfig, VideoBackendPreference,
-    VideoCodec, VideoConfig, VideoSchedulerConfig, VulkanConfig, VulkanPresentMode, YoutubeConfig,
-    YoutubeHdrSelection,
+    PlayerSeekConfig, PlaylistConfig, PlaylistErrorBehavior, PlaylistPlaybackBehavior,
+    PlaylistSiblingMediaFilter, RenderColorAdjustmentConfig, RenderConfig, RenderProfile,
+    ToneMappingMode, UiAnimationsConfig, UiConfig, UiSettingsConfig, UiWindowConfig,
+    VideoBackendPreference, VideoCodec, VideoConfig, VideoSchedulerConfig, VulkanConfig,
+    VulkanPresentMode, YoutubeConfig, YoutubeHdrSelection,
 };
 pub(crate) use schema::{
     LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3, LEGACY_SCHEMA_VERSION_4,

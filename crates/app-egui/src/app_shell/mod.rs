@@ -113,7 +113,10 @@ impl AppShell {
                 startup_error,
                 startup_wake_port,
             ),
-            playlist_runtime: PlaylistRuntime::new(playlist_wake_port),
+            playlist_runtime: PlaylistRuntime::new_with_config(
+                playlist_wake_port,
+                loaded_config.config.playlist,
+            ),
             local_file_open_wake_port: local_file_wake_port,
             settings_runtime: SettingsRuntime::from_loaded_config_with_wake_port(
                 loaded_config,

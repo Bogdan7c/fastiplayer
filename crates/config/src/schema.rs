@@ -4,6 +4,7 @@ use crate::{ConfigResult, frame_server::FrameServerConfig, validation};
 
 mod default_document;
 mod player;
+mod playlist;
 mod render;
 mod services;
 mod ui;
@@ -14,6 +15,7 @@ mod video;
 mod metadata_tests;
 
 pub use player::*;
+pub use playlist::*;
 pub use render::*;
 pub use services::*;
 pub use ui::*;
@@ -50,6 +52,11 @@ pub struct AppConfig {
     #[serde(default)]
     #[setting(nested)]
     pub player: PlayerConfig,
+
+    /// Playlist discovery, traversal defaults и persistence policy.
+    #[serde(default)]
+    #[setting(nested)]
+    pub playlist: PlaylistConfig,
 
     /// Decode-ограничения и backend preference.
     #[serde(default)]
@@ -113,6 +120,7 @@ impl Default for AppConfig {
         Self {
             schema_version: CURRENT_SCHEMA_VERSION,
             player: PlayerConfig::default(),
+            playlist: PlaylistConfig::default(),
             video: VideoConfig::default(),
             frame_server: FrameServerConfig::default(),
             render: RenderConfig::default(),

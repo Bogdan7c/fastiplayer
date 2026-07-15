@@ -28,17 +28,17 @@ use render_core::{
 };
 use rustiplayer_config::{
     AppConfig, FrameServerConfig, HdrToSdrOperatorConfig, NetworkConfig, OpenGlesConfig,
-    PlayerDemuxConfig, RenderProfile, ToneMappingMode as ConfigToneMappingMode, UiConfig,
-    VideoBackendPreference, VideoCodec as ConfigVideoCodec, VulkanConfig, YoutubeConfig,
+    PlayerDemuxConfig, PlaylistConfig, RenderProfile, ToneMappingMode as ConfigToneMappingMode,
+    UiConfig, VideoBackendPreference, VideoCodec as ConfigVideoCodec, VulkanConfig, YoutubeConfig,
     save_validated_atomic_at,
 };
 use settings_core::{
     ApplyMechanism, ApplyRouteReport, ApplyRouteResult, CommittedApplyRequest,
-    CommittedRollbackRequest, CommittedSettingsApplier, PersistReport, PersistRequest,
-    RollbackReport, RollbackResult, RouteApplyUpdate, RouteGeneration, SettingApplyMode,
-    SettingChange, SettingDescriptor, SettingId, SettingRouteId, SettingsDiff, SettingsError,
-    SettingsPersister, SettingsRegistry, SettingsResult, SettingsSchema, SettingsValidator,
-    ValidationReport, ValidationRequest,
+    CommittedFinalizeRequest, CommittedRollbackRequest, CommittedSettingsApplier, PersistReport,
+    PersistRequest, RollbackReport, RollbackResult, RouteApplyUpdate, RouteGeneration,
+    SettingApplyMode, SettingChange, SettingDescriptor, SettingId, SettingRouteId, SettingsDiff,
+    SettingsError, SettingsPersister, SettingsRegistry, SettingsResult, SettingsSchema,
+    SettingsValidator, ValidationReport, ValidationRequest,
 };
 
 mod routing;

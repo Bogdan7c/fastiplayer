@@ -30,13 +30,10 @@ where
     A: SettingsRuntimeReconfigureHost,
 {
     fn persist(&mut self, request: PersistRequest<'_, AppConfig>) -> SettingsResult<PersistReport> {
-        let report = self.store.persist(PersistRequest {
+        self.store.persist(PersistRequest {
             document: request.document,
             changed_settings: request.changed_settings,
-        })?;
-        self.runtime_adapter
-            .sync_committed_config_snapshot(CommittedConfigSnapshot::from_config(request.document));
-        Ok(report)
+        })
     }
 }
 
@@ -122,6 +119,11 @@ where
         self.applied_route_count = 0;
         Ok(reports)
     }
+
+    fn finalize_committed(&mut self, _request: CommittedFinalizeRequest<'_, AppConfig>) {
+        self.runtime_adapter.finalize_settings_transaction();
+        self.applied_route_count = 0;
+    }
 }
 
 impl SettingsRuntime {
@@ -144,14 +146,21 @@ impl SettingsRuntime {
         A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
     {
         self.invalidate_ui_model();
-        let mut delegate = SettingsRuntimeApplyDelegate {
-            validator: AppConfigValidator,
-            store: &mut self.store,
-            route_appliers: &mut self.route_appliers,
-            runtime_adapter,
-            applied_route_count: 0,
+        let report = {
+            let mut delegate = SettingsRuntimeApplyDelegate {
+                validator: AppConfigValidator,
+                store: &mut self.store,
+                route_appliers: &mut self.route_appliers,
+                runtime_adapter,
+                applied_route_count: 0,
+            };
+            self.controller.apply(&mut delegate)?
         };
-        let report = self.controller.apply(&mut delegate)?;
+        if report.final_state == ApplyFinalState::FullyApplied {
+            runtime_adapter.sync_committed_config_snapshot(CommittedConfigSnapshot::from_config(
+                self.controller.committed(),
+            ));
+        }
         self.latest_apply_report = Some(report.clone());
         self.status = status_from_apply_report(&report);
         Ok(report)

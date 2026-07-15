@@ -37,6 +37,21 @@ hotkey_large_step_secs = 30
 # Сколько corrupted packets подряд можно пропустить до fatal ошибки.
 max_consecutive_corrupted_packets = 64
 
+# Playlist policy: discovery следующих открытий, traversal defaults и state save timing.
+[playlist]
+# Автоматически искать соседние media при следующих explicit local opens.
+load_siblings = true
+# Topology-фильтр только для будущих sibling discovery jobs.
+sibling_media_filter = "same_as_opened"
+# Repeat default только для новой очереди без совместимого persisted state.
+playback_behavior = "stop_after_last"
+# Automatic traversal после media-ошибки: остановиться или пропустить.
+error_behavior = "stop"
+# Quiet period перед сохранением newest dirty playlist revision.
+state_save_debounce_ms = 2000
+# Порог restart-current для Previous; 0 отключает эту ветку.
+previous_restart_threshold_ms = 5000
+
 [video]
 preferred_backend = "auto"
 max_decode_ahead_ms = 500

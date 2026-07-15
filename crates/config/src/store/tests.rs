@@ -16,6 +16,86 @@ fn default_config_is_valid() {
         .expect("default config valid");
 }
 
+#[test]
+fn playlist_defaults_match_session_13_contract() {
+    let playlist = AppConfig::default().playlist;
+    assert!(playlist.load_siblings);
+    assert_eq!(
+        playlist.sibling_media_filter,
+        crate::PlaylistSiblingMediaFilter::SameAsOpened
+    );
+    assert_eq!(
+        playlist.playback_behavior,
+        crate::PlaylistPlaybackBehavior::StopAfterLast
+    );
+    assert_eq!(playlist.error_behavior, crate::PlaylistErrorBehavior::Stop);
+    assert_eq!(playlist.state_save_debounce_ms, 2_000);
+    assert_eq!(playlist.previous_restart_threshold_ms, 5_000);
+}
+
+/// Additive `[playlist]` в schema v5 default-ится без rewrite существующего файла.
+#[test]
+fn legacy_v5_without_playlist_uses_defaults_without_startup_rewrite() {
+    let temp_dir = tempfile::tempdir().expect("temp dir created");
+    let config_path = temp_dir.path().join("config.toml");
+    let legacy_text = "schema_version = 5\n\n[ui]\nlanguage = \"ru\"\n";
+    fs::write(&config_path, legacy_text).expect("legacy config written");
+
+    let loaded = load_from_path(&config_path).expect("legacy config loads");
+
+    assert_eq!(loaded.config.playlist, crate::PlaylistConfig::default());
+    assert!(!loaded.created);
+    assert_eq!(
+        fs::read_to_string(&config_path).expect("legacy file remains readable"),
+        legacy_text
+    );
+    assert_eq!(CURRENT_SCHEMA_VERSION, 5);
+}
+
+#[test]
+fn playlist_bounds_are_inclusive_and_reject_neighbors() {
+    for value in [250, 30_000] {
+        let mut config = AppConfig::default();
+        config.playlist.state_save_debounce_ms = value;
+        config
+            .validate()
+            .expect("inclusive debounce bound accepted");
+    }
+    for value in [249, 30_001] {
+        let mut config = AppConfig::default();
+        config.playlist.state_save_debounce_ms = value;
+        assert!(config.validate().is_err());
+    }
+    for value in [0, 60_000] {
+        let mut config = AppConfig::default();
+        config.playlist.previous_restart_threshold_ms = value;
+        config
+            .validate()
+            .expect("inclusive Previous bound accepted");
+    }
+    let mut config = AppConfig::default();
+    config.playlist.previous_restart_threshold_ms = 60_001;
+    assert!(config.validate().is_err());
+}
+
+#[test]
+fn playlist_section_rejects_unknown_fields_and_roundtrips_stable_enum_ids() {
+    let temp_dir = tempfile::tempdir().expect("temp dir created");
+    let config_path = temp_dir.path().join("config.toml");
+    let unknown = "schema_version = 5\n\n[playlist]\nunknown = true\n";
+    fs::write(&config_path, unknown).expect("unknown fixture written");
+    let error =
+        load_from_path(&config_path).expect_err("strict playlist section rejects unknown field");
+    assert!(error.to_string().contains("unknown"));
+
+    let generated = AppConfig::default()
+        .to_pretty_toml()
+        .expect("defaults serialize");
+    for stable_id in ["same_as_opened", "stop_after_last", "stop"] {
+        assert!(generated.contains(stable_id));
+    }
+}
+
 /// Старый schema v5 без нового ключа сохраняет прежнее SDR-only поведение.
 #[test]
 fn schema_v5_without_youtube_hdr_selection_defaults_to_sdr_only() {

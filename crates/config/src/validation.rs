@@ -132,6 +132,18 @@ pub(crate) const MIN_POSITIVE_U64_SETTING_VALUE: u64 = 1;
 /// Максимум, который settings registry может представить как signed integer.
 pub(crate) const MAX_POSITIVE_U64_SETTING_VALUE: u64 = i64::MAX as u64;
 
+/// Минимальный playlist save debounce исключает write storm.
+pub(crate) const MIN_PLAYLIST_STATE_SAVE_DEBOUNCE_MS: u64 = 250;
+
+/// Максимальный playlist save debounce ограничивает окно возможной потери.
+pub(crate) const MAX_PLAYLIST_STATE_SAVE_DEBOUNCE_MS: u64 = 30_000;
+
+/// Ноль отключает restart-current branch команды Previous.
+pub(crate) const MIN_PLAYLIST_PREVIOUS_RESTART_THRESHOLD_MS: u64 = 0;
+
+/// Порог Previous не может быть длиннее одной минуты.
+pub(crate) const MAX_PLAYLIST_PREVIOUS_RESTART_THRESHOLD_MS: u64 = 60_000;
+
 /// Минимальное additive brightness смещение SDR shader-а.
 pub(crate) const MIN_RENDER_COLOR_BRIGHTNESS: f32 = -1.0;
 
@@ -182,8 +194,25 @@ pub(crate) fn validate_app_config(config: &AppConfig) -> ConfigResult<()> {
     validate_render_section(config)?;
     validate_ui_section(config)?;
     validate_frame_server_section(config)?;
+    validate_playlist_section(config)?;
 
     Ok(())
+}
+
+/// Проверяет bounded playlist timing policy.
+fn validate_playlist_section(config: &AppConfig) -> ConfigResult<()> {
+    validate_u64_range(
+        "playlist.state_save_debounce_ms",
+        config.playlist.state_save_debounce_ms,
+        MIN_PLAYLIST_STATE_SAVE_DEBOUNCE_MS,
+        MAX_PLAYLIST_STATE_SAVE_DEBOUNCE_MS,
+    )?;
+    validate_u64_range(
+        "playlist.previous_restart_threshold_ms",
+        config.playlist.previous_restart_threshold_ms,
+        MIN_PLAYLIST_PREVIOUS_RESTART_THRESHOLD_MS,
+        MAX_PLAYLIST_PREVIOUS_RESTART_THRESHOLD_MS,
+    )
 }
 
 /// Проверяет schema version как явную точку будущих миграций.

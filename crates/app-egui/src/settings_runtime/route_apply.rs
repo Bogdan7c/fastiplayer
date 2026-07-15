@@ -20,8 +20,24 @@ pub(crate) trait SettingsRuntimeReconfigureHost {
         Ok(())
     }
 
-    /// Синхронизирует внешний owner с committed config-ом перед owner-level apply.
+    /// Синхронизирует внешний snapshot только после persistence и finalize.
     fn sync_committed_config_snapshot(&mut self, _snapshot: CommittedConfigSnapshot) {}
+
+    /// Завершает staged irreversible work после successful persistence.
+    fn finalize_settings_transaction(&mut self) {}
+
+    /// Обратимо stage-ит playlist policy у process-lifetime owner-а.
+    fn apply_playlist_runtime_settings(
+        &mut self,
+        _update: &PlaylistRuntimeSettingsUpdate,
+    ) -> AppRouteApplyResult {
+        AppRouteApplyResult::Noop
+    }
+
+    /// Компенсирует staged playlist policy до finalize.
+    fn rollback_playlist_runtime_settings(&mut self) -> AppRouteApplyResult {
+        AppRouteApplyResult::Noop
+    }
 
     /// Транзакционно пересоздаёт renderer/surface path у shell lifecycle owner-а.
     fn recreate_renderer(
@@ -306,6 +322,8 @@ impl AppRuntimeRouteApplier for SettingsRuntimeRouteAppliers {
     ) -> SettingsResult<AppRouteApplyReport> {
         self.apply_committed_route(route)
     }
+
+    fn finalize_committed_routes(&mut self) {}
 }
 
 impl SettingsRuntimeRouteAppliers {
@@ -327,6 +345,10 @@ impl SettingsRuntimeRouteAppliers {
                     result,
                     ApplyMechanism::PreviewPromoted,
                 ))
+            }
+            RuntimeCommittedUpdate::Playlist(_) => {
+                let result = runtime_adapter.rollback_playlist_runtime_settings();
+                Ok(Self::route_report(route, result, ApplyMechanism::InPlace))
             }
             _ => self.apply_committed_route_with_reconfigure_host(route, runtime_adapter),
         }
@@ -406,6 +428,10 @@ impl SettingsRuntimeRouteAppliers {
                     result,
                     ApplyMechanism::WorkerReconfigure,
                 ))
+            }
+            RuntimeCommittedUpdate::Playlist(update) => {
+                let result = reconfigure_host.apply_playlist_runtime_settings(&update);
+                Ok(Self::route_report(route, result, ApplyMechanism::InPlace))
             }
             RuntimeCommittedUpdate::RenderPreview(_update) => unreachable!(
                 "render preview committed route requires render adapter promotion path"

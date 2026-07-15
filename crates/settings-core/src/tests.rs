@@ -230,6 +230,10 @@ impl CommittedSettingsApplier<TestDocument> for RecordingApplyDelegate {
             })
             .collect())
     }
+
+    fn finalize_committed(&mut self, _request: crate::CommittedFinalizeRequest<'_, TestDocument>) {
+        self.calls.push("finalize");
+    }
 }
 
 #[derive(Default)]
@@ -743,7 +747,7 @@ fn controller_apply_runs_validate_preflight_runtime_then_persist() {
 
     assert_eq!(
         delegate.calls,
-        vec!["validate", "preflight", "apply", "persist"]
+        vec!["validate", "preflight", "apply", "persist", "finalize"]
     );
     assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
     assert_eq!(controller.committed().title, "Применённое имя");
@@ -845,7 +849,7 @@ fn controller_runtime_failure_preserves_same_draft_for_retry() {
 
     assert_eq!(
         retry_delegate.calls,
-        vec!["validate", "preflight", "apply", "persist"]
+        vec!["validate", "preflight", "apply", "persist", "finalize"]
     );
     assert_eq!(retry_report.final_state, ApplyFinalState::FullyApplied);
     assert_eq!(

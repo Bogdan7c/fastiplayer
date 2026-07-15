@@ -30,6 +30,9 @@ pub enum SettingStateOwner {
     MediaSourceLifecycle,
     /// Player-owned Frame Server policy.
     FrameServerPolicy,
+
+    /// Process-lifetime playlist policy owner.
+    PlaylistPolicy,
 }
 
 /// Intent-механизм, которым setting должен попасть в активный runtime.
@@ -460,6 +463,24 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
             SettingApplyMechanism::WorkerReconfigure,
             WORKER_TESTS,
         ),
+        "playlist.load_siblings"
+        | "playlist.sibling_media_filter"
+        | "playlist.playback_behavior"
+        | "playlist.error_behavior"
+        | "playlist.previous_restart_threshold_ms" => SettingApplicationContract::new(
+            setting_name,
+            AppRuntimeRoute::Playlist,
+            SettingStateOwner::PlaylistPolicy,
+            SettingApplyMechanism::PolicyUpdateInPlace,
+            POLICY_TESTS,
+        ),
+        "playlist.state_save_debounce_ms" => SettingApplicationContract::new(
+            setting_name,
+            AppRuntimeRoute::Playlist,
+            SettingStateOwner::PlaylistPolicy,
+            SettingApplyMechanism::WorkerReconfigure,
+            WORKER_TESTS,
+        ),
         _ => return None,
     };
 
@@ -529,5 +550,32 @@ mod tests {
             rollback_failure,
             SettingsApplyOutcome::Failed(SettingsApplyFailure::ApplyAndRollbackFailed { .. })
         ));
+    }
+
+    #[test]
+    fn playlist_descriptors_use_dedicated_owner_and_explicit_mechanisms() {
+        for setting_id in [
+            "playlist.load_siblings",
+            "playlist.sibling_media_filter",
+            "playlist.playback_behavior",
+            "playlist.error_behavior",
+            "playlist.previous_restart_threshold_ms",
+        ] {
+            let contract = setting_application_contract(&SettingId::from(setting_id))
+                .expect("playlist policy contract exists");
+            assert_eq!(contract.route, AppRuntimeRoute::Playlist);
+            assert_eq!(contract.state_owner, SettingStateOwner::PlaylistPolicy);
+            assert_eq!(
+                contract.mechanism,
+                SettingApplyMechanism::PolicyUpdateInPlace
+            );
+        }
+
+        let debounce =
+            setting_application_contract(&SettingId::from("playlist.state_save_debounce_ms"))
+                .expect("playlist debounce contract exists");
+        assert_eq!(debounce.route, AppRuntimeRoute::Playlist);
+        assert_eq!(debounce.state_owner, SettingStateOwner::PlaylistPolicy);
+        assert_eq!(debounce.mechanism, SettingApplyMechanism::WorkerReconfigure);
     }
 }

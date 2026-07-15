@@ -42,3 +42,10 @@
 - `state::strong_media_open` коммитит app video pointers сразу после exact Installed, до fallible restore. Active source публикуется только после Installed.
 - Любая ошибка после возможного install barrier возвращает `AppRouteApplyResult::PartialFailure`, включая post-Installed D52 dispatch/outcome, pointer invariant и restore failures. Поэтому `AppConfigSettingsDelegate::applied_route_count` включает failing route в reverse compensation; rollback повторно проходит тот же strong reinstall и ждёт terminal Installed. Доказанный pre-barrier failure возвращает `Failed` и не запускает лишний rollback.
 - Focused classification tests закрепляют PartialFailure vs Failed; существующая transaction matrix сохраняет separate apply/rollback reports и persistence-failure compensation.
+
+## Session 13 — post-persist finalize и Playlist route (2026-07-15)
+- `SettingsController::apply` теперь выполняет validate -> preflight -> reversible runtime apply -> atomic persist -> infallible synchronous/idempotent `finalize_committed` -> committed document/generation update.
+- Finalize не возвращает ошибку и не вводит divergence recovery. Persistence failure вызывает прежний reverse rollback и finalize не запускает.
+- App committed config snapshot удалён из persister-а и синхронизируется `SettingsRuntime` только после runtime finalize и возврата `FullyApplied`, то есть после controller committed document/generation update.
+- Добавлены отдельные `AppRuntimeRoute::Playlist` и `SettingStateOwner::PlaylistPolicy`; все шесть `playlist.*` ids имеют explicit checked contracts. Debounce использует `WorkerReconfigure`, остальные — `PolicyUpdateInPlace`; restart/deferred/hidden queue отсутствуют.
+- App D62 owner contract описан в `mem:playlist/settings-s13`.

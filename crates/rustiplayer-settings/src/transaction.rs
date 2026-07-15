@@ -189,4 +189,9 @@ where
         self.applied_route_count = 0;
         Ok(reports)
     }
+
+    fn finalize_committed(&mut self, _request: CommittedFinalizeRequest<'_, AppConfig>) {
+        self.runtime_applier.finalize_committed_routes();
+        self.applied_route_count = 0;
+    }
 }

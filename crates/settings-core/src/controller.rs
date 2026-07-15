@@ -487,6 +487,18 @@ pub struct CommittedRollbackRequest<'a, D> {
     pub changed_settings: &'a SettingsDiff,
 }
 
+/// Immutable context for the infallible post-persist finalize phase.
+pub struct CommittedFinalizeRequest<'a, D> {
+    /// Document that was active before this transaction.
+    pub previous_committed: &'a D,
+    /// Document already persisted successfully by this transaction.
+    pub committed: &'a D,
+    /// Owner routes completed by the reversible apply phase.
+    pub route_updates: &'a [RouteApplyUpdate],
+    /// Stable ids changed by the transaction.
+    pub changed_settings: &'a SettingsDiff,
+}
+
 /// Request passed to preview apply delegate.
 pub struct PreviewApplyRequest<'a, D> {
     /// Latest pending update for one route.
@@ -660,6 +672,13 @@ pub trait CommittedSettingsApplier<D> {
         &mut self,
         request: CommittedRollbackRequest<'_, D>,
     ) -> SettingsResult<Vec<RollbackReport>>;
+
+    /// Finalizes irreversible owner work after persistence succeeded.
+    ///
+    /// Implementations must be synchronous, idempotent and semantically
+    /// infallible: persistence has already committed and there is no rollback
+    /// path after this boundary.
+    fn finalize_committed(&mut self, request: CommittedFinalizeRequest<'_, D>);
 }
 
 /// Delegate responsible for sending live preview updates.
@@ -1101,6 +1120,13 @@ where
                 });
             }
         };
+
+        delegate.finalize_committed(CommittedFinalizeRequest {
+            previous_committed: &self.committed,
+            committed: &self.draft,
+            route_updates: &route_updates,
+            changed_settings: &changed_settings,
+        });
 
         self.commit_full_success(route_updates.iter().map(|update| update.route.clone()));
         Ok(ApplyReport {

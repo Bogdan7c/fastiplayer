@@ -283,6 +283,8 @@ struct RecordingRuntimeAdapter {
     preflight_failure: Option<(rustiplayer_settings::AppRuntimeRoute, AppRouteApplyResult)>,
     preflight_calls: usize,
     committed_snapshots: Vec<CommittedConfigSnapshot>,
+    finalize_calls: usize,
+    snapshot_synced_after_finalize: Vec<bool>,
 }
 
 impl RecordingRuntimeAdapter {
@@ -298,6 +300,8 @@ impl RecordingRuntimeAdapter {
             preflight_failure: None,
             preflight_calls: 0,
             committed_snapshots: Vec::new(),
+            finalize_calls: 0,
+            snapshot_synced_after_finalize: Vec::new(),
         })
     }
 }
@@ -338,7 +342,13 @@ impl SettingsRuntimeReconfigureHost for RecordingRuntimeAdapter {
     }
 
     fn sync_committed_config_snapshot(&mut self, snapshot: CommittedConfigSnapshot) {
+        self.snapshot_synced_after_finalize
+            .push(self.finalize_calls > 0);
         self.committed_snapshots.push(snapshot);
+    }
+
+    fn finalize_settings_transaction(&mut self) {
+        self.finalize_calls += 1;
     }
 
     fn recreate_renderer(
@@ -1696,6 +1706,8 @@ fn transaction_multi_group_success_commits_runtime_and_toml() {
     assert_eq!(report.routes.len(), 2);
     assert_eq!(adapter.media_updates, 1);
     assert_eq!(adapter.committed_snapshots.len(), 1);
+    assert_eq!(adapter.finalize_calls, 1);
+    assert_eq!(adapter.snapshot_synced_after_finalize, vec![true]);
     assert!(path.exists());
     remove_file_if_exists(&path);
 }
@@ -1911,6 +1923,8 @@ fn transaction_persistence_failure_rolls_runtime_back() {
     assert_eq!(report.rollback.len(), 1);
     assert_eq!(adapter.media_updates, 2);
     assert!(adapter.committed_snapshots.is_empty());
+    assert_eq!(adapter.finalize_calls, 0);
+    assert!(adapter.snapshot_synced_after_finalize.is_empty());
     assert_eq!(runtime.committed_config().network, config.network);
     fs::remove_dir_all(&path).expect("test target directory должна удалиться");
 }

@@ -2,6 +2,41 @@
 pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     insert_default_config_comment(
         toml_text,
+        "[playlist]",
+        "# Playlist policy: discovery следующих открытий, traversal defaults и state save timing.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "load_siblings = true",
+        "# Автоматически искать соседние media при следующих explicit local opens.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "sibling_media_filter = \"same_as_opened\"",
+        "# Topology-фильтр только для будущих sibling discovery jobs.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "playback_behavior = \"stop_after_last\"",
+        "# Repeat default только для новой очереди без совместимого persisted state.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "error_behavior = \"stop\"",
+        "# Automatic traversal после media-ошибки: остановиться или пропустить.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "state_save_debounce_ms = 2000",
+        "# Quiet period перед сохранением newest dirty playlist revision.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "previous_restart_threshold_ms = 5000",
+        "# Порог restart-current для Previous; 0 отключает эту ветку.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "[player.seek]",
         "# Настройки seek commit, resume после seek и hotkey-шагов.",
     );

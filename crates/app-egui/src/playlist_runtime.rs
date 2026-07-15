@@ -26,6 +26,8 @@ mod identity;
     reason = "Session 12A publishes runtime Undo boundary before Session 20 UI wiring"
 )]
 mod removal_undo;
+mod settings;
+pub(crate) use settings::{FutureDiscoveryPolicy, PlaylistSettingsStageError};
 #[allow(
     dead_code,
     reason = "Session 11A read-only snapshot is attached by later playlist UI integration"
@@ -187,6 +189,7 @@ pub(crate) struct PlaylistRuntime {
     removal_undo: Option<removal_undo::RemovalUndoState>,
     /// Process-lifetime reusable preparation/install mechanism Session 10C.
     media_open: MediaOpenCoordinator,
+    settings: settings::PlaylistSettingsOwner,
 }
 
 impl PlaylistRuntime {
@@ -203,10 +206,22 @@ impl PlaylistRuntime {
     }
 
     /// Создаёт runtime один раз вместе с `AppShell`, до любого `AppState`.
+    #[cfg(test)]
     pub(crate) fn new(wake_port: AppWakePort) -> Self {
+        Self::new_with_config(wake_port, rustiplayer_config::PlaylistConfig::default())
+    }
+
+    /// Создаёт runtime с policy из уже валидированного startup config.
+    pub(crate) fn new_with_config(
+        wake_port: AppWakePort,
+        playlist_config: rustiplayer_config::PlaylistConfig,
+    ) -> Self {
         let media_open = MediaOpenCoordinator::new(wake_port.clone());
         let (publisher, owner_receiver) = owner_mailbox(wake_port);
         let admission_open = Arc::new(AtomicBool::new(true));
+        let settings = settings::PlaylistSettingsOwner::new(playlist_config);
+        let mut controller = PlaylistController::new();
+        settings.initialize_new_queue_policy(&mut controller);
         Self {
             lifecycle_generation: PlaylistLifecycleGeneration(0),
             next_binding_generation: PlaylistBindingGeneration(0),
@@ -218,10 +233,40 @@ impl PlaylistRuntime {
             },
             admission_open,
             owner_receiver,
-            controller: PlaylistController::new(),
+            controller,
             removal_undo: None,
             media_open,
+            settings,
         }
+    }
+
+    pub(crate) fn preflight_playlist_settings(&self) -> Result<(), String> {
+        self.settings.preflight()
+    }
+
+    pub(crate) fn stage_playlist_settings(
+        &mut self,
+        requested: rustiplayer_config::PlaylistConfig,
+    ) -> Result<bool, settings::PlaylistSettingsStageError> {
+        self.settings.stage(requested, &mut self.controller)
+    }
+
+    #[allow(dead_code)] // Session 14 подключит следующий explicit-open discovery job к snapshot boundary.
+    pub(crate) fn future_playlist_discovery_policy(&self) -> FutureDiscoveryPolicy {
+        self.settings.future_discovery_policy()
+    }
+
+    #[allow(dead_code)] // Подключается transport callsite-ами вместе с playlist UI в следующей wiring session.
+    pub(crate) fn previous_restart_threshold(&self) -> controller::PreviousRestartThreshold {
+        self.settings.previous_restart_threshold()
+    }
+
+    pub(crate) fn rollback_playlist_settings(&mut self) -> Result<bool, String> {
+        self.settings.rollback(&mut self.controller)
+    }
+
+    pub(crate) fn finalize_playlist_settings(&mut self) {
+        self.settings.finalize();
     }
 
     /// Создаёт новый exact binding после успешного AppState recreation.

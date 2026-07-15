@@ -24,6 +24,12 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "player.seek.hotkey_large_step_secs",
     "player.demux.max_consecutive_corrupted_packets",
     "player.preferred_video_codec_order",
+    "playlist.load_siblings",
+    "playlist.sibling_media_filter",
+    "playlist.playback_behavior",
+    "playlist.error_behavior",
+    "playlist.state_save_debounce_ms",
+    "playlist.previous_restart_threshold_ms",
     "video.preferred_backend",
     "video.max_decode_ahead_ms",
     "video.present_queue_frames",
@@ -233,6 +239,18 @@ fn rgb_fields_are_fixed_length_three_vectors() {
 fn metadata_ranges_match_validation_constants() {
     let registry = registry();
 
+    assert_integer_range(
+        &registry,
+        "playlist.state_save_debounce_ms",
+        validation::MIN_PLAYLIST_STATE_SAVE_DEBOUNCE_MS,
+        validation::MAX_PLAYLIST_STATE_SAVE_DEBOUNCE_MS,
+    );
+    assert_integer_range(
+        &registry,
+        "playlist.previous_restart_threshold_ms",
+        validation::MIN_PLAYLIST_PREVIOUS_RESTART_THRESHOLD_MS,
+        validation::MAX_PLAYLIST_PREVIOUS_RESTART_THRESHOLD_MS,
+    );
     assert_integer_range(
         &registry,
         "player.seek.commit_timeout_ms",
@@ -556,6 +574,17 @@ fn static_enum_and_string_options_use_stable_ids() {
         "video.preferred_backend",
         &["auto", "hardware", "software"],
     );
+    assert_select_options(
+        &registry,
+        "playlist.sibling_media_filter",
+        &["video_only", "all_media", "audio_only", "same_as_opened"],
+    );
+    assert_select_options(
+        &registry,
+        "playlist.playback_behavior",
+        &["stop_after_last", "repeat_queue", "repeat_one"],
+    );
+    assert_select_options(&registry, "playlist.error_behavior", &["stop", "skip"]);
     assert_select_options(&registry, "render.profile", &["auto", "vulkan", "opengles"]);
     assert_select_options(&registry, "render.hdr_to_sdr.operator", &["bt2446_c"]);
     assert_select_options(&registry, "render.tone_mapping", &["auto", "disabled"]);
