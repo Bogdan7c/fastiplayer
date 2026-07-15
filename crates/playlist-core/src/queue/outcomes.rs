@@ -4,7 +4,7 @@ use std::fmt;
 
 use crate::{AllocatorRestoreError, PlaylistItemId};
 
-use super::{QueueRevisionSnapshot, TraversalCurrentItemId};
+use super::{QueueRevisionSnapshot, RemovalCurrentOutcome, TraversalCurrentItemId};
 
 /// IDs, опубликованные только вместе с успешным domain commit.
 #[derive(Clone, PartialEq, Eq)]
@@ -287,6 +287,8 @@ pub enum RemoveItemOutcome {
         item_id: PlaylistItemId,
         /// Влияние удаления на traversal current.
         traversal_current_effect: TraversalCurrentEffect,
+        /// D71 persisted-current outcome без неявного successor-а.
+        current_outcome: RemovalCurrentOutcome,
     },
     /// Item ID отсутствует в committed queue.
     NotFound { item_id: PlaylistItemId },
@@ -304,10 +306,12 @@ impl fmt::Debug for RemoveItemOutcome {
             Self::Removed {
                 item_id,
                 traversal_current_effect,
+                current_outcome,
             } => formatter
                 .debug_struct("Removed")
                 .field("item_id", item_id)
                 .field("traversal_current_effect", traversal_current_effect)
+                .field("current_outcome", current_outcome)
                 .finish(),
             Self::NotFound { item_id } => formatter
                 .debug_struct("NotFound")
@@ -445,6 +449,7 @@ pub enum ClearQueueOutcome {
     Cleared {
         removed_item_count: usize,
         traversal_current_effect: TraversalCurrentEffect,
+        current_outcome: RemovalCurrentOutcome,
     },
     /// Queue уже пуста и current уже отсутствует.
     AlreadyEmpty,
@@ -462,10 +467,12 @@ impl fmt::Debug for ClearQueueOutcome {
             Self::Cleared {
                 removed_item_count,
                 traversal_current_effect,
+                current_outcome,
             } => formatter
                 .debug_struct("Cleared")
                 .field("removed_item_count", removed_item_count)
                 .field("traversal_current_effect", traversal_current_effect)
+                .field("current_outcome", current_outcome)
                 .finish(),
             Self::AlreadyEmpty => formatter.write_str("AlreadyEmpty"),
             Self::InstallCommitLinearizing => formatter.write_str("InstallCommitLinearizing"),

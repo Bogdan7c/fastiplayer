@@ -4,7 +4,7 @@ use std::fmt;
 
 use crate::PlaylistItemId;
 
-use super::super::{QueueRestoreError, TraversalCurrentEffect};
+use super::super::{QueueRestoreError, RemovalCurrentOutcome, TraversalCurrentEffect};
 
 /// Максимальное число сохранённых фактических visits в rolling history.
 pub const MAX_SHUFFLE_HISTORY_ENTRIES: usize = 1_024;
@@ -202,6 +202,7 @@ pub enum BulkRemoveOutcome {
     Removed {
         removed_item_count: usize,
         traversal_current_effect: TraversalCurrentEffect,
+        current_outcome: RemovalCurrentOutcome,
     },
 }
 

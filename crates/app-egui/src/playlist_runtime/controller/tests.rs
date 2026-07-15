@@ -5,7 +5,7 @@ use std::sync::Arc;
 use player_core::{MediaInstallRequestId, MediaInstanceId, PlaybackIntentRevision};
 use playlist_core::{
     CachedPlaylistMetadata, LocalLocator, PlaylistItemDraft, PlaylistItemId, PlaylistMediaKind,
-    PrepareReservedMutationError, RepeatMode, ReservedQueueMutation, TraversalCurrentEffect,
+    PrepareReservedMutationError, RepeatMode, ReservedQueueMutation,
 };
 
 use super::*;
@@ -129,20 +129,22 @@ fn remove_selected_uses_d47_fallback_and_clears_persisted_current_without_active
     controller.select_row(Some(item_ids[1]));
     controller.queue.set_traversal_current(item_ids[1]).unwrap();
 
-    let outcome = controller.remove_non_active(item_ids[1]);
+    let outcome = controller.remove_item(item_ids[1]);
     assert!(matches!(
         outcome,
-        ControllerRemoveOutcome::Removed {
-            selected_item_id: Some(selected),
-            traversal_current_effect: TraversalCurrentEffect::Cleared,
-            ..
-        } if selected == item_ids[2]
+        ControllerDestructiveRemovalOutcome::Removed(ref removal)
+            if removal.selected_item_id_after == Some(item_ids[2])
+                && matches!(
+                    removal.current_outcome,
+                    playlist_core::RemovalCurrentOutcome::Detached { removed_item_id }
+                        if removed_item_id == item_ids[1]
+                )
     ));
     assert_eq!(controller.queue().traversal_current(), None);
     assert_eq!(controller.active_media(), None);
     assert!(matches!(
-        controller.remove_non_active(item_ids[1]),
-        ControllerRemoveOutcome::NotFound { .. }
+        controller.remove_item(item_ids[1]),
+        ControllerDestructiveRemovalOutcome::NotFound { .. }
     ));
 }
 
@@ -153,8 +155,8 @@ fn ready_reservation_failure_preserves_queue_allocator_and_dirty_state() {
     let item_id = item_ids[0];
     let missing_id = item_ids[1];
     assert!(matches!(
-        controller.remove_non_active(missing_id),
-        ControllerRemoveOutcome::Removed { .. }
+        controller.remove_item(missing_id),
+        ControllerDestructiveRemovalOutcome::Removed(_)
     ));
     let dirty_before = controller.dirty_revision();
     let watermark_before = controller.queue().next_item_id_snapshot();
@@ -622,7 +624,7 @@ fn d49_badge_correlation_and_d70_retention_do_not_dirty_queue() {
 }
 
 #[test]
-fn active_removal_is_typed_blocked_selected_stays_independent_and_latch_is_storage_only() {
+fn active_removal_detaches_identity_selected_stays_independent_and_latch_is_storage_only() {
     let mut controller = PlaylistController::new();
     let item_ids = append_ids(&mut controller, 2);
     controller.select_row(Some(item_ids[1]));
@@ -646,11 +648,16 @@ fn active_removal_is_typed_blocked_selected_stays_independent_and_latch_is_stora
         .unwrap();
 
     assert_eq!(controller.selected_item_id(), Some(item_ids[1]));
-    assert!(matches!(
-        controller.remove_non_active(item_ids[0]),
-        ControllerRemoveOutcome::ActiveItemRequiresTombstoneSession { .. }
-    ));
     assert!(controller.set_stop_after_current(true));
+    assert!(matches!(
+        controller.remove_item(item_ids[0]),
+        ControllerDestructiveRemovalOutcome::Removed(_)
+    ));
+    assert!(
+        controller
+            .active_media()
+            .is_some_and(|active| active.item_id().is_none())
+    );
     let latch = controller.stop_after_current().unwrap();
     assert_eq!(latch.item_id(), Some(item_ids[0]));
     assert_eq!(

@@ -69,6 +69,40 @@ impl ActiveMediaIdentity {
     pub(crate) const fn player_binding_generation(self) -> PlaylistBindingGeneration {
         self.player_binding_generation
     }
+
+    /// Отсоединяет active media от committed row, сохраняя exact lineage/instance/binding.
+    pub(super) const fn detached(self) -> Self {
+        Self {
+            item_id: None,
+            lineage_id: self.lineage_id,
+            media_instance_id: self.media_instance_id,
+            player_binding_generation: self.player_binding_generation,
+        }
+    }
+
+    /// Возвращает tombstone той же lineage к восстановленной committed row без reopen.
+    pub(super) const fn reattached(self, item_id: PlaylistItemId) -> Self {
+        Self {
+            item_id: Some(item_id),
+            lineage_id: self.lineage_id,
+            media_instance_id: self.media_instance_id,
+            player_binding_generation: self.player_binding_generation,
+        }
+    }
+
+    /// D72 меняет exact player instance/binding, но не app-owned lineage.
+    pub(super) const fn rebound(
+        self,
+        media_instance_id: MediaInstanceId,
+        player_binding_generation: PlaylistBindingGeneration,
+    ) -> Self {
+        Self {
+            item_id: self.item_id,
+            lineage_id: self.lineage_id,
+            media_instance_id,
+            player_binding_generation,
+        }
+    }
 }
 
 /// Источник intent-а нужен для diagnostics, но не сообщает coordinator-у priority policy.

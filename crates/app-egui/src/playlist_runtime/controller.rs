@@ -3,6 +3,7 @@
 mod automatic_lifecycle;
 mod install;
 mod manual_navigation;
+mod removal;
 mod transport;
 
 use std::collections::HashMap;
@@ -10,8 +11,7 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use playlist_core::{
-    AddItemsError, AddItemsOutcome, PlaylistItemDraft, PlaylistItemId, PlaylistQueue,
-    RemoveItemOutcome, RepeatMode, TraversalCurrentEffect,
+    AddItemsError, AddItemsOutcome, PlaylistItemDraft, PlaylistItemId, PlaylistQueue, RepeatMode,
 };
 
 use super::identity::{
@@ -44,6 +44,12 @@ pub(crate) use manual_navigation::{
     PreConcreteProbeRejectionOutcome,
 };
 #[allow(unused_imports)]
+pub(crate) use removal::{
+    ControllerActiveMediaRebindOutcome, ControllerDestructiveRemoval,
+    ControllerDestructiveRemovalOutcome, ControllerRemovalKind, ControllerRemovalUndoOutcome,
+    DetachedActiveTombstone,
+};
+#[allow(unused_imports)]
 pub(crate) use transport::{
     AppTransportDisposition, ControllerManualNavigationOutcome, ControllerPlayItemOutcome,
     ControllerStableIntentDispatch, DeferredTransportExecutionContext,
@@ -70,29 +76,6 @@ pub(crate) enum ControllerAppendError {
     DirtyRevisionExhausted,
     StructuralRevisionExhausted,
     Domain(AddItemsError),
-}
-
-/// Removal active row остаётся typed blocked до tombstone Session 12A.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ControllerRemoveOutcome {
-    Removed {
-        item_id: PlaylistItemId,
-        selected_item_id: Option<PlaylistItemId>,
-        traversal_current_effect: TraversalCurrentEffect,
-        dirty: PlaylistDirtySignal,
-        manual_navigation_invalidation: Option<ManualNavigationInvalidation>,
-    },
-    NotFound {
-        item_id: PlaylistItemId,
-    },
-    ActiveItemRequiresTombstoneSession {
-        item_id: PlaylistItemId,
-    },
-    InstallCommitLinearizing,
-    FatalInvariant,
-    DirtyRevisionExhausted,
-    StructuralRevisionExhausted,
-    DomainRevisionExhausted,
 }
 
 /// Ошибка correlation не изменяет badge и не dirty-ит persisted state.
@@ -125,6 +108,7 @@ pub(crate) struct PlaylistController {
     pending_manual_traversal: Option<transport::PendingManualTraversal>,
     manual_navigation_cursor: manual_navigation::ManualNavigationCursor,
     automatic_lifecycle: automatic_lifecycle::AutomaticLifecycle,
+    pub(super) detached_active_tombstone: Option<DetachedActiveTombstone>,
     error_behavior: automatic_lifecycle::PlaylistErrorBehavior,
     pub(super) next_manual_wait_identity: u64,
     pub(super) worker_availability: PlaylistWorkerAvailability,
@@ -157,6 +141,7 @@ impl PlaylistController {
             pending_manual_traversal: None,
             manual_navigation_cursor: manual_navigation::ManualNavigationCursor::default(),
             automatic_lifecycle: automatic_lifecycle::AutomaticLifecycle::default(),
+            detached_active_tombstone: None,
             error_behavior: automatic_lifecycle::PlaylistErrorBehavior::Stop,
             next_manual_wait_identity: 1,
             worker_availability: PlaylistWorkerAvailability::Available,
@@ -240,72 +225,6 @@ impl PlaylistController {
             }
             Ok(AddItemsOutcome::NoItemsProvided) => Ok(ControllerAppendOutcome::NoItemsProvided),
             Err(error) => Err(ControllerAppendError::Domain(error)),
-        }
-    }
-
-    /// Remove non-active применяет D47 fallback в одной controller mutation.
-    pub(crate) fn remove_non_active(&mut self, item_id: PlaylistItemId) -> ControllerRemoveOutcome {
-        if self.fatal_invariant.is_some() {
-            return ControllerRemoveOutcome::FatalInvariant;
-        }
-        if self
-            .active_media
-            .and_then(ActiveMediaIdentity::item_id)
-            .is_some_and(|active_item_id| active_item_id == item_id)
-        {
-            return ControllerRemoveOutcome::ActiveItemRequiresTombstoneSession { item_id };
-        }
-        let Some(removed_index) = self
-            .queue
-            .items()
-            .iter()
-            .position(|item| item.item_id() == item_id)
-        else {
-            return ControllerRemoveOutcome::NotFound { item_id };
-        };
-        let Some(next_dirty) = self.dirty_revision.checked_next() else {
-            return ControllerRemoveOutcome::DirtyRevisionExhausted;
-        };
-        let Some(next_structural) = self.structural_revision.checked_next() else {
-            return ControllerRemoveOutcome::StructuralRevisionExhausted;
-        };
-        let selected_was_removed = self.selected_item_id == Some(item_id);
-
-        match self.queue.remove(item_id) {
-            RemoveItemOutcome::Removed {
-                traversal_current_effect,
-                ..
-            } => {
-                if selected_was_removed {
-                    self.selected_item_id = self
-                        .queue
-                        .items()
-                        .get(removed_index)
-                        .or_else(|| self.queue.items().last())
-                        .map(|item| item.item_id());
-                }
-                self.runtime_errors.remove(&item_id);
-                let manual_navigation_invalidation =
-                    self.invalidate_manual_navigation_after_structural_mutation();
-                self.structural_revision = next_structural;
-                let dirty = self.commit_dirty(next_dirty);
-                self.publish_view(true);
-                ControllerRemoveOutcome::Removed {
-                    item_id,
-                    selected_item_id: self.selected_item_id,
-                    traversal_current_effect,
-                    dirty,
-                    manual_navigation_invalidation,
-                }
-            }
-            RemoveItemOutcome::NotFound { .. } => ControllerRemoveOutcome::NotFound { item_id },
-            RemoveItemOutcome::InstallCommitLinearizing => {
-                ControllerRemoveOutcome::InstallCommitLinearizing
-            }
-            RemoveItemOutcome::StructuralRevisionExhausted
-            | RemoveItemOutcome::TraversalRevisionExhausted => {
-                ControllerRemoveOutcome::DomainRevisionExhausted
-            }
         }
     }
 

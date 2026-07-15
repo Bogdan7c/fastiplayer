@@ -1,6 +1,7 @@
 //! Playlist item records и ID-less mutation drafts.
 
 use std::fmt;
+use std::sync::Arc;
 
 use crate::{
     CachedPlaylistMetadata, LocalLocator, LocalSourceFingerprint, PlaylistItemId, PlaylistLocator,
@@ -57,9 +58,11 @@ impl PlaylistItemDraft {
     pub(crate) fn into_item(self, item_id: PlaylistItemId) -> PlaylistItem {
         PlaylistItem {
             item_id,
-            locator: self.locator,
             local_fingerprint: self.local_fingerprint,
-            cached_metadata: self.cached_metadata,
+            payload: Arc::new(PlaylistItemPayload {
+                locator: self.locator,
+                cached_metadata: self.cached_metadata,
+            }),
         }
     }
 }
@@ -79,8 +82,15 @@ impl fmt::Debug for PlaylistItemDraft {
 #[derive(Clone, PartialEq, Eq)]
 pub struct PlaylistItem {
     item_id: PlaylistItemId,
-    locator: PlaylistLocator,
     local_fingerprint: Option<LocalSourceFingerprint>,
+    /// Тяжёлый locator/metadata payload разделяется с runtime-only Undo snapshot.
+    payload: Arc<PlaylistItemPayload>,
+}
+
+/// Неизменяемая часть строки, которую removal snapshot не клонирует глубоко.
+#[derive(Clone, PartialEq, Eq)]
+struct PlaylistItemPayload {
+    locator: PlaylistLocator,
     cached_metadata: CachedPlaylistMetadata,
 }
 
@@ -92,7 +102,7 @@ impl PlaylistItem {
 
     /// Возвращает persisted/open locator read-only.
     pub fn locator(&self) -> &PlaylistLocator {
-        &self.locator
+        &self.payload.locator
     }
 
     /// Возвращает optional local source fingerprint.
@@ -102,12 +112,18 @@ impl PlaylistItem {
 
     /// Возвращает immutable cached metadata.
     pub fn cached_metadata(&self) -> &CachedPlaylistMetadata {
-        &self.cached_metadata
+        &self.payload.cached_metadata
     }
 
     /// Меняет только metadata cache после полного batch preflight.
     pub(crate) fn replace_cached_metadata(&mut self, metadata: CachedPlaylistMetadata) {
-        self.cached_metadata = metadata;
+        Arc::make_mut(&mut self.payload).cached_metadata = metadata;
+    }
+
+    /// Проверяет shared payload без раскрытия locator/metadata наружу.
+    #[cfg(test)]
+    pub(crate) fn shares_payload_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.payload, &other.payload)
     }
 }
 
@@ -116,9 +132,9 @@ impl fmt::Debug for PlaylistItem {
         formatter
             .debug_struct("PlaylistItem")
             .field("item_id", &self.item_id)
-            .field("locator", &self.locator)
+            .field("locator", &self.payload.locator)
             .field("local_fingerprint", &self.local_fingerprint)
-            .field("cached_metadata", &self.cached_metadata)
+            .field("cached_metadata", &self.payload.cached_metadata)
             .finish()
     }
 }

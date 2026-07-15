@@ -362,6 +362,22 @@ impl PlaylistController {
         self.install_state.as_ref().map(InstallState::phase)
     }
 
+    /// Structural removal retires only a pre-Ready request; guarded phases remain immutable.
+    pub(super) fn retire_awaiting_install_for_removal(
+        &mut self,
+    ) -> Result<Option<MediaOpenRequestId>, PlaylistControllerInvariantViolation> {
+        let Some(state) = self.install_state.take() else {
+            return Ok(None);
+        };
+        let InstallState::AwaitingReady(awaiting) = state else {
+            self.install_state = Some(state);
+            return self.fatal_result(PlaylistControllerInvariantViolation::UnexpectedInstallPhase);
+        };
+        let request_id = awaiting.request.request_id;
+        self.pending_target = None;
+        Ok(Some(request_id))
+    }
+
     /// Matching Ready выполняет все domain fallible checks до authorization dispatch.
     pub(crate) fn on_ready_to_commit(
         &mut self,
@@ -694,6 +710,7 @@ impl PlaylistController {
             binding_generation,
         );
         self.active_media = Some(active_media);
+        self.release_detached_tombstone_for_new_lineage(active_media);
         self.automatic_install_committed(active_media);
         self.stop_after_current = None;
         self.pending_target = None;

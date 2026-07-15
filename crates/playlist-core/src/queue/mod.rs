@@ -4,6 +4,7 @@ mod automatic;
 mod metadata_patch;
 mod navigation;
 mod outcomes;
+mod removal;
 mod reservation;
 mod shuffle;
 mod sort;
@@ -38,6 +39,10 @@ pub use outcomes::{
     ReplaceQueueError, ReplaceQueueOutcome, ReservedMutationCommit, TraversalCurrentEffect,
     TraversalCurrentMutationError, TraversalCurrentMutationOutcome,
     TraversalCurrentValidationError,
+};
+pub use removal::{
+    PlaylistRemovalSnapshot, RemovalCurrentOutcome, RemovalSnapshotRestoreError,
+    RemovalSnapshotRestoreOutcome,
 };
 pub use reservation::{PreparedQueueMutationToken, ReservedQueueMutation};
 pub use shuffle::{
@@ -525,9 +530,17 @@ impl PlaylistQueue {
             TraversalCurrentEffect::Preserved
         };
 
+        let current_outcome = if clears_current {
+            RemovalCurrentOutcome::Detached {
+                removed_item_id: item_id,
+            }
+        } else {
+            RemovalCurrentOutcome::Preserved(self.traversal_current)
+        };
         RemoveItemOutcome::Removed {
             item_id,
             traversal_current_effect,
+            current_outcome,
         }
     }
 
@@ -581,6 +594,7 @@ impl PlaylistQueue {
         } else {
             None
         };
+        let current_before = self.traversal_current;
         let removed_item_count = self.items.len();
         let traversal_current_effect = if self.traversal_current.is_some() {
             TraversalCurrentEffect::Cleared
@@ -598,9 +612,19 @@ impl PlaylistQueue {
             self.traversal_revision = next_revision;
         }
 
+        let current_outcome = match traversal_current_effect {
+            TraversalCurrentEffect::Cleared => match current_before {
+                Some(current) => RemovalCurrentOutcome::Detached {
+                    removed_item_id: current.item_id(),
+                },
+                None => RemovalCurrentOutcome::Preserved(None),
+            },
+            TraversalCurrentEffect::Preserved => RemovalCurrentOutcome::Preserved(None),
+        };
         ClearQueueOutcome::Cleared {
             removed_item_count,
             traversal_current_effect,
+            current_outcome,
         }
     }
 

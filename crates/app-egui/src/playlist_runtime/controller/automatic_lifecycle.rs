@@ -340,6 +340,9 @@ impl PlaylistController {
         active: ActiveMediaIdentity,
         deferred_availability: AutomaticDeferredAvailability,
     ) -> AutomaticLifecycleOutcome {
+        if active.item_id().is_none() {
+            return self.evaluate_detached_clean_ended(active);
+        }
         let Some(item_id) = active.item_id() else {
             return self.stop_for_active(
                 active,
@@ -395,6 +398,50 @@ impl PlaylistController {
                 }
                 self.stop_for_active(active, AutomaticStopCause::Domain(reason))
             }
+        }
+    }
+
+    /// Tombstone использует pre-removal traversal context, но повторно валидирует target.
+    fn evaluate_detached_clean_ended(
+        &mut self,
+        active: ActiveMediaIdentity,
+    ) -> AutomaticLifecycleOutcome {
+        let Some(tombstone) = self.detached_active_tombstone.as_mut() else {
+            return self.stop_for_active(
+                active,
+                AutomaticStopCause::Domain(AutomaticStopReason::CurrentItemAbsent),
+            );
+        };
+        if tombstone.active_lineage_id() != active.lineage_id() {
+            return self.stop_for_active(
+                active,
+                AutomaticStopCause::Domain(AutomaticStopReason::CurrentItemAbsent),
+            );
+        }
+        let removed_item_id = tombstone.removed_item_id();
+        if self.stop_after_current.is_some_and(|latch| {
+            latch.item_id() == Some(removed_item_id) && latch.lineage_id() == active.lineage_id()
+        }) {
+            self.stop_after_current = None;
+            return self.stop_for_active(active, AutomaticStopCause::StopAfterCurrent);
+        }
+        let Some(plan) = tombstone.take_continuation() else {
+            return self.stop_for_active(
+                active,
+                AutomaticStopCause::Domain(AutomaticStopReason::CurrentItemAbsent),
+            );
+        };
+        match self.queue.revalidate_automatic_traversal(*plan) {
+            playlist_core::AutomaticTraversalAdvance::OpenItem { item_id, plan } => {
+                self.mark_current_edge_automatic_pending(active);
+                AutomaticLifecycleOutcome::OpenItem {
+                    install: self.planned_automatic_install(item_id, plan),
+                }
+            }
+            playlist_core::AutomaticTraversalAdvance::AllFailed { .. } => self.stop_for_active(
+                active,
+                AutomaticStopCause::Domain(AutomaticStopReason::CurrentItemAbsent),
+            ),
         }
     }
 

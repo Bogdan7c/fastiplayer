@@ -23,11 +23,18 @@ mod controller;
 mod identity;
 #[allow(
     dead_code,
+    reason = "Session 12A publishes runtime Undo boundary before Session 20 UI wiring"
+)]
+mod removal_undo;
+#[allow(
+    dead_code,
     reason = "Session 11A read-only snapshot is attached by later playlist UI integration"
 )]
 mod view;
 
 pub(crate) use controller::PlaylistController;
+#[allow(unused_imports)]
+pub(crate) use removal_undo::{RemovalUndoOutcome, RemovalUndoStatus, RuntimeRemovalOutcome};
 pub(crate) use view::PlaylistViewSnapshot;
 
 /// Generation любого lifecycle transition runtime-а.
@@ -176,6 +183,8 @@ pub(crate) struct PlaylistRuntime {
         reason = "Session 11A foundation is attached by later UI orchestration"
     )]
     controller: PlaylistController,
+    /// Ровно один process-lifetime last-action removal Undo slot.
+    removal_undo: Option<removal_undo::RemovalUndoState>,
     /// Process-lifetime reusable preparation/install mechanism Session 10C.
     media_open: MediaOpenCoordinator,
 }
@@ -210,6 +219,7 @@ impl PlaylistRuntime {
             admission_open,
             owner_receiver,
             controller: PlaylistController::new(),
+            removal_undo: None,
             media_open,
         }
     }
@@ -323,6 +333,8 @@ impl PlaylistRuntime {
 
         self.admission_open.store(false, Ordering::Release);
         self.lifecycle = PlaylistRuntimeLifecycle::ShuttingDown;
+        self.removal_undo = None;
+        self.controller.release_detached_tombstone_for_shutdown();
         self.media_open.shutdown();
 
         // В Session 10A blocking owners ещё нет: deadline уже является частью API,

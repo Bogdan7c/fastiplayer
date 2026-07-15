@@ -607,6 +607,10 @@ impl PlaylistQueue {
         let clears_current = self
             .traversal_current
             .is_some_and(|current| committed_to_remove.contains(&current.item_id()));
+        let removed_current_item_id = self
+            .traversal_current
+            .map(TraversalCurrentItemId::item_id)
+            .filter(|_| clears_current);
         let next_traversal_revision = clears_current
             .then(|| {
                 self.traversal_revision
@@ -638,9 +642,14 @@ impl PlaylistQueue {
         } else {
             TraversalCurrentEffect::Preserved
         };
+        let current_outcome = match removed_current_item_id {
+            Some(removed_item_id) => crate::RemovalCurrentOutcome::Detached { removed_item_id },
+            None => crate::RemovalCurrentOutcome::Preserved(self.traversal_current),
+        };
         Ok(BulkRemoveOutcome::Removed {
             removed_item_count: committed_to_remove.len(),
             traversal_current_effect,
+            current_outcome,
         })
     }
 

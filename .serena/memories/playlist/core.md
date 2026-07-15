@@ -73,3 +73,11 @@ Session 05 completed PASS on 2026-07-14. This memory complements `mem:core` and 
 - Manual one-step app navigation preserves the opaque `ManualNavigationPreview`/`PreparedManualNavigationToken` through the D08 guard until exact Installed. Abort returns/discards it without committed traversal mutation; commit alone publishes target and exact shuffle history/upcoming state.
 - A reserved select of the already-current Item ID while shuffle is enabled represents a new factual reinstall visit: it advances traversal revision and appends the factual history entry even though Item ID is unchanged. Structural revision, allocator, and canonical order do not change.
 - Manual transport intent, D17 threshold, D50 wait, D52 correlation, stop-after-current, and app Stopped disposition remain app/player responsibilities documented in `mem:app-egui/playlist-controller-s11b`. Fast repeated target preview stays Session 11C.
+
+
+## Session 12A removal snapshot and current semantics (2026-07-15)
+- `queue::removal` owns opaque `PlaylistRemovalSnapshot`, typed `RemovalCurrentOutcome::{Preserved,Detached}`, and restore-as-new-mutation. Removing the committed current persists `None` without choosing a successor.
+- Snapshot restore requires the immediately post-removal structural revision, unchanged metadata/allocator state and no active D08 reservation; it advances structural/traversal revisions instead of rolling them back.
+- `PlaylistItem` stores immutable locator + cached metadata in a private Arc payload. Removal snapshots share every heavy payload; metadata mutation uses `Arc::make_mut`, so later metadata cannot mutate the pre-removal snapshot.
+- Shuffle history/upcoming remain domain-private and Arc-backed. Tombstone continuation uses the opaque Session 12 automatic plan plus `revalidate_automatic_traversal`; current is still committed only by exact Installed token.
+- App/runtime tombstone and Undo lifecycle details are in `mem:app-egui/playlist-controller-s12a`.

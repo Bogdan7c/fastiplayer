@@ -235,6 +235,21 @@ impl PlaylistQueue {
         }
     }
 
+    /// Повторно валидирует removal continuation против актуальной committed queue.
+    pub fn revalidate_automatic_traversal(
+        &self,
+        mut plan: AutomaticTraversalPlan,
+    ) -> AutomaticTraversalAdvance {
+        plan.expected_revision = self.revision_snapshot();
+        if self.automatic_candidate_is_available(&plan, plan.target_item_id) {
+            return AutomaticTraversalAdvance::OpenItem {
+                item_id: plan.target_item_id,
+                plan: Box::new(plan),
+            };
+        }
+        self.advance_automatic_traversal_after_failure(plan)
+    }
+
     /// Matching Ready устанавливает reservation без раскрытия shuffle snapshot.
     pub fn prepare_automatic_traversal(
         &mut self,
