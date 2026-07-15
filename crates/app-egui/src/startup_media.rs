@@ -376,12 +376,36 @@ impl StartupMediaController {
             return;
         };
 
-        match initial_media {
+        let trusted_intent = match initial_media {
             InitialMedia::File(path) => {
-                info!(path = %path.display(), "Автозагрузка файла из CLI");
-                app_state.load_file(&path, playlist_runtime, renderer);
+                crate::playlist_runtime::TrustedStartupQueueReplacementIntent::local_file(path)
             }
             InitialMedia::Url(locator) => {
+                crate::playlist_runtime::TrustedStartupQueueReplacementIntent::service_url(locator)
+            }
+        };
+        let admitted =
+            match playlist_runtime.admit_trusted_startup_queue_replacement(trusted_intent) {
+                Ok(admitted) => admitted,
+                Err(error) => {
+                    warn!(error = %error, "Trusted startup media admission отклонён");
+                    app_state.set_startup_error(format!(
+                        "Не удалось начать стартовое открытие media: {error}"
+                    ));
+                    return;
+                }
+            };
+
+        match admitted {
+            crate::playlist_runtime::AdmittedQueueReplacementIntent::LocalFile(local_open) => {
+                let safe_label = crate::playlist_runtime::safe_local_open_label(
+                    local_open.path_for_safe_label(),
+                );
+                info!(source = %safe_label, "Автозагрузка файла из CLI");
+                app_state.load_file(local_open, playlist_runtime, renderer);
+            }
+            crate::playlist_runtime::AdmittedQueueReplacementIntent::ServiceUrl(url_open) => {
+                let locator = url_open.into_locator();
                 info!(source = %locator.safe_label(), "Автозагрузка service URL из CLI");
                 locator.start(self, app_state, app_config, system_capabilities);
             }

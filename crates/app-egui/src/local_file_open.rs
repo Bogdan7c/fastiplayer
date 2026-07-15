@@ -20,10 +20,13 @@ use crate::process_shutdown::{
     join_thread_until,
 };
 
-/// Финальный результат async file dialog-а и подготовки локального media.
+/// Финальный результат одной фазы local picker/preparation pipeline.
 pub(crate) enum LocalFileOpenResult {
     /// Пользователь закрыл dialog без выбора файла.
     Cancelled,
+
+    /// Picker вернул target; media/path I/O ещё не начинался.
+    Selected { path: PathBuf },
 
     /// Файл выбран и успешно подготовлен вне UI thread-а.
     Prepared {
@@ -62,7 +65,7 @@ impl LocalFileOpenDrain {
     }
 }
 
-/// Фоновый job выбора и подготовки локального файла.
+/// Фоновый job ровно одной фазы выбора либо подготовки локального файла.
 pub(crate) struct LocalFileOpenJob {
     /// Owner mailbox хранит latest path отдельно от lossless terminal result.
     mailbox_receiver: OwnerMailboxReceiver<PathBuf, LocalFileOpenResult>,
@@ -81,10 +84,9 @@ pub(crate) struct LocalFileOpenJob {
 }
 
 impl LocalFileOpenJob {
-    /// Запускает async file dialog и подготовку demuxer-а без блокировки UI thread-а.
-    pub(crate) fn spawn(
+    /// Запускает только async file dialog; выбранный target вернётся на admission boundary.
+    pub(crate) fn spawn_picker(
         window: &Window,
-        demux_config: PlayerDemuxConfig,
         wake_port: AppWakePort,
     ) -> std::result::Result<Self, String> {
         let (mailbox_publisher, mailbox_receiver) = owner_mailbox(wake_port);
@@ -101,7 +103,7 @@ impl LocalFileOpenJob {
             .pick_file();
 
         let join_handle = thread::Builder::new()
-            .name("local-file-open".to_string())
+            .name("local-file-picker".to_string())
             .spawn(move || {
                 let Some(file_handle) = file_dialog_future.block_on() else {
                     publish_local_file_completion(
@@ -120,6 +122,42 @@ impl LocalFileOpenJob {
                 }
 
                 let selected_path = file_handle.path().to_path_buf();
+                publish_local_file_completion(
+                    &mailbox_publisher,
+                    LocalFileOpenResult::Selected {
+                        path: selected_path,
+                    },
+                );
+            })
+            .map_err(|error| format!("Не удалось запустить local file picker job: {error}"))?;
+
+        Ok(Self::from_parts(
+            mailbox_receiver,
+            join_handle,
+            cancellation_requested,
+        ))
+    }
+
+    /// Запускает media preparation только для intent-а, уже прошедшего D79 admission.
+    pub(crate) fn spawn_preparation(
+        selected_path: PathBuf,
+        demux_config: PlayerDemuxConfig,
+        wake_port: AppWakePort,
+    ) -> std::result::Result<Self, String> {
+        let (mailbox_publisher, mailbox_receiver) = owner_mailbox(wake_port);
+        let cancellation_requested = Arc::new(AtomicBool::new(false));
+        let worker_cancellation_requested = Arc::clone(&cancellation_requested);
+        let join_handle = thread::Builder::new()
+            .name("local-file-preparation".to_string())
+            .spawn(move || {
+                if worker_cancellation_requested.load(Ordering::Acquire) {
+                    publish_local_file_completion(
+                        &mailbox_publisher,
+                        LocalFileOpenResult::Cancelled,
+                    );
+                    return;
+                }
+
                 let progress_outcome = mailbox_publisher.publish_progress(selected_path.clone());
                 if progress_outcome.wake_delivery == WakeDelivery::EventLoopClosed {
                     debug!("Event loop закрыт; local-file progress оставлен без wake retry");
@@ -142,18 +180,29 @@ impl LocalFileOpenJob {
                     );
                     return;
                 }
-
                 publish_local_file_completion(&mailbox_publisher, prepare_result);
             })
-            .map_err(|error| format!("Не удалось запустить local file open job: {error}"))?;
+            .map_err(|error| format!("Не удалось запустить local file preparation job: {error}"))?;
 
-        Ok(Self {
+        Ok(Self::from_parts(
+            mailbox_receiver,
+            join_handle,
+            cancellation_requested,
+        ))
+    }
+
+    fn from_parts(
+        mailbox_receiver: OwnerMailboxReceiver<PathBuf, LocalFileOpenResult>,
+        join_handle: JoinHandle<()>,
+        cancellation_requested: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
             mailbox_receiver,
             join_handle: Some(join_handle),
             pending_completion: None,
             cancellation_requested,
             terminal_shutdown_completed: false,
-        })
+        }
     }
 
     /// Неблокирующе забирает оба независимых slot-а и никогда не ждёт join.
@@ -260,12 +309,14 @@ fn publish_local_file_completion(
 
 /// Форматирует pending overlay после выбора файла.
 pub(crate) fn preparing_local_file_message(path: &std::path::Path) -> String {
-    format!("Подготовка media-файла: {}", path.display())
+    let safe_label = crate::playlist_runtime::safe_local_open_label(path);
+    format!("Подготовка media-файла: {safe_label}")
 }
 
 /// Форматирует shell-level ошибку подготовки локального файла.
 pub(crate) fn local_file_prepare_error_message(path: &std::path::Path, error: &str) -> String {
-    format!("Ошибка открытия media-файла {}: {error}", path.display())
+    let safe_label = crate::playlist_runtime::safe_local_open_label(path);
+    format!("Ошибка открытия media-файла {safe_label}: {error}")
 }
 
 #[cfg(test)]
@@ -313,24 +364,26 @@ mod tests {
         ));
     }
 
-    /// Проверяет, что prepare error сохраняет путь для user-facing диагностики.
+    /// Проверяет, что prepare error не показывает ни filename, ни parent path.
     #[test]
-    fn prepare_error_keeps_selected_path_in_error_message() {
+    fn prepare_error_uses_generic_label_without_selected_path() {
         let path = PathBuf::from("/tmp/broken-media.webm");
         let error_message = local_file_prepare_error_message(&path, "demux failed");
 
-        assert!(error_message.contains("/tmp/broken-media.webm"));
+        assert!(error_message.contains("локальный media-файл"));
+        assert!(!error_message.contains("broken-media.webm"));
+        assert!(!error_message.contains("/tmp/"));
         assert!(error_message.contains("demux failed"));
     }
 
-    /// Проверяет pending-текст подготовки без доступа к state/worker internals.
+    /// Проверяет pending-текст без раскрытия native/foreign path units.
     #[test]
-    fn preparing_message_identifies_selected_file() {
+    fn preparing_message_uses_generic_label_without_path_units() {
         let path = PathBuf::from("/tmp/clip.mkv");
 
         assert_eq!(
             preparing_local_file_message(&path),
-            "Подготовка media-файла: /tmp/clip.mkv"
+            "Подготовка media-файла: локальный media-файл"
         );
     }
 

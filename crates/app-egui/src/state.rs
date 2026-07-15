@@ -150,6 +150,10 @@ pub(crate) struct RenderedAppUi {
     /// Window chrome actions, которые shell применит через winit boundary.
     pub(crate) window_chrome_actions: Vec<WindowChromeAction>,
 
+    /// Typed response central confirmation entity; authoritative intent остаётся в runtime.
+    pub(crate) queue_replacement_confirmation_action:
+        Option<crate::playlist_runtime::QueueReplacementConfirmationAction>,
+
     /// Область video underlay в egui points; overlay-панели её не уменьшают.
     pub(crate) video_viewport_rect: egui::Rect,
 

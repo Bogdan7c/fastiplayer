@@ -13,27 +13,28 @@ impl AppState {
     /// Загружает локальный файл через playback worker.
     pub fn load_file(
         &mut self,
-        path: &Path,
+        admitted_open: crate::playlist_runtime::AdmittedLocalFileOpen,
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
         renderer: &render_wgpu_shell::Renderer,
     ) {
+        let path = admitted_open.into_path();
         match local_media::prepare_local_file(
-            path,
+            &path,
             &self.committed_config_snapshot.demux_config_for_open(),
         ) {
             Ok(prepared_media) => {
                 self.load_prepared_local_file(
-                    path.to_path_buf(),
+                    path.clone(),
                     prepared_media,
                     playlist_runtime,
                     renderer,
                 );
             }
             Err(error) => {
-                warn!(error = %error, "Не удалось открыть файл");
+                let safe_label = crate::playlist_runtime::safe_local_open_label(&path);
+                warn!(error = %error, source = %safe_label, "Не удалось открыть файл");
                 self.set_startup_error(format!(
-                    "Ошибка открытия media-файла {}: {error}",
-                    path.display()
+                    "Ошибка открытия media-файла {safe_label}: {error}"
                 ));
             }
         }
@@ -53,7 +54,7 @@ impl AppState {
         let prepared_input = PreparedSingleMediaOpen::new(
             prepared_media,
             source.clone(),
-            crate::media_open::SafeMediaLabel::from_local_path(&path),
+            crate::playlist_runtime::safe_local_open_label(&path),
         );
         if let Err(error) = self.install_prepared_media_strong(
             playlist_runtime,
@@ -61,10 +62,10 @@ impl AppState {
             prepared_input,
             player_core::PlaybackIntent::from_autoplay(autoplay),
         ) {
-            warn!(error = %error, path = %path.display(), "Не удалось отправить подготовленный файл в worker");
+            let safe_label = crate::playlist_runtime::safe_local_open_label(&path);
+            warn!(error = %error, source = %safe_label, "Не удалось отправить подготовленный файл в worker");
             self.set_startup_error(format!(
-                "Ошибка открытия media-файла {}: worker недоступен: {error}",
-                path.display()
+                "Ошибка открытия media-файла {safe_label}: worker недоступен: {error}"
             ));
             return false;
         }
@@ -317,6 +318,24 @@ impl AppState {
                 self.startup_pending = None;
                 self.mark_pending_worker_redraw();
             }
+            LocalFileOpenResult::Selected { path } => {
+                let intent = crate::playlist_runtime::InAppQueueReplacementIntent::local_file(path);
+                match playlist_runtime.admit_in_app_queue_replacement(intent) {
+                    Ok(crate::playlist_runtime::InAppQueueReplacementAdmission::StartNow(
+                        admitted,
+                    )) => self.start_admitted_queue_replacement(admitted),
+                    Ok(crate::playlist_runtime::InAppQueueReplacementAdmission::AwaitingConfirmation) => {
+                        self.startup_pending = None;
+                        self.mark_pending_worker_redraw();
+                    }
+                    Err(error) => {
+                        warn!(error = %error, "Local open admission отклонён до preparation");
+                        self.set_startup_error(format!(
+                            "Не удалось начать открытие media: {error}"
+                        ));
+                    }
+                }
+            }
             LocalFileOpenResult::Prepared {
                 path,
                 prepared_media,
@@ -324,12 +343,66 @@ impl AppState {
                 self.load_prepared_local_file(path, prepared_media, playlist_runtime, renderer);
             }
             LocalFileOpenResult::PrepareFailed { path, error } => {
-                warn!(path = %path.display(), error = %error, "Не удалось подготовить локальный файл");
+                let safe_label = crate::playlist_runtime::safe_local_open_label(&path);
+                warn!(source = %safe_label, error = %error, "Не удалось подготовить локальный файл");
                 self.set_startup_error(local_file_prepare_error_message(&path, &error));
             }
             LocalFileOpenResult::JobFailed { error } => {
                 warn!(error = %error, "Local file open job завершился ошибкой");
                 self.set_startup_error(format!("Ошибка открытия media-файла: {error}"));
+            }
+        }
+    }
+
+    /// Запускает нижний local preparation owner только после typed admission.
+    fn start_admitted_queue_replacement(
+        &mut self,
+        admitted: crate::playlist_runtime::AdmittedQueueReplacementIntent,
+    ) {
+        let crate::playlist_runtime::AdmittedQueueReplacementIntent::LocalFile(local_open) =
+            admitted
+        else {
+            // Production URL editor отсутствует: такой intent не может появиться из текущего UI.
+            self.set_startup_error(
+                "Внутренняя ошибка: URL open route ещё не подключён к in-app UI".to_string(),
+            );
+            return;
+        };
+        let path = local_open.into_path();
+        let safe_label = crate::playlist_runtime::safe_local_open_label(&path);
+        match LocalFileOpenJob::spawn_preparation(
+            path,
+            self.committed_config_snapshot.demux_config_for_open(),
+            self.local_file_open_wake_port.clone(),
+        ) {
+            Ok(job) => {
+                self.local_file_open_job = Some(job);
+                self.set_startup_pending(format!("Подготовка media-файла: {safe_label}"));
+            }
+            Err(error) => {
+                warn!(error = %error, source = %safe_label, "Не удалось запустить local preparation");
+                self.set_startup_error(format!(
+                    "Ошибка открытия media-файла {safe_label}: {error}"
+                ));
+            }
+        }
+    }
+
+    /// Применяет typed Confirm/Cancel после egui closure, не сохраняя intent в `AppState`.
+    pub(crate) fn apply_queue_replacement_confirmation_action(
+        &mut self,
+        action: crate::playlist_runtime::QueueReplacementConfirmationAction,
+        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+    ) {
+        match playlist_runtime.respond_to_queue_replacement_confirmation(action) {
+            crate::playlist_runtime::QueueReplacementConfirmationOutcome::Confirmed(intent) => {
+                self.start_admitted_queue_replacement(intent);
+            }
+            crate::playlist_runtime::QueueReplacementConfirmationOutcome::Cancelled => {
+                self.mark_pending_worker_redraw();
+            }
+            crate::playlist_runtime::QueueReplacementConfirmationOutcome::Stale => {
+                debug!("Stale queue replacement confirmation response проигнорирован");
             }
         }
     }

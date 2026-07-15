@@ -46,3 +46,6 @@
 - Session 12A completed 2026-07-15: destructive Remove/Clear/RemoveOthers now detach active media into a runtime tombstone while persisted current becomes None; `PlaylistRuntime` owns one 8-second shared-snapshot removal Undo slot with exact lineage/deadline rules. Domain snapshot/current contracts are in `mem:playlist/core`; controller/runtime lifecycle is in `mem:app-egui/playlist-controller-s12a`. UI/store/discovery and real D72 checkpoint wiring remain later sessions; next playlist session is 13.
 
 - Session 14 completed 2026-07-15: typed process bootstrap/lease, closed startup allocator gate, process-lifetime playlist-state persistence and one-deadline terminal shutdown are documented in `mem:app-egui/playlist-persistence-s14`. Renderer suspend preserves playlist/store/lease; restored-current open remains Session 17.
+
+
+- Session 14A completed 2026-07-15: process-lifetime `PlaylistRuntime` owns D79 destructive replacement confirmation; local picker is separated from media preparation, in-app/trusted startup origins are distinct types, and the safe entity reuses the existing center overlay. No in-app local/URL media or discovery I/O reaches lower layers before matching Confirm on a nonempty committed queue. Details: `mem:app-egui/queue-replacement-confirmation-s14a`.

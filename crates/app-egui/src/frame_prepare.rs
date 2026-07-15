@@ -1121,17 +1121,22 @@ pub(crate) fn render_frame(
     let frame_context = prepared_frame_input.frame_context;
 
     let stage_started_at = Instant::now();
+    let queue_replacement_confirmation = playlist_runtime.pending_queue_replacement_confirmation();
     let mut prepared_ui_frame = prepare_ui_frame(
         window,
         app_state,
         settings_runtime,
         egui_input,
         &frame_context,
+        queue_replacement_confirmation.as_ref(),
     );
     frame_sequence.reached(FrameSequenceStage::EguiOutput);
     let egui_requested_repaint = prepared_ui_frame.requested_repaint;
     let settings_actions = std::mem::take(&mut prepared_ui_frame.settings_actions);
     let window_chrome_actions = std::mem::take(&mut prepared_ui_frame.window_chrome_actions);
+    let queue_replacement_confirmation_action = prepared_ui_frame
+        .queue_replacement_confirmation_action
+        .take();
     let mut ui_prepare_timings = prepared_ui_frame.timings;
     ui_prepare_timings.total = stage_started_at.elapsed();
 
@@ -1165,6 +1170,10 @@ pub(crate) fn render_frame(
     };
     let chrome_close_requested = apply_window_chrome_actions(window, window_chrome_actions);
     renderer_lifecycle.set_surface_event_pending(false);
+
+    if let Some(action) = queue_replacement_confirmation_action {
+        app_state.apply_queue_replacement_confirmation_action(action, playlist_runtime);
+    }
 
     let settings_preview_tick = match settings_runtime.apply_due_preview(renderer, Instant::now()) {
         Ok(tick) => tick,

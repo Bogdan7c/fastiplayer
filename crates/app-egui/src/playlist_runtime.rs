@@ -32,6 +32,7 @@ mod persistence_runtime;
     reason = "Session 12A publishes runtime Undo boundary before Session 20 UI wiring"
 )]
 mod removal_undo;
+mod replacement_confirmation;
 mod settings;
 pub(crate) use settings::{FutureDiscoveryPolicy, PlaylistSettingsStageError};
 #[allow(
@@ -62,6 +63,13 @@ pub(crate) use persistence::{
 };
 #[allow(unused_imports)]
 pub(crate) use removal_undo::{RemovalUndoOutcome, RemovalUndoStatus, RuntimeRemovalOutcome};
+pub(crate) use replacement_confirmation::{
+    AdmittedLocalFileOpen, AdmittedQueueReplacementIntent, InAppQueueReplacementAdmission,
+    InAppQueueReplacementIntent, PendingQueueReplacementConfirmation,
+    QueueReplacementConfirmationAction, QueueReplacementConfirmationDecision,
+    QueueReplacementConfirmationOutcome, TrustedStartupQueueReplacementIntent,
+    safe_local_open_label,
+};
 pub(crate) use view::PlaylistViewSnapshot;
 
 /// Generation любого lifecycle transition runtime-а.
@@ -304,6 +312,8 @@ pub(crate) struct PlaylistRuntime {
     controller: PlaylistControllerSlot,
     /// Ровно один process-lifetime last-action removal Undo slot.
     removal_undo: Option<removal_undo::RemovalUndoState>,
+    /// D79 confirmation хранит secret-bearing intent вне renderer-bound `AppState`.
+    replacement_confirmation: replacement_confirmation::QueueReplacementConfirmationState,
     /// Process-lifetime reusable preparation/install mechanism Session 10C.
     media_open: MediaOpenCoordinator,
     settings: settings::PlaylistSettingsOwner,
@@ -356,6 +366,8 @@ impl PlaylistRuntime {
             owner_receiver,
             controller: PlaylistControllerSlot::pending(),
             removal_undo: None,
+            replacement_confirmation:
+                replacement_confirmation::QueueReplacementConfirmationState::new(),
             media_open,
             settings,
         }
@@ -517,6 +529,7 @@ impl PlaylistRuntime {
         self.admission_open.store(false, Ordering::Release);
         self.lifecycle = PlaylistRuntimeLifecycle::ShuttingDown;
         self.removal_undo = None;
+        self.replacement_confirmation.cancel();
         if let Some(controller) = self.controller.as_mut() {
             controller.release_detached_tombstone_for_shutdown();
         }

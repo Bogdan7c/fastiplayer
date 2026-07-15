@@ -43,3 +43,8 @@
 - Exact settings restore использует request + `MediaInstanceId` для position/video/audio/subtitle tracks и D52 exact intent receipt. Post-barrier failure классифицируется как `PartialFailure`, поэтому settings transaction correlated reinstall rollback также ждёт Installed; pre-barrier failure остаётся `Failed`.
 - Authorization backpressure остаётся pre-barrier rejection, после которого strong adapter использует lossless cancel delivery в том же ordered player stream. Missing owner resolution/Installed остаётся fatal.
 - PASS: 309 app no-default, 516 player-core, 14 coordinator, 43 settings-runtime, strict app/player Clippy, fmt, Rust 1.96 locked workspace check, guardrails, diff check и Serena reference/diagnostic audit. Startup protocol-message regression исправлен secret-safe. Следующий scope — Session 11A.
+
+## Session 14A admission boundary (2026-07-15)
+- Coordinator остаётся policy-neutral и не видит unconfirmed in-app intent. `PlaylistRuntime`-owned D79 boundary находится выше него; matching Confirm атомарно consumes slot и только затем выдаёт admitted original intent в существующий preparation/strong-open route.
+- Local picker больше не вызывает demux/path preparation: выбранный target возвращается runtime-у, а отдельный preparation job создаётся только после empty-queue admission либо Confirm. Trusted CLI/startup использует отдельный typed origin.
+- Полный контракт: `mem:app-egui/queue-replacement-confirmation-s14a`.

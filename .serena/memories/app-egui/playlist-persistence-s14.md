@@ -23,3 +23,9 @@
 
 - Focused args/lease/bootstrap/load-gate/persistence/durability/wake/retry/shutdown tests и full crate suites закрепляют границы. Rust 1.96 locked workspace check, strict Clippy, fmt, guardrails и diff check входят в handoff Session 14.
 - Session 14 не открывает restored current, не добавляет destructive replacement confirmation, media checkpoint/resume или новую CLI precedence. Следующие владельцы: Session 14A, 14B и 17 соответственно.
+
+
+## Session 14A continuation (2026-07-15)
+- D79 pending confirmation теперь является process-lifetime transient state `PlaylistRuntime`: оно не сериализуется, не создаёт dirty revision, переживает renderer/AppState recreation и отменяется process shutdown-ом.
+- Ранний in-app open до load decision использует существующий D65 startup draft replacement: restore items apply superseded, allocator decision сохраняется, provisional Item ID/player commit до gate не возникает.
+- Полный контракт: `mem:app-egui/queue-replacement-confirmation-s14a`.

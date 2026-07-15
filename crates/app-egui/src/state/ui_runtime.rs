@@ -139,13 +139,23 @@ impl AppState {
     /// Рендерит egui UI поверх видео.
     ///
     /// UI читает только `PlayerSnapshot`, а действия после egui closure отправляет worker-у.
-    #[instrument(skip(self, window, frame_context, egui_input, settings_ui_model))]
+    #[instrument(skip(
+        self,
+        window,
+        frame_context,
+        egui_input,
+        settings_ui_model,
+        queue_replacement_confirmation
+    ))]
     pub fn render_ui(
         &mut self,
         window: &Window,
         egui_input: egui::RawInput,
         frame_context: &AppFrameContext,
         settings_ui_model: &SettingsUiModel,
+        queue_replacement_confirmation: Option<
+            &crate::playlist_runtime::PendingQueueReplacementConfirmation,
+        >,
     ) -> RenderedAppUi {
         let render_ui_started_at = Instant::now();
 
@@ -199,6 +209,7 @@ impl AppState {
         let mut settings_actions = Vec::new();
         let mut sidebar_close_requested = false;
         let mut window_chrome_actions = Vec::new();
+        let mut queue_replacement_confirmation_action = None;
         let mut timeline_ui_state = std::mem::take(&mut self.timeline_ui_state);
         let pre_ui_setup_elapsed = pre_ui_setup_started_at.elapsed();
         let mut telemetry_panel_cache_elapsed = Duration::ZERO;
@@ -302,11 +313,12 @@ impl AppState {
             }
 
             let stage_started_at = Instant::now();
-            Self::render_center_overlay(
+            queue_replacement_confirmation_action = Self::render_center_overlay(
                 ui,
                 is_playing,
                 error_message,
                 pending_message,
+                queue_replacement_confirmation,
                 &selected_skin,
                 animation_state,
             );
@@ -332,6 +344,7 @@ impl AppState {
             full_output,
             settings_actions,
             window_chrome_actions,
+            queue_replacement_confirmation_action,
             video_viewport_rect,
             video_exclusion_rects,
             timings: AppUiRenderTimings {
@@ -675,11 +688,7 @@ impl AppState {
             return;
         }
 
-        match LocalFileOpenJob::spawn(
-            window,
-            self.committed_config_snapshot.demux_config_for_open(),
-            self.local_file_open_wake_port.clone(),
-        ) {
+        match LocalFileOpenJob::spawn_picker(window, self.local_file_open_wake_port.clone()) {
             Ok(job) => {
                 self.local_file_open_job = Some(job);
                 self.set_startup_pending("Выбор media-файла...".to_string());
@@ -697,9 +706,13 @@ impl AppState {
         is_playing: bool,
         error_message: Option<&str>,
         pending_message: Option<&str>,
+        queue_replacement_confirmation: Option<
+            &crate::playlist_runtime::PendingQueueReplacementConfirmation,
+        >,
         skin: &impl PlayerSkin,
         animation_state: AnimationState,
-    ) {
+    ) -> Option<crate::playlist_runtime::QueueReplacementConfirmationAction> {
+        let mut confirmation_action = None;
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show_inside(ui, |ui| {
@@ -708,7 +721,10 @@ impl AppState {
                         .video_dim_overlay(ui.max_rect(), dim_color);
                 }
 
-                if let Some(error) = error_message {
+                if let Some(model) = queue_replacement_confirmation {
+                    confirmation_action =
+                        crate::ui::queue_replacement_confirmation::render(ui, model);
+                } else if let Some(error) = error_message {
                     ui.vertical_centered(|ui| {
                         ui.add_space(40.0);
                         ui.colored_label(egui::Color32::RED, error);
@@ -725,6 +741,7 @@ impl AppState {
                     });
                 }
             });
+        confirmation_action
     }
 
     /// Собирает frame counters из текущей телеметрии.

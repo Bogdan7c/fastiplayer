@@ -27,7 +27,8 @@ Session 10A завершена PASS 2026-07-14. Детальный handoff на�
 - Итог Session 10A: 9 wake tests, 3 runtime lifecycle/shutdown tests, 2 no-idle-redraw tests и полный `app-egui` suite 282 tests PASS; strict app Clippy, fmt, Rust 1.96 locked workspace check, diff check и Serena diagnostics PASS.
 
 ## Next scope
-- Sessions 11A–13 также завершены. Следующая разрешённая session — Session 14 persistence/load/bootstrap/shutdown integration; restore-open, destructive replacement confirmation и media resume checkpoint остаются Sessions 17/14A/14B.
+- Sessions 11A–14A завершены. Process-lifetime runtime теперь также сохраняет D79 confirmation через suspend/resume; renderer-bound AppState читает только immutable safe model. Полный контракт: `mem:app-egui/queue-replacement-confirmation-s14a`.
+- Следующая разрешённая session — 14B media resume checkpoint; restore-open остаётся Session 17.
 
 ## Session 14 persistence wake integration (2026-07-15)
 

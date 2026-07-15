@@ -20,6 +20,8 @@ pub(super) struct PreparedUiFrame {
     pub(super) requested_repaint: bool,
     pub(super) settings_actions: Vec<crate::settings_ui::SettingsUiAction>,
     pub(super) window_chrome_actions: Vec<WindowChromeAction>,
+    pub(super) queue_replacement_confirmation_action:
+        Option<crate::playlist_runtime::QueueReplacementConfirmationAction>,
     pub(super) timings: UiPrepareTimings,
 }
 
@@ -41,6 +43,9 @@ pub(super) fn prepare_ui_frame(
     settings_runtime: &mut SettingsRuntime,
     egui_input: egui::RawInput,
     frame_context: &AppFrameContext,
+    queue_replacement_confirmation: Option<
+        &crate::playlist_runtime::PendingQueueReplacementConfirmation,
+    >,
 ) -> PreparedUiFrame {
     let ui_prepare_started_at = Instant::now();
     settings_runtime.poll_dynamic_options_refresh();
@@ -51,11 +56,18 @@ pub(super) fn prepare_ui_frame(
         .set_visual_hold(!settings_panel_open && app_state.sidebar_slide_is_animating());
 
     let settings_ui_model = settings_runtime.ui_model();
-    let rendered_app_ui = app_state.render_ui(window, egui_input, frame_context, settings_ui_model);
+    let rendered_app_ui = app_state.render_ui(
+        window,
+        egui_input,
+        frame_context,
+        settings_ui_model,
+        queue_replacement_confirmation,
+    );
     let crate::state::RenderedAppUi {
         full_output: egui_full_output,
         settings_actions,
         window_chrome_actions,
+        queue_replacement_confirmation_action,
         video_viewport_rect,
         video_exclusion_rects,
         timings: app_ui_timings,
@@ -103,6 +115,7 @@ pub(super) fn prepare_ui_frame(
         requested_repaint,
         settings_actions,
         window_chrome_actions,
+        queue_replacement_confirmation_action,
         timings: UiPrepareTimings {
             total: ui_prepare_started_at.elapsed(),
             app_ui: app_ui_timings,
