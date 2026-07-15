@@ -510,6 +510,15 @@ impl MediaOpenCoordinator {
         self.executor.shutdown();
     }
 
+    /// Закрывает coordinator admission и bounded-завершает preparation executor.
+    pub(crate) fn shutdown_until(
+        &mut self,
+        deadline: crate::process_shutdown::ShutdownDeadline,
+    ) -> crate::process_shutdown::ProcessOwnerShutdownOutcome {
+        self.shutdown();
+        self.executor.shutdown_until(deadline)
+    }
+
     fn drain_preparation(&mut self) -> bool {
         if self.executor.state_was_lost() {
             self.publish_fatal(MediaOpenInvariantViolation::PreparationStateLost);

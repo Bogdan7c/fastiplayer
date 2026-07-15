@@ -7,6 +7,7 @@
 //! - создание winit event loop;
 //! - запуск `AppShell`.
 
+mod app_instance;
 mod app_shell;
 mod app_wake;
 mod dma_buf_runtime_fallback;
@@ -15,6 +16,7 @@ mod local_file_open;
 mod local_media;
 mod media_open;
 mod playlist_runtime;
+mod process_shutdown;
 mod redraw_pacing;
 mod render_settings;
 mod renderer_recreation;
@@ -33,14 +35,23 @@ use anyhow::{Context, Result};
 use tracing::info;
 use winit::event_loop::{ControlFlow, EventLoop};
 
+use crate::app_instance::{ProcessBootstrap, bootstrap_process};
 use crate::app_shell::AppShell;
 use crate::app_wake::{AppWakeEvent, AppWakeProxy};
-use crate::startup_media::{InitialMedia, resolve_initial_media_from_cli};
+use crate::startup_media::InitialMedia;
 
 /// Точка входа приложения.
 ///
 /// Shell lifecycle живёт в `app_shell`; здесь остаётся только процессный bootstrap.
 fn main() -> Result<()> {
+    let ProcessBootstrap {
+        config_paths,
+        instance_lease,
+        loaded_config,
+        initial_media,
+        startup_error: cli_startup_error,
+    } = bootstrap_process().context("Process bootstrap rustiplayer завершился ошибкой")?;
+
     // Инициализируем tracing.
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -54,13 +65,7 @@ fn main() -> Result<()> {
     info!("=== rustiplayer ===");
     info!("Запуск приложения");
 
-    let loaded_config =
-        rustiplayer_config::load_or_create().context("Не удалось загрузить config rustiplayer")?;
-    info!(
-        path = %loaded_config.path.display(),
-        created = loaded_config.created,
-        "Config rustiplayer готов"
-    );
+    info!(created = loaded_config.created, "Config rustiplayer готов");
 
     // Один typed event loop принимает только лёгкие owner wake events.
     let event_loop = EventLoop::<AppWakeEvent>::with_user_event()
@@ -72,14 +77,24 @@ fn main() -> Result<()> {
     // Idle default — Wait; playback включает Poll только на активном render loop-е.
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let (initial_media, cli_startup_error) = resolve_initial_media_from_cli(&loaded_config.config);
-    if let Some(InitialMedia::File(path)) = &initial_media {
-        info!(path = %path.display(), "CLI аргумент: файл для воспроизведения");
+    if matches!(initial_media, Some(InitialMedia::File(_))) {
+        info!("CLI аргумент: локальный файл для воспроизведения");
     }
 
-    let mut app = AppShell::new(initial_media, cli_startup_error, loaded_config, wake_proxy)
-        .context("Не удалось создать settings runtime app shell")?;
-    event_loop.run_app(&mut app)?;
+    let mut app = AppShell::new(
+        initial_media,
+        cli_startup_error,
+        loaded_config,
+        wake_proxy,
+        config_paths,
+        instance_lease,
+    )
+    .context("Не удалось создать settings runtime app shell")?;
+    let event_loop_result = event_loop.run_app(&mut app);
+    // `exiting` обычно уже выполнил этот path; явный idempotent вызов также
+    // защищает error-return event loop-а от обычного Drop незавершённых owners.
+    app.finish_process_shutdown();
+    event_loop_result?;
 
     info!("Приложение завершено");
     Ok(())

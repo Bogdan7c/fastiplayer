@@ -1,4 +1,8 @@
 use std::path::PathBuf;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread::{self, JoinHandle};
 
 use player_core::PreparedMedia;
@@ -11,6 +15,10 @@ use crate::app_wake::{
     AppWakePort, CompletionPublishError, OwnerMailboxReceiver, WakeDelivery, owner_mailbox,
 };
 use crate::local_media;
+use crate::process_shutdown::{
+    FinishedThreadJoin, ProcessOwnerShutdownOutcome, ShutdownDeadline, join_finished_thread,
+    join_thread_until,
+};
 
 /// Финальный результат async file dialog-а и подготовки локального media.
 pub(crate) enum LocalFileOpenResult {
@@ -38,6 +46,15 @@ pub(crate) struct LocalFileOpenDrain {
     pub(crate) completion: Option<LocalFileOpenResult>,
 }
 
+/// Typed результат возврата suspend-transferred job в новый `AppState`.
+pub(crate) enum LocalFileOpenRestoreOutcome {
+    /// Новый renderer owner принял exact job ownership.
+    Restored,
+
+    /// Новый owner уже содержит job; отвергнутый handle возвращён process owner-у.
+    ExistingJob(Box<LocalFileOpenJob>),
+}
+
 impl LocalFileOpenDrain {
     /// `true` означает реальную видимую мутацию shell status/media state.
     pub(crate) fn has_payload(&self) -> bool {
@@ -52,6 +69,15 @@ pub(crate) struct LocalFileOpenJob {
 
     /// JoinHandle нужен для cleanup после финального результата.
     join_handle: Option<JoinHandle<()>>,
+
+    /// Completion ждёт exact worker exit, чтобы UI не потерял join authority.
+    pending_completion: Option<LocalFileOpenResult>,
+
+    /// Cooperative terminal cancellation между dialog и дорогой preparation.
+    cancellation_requested: Arc<AtomicBool>,
+
+    /// `true`, когда worker уже joined и повторный shutdown является no-op.
+    terminal_shutdown_completed: bool,
 }
 
 impl LocalFileOpenJob {
@@ -62,6 +88,8 @@ impl LocalFileOpenJob {
         wake_port: AppWakePort,
     ) -> std::result::Result<Self, String> {
         let (mailbox_publisher, mailbox_receiver) = owner_mailbox(wake_port);
+        let cancellation_requested = Arc::new(AtomicBool::new(false));
+        let worker_cancellation_requested = Arc::clone(&cancellation_requested);
         let file_dialog_future = rfd::AsyncFileDialog::new()
             .set_parent(window)
             .add_filter(
@@ -83,6 +111,14 @@ impl LocalFileOpenJob {
                     return;
                 };
 
+                if worker_cancellation_requested.load(Ordering::Acquire) {
+                    publish_local_file_completion(
+                        &mailbox_publisher,
+                        LocalFileOpenResult::Cancelled,
+                    );
+                    return;
+                }
+
                 let selected_path = file_handle.path().to_path_buf();
                 let progress_outcome = mailbox_publisher.publish_progress(selected_path.clone());
                 if progress_outcome.wake_delivery == WakeDelivery::EventLoopClosed {
@@ -99,6 +135,14 @@ impl LocalFileOpenJob {
                         error: format!("{error:#}"),
                     });
 
+                if worker_cancellation_requested.load(Ordering::Acquire) {
+                    publish_local_file_completion(
+                        &mailbox_publisher,
+                        LocalFileOpenResult::Cancelled,
+                    );
+                    return;
+                }
+
                 publish_local_file_completion(&mailbox_publisher, prepare_result);
             })
             .map_err(|error| format!("Не удалось запустить local file open job: {error}"))?;
@@ -106,34 +150,46 @@ impl LocalFileOpenJob {
         Ok(Self {
             mailbox_receiver,
             join_handle: Some(join_handle),
+            pending_completion: None,
+            cancellation_requested,
+            terminal_shutdown_completed: false,
         })
     }
 
     /// Неблокирующе забирает оба независимых slot-а и никогда не ждёт join.
     pub(crate) fn drain(&mut self) -> LocalFileOpenDrain {
         let mailbox_drain = self.mailbox_receiver.drain();
-        let mut completion = mailbox_drain.completion;
-
-        if completion.is_none()
-            && (mailbox_drain.producer_disconnected_without_completion
-                || self
-                    .join_handle
-                    .as_ref()
-                    .is_some_and(JoinHandle::is_finished))
-        {
-            completion = Some(LocalFileOpenResult::JobFailed {
-                error: self
-                    .take_finished_join_error()
-                    .unwrap_or_else(|| "Local file open job завершился без результата".to_string()),
-            });
-        } else if completion.is_some() {
-            // Publish выполняется перед return worker-а. JoinHandle может ещё не успеть
-            // стать finished, поэтому UI либо join-ит готовый thread, либо detach-ит его.
-            if let Some(join_error) = self.take_finished_join_error() {
-                completion = Some(LocalFileOpenResult::JobFailed { error: join_error });
-            }
-            self.join_handle = None;
+        if mailbox_drain.completion.is_some() {
+            self.pending_completion = mailbox_drain.completion;
         }
+
+        let completion = match join_finished_thread(&mut self.join_handle) {
+            FinishedThreadJoin::Joined => self.pending_completion.take().or_else(|| {
+                Some(LocalFileOpenResult::JobFailed {
+                    error: "Local file open job завершился без результата".to_string(),
+                })
+            }),
+            FinishedThreadJoin::Panicked => {
+                self.pending_completion = None;
+                Some(LocalFileOpenResult::JobFailed {
+                    error: "Local file open job завершился panic".to_string(),
+                })
+            }
+            FinishedThreadJoin::AlreadyJoined if self.pending_completion.is_some() => {
+                self.pending_completion.take()
+            }
+            FinishedThreadJoin::AlreadyJoined | FinishedThreadJoin::StillRunning => {
+                if mailbox_drain.producer_disconnected_without_completion
+                    && self.join_handle.is_none()
+                {
+                    Some(LocalFileOpenResult::JobFailed {
+                        error: "Local file open job потерял terminal result".to_string(),
+                    })
+                } else {
+                    None
+                }
+            }
+        };
 
         LocalFileOpenDrain {
             preparing_path: mailbox_drain.latest_progress,
@@ -141,17 +197,48 @@ impl LocalFileOpenJob {
         }
     }
 
-    /// Join-ит только уже завершившийся thread, поэтому UI callback не блокируется.
-    fn take_finished_join_error(&mut self) -> Option<String> {
-        let join_handle = self.join_handle.take()?;
-        if !join_handle.is_finished() {
-            self.join_handle = Some(join_handle);
-            return None;
+    /// Закрывает admission и cooperative-cancel-ит job перед bounded join.
+    pub(crate) fn shutdown_until(
+        &mut self,
+        deadline: ShutdownDeadline,
+    ) -> ProcessOwnerShutdownOutcome {
+        if self.terminal_shutdown_completed {
+            return ProcessOwnerShutdownOutcome::AlreadyCompleted;
         }
-        join_handle
-            .join()
-            .err()
-            .map(|_| "Local file open job завершился panic после результата".to_string())
+
+        self.cancellation_requested.store(true, Ordering::Release);
+
+        match join_thread_until(&mut self.join_handle, deadline) {
+            FinishedThreadJoin::AlreadyJoined | FinishedThreadJoin::Joined => {
+                self.terminal_shutdown_completed = true;
+                ProcessOwnerShutdownOutcome::Completed
+            }
+            FinishedThreadJoin::StillRunning => {
+                ProcessOwnerShutdownOutcome::TimedOut { pending_threads: 1 }
+            }
+            FinishedThreadJoin::Panicked => {
+                self.terminal_shutdown_completed = true;
+                ProcessOwnerShutdownOutcome::ThreadPanicked {
+                    panicked_threads: 1,
+                    pending_threads: 0,
+                }
+            }
+        }
+    }
+}
+
+impl Drop for LocalFileOpenJob {
+    fn drop(&mut self) {
+        self.cancellation_requested.store(true, Ordering::Release);
+        let Some(join_handle) = self.join_handle.take() else {
+            return;
+        };
+
+        // Это fail-safe, а не process shutdown path. AppShell обязан передать job
+        // через suspend boundary и вызвать bounded shutdown до terminal Drop.
+        if join_handle.join().is_err() {
+            warn!("Local file open job panic обнаружен во время fail-safe Drop");
+        }
     }
 }
 
@@ -184,11 +271,32 @@ pub(crate) fn local_file_prepare_error_message(path: &std::path::Path, error: &s
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    use std::time::Duration;
 
     use super::{
-        LocalFileOpenDrain, LocalFileOpenResult, local_file_prepare_error_message,
-        preparing_local_file_message,
+        LocalFileOpenDrain, LocalFileOpenJob, LocalFileOpenResult,
+        local_file_prepare_error_message, preparing_local_file_message,
     };
+    use crate::app_wake::{AppWakeOwner, AppWakePort, owner_mailbox};
+    use crate::process_shutdown::{ProcessOwnerShutdownOutcome, ShutdownDeadline};
+
+    /// Создаёт focused job без открытия platform dialog-а.
+    fn test_job(join_handle: std::thread::JoinHandle<()>) -> LocalFileOpenJob {
+        let (_publisher, mailbox_receiver) =
+            owner_mailbox(AppWakePort::disconnected(AppWakeOwner::LocalFileOpen));
+        LocalFileOpenJob {
+            mailbox_receiver,
+            join_handle: Some(join_handle),
+            pending_completion: None,
+            cancellation_requested: Arc::new(AtomicBool::new(false)),
+            terminal_shutdown_completed: false,
+        }
+    }
 
     /// Проверяет, что terminal cancel считается видимой exactly-once мутацией.
     #[test]
@@ -235,5 +343,88 @@ mod tests {
         };
 
         assert!(!drain.has_payload());
+    }
+
+    #[test]
+    fn shutdown_timeout_retains_handle_and_later_reaps_it() {
+        let release = Arc::new(AtomicBool::new(false));
+        let worker_release = Arc::clone(&release);
+        let mut job = test_job(std::thread::spawn(move || {
+            while !worker_release.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+        }));
+
+        assert_eq!(
+            job.shutdown_until(ShutdownDeadline::after(Duration::from_millis(1))),
+            ProcessOwnerShutdownOutcome::TimedOut { pending_threads: 1 }
+        );
+        assert!(job.join_handle.is_some());
+
+        release.store(true, Ordering::Release);
+        assert_eq!(
+            job.shutdown_until(ShutdownDeadline::after(Duration::from_secs(1))),
+            ProcessOwnerShutdownOutcome::Completed
+        );
+        assert_eq!(
+            job.shutdown_until(ShutdownDeadline::after(Duration::from_secs(1))),
+            ProcessOwnerShutdownOutcome::AlreadyCompleted
+        );
+    }
+
+    #[test]
+    fn shutdown_reports_worker_panic() {
+        let mut job = test_job(std::thread::spawn(|| panic!("expected local job panic")));
+
+        assert_eq!(
+            job.shutdown_until(ShutdownDeadline::after(Duration::from_secs(1))),
+            ProcessOwnerShutdownOutcome::ThreadPanicked {
+                panicked_threads: 1,
+                pending_threads: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn suspend_transfer_preserves_join_authority() {
+        let mut renderer_owner = Some(test_job(std::thread::spawn(|| {})));
+        let mut process_owner = renderer_owner.take().expect("suspend должен передать job");
+
+        assert!(renderer_owner.is_none());
+        assert!(process_owner.join_handle.is_some());
+        assert_eq!(
+            process_owner.shutdown_until(ShutdownDeadline::after(Duration::from_secs(1))),
+            ProcessOwnerShutdownOutcome::Completed
+        );
+    }
+
+    #[test]
+    fn fail_safe_drop_waits_instead_of_reporting_detached_success() {
+        let release = Arc::new(AtomicBool::new(false));
+        let worker_release = Arc::clone(&release);
+        let job = test_job(std::thread::spawn(move || {
+            while !worker_release.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+        }));
+        let (drop_finished_sender, drop_finished_receiver) = mpsc::channel();
+        let dropper = std::thread::spawn(move || {
+            drop(job);
+            drop_finished_sender
+                .send(())
+                .expect("test receiver должен оставаться жив");
+        });
+
+        assert!(
+            drop_finished_receiver
+                .recv_timeout(Duration::from_millis(5))
+                .is_err(),
+            "Drop не должен detach-ить ещё работающий thread"
+        );
+        release.store(true, Ordering::Release);
+        drop_finished_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("Drop должен завершиться после worker-а");
+        dropper.join().expect("dropper не должен panic");
     }
 }

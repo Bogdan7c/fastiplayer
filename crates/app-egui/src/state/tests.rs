@@ -1,7 +1,9 @@
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
+use desktop_integration::DesktopIntegrationShutdownOutcome;
 use frame_server_core::{
     DeferredLiveScrubSettingsChange, LiveScrubDecodeMode, LiveScrubDiagnostics,
     LiveScrubSettingsSnapshot, ScrubDiagnosticsRecorder,
@@ -9,8 +11,8 @@ use frame_server_core::{
 use media_core::MediaTime;
 use player_core::{
     MediaOpenRequest, MediaSource, MediaSummary, PlaybackRate, PlaybackResumeIntent, PlaybackState,
-    PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerSnapshot, ScrubCommitPolicy,
-    SeekCommitInfo, SeekRequest,
+    PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerSnapshot,
+    PlayerWorkerShutdownOutcome, ScrubCommitPolicy, SeekCommitInfo, SeekRequest,
 };
 use render_core::{
     ActiveColorPath, ColorPipelineSettings, HdrMetadataDiagnosticMarker,
@@ -33,10 +35,32 @@ use super::ui_runtime::{
     live_scrub_release_policy_from_action, playback_rate_command_from_action,
     timeline_command_from_action,
 };
-use super::{AppFrameContext, AppState};
+use super::{AppFrameContext, AppState, shutdown_app_state_owners_in_order};
 use crate::telemetry::Telemetry;
 use crate::ui::player_controls::ControlAction;
 use crate::ui::timeline::{TimelineAction, TimelineUiState};
+
+#[test]
+fn desktop_integration_shutdown_precedes_player_shutdown() {
+    let call_order = RefCell::new(Vec::new());
+    let report = shutdown_app_state_owners_in_order(
+        || {
+            call_order.borrow_mut().push("desktop-integration");
+            Some(DesktopIntegrationShutdownOutcome::AlreadyCompleted)
+        },
+        || {
+            call_order.borrow_mut().push("player");
+            PlayerWorkerShutdownOutcome::AlreadyCompleted
+        },
+    );
+
+    assert_eq!(call_order.into_inner(), ["desktop-integration", "player"]);
+    assert_eq!(
+        report.desktop_integration,
+        Some(DesktopIntegrationShutdownOutcome::AlreadyCompleted)
+    );
+    assert_eq!(report.player, PlayerWorkerShutdownOutcome::AlreadyCompleted);
+}
 
 /// Собирает source `state` и child-модулей для guard-тестов после split-а.
 fn state_source_for_architecture_tests() -> String {

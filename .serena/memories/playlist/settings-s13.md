@@ -16,3 +16,9 @@ Session 13 completed PASS on 2026-07-15. This memory complements `mem:core`, `me
 
 ## Verification
 - PASS: 79 config, 16 rustiplayer-settings, 25 settings-core, 393 app no-default, 52 discovery and 33 state tests; strict focused Clippy; fmt; locked workspace check; refactor guardrails; diff check and clean Serena production diagnostics.
+
+
+## Session 14 persistence/shutdown integration (2026-07-15)
+
+- Live debounce reconfigure remains transactional with apply/reschedule and rollback. PlaylistRuntime owns the committed debounce schedule used by its state worker; process shutdown joins active and retired dynamic-option jobs under the shared absolute deadline before releasing the app lease.
+- Full owner order and limitations: `mem:app-egui/playlist-persistence-s14`.

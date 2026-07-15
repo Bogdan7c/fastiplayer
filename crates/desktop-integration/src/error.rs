@@ -23,6 +23,14 @@ pub enum DesktopIntegrationError {
     #[error("desktop backend control channel is disconnected")]
     BackendChannelDisconnected,
 
+    /// Terminal shutdown уже закрыл admission новых desktop операций.
+    #[error("desktop backend admission is closed for terminal shutdown")]
+    BackendAdmissionClosed,
+
+    /// Legacy shutdown вызван после bounded timeout-а и не может снова блокироваться.
+    #[error("desktop backend shutdown deadline elapsed")]
+    BackendShutdownTimedOut,
+
     /// Backend thread завершился panic-ом.
     #[error("desktop backend thread panicked during shutdown")]
     BackendThreadPanicked,

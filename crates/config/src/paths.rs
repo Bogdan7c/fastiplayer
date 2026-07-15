@@ -7,6 +7,12 @@ use crate::{ConfigError, ConfigResult};
 /// Имя TOML-файла пользовательской конфигурации.
 pub const CONFIG_FILE_NAME: &str = "config.toml";
 
+/// Имя отдельного файла состояния очереди рядом с пользовательским config.
+const PLAYLIST_STATE_FILE_NAME: &str = "playlist-state.json";
+
+/// Имя стабильного lock artifact, который нельзя удалять между запусками.
+const APP_INSTANCE_LOCK_FILE_NAME: &str = "rustiplayer.instance.lock";
+
 /// Имя каталога приложения внутри платформенного config-dir.
 const APP_CONFIG_DIRECTORY_NAME: &str = "rustiplayer";
 
@@ -40,5 +46,53 @@ impl ConfigPaths {
             config_dir,
             config_file,
         }
+    }
+
+    /// Возвращает принадлежащую config-слою директорию приложения.
+    #[must_use]
+    pub fn config_dir(&self) -> &std::path::Path {
+        &self.config_dir
+    }
+
+    /// Возвращает путь к TOML-конфигурации без повторения имени файла в app-слое.
+    #[must_use]
+    pub fn config_file(&self) -> &std::path::Path {
+        &self.config_file
+    }
+
+    /// Строит путь к отдельному persistent state очереди.
+    #[must_use]
+    pub fn playlist_state_file(&self) -> PathBuf {
+        self.config_dir.join(PLAYLIST_STATE_FILE_NAME)
+    }
+
+    /// Строит путь к стабильному process-instance lock artifact.
+    #[must_use]
+    pub fn app_instance_lock_file(&self) -> PathBuf {
+        self.config_dir.join(APP_INSTANCE_LOCK_FILE_NAME)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::ConfigPaths;
+
+    #[test]
+    fn derived_paths_share_the_trusted_config_owner() {
+        let config_root = PathBuf::from("platform-config-root").join("rustiplayer");
+        let paths = ConfigPaths::from_config_dir(&config_root);
+
+        assert_eq!(paths.config_dir(), config_root);
+        assert_eq!(paths.config_file(), config_root.join("config.toml"));
+        assert_eq!(
+            paths.playlist_state_file(),
+            config_root.join("playlist-state.json")
+        );
+        assert_eq!(
+            paths.app_instance_lock_file(),
+            config_root.join("rustiplayer.instance.lock")
+        );
     }
 }

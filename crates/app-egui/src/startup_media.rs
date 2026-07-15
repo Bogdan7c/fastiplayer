@@ -1,4 +1,8 @@
 use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -18,10 +22,13 @@ use crate::app_wake::AppWakeOwner;
 use crate::app_wake::{
     AppWakePort, CompletionPublishError, OwnerMailboxReceiver, WakeDelivery, owner_mailbox,
 };
+use crate::process_shutdown::{FinishedThreadJoin, join_finished_thread};
 use crate::state::AppState;
 use crate::url_service_adapter::{
     StartupUrlClassification, StartupUrlLocator, classify_startup_url,
 };
+
+mod shutdown;
 
 /// Интервал polling-а фоновой подготовки startup media, когда playback ещё не активен.
 pub(crate) const STARTUP_MEDIA_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -65,6 +72,12 @@ struct YoutubeStartupJob {
 
     /// JoinHandle нужен для cleanup после получения результата.
     join_handle: Option<JoinHandle<()>>,
+
+    /// Mailbox result удерживается до exact worker exit и успешного join.
+    pending_result: Option<YoutubeStartupResult>,
+
+    /// Cooperative cancellation не даёт позднему результату apply authority.
+    cancellation_requested: Arc<AtomicBool>,
 }
 
 impl YoutubeStartupJob {
@@ -81,18 +94,28 @@ impl YoutubeStartupJob {
         let youtube_config = app_config.youtube.clone();
         let demux_config = app_config.player.demux;
         let preferred_video_codec_order = app_config.player.preferred_video_codec_order;
+        let cancellation_requested = Arc::new(AtomicBool::new(false));
+        let worker_cancellation_requested = Arc::clone(&cancellation_requested);
         let join_handle = thread::Builder::new()
             .name("youtube-startup-resolver".to_string())
             .spawn(move || {
-                let resolve_result = resolve_youtube_startup_media(
-                    &thread_locator,
-                    &network_config,
-                    &youtube_config,
-                    &demux_config,
-                    &preferred_video_codec_order,
-                    &system_capabilities,
-                )
-                .map_err(|error| format!("{error:#}"));
+                let resolve_result = if worker_cancellation_requested.load(Ordering::Acquire) {
+                    Err("YouTube startup preparation отменена shutdown lifecycle".to_string())
+                } else {
+                    resolve_youtube_startup_media(
+                        &thread_locator,
+                        &network_config,
+                        &youtube_config,
+                        &demux_config,
+                        &preferred_video_codec_order,
+                        &system_capabilities,
+                    )
+                    .map_err(|error| format!("{error:#}"))
+                };
+
+                if worker_cancellation_requested.load(Ordering::Acquire) {
+                    return;
+                }
 
                 match result_publisher.publish_completion(resolve_result) {
                     Ok(WakeDelivery::EventLoopClosed) => {
@@ -113,6 +136,8 @@ impl YoutubeStartupJob {
             pending_message: "Подготовка YouTube stream...".to_string(),
             result_receiver,
             join_handle: Some(join_handle),
+            pending_result: None,
+            cancellation_requested,
         })
     }
 
@@ -124,27 +149,24 @@ impl YoutubeStartupJob {
     /// Неблокирующе забирает результат resolver-а, если он уже готов.
     fn try_take_result(&mut self) -> Option<YoutubeStartupResult> {
         let drain = self.result_receiver.drain();
-        let result = drain.completion;
-        if result.is_none()
-            && !drain.producer_disconnected_without_completion
-            && !self
-                .join_handle
-                .as_ref()
-                .is_some_and(JoinHandle::is_finished)
-        {
-            return None;
+        if drain.completion.is_some() {
+            self.pending_result = drain.completion;
         }
-        if let Some(join_handle) = self.join_handle.take()
-            && join_handle.is_finished()
-            && join_handle.join().is_err()
-        {
-            return Some(Err("YouTube startup resolver завершился panic".to_string()));
+
+        match join_finished_thread(&mut self.join_handle) {
+            FinishedThreadJoin::Joined | FinishedThreadJoin::AlreadyJoined => {
+                self.pending_result.take().or_else(|| {
+                    drain.producer_disconnected_without_completion.then(|| {
+                        Err("YouTube startup resolver завершился без результата".to_string())
+                    })
+                })
+            }
+            FinishedThreadJoin::Panicked => {
+                self.pending_result = None;
+                Some(Err("YouTube startup resolver завершился panic".to_string()))
+            }
+            FinishedThreadJoin::StillRunning => None,
         }
-        result.or_else(|| {
-            Some(Err(
-                "YouTube startup resolver завершился без результата".to_string()
-            ))
-        })
     }
 }
 
@@ -161,6 +183,12 @@ struct DirectMediaStartupJob {
 
     /// JoinHandle нужен для cleanup после получения результата.
     join_handle: Option<JoinHandle<()>>,
+
+    /// Mailbox result удерживается до exact worker exit и успешного join.
+    pending_result: Option<DirectMediaStartupResult>,
+
+    /// Cooperative cancellation запрещает позднюю публикацию после shutdown.
+    cancellation_requested: Arc<AtomicBool>,
 }
 
 impl DirectMediaStartupJob {
@@ -174,16 +202,25 @@ impl DirectMediaStartupJob {
         let thread_locator = source_locator.clone();
         let network_config = app_config.network.clone();
         let demux_config = app_config.player.demux;
+        let cancellation_requested = Arc::new(AtomicBool::new(false));
+        let worker_cancellation_requested = Arc::clone(&cancellation_requested);
         let join_handle = thread::Builder::new()
             .name("direct-media-startup-opener".to_string())
             .spawn(move || {
-                let open_result =
+                let open_result = if worker_cancellation_requested.load(Ordering::Acquire) {
+                    Err("Direct media startup preparation отменена shutdown lifecycle".to_string())
+                } else {
                     resolve_direct_media_startup_media(
                         &thread_locator,
                         &network_config,
                         &demux_config,
                     )
-                        .map_err(|error| format!("{error:#}"));
+                    .map_err(|error| format!("{error:#}"))
+                };
+
+                if worker_cancellation_requested.load(Ordering::Acquire) {
+                    return;
+                }
 
                 match result_publisher.publish_completion(open_result) {
                     Ok(WakeDelivery::EventLoopClosed) => {
@@ -206,6 +243,8 @@ impl DirectMediaStartupJob {
             pending_message: "Подготовка direct media URL...".to_string(),
             result_receiver,
             join_handle: Some(join_handle),
+            pending_result: None,
+            cancellation_requested,
         })
     }
 
@@ -217,29 +256,26 @@ impl DirectMediaStartupJob {
     /// Неблокирующе забирает результат opener-а, если он уже готов.
     fn try_take_result(&mut self) -> Option<DirectMediaStartupResult> {
         let drain = self.result_receiver.drain();
-        let result = drain.completion;
-        if result.is_none()
-            && !drain.producer_disconnected_without_completion
-            && !self
-                .join_handle
-                .as_ref()
-                .is_some_and(JoinHandle::is_finished)
-        {
-            return None;
+        if drain.completion.is_some() {
+            self.pending_result = drain.completion;
         }
-        if let Some(join_handle) = self.join_handle.take()
-            && join_handle.is_finished()
-            && join_handle.join().is_err()
-        {
-            return Some(Err(
-                "Direct media startup opener завершился panic".to_string()
-            ));
+
+        match join_finished_thread(&mut self.join_handle) {
+            FinishedThreadJoin::Joined | FinishedThreadJoin::AlreadyJoined => {
+                self.pending_result.take().or_else(|| {
+                    drain.producer_disconnected_without_completion.then(|| {
+                        Err("Direct media startup opener завершился без результата".to_string())
+                    })
+                })
+            }
+            FinishedThreadJoin::Panicked => {
+                self.pending_result = None;
+                Some(Err(
+                    "Direct media startup opener завершился panic".to_string()
+                ))
+            }
+            FinishedThreadJoin::StillRunning => None,
         }
-        result.or_else(|| {
-            Some(Err(
-                "Direct media startup opener завершился без результата".to_string()
-            ))
-        })
     }
 }
 
@@ -259,6 +295,12 @@ pub(crate) struct StartupMediaController {
 
     /// Startup-ошибка shell-слоя, которую нужно показать после создания UI.
     startup_error: Option<String>,
+
+    /// Terminal shutdown закрывает admission новых startup jobs.
+    terminal_shutdown_started: bool,
+
+    /// Завершённый controller отличает первый terminal call от повторного.
+    terminal_shutdown_completed: bool,
 }
 
 impl StartupMediaController {
@@ -284,6 +326,8 @@ impl StartupMediaController {
             youtube_startup_job: None,
             direct_media_startup_job: None,
             startup_error,
+            terminal_shutdown_started: false,
+            terminal_shutdown_completed: false,
         }
     }
 
@@ -386,6 +430,11 @@ impl StartupMediaController {
         app_config: &AppConfig,
         system_capabilities: &SystemCapabilities,
     ) {
+        if let Some(error) = self.startup_job_admission_error() {
+            self.startup_error = Some(error.clone());
+            app_state.set_startup_error(error);
+            return;
+        }
         app_state.set_startup_pending("Подготовка YouTube stream...".to_string());
         match YoutubeStartupJob::spawn(
             source_locator,
@@ -413,6 +462,11 @@ impl StartupMediaController {
         app_state: &mut AppState,
         app_config: &AppConfig,
     ) {
+        if let Some(error) = self.startup_job_admission_error() {
+            self.startup_error = Some(error.clone());
+            app_state.set_startup_error(error);
+            return;
+        }
         app_state.set_startup_pending("Подготовка direct media URL...".to_string());
         match DirectMediaStartupJob::spawn(
             source_locator,
@@ -630,27 +684,28 @@ fn poll_direct_media_startup_job(
     true
 }
 
-/// Подготавливает стартовый media-файл из CLI-аргумента.
+/// Классифицирует уже разобранный typed media intent после получения process lease.
 ///
-/// Локальный путь возвращается как файл. Web URL маршрутизируется либо в
-/// YouTube adapter, либо в generic direct media opener.
-pub(crate) fn resolve_initial_media_from_cli(
+/// Только валидный UTF-8 может быть URL. Native non-UTF-8 значение без lossy
+/// преобразования остаётся локальным `PathBuf`.
+pub(crate) fn resolve_initial_media_argument(
+    argument: Option<std::ffi::OsString>,
     app_config: &AppConfig,
 ) -> (Option<InitialMedia>, Option<String>) {
-    // Берём только первый пользовательский аргумент, чтобы не вводить неполный CLI parser.
-    let Some(argument) = std::env::args().nth(1) else {
+    let Some(argument) = argument else {
         return (None, None);
     };
+    let utf8_argument = match argument.into_string() {
+        Ok(argument) => argument,
+        Err(native_argument) => {
+            return (
+                Some(InitialMedia::File(PathBuf::from(native_argument))),
+                None,
+            );
+        }
+    };
 
-    resolve_initial_media_argument(argument, app_config)
-}
-
-/// Pure helper для тестируемой маршрутизации одного CLI аргумента.
-fn resolve_initial_media_argument(
-    argument: String,
-    app_config: &AppConfig,
-) -> (Option<InitialMedia>, Option<String>) {
-    match classify_startup_url(&argument) {
+    match classify_startup_url(&utf8_argument) {
         StartupUrlClassification::NotUrl => {}
         StartupUrlClassification::Supported(locator) => {
             info!(source = %locator.safe_label(), "CLI аргумент принят URL service adapter-ом");
@@ -665,11 +720,12 @@ fn resolve_initial_media_argument(
     }
 
     // Всё остальное считаем локальным путём, как работало раньше.
-    (Some(InitialMedia::File(PathBuf::from(argument))), None)
+    (Some(InitialMedia::File(PathBuf::from(utf8_argument))), None)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
     use std::path::Path;
     use std::time::Duration;
 
@@ -692,6 +748,7 @@ mod tests {
     use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
     use super::*;
+    use crate::process_shutdown::{ProcessOwnerShutdownOutcome, ShutdownDeadline};
 
     fn capabilities_with_vp9_profile0() -> SystemCapabilities {
         let decode_format = SupportedVideoDecodeFormat {
@@ -858,9 +915,13 @@ mod tests {
                 pending_message: "Подготовка YouTube stream...".to_string(),
                 result_receiver,
                 join_handle: None,
+                pending_result: None,
+                cancellation_requested: Arc::new(AtomicBool::new(false)),
             }),
             direct_media_startup_job: None,
             startup_error: None,
+            terminal_shutdown_started: false,
+            terminal_shutdown_completed: false,
         };
 
         assert!(controller.has_pending_startup_job());
@@ -868,12 +929,85 @@ mod tests {
             controller.pending_message(),
             Some("Подготовка YouTube stream...")
         );
+        assert!(
+            controller.startup_job_admission_error().is_some(),
+            "single-startup-job boundary должен отвергать replacement"
+        );
+    }
+
+    /// Собирает controller с synthetic worker-ом без network/media locator leakage.
+    fn controller_with_test_youtube_thread(join_handle: JoinHandle<()>) -> StartupMediaController {
+        let wake_port = AppWakePort::disconnected(AppWakeOwner::StartupMedia);
+        let (_result_publisher, result_receiver) = owner_mailbox(wake_port.clone());
+        StartupMediaController {
+            wake_port,
+            initial_media: None,
+            youtube_startup_job: Some(YoutubeStartupJob {
+                source_locator: service_youtube::parse_youtube_media_locator(
+                    "https://www.youtube.com/watch?v=test",
+                )
+                .expect("test locator должен проходить service parse"),
+                pending_message: "Подготовка YouTube stream...".to_string(),
+                result_receiver,
+                join_handle: Some(join_handle),
+                pending_result: None,
+                cancellation_requested: Arc::new(AtomicBool::new(false)),
+            }),
+            direct_media_startup_job: None,
+            startup_error: None,
+            terminal_shutdown_started: false,
+            terminal_shutdown_completed: false,
+        }
+    }
+
+    #[test]
+    fn startup_shutdown_timeout_retains_handle_and_later_reaps_it() {
+        let release = Arc::new(AtomicBool::new(false));
+        let worker_release = Arc::clone(&release);
+        let mut controller = controller_with_test_youtube_thread(std::thread::spawn(move || {
+            while !worker_release.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+        }));
+
+        assert_eq!(
+            controller.shutdown_until(ShutdownDeadline::after(Duration::from_millis(1))),
+            ProcessOwnerShutdownOutcome::TimedOut { pending_threads: 1 }
+        );
+        assert!(controller.youtube_startup_job.is_some());
+
+        release.store(true, Ordering::Release);
+        assert_eq!(
+            controller.shutdown_until(ShutdownDeadline::after(Duration::from_secs(1))),
+            ProcessOwnerShutdownOutcome::Completed
+        );
+        assert_eq!(
+            controller.shutdown_until(ShutdownDeadline::after(Duration::from_secs(1))),
+            ProcessOwnerShutdownOutcome::AlreadyCompleted
+        );
+    }
+
+    #[test]
+    fn startup_shutdown_reports_worker_panic() {
+        let mut controller = controller_with_test_youtube_thread(std::thread::spawn(|| {
+            panic!("expected startup panic");
+        }));
+
+        assert_eq!(
+            controller.shutdown_until(ShutdownDeadline::after(Duration::from_secs(1))),
+            ProcessOwnerShutdownOutcome::ThreadPanicked {
+                panicked_threads: 1,
+                pending_threads: 0,
+            }
+        );
     }
 
     #[test]
     fn cli_route_keeps_local_path_unchanged() {
-        let (initial_media, startup_error) =
-            resolve_initial_media_argument("/tmp/sample.mp4".to_string(), &AppConfig::default());
+        let (initial_media, startup_error) = resolve_initial_media_argument(
+            Some(OsString::from("/tmp/sample.mp4")),
+            &AppConfig::default(),
+        );
 
         assert!(startup_error.is_none());
         assert!(matches!(
@@ -882,10 +1016,27 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn cli_route_keeps_non_utf8_argument_as_native_local_path() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let native_path = OsString::from_vec(b"/tmp/movie-\xFF.mkv".to_vec());
+        let expected_path = std::path::PathBuf::from(native_path.clone());
+        let (initial_media, startup_error) =
+            resolve_initial_media_argument(Some(native_path), &AppConfig::default());
+
+        assert!(startup_error.is_none());
+        assert!(matches!(
+            initial_media,
+            Some(InitialMedia::File(path)) if path == expected_path
+        ));
+    }
+
     #[test]
     fn cli_route_sends_youtube_host_to_youtube_path() {
         let (initial_media, startup_error) = resolve_initial_media_argument(
-            "https://youtu.be/video-id".to_string(),
+            Some(OsString::from("https://youtu.be/video-id")),
             &AppConfig::default(),
         );
 
@@ -903,7 +1054,7 @@ mod tests {
     #[test]
     fn cli_route_sends_supported_http_media_to_direct_path() {
         let (initial_media, startup_error) = resolve_initial_media_argument(
-            "https://cdn.example.test/video.mp4?token=1".to_string(),
+            Some(OsString::from("https://cdn.example.test/video.mp4?token=1")),
             &AppConfig::default(),
         );
 
@@ -921,7 +1072,9 @@ mod tests {
     #[test]
     fn cli_route_sends_quicktime_mov_http_media_to_direct_path() {
         let (initial_media, startup_error) = resolve_initial_media_argument(
-            "https://cdn.example.test/camera/ios-hevc-main10-aac-4k60.MOV".to_string(),
+            Some(OsString::from(
+                "https://cdn.example.test/camera/ios-hevc-main10-aac-4k60.MOV",
+            )),
             &AppConfig::default(),
         );
 
@@ -939,7 +1092,7 @@ mod tests {
     #[test]
     fn cli_route_rejects_http_media_without_supported_extension() {
         let (initial_media, startup_error) = resolve_initial_media_argument(
-            "https://192.0.2.10/media".to_string(),
+            Some(OsString::from("https://192.0.2.10/media")),
             &AppConfig::default(),
         );
 
@@ -954,7 +1107,7 @@ mod tests {
     #[test]
     fn cli_route_rejects_unsupported_media_protocol() {
         let (initial_media, startup_error) = resolve_initial_media_argument(
-            "rtsp://192.0.2.10/video.mp4".to_string(),
+            Some(OsString::from("rtsp://192.0.2.10/video.mp4")),
             &AppConfig::default(),
         );
 

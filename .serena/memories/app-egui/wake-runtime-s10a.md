@@ -6,7 +6,7 @@ Session 10A завершена PASS 2026-07-14. Детальный handoff на�
 - `main.rs` создаёт `EventLoop<AppWakeEvent>` через winit 0.30 `with_user_event().build()`, затем ровно один `EventLoopProxy<AppWakeEvent>` и передаёт его в `AppShell` через `AppWakeProxy`.
 - `AppWakeEvent` содержит только `AppWakeOwner`; payload никогда не переносится через winit event и остаётся в bounded owner mailbox.
 - `AppShell` реализует `ApplicationHandler<AppWakeEvent>` и является единственным UI-thread drain owner. Redraw запрашивается только после реально видимой мутации; queued/no-op wake и idle state redraw не создают.
-- `PlaylistRuntime` принадлежит `AppShell`, а не renderer-bound `AppState`, поэтому переживает `suspended -> resumed` и recreation renderer/player state. После Session 10C он владеет policy-neutral media-open coordinator-ом и привязывает exact ordered player sender на resume; controller, MPRIS и persistence wiring всё ещё отсутствуют. Полный контракт: `mem:app-egui/media-open-coordinator-s10c`.
+- `PlaylistRuntime` принадлежит `AppShell`, а не renderer-bound `AppState`, поэтому переживает `suspended -> resumed` и recreation renderer/player state. После Sessions 10C–13 он владеет policy-neutral media-open coordinator-ом, process-lifetime `PlaylistController`, removal Undo и playlist settings owner-ом; на resume привязывает exact ordered player sender. Disk persistence/load-gate wiring и D10e app-instance lease остаются scope Session 14. Media-open contract: `mem:app-egui/media-open-coordinator-s10c`; controller evolution: `mem:app-egui/playlist-controller-s12a`.
 
 ## Wake/mailbox invariant
 - `app_wake.rs` владеет per-owner `wake_pending`, sticky `EventLoopClosed`, latest progress slot, lossless completion slot и отдельным producer-disconnect outcome.
@@ -27,4 +27,9 @@ Session 10A завершена PASS 2026-07-14. Детальный handoff на�
 - Итог Session 10A: 9 wake tests, 3 runtime lifecycle/shutdown tests, 2 no-idle-redraw tests и полный `app-egui` suite 282 tests PASS; strict app Clippy, fmt, Rust 1.96 locked workspace check, diff check и Serena diagnostics PASS.
 
 ## Next scope
-- Sessions 10B, 10C и 10D завершены. Следующая разрешённая session: только 11A controller foundation; Session 14 persistence/load wiring не начата.
+- Sessions 11A–13 также завершены. Следующая разрешённая session — Session 14 persistence/load/bootstrap/shutdown integration; restore-open, destructive replacement confirmation и media resume checkpoint остаются Sessions 17/14A/14B.
+
+## Session 14 persistence wake integration (2026-07-15)
+
+- Playlist state worker outcomes use the shared typed `AppWake` route. The mailbox publish epoch closes the sibling-owner race while draining `wake_pending`; defensive timed polling remains only fallback. Persistence and startup owners live in process-lifetime `PlaylistRuntime`, not renderer-bound AppState.
+- Full contract: `mem:app-egui/playlist-persistence-s14`.

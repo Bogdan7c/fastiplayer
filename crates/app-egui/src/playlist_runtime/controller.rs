@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use playlist_core::{
     AddItemsError, AddItemsOutcome, PlaylistItemDraft, PlaylistItemId, PlaylistQueue, RepeatMode,
+    ShuffleToggleError,
 };
 
 use super::identity::{
@@ -87,6 +88,22 @@ pub(crate) enum RuntimeErrorCorrelationOutcome {
     StaleMediaInstance,
 }
 
+/// Startup initialization публикует не больше одной matching dirty revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StartupInitializationMutation {
+    None,
+    Modes,
+    Structural,
+}
+
+/// Startup controller build не скрывает fallible queue mode initialization.
+#[derive(Debug)]
+pub(crate) enum StartupControllerBuildError {
+    Shuffle(ShuffleToggleError),
+    DirtyRevisionExhausted,
+    StructuralRevisionExhausted,
+}
+
 /// Process-lifetime owner canonical queue и app-owned runtime identities.
 pub(crate) struct PlaylistController {
     pub(super) queue: PlaylistQueue,
@@ -148,6 +165,55 @@ impl PlaylistController {
             fatal_invariant: None,
             view_snapshot,
         }
+    }
+
+    /// Создаёт controller только после allocator gate из уже выбранной startup queue.
+    ///
+    /// Persisted modes и coalesced pre-gate overlay применяются до единственной
+    /// публикации view, поэтому промежуточное состояние renderer-у не видно.
+    pub(super) fn from_startup_queue(
+        queue: PlaylistQueue,
+        persisted_repeat_mode: RepeatMode,
+        desired_repeat_mode: Option<RepeatMode>,
+        desired_shuffle_enabled: Option<bool>,
+        mutation: StartupInitializationMutation,
+    ) -> Result<Self, StartupControllerBuildError> {
+        let mut controller = Self::new();
+        controller.queue = queue;
+        controller.repeat_mode = desired_repeat_mode.unwrap_or(persisted_repeat_mode);
+
+        match desired_shuffle_enabled {
+            Some(true) if !controller.queue.shuffle_enabled() => {
+                controller
+                    .queue
+                    .enable_shuffle()
+                    .map_err(StartupControllerBuildError::Shuffle)?;
+            }
+            Some(false) if controller.queue.shuffle_enabled() => {
+                controller
+                    .queue
+                    .disable_shuffle()
+                    .map_err(StartupControllerBuildError::Shuffle)?;
+            }
+            Some(_) | None => {}
+        }
+
+        if !matches!(mutation, StartupInitializationMutation::None) {
+            let next_dirty = controller
+                .dirty_revision
+                .checked_next()
+                .ok_or(StartupControllerBuildError::DirtyRevisionExhausted)?;
+            controller.commit_dirty(next_dirty);
+        }
+        if matches!(mutation, StartupInitializationMutation::Structural) {
+            controller.structural_revision = controller
+                .structural_revision
+                .checked_next()
+                .ok_or(StartupControllerBuildError::StructuralRevisionExhausted)?;
+        }
+
+        controller.publish_view(true);
+        Ok(controller)
     }
 
     pub(crate) fn view_snapshot(&self) -> Arc<PlaylistViewSnapshot> {

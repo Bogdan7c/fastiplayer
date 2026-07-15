@@ -8,6 +8,9 @@ use std::thread;
 use player_core::MediaInstallCancellationCause;
 
 use crate::app_wake::AppWakePort;
+use crate::process_shutdown::{
+    FinishedThreadJoin, ProcessOwnerShutdownOutcome, ShutdownDeadline, join_thread_until,
+};
 
 use super::{MediaOpenStartError, MediaPreparationFailureKind, PreparedMediaOpen};
 
@@ -139,25 +142,41 @@ struct PreparationExecutorState {
     worker_started: bool,
 }
 
-/// Один process worker и capacity-one latest pending slot.
-pub(super) struct PreparationExecutor {
+/// Разделяемое worker-состояние не владеет JoinHandle своего потока.
+struct PreparationExecutorShared {
     state: Mutex<PreparationExecutorState>,
     ready: Condvar,
     wake_port: AppWakePort,
     state_lost: AtomicBool,
 }
 
+/// Один process worker и capacity-one latest pending slot.
+pub(super) struct PreparationExecutor {
+    /// Worker захватывает только shared state, поэтому owner не образует Arc-cycle.
+    shared: Arc<PreparationExecutorShared>,
+
+    /// Exact join authority единственного worker-а остаётся у process owner-а.
+    worker_handle: Mutex<Option<thread::JoinHandle<()>>>,
+
+    /// Повторный terminal call возвращает отдельный `AlreadyCompleted`.
+    terminal_shutdown_completed: AtomicBool,
+}
+
 impl PreparationExecutor {
     pub(super) fn new(wake_port: AppWakePort) -> Arc<Self> {
         Arc::new(Self {
-            state: Mutex::new(PreparationExecutorState {
-                pending_latest: None,
-                shutting_down: false,
-                worker_started: false,
+            shared: Arc::new(PreparationExecutorShared {
+                state: Mutex::new(PreparationExecutorState {
+                    pending_latest: None,
+                    shutting_down: false,
+                    worker_started: false,
+                }),
+                ready: Condvar::new(),
+                wake_port,
+                state_lost: AtomicBool::new(false),
             }),
-            ready: Condvar::new(),
-            wake_port,
-            state_lost: AtomicBool::new(false),
+            worker_handle: Mutex::new(None),
+            terminal_shutdown_completed: AtomicBool::new(false),
         })
     }
 
@@ -165,19 +184,29 @@ impl PreparationExecutor {
         self: &Arc<Self>,
         work: PreparationWork,
     ) -> Result<(), MediaOpenStartError> {
-        let mut state = self.state.lock().map_err(|_| {
-            self.state_lost.store(true, Ordering::Release);
+        let mut state = self.shared.state.lock().map_err(|_| {
+            self.shared.state_lost.store(true, Ordering::Release);
             MediaOpenStartError::ExecutorInvariant
         })?;
         if state.shutting_down {
             return Err(MediaOpenStartError::ShuttingDown);
         }
         if !state.worker_started {
-            let worker_executor = Arc::clone(self);
-            thread::Builder::new()
+            let worker_shared = Arc::clone(&self.shared);
+            let worker_handle = thread::Builder::new()
                 .name("media-open-worker".to_owned())
-                .spawn(move || worker_executor.run())
+                .spawn(move || Self::run(worker_shared))
                 .map_err(|_| MediaOpenStartError::WorkerStartup)?;
+            match self.worker_handle.lock() {
+                Ok(mut handle_slot) => *handle_slot = Some(worker_handle),
+                Err(poisoned_handle_slot) => {
+                    self.shared.state_lost.store(true, Ordering::Release);
+                    *poisoned_handle_slot.into_inner() = Some(worker_handle);
+                    state.shutting_down = true;
+                    self.shared.ready.notify_all();
+                    return Err(MediaOpenStartError::ExecutorInvariant);
+                }
+            }
             state.worker_started = true;
         }
         if let Some(replaced) = state.pending_latest.replace(work) {
@@ -185,14 +214,14 @@ impl PreparationExecutor {
                 .cancellation
                 .cancel(MediaInstallCancellationCause::Superseded);
         }
-        self.ready.notify_one();
+        self.shared.ready.notify_one();
         Ok(())
     }
 
     pub(super) fn shutdown(&self) {
-        let Ok(mut state) = self.state.lock() else {
-            self.state_lost.store(true, Ordering::Release);
-            let _wake_delivery = self.wake_port.request_wake();
+        let Ok(mut state) = self.shared.state.lock() else {
+            self.shared.state_lost.store(true, Ordering::Release);
+            let _wake_delivery = self.shared.wake_port.request_wake();
             return;
         };
         state.shutting_down = true;
@@ -201,21 +230,55 @@ impl PreparationExecutor {
                 .cancellation
                 .cancel(MediaInstallCancellationCause::LifecycleShutdown);
         }
-        self.ready.notify_all();
+        self.shared.ready.notify_all();
     }
 
-    fn run(&self) {
+    /// Выполняет terminal bounded join; timeout сохраняет handle у executor-а.
+    pub(super) fn shutdown_until(&self, deadline: ShutdownDeadline) -> ProcessOwnerShutdownOutcome {
+        if self.terminal_shutdown_completed.load(Ordering::Acquire) {
+            return ProcessOwnerShutdownOutcome::AlreadyCompleted;
+        }
+        self.shutdown();
+
+        let mut handle_slot = match self.worker_handle.lock() {
+            Ok(handle_slot) => handle_slot,
+            Err(poisoned_handle_slot) => {
+                self.shared.state_lost.store(true, Ordering::Release);
+                poisoned_handle_slot.into_inner()
+            }
+        };
+        match join_thread_until(&mut handle_slot, deadline) {
+            FinishedThreadJoin::AlreadyJoined | FinishedThreadJoin::Joined => {
+                self.terminal_shutdown_completed
+                    .store(true, Ordering::Release);
+                ProcessOwnerShutdownOutcome::Completed
+            }
+            FinishedThreadJoin::StillRunning => {
+                ProcessOwnerShutdownOutcome::TimedOut { pending_threads: 1 }
+            }
+            FinishedThreadJoin::Panicked => {
+                self.terminal_shutdown_completed
+                    .store(true, Ordering::Release);
+                ProcessOwnerShutdownOutcome::ThreadPanicked {
+                    panicked_threads: 1,
+                    pending_threads: 0,
+                }
+            }
+        }
+    }
+
+    fn run(shared: Arc<PreparationExecutorShared>) {
         loop {
             let work = {
-                let Ok(mut state) = self.state.lock() else {
-                    self.state_lost.store(true, Ordering::Release);
-                    let _wake_delivery = self.wake_port.request_wake();
+                let Ok(mut state) = shared.state.lock() else {
+                    shared.state_lost.store(true, Ordering::Release);
+                    let _wake_delivery = shared.wake_port.request_wake();
                     return;
                 };
                 while state.pending_latest.is_none() && !state.shutting_down {
-                    let Ok(waited_state) = self.ready.wait(state) else {
-                        self.state_lost.store(true, Ordering::Release);
-                        let _wake_delivery = self.wake_port.request_wake();
+                    let Ok(waited_state) = shared.ready.wait(state) else {
+                        shared.state_lost.store(true, Ordering::Release);
+                        let _wake_delivery = shared.wake_port.request_wake();
                         return;
                     };
                     state = waited_state;
@@ -235,11 +298,117 @@ impl PreparationExecutor {
                     .unwrap_or(Err(MediaPreparationFailureKind::WorkerPanicked))
             };
             work.result_slot.publish(result);
-            let _wake_delivery = self.wake_port.request_wake();
+            let _wake_delivery = shared.wake_port.request_wake();
         }
     }
 
     pub(super) fn state_was_lost(&self) -> bool {
-        self.state_lost.load(Ordering::Acquire)
+        self.shared.state_lost.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for PreparationExecutor {
+    fn drop(&mut self) {
+        self.shutdown();
+        let handle_slot = match self.worker_handle.get_mut() {
+            Ok(handle_slot) => handle_slot,
+            Err(poisoned_handle_slot) => poisoned_handle_slot.into_inner(),
+        };
+        let Some(worker_handle) = handle_slot.take() else {
+            return;
+        };
+
+        // Fail-safe Drop не является bounded process path. В production terminal
+        // coordinator обязан заранее вызвать `shutdown_until` и убрать handle.
+        let _worker_result = worker_handle.join();
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::time::Duration;
+
+    use super::*;
+    use crate::app_wake::{AppWakeOwner, AppWakePort};
+    use crate::process_shutdown::{ProcessOwnerShutdownOutcome, ShutdownDeadline};
+
+    fn disconnected_executor() -> Arc<PreparationExecutor> {
+        PreparationExecutor::new(AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime))
+    }
+
+    #[test]
+    fn idle_executor_shutdown_is_idempotent() {
+        let executor = disconnected_executor();
+
+        assert_eq!(
+            executor.shutdown_until(ShutdownDeadline::after(Duration::from_secs(1))),
+            ProcessOwnerShutdownOutcome::Completed
+        );
+        assert_eq!(
+            executor.shutdown_until(ShutdownDeadline::after(Duration::from_secs(1))),
+            ProcessOwnerShutdownOutcome::AlreadyCompleted
+        );
+    }
+
+    #[test]
+    fn timeout_retains_worker_handle_and_later_reaps_it() {
+        let executor = disconnected_executor();
+        let release = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(AtomicBool::new(false));
+        let worker_release = Arc::clone(&release);
+        let worker_started = Arc::clone(&started);
+        executor
+            .submit_latest(PreparationWork::new(
+                Arc::new(PreparationCancellation::new()),
+                Arc::new(PreparationResultSlot::new()),
+                move |_| {
+                    worker_started.store(true, Ordering::Release);
+                    while !worker_release.load(Ordering::Acquire) {
+                        std::thread::yield_now();
+                    }
+                    Err(MediaPreparationFailureKind::Cancelled)
+                },
+            ))
+            .expect("test work должен стартовать");
+        while !started.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+
+        assert_eq!(
+            executor.shutdown_until(ShutdownDeadline::after(Duration::from_millis(1))),
+            ProcessOwnerShutdownOutcome::TimedOut { pending_threads: 1 }
+        );
+        assert!(
+            executor
+                .worker_handle
+                .lock()
+                .expect("worker handle mutex")
+                .is_some()
+        );
+
+        release.store(true, Ordering::Release);
+        assert_eq!(
+            executor.shutdown_until(ShutdownDeadline::after(Duration::from_secs(1))),
+            ProcessOwnerShutdownOutcome::Completed
+        );
+    }
+
+    #[test]
+    fn worker_thread_panic_is_typed() {
+        let executor = disconnected_executor();
+        *executor.worker_handle.lock().expect("worker handle mutex") =
+            Some(std::thread::spawn(|| panic!("expected executor panic")));
+
+        assert_eq!(
+            executor.shutdown_until(ShutdownDeadline::after(Duration::from_secs(1))),
+            ProcessOwnerShutdownOutcome::ThreadPanicked {
+                panicked_threads: 1,
+                pending_threads: 0,
+            }
+        );
     }
 }

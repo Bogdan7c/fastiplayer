@@ -20,7 +20,7 @@ use crate::media_open::{
     MediaOpenStartError, MediaOpenStartOutcome, MediaOpenTerminalOutcome, PreparedMediaOpen,
     SafeMediaLabel,
 };
-use crate::playlist_runtime::PlaylistRuntime;
+use crate::playlist_runtime::{PlaylistMediaOpenGateError, PlaylistRuntime};
 use crate::video_pipeline_candidate::{
     ActiveVideoPipelinePointers, AppVideoPipelineCandidateOwner,
     PostInstalledVideoPipelineInvariantViolation, WgpuCandidateVideoPipelineResourceDriver,
@@ -69,6 +69,8 @@ pub(crate) enum StrongMediaOpenError {
     Start(#[from] MediaOpenStartError),
     #[error("media-open protocol command failed: {0}")]
     Command(#[from] MediaOpenCommandError),
+    #[error("playlist allocator gate rejected media-open install: {0:?}")]
+    PlaylistGate(PlaylistMediaOpenGateError),
     #[error("media-open completion state was lost: {0}")]
     Completion(#[from] MediaOpenCompletionDriveError),
     #[error("media-open returned an unexpected terminal outcome: {0:?}")]
@@ -174,7 +176,7 @@ impl AppState {
                     .take_media_open_terminal(request_id)?
                     .ok_or(StrongMediaOpenError::MissingTerminal)?;
             }
-            return Err(StrongMediaOpenError::Command(error));
+            return Err(StrongMediaOpenError::PlaylistGate(error));
         }
 
         self.drive_media_open_to_terminal(
@@ -226,7 +228,7 @@ impl AppState {
                         Ok(_) => return Err(StrongMediaOpenError::MissingAuthorizationBarrier),
                         Err(error) => {
                             self.cancel_rejected_media_open(playlist_runtime, request_id)?;
-                            return Err(StrongMediaOpenError::Command(error));
+                            return Err(StrongMediaOpenError::PlaylistGate(error));
                         }
                     }
                 }

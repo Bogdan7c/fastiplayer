@@ -62,4 +62,10 @@ Session 06 completed PASS on 2026-07-14. This memory complements `mem:core`, `me
 ## Session 07 verification
 - 33 playlist-state tests pass: the original 15 load/quarantine tests plus 18 worker/atomic tests covering revision/watermark pairing, debounce/latest coalescing, mutation during write, single-write invariant, full queue/backpressure, no-op revision, wake coalescing and publish-vs-clear, typed spawn failure, atomic target/no-partial behavior, owned-temp cleanup, Unix permissions, targeted directory retry, D69 cap/reset/manual/new mutation/reschedule, D68 committed-only flush/timeout, all save blocks, exactly-once terminal reports and wake disconnect.
 - PASS: `cargo test -p playlist-state`; `cargo clippy -p playlist-state --all-targets -- -D warnings`; `cargo fmt --all --check`; `cargo +1.96.0 check --workspace --locked`; `git diff --check`; Serena diagnostics for new production modules.
-- Next allowed work is Session 08 only: playlist-discovery single-file probe and metadata extraction.
+- Sessions 08–13 are complete. App-side inspection/load gate, save-worker wake/debounce/view integration and D10e/D68 lifecycle ordering belong to Session 14; restored-current open remains later scope.
+
+
+## Session 14 app integration (2026-07-15)
+
+- `PlaylistRuntime` now owns read-only inspection, explicit identity-revalidated quarantine, protected-state writer blocking, exact dirty snapshots, save worker wake/retry/durability view and terminal flush. Valid watermark is retained even when restore apply is superseded; Missing/quarantine success create persistent lineage, protected outcomes create only non-persistent generation-scoped lineage.
+- App integration and shutdown ownership details: `mem:app-egui/playlist-persistence-s14`.

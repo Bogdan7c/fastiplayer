@@ -15,9 +15,8 @@ use crate::playlist_runtime::controller::{
     ControllerAppendOutcome, EndedSnapshotKind, InstallReadyOutcome, PlaylistInstallRequest,
 };
 use crate::playlist_runtime::identity::{ActiveMediaIdentity, ActiveMediaLineageId};
-use crate::playlist_runtime::{
-    PlaylistBindingGeneration, PlaylistRuntime, PlaylistShutdownDeadline,
-};
+use crate::playlist_runtime::{PlaylistBindingGeneration, PlaylistRuntime};
+use crate::process_shutdown::ShutdownDeadline;
 
 fn non_zero(value: u64) -> NonZeroU64 {
     NonZeroU64::new(value).expect("test identity is non-zero")
@@ -35,6 +34,7 @@ fn draft(index: usize) -> PlaylistItemDraft {
 fn runtime_with_items(count: usize) -> (PlaylistRuntime, Vec<PlaylistItemId>) {
     let mut runtime =
         PlaylistRuntime::new(AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime));
+    runtime.resolve_missing_state_for_test();
     let ids = match runtime
         .controller
         .append((0..count).map(draft).collect())
@@ -143,6 +143,13 @@ fn clear_and_remove_others_use_same_undo_and_restore_selection() {
         RuntimeRemovalOutcome::Removed { .. }
     ));
     assert!(clear_runtime.controller.queue.is_empty());
+    assert_eq!(
+        clear_runtime
+            .playlist_persistence_view()
+            .latest_committed_revision
+            .map(playlist_state::SaveRevision::value),
+        Some(1)
+    );
     assert!(matches!(
         clear_runtime.undo_last_removal(now + Duration::from_secs(1)),
         RemovalUndoOutcome::Restored {
@@ -151,6 +158,13 @@ fn clear_and_remove_others_use_same_undo_and_restore_selection() {
         } if selected == clear_ids[2]
     ));
     assert_eq!(clear_runtime.controller.queue.len(), 4);
+    assert_eq!(
+        clear_runtime
+            .playlist_persistence_view()
+            .latest_committed_revision
+            .map(playlist_state::SaveRevision::value),
+        Some(2)
+    );
 
     let (mut others_runtime, others_ids) = runtime_with_items(4);
     others_runtime.controller.select_row(Some(others_ids[1]));
@@ -174,11 +188,20 @@ fn real_mutation_invalidates_but_selection_and_noop_preserve_slot() {
     let (mut runtime, ids) = runtime_with_items(3);
     let now = Instant::now();
     let _removed = runtime.remove_playlist_item(ids[0], now);
+    let revision_after_removal = runtime
+        .playlist_persistence_view()
+        .latest_committed_revision;
     assert!(runtime.controller.select_row(Some(ids[2])));
     assert!(matches!(
         runtime.remove_playlist_item(ids[0], now + Duration::from_secs(1)),
         RuntimeRemovalOutcome::NotFound { .. }
     ));
+    assert_eq!(
+        runtime
+            .playlist_persistence_view()
+            .latest_committed_revision,
+        revision_after_removal
+    );
     assert!(
         runtime
             .removal_undo_status(now + Duration::from_secs(2))
@@ -251,7 +274,7 @@ fn shutdown_releases_tombstone_and_undo_without_dirty_mutation() {
     let _removed = runtime.remove_playlist_item(ids[0], now);
     let dirty_before_shutdown = runtime.controller.dirty_revision();
 
-    let _shutdown = runtime.shutdown(PlaylistShutdownDeadline::at(now + Duration::from_secs(1)));
+    let _shutdown = runtime.shutdown_until(ShutdownDeadline::after(Duration::from_secs(1)));
     assert!(runtime.removal_undo.is_none());
     assert!(runtime.controller.detached_active_tombstone.is_none());
     assert_eq!(runtime.controller.dirty_revision(), dirty_before_shutdown);

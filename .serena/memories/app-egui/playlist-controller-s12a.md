@@ -26,4 +26,4 @@ Session 12A completed PASS on 2026-07-15. This memory extends `mem:app-egui/play
 ## Verification and scope
 - PASS: 69 playlist-core, 33 playlist-state, 387 app-egui no-default, 23 player EOF drain, 6 exact transport; strict touched-crate Clippy, fmt, Rust 1.96 locked workspace check, refactor guardrails, diff check, and clean Serena diagnostics.
 - Focused coverage includes all removal kinds, D47, all repeat modes, fixed continuation revalidation, failed/cancelled retention, exact Installed release, deadline boundaries, second removal, metadata invalidation/no-op, 50k sharing, matching/stale lineage, same-lineage new instance, shutdown and new-lineage release.
-- Persistence/UI/discovery wiring and the real D72 suspend checkpoint/reopen flow remain out of scope; D72 production wiring belongs to Session 14B. Next allowed playlist session is Session 13.
+- Session 13 settings ownership is complete. Persistence/load-gate/bootstrap/shutdown integration belongs to Session 14; UI/discovery remain later scope, and the real D72 suspend checkpoint/reopen flow belongs to Session 14B.

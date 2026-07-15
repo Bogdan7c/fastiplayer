@@ -94,6 +94,7 @@ pub(crate) enum ControllerInstallPhase {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlaylistControllerInvariantViolation {
+    LoadDecisionPending,
     StaleReadyToCommit,
     UnexpectedInstallPhase,
     MissingAuthorizationResolution,

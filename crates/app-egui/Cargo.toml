@@ -36,7 +36,11 @@ service-direct-media.workspace = true
 service-youtube.workspace = true
 playlist-core.workspace = true
 playlist-discovery.workspace = true
+playlist-state.workspace = true
 desktop-integration.workspace = true
+
+# Linux-v1 instance lease: O_NOFOLLOW/O_CLOEXEC, fcntl и effective uid.
+libc.workspace = true
 
 # Композиция playback/media boundary.
 player-core.workspace = true

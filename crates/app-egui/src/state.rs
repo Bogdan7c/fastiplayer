@@ -8,13 +8,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use capability_core::SystemCapabilities;
-use desktop_integration::{DesktopIntegration, DesktopIntegrationEvent};
+use desktop_integration::{
+    DesktopIntegration, DesktopIntegrationEvent, DesktopIntegrationShutdownOutcome,
+};
 use player_core::{
     FrameCounters, PlaybackRate, PlaybackState, PlayerCommand, PlayerEvent, PlayerRenderError,
     PlayerRuntimeApplyResult, PlayerRuntimeSettingsUpdate, PlayerSnapshot,
     PlayerVideoDecoderThreadConfig, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent,
-    PreparedMedia, QualitySelection, ScrubCommitPolicy, SeekRequest, VideoBackendSelectionRequest,
-    VideoDecodeRequirement,
+    PlayerWorkerShutdownDeadline, PlayerWorkerShutdownOutcome, PreparedMedia, QualitySelection,
+    ScrubCommitPolicy, SeekRequest, VideoBackendSelectionRequest, VideoDecodeRequirement,
 };
 use render_core::RenderDiagnostics;
 use render_wgpu_video::{
@@ -36,8 +38,8 @@ use crate::dma_buf_runtime_fallback::{
     PendingDmaBufLayoutRejection,
 };
 use crate::local_file_open::{
-    LocalFileOpenJob, LocalFileOpenResult, local_file_prepare_error_message,
-    preparing_local_file_message,
+    LocalFileOpenJob, LocalFileOpenRestoreOutcome, LocalFileOpenResult,
+    local_file_prepare_error_message, preparing_local_file_message,
 };
 use crate::local_media;
 use crate::settings_runtime::CommittedConfigSnapshot;
@@ -286,6 +288,27 @@ pub struct AppState {
 /// анимация продолжается плавно, а не прыгает к концу.
 const MAX_SIDEBAR_SLIDE_FRAME_DT_SECONDS: f32 = 0.1;
 
+/// Typed outcomes renderer-bound process owners в их dependency-safe порядке.
+pub(crate) struct AppStateProcessShutdownReport {
+    /// MPRIS закрывается первым, пока player command boundary ещё существует.
+    pub(crate) desktop_integration: Option<DesktopIntegrationShutdownOutcome>,
+    /// Player закрывается после прекращения внешнего MPRIS command admission.
+    pub(crate) player: PlayerWorkerShutdownOutcome,
+}
+
+/// Выполняет dependency order через маленький fake-able seam для focused test-а.
+fn shutdown_app_state_owners_in_order(
+    shutdown_desktop_integration: impl FnOnce() -> Option<DesktopIntegrationShutdownOutcome>,
+    shutdown_player: impl FnOnce() -> PlayerWorkerShutdownOutcome,
+) -> AppStateProcessShutdownReport {
+    let desktop_integration = shutdown_desktop_integration();
+    let player = shutdown_player();
+    AppStateProcessShutdownReport {
+        desktop_integration,
+        player,
+    }
+}
+
 impl AppState {
     /// Создаёт новое состояние приложения и запускает playback worker.
     #[instrument(skip(
@@ -375,6 +398,29 @@ impl AppState {
             sidebar_controller: SidebarController::default(),
             sidebar_slide_last_tick: None,
         })
+    }
+
+    /// Закрывает renderer-bound process owners в dependency-safe порядке.
+    ///
+    /// Сначала MPRIS теряет command admission и завершает backend, затем закрывается
+    /// player. Оба владельца получают один абсолютный deadline process coordinator-а.
+    pub(crate) fn shutdown_process_owners_until(
+        &mut self,
+        deadline: crate::process_shutdown::ShutdownDeadline,
+    ) -> AppStateProcessShutdownReport {
+        let desktop_integration = &mut self.desktop_integration;
+        let player_worker = &mut self.player_worker;
+        shutdown_app_state_owners_in_order(
+            || {
+                desktop_integration
+                    .as_mut()
+                    .map(|integration| integration.shutdown_until(deadline.expires_at()))
+            },
+            || {
+                player_worker
+                    .shutdown_before(PlayerWorkerShutdownDeadline::at(deadline.expires_at()))
+            },
+        )
     }
 
     /// Продвигает анимацию выезда settings sidebar к runtime open-state.

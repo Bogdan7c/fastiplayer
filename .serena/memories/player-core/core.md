@@ -114,3 +114,9 @@
 - Public `ExactMediaTransportRequest` targets one `MediaInstanceId` and carries `SetPlaybackIntent`, `RestartFromBeginning`, or non-destructive `NeutralStop`. `PlayerWorker::exact_media_transport` returns a request-owned receipt: command queue Full/Disconnected is separate from owner `Applied`, `StaleInstance`, stage-specific `Failed`/`PartiallyApplied`, and fatal `MissingOwnerOutcome`.
 - Owner execution is serialized in the worker turn. Neutral Stop is Pause then seek-to-zero without `reset_media_state`; a Pause-success/seek-failure is explicitly partial. Restart uses the existing replay-from-EOF path for clean Ended media, otherwise exact seek then requested Playing/Paused, and never affects a newer instance.
 - D52 remains the only pending-install Play/Pause path. App controller dispatches exact-current transport only when no pending install exists, preventing duplicate Play/Pause while keeping staged/just-installed correlation intact. Controller policy and verification are in `mem:app-egui/playlist-controller-s11b`.
+
+
+## Session 14 bounded worker termination (2026-07-15)
+
+- `PlayerWorker::shutdown_before(Instant)` is the typed process-owner boundary. It preserves the join handle on timeout and distinguishes request failure, completion, panic and timeout; Drop must not perform a second unbounded join after typed timeout.
+- AppShell uses the same absolute shutdown deadline for MPRIS and all other process owners, and releases `AppInstanceLease` only after terminal owner outcomes. Details: `mem:app-egui/playlist-persistence-s14`.

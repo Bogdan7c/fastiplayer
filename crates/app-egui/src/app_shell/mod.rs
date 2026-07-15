@@ -10,15 +10,19 @@
 //! через boundary methods `AppState`, `Renderer` и startup/redraw helpers.
 
 use std::sync::Arc;
+mod shutdown;
+
 use std::time::Instant;
 
+use crate::app_instance::AppInstanceLease;
 use crate::app_wake::{AppWakeEvent, AppWakeOwner, AppWakeProxy};
 use crate::render_settings::{
     surface_present_settings_from_config, warn_legacy_tone_mapping_config,
 };
 use crate::system_capabilities::probe_system_capabilities;
+use playlist_state::PlaylistStateStore;
 use render_wgpu_shell::Renderer;
-use rustiplayer_config::LoadedConfig;
+use rustiplayer_config::{ConfigPaths, LoadedConfig};
 use tracing::{debug, info, instrument};
 use winit::{
     application::ApplicationHandler, dpi::PhysicalSize, event::WindowEvent,
@@ -26,7 +30,9 @@ use winit::{
 };
 
 use crate::frame_prepare::render_frame;
-use crate::playlist_runtime::{PlaylistRuntime, PlaylistShutdownDeadline, PlaylistShutdownOutcome};
+use crate::local_file_open::{LocalFileOpenJob, LocalFileOpenRestoreOutcome};
+use crate::playlist_runtime::PlaylistRuntime;
+use crate::process_shutdown::{ProcessOwnerShutdownOutcome, ShutdownDeadline};
 use crate::redraw_pacing::{
     BackgroundPollScheduler, RedrawControlAction, should_request_redraw_after_window_event,
 };
@@ -35,6 +41,12 @@ use crate::settings_runtime::SettingsRuntime;
 use crate::startup_media::{InitialMedia, StartupMediaController};
 use crate::state::AppState;
 use crate::telemetry::Telemetry;
+use shutdown::{
+    AppShellProcessLifecycle, AppShellShutdownReport, OwnerTerminalDisposition,
+    PROCESS_TERMINAL_SHUTDOWN_BUDGET, TERMINAL_SHUTDOWN_TIMEOUT_EXIT_CODE,
+    TerminalEntryDisposition, aggregate_terminal_dispositions, desktop_integration_disposition,
+    player_disposition, process_owner_disposition, terminal_entry_disposition,
+};
 
 /// Применяет redraw только когда drain действительно изменил видимый state.
 fn request_redraw_for_visible_wake(window: Option<&Window>, visible_mutation: bool) -> bool {
@@ -79,6 +91,9 @@ pub(crate) struct AppShell {
     /// Port копируется в каждый renderer-bound AppState при resume.
     local_file_open_wake_port: crate::app_wake::AppWakePort,
 
+    /// Exact local-file job переживает renderer suspend без detach или process flush.
+    suspended_local_file_open_job: Option<LocalFileOpenJob>,
+
     /// Authoritative runtime owner пользовательских настроек.
     settings_runtime: SettingsRuntime,
 
@@ -87,6 +102,15 @@ pub(crate) struct AppShell {
 
     /// Сериализатор renderer recreation и surface resize lifecycle-а.
     renderer_lifecycle: RendererLifecycleCoordinator,
+
+    /// Terminal state запрещает повторные UI actions после начала process close.
+    process_lifecycle: AppShellProcessLifecycle,
+
+    /// Единственный platform path owner для будущего state worker integration.
+    _config_paths: ConfigPaths,
+
+    /// Process lease освобождается последним после остальных полей shell-а.
+    _instance_lease: AppInstanceLease,
 }
 
 impl AppShell {
@@ -98,11 +122,28 @@ impl AppShell {
         startup_error: Option<String>,
         loaded_config: LoadedConfig,
         wake_proxy: AppWakeProxy,
+        config_paths: ConfigPaths,
+        instance_lease: AppInstanceLease,
     ) -> anyhow::Result<Self> {
         let startup_wake_port = wake_proxy.port(AppWakeOwner::StartupMedia);
         let local_file_wake_port = wake_proxy.port(AppWakeOwner::LocalFileOpen);
         let settings_wake_port = wake_proxy.port(AppWakeOwner::SettingsDynamicOptions);
         let playlist_wake_port = wake_proxy.port(AppWakeOwner::PlaylistRuntime);
+        // Сначала строятся все fallible process owners. Inspection запускается
+        // последней: после неё constructor уже не может вернуть ошибку и detach-нуть thread.
+        let settings_runtime =
+            SettingsRuntime::from_loaded_config_with_wake_port(loaded_config, settings_wake_port)?;
+        let mut playlist_runtime = PlaylistRuntime::new_with_config(
+            playlist_wake_port,
+            settings_runtime.committed_config().playlist,
+        );
+        playlist_runtime
+            .begin_production_playlist_state_inspection(Arc::new(PlaylistStateStore::new(
+                config_paths.playlist_state_file(),
+            )))
+            .map_err(|error| {
+                anyhow::anyhow!("playlist state inspection startup failed: {error:?}")
+            })?;
         Ok(Self {
             window: None,
             renderer: None,
@@ -113,17 +154,15 @@ impl AppShell {
                 startup_error,
                 startup_wake_port,
             ),
-            playlist_runtime: PlaylistRuntime::new_with_config(
-                playlist_wake_port,
-                loaded_config.config.playlist,
-            ),
+            playlist_runtime,
             local_file_open_wake_port: local_file_wake_port,
-            settings_runtime: SettingsRuntime::from_loaded_config_with_wake_port(
-                loaded_config,
-                settings_wake_port,
-            )?,
+            suspended_local_file_open_job: None,
+            settings_runtime,
             background_poll_scheduler: BackgroundPollScheduler::new(),
             renderer_lifecycle: RendererLifecycleCoordinator::default(),
+            process_lifecycle: AppShellProcessLifecycle::Running,
+            _config_paths: config_paths,
+            _instance_lease: instance_lease,
         })
     }
 
@@ -134,6 +173,9 @@ impl AppShell {
     /// и GPU-ресурсы могли быть сброшены. Поэтому восстановление renderer/app_state
     /// отделено от создания окна.
     fn restore_runtime(&mut self, event_loop: &ActiveEventLoop, window: Arc<Window>) {
+        if self.process_lifecycle != AppShellProcessLifecycle::Running {
+            return;
+        }
         if self.renderer.is_some() && self.app_state.is_some() {
             return;
         }
@@ -187,6 +229,7 @@ impl AppShell {
 
         let Some(playlist_binding) = self.playlist_runtime.bind_resumed_app_state() else {
             tracing::error!("Playlist runtime уже закрыт и не принимает новый AppState binding");
+            Self::shutdown_uninstalled_app_state_or_exit(&mut app_state);
             event_loop.exit();
             return;
         };
@@ -198,6 +241,7 @@ impl AppShell {
                     ?error,
                     "Playlist runtime не создал exact AppState attachment"
                 );
+                Self::shutdown_uninstalled_app_state_or_exit(&mut app_state);
                 event_loop.exit();
                 return;
             }
@@ -205,6 +249,16 @@ impl AppShell {
         app_state.attach_playlist_runtime(playlist_attachment);
         self.playlist_runtime
             .attach_player_sender(app_state.player_command_sender());
+
+        if let Some(transferred_job) = self.suspended_local_file_open_job.take() {
+            match app_state.restore_local_file_open_job_after_resume(transferred_job) {
+                LocalFileOpenRestoreOutcome::Restored => {}
+                LocalFileOpenRestoreOutcome::ExistingJob(rejected_job) => {
+                    self.suspended_local_file_open_job = Some(*rejected_job);
+                    self.shutdown_rejected_local_job_or_exit();
+                }
+            }
+        }
 
         self.startup_media.start_pending_initial_media(
             &mut app_state,
@@ -227,12 +281,25 @@ impl AppShell {
     }
 
     /// Освобождает runtime-ресурсы в порядке, безопасном для GPU/audio cleanup.
-    fn drop_runtime(&mut self) {
+    fn suspend_runtime(&mut self) {
+        let mut transferred_local_file_open_job = None;
         if let Some(app_state) = &mut self.app_state {
             app_state.clear_cached_present_frame_for_runtime_drop();
+            transferred_local_file_open_job = app_state.take_local_file_open_job_for_suspend();
 
             if let Some(path) = app_state.current_local_file() {
                 self.startup_media.restore_file_on_next_resume(path);
+            }
+        }
+
+        if let Some(mut transferred_job) = transferred_local_file_open_job {
+            if self.suspended_local_file_open_job.is_none() {
+                self.suspended_local_file_open_job = Some(transferred_job);
+            } else {
+                tracing::error!(
+                    "Suspend обнаружил второй local-file owner; rejected job завершается bounded"
+                );
+                Self::shutdown_local_job_owner_or_exit(&mut transferred_job);
             }
         }
 
@@ -244,23 +311,148 @@ impl AppShell {
     /// Закрывает приложение через единый cleanup path shell-а.
     fn close_runtime_and_exit(&mut self, event_loop: &ActiveEventLoop, reason: &'static str) {
         info!("{reason}");
-        self.drop_runtime();
-        self.shutdown_playlist_runtime();
+        self.finish_process_shutdown();
         event_loop.exit();
     }
 
-    /// Закрывает process-lifetime admission через единый idempotent boundary.
-    fn shutdown_playlist_runtime(&mut self) {
-        let shutdown_outcome = self
-            .playlist_runtime
-            .shutdown(PlaylistShutdownDeadline::at(Instant::now()));
-        match shutdown_outcome {
-            PlaylistShutdownOutcome::Completed => {
-                info!("Playlist runtime bounded shutdown завершён");
+    /// Завершает process owners после возврата event loop либо из `exiting`.
+    pub(crate) fn finish_process_shutdown(&mut self) {
+        match terminal_entry_disposition(self.process_lifecycle) {
+            TerminalEntryDisposition::AlreadyCompleted => return,
+            TerminalEntryDisposition::ExitRequired => {
+                tracing::error!(
+                    "Повторный terminal вход застал незавершённый shutdown; lease остаётся удержанным"
+                );
+                std::process::exit(TERMINAL_SHUTDOWN_TIMEOUT_EXIT_CODE);
             }
-            PlaylistShutdownOutcome::AlreadyCompleted => {
-                debug!("Playlist runtime уже был закрыт");
+            TerminalEntryDisposition::Begin => {
+                self.process_lifecycle = AppShellProcessLifecycle::ShuttingDown;
             }
+        }
+
+        let deadline = ShutdownDeadline::after(PROCESS_TERMINAL_SHUTDOWN_BUDGET);
+
+        // Local job сначала извлекается из renderer owner-а, чтобы любой timeout
+        // сохранил exact handle внутри process-lifetime AppShell.
+        if self.suspended_local_file_open_job.is_none()
+            && let Some(app_state) = self.app_state.as_mut()
+        {
+            self.suspended_local_file_open_job = app_state.take_local_file_open_job_for_suspend();
+        }
+
+        let app_state_shutdown = self
+            .app_state
+            .as_mut()
+            .map(|app_state| app_state.shutdown_process_owners_until(deadline));
+        let local_file_open = self
+            .suspended_local_file_open_job
+            .as_mut()
+            .map_or(ProcessOwnerShutdownOutcome::AlreadyCompleted, |job| {
+                job.shutdown_until(deadline)
+            });
+        if !matches!(
+            local_file_open,
+            ProcessOwnerShutdownOutcome::TimedOut { .. }
+                | ProcessOwnerShutdownOutcome::ThreadPanicked {
+                    pending_threads: 1..,
+                    ..
+                }
+        ) {
+            self.suspended_local_file_open_job = None;
+        }
+        let startup_media = self.startup_media.shutdown_until(deadline);
+        let settings = self
+            .settings_runtime
+            .shutdown_dynamic_options_until(deadline);
+        let playlist = self.playlist_runtime.shutdown_until(deadline);
+        let report = AppShellShutdownReport {
+            desktop_integration: app_state_shutdown
+                .as_ref()
+                .and_then(|outcome| outcome.desktop_integration),
+            player: app_state_shutdown.map(|outcome| outcome.player),
+            local_file_open,
+            startup_media,
+            settings,
+            playlist,
+        };
+
+        match report.terminal_disposition() {
+            OwnerTerminalDisposition::ExitRequired => {
+                tracing::error!(
+                    ?report,
+                    "Process owners не завершились до общего deadline; немедленно завершаем process с удержанным lease"
+                );
+                std::process::exit(TERMINAL_SHUTDOWN_TIMEOUT_EXIT_CODE);
+            }
+            OwnerTerminalDisposition::Failed => {
+                tracing::warn!(
+                    ?report,
+                    "Process owners терминальны, но shutdown завершился типизированной ошибкой"
+                );
+            }
+            OwnerTerminalDisposition::Completed => {
+                info!(?report, "Process owners штатно завершены");
+            }
+        }
+
+        // До этой точки timeout не может дойти: `process::exit` не запускает Drop.
+        self.playlist_runtime.suspend_app_state_binding();
+        self.app_state = None;
+        self.renderer = None;
+        self.process_lifecycle = AppShellProcessLifecycle::ShutdownCompleted;
+    }
+
+    /// Bounded-завершает AppState, который ещё не был установлен в shell.
+    fn shutdown_uninstalled_app_state_or_exit(app_state: &mut AppState) {
+        let report = app_state.shutdown_process_owners_until(ShutdownDeadline::after(
+            PROCESS_TERMINAL_SHUTDOWN_BUDGET,
+        ));
+        let disposition = aggregate_terminal_dispositions([
+            report.desktop_integration.map_or(
+                OwnerTerminalDisposition::Completed,
+                desktop_integration_disposition,
+            ),
+            player_disposition(report.player),
+        ]);
+        match disposition {
+            OwnerTerminalDisposition::ExitRequired => {
+                tracing::error!(
+                    desktop_integration = ?report.desktop_integration,
+                    player = ?report.player,
+                    "AppState process owner не завершился после ошибки renderer construction"
+                );
+                std::process::exit(TERMINAL_SHUTDOWN_TIMEOUT_EXIT_CODE);
+            }
+            OwnerTerminalDisposition::Failed => {
+                tracing::warn!(
+                    desktop_integration = ?report.desktop_integration,
+                    player = ?report.player,
+                    "AppState process owner завершился terminal failure после construction error"
+                );
+            }
+            OwnerTerminalDisposition::Completed => {}
+        }
+    }
+
+    fn shutdown_rejected_local_job_or_exit(&mut self) {
+        if let Some(job) = self.suspended_local_file_open_job.as_mut() {
+            Self::shutdown_local_job_owner_or_exit(job);
+        }
+        self.suspended_local_file_open_job = None;
+    }
+
+    /// Общая terminal policy для local job, который нельзя сохранить в shell slot-е.
+    fn shutdown_local_job_owner_or_exit(job: &mut LocalFileOpenJob) {
+        let outcome = job.shutdown_until(ShutdownDeadline::after(PROCESS_TERMINAL_SHUTDOWN_BUDGET));
+        match process_owner_disposition(outcome) {
+            OwnerTerminalDisposition::ExitRequired => {
+                tracing::error!(?outcome, "Local-file owner не завершился bounded");
+                std::process::exit(TERMINAL_SHUTDOWN_TIMEOUT_EXIT_CODE);
+            }
+            OwnerTerminalDisposition::Failed => {
+                tracing::warn!(?outcome, "Local-file owner завершился panic");
+            }
+            OwnerTerminalDisposition::Completed => {}
         }
     }
 
@@ -294,12 +486,30 @@ impl AppShell {
                 .as_ref()
                 .is_some_and(AppState::has_pending_local_file_open)
             || self.settings_runtime.has_pending_options_refresh()
+            || self
+                .playlist_runtime
+                .has_pending_playlist_persistence_work()
+    }
+
+    /// Единая PlaylistRuntime wake точка применяет startup/save outcomes на UI thread.
+    fn drain_playlist_persistence(&mut self) -> bool {
+        self.playlist_runtime.drain_owner_mailbox();
+        match self.playlist_runtime.drain_playlist_persistence() {
+            Ok(visible_change) => visible_change,
+            Err(error) => {
+                tracing::error!(error = %error, "Не удалось применить playlist persistence event");
+                false
+            }
+        }
     }
 }
 
 impl ApplicationHandler<AppWakeEvent> for AppShell {
     /// Неблокирующе опустошает ровно одного owner-а и redraw-ит только mutation.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppWakeEvent) {
+        if self.process_lifecycle != AppShellProcessLifecycle::Running {
+            return;
+        }
         let visible_mutation = match event.owner() {
             AppWakeOwner::StartupMedia => match (self.app_state.as_mut(), self.renderer.as_ref()) {
                 (Some(app_state), Some(renderer)) => self.startup_media.poll_startup_jobs(
@@ -324,10 +534,7 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
             AppWakeOwner::SettingsDynamicOptions => {
                 self.settings_runtime.poll_dynamic_options_refresh()
             }
-            AppWakeOwner::PlaylistRuntime => {
-                self.playlist_runtime.drain_owner_mailbox();
-                false
-            }
+            AppWakeOwner::PlaylistRuntime => self.drain_playlist_persistence(),
         };
 
         request_redraw_for_visible_wake(self.window.as_deref(), visible_mutation);
@@ -335,8 +542,7 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
 
     /// Гарантирует process-owner shutdown и для exit путей вне window callbacks.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        self.drop_runtime();
-        self.shutdown_playlist_runtime();
+        self.finish_process_shutdown();
     }
 
     /// Вызывается при приостановке приложения (сворачивание, смена TTY).
@@ -344,8 +550,11 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
     /// Освобождаем GPU ресурсы — surface может стать невалидным.
     #[instrument(skip(self))]
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        if self.process_lifecycle != AppShellProcessLifecycle::Running {
+            return;
+        }
         info!("Приостановка: освобождаем runtime-ресурсы");
-        self.drop_runtime();
+        self.suspend_runtime();
     }
 
     /// Вызывается при возобновлении работы (разворачивание, первый запуск).
@@ -353,8 +562,17 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
     /// Здесь создаём окно, инициализируем wgpu и egui.
     #[instrument(skip(self, event_loop))]
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.process_lifecycle != AppShellProcessLifecycle::Running {
+            return;
+        }
+        let persistence_changed = self.drain_playlist_persistence();
         if let Some(window) = self.window.clone() {
             self.restore_runtime(event_loop, window);
+            let post_resume_changed = self.drain_playlist_persistence();
+            request_redraw_for_visible_wake(
+                self.window.as_deref(),
+                persistence_changed || post_resume_changed,
+            );
             return;
         }
 
@@ -384,6 +602,11 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
 
         self.window = Some(window.clone());
         self.restore_runtime(event_loop, window);
+        let post_resume_changed = self.drain_playlist_persistence();
+        request_redraw_for_visible_wake(
+            self.window.as_deref(),
+            persistence_changed || post_resume_changed,
+        );
     }
 
     /// Обработка событий окна.
@@ -395,6 +618,9 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
         _window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
+        if self.process_lifecycle != AppShellProcessLifecycle::Running {
+            return;
+        }
         let Some(window) = self.window.clone() else {
             return;
         };
@@ -475,7 +701,10 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
                 }
                 let has_pending_background_job = self.startup_media.has_pending_startup_job()
                     || app_state.has_pending_local_file_open()
-                    || self.settings_runtime.has_pending_options_refresh();
+                    || self.settings_runtime.has_pending_options_refresh()
+                    || self
+                        .playlist_runtime
+                        .has_pending_playlist_persistence_work();
                 let action = self.background_poll_scheduler.after_render(
                     frame_result.pacing,
                     has_pending_background_job,
@@ -495,6 +724,11 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
 
     /// Перед idle wait будит shell только для timed background job polling-а.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.process_lifecycle != AppShellProcessLifecycle::Running {
+            return;
+        }
+        let persistence_changed = self.drain_playlist_persistence();
+        request_redraw_for_visible_wake(self.window.as_deref(), persistence_changed);
         let has_continuous_redraw = self.has_continuous_redraw();
         let has_pending_background_job = self.has_pending_background_job();
         let now = Instant::now();

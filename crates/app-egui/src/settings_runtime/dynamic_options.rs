@@ -1,5 +1,171 @@
 use super::*;
 
+/// Один подготовленный batch provider requests для background refresh.
+pub(super) type DynamicOptionsRefreshWork = Vec<(
+    OptionProviderId,
+    SettingOptionsRequest,
+    Option<Arc<dyn SettingOptionProvider>>,
+)>;
+
+/// Неблокирующий terminal результат одного refresh job-а.
+enum DynamicOptionsRefreshCompletion {
+    /// Authoritative latest snapshots можно применить к cache.
+    Snapshots(Vec<(OptionProviderId, SettingOptions)>),
+
+    /// Superseded/shutdown job завершён и joined без apply authority.
+    Cancelled,
+
+    /// Worker panic или потеря exactly-once terminal mailbox.
+    Failed,
+}
+
+/// Один bounded-owned refresh thread и его exactly-once mailbox.
+pub(super) struct DynamicOptionsRefreshJob {
+    /// Completion не применяется до exact worker exit и join.
+    result_receiver:
+        crate::app_wake::OwnerMailboxReceiver<(), Vec<(OptionProviderId, SettingOptions)>>,
+
+    /// Join authority никогда не выбрасывается при replacement.
+    join_handle: Option<std::thread::JoinHandle<()>>,
+
+    /// Mailbox result ждёт завершения thread-а внутри owner-а.
+    pending_result: Option<Vec<(OptionProviderId, SettingOptions)>>,
+
+    /// Cooperative cancellation делает superseded result неавторитетным.
+    cancellation_requested: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl DynamicOptionsRefreshJob {
+    /// Запускает один refresh batch с owned handle и secret-free error mapping.
+    fn spawn(
+        refresh_work: DynamicOptionsRefreshWork,
+        wake_port: AppWakePort,
+    ) -> SettingsResult<Self> {
+        let (result_publisher, result_receiver) = crate::app_wake::owner_mailbox(wake_port);
+        let cancellation_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_cancellation_requested = Arc::clone(&cancellation_requested);
+        let join_handle = std::thread::Builder::new()
+            .name("settings-options-refresh".to_string())
+            .spawn(move || {
+                let snapshots = refresh_work
+                    .into_iter()
+                    .take_while(|_| {
+                        !worker_cancellation_requested.load(std::sync::atomic::Ordering::Acquire)
+                    })
+                    .map(|(provider_id, request, provider)| {
+                        let snapshot = collect_provider_snapshot(&provider_id, request, provider);
+                        (provider_id, snapshot)
+                    })
+                    .collect::<Vec<_>>();
+                if worker_cancellation_requested.load(std::sync::atomic::Ordering::Acquire) {
+                    return;
+                }
+                match result_publisher.publish_completion(snapshots) {
+                    Ok(crate::app_wake::WakeDelivery::EventLoopClosed) => {
+                        tracing::debug!(
+                            "Event loop закрыт; settings terminal оставлен без wake retry"
+                        );
+                    }
+                    Ok(
+                        crate::app_wake::WakeDelivery::Armed
+                        | crate::app_wake::WakeDelivery::Coalesced,
+                    ) => {}
+                    Err(crate::app_wake::CompletionPublishError::AlreadyPublished) => {
+                        tracing::warn!(
+                            "dynamic options refresh попытался опубликовать второй terminal result"
+                        );
+                    }
+                }
+            })
+            .map_err(|error| {
+                settings_core::SettingsError::access_failed(format!(
+                    "не удалось запустить фоновый refresh dynamic options: {error}"
+                ))
+            })?;
+
+        Ok(Self {
+            result_receiver,
+            join_handle: Some(join_handle),
+            pending_result: None,
+            cancellation_requested,
+        })
+    }
+
+    /// Делает job stale и запрещает публикацию позднего результата.
+    fn cancel(&self) {
+        self.cancellation_requested
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Reap-ит только finished handle и возвращает authoritative snapshots.
+    fn take_finished_result(&mut self) -> Option<DynamicOptionsRefreshCompletion> {
+        let drain = self.result_receiver.drain();
+        if drain.completion.is_some() {
+            self.pending_result = drain.completion;
+        }
+
+        match crate::process_shutdown::join_finished_thread(&mut self.join_handle) {
+            crate::process_shutdown::FinishedThreadJoin::StillRunning => None,
+            crate::process_shutdown::FinishedThreadJoin::Panicked => {
+                Some(DynamicOptionsRefreshCompletion::Failed)
+            }
+            crate::process_shutdown::FinishedThreadJoin::Joined
+            | crate::process_shutdown::FinishedThreadJoin::AlreadyJoined => {
+                if self
+                    .cancellation_requested
+                    .load(std::sync::atomic::Ordering::Acquire)
+                {
+                    self.pending_result = None;
+                    Some(DynamicOptionsRefreshCompletion::Cancelled)
+                } else if let Some(snapshots) = self.pending_result.take() {
+                    Some(DynamicOptionsRefreshCompletion::Snapshots(snapshots))
+                } else if drain.producer_disconnected_without_completion {
+                    Some(DynamicOptionsRefreshCompletion::Failed)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Cooperative-cancel-ит job и bounded-join-ит его exact handle.
+    fn shutdown_until(
+        &mut self,
+        deadline: crate::process_shutdown::ShutdownDeadline,
+    ) -> crate::process_shutdown::ProcessOwnerShutdownOutcome {
+        self.cancel();
+        match crate::process_shutdown::join_thread_until(&mut self.join_handle, deadline) {
+            crate::process_shutdown::FinishedThreadJoin::AlreadyJoined
+            | crate::process_shutdown::FinishedThreadJoin::Joined => {
+                crate::process_shutdown::ProcessOwnerShutdownOutcome::Completed
+            }
+            crate::process_shutdown::FinishedThreadJoin::StillRunning => {
+                crate::process_shutdown::ProcessOwnerShutdownOutcome::TimedOut {
+                    pending_threads: 1,
+                }
+            }
+            crate::process_shutdown::FinishedThreadJoin::Panicked => {
+                crate::process_shutdown::ProcessOwnerShutdownOutcome::ThreadPanicked {
+                    panicked_threads: 1,
+                    pending_threads: 0,
+                }
+            }
+        }
+    }
+}
+
+impl Drop for DynamicOptionsRefreshJob {
+    fn drop(&mut self) {
+        self.cancel();
+        let Some(join_handle) = self.join_handle.take() else {
+            return;
+        };
+        if join_handle.join().is_err() {
+            tracing::warn!("dynamic options refresh panic обнаружен во время fail-safe Drop");
+        }
+    }
+}
+
 /// Опрашивает один provider; выполняется в фоновом потоке refresh-а.
 ///
 /// Ошибки провайдера и его отсутствие превращаются в error-snapshot —
@@ -220,50 +386,39 @@ impl SettingsRuntime {
         if provider_ids.is_empty() {
             return Ok(());
         }
+        if self.dynamic_options_shutdown_started {
+            return Err(settings_core::SettingsError::access_failed(
+                "dynamic options shutdown уже начат; новый refresh запрещён",
+            ));
+        }
 
-        let mut refresh_jobs = Vec::with_capacity(provider_ids.len());
+        let mut refresh_work = Vec::with_capacity(provider_ids.len());
         for provider_id in provider_ids {
             let request = self.option_request_for_provider(&provider_id)?;
             let provider = self.option_providers.get(&provider_id).cloned();
-            refresh_jobs.push((provider_id, request, provider));
+            refresh_work.push((provider_id, request, provider));
         }
 
-        let (result_publisher, result_receiver) =
-            crate::app_wake::owner_mailbox(self.dynamic_options_wake_port.clone());
-        std::thread::Builder::new()
-            .name("settings-options-refresh".to_string())
-            .spawn(move || {
-                let snapshots = refresh_jobs
-                    .into_iter()
-                    .map(|(provider_id, request, provider)| {
-                        let snapshot = collect_provider_snapshot(&provider_id, request, provider);
-                        (provider_id, snapshot)
-                    })
-                    .collect::<Vec<_>>();
-                match result_publisher.publish_completion(snapshots) {
-                    Ok(crate::app_wake::WakeDelivery::EventLoopClosed) => {
-                        tracing::debug!(
-                            "Event loop закрыт; settings terminal оставлен без wake retry"
-                        );
-                    }
-                    Ok(
-                        crate::app_wake::WakeDelivery::Armed
-                        | crate::app_wake::WakeDelivery::Coalesced,
-                    ) => {}
-                    Err(crate::app_wake::CompletionPublishError::AlreadyPublished) => {
-                        tracing::warn!(
-                            "dynamic options refresh попытался опубликовать второй terminal result"
-                        );
-                    }
-                }
-            })
-            .map_err(|error| {
-                settings_core::SettingsError::access_failed(format!(
-                    "не удалось запустить фоновый refresh dynamic options: {error}"
-                ))
-            })?;
+        self.reap_retired_options_refresh();
+        if let Some(active_job) = self.active_options_refresh.take() {
+            active_job.cancel();
+            if self.retired_options_refresh.is_none() {
+                self.retired_options_refresh = Some(active_job);
+                self.active_options_refresh = Some(DynamicOptionsRefreshJob::spawn(
+                    refresh_work,
+                    self.dynamic_options_wake_port.clone(),
+                )?);
+            } else {
+                self.active_options_refresh = Some(active_job);
+                self.pending_latest_options_refresh = Some(refresh_work);
+            }
+            return Ok(());
+        }
 
-        self.pending_options_refresh = Some(result_receiver);
+        self.active_options_refresh = Some(DynamicOptionsRefreshJob::spawn(
+            refresh_work,
+            self.dynamic_options_wake_port.clone(),
+        )?);
         Ok(())
     }
 
@@ -271,7 +426,9 @@ impl SettingsRuntime {
     /// Shell использует это для пробуждения idle loop под background polling.
     #[must_use]
     pub(crate) fn has_pending_options_refresh(&self) -> bool {
-        self.pending_options_refresh.is_some()
+        self.active_options_refresh.is_some()
+            || self.retired_options_refresh.is_some()
+            || self.pending_latest_options_refresh.is_some()
     }
 
     /// Подбирает результат фонового refresh-а, если он готов.
@@ -279,22 +436,39 @@ impl SettingsRuntime {
     /// Возвращает `true`, когда cache обновился и model была инвалидирована.
     /// Вызывается на каждом кадре перед сборкой `ui_model`; `try_recv` дешёвый.
     pub(crate) fn poll_dynamic_options_refresh(&mut self) -> bool {
-        let Some(result_receiver) = self.pending_options_refresh.as_ref() else {
+        self.reap_retired_options_refresh();
+
+        let Some(active_job) = self.active_options_refresh.as_mut() else {
+            if self.start_pending_latest_options_refresh().is_err() {
+                tracing::warn!("не удалось запустить latest dynamic options refresh");
+            }
             self.dynamic_options_wake_port
                 .acknowledge_abandoned_mailbox();
             return false;
         };
-        let drain = result_receiver.drain();
-        let Some(snapshots) = drain.completion else {
-            if drain.producer_disconnected_without_completion {
-                self.pending_options_refresh = None;
-                tracing::warn!("фоновый refresh dynamic options завершился без terminal result");
-            }
+        let Some(result) = active_job.take_finished_result() else {
             return false;
         };
-        self.pending_options_refresh = None;
-        self.apply_dynamic_options_snapshots(snapshots);
-        true
+        self.active_options_refresh = None;
+
+        let had_visible_mutation = match result {
+            DynamicOptionsRefreshCompletion::Snapshots(snapshots)
+                if self.pending_latest_options_refresh.is_none() =>
+            {
+                self.apply_dynamic_options_snapshots(snapshots);
+                true
+            }
+            DynamicOptionsRefreshCompletion::Snapshots(_)
+            | DynamicOptionsRefreshCompletion::Cancelled => false,
+            DynamicOptionsRefreshCompletion::Failed => {
+                tracing::warn!("фоновый refresh dynamic options завершился без terminal result");
+                false
+            }
+        };
+        if self.start_pending_latest_options_refresh().is_err() {
+            tracing::warn!("не удалось запустить latest dynamic options refresh");
+        }
+        had_visible_mutation
     }
 
     /// Кладёт готовые snapshots провайдеров в cache и инвалидирует visual model.
@@ -311,21 +485,114 @@ impl SettingsRuntime {
     /// Блокирующее ожидание фонового refresh-а для детерминированных тестов.
     #[cfg(test)]
     pub(crate) fn wait_for_options_refresh_for_test(&mut self) {
-        let Some(result_receiver) = self.pending_options_refresh.take() else {
-            return;
-        };
         let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            if let Some(snapshots) = result_receiver.drain().completion {
-                self.apply_dynamic_options_snapshots(snapshots);
-                return;
-            }
+        while self.has_pending_options_refresh() {
+            let _visible_mutation = self.poll_dynamic_options_refresh();
             assert!(
                 Instant::now() < deadline,
                 "фоновый refresh dynamic options должен завершиться в тесте"
             );
             std::thread::yield_now();
         }
+    }
+
+    /// Reap-ит единственный retired job без применения stale snapshots.
+    fn reap_retired_options_refresh(&mut self) {
+        let Some(retired_job) = self.retired_options_refresh.as_mut() else {
+            return;
+        };
+        if retired_job.take_finished_result().is_some() {
+            self.retired_options_refresh = None;
+        }
+    }
+
+    /// Запускает capacity-one latest work после освобождения active slot-а.
+    fn start_pending_latest_options_refresh(&mut self) -> SettingsResult<()> {
+        let Some(refresh_work) = self.pending_latest_options_refresh.take() else {
+            return Ok(());
+        };
+        if self.active_options_refresh.is_some() {
+            self.pending_latest_options_refresh = Some(refresh_work);
+            return Ok(());
+        }
+        self.active_options_refresh = Some(DynamicOptionsRefreshJob::spawn(
+            refresh_work,
+            self.dynamic_options_wake_port.clone(),
+        )?);
+        Ok(())
+    }
+
+    /// Закрывает refresh admission и bounded-завершает active/retired threads.
+    pub(crate) fn shutdown_dynamic_options_until(
+        &mut self,
+        deadline: crate::process_shutdown::ShutdownDeadline,
+    ) -> crate::process_shutdown::ProcessOwnerShutdownOutcome {
+        use crate::process_shutdown::ProcessOwnerShutdownOutcome;
+
+        if self.dynamic_options_shutdown_completed {
+            return ProcessOwnerShutdownOutcome::AlreadyCompleted;
+        }
+        self.dynamic_options_shutdown_started = true;
+        self.pending_latest_options_refresh = None;
+
+        // Сначала закрываем apply authority у обоих bounded slots; только затем
+        // первый join может начать расходовать общий deadline.
+        if let Some(active_job) = self.active_options_refresh.as_ref() {
+            active_job.cancel();
+        }
+        if let Some(retired_job) = self.retired_options_refresh.as_ref() {
+            retired_job.cancel();
+        }
+
+        let mut panicked_threads = 0;
+        let mut pending_threads = 0;
+        if let Some(active_job) = self.active_options_refresh.as_mut() {
+            accumulate_dynamic_options_shutdown(
+                active_job.shutdown_until(deadline),
+                &mut panicked_threads,
+                &mut pending_threads,
+            );
+            if active_job.join_handle.is_none() {
+                self.active_options_refresh = None;
+            }
+        }
+        if let Some(retired_job) = self.retired_options_refresh.as_mut() {
+            accumulate_dynamic_options_shutdown(
+                retired_job.shutdown_until(deadline),
+                &mut panicked_threads,
+                &mut pending_threads,
+            );
+            if retired_job.join_handle.is_none() {
+                self.retired_options_refresh = None;
+            }
+        }
+
+        if pending_threads > 0 {
+            if panicked_threads > 0 {
+                return ProcessOwnerShutdownOutcome::ThreadPanicked {
+                    panicked_threads,
+                    pending_threads,
+                };
+            }
+            return ProcessOwnerShutdownOutcome::TimedOut { pending_threads };
+        }
+
+        self.dynamic_options_shutdown_completed = true;
+        if panicked_threads > 0 {
+            ProcessOwnerShutdownOutcome::ThreadPanicked {
+                panicked_threads,
+                pending_threads: 0,
+            }
+        } else {
+            ProcessOwnerShutdownOutcome::Completed
+        }
+    }
+
+    /// Возвращает bounded число owned handles для focused tests.
+    #[cfg(test)]
+    pub(crate) fn dynamic_options_owned_thread_count(&self) -> usize {
+        usize::from(self.active_options_refresh.is_some())
+            + usize::from(self.retired_options_refresh.is_some())
     }
 
     /// Собирает request для provider-а из текущего draft value.
@@ -369,5 +636,28 @@ impl SettingsRuntime {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect()
+    }
+}
+
+/// Агрегирует shutdown outcome двух bounded settings slots.
+fn accumulate_dynamic_options_shutdown(
+    outcome: crate::process_shutdown::ProcessOwnerShutdownOutcome,
+    panicked_threads: &mut usize,
+    pending_threads: &mut usize,
+) {
+    use crate::process_shutdown::ProcessOwnerShutdownOutcome;
+
+    match outcome {
+        ProcessOwnerShutdownOutcome::Completed | ProcessOwnerShutdownOutcome::AlreadyCompleted => {}
+        ProcessOwnerShutdownOutcome::TimedOut {
+            pending_threads: pending,
+        } => *pending_threads += pending,
+        ProcessOwnerShutdownOutcome::ThreadPanicked {
+            panicked_threads: panicked,
+            pending_threads: pending,
+        } => {
+            *panicked_threads += panicked;
+            *pending_threads += pending;
+        }
     }
 }

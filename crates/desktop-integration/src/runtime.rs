@@ -1,4 +1,5 @@
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
 use crossbeam_channel::Receiver;
 use player_core::{PlayerCommand, PlayerSnapshot};
@@ -6,7 +7,7 @@ use player_core::{PlayerCommand, PlayerSnapshot};
 use crate::platform::{BackendControlCommand, BackendHandle};
 use crate::{
     DesktopCommandSink, DesktopIntegrationError, DesktopIntegrationEvent, DesktopIntegrationResult,
-    DesktopSnapshotChange, DesktopSnapshotView,
+    DesktopIntegrationShutdownOutcome, DesktopSnapshotChange, DesktopSnapshotView,
 };
 
 /// Read-only источник latest snapshot для platform backend-ов.
@@ -92,6 +93,9 @@ impl DesktopIntegration {
 
     /// Публикует latest player snapshot и уведомляет backend о signalled property changes.
     pub fn publish_snapshot(&self, snapshot: &PlayerSnapshot) -> DesktopIntegrationResult<()> {
+        // После terminal request snapshot storage тоже становится read-only: иначе UI мог бы
+        // наблюдать локальный commit, который уже невозможно экспортировать platform backend-у.
+        self.backend_handle.ensure_admission_open()?;
         let previous_snapshot = self.snapshot_handle.publish_snapshot(snapshot.clone())?;
         let previous_view = DesktopSnapshotView::from_player_snapshot(&previous_snapshot);
         let current_view = DesktopSnapshotView::from_player_snapshot(snapshot);
@@ -113,9 +117,19 @@ impl DesktopIntegration {
 
     /// Convenience wrapper для тестов и будущих platform adapters.
     pub fn send_command(&self, command: PlayerCommand) -> DesktopIntegrationResult<()> {
+        self.backend_handle.ensure_admission_open()?;
         self.backend_handle
             .command_sink()
             .send_desktop_command(command)
+    }
+
+    /// Terminal shutdown с общим абсолютным deadline process owner-а.
+    ///
+    /// При `TimedOut` backend handle остаётся внутри `DesktopIntegration`, поэтому следующий
+    /// вызов может безопасно reap-нуть завершившийся thread. После такого timeout-а Drop никогда
+    /// не выполняет blocking join: process owner обязан сохранить terminal lifecycle и выйти.
+    pub fn shutdown_until(&mut self, deadline: Instant) -> DesktopIntegrationShutdownOutcome {
+        self.backend_handle.shutdown_until(deadline)
     }
 
     /// Явно останавливает backend thread.
@@ -128,5 +142,64 @@ impl Drop for DesktopIntegration {
     /// Drop path не должен оставлять D-Bus/backend thread после закрытия app shell.
     fn drop(&mut self) {
         let _ = self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::thread;
+    use std::time::Duration;
+
+    use crossbeam_channel::unbounded;
+
+    use super::*;
+
+    /// Lifecycle test sink не отправляет команды настоящему player worker-у.
+    struct AcceptingCommandSink;
+
+    impl DesktopCommandSink for AcceptingCommandSink {
+        fn send_desktop_command(&self, _command: PlayerCommand) -> DesktopIntegrationResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn terminal_shutdown_closes_snapshot_admission_before_mutation() {
+        let snapshot_handle = LatestSnapshotHandle::new();
+        let mut published_snapshot = PlayerSnapshot::empty();
+        published_snapshot.source_label = Some("committed-before-shutdown".to_string());
+        snapshot_handle
+            .publish_snapshot(published_snapshot.clone())
+            .expect("test snapshot lock is healthy");
+
+        let (control_tx, control_rx) = unbounded();
+        let join_handle = thread::spawn(move || {
+            assert_eq!(control_rx.recv(), Ok(BackendControlCommand::Shutdown));
+        });
+        let (_event_tx, event_rx) = unbounded();
+        let backend_handle =
+            BackendHandle::threaded(Arc::new(AcceptingCommandSink), control_tx, join_handle);
+        let mut integration = DesktopIntegration {
+            snapshot_handle: snapshot_handle.clone(),
+            backend_handle,
+            event_rx,
+        };
+
+        assert_eq!(
+            integration.shutdown_until(Instant::now() + Duration::from_secs(1)),
+            DesktopIntegrationShutdownOutcome::Completed
+        );
+        let mut rejected_snapshot = PlayerSnapshot::empty();
+        rejected_snapshot.source_label = Some("must-not-be-published".to_string());
+        assert_eq!(
+            integration.publish_snapshot(&rejected_snapshot),
+            Err(DesktopIntegrationError::BackendAdmissionClosed)
+        );
+        assert_eq!(
+            snapshot_handle
+                .latest_snapshot()
+                .expect("test snapshot lock is healthy"),
+            published_snapshot
+        );
     }
 }

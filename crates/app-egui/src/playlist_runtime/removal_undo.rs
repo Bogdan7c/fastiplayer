@@ -60,6 +60,7 @@ pub(crate) enum RuntimeRemovalOutcome {
     StructuralRevisionExhausted,
     DomainRevisionExhausted,
     DeadlineOverflow,
+    LoadDecisionPending,
 }
 
 /// Typed Undo result сохраняет distinction expiry/invalidation/controller failure.
@@ -139,14 +140,26 @@ impl PlaylistRuntime {
         item_id: PlaylistItemId,
         now: Instant,
     ) -> RuntimeRemovalOutcome {
-        let outcome = self.controller.remove_item(item_id);
-        self.store_removal_outcome(outcome, now)
+        let Some(controller) = self.controller.as_mut() else {
+            return RuntimeRemovalOutcome::LoadDecisionPending;
+        };
+        let dirty_before = controller.dirty_revision();
+        let outcome = controller.remove_item(item_id);
+        let runtime_outcome = self.store_removal_outcome(outcome, now);
+        self.publish_controller_mutation_if_dirty(dirty_before);
+        runtime_outcome
     }
 
     /// Clear использует тот же last-action slot; empty no-op сохраняет прежний Undo.
     pub(crate) fn clear_playlist(&mut self, now: Instant) -> RuntimeRemovalOutcome {
-        let outcome = self.controller.clear_queue();
-        self.store_removal_outcome(outcome, now)
+        let Some(controller) = self.controller.as_mut() else {
+            return RuntimeRemovalOutcome::LoadDecisionPending;
+        };
+        let dirty_before = controller.dirty_revision();
+        let outcome = controller.clear_queue();
+        let runtime_outcome = self.store_removal_outcome(outcome, now);
+        self.publish_controller_mutation_if_dirty(dirty_before);
+        runtime_outcome
     }
 
     /// Remove Others сохраняет retained row и один shared snapshot.
@@ -155,8 +168,14 @@ impl PlaylistRuntime {
         retained_item_id: PlaylistItemId,
         now: Instant,
     ) -> RuntimeRemovalOutcome {
-        let outcome = self.controller.remove_other_items(retained_item_id);
-        self.store_removal_outcome(outcome, now)
+        let Some(controller) = self.controller.as_mut() else {
+            return RuntimeRemovalOutcome::LoadDecisionPending;
+        };
+        let dirty_before = controller.dirty_revision();
+        let outcome = controller.remove_other_items(retained_item_id);
+        let runtime_outcome = self.store_removal_outcome(outcome, now);
+        self.publish_controller_mutation_if_dirty(dirty_before);
+        runtime_outcome
     }
 
     fn store_removal_outcome(
@@ -215,12 +234,9 @@ impl PlaylistRuntime {
 
     /// Возвращает countdown model и exactly once освобождает expired/invalidated slot.
     pub(crate) fn removal_undo_status(&mut self, now: Instant) -> Option<RemovalUndoStatus> {
+        let controller = self.controller.as_ref()?;
         let availability = self.removal_undo.as_ref().map(|undo| {
-            undo.availability(
-                now,
-                self.controller.dirty_revision(),
-                self.controller.active_media(),
-            )
+            undo.availability(now, controller.dirty_revision(), controller.active_media())
         });
         match availability {
             Some(RemovalUndoAvailability::Available) => {
@@ -236,14 +252,14 @@ impl PlaylistRuntime {
 
     /// Undo до deadline восстанавливает exact queue/traversal/selection как новую revision.
     pub(crate) fn undo_last_removal(&mut self, now: Instant) -> RemovalUndoOutcome {
+        let Some(controller) = self.controller.as_mut() else {
+            return RemovalUndoOutcome::Unavailable;
+        };
+        let dirty_before = controller.dirty_revision();
         let Some(undo) = self.removal_undo.as_ref() else {
             return RemovalUndoOutcome::Unavailable;
         };
-        match undo.availability(
-            now,
-            self.controller.dirty_revision(),
-            self.controller.active_media(),
-        ) {
+        match undo.availability(now, controller.dirty_revision(), controller.active_media()) {
             RemovalUndoAvailability::Expired => {
                 self.removal_undo = None;
                 return RemovalUndoOutcome::Expired;
@@ -256,17 +272,19 @@ impl PlaylistRuntime {
         }
 
         let removal = undo.removal.clone();
-        match self.controller.restore_destructive_removal(removal) {
+        match controller.restore_destructive_removal(removal) {
             ControllerRemovalUndoOutcome::Restored {
                 selected_item_id,
                 reattached_active,
                 ..
             } => {
                 self.removal_undo = None;
-                RemovalUndoOutcome::Restored {
+                let outcome = RemovalUndoOutcome::Restored {
                     selected_item_id,
                     reattached_active,
-                }
+                };
+                self.publish_controller_mutation_if_dirty(dirty_before);
+                outcome
             }
             ControllerRemovalUndoOutcome::ActiveLineageChanged => {
                 self.removal_undo = None;
@@ -289,7 +307,12 @@ impl PlaylistRuntime {
         media_instance_id: MediaInstanceId,
         binding_generation: PlaylistBindingGeneration,
     ) -> Result<ControllerTerminalDrain, PlaylistControllerInvariantViolation> {
-        let drain = self.controller.on_installed(
+        let controller = self
+            .controller
+            .as_mut()
+            .ok_or(PlaylistControllerInvariantViolation::LoadDecisionPending)?;
+        let dirty_before = controller.dirty_revision();
+        let drain = controller.on_installed(
             request_id,
             player_request_id,
             media_instance_id,
@@ -302,6 +325,7 @@ impl PlaylistRuntime {
         {
             self.removal_undo = None;
         }
+        self.publish_controller_mutation_if_dirty(dirty_before);
         Ok(drain)
     }
 }

@@ -4,7 +4,7 @@
 //! чей bounded mailbox нужно неблокирующе опустошить. Сам payload сначала
 //! публикуется под mutex, и только затем producer поднимает atomic wake edge.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use winit::event_loop::EventLoopProxy;
@@ -60,6 +60,13 @@ pub(crate) struct ProgressPublishOutcome {
     pub(crate) replaced_pending_progress: bool,
     /// Состояние wake edge после публикации.
     pub(crate) wake_delivery: WakeDelivery,
+}
+
+impl ProgressPublishOutcome {
+    /// Позволяет owner adapter-у сохранить typed disconnect без доступа к mailbox internals.
+    pub(crate) const fn wake_delivery(self) -> WakeDelivery {
+        self.wake_delivery
+    }
 }
 
 /// Один неблокирующий UI drain owner mailbox-а.
@@ -140,6 +147,7 @@ struct AppWakePortInner {
     owner: AppWakeOwner,
     emitter: Arc<dyn WakeEmitter>,
     wake_pending: AtomicBool,
+    publish_epoch: AtomicU64,
     event_loop_closed: AtomicBool,
 }
 
@@ -150,6 +158,7 @@ impl AppWakePort {
                 owner,
                 emitter,
                 wake_pending: AtomicBool::new(false),
+                publish_epoch: AtomicU64::new(0),
                 event_loop_closed: AtomicBool::new(false),
             }),
         }
@@ -163,6 +172,12 @@ impl AppWakePort {
 
     /// Поднимает только false→true edge; payload должен быть опубликован раньше.
     pub(crate) fn request_wake(&self) -> WakeDelivery {
+        self.inner.publish_epoch.fetch_add(1, Ordering::AcqRel);
+        self.rearm_wake()
+    }
+
+    /// Receiver re-arm не считается новой публикацией и не создаёт ложный epoch.
+    fn rearm_wake(&self) -> WakeDelivery {
         if self.inner.event_loop_closed.load(Ordering::Acquire) {
             return WakeDelivery::EventLoopClosed;
         }
@@ -181,6 +196,10 @@ impl AppWakePort {
             self.inner.event_loop_closed.store(true, Ordering::Release);
             WakeDelivery::EventLoopClosed
         }
+    }
+
+    fn publish_epoch(&self) -> u64 {
+        self.inner.publish_epoch.load(Ordering::Acquire)
     }
 
     /// UI очистил текущий edge перед обязательной повторной проверкой mailbox-а.
@@ -327,6 +346,7 @@ impl<Progress, Completion> OwnerMailboxReceiver<Progress, Completion> {
         after_take: impl FnOnce(),
         after_clear: impl FnOnce(),
     ) -> OwnerMailboxDrain<Progress, Completion> {
+        let publish_epoch_before_drain = self.wake_port.publish_epoch();
         let drain = {
             let mut state = self
                 .state
@@ -356,9 +376,11 @@ impl<Progress, Completion> OwnerMailboxReceiver<Progress, Completion> {
                 || state.completion.is_some()
                 || state.producer_disconnect_pending
         };
-        if payload_arrived_during_drain {
+        let another_owner_mailbox_published_during_drain =
+            self.wake_port.publish_epoch() != publish_epoch_before_drain;
+        if payload_arrived_during_drain || another_owner_mailbox_published_during_drain {
             // Даже если producer уже успел re-arm-ить edge, request coalesce-ится.
-            let _delivery = self.wake_port.request_wake();
+            let _delivery = self.wake_port.rearm_wake();
         }
 
         drain
@@ -585,6 +607,26 @@ mod tests {
             new_publisher.publish_progress(2).wake_delivery,
             WakeDelivery::Armed
         );
+        assert_eq!(emitter.emits.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn shared_owner_mailboxes_rearm_when_sibling_publishes_during_drain() {
+        let emitter = Arc::new(RecordingEmitter {
+            emits: AtomicUsize::new(0),
+            fail: AtomicBool::new(false),
+        });
+        let wake_port = test_port(emitter.clone());
+        let (first_publisher, first_receiver) = owner_mailbox::<u32, ()>(wake_port.clone());
+        let (second_publisher, second_receiver) = owner_mailbox::<u32, ()>(wake_port);
+        first_publisher.publish_progress(1);
+
+        let first_drain = first_receiver.drain_with_after_take_hook(|| {
+            second_publisher.publish_progress(2);
+        });
+
+        assert_eq!(first_drain.latest_progress, Some(1));
+        assert_eq!(second_receiver.drain().latest_progress, Some(2));
         assert_eq!(emitter.emits.load(Ordering::Relaxed), 2);
     }
 }

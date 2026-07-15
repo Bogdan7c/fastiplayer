@@ -134,6 +134,10 @@ impl PlaylistSettingsOwner {
     }
 
     /// Инициализирует только новую runtime queue до будущего persisted-state restore.
+    #[allow(
+        dead_code,
+        reason = "Session 14 startup integration consumes this policy"
+    )]
     pub(super) fn initialize_new_queue_policy(&self, controller: &mut PlaylistController) {
         controller.set_error_behavior(controller_error_behavior(self.committed.error_behavior));
         controller.repeat_mode = match self.committed.playback_behavior {
@@ -141,6 +145,15 @@ impl PlaylistSettingsOwner {
             rustiplayer_config::PlaylistPlaybackBehavior::RepeatQueue => RepeatMode::RepeatQueue,
             rustiplayer_config::PlaylistPlaybackBehavior::RepeatOne => RepeatMode::RepeatOne,
         };
+    }
+
+    /// Persisted repeat/shuffle не заменяются config defaults; error policy runtime-only.
+    #[allow(
+        dead_code,
+        reason = "Session 14 startup integration consumes this policy"
+    )]
+    pub(super) fn initialize_restored_queue_policy(&self, controller: &mut PlaylistController) {
+        controller.set_error_behavior(controller_error_behavior(self.committed.error_behavior));
     }
 
     pub(super) fn stage(
@@ -259,6 +272,14 @@ impl PlaylistSettingsOwner {
     #[cfg(test)]
     pub(super) fn committed(&self) -> PlaylistConfig {
         self.committed
+    }
+
+    /// Session 14 подключает process-lifetime worker, не меняя discovery owner.
+    pub(super) fn install_save_debounce_port(
+        &mut self,
+        save_debounce_port: Box<dyn PlaylistSaveDebouncePort>,
+    ) {
+        self.save_debounce_port = save_debounce_port;
     }
 
     #[cfg(test)]

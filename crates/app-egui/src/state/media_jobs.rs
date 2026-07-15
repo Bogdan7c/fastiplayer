@@ -256,6 +256,29 @@ impl AppState {
         self.local_file_open_job.is_some()
     }
 
+    /// Передаёт renderer-bound local job process owner-у на время suspend.
+    ///
+    /// Suspend не является process shutdown: handle должен пережить уничтожение
+    /// `AppState`, а результат будет применён уже к следующей renderer generation.
+    pub(crate) fn take_local_file_open_job_for_suspend(&mut self) -> Option<LocalFileOpenJob> {
+        self.local_file_open_job.take()
+    }
+
+    /// Возвращает сохранённый process owner-ом local job после resume.
+    ///
+    /// При нарушении single-job invariant ownership возвращается вызывающему коду,
+    /// чтобы тот мог выполнить terminal shutdown без скрытого detach.
+    pub(crate) fn restore_local_file_open_job_after_resume(
+        &mut self,
+        transferred_job: LocalFileOpenJob,
+    ) -> LocalFileOpenRestoreOutcome {
+        if self.local_file_open_job.is_some() {
+            return LocalFileOpenRestoreOutcome::ExistingJob(Box::new(transferred_job));
+        }
+        self.local_file_open_job = Some(transferred_job);
+        LocalFileOpenRestoreOutcome::Restored
+    }
+
     /// Неблокирующе забирает события async открытия локального файла.
     pub fn poll_local_file_open_job(
         &mut self,

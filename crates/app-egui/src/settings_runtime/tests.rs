@@ -1,7 +1,10 @@
 use std::fs;
 use std::io::ErrorKind;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use player_core::{
@@ -166,6 +169,30 @@ impl settings_core::SettingOptionProvider for ScriptedOptionProvider {
             options.current = current_option_value(request.current_value, &options.options);
             options
         })
+    }
+}
+
+/// Provider, которым focused shutdown tests удерживают refresh threads активными.
+struct BlockingOptionProvider {
+    provider_id: OptionProviderId,
+    started_calls: Arc<AtomicUsize>,
+    release: Arc<AtomicBool>,
+}
+
+impl settings_core::SettingOptionProvider for BlockingOptionProvider {
+    fn provider_id(&self) -> OptionProviderId {
+        self.provider_id.clone()
+    }
+
+    fn options(
+        &self,
+        request: SettingOptionsRequest,
+    ) -> Result<SettingOptions, SettingOptionsError> {
+        self.started_calls.fetch_add(1, Ordering::AcqRel);
+        while !self.release.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        Ok(ready_audio_options(request.current_value, Vec::new()))
     }
 }
 
@@ -1128,6 +1155,66 @@ fn manual_refresh_updates_cached_dynamic_options() {
             .iter()
             .any(|option| option.id.as_str() == "cpal-0.15-name:USB%20DAC")
     );
+}
+
+#[test]
+fn dynamic_options_replacement_is_bounded_and_shutdown_retains_timed_out_handles() {
+    let config = custom_config_for_test();
+    let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test(config.clone()))
+        .expect("settings runtime должен построиться");
+    let started_calls = Arc::new(AtomicUsize::new(0));
+    let release = Arc::new(AtomicBool::new(false));
+    runtime.option_providers.insert(
+        audio_output_provider_id(),
+        Arc::new(BlockingOptionProvider {
+            provider_id: audio_output_provider_id(),
+            started_calls: Arc::clone(&started_calls),
+            release: Arc::clone(&release),
+        }),
+    );
+    let mut render_adapter =
+        RecordingRenderAdapter::from_config(&config).expect("adapter должен стартовать");
+
+    runtime
+        .handle_ui_actions(vec![SettingsUiAction::Open], &mut render_adapter)
+        .expect("open должен запустить первый refresh");
+    while started_calls.load(Ordering::Acquire) < 1 {
+        std::thread::yield_now();
+    }
+
+    for _ in 0..3 {
+        runtime
+            .handle_ui_actions(
+                vec![SettingsUiAction::RefreshOptions {
+                    provider_id: audio_output_provider_id(),
+                }],
+                &mut render_adapter,
+            )
+            .expect("replacement refresh должен сохранять bounded latest semantics");
+    }
+    assert!(
+        runtime.dynamic_options_owned_thread_count() <= 2,
+        "owner хранит не более active+retired handles"
+    );
+
+    assert!(matches!(
+        runtime.shutdown_dynamic_options_until(crate::process_shutdown::ShutdownDeadline::after(
+            Duration::from_millis(1)
+        )),
+        crate::process_shutdown::ProcessOwnerShutdownOutcome::TimedOut {
+            pending_threads: 1 | 2
+        }
+    ));
+    assert!(runtime.dynamic_options_owned_thread_count() > 0);
+
+    release.store(true, Ordering::Release);
+    assert_eq!(
+        runtime.shutdown_dynamic_options_until(crate::process_shutdown::ShutdownDeadline::after(
+            Duration::from_secs(1)
+        )),
+        crate::process_shutdown::ProcessOwnerShutdownOutcome::Completed
+    );
+    assert_eq!(runtime.dynamic_options_owned_thread_count(), 0);
 }
 
 #[test]

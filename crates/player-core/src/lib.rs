@@ -129,5 +129,6 @@ pub use state::PlaybackState;
 pub use worker::{
     MediaInstallControlReceipt, MediaInstallControlReceiptError, PlayerCommandSender,
     PlayerRenderError, PlayerRenderErrorKind, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent,
-    PlayerWorkerJoinError, PlayerWorkerSendError,
+    PlayerWorkerJoinError, PlayerWorkerSendError, PlayerWorkerShutdownDeadline,
+    PlayerWorkerShutdownOutcome, PlayerWorkerShutdownRequestOutcome,
 };

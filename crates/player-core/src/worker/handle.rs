@@ -17,6 +17,7 @@ impl PlayerWorker {
         let (event_tx, event_rx) = bounded(EVENT_CHANNEL_CAPACITY);
         let (render_bridge, render_bridge_client) = RenderLeaseBridge::new();
         let (shutdown_tx, shutdown_rx) = bounded(1);
+        let admission_closed = Arc::new(AtomicBool::new(false));
         let decoder_thread_config = config.decoder_thread_config;
         let audio_decoder_factory = Arc::clone(&config.audio_decoder_factory);
         let audio_output_factory = Arc::clone(&config.audio_output_factory);
@@ -27,6 +28,7 @@ impl PlayerWorker {
             command_tx,
             playback_intent_control: Arc::clone(&playback_intent_control),
             playback_intent_wake_tx: playback_intent_wake_tx.clone(),
+            admission_closed,
         };
         let snapshot_rx_for_worker = snapshot_rx.clone();
 
@@ -87,6 +89,7 @@ impl PlayerWorker {
             decoder_thread_config,
             shutdown_tx,
             join_handle: Some(join_handle),
+            terminal_state: PlayerWorkerTerminalState::Running,
         })
     }
 
@@ -121,11 +124,10 @@ impl PlayerWorker {
     ) -> Result<Option<PlayerRuntimeBoundaryActivity>, PlayerRuntimeApplyError> {
         let (response_tx, response_rx) = bounded(1);
         self.command_sender
-            .command_tx
-            .try_send(WorkerCommand::CheckRuntimeReconfigureBoundary { response_tx })
+            .try_send_worker_command(WorkerCommand::CheckRuntimeReconfigureBoundary { response_tx })
             .map_err(|error| match error {
-                TrySendError::Full(_) => PlayerRuntimeApplyError::Backpressure,
-                TrySendError::Disconnected(_) => PlayerRuntimeApplyError::Disconnected,
+                PlayerWorkerSendError::Full => PlayerRuntimeApplyError::Backpressure,
+                PlayerWorkerSendError::Disconnected => PlayerRuntimeApplyError::Disconnected,
             })?;
 
         response_rx
@@ -207,9 +209,7 @@ impl PlayerWorker {
         error: PlayerError,
     ) -> Result<(), PlayerWorkerSendError> {
         self.command_sender
-            .command_tx
-            .try_send(WorkerCommand::MediaOpenFailed { request, error })
-            .map_err(PlayerWorkerSendError::from)
+            .try_send_worker_command(WorkerCommand::MediaOpenFailed { request, error })
     }
 
     /// Устанавливает video backend и ждёт фактический worker-side commit/rollback.
@@ -221,16 +221,15 @@ impl PlayerWorker {
     ) -> Result<(), PlayerRuntimeApplyError> {
         let (response_tx, response_rx) = bounded(1);
         self.command_sender
-            .command_tx
-            .try_send(WorkerCommand::SetVideoBackend {
+            .try_send_worker_command(WorkerCommand::SetVideoBackend {
                 started_backend,
                 intent,
                 accepted_decoder_config,
                 response_tx,
             })
             .map_err(|error| match error {
-                TrySendError::Full(_) => PlayerRuntimeApplyError::Backpressure,
-                TrySendError::Disconnected(_) => PlayerRuntimeApplyError::Disconnected,
+                PlayerWorkerSendError::Full => PlayerRuntimeApplyError::Backpressure,
+                PlayerWorkerSendError::Disconnected => PlayerRuntimeApplyError::Disconnected,
             })?;
 
         response_rx
@@ -244,9 +243,7 @@ impl PlayerWorker {
         reason: String,
     ) -> Result<(), PlayerWorkerSendError> {
         self.command_sender
-            .command_tx
-            .try_send(WorkerCommand::RejectPendingVideoBackend { reason })
-            .map_err(PlayerWorkerSendError::from)
+            .try_send_worker_command(WorkerCommand::RejectPendingVideoBackend { reason })
     }
 
     /// Передаёт capability report из shell/backend layer в worker.
@@ -255,17 +252,13 @@ impl PlayerWorker {
         capabilities: SystemCapabilities,
     ) -> Result<(), PlayerWorkerSendError> {
         self.command_sender
-            .command_tx
-            .try_send(WorkerCommand::SetSystemCapabilities(capabilities))
-            .map_err(PlayerWorkerSendError::from)
+            .try_send_worker_command(WorkerCommand::SetSystemCapabilities(capabilities))
     }
 
     /// Передаёт fatal render error в player state machine.
     pub fn mark_fatal_error(&self, error: PlayerError) -> Result<(), PlayerWorkerSendError> {
         self.command_sender
-            .command_tx
-            .try_send(WorkerCommand::MarkFatalError(error))
-            .map_err(PlayerWorkerSendError::from)
+            .try_send_worker_command(WorkerCommand::MarkFatalError(error))
     }
 
     /// Передаёт typed render bridge error в worker-owned player session.
@@ -274,9 +267,7 @@ impl PlayerWorker {
         error: PlayerRenderError,
     ) -> Result<(), PlayerWorkerSendError> {
         self.command_sender
-            .command_tx
-            .try_send(WorkerCommand::RenderError(error))
-            .map_err(PlayerWorkerSendError::from)
+            .try_send_worker_command(WorkerCommand::RenderError(error))
     }
 
     /// Возвращает последний snapshot, не блокируя UI.
@@ -328,26 +319,5 @@ impl PlayerWorker {
         request: ExactMediaTransportRequest,
     ) -> Result<ExactMediaTransportReceipt, PlayerWorkerSendError> {
         self.command_sender.exact_media_transport(request)
-    }
-
-    /// Запрашивает shutdown и ждёт завершения worker thread.
-    pub fn shutdown(&mut self) -> Result<(), PlayerWorkerJoinError> {
-        let _ = self.try_send_command(PlayerCommand::Shutdown);
-        let _ = self.shutdown_tx.try_send(());
-
-        let Some(join_handle) = self.join_handle.take() else {
-            return Ok(());
-        };
-
-        join_handle.join().map_err(|_| PlayerWorkerJoinError)
-    }
-}
-
-impl Drop for PlayerWorker {
-    /// Drop path не должен оставлять фоновые player threads.
-    fn drop(&mut self) {
-        if let Err(error) = self.shutdown() {
-            warn!(error = %error, "Player worker shutdown failed during drop");
-        }
     }
 }

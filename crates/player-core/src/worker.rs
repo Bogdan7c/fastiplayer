@@ -1,5 +1,6 @@
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -62,11 +63,16 @@ mod runtime_publish;
 mod runtime_wait;
 mod sender;
 mod staged_media_install;
+mod terminal;
 #[cfg(test)]
 mod tests;
 
 use staged_media_install::{MediaInstallControlCommand, StagePreparedMediaInstallCommand};
 pub use staged_media_install::{MediaInstallControlReceipt, MediaInstallControlReceiptError};
+use terminal::PlayerWorkerTerminalState;
+pub use terminal::{
+    PlayerWorkerShutdownDeadline, PlayerWorkerShutdownOutcome, PlayerWorkerShutdownRequestOutcome,
+};
 
 /// Редкий fallback wakeup активного pipeline, когда нет точного media deadline-а.
 const DEFAULT_WORKER_COARSE_WAKEUP_INTERVAL: Duration = Duration::from_millis(250);
@@ -477,6 +483,9 @@ pub struct PlayerCommandSender {
 
     /// Coalesced capacity-one wake player owner-а для post-commit exact apply.
     playback_intent_wake_tx: Sender<()>,
+
+    /// Shared terminal gate закрывает admission у всех ранее клонированных sender-ов.
+    admission_closed: Arc<AtomicBool>,
 }
 
 /// Playback worker boundary, которым владеет app shell.
@@ -504,6 +513,9 @@ pub struct PlayerWorker {
 
     /// Join handle фонового потока.
     join_handle: Option<thread::JoinHandle<()>>,
+
+    /// Явная state machine отделяет первый request, timeout и окончательный join.
+    terminal_state: PlayerWorkerTerminalState,
 }
 
 /// Внутренние команды worker boundary.

@@ -1,6 +1,25 @@
 use super::*;
 
 impl PlayerCommandSender {
+    /// Проверяет общий terminal gate до любой новой owner mutation/admission.
+    fn ensure_admission_open(&self) -> Result<(), PlayerWorkerSendError> {
+        if self.admission_closed.load(Ordering::Acquire) {
+            return Err(PlayerWorkerSendError::Disconnected);
+        }
+        Ok(())
+    }
+
+    /// Единая неблокирующая отправка ordinary worker command с terminal admission gate.
+    pub(super) fn try_send_worker_command(
+        &self,
+        command: WorkerCommand,
+    ) -> Result<(), PlayerWorkerSendError> {
+        self.ensure_admission_open()?;
+        self.command_tx
+            .try_send(command)
+            .map_err(PlayerWorkerSendError::from)
+    }
+
     /// Ставит exact-instance transport и возвращает receipt фактического owner apply.
     pub fn exact_media_transport(
         &self,
@@ -8,12 +27,10 @@ impl PlayerCommandSender {
     ) -> Result<ExactMediaTransportReceipt, PlayerWorkerSendError> {
         // Capacity-one reply хранит ровно один authoritative outcome без polling/FIFO.
         let (outcome_tx, outcome_rx) = bounded(1);
-        self.command_tx
-            .try_send(WorkerCommand::ExactMediaTransport {
-                request,
-                outcome_tx,
-            })
-            .map_err(PlayerWorkerSendError::from)?;
+        self.try_send_worker_command(WorkerCommand::ExactMediaTransport {
+            request,
+            outcome_tx,
+        })?;
         Ok(ExactMediaTransportReceipt::new(
             request.media_instance_id,
             outcome_rx,
@@ -27,12 +44,10 @@ impl PlayerCommandSender {
     ) -> Result<InstalledMediaStateRestoreReceipt, PlayerWorkerSendError> {
         let request_id = restore.request_id;
         let (outcome_tx, outcome_rx) = bounded(1);
-        self.command_tx
-            .try_send(WorkerCommand::RestoreInstalledMediaState {
-                restore,
-                outcome_tx,
-            })
-            .map_err(PlayerWorkerSendError::from)?;
+        self.try_send_worker_command(WorkerCommand::RestoreInstalledMediaState {
+            restore,
+            outcome_tx,
+        })?;
         Ok(InstalledMediaStateRestoreReceipt::new(
             request_id, outcome_rx,
         ))
@@ -59,22 +74,20 @@ impl PlayerCommandSender {
                 intent: initial_intent,
             },
         );
-        let send_result = self
-            .command_tx
-            .try_send(WorkerCommand::StagePreparedMediaInstall(Box::new(
-                StagePreparedMediaInstallCommand {
-                    request_id,
-                    prepared_media,
-                    initial_intent,
-                    initial_intent_revision,
-                    install_port,
-                    video_resource_port,
-                },
-            )));
+        let send_result = self.try_send_worker_command(WorkerCommand::StagePreparedMediaInstall(
+            Box::new(StagePreparedMediaInstallCommand {
+                request_id,
+                prepared_media,
+                initial_intent,
+                initial_intent_revision,
+                install_port,
+                video_resource_port,
+            }),
+        ));
         if let Err(error) = send_result {
             self.playback_intent_control
                 .rollback_staged_registration(registration);
-            return Err(PlayerWorkerSendError::from(error));
+            return Err(error);
         }
         Ok(receipt)
     }
@@ -122,14 +135,12 @@ impl PlayerCommandSender {
         request_id: MediaInstallRequestId,
     ) -> Result<MediaInstallControlReceipt, PlayerWorkerSendError> {
         let (receipt, outcome_tx) = MediaInstallControlReceipt::new(request_id);
-        self.command_tx
-            .try_send(WorkerCommand::MediaInstallControl(
-                MediaInstallControlCommand {
-                    control,
-                    outcome_tx,
-                },
-            ))
-            .map_err(PlayerWorkerSendError::from)?;
+        self.try_send_worker_command(WorkerCommand::MediaInstallControl(
+            MediaInstallControlCommand {
+                control,
+                outcome_tx,
+            },
+        ))?;
         Ok(receipt)
     }
 
@@ -140,6 +151,7 @@ impl PlayerCommandSender {
         request_id: MediaInstallRequestId,
     ) -> Result<MediaInstallControlReceipt, PlayerWorkerSendError> {
         let (receipt, outcome_tx) = MediaInstallControlReceipt::new(request_id);
+        self.ensure_admission_open()?;
         self.command_tx
             .send(WorkerCommand::MediaInstallControl(
                 MediaInstallControlCommand {
@@ -162,14 +174,12 @@ impl PlayerCommandSender {
         autoplay: bool,
     ) -> Result<MediaInstallReceipt, PlayerWorkerSendError> {
         let (receipt, install_port) = MediaInstallReceipt::new(request_id);
-        self.command_tx
-            .try_send(WorkerCommand::LoadPreparedMedia {
-                request_id,
-                prepared_media,
-                autoplay,
-                install_port,
-            })
-            .map_err(PlayerWorkerSendError::from)?;
+        self.try_send_worker_command(WorkerCommand::LoadPreparedMedia {
+            request_id,
+            prepared_media,
+            autoplay,
+            install_port,
+        })?;
         Ok(receipt)
     }
 
@@ -181,6 +191,7 @@ impl PlayerCommandSender {
         &self,
         update: PlaybackIntentUpdate,
     ) -> Result<PlaybackIntentUpdateReceipt, PlayerWorkerSendError> {
+        self.ensure_admission_open()?;
         let submitted = self.playback_intent_control.submit_update(update);
         if submitted.wake_player_owner {
             match self.playback_intent_wake_tx.try_send(()) {
@@ -198,11 +209,13 @@ impl PlayerCommandSender {
     pub(super) fn for_tests(command_tx: Sender<WorkerCommand>) -> (Self, Receiver<()>) {
         let playback_intent_control = Arc::new(PlaybackIntentControl::default());
         let (playback_intent_wake_tx, playback_intent_wake_rx) = bounded(1);
+        let admission_closed = Arc::new(AtomicBool::new(false));
         (
             Self {
                 command_tx,
                 playback_intent_control,
                 playback_intent_wake_tx,
+                admission_closed,
             },
             playback_intent_wake_rx,
         )
@@ -210,9 +223,7 @@ impl PlayerCommandSender {
 
     /// Отправляет команду без блокировки render/UI thread.
     pub fn try_send(&self, command: PlayerCommand) -> Result<(), PlayerWorkerSendError> {
-        self.command_tx
-            .try_send(WorkerCommand::Player(command))
-            .map_err(PlayerWorkerSendError::from)
+        self.try_send_worker_command(WorkerCommand::Player(command))
     }
 
     /// Применяет committed runtime settings и ждёт реальный worker report.
@@ -224,6 +235,10 @@ impl PlayerCommandSender {
         update: PlayerRuntimeSettingsUpdate,
     ) -> PlayerRuntimeApplyResult {
         let (response_tx, response_rx) = bounded(1);
+
+        if self.ensure_admission_open().is_err() {
+            return Err(PlayerRuntimeApplyError::Disconnected);
+        }
 
         match self
             .command_tx

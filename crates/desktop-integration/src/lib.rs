@@ -11,6 +11,7 @@ mod error;
 mod event;
 mod platform;
 mod runtime;
+mod shutdown;
 mod snapshot;
 
 pub use command::{
@@ -20,6 +21,7 @@ pub use command::{
 pub use error::{DesktopIntegrationError, DesktopIntegrationResult};
 pub use event::{DesktopBackendKind, DesktopIntegrationEvent};
 pub use runtime::{DesktopIntegration, LatestSnapshotHandle, LatestSnapshotSource};
+pub use shutdown::{DesktopIntegrationShutdownOutcome, DesktopIntegrationShutdownTransportFailure};
 pub use snapshot::{
     DesktopMetadata, DesktopPlaybackStatus, DesktopSnapshotChange, DesktopSnapshotView,
 };

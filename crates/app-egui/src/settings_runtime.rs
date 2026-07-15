@@ -49,7 +49,7 @@ use settings_core::{
 
 #[cfg(test)]
 use crate::app_wake::AppWakeOwner;
-use crate::app_wake::{AppWakePort, OwnerMailboxReceiver};
+use crate::app_wake::AppWakePort;
 use crate::render_settings::{
     color_pipeline_settings_from_config, hdr_to_sdr_settings_from_config,
 };
@@ -135,11 +135,20 @@ pub(crate) struct SettingsRuntime {
     /// Wake port process shell-а для каждого нового options refresh mailbox-а.
     dynamic_options_wake_port: AppWakePort,
 
-    /// Активный фоновый refresh dynamic options. Опрос провайдеров (например,
-    /// CPAL/ALSA устройств) занимает сотни мс и НЕ должен блокировать UI-поток
-    /// в кадре открытия панели; результат подбирается poll-ом перед сборкой model.
-    pending_options_refresh:
-        Option<OwnerMailboxReceiver<(), Vec<(OptionProviderId, SettingOptions)>>>,
+    /// Последний запущенный refresh, результат которого ещё может обновить cache.
+    active_options_refresh: Option<dynamic_options::DynamicOptionsRefreshJob>,
+
+    /// Один cooperative-cancelled replacement сохраняет JoinHandle до reap.
+    retired_options_refresh: Option<dynamic_options::DynamicOptionsRefreshJob>,
+
+    /// Capacity-one latest request не создаёт третий параллельный thread.
+    pending_latest_options_refresh: Option<dynamic_options::DynamicOptionsRefreshWork>,
+
+    /// Terminal shutdown запрещает admission новых refresh requests.
+    dynamic_options_shutdown_started: bool,
+
+    /// Повторный terminal вызов различается с первым успешным завершением.
+    dynamic_options_shutdown_completed: bool,
 
     /// Последняя попытка отправить preview update; pacing берётся из committed config.
     last_preview_sent_at: Option<Instant>,
@@ -186,7 +195,11 @@ impl SettingsRuntime {
             option_providers,
             option_cache: BTreeMap::new(),
             dynamic_options_wake_port,
-            pending_options_refresh: None,
+            active_options_refresh: None,
+            retired_options_refresh: None,
+            pending_latest_options_refresh: None,
+            dynamic_options_shutdown_started: false,
+            dynamic_options_shutdown_completed: false,
             last_preview_sent_at: None,
             ui_model_cache: None,
             visual_hold: false,
