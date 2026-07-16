@@ -130,16 +130,25 @@ impl PlaylistRuntime {
             .expect("controller checked above")
             .begin_authorization_dispatch(request_id)
             .map_err(PlaylistMediaOpenGateError::ControllerInvariant)?;
-        let resolution = self
-            .media_open
-            .authorize_ready(request_id)
-            .map_err(PlaylistMediaOpenGateError::Coordinator)?;
+        let authorization = self.media_open.authorize_ready(request_id);
+        let resolution = match &authorization {
+            Ok(resolution) => *resolution,
+            Err(_) => self
+                .media_open
+                .snapshot()
+                .and_then(|snapshot| snapshot.authorization_resolution)
+                .ok_or(PlaylistMediaOpenGateError::ControllerInvariant(
+                    super::controller::PlaylistControllerInvariantViolation::MissingAuthorizationResolution,
+                ))?,
+        };
         self.controller
             .as_mut()
             .expect("controller remains installed")
             .resolve_authorization_dispatch(request_id, resolution)
             .map_err(PlaylistMediaOpenGateError::ControllerInvariant)?;
-        Ok(resolution)
+        authorization
+            .map(|_| resolution)
+            .map_err(PlaylistMediaOpenGateError::Coordinator)
     }
 
     /// После exact target-only commit запускает independent sibling scope, если policy разрешает.

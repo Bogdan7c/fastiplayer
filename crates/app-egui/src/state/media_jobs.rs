@@ -10,19 +10,6 @@ impl AppState {
         self.player_worker.command_sender()
     }
 
-    /// Загружает локальный файл через playback worker.
-    pub fn load_file(
-        &mut self,
-        admitted_open: crate::playlist_runtime::AdmittedLocalFileOpen,
-        _playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-        _renderer: &render_wgpu_shell::Renderer,
-    ) {
-        self.start_admitted_queue_replacement(
-            crate::playlist_runtime::AdmittedQueueReplacementIntent::LocalFile(admitted_open),
-        );
-        self.mark_pending_worker_redraw();
-    }
-
     /// Доставляет уже подготовленный локальный media в worker после async UI opening-а.
     pub(crate) fn load_prepared_local_file(
         &mut self,
@@ -70,77 +57,6 @@ impl AppState {
         {
             warn!(error, "Target установлен, но sibling discovery не запущен");
         }
-        true
-    }
-
-    /// Загружает YouTube demuxer без долговременного database/cache слоя.
-    pub fn load_youtube_demuxer(
-        &mut self,
-        source_locator: service_youtube::YoutubeMediaLocator,
-        label: String,
-        demuxer: Box<dyn symphonia_demux::Demuxer + Send>,
-        selected_stream_identity: service_youtube::YoutubeSelectedStreamIdentity,
-        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
-    ) -> bool {
-        let autoplay = self.committed_config_snapshot.autoplay_for_new_media();
-        let prepared_media = PreparedMedia::from_external_label(label, demuxer);
-        let source = ActiveMediaSource::YouTubeUrl {
-            source_locator: source_locator.clone(),
-            selected_stream_identity,
-        };
-        let prepared_input = PreparedSingleMediaOpen::new(
-            prepared_media,
-            source.clone(),
-            crate::media_open::SafeMediaLabel::from_service_safe_label(source_locator.safe_label()),
-        );
-        if let Err(error) = self.install_prepared_media_strong(
-            playlist_runtime,
-            renderer,
-            prepared_input,
-            player_core::PlaybackIntent::from_autoplay(autoplay),
-        ) {
-            warn!(error = %error, "Не удалось отправить YouTube demuxer в worker");
-            self.set_startup_error(format!(
-                "WorkerUnavailable: YouTube worker недоступен для {source_locator}: {error}"
-            ));
-            return false;
-        }
-
-        self.record_installed_media_source(source);
-        true
-    }
-
-    /// Загружает подготовленный direct media URL и запоминает восстановимый source intent.
-    pub fn load_prepared_direct_media(
-        &mut self,
-        source_locator: service_direct_media::DirectMediaUrl,
-        label: String,
-        prepared_media: PreparedMedia,
-        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
-    ) -> bool {
-        let autoplay = self.committed_config_snapshot.autoplay_for_new_media();
-        let source = ActiveMediaSource::DirectMediaUrl(source_locator.clone());
-        let prepared_input = PreparedSingleMediaOpen::new(
-            prepared_media,
-            source.clone(),
-            crate::media_open::SafeMediaLabel::from_service_safe_label(source_locator.safe_label()),
-        );
-        if let Err(error) = self.install_prepared_media_strong(
-            playlist_runtime,
-            renderer,
-            prepared_input,
-            player_core::PlaybackIntent::from_autoplay(autoplay),
-        ) {
-            warn!(error = %error, label = %label, "Не удалось отправить внешний media source в worker");
-            self.set_startup_error(format!(
-                "WorkerUnavailable: direct media worker недоступен для {label}: {error}"
-            ));
-            return false;
-        }
-
-        self.record_installed_media_source(source);
         true
     }
 

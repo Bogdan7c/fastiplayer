@@ -2,7 +2,7 @@
 
 ## Границы владения
 
-- `app-egui::app_instance` владеет typed `ProcessArgs`, platform-neutral `AppInstanceLease` и fake-able platform adapter. Обязательный порядок bootstrap: args_os parse → trusted `ConfigPaths` discovery → lease `rustiplayer.instance.lock` → config load/create → playlist state inspection и media preparation → transfer lease в `AppShell`.
+- `app-egui::app_instance` владеет typed `ProcessArgs`, platform-neutral `AppInstanceLease` и fake-able platform adapter. Фактический порядок до Session 17: args_os parse → trusted `ConfigPaths` discovery → lease `rustiplayer.instance.lock` → config load/create и typed CLI classification → transfer lease + optional `InitialMedia` в `AppShell`; уже `AppShell::new` запускает playlist-state inspection, а CLI media preparation начинается после `restore_runtime`. Contention и остальные pre-lease failures поэтому не достигают state/media preparation.
 - Linux-v1 adapter использует `File::try_lock`, 0700/0600, no-follow open, regular-file/current-effective-user validation, stable descriptor/path inode, no unlink и explicit close-on-exec. Contention и unsupported platform завершаются до config/state/media/player/window/MPRIS side effects.
 - `PlaylistRuntime`, а не renderer-bound `AppState`, владеет startup load gate, `PlaylistStateStore`, save worker, dirty snapshots, warnings/retry и shutdown state. `ConfigPaths::playlist_state_path` строит `playlist-state.json`; путь не входит в AppConfig TOML.
 - До typed load decision controller физически отсутствует, allocator gate закрыт, startup media остаётся ID-less draft и player staging/install/domain commit/save/quarantine запрещены.
@@ -29,3 +29,7 @@
 - D79 pending confirmation теперь является process-lifetime transient state `PlaylistRuntime`: оно не сериализуется, не создаёт dirty revision, переживает renderer/AppState recreation и отменяется process shutdown-ом.
 - Ранний in-app open до load decision использует существующий D65 startup draft replacement: restore items apply superseded, allocator decision сохраняется, provisional Item ID/player commit до gate не возникает.
 - Полный контракт: `mem:app-egui/queue-replacement-confirmation-s14a`.
+
+
+## Session 17 startup continuation (2026-07-16)
+- Startup load gate теперь полностью интегрирован с parallel CLI preparation, unopened restored fallback, protected runtime-only generation и post-gate bounded retained actions. Writer/allocator invariants не ослаблены. Полный контракт: `mem:app-egui/startup-orchestration-s17`.

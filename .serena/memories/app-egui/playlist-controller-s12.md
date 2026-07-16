@@ -31,3 +31,7 @@ Session 12 completed PASS on 2026-07-15. This memory extends `mem:app-egui/playl
 - D58 cancellation clears the matching wait/latch/request action and traversal priority authority while the discovery bulk job remains alive. Cancel/fatal scan terminal clears matching continuation without reevaluation or resurrection; completed/limit terminal resolves matching wait as typed exhaustion.
 - Successful readiness still returns only the existing planned manual/automatic install. D08 reservation/authorization/Installed remains the sole commit path, and the automatic D03 plan remains a fixed committed-ID snapshot that late admission cannot expand.
 - Focused Session 15A coverage adds same/opposite coalescing, exact non-shuffle readiness once, responsive-shuffle admission/no-target retention, stale/cancel rejection, no pre-Installed queue/dirty mutation, and monotonic marker revision/direction checks. Next allowed playlist work is Session 16.
+
+
+## Session 17 restore/startup continuation (2026-07-16)
+- Controller получил intent-named restored-current boundary и bounded paused Stop/Skip chain; post-gate D65 actions удерживаются до authoritative cancel/enqueue winner, а queue/current/active identity коммитятся только через existing D08/Installed contract. Полный контракт: `mem:app-egui/startup-orchestration-s17`.

@@ -507,6 +507,10 @@ impl AppShell {
             || self
                 .app_state
                 .as_ref()
+                .is_some_and(AppState::has_pending_prepared_media_strong)
+            || self
+                .app_state
+                .as_ref()
                 .is_some_and(AppState::has_pending_local_file_open)
             || self.settings_runtime.has_pending_options_refresh()
             || self
@@ -535,8 +539,16 @@ impl AppShell {
             }
             _ => false,
         };
+        let startup_changed = match (self.app_state.as_mut(), self.renderer.as_ref()) {
+            (Some(app_state), Some(renderer)) => self.startup_media.poll_startup_jobs(
+                app_state,
+                &mut self.playlist_runtime,
+                renderer,
+            ),
+            _ => false,
+        };
         let _resume_status = self.playlist_runtime.suspended_media_status();
-        persistence_changed || discovery_changed || resume_changed
+        persistence_changed || discovery_changed || resume_changed || startup_changed
     }
 }
 
@@ -736,6 +748,7 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
                     return;
                 }
                 let has_pending_background_job = self.startup_media.has_pending_startup_job()
+                    || app_state.has_pending_prepared_media_strong()
                     || app_state.has_pending_local_file_open()
                     || self.settings_runtime.has_pending_options_refresh()
                     || self

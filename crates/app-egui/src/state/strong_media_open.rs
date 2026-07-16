@@ -3,6 +3,9 @@
 //! Модуль владеет orchestration, но не player/session данными: coordinator хранит
 //! request phases, player — atomic install, а `AppState` — renderer pointers.
 
+mod pending;
+pub(super) use pending::PendingStrongMediaOpen;
+
 use std::num::NonZeroU64;
 use std::sync::Arc;
 
@@ -38,7 +41,13 @@ pub(crate) struct PreparedSingleMediaOpen {
     prepared_media: PreparedMedia,
     source: ActiveMediaSource,
     safe_label: SafeMediaLabel,
-    queue_replacement: Option<playlist_core::PlaylistItemDraft>,
+    playlist_target: Option<PreparedPlaylistTarget>,
+}
+
+/// App intent определяет domain reservation, не устройство coordinator-а.
+enum PreparedPlaylistTarget {
+    QueueReplacement(playlist_core::PlaylistItemDraft),
+    RestoredCurrent(crate::playlist_runtime::StartupRestoreTarget),
 }
 
 impl PreparedSingleMediaOpen {
@@ -52,7 +61,7 @@ impl PreparedSingleMediaOpen {
             prepared_media,
             source,
             safe_label,
-            queue_replacement: None,
+            playlist_target: None,
         }
     }
 
@@ -67,7 +76,22 @@ impl PreparedSingleMediaOpen {
             prepared_media,
             source,
             safe_label,
-            queue_replacement: Some(target_draft),
+            playlist_target: Some(PreparedPlaylistTarget::QueueReplacement(target_draft)),
+        }
+    }
+
+    /// Restored row уже имеет stable Item ID; traversal коммитится только после Installed.
+    pub(crate) fn restored_current(
+        prepared_media: PreparedMedia,
+        source: ActiveMediaSource,
+        safe_label: SafeMediaLabel,
+        target: crate::playlist_runtime::StartupRestoreTarget,
+    ) -> Self {
+        Self {
+            prepared_media,
+            source,
+            safe_label,
+            playlist_target: Some(PreparedPlaylistTarget::RestoredCurrent(target)),
         }
     }
 }
@@ -78,6 +102,26 @@ pub(crate) struct InstalledSingleMediaOpen {
     pub(crate) completion: MediaInstallCompletion,
     pub(crate) source: ActiveMediaSource,
     descriptor: Box<PreparedMediaDescriptor>,
+}
+
+/// Результат одного неблокирующего шага renderer-bound strong install.
+pub(crate) enum StrongMediaOpenPoll {
+    /// Владелец receipt ещё не опубликовал следующий authoritative outcome.
+    Pending,
+    /// Транзакция завершилась exactly once и больше не принадлежит `AppState`.
+    Installed(Box<InstalledSingleMediaOpen>),
+    /// Typed terminal failure сохраняет barrier classification для startup owner-а.
+    Failed(Box<StrongMediaOpenError>),
+}
+
+impl StrongMediaOpenPoll {
+    /// Нормализует внутренний `Result`, не раздувая pending enum большим payload-ом.
+    fn completed(result: Result<InstalledSingleMediaOpen, StrongMediaOpenError>) -> Self {
+        match result {
+            Ok(installed) => Self::Installed(Box::new(installed)),
+            Err(error) => Self::Failed(Box::new(error)),
+        }
+    }
 }
 
 /// Typed failure не смешивает transport acceptance с terminal install outcome.
@@ -110,6 +154,21 @@ pub(crate) enum StrongMediaOpenError {
 }
 
 impl StrongMediaOpenError {
+    /// Terminal request correlation нужна D22 только для proven pre-barrier failure.
+    pub(crate) const fn terminal_request_id(&self) -> Option<MediaOpenRequestId> {
+        let Self::Terminal(terminal) = self else {
+            return None;
+        };
+        Some(match terminal {
+            MediaOpenTerminalOutcome::Installed { request_id, .. }
+            | MediaOpenTerminalOutcome::Cancelled { request_id, .. }
+            | MediaOpenTerminalOutcome::PreparationFailed { request_id, .. }
+            | MediaOpenTerminalOutcome::PlayerRejected { request_id, .. }
+            | MediaOpenTerminalOutcome::PlayerFailed { request_id, .. }
+            | MediaOpenTerminalOutcome::FatalInvariant { request_id, .. } => *request_id,
+        })
+    }
+
     /// Показывает, что player ownership уже мог переключиться и settings обязан rollback-нуть route.
     pub(crate) const fn may_have_crossed_install_barrier(&self) -> bool {
         matches!(
@@ -120,6 +179,19 @@ impl StrongMediaOpenError {
                 | Self::PlaybackIntentDispatch(_)
                 | Self::MissingActiveVideoPointers
                 | Self::PostInstalledVideo(_)
+        )
+    }
+
+    /// Только доказанный pre-barrier terminal разрешает startup fallback/skip.
+    pub(crate) const fn is_proven_pre_barrier_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::Terminal(
+                MediaOpenTerminalOutcome::Cancelled { .. }
+                    | MediaOpenTerminalOutcome::PreparationFailed { .. }
+                    | MediaOpenTerminalOutcome::PlayerRejected { .. }
+                    | MediaOpenTerminalOutcome::PlayerFailed { .. }
+            )
         )
     }
 }
@@ -147,7 +219,7 @@ impl AppState {
         self.cancel_suspended_media_resume_for_explicit_open(playlist_runtime)
             .map_err(StrongMediaOpenError::LineageRegistration)?;
         let source = prepared_input.source.clone();
-        let queue_replacement = prepared_input.queue_replacement;
+        let playlist_target = prepared_input.playlist_target;
         let prepared_open = PreparedMediaOpen::from_caller_prepared(
             prepared_input.prepared_media,
             prepared_input.source,
@@ -204,16 +276,22 @@ impl AppState {
                 return Err(StrongMediaOpenError::PlaylistGate(error));
             }
         };
-        if let Some(target_draft) = queue_replacement
-            && let Err(error) = playlist_runtime.accept_explicit_target_install(
-                request_id,
-                player_request_id,
-                target_draft,
-                initial_revision,
-            )
-        {
-            self.cancel_rejected_media_open(playlist_runtime, request_id)?;
-            return Err(StrongMediaOpenError::PlaylistGate(error));
+        if let Some(playlist_target) = playlist_target {
+            let admission = match playlist_target {
+                PreparedPlaylistTarget::QueueReplacement(target_draft) => playlist_runtime
+                    .accept_explicit_target_install(
+                        request_id,
+                        player_request_id,
+                        target_draft,
+                        initial_revision,
+                    ),
+                PreparedPlaylistTarget::RestoredCurrent(target) => playlist_runtime
+                    .accept_startup_restore_install(request_id, player_request_id, target),
+            };
+            if let Err(error) = admission {
+                self.cancel_rejected_media_open(playlist_runtime, request_id)?;
+                return Err(StrongMediaOpenError::PlaylistGate(error));
+            }
         }
 
         self.drive_media_open_to_terminal(
@@ -442,5 +520,49 @@ impl AppState {
     pub(crate) fn advance_renderer_generation(&mut self) {
         self.renderer_generation =
             crate::video_pipeline_candidate::RendererGeneration::new_unique();
+    }
+}
+
+#[cfg(test)]
+mod startup_poll_tests {
+    use super::*;
+
+    /// Startup orchestration не должна снова вызвать blocking compatibility wrapper.
+    #[test]
+    fn startup_orchestration_uses_only_stepwise_strong_install_boundary() {
+        let orchestration_source = include_str!("../startup_media/orchestration.rs");
+        let pending_install_source = include_str!("../startup_media/pending_install.rs");
+
+        assert!(orchestration_source.contains("begin_prepared_media_strong("));
+        assert!(pending_install_source.contains("poll_prepared_media_strong("));
+        assert!(!orchestration_source.contains("install_prepared_media_strong("));
+        assert!(!pending_install_source.contains("install_prepared_media_strong("));
+        assert!(!orchestration_source.contains("wait_for_media_open_progress("));
+        assert!(!pending_install_source.contains("wait_for_media_open_progress("));
+        assert!(!orchestration_source.contains("wait_for_outcome("));
+        assert!(!pending_install_source.contains("wait_for_outcome("));
+    }
+
+    /// Cancel-win разрешает fallback, а missing/fatal terminal остаётся sticky fatal.
+    #[test]
+    fn fallback_classification_accepts_only_proven_pre_barrier_terminal() {
+        let request_id = MediaOpenRequestId::from_non_zero(
+            NonZeroU64::new(17).expect("fixture request id is non-zero"),
+        );
+        let cancelled = StrongMediaOpenError::Terminal(MediaOpenTerminalOutcome::Cancelled {
+            request_id,
+            cause: MediaInstallCancellationCause::Superseded,
+        });
+        let fatal = StrongMediaOpenError::Terminal(MediaOpenTerminalOutcome::FatalInvariant {
+            request_id,
+            violation:
+                crate::media_open::MediaOpenInvariantViolation::MissingPlayerControlResolution,
+        });
+
+        assert!(cancelled.is_proven_pre_barrier_failure());
+        assert_eq!(cancelled.terminal_request_id(), Some(request_id));
+        assert!(!fatal.is_proven_pre_barrier_failure());
+        assert_eq!(fatal.terminal_request_id(), Some(request_id));
+        assert!(!StrongMediaOpenError::MissingTerminal.is_proven_pre_barrier_failure());
     }
 }

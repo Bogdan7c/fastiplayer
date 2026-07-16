@@ -8,6 +8,7 @@ mod manual_navigation;
 mod metadata;
 mod removal;
 mod sorting;
+mod startup_restore;
 mod transport;
 
 use std::collections::HashMap;
@@ -59,6 +60,7 @@ pub(crate) use removal::{
 };
 #[allow(unused_imports)]
 pub(crate) use sorting::ControllerCanonicalSortError;
+pub(crate) use startup_restore::{StartupRestoreFailureOutcome, StartupRestoreTarget};
 #[allow(unused_imports)]
 pub(crate) use transport::{
     AppTransportDisposition, ControllerManualNavigationOutcome, ControllerPlayItemOutcome,

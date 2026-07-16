@@ -12,7 +12,7 @@ use token::{GuardedInstallAbort, GuardedInstallToken};
 
 use player_core::{MediaInstallRequestId, MediaInstanceId, PlaybackIntentRevision};
 use playlist_core::{
-    AutomaticTraversalPlan, PrepareReservedMutationError, QueueRevisionSnapshot,
+    AutomaticTraversalPlan, PrepareReservedMutationError, QueueRevisionSnapshot, RepeatMode,
     ReservedQueueMutation, ShuffleToggleError,
 };
 
@@ -357,6 +357,27 @@ impl PlaylistController {
         self.pending_target = None;
         self.publish_view(false);
         Some((item_id, *plan))
+    }
+
+    /// Restore startup failure до Ready/dispatch возвращает exact request policy owner-у.
+    pub(super) fn take_awaiting_startup_restore_failure(
+        &mut self,
+        request_id: MediaOpenRequestId,
+    ) -> Option<PlaylistInstallRequest> {
+        let state = self.install_state.take()?;
+        let InstallState::AwaitingReady(awaiting) = state else {
+            self.install_state = Some(state);
+            return None;
+        };
+        if awaiting.request.request_id != request_id
+            || awaiting.request.origin != PendingTargetOrigin::RestoredCurrent
+        {
+            self.install_state = Some(InstallState::AwaitingReady(awaiting));
+            return None;
+        }
+        self.pending_target = None;
+        self.publish_view(false);
+        Some(awaiting.request)
     }
 
     pub(crate) fn install_phase(&self) -> Option<ControllerInstallPhase> {
@@ -829,6 +850,29 @@ impl PlaylistController {
         let dirty = self.apply_desired_modes(Some(desired))?;
         self.publish_view(false);
         Ok(dirty)
+    }
+
+    /// Coalesce-ит отдельные startup mode values, не раскрывая storage текущих modes caller-у.
+    pub(crate) fn request_startup_mode_overlay(
+        &mut self,
+        repeat_mode: Option<RepeatMode>,
+        shuffle_enabled: Option<bool>,
+    ) -> Result<Option<PlaylistDirtySignal>, PlaylistControllerInvariantViolation> {
+        let retained_modes = self.install_state.as_ref().and_then(|state| match state {
+            InstallState::ReservedAwaitingAuthorization(guarded)
+            | InstallState::AuthorizationDispatchPending { guarded, .. }
+            | InstallState::AuthorizationInFlight { guarded, .. } => guarded.desired_modes,
+            InstallState::AwaitingReady(_) => None,
+        });
+        self.request_queue_modes(DesiredQueueModes {
+            repeat_mode: repeat_mode
+                .or_else(|| retained_modes.map(|modes| modes.repeat_mode))
+                .unwrap_or(self.repeat_mode),
+            shuffle_enabled: shuffle_enabled
+                .or_else(|| retained_modes.map(|modes| modes.shuffle_enabled))
+                .unwrap_or_else(|| self.queue.shuffle_enabled()),
+            protected_runtime_generation: self.protected_modes_generation,
+        })
     }
 
     fn apply_desired_modes(

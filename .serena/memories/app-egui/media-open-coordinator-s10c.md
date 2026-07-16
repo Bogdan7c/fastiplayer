@@ -54,3 +54,7 @@
 - `PlaylistRuntime` uses the same coordinator for runtime-only active-media reopen. Suspend terminal-resolves pre-dispatch work and waits authoritative dispatch winner; enqueue winner drains exact Installed before checkpoint capture.
 - Resume stages `StartPaused`, then exact seek/non-seekable resolution and stable intent occur outside coordinator before same-lineage controller rebind. Pre-Installed resume failures consume/cancel the terminal so explicit Retry never inherits a hidden Busy slot.
 - Exact YouTube selected-stream identity can be reopened through the service adapter without silently reselecting another stream. Full ownership/order contract: `mem:app-egui/suspend-resume-checkpoint-s14b`.
+
+
+## Session 17 nonblocking startup consumer (2026-07-16)
+- Startup использует отдельный renderer-bound stepwise strong-install driver и не блокирует winit event loop; policy-neutral coordinator не получил CLI/fallback/queue policy. Blocking wrapper сохранён для прежних non-startup callers. Полный контракт: `mem:app-egui/startup-orchestration-s17`.

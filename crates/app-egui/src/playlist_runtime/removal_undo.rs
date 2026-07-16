@@ -62,6 +62,7 @@ pub(crate) enum RuntimeRemovalOutcome {
         item_id: PlaylistItemId,
     },
     NoChange,
+    DeferredUntilStartupInstallResolution,
     InstallCommitLinearizing,
     FatalInvariant,
     DirtyRevisionExhausted,
@@ -160,15 +161,36 @@ impl PlaylistRuntime {
 
     /// Clear использует тот же last-action slot; empty no-op сохраняет прежний Undo.
     pub(crate) fn clear_playlist(&mut self, now: Instant) -> RuntimeRemovalOutcome {
+        self.supersede_startup_media_apply();
         self.cancel_queue_replacement_confirmation_for_structural_replacement();
         self.supersede_manual_add_queue_generation();
+        if self.controller.as_ref().is_none() {
+            return match self.record_startup_clear() {
+                Ok(()) => RuntimeRemovalOutcome::DeferredUntilStartupInstallResolution,
+                Err(_) => RuntimeRemovalOutcome::StructuralRevisionExhausted,
+            };
+        }
+        let retention_active = self.startup_action_retention_is_active();
+        if retention_active && self.retain_startup_clear(now).is_err() {
+            return RuntimeRemovalOutcome::StructuralRevisionExhausted;
+        }
         let Some(controller) = self.controller.as_mut() else {
             return RuntimeRemovalOutcome::LoadDecisionPending;
         };
         let dirty_before = controller.dirty_revision();
         let outcome = controller.clear_queue();
-        let runtime_outcome = self.store_removal_outcome(outcome, now);
+        let mut runtime_outcome = self.store_removal_outcome(outcome, now);
         self.publish_controller_mutation_if_dirty(dirty_before);
+        if retention_active {
+            if matches!(
+                runtime_outcome,
+                RuntimeRemovalOutcome::InstallCommitLinearizing
+            ) {
+                runtime_outcome = RuntimeRemovalOutcome::DeferredUntilStartupInstallResolution;
+            } else {
+                self.mark_retained_startup_queue_action_committed();
+            }
+        }
         runtime_outcome
     }
 

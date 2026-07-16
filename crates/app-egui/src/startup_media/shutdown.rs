@@ -50,6 +50,8 @@ impl StartupMediaController {
             return ProcessOwnerShutdownOutcome::AlreadyCompleted;
         }
         self.terminal_shutdown_started = true;
+        self.orchestration.phase = super::StartupMediaPhase::Shutdown;
+        self.orchestration.prepared = None;
 
         // Все owners сначала теряют admission/apply authority и получают cancel,
         // только после этого общий deadline расходуется на bounded join.
@@ -82,6 +84,22 @@ impl StartupMediaController {
                 self.direct_media_startup_job = None;
             }
         }
+        if let Some(job) = self.local_startup_job.as_mut() {
+            let outcome = job.shutdown_until(deadline);
+            let completed = matches!(
+                outcome,
+                ProcessOwnerShutdownOutcome::Completed
+                    | ProcessOwnerShutdownOutcome::AlreadyCompleted
+                    | ProcessOwnerShutdownOutcome::ThreadPanicked {
+                        pending_threads: 0,
+                        ..
+                    }
+            );
+            accumulate_shutdown_outcome(outcome, &mut panicked_threads, &mut pending_threads);
+            if completed {
+                self.local_startup_job = None;
+            }
+        }
 
         if pending_threads > 0 {
             if panicked_threads > 0 {
@@ -109,7 +127,10 @@ impl StartupMediaController {
         if self.terminal_shutdown_started {
             return Some("Startup media shutdown уже начат; новый job запрещён".to_string());
         }
-        if self.has_pending_startup_job() {
+        if self.youtube_startup_job.is_some()
+            || self.direct_media_startup_job.is_some()
+            || self.local_startup_job.is_some()
+        {
             return Some(
                 "Startup media job уже выполняется; параллельный запуск запрещён".to_string(),
             );

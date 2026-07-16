@@ -446,6 +446,7 @@ impl PlaylistRuntime {
         &mut self,
         intent: InAppQueueReplacementIntent,
     ) -> Result<InAppQueueReplacementAdmission, QueueReplacementAdmissionError> {
+        self.supersede_startup_media_apply();
         self.supersede_manual_add_queue_generation();
         if !self
             .admission_open
@@ -478,6 +479,13 @@ impl PlaylistRuntime {
                 return Ok(InAppQueueReplacementAdmission::AwaitingConfirmation);
             }
             self.replacement_confirmation.cancel();
+            if self.startup_action_retention_is_active() {
+                self.retain_startup_media_replacement().map_err(|error| {
+                    QueueReplacementAdmissionError::StartupDraft(
+                        crate::playlist_runtime::StartupDraftAdmissionError::Draft(error),
+                    )
+                })?;
+            }
             return Ok(InAppQueueReplacementAdmission::StartNow(
                 intent.target.admit(),
             ));
@@ -528,7 +536,14 @@ impl PlaylistRuntime {
         &mut self,
         action: QueueReplacementConfirmationAction,
     ) -> QueueReplacementConfirmationOutcome {
-        self.replacement_confirmation.respond(action)
+        let outcome = self.replacement_confirmation.respond(action);
+        if matches!(outcome, QueueReplacementConfirmationOutcome::Confirmed(_))
+            && self.startup_action_retention_is_active()
+            && let Err(error) = self.retain_startup_media_replacement()
+        {
+            tracing::error!(?error, "Не удалось сохранить confirmed startup replacement");
+        }
+        outcome
     }
 
     /// Explicit Play конкретной строки supersede-ит старое replacement confirmation.

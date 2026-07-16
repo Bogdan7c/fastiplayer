@@ -19,6 +19,77 @@ use super::{
     reason = "Session 14 bootstrap/save-worker integration consumes these startup entrypoints"
 )]
 impl PlaylistRuntime {
+    /// Structural user actions call this intent boundary; mode-only actions do not.
+    pub(crate) fn supersede_startup_media_apply(&mut self) {
+        self.startup_media_apply_superseded = true;
+    }
+
+    /// Read-only winner query keeps startup controller independent from queue fields.
+    pub(crate) const fn startup_media_apply_was_superseded(&self) -> bool {
+        self.startup_media_apply_superseded
+    }
+
+    /// Typed gate query для startup orchestration; caller не читает controller internals.
+    pub(crate) const fn allocator_load_gate_is_open(&self) -> bool {
+        matches!(self.load_gate, PlaylistLoadGateState::Open(_))
+    }
+
+    /// Возвращает только persisted current; `None` остаётся idle и не выбирает первый row.
+    pub(crate) fn startup_restored_current(&self) -> Option<super::StartupRestoreTarget> {
+        self.controller.as_ref()?.startup_restored_current()
+    }
+
+    /// D70/D22 failure остаётся runtime badge и может продолжить bounded paused chain.
+    pub(crate) fn report_startup_restore_failure(
+        &mut self,
+        failed: super::StartupRestoreTarget,
+        safe_summary: Arc<str>,
+    ) -> Option<super::StartupRestoreTarget> {
+        let controller = self.controller.as_mut()?;
+        match controller.report_startup_restore_failure(failed, safe_summary) {
+            super::StartupRestoreFailureOutcome::Stopped { cause } => {
+                tracing::warn!(?cause, "Startup restore остановлен typed error policy");
+                None
+            }
+            super::StartupRestoreFailureOutcome::OpenItem { target } => Some(target),
+        }
+    }
+
+    /// Связывает opaque restored traversal plan с exact staged request.
+    pub(crate) fn accept_startup_restore_install(
+        &mut self,
+        request_id: crate::media_open::MediaOpenRequestId,
+        player_request_id: player_core::MediaInstallRequestId,
+        target: super::StartupRestoreTarget,
+    ) -> Result<(), super::PlaylistMediaOpenGateError> {
+        let controller = self
+            .controller
+            .as_mut()
+            .ok_or(super::PlaylistMediaOpenGateError::LoadDecisionPending)?;
+        controller
+            .accept_startup_restore_install(request_id, player_request_id, target)
+            .map_err(super::PlaylistMediaOpenGateError::InstallAdmission)
+    }
+
+    /// Только proven pre-barrier failure может сохранить/продолжить fallback.
+    pub(crate) fn report_startup_restore_install_failure(
+        &mut self,
+        request_id: crate::media_open::MediaOpenRequestId,
+        safe_summary: Arc<str>,
+    ) -> Option<super::StartupRestoreTarget> {
+        let outcome = self
+            .controller
+            .as_mut()?
+            .report_startup_restore_install_failure(request_id, safe_summary)?;
+        match outcome {
+            super::StartupRestoreFailureOutcome::Stopped { cause } => {
+                tracing::warn!(?cause, "Startup restore install failure остановил chain");
+                None
+            }
+            super::StartupRestoreFailureOutcome::OpenItem { target } => Some(target),
+        }
+    }
+
     /// Запускает read-only inspection вне event-loop thread.
     pub(crate) fn begin_playlist_state_inspection(
         &mut self,
@@ -66,7 +137,9 @@ impl PlaylistRuntime {
             .draft_mut()
             .map_err(StartupDraftAdmissionError::Owner)?
             .record_clear()
-            .map_err(StartupDraftAdmissionError::Draft)
+            .map_err(StartupDraftAdmissionError::Draft)?;
+        self.supersede_startup_media_apply();
+        Ok(())
     }
 
     /// Open/Play/replacement ждут gate без provisional Item ID/player staging.
@@ -74,11 +147,19 @@ impl PlaylistRuntime {
     pub(crate) fn record_startup_media_replacement(
         &mut self,
     ) -> Result<(), StartupDraftAdmissionError> {
+        if self.startup_action_retention_is_active() {
+            self.retain_startup_media_replacement()
+                .map_err(StartupDraftAdmissionError::Draft)?;
+            self.supersede_startup_media_apply();
+            return Ok(());
+        }
         self.startup
             .draft_mut()
             .map_err(StartupDraftAdmissionError::Owner)?
             .record_media_replacement()
-            .map_err(StartupDraftAdmissionError::Draft)
+            .map_err(StartupDraftAdmissionError::Draft)?;
+        self.supersede_startup_media_apply();
+        Ok(())
     }
 
     /// Prepared Add остаётся ID-less и bounded до trusted allocator decision.
@@ -86,11 +167,19 @@ impl PlaylistRuntime {
         &mut self,
         drafts: Vec<playlist_core::PlaylistItemDraft>,
     ) -> Result<(), StartupDraftAdmissionError> {
+        if self.startup_action_retention_is_active() {
+            self.retain_startup_prepared_add(drafts)
+                .map_err(StartupDraftAdmissionError::Draft)?;
+            self.supersede_startup_media_apply();
+            return Ok(());
+        }
         self.startup
             .draft_mut()
             .map_err(StartupDraftAdmissionError::Owner)?
             .record_prepared_add(drafts)
-            .map_err(StartupDraftAdmissionError::Draft)
+            .map_err(StartupDraftAdmissionError::Draft)?;
+        self.supersede_startup_media_apply();
+        Ok(())
     }
 
     /// Mode-only intent coalesce-ится без supersede restore generation.
@@ -98,6 +187,20 @@ impl PlaylistRuntime {
         &mut self,
         repeat_mode: RepeatMode,
     ) -> Result<(), StartupOwnerError> {
+        if self.startup_action_retention_is_active() {
+            let dirty_before = self
+                .controller
+                .as_ref()
+                .ok_or(StartupOwnerError::InvalidPhase)?
+                .dirty_revision();
+            self.controller
+                .as_mut()
+                .ok_or(StartupOwnerError::InvalidPhase)?
+                .request_startup_mode_overlay(Some(repeat_mode), None)
+                .map_err(|_| StartupOwnerError::InvalidPhase)?;
+            self.publish_controller_mutation_if_dirty(dirty_before);
+            return Ok(());
+        }
         self.startup.draft_mut()?.set_repeat_mode(repeat_mode);
         Ok(())
     }
@@ -107,6 +210,20 @@ impl PlaylistRuntime {
         &mut self,
         shuffle_enabled: bool,
     ) -> Result<(), StartupOwnerError> {
+        if self.startup_action_retention_is_active() {
+            let dirty_before = self
+                .controller
+                .as_ref()
+                .ok_or(StartupOwnerError::InvalidPhase)?
+                .dirty_revision();
+            self.controller
+                .as_mut()
+                .ok_or(StartupOwnerError::InvalidPhase)?
+                .request_startup_mode_overlay(None, Some(shuffle_enabled))
+                .map_err(|_| StartupOwnerError::InvalidPhase)?;
+            self.publish_controller_mutation_if_dirty(dirty_before);
+            return Ok(());
+        }
         self.startup
             .draft_mut()?
             .set_shuffle_enabled(shuffle_enabled);

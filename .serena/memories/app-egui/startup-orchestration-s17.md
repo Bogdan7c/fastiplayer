@@ -1,0 +1,21 @@
+# Session 17 — startup restore и CLI priority/fallback (2026-07-16)
+
+## Владение и порядок
+- `AppShell` остаётся thin lifecycle owner: удерживает acquired `AppInstanceLease`, запускает state inspection и CLI preparation только после lease/config bootstrap, drain-ит wake/poll и завершает startup/state/player owners до release lease.
+- `StartupMediaController` + `startup_media::orchestration` владеют process-lifetime startup winner/fallback policy и фазами `WaitingForRuntime | Preparing | PreparedAwaitingAllocator | Applying | Activated | Idle | Failed | Shutdown`. Prepared CLI/local/YouTube/direct media остаётся ID-less до typed allocator gate.
+- `PlaylistStartupOwner` единолично решает valid/missing/quarantine/protected lineage. Valid state всегда передаёт persisted allocator watermark даже после D65 supersede. Missing и successful quarantine создают persistent initial lineage. Newer/unrecognized/quarantine-failed state создаёт отдельную non-persistent runtime generation с blocked writer; protected IDs не merge-ятся и не записываются.
+- Renderer-bound stepwise strong install принадлежит `AppState` в `state/strong_media_open/pending.rs`. Startup poll не вызывает blocking `install_prepared_media_strong`: begin быстро выполняет staging/admission, poll неблокирующе проходит coordinator phases, Ready authorization, exact Installed, `PlaybackIntentUpdateReceipt::try_outcome`, затем lineage/domain commit. Старый blocking wrapper остаётся только для non-startup settings/local callers.
+
+## Winner, fallback и D65
+- Valid restored queue при CLI остаётся unopened fallback. CLI success заменяет её только после exact `EnqueuedAtPlayerOwner -> Installed`; pre-barrier preparation/cancel-win/rejection сохраняют fallback. Missing resolution/terminal, fatal invariant и post-barrier failure sticky fatal и никогда не активируют fallback.
+- No CLI + restored `Some(current)` готовится без sibling scan, открывается с time zero и typed `StartPaused`. Restored `current=None` остаётся idle без implicit selection. `controller/startup_restore.rs` использует bounded committed-ID automatic plan для Skip; Stop и RepeatOne останавливают; все fallback attempts Paused; D70 unavailable rows получают runtime badge без delete/dirty.
+- `StartupMutationDraft` действует до gate; `playlist_runtime/startup_retained.rs` продолжает те же bounded latest-wins semantics вокруг post-gate install linearization. Clear/replacement supersede earlier queue action, prepared Adds bounded cap, repeat/shuffle coalesce. Cancel-win применяет retained winner exactly once; enqueue-win сначала полностью публикует unavoidable Installed identity/domain commit, затем retained action. IDs/dirty не появляются до разрешённого domain boundary.
+- CLI local использует target-first open и запускает sibling discovery только после exact Installed target. CLI URL — one-item replacement. Native non-UTF-8 CLI media остаётся exact `PathBuf`; URL не строится lossy.
+- Trusted sensitive direct CLI URL не получает второй acknowledgement dialog. Service-owned locator сохраняет reopenable identity, а отдельный redacted informational warning является process-lifetime read-only status и не gate.
+
+## Wake, shutdown и проверки
+- Startup preparation, prepared-awaiting-allocator и stepwise Applying считаются pending background work. Wake/defensive poll продвигают транзакцию без блокировки UI; `ControlFlow::Wait` сохраняется.
+- Shutdown закрывает admission, drop-ит prepared ownership, cancel/drain-ит pending strong transaction по authoritative cancel/enqueue semantics и не разрешает поздний install/quarantine/write поверх terminal lifecycle. Session 14B suspend checkpoint и process restart zero+Pause не менялись.
+- Focused tests находятся в `playlist_runtime/startup/tests.rs`, `playlist_runtime/startup_retained.rs`, `startup_media/pending_install.rs`, `startup_media/orchestration.rs`, `state/strong_media_open/pending.rs`.
+- PASS: 516 app-egui no-default, 75 playlist-core, 33 playlist-state, 52 playlist-discovery, 9 direct (+1 manual ignored), 33 YouTube (+4 manual ignored), app strict Clippy no-default/all-features, fmt, Rust 1.96 locked workspace check, guardrails, diff check и Serena diagnostics.
+- Полный handoff: `user/playlist_queue_implementation_plan.md`. Следующий разрешённый scope — Session 18 UI; Session 17 UI не добавляла.

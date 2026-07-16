@@ -27,6 +27,7 @@ pub(crate) enum UrlAppendValidationError {
 pub(crate) enum UrlAppendActionOutcome {
     Appended { item_count: usize },
     NoCapacity,
+    DeferredUntilStartupInstallResolution,
     AwaitingSensitivePersistenceDecision,
 }
 
@@ -36,6 +37,7 @@ pub(crate) enum PlaylistConfirmationApplyOutcome {
     QueueReplacementConfirmed(AdmittedQueueReplacementIntent),
     UrlAppended { item_count: usize },
     UrlNoCapacity,
+    DeferredUntilStartupInstallResolution,
     Cancelled,
     Stale,
     CommitRejected,
@@ -114,9 +116,7 @@ impl PlaylistRuntime {
         {
             return Err(UrlAppendValidationError::RuntimeShuttingDown);
         }
-        if self.controller.as_ref().is_none() {
-            return Err(UrlAppendValidationError::LoadDecisionPending);
-        }
+        self.supersede_startup_media_apply();
         let locator = match classify_startup_url(input) {
             StartupUrlClassification::NotUrl => return Err(UrlAppendValidationError::NotUrl),
             StartupUrlClassification::Unsupported { safe_error } => {
@@ -167,6 +167,9 @@ impl PlaylistRuntime {
                 Ok(UrlAppendActionOutcome::NoCapacity) => {
                     PlaylistConfirmationApplyOutcome::UrlNoCapacity
                 }
+                Ok(UrlAppendActionOutcome::DeferredUntilStartupInstallResolution) => {
+                    PlaylistConfirmationApplyOutcome::DeferredUntilStartupInstallResolution
+                }
                 Ok(UrlAppendActionOutcome::AwaitingSensitivePersistenceDecision) => {
                     unreachable!("confirmed draft never re-enters acknowledgement")
                 }
@@ -179,6 +182,22 @@ impl PlaylistRuntime {
         &mut self,
         draft: PlaylistItemDraft,
     ) -> Result<UrlAppendActionOutcome, UrlAppendValidationError> {
+        if self.controller.as_ref().is_none() {
+            self.record_startup_prepared_add(vec![draft])
+                .map_err(|_| UrlAppendValidationError::CommitRejected)?;
+            return Ok(UrlAppendActionOutcome::DeferredUntilStartupInstallResolution);
+        }
+        let startup_install_linearizing = self.startup_action_retention_is_active()
+            && self.controller.as_ref().is_some_and(|controller| {
+                controller.install_phase().is_some_and(|phase| {
+                    phase != super::controller::ControllerInstallPhase::AwaitingReady
+                })
+            });
+        if startup_install_linearizing {
+            self.retain_startup_prepared_add(vec![draft])
+                .map_err(|_| UrlAppendValidationError::CommitRejected)?;
+            return Ok(UrlAppendActionOutcome::DeferredUntilStartupInstallResolution);
+        }
         let controller = self
             .controller
             .as_mut()

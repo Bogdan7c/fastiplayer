@@ -101,6 +101,146 @@ fn missing_state_opens_persistent_allocator_gate() {
 }
 
 #[test]
+fn restored_current_none_stays_idle_without_implicit_selection() {
+    let mut queue = PlaylistQueue::new();
+    queue
+        .append_batch(vec![draft("idle-one.mkv"), draft("idle-two.mkv")])
+        .expect("append fixture");
+    assert!(queue.traversal_current().is_none());
+    let (_directory, store) = state_store_for_queue(&queue, RepeatMode::StopAtEnd);
+    let mut runtime = pending_runtime();
+    runtime
+        .begin_playlist_state_inspection(store)
+        .expect("start inspection");
+    drain_until_ready(
+        &mut runtime,
+        QuarantineFileName::from_timestamp(SystemTime::UNIX_EPOCH),
+    );
+
+    assert!(runtime.startup_restored_current().is_none());
+    assert_eq!(runtime.playlist_view_snapshot().len(), 2);
+    assert!(
+        runtime
+            .playlist_controller()
+            .expect("controller")
+            .queue()
+            .traversal_current()
+            .is_none()
+    );
+}
+
+#[test]
+fn restored_current_and_skip_fallback_keep_start_paused_and_rows() {
+    let mut queue = PlaylistQueue::new();
+    let item_ids = match queue
+        .append_batch(vec![
+            draft("missing-one.mkv"),
+            draft("fallback-two.mkv"),
+            draft("fallback-three.mkv"),
+        ])
+        .expect("append fixture")
+    {
+        playlist_core::AddItemsOutcome::Added(item_ids) => item_ids.into_vec(),
+        playlist_core::AddItemsOutcome::NoItemsProvided => panic!("fixture rows required"),
+    };
+    queue
+        .set_traversal_current(item_ids[0])
+        .expect("set restored current");
+    let (_directory, store) = state_store_for_queue(&queue, RepeatMode::RepeatQueue);
+    let mut runtime = pending_runtime();
+    runtime
+        .begin_playlist_state_inspection(store)
+        .expect("start inspection");
+    drain_until_ready(
+        &mut runtime,
+        QuarantineFileName::from_timestamp(SystemTime::UNIX_EPOCH),
+    );
+    runtime
+        .controller
+        .as_mut()
+        .expect("controller")
+        .set_error_behavior(crate::playlist_runtime::controller::PlaylistErrorBehavior::Skip);
+
+    let first = runtime
+        .startup_restored_current()
+        .expect("restored current");
+    assert_eq!(first.item_id(), item_ids[0]);
+    assert_eq!(
+        first.playback_intent(),
+        player_core::PlaybackIntent::StartPaused
+    );
+    let fallback = runtime
+        .report_startup_restore_failure(first, Arc::<str>::from("missing"))
+        .expect("skip fallback");
+    assert_eq!(fallback.item_id(), item_ids[1]);
+    assert_eq!(
+        fallback.playback_intent(),
+        player_core::PlaybackIntent::StartPaused
+    );
+    assert_eq!(runtime.playlist_view_snapshot().len(), 3);
+    assert!(
+        runtime
+            .playlist_controller()
+            .expect("controller")
+            .latest_dirty_signal()
+            .is_none()
+    );
+}
+
+#[test]
+fn restored_pre_barrier_terminal_failure_continues_same_paused_chain() {
+    let mut queue = PlaylistQueue::new();
+    let item_ids = match queue
+        .append_batch(vec![draft("first.mkv"), draft("second.mkv")])
+        .expect("append fixture")
+    {
+        playlist_core::AddItemsOutcome::Added(item_ids) => item_ids.into_vec(),
+        playlist_core::AddItemsOutcome::NoItemsProvided => panic!("fixture rows required"),
+    };
+    queue
+        .set_traversal_current(item_ids[0])
+        .expect("set restored current");
+    let (_directory, store) = state_store_for_queue(&queue, RepeatMode::RepeatQueue);
+    let mut runtime = pending_runtime();
+    runtime
+        .begin_playlist_state_inspection(store)
+        .expect("start inspection");
+    drain_until_ready(
+        &mut runtime,
+        QuarantineFileName::from_timestamp(SystemTime::UNIX_EPOCH),
+    );
+    runtime
+        .controller
+        .as_mut()
+        .expect("controller")
+        .set_error_behavior(crate::playlist_runtime::controller::PlaylistErrorBehavior::Skip);
+
+    let request_id = crate::media_open::MediaOpenRequestId::from_non_zero(
+        NonZeroU64::new(401).expect("request id"),
+    );
+    let player_request_id = player_core::MediaInstallRequestId::from_non_zero(
+        NonZeroU64::new(501).expect("player request id"),
+    );
+    let target = runtime.startup_restored_current().expect("restored target");
+    runtime
+        .accept_startup_restore_install(request_id, player_request_id, target)
+        .expect("pre-barrier controller admission");
+
+    let fallback = runtime
+        .report_startup_restore_install_failure(
+            request_id,
+            Arc::<str>::from("player rejected before enqueue"),
+        )
+        .expect("typed pre-barrier failure keeps fallback");
+    assert_eq!(fallback.item_id(), item_ids[1]);
+    assert_eq!(
+        fallback.playback_intent(),
+        player_core::PlaybackIntent::StartPaused
+    );
+    assert_eq!(runtime.playlist_view_snapshot().len(), 2);
+}
+
+#[test]
 fn player_authorization_is_typed_closed_until_allocator_decision() {
     let directory = tempfile::tempdir().expect("temporary state directory");
     let store = Arc::new(PlaylistStateStore::new(

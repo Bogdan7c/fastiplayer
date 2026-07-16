@@ -15,8 +15,8 @@ use player_core::{
     FrameCounters, PlaybackRate, PlaybackState, PlayerCommand, PlayerEvent, PlayerRenderError,
     PlayerRuntimeApplyResult, PlayerRuntimeSettingsUpdate, PlayerSnapshot,
     PlayerVideoDecoderThreadConfig, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent,
-    PlayerWorkerShutdownDeadline, PlayerWorkerShutdownOutcome, PreparedMedia, QualitySelection,
-    ScrubCommitPolicy, SeekRequest, VideoBackendSelectionRequest, VideoDecodeRequirement,
+    PlayerWorkerShutdownDeadline, PlayerWorkerShutdownOutcome, QualitySelection, ScrubCommitPolicy,
+    SeekRequest, VideoBackendSelectionRequest, VideoDecodeRequirement,
 };
 use render_core::RenderDiagnostics;
 use render_wgpu_video::{
@@ -68,7 +68,7 @@ mod sidebar_controller;
 mod strong_media_open;
 mod suspended_media_resume;
 pub(crate) use strong_media_open::{
-    InstalledSingleMediaOpen, PreparedSingleMediaOpen, StrongMediaOpenError,
+    InstalledSingleMediaOpen, PreparedSingleMediaOpen, StrongMediaOpenError, StrongMediaOpenPoll,
 };
 mod telemetry_panel;
 mod timeline_inline_status;
@@ -271,6 +271,9 @@ pub struct AppState {
     /// Renderer-bound receipts/candidate одной resume attempt; checkpoint остаётся в runtime.
     suspended_media_resume: Option<suspended_media_resume::SuspendedMediaResume>,
 
+    /// Renderer-bound startup install, который UI loop продвигает только неблокирующими шагами.
+    pending_strong_media_open: Option<strong_media_open::PendingStrongMediaOpen>,
+
     /// Активный async dialog/prepare job для локального файла.
     local_file_open_job: Option<LocalFileOpenJob>,
 
@@ -398,6 +401,7 @@ impl AppState {
             current_local_file: None,
             active_media_source: None,
             suspended_media_resume: None,
+            pending_strong_media_open: None,
             local_file_open_job: None,
             local_file_open_wake_port,
             timeline_ui_state: TimelineUiState::default(),

@@ -21,7 +21,7 @@ use crate::process_shutdown::{FinishedThreadJoin, ShutdownDeadline, join_thread_
 mod tests;
 
 /// Hard cap не позволяет pre-gate draft превратиться в unbounded command queue.
-const MAX_STARTUP_DRAFT_ITEMS: usize = MAX_PLAYLIST_ITEMS;
+pub(super) const MAX_STARTUP_DRAFT_ITEMS: usize = MAX_PLAYLIST_ITEMS;
 
 /// Generation read-only inspection/quarantine policy decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

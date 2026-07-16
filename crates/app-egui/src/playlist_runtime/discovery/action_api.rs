@@ -25,6 +25,7 @@ impl PlaylistRuntime {
         {
             return Err(ManualAddStartError::RuntimeShuttingDown);
         }
+        self.supersede_startup_media_apply();
         if self.controller.as_ref().is_none() {
             return Err(ManualAddStartError::LoadDecisionPending);
         }

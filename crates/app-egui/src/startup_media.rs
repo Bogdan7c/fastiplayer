@@ -9,7 +9,6 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use capability_core::{SelectedVideoStream, SystemCapabilities};
 use codec_core::VideoCodec as RuntimeVideoCodec;
-use player_core::PreparedMedia;
 use rustiplayer_config::{
     AppConfig, NetworkConfig, PlayerDemuxConfig, VideoCodec as ConfigVideoCodec, YoutubeConfig,
     YoutubeHdrSelection,
@@ -28,7 +27,12 @@ use crate::url_service_adapter::{
     StartupUrlClassification, StartupUrlLocator, classify_startup_url,
 };
 
+mod orchestration;
+mod pending_install;
 mod shutdown;
+
+pub(crate) use orchestration::StartupMediaPhase;
+use orchestration::{StartupMediaOrchestration, StartupMediaTarget};
 
 /// Интервал polling-а фоновой подготовки startup media, когда playback ещё не активен.
 pub(crate) const STARTUP_MEDIA_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -293,6 +297,19 @@ pub(crate) struct StartupMediaController {
     /// Фоновая подготовка generic direct media URL, если она уже запущена.
     direct_media_startup_job: Option<DirectMediaStartupJob>,
 
+    /// Local CLI/restore preparation принадлежит startup owner-у, а не UI picker-у.
+    local_startup_job: Option<crate::local_file_open::LocalFileOpenJob>,
+
+    /// Winner/fallback state удерживает prepared ownership до allocator gate.
+    orchestration: StartupMediaOrchestration,
+
+    /// URL replacement draft не получает Item ID до ReadyToCommit reservation.
+    cli_url_target_draft: Option<playlist_core::PlaylistItemDraft>,
+
+    /// Reusable preparation inputs нужны позднему restored fallback после CLI failure.
+    startup_config: Option<AppConfig>,
+    system_capabilities: Option<SystemCapabilities>,
+
     /// Startup-ошибка shell-слоя, которую нужно показать после создания UI.
     startup_error: Option<String>,
 
@@ -320,11 +337,17 @@ impl StartupMediaController {
         startup_error: Option<String>,
         wake_port: AppWakePort,
     ) -> Self {
+        let cli_requested = initial_media.is_some();
         Self {
             wake_port,
             initial_media,
             youtube_startup_job: None,
             direct_media_startup_job: None,
+            local_startup_job: None,
+            orchestration: StartupMediaOrchestration::new(cli_requested),
+            cli_url_target_draft: None,
+            startup_config: None,
+            system_capabilities: None,
             startup_error,
             terminal_shutdown_started: false,
             terminal_shutdown_completed: false,
@@ -346,11 +369,31 @@ impl StartupMediaController {
                     .as_ref()
                     .map(DirectMediaStartupJob::pending_message)
             })
+            .or_else(|| {
+                self.local_startup_job
+                    .as_ref()
+                    .map(|_| "Подготовка local media...")
+            })
     }
 
     /// Сообщает shell scheduler-у, нужно ли продолжать polling startup jobs.
     pub(crate) fn has_pending_startup_job(&self) -> bool {
-        self.youtube_startup_job.is_some() || self.direct_media_startup_job.is_some()
+        self.youtube_startup_job.is_some()
+            || self.direct_media_startup_job.is_some()
+            || self.local_startup_job.is_some()
+            || self.orchestration.has_pending_work()
+    }
+
+    /// Read-only phase не даёт shell-у доступа к prepared media ownership.
+    #[allow(dead_code, reason = "Session 18 renders the startup phase read model")]
+    pub(crate) const fn phase(&self) -> StartupMediaPhase {
+        self.orchestration.phase
+    }
+
+    /// Informational D15 warning не является gate и переживает renderer suspend.
+    #[allow(dead_code, reason = "Session 18 renders the process-global warning")]
+    pub(crate) const fn has_sensitive_cli_persistence_warning(&self) -> bool {
+        self.orchestration.sensitive_cli_persistence_warning
     }
 
     /// Запускает отложенное стартовое media после того, как `AppState` уже создан.
@@ -362,19 +405,46 @@ impl StartupMediaController {
         app_config: &AppConfig,
         system_capabilities: &SystemCapabilities,
     ) {
+        self.startup_config = Some(app_config.clone());
+        self.system_capabilities = Some(system_capabilities.clone());
+        self.orchestration.expected_restore_generation =
+            Some(playlist_runtime.playlist_startup_view().restore_generation);
         if let Some(pending_message) = self.pending_message() {
             app_state.set_startup_pending(pending_message.to_string());
         }
 
         let Some(initial_media) = self.initial_media.take() else {
+            self.drive_startup_orchestration(app_state, playlist_runtime, renderer);
             return;
         };
+
+        self.orchestration
+            .begin_target(StartupMediaTarget::CliReplacement);
 
         let trusted_intent = match initial_media {
             InitialMedia::File(path) => {
                 crate::playlist_runtime::TrustedStartupQueueReplacementIntent::local_file(path)
             }
             InitialMedia::Url(locator) => {
+                self.orchestration.sensitive_cli_persistence_warning =
+                    locator.requires_sensitive_persistence_acknowledgement();
+                let domain_locator = match locator.to_playlist_locator() {
+                    Ok(locator) => locator,
+                    Err(error) => {
+                        self.orchestration.preparation_failed();
+                        app_state.set_startup_error(format!(
+                            "Не удалось сохранить reopenable CLI URL identity: {error}"
+                        ));
+                        return;
+                    }
+                };
+                self.cli_url_target_draft = Some(playlist_core::PlaylistItemDraft::url(
+                    domain_locator,
+                    playlist_core::CachedPlaylistMetadata::new(
+                        locator.safe_label(),
+                        playlist_core::PlaylistMediaKind::Unknown,
+                    ),
+                ));
                 crate::playlist_runtime::TrustedStartupQueueReplacementIntent::service_url(locator)
             }
         };
@@ -382,6 +452,7 @@ impl StartupMediaController {
             match playlist_runtime.admit_trusted_startup_queue_replacement(trusted_intent) {
                 Ok(admitted) => admitted,
                 Err(error) => {
+                    self.orchestration.preparation_failed();
                     warn!(error = %error, "Trusted startup media admission отклонён");
                     app_state.set_startup_error(format!(
                         "Не удалось начать стартовое открытие media: {error}"
@@ -396,7 +467,17 @@ impl StartupMediaController {
                     local_open.path_for_safe_label(),
                 );
                 info!(source = %safe_label, "Автозагрузка файла из CLI");
-                app_state.load_file(local_open, playlist_runtime, renderer);
+                match crate::local_file_open::LocalFileOpenJob::spawn_preparation(
+                    local_open.into_path(),
+                    app_config.player.demux,
+                    self.wake_port.clone(),
+                ) {
+                    Ok(job) => self.local_startup_job = Some(job),
+                    Err(error) => {
+                        self.orchestration.preparation_failed();
+                        app_state.set_startup_error(error);
+                    }
+                }
             }
             crate::playlist_runtime::AdmittedQueueReplacementIntent::ServiceUrl(url_open) => {
                 let locator = url_open.into_locator();
@@ -413,31 +494,7 @@ impl StartupMediaController {
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
         renderer: &render_wgpu_shell::Renderer,
     ) -> bool {
-        let youtube_changed = self.poll_youtube_job(app_state, playlist_runtime, renderer);
-        let direct_changed = poll_direct_media_startup_job(
-            &mut self.direct_media_startup_job,
-            app_state,
-            playlist_runtime,
-            renderer,
-            &mut self.startup_error,
-        );
-        youtube_changed || direct_changed
-    }
-
-    /// Неблокирующе опрашивает результат фоновой подготовки YouTube URL.
-    pub(crate) fn poll_youtube_job(
-        &mut self,
-        app_state: &mut AppState,
-        playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-        renderer: &render_wgpu_shell::Renderer,
-    ) -> bool {
-        poll_youtube_startup_job(
-            &mut self.youtube_startup_job,
-            app_state,
-            playlist_runtime,
-            renderer,
-            &mut self.startup_error,
-        )
+        self.drive_startup_orchestration(app_state, playlist_runtime, renderer)
     }
 
     /// Запускает background resolve для CLI YouTube URL и сразу обновляет UI state.
@@ -449,6 +506,7 @@ impl StartupMediaController {
         system_capabilities: &SystemCapabilities,
     ) {
         if let Some(error) = self.startup_job_admission_error() {
+            self.orchestration.preparation_failed();
             self.startup_error = Some(error.clone());
             app_state.set_startup_error(error);
             return;
@@ -465,6 +523,7 @@ impl StartupMediaController {
                 self.youtube_startup_job = Some(job);
             }
             Err(error) => {
+                self.orchestration.preparation_failed();
                 warn!(error = %error, "Не удалось запустить YouTube startup resolver");
                 let startup_error = format!("NetworkError: YouTube error: {error}");
                 self.startup_error = Some(startup_error.clone());
@@ -481,6 +540,7 @@ impl StartupMediaController {
         app_config: &AppConfig,
     ) {
         if let Some(error) = self.startup_job_admission_error() {
+            self.orchestration.preparation_failed();
             self.startup_error = Some(error.clone());
             app_state.set_startup_error(error);
             return;
@@ -496,6 +556,7 @@ impl StartupMediaController {
                 self.direct_media_startup_job = Some(job);
             }
             Err(error) => {
+                self.orchestration.preparation_failed();
                 warn!(error = %error, "Не удалось запустить direct media startup opener");
                 let startup_error = format!("NetworkError: Direct media error: {error}");
                 self.startup_error = Some(startup_error.clone());
@@ -608,98 +669,6 @@ pub(crate) const fn runtime_video_codec(codec: ConfigVideoCodec) -> RuntimeVideo
         ConfigVideoCodec::H265 => RuntimeVideoCodec::H265,
         ConfigVideoCodec::Vp8 => RuntimeVideoCodec::Vp8,
     }
-}
-
-/// Забирает готовый результат фоновой подготовки YouTube и доставляет его в UI/player.
-fn poll_youtube_startup_job(
-    job_slot: &mut Option<YoutubeStartupJob>,
-    app_state: &mut AppState,
-    playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-    renderer: &render_wgpu_shell::Renderer,
-    startup_error_slot: &mut Option<String>,
-) -> bool {
-    let Some(job) = job_slot.as_mut() else {
-        return false;
-    };
-    let Some(resolve_result) = job.try_take_result() else {
-        return false;
-    };
-    let source_locator = job.source_locator.clone();
-    *job_slot = None;
-
-    match resolve_result {
-        Ok(prepared_youtube_media) => {
-            *startup_error_slot = None;
-            info!(
-                source = %source_locator,
-                description = %prepared_youtube_media.streaming_media.description,
-                "YouTube media подготовлен для streaming playback"
-            );
-            app_state.load_youtube_demuxer(
-                source_locator,
-                prepared_youtube_media.streaming_media.description,
-                prepared_youtube_media.streaming_media.demuxer,
-                prepared_youtube_media.selected_stream_identity,
-                playlist_runtime,
-                renderer,
-            );
-        }
-        Err(error) => {
-            warn!(source = %source_locator, error = %error, "Не удалось подготовить YouTube URL");
-            let startup_error = format!("NetworkError: YouTube error: {error}");
-            *startup_error_slot = Some(startup_error.clone());
-            app_state.set_startup_error(startup_error);
-        }
-    }
-    true
-}
-
-/// Забирает готовый результат фоновой подготовки direct media и доставляет его в UI/player.
-fn poll_direct_media_startup_job(
-    job_slot: &mut Option<DirectMediaStartupJob>,
-    app_state: &mut AppState,
-    playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
-    renderer: &render_wgpu_shell::Renderer,
-    startup_error_slot: &mut Option<String>,
-) -> bool {
-    let Some(job) = job_slot.as_mut() else {
-        return false;
-    };
-    let Some(open_result) = job.try_take_result() else {
-        return false;
-    };
-    let source_locator = job.source_locator.clone();
-    *job_slot = None;
-
-    match open_result {
-        Ok(opened_media) => {
-            *startup_error_slot = None;
-            let source_label = opened_media.source_label().to_string();
-            let prepared_media = PreparedMedia::from_external_label(
-                source_label.clone(),
-                opened_media.into_demuxer(),
-            );
-            info!(
-                source = %source_locator,
-                label = %source_label,
-                "Direct media URL подготовлен для playback"
-            );
-            app_state.load_prepared_direct_media(
-                source_locator,
-                source_label,
-                prepared_media,
-                playlist_runtime,
-                renderer,
-            );
-        }
-        Err(error) => {
-            warn!(source = %source_locator, error = %error, "Не удалось подготовить direct media URL");
-            let startup_error = format!("NetworkError: Direct media error: {error}");
-            *startup_error_slot = Some(startup_error.clone());
-            app_state.set_startup_error(startup_error);
-        }
-    }
-    true
 }
 
 /// Классифицирует уже разобранный typed media intent после получения process lease.
@@ -915,6 +884,11 @@ mod tests {
                 cancellation_requested: Arc::new(AtomicBool::new(false)),
             }),
             direct_media_startup_job: None,
+            local_startup_job: None,
+            orchestration: StartupMediaOrchestration::new(false),
+            cli_url_target_draft: None,
+            startup_config: None,
+            system_capabilities: None,
             startup_error: None,
             terminal_shutdown_started: false,
             terminal_shutdown_completed: false,
@@ -950,6 +924,11 @@ mod tests {
                 cancellation_requested: Arc::new(AtomicBool::new(false)),
             }),
             direct_media_startup_job: None,
+            local_startup_job: None,
+            orchestration: StartupMediaOrchestration::new(false),
+            cli_url_target_draft: None,
+            startup_config: None,
+            system_capabilities: None,
             startup_error: None,
             terminal_shutdown_started: false,
             terminal_shutdown_completed: false,

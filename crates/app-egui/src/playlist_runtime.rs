@@ -54,13 +54,15 @@ pub(crate) use suspend_resume::{
     reason = "Session 14 bootstrap/save-worker integration consumes this startup boundary"
 )]
 mod startup;
+mod startup_retained;
 mod startup_runtime;
 #[allow(unused_imports)]
 pub(crate) use startup::{
     PlaylistLineagePersistence, PlaylistQueueGeneration, PlaylistStartupPhase,
-    PlaylistStartupStateStore, PlaylistStartupView, PlaylistStartupWarning, StartupDraftError,
-    StartupOwnerError,
+    PlaylistStartupStateStore, PlaylistStartupView, PlaylistStartupWarning, RestoreApplyGeneration,
+    StartupDraftError, StartupOwnerError,
 };
+pub(crate) use startup_retained::RetainedStartupApplyOutcome;
 #[allow(
     dead_code,
     reason = "Session 11A read-only snapshot is attached by later playlist UI integration"
@@ -76,6 +78,7 @@ pub(crate) use actions::{
     UrlAppendValidationError,
 };
 pub(crate) use controller::PlaylistController;
+pub(crate) use controller::{StartupRestoreFailureOutcome, StartupRestoreTarget};
 #[allow(
     unused_imports,
     reason = "typed persistence read model is consumed by upcoming playlist UI wiring"
@@ -362,6 +365,10 @@ pub(crate) struct PlaylistRuntime {
     replacement_confirmation: replacement_confirmation::QueueReplacementConfirmationState,
     /// D66 stale guard для uncommitted Manual Add completions.
     manual_add_queue_generation: ManualAddQueueGeneration,
+    /// D65 structural user intent invalidates late restore/CLI apply, not read-only load.
+    startup_media_apply_superseded: bool,
+    /// Bounded post-gate intent slot переживает cancel/enqueue race old startup install-а.
+    startup_retained_actions: startup_retained::StartupRetainedActionOwner,
     /// Target-first sibling scope/executor переживает player advance и AppState recreation.
     discovery: discovery::PlaylistDiscoveryCoordinator,
     /// Process-lifetime reusable preparation/install mechanism Session 10C.
@@ -423,6 +430,8 @@ impl PlaylistRuntime {
             replacement_confirmation:
                 replacement_confirmation::QueueReplacementConfirmationState::new(),
             manual_add_queue_generation: ManualAddQueueGeneration::INITIAL,
+            startup_media_apply_superseded: false,
+            startup_retained_actions: startup_retained::StartupRetainedActionOwner::default(),
             discovery,
             media_open,
             suspended_media: suspend_resume::SuspendedMediaState::default(),
