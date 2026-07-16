@@ -1121,6 +1121,10 @@ pub(crate) fn render_frame(
     let frame_context = prepared_frame_input.frame_context;
 
     let stage_started_at = Instant::now();
+    if let Some(binding) = app_state.playlist_runtime_binding() {
+        let playlist_view_model = playlist_runtime.playlist_view_model();
+        let _model_was_applied = app_state.update_playlist_view_model(binding, playlist_view_model);
+    }
     let queue_replacement_confirmation = playlist_runtime.pending_queue_replacement_confirmation();
     let mut prepared_ui_frame = prepare_ui_frame(
         window,
@@ -1137,6 +1141,7 @@ pub(crate) fn render_frame(
     let queue_replacement_confirmation_action = prepared_ui_frame
         .queue_replacement_confirmation_action
         .take();
+    let playlist_visible_items_hint = prepared_ui_frame.playlist_visible_items_hint.take();
     let mut ui_prepare_timings = prepared_ui_frame.timings;
     ui_prepare_timings.total = stage_started_at.elapsed();
 
@@ -1173,6 +1178,11 @@ pub(crate) fn render_frame(
 
     if let Some(action) = queue_replacement_confirmation_action {
         app_state.apply_queue_replacement_confirmation_action(action, playlist_runtime);
+    }
+    if let Some(hint) = playlist_visible_items_hint
+        && playlist_runtime.validate_binding(hint.binding()).is_ok()
+    {
+        let _refresh_outcome = playlist_runtime.request_visible_metadata_refresh(hint.item_ids());
     }
 
     let settings_preview_tick = match settings_runtime.apply_due_preview(renderer, Instant::now()) {

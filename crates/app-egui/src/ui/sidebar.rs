@@ -7,7 +7,7 @@ use egui::{Button, RichText, Ui};
 
 use crate::settings_ui::{SettingsUiAction, SettingsUiModel, layout};
 use crate::state::{ContentSlideDirection, SidebarContentTransition, SidebarSection};
-use crate::ui::media_info;
+use crate::ui::{media_info, playlist};
 
 const DEFAULT_SIDEBAR_WIDTH: f32 = 420.0;
 const MIN_SIDEBAR_WIDTH: f32 = 320.0;
@@ -18,6 +18,9 @@ const SIDEBAR_FILL: egui::Color32 = egui::Color32::from_rgb(18, 18, 18);
 pub(crate) struct SidebarRenderContext<'a> {
     pub(crate) model: &'a SettingsUiModel,
     pub(crate) snapshot: &'a player_core::PlayerSnapshot,
+    pub(crate) playlist_model: Option<&'a crate::playlist_runtime::PlaylistViewModel>,
+    pub(crate) playlist_state: &'a mut playlist::PlaylistUiState,
+    pub(crate) playlist_output: &'a mut playlist::PlaylistUiOutput,
     pub(crate) settings_actions: &'a mut Vec<SettingsUiAction>,
     pub(crate) close_requested: &'a mut bool,
 }
@@ -180,6 +183,13 @@ fn render_section(ui: &mut Ui, section: SidebarSection, context: &mut SidebarRen
     ui.push_id(("section", section as u8), |ui| match section {
         SidebarSection::Playlist => {
             render_simple_header(ui, "Плейлист", context.close_requested);
+            ui.separator();
+            playlist::show(
+                ui,
+                context.playlist_model,
+                context.playlist_state,
+                context.playlist_output,
+            );
         }
         SidebarSection::Settings => {
             render_settings_header(ui, context.settings_actions, context.close_requested);

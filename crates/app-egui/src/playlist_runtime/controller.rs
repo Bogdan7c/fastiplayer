@@ -565,6 +565,10 @@ impl PlaylistController {
             structural_actions_enabled: !self.install_linearizing()
                 && self.fatal_invariant.is_none(),
             worker_availability: self.worker_availability,
+            awaiting_user_after_navigation_failure: self
+                .manual_navigation_cursor
+                .is_awaiting_user_after_failure(),
+            active_tombstone: self.detached_active_tombstone.is_some(),
         };
         self.view_snapshot = Arc::new(rebuild_snapshot(
             &self.view_snapshot,

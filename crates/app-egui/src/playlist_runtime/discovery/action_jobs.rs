@@ -143,6 +143,10 @@ pub(super) struct DiscoveryActionJobs {
 }
 
 impl DiscoveryActionJobs {
+    pub(super) const fn manual_progress(&self) -> Option<DiscoveryProgress> {
+        self.manual_progress
+    }
+
     pub(super) fn new() -> Self {
         Self {
             next_request_revision: 1,

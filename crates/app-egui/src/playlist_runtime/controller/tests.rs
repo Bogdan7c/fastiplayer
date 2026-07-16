@@ -105,6 +105,7 @@ fn append_does_not_start_playback_and_visible_access_reuses_shared_rows() {
     let item_ids = append_ids(&mut controller, 128);
     let structural_snapshot = controller.view_snapshot();
     let shared_rows_identity = structural_snapshot.shared_rows_identity();
+    let shared_title_identity = structural_snapshot.shared_title_identity(73);
 
     assert_eq!(controller.active_media(), None);
     assert_eq!(controller.queue().traversal_current(), None);
@@ -116,6 +117,10 @@ fn append_does_not_start_playback_and_visible_access_reuses_shared_rows() {
     assert_eq!(
         selection_snapshot.shared_rows_identity(),
         shared_rows_identity
+    );
+    assert_eq!(
+        selection_snapshot.shared_title_identity(73),
+        shared_title_identity
     );
     assert_eq!(selection_snapshot.selected_item_id(), Some(item_ids[73]));
     assert_eq!(selection_snapshot.active_media(), None);
@@ -620,6 +625,7 @@ fn d49_badge_correlation_and_d70_retention_do_not_dirty_queue() {
     assert_eq!(controller.dirty_revision(), dirty_before_errors);
     let rows = controller.view_snapshot().visible_rows(0..2);
     assert!(rows[0].runtime_error().is_some());
+    assert!(rows[0].is_pending());
     assert!(rows[1].runtime_error().is_some());
 }
 
@@ -648,6 +654,11 @@ fn active_removal_detaches_identity_selected_stays_independent_and_latch_is_stor
         .unwrap();
 
     assert_eq!(controller.selected_item_id(), Some(item_ids[1]));
+    let installed_rows = controller.view_snapshot().visible_rows(0..2);
+    assert!(installed_rows[0].is_active());
+    assert!(!installed_rows[0].is_selected());
+    assert!(installed_rows[1].is_selected());
+    assert!(!installed_rows[1].is_active());
     assert!(controller.set_stop_after_current(true));
     assert!(matches!(
         controller.remove_item(item_ids[0]),
@@ -658,6 +669,7 @@ fn active_removal_detaches_identity_selected_stays_independent_and_latch_is_stor
             .active_media()
             .is_some_and(|active| active.item_id().is_none())
     );
+    assert!(controller.view_snapshot().has_active_tombstone());
     let latch = controller.stop_after_current().unwrap();
     assert_eq!(latch.item_id(), Some(item_ids[0]));
     assert_eq!(

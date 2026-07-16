@@ -8,6 +8,7 @@ pub mod animation;
 pub mod assets;
 pub mod media_info;
 pub mod player_controls;
+pub(crate) mod playlist;
 pub(crate) mod queue_replacement_confirmation;
 pub mod sidebar;
 pub mod skin;

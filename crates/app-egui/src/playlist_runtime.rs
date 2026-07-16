@@ -4,8 +4,8 @@
 //! Он живёт в `AppShell`, а renderer-bound `AppState` получает короткоживущий binding
 //! с новой generation и exact ordered player port после resume.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock};
 
 use playlist_core::PlaylistQueue;
 
@@ -68,6 +68,7 @@ pub(crate) use startup_retained::RetainedStartupApplyOutcome;
     reason = "Session 11A read-only snapshot is attached by later playlist UI integration"
 )]
 mod view;
+mod view_model;
 
 #[allow(
     unused_imports,
@@ -100,7 +101,13 @@ pub(crate) use replacement_confirmation::{
     QueueReplacementConfirmationDecision, QueueReplacementConfirmationOutcome,
     TrustedStartupQueueReplacementIntent, safe_local_open_label,
 };
-pub(crate) use view::PlaylistViewSnapshot;
+#[cfg(test)]
+pub(crate) use view::PlaylistVisibleRowTestFixture;
+pub(crate) use view::{PlaylistStructuralRevision, PlaylistViewSnapshot, PlaylistVisibleRow};
+pub(crate) use view_model::{
+    PlaylistLoadingView, PlaylistNavigationView, PlaylistProbeView, PlaylistSaveView,
+    PlaylistStartupWarningView, PlaylistViewModel,
+};
 
 /// D66 generation меняется только при queue-identity replacement boundaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,7 +144,7 @@ pub(crate) struct PlaylistRuntimeBinding {
 #[derive(Debug, Clone)]
 pub(crate) struct PlaylistAppStateAttachment {
     binding: PlaylistRuntimeBinding,
-    view_snapshot: Arc<PlaylistViewSnapshot>,
+    view_model: PlaylistViewModel,
 }
 
 impl PlaylistAppStateAttachment {
@@ -147,13 +154,13 @@ impl PlaylistAppStateAttachment {
     }
 
     /// Возвращает cheap-clone read-only snapshot без mutable доступа к controller-у.
-    pub(crate) fn view_snapshot(&self) -> Arc<PlaylistViewSnapshot> {
-        self.view_snapshot.clone()
+    pub(crate) fn view_model(&self) -> PlaylistViewModel {
+        self.view_model.clone()
     }
 
     /// Заменяет только immutable view при сохранении exact binding identity.
-    pub(crate) fn replace_view_snapshot(&mut self, view_snapshot: Arc<PlaylistViewSnapshot>) {
-        self.view_snapshot = view_snapshot;
+    pub(crate) fn replace_view_model(&mut self, view_model: PlaylistViewModel) {
+        self.view_model = view_model;
     }
 }
 
@@ -553,10 +560,12 @@ impl PlaylistRuntime {
         reason = "read-only AppState attachment lands with playlist UI"
     )]
     pub(crate) fn playlist_view_snapshot(&self) -> Arc<PlaylistViewSnapshot> {
+        static EMPTY_VIEW: LazyLock<Arc<PlaylistViewSnapshot>> =
+            LazyLock::new(|| Arc::new(PlaylistViewSnapshot::initial(&PlaylistQueue::new())));
         self.controller
             .as_ref()
             .map(PlaylistController::view_snapshot)
-            .unwrap_or_else(|| Arc::new(PlaylistViewSnapshot::initial(&PlaylistQueue::new())))
+            .unwrap_or_else(|| Arc::clone(&EMPTY_VIEW))
     }
 
     /// Создаёт renderer-bound attachment только для текущего exact binding-а.
@@ -567,7 +576,7 @@ impl PlaylistRuntime {
         self.validate_binding(binding)?;
         Ok(PlaylistAppStateAttachment {
             binding,
-            view_snapshot: self.playlist_view_snapshot(),
+            view_model: self.playlist_view_model(),
         })
     }
 
@@ -868,10 +877,7 @@ mod tests {
             .app_state_attachment(second)
             .expect("current binding attachment");
         assert_eq!(attachment.binding(), second);
-        assert_eq!(
-            attachment.view_snapshot().revision(),
-            initial_view.revision()
-        );
+        assert_eq!(attachment.view_model().revision(), initial_view.revision());
         assert!(matches!(
             runtime.app_state_attachment(first),
             Err(PlaylistBindingRejection::StaleGeneration)

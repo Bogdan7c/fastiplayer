@@ -11,3 +11,4 @@
 - Titlebar controls are 36x32 pt, inset 8 pt, gap 4 pt, ordered Playlist/Settings/URL/Info. The complete reserved rect is excluded from drag/resize. Tooltips/accessibility labels are Russian.
 - Painter primitives, including active background, live in `ui-artwork-egui`; app-egui owns hit-testing/actions only.
 - Hiding/switching away from Settings preserves its draft/live preview. Re-entering an existing draft refreshes dynamic options without `begin_edit`. Settings X/Cancel rolls back; successful OK closes through visibility reconciliation; Apply stays open.
+- Session 18: Playlist content routes to `ui/playlist/` inside the same single host. Authoritative copy owns persistent viewport anchor/output; disabled outgoing/incoming animation copies render with temporary Playlist UI state and discarded output, so they cannot overwrite anchor or duplicate visible metadata demand. См. `mem:app-egui/playlist-ui-s18`.

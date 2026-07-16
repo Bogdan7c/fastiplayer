@@ -154,6 +154,9 @@ pub(crate) struct RenderedAppUi {
     pub(crate) queue_replacement_confirmation_action:
         Option<crate::playlist_runtime::QueueReplacementConfirmationAction>,
 
+    /// Bounded read-only visibility hint для demand metadata refresh.
+    pub(crate) playlist_visible_items_hint: Option<crate::ui::playlist::PlaylistVisibleItemsHint>,
+
     /// Область video underlay в egui points; overlay-панели её не уменьшают.
     pub(crate) video_viewport_rect: egui::Rect,
 
@@ -209,6 +212,9 @@ pub struct AppState {
 
     /// Exact renderer binding и immutable playlist view без controller ownership.
     playlist_attachment: Option<crate::playlist_runtime::PlaylistAppStateAttachment>,
+
+    /// Viewport anchor принадлежит только Playlist UI и не следует за active media.
+    playlist_ui_state: crate::ui::playlist::PlaylistUiState,
 
     /// Startup-ошибка shell-слоя, которую нужно показать без перевода player в Failed.
     pub startup_error: Option<String>,
@@ -381,6 +387,7 @@ impl AppState {
             committed_config_snapshot,
             system_capabilities_snapshot: None,
             playlist_attachment: None,
+            playlist_ui_state: crate::ui::playlist::PlaylistUiState::default(),
             startup_error,
             startup_pending: None,
             last_player_snapshot: PlayerSnapshot::empty(),

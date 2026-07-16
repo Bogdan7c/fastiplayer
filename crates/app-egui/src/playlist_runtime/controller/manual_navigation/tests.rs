@@ -343,6 +343,13 @@ fn concrete_failure_requires_retry_or_explicit_cursor_action() {
         controller.report_manual_navigation_target_failure(request_id(91)),
         ManualNavigationFailureOutcome::AwaitingUserAfterFailure { item_id: items[1] }
     );
+    assert!(
+        controller
+            .view_snapshot()
+            .awaiting_user_after_navigation_failure()
+    );
+    let failed_row = controller.view_snapshot().visible_rows(1..2).remove(0);
+    assert!(!failed_row.is_pending());
     assert_eq!(
         controller.queue.traversal_current().unwrap().item_id(),
         items[0]

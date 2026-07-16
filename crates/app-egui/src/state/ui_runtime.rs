@@ -210,6 +210,10 @@ impl AppState {
         let mut sidebar_close_requested = false;
         let mut window_chrome_actions = Vec::new();
         let mut queue_replacement_confirmation_action = None;
+        let playlist_view_model = self.playlist_view_model();
+        let playlist_runtime_binding = self.playlist_runtime_binding();
+        let mut playlist_ui_state = std::mem::take(&mut self.playlist_ui_state);
+        let mut playlist_ui_output = crate::ui::playlist::PlaylistUiOutput::default();
         let mut timeline_ui_state = std::mem::take(&mut self.timeline_ui_state);
         let pre_ui_setup_elapsed = pre_ui_setup_started_at.elapsed();
         let mut telemetry_panel_cache_elapsed = Duration::ZERO;
@@ -293,6 +297,9 @@ impl AppState {
                 SidebarRenderContext {
                     model: settings_ui_model,
                     snapshot: player_snapshot,
+                    playlist_model: playlist_view_model.as_ref(),
+                    playlist_state: &mut playlist_ui_state,
+                    playlist_output: &mut playlist_ui_output,
                     settings_actions: &mut settings_actions,
                     close_requested: &mut sidebar_close_requested,
                 },
@@ -336,6 +343,7 @@ impl AppState {
         }
 
         let post_ui_actions_started_at = Instant::now();
+        self.playlist_ui_state = playlist_ui_state;
         self.timeline_ui_state = timeline_ui_state;
         self.handle_control_actions(window, player_snapshot, control_actions);
         let post_ui_actions_elapsed = post_ui_actions_started_at.elapsed();
@@ -345,6 +353,8 @@ impl AppState {
             settings_actions,
             window_chrome_actions,
             queue_replacement_confirmation_action,
+            playlist_visible_items_hint: playlist_runtime_binding
+                .and_then(|binding| playlist_ui_output.into_visible_hint(binding)),
             video_viewport_rect,
             video_exclusion_rects,
             timings: AppUiRenderTimings {

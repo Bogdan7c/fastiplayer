@@ -22,6 +22,7 @@ pub(super) struct PreparedUiFrame {
     pub(super) window_chrome_actions: Vec<WindowChromeAction>,
     pub(super) queue_replacement_confirmation_action:
         Option<crate::playlist_runtime::QueueReplacementConfirmationAction>,
+    pub(super) playlist_visible_items_hint: Option<crate::ui::playlist::PlaylistVisibleItemsHint>,
     pub(super) timings: UiPrepareTimings,
 }
 
@@ -68,6 +69,7 @@ pub(super) fn prepare_ui_frame(
         settings_actions,
         window_chrome_actions,
         queue_replacement_confirmation_action,
+        playlist_visible_items_hint,
         video_viewport_rect,
         video_exclusion_rects,
         timings: app_ui_timings,
@@ -116,6 +118,7 @@ pub(super) fn prepare_ui_frame(
         settings_actions,
         window_chrome_actions,
         queue_replacement_confirmation_action,
+        playlist_visible_items_hint,
         timings: UiPrepareTimings {
             total: ui_prepare_started_at.elapsed(),
             app_ui: app_ui_timings,

@@ -1,10 +1,8 @@
 //! Renderer-bound read-only attachment к process-lifetime playlist runtime.
 
-use std::sync::Arc;
-
 use super::AppState;
 use crate::playlist_runtime::{
-    PlaylistAppStateAttachment, PlaylistRuntimeBinding, PlaylistViewSnapshot,
+    PlaylistAppStateAttachment, PlaylistRuntimeBinding, PlaylistViewModel,
 };
 
 impl AppState {
@@ -23,14 +21,10 @@ impl AppState {
     }
 
     /// Обновляет только read-only view; mutable controller остаётся в `PlaylistRuntime`.
-    #[allow(
-        dead_code,
-        reason = "playlist UI starts consuming refreshed snapshots in Session 12"
-    )]
-    pub(crate) fn update_playlist_view_snapshot(
+    pub(crate) fn update_playlist_view_model(
         &mut self,
         binding: PlaylistRuntimeBinding,
-        view_snapshot: Arc<PlaylistViewSnapshot>,
+        view_model: PlaylistViewModel,
     ) -> bool {
         let Some(attachment) = &mut self.playlist_attachment else {
             return false;
@@ -38,18 +32,14 @@ impl AppState {
         if attachment.binding() != binding {
             return false;
         }
-        attachment.replace_view_snapshot(view_snapshot);
+        attachment.replace_view_model(view_model);
         true
     }
 
     /// Возвращает renderer consumer-у только immutable snapshot текущего attachment-а.
-    #[allow(
-        dead_code,
-        reason = "playlist UI starts reading the attached snapshot in Session 12"
-    )]
-    pub(crate) fn playlist_view_snapshot(&self) -> Option<Arc<PlaylistViewSnapshot>> {
+    pub(crate) fn playlist_view_model(&self) -> Option<PlaylistViewModel> {
         self.playlist_attachment
             .as_ref()
-            .map(PlaylistAppStateAttachment::view_snapshot)
+            .map(PlaylistAppStateAttachment::view_model)
     }
 }

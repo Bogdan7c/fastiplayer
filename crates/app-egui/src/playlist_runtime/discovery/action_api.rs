@@ -124,6 +124,12 @@ impl PlaylistDiscoveryCoordinator {
         self.action_jobs.read_model()
     }
 
+    pub(crate) const fn manual_probe_progress(
+        &self,
+    ) -> Option<playlist_discovery::DiscoveryProgress> {
+        self.action_jobs.manual_progress()
+    }
+
     pub(super) fn cancel_action_jobs_for_queue_replacement(&mut self) {
         self.action_jobs.cancel_for_queue_replacement();
         self.metadata_sort.cancel_for_queue_replacement();

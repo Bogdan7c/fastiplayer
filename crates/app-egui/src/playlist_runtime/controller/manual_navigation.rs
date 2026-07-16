@@ -376,6 +376,7 @@ impl PlaylistController {
             .manual_navigation_cursor
             .latest_target_item_id()
             .expect("failed manual preview retains concrete target");
+        self.publish_view(false);
         ManualNavigationFailureOutcome::AwaitingUserAfterFailure { item_id }
     }
 
