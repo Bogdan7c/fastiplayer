@@ -17,7 +17,8 @@ use render_wgpu_shell::Renderer;
 use tracing::warn;
 
 use crate::playlist_runtime::{
-    AutomaticLifecycleOutcome, ControllerManualNavigationOutcome, ControllerPlayItemOutcome,
+    AutomaticLifecycleOutcome, ControllerInitialQueuePlaybackAction,
+    ControllerManualNavigationOutcome, ControllerPlayItemOutcome,
     PlaylistDiscoveryNavigationAction, PlaylistRuntime, RuntimeRowPlayOutcome,
     TransportActionOrigin,
 };
@@ -62,6 +63,34 @@ pub(crate) fn apply_playlist_row_play(
         ControllerPlayItemOutcome::ItemNotCommitted { .. }
         | ControllerPlayItemOutcome::IntentRevisionExhausted => false,
     }
+}
+
+/// Применяет deferred start новой directory queue через те же exact/strong adapters, что Row Play.
+pub(crate) fn apply_initial_queue_playback_action(
+    app_state: &mut AppState,
+    playlist_runtime: &mut PlaylistRuntime,
+    renderer: &Renderer,
+) -> bool {
+    let Some(action) = playlist_runtime.take_initial_queue_playback_action() else {
+        return false;
+    };
+    match action {
+        ControllerInitialQueuePlaybackAction::RestartCurrent {
+            request,
+            intent_dispatch,
+        } => {
+            app_state.apply_playlist_stable_intent_dispatch(playlist_runtime, intent_dispatch);
+            app_state.dispatch_exact_playlist_transport(request);
+        }
+        ControllerInitialQueuePlaybackAction::InstallFirst {
+            install,
+            intent_dispatch,
+        } => {
+            app_state.apply_playlist_stable_intent_dispatch(playlist_runtime, intent_dispatch);
+            app_state.begin_planned_playlist_install(playlist_runtime, renderer, install, None);
+        }
+    }
+    true
 }
 
 pub(crate) fn apply_transport_actions(

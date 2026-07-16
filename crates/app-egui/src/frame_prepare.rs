@@ -1211,6 +1211,11 @@ pub(crate) fn render_frame(
         frame_context.player_snapshot(),
         transport_actions,
     );
+    crate::transport_runtime::apply_initial_queue_playback_action(
+        app_state,
+        playlist_runtime,
+        renderer,
+    );
     crate::transport_runtime::apply_discovery_navigation_action(
         app_state,
         playlist_runtime,

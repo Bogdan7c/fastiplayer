@@ -29,6 +29,7 @@ impl PlaylistRuntime {
     /// Explicit row Play supersede-ит только replacement prompt и использует D59/D60 controller.
     pub(crate) fn play_playlist_row(&mut self, item_id: PlaylistItemId) -> RuntimeRowPlayOutcome {
         self.supersede_queue_replacement_confirmation_for_row_play();
+        self.discovery.cancel_initial_queue_playback();
         let Some(controller) = self.controller.as_mut() else {
             return RuntimeRowPlayOutcome::LoadDecisionPending;
         };

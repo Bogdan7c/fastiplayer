@@ -6,6 +6,8 @@ mod action_api;
     reason = "Session 16 action API is rendered by Session 19 UI"
 )]
 mod action_jobs;
+mod initial_playback;
+mod installed_target;
 mod manifest_worker;
 mod mapping;
 mod metadata_sort;
@@ -45,14 +47,15 @@ use playlist_discovery::{
 };
 
 use super::controller::{
-    DiscoveryContinuation, InstallReadyOutcome, PlaylistInstallMutation, PlaylistInstallRequest,
-    SiblingDiscoveryScopeId,
+    DiscoveryContinuation, InitialQueuePlaybackGuard, InstallReadyOutcome, PlaylistInstallMutation,
+    PlaylistInstallRequest, SiblingDiscoveryScopeId,
 };
 use super::identity::PendingTargetOrigin;
 use super::settings::{FutureDiscoveryPolicy, PlaylistDiscoverySettingsPort};
 use super::{PlaylistMediaOpenGateError, PlaylistRuntime};
 use crate::app_wake::{AppWakePort, WakeDelivery};
 use crate::media_open::{AuthorizationDispatchResolution, MediaOpenRequestId};
+pub(crate) use initial_playback::InstalledTargetDiscoveryStartError;
 use manifest_worker::{ManifestWork, ManifestWorker};
 pub(crate) use mapping::cached_metadata;
 pub(crate) use mapping::target_draft_from_prepared;
@@ -152,34 +155,6 @@ impl PlaylistRuntime {
         authorization
             .map(|_| resolution)
             .map_err(PlaylistMediaOpenGateError::Coordinator)
-    }
-
-    /// После exact target-only commit запускает independent sibling scope, если policy разрешает.
-    pub(crate) fn start_sibling_discovery_for_installed_target(
-        &mut self,
-        target_path: PathBuf,
-        opened_media_kind: LocalMediaKind,
-    ) -> Result<(), &'static str> {
-        let controller = self
-            .controller
-            .as_mut()
-            .ok_or("playlist load decision is pending")?;
-        let target_item_id = controller
-            .active_media()
-            .and_then(super::identity::ActiveMediaIdentity::item_id)
-            .ok_or("installed explicit target has no committed Item ID")?;
-        let continuation = controller
-            .begin_discovery_continuation()
-            .map_err(|_| "cannot allocate discovery continuation")?;
-        let policy = self.settings.future_discovery_policy();
-        self.discovery.start(
-            target_item_id,
-            target_path,
-            opened_media_kind,
-            policy,
-            continuation,
-        );
-        Ok(())
     }
 
     /// Event-driven drain; каждый accepted batch отдельно публикует dirty/save revision.
@@ -313,6 +288,7 @@ pub(super) struct PlaylistDiscoveryCoordinator {
     last_insertion_hint: Option<PlaylistDiscoveryInsertionHint>,
     navigation_action: Option<navigation::PlaylistDiscoveryNavigationAction>,
     navigation_status: navigation::PlaylistDiscoveryNavigationStatus,
+    initial_playback: initial_playback::InitialQueuePlaybackCoordinator,
 }
 
 impl PlaylistDiscoveryCoordinator {
@@ -337,11 +313,17 @@ impl PlaylistDiscoveryCoordinator {
             last_insertion_hint: None,
             navigation_action: None,
             navigation_status: navigation::PlaylistDiscoveryNavigationStatus::Idle,
+            initial_playback: initial_playback::InitialQueuePlaybackCoordinator::default(),
         }
     }
 
     pub(super) fn settings_port(&self) -> Box<dyn PlaylistDiscoverySettingsPort> {
         self.settings_control.port()
+    }
+
+    /// Новый explicit transport intent не должен быть переигран deferred directory start-ом.
+    pub(in crate::playlist_runtime) fn cancel_initial_queue_playback(&mut self) {
+        self.initial_playback.cancel_all();
     }
 
     pub(super) fn status(&self) -> &PlaylistDiscoveryStatus {
@@ -355,6 +337,7 @@ impl PlaylistDiscoveryCoordinator {
     /// Неблокирующе закрывает discovery admission перед общим committed-state flush.
     pub(super) fn begin_shutdown(&mut self) {
         self.cancel_active(DiscoveryCancellationCause::LifecycleShutdown);
+        self.initial_playback.cancel_all();
         self.action_jobs.begin_shutdown();
         self.metadata_sort.begin_shutdown();
         if let Some(manifest_worker) = &mut self.manifest_worker {
@@ -380,10 +363,15 @@ impl PlaylistDiscoveryCoordinator {
         opened_media_kind: LocalMediaKind,
         policy: FutureDiscoveryPolicy,
         continuation: DiscoveryContinuation,
+        initial_playback_guard: Option<InitialQueuePlaybackGuard>,
     ) {
         self.cancel_active(DiscoveryCancellationCause::Superseded);
+        self.initial_playback.cancel_all();
         self.last_insertion_hint = None;
         let Some(scope_id) = self.allocate_scope_id() else {
+            if let Some(guard) = initial_playback_guard {
+                self.initial_playback.arm_ready_without_scope(guard);
+            }
             self.status = PlaylistDiscoveryStatus::TargetOnlyWarning {
                 scope_id: SiblingDiscoveryScopeId::from_non_zero(
                     NonZeroU64::new(u64::MAX).expect("maximum u64 is non-zero"),
@@ -392,7 +380,11 @@ impl PlaylistDiscoveryCoordinator {
             };
             return;
         };
+        if let Some(guard) = initial_playback_guard {
+            self.initial_playback.arm_waiting(scope_id, guard);
+        }
         if !policy.load_siblings {
+            self.initial_playback.mark_scope_ready(scope_id);
             self.status = PlaylistDiscoveryStatus::Completed {
                 scope_id,
                 outcome: DiscoveryFinalOutcome::Completed,
@@ -406,6 +398,7 @@ impl PlaylistDiscoveryCoordinator {
             policy_revision,
         );
         let Some(manifest_worker) = &self.manifest_worker else {
+            self.initial_playback.mark_scope_ready(scope_id);
             self.status = PlaylistDiscoveryStatus::TargetOnlyWarning {
                 scope_id,
                 warning: PlaylistDiscoveryWarning::ExecutorUnavailable,
@@ -419,6 +412,7 @@ impl PlaylistDiscoveryCoordinator {
             })
             .is_err()
         {
+            self.initial_playback.mark_scope_ready(scope_id);
             self.status = PlaylistDiscoveryStatus::TargetOnlyWarning {
                 scope_id,
                 warning: PlaylistDiscoveryWarning::SubmitRejected,
@@ -464,6 +458,7 @@ impl PlaylistDiscoveryCoordinator {
                 scope_id: active.scope_id,
                 warning: PlaylistDiscoveryWarning::StaleStructuralRevision,
             };
+            self.initial_playback.cancel_scope(active.scope_id);
             self.clear_settings_control(active.scope_id);
             return true;
         }
@@ -546,8 +541,13 @@ impl PlaylistDiscoveryCoordinator {
                         }
                     }
                 }
-                marker @ (DiscoveryEvent::AdmissionAdvanced(_)
-                | DiscoveryEvent::FrontierReady(_)) => {
+                marker @ DiscoveryEvent::AdmissionAdvanced(admission) => {
+                    self.initial_playback
+                        .observe_admission_advanced(&active, admission);
+                    // Marker-only events меняют только wait/action state, но не queue records.
+                    self.route_navigation_event(controller, &mut active, marker);
+                }
+                marker @ DiscoveryEvent::FrontierReady(_) => {
                     // Marker-only events меняют только wait/action state, но не queue records.
                     self.route_navigation_event(controller, &mut active, marker);
                 }
@@ -563,6 +563,8 @@ impl PlaylistDiscoveryCoordinator {
         }
         if let Some(summary) = active.job.take_final_summary() {
             self.finish_navigation_scope(controller, &active, summary.outcome);
+            self.initial_playback
+                .finish_scope(active.scope_id, summary.outcome);
             self.status = PlaylistDiscoveryStatus::Completed {
                 scope_id: active.scope_id,
                 outcome: summary.outcome,
@@ -608,6 +610,7 @@ impl PlaylistDiscoveryCoordinator {
         };
         let finalized = self.settings_control.is_finalized();
         if finalized {
+            self.initial_playback.cancel_scope(manifest_job.scope_id);
             self.status = PlaylistDiscoveryStatus::Completed {
                 scope_id: manifest_job.scope_id,
                 outcome: DiscoveryFinalOutcome::Cancelled(
@@ -620,6 +623,8 @@ impl PlaylistDiscoveryCoordinator {
         let manifest = match result {
             Ok(manifest) => Arc::new(manifest),
             Err(error) => {
+                self.initial_playback
+                    .mark_scope_ready(manifest_job.scope_id);
                 self.status = PlaylistDiscoveryStatus::TargetOnlyWarning {
                     scope_id: manifest_job.scope_id,
                     warning: manifest_warning(error),
@@ -629,6 +634,8 @@ impl PlaylistDiscoveryCoordinator {
             }
         };
         let target_key = manifest.explicit_target().candidate_key();
+        self.initial_playback
+            .observe_manifest(manifest_job.scope_id, &manifest, target_key);
         let request_revision = DiscoveryRequestRevision::new(manifest_job.scope_id.get());
         let request = DiscoveryRequest::Sibling(SiblingDiscoveryRequest::new(
             Arc::clone(&manifest),
@@ -637,6 +644,8 @@ impl PlaylistDiscoveryCoordinator {
             request_revision,
         ));
         let Some(executor) = &self.executor else {
+            self.initial_playback
+                .mark_scope_ready(manifest_job.scope_id);
             self.status = PlaylistDiscoveryStatus::TargetOnlyWarning {
                 scope_id: manifest_job.scope_id,
                 warning: PlaylistDiscoveryWarning::ExecutorUnavailable,
@@ -647,6 +656,8 @@ impl PlaylistDiscoveryCoordinator {
         let job = match executor.submit(request) {
             Ok(job) => job,
             Err(_) => {
+                self.initial_playback
+                    .mark_scope_ready(manifest_job.scope_id);
                 self.status = PlaylistDiscoveryStatus::TargetOnlyWarning {
                     scope_id: manifest_job.scope_id,
                     warning: PlaylistDiscoveryWarning::SubmitRejected,
@@ -681,6 +692,8 @@ impl PlaylistDiscoveryCoordinator {
         let frozen = self.settings_control.is_frozen();
         if frozen && !job.freeze_admission() {
             let _cancelled_now = job.cancel(DiscoveryCancellationCause::StructuralInvalidation);
+            self.initial_playback
+                .mark_scope_ready(manifest_job.scope_id);
             self.status = PlaylistDiscoveryStatus::TargetOnlyWarning {
                 scope_id: manifest_job.scope_id,
                 warning: PlaylistDiscoveryWarning::BatchRejected,
@@ -705,12 +718,19 @@ impl PlaylistDiscoveryCoordinator {
     fn cancel_active(&mut self, cause: DiscoveryCancellationCause) {
         if let Some(active) = self.active_scope.take() {
             let _cancelled_now = active.job.cancel(cause);
+            self.initial_playback
+                .finish_scope(active.scope_id, DiscoveryFinalOutcome::Cancelled(cause));
             self.clear_settings_control(active.scope_id);
         }
         if let Some(manifest) = self.manifest_job.take() {
             // Persistent bounded worker завершит syscall, но stale result больше не применяется.
             let scope_id = manifest.scope_id;
+            self.initial_playback
+                .finish_scope(scope_id, DiscoveryFinalOutcome::Cancelled(cause));
             self.clear_settings_control(scope_id);
+        }
+        if cause != DiscoveryCancellationCause::UserCancelled {
+            self.initial_playback.cancel_all();
         }
     }
 

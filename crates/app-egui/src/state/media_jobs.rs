@@ -29,7 +29,11 @@ impl AppState {
                     return false;
                 }
             };
-        let autoplay = self.committed_config_snapshot.autoplay_for_new_media();
+        let desired_initial_intent = if self.committed_config_snapshot.autoplay_for_new_media() {
+            crate::playlist_runtime::StablePlaybackIntent::Playing
+        } else {
+            crate::playlist_runtime::StablePlaybackIntent::Paused
+        };
         let source = ActiveMediaSource::LocalFile(path.clone());
         let prepared_input = PreparedSingleMediaOpen::target_replacement(
             prepared.prepared_media,
@@ -41,7 +45,7 @@ impl AppState {
             playlist_runtime,
             renderer,
             prepared_input,
-            player_core::PlaybackIntent::from_autoplay(autoplay),
+            player_core::PlaybackIntent::StartPaused,
         ) {
             let safe_label = crate::playlist_runtime::safe_local_open_label(&path);
             warn!(error = %error, source = %safe_label, "Не удалось отправить подготовленный файл в worker");
@@ -52,10 +56,12 @@ impl AppState {
         }
 
         self.record_installed_media_source(source);
-        if let Err(error) = playlist_runtime
-            .start_sibling_discovery_for_installed_target(path.clone(), opened_media_kind)
-        {
-            warn!(error, "Target установлен, но sibling discovery не запущен");
+        if let Err(error) = playlist_runtime.start_sibling_discovery_then_play_from_beginning(
+            path.clone(),
+            opened_media_kind,
+            desired_initial_intent,
+        ) {
+            warn!(error = %error, "Target установлен, но sibling discovery не запущен");
         }
         true
     }
@@ -228,6 +234,23 @@ impl AppState {
                 self.mark_pending_worker_redraw();
             }
             LocalFileOpenResult::Selected { path } => {
+                if let crate::playlist_runtime::LocalFileSelectionDisposition::PlayCommittedItem {
+                    item_id,
+                } = playlist_runtime.classify_in_app_local_file_selection(&path)
+                {
+                    let outcome = playlist_runtime.play_playlist_row(item_id);
+                    if !crate::transport_runtime::apply_playlist_row_play(
+                        self,
+                        playlist_runtime,
+                        renderer,
+                        outcome,
+                    ) {
+                        self.set_startup_error(
+                            "Не удалось открыть выбранный файл из текущей очереди".to_string(),
+                        );
+                    }
+                    return;
+                }
                 let intent = crate::playlist_runtime::InAppQueueReplacementIntent::local_file(path);
                 match playlist_runtime.admit_in_app_queue_replacement(intent) {
                     Ok(crate::playlist_runtime::InAppQueueReplacementAdmission::StartNow(

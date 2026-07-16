@@ -59,3 +59,13 @@ Session 15 completed PASS on 2026-07-15. This memory complements `mem:core`, `me
 
 ## Session 17 startup consumer (2026-07-16)
 - CLI local сохраняет target-first policy и запускает sibling discovery только после exact Installed target. Restore queue/current никогда не создаёт discovery scope и не сканирует siblings. Полный startup contract: `mem:app-egui/startup-orchestration-s17`.
+
+
+## 2026-07-17 directory-aware in-app start-from-beginning extension
+- D24 now distinguishes CLI startup from the main in-app single-file picker. CLI keeps immediate target playback. In-app replacement installs the selected target with `StartPaused` as the existing D08 atomic target-only anchor, then starts playback only after the beginning of the new committed queue is proven.
+- `controller/initial_queue_playback.rs` owns an opaque guard over exact active media identity, stable-intent revision, target Item ID, and desired autoplay intent. Beginning the guard synchronizes app-owned stable intent with the already-installed paused target so a `Playing` intent from the replaced queue cannot cancel the new lineage.
+- `discovery/initial_playback.rs` owns at most one pending guard. It becomes ready when the immutable manifest proves the target is first or when a matching `AdmissionAdvanced(Before, exhausted=true)` proves no further rows can be inserted before the first committed row. Full `After` discovery continues independently.
+- The action is built only at the post-UI application boundary, after same-frame playlist and transport intents. A newer Play/Pause/Stop, explicit Row Play, new open, structural/lifecycle invalidation, or identity/revision mismatch supersedes the guard. User-cancelled discovery releases a partial-queue fallback; internal manifest/executor failure and `load_siblings=false` release target-only fallback.
+- If the target is already first, controller emits exact `RestartFromBeginning` with the configured playback intent. Otherwise it emits the existing `PlannedPlaylistInstall` for `queue.items().first()` and reuses the normal strong install adapter. No queue/current mutation or player command originates in discovery itself.
+- Glue is split into `discovery/installed_target.rs`; the central `discovery.rs` remains below 800 lines. `player-core`, `playlist-core`, and `playlist-discovery` public contracts are unchanged.
+- Verification: 583 app-egui no-default tests, all-feature workspace tests, strict all-feature/all-target Clippy and rustdoc, Rust 1.96 locked workspace check, MSRV 1.92, fmt/guardrails/diff and clean Serena diagnostics. Pre-PR dependency gate remains externally blocked by lock-graph advisories; Cargo manifests and lockfile were not changed.

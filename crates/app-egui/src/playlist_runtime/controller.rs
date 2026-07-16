@@ -3,7 +3,9 @@
 mod automatic_lifecycle;
 mod discovery;
 mod discovery_navigation;
+mod initial_queue_playback;
 mod install;
+mod local_file_selection;
 mod manual_navigation;
 mod metadata;
 mod removal;
@@ -37,6 +39,10 @@ pub(crate) use automatic_lifecycle::{
 };
 pub(crate) use discovery::{DiscoveryContinuation, DiscoveryContinuationRevision};
 pub(crate) use discovery_navigation::{AutomaticDiscoveryReadiness, DiscoveryNavigationInterest};
+pub(crate) use initial_queue_playback::{
+    ControllerInitialQueuePlaybackAction, InitialQueuePlaybackGuard,
+    InitialQueuePlaybackGuardError, InitialQueuePlaybackPlanError,
+};
 #[allow(unused_imports)]
 pub(crate) use install::{
     AuthorizationDispatchStart, BarrierRaceIntent, ControllerInstallPhase,
@@ -45,6 +51,9 @@ pub(crate) use install::{
     DesiredQueueModes, InstallReadyOutcome, LifecycleIntentOutcome,
     PlaylistControllerInvariantViolation, PlaylistInstallAdmissionError, PlaylistInstallMutation,
     PlaylistInstallRequest,
+};
+pub(crate) use local_file_selection::{
+    LocalFileQueueReplacementReason, LocalFileSelectionDisposition,
 };
 #[allow(unused_imports)]
 pub(crate) use manual_navigation::{

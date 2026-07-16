@@ -59,7 +59,7 @@ impl StartupMediaController {
                     && let Err(error) = playlist_runtime
                         .start_sibling_discovery_for_installed_target(path, media_kind)
                 {
-                    tracing::warn!(error, "CLI target установлен без sibling discovery");
+                    tracing::warn!(error = %error, "CLI target установлен без sibling discovery");
                 }
                 let retained = match playlist_runtime.apply_retained_startup_actions() {
                     Ok(outcome) => outcome,

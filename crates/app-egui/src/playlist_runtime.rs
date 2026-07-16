@@ -32,6 +32,7 @@ pub(crate) mod discovery;
     reason = "Session 11A identities become production callsite inputs in subsequent sessions"
 )]
 mod identity;
+mod local_file_selection;
 mod persistence;
 mod persistence_runtime;
 #[allow(
@@ -90,8 +91,9 @@ pub(crate) use actions::{
 };
 pub(crate) use controller::PlaylistController;
 pub(crate) use controller::{
-    AutomaticLifecycleOutcome, ControllerManualNavigationOutcome, ControllerMoveItemOutcome,
-    ControllerPlayItemOutcome, ControllerStableIntentDispatch, PlannedPlaylistInstall,
+    AutomaticLifecycleOutcome, ControllerInitialQueuePlaybackAction,
+    ControllerManualNavigationOutcome, ControllerMoveItemOutcome, ControllerPlayItemOutcome,
+    ControllerStableIntentDispatch, LocalFileSelectionDisposition, PlannedPlaylistInstall,
     StablePlaybackIntent, StopAfterCurrentOutcome,
 };
 pub(crate) use controller::{StartupRestoreFailureOutcome, StartupRestoreTarget};
