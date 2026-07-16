@@ -45,10 +45,11 @@ video-ffmpeg» НЕВЕРНА — заменяется этим.
    (FFmpeg `parse_obu_header`, cbs_av1).
 2. `adapter.rs`: ветка `VideoCodec::Av1` в
    `probe_video_packet_keyframe_with_codec_private` → `Keyframe(bool)` /
-   `Uncertain(ParseError)`. Requirement-probe AV1 НЕ трогался (остался
-   AdapterUnavailable, тест на это сохранён). Теперь AV1 packets получают
-   Keyframe/NotKeyframe, и существующие ветки bootstrap корректно дропают
-   inter-frames до реального keyframe (как VP9).
+   `Uncertain(ParseError)`. Generic packet requirement-probe AV1 остаётся
+   `AdapterUnavailable`; это отдельно от добавленного 2026-07-16 container-level
+   `av1C -> VideoDecodeRequirement` boundary в `mem:codec-core/av1`. Теперь AV1
+   packets получают Keyframe/NotKeyframe, и существующие ветки bootstrap корректно
+   дропают inter-frames до реального keyframe (как VP9).
 3. `player-core/src/session/capability_selection.rs`:
    `retry_pending_video_backend_reselection` после `activate_video_track` +
    `note_active_video_stream_requirement(..., true)` вызывает новый

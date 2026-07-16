@@ -3,8 +3,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use codec_core::{
-    Av1Profile, H264Profile, H265Profile, VideoColorMetadata, VideoDisplayOrientation,
-    VideoProfile, Vp9Profile,
+    Av1Profile, H264Profile, H265Profile, VideoColorMetadata, VideoDecodeRequirement,
+    VideoDisplayOrientation, VideoProfile, Vp9Profile,
+    av1_decode_requirement_from_decoder_configuration_record,
 };
 use media_core::{TrackId, TrackInfo, TrackKind, VideoTrackMetadata};
 use symphonia::core::codecs::audio::well_known as audio_codec;
@@ -12,6 +13,7 @@ use symphonia::core::codecs::audio::{AudioCodecId, CODEC_ID_NULL_AUDIO};
 use symphonia::core::codecs::subtitle::well_known as subtitle_codec;
 use symphonia::core::codecs::subtitle::{CODEC_ID_NULL_SUBTITLE, SubtitleCodecId};
 use symphonia::core::codecs::video::well_known as video_codec;
+use symphonia::core::codecs::video::well_known::extra_data::VIDEO_EXTRA_DATA_ID_AV1_DECODER_CONFIG;
 use symphonia::core::codecs::video::well_known::profiles as video_profile;
 use symphonia::core::codecs::video::{CODEC_ID_NULL_VIDEO, VideoCodecId, VideoCodecParameters};
 use symphonia::core::codecs::{CodecParameters, CodecProfile};
@@ -454,19 +456,58 @@ fn video_metadata_from_symphonia_track(track: &Track) -> Option<VideoTrackMetada
     let Some(CodecParameters::Video(video_params)) = track.codec_params.as_ref() else {
         return None;
     };
+    let av1_requirement = av1_requirement_from_symphonia_video_params(video_params);
 
     VideoTrackMetadata {
         coded_width: video_params.width.map(u32::from),
         coded_height: video_params.height.map(u32::from),
         profile: video_params
             .profile
-            .and_then(|profile| video_profile_from_symphonia(video_params, profile)),
-        bit_depth: None,
-        chroma: None,
+            .and_then(|profile| video_profile_from_symphonia(video_params, profile))
+            .or_else(|| {
+                av1_requirement
+                    .as_ref()
+                    .and_then(|requirement| requirement.profile)
+            }),
+        bit_depth: av1_requirement
+            .as_ref()
+            .and_then(|requirement| requirement.bit_depth),
+        chroma: av1_requirement
+            .as_ref()
+            .and_then(|requirement| requirement.chroma),
         color: None,
         orientation: VideoDisplayOrientation::Identity,
     }
     .into_option()
+}
+
+/// Восстанавливает обязательные AV1 sequence metadata из MP4 `av1C` extra data.
+///
+/// Symphonia 0.6 сохраняет весь decoder configuration record, но пока не
+/// поднимает его bit depth/chroma в `VideoCodecParameters`. Разбор остаётся в
+/// codec-core; demux boundary только переносит готовый neutral requirement.
+fn av1_requirement_from_symphonia_video_params(
+    video_params: &VideoCodecParameters,
+) -> Option<VideoDecodeRequirement> {
+    if video_params.codec != video_codec::CODEC_ID_AV1 {
+        return None;
+    }
+
+    let decoder_configuration = video_params
+        .extra_data
+        .iter()
+        .find(|extra_data| extra_data.id == VIDEO_EXTRA_DATA_ID_AV1_DECODER_CONFIG)?;
+
+    match av1_decode_requirement_from_decoder_configuration_record(&decoder_configuration.data) {
+        Ok(requirement) => Some(requirement),
+        Err(error) => {
+            warn!(
+                reason = %error,
+                "AV1 decoder configuration не удалось перенести в neutral track metadata"
+            );
+            None
+        }
+    }
 }
 
 /// Мапит Symphonia codec-specific profile в существующую neutral profile model.
@@ -849,8 +890,9 @@ mod tests {
     use std::collections::HashMap;
 
     use codec_core::{
-        ColorPrimaries, ColorRange, HdrMetadata, MatrixCoefficients, TransferFunction,
-        VideoColorMetadata, VideoDisplayOrientation, VideoProfile, Vp9Profile,
+        Av1Profile, BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, HdrMetadata,
+        MatrixCoefficients, TransferFunction, VideoColorMetadata, VideoDisplayOrientation,
+        VideoProfile, Vp9Profile,
     };
     use media_core::{TrackId, TrackKind, VideoTrackMetadata};
     use symphonia::core::codecs::CodecParameters;
@@ -858,7 +900,8 @@ mod tests {
     use symphonia::core::codecs::audio::well_known as audio_codec;
     use symphonia::core::codecs::subtitle::SubtitleCodecParameters;
     use symphonia::core::codecs::subtitle::well_known as subtitle_codec;
-    use symphonia::core::codecs::video::VideoCodecParameters;
+    use symphonia::core::codecs::video::well_known::extra_data::VIDEO_EXTRA_DATA_ID_AV1_DECODER_CONFIG;
+    use symphonia::core::codecs::video::{VideoCodecParameters, VideoExtraData};
     use symphonia::core::formats::Track;
     use symphonia::core::units::{Duration as SymphoniaDuration, TimeBase};
 
@@ -921,6 +964,21 @@ mod tests {
     fn vp9_video_track(track_id: u32) -> Track {
         let mut video_params = VideoCodecParameters::default();
         video_params.for_codec(symphonia::core::codecs::video::well_known::CODEC_ID_VP9);
+
+        let mut track = Track::new(track_id);
+        track.with_codec_params(CodecParameters::Video(video_params));
+        track.with_time_base(TimeBase::try_new(1, 1_000).expect("valid time base"));
+        track
+    }
+
+    /// Строит MP4-подобный AV1 track с typed `av1C` extra data.
+    fn av1_video_track(track_id: u32, configuration_header: [u8; 4]) -> Track {
+        let mut video_params = VideoCodecParameters::default();
+        video_params.for_codec(symphonia::core::codecs::video::well_known::CODEC_ID_AV1);
+        video_params.add_extra_data(VideoExtraData {
+            id: VIDEO_EXTRA_DATA_ID_AV1_DECODER_CONFIG,
+            data: Vec::from(configuration_header).into_boxed_slice(),
+        });
 
         let mut track = Track::new(track_id);
         track.with_codec_params(CodecParameters::Video(video_params));
@@ -1261,6 +1319,56 @@ mod tests {
             video_metadata.profile,
             Some(VideoProfile::Vp9(Vp9Profile::Profile2))
         );
+    }
+
+    /// Не теряет 8-bit/4:2:0 поля из `av1C` реального SDR fixture-а.
+    #[test]
+    fn mp4_av1c_sdr_metadata_reaches_neutral_track() {
+        let mut metadata_by_track = HashMap::new();
+        let track = av1_video_track(1, [0x81, 0x0d, 0x0c, 0x00]);
+
+        let mapping = map_tracks(&[track], &mut metadata_by_track);
+        let video_metadata = mapping.tracks[0]
+            .video
+            .as_ref()
+            .expect("SDR AV1 track должен содержать neutral video metadata");
+
+        assert_eq!(
+            video_metadata.profile,
+            Some(VideoProfile::Av1(Av1Profile::Main))
+        );
+        assert_eq!(video_metadata.bit_depth, Some(BitDepth::Eight));
+        assert_eq!(video_metadata.chroma, Some(ChromaSubsampling::Yuv420));
+    }
+
+    /// Не теряет 10-bit/4:2:0 поля `av1C` при отдельной MP4 HDR color metadata.
+    #[test]
+    fn mp4_av1c_hdr_metadata_reaches_neutral_track() {
+        let mut matroska_metadata_by_track = HashMap::new();
+        let display_orientations_by_track = HashMap::new();
+        let expected_color_metadata = mp4_hdr_color_metadata();
+        let color_metadata_by_track =
+            HashMap::from([(TrackId::new(1), expected_color_metadata.clone())]);
+        let track = av1_video_track(1, [0x81, 0x0d, 0x4c, 0x00]);
+
+        let mapping = map_tracks_with_video_metadata(
+            &[track],
+            &mut matroska_metadata_by_track,
+            &display_orientations_by_track,
+            &color_metadata_by_track,
+        );
+        let video_metadata = mapping.tracks[0]
+            .video
+            .as_ref()
+            .expect("HDR AV1 track должен содержать neutral video metadata");
+
+        assert_eq!(
+            video_metadata.profile,
+            Some(VideoProfile::Av1(Av1Profile::Main))
+        );
+        assert_eq!(video_metadata.bit_depth, Some(BitDepth::Ten));
+        assert_eq!(video_metadata.chroma, Some(ChromaSubsampling::Yuv420));
+        assert_eq!(video_metadata.color, Some(expected_color_metadata));
     }
 
     #[test]

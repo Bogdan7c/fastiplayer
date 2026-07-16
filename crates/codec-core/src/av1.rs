@@ -1,5 +1,6 @@
-//! AV1 OBU bitstream probing: packet-level keyframe (decode-start) detection.
+//! AV1 codec-private metadata и OBU packet probing.
 //!
+//! Fixed header `av1C` даёт container-level profile/bit-depth/chroma до decode.
 //! AV1 в ISOBMFF/low-overhead bitstream format: temporal unit состоит из OBU-ов,
 //! у которых `obu_has_size_field = 1`. Config OBUs (sequence header) лежат в
 //! `av1C` codec-private, а sync-сэмплы (keyframes) дополнительно несут sequence
@@ -11,6 +12,12 @@
 //! (`libdav1d: Error parsing OBU data`).
 
 use core::fmt;
+
+mod configuration;
+
+pub use configuration::{
+    Av1DecoderConfigurationRecordError, av1_decode_requirement_from_decoder_configuration_record,
+};
 
 /// OBU type codes (AV1 spec §6.2.2).
 const OBU_SEQUENCE_HEADER: u8 = 1;

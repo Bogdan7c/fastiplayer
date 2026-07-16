@@ -1,0 +1,8 @@
+# codec-core AV1
+
+- `crates/codec-core/src/av1.rs` owns AV1 packet-level keyframe probing and re-exports the container configuration boundary from `av1/configuration.rs`.
+- Public `av1_decode_requirement_from_decoder_configuration_record(&[u8]) -> Result<VideoDecodeRequirement, Av1DecoderConfigurationRecordError>` parses the fixed four-byte MP4 `AV1CodecConfigurationRecord` (`av1C`) header. It validates marker/version/profile, derives AV1 bit depth from `seq_profile + high_bitdepth + twelve_bit`, maps supported chroma flags, and returns typed errors for truncated/inconsistent/reserved/monochrome input. It intentionally does not weaken capability-core HDR validation.
+- This is a container-level metadata boundary, not a packet requirement probe. Generic `probe_video_packet_requirement(VideoCodec::Av1, ...)` remains unavailable; AV1 packet keyframe probing remains the separate `probe_av1_packet_keyframe` path.
+- `symphonia-demux::track_mapper` consumes the public parser for Symphonia AV1 extra data with id `VIDEO_EXTRA_DATA_ID_AV1_DECODER_CONFIG`, then copies profile/bit-depth/chroma into neutral `VideoTrackMetadata`. MP4 color/HDR tags remain a separate source and merge into `VideoTrackMetadata.color`.
+- Focused tests: `crates/codec-core/src/av1/configuration.rs` covers the real SDR/HDR fixture headers plus malformed typed errors; `crates/symphonia-demux/src/track_mapper.rs` tests `mp4_av1c_sdr_metadata_reaches_neutral_track` and `mp4_av1c_hdr_metadata_reaches_neutral_track`.
+- Regression fixed (2026-07-16): switching between the repository AV1 SDR and HDR MP4 files no longer rejects HDR as an apparent NV12 input. The root cause was missing bit-depth/chroma in Symphonia `VideoCodecParameters`, despite valid `av1C` extra data.
