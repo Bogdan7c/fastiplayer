@@ -11,6 +11,7 @@ mod h264;
 mod h265;
 mod model;
 mod profile;
+mod requirement_preflight;
 mod vp9;
 
 pub use adapter::{
@@ -59,6 +60,11 @@ pub use model::{
     video_frame_pixel_layout_from_optional_codec_fields,
 };
 pub use profile::{Av1Profile, H264Profile, H265Profile, VideoProfile, Vp8Profile, Vp9Profile};
+pub use requirement_preflight::{
+    VideoRequirementEvidencePolicy, VideoRequirementPreflight,
+    VideoRequirementPreflightUnavailable, preflight_video_requirement,
+    video_requirement_evidence_policy,
+};
 pub use video_frame_contract::VideoFramePixelLayout;
 pub use vp9::{
     Vp9DecodedFormatRequirement, Vp9MetadataConflict, Vp9MetadataDiagnostic, Vp9MetadataField,

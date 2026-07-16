@@ -1,7 +1,12 @@
+mod prefetched_demuxer;
+
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use media_core::{DemuxSeekability, Demuxer, TrackInfo, TrackKind};
+use media_core::{DemuxReadEvent, DemuxSeekability, Demuxer, MediaMetadata, TrackInfo, TrackKind};
+
+use self::prefetched_demuxer::PrefetchedDemuxer;
 
 use crate::MediaSource;
 
@@ -31,6 +36,15 @@ pub(crate) struct PreparedMediaSlots {
     pub(crate) source_info: MediaSourceInfo,
 }
 
+/// Cold staged-prefetch state хранится за indirection, чтобы не раздувать worker commands.
+struct PreparedMediaPrefetchState {
+    /// Metadata snapshot до первого prefetch event-а.
+    initial_media_metadata: Option<MediaMetadata>,
+
+    /// Demux events, прочитанные preflight-ом до atomic install candidate-а.
+    events: VecDeque<DemuxReadEvent>,
+}
+
 /// Подготовленный media source, который уже открыт за границей `player-core`.
 pub struct PreparedMedia {
     /// Источник media: локальный файл или внешний streaming label.
@@ -47,6 +61,9 @@ pub struct PreparedMedia {
 
     /// Seekability container-а, которую session публикует в timeline snapshot.
     pub(crate) seekability: DemuxSeekability,
+
+    /// Cold replay state создаётся только если exact preflight действительно читает demuxer.
+    prefetch_state: Option<Box<PreparedMediaPrefetchState>>,
 
     /// Typed source snapshot, подготовленный opener-слоем для Info.
     pub(crate) source_info: MediaSourceInfo,
@@ -132,13 +149,47 @@ impl PreparedMedia {
         self.source.missing_video_track_message()
     }
 
+    /// Читает и сохраняет следующий demux event для staged video probe.
+    ///
+    /// Event клонируется только на нейтральной boundary: encoded payload использует
+    /// reference-counted bytes, а оригинал остаётся в replay queue для будущего media.
+    pub(crate) fn prefetch_next_event_for_video_probe(&mut self) -> anyhow::Result<DemuxReadEvent> {
+        if self.prefetch_state.is_none() {
+            self.prefetch_state = Some(Box::new(PreparedMediaPrefetchState {
+                initial_media_metadata: self.demuxer.media_metadata(),
+                events: VecDeque::new(),
+            }));
+        }
+        let event = self.demuxer.next_event()?;
+        let prefetch_state = self
+            .prefetch_state
+            .as_mut()
+            .expect("prefetch state initialized before demux read");
+        prefetch_state.events.push_back(event.clone());
+        Ok(event)
+    }
+
     /// Разбирает prepared media на slots, которые `PlaybackPipeline` устанавливает как владелец.
     pub(crate) fn into_pipeline_slots(self) -> PreparedMediaSlots {
         let file_path = self.source.pipeline_file_path();
         let source_label = self.source.pipeline_source_label();
 
+        let demuxer = match self.prefetch_state {
+            Some(prefetch_state) if !prefetch_state.events.is_empty() => {
+                Box::new(PrefetchedDemuxer::new(
+                    self.demuxer,
+                    self.tracks.clone(),
+                    self.duration,
+                    self.seekability,
+                    prefetch_state.initial_media_metadata,
+                    prefetch_state.events,
+                ))
+            }
+            Some(_) | None => self.demuxer,
+        };
+
         PreparedMediaSlots {
-            demuxer: self.demuxer,
+            demuxer,
             file_path,
             source_label,
             tracks: self.tracks,
@@ -159,6 +210,7 @@ impl PreparedMedia {
             tracks,
             duration,
             seekability,
+            prefetch_state: None,
             source_info,
         }
     }

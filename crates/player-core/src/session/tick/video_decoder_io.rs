@@ -11,7 +11,7 @@ use bytes::Bytes;
 #[cfg(test)]
 use codec_core::video_frame_pixel_layout_from_decode_requirement;
 use codec_core::{
-    VideoCodec, VideoDecodeRequirement, VideoRequirementProbe, VideoRequirementRejection,
+    VideoCodec, VideoDecodeRequirement, VideoRequirementProbe,
     probe_video_packet_requirement_with_codec_private, resolve_video_metadata,
     video_requirement_needs_packet_refinement,
 };
@@ -28,9 +28,11 @@ use super::{
     },
     record_pipeline_pause, record_video_drop,
 };
+use crate::session::video_requirement_error::player_error_from_requirement_rejection;
 use crate::{
     DecodeSendError, DecodeThreadError, PipelinePauseReason, PlaybackPipeline, PlayerDecodePacket,
     PlayerError, PlayerErrorKind, pipeline::VideoDecoderSendBackpressure, session::PlayerSession,
+    session::capability_selection::ActiveVideoRequirementRefinement,
 };
 
 /// Typed лимит texture/surface pressure для decoder admission.
@@ -544,8 +546,10 @@ pub(super) fn send_pending_video_packets_to_decoder(
             track_id: packet_track_id,
             encoded_bytes,
         };
-        if !validate_pending_video_packet_before_decode(session, &packet_probe) {
-            break;
+        match validate_pending_video_packet_before_decode(session, &packet_probe) {
+            PendingVideoPacketValidation::DecoderReady => {}
+            PendingVideoPacketValidation::BackendReselectionPending
+            | PendingVideoPacketValidation::Rejected => break,
         }
 
         if let Some(reason) =
@@ -899,37 +903,59 @@ struct PendingVideoPacketProbe {
     encoded_bytes: Bytes,
 }
 
+/// Решение packet admission после codec requirement probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingVideoPacketValidation {
+    /// Packet можно отправлять текущему decoder-у.
+    DecoderReady,
+
+    /// Packet остаётся первым в очереди до завершения backend reselection.
+    BackendReselectionPending,
+
+    /// Stream отклонён, а fatal error уже опубликован session-ом.
+    Rejected,
+}
+
 /// Проверяет profile/format до отправки packet-а в hardware decoder.
 fn validate_pending_video_packet_before_decode(
     session: &mut PlayerSession,
     packet: &PendingVideoPacketProbe,
-) -> bool {
+) -> PendingVideoPacketValidation {
+    if session.has_pending_video_backend_reselection() {
+        return PendingVideoPacketValidation::BackendReselectionPending;
+    }
+
     if session
         .pipeline
         .active_video_requirement()
         .is_some_and(|requirement| !video_requirement_needs_packet_refinement(requirement))
     {
-        return true;
+        return PendingVideoPacketValidation::DecoderReady;
     }
 
     let requirement = match video_requirement_from_packet(session, packet) {
         Ok(Some(requirement)) => requirement,
-        Ok(None) => return true,
+        Ok(None) => return PendingVideoPacketValidation::DecoderReady,
         Err(error) => {
             warn!(error = %error, "Video stream rejected by packet requirement probe");
             session.mark_fatal_error(error);
             session.pipeline.clear_pending_video_packets();
-            return false;
+            return PendingVideoPacketValidation::Rejected;
         }
     };
 
     match session.refine_active_video_requirement(requirement) {
-        Ok(()) => true,
+        Ok(ActiveVideoRequirementRefinement::DecoderReady) => {
+            PendingVideoPacketValidation::DecoderReady
+        }
+        Ok(ActiveVideoRequirementRefinement::BackendReselectionRequested) => {
+            PendingVideoPacketValidation::BackendReselectionPending
+        }
         Err(error) => {
             warn!(error = %error, "Video stream rejected before hardware decode");
             session.mark_fatal_error(error);
             session.pipeline.clear_pending_video_packets();
-            false
+            PendingVideoPacketValidation::Rejected
         }
     }
 }
@@ -956,32 +982,6 @@ fn video_requirement_from_packet_data(
             Ok(None)
         }
     }
-}
-
-/// Переводит codec adapter reject в player error без generic hardware wording.
-fn player_error_from_requirement_rejection(rejection: VideoRequirementRejection) -> PlayerError {
-    let kind = match rejection {
-        VideoRequirementRejection::UnsupportedBitDepth { .. } => {
-            PlayerErrorKind::UnsupportedVideoBitDepth
-        }
-        VideoRequirementRejection::UnsupportedChroma { .. } => {
-            PlayerErrorKind::UnsupportedVideoChroma
-        }
-        VideoRequirementRejection::UnsupportedChromaFormat { .. } => {
-            PlayerErrorKind::UnsupportedVideoChroma
-        }
-        VideoRequirementRejection::UnsupportedProfile { .. } => {
-            PlayerErrorKind::UnsupportedVideoProfile
-        }
-        VideoRequirementRejection::UnsupportedPacketization { .. } => {
-            PlayerErrorKind::UnsupportedVideoCodec
-        }
-        VideoRequirementRejection::UnsupportedCodecAdapter { .. } => {
-            PlayerErrorKind::UnsupportedVideoCodec
-        }
-    };
-
-    PlayerError::new(kind, rejection.user_message())
 }
 
 /// Возвращает codec-specific requirement probe через adapter registry.

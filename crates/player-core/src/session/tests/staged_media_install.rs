@@ -2,7 +2,9 @@ use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use media_core::TrackKind;
+use bytes::Bytes;
+use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata, VideoProfile, Vp9Profile};
+use media_core::{DemuxReadEvent, Packet, TrackKind, VideoTrackMetadata};
 use video_backend_api::{
     DetachedVideoBackend, DetachedVideoBackendCandidateCancellationCause,
     DetachedVideoBackendCandidateStatus, DetachedVideoBackendPortError, DetachedVideoBackendReply,
@@ -12,8 +14,10 @@ use video_backend_api::{
 
 use super::super::PlayerSession;
 use super::test_support::{
-    FakeDemuxer, SharedFakeVideoDecoderThread, capabilities_with_vp9_profile0, fake_track,
-    install_fake_media, present_frame_for_current_seek_generation, test_decode_backend_id,
+    FakeDemuxer, SharedFakeVideoDecoderThread, bt2020_pq_limited,
+    capabilities_with_phase10_vp9_profile2_hdr, capabilities_with_vp9_profile0, fake_audio_packet,
+    fake_track, install_fake_media, present_frame_for_current_seek_generation,
+    test_decode_backend_id,
 };
 use crate::{
     AuthorizeInstallCommit, CancelMediaInstall, DecodeThreadError, MediaInstallCancellationCause,
@@ -164,9 +168,77 @@ fn prepared_media(track_kinds: &[TrackKind]) -> PreparedMedia {
     let tracks = track_kinds
         .iter()
         .enumerate()
-        .map(|(index, kind)| fake_track((index + 1) as u32, *kind))
+        .map(|(index, kind)| {
+            let track_id = (index + 1) as u32;
+            match kind {
+                TrackKind::Video => staged_vp9_track(track_id),
+                TrackKind::Audio => fake_track(track_id, TrackKind::Audio),
+            }
+        })
         .collect::<Vec<_>>();
     prepared_media_from_tracks(tracks)
+}
+
+/// Создаёт реалистичный VP9 SDR track с полным container evidence для protocol tests.
+fn staged_vp9_track(track_id: u32) -> media_core::TrackInfo {
+    let mut track = fake_track(track_id, TrackKind::Video);
+    let mut metadata = VideoTrackMetadata::empty();
+    metadata.profile = Some(VideoProfile::Vp9(Vp9Profile::Profile0));
+    metadata.bit_depth = Some(BitDepth::Eight);
+    metadata.chroma = Some(ChromaSubsampling::Yuv420);
+    metadata.coded_width = Some(1_920);
+    metadata.coded_height = Some(1_080);
+    metadata.color = Some(VideoColorMetadata::sdr_bt709_limited());
+    track.video = Some(metadata);
+    track
+}
+
+/// Создаёт VP9 Profile 2 keyframe с 10-bit 4:2:0 BT.2020 header-ом.
+fn vp9_profile2_10bit_bt2020_keyframe(width: u32, height: u32) -> Bytes {
+    let mut bits = Vec::new();
+    push_bits(&mut bits, 0b10, 2);
+    push_vp9_profile(&mut bits, 2);
+    bits.push(0);
+    bits.push(0);
+    bits.push(1);
+    bits.push(0);
+    push_bits(&mut bits, 0x49_83_42, 24);
+    bits.push(0);
+    push_bits(&mut bits, 5, 3);
+    bits.push(0);
+    push_bits(&mut bits, width - 1, 16);
+    push_bits(&mut bits, height - 1, 16);
+    bits.push(0);
+    Bytes::from(bits_to_bytes(&bits))
+}
+
+/// Кодирует VP9 profile bits из uncompressed header.
+fn push_vp9_profile(bits: &mut Vec<u8>, profile: u8) {
+    bits.push(profile & 1);
+    bits.push((profile >> 1) & 1);
+    if profile == 3 {
+        bits.push(0);
+    }
+}
+
+/// Добавляет старшие `width` битов числа в VP9 bitstream order.
+fn push_bits(bits: &mut Vec<u8>, value: u32, width: u8) {
+    for shift in (0..width).rev() {
+        bits.push(((value >> shift) & 1) as u8);
+    }
+}
+
+/// Упаковывает MSB-first bits в encoded bytes.
+fn bits_to_bytes(bits: &[u8]) -> Vec<u8> {
+    bits.chunks(8)
+        .map(|chunk| {
+            let mut byte = 0u8;
+            for (index, bit) in chunk.iter().enumerate() {
+                byte |= bit << (7 - index);
+            }
+            byte
+        })
+        .collect()
 }
 
 /// Создаёт candidate media из exact scripted tracks.
@@ -190,6 +262,108 @@ fn install_old_media(
     session.snapshot.media_instance_id = Some(old_instance_id);
     session.set_playback_state(playback_state);
     old_instance_id
+}
+
+/// Strong install обязан уточнить VP9 HDR по packet header до backend request-а
+/// и после commit-а вернуть все prefetched packets в исходном demux order.
+#[test]
+fn vp9_hdr_packet_preflight_selects_p010_and_replays_interleaved_audio() {
+    let mut session = PlayerSession::new();
+    session.set_system_capabilities(capabilities_with_phase10_vp9_profile2_hdr());
+    let old_instance_id = install_old_media(&mut session, PlaybackState::Paused);
+
+    let mut video_track = fake_track(1, TrackKind::Video);
+    let mut video_metadata = VideoTrackMetadata::empty();
+    video_metadata.coded_width = Some(3_840);
+    video_metadata.coded_height = Some(2_160);
+    video_metadata.color = Some(bt2020_pq_limited());
+    video_track.video = Some(video_metadata);
+    let audio_track = fake_track(2, TrackKind::Audio);
+
+    let audio_packet = fake_audio_packet(
+        crate::TrackId::new(2),
+        Duration::ZERO,
+        Duration::from_millis(20),
+    );
+    let encoded_video = vp9_profile2_10bit_bt2020_keyframe(3_840, 2_160);
+    let video_packet = Packet::new(
+        crate::TrackId::new(1),
+        TrackKind::Video,
+        Duration::ZERO,
+        None,
+        true,
+        encoded_video,
+    );
+    let mut demuxer = FakeDemuxer::new(
+        vec![video_track, audio_track],
+        Some(Duration::from_secs(42)),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    demuxer.push_event(DemuxReadEvent::Packet(audio_packet.clone()));
+    demuxer.push_event(DemuxReadEvent::Packet(video_packet.clone()));
+
+    let request_id = MediaInstallRequestId::from_non_zero(
+        NonZeroU64::new(100).expect("test request id is non-zero"),
+    );
+    let decoder = SharedFakeVideoDecoderThread::new();
+    let (resource_port, resource_state) = FakeResourcePort::available(decoder.clone());
+    let (receipt, install_port) = MediaInstallReceipt::new(request_id);
+
+    session.stage_prepared_media_install(
+        request_id,
+        PreparedMedia::from_external_label("vp9-hdr", Box::new(demuxer)),
+        PlaybackIntent::StartPaused,
+        PlaybackIntentRevision::INITIAL,
+        install_port,
+        Box::new(resource_port),
+    );
+
+    assert!(receipt.try_take_ready_to_commit().is_some());
+    assert_eq!(session.snapshot().media_instance_id, Some(old_instance_id));
+    assert_eq!(
+        resource_state
+            .lock()
+            .expect("fake resource state lock")
+            .request_count,
+        1
+    );
+    let configured_streams = decoder.configured_streams();
+    let configured_stream = configured_streams
+        .last()
+        .expect("detached decoder должен быть настроен до ReadyToCommit");
+    assert_eq!(
+        configured_stream.profile,
+        Some(VideoProfile::Vp9(Vp9Profile::Profile2))
+    );
+    assert_eq!(configured_stream.bit_depth, Some(BitDepth::Ten));
+    assert_eq!(configured_stream.chroma, Some(ChromaSubsampling::Yuv420));
+    assert_eq!(
+        configured_stream.frame_contract.pixel_layout,
+        video_frame_contract::VideoFramePixelLayout::P010
+    );
+
+    assert_eq!(
+        session.apply_staged_media_install_control(MediaInstallControl::Authorize(
+            AuthorizeInstallCommit { request_id },
+        )),
+        MediaInstallControlOutcome::AuthorizationAccepted
+    );
+    assert_eq!(
+        session
+            .pipeline
+            .demux_next_event()
+            .expect("installed demuxer должен существовать")
+            .expect("prefetched audio event должен читаться без ошибки"),
+        DemuxReadEvent::Packet(audio_packet)
+    );
+    assert_eq!(
+        session
+            .pipeline
+            .demux_next_event()
+            .expect("installed demuxer должен существовать")
+            .expect("prefetched video event должен читаться без ошибки"),
+        DemuxReadEvent::Packet(video_packet)
+    );
 }
 
 #[test]
@@ -531,6 +705,52 @@ fn pure_track_reselection_failure_never_requests_candidate_resources() {
         Some(old_instance_id)
     );
     assert_eq!(planning_session.playback_state(), PlaybackState::Paused);
+}
+
+/// Неполный AV1 не должен снова превратиться в unprobed detached request:
+/// strong transaction завершается до resource boundary и сохраняет old media.
+#[test]
+fn incomplete_av1_never_requests_unprobed_backend_resource() {
+    let mut session = PlayerSession::new();
+    let old_instance_id = install_old_media(&mut session, PlaybackState::Paused);
+    let request_id = MediaInstallRequestId::from_non_zero(
+        NonZeroU64::new(112).expect("test request id is non-zero"),
+    );
+    let mut av1_track = fake_track(1, TrackKind::Video);
+    av1_track.codec_id = "V_AV1".to_owned();
+    let mut av1_metadata = VideoTrackMetadata::empty();
+    av1_metadata.coded_width = Some(1_920);
+    av1_metadata.coded_height = Some(1_080);
+    av1_track.video = Some(av1_metadata);
+    let (resource_port, resource_state) =
+        FakeResourcePort::available(SharedFakeVideoDecoderThread::new());
+    let (receipt, install_port) = MediaInstallReceipt::new(request_id);
+
+    session.stage_prepared_media_install(
+        request_id,
+        prepared_media_from_tracks(vec![av1_track]),
+        PlaybackIntent::StartPaused,
+        PlaybackIntentRevision::INITIAL,
+        install_port,
+        Box::new(resource_port),
+    );
+
+    assert!(receipt.try_take_ready_to_commit().is_none());
+    assert!(matches!(
+        receipt.try_take_completion(),
+        Some(MediaInstallCompletion::Failed { failure, .. })
+            if failure.stage == MediaInstallFailureStage::VideoStreamConfiguration
+                && failure.error.message.contains("codec-private")
+    ));
+    assert_eq!(
+        resource_state
+            .lock()
+            .expect("fake resource state lock")
+            .request_count,
+        0
+    );
+    assert_eq!(session.snapshot().media_instance_id, Some(old_instance_id));
+    assert_eq!(session.playback_state(), PlaybackState::Paused);
 }
 
 #[test]

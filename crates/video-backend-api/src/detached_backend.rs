@@ -156,7 +156,7 @@ impl std::error::Error for DetachedVideoBackendConfigurationError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetachedVideoBackendSelection {
     /// Canonical backend ID выбранного playable output-а.
-    expected_backend_id: Option<String>,
+    expected_backend_id: String,
 
     /// Exact decoder-to-renderer contract выбранного stream plan-а.
     frame_contract: VideoFrameContract,
@@ -170,24 +170,15 @@ impl DetachedVideoBackendSelection {
         frame_contract: VideoFrameContract,
     ) -> Self {
         Self {
-            expected_backend_id: Some(expected_backend_id.into()),
+            expected_backend_id: expected_backend_id.into(),
             frame_contract,
         }
     }
 
-    /// Сохраняет contract для legacy/unprobed player plan-а без самостоятельного выбора backend-а.
+    /// Возвращает canonical backend ID, уже выбранный player capability layer-ом.
     #[must_use]
-    pub const fn unprobed(frame_contract: VideoFrameContract) -> Self {
-        Self {
-            expected_backend_id: None,
-            frame_contract,
-        }
-    }
-
-    /// Возвращает canonical backend ID только когда его действительно выбрал player.
-    #[must_use]
-    pub fn expected_backend_id(&self) -> Option<&str> {
-        self.expected_backend_id.as_deref()
+    pub fn expected_backend_id(&self) -> &str {
+        &self.expected_backend_id
     }
 
     /// Возвращает exact frame contract выбранного stream plan-а.

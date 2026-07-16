@@ -19,7 +19,6 @@ use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 use crate::event::VideoBackendSelectionRequest;
 use crate::{PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, SeekRequest, TrackId};
 
-use super::staged_media_install::StagedVideoTrackPlan;
 use super::{PendingVideoBackendReselection, PlayerSession};
 
 /// Принятый video stream после capability validation.
@@ -56,77 +55,17 @@ pub(crate) enum DefaultVideoTrackOutcome {
     BackendReselectionRequested,
 }
 
+/// Итог packet-level уточнения active requirement до отправки packet-а decoder-у.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ActiveVideoRequirementRefinement {
+    /// Текущий decoder/backend уже готов принять packet с уточнённым requirement.
+    DecoderReady,
+
+    /// Packet должен остаться в очереди до установки другого backend-а.
+    BackendReselectionRequested,
+}
+
 impl PlayerSession {
-    /// Строит default video plan для detached candidate, не читая active backend state.
-    ///
-    /// Strong media transaction выбирает output из общего playable capability report-а:
-    /// прежний active backend не должен влиять на candidate и не получает configure.
-    pub(super) fn plan_staged_video_track(
-        &self,
-        tracks: &[TrackInfo],
-        missing_message: &str,
-    ) -> PlayerResult<Option<StagedVideoTrackPlan>> {
-        let video_tracks = tracks
-            .iter()
-            .filter(|track| track.kind == TrackKind::Video)
-            .collect::<Vec<_>>();
-        if video_tracks.is_empty() {
-            return Ok(None);
-        }
-
-        let mut last_rejection = None;
-        for track in video_tracks {
-            let Some(requirement) = video_requirement_from_track(track) else {
-                last_rejection = Some(PlayerError::new(
-                    PlayerErrorKind::UnsupportedVideoCodec,
-                    format!(
-                        "Video codec `{}` не поддерживается candidate capability model",
-                        track.codec_id
-                    ),
-                ));
-                continue;
-            };
-
-            let playable_output = match self.capabilities.as_ref() {
-                Some(capabilities) => match capabilities.check_video_requirement(&requirement) {
-                    Ok(output) => Some(output.clone()),
-                    Err(_error) if self.can_defer_packet_refinement(&requirement) => None,
-                    Err(error) => {
-                        last_rejection = Some(player_error_from_unsupported_requirement(error));
-                        continue;
-                    }
-                },
-                None => None,
-            };
-            let frame_contract = playable_output.as_ref().map_or_else(
-                || fallback_frame_contract_for_unprobed_requirement(&requirement),
-                |output| output.frame_contract,
-            );
-            let stream_config =
-                match video_stream_decode_config_from_track(track, &requirement, frame_contract) {
-                    Ok(stream_config) => stream_config,
-                    Err(error) if can_try_next_video_track_after_error(&error.kind) => {
-                        last_rejection = Some(error);
-                        continue;
-                    }
-                    Err(error) => return Err(error),
-                };
-
-            return Ok(Some(StagedVideoTrackPlan {
-                track_id: track.id,
-                requirement,
-                frame_contract,
-                stream_config,
-                expected_backend_id: playable_output
-                    .map(|output| output.backend.as_str().to_owned()),
-            }));
-        }
-
-        Err(last_rejection.unwrap_or_else(|| {
-            PlayerError::new(PlayerErrorKind::UnsupportedVideoCodec, missing_message)
-        }))
-    }
-
     /// Устанавливает capability report и публикует событие для UI/log layer.
     pub fn set_system_capabilities(&mut self, capabilities: SystemCapabilities) {
         let summary = capabilities.detailed_report_text();
@@ -553,7 +492,7 @@ impl PlayerSession {
     pub(super) fn refine_active_video_requirement(
         &mut self,
         requirement: VideoDecodeRequirement,
-    ) -> PlayerResult<()> {
+    ) -> PlayerResult<ActiveVideoRequirementRefinement> {
         let matched_output = match self.validate_video_decode_requirement(&requirement) {
             Ok(matched_output) => matched_output,
             Err(error) => {
@@ -566,7 +505,7 @@ impl PlayerSession {
                     && let Some(track_id) = self.pipeline.selected_video_track_id()
                 {
                     self.request_video_backend_reselection(requirement, track_id);
-                    return Ok(());
+                    return Ok(ActiveVideoRequirementRefinement::BackendReselectionRequested);
                 }
                 return Err(error);
             }
@@ -598,7 +537,7 @@ impl PlayerSession {
 
         self.pipeline
             .set_active_video_selection(requirement, frame_contract);
-        Ok(())
+        Ok(ActiveVideoRequirementRefinement::DecoderReady)
     }
 
     /// Возвращает codec текущего video track по `TrackId`.
@@ -633,7 +572,7 @@ impl PlayerSession {
 }
 
 /// Строит decoder stream config из уже принятого track requirement.
-fn video_stream_decode_config_from_track(
+pub(super) fn video_stream_decode_config_from_track(
     track: &TrackInfo,
     requirement: &VideoDecodeRequirement,
     frame_contract: VideoFrameContract,
@@ -668,7 +607,7 @@ fn video_stream_decode_config_from_track(
 /// нельзя по умолчанию падать в NV12: иначе decoder сконфигурируется под NV12
 /// и упадёт на реальном P010 DMA-BUF export-е до того, как refinement уточнит
 /// bit depth.
-fn fallback_frame_contract_for_unprobed_requirement(
+pub(super) fn fallback_frame_contract_for_unprobed_requirement(
     requirement: &VideoDecodeRequirement,
 ) -> VideoFrameContract {
     let chroma_allows_p010 = !matches!(
@@ -766,7 +705,7 @@ fn player_result_from_stream_config_result(result: VideoStreamConfigResult) -> P
 }
 
 /// Сохраняет существующую policy: unsupported track можно пропустить, runtime failure — нет.
-fn can_try_next_video_track_after_error(error_kind: &PlayerErrorKind) -> bool {
+pub(super) fn can_try_next_video_track_after_error(error_kind: &PlayerErrorKind) -> bool {
     matches!(
         error_kind,
         PlayerErrorKind::UnsupportedVideoCodec
@@ -832,7 +771,7 @@ fn unsupported_requirement_can_be_refined_by_packet_probe(
 }
 
 /// Собирает codec-neutral resolver source из typed video metadata track-а.
-fn video_metadata_source_from_track(track: &TrackInfo) -> Option<VideoMetadataSource> {
+pub(super) fn video_metadata_source_from_track(track: &TrackInfo) -> Option<VideoMetadataSource> {
     let codec = VideoCodec::from_container_codec_id(&track.codec_id)?;
     let video = track.video.as_ref()?;
     let mut source = VideoMetadataSource::container(codec);
@@ -871,7 +810,9 @@ fn log_selected_video_track_metadata(
 }
 
 /// Переводит structured capability error в player error model.
-fn player_error_from_unsupported_requirement(error: UnsupportedVideoRequirement) -> PlayerError {
+pub(super) fn player_error_from_unsupported_requirement(
+    error: UnsupportedVideoRequirement,
+) -> PlayerError {
     let kind = match error.rejections.first() {
         Some(VideoCapabilityRejection::UnsupportedCodec { .. }) => {
             PlayerErrorKind::UnsupportedVideoCodec

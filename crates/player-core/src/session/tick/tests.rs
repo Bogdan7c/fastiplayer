@@ -25,7 +25,7 @@ use crate::{
     DecodeBackpressureReason, DecodeSendError, DecodeThreadError, FrameCounters,
     PendingAudioPacket, PendingVideoPacket, PlaybackPipeline, PlaybackRate, PlaybackResumeIntent,
     PlayerAudioClock, PlayerAudioOutput, PlayerCommand, PlayerDecodePacket, PlayerErrorKind,
-    PlayerSession, PresentFrameResourceProviderHandle, WorkerWakeupReason,
+    PlayerSession, PresentFrameResourceProviderHandle, StartedVideoBackend, WorkerWakeupReason,
 };
 
 /// Scripted demuxer для focused admission tests без реального container backend-а.
@@ -651,6 +651,44 @@ fn capabilities_with_vp9_profile0_for_decoder_io() -> capability_core::SystemCap
         render_backends: vec![render_core::RenderCapabilities::wgpu_nv12(Some(4096))],
         playable_video_outputs: vec![output],
     }
+}
+
+/// Добавляет software-like Profile 2 output для проверки pending backend reselection.
+fn capabilities_with_vp9_profile0_and_profile2_for_decoder_io()
+-> capability_core::SystemCapabilities {
+    let mut capabilities = capabilities_with_vp9_profile0_for_decoder_io();
+    let backend_id = codec_core::DecodeBackendId::new("decoder_io_profile_two")
+        .expect("test backend id должен быть валидным");
+    let output = capability_core::SupportedVideoOutput {
+        backend: backend_id.clone(),
+        decode_format: codec_core::SupportedVideoDecodeFormat {
+            codec: VideoCodec::Vp9,
+            profile: codec_core::VideoProfile::Vp9(codec_core::Vp9Profile::Profile2),
+            bit_depth: codec_core::BitDepth::Ten,
+            chroma: codec_core::ChromaSubsampling::Yuv420,
+            max_width: Some(4096),
+            max_height: Some(4096),
+            max_fps: None,
+            hdr_input: true,
+        },
+        frame_contract: video_frame_contract::VideoFrameContract::host_yuv420_planar10le(),
+    };
+    capabilities
+        .video_backends
+        .push(capability_core::BackendCapabilities {
+            backend_id: backend_id.clone(),
+            display_name: "Decoder I/O Profile 2 backend".to_string(),
+            status: capability_core::BackendProbeStatus::Available,
+            driver: capability_core::BackendDriverInfo::default(),
+            raw_supported_outputs: vec![output.clone()],
+            raw_profiles: Vec::new(),
+            raw_entrypoints: Vec::new(),
+            raw_rt_formats: Vec::new(),
+            quirks: Vec::new(),
+            diagnostics: Vec::new(),
+        });
+    capabilities.playable_video_outputs.push(output);
+    capabilities
 }
 
 /// Собирает минимальный VP9 keyframe header для packet refinement tests.
@@ -3680,6 +3718,49 @@ fn packet_refinement_rejection_stops_before_decoder_send() {
         .expect("rejected bitstream refinement должен стать fatal before send");
     assert_eq!(last_error.kind, PlayerErrorKind::UnsupportedVideoProfile);
     assert!(last_error.message.contains("profile VP9 Profile 2"));
+}
+
+/// Packet, который потребовал другой backend, остаётся в FIFO и ни на одном
+/// следующем tick-е не может попасть в старый decoder до завершения reselection.
+#[test]
+fn packet_refinement_waits_for_backend_reselection_without_old_decoder_send() {
+    let mut session = PlayerSession::new();
+    let decoder_thread = RecordingVideoDecoderThread::new();
+    let mut tick_result = PlayerTickResult::default();
+
+    session.set_system_capabilities(capabilities_with_vp9_profile0_and_profile2_for_decoder_io());
+    session
+        .pipeline
+        .apply_demux_track_list_update(vec![video_track_for_tests(1)]);
+    session.set_video_backend(StartedVideoBackend::from_decoder_thread(
+        "decoder_io_test_backend",
+        decoder_thread.clone(),
+    ));
+    session.pipeline.select_video_track(
+        TrackId::new(1),
+        VideoDecodeRequirement::new(VideoCodec::Vp9),
+    );
+    enqueue_selected_video_packet(
+        &mut session,
+        Duration::from_millis(120),
+        vp9_profile2_10bit_keyframe_for_tests(),
+        true,
+    );
+
+    for _ in 0..2 {
+        let sent_packets = send_pending_video_packets_to_decoder(
+            &mut session,
+            &mut tick_result,
+            decoder_io_limits_for_tests(0, 1),
+            None,
+        );
+
+        assert_eq!(sent_packets, 0);
+        assert!(!session.pipeline.pending_video_packet_is_empty());
+        assert!(decoder_thread.sent_packets().is_empty());
+        assert!(session.has_pending_video_backend_reselection());
+    }
+    assert!(session.snapshot().last_error.is_none());
 }
 
 #[test]

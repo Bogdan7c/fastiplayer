@@ -51,8 +51,10 @@ mod seek_start;
 mod seek_transaction;
 mod snapshot_builder;
 mod staged_media_install;
+mod staged_video_preflight;
 mod tick;
 mod timeline_seek;
+mod video_requirement_error;
 
 #[cfg(test)]
 use self::audio_runtime::{

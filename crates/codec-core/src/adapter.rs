@@ -594,7 +594,7 @@ pub fn video_requirement_needs_packet_refinement(requirement: &VideoDecodeRequir
                 || requirement.width.is_none()
                 || requirement.height.is_none()
         }
-        _ => false,
+        VideoCodec::Av1 | VideoCodec::Vp8 => false,
     }
 }
 

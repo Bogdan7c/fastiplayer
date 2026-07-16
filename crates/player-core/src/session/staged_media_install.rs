@@ -26,6 +26,7 @@ use crate::{
 
 use super::PlayerSession;
 use super::audio_runtime::audio_decoder_init_spec_from_tracks;
+use super::staged_video_preflight::StagedVideoPlanningMode;
 
 mod commit;
 
@@ -80,8 +81,20 @@ pub(crate) struct StagedVideoTrackPlan {
     /// Полностью построенный decoder stream config для fallible preflight configure.
     pub(super) stream_config: VideoStreamDecodeConfig,
 
-    /// Backend ID выбранного playable output-а, если capability snapshot доступен.
-    pub(super) expected_backend_id: Option<String>,
+    /// Typed backend plan: exact для strong install или отдельный compatibility state.
+    pub(super) backend_plan: StagedVideoBackendPlan,
+}
+
+/// Backend selection state staged video plan-а без двусмысленного `Option<String>`.
+pub(super) enum StagedVideoBackendPlan {
+    /// Capability layer выбрал точный backend до запроса detached resource.
+    Exact {
+        /// Canonical backend ID выбранного playable output-а.
+        backend_id: String,
+    },
+
+    /// Временный compatibility ingress не запрашивает detached backend resource.
+    CompatibilityDeferred,
 }
 
 /// Полностью подготовленный player-side media plan до resource request-а.
@@ -273,7 +286,12 @@ impl PlayerSession {
         );
 
         let mut protocol = MediaInstallProtocol::accept(request_id, install_port);
-        let prepared_media = match self.prepare_staged_media(prepared_media) {
+        let video_planning_mode = if video_resource_port.is_some() {
+            StagedVideoPlanningMode::ExactBackendRequired
+        } else {
+            StagedVideoPlanningMode::CompatibilityDeferredAllowed
+        };
+        let prepared_media = match self.prepare_staged_media(prepared_media, video_planning_mode) {
             Ok(prepared_media) => prepared_media,
             Err(failure) => {
                 protocol.complete_failed(failure);
@@ -439,9 +457,10 @@ impl PlayerSession {
     }
 
     /// Выполняет все pure/fallible player preflight stages без active-state mutation.
-    pub(crate) fn prepare_staged_media(
+    fn prepare_staged_media(
         &self,
-        prepared_media: PreparedMedia,
+        mut prepared_media: PreparedMedia,
+        video_planning_mode: StagedVideoPlanningMode,
     ) -> Result<PreparedStagedMedia, MediaInstallFailure> {
         if self.is_shutdown_requested() {
             return Err(MediaInstallFailure::new(
@@ -457,10 +476,7 @@ impl PlayerSession {
             MediaInstallFailure::new(MediaInstallFailureStage::AudioTrackPlanning, error)
         })?;
         let video_plan = self
-            .plan_staged_video_track(
-                prepared_media.tracks(),
-                prepared_media.missing_video_track_message(),
-            )
+            .plan_staged_video_track(&mut prepared_media, video_planning_mode)
             .map_err(|error| {
                 MediaInstallFailure::new(MediaInstallFailureStage::VideoStreamConfiguration, error)
             })?;
@@ -488,12 +504,20 @@ fn prepare_detached_video_backend(
         return Ok(None);
     };
 
-    let selection = match video_plan.expected_backend_id.as_deref() {
-        Some(expected_backend_id) => {
-            DetachedVideoBackendSelection::selected(expected_backend_id, video_plan.frame_contract)
+    let expected_backend_id = match &video_plan.backend_plan {
+        StagedVideoBackendPlan::Exact { backend_id } => backend_id.as_str(),
+        StagedVideoBackendPlan::CompatibilityDeferred => {
+            return Err(MediaInstallFailure::new(
+                MediaInstallFailureStage::CandidateVideoBackendMatching,
+                PlayerError::new(
+                    PlayerErrorKind::HardwareDecoderUnavailable,
+                    "Strong media install не получил exact video backend plan",
+                ),
+            ));
         }
-        None => DetachedVideoBackendSelection::unprobed(video_plan.frame_contract),
     };
+    let selection =
+        DetachedVideoBackendSelection::selected(expected_backend_id, video_plan.frame_contract);
     let reply = video_resource_port
         .request_detached_backend(DetachedVideoBackendRequest::new(request_id, selection))
         .map_err(|error| media_install_port_failure(error, "detached backend request"))?;
@@ -514,9 +538,7 @@ fn prepare_detached_video_backend(
     }
     let detached_backend = detached_backend_result.map_err(media_install_resource_failure)?;
 
-    if let Some(expected_backend_id) = video_plan.expected_backend_id.as_deref()
-        && detached_backend.backend_id() != expected_backend_id
-    {
+    if detached_backend.backend_id() != expected_backend_id {
         publish_candidate_cancelled_for_matching_failure(
             video_resource_port,
             request_id,
