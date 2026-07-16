@@ -44,6 +44,7 @@ mod removal_undo;
     reason = "Session 16 generalized model is rendered by Session 19 UI"
 )]
 mod replacement_confirmation;
+mod row_interactions;
 mod settings;
 mod suspend_resume;
 mod transport_execution;
@@ -89,8 +90,9 @@ pub(crate) use actions::{
 };
 pub(crate) use controller::PlaylistController;
 pub(crate) use controller::{
-    AutomaticLifecycleOutcome, ControllerManualNavigationOutcome, ControllerStableIntentDispatch,
-    PlannedPlaylistInstall, StablePlaybackIntent, StopAfterCurrentOutcome,
+    AutomaticLifecycleOutcome, ControllerManualNavigationOutcome, ControllerMoveItemOutcome,
+    ControllerPlayItemOutcome, ControllerStableIntentDispatch, PlannedPlaylistInstall,
+    StablePlaybackIntent, StopAfterCurrentOutcome,
 };
 pub(crate) use controller::{StartupRestoreFailureOutcome, StartupRestoreTarget};
 pub(crate) use discovery::{MetadataSortCancelOutcome, PlaylistDiscoveryNavigationAction};
@@ -116,6 +118,7 @@ pub(crate) use replacement_confirmation::{
     QueueReplacementConfirmationDecision, QueueReplacementConfirmationOutcome,
     TrustedStartupQueueReplacementIntent, safe_local_open_label,
 };
+pub(crate) use row_interactions::{RuntimeMoveItemOutcome, RuntimeRowPlayOutcome};
 #[cfg(test)]
 pub(crate) use view::PlaylistVisibleRowTestFixture;
 pub(crate) use view::{PlaylistStructuralRevision, PlaylistViewSnapshot, PlaylistVisibleRow};

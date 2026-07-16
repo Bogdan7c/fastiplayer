@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use playlist_core::{RepeatMode, SortCanonicalQueue};
+use playlist_core::{MoveItemIntent, PlaylistItemId, RepeatMode, SortCanonicalQueue};
 
 use crate::playlist_runtime::{PlaylistGoCurrentTarget, PlaylistProgressCancelScope};
 
@@ -29,6 +29,14 @@ impl fmt::Debug for PlaylistUrlDraftText {
 /// UI описывает намерение; runtime/controller применяет его после egui render.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PlaylistAction {
+    Select(PlaylistItemId),
+    Play(PlaylistItemId),
+    Remove(PlaylistItemId),
+    RemoveOthers(PlaylistItemId),
+    Move {
+        item_id: PlaylistItemId,
+        intent: MoveItemIntent,
+    },
     AddFiles,
     OpenUrlEditor,
     UpdateUrlDraft(PlaylistUrlDraftText),

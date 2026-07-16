@@ -23,5 +23,5 @@
 ## Verification and next scope
 - Session 19 verification: 561 `app-egui --no-default-features` tests; strict app Clippy all targets with `-D warnings`; `cargo fmt --all --check`; `cargo check --workspace`; refactor guardrails; `git diff --check`.
 - Focused additions cover ordered typed action drain, hermetic multi-file Cancel/Selected exactly-once terminal handoff and duplicate-open rejection, consumed inline Enter, URL invalid/sensitive/stale-confirmation lifecycle and redaction, disabled animation-copy focus/action isolation, all six Sort keys, exact progress/wait text, and D56 tooltip.
-- Row single/double click, row context menu, and drag/drop remain out of scope. Next allowed playlist session is Session 20.
+- Исторический scope Session 19 не включал row interactions. Session 20 теперь завершена; актуальный UI contract: `mem:app-egui/playlist-ui-s20`. Следующая разрешённая playlist session — Session 21.
 - Complements `mem:app-egui/playlist-ui-s18`, `mem:app-egui/playlist-transport-s18a`, `mem:app-egui/playlist-desktop-transport-s18b`, and the handoff in `user/playlist_queue_implementation_plan.md`.

@@ -2,8 +2,10 @@
 
 mod actions;
 mod renderer;
+mod row_interactions;
 mod status;
 mod toolbar;
+mod virtualized_drag;
 
 pub(crate) use actions::PlaylistAction;
 
@@ -24,6 +26,8 @@ pub(crate) struct PlaylistUiState {
     viewport_anchor: Option<ViewportAnchor>,
     observed_structural_revision: Option<PlaylistStructuralRevision>,
     go_current: Option<PlaylistGoCurrentTarget>,
+    focus_row: Option<PlaylistItemId>,
+    drag: virtualized_drag::VirtualizedDragState,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -85,6 +89,15 @@ impl PlaylistUiState {
         } else {
             false
         }
+    }
+
+    /// D47 focus intent приходит только из controller-provided selected Item ID.
+    pub(crate) fn request_row_focus(&mut self, item_id: PlaylistItemId) {
+        self.focus_row = Some(item_id);
+    }
+
+    pub(super) fn take_row_focus(&mut self) -> Option<PlaylistItemId> {
+        self.focus_row.take()
     }
 }
 

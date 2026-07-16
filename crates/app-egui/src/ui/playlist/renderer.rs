@@ -3,7 +3,9 @@
 use egui::{Align, Layout, Sense, TextWrapMode, WidgetInfo, WidgetType};
 use playlist_core::PlaylistMediaKind;
 
-use super::{PlaylistUiOutput, PlaylistUiState, ViewportAnchor};
+use super::{
+    PlaylistUiOutput, PlaylistUiState, ViewportAnchor, row_interactions, virtualized_drag,
+};
 use crate::playlist_runtime::{PlaylistViewModel, PlaylistVisibleRow};
 
 pub(super) const ROW_HEIGHT: f32 = 34.0;
@@ -29,9 +31,17 @@ pub(super) fn show_rows(
         Some(crate::playlist_runtime::PlaylistGoCurrentTarget::Row(item_id)) => Some(item_id),
         Some(crate::playlist_runtime::PlaylistGoCurrentTarget::Tombstone) | None => None,
     };
-    let anchored_offset = go_current_item
+    let focus_item = state.take_row_focus().or(go_current_item);
+    let drag_offset = virtualized_drag::prepare_scroll_offset(
+        ui.ctx(),
+        &mut state.drag,
+        model.item_count(),
+        row_pitch,
+    );
+    let anchored_offset = focus_item
         .and_then(|item_id| model.row_index(item_id))
         .map(|index| index as f32 * row_pitch)
+        .or(drag_offset)
         .or_else(|| anchored_scroll_offset(model, state, row_pitch));
     let mut scroll_area = egui::ScrollArea::vertical()
         .id_salt("playlist_rows_scroll")
@@ -51,12 +61,24 @@ pub(super) fn show_rows(
                 output.record_visible(row.item_id());
                 render_row(
                     rows_ui,
+                    model,
                     visible_range.start + visible_offset,
                     row,
-                    go_current_item == Some(row.item_id()),
+                    focus_item == Some(row.item_id()),
+                    state,
+                    output,
                 );
             }
         },
+    );
+    virtualized_drag::finish_frame(
+        ui.ctx(),
+        &mut state.drag,
+        model,
+        scroll_output.inner_rect,
+        scroll_output.state.offset.y,
+        row_pitch,
+        output,
     );
     update_viewport_anchor(model, state, row_pitch, scroll_output.state.offset.y);
 }
@@ -97,19 +119,29 @@ fn update_viewport_anchor(
 
 fn render_row(
     ui: &mut egui::Ui,
+    model: &PlaylistViewModel,
     row_index: usize,
     row: &PlaylistVisibleRow,
     focus_requested: bool,
+    state: &mut PlaylistUiState,
+    output: &mut PlaylistUiOutput,
 ) {
     let item_id_value = row.item_id().expose_value_for_persistence();
     ui.push_id(("playlist_row", item_id_value), |ui| {
         let available_width = ui.available_width().max(1.0);
         let (row_rect, response) = ui.allocate_exact_size(
             egui::vec2(available_width, ROW_HEIGHT),
-            Sense::focusable_noninteractive(),
+            Sense::click_and_drag(),
         );
         let row_fill = row_fill(ui, row);
-        let row_stroke = if row.is_active() {
+        let row_stroke = if virtualized_drag::marks_row(
+            &state.drag,
+            row_index,
+            row.item_id(),
+            model.item_count(),
+        ) {
+            ui.visuals().selection.stroke
+        } else if row.is_active() {
             ui.visuals().widgets.active.fg_stroke
         } else {
             egui::Stroke::NONE
@@ -128,12 +160,26 @@ fn render_row(
 
         let accessibility_text = accessibility_text(row_index, row);
         response.widget_info(|| {
-            WidgetInfo::labeled(WidgetType::Label, ui.is_enabled(), &accessibility_text)
+            WidgetInfo::selected(
+                WidgetType::SelectableLabel,
+                ui.is_enabled(),
+                row.is_selected(),
+                &accessibility_text,
+            )
         });
         if focus_requested {
             response.scroll_to_me(Some(Align::Center));
             response.request_focus();
         }
+        row_interactions::handle_row_response(
+            ui,
+            &response,
+            model,
+            row_index,
+            row.item_id(),
+            state,
+            output,
+        );
         response.on_hover_ui(|ui| show_safe_tooltip(ui, row));
     });
 }

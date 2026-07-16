@@ -2,11 +2,13 @@
 
 use std::time::Instant;
 
+use render_wgpu_shell::Renderer;
 use winit::window::Window;
 
 use crate::playlist_runtime::{
-    MetadataSortCancelOutcome, PlaylistProgressCancelScope, PlaylistRuntime, RuntimeRemovalOutcome,
-    StopAfterCurrentOutcome, TransportActionOrigin,
+    ControllerMoveItemOutcome, MetadataSortCancelOutcome, PlaylistProgressCancelScope,
+    PlaylistRuntime, RuntimeMoveItemOutcome, RuntimeRemovalOutcome, StopAfterCurrentOutcome,
+    TransportActionOrigin,
 };
 use crate::state::AppState;
 use crate::ui::playlist::PlaylistAction;
@@ -16,11 +18,55 @@ pub(crate) fn apply_playlist_actions(
     window: &Window,
     app_state: &mut AppState,
     runtime: &mut PlaylistRuntime,
+    renderer: &Renderer,
     actions: Vec<PlaylistAction>,
 ) -> bool {
     let mut changed = false;
     for action in actions {
         match action {
+            PlaylistAction::Select(item_id) => {
+                changed |= runtime.select_playlist_row(Some(item_id));
+            }
+            PlaylistAction::Play(item_id) => {
+                let outcome = runtime.play_playlist_row(item_id);
+                let applied = crate::transport_runtime::apply_playlist_row_play(
+                    app_state, runtime, renderer, outcome,
+                );
+                if !applied {
+                    runtime.set_playlist_safe_feedback("Не удалось запустить выбранный элемент");
+                }
+                changed = true;
+            }
+            PlaylistAction::Remove(item_id) => {
+                let outcome = runtime.remove_playlist_item(item_id, Instant::now());
+                changed |= apply_removal_outcome(app_state, runtime, outcome, "удалить элемент");
+            }
+            PlaylistAction::RemoveOthers(item_id) => {
+                let outcome = runtime.remove_other_playlist_items(item_id, Instant::now());
+                changed |= apply_removal_outcome(
+                    app_state,
+                    runtime,
+                    outcome,
+                    "удалить остальные элементы",
+                );
+            }
+            PlaylistAction::Move { item_id, intent } => {
+                let outcome = runtime.move_playlist_item(item_id, intent);
+                changed |= matches!(
+                    outcome,
+                    RuntimeMoveItemOutcome::Controller(ControllerMoveItemOutcome::Moved { .. })
+                );
+                if !matches!(
+                    outcome,
+                    RuntimeMoveItemOutcome::Controller(
+                        ControllerMoveItemOutcome::Moved { .. }
+                            | ControllerMoveItemOutcome::AlreadyInPlace
+                    )
+                ) {
+                    runtime.set_playlist_safe_feedback("Не удалось изменить порядок плейлиста");
+                    changed = true;
+                }
+            }
             PlaylistAction::AddFiles => changed |= runtime.start_playlist_file_dialog(window),
             PlaylistAction::OpenUrlEditor => {
                 runtime.open_playlist_url_editor();
@@ -124,4 +170,29 @@ pub(crate) fn apply_playlist_actions(
         }
     }
     changed
+}
+
+fn apply_removal_outcome(
+    app_state: &mut AppState,
+    runtime: &mut PlaylistRuntime,
+    outcome: RuntimeRemovalOutcome,
+    action_label: &'static str,
+) -> bool {
+    if let RuntimeRemovalOutcome::Removed {
+        selected_item_id, ..
+    } = outcome
+    {
+        if let Some(selected_item_id) = selected_item_id {
+            app_state.request_playlist_row_focus(selected_item_id);
+        }
+        return true;
+    }
+    if !matches!(
+        outcome,
+        RuntimeRemovalOutcome::NotFound { .. } | RuntimeRemovalOutcome::NoChange
+    ) {
+        runtime.set_playlist_safe_feedback(format!("Не удалось {action_label}"));
+        return true;
+    }
+    false
 }

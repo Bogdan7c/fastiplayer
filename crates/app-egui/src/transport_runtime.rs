@@ -17,11 +17,52 @@ use render_wgpu_shell::Renderer;
 use tracing::warn;
 
 use crate::playlist_runtime::{
-    AutomaticLifecycleOutcome, ControllerManualNavigationOutcome,
-    PlaylistDiscoveryNavigationAction, PlaylistRuntime, TransportActionOrigin,
+    AutomaticLifecycleOutcome, ControllerManualNavigationOutcome, ControllerPlayItemOutcome,
+    PlaylistDiscoveryNavigationAction, PlaylistRuntime, RuntimeRowPlayOutcome,
+    TransportActionOrigin,
 };
 use crate::state::AppState;
 use crate::ui::player_controls::TransportControlAction;
+
+/// Row Play использует тот же strong install/exact transport adapter, что и main controls.
+pub(crate) fn apply_playlist_row_play(
+    app_state: &mut AppState,
+    playlist_runtime: &mut PlaylistRuntime,
+    renderer: &Renderer,
+    outcome: RuntimeRowPlayOutcome,
+) -> bool {
+    let RuntimeRowPlayOutcome::Controller(outcome) = outcome else {
+        return false;
+    };
+    match outcome {
+        ControllerPlayItemOutcome::RestartActive { request, .. } => {
+            app_state.dispatch_exact_playlist_transport(request);
+            true
+        }
+        ControllerPlayItemOutcome::CoalescePending {
+            intent_dispatch, ..
+        } => {
+            app_state.apply_playlist_stable_intent_dispatch(playlist_runtime, intent_dispatch);
+            true
+        }
+        ControllerPlayItemOutcome::StartInstall {
+            install,
+            intent_dispatch,
+        } => {
+            app_state.apply_playlist_stable_intent_dispatch(playlist_runtime, intent_dispatch);
+            app_state.begin_planned_playlist_install(playlist_runtime, renderer, install, None);
+            true
+        }
+        ControllerPlayItemOutcome::Guarded {
+            intent_dispatch, ..
+        } => {
+            app_state.apply_playlist_stable_intent_dispatch(playlist_runtime, intent_dispatch);
+            true
+        }
+        ControllerPlayItemOutcome::ItemNotCommitted { .. }
+        | ControllerPlayItemOutcome::IntentRevisionExhausted => false,
+    }
+}
 
 pub(crate) fn apply_transport_actions(
     app_state: &mut AppState,

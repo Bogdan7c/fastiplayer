@@ -50,4 +50,9 @@ impl AppState {
     ) {
         self.playlist_ui_state.request_go_current(target);
     }
+
+    /// После removal фокус следует только controller-provided D47 selected Item ID.
+    pub(crate) fn request_playlist_row_focus(&mut self, item_id: playlist_core::PlaylistItemId) {
+        self.playlist_ui_state.request_row_focus(item_id);
+    }
 }

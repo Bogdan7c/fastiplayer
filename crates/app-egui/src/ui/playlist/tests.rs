@@ -127,6 +127,7 @@ fn disabled_animation_copy_does_not_replace_viewport_or_publish_hint() {
         }),
         observed_structural_revision: Some(model.structural_revision()),
         go_current: None,
+        ..PlaylistUiState::default()
     };
     let mut output = PlaylistUiOutput::default();
     let interaction = PlaylistInteractionModel {
@@ -188,6 +189,7 @@ fn insertion_before_inside_or_after_viewport_preserves_top_item_and_offset() {
             }),
             observed_structural_revision: Some(before.structural_revision()),
             go_current: None,
+            ..PlaylistUiState::default()
         };
         let inserted_item_id = match queue.append_one(draft(100)).expect("append") {
             playlist_core::AddItemsOutcome::Added(item_ids) => item_ids.as_slice()[0],
@@ -232,6 +234,7 @@ fn active_only_revision_never_requests_hidden_scroll() {
         }),
         observed_structural_revision: Some(model.structural_revision()),
         go_current: None,
+        ..PlaylistUiState::default()
     };
 
     assert_eq!(anchored_scroll_offset(&model, &mut state, 42.0), None);

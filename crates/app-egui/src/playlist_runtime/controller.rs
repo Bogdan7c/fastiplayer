@@ -7,6 +7,7 @@ mod install;
 mod manual_navigation;
 mod metadata;
 mod removal;
+mod reordering;
 mod sorting;
 mod startup_restore;
 mod transport;
@@ -58,6 +59,7 @@ pub(crate) use removal::{
     ControllerDestructiveRemovalOutcome, ControllerRemovalKind, ControllerRemovalUndoOutcome,
     DetachedActiveTombstone,
 };
+pub(crate) use reordering::ControllerMoveItemOutcome;
 #[allow(unused_imports)]
 pub(crate) use sorting::ControllerCanonicalSortError;
 pub(crate) use startup_restore::{StartupRestoreFailureOutcome, StartupRestoreTarget};

@@ -1196,6 +1196,7 @@ pub(crate) fn render_frame(
         window,
         app_state,
         playlist_runtime,
+        renderer,
         playlist_actions,
     );
     if let Some(hint) = playlist_visible_items_hint
