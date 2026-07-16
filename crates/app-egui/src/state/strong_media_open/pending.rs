@@ -6,15 +6,22 @@ use super::*;
 pub(crate) struct PendingStrongMediaOpen {
     request_id: MediaOpenRequestId,
     candidate_owner: Option<ProductionCandidateOwner>,
-    source: ActiveMediaSource,
+    source: Option<ActiveMediaSource>,
     intent: PlaybackIntent,
+    intent_revision: PlaybackIntentRevision,
     phase: PendingStrongMediaOpenPhase,
+}
+
+struct PendingStrongMediaStaging {
+    video_resource_port: player_core::MediaInstallVideoResourcePort,
+    playlist_target: PreparedPlaylistTarget,
 }
 
 /// Player protocol и post-Installed intent acknowledgement остаются разными этапами.
 enum PendingStrongMediaOpenPhase {
     Protocol {
         deferred_rejection: Option<PlaylistMediaOpenGateError>,
+        pending_staging: Option<PendingStrongMediaStaging>,
     },
     PlaybackIntent {
         installed: InstalledSingleMediaOpen,
@@ -24,6 +31,22 @@ enum PendingStrongMediaOpenPhase {
 }
 
 impl AppState {
+    /// Синхронизирует renderer-bound post-Installed phase с accepted D52 revision.
+    pub(crate) fn update_pending_strong_playlist_intent(
+        &mut self,
+        request_id: MediaOpenRequestId,
+        revision: PlaybackIntentRevision,
+        intent: PlaybackIntent,
+    ) {
+        let Some(pending) = self.pending_strong_media_open.as_mut() else {
+            return;
+        };
+        if pending.request_id == request_id {
+            pending.intent = intent;
+            pending.intent_revision = revision;
+        }
+    }
+
     /// Начинает renderer-bound strong install и возвращает управление до любого receipt wait.
     pub(crate) fn begin_prepared_media_strong(
         &mut self,
@@ -82,10 +105,12 @@ impl AppState {
                 self.pending_strong_media_open = Some(PendingStrongMediaOpen {
                     request_id,
                     candidate_owner: Some(candidate_owner),
-                    source,
+                    source: Some(source),
                     intent,
+                    intent_revision: initial_revision,
                     phase: PendingStrongMediaOpenPhase::Protocol {
                         deferred_rejection: Some(error),
+                        pending_staging: None,
                     },
                 });
                 return Ok(());
@@ -103,6 +128,23 @@ impl AppState {
                     ),
                 PreparedPlaylistTarget::RestoredCurrent(target) => playlist_runtime
                     .accept_startup_restore_install(request_id, player_request_id, target),
+                PreparedPlaylistTarget::Planned {
+                    install,
+                    supersedes,
+                } => match supersedes {
+                    Some(expected_request_id) => playlist_runtime
+                        .accept_superseding_playlist_install(
+                            expected_request_id,
+                            request_id,
+                            player_request_id,
+                            install,
+                        ),
+                    None => playlist_runtime.accept_planned_playlist_install(
+                        request_id,
+                        player_request_id,
+                        install,
+                    ),
+                },
             };
             admission.err()
         });
@@ -117,11 +159,72 @@ impl AppState {
         self.pending_strong_media_open = Some(PendingStrongMediaOpen {
             request_id,
             candidate_owner: Some(candidate_owner),
-            source,
+            source: Some(source),
             intent,
-            phase: PendingStrongMediaOpenPhase::Protocol { deferred_rejection },
+            intent_revision: initial_revision,
+            phase: PendingStrongMediaOpenPhase::Protocol {
+                deferred_rejection,
+                pending_staging: None,
+            },
         });
         Ok(())
+    }
+
+    /// Запускает locator-based preparation в том же strong coordinator/protocol-е.
+    pub(crate) fn begin_playlist_source_media_strong(
+        &mut self,
+        playlist_runtime: &mut PlaylistRuntime,
+        renderer: &Renderer,
+        source_request: MediaOpenSourceRequest,
+        install: crate::playlist_runtime::PlannedPlaylistInstall,
+        supersedes: Option<MediaOpenRequestId>,
+    ) -> Result<MediaOpenRequestId, StrongMediaOpenError> {
+        if self.pending_strong_media_open.is_some() {
+            return Err(StrongMediaOpenError::Start(MediaOpenStartError::Busy));
+        }
+        self.cancel_suspended_media_resume_for_explicit_open(playlist_runtime)
+            .map_err(StrongMediaOpenError::LineageRegistration)?;
+        let intent = install.playback_intent;
+        let intent_revision = install.intent_revision;
+        let request_id = match playlist_runtime.start_media_open(
+            SINGLE_MEDIA_CLIENT_KEY,
+            source_request,
+            MediaOpenStartMode::RequireIdle,
+        )? {
+            MediaOpenStartOutcome::Accepted { request_id } => request_id,
+            MediaOpenStartOutcome::Coalesced { .. } => {
+                return Err(StrongMediaOpenError::Start(MediaOpenStartError::Busy));
+            }
+        };
+        let driver = WgpuCandidateVideoPipelineResourceDriver::new(
+            renderer.instance(),
+            renderer.adapter(),
+            renderer.device(),
+            renderer.queue(),
+        );
+        let (candidate_owner, video_resource_port) = player_selected_video_candidate_boundary(
+            self.renderer_generation,
+            self.player_worker.decoder_thread_config(),
+            driver,
+        );
+        self.pending_strong_media_open = Some(PendingStrongMediaOpen {
+            request_id,
+            candidate_owner: Some(candidate_owner),
+            source: None,
+            intent,
+            intent_revision,
+            phase: PendingStrongMediaOpenPhase::Protocol {
+                deferred_rejection: None,
+                pending_staging: Some(PendingStrongMediaStaging {
+                    video_resource_port,
+                    playlist_target: PreparedPlaylistTarget::Planned {
+                        install,
+                        supersedes,
+                    },
+                }),
+            },
+        });
+        Ok(request_id)
     }
 
     /// Продвигает не более одного логического этапа и никогда не ждёт worker receipt.
@@ -136,21 +239,27 @@ impl AppState {
             &mut pending.phase,
             PendingStrongMediaOpenPhase::Protocol {
                 deferred_rejection: None,
+                pending_staging: None,
             },
         );
         let result = match phase {
             PendingStrongMediaOpenPhase::Protocol {
                 mut deferred_rejection,
+                mut pending_staging,
             } => {
                 let result = self.poll_strong_media_protocol(
                     playlist_runtime,
                     &mut pending,
                     &mut deferred_rejection,
+                    &mut pending_staging,
                 );
                 if matches!(result, StrongMediaOpenPoll::Pending)
                     && matches!(pending.phase, PendingStrongMediaOpenPhase::Protocol { .. })
                 {
-                    pending.phase = PendingStrongMediaOpenPhase::Protocol { deferred_rejection };
+                    pending.phase = PendingStrongMediaOpenPhase::Protocol {
+                        deferred_rejection,
+                        pending_staging,
+                    };
                 }
                 result
             }
@@ -218,6 +327,7 @@ impl AppState {
         playlist_runtime: &mut PlaylistRuntime,
         pending: &mut PendingStrongMediaOpen,
         deferred_rejection: &mut Option<PlaylistMediaOpenGateError>,
+        pending_staging: &mut Option<PendingStrongMediaStaging>,
     ) -> StrongMediaOpenPoll {
         let Some(snapshot) = playlist_runtime.media_open_snapshot() else {
             return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::MissingTerminal));
@@ -233,11 +343,13 @@ impl AppState {
             | MediaOpenPhase::PlayerStaging
             | MediaOpenPhase::AuthorizationDispatchPending
             | MediaOpenPhase::EnqueuedAtPlayerOwner => StrongMediaOpenPoll::Pending,
-            MediaOpenPhase::Prepared => StrongMediaOpenPoll::completed(Err(
-                StrongMediaOpenError::Command(MediaOpenCommandError::InvalidPhase {
-                    actual: MediaOpenPhase::Prepared,
-                }),
-            )),
+            MediaOpenPhase::Prepared => self.stage_prepared_playlist_source(
+                playlist_runtime,
+                pending,
+                deferred_rejection,
+                pending_staging,
+                snapshot,
+            ),
             MediaOpenPhase::ReadyToCommit => {
                 if deferred_rejection.is_some() {
                     return StrongMediaOpenPoll::Pending;
@@ -291,6 +403,79 @@ impl AppState {
         }
     }
 
+    /// Prepared source получает player resources и controller admission ровно один раз.
+    fn stage_prepared_playlist_source(
+        &mut self,
+        playlist_runtime: &mut PlaylistRuntime,
+        pending: &mut PendingStrongMediaOpen,
+        deferred_rejection: &mut Option<PlaylistMediaOpenGateError>,
+        pending_staging: &mut Option<PendingStrongMediaStaging>,
+        snapshot: MediaOpenSnapshot,
+    ) -> StrongMediaOpenPoll {
+        let Some(staging) = pending_staging.take() else {
+            return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::Command(
+                MediaOpenCommandError::InvalidPhase {
+                    actual: MediaOpenPhase::Prepared,
+                },
+            )));
+        };
+        let Some(descriptor) = snapshot.descriptor else {
+            return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::MissingTerminal));
+        };
+        pending.source = Some(descriptor.active_source());
+        let player_request_id = match playlist_runtime.stage_media_open_at_player(
+            pending.request_id,
+            MediaOpenInstallIntent {
+                intent: pending.intent,
+                revision: pending.intent_revision,
+            },
+            staging.video_resource_port,
+        ) {
+            Ok(player_request_id) => player_request_id,
+            Err(error) => {
+                *deferred_rejection = Some(error);
+                return StrongMediaOpenPoll::Pending;
+            }
+        };
+        let admission = match staging.playlist_target {
+            PreparedPlaylistTarget::QueueReplacement(target_draft) => playlist_runtime
+                .accept_explicit_target_install(
+                    pending.request_id,
+                    player_request_id,
+                    target_draft,
+                    pending.intent_revision,
+                ),
+            PreparedPlaylistTarget::RestoredCurrent(target) => playlist_runtime
+                .accept_startup_restore_install(pending.request_id, player_request_id, target),
+            PreparedPlaylistTarget::Planned {
+                install,
+                supersedes,
+            } => match supersedes {
+                Some(expected_request_id) => playlist_runtime.accept_superseding_playlist_install(
+                    expected_request_id,
+                    pending.request_id,
+                    player_request_id,
+                    install,
+                ),
+                None => playlist_runtime.accept_planned_playlist_install(
+                    pending.request_id,
+                    player_request_id,
+                    install,
+                ),
+            },
+        };
+        if let Err(error) = admission {
+            *deferred_rejection = Some(error);
+            if let Err(error) = playlist_runtime.cancel_media_open_lossless(
+                pending.request_id,
+                MediaInstallCancellationCause::StructuralInvalidation,
+            ) {
+                return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::Command(error)));
+            }
+        }
+        StrongMediaOpenPoll::Pending
+    }
+
     /// Installed забирается exactly once, затем начинается отдельный intent receipt phase.
     fn begin_post_installed_intent(
         &mut self,
@@ -309,11 +494,10 @@ impl AppState {
         let Some(candidate_owner) = pending.candidate_owner.take() else {
             return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::MissingTerminal));
         };
-        let installed = match self.finish_media_open_terminal(
-            candidate_owner,
-            pending.source.clone(),
-            terminal,
-        ) {
+        let Some(source) = pending.source.clone() else {
+            return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::MissingTerminal));
+        };
+        let installed = match self.finish_media_open_terminal(candidate_owner, source, terminal) {
             Ok(installed) => installed,
             Err(error) => return StrongMediaOpenPoll::completed(Err(error)),
         };
@@ -323,8 +507,11 @@ impl AppState {
         else {
             return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::MissingTerminal));
         };
+        let Some(next_revision) = pending.intent_revision.get().checked_add(1) else {
+            return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::MissingTerminal));
+        };
         let exact_revision = PlaybackIntentRevision::from_non_zero(
-            NonZeroU64::new(2).expect("post-Installed revision is non-zero"),
+            NonZeroU64::new(next_revision).expect("checked increment remains non-zero"),
         );
         let receipt =
             match self

@@ -62,6 +62,8 @@ impl RedrawPacing {
 pub(crate) struct BackgroundPollScheduler {
     /// Ближайший deadline, когда idle loop должен снова проверить background jobs.
     next_background_job_poll_at: Option<Instant>,
+    /// Ближайшая видимая UI смена (countdown/expiry), независимая от background jobs.
+    next_ui_wake_at: Option<Instant>,
 }
 
 impl BackgroundPollScheduler {
@@ -69,16 +71,30 @@ impl BackgroundPollScheduler {
     pub(crate) const fn new() -> Self {
         Self {
             next_background_job_poll_at: None,
+            next_ui_wake_at: None,
         }
     }
 
     /// Возвращает winit action после render pass-а и обновляет deadline background polling-а.
+    #[cfg(test)]
     pub(crate) fn after_render(
         &mut self,
         pacing: RedrawPacing,
         has_pending_background_job: bool,
         now: Instant,
     ) -> RedrawControlAction {
+        self.after_render_with_deadline(pacing, has_pending_background_job, None, now)
+    }
+
+    /// Учитывает owner-produced UI deadline без timer thread или idle polling.
+    pub(crate) fn after_render_with_deadline(
+        &mut self,
+        pacing: RedrawPacing,
+        has_pending_background_job: bool,
+        ui_deadline: Option<Instant>,
+        now: Instant,
+    ) -> RedrawControlAction {
+        self.next_ui_wake_at = ui_deadline;
         self.clear_deadline_if_background_jobs_finished(has_pending_background_job);
 
         if pacing.wants_continuous_redraw() {
@@ -94,7 +110,9 @@ impl BackgroundPollScheduler {
             return RedrawControlAction::new(ControlFlow::Wait, true);
         }
 
-        self.schedule_idle_background_poll_after_render(has_pending_background_job, now)
+        let background =
+            self.schedule_idle_background_poll_after_render(has_pending_background_job, now);
+        merge_ui_deadline(background, ui_deadline, now)
     }
 
     /// Возвращает winit action прямо перед idle wait.
@@ -112,7 +130,9 @@ impl BackgroundPollScheduler {
             return RedrawControlAction::new(ControlFlow::Wait, true);
         }
 
-        self.schedule_background_poll_before_idle_wait(has_pending_background_job, now)
+        let background =
+            self.schedule_background_poll_before_idle_wait(has_pending_background_job, now);
+        merge_ui_deadline(background, self.next_ui_wake_at, now)
     }
 
     /// Сбрасывает stale deadline, когда shell больше не ждёт фоновых задач.
@@ -159,6 +179,24 @@ impl BackgroundPollScheduler {
         self.next_background_job_poll_at = Some(current_deadline);
         RedrawControlAction::new(ControlFlow::WaitUntil(current_deadline), false)
     }
+}
+
+fn merge_ui_deadline(
+    action: RedrawControlAction,
+    ui_deadline: Option<Instant>,
+    now: Instant,
+) -> RedrawControlAction {
+    let Some(ui_deadline) = ui_deadline else {
+        return action;
+    };
+    if ui_deadline <= now {
+        return RedrawControlAction::new(ControlFlow::Wait, true);
+    }
+    let control_flow = match action.control_flow {
+        ControlFlow::WaitUntil(existing) => ControlFlow::WaitUntil(existing.min(ui_deadline)),
+        ControlFlow::Wait | ControlFlow::Poll => ControlFlow::WaitUntil(ui_deadline),
+    };
+    RedrawControlAction::new(control_flow, action.request_redraw)
 }
 
 /// Возвращает `true`, если window/input событие должно дать один redraw в Wait mode.
@@ -311,5 +349,33 @@ mod tests {
 
         assert_eq!(wait_until_deadline(action), expected_deadline);
         assert!(!action.request_redraw);
+    }
+
+    #[test]
+    fn ui_countdown_deadline_waits_once_without_idle_redraw_spin() {
+        let mut scheduler = BackgroundPollScheduler::new();
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(1);
+        let after_render = scheduler.after_render_with_deadline(
+            RedrawPacing::new(false, false),
+            false,
+            Some(deadline),
+            now,
+        );
+        assert_eq!(after_render.control_flow, ControlFlow::WaitUntil(deadline));
+        assert!(!after_render.request_redraw);
+
+        let before_deadline = scheduler.before_idle_wait(false, false, now);
+        assert_eq!(
+            before_deadline.control_flow,
+            ControlFlow::WaitUntil(deadline)
+        );
+        assert!(!before_deadline.request_redraw);
+
+        let due = scheduler.before_idle_wait(false, false, deadline);
+        assert!(due.request_redraw);
+        let cleared = scheduler.after_render(RedrawPacing::new(false, false), false, deadline);
+        assert_eq!(cleared.control_flow, ControlFlow::Wait);
+        assert!(!cleared.request_redraw);
     }
 }

@@ -45,10 +45,13 @@ mod removal_undo;
 mod replacement_confirmation;
 mod settings;
 mod suspend_resume;
+mod transport_execution;
+mod transport_ui;
 pub(crate) use settings::{FutureDiscoveryPolicy, PlaylistSettingsStageError};
 pub(crate) use suspend_resume::{
     ResumeAttempt, ResumeCheckpointError, ResumePlaybackIntent, ResumePositionWarning,
 };
+pub(crate) use transport_ui::{NavigationControlAvailability, PlaylistTransportUiModel};
 #[allow(
     dead_code,
     reason = "Session 14 bootstrap/save-worker integration consumes this startup boundary"
@@ -79,7 +82,13 @@ pub(crate) use actions::{
     UrlAppendValidationError,
 };
 pub(crate) use controller::PlaylistController;
+pub(crate) use controller::{
+    AutomaticLifecycleOutcome, ControllerManualNavigationOutcome, ControllerStableIntentDispatch,
+    PlannedPlaylistInstall,
+};
 pub(crate) use controller::{StartupRestoreFailureOutcome, StartupRestoreTarget};
+pub(crate) use discovery::PlaylistDiscoveryNavigationAction;
+pub(crate) use identity::TransportActionOrigin;
 #[allow(
     unused_imports,
     reason = "typed persistence read model is consumed by upcoming playlist UI wiring"
@@ -244,6 +253,7 @@ pub(crate) enum PlaylistMediaOpenGateError {
     InstallAdmission(controller::PlaylistInstallAdmissionError),
     InstallReservation(playlist_core::PrepareReservedMutationError),
     ControllerInvariant(controller::PlaylistControllerInvariantViolation),
+    StalePlannedTarget,
 }
 
 /// Текущая lifecycle фаза process owner-а.

@@ -74,6 +74,9 @@ pub(crate) struct AppRenderFrameResult {
 
     /// Пользователь запросил закрытие через кастомный titlebar.
     pub(crate) close_requested: bool,
+
+    /// Ближайшая event-driven UI смена без continuous redraw.
+    pub(crate) next_ui_wake_deadline: Option<Instant>,
 }
 
 /// Video stage, подготовленный до финального `render_wgpu_shell::RenderFrameInput`.
@@ -1126,6 +1129,10 @@ pub(crate) fn render_frame(
         let _model_was_applied = app_state.update_playlist_view_model(binding, playlist_view_model);
     }
     let queue_replacement_confirmation = playlist_runtime.pending_queue_replacement_confirmation();
+    let transport_model = playlist_runtime.playlist_transport_ui_model(
+        frame_context.player_snapshot().current_position,
+        Instant::now(),
+    );
     let mut prepared_ui_frame = prepare_ui_frame(
         window,
         app_state,
@@ -1133,10 +1140,12 @@ pub(crate) fn render_frame(
         egui_input,
         &frame_context,
         queue_replacement_confirmation.as_ref(),
+        &transport_model,
     );
     frame_sequence.reached(FrameSequenceStage::EguiOutput);
     let egui_requested_repaint = prepared_ui_frame.requested_repaint;
     let settings_actions = std::mem::take(&mut prepared_ui_frame.settings_actions);
+    let transport_actions = std::mem::take(&mut prepared_ui_frame.transport_actions);
     let window_chrome_actions = std::mem::take(&mut prepared_ui_frame.window_chrome_actions);
     let queue_replacement_confirmation_action = prepared_ui_frame
         .queue_replacement_confirmation_action
@@ -1184,6 +1193,19 @@ pub(crate) fn render_frame(
     {
         let _refresh_outcome = playlist_runtime.request_visible_metadata_refresh(hint.item_ids());
     }
+    crate::transport_runtime::apply_transport_actions(
+        app_state,
+        playlist_runtime,
+        renderer,
+        frame_context.player_snapshot(),
+        transport_actions,
+    );
+    crate::transport_runtime::apply_discovery_navigation_action(
+        app_state,
+        playlist_runtime,
+        renderer,
+    );
+    app_state.poll_playlist_transport(playlist_runtime, renderer);
 
     let settings_preview_tick = match settings_runtime.apply_due_preview(renderer, Instant::now()) {
         Ok(tick) => tick,
@@ -1256,6 +1278,7 @@ pub(crate) fn render_frame(
                 || settings_action_requested_repaint,
         ),
         close_requested: chrome_close_requested,
+        next_ui_wake_deadline: transport_model.next_wake_deadline,
     }
 }
 

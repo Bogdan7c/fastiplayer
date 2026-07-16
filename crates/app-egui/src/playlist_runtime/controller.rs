@@ -63,11 +63,12 @@ pub(crate) use sorting::ControllerCanonicalSortError;
 pub(crate) use startup_restore::{StartupRestoreFailureOutcome, StartupRestoreTarget};
 #[allow(unused_imports)]
 pub(crate) use transport::{
-    AppTransportDisposition, ControllerManualNavigationOutcome, ControllerPlayItemOutcome,
-    ControllerStableIntentDispatch, DeferredTransportExecutionContext,
-    DeferredTransportExecutionOutcome, DiscoveryManualWaitAvailability, ManualNavigationWaitId,
-    PlannedPlaylistInstall, PreviousRestartThreshold, SiblingDiscoveryScopeId,
-    StablePlaybackIntent, StopAfterCurrentOutcome, TransportGuardOutcome,
+    AppTransportDisposition, ControllerManualNavigationAvailability,
+    ControllerManualNavigationOutcome, ControllerPlayItemOutcome, ControllerStableIntentDispatch,
+    DeferredTransportExecutionContext, DeferredTransportExecutionOutcome,
+    DiscoveryManualWaitAvailability, ManualNavigationWaitId, PlannedPlaylistInstall,
+    PreviousRestartThreshold, SiblingDiscoveryScopeId, StablePlaybackIntent,
+    StopAfterCurrentOutcome, TransportGuardOutcome,
 };
 
 /// Typed append результат сохраняет distinction между mutation и no-op.

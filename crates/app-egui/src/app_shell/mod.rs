@@ -10,6 +10,7 @@
 //! через boundary methods `AppState`, `Renderer` и startup/redraw helpers.
 
 use std::sync::Arc;
+mod hotkeys;
 mod shutdown;
 
 use std::time::Instant;
@@ -41,6 +42,7 @@ use crate::settings_runtime::SettingsRuntime;
 use crate::startup_media::{InitialMedia, StartupMediaController};
 use crate::state::AppState;
 use crate::telemetry::Telemetry;
+use hotkeys::ShellHotkeyAction;
 use shutdown::{
     AppShellProcessLifecycle, AppShellShutdownReport, OwnerTerminalDisposition,
     PROCESS_TERMINAL_SHUTDOWN_BUDGET, TERMINAL_SHUTDOWN_TIMEOUT_EXIT_CODE,
@@ -681,6 +683,39 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
         let egui_response = app_state.egui_winit_state.on_window_event(&window, &event);
         let redraw_after_event = should_request_redraw_after_window_event(&event);
 
+        if let WindowEvent::KeyboardInput {
+            event: key_event, ..
+        } = &event
+        {
+            let keyboard_captured = egui_response.consumed
+                || app_state.egui_ctx.egui_wants_keyboard_input()
+                || app_state.egui_ctx.text_edit_focused();
+            if let Some(action) = hotkeys::classify_key_event(key_event, keyboard_captured) {
+                match action {
+                    ShellHotkeyAction::Close => {
+                        self.close_runtime_and_exit(event_loop, "Выход по Escape");
+                        return;
+                    }
+                    ShellHotkeyAction::Legacy(key_code) => {
+                        app_state.handle_hotkeys(&window, key_code, false);
+                    }
+                    ShellHotkeyAction::Transport(action) => {
+                        let snapshot = app_state.refresh_player_snapshot();
+                        app_state.publish_desktop_snapshot(&snapshot);
+                        crate::transport_runtime::apply_transport_action(
+                            app_state,
+                            &mut self.playlist_runtime,
+                            renderer,
+                            &snapshot,
+                            action,
+                        );
+                    }
+                }
+                window.request_redraw();
+                return;
+            }
+        }
+
         // Если egui потребил событие (например, клик по кнопке), не обрабатываем дальше
         if egui_response.consumed {
             if redraw_after_event {
@@ -705,24 +740,6 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
                 debug!(scale_factor, "Изменение масштаба");
                 app_state.egui_ctx.set_pixels_per_point(scale_factor as f32);
             }
-
-            WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        physical_key: winit::keyboard::PhysicalKey::Code(key_code),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => match key_code {
-                winit::keyboard::KeyCode::Escape => {
-                    self.close_runtime_and_exit(event_loop, "Выход по Escape");
-                    return;
-                }
-                other => {
-                    app_state.handle_hotkeys(&window, other, egui_response.consumed);
-                }
-            },
 
             WindowEvent::RedrawRequested => {
                 self.startup_media.poll_startup_jobs(
@@ -749,14 +766,16 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
                 }
                 let has_pending_background_job = self.startup_media.has_pending_startup_job()
                     || app_state.has_pending_prepared_media_strong()
+                    || app_state.has_pending_playlist_transport()
                     || app_state.has_pending_local_file_open()
                     || self.settings_runtime.has_pending_options_refresh()
                     || self
                         .playlist_runtime
                         .has_pending_playlist_persistence_work();
-                let action = self.background_poll_scheduler.after_render(
+                let action = self.background_poll_scheduler.after_render_with_deadline(
                     frame_result.pacing,
                     has_pending_background_job,
+                    frame_result.next_ui_wake_deadline,
                     Instant::now(),
                 );
                 Self::apply_redraw_control_action(event_loop, Some(&window), action);

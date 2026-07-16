@@ -44,19 +44,19 @@ impl PlaybackRateInputAccumulator {
 /// Возвращает rect временной кнопки reset/current-rate рядом с play/pause.
 pub(super) fn button_rect(
     row_rect: Rect,
-    playback_button_rect: Rect,
+    left_transport_rect: Rect,
     fullscreen_button_rect: Rect,
     controls_style: ControlsStyle,
     item_spacing: f32,
 ) -> Rect {
-    let available_left = playback_button_rect.right() + item_spacing;
+    let available_left = left_transport_rect.right() + item_spacing;
     let available_right = fullscreen_button_rect.left() - item_spacing;
     let available_width = (available_right - available_left).max(0.0);
     let button_width = PLAYBACK_RATE_BUTTON_WIDTH.min(available_width);
     let button_size = vec2(button_width, controls_style.button_height);
     let button_center = pos2(
         available_left + button_width * 0.5,
-        playback_button_rect
+        left_transport_rect
             .center()
             .y
             .clamp(row_rect.top(), row_rect.bottom()),

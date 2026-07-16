@@ -20,8 +20,9 @@ use super::AppState;
 use crate::media_open::{
     ActiveMediaSource, AuthorizationDispatchResolution, MediaOpenClientKey, MediaOpenCommandError,
     MediaOpenCompletionDriveError, MediaOpenInstallIntent, MediaOpenPhase, MediaOpenRequestId,
-    MediaOpenStartError, MediaOpenStartOutcome, MediaOpenTerminalOutcome, PreparedMediaDescriptor,
-    PreparedMediaOpen, SafeMediaLabel,
+    MediaOpenSnapshot, MediaOpenSourceRequest, MediaOpenStartError, MediaOpenStartMode,
+    MediaOpenStartOutcome, MediaOpenTerminalOutcome, PreparedMediaDescriptor, PreparedMediaOpen,
+    SafeMediaLabel,
 };
 use crate::playlist_runtime::{PlaylistMediaOpenGateError, PlaylistRuntime};
 use crate::video_pipeline_candidate::{
@@ -48,6 +49,10 @@ pub(crate) struct PreparedSingleMediaOpen {
 enum PreparedPlaylistTarget {
     QueueReplacement(playlist_core::PlaylistItemDraft),
     RestoredCurrent(crate::playlist_runtime::StartupRestoreTarget),
+    Planned {
+        install: crate::playlist_runtime::PlannedPlaylistInstall,
+        supersedes: Option<crate::media_open::MediaOpenRequestId>,
+    },
 }
 
 impl PreparedSingleMediaOpen {
@@ -287,6 +292,23 @@ impl AppState {
                     ),
                 PreparedPlaylistTarget::RestoredCurrent(target) => playlist_runtime
                     .accept_startup_restore_install(request_id, player_request_id, target),
+                PreparedPlaylistTarget::Planned {
+                    install,
+                    supersedes,
+                } => match supersedes {
+                    Some(expected_request_id) => playlist_runtime
+                        .accept_superseding_playlist_install(
+                            expected_request_id,
+                            request_id,
+                            player_request_id,
+                            install,
+                        ),
+                    None => playlist_runtime.accept_planned_playlist_install(
+                        request_id,
+                        player_request_id,
+                        install,
+                    ),
+                },
             };
             if let Err(error) = admission {
                 self.cancel_rejected_media_open(playlist_runtime, request_id)?;

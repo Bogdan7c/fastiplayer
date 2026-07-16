@@ -12,7 +12,9 @@ use crate::ui::skin::{ControlsStyle, PlayerSkin, SkinId};
 use crate::ui::timeline::{self, TimelineAction, TimelineUiState};
 
 mod playback_rate;
+mod transport;
 pub(crate) use playback_rate::PLAYBACK_RATE_STEP_X;
+pub(crate) use transport::TransportControlAction;
 
 const VOLUME_SEPARATOR_WIDTH: f32 = 1.0;
 const VOLUME_SEPARATOR_HEIGHT_FACTOR: f32 = 0.68;
@@ -29,8 +31,8 @@ fn button_visual_state(interactive: bool) -> ButtonVisualState {
 /// Действие controls, которое shell должен применить после egui pass.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControlAction {
-    /// Переключить play/pause.
-    TogglePlayback,
+    /// Playlist-aware transport intent, применяемый process/runtime owner-ом.
+    Transport(TransportControlAction),
 
     /// Открыть файл.
     OpenFile,
@@ -55,16 +57,31 @@ pub enum ControlAction {
 }
 
 /// Рисует нижнюю player controls панель и возвращает действия пользователя.
+pub(crate) struct BottomControlsInput<'a, S: PlayerSkin> {
+    pub(crate) player_snapshot: &'a PlayerSnapshot,
+    pub(crate) timeline_state: &'a mut TimelineUiState,
+    pub(crate) timeline_inline_status: Option<&'a str>,
+    pub(crate) skin: &'a S,
+    pub(crate) is_window_fullscreen: bool,
+    pub(crate) live_scrub_enabled: bool,
+    pub(crate) playlist_transport: &'a crate::playlist_runtime::PlaylistTransportUiModel,
+}
+
+/// Рисует нижнюю player controls панель и возвращает действия пользователя.
 #[must_use]
-pub fn render_bottom_controls(
+pub fn render_bottom_controls<S: PlayerSkin>(
     ui: &mut Ui,
-    player_snapshot: &PlayerSnapshot,
-    timeline_state: &mut TimelineUiState,
-    timeline_inline_status: Option<&str>,
-    skin: &impl PlayerSkin,
-    is_window_fullscreen: bool,
-    live_scrub_enabled: bool,
+    input: BottomControlsInput<'_, S>,
 ) -> Vec<ControlAction> {
+    let BottomControlsInput {
+        player_snapshot,
+        timeline_state,
+        timeline_inline_status,
+        skin,
+        is_window_fullscreen,
+        live_scrub_enabled,
+        playlist_transport,
+    } = input;
     let mut actions = Vec::new();
     let panel_id = bottom_panel_id(skin.id());
 
@@ -92,11 +109,13 @@ pub fn render_bottom_controls(
             );
 
             ui.add_space(4.0);
+            transport::render_global_status(ui, playlist_transport, &mut actions);
             render_button_row(
                 ui,
                 player_snapshot,
                 skin,
                 is_window_fullscreen,
+                playlist_transport,
                 &mut actions,
             );
         });
@@ -110,6 +129,7 @@ fn render_button_row(
     player_snapshot: &PlayerSnapshot,
     skin: &impl PlayerSkin,
     is_window_fullscreen: bool,
+    playlist_transport: &crate::playlist_runtime::PlaylistTransportUiModel,
     actions: &mut Vec<ControlAction>,
 ) {
     let controls_style = skin.controls_style();
@@ -121,18 +141,20 @@ fn render_button_row(
     let open_file_button_rect = open_file_button_anchor_rect(row_rect, controls_style);
     let playback_button_rect = playback_button_anchor_rect(row_rect, controls_style);
     let fullscreen_button_rect = fullscreen_button_anchor_rect(row_rect, controls_style);
+    let next_button_rect = transport::next_button_rect(ui, playback_button_rect);
     let playback_rate_button_rect = playback_rate::button_rect(
         row_rect,
-        playback_button_rect,
+        next_button_rect,
         fullscreen_button_rect,
         controls_style,
         ui.spacing().item_spacing.x,
     );
     let volume_to_playback_gap = ui.spacing().item_spacing.x;
+    let previous_button_rect = transport::previous_button_rect(ui, playback_button_rect);
     let volume_zone = volume_controls_zone_rect(
         row_rect,
         open_file_button_rect,
-        playback_button_rect,
+        previous_button_rect,
         volume_to_playback_gap,
     );
 
@@ -142,13 +164,24 @@ fn render_button_row(
 
     render_volume_controls(ui, player_snapshot, controls_style, volume_zone, actions);
 
+    transport::render_previous_button(
+        ui,
+        playback_button_rect,
+        playlist_transport.previous,
+        actions,
+    );
+
     let playback_button_response =
         render_playback_toggle_button_at(ui, playback_button_rect, play_icon, skin);
     playback_rate::collect_input_actions(ui, &playback_button_response, actions);
 
     if playback_button_response.clicked() {
-        actions.push(ControlAction::TogglePlayback);
+        actions.push(ControlAction::Transport(
+            TransportControlAction::TogglePlayback,
+        ));
     }
+
+    transport::render_next_button(ui, playback_button_rect, playlist_transport.next, actions);
 
     if playback_rate::render_reset_button_at(ui, playback_rate_button_rect, player_snapshot)
         .clicked()
@@ -515,19 +548,10 @@ fn render_fullscreen_toggle_button_at(
 
 /// Выбирает иконку toggle через player-side active semantics, а не через один `Playing`.
 fn playback_toggle_icon(playback_state: PlaybackState) -> IconId {
-    match playback_state {
-        // Active состояния, включая EOF drain, пользователь воспринимает как pauseable playback.
-        PlaybackState::Playing
-        | PlaybackState::Buffering
-        | PlaybackState::Seeking
-        | PlaybackState::Draining => IconId::Pause,
-        PlaybackState::Idle
-        | PlaybackState::Opening
-        | PlaybackState::Paused
-        | PlaybackState::Scrubbing
-        | PlaybackState::Ended
-        | PlaybackState::Stopped
-        | PlaybackState::Failed => IconId::Play,
+    if crate::transport_runtime::playback_toggle_will_pause(playback_state) {
+        IconId::Pause
+    } else {
+        IconId::Play
     }
 }
 

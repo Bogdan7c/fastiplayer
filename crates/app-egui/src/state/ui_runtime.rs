@@ -156,6 +156,7 @@ impl AppState {
         queue_replacement_confirmation: Option<
             &crate::playlist_runtime::PendingQueueReplacementConfirmation,
         >,
+        playlist_transport: &crate::playlist_runtime::PlaylistTransportUiModel,
     ) -> RenderedAppUi {
         let render_ui_started_at = Instant::now();
 
@@ -280,12 +281,15 @@ impl AppState {
             let stage_started_at = Instant::now();
             control_actions = player_controls::render_bottom_controls(
                 ui,
-                player_snapshot,
-                &mut timeline_ui_state,
-                timeline_inline_status,
-                &selected_skin,
-                window_is_fullscreen,
-                self.committed_config_snapshot.live_scrub_enabled(),
+                player_controls::BottomControlsInput {
+                    player_snapshot,
+                    timeline_state: &mut timeline_ui_state,
+                    timeline_inline_status,
+                    skin: &selected_skin,
+                    is_window_fullscreen: window_is_fullscreen,
+                    live_scrub_enabled: self.committed_config_snapshot.live_scrub_enabled(),
+                    playlist_transport,
+                },
             );
             bottom_controls_elapsed = stage_started_at.elapsed();
 
@@ -345,12 +349,14 @@ impl AppState {
         let post_ui_actions_started_at = Instant::now();
         self.playlist_ui_state = playlist_ui_state;
         self.timeline_ui_state = timeline_ui_state;
-        self.handle_control_actions(window, player_snapshot, control_actions);
+        let transport_actions =
+            self.handle_control_actions(window, player_snapshot, control_actions);
         let post_ui_actions_elapsed = post_ui_actions_started_at.elapsed();
 
         RenderedAppUi {
             full_output,
             settings_actions,
+            transport_actions,
             window_chrome_actions,
             queue_replacement_confirmation_action,
             playlist_visible_items_hint: playlist_runtime_binding
@@ -377,10 +383,11 @@ impl AppState {
         window: &Window,
         player_snapshot: &PlayerSnapshot,
         actions: Vec<ControlAction>,
-    ) {
+    ) -> Vec<crate::ui::player_controls::TransportControlAction> {
+        let mut transport_actions = Vec::new();
         for action in actions {
             match action {
-                ControlAction::TogglePlayback => self.toggle_playback(),
+                ControlAction::Transport(action) => transport_actions.push(action),
                 ControlAction::OpenFile => self.open_file(window),
                 ControlAction::SetVolume(requested_volume) => {
                     if let Err(error) = self
@@ -424,6 +431,7 @@ impl AppState {
                 }
             }
         }
+        transport_actions
     }
 
     /// Снимает live-scrub completion-gate по worker landing-сигналу.

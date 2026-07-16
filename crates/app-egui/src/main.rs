@@ -26,6 +26,7 @@ mod startup_media;
 mod state;
 mod system_capabilities;
 mod telemetry;
+mod transport_runtime;
 mod ui;
 mod url_service_adapter;
 mod video_pipeline_candidate;

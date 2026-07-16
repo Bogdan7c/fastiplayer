@@ -36,6 +36,16 @@ impl StartupUrlLocator {
             .start(controller, app_state, app_config, system_capabilities);
     }
 
+    /// Строит request для общего media-open coordinator-а без второго URL parser-а.
+    pub(crate) fn into_media_open_source_request(
+        self,
+        app_config: &AppConfig,
+        system_capabilities: &SystemCapabilities,
+    ) -> Result<crate::media_open::MediaOpenSourceRequest, String> {
+        self.0
+            .into_media_open_source_request(app_config, system_capabilities)
+    }
+
     /// Переносит уже нормализованную service identity в service-neutral playlist domain.
     #[allow(dead_code)] // Session 10C/14 подключит mapping к media-open/persistence lifecycle.
     pub(crate) fn to_playlist_locator(
@@ -73,6 +83,12 @@ trait StartupUrlServiceAdapter: Send {
         app_config: &AppConfig,
         system_capabilities: &SystemCapabilities,
     );
+
+    fn into_media_open_source_request(
+        self: Box<Self>,
+        app_config: &AppConfig,
+        system_capabilities: &SystemCapabilities,
+    ) -> Result<crate::media_open::MediaOpenSourceRequest, String>;
 
     #[allow(dead_code)] // Используется только intent-named domain mapping-ом выше.
     fn expose_secret_for_persistence(&self) -> &str;
@@ -114,6 +130,23 @@ impl StartupUrlServiceAdapter for YoutubeStartupAdapter {
         );
     }
 
+    fn into_media_open_source_request(
+        self: Box<Self>,
+        app_config: &AppConfig,
+        system_capabilities: &SystemCapabilities,
+    ) -> Result<crate::media_open::MediaOpenSourceRequest, String> {
+        self.validate_config(app_config)?;
+        Ok(crate::media_open::MediaOpenSourceRequest::YouTube {
+            locator: self.locator,
+            required_stream_identity: None,
+            network_config: app_config.network.clone(),
+            youtube_config: app_config.youtube.clone(),
+            demux_config: app_config.player.demux,
+            preferred_video_codec_order: app_config.player.preferred_video_codec_order.clone(),
+            system_capabilities: system_capabilities.clone(),
+        })
+    }
+
     fn expose_secret_for_persistence(&self) -> &str {
         self.locator.expose_secret_for_persistence()
     }
@@ -136,6 +169,18 @@ impl StartupUrlServiceAdapter for DirectMediaStartupAdapter {
         _system_capabilities: &SystemCapabilities,
     ) {
         controller.start_direct_media_startup_job(self.locator, app_state, app_config);
+    }
+
+    fn into_media_open_source_request(
+        self: Box<Self>,
+        app_config: &AppConfig,
+        _system_capabilities: &SystemCapabilities,
+    ) -> Result<crate::media_open::MediaOpenSourceRequest, String> {
+        Ok(crate::media_open::MediaOpenSourceRequest::Direct {
+            locator: self.locator,
+            network_config: app_config.network.clone(),
+            demux_config: app_config.player.demux,
+        })
     }
 
     fn expose_secret_for_persistence(&self) -> &str {

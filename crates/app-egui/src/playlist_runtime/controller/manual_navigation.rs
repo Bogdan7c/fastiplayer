@@ -380,6 +380,21 @@ impl PlaylistController {
         ManualNavigationFailureOutcome::AwaitingUserAfterFailure { item_id }
     }
 
+    /// Ошибка подготовки до player admission всё равно переводит exact preview в D55.
+    pub(crate) fn report_unstaged_manual_navigation_target_failure(
+        &mut self,
+        item_id: PlaylistItemId,
+    ) -> ManualNavigationFailureOutcome {
+        if self.install_state.is_some()
+            || self.manual_navigation_cursor.latest_target_item_id() != Some(item_id)
+            || !self.manual_navigation_cursor.mark_prepared_target_failed()
+        {
+            return ManualNavigationFailureOutcome::NotManualNavigation;
+        }
+        self.publish_view(false);
+        ManualNavigationFailureOutcome::AwaitingUserAfterFailure { item_id }
+    }
+
     /// Retry повторяет exact failed target без cursor step или automatic reevaluation.
     pub(crate) fn retry_failed_manual_navigation(&mut self) -> ManualNavigationRetryOutcome {
         if let Some(state) = self.install_state.as_ref() {

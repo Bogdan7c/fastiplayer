@@ -117,7 +117,13 @@ impl PlaylistRuntime {
     pub(crate) fn take_playlist_discovery_navigation_action(
         &mut self,
     ) -> Option<PlaylistDiscoveryNavigationAction> {
-        self.discovery.navigation_action.take()
+        let action = self.discovery.navigation_action.take();
+        if action.is_some()
+            && let Some(controller) = self.controller.as_ref()
+        {
+            self.discovery.synchronize_navigation_interest(controller);
+        }
+        action
     }
 
     /// D58 очищает transition/action/priority, сохраняя сам bounded bulk scan.
@@ -142,7 +148,7 @@ impl PlaylistRuntime {
 
 impl PlaylistDiscoveryCoordinator {
     #[allow(dead_code, reason = "called by the Session 15A app action boundary")]
-    pub(super) fn manual_wait_availability(&self) -> DiscoveryManualWaitAvailability {
+    pub(crate) fn manual_wait_availability(&self) -> DiscoveryManualWaitAvailability {
         match self.active_scope.as_ref() {
             Some(active) => DiscoveryManualWaitAvailability::MayProduceCandidate {
                 scope_id: active.scope_id,
@@ -162,7 +168,7 @@ impl PlaylistDiscoveryCoordinator {
     }
 
     #[allow(dead_code, reason = "called by the Session 15A app action boundary")]
-    pub(super) fn synchronize_navigation_interest(&mut self, controller: &PlaylistController) {
+    pub(crate) fn synchronize_navigation_interest(&mut self, controller: &PlaylistController) {
         let Some(active) = self.active_scope.as_ref() else {
             self.navigation_status = PlaylistDiscoveryNavigationStatus::Idle;
             return;

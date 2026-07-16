@@ -148,6 +148,19 @@ pub(crate) enum ControllerManualNavigationOutcome {
     IntentRevisionExhausted,
 }
 
+/// Owner-side read model: UI видит возможность intent-а, но не вычисляет traversal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ControllerManualNavigationAvailability {
+    /// Canonical owner уже знает конкретный следующий шаг.
+    Ready,
+    /// Конкретного item пока нет, но active discovery может его добавить.
+    PotentialWait,
+    /// Есть latest-only transition/cursor; повторный intent будет coalesce/supersede.
+    Pending,
+    /// Ни queue policy, ни discovery не могут дать item.
+    Disabled,
+}
+
 /// Guard outcome не скрывает exact request/cancellation cause и не создаёт FIFO.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TransportGuardOutcome {
@@ -211,6 +224,68 @@ pub(crate) enum DeferredTransportExecutionOutcome {
 }
 
 impl PlaylistController {
+    /// Вычисляет Play/Pause toggle из stable intent owner-а, не из transient player snapshot.
+    pub(crate) fn toggle_stable_transport_intent(
+        &mut self,
+        origin: TransportActionOrigin,
+    ) -> Option<ControllerStableIntentDispatch> {
+        let next_intent = match self.stable_playback_intent {
+            StablePlaybackIntent::Playing => StablePlaybackIntent::Paused,
+            StablePlaybackIntent::Paused => StablePlaybackIntent::Playing,
+        };
+        self.record_stable_transport_intent(next_intent, origin)
+    }
+
+    /// Строит immutable availability без изменения queue/current/history.
+    pub(crate) fn manual_navigation_availability(
+        &self,
+        direction: ManualNavigationDirection,
+        current_position: Duration,
+        restart_threshold: PreviousRestartThreshold,
+        wait_availability: DiscoveryManualWaitAvailability,
+    ) -> ControllerManualNavigationAvailability {
+        if self.pending_manual_traversal.is_some()
+            || self
+                .manual_navigation_cursor
+                .latest_target_item_id()
+                .is_some()
+            || self.install_state.is_some()
+        {
+            return ControllerManualNavigationAvailability::Pending;
+        }
+        if direction == ManualNavigationDirection::Previous
+            && restart_threshold.should_restart(current_position)
+            && self.active_media.is_some()
+        {
+            return ControllerManualNavigationAvailability::Ready;
+        }
+        let intent = match direction {
+            ManualNavigationDirection::Next => ManualNavigationIntent::next(self.repeat_mode),
+            ManualNavigationDirection::Previous => {
+                ManualNavigationIntent::previous(self.repeat_mode)
+            }
+        };
+        if matches!(
+            self.queue.begin_manual_navigation(intent),
+            ManualNavigationOutcome::OpenItem { .. }
+        ) {
+            return ControllerManualNavigationAvailability::Ready;
+        }
+        let direction_may_wait =
+            !self.queue.shuffle_enabled() || direction == ManualNavigationDirection::Next;
+        if direction_may_wait
+            && self.active_media.is_some()
+            && matches!(
+                wait_availability,
+                DiscoveryManualWaitAvailability::MayProduceCandidate { .. }
+            )
+        {
+            ControllerManualNavigationAvailability::PotentialWait
+        } else {
+            ControllerManualNavigationAvailability::Disabled
+        }
+    }
+
     pub(crate) const fn stable_playback_intent(&self) -> StablePlaybackIntent {
         self.stable_playback_intent
     }

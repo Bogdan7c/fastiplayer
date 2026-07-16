@@ -63,6 +63,7 @@ mod main_visual_override;
 mod media_jobs;
 pub(crate) use media_jobs::playback_intent_from_snapshot;
 mod playlist_attachment;
+mod playlist_transport;
 mod present_frame_cache;
 mod sidebar_controller;
 mod strong_media_open;
@@ -146,6 +147,9 @@ pub(crate) struct RenderedAppUi {
 
     /// Visual settings actions, которые shell передаст authoritative runtime owner-у.
     pub(crate) settings_actions: Vec<SettingsUiAction>,
+
+    /// Typed transport intents применяются только после завершения egui closure.
+    pub(crate) transport_actions: Vec<crate::ui::player_controls::TransportControlAction>,
 
     /// Window chrome actions, которые shell применит через winit boundary.
     pub(crate) window_chrome_actions: Vec<WindowChromeAction>,
@@ -280,6 +284,9 @@ pub struct AppState {
     /// Renderer-bound startup install, который UI loop продвигает только неблокирующими шагами.
     pending_strong_media_open: Option<strong_media_open::PendingStrongMediaOpen>,
 
+    /// Renderer-bound execution state UI playlist transport-а; traversal остаётся в runtime.
+    playlist_transport: playlist_transport::PlaylistTransportRuntimeState,
+
     /// Активный async dialog/prepare job для локального файла.
     local_file_open_job: Option<LocalFileOpenJob>,
 
@@ -409,6 +416,7 @@ impl AppState {
             active_media_source: None,
             suspended_media_resume: None,
             pending_strong_media_open: None,
+            playlist_transport: playlist_transport::PlaylistTransportRuntimeState::default(),
             local_file_open_job: None,
             local_file_open_wake_port,
             timeline_ui_state: TimelineUiState::default(),

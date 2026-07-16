@@ -660,3 +660,85 @@ fn repeat_one_manual_navigation_does_not_wrap_but_repeat_queue_does() {
     };
     assert_eq!(install.item_id, item_ids[0]);
 }
+
+#[test]
+fn owner_availability_distinguishes_ready_wait_disabled_and_pending() {
+    let mut controller = PlaylistController::new();
+    let items = append_items(&mut controller, 2);
+    install_active_fixture(&mut controller, items[0], 170);
+    assert_eq!(
+        controller.manual_navigation_availability(
+            ManualNavigationDirection::Next,
+            Duration::ZERO,
+            threshold(5_000),
+            DiscoveryManualWaitAvailability::Exhausted,
+        ),
+        ControllerManualNavigationAvailability::Ready
+    );
+
+    install_active_fixture(&mut controller, items[1], 171);
+    assert_eq!(
+        controller.manual_navigation_availability(
+            ManualNavigationDirection::Next,
+            Duration::ZERO,
+            threshold(5_000),
+            DiscoveryManualWaitAvailability::MayProduceCandidate {
+                scope_id: SiblingDiscoveryScopeId::from_non_zero(non_zero(172)),
+            },
+        ),
+        ControllerManualNavigationAvailability::PotentialWait
+    );
+    assert_eq!(
+        controller.manual_navigation_availability(
+            ManualNavigationDirection::Next,
+            Duration::ZERO,
+            threshold(5_000),
+            DiscoveryManualWaitAvailability::Exhausted,
+        ),
+        ControllerManualNavigationAvailability::Disabled
+    );
+
+    let ControllerManualNavigationOutcome::StartInstall { .. } = controller.manual_navigation(
+        ManualNavigationDirection::Previous,
+        TransportActionOrigin::Ui,
+        Duration::ZERO,
+        threshold(5_000),
+        DiscoveryManualWaitAvailability::Exhausted,
+    ) else {
+        panic!("previous target must start a plan")
+    };
+    assert_eq!(
+        controller.manual_navigation_availability(
+            ManualNavigationDirection::Next,
+            Duration::ZERO,
+            threshold(5_000),
+            DiscoveryManualWaitAvailability::Exhausted,
+        ),
+        ControllerManualNavigationAvailability::Pending
+    );
+}
+
+#[test]
+fn stable_toggle_uses_owner_intent_instead_of_transient_player_state() {
+    let mut controller = PlaylistController::new();
+    assert_eq!(
+        controller.stable_playback_intent(),
+        StablePlaybackIntent::Paused
+    );
+
+    controller
+        .toggle_stable_transport_intent(TransportActionOrigin::Ui)
+        .expect("first toggle advances the stable revision");
+    assert_eq!(
+        controller.stable_playback_intent(),
+        StablePlaybackIntent::Playing
+    );
+
+    controller
+        .toggle_stable_transport_intent(TransportActionOrigin::Ui)
+        .expect("second toggle advances the stable revision");
+    assert_eq!(
+        controller.stable_playback_intent(),
+        StablePlaybackIntent::Paused
+    );
+}

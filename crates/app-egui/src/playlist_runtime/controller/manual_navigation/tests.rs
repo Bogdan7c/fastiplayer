@@ -376,6 +376,33 @@ fn concrete_failure_requires_retry_or_explicit_cursor_action() {
 }
 
 #[test]
+fn concrete_preparation_failure_before_player_admission_enters_d55() {
+    let mut controller = PlaylistController::new();
+    let items = append_items(&mut controller, 2);
+    install_active(&mut controller, items[0], 190);
+    let ControllerManualNavigationOutcome::StartInstall { install } =
+        navigation(&mut controller, ManualNavigationDirection::Next)
+    else {
+        panic!("A -> B creates an unstaged plan")
+    };
+
+    assert_eq!(
+        controller.report_unstaged_manual_navigation_target_failure(install.item_id),
+        ManualNavigationFailureOutcome::AwaitingUserAfterFailure { item_id: items[1] }
+    );
+    assert!(
+        controller
+            .view_snapshot()
+            .awaiting_user_after_navigation_failure()
+    );
+    assert!(matches!(
+        controller.retry_failed_manual_navigation(),
+        ManualNavigationRetryOutcome::StartInstall { install }
+            if install.item_id == items[1]
+    ));
+}
+
+#[test]
 fn downstream_rejection_is_concrete_failure_and_play_pause_keeps_confirmation_cursor() {
     let mut controller = PlaylistController::new();
     let items = append_items(&mut controller, 2);

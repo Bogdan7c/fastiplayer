@@ -22,7 +22,6 @@ impl PlaylistStructuralRevision {
         self.0.checked_add(1).map(Self)
     }
 
-    #[cfg(test)]
     pub(crate) const fn get(self) -> u64 {
         self.0
     }
@@ -39,7 +38,6 @@ impl PlaylistViewRevision {
         Self(self.0.saturating_add(1))
     }
 
-    #[cfg(test)]
     pub(crate) const fn get(self) -> u64 {
         self.0
     }
