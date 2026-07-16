@@ -22,3 +22,9 @@
 - `scripts/ci-checks.sh dependencies` remains blocking on RUSTSEC-2026-0194/0195 (`wayland-scanner 0.31.10 -> quick-xml 0.39.3`); licenses/sources/bans pass and cargo-machete reports no unused direct deps. RUSTSEC-2026-0150 marks `audiopus_sys 0.2.2` unmaintained as non-blocking visibility.
 - Coverage ratchet is also currently red due the external-test filename classification described in `mem:testing/coverage`; do not treat a green unit suite as overall CI readiness.
 - GitHub rulesets and `main` protection APIs were rechecked and still return the private-repo-without-Pro HTTP 403 limitation. Full evidence: root `readiness_report_2026-07-12.md`.
+
+## Playlist Session 21 dependency inventory (2026-07-16)
+
+- `scripts/ci-checks.sh` владеет exact `WORKSPACE_CRATE_DIRECTORIES` из всех 37 root workspace members для `cargo machete --with-metadata`; четыре standalone patch crates из workspace `exclude` намеренно не попадают в этот recursive audit.
+- `scripts/tests/test_dependency_audit_inventory.py` сверяет exact set, uniqueness и disjoint exclusions с root `Cargo.toml`. Это предотвращает повторный пропуск новых crates; policy discovery сейчас 30 tests.
+- Session 21 dependency run проверил все 37 crates: licenses/bans/sources и cargo-machete прошли, а общий gate честно FAIL только на прежних `RUSTSEC-2026-0194/0195` (`wayland-scanner 0.31.10 -> quick-xml 0.39.3`). Advisory ignores не добавлялись; foundation остаётся NOT READY.

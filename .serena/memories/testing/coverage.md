@@ -23,3 +23,9 @@
 - `scripts/tests/test_coverage_metrics.py::CoveragePolicyInventoryTests::test_every_workspace_crate_is_classified_by_coverage_policy` fail-fast сверяет каталоги всех root workspace members с точным объединением `blocking_crates` и `informational_crates`. Поэтому новый workspace crate без осознанной coverage-классификации должен падать уже в `scripts/ci-checks.sh format-guardrails`, до дорогого `scripts/coverage.sh check`.
 - `coverage_metrics.py` намеренно продолжает fail-closed отклонять LLVM source crate, отсутствующий в policy; launcher `scripts/coverage.sh` и baseline/exception semantics не ослаблялись.
 - После классификации `ui-artwork-egui` current `scripts/coverage.sh check` снова доходит до известного Session 28 relocation/ratchet failure; clean suite и report generation проходят. Current aggregate counters на commit `fa7511b`: workspace lines 57,953/81,391, functions 5,794/7,830, regions 71,331/100,421; blocking group lines 34,509/41,733, functions 3,553/4,181, regions 42,142/51,096. Baseline/exceptions не обновлялись.
+
+## Playlist Session 21 inventory hardening (2026-07-16)
+
+- `bounded-work-executor`, `natural-sort-key`, `playlist-core`, `playlist-discovery` и `playlist-state` теперь явно входят в `blocking_crates`. Это исправляет coverage inventory, а не baseline: `coverage/baseline.json` и `coverage/exceptions.json` не менялись.
+- `scripts/coverage.sh check` снова выполнил clean suite/report generation и честно остановился на известном D28 relocation/ratchet. Current workspace: lines 81,769/115,516, functions 8,155/11,035, regions 100,373/142,282. Current blocking group: lines 45,412/55,041, functions 4,703/5,660, regions 55,182/67,412. Baseline остаётся workspace 58,981/81,342 lines и blocking 36,977/43,992 lines.
+- Нельзя называть этот run PASS или менять baseline/exceptions как часть playlist Session 21. Feature-scope regression suite зелёная, repository foundation по coverage остаётся NOT READY.

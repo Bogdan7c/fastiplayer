@@ -16,6 +16,46 @@ readonly REPO_ROOT="${repo_root}"
 # Exact pins делают локальный и CI policy engine воспроизводимыми.
 readonly CARGO_DENY_VERSION="0.20.2"
 readonly CARGO_MACHETE_VERSION="0.9.2"
+# Явный inventory ограничивает cargo-machete first-party workspace и исключает patch crates.
+readonly -a WORKSPACE_CRATE_DIRECTORIES=(
+    crates/animation-core
+    crates/app-egui
+    crates/ui-artwork-egui
+    crates/audio-core
+    crates/audio-signalsmith
+    crates/audio-timestretch
+    crates/capability-core
+    crates/codec-core
+    crates/config
+    crates/desktop-integration
+    crates/frame-server-core
+    crates/source-core
+    crates/media-prefetch
+    crates/service-direct-media
+    crates/settings-core
+    crates/settings-derive
+    crates/rustiplayer-settings
+    crates/player-core
+    crates/bounded-work-executor
+    crates/natural-sort-key
+    crates/playlist-core
+    crates/playlist-discovery
+    crates/playlist-state
+    crates/media-core
+    crates/symphonia-demux
+    crates/audio
+    crates/vp9-parser
+    crates/video-frame-contract
+    crates/video-core
+    crates/video-backend-api
+    crates/video-present-core
+    crates/video-ffmpeg
+    crates/render-core
+    crates/render-wgpu-video
+    crates/render-wgpu-shell
+    crates/video-vaapi
+    crates/service-youtube
+)
 
 # Функция печатает поддерживаемые стабильные имена проверок.
 print_help() {
@@ -130,18 +170,10 @@ run_dependencies() {
     local dependency_policy_status=0
     run_step "licenses, sources and duplicate inventory" \
         cargo deny check licenses bans sources || dependency_policy_status=$?
-    # Явный список workspace members исключает четыре upstream patch directories.
+    # Versioned inventory исключает четыре upstream patch directories и проверяется unit-тестом.
     local unused_dependencies_status=0
     run_step "unused direct dependencies" cargo machete --with-metadata \
-        crates/animation-core crates/app-egui crates/audio-core crates/audio-signalsmith \
-        crates/audio-timestretch crates/audio crates/capability-core crates/codec-core \
-        crates/config crates/desktop-integration crates/frame-server-core crates/media-core \
-        crates/media-prefetch crates/player-core crates/playlist-core crates/playlist-state \
-        crates/render-core crates/render-wgpu-shell \
-        crates/render-wgpu-video crates/rustiplayer-settings crates/service-direct-media \
-        crates/service-youtube crates/settings-core crates/settings-derive crates/source-core \
-        crates/symphonia-demux crates/video-backend-api crates/video-core crates/video-ffmpeg \
-        crates/video-frame-contract crates/video-present-core crates/video-vaapi crates/vp9-parser \
+        "${WORKSPACE_CRATE_DIRECTORIES[@]}" \
         || unused_dependencies_status=$?
 
     # Все независимые diagnostics публикуются за один запуск; любой blocking status
