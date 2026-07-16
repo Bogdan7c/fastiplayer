@@ -5,7 +5,9 @@ mod discovery;
 mod discovery_navigation;
 mod install;
 mod manual_navigation;
+mod metadata;
 mod removal;
+mod sorting;
 mod transport;
 
 use std::collections::HashMap;
@@ -13,8 +15,7 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use playlist_core::{
-    AddItemsError, AddItemsOutcome, MetadataPatchBatchError, MetadataPatchBatchOutcome,
-    PlaylistItemDraft, PlaylistItemId, PlaylistMetadataPatch, PlaylistQueue, RepeatMode,
+    AddItemsError, AddItemsOutcome, PlaylistItemDraft, PlaylistItemId, PlaylistQueue, RepeatMode,
     ShuffleToggleError,
 };
 
@@ -50,11 +51,14 @@ pub(crate) use manual_navigation::{
     PreConcreteProbeRejectionOutcome,
 };
 #[allow(unused_imports)]
+pub(crate) use metadata::ControllerMetadataPatchError;
 pub(crate) use removal::{
     ControllerActiveMediaRebindOutcome, ControllerDestructiveRemoval,
     ControllerDestructiveRemovalOutcome, ControllerRemovalKind, ControllerRemovalUndoOutcome,
     DetachedActiveTombstone,
 };
+#[allow(unused_imports)]
+pub(crate) use sorting::ControllerCanonicalSortError;
 #[allow(unused_imports)]
 pub(crate) use transport::{
     AppTransportDisposition, ControllerManualNavigationOutcome, ControllerPlayItemOutcome,
@@ -91,21 +95,6 @@ pub(crate) struct ControllerCappedAppendOutcome {
     pub(crate) capacity_rejected: usize,
     pub(crate) dirty: Option<PlaylistDirtySignal>,
     pub(crate) manual_navigation_invalidation: Option<ManualNavigationInvalidation>,
-}
-
-/// Metadata cache mutation не смешивает domain revision и app dirty failures.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ControllerMetadataPatchError {
-    FatalInvariant,
-    DirtyRevisionExhausted,
-    Domain(MetadataPatchBatchError),
-}
-
-/// Metadata patch публикует dirty signal только при реальном cache изменении.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ControllerMetadataPatchOutcome {
-    pub(crate) domain: MetadataPatchBatchOutcome,
-    pub(crate) dirty: Option<PlaylistDirtySignal>,
 }
 
 /// Ошибка correlation не изменяет badge и не dirty-ит persisted state.
@@ -160,6 +149,8 @@ pub(crate) struct PlaylistController {
     discovery_continuation_revision: DiscoveryContinuationRevision,
     pub(super) worker_availability: PlaylistWorkerAvailability,
     pub(super) fatal_invariant: Option<PlaylistControllerInvariantViolation>,
+    #[cfg(test)]
+    reject_metadata_dirty_preflight_for_test: bool,
     view_snapshot: Arc<PlaylistViewSnapshot>,
 }
 
@@ -194,6 +185,8 @@ impl PlaylistController {
             discovery_continuation_revision: DiscoveryContinuationRevision::INITIAL,
             worker_availability: PlaylistWorkerAvailability::Available,
             fatal_invariant: None,
+            #[cfg(test)]
+            reject_metadata_dirty_preflight_for_test: false,
             view_snapshot,
         }
     }
@@ -373,39 +366,6 @@ impl PlaylistController {
             dirty: Some(dirty),
             manual_navigation_invalidation,
         })
-    }
-
-    /// Применяет stale-safe cache patches без structural/traversal side effects.
-    pub(crate) fn apply_metadata_patches(
-        &mut self,
-        patches: Vec<PlaylistMetadataPatch>,
-    ) -> Result<ControllerMetadataPatchOutcome, ControllerMetadataPatchError> {
-        if self.fatal_invariant.is_some() {
-            return Err(ControllerMetadataPatchError::FatalInvariant);
-        }
-        let has_changes = self.queue.metadata_patch_batch_has_changes(&patches);
-        let next_dirty = has_changes
-            .then(|| self.dirty_revision.checked_next())
-            .flatten()
-            .ok_or(ControllerMetadataPatchError::DirtyRevisionExhausted)
-            .or_else(|error| {
-                if has_changes {
-                    Err(error)
-                } else {
-                    Ok(self.dirty_revision)
-                }
-            })?;
-        let domain = self
-            .queue
-            .apply_metadata_patch_batch(patches)
-            .map_err(ControllerMetadataPatchError::Domain)?;
-        let dirty = domain
-            .changed_metadata()
-            .then(|| self.commit_dirty(next_dirty));
-        if dirty.is_some() {
-            self.publish_view(true);
-        }
-        Ok(ControllerMetadataPatchOutcome { domain, dirty })
     }
 
     /// Retry start не очищает старый badge: D49 ждёт exact same-item Installed.

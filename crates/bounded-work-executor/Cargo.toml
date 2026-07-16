@@ -1,0 +1,10 @@
+[package]
+name = "bounded-work-executor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "bounded_work_executor"
+path = "src/lib.rs"

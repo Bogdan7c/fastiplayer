@@ -202,6 +202,11 @@ impl AppWakePort {
         self.inner.publish_epoch.load(Ordering::Acquire)
     }
 
+    #[cfg(test)]
+    pub(crate) fn publish_epoch_for_test(&self) -> u64 {
+        self.publish_epoch()
+    }
+
     /// UI очистил текущий edge перед обязательной повторной проверкой mailbox-а.
     fn clear_pending_for_drain(&self) {
         self.inner.wake_pending.store(false, Ordering::Release);

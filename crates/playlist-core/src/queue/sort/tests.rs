@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use media_core::{DiscNumber, MediaDuration, TrackNumber, TvEpisodeNumber, TvSeasonNumber};
 use rand::SeedableRng;
@@ -11,8 +12,9 @@ use super::{
 };
 use crate::{
     CachedPlaylistMetadata, ForeignPathEncoding, ForeignPathPlatform, ForeignPlatformPath,
-    LocalLocator, PlaylistItemDraft, PlaylistItemId, PlaylistMediaKind, PlaylistQueue,
-    ReservedQueueMutation, SecretUrlLocator,
+    LocalLocator, LocalSourceFingerprint, MoveItemIntent, PlaylistItemDraft, PlaylistItemId,
+    PlaylistMediaKind, PlaylistMetadataPatch, PlaylistQueue, ReservedQueueMutation,
+    SecretUrlLocator,
 };
 
 fn audio_metadata(
@@ -635,4 +637,137 @@ fn prepared_comparator_is_total_antisymmetric_and_transitive() {
             }
         }
     }
+}
+
+#[test]
+fn background_plan_combines_metadata_and_order_in_one_guarded_commit() {
+    let old_fingerprint = LocalSourceFingerprint::new(10, SystemTime::UNIX_EPOCH);
+    let new_fingerprint = LocalSourceFingerprint::new(20, SystemTime::UNIX_EPOCH);
+    let mut queue = PlaylistQueue::new();
+    queue
+        .append_batch(vec![
+            PlaylistItemDraft::local(
+                LocalLocator::Native("/music/z.flac".into()),
+                Some(old_fingerprint),
+                audio_metadata("z.flac", None, None, None, None, None, None),
+            ),
+            PlaylistItemDraft::local(
+                LocalLocator::Native("/music/a.flac".into()),
+                Some(old_fingerprint),
+                audio_metadata("a.flac", Some("Alpha"), None, None, None, None, None),
+            ),
+        ])
+        .unwrap();
+    let ids = canonical_ids(&queue);
+    queue.set_traversal_current(ids[0]).unwrap();
+    let traversal_before = queue.traversal_current();
+    let revisions_before = queue.revision_snapshot();
+    let patch = PlaylistMetadataPatch::refreshed_local(
+        ids[0],
+        queue.item(ids[0]).unwrap().locator().clone(),
+        Some(old_fingerprint),
+        new_fingerprint,
+        audio_metadata("z.flac", Some("Zulu"), None, None, None, None, None),
+    );
+    let prepared = queue
+        .canonical_sort_snapshot()
+        .prepare(
+            std::slice::from_ref(&patch),
+            SortCanonicalQueue::new(PlaylistSortKey::Title, SortDirection::Ascending),
+            || false,
+        )
+        .unwrap();
+    assert_eq!(prepared.statistics().prepared_items, 2);
+
+    let outcome = queue
+        .apply_prepared_canonical_sort(prepared, vec![patch])
+        .unwrap();
+    assert!(outcome.reordered());
+    assert_eq!(outcome.metadata().applied_count(), 1);
+    assert_ne!(
+        queue.revision_snapshot().structural(),
+        revisions_before.structural()
+    );
+    assert_ne!(
+        queue.revision_snapshot().metadata(),
+        revisions_before.metadata()
+    );
+    assert_eq!(
+        queue.revision_snapshot().traversal(),
+        revisions_before.traversal()
+    );
+    assert_eq!(queue.traversal_current(), traversal_before);
+    assert_eq!(canonical_ids(&queue), [ids[1], ids[0]]);
+}
+
+#[test]
+fn background_preparation_cancel_and_stale_apply_never_publish_partial_order() {
+    let mut queue = queue_from_drafts(vec![
+        local_draft("item 10.flac", unknown_metadata("item 10.flac")),
+        local_draft("item 2.flac", unknown_metadata("item 2.flac")),
+    ]);
+    let ids_before = canonical_ids(&queue);
+    let mut cancellation_checks = 0usize;
+    assert!(
+        queue
+            .canonical_sort_snapshot()
+            .prepare(
+                &[],
+                SortCanonicalQueue::new(
+                    PlaylistSortKey::NaturalFilename,
+                    SortDirection::Ascending,
+                ),
+                || {
+                    cancellation_checks += 1;
+                    cancellation_checks > 1
+                },
+            )
+            .is_err()
+    );
+    assert_eq!(canonical_ids(&queue), ids_before);
+
+    let prepared = queue
+        .canonical_sort_snapshot()
+        .prepare(
+            &[],
+            SortCanonicalQueue::new(PlaylistSortKey::NaturalFilename, SortDirection::Ascending),
+            || false,
+        )
+        .unwrap();
+    assert!(matches!(
+        queue.move_item(ids_before[0], MoveItemIntent::ToBack),
+        crate::MoveItemOutcome::Moved { .. }
+    ));
+    assert_eq!(
+        queue.apply_prepared_canonical_sort(prepared, Vec::new()),
+        Err(super::ApplyPreparedCanonicalSortError::StaleQueueRevision)
+    );
+}
+
+#[test]
+fn fifty_thousand_background_keys_are_once_per_item_and_n_log_n_bounded() {
+    let mut queue = PlaylistQueue::new();
+    queue
+        .append_batch(
+            (0..50_000)
+                .rev()
+                .map(|index| {
+                    let filename = format!("episode {index}.mkv");
+                    local_draft(&filename, unknown_metadata(&filename))
+                })
+                .collect(),
+        )
+        .unwrap();
+    let prepared = queue
+        .canonical_sort_snapshot()
+        .prepare(
+            &[],
+            SortCanonicalQueue::new(PlaylistSortKey::NaturalFilename, SortDirection::Ascending),
+            || false,
+        )
+        .unwrap();
+    let statistics = prepared.statistics();
+    assert_eq!(statistics.prepared_items, 50_000);
+    assert_eq!(statistics.shared_item_handles, 50_000);
+    assert!(statistics.comparisons <= 50_000 * 16);
 }

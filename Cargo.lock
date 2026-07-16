@@ -135,6 +135,7 @@ dependencies = [
  "anyhow",
  "audio",
  "audio-signalsmith",
+ "bounded-work-executor",
  "capability-core",
  "codec-core",
  "desktop-integration",
@@ -602,6 +603,10 @@ dependencies = [
  "futures-lite",
  "piper",
 ]
+
+[[package]]
+name = "bounded-work-executor"
+version = "0.1.0"
 
 [[package]]
 name = "bumpalo"

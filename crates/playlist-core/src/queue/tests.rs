@@ -518,6 +518,38 @@ fn metadata_batch_distinguishes_all_outcomes_and_preserves_other_state() {
 }
 
 #[test]
+fn metadata_preflight_revision_exhaustion_preserves_cache_and_all_revisions() {
+    let mut queue = PlaylistQueue::new();
+    let item_id = appended_ids(
+        queue
+            .append_batch(vec![local_draft("metadata-exhaustion")])
+            .expect("append fixture"),
+    )[0];
+    let item = queue.item(item_id).unwrap();
+    let metadata_before = item.cached_metadata().clone();
+    let patch = PlaylistMetadataPatch::new(
+        item_id,
+        item.locator().clone(),
+        item.local_fingerprint(),
+        metadata_before
+            .clone()
+            .with_title(Some("must not commit".to_owned())),
+    );
+    queue.metadata_revision = QueueRevision(u64::MAX);
+    let revisions_before = queue.revision_snapshot();
+
+    assert!(matches!(
+        queue.preflight_metadata_patch_batch(vec![patch]),
+        Err(MetadataPatchBatchError::MetadataRevisionExhausted)
+    ));
+    assert_eq!(
+        queue.item(item_id).unwrap().cached_metadata(),
+        &metadata_before
+    );
+    assert_eq!(queue.revision_snapshot(), revisions_before);
+}
+
+#[test]
 fn metadata_patch_is_allowed_during_reservation_and_does_not_break_commit() {
     // Metadata dimension не входит в D08 allocator/structural/traversal preconditions.
     let mut queue = PlaylistQueue::new();

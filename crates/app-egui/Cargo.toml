@@ -36,6 +36,7 @@ service-direct-media.workspace = true
 service-youtube.workspace = true
 playlist-core.workspace = true
 playlist-discovery.workspace = true
+bounded-work-executor.workspace = true
 natural-sort-key.workspace = true
 playlist-state.workspace = true
 desktop-integration.workspace = true

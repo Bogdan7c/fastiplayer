@@ -27,7 +27,7 @@ pub use discovery::{
 };
 pub use metadata_patch::{
     MetadataPatchBatchError, MetadataPatchBatchOutcome, MetadataPatchItemOutcome,
-    PlaylistMetadataPatch,
+    PlaylistMetadataPatch, PreparedMetadataPatchBatchCommit,
 };
 pub use navigation::{
     AutomaticEndedIntent, AutomaticNavigationOutcome, AutomaticStopReason,
@@ -54,7 +54,12 @@ pub use shuffle::{
     ShuffleQueueRestoreError, ShuffleToggleError, ShuffleToggleOutcome,
     ShuffleTraversalRestoreError, ShuffleTraversalSnapshot,
 };
-pub use sort::{PlaylistSortKey, SortCanonicalQueue, SortCanonicalQueueOutcome, SortDirection};
+pub use sort::{
+    ApplyPreparedCanonicalSortError, ApplyPreparedCanonicalSortOutcome,
+    CanonicalSortPreparationCancelled, CanonicalSortPreparationStatistics, CanonicalSortSnapshot,
+    PlaylistSortKey, PreparedCanonicalSort, PreparedCanonicalSortCommit, SortCanonicalQueue,
+    SortCanonicalQueueOutcome, SortDirection,
+};
 
 /// Hard safety cap любой committed/candidate queue.
 pub const MAX_PLAYLIST_ITEMS: usize = 50_000;

@@ -8,6 +8,7 @@ mod action_api;
 mod action_jobs;
 mod manifest_worker;
 mod mapping;
+mod metadata_sort;
 mod navigation;
 mod settings_port;
 
@@ -171,18 +172,21 @@ impl PlaylistRuntime {
 
     /// Event-driven drain; каждый accepted batch отдельно публикует dirty/save revision.
     pub(crate) fn drain_playlist_discovery(&mut self) -> bool {
-        let Some(controller) = self.controller.as_mut() else {
-            return false;
+        let visible = {
+            let Some(controller) = self.controller.as_mut() else {
+                return false;
+            };
+            let dirty_before = controller.dirty_revision();
+            let visible = self
+                .discovery
+                .drain(controller, self.manual_add_queue_generation.value());
+            let dirty_after = controller.dirty_revision();
+            if dirty_after != dirty_before {
+                self.publish_controller_mutation_if_dirty(dirty_before);
+            }
+            visible
         };
-        let dirty_before = controller.dirty_revision();
-        let visible = self
-            .discovery
-            .drain(controller, self.manual_add_queue_generation.value());
-        let dirty_after = controller.dirty_revision();
-        if dirty_after != dirty_before {
-            self.publish_controller_mutation_if_dirty(dirty_before);
-        }
-        visible
+        visible | self.drain_metadata_sort()
     }
 
     #[allow(dead_code)]
@@ -285,7 +289,9 @@ struct ActiveDiscoveryScope {
 /// Process-lifetime owner manifest stage, executor, scope registry и terminal model.
 pub(super) struct PlaylistDiscoveryCoordinator {
     executor: Option<DiscoveryExecutor>,
+    cpu_executor: Option<bounded_work_executor::BoundedExecutor>,
     action_jobs: action_jobs::DiscoveryActionJobs,
+    metadata_sort: metadata_sort::MetadataSortOwner,
     manifest_worker: Option<ManifestWorker>,
     settings_control: SharedDiscoverySettingsControl,
     next_scope_id: u64,
@@ -303,10 +309,13 @@ impl PlaylistDiscoveryCoordinator {
             wake_port: wake_port.clone(),
         });
         let executor = DiscoveryExecutor::start(discovery_wake).ok();
+        let cpu_executor = metadata_sort::start_cpu_executor();
         let manifest_worker = ManifestWorker::start(wake_port.clone());
         Self {
             executor,
+            cpu_executor,
             action_jobs: action_jobs::DiscoveryActionJobs::new(),
+            metadata_sort: metadata_sort::MetadataSortOwner::new(wake_port),
             manifest_worker,
             settings_control: SharedDiscoverySettingsControl::default(),
             next_scope_id: 1,
@@ -335,6 +344,7 @@ impl PlaylistDiscoveryCoordinator {
     pub(super) fn begin_shutdown(&mut self) {
         self.cancel_active(DiscoveryCancellationCause::LifecycleShutdown);
         self.action_jobs.begin_shutdown();
+        self.metadata_sort.begin_shutdown();
         if let Some(manifest_worker) = &mut self.manifest_worker {
             manifest_worker.close_admission();
         }
@@ -345,6 +355,9 @@ impl PlaylistDiscoveryCoordinator {
                 in_flight_work_units = report.in_flight_work_units,
                 "Discovery executor начал неблокирующий shutdown"
             );
+        }
+        if let Some(executor) = &self.cpu_executor {
+            executor.shutdown();
         }
     }
 

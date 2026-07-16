@@ -125,5 +125,6 @@ impl PlaylistDiscoveryCoordinator {
 
     pub(super) fn cancel_action_jobs_for_queue_replacement(&mut self) {
         self.action_jobs.cancel_for_queue_replacement();
+        self.metadata_sort.cancel_for_queue_replacement();
     }
 }

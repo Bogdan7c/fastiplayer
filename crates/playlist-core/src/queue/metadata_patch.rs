@@ -5,7 +5,7 @@ use std::fmt;
 
 use crate::{CachedPlaylistMetadata, LocalSourceFingerprint, PlaylistItemId, PlaylistLocator};
 
-use super::PlaylistQueue;
+use super::{PlaylistQueue, QueueRevision};
 
 /// Один verified metadata patch с source identity precondition.
 #[derive(Clone, PartialEq, Eq)]
@@ -186,17 +186,106 @@ impl fmt::Display for MetadataPatchBatchError {
 
 impl std::error::Error for MetadataPatchBatchError {}
 
+pub(super) struct PreparedMetadataPatchPlan {
+    staged_cache_by_index: HashMap<usize, (Option<LocalSourceFingerprint>, CachedPlaylistMetadata)>,
+    outcome: MetadataPatchBatchOutcome,
+}
+
+/// Полностью проверенный metadata-only commit без оставшихся fallible шагов.
+pub struct PreparedMetadataPatchBatchCommit {
+    plan: PreparedMetadataPatchPlan,
+    next_metadata_revision: QueueRevision,
+}
+
+impl PreparedMetadataPatchBatchCommit {
+    /// Отличает persistent cache mutation от revalidated no-op batch.
+    #[must_use]
+    pub fn changed_metadata(&self) -> bool {
+        self.plan.changed_metadata()
+    }
+}
+
+impl PreparedMetadataPatchPlan {
+    pub(super) fn changed_metadata(&self) -> bool {
+        self.outcome.changed_metadata()
+    }
+
+    pub(super) fn apply(self, items: &mut [crate::PlaylistItem]) -> MetadataPatchBatchOutcome {
+        for (item_index, (local_fingerprint, cached_metadata)) in self.staged_cache_by_index {
+            items[item_index].replace_local_cache(local_fingerprint, cached_metadata);
+        }
+        self.outcome
+    }
+}
+
+pub(super) fn prepare_metadata_patch_plan(
+    items: &[crate::PlaylistItem],
+    patches: &[PlaylistMetadataPatch],
+) -> PreparedMetadataPatchPlan {
+    let item_index_by_id = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (item.item_id(), index))
+        .collect::<HashMap<_, _>>();
+    let mut staged_cache_by_index = HashMap::new();
+    let mut item_outcomes = Vec::with_capacity(patches.len());
+    let mut applied_count = 0usize;
+
+    for patch in patches {
+        let Some(item_index) = item_index_by_id.get(&patch.item_id).copied() else {
+            item_outcomes.push(MetadataPatchItemOutcome::NotFound {
+                item_id: patch.item_id,
+            });
+            continue;
+        };
+        let item = &items[item_index];
+        if item.locator() != &patch.expected_locator
+            || item.local_fingerprint() != patch.expected_local_fingerprint
+        {
+            item_outcomes.push(MetadataPatchItemOutcome::SourceMismatch {
+                item_id: patch.item_id,
+            });
+            continue;
+        }
+        let effective_cache = staged_cache_by_index
+            .get(&item_index)
+            .cloned()
+            .unwrap_or_else(|| (item.local_fingerprint(), item.cached_metadata().clone()));
+        if effective_cache.0 == patch.refreshed_local_fingerprint
+            && effective_cache.1 == patch.cached_metadata
+        {
+            item_outcomes.push(MetadataPatchItemOutcome::NoChange {
+                item_id: patch.item_id,
+            });
+            continue;
+        }
+
+        staged_cache_by_index.insert(
+            item_index,
+            (
+                patch.refreshed_local_fingerprint,
+                patch.cached_metadata.clone(),
+            ),
+        );
+        item_outcomes.push(MetadataPatchItemOutcome::Applied {
+            item_id: patch.item_id,
+        });
+        applied_count += 1;
+    }
+
+    PreparedMetadataPatchPlan {
+        staged_cache_by_index,
+        outcome: MetadataPatchBatchOutcome {
+            item_outcomes,
+            applied_count,
+        },
+    }
+}
+
 impl PlaylistQueue {
     /// Проверяет, создаст ли matching batch реальное cache изменение.
     pub fn metadata_patch_batch_has_changes(&self, patches: &[PlaylistMetadataPatch]) -> bool {
-        patches.iter().any(|patch| {
-            self.item(patch.item_id).is_some_and(|item| {
-                item.locator() == &patch.expected_locator
-                    && item.local_fingerprint() == patch.expected_local_fingerprint
-                    && (item.local_fingerprint() != patch.refreshed_local_fingerprint
-                        || item.cached_metadata() != &patch.cached_metadata)
-            })
-        })
+        prepare_metadata_patch_plan(&self.items, patches).changed_metadata()
     }
 
     /// Строит весь patch plan и только затем публикует matching changes.
@@ -207,69 +296,40 @@ impl PlaylistQueue {
         &mut self,
         patches: Vec<PlaylistMetadataPatch>,
     ) -> Result<MetadataPatchBatchOutcome, MetadataPatchBatchError> {
-        let mut staged_cache_by_index = HashMap::new();
-        let mut item_outcomes = Vec::with_capacity(patches.len());
-        let mut applied_count = 0usize;
+        let commit = self.preflight_metadata_patch_batch(patches)?;
+        Ok(self.commit_metadata_patch_batch(commit))
+    }
 
-        for patch in patches {
-            let Some(item_index) = self.index_of(patch.item_id) else {
-                item_outcomes.push(MetadataPatchItemOutcome::NotFound {
-                    item_id: patch.item_id,
-                });
-                continue;
-            };
-            let item = &self.items[item_index];
-            if item.locator() != &patch.expected_locator
-                || item.local_fingerprint() != patch.expected_local_fingerprint
-            {
-                item_outcomes.push(MetadataPatchItemOutcome::SourceMismatch {
-                    item_id: patch.item_id,
-                });
-                continue;
-            }
-            let effective_cache = staged_cache_by_index
-                .get(&item_index)
-                .cloned()
-                .unwrap_or_else(|| (item.local_fingerprint(), item.cached_metadata().clone()));
-            if effective_cache.0 == patch.refreshed_local_fingerprint
-                && effective_cache.1 == patch.cached_metadata
-            {
-                item_outcomes.push(MetadataPatchItemOutcome::NoChange {
-                    item_id: patch.item_id,
-                });
-                continue;
-            }
-
-            staged_cache_by_index.insert(
-                item_index,
-                (patch.refreshed_local_fingerprint, patch.cached_metadata),
-            );
-            item_outcomes.push(MetadataPatchItemOutcome::Applied {
-                item_id: patch.item_id,
-            });
-            applied_count += 1;
-        }
-
-        let next_metadata_revision = if staged_cache_by_index.is_empty() {
-            None
+    /// Выполняет revalidation и revision preflight без metadata mutation.
+    pub fn preflight_metadata_patch_batch(
+        &self,
+        patches: Vec<PlaylistMetadataPatch>,
+    ) -> Result<PreparedMetadataPatchBatchCommit, MetadataPatchBatchError> {
+        let plan = prepare_metadata_patch_plan(&self.items, &patches);
+        let next_metadata_revision = if plan.changed_metadata() {
+            self.metadata_revision
+                .checked_next()
+                .ok_or(MetadataPatchBatchError::MetadataRevisionExhausted)?
         } else {
-            Some(
-                self.metadata_revision
-                    .checked_next()
-                    .ok_or(MetadataPatchBatchError::MetadataRevisionExhausted)?,
-            )
+            self.metadata_revision
         };
 
-        for (item_index, (local_fingerprint, cached_metadata)) in staged_cache_by_index {
-            self.items[item_index].replace_local_cache(local_fingerprint, cached_metadata);
-        }
-        if let Some(next_revision) = next_metadata_revision {
-            self.metadata_revision = next_revision;
-        }
-
-        Ok(MetadataPatchBatchOutcome {
-            item_outcomes,
-            applied_count,
+        Ok(PreparedMetadataPatchBatchCommit {
+            plan,
+            next_metadata_revision,
         })
+    }
+
+    /// Применяет только что preflighted plan; owner не передаёт управление между фазами.
+    pub fn commit_metadata_patch_batch(
+        &mut self,
+        commit: PreparedMetadataPatchBatchCommit,
+    ) -> MetadataPatchBatchOutcome {
+        let changed_metadata = commit.changed_metadata();
+        let outcome = commit.plan.apply(&mut self.items);
+        if changed_metadata {
+            self.metadata_revision = commit.next_metadata_revision;
+        }
+        outcome
     }
 }

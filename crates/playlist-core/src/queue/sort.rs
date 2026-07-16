@@ -1,8 +1,11 @@
 //! Pure one-shot sorting canonical queue по заранее закэшированным metadata.
 
 mod natural;
+mod prepared;
 #[cfg(test)]
 mod tests;
+
+pub use prepared::*;
 
 use std::cmp::Ordering;
 use std::fmt;
