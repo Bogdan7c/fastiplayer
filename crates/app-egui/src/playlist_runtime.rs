@@ -48,11 +48,16 @@ mod settings;
 mod suspend_resume;
 mod transport_execution;
 mod transport_ui;
+mod ui_interaction;
 pub(crate) use settings::{FutureDiscoveryPolicy, PlaylistSettingsStageError};
 pub(crate) use suspend_resume::{
     ResumeAttempt, ResumeCheckpointError, ResumePlaybackIntent, ResumePositionWarning,
 };
 pub(crate) use transport_ui::{NavigationControlAvailability, PlaylistTransportUiModel};
+pub(crate) use ui_interaction::{
+    PlaylistGoCurrentTarget, PlaylistInteractionModel, PlaylistProgressCancelScope,
+    PlaylistProgressModel, PlaylistWaitDirection,
+};
 #[allow(
     dead_code,
     reason = "Session 14 bootstrap/save-worker integration consumes this startup boundary"
@@ -85,10 +90,10 @@ pub(crate) use actions::{
 pub(crate) use controller::PlaylistController;
 pub(crate) use controller::{
     AutomaticLifecycleOutcome, ControllerManualNavigationOutcome, ControllerStableIntentDispatch,
-    PlannedPlaylistInstall, StablePlaybackIntent,
+    PlannedPlaylistInstall, StablePlaybackIntent, StopAfterCurrentOutcome,
 };
 pub(crate) use controller::{StartupRestoreFailureOutcome, StartupRestoreTarget};
-pub(crate) use discovery::PlaylistDiscoveryNavigationAction;
+pub(crate) use discovery::{MetadataSortCancelOutcome, PlaylistDiscoveryNavigationAction};
 pub(crate) use identity::TransportActionOrigin;
 #[allow(
     unused_imports,
@@ -269,6 +274,7 @@ enum PlaylistRuntimeLifecycle {
 /// Полный typed отчёт всех process-lifetime playlist owners.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PlaylistShutdownReport {
+    pub(crate) ui_interaction: ProcessOwnerShutdownOutcome,
     pub(crate) media_open: ProcessOwnerShutdownOutcome,
     pub(crate) startup: startup::PlaylistStartupShutdownOutcome,
     pub(crate) persistence: persistence::PlaylistPersistenceShutdownOutcome,
@@ -381,6 +387,8 @@ pub(crate) struct PlaylistRuntime {
     removal_undo: Option<removal_undo::RemovalUndoState>,
     /// D79 confirmation хранит secret-bearing intent вне renderer-bound `AppState`.
     replacement_confirmation: replacement_confirmation::QueueReplacementConfirmationState,
+    /// D48 form и async multi-file dialog принадлежат process runtime.
+    ui_interaction: ui_interaction::PlaylistUiInteractionOwner,
     /// D66 stale guard для uncommitted Manual Add completions.
     manual_add_queue_generation: ManualAddQueueGeneration,
     /// D65 structural user intent invalidates late restore/CLI apply, not read-only load.
@@ -422,6 +430,7 @@ impl PlaylistRuntime {
         wake_port: AppWakePort,
         playlist_config: rustiplayer_config::PlaylistConfig,
     ) -> Self {
+        let ui_interaction = ui_interaction::PlaylistUiInteractionOwner::new(wake_port.clone());
         let desktop_transport = desktop_transport::DesktopTransportOwner::new(wake_port.clone());
         let media_open = MediaOpenCoordinator::new(wake_port.clone());
         let startup = startup::PlaylistStartupOwner::new(wake_port.clone());
@@ -450,6 +459,7 @@ impl PlaylistRuntime {
             removal_undo: None,
             replacement_confirmation:
                 replacement_confirmation::QueueReplacementConfirmationState::new(),
+            ui_interaction,
             manual_add_queue_generation: ManualAddQueueGeneration::INITIAL,
             startup_media_apply_superseded: false,
             startup_retained_actions: startup_retained::StartupRetainedActionOwner::default(),
@@ -566,7 +576,8 @@ impl PlaylistRuntime {
     pub(crate) fn drain_owner_mailbox(&mut self) -> bool {
         let owner_changed = self.owner_receiver.drain().has_payload();
         let media_open_changed = self.media_open.drain();
-        owner_changed || media_open_changed
+        let dialog_changed = self.drain_playlist_file_dialog();
+        owner_changed || media_open_changed || dialog_changed
     }
 
     /// Cheap-clone read-only snapshot для renderer-bound AppState/будущего UI port-а.
@@ -625,12 +636,14 @@ impl PlaylistRuntime {
         }
         self.discovery.begin_shutdown();
 
+        let ui_interaction = self.ui_interaction.shutdown_until(deadline);
         let media_open = self.media_open.shutdown_until(deadline);
         let startup = self.startup.shutdown_until(deadline);
         let persistence = self
             .persistence
             .shutdown_until(self.controller.as_ref(), deadline);
         let report = PlaylistShutdownReport {
+            ui_interaction,
             media_open,
             startup,
             persistence,
@@ -661,6 +674,13 @@ impl PlaylistRuntime {
 impl PlaylistShutdownReport {
     fn requires_process_exit(self) -> bool {
         matches!(
+            self.ui_interaction,
+            ProcessOwnerShutdownOutcome::TimedOut { .. }
+                | ProcessOwnerShutdownOutcome::ThreadPanicked {
+                    pending_threads: 1..,
+                    ..
+                }
+        ) || matches!(
             self.media_open,
             ProcessOwnerShutdownOutcome::TimedOut { .. }
                 | ProcessOwnerShutdownOutcome::ThreadPanicked {
@@ -677,6 +697,10 @@ impl PlaylistShutdownReport {
     }
 
     fn has_terminal_failure(self) -> bool {
+        let ui_failed = matches!(
+            self.ui_interaction,
+            ProcessOwnerShutdownOutcome::ThreadPanicked { .. }
+        );
         let media_failed = matches!(
             self.media_open,
             ProcessOwnerShutdownOutcome::ThreadPanicked { .. }
@@ -696,7 +720,7 @@ impl PlaylistShutdownReport {
             | persistence::PlaylistPersistenceShutdownOutcome::AlreadyCompleted
             | persistence::PlaylistPersistenceShutdownOutcome::TimedOut { .. } => false,
         };
-        media_failed || startup_failed || persistence_failed
+        ui_failed || media_failed || startup_failed || persistence_failed
     }
 }
 
@@ -912,6 +936,53 @@ mod tests {
     }
 
     #[test]
+    fn inline_url_draft_survives_views_and_confirmation_is_render_only() {
+        let mut runtime = runtime();
+        runtime.open_playlist_url_editor();
+        runtime.update_playlist_url_draft("не URL с token=secret".to_string());
+
+        assert!(runtime.submit_playlist_url_draft());
+        let invalid = runtime.playlist_interaction_model();
+        assert!(invalid.url_editor_open);
+        assert_eq!(invalid.url_text, "не URL с token=secret");
+        assert_eq!(
+            invalid.url_safe_error.as_ref().map(|error| error.message()),
+            Some("Введите корректный http(s) URL")
+        );
+
+        let sensitive = "https://user:password@media.example.test/video.mp4?token=secret";
+        runtime.update_playlist_url_draft(sensitive.to_string());
+        assert!(runtime.submit_playlist_url_draft());
+        let confirmation = runtime
+            .pending_playlist_confirmation()
+            .expect("sensitive URL должен ждать typed decision");
+        assert_eq!(runtime.playlist_interaction_model().url_text, sensitive);
+        assert!(!format!("{confirmation:?}").contains("token=secret"));
+
+        assert!(runtime.submit_playlist_url_draft());
+        let stale_outcome = runtime.respond_to_playlist_confirmation(PlaylistConfirmationAction {
+            intent_id: confirmation.intent_id(),
+            decision: QueueReplacementConfirmationDecision::Confirm,
+        });
+        runtime.finish_url_draft_after_confirmation(&stale_outcome);
+        assert_eq!(runtime.playlist_interaction_model().url_text, sensitive);
+
+        let current_confirmation = runtime
+            .pending_playlist_confirmation()
+            .expect("новый exact intent должен остаться pending");
+        let outcome = runtime.respond_to_playlist_confirmation(PlaylistConfirmationAction {
+            intent_id: current_confirmation.intent_id(),
+            decision: QueueReplacementConfirmationDecision::Confirm,
+        });
+        runtime.finish_url_draft_after_confirmation(&outcome);
+
+        let finished = runtime.playlist_interaction_model();
+        assert!(!finished.url_editor_open);
+        assert!(finished.url_text.is_empty());
+        assert_eq!(runtime.controller.queue().len(), 1);
+    }
+
+    #[test]
     fn shutdown_is_bounded_idempotent_and_closes_admission() {
         let mut runtime = runtime();
         let ports = runtime.owner_ports();
@@ -934,6 +1005,7 @@ mod tests {
         let ports = runtime.owner_ports();
         let report = PlaylistShutdownReport {
             media_open: ProcessOwnerShutdownOutcome::TimedOut { pending_threads: 1 },
+            ui_interaction: ProcessOwnerShutdownOutcome::Completed,
             startup: startup::PlaylistStartupShutdownOutcome::Completed,
             persistence: persistence::PlaylistPersistenceShutdownOutcome::CompletedWithoutWorker {
                 save_block: None,

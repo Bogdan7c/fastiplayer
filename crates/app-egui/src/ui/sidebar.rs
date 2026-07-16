@@ -19,6 +19,7 @@ pub(crate) struct SidebarRenderContext<'a> {
     pub(crate) model: &'a SettingsUiModel,
     pub(crate) snapshot: &'a player_core::PlayerSnapshot,
     pub(crate) playlist_model: Option<&'a crate::playlist_runtime::PlaylistViewModel>,
+    pub(crate) playlist_interaction: &'a crate::playlist_runtime::PlaylistInteractionModel,
     pub(crate) playlist_state: &'a mut playlist::PlaylistUiState,
     pub(crate) playlist_output: &'a mut playlist::PlaylistUiOutput,
     pub(crate) settings_actions: &'a mut Vec<SettingsUiAction>,
@@ -187,6 +188,7 @@ fn render_section(ui: &mut Ui, section: SidebarSection, context: &mut SidebarRen
             playlist::show(
                 ui,
                 context.playlist_model,
+                context.playlist_interaction,
                 context.playlist_state,
                 context.playlist_output,
             );

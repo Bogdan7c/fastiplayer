@@ -469,6 +469,12 @@ impl PlaylistController {
         self.stop_after_current
     }
 
+    /// D56 accessibility hint не раскрывает UI внутренний cursor/hold.
+    pub(crate) fn awaiting_manual_navigation_failure_origin_ended(&self) -> bool {
+        self.manual_navigation_cursor
+            .awaiting_failure_origin_ended()
+    }
+
     fn upsert_runtime_error(
         &mut self,
         item_id: PlaylistItemId,

@@ -20,6 +20,9 @@ pub(crate) use action_jobs::{
     ManualAddJobId, ManualAddStartError, PlaylistDiscoveryJobsReadModel,
     VisibleRefreshRequestOutcome,
 };
+pub(crate) use metadata_sort::{
+    MetadataSortCancelOutcome, MetadataSortJobId, MetadataSortPhase, MetadataSortTerminalOutcome,
+};
 
 #[allow(unused_imports)]
 pub(crate) use navigation::{PlaylistDiscoveryNavigationAction, PlaylistDiscoveryNavigationStatus};

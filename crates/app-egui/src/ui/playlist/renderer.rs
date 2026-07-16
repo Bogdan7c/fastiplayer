@@ -25,7 +25,14 @@ pub(super) fn show_rows(
     }
 
     let row_pitch = ROW_HEIGHT + ui.spacing().item_spacing.y;
-    let anchored_offset = anchored_scroll_offset(model, state, row_pitch);
+    let go_current_item = match state.take_go_current() {
+        Some(crate::playlist_runtime::PlaylistGoCurrentTarget::Row(item_id)) => Some(item_id),
+        Some(crate::playlist_runtime::PlaylistGoCurrentTarget::Tombstone) | None => None,
+    };
+    let anchored_offset = go_current_item
+        .and_then(|item_id| model.row_index(item_id))
+        .map(|index| index as f32 * row_pitch)
+        .or_else(|| anchored_scroll_offset(model, state, row_pitch));
     let mut scroll_area = egui::ScrollArea::vertical()
         .id_salt("playlist_rows_scroll")
         .auto_shrink([false, false]);
@@ -42,7 +49,12 @@ pub(super) fn show_rows(
             let visible_rows = model.visible_rows(visible_range.clone());
             for (visible_offset, row) in visible_rows.iter().enumerate() {
                 output.record_visible(row.item_id());
-                render_row(rows_ui, visible_range.start + visible_offset, row);
+                render_row(
+                    rows_ui,
+                    visible_range.start + visible_offset,
+                    row,
+                    go_current_item == Some(row.item_id()),
+                );
             }
         },
     );
@@ -83,12 +95,19 @@ fn update_viewport_anchor(
     });
 }
 
-fn render_row(ui: &mut egui::Ui, row_index: usize, row: &PlaylistVisibleRow) {
+fn render_row(
+    ui: &mut egui::Ui,
+    row_index: usize,
+    row: &PlaylistVisibleRow,
+    focus_requested: bool,
+) {
     let item_id_value = row.item_id().expose_value_for_persistence();
     ui.push_id(("playlist_row", item_id_value), |ui| {
         let available_width = ui.available_width().max(1.0);
-        let (row_rect, response) =
-            ui.allocate_exact_size(egui::vec2(available_width, ROW_HEIGHT), Sense::hover());
+        let (row_rect, response) = ui.allocate_exact_size(
+            egui::vec2(available_width, ROW_HEIGHT),
+            Sense::focusable_noninteractive(),
+        );
         let row_fill = row_fill(ui, row);
         let row_stroke = if row.is_active() {
             ui.visuals().widgets.active.fg_stroke
@@ -111,6 +130,10 @@ fn render_row(ui: &mut egui::Ui, row_index: usize, row: &PlaylistVisibleRow) {
         response.widget_info(|| {
             WidgetInfo::labeled(WidgetType::Label, ui.is_enabled(), &accessibility_text)
         });
+        if focus_requested {
+            response.scroll_to_me(Some(Align::Center));
+            response.request_focus();
+        }
         response.on_hover_ui(|ui| show_safe_tooltip(ui, row));
     });
 }

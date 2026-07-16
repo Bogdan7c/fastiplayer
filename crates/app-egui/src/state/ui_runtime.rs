@@ -145,7 +145,7 @@ impl AppState {
         frame_context,
         egui_input,
         settings_ui_model,
-        queue_replacement_confirmation
+        playlist_models
     ))]
     pub fn render_ui(
         &mut self,
@@ -153,10 +153,7 @@ impl AppState {
         egui_input: egui::RawInput,
         frame_context: &AppFrameContext,
         settings_ui_model: &SettingsUiModel,
-        queue_replacement_confirmation: Option<
-            &crate::playlist_runtime::PendingQueueReplacementConfirmation,
-        >,
-        playlist_transport: &crate::playlist_runtime::PlaylistTransportUiModel,
+        playlist_models: PlaylistUiFrameModels<'_>,
     ) -> RenderedAppUi {
         let render_ui_started_at = Instant::now();
 
@@ -210,7 +207,7 @@ impl AppState {
         let mut settings_actions = Vec::new();
         let mut sidebar_close_requested = false;
         let mut window_chrome_actions = Vec::new();
-        let mut queue_replacement_confirmation_action = None;
+        let mut playlist_confirmation_action = None;
         let playlist_view_model = self.playlist_view_model();
         let playlist_runtime_binding = self.playlist_runtime_binding();
         let mut playlist_ui_state = std::mem::take(&mut self.playlist_ui_state);
@@ -288,7 +285,7 @@ impl AppState {
                     skin: &selected_skin,
                     is_window_fullscreen: window_is_fullscreen,
                     live_scrub_enabled: self.committed_config_snapshot.live_scrub_enabled(),
-                    playlist_transport,
+                    playlist_transport: playlist_models.transport,
                 },
             );
             bottom_controls_elapsed = stage_started_at.elapsed();
@@ -302,6 +299,7 @@ impl AppState {
                     model: settings_ui_model,
                     snapshot: player_snapshot,
                     playlist_model: playlist_view_model.as_ref(),
+                    playlist_interaction: playlist_models.interaction,
                     playlist_state: &mut playlist_ui_state,
                     playlist_output: &mut playlist_ui_output,
                     settings_actions: &mut settings_actions,
@@ -324,12 +322,12 @@ impl AppState {
             }
 
             let stage_started_at = Instant::now();
-            queue_replacement_confirmation_action = Self::render_center_overlay(
+            playlist_confirmation_action = Self::render_center_overlay(
                 ui,
                 is_playing,
                 error_message,
                 pending_message,
-                queue_replacement_confirmation,
+                playlist_models.confirmation,
                 &selected_skin,
                 animation_state,
             );
@@ -358,7 +356,8 @@ impl AppState {
             settings_actions,
             transport_actions,
             window_chrome_actions,
-            queue_replacement_confirmation_action,
+            playlist_confirmation_action,
+            playlist_actions: playlist_ui_output.take_actions(),
             playlist_visible_items_hint: playlist_runtime_binding
                 .and_then(|binding| playlist_ui_output.into_visible_hint(binding)),
             video_viewport_rect,
@@ -722,12 +721,10 @@ impl AppState {
         is_playing: bool,
         error_message: Option<&str>,
         pending_message: Option<&str>,
-        queue_replacement_confirmation: Option<
-            &crate::playlist_runtime::PendingQueueReplacementConfirmation,
-        >,
+        playlist_confirmation: Option<&crate::playlist_runtime::PendingPlaylistConfirmation>,
         skin: &impl PlayerSkin,
         animation_state: AnimationState,
-    ) -> Option<crate::playlist_runtime::QueueReplacementConfirmationAction> {
+    ) -> Option<crate::playlist_runtime::PlaylistConfirmationAction> {
         let mut confirmation_action = None;
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -737,7 +734,7 @@ impl AppState {
                         .video_dim_overlay(ui.max_rect(), dim_color);
                 }
 
-                if let Some(model) = queue_replacement_confirmation {
+                if let Some(model) = playlist_confirmation {
                     confirmation_action =
                         crate::ui::queue_replacement_confirmation::render(ui, model);
                 } else if let Some(error) = error_message {

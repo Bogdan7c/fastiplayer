@@ -6,11 +6,11 @@
 use player_core::MediaInstallRequestId;
 use playlist_core::PlaylistLocator;
 
-use super::controller::ManualNavigationFailureOutcome;
 use super::controller::{
     AutomaticLifecycleOutcome, ControllerStableIntentDispatch, PlannedPlaylistInstall,
     PlaylistInstallRequest,
 };
+use super::controller::{ManualNavigationCancelOutcome, ManualNavigationFailureOutcome};
 use super::discovery::PlaylistDiscoveryNavigationStatus;
 use super::identity::TransportActionOrigin;
 use super::{PlaylistMediaOpenGateError, PlaylistRuntime};
@@ -177,6 +177,36 @@ impl PlaylistRuntime {
         };
         self.discovery.synchronize_navigation_interest(controller);
         outcome
+    }
+
+    /// Один UI intent маршрутизируется либо в D55 cursor Cancel, либо в D50 wait Cancel.
+    pub(crate) fn cancel_playlist_navigation_from_ui(&mut self) -> bool {
+        if self.controller.as_ref().is_some_and(|controller| {
+            controller
+                .view_snapshot()
+                .awaiting_user_after_navigation_failure()
+        }) {
+            let Some(controller) = self.controller.as_mut() else {
+                return false;
+            };
+            let outcome = controller.cancel_manual_navigation();
+            self.discovery.synchronize_navigation_interest(controller);
+            return match outcome {
+                ManualNavigationCancelOutcome::NoManualNavigation => false,
+                ManualNavigationCancelOutcome::Fatal(_) => {
+                    self.set_playlist_safe_feedback("Не удалось отменить переход");
+                    true
+                }
+                ManualNavigationCancelOutcome::Discarded(_)
+                | ManualNavigationCancelOutcome::CancelPending { .. }
+                | ManualNavigationCancelOutcome::AwaitAuthorizationResolution { .. }
+                | ManualNavigationCancelOutcome::AwaitInstalled { .. } => true,
+            };
+        }
+        !matches!(
+            self.cancel_global_playlist_navigation_wait(),
+            PlaylistTransportCancelOutcome::NoPendingWait
+        )
     }
 }
 

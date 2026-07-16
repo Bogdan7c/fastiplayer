@@ -1,24 +1,37 @@
-//! Содержимое D79 confirmation внутри общего central overlay host-а.
+//! Generalized D15+D79 confirmation внутри общего central overlay host-а.
 
 use crate::playlist_runtime::{
-    PendingQueueReplacementConfirmation, QueueReplacementConfirmationAction,
-    QueueReplacementConfirmationDecision,
+    PendingPlaylistConfirmation, PlaylistConfirmationAction, QueueReplacementConfirmationDecision,
 };
 
 /// Рендерит safe immutable model и возвращает не более одного typed action за кадр.
 pub(crate) fn render(
     ui: &mut egui::Ui,
-    model: &PendingQueueReplacementConfirmation,
-) -> Option<QueueReplacementConfirmationAction> {
+    model: &PendingPlaylistConfirmation,
+) -> Option<PlaylistConfirmationAction> {
     let mut action = None;
     ui.vertical_centered(|ui| {
         ui.add_space(40.0);
         egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.heading("Заменить текущую очередь?");
-            ui.label(format!(
-                "Открыть «{}» и заменить непустую очередь?",
-                model.safe_label()
-            ));
+            let reasons = model.reasons();
+            ui.heading(
+                if reasons.queue_replacement() && reasons.sensitive_url_persistence() {
+                    "Подтвердить открытие и сохранение?"
+                } else if reasons.queue_replacement() {
+                    "Заменить текущую очередь?"
+                } else {
+                    "Сохранить URL в плейлисте?"
+                },
+            );
+            if reasons.queue_replacement() {
+                ui.label(format!(
+                    "Открыть «{}» и заменить непустую очередь?",
+                    model.safe_label()
+                ));
+            }
+            if reasons.sensitive_url_persistence() {
+                ui.label("URL содержит чувствительные параметры. Сохранить его в playlist-state?");
+            }
             ui.horizontal(|ui| {
                 if ui.button("Отмена").clicked() {
                     action = Some(action_for(
@@ -26,7 +39,7 @@ pub(crate) fn render(
                         QueueReplacementConfirmationDecision::Cancel,
                     ));
                 }
-                if ui.button("Заменить и открыть").clicked() {
+                if ui.button("Подтвердить").clicked() {
                     action = Some(action_for(
                         model,
                         QueueReplacementConfirmationDecision::Confirm,
@@ -39,10 +52,10 @@ pub(crate) fn render(
 }
 
 fn action_for(
-    model: &PendingQueueReplacementConfirmation,
+    model: &PendingPlaylistConfirmation,
     decision: QueueReplacementConfirmationDecision,
-) -> QueueReplacementConfirmationAction {
-    QueueReplacementConfirmationAction {
+) -> PlaylistConfirmationAction {
+    PlaylistConfirmationAction {
         intent_id: model.intent_id(),
         decision,
     }

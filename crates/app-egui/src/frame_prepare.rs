@@ -1129,7 +1129,8 @@ pub(crate) fn render_frame(
         let playlist_view_model = playlist_runtime.playlist_view_model();
         let _model_was_applied = app_state.update_playlist_view_model(binding, playlist_view_model);
     }
-    let queue_replacement_confirmation = playlist_runtime.pending_queue_replacement_confirmation();
+    let playlist_confirmation = playlist_runtime.pending_playlist_confirmation();
+    let playlist_interaction = playlist_runtime.playlist_interaction_model();
     let transport_model = playlist_runtime.playlist_transport_ui_model(
         frame_context.player_snapshot().current_position,
         Instant::now(),
@@ -1140,17 +1141,19 @@ pub(crate) fn render_frame(
         settings_runtime,
         egui_input,
         &frame_context,
-        queue_replacement_confirmation.as_ref(),
-        &transport_model,
+        crate::state::PlaylistUiFrameModels {
+            confirmation: playlist_confirmation.as_ref(),
+            interaction: &playlist_interaction,
+            transport: &transport_model,
+        },
     );
     frame_sequence.reached(FrameSequenceStage::EguiOutput);
     let egui_requested_repaint = prepared_ui_frame.requested_repaint;
     let settings_actions = std::mem::take(&mut prepared_ui_frame.settings_actions);
     let transport_actions = std::mem::take(&mut prepared_ui_frame.transport_actions);
     let window_chrome_actions = std::mem::take(&mut prepared_ui_frame.window_chrome_actions);
-    let queue_replacement_confirmation_action = prepared_ui_frame
-        .queue_replacement_confirmation_action
-        .take();
+    let playlist_confirmation_action = prepared_ui_frame.playlist_confirmation_action.take();
+    let playlist_actions = std::mem::take(&mut prepared_ui_frame.playlist_actions);
     let playlist_visible_items_hint = prepared_ui_frame.playlist_visible_items_hint.take();
     let mut ui_prepare_timings = prepared_ui_frame.timings;
     ui_prepare_timings.total = stage_started_at.elapsed();
@@ -1186,9 +1189,15 @@ pub(crate) fn render_frame(
     let chrome_close_requested = apply_window_chrome_actions(window, window_chrome_actions);
     renderer_lifecycle.set_surface_event_pending(false);
 
-    if let Some(action) = queue_replacement_confirmation_action {
-        app_state.apply_queue_replacement_confirmation_action(action, playlist_runtime);
+    if let Some(action) = playlist_confirmation_action {
+        app_state.apply_playlist_confirmation_action(action, playlist_runtime);
     }
+    let playlist_action_requested_repaint = crate::playlist_action_runtime::apply_playlist_actions(
+        window,
+        app_state,
+        playlist_runtime,
+        playlist_actions,
+    );
     if let Some(hint) = playlist_visible_items_hint
         && playlist_runtime.validate_binding(hint.binding()).is_ok()
     {
@@ -1276,7 +1285,8 @@ pub(crate) fn render_frame(
             app_state.wants_continuous_redraw(),
             app_state.take_pending_worker_redraw()
                 || egui_requested_repaint
-                || settings_action_requested_repaint,
+                || settings_action_requested_repaint
+                || playlist_action_requested_repaint,
         ),
         close_requested: chrome_close_requested,
         next_ui_wake_deadline: transport_model.next_wake_deadline,

@@ -15,6 +15,7 @@ mod frame_prepare;
 mod local_file_open;
 mod local_media;
 mod media_open;
+mod playlist_action_runtime;
 mod playlist_runtime;
 mod process_shutdown;
 mod redraw_pacing;

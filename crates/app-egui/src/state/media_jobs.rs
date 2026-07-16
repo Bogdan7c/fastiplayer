@@ -295,20 +295,26 @@ impl AppState {
     }
 
     /// Применяет typed Confirm/Cancel после egui closure, не сохраняя intent в `AppState`.
-    pub(crate) fn apply_queue_replacement_confirmation_action(
+    pub(crate) fn apply_playlist_confirmation_action(
         &mut self,
-        action: crate::playlist_runtime::QueueReplacementConfirmationAction,
+        action: crate::playlist_runtime::PlaylistConfirmationAction,
         playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
     ) {
-        match playlist_runtime.respond_to_queue_replacement_confirmation(action) {
-            crate::playlist_runtime::QueueReplacementConfirmationOutcome::Confirmed(intent) => {
+        let outcome = playlist_runtime.respond_to_playlist_confirmation(action);
+        playlist_runtime.finish_url_draft_after_confirmation(&outcome);
+        match outcome {
+            crate::playlist_runtime::PlaylistConfirmationApplyOutcome::QueueReplacementConfirmed(intent) => {
                 self.start_admitted_queue_replacement(intent);
             }
-            crate::playlist_runtime::QueueReplacementConfirmationOutcome::Cancelled => {
+            crate::playlist_runtime::PlaylistConfirmationApplyOutcome::Cancelled
+            | crate::playlist_runtime::PlaylistConfirmationApplyOutcome::UrlAppended { .. }
+            | crate::playlist_runtime::PlaylistConfirmationApplyOutcome::UrlNoCapacity
+            | crate::playlist_runtime::PlaylistConfirmationApplyOutcome::DeferredUntilStartupInstallResolution
+            | crate::playlist_runtime::PlaylistConfirmationApplyOutcome::CommitRejected => {
                 self.mark_pending_worker_redraw();
             }
-            crate::playlist_runtime::QueueReplacementConfirmationOutcome::Stale => {
-                debug!("Stale queue replacement confirmation response проигнорирован");
+            crate::playlist_runtime::PlaylistConfirmationApplyOutcome::Stale => {
+                debug!("Stale playlist confirmation response проигнорирован");
             }
         }
     }

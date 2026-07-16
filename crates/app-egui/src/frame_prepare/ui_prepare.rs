@@ -21,8 +21,9 @@ pub(super) struct PreparedUiFrame {
     pub(super) settings_actions: Vec<crate::settings_ui::SettingsUiAction>,
     pub(super) transport_actions: Vec<crate::ui::player_controls::TransportControlAction>,
     pub(super) window_chrome_actions: Vec<WindowChromeAction>,
-    pub(super) queue_replacement_confirmation_action:
-        Option<crate::playlist_runtime::QueueReplacementConfirmationAction>,
+    pub(super) playlist_confirmation_action:
+        Option<crate::playlist_runtime::PlaylistConfirmationAction>,
+    pub(super) playlist_actions: Vec<crate::ui::playlist::PlaylistAction>,
     pub(super) playlist_visible_items_hint: Option<crate::ui::playlist::PlaylistVisibleItemsHint>,
     pub(super) timings: UiPrepareTimings,
 }
@@ -45,10 +46,7 @@ pub(super) fn prepare_ui_frame(
     settings_runtime: &mut SettingsRuntime,
     egui_input: egui::RawInput,
     frame_context: &AppFrameContext,
-    queue_replacement_confirmation: Option<
-        &crate::playlist_runtime::PendingQueueReplacementConfirmation,
-    >,
-    playlist_transport: &crate::playlist_runtime::PlaylistTransportUiModel,
+    playlist_models: crate::state::PlaylistUiFrameModels<'_>,
 ) -> PreparedUiFrame {
     let ui_prepare_started_at = Instant::now();
     settings_runtime.poll_dynamic_options_refresh();
@@ -64,15 +62,15 @@ pub(super) fn prepare_ui_frame(
         egui_input,
         frame_context,
         settings_ui_model,
-        queue_replacement_confirmation,
-        playlist_transport,
+        playlist_models,
     );
     let crate::state::RenderedAppUi {
         full_output: egui_full_output,
         settings_actions,
         transport_actions,
         window_chrome_actions,
-        queue_replacement_confirmation_action,
+        playlist_confirmation_action,
+        playlist_actions,
         playlist_visible_items_hint,
         video_viewport_rect,
         video_exclusion_rects,
@@ -122,7 +120,8 @@ pub(super) fn prepare_ui_frame(
         settings_actions,
         transport_actions,
         window_chrome_actions,
-        queue_replacement_confirmation_action,
+        playlist_confirmation_action,
+        playlist_actions,
         playlist_visible_items_hint,
         timings: UiPrepareTimings {
             total: ui_prepare_started_at.elapsed(),

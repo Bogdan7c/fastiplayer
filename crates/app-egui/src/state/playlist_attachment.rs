@@ -42,4 +42,12 @@ impl AppState {
             .as_ref()
             .map(PlaylistAppStateAttachment::view_model)
     }
+
+    /// Сохраняет одноразовый D80 scroll/focus intent до следующего authoritative UI frame.
+    pub(crate) fn request_playlist_go_current(
+        &mut self,
+        target: crate::playlist_runtime::PlaylistGoCurrentTarget,
+    ) {
+        self.playlist_ui_state.request_go_current(target);
+    }
 }

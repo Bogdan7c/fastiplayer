@@ -10,10 +10,10 @@ use playlist_core::{
 
 use super::renderer::{ROW_HEIGHT, accessibility_text, anchored_scroll_offset, stable_row_id};
 use super::status::{navigation_message, save_message};
-use super::{PlaylistUiOutput, PlaylistUiState, ViewportAnchor};
+use super::{PlaylistAction, PlaylistUiOutput, PlaylistUiState, ViewportAnchor};
 use crate::playlist_runtime::{
-    PlaylistLoadingView, PlaylistNavigationView, PlaylistSaveView, PlaylistViewModel,
-    PlaylistVisibleRow, PlaylistVisibleRowTestFixture,
+    PlaylistInteractionModel, PlaylistLoadingView, PlaylistNavigationView, PlaylistSaveView,
+    PlaylistViewModel, PlaylistVisibleRow, PlaylistVisibleRowTestFixture,
 };
 
 fn draft(index: usize) -> PlaylistItemDraft {
@@ -103,6 +103,19 @@ fn repeated_visual_copies_deduplicate_and_bound_visible_hint() {
 }
 
 #[test]
+fn typed_toolbar_actions_keep_render_order_until_post_render_drain() {
+    let mut output = PlaylistUiOutput::default();
+    output.push_action(PlaylistAction::AddFiles);
+    output.push_action(PlaylistAction::OpenUrlEditor);
+
+    assert_eq!(
+        output.take_actions(),
+        vec![PlaylistAction::AddFiles, PlaylistAction::OpenUrlEditor]
+    );
+    assert!(output.take_actions().is_empty());
+}
+
+#[test]
 fn disabled_animation_copy_does_not_replace_viewport_or_publish_hint() {
     let queue = queue(100);
     let model = model(&queue, 4);
@@ -113,18 +126,25 @@ fn disabled_animation_copy_does_not_replace_viewport_or_publish_hint() {
             intra_row_offset: 6.0,
         }),
         observed_structural_revision: Some(model.structural_revision()),
+        go_current: None,
     };
     let mut output = PlaylistUiOutput::default();
+    let interaction = PlaylistInteractionModel {
+        url_editor_open: true,
+        url_request_focus: true,
+        ..PlaylistInteractionModel::default()
+    };
 
     egui::__run_test_ui(|ui| {
         ui.disable();
         ui.set_width(420.0);
         ui.set_max_height(180.0);
-        super::show(ui, Some(&model), &mut state, &mut output);
+        super::show(ui, Some(&model), &interaction, &mut state, &mut output);
     });
 
     assert_eq!(state.viewport_anchor.unwrap().item_id, top_item_id);
     assert!(output.visible_item_ids.is_empty());
+    assert!(output.actions.is_empty());
 }
 
 #[test]
@@ -167,6 +187,7 @@ fn insertion_before_inside_or_after_viewport_preserves_top_item_and_offset() {
                 intra_row_offset: 7.5,
             }),
             observed_structural_revision: Some(before.structural_revision()),
+            go_current: None,
         };
         let inserted_item_id = match queue.append_one(draft(100)).expect("append") {
             playlist_core::AddItemsOutcome::Added(item_ids) => item_ids.as_slice()[0],
@@ -210,6 +231,7 @@ fn active_only_revision_never_requests_hidden_scroll() {
             intra_row_offset: 4.0,
         }),
         observed_structural_revision: Some(model.structural_revision()),
+        go_current: None,
     };
 
     assert_eq!(anchored_scroll_offset(&model, &mut state, 42.0), None);

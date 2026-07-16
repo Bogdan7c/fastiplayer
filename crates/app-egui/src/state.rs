@@ -137,6 +137,16 @@ pub(crate) struct AppUiRenderTimings {
     pub(crate) telemetry_panel_visible: bool,
 }
 
+/// Согласованные Playlist snapshots одного egui frame-а.
+pub(crate) struct PlaylistUiFrameModels<'a> {
+    /// Единственная process-lifetime confirmation entity текущего кадра.
+    pub(crate) confirmation: Option<&'a crate::playlist_runtime::PendingPlaylistConfirmation>,
+    /// Immutable toolbar/forms/progress snapshot authoritative runtime-а.
+    pub(crate) interaction: &'a crate::playlist_runtime::PlaylistInteractionModel,
+    /// Global transport controls используют согласованный snapshot того же кадра.
+    pub(crate) transport: &'a crate::playlist_runtime::PlaylistTransportUiModel,
+}
+
 /// Результат app-owned UI подготовки до platform output и tessellation.
 pub(crate) struct RenderedAppUi {
     /// Полный output egui за текущий кадр.
@@ -152,8 +162,11 @@ pub(crate) struct RenderedAppUi {
     pub(crate) window_chrome_actions: Vec<WindowChromeAction>,
 
     /// Typed response central confirmation entity; authoritative intent остаётся в runtime.
-    pub(crate) queue_replacement_confirmation_action:
-        Option<crate::playlist_runtime::QueueReplacementConfirmationAction>,
+    pub(crate) playlist_confirmation_action:
+        Option<crate::playlist_runtime::PlaylistConfirmationAction>,
+
+    /// Playlist toolbar/form actions применяются shell-ом после egui closure.
+    pub(crate) playlist_actions: Vec<crate::ui::playlist::PlaylistAction>,
 
     /// Bounded read-only visibility hint для demand metadata refresh.
     pub(crate) playlist_visible_items_hint: Option<crate::ui::playlist::PlaylistVisibleItemsHint>,

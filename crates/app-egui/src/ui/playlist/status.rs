@@ -1,5 +1,6 @@
 //! Privacy-safe read-only status formatting для Playlist sidebar.
 
+use super::PlaylistUiState;
 use crate::playlist_runtime::{
     PlaylistLoadingView, PlaylistNavigationView, PlaylistProbeView, PlaylistSaveView,
     PlaylistStartupWarningView, PlaylistViewModel,
@@ -9,14 +10,25 @@ pub(super) fn show_unavailable(ui: &mut egui::Ui) {
     ui.label("Плейлист ещё подключается…");
 }
 
-pub(super) fn show_summary(ui: &mut egui::Ui, model: &PlaylistViewModel) {
+pub(super) fn show_summary(
+    ui: &mut egui::Ui,
+    model: &PlaylistViewModel,
+    state: &mut PlaylistUiState,
+) {
     ui.horizontal(|ui| {
         ui.strong("Очередь");
         ui.label(format!("{} элементов", model.item_count()));
     });
 
     if model.has_active_tombstone() {
-        ui.label(egui::RichText::new("Сейчас играет — удалено из очереди").strong());
+        let response = ui.add(
+            egui::Label::new(egui::RichText::new("Сейчас играет — удалено из очереди").strong())
+                .sense(egui::Sense::focusable_noninteractive()),
+        );
+        if state.take_tombstone_request() {
+            response.scroll_to_me(Some(egui::Align::Center));
+            response.request_focus();
+        }
     }
     if matches!(model.loading(), PlaylistLoadingView::Loading) {
         ui.horizontal(|ui| {

@@ -39,6 +39,23 @@ impl PlaylistRuntime {
         self.discovery.cancel_manual_add(job_id)
     }
 
+    /// Inline progress не хранит очередь job IDs и отменяет только Manual Add owner scope.
+    pub(crate) fn cancel_all_manual_file_adds(&mut self) -> bool {
+        self.discovery.action_jobs.cancel_all_manual_adds()
+    }
+
+    /// D27 отменяет sibling scan и связанный wait, но не откатывает committed batches.
+    pub(crate) fn cancel_sibling_discovery_from_ui(&mut self) -> bool {
+        let active = !matches!(
+            self.discovery.status(),
+            super::PlaylistDiscoveryStatus::Idle
+        );
+        let _ = self.cancel_global_playlist_navigation_wait();
+        self.discovery
+            .cancel_active(DiscoveryCancellationCause::UserCancelled);
+        active
+    }
+
     /// D31 принимает только committed native-local rows; URL visibility не создаёт network I/O.
     #[allow(
         dead_code,

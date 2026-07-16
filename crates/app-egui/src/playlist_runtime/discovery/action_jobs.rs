@@ -195,6 +195,15 @@ impl DiscoveryActionJobs {
             .is_some_and(|job| job.handle.cancel(DiscoveryCancellationCause::UserCancelled))
     }
 
+    /// UI cancel относится ко всем ещё не committed Manual Add batches.
+    pub(super) fn cancel_all_manual_adds(&mut self) -> bool {
+        let mut changed = false;
+        for job in &mut self.manual_jobs {
+            changed |= job.handle.cancel(DiscoveryCancellationCause::UserCancelled);
+        }
+        changed
+    }
+
     pub(super) fn request_visible_refresh(
         &mut self,
         demands: Vec<VisibleRefreshDemand>,

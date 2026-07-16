@@ -195,6 +195,14 @@ impl ManualNavigationCursor {
             .or_else(|| self.prepared_context.as_ref().map(|context| context.origin))
     }
 
+    /// UI читает только accessibility-факт D56, не outcome policy/correlation поля.
+    pub(super) fn awaiting_failure_origin_ended(&self) -> bool {
+        self.is_awaiting_user_after_failure()
+            && self.preview.as_ref().is_some_and(|cursor| {
+                cursor.context.origin_state == ManualNavigationOriginState::Ended
+            })
+    }
+
     pub(super) fn continue_in_direction(
         &mut self,
         queue: &PlaylistQueue,
