@@ -172,13 +172,17 @@ impl StartupMutationDraft {
     }
 
     /// Latest repeat choice coalesce-ится и не supersede-ит restored items.
-    pub(crate) fn set_repeat_mode(&mut self, repeat_mode: RepeatMode) {
+    pub(crate) fn set_repeat_mode(&mut self, repeat_mode: RepeatMode) -> bool {
+        let changed = self.desired_modes.repeat_mode != Some(repeat_mode);
         self.desired_modes.repeat_mode = Some(repeat_mode);
+        changed
     }
 
     /// Latest shuffle choice coalesce-ится и не supersede-ит restored items.
-    pub(crate) fn set_shuffle_enabled(&mut self, shuffle_enabled: bool) {
+    pub(crate) fn set_shuffle_enabled(&mut self, shuffle_enabled: bool) -> bool {
+        let changed = self.desired_modes.shuffle_enabled != Some(shuffle_enabled);
         self.desired_modes.shuffle_enabled = Some(shuffle_enabled);
+        changed
     }
 
     fn supersede_restore_items(&mut self) -> Result<(), StartupDraftError> {

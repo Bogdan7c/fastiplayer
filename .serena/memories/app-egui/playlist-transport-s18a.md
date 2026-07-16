@@ -9,3 +9,8 @@
 - D80 global status/Cancel и D46 Undo доступны независимо от sidebar. Undo countdown не использует `egui::request_repaint_after`: owner публикует exact deadline, `BackgroundPollScheduler` объединяет его с background deadline и делает один due redraw без idle spin.
 - Main review устранил overlap prototype Next с existing playback-rate button, добавил geometry regression, перевёл toggle на stable-intent owner и гарантировал D55 для любого pre-admission start failure; empty receipt polling больше не пишет debug каждый frame.
 - Проверки Session 18A: app no-default 540; focused player-controls 31/hotkey 6; desktop-integration 20; strict app clippy no-default/all-targets; fmt; Rust 1.96 locked workspace check; guardrails; diff check. Serena diagnostics чисты в 14 production files; `frame_prepare.rs`/`frame_prepare/ui_prepare.rs` сохранили stale call-site cache старых сигнатур, который опровергнут полным Cargo test, Clippy и workspace check. Handoff: `user/playlist_queue_implementation_plan.md`.
+
+
+## Session 18B continuation (2026-07-16)
+- UI/hotkey transport from 18A is unchanged. MPRIS now enters the same controller boundaries with origin `Mpris`, including D17/D50–D53 traversal, D58 Stop guard and controller-owned Stopped disposition.
+- Process-lifetime ownership, modes/volume/identity, MPRIS capability matrix and correlated seek are documented in `mem:app-egui/playlist-desktop-transport-s18b`.

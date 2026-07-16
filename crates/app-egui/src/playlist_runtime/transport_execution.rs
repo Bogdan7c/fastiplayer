@@ -25,6 +25,16 @@ pub(crate) enum PlaylistTransportCancelOutcome {
 }
 
 impl PlaylistRuntime {
+    /// Commit-ит app-level Stopped только после exact player owner success.
+    pub(crate) fn apply_neutral_stop_outcome(
+        &mut self,
+        outcome: &player_core::ExactMediaTransportOutcome,
+    ) -> bool {
+        self.controller
+            .as_mut()
+            .is_some_and(|controller| controller.apply_neutral_stop_outcome(outcome))
+    }
+
     /// Locator выдаётся только для exact queue revision/item из controller plan-а.
     pub(crate) fn locator_for_planned_install(
         &self,

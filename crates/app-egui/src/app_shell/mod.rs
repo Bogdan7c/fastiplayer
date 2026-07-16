@@ -46,8 +46,8 @@ use hotkeys::ShellHotkeyAction;
 use shutdown::{
     AppShellProcessLifecycle, AppShellShutdownReport, OwnerTerminalDisposition,
     PROCESS_TERMINAL_SHUTDOWN_BUDGET, TERMINAL_SHUTDOWN_TIMEOUT_EXIT_CODE,
-    TerminalEntryDisposition, aggregate_terminal_dispositions, desktop_integration_disposition,
-    player_disposition, process_owner_disposition, terminal_entry_disposition,
+    TerminalEntryDisposition, player_disposition, process_owner_disposition,
+    terminal_entry_disposition,
 };
 
 /// Применяет redraw только когда drain действительно изменил видимый state.
@@ -138,6 +138,12 @@ impl AppShell {
         let mut playlist_runtime = PlaylistRuntime::new_with_config(
             playlist_wake_port,
             settings_runtime.committed_config().playlist,
+        );
+        // Constructor доступен только после process bootstrap с acquired lease.
+        playlist_runtime.start_desktop_transport(
+            settings_runtime
+                .committed_snapshot()
+                .default_volume_for_new_media(),
         );
         playlist_runtime
             .begin_production_playlist_state_inspection(Arc::new(PlaylistStateStore::new(
@@ -251,6 +257,15 @@ impl AppShell {
         app_state.attach_playlist_runtime(playlist_attachment);
         self.playlist_runtime
             .attach_player_sender(app_state.player_command_sender());
+        if let Err(error) =
+            app_state
+                .player_command_sender()
+                .try_send(player_core::PlayerCommand::SetVolume(
+                    self.playlist_runtime.desktop_effective_volume().as_player(),
+                ))
+        {
+            tracing::warn!(error = %error, "Process-lifetime effective volume не принят новым player binding");
+        }
         let _resume_started = app_state.start_suspended_media_resume(&mut self.playlist_runtime);
 
         if let Some(transferred_job) = self.suspended_local_file_open_job.take() {
@@ -276,7 +291,8 @@ impl AppShell {
 
         // Shell явно разделяет обновление snapshot и публикацию в desktop integration.
         let player_snapshot = app_state.refresh_player_snapshot();
-        app_state.publish_desktop_snapshot(&player_snapshot);
+        self.playlist_runtime
+            .publish_desktop_snapshot(&player_snapshot);
 
         self.renderer = Some(renderer);
         self.app_state = Some(app_state);
@@ -329,6 +345,7 @@ impl AppShell {
         }
 
         self.playlist_runtime.suspend_app_state_binding();
+        self.playlist_runtime.publish_detached_desktop_snapshot();
         self.app_state = None;
         self.renderer = None;
     }
@@ -365,10 +382,14 @@ impl AppShell {
             self.suspended_local_file_open_job = app_state.take_local_file_open_job_for_suspend();
         }
 
-        let app_state_shutdown = self
+        // Внешний command admission закрывается до player owner-а; lease остаётся последним.
+        let desktop_integration = self
+            .playlist_runtime
+            .shutdown_desktop_transport_until(deadline);
+        let player = self
             .app_state
             .as_mut()
-            .map(|app_state| app_state.shutdown_process_owners_until(deadline));
+            .map(|app_state| app_state.shutdown_player_until(deadline));
         let local_file_open = self
             .suspended_local_file_open_job
             .as_mut()
@@ -391,10 +412,8 @@ impl AppShell {
             .shutdown_dynamic_options_until(deadline);
         let playlist = self.playlist_runtime.shutdown_until(deadline);
         let report = AppShellShutdownReport {
-            desktop_integration: app_state_shutdown
-                .as_ref()
-                .and_then(|outcome| outcome.desktop_integration),
-            player: app_state_shutdown.map(|outcome| outcome.player),
+            desktop_integration,
+            player,
             local_file_open,
             startup_media,
             settings,
@@ -429,29 +448,20 @@ impl AppShell {
 
     /// Bounded-завершает AppState, который ещё не был установлен в shell.
     fn shutdown_uninstalled_app_state_or_exit(app_state: &mut AppState) {
-        let report = app_state.shutdown_process_owners_until(ShutdownDeadline::after(
-            PROCESS_TERMINAL_SHUTDOWN_BUDGET,
-        ));
-        let disposition = aggregate_terminal_dispositions([
-            report.desktop_integration.map_or(
-                OwnerTerminalDisposition::Completed,
-                desktop_integration_disposition,
-            ),
-            player_disposition(report.player),
-        ]);
+        let player = app_state
+            .shutdown_player_until(ShutdownDeadline::after(PROCESS_TERMINAL_SHUTDOWN_BUDGET));
+        let disposition = player_disposition(player);
         match disposition {
             OwnerTerminalDisposition::ExitRequired => {
                 tracing::error!(
-                    desktop_integration = ?report.desktop_integration,
-                    player = ?report.player,
+                    ?player,
                     "AppState process owner не завершился после ошибки renderer construction"
                 );
                 std::process::exit(TERMINAL_SHUTDOWN_TIMEOUT_EXIT_CODE);
             }
             OwnerTerminalDisposition::Failed => {
                 tracing::warn!(
-                    desktop_integration = ?report.desktop_integration,
-                    player = ?report.player,
+                    ?player,
                     "AppState process owner завершился terminal failure после construction error"
                 );
             }
@@ -527,6 +537,22 @@ impl AppShell {
     /// Единая PlaylistRuntime wake точка применяет startup/save outcomes на UI thread.
     fn drain_playlist_persistence(&mut self) -> bool {
         self.playlist_runtime.drain_owner_mailbox();
+        let desktop_commands = self.playlist_runtime.drain_desktop_commands();
+        let desktop_changed = match (self.app_state.as_mut(), self.renderer.as_ref()) {
+            (Some(app_state), Some(renderer)) => {
+                let snapshot = app_state.refresh_player_snapshot();
+                let changed = crate::transport_runtime::apply_desktop_commands(
+                    app_state,
+                    &mut self.playlist_runtime,
+                    renderer,
+                    &snapshot,
+                    desktop_commands,
+                );
+                self.playlist_runtime.publish_desktop_snapshot(&snapshot);
+                changed
+            }
+            _ => false,
+        };
         let persistence_changed = match self.playlist_runtime.drain_playlist_persistence() {
             Ok(visible_change) => visible_change,
             Err(error) => {
@@ -550,7 +576,11 @@ impl AppShell {
             _ => false,
         };
         let _resume_status = self.playlist_runtime.suspended_media_status();
-        persistence_changed || discovery_changed || resume_changed || startup_changed
+        desktop_changed
+            || persistence_changed
+            || discovery_changed
+            || resume_changed
+            || startup_changed
     }
 }
 
@@ -701,7 +731,7 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
                     }
                     ShellHotkeyAction::Transport(action) => {
                         let snapshot = app_state.refresh_player_snapshot();
-                        app_state.publish_desktop_snapshot(&snapshot);
+                        self.playlist_runtime.publish_desktop_snapshot(&snapshot);
                         crate::transport_runtime::apply_transport_action(
                             app_state,
                             &mut self.playlist_runtime,
@@ -824,5 +854,20 @@ mod tests {
     fn visible_wake_requires_live_window() {
         assert!(should_request_redraw_for_wake(true, true));
         assert!(!should_request_redraw_for_wake(false, true));
+    }
+
+    #[test]
+    fn desktop_backend_start_is_inside_lease_owning_shell_constructor() {
+        let source = include_str!("mod.rs");
+        let lease_argument = source
+            .find("instance_lease: AppInstanceLease")
+            .expect("AppShell constructor requires an acquired lease");
+        let desktop_start = source
+            .find("playlist_runtime.start_desktop_transport(")
+            .expect("desktop backend starts from process shell");
+        let retained_lease = source
+            .find("_instance_lease: instance_lease")
+            .expect("process shell retains lease for its full lifetime");
+        assert!(lease_argument < desktop_start && desktop_start < retained_lease);
     }
 }

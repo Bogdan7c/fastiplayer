@@ -62,3 +62,4 @@ mod seek_regressions;
 mod seek_start;
 mod seek_trace;
 mod staged_media_install;
+mod timeline_seek;

@@ -38,3 +38,8 @@ Session 10A завершена PASS 2026-07-14. Детальный handoff на�
 
 ## Session 17 startup scheduling (2026-07-16)
 - Loading, prepared-awaiting-allocator и renderer-bound stepwise Applying входят в pending-work scheduler; startup poll не вызывает blocking strong install. Wake/defensive poll продвигают exact transaction при `ControlFlow::Wait`. Полный контракт: `mem:app-egui/startup-orchestration-s17`.
+
+
+## Session 18B desktop owner (2026-07-16)
+- Process-lifetime desktop command mailbox shares `AppWakeOwner::PlaylistRuntime`: bounded payload remains outside winit events, send uses the existing false→true wake edge, and UI-thread drain applies neutral MPRIS actions without a hidden playback queue during suspend/no-binding.
+- Desktop backend is now a process owner in `PlaylistRuntime/AppShell`; it starts only after D10e lease and shuts down before renderer-bound player. Details: `mem:app-egui/playlist-desktop-transport-s18b`.

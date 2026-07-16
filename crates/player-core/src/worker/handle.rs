@@ -328,4 +328,12 @@ impl PlayerWorker {
     ) -> Result<ExactMediaTransportReceipt, PlayerWorkerSendError> {
         self.command_sender.exact_media_transport(request)
     }
+
+    /// Ставит exact-instance timeline seek с terminal owner receipt-ом.
+    pub fn exact_timeline_seek(
+        &self,
+        request: ExactTimelineSeekRequest,
+    ) -> Result<ExactTimelineSeekReceipt, PlayerWorkerSendError> {
+        self.command_sender.exact_timeline_seek(request)
+    }
 }

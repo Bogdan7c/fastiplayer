@@ -10,6 +10,7 @@ mod exact_media_transport;
 mod installed_media_release;
 mod installed_state_restore;
 mod playback_intent;
+pub(crate) mod timeline_seek;
 
 pub use exact_media_transport::{
     ExactMediaTransportAction, ExactMediaTransportFailureStage, ExactMediaTransportOutcome,
@@ -30,6 +31,10 @@ pub(crate) use playback_intent::{AcceptedPlaybackIntent, PlaybackIntentControl};
 pub use playback_intent::{
     PlaybackIntent, PlaybackIntentRevision, PlaybackIntentUpdate, PlaybackIntentUpdateOutcome,
     PlaybackIntentUpdateReceipt,
+};
+pub use timeline_seek::{
+    ExactTimelineSeekOutcome, ExactTimelineSeekReceipt, ExactTimelineSeekReceiptError,
+    ExactTimelineSeekRequest, TimelineSeekKind, TimelineSeekRequestId,
 };
 
 use std::fmt;

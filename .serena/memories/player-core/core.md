@@ -126,3 +126,9 @@
 - Public `InstalledMediaRelease` targets exact `MediaInstallRequestId` + `MediaInstanceId`; its request-owned receipt distinguishes Applied, Absent, StaleInstance, Failed and MissingOwnerOutcome. Matching validation and media reset execute in one serialized owner turn, so stale cleanup cannot destroy newer media.
 - `InstalledMediaStateRestoreOutcome::PositionUnavailable` is the non-terminal typed outcome for `SourceNotSeekable` and carries requested/available positions. Other seek errors remain `Failed(Position)`; callers must not parse error strings.
 - App resume ordering and ownership: `mem:app-egui/suspend-resume-checkpoint-s14b`.
+
+
+## Session 18B exact timeline seek boundary (2026-07-16)
+- `player-core` exposes neutral `TimelineSeekRequestId`, `ExactTimelineSeekRequest`, request-owned receipt and typed terminal `ExactTimelineSeekOutcome` for app/MPRIS correlation; it contains no D-Bus/zbus types.
+- Admission checks exact `MediaInstanceId`, seekability and known range. SetPosition strict beyond-end -> InvalidRange; relative strict beyond-end -> BeyondEnd; equality is admitted. Matching seek commit alone yields Applied, while supersede/ordinary seek/timeout/instance replacement terminal-resolve without false Applied.
+- Focused tests: `crates/player-core/src/session/tests/timeline_seek.rs`. App/MPRIS routing contract: `mem:app-egui/playlist-desktop-transport-s18b`.

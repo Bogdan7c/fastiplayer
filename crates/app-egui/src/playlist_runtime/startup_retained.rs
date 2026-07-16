@@ -520,4 +520,98 @@ mod tests {
         );
         assert!(controller.dirty_revision() > dirty_before);
     }
+
+    #[test]
+    fn ready_mode_setters_mutate_empty_controller_once_and_noop_stays_clean() {
+        let mut runtime =
+            PlaylistRuntime::new(AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime));
+        runtime.resolve_missing_state_for_test();
+        let dirty_before = runtime
+            .playlist_controller()
+            .expect("ready controller")
+            .dirty_revision();
+
+        assert!(
+            runtime
+                .record_startup_repeat_mode(RepeatMode::RepeatOne)
+                .expect("set repeat one")
+        );
+        let dirty_after_repeat = runtime
+            .playlist_controller()
+            .expect("ready controller")
+            .dirty_revision();
+        assert!(dirty_after_repeat > dirty_before);
+        assert!(
+            !runtime
+                .record_startup_repeat_mode(RepeatMode::RepeatOne)
+                .expect("repeat no-op")
+        );
+        assert_eq!(
+            runtime
+                .playlist_controller()
+                .expect("ready controller")
+                .dirty_revision(),
+            dirty_after_repeat
+        );
+
+        assert!(
+            runtime
+                .record_startup_repeat_mode(RepeatMode::RepeatQueue)
+                .expect("set repeat queue")
+        );
+        assert!(
+            runtime
+                .record_startup_repeat_mode(RepeatMode::StopAtEnd)
+                .expect("set stop at end")
+        );
+        assert!(
+            runtime
+                .record_startup_shuffle_enabled(true)
+                .expect("enable shuffle")
+        );
+        let dirty_after_shuffle = runtime
+            .playlist_controller()
+            .expect("ready controller")
+            .dirty_revision();
+        assert!(
+            !runtime
+                .record_startup_shuffle_enabled(true)
+                .expect("shuffle no-op")
+        );
+        assert_eq!(
+            runtime
+                .playlist_controller()
+                .expect("ready controller")
+                .dirty_revision(),
+            dirty_after_shuffle
+        );
+    }
+
+    #[test]
+    fn pregate_mode_setters_coalesce_without_early_visible_mutation() {
+        let mut runtime =
+            PlaylistRuntime::new(AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime));
+
+        assert!(
+            !runtime
+                .record_startup_repeat_mode(RepeatMode::RepeatOne)
+                .expect("retain first repeat")
+        );
+        assert!(
+            !runtime
+                .record_startup_repeat_mode(RepeatMode::RepeatQueue)
+                .expect("coalesce repeat")
+        );
+        assert!(
+            !runtime
+                .record_startup_shuffle_enabled(true)
+                .expect("retain shuffle")
+        );
+        assert!(runtime.playlist_controller().is_none());
+
+        runtime.resolve_missing_state_for_test();
+        let controller = runtime.playlist_controller().expect("ready controller");
+        assert_eq!(controller.repeat_mode(), RepeatMode::RepeatQueue);
+        assert!(controller.queue().shuffle_enabled());
+    }
 }

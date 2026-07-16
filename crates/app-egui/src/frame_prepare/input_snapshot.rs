@@ -63,7 +63,6 @@ pub(super) fn prepare_frame_input(
     let frame_context_elapsed = stage_started_at.elapsed();
 
     let stage_started_at = Instant::now();
-    app_state.publish_desktop_snapshot(frame_context.player_snapshot());
     sequence.reached(FrameSequenceStage::DesktopPublish);
     let desktop_publish_elapsed = stage_started_at.elapsed();
 

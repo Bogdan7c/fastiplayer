@@ -1,313 +1,272 @@
-use std::sync::Arc;
-use std::time::Duration;
+use std::num::NonZeroU64;
 
-use media_core::{MediaDuration, MediaTime, TimelineRange};
-use player_core::{PlayerCommand, PlayerCommandSender, PlayerSnapshot, SeekRequest};
+use media_core::MediaTime;
 
-use crate::{DesktopIntegrationError, DesktopIntegrationResult};
+use crate::DesktopIntegrationResult;
 
-/// Stable MPRIS track id для single-current-track модели rustiplayer.
-pub const MPRIS_CURRENT_TRACK_ID: &str = "/org/mpris/MediaPlayer2/track/current";
+/// Нейтральный идентификатор desktop-команды, не связанный с D-Bus serial.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DesktopCommandRequestId(NonZeroU64);
 
-/// Sink команд, который скрывает конкретный worker sender от backend-а.
-pub trait DesktopCommandSink: Send + Sync + 'static {
-    /// Отправляет команду в player worker boundary.
-    fn send_desktop_command(&self, command: PlayerCommand) -> DesktopIntegrationResult<()>;
-}
+impl DesktopCommandRequestId {
+    /// Создаёт request id из app/backend-owned монотонного счётчика.
+    #[must_use]
+    pub const fn new(value: NonZeroU64) -> Self {
+        Self(value)
+    }
 
-impl DesktopCommandSink for PlayerCommandSender {
-    /// Адаптирует existing `PlayerCommandSender` без расширения `player-core`.
-    fn send_desktop_command(&self, command: PlayerCommand) -> DesktopIntegrationResult<()> {
-        self.try_send(command)
-            .map_err(|error| DesktopIntegrationError::CommandSendFailed(error.to_string()))
+    /// Возвращает непрозрачное числовое значение для correlation и тестов.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0.get()
     }
 }
 
-impl DesktopCommandSink for Arc<dyn DesktopCommandSink> {
-    /// Позволяет backend-ам хранить type-erased command sink.
-    fn send_desktop_command(&self, command: PlayerCommand) -> DesktopIntegrationResult<()> {
+/// Нейтральный request id timeline seek; `player-core` использует тот же смысл без D-Bus типов.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TimelineSeekRequestId(NonZeroU64);
+
+impl TimelineSeekRequestId {
+    /// Создаёт correlation id из монотонного desktop request id.
+    #[must_use]
+    pub const fn new(value: NonZeroU64) -> Self {
+        Self(value)
+    }
+
+    /// Возвращает непрозрачное числовое значение.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+/// Neutral terminal/preflight outcome без D-Bus и player error типов.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopTimelineSeekOutcome {
+    Applied {
+        request_id: TimelineSeekRequestId,
+        position: MediaTime,
+    },
+    InvalidRange {
+        request_id: TimelineSeekRequestId,
+    },
+    StaleTrack {
+        request_id: TimelineSeekRequestId,
+    },
+    StaleInstance {
+        request_id: TimelineSeekRequestId,
+    },
+    NotSeekable {
+        request_id: TimelineSeekRequestId,
+    },
+    Failed {
+        request_id: TimelineSeekRequestId,
+    },
+    BeyondEnd {
+        request_id: TimelineSeekRequestId,
+    },
+    ArithmeticOverflow {
+        request_id: TimelineSeekRequestId,
+    },
+}
+
+impl DesktopTimelineSeekOutcome {
+    #[must_use]
+    pub const fn request_id(self) -> TimelineSeekRequestId {
+        match self {
+            Self::Applied { request_id, .. }
+            | Self::InvalidRange { request_id }
+            | Self::StaleTrack { request_id }
+            | Self::StaleInstance { request_id }
+            | Self::NotSeekable { request_id }
+            | Self::Failed { request_id }
+            | Self::BeyondEnd { request_id }
+            | Self::ArithmeticOverflow { request_id } => request_id,
+        }
+    }
+}
+
+/// App-owned identity активного media без locator/title и без zbus типов.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DesktopTrackKey {
+    /// Установленный playlist item: lineage отличает новый allocator lifecycle.
+    PlaylistItem { lineage: u64, item_id: NonZeroU64 },
+
+    /// Установленное media вне committed playlist row.
+    ExternalMedia { lineage: u64 },
+}
+
+/// Три значения writable MPRIS `LoopStatus` в neutral vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopLoopStatus {
+    /// Не повторять после конца.
+    None,
+
+    /// Повторять текущий track.
+    Track,
+
+    /// Повторять очередь.
+    Playlist,
+}
+
+impl DesktopLoopStatus {
+    /// Возвращает точное spec spelling для Linux adapter-а.
+    #[must_use]
+    pub const fn as_mpris_str(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Track => "Track",
+            Self::Playlist => "Playlist",
+        }
+    }
+
+    /// Проверяет входной setter без передачи строки в app/controller.
+    #[must_use]
+    pub fn from_mpris_str(value: &str) -> Option<Self> {
+        match value {
+            "None" => Some(Self::None),
+            "Track" => Some(Self::Track),
+            "Playlist" => Some(Self::Playlist),
+            _ => None,
+        }
+    }
+}
+
+/// Нормализованная process-lifetime громкость приложения.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EffectiveVolume(f32);
+
+impl EffectiveVolume {
+    /// Нормализует MPRIS volume: negative -> 0, above-one -> 1, non-finite invalid.
+    pub fn from_mpris(value: f64) -> Result<Self, EffectiveVolumeError> {
+        if !value.is_finite() {
+            return Err(EffectiveVolumeError::NonFinite);
+        }
+        let normalized = value.clamp(0.0, 1.0);
+        let checked = normalized as f32;
+        if !checked.is_finite() {
+            return Err(EffectiveVolumeError::Conversion);
+        }
+        Ok(Self(checked))
+    }
+
+    /// Создаёт значение из уже валидированного app config/player representation.
+    pub fn from_player(value: f32) -> Result<Self, EffectiveVolumeError> {
+        if !value.is_finite() {
+            return Err(EffectiveVolumeError::NonFinite);
+        }
+        Ok(Self(value.clamp(0.0, 1.0)))
+    }
+
+    /// Возвращает значение для player boundary.
+    #[must_use]
+    pub const fn as_player(self) -> f32 {
+        self.0
+    }
+
+    /// Возвращает значение для MPRIS property.
+    #[must_use]
+    pub fn as_mpris(self) -> f64 {
+        f64::from(self.0)
+    }
+}
+
+/// Причина отказа checked volume normalization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectiveVolumeError {
+    /// NaN или бесконечность не имеют spec-safe effective value.
+    NonFinite,
+
+    /// Checked conversion в player representation не удалась.
+    Conversion,
+}
+
+/// Нейтральные desktop actions; playback policy исполняет только app UI thread.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DesktopTransportAction {
+    Play,
+    Pause,
+    PlayPause,
+    Stop,
+    Next,
+    Previous,
+    SetLoopStatus(DesktopLoopStatus),
+    SetShuffle(bool),
+    Seek {
+        request_id: TimelineSeekRequestId,
+        offset_microseconds: i64,
+    },
+    SetPosition {
+        request_id: TimelineSeekRequestId,
+        track_key: DesktopTrackKey,
+        position_microseconds: i64,
+    },
+    SetVolume(EffectiveVolume),
+    /// V1 fixed-rate contract передаёт только нулевую скорость как Pause intent.
+    SetRatePause,
+}
+
+/// Одна bounded mailbox command с correlation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DesktopCommand {
+    pub request_id: DesktopCommandRequestId,
+    pub action: DesktopTransportAction,
+}
+
+/// Process-lifetime app sink; backend не знает player worker/channel.
+pub trait DesktopCommandSink: Send + Sync + 'static {
+    /// Принимает одну neutral command либо возвращает typed backpressure/disconnect.
+    fn send_desktop_command(&self, command: DesktopCommand) -> DesktopIntegrationResult<()>;
+}
+
+impl DesktopCommandSink for std::sync::Arc<dyn DesktopCommandSink> {
+    fn send_desktop_command(&self, command: DesktopCommand) -> DesktopIntegrationResult<()> {
         self.as_ref().send_desktop_command(command)
     }
 }
 
-/// MPRIS SetPosition request без зависимости neutral layer от zbus ObjectPath.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MprisSetPositionRequest {
-    /// Track id, пришедший от MPRIS клиента.
-    pub track_id: String,
-
-    /// Absolute target position в microseconds по MPRIS spec.
-    pub position_microseconds: i64,
-}
-
-/// Поддерживаемые MPRIS player commands.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MprisCommand {
-    /// MPRIS `Play`.
-    Play,
-
-    /// MPRIS `Pause`.
-    Pause,
-
-    /// MPRIS `PlayPause`.
-    PlayPause,
-
-    /// MPRIS `Stop`; в rustiplayer это pause + seek zero, не close media.
-    Stop,
-
-    /// MPRIS `Seek` с signed offset в microseconds.
-    Seek { offset_microseconds: i64 },
-
-    /// MPRIS `SetPosition` с проверкой track id.
-    SetPosition(MprisSetPositionRequest),
-}
-
-/// Преобразует MPRIS command в один или несколько neutral `PlayerCommand`.
-#[must_use]
-pub fn map_mpris_command_to_player_commands(
-    command: MprisCommand,
-    snapshot: &PlayerSnapshot,
-) -> Vec<PlayerCommand> {
-    match command {
-        MprisCommand::Play => vec![PlayerCommand::Play],
-        MprisCommand::Pause => vec![PlayerCommand::Pause],
-        MprisCommand::PlayPause => vec![PlayerCommand::TogglePlayback],
-        MprisCommand::Stop => stop_commands(),
-        MprisCommand::Seek {
-            offset_microseconds,
-        } => seek_offset_commands(snapshot, offset_microseconds),
-        MprisCommand::SetPosition(request) => set_position_commands(snapshot, request),
-    }
-}
-
-/// Возвращает stop semantics, совместимые с MPRIS и текущим `player-core`.
-#[must_use]
-pub fn stop_commands() -> Vec<PlayerCommand> {
-    vec![
-        PlayerCommand::Pause,
-        PlayerCommand::Seek(SeekRequest::absolute(MediaTime::ZERO)),
-    ]
-}
-
-/// Строит absolute seek из signed MPRIS offset и текущего snapshot.
-#[must_use]
-fn seek_offset_commands(snapshot: &PlayerSnapshot, offset_microseconds: i64) -> Vec<PlayerCommand> {
-    if !snapshot.timeline.seekable {
-        return Vec::new();
-    }
-
-    let current_position = snapshot.timeline.current_position;
-    let target_position = resolve_signed_offset(current_position, offset_microseconds);
-    let clamped_position = clamp_to_seekable_window(snapshot, target_position);
-
-    vec![PlayerCommand::Seek(SeekRequest::absolute(clamped_position))]
-}
-
-/// Строит absolute seek для MPRIS SetPosition, если track id относится к текущему media.
-#[must_use]
-fn set_position_commands(
-    snapshot: &PlayerSnapshot,
-    request: MprisSetPositionRequest,
-) -> Vec<PlayerCommand> {
-    if !snapshot.timeline.seekable || request.track_id != MPRIS_CURRENT_TRACK_ID {
-        return Vec::new();
-    }
-
-    let target_position = media_time_from_mpris_microseconds(request.position_microseconds);
-    let clamped_position = clamp_to_seekable_window(snapshot, target_position);
-
-    vec![PlayerCommand::Seek(SeekRequest::absolute(clamped_position))]
-}
-
-/// Применяет signed microseconds offset без underflow.
-#[must_use]
-fn resolve_signed_offset(position: MediaTime, offset_microseconds: i64) -> MediaTime {
-    if offset_microseconds >= 0 {
-        position.saturating_add(MediaDuration::from_duration(Duration::from_micros(
-            offset_microseconds as u64,
-        )))
-    } else {
-        position.saturating_sub(MediaDuration::from_duration(Duration::from_micros(
-            offset_microseconds.unsigned_abs(),
-        )))
-    }
-}
-
-/// Конвертирует MPRIS absolute microseconds в non-negative media time.
-#[must_use]
-fn media_time_from_mpris_microseconds(position_microseconds: i64) -> MediaTime {
-    if position_microseconds <= 0 {
-        return MediaTime::ZERO;
-    }
-
-    MediaTime::from_duration(Duration::from_micros(position_microseconds as u64))
-}
-
-/// Ограничивает seek target известным seekable window, если оно есть.
-#[must_use]
-fn clamp_to_seekable_window(snapshot: &PlayerSnapshot, target_position: MediaTime) -> MediaTime {
-    snapshot
-        .timeline
-        .seekable_range
-        .unwrap_or_else(|| {
-            let end = snapshot
-                .timeline
-                .duration
-                .map(|duration| MediaTime::from_duration(duration.as_duration()))
-                .unwrap_or(MediaTime::MAX);
-            TimelineRange::from_bounds_saturating(MediaTime::ZERO, end)
-        })
-        .clamp(target_position)
-}
-
 #[cfg(test)]
 mod tests {
-    use media_core::{MediaDuration, MediaTime, TimelineSnapshot};
-    use player_core::{PlaybackState, SeekTarget};
-
     use super::*;
 
-    fn seekable_snapshot(position: MediaTime, duration: MediaDuration) -> PlayerSnapshot {
-        let mut snapshot = PlayerSnapshot::empty();
-        snapshot.source_label = Some("movie.webm".to_string());
-        snapshot.playback_state = PlaybackState::Paused;
-        snapshot.timeline = TimelineSnapshot::seekable_vod(duration);
-        snapshot.timeline.current_position = position;
-        snapshot.current_position = position.as_duration();
-        snapshot.duration = Some(duration.as_duration());
-        snapshot
-    }
-
     #[test]
-    fn maps_play_pause_and_toggle_methods() {
-        let snapshot = PlayerSnapshot::empty();
-
+    fn effective_volume_normalizes_spec_edges_before_checked_conversion() {
         assert_eq!(
-            map_mpris_command_to_player_commands(MprisCommand::Play, &snapshot),
-            vec![PlayerCommand::Play]
+            EffectiveVolume::from_mpris(-4.0)
+                .expect("negative is clamped")
+                .as_player(),
+            0.0
         );
         assert_eq!(
-            map_mpris_command_to_player_commands(MprisCommand::Pause, &snapshot),
-            vec![PlayerCommand::Pause]
+            EffectiveVolume::from_mpris(4.0)
+                .expect("above one is best-fit")
+                .as_player(),
+            1.0
         );
         assert_eq!(
-            map_mpris_command_to_player_commands(MprisCommand::PlayPause, &snapshot),
-            vec![PlayerCommand::TogglePlayback]
+            EffectiveVolume::from_mpris(f64::NAN),
+            Err(EffectiveVolumeError::NonFinite)
         );
-    }
-
-    #[test]
-    fn stop_maps_to_pause_and_seek_zero_without_player_stop() {
-        let snapshot = seekable_snapshot(MediaTime::from_secs(42), MediaDuration::from_secs(100));
-
-        let commands = map_mpris_command_to_player_commands(MprisCommand::Stop, &snapshot);
-
-        assert_eq!(commands, stop_commands());
-        assert!(!commands.contains(&PlayerCommand::Stop));
-    }
-
-    #[test]
-    fn mpris_mapping_never_emits_scrub_commands() {
-        let snapshot = seekable_snapshot(MediaTime::from_secs(10), MediaDuration::from_secs(100));
-        let commands_to_check = [
-            MprisCommand::Play,
-            MprisCommand::Pause,
-            MprisCommand::PlayPause,
-            MprisCommand::Stop,
-            MprisCommand::Seek {
-                offset_microseconds: 5_000_000,
-            },
-            MprisCommand::SetPosition(MprisSetPositionRequest {
-                track_id: MPRIS_CURRENT_TRACK_ID.to_string(),
-                position_microseconds: 20_000_000,
-            }),
-        ];
-
-        for mpris_command in commands_to_check {
-            let player_commands = map_mpris_command_to_player_commands(mpris_command, &snapshot);
-
-            assert!(
-                player_commands.iter().all(|player_command| !matches!(
-                    player_command,
-                    PlayerCommand::BeginScrub { .. }
-                        | PlayerCommand::UpdateScrub(_)
-                        | PlayerCommand::PreviewScrub { .. }
-                        | PlayerCommand::EndScrub { .. }
-                )),
-                "MPRIS mapping must not emit scrub commands: {player_commands:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn seek_maps_signed_offset_to_absolute_target() {
-        let snapshot = seekable_snapshot(MediaTime::from_secs(10), MediaDuration::from_secs(100));
-
-        let commands = map_mpris_command_to_player_commands(
-            MprisCommand::Seek {
-                offset_microseconds: 5_000_000,
-            },
-            &snapshot,
-        );
-
         assert_eq!(
-            commands,
-            vec![PlayerCommand::Seek(SeekRequest {
-                target: SeekTarget::Absolute(MediaTime::from_secs(15)),
-                mode: player_core::SeekMode::Accurate,
-            })]
+            EffectiveVolume::from_mpris(f64::INFINITY),
+            Err(EffectiveVolumeError::NonFinite)
         );
     }
 
     #[test]
-    fn seek_saturates_negative_offset_to_zero() {
-        let snapshot = seekable_snapshot(MediaTime::from_secs(3), MediaDuration::from_secs(100));
-
-        let commands = map_mpris_command_to_player_commands(
-            MprisCommand::Seek {
-                offset_microseconds: -9_000_000,
-            },
-            &snapshot,
-        );
-
+    fn loop_status_parser_accepts_only_spec_values() {
         assert_eq!(
-            commands,
-            vec![PlayerCommand::Seek(SeekRequest::absolute(MediaTime::ZERO))]
+            DesktopLoopStatus::from_mpris_str("None"),
+            Some(DesktopLoopStatus::None)
         );
-    }
-
-    #[test]
-    fn set_position_ignores_stale_track_id() {
-        let snapshot = seekable_snapshot(MediaTime::from_secs(0), MediaDuration::from_secs(100));
-
-        let commands = map_mpris_command_to_player_commands(
-            MprisCommand::SetPosition(MprisSetPositionRequest {
-                track_id: "/org/mpris/MediaPlayer2/track/old".to_string(),
-                position_microseconds: 20_000_000,
-            }),
-            &snapshot,
-        );
-
-        assert!(commands.is_empty());
-    }
-
-    #[test]
-    fn set_position_maps_current_track_to_absolute_seek() {
-        let snapshot = seekable_snapshot(MediaTime::from_secs(0), MediaDuration::from_secs(100));
-
-        let commands = map_mpris_command_to_player_commands(
-            MprisCommand::SetPosition(MprisSetPositionRequest {
-                track_id: MPRIS_CURRENT_TRACK_ID.to_string(),
-                position_microseconds: 20_000_000,
-            }),
-            &snapshot,
-        );
-
         assert_eq!(
-            commands,
-            vec![PlayerCommand::Seek(SeekRequest::absolute(
-                MediaTime::from_secs(20)
-            ))]
+            DesktopLoopStatus::from_mpris_str("Track"),
+            Some(DesktopLoopStatus::Track)
         );
+        assert_eq!(
+            DesktopLoopStatus::from_mpris_str("Playlist"),
+            Some(DesktopLoopStatus::Playlist)
+        );
+        assert_eq!(DesktopLoopStatus::from_mpris_str("Queue"), None);
     }
 }

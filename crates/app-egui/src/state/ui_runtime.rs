@@ -651,8 +651,6 @@ impl AppState {
                 true
             }
             winit::keyboard::KeyCode::KeyM => {
-                let player_snapshot = self.refresh_player_snapshot();
-                self.publish_desktop_snapshot(&player_snapshot);
                 if let Err(error) = self
                     .player_worker
                     .try_send_command(PlayerCommand::ToggleMute {

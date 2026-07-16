@@ -1,64 +1,89 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::num::NonZeroU64;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 
-use crossbeam_channel::{Receiver, Sender, unbounded};
-use media_core::{MediaDuration, MediaTime};
-use player_core::PlayerCommand;
+use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use tracing::debug;
 use zbus::blocking::{Connection, connection};
 use zbus::names::InterfaceName;
 use zbus::object_server::SignalEmitter;
-use zbus::zvariant::{ObjectPath, OwnedValue, Value};
+use zbus::zvariant::{ObjectPath, OwnedValue};
 use zbus::{fdo, interface};
 
 use crate::{
-    DesktopBackendKind, DesktopCommandSink, DesktopIntegrationError, DesktopIntegrationEvent,
-    DesktopIntegrationResult, DesktopMetadata, DesktopSnapshotChange, DesktopSnapshotView,
-    LatestSnapshotHandle, LatestSnapshotSource, MprisCommand, MprisSetPositionRequest,
-    map_mpris_command_to_player_commands,
+    DesktopBackendKind, DesktopCommand, DesktopCommandRequestId, DesktopCommandSink,
+    DesktopIntegrationError, DesktopIntegrationEvent, DesktopIntegrationResult, DesktopLoopStatus,
+    DesktopSnapshotChange, DesktopSnapshotView, DesktopTimelineSeekOutcome, DesktopTransportAction,
+    EffectiveVolume, LatestSnapshotHandle, LatestSnapshotSource, TimelineSeekRequestId,
 };
 
 use super::{BackendControlCommand, BackendHandle};
 
+mod snapshot_properties;
+mod track_identity;
+
+use snapshot_properties::{full_dynamic_player_properties, mpris_metadata_values};
+use track_identity::{encode_track_key, media_time_to_mpris_microseconds};
+
+/// Единственное process base name: fallback suffix и late retry запрещены D78.
 const MPRIS_BUS_NAME: &str = "org.mpris.MediaPlayer2.rustiplayer";
 const MPRIS_OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
 const MPRIS_PLAYER_INTERFACE: &str = "org.mpris.MediaPlayer2.Player";
 
-/// Запускает Linux MPRIS backend на отдельном blocking thread.
+/// Запускает thread и синхронно подтверждает первоначальный non-queued bus claim.
 pub(crate) fn spawn(
     command_sink: Arc<dyn DesktopCommandSink>,
     snapshot_source: LatestSnapshotHandle,
     event_tx: Sender<DesktopIntegrationEvent>,
 ) -> DesktopIntegrationResult<BackendHandle> {
     let (control_tx, control_rx) = unbounded();
-    let thread_command_sink = Arc::clone(&command_sink);
+    let (startup_tx, startup_rx) = bounded(1);
+    let thread_sink = Arc::clone(&command_sink);
     let join_handle = thread::Builder::new()
         .name("desktop-mpris".to_string())
         .spawn(move || {
-            run_mpris_thread(thread_command_sink, snapshot_source, event_tx, control_rx);
+            run_mpris_thread(
+                thread_sink,
+                snapshot_source,
+                event_tx,
+                control_rx,
+                startup_tx,
+            )
         })
         .map_err(|error| DesktopIntegrationError::ThreadSpawn(error.to_string()))?;
 
-    Ok(BackendHandle::threaded(
-        command_sink,
-        control_tx,
-        join_handle,
-    ))
+    match startup_rx.recv() {
+        Ok(Ok(())) => Ok(BackendHandle::threaded(
+            command_sink,
+            control_tx,
+            join_handle,
+        )),
+        Ok(Err(error)) => {
+            let _ = join_handle.join();
+            Err(error)
+        }
+        Err(_) => {
+            let _ = join_handle.join();
+            Err(DesktopIntegrationError::BackendChannelDisconnected)
+        }
+    }
 }
 
-/// Инициализирует zbus connection и держит thread живым до shutdown.
 fn run_mpris_thread(
     command_sink: Arc<dyn DesktopCommandSink>,
     snapshot_source: LatestSnapshotHandle,
     event_tx: Sender<DesktopIntegrationEvent>,
     control_rx: Receiver<BackendControlCommand>,
+    startup_tx: Sender<DesktopIntegrationResult<()>>,
 ) {
     let backend = DesktopBackendKind::LinuxMpris;
     let runtime = match MprisRuntime::new(command_sink, snapshot_source, event_tx.clone()) {
         Ok(runtime) => runtime,
         Err(error) => {
+            let _ = startup_tx.send(Err(error.clone()));
             emit_event(
                 &event_tx,
                 DesktopIntegrationEvent::BackendError { backend, error },
@@ -70,7 +95,9 @@ fn run_mpris_thread(
             return;
         }
     };
-
+    if startup_tx.send(Ok(())).is_err() {
+        return;
+    }
     emit_event(
         &event_tx,
         DesktopIntegrationEvent::BackendStarted { backend },
@@ -82,39 +109,21 @@ fn run_mpris_thread(
     );
 }
 
-/// Runtime Linux backend-а с live D-Bus connection.
 struct MprisRuntime {
-    /// Blocking zbus connection владеет registered object server.
     connection: Connection,
-
-    /// Snapshot source нужен для property-change values вне D-Bus handler-ов.
     snapshot_source: LatestSnapshotHandle,
-
-    /// Event channel наружу в app shell.
     event_tx: Sender<DesktopIntegrationEvent>,
 }
 
 impl MprisRuntime {
-    /// Регистрирует root/player MPRIS interfaces на session bus.
     fn new(
         command_sink: Arc<dyn DesktopCommandSink>,
         snapshot_source: LatestSnapshotHandle,
         event_tx: Sender<DesktopIntegrationEvent>,
     ) -> DesktopIntegrationResult<Self> {
-        let root_interface = MprisRootInterface;
-        let player_interface =
-            MprisPlayerInterface::new(command_sink, snapshot_source.clone(), event_tx.clone());
-        let connection = connection::Builder::session()
-            .map_err(map_zbus_error)?
-            .name(MPRIS_BUS_NAME)
-            .map_err(map_zbus_error)?
-            .serve_at(MPRIS_OBJECT_PATH, root_interface)
-            .map_err(map_zbus_error)?
-            .serve_at(MPRIS_OBJECT_PATH, player_interface)
-            .map_err(map_zbus_error)?
-            .build()
-            .map_err(map_zbus_error)?;
-
+        let player_interface = MprisPlayerInterface::new(command_sink, snapshot_source.clone());
+        let builder = connection::Builder::session().map_err(map_zbus_error)?;
+        let connection = build_mpris_connection(builder, player_interface)?;
         Ok(Self {
             connection,
             snapshot_source,
@@ -122,46 +131,21 @@ impl MprisRuntime {
         })
     }
 
-    /// Обрабатывает control channel; D-Bus calls обслуживает zbus object server.
     fn run(&self, control_rx: Receiver<BackendControlCommand>) {
         while let Ok(command) = control_rx.recv() {
             match command {
                 BackendControlCommand::SnapshotChanged(change) => {
-                    self.emit_snapshot_property_changes(change);
+                    self.emit_snapshot_notifications(change)
                 }
                 BackendControlCommand::Shutdown => break,
             }
         }
     }
 
-    /// Публикует `PropertiesChanged` только для низкочастотных MPRIS properties.
-    fn emit_snapshot_property_changes(&self, change: DesktopSnapshotChange) {
-        let snapshot = match self.snapshot_source.latest_snapshot() {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                self.emit_backend_error(error);
-                return;
-            }
-        };
-        let view = DesktopSnapshotView::from_player_snapshot(&snapshot);
-        let changed_properties = match changed_player_properties(&view, change) {
-            Ok(changed_properties) => changed_properties,
-            Err(error) => {
-                self.emit_backend_error(error);
-                return;
-            }
-        };
-
-        if changed_properties.is_empty() {
-            return;
-        }
-
-        let interface_name = match InterfaceName::try_from(MPRIS_PLAYER_INTERFACE) {
-            Ok(interface_name) => interface_name,
-            Err(error) => {
-                self.emit_backend_error(DesktopIntegrationError::Backend(error.to_string()));
-                return;
-            }
+    fn emit_snapshot_notifications(&self, change: DesktopSnapshotChange) {
+        let view = match self.snapshot_source.latest_snapshot() {
+            Ok(view) => view,
+            Err(error) => return self.emit_backend_error(error),
         };
         let interface_ref = match self
             .connection
@@ -169,31 +153,49 @@ impl MprisRuntime {
             .interface::<_, MprisPlayerInterface>(MPRIS_OBJECT_PATH)
         {
             Ok(interface_ref) => interface_ref,
-            Err(error) => {
-                self.emit_backend_error(map_zbus_error(error));
-                return;
-            }
+            Err(error) => return self.emit_backend_error(map_zbus_error(error)),
         };
-        let emit_result = zbus::block_on(fdo::Properties::properties_changed(
-            interface_ref.signal_emitter(),
-            interface_name,
-            changed_properties,
-            Cow::Borrowed(&[] as &[&str]),
-        ));
 
-        match emit_result {
-            Ok(()) => emit_event(
+        if change.dynamic_properties_changed {
+            let properties = match full_dynamic_player_properties(&view) {
+                Ok(properties) => properties,
+                Err(error) => return self.emit_backend_error(error),
+            };
+            let interface_name = match InterfaceName::try_from(MPRIS_PLAYER_INTERFACE) {
+                Ok(name) => name,
+                Err(error) => {
+                    return self
+                        .emit_backend_error(DesktopIntegrationError::Backend(error.to_string()));
+                }
+            };
+            let result = zbus::block_on(fdo::Properties::properties_changed(
+                interface_ref.signal_emitter(),
+                interface_name,
+                properties,
+                Cow::Borrowed(&[] as &[&str]),
+            ));
+            if let Err(error) = result {
+                return self.emit_backend_error(map_zbus_error(error));
+            }
+            emit_event(
                 &self.event_tx,
                 DesktopIntegrationEvent::SnapshotPropertiesChanged {
                     backend: DesktopBackendKind::LinuxMpris,
                     change,
                 },
-            ),
-            Err(error) => self.emit_backend_error(map_zbus_error(error)),
+            );
+        }
+
+        if let Some(seeked) = change.seeked
+            && let Err(error) = zbus::block_on(MprisPlayerInterface::seeked(
+                interface_ref.signal_emitter(),
+                media_time_to_mpris_microseconds(seeked.position),
+            ))
+        {
+            self.emit_backend_error(map_zbus_error(error));
         }
     }
 
-    /// Отправляет backend error как event и tracing warning.
     fn emit_backend_error(&self, error: DesktopIntegrationError) {
         emit_event(
             &self.event_tx,
@@ -205,449 +207,327 @@ impl MprisRuntime {
     }
 }
 
-/// Root interface `org.mpris.MediaPlayer2`.
+fn build_mpris_connection(
+    builder: connection::Builder<'_>,
+    player_interface: MprisPlayerInterface,
+) -> DesktopIntegrationResult<Connection> {
+    builder
+        .name(MPRIS_BUS_NAME)
+        .map_err(map_zbus_error)?
+        // zbus 5.15 defaults both flags to true; D78 requires an explicit non-replacing claim.
+        .allow_name_replacements(false)
+        .replace_existing_names(false)
+        .serve_at(MPRIS_OBJECT_PATH, MprisRootInterface)
+        .map_err(map_zbus_error)?
+        .serve_at(MPRIS_OBJECT_PATH, player_interface)
+        .map_err(map_zbus_error)?
+        .build()
+        .map_err(map_zbus_error)
+}
+
+/// Корневой MPRIS interface не владеет transport state.
 struct MprisRootInterface;
 
 #[interface(name = "org.mpris.MediaPlayer2")]
 impl MprisRootInterface {
-    /// Просьбу поднять окно пока не обрабатываем: window lifecycle остаётся в app shell.
     fn raise(&self) {}
-
-    /// MPRIS Quit не закрывает app, потому что desktop backend не владеет lifecycle.
     fn quit(&self) {}
-
-    /// Rustiplayer не поддерживает remote quit через MPRIS.
     #[zbus(property)]
     fn can_quit(&self) -> bool {
         false
     }
-
-    /// Fullscreen управляется window/input layer, не MPRIS backend-ом.
     #[zbus(property)]
     fn fullscreen(&self) -> bool {
         false
     }
-
-    /// Setter нужен для spec-compatible property, но backend не меняет window state.
     #[zbus(property)]
     fn set_fullscreen(&self, _fullscreen: bool) {}
-
-    /// MPRIS backend не умеет менять fullscreen сам.
     #[zbus(property)]
     fn can_set_fullscreen(&self) -> bool {
         false
     }
-
-    /// Raise сейчас no-op, поэтому явно сообщаем false.
     #[zbus(property)]
     fn can_raise(&self) -> bool {
         false
     }
-
-    /// TrackList interface не реализован в этой сессии.
     #[zbus(property)]
     fn has_track_list(&self) -> bool {
         false
     }
-
-    /// Имя приложения для desktop media widgets.
     #[zbus(property)]
     fn identity(&self) -> &str {
         "Rustiplayer"
     }
-
-    /// Desktop entry id без `.desktop`, как ожидает MPRIS.
     #[zbus(property)]
     fn desktop_entry(&self) -> &str {
         "rustiplayer"
     }
-
-    /// URI schemes, которые может открыть shell/source layer.
     #[zbus(property)]
     fn supported_uri_schemes(&self) -> Vec<&str> {
         vec!["file", "http", "https"]
     }
-
-    /// MIME types текущего production path.
     #[zbus(property)]
     fn supported_mime_types(&self) -> Vec<&str> {
-        vec!["video/webm", "video/x-matroska"]
+        vec!["video/webm", "video/x-matroska", "video/mp4"]
     }
 }
 
-/// Player interface `org.mpris.MediaPlayer2.Player`.
 struct MprisPlayerInterface {
-    /// Worker command boundary.
     command_sink: Arc<dyn DesktopCommandSink>,
-
-    /// Latest snapshot boundary.
     snapshot_source: LatestSnapshotHandle,
-
-    /// Event channel наружу.
-    event_tx: Sender<DesktopIntegrationEvent>,
+    next_request_id: AtomicU64,
 }
 
 impl MprisPlayerInterface {
-    /// Собирает player interface dependencies.
     fn new(
         command_sink: Arc<dyn DesktopCommandSink>,
         snapshot_source: LatestSnapshotHandle,
-        event_tx: Sender<DesktopIntegrationEvent>,
     ) -> Self {
         Self {
             command_sink,
             snapshot_source,
-            event_tx,
+            next_request_id: AtomicU64::new(1),
         }
     }
 
-    /// Отправляет mapped commands в worker boundary.
-    fn send_mpris_command(&self, command: MprisCommand) -> fdo::Result<Option<MediaTime>> {
-        let snapshot = self
-            .snapshot_source
-            .latest_snapshot()
-            .map_err(to_fdo_error)?;
-        let commands = map_mpris_command_to_player_commands(command, &snapshot);
-        let seek_target = commands.iter().find_map(extract_absolute_seek_target);
-
-        for player_command in commands {
-            self.command_sink
-                .send_desktop_command(player_command)
-                .map_err(to_fdo_error)?;
-        }
-
-        Ok(seek_target)
-    }
-
-    /// Возвращает latest desktop snapshot view для property getter-ов.
     fn desktop_view(&self) -> fdo::Result<DesktopSnapshotView> {
-        self.snapshot_source
-            .latest_snapshot()
-            .map(|snapshot| DesktopSnapshotView::from_player_snapshot(&snapshot))
+        self.snapshot_source.latest_snapshot().map_err(to_fdo_error)
+    }
+
+    fn next_request_id(&self) -> fdo::Result<DesktopCommandRequestId> {
+        let value = self
+            .next_request_id
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1)
+            })
+            .map_err(|_| fdo::Error::Failed("desktop request id exhausted".to_string()))?;
+        let non_zero = NonZeroU64::new(value)
+            .ok_or_else(|| fdo::Error::Failed("desktop request id exhausted".to_string()))?;
+        Ok(DesktopCommandRequestId::new(non_zero))
+    }
+
+    fn send_action(&self, action: DesktopTransportAction) -> fdo::Result<()> {
+        let request_id = self.next_request_id()?;
+        self.command_sink
+            .send_desktop_command(DesktopCommand { request_id, action })
             .map_err(to_fdo_error)
     }
 
-    /// Отправляет `Seeked` и event после принятого seek command.
-    fn emit_seeked(
-        &self,
-        emitter: SignalEmitter<'_>,
-        target_position: Option<MediaTime>,
-    ) -> fdo::Result<()> {
-        let Some(target_position) = target_position else {
-            return Ok(());
-        };
-        let position_microseconds = media_time_to_mpris_microseconds(target_position);
+    fn seek_request_id(request_id: DesktopCommandRequestId) -> fdo::Result<TimelineSeekRequestId> {
+        NonZeroU64::new(request_id.get())
+            .map(TimelineSeekRequestId::new)
+            .ok_or_else(|| fdo::Error::Failed("seek request id exhausted".to_string()))
+    }
 
-        zbus::block_on(Self::seeked(&emitter, position_microseconds)).map_err(fdo::Error::ZBus)?;
-        emit_event(
-            &self.event_tx,
-            DesktopIntegrationEvent::Seeked {
-                backend: DesktopBackendKind::LinuxMpris,
-                position: target_position,
-            },
-        );
-
-        Ok(())
+    fn send_seek(&self, offset_microseconds: i64) -> fdo::Result<()> {
+        let request_id = self.next_request_id()?;
+        self.command_sink
+            .send_desktop_command(DesktopCommand {
+                request_id,
+                action: DesktopTransportAction::Seek {
+                    request_id: Self::seek_request_id(request_id)?,
+                    offset_microseconds,
+                },
+            })
+            .map_err(to_fdo_error)
     }
 }
 
 #[interface(name = "org.mpris.MediaPlayer2.Player")]
 impl MprisPlayerInterface {
-    /// Next не входит в текущий player command scope.
-    fn next(&self) {}
-
-    /// Previous не входит в текущий player command scope.
-    fn previous(&self) {}
-
-    /// MPRIS `Pause` -> `PlayerCommand::Pause`.
+    fn next(&self) -> fdo::Result<()> {
+        if !self.desktop_view()?.capabilities.can_go_next {
+            return Ok(());
+        }
+        self.send_action(DesktopTransportAction::Next)
+    }
+    fn previous(&self) -> fdo::Result<()> {
+        if !self.desktop_view()?.capabilities.can_go_previous {
+            return Ok(());
+        }
+        self.send_action(DesktopTransportAction::Previous)
+    }
     fn pause(&self) -> fdo::Result<()> {
-        self.send_mpris_command(MprisCommand::Pause).map(|_| ())
+        if !self.desktop_view()?.capabilities.can_pause {
+            return Ok(());
+        }
+        self.send_action(DesktopTransportAction::Pause)
     }
-
-    /// MPRIS `PlayPause` -> `PlayerCommand::TogglePlayback`.
     fn play_pause(&self) -> fdo::Result<()> {
-        self.send_mpris_command(MprisCommand::PlayPause).map(|_| ())
+        if !self.desktop_view()?.capabilities.can_pause {
+            return Err(fdo::Error::Failed(
+                "PlayPause is unavailable while CanPause is false".to_string(),
+            ));
+        }
+        self.send_action(DesktopTransportAction::PlayPause)
     }
-
-    /// MPRIS `Stop` -> pause + seek zero, media stays open.
     fn stop(&self) -> fdo::Result<()> {
-        self.send_mpris_command(MprisCommand::Stop).map(|_| ())
+        self.send_action(DesktopTransportAction::Stop)
     }
-
-    /// MPRIS `Play` -> `PlayerCommand::Play`.
     fn play(&self) -> fdo::Result<()> {
-        self.send_mpris_command(MprisCommand::Play).map(|_| ())
+        if !self.desktop_view()?.capabilities.can_play {
+            return Ok(());
+        }
+        self.send_action(DesktopTransportAction::Play)
     }
-
-    /// MPRIS `Seek` приходит как signed offset в microseconds.
-    fn seek(
-        &self,
-        offset_microseconds: i64,
-        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
-    ) -> fdo::Result<()> {
-        let target_position = self.send_mpris_command(MprisCommand::Seek {
-            offset_microseconds,
-        })?;
-
-        self.emit_seeked(emitter, target_position)
+    fn seek(&self, offset_microseconds: i64) -> fdo::Result<()> {
+        if !self.desktop_view()?.capabilities.can_seek {
+            return Ok(());
+        }
+        self.send_seek(offset_microseconds)
     }
-
-    /// MPRIS `SetPosition` приходит как absolute microseconds и track id.
     fn set_position(
         &self,
         track_id: ObjectPath<'_>,
         position_microseconds: i64,
-        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> fdo::Result<()> {
-        let target_position =
-            self.send_mpris_command(MprisCommand::SetPosition(MprisSetPositionRequest {
-                track_id: track_id.to_string(),
-                position_microseconds,
-            }))?;
-
-        self.emit_seeked(emitter, target_position)
-    }
-
-    /// Signal MPRIS `Seeked`.
-    #[zbus(signal)]
-    async fn seeked(emitter: &SignalEmitter<'_>, position: i64) -> zbus::Result<()>;
-
-    /// LoopStatus пока фиксирован: loop-mode нет в player contract.
-    #[zbus(property)]
-    fn loop_status(&self) -> &str {
-        "None"
-    }
-
-    /// Setter оставлен no-op для compatibility с MPRIS clients.
-    #[zbus(property)]
-    fn set_loop_status(&self, _loop_status: &str) {}
-
-    /// Rate фиксирован на normal speed.
-    #[zbus(property)]
-    fn rate(&self) -> f64 {
-        1.0
-    }
-
-    /// Setter оставлен no-op до появления playback-rate contract.
-    #[zbus(property)]
-    fn set_rate(&self, _rate: f64) {}
-
-    /// Shuffle не применим к single-media player.
-    #[zbus(property)]
-    fn shuffle(&self) -> bool {
-        false
-    }
-
-    /// Setter оставлен no-op до появления playlist model.
-    #[zbus(property)]
-    fn set_shuffle(&self, _shuffle: bool) {}
-
-    /// Metadata включает track id, title и duration как `mpris:length`.
-    #[zbus(property)]
-    fn metadata(&self) -> fdo::Result<HashMap<String, OwnedValue>> {
         let view = self.desktop_view()?;
-        mpris_metadata_values(&view.metadata).map_err(to_fdo_error)
-    }
-
-    /// Volume берётся из player snapshot.
-    #[zbus(property)]
-    fn volume(&self) -> fdo::Result<f64> {
-        let snapshot = self
-            .snapshot_source
-            .latest_snapshot()
-            .map_err(to_fdo_error)?;
-
-        Ok(f64::from(snapshot.volume))
-    }
-
-    /// Volume setter проходит через worker command boundary.
-    #[zbus(property)]
-    fn set_volume(&self, volume: f64) -> fdo::Result<()> {
-        if !volume.is_finite() || !(0.0..=1.0).contains(&volume) {
-            return Err(fdo::Error::InvalidArgs(format!(
-                "MPRIS volume must be within 0.0..=1.0, got {volume}"
-            )));
+        if !view.capabilities.can_seek {
+            return Ok(());
         }
-
+        let request_id = Self::seek_request_id(self.next_request_id()?)?;
+        let Some(track_key) = view.metadata.track_key else {
+            let _outcome = DesktopTimelineSeekOutcome::StaleTrack { request_id };
+            return Ok(());
+        };
+        if encode_track_key(track_key).map_err(to_fdo_error)? != track_id.as_str() {
+            let _outcome = DesktopTimelineSeekOutcome::StaleTrack { request_id };
+            return Ok(());
+        }
+        if position_microseconds < 0 {
+            let _outcome = DesktopTimelineSeekOutcome::InvalidRange { request_id };
+            return Ok(());
+        }
+        if let Some(duration) = view.metadata.duration
+            && u128::try_from(position_microseconds).unwrap_or(u128::MAX)
+                > duration.as_duration().as_micros()
+        {
+            let _outcome = DesktopTimelineSeekOutcome::InvalidRange { request_id };
+            return Ok(());
+        }
+        let command_request_id = DesktopCommandRequestId::new(
+            NonZeroU64::new(request_id.get()).expect("seek request IDs are non-zero"),
+        );
         self.command_sink
-            .send_desktop_command(PlayerCommand::SetVolume(volume as f32))
+            .send_desktop_command(DesktopCommand {
+                request_id: command_request_id,
+                action: DesktopTransportAction::SetPosition {
+                    request_id,
+                    track_key,
+                    position_microseconds,
+                },
+            })
             .map_err(to_fdo_error)
     }
 
-    /// Position отдаётся по запросу клиента, но не публикуется high-rate PropertiesChanged.
-    #[zbus(property)]
-    fn position(&self) -> fdo::Result<i64> {
-        let view = self.desktop_view()?;
+    #[zbus(signal)]
+    async fn seeked(emitter: &SignalEmitter<'_>, position: i64) -> zbus::Result<()>;
 
-        Ok(media_time_to_mpris_microseconds(view.position))
+    #[zbus(property(emits_changed_signal = "false"))]
+    fn loop_status(&self) -> fdo::Result<&'static str> {
+        Ok(self.desktop_view()?.loop_status.as_mpris_str())
     }
-
-    /// MinimumRate фиксирован, потому что rate control не реализован.
     #[zbus(property)]
+    fn set_loop_status(&self, value: &str) -> fdo::Result<()> {
+        let status = DesktopLoopStatus::from_mpris_str(value)
+            .ok_or_else(|| fdo::Error::InvalidArgs(format!("invalid LoopStatus: {value}")))?;
+        self.send_action(DesktopTransportAction::SetLoopStatus(status))
+    }
+    #[zbus(property(emits_changed_signal = "const"))]
+    fn rate(&self) -> f64 {
+        1.0
+    }
+    #[zbus(property)]
+    fn set_rate(&self, rate: f64) -> fdo::Result<()> {
+        if !rate.is_finite() {
+            return Err(fdo::Error::InvalidArgs("Rate must be finite".to_string()));
+        }
+        if rate == 0.0 {
+            if !self.desktop_view()?.capabilities.can_pause {
+                return Ok(());
+            }
+            return self.send_action(DesktopTransportAction::SetRatePause);
+        }
+        Ok(())
+    }
+    #[zbus(property(emits_changed_signal = "false"))]
+    fn shuffle(&self) -> fdo::Result<bool> {
+        Ok(self.desktop_view()?.shuffle)
+    }
+    #[zbus(property)]
+    fn set_shuffle(&self, shuffle: bool) -> fdo::Result<()> {
+        self.send_action(DesktopTransportAction::SetShuffle(shuffle))
+    }
+    #[zbus(property(emits_changed_signal = "false"))]
+    fn metadata(&self) -> fdo::Result<HashMap<String, OwnedValue>> {
+        mpris_metadata_values(&self.desktop_view()?.metadata).map_err(to_fdo_error)
+    }
+    #[zbus(property(emits_changed_signal = "false"))]
+    fn volume(&self) -> fdo::Result<f64> {
+        Ok(self.desktop_view()?.volume.as_mpris())
+    }
+    #[zbus(property)]
+    fn set_volume(&self, volume: f64) -> fdo::Result<()> {
+        let effective = EffectiveVolume::from_mpris(volume)
+            .map_err(|_| fdo::Error::InvalidArgs("Volume must be finite".to_string()))?;
+        self.send_action(DesktopTransportAction::SetVolume(effective))
+    }
+    #[zbus(property(emits_changed_signal = "false"))]
+    fn position(&self) -> fdo::Result<i64> {
+        Ok(media_time_to_mpris_microseconds(
+            self.desktop_view()?.position,
+        ))
+    }
+    #[zbus(property(emits_changed_signal = "const"))]
     fn minimum_rate(&self) -> f64 {
         1.0
     }
-
-    /// MaximumRate фиксирован, потому что rate control не реализован.
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "const"))]
     fn maximum_rate(&self) -> f64 {
         1.0
     }
-
-    /// Next не поддержан текущим player command scope.
-    #[zbus(property)]
-    fn can_go_next(&self) -> bool {
-        false
+    #[zbus(property(emits_changed_signal = "false"))]
+    fn can_go_next(&self) -> fdo::Result<bool> {
+        Ok(self.desktop_view()?.capabilities.can_go_next)
     }
-
-    /// Previous не поддержан текущим player command scope.
-    #[zbus(property)]
-    fn can_go_previous(&self) -> bool {
-        false
+    #[zbus(property(emits_changed_signal = "false"))]
+    fn can_go_previous(&self) -> fdo::Result<bool> {
+        Ok(self.desktop_view()?.capabilities.can_go_previous)
     }
-
-    /// Play command доступен через worker boundary.
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "false"))]
     fn can_play(&self) -> fdo::Result<bool> {
-        let view = self.desktop_view()?;
-
-        Ok(view.has_media())
+        Ok(self.desktop_view()?.capabilities.can_play)
     }
-
-    /// Pause command доступен через worker boundary.
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "false"))]
     fn can_pause(&self) -> fdo::Result<bool> {
-        let view = self.desktop_view()?;
-
-        Ok(view.has_media())
+        Ok(self.desktop_view()?.capabilities.can_pause)
     }
-
-    /// Seek доступен только когда timeline сообщает seekable.
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "false"))]
     fn can_seek(&self) -> fdo::Result<bool> {
-        let view = self.desktop_view()?;
-
-        Ok(view.can_seek)
+        Ok(self.desktop_view()?.capabilities.can_seek)
     }
-
-    /// Desktop controls доступны, пока backend жив.
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "const"))]
     fn can_control(&self) -> bool {
         true
     }
-
-    /// PlaybackStatus маппится в три значения MPRIS.
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "false"))]
     fn playback_status(&self) -> fdo::Result<&'static str> {
-        let view = self.desktop_view()?;
-
-        Ok(view.playback_status.as_mpris_str())
+        Ok(self.desktop_view()?.playback_status.as_mpris_str())
     }
 }
 
-/// Собирает changed properties для `org.freedesktop.DBus.Properties.PropertiesChanged`.
-fn changed_player_properties(
-    view: &DesktopSnapshotView,
-    change: DesktopSnapshotChange,
-) -> DesktopIntegrationResult<HashMap<&'static str, Value<'static>>> {
-    let mut changed_properties = HashMap::new();
-
-    if change.playback_status_changed {
-        changed_properties.insert(
-            "PlaybackStatus",
-            Value::from(view.playback_status.as_mpris_str().to_string()),
-        );
-    }
-
-    if change.metadata_changed {
-        changed_properties.insert(
-            "Metadata",
-            Value::from(mpris_metadata_values(&view.metadata)?),
-        );
-        changed_properties.insert("CanPlay", Value::from(view.has_media()));
-        changed_properties.insert("CanPause", Value::from(view.has_media()));
-    }
-
-    if change.can_seek_changed {
-        changed_properties.insert("CanSeek", Value::from(view.can_seek));
-    }
-
-    Ok(changed_properties)
-}
-
-/// Конвертирует neutral metadata в MPRIS `a{sv}`.
-fn mpris_metadata_values(
-    metadata: &DesktopMetadata,
-) -> DesktopIntegrationResult<HashMap<String, OwnedValue>> {
-    let mut metadata_values = HashMap::new();
-
-    if let Some(track_id) = &metadata.track_id {
-        let object_path = ObjectPath::try_from(track_id.as_str())
-            .map_err(|error| DesktopIntegrationError::Backend(error.to_string()))?;
-        metadata_values.insert("mpris:trackid".to_string(), OwnedValue::from(object_path));
-    }
-
-    if let Some(title) = &metadata.title {
-        metadata_values.insert(
-            "xesam:title".to_string(),
-            owned_value_from_string(title.clone())?,
-        );
-    }
-
-    if let Some(duration) = metadata.duration {
-        metadata_values.insert(
-            "mpris:length".to_string(),
-            OwnedValue::from(media_duration_to_mpris_microseconds(duration)),
-        );
-    }
-
-    Ok(metadata_values)
-}
-
-/// Упаковывает String в zvariant OwnedValue с typed error propagation.
-fn owned_value_from_string(value: String) -> DesktopIntegrationResult<OwnedValue> {
-    OwnedValue::try_from(Value::from(value))
-        .map_err(|error| DesktopIntegrationError::Backend(error.to_string()))
-}
-
-/// Достаёт absolute seek target из neutral command.
-fn extract_absolute_seek_target(command: &PlayerCommand) -> Option<MediaTime> {
-    let PlayerCommand::Seek(request) = command else {
-        return None;
-    };
-    let player_core::SeekTarget::Absolute(position) = request.target else {
-        return None;
-    };
-
-    Some(position)
-}
-
-/// Конвертирует media time в MPRIS signed microseconds.
-fn media_time_to_mpris_microseconds(position: MediaTime) -> i64 {
-    duration_to_mpris_microseconds(position.as_duration())
-}
-
-/// Конвертирует media duration в MPRIS signed microseconds.
-fn media_duration_to_mpris_microseconds(duration: MediaDuration) -> i64 {
-    duration_to_mpris_microseconds(duration.as_duration())
-}
-
-/// Saturating conversion из Rust Duration в MPRIS `x`.
-fn duration_to_mpris_microseconds(duration: std::time::Duration) -> i64 {
-    duration.as_micros().min(i64::MAX as u128) as i64
-}
-
-/// Преобразует zbus error в neutral backend error.
 fn map_zbus_error(error: zbus::Error) -> DesktopIntegrationError {
-    DesktopIntegrationError::Backend(error.to_string())
+    if matches!(error, zbus::Error::NameTaken) {
+        DesktopIntegrationError::MprisBusNameUnavailable
+    } else {
+        DesktopIntegrationError::Backend(error.to_string())
+    }
 }
 
-/// Преобразует neutral error в D-Bus FDO error.
 fn to_fdo_error(error: DesktopIntegrationError) -> fdo::Error {
     fdo::Error::Failed(error.to_string())
 }
 
-/// Отправляет event и логирует закрытый receiver вместо silent ignore.
 fn emit_event(event_tx: &Sender<DesktopIntegrationEvent>, event: DesktopIntegrationEvent) {
     if let Err(error) = event_tx.send(event) {
         debug!(error = %error, "Desktop integration event receiver is closed");
@@ -655,42 +535,4 @@ fn emit_event(event_tx: &Sender<DesktopIntegrationEvent>, event: DesktopIntegrat
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{DesktopPlaybackStatus, MPRIS_CURRENT_TRACK_ID};
-    use media_core::MediaDuration;
-
-    #[test]
-    fn mpris_duration_conversion_saturates_to_i64() {
-        assert_eq!(
-            media_duration_to_mpris_microseconds(MediaDuration::from_secs(2)),
-            2_000_000
-        );
-    }
-
-    #[test]
-    fn changed_properties_do_not_include_position() {
-        let view = DesktopSnapshotView {
-            playback_status: DesktopPlaybackStatus::Playing,
-            metadata: DesktopMetadata {
-                track_id: Some(MPRIS_CURRENT_TRACK_ID.to_string()),
-                title: Some("Sample".to_string()),
-                source_label: Some("sample.webm".to_string()),
-                duration: Some(MediaDuration::from_secs(1)),
-            },
-            position: MediaTime::from_secs(42),
-            can_seek: true,
-        };
-        let change = DesktopSnapshotChange {
-            playback_status_changed: true,
-            metadata_changed: false,
-            can_seek_changed: true,
-        };
-
-        let properties = changed_player_properties(&view, change).unwrap();
-
-        assert!(properties.contains_key("PlaybackStatus"));
-        assert!(properties.contains_key("CanSeek"));
-        assert!(!properties.contains_key("Position"));
-    }
-}
+mod tests;

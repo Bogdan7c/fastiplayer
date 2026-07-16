@@ -3,7 +3,15 @@
 //! UI и shell не вычисляют traversal. Adapter задаёт origin `Ui`, вызывает controller boundary,
 //! а подготовку/установку передаёт существующему strong media-open protocol.
 
-use player_core::{PlaybackState, PlayerCommand, PlayerSnapshot};
+use desktop_integration::{
+    DesktopCommand, DesktopLoopStatus, DesktopTimelineSeekOutcome, DesktopTransportAction,
+    TimelineSeekRequestId as DesktopTimelineSeekRequestId,
+};
+use media_core::{MediaDuration, MediaTime};
+use player_core::{
+    ExactTimelineSeekRequest, PlaybackState, PlayerCommand, PlayerSnapshot, TimelineSeekKind,
+    TimelineSeekRequestId,
+};
 use playlist_core::ManualNavigationDirection;
 use render_wgpu_shell::Renderer;
 use tracing::warn;
@@ -47,6 +55,7 @@ pub(crate) fn apply_transport_action(
             renderer,
             ManualNavigationDirection::Previous,
             player_snapshot,
+            TransportActionOrigin::Ui,
         ),
         TransportControlAction::Next => request_navigation(
             app_state,
@@ -54,6 +63,7 @@ pub(crate) fn apply_transport_action(
             renderer,
             ManualNavigationDirection::Next,
             player_snapshot,
+            TransportActionOrigin::Ui,
         ),
         TransportControlAction::TogglePlayback => {
             if let Some(dispatch) = playlist_runtime.toggle_ui_stable_transport_intent() {
@@ -118,21 +128,265 @@ pub(crate) const fn playback_toggle_will_pause(state: PlaybackState) -> bool {
     )
 }
 
-fn request_navigation(
+pub(crate) fn request_navigation(
     app_state: &mut AppState,
     playlist_runtime: &mut PlaylistRuntime,
     renderer: &Renderer,
     direction: ManualNavigationDirection,
     player_snapshot: &PlayerSnapshot,
+    origin: TransportActionOrigin,
 ) {
     let Some(outcome) = playlist_runtime.request_playlist_navigation(
         direction,
-        TransportActionOrigin::Ui,
+        origin,
         player_snapshot.current_position,
     ) else {
         return;
     };
     apply_manual_navigation_outcome(app_state, playlist_runtime, renderer, outcome);
+}
+
+/// Drain-ит neutral MPRIS mailbox только на app UI thread.
+pub(crate) fn apply_desktop_commands(
+    app_state: &mut AppState,
+    playlist_runtime: &mut PlaylistRuntime,
+    renderer: &Renderer,
+    player_snapshot: &PlayerSnapshot,
+    commands: Vec<DesktopCommand>,
+) -> bool {
+    let mut visible_change = false;
+    for command in commands {
+        let action = command.action;
+        match action {
+            DesktopTransportAction::Next => request_navigation(
+                app_state,
+                playlist_runtime,
+                renderer,
+                ManualNavigationDirection::Next,
+                player_snapshot,
+                TransportActionOrigin::Mpris,
+            ),
+            DesktopTransportAction::Previous => request_navigation(
+                app_state,
+                playlist_runtime,
+                renderer,
+                ManualNavigationDirection::Previous,
+                player_snapshot,
+                TransportActionOrigin::Mpris,
+            ),
+            DesktopTransportAction::Play => apply_desktop_intent(
+                app_state,
+                playlist_runtime,
+                crate::playlist_runtime::StablePlaybackIntent::Playing,
+            ),
+            DesktopTransportAction::Pause | DesktopTransportAction::SetRatePause => {
+                apply_desktop_intent(
+                    app_state,
+                    playlist_runtime,
+                    crate::playlist_runtime::StablePlaybackIntent::Paused,
+                );
+            }
+            DesktopTransportAction::PlayPause => {
+                if let Some(dispatch) = playlist_runtime.toggle_desktop_playback_intent() {
+                    app_state.apply_playlist_stable_intent_dispatch(playlist_runtime, dispatch);
+                }
+            }
+            DesktopTransportAction::Stop => match playlist_runtime.request_desktop_stop() {
+                Some(Ok(request)) => app_state.dispatch_exact_playlist_transport(request),
+                Some(Err(outcome)) => {
+                    tracing::debug!(?outcome, "MPRIS Stop сохранён controller guard-ом")
+                }
+                None => {}
+            },
+            DesktopTransportAction::SetLoopStatus(status) => {
+                let repeat_mode = match status {
+                    DesktopLoopStatus::None => playlist_core::RepeatMode::StopAtEnd,
+                    DesktopLoopStatus::Track => playlist_core::RepeatMode::RepeatOne,
+                    DesktopLoopStatus::Playlist => playlist_core::RepeatMode::RepeatQueue,
+                };
+                match playlist_runtime.record_startup_repeat_mode(repeat_mode) {
+                    Ok(changed) => visible_change |= changed,
+                    Err(error) => warn!(?error, "MPRIS LoopStatus mutation отклонена"),
+                }
+            }
+            DesktopTransportAction::SetShuffle(enabled) => {
+                match playlist_runtime.record_startup_shuffle_enabled(enabled) {
+                    Ok(changed) => visible_change |= changed,
+                    Err(error) => warn!(?error, "MPRIS Shuffle mutation отклонена"),
+                }
+            }
+            DesktopTransportAction::SetVolume(volume) => {
+                if playlist_runtime.set_desktop_effective_volume(volume) {
+                    visible_change = true;
+                    if let Err(error) = app_state
+                        .player_command_sender()
+                        .try_send(PlayerCommand::SetVolume(volume.as_player()))
+                    {
+                        warn!(error = %error, "MPRIS Volume не принят active player binding");
+                    }
+                }
+            }
+            DesktopTransportAction::Seek {
+                request_id,
+                offset_microseconds,
+            } => {
+                apply_relative_desktop_seek(
+                    app_state,
+                    playlist_runtime,
+                    renderer,
+                    player_snapshot,
+                    request_id,
+                    offset_microseconds,
+                );
+            }
+            DesktopTransportAction::SetPosition {
+                request_id,
+                track_key,
+                position_microseconds,
+            } => {
+                if !playlist_runtime.desktop_track_matches(track_key) {
+                    playlist_runtime.record_desktop_seek_outcome(
+                        DesktopTimelineSeekOutcome::StaleTrack { request_id },
+                    );
+                    continue;
+                }
+                let Some(media_instance_id) = player_snapshot.media_instance_id else {
+                    playlist_runtime.record_desktop_seek_outcome(
+                        DesktopTimelineSeekOutcome::StaleInstance { request_id },
+                    );
+                    continue;
+                };
+                let Ok(microseconds) = u64::try_from(position_microseconds) else {
+                    playlist_runtime.record_desktop_seek_outcome(
+                        DesktopTimelineSeekOutcome::InvalidRange { request_id },
+                    );
+                    continue;
+                };
+                let target =
+                    MediaTime::from_duration(std::time::Duration::from_micros(microseconds));
+                app_state.dispatch_exact_timeline_seek(ExactTimelineSeekRequest {
+                    request_id: player_seek_request_id(request_id),
+                    media_instance_id,
+                    target,
+                    kind: TimelineSeekKind::SetPosition,
+                });
+            }
+        }
+    }
+    visible_change
+}
+
+fn apply_desktop_intent(
+    app_state: &mut AppState,
+    playlist_runtime: &mut PlaylistRuntime,
+    intent: crate::playlist_runtime::StablePlaybackIntent,
+) {
+    if let Some(dispatch) = playlist_runtime.record_desktop_playback_intent(intent) {
+        app_state.apply_playlist_stable_intent_dispatch(playlist_runtime, dispatch);
+    }
+}
+
+fn apply_relative_desktop_seek(
+    app_state: &mut AppState,
+    playlist_runtime: &mut PlaylistRuntime,
+    renderer: &Renderer,
+    snapshot: &PlayerSnapshot,
+    request_id: DesktopTimelineSeekRequestId,
+    offset_microseconds: i64,
+) {
+    match resolve_relative_desktop_seek(
+        snapshot.timeline.current_position,
+        snapshot.timeline.duration,
+        offset_microseconds,
+    ) {
+        RelativeSeekResolution::BeyondEnd => {
+            playlist_runtime
+                .record_desktop_seek_outcome(DesktopTimelineSeekOutcome::BeyondEnd { request_id });
+            request_navigation(
+                app_state,
+                playlist_runtime,
+                renderer,
+                ManualNavigationDirection::Next,
+                snapshot,
+                TransportActionOrigin::Mpris,
+            );
+        }
+        RelativeSeekResolution::ArithmeticOverflow => {
+            playlist_runtime.record_desktop_seek_outcome(
+                DesktopTimelineSeekOutcome::ArithmeticOverflow { request_id },
+            );
+        }
+        RelativeSeekResolution::InTrack(target) => {
+            let Some(media_instance_id) = snapshot.media_instance_id else {
+                playlist_runtime.record_desktop_seek_outcome(
+                    DesktopTimelineSeekOutcome::StaleInstance { request_id },
+                );
+                return;
+            };
+            app_state.dispatch_exact_timeline_seek(ExactTimelineSeekRequest {
+                request_id: player_seek_request_id(request_id),
+                media_instance_id,
+                target,
+                kind: TimelineSeekKind::Relative,
+            });
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RelativeSeekResolution {
+    InTrack(MediaTime),
+    BeyondEnd,
+    ArithmeticOverflow,
+}
+
+/// Разрешает signed relative seek отдельно от SetPosition range policy.
+fn resolve_relative_desktop_seek(
+    current_position: MediaTime,
+    known_duration: Option<MediaDuration>,
+    offset_microseconds: i64,
+) -> RelativeSeekResolution {
+    let Ok(current_microseconds) = i128::try_from(current_position.as_duration().as_micros())
+    else {
+        return if known_duration.is_some() && offset_microseconds > 0 {
+            RelativeSeekResolution::BeyondEnd
+        } else {
+            RelativeSeekResolution::ArithmeticOverflow
+        };
+    };
+    let Some(target_microseconds) =
+        current_microseconds.checked_add(i128::from(offset_microseconds))
+    else {
+        return if known_duration.is_some() && offset_microseconds > 0 {
+            RelativeSeekResolution::BeyondEnd
+        } else {
+            RelativeSeekResolution::ArithmeticOverflow
+        };
+    };
+    let target_microseconds = target_microseconds.max(0);
+    if known_duration.is_some_and(|duration| {
+        i128::try_from(duration.as_duration().as_micros())
+            .is_ok_and(|duration_microseconds| target_microseconds > duration_microseconds)
+    }) {
+        return RelativeSeekResolution::BeyondEnd;
+    }
+    let Ok(target_microseconds) = u64::try_from(target_microseconds) else {
+        return if known_duration.is_some() && offset_microseconds > 0 {
+            RelativeSeekResolution::BeyondEnd
+        } else {
+            RelativeSeekResolution::ArithmeticOverflow
+        };
+    };
+    RelativeSeekResolution::InTrack(MediaTime::from_duration(std::time::Duration::from_micros(
+        target_microseconds,
+    )))
+}
+
+fn player_seek_request_id(request_id: DesktopTimelineSeekRequestId) -> TimelineSeekRequestId {
+    TimelineSeekRequestId::new(
+        std::num::NonZeroU64::new(request_id.get())
+            .expect("desktop timeline request IDs are non-zero"),
+    )
 }
 
 fn apply_manual_navigation_outcome(
@@ -209,5 +463,41 @@ mod tests {
         ] {
             assert!(!playback_toggle_will_pause(state));
         }
+    }
+
+    #[test]
+    fn relative_seek_clamps_underflow_and_accepts_equal_known_end() {
+        assert_eq!(
+            resolve_relative_desktop_seek(MediaTime::from_secs(2), None, -3_000_000),
+            RelativeSeekResolution::InTrack(MediaTime::ZERO)
+        );
+        assert_eq!(
+            resolve_relative_desktop_seek(
+                MediaTime::from_secs(2),
+                Some(MediaDuration::from_secs(3)),
+                1_000_000,
+            ),
+            RelativeSeekResolution::InTrack(MediaTime::from_secs(3))
+        );
+    }
+
+    #[test]
+    fn relative_seek_separates_known_beyond_end_from_unknown_overflow() {
+        assert_eq!(
+            resolve_relative_desktop_seek(
+                MediaTime::from_secs(2),
+                Some(MediaDuration::from_secs(3)),
+                1_000_001,
+            ),
+            RelativeSeekResolution::BeyondEnd
+        );
+        assert_eq!(
+            resolve_relative_desktop_seek(
+                MediaTime::from_duration(std::time::Duration::MAX),
+                None,
+                1,
+            ),
+            RelativeSeekResolution::ArithmeticOverflow
+        );
     }
 }

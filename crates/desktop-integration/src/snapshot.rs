@@ -1,23 +1,16 @@
 use media_core::{MediaDuration, MediaTime};
-use player_core::{PlaybackState, PlayerSnapshot};
 
-use crate::MPRIS_CURRENT_TRACK_ID;
+use crate::{DesktopLoopStatus, DesktopTrackKey, EffectiveVolume, TimelineSeekRequestId};
 
 /// MPRIS-compatible playback status без зависимости от zbus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesktopPlaybackStatus {
-    /// MPRIS `Playing`.
     Playing,
-
-    /// MPRIS `Paused`.
     Paused,
-
-    /// MPRIS `Stopped`.
     Stopped,
 }
 
 impl DesktopPlaybackStatus {
-    /// Возвращает строку, которую ожидает MPRIS property `PlaybackStatus`.
     #[must_use]
     pub const fn as_mpris_str(self) -> &'static str {
         match self {
@@ -28,219 +21,144 @@ impl DesktopPlaybackStatus {
     }
 }
 
-/// Metadata, которую platform backend может сериализовать в свой transport.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DesktopMetadata {
-    /// Stable track id текущего media для MPRIS SetPosition.
-    pub track_id: Option<String>,
+/// Монотонная committed revision process-lifetime transport snapshot-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DesktopSnapshotRevision(u64);
 
-    /// Заголовок media для desktop widget.
-    pub title: Option<String>,
+impl DesktopSnapshotRevision {
+    pub const INITIAL: Self = Self(0);
 
-    /// Человекочитаемый источник, если отдельного title нет.
-    pub source_label: Option<String>,
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
 
-    /// Длительность media; в MPRIS публикуется как `mpris:length`.
-    pub duration: Option<MediaDuration>,
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
 }
 
-/// Compact view snapshot-а, который нужен desktop backend-ам.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DesktopSnapshotView {
-    /// Текущее состояние playback в MPRIS-compatible форме.
-    pub playback_status: DesktopPlaybackStatus,
-
-    /// Metadata текущего media.
-    pub metadata: DesktopMetadata,
-
-    /// Текущая media-позиция.
-    pub position: MediaTime,
-
-    /// Можно ли принимать desktop seek commands.
+/// Динамические capability свойства MPRIS Player.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DesktopCapabilities {
+    pub can_go_next: bool,
+    pub can_go_previous: bool,
+    pub can_play: bool,
+    pub can_pause: bool,
     pub can_seek: bool,
 }
 
-impl DesktopSnapshotView {
-    /// Строит desktop view только из public `PlayerSnapshot`.
-    #[must_use]
-    pub fn from_player_snapshot(snapshot: &PlayerSnapshot) -> Self {
-        let duration = snapshot
-            .timeline
-            .duration
-            .or_else(|| snapshot.duration.map(MediaDuration::from_duration));
-        let source_label = snapshot.source_label.clone();
-        let title = snapshot
-            .media_title
-            .clone()
-            .or_else(|| source_label.clone());
-        let has_media = source_label.is_some();
+/// Metadata активного media; track key кодируется в object path только Linux adapter-ом.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DesktopMetadata {
+    pub track_key: Option<DesktopTrackKey>,
+    pub title: Option<String>,
+    pub source_label: Option<String>,
+    pub duration: Option<MediaDuration>,
+}
 
+/// Matching Applied seek, который backend должен сигналить ровно один раз.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DesktopSeeked {
+    pub request_id: TimelineSeekRequestId,
+    pub position: MediaTime,
+}
+
+/// Полный process-lifetime transport snapshot.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DesktopSnapshotView {
+    pub revision: DesktopSnapshotRevision,
+    pub playback_status: DesktopPlaybackStatus,
+    pub metadata: DesktopMetadata,
+    pub position: MediaTime,
+    pub capabilities: DesktopCapabilities,
+    pub loop_status: DesktopLoopStatus,
+    pub shuffle: bool,
+    pub volume: EffectiveVolume,
+    pub seeked: Option<DesktopSeeked>,
+}
+
+impl DesktopSnapshotView {
+    #[must_use]
+    pub fn neutral(volume: EffectiveVolume) -> Self {
         Self {
-            playback_status: map_playback_status(snapshot.playback_state),
-            metadata: DesktopMetadata {
-                track_id: has_media.then(|| MPRIS_CURRENT_TRACK_ID.to_string()),
-                title,
-                source_label,
-                duration,
-            },
-            position: snapshot.timeline.current_position,
-            can_seek: has_media && snapshot.timeline.seekable,
+            revision: DesktopSnapshotRevision::INITIAL,
+            playback_status: DesktopPlaybackStatus::Stopped,
+            metadata: DesktopMetadata::default(),
+            position: MediaTime::ZERO,
+            capabilities: DesktopCapabilities::default(),
+            loop_status: DesktopLoopStatus::None,
+            shuffle: false,
+            volume,
+            seeked: None,
         }
     }
 
-    /// Возвращает `true`, если metadata представляет открытый media.
     #[must_use]
-    pub fn has_media(&self) -> bool {
-        self.metadata.track_id.is_some()
+    pub const fn has_media(&self) -> bool {
+        self.metadata.track_key.is_some()
     }
 }
 
-/// Набор MPRIS-signalled properties, изменившихся после нового snapshot.
+/// Diff хранит только protocol-level факты; payload всегда читается из latest revision.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DesktopSnapshotChange {
-    /// Изменился `PlaybackStatus`.
-    pub playback_status_changed: bool,
-
-    /// Изменилась `Metadata`, включая duration.
-    pub metadata_changed: bool,
-
-    /// Изменился `CanSeek`.
-    pub can_seek_changed: bool,
+    pub dynamic_properties_changed: bool,
+    pub seeked: Option<DesktopSeeked>,
 }
 
 impl DesktopSnapshotChange {
-    /// Сравнивает два desktop view без учёта high-rate position.
     #[must_use]
     pub fn from_views(previous: &DesktopSnapshotView, current: &DesktopSnapshotView) -> Self {
+        let dynamic_properties_changed = previous.playback_status != current.playback_status
+            || previous.metadata != current.metadata
+            || previous.capabilities != current.capabilities
+            || previous.loop_status != current.loop_status
+            || previous.shuffle != current.shuffle
+            || previous.volume != current.volume;
+        let seeked = (previous.seeked != current.seeked)
+            .then_some(current.seeked)
+            .flatten();
         Self {
-            playback_status_changed: previous.playback_status != current.playback_status,
-            metadata_changed: previous.metadata != current.metadata,
-            can_seek_changed: previous.can_seek != current.can_seek,
+            dynamic_properties_changed,
+            seeked,
         }
     }
 
-    /// Проверяет, есть ли properties для D-Bus notification.
     #[must_use]
-    pub const fn has_property_changes(self) -> bool {
-        self.playback_status_changed || self.metadata_changed || self.can_seek_changed
-    }
-}
-
-/// Маппит rich playback state в три состояния MPRIS.
-#[must_use]
-fn map_playback_status(playback_state: PlaybackState) -> DesktopPlaybackStatus {
-    match playback_state {
-        PlaybackState::Playing
-        | PlaybackState::Buffering
-        | PlaybackState::Seeking
-        | PlaybackState::Draining => DesktopPlaybackStatus::Playing,
-        PlaybackState::Scrubbing | PlaybackState::Paused | PlaybackState::Ended => {
-            DesktopPlaybackStatus::Paused
-        }
-        PlaybackState::Idle
-        | PlaybackState::Opening
-        | PlaybackState::Stopped
-        | PlaybackState::Failed => DesktopPlaybackStatus::Stopped,
+    pub const fn has_notifications(self) -> bool {
+        self.dynamic_properties_changed || self.seeked.is_some()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use media_core::{MediaDuration, MediaTime, TimelineSnapshot};
-    use player_core::{PlaybackState, PlayerSnapshot};
-
     use super::*;
 
-    #[test]
-    fn maps_snapshot_metadata_duration_and_can_seek() {
-        let mut snapshot = PlayerSnapshot::empty();
-        snapshot.source_label = Some("sample.webm".to_string());
-        snapshot.media_title = Some("Sample".to_string());
-        snapshot.timeline = TimelineSnapshot::seekable_vod(MediaDuration::from_secs(90));
-
-        let view = DesktopSnapshotView::from_player_snapshot(&snapshot);
-
-        assert_eq!(
-            view.metadata.track_id.as_deref(),
-            Some(MPRIS_CURRENT_TRACK_ID)
-        );
-        assert_eq!(view.metadata.title.as_deref(), Some("Sample"));
-        assert_eq!(view.metadata.duration, Some(MediaDuration::from_secs(90)));
-        assert!(view.can_seek);
+    fn volume() -> EffectiveVolume {
+        EffectiveVolume::from_player(1.0).expect("test volume")
     }
 
     #[test]
-    fn falls_back_to_source_label_as_title() {
-        let mut snapshot = PlayerSnapshot::empty();
-        snapshot.source_label = Some("fallback-title.webm".to_string());
+    fn position_and_fixed_contract_do_not_create_properties_changed() {
+        let previous = DesktopSnapshotView::neutral(volume());
+        let mut current = previous.clone();
+        current.position = MediaTime::from_secs(42);
+        current.revision = DesktopSnapshotRevision::new(1);
 
-        let view = DesktopSnapshotView::from_player_snapshot(&snapshot);
-
-        assert_eq!(view.metadata.title.as_deref(), Some("fallback-title.webm"));
-    }
-
-    #[test]
-    fn maps_playback_status_to_mpris_values() {
-        let mut snapshot = PlayerSnapshot::empty();
-
-        snapshot.playback_state = PlaybackState::Playing;
         assert_eq!(
-            DesktopSnapshotView::from_player_snapshot(&snapshot).playback_status,
-            DesktopPlaybackStatus::Playing
-        );
-
-        snapshot.playback_state = PlaybackState::Paused;
-        assert_eq!(
-            DesktopSnapshotView::from_player_snapshot(&snapshot).playback_status,
-            DesktopPlaybackStatus::Paused
-        );
-
-        snapshot.playback_state = PlaybackState::Scrubbing;
-        assert_eq!(
-            DesktopSnapshotView::from_player_snapshot(&snapshot).playback_status,
-            DesktopPlaybackStatus::Paused
-        );
-
-        snapshot.playback_state = PlaybackState::Stopped;
-        assert_eq!(
-            DesktopSnapshotView::from_player_snapshot(&snapshot).playback_status,
-            DesktopPlaybackStatus::Stopped
+            DesktopSnapshotChange::from_views(&previous, &current),
+            DesktopSnapshotChange::default()
         );
     }
 
     #[test]
-    fn snapshot_change_ignores_position_only_updates() {
-        let mut previous_snapshot = PlayerSnapshot::empty();
-        previous_snapshot.source_label = Some("sample.webm".to_string());
-        previous_snapshot.timeline = TimelineSnapshot::seekable_vod(MediaDuration::from_secs(90));
+    fn every_dynamic_capability_change_requests_full_property_publication() {
+        let previous = DesktopSnapshotView::neutral(volume());
+        let mut current = previous.clone();
+        current.capabilities.can_play = true;
 
-        let mut current_snapshot = previous_snapshot.clone();
-        current_snapshot.timeline.current_position = MediaTime::from_secs(10);
-
-        let previous_view = DesktopSnapshotView::from_player_snapshot(&previous_snapshot);
-        let current_view = DesktopSnapshotView::from_player_snapshot(&current_snapshot);
-        let change = DesktopSnapshotChange::from_views(&previous_view, &current_view);
-
-        assert!(!change.has_property_changes());
-    }
-
-    #[test]
-    fn snapshot_change_tracks_metadata_duration_can_seek_and_status() {
-        let mut previous_snapshot = PlayerSnapshot::empty();
-        previous_snapshot.source_label = Some("sample.webm".to_string());
-        previous_snapshot.playback_state = PlaybackState::Paused;
-
-        let mut current_snapshot = previous_snapshot.clone();
-        current_snapshot.playback_state = PlaybackState::Playing;
-        current_snapshot.timeline = TimelineSnapshot::seekable_vod(MediaDuration::from_secs(90));
-
-        let previous_view = DesktopSnapshotView::from_player_snapshot(&previous_snapshot);
-        let current_view = DesktopSnapshotView::from_player_snapshot(&current_snapshot);
-        let change = DesktopSnapshotChange::from_views(&previous_view, &current_view);
-
-        assert!(change.playback_status_changed);
-        assert!(change.metadata_changed);
-        assert!(change.can_seek_changed);
-        assert!(change.has_property_changes());
+        assert!(DesktopSnapshotChange::from_views(&previous, &current).dynamic_properties_changed);
     }
 }

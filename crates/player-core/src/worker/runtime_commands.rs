@@ -134,6 +134,10 @@ impl PlayerWorkerRuntime {
                     warn!("Exact media transport outcome receiver was dropped");
                 }
             }
+            WorkerCommand::ExactTimelineSeek {
+                request,
+                outcome_tx,
+            } => self.session.begin_exact_timeline_seek(request, outcome_tx),
             WorkerCommand::MediaOpenFailed { request, error } => {
                 self.session.fail_media_open_with_error(request, error);
             }
@@ -184,6 +188,7 @@ impl PlayerWorkerRuntime {
                 }
             }
         }
+        self.session.reconcile_exact_timeline_seek_identity();
     }
 
     /// Применяет typed runtime settings, которыми владеет worker.

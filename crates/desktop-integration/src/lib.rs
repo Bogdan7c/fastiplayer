@@ -1,8 +1,7 @@
 //! Desktop integration boundary для media controls.
 //!
-//! Crate намеренно видит только public `player-core` contracts: команды уходят через
-//! `PlayerCommand`, а состояние читается из read-only `PlayerSnapshot`. Linux MPRIS
-//! живёт в platform backend и не протекает в `player-core`.
+//! Crate владеет только neutral desktop vocabulary и Linux MPRIS codec. Player,
+//! playlist/controller и process lease остаются за app composition root.
 
 #![forbid(unsafe_code)]
 
@@ -15,13 +14,15 @@ mod shutdown;
 mod snapshot;
 
 pub use command::{
-    DesktopCommandSink, MPRIS_CURRENT_TRACK_ID, MprisCommand, MprisSetPositionRequest,
-    map_mpris_command_to_player_commands,
+    DesktopCommand, DesktopCommandRequestId, DesktopCommandSink, DesktopLoopStatus,
+    DesktopTimelineSeekOutcome, DesktopTrackKey, DesktopTransportAction, EffectiveVolume,
+    EffectiveVolumeError, TimelineSeekRequestId,
 };
 pub use error::{DesktopIntegrationError, DesktopIntegrationResult};
 pub use event::{DesktopBackendKind, DesktopIntegrationEvent};
 pub use runtime::{DesktopIntegration, LatestSnapshotHandle, LatestSnapshotSource};
 pub use shutdown::{DesktopIntegrationShutdownOutcome, DesktopIntegrationShutdownTransportFailure};
 pub use snapshot::{
-    DesktopMetadata, DesktopPlaybackStatus, DesktopSnapshotChange, DesktopSnapshotView,
+    DesktopCapabilities, DesktopMetadata, DesktopPlaybackStatus, DesktopSeeked,
+    DesktopSnapshotChange, DesktopSnapshotRevision, DesktopSnapshotView,
 };

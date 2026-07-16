@@ -37,6 +37,22 @@ impl PlayerCommandSender {
         ))
     }
 
+    /// Ставит exact-instance seek и возвращает receipt фактического commit-а.
+    pub fn exact_timeline_seek(
+        &self,
+        request: ExactTimelineSeekRequest,
+    ) -> Result<ExactTimelineSeekReceipt, PlayerWorkerSendError> {
+        let (outcome_tx, outcome_rx) = bounded(1);
+        self.try_send_worker_command(WorkerCommand::ExactTimelineSeek {
+            request,
+            outcome_tx,
+        })?;
+        Ok(ExactTimelineSeekReceipt::new(
+            request.request_id,
+            outcome_rx,
+        ))
+    }
+
     /// Ставит exact-instance restore и возвращает receipt, а не ложный success по enqueue.
     pub fn restore_installed_media_state(
         &self,

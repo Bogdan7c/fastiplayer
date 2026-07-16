@@ -1122,6 +1122,7 @@ pub(crate) fn render_frame(
     let input_snapshot_timings = prepared_frame_input.timings;
     let egui_input = prepared_frame_input.egui_input;
     let frame_context = prepared_frame_input.frame_context;
+    playlist_runtime.publish_desktop_snapshot(frame_context.player_snapshot());
 
     let stage_started_at = Instant::now();
     if let Some(binding) = app_state.playlist_runtime_binding() {

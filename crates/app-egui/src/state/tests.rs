@@ -1,9 +1,7 @@
-use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata};
-use desktop_integration::DesktopIntegrationShutdownOutcome;
 use frame_server_core::{
     DeferredLiveScrubSettingsChange, LiveScrubDecodeMode, LiveScrubDiagnostics,
     LiveScrubSettingsSnapshot, ScrubDiagnosticsRecorder,
@@ -11,8 +9,8 @@ use frame_server_core::{
 use media_core::MediaTime;
 use player_core::{
     MediaOpenRequest, MediaSource, MediaSummary, PlaybackRate, PlaybackResumeIntent, PlaybackState,
-    PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerSnapshot,
-    PlayerWorkerShutdownOutcome, ScrubCommitPolicy, SeekCommitInfo, SeekRequest,
+    PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, PlayerSnapshot, ScrubCommitPolicy,
+    SeekCommitInfo, SeekRequest,
 };
 use render_core::{
     ActiveColorPath, ColorPipelineSettings, HdrMetadataDiagnosticMarker,
@@ -35,32 +33,10 @@ use super::ui_runtime::{
     live_scrub_release_policy_from_action, playback_rate_command_from_action,
     timeline_command_from_action,
 };
-use super::{AppFrameContext, AppState, shutdown_app_state_owners_in_order};
+use super::{AppFrameContext, AppState};
 use crate::telemetry::Telemetry;
 use crate::ui::player_controls::ControlAction;
 use crate::ui::timeline::{TimelineAction, TimelineUiState};
-
-#[test]
-fn desktop_integration_shutdown_precedes_player_shutdown() {
-    let call_order = RefCell::new(Vec::new());
-    let report = shutdown_app_state_owners_in_order(
-        || {
-            call_order.borrow_mut().push("desktop-integration");
-            Some(DesktopIntegrationShutdownOutcome::AlreadyCompleted)
-        },
-        || {
-            call_order.borrow_mut().push("player");
-            PlayerWorkerShutdownOutcome::AlreadyCompleted
-        },
-    );
-
-    assert_eq!(call_order.into_inner(), ["desktop-integration", "player"]);
-    assert_eq!(
-        report.desktop_integration,
-        Some(DesktopIntegrationShutdownOutcome::AlreadyCompleted)
-    );
-    assert_eq!(report.player, PlayerWorkerShutdownOutcome::AlreadyCompleted);
-}
 
 /// Собирает source `state` и child-модулей для guard-тестов после split-а.
 fn state_source_for_architecture_tests() -> String {
@@ -568,18 +544,15 @@ fn app_layout_shrinks_video_viewport_by_sidebar_without_exclusion_rects() {
 fn app_state_player_snapshot_boundary_stays_explicit() {
     let state_source = state_source_for_architecture_tests();
     let frame_prepare_source = include_str!("../frame_prepare.rs");
-    let input_snapshot_source = include_str!("../frame_prepare/input_snapshot.rs");
+    let desktop_owner_source = include_str!("../playlist_runtime/desktop_transport.rs");
     let removed_getter_signature = concat!("fn ", "player_snapshot", "(&mut self)");
     let refresh_signature = concat!(
         "pub(crate) fn ",
         "refresh_player_snapshot",
         "(&mut self) -> PlayerSnapshot"
     );
-    let publish_signature = concat!(
-        "pub(crate) fn ",
-        "publish_desktop_snapshot",
-        "(&self, player_snapshot: &PlayerSnapshot)"
-    );
+    let publish_signature =
+        "pub(crate) fn publish_desktop_snapshot(&mut self, snapshot: &PlayerSnapshot)";
 
     assert!(
         !state_source.contains(removed_getter_signature),
@@ -590,8 +563,9 @@ fn app_state_player_snapshot_boundary_stays_explicit() {
         "AppState должен явно читать worker snapshot через refresh_player_snapshot()"
     );
     assert!(
-        state_source.contains(publish_signature),
-        "AppState должен явно публиковать desktop snapshot через publish_desktop_snapshot()"
+        !state_source.contains("desktop_integration: Option<DesktopIntegration>")
+            && !state_source.contains("DesktopIntegration::spawn"),
+        "renderer-lifetime AppState не должен владеть desktop integration"
     );
 
     let refresh_section = source_section_between(
@@ -608,36 +582,28 @@ fn app_state_player_snapshot_boundary_stays_explicit() {
         "refresh_player_snapshot() не должен напрямую трогать desktop integration"
     );
 
-    let publish_section = source_section_between(
-        &state_source,
-        publish_signature,
-        concat!("fn ", "log_desktop_integration_events"),
+    assert!(
+        desktop_owner_source.contains(publish_signature),
+        "process-lifetime PlaylistRuntime должен явно публиковать desktop snapshot"
     );
     assert!(
-        !publish_section.contains("latest_snapshot"),
-        "publish_desktop_snapshot() не должен читать worker snapshot"
-    );
-    assert!(
-        !publish_section.contains("player_worker"),
-        "publish_desktop_snapshot() не должен зависеть от worker storage"
+        !desktop_owner_source.contains("PlayerCommand"),
+        "desktop owner не должен создавать direct player command bypass"
     );
 
-    let begin_frame_position = input_snapshot_source
-        .find("let frame_context = app_state.begin_frame_context(renderer.diagnostics());")
-        .expect("input snapshot adapter должен создавать AppFrameContext перед публикацией");
-    let publish_position = input_snapshot_source
-        .find("app_state.publish_desktop_snapshot(frame_context.player_snapshot());")
-        .expect("input snapshot adapter должен явно публиковать snapshot текущего frame-а");
     let input_prepare_position = frame_prepare_source
         .find("prepare_frame_input(telemetry, window, renderer, app_state, &mut frame_sequence)")
         .expect("render_frame должен делегировать input snapshot отдельному adapter-у");
+    let publish_position = frame_prepare_source
+        .find("playlist_runtime.publish_desktop_snapshot(frame_context.player_snapshot());")
+        .expect("frame adapter должен передать уже зафиксированный snapshot process owner-у");
     let ui_prepare_position = frame_prepare_source
         .find("let mut prepared_ui_frame = prepare_ui_frame(")
         .expect("render_frame должен готовить UI через тот же AppFrameContext");
 
     assert!(
-        begin_frame_position < publish_position && input_prepare_position < ui_prepare_position,
-        "input adapter должен публиковать AppFrameContext до UI/render подготовки"
+        input_prepare_position < publish_position && publish_position < ui_prepare_position,
+        "process owner должен публиковать тот же AppFrameContext до UI/render подготовки"
     );
 }
 

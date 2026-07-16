@@ -52,6 +52,7 @@ mod seek_transaction;
 mod snapshot_builder;
 mod staged_media_install;
 mod tick;
+mod timeline_seek;
 
 #[cfg(test)]
 use self::audio_runtime::{
@@ -136,6 +137,10 @@ pub struct PlayerSession {
 
     /// Runtime state seek transaction/scrub/trace markers, которым владеет session.
     seek_runtime: SeekRuntimeState,
+
+    /// Request-owned completion активного external exact seek-а.
+    pending_exact_timeline_seek:
+        Option<crate::media_install::timeline_seek::PendingExactTimelineSeek>,
 
     /// S17B bridge: neutral prepared working set плюс seek-owned promoted lease.
     prepared_seek_landing: PreparedSeekLandingRuntime,
@@ -1190,6 +1195,7 @@ impl Default for PlayerSession {
                 .validate()
                 .expect("default frame-server config must validate"),
             seek_runtime: SeekRuntimeState::default(),
+            pending_exact_timeline_seek: None,
             prepared_seek_landing: PreparedSeekLandingRuntime,
             pending_video_backend_reselection: None,
             last_audio_starvation_warn_at: None,

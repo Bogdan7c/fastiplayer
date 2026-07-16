@@ -3,9 +3,13 @@ use thiserror::Error;
 /// Единый тип ошибок neutral desktop integration boundary.
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum DesktopIntegrationError {
-    /// Команда не была принята playback worker boundary.
-    #[error("desktop command send failed: {0}")]
-    CommandSendFailed(String),
+    /// Bounded app mailbox заполнен; команда не превращается в hidden queue.
+    #[error("desktop command mailbox is full")]
+    CommandBackpressure,
+
+    /// Process-lifetime app command owner уже отключён.
+    #[error("desktop command mailbox is disconnected")]
+    CommandDisconnected,
 
     /// Latest snapshot lock повреждён panic-ом другого thread-а.
     #[error("desktop snapshot lock is poisoned")]
@@ -14,6 +18,10 @@ pub enum DesktopIntegrationError {
     /// Platform backend не смог стартовать или обслужить platform API.
     #[error("desktop backend error: {0}")]
     Backend(String),
+
+    /// Единственное base MPRIS имя уже принадлежит другому процессу.
+    #[error("MPRIS base bus name is unavailable")]
+    MprisBusNameUnavailable,
 
     /// Thread backend-а не был создан операционной системой.
     #[error("desktop backend thread spawn failed: {0}")]

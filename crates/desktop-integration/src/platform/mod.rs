@@ -38,7 +38,7 @@ pub(crate) enum BackendControlCommand {
 /// Handle platform backend-а, скрывающий thread/channel детали.
 pub(crate) struct BackendHandle {
     /// Command sink хранится здесь, чтобы lifetime совпадал с backend-ом.
-    command_sink: Arc<dyn DesktopCommandSink>,
+    _command_sink: Arc<dyn DesktopCommandSink>,
 
     /// Канал управления backend thread-ом.
     control_tx: Option<Sender<BackendControlCommand>>,
@@ -83,7 +83,7 @@ impl BackendHandle {
         join_handle: thread::JoinHandle<()>,
     ) -> Self {
         Self {
-            command_sink,
+            _command_sink: command_sink,
             control_tx: Some(control_tx),
             join_handle: Some(join_handle),
             shutdown_requested: false,
@@ -98,7 +98,7 @@ impl BackendHandle {
     #[cfg(not(target_os = "linux"))]
     pub(crate) fn stub(command_sink: Arc<dyn DesktopCommandSink>) -> Self {
         Self {
-            command_sink,
+            _command_sink: command_sink,
             control_tx: None,
             join_handle: None,
             shutdown_requested: false,
@@ -107,11 +107,6 @@ impl BackendHandle {
             terminal_outcome: None,
             completion_reported: false,
         }
-    }
-
-    /// Возвращает command sink для neutral convenience APIs.
-    pub(crate) fn command_sink(&self) -> Arc<dyn DesktopCommandSink> {
-        Arc::clone(&self.command_sink)
     }
 
     /// Проверяет, что terminal shutdown ещё не закрыл desktop admission.
@@ -331,8 +326,8 @@ pub(crate) fn spawn_stub_backend(
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use crate::DesktopCommand;
     use crossbeam_channel::{bounded, unbounded};
-    use player_core::PlayerCommand;
 
     use super::*;
 
@@ -340,7 +335,7 @@ mod tests {
     struct AcceptingCommandSink;
 
     impl DesktopCommandSink for AcceptingCommandSink {
-        fn send_desktop_command(&self, _command: PlayerCommand) -> DesktopIntegrationResult<()> {
+        fn send_desktop_command(&self, _command: DesktopCommand) -> DesktopIntegrationResult<()> {
             Ok(())
         }
     }

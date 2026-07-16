@@ -23,9 +23,13 @@ impl ActiveMediaLineageId {
     }
 
     /// Возвращает число только для diagnostics и focused tests.
+    pub(crate) const fn expose_value_for_correlation(self) -> u64 {
+        self.0.get()
+    }
+
     #[cfg(test)]
     pub(crate) const fn get(self) -> u64 {
-        self.0.get()
+        self.expose_value_for_correlation()
     }
 }
 

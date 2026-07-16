@@ -25,6 +25,7 @@ mod actions;
     reason = "Session 11A publishes controller foundation before Session 11B/12 UI callsites"
 )]
 mod controller;
+mod desktop_transport;
 pub(crate) mod discovery;
 #[allow(
     dead_code,
@@ -84,7 +85,7 @@ pub(crate) use actions::{
 pub(crate) use controller::PlaylistController;
 pub(crate) use controller::{
     AutomaticLifecycleOutcome, ControllerManualNavigationOutcome, ControllerStableIntentDispatch,
-    PlannedPlaylistInstall,
+    PlannedPlaylistInstall, StablePlaybackIntent,
 };
 pub(crate) use controller::{StartupRestoreFailureOutcome, StartupRestoreTarget};
 pub(crate) use discovery::PlaylistDiscoveryNavigationAction;
@@ -393,6 +394,8 @@ pub(crate) struct PlaylistRuntime {
     /// Runtime-only active source/checkpoint переживают renderer-bound `AppState` recreation.
     suspended_media: suspend_resume::SuspendedMediaState,
     settings: settings::PlaylistSettingsOwner,
+    /// MPRIS backend/mailbox/snapshot/volume переживают renderer-bound AppState.
+    desktop_transport: Option<desktop_transport::DesktopTransportOwner>,
 }
 
 impl PlaylistRuntime {
@@ -419,6 +422,7 @@ impl PlaylistRuntime {
         wake_port: AppWakePort,
         playlist_config: rustiplayer_config::PlaylistConfig,
     ) -> Self {
+        let desktop_transport = desktop_transport::DesktopTransportOwner::new(wake_port.clone());
         let media_open = MediaOpenCoordinator::new(wake_port.clone());
         let startup = startup::PlaylistStartupOwner::new(wake_port.clone());
         let discovery = discovery::PlaylistDiscoveryCoordinator::new(wake_port.clone());
@@ -453,6 +457,7 @@ impl PlaylistRuntime {
             media_open,
             suspended_media: suspend_resume::SuspendedMediaState::default(),
             settings,
+            desktop_transport: Some(desktop_transport),
         }
     }
 }

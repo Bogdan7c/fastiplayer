@@ -12,7 +12,6 @@ path = "src/lib.rs"
 [dependencies]
 crossbeam-channel = { workspace = true }
 media-core = { workspace = true }
-player-core = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 

@@ -5,6 +5,7 @@
 
 use player_core::{
     ExactMediaTransportOutcome, ExactMediaTransportReceipt, ExactMediaTransportRequest,
+    ExactTimelineSeekOutcome, ExactTimelineSeekReceipt, ExactTimelineSeekRequest,
     MediaInstallCancellationCause,
 };
 use render_wgpu_shell::Renderer;
@@ -22,13 +23,20 @@ struct QueuedPlaylistInstall {
     supersedes: Option<MediaOpenRequestId>,
 }
 
+/// Receipt хранит controller intent, который разрешено commit-ить только после owner outcome.
+struct PendingExactTransportReceipt {
+    receipt: ExactMediaTransportReceipt,
+    commits_neutral_stop: bool,
+}
+
 /// Bounded state: один active strong request, один latest queued D53 plan и receipts.
 #[derive(Default)]
 pub(super) struct PlaylistTransportRuntimeState {
     active_request_id: Option<MediaOpenRequestId>,
     active_item_id: Option<playlist_core::PlaylistItemId>,
     queued_install: Option<QueuedPlaylistInstall>,
-    exact_receipts: Vec<ExactMediaTransportReceipt>,
+    exact_receipts: Vec<PendingExactTransportReceipt>,
+    timeline_seek_receipts: Vec<ExactTimelineSeekReceipt>,
     intent_receipts: Vec<player_core::PlaybackIntentUpdateReceipt>,
 }
 
@@ -129,14 +137,34 @@ impl AppState {
         &mut self,
         request: ExactMediaTransportRequest,
     ) {
+        let commits_neutral_stop = matches!(
+            request.action,
+            player_core::ExactMediaTransportAction::NeutralStop
+        );
         match self.player_worker.exact_media_transport(request) {
             Ok(receipt) => {
-                self.playlist_transport.exact_receipts.push(receipt);
+                self.playlist_transport
+                    .exact_receipts
+                    .push(PendingExactTransportReceipt {
+                        receipt,
+                        commits_neutral_stop,
+                    });
                 self.mark_pending_worker_redraw();
             }
             Err(error) => {
                 warn!(error = %error, "Exact playlist transport не принят player worker-ом")
             }
+        }
+    }
+
+    /// Ставит correlated seek и хранит receipt до terminal player owner outcome-а.
+    pub(crate) fn dispatch_exact_timeline_seek(&mut self, request: ExactTimelineSeekRequest) {
+        match self.player_worker.exact_timeline_seek(request) {
+            Ok(receipt) => {
+                self.playlist_transport.timeline_seek_receipts.push(receipt);
+                self.mark_pending_worker_redraw();
+            }
+            Err(error) => warn!(error = %error, "Exact timeline seek не принят player worker-ом"),
         }
     }
 
@@ -171,7 +199,19 @@ impl AppState {
         playlist_runtime: &mut PlaylistRuntime,
         renderer: &Renderer,
     ) {
-        self.poll_exact_playlist_transport_receipts();
+        self.poll_exact_playlist_transport_receipts(playlist_runtime);
+        let route_relative_beyond_end = self.poll_exact_timeline_seek_receipts(playlist_runtime);
+        if route_relative_beyond_end {
+            let snapshot = self.last_player_snapshot.clone();
+            crate::transport_runtime::request_navigation(
+                self,
+                playlist_runtime,
+                renderer,
+                playlist_core::ManualNavigationDirection::Next,
+                &snapshot,
+                crate::playlist_runtime::TransportActionOrigin::Mpris,
+            );
+        }
         self.poll_playlist_intent_receipts();
         let Some(active_request_id) = self.playlist_transport.active_request_id else {
             return;
@@ -220,6 +260,7 @@ impl AppState {
     pub(crate) fn has_pending_playlist_transport(&self) -> bool {
         self.playlist_transport.active_request_id.is_some()
             || !self.playlist_transport.exact_receipts.is_empty()
+            || !self.playlist_transport.timeline_seek_receipts.is_empty()
             || !self.playlist_transport.intent_receipts.is_empty()
     }
 
@@ -258,13 +299,17 @@ impl AppState {
             .map_err(|_| "URL service rejected committed configuration")
     }
 
-    fn poll_exact_playlist_transport_receipts(&mut self) {
+    fn poll_exact_playlist_transport_receipts(&mut self, playlist_runtime: &mut PlaylistRuntime) {
         let had_pending_receipts = !self.playlist_transport.exact_receipts.is_empty();
-        self.playlist_transport
-            .exact_receipts
-            .retain(|receipt| match receipt.try_take_outcome() {
+        self.playlist_transport.exact_receipts.retain(|pending| {
+            match pending.receipt.try_take_outcome() {
                 Ok(None) => true,
-                Ok(Some(ExactMediaTransportOutcome::Applied { .. })) => false,
+                Ok(Some(outcome @ ExactMediaTransportOutcome::Applied { .. })) => {
+                    if pending.commits_neutral_stop {
+                        playlist_runtime.apply_neutral_stop_outcome(&outcome);
+                    }
+                    false
+                }
                 Ok(Some(outcome)) => {
                     warn!(
                         ?outcome,
@@ -276,7 +321,8 @@ impl AppState {
                     warn!(error = %error, "Exact playlist transport потерял owner outcome");
                     false
                 }
-            });
+            }
+        });
         if had_pending_receipts && self.playlist_transport.exact_receipts.is_empty() {
             debug!("Exact playlist transport receipts drained");
         }
@@ -300,4 +346,81 @@ impl AppState {
                 }
             });
     }
+
+    fn poll_exact_timeline_seek_receipts(
+        &mut self,
+        playlist_runtime: &mut PlaylistRuntime,
+    ) -> bool {
+        let mut route_relative_beyond_end = false;
+        self.playlist_transport
+            .timeline_seek_receipts
+            .retain(|receipt| match receipt.try_take_outcome() {
+                Ok(None) => true,
+                Ok(Some(ExactTimelineSeekOutcome::Applied {
+                    request_id,
+                    position,
+                    ..
+                })) => {
+                    let request_id = desktop_seek_request_id(request_id);
+                    playlist_runtime.publish_desktop_seeked(request_id, position);
+                    false
+                }
+                Ok(Some(ExactTimelineSeekOutcome::BeyondEnd { request_id })) => {
+                    playlist_runtime.record_desktop_seek_outcome(
+                        desktop_integration::DesktopTimelineSeekOutcome::BeyondEnd {
+                            request_id: desktop_seek_request_id(request_id),
+                        },
+                    );
+                    route_relative_beyond_end = true;
+                    false
+                }
+                Ok(Some(outcome)) => {
+                    let desktop_outcome = match outcome {
+                        ExactTimelineSeekOutcome::InvalidRange { request_id } => {
+                            desktop_integration::DesktopTimelineSeekOutcome::InvalidRange {
+                                request_id: desktop_seek_request_id(request_id),
+                            }
+                        }
+                        ExactTimelineSeekOutcome::StaleInstance { request_id } => {
+                            desktop_integration::DesktopTimelineSeekOutcome::StaleInstance {
+                                request_id: desktop_seek_request_id(request_id),
+                            }
+                        }
+                        ExactTimelineSeekOutcome::NotSeekable { request_id } => {
+                            desktop_integration::DesktopTimelineSeekOutcome::NotSeekable {
+                                request_id: desktop_seek_request_id(request_id),
+                            }
+                        }
+                        ExactTimelineSeekOutcome::Failed { request_id, .. } => {
+                            desktop_integration::DesktopTimelineSeekOutcome::Failed {
+                                request_id: desktop_seek_request_id(request_id),
+                            }
+                        }
+                        ExactTimelineSeekOutcome::Applied { .. }
+                        | ExactTimelineSeekOutcome::BeyondEnd { .. } => {
+                            unreachable!("Applied and BeyondEnd are handled above")
+                        }
+                    };
+                    playlist_runtime.record_desktop_seek_outcome(desktop_outcome);
+                    debug!(
+                        ?desktop_outcome,
+                        "Exact timeline seek завершился без Seeked signal"
+                    );
+                    false
+                }
+                Err(error) => {
+                    warn!(error = %error, "Exact timeline seek потерял owner outcome");
+                    false
+                }
+            });
+        route_relative_beyond_end
+    }
+}
+
+fn desktop_seek_request_id(
+    request_id: player_core::TimelineSeekRequestId,
+) -> desktop_integration::TimelineSeekRequestId {
+    std::num::NonZeroU64::new(request_id.get())
+        .map(desktop_integration::TimelineSeekRequestId::new)
+        .expect("player timeline request IDs are non-zero")
 }

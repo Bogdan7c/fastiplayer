@@ -1,5 +1,3 @@
-use media_core::MediaTime;
-
 use crate::{DesktopIntegrationError, DesktopSnapshotChange};
 
 /// Platform backend, который обслуживает текущую сборку.
@@ -31,11 +29,5 @@ pub enum DesktopIntegrationEvent {
     SnapshotPropertiesChanged {
         backend: DesktopBackendKind,
         change: DesktopSnapshotChange,
-    },
-
-    /// Desktop seek command принят и backend отправил seek notification.
-    Seeked {
-        backend: DesktopBackendKind,
-        position: MediaTime,
     },
 }

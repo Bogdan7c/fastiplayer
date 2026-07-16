@@ -8,9 +8,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use capability_core::SystemCapabilities;
-use desktop_integration::{
-    DesktopIntegration, DesktopIntegrationEvent, DesktopIntegrationShutdownOutcome,
-};
 use player_core::{
     FrameCounters, PlaybackRate, PlaybackState, PlayerCommand, PlayerEvent, PlayerRenderError,
     PlayerRuntimeApplyResult, PlayerRuntimeSettingsUpdate, PlayerSnapshot,
@@ -193,9 +190,6 @@ pub struct AppState {
     /// Egui_winit state — обработка ввода от winit.
     pub egui_winit_state: egui_winit::State,
 
-    /// Desktop integration живёт отдельно от UI и говорит с player только через worker boundary.
-    desktop_integration: Option<DesktopIntegration>,
-
     /// Playback worker владеет `PlayerSession` и media pipeline на отдельном thread.
     pub player_worker: PlayerWorker,
 
@@ -310,27 +304,6 @@ pub struct AppState {
 /// анимация продолжается плавно, а не прыгает к концу.
 const MAX_SIDEBAR_SLIDE_FRAME_DT_SECONDS: f32 = 0.1;
 
-/// Typed outcomes renderer-bound process owners в их dependency-safe порядке.
-pub(crate) struct AppStateProcessShutdownReport {
-    /// MPRIS закрывается первым, пока player command boundary ещё существует.
-    pub(crate) desktop_integration: Option<DesktopIntegrationShutdownOutcome>,
-    /// Player закрывается после прекращения внешнего MPRIS command admission.
-    pub(crate) player: PlayerWorkerShutdownOutcome,
-}
-
-/// Выполняет dependency order через маленький fake-able seam для focused test-а.
-fn shutdown_app_state_owners_in_order(
-    shutdown_desktop_integration: impl FnOnce() -> Option<DesktopIntegrationShutdownOutcome>,
-    shutdown_player: impl FnOnce() -> PlayerWorkerShutdownOutcome,
-) -> AppStateProcessShutdownReport {
-    let desktop_integration = shutdown_desktop_integration();
-    let player = shutdown_player();
-    AppStateProcessShutdownReport {
-        desktop_integration,
-        player,
-    }
-}
-
 impl AppState {
     /// Создаёт новое состояние приложения и запускает playback worker.
     #[instrument(skip(
@@ -370,13 +343,6 @@ impl AppState {
                     audio_signalsmith::SignalsmithTempoProcessorFactory,
                 ));
         let player_worker = PlayerWorker::spawn(worker_config)?;
-        let desktop_integration = match DesktopIntegration::spawn(player_worker.command_sender()) {
-            Ok(desktop_integration) => Some(desktop_integration),
-            Err(error) => {
-                warn!(error = %error, "Не удалось запустить desktop integration");
-                None
-            }
-        };
         if let Err(error) = player_worker.try_send_command(PlayerCommand::SetVolume(
             committed_config_snapshot.default_volume_for_new_media(),
         )) {
@@ -386,7 +352,6 @@ impl AppState {
         Ok(Self {
             egui_ctx,
             egui_winit_state,
-            desktop_integration,
             player_worker,
             frame_index: 0,
             start_time: std::time::Instant::now(),
@@ -426,27 +391,13 @@ impl AppState {
         })
     }
 
-    /// Закрывает renderer-bound process owners в dependency-safe порядке.
-    ///
-    /// Сначала MPRIS теряет command admission и завершает backend, затем закрывается
-    /// player. Оба владельца получают один абсолютный deadline process coordinator-а.
-    pub(crate) fn shutdown_process_owners_until(
+    /// Закрывает renderer-bound player после process desktop admission shutdown-а в AppShell.
+    pub(crate) fn shutdown_player_until(
         &mut self,
         deadline: crate::process_shutdown::ShutdownDeadline,
-    ) -> AppStateProcessShutdownReport {
-        let desktop_integration = &mut self.desktop_integration;
-        let player_worker = &mut self.player_worker;
-        shutdown_app_state_owners_in_order(
-            || {
-                desktop_integration
-                    .as_mut()
-                    .map(|integration| integration.shutdown_until(deadline.expires_at()))
-            },
-            || {
-                player_worker
-                    .shutdown_before(PlayerWorkerShutdownDeadline::at(deadline.expires_at()))
-            },
-        )
+    ) -> PlayerWorkerShutdownOutcome {
+        self.player_worker
+            .shutdown_before(PlayerWorkerShutdownDeadline::at(deadline.expires_at()))
     }
 
     /// Продвигает анимацию выезда settings sidebar к runtime open-state.
@@ -618,32 +569,5 @@ impl AppState {
     /// Помечает, что после текущего frame-а нужен ещё один redraw для worker response.
     pub(super) fn mark_pending_worker_redraw(&mut self) {
         self.pending_redraw_after_worker_command = true;
-    }
-
-    /// Явно публикует read-only snapshot в desktop integration boundary и забирает events.
-    pub(crate) fn publish_desktop_snapshot(&self, player_snapshot: &PlayerSnapshot) {
-        let Some(desktop_integration) = &self.desktop_integration else {
-            return;
-        };
-
-        if let Err(error) = desktop_integration.publish_snapshot(player_snapshot) {
-            warn!(error = %error, "Не удалось обновить desktop integration snapshot");
-        }
-
-        Self::log_desktop_integration_events(desktop_integration.drain_events());
-    }
-
-    /// Логирует события desktop integration без переноса MPRIS logic в UI.
-    fn log_desktop_integration_events(events: Vec<DesktopIntegrationEvent>) {
-        for event in events {
-            match event {
-                DesktopIntegrationEvent::BackendError { backend, error } => {
-                    warn!(?backend, error = %error, "Desktop integration backend error");
-                }
-                other_event => {
-                    debug!(?other_event, "Desktop integration event");
-                }
-            }
-        }
     }
 }

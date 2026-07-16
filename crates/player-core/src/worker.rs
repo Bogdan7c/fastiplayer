@@ -39,8 +39,9 @@ use crate::{
     ActiveSeekDiagnosticsSnapshot, AudioDecoderFactory, AudioOutputFactory,
     AudioTempoProcessorFactory, AuthorizeInstallCommit, CancelMediaInstall, CorrelatedPlayerEvent,
     ExactMediaTransportOutcome, ExactMediaTransportReceipt, ExactMediaTransportRequest,
-    FrameCounters, InstalledMediaRelease, InstalledMediaReleaseOutcome,
-    InstalledMediaReleaseReceipt, InstalledMediaStateRestore, InstalledMediaStateRestoreOutcome,
+    ExactTimelineSeekOutcome, ExactTimelineSeekReceipt, ExactTimelineSeekRequest, FrameCounters,
+    InstalledMediaRelease, InstalledMediaReleaseOutcome, InstalledMediaReleaseReceipt,
+    InstalledMediaStateRestore, InstalledMediaStateRestoreOutcome,
     InstalledMediaStateRestoreReceipt, LatencyCounterSnapshot, MediaInstallCancellationCause,
     MediaInstallControl, MediaInstallPhaseCompletionPort, MediaInstallReceipt,
     MediaInstallRequestId, MediaInstallVideoResourcePort, MediaOpenRequest, MediaSource,
@@ -567,6 +568,12 @@ enum WorkerCommand {
         request: ExactMediaTransportRequest,
         /// Request-owned authoritative owner outcome.
         outcome_tx: Sender<ExactMediaTransportOutcome>,
+    },
+
+    /// Выполняет timeline seek только над exact current media instance.
+    ExactTimelineSeek {
+        request: ExactTimelineSeekRequest,
+        outcome_tx: Sender<ExactTimelineSeekOutcome>,
     },
 
     /// Зафиксировать ошибку подготовки media, не скрывая open-request transition.

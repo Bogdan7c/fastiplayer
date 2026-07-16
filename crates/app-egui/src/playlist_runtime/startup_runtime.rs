@@ -9,9 +9,9 @@ use playlist_state::{
 
 use super::{
     PlaylistController, PlaylistLineagePersistence, PlaylistLoadGateState, PlaylistRuntime,
-    PlaylistStartupApplyError, PlaylistStartupDrainOutcome, PlaylistStartupStateStore,
-    PlaylistStartupView, PlaylistStartupWarning, StartupDraftAdmissionError, StartupOwnerError,
-    controller, startup,
+    PlaylistStartupApplyError, PlaylistStartupDrainOutcome, PlaylistStartupPhase,
+    PlaylistStartupStateStore, PlaylistStartupView, PlaylistStartupWarning,
+    StartupDraftAdmissionError, StartupOwnerError, controller, startup,
 };
 
 #[allow(
@@ -186,48 +186,86 @@ impl PlaylistRuntime {
     pub(crate) fn record_startup_repeat_mode(
         &mut self,
         repeat_mode: RepeatMode,
-    ) -> Result<(), StartupOwnerError> {
-        if self.startup_action_retention_is_active() {
-            let dirty_before = self
-                .controller
-                .as_ref()
-                .ok_or(StartupOwnerError::InvalidPhase)?
-                .dirty_revision();
-            self.controller
-                .as_mut()
-                .ok_or(StartupOwnerError::InvalidPhase)?
-                .request_startup_mode_overlay(Some(repeat_mode), None)
-                .map_err(|_| StartupOwnerError::InvalidPhase)?;
-            self.publish_controller_mutation_if_dirty(dirty_before);
-            return Ok(());
+    ) -> Result<bool, StartupOwnerError> {
+        match self.startup.view().phase {
+            PlaylistStartupPhase::Shutdown => Err(StartupOwnerError::InvalidPhase),
+            PlaylistStartupPhase::Ready => {
+                let dirty_before = self
+                    .controller
+                    .as_ref()
+                    .ok_or(StartupOwnerError::InvalidPhase)?
+                    .dirty_revision();
+                let visible_before = self.controller.as_ref().map(|controller| {
+                    (
+                        controller.repeat_mode(),
+                        controller.queue().shuffle_enabled(),
+                    )
+                });
+                self.controller
+                    .as_mut()
+                    .ok_or(StartupOwnerError::InvalidPhase)?
+                    .request_startup_mode_overlay(Some(repeat_mode), None)
+                    .map_err(|_| StartupOwnerError::InvalidPhase)?;
+                let visible_after = self.controller.as_ref().map(|controller| {
+                    (
+                        controller.repeat_mode(),
+                        controller.queue().shuffle_enabled(),
+                    )
+                });
+                self.publish_controller_mutation_if_dirty(dirty_before);
+                Ok(visible_before != visible_after)
+            }
+            PlaylistStartupPhase::PendingLoadDecision
+            | PlaylistStartupPhase::Inspecting
+            | PlaylistStartupPhase::ApplyingQuarantine => {
+                self.startup.draft_mut()?.set_repeat_mode(repeat_mode);
+                Ok(false)
+            }
         }
-        self.startup.draft_mut()?.set_repeat_mode(repeat_mode);
-        Ok(())
     }
 
     /// Mode-only intent coalesce-ится без supersede restore generation.
     pub(crate) fn record_startup_shuffle_enabled(
         &mut self,
         shuffle_enabled: bool,
-    ) -> Result<(), StartupOwnerError> {
-        if self.startup_action_retention_is_active() {
-            let dirty_before = self
-                .controller
-                .as_ref()
-                .ok_or(StartupOwnerError::InvalidPhase)?
-                .dirty_revision();
-            self.controller
-                .as_mut()
-                .ok_or(StartupOwnerError::InvalidPhase)?
-                .request_startup_mode_overlay(None, Some(shuffle_enabled))
-                .map_err(|_| StartupOwnerError::InvalidPhase)?;
-            self.publish_controller_mutation_if_dirty(dirty_before);
-            return Ok(());
+    ) -> Result<bool, StartupOwnerError> {
+        match self.startup.view().phase {
+            PlaylistStartupPhase::Shutdown => Err(StartupOwnerError::InvalidPhase),
+            PlaylistStartupPhase::Ready => {
+                let dirty_before = self
+                    .controller
+                    .as_ref()
+                    .ok_or(StartupOwnerError::InvalidPhase)?
+                    .dirty_revision();
+                let visible_before = self.controller.as_ref().map(|controller| {
+                    (
+                        controller.repeat_mode(),
+                        controller.queue().shuffle_enabled(),
+                    )
+                });
+                self.controller
+                    .as_mut()
+                    .ok_or(StartupOwnerError::InvalidPhase)?
+                    .request_startup_mode_overlay(None, Some(shuffle_enabled))
+                    .map_err(|_| StartupOwnerError::InvalidPhase)?;
+                let visible_after = self.controller.as_ref().map(|controller| {
+                    (
+                        controller.repeat_mode(),
+                        controller.queue().shuffle_enabled(),
+                    )
+                });
+                self.publish_controller_mutation_if_dirty(dirty_before);
+                Ok(visible_before != visible_after)
+            }
+            PlaylistStartupPhase::PendingLoadDecision
+            | PlaylistStartupPhase::Inspecting
+            | PlaylistStartupPhase::ApplyingQuarantine => {
+                self.startup
+                    .draft_mut()?
+                    .set_shuffle_enabled(shuffle_enabled);
+                Ok(false)
+            }
         }
-        self.startup
-            .draft_mut()?
-            .set_shuffle_enabled(shuffle_enabled);
-        Ok(())
     }
 
     /// Read-only loading/warning/save-block model не отдаёт mutable policy state.
