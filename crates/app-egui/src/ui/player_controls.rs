@@ -141,13 +141,16 @@ fn render_button_row(
     let open_file_button_rect = open_file_button_anchor_rect(row_rect, controls_style);
     let playback_button_rect = playback_button_anchor_rect(row_rect, controls_style);
     let fullscreen_button_rect = fullscreen_button_anchor_rect(row_rect, controls_style);
-    let next_button_rect = transport::next_button_rect(playback_button_rect, controls_style);
-    let playback_rate_button_rect = playback_rate::button_rect(
-        row_rect,
-        next_button_rect,
+    let base_next_button_rect = transport::next_button_rect(playback_button_rect, controls_style);
+    let playback_rate_reveal_progress =
+        playback_rate::reveal_progress(ui, player_snapshot.playback_rate);
+    let playback_rate_layout = playback_rate::control_layout(
+        playback_button_rect,
+        base_next_button_rect,
         fullscreen_button_rect,
         controls_style,
         ui.spacing().item_spacing.x,
+        playback_rate_reveal_progress,
     );
     let volume_to_playback_gap = ui.spacing().item_spacing.x;
     let previous_button_rect =
@@ -183,19 +186,22 @@ fn render_button_row(
         ));
     }
 
-    transport::render_next_button(
+    playback_rate::render_reset_button_at(
         ui,
-        next_button_rect,
-        playlist_transport.next,
+        playback_rate_layout,
+        playback_button_rect,
+        player_snapshot,
         controls_style,
         actions,
     );
 
-    if playback_rate::render_reset_button_at(ui, playback_rate_button_rect, player_snapshot)
-        .clicked()
-    {
-        actions.push(ControlAction::ResetPlaybackRate);
-    }
+    transport::render_next_button(
+        ui,
+        playback_rate_layout.next_button_rect,
+        playlist_transport.next,
+        controls_style,
+        actions,
+    );
 
     if render_fullscreen_toggle_button_at(ui, fullscreen_button_rect, is_window_fullscreen, skin)
         .clicked()
@@ -700,6 +706,10 @@ mod tests {
         assert_eq!(controls_style.transport_button_icon_extent, 18.0);
         assert!(controls_style.transport_button_icon_extent < controls_style.transport_button_size);
         assert!(controls_style.transport_button_bar_width > 0.0);
+        assert_eq!(controls_style.playback_rate_button_width, 48.0);
+        assert_eq!(controls_style.playback_rate_button_gap, 5.0);
+        assert_eq!(controls_style.playback_rate_button_vertical_inset, 2.0);
+        assert!(controls_style.playback_rate_button_stroke_width > 0.0);
         assert_eq!(controls_style.fullscreen_button_size, 32.0);
         assert_eq!(controls_style.fullscreen_icon_extent, 16.0);
         assert!(controls_style.fullscreen_icon_extent < controls_style.fullscreen_button_size);

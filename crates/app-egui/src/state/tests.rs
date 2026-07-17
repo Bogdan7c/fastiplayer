@@ -228,6 +228,80 @@ fn playback_rate_ui_skips_normal_reset_noop() {
     );
 }
 
+/// Явный reset из non-1x остаётся единственным UI-путём к NORMAL rate.
+#[test]
+fn playback_rate_ui_explicit_reset_selects_normal_rate() {
+    let mut player_snapshot = PlayerSnapshot::empty();
+    player_snapshot.playback_state = PlaybackState::Playing;
+    player_snapshot.playback_rate = PlaybackRate::new(1.50).expect("valid test rate");
+
+    let command =
+        playback_rate_command_from_action(&player_snapshot, &ControlAction::ResetPlaybackRate)
+            .expect("explicit reset from non-normal rate must send one command");
+
+    assert_eq!(
+        command,
+        PlayerCommand::SetPlaybackRate(PlaybackRate::NORMAL)
+    );
+}
+
+/// Incremental decrease перепрыгивает 1x, не запуская закрытие reset-кнопки.
+#[test]
+fn playback_rate_ui_decrease_skips_normal_rate() {
+    let mut player_snapshot = PlayerSnapshot::empty();
+    player_snapshot.playback_state = PlaybackState::Playing;
+    player_snapshot.playback_rate = PlaybackRate::new(1.10).expect("valid test rate");
+
+    let command = playback_rate_command_from_action(
+        &player_snapshot,
+        &ControlAction::AdjustPlaybackRateSteps(-1),
+    )
+    .expect("decrease across normal rate must remain an applied adjustment");
+
+    assert_eq!(
+        command,
+        PlayerCommand::SetPlaybackRate(PlaybackRate::new(0.90).expect("valid test rate"))
+    );
+}
+
+/// Incremental increase симметрично перепрыгивает 1x снизу вверх.
+#[test]
+fn playback_rate_ui_increase_skips_normal_rate() {
+    let mut player_snapshot = PlayerSnapshot::empty();
+    player_snapshot.playback_state = PlaybackState::Playing;
+    player_snapshot.playback_rate = PlaybackRate::new(0.90).expect("valid test rate");
+
+    let command = playback_rate_command_from_action(
+        &player_snapshot,
+        &ControlAction::AdjustPlaybackRateSteps(1),
+    )
+    .expect("increase across normal rate must remain an applied adjustment");
+
+    assert_eq!(
+        command,
+        PlayerCommand::SetPlaybackRate(PlaybackRate::new(1.10).expect("valid test rate"))
+    );
+}
+
+/// Multi-step wheel batch также не может закончиться ровно на 1x.
+#[test]
+fn playback_rate_ui_multi_step_landing_skips_normal_rate() {
+    let mut player_snapshot = PlayerSnapshot::empty();
+    player_snapshot.playback_state = PlaybackState::Playing;
+    player_snapshot.playback_rate = PlaybackRate::new(1.20).expect("valid test rate");
+
+    let command = playback_rate_command_from_action(
+        &player_snapshot,
+        &ControlAction::AdjustPlaybackRateSteps(-2),
+    )
+    .expect("multi-step landing on normal rate must skip it");
+
+    assert_eq!(
+        command,
+        PlayerCommand::SetPlaybackRate(PlaybackRate::new(0.90).expect("valid test rate"))
+    );
+}
+
 /// Clamp на верхней границе не должен повторно отправлять no-op command.
 #[test]
 fn playback_rate_ui_skips_clamped_edge_noop() {

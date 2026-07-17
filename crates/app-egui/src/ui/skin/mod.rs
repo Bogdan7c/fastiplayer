@@ -128,6 +128,18 @@ pub struct ControlsStyle {
     /// Заливка transport-кнопки при hover.
     pub transport_button_hover_fill: Color32,
 
+    /// Предпочтительная ширина раскрытой кнопки сброса скорости.
+    pub playback_rate_button_width: f32,
+
+    /// Отступ между bounding rect Play/Pause и кнопкой сброса скорости.
+    pub playback_rate_button_gap: f32,
+
+    /// Вертикальный inset кнопки скорости относительно 32-point Next hit-area.
+    pub playback_rate_button_vertical_inset: f32,
+
+    /// Толщина светлого контура кнопки сброса скорости.
+    pub playback_rate_button_stroke_width: f32,
+
     /// Размер квадратной fullscreen-кнопки в нижней панели.
     pub fullscreen_button_size: f32,
 

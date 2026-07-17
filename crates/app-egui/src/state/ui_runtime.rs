@@ -124,7 +124,9 @@ fn playback_rate_from_step_count(
     let requested_rate =
         current_rate.as_f32() + step_count as f32 * player_controls::PLAYBACK_RATE_STEP_X;
     let rounded_rate = (requested_rate * 100.0).round() / 100.0;
-    let clamped_rate = rounded_rate.clamp(PlaybackRate::MIN.as_f32(), PlaybackRate::MAX.as_f32());
+    let incremental_rate = skip_normal_incremental_rate(current_rate, rounded_rate, step_count);
+    let clamped_rate =
+        incremental_rate.clamp(PlaybackRate::MIN.as_f32(), PlaybackRate::MAX.as_f32());
 
     match PlaybackRate::new(clamped_rate) {
         Ok(playback_rate) => Some(playback_rate),
@@ -133,6 +135,24 @@ fn playback_rate_from_step_count(
             None
         }
     }
+}
+
+/// Исключает `1x` из wheel/`+`/`-` сетки, сохраняя его только для explicit reset intent.
+fn skip_normal_incremental_rate(
+    current_rate: PlaybackRate,
+    rounded_rate: f32,
+    step_count: i32,
+) -> f32 {
+    // Из исходного 1x обычный первый шаг должен по-прежнему дать 0.9x или 1.1x.
+    if current_rate == PlaybackRate::NORMAL {
+        return rounded_rate;
+    }
+    // После округления NORMAL сравнивается точно: 1.0 представляется без float-погрешности.
+    if rounded_rate != PlaybackRate::NORMAL.as_f32() {
+        return rounded_rate;
+    }
+    // Landing ровно на 1x переносится ещё на один неизменный 0.10x шаг по направлению жеста.
+    rounded_rate + step_count.signum() as f32 * player_controls::PLAYBACK_RATE_STEP_X
 }
 
 impl AppState {

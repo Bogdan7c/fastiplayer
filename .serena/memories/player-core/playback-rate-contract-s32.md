@@ -48,3 +48,10 @@
 - Основной gate: `cargo test -p audio-core`, `cargo test -p audio-signalsmith`, `cargo test -p audio`, `cargo test -p player-core`, `cargo test -p app-egui`, `cargo check --workspace`, `cargo clippy --workspace --all-targets`, `cargo fmt --all --check`, `scripts/check-refactor-guardrails.py`, `git diff --check`.
 - Guardrail regression: `python -m unittest scripts.tests.test_check_refactor_guardrails`.
 - S39/S40 нельзя закрывать только автоматическими тестами: manual release smoke для audio/video-only 0.25x/0.5x/1x/2x/4x, media reset, pause/rate-change, EOF и repeated changes остаётся обязательным до фактического выполнения.
+
+
+## App-egui reset indicator policy (2026-07-18)
+
+- Player-core command/snapshot contracts не менялись. `app-egui` показывает reset indicator только для фактического non-`1x` snapshot и начинает 250-ms closing только после подтверждённого `PlaybackRate::NORMAL`; rejected reset оставляет кнопку раскрытой.
+- Wheel и scoped `+`/`-` сохраняют шаг 0.10x, но исключают `1x` из incremental UI-сетки: `1.10 -> 0.90` и `0.90 -> 1.10`; multi-step landing ровно на `1x` также переносится ещё на один шаг по направлению. Из исходного `1x` первый шаг остаётся 0.90/1.10.
+- Явные reset intents остаются двумя путями: клик по видимой кнопке и scoped клавиша `0`. Оба используют существующий `ControlAction::ResetPlaybackRate` -> `PlayerCommand::SetPlaybackRate(PlaybackRate::NORMAL)` и старую Playing/Paused/error policy.

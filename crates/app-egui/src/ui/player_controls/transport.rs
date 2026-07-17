@@ -333,21 +333,22 @@ mod tests {
             row_rect.center(),
             Vec2::splat(controls_style.playback_button_diameter),
         );
-        let next_rect = next_button_rect(playback_rect, controls_style);
+        let base_next_rect = next_button_rect(playback_rect, controls_style);
         let fullscreen_rect = Rect::from_center_size(
             pos2(row_rect.right() - 24.0, row_rect.center().y),
             vec2(32.0, 32.0),
         );
-        let rate_rect = super::super::playback_rate::button_rect(
-            row_rect,
-            next_rect,
+        let rate_layout = super::super::playback_rate::control_layout(
+            playback_rect,
+            base_next_rect,
             fullscreen_rect,
             controls_style,
             8.0,
+            1.0,
         );
 
-        assert!(next_rect.right() <= rate_rect.left());
-        assert!(rate_rect.right() <= fullscreen_rect.left());
+        assert!(rate_layout.button_rect.right() <= rate_layout.next_button_rect.left());
+        assert!(rate_layout.next_button_rect.right() + 8.0 <= fullscreen_rect.left());
     }
 
     #[test]
@@ -368,7 +369,7 @@ mod tests {
         // Previous остаётся правой границей volume-зоны.
         let previous_rect = previous_button_rect(playback_rect, controls_style);
         // Next остаётся левой границей playback-rate control.
-        let next_rect = next_button_rect(playback_rect, controls_style);
+        let base_next_rect = next_button_rect(playback_rect, controls_style);
         // Egui spacing совпадает с production значением проверяемой раскладки.
         let item_spacing = 8.0;
         // Volume layout получает тот же exact Previous rect, что render path.
@@ -379,22 +380,33 @@ mod tests {
             item_spacing,
         );
         // Rate layout получает тот же exact Next rect, что render path.
-        let rate_rect = super::super::playback_rate::button_rect(
-            row_rect,
-            next_rect,
+        let rate_layout = super::super::playback_rate::control_layout(
+            playback_rect,
+            base_next_rect,
             fullscreen_rect,
             controls_style,
             item_spacing,
+            1.0,
         );
 
         // Левая группа не пересекает внешний open-file control.
         assert!(open_file_rect.right() <= volume_zone.left());
         // Volume-зона сохраняет production gap перед Previous.
         assert!(volume_zone.right() <= previous_rect.left() - item_spacing);
-        // Next сохраняет production gap перед rate control.
-        assert!(next_rect.right() + item_spacing <= rate_rect.left());
-        // Rate control сохраняет production gap перед fullscreen.
-        assert!(rate_rect.right() <= fullscreen_rect.left() - item_spacing);
+        // Rate control раскрывается перед сдвинутым Next без пересечения.
+        assert!(rate_layout.button_rect.right() <= rate_layout.next_button_rect.left());
+        // Узкий row действительно уменьшает preferred rate width, а не перекрывает Fullscreen.
+        assert!(rate_layout.button_rect.width() < controls_style.playback_rate_button_width);
+        // Next сдвигается ровно на фактически доступную, уже уменьшенную ширину.
+        assert!(
+            (rate_layout.next_button_rect.left()
+                - base_next_rect.left()
+                - rate_layout.button_rect.width())
+            .abs()
+                < 0.0001
+        );
+        // Сдвинутый Next сохраняет production gap перед fullscreen.
+        assert!(rate_layout.next_button_rect.right() + item_spacing <= fullscreen_rect.left());
     }
 
     /// Создаёт deterministic egui input для custom transport widget.

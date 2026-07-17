@@ -7,6 +7,7 @@ mod fullscreen_button;
 mod media_kind_icon;
 mod open_media_button;
 mod playback_button;
+mod playback_rate_button;
 mod settings_button;
 mod sidebar_buttons;
 mod timeline;
@@ -23,6 +24,7 @@ use egui::Painter;
 pub use fullscreen_button::{FullscreenGlyph, FullscreenStyle};
 pub use media_kind_icon::MediaKindGlyph;
 pub use playback_button::{ButtonVisualState, PlaybackGlyph, PlaybackStyle};
+pub use playback_rate_button::{PlaybackRateButtonGeometry, PlaybackRateButtonStyle};
 pub use sidebar_buttons::SidebarButtonGlyph;
 pub use timeline::{TimelinePaintState, TimelineStyle, timeline_track_rect};
 pub use transport_button::{TransportButtonStyle, TransportGlyph};
@@ -52,6 +54,17 @@ impl<'a> ArtworkPainter<'a> {
         style: PlaybackStyle,
     ) {
         playback_button::paint(self.painter, rect, glyph, state, style);
+    }
+
+    /// Рисует анимированную кнопку сброса скорости с вогнутой левой гранью.
+    pub fn playback_rate_button(
+        self,
+        geometry: PlaybackRateButtonGeometry,
+        label: Option<&str>,
+        state: ButtonVisualState,
+        style: PlaybackRateButtonStyle,
+    ) {
+        playback_rate_button::paint(self.painter, geometry, label, state, style);
     }
 
     /// Рисует компактную кнопку перехода к предыдущему или следующему элементу.
@@ -178,7 +191,7 @@ impl<'a> ArtworkPainter<'a> {
 
 #[cfg(test)]
 mod tests {
-    use egui::{Color32, Context, RawInput, Rect, Stroke, Vec2, pos2};
+    use egui::{Color32, Context, FontId, RawInput, Rect, Shape, Stroke, Vec2, pos2};
 
     use super::*;
 
@@ -210,6 +223,15 @@ mod tests {
             bar_width: 2.0,
             color: Color32::WHITE,
             hover_fill: Color32::GRAY,
+        }
+    }
+
+    fn playback_rate_style() -> PlaybackRateButtonStyle {
+        PlaybackRateButtonStyle {
+            outline: Stroke::new(1.5, Color32::WHITE),
+            hover_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 28),
+            text_color: Color32::WHITE,
+            font_id: FontId::proportional(14.0),
         }
     }
 
@@ -254,6 +276,99 @@ mod tests {
                 transport_style(),
             )),
             3
+        );
+    }
+
+    #[test]
+    fn playback_rate_button_states_have_stable_shape_counts() {
+        // Полностью открытая geometry не обрезает ни контур, ни подпись.
+        let geometry = PlaybackRateButtonGeometry {
+            button_rect: Rect::from_min_size(pos2(20.0, 20.0), Vec2::new(48.0, 32.0)),
+            visible_clip_rect: Rect::from_min_size(pos2(20.0, 20.0), Vec2::new(48.0, 32.0)),
+            concave_radius: 24.0,
+        };
+        // Idle содержит только outline и текст.
+        assert_eq!(
+            painted_shape_count(|painter| painter.playback_rate_button(
+                geometry,
+                Some("1.25x"),
+                ButtonVisualState::Idle,
+                playback_rate_style(),
+            )),
+            2
+        );
+        // Hover добавляет один mesh той же concave-формы.
+        assert_eq!(
+            painted_shape_count(|painter| painter.playback_rate_button(
+                geometry,
+                Some("1.25x"),
+                ButtonVisualState::Hovered,
+                playback_rate_style(),
+            )),
+            3
+        );
+        // Нулевой reveal не оставляет невидимых shapes в paint list.
+        let hidden_geometry = PlaybackRateButtonGeometry {
+            visible_clip_rect: Rect::from_min_max(
+                geometry.button_rect.left_top(),
+                geometry.button_rect.left_bottom(),
+            ),
+            ..geometry
+        };
+        assert_eq!(
+            painted_shape_count(|painter| painter.playback_rate_button(
+                hidden_geometry,
+                None,
+                ButtonVisualState::Idle,
+                playback_rate_style(),
+            )),
+            0
+        );
+    }
+
+    #[test]
+    fn playback_rate_button_left_edge_is_concave_and_stays_inside_bounds() {
+        // Characterization использует production-размеры 48×28 и радиус Play/Pause 24.
+        let button_rect = Rect::from_min_size(pos2(20.0, 22.0), Vec2::new(48.0, 28.0));
+        // Полный clip позволяет проверять исходную geometry без animation crop.
+        let geometry = PlaybackRateButtonGeometry {
+            button_rect,
+            visible_clip_rect: button_rect,
+            concave_radius: 24.0,
+        };
+        // Label исключён, чтобы единственным shape оставался outline path.
+        let output = Context::default().run_ui(RawInput::default(), |ui| {
+            ArtworkPainter::new(ui.painter()).playback_rate_button(
+                geometry,
+                None,
+                ButtonVisualState::Idle,
+                playback_rate_style(),
+            );
+        });
+        // Outline обязан оставаться одним детерминированным shape.
+        assert_eq!(output.shapes.len(), 1);
+        // Извлекаем реальные sampled points, а не дублируем формулу тестом.
+        let Shape::Path(outline_path) = &output.shapes[0].shape else {
+            panic!("playback-rate outline должен быть PathShape");
+        };
+        // Верхняя точка начинается от bounding rect.
+        let top_left = outline_path.points[0];
+        // Средняя точка sampled дуги должна быть правее и образовывать выемку.
+        let middle_left = outline_path.points[8];
+        // Нижняя точка возвращается к той же bounding X.
+        let bottom_left = outline_path.points[16];
+        // Обе крайние точки совпадают с прямоугольной границей.
+        assert!((top_left.x - button_rect.left()).abs() < 0.0001);
+        assert!((bottom_left.x - button_rect.left()).abs() < 0.0001);
+        // Центр действительно вогнут внутрь кнопки.
+        assert!(middle_left.x > button_rect.left());
+        // Дуга симметрична относительно горизонтального центра.
+        assert!((top_left.x - bottom_left.x).abs() < 0.0001);
+        // Stroke целиком остаётся в ожидаемых bounds с допуском собственной толщины.
+        assert!(
+            button_rect
+                .expand(playback_rate_style().outline.width)
+                .contains_rect(outline_path.visual_bounding_rect())
         );
     }
 

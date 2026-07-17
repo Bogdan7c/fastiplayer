@@ -1,16 +1,16 @@
 //! Controls скорости воспроизведения для нижней панели.
 
-use egui::{Key, Modifiers, Rect, Ui, WidgetInfo, WidgetType, pos2, vec2};
-use player_core::PlayerSnapshot;
+mod indicator;
+
+pub(super) use indicator::{control_layout, render_reset_button_at, reveal_progress};
+
+use egui::{Key, Modifiers, Ui};
 
 use super::ControlAction;
-use crate::ui::skin::ControlsStyle;
 
 pub(crate) const PLAYBACK_RATE_STEP_X: f32 = 0.10;
 // egui desktop default line-scroll speed: один wheel line-notch соответствует 40 points.
 const PLAYBACK_RATE_WHEEL_POINTS_PER_STEP: f32 = 40.0;
-const PLAYBACK_RATE_BUTTON_WIDTH: f32 = 58.0;
-
 /// Накопитель wheel/touchpad-дельты для scoped playback-rate управления.
 #[derive(Debug, Default, Clone)]
 struct PlaybackRateInputAccumulator {
@@ -39,51 +39,6 @@ impl PlaybackRateInputAccumulator {
     fn clear(&mut self) {
         self.residual_vertical_points = 0.0;
     }
-}
-
-/// Возвращает rect временной кнопки reset/current-rate рядом с play/pause.
-pub(super) fn button_rect(
-    row_rect: Rect,
-    left_transport_rect: Rect,
-    fullscreen_button_rect: Rect,
-    controls_style: ControlsStyle,
-    item_spacing: f32,
-) -> Rect {
-    let available_left = left_transport_rect.right() + item_spacing;
-    let available_right = fullscreen_button_rect.left() - item_spacing;
-    let available_width = (available_right - available_left).max(0.0);
-    let button_width = PLAYBACK_RATE_BUTTON_WIDTH.min(available_width);
-    let button_size = vec2(button_width, controls_style.button_height);
-    let button_center = pos2(
-        available_left + button_width * 0.5,
-        left_transport_rect
-            .center()
-            .y
-            .clamp(row_rect.top(), row_rect.bottom()),
-    );
-
-    Rect::from_center_size(button_center, button_size)
-}
-
-/// Рисует временную V1-кнопку текущей скорости; click трактуется как reset intent.
-pub(super) fn render_reset_button_at(
-    ui: &mut Ui,
-    button_rect: Rect,
-    player_snapshot: &PlayerSnapshot,
-) -> egui::Response {
-    let rate_label = label(player_snapshot.playback_rate.as_f32());
-    let button_response = ui.put(button_rect, egui::Button::new(rate_label.clone()));
-    let button_response = button_response.on_hover_text("Сбросить скорость воспроизведения");
-
-    button_response.widget_info(|| {
-        WidgetInfo::labeled(
-            WidgetType::Button,
-            ui.is_enabled(),
-            format!("Скорость воспроизведения {rate_label}"),
-        )
-    });
-
-    button_response
 }
 
 /// Собирает wheel/touchpad и hotkey intent только с play/pause scoped surface.
@@ -187,10 +142,47 @@ mod tests {
     use super::*;
     use crate::ui::skin::PlayerSkin;
     use crate::ui::skin::minimal::MinimalSkin;
-    use egui::{Event, MouseWheelUnit, PointerButton, Pos2, RawInput, Sense, TouchPhase};
+    use egui::{
+        Event, MouseWheelUnit, PointerButton, Pos2, RawInput, Rect, Sense, TouchPhase, pos2, vec2,
+    };
+    use player_core::{PlaybackRate, PlayerSnapshot};
 
     fn test_playback_button_rect() -> Rect {
         Rect::from_min_size(pos2(40.0, 40.0), vec2(48.0, 48.0))
+    }
+
+    fn test_rate_button_layout(reveal_progress: f32) -> indicator::PlaybackRateControlLayout {
+        // Production style фиксирует 48×28 rate geometry и 5-point gap.
+        let controls_style = MinimalSkin.controls_style();
+        // Базовый Next остаётся на 64 points правее центра Play/Pause.
+        let base_next_rect = Rect::from_center_size(
+            pos2(
+                test_playback_button_rect().center().x
+                    + controls_style.transport_button_center_distance,
+                test_playback_button_rect().center().y,
+            ),
+            vec2(
+                controls_style.transport_button_size,
+                controls_style.transport_button_size,
+            ),
+        );
+        // Далёкий Fullscreen не ограничивает preferred width в focused widget-тестах.
+        let fullscreen_rect = Rect::from_center_size(
+            pos2(220.0, test_playback_button_rect().center().y),
+            vec2(
+                controls_style.fullscreen_button_size,
+                controls_style.fullscreen_button_size,
+            ),
+        );
+        // Один helper гарантирует ту же layout-формулу, что production render path.
+        control_layout(
+            test_playback_button_rect(),
+            base_next_rect,
+            fullscreen_rect,
+            controls_style,
+            8.0,
+            reveal_progress,
+        )
     }
 
     fn test_hover_position() -> Pos2 {
@@ -273,15 +265,52 @@ mod tests {
     }
 
     fn render_rate_button_clicked_for_input(egui_ctx: &egui::Context, input: RawInput) -> bool {
-        let mut clicked = false;
+        let mut actions = Vec::new();
 
         let _ = egui_ctx.run_ui(input, |ui| {
-            let player_snapshot = PlayerSnapshot::empty();
-            clicked =
-                render_reset_button_at(ui, test_playback_button_rect(), &player_snapshot).clicked();
+            // Кнопка интерактивна только при реальной non-1x скорости.
+            let mut player_snapshot = PlayerSnapshot::empty();
+            // Значение соответствует публичной UI-сетке и гарантированно валидно.
+            player_snapshot.playback_rate =
+                PlaybackRate::new(1.25).expect("valid focused test playback rate");
+            // Fully-open layout исключает влияние animation timing из click semantics.
+            render_reset_button_at(
+                ui,
+                test_rate_button_layout(1.0),
+                test_playback_button_rect(),
+                &player_snapshot,
+                MinimalSkin.controls_style(),
+                &mut actions,
+            );
         });
 
-        clicked
+        actions == vec![ControlAction::ResetPlaybackRate]
+    }
+
+    fn render_reveal_progress_for_frame(
+        egui_ctx: &egui::Context,
+        time_seconds: f64,
+        frame_delta_seconds: f32,
+        playback_rate: PlaybackRate,
+    ) -> f32 {
+        // Synthetic frame time делает проверку 250 ms независимой от wall clock теста.
+        let mut input = RawInput {
+            time: Some(time_seconds),
+            predicted_dt: frame_delta_seconds,
+            ..RawInput::default()
+        };
+        // Явный screen rect сохраняет стабильный UI layout между synthetic frames.
+        input.screen_rect = Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(320.0, 180.0)));
+        // Progress записывается из реального production helper.
+        let mut progress = f32::NAN;
+        // Один Context сохраняет animation manager state между вызовами.
+        let _ = egui_ctx.run_ui(input, |ui| {
+            progress = reveal_progress(ui, playback_rate);
+        });
+        // NaN означал бы, что render closure не выполнился.
+        assert!(progress.is_finite());
+        // Возвращаем eased значение для characterization assertions.
+        progress
     }
 
     /// Проверяет stop gate S38: custom-painted play/pause с `Sense::click()` фокусируем.
@@ -436,7 +465,7 @@ mod tests {
     #[test]
     fn rate_reset_button_reports_click_on_pointer_release() {
         let egui_ctx = egui::Context::default();
-        let click_position = test_hover_position();
+        let click_position = test_rate_button_layout(1.0).visible_rect.center();
 
         let hover_clicked = render_rate_button_clicked_for_input(
             &egui_ctx,
@@ -455,6 +484,93 @@ mod tests {
             raw_input(vec![pointer_button(click_position, false)]),
         );
         assert!(release_clicked);
+    }
+
+    #[test]
+    fn normal_rate_closing_outline_has_no_label_or_reset_interaction() {
+        // Fully-visible layout моделирует первый кадр closing после snapshot=1x.
+        let layout = test_rate_button_layout(1.0);
+        // Empty snapshot по контракту имеет NORMAL playback rate.
+        let player_snapshot = PlayerSnapshot::empty();
+        // Typed actions должны остаться пустыми даже при видимом closing-контуре.
+        let mut actions = Vec::new();
+        // Paint output позволяет отличить outline от отсутствующей текстовой shape.
+        let output = egui::Context::default().run_ui(RawInput::default(), |ui| {
+            render_reset_button_at(
+                ui,
+                layout,
+                test_playback_button_rect(),
+                &player_snapshot,
+                MinimalSkin.controls_style(),
+                &mut actions,
+            );
+        });
+
+        // Единственный shape — пустой outline; надпись `1x` не рисуется.
+        assert_eq!(output.shapes.len(), 1);
+        // Closing control не может породить повторный reset.
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn playback_rate_reveal_uses_full_250_millisecond_transition() {
+        // Общий Context хранит один stable animation Id между synthetic frames.
+        let egui_ctx = egui::Context::default();
+        // Первый NORMAL кадр регистрирует скрытое начальное состояние.
+        let hidden = render_reveal_progress_for_frame(&egui_ctx, 0.0, 0.125, PlaybackRate::NORMAL);
+        // Первый non-1x кадр через 125 ms должен оказаться ровно посередине cubic curve.
+        let halfway = render_reveal_progress_for_frame(
+            &egui_ctx,
+            0.125,
+            0.125,
+            PlaybackRate::new(1.25).expect("valid test rate"),
+        );
+        // Вторые 125 ms завершают полный согласованный 250-ms переход.
+        let open = render_reveal_progress_for_frame(
+            &egui_ctx,
+            0.250,
+            0.125,
+            PlaybackRate::new(1.25).expect("valid test rate"),
+        );
+
+        // NORMAL нигде не раскрывает control.
+        assert_eq!(hidden, 0.0);
+        // Cubic ease-in-out симметричен и имеет midpoint 0.5.
+        assert!((halfway - 0.5).abs() < 0.0001);
+        // Полная длительность заканчивается точным open состоянием.
+        assert_eq!(open, 1.0);
+    }
+
+    #[test]
+    fn playback_rate_reveal_reverses_without_visual_jump() {
+        // Один Context сохраняет внутреннюю линейную позицию при смене target.
+        let egui_ctx = egui::Context::default();
+        // 62.5-ms кадры делят полный переход на четыре одинаковых шага.
+        let frame_delta = 0.0625;
+        // Сначала регистрируем скрытое состояние.
+        let _ = render_reveal_progress_for_frame(&egui_ctx, 0.0, frame_delta, PlaybackRate::NORMAL);
+        // Четыре шага полностью раскрывают кнопку.
+        for frame_index in 1..=4 {
+            let _ = render_reveal_progress_for_frame(
+                &egui_ctx,
+                frame_index as f64 * f64::from(frame_delta),
+                frame_delta,
+                PlaybackRate::new(1.25).expect("valid test rate"),
+            );
+        }
+        // Один closing-шаг возвращает внутреннюю позицию с 1.0 на 0.75.
+        let closing_progress =
+            render_reveal_progress_for_frame(&egui_ctx, 0.3125, frame_delta, PlaybackRate::NORMAL);
+        // Реверс в тот же момент не продвигает время и обязан сохранить exact visual progress.
+        let reversed_progress = render_reveal_progress_for_frame(
+            &egui_ctx,
+            0.3125,
+            frame_delta,
+            PlaybackRate::new(1.25).expect("valid test rate"),
+        );
+
+        // Target-aware cubic easing симметричен, поэтому при реверсе нет скачка.
+        assert!((closing_progress - reversed_progress).abs() < 0.0001);
     }
 
     /// Проверяет, что плавный touchpad не даёт jitter до пересечения threshold.
@@ -503,7 +619,7 @@ mod tests {
         );
     }
 
-    /// Проверяет, что reset-кнопка остаётся справа от play/pause и не залезает на fullscreen.
+    /// Проверяет fully-open геометрию и одинаковое смещение Next.
     #[test]
     fn playback_rate_button_sits_between_playback_and_fullscreen_buttons() {
         let controls_style = MinimalSkin.controls_style();
@@ -532,16 +648,69 @@ mod tests {
                 controls_style.fullscreen_button_size,
             ),
         );
-        let rate_button_rect = button_rect(
-            row_rect,
+        let base_next_button_rect =
+            super::super::transport::next_button_rect(playback_button_rect, controls_style);
+        let layout = control_layout(
             playback_button_rect,
+            base_next_button_rect,
             fullscreen_button_rect,
             controls_style,
             8.0,
+            1.0,
         );
 
-        assert!(rate_button_rect.left() >= playback_button_rect.right());
-        assert!(rate_button_rect.right() <= fullscreen_button_rect.left());
-        assert_eq!(rate_button_rect.height(), controls_style.button_height);
+        assert_eq!(
+            layout.button_rect.left(),
+            playback_button_rect.right() + controls_style.playback_rate_button_gap
+        );
+        assert_eq!(
+            layout.button_rect.width(),
+            controls_style.playback_rate_button_width
+        );
+        assert_eq!(
+            layout.button_rect.height(),
+            controls_style.transport_button_size
+                - controls_style.playback_rate_button_vertical_inset * 2.0
+        );
+        assert_eq!(layout.visible_rect, layout.button_rect);
+        assert_eq!(
+            layout.next_button_rect.left() - base_next_button_rect.left(),
+            layout.button_rect.width()
+        );
+        assert!(layout.button_rect.right() <= layout.next_button_rect.left());
+        assert!(layout.next_button_rect.right() + 8.0 <= fullscreen_button_rect.left());
+    }
+
+    #[test]
+    fn playback_rate_layout_moves_indicator_and_next_with_one_progress() {
+        // Три контрольных точки характеризуют hidden, half-open и fully-open layout.
+        let hidden = test_rate_button_layout(0.0);
+        let halfway = test_rate_button_layout(0.5);
+        let open = test_rate_button_layout(1.0);
+        // Preferred width известна из production MinimalSkin.
+        let full_width = MinimalSkin.controls_style().playback_rate_button_width;
+
+        // Hidden control не оставляет hit-area.
+        assert_eq!(hidden.visible_rect.width(), 0.0);
+        // Half-open control раскрывает ровно половину preferred width.
+        assert!((halfway.visible_rect.width() - full_width * 0.5).abs() < 0.0001);
+        // Fully-open control раскрывает всю ширину.
+        assert!((open.visible_rect.width() - full_width).abs() < 0.0001);
+        // Next на половине пути получает то же смещение, что и правая грань indicator-а.
+        assert!(
+            (halfway.next_button_rect.left()
+                - hidden.next_button_rect.left()
+                - halfway.visible_rect.width())
+            .abs()
+                < 0.0001
+        );
+        // Полный сдвиг Next также совпадает с полной раскрытой шириной.
+        assert!(
+            (open.next_button_rect.left()
+                - hidden.next_button_rect.left()
+                - open.visible_rect.width())
+            .abs()
+                < 0.0001
+        );
     }
 }

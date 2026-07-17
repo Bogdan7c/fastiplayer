@@ -9,3 +9,12 @@
 - Previous/Next transport artwork использует доменно-нейтральный `TransportGlyph::{Previous, Next}`, `TransportButtonStyle` и `ArtworkPainter::transport_button(...)`. `ui-artwork-egui` владеет зеркальной геометрией ограничителя/треугольника и hover-подложкой; `app-egui` владеет anchored hit-area `32x32`, расстоянием центров `64` от play/pause через `ControlsStyle`, availability/disabled color, accessibility/focus и typed transport actions.
 - Playlist media-kind artwork использует доменно-нейтральный `MediaKindGlyph::{Unknown, Audio, Video}` и `ArtworkPainter::media_kind_icon(rect, glyph, stroke)`. `app-egui` владеет переводом `PlaylistMediaKind` в glyph, фиксированной ячейкой строки и accessibility-текстом; artwork-crate владеет геометрией ноты, видеокадра Play и неизвестного файла.
 - Titlebar title, settings gear, window controls и video dim overlay также проходят через facade; прежние места вызова остаются владельцами layout/runtime semantics.
+
+
+## Playback-rate reset artwork (2026-07-18)
+
+- Анимированная кнопка сброса скорости проходит через `ArtworkPainter::playback_rate_button(...)`; geometry/style types и concave Painter primitives живут в `crates/ui-artwork-egui/src/playback_rate_button.rs`.
+- `app-egui::ui::player_controls::playback_rate::indicator` владеет stable egui animation Id, 250-ms cubic transition, layout/hit-area/accessibility и typed `ResetPlaybackRate`; `ui-artwork-egui` не знает о `PlaybackRate`, `PlayerSnapshot` или командах.
+- Fully-open preferred geometry MinimalSkin: 48x28 points (2-point vertical inset сверху и снизу относительно Next), bounding gap 5 points от Play/Pause, прозрачный светлый outline и общий translucent hover fill. Next сдвигается на тот же eased resolved width; narrow layout уменьшает обе величины до безопасного остатка перед Fullscreen.
+- При snapshot `1x` label и reset interaction отсутствуют; во время closing рисуется только пустой контур, поэтому надпись `1x` не появляется.
+- Characterization-тесты concave path/hover mesh находятся в `ui-artwork-egui/src/lib.rs`; layout, 250-ms timing/reversal, click/accessibility и narrow non-overlap tests — в app-egui playback-rate/transport tests.
