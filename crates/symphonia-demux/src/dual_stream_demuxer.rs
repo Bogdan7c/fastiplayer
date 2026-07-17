@@ -422,11 +422,29 @@ impl Demuxer for DualStreamDemuxer {
         self.clear_post_seek_read_state();
 
         let video_seek = self.video_demuxer.seek_with_request(request)?;
-        let audio_seek = self.audio_demuxer.seek_with_request(request)?;
+        let audio_seek_request = audio_seek_request_for_dual_stream(request);
+        let audio_seek = self.audio_demuxer.seek_with_request(audio_seek_request)?;
         self.post_seek_audio_bootstrap =
             PostSeekAudioBootstrap::for_seek_results(request, video_seek, audio_seek);
 
         Ok(Self::composite_seek_result(request, video_seek, audio_seek))
+    }
+}
+
+/// Выбирает seek-семантику отдельного audio stream-а внутри adaptive dual-stream media.
+///
+/// `DecodePointBefore` нужен video stream-у: после decoder flush он обязан начать с
+/// decode-safe keyframe/cue не позже пользовательской цели. Audio stream не владеет
+/// этим инвариантом и может иметь более грубую packet granularity (например, Opus
+/// по 20 мс). Поэтому строгая video-проверка для audio ошибочно отвергала корректное
+/// приземление на несколько миллисекунд после цели и останавливала весь seek.
+///
+/// Composite result и decode anchor по-прежнему принадлежат video stream-у, а
+/// `PostSeekAudioBootstrap` сохраняет существующее выравнивание audio с video preroll.
+fn audio_seek_request_for_dual_stream(request: DemuxSeekRequest) -> DemuxSeekRequest {
+    match request.mode {
+        DemuxSeekMode::DecodePointBefore => DemuxSeekRequest::accurate(request.timestamp),
+        DemuxSeekMode::Accurate | DemuxSeekMode::Preview => request,
     }
 }
 
@@ -840,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_point_before_seek_is_forwarded_to_both_streams() {
+    fn decode_point_before_uses_video_anchor_and_audio_accurate_seek() {
         let (mut demuxer, video_seek_log, audio_seek_log) = fake_dual_stream_demuxer(4_000, 4_000);
 
         demuxer
@@ -849,25 +867,63 @@ mod tests {
             )))
             .expect("dual decode-point seek succeeds");
 
-        // RC1: initial backend seek целится почти в сам target (10 s − 1 ms margin), а не на
-        // target − 5 s, чтобы каждый поток приземлился на ближайший keyframe перед target.
-        let expected_seek_call = FakeSeekCall {
+        // RC1: video seek целится почти в сам target (10 s − 1 ms margin), а не на
+        // target − 5 s, чтобы выбрать ближайший decode-safe keyframe перед target.
+        // Audio не требует video decode anchor и сохраняет исходную Accurate-цель 10 s.
+        let expected_video_seek_call = FakeSeekCall {
             mode: SeekMode::Accurate,
             required_timestamp_units: 9_999,
+        };
+        let expected_audio_seek_call = FakeSeekCall {
+            mode: SeekMode::Accurate,
+            required_timestamp_units: 10_000,
         };
         assert_eq!(
             video_seek_log
                 .lock()
                 .expect("video seek log mutex should not be poisoned")
                 .as_slice(),
-            &[expected_seek_call]
+            &[expected_video_seek_call]
         );
         assert_eq!(
             audio_seek_log
                 .lock()
                 .expect("audio seek log mutex should not be poisoned")
                 .as_slice(),
-            &[expected_seek_call]
+            &[expected_audio_seek_call]
+        );
+    }
+
+    #[test]
+    fn decode_point_before_accepts_audio_packet_granularity_after_target() {
+        let requested_timestamp = Duration::from_millis(10_000);
+        let (mut demuxer, video_seek_log, audio_seek_log) = fake_dual_stream_demuxer(9_000, 10_010);
+
+        let result = demuxer
+            .seek_with_request(DemuxSeekRequest::decode_point_before(requested_timestamp))
+            .expect("audio packet granularity after target не должна ломать video seek");
+
+        assert_eq!(result.requested_position, MediaTime::from_secs(10));
+        assert_eq!(result.actual_position, MediaTime::from_secs(9));
+        assert_eq!(
+            video_seek_log
+                .lock()
+                .expect("video seek log mutex should not be poisoned")
+                .as_slice(),
+            &[FakeSeekCall {
+                mode: SeekMode::Accurate,
+                required_timestamp_units: 9_999,
+            }]
+        );
+        assert_eq!(
+            audio_seek_log
+                .lock()
+                .expect("audio seek log mutex should not be poisoned")
+                .as_slice(),
+            &[FakeSeekCall {
+                mode: SeekMode::Accurate,
+                required_timestamp_units: 10_000,
+            }]
         );
     }
 
