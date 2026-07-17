@@ -40,11 +40,12 @@ use settings_core::{
     CommittedSettingsApplier, OptionProviderId, PersistOutcome, PersistReport, PersistRequest,
     PreviewApplyReport, PreviewApplyRequest, PreviewApplyResult, PreviewRollbackRequest,
     PreviewRollbacker, PreviewSettingsApplier, ResetReport, RollbackReport, RollbackResult,
-    SelectDescriptor, SettingEditor, SettingGroupId, SettingId, SettingOption,
-    SettingOptionCurrentValue, SettingOptionId, SettingOptionProvider, SettingOptions,
-    SettingOptionsError, SettingOptionsRequest, SettingOptionsStatus, SettingRouteId, SettingText,
-    SettingValue, SettingsController, SettingsPersister, SettingsRegistry, SettingsResult,
-    SettingsSurfaceId, SettingsValidator, ValidationReport, ValidationRequest,
+    RuntimeSettingCommitRequest, SelectDescriptor, SettingEditor, SettingGroupId, SettingId,
+    SettingOption, SettingOptionCurrentValue, SettingOptionId, SettingOptionProvider,
+    SettingOptions, SettingOptionsError, SettingOptionsRequest, SettingOptionsStatus,
+    SettingRouteId, SettingText, SettingValue, SettingsController, SettingsPersister,
+    SettingsRegistry, SettingsResult, SettingsSurfaceId, SettingsValidator, ValidationReport,
+    ValidationRequest,
 };
 
 #[cfg(test)]
@@ -66,6 +67,7 @@ mod committed_snapshot;
 mod dynamic_options;
 mod preview;
 mod route_apply;
+mod sidebar_resize;
 mod status_text;
 #[cfg(test)]
 mod tests;
@@ -85,6 +87,7 @@ pub(crate) use route_apply::SettingsRuntimeReconfigureHost;
 use route_apply::SettingsRuntimeRouteAppliers;
 #[cfg(test)]
 use route_apply::{MediaServiceRuntimeSnapshot, simulated_player_runtime_report};
+pub(crate) use sidebar_resize::SidebarResizeFlushOutcome;
 use status_text::{
     group_reports, status_from_apply_report, status_from_cancel, status_from_preview_reports,
     status_from_reset,
@@ -112,6 +115,9 @@ pub(crate) struct SettingsRuntime {
 
     /// Apply, который стартует на следующем frame после показа progress state.
     pending_apply: Option<PendingSettingsApply>,
+
+    /// Latest-only drag resize, ожидающий quiet-period перед atomic persistence.
+    pending_sidebar_resize: Option<sidebar_resize::PendingSidebarResize>,
 
     /// Открыто ли visual settings window; draft transaction начинается при `Open`.
     settings_window_open: bool,
@@ -189,6 +195,7 @@ impl SettingsRuntime {
             route_appliers,
             latest_apply_report: None,
             pending_apply: None,
+            pending_sidebar_resize: None,
             settings_window_open: false,
             field_validation_errors: BTreeMap::new(),
             status: SettingsUiStatus::default(),
@@ -433,6 +440,9 @@ impl SettingsRuntime {
             }
             SettingsUiAction::Cancel => self.cancel_edit(runtime_adapter),
             SettingsUiAction::SetValue { setting_id, value } => {
+                if setting_id.as_str() == sidebar_resize::SIDEBAR_WIDTH_SETTING_ID {
+                    let _flush_outcome = self.flush_pending_sidebar_resize(runtime_adapter)?;
+                }
                 self.set_draft_value(setting_id, value)
             }
             SettingsUiAction::ResetField { setting_id } => self.reset_field(setting_id),
@@ -444,6 +454,10 @@ impl SettingsRuntime {
                 Ok(true)
             }
             SettingsUiAction::Apply => {
+                let resize_flush = self.flush_pending_sidebar_resize(runtime_adapter)?;
+                if !resize_flush.allows_followup_apply() {
+                    return Ok(true);
+                }
                 if self.block_apply_when_field_errors_exist() {
                     return Ok(true);
                 }
@@ -451,6 +465,10 @@ impl SettingsRuntime {
                 Ok(true)
             }
             SettingsUiAction::Ok => {
+                let resize_flush = self.flush_pending_sidebar_resize(runtime_adapter)?;
+                if !resize_flush.allows_followup_apply() {
+                    return Ok(true);
+                }
                 if self.block_apply_when_field_errors_exist() {
                     return Ok(true);
                 }

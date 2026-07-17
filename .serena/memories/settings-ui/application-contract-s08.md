@@ -49,3 +49,13 @@
 - App committed config snapshot удалён из persister-а и синхронизируется `SettingsRuntime` только после runtime finalize и возврата `FullyApplied`, то есть после controller committed document/generation update.
 - Добавлены отдельные `AppRuntimeRoute::Playlist` и `SettingStateOwner::PlaylistPolicy`; все шесть `playlist.*` ids имеют explicit checked contracts. Debounce использует `WorkerReconfigure`, остальные — `PolicyUpdateInPlace`; restart/deferred/hidden queue отсутствуют.
 - App D62 owner contract описан в `mem:playlist/settings-s13`.
+
+
+## Runtime-originated single-setting commit — remembered sidebar width (2026-07-17)
+
+- `SettingsController::commit_runtime_setting(RuntimeSettingCommitRequest)` — intent boundary для атомарного изменения одного setting из runtime UI, а не из обычного draft Apply.
+- Boundary строит requested document от committed snapshot и проходит существующий validate -> preflight -> ordered runtime apply -> atomic persistence -> finalize/rollback pipeline. Поэтому соседние незавершённые draft/preview значения никогда случайно не persist-ятся.
+- После успеха только тот же setting синхронизируется в открытом draft и preview snapshots; остальные draft/preview состояния сохраняются. Same-route baseline rebases только если он был актуален до runtime commit; уже существующий настоящий generation conflict не маскируется.
+- Failure полностью восстанавливает controller committed/draft/preview/generation baselines; app-owned live state дополнительно откатывается к committed snapshot владельцем host.
+- `SettingsRuntime` использует boundary для `ui.sidebar.width_points`: latest-only debounce 500 ms, same rounded value не создаёт запись, deadline участвует в event-loop wake, manual width edit/Apply/OK сначала force-flush pending, Cancel соседних изменений не отменяет committed resize.
+- Pending runtime resize force-flush-ится перед suspend и штатным shutdown. Focused tests покрывают coalescing, draft/preview preservation, genuine conflict preservation, no-op same-field sync, persistence rollback и drag -> Apply/Cancel ordering.

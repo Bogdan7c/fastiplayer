@@ -551,8 +551,47 @@ skin = "minimal"
 
     assert!(!loaded.config.ui.show_telemetry);
     assert_eq!(loaded.config.ui.window.titlebar_height_px, 40);
+    assert_eq!(
+        loaded.config.ui.sidebar.width_points,
+        crate::DEFAULT_SIDEBAR_WIDTH_POINTS
+    );
     assert_eq!(loaded.config.ui.settings.live_preview_max_hz, 60);
     assert_eq!(loaded.config.ui.animations.sidebar_slide_duration_ms, 500);
+}
+
+/// Проверяет backward compatibility текущей schema v6 без нового sidebar-поля
+/// и появление поля после следующего успешного атомарного сохранения.
+#[test]
+fn schema_v6_without_sidebar_width_loads_default_and_roundtrips_new_field() {
+    let temp_dir = tempfile::tempdir().expect("temp dir created");
+    let config_path = temp_dir.path().join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+schema_version = 6
+
+[ui]
+show_telemetry = true
+language = "ru"
+skin = "minimal"
+"#,
+    )
+    .expect("schema v6 config without sidebar width written");
+
+    let loaded = load_from_path(&config_path).expect("old schema v6 shape accepted");
+    assert_eq!(
+        loaded.config.ui.sidebar.width_points,
+        crate::DEFAULT_SIDEBAR_WIDTH_POINTS
+    );
+
+    save_validated_atomic_at(&config_path, &loaded.config)
+        .expect("compatible config saved with current defaults");
+    let persisted = fs::read_to_string(&config_path).expect("saved config readable");
+    assert!(persisted.contains("[ui.sidebar]"));
+    assert!(persisted.contains("width_points = 420"));
+
+    let reloaded = load_from_path(&config_path).expect("saved sidebar width roundtrips");
+    assert_eq!(reloaded.config, loaded.config);
 }
 
 /// Проверяет, что старый config без `[frame_server]` получает V1 defaults.
@@ -854,6 +893,33 @@ fn sidebar_slide_duration_validation_accepts_zero_and_rejects_above_max() {
             .to_string()
             .contains("ui.animations.sidebar_slide_duration_ms")
     );
+}
+
+/// Проверяет inclusive границы sidebar и отказ от ближайших значений снаружи диапазона.
+#[test]
+fn sidebar_width_bounds_accept_edges_and_reject_neighbors() {
+    for accepted_width in [
+        crate::MIN_SIDEBAR_WIDTH_POINTS,
+        crate::MAX_SIDEBAR_WIDTH_POINTS,
+    ] {
+        let mut config = AppConfig::default();
+        config.ui.sidebar.width_points = accepted_width;
+        config
+            .validate()
+            .expect("inclusive sidebar width boundary must be valid");
+    }
+
+    for rejected_width in [
+        crate::MIN_SIDEBAR_WIDTH_POINTS - 1,
+        crate::MAX_SIDEBAR_WIDTH_POINTS + 1,
+    ] {
+        let mut config = AppConfig::default();
+        config.ui.sidebar.width_points = rejected_width;
+        let error = config
+            .validate()
+            .expect_err("sidebar width outside the range must be rejected");
+        assert!(error.to_string().contains("ui.sidebar.width_points"));
+    }
 }
 
 /// Проверяет, что старые index-only network поля больше не принимаются.

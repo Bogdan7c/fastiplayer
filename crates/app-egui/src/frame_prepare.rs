@@ -18,7 +18,7 @@ use rustiplayer_settings::{
     AppRouteApplyResult, MediaServiceRuntimeSettingsUpdate, PlayerCommittedSettingsUpdate,
     RenderCommittedSettingsUpdate, SettingsBoundaryActivity,
 };
-use settings_core::SettingId;
+use settings_core::{SettingId, SettingsResult};
 use tracing::{debug, error, instrument, trace, warn};
 use video_core::DecodedPixelFormat;
 use winit::window::{ResizeDirection, Window};
@@ -77,6 +77,11 @@ pub(crate) struct AppRenderFrameResult {
 
     /// Ближайшая event-driven UI смена без continuous redraw.
     pub(crate) next_ui_wake_deadline: Option<Instant>,
+}
+
+/// Выбирает ближайший deadline независимых UI owners для одного `WaitUntil`.
+fn earliest_ui_wake_deadline(first: Option<Instant>, second: Option<Instant>) -> Option<Instant> {
+    first.into_iter().chain(second).min()
 }
 
 /// Video stage, подготовленный до финального `render_wgpu_shell::RenderFrameInput`.
@@ -1093,6 +1098,25 @@ pub(super) fn render_outcome_marks_video_submitted(
     submitted_video_frame && matches!(render_frame_outcome, RenderFrameOutcome::Presented(_))
 }
 
+/// Принудительно flush-ит sidebar resize, пока renderer-bound AppState ещё доступен.
+pub(crate) fn flush_sidebar_resize_before_lifecycle_boundary(
+    window: &Arc<Window>,
+    renderer: &mut Renderer,
+    app_state: &mut AppState,
+    playlist_runtime: &mut crate::playlist_runtime::PlaylistRuntime,
+    settings_runtime: &mut SettingsRuntime,
+    renderer_lifecycle: &mut RendererLifecycleCoordinator,
+) -> SettingsResult<crate::settings_runtime::SidebarResizeFlushOutcome> {
+    let mut runtime_adapter = FrameSettingsRuntimeAdapter::new(
+        window.clone(),
+        app_state,
+        renderer,
+        playlist_runtime,
+        renderer_lifecycle,
+    );
+    settings_runtime.flush_pending_sidebar_resize(&mut runtime_adapter)
+}
+
 /// Рендерит один полный кадр: видео + egui overlay.
 ///
 /// Измеряет время кадра, обновляет телеметрию,
@@ -1150,6 +1174,7 @@ pub(crate) fn render_frame(
     frame_sequence.reached(FrameSequenceStage::EguiOutput);
     let egui_requested_repaint = prepared_ui_frame.requested_repaint;
     let settings_actions = std::mem::take(&mut prepared_ui_frame.settings_actions);
+    let sidebar_width_change = prepared_ui_frame.sidebar_width_change.take();
     let transport_actions = std::mem::take(&mut prepared_ui_frame.transport_actions);
     let window_chrome_actions = std::mem::take(&mut prepared_ui_frame.window_chrome_actions);
     let playlist_confirmation_action = prepared_ui_frame.playlist_confirmation_action.take();
@@ -1175,7 +1200,20 @@ pub(crate) fn render_frame(
             playlist_runtime,
             renderer_lifecycle,
         );
-        match settings_runtime
+        if let Some(width_change) = sidebar_width_change {
+            let _pending_changed =
+                settings_runtime.record_sidebar_width_change(width_change, Instant::now());
+        }
+        let resize_requested_repaint = match settings_runtime
+            .flush_due_sidebar_resize(Instant::now(), &mut runtime_adapter)
+        {
+            Ok(outcome) => outcome.needs_redraw(),
+            Err(error) => {
+                settings_runtime.report_runtime_error("Не удалось сохранить ширину sidebar", error);
+                true
+            }
+        };
+        let actions_requested_repaint = match settings_runtime
             .handle_ui_actions_with_runtime_adapter(settings_actions, &mut runtime_adapter)
         {
             Ok(requested_repaint) => requested_repaint,
@@ -1184,7 +1222,8 @@ pub(crate) fn render_frame(
                     .report_runtime_error("Не удалось обработать действие settings UI", error);
                 true
             }
-        }
+        };
+        resize_requested_repaint || actions_requested_repaint
     };
     let chrome_close_requested = apply_window_chrome_actions(window, window_chrome_actions);
     renderer_lifecycle.set_surface_event_pending(false);
@@ -1303,7 +1342,10 @@ pub(crate) fn render_frame(
                 || playlist_action_requested_repaint,
         ),
         close_requested: chrome_close_requested,
-        next_ui_wake_deadline: transport_model.next_wake_deadline,
+        next_ui_wake_deadline: earliest_ui_wake_deadline(
+            transport_model.next_wake_deadline,
+            settings_runtime.next_sidebar_resize_deadline(),
+        ),
     }
 }
 
@@ -1314,6 +1356,22 @@ mod tests {
 
     use player_core::{PlayerRenderErrorKind, PlayerVideoDropReason, PlayerVideoFrameDrop};
     use render_wgpu_shell::{RenderFrameDropReason, RenderFrameFailure, RenderFrameStageTimings};
+
+    #[test]
+    fn sidebar_debounce_deadline_participates_in_nearest_ui_wake_selection() {
+        let now = Instant::now();
+        let transport_deadline = now + Duration::from_secs(2);
+        let sidebar_deadline = now + Duration::from_millis(500);
+
+        assert_eq!(
+            earliest_ui_wake_deadline(Some(transport_deadline), Some(sidebar_deadline)),
+            Some(sidebar_deadline)
+        );
+        assert_eq!(
+            earliest_ui_wake_deadline(None, Some(sidebar_deadline)),
+            Some(sidebar_deadline)
+        );
+    }
 
     /// Проверяет, что renderer error становится fatal media error, а не silent fallback.
     #[test]

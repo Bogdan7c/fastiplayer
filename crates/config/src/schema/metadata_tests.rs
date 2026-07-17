@@ -84,6 +84,7 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "ui.language",
     "ui.skin",
     "ui.window.titlebar_height_px",
+    "ui.sidebar.width_points",
     "ui.settings.live_preview_max_hz",
     "ui.animations.sidebar_slide_duration_ms",
 ];
@@ -539,6 +540,12 @@ fn metadata_ranges_match_validation_constants() {
         "ui.settings.live_preview_max_hz",
         validation::MIN_LIVE_PREVIEW_MAX_HZ,
         validation::MAX_LIVE_PREVIEW_MAX_HZ,
+    );
+    assert_integer_range(
+        &registry,
+        "ui.sidebar.width_points",
+        crate::MIN_SIDEBAR_WIDTH_POINTS,
+        crate::MAX_SIDEBAR_WIDTH_POINTS,
     );
     assert_integer_range(
         &registry,

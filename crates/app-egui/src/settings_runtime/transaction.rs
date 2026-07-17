@@ -127,6 +127,36 @@ where
 }
 
 impl SettingsRuntime {
+    /// Пропускает одно runtime-originated значение через тот же transaction delegate.
+    pub(super) fn commit_runtime_setting_with_runtime_adapter<A>(
+        &mut self,
+        request: RuntimeSettingCommitRequest,
+        runtime_adapter: &mut A,
+    ) -> SettingsResult<ApplyReport>
+    where
+        A: RenderLiveSettingsAdapter + SettingsRuntimeReconfigureHost,
+    {
+        self.invalidate_ui_model();
+        let report = {
+            let mut delegate = SettingsRuntimeApplyDelegate {
+                validator: AppConfigValidator,
+                store: &mut self.store,
+                route_appliers: &mut self.route_appliers,
+                runtime_adapter,
+                applied_route_count: 0,
+            };
+            self.controller
+                .commit_runtime_setting(request, &mut delegate)?
+        };
+        if report.final_state == ApplyFinalState::FullyApplied {
+            runtime_adapter.sync_committed_config_snapshot(CommittedConfigSnapshot::from_config(
+                self.controller.committed(),
+            ));
+        }
+        self.latest_apply_report = Some(report.clone());
+        Ok(report)
+    }
+
     /// Test-only apply path with a renderer-neutral adapter.
     #[cfg(test)]
     pub(crate) fn apply_draft<A>(&mut self, render_adapter: &mut A) -> SettingsResult<ApplyReport>

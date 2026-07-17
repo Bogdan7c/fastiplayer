@@ -19,6 +19,7 @@ pub(super) struct PreparedUiFrame {
     pub(super) video_exclusion_rects: Vec<RenderViewport>,
     pub(super) requested_repaint: bool,
     pub(super) settings_actions: Vec<crate::settings_ui::SettingsUiAction>,
+    pub(super) sidebar_width_change: Option<crate::ui::sidebar::SidebarWidthChange>,
     pub(super) transport_actions: Vec<crate::ui::player_controls::TransportControlAction>,
     pub(super) window_chrome_actions: Vec<WindowChromeAction>,
     pub(super) playlist_confirmation_action:
@@ -67,6 +68,7 @@ pub(super) fn prepare_ui_frame(
     let crate::state::RenderedAppUi {
         full_output: egui_full_output,
         settings_actions,
+        sidebar_width_change,
         transport_actions,
         window_chrome_actions,
         playlist_confirmation_action,
@@ -118,6 +120,7 @@ pub(super) fn prepare_ui_frame(
         video_exclusion_rects,
         requested_repaint,
         settings_actions,
+        sidebar_width_change,
         transport_actions,
         window_chrome_actions,
         playlist_confirmation_action,

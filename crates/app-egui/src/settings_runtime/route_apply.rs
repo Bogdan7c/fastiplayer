@@ -23,6 +23,9 @@ pub(crate) trait SettingsRuntimeReconfigureHost {
     /// Синхронизирует внешний snapshot только после persistence и finalize.
     fn sync_committed_config_snapshot(&mut self, _snapshot: CommittedConfigSnapshot) {}
 
+    /// Возвращает live sidebar geometry к committed значению после persistence failure.
+    fn restore_sidebar_width(&mut self, _width_points: crate::ui::sidebar::SidebarWidthPoints) {}
+
     /// Завершает staged irreversible work после successful persistence.
     fn finalize_settings_transaction(&mut self) {}
 

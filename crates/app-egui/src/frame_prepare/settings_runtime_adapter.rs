@@ -346,6 +346,10 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
         self.app_state.sync_committed_config_snapshot(snapshot);
     }
 
+    fn restore_sidebar_width(&mut self, width_points: crate::ui::sidebar::SidebarWidthPoints) {
+        self.app_state.restore_sidebar_width(width_points);
+    }
+
     fn finalize_settings_transaction(&mut self) {
         self.playlist_runtime.finalize_playlist_settings();
     }

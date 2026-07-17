@@ -30,7 +30,7 @@ use winit::{
     event_loop::ActiveEventLoop, window::Window,
 };
 
-use crate::frame_prepare::render_frame;
+use crate::frame_prepare::{flush_sidebar_resize_before_lifecycle_boundary, render_frame};
 use crate::local_file_open::{LocalFileOpenJob, LocalFileOpenRestoreOutcome};
 use crate::playlist_runtime::PlaylistRuntime;
 use crate::process_shutdown::{ProcessOwnerShutdownOutcome, ShutdownDeadline};
@@ -116,6 +116,41 @@ pub(crate) struct AppShell {
 }
 
 impl AppShell {
+    /// Сохраняет pending sidebar resize до уничтожения renderer-bound geometry owner-а.
+    fn flush_sidebar_resize_for_lifecycle_boundary(&mut self) {
+        if self
+            .settings_runtime
+            .next_sidebar_resize_deadline()
+            .is_none()
+        {
+            return;
+        }
+        let (Some(window), Some(renderer), Some(app_state)) = (
+            self.window.as_ref(),
+            self.renderer.as_mut(),
+            self.app_state.as_mut(),
+        ) else {
+            tracing::error!(
+                "Pending sidebar resize дошёл до lifecycle boundary без активного AppState"
+            );
+            return;
+        };
+
+        if let Err(error) = flush_sidebar_resize_before_lifecycle_boundary(
+            window,
+            renderer,
+            app_state,
+            &mut self.playlist_runtime,
+            &mut self.settings_runtime,
+            &mut self.renderer_lifecycle,
+        ) {
+            self.settings_runtime.report_runtime_error(
+                "Не удалось сохранить ширину sidebar перед suspend/exit",
+                error,
+            );
+        }
+    }
+
     /// Создаёт пустой shell.
     ///
     /// Ресурсы инициализируются в Resumed, когда окно готово.
@@ -301,6 +336,7 @@ impl AppShell {
 
     /// Освобождает runtime-ресурсы в порядке, безопасном для GPU/audio cleanup.
     fn suspend_runtime(&mut self) {
+        self.flush_sidebar_resize_for_lifecycle_boundary();
         let mut transferred_local_file_open_job = None;
         if let Some(app_state) = &mut self.app_state {
             let binding = app_state.playlist_runtime_binding();
@@ -372,6 +408,7 @@ impl AppShell {
             }
         }
 
+        self.flush_sidebar_resize_for_lifecycle_boundary();
         let deadline = ShutdownDeadline::after(PROCESS_TERMINAL_SHUTDOWN_BUDGET);
 
         // Local job сначала извлекается из renderer owner-а, чтобы любой timeout
@@ -869,5 +906,41 @@ mod tests {
             .find("_instance_lease: instance_lease")
             .expect("process shell retains lease for its full lifetime");
         assert!(lease_argument < desktop_start && desktop_start < retained_lease);
+    }
+
+    #[test]
+    fn suspend_and_terminal_exit_force_flush_pending_sidebar_resize() {
+        let source = include_str!("mod.rs");
+        let flush_call = format!(
+            "{}{}",
+            "self.flush_sidebar_resize_for_lifecycle_boundary", "();"
+        );
+        assert_eq!(
+            source.matches(&flush_call).count(),
+            2,
+            "suspend и terminal shutdown должны flush-ить resize до уничтожения AppState"
+        );
+
+        let suspend_start = source
+            .find("fn suspend_runtime(&mut self)")
+            .expect("suspend lifecycle method exists");
+        let suspend_flush = source[suspend_start..]
+            .find(&flush_call)
+            .expect("suspend flush exists");
+        let suspend_drop = source[suspend_start..]
+            .find("self.app_state = None;")
+            .expect("suspend drops AppState");
+        assert!(suspend_flush < suspend_drop);
+
+        let shutdown_start = source
+            .find("pub(crate) fn finish_process_shutdown(&mut self)")
+            .expect("terminal shutdown method exists");
+        let shutdown_flush = source[shutdown_start..]
+            .find(&flush_call)
+            .expect("terminal flush exists");
+        let shutdown_drop = source[shutdown_start..]
+            .find("self.app_state = None;")
+            .expect("terminal shutdown drops AppState");
+        assert!(shutdown_flush < shutdown_drop);
     }
 }

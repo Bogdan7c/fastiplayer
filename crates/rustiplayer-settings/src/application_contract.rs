@@ -320,6 +320,7 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
         | "ui.language"
         | "ui.skin"
         | "ui.window.titlebar_height_px"
+        | "ui.sidebar.width_points"
         | "ui.animations.sidebar_slide_duration_ms" => SettingApplicationContract::new(
             setting_name,
             AppRuntimeRoute::Ui,

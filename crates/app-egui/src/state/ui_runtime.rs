@@ -205,6 +205,7 @@ impl AppState {
         let window_is_fullscreen = window.fullscreen().is_some();
         let mut control_actions = Vec::new();
         let mut settings_actions = Vec::new();
+        let mut sidebar_width_change = None;
         let mut sidebar_close_requested = false;
         let mut window_chrome_actions = Vec::new();
         let mut playlist_confirmation_action = None;
@@ -292,6 +293,7 @@ impl AppState {
 
             let sidebar_rect = sidebar::show(
                 ui,
+                &mut self.sidebar_host_state,
                 self.sidebar_controller.displayed(),
                 sidebar_slide_progress,
                 self.sidebar_controller.content_transition(),
@@ -306,10 +308,18 @@ impl AppState {
                     close_requested: &mut sidebar_close_requested,
                 },
             );
-            if let Some(sidebar_rect) = sidebar_rect {
+            if let Some(sidebar_output) = sidebar_rect {
+                sidebar_width_change = sidebar_output.width_change;
+                debug_assert!(
+                    (sidebar_output.open_width_points
+                        - self.sidebar_host_state.open_width_points())
+                    .abs()
+                        < f32::EPSILON
+                );
                 // Sidebar вытесняет видео: content viewport начинается от правого
                 // края панели, letterbox/aspect ratio рендер пересчитает сам.
-                video_viewport_rect.min.x = sidebar_rect
+                video_viewport_rect.min.x = sidebar_output
+                    .rect
                     .right()
                     .clamp(video_viewport_rect.min.x, video_viewport_rect.max.x);
             }
@@ -354,6 +364,7 @@ impl AppState {
         RenderedAppUi {
             full_output,
             settings_actions,
+            sidebar_width_change,
             transport_actions,
             window_chrome_actions,
             playlist_confirmation_action,

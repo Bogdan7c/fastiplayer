@@ -17,13 +17,14 @@ pub use error::{ConfigError, ConfigResult};
 pub use frame_server::{FrameServerConfig, FrameServerLiveScrubDecodeModeConfig};
 pub use paths::{CONFIG_FILE_NAME, ConfigPaths};
 pub use schema::{
-    AppConfig, AudioConfig, CURRENT_SCHEMA_VERSION, HdrToSdrConfig, HdrToSdrOperatorConfig,
-    NetworkConfig, OpenGlesConfig, PausedCommitBehavior, PlayerConfig, PlayerDemuxConfig,
-    PlayerSeekConfig, PlaylistConfig, PlaylistErrorBehavior, PlaylistPlaybackBehavior,
-    PlaylistSiblingMediaFilter, RenderColorAdjustmentConfig, RenderConfig, RenderProfile,
-    ToneMappingMode, UiAnimationsConfig, UiConfig, UiSettingsConfig, UiWindowConfig,
-    VideoBackendPreference, VideoCodec, VideoConfig, VideoSchedulerConfig, VulkanConfig,
-    VulkanPresentMode, YtDlpConfig, YtDlpHdrSelection,
+    AppConfig, AudioConfig, CURRENT_SCHEMA_VERSION, DEFAULT_SIDEBAR_WIDTH_POINTS, HdrToSdrConfig,
+    HdrToSdrOperatorConfig, MAX_SIDEBAR_WIDTH_POINTS, MIN_SIDEBAR_WIDTH_POINTS, NetworkConfig,
+    OpenGlesConfig, PausedCommitBehavior, PlayerConfig, PlayerDemuxConfig, PlayerSeekConfig,
+    PlaylistConfig, PlaylistErrorBehavior, PlaylistPlaybackBehavior, PlaylistSiblingMediaFilter,
+    RenderColorAdjustmentConfig, RenderConfig, RenderProfile, ToneMappingMode, UiAnimationsConfig,
+    UiConfig, UiSettingsConfig, UiSidebarConfig, UiWindowConfig, VideoBackendPreference,
+    VideoCodec, VideoConfig, VideoSchedulerConfig, VulkanConfig, VulkanPresentMode, YtDlpConfig,
+    YtDlpHdrSelection,
 };
 pub(crate) use schema::{
     LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3, LEGACY_SCHEMA_VERSION_4,

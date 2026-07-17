@@ -1,5 +1,14 @@
 use serde::{Deserialize, Serialize};
 
+/// Ширина sidebar по умолчанию в логических egui points.
+pub const DEFAULT_SIDEBAR_WIDTH_POINTS: u16 = 420;
+
+/// Минимальная ширина sidebar, при которой контент остаётся читаемым.
+pub const MIN_SIDEBAR_WIDTH_POINTS: u16 = 350;
+
+/// Максимальная ширина sidebar, чтобы панель не вытесняла основную часть видео.
+pub const MAX_SIDEBAR_WIDTH_POINTS: u16 = 600;
+
 /// Настройки UI shell.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, settings_derive::SettingsSchema)]
 #[settings(require_all_fields)]
@@ -65,6 +74,11 @@ pub struct UiConfig {
     #[setting(nested)]
     pub window: UiWindowConfig,
 
+    /// Геометрия общего sidebar host для Playlist/Settings/URL/Info.
+    #[serde(default)]
+    #[setting(nested)]
+    pub sidebar: UiSidebarConfig,
+
     /// Настройки будущего Settings UI.
     #[serde(default)]
     #[setting(nested)]
@@ -84,6 +98,7 @@ impl Default for UiConfig {
             language: "ru".to_string(),
             skin: "minimal".to_string(),
             window: UiWindowConfig::default(),
+            sidebar: UiSidebarConfig::default(),
             settings: UiSettingsConfig::default(),
             animations: UiAnimationsConfig::default(),
         }
@@ -125,6 +140,45 @@ impl Default for UiWindowConfig {
     fn default() -> Self {
         Self {
             titlebar_height_px: 40,
+        }
+    }
+}
+
+/// Настройки геометрии единственного переиспользуемого sidebar host.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, settings_derive::SettingsSchema,
+)]
+#[settings(require_all_fields)]
+#[serde(default, deny_unknown_fields)]
+pub struct UiSidebarConfig {
+    /// Полностью открытая ширина общей панели в логических egui points.
+    #[setting(
+        id = "ui.sidebar.width_points",
+        path = "ui.sidebar.width_points",
+        section = "ui",
+        group = "sidebar",
+        surface = "main-settings-window",
+        label_id = "settings.ui.sidebar.width_points.label",
+        label_ru = "Ширина сайдбара",
+        description_id = "settings.ui.sidebar.width_points.description",
+        description_ru = "Общая ширина Playlist, Settings, URL и Info в логических UI-пунктах.",
+        help_id = "settings.ui.sidebar.width_points.help",
+        help_ru = "Ширину также можно менять мышью за правую границу открытой панели.",
+        editor = "integer",
+        min = crate::MIN_SIDEBAR_WIDTH_POINTS,
+        max = crate::MAX_SIDEBAR_WIDTH_POINTS,
+        step = 1,
+        unit = "pt",
+        apply = "ui.apply"
+    )]
+    pub width_points: u16,
+}
+
+impl Default for UiSidebarConfig {
+    /// Возвращает ширину, достаточную для Settings и Playlist без чрезмерного сжатия видео.
+    fn default() -> Self {
+        Self {
+            width_points: DEFAULT_SIDEBAR_WIDTH_POINTS,
         }
     }
 }

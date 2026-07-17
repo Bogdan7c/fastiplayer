@@ -1,11 +1,14 @@
 # App sidebar controller
 
-- `AppState` owns `SidebarController`; `SettingsRuntime` owns only settings draft/apply/preview transaction.
+- `AppState` owns `SidebarController` for section/animation lifecycle and `SidebarHostState` as the single owner of live sidebar geometry. `SettingsRuntime` owns only settings draft/apply/preview transactions and debounced persistence of host-originated width changes.
 - Stable order: `Playlist`, `Settings`, `Url`, `Info`. Order defines content-slide direction.
 - Open/close uses `animation-core::SlideTransition` + `EaseInOutCubic` and configured `ui.animations.sidebar_slide_duration_ms`. Content transition duration is exactly `D/2`; zero duration completes immediately.
 - During content transition only the latest queued section is kept. Both outgoing/incoming panels move one shared sidebar width inside one clipped, resizable host and have distinct stable content IDs; transition copies are interaction-disabled.
 - `ui/sidebar.rs::show` содержит ровно один site создания `egui::Panel::left(app_sidebar)`. Секции и animation phases — только content renderers внутри host и архитектурно не могут создавать Panel/width/resize state.
-- Host владеет одним temp width snapshot и единым диапазоном 320–560 pt. Regression test считает sites `Panel::left` и требует ровно один.
+- `SidebarHostState` хранит единственную live width для всех секций. Default/range принадлежат config: `420`, `350..=600` pt. Перед `Panel::show` host удаляет remembered `egui::PanelState`, чтобы egui не становился вторым владельцем. Fully-open width берётся только из захваченного до content render `ui.max_rect()` самого Panel; `response.rect` запрещён, потому что translated animation children меняют его. После content render parent UI явно расширяется обратно до panel rect, чтобы egui cursor/PanelState тоже не сжимались до content minimum. Animation/content widths никогда не коммитятся.
+- `SidebarOutput` возвращает rect, live width и typed `SidebarWidthChange`; внешний код не читает поля host напрямую. Текущий rect в том же кадре сдвигает video viewport.
+- `SettingsRuntime` держит latest-only pending resize и коммитит `ui.sidebar.width_points` после 500 ms тишины через settings-core runtime-setting intent API. Deadline участвует в event-loop wake; ручной SetValue/Apply/OK сначала force-flush pending. Cancel соседних draft-настроек уже committed width не откатывает.
+- Persistence failure сохраняет committed config/draft, явно возвращает live host к committed width и публикует Settings status/log. Pending resize force-flush-ится перед suspend и штатным shutdown.
 - Content child получает фиксированный host rect, min-width 0 и clip только во время open/close/content animation. В fully-open состоянии секция рендерится прямо в Panel UI: fixed `UiBuilder::max_rect` здесь запрещён, потому что он превращает текущую ширину в content minimum и блокирует resize handle.
 - Info values используют wrapped layout; длинная metadata строка не может менять desired width панели. Regression test требует `animated_content_rect(..., fully_open=true) == None`.
 - Titlebar controls are 36x32 pt, inset 8 pt, gap 4 pt, ordered Playlist/Settings/URL/Info. The complete reserved rect is excluded from drag/resize. Tooltips/accessibility labels are Russian.

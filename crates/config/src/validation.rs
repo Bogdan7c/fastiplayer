@@ -705,6 +705,13 @@ fn validate_ui_section(config: &AppConfig) -> ConfigResult<()> {
     )?;
 
     validate_u16_range(
+        "ui.sidebar.width_points",
+        config.ui.sidebar.width_points,
+        crate::MIN_SIDEBAR_WIDTH_POINTS,
+        crate::MAX_SIDEBAR_WIDTH_POINTS,
+    )?;
+
+    validate_u16_range(
         "ui.animations.sidebar_slide_duration_ms",
         config.ui.animations.sidebar_slide_duration_ms,
         MIN_SIDEBAR_SLIDE_DURATION_MS,

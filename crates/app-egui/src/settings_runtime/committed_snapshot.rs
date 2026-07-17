@@ -100,6 +100,12 @@ impl CommittedConfigSnapshot {
         f32::from(self.config.ui.animations.sidebar_slide_duration_ms) / 1000.0
     }
 
+    /// Запоминаемая fully-open ширина общего sidebar host в egui points.
+    #[must_use]
+    pub(crate) fn sidebar_width_points(&self) -> u16 {
+        self.config.ui.sidebar.width_points
+    }
+
     /// Высота кастомного titlebar в egui points; config хранит те же логические UI px.
     #[must_use]
     pub(crate) fn titlebar_height_points(&self) -> f32 {

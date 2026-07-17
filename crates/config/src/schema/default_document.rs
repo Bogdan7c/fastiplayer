@@ -267,6 +267,16 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "[ui.sidebar]",
+        "# Геометрия общей панели Playlist/Settings/URL/Info.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "width_points = 420",
+        "# Запоминаемая ширина полностью открытого sidebar в логических egui points.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "[ui.settings]",
         "# Настройки поведения окна Settings UI.",
     );

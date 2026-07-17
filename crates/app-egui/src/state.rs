@@ -43,7 +43,9 @@ use crate::settings_ui::{SettingsUiAction, SettingsUiModel};
 use crate::telemetry::Telemetry;
 use crate::ui::animation::AnimationState;
 use crate::ui::player_controls::{self, ControlAction};
-use crate::ui::sidebar::{self, SidebarRenderContext};
+use crate::ui::sidebar::{
+    self, SidebarHostState, SidebarRenderContext, SidebarWidthChange, SidebarWidthPoints,
+};
 use crate::ui::skin::{self, PlayerSkin};
 use crate::ui::timeline::{
     self, TimelineAction, TimelineLiveScrubDecodeMode, TimelineLiveScrubSettingsSnapshot,
@@ -154,6 +156,9 @@ pub(crate) struct RenderedAppUi {
 
     /// Visual settings actions, которые shell передаст authoritative runtime owner-у.
     pub(crate) settings_actions: Vec<SettingsUiAction>,
+
+    /// Fully-open drag-resize общего sidebar; persistence остаётся у SettingsRuntime.
+    pub(crate) sidebar_width_change: Option<SidebarWidthChange>,
 
     /// Typed transport intents применяются только после завершения egui closure.
     pub(crate) transport_actions: Vec<crate::ui::player_controls::TransportControlAction>,
@@ -309,6 +314,9 @@ pub struct AppState {
     /// Анимация выезда settings sidebar; runtime open-state остаётся целью перехода.
     sidebar_controller: SidebarController,
 
+    /// Единственный владелец live geometry общей панели для всех sidebar sections.
+    sidebar_host_state: SidebarHostState,
+
     /// Момент последнего advance анимации sidebar для вычисления дельты времени кадра.
     sidebar_slide_last_tick: Option<Instant>,
 }
@@ -361,6 +369,8 @@ impl AppState {
         )) {
             warn!(error = %error, "Не удалось применить начальную громкость из config");
         }
+        let sidebar_host_state =
+            SidebarHostState::from_committed(committed_config_snapshot.sidebar_width_points());
 
         Ok(Self {
             egui_ctx,
@@ -400,6 +410,7 @@ impl AppState {
             timeline_ui_state: TimelineUiState::default(),
             telemetry_panel_cache: TelemetryPanelCache::default(),
             sidebar_controller: SidebarController::default(),
+            sidebar_host_state,
             sidebar_slide_last_tick: None,
         })
     }
@@ -445,10 +456,22 @@ impl AppState {
 
     /// Обновляет read-only config snapshot из authoritative settings runtime.
     pub(crate) fn sync_committed_config_snapshot(&mut self, snapshot: CommittedConfigSnapshot) {
+        let previous_sidebar_width = self.committed_config_snapshot.sidebar_width_points();
+        let next_sidebar_width = snapshot.sidebar_width_points();
         self.committed_config_snapshot = snapshot;
+        if previous_sidebar_width != next_sidebar_width {
+            self.sidebar_host_state
+                .restore_committed_width(SidebarWidthPoints::from_committed(next_sidebar_width));
+        }
         let live_scrub_settings = self.live_scrub_settings_snapshot();
         self.timeline_ui_state
             .defer_live_scrub_settings_change(live_scrub_settings);
+    }
+
+    /// Явно возвращает live host к последней сохранённой ширине после persistence failure.
+    pub(crate) fn restore_sidebar_width(&mut self, width_points: SidebarWidthPoints) {
+        self.sidebar_host_state
+            .restore_committed_width(width_points);
     }
 
     /// Применяет player runtime settings через request/reply worker boundary.

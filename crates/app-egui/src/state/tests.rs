@@ -530,7 +530,7 @@ fn app_layout_shrinks_video_viewport_by_sidebar_without_exclusion_rects() {
         "video underlay должен начинаться с полного egui root rect"
     );
     assert!(
-        render_ui_section.contains("video_viewport_rect.min.x = sidebar_rect"),
+        render_ui_section.contains("video_viewport_rect.min.x = sidebar_output"),
         "sidebar должен вытеснять видео: viewport начинается от правого края панели"
     );
     assert!(

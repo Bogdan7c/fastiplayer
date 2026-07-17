@@ -4,12 +4,12 @@ use crate::{
     ListLengthLimitKind, NumericDescriptor, NumericRange, NumericStep, PersistReport,
     PersistRequest, PreviewApplyReport, PreviewApplyRequest, PreviewApplyResult,
     PreviewRollbackRequest, PreviewRollbacker, PreviewSettingsApplier, RollbackReport,
-    RouteGeneration, SelectListDescriptor, SettingAccess, SettingApplyMode, SettingDescriptor,
-    SettingDescriptorText, SettingEditor, SettingId, SettingOption, SettingOptionCurrentValue,
-    SettingOptionId, SettingOptions, SettingPlacement, SettingRouteId, SettingText, SettingValue,
-    SettingValueError, SettingValueType, SettingsController, SettingsError, SettingsPersister,
-    SettingsRegistry, SettingsValidator, TextDescriptor, TextFormat, ValidationReport,
-    ValidationRequest, VectorDescriptor,
+    RouteGeneration, RuntimeSettingCommitRequest, SelectListDescriptor, SettingAccess,
+    SettingApplyMode, SettingDescriptor, SettingDescriptorText, SettingEditor, SettingId,
+    SettingOption, SettingOptionCurrentValue, SettingOptionId, SettingOptions, SettingPlacement,
+    SettingRouteId, SettingText, SettingValue, SettingValueError, SettingValueType,
+    SettingsController, SettingsError, SettingsPersister, SettingsRegistry, SettingsValidator,
+    TextDescriptor, TextFormat, ValidationReport, ValidationRequest, VectorDescriptor,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -17,6 +17,7 @@ struct TestDocument {
     brightness: f64,
     schema_version: i64,
     title: String,
+    sidebar_width: i64,
     rgb: Vec<f64>,
 }
 
@@ -26,6 +27,7 @@ impl Default for TestDocument {
             brightness: 0.5,
             schema_version: 2,
             title: "Исходное имя".to_owned(),
+            sidebar_width: 420,
             rgb: vec![1.0, 1.0, 1.0],
         }
     }
@@ -108,6 +110,33 @@ impl crate::SettingAccessor<TestDocument> for TitleAccessor {
     }
 }
 
+struct SidebarWidthAccessor;
+
+impl crate::SettingAccessor<TestDocument> for SidebarWidthAccessor {
+    fn get(&self, document: &TestDocument) -> crate::SettingsResult<SettingValue> {
+        Ok(SettingValue::Integer(document.sidebar_width))
+    }
+
+    fn set(&self, document: &mut TestDocument, value: SettingValue) -> crate::SettingsResult<()> {
+        let SettingValue::Integer(sidebar_width) = value else {
+            return Err(SettingsError::access_failed(
+                "sidebar width expected integer",
+            ));
+        };
+        document.sidebar_width = sidebar_width;
+        Ok(())
+    }
+
+    fn reset(
+        &self,
+        document: &mut TestDocument,
+        default_document: &TestDocument,
+    ) -> crate::SettingsResult<()> {
+        document.sidebar_width = default_document.sidebar_width;
+        Ok(())
+    }
+}
+
 struct RgbAccessor;
 
 impl crate::SettingAccessor<TestDocument> for RgbAccessor {
@@ -136,6 +165,8 @@ impl crate::SettingAccessor<TestDocument> for RgbAccessor {
 #[derive(Default)]
 struct RecordingApplyDelegate {
     calls: Vec<&'static str>,
+    persisted_documents: Vec<TestDocument>,
+    persisted_setting_ids: Vec<Vec<SettingId>>,
     validate_error: Option<SettingsError>,
     persist_error: Option<SettingsError>,
     apply_error: Option<SettingsError>,
@@ -169,13 +200,22 @@ impl SettingsValidator<TestDocument> for RecordingApplyDelegate {
 impl SettingsPersister<TestDocument> for RecordingApplyDelegate {
     fn persist(
         &mut self,
-        _request: PersistRequest<'_, TestDocument>,
+        request: PersistRequest<'_, TestDocument>,
     ) -> crate::SettingsResult<PersistReport> {
         self.calls.push("persist");
         if let Some(error) = self.persist_error.clone() {
             return Err(error);
         }
 
+        self.persisted_documents.push(request.document.clone());
+        self.persisted_setting_ids.push(
+            request
+                .changed_settings
+                .changes()
+                .iter()
+                .map(|change| change.id.clone())
+                .collect(),
+        );
         Ok(PersistReport::persisted())
     }
 }
@@ -1135,14 +1175,214 @@ fn controller_repeated_apply_after_success_is_noop() {
     );
 }
 
+#[test]
+fn controller_runtime_setting_commit_preserves_neighbor_draft_preview_and_rebases_route() {
+    let registry = controller_registry();
+    let mut controller = SettingsController::new(TestDocument::default(), registry);
+    controller
+        .set_value(
+            SettingId::from("ui.title"),
+            SettingValue::Text("Незавершённый заголовок".to_owned()),
+        )
+        .expect("neighbor UI draft edit should succeed");
+    controller
+        .set_value(
+            SettingId::from("render.brightness"),
+            SettingValue::Float(0.8),
+        )
+        .expect("render preview should stay pending");
+
+    let mut runtime_delegate = RecordingApplyDelegate::default();
+    let report = controller
+        .commit_runtime_setting(
+            RuntimeSettingCommitRequest::new("ui.sidebar.width_points", SettingValue::Integer(480)),
+            &mut runtime_delegate,
+        )
+        .expect("runtime width commit should complete");
+
+    assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
+    assert_eq!(
+        runtime_delegate.calls,
+        vec!["validate", "preflight", "apply", "persist", "finalize"]
+    );
+    assert_eq!(
+        runtime_delegate.persisted_setting_ids,
+        vec![vec![SettingId::from("ui.sidebar.width_points")]]
+    );
+    assert_eq!(runtime_delegate.persisted_documents[0].sidebar_width, 480);
+    assert_eq!(
+        runtime_delegate.persisted_documents[0].title,
+        "Исходное имя"
+    );
+    assert_eq!(runtime_delegate.persisted_documents[0].brightness, 0.5);
+
+    assert_eq!(controller.committed().sidebar_width, 480);
+    assert_eq!(controller.committed().title, "Исходное имя");
+    assert_eq!(controller.draft().sidebar_width, 480);
+    assert_eq!(controller.draft().title, "Незавершённый заголовок");
+    assert_eq!(controller.draft().brightness, 0.8);
+    let pending_render = controller
+        .preview()
+        .pending_update(&SettingRouteId::from("render"))
+        .expect("unrelated pending preview should survive runtime commit");
+    assert_eq!(pending_render.document.sidebar_width, 480);
+    assert_eq!(pending_render.document.brightness, 0.8);
+
+    // Соседний UI draft должен примениться относительно нового generation без ложного conflict.
+    let mut user_delegate = RecordingApplyDelegate::default();
+    let user_report = controller
+        .apply(&mut user_delegate)
+        .expect("neighbor draft apply should remain valid");
+    assert_eq!(user_report.final_state, ApplyFinalState::FullyApplied);
+    assert!(user_report.conflicts.is_empty());
+    assert_eq!(controller.committed().title, "Незавершённый заголовок");
+    assert_eq!(controller.committed().sidebar_width, 480);
+}
+
+#[test]
+fn controller_runtime_setting_commit_does_not_hide_preexisting_neighbor_conflict() {
+    let registry = controller_registry();
+    let mut controller = SettingsController::new(TestDocument::default(), registry);
+    let ui_route = SettingRouteId::from("ui");
+    controller
+        .set_value(
+            SettingId::from("ui.title"),
+            SettingValue::Text("Уже stale draft".to_owned()),
+        )
+        .expect("neighbor draft edit should capture generation zero");
+    controller.set_route_generation(ui_route.clone(), RouteGeneration::new(1));
+
+    let mut runtime_delegate = RecordingApplyDelegate::default();
+    let runtime_report = controller
+        .commit_runtime_setting(
+            RuntimeSettingCommitRequest::new("ui.sidebar.width_points", SettingValue::Integer(480)),
+            &mut runtime_delegate,
+        )
+        .expect("independent runtime setting should still commit");
+    assert_eq!(runtime_report.final_state, ApplyFinalState::FullyApplied);
+    assert_eq!(controller.committed().sidebar_width, 480);
+    assert_eq!(controller.draft().title, "Уже stale draft");
+
+    let mut user_delegate = RecordingApplyDelegate::default();
+    let user_report = controller
+        .apply(&mut user_delegate)
+        .expect("preexisting conflict should stay represented in report");
+    assert_eq!(user_report.final_state, ApplyFinalState::BlockedByConflicts);
+    assert_eq!(user_report.conflicts[0].route, ui_route);
+    assert_eq!(user_report.conflicts[0].baseline, RouteGeneration::new(0));
+    assert_eq!(user_report.conflicts[0].current, RouteGeneration::new(2));
+}
+
+#[test]
+fn controller_runtime_setting_persistence_failure_restores_committed_draft_and_preview() {
+    let registry = controller_registry();
+    let mut controller = SettingsController::new(TestDocument::default(), registry);
+    controller
+        .set_value(
+            SettingId::from("ui.title"),
+            SettingValue::Text("Черновик переживает ошибку".to_owned()),
+        )
+        .expect("draft edit should succeed");
+    controller
+        .set_value(
+            SettingId::from("render.brightness"),
+            SettingValue::Float(0.7),
+        )
+        .expect("preview edit should succeed");
+
+    let mut delegate = RecordingApplyDelegate {
+        persist_error: Some(SettingsError::access_failed("disk unavailable")),
+        ..RecordingApplyDelegate::default()
+    };
+    let report = controller
+        .commit_runtime_setting(
+            RuntimeSettingCommitRequest::new("ui.sidebar.width_points", SettingValue::Integer(500)),
+            &mut delegate,
+        )
+        .expect("persistence failure should be represented in report");
+
+    assert_eq!(report.final_state, ApplyFinalState::PersistFailed);
+    assert_eq!(controller.committed().sidebar_width, 420);
+    assert_eq!(controller.draft().sidebar_width, 420);
+    assert_eq!(controller.draft().title, "Черновик переживает ошибку");
+    assert_eq!(controller.draft().brightness, 0.7);
+    let pending_render = controller
+        .preview()
+        .pending_update(&SettingRouteId::from("render"))
+        .expect("preview must survive failed runtime persistence");
+    assert_eq!(pending_render.document.sidebar_width, 420);
+    assert_eq!(pending_render.document.brightness, 0.7);
+}
+
+#[test]
+fn controller_runtime_noop_still_replaces_only_same_unfinished_draft_value() {
+    let registry = controller_registry();
+    let mut controller = SettingsController::new(TestDocument::default(), registry);
+    controller
+        .set_value(
+            SettingId::from("ui.title"),
+            SettingValue::Text("Соседнее изменение".to_owned()),
+        )
+        .expect("neighbor draft edit should succeed");
+    controller
+        .set_value(
+            SettingId::from("ui.sidebar.width_points"),
+            SettingValue::Integer(510),
+        )
+        .expect("unfinished manual width edit should succeed");
+
+    let mut delegate = RecordingApplyDelegate::default();
+    let report = controller
+        .commit_runtime_setting(
+            RuntimeSettingCommitRequest::new("ui.sidebar.width_points", SettingValue::Integer(420)),
+            &mut delegate,
+        )
+        .expect("same committed runtime value should be a valid no-op");
+
+    assert_eq!(report.final_state, ApplyFinalState::NoChanges);
+    assert!(delegate.calls.is_empty());
+    assert_eq!(controller.draft().sidebar_width, 420);
+    assert_eq!(controller.draft().title, "Соседнее изменение");
+
+    let mut apply_delegate = RecordingApplyDelegate::default();
+    let apply_report = controller
+        .apply(&mut apply_delegate)
+        .expect("neighbor UI change should remain applicable");
+    assert_eq!(apply_report.final_state, ApplyFinalState::FullyApplied);
+    assert!(apply_report.conflicts.is_empty());
+}
+
 fn controller_registry() -> SettingsRegistry<TestDocument> {
     SettingsRegistry::new(vec![
         crate::RegisteredSetting::new(brightness_descriptor(), BrightnessAccessor),
         crate::RegisteredSetting::new(schema_descriptor(), SchemaVersionAccessor),
         crate::RegisteredSetting::new(title_descriptor(), TitleAccessor),
+        crate::RegisteredSetting::new(sidebar_width_descriptor(), SidebarWidthAccessor),
         crate::RegisteredSetting::new(rgb_descriptor(), RgbAccessor),
     ])
     .expect("test controller registry should be valid")
+}
+
+fn sidebar_width_descriptor() -> SettingDescriptor {
+    SettingDescriptor {
+        id: SettingId::from("ui.sidebar.width_points"),
+        path: "ui.sidebar.width_points".into(),
+        text: SettingDescriptorText::new(SettingText::new(
+            "settings.ui.sidebar.width_points.label",
+            "Ширина сайдбара",
+        )),
+        placement: SettingPlacement::new("ui", "sidebar", "main-settings-window"),
+        value_type: SettingValueType::Integer,
+        editor: SettingEditor::Numeric(NumericDescriptor::new(
+            NumericRange::Integer { min: 350, max: 600 },
+            NumericStep::Integer(1),
+            None,
+        )),
+        access: SettingAccess::ReadWrite,
+        default_behavior: DefaultBehavior::FromDefaultDocument,
+        route: SettingRouteId::from("ui"),
+        apply_mode: SettingApplyMode::CommittedApply,
+    }
 }
 
 fn brightness_descriptor() -> SettingDescriptor {
