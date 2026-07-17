@@ -9,6 +9,7 @@ use super::{
 use crate::playlist_runtime::{PlaylistViewModel, PlaylistVisibleRow};
 
 pub(super) const ROW_HEIGHT: f32 = 34.0;
+pub(super) const TOOLTIP_MAX_WIDTH: f32 = 320.0;
 const INDEX_WIDTH: f32 = 38.0;
 const KIND_WIDTH: f32 = 48.0;
 const DURATION_WIDTH: f32 = 50.0;
@@ -180,7 +181,9 @@ fn render_row(
             state,
             output,
         );
-        response.on_hover_ui(|ui| show_safe_tooltip(ui, row));
+        egui::Tooltip::for_enabled(&response)
+            .width(tooltip_width(response.rect.width()))
+            .show(|ui| show_safe_tooltip(ui, row));
     });
 }
 
@@ -306,13 +309,26 @@ pub(super) fn accessibility_text(row_index: usize, row: &PlaylistVisibleRow) -> 
 }
 
 fn show_safe_tooltip(ui: &mut egui::Ui, row: &PlaylistVisibleRow) {
-    ui.label(row.display_title());
+    ui.add(egui::Label::new(row.display_title()).wrap_mode(TextWrapMode::Wrap));
     if row.display_title() != row.fallback_display_name() {
-        ui.weak(row.fallback_display_name());
+        ui.add(
+            egui::Label::new(egui::RichText::new(row.fallback_display_name()).weak())
+                .wrap_mode(TextWrapMode::Wrap),
+        );
     }
     if let Some(error) = row.runtime_error() {
-        ui.colored_label(ui.visuals().error_fg_color, error.safe_summary());
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(error.safe_summary()).color(ui.visuals().error_fg_color),
+            )
+            .wrap_mode(TextWrapMode::Wrap),
+        );
     }
+}
+
+/// Ограничивает tooltip шириной строки и не выпускает длинное имя поверх всего видео.
+pub(super) fn tooltip_width(row_width: f32) -> f32 {
+    row_width.clamp(1.0, TOOLTIP_MAX_WIDTH)
 }
 
 #[cfg(test)]

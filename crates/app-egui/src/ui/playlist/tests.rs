@@ -8,7 +8,10 @@ use playlist_core::{
     PlaylistMediaKind, PlaylistQueue,
 };
 
-use super::renderer::{ROW_HEIGHT, accessibility_text, anchored_scroll_offset, stable_row_id};
+use super::renderer::{
+    ROW_HEIGHT, TOOLTIP_MAX_WIDTH, accessibility_text, anchored_scroll_offset, stable_row_id,
+    tooltip_width,
+};
 use super::status::{navigation_message, save_message};
 use super::{PlaylistAction, PlaylistUiOutput, PlaylistUiState, ViewportAnchor};
 use crate::playlist_runtime::{
@@ -57,6 +60,13 @@ fn loading_and_empty_are_distinct_model_states() {
     assert!(ready.is_empty());
     assert_eq!(loading.loading(), PlaylistLoadingView::Loading);
     assert_eq!(ready.loading(), PlaylistLoadingView::Ready);
+}
+
+#[test]
+fn long_row_tooltip_is_bounded_by_row_and_overlay_limit() {
+    assert_eq!(tooltip_width(180.0), 180.0);
+    assert_eq!(tooltip_width(420.0), TOOLTIP_MAX_WIDTH);
+    assert_eq!(tooltip_width(0.0), 1.0);
 }
 
 #[test]

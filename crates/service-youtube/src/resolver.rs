@@ -640,7 +640,11 @@ fn vp9_requirement_from_codec_tag(
         requirement = requirement
             .with_profile(VideoProfile::Vp9(Vp9Profile::Profile0))
             .with_bit_depth(BitDepth::Eight)
-            .with_chroma(ChromaSubsampling::Yuv420);
+            .with_chroma(ChromaSubsampling::Yuv420)
+            // Plain `vp9` — документированный YouTube SDR baseline. Typed SDR
+            // fallback нужен selection boundary, чтобы manifest `SDR` не
+            // превращался в ложный `UnknownDynamicRange`.
+            .with_color(VideoColorMetadata::sdr_bt709_limited());
         return ready_or_insufficient(
             apply_common_video_fields(requirement, format),
             missing_fields,
@@ -1349,14 +1353,18 @@ mod tests {
         );
         assert_eq!(requirement.bit_depth, Some(BitDepth::Eight));
         assert_eq!(requirement.chroma, Some(ChromaSubsampling::Yuv420));
+        assert_eq!(
+            requirement.color,
+            Some(VideoColorMetadata::sdr_bt709_limited())
+        );
         assert!(!requirement.hdr);
     }
 
     #[test]
     fn plain_vp9_hdr_hint_remains_unresolved_until_typed_selection() {
-        // Resolver сохраняет codec/profile/chroma, но не выдумывает color metadata.
-        // Service selection сопоставит typed dynamic range с этим отсутствующим
-        // color requirement и вернёт UnknownDynamicRange.
+        // Plain `vp9` остаётся typed SDR baseline. Противоречащий manifest HDR
+        // hint не получает HDR authority: selection увидит несогласованность и
+        // вернёт UnknownDynamicRange.
         let mut format = video_format("248", "vp9");
         format.dynamic_range = Some("HDR".to_string());
 
@@ -1366,7 +1374,11 @@ mod tests {
             panic!("codec metadata должна сохраниться для typed selection rejection");
         };
         assert_eq!(youtube_dynamic_range(&format), YoutubeDynamicRange::Hdr);
-        assert!(requirement.color.is_none());
+        assert_eq!(
+            requirement.color,
+            Some(VideoColorMetadata::sdr_bt709_limited())
+        );
+        assert!(!requirement.requires_hdr_processing());
     }
 
     #[test]
