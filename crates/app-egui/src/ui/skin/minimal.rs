@@ -47,17 +47,28 @@ impl PlayerSkin for MinimalSkin {
 
     /// Возвращает размеры и цвета панелей controls.
     fn controls_style(&self) -> ControlsStyle {
+        // Один text color остаётся источником normal и приглушённого transport-состояния.
+        let text_color = Color32::from_gray(230);
+        // Центральная и transport-кнопки используют общий язык hover-подсветки.
+        let button_hover_fill = Color32::from_rgba_unmultiplied(255, 255, 255, 28);
+
         ControlsStyle {
             top_panel_fill: Color32::from_rgba_unmultiplied(0, 0, 0, 145),
             bottom_panel_fill: Color32::from_rgba_unmultiplied(0, 0, 0, 190),
-            text_color: Color32::from_gray(230),
+            text_color,
             button_width: 72.0,
             button_height: 28.0,
             playback_button_diameter: 48.0,
             playback_button_icon_extent: 18.0,
             playback_button_stroke_width: 1.6,
             playback_button_vertical_raise: 5.0,
-            playback_button_hover_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 28),
+            playback_button_hover_fill: button_hover_fill,
+            transport_button_size: 32.0,
+            transport_button_center_distance: 64.0,
+            transport_button_icon_extent: 18.0,
+            transport_button_bar_width: 2.0,
+            transport_button_disabled_color: text_color.gamma_multiply(0.4),
+            transport_button_hover_fill: button_hover_fill,
             fullscreen_button_size: 32.0,
             fullscreen_icon_extent: 16.0,
             volume_slider_width: 96.0,

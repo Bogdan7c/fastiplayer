@@ -10,6 +10,7 @@ mod playback_button;
 mod settings_button;
 mod sidebar_buttons;
 mod timeline;
+mod transport_button;
 mod video_dim_overlay;
 mod volume_button;
 mod volume_separator;
@@ -24,6 +25,7 @@ pub use media_kind_icon::MediaKindGlyph;
 pub use playback_button::{ButtonVisualState, PlaybackGlyph, PlaybackStyle};
 pub use sidebar_buttons::SidebarButtonGlyph;
 pub use timeline::{TimelinePaintState, TimelineStyle, timeline_track_rect};
+pub use transport_button::{TransportButtonStyle, TransportGlyph};
 pub use volume_button::VolumeGlyph;
 pub use volume_slider::{THUMB_RADIUS as VOLUME_THUMB_RADIUS, TRACK_HEIGHT as VOLUME_TRACK_HEIGHT};
 pub use window_controls::{WindowControlGlyph, WindowControlStyle};
@@ -50,6 +52,17 @@ impl<'a> ArtworkPainter<'a> {
         style: PlaybackStyle,
     ) {
         playback_button::paint(self.painter, rect, glyph, state, style);
+    }
+
+    /// Рисует компактную кнопку перехода к предыдущему или следующему элементу.
+    pub fn transport_button(
+        self,
+        rect: egui::Rect,
+        glyph: TransportGlyph,
+        state: ButtonVisualState,
+        style: TransportButtonStyle,
+    ) {
+        transport_button::paint(self.painter, rect, glyph, state, style);
     }
 
     /// Рисует кнопку открытия медиа.
@@ -191,6 +204,15 @@ mod tests {
         }
     }
 
+    fn transport_style() -> TransportButtonStyle {
+        TransportButtonStyle {
+            icon_extent: 18.0,
+            bar_width: 2.0,
+            color: Color32::WHITE,
+            hover_fill: Color32::GRAY,
+        }
+    }
+
     #[test]
     fn playback_states_have_stable_shape_counts() {
         assert_eq!(
@@ -211,6 +233,81 @@ mod tests {
             )),
             4
         );
+    }
+
+    #[test]
+    fn transport_states_have_stable_shape_counts() {
+        assert_eq!(
+            painted_shape_count(|painter| painter.transport_button(
+                rect(),
+                TransportGlyph::Previous,
+                ButtonVisualState::Idle,
+                transport_style(),
+            )),
+            2
+        );
+        assert_eq!(
+            painted_shape_count(|painter| painter.transport_button(
+                rect(),
+                TransportGlyph::Next,
+                ButtonVisualState::Hovered,
+                transport_style(),
+            )),
+            3
+        );
+    }
+
+    #[test]
+    fn transport_glyphs_are_mirrored_and_stay_inside_their_hit_area() {
+        // Общий hit-area задаёт ось зеркального отражения для обеих иконок.
+        let hit_rect = rect();
+        // Отдельный paint pass сохраняет только два shape варианта Previous.
+        let previous_output = Context::default().run_ui(RawInput::default(), |ui| {
+            ArtworkPainter::new(ui.painter()).transport_button(
+                hit_rect,
+                TransportGlyph::Previous,
+                ButtonVisualState::Idle,
+                transport_style(),
+            );
+        });
+        // Второй paint pass изолирует зеркальный вариант Next.
+        let next_output = Context::default().run_ui(RawInput::default(), |ui| {
+            ArtworkPainter::new(ui.painter()).transport_button(
+                hit_rect,
+                TransportGlyph::Next,
+                ButtonVisualState::Idle,
+                transport_style(),
+            );
+        });
+        // Оба варианта обязаны состоять из ограничителя и треугольника.
+        assert_eq!(previous_output.shapes.len(), 2);
+        assert_eq!(next_output.shapes.len(), 2);
+
+        // Shape-ы сравниваются попарно: ограничитель с ограничителем, треугольник с треугольником.
+        for (previous_shape, next_shape) in previous_output.shapes.iter().zip(&next_output.shapes) {
+            // Реальные visual bounds учитывают итоговую геометрию Painter.
+            let previous_bounds = previous_shape.shape.visual_bounding_rect();
+            // Bounds Next должны быть точным горизонтальным отражением Previous.
+            let next_bounds = next_shape.shape.visual_bounding_rect();
+            // Левая граница Previous отражается в правую границу Next.
+            assert!(
+                (previous_bounds.left() + next_bounds.right() - hit_rect.center().x * 2.0).abs()
+                    < f32::EPSILON
+            );
+            // Правая граница Previous отражается в левую границу Next.
+            assert!(
+                (previous_bounds.right() + next_bounds.left() - hit_rect.center().x * 2.0).abs()
+                    < f32::EPSILON
+            );
+            // Вертикальная геометрия у зеркальных вариантов не меняется.
+            assert_eq!(previous_bounds.top(), next_bounds.top());
+            // Нижняя граница также должна полностью совпасть.
+            assert_eq!(previous_bounds.bottom(), next_bounds.bottom());
+            // Previous не имеет права выходить за общий hit-area.
+            assert!(hit_rect.contains_rect(previous_bounds));
+            // Next подчиняется тому же ограничению.
+            assert!(hit_rect.contains_rect(next_bounds));
+        }
     }
 
     #[test]

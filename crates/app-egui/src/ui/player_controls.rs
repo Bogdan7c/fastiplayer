@@ -141,7 +141,7 @@ fn render_button_row(
     let open_file_button_rect = open_file_button_anchor_rect(row_rect, controls_style);
     let playback_button_rect = playback_button_anchor_rect(row_rect, controls_style);
     let fullscreen_button_rect = fullscreen_button_anchor_rect(row_rect, controls_style);
-    let next_button_rect = transport::next_button_rect(ui, playback_button_rect);
+    let next_button_rect = transport::next_button_rect(playback_button_rect, controls_style);
     let playback_rate_button_rect = playback_rate::button_rect(
         row_rect,
         next_button_rect,
@@ -150,7 +150,8 @@ fn render_button_row(
         ui.spacing().item_spacing.x,
     );
     let volume_to_playback_gap = ui.spacing().item_spacing.x;
-    let previous_button_rect = transport::previous_button_rect(ui, playback_button_rect);
+    let previous_button_rect =
+        transport::previous_button_rect(playback_button_rect, controls_style);
     let volume_zone = volume_controls_zone_rect(
         row_rect,
         open_file_button_rect,
@@ -166,8 +167,9 @@ fn render_button_row(
 
     transport::render_previous_button(
         ui,
-        playback_button_rect,
+        previous_button_rect,
         playlist_transport.previous,
+        controls_style,
         actions,
     );
 
@@ -181,7 +183,13 @@ fn render_button_row(
         ));
     }
 
-    transport::render_next_button(ui, playback_button_rect, playlist_transport.next, actions);
+    transport::render_next_button(
+        ui,
+        next_button_rect,
+        playlist_transport.next,
+        controls_style,
+        actions,
+    );
 
     if playback_rate::render_reset_button_at(ui, playback_rate_button_rect, player_snapshot)
         .clicked()
@@ -675,9 +683,9 @@ mod tests {
         assert_eq!(playback_toggle_icon(PlaybackState::Scrubbing), IconId::Play);
     }
 
-    /// Проверяет, что skin владеет геометрией центральной и fullscreen-кнопки.
+    /// Проверяет, что skin владеет геометрией центральной, transport и fullscreen-кнопок.
     #[test]
-    fn minimal_skin_owns_playback_and_fullscreen_button_geometry() {
+    fn minimal_skin_owns_playback_transport_and_fullscreen_button_geometry() {
         let controls_style = MinimalSkin.controls_style();
 
         assert!(controls_style.playback_button_diameter > controls_style.button_height);
@@ -687,6 +695,11 @@ mod tests {
         assert!(
             controls_style.playback_button_icon_extent < controls_style.playback_button_diameter
         );
+        assert_eq!(controls_style.transport_button_size, 32.0);
+        assert_eq!(controls_style.transport_button_center_distance, 64.0);
+        assert_eq!(controls_style.transport_button_icon_extent, 18.0);
+        assert!(controls_style.transport_button_icon_extent < controls_style.transport_button_size);
+        assert!(controls_style.transport_button_bar_width > 0.0);
         assert_eq!(controls_style.fullscreen_button_size, 32.0);
         assert_eq!(controls_style.fullscreen_icon_extent, 16.0);
         assert!(controls_style.fullscreen_icon_extent < controls_style.fullscreen_button_size);
@@ -818,9 +831,9 @@ mod tests {
         );
     }
 
-    /// Проверяет, что volume зона начинается после open-file кнопки с зеркальным отступом.
+    /// Проверяет, что volume зона остаётся между open-file и Previous transport-кнопкой.
     #[test]
-    fn volume_controls_zone_rect_stays_between_open_file_and_playback_buttons() {
+    fn volume_controls_zone_rect_stays_between_open_file_and_previous_buttons() {
         let controls_style = MinimalSkin.controls_style();
         let row_rect = Rect::from_min_size(
             pos2(24.0, 80.0),
@@ -828,20 +841,22 @@ mod tests {
         );
         let open_file_button_rect = open_file_button_anchor_rect(row_rect, controls_style);
         let playback_button_rect = playback_button_anchor_rect(row_rect, controls_style);
+        let previous_button_rect =
+            transport::previous_button_rect(playback_button_rect, controls_style);
         let volume_to_playback_gap = 8.0;
         let volume_zone_rect = volume_controls_zone_rect(
             row_rect,
             open_file_button_rect,
-            playback_button_rect,
+            previous_button_rect,
             volume_to_playback_gap,
         );
         let open_button_left_inset = open_file_button_rect.left() - row_rect.left();
         let open_button_to_volume_gap = volume_zone_rect.left() - open_file_button_rect.right();
 
         assert!((open_button_to_volume_gap - open_button_left_inset).abs() < f32::EPSILON);
-        assert!(volume_zone_rect.right() <= playback_button_rect.left() - volume_to_playback_gap);
+        assert!(volume_zone_rect.right() <= previous_button_rect.left() - volume_to_playback_gap);
         assert!(volume_zone_rect.left() >= open_file_button_rect.right());
-        assert!(volume_zone_rect.right() <= playback_button_rect.left());
+        assert!(volume_zone_rect.right() <= previous_button_rect.left());
     }
 
     /// Проверяет, что custom volume widgets остаются внутри volume-zone и центрируются как buttons.

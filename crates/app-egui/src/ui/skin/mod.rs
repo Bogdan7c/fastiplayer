@@ -110,6 +110,24 @@ pub struct ControlsStyle {
     /// Заливка центральной play/pause-кнопки при hover.
     pub playback_button_hover_fill: Color32,
 
+    /// Размер квадратной hit-area кнопок Previous и Next.
+    pub transport_button_size: f32,
+
+    /// Расстояние от центра play/pause до центра каждой transport-кнопки.
+    pub transport_button_center_distance: f32,
+
+    /// Полный размер glyph внутри transport-кнопки.
+    pub transport_button_icon_extent: f32,
+
+    /// Ширина вертикального ограничителя transport glyph.
+    pub transport_button_bar_width: f32,
+
+    /// Цвет disabled transport glyph.
+    pub transport_button_disabled_color: Color32,
+
+    /// Заливка transport-кнопки при hover.
+    pub transport_button_hover_fill: Color32,
+
     /// Размер квадратной fullscreen-кнопки в нижней панели.
     pub fullscreen_button_size: f32,
 
