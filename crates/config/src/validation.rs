@@ -76,7 +76,7 @@ pub(crate) const MAX_NETWORK_PREFETCH_INITIAL_CHUNK_KB: u64 = MAX_NETWORK_READ_A
 pub(crate) const MAX_NETWORK_MEMORY_CACHE_MB: u64 = 4096;
 
 /// Верхний предел ожидания `yt-dlp`, чтобы зависший resolver не жил бесконечно.
-pub(crate) const MAX_YOUTUBE_RESOLVE_TIMEOUT_MS: u64 = 300_000;
+pub(crate) const MAX_YT_DLP_RESOLVE_TIMEOUT_MS: u64 = 300_000;
 
 /// Верхний предел render latency, выше которого config почти наверняка ошибочен.
 pub(crate) const MAX_VULKAN_FRAME_LATENCY: u32 = 8;
@@ -190,7 +190,7 @@ pub(crate) fn validate_app_config(config: &AppConfig) -> ConfigResult<()> {
     validate_video_section(config)?;
     validate_audio_section(config)?;
     validate_network_section(config)?;
-    validate_youtube_section(config)?;
+    validate_yt_dlp_section(config)?;
     validate_render_section(config)?;
     validate_ui_section(config)?;
     validate_frame_server_section(config)?;
@@ -547,13 +547,13 @@ fn validate_network_section(config: &AppConfig) -> ConfigResult<()> {
     Ok(())
 }
 
-/// Проверяет YouTube/service section.
-fn validate_youtube_section(config: &AppConfig) -> ConfigResult<()> {
+/// Проверяет YtDlp/service section.
+fn validate_yt_dlp_section(config: &AppConfig) -> ConfigResult<()> {
     validate_u64_range(
-        "youtube.resolve_timeout_ms",
-        config.youtube.resolve_timeout_ms,
+        "yt_dlp.resolve_timeout_ms",
+        config.yt_dlp.resolve_timeout_ms,
         1,
-        MAX_YOUTUBE_RESOLVE_TIMEOUT_MS,
+        MAX_YT_DLP_RESOLVE_TIMEOUT_MS,
     )?;
     Ok(())
 }

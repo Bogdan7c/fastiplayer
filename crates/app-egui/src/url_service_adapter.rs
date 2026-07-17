@@ -12,8 +12,8 @@ pub(crate) struct StartupUrlLocator(Box<dyn StartupUrlServiceAdapter>);
 /// Typed source для необязательного фонового обогащения playlist metadata.
 #[derive(Clone)]
 pub(crate) enum PlaylistUrlMetadataSource {
-    /// YouTube owner повторно использует нормализованный locator страницы ролика.
-    YouTube(service_youtube::YoutubeMediaLocator),
+    /// Generic yt-dlp owner повторно использует exact HTTP(S) locator.
+    YtDlp(service_ytdlp::YtDlpMediaLocator),
 }
 
 impl StartupUrlLocator {
@@ -114,17 +114,17 @@ trait StartupUrlServiceAdapter: Send {
     }
 }
 
-struct YoutubeStartupAdapter {
-    locator: service_youtube::YoutubeMediaLocator,
+struct YtDlpStartupAdapter {
+    locator: service_ytdlp::YtDlpMediaLocator,
 }
 
-impl StartupUrlServiceAdapter for YoutubeStartupAdapter {
+impl StartupUrlServiceAdapter for YtDlpStartupAdapter {
     fn safe_label(&self) -> &str {
         self.locator.safe_label()
     }
 
     fn validate_config(&self, app_config: &AppConfig) -> Result<(), String> {
-        if app_config.youtube.enabled {
+        if app_config.yt_dlp.enabled {
             Ok(())
         } else {
             Err("NetworkError: URL service adapter отключён в config".to_string())
@@ -138,7 +138,7 @@ impl StartupUrlServiceAdapter for YoutubeStartupAdapter {
         app_config: &AppConfig,
         system_capabilities: &SystemCapabilities,
     ) {
-        controller.start_youtube_startup_job(
+        controller.start_yt_dlp_startup_job(
             self.locator,
             app_state,
             app_config,
@@ -152,11 +152,11 @@ impl StartupUrlServiceAdapter for YoutubeStartupAdapter {
         system_capabilities: &SystemCapabilities,
     ) -> Result<crate::media_open::MediaOpenSourceRequest, String> {
         self.validate_config(app_config)?;
-        Ok(crate::media_open::MediaOpenSourceRequest::YouTube {
+        Ok(crate::media_open::MediaOpenSourceRequest::YtDlp {
             locator: self.locator,
             required_stream_identity: None,
             network_config: app_config.network.clone(),
-            youtube_config: app_config.youtube.clone(),
+            yt_dlp_config: app_config.yt_dlp.clone(),
             demux_config: app_config.player.demux,
             preferred_video_codec_order: app_config.player.preferred_video_codec_order.clone(),
             system_capabilities: system_capabilities.clone(),
@@ -168,7 +168,7 @@ impl StartupUrlServiceAdapter for YoutubeStartupAdapter {
     }
 
     fn playlist_metadata_source(&self) -> Option<PlaylistUrlMetadataSource> {
-        Some(PlaylistUrlMetadataSource::YouTube(self.locator.clone()))
+        Some(PlaylistUrlMetadataSource::YtDlp(self.locator.clone()))
     }
 }
 
@@ -230,8 +230,8 @@ type StartupUrlServiceClassifier = fn(&str) -> ServiceClassifierResult;
 
 /// Единственное место регистрации URL services; общий traversal не знает их семантику.
 const STARTUP_URL_SERVICE_CLASSIFIERS: &[StartupUrlServiceClassifier] = &[
-    classify_youtube_startup_url,
     classify_direct_media_startup_url,
+    classify_yt_dlp_startup_url,
 ];
 
 /// Safe classification result одного CLI argument-а.
@@ -285,25 +285,29 @@ pub(crate) fn classify_playlist_url(
     classify_startup_url(locator.expose_secret_for_open())
 }
 
-/// YouTube registration adapter: service сам владеет URL allowlist и normalization.
-fn classify_youtube_startup_url(argument: &str) -> ServiceClassifierResult {
-    if !service_youtube::is_probably_url(argument) {
+/// Generic fallback adapter принимает любой оставшийся absolute HTTP(S) URL.
+fn classify_yt_dlp_startup_url(argument: &str) -> ServiceClassifierResult {
+    if !service_ytdlp::is_probably_url(argument) {
         return ServiceClassifierResult::NotUrl;
     }
 
-    match service_youtube::parse_youtube_media_locator(argument) {
+    match service_ytdlp::parse_yt_dlp_media_locator(argument) {
         Ok(locator) => {
-            ServiceClassifierResult::Supported(StartupUrlLocator::new(YoutubeStartupAdapter {
+            ServiceClassifierResult::Supported(StartupUrlLocator::new(YtDlpStartupAdapter {
                 locator,
             }))
         }
-        Err(service_youtube::YoutubeLocatorParseError::InvalidSyntax) => {
+        Err(service_ytdlp::YtDlpLocatorParseError::InvalidSyntax) => {
             ServiceClassifierResult::UnclaimedUrl {
                 safe_error: Some("NetworkError: некорректный URL".to_string()),
             }
         }
-        Err(service_youtube::YoutubeLocatorParseError::UnsupportedService) => {
-            ServiceClassifierResult::UnclaimedUrl { safe_error: None }
+        Err(service_ytdlp::YtDlpLocatorParseError::UnsupportedScheme) => {
+            ServiceClassifierResult::UnclaimedUrl {
+                safe_error: Some(
+                    "NetworkError: yt-dlp поддерживает только HTTP(S) URL".to_string(),
+                ),
+            }
         }
     }
 }
@@ -342,7 +346,9 @@ fn classify_direct_media_startup_url(argument: &str) -> ServiceClassifierResult 
 
 #[cfg(test)]
 mod tests {
+    use capability_core::SystemCapabilities;
     use playlist_core::SecretUrlLocator;
+    use rustiplayer_config::AppConfig;
 
     use super::{StartupUrlClassification, classify_playlist_url, classify_startup_url};
 
@@ -355,17 +361,14 @@ mod tests {
     }
 
     #[test]
-    fn registry_keeps_service_specific_normalization_in_service_owner() {
-        let classified =
-            classify_startup_url("https://youtu.be/video-id?v=keep&si=drop&unknown=preserve");
+    fn registry_keeps_exact_generic_identity_in_service_owner() {
+        let exact_url = "https://youtu.be/video-id?v=keep&si=preserve&unknown=preserve";
+        let classified = classify_startup_url(exact_url);
         let StartupUrlClassification::Supported(locator) = classified else {
-            panic!("YouTube service должен классифицировать собственный host");
+            panic!("generic yt-dlp service должен принять HTTP(S) URL");
         };
 
-        assert_eq!(
-            persistence_identity(&locator),
-            "https://youtu.be/video-id?v=keep&unknown=preserve"
-        );
+        assert_eq!(persistence_identity(&locator), exact_url);
     }
 
     #[test]
@@ -393,20 +396,55 @@ mod tests {
 
         assert_eq!(
             persistence_identity(&service_locator),
-            "https://youtu.be/video-id?future=preserve"
+            "https://youtu.be/video-id?si=drop&future=preserve"
         );
     }
 
     #[test]
     fn unsupported_error_does_not_reflect_secret_input() {
-        let classified =
-            classify_startup_url("https://user:password@example.test/private?token=secret");
+        let classified = classify_startup_url("https://user:password@[invalid-host]?token=secret");
         let StartupUrlClassification::Unsupported { safe_error } = classified else {
-            panic!("URL без direct extension должен быть rejected");
+            panic!("синтаксически невалидный URL должен быть rejected");
         };
 
         assert!(!safe_error.contains("password"));
         assert!(!safe_error.contains("secret"));
         assert!(!safe_error.contains("private"));
+    }
+
+    #[test]
+    fn registry_prioritizes_direct_media_and_uses_yt_dlp_as_generic_fallback() {
+        let StartupUrlClassification::Supported(direct_locator) =
+            classify_startup_url("https://cdn.example.test/video.mp4?token=direct")
+        else {
+            panic!("direct media URL должен быть принят");
+        };
+        let direct_request = direct_locator
+            .into_media_open_source_request(&AppConfig::default(), &SystemCapabilities::empty(1))
+            .expect("direct request");
+        assert!(matches!(
+            direct_request,
+            crate::media_open::MediaOpenSourceRequest::Direct { .. }
+        ));
+
+        let exact_generic_url =
+            "https://user:password@media.example.test/article?token=generic#chapter";
+        let StartupUrlClassification::Supported(generic_locator) =
+            classify_startup_url(exact_generic_url)
+        else {
+            panic!("оставшийся HTTP(S) URL должен попасть в yt-dlp fallback");
+        };
+        assert_eq!(persistence_identity(&generic_locator), exact_generic_url);
+        assert!(
+            !generic_locator.requires_sensitive_persistence_acknowledgement(),
+            "утверждённая generic policy сохраняет exact yt-dlp URL без отдельного prompt"
+        );
+        let generic_request = generic_locator
+            .into_media_open_source_request(&AppConfig::default(), &SystemCapabilities::empty(1))
+            .expect("yt-dlp request");
+        assert!(matches!(
+            generic_request,
+            crate::media_open::MediaOpenSourceRequest::YtDlp { .. }
+        ));
     }
 }

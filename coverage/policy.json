@@ -45,7 +45,7 @@
     "desktop-integration",
     "render-wgpu-shell",
     "render-wgpu-video",
-    "service-youtube",
+    "service-ytdlp",
     "ui-artwork-egui",
     "video-ffmpeg",
     "video-vaapi"

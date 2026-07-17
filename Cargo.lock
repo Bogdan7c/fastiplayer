@@ -157,7 +157,7 @@ dependencies = [
  "rustiplayer-config",
  "rustiplayer-settings",
  "service-direct-media",
- "service-youtube",
+ "service-ytdlp",
  "settings-core",
  "source-core",
  "symphonia-demux",
@@ -3990,7 +3990,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "service-youtube"
+name = "service-ytdlp"
 version = "0.1.0"
 dependencies = [
  "anyhow",

@@ -58,3 +58,12 @@
 
 ## Session 17 nonblocking startup consumer (2026-07-16)
 - Startup использует отдельный renderer-bound stepwise strong-install driver и не блокирует winit event loop; policy-neutral coordinator не получил CLI/fallback/queue policy. Blocking wrapper сохранён для прежних non-startup callers. Полный контракт: `mem:app-egui/startup-orchestration-s17`.
+
+## Generic yt-dlp reconstruction update (2026-07-17)
+
+- Все прежние app composition variants `YouTube` заменены на `YtDlp`: source request, prepared descriptor, active source, startup job, suspend checkpoint, settings rebuild и playlist metadata source.
+- `YtDlpMediaLocator` хранит exact HTTP(S) identity и проходит через coordinator/reopen без повторного app parsing. Selected-stream reconstruction хранит `YtDlpSelectedStreamIdentity`; refresh/open должен совпасть с exact chosen candidate и не может молча выбрать другой stream.
+- Coordinator остаётся policy-neutral: generic host admission, WebM/VP9/Opus compatibility, process args/errors и URL privacy принадлежат `service-ytdlp`; capability selection остаётся app/capability boundary; player получает только готовый `PreparedMedia`.
+- URL registry выбирает direct-media до yt-dlp. После выбора adapter фиксирован, поэтому direct open failure не даёт hidden yt-dlp retry.
+- Metadata enrichment не меняет playback/coordinator lifecycle и revalidates exact Item ID + locator; см. `mem:app-egui/ytdlp-playlist-metadata-2026-07-17`.
+- Privacy/exact identity: `mem:media-services/secret-safe-locators-s10b`.

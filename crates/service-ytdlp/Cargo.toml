@@ -1,12 +1,12 @@
 [package]
-name = "service-youtube"
+name = "service-ytdlp"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [lib]
-name = "service_youtube"
+name = "service_ytdlp"
 path = "src/lib.rs"
 
 [dependencies]

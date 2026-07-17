@@ -9,7 +9,7 @@
 - Linux x86_64 с Vulkan-capable GPU/driver;
 - Rust toolchain `1.96.0` из `rust-toolchain.toml`; поддерживаемый MSRV — `1.92.0`;
 - `clang`, `libclang`, `pkg-config`, development headers ALSA, FFmpeg, GBM и VA-API;
-- `yt-dlp` в `PATH` только для открытия YouTube URL.
+- `yt-dlp` в `PATH` для открытия поддерживаемых extractor-ом HTTP(S) страниц.
 
 Для Ubuntu 24.04 compile dependencies соответствуют CI:
 
@@ -71,7 +71,8 @@ non-blocking report после blocking policy из `deny.toml`.
 - software decode требует совместимые FFmpeg runtime libraries;
 - native HDR output и CPU readback fallback не реализованы;
 - DRM/codec support зависит от установленного GPU driver и FFmpeg build;
-- YouTube playback зависит от внешнего `yt-dlp` и изменений сервиса.
+- generic web URL playback зависит от внешнего `yt-dlp`, extractor-ов сайтов и
+  наличия совместимой direct WebM/VP9 + WebM/Opus пары без DRM.
 
 Runtime acceptance выполняется отдельно:
 

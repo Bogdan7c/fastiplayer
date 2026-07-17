@@ -1,4 +1,4 @@
-schema_version = 5
+schema_version = 6
 
 [player]
 start_paused = true
@@ -155,13 +155,12 @@ connect_timeout_ms = 15000
 # Timeout чтения из сетевого источника.
 read_timeout_ms = 15000
 
-# Настройки YouTube/service adapter-а.
-[youtube]
+# Настройки generic yt-dlp service adapter-а.
+[yt_dlp]
 enabled = true
-prefer_account_session = true
-# Политика YouTube dynamic range: только SDR или HDR с автоматическим SDR fallback.
+# Политика yt-dlp dynamic range: только SDR или HDR с автоматическим SDR fallback.
 hdr_selection = "sdr_only"
-# Timeout подготовки YouTube metadata через yt-dlp.
+# Timeout подготовки metadata через системный yt-dlp.
 resolve_timeout_ms = 30000
 
 [ui]

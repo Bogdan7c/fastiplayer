@@ -3,12 +3,12 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
-use rustiplayer_config::YoutubeConfig;
+use rustiplayer_config::YtDlpConfig;
 
 use crate::dto::YtDlpMetadata;
+use crate::error::YtDlpServiceError;
 
-/// Имя env-переменной для полного переопределения selector-а `yt-dlp`.
+/// Legacy env contract сохраняется, чтобы generic migration не ломала ручные smoke-сценарии.
 const FORMAT_SELECTOR_ENV: &str = "VIDEO_PLAYER_YOUTUBE_FORMAT_SELECTOR";
 
 /// Имя production binary, через который service получает direct stream metadata.
@@ -50,15 +50,19 @@ pub(crate) struct YtDlpProcessConfig {
 }
 
 impl YtDlpProcessConfig {
-    /// Строит process policy из пользовательского YouTube config.
-    pub(crate) fn from_youtube_config(youtube_config: &YoutubeConfig) -> Result<Self> {
-        if youtube_config.resolve_timeout_ms == 0 {
-            bail!("youtube.resolve_timeout_ms должен быть положительным");
+    /// Строит process policy из пользовательского YtDlp config.
+    pub(crate) fn from_yt_dlp_config(
+        yt_dlp_config: &YtDlpConfig,
+    ) -> Result<Self, YtDlpServiceError> {
+        if yt_dlp_config.resolve_timeout_ms == 0 {
+            return Err(YtDlpServiceError::process(anyhow::anyhow!(
+                "yt_dlp.resolve_timeout_ms должен быть положительным"
+            )));
         }
 
         Ok(Self {
             executable: YT_DLP_EXECUTABLE.to_string(),
-            timeout: Duration::from_millis(youtube_config.resolve_timeout_ms),
+            timeout: Duration::from_millis(yt_dlp_config.resolve_timeout_ms),
         })
     }
 }
@@ -105,21 +109,21 @@ enum ProcessWaitOutcome {
 }
 
 /// Получает metadata и выбранные direct URLs через `yt-dlp`.
-pub(crate) fn resolve_youtube_metadata(
+pub(crate) fn resolve_yt_dlp_metadata(
     video_url: &str,
     process_config: &YtDlpProcessConfig,
-) -> Result<YtDlpMetadata> {
-    resolve_youtube_metadata_with_cancellation(video_url, process_config, &|| false)
+) -> Result<YtDlpMetadata, YtDlpServiceError> {
+    resolve_yt_dlp_metadata_with_cancellation(video_url, process_config, &|| false)
 }
 
 /// Получает metadata и позволяет process-lifetime owner-у прервать `yt-dlp`.
-pub(crate) fn resolve_youtube_metadata_with_cancellation(
+pub(crate) fn resolve_yt_dlp_metadata_with_cancellation(
     video_url: &str,
     process_config: &YtDlpProcessConfig,
     is_cancelled: &dyn Fn() -> bool,
-) -> Result<YtDlpMetadata> {
+) -> Result<YtDlpMetadata, YtDlpServiceError> {
     // Выбираем selector из env или используем тестовую policy по умолчанию.
-    let format_selector = youtube_format_selector();
+    let format_selector = yt_dlp_format_selector();
     let command_arguments = [
         "--quiet",
         "--no-warnings",
@@ -136,34 +140,33 @@ pub(crate) fn resolve_youtube_metadata_with_cancellation(
         &command_arguments,
         process_config.timeout,
         is_cancelled,
-    )
-    .context("Не удалось выполнить yt-dlp для получения streaming metadata")?;
+    )?;
 
     // Любая ошибка selection/access должна стать понятной ошибкой UI.
     ensure_yt_dlp_success(command_output.status, &command_output.stderr)?;
 
     // JSON должен быть валидным UTF-8.
-    let stdout_text = String::from_utf8(command_output.stdout)
-        .context("yt-dlp вернул metadata stdout не в UTF-8")?;
+    let stdout_text =
+        String::from_utf8(command_output.stdout).map_err(YtDlpServiceError::invalid_response)?;
 
     // Парсим typed JSON, чтобы не ходить по magic string paths руками.
-    serde_json::from_str(&stdout_text).context("Не удалось разобрать JSON metadata от yt-dlp")
+    serde_json::from_str(&stdout_text).map_err(YtDlpServiceError::invalid_response)
 }
 
 /// Получает manifest formats без применения текущего service default selector-а.
-pub(crate) fn resolve_youtube_candidate_metadata(
+pub(crate) fn resolve_yt_dlp_candidate_metadata(
     video_url: &str,
     process_config: &YtDlpProcessConfig,
-) -> Result<YtDlpMetadata> {
-    resolve_youtube_candidate_metadata_with_cancellation(video_url, process_config, &|| false)
+) -> Result<YtDlpMetadata, YtDlpServiceError> {
+    resolve_yt_dlp_candidate_metadata_with_cancellation(video_url, process_config, &|| false)
 }
 
 /// Получает общий manifest JSON без playback selector-а и поддерживает отмену.
-pub(crate) fn resolve_youtube_candidate_metadata_with_cancellation(
+pub(crate) fn resolve_yt_dlp_candidate_metadata_with_cancellation(
     video_url: &str,
     process_config: &YtDlpProcessConfig,
     is_cancelled: &dyn Fn() -> bool,
-) -> Result<YtDlpMetadata> {
+) -> Result<YtDlpMetadata, YtDlpServiceError> {
     let command_arguments = [
         "--quiet",
         "--no-warnings",
@@ -178,15 +181,14 @@ pub(crate) fn resolve_youtube_candidate_metadata_with_cancellation(
         &command_arguments,
         process_config.timeout,
         is_cancelled,
-    )
-    .context("Не удалось выполнить yt-dlp для получения YouTube stream candidates")?;
+    )?;
 
     ensure_yt_dlp_candidate_success(command_output.status, &command_output.stderr)?;
 
-    let stdout_text = String::from_utf8(command_output.stdout)
-        .context("yt-dlp вернул candidates stdout не в UTF-8")?;
+    let stdout_text =
+        String::from_utf8(command_output.stdout).map_err(YtDlpServiceError::invalid_response)?;
 
-    serde_json::from_str(&stdout_text).context("Не удалось разобрать JSON candidates от yt-dlp")
+    serde_json::from_str(&stdout_text).map_err(YtDlpServiceError::invalid_response)
 }
 
 /// Запускает внешний процесс, читает stdout/stderr параллельно и ограничивает ожидание.
@@ -195,7 +197,7 @@ fn run_process_with_timeout(
     executable: &str,
     arguments: &[&str],
     timeout: Duration,
-) -> Result<ProcessOutput> {
+) -> Result<ProcessOutput, YtDlpServiceError> {
     run_process_with_timeout_and_cancellation(executable, arguments, timeout, &|| false)
 }
 
@@ -205,12 +207,14 @@ fn run_process_with_timeout_and_cancellation(
     arguments: &[&str],
     timeout: Duration,
     is_cancelled: &dyn Fn() -> bool,
-) -> Result<ProcessOutput> {
+) -> Result<ProcessOutput, YtDlpServiceError> {
     if timeout.is_zero() {
-        bail!("process timeout должен быть положительным");
+        return Err(YtDlpServiceError::process(anyhow::anyhow!(
+            "process timeout должен быть положительным"
+        )));
     }
     if is_cancelled() {
-        bail!("запуск yt-dlp отменён до создания process-а");
+        return Err(YtDlpServiceError::Cancellation);
     }
 
     let mut child = Command::new(executable)
@@ -218,16 +222,16 @@ fn run_process_with_timeout_and_cancellation(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| format!("Не удалось запустить process: {executable}"))?;
+        .map_err(YtDlpServiceError::process)?;
 
     let stdout = child
         .stdout
         .take()
-        .context("stdout pipe process-а недоступен")?;
+        .ok_or_else(|| YtDlpServiceError::process(anyhow::anyhow!("stdout pipe недоступен")))?;
     let stderr = child
         .stderr
         .take()
-        .context("stderr pipe process-а недоступен")?;
+        .ok_or_else(|| YtDlpServiceError::process(anyhow::anyhow!("stderr pipe недоступен")))?;
     let stdout_reader = spawn_pipe_reader("stdout", stdout)?;
     let stderr_reader = spawn_pipe_reader("stderr", stderr)?;
 
@@ -241,12 +245,8 @@ fn run_process_with_timeout_and_cancellation(
             stdout,
             stderr,
         }),
-        ProcessWaitOutcome::TimedOut => bail!(
-            "yt-dlp не завершился за {} мс и был остановлен; {}",
-            timeout.as_millis(),
-            safe_stderr_context(&stderr)
-        ),
-        ProcessWaitOutcome::Cancelled => bail!("получение metadata через yt-dlp отменено"),
+        ProcessWaitOutcome::TimedOut => Err(YtDlpServiceError::Timeout),
+        ProcessWaitOutcome::Cancelled => Err(YtDlpServiceError::Cancellation),
     }
 }
 
@@ -254,7 +254,7 @@ fn run_process_with_timeout_and_cancellation(
 fn spawn_pipe_reader<R>(
     pipe_name: &'static str,
     mut pipe: R,
-) -> Result<thread::JoinHandle<io::Result<Vec<u8>>>>
+) -> Result<thread::JoinHandle<io::Result<Vec<u8>>>, YtDlpServiceError>
 where
     R: Read + Send + 'static,
 {
@@ -265,18 +265,22 @@ where
             pipe.read_to_end(&mut captured_bytes)?;
             Ok(captured_bytes)
         })
-        .with_context(|| format!("Не удалось запустить reader thread для {pipe_name}"))
+        .map_err(YtDlpServiceError::process)
 }
 
 /// Забирает bytes из pipe reader thread и превращает panic/thread IO в понятную ошибку.
 fn join_pipe_reader(
     pipe_name: &'static str,
     reader: thread::JoinHandle<io::Result<Vec<u8>>>,
-) -> Result<Vec<u8>> {
+) -> Result<Vec<u8>, YtDlpServiceError> {
     reader
         .join()
-        .map_err(|_| anyhow::anyhow!("reader thread для {pipe_name} завершился panic"))?
-        .with_context(|| format!("Не удалось прочитать {pipe_name} process-а"))
+        .map_err(|_| {
+            YtDlpServiceError::process(anyhow::anyhow!(
+                "reader thread для {pipe_name} завершился panic"
+            ))
+        })?
+        .map_err(YtDlpServiceError::process)
 }
 
 /// Ждёт child process с bounded polling и убивает его при превышении timeout-а.
@@ -284,14 +288,11 @@ fn wait_for_process_with_timeout(
     child: &mut Child,
     timeout: Duration,
     is_cancelled: &dyn Fn() -> bool,
-) -> Result<ProcessWaitOutcome> {
+) -> Result<ProcessWaitOutcome, YtDlpServiceError> {
     let start = Instant::now();
 
     loop {
-        if let Some(status) = child
-            .try_wait()
-            .context("Не удалось проверить статус process-а")?
-        {
+        if let Some(status) = child.try_wait().map_err(YtDlpServiceError::process)? {
             return Ok(ProcessWaitOutcome::Exited(status));
         }
 
@@ -311,21 +312,19 @@ fn wait_for_process_with_timeout(
 }
 
 /// Останавливает зависший child process и reaps его, чтобы не оставлять zombie process.
-fn terminate_process(child: &mut Child) -> Result<()> {
+fn terminate_process(child: &mut Child) -> Result<(), YtDlpServiceError> {
     match child.kill() {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::InvalidInput => {}
-        Err(error) => return Err(error).context("Не удалось остановить process по policy"),
+        Err(error) => return Err(YtDlpServiceError::process(error)),
     }
 
-    child
-        .wait()
-        .context("Не удалось дождаться остановленного process-а")?;
+    child.wait().map_err(YtDlpServiceError::process)?;
     Ok(())
 }
 
-/// Возвращает selector `yt-dlp` для выбора тестового YouTube формата.
-fn youtube_format_selector() -> String {
+/// Возвращает selector `yt-dlp` для выбора тестового YtDlp формата.
+fn yt_dlp_format_selector() -> String {
     // Env override нужен для ручных тестов новых кодеков/разрешений без перекомпиляции.
     if let Ok(configured_selector) = std::env::var(FORMAT_SELECTOR_ENV) {
         // Пустая строка почти всегда ошибка конфигурации, поэтому не используем её.
@@ -339,39 +338,29 @@ fn youtube_format_selector() -> String {
 }
 
 /// Преобразует неуспешный exit code `yt-dlp` в читаемую ошибку.
-fn ensure_yt_dlp_success(status: ExitStatus, stderr_bytes: &[u8]) -> Result<()> {
+fn ensure_yt_dlp_success(status: ExitStatus, stderr_bytes: &[u8]) -> Result<(), YtDlpServiceError> {
     // Нулевой exit code означает, что `yt-dlp` считает selection успешным.
     if status.success() {
         return Ok(());
     }
 
-    anyhow::bail!(
-        "yt-dlp не смог выбрать поддерживаемый SDR VP9/Opus WebM поток (4K60, 4K30, 1080p60 или 1080p); {}",
-        safe_stderr_context(stderr_bytes)
-    );
+    Err(YtDlpServiceError::ExtractorRejection {
+        stderr_bytes: stderr_bytes.len().min(MAX_REPORTED_STDERR_BYTES),
+    })
 }
 
 /// Преобразует ошибку metadata-only candidates command в читаемую ошибку.
-fn ensure_yt_dlp_candidate_success(status: ExitStatus, stderr_bytes: &[u8]) -> Result<()> {
+fn ensure_yt_dlp_candidate_success(
+    status: ExitStatus,
+    stderr_bytes: &[u8],
+) -> Result<(), YtDlpServiceError> {
     if status.success() {
         return Ok(());
     }
 
-    anyhow::bail!(
-        "yt-dlp не смог получить YouTube stream candidates; {}",
-        safe_stderr_context(stderr_bytes)
-    );
-}
-
-/// Возвращает bounded metadata о stderr без копирования потенциальных URL/cookies.
-fn safe_stderr_context(stderr_bytes: &[u8]) -> String {
-    let bounded_length = stderr_bytes.len().min(MAX_REPORTED_STDERR_BYTES);
-    let truncation_marker = if stderr_bytes.len() > MAX_REPORTED_STDERR_BYTES {
-        "+"
-    } else {
-        ""
-    };
-    format!("stderr redacted ({bounded_length}{truncation_marker} bytes)")
+    Err(YtDlpServiceError::ExtractorRejection {
+        stderr_bytes: stderr_bytes.len().min(MAX_REPORTED_STDERR_BYTES),
+    })
 }
 
 #[cfg(test)]
@@ -406,7 +395,7 @@ mod tests {
         )
         .expect_err("slow process times out");
 
-        assert!(error.to_string().contains("не завершился"));
+        assert!(matches!(error, YtDlpServiceError::Timeout));
         assert!(!error.to_string().contains("password"));
         assert!(!error.to_string().contains("secret"));
     }
@@ -447,12 +436,12 @@ mod tests {
         assert!(!output_debug.contains("secret"));
 
         let error = ensure_yt_dlp_candidate_success(output.status, &output.stderr)
-            .expect_err("non-zero status должен стать typed anyhow error");
+            .expect_err("non-zero status должен стать typed extractor error");
         let formatted = format!("{error:?} {error}");
         assert!(!formatted.contains("password"));
         assert!(!formatted.contains("secret"));
         assert!(!formatted.contains("example.test"));
-        assert!(formatted.contains("stderr redacted"));
+        assert!(formatted.contains("stderr скрыт"));
         assert!(formatted.len() < 512);
     }
 }

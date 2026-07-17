@@ -772,7 +772,7 @@ impl MediaOpenSourceRequest {
             Self::Direct { locator, .. } => {
                 SafeMediaLabel::from_service_safe_label(locator.safe_label())
             }
-            Self::YouTube { locator, .. } => {
+            Self::YtDlp { locator, .. } => {
                 SafeMediaLabel::from_service_safe_label(locator.safe_label())
             }
         }
@@ -833,10 +833,10 @@ mod tests {
 
     use media_core::{DemuxSeekResult, Demuxer, Packet};
     use playlist_discovery::{LocalMediaFingerprint, LocalMediaKind};
-    use service_youtube::{
-        YoutubeDirectStreamDescriptor, YoutubeDirectStreamUrl, YoutubeDynamicRange,
-        YoutubeInsufficientVideoMetadata, YoutubeSelectedStreamIdentity, YoutubeStreamCandidate,
-        YoutubeStreamKind, YoutubeVideoRequirement,
+    use service_ytdlp::{
+        YtDlpDirectStreamDescriptor, YtDlpDirectStreamUrl, YtDlpDynamicRange,
+        YtDlpInsufficientVideoMetadata, YtDlpSelectedStreamIdentity, YtDlpStreamCandidate,
+        YtDlpStreamKind, YtDlpVideoRequirement,
     };
     use source_core::SourceValidators;
     use video_backend_api::{
@@ -1066,13 +1066,13 @@ mod tests {
         })
     }
 
-    fn youtube_selected_stream_identity() -> YoutubeSelectedStreamIdentity {
-        let candidate = YoutubeStreamCandidate {
+    fn yt_dlp_selected_stream_identity() -> YtDlpSelectedStreamIdentity {
+        let candidate = YtDlpStreamCandidate {
             stream_id: "video-251".to_owned(),
             format_id: Some("251+140".to_owned()),
-            video: YoutubeDirectStreamDescriptor {
-                kind: YoutubeStreamKind::Video,
-                url: YoutubeDirectStreamUrl::from_secret_for_open(
+            video: YtDlpDirectStreamDescriptor {
+                kind: YtDlpStreamKind::Video,
+                url: YtDlpDirectStreamUrl::from_secret_for_open(
                     "https://media.example.test/video?signature=secret",
                 ),
                 headers: Vec::new(),
@@ -1088,16 +1088,16 @@ mod tests {
             fps: Some(30.0),
             vcodec: Some("vp9".to_owned()),
             acodec: None,
-            dynamic_range: YoutubeDynamicRange::Sdr,
-            video_requirement: YoutubeVideoRequirement::Insufficient(
-                YoutubeInsufficientVideoMetadata {
+            dynamic_range: YtDlpDynamicRange::Sdr,
+            video_requirement: YtDlpVideoRequirement::Insufficient(
+                YtDlpInsufficientVideoMetadata {
                     reason: "test fixture".to_owned(),
                     partial_requirement: None,
                 },
             ),
             quality_score: 1,
         };
-        YoutubeSelectedStreamIdentity::from_candidate(&candidate)
+        YtDlpSelectedStreamIdentity::from_candidate(&candidate)
     }
 
     fn wait_until_prepared(coordinator: &mut MediaOpenCoordinator) -> MediaOpenRequestId {
@@ -1338,15 +1338,15 @@ mod tests {
     }
 
     #[test]
-    fn direct_and_youtube_descriptors_follow_the_same_prepared_phase() {
+    fn direct_and_yt_dlp_descriptors_follow_the_same_prepared_phase() {
         let direct_locator = service_direct_media::parse_direct_media_url(
             "https://media.example.test/movie.mp4?token=secret",
         )
         .expect("direct locator");
-        let youtube_locator = service_youtube::parse_youtube_media_locator(
+        let yt_dlp_locator = service_ytdlp::parse_yt_dlp_media_locator(
             "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         )
-        .expect("YouTube locator");
+        .expect("YtDlp locator");
         let descriptors = [
             PreparedMediaDescriptor::Direct {
                 tracks: Vec::new(),
@@ -1355,13 +1355,13 @@ mod tests {
                 source: ActiveMediaSource::DirectMediaUrl(direct_locator),
                 safe_label: SafeMediaLabel::from_service_safe_label("media.example.test"),
             },
-            PreparedMediaDescriptor::YouTube {
+            PreparedMediaDescriptor::YtDlp {
                 tracks: Vec::new(),
                 duration: None,
                 metadata: media_core::MediaTagMetadata::default(),
-                source: ActiveMediaSource::YouTubeUrl {
-                    source_locator: youtube_locator,
-                    selected_stream_identity: youtube_selected_stream_identity(),
+                source: ActiveMediaSource::YtDlpUrl {
+                    source_locator: yt_dlp_locator,
+                    selected_stream_identity: yt_dlp_selected_stream_identity(),
                 },
                 safe_label: SafeMediaLabel::from_service_safe_label("youtube.com"),
             },
@@ -1383,7 +1383,7 @@ mod tests {
                     .expect("prepared snapshot")
                     .descriptor,
                 Some(PreparedMediaDescriptor::Direct { .. })
-                    | Some(PreparedMediaDescriptor::YouTube { .. })
+                    | Some(PreparedMediaDescriptor::YtDlp { .. })
             ));
         }
     }

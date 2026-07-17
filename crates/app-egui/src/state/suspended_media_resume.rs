@@ -280,7 +280,7 @@ impl AppState {
                 network_config: config.network,
                 demux_config: config.player.demux,
             }),
-            ActiveMediaSource::YouTubeUrl {
+            ActiveMediaSource::YtDlpUrl {
                 source_locator,
                 selected_stream_identity,
             } => {
@@ -288,11 +288,11 @@ impl AppState {
                     .system_capabilities_snapshot
                     .clone()
                     .ok_or(ResumeCheckpointError::PreparationFailed)?;
-                Ok(MediaOpenSourceRequest::YouTube {
+                Ok(MediaOpenSourceRequest::YtDlp {
                     locator: source_locator.clone(),
                     required_stream_identity: Some(Box::new(selected_stream_identity.clone())),
                     network_config: config.network,
-                    youtube_config: config.youtube,
+                    yt_dlp_config: config.yt_dlp,
                     demux_config: config.player.demux,
                     preferred_video_codec_order: config.player.preferred_video_codec_order,
                     system_capabilities: capabilities,

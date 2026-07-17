@@ -84,7 +84,7 @@ pub(crate) struct AppShell {
     /// Общая телеметрия.
     telemetry: Arc<Telemetry>,
 
-    /// Controller стартового media и фоновой подготовки CLI YouTube URL.
+    /// Controller стартового media и фоновой подготовки CLI YtDlp URL.
     startup_media: StartupMediaController,
 
     /// Process-lifetime playlist owner переживает renderer-bound AppState recreation.

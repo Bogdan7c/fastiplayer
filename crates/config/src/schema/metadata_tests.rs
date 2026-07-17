@@ -77,10 +77,9 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "network.prefetch_chunk_mb",
     "network.connect_timeout_ms",
     "network.read_timeout_ms",
-    "youtube.enabled",
-    "youtube.prefer_account_session",
-    "youtube.hdr_selection",
-    "youtube.resolve_timeout_ms",
+    "yt_dlp.enabled",
+    "yt_dlp.hdr_selection",
+    "yt_dlp.resolve_timeout_ms",
     "ui.show_telemetry",
     "ui.language",
     "ui.skin",
@@ -525,9 +524,9 @@ fn metadata_ranges_match_validation_constants() {
     );
     assert_integer_range(
         &registry,
-        "youtube.resolve_timeout_ms",
+        "yt_dlp.resolve_timeout_ms",
         1_u64,
-        validation::MAX_YOUTUBE_RESOLVE_TIMEOUT_MS,
+        validation::MAX_YT_DLP_RESOLVE_TIMEOUT_MS,
     );
     assert_text_len(
         &registry,
@@ -600,7 +599,7 @@ fn static_enum_and_string_options_use_stable_ids() {
     );
     assert_select_options(
         &registry,
-        "youtube.hdr_selection",
+        "yt_dlp.hdr_selection",
         &["sdr_only", "prefer_hdr"],
     );
     assert_select_options(&registry, "ui.skin", &[validation::DEFAULT_UI_SKIN]);

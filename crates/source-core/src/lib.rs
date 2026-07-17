@@ -2,7 +2,7 @@
 //!
 //! Crate владеет только чтением bytes из локальных файлов и HTTP Range
 //! источников, metadata источника и RAM range cache. Здесь намеренно нет знаний
-//! о YouTube, контейнерах, demuxer-ах, decoder-ах или UI.
+//! о media services, extractor-ах, контейнерах, demuxer-ах, decoder-ах или UI.
 
 #![forbid(unsafe_code)]
 

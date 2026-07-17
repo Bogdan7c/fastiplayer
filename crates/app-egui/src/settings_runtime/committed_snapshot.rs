@@ -40,10 +40,10 @@ impl CommittedConfigSnapshot {
         self.config.video.preferred_backend
     }
 
-    /// Process policy для новых фоновых YouTube playlist metadata jobs.
+    /// Process policy для новых фоновых YtDlp playlist metadata jobs.
     #[must_use]
-    pub(crate) fn youtube_metadata_config(&self) -> YoutubeConfig {
-        self.config.youtube.clone()
+    pub(crate) fn yt_dlp_metadata_config(&self) -> YtDlpConfig {
+        self.config.yt_dlp.clone()
     }
 
     /// Default volume policy для startup/new media и mute-toggle restore.

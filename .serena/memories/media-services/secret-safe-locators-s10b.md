@@ -1,24 +1,25 @@
-# Session 10B: secret-safe URL/service locator boundaries
+# Secret-safe URL/service locator boundaries — актуально 2026-07-17
 
-Session 10B завершена PASS 2026-07-14. Эта memory дополняет `mem:core`, `mem:media-services/core`, `mem:media-services/direct-media` и `mem:playlist/core`.
+Эта memory дополняет `mem:core`, `mem:media-services/core`, `mem:media-services/direct-media` и `mem:playlist/core`.
 
-## Ownership и API
-- `service-direct-media::DirectMediaUrl` — service-owned typed locator. `parse_direct_media_url` валидирует direct http(s)+extension policy, но сохраняет исходную строку exact, включая signed/functional query и percent-encoding. Raw identity доступна только через `expose_secret_for_open` и `expose_secret_for_persistence`; `Debug`/`Display` и `safe_label` скрывают userinfo/path/query/fragment. Session 16 добавила intent-named `requires_sensitive_persistence_acknowledgement()`: сервис вычисляет его один раз из parsed userinfo/password/query, поэтому app/controller не раскрывает и не парсит raw URL повторно.
-- `open_direct_media_url` и `open_direct_media_url_with_options` принимают `&DirectMediaUrl`, а не raw `&str`. `DirectMediaOpenError` сохраняет прежние typed категории, но URL context теперь typed/redacted и invalid syntax не отражает input.
-- `service-youtube::YoutubeMediaLocator` создаётся только через `parse_youtube_media_locator`. YouTube host allowlist и normalize policy принадлежат исключительно service-youtube. Normalization v1 удаляет только `utm_*`, `si`, `feature`; сохраняет unknown и functional `v`, `t`, `start`, `end`, `list`, `index`, а повторный parse идемпотентен. Raw normalized identity доступна только через intent-named open/persistence accessors.
-- Все public YouTube resolve/open/reopen API принимают `&YoutubeMediaLocator`. Internal yt-dlp process получает raw только непосредственно при command construction. `RefreshContext` хранит typed locator.
-- `YoutubeDirectStreamUrl` хранит exact transient signed stream URL и раскрывается только для transport open. `YoutubeDirectStreamDescriptor`/candidate/aggregate `Debug` безопасен; `HttpHeader::Debug` скрывает values.
-- `source-core::SecretHttpUrl` — service-neutral transport locator. `HttpRangeSourceConfig`, `HttpRangeSource` и URL-bearing `SourceError` используют его; tracing и `Debug` redacted, reqwest error chains проходят `without_url()`, HTTP fingerprint содержит только hash identity, не raw URL.
-- `app-egui::StartupUrlLocator` — service-neutral type-erased adapter contract. Общий traversal обходит единую таблицу service-owned classifiers и не содержит YouTube enum/host/query parser; typed adapter запускает существующий startup job. Добавление будущего URL service требует нового adapter implementation/registration, но не изменения общего traversal/locator shape. Mapping `StartupUrlLocator` ↔ `playlist_core::SecretUrlLocator` использует только intent-named exposure и тот же registry без второго parser-а; поэтому `app-egui -> playlist-core` является намеренной однонаправленной domain dependency. `InitialMedia`, startup jobs и `ActiveMediaSource` хранят typed service locators; settings rebuild повторно использует их без reparsing.
+## Ownership и exact identity
 
-## Privacy invariants
-- Никакой automatic `Debug`/`Display`, tracing field, UI/source label, typed error context, reqwest source chain, HTTP fingerprint или yt-dlp stderr summary не содержит raw userinfo/path/query/fragment.
-- yt-dlp stdout/stderr остаются внутренними process bytes; `ProcessOutput::Debug` показывает только размеры, non-zero/timeout errors используют bounded `stderr redacted (N bytes)`.
-- Direct URL нельзя пересобирать через `query_pairs_mut`: exact signed identity сохраняется. YouTube может пересериализовать только при удалении service-known tracking parameters и затем обязан быть idempotent.
+- `service-direct-media::DirectMediaUrl` принимает direct HTTP(S)+supported extension, сохраняет exact signed/functional identity и раскрывает raw строку только через intent-named open/persistence accessors. Этот service остаётся первым URL adapter-ом.
+- `service-ytdlp::YtDlpMediaLocator` принимает любой absolute HTTP(S) URL с host и сохраняет исходную строку byte-for-byte. Query/userinfo/path/fragment не нормализуются и не удаляются; разные exact URL, включая разные YouTube tracking parameters, являются разными playlist identities.
+- `YtDlpMediaLocator::{Debug,Display,safe_label}` показывают только host. Invalid syntax/scheme errors не отражают input. Generic yt-dlp persistence по утверждённой policy не требует дополнительного acknowledgement даже при query/userinfo; это означает, что exact token может попасть в playlist-state, но не в UI/logs/diagnostics.
+- `YtDlpDirectStreamUrl` хранит transient signed stream URL и раскрывается только transport-у. `YtDlpDirectStreamDescriptor`, selected identity и candidate stream id имеют redacted/opaque Debug; `HttpHeader::Debug` скрывает values.
+- `source-core::SecretHttpUrl` остаётся service-neutral transport locator. Reqwest chains проходят `without_url()`, URL-bearing errors/tracing/fingerprint не содержат raw URL.
 
-## Verification
-- Hermetic tests: source-core 18 PASS; service-direct-media 9 PASS + 1 manual ignored; service-youtube 33 PASS + 4 manual ignored; app-egui 286 PASS.
-- Strict focused Clippy, `cargo fmt --all --check`, `cargo +1.96.0 check --workspace --locked`, refactor guardrails, `git diff --check`, Serena references/diagnostics PASS.
-- Dependency graph получил только ожидаемую app → `playlist-core` связь для domain mapping; новых external packages нет.
+## App composition
 
-Следующая разрешённая session — только 10C. Session 10B не добавляла playlist confirmation/persistence UI, network test I/O или media-open coordinator.
+- `app-egui::StartupUrlLocator` остаётся type-erased service-neutral adapter contract. Registry register order: direct-media -> yt-dlp. Любой оставшийся валидный HTTP(S) URL classified как `YtDlp`; фактическая поддержка определяется фоновой extraction/admission попыткой.
+- После classification adapter фиксирован для request/reopen/suspend/settings rebuild. Ошибка direct-media open не вызывает второй скрытый open через yt-dlp.
+- `InitialMedia`, `MediaOpenSourceRequest`, prepared descriptor, `ActiveMediaSource`, startup jobs и playlist metadata source используют `YtDlp` variants и typed locator. Mapping к `playlist_core::SecretUrlLocator` использует exact persistence accessor и тот же registry без второго URL parser-а.
+
+## Privacy/error invariants
+
+- Никакой automatic `Debug`/`Display`, tracing field, UI/source label, typed error, reqwest chain, HTTP fingerprint или process stderr summary не содержит locator userinfo/path/query/fragment, signed direct URL/header values либо extractor format identity.
+- `YtDlpServiceError` сохраняет категории cancellation/timeout/process/extractor/collection/compatibility/transport/demux без raw payload. Non-zero extractor error сообщает только bounded stderr byte count.
+- System `yt-dlp` продолжает читать собственные config/cookies; app не хранит отдельные credentials и не добавляет `--ignore-config`.
+
+Focused tests: `crates/service-ytdlp/src/locator.rs`, service descriptor/process tests, `crates/app-egui/src/url_service_adapter.rs`, media-open redaction tests и playlist metadata stale/exact tests.

@@ -405,7 +405,7 @@ impl SettingsRuntimeRouteAppliers {
                 let policy_only = route
                     .affected_settings
                     .iter()
-                    .all(|setting_id| setting_id.as_str().starts_with("youtube."));
+                    .all(|setting_id| setting_id.as_str().starts_with("yt_dlp."));
                 let result = self.apply_media_service_update(
                     &update,
                     &route.affected_settings,
@@ -864,8 +864,8 @@ pub(super) struct MediaServiceRuntimeSnapshot {
     /// Network/source cache policy.
     network: NetworkConfig,
 
-    /// YouTube service policy.
-    youtube: YoutubeConfig,
+    /// YtDlp service policy.
+    yt_dlp: YtDlpConfig,
 }
 
 impl MediaServiceRuntimeSnapshot {
@@ -873,7 +873,7 @@ impl MediaServiceRuntimeSnapshot {
     pub(super) fn from_config(config: &AppConfig) -> Self {
         Self {
             network: config.network.clone(),
-            youtube: config.youtube.clone(),
+            yt_dlp: config.yt_dlp.clone(),
         }
     }
 
@@ -881,7 +881,7 @@ impl MediaServiceRuntimeSnapshot {
     fn from_update(update: &MediaServiceRuntimeSettingsUpdate) -> Self {
         Self {
             network: update.network.clone(),
-            youtube: update.youtube.clone(),
+            yt_dlp: update.yt_dlp.clone(),
         }
     }
 }

@@ -1,19 +1,20 @@
 use std::time::Duration;
 
-use anyhow::{Result, bail};
-use rustiplayer_config::YoutubeConfig;
+use rustiplayer_config::YtDlpConfig;
 
-use crate::locator::YoutubeMediaLocator;
-use crate::process::{YtDlpProcessConfig, resolve_youtube_candidate_metadata_with_cancellation};
+use crate::admission::ensure_single_item;
+use crate::error::YtDlpServiceError;
+use crate::locator::YtDlpMediaLocator;
+use crate::process::{YtDlpProcessConfig, resolve_yt_dlp_candidate_metadata_with_cancellation};
 
-/// Минимальная service-owned metadata для отображения YouTube media в плейлисте.
+/// Минимальная service-owned metadata для отображения YtDlp media в плейлисте.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct YoutubePlaylistMetadata {
+pub struct YtDlpPlaylistMetadata {
     title: Option<String>,
     duration: Option<Duration>,
 }
 
-impl YoutubePlaylistMetadata {
+impl YtDlpPlaylistMetadata {
     /// Строит summary из уже полученного extractor snapshot-а без нового I/O.
     pub(crate) fn from_extractor(title: Option<String>, duration: Option<Duration>) -> Self {
         Self {
@@ -36,23 +37,24 @@ impl YoutubePlaylistMetadata {
 }
 
 /// Разрешает только playlist metadata, не открывая media bytes и не выбирая decoder stream.
-pub fn resolve_youtube_playlist_metadata_with_config(
-    locator: &YoutubeMediaLocator,
-    youtube_config: &YoutubeConfig,
+pub fn resolve_yt_dlp_playlist_metadata_with_config(
+    locator: &YtDlpMediaLocator,
+    yt_dlp_config: &YtDlpConfig,
     is_cancelled: impl Fn() -> bool,
-) -> Result<YoutubePlaylistMetadata> {
-    if !youtube_config.enabled {
-        bail!("YouTube adapter отключён в config");
+) -> Result<YtDlpPlaylistMetadata, YtDlpServiceError> {
+    if !yt_dlp_config.enabled {
+        return Err(YtDlpServiceError::AdapterDisabled);
     }
 
-    let process_config = YtDlpProcessConfig::from_youtube_config(youtube_config)?;
-    let metadata = resolve_youtube_candidate_metadata_with_cancellation(
+    let process_config = YtDlpProcessConfig::from_yt_dlp_config(yt_dlp_config)?;
+    let metadata = resolve_yt_dlp_candidate_metadata_with_cancellation(
         locator.expose_secret_for_open(),
         &process_config,
         &is_cancelled,
     )?;
+    ensure_single_item(&metadata)?;
 
-    Ok(YoutubePlaylistMetadata::from_extractor(
+    Ok(YtDlpPlaylistMetadata::from_extractor(
         metadata.title,
         duration_from_seconds(metadata.duration),
     ))

@@ -1,6 +1,6 @@
-//! Временный YouTube resolver на базе `yt-dlp`.
+//! Временный YtDlp resolver на базе `yt-dlp`.
 //!
-//! Этот crate является service boundary: он знает про YouTube/yt-dlp format
+//! Этот crate является service boundary: он знает про YtDlp/yt-dlp format
 //! selection и HTTP headers, но не знает про UI, renderer или внутренний state
 //! player-а. Production startup получает candidates, вызывает service-owned
 //! selection policy с neutral capability snapshot, а затем открывает demuxer
@@ -8,8 +8,8 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
-use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, YoutubeConfig};
+use anyhow::Context;
+use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig, YtDlpConfig};
 use source_core::{ByteSource, SourceRuntimeConfig};
 use symphonia_demux::DemuxerOptions;
 
@@ -19,7 +19,9 @@ const KIB_BYTES: u64 = 1024;
 /// Один мебибайт в bytes для явной конвертации пользовательских network-настроек.
 const MIB_BYTES: u64 = KIB_BYTES * 1024;
 
+mod admission;
 mod dto;
+mod error;
 mod http_refresh;
 mod http_stream;
 mod locator;
@@ -28,32 +30,36 @@ mod process;
 mod resolver;
 mod selection;
 
+pub use admission::YtDlpCompatibilityRejection;
 pub use dto::{
-    YoutubeDirectStreamDescriptor, YoutubeDirectStreams, YoutubeDynamicRange,
-    YoutubeInsufficientVideoMetadata, YoutubeStreamCandidate, YoutubeStreamCandidates,
-    YoutubeStreamKind, YoutubeStreamingMedia, YoutubeVideoRequirement,
+    YtDlpDirectStreamDescriptor, YtDlpDirectStreams, YtDlpDynamicRange,
+    YtDlpInsufficientVideoMetadata, YtDlpStreamCandidate, YtDlpStreamCandidates, YtDlpStreamKind,
+    YtDlpStreamingMedia, YtDlpVideoRequirement,
 };
+pub use error::YtDlpServiceError;
 pub use locator::{
-    YoutubeDirectStreamUrl, YoutubeLocatorParseError, YoutubeMediaLocator,
-    parse_youtube_media_locator,
+    YtDlpDirectStreamUrl, YtDlpLocatorParseError, YtDlpMediaLocator, parse_yt_dlp_media_locator,
 };
-pub use metadata::{YoutubePlaylistMetadata, resolve_youtube_playlist_metadata_with_config};
+pub use metadata::{YtDlpPlaylistMetadata, resolve_yt_dlp_playlist_metadata_with_config};
 pub use resolver::{
-    YoutubeSelectedStreamIdentity, resolve_youtube_direct_streams,
-    resolve_youtube_stream_candidates, resolve_youtube_stream_candidates_with_config,
+    YtDlpSelectedStreamIdentity, resolve_yt_dlp_direct_streams, resolve_yt_dlp_stream_candidates,
+    resolve_yt_dlp_stream_candidates_with_config,
 };
 pub use selection::{
-    YoutubeCandidateRejection, YoutubeCandidateRejectionReason, YoutubeStreamSelectionError,
-    select_youtube_stream,
+    YtDlpCandidateRejection, YtDlpCandidateRejectionReason, YtDlpStreamSelectionError,
+    select_yt_dlp_stream,
 };
 
-use http_refresh::{RefreshContext, YoutubeRefreshingRangeSource};
+use http_refresh::{RefreshContext, YtDlpRefreshingRangeSource};
 use http_stream::spawn_http_fetcher;
 use resolver::{
-    YoutubeDirectStreamResolver, YtDlpDirectStreamResolver, YtDlpSelectedStreamResolver,
+    DirectStreamResolver, YtDlpProcessStreamResolver, YtDlpSelectedStreamResolver,
     build_streaming_description, direct_streams_from_matching_candidate,
     direct_streams_from_selected_candidate,
 };
+
+/// Result alias фиксирует typed service boundary для всех production open API.
+type ServiceResult<T> = std::result::Result<T, YtDlpServiceError>;
 
 #[cfg(test)]
 use dto::{YtDlpFormat, YtDlpMetadata, YtDlpRequestedDownload};
@@ -71,52 +77,55 @@ pub fn is_probably_url(argument: &str) -> bool {
     argument.starts_with("https://") || argument.starts_with("http://")
 }
 
-/// Проверяет, принадлежит ли web URL YouTube route allowlist.
+/// Проверяет, принадлежит ли web URL YtDlp route allowlist.
 #[must_use]
-pub fn is_supported_youtube_url(argument: &str) -> bool {
-    parse_youtube_media_locator(argument).is_ok()
+pub fn is_supported_yt_dlp_url(argument: &str) -> bool {
+    parse_yt_dlp_media_locator(argument).is_ok()
 }
 
-/// Открывает YouTube URL старым compatibility path-ом без внешнего capability selection.
+/// Открывает YtDlp URL старым compatibility path-ом без внешнего capability selection.
 ///
 /// Production startup в `app-egui` должен использовать
-/// `resolve_youtube_stream_candidates_with_config` и затем
+/// `resolve_yt_dlp_stream_candidates_with_config` и затем
 /// `open_streaming_media_from_candidates_with_demux_config`.
 pub fn open_streaming_media(
-    locator: &YoutubeMediaLocator,
+    locator: &YtDlpMediaLocator,
     network_config: &NetworkConfig,
-) -> Result<YoutubeStreamingMedia> {
-    open_streaming_media_with_config(locator, network_config, &YoutubeConfig::default())
+) -> ServiceResult<YtDlpStreamingMedia> {
+    open_streaming_media_with_config(locator, network_config, &YtDlpConfig::default())
 }
 
-/// Открывает YouTube URL старым compatibility path-ом с явной service policy.
+/// Открывает YtDlp URL старым compatibility path-ом с явной service policy.
 pub fn open_streaming_media_with_config(
-    locator: &YoutubeMediaLocator,
+    locator: &YtDlpMediaLocator,
     network_config: &NetworkConfig,
-    youtube_config: &YoutubeConfig,
-) -> Result<YoutubeStreamingMedia> {
+    yt_dlp_config: &YtDlpConfig,
+) -> ServiceResult<YtDlpStreamingMedia> {
     open_streaming_media_with_demux_config(
         locator,
         network_config,
-        youtube_config,
+        yt_dlp_config,
         &PlayerDemuxConfig::default(),
     )
 }
 
-/// Открывает YouTube URL старым compatibility path-ом с явной demux fail-safe политикой.
+/// Открывает YtDlp URL старым compatibility path-ом с явной demux fail-safe политикой.
 pub fn open_streaming_media_with_demux_config(
-    locator: &YoutubeMediaLocator,
+    locator: &YtDlpMediaLocator,
     network_config: &NetworkConfig,
-    youtube_config: &YoutubeConfig,
+    yt_dlp_config: &YtDlpConfig,
     demux_config: &PlayerDemuxConfig,
-) -> Result<YoutubeStreamingMedia> {
+) -> ServiceResult<YtDlpStreamingMedia> {
+    if !yt_dlp_config.enabled {
+        return Err(YtDlpServiceError::AdapterDisabled);
+    }
     let source_config = SourceRuntimeConfig::from_network_config(network_config)
-        .context("Network config нельзя использовать для YouTube source")?;
+        .map_err(YtDlpServiceError::transport)?;
     let prefetch_config = prefetch_config_from_network_config(network_config)
-        .context("Network config нельзя использовать для YouTube prefetch")?;
+        .map_err(YtDlpServiceError::transport)?;
     let demuxer_options = demuxer_options_from_config(demux_config);
-    let resolver: Arc<dyn YoutubeDirectStreamResolver> = Arc::new(
-        YtDlpDirectStreamResolver::from_youtube_config(youtube_config)?,
+    let resolver: Arc<dyn DirectStreamResolver> = Arc::new(
+        YtDlpProcessStreamResolver::from_yt_dlp_config(yt_dlp_config)?,
     );
     let mut direct_streams = resolver.resolve_direct_streams(locator)?;
     let description = build_streaming_description(&direct_streams);
@@ -129,42 +138,44 @@ pub fn open_streaming_media_with_demux_config(
         demuxer_options,
     )?;
 
-    Ok(YoutubeStreamingMedia {
+    Ok(YtDlpStreamingMedia {
         demuxer,
         description,
         direct_streams,
     })
 }
 
-/// Открывает YouTube URL по candidate-у, выбранному service selection boundary.
+/// Открывает YtDlp URL по candidate-у, выбранному service selection boundary.
 ///
 /// Этот API является production path для startup/playback: service уже не
 /// применяет legacy SDR-safe selector до открытия bytes, а только строит source
 /// для выбранной `stream_id` пары.
 pub fn open_streaming_media_from_candidates_with_demux_config(
-    locator: &YoutubeMediaLocator,
-    stream_candidates: &YoutubeStreamCandidates,
+    locator: &YtDlpMediaLocator,
+    stream_candidates: &YtDlpStreamCandidates,
     selected_stream_id: &str,
     network_config: &NetworkConfig,
-    youtube_config: &YoutubeConfig,
+    yt_dlp_config: &YtDlpConfig,
     demux_config: &PlayerDemuxConfig,
-) -> Result<YoutubeStreamingMedia> {
+) -> ServiceResult<YtDlpStreamingMedia> {
+    if !yt_dlp_config.enabled {
+        return Err(YtDlpServiceError::AdapterDisabled);
+    }
     let source_config = SourceRuntimeConfig::from_network_config(network_config)
-        .context("Network config нельзя использовать для YouTube source")?;
+        .map_err(YtDlpServiceError::transport)?;
     let prefetch_config = prefetch_config_from_network_config(network_config)
-        .context("Network config нельзя использовать для YouTube prefetch")?;
+        .map_err(YtDlpServiceError::transport)?;
     let demuxer_options = demuxer_options_from_config(demux_config);
     let selected_candidate = stream_candidates
         .candidates
         .iter()
         .find(|candidate| candidate.stream_id == selected_stream_id)
-        .with_context(|| {
-            format!("selected YouTube stream id не найден в candidates: {selected_stream_id}")
+        .ok_or(YtDlpServiceError::NoCompatibleStreams {
+            reason: YtDlpCompatibilityRejection::MissingSeparateVideo,
         })?;
-    let selected_stream_identity =
-        YoutubeSelectedStreamIdentity::from_candidate(selected_candidate);
-    let resolver: Arc<dyn YoutubeDirectStreamResolver> = Arc::new(
-        YtDlpSelectedStreamResolver::from_youtube_config(youtube_config, selected_stream_identity)?,
+    let selected_stream_identity = YtDlpSelectedStreamIdentity::from_candidate(selected_candidate);
+    let resolver: Arc<dyn DirectStreamResolver> = Arc::new(
+        YtDlpSelectedStreamResolver::from_yt_dlp_config(yt_dlp_config, selected_stream_identity)?,
     );
     let mut direct_streams =
         direct_streams_from_selected_candidate(stream_candidates, selected_stream_id)?;
@@ -178,18 +189,18 @@ pub fn open_streaming_media_from_candidates_with_demux_config(
         demuxer_options,
     )?;
 
-    Ok(YoutubeStreamingMedia {
+    Ok(YtDlpStreamingMedia {
         demuxer,
         description,
         direct_streams,
     })
 }
 
-/// Причина, почему YouTube source нельзя открыть как обязательный seekable VOD source.
+/// Причина, почему YtDlp source нельзя открыть как обязательный seekable VOD source.
 #[derive(Debug)]
-pub enum YoutubeSeekableVodOpenError {
+pub enum YtDlpSeekableVodOpenError {
     /// Config/source/demux setup или yt-dlp refresh завершились ошибкой.
-    Open(anyhow::Error),
+    Open(YtDlpServiceError),
 
     /// Live streams не имеют обязательного exact byte-seek контракта.
     LiveStream,
@@ -198,64 +209,60 @@ pub enum YoutubeSeekableVodOpenError {
     RangeUnsupported,
 }
 
-impl std::fmt::Display for YoutubeSeekableVodOpenError {
+impl std::fmt::Display for YtDlpSeekableVodOpenError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Open(error) => write!(formatter, "{error:#}"),
+            Self::Open(error) => write!(formatter, "{error}"),
             Self::LiveStream => {
-                formatter.write_str("YouTube live stream не поддержан для seekable VOD")
+                formatter.write_str("YtDlp live stream не поддержан для seekable VOD")
             }
             Self::RangeUnsupported => {
-                formatter.write_str("YouTube VOD не подтвердил обязательный HTTP Range seek")
+                formatter.write_str("YtDlp VOD не подтвердил обязательный HTTP Range seek")
             }
         }
     }
 }
 
-impl std::error::Error for YoutubeSeekableVodOpenError {
+impl std::error::Error for YtDlpSeekableVodOpenError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Open(error) => Some(error.as_ref()),
+            Self::Open(error) => Some(error),
             Self::LiveStream | Self::RangeUnsupported => None,
         }
     }
 }
 
-impl From<anyhow::Error> for YoutubeSeekableVodOpenError {
-    fn from(error: anyhow::Error) -> Self {
+impl From<YtDlpServiceError> for YtDlpSeekableVodOpenError {
+    fn from(error: YtDlpServiceError) -> Self {
         Self::Open(error)
     }
 }
 
-/// Открывает YouTube VOD только как seekable Range-backed source.
+/// Открывает YtDlp VOD только как seekable Range-backed source.
 ///
 /// В отличие от playback API, этот путь не fallback-ит на streaming reader:
 /// source обязан быть exact-seekable или вернуть typed unsupported.
 pub fn open_seekable_vod_from_selected_identity_with_demux_config(
-    locator: &YoutubeMediaLocator,
-    selected_stream_identity: &YoutubeSelectedStreamIdentity,
+    locator: &YtDlpMediaLocator,
+    selected_stream_identity: &YtDlpSelectedStreamIdentity,
     network_config: &NetworkConfig,
-    youtube_config: &YoutubeConfig,
+    yt_dlp_config: &YtDlpConfig,
     demux_config: &PlayerDemuxConfig,
-) -> std::result::Result<YoutubeStreamingMedia, YoutubeSeekableVodOpenError> {
+) -> std::result::Result<YtDlpStreamingMedia, YtDlpSeekableVodOpenError> {
     let source_config = SourceRuntimeConfig::from_network_config(network_config)
-        .context("Network config нельзя использовать для YouTube seekable VOD source")?;
+        .map_err(YtDlpServiceError::transport)?;
     let prefetch_config = prefetch_config_from_network_config(network_config)
-        .context("Network config нельзя использовать для YouTube seekable VOD prefetch")?;
+        .map_err(YtDlpServiceError::transport)?;
     let demuxer_options = demuxer_options_from_config(demux_config);
-    let stream_candidates = resolve_youtube_stream_candidates_with_config(locator, youtube_config)
-        .context("Не удалось refresh-нуть YouTube stream candidates для seekable VOD")?;
+    let stream_candidates = resolve_yt_dlp_stream_candidates_with_config(locator, yt_dlp_config)?;
     let mut direct_streams =
-        direct_streams_from_matching_candidate(&stream_candidates, selected_stream_identity)
-            .context("Не удалось восстановить выбранный YouTube stream для seekable VOD")?;
+        direct_streams_from_matching_candidate(&stream_candidates, selected_stream_identity)?;
     let description = build_streaming_description(&direct_streams);
-    let resolver: Arc<dyn YoutubeDirectStreamResolver> = Arc::new(
-        YtDlpSelectedStreamResolver::from_youtube_config(
-            youtube_config,
+    let resolver: Arc<dyn DirectStreamResolver> =
+        Arc::new(YtDlpSelectedStreamResolver::from_yt_dlp_config(
+            yt_dlp_config,
             selected_stream_identity.clone(),
-        )
-        .context("Не удалось создать YouTube selected-stream resolver для seekable VOD")?,
-    );
+        )?);
 
     let demuxer = build_seekable_vod_demuxer_from_direct_streams(
         locator,
@@ -266,7 +273,7 @@ pub fn open_seekable_vod_from_selected_identity_with_demux_config(
         demuxer_options,
     )?;
 
-    Ok(YoutubeStreamingMedia {
+    Ok(YtDlpStreamingMedia {
         demuxer,
         description,
         direct_streams,
@@ -275,30 +282,26 @@ pub fn open_seekable_vod_from_selected_identity_with_demux_config(
 
 /// Повторно открывает exact selected stream identity, сохраняя live/non-seekable fallback.
 pub fn open_streaming_media_from_selected_identity_with_demux_config(
-    locator: &YoutubeMediaLocator,
-    selected_stream_identity: &YoutubeSelectedStreamIdentity,
+    locator: &YtDlpMediaLocator,
+    selected_stream_identity: &YtDlpSelectedStreamIdentity,
     network_config: &NetworkConfig,
-    youtube_config: &YoutubeConfig,
+    yt_dlp_config: &YtDlpConfig,
     demux_config: &PlayerDemuxConfig,
-) -> Result<YoutubeStreamingMedia> {
+) -> ServiceResult<YtDlpStreamingMedia> {
     let source_config = SourceRuntimeConfig::from_network_config(network_config)
-        .context("Network config нельзя использовать для YouTube resume source")?;
+        .map_err(YtDlpServiceError::transport)?;
     let prefetch_config = prefetch_config_from_network_config(network_config)
-        .context("Network config нельзя использовать для YouTube resume prefetch")?;
+        .map_err(YtDlpServiceError::transport)?;
     let demuxer_options = demuxer_options_from_config(demux_config);
-    let stream_candidates = resolve_youtube_stream_candidates_with_config(locator, youtube_config)
-        .context("Не удалось refresh-нуть YouTube stream candidates для resume")?;
+    let stream_candidates = resolve_yt_dlp_stream_candidates_with_config(locator, yt_dlp_config)?;
     let mut direct_streams =
-        direct_streams_from_matching_candidate(&stream_candidates, selected_stream_identity)
-            .context("Не удалось восстановить exact selected YouTube stream")?;
+        direct_streams_from_matching_candidate(&stream_candidates, selected_stream_identity)?;
     let description = build_streaming_description(&direct_streams);
-    let resolver: Arc<dyn YoutubeDirectStreamResolver> = Arc::new(
-        YtDlpSelectedStreamResolver::from_youtube_config(
-            youtube_config,
+    let resolver: Arc<dyn DirectStreamResolver> =
+        Arc::new(YtDlpSelectedStreamResolver::from_yt_dlp_config(
+            yt_dlp_config,
             selected_stream_identity.clone(),
-        )
-        .context("Не удалось создать YouTube selected-stream resolver для resume")?,
-    );
+        )?);
     let demuxer = build_demuxer_from_direct_streams(
         locator,
         &mut direct_streams,
@@ -307,7 +310,7 @@ pub fn open_streaming_media_from_selected_identity_with_demux_config(
         resolver,
         demuxer_options,
     )?;
-    Ok(YoutubeStreamingMedia {
+    Ok(YtDlpStreamingMedia {
         demuxer,
         description,
         direct_streams,
@@ -315,15 +318,15 @@ pub fn open_streaming_media_from_selected_identity_with_demux_config(
 }
 
 fn build_seekable_vod_demuxer_from_direct_streams(
-    locator: &YoutubeMediaLocator,
-    direct_streams: &mut YoutubeDirectStreams,
+    locator: &YtDlpMediaLocator,
+    direct_streams: &mut YtDlpDirectStreams,
     source_config: SourceRuntimeConfig,
     prefetch_config: media_prefetch::PrefetchConfig,
-    resolver: Arc<dyn YoutubeDirectStreamResolver>,
+    resolver: Arc<dyn DirectStreamResolver>,
     demuxer_options: DemuxerOptions,
-) -> std::result::Result<Box<dyn symphonia_demux::Demuxer + Send>, YoutubeSeekableVodOpenError> {
+) -> std::result::Result<Box<dyn symphonia_demux::Demuxer + Send>, YtDlpSeekableVodOpenError> {
     if direct_streams.live {
-        return Err(YoutubeSeekableVodOpenError::LiveStream);
+        return Err(YtDlpSeekableVodOpenError::LiveStream);
     }
 
     let Some(demuxer) = open_range_backed_demuxer(
@@ -333,10 +336,9 @@ fn build_seekable_vod_demuxer_from_direct_streams(
         prefetch_config,
         resolver,
         demuxer_options,
-    )
-    .context("Не удалось открыть YouTube seekable Range-backed demuxer")?
+    )?
     else {
-        return Err(YoutubeSeekableVodOpenError::RangeUnsupported);
+        return Err(YtDlpSeekableVodOpenError::RangeUnsupported);
     };
 
     Ok(demuxer)
@@ -344,15 +346,15 @@ fn build_seekable_vod_demuxer_from_direct_streams(
 
 /// Строит seekable Range demuxer для VOD или unseekable streaming fallback.
 fn build_demuxer_from_direct_streams(
-    locator: &YoutubeMediaLocator,
-    direct_streams: &mut YoutubeDirectStreams,
+    locator: &YtDlpMediaLocator,
+    direct_streams: &mut YtDlpDirectStreams,
     source_config: SourceRuntimeConfig,
     prefetch_config: media_prefetch::PrefetchConfig,
-    resolver: Arc<dyn YoutubeDirectStreamResolver>,
+    resolver: Arc<dyn DirectStreamResolver>,
     demuxer_options: DemuxerOptions,
-) -> Result<Box<dyn symphonia_demux::Demuxer + Send>> {
+) -> ServiceResult<Box<dyn symphonia_demux::Demuxer + Send>> {
     if direct_streams.live {
-        tracing::info!("YouTube live stream открыт как not seekable streaming source");
+        tracing::info!("YtDlp live stream открыт как not seekable streaming source");
         return open_unseekable_streaming_demuxer(direct_streams, &source_config, demuxer_options);
     }
 
@@ -371,40 +373,40 @@ fn build_demuxer_from_direct_streams(
 
 /// Открывает pair demuxer-ов поверх HTTP Range sources, если оба source seekable.
 fn open_range_backed_demuxer(
-    locator: &YoutubeMediaLocator,
-    direct_streams: &mut YoutubeDirectStreams,
+    locator: &YtDlpMediaLocator,
+    direct_streams: &mut YtDlpDirectStreams,
     source_config: SourceRuntimeConfig,
     prefetch_config: media_prefetch::PrefetchConfig,
-    resolver: Arc<dyn YoutubeDirectStreamResolver>,
+    resolver: Arc<dyn DirectStreamResolver>,
     demuxer_options: DemuxerOptions,
-) -> Result<Option<Box<dyn symphonia_demux::Demuxer + Send>>> {
-    let video_source = match YoutubeRefreshingRangeSource::open(
+) -> ServiceResult<Option<Box<dyn symphonia_demux::Demuxer + Send>>> {
+    let video_source = match YtDlpRefreshingRangeSource::open(
         direct_streams.video.clone(),
         source_config.clone(),
         RefreshContext {
             original_locator: locator.clone(),
-            stream_kind: YoutubeStreamKind::Video,
+            stream_kind: YtDlpStreamKind::Video,
             resolver: Arc::clone(&resolver),
         },
     ) {
         Ok(source) => source,
         Err(error) => {
-            tracing::warn!(error = %error, "YouTube video Range probe failed; source stays not seekable");
+            tracing::warn!(error = %error, "YtDlp video Range probe failed; source stays not seekable");
             return Ok(None);
         }
     };
-    let audio_source = match YoutubeRefreshingRangeSource::open(
+    let audio_source = match YtDlpRefreshingRangeSource::open(
         direct_streams.audio.clone(),
         source_config.clone(),
         RefreshContext {
             original_locator: locator.clone(),
-            stream_kind: YoutubeStreamKind::Audio,
+            stream_kind: YtDlpStreamKind::Audio,
             resolver,
         },
     ) {
         Ok(source) => source,
         Err(error) => {
-            tracing::warn!(error = %error, "YouTube audio Range probe failed; source stays not seekable");
+            tracing::warn!(error = %error, "YtDlp audio Range probe failed; source stays not seekable");
             return Ok(None);
         }
     };
@@ -418,33 +420,33 @@ fn open_range_backed_demuxer(
         tracing::warn!(
             video_seekability = ?video_source.seekability(),
             audio_seekability = ?audio_source.seekability(),
-            "YouTube HTTP Range probe не подтвердил seek; fallback на playback-only streaming"
+            "YtDlp HTTP Range probe не подтвердил seek; fallback на playback-only streaming"
         );
         return Ok(None);
     }
 
     let video_source =
         media_prefetch::PrefetchingByteSource::new(Box::new(video_source), prefetch_config)
-            .context("Не удалось запустить prefetch worker для YouTube video source")?;
+            .map_err(YtDlpServiceError::transport)?;
     let audio_source =
         media_prefetch::PrefetchingByteSource::new(Box::new(audio_source), prefetch_config)
-            .context("Не удалось запустить prefetch worker для YouTube audio source")?;
+            .map_err(YtDlpServiceError::transport)?;
     let video_demuxer = symphonia_demux::SymphoniaDemuxer::from_byte_source_with_options(
         video_source,
         "webm",
-        "youtube-video",
+        "yt_dlp-video",
         demuxer_options,
     )
-    .context("Не удалось открыть Range-backed video WebM")?;
+    .map_err(YtDlpServiceError::demux)?;
     let audio_demuxer = symphonia_demux::SymphoniaDemuxer::from_byte_source_with_options(
         audio_source,
         "webm",
-        "youtube-audio",
+        "yt_dlp-audio",
         demuxer_options,
     )
-    .context("Не удалось открыть Range-backed audio WebM")?;
+    .map_err(YtDlpServiceError::demux)?;
     let demuxer = symphonia_demux::DualStreamDemuxer::new(video_demuxer, audio_demuxer)
-        .context("Не удалось объединить Range-backed video/audio demuxer-ы")?;
+        .map_err(YtDlpServiceError::demux)?;
 
     Ok(Some(Box::new(demuxer)))
 }
@@ -452,7 +454,7 @@ fn open_range_backed_demuxer(
 /// Строит нейтральный `media-prefetch` config из пользовательской network-секции.
 fn prefetch_config_from_network_config(
     network_config: &NetworkConfig,
-) -> Result<media_prefetch::PrefetchConfig> {
+) -> anyhow::Result<media_prefetch::PrefetchConfig> {
     let initial_chunk_bytes = network_kibibytes_to_bytes(
         "network.prefetch_initial_chunk_kb",
         network_config.prefetch_initial_chunk_kb,
@@ -477,14 +479,14 @@ fn prefetch_config_from_network_config(
 }
 
 /// Переводит KiB-поле config-а в bytes без переполнения.
-fn network_kibibytes_to_bytes(field_name: &'static str, value_kb: u64) -> Result<u64> {
+fn network_kibibytes_to_bytes(field_name: &'static str, value_kb: u64) -> anyhow::Result<u64> {
     value_kb
         .checked_mul(KIB_BYTES)
         .with_context(|| format!("{field_name} не помещается в байтовый budget: {value_kb} KiB"))
 }
 
 /// Переводит MiB-поле config-а в bytes без переполнения.
-fn network_mebibytes_to_bytes(field_name: &'static str, value_mb: u64) -> Result<u64> {
+fn network_mebibytes_to_bytes(field_name: &'static str, value_mb: u64) -> anyhow::Result<u64> {
     value_mb
         .checked_mul(MIB_BYTES)
         .with_context(|| format!("{field_name} не помещается в байтовый budget: {value_mb} MiB"))
@@ -492,43 +494,45 @@ fn network_mebibytes_to_bytes(field_name: &'static str, value_mb: u64) -> Result
 
 /// Открывает старый playback-only path через последовательный HTTP body stream.
 fn open_unseekable_streaming_demuxer(
-    direct_streams: &YoutubeDirectStreams,
+    direct_streams: &YtDlpDirectStreams,
     source_config: &SourceRuntimeConfig,
     demuxer_options: DemuxerOptions,
-) -> Result<Box<dyn symphonia_demux::Demuxer + Send>> {
+) -> ServiceResult<Box<dyn symphonia_demux::Demuxer + Send>> {
     let (video_writer, video_reader) = symphonia_demux::StreamingByteReader::channel();
     let (audio_writer, audio_reader) = symphonia_demux::StreamingByteReader::channel();
 
     spawn_http_fetcher(
-        "youtube-video",
+        "yt_dlp-video",
         direct_streams.video.clone(),
         source_config.clone(),
         video_writer,
-    )?;
+    )
+    .map_err(YtDlpServiceError::transport)?;
     spawn_http_fetcher(
-        "youtube-audio",
+        "yt_dlp-audio",
         direct_streams.audio.clone(),
         source_config.clone(),
         audio_writer,
-    )?;
+    )
+    .map_err(YtDlpServiceError::transport)?;
 
     let video_demuxer = symphonia_demux::SymphoniaDemuxer::from_stream_with_options(
         video_reader,
         "webm",
-        "youtube-video",
+        "yt_dlp-video",
         demuxer_options,
     )
-    .context("Не удалось открыть streaming video WebM")?;
+    .map_err(YtDlpServiceError::demux)?;
     let audio_demuxer = symphonia_demux::SymphoniaDemuxer::from_stream_with_options(
         audio_reader,
         "webm",
-        "youtube-audio",
+        "yt_dlp-audio",
         demuxer_options,
     )
-    .context("Не удалось открыть streaming audio WebM")?;
+    .map_err(YtDlpServiceError::demux)?;
 
     let demuxer = symphonia_demux::DualStreamDemuxer::new(video_demuxer, audio_demuxer)
-        .context("Не удалось объединить streaming video/audio demuxer-ы")?;
+        .map_err(YtDlpServiceError::demux)?;
 
     Ok(Box::new(demuxer))
 }
@@ -639,12 +643,12 @@ mod tests {
 
     #[derive(Clone)]
     struct FakeResolver {
-        streams: Arc<Mutex<YoutubeDirectStreams>>,
+        streams: Arc<Mutex<YtDlpDirectStreams>>,
         calls: Arc<AtomicUsize>,
     }
 
     impl FakeResolver {
-        fn new(streams: YoutubeDirectStreams) -> Self {
+        fn new(streams: YtDlpDirectStreams) -> Self {
             Self {
                 streams: Arc::new(Mutex::new(streams)),
                 calls: Arc::new(AtomicUsize::new(0)),
@@ -656,19 +660,19 @@ mod tests {
         }
     }
 
-    impl YoutubeDirectStreamResolver for FakeResolver {
+    impl DirectStreamResolver for FakeResolver {
         fn resolve_direct_streams(
             &self,
-            _locator: &YoutubeMediaLocator,
-        ) -> Result<YoutubeDirectStreams> {
+            _locator: &YtDlpMediaLocator,
+        ) -> ServiceResult<YtDlpDirectStreams> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.streams.lock().expect("streams lock").clone())
         }
     }
 
     /// Создаёт service-owned page locator для hermetic transport tests.
-    fn test_youtube_locator() -> YoutubeMediaLocator {
-        parse_youtube_media_locator("https://www.youtube.com/watch?v=hermetic-test")
+    fn test_yt_dlp_locator() -> YtDlpMediaLocator {
+        parse_yt_dlp_media_locator("https://www.youtube.com/watch?v=hermetic-test")
             .expect("canonical test locator должен проходить service parse")
     }
 
@@ -698,32 +702,56 @@ mod tests {
     }
 
     #[test]
-    fn youtube_url_allowlist_accepts_known_hosts() {
-        assert!(is_supported_youtube_url("https://youtube.com/watch?v=abc"));
-        assert!(is_supported_youtube_url(
+    fn yt_dlp_url_allowlist_accepts_known_hosts() {
+        assert!(is_supported_yt_dlp_url("https://youtube.com/watch?v=abc"));
+        assert!(is_supported_yt_dlp_url(
             "https://www.youtube.com/watch?v=abc"
         ));
-        assert!(is_supported_youtube_url(
-            "https://m.youtube.com/watch?v=abc"
-        ));
-        assert!(is_supported_youtube_url(
+        assert!(is_supported_yt_dlp_url("https://m.youtube.com/watch?v=abc"));
+        assert!(is_supported_yt_dlp_url(
             "https://music.youtube.com/watch?v=abc"
         ));
-        assert!(is_supported_youtube_url("https://youtu.be/abc"));
+        assert!(is_supported_yt_dlp_url("https://youtu.be/abc"));
     }
 
     #[test]
-    fn youtube_url_allowlist_rejects_generic_http_media() {
-        assert!(!is_supported_youtube_url(
+    fn yt_dlp_generic_locator_accepts_http_and_rejects_non_http() {
+        assert!(is_supported_yt_dlp_url(
             "https://cdn.example.test/video.mp4"
         ));
-        assert!(!is_supported_youtube_url("rtsp://youtube.com/watch?v=abc"));
+        assert!(is_supported_yt_dlp_url(
+            "https://media.example.test/article/without-extension"
+        ));
+        assert!(!is_supported_yt_dlp_url("rtsp://youtube.com/watch?v=abc"));
+    }
+
+    /// Disabled adapter обязан завершиться typed ошибкой до запуска внешнего процесса.
+    #[test]
+    fn disabled_adapter_rejects_resolution_without_process_side_effects() {
+        // Строим валидный locator, чтобы тест изолировал именно service policy.
+        let locator = test_yt_dlp_locator();
+        // Меняем только admission-флаг, сохраняя остальные production defaults.
+        let yt_dlp_config = YtDlpConfig {
+            enabled: false,
+            ..YtDlpConfig::default()
+        };
+
+        // Public resolver должен остановиться до создания process configuration.
+        let resolution_error =
+            resolve_yt_dlp_stream_candidates_with_config(&locator, &yt_dlp_config)
+                .expect_err("disabled yt-dlp adapter must reject resolution");
+
+        // Typed variant позволяет app composition отличить настройку от process failure.
+        assert!(matches!(
+            resolution_error,
+            YtDlpServiceError::AdapterDisabled
+        ));
     }
 
     #[test]
     fn direct_stream_descriptor_debug_redacts_url_and_header_values() {
         let mut stream = descriptor(
-            YoutubeStreamKind::Video,
+            YtDlpStreamKind::Video,
             "https://user:password@media.example.test/video?signature=secret".to_string(),
         );
         stream
@@ -765,10 +793,10 @@ mod tests {
         assert!(format!("{error:#}").contains("read_ahead_mb=4"));
     }
 
-    fn descriptor(kind: YoutubeStreamKind, url: String) -> YoutubeDirectStreamDescriptor {
-        YoutubeDirectStreamDescriptor {
+    fn descriptor(kind: YtDlpStreamKind, url: String) -> YtDlpDirectStreamDescriptor {
+        YtDlpDirectStreamDescriptor {
             kind,
-            url: YoutubeDirectStreamUrl::from_secret_for_open(url),
+            url: YtDlpDirectStreamUrl::from_secret_for_open(url),
             headers: vec![HttpHeader::new("X-Test-Header", kind.as_str())],
             format_id: Some(kind.as_str().to_string()),
             service_media_id: Some("media-id".to_string()),
@@ -779,8 +807,8 @@ mod tests {
         }
     }
 
-    fn direct_streams(video_url: String, audio_url: String) -> YoutubeDirectStreams {
-        YoutubeDirectStreams {
+    fn direct_streams(video_url: String, audio_url: String) -> YtDlpDirectStreams {
+        YtDlpDirectStreams {
             title: Some("title".to_string()),
             service_media_id: Some("media-id".to_string()),
             format_id: Some("video+audio".to_string()),
@@ -790,8 +818,8 @@ mod tests {
             acodec: Some("opus".to_string()),
             duration: Some(Duration::from_secs(2)),
             live: false,
-            video: descriptor(YoutubeStreamKind::Video, video_url),
-            audio: descriptor(YoutubeStreamKind::Audio, audio_url),
+            video: descriptor(YtDlpStreamKind::Video, video_url),
+            audio: descriptor(YtDlpStreamKind::Audio, audio_url),
         }
     }
 
@@ -806,14 +834,14 @@ mod tests {
 
     fn stream_candidates_from_streams(
         stream_id: &str,
-        direct_streams: &YoutubeDirectStreams,
-    ) -> YoutubeStreamCandidates {
-        YoutubeStreamCandidates {
+        direct_streams: &YtDlpDirectStreams,
+    ) -> YtDlpStreamCandidates {
+        YtDlpStreamCandidates {
             title: direct_streams.title.clone(),
             service_media_id: direct_streams.service_media_id.clone(),
             duration: direct_streams.duration,
             live: direct_streams.live,
-            candidates: vec![YoutubeStreamCandidate {
+            candidates: vec![YtDlpStreamCandidate {
                 stream_id: stream_id.to_string(),
                 format_id: direct_streams.format_id.clone(),
                 video: direct_streams.video.clone(),
@@ -822,8 +850,8 @@ mod tests {
                 fps: direct_streams.fps,
                 vcodec: direct_streams.vcodec.clone(),
                 acodec: direct_streams.acodec.clone(),
-                dynamic_range: YoutubeDynamicRange::Hdr,
-                video_requirement: YoutubeVideoRequirement::Ready(vp9_profile2_requirement()),
+                dynamic_range: YtDlpDynamicRange::Hdr,
+                video_requirement: YtDlpVideoRequirement::Ready(vp9_profile2_requirement()),
                 quality_score: 1,
             }],
         }
@@ -864,21 +892,21 @@ mod tests {
         Arc::new(bytes)
     }
 
-    /// Читает explicit WebM path для ignored manual YouTube transport acceptance test-ов.
+    /// Читает explicit WebM path для ignored manual YtDlp transport acceptance test-ов.
     fn selected_manual_webm_path() -> PathBuf {
         let path = std::env::var_os("RUSTIPLAYER_MEDIA_PATH")
             .map(PathBuf::from)
             .expect("RUSTIPLAYER_MEDIA_PATH must select a local WebM file");
         assert!(
             path.is_file(),
-            "selected YouTube media path is not a regular file: {}",
+            "selected YtDlp media path is not a regular file: {}",
             path.display()
         );
         assert!(
             path.extension()
                 .and_then(|extension| extension.to_str())
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("webm")),
-            "selected YouTube media must be a WebM file: {}",
+            "selected YtDlp media must be a WebM file: {}",
             path.display()
         );
         path
@@ -984,6 +1012,9 @@ mod tests {
         let mut video_headers = BTreeMap::new();
         video_headers.insert("User-Agent".to_string(), "agent".to_string());
         let metadata = YtDlpMetadata {
+            entry_type: Some("video".to_string()),
+            entries: None,
+            has_drm: Some(false),
             title: Some("sample".to_string()),
             id: Some("abc123".to_string()),
             format_id: Some("303+251".to_string()),
@@ -997,7 +1028,9 @@ mod tests {
             requested_downloads: Some(vec![YtDlpRequestedDownload {
                 requested_formats: Some(vec![
                     YtDlpFormat {
-                        url: "http://video.test/media".to_string(),
+                        url: Some("http://video.test/media".to_string()),
+                        protocol: Some("http".to_string()),
+                        has_drm: Some(false),
                         format_id: Some("303".to_string()),
                         ext: Some("webm".to_string()),
                         vcodec: Some("vp9".to_string()),
@@ -1015,7 +1048,9 @@ mod tests {
                         http_headers: Some(video_headers),
                     },
                     YtDlpFormat {
-                        url: "http://audio.test/media".to_string(),
+                        url: Some("http://audio.test/media".to_string()),
+                        protocol: Some("http".to_string()),
+                        has_drm: Some(false),
                         format_id: Some("251".to_string()),
                         ext: Some("webm".to_string()),
                         vcodec: Some("none".to_string()),
@@ -1073,7 +1108,7 @@ mod tests {
         let resolver = Arc::new(FakeResolver::new(streams.clone()));
 
         let demuxer = open_range_backed_demuxer(
-            &test_youtube_locator(),
+            &test_yt_dlp_locator(),
             &mut streams,
             test_source_config(),
             test_prefetch_config(),
@@ -1123,11 +1158,11 @@ mod tests {
         let candidates = stream_candidates_from_streams("selected-vp9-p010", &direct_streams);
 
         let media = open_streaming_media_from_candidates_with_demux_config(
-            &test_youtube_locator(),
+            &test_yt_dlp_locator(),
             &candidates,
             "selected-vp9-p010",
             &NetworkConfig::default(),
-            &YoutubeConfig::default(),
+            &YtDlpConfig::default(),
             &PlayerDemuxConfig::default(),
         )
         .expect("selected candidate opens");
@@ -1161,17 +1196,22 @@ mod tests {
         candidates.candidates[0].audio = None;
 
         let open_result = open_streaming_media_from_candidates_with_demux_config(
-            &test_youtube_locator(),
+            &test_yt_dlp_locator(),
             &candidates,
             "video-only",
             &NetworkConfig::default(),
-            &YoutubeConfig::default(),
+            &YtDlpConfig::default(),
             &PlayerDemuxConfig::default(),
         )
         .map(|_| ());
         let error = open_result.expect_err("video-only selected candidate is rejected");
 
-        assert!(format!("{error:#}").contains("audio companion descriptor"));
+        assert!(matches!(
+            error,
+            YtDlpServiceError::NoCompatibleStreams {
+                reason: YtDlpCompatibilityRejection::MissingSeparateAudio,
+            }
+        ));
     }
 
     #[test]
@@ -1191,12 +1231,12 @@ mod tests {
         });
         let refreshed_streams = direct_streams(fresh_server.url.clone(), fresh_server.url.clone());
         let fake_resolver = FakeResolver::new(refreshed_streams);
-        let mut source = YoutubeRefreshingRangeSource::open(
-            descriptor(YoutubeStreamKind::Video, expired_server.url.clone()),
+        let mut source = YtDlpRefreshingRangeSource::open(
+            descriptor(YtDlpStreamKind::Video, expired_server.url.clone()),
             test_source_config(),
             RefreshContext {
-                original_locator: test_youtube_locator(),
-                stream_kind: YoutubeStreamKind::Video,
+                original_locator: test_yt_dlp_locator(),
+                stream_kind: YtDlpStreamKind::Video,
                 resolver: Arc::new(fake_resolver.clone()),
             },
         )
@@ -1228,7 +1268,7 @@ mod tests {
         let resolver = Arc::new(FakeResolver::new(streams.clone()));
 
         let mut demuxer = build_demuxer_from_direct_streams(
-            &test_youtube_locator(),
+            &test_yt_dlp_locator(),
             &mut streams,
             test_source_config(),
             test_prefetch_config(),
@@ -1278,7 +1318,7 @@ mod tests {
         let resolver = Arc::new(FakeResolver::new(streams.clone()));
 
         let error = build_seekable_vod_demuxer_from_direct_streams(
-            &test_youtube_locator(),
+            &test_yt_dlp_locator(),
             &mut streams,
             test_source_config(),
             test_prefetch_config(),
@@ -1288,10 +1328,7 @@ mod tests {
         .map(|_| ())
         .expect_err("seekable VOD path must not fallback to streaming");
 
-        assert!(matches!(
-            error,
-            YoutubeSeekableVodOpenError::RangeUnsupported
-        ));
+        assert!(matches!(error, YtDlpSeekableVodOpenError::RangeUnsupported));
     }
 
     #[test]
@@ -1312,7 +1349,7 @@ mod tests {
         let resolver = Arc::new(FakeResolver::new(streams.clone()));
 
         let demuxer = build_demuxer_from_direct_streams(
-            &test_youtube_locator(),
+            &test_yt_dlp_locator(),
             &mut streams,
             test_source_config(),
             test_prefetch_config(),
@@ -1334,12 +1371,30 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "manual network acceptance requires RUSTIPLAYER_REAL_YOUTUBE_SMOKE_URL"]
-    fn real_youtube_smoke_requires_explicit_url() -> Result<()> {
-        let url = std::env::var("RUSTIPLAYER_REAL_YOUTUBE_SMOKE_URL")
-            .context("RUSTIPLAYER_REAL_YOUTUBE_SMOKE_URL must select a YouTube URL")?;
+    #[ignore = "manual network acceptance requires an explicit non-YouTube URL"]
+    fn real_generic_non_youtube_smoke_requires_explicit_url() -> anyhow::Result<()> {
+        let url = std::env::var("RUSTIPLAYER_REAL_YT_DLP_NON_YOUTUBE_SMOKE_URL").context(
+            "RUSTIPLAYER_REAL_YT_DLP_NON_YOUTUBE_SMOKE_URL must select a generic media page",
+        )?;
+        let parsed_url = url::Url::parse(&url).context("manual smoke URL must be absolute")?;
+        let normalized_host = parsed_url
+            .host_str()
+            .unwrap_or_default()
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
+        anyhow::ensure!(
+            !matches!(
+                normalized_host.as_str(),
+                "youtube.com"
+                    | "www.youtube.com"
+                    | "m.youtube.com"
+                    | "music.youtube.com"
+                    | "youtu.be"
+            ),
+            "manual generic smoke URL must not use a YouTube host"
+        );
 
-        let locator = parse_youtube_media_locator(&url)?;
+        let locator = parse_yt_dlp_media_locator(&url)?;
         let media = open_streaming_media(&locator, &NetworkConfig::default())?;
 
         assert!(media.demuxer.duration().is_some() || media.direct_streams.live);
@@ -1348,7 +1403,7 @@ mod tests {
 
     #[test]
     #[ignore = "manual media regression; use scripts/media-regression.sh"]
-    fn selected_webm_opens_over_youtube_range_sources() {
+    fn selected_webm_opens_over_yt_dlp_range_sources() {
         let path = selected_manual_webm_path();
         let media = selected_manual_webm_bytes(&path);
         let video_media = Arc::clone(&media);
@@ -1363,15 +1418,15 @@ mod tests {
         let resolver = Arc::new(FakeResolver::new(streams.clone()));
 
         let demuxer = open_range_backed_demuxer(
-            &test_youtube_locator(),
+            &test_yt_dlp_locator(),
             &mut streams,
             test_source_config(),
             test_prefetch_config(),
             resolver,
             DemuxerOptions::default(),
         )
-        .expect("selected YouTube Range demuxer attempt succeeds")
-        .expect("selected YouTube Range source is seekable");
+        .expect("selected YtDlp Range demuxer attempt succeeds")
+        .expect("selected YtDlp Range source is seekable");
 
         assert_eq!(demuxer.seekability(), DemuxSeekability::Seekable);
         assert!(streams.video.has_persistent_validators());
@@ -1380,7 +1435,7 @@ mod tests {
 
     #[test]
     #[ignore = "manual media regression; use scripts/media-regression.sh"]
-    fn selected_webm_falls_back_when_youtube_range_is_rejected() {
+    fn selected_webm_falls_back_when_yt_dlp_range_is_rejected() {
         let path = selected_manual_webm_path();
         let media = selected_manual_webm_bytes(&path);
         let video_media = Arc::clone(&media);
@@ -1395,14 +1450,14 @@ mod tests {
         let resolver = Arc::new(FakeResolver::new(streams.clone()));
 
         let mut demuxer = build_demuxer_from_direct_streams(
-            &test_youtube_locator(),
+            &test_yt_dlp_locator(),
             &mut streams,
             test_source_config(),
             test_prefetch_config(),
             resolver,
             DemuxerOptions::default(),
         )
-        .expect("selected YouTube fallback demuxer opens");
+        .expect("selected YtDlp fallback demuxer opens");
 
         assert!(matches!(
             demuxer.seekability(),
@@ -1420,7 +1475,7 @@ mod tests {
 
     #[test]
     #[ignore = "manual media regression; use scripts/media-regression.sh"]
-    fn selected_webm_live_source_skips_youtube_range_probe() {
+    fn selected_webm_live_source_skips_yt_dlp_range_probe() {
         let path = selected_manual_webm_path();
         let media = selected_manual_webm_bytes(&path);
         let video_media = Arc::clone(&media);
@@ -1438,14 +1493,14 @@ mod tests {
         let resolver = Arc::new(FakeResolver::new(streams.clone()));
 
         let demuxer = build_demuxer_from_direct_streams(
-            &test_youtube_locator(),
+            &test_yt_dlp_locator(),
             &mut streams,
             test_source_config(),
             test_prefetch_config(),
             resolver,
             DemuxerOptions::default(),
         )
-        .expect("selected YouTube live demuxer opens");
+        .expect("selected YtDlp live demuxer opens");
 
         assert!(matches!(
             demuxer.seekability(),

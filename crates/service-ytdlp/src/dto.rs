@@ -5,15 +5,25 @@ use codec_core::VideoDecodeRequirement;
 use serde::Deserialize;
 use source_core::{HttpHeader, SourceValidators};
 
-use crate::YoutubeDirectStreamUrl;
+use crate::YtDlpDirectStreamUrl;
 
-/// Минимальная metadata по выбранному YouTube формату.
+/// Минимальная metadata по выбранному YtDlp формату.
 #[derive(Debug, Deserialize)]
 pub(crate) struct YtDlpMetadata {
+    /// Structural extractor type: `video`, `playlist`, `multi_video` и т.п.
+    #[serde(rename = "_type")]
+    pub(crate) entry_type: Option<String>,
+
+    /// Наличие `entries` означает collection topology, даже если список пуст.
+    pub(crate) entries: Option<Vec<serde_json::Value>>,
+
+    /// Media-level DRM marker, если extractor его сообщает.
+    pub(crate) has_drm: Option<bool>,
+
     /// Заголовок ролика для логов.
     pub(crate) title: Option<String>,
 
-    /// YouTube id для логов.
+    /// YtDlp id для логов.
     pub(crate) id: Option<String>,
 
     /// Итоговый выбранный combined format.
@@ -61,7 +71,13 @@ pub(crate) struct YtDlpRequestedDownload {
 #[derive(Clone, Deserialize)]
 pub(crate) struct YtDlpFormat {
     /// Прямой media URL.
-    pub(crate) url: String,
+    pub(crate) url: Option<String>,
+
+    /// Transport protocol от extractor-а: `https`, `m3u8_native`, `http_dash_segments` и т.п.
+    pub(crate) protocol: Option<String>,
+
+    /// Format-level DRM marker.
+    pub(crate) has_drm: Option<bool>,
 
     /// Идентификатор формата, например `315` или `251`.
     pub(crate) format_id: Option<String>,
@@ -105,7 +121,7 @@ pub(crate) struct YtDlpFormat {
     /// Длительность конкретного adaptive stream, если yt-dlp её сообщает.
     pub(crate) duration: Option<f64>,
 
-    /// HTTP headers, которые YouTube ожидает для этого URL.
+    /// HTTP headers, которые YtDlp ожидает для этого URL.
     pub(crate) http_headers: Option<BTreeMap<String, String>>,
 }
 
@@ -130,9 +146,9 @@ impl std::fmt::Debug for YtDlpFormat {
     }
 }
 
-/// Вид adaptive stream-а внутри YouTube media.
+/// Вид adaptive stream-а внутри YtDlp media.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum YoutubeStreamKind {
+pub enum YtDlpStreamKind {
     /// Video-only WebM stream.
     Video,
 
@@ -140,7 +156,7 @@ pub enum YoutubeStreamKind {
     Audio,
 }
 
-impl YoutubeStreamKind {
+impl YtDlpStreamKind {
     /// Возвращает стабильную строку для логов и тестовых diagnostics.
     #[must_use]
     pub(crate) fn as_str(self) -> &'static str {
@@ -152,18 +168,18 @@ impl YoutubeStreamKind {
 }
 
 /// Нормализованный direct stream descriptor без yt-dlp-specific структуры.
-#[derive(Debug, Clone)]
-pub struct YoutubeDirectStreamDescriptor {
+#[derive(Clone)]
+pub struct YtDlpDirectStreamDescriptor {
     /// Тип adaptive stream-а.
-    pub kind: YoutubeStreamKind,
+    pub kind: YtDlpStreamKind,
 
     /// Прямой media URL.
-    pub url: YoutubeDirectStreamUrl,
+    pub url: YtDlpDirectStreamUrl,
 
     /// HTTP headers, которые service layer получил от yt-dlp.
     pub headers: Vec<HttpHeader>,
 
-    /// YouTube/yt-dlp format id, например `315` или `251`.
+    /// YtDlp/yt-dlp format id, например `315` или `251`.
     pub format_id: Option<String>,
 
     /// Opaque id media в сервисе.
@@ -182,7 +198,22 @@ pub struct YoutubeDirectStreamDescriptor {
     pub description: String,
 }
 
-impl YoutubeDirectStreamDescriptor {
+impl std::fmt::Debug for YtDlpDirectStreamDescriptor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("YtDlpDirectStreamDescriptor")
+            .field("kind", &self.kind)
+            .field("url", &self.url)
+            .field("header_count", &self.headers.len())
+            .field("format_identity", &"<redacted>")
+            .field("validators", &self.validators)
+            .field("duration", &self.duration)
+            .field("live", &self.live)
+            .finish()
+    }
+}
+
+impl YtDlpDirectStreamDescriptor {
     /// Возвращает `true`, если stream имеет HTTP validators для стабильной byte identity.
     #[must_use]
     pub fn has_persistent_validators(&self) -> bool {
@@ -190,9 +221,9 @@ impl YoutubeDirectStreamDescriptor {
     }
 }
 
-/// Нормализованная пара adaptive video/audio streams для одного YouTube media.
+/// Нормализованная пара adaptive video/audio streams для одного YtDlp media.
 #[derive(Debug, Clone)]
-pub struct YoutubeDirectStreams {
+pub struct YtDlpDirectStreams {
     /// Заголовок media, если extractor его сообщил.
     pub title: Option<String>,
 
@@ -221,15 +252,15 @@ pub struct YoutubeDirectStreams {
     pub live: bool,
 
     /// Video-only stream descriptor.
-    pub video: YoutubeDirectStreamDescriptor,
+    pub video: YtDlpDirectStreamDescriptor,
 
     /// Audio-only stream descriptor.
-    pub audio: YoutubeDirectStreamDescriptor,
+    pub audio: YtDlpDirectStreamDescriptor,
 }
 
-/// Набор YouTube stream candidates без открытия media bytes.
+/// Набор YtDlp stream candidates без открытия media bytes.
 #[derive(Debug, Clone)]
-pub struct YoutubeStreamCandidates {
+pub struct YtDlpStreamCandidates {
     /// Заголовок media, если extractor его сообщил.
     pub title: Option<String>,
 
@@ -243,23 +274,23 @@ pub struct YoutubeStreamCandidates {
     pub live: bool,
 
     /// Нормализованные service candidates для будущего capability selection.
-    pub candidates: Vec<YoutubeStreamCandidate>,
+    pub candidates: Vec<YtDlpStreamCandidate>,
 }
 
 /// Один service-level video candidate с direct descriptors для позднего открытия.
 #[derive(Debug, Clone)]
-pub struct YoutubeStreamCandidate {
-    /// Stable stream id внутри одного YouTube media manifest-а.
+pub struct YtDlpStreamCandidate {
+    /// Stable stream id внутри одного YtDlp media manifest-а.
     pub stream_id: String,
 
     /// Composite format id пары video/audio, если yt-dlp сообщил format id.
     pub format_id: Option<String>,
 
     /// Video-only direct stream descriptor.
-    pub video: YoutubeDirectStreamDescriptor,
+    pub video: YtDlpDirectStreamDescriptor,
 
     /// Audio-only direct stream descriptor, выбранный как service companion для video.
-    pub audio: Option<YoutubeDirectStreamDescriptor>,
+    pub audio: Option<YtDlpDirectStreamDescriptor>,
 
     /// Высота video stream-а из service manifest-а.
     pub height: Option<u32>,
@@ -274,10 +305,10 @@ pub struct YoutubeStreamCandidate {
     pub acodec: Option<String>,
 
     /// Нормализованный dynamic range из отдельного service metadata field-а.
-    pub dynamic_range: YoutubeDynamicRange,
+    pub dynamic_range: YtDlpDynamicRange,
 
     /// Требование к capability-core или typed причина, почему metadata недостаточна.
-    pub video_requirement: YoutubeVideoRequirement,
+    pub video_requirement: YtDlpVideoRequirement,
 
     /// Чем больше значение, тем предпочтительнее stream при равной поддержке.
     pub quality_score: i64,
@@ -285,7 +316,7 @@ pub struct YoutubeStreamCandidate {
 
 /// Достоверность dynamic range, которую service adapter получил из manifest metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum YoutubeDynamicRange {
+pub enum YtDlpDynamicRange {
     /// Manifest явно классифицировал stream как SDR.
     Sdr,
 
@@ -298,15 +329,15 @@ pub enum YoutubeDynamicRange {
 
 /// Состояние конвертации service metadata в codec/capability requirement.
 #[derive(Debug, Clone)]
-pub enum YoutubeVideoRequirement {
+pub enum YtDlpVideoRequirement {
     /// Metadata достаточно точна для передачи в capability-core.
     Ready(VideoDecodeRequirement),
 
     /// Metadata распознана частично или отсутствует; guessing запрещён.
-    Insufficient(YoutubeInsufficientVideoMetadata),
+    Insufficient(YtDlpInsufficientVideoMetadata),
 }
 
-impl YoutubeVideoRequirement {
+impl YtDlpVideoRequirement {
     /// Возвращает `true`, если candidate можно передать в capability-core.
     #[must_use]
     pub const fn is_ready(&self) -> bool {
@@ -334,7 +365,7 @@ impl YoutubeVideoRequirement {
 
 /// Диагностика candidate-а, который нельзя безопасно выбрать по capabilities.
 #[derive(Debug, Clone)]
-pub struct YoutubeInsufficientVideoMetadata {
+pub struct YtDlpInsufficientVideoMetadata {
     /// Человекочитаемая причина, почему service не построил полный requirement.
     pub reason: String,
 
@@ -342,23 +373,23 @@ pub struct YoutubeInsufficientVideoMetadata {
     pub partial_requirement: Option<VideoDecodeRequirement>,
 }
 
-/// Результат подготовки YouTube ролика к streaming playback.
-pub struct YoutubeStreamingMedia {
+/// Результат подготовки YtDlp ролика к streaming playback.
+pub struct YtDlpStreamingMedia {
     /// Demuxer, который уже читает из HTTP-backed streaming sources.
     pub demuxer: Box<dyn symphonia_demux::Demuxer + Send>,
 
-    /// Человекочитаемое описание выбранного YouTube формата.
+    /// Человекочитаемое описание выбранного YtDlp формата.
     pub description: String,
 
     /// Нормализованные direct stream descriptors, выбранные service layer-ом.
-    pub direct_streams: YoutubeDirectStreams,
+    pub direct_streams: YtDlpDirectStreams,
 }
 
-impl YoutubeStreamingMedia {
+impl YtDlpStreamingMedia {
     /// Возвращает metadata выбранного service snapshot-а без повторного `yt-dlp` I/O.
     #[must_use]
-    pub fn playlist_metadata(&self) -> crate::YoutubePlaylistMetadata {
-        crate::YoutubePlaylistMetadata::from_extractor(
+    pub fn playlist_metadata(&self) -> crate::YtDlpPlaylistMetadata {
+        crate::YtDlpPlaylistMetadata::from_extractor(
             self.direct_streams.title.clone(),
             self.direct_streams.duration,
         )

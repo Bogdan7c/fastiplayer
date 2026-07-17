@@ -31,7 +31,8 @@
 - один ignored FFmpeg runtime probe: `video-ffmpeg/tests/ffmpeg_runtime_probe.rs`; запускается только через `probe-only`/software/full suite и требует установленный FFmpeg runtime;
 - семнадцать ignored local-media demux regressions в `symphonia-demux/tests/`: шесть H.264, три H.265, один VP9, шесть audio и один generic inspection;
 - один ignored direct HTTP Range regression в `service-direct-media`;
-- четыре ignored YouTube/network regressions в `service-youtube`: explicit real URL smoke, Range, fallback и live source;
+- четыре ignored `yt-dlp`/network regressions в `service-ytdlp`: explicit
+  non-YouTube URL smoke, Range, fallback и live source;
 - hardware playback assertions не являются `cargo test`: ими владеют `hardware-only` и `full` modes `playback-smoke.sh`, потому что им нужны GUI/runtime, VA-API/WGPU и выбранные пользователем assets.
 
 Все fixture regressions запускаются по одному через `scripts/media-regression.sh --scenario <NAME> --path <FILE>`. Полный список требований доступен через `scripts/media-regression.sh --list-scenarios`; отсутствие selection уже печатает `NOT RUN`, а выбранный отсутствующий path завершает runner ошибкой.

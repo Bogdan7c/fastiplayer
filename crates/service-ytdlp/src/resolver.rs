@@ -1,40 +1,44 @@
+use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
 use codec_core::{
     Av1Profile, BitDepth, ChromaSubsampling, ColorMetadataConfidence, ColorMetadataOrigin,
     ColorPrimaries, ColorRange, H264Profile, MatrixCoefficients, TransferFunction, VideoCodec,
     VideoColorMetadata, VideoDecodeRequirement, VideoProfile, Vp9Profile,
 };
-use rustiplayer_config::YoutubeConfig;
+use rustiplayer_config::YtDlpConfig;
 use source_core::{HttpHeader, SourceValidators};
 
-use crate::YoutubeMediaLocator;
+use crate::YtDlpMediaLocator;
+use crate::YtDlpServiceError;
+use crate::admission::{AdmittedFormats, YtDlpCompatibilityRejection, admit_formats};
 use crate::dto::{
-    YoutubeDirectStreamDescriptor, YoutubeDirectStreams, YoutubeDynamicRange,
-    YoutubeInsufficientVideoMetadata, YoutubeStreamCandidate, YoutubeStreamCandidates,
-    YoutubeStreamKind, YoutubeVideoRequirement, YtDlpFormat, YtDlpMetadata,
+    YtDlpDirectStreamDescriptor, YtDlpDirectStreams, YtDlpDynamicRange, YtDlpFormat,
+    YtDlpInsufficientVideoMetadata, YtDlpMetadata, YtDlpStreamCandidate, YtDlpStreamCandidates,
+    YtDlpStreamKind, YtDlpVideoRequirement,
 };
 use crate::process::{
-    YtDlpProcessConfig, resolve_youtube_candidate_metadata, resolve_youtube_metadata,
+    YtDlpProcessConfig, resolve_yt_dlp_candidate_metadata, resolve_yt_dlp_metadata,
 };
 
+/// Локальный alias не позволяет внутренним функциям случайно вернуть opaque `anyhow`.
+type Result<T> = std::result::Result<T, YtDlpServiceError>;
+
 /// Resolver direct stream descriptors для production и тестового refresh path.
-pub(crate) trait YoutubeDirectStreamResolver: Send + Sync {
-    /// Возвращает свежую пару direct stream descriptors для исходного YouTube URL.
-    fn resolve_direct_streams(&self, locator: &YoutubeMediaLocator)
-    -> Result<YoutubeDirectStreams>;
+pub(crate) trait DirectStreamResolver: Send + Sync {
+    /// Возвращает свежую пару direct stream descriptors для исходного YtDlp URL.
+    fn resolve_direct_streams(&self, locator: &YtDlpMediaLocator) -> Result<YtDlpDirectStreams>;
 }
 
 /// Production resolver на базе `yt-dlp`.
-pub(crate) struct YtDlpDirectStreamResolver {
+pub(crate) struct YtDlpProcessStreamResolver {
     /// Process policy для всех metadata refresh-ов этого resolver-а.
     process_config: YtDlpProcessConfig,
 }
 
 /// Stable identity выбранного candidate-а для refresh-а direct URL.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct YoutubeSelectedStreamIdentity {
+#[derive(Clone, PartialEq, Eq)]
+pub struct YtDlpSelectedStreamIdentity {
     /// Stream id из первого service manifest-а.
     stream_id: String,
 
@@ -48,37 +52,44 @@ pub struct YoutubeSelectedStreamIdentity {
     audio_format_id: Option<String>,
 }
 
+impl std::fmt::Debug for YtDlpSelectedStreamIdentity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("YtDlpSelectedStreamIdentity")
+            .field("stream_id", &self.stream_id)
+            .field("format_identity", &"<redacted>")
+            .finish()
+    }
+}
+
 /// Resolver, который refresh-ит direct URL той же capability-selected пары.
 pub(crate) struct YtDlpSelectedStreamResolver {
     /// Process policy для повторного получения manifest-а.
     process_config: YtDlpProcessConfig,
 
     /// Identity выбранной пары, которую нельзя заменить legacy selector-ом.
-    selected_stream: YoutubeSelectedStreamIdentity,
+    selected_stream: YtDlpSelectedStreamIdentity,
 }
 
-impl YtDlpDirectStreamResolver {
-    /// Создаёт production resolver из пользовательского YouTube config.
-    pub(crate) fn from_youtube_config(youtube_config: &YoutubeConfig) -> Result<Self> {
+impl YtDlpProcessStreamResolver {
+    /// Создаёт production resolver из пользовательского YtDlp config.
+    pub(crate) fn from_yt_dlp_config(yt_dlp_config: &YtDlpConfig) -> Result<Self> {
         Ok(Self {
-            process_config: YtDlpProcessConfig::from_youtube_config(youtube_config)?,
+            process_config: YtDlpProcessConfig::from_yt_dlp_config(yt_dlp_config)?,
         })
     }
 }
 
-impl YoutubeDirectStreamResolver for YtDlpDirectStreamResolver {
-    fn resolve_direct_streams(
-        &self,
-        locator: &YoutubeMediaLocator,
-    ) -> Result<YoutubeDirectStreams> {
-        resolve_youtube_direct_streams_with_process_config(locator, &self.process_config)
+impl DirectStreamResolver for YtDlpProcessStreamResolver {
+    fn resolve_direct_streams(&self, locator: &YtDlpMediaLocator) -> Result<YtDlpDirectStreams> {
+        resolve_yt_dlp_direct_streams_with_process_config(locator, &self.process_config)
     }
 }
 
-impl YoutubeSelectedStreamIdentity {
+impl YtDlpSelectedStreamIdentity {
     /// Запоминает выбранные ids без владения полным manifest-ом.
     #[must_use]
-    pub fn from_candidate(candidate: &YoutubeStreamCandidate) -> Self {
+    pub fn from_candidate(candidate: &YtDlpStreamCandidate) -> Self {
         Self {
             stream_id: candidate.stream_id.clone(),
             format_id: candidate.format_id.clone(),
@@ -92,15 +103,15 @@ impl YoutubeSelectedStreamIdentity {
 
     /// Находит выбранный candidate в service manifest-е и сохраняет только reconstructible ids.
     pub fn from_candidates(
-        stream_candidates: &YoutubeStreamCandidates,
+        stream_candidates: &YtDlpStreamCandidates,
         selected_stream_id: &str,
     ) -> Result<Self> {
         let selected_candidate = stream_candidates
             .candidates
             .iter()
             .find(|candidate| candidate.stream_id == selected_stream_id)
-            .with_context(|| {
-                format!("selected YouTube stream id не найден в candidates: {selected_stream_id}")
+            .ok_or(YtDlpServiceError::NoCompatibleStreams {
+                reason: YtDlpCompatibilityRejection::MissingSeparateVideo,
             })?;
 
         Ok(Self::from_candidate(selected_candidate))
@@ -113,7 +124,7 @@ impl YoutubeSelectedStreamIdentity {
     }
 
     /// Проверяет, что fresh manifest содержит ту же video/audio пару.
-    fn matches_format_identity(&self, candidate: &YoutubeStreamCandidate) -> bool {
+    fn matches_format_identity(&self, candidate: &YtDlpStreamCandidate) -> bool {
         let Some(expected_video_format_id) = self.video_format_id.as_deref() else {
             return false;
         };
@@ -137,144 +148,133 @@ impl YoutubeSelectedStreamIdentity {
 
 impl YtDlpSelectedStreamResolver {
     /// Создаёт refresh resolver для уже выбранной capability-aware пары.
-    pub(crate) fn from_youtube_config(
-        youtube_config: &YoutubeConfig,
-        selected_stream: YoutubeSelectedStreamIdentity,
+    pub(crate) fn from_yt_dlp_config(
+        yt_dlp_config: &YtDlpConfig,
+        selected_stream: YtDlpSelectedStreamIdentity,
     ) -> Result<Self> {
         Ok(Self {
-            process_config: YtDlpProcessConfig::from_youtube_config(youtube_config)?,
+            process_config: YtDlpProcessConfig::from_yt_dlp_config(yt_dlp_config)?,
             selected_stream,
         })
     }
 }
 
-impl YoutubeDirectStreamResolver for YtDlpSelectedStreamResolver {
-    fn resolve_direct_streams(
-        &self,
-        locator: &YoutubeMediaLocator,
-    ) -> Result<YoutubeDirectStreams> {
+impl DirectStreamResolver for YtDlpSelectedStreamResolver {
+    fn resolve_direct_streams(&self, locator: &YtDlpMediaLocator) -> Result<YtDlpDirectStreams> {
         let stream_candidates =
-            resolve_youtube_stream_candidates_with_process_config(locator, &self.process_config)?;
+            resolve_yt_dlp_stream_candidates_with_process_config(locator, &self.process_config)?;
 
         direct_streams_from_matching_candidate(&stream_candidates, &self.selected_stream)
     }
 }
 
 /// Получает normalized descriptors через `yt-dlp`, не открывая media bytes.
-pub fn resolve_youtube_direct_streams(
-    locator: &YoutubeMediaLocator,
-) -> Result<YoutubeDirectStreams> {
-    let process_config = YtDlpProcessConfig::from_youtube_config(&YoutubeConfig::default())?;
+pub fn resolve_yt_dlp_direct_streams(locator: &YtDlpMediaLocator) -> Result<YtDlpDirectStreams> {
+    let process_config = YtDlpProcessConfig::from_yt_dlp_config(&YtDlpConfig::default())?;
 
-    resolve_youtube_direct_streams_with_process_config(locator, &process_config)
+    resolve_yt_dlp_direct_streams_with_process_config(locator, &process_config)
 }
 
 /// Получает capability-aware stream candidates через `yt-dlp`, не открывая media bytes.
-pub fn resolve_youtube_stream_candidates(
-    locator: &YoutubeMediaLocator,
-) -> Result<YoutubeStreamCandidates> {
-    resolve_youtube_stream_candidates_with_config(locator, &YoutubeConfig::default())
+pub fn resolve_yt_dlp_stream_candidates(
+    locator: &YtDlpMediaLocator,
+) -> Result<YtDlpStreamCandidates> {
+    resolve_yt_dlp_stream_candidates_with_config(locator, &YtDlpConfig::default())
 }
 
 /// Получает capability-aware stream candidates с явной process policy.
-pub fn resolve_youtube_stream_candidates_with_config(
-    locator: &YoutubeMediaLocator,
-    youtube_config: &YoutubeConfig,
-) -> Result<YoutubeStreamCandidates> {
-    let process_config = YtDlpProcessConfig::from_youtube_config(youtube_config)?;
+pub fn resolve_yt_dlp_stream_candidates_with_config(
+    locator: &YtDlpMediaLocator,
+    yt_dlp_config: &YtDlpConfig,
+) -> Result<YtDlpStreamCandidates> {
+    if !yt_dlp_config.enabled {
+        return Err(YtDlpServiceError::AdapterDisabled);
+    }
+    let process_config = YtDlpProcessConfig::from_yt_dlp_config(yt_dlp_config)?;
 
-    resolve_youtube_stream_candidates_with_process_config(locator, &process_config)
+    resolve_yt_dlp_stream_candidates_with_process_config(locator, &process_config)
 }
 
 /// Получает normalized descriptors через `yt-dlp` с уже валидированной process policy.
-fn resolve_youtube_direct_streams_with_process_config(
-    locator: &YoutubeMediaLocator,
+fn resolve_yt_dlp_direct_streams_with_process_config(
+    locator: &YtDlpMediaLocator,
     process_config: &YtDlpProcessConfig,
-) -> Result<YoutubeDirectStreams> {
-    let metadata = resolve_youtube_metadata(locator.expose_secret_for_open(), process_config)?;
+) -> Result<YtDlpDirectStreams> {
+    let metadata = resolve_yt_dlp_metadata(locator.expose_secret_for_open(), process_config)?;
 
     select_direct_media_streams(&metadata)
 }
 
 /// Получает full manifest metadata и строит service candidates.
-fn resolve_youtube_stream_candidates_with_process_config(
-    locator: &YoutubeMediaLocator,
+fn resolve_yt_dlp_stream_candidates_with_process_config(
+    locator: &YtDlpMediaLocator,
     process_config: &YtDlpProcessConfig,
-) -> Result<YoutubeStreamCandidates> {
+) -> Result<YtDlpStreamCandidates> {
     let metadata =
-        resolve_youtube_candidate_metadata(locator.expose_secret_for_open(), process_config)?;
+        resolve_yt_dlp_candidate_metadata(locator.expose_secret_for_open(), process_config)?;
 
     build_stream_candidates(&metadata)
 }
 
 /// Нормализует yt-dlp formats в stream candidates без выбора video default-а.
-pub(crate) fn build_stream_candidates(metadata: &YtDlpMetadata) -> Result<YoutubeStreamCandidates> {
+pub(crate) fn build_stream_candidates(metadata: &YtDlpMetadata) -> Result<YtDlpStreamCandidates> {
     let manifest_formats = metadata
         .formats
         .as_ref()
         .filter(|formats| !formats.is_empty())
         .or_else(|| selected_requested_formats(metadata))
-        .context("yt-dlp metadata не содержит formats для stream candidates")?;
+        .ok_or(YtDlpServiceError::NoCompatibleStreams {
+            reason: YtDlpCompatibilityRejection::MissingFormats,
+        })?;
+    let admitted_formats = admit_formats(metadata, manifest_formats)?;
     let service_media_id = metadata.id.clone();
     let media_duration = duration_from_seconds(metadata.duration);
     let live = metadata_is_live(metadata);
-    let audio_format = select_companion_audio_format(manifest_formats);
+    let audio_format = select_companion_audio_format(&admitted_formats)?;
     let mut candidates = Vec::new();
 
-    for (video_index, video_format) in manifest_formats
-        .iter()
-        .filter(|format| is_supported_video_candidate_format(format))
-        .enumerate()
-    {
-        let audio = audio_format.clone().map(|format| {
-            direct_stream_from_format(
-                YoutubeStreamKind::Audio,
-                format,
-                service_media_id.clone(),
-                media_duration,
-                live,
-            )
-        });
+    for (video_index, video_format) in admitted_formats.video_formats.iter().enumerate() {
+        let audio = direct_stream_from_format(
+            YtDlpStreamKind::Audio,
+            audio_format.clone(),
+            service_media_id.clone(),
+            media_duration,
+            live,
+        )?;
         let stream_id = candidate_stream_id(
             service_media_id.as_deref(),
             video_format.format_id.as_deref(),
-            audio_format
-                .as_ref()
-                .and_then(|format| format.format_id.as_deref()),
+            audio_format.format_id.as_deref(),
             video_index,
         );
         let format_id = composite_candidate_format_id(
             video_format.format_id.as_deref(),
-            audio_format
-                .as_ref()
-                .and_then(|format| format.format_id.as_deref()),
+            audio_format.format_id.as_deref(),
         );
         let video = direct_stream_from_format(
-            YoutubeStreamKind::Video,
-            video_format.clone(),
+            YtDlpStreamKind::Video,
+            (*video_format).clone(),
             service_media_id.clone(),
             media_duration,
             live,
-        );
+        )?;
 
-        candidates.push(YoutubeStreamCandidate {
+        candidates.push(YtDlpStreamCandidate {
             stream_id,
             format_id,
             video,
-            audio,
+            audio: Some(audio),
             height: video_format.height,
             fps: video_format.fps,
             vcodec: video_format.vcodec.clone(),
-            acodec: audio_format
-                .as_ref()
-                .and_then(|format| format.acodec.clone()),
-            dynamic_range: youtube_dynamic_range(video_format),
+            acodec: audio_format.acodec.clone(),
+            dynamic_range: yt_dlp_dynamic_range(video_format),
             video_requirement: video_requirement_from_format(video_format),
             quality_score: video_quality_score(video_format),
         });
     }
 
-    Ok(YoutubeStreamCandidates {
+    Ok(YtDlpStreamCandidates {
         title: metadata.title.clone(),
         service_media_id,
         duration: media_duration,
@@ -284,29 +284,29 @@ pub(crate) fn build_stream_candidates(metadata: &YtDlpMetadata) -> Result<Youtub
 }
 
 /// Нормализует только отдельное поле `dynamic_range`, не читая quality label/description.
-fn youtube_dynamic_range(format: &YtDlpFormat) -> YoutubeDynamicRange {
+fn yt_dlp_dynamic_range(format: &YtDlpFormat) -> YtDlpDynamicRange {
     let Some(dynamic_range) = format.dynamic_range.as_deref() else {
-        return YoutubeDynamicRange::Unknown;
+        return YtDlpDynamicRange::Unknown;
     };
 
     match dynamic_range.trim().to_ascii_lowercase().as_str() {
-        "sdr" => YoutubeDynamicRange::Sdr,
-        "hdr" | "hdr10" | "hdr10+" | "hlg" | "pq" => YoutubeDynamicRange::Hdr,
-        _ => YoutubeDynamicRange::Unknown,
+        "sdr" => YtDlpDynamicRange::Sdr,
+        "hdr" | "hdr10" | "hdr10+" | "hlg" | "pq" => YtDlpDynamicRange::Hdr,
+        _ => YtDlpDynamicRange::Unknown,
     }
 }
 
 /// Берёт выбранный stream id из service candidates и строит pair descriptors.
 pub(crate) fn direct_streams_from_selected_candidate(
-    stream_candidates: &YoutubeStreamCandidates,
+    stream_candidates: &YtDlpStreamCandidates,
     selected_stream_id: &str,
-) -> Result<YoutubeDirectStreams> {
+) -> Result<YtDlpDirectStreams> {
     let selected_candidate = stream_candidates
         .candidates
         .iter()
         .find(|candidate| candidate.stream_id == selected_stream_id)
-        .with_context(|| {
-            format!("selected YouTube stream id не найден в candidates: {selected_stream_id}")
+        .ok_or(YtDlpServiceError::NoCompatibleStreams {
+            reason: YtDlpCompatibilityRejection::MissingSeparateVideo,
         })?;
 
     direct_streams_from_candidate(stream_candidates, selected_candidate)
@@ -314,9 +314,9 @@ pub(crate) fn direct_streams_from_selected_candidate(
 
 /// Повторно находит выбранный stream после refresh-а manifest-а.
 pub(crate) fn direct_streams_from_matching_candidate(
-    stream_candidates: &YoutubeStreamCandidates,
-    selected_stream: &YoutubeSelectedStreamIdentity,
-) -> Result<YoutubeDirectStreams> {
+    stream_candidates: &YtDlpStreamCandidates,
+    selected_stream: &YtDlpSelectedStreamIdentity,
+) -> Result<YtDlpDirectStreams> {
     let selected_candidate = stream_candidates
         .candidates
         .iter()
@@ -327,11 +327,8 @@ pub(crate) fn direct_streams_from_matching_candidate(
                 .iter()
                 .find(|candidate| selected_stream.matches_format_identity(candidate))
         })
-        .with_context(|| {
-            format!(
-                "fresh YouTube manifest не содержит выбранную stream pair: {}",
-                selected_stream.stream_id
-            )
+        .ok_or(YtDlpServiceError::NoCompatibleStreams {
+            reason: YtDlpCompatibilityRejection::MissingSeparateVideo,
         })?;
 
     direct_streams_from_candidate(stream_candidates, selected_candidate)
@@ -339,17 +336,17 @@ pub(crate) fn direct_streams_from_matching_candidate(
 
 /// Превращает selected service candidate в структуру, которую уже умеет открыть demux path.
 fn direct_streams_from_candidate(
-    stream_candidates: &YoutubeStreamCandidates,
-    candidate: &YoutubeStreamCandidate,
-) -> Result<YoutubeDirectStreams> {
-    let audio = candidate.audio.clone().with_context(|| {
-        format!(
-            "selected YouTube stream {} не содержит audio companion descriptor",
-            candidate.stream_id
-        )
-    })?;
+    stream_candidates: &YtDlpStreamCandidates,
+    candidate: &YtDlpStreamCandidate,
+) -> Result<YtDlpDirectStreams> {
+    let audio = candidate
+        .audio
+        .clone()
+        .ok_or(YtDlpServiceError::NoCompatibleStreams {
+            reason: YtDlpCompatibilityRejection::MissingSeparateAudio,
+        })?;
 
-    Ok(YoutubeDirectStreams {
+    Ok(YtDlpDirectStreams {
         title: stream_candidates.title.clone(),
         service_media_id: stream_candidates
             .service_media_id
@@ -368,48 +365,31 @@ fn direct_streams_from_candidate(
 }
 
 /// Выбирает прямые video/audio descriptors из metadata.
-pub(crate) fn select_direct_media_streams(
-    metadata: &YtDlpMetadata,
-) -> Result<YoutubeDirectStreams> {
+pub(crate) fn select_direct_media_streams(metadata: &YtDlpMetadata) -> Result<YtDlpDirectStreams> {
     let requested_formats = metadata
         .requested_downloads
         .as_ref()
         .and_then(|downloads| downloads.first())
         .and_then(|download| download.requested_formats.as_ref())
         .or(metadata.requested_formats.as_ref())
-        .context("yt-dlp metadata не содержит requested_formats для streaming")?;
-
-    // Video stream имеет настоящий vcodec и не имеет audio codec.
-    let video_format = requested_formats
-        .iter()
-        .find(|format| {
-            format
-                .vcodec
-                .as_deref()
-                .is_some_and(|codec| codec != "none")
-                && format.acodec.as_deref().unwrap_or("none") == "none"
-        })
-        .cloned()
-        .context("yt-dlp не вернул video-only stream URL")?;
-
-    // Audio stream имеет настоящий acodec и не имеет video codec.
-    let audio_format = requested_formats
-        .iter()
-        .find(|format| {
-            format
-                .acodec
-                .as_deref()
-                .is_some_and(|codec| codec != "none")
-                && format.vcodec.as_deref().unwrap_or("none") == "none"
-        })
-        .cloned()
-        .context("yt-dlp не вернул audio-only stream URL")?;
+        .ok_or(YtDlpServiceError::NoCompatibleStreams {
+            reason: YtDlpCompatibilityRejection::MissingFormats,
+        })?;
+    let admitted_formats = admit_formats(metadata, requested_formats)?;
+    let video_format = admitted_formats
+        .video_formats
+        .first()
+        .map(|format| (*format).clone())
+        .ok_or(YtDlpServiceError::NoCompatibleStreams {
+            reason: YtDlpCompatibilityRejection::MissingSeparateVideo,
+        })?;
+    let audio_format = select_companion_audio_format(&admitted_formats)?;
 
     let service_media_id = metadata.id.clone();
     let duration = duration_from_seconds(metadata.duration);
     let live = metadata_is_live(metadata);
 
-    Ok(YoutubeDirectStreams {
+    Ok(YtDlpDirectStreams {
         title: metadata.title.clone(),
         service_media_id: service_media_id.clone(),
         format_id: metadata.format_id.clone(),
@@ -420,19 +400,19 @@ pub(crate) fn select_direct_media_streams(
         duration,
         live,
         video: direct_stream_from_format(
-            YoutubeStreamKind::Video,
+            YtDlpStreamKind::Video,
             video_format,
             service_media_id.clone(),
             duration,
             live,
-        ),
+        )?,
         audio: direct_stream_from_format(
-            YoutubeStreamKind::Audio,
+            YtDlpStreamKind::Audio,
             audio_format,
             service_media_id,
             duration,
             live,
-        ),
+        )?,
     })
 }
 
@@ -446,82 +426,21 @@ fn selected_requested_formats(metadata: &YtDlpMetadata) -> Option<&Vec<YtDlpForm
         .or(metadata.requested_formats.as_ref())
 }
 
-/// Проверяет, что format находится в текущем production envelope service open path-а.
-fn is_supported_video_candidate_format(format: &YtDlpFormat) -> bool {
-    is_video_only_format(format) && is_webm_format(format) && is_vp9_codec_tag(format)
-}
-
-/// Проверяет companion audio для текущего WebM dual-demux path-а.
-fn is_supported_audio_companion_format(format: &YtDlpFormat) -> bool {
-    is_audio_only_format(format) && is_webm_format(format) && is_opus_codec_tag(format)
-}
-
-/// Текущий service demux open path открывает только WebM byte streams.
-fn is_webm_format(format: &YtDlpFormat) -> bool {
-    format
-        .ext
-        .as_deref()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("webm"))
-}
-
-/// VP9 остаётся единственным YouTube video codec-ом в scope этой задачи.
-fn is_vp9_codec_tag(format: &YtDlpFormat) -> bool {
-    normalized_video_codec_tag(format)
-        .as_deref()
-        .is_some_and(|codec| codec.starts_with("vp9") || codec.starts_with("vp09"))
-}
-
-/// Opus/WebM сохраняет текущую audio policy legacy selector-а.
-fn is_opus_codec_tag(format: &YtDlpFormat) -> bool {
-    format
-        .acodec
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|codec| codec.eq_ignore_ascii_case("opus"))
-}
-
-/// Проверяет, что format является direct video-only stream-ом.
-fn is_video_only_format(format: &YtDlpFormat) -> bool {
-    has_direct_media_url(format)
-        && format
-            .vcodec
-            .as_deref()
-            .is_some_and(|codec| !codec.eq_ignore_ascii_case("none"))
-        && format
-            .acodec
-            .as_deref()
-            .is_none_or(|codec| codec.eq_ignore_ascii_case("none"))
-}
-
-/// Проверяет, что format является direct audio-only stream-ом.
-fn is_audio_only_format(format: &YtDlpFormat) -> bool {
-    has_direct_media_url(format)
-        && format
-            .acodec
-            .as_deref()
-            .is_some_and(|codec| !codec.eq_ignore_ascii_case("none"))
-        && format
-            .vcodec
-            .as_deref()
-            .is_none_or(|codec| codec.eq_ignore_ascii_case("none"))
-}
-
-/// Отсекает manifest entries, которые нельзя открыть как direct media URL.
-fn has_direct_media_url(format: &YtDlpFormat) -> bool {
-    !format.url.trim().is_empty()
-}
-
-/// Выбирает companion audio без влияния на video capability selection.
-fn select_companion_audio_format(formats: &[YtDlpFormat]) -> Option<YtDlpFormat> {
-    formats
+/// Выбирает companion audio только внутри уже доказанного admission набора.
+fn select_companion_audio_format(admitted_formats: &AdmittedFormats<'_>) -> Result<YtDlpFormat> {
+    admitted_formats
+        .audio_formats
         .iter()
-        .filter(|format| is_supported_audio_companion_format(format))
+        .copied()
         .max_by(|left, right| {
             audio_quality_score(left)
                 .cmp(&audio_quality_score(right))
                 .then_with(|| left.format_id.cmp(&right.format_id))
         })
         .cloned()
+        .ok_or(YtDlpServiceError::NoCompatibleStreams {
+            reason: YtDlpCompatibilityRejection::MissingSeparateAudio,
+        })
 }
 
 /// Формирует stable id candidate-а из service media id и format ids.
@@ -531,15 +450,13 @@ fn candidate_stream_id(
     audio_format_id: Option<&str>,
     video_index: usize,
 ) -> String {
-    let media_id = service_media_id.unwrap_or("unknown-media");
-    let video_id = video_format_id
-        .map(|format_id| format!("v{format_id}"))
-        .unwrap_or_else(|| format!("v-index-{video_index}"));
-    let audio_id = audio_format_id
-        .map(|format_id| format!("a{format_id}"))
-        .unwrap_or_else(|| "a-none".to_string());
+    let mut identity_hasher = std::collections::hash_map::DefaultHasher::new();
+    service_media_id.hash(&mut identity_hasher);
+    video_format_id.hash(&mut identity_hasher);
+    audio_format_id.hash(&mut identity_hasher);
+    video_index.hash(&mut identity_hasher);
 
-    format!("{media_id}:{video_id}:{audio_id}")
+    format!("candidate-{:016x}", identity_hasher.finish())
 }
 
 /// Формирует composite format id пары video/audio.
@@ -584,7 +501,7 @@ fn finite_non_negative(value: Option<f64>) -> Option<f64> {
 }
 
 /// Конвертирует yt-dlp video metadata в requirement или typed insufficiency.
-fn video_requirement_from_format(format: &YtDlpFormat) -> YoutubeVideoRequirement {
+fn video_requirement_from_format(format: &YtDlpFormat) -> YtDlpVideoRequirement {
     let Some(codec_tag) = normalized_video_codec_tag(format) else {
         return insufficient_requirement("yt-dlp не сообщил video codec", None);
     };
@@ -605,7 +522,7 @@ fn video_requirement_from_format(format: &YtDlpFormat) -> YoutubeVideoRequiremen
 
         insufficient_requirement(
             format!(
-                "yt-dlp сообщил codec `{codec_tag}`, который service-youtube пока не конвертирует"
+                "yt-dlp сообщил codec `{codec_tag}`, который service-ytdlp пока не конвертирует"
             ),
             partial_requirement,
         )
@@ -621,27 +538,24 @@ fn normalized_video_codec_tag(format: &YtDlpFormat) -> Option<String> {
 }
 
 /// Строит VP9 requirement из простого `vp9` или ISO BMFF `vp09.*` tag.
-fn vp9_requirement_from_codec_tag(
-    codec_tag: &str,
-    format: &YtDlpFormat,
-) -> YoutubeVideoRequirement {
+fn vp9_requirement_from_codec_tag(codec_tag: &str, format: &YtDlpFormat) -> YtDlpVideoRequirement {
     let mut requirement = VideoDecodeRequirement::new(VideoCodec::Vp9);
     let mut missing_fields = Vec::new();
 
     if codec_tag == "vp9" {
-        // yt-dlp на YouTube отдаёт SDR VP9 голым тегом `vp9` без ISO BMFF полей
-        // profile/bit-depth/chroma. На YouTube такой stream всегда VP9 Profile 0
+        // yt-dlp на YtDlp отдаёт SDR VP9 голым тегом `vp9` без ISO BMFF полей
+        // profile/bit-depth/chroma. На YtDlp такой stream всегда VP9 Profile 0
         // (8-bit 4:2:0 SDR) — это и есть базовый production decode path
-        // (VP9 Profile 0 SDR -> VA-API -> NV12 -> WGPU SDR). HDR VP9 на YouTube
+        // (VP9 Profile 0 SDR -> VA-API -> NV12 -> WGPU SDR). HDR VP9 на YtDlp
         // приходит только детальным тегом `vp09.02.*`; ошибочный HDR-намёк на
         // голом `vp9` дополнительно отсекает
         // reject_hdr_hint_without_resolved_hdr_metadata. Поэтому здесь это не
-        // «угадывание», а доменный факт YouTube-адаптера.
+        // «угадывание», а доменный факт YtDlp-адаптера.
         requirement = requirement
             .with_profile(VideoProfile::Vp9(Vp9Profile::Profile0))
             .with_bit_depth(BitDepth::Eight)
             .with_chroma(ChromaSubsampling::Yuv420)
-            // Plain `vp9` — документированный YouTube SDR baseline. Typed SDR
+            // Plain `vp9` — документированный YtDlp SDR baseline. Typed SDR
             // fallback нужен selection boundary, чтобы manifest `SDR` не
             // превращался в ложный `UnknownDynamicRange`.
             .with_color(VideoColorMetadata::sdr_bt709_limited());
@@ -705,10 +619,7 @@ fn vp9_requirement_from_codec_tag(
 }
 
 /// Строит AV1 requirement из `av01.*` codec tag.
-fn av1_requirement_from_codec_tag(
-    codec_tag: &str,
-    format: &YtDlpFormat,
-) -> YoutubeVideoRequirement {
+fn av1_requirement_from_codec_tag(codec_tag: &str, format: &YtDlpFormat) -> YtDlpVideoRequirement {
     let mut requirement = VideoDecodeRequirement::new(VideoCodec::Av1);
     let mut missing_fields = Vec::new();
     let codec_parts = codec_tag.split('.').collect::<Vec<_>>();
@@ -779,10 +690,7 @@ fn av1_requirement_from_codec_tag(
 }
 
 /// Строит H.264 requirement из AVC `avc1.PPCCLL`/`avc3.PPCCLL` codec tag.
-fn h264_requirement_from_codec_tag(
-    codec_tag: &str,
-    format: &YtDlpFormat,
-) -> YoutubeVideoRequirement {
+fn h264_requirement_from_codec_tag(codec_tag: &str, format: &YtDlpFormat) -> YtDlpVideoRequirement {
     let mut requirement = VideoDecodeRequirement::new(VideoCodec::H264);
 
     if codec_tag == "h264" || codec_tag == "h.264" {
@@ -848,9 +756,9 @@ fn apply_common_video_fields(
 fn ready_or_insufficient(
     requirement: VideoDecodeRequirement,
     missing_fields: Vec<&'static str>,
-) -> YoutubeVideoRequirement {
+) -> YtDlpVideoRequirement {
     if missing_fields.is_empty() {
-        return YoutubeVideoRequirement::Ready(requirement);
+        return YtDlpVideoRequirement::Ready(requirement);
     }
 
     insufficient_requirement(
@@ -866,8 +774,8 @@ fn ready_or_insufficient(
 fn insufficient_requirement(
     reason: impl Into<String>,
     partial_requirement: Option<VideoDecodeRequirement>,
-) -> YoutubeVideoRequirement {
-    YoutubeVideoRequirement::Insufficient(YoutubeInsufficientVideoMetadata {
+) -> YtDlpVideoRequirement {
+    YtDlpVideoRequirement::Insufficient(YtDlpInsufficientVideoMetadata {
         reason: reason.into(),
         partial_requirement,
     })
@@ -1096,12 +1004,12 @@ fn parse_avcoti(avcoti: &str) -> Option<(u8, u8)> {
 
 /// Преобразует JSON format в runtime stream descriptor.
 fn direct_stream_from_format(
-    kind: YoutubeStreamKind,
+    kind: YtDlpStreamKind,
     format: YtDlpFormat,
     service_media_id: Option<String>,
     media_duration: Option<Duration>,
     live: bool,
-) -> YoutubeDirectStreamDescriptor {
+) -> Result<YtDlpDirectStreamDescriptor> {
     let size = format
         .filesize
         .or(format.filesize_approx)
@@ -1133,9 +1041,13 @@ fn direct_stream_from_format(
         .map(|(name, value)| HttpHeader::new(name, value))
         .collect();
 
-    YoutubeDirectStreamDescriptor {
+    let direct_url = format.url.ok_or(YtDlpServiceError::NoCompatibleStreams {
+        reason: YtDlpCompatibilityRejection::MissingDirectHttpUrl,
+    })?;
+
+    Ok(YtDlpDirectStreamDescriptor {
         kind,
-        url: crate::YoutubeDirectStreamUrl::from_secret_for_open(format.url),
+        url: crate::YtDlpDirectStreamUrl::from_secret_for_open(direct_url),
         headers,
         format_id: format.format_id,
         service_media_id,
@@ -1143,7 +1055,7 @@ fn direct_stream_from_format(
         duration,
         live,
         description,
-    }
+    })
 }
 
 /// Конвертирует секунды yt-dlp в `Duration`, отбрасывая некорректные значения.
@@ -1166,8 +1078,8 @@ fn metadata_is_live(metadata: &YtDlpMetadata) -> bool {
 }
 
 /// Формирует описание выбранного streaming формата.
-pub(crate) fn build_streaming_description(direct_streams: &YoutubeDirectStreams) -> String {
-    let title = direct_streams.title.as_deref().unwrap_or("YouTube video");
+pub(crate) fn build_streaming_description(direct_streams: &YtDlpDirectStreams) -> String {
+    let title = direct_streams.title.as_deref().unwrap_or("YtDlp video");
     let video_id = direct_streams
         .service_media_id
         .as_deref()
@@ -1210,7 +1122,9 @@ mod tests {
 
     fn video_format(format_id: &str, vcodec: &str) -> YtDlpFormat {
         YtDlpFormat {
-            url: format!("http://media.test/{format_id}.video"),
+            url: Some(format!("http://media.test/{format_id}.video")),
+            protocol: Some("http".to_string()),
+            has_drm: Some(false),
             format_id: Some(format_id.to_string()),
             ext: Some("webm".to_string()),
             vcodec: Some(vcodec.to_string()),
@@ -1231,7 +1145,9 @@ mod tests {
 
     fn audio_format(format_id: &str, abr: f64) -> YtDlpFormat {
         YtDlpFormat {
-            url: format!("http://media.test/{format_id}.audio"),
+            url: Some(format!("http://media.test/{format_id}.audio")),
+            protocol: Some("http".to_string()),
+            has_drm: Some(false),
             format_id: Some(format_id.to_string()),
             ext: Some("webm".to_string()),
             vcodec: Some("none".to_string()),
@@ -1252,6 +1168,9 @@ mod tests {
 
     fn metadata_with_formats(formats: Vec<YtDlpFormat>) -> YtDlpMetadata {
         YtDlpMetadata {
+            entry_type: Some("video".to_string()),
+            entries: None,
+            has_drm: Some(false),
             title: Some("sample".to_string()),
             id: Some("abc123".to_string()),
             format_id: None,
@@ -1269,7 +1188,7 @@ mod tests {
     }
 
     fn ready_requirement(format: &YtDlpFormat) -> VideoDecodeRequirement {
-        let YoutubeVideoRequirement::Ready(requirement) = video_requirement_from_format(format)
+        let YtDlpVideoRequirement::Ready(requirement) = video_requirement_from_format(format)
         else {
             panic!("format должен дать ready requirement");
         };
@@ -1338,12 +1257,12 @@ mod tests {
     }
 
     #[test]
-    fn plain_vp9_resolves_to_youtube_sdr_profile0_baseline() {
+    fn plain_vp9_resolves_to_yt_dlp_sdr_profile0_baseline() {
         let format = video_format("248", "vp9");
 
         let requirement = ready_requirement(&format);
 
-        // YouTube отдаёт SDR VP9 голым тегом `vp9`; адаптер раскрывает его в
+        // YtDlp отдаёт SDR VP9 голым тегом `vp9`; адаптер раскрывает его в
         // базовый production-профиль Profile 0 / 8-bit / 4:2:0 SDR, иначе
         // capability-aware startup path не получил бы ни одного ready candidate.
         assert_eq!(requirement.codec, VideoCodec::Vp9);
@@ -1370,10 +1289,10 @@ mod tests {
 
         let requirement = video_requirement_from_format(&format);
 
-        let YoutubeVideoRequirement::Ready(requirement) = requirement else {
+        let YtDlpVideoRequirement::Ready(requirement) = requirement else {
             panic!("codec metadata должна сохраниться для typed selection rejection");
         };
-        assert_eq!(youtube_dynamic_range(&format), YoutubeDynamicRange::Hdr);
+        assert_eq!(yt_dlp_dynamic_range(&format), YtDlpDynamicRange::Hdr);
         assert_eq!(
             requirement.color,
             Some(VideoColorMetadata::sdr_bt709_limited())
@@ -1395,7 +1314,8 @@ mod tests {
 
         assert_eq!(candidates.candidates.len(), 1);
         let candidate = &candidates.candidates[0];
-        assert_eq!(candidate.stream_id, "abc123:v315:a251");
+        assert!(candidate.stream_id.starts_with("candidate-"));
+        assert!(!candidate.stream_id.contains("abc123"));
         assert_eq!(candidate.format_id.as_deref(), Some("315+251"));
         assert_eq!(candidate.video.format_id.as_deref(), Some("315"));
         assert_eq!(
@@ -1412,7 +1332,7 @@ mod tests {
             Some("vp09.02.10.10.01.09.16.09.00")
         );
         assert_eq!(candidate.acodec.as_deref(), Some("opus"));
-        assert_eq!(candidate.dynamic_range, YoutubeDynamicRange::Hdr);
+        assert_eq!(candidate.dynamic_range, YtDlpDynamicRange::Hdr);
         let requirement = candidate
             .video_requirement
             .as_requirement()
@@ -1441,7 +1361,8 @@ mod tests {
 
         assert_eq!(candidates.candidates.len(), 1);
         let candidate = &candidates.candidates[0];
-        assert_eq!(candidate.stream_id, "abc123:v315:a251");
+        assert!(candidate.stream_id.starts_with("candidate-"));
+        assert!(!candidate.stream_id.contains("abc123"));
         assert_eq!(candidate.video.format_id.as_deref(), Some("315"));
         assert_eq!(
             candidate
@@ -1460,7 +1381,10 @@ mod tests {
         ]))
         .expect("initial candidates built");
         let selected_identity =
-            YoutubeSelectedStreamIdentity::from_candidate(&initial_candidates.candidates[0]);
+            YtDlpSelectedStreamIdentity::from_candidate(&initial_candidates.candidates[0]);
+        let identity_debug = format!("{selected_identity:?}");
+        assert!(identity_debug.contains("<redacted>"));
+        assert!(!identity_debug.contains("315+251"));
         let mut refreshed_candidates = initial_candidates.clone();
         refreshed_candidates.candidates[0].stream_id =
             "fresh-manifest-renumbered:v315:a251".to_string();

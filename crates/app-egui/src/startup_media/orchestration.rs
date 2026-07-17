@@ -14,7 +14,7 @@ use crate::playlist_runtime::StartupRestoreTarget;
 use crate::state::PreparedSingleMediaOpen;
 use crate::url_service_adapter::{StartupUrlClassification, classify_playlist_url};
 
-use super::{PreparedYoutubeStartupMedia, StartupMediaController};
+use super::{PreparedYtDlpStartupMedia, StartupMediaController};
 
 /// Чья подготовка сейчас владеет единственным startup media slot-ом.
 pub(super) enum StartupMediaTarget {
@@ -56,9 +56,9 @@ mod pending_work_tests {
 /// Prepared ownership сохраняется до trusted allocator decision.
 pub(super) enum PreparedStartupMedia {
     Local(Box<PreparedLocalOpenResult>),
-    YouTube {
-        source_locator: service_youtube::YoutubeMediaLocator,
-        prepared: Box<PreparedYoutubeStartupMedia>,
+    YtDlp {
+        source_locator: service_ytdlp::YtDlpMediaLocator,
+        prepared: Box<PreparedYtDlpStartupMedia>,
     },
     Direct {
         source_locator: service_direct_media::DirectMediaUrl,
@@ -187,7 +187,7 @@ impl StartupMediaController {
 
         if gate_open
             && structurally_superseded
-            && self.youtube_startup_job.is_none()
+            && self.yt_dlp_startup_job.is_none()
             && self.direct_media_startup_job.is_none()
             && self.local_startup_job.is_none()
         {
@@ -204,7 +204,7 @@ impl StartupMediaController {
 
         if gate_open
             && self.orchestration.prepared.is_none()
-            && self.youtube_startup_job.is_none()
+            && self.yt_dlp_startup_job.is_none()
             && self.direct_media_startup_job.is_none()
             && self.local_startup_job.is_none()
             && (!self.orchestration.cli_requested || self.orchestration.cli_failed)
@@ -255,15 +255,15 @@ impl StartupMediaController {
             }
         }
 
-        if let Some(job) = self.youtube_startup_job.as_mut()
+        if let Some(job) = self.yt_dlp_startup_job.as_mut()
             && let Some(result) = job.try_take_result()
         {
             let source_locator = job.source_locator.clone();
-            self.youtube_startup_job = None;
+            self.yt_dlp_startup_job = None;
             changed = true;
             match result {
                 Ok(prepared) => self.hold_prepared(
-                    PreparedStartupMedia::YouTube {
+                    PreparedStartupMedia::YtDlp {
                         source_locator,
                         prepared: Box::new(prepared),
                     },
@@ -426,7 +426,7 @@ impl StartupMediaController {
                     return;
                 };
                 service_locator.start(self, app_state, &config, &capabilities);
-                if self.youtube_startup_job.is_some() || self.direct_media_startup_job.is_some() {
+                if self.yt_dlp_startup_job.is_some() || self.direct_media_startup_job.is_some() {
                     return;
                 }
                 let failed = self.orchestration.target.take();
@@ -530,12 +530,12 @@ impl StartupMediaController {
                         });
                     })
             }
-            PreparedStartupMedia::YouTube {
+            PreparedStartupMedia::YtDlp {
                 source_locator,
                 prepared,
             } => {
                 let prepared = *prepared;
-                let source = ActiveMediaSource::YouTubeUrl {
+                let source = ActiveMediaSource::YtDlpUrl {
                     source_locator: source_locator.clone(),
                     selected_stream_identity: prepared.selected_stream_identity,
                 };

@@ -1,4 +1,4 @@
-//! Bounded process-lifetime enrichment YouTube metadata без UI/network ownership в domain.
+//! Bounded process-lifetime enrichment YtDlp metadata без UI/network ownership в domain.
 
 use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroUsize;
@@ -10,55 +10,55 @@ use bounded_work_executor::{
     TaskPoll,
 };
 use playlist_core::{PlaylistItemId, PlaylistLocator, PlaylistMetadataPatch};
-use rustiplayer_config::YoutubeConfig;
+use rustiplayer_config::YtDlpConfig;
 
 use crate::app_wake::AppWakePort;
 use crate::playlist_runtime::controller::PlaylistController;
 
 /// Два worker-а ограничивают число одновременных внешних `yt-dlp` process-ов.
-const YOUTUBE_METADATA_WORKER_THREADS: NonZeroUsize = NonZeroUsize::new(2).unwrap();
+const YT_DLP_METADATA_WORKER_THREADS: NonZeroUsize = NonZeroUsize::new(2).unwrap();
 
 /// Очередь executor-а ограничивает уже принятые, но ещё не запущенные process-задачи.
-const YOUTUBE_METADATA_EXECUTOR_QUEUE_CAPACITY: NonZeroUsize = NonZeroUsize::new(16).unwrap();
+const YT_DLP_METADATA_EXECUTOR_QUEUE_CAPACITY: NonZeroUsize = NonZeroUsize::new(16).unwrap();
 
 /// Общий предел running + executor-queued задач, для которых owner хранит handles.
-const YOUTUBE_METADATA_IN_FLIGHT_LIMIT: usize =
-    YOUTUBE_METADATA_WORKER_THREADS.get() + YOUTUBE_METADATA_EXECUTOR_QUEUE_CAPACITY.get();
+const YT_DLP_METADATA_IN_FLIGHT_LIMIT: usize =
+    YT_DLP_METADATA_WORKER_THREADS.get() + YT_DLP_METADATA_EXECUTOR_QUEUE_CAPACITY.get();
 
 /// Pending demands ограничены независимо от потенциального размера playlist-а.
-const YOUTUBE_METADATA_PENDING_LIMIT: usize = 256;
+const YT_DLP_METADATA_PENDING_LIMIT: usize = 256;
 
 /// Временная service/network ошибка повторяется, но не создаёт process каждый frame.
-const YOUTUBE_METADATA_RETRY_DELAY: Duration = Duration::from_secs(30);
+const YT_DLP_METADATA_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 /// Один exact playlist item, locator и process policy для фонового enrichment-а.
 #[derive(Clone)]
-pub(in crate::playlist_runtime) struct YoutubeMetadataDemand {
+pub(in crate::playlist_runtime) struct YtDlpMetadataDemand {
     item_id: PlaylistItemId,
     expected_locator: PlaylistLocator,
-    youtube_locator: service_youtube::YoutubeMediaLocator,
-    youtube_config: YoutubeConfig,
+    yt_dlp_locator: service_ytdlp::YtDlpMediaLocator,
+    yt_dlp_config: YtDlpConfig,
 }
 
-impl YoutubeMetadataDemand {
+impl YtDlpMetadataDemand {
     pub(in crate::playlist_runtime) fn new(
         item_id: PlaylistItemId,
         expected_locator: PlaylistLocator,
-        youtube_locator: service_youtube::YoutubeMediaLocator,
-        youtube_config: YoutubeConfig,
+        yt_dlp_locator: service_ytdlp::YtDlpMediaLocator,
+        yt_dlp_config: YtDlpConfig,
     ) -> Self {
         Self {
             item_id,
             expected_locator,
-            youtube_locator,
-            youtube_config,
+            yt_dlp_locator,
+            yt_dlp_config,
         }
     }
 }
 
 /// Bounded admission result не смешивает coalescing, backpressure и disabled policy.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(in crate::playlist_runtime) struct YoutubeMetadataRequestOutcome {
+pub(in crate::playlist_runtime) struct YtDlpMetadataRequestOutcome {
     pub(super) accepted: usize,
     pub(super) coalesced: usize,
     pub(super) dropped_by_bound: usize,
@@ -68,7 +68,7 @@ pub(in crate::playlist_runtime) struct YoutubeMetadataRequestOutcome {
 
 /// Нормализованный task result без secret-bearing service diagnostics.
 #[derive(Debug)]
-pub(in crate::playlist_runtime) enum YoutubeMetadataTaskOutcome {
+pub(in crate::playlist_runtime) enum YtDlpMetadataTaskOutcome {
     Resolved {
         title: Option<String>,
         duration: Option<Duration>,
@@ -78,88 +78,84 @@ pub(in crate::playlist_runtime) enum YoutubeMetadataTaskOutcome {
 }
 
 /// Injectable service boundary позволяет тестам не запускать сеть и `yt-dlp`.
-pub(in crate::playlist_runtime) trait YoutubeMetadataResolver:
+pub(in crate::playlist_runtime) trait YtDlpMetadataResolver:
     Send + Sync
 {
     fn resolve(
         &self,
-        locator: &service_youtube::YoutubeMediaLocator,
-        youtube_config: &YoutubeConfig,
+        locator: &service_ytdlp::YtDlpMediaLocator,
+        yt_dlp_config: &YtDlpConfig,
         cancellation: &CancellationToken,
-    ) -> YoutubeMetadataTaskOutcome;
+    ) -> YtDlpMetadataTaskOutcome;
 }
 
-struct ServiceYoutubeMetadataResolver;
+struct ServiceYtDlpMetadataResolver;
 
-impl YoutubeMetadataResolver for ServiceYoutubeMetadataResolver {
+impl YtDlpMetadataResolver for ServiceYtDlpMetadataResolver {
     fn resolve(
         &self,
-        locator: &service_youtube::YoutubeMediaLocator,
-        youtube_config: &YoutubeConfig,
+        locator: &service_ytdlp::YtDlpMediaLocator,
+        yt_dlp_config: &YtDlpConfig,
         cancellation: &CancellationToken,
-    ) -> YoutubeMetadataTaskOutcome {
+    ) -> YtDlpMetadataTaskOutcome {
         if cancellation.is_cancelled() {
-            return YoutubeMetadataTaskOutcome::Cancelled;
+            return YtDlpMetadataTaskOutcome::Cancelled;
         }
-        let metadata = service_youtube::resolve_youtube_playlist_metadata_with_config(
+        let metadata = service_ytdlp::resolve_yt_dlp_playlist_metadata_with_config(
             locator,
-            youtube_config,
+            yt_dlp_config,
             || cancellation.is_cancelled(),
         );
         match metadata {
-            Ok(metadata) if !cancellation.is_cancelled() => YoutubeMetadataTaskOutcome::Resolved {
+            Ok(metadata) if !cancellation.is_cancelled() => YtDlpMetadataTaskOutcome::Resolved {
                 title: metadata.title().map(ToOwned::to_owned),
                 duration: metadata.duration(),
             },
-            Ok(_) => YoutubeMetadataTaskOutcome::Cancelled,
-            Err(_) if cancellation.is_cancelled() => YoutubeMetadataTaskOutcome::Cancelled,
-            Err(_) => YoutubeMetadataTaskOutcome::Failed,
+            Ok(_) => YtDlpMetadataTaskOutcome::Cancelled,
+            Err(_) if cancellation.is_cancelled() => YtDlpMetadataTaskOutcome::Cancelled,
+            Err(_) => YtDlpMetadataTaskOutcome::Failed,
         }
     }
 }
 
-struct ActiveYoutubeMetadataJob {
-    demand: YoutubeMetadataDemand,
-    handle: TaskHandle<YoutubeMetadataTaskOutcome>,
+struct ActiveYtDlpMetadataJob {
+    demand: YtDlpMetadataDemand,
+    handle: TaskHandle<YtDlpMetadataTaskOutcome>,
 }
 
-struct FailedYoutubeMetadataAttempt {
+struct FailedYtDlpMetadataAttempt {
     expected_locator: PlaylistLocator,
-    youtube_config: YoutubeConfig,
+    yt_dlp_config: YtDlpConfig,
     failed_at: Instant,
 }
 
 /// Process-lifetime owner admission, cancellation, retry и exact cache patch-а.
-pub(super) struct YoutubeMetadataOwner {
+pub(super) struct YtDlpMetadataOwner {
     executor: Option<BoundedExecutor>,
-    resolver: Arc<dyn YoutubeMetadataResolver>,
+    resolver: Arc<dyn YtDlpMetadataResolver>,
     wake_port: AppWakePort,
-    pending: VecDeque<YoutubeMetadataDemand>,
-    active: Vec<ActiveYoutubeMetadataJob>,
+    pending: VecDeque<YtDlpMetadataDemand>,
+    active: Vec<ActiveYtDlpMetadataJob>,
     resolved: HashMap<PlaylistItemId, PlaylistLocator>,
-    failed: HashMap<PlaylistItemId, FailedYoutubeMetadataAttempt>,
+    failed: HashMap<PlaylistItemId, FailedYtDlpMetadataAttempt>,
     admission_open: bool,
 }
 
-impl YoutubeMetadataOwner {
+impl YtDlpMetadataOwner {
     pub(super) fn new(wake_port: AppWakePort) -> Self {
         let executor = BoundedExecutor::start(ExecutorConfig::new(
-            YOUTUBE_METADATA_WORKER_THREADS,
-            YOUTUBE_METADATA_EXECUTOR_QUEUE_CAPACITY,
-            "playlist-youtube-metadata",
+            YT_DLP_METADATA_WORKER_THREADS,
+            YT_DLP_METADATA_EXECUTOR_QUEUE_CAPACITY,
+            "playlist-yt_dlp-metadata",
         ))
         .ok();
-        Self::with_dependencies(
-            wake_port,
-            executor,
-            Arc::new(ServiceYoutubeMetadataResolver),
-        )
+        Self::with_dependencies(wake_port, executor, Arc::new(ServiceYtDlpMetadataResolver))
     }
 
     fn with_dependencies(
         wake_port: AppWakePort,
         executor: Option<BoundedExecutor>,
-        resolver: Arc<dyn YoutubeMetadataResolver>,
+        resolver: Arc<dyn YtDlpMetadataResolver>,
     ) -> Self {
         Self {
             executor,
@@ -176,12 +172,12 @@ impl YoutubeMetadataOwner {
     /// Принимает demands без blocking I/O и coalesce-ит exact Item ID.
     pub(super) fn request(
         &mut self,
-        demands: Vec<YoutubeMetadataDemand>,
+        demands: Vec<YtDlpMetadataDemand>,
         now: Instant,
-    ) -> YoutubeMetadataRequestOutcome {
-        let mut outcome = YoutubeMetadataRequestOutcome::default();
+    ) -> YtDlpMetadataRequestOutcome {
+        let mut outcome = YtDlpMetadataRequestOutcome::default();
         for demand in demands {
-            if !demand.youtube_config.enabled {
+            if !demand.yt_dlp_config.enabled {
                 outcome.disabled_by_config += 1;
                 continue;
             }
@@ -193,7 +189,7 @@ impl YoutubeMetadataOwner {
                 outcome.coalesced += 1;
                 continue;
             }
-            if self.pending.len() == YOUTUBE_METADATA_PENDING_LIMIT {
+            if self.pending.len() == YT_DLP_METADATA_PENDING_LIMIT {
                 outcome.dropped_by_bound += 1;
                 continue;
             }
@@ -213,24 +209,24 @@ impl YoutubeMetadataOwner {
         for active_job in std::mem::take(&mut self.active) {
             match active_job.handle.try_take() {
                 TaskPoll::Pending => still_active.push(active_job),
-                TaskPoll::Completed(YoutubeMetadataTaskOutcome::Resolved { title, duration }) => {
+                TaskPoll::Completed(YtDlpMetadataTaskOutcome::Resolved { title, duration }) => {
                     match apply_resolved_metadata(controller, &active_job.demand, title, duration) {
-                        YoutubeMetadataApplyOutcome::Applied => {
+                        YtDlpMetadataApplyOutcome::Applied => {
                             self.mark_resolved(&active_job.demand);
                             visible_change = true;
                         }
-                        YoutubeMetadataApplyOutcome::NoChange => {
+                        YtDlpMetadataApplyOutcome::NoChange => {
                             self.mark_resolved(&active_job.demand);
                         }
-                        YoutubeMetadataApplyOutcome::Stale => {}
-                        YoutubeMetadataApplyOutcome::Rejected => {
+                        YtDlpMetadataApplyOutcome::Stale => {}
+                        YtDlpMetadataApplyOutcome::Rejected => {
                             self.mark_failed(active_job.demand, now);
                         }
                     }
                 }
-                TaskPoll::Completed(YoutubeMetadataTaskOutcome::Cancelled)
+                TaskPoll::Completed(YtDlpMetadataTaskOutcome::Cancelled)
                 | TaskPoll::Failed(TaskFailure::CancelledBeforeStart) => {}
-                TaskPoll::Completed(YoutubeMetadataTaskOutcome::Failed)
+                TaskPoll::Completed(YtDlpMetadataTaskOutcome::Failed)
                 | TaskPoll::Failed(TaskFailure::Panicked | TaskFailure::ExecutorStopped) => {
                     self.mark_failed(active_job.demand, now);
                 }
@@ -262,12 +258,12 @@ impl YoutubeMetadataOwner {
     }
 
     #[cfg(test)]
-    pub(super) fn replace_resolver_for_test(&mut self, resolver: Arc<dyn YoutubeMetadataResolver>) {
+    pub(super) fn replace_resolver_for_test(&mut self, resolver: Arc<dyn YtDlpMetadataResolver>) {
         self.cancel_for_queue_replacement();
         self.resolver = resolver;
     }
 
-    fn is_coalesced(&self, demand: &YoutubeMetadataDemand, now: Instant) -> bool {
+    fn is_coalesced(&self, demand: &YtDlpMetadataDemand, now: Instant) -> bool {
         if self
             .resolved
             .get(&demand.item_id)
@@ -285,8 +281,8 @@ impl YoutubeMetadataOwner {
         }
         self.failed.get(&demand.item_id).is_some_and(|failed| {
             failed.expected_locator == demand.expected_locator
-                && failed.youtube_config == demand.youtube_config
-                && now.saturating_duration_since(failed.failed_at) < YOUTUBE_METADATA_RETRY_DELAY
+                && failed.yt_dlp_config == demand.yt_dlp_config
+                && now.saturating_duration_since(failed.failed_at) < YT_DLP_METADATA_RETRY_DELAY
         })
     }
 
@@ -294,23 +290,21 @@ impl YoutubeMetadataOwner {
         let Some(executor) = self.executor.as_ref() else {
             return;
         };
-        while self.active.len() < YOUTUBE_METADATA_IN_FLIGHT_LIMIT {
+        while self.active.len() < YT_DLP_METADATA_IN_FLIGHT_LIMIT {
             let Some(demand) = self.pending.pop_front() else {
                 break;
             };
             let resolver = Arc::clone(&self.resolver);
-            let locator = demand.youtube_locator.clone();
-            let youtube_config = demand.youtube_config.clone();
+            let locator = demand.yt_dlp_locator.clone();
+            let yt_dlp_config = demand.yt_dlp_config.clone();
             let wake_port = self.wake_port.clone();
             match executor.try_submit_with_terminal_notifier(
-                move |cancellation| resolver.resolve(&locator, &youtube_config, &cancellation),
+                move |cancellation| resolver.resolve(&locator, &yt_dlp_config, &cancellation),
                 move || {
                     let _wake_delivery = wake_port.request_wake();
                 },
             ) {
-                Ok(handle) => self
-                    .active
-                    .push(ActiveYoutubeMetadataJob { demand, handle }),
+                Ok(handle) => self.active.push(ActiveYtDlpMetadataJob { demand, handle }),
                 Err(SubmitError::QueueFull) => {
                     self.pending.push_front(demand);
                     break;
@@ -337,18 +331,18 @@ impl YoutubeMetadataOwner {
         });
     }
 
-    fn mark_resolved(&mut self, demand: &YoutubeMetadataDemand) {
+    fn mark_resolved(&mut self, demand: &YtDlpMetadataDemand) {
         self.failed.remove(&demand.item_id);
         self.resolved
             .insert(demand.item_id, demand.expected_locator.clone());
     }
 
-    fn mark_failed(&mut self, demand: YoutubeMetadataDemand, failed_at: Instant) {
+    fn mark_failed(&mut self, demand: YtDlpMetadataDemand, failed_at: Instant) {
         self.failed.insert(
             demand.item_id,
-            FailedYoutubeMetadataAttempt {
+            FailedYtDlpMetadataAttempt {
                 expected_locator: demand.expected_locator,
-                youtube_config: demand.youtube_config,
+                yt_dlp_config: demand.yt_dlp_config,
                 failed_at,
             },
         );
@@ -356,7 +350,7 @@ impl YoutubeMetadataOwner {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum YoutubeMetadataApplyOutcome {
+enum YtDlpMetadataApplyOutcome {
     Applied,
     NoChange,
     Stale,
@@ -366,15 +360,15 @@ enum YoutubeMetadataApplyOutcome {
 /// Merge выполняется поверх последнего cache snapshot-а, поэтому playback metadata не стирается.
 fn apply_resolved_metadata(
     controller: &mut PlaylistController,
-    demand: &YoutubeMetadataDemand,
+    demand: &YtDlpMetadataDemand,
     resolved_title: Option<String>,
     resolved_duration: Option<Duration>,
-) -> YoutubeMetadataApplyOutcome {
+) -> YtDlpMetadataApplyOutcome {
     let Some(item) = controller.queue().item(demand.item_id) else {
-        return YoutubeMetadataApplyOutcome::Stale;
+        return YtDlpMetadataApplyOutcome::Stale;
     };
     if item.locator() != &demand.expected_locator {
-        return YoutubeMetadataApplyOutcome::Stale;
+        return YtDlpMetadataApplyOutcome::Stale;
     }
 
     let current_metadata = item.cached_metadata();
@@ -393,13 +387,13 @@ fn apply_resolved_metadata(
         merged_metadata,
     );
     match controller.apply_metadata_patches(vec![patch]) {
-        Ok(outcome) if outcome.domain.changed_metadata() => YoutubeMetadataApplyOutcome::Applied,
-        Ok(_) => YoutubeMetadataApplyOutcome::NoChange,
-        Err(_) => YoutubeMetadataApplyOutcome::Rejected,
+        Ok(outcome) if outcome.domain.changed_metadata() => YtDlpMetadataApplyOutcome::Applied,
+        Ok(_) => YtDlpMetadataApplyOutcome::NoChange,
+        Err(_) => YtDlpMetadataApplyOutcome::Rejected,
     }
 }
 
-fn demand_still_current(controller: &PlaylistController, demand: &YoutubeMetadataDemand) -> bool {
+fn demand_still_current(controller: &PlaylistController, demand: &YtDlpMetadataDemand) -> bool {
     controller
         .queue()
         .item(demand.item_id)

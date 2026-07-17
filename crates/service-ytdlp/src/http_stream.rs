@@ -1,4 +1,4 @@
-//! Потоковый HTTP transport для playback-only YouTube sources.
+//! Потоковый HTTP transport для playback-only YtDlp sources.
 
 use std::io::Read;
 use std::thread;
@@ -8,7 +8,7 @@ use bytes::Bytes;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use source_core::{HttpHeader, SourceRuntimeConfig};
 
-use crate::YoutubeDirectStreamDescriptor;
+use crate::YtDlpDirectStreamDescriptor;
 
 /// Размер блока между HTTP reader-ом и streaming demux source.
 const HTTP_READ_CHUNK_SIZE: usize = 64 * 1024;
@@ -16,7 +16,7 @@ const HTTP_READ_CHUNK_SIZE: usize = 64 * 1024;
 /// Запускает transport worker для одного direct media URL.
 pub(crate) fn spawn_http_fetcher(
     thread_name: &'static str,
-    stream: YoutubeDirectStreamDescriptor,
+    stream: YtDlpDirectStreamDescriptor,
     source_config: SourceRuntimeConfig,
     writer: symphonia_demux::StreamingByteWriter,
 ) -> Result<()> {
@@ -40,7 +40,7 @@ pub(crate) fn spawn_http_fetcher(
 
 /// Качает response body и сохраняет прежнюю EOF/error policy writer-а.
 fn fetch_stream_to_writer(
-    stream: &YoutubeDirectStreamDescriptor,
+    stream: &YtDlpDirectStreamDescriptor,
     source_config: &SourceRuntimeConfig,
     writer: &symphonia_demux::StreamingByteWriter,
 ) -> Result<()> {
@@ -59,7 +59,7 @@ fn fetch_stream_to_writer(
         .context("HTTP запрос direct media stream не удался")?
         .error_for_status()
         .map_err(reqwest::Error::without_url)
-        .context("YouTube direct media stream вернул HTTP ошибку")?;
+        .context("YtDlp direct media stream вернул HTTP ошибку")?;
     let mut read_buffer = vec![0u8; HTTP_READ_CHUNK_SIZE];
 
     loop {

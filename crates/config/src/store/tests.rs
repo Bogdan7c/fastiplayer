@@ -5,7 +5,7 @@ use super::*;
 use crate::{
     CURRENT_SCHEMA_VERSION, FrameServerConfig, FrameServerLiveScrubDecodeModeConfig,
     HdrToSdrOperatorConfig, LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3, PausedCommitBehavior,
-    ToneMappingMode, VideoBackendPreference, YoutubeHdrSelection, validation,
+    ToneMappingMode, VideoBackendPreference, YtDlpHdrSelection, validation,
 };
 
 /// Проверяет, что default schema остаётся самосогласованной.
@@ -49,7 +49,7 @@ fn legacy_v5_without_playlist_uses_defaults_without_startup_rewrite() {
         fs::read_to_string(&config_path).expect("legacy file remains readable"),
         legacy_text
     );
-    assert_eq!(CURRENT_SCHEMA_VERSION, 5);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 6);
 }
 
 #[test]
@@ -98,7 +98,7 @@ fn playlist_section_rejects_unknown_fields_and_roundtrips_stable_enum_ids() {
 
 /// Старый schema v5 без нового ключа сохраняет прежнее SDR-only поведение.
 #[test]
-fn schema_v5_without_youtube_hdr_selection_defaults_to_sdr_only() {
+fn schema_v5_without_yt_dlp_hdr_selection_defaults_to_sdr_only() {
     let temp_dir = tempfile::tempdir().expect("temp dir created");
     let config_path = temp_dir.path().join("config.toml");
     fs::write(
@@ -117,18 +117,82 @@ resolve_timeout_ms = 30000
     let loaded = load_from_path(&config_path).expect("old schema v5 config loads");
 
     assert_eq!(
-        loaded.config.youtube.hdr_selection,
-        YoutubeHdrSelection::SdrOnly
+        loaded.config.yt_dlp.hdr_selection,
+        YtDlpHdrSelection::SdrOnly
     );
-    assert_eq!(loaded.config.schema_version, 5);
+    assert_eq!(loaded.config.schema_version, 6);
+}
+
+/// Все поддерживаемые legacy-схемы переименовывают `[youtube]` без потери значений.
+#[test]
+fn legacy_v2_through_v5_migrate_youtube_section_to_yt_dlp() {
+    for legacy_schema_version in 2..=5 {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+schema_version = {legacy_schema_version}
+
+[youtube]
+enabled = false
+prefer_account_session = true
+hdr_selection = "prefer_hdr"
+resolve_timeout_ms = 4321
+"#
+            ),
+        )
+        .expect("legacy yt-dlp config written");
+
+        let loaded = load_from_path(&config_path).expect("legacy yt-dlp config loads");
+
+        assert_eq!(loaded.config.schema_version, 6);
+        assert!(!loaded.config.yt_dlp.enabled);
+        assert_eq!(
+            loaded.config.yt_dlp.hdr_selection,
+            YtDlpHdrSelection::PreferHdrWhenAvailable
+        );
+        assert_eq!(loaded.config.yt_dlp.resolve_timeout_ms, 4321);
+        let generated = loaded
+            .config
+            .to_pretty_toml()
+            .expect("migrated config serializes");
+        assert!(generated.contains("[yt_dlp]"));
+        assert!(!generated.contains("[youtube]"));
+        assert!(!generated.contains("prefer_account_session"));
+    }
+}
+
+/// Current v6 не принимает старую секцию и удалённый placeholder.
+#[test]
+fn schema_v6_strictly_rejects_legacy_youtube_section_and_placeholder() {
+    for legacy_fragment in [
+        "[youtube]\nenabled = true\n",
+        "[yt_dlp]\nprefer_account_session = true\n",
+    ] {
+        let temp_dir = tempfile::tempdir().expect("temp dir created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            format!("schema_version = 6\n\n{legacy_fragment}"),
+        )
+        .expect("strict v6 fixture written");
+
+        let error = load_from_path(&config_path).expect_err("legacy v6 key rejected");
+        assert!(
+            error.to_string().contains("youtube")
+                || error.to_string().contains("prefer_account_session")
+        );
+    }
 }
 
 /// Оба стабильных id читаются и записываются без изменения schema version.
 #[test]
-fn youtube_hdr_selection_stable_ids_roundtrip() {
+fn yt_dlp_hdr_selection_stable_ids_roundtrip() {
     for (stable_id, expected_selection) in [
-        ("sdr_only", YoutubeHdrSelection::SdrOnly),
-        ("prefer_hdr", YoutubeHdrSelection::PreferHdrWhenAvailable),
+        ("sdr_only", YtDlpHdrSelection::SdrOnly),
+        ("prefer_hdr", YtDlpHdrSelection::PreferHdrWhenAvailable),
     ] {
         let temp_dir = tempfile::tempdir().expect("temp dir created");
         let config_path = temp_dir.path().join("config.toml");
@@ -136,9 +200,9 @@ fn youtube_hdr_selection_stable_ids_roundtrip() {
             &config_path,
             format!(
                 r#"
-schema_version = 5
+schema_version = 6
 
-[youtube]
+[yt_dlp]
 hdr_selection = "{stable_id}"
 "#
             ),
@@ -146,14 +210,14 @@ hdr_selection = "{stable_id}"
         .expect("HDR selection config written");
 
         let loaded = load_from_path(&config_path).expect("HDR selection config loads");
-        assert_eq!(loaded.config.youtube.hdr_selection, expected_selection);
+        assert_eq!(loaded.config.yt_dlp.hdr_selection, expected_selection);
 
         let generated = loaded
             .config
             .to_pretty_toml()
             .expect("HDR selection config serializes");
         assert!(generated.contains(&format!("hdr_selection = \"{stable_id}\"")));
-        assert!(generated.contains("schema_version = 5"));
+        assert!(generated.contains("schema_version = 6"));
     }
 }
 
@@ -220,13 +284,13 @@ fn render_hdr_to_sdr_defaults_are_valid_phase10_baseline() {
     assert_eq!(config.render.tone_mapping, ToneMappingMode::Disabled);
 }
 
-/// Проверяет defaults текущей schema version 5.
+/// Проверяет defaults текущей schema version 6.
 #[test]
-fn schema_version_5_defaults_include_seek_network_and_ui_skin() {
+fn schema_version_6_defaults_include_seek_network_and_ui_skin() {
     let config = AppConfig::default();
 
     assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 5);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 6);
     assert_eq!(config.player.seek.commit_timeout_ms, 10_000);
     assert_eq!(config.player.seek.resume_audio_min_buffer_ms, 50);
     assert_eq!(config.player.seek.resume_audio_gate_timeout_ms, 250);
@@ -261,7 +325,7 @@ fn schema_version_5_defaults_include_seek_network_and_ui_skin() {
     assert_eq!(config.network.prefetch_chunk_mb, 8);
     assert_eq!(config.network.connect_timeout_ms, 15_000);
     assert_eq!(config.network.read_timeout_ms, 15_000);
-    assert_eq!(config.youtube.resolve_timeout_ms, 30_000);
+    assert_eq!(config.yt_dlp.resolve_timeout_ms, 30_000);
     assert_eq!(config.ui.skin, "minimal");
     assert_eq!(config.ui.window.titlebar_height_px, 40);
     assert_eq!(config.ui.settings.live_preview_max_hz, 60);
@@ -370,7 +434,7 @@ fn missing_config_is_created_with_defaults() {
     assert!(loaded.config.render.color_adjustment.is_identity());
 
     let created_toml = fs::read_to_string(&loaded.path).expect("created config readable");
-    assert!(created_toml.contains("schema_version = 5"));
+    assert!(created_toml.contains("schema_version = 6"));
     assert!(created_toml.contains("[player.seek]"));
     assert!(created_toml.contains("# Настройки seek commit"));
     assert!(created_toml.contains("commit_timeout_ms = 10000"));
@@ -395,7 +459,7 @@ fn missing_config_is_created_with_defaults() {
     assert!(created_toml.contains("prefetch_initial_chunk_kb = 64"));
     assert!(created_toml.contains("# Размер ПЕРВОГО prefetch-чтения"));
     assert!(created_toml.contains("prefetch_chunk_mb = 8"));
-    assert!(created_toml.contains("# Timeout подготовки YouTube metadata"));
+    assert!(created_toml.contains("# Timeout подготовки metadata через системный yt-dlp"));
     assert!(created_toml.contains("resolve_timeout_ms = 30000"));
     assert!(!created_toml.contains("index_fingerprint_sample_kb"));
     assert!(created_toml.contains("# UI skin id"));
@@ -1278,9 +1342,9 @@ connect_timeout_ms = 0
     assert!(error.to_string().contains("network.connect_timeout_ms"));
 }
 
-/// Проверяет положительность timeout-а подготовки YouTube metadata.
+/// Проверяет положительность timeout-а подготовки YtDlp metadata.
 #[test]
-fn invalid_youtube_resolve_timeout_fails_validation() {
+fn invalid_yt_dlp_resolve_timeout_fails_validation() {
     let temp_dir = tempfile::tempdir().expect("temp dir created");
     let config_path = temp_dir.path().join("config.toml");
     fs::write(
@@ -1296,7 +1360,7 @@ resolve_timeout_ms = 0
 
     let error = load_from_path(&config_path).expect_err("invalid timeout rejected");
 
-    assert!(error.to_string().contains("youtube.resolve_timeout_ms"));
+    assert!(error.to_string().contains("yt_dlp.resolve_timeout_ms"));
 }
 
 /// Проверяет положительность seek commit timeout-а.

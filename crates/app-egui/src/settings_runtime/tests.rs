@@ -776,7 +776,7 @@ fn media_service_route_uses_live_app_owner() {
         }],
         update: RuntimeCommittedUpdate::MediaService(MediaServiceRuntimeSettingsUpdate {
             network: next_network,
-            youtube: config.youtube.clone(),
+            yt_dlp: config.yt_dlp.clone(),
         }),
     };
 
@@ -811,7 +811,7 @@ fn media_service_route_keeps_snapshot_when_owner_rebuild_fails() {
         }],
         update: RuntimeCommittedUpdate::MediaService(MediaServiceRuntimeSettingsUpdate {
             network: next_network,
-            youtube: config.youtube.clone(),
+            yt_dlp: config.yt_dlp.clone(),
         }),
     };
 

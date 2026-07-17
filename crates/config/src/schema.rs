@@ -22,6 +22,7 @@ pub use ui::*;
 pub use version::CURRENT_SCHEMA_VERSION;
 pub(crate) use version::{
     LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3, LEGACY_SCHEMA_VERSION_4,
+    LEGACY_SCHEMA_VERSION_5,
 };
 pub use video::*;
 
@@ -83,10 +84,10 @@ pub struct AppConfig {
     #[setting(nested)]
     pub network: NetworkConfig,
 
-    /// Настройки YouTube/service слоя.
+    /// Настройки YtDlp/service слоя.
     #[serde(default)]
     #[setting(nested)]
-    pub youtube: YoutubeConfig,
+    pub yt_dlp: YtDlpConfig,
 
     /// Настройки shell UI.
     #[serde(default)]
@@ -126,7 +127,7 @@ impl Default for AppConfig {
             render: RenderConfig::default(),
             audio: AudioConfig::default(),
             network: NetworkConfig::default(),
-            youtube: YoutubeConfig::default(),
+            yt_dlp: YtDlpConfig::default(),
             ui: UiConfig::default(),
         }
     }

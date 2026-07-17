@@ -72,7 +72,7 @@ fn pending_model(
 }
 
 #[test]
-fn empty_queue_gates_sensitive_direct_but_admits_local_and_youtube() {
+fn empty_queue_gates_sensitive_direct_but_admits_local_and_yt_dlp() {
     let mut local_runtime = runtime_with_queue(0);
     assert!(matches!(
         local_runtime
@@ -102,12 +102,12 @@ fn empty_queue_gates_sensitive_direct_but_admits_local_and_youtube() {
             .is_none()
     );
 
-    let mut youtube_runtime = runtime_with_queue(0);
-    let youtube = classified_url("https://www.youtube.com/watch?v=abcdefghijk");
+    let mut yt_dlp_runtime = runtime_with_queue(0);
+    let yt_dlp = classified_url("https://www.youtube.com/watch?v=abcdefghijk");
     assert!(matches!(
-        youtube_runtime
-            .admit_in_app_queue_replacement(InAppQueueReplacementIntent::service_url(youtube))
-            .expect("empty YouTube admission"),
+        yt_dlp_runtime
+            .admit_in_app_queue_replacement(InAppQueueReplacementIntent::service_url(yt_dlp))
+            .expect("empty YtDlp admission"),
         InAppQueueReplacementAdmission::StartNow(AdmittedQueueReplacementIntent::ServiceUrl(_))
     ));
 }

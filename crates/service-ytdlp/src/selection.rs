@@ -1,17 +1,17 @@
-//! Product policy выбора YouTube stream-а до открытия media bytes.
+//! Product policy выбора YtDlp stream-а до открытия media bytes.
 
 use capability_core::{SelectedVideoStream, SystemCapabilities, UnsupportedVideoRequirement};
 use codec_core::{VideoCodec, VideoDecodeRequirement};
-use rustiplayer_config::YoutubeHdrSelection;
+use rustiplayer_config::YtDlpHdrSelection;
 use thiserror::Error;
 
 use crate::{
-    YoutubeDynamicRange, YoutubeStreamCandidate, YoutubeStreamCandidates, YoutubeVideoRequirement,
+    YtDlpDynamicRange, YtDlpStreamCandidate, YtDlpStreamCandidates, YtDlpVideoRequirement,
 };
 
 /// Typed причина отказа конкретному service candidate-у.
 #[derive(Debug, Clone, PartialEq)]
-pub enum YoutubeCandidateRejectionReason {
+pub enum YtDlpCandidateRejectionReason {
     /// Adaptive video stream не имеет audio companion-а.
     MissingAudioCompanion,
 
@@ -33,53 +33,53 @@ pub enum YoutubeCandidateRejectionReason {
 
 /// Отказ одному candidate-у с сохранением stable stream identity.
 #[derive(Debug, Clone, PartialEq)]
-pub struct YoutubeCandidateRejection {
+pub struct YtDlpCandidateRejection {
     /// Stable stream id внутри текущего manifest-а.
     pub stream_id: String,
 
     /// Typed причина, по которой selection продолжила поиск.
-    pub reason: YoutubeCandidateRejectionReason,
+    pub reason: YtDlpCandidateRejectionReason,
 }
 
-/// Typed итоговая ошибка YouTube selection policy.
+/// Typed итоговая ошибка YtDlp selection policy.
 #[derive(Debug, Clone, PartialEq, Error)]
-pub enum YoutubeStreamSelectionError {
+pub enum YtDlpStreamSelectionError {
     /// Service resolver не вернул ни одного candidate-а.
-    #[error("YouTube stream candidates are empty")]
+    #[error("YtDlp stream candidates are empty")]
     EmptyCandidates,
 
     /// В режиме `sdr_only` не осталось playable SDR candidate-ов.
-    #[error("YouTube candidates не содержат playable SDR stream")]
+    #[error("YtDlp candidates не содержат playable SDR stream")]
     NoPlayableSdr {
         /// Отказы, объясняющие продолжение поиска по candidate list.
-        rejections: Vec<YoutubeCandidateRejection>,
+        rejections: Vec<YtDlpCandidateRejection>,
     },
 
     /// В prefer-HDR режиме не найден ни playable HDR, ни SDR fallback.
-    #[error("YouTube candidates не содержат playable HDR или SDR fallback")]
+    #[error("YtDlp candidates не содержат playable HDR или SDR fallback")]
     NoPlayableCandidate {
         /// Отказы, объясняющие продолжение поиска по candidate list.
-        rejections: Vec<YoutubeCandidateRejection>,
+        rejections: Vec<YtDlpCandidateRejection>,
     },
 }
 
 /// Выбирает stream по codec order и HDR policy, не открывая ни одного media source.
-pub fn select_youtube_stream(
-    stream_candidates: &YoutubeStreamCandidates,
+pub fn select_yt_dlp_stream(
+    stream_candidates: &YtDlpStreamCandidates,
     preferred_codecs: &[VideoCodec],
-    hdr_selection: YoutubeHdrSelection,
+    hdr_selection: YtDlpHdrSelection,
     system_capabilities: &SystemCapabilities,
-) -> Result<SelectedVideoStream, YoutubeStreamSelectionError> {
+) -> Result<SelectedVideoStream, YtDlpStreamSelectionError> {
     if stream_candidates.candidates.is_empty() {
-        return Err(YoutubeStreamSelectionError::EmptyCandidates);
+        return Err(YtDlpStreamSelectionError::EmptyCandidates);
     }
 
     let mut rejections =
         collect_intrinsic_rejections(stream_candidates, preferred_codecs, hdr_selection);
-    let dynamic_range_order: &[YoutubeDynamicRange] = match hdr_selection {
-        YoutubeHdrSelection::SdrOnly => &[YoutubeDynamicRange::Sdr],
-        YoutubeHdrSelection::PreferHdrWhenAvailable => {
-            &[YoutubeDynamicRange::Hdr, YoutubeDynamicRange::Sdr]
+    let dynamic_range_order: &[YtDlpDynamicRange] = match hdr_selection {
+        YtDlpHdrSelection::SdrOnly => &[YtDlpDynamicRange::Sdr],
+        YtDlpHdrSelection::PreferHdrWhenAvailable => {
+            &[YtDlpDynamicRange::Hdr, YtDlpDynamicRange::Sdr]
         }
     };
 
@@ -99,32 +99,32 @@ pub fn select_youtube_stream(
     }
 
     Err(match hdr_selection {
-        YoutubeHdrSelection::SdrOnly => YoutubeStreamSelectionError::NoPlayableSdr { rejections },
-        YoutubeHdrSelection::PreferHdrWhenAvailable => {
-            YoutubeStreamSelectionError::NoPlayableCandidate { rejections }
+        YtDlpHdrSelection::SdrOnly => YtDlpStreamSelectionError::NoPlayableSdr { rejections },
+        YtDlpHdrSelection::PreferHdrWhenAvailable => {
+            YtDlpStreamSelectionError::NoPlayableCandidate { rejections }
         }
     })
 }
 
 /// Собирает отказы, которые не зависят от capability intersection и порядка quality.
 fn collect_intrinsic_rejections(
-    stream_candidates: &YoutubeStreamCandidates,
+    stream_candidates: &YtDlpStreamCandidates,
     preferred_codecs: &[VideoCodec],
-    hdr_selection: YoutubeHdrSelection,
-) -> Vec<YoutubeCandidateRejection> {
+    hdr_selection: YtDlpHdrSelection,
+) -> Vec<YtDlpCandidateRejection> {
     stream_candidates
         .candidates
         .iter()
         .filter_map(|candidate| {
             let reason = intrinsic_rejection(candidate, preferred_codecs).or_else(|| {
                 let requirement = candidate.video_requirement.as_requirement()?;
-                (hdr_selection == YoutubeHdrSelection::SdrOnly
+                (hdr_selection == YtDlpHdrSelection::SdrOnly
                     && resolved_dynamic_range(candidate, requirement)
-                        == Some(YoutubeDynamicRange::Hdr))
-                .then_some(YoutubeCandidateRejectionReason::HdrDisallowedByPolicy)
+                        == Some(YtDlpDynamicRange::Hdr))
+                .then_some(YtDlpCandidateRejectionReason::HdrDisallowedByPolicy)
             });
 
-            reason.map(|reason| YoutubeCandidateRejection {
+            reason.map(|reason| YtDlpCandidateRejection {
                 stream_id: candidate.stream_id.clone(),
                 reason,
             })
@@ -134,38 +134,38 @@ fn collect_intrinsic_rejections(
 
 /// Проверяет metadata/audio/codec prerequisites до обращения к capability layer.
 fn intrinsic_rejection(
-    candidate: &YoutubeStreamCandidate,
+    candidate: &YtDlpStreamCandidate,
     preferred_codecs: &[VideoCodec],
-) -> Option<YoutubeCandidateRejectionReason> {
+) -> Option<YtDlpCandidateRejectionReason> {
     if candidate.audio.is_none() {
-        return Some(YoutubeCandidateRejectionReason::MissingAudioCompanion);
+        return Some(YtDlpCandidateRejectionReason::MissingAudioCompanion);
     }
 
-    let YoutubeVideoRequirement::Ready(requirement) = &candidate.video_requirement else {
+    let YtDlpVideoRequirement::Ready(requirement) = &candidate.video_requirement else {
         let reason = candidate
             .video_requirement
             .insufficient_reason()
             .unwrap_or("service metadata недостаточна")
             .to_string();
-        return Some(YoutubeCandidateRejectionReason::InsufficientVideoMetadata { reason });
+        return Some(YtDlpCandidateRejectionReason::InsufficientVideoMetadata { reason });
     };
 
     if resolved_dynamic_range(candidate, requirement).is_none() {
-        return Some(YoutubeCandidateRejectionReason::UnknownDynamicRange);
+        return Some(YtDlpCandidateRejectionReason::UnknownDynamicRange);
     }
 
     (!preferred_codecs.contains(&requirement.codec))
-        .then_some(YoutubeCandidateRejectionReason::CodecNotPreferred)
+        .then_some(YtDlpCandidateRejectionReason::CodecNotPreferred)
 }
 
 /// Выбирает лучший по quality candidate внутри одного codec/dynamic-range bucket-а.
 fn select_best_matching_candidate(
-    stream_candidates: &YoutubeStreamCandidates,
+    stream_candidates: &YtDlpStreamCandidates,
     preferred_codec: VideoCodec,
-    expected_dynamic_range: YoutubeDynamicRange,
-    hdr_selection: YoutubeHdrSelection,
+    expected_dynamic_range: YtDlpDynamicRange,
+    hdr_selection: YtDlpHdrSelection,
     system_capabilities: &SystemCapabilities,
-    rejections: &mut Vec<YoutubeCandidateRejection>,
+    rejections: &mut Vec<YtDlpCandidateRejection>,
 ) -> Option<SelectedVideoStream> {
     let mut ordered_candidates = stream_candidates.candidates.iter().collect::<Vec<_>>();
     ordered_candidates.sort_by(|left, right| {
@@ -180,7 +180,7 @@ fn select_best_matching_candidate(
             continue;
         }
 
-        let YoutubeVideoRequirement::Ready(requirement) = &candidate.video_requirement else {
+        let YtDlpVideoRequirement::Ready(requirement) = &candidate.video_requirement else {
             continue;
         };
         let Some(dynamic_range) = resolved_dynamic_range(candidate, requirement) else {
@@ -189,12 +189,10 @@ fn select_best_matching_candidate(
         if dynamic_range != expected_dynamic_range || requirement.codec != preferred_codec {
             continue;
         }
-        if hdr_selection == YoutubeHdrSelection::SdrOnly
-            && dynamic_range == YoutubeDynamicRange::Hdr
-        {
-            rejections.push(YoutubeCandidateRejection {
+        if hdr_selection == YtDlpHdrSelection::SdrOnly && dynamic_range == YtDlpDynamicRange::Hdr {
+            rejections.push(YtDlpCandidateRejection {
                 stream_id: candidate.stream_id.clone(),
-                reason: YoutubeCandidateRejectionReason::HdrDisallowedByPolicy,
+                reason: YtDlpCandidateRejectionReason::HdrDisallowedByPolicy,
             });
             continue;
         }
@@ -207,9 +205,9 @@ fn select_best_matching_candidate(
                     matched_output: matched_output.clone(),
                 });
             }
-            Err(rejection) => rejections.push(YoutubeCandidateRejection {
+            Err(rejection) => rejections.push(YtDlpCandidateRejection {
                 stream_id: candidate.stream_id.clone(),
-                reason: YoutubeCandidateRejectionReason::Capability(rejection),
+                reason: YtDlpCandidateRejectionReason::Capability(rejection),
             }),
         }
     }
@@ -219,14 +217,14 @@ fn select_best_matching_candidate(
 
 /// Принимает dynamic range только когда отдельный manifest field согласован с typed color metadata.
 fn resolved_dynamic_range(
-    candidate: &YoutubeStreamCandidate,
+    candidate: &YtDlpStreamCandidate,
     requirement: &VideoDecodeRequirement,
-) -> Option<YoutubeDynamicRange> {
+) -> Option<YtDlpDynamicRange> {
     let color_metadata = requirement.color.as_ref()?;
     let color_dynamic_range = if color_metadata.requires_hdr_processing() {
-        YoutubeDynamicRange::Hdr
+        YtDlpDynamicRange::Hdr
     } else {
-        YoutubeDynamicRange::Sdr
+        YtDlpDynamicRange::Sdr
     };
 
     (candidate.dynamic_range == color_dynamic_range).then_some(color_dynamic_range)
@@ -249,7 +247,7 @@ mod tests {
     use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
     use super::*;
-    use crate::{YoutubeDirectStreamDescriptor, YoutubeStreamKind};
+    use crate::{YtDlpDirectStreamDescriptor, YtDlpStreamKind};
 
     /// Строит capability snapshot, где decoder знает SDR/HDR, а renderer HDR support управляем.
     fn capabilities(hdr_renderer_compatible: bool) -> SystemCapabilities {
@@ -346,32 +344,32 @@ mod tests {
     }
 
     /// Строит открываемый candidate с отдельными video/audio descriptors.
-    fn candidate(stream_id: &str, is_hdr: bool, quality_score: i64) -> YoutubeStreamCandidate {
+    fn candidate(stream_id: &str, is_hdr: bool, quality_score: i64) -> YtDlpStreamCandidate {
         let dynamic_range = if is_hdr {
-            YoutubeDynamicRange::Hdr
+            YtDlpDynamicRange::Hdr
         } else {
-            YoutubeDynamicRange::Sdr
+            YtDlpDynamicRange::Sdr
         };
-        YoutubeStreamCandidate {
+        YtDlpStreamCandidate {
             stream_id: stream_id.to_string(),
             format_id: Some(format!("{stream_id}+audio")),
-            video: descriptor(YoutubeStreamKind::Video, stream_id),
-            audio: Some(descriptor(YoutubeStreamKind::Audio, "audio")),
+            video: descriptor(YtDlpStreamKind::Video, stream_id),
+            audio: Some(descriptor(YtDlpStreamKind::Audio, "audio")),
             height: Some(1080),
             fps: Some(60.0),
             vcodec: Some("vp09".to_string()),
             acodec: Some("opus".to_string()),
             dynamic_range,
-            video_requirement: YoutubeVideoRequirement::Ready(vp9_requirement(is_hdr)),
+            video_requirement: YtDlpVideoRequirement::Ready(vp9_requirement(is_hdr)),
             quality_score,
         }
     }
 
     /// Строит inert descriptor: selection обязана читать metadata, но не URL bytes.
-    fn descriptor(kind: YoutubeStreamKind, format_id: &str) -> YoutubeDirectStreamDescriptor {
-        YoutubeDirectStreamDescriptor {
+    fn descriptor(kind: YtDlpStreamKind, format_id: &str) -> YtDlpDirectStreamDescriptor {
+        YtDlpDirectStreamDescriptor {
             kind,
-            url: crate::YoutubeDirectStreamUrl::from_secret_for_open(format!(
+            url: crate::YtDlpDirectStreamUrl::from_secret_for_open(format!(
                 "https://media.invalid/{format_id}"
             )),
             headers: Vec::new(),
@@ -385,8 +383,8 @@ mod tests {
     }
 
     /// Оборачивает candidates в manifest-level service DTO.
-    fn stream_candidates(candidates: Vec<YoutubeStreamCandidate>) -> YoutubeStreamCandidates {
-        YoutubeStreamCandidates {
+    fn stream_candidates(candidates: Vec<YtDlpStreamCandidate>) -> YtDlpStreamCandidates {
+        YtDlpStreamCandidates {
             title: Some("test".to_string()),
             service_media_id: Some("media".to_string()),
             duration: Some(Duration::from_secs(60)),
@@ -402,10 +400,10 @@ mod tests {
             candidate("hdr", true, 100),
         ]);
 
-        let selected = select_youtube_stream(
+        let selected = select_yt_dlp_stream(
             &candidates,
             &[VideoCodec::Vp9],
-            YoutubeHdrSelection::PreferHdrWhenAvailable,
+            YtDlpHdrSelection::PreferHdrWhenAvailable,
             &capabilities(true),
         )
         .expect("playable HDR is preferred before SDR regardless of quality score");
@@ -420,10 +418,10 @@ mod tests {
             candidate("sdr", false, 100),
         ]);
 
-        let selected = select_youtube_stream(
+        let selected = select_yt_dlp_stream(
             &candidates,
             &[VideoCodec::Vp9],
-            YoutubeHdrSelection::PreferHdrWhenAvailable,
+            YtDlpHdrSelection::PreferHdrWhenAvailable,
             &capabilities(false),
         )
         .expect("renderer-incompatible HDR must fall back to playable SDR");
@@ -435,20 +433,20 @@ mod tests {
     fn sdr_only_never_selects_hdr_and_reports_hdr_only_list() {
         let candidates = stream_candidates(vec![candidate("hdr", true, 10_000)]);
 
-        let error = select_youtube_stream(
+        let error = select_yt_dlp_stream(
             &candidates,
             &[VideoCodec::Vp9],
-            YoutubeHdrSelection::SdrOnly,
+            YtDlpHdrSelection::SdrOnly,
             &capabilities(true),
         )
         .expect_err("SdrOnly must reject even playable HDR");
 
         assert!(matches!(
             error,
-            YoutubeStreamSelectionError::NoPlayableSdr { rejections }
+            YtDlpStreamSelectionError::NoPlayableSdr { rejections }
                 if rejections.iter().any(|rejection| {
                     rejection.stream_id == "hdr"
-                        && rejection.reason == YoutubeCandidateRejectionReason::HdrDisallowedByPolicy
+                        && rejection.reason == YtDlpCandidateRejectionReason::HdrDisallowedByPolicy
                 })
         ));
     }
@@ -457,28 +455,28 @@ mod tests {
     fn prefer_hdr_hdr_only_requires_playable_hdr_intersection() {
         let candidates = stream_candidates(vec![candidate("hdr", true, 10_000)]);
 
-        let selected = select_youtube_stream(
+        let selected = select_yt_dlp_stream(
             &candidates,
             &[VideoCodec::Vp9],
-            YoutubeHdrSelection::PreferHdrWhenAvailable,
+            YtDlpHdrSelection::PreferHdrWhenAvailable,
             &capabilities(true),
         )
         .expect("HDR-only list is playable when full intersection passes");
         assert_eq!(selected.stream_id, "hdr");
 
-        let error = select_youtube_stream(
+        let error = select_yt_dlp_stream(
             &candidates,
             &[VideoCodec::Vp9],
-            YoutubeHdrSelection::PreferHdrWhenAvailable,
+            YtDlpHdrSelection::PreferHdrWhenAvailable,
             &capabilities(false),
         )
         .expect_err("HDR-only list without renderer intersection has no SDR fallback");
         assert!(matches!(
             error,
-            YoutubeStreamSelectionError::NoPlayableCandidate { rejections }
+            YtDlpStreamSelectionError::NoPlayableCandidate { rejections }
                 if rejections.iter().any(|rejection| matches!(
                     rejection.reason,
-                    YoutubeCandidateRejectionReason::Capability(_)
+                    YtDlpCandidateRejectionReason::Capability(_)
                 ))
         ));
     }
@@ -486,13 +484,13 @@ mod tests {
     #[test]
     fn unknown_dynamic_range_is_rejected_and_selection_continues() {
         let mut unknown = candidate("unknown", false, 10_000);
-        unknown.dynamic_range = YoutubeDynamicRange::Unknown;
+        unknown.dynamic_range = YtDlpDynamicRange::Unknown;
         let candidates = stream_candidates(vec![unknown, candidate("sdr", false, 100)]);
 
-        let selected = select_youtube_stream(
+        let selected = select_yt_dlp_stream(
             &candidates,
             &[VideoCodec::Vp9],
-            YoutubeHdrSelection::SdrOnly,
+            YtDlpHdrSelection::SdrOnly,
             &capabilities(false),
         )
         .expect("UnknownDynamicRange must not stop search before later SDR");
@@ -503,7 +501,7 @@ mod tests {
     #[test]
     fn missing_color_metadata_returns_typed_unknown_dynamic_range_failure() {
         let mut unknown = candidate("unknown", false, 10_000);
-        unknown.video_requirement = YoutubeVideoRequirement::Ready(
+        unknown.video_requirement = YtDlpVideoRequirement::Ready(
             VideoDecodeRequirement::new(VideoCodec::Vp9)
                 .with_profile(VideoProfile::Vp9(Vp9Profile::Profile0))
                 .with_bit_depth(BitDepth::Eight)
@@ -511,20 +509,20 @@ mod tests {
         );
         let candidates = stream_candidates(vec![unknown]);
 
-        let error = select_youtube_stream(
+        let error = select_yt_dlp_stream(
             &candidates,
             &[VideoCodec::Vp9],
-            YoutubeHdrSelection::SdrOnly,
+            YtDlpHdrSelection::SdrOnly,
             &capabilities(false),
         )
         .expect_err("missing typed color metadata must not be guessed as SDR");
 
         assert!(matches!(
             error,
-            YoutubeStreamSelectionError::NoPlayableSdr { rejections }
+            YtDlpStreamSelectionError::NoPlayableSdr { rejections }
                 if rejections.iter().any(|rejection| {
                     rejection.stream_id == "unknown"
-                        && rejection.reason == YoutubeCandidateRejectionReason::UnknownDynamicRange
+                        && rejection.reason == YtDlpCandidateRejectionReason::UnknownDynamicRange
                 })
         ));
     }

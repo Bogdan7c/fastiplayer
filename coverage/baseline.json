@@ -408,7 +408,7 @@
         "total": 6312
       }
     },
-    "service-youtube": {
+    "service-ytdlp": {
       "functions": {
         "covered": 210,
         "total": 278

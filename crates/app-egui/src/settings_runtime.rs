@@ -23,7 +23,7 @@ use render_core::{RenderLiveApplyReport, RenderLiveSettingsError};
 use rustiplayer_config::{
     AppConfig, FrameServerLiveScrubDecodeModeConfig, LoadedConfig, NetworkConfig,
     PlayerDemuxConfig, RenderProfile, ToneMappingMode, UiConfig, VideoBackendPreference,
-    VulkanConfig, YoutubeConfig,
+    VulkanConfig, YtDlpConfig,
 };
 use rustiplayer_settings::{
     AppConfigStore, AppConfigValidator, AppRouteApplyReport, AppRouteApplyResult,

@@ -368,10 +368,10 @@ pub enum VideoCodec {
     Vp8,
 }
 
-/// Пользовательская политика выбора dynamic range для YouTube video stream-а.
+/// Пользовательская политика выбора dynamic range для YtDlp video stream-а.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum YoutubeHdrSelection {
+pub enum YtDlpHdrSelection {
     /// Выбирать только кандидаты с достоверно подтверждённым SDR dynamic range.
     #[default]
     SdrOnly,

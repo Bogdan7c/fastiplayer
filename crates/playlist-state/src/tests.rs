@@ -147,7 +147,7 @@ fn full_d12_cache_urls_and_every_local_encoding_roundtrip_exactly() {
     ));
     restored_items.push(RestoredPlaylistItem::new(
         item_id(21),
-        url_draft("https://www.youtube.com/watch?v=stable-id", "youtube"),
+        url_draft("https://www.youtube.com/watch?v=stable-id", "yt_dlp"),
     ));
 
     let queue = PlaylistQueue::restore(PlaylistQueueRestore::new(

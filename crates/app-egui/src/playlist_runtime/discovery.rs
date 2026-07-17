@@ -13,7 +13,7 @@ mod mapping;
 mod metadata_sort;
 mod navigation;
 mod settings_port;
-mod youtube_metadata;
+mod yt_dlp_metadata;
 
 #[allow(
     unused_imports,
@@ -26,10 +26,10 @@ pub(crate) use action_jobs::{
 pub(crate) use metadata_sort::{
     MetadataSortCancelOutcome, MetadataSortJobId, MetadataSortPhase, MetadataSortTerminalOutcome,
 };
-pub(in crate::playlist_runtime) use youtube_metadata::YoutubeMetadataDemand;
+pub(in crate::playlist_runtime) use yt_dlp_metadata::YtDlpMetadataDemand;
 #[cfg(test)]
-pub(in crate::playlist_runtime) use youtube_metadata::{
-    YoutubeMetadataResolver, YoutubeMetadataTaskOutcome,
+pub(in crate::playlist_runtime) use yt_dlp_metadata::{
+    YtDlpMetadataResolver, YtDlpMetadataTaskOutcome,
 };
 
 #[allow(unused_imports)]
@@ -285,7 +285,7 @@ pub(super) struct PlaylistDiscoveryCoordinator {
     cpu_executor: Option<bounded_work_executor::BoundedExecutor>,
     action_jobs: action_jobs::DiscoveryActionJobs,
     metadata_sort: metadata_sort::MetadataSortOwner,
-    youtube_metadata: youtube_metadata::YoutubeMetadataOwner,
+    yt_dlp_metadata: yt_dlp_metadata::YtDlpMetadataOwner,
     manifest_worker: Option<ManifestWorker>,
     settings_control: SharedDiscoverySettingsControl,
     next_scope_id: u64,
@@ -311,7 +311,7 @@ impl PlaylistDiscoveryCoordinator {
             cpu_executor,
             action_jobs: action_jobs::DiscoveryActionJobs::new(),
             metadata_sort: metadata_sort::MetadataSortOwner::new(wake_port.clone()),
-            youtube_metadata: youtube_metadata::YoutubeMetadataOwner::new(wake_port),
+            yt_dlp_metadata: yt_dlp_metadata::YtDlpMetadataOwner::new(wake_port),
             manifest_worker,
             settings_control: SharedDiscoverySettingsControl::default(),
             next_scope_id: 1,
@@ -348,7 +348,7 @@ impl PlaylistDiscoveryCoordinator {
         self.initial_playback.cancel_all();
         self.action_jobs.begin_shutdown();
         self.metadata_sort.begin_shutdown();
-        self.youtube_metadata.begin_shutdown();
+        self.yt_dlp_metadata.begin_shutdown();
         if let Some(manifest_worker) = &mut self.manifest_worker {
             manifest_worker.close_admission();
         }
@@ -445,7 +445,7 @@ impl PlaylistDiscoveryCoordinator {
         queue_generation: u64,
     ) -> bool {
         let mut visible_change = self
-            .youtube_metadata
+            .yt_dlp_metadata
             .drain(controller, std::time::Instant::now());
         visible_change |=
             self.action_jobs

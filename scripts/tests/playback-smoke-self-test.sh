@@ -46,18 +46,19 @@ dry_run_output="$(${PLAYBACK_SMOKE} --mode full --dry-run --duration 1 \
     --vp9 "${temporary_directory}/vp9.mp4" \
     --av1 "${temporary_directory}/av1.mp4" \
     --h264 "${temporary_directory}/h264.mp4" 2>&1)"
-require_output "${dry_run_output}" "schema v5"
-require_output "${dry_run_output}" 'youtube.hdr_selection = "sdr_only"'
+require_output "${dry_run_output}" "schema v6"
+require_output "${dry_run_output}" 'yt_dlp.hdr_selection = "sdr_only"'
 require_output "${dry_run_output}" "cargo build --release -p app-egui"
 
 # Config helper создаёт полный current-schema TOML без GUI.
 current_config_path="${temporary_directory}/current-config.toml"
 cargo run --quiet --locked -p rustiplayer-config --example smoke_config -- \
     generate-current "${current_config_path}" software
-# Ключи доказывают current schema, playback overrides и Session 16 HDR default.
-grep -Fqx 'schema_version = 5' "${current_config_path}"
+# Ключи доказывают current schema v6, playback overrides и generic yt-dlp HDR default.
+grep -Fqx 'schema_version = 6' "${current_config_path}"
 grep -Fqx 'start_paused = false' "${current_config_path}"
 grep -Fqx 'preferred_backend = "software"' "${current_config_path}"
+grep -Fqx '[yt_dlp]' "${current_config_path}"
 grep -Fqx 'hdr_selection = "sdr_only"' "${current_config_path}"
 # Production loader подтверждает parse без запуска приложения.
 cargo run --quiet --locked -p rustiplayer-config --example smoke_config -- \

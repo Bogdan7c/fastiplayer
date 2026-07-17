@@ -10,13 +10,13 @@ use playlist_core::{
 use super::*;
 use crate::app_wake::AppWakeOwner;
 
-struct FakeYoutubeMetadataResolver {
-    outcomes: Mutex<VecDeque<YoutubeMetadataTaskOutcome>>,
+struct FakeYtDlpMetadataResolver {
+    outcomes: Mutex<VecDeque<YtDlpMetadataTaskOutcome>>,
     calls: AtomicUsize,
 }
 
-impl FakeYoutubeMetadataResolver {
-    fn new(outcomes: Vec<YoutubeMetadataTaskOutcome>) -> Self {
+impl FakeYtDlpMetadataResolver {
+    fn new(outcomes: Vec<YtDlpMetadataTaskOutcome>) -> Self {
         Self {
             outcomes: Mutex::new(outcomes.into()),
             calls: AtomicUsize::new(0),
@@ -24,33 +24,33 @@ impl FakeYoutubeMetadataResolver {
     }
 }
 
-impl YoutubeMetadataResolver for FakeYoutubeMetadataResolver {
+impl YtDlpMetadataResolver for FakeYtDlpMetadataResolver {
     fn resolve(
         &self,
-        _locator: &service_youtube::YoutubeMediaLocator,
-        _youtube_config: &YoutubeConfig,
+        _locator: &service_ytdlp::YtDlpMediaLocator,
+        _yt_dlp_config: &YtDlpConfig,
         cancellation: &CancellationToken,
-    ) -> YoutubeMetadataTaskOutcome {
+    ) -> YtDlpMetadataTaskOutcome {
         self.calls.fetch_add(1, Ordering::Relaxed);
         if cancellation.is_cancelled() {
-            return YoutubeMetadataTaskOutcome::Cancelled;
+            return YtDlpMetadataTaskOutcome::Cancelled;
         }
         self.outcomes
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .pop_front()
-            .unwrap_or(YoutubeMetadataTaskOutcome::Failed)
+            .unwrap_or(YtDlpMetadataTaskOutcome::Failed)
     }
 }
 
-fn youtube_config() -> YoutubeConfig {
-    YoutubeConfig {
+fn yt_dlp_config() -> YtDlpConfig {
+    YtDlpConfig {
         enabled: true,
-        ..YoutubeConfig::default()
+        ..YtDlpConfig::default()
     }
 }
 
-fn append_youtube_item(
+fn append_yt_dlp_item(
     controller: &mut PlaylistController,
     url: &str,
     cached_metadata: CachedPlaylistMetadata,
@@ -66,20 +66,19 @@ fn demand(
     controller: &PlaylistController,
     item_id: PlaylistItemId,
     url: &str,
-) -> YoutubeMetadataDemand {
+) -> YtDlpMetadataDemand {
     let expected_locator = controller
         .queue()
         .item(item_id)
         .expect("committed test item")
         .locator()
         .clone();
-    let youtube_locator =
-        service_youtube::parse_youtube_media_locator(url).expect("valid YouTube URL");
-    YoutubeMetadataDemand::new(item_id, expected_locator, youtube_locator, youtube_config())
+    let yt_dlp_locator = service_ytdlp::parse_yt_dlp_media_locator(url).expect("valid YtDlp URL");
+    YtDlpMetadataDemand::new(item_id, expected_locator, yt_dlp_locator, yt_dlp_config())
 }
 
 fn drain_until_idle(
-    owner: &mut YoutubeMetadataOwner,
+    owner: &mut YtDlpMetadataOwner,
     controller: &mut PlaylistController,
     now: Instant,
 ) {
@@ -90,7 +89,7 @@ fn drain_until_idle(
         }
         thread::sleep(Duration::from_millis(5));
     }
-    panic!("YouTube metadata test job did not become idle");
+    panic!("YtDlp metadata test job did not become idle");
 }
 
 #[test]
@@ -98,14 +97,14 @@ fn resolved_metadata_updates_only_exact_duplicate_item_and_preserves_other_cache
     let mut controller = PlaylistController::new();
     let url = "https://youtu.be/same-video";
     let rich_fallback =
-        CachedPlaylistMetadata::new("YouTube media (youtu.be)", PlaylistMediaKind::Unknown)
+        CachedPlaylistMetadata::new("YtDlp media (youtu.be)", PlaylistMediaKind::Unknown)
             .with_artists(vec!["Сохранённый автор".to_string()])
             .expect("bounded artists");
-    let first_id = append_youtube_item(&mut controller, url, rich_fallback);
-    let second_id = append_youtube_item(
+    let first_id = append_yt_dlp_item(&mut controller, url, rich_fallback);
+    let second_id = append_yt_dlp_item(
         &mut controller,
         url,
-        CachedPlaylistMetadata::new("YouTube media (youtu.be)", PlaylistMediaKind::Unknown),
+        CachedPlaylistMetadata::new("YtDlp media (youtu.be)", PlaylistMediaKind::Unknown),
     );
     let first_demand = demand(&controller, first_id, url);
 
@@ -116,7 +115,7 @@ fn resolved_metadata_updates_only_exact_duplicate_item_and_preserves_other_cache
             Some("Настоящее название".to_string()),
             Some(Duration::from_secs(125)),
         ),
-        YoutubeMetadataApplyOutcome::Applied
+        YtDlpMetadataApplyOutcome::Applied
     );
 
     let first = controller.queue().item(first_id).expect("first item");
@@ -146,10 +145,10 @@ fn resolved_metadata_updates_only_exact_duplicate_item_and_preserves_other_cache
 fn stale_locator_and_missing_item_never_mutate_queue() {
     let mut controller = PlaylistController::new();
     let url = "https://youtu.be/current";
-    let item_id = append_youtube_item(
+    let item_id = append_yt_dlp_item(
         &mut controller,
         url,
-        CachedPlaylistMetadata::new("YouTube media (youtu.be)", PlaylistMediaKind::Unknown),
+        CachedPlaylistMetadata::new("YtDlp media (youtu.be)", PlaylistMediaKind::Unknown),
     );
     let mut stale_demand = demand(&controller, item_id, url);
     stale_demand.expected_locator = playlist_core::PlaylistLocator::Url(
@@ -164,7 +163,7 @@ fn stale_locator_and_missing_item_never_mutate_queue() {
             Some("Не должно примениться".to_string()),
             None,
         ),
-        YoutubeMetadataApplyOutcome::Stale
+        YtDlpMetadataApplyOutcome::Stale
     );
     assert_eq!(controller.dirty_revision(), dirty_before);
     assert_eq!(
@@ -182,20 +181,20 @@ fn stale_locator_and_missing_item_never_mutate_queue() {
 fn owner_coalesces_in_flight_and_retries_failed_job_after_delay() {
     let mut controller = PlaylistController::new();
     let url = "https://youtu.be/retry";
-    let item_id = append_youtube_item(
+    let item_id = append_yt_dlp_item(
         &mut controller,
         url,
-        CachedPlaylistMetadata::new("YouTube media (youtu.be)", PlaylistMediaKind::Unknown),
+        CachedPlaylistMetadata::new("YtDlp media (youtu.be)", PlaylistMediaKind::Unknown),
     );
-    let fake = Arc::new(FakeYoutubeMetadataResolver::new(vec![
-        YoutubeMetadataTaskOutcome::Failed,
-        YoutubeMetadataTaskOutcome::Resolved {
+    let fake = Arc::new(FakeYtDlpMetadataResolver::new(vec![
+        YtDlpMetadataTaskOutcome::Failed,
+        YtDlpMetadataTaskOutcome::Resolved {
             title: Some("Название после retry".to_string()),
             duration: Some(Duration::from_secs(42)),
         },
     ]));
     let wake_port = AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime);
-    let mut owner = YoutubeMetadataOwner::new(wake_port);
+    let mut owner = YtDlpMetadataOwner::new(wake_port);
     owner.replace_resolver_for_test(fake.clone());
     let initial_now = Instant::now();
 
@@ -213,13 +212,13 @@ fn owner_coalesces_in_flight_and_retries_failed_job_after_delay() {
     assert_eq!(early_retry.coalesced, 1);
     let accepted_retry = owner.request(
         vec![demand(&controller, item_id, url)],
-        initial_now + YOUTUBE_METADATA_RETRY_DELAY,
+        initial_now + YT_DLP_METADATA_RETRY_DELAY,
     );
     assert_eq!(accepted_retry.accepted, 1);
     drain_until_idle(
         &mut owner,
         &mut controller,
-        initial_now + YOUTUBE_METADATA_RETRY_DELAY,
+        initial_now + YT_DLP_METADATA_RETRY_DELAY,
     );
 
     assert_eq!(fake.calls.load(Ordering::Relaxed), 2);
@@ -238,13 +237,13 @@ fn owner_coalesces_in_flight_and_retries_failed_job_after_delay() {
 fn unavailable_executor_reports_typed_outcome_without_running_resolver() {
     let mut controller = PlaylistController::new();
     let url = "https://youtu.be/no-executor";
-    let item_id = append_youtube_item(
+    let item_id = append_yt_dlp_item(
         &mut controller,
         url,
-        CachedPlaylistMetadata::new("YouTube media (youtu.be)", PlaylistMediaKind::Unknown),
+        CachedPlaylistMetadata::new("YtDlp media (youtu.be)", PlaylistMediaKind::Unknown),
     );
-    let fake = Arc::new(FakeYoutubeMetadataResolver::new(Vec::new()));
-    let mut owner = YoutubeMetadataOwner::with_dependencies(
+    let fake = Arc::new(FakeYtDlpMetadataResolver::new(Vec::new()));
+    let mut owner = YtDlpMetadataOwner::with_dependencies(
         AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime),
         None,
         fake.clone(),

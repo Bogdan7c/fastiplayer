@@ -43,10 +43,10 @@ impl<'frame> FrameSettingsRuntimeAdapter<'frame> {
 /// Полный config snapshot для staged active-media reopen-а.
 struct ActiveMediaReconfigureConfig {
     network: rustiplayer_config::NetworkConfig,
-    youtube: rustiplayer_config::YoutubeConfig,
+    yt_dlp: rustiplayer_config::YtDlpConfig,
     demux: rustiplayer_config::PlayerDemuxConfig,
     preferred_video_codec_order: Vec<rustiplayer_config::VideoCodec>,
-    reselect_youtube_stream: bool,
+    reselect_yt_dlp_stream: bool,
     rebuild_local_source: bool,
 }
 
@@ -148,17 +148,17 @@ impl FrameSettingsRuntimeAdapter<'_> {
                         Err(error) => Err(format!("direct media rebuild failed: {error:#}")),
                     }
                 }
-                ActiveMediaSource::YouTubeUrl {
+                ActiveMediaSource::YtDlpUrl {
                     source_locator,
                     selected_stream_identity,
                 } => {
-                    if config.reselect_youtube_stream {
+                    if config.reselect_yt_dlp_stream {
                         let system_capabilities =
                             probe_system_capabilities(self.renderer.render_capabilities());
-                        match resolve_youtube_startup_media(
+                        match resolve_yt_dlp_startup_media(
                             &source_locator,
                             &config.network,
-                            &config.youtube,
+                            &config.yt_dlp,
                             &config.demux,
                             &config.preferred_video_codec_order,
                             &system_capabilities,
@@ -174,21 +174,21 @@ impl FrameSettingsRuntimeAdapter<'_> {
                                     );
                                 Ok(crate::state::PreparedSingleMediaOpen::new(
                                     prepared_media,
-                                    ActiveMediaSource::YouTubeUrl {
+                                    ActiveMediaSource::YtDlpUrl {
                                         source_locator,
                                         selected_stream_identity: prepared.selected_stream_identity,
                                     },
                                     safe_label,
                                 ))
                             }
-                            Err(error) => Err(format!("YouTube media rebuild failed: {error:#}")),
+                            Err(error) => Err(format!("YtDlp media rebuild failed: {error:#}")),
                         }
                     } else {
-                        match service_youtube::open_seekable_vod_from_selected_identity_with_demux_config(
+                        match service_ytdlp::open_seekable_vod_from_selected_identity_with_demux_config(
                             &source_locator,
                             &selected_stream_identity,
                             &config.network,
-                            &config.youtube,
+                            &config.yt_dlp,
                             &config.demux,
                         ) {
                             Ok(streaming_media) => {
@@ -202,7 +202,7 @@ impl FrameSettingsRuntimeAdapter<'_> {
                                     );
                                 Ok(crate::state::PreparedSingleMediaOpen::new(
                                     prepared_media,
-                                    ActiveMediaSource::YouTubeUrl {
+                                    ActiveMediaSource::YtDlpUrl {
                                         source_locator,
                                         selected_stream_identity,
                                     },
@@ -210,7 +210,7 @@ impl FrameSettingsRuntimeAdapter<'_> {
                                 ))
                             }
                             Err(error) => Err(format!(
-                                "selected YouTube media rebuild failed without changing stream: {error}"
+                                "selected YtDlp media rebuild failed without changing stream: {error}"
                             )),
                         }
                     }
@@ -446,16 +446,16 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
             app_config.player.demux = media_update.demux;
             app_config.player.preferred_video_codec_order =
                 media_update.preferred_video_codec_order.clone();
-            let reselect_youtube_stream = media_update
+            let reselect_yt_dlp_stream = media_update
                 .affected_settings
                 .iter()
                 .any(|setting_id| setting_id.as_str() == "player.preferred_video_codec_order");
             let media_result = self.reconfigure_active_media(ActiveMediaReconfigureConfig {
                 network: app_config.network,
-                youtube: app_config.youtube,
+                yt_dlp: app_config.yt_dlp,
                 demux: app_config.player.demux,
                 preferred_video_codec_order: app_config.player.preferred_video_codec_order,
-                reselect_youtube_stream,
+                reselect_yt_dlp_stream,
                 rebuild_local_source: true,
             });
             let affected_settings =
@@ -534,20 +534,20 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
     ) -> AppRouteApplyResult {
         if affected_settings
             .iter()
-            .all(|setting_id| setting_id.as_str().starts_with("youtube."))
+            .all(|setting_id| setting_id.as_str().starts_with("yt_dlp."))
         {
             return self.app_state.apply_media_service_runtime_settings(update);
         }
 
         let mut app_config = self.app_state.committed_app_config();
         app_config.network = update.network.clone();
-        app_config.youtube = update.youtube.clone();
+        app_config.yt_dlp = update.yt_dlp.clone();
         self.reconfigure_active_media(ActiveMediaReconfigureConfig {
             network: app_config.network,
-            youtube: app_config.youtube,
+            yt_dlp: app_config.yt_dlp,
             demux: app_config.player.demux,
             preferred_video_codec_order: app_config.player.preferred_video_codec_order,
-            reselect_youtube_stream: false,
+            reselect_yt_dlp_stream: false,
             rebuild_local_source: false,
         })
     }

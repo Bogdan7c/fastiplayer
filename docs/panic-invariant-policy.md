@@ -53,7 +53,7 @@ cargo clippy --workspace --lib -- -W clippy::unwrap_used -W clippy::expect_used
   либо сделать structural iteration без изменения channel order.
 - `video-core` — 1: literal `1` является non-zero constant invariant; заменить
   на именованную константу/безопасную конструкцию только локально.
-- `service-youtube` — 1: validated user config остаётся input boundary и должен
+- `service-ytdlp` — 1: validated user config остаётся input boundary и должен
   возвращать typed mapping error вместо panic.
 - `video-vaapi` — 1: literal `1` в surface accounting является non-zero constant
   invariant; resource-pool poison findings в этой группе закрыты Сессией 11.

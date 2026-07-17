@@ -2,7 +2,7 @@
 //!
 //! Crate является service boundary для обычных media URL: он знает только про
 //! URL policy, HTTP Range source, prefetch и container demuxer. Он не зависит от
-//! `player-core`, UI, renderer или YouTube-specific resolver semantics.
+//! `player-core`, UI, renderer или extractor-specific resolver semantics.
 
 use std::time::Duration;
 

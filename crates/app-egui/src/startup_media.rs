@@ -10,10 +10,10 @@ use anyhow::{Context, Result};
 use capability_core::{SelectedVideoStream, SystemCapabilities};
 use codec_core::VideoCodec as RuntimeVideoCodec;
 use rustiplayer_config::{
-    AppConfig, NetworkConfig, PlayerDemuxConfig, VideoCodec as ConfigVideoCodec, YoutubeConfig,
-    YoutubeHdrSelection,
+    AppConfig, NetworkConfig, PlayerDemuxConfig, VideoCodec as ConfigVideoCodec, YtDlpConfig,
+    YtDlpHdrSelection,
 };
-use service_youtube::YoutubeStreamCandidates;
+use service_ytdlp::YtDlpStreamCandidates;
 use tracing::{debug, info, warn};
 
 #[cfg(test)]
@@ -47,47 +47,47 @@ pub(crate) enum InitialMedia {
     Url(StartupUrlLocator),
 }
 
-/// Подготовленный YouTube playback source и compact identity выбранной stream-пары.
-pub(crate) struct PreparedYoutubeStartupMedia {
+/// Подготовленный YtDlp playback source и compact identity выбранной stream-пары.
+pub(crate) struct PreparedYtDlpStartupMedia {
     /// Уже открытый demuxer для текущего playback open.
-    pub(crate) streaming_media: service_youtube::YoutubeStreamingMedia,
+    pub(crate) streaming_media: service_ytdlp::YtDlpStreamingMedia,
 
     /// Минимальная identity, по которой повторное открытие может восстановить тот же выбор.
-    pub(crate) selected_stream_identity: service_youtube::YoutubeSelectedStreamIdentity,
+    pub(crate) selected_stream_identity: service_ytdlp::YtDlpSelectedStreamIdentity,
 }
 
-/// Результат фоновой подготовки CLI YouTube URL.
-type YoutubeStartupResult = std::result::Result<PreparedYoutubeStartupMedia, String>;
+/// Результат фоновой подготовки CLI YtDlp URL.
+type YtDlpStartupResult = std::result::Result<PreparedYtDlpStartupMedia, String>;
 
 /// Результат фоновой подготовки generic direct media URL.
 type DirectMediaStartupResult =
     std::result::Result<service_direct_media::DirectMediaOpenResult, String>;
 
 /// Фоновый job, который не блокирует создание окна и UI.
-struct YoutubeStartupJob {
+struct YtDlpStartupJob {
     /// URL страницы/ролика, который был передан через CLI.
-    source_locator: service_youtube::YoutubeMediaLocator,
+    source_locator: service_ytdlp::YtDlpMediaLocator,
 
     /// Текст pending-состояния для центрального overlay.
     pending_message: String,
 
     /// Exactly-once completion mailbox background resolver-а.
-    result_receiver: OwnerMailboxReceiver<(), YoutubeStartupResult>,
+    result_receiver: OwnerMailboxReceiver<(), YtDlpStartupResult>,
 
     /// JoinHandle нужен для cleanup после получения результата.
     join_handle: Option<JoinHandle<()>>,
 
     /// Mailbox result удерживается до exact worker exit и успешного join.
-    pending_result: Option<YoutubeStartupResult>,
+    pending_result: Option<YtDlpStartupResult>,
 
     /// Cooperative cancellation не даёт позднему результату apply authority.
     cancellation_requested: Arc<AtomicBool>,
 }
 
-impl YoutubeStartupJob {
-    /// Запускает подготовку YouTube media на отдельном thread-е.
+impl YtDlpStartupJob {
+    /// Запускает подготовку YtDlp media на отдельном thread-е.
     fn spawn(
-        source_locator: service_youtube::YoutubeMediaLocator,
+        source_locator: service_ytdlp::YtDlpMediaLocator,
         app_config: AppConfig,
         system_capabilities: SystemCapabilities,
         wake_port: AppWakePort,
@@ -95,21 +95,21 @@ impl YoutubeStartupJob {
         let (result_publisher, result_receiver) = owner_mailbox(wake_port);
         let thread_locator = source_locator.clone();
         let network_config = app_config.network.clone();
-        let youtube_config = app_config.youtube.clone();
+        let yt_dlp_config = app_config.yt_dlp.clone();
         let demux_config = app_config.player.demux;
         let preferred_video_codec_order = app_config.player.preferred_video_codec_order;
         let cancellation_requested = Arc::new(AtomicBool::new(false));
         let worker_cancellation_requested = Arc::clone(&cancellation_requested);
         let join_handle = thread::Builder::new()
-            .name("youtube-startup-resolver".to_string())
+            .name("yt_dlp-startup-resolver".to_string())
             .spawn(move || {
                 let resolve_result = if worker_cancellation_requested.load(Ordering::Acquire) {
-                    Err("YouTube startup preparation отменена shutdown lifecycle".to_string())
+                    Err("YtDlp startup preparation отменена shutdown lifecycle".to_string())
                 } else {
-                    resolve_youtube_startup_media(
+                    resolve_yt_dlp_startup_media(
                         &thread_locator,
                         &network_config,
-                        &youtube_config,
+                        &yt_dlp_config,
                         &demux_config,
                         &preferred_video_codec_order,
                         &system_capabilities,
@@ -123,21 +123,21 @@ impl YoutubeStartupJob {
 
                 match result_publisher.publish_completion(resolve_result) {
                     Ok(WakeDelivery::EventLoopClosed) => {
-                        debug!("Event loop закрыт; YouTube terminal оставлен без wake retry");
+                        debug!("Event loop закрыт; YtDlp terminal оставлен без wake retry");
                     }
                     Ok(WakeDelivery::Armed | WakeDelivery::Coalesced) => {}
                     Err(CompletionPublishError::AlreadyPublished) => {
                         warn!(
-                            "YouTube startup resolver попытался опубликовать второй terminal result"
+                            "YtDlp startup resolver попытался опубликовать второй terminal result"
                         );
                     }
                 }
             })
-            .map_err(|error| format!("Не удалось запустить YouTube startup resolver: {error}"))?;
+            .map_err(|error| format!("Не удалось запустить YtDlp startup resolver: {error}"))?;
 
         Ok(Self {
             source_locator,
-            pending_message: "Подготовка YouTube stream...".to_string(),
+            pending_message: "Подготовка YtDlp stream...".to_string(),
             result_receiver,
             join_handle: Some(join_handle),
             pending_result: None,
@@ -151,7 +151,7 @@ impl YoutubeStartupJob {
     }
 
     /// Неблокирующе забирает результат resolver-а, если он уже готов.
-    fn try_take_result(&mut self) -> Option<YoutubeStartupResult> {
+    fn try_take_result(&mut self) -> Option<YtDlpStartupResult> {
         let drain = self.result_receiver.drain();
         if drain.completion.is_some() {
             self.pending_result = drain.completion;
@@ -161,13 +161,13 @@ impl YoutubeStartupJob {
             FinishedThreadJoin::Joined | FinishedThreadJoin::AlreadyJoined => {
                 self.pending_result.take().or_else(|| {
                     drain.producer_disconnected_without_completion.then(|| {
-                        Err("YouTube startup resolver завершился без результата".to_string())
+                        Err("YtDlp startup resolver завершился без результата".to_string())
                     })
                 })
             }
             FinishedThreadJoin::Panicked => {
                 self.pending_result = None;
-                Some(Err("YouTube startup resolver завершился panic".to_string()))
+                Some(Err("YtDlp startup resolver завершился panic".to_string()))
             }
             FinishedThreadJoin::StillRunning => None,
         }
@@ -291,8 +291,8 @@ pub(crate) struct StartupMediaController {
     /// Media, переданное через CLI или восстановленное после suspend.
     initial_media: Option<InitialMedia>,
 
-    /// Фоновая подготовка CLI YouTube URL, если она уже запущена.
-    youtube_startup_job: Option<YoutubeStartupJob>,
+    /// Фоновая подготовка CLI YtDlp URL, если она уже запущена.
+    yt_dlp_startup_job: Option<YtDlpStartupJob>,
 
     /// Фоновая подготовка generic direct media URL, если она уже запущена.
     direct_media_startup_job: Option<DirectMediaStartupJob>,
@@ -341,7 +341,7 @@ impl StartupMediaController {
         Self {
             wake_port,
             initial_media,
-            youtube_startup_job: None,
+            yt_dlp_startup_job: None,
             direct_media_startup_job: None,
             local_startup_job: None,
             orchestration: StartupMediaOrchestration::new(cli_requested),
@@ -361,9 +361,9 @@ impl StartupMediaController {
 
     /// Возвращает pending-текст активного startup job.
     pub(crate) fn pending_message(&self) -> Option<&str> {
-        self.youtube_startup_job
+        self.yt_dlp_startup_job
             .as_ref()
-            .map(YoutubeStartupJob::pending_message)
+            .map(YtDlpStartupJob::pending_message)
             .or_else(|| {
                 self.direct_media_startup_job
                     .as_ref()
@@ -378,7 +378,7 @@ impl StartupMediaController {
 
     /// Сообщает shell scheduler-у, нужно ли продолжать polling startup jobs.
     pub(crate) fn has_pending_startup_job(&self) -> bool {
-        self.youtube_startup_job.is_some()
+        self.yt_dlp_startup_job.is_some()
             || self.direct_media_startup_job.is_some()
             || self.local_startup_job.is_some()
             || self.orchestration.has_pending_work()
@@ -497,10 +497,10 @@ impl StartupMediaController {
         self.drive_startup_orchestration(app_state, playlist_runtime, renderer)
     }
 
-    /// Запускает background resolve для CLI YouTube URL и сразу обновляет UI state.
-    pub(crate) fn start_youtube_startup_job(
+    /// Запускает background resolve для CLI YtDlp URL и сразу обновляет UI state.
+    pub(crate) fn start_yt_dlp_startup_job(
         &mut self,
-        source_locator: service_youtube::YoutubeMediaLocator,
+        source_locator: service_ytdlp::YtDlpMediaLocator,
         app_state: &mut AppState,
         app_config: &AppConfig,
         system_capabilities: &SystemCapabilities,
@@ -511,8 +511,8 @@ impl StartupMediaController {
             app_state.set_startup_error(error);
             return;
         }
-        app_state.set_startup_pending("Подготовка YouTube stream...".to_string());
-        match YoutubeStartupJob::spawn(
+        app_state.set_startup_pending("Подготовка YtDlp stream...".to_string());
+        match YtDlpStartupJob::spawn(
             source_locator,
             app_config.clone(),
             system_capabilities.clone(),
@@ -520,12 +520,12 @@ impl StartupMediaController {
         ) {
             Ok(job) => {
                 self.startup_error = None;
-                self.youtube_startup_job = Some(job);
+                self.yt_dlp_startup_job = Some(job);
             }
             Err(error) => {
                 self.orchestration.preparation_failed();
-                warn!(error = %error, "Не удалось запустить YouTube startup resolver");
-                let startup_error = format!("NetworkError: YouTube error: {error}");
+                warn!(error = %error, "Не удалось запустить YtDlp startup resolver");
+                let startup_error = format!("NetworkError: YtDlp error: {error}");
                 self.startup_error = Some(startup_error.clone());
                 app_state.set_startup_error(startup_error);
             }
@@ -567,54 +567,52 @@ impl StartupMediaController {
 }
 
 /// Выполняет production chain: service candidates -> capability selection -> demux open.
-pub(crate) fn resolve_youtube_startup_media(
-    source_locator: &service_youtube::YoutubeMediaLocator,
+pub(crate) fn resolve_yt_dlp_startup_media(
+    source_locator: &service_ytdlp::YtDlpMediaLocator,
     network_config: &NetworkConfig,
-    youtube_config: &YoutubeConfig,
+    yt_dlp_config: &YtDlpConfig,
     demux_config: &PlayerDemuxConfig,
     preferred_video_codec_order: &[ConfigVideoCodec],
     system_capabilities: &SystemCapabilities,
-) -> Result<PreparedYoutubeStartupMedia> {
-    let stream_candidates = service_youtube::resolve_youtube_stream_candidates_with_config(
-        source_locator,
-        youtube_config,
-    )
-    .context("Не удалось получить YouTube stream candidates")?;
-    let selected_stream = select_youtube_startup_candidate_with_codec_order(
+) -> Result<PreparedYtDlpStartupMedia> {
+    let stream_candidates =
+        service_ytdlp::resolve_yt_dlp_stream_candidates_with_config(source_locator, yt_dlp_config)
+            .context("Не удалось получить YtDlp stream candidates")?;
+    let selected_stream = select_yt_dlp_startup_candidate_with_codec_order(
         &stream_candidates,
         preferred_video_codec_order,
-        youtube_config.hdr_selection,
+        yt_dlp_config.hdr_selection,
         system_capabilities,
     )
-    .context("Не удалось выбрать YouTube stream по codec policy и system capabilities")?;
+    .context("Не удалось выбрать YtDlp stream по codec policy и system capabilities")?;
 
-    let selected_stream_identity = service_youtube::YoutubeSelectedStreamIdentity::from_candidates(
+    let selected_stream_identity = service_ytdlp::YtDlpSelectedStreamIdentity::from_candidates(
         &stream_candidates,
         &selected_stream.stream_id,
     )
-    .context("Не удалось сохранить выбранную YouTube stream identity")?;
-    let streaming_media = service_youtube::open_streaming_media_from_candidates_with_demux_config(
+    .context("Не удалось сохранить выбранную YtDlp stream identity")?;
+    let streaming_media = service_ytdlp::open_streaming_media_from_candidates_with_demux_config(
         source_locator,
         &stream_candidates,
         &selected_stream.stream_id,
         network_config,
-        youtube_config,
+        yt_dlp_config,
         demux_config,
     )
     .with_context(|| {
         format!(
-            "Не удалось открыть выбранный YouTube stream {}",
+            "Не удалось открыть выбранный YtDlp stream {}",
             selected_stream.stream_id
         )
     })?;
 
-    Ok(PreparedYoutubeStartupMedia {
+    Ok(PreparedYtDlpStartupMedia {
         streaming_media,
         selected_stream_identity,
     })
 }
 
-/// Выполняет generic direct media open chain без YouTube-specific semantics.
+/// Выполняет generic direct media open chain без YtDlp-specific semantics.
 pub(crate) fn resolve_direct_media_startup_media(
     source_locator: &service_direct_media::DirectMediaUrl,
     network_config: &NetworkConfig,
@@ -625,19 +623,19 @@ pub(crate) fn resolve_direct_media_startup_media(
 }
 
 /// Делегирует service-owned policy выбор до открытия media bytes.
-fn select_youtube_startup_candidate_with_codec_order(
-    stream_candidates: &YoutubeStreamCandidates,
+fn select_yt_dlp_startup_candidate_with_codec_order(
+    stream_candidates: &YtDlpStreamCandidates,
     preferred_video_codec_order: &[ConfigVideoCodec],
-    hdr_selection: YoutubeHdrSelection,
+    hdr_selection: YtDlpHdrSelection,
     system_capabilities: &SystemCapabilities,
-) -> std::result::Result<SelectedVideoStream, service_youtube::YoutubeStreamSelectionError> {
+) -> std::result::Result<SelectedVideoStream, service_ytdlp::YtDlpStreamSelectionError> {
     let preferred_runtime_codecs = preferred_video_codec_order
         .iter()
         .copied()
         .map(runtime_video_codec)
         .collect::<Vec<_>>();
 
-    service_youtube::select_youtube_stream(
+    service_ytdlp::select_yt_dlp_stream(
         stream_candidates,
         &preferred_runtime_codecs,
         hdr_selection,
@@ -647,12 +645,12 @@ fn select_youtube_startup_candidate_with_codec_order(
 
 /// Test helper с default codec policy и явной HDR policy.
 #[cfg(test)]
-fn select_youtube_startup_candidate(
-    stream_candidates: &YoutubeStreamCandidates,
-    hdr_selection: YoutubeHdrSelection,
+fn select_yt_dlp_startup_candidate(
+    stream_candidates: &YtDlpStreamCandidates,
+    hdr_selection: YtDlpHdrSelection,
     system_capabilities: &SystemCapabilities,
-) -> std::result::Result<SelectedVideoStream, service_youtube::YoutubeStreamSelectionError> {
-    select_youtube_startup_candidate_with_codec_order(
+) -> std::result::Result<SelectedVideoStream, service_ytdlp::YtDlpStreamSelectionError> {
+    select_yt_dlp_startup_candidate_with_codec_order(
         stream_candidates,
         &AppConfig::default().player.preferred_video_codec_order,
         hdr_selection,
@@ -726,10 +724,9 @@ mod tests {
         VideoColorMetadata, VideoDecodeRequirement, VideoProfile, Vp9Profile,
     };
     use render_core::RenderCapabilities;
-    use service_youtube::{
-        YoutubeDirectStreamDescriptor, YoutubeDynamicRange, YoutubeInsufficientVideoMetadata,
-        YoutubeStreamCandidate, YoutubeStreamCandidates, YoutubeStreamKind,
-        YoutubeVideoRequirement,
+    use service_ytdlp::{
+        YtDlpDirectStreamDescriptor, YtDlpDynamicRange, YtDlpInsufficientVideoMetadata,
+        YtDlpStreamCandidate, YtDlpStreamCandidates, YtDlpStreamKind, YtDlpVideoRequirement,
     };
     use source_core::SourceValidators;
     use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
@@ -774,18 +771,15 @@ mod tests {
         }
     }
 
-    fn youtube_descriptor(
-        kind: YoutubeStreamKind,
-        format_id: &str,
-    ) -> YoutubeDirectStreamDescriptor {
+    fn yt_dlp_descriptor(kind: YtDlpStreamKind, format_id: &str) -> YtDlpDirectStreamDescriptor {
         let kind_label = match kind {
-            YoutubeStreamKind::Video => "video",
-            YoutubeStreamKind::Audio => "audio",
+            YtDlpStreamKind::Video => "video",
+            YtDlpStreamKind::Audio => "audio",
         };
 
-        YoutubeDirectStreamDescriptor {
+        YtDlpDirectStreamDescriptor {
             kind,
-            url: service_youtube::YoutubeDirectStreamUrl::from_secret_for_open(format!(
+            url: service_ytdlp::YtDlpDirectStreamUrl::from_secret_for_open(format!(
                 "http://media.test/{format_id}.webm"
             )),
             headers: Vec::new(),
@@ -819,34 +813,34 @@ mod tests {
             .with_color(color)
     }
 
-    fn ready_youtube_candidate(
+    fn ready_yt_dlp_candidate(
         stream_id: &str,
         format_id: &str,
         requirement: VideoDecodeRequirement,
         quality_score: i64,
-    ) -> YoutubeStreamCandidate {
+    ) -> YtDlpStreamCandidate {
         let dynamic_range = if requirement.requires_hdr_processing() {
-            YoutubeDynamicRange::Hdr
+            YtDlpDynamicRange::Hdr
         } else {
-            YoutubeDynamicRange::Sdr
+            YtDlpDynamicRange::Sdr
         };
-        YoutubeStreamCandidate {
+        YtDlpStreamCandidate {
             stream_id: stream_id.to_string(),
             format_id: Some(format!("{format_id}+251")),
-            video: youtube_descriptor(YoutubeStreamKind::Video, format_id),
-            audio: Some(youtube_descriptor(YoutubeStreamKind::Audio, "251")),
+            video: yt_dlp_descriptor(YtDlpStreamKind::Video, format_id),
+            audio: Some(yt_dlp_descriptor(YtDlpStreamKind::Audio, "251")),
             height: requirement.height,
             fps: requirement.fps,
             vcodec: Some("vp09.00.10.08".to_string()),
             acodec: Some("opus".to_string()),
             dynamic_range,
-            video_requirement: YoutubeVideoRequirement::Ready(requirement),
+            video_requirement: YtDlpVideoRequirement::Ready(requirement),
             quality_score,
         }
     }
 
-    fn youtube_candidates(candidates: Vec<YoutubeStreamCandidate>) -> YoutubeStreamCandidates {
-        YoutubeStreamCandidates {
+    fn yt_dlp_candidates(candidates: Vec<YtDlpStreamCandidate>) -> YtDlpStreamCandidates {
+        YtDlpStreamCandidates {
             title: Some("sample".to_string()),
             service_media_id: Some("media-id".to_string()),
             duration: Some(Duration::from_secs(120)),
@@ -866,18 +860,18 @@ mod tests {
     }
 
     #[test]
-    fn pending_message_reports_existing_youtube_job() {
+    fn pending_message_reports_existing_yt_dlp_job() {
         let wake_port = AppWakePort::disconnected(AppWakeOwner::StartupMedia);
         let (_result_publisher, result_receiver) = owner_mailbox(wake_port.clone());
         let controller = StartupMediaController {
             wake_port,
             initial_media: None,
-            youtube_startup_job: Some(YoutubeStartupJob {
-                source_locator: service_youtube::parse_youtube_media_locator(
+            yt_dlp_startup_job: Some(YtDlpStartupJob {
+                source_locator: service_ytdlp::parse_yt_dlp_media_locator(
                     "https://www.youtube.com/watch?v=test",
                 )
                 .expect("test locator должен проходить service parse"),
-                pending_message: "Подготовка YouTube stream...".to_string(),
+                pending_message: "Подготовка YtDlp stream...".to_string(),
                 result_receiver,
                 join_handle: None,
                 pending_result: None,
@@ -897,7 +891,7 @@ mod tests {
         assert!(controller.has_pending_startup_job());
         assert_eq!(
             controller.pending_message(),
-            Some("Подготовка YouTube stream...")
+            Some("Подготовка YtDlp stream...")
         );
         assert!(
             controller.startup_job_admission_error().is_some(),
@@ -906,18 +900,18 @@ mod tests {
     }
 
     /// Собирает controller с synthetic worker-ом без network/media locator leakage.
-    fn controller_with_test_youtube_thread(join_handle: JoinHandle<()>) -> StartupMediaController {
+    fn controller_with_test_yt_dlp_thread(join_handle: JoinHandle<()>) -> StartupMediaController {
         let wake_port = AppWakePort::disconnected(AppWakeOwner::StartupMedia);
         let (_result_publisher, result_receiver) = owner_mailbox(wake_port.clone());
         StartupMediaController {
             wake_port,
             initial_media: None,
-            youtube_startup_job: Some(YoutubeStartupJob {
-                source_locator: service_youtube::parse_youtube_media_locator(
+            yt_dlp_startup_job: Some(YtDlpStartupJob {
+                source_locator: service_ytdlp::parse_yt_dlp_media_locator(
                     "https://www.youtube.com/watch?v=test",
                 )
                 .expect("test locator должен проходить service parse"),
-                pending_message: "Подготовка YouTube stream...".to_string(),
+                pending_message: "Подготовка YtDlp stream...".to_string(),
                 result_receiver,
                 join_handle: Some(join_handle),
                 pending_result: None,
@@ -939,7 +933,7 @@ mod tests {
     fn startup_shutdown_timeout_retains_handle_and_later_reaps_it() {
         let release = Arc::new(AtomicBool::new(false));
         let worker_release = Arc::clone(&release);
-        let mut controller = controller_with_test_youtube_thread(std::thread::spawn(move || {
+        let mut controller = controller_with_test_yt_dlp_thread(std::thread::spawn(move || {
             while !worker_release.load(Ordering::Acquire) {
                 std::thread::yield_now();
             }
@@ -949,7 +943,7 @@ mod tests {
             controller.shutdown_until(ShutdownDeadline::after(Duration::from_millis(1))),
             ProcessOwnerShutdownOutcome::TimedOut { pending_threads: 1 }
         );
-        assert!(controller.youtube_startup_job.is_some());
+        assert!(controller.yt_dlp_startup_job.is_some());
 
         release.store(true, Ordering::Release);
         assert_eq!(
@@ -964,7 +958,7 @@ mod tests {
 
     #[test]
     fn startup_shutdown_reports_worker_panic() {
-        let mut controller = controller_with_test_youtube_thread(std::thread::spawn(|| {
+        let mut controller = controller_with_test_yt_dlp_thread(std::thread::spawn(|| {
             panic!("expected startup panic");
         }));
 
@@ -1009,7 +1003,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_route_sends_youtube_host_to_youtube_path() {
+    fn cli_route_sends_yt_dlp_host_to_yt_dlp_path() {
         let (initial_media, startup_error) = resolve_initial_media_argument(
             Some(OsString::from("https://youtu.be/video-id")),
             &AppConfig::default(),
@@ -1065,18 +1059,14 @@ mod tests {
     }
 
     #[test]
-    fn cli_route_rejects_http_media_without_supported_extension() {
+    fn cli_route_sends_http_page_without_direct_extension_to_yt_dlp_fallback() {
         let (initial_media, startup_error) = resolve_initial_media_argument(
             Some(OsString::from("https://192.0.2.10/media")),
             &AppConfig::default(),
         );
 
-        assert!(initial_media.is_none());
-        assert!(
-            startup_error
-                .as_deref()
-                .is_some_and(|error| error.contains("Direct media URL unsupported"))
-        );
+        assert!(startup_error.is_none());
+        assert!(matches!(initial_media, Some(InitialMedia::Url(_))));
     }
 
     #[test]
@@ -1095,15 +1085,15 @@ mod tests {
     }
 
     #[test]
-    fn youtube_startup_selection_picks_supported_candidate_before_demux_open() {
-        let candidates = youtube_candidates(vec![
-            ready_youtube_candidate(
+    fn yt_dlp_startup_selection_picks_supported_candidate_before_demux_open() {
+        let candidates = yt_dlp_candidates(vec![
+            ready_yt_dlp_candidate(
                 "hdr-p010",
                 "315",
                 vp9_requirement(Vp9Profile::Profile2, BitDepth::Ten),
                 10_000,
             ),
-            ready_youtube_candidate(
+            ready_yt_dlp_candidate(
                 "sdr-nv12",
                 "303",
                 vp9_requirement(Vp9Profile::Profile0, BitDepth::Eight),
@@ -1111,9 +1101,9 @@ mod tests {
             ),
         ]);
 
-        let selected = select_youtube_startup_candidate(
+        let selected = select_yt_dlp_startup_candidate(
             &candidates,
-            YoutubeHdrSelection::SdrOnly,
+            YtDlpHdrSelection::SdrOnly,
             &capabilities_with_vp9_profile0(),
         )
         .expect("supported SDR candidate is selected");
@@ -1122,8 +1112,8 @@ mod tests {
     }
 
     #[test]
-    fn youtube_startup_codec_policy_uses_first_supported_configured_codec() {
-        let candidates = youtube_candidates(vec![ready_youtube_candidate(
+    fn yt_dlp_startup_codec_policy_uses_first_supported_configured_codec() {
+        let candidates = yt_dlp_candidates(vec![ready_yt_dlp_candidate(
             "vp9-video",
             "247",
             vp9_requirement(Vp9Profile::Profile0, BitDepth::Eight),
@@ -1131,84 +1121,84 @@ mod tests {
         )]);
         let capabilities = capabilities_with_vp9_profile0();
 
-        let selected = select_youtube_startup_candidate_with_codec_order(
+        let selected = select_yt_dlp_startup_candidate_with_codec_order(
             &candidates,
             &[ConfigVideoCodec::Av1, ConfigVideoCodec::Vp9],
-            YoutubeHdrSelection::SdrOnly,
+            YtDlpHdrSelection::SdrOnly,
             &capabilities,
         )
         .expect("policy must continue to the first supported configured codec");
         assert_eq!(selected.stream_id, "vp9-video");
 
-        let error = select_youtube_startup_candidate_with_codec_order(
+        let error = select_yt_dlp_startup_candidate_with_codec_order(
             &candidates,
             &[ConfigVideoCodec::Av1],
-            YoutubeHdrSelection::SdrOnly,
+            YtDlpHdrSelection::SdrOnly,
             &capabilities,
         )
         .expect_err("codec omitted from policy must not be selected");
         assert!(matches!(
             error,
-            service_youtube::YoutubeStreamSelectionError::NoPlayableSdr { .. }
+            service_ytdlp::YtDlpStreamSelectionError::NoPlayableSdr { .. }
         ));
     }
 
     #[test]
-    fn youtube_startup_selection_returns_typed_capability_rejection() {
-        let candidates = youtube_candidates(vec![ready_youtube_candidate(
+    fn yt_dlp_startup_selection_returns_typed_capability_rejection() {
+        let candidates = yt_dlp_candidates(vec![ready_yt_dlp_candidate(
             "sdr-nv12",
             "303",
             vp9_requirement(Vp9Profile::Profile0, BitDepth::Eight),
             1_000,
         )]);
 
-        let error = select_youtube_startup_candidate(
+        let error = select_yt_dlp_startup_candidate(
             &candidates,
-            YoutubeHdrSelection::SdrOnly,
+            YtDlpHdrSelection::SdrOnly,
             &SystemCapabilities::empty(1),
         )
         .expect_err("empty capabilities reject ready candidate");
 
         assert!(matches!(
             error,
-            service_youtube::YoutubeStreamSelectionError::NoPlayableSdr { rejections }
+            service_ytdlp::YtDlpStreamSelectionError::NoPlayableSdr { rejections }
                 if rejections.iter().any(|rejection| matches!(
                     rejection.reason,
-                    service_youtube::YoutubeCandidateRejectionReason::Capability(_)
+                    service_ytdlp::YtDlpCandidateRejectionReason::Capability(_)
                 ))
         ));
     }
 
     #[test]
-    fn youtube_startup_selection_reports_insufficient_service_metadata() {
-        let mut candidate = ready_youtube_candidate(
+    fn yt_dlp_startup_selection_reports_insufficient_service_metadata() {
+        let mut candidate = ready_yt_dlp_candidate(
             "plain-vp9",
             "248",
             VideoDecodeRequirement::new(VideoCodec::Vp9),
             1_000,
         );
         candidate.video_requirement =
-            YoutubeVideoRequirement::Insufficient(YoutubeInsufficientVideoMetadata {
+            YtDlpVideoRequirement::Insufficient(YtDlpInsufficientVideoMetadata {
                 reason: "missing VP9 profile metadata".to_string(),
                 partial_requirement: Some(VideoDecodeRequirement::new(VideoCodec::Vp9)),
             });
-        let candidates = youtube_candidates(vec![candidate]);
+        let candidates = yt_dlp_candidates(vec![candidate]);
 
-        let error = select_youtube_startup_candidate(
+        let error = select_yt_dlp_startup_candidate(
             &candidates,
-            YoutubeHdrSelection::SdrOnly,
+            YtDlpHdrSelection::SdrOnly,
             &capabilities_with_vp9_profile0(),
         )
         .expect_err("insufficient service metadata is rejected before selection");
 
         assert!(matches!(
             error,
-            service_youtube::YoutubeStreamSelectionError::NoPlayableSdr { rejections }
+            service_ytdlp::YtDlpStreamSelectionError::NoPlayableSdr { rejections }
                 if rejections.iter().any(|rejection| {
                     rejection.stream_id == "plain-vp9"
                         && matches!(
                             &rejection.reason,
-                            service_youtube::YoutubeCandidateRejectionReason::InsufficientVideoMetadata { reason }
+                            service_ytdlp::YtDlpCandidateRejectionReason::InsufficientVideoMetadata { reason }
                                 if reason.contains("missing VP9 profile metadata")
                         )
                 })
@@ -1216,43 +1206,43 @@ mod tests {
     }
 
     #[test]
-    fn youtube_startup_selection_rejects_candidate_without_audio_companion() {
-        let mut candidate = ready_youtube_candidate(
+    fn yt_dlp_startup_selection_rejects_candidate_without_audio_companion() {
+        let mut candidate = ready_yt_dlp_candidate(
             "video-without-audio",
             "303",
             vp9_requirement(Vp9Profile::Profile0, BitDepth::Eight),
             1_000,
         );
         candidate.audio = None;
-        let candidates = youtube_candidates(vec![candidate]);
+        let candidates = yt_dlp_candidates(vec![candidate]);
 
-        let error = select_youtube_startup_candidate(
+        let error = select_yt_dlp_startup_candidate(
             &candidates,
-            YoutubeHdrSelection::SdrOnly,
+            YtDlpHdrSelection::SdrOnly,
             &capabilities_with_vp9_profile0(),
         )
         .expect_err("video-only candidate is not openable by current service path");
 
         assert!(matches!(
             error,
-            service_youtube::YoutubeStreamSelectionError::NoPlayableSdr { rejections }
+            service_ytdlp::YtDlpStreamSelectionError::NoPlayableSdr { rejections }
                 if rejections.iter().any(|rejection| {
                     rejection.stream_id == "video-without-audio"
                         && rejection.reason
-                            == service_youtube::YoutubeCandidateRejectionReason::MissingAudioCompanion
+                            == service_ytdlp::YtDlpCandidateRejectionReason::MissingAudioCompanion
                 })
         ));
     }
 
     #[test]
-    fn youtube_startup_sdr_only_selects_sdr_candidate() {
+    fn yt_dlp_startup_sdr_only_selects_sdr_candidate() {
         // Явная пользовательская политика SdrOnly не допускает HDR даже при
         // более высоком quality score.
         let mut hdr_requirement = vp9_requirement(Vp9Profile::Profile2, BitDepth::Ten);
         hdr_requirement.hdr = true;
-        let candidates = youtube_candidates(vec![
-            ready_youtube_candidate("hdr-stream", "315", hdr_requirement, 10_000),
-            ready_youtube_candidate(
+        let candidates = yt_dlp_candidates(vec![
+            ready_yt_dlp_candidate("hdr-stream", "315", hdr_requirement, 10_000),
+            ready_yt_dlp_candidate(
                 "sdr-nv12",
                 "303",
                 vp9_requirement(Vp9Profile::Profile0, BitDepth::Eight),
@@ -1260,9 +1250,9 @@ mod tests {
             ),
         ]);
 
-        let selected = select_youtube_startup_candidate(
+        let selected = select_yt_dlp_startup_candidate(
             &candidates,
-            YoutubeHdrSelection::SdrOnly,
+            YtDlpHdrSelection::SdrOnly,
             &capabilities_with_vp9_profile0(),
         )
         .expect("SDR candidate остаётся выбираемым при отключённом HDR");
@@ -1271,28 +1261,28 @@ mod tests {
     }
 
     #[test]
-    fn youtube_startup_sdr_only_reports_no_playable_sdr_for_hdr_only_list() {
+    fn yt_dlp_startup_sdr_only_reports_no_playable_sdr_for_hdr_only_list() {
         // Единственный кандидат — HDR, поэтому SdrOnly возвращает отдельную
         // typed ошибку отсутствия playable SDR.
         let mut hdr_requirement = vp9_requirement(Vp9Profile::Profile2, BitDepth::Ten);
         hdr_requirement.hdr = true;
-        let candidates = youtube_candidates(vec![ready_youtube_candidate(
+        let candidates = yt_dlp_candidates(vec![ready_yt_dlp_candidate(
             "hdr-only",
             "315",
             hdr_requirement,
             10_000,
         )]);
 
-        let error = select_youtube_startup_candidate(
+        let error = select_yt_dlp_startup_candidate(
             &candidates,
-            YoutubeHdrSelection::SdrOnly,
+            YtDlpHdrSelection::SdrOnly,
             &capabilities_with_vp9_profile0(),
         )
         .expect_err("HDR-only кандидат отфильтрован до capability selection");
 
         assert!(matches!(
             error,
-            service_youtube::YoutubeStreamSelectionError::NoPlayableSdr { .. }
+            service_ytdlp::YtDlpStreamSelectionError::NoPlayableSdr { .. }
         ));
     }
 }

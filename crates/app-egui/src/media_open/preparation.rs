@@ -1,4 +1,4 @@
-//! Production adapters существующих local/direct/YouTube preparation owners.
+//! Production adapters существующих local/direct/YtDlp preparation owners.
 
 use player_core::PreparedMedia;
 
@@ -77,11 +77,11 @@ pub(super) fn prepare_source(
                 },
             })
         }
-        MediaOpenSourceRequest::YouTube {
+        MediaOpenSourceRequest::YtDlp {
             locator,
             required_stream_identity,
             network_config,
-            youtube_config,
+            yt_dlp_config,
             demux_config,
             preferred_video_codec_order,
             system_capabilities,
@@ -89,33 +89,33 @@ pub(super) fn prepare_source(
             let safe_label = SafeMediaLabel::from_service_safe_label(locator.safe_label());
             let prepared = match required_stream_identity {
                 Some(selected_stream_identity) => {
-                    let streaming_media = service_youtube::open_streaming_media_from_selected_identity_with_demux_config(
+                    let streaming_media = service_ytdlp::open_streaming_media_from_selected_identity_with_demux_config(
                         &locator,
                         &selected_stream_identity,
                         &network_config,
-                        &youtube_config,
+                        &yt_dlp_config,
                         &demux_config,
                     )
                     .map_err(|error| {
-                        tracing::warn!(source = %safe_label, error = %error, "Повторная подготовка exact YouTube media завершилась ошибкой");
-                        MediaPreparationFailureKind::YouTubeOpen
+                        tracing::warn!(source = %safe_label, error = %error, "Повторная подготовка exact YtDlp media завершилась ошибкой");
+                        MediaPreparationFailureKind::YtDlpOpen
                     })?;
-                    crate::startup_media::PreparedYoutubeStartupMedia {
+                    crate::startup_media::PreparedYtDlpStartupMedia {
                         streaming_media,
                         selected_stream_identity: *selected_stream_identity,
                     }
                 }
-                None => crate::startup_media::resolve_youtube_startup_media(
+                None => crate::startup_media::resolve_yt_dlp_startup_media(
                     &locator,
                     &network_config,
-                    &youtube_config,
+                    &yt_dlp_config,
                     &demux_config,
                     &preferred_video_codec_order,
                     &system_capabilities,
                 )
                 .map_err(|error| {
-                    tracing::warn!(source = %safe_label, error = %error, "Подготовка YouTube media завершилась ошибкой");
-                    MediaPreparationFailureKind::YouTubeOpen
+                    tracing::warn!(source = %safe_label, error = %error, "Подготовка YtDlp media завершилась ошибкой");
+                    MediaPreparationFailureKind::YtDlpOpen
                 })?,
             };
             if is_cancelled() {
@@ -130,7 +130,7 @@ pub(super) fn prepare_source(
                 .media_metadata()
                 .unwrap_or_default()
                 .tags;
-            let (duration, metadata) = merge_youtube_playlist_metadata(
+            let (duration, metadata) = merge_yt_dlp_playlist_metadata(
                 demux_duration,
                 demux_metadata,
                 service_metadata.title(),
@@ -142,11 +142,11 @@ pub(super) fn prepare_source(
             );
             Ok(PreparedMediaOpen {
                 prepared_media,
-                descriptor: PreparedMediaDescriptor::YouTube {
+                descriptor: PreparedMediaDescriptor::YtDlp {
                     tracks,
                     duration,
                     metadata,
-                    source: ActiveMediaSource::YouTubeUrl {
+                    source: ActiveMediaSource::YtDlpUrl {
                         source_locator: locator,
                         selected_stream_identity: prepared.selected_stream_identity,
                     },
@@ -158,7 +158,7 @@ pub(super) fn prepare_source(
 }
 
 /// Service title/duration заполняют только пробелы demux metadata и не стирают более полный snapshot.
-fn merge_youtube_playlist_metadata(
+fn merge_yt_dlp_playlist_metadata(
     demux_duration: Option<std::time::Duration>,
     mut demux_metadata: media_core::MediaTagMetadata,
     service_title: Option<&str>,
@@ -180,22 +180,19 @@ mod tests {
 
     use media_core::MediaTagMetadata;
 
-    use super::merge_youtube_playlist_metadata;
+    use super::merge_yt_dlp_playlist_metadata;
 
     #[test]
-    fn youtube_service_metadata_fills_missing_demux_values() {
-        let (duration, metadata) = merge_youtube_playlist_metadata(
+    fn yt_dlp_service_metadata_fills_missing_demux_values() {
+        let (duration, metadata) = merge_yt_dlp_playlist_metadata(
             None,
             MediaTagMetadata::default(),
-            Some("Настоящее YouTube название"),
+            Some("Настоящее YtDlp название"),
             Some(Duration::from_secs(90)),
         );
 
         assert_eq!(duration, Some(Duration::from_secs(90)));
-        assert_eq!(
-            metadata.title.as_deref(),
-            Some("Настоящее YouTube название")
-        );
+        assert_eq!(metadata.title.as_deref(), Some("Настоящее YtDlp название"));
     }
 
     #[test]
@@ -205,10 +202,10 @@ mod tests {
             artists: vec!["Автор".to_string()],
             ..MediaTagMetadata::default()
         };
-        let (duration, metadata) = merge_youtube_playlist_metadata(
+        let (duration, metadata) = merge_yt_dlp_playlist_metadata(
             Some(Duration::from_secs(91)),
             demux_metadata,
-            Some("Название YouTube"),
+            Some("Название YtDlp"),
             Some(Duration::from_secs(90)),
         );
 

@@ -5,12 +5,12 @@ use std::thread::JoinHandle;
 
 use tracing::warn;
 
-use super::{DirectMediaStartupJob, StartupMediaController, YoutubeStartupJob};
+use super::{DirectMediaStartupJob, StartupMediaController, YtDlpStartupJob};
 use crate::process_shutdown::{
     FinishedThreadJoin, ProcessOwnerShutdownOutcome, ShutdownDeadline, join_thread_until,
 };
 
-impl YoutubeStartupJob {
+impl YtDlpStartupJob {
     /// Cooperative-cancel-ит resolver и bounded-join-ит finished handle.
     fn shutdown_until(&mut self, deadline: ShutdownDeadline) -> ProcessOwnerShutdownOutcome {
         self.cancellation_requested.store(true, Ordering::Release);
@@ -18,10 +18,10 @@ impl YoutubeStartupJob {
     }
 }
 
-impl Drop for YoutubeStartupJob {
+impl Drop for YtDlpStartupJob {
     fn drop(&mut self) {
         self.cancellation_requested.store(true, Ordering::Release);
-        join_startup_thread_on_fail_safe_drop(&mut self.join_handle, "YouTube startup resolver");
+        join_startup_thread_on_fail_safe_drop(&mut self.join_handle, "YtDlp startup resolver");
     }
 }
 
@@ -55,7 +55,7 @@ impl StartupMediaController {
 
         // Все owners сначала теряют admission/apply authority и получают cancel,
         // только после этого общий deadline расходуется на bounded join.
-        if let Some(job) = self.youtube_startup_job.as_ref() {
+        if let Some(job) = self.yt_dlp_startup_job.as_ref() {
             job.cancellation_requested.store(true, Ordering::Release);
         }
         if let Some(job) = self.direct_media_startup_job.as_ref() {
@@ -64,14 +64,14 @@ impl StartupMediaController {
 
         let mut panicked_threads = 0;
         let mut pending_threads = 0;
-        if let Some(job) = self.youtube_startup_job.as_mut() {
+        if let Some(job) = self.yt_dlp_startup_job.as_mut() {
             accumulate_shutdown_outcome(
                 job.shutdown_until(deadline),
                 &mut panicked_threads,
                 &mut pending_threads,
             );
             if job.join_handle.is_none() {
-                self.youtube_startup_job = None;
+                self.yt_dlp_startup_job = None;
             }
         }
         if let Some(job) = self.direct_media_startup_job.as_mut() {
@@ -127,7 +127,7 @@ impl StartupMediaController {
         if self.terminal_shutdown_started {
             return Some("Startup media shutdown уже начат; новый job запрещён".to_string());
         }
-        if self.youtube_startup_job.is_some()
+        if self.yt_dlp_startup_job.is_some()
             || self.direct_media_startup_job.is_some()
             || self.local_startup_job.is_some()
         {

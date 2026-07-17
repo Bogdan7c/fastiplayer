@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::YoutubeHdrSelection;
+use super::YtDlpHdrSelection;
 
 /// Настройки аудио.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, settings_derive::SettingsSchema)]
@@ -218,91 +218,74 @@ impl Default for NetworkConfig {
     }
 }
 
-/// Настройки YouTube/service слоя.
+/// Настройки YtDlp/service слоя.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, settings_derive::SettingsSchema)]
 #[settings(require_all_fields)]
 #[serde(default, deny_unknown_fields)]
-pub struct YoutubeConfig {
-    /// Разрешает YouTube adapter.
+pub struct YtDlpConfig {
+    /// Разрешает YtDlp adapter.
     #[setting(
-        id = "youtube.enabled",
-        path = "youtube.enabled",
-        section = "youtube",
+        id = "yt_dlp.enabled",
+        path = "yt_dlp.enabled",
+        section = "yt_dlp",
         group = "service",
         surface = "main-settings-window",
-        label_id = "settings.youtube.enabled.label",
-        label_ru = "YouTube adapter",
-        description_id = "settings.youtube.enabled.description",
-        description_ru = "Разрешает YouTube service adapter.",
+        label_id = "settings.yt_dlp.enabled.label",
+        label_ru = "YtDlp adapter",
+        description_id = "settings.yt_dlp.enabled.description",
+        description_ru = "Разрешает YtDlp service adapter.",
         editor = "toggle",
-        apply = "youtube.apply"
+        apply = "yt_dlp.apply"
     )]
     pub enabled: bool,
 
-    /// Предпочитать account/session cookies, если service adapter их поддерживает.
-    #[setting(
-        id = "youtube.prefer_account_session",
-        path = "youtube.prefer_account_session",
-        section = "youtube",
-        group = "service",
-        surface = "main-settings-window",
-        label_id = "settings.youtube.prefer_account_session.label",
-        label_ru = "Использовать account session",
-        description_id = "settings.youtube.prefer_account_session.description",
-        description_ru = "Предпочитать account/session cookies, если adapter их поддерживает.",
-        editor = "toggle",
-        apply = "youtube.apply"
-    )]
-    pub prefer_account_session: bool,
-
     /// Политика выбора SDR/HDR stream-а до открытия media bytes.
     #[setting(
-        id = "youtube.hdr_selection",
-        path = "youtube.hdr_selection",
-        section = "youtube",
+        id = "yt_dlp.hdr_selection",
+        path = "yt_dlp.hdr_selection",
+        section = "yt_dlp",
         group = "service",
         surface = "main-settings-window",
-        label_id = "settings.youtube.hdr_selection.label",
-        label_ru = "Динамический диапазон YouTube",
-        description_id = "settings.youtube.hdr_selection.description",
+        label_id = "settings.yt_dlp.hdr_selection.label",
+        label_ru = "Динамический диапазон YtDlp",
+        description_id = "settings.yt_dlp.hdr_selection.description",
         description_ru = "Выбирать только SDR или предпочитать HDR при полной поддержке decoder и renderer с автоматическим SDR fallback.",
         editor = "select",
-        apply = "youtube.apply",
+        apply = "yt_dlp.apply",
         options(
-            option(id = "sdr_only", label_id = "settings.youtube.hdr_selection.sdr_only", label_ru = "Только SDR", value = YoutubeHdrSelection::SdrOnly),
-            option(id = "prefer_hdr", label_id = "settings.youtube.hdr_selection.prefer_hdr", label_ru = "Предпочитать HDR", value = YoutubeHdrSelection::PreferHdrWhenAvailable),
+            option(id = "sdr_only", label_id = "settings.yt_dlp.hdr_selection.sdr_only", label_ru = "Только SDR", value = YtDlpHdrSelection::SdrOnly),
+            option(id = "prefer_hdr", label_id = "settings.yt_dlp.hdr_selection.prefer_hdr", label_ru = "Предпочитать HDR", value = YtDlpHdrSelection::PreferHdrWhenAvailable),
         )
     )]
-    pub hdr_selection: YoutubeHdrSelection,
+    pub hdr_selection: YtDlpHdrSelection,
 
     /// Максимальное время подготовки direct stream metadata через `yt-dlp`.
     #[setting(
-        id = "youtube.resolve_timeout_ms",
-        path = "youtube.resolve_timeout_ms",
-        section = "youtube",
+        id = "yt_dlp.resolve_timeout_ms",
+        path = "yt_dlp.resolve_timeout_ms",
+        section = "yt_dlp",
         group = "service",
         surface = "main-settings-window",
-        label_id = "settings.youtube.resolve_timeout_ms.label",
-        label_ru = "YouTube resolve timeout",
-        description_id = "settings.youtube.resolve_timeout_ms.description",
+        label_id = "settings.yt_dlp.resolve_timeout_ms.label",
+        label_ru = "YtDlp resolve timeout",
+        description_id = "settings.yt_dlp.resolve_timeout_ms.description",
         description_ru = "Максимальное время подготовки direct stream metadata через yt-dlp.",
         editor = "integer",
         min = 1,
-        max = crate::validation::MAX_YOUTUBE_RESOLVE_TIMEOUT_MS,
+        max = crate::validation::MAX_YT_DLP_RESOLVE_TIMEOUT_MS,
         step = 100,
         unit = "ms",
-        apply = "youtube.apply"
+        apply = "yt_dlp.apply"
     )]
     pub resolve_timeout_ms: u64,
 }
 
-impl Default for YoutubeConfig {
+impl Default for YtDlpConfig {
     /// Возвращает включённый service adapter для текущего приложения.
     fn default() -> Self {
         Self {
             enabled: true,
-            prefer_account_session: true,
-            hdr_selection: YoutubeHdrSelection::SdrOnly,
+            hdr_selection: YtDlpHdrSelection::SdrOnly,
             resolve_timeout_ms: 30_000,
         }
     }

@@ -91,10 +91,10 @@ impl fmt::Display for SafeMediaLabel {
 pub(crate) enum ActiveMediaSource {
     /// Exact native path; `Debug` ниже не раскрывает его.
     LocalFile(PathBuf),
-    /// Stable normalized YouTube locator + exact selected stream pair.
-    YouTubeUrl {
-        source_locator: service_youtube::YoutubeMediaLocator,
-        selected_stream_identity: service_youtube::YoutubeSelectedStreamIdentity,
+    /// Stable normalized YtDlp locator + exact selected stream pair.
+    YtDlpUrl {
+        source_locator: service_ytdlp::YtDlpMediaLocator,
+        selected_stream_identity: service_ytdlp::YtDlpSelectedStreamIdentity,
     },
     /// Exact functional direct locator с service-owned redacted formatting.
     DirectMediaUrl(service_direct_media::DirectMediaUrl),
@@ -104,8 +104,8 @@ impl fmt::Debug for ActiveMediaSource {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::LocalFile(_) => formatter.write_str("LocalFile(<redacted-path>)"),
-            Self::YouTubeUrl { source_locator, .. } => formatter
-                .debug_struct("YouTubeUrl")
+            Self::YtDlpUrl { source_locator, .. } => formatter
+                .debug_struct("YtDlpUrl")
                 .field("source_locator", source_locator)
                 .field("selected_stream_identity", &"<selected-stream>")
                 .finish(),
@@ -139,8 +139,8 @@ pub(crate) enum PreparedMediaDescriptor {
         source: ActiveMediaSource,
         safe_label: SafeMediaLabel,
     },
-    /// YouTube parity envelope с exact service-selected stream identity.
-    YouTube {
+    /// YtDlp parity envelope с exact service-selected stream identity.
+    YtDlp {
         tracks: Vec<TrackInfo>,
         duration: Option<Duration>,
         metadata: MediaTagMetadata,
@@ -185,7 +185,7 @@ impl PreparedMediaDescriptor {
                 metadata,
                 ..
             }
-            | Self::YouTube {
+            | Self::YtDlp {
                 tracks,
                 duration,
                 metadata,
@@ -215,7 +215,7 @@ impl PreparedMediaDescriptor {
         match self {
             Self::Local { source, .. }
             | Self::Direct { source, .. }
-            | Self::YouTube { source, .. }
+            | Self::YtDlp { source, .. }
             | Self::CallerPrepared { source, .. } => source.clone(),
         }
     }
@@ -254,11 +254,11 @@ pub(crate) enum MediaOpenSourceRequest {
         network_config: rustiplayer_config::NetworkConfig,
         demux_config: rustiplayer_config::PlayerDemuxConfig,
     },
-    YouTube {
-        locator: service_youtube::YoutubeMediaLocator,
-        required_stream_identity: Option<Box<service_youtube::YoutubeSelectedStreamIdentity>>,
+    YtDlp {
+        locator: service_ytdlp::YtDlpMediaLocator,
+        required_stream_identity: Option<Box<service_ytdlp::YtDlpSelectedStreamIdentity>>,
         network_config: rustiplayer_config::NetworkConfig,
-        youtube_config: rustiplayer_config::YoutubeConfig,
+        yt_dlp_config: rustiplayer_config::YtDlpConfig,
         demux_config: rustiplayer_config::PlayerDemuxConfig,
         preferred_video_codec_order: Vec<rustiplayer_config::VideoCodec>,
         system_capabilities: capability_core::SystemCapabilities,
@@ -374,7 +374,7 @@ pub(crate) enum MediaPreparationFailureKind {
     LocalOpen,
     LocalSourceChanged,
     DirectOpen,
-    YouTubeOpen,
+    YtDlpOpen,
     Cancelled,
     StaleResult,
     WorkerPanicked,
@@ -462,13 +462,13 @@ mod tests {
         assert!(!direct_label.contains("password"));
         assert!(!direct_label.contains("very-secret"));
 
-        let youtube_secret = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&token=youtube-secret";
-        let youtube_locator = service_youtube::parse_youtube_media_locator(youtube_secret)
-            .expect("YouTube locator parsed");
-        let youtube_label =
-            SafeMediaLabel::from_service_safe_label(youtube_locator.safe_label()).to_string();
-        assert!(!youtube_label.contains("youtube-secret"));
-        assert!(!youtube_label.contains('?'));
+        let yt_dlp_secret = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&token=yt_dlp-secret";
+        let yt_dlp_locator =
+            service_ytdlp::parse_yt_dlp_media_locator(yt_dlp_secret).expect("YtDlp locator parsed");
+        let yt_dlp_label =
+            SafeMediaLabel::from_service_safe_label(yt_dlp_locator.safe_label()).to_string();
+        assert!(!yt_dlp_label.contains("yt_dlp-secret"));
+        assert!(!yt_dlp_label.contains('?'));
     }
 
     #[test]

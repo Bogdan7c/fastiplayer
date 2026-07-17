@@ -59,7 +59,7 @@ impl PlaylistRuntime {
         active
     }
 
-    /// D31 принимает local refresh и service-owned YouTube enrichment видимых rows.
+    /// D31 принимает local refresh и service-owned YtDlp enrichment видимых rows.
     #[allow(
         dead_code,
         reason = "Session 18/19 visible-row hint invokes this action"
@@ -67,7 +67,7 @@ impl PlaylistRuntime {
     pub(crate) fn request_visible_metadata_refresh(
         &mut self,
         item_ids: &[PlaylistItemId],
-        youtube_config: &rustiplayer_config::YoutubeConfig,
+        yt_dlp_config: &rustiplayer_config::YtDlpConfig,
     ) -> VisibleRefreshRequestOutcome {
         let Some(controller) = self.controller.as_ref() else {
             return VisibleRefreshRequestOutcome::default();
@@ -91,7 +91,7 @@ impl PlaylistRuntime {
                 })
             })
             .collect();
-        let youtube_demands = item_ids
+        let yt_dlp_demands = item_ids
             .iter()
             .filter_map(|item_id| {
                 let item = controller.queue().item(*item_id)?;
@@ -108,18 +108,18 @@ impl PlaylistRuntime {
                 else {
                     return None;
                 };
-                let PlaylistUrlMetadataSource::YouTube(youtube_locator) =
+                let PlaylistUrlMetadataSource::YtDlp(yt_dlp_locator) =
                     locator.playlist_metadata_source()?;
-                Some(super::youtube_metadata::YoutubeMetadataDemand::new(
+                Some(super::yt_dlp_metadata::YtDlpMetadataDemand::new(
                     *item_id,
                     item.locator().clone(),
-                    youtube_locator,
-                    youtube_config.clone(),
+                    yt_dlp_locator,
+                    yt_dlp_config.clone(),
                 ))
             })
             .collect();
         let outcome = self.discovery.request_visible_refresh(local_demands);
-        let _youtube_outcome = self.discovery.request_youtube_metadata(youtube_demands);
+        let _yt_dlp_outcome = self.discovery.request_yt_dlp_metadata(yt_dlp_demands);
         outcome
     }
 
@@ -170,11 +170,11 @@ impl PlaylistDiscoveryCoordinator {
         self.action_jobs.request_visible_refresh(demands)
     }
 
-    pub(in crate::playlist_runtime) fn request_youtube_metadata(
+    pub(in crate::playlist_runtime) fn request_yt_dlp_metadata(
         &mut self,
-        demands: Vec<super::YoutubeMetadataDemand>,
-    ) -> super::youtube_metadata::YoutubeMetadataRequestOutcome {
-        self.youtube_metadata
+        demands: Vec<super::YtDlpMetadataDemand>,
+    ) -> super::yt_dlp_metadata::YtDlpMetadataRequestOutcome {
+        self.yt_dlp_metadata
             .request(demands, std::time::Instant::now())
     }
 
@@ -191,14 +191,14 @@ impl PlaylistDiscoveryCoordinator {
     pub(super) fn cancel_action_jobs_for_queue_replacement(&mut self) {
         self.action_jobs.cancel_for_queue_replacement();
         self.metadata_sort.cancel_for_queue_replacement();
-        self.youtube_metadata.cancel_for_queue_replacement();
+        self.yt_dlp_metadata.cancel_for_queue_replacement();
     }
 
     #[cfg(test)]
-    pub(in crate::playlist_runtime) fn replace_youtube_metadata_resolver_for_test(
+    pub(in crate::playlist_runtime) fn replace_yt_dlp_metadata_resolver_for_test(
         &mut self,
-        resolver: std::sync::Arc<dyn super::YoutubeMetadataResolver>,
+        resolver: std::sync::Arc<dyn super::YtDlpMetadataResolver>,
     ) {
-        self.youtube_metadata.replace_resolver_for_test(resolver);
+        self.yt_dlp_metadata.replace_resolver_for_test(resolver);
     }
 }

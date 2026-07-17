@@ -54,7 +54,7 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/render-wgpu-video
     crates/render-wgpu-shell
     crates/video-vaapi
-    crates/service-youtube
+    crates/service-ytdlp
 )
 
 # Функция печатает поддерживаемые стабильные имена проверок.

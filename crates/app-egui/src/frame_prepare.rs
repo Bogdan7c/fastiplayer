@@ -29,7 +29,7 @@ use crate::settings_runtime::{
     CommittedConfigSnapshot, SettingsRuntime, SettingsRuntimeReconfigureHost,
 };
 use crate::startup_media::{
-    resolve_direct_media_startup_media, resolve_youtube_startup_media, runtime_video_codec,
+    resolve_direct_media_startup_media, resolve_yt_dlp_startup_media, runtime_video_codec,
 };
 use crate::state::{
     ActiveMediaSource, AppState, BackendSwapVideoPhase, MainVisualOverrideAcquisition,
@@ -1202,9 +1202,9 @@ pub(crate) fn render_frame(
     if let Some(hint) = playlist_visible_items_hint
         && playlist_runtime.validate_binding(hint.binding()).is_ok()
     {
-        let youtube_config = app_state.youtube_metadata_config();
+        let yt_dlp_config = app_state.yt_dlp_metadata_config();
         let _refresh_outcome =
-            playlist_runtime.request_visible_metadata_refresh(hint.item_ids(), &youtube_config);
+            playlist_runtime.request_visible_metadata_refresh(hint.item_ids(), &yt_dlp_config);
     }
     crate::transport_runtime::apply_transport_actions(
         app_state,

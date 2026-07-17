@@ -1,4 +1,4 @@
-/// Добавляет русские комментарии к полям schema version 5 в default TOML.
+/// Добавляет русские комментарии к полям schema version 6 в default TOML.
 pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     insert_default_config_comment(
         toml_text,
@@ -237,18 +237,18 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
-        "[youtube]",
-        "# Настройки YouTube/service adapter-а.",
+        "[yt_dlp]",
+        "# Настройки generic yt-dlp service adapter-а.",
     );
     insert_default_config_comment(
         toml_text,
         "hdr_selection = \"sdr_only\"",
-        "# Политика YouTube dynamic range: только SDR или HDR с автоматическим SDR fallback.",
+        "# Политика yt-dlp dynamic range: только SDR или HDR с автоматическим SDR fallback.",
     );
     insert_default_config_comment(
         toml_text,
         "resolve_timeout_ms = 30000",
-        "# Timeout подготовки YouTube metadata через yt-dlp.",
+        "# Timeout подготовки metadata через системный yt-dlp.",
     );
     insert_default_config_comment(
         toml_text,

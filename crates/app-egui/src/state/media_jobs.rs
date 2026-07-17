@@ -82,7 +82,7 @@ impl AppState {
         self.clear_startup_status();
         self.current_local_file = match &source {
             ActiveMediaSource::LocalFile(path) => Some(path.clone()),
-            ActiveMediaSource::DirectMediaUrl(_) | ActiveMediaSource::YouTubeUrl { .. } => None,
+            ActiveMediaSource::DirectMediaUrl(_) | ActiveMediaSource::YtDlpUrl { .. } => None,
         };
         self.remember_active_media_source(source);
         self.mark_pending_worker_redraw();

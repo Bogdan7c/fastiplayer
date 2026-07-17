@@ -23,10 +23,11 @@ pub use schema::{
     PlaylistSiblingMediaFilter, RenderColorAdjustmentConfig, RenderConfig, RenderProfile,
     ToneMappingMode, UiAnimationsConfig, UiConfig, UiSettingsConfig, UiWindowConfig,
     VideoBackendPreference, VideoCodec, VideoConfig, VideoSchedulerConfig, VulkanConfig,
-    VulkanPresentMode, YoutubeConfig, YoutubeHdrSelection,
+    VulkanPresentMode, YtDlpConfig, YtDlpHdrSelection,
 };
 pub(crate) use schema::{
     LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3, LEGACY_SCHEMA_VERSION_4,
+    LEGACY_SCHEMA_VERSION_5,
 };
 pub use store::{
     LoadedConfig, load_from_path, load_or_create, load_or_create_at, save_validated_atomic_at,

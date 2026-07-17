@@ -8,27 +8,27 @@ use source_core::{
     SourceValidators,
 };
 
-use crate::YoutubeMediaLocator;
-use crate::dto::{YoutubeDirectStreamDescriptor, YoutubeStreamKind};
-use crate::resolver::YoutubeDirectStreamResolver;
+use crate::YtDlpMediaLocator;
+use crate::dto::{YtDlpDirectStreamDescriptor, YtDlpStreamKind};
+use crate::resolver::DirectStreamResolver;
 
 /// Контекст refresh-а direct URL, ограниченный одним stream-ом.
 #[derive(Clone)]
 pub(crate) struct RefreshContext {
     /// Исходный URL страницы/ролика, который понимает yt-dlp.
-    pub(crate) original_locator: YoutubeMediaLocator,
+    pub(crate) original_locator: YtDlpMediaLocator,
 
     /// Какой stream нужно достать из свежей пары descriptors.
-    pub(crate) stream_kind: YoutubeStreamKind,
+    pub(crate) stream_kind: YtDlpStreamKind,
 
     /// Resolver, который умеет заново получить direct URLs.
-    pub(crate) resolver: Arc<dyn YoutubeDirectStreamResolver>,
+    pub(crate) resolver: Arc<dyn DirectStreamResolver>,
 }
 
 /// HTTP Range source с одноразовым refresh-ом direct URL через service layer.
-pub(crate) struct YoutubeRefreshingRangeSource {
+pub(crate) struct YtDlpRefreshingRangeSource {
     /// Текущий direct stream descriptor.
-    descriptor: YoutubeDirectStreamDescriptor,
+    descriptor: YtDlpDirectStreamDescriptor,
 
     /// Настройки HTTP/cache layer из пользовательского config.
     source_config: SourceRuntimeConfig,
@@ -43,10 +43,10 @@ pub(crate) struct YoutubeRefreshingRangeSource {
     refresh_attempted: bool,
 }
 
-impl YoutubeRefreshingRangeSource {
+impl YtDlpRefreshingRangeSource {
     /// Открывает Range source; если initial direct URL уже истёк, refresh выполняется один раз.
     pub(crate) fn open(
-        descriptor: YoutubeDirectStreamDescriptor,
+        descriptor: YtDlpDirectStreamDescriptor,
         source_config: SourceRuntimeConfig,
         refresh_context: RefreshContext,
     ) -> Result<Self> {
@@ -60,9 +60,9 @@ impl YoutubeRefreshingRangeSource {
             }),
             Err(error) if direct_url_may_be_expired(&error) => {
                 let refreshed_descriptor = refresh_descriptor(&refresh_context)
-                    .context("Не удалось обновить истёкший YouTube direct URL")?;
+                    .context("Не удалось обновить истёкший YtDlp direct URL")?;
                 let inner = open_http_range_source(&refreshed_descriptor, source_config.clone())
-                    .context("Не удалось открыть обновлённый YouTube HTTP Range source")?;
+                    .context("Не удалось открыть обновлённый YtDlp HTTP Range source")?;
                 Ok(Self {
                     descriptor: refreshed_descriptor,
                     source_config,
@@ -76,7 +76,7 @@ impl YoutubeRefreshingRangeSource {
     }
 
     /// Возвращает текущий descriptor после возможного initial refresh-а.
-    pub(crate) fn descriptor(&self) -> &YoutubeDirectStreamDescriptor {
+    pub(crate) fn descriptor(&self) -> &YtDlpDirectStreamDescriptor {
         &self.descriptor
     }
 
@@ -90,7 +90,7 @@ impl YoutubeRefreshingRangeSource {
         let refreshed_descriptor = match refresh_descriptor(&self.refresh_context) {
             Ok(descriptor) => descriptor,
             Err(error) => {
-                tracing::warn!(error = %error, "YouTube direct URL refresh failed");
+                tracing::warn!(error = %error, "YtDlp direct URL refresh failed");
                 return false;
             }
         };
@@ -98,13 +98,13 @@ impl YoutubeRefreshingRangeSource {
             match open_http_range_source(&refreshed_descriptor, self.source_config.clone()) {
                 Ok(source) => source,
                 Err(error) => {
-                    tracing::warn!(error = %error, "Updated YouTube HTTP Range source open failed");
+                    tracing::warn!(error = %error, "Updated YtDlp HTTP Range source open failed");
                     return false;
                 }
             };
 
         if let Err(error) = refreshed_source.seek(position) {
-            tracing::warn!(error = %error, position, "Updated YouTube source seek failed");
+            tracing::warn!(error = %error, position, "Updated YtDlp source seek failed");
             return false;
         }
 
@@ -114,7 +114,7 @@ impl YoutubeRefreshingRangeSource {
     }
 }
 
-impl ByteSource for YoutubeRefreshingRangeSource {
+impl ByteSource for YtDlpRefreshingRangeSource {
     fn read(&mut self, output: &mut [u8], cancellation: &CancellationToken) -> SourceResult<usize> {
         let retry_position = self.inner.position();
         match self.inner.read(output, cancellation) {
@@ -163,7 +163,7 @@ impl ByteSource for YoutubeRefreshingRangeSource {
 
 /// Открывает нейтральный HTTP Range source из service descriptor-а.
 fn open_http_range_source(
-    descriptor: &YoutubeDirectStreamDescriptor,
+    descriptor: &YtDlpDirectStreamDescriptor,
     source_config: SourceRuntimeConfig,
 ) -> SourceResult<HttpRangeSource> {
     HttpRangeSource::open(HttpRangeSourceConfig::new(
@@ -174,14 +174,14 @@ fn open_http_range_source(
 }
 
 /// Возвращает свежий descriptor нужного stream kind-а.
-fn refresh_descriptor(refresh_context: &RefreshContext) -> Result<YoutubeDirectStreamDescriptor> {
+fn refresh_descriptor(refresh_context: &RefreshContext) -> Result<YtDlpDirectStreamDescriptor> {
     let refreshed_streams = refresh_context
         .resolver
         .resolve_direct_streams(&refresh_context.original_locator)?;
 
     Ok(match refresh_context.stream_kind {
-        YoutubeStreamKind::Video => refreshed_streams.video,
-        YoutubeStreamKind::Audio => refreshed_streams.audio,
+        YtDlpStreamKind::Video => refreshed_streams.video,
+        YtDlpStreamKind::Audio => refreshed_streams.audio,
     })
 }
 

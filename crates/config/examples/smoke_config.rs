@@ -34,7 +34,7 @@ fn run() -> Result<(), String> {
 fn generate_current_config(config_path: PathBuf, backend: &str) -> Result<(), String> {
     // Typed enum сохраняет тот же public vocabulary, что production config parser.
     let backend_preference = parse_backend_preference(backend)?;
-    // Default является единственным владельцем полного набора актуальных полей schema v5.
+    // Default является единственным владельцем полного набора актуальных полей schema v6.
     let mut config = AppConfig::default();
     // Smoke должен начать воспроизведение без взаимодействия с GUI.
     config.player.start_paused = false;

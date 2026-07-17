@@ -116,7 +116,7 @@ impl PlaylistRuntime {
     pub(crate) fn append_playlist_url(
         &mut self,
         input: &str,
-        youtube_config: &rustiplayer_config::YoutubeConfig,
+        yt_dlp_config: &rustiplayer_config::YtDlpConfig,
     ) -> Result<UrlAppendActionOutcome, UrlAppendValidationError> {
         if !self
             .admission_open
@@ -156,7 +156,7 @@ impl PlaylistRuntime {
             self.request_committed_url_metadata(
                 &committed.item_ids,
                 metadata_source,
-                youtube_config,
+                yt_dlp_config,
             );
         }
         Ok(committed.outcome)
@@ -252,9 +252,9 @@ impl PlaylistRuntime {
         &mut self,
         item_ids: &[PlaylistItemId],
         metadata_source: PlaylistUrlMetadataSource,
-        youtube_config: &rustiplayer_config::YoutubeConfig,
+        yt_dlp_config: &rustiplayer_config::YtDlpConfig,
     ) {
-        let PlaylistUrlMetadataSource::YouTube(youtube_locator) = metadata_source;
+        let PlaylistUrlMetadataSource::YtDlp(yt_dlp_locator) = metadata_source;
         let Some(controller) = self.controller.as_ref() else {
             return;
         };
@@ -262,15 +262,15 @@ impl PlaylistRuntime {
             .iter()
             .filter_map(|item_id| {
                 let item = controller.queue().item(*item_id)?;
-                Some(super::discovery::YoutubeMetadataDemand::new(
+                Some(super::discovery::YtDlpMetadataDemand::new(
                     *item_id,
                     item.locator().clone(),
-                    youtube_locator.clone(),
-                    youtube_config.clone(),
+                    yt_dlp_locator.clone(),
+                    yt_dlp_config.clone(),
                 ))
             })
             .collect();
-        let _request_outcome = self.discovery.request_youtube_metadata(demands);
+        let _request_outcome = self.discovery.request_yt_dlp_metadata(demands);
     }
 }
 
@@ -284,7 +284,7 @@ mod tests {
     use super::*;
     use crate::app_wake::{AppWakeOwner, AppWakePort};
     use crate::playlist_runtime::controller::ControllerAppendOutcome;
-    use crate::playlist_runtime::discovery::{YoutubeMetadataResolver, YoutubeMetadataTaskOutcome};
+    use crate::playlist_runtime::discovery::{YtDlpMetadataResolver, YtDlpMetadataTaskOutcome};
     use crate::playlist_runtime::{
         PlaylistConfirmationAction, QueueReplacementConfirmationDecision,
     };
@@ -296,19 +296,19 @@ mod tests {
         runtime
     }
 
-    struct ImmediateYoutubeMetadataResolver;
+    struct ImmediateYtDlpMetadataResolver;
 
-    impl YoutubeMetadataResolver for ImmediateYoutubeMetadataResolver {
+    impl YtDlpMetadataResolver for ImmediateYtDlpMetadataResolver {
         fn resolve(
             &self,
-            _locator: &service_youtube::YoutubeMediaLocator,
-            _youtube_config: &rustiplayer_config::YoutubeConfig,
+            _locator: &service_ytdlp::YtDlpMediaLocator,
+            _yt_dlp_config: &rustiplayer_config::YtDlpConfig,
             cancellation: &bounded_work_executor::CancellationToken,
-        ) -> YoutubeMetadataTaskOutcome {
+        ) -> YtDlpMetadataTaskOutcome {
             if cancellation.is_cancelled() {
-                YoutubeMetadataTaskOutcome::Cancelled
+                YtDlpMetadataTaskOutcome::Cancelled
             } else {
-                YoutubeMetadataTaskOutcome::Resolved {
+                YtDlpMetadataTaskOutcome::Resolved {
                     title: Some("Настоящее название из yt-dlp".to_string()),
                     duration: Some(Duration::from_secs(77)),
                 }
@@ -322,13 +322,13 @@ mod tests {
         let first = runtime
             .append_playlist_url(
                 "https://media.example.test/video2.mp4",
-                &rustiplayer_config::YoutubeConfig::default(),
+                &rustiplayer_config::YtDlpConfig::default(),
             )
             .expect("pure direct classification");
         let second = runtime
             .append_playlist_url(
                 "https://media.example.test/video2.mp4",
-                &rustiplayer_config::YoutubeConfig::default(),
+                &rustiplayer_config::YtDlpConfig::default(),
             )
             .expect("duplicate remains valid");
         assert_eq!(first, UrlAppendActionOutcome::Appended { item_count: 1 });
@@ -338,20 +338,23 @@ mod tests {
     }
 
     #[test]
-    fn youtube_url_append_enriches_committed_row_without_playback() {
+    fn yt_dlp_url_append_enriches_committed_row_without_playback() {
         let mut runtime = runtime();
         runtime
             .discovery
-            .replace_youtube_metadata_resolver_for_test(Arc::new(ImmediateYoutubeMetadataResolver));
-        let youtube_config = rustiplayer_config::YoutubeConfig {
+            .replace_yt_dlp_metadata_resolver_for_test(Arc::new(ImmediateYtDlpMetadataResolver));
+        let yt_dlp_config = rustiplayer_config::YtDlpConfig {
             enabled: true,
-            ..rustiplayer_config::YoutubeConfig::default()
+            ..rustiplayer_config::YtDlpConfig::default()
         };
 
         assert_eq!(
             runtime
-                .append_playlist_url("https://youtu.be/title-test", &youtube_config)
-                .expect("YouTube URL append"),
+                .append_playlist_url(
+                    "https://media.example.test/watch/title-test?token=exact",
+                    &yt_dlp_config,
+                )
+                .expect("YtDlp URL append"),
             UrlAppendActionOutcome::Appended { item_count: 1 }
         );
         assert!(runtime.controller.active_media().is_none());
@@ -389,7 +392,7 @@ mod tests {
         let raw = "https://user:password@media.example.test/video.mp4?token=secret";
         assert_eq!(
             runtime
-                .append_playlist_url(raw, &rustiplayer_config::YoutubeConfig::default())
+                .append_playlist_url(raw, &rustiplayer_config::YtDlpConfig::default())
                 .expect("pure classification"),
             UrlAppendActionOutcome::AwaitingSensitivePersistenceDecision
         );
@@ -403,7 +406,7 @@ mod tests {
         assert!(model.reasons().sensitive_url_persistence());
         assert!(!format!("{model:?}").contains("token=secret"));
         runtime
-            .append_playlist_url(raw, &rustiplayer_config::YoutubeConfig::default())
+            .append_playlist_url(raw, &rustiplayer_config::YtDlpConfig::default())
             .expect("new exact intent");
         assert!(matches!(
             runtime.respond_to_playlist_confirmation(PlaylistConfirmationAction {
@@ -431,7 +434,7 @@ mod tests {
         let mut runtime = runtime();
         let raw = "https://user:password@media.example.test/video.mp4?token=secret";
         runtime
-            .append_playlist_url(raw, &rustiplayer_config::YoutubeConfig::default())
+            .append_playlist_url(raw, &rustiplayer_config::YtDlpConfig::default())
             .expect("pending decision");
         let model = runtime.pending_playlist_confirmation().expect("model");
         assert!(matches!(
@@ -444,13 +447,13 @@ mod tests {
         assert_eq!(runtime.controller.queue().len(), 0);
 
         runtime
-            .append_playlist_url(raw, &rustiplayer_config::YoutubeConfig::default())
+            .append_playlist_url(raw, &rustiplayer_config::YtDlpConfig::default())
             .expect("second pending decision");
         let stale = runtime.pending_playlist_confirmation().expect("model");
         runtime
             .append_playlist_url(
                 "https://media.example.test/other.mp4",
-                &rustiplayer_config::YoutubeConfig::default(),
+                &rustiplayer_config::YtDlpConfig::default(),
             )
             .expect("new action commits and supersedes pending slot");
         assert!(matches!(
@@ -462,7 +465,7 @@ mod tests {
         ));
         let malformed = "https://user:password@[invalid]/video.mp4?token=secret";
         let error = runtime
-            .append_playlist_url(malformed, &rustiplayer_config::YoutubeConfig::default())
+            .append_playlist_url(malformed, &rustiplayer_config::YtDlpConfig::default())
             .expect_err("invalid URL rejected");
         let formatted = format!("{error:?}");
         for secret in ["password", "token=secret"] {

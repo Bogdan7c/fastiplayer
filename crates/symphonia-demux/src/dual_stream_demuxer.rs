@@ -1,7 +1,7 @@
-//! Demuxer для YouTube adaptive streaming.
+//! Demuxer для adaptive streaming с раздельными video/audio источниками.
 //!
-//! YouTube отдаёт video-only и audio-only WebM отдельно. Этот demuxer объединяет два
-//! независимых `SymphoniaDemuxer` в один поток packets, чтобы app layer мог остаться простым.
+//! Этот demuxer объединяет независимые video-only и audio-only `SymphoniaDemuxer`
+//! в один поток packets, чтобы app layer не зависел от происхождения streams.
 
 mod media_metadata;
 
