@@ -186,10 +186,6 @@ impl PlaylistAppStateAttachment {
 
 impl PlaylistRuntimeBinding {
     /// Передаёт controller-у exact player binding generation после `Installed`.
-    #[allow(
-        dead_code,
-        reason = "used by playlist install orchestration in the next session"
-    )]
     pub(crate) const fn binding_generation(self) -> PlaylistBindingGeneration {
         self.binding_generation
     }
@@ -562,7 +558,6 @@ impl PlaylistRuntime {
     }
 
     /// Проверяет exact generation до применения будущего callback-а.
-    #[allow(dead_code)] // Используется будущими callbacks; focused tests фиксируют контракт сейчас.
     pub(crate) fn validate_binding(
         &self,
         binding: PlaylistRuntimeBinding,

@@ -172,19 +172,54 @@ pub(crate) fn apply_discovery_navigation_action(
         PlaylistDiscoveryNavigationAction::Manual(outcome) => {
             apply_manual_navigation_outcome(app_state, playlist_runtime, renderer, outcome);
         }
-        PlaylistDiscoveryNavigationAction::Automatic(outcome) => match outcome {
-            AutomaticLifecycleOutcome::ReplayCurrent { request } => {
-                app_state.dispatch_exact_playlist_transport(request);
-            }
-            AutomaticLifecycleOutcome::OpenItem { install } => {
-                app_state.begin_planned_playlist_install(playlist_runtime, renderer, install, None);
-            }
-            _ => {}
-        },
+        PlaylistDiscoveryNavigationAction::Automatic(outcome) => {
+            apply_automatic_lifecycle_outcome(app_state, playlist_runtime, renderer, outcome);
+        }
         PlaylistDiscoveryNavigationAction::ScopeCancelled { .. } => {}
         PlaylistDiscoveryNavigationAction::ScopeFatal { .. } => {
             warn!("Playlist discovery navigation scope завершился fatal outcome");
         }
+    }
+}
+
+/// Передаёт один exact player snapshot controller-у и исполняет возникший EOF action.
+pub(crate) fn apply_playlist_automatic_snapshot(
+    app_state: &mut AppState,
+    playlist_runtime: &mut PlaylistRuntime,
+    renderer: &Renderer,
+    player_snapshot: &PlayerSnapshot,
+) {
+    let Some(binding) = app_state.playlist_runtime_binding() else {
+        return;
+    };
+    let Some(outcome) =
+        playlist_runtime.observe_playlist_automatic_snapshot(binding, player_snapshot)
+    else {
+        return;
+    };
+    apply_automatic_lifecycle_outcome(app_state, playlist_runtime, renderer, outcome);
+}
+
+/// Оба источника automatic action — непосредственный EOF и deferred discovery readiness —
+/// используют один strong-install/exact-replay executor.
+fn apply_automatic_lifecycle_outcome(
+    app_state: &mut AppState,
+    playlist_runtime: &mut PlaylistRuntime,
+    renderer: &Renderer,
+    outcome: AutomaticLifecycleOutcome,
+) {
+    match outcome {
+        AutomaticLifecycleOutcome::ReplayCurrent { request } => {
+            app_state.dispatch_exact_playlist_transport(request);
+        }
+        AutomaticLifecycleOutcome::OpenItem { install } => {
+            app_state.begin_planned_playlist_install(playlist_runtime, renderer, install, None);
+        }
+        AutomaticLifecycleOutcome::NoAction
+        | AutomaticLifecycleOutcome::StaleObservation
+        | AutomaticLifecycleOutcome::HeldForExplicitIntent { .. }
+        | AutomaticLifecycleOutcome::Deferred { .. }
+        | AutomaticLifecycleOutcome::Stop { .. } => {}
     }
 }
 

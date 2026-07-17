@@ -35,3 +35,10 @@ Session 12 completed PASS on 2026-07-15. This memory extends `mem:app-egui/playl
 
 ## Session 17 restore/startup continuation (2026-07-16)
 - Controller получил intent-named restored-current boundary и bounded paused Stop/Skip chain; post-gate D65 actions удерживаются до authoritative cancel/enqueue winner, а queue/current/active identity коммитятся только через existing D08/Installed contract. Полный контракт: `mem:app-egui/startup-orchestration-s17`.
+
+## Production EOF wiring fix (2026-07-17)
+- Исправлен post-PASS wiring gap: `frame_prepare::render_frame` теперь передаёт тот же immutable `PlayerSnapshot`, который использует UI/render frame, через `transport_runtime::apply_playlist_automatic_snapshot` в process-lifetime `PlaylistRuntime::observe_playlist_automatic_snapshot`; раньше этот production call отсутствовал, поэтому player доходил до `PlaybackState::Ended`, но controller automatic lifecycle не запускался.
+- Порядок owner turn: explicit UI transport actions -> initial directory action -> automatic snapshot observation -> deferred discovery navigation action -> pending transport poll. Это сохраняет D42 manual priority и использует один executor для immediate EOF и deferred D41 outcomes.
+- Runtime сначала валидирует exact `PlaylistRuntimeBinding`, затем controller по-прежнему коррелирует binding generation + `MediaInstanceId` и edge-triggered exactly-once выбирает `OpenItem`/`ReplayCurrent`/Stop/Deferred. `player-core`, queue ownership и D08/Installed commit boundary не менялись.
+- Clean `Ended` не классифицируется по потенциально старому `last_error`; `Failed` остаётся отдельной Stop/Skip policy. Playlist runtime badge получает только secret-safe `PlayerErrorKind`, без произвольного текста нижнего слоя.
+- Regression coverage: production frame-order source contract, clean EOF -> next stable Item ID exactly once, repeated terminal no-op, stale `last_error` не меняет clean EOF, `Failed` skip и secret redaction. PASS: 586 app no-default tests, 23 player EOF tests, strict app Clippy, fmt, Rust 1.96 locked workspace check, guardrails, diff check и Serena diagnostics.

@@ -3,9 +3,9 @@
 #[cfg(test)]
 mod tests;
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-use player_core::{MediaInstanceId, PlaybackState};
+use player_core::{PlaybackState, PlayerSnapshot};
 use playlist_core::{ManualNavigationDirection, PlaylistItemId};
 use playlist_discovery::{
     AdmissionAdvanced, AdmissionDirection, DiscoveryCancellationCause, DiscoveryEvent,
@@ -19,7 +19,10 @@ use crate::playlist_runtime::controller::{
     DiscoveryNavigationInterest, EndedSnapshotKind, StopAfterCurrentOutcome,
 };
 use crate::playlist_runtime::identity::TransportActionOrigin;
-use crate::playlist_runtime::{PlaylistBindingGeneration, PlaylistController, PlaylistRuntime};
+use crate::playlist_runtime::{PlaylistController, PlaylistRuntime, PlaylistRuntimeBinding};
+
+const FAILED_PLAYBACK_WITHOUT_DETAILS: &str =
+    "Воспроизведение завершилось с ошибкой без дополнительных сведений";
 
 /// Event-driven action slot: readiness выбирает intent, а не коммитит queue/media.
 #[allow(
@@ -95,17 +98,20 @@ impl PlaylistRuntime {
     /// Player snapshot edge использует active discovery scope только как readiness possibility.
     pub(crate) fn observe_playlist_automatic_snapshot(
         &mut self,
-        binding_generation: PlaylistBindingGeneration,
-        media_instance_id: Option<MediaInstanceId>,
-        playback_state: PlaybackState,
-        ended_kind: EndedSnapshotKind,
+        binding: PlaylistRuntimeBinding,
+        player_snapshot: &PlayerSnapshot,
     ) -> Option<AutomaticLifecycleOutcome> {
+        if self.validate_binding(binding).is_err() {
+            return Some(AutomaticLifecycleOutcome::StaleObservation);
+        }
+
+        let ended_kind = automatic_snapshot_kind(player_snapshot);
         let controller = self.controller.as_mut()?;
         let deferred = self.discovery.automatic_deferred_availability();
         let outcome = controller.observe_automatic_snapshot(
-            binding_generation,
-            media_instance_id,
-            playback_state,
+            binding.binding_generation(),
+            player_snapshot.media_instance_id,
+            player_snapshot.playback_state,
             ended_kind,
             deferred,
         );
@@ -144,6 +150,23 @@ impl PlaylistRuntime {
     ) -> PlaylistDiscoveryNavigationStatus {
         self.discovery.navigation_status
     }
+}
+
+/// Определяет terminal semantics только по текущему player state.
+///
+/// Старый `last_error` может пережить успешный replay и поэтому не превращает чистый EOF
+/// в runtime failure. Для `Failed` наружу передаётся только безопасная категория:
+/// произвольный текст нижнего слоя может содержать locator или другие чувствительные детали.
+fn automatic_snapshot_kind(player_snapshot: &PlayerSnapshot) -> EndedSnapshotKind {
+    if player_snapshot.playback_state != PlaybackState::Failed {
+        return EndedSnapshotKind::Clean;
+    }
+
+    let safe_summary = player_snapshot.last_error.as_ref().map_or_else(
+        || Arc::<str>::from(FAILED_PLAYBACK_WITHOUT_DETAILS),
+        |error| Arc::<str>::from(format!("Ошибка воспроизведения ({:?})", error.kind)),
+    );
+    EndedSnapshotKind::ErrorAssociated { safe_summary }
 }
 
 impl PlaylistDiscoveryCoordinator {

@@ -607,6 +607,38 @@ fn app_state_player_snapshot_boundary_stays_explicit() {
     );
 }
 
+/// Фиксирует production wiring EOF snapshot после explicit UI intents и до deferred actions.
+#[test]
+fn render_frame_routes_player_snapshot_into_playlist_automatic_lifecycle() {
+    let frame_prepare_source = include_str!("../frame_prepare.rs");
+    let render_frame_section = source_section_between(
+        frame_prepare_source,
+        "pub(crate) fn render_frame(",
+        "app_state.poll_playlist_transport(playlist_runtime, renderer);",
+    );
+
+    let explicit_transport_position = render_frame_section
+        .find("crate::transport_runtime::apply_transport_actions(")
+        .expect("render frame должен сначала применить explicit transport intents");
+    let automatic_snapshot_position = render_frame_section
+        .find("crate::transport_runtime::apply_playlist_automatic_snapshot(")
+        .expect("render frame должен передать player snapshot automatic lifecycle owner-у");
+    let deferred_action_position = render_frame_section
+        .find("crate::transport_runtime::apply_discovery_navigation_action(")
+        .expect("render frame должен затем исполнить deferred discovery action");
+
+    assert!(
+        explicit_transport_position < automatic_snapshot_position
+            && automatic_snapshot_position < deferred_action_position,
+        "explicit intent должен иметь приоритет, а EOF observation — предшествовать deferred drain"
+    );
+    assert!(
+        render_frame_section[automatic_snapshot_position..deferred_action_position]
+            .contains("frame_context.player_snapshot()"),
+        "automatic lifecycle должен получить тот же immutable snapshot текущего frame-а"
+    );
+}
+
 /// Фиксирует, что live-смена настроек пересобирает video pipeline с учётом
 /// requirement активного стрима, а не вслепую (`None`). Иначе `auto` для
 /// software-only кодека (AV1) выбрал бы hardware backend, который железо не
