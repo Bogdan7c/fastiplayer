@@ -6,4 +6,5 @@
 - Вся новая custom-рисовка должна появляться отдельным `.rs` в `crates/ui-artwork-egui/src/`; прямые Painter-примитивы в `crates/app-egui/src` запрещает `scripts/check-refactor-guardrails.py`.
 - Timeline track geometry принадлежит artwork crate: `timeline_track_rect` используется и paint path, и app-side pointer mapping, чтобы hit-testing совпадал с изображением.
 - Characterization-тесты фигур и геометрии находятся в `crates/ui-artwork-egui/src/lib.rs`; action/accessibility/hit-area regression tests остаются в `app-egui`.
+- Playlist media-kind artwork использует доменно-нейтральный `MediaKindGlyph::{Unknown, Audio, Video}` и `ArtworkPainter::media_kind_icon(rect, glyph, stroke)`. `app-egui` владеет переводом `PlaylistMediaKind` в glyph, фиксированной ячейкой строки и accessibility-текстом; artwork-crate владеет геометрией ноты, видеокадра Play и неизвестного файла.
 - Titlebar title, settings gear, window controls и video dim overlay также проходят через facade; прежние места вызова остаются владельцами layout/runtime semantics.

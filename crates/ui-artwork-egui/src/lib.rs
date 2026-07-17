@@ -4,6 +4,7 @@
 //! передаёт только painter, прямоугольники и типизированное визуальное состояние.
 
 mod fullscreen_button;
+mod media_kind_icon;
 mod open_media_button;
 mod playback_button;
 mod settings_button;
@@ -19,6 +20,7 @@ mod window_title;
 use egui::Painter;
 
 pub use fullscreen_button::{FullscreenGlyph, FullscreenStyle};
+pub use media_kind_icon::MediaKindGlyph;
 pub use playback_button::{ButtonVisualState, PlaybackGlyph, PlaybackStyle};
 pub use sidebar_buttons::SidebarButtonGlyph;
 pub use timeline::{TimelinePaintState, TimelineStyle, timeline_track_rect};
@@ -59,6 +61,11 @@ impl<'a> ArtworkPainter<'a> {
         hover_fill: egui::Color32,
     ) {
         open_media_button::paint(self.painter, rect, state, stroke, hover_fill);
+    }
+
+    /// Рисует компактную нейтральную иконку типа медиа.
+    pub fn media_kind_icon(self, rect: egui::Rect, glyph: MediaKindGlyph, stroke: egui::Stroke) {
+        media_kind_icon::paint(self.painter, rect, glyph, stroke);
     }
 
     /// Рисует кнопку полноэкранного режима.
@@ -204,6 +211,51 @@ mod tests {
             )),
             4
         );
+    }
+
+    #[test]
+    fn media_kind_glyphs_are_visually_distinct_and_deterministic() {
+        let stroke = Stroke::new(1.0, Color32::WHITE);
+        let unknown_shapes = painted_shape_count(|painter| {
+            painter.media_kind_icon(rect(), MediaKindGlyph::Unknown, stroke);
+        });
+        let audio_shapes = painted_shape_count(|painter| {
+            painter.media_kind_icon(rect(), MediaKindGlyph::Audio, stroke);
+        });
+        let video_shapes = painted_shape_count(|painter| {
+            painter.media_kind_icon(rect(), MediaKindGlyph::Video, stroke);
+        });
+
+        assert_eq!(unknown_shapes, 7);
+        assert_eq!(audio_shapes, 4);
+        assert_eq!(video_shapes, 2);
+    }
+
+    #[test]
+    fn media_kind_glyphs_stay_inside_their_cell() {
+        for glyph in [
+            MediaKindGlyph::Unknown,
+            MediaKindGlyph::Audio,
+            MediaKindGlyph::Video,
+        ] {
+            // Отдельный context изолирует shape-ы каждого варианта и упрощает диагностику границ.
+            let context = Context::default();
+            // Общая ячейка совпадает с geometry-helper остальных artwork-тестов.
+            let cell_rect = rect();
+            // Реальный egui paint output позволяет проверить stroke, а не только опорные координаты.
+            let output = context.run_ui(RawInput::default(), |ui| {
+                ArtworkPainter::new(ui.painter()).media_kind_icon(
+                    cell_rect,
+                    glyph,
+                    Stroke::new(1.0, Color32::WHITE),
+                );
+            });
+
+            // Ни один фактически нарисованный shape не должен пересечь границу ячейки.
+            assert!(output.shapes.iter().all(|clipped_shape| {
+                cell_rect.contains_rect(clipped_shape.shape.visual_bounding_rect())
+            }));
+        }
     }
 
     #[test]

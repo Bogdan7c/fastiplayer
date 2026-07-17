@@ -2,6 +2,7 @@
 
 use egui::{Align, Layout, Sense, TextWrapMode, WidgetInfo, WidgetType};
 use playlist_core::PlaylistMediaKind;
+use ui_artwork_egui::{ArtworkPainter, MediaKindGlyph};
 
 use super::{
     PlaylistUiOutput, PlaylistUiState, ViewportAnchor, row_interactions, virtualized_drag,
@@ -10,8 +11,8 @@ use crate::playlist_runtime::{PlaylistViewModel, PlaylistVisibleRow};
 
 pub(super) const ROW_HEIGHT: f32 = 34.0;
 pub(super) const TOOLTIP_MAX_WIDTH: f32 = 320.0;
-const INDEX_WIDTH: f32 = 38.0;
-const KIND_WIDTH: f32 = 48.0;
+pub(super) const INDEX_WIDTH: f32 = 38.0;
+pub(super) const MEDIA_KIND_WIDTH: f32 = 16.0;
 const DURATION_WIDTH: f32 = 50.0;
 const BADGES_WIDTH: f32 = 58.0;
 
@@ -203,10 +204,7 @@ fn render_row_content(ui: &mut egui::Ui, row_index: usize, row: &PlaylistVisible
         egui::Label::new(egui::RichText::new(format!("{}.", row_index + 1)).weak())
             .wrap_mode(TextWrapMode::Truncate),
     );
-    ui.add_sized(
-        [KIND_WIDTH, ROW_HEIGHT],
-        egui::Label::new(media_kind_text(row.media_kind())).wrap_mode(TextWrapMode::Truncate),
-    );
+    render_media_kind_icon(ui, row.media_kind());
 
     let trailing_width = DURATION_WIDTH + BADGES_WIDTH;
     let spacing_width = ui.spacing().item_spacing.x * 2.0;
@@ -221,6 +219,31 @@ fn render_row_content(ui: &mut egui::Ui, row_index: usize, row: &PlaylistVisible
         egui::Label::new(format_duration(row.duration())).wrap_mode(TextWrapMode::Truncate),
     );
     render_badges(ui, row);
+}
+
+/// Резервирует компактную неинтерактивную ячейку и передаёт рисование artwork-crate.
+fn render_media_kind_icon(ui: &mut egui::Ui, media_kind: PlaylistMediaKind) {
+    // `Sense::hover` не создаёт click/drag-владельца и сохраняет взаимодействие с целой строкой.
+    let (response, painter) =
+        ui.allocate_painter(egui::vec2(MEDIA_KIND_WIDTH, ROW_HEIGHT), Sense::hover());
+    // Цвет и толщина берутся из текущей темы, поэтому glyph наследует состояние интерфейса.
+    let stroke = ui.visuals().widgets.noninteractive.fg_stroke;
+    // App-level выполняет только типизированное отображение domain-вида в визуальный glyph.
+    ArtworkPainter::new(&painter).media_kind_icon(
+        response.rect,
+        media_kind_glyph(media_kind),
+        stroke,
+    );
+}
+
+/// Переводит playlist-domain тип в нейтральный artwork-контракт.
+pub(super) const fn media_kind_glyph(media_kind: PlaylistMediaKind) -> MediaKindGlyph {
+    // Полный match не позволит молча забыть новый domain-вариант.
+    match media_kind {
+        PlaylistMediaKind::Unknown => MediaKindGlyph::Unknown,
+        PlaylistMediaKind::Audio => MediaKindGlyph::Audio,
+        PlaylistMediaKind::Video => MediaKindGlyph::Video,
+    }
 }
 
 fn render_badges(ui: &mut egui::Ui, row: &PlaylistVisibleRow) {

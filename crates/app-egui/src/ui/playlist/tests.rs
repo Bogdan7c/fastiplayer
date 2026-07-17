@@ -7,10 +7,11 @@ use playlist_core::{
     CachedPlaylistMetadata, LocalLocator, MoveItemIntent, PlaylistItemDraft, PlaylistItemId,
     PlaylistMediaKind, PlaylistQueue,
 };
+use ui_artwork_egui::MediaKindGlyph;
 
 use super::renderer::{
-    ROW_HEIGHT, TOOLTIP_MAX_WIDTH, accessibility_text, anchored_scroll_offset, stable_row_id,
-    tooltip_width,
+    INDEX_WIDTH, MEDIA_KIND_WIDTH, ROW_HEIGHT, TOOLTIP_MAX_WIDTH, accessibility_text,
+    anchored_scroll_offset, media_kind_glyph, stable_row_id, tooltip_width,
 };
 use super::status::{navigation_message, save_message};
 use super::{PlaylistAction, PlaylistUiOutput, PlaylistUiState, ViewportAnchor};
@@ -67,6 +68,33 @@ fn long_row_tooltip_is_bounded_by_row_and_overlay_limit() {
     assert_eq!(tooltip_width(180.0), 180.0);
     assert_eq!(tooltip_width(420.0), TOOLTIP_MAX_WIDTH);
     assert_eq!(tooltip_width(0.0), 1.0);
+}
+
+#[test]
+fn compact_media_kind_column_preserves_large_queue_index_width() {
+    egui::__run_test_ui(|ui| {
+        let title_start = INDEX_WIDTH + MEDIA_KIND_WIDTH + ui.spacing().item_spacing.x * 2.0;
+
+        assert_eq!(INDEX_WIDTH, 38.0);
+        assert_eq!(MEDIA_KIND_WIDTH, 16.0);
+        assert_eq!(title_start, 70.0);
+    });
+}
+
+#[test]
+fn every_playlist_media_kind_maps_to_an_explicit_artwork_glyph() {
+    assert_eq!(
+        media_kind_glyph(PlaylistMediaKind::Unknown),
+        MediaKindGlyph::Unknown
+    );
+    assert_eq!(
+        media_kind_glyph(PlaylistMediaKind::Audio),
+        MediaKindGlyph::Audio
+    );
+    assert_eq!(
+        media_kind_glyph(PlaylistMediaKind::Video),
+        MediaKindGlyph::Video
+    );
 }
 
 #[test]
@@ -279,6 +307,7 @@ fn error_retry_and_failed_navigation_have_distinct_accessibility() {
 
     let retrying_text = accessibility_text(0, &retrying);
     let failed_text = accessibility_text(0, &failed);
+    assert!(retrying_text.contains("Тип: Видео"));
     assert!(retrying_text.contains("Предыдущая попытка завершилась ошибкой"));
     assert!(retrying_text.contains("выполняется повторная попытка"));
     assert!(failed_text.contains("Ошибка"));
@@ -310,6 +339,7 @@ fn save_warning_exposes_retry_and_unavailable_row_stays_non_modal() {
         safe_error_summary: Some("Файл недоступен".into()),
     });
     assert!(accessibility_text(8, &unavailable).contains("Файл недоступен"));
+    assert!(accessibility_text(8, &unavailable).contains("Тип: Медиа"));
 }
 
 #[test]
