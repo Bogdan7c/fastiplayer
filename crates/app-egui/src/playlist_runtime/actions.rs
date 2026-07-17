@@ -7,7 +7,9 @@ use super::controller::ControllerCappedAppendOutcome;
 use super::replacement_confirmation::{PendingConfirmationTarget, PlaylistConfirmationResolution};
 use super::{AdmittedQueueReplacementIntent, PlaylistRuntime};
 use crate::media_open::SafeMediaLabel;
-use crate::url_service_adapter::{StartupUrlClassification, classify_startup_url};
+use crate::url_service_adapter::{
+    PlaylistUrlMetadataSource, StartupUrlClassification, classify_startup_url,
+};
 
 /// Pure URL append validation никогда не содержит исходную secret-bearing строку.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +53,11 @@ pub(crate) enum InstalledMetadataCacheOutcome {
     DescriptorHasNoMetadata,
     ItemNotCommitted,
     Rejected,
+}
+
+struct CommittedUrlAppend {
+    outcome: UrlAppendActionOutcome,
+    item_ids: Vec<PlaylistItemId>,
 }
 
 impl PlaylistRuntime {
@@ -105,10 +112,11 @@ impl PlaylistRuntime {
         }
     }
 
-    /// Pure classifier/normalizer + D15 gate; network/open здесь запрещены.
+    /// Синхронно выполняет только classifier/commit; enrichment уходит в bounded worker.
     pub(crate) fn append_playlist_url(
         &mut self,
         input: &str,
+        youtube_config: &rustiplayer_config::YoutubeConfig,
     ) -> Result<UrlAppendActionOutcome, UrlAppendValidationError> {
         if !self
             .admission_open
@@ -125,6 +133,7 @@ impl PlaylistRuntime {
             StartupUrlClassification::Supported(locator) => locator,
         };
         let requires_ack = locator.requires_sensitive_persistence_acknowledgement();
+        let metadata_source = locator.playlist_metadata_source();
         let safe_label = SafeMediaLabel::from_service_safe_label(locator.safe_label());
         let cached_metadata =
             CachedPlaylistMetadata::new(locator.safe_label(), PlaylistMediaKind::Unknown);
@@ -142,7 +151,15 @@ impl PlaylistRuntime {
             return Ok(UrlAppendActionOutcome::AwaitingSensitivePersistenceDecision);
         }
         self.replacement_confirmation.cancel();
-        self.commit_url_append(draft)
+        let committed = self.commit_url_append(draft)?;
+        if let Some(metadata_source) = metadata_source {
+            self.request_committed_url_metadata(
+                &committed.item_ids,
+                metadata_source,
+                youtube_config,
+            );
+        }
+        Ok(committed.outcome)
     }
 
     /// Matching generalized response consumes secret-bearing intent exactly once.
@@ -160,7 +177,10 @@ impl PlaylistRuntime {
             ) => PlaylistConfirmationApplyOutcome::QueueReplacementConfirmed(target.admit()),
             PlaylistConfirmationResolution::Confirmed(
                 PendingConfirmationTarget::SensitiveUrlAppend(draft),
-            ) => match self.commit_url_append(*draft) {
+            ) => match self
+                .commit_url_append(*draft)
+                .map(|committed| committed.outcome)
+            {
                 Ok(UrlAppendActionOutcome::Appended { item_count }) => {
                     PlaylistConfirmationApplyOutcome::UrlAppended { item_count }
                 }
@@ -181,11 +201,14 @@ impl PlaylistRuntime {
     fn commit_url_append(
         &mut self,
         draft: PlaylistItemDraft,
-    ) -> Result<UrlAppendActionOutcome, UrlAppendValidationError> {
+    ) -> Result<CommittedUrlAppend, UrlAppendValidationError> {
         if self.controller.as_ref().is_none() {
             self.record_startup_prepared_add(vec![draft])
                 .map_err(|_| UrlAppendValidationError::CommitRejected)?;
-            return Ok(UrlAppendActionOutcome::DeferredUntilStartupInstallResolution);
+            return Ok(CommittedUrlAppend {
+                outcome: UrlAppendActionOutcome::DeferredUntilStartupInstallResolution,
+                item_ids: Vec::new(),
+            });
         }
         let startup_install_linearizing = self.startup_action_retention_is_active()
             && self.controller.as_ref().is_some_and(|controller| {
@@ -196,7 +219,10 @@ impl PlaylistRuntime {
         if startup_install_linearizing {
             self.retain_startup_prepared_add(vec![draft])
                 .map_err(|_| UrlAppendValidationError::CommitRejected)?;
-            return Ok(UrlAppendActionOutcome::DeferredUntilStartupInstallResolution);
+            return Ok(CommittedUrlAppend {
+                outcome: UrlAppendActionOutcome::DeferredUntilStartupInstallResolution,
+                item_ids: Vec::new(),
+            });
         }
         let controller = self
             .controller
@@ -207,23 +233,58 @@ impl PlaylistRuntime {
             .append_capped_tail(vec![draft])
             .map_err(|_| UrlAppendValidationError::CommitRejected)?;
         if item_ids.is_empty() {
-            return Ok(UrlAppendActionOutcome::NoCapacity);
+            return Ok(CommittedUrlAppend {
+                outcome: UrlAppendActionOutcome::NoCapacity,
+                item_ids,
+            });
         }
         self.publish_controller_mutation_if_dirty(dirty_before);
-        Ok(UrlAppendActionOutcome::Appended {
-            item_count: item_ids.len(),
+        Ok(CommittedUrlAppend {
+            outcome: UrlAppendActionOutcome::Appended {
+                item_count: item_ids.len(),
+            },
+            item_ids,
         })
+    }
+
+    /// После exact queue commit связывает service result только с выданными Item IDs.
+    fn request_committed_url_metadata(
+        &mut self,
+        item_ids: &[PlaylistItemId],
+        metadata_source: PlaylistUrlMetadataSource,
+        youtube_config: &rustiplayer_config::YoutubeConfig,
+    ) {
+        let PlaylistUrlMetadataSource::YouTube(youtube_locator) = metadata_source;
+        let Some(controller) = self.controller.as_ref() else {
+            return;
+        };
+        let demands = item_ids
+            .iter()
+            .filter_map(|item_id| {
+                let item = controller.queue().item(*item_id)?;
+                Some(super::discovery::YoutubeMetadataDemand::new(
+                    *item_id,
+                    item.locator().clone(),
+                    youtube_locator.clone(),
+                    youtube_config.clone(),
+                ))
+            })
+            .collect();
+        let _request_outcome = self.discovery.request_youtube_metadata(demands);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::time::SystemTime;
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::{Duration, SystemTime};
 
     use super::*;
     use crate::app_wake::{AppWakeOwner, AppWakePort};
     use crate::playlist_runtime::controller::ControllerAppendOutcome;
+    use crate::playlist_runtime::discovery::{YoutubeMetadataResolver, YoutubeMetadataTaskOutcome};
     use crate::playlist_runtime::{
         PlaylistConfirmationAction, QueueReplacementConfirmationDecision,
     };
@@ -235,18 +296,89 @@ mod tests {
         runtime
     }
 
+    struct ImmediateYoutubeMetadataResolver;
+
+    impl YoutubeMetadataResolver for ImmediateYoutubeMetadataResolver {
+        fn resolve(
+            &self,
+            _locator: &service_youtube::YoutubeMediaLocator,
+            _youtube_config: &rustiplayer_config::YoutubeConfig,
+            cancellation: &bounded_work_executor::CancellationToken,
+        ) -> YoutubeMetadataTaskOutcome {
+            if cancellation.is_cancelled() {
+                YoutubeMetadataTaskOutcome::Cancelled
+            } else {
+                YoutubeMetadataTaskOutcome::Resolved {
+                    title: Some("Настоящее название из yt-dlp".to_string()),
+                    duration: Some(Duration::from_secs(77)),
+                }
+            }
+        }
+    }
+
     #[test]
     fn pure_url_append_allows_duplicates_without_network_or_playback_side_effects() {
         let mut runtime = runtime();
         let first = runtime
-            .append_playlist_url("https://media.example.test/video2.mp4")
+            .append_playlist_url(
+                "https://media.example.test/video2.mp4",
+                &rustiplayer_config::YoutubeConfig::default(),
+            )
             .expect("pure direct classification");
         let second = runtime
-            .append_playlist_url("https://media.example.test/video2.mp4")
+            .append_playlist_url(
+                "https://media.example.test/video2.mp4",
+                &rustiplayer_config::YoutubeConfig::default(),
+            )
             .expect("duplicate remains valid");
         assert_eq!(first, UrlAppendActionOutcome::Appended { item_count: 1 });
         assert_eq!(second, UrlAppendActionOutcome::Appended { item_count: 1 });
         assert_eq!(runtime.controller.queue().len(), 2);
+        assert!(runtime.controller.active_media().is_none());
+    }
+
+    #[test]
+    fn youtube_url_append_enriches_committed_row_without_playback() {
+        let mut runtime = runtime();
+        runtime
+            .discovery
+            .replace_youtube_metadata_resolver_for_test(Arc::new(ImmediateYoutubeMetadataResolver));
+        let youtube_config = rustiplayer_config::YoutubeConfig {
+            enabled: true,
+            ..rustiplayer_config::YoutubeConfig::default()
+        };
+
+        assert_eq!(
+            runtime
+                .append_playlist_url("https://youtu.be/title-test", &youtube_config)
+                .expect("YouTube URL append"),
+            UrlAppendActionOutcome::Appended { item_count: 1 }
+        );
+        assert!(runtime.controller.active_media().is_none());
+
+        for _ in 0..200 {
+            let _visible_change = runtime.drain_playlist_discovery();
+            if runtime.controller.queue().items()[0]
+                .cached_metadata()
+                .title()
+                .is_some()
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let item = &runtime.controller.queue().items()[0];
+        assert_eq!(
+            item.cached_metadata().title(),
+            Some("Настоящее название из yt-dlp")
+        );
+        assert_eq!(
+            item.cached_metadata().duration(),
+            Some(media_core::MediaDuration::from_duration(
+                Duration::from_secs(77)
+            ))
+        );
         assert!(runtime.controller.active_media().is_none());
     }
 
@@ -257,7 +389,7 @@ mod tests {
         let raw = "https://user:password@media.example.test/video.mp4?token=secret";
         assert_eq!(
             runtime
-                .append_playlist_url(raw)
+                .append_playlist_url(raw, &rustiplayer_config::YoutubeConfig::default())
                 .expect("pure classification"),
             UrlAppendActionOutcome::AwaitingSensitivePersistenceDecision
         );
@@ -270,7 +402,9 @@ mod tests {
         assert!(!model.reasons().queue_replacement());
         assert!(model.reasons().sensitive_url_persistence());
         assert!(!format!("{model:?}").contains("token=secret"));
-        runtime.append_playlist_url(raw).expect("new exact intent");
+        runtime
+            .append_playlist_url(raw, &rustiplayer_config::YoutubeConfig::default())
+            .expect("new exact intent");
         assert!(matches!(
             runtime.respond_to_playlist_confirmation(PlaylistConfirmationAction {
                 intent_id: model.intent_id(),
@@ -296,7 +430,9 @@ mod tests {
     fn sensitive_cancel_and_supersede_are_typed_noops_and_errors_are_redacted() {
         let mut runtime = runtime();
         let raw = "https://user:password@media.example.test/video.mp4?token=secret";
-        runtime.append_playlist_url(raw).expect("pending decision");
+        runtime
+            .append_playlist_url(raw, &rustiplayer_config::YoutubeConfig::default())
+            .expect("pending decision");
         let model = runtime.pending_playlist_confirmation().expect("model");
         assert!(matches!(
             runtime.respond_to_playlist_confirmation(PlaylistConfirmationAction {
@@ -308,11 +444,14 @@ mod tests {
         assert_eq!(runtime.controller.queue().len(), 0);
 
         runtime
-            .append_playlist_url(raw)
+            .append_playlist_url(raw, &rustiplayer_config::YoutubeConfig::default())
             .expect("second pending decision");
         let stale = runtime.pending_playlist_confirmation().expect("model");
         runtime
-            .append_playlist_url("https://media.example.test/other.mp4")
+            .append_playlist_url(
+                "https://media.example.test/other.mp4",
+                &rustiplayer_config::YoutubeConfig::default(),
+            )
             .expect("new action commits and supersedes pending slot");
         assert!(matches!(
             runtime.respond_to_playlist_confirmation(PlaylistConfirmationAction {
@@ -323,7 +462,7 @@ mod tests {
         ));
         let malformed = "https://user:password@[invalid]/video.mp4?token=secret";
         let error = runtime
-            .append_playlist_url(malformed)
+            .append_playlist_url(malformed, &rustiplayer_config::YoutubeConfig::default())
             .expect_err("invalid URL rejected");
         let formatted = format!("{error:?}");
         for secret in ["password", "token=secret"] {

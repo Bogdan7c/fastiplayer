@@ -67,3 +67,6 @@
 ## Playlist main Open UX correction (2026-07-17)
 - Main in-app single-file Open is directory-aware: an exact committed item in the current lexical parent directory reuses its stable Item ID/Row Play; a different directory or missing exact/current local identity follows typed atomic queue replacement. Playlist `Add Files` remains append-only.
 - In-app directory replacement installs the chosen target paused as the D08 anchor, waits only until the natural queue beginning is proven, then restarts the target if it is first or strong-installs the first committed row. CLI target startup remains immediate. Exact identity/revision guards make later user transport/structural/lifecycle actions win over deferred autoplay. Details: `mem:app-egui/playlist-discovery-s15` and `mem:app-egui/queue-replacement-confirmation-s14a`.
+
+
+- YouTube playlist title enrichment completed 2026-07-17: service-owned cancellable `yt-dlp` metadata summary, app-owned bounded process-lifetime jobs, immediate post-append plus visible/restore enrichment, exact Item ID+locator patching, and post-Installed title reuse are documented in `mem:app-egui/youtube-playlist-metadata-2026-07-17`.

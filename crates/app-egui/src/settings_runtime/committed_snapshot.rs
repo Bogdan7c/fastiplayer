@@ -40,6 +40,12 @@ impl CommittedConfigSnapshot {
         self.config.video.preferred_backend
     }
 
+    /// Process policy для новых фоновых YouTube playlist metadata jobs.
+    #[must_use]
+    pub(crate) fn youtube_metadata_config(&self) -> YoutubeConfig {
+        self.config.youtube.clone()
+    }
+
     /// Default volume policy для startup/new media и mute-toggle restore.
     #[must_use]
     pub(crate) fn default_volume_for_new_media(&self) -> f32 {

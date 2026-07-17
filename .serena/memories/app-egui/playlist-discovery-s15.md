@@ -69,3 +69,7 @@ Session 15 completed PASS on 2026-07-15. This memory complements `mem:core`, `me
 - If the target is already first, controller emits exact `RestartFromBeginning` with the configured playback intent. Otherwise it emits the existing `PlannedPlaylistInstall` for `queue.items().first()` and reuses the normal strong install adapter. No queue/current mutation or player command originates in discovery itself.
 - Glue is split into `discovery/installed_target.rs`; the central `discovery.rs` remains below 800 lines. `player-core`, `playlist-core`, and `playlist-discovery` public contracts are unchanged.
 - Verification: 583 app-egui no-default tests, all-feature workspace tests, strict all-feature/all-target Clippy and rustdoc, Rust 1.96 locked workspace check, MSRV 1.92, fmt/guardrails/diff and clean Serena diagnostics. Pre-PR dependency gate remains externally blocked by lock-graph advisories; Cargo manifests and lockfile were not changed.
+
+
+## 2026-07-17 YouTube visible/immediate metadata enrichment
+- URL network metadata остаётся вне neutral `playlist-discovery`: отдельный `app-egui::discovery::youtube_metadata` process-lifetime owner использует bounded-work-executor и service-owned typed resolver. Immediate committed append и visible restored rows ставят exact Item ID+locator demands; metadata patch не меняет structural/current/playback state. Полный contract и проверки: `mem:app-egui/youtube-playlist-metadata-2026-07-17`.

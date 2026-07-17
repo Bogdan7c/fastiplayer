@@ -623,9 +623,12 @@ impl PlaylistRuntime {
     }
 
     /// Pure URL classifier/controller boundary выполняется после egui render.
-    pub(crate) fn submit_playlist_url_draft(&mut self) -> bool {
+    pub(crate) fn submit_playlist_url_draft(
+        &mut self,
+        youtube_config: &rustiplayer_config::YoutubeConfig,
+    ) -> bool {
         let input = self.ui_interaction.url_draft().text().to_string();
-        match self.append_playlist_url(&input) {
+        match self.append_playlist_url(&input, youtube_config) {
             Ok(super::UrlAppendActionOutcome::Appended { .. }) => {
                 self.ui_interaction.url_draft_mut().finish_success();
             }

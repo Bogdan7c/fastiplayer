@@ -76,7 +76,10 @@ pub(crate) fn apply_playlist_actions(
                 runtime.update_playlist_url_draft(text.into_inner());
                 changed = true;
             }
-            PlaylistAction::SubmitUrl => changed |= runtime.submit_playlist_url_draft(),
+            PlaylistAction::SubmitUrl => {
+                let youtube_config = app_state.youtube_metadata_config();
+                changed |= runtime.submit_playlist_url_draft(&youtube_config);
+            }
             PlaylistAction::CancelUrlEditor => {
                 changed |= runtime.cancel_playlist_url_editor();
             }

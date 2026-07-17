@@ -121,14 +121,21 @@ pub(super) fn prepare_source(
             if is_cancelled() {
                 return Err(MediaPreparationFailureKind::Cancelled);
             }
+            let service_metadata = prepared.streaming_media.playlist_metadata();
             let tracks = prepared.streaming_media.demuxer.tracks().to_vec();
-            let duration = prepared.streaming_media.demuxer.duration();
-            let metadata = prepared
+            let demux_duration = prepared.streaming_media.demuxer.duration();
+            let demux_metadata = prepared
                 .streaming_media
                 .demuxer
                 .media_metadata()
                 .unwrap_or_default()
                 .tags;
+            let (duration, metadata) = merge_youtube_playlist_metadata(
+                demux_duration,
+                demux_metadata,
+                service_metadata.title(),
+                service_metadata.duration(),
+            );
             let prepared_media = PreparedMedia::from_external_label(
                 safe_label.as_str(),
                 prepared.streaming_media.demuxer,
@@ -147,5 +154,66 @@ pub(super) fn prepare_source(
                 },
             })
         }
+    }
+}
+
+/// Service title/duration заполняют только пробелы demux metadata и не стирают более полный snapshot.
+fn merge_youtube_playlist_metadata(
+    demux_duration: Option<std::time::Duration>,
+    mut demux_metadata: media_core::MediaTagMetadata,
+    service_title: Option<&str>,
+    service_duration: Option<std::time::Duration>,
+) -> (Option<std::time::Duration>, media_core::MediaTagMetadata) {
+    if demux_metadata
+        .title
+        .as_deref()
+        .is_none_or(|title| title.trim().is_empty())
+    {
+        demux_metadata.title = service_title.map(ToOwned::to_owned);
+    }
+    (demux_duration.or(service_duration), demux_metadata)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use media_core::MediaTagMetadata;
+
+    use super::merge_youtube_playlist_metadata;
+
+    #[test]
+    fn youtube_service_metadata_fills_missing_demux_values() {
+        let (duration, metadata) = merge_youtube_playlist_metadata(
+            None,
+            MediaTagMetadata::default(),
+            Some("Настоящее YouTube название"),
+            Some(Duration::from_secs(90)),
+        );
+
+        assert_eq!(duration, Some(Duration::from_secs(90)));
+        assert_eq!(
+            metadata.title.as_deref(),
+            Some("Настоящее YouTube название")
+        );
+    }
+
+    #[test]
+    fn demux_metadata_remains_primary_when_already_known() {
+        let demux_metadata = MediaTagMetadata {
+            title: Some("Название из контейнера".to_string()),
+            artists: vec!["Автор".to_string()],
+            ..MediaTagMetadata::default()
+        };
+        let (duration, metadata) = merge_youtube_playlist_metadata(
+            Some(Duration::from_secs(91)),
+            demux_metadata,
+            Some("Название YouTube"),
+            Some(Duration::from_secs(90)),
+        );
+
+        assert_eq!(duration, Some(Duration::from_secs(91)));
+        assert_eq!(metadata.title.as_deref(), Some("Название из контейнера"));
+        assert_eq!(metadata.artists, ["Автор".to_string()]);
     }
 }

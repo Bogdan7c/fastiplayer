@@ -1202,7 +1202,9 @@ pub(crate) fn render_frame(
     if let Some(hint) = playlist_visible_items_hint
         && playlist_runtime.validate_binding(hint.binding()).is_ok()
     {
-        let _refresh_outcome = playlist_runtime.request_visible_metadata_refresh(hint.item_ids());
+        let youtube_config = app_state.youtube_metadata_config();
+        let _refresh_outcome =
+            playlist_runtime.request_visible_metadata_refresh(hint.item_ids(), &youtube_config);
     }
     crate::transport_runtime::apply_transport_actions(
         app_state,

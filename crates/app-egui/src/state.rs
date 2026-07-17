@@ -479,6 +479,11 @@ impl AppState {
         self.committed_config_snapshot.video_backend_preference()
     }
 
+    /// Захватывает committed YouTube policy для новой playlist metadata задачи.
+    pub(crate) fn youtube_metadata_config(&self) -> rustiplayer_config::YoutubeConfig {
+        self.committed_config_snapshot.youtube_metadata_config()
+    }
+
     /// Клонирует committed config только для staged owner rebuild-а.
     pub(crate) fn committed_app_config(&self) -> rustiplayer_config::AppConfig {
         self.committed_config_snapshot.as_config().clone()

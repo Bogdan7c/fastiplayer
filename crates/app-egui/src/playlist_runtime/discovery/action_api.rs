@@ -11,6 +11,9 @@ use super::action_jobs::{
     VisibleRefreshRequestOutcome,
 };
 use crate::playlist_runtime::PlaylistRuntime;
+use crate::url_service_adapter::{
+    PlaylistUrlMetadataSource, StartupUrlClassification, classify_playlist_url,
+};
 
 impl PlaylistRuntime {
     /// Запускает app-owned Manual Add без Item ID reservation до terminal commit.
@@ -56,7 +59,7 @@ impl PlaylistRuntime {
         active
     }
 
-    /// D31 принимает только committed native-local rows; URL visibility не создаёт network I/O.
+    /// D31 принимает local refresh и service-owned YouTube enrichment видимых rows.
     #[allow(
         dead_code,
         reason = "Session 18/19 visible-row hint invokes this action"
@@ -64,12 +67,13 @@ impl PlaylistRuntime {
     pub(crate) fn request_visible_metadata_refresh(
         &mut self,
         item_ids: &[PlaylistItemId],
+        youtube_config: &rustiplayer_config::YoutubeConfig,
     ) -> VisibleRefreshRequestOutcome {
         let Some(controller) = self.controller.as_ref() else {
             return VisibleRefreshRequestOutcome::default();
         };
         let expected_structural_revision = controller.view_snapshot().structural_revision();
-        let demands = item_ids
+        let local_demands = item_ids
             .iter()
             .filter_map(|item_id| {
                 let item = controller.queue().item(*item_id)?;
@@ -87,7 +91,36 @@ impl PlaylistRuntime {
                 })
             })
             .collect();
-        self.discovery.request_visible_refresh(demands)
+        let youtube_demands = item_ids
+            .iter()
+            .filter_map(|item_id| {
+                let item = controller.queue().item(*item_id)?;
+                if item
+                    .cached_metadata()
+                    .title()
+                    .is_some_and(|title| !title.trim().is_empty())
+                {
+                    return None;
+                }
+                let secret_url = item.locator().as_secret_url()?;
+                let StartupUrlClassification::Supported(locator) =
+                    classify_playlist_url(secret_url)
+                else {
+                    return None;
+                };
+                let PlaylistUrlMetadataSource::YouTube(youtube_locator) =
+                    locator.playlist_metadata_source()?;
+                Some(super::youtube_metadata::YoutubeMetadataDemand::new(
+                    *item_id,
+                    item.locator().clone(),
+                    youtube_locator,
+                    youtube_config.clone(),
+                ))
+            })
+            .collect();
+        let outcome = self.discovery.request_visible_refresh(local_demands);
+        let _youtube_outcome = self.discovery.request_youtube_metadata(youtube_demands);
+        outcome
     }
 
     /// Возвращает bounded process-lifetime read model для будущего UI.
@@ -137,6 +170,14 @@ impl PlaylistDiscoveryCoordinator {
         self.action_jobs.request_visible_refresh(demands)
     }
 
+    pub(in crate::playlist_runtime) fn request_youtube_metadata(
+        &mut self,
+        demands: Vec<super::YoutubeMetadataDemand>,
+    ) -> super::youtube_metadata::YoutubeMetadataRequestOutcome {
+        self.youtube_metadata
+            .request(demands, std::time::Instant::now())
+    }
+
     fn jobs_read_model(&self) -> PlaylistDiscoveryJobsReadModel {
         self.action_jobs.read_model()
     }
@@ -150,5 +191,14 @@ impl PlaylistDiscoveryCoordinator {
     pub(super) fn cancel_action_jobs_for_queue_replacement(&mut self) {
         self.action_jobs.cancel_for_queue_replacement();
         self.metadata_sort.cancel_for_queue_replacement();
+        self.youtube_metadata.cancel_for_queue_replacement();
+    }
+
+    #[cfg(test)]
+    pub(in crate::playlist_runtime) fn replace_youtube_metadata_resolver_for_test(
+        &mut self,
+        resolver: std::sync::Arc<dyn super::YoutubeMetadataResolver>,
+    ) {
+        self.youtube_metadata.replace_resolver_for_test(resolver);
     }
 }

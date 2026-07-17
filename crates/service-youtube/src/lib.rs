@@ -23,6 +23,7 @@ mod dto;
 mod http_refresh;
 mod http_stream;
 mod locator;
+mod metadata;
 mod process;
 mod resolver;
 mod selection;
@@ -36,6 +37,7 @@ pub use locator::{
     YoutubeDirectStreamUrl, YoutubeLocatorParseError, YoutubeMediaLocator,
     parse_youtube_media_locator,
 };
+pub use metadata::{YoutubePlaylistMetadata, resolve_youtube_playlist_metadata_with_config};
 pub use resolver::{
     YoutubeSelectedStreamIdentity, resolve_youtube_direct_streams,
     resolve_youtube_stream_candidates, resolve_youtube_stream_candidates_with_config,

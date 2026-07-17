@@ -13,6 +13,7 @@ mod mapping;
 mod metadata_sort;
 mod navigation;
 mod settings_port;
+mod youtube_metadata;
 
 #[allow(
     unused_imports,
@@ -24,6 +25,11 @@ pub(crate) use action_jobs::{
 };
 pub(crate) use metadata_sort::{
     MetadataSortCancelOutcome, MetadataSortJobId, MetadataSortPhase, MetadataSortTerminalOutcome,
+};
+pub(in crate::playlist_runtime) use youtube_metadata::YoutubeMetadataDemand;
+#[cfg(test)]
+pub(in crate::playlist_runtime) use youtube_metadata::{
+    YoutubeMetadataResolver, YoutubeMetadataTaskOutcome,
 };
 
 #[allow(unused_imports)]
@@ -279,6 +285,7 @@ pub(super) struct PlaylistDiscoveryCoordinator {
     cpu_executor: Option<bounded_work_executor::BoundedExecutor>,
     action_jobs: action_jobs::DiscoveryActionJobs,
     metadata_sort: metadata_sort::MetadataSortOwner,
+    youtube_metadata: youtube_metadata::YoutubeMetadataOwner,
     manifest_worker: Option<ManifestWorker>,
     settings_control: SharedDiscoverySettingsControl,
     next_scope_id: u64,
@@ -303,7 +310,8 @@ impl PlaylistDiscoveryCoordinator {
             executor,
             cpu_executor,
             action_jobs: action_jobs::DiscoveryActionJobs::new(),
-            metadata_sort: metadata_sort::MetadataSortOwner::new(wake_port),
+            metadata_sort: metadata_sort::MetadataSortOwner::new(wake_port.clone()),
+            youtube_metadata: youtube_metadata::YoutubeMetadataOwner::new(wake_port),
             manifest_worker,
             settings_control: SharedDiscoverySettingsControl::default(),
             next_scope_id: 1,
@@ -340,6 +348,7 @@ impl PlaylistDiscoveryCoordinator {
         self.initial_playback.cancel_all();
         self.action_jobs.begin_shutdown();
         self.metadata_sort.begin_shutdown();
+        self.youtube_metadata.begin_shutdown();
         if let Some(manifest_worker) = &mut self.manifest_worker {
             manifest_worker.close_admission();
         }
@@ -435,7 +444,10 @@ impl PlaylistDiscoveryCoordinator {
         controller: &mut super::controller::PlaylistController,
         queue_generation: u64,
     ) -> bool {
-        let mut visible_change =
+        let mut visible_change = self
+            .youtube_metadata
+            .drain(controller, std::time::Instant::now());
+        visible_change |=
             self.action_jobs
                 .drain(self.executor.as_ref(), controller, queue_generation);
         visible_change |= self.finish_manifest_if_ready(controller);

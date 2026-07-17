@@ -99,12 +99,24 @@ enum ProcessWaitOutcome {
 
     /// Процесс был остановлен из-за timeout-а.
     TimedOut,
+
+    /// Процесс был остановлен по cooperative cancellation от owner-а.
+    Cancelled,
 }
 
 /// Получает metadata и выбранные direct URLs через `yt-dlp`.
 pub(crate) fn resolve_youtube_metadata(
     video_url: &str,
     process_config: &YtDlpProcessConfig,
+) -> Result<YtDlpMetadata> {
+    resolve_youtube_metadata_with_cancellation(video_url, process_config, &|| false)
+}
+
+/// Получает metadata и позволяет process-lifetime owner-у прервать `yt-dlp`.
+pub(crate) fn resolve_youtube_metadata_with_cancellation(
+    video_url: &str,
+    process_config: &YtDlpProcessConfig,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<YtDlpMetadata> {
     // Выбираем selector из env или используем тестовую policy по умолчанию.
     let format_selector = youtube_format_selector();
@@ -119,10 +131,11 @@ pub(crate) fn resolve_youtube_metadata(
         video_url,
     ];
 
-    let command_output = run_process_with_timeout(
+    let command_output = run_process_with_timeout_and_cancellation(
         process_config.executable.as_str(),
         &command_arguments,
         process_config.timeout,
+        is_cancelled,
     )
     .context("Не удалось выполнить yt-dlp для получения streaming metadata")?;
 
@@ -142,6 +155,15 @@ pub(crate) fn resolve_youtube_candidate_metadata(
     video_url: &str,
     process_config: &YtDlpProcessConfig,
 ) -> Result<YtDlpMetadata> {
+    resolve_youtube_candidate_metadata_with_cancellation(video_url, process_config, &|| false)
+}
+
+/// Получает общий manifest JSON без playback selector-а и поддерживает отмену.
+pub(crate) fn resolve_youtube_candidate_metadata_with_cancellation(
+    video_url: &str,
+    process_config: &YtDlpProcessConfig,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<YtDlpMetadata> {
     let command_arguments = [
         "--quiet",
         "--no-warnings",
@@ -151,10 +173,11 @@ pub(crate) fn resolve_youtube_candidate_metadata(
         video_url,
     ];
 
-    let command_output = run_process_with_timeout(
+    let command_output = run_process_with_timeout_and_cancellation(
         process_config.executable.as_str(),
         &command_arguments,
         process_config.timeout,
+        is_cancelled,
     )
     .context("Не удалось выполнить yt-dlp для получения YouTube stream candidates")?;
 
@@ -167,13 +190,27 @@ pub(crate) fn resolve_youtube_candidate_metadata(
 }
 
 /// Запускает внешний процесс, читает stdout/stderr параллельно и ограничивает ожидание.
+#[cfg(test)]
 fn run_process_with_timeout(
     executable: &str,
     arguments: &[&str],
     timeout: Duration,
 ) -> Result<ProcessOutput> {
+    run_process_with_timeout_and_cancellation(executable, arguments, timeout, &|| false)
+}
+
+/// Запускает внешний процесс с timeout-ом и cooperative cancellation.
+fn run_process_with_timeout_and_cancellation(
+    executable: &str,
+    arguments: &[&str],
+    timeout: Duration,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<ProcessOutput> {
     if timeout.is_zero() {
         bail!("process timeout должен быть положительным");
+    }
+    if is_cancelled() {
+        bail!("запуск yt-dlp отменён до создания process-а");
     }
 
     let mut child = Command::new(executable)
@@ -194,7 +231,7 @@ fn run_process_with_timeout(
     let stdout_reader = spawn_pipe_reader("stdout", stdout)?;
     let stderr_reader = spawn_pipe_reader("stderr", stderr)?;
 
-    let wait_outcome = wait_for_process_with_timeout(&mut child, timeout)?;
+    let wait_outcome = wait_for_process_with_timeout(&mut child, timeout, is_cancelled)?;
     let stdout = join_pipe_reader("stdout", stdout_reader)?;
     let stderr = join_pipe_reader("stderr", stderr_reader)?;
 
@@ -209,6 +246,7 @@ fn run_process_with_timeout(
             timeout.as_millis(),
             safe_stderr_context(&stderr)
         ),
+        ProcessWaitOutcome::Cancelled => bail!("получение metadata через yt-dlp отменено"),
     }
 }
 
@@ -245,6 +283,7 @@ fn join_pipe_reader(
 fn wait_for_process_with_timeout(
     child: &mut Child,
     timeout: Duration,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<ProcessWaitOutcome> {
     let start = Instant::now();
 
@@ -254,6 +293,11 @@ fn wait_for_process_with_timeout(
             .context("Не удалось проверить статус process-а")?
         {
             return Ok(ProcessWaitOutcome::Exited(status));
+        }
+
+        if is_cancelled() {
+            terminate_process(child)?;
+            return Ok(ProcessWaitOutcome::Cancelled);
         }
 
         if start.elapsed() >= timeout {
@@ -271,7 +315,7 @@ fn terminate_process(child: &mut Child) -> Result<()> {
     match child.kill() {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::InvalidInput => {}
-        Err(error) => return Err(error).context("Не удалось остановить process по timeout-у"),
+        Err(error) => return Err(error).context("Не удалось остановить process по policy"),
     }
 
     child
@@ -365,6 +409,25 @@ mod tests {
         assert!(error.to_string().contains("не завершился"));
         assert!(!error.to_string().contains("password"));
         assert!(!error.to_string().contains("secret"));
+    }
+
+    /// Cooperative cancellation должен быстро остановить уже запущенный child process.
+    #[test]
+    fn process_cancellation_stops_running_child() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let cancellation_checks = AtomicUsize::new(0);
+        let started_at = Instant::now();
+        let error = run_process_with_timeout_and_cancellation(
+            "sh",
+            &["-c", "sleep 5"],
+            Duration::from_secs(5),
+            &|| cancellation_checks.fetch_add(1, Ordering::Relaxed) > 0,
+        )
+        .expect_err("cancelled process must not complete successfully");
+
+        assert!(error.to_string().contains("отмен"));
+        assert!(started_at.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

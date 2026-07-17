@@ -1153,7 +1153,7 @@ fn duration_from_seconds(seconds: Option<f64>) -> Option<Duration> {
         return None;
     }
 
-    Some(Duration::from_secs_f64(seconds))
+    Duration::try_from_secs_f64(seconds).ok()
 }
 
 /// Определяет live media без превращения бывших live VOD в live.

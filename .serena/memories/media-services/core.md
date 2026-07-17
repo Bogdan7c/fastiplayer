@@ -33,3 +33,7 @@
 - `app-egui::media_open` reuses existing local/direct/YouTube owners without moving service policy into coordinator. Direct uses `DirectMediaOpenResult::media_metadata`; YouTube keeps capability selection and exact `YoutubeSelectedStreamIdentity`.
 - `ActiveMediaSource` is now the single reconstructible app vocabulary owned by media-open and re-exported through the old state path until Session 10D.
 - Local D64/D75 preparation uses one `LocalFileSource` handle and one demux open; `source-core::LocalFileMetadataSnapshot` exposes same-handle size/mtime before transfer. Full invariants: `mem:app-egui/media-open-coordinator-s10c`.
+
+
+## 2026-07-17 YouTube playlist metadata boundary
+- `service-youtube` exposes cancellable `resolve_youtube_playlist_metadata_with_config` for title/duration-only enrichment and `YoutubeStreamingMedia::playlist_metadata` for no-I/O reuse of an already resolved snapshot. It does not know playlist IDs/UI; app orchestration and exact patching are documented in `mem:app-egui/youtube-playlist-metadata-2026-07-17`.

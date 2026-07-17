@@ -353,3 +353,14 @@ pub struct YoutubeStreamingMedia {
     /// Нормализованные direct stream descriptors, выбранные service layer-ом.
     pub direct_streams: YoutubeDirectStreams,
 }
+
+impl YoutubeStreamingMedia {
+    /// Возвращает metadata выбранного service snapshot-а без повторного `yt-dlp` I/O.
+    #[must_use]
+    pub fn playlist_metadata(&self) -> crate::YoutubePlaylistMetadata {
+        crate::YoutubePlaylistMetadata::from_extractor(
+            self.direct_streams.title.clone(),
+            self.direct_streams.duration,
+        )
+    }
+}

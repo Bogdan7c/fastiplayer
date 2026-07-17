@@ -9,6 +9,13 @@ use crate::state::AppState;
 /// Service-neutral type erasure для уже разобранного URL service request-а.
 pub(crate) struct StartupUrlLocator(Box<dyn StartupUrlServiceAdapter>);
 
+/// Typed source для необязательного фонового обогащения playlist metadata.
+#[derive(Clone)]
+pub(crate) enum PlaylistUrlMetadataSource {
+    /// YouTube owner повторно использует нормализованный locator страницы ролика.
+    YouTube(service_youtube::YoutubeMediaLocator),
+}
+
 impl StartupUrlLocator {
     fn new(adapter: impl StartupUrlServiceAdapter + 'static) -> Self {
         Self(Box::new(adapter))
@@ -58,6 +65,11 @@ impl StartupUrlLocator {
     pub(crate) fn requires_sensitive_persistence_acknowledgement(&self) -> bool {
         self.0.requires_sensitive_persistence_acknowledgement()
     }
+
+    /// Возвращает service-owned metadata source, если adapter поддерживает enrichment.
+    pub(crate) fn playlist_metadata_source(&self) -> Option<PlaylistUrlMetadataSource> {
+        self.0.playlist_metadata_source()
+    }
 }
 
 impl fmt::Debug for StartupUrlLocator {
@@ -95,6 +107,10 @@ trait StartupUrlServiceAdapter: Send {
 
     fn requires_sensitive_persistence_acknowledgement(&self) -> bool {
         false
+    }
+
+    fn playlist_metadata_source(&self) -> Option<PlaylistUrlMetadataSource> {
+        None
     }
 }
 
@@ -149,6 +165,10 @@ impl StartupUrlServiceAdapter for YoutubeStartupAdapter {
 
     fn expose_secret_for_persistence(&self) -> &str {
         self.locator.expose_secret_for_persistence()
+    }
+
+    fn playlist_metadata_source(&self) -> Option<PlaylistUrlMetadataSource> {
+        Some(PlaylistUrlMetadataSource::YouTube(self.locator.clone()))
     }
 }
 
