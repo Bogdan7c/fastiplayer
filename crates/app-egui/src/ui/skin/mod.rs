@@ -123,6 +123,35 @@ pub struct PlaylistRowStyle {
     pub active_stroke: Stroke,
 }
 
+/// Skin-owned геометрия и цвета компактного toolbar плейлиста.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlaylistToolbarStyle {
+    /// Сторона квадратной hit-area каждой кнопки.
+    pub button_size: f32,
+    /// Интервал между четырьмя обычными действиями слева.
+    pub button_gap: f32,
+    /// Полный размер glyph внутри hit-area.
+    pub icon_extent: f32,
+    /// Единый визуальный вес открытых линий.
+    pub glyph_stroke_width: f32,
+    /// Радиус мягкой hover/pressed-подложки.
+    pub surface_corner_radius: f32,
+    /// Цвет glyph без взаимодействия.
+    pub foreground_idle: Color32,
+    /// Цвет glyph под pointer и во время нажатия.
+    pub foreground_hover: Color32,
+    /// Цвет glyph при запрещённом действии.
+    pub foreground_disabled: Color32,
+    /// Поверхность под pointer.
+    pub surface_hover: Color32,
+    /// Усиленная поверхность во время pointer/key press.
+    pub surface_pressed: Color32,
+    /// Контур keyboard focus.
+    pub focus_outline: Stroke,
+    /// Отступ focus outline внутрь hit-area.
+    pub focus_inset: f32,
+}
+
 /// Цвета и размеры панели controls.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ControlsStyle {
@@ -235,6 +264,10 @@ pub trait PlayerSkin: AssetProvider {
     #[must_use]
     fn playlist_row_style(&self) -> PlaylistRowStyle;
 
+    /// Возвращает explicit стиль иконного toolbar плейлиста.
+    #[must_use]
+    fn playlist_toolbar_style(&self) -> PlaylistToolbarStyle;
+
     /// Возвращает frame нижней панели.
     fn bottom_panel_frame(&self) -> Frame {
         Frame::NONE
@@ -312,6 +345,28 @@ mod tests {
             style.insertion_stroke.color,
             style.focus_stroke.color,
             style.active_stroke.color,
+        ] {
+            assert_eq!(color.r(), color.g());
+            assert_eq!(color.g(), color.b());
+        }
+    }
+
+    /// Toolbar остаётся компактным и использует только grayscale-токены MinimalSkin.
+    #[test]
+    fn minimal_playlist_toolbar_is_compact_and_has_no_color_accent() {
+        let style = MinimalSkin.playlist_toolbar_style();
+
+        assert_eq!(style.button_size, 28.0);
+        assert_eq!(style.button_gap, 2.0);
+        assert_eq!(style.icon_extent, 16.0);
+        assert_eq!(style.glyph_stroke_width, 1.5);
+        for color in [
+            style.foreground_idle,
+            style.foreground_hover,
+            style.foreground_disabled,
+            style.surface_hover,
+            style.surface_pressed,
+            style.focus_outline.color,
         ] {
             assert_eq!(color.r(), color.g());
             assert_eq!(color.g(), color.b());

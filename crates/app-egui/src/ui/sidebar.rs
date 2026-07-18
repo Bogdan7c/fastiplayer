@@ -8,7 +8,7 @@ use rustiplayer_config::{MAX_SIDEBAR_WIDTH_POINTS, MIN_SIDEBAR_WIDTH_POINTS};
 
 use crate::settings_ui::{SettingsUiAction, SettingsUiModel, layout};
 use crate::state::{ContentSlideDirection, SidebarContentTransition, SidebarSection};
-use crate::ui::skin::PlaylistRowStyle;
+use crate::ui::skin::{PlaylistRowStyle, PlaylistToolbarStyle};
 use crate::ui::{media_info, playlist};
 
 const SIDEBAR_FILL: egui::Color32 = egui::Color32::from_rgb(18, 18, 18);
@@ -106,6 +106,7 @@ pub(crate) struct SidebarRenderContext<'a> {
     pub(crate) snapshot: &'a player_core::PlayerSnapshot,
     pub(crate) playlist_model: Option<&'a crate::playlist_runtime::PlaylistViewModel>,
     pub(crate) playlist_row_style: PlaylistRowStyle,
+    pub(crate) playlist_toolbar_style: PlaylistToolbarStyle,
     pub(crate) playlist_interaction: &'a crate::playlist_runtime::PlaylistInteractionModel,
     pub(crate) playlist_state: &'a mut playlist::PlaylistUiState,
     pub(crate) playlist_output: &'a mut playlist::PlaylistUiOutput,
@@ -294,6 +295,7 @@ fn render_section(ui: &mut Ui, section: SidebarSection, context: &mut SidebarRen
                 context.playlist_model,
                 context.playlist_interaction,
                 context.playlist_row_style,
+                context.playlist_toolbar_style,
                 context.playlist_state,
                 context.playlist_output,
             );

@@ -34,3 +34,10 @@
 - The app reserves a painter shape slot before content, obtains the single full-row response after layout, then fills that earlier slot so hover/selection stays behind text. Separator is painted last over the row using a pixel-aligned `1 / pixels_per_point` stroke spanning the exact row width; row height is unchanged.
 - `PlaylistRowStyle` remains app skin vocabulary and supplies fill/stroke/color tokens to the neutral facade. Artwork owns only geometry and shape ordering, never selection/playback semantics, hit-testing or commands.
 - Characterization tests cover one line, full width, exactly one physical pixel and alignment at 1.0/1.25/1.5/2.0/2.5 scale factors. `ui-artwork-egui` has 15 passing tests after this boundary change.
+
+
+## Playlist icon-only toolbar (2026-07-18)
+- `ui-artwork-egui::playlist_toolbar` owns the five neutral hand-drawn vector glyphs `AddFiles`, `AddUrl`, `Sort`, `CurrentItem`, and `Clear`, plus the surface/focus geometry behind `ArtworkPainter::playlist_toolbar_button(...)`.
+- `app-egui::ui::playlist::toolbar::icon_bar` owns the full-width row layout, stable hit areas/IDs, pointer and keyboard interaction, accessibility/tooltips, disabled reasons, sort popup, and mapping to existing `PlaylistAction`; it contains no queue/domain mutation.
+- `PlayerSkin::playlist_toolbar_style()` is the only owner of button size/gap, icon extent/stroke, grayscale foreground states, hover/pressed surfaces, and focus outline. `MinimalSkin` uses 28x28 point buttons, 16-point glyphs, and a 2-point gap for the four left controls; Clear is pinned to the right edge.
+- The app still contains no direct Painter primitives. Artwork characterization tests live with the dedicated module and cover shape counts, distinct geometry, bounds, and decoration invariance; app headless tests cover layout at 350/420/600 points, exact actions, disabled controls, sort popup, Tab+Space/Enter, and Russian accessibility labels.

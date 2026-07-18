@@ -123,6 +123,7 @@ pub(crate) fn show(
     model: Option<&PlaylistViewModel>,
     interaction: &PlaylistInteractionModel,
     row_style: crate::ui::skin::PlaylistRowStyle,
+    toolbar_style: crate::ui::skin::PlaylistToolbarStyle,
     state: &mut PlaylistUiState,
     output: &mut PlaylistUiOutput,
 ) {
@@ -135,7 +136,7 @@ pub(crate) fn show(
         // Они не имеют права вернуть action, заменить viewport anchor или demand hint.
         let mut visual_state = PlaylistUiState::default();
         let mut discarded_output = PlaylistUiOutput::default();
-        toolbar::show(ui, interaction, &mut discarded_output);
+        toolbar::show(ui, interaction, toolbar_style, &mut discarded_output);
         status::show_summary(ui, model, &mut visual_state);
         renderer::show_rows(
             ui,
@@ -146,7 +147,7 @@ pub(crate) fn show(
         );
         return;
     }
-    toolbar::show(ui, interaction, output);
+    toolbar::show(ui, interaction, toolbar_style, output);
     status::show_summary(ui, model, state);
     renderer::show_rows(ui, model, row_style, state, output);
 }

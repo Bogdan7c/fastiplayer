@@ -1,8 +1,11 @@
 //! Toolbar/forms/progress renderer без I/O и business mutations.
 
-use playlist_core::{PlaylistSortKey, SortCanonicalQueue, SortDirection};
+mod icon_bar;
+
+use playlist_core::PlaylistSortKey;
 
 use crate::playlist_runtime::{PlaylistInteractionModel, PlaylistWaitDirection};
+use crate::ui::skin::PlaylistToolbarStyle;
 
 use super::PlaylistUiOutput;
 use super::actions::{PlaylistAction, PlaylistUrlDraftText};
@@ -19,97 +22,15 @@ const SORT_KEYS: [(PlaylistSortKey, &str); 6] = [
 pub(super) fn show(
     ui: &mut egui::Ui,
     model: &PlaylistInteractionModel,
+    style: PlaylistToolbarStyle,
     output: &mut PlaylistUiOutput,
 ) {
-    ui.horizontal_wrapped(|ui| {
-        let add_files = ui
-            .add_enabled(
-                model.structural_actions_enabled && !model.file_dialog_open,
-                egui::Button::new("Добавить файлы"),
-            )
-            .on_hover_text("Выбрать несколько файлов и добавить их в конец плейлиста");
-        if add_files.clicked() {
-            output.push_action(PlaylistAction::AddFiles);
-        }
-
-        if ui
-            .add_enabled(
-                model.structural_actions_enabled,
-                egui::Button::new("Добавить URL"),
-            )
-            .on_hover_text("Открыть встроенную форму добавления URL")
-            .clicked()
-        {
-            output.push_action(PlaylistAction::OpenUrlEditor);
-        }
-
-        if ui
-            .add_enabled(
-                model.structural_actions_enabled && model.item_count > 0,
-                egui::Button::new("Очистить"),
-            )
-            .on_hover_text("Очистить очередь; текущее воспроизведение не останавливается")
-            .clicked()
-        {
-            output.push_action(PlaylistAction::Clear);
-        }
-
-        sort_menu(ui, model, output);
-
-        if let Some(target) = model.go_current_target {
-            if ui
-                .button("Перейти к текущему")
-                .on_hover_text(match target {
-                    crate::playlist_runtime::PlaylistGoCurrentTarget::Row(_) => {
-                        "Сфокусировать и показать текущую строку"
-                    }
-                    crate::playlist_runtime::PlaylistGoCurrentTarget::Tombstone => {
-                        "Показать продолжающее воспроизводиться удалённое медиа"
-                    }
-                })
-                .clicked()
-            {
-                output.push_action(PlaylistAction::GoCurrent(target));
-            }
-        } else {
-            ui.add_enabled(false, egui::Button::new("Перейти к текущему"))
-                .on_disabled_hover_text("Сейчас нет активного медиа");
-        }
-    });
+    icon_bar::show(ui, model, style, output);
 
     if model.url_editor_open {
         show_url_editor(ui, model, output);
     }
     show_operation_status(ui, model, output);
-}
-
-fn sort_menu(ui: &mut egui::Ui, model: &PlaylistInteractionModel, output: &mut PlaylistUiOutput) {
-    let sort_enabled =
-        model.structural_actions_enabled && model.item_count > 1 && model.progress.is_none();
-    ui.add_enabled_ui(sort_enabled, |ui| {
-        ui.menu_button("Сортировка", |ui| {
-            for (key, label) in SORT_KEYS {
-                ui.menu_button(label, |ui| {
-                    if ui.button("По возрастанию ↑").clicked() {
-                        output.push_action(PlaylistAction::Sort(SortCanonicalQueue::new(
-                            key,
-                            SortDirection::Ascending,
-                        )));
-                        ui.close();
-                    }
-                    if ui.button("По убыванию ↓").clicked() {
-                        output.push_action(PlaylistAction::Sort(SortCanonicalQueue::new(
-                            key,
-                            SortDirection::Descending,
-                        )));
-                        ui.close();
-                    }
-                });
-            }
-        })
-        .response
-        .on_hover_text("Однократно изменить canonical порядок");
-    });
 }
 
 fn show_url_editor(
@@ -298,10 +219,15 @@ mod tests {
 
     #[test]
     fn queue_mode_controls_are_not_duplicated_in_playlist_toolbar() {
-        let production_source = include_str!("toolbar.rs")
+        let toolbar_source = include_str!("toolbar.rs")
             .split_once("#[cfg(test)]")
             .expect("toolbar tests must stay after production code")
             .0;
+        let icon_bar_source = include_str!("toolbar/icon_bar.rs")
+            .split_once("#[cfg(test)]")
+            .expect("icon bar tests must stay after production code")
+            .0;
+        let production_source = format!("{toolbar_source}\n{icon_bar_source}");
 
         assert!(!production_source.contains("SetRepeatMode"));
         assert!(!production_source.contains("SetShuffle"));
@@ -309,6 +235,7 @@ mod tests {
         assert!(!production_source.contains("Повтор:"));
         assert!(!production_source.contains("SetStopAfterCurrent"));
         assert!(!production_source.contains("После текущего"));
-        assert!(production_source.contains("Сортировка"));
+        assert!(production_source.contains("PlaylistToolbarGlyph::Sort"));
+        assert!(toolbar_source.contains("icon_bar::show"));
     }
 }

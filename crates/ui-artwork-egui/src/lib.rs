@@ -9,6 +9,7 @@ mod open_media_button;
 mod playback_button;
 mod playback_rate_button;
 mod playlist_row;
+mod playlist_toolbar;
 mod queue_mode_controls;
 mod settings_button;
 mod sidebar_buttons;
@@ -27,6 +28,9 @@ pub use fullscreen_button::{FullscreenGlyph, FullscreenStyle};
 pub use media_kind_icon::MediaKindGlyph;
 pub use playback_button::{ButtonVisualState, PlaybackGlyph, PlaybackStyle};
 pub use playback_rate_button::{PlaybackRateButtonGeometry, PlaybackRateButtonStyle};
+pub use playlist_toolbar::{
+    PlaylistToolbarButtonStyle, PlaylistToolbarGlyph, PlaylistToolbarPaintState,
+};
 pub use queue_mode_controls::{QueueModeControlStyle, QueueModeGlyph, QueueModePaintState};
 pub use sidebar_buttons::SidebarButtonGlyph;
 pub use timeline::{TimelinePaintState, TimelineStyle, timeline_track_rect};
@@ -132,6 +136,17 @@ impl<'a> ArtworkPainter<'a> {
         pixels_per_point: f32,
     ) {
         playlist_row::paint_separator(self.painter, rect, color, pixels_per_point);
+    }
+
+    /// Рисует компактную иконную кнопку toolbar плейлиста.
+    pub fn playlist_toolbar_button(
+        self,
+        rect: egui::Rect,
+        glyph: PlaylistToolbarGlyph,
+        state: PlaylistToolbarPaintState,
+        style: PlaylistToolbarButtonStyle,
+    ) {
+        playlist_toolbar::paint(self.painter, rect, glyph, state, style);
     }
 
     /// Рисует кнопку полноэкранного режима.

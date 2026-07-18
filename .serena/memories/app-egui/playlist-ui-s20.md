@@ -26,3 +26,10 @@
 - Virtualized drag captures selected IDs and structural revision once. Dragging an unselected row first collapses selection to it; selected rows move atomically as one canonical-order block. Drop slots exclude selected anchors, per-frame target lookup stays O(1), and Escape/lost capture clean ephemeral state.
 - Row visuals come only from `PlaylistRowStyle`: white alpha 28 hover, 46 selected, 64 selected+hover, white alpha 128 separator and light grayscale insertion/focus/active strokes. Playing remains independent through `▶`, active fill/stroke and accessibility selected state.
 - Headless egui tests cover every row column/edge plus double click, secondary click, drag/drop, keyboard focus/navigation/select-all, empty-area clear and disabled text selection. Focused Playlist UI 34 PASS; full app suites 643 PASS for both feature sets.
+
+
+## Compact icon-only playlist toolbar (2026-07-18)
+- The five text buttons were replaced by fixed 28x28 vector controls: Add Files, Add URL, Sort, Current Item, and a broom-shaped Clear. The first four stay in a compact left group with 2-point gaps; Clear is pinned to the right edge and remains grayscale rather than receiving a destructive color accent.
+- Existing action and availability semantics are unchanged: file-dialog/structural gates, empty queue, sort progress/item-count gate, exact `PlaylistGoCurrentTarget`, canonical nested sort choices, and detached playback on Clear remain distinct. Enabled and disabled Russian tooltips explain those distinctions.
+- `ui/playlist/toolbar/icon_bar.rs` owns only layout/interaction/accessibility/action mapping; `ui-artwork-egui` owns vector geometry; `PlayerSkin::playlist_toolbar_style()` owns visual tokens. URL editor and operation status remain in the parent toolbar renderer.
+- Final focused coverage includes real pointer clicks, disabled no-actions, sort popup open, Tab+Space/Enter activation, Russian accessibility names, layout at sidebar widths 350/420/600, and artwork shape/bounds invariants. Both default and no-default full app suites pass at 650 tests.

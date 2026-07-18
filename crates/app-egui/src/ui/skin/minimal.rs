@@ -5,7 +5,8 @@ use egui::{Color32, Margin};
 use crate::ui::animation::AnimationState;
 use crate::ui::assets::{AssetProvider, IconId};
 use crate::ui::skin::{
-    ControlsStyle, PersistentControlStyle, PlayerSkin, PlaylistRowStyle, SkinId, TimelineStyle,
+    ControlsStyle, PersistentControlStyle, PlayerSkin, PlaylistRowStyle, PlaylistToolbarStyle,
+    SkinId, TimelineStyle,
 };
 
 /// Первый production skin для desktop player controls.
@@ -114,6 +115,27 @@ impl PlayerSkin for MinimalSkin {
                 1.0,
                 Color32::from_rgba_unmultiplied(235, 235, 235, 180),
             ),
+        }
+    }
+
+    /// Возвращает компактный grayscale toolbar без системного button theme.
+    fn playlist_toolbar_style(&self) -> PlaylistToolbarStyle {
+        PlaylistToolbarStyle {
+            button_size: 28.0,
+            button_gap: 2.0,
+            icon_extent: 16.0,
+            glyph_stroke_width: 1.5,
+            surface_corner_radius: 4.0,
+            foreground_idle: Color32::from_gray(170),
+            foreground_hover: Color32::from_gray(230),
+            foreground_disabled: Color32::from_gray(105),
+            surface_hover: Color32::from_rgba_unmultiplied(255, 255, 255, 28),
+            surface_pressed: Color32::from_rgba_unmultiplied(255, 255, 255, 56),
+            focus_outline: egui::Stroke::new(
+                1.5,
+                Color32::from_rgba_unmultiplied(245, 245, 245, 220),
+            ),
+            focus_inset: 1.5,
         }
     }
 

@@ -20,11 +20,16 @@ use crate::playlist_runtime::{
     PlaylistInteractionModel, PlaylistLoadingView, PlaylistNavigationView, PlaylistSaveView,
     PlaylistViewModel, PlaylistVisibleRow, PlaylistVisibleRowTestFixture,
 };
-use crate::ui::skin::{MinimalSkin, PlayerSkin, PlaylistRowStyle};
+use crate::ui::skin::{MinimalSkin, PlayerSkin, PlaylistRowStyle, PlaylistToolbarStyle};
 
 /// Focused UI tests используют те же explicit row tokens, что production MinimalSkin.
 fn row_style() -> PlaylistRowStyle {
     MinimalSkin.playlist_row_style()
+}
+
+/// Toolbar tests используют production tokens MinimalSkin без локальных цветов.
+fn toolbar_style() -> PlaylistToolbarStyle {
+    MinimalSkin.playlist_toolbar_style()
 }
 
 fn draft(index: usize) -> PlaylistItemDraft {
@@ -541,6 +546,7 @@ fn disabled_animation_copy_does_not_replace_viewport_or_publish_hint() {
             Some(&model),
             &interaction,
             row_style(),
+            toolbar_style(),
             &mut state,
             &mut output,
         );
