@@ -146,6 +146,19 @@ pub(crate) fn apply_transport_action(
                 send_legacy_toggle(app_state);
             }
         }
+        TransportControlAction::SetShuffleEnabled { enabled } => {
+            if playlist_runtime
+                .record_startup_shuffle_enabled(enabled)
+                .is_err()
+            {
+                playlist_runtime.set_playlist_safe_feedback("Не удалось изменить перемешивание");
+            }
+        }
+        TransportControlAction::SetRepeatMode { mode } => {
+            if playlist_runtime.record_startup_repeat_mode(mode).is_err() {
+                playlist_runtime.set_playlist_safe_feedback("Не удалось изменить режим повтора");
+            }
+        }
         TransportControlAction::CancelNavigation => {
             let outcome = playlist_runtime.cancel_global_playlist_navigation_wait();
             tracing::debug!(

@@ -288,6 +288,11 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     insert_default_config_comment(toml_text, "[ui.animations]", "# Настройки UI-анимаций.");
     insert_default_config_comment(
         toml_text,
+        "reduced_motion = true",
+        "# Убирает пространственное движение и масштабирование; короткие переходы цвета сохраняются.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "sidebar_slide_duration_ms = 500",
         "# Длительность выезда settings sidebar и сжатия видео, мс; 0 отключает анимацию.",
     );

@@ -77,6 +77,31 @@ pub struct TimelineStyle {
     pub disabled_fill: Color32,
 }
 
+/// Общие цветовые токены постоянных toggle-controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PersistentControlStyle {
+    /// Цвет неактивного glyph без hover.
+    pub foreground_idle: Color32,
+    /// Цвет неактивного glyph при hover.
+    pub foreground_hover: Color32,
+    /// Цвет подтверждённого активного glyph.
+    pub foreground_active: Color32,
+    /// Цвет glyph при запрещённом interaction.
+    pub foreground_disabled: Color32,
+    /// Полностью прозрачная поверхность неактивной кнопки.
+    pub surface_idle: Color32,
+    /// Круглая поверхность при hover неактивной кнопки.
+    pub surface_hover: Color32,
+    /// Постоянная слабая поверхность подтверждённой активной кнопки.
+    pub surface_active: Color32,
+    /// Поверхность активной кнопки при hover.
+    pub surface_active_hover: Color32,
+    /// Поверхность во время pointer/key press.
+    pub surface_pressed: Color32,
+    /// Контур keyboard focus.
+    pub focus_outline: Color32,
+}
+
 /// Цвета и размеры панели controls.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ControlsStyle {
@@ -127,6 +152,24 @@ pub struct ControlsStyle {
 
     /// Заливка transport-кнопки при hover.
     pub transport_button_hover_fill: Color32,
+
+    /// Общие цвета постоянных Shuffle/Repeat toggle-controls.
+    pub persistent_control: PersistentControlStyle,
+
+    /// Предпочтительное расстояние Shuffle/Repeat от центра Play/Pause.
+    pub queue_mode_button_center_distance: f32,
+
+    /// Минимальный зазор Next–Repeat и внешних controls до статических соседей.
+    pub queue_mode_neighbor_gap: f32,
+
+    /// Толщина открытых линий Shuffle/Repeat glyph.
+    pub queue_mode_glyph_stroke_width: f32,
+
+    /// Толщина видимого keyboard-focus outline.
+    pub queue_mode_focus_outline_width: f32,
+
+    /// Отступ focus outline внутрь 32-point hit-area.
+    pub queue_mode_focus_inset: f32,
 
     /// Предпочтительная ширина раскрытой кнопки сброса скорости.
     pub playback_rate_button_width: f32,

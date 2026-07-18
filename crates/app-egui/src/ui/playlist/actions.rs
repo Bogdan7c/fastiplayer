@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use playlist_core::{MoveItemIntent, PlaylistItemId, RepeatMode, SortCanonicalQueue};
+use playlist_core::{MoveItemIntent, PlaylistItemId, SortCanonicalQueue};
 
 use crate::playlist_runtime::{PlaylistGoCurrentTarget, PlaylistProgressCancelScope};
 
@@ -43,8 +43,6 @@ pub(crate) enum PlaylistAction {
     SubmitUrl,
     CancelUrlEditor,
     Clear,
-    SetRepeatMode(RepeatMode),
-    SetShuffle(bool),
     SetStopAfterCurrent(bool),
     Sort(SortCanonicalQueue),
     CancelProgress(PlaylistProgressCancelScope),

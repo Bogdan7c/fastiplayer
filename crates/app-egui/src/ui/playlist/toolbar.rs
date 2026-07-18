@@ -1,6 +1,6 @@
 //! Toolbar/forms/progress renderer без I/O и business mutations.
 
-use playlist_core::{PlaylistSortKey, RepeatMode, SortCanonicalQueue, SortDirection};
+use playlist_core::{PlaylistSortKey, SortCanonicalQueue, SortDirection};
 
 use crate::playlist_runtime::{PlaylistInteractionModel, PlaylistWaitDirection};
 
@@ -54,19 +54,6 @@ pub(super) fn show(
             output.push_action(PlaylistAction::Clear);
         }
 
-        repeat_menu(ui, model, output);
-
-        let mut shuffle = model.shuffle_enabled;
-        let shuffle_response = ui
-            .add_enabled(
-                model.structural_actions_enabled,
-                egui::Checkbox::new(&mut shuffle, "Перемешать"),
-            )
-            .on_hover_text("Изменить маршрут воспроизведения, не переставляя строки");
-        if shuffle_response.changed() {
-            output.push_action(PlaylistAction::SetShuffle(shuffle));
-        }
-
         let mut stop_after_current = model.stop_after_current;
         let stop_response = ui
             .add_enabled(
@@ -109,36 +96,6 @@ pub(super) fn show(
         show_url_editor(ui, model, output);
     }
     show_operation_status(ui, model, output);
-}
-
-fn repeat_menu(ui: &mut egui::Ui, model: &PlaylistInteractionModel, output: &mut PlaylistUiOutput) {
-    ui.add_enabled_ui(model.structural_actions_enabled, |ui| {
-        ui.menu_button(repeat_label(model.repeat_mode), |ui| {
-            for (mode, label) in [
-                (RepeatMode::StopAtEnd, "Без повтора"),
-                (RepeatMode::RepeatQueue, "Повтор очереди"),
-                (RepeatMode::RepeatOne, "Повтор трека"),
-            ] {
-                if ui
-                    .selectable_label(model.repeat_mode == mode, label)
-                    .clicked()
-                {
-                    output.push_action(PlaylistAction::SetRepeatMode(mode));
-                    ui.close();
-                }
-            }
-        })
-        .response
-        .on_hover_text("Режим повтора очереди");
-    });
-}
-
-fn repeat_label(mode: RepeatMode) -> &'static str {
-    match mode {
-        RepeatMode::StopAtEnd => "Повтор: выкл.",
-        RepeatMode::RepeatQueue => "Повтор: очередь",
-        RepeatMode::RepeatOne => "Повтор: трек",
-    }
 }
 
 fn sort_menu(ui: &mut egui::Ui, model: &PlaylistInteractionModel, output: &mut PlaylistUiOutput) {
@@ -352,5 +309,20 @@ mod tests {
         assert!(enter_branch.contains("consume_key"));
         assert!(enter_branch.contains("egui::Key::Enter"));
         assert!(!enter_branch.contains("key_pressed"));
+    }
+
+    #[test]
+    fn queue_mode_controls_are_not_duplicated_in_playlist_toolbar() {
+        let production_source = include_str!("toolbar.rs")
+            .split_once("#[cfg(test)]")
+            .expect("toolbar tests must stay after production code")
+            .0;
+
+        assert!(!production_source.contains("SetRepeatMode"));
+        assert!(!production_source.contains("SetShuffle"));
+        assert!(!production_source.contains("Перемешать"));
+        assert!(!production_source.contains("Повтор:"));
+        assert!(production_source.contains("После текущего"));
+        assert!(production_source.contains("Сортировка"));
     }
 }

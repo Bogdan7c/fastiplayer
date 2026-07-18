@@ -8,6 +8,7 @@ mod media_kind_icon;
 mod open_media_button;
 mod playback_button;
 mod playback_rate_button;
+mod queue_mode_controls;
 mod settings_button;
 mod sidebar_buttons;
 mod timeline;
@@ -25,6 +26,7 @@ pub use fullscreen_button::{FullscreenGlyph, FullscreenStyle};
 pub use media_kind_icon::MediaKindGlyph;
 pub use playback_button::{ButtonVisualState, PlaybackGlyph, PlaybackStyle};
 pub use playback_rate_button::{PlaybackRateButtonGeometry, PlaybackRateButtonStyle};
+pub use queue_mode_controls::{QueueModeControlStyle, QueueModeGlyph, QueueModePaintState};
 pub use sidebar_buttons::SidebarButtonGlyph;
 pub use timeline::{TimelinePaintState, TimelineStyle, timeline_track_rect};
 pub use transport_button::{TransportButtonStyle, TransportGlyph};
@@ -65,6 +67,17 @@ impl<'a> ArtworkPainter<'a> {
         style: PlaybackRateButtonStyle,
     ) {
         playback_rate_button::paint(self.painter, geometry, label, state, style);
+    }
+
+    /// Рисует постоянную Shuffle или Repeat кнопку в готовой hit-area.
+    pub fn queue_mode_control(
+        self,
+        rect: egui::Rect,
+        glyph: QueueModeGlyph,
+        state: QueueModePaintState,
+        style: QueueModeControlStyle,
+    ) {
+        queue_mode_controls::paint(self.painter, rect, glyph, state, style);
     }
 
     /// Рисует компактную кнопку перехода к предыдущему или следующему элементу.
@@ -235,6 +248,28 @@ mod tests {
         }
     }
 
+    fn queue_mode_style() -> QueueModeControlStyle {
+        QueueModeControlStyle {
+            icon_extent: 18.0,
+            glyph_stroke_width: 1.6,
+            focus_outline: Stroke::new(1.5, Color32::from_rgba_unmultiplied(245, 245, 245, 220)),
+            focus_inset: 1.5,
+        }
+    }
+
+    fn queue_mode_state(active_surface: bool) -> QueueModePaintState {
+        QueueModePaintState {
+            foreground: Color32::from_gray(245),
+            surface_fill: if active_surface {
+                Color32::from_rgba_unmultiplied(255, 255, 255, 25)
+            } else {
+                Color32::TRANSPARENT
+            },
+            focus_visible: false,
+            content_scale: 1.0,
+        }
+    }
+
     #[test]
     fn playback_states_have_stable_shape_counts() {
         assert_eq!(
@@ -370,6 +405,95 @@ mod tests {
                 .expand(playback_rate_style().outline.width)
                 .contains_rect(outline_path.visual_bounding_rect())
         );
+    }
+
+    #[test]
+    fn queue_mode_glyphs_have_stable_shape_counts_and_repeat_one_adds_digit() {
+        let shuffle_count = painted_shape_count(|painter| {
+            painter.queue_mode_control(
+                rect(),
+                QueueModeGlyph::Shuffle,
+                queue_mode_state(false),
+                queue_mode_style(),
+            );
+        });
+        let repeat_count = painted_shape_count(|painter| {
+            painter.queue_mode_control(
+                rect(),
+                QueueModeGlyph::Repeat,
+                queue_mode_state(false),
+                queue_mode_style(),
+            );
+        });
+        let repeat_one_count = painted_shape_count(|painter| {
+            painter.queue_mode_control(
+                rect(),
+                QueueModeGlyph::RepeatOne,
+                queue_mode_state(false),
+                queue_mode_style(),
+            );
+        });
+
+        assert_eq!(shuffle_count, 4);
+        assert_eq!(repeat_count, 4);
+        assert_eq!(repeat_one_count, repeat_count + 1);
+    }
+
+    #[test]
+    fn active_queue_mode_adds_surface_without_changing_glyph_geometry() {
+        let idle_output = Context::default().run_ui(RawInput::default(), |ui| {
+            ArtworkPainter::new(ui.painter()).queue_mode_control(
+                rect(),
+                QueueModeGlyph::Repeat,
+                queue_mode_state(false),
+                queue_mode_style(),
+            );
+        });
+        let active_output = Context::default().run_ui(RawInput::default(), |ui| {
+            ArtworkPainter::new(ui.painter()).queue_mode_control(
+                rect(),
+                QueueModeGlyph::Repeat,
+                queue_mode_state(true),
+                queue_mode_style(),
+            );
+        });
+
+        assert_eq!(active_output.shapes.len(), idle_output.shapes.len() + 1);
+        for (idle_shape, active_shape) in idle_output
+            .shapes
+            .iter()
+            .zip(active_output.shapes.iter().skip(1))
+        {
+            assert_eq!(
+                idle_shape.shape.visual_bounding_rect(),
+                active_shape.shape.visual_bounding_rect()
+            );
+        }
+    }
+
+    #[test]
+    fn every_queue_mode_glyph_stays_inside_hit_area() {
+        let hit_rect = rect();
+        for glyph in [
+            QueueModeGlyph::Shuffle,
+            QueueModeGlyph::Repeat,
+            QueueModeGlyph::RepeatOne,
+        ] {
+            let output = Context::default().run_ui(RawInput::default(), |ui| {
+                ArtworkPainter::new(ui.painter()).queue_mode_control(
+                    hit_rect,
+                    glyph,
+                    queue_mode_state(false),
+                    queue_mode_style(),
+                );
+            });
+
+            assert!(output.shapes.iter().all(|shape| {
+                hit_rect
+                    .expand(queue_mode_style().glyph_stroke_width)
+                    .contains_rect(shape.shape.visual_bounding_rect())
+            }));
+        }
     }
 
     #[test]

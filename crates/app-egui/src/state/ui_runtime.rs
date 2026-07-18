@@ -306,6 +306,7 @@ impl AppState {
                     skin: &selected_skin,
                     is_window_fullscreen: window_is_fullscreen,
                     live_scrub_enabled: self.committed_config_snapshot.live_scrub_enabled(),
+                    reduced_motion: self.committed_config_snapshot.reduced_motion(),
                     playlist_transport: playlist_models.transport,
                 },
             );

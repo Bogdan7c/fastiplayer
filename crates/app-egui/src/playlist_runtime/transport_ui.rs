@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use playlist_core::ManualNavigationDirection;
+use playlist_core::{ManualNavigationDirection, RepeatMode};
 
 use super::PlaylistRuntime;
 use super::controller::{ControllerManualNavigationAvailability, ControllerRemovalKind};
@@ -95,6 +95,12 @@ pub(crate) struct PlaylistTransportUiModel {
     pub(crate) playlist_view_revision: u64,
     pub(crate) previous: NavigationControlAvailability,
     pub(crate) next: NavigationControlAvailability,
+    /// Подтверждённый owner-ом режим повтора для persistent transport control.
+    pub(crate) repeat_mode: RepeatMode,
+    /// Подтверждённый owner-ом shuffle flag без optimistic UI state.
+    pub(crate) shuffle_enabled: bool,
+    /// Единая доступность mode mutations на текущей controller revision.
+    pub(crate) queue_modes_enabled: bool,
     pub(crate) global_status: Option<PlaylistGlobalTransportStatus>,
     pub(crate) undo: Option<RemovalUndoUiModel>,
     /// Только ближайшая видимая смена countdown/expiry, не animation loop.
@@ -110,11 +116,21 @@ impl PlaylistRuntime {
     ) -> PlaylistTransportUiModel {
         let wait_availability = self.discovery.manual_wait_availability();
         let restart_threshold = self.previous_restart_threshold();
-        let (playlist_view_revision, previous, next) = self.controller.as_ref().map_or(
+        let (
+            playlist_view_revision,
+            previous,
+            next,
+            repeat_mode,
+            shuffle_enabled,
+            queue_modes_enabled,
+        ) = self.controller.as_ref().map_or(
             (
                 0,
                 NavigationControlAvailability::Disabled,
                 NavigationControlAvailability::Disabled,
+                RepeatMode::StopAtEnd,
+                false,
+                false,
             ),
             |controller| {
                 (
@@ -135,6 +151,9 @@ impl PlaylistRuntime {
                             wait_availability,
                         )
                         .into(),
+                    controller.repeat_mode(),
+                    controller.queue().shuffle_enabled(),
+                    controller.view_snapshot().structural_actions_enabled(),
                 )
             },
         );
@@ -173,6 +192,9 @@ impl PlaylistRuntime {
             playlist_view_revision,
             previous,
             next,
+            repeat_mode,
+            shuffle_enabled,
+            queue_modes_enabled,
             global_status,
             undo,
             next_wake_deadline,

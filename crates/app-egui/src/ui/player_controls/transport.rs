@@ -17,6 +17,8 @@ pub(crate) enum TransportControlAction {
     Previous,
     TogglePlayback,
     Next,
+    SetShuffleEnabled { enabled: bool },
+    SetRepeatMode { mode: playlist_core::RepeatMode },
     CancelNavigation,
     UndoRemoval,
 }
@@ -334,31 +336,37 @@ mod tests {
             Vec2::splat(controls_style.playback_button_diameter),
         );
         let base_next_rect = next_button_rect(playback_rect, controls_style);
-        let fullscreen_rect = Rect::from_center_size(
-            pos2(row_rect.right() - 24.0, row_rect.center().y),
+        let repeat_rect = Rect::from_center_size(
+            pos2(
+                playback_rect.center().x + controls_style.queue_mode_button_center_distance,
+                row_rect.center().y,
+            ),
             vec2(32.0, 32.0),
         );
         let rate_layout = super::super::playback_rate::control_layout(
             playback_rect,
             base_next_rect,
-            fullscreen_rect,
+            repeat_rect,
             controls_style,
             8.0,
             1.0,
         );
 
         assert!(rate_layout.button_rect.right() <= rate_layout.next_button_rect.left());
-        assert!(rate_layout.next_button_rect.right() + 8.0 <= fullscreen_rect.left());
+        assert!(
+            rate_layout.next_button_rect.right() + controls_style.queue_mode_neighbor_gap
+                <= repeat_rect.left()
+        );
     }
 
     #[test]
     fn transport_and_adjacent_controls_do_not_overlap_in_narrow_row() {
         // Узкая строка проверяет реальную композицию без запаса desktop-ширины.
         let controls_style = MinimalSkin.controls_style();
-        // 320 points достаточно для всех controls, но быстро выявляет ошибку anchor spacing.
+        // 400 points — минимальная поддерживаемая ширина окна.
         let row_rect = Rect::from_min_size(
-            pos2(0.0, 0.0),
-            vec2(320.0, controls_style.playback_button_diameter),
+            pos2(10.0, 0.0),
+            vec2(380.0, controls_style.playback_button_diameter),
         );
         // Production helpers сохраняют одинаковый вертикальный raise всех anchored buttons.
         let playback_rect = super::super::playback_button_anchor_rect(row_rect, controls_style);
@@ -366,24 +374,30 @@ mod tests {
         let open_file_rect = super::super::open_file_button_anchor_rect(row_rect, controls_style);
         // Правая внешняя кнопка ограничивает playback-rate control.
         let fullscreen_rect = super::super::fullscreen_button_anchor_rect(row_rect, controls_style);
-        // Previous остаётся правой границей volume-зоны.
-        let previous_rect = previous_button_rect(playback_rect, controls_style);
+        // Queue-mode controls сжимаются только по статическим внешним границам.
+        let queue_mode_layout = super::super::queue_mode_controls::control_layout(
+            playback_rect,
+            open_file_rect,
+            fullscreen_rect,
+            controls_style,
+            8.0,
+        );
         // Next остаётся левой границей playback-rate control.
         let base_next_rect = next_button_rect(playback_rect, controls_style);
         // Egui spacing совпадает с production значением проверяемой раскладки.
         let item_spacing = 8.0;
-        // Volume layout получает тот же exact Previous rect, что render path.
+        // Volume layout получает тот же exact Shuffle rect, что render path.
         let volume_zone = super::super::volume_controls_zone_rect(
             row_rect,
             open_file_rect,
-            previous_rect,
+            queue_mode_layout.shuffle_rect,
             item_spacing,
         );
         // Rate layout получает тот же exact Next rect, что render path.
         let rate_layout = super::super::playback_rate::control_layout(
             playback_rect,
             base_next_rect,
-            fullscreen_rect,
+            queue_mode_layout.repeat_rect,
             controls_style,
             item_spacing,
             1.0,
@@ -391,8 +405,8 @@ mod tests {
 
         // Левая группа не пересекает внешний open-file control.
         assert!(open_file_rect.right() <= volume_zone.left());
-        // Volume-зона сохраняет production gap перед Previous.
-        assert!(volume_zone.right() <= previous_rect.left() - item_spacing);
+        // Volume-зона сохраняет production gap перед Shuffle.
+        assert!(volume_zone.right() <= queue_mode_layout.shuffle_rect.left() - item_spacing);
         // Rate control раскрывается перед сдвинутым Next без пересечения.
         assert!(rate_layout.button_rect.right() <= rate_layout.next_button_rect.left());
         // Узкий row действительно уменьшает preferred rate width, а не перекрывает Fullscreen.
@@ -405,8 +419,16 @@ mod tests {
             .abs()
                 < 0.0001
         );
-        // Сдвинутый Next сохраняет production gap перед fullscreen.
-        assert!(rate_layout.next_button_rect.right() + item_spacing <= fullscreen_rect.left());
+        // Сдвинутый Next сохраняет обязательные 12 points перед Repeat.
+        assert!(
+            rate_layout.next_button_rect.right() + controls_style.queue_mode_neighbor_gap
+                <= queue_mode_layout.repeat_rect.left()
+        );
+        // Repeat остаётся перед статическим Fullscreen.
+        assert!(
+            queue_mode_layout.repeat_rect.right() + controls_style.queue_mode_neighbor_gap
+                <= fullscreen_rect.left()
+        );
     }
 
     /// Создаёт deterministic egui input для custom transport widget.

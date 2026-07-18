@@ -698,6 +698,9 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
         let window_attributes = Window::default_attributes()
             .with_title("Rustiplayer")
             .with_inner_size(winit::dpi::PhysicalSize::new(1280, 720))
+            // Ширина гарантирует полный порядок transport controls; единичная высота
+            // оставляет вертикальное ограничение практически на усмотрение compositor-а.
+            .with_min_inner_size(winit::dpi::LogicalSize::new(400.0, 1.0))
             .with_decorations(false)
             .with_visible(true);
 
@@ -942,5 +945,20 @@ mod tests {
             .find("self.app_state = None;")
             .expect("terminal shutdown drops AppState");
         assert!(shutdown_flush < shutdown_drop);
+    }
+
+    #[test]
+    fn window_creation_keeps_minimum_logical_width_at_four_hundred_points() {
+        let source = include_str!("mod.rs");
+        let creation = source
+            .split_once("let window_attributes = Window::default_attributes()")
+            .expect("window attributes construction must exist")
+            .1
+            .split_once("let window = match")
+            .expect("window attributes construction must stay bounded")
+            .0;
+
+        assert!(creation.contains("with_min_inner_size"));
+        assert!(creation.contains("LogicalSize::new(400.0, 1.0)"));
     }
 }

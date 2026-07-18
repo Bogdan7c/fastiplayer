@@ -566,6 +566,17 @@ fn shutdown_before_decision_never_starts_quarantine() {
         PlaylistStartupPhase::Shutdown
     );
     assert!(runtime.playlist_controller().is_none());
+    assert!(
+        runtime
+            .record_startup_repeat_mode(RepeatMode::RepeatQueue)
+            .is_err()
+    );
+    assert!(runtime.record_startup_shuffle_enabled(true).is_err());
+    let transport_model =
+        runtime.playlist_transport_ui_model(Duration::ZERO, std::time::Instant::now());
+    assert!(!transport_model.queue_modes_enabled);
+    assert_eq!(transport_model.repeat_mode, RepeatMode::StopAtEnd);
+    assert!(!transport_model.shuffle_enabled);
 }
 
 struct BlockingInspectionStore {

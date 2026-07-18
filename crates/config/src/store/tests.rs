@@ -556,7 +556,37 @@ skin = "minimal"
         crate::DEFAULT_SIDEBAR_WIDTH_POINTS
     );
     assert_eq!(loaded.config.ui.settings.live_preview_max_hz, 60);
+    assert!(loaded.config.ui.animations.reduced_motion);
     assert_eq!(loaded.config.ui.animations.sidebar_slide_duration_ms, 500);
+}
+
+/// Проверяет additive/defaulted reduced-motion поле на старом current-schema документе.
+#[test]
+fn schema_v6_without_reduced_motion_loads_safe_default_and_roundtrips_field() {
+    let temp_dir = tempfile::tempdir().expect("temp dir created");
+    let config_path = temp_dir.path().join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+schema_version = 6
+
+[ui]
+show_telemetry = true
+language = "ru"
+skin = "minimal"
+
+[ui.animations]
+sidebar_slide_duration_ms = 500
+"#,
+    )
+    .expect("current config without reduced-motion written");
+
+    let loaded = load_from_path(&config_path).expect("missing additive field accepted");
+    assert!(loaded.config.ui.animations.reduced_motion);
+
+    save_validated_atomic_at(&config_path, &loaded.config).expect("defaulted config saved");
+    let saved = fs::read_to_string(&config_path).expect("saved config read");
+    assert!(saved.contains("reduced_motion = true"));
 }
 
 /// Проверяет backward compatibility текущей schema v6 без нового sidebar-поля

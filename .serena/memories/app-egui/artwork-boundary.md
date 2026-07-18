@@ -18,3 +18,12 @@
 - Fully-open preferred geometry MinimalSkin: 48x28 points (2-point vertical inset сверху и снизу относительно Next), bounding gap 5 points от Play/Pause, прозрачный светлый outline и общий translucent hover fill. Next сдвигается на тот же eased resolved width; narrow layout уменьшает обе величины до безопасного остатка перед Fullscreen.
 - При snapshot `1x` label и reset interaction отсутствуют; во время closing рисуется только пустой контур, поэтому надпись `1x` не появляется.
 - Characterization-тесты concave path/hover mesh находятся в `ui-artwork-egui/src/lib.rs`; layout, 250-ms timing/reversal, click/accessibility и narrow non-overlap tests — в app-egui playback-rate/transport tests.
+
+
+## Persistent queue-mode controls (2026-07-18)
+
+- Нейтральная векторная рисовка Shuffle/Repeat/Repeat One живёт в `ui-artwork-egui::queue_mode_controls` и принимает только `QueueModeGlyph`, `QueueModePaintState` и `QueueModeControlStyle`.
+- `ui-artwork-egui` не зависит от playlist/player типов и не владеет layout, hit-testing, accessibility, animation или actions.
+- `app-egui::ui::player_controls::queue_mode_controls` переводит authoritative playlist snapshot в нейтральный glyph/paint-state, владеет interaction, accessibility и stable egui IDs.
+- `PersistentControlStyle` хранится в app skin и передаёт artwork все foreground/surface/focus токены; конкретные queue-mode кнопки не хардкодят цвета.
+- Characterization-тесты artwork закрепляют bounds, число/тип фигур, дополнительную геометрическую цифру `1` и active surface без изменения glyph geometry.

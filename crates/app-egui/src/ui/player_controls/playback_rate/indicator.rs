@@ -30,16 +30,17 @@ pub(in crate::ui::player_controls) struct PlaybackRateControlLayout {
 pub(in crate::ui::player_controls) fn control_layout(
     playback_button_rect: Rect,
     base_next_button_rect: Rect,
-    fullscreen_button_rect: Rect,
+    repeat_button_rect: Rect,
     controls_style: ControlsStyle,
     item_spacing: f32,
     reveal_progress: f32,
 ) -> PlaybackRateControlLayout {
     // Progress от внешнего animation manager защищаем от некорректного custom input.
     let reveal_progress = reveal_progress.clamp(0.0, 1.0);
-    // Next может сдвигаться только до обязательного gap перед Fullscreen.
+    // Next может сдвигаться только до обязательных 12 points перед неподвижным Repeat.
+    let next_to_repeat_gap = controls_style.queue_mode_neighbor_gap.max(item_spacing);
     let available_shift =
-        (fullscreen_button_rect.left() - item_spacing - base_next_button_rect.right()).max(0.0);
+        (repeat_button_rect.left() - next_to_repeat_gap - base_next_button_rect.right()).max(0.0);
     // На обычном окне используется skin-owned 48 points; на узком — безопасный остаток.
     let resolved_width = controls_style
         .playback_rate_button_width
@@ -83,11 +84,19 @@ pub(in crate::ui::player_controls) fn control_layout(
 }
 
 /// Читает widget-local animation state из egui и возвращает eased progress.
-pub(in crate::ui::player_controls) fn reveal_progress(ui: &Ui, playback_rate: PlaybackRate) -> f32 {
+pub(in crate::ui::player_controls) fn reveal_progress(
+    ui: &Ui,
+    playback_rate: PlaybackRate,
+    reduced_motion: bool,
+) -> f32 {
     // Stable Id нужен даже при полностью скрытой кнопке, чтобы первый non-1x кадр анимировался.
     let transition_id = ui.make_persistent_id(PLAYBACK_RATE_TRANSITION_ID_SUFFIX);
     // Только реальный snapshot определяет цель: optimistic reset не скрывает кнопку.
     let target_visible = playback_rate != PlaybackRate::NORMAL;
+    // Reduced motion делает layout-переход мгновенным и не запускает animation repaint.
+    if reduced_motion {
+        return if target_visible { 1.0 } else { 0.0 };
+    }
     // egui сам хранит переход, поддерживает реверс и запрашивает repaint до достижения цели.
     ui.ctx().animate_bool_with_time_and_easing(
         transition_id,

@@ -36,3 +36,8 @@
 
 
 - Session 08 checked live-apply contract scaffold (2026-07-11): see `mem:settings-ui/application-contract-s08`. It adds the exhaustive editable-setting application matrix and typed outcome vocabulary without yet replacing the existing 08B-08D runtime executor debt paths.
+
+
+## Reduced motion (2026-07-18)
+
+Публичный toggle `ui.animations.reduced_motion` применён live через `ui.apply`; default `true`, без schema bump. Он мгновенно завершает sidebar и playback-rate layout transitions, но оставляет короткие color/opacity transitions persistent toggles и отключает scale/pulse. Подробный контракт и тесты: `mem:settings-ui/reduced-motion-2026-07-18`.

@@ -4,7 +4,7 @@ use egui::{Color32, Margin};
 
 use crate::ui::animation::AnimationState;
 use crate::ui::assets::{AssetProvider, IconId};
-use crate::ui::skin::{ControlsStyle, PlayerSkin, SkinId, TimelineStyle};
+use crate::ui::skin::{ControlsStyle, PersistentControlStyle, PlayerSkin, SkinId, TimelineStyle};
 
 /// Первый production skin для desktop player controls.
 #[derive(Debug, Clone, Copy, Default)]
@@ -69,6 +69,23 @@ impl PlayerSkin for MinimalSkin {
             transport_button_bar_width: 2.0,
             transport_button_disabled_color: text_color.gamma_multiply(0.4),
             transport_button_hover_fill: button_hover_fill,
+            persistent_control: PersistentControlStyle {
+                foreground_idle: Color32::from_gray(170),
+                foreground_hover: Color32::from_gray(230),
+                foreground_active: Color32::from_gray(245),
+                foreground_disabled: Color32::from_gray(105),
+                surface_idle: Color32::TRANSPARENT,
+                surface_hover: Color32::from_rgba_unmultiplied(255, 255, 255, 28),
+                surface_active: Color32::from_rgba_unmultiplied(255, 255, 255, 25),
+                surface_active_hover: Color32::from_rgba_unmultiplied(255, 255, 255, 46),
+                surface_pressed: Color32::from_rgba_unmultiplied(255, 255, 255, 56),
+                focus_outline: Color32::from_rgba_unmultiplied(245, 245, 245, 220),
+            },
+            queue_mode_button_center_distance: 156.0,
+            queue_mode_neighbor_gap: 12.0,
+            queue_mode_glyph_stroke_width: 1.6,
+            queue_mode_focus_outline_width: 1.5,
+            queue_mode_focus_inset: 1.5,
             playback_rate_button_width: 48.0,
             playback_rate_button_gap: 5.0,
             playback_rate_button_vertical_inset: 2.0,

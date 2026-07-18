@@ -9,3 +9,7 @@
 - Golden current document: `crates/config/tests/fixtures/current_schema_v6.toml`; byte-stable roundtrip сравнивает его с `AppConfig::default().to_pretty_toml()`.
 - `[playlist]` остаётся strict/defaulted group с `load_siblings`, `sibling_media_filter`, playback/error behavior, save debounce и previous restart threshold. Legacy documents без section получают `PlaylistConfig::default()` без обязательной startup rewrite; runtime contract — `mem:playlist/settings-s13`.
 - Verification owner set: config/settings tests, app settings runtime tests, smoke current config generation+parse, refactor guardrails, locked workspace check, fmt/diff checks.
+
+## Additive UI animation field (2026-07-18)
+
+`UiAnimationsConfig` теперь содержит defaulted `reduced_motion: bool` со значением `true`. Поле добавлено в default document/current schema fixture и settings metadata; старый TOML совместим, поэтому `CURRENT_SCHEMA_VERSION` не повышался. Подробности UI-семантики: `mem:settings-ui/reduced-motion-2026-07-18`.

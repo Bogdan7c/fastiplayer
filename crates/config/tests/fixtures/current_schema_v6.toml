@@ -186,5 +186,7 @@ live_preview_max_hz = 60
 
 # Настройки UI-анимаций.
 [ui.animations]
+# Убирает пространственное движение и масштабирование; короткие переходы цвета сохраняются.
+reduced_motion = true
 # Длительность выезда settings sidebar и сжатия видео, мс; 0 отключает анимацию.
 sidebar_slide_duration_ms = 500

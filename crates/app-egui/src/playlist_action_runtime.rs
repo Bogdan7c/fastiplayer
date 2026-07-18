@@ -102,22 +102,6 @@ pub(crate) fn apply_playlist_actions(
                     changed = true;
                 }
             }
-            PlaylistAction::SetRepeatMode(mode) => match runtime.record_startup_repeat_mode(mode) {
-                Ok(mode_changed) => changed |= mode_changed,
-                Err(_) => {
-                    runtime.set_playlist_safe_feedback("Не удалось изменить режим повтора");
-                    changed = true;
-                }
-            },
-            PlaylistAction::SetShuffle(enabled) => {
-                match runtime.record_startup_shuffle_enabled(enabled) {
-                    Ok(mode_changed) => changed |= mode_changed,
-                    Err(_) => {
-                        runtime.set_playlist_safe_feedback("Не удалось изменить перемешивание");
-                        changed = true;
-                    }
-                }
-            }
             PlaylistAction::SetStopAfterCurrent(enabled) => {
                 let transition_was_pending = runtime
                     .playlist_interaction_model()

@@ -86,6 +86,7 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "ui.window.titlebar_height_px",
     "ui.sidebar.width_points",
     "ui.settings.live_preview_max_hz",
+    "ui.animations.reduced_motion",
     "ui.animations.sidebar_slide_duration_ms",
 ];
 

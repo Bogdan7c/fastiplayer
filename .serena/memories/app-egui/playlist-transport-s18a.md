@@ -14,3 +14,15 @@
 ## Session 18B continuation (2026-07-16)
 - UI/hotkey transport from 18A is unchanged. MPRIS now enters the same controller boundaries with origin `Mpris`, including D17/D50–D53 traversal, D58 Stop guard and controller-owned Stopped disposition.
 - Process-lifetime ownership, modes/volume/identity, MPRIS capability matrix and correlated seek are documented in `mem:app-egui/playlist-desktop-transport-s18b`.
+
+
+## Shuffle/Repeat перенесены в persistent transport (2026-07-18)
+
+- `PlaylistRuntime`/`PlaylistController` остаются единственным владельцем подтверждённых `shuffle_enabled` и `RepeatMode`; UI не хранит optimistic mode state.
+- `PlaylistTransportUiModel` несёт authoritative `shuffle_enabled`, `repeat_mode` и `queue_modes_enabled`. При отсутствующем/остановленном runtime режимы disabled, но selected-состояние модели сохраняется логически.
+- `TransportControlAction::{SetShuffleEnabled { enabled }, SetRepeatMode { mode }}` передают точный typed intent. Runtime применяет его через controller startup-record methods; ошибка сохраняет прежний snapshot и публикует безопасную feedback-команду.
+- Repeat cycle: `StopAtEnd -> RepeatQueue -> RepeatOne -> StopAtEnd`. Shuffle отправляет точную инверсию текущего authoritative snapshot.
+- Старые Shuffle/Repeat полностью удалены из playlist toolbar и `PlaylistInteractionModel`; toolbar сохраняет сортировку, «После текущего» и прочие playlist-команды.
+- Layout принадлежит `app-egui`: hit-area 32 pt, glyph 18 pt, preferred distance 156 pt, Shuffle зеркален Repeat, минимум 12 pt Next–Repeat; rate/Next зависят от reveal progress, сами queue-mode rect стабильны.
+- Accessibility использует selected button metadata, русские current/next labels, Tab + Space/Enter и pointer focus surrender.
+- Focused tests находятся в `crates/app-egui/src/ui/player_controls/queue_mode_controls/tests.rs`; artwork tests — в `crates/ui-artwork-egui/src/lib.rs`.

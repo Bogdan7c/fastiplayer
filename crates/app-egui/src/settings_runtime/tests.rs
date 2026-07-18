@@ -497,6 +497,7 @@ fn visual_hold_keeps_fields_built_only_while_closing_animation_runs() {
 #[test]
 fn committed_snapshot_maps_sidebar_slide_duration_to_seconds() {
     let mut config = custom_config_for_test();
+    config.ui.animations.reduced_motion = false;
     config.ui.animations.sidebar_slide_duration_ms = 250;
     let snapshot = CommittedConfigSnapshot::from_config(&config);
 

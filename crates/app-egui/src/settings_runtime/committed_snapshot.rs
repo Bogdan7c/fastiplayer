@@ -97,7 +97,17 @@ impl CommittedConfigSnapshot {
     /// Длительность анимации выезда settings sidebar в секундах; `0` — без анимации.
     #[must_use]
     pub(crate) fn sidebar_slide_duration_seconds(&self) -> f32 {
-        f32::from(self.config.ui.animations.sidebar_slide_duration_ms) / 1000.0
+        if self.config.ui.animations.reduced_motion {
+            0.0
+        } else {
+            f32::from(self.config.ui.animations.sidebar_slide_duration_ms) / 1000.0
+        }
+    }
+
+    /// Требует ли UI мгновенных layout-переходов и отключённого scale/pulse.
+    #[must_use]
+    pub(crate) fn reduced_motion(&self) -> bool {
+        self.config.ui.animations.reduced_motion
     }
 
     /// Запоминаемая fully-open ширина общего sidebar host в egui points.
@@ -131,5 +141,23 @@ impl SettingsRuntime {
                 .map_err(|error| settings_core::SettingsError::access_failed(error.to_string()))?,
             hdr_to_sdr: hdr_to_sdr_settings_from_config(self.committed_config()),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reduced_motion_forces_instant_sidebar_without_losing_saved_duration() {
+        let default_snapshot = CommittedConfigSnapshot::from_config(&AppConfig::default());
+        assert!(default_snapshot.reduced_motion());
+        assert_eq!(default_snapshot.sidebar_slide_duration_seconds(), 0.0);
+
+        let mut animated_config = AppConfig::default();
+        animated_config.ui.animations.reduced_motion = false;
+        let animated_snapshot = CommittedConfigSnapshot::from_config(&animated_config);
+        assert!(!animated_snapshot.reduced_motion());
+        assert_eq!(animated_snapshot.sidebar_slide_duration_seconds(), 0.5);
     }
 }

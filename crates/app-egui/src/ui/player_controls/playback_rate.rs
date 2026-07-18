@@ -305,7 +305,7 @@ mod tests {
         let mut progress = f32::NAN;
         // Один Context сохраняет animation manager state между вызовами.
         let _ = egui_ctx.run_ui(input, |ui| {
-            progress = reveal_progress(ui, playback_rate);
+            progress = reveal_progress(ui, playback_rate, false);
         });
         // NaN означал бы, что render closure не выполнился.
         assert!(progress.is_finite());
@@ -542,6 +542,23 @@ mod tests {
     }
 
     #[test]
+    fn reduced_motion_makes_playback_rate_reveal_instant() {
+        let context = egui::Context::default();
+        let mut hidden = f32::NAN;
+        let mut visible = f32::NAN;
+
+        let _ = context.run_ui(RawInput::default(), |ui| {
+            hidden = reveal_progress(ui, PlaybackRate::NORMAL, true);
+        });
+        let _ = context.run_ui(RawInput::default(), |ui| {
+            visible = reveal_progress(ui, PlaybackRate::new(1.25).expect("valid test rate"), true);
+        });
+
+        assert_eq!(hidden, 0.0);
+        assert_eq!(visible, 1.0);
+    }
+
+    #[test]
     fn playback_rate_reveal_reverses_without_visual_jump() {
         // Один Context сохраняет внутреннюю линейную позицию при смене target.
         let egui_ctx = egui::Context::default();
@@ -621,7 +638,7 @@ mod tests {
 
     /// Проверяет fully-open геометрию и одинаковое смещение Next.
     #[test]
-    fn playback_rate_button_sits_between_playback_and_fullscreen_buttons() {
+    fn playback_rate_button_sits_between_playback_and_fixed_repeat_button() {
         let controls_style = MinimalSkin.controls_style();
         let row_rect = Rect::from_min_size(
             pos2(24.0, 80.0),
@@ -637,15 +654,14 @@ mod tests {
                 controls_style.playback_button_diameter,
             ),
         );
-        let fullscreen_button_rect = Rect::from_center_size(
+        let repeat_button_rect = Rect::from_center_size(
             pos2(
-                row_rect.right() - controls_style.fullscreen_button_size
-                    + controls_style.fullscreen_button_size * 0.5,
+                playback_button_rect.center().x + controls_style.queue_mode_button_center_distance,
                 playback_button_rect.center().y,
             ),
             vec2(
-                controls_style.fullscreen_button_size,
-                controls_style.fullscreen_button_size,
+                controls_style.transport_button_size,
+                controls_style.transport_button_size,
             ),
         );
         let base_next_button_rect =
@@ -653,7 +669,7 @@ mod tests {
         let layout = control_layout(
             playback_button_rect,
             base_next_button_rect,
-            fullscreen_button_rect,
+            repeat_button_rect,
             controls_style,
             8.0,
             1.0,
@@ -678,7 +694,10 @@ mod tests {
             layout.button_rect.width()
         );
         assert!(layout.button_rect.right() <= layout.next_button_rect.left());
-        assert!(layout.next_button_rect.right() + 8.0 <= fullscreen_button_rect.left());
+        assert!(
+            layout.next_button_rect.right() + controls_style.queue_mode_neighbor_gap
+                <= repeat_button_rect.left()
+        );
     }
 
     #[test]

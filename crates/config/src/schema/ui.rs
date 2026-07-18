@@ -229,6 +229,24 @@ impl Default for UiSettingsConfig {
 #[settings(require_all_fields)]
 #[serde(default, deny_unknown_fields)]
 pub struct UiAnimationsConfig {
+    /// Отключает пространственные анимации и масштабирование для комфортного UI.
+    #[setting(
+        id = "ui.animations.reduced_motion",
+        path = "ui.animations.reduced_motion",
+        section = "ui",
+        group = "animations",
+        surface = "main-settings-window",
+        label_id = "settings.ui.animations.reduced_motion.label",
+        label_ru = "Уменьшить движение",
+        description_id = "settings.ui.animations.reduced_motion.description",
+        description_ru = "Показывать сайдбар и индикатор скорости без движения, а кнопки — без масштабирования.",
+        help_id = "settings.ui.animations.reduced_motion.help",
+        help_ru = "Короткие переходы цвета сохраняются, чтобы состояние кнопок оставалось понятным.",
+        editor = "toggle",
+        apply = "ui.apply"
+    )]
+    pub reduced_motion: bool,
+
     /// Длительность выезда/заезда settings sidebar; `0` отключает анимацию.
     #[setting(
         id = "ui.animations.sidebar_slide_duration_ms",
@@ -253,9 +271,10 @@ pub struct UiAnimationsConfig {
 }
 
 impl Default for UiAnimationsConfig {
-    /// Default 0,5 сек: заметная, но не затягивающая UI анимация.
+    /// По умолчанию движение уменьшено, а сохранённая длительность доступна после отключения режима.
     fn default() -> Self {
         Self {
+            reduced_motion: true,
             sidebar_slide_duration_ms: 500,
         }
     }

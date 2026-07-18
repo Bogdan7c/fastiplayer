@@ -12,6 +12,7 @@ use crate::ui::skin::{ControlsStyle, PlayerSkin, SkinId};
 use crate::ui::timeline::{self, TimelineAction, TimelineUiState};
 
 mod playback_rate;
+mod queue_mode_controls;
 mod transport;
 pub(crate) use playback_rate::PLAYBACK_RATE_STEP_X;
 pub(crate) use transport::TransportControlAction;
@@ -64,6 +65,7 @@ pub(crate) struct BottomControlsInput<'a, S: PlayerSkin> {
     pub(crate) skin: &'a S,
     pub(crate) is_window_fullscreen: bool,
     pub(crate) live_scrub_enabled: bool,
+    pub(crate) reduced_motion: bool,
     pub(crate) playlist_transport: &'a crate::playlist_runtime::PlaylistTransportUiModel,
 }
 
@@ -80,6 +82,7 @@ pub fn render_bottom_controls<S: PlayerSkin>(
         skin,
         is_window_fullscreen,
         live_scrub_enabled,
+        reduced_motion,
         playlist_transport,
     } = input;
     let mut actions = Vec::new();
@@ -115,6 +118,7 @@ pub fn render_bottom_controls<S: PlayerSkin>(
                 player_snapshot,
                 skin,
                 is_window_fullscreen,
+                reduced_motion,
                 playlist_transport,
                 &mut actions,
             );
@@ -129,6 +133,7 @@ fn render_button_row(
     player_snapshot: &PlayerSnapshot,
     skin: &impl PlayerSkin,
     is_window_fullscreen: bool,
+    reduced_motion: bool,
     playlist_transport: &crate::playlist_runtime::PlaylistTransportUiModel,
     actions: &mut Vec<ControlAction>,
 ) {
@@ -141,13 +146,20 @@ fn render_button_row(
     let open_file_button_rect = open_file_button_anchor_rect(row_rect, controls_style);
     let playback_button_rect = playback_button_anchor_rect(row_rect, controls_style);
     let fullscreen_button_rect = fullscreen_button_anchor_rect(row_rect, controls_style);
+    let queue_mode_layout = queue_mode_controls::control_layout(
+        playback_button_rect,
+        open_file_button_rect,
+        fullscreen_button_rect,
+        controls_style,
+        ui.spacing().item_spacing.x,
+    );
     let base_next_button_rect = transport::next_button_rect(playback_button_rect, controls_style);
     let playback_rate_reveal_progress =
-        playback_rate::reveal_progress(ui, player_snapshot.playback_rate);
+        playback_rate::reveal_progress(ui, player_snapshot.playback_rate, reduced_motion);
     let playback_rate_layout = playback_rate::control_layout(
         playback_button_rect,
         base_next_button_rect,
-        fullscreen_button_rect,
+        queue_mode_layout.repeat_rect,
         controls_style,
         ui.spacing().item_spacing.x,
         playback_rate_reveal_progress,
@@ -158,7 +170,7 @@ fn render_button_row(
     let volume_zone = volume_controls_zone_rect(
         row_rect,
         open_file_button_rect,
-        previous_button_rect,
+        queue_mode_layout.shuffle_rect,
         volume_to_playback_gap,
     );
 
@@ -173,6 +185,15 @@ fn render_button_row(
         previous_button_rect,
         playlist_transport.previous,
         controls_style,
+        actions,
+    );
+
+    queue_mode_controls::render(
+        ui,
+        queue_mode_layout,
+        playlist_transport,
+        controls_style,
+        reduced_motion,
         actions,
     );
 
@@ -254,10 +275,13 @@ fn volume_controls_zone_rect(
     volume_to_playback_gap: f32,
 ) -> Rect {
     let open_button_left_inset = open_file_button_rect.left() - row_rect.left();
-    let zone_left = (open_file_button_rect.right() + open_button_left_inset)
+    let preferred_zone_left = (open_file_button_rect.right() + open_button_left_inset)
         .clamp(row_rect.left(), row_rect.right());
-    let zone_right =
-        (playback_button_rect.left() - volume_to_playback_gap).clamp(zone_left, row_rect.right());
+    let zone_right = (playback_button_rect.left() - volume_to_playback_gap)
+        .clamp(open_file_button_rect.right(), row_rect.right());
+    // На минимальной ширине volume схлопывается у правой границы своей зоны,
+    // а не выталкивается в Shuffle из-за предпочтительного левого отступа.
+    let zone_left = preferred_zone_left.min(zone_right);
 
     Rect::from_min_max(
         pos2(zone_left, row_rect.top()),
@@ -706,6 +730,25 @@ mod tests {
         assert_eq!(controls_style.transport_button_icon_extent, 18.0);
         assert!(controls_style.transport_button_icon_extent < controls_style.transport_button_size);
         assert!(controls_style.transport_button_bar_width > 0.0);
+        assert_eq!(controls_style.queue_mode_button_center_distance, 156.0);
+        assert_eq!(controls_style.queue_mode_neighbor_gap, 12.0);
+        assert!(controls_style.queue_mode_glyph_stroke_width > 0.0);
+        assert_eq!(
+            controls_style.persistent_control.foreground_idle,
+            egui::Color32::from_gray(170)
+        );
+        assert_eq!(
+            controls_style.persistent_control.foreground_hover,
+            egui::Color32::from_gray(230)
+        );
+        assert_eq!(
+            controls_style.persistent_control.foreground_active,
+            egui::Color32::from_gray(245)
+        );
+        assert_eq!(
+            controls_style.persistent_control.foreground_disabled,
+            egui::Color32::from_gray(105)
+        );
         assert_eq!(controls_style.playback_rate_button_width, 48.0);
         assert_eq!(controls_style.playback_rate_button_gap, 5.0);
         assert_eq!(controls_style.playback_rate_button_vertical_inset, 2.0);
@@ -841,9 +884,9 @@ mod tests {
         );
     }
 
-    /// Проверяет, что volume зона остаётся между open-file и Previous transport-кнопкой.
+    /// Проверяет, что volume зона остаётся между open-file и Shuffle.
     #[test]
-    fn volume_controls_zone_rect_stays_between_open_file_and_previous_buttons() {
+    fn volume_controls_zone_rect_stays_between_open_file_and_shuffle() {
         let controls_style = MinimalSkin.controls_style();
         let row_rect = Rect::from_min_size(
             pos2(24.0, 80.0),
@@ -851,22 +894,29 @@ mod tests {
         );
         let open_file_button_rect = open_file_button_anchor_rect(row_rect, controls_style);
         let playback_button_rect = playback_button_anchor_rect(row_rect, controls_style);
-        let previous_button_rect =
-            transport::previous_button_rect(playback_button_rect, controls_style);
+        let fullscreen_button_rect = fullscreen_button_anchor_rect(row_rect, controls_style);
+        let shuffle_button_rect = queue_mode_controls::control_layout(
+            playback_button_rect,
+            open_file_button_rect,
+            fullscreen_button_rect,
+            controls_style,
+            8.0,
+        )
+        .shuffle_rect;
         let volume_to_playback_gap = 8.0;
         let volume_zone_rect = volume_controls_zone_rect(
             row_rect,
             open_file_button_rect,
-            previous_button_rect,
+            shuffle_button_rect,
             volume_to_playback_gap,
         );
         let open_button_left_inset = open_file_button_rect.left() - row_rect.left();
         let open_button_to_volume_gap = volume_zone_rect.left() - open_file_button_rect.right();
 
         assert!((open_button_to_volume_gap - open_button_left_inset).abs() < f32::EPSILON);
-        assert!(volume_zone_rect.right() <= previous_button_rect.left() - volume_to_playback_gap);
+        assert!(volume_zone_rect.right() <= shuffle_button_rect.left() - volume_to_playback_gap);
         assert!(volume_zone_rect.left() >= open_file_button_rect.right());
-        assert!(volume_zone_rect.right() <= previous_button_rect.left());
+        assert!(volume_zone_rect.right() <= shuffle_button_rect.left());
     }
 
     /// Проверяет, что custom volume widgets остаются внутри volume-zone и центрируются как buttons.

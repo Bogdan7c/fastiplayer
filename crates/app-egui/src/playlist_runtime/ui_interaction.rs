@@ -14,7 +14,7 @@ use std::thread::{self, JoinHandle};
 use pollster::FutureExt as _;
 use winit::window::Window;
 
-use playlist_core::{ManualNavigationDirection, PlaylistItemId, RepeatMode};
+use playlist_core::{ManualNavigationDirection, PlaylistItemId};
 
 use crate::app_wake::{AppWakePort, CompletionPublishError, OwnerMailboxReceiver, owner_mailbox};
 use crate::local_media;
@@ -393,8 +393,6 @@ pub(crate) struct PlaylistProgressModel {
 pub(crate) struct PlaylistInteractionModel {
     pub(crate) structural_actions_enabled: bool,
     pub(crate) item_count: usize,
-    pub(crate) repeat_mode: RepeatMode,
-    pub(crate) shuffle_enabled: bool,
     pub(crate) stop_after_current: bool,
     pub(crate) stop_after_current_available: bool,
     pub(crate) url_editor_open: bool,
@@ -418,8 +416,6 @@ impl Default for PlaylistInteractionModel {
         Self {
             structural_actions_enabled: true,
             item_count: 0,
-            repeat_mode: RepeatMode::StopAtEnd,
-            shuffle_enabled: false,
             stop_after_current: false,
             stop_after_current_available: false,
             url_editor_open: false,
@@ -565,10 +561,6 @@ impl PlaylistRuntime {
             structural_actions_enabled: controller
                 .is_some_and(|controller| controller.view_snapshot().structural_actions_enabled()),
             item_count: controller.map_or(0, |controller| controller.queue().len()),
-            repeat_mode: controller
-                .map_or(RepeatMode::StopAtEnd, |controller| controller.repeat_mode()),
-            shuffle_enabled: controller
-                .is_some_and(|controller| controller.queue().shuffle_enabled()),
             stop_after_current: controller
                 .and_then(|controller| controller.stop_after_current())
                 .is_some(),
