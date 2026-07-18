@@ -5,6 +5,9 @@
 //! Здесь только детерминированная арифметика прогресса и easing-кривые,
 //! поэтому всё легко тестируется и ничего не стоит по ресурсам.
 
+/// Переиспользуемые эффекты появления и исчезновения UI-элементов.
+pub mod visibility;
+
 /// Кривая сглаживания линейного прогресса анимации.
 ///
 /// Прогресс на входе и выходе лежит в диапазоне `0.0..=1.0`.
@@ -12,6 +15,11 @@
 pub enum Easing {
     /// Без сглаживания: равномерная скорость от начала до конца.
     Linear,
+    /// Быстрый старт и мягкое кубическое торможение у цели.
+    ///
+    /// Подходит для короткого появления небольших интерактивных элементов:
+    /// пользователь сразу замечает действие, но финальная фиксация не дёргается.
+    EaseOutCubic,
     /// Плавный разгон и плавное торможение (кубическая кривая).
     ///
     /// Стандартная кривая для выезжающих панелей: движение мягко
@@ -35,6 +43,12 @@ impl Easing {
 
         match self {
             Easing::Linear => clamped_progress,
+            Easing::EaseOutCubic => {
+                // Остаток до цели возводится в куб: скорость максимальна в начале
+                // и непрерывно падает до нуля на правой границе.
+                let remaining = 1.0 - clamped_progress;
+                1.0 - remaining * remaining * remaining
+            }
             Easing::EaseInOutCubic => {
                 // Классическая cubic ease-in-out:
                 // первая половина — разгон (4t^3),
@@ -227,10 +241,28 @@ mod tests {
 
     #[test]
     fn easing_clamps_out_of_range_and_nan_input() {
-        for easing in [Easing::Linear, Easing::EaseInOutCubic] {
+        for easing in [Easing::Linear, Easing::EaseOutCubic, Easing::EaseInOutCubic] {
             assert!((easing.apply(-1.0) - 0.0).abs() < EPSILON);
             assert!((easing.apply(2.0) - 1.0).abs() < EPSILON);
             assert!((easing.apply(f32::NAN) - 0.0).abs() < EPSILON);
+        }
+    }
+
+    #[test]
+    fn ease_out_cubic_has_stable_boundaries_and_no_overshoot() {
+        let easing = Easing::EaseOutCubic;
+        assert!((easing.apply(0.0) - 0.0).abs() < EPSILON);
+        assert!((easing.apply(0.5) - 0.875).abs() < EPSILON);
+        assert!((easing.apply(1.0) - 1.0).abs() < EPSILON);
+
+        // Плотная выборка защищает visibility-анимации от отрицательной
+        // прозрачности, overshoot и случайного нарушения монотонности.
+        let mut previous = easing.apply(0.0);
+        for step in 1..=100 {
+            let current = easing.apply(step as f32 / 100.0);
+            assert!((0.0..=1.0).contains(&current));
+            assert!(current >= previous);
+            previous = current;
         }
     }
 }

@@ -7,8 +7,8 @@ use winit::window::Window;
 
 use crate::playlist_runtime::{
     ControllerMoveItemsOutcome, MetadataSortCancelOutcome, PlaylistProgressCancelScope,
-    PlaylistRuntime, RuntimeMoveItemsOutcome, RuntimeRemovalOutcome, RuntimeUpdateSelectionOutcome,
-    UpdateSelectionOutcome,
+    PlaylistRuntime, RemovalUndoOutcome, RuntimeMoveItemsOutcome, RuntimeRemovalOutcome,
+    RuntimeUpdateSelectionOutcome, UpdateSelectionOutcome,
 };
 use crate::state::AppState;
 use crate::ui::playlist::PlaylistAction;
@@ -164,12 +164,78 @@ pub(crate) fn apply_playlist_actions(
                 app_state.request_playlist_go_current(target);
                 changed = true;
             }
+            PlaylistAction::UndoRemoval => {
+                // Только runtime owner проверяет deadline, invalidation и controller state.
+                let outcome = runtime.undo_last_removal(Instant::now());
+                // UI side effect выбирается из typed outcome без потери причины отказа.
+                match undo_removal_ui_effect(outcome) {
+                    UndoRemovalUiEffect::Restored { selected_item_id } => {
+                        // Focus возвращается exact selected item из восстановленного snapshot-а.
+                        if let Some(selected_item_id) = selected_item_id {
+                            app_state.request_playlist_row_focus(selected_item_id);
+                        }
+                        tracing::debug!(
+                            ?outcome,
+                            "Playlist toolbar Undo успешно обработан runtime owner-ом"
+                        );
+                    }
+                    UndoRemovalUiEffect::Rejected { safe_message } => {
+                        // Пользователь получает безопасное сообщение без controller internals.
+                        runtime.set_playlist_safe_feedback(safe_message);
+                        // Typed diagnostic сохраняет unavailable/expiry/invalidation/failure.
+                        if matches!(outcome, RemovalUndoOutcome::Controller(_)) {
+                            tracing::warn!(
+                                ?outcome,
+                                "Playlist toolbar Undo отклонён controller boundary"
+                            );
+                        } else {
+                            tracing::debug!(
+                                ?outcome,
+                                "Playlist toolbar Undo больше не authoritative"
+                            );
+                        }
+                    }
+                }
+                changed = true;
+            }
             PlaylistAction::UrlFocusRestored => {
                 runtime.acknowledge_playlist_url_focus();
             }
         }
     }
     changed
+}
+
+/// UI-эффект typed Undo outcome не раскрывает controller storage вызывающему коду.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UndoRemovalUiEffect {
+    /// Snapshot восстановлен; exact selected item может отсутствовать у пустого selection.
+    Restored {
+        selected_item_id: Option<playlist_core::PlaylistItemId>,
+    },
+    /// Undo отклонён; пользователю показывается безопасная локализованная причина.
+    Rejected { safe_message: &'static str },
+}
+
+/// Сопоставляет каждую typed runtime-причину с безопасным UI-результатом.
+fn undo_removal_ui_effect(outcome: RemovalUndoOutcome) -> UndoRemovalUiEffect {
+    match outcome {
+        RemovalUndoOutcome::Restored {
+            selected_item_id, ..
+        } => UndoRemovalUiEffect::Restored { selected_item_id },
+        RemovalUndoOutcome::Unavailable => UndoRemovalUiEffect::Rejected {
+            safe_message: "Отмена удаления уже недоступна",
+        },
+        RemovalUndoOutcome::Expired => UndoRemovalUiEffect::Rejected {
+            safe_message: "Время для отмены удаления истекло",
+        },
+        RemovalUndoOutcome::Invalidated => UndoRemovalUiEffect::Rejected {
+            safe_message: "Отмена удаления недоступна после изменения плейлиста",
+        },
+        RemovalUndoOutcome::Controller(_) => UndoRemovalUiEffect::Rejected {
+            safe_message: "Не удалось отменить удаление из плейлиста",
+        },
+    }
 }
 
 fn apply_removal_outcome(
@@ -195,4 +261,73 @@ fn apply_removal_outcome(
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use playlist_core::PlaylistItemId;
+
+    use super::{UndoRemovalUiEffect, undo_removal_ui_effect};
+    use crate::playlist_runtime::{ControllerRemovalUndoOutcome, RemovalUndoOutcome};
+
+    #[test]
+    fn successful_undo_preserves_exact_restored_focus_target() {
+        let selected_item_id =
+            PlaylistItemId::from_persistence_value(41).expect("test ItemId должен быть ненулевым");
+        let outcome = RemovalUndoOutcome::Restored {
+            selected_item_id: Some(selected_item_id),
+            reattached_active: true,
+        };
+
+        assert_eq!(
+            undo_removal_ui_effect(outcome),
+            UndoRemovalUiEffect::Restored {
+                selected_item_id: Some(selected_item_id)
+            }
+        );
+    }
+
+    #[test]
+    fn unavailable_expired_and_invalidated_keep_distinct_safe_messages() {
+        let cases = [
+            (
+                RemovalUndoOutcome::Unavailable,
+                "Отмена удаления уже недоступна",
+            ),
+            (
+                RemovalUndoOutcome::Expired,
+                "Время для отмены удаления истекло",
+            ),
+            (
+                RemovalUndoOutcome::Invalidated,
+                "Отмена удаления недоступна после изменения плейлиста",
+            ),
+        ];
+
+        for (outcome, expected_message) in cases {
+            assert_eq!(
+                undo_removal_ui_effect(outcome),
+                UndoRemovalUiEffect::Rejected {
+                    safe_message: expected_message
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn controller_failure_maps_to_safe_message_without_collapsing_typed_outcome() {
+        let typed_outcome =
+            RemovalUndoOutcome::Controller(ControllerRemovalUndoOutcome::DirtyRevisionExhausted);
+
+        assert_eq!(
+            undo_removal_ui_effect(typed_outcome),
+            UndoRemovalUiEffect::Rejected {
+                safe_message: "Не удалось отменить удаление из плейлиста"
+            }
+        );
+        assert!(matches!(
+            typed_outcome,
+            RemovalUndoOutcome::Controller(ControllerRemovalUndoOutcome::DirtyRevisionExhausted)
+        ));
+    }
 }

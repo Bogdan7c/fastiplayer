@@ -543,10 +543,17 @@ fn disabled_animation_copy_does_not_replace_viewport_or_publish_hint() {
         ui.set_max_height(180.0);
         super::show(
             ui,
-            Some(&model),
-            &interaction,
-            row_style(),
-            toolbar_style(),
+            super::PlaylistShowInput {
+                model: Some(&model),
+                interaction: &interaction,
+                row_style: row_style(),
+                toolbar_style: toolbar_style(),
+                undo_snapshot: &crate::playlist_runtime::PlaylistUndoUiSnapshot {
+                    undo: None,
+                    next_wake_deadline: None,
+                },
+                visibility_motion: crate::ui::animation::VisibilityMotion::Standard,
+            },
             &mut state,
             &mut output,
         );

@@ -572,8 +572,7 @@ fn shutdown_before_decision_never_starts_quarantine() {
             .is_err()
     );
     assert!(runtime.record_startup_shuffle_enabled(true).is_err());
-    let transport_model =
-        runtime.playlist_transport_ui_model(Duration::ZERO, std::time::Instant::now());
+    let transport_model = runtime.playlist_transport_ui_model(Duration::ZERO);
     assert!(!transport_model.queue_modes_enabled);
     assert_eq!(transport_model.repeat_mode, RepeatMode::StopAtEnd);
     assert!(!transport_model.shuffle_enabled);

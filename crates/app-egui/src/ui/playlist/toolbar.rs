@@ -22,10 +22,12 @@ const SORT_KEYS: [(PlaylistSortKey, &str); 6] = [
 pub(super) fn show(
     ui: &mut egui::Ui,
     model: &PlaylistInteractionModel,
+    undo_snapshot: &crate::playlist_runtime::PlaylistUndoUiSnapshot,
     style: PlaylistToolbarStyle,
+    visibility_motion: crate::ui::animation::VisibilityMotion,
     output: &mut PlaylistUiOutput,
 ) {
-    icon_bar::show(ui, model, style, output);
+    icon_bar::show(ui, model, undo_snapshot, style, visibility_motion, output);
 
     if model.url_editor_open {
         show_url_editor(ui, model, output);

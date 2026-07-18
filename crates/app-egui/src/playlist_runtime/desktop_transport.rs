@@ -176,10 +176,8 @@ impl DesktopTransportOwner {
                 self.effective_volume = player_volume;
             }
         }
-        let navigation = runtime.playlist_transport_ui_model(
-            player_snapshot.timeline.current_position.as_duration(),
-            std::time::Instant::now(),
-        );
+        let navigation = runtime
+            .playlist_transport_ui_model(player_snapshot.timeline.current_position.as_duration());
         let stopped = runtime.playlist_controller().is_some_and(|controller| {
             controller.transport_disposition() == AppTransportDisposition::Stopped
         });

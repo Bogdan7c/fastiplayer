@@ -1,7 +1,7 @@
-//! Immutable transport/status model для bottom host.
+//! Immutable transport/status и отдельная Undo-модель для UI.
 //!
-//! Здесь controller/runtime переводят queue/discovery/Undo state в intent-oriented UI model.
-//! UI не читает queue, shuffle history или pending install fields напрямую.
+//! Здесь controller/runtime переводят queue/discovery/removal state в intent-oriented
+//! UI snapshots. UI не читает queue, shuffle history или pending install fields напрямую.
 
 use std::time::{Duration, Instant};
 
@@ -46,11 +46,32 @@ impl From<ControllerManualNavigationAvailability> for NavigationControlAvailabil
     }
 }
 
-/// Read-only prototype Undo model без controller snapshot-а в UI.
+/// Read-only представление одного authoritative Undo без controller snapshot-а в UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RemovalUndoUiModel {
+    /// Грамматически готовое название отменяемой операции для русской подписи.
     pub(crate) kind_label: &'static str,
+    /// Целое число секунд, округлённое вверх runtime owner-ом.
     pub(crate) seconds_remaining: u64,
+}
+
+impl RemovalUndoUiModel {
+    /// Формирует единое имя для tooltip и AccessKit без расхождения строк.
+    pub(crate) fn action_label(self) -> String {
+        format!(
+            "Отменить {} ({} с)",
+            self.kind_label, self.seconds_remaining
+        )
+    }
+}
+
+/// Отдельный read-only snapshot visibility и runtime wake для Undo toolbar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlaylistUndoUiSnapshot {
+    /// Authoritative Undo отсутствует сразу после expiry/invalidation/activation.
+    pub(crate) undo: Option<RemovalUndoUiModel>,
+    /// Следующая смена countdown либо expiry; animation repaint сюда не входит.
+    pub(crate) next_wake_deadline: Option<Instant>,
 }
 
 /// Global D41/D50 status остаётся доступен даже при скрытом sidebar.
@@ -88,7 +109,7 @@ impl PlaylistGlobalTransportStatus {
     }
 }
 
-/// Один immutable snapshot для prototype buttons и global recovery actions.
+/// Один immutable snapshot для transport buttons и global navigation recovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PlaylistTransportUiModel {
     /// Controller view revision делает snapshot явно correlated с owner state.
@@ -102,17 +123,13 @@ pub(crate) struct PlaylistTransportUiModel {
     /// Единая доступность mode mutations на текущей controller revision.
     pub(crate) queue_modes_enabled: bool,
     pub(crate) global_status: Option<PlaylistGlobalTransportStatus>,
-    pub(crate) undo: Option<RemovalUndoUiModel>,
-    /// Только ближайшая видимая смена countdown/expiry, не animation loop.
-    pub(crate) next_wake_deadline: Option<Instant>,
 }
 
 impl PlaylistRuntime {
-    /// Собирает UI snapshot и exactly-once очищает expired Undo slot.
+    /// Собирает transport-only UI snapshot без mutation и Undo lifecycle.
     pub(crate) fn playlist_transport_ui_model(
-        &mut self,
+        &self,
         current_position: Duration,
-        now: Instant,
     ) -> PlaylistTransportUiModel {
         let wait_availability = self.discovery.manual_wait_availability();
         let restart_threshold = self.previous_restart_threshold();
@@ -178,7 +195,22 @@ impl PlaylistRuntime {
                 Some(PlaylistGlobalTransportStatus::Fatal)
             }
         };
+        PlaylistTransportUiModel {
+            playlist_view_revision,
+            previous,
+            next,
+            repeat_mode,
+            shuffle_enabled,
+            queue_modes_enabled,
+            global_status,
+        }
+    }
+
+    /// Собирает отдельный Undo snapshot и exactly-once очищает stale runtime slot.
+    pub(crate) fn playlist_undo_ui_snapshot(&mut self, now: Instant) -> PlaylistUndoUiSnapshot {
+        // Runtime status остаётся единственной точкой expiry/invalidation проверки.
         let undo_status = self.removal_undo_status(now);
+        // UI получает только грамматическую подпись и countdown, а не snapshot очереди.
         let undo = undo_status.map(|status| RemovalUndoUiModel {
             kind_label: match status.kind {
                 ControllerRemovalKind::Remove => "удаление элемента",
@@ -189,15 +221,10 @@ impl PlaylistRuntime {
             },
             seconds_remaining: status.seconds_remaining,
         });
+        // Deadline сохраняется отдельно от transport, но не теряет runtime источник.
         let next_wake_deadline = undo_status.map(|status| status.next_wake_deadline);
-        PlaylistTransportUiModel {
-            playlist_view_revision,
-            previous,
-            next,
-            repeat_mode,
-            shuffle_enabled,
-            queue_modes_enabled,
-            global_status,
+
+        PlaylistUndoUiSnapshot {
             undo,
             next_wake_deadline,
         }

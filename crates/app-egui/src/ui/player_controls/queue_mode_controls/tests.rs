@@ -17,8 +17,6 @@ fn transport_model() -> PlaylistTransportUiModel {
         shuffle_enabled: false,
         queue_modes_enabled: true,
         global_status: None,
-        undo: None,
-        next_wake_deadline: None,
     }
 }
 

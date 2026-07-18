@@ -327,8 +327,12 @@ impl AppState {
                     snapshot: player_snapshot,
                     playlist_model: playlist_view_model.as_ref(),
                     playlist_interaction: playlist_models.interaction,
+                    playlist_undo: playlist_models.undo,
                     playlist_row_style: selected_skin.playlist_row_style(),
                     playlist_toolbar_style: selected_skin.playlist_toolbar_style(),
+                    visibility_motion: crate::ui::animation::VisibilityMotion::from_reduced_motion(
+                        self.committed_config_snapshot.reduced_motion(),
+                    ),
                     playlist_state: &mut playlist_ui_state,
                     playlist_output: &mut playlist_ui_output,
                     settings_actions: &mut settings_actions,

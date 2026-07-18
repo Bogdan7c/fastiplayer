@@ -108,6 +108,8 @@ pub(crate) struct SidebarRenderContext<'a> {
     pub(crate) playlist_row_style: PlaylistRowStyle,
     pub(crate) playlist_toolbar_style: PlaylistToolbarStyle,
     pub(crate) playlist_interaction: &'a crate::playlist_runtime::PlaylistInteractionModel,
+    pub(crate) playlist_undo: &'a crate::playlist_runtime::PlaylistUndoUiSnapshot,
+    pub(crate) visibility_motion: crate::ui::animation::VisibilityMotion,
     pub(crate) playlist_state: &'a mut playlist::PlaylistUiState,
     pub(crate) playlist_output: &'a mut playlist::PlaylistUiOutput,
     pub(crate) settings_actions: &'a mut Vec<SettingsUiAction>,
@@ -292,10 +294,14 @@ fn render_section(ui: &mut Ui, section: SidebarSection, context: &mut SidebarRen
             ui.separator();
             playlist::show(
                 ui,
-                context.playlist_model,
-                context.playlist_interaction,
-                context.playlist_row_style,
-                context.playlist_toolbar_style,
+                playlist::PlaylistShowInput {
+                    model: context.playlist_model,
+                    interaction: context.playlist_interaction,
+                    row_style: context.playlist_row_style,
+                    toolbar_style: context.playlist_toolbar_style,
+                    undo_snapshot: context.playlist_undo,
+                    visibility_motion: context.visibility_motion,
+                },
                 context.playlist_state,
                 context.playlist_output,
             );

@@ -1155,10 +1155,11 @@ pub(crate) fn render_frame(
     }
     let playlist_confirmation = playlist_runtime.pending_playlist_confirmation();
     let playlist_interaction = playlist_runtime.playlist_interaction_model();
-    let transport_model = playlist_runtime.playlist_transport_ui_model(
-        frame_context.player_snapshot().current_position,
-        Instant::now(),
-    );
+    // Один monotonic timestamp согласует countdown snapshot и его wake deadline.
+    let playlist_ui_now = Instant::now();
+    let transport_model = playlist_runtime
+        .playlist_transport_ui_model(frame_context.player_snapshot().current_position);
+    let undo_model = playlist_runtime.playlist_undo_ui_snapshot(playlist_ui_now);
     let mut prepared_ui_frame = prepare_ui_frame(
         window,
         app_state,
@@ -1169,6 +1170,7 @@ pub(crate) fn render_frame(
             confirmation: playlist_confirmation.as_ref(),
             interaction: &playlist_interaction,
             transport: &transport_model,
+            undo: &undo_model,
         },
     );
     frame_sequence.reached(FrameSequenceStage::EguiOutput);
@@ -1343,7 +1345,7 @@ pub(crate) fn render_frame(
         ),
         close_requested: chrome_close_requested,
         next_ui_wake_deadline: earliest_ui_wake_deadline(
-            transport_model.next_wake_deadline,
+            undo_model.next_wake_deadline,
             settings_runtime.next_sidebar_resize_deadline(),
         ),
     }

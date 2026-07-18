@@ -73,6 +73,19 @@ fn deadline_is_inclusive_at_expiry_and_countdown_uses_monotonic_boundaries() {
     let initial = runtime.removal_undo_status(now).expect("undo available");
     assert_eq!(initial.seconds_remaining, 8);
     assert_eq!(initial.next_wake_deadline, now + Duration::from_secs(1));
+    // Отделение от transport model не теряет ни presentation, ни runtime wake.
+    let ui_snapshot = runtime.playlist_undo_ui_snapshot(now);
+    assert_eq!(
+        ui_snapshot
+            .undo
+            .expect("authoritative Undo UI model")
+            .action_label(),
+        "Отменить удаление элемента (8 с)"
+    );
+    assert_eq!(
+        ui_snapshot.next_wake_deadline,
+        Some(now + Duration::from_secs(1))
+    );
 
     let before_deadline = now + Duration::from_millis(7_999);
     assert_eq!(

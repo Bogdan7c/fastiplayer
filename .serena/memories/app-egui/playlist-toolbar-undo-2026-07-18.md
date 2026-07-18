@@ -1,0 +1,9 @@
+# Playlist toolbar Undo (2026-07-18)
+
+- Единственная Undo-точка UI — пятый постоянно зарезервированный slot toolbar после Current Item. Нижней текстовой кнопки и Ctrl+Z нет; первые четыре toolbar-оси и Clear сохраняют прежнее положение на ширинах 350/420/600.
+- `PlaylistRuntime` остаётся owner восьмисекундного removal undo, expiry, invalidation и typed `RemovalUndoOutcome`. От transport UI отделён read-only `PlaylistUndoUiSnapshot { undo, next_wake_deadline }`, поэтому countdown продолжает будить UI по authoritative runtime deadline.
+- UI intent — `PlaylistAction::UndoRemoval`; транспортный вариант удалён. Successful restore переносит row focus на exact controller-provided restored selected Item ID. Unavailable/expired/invalidated/controller failure имеют раздельные safe messages и typed tracing diagnostics.
+- `ui/playlist/toolbar/icon_bar/undo.rs` владеет interaction/accessibility и вызывает reusable visibility adapter каждый toolbar frame. Fade-in сразу interactive; fade-out только рисует остаточный artwork glyph без `Response`, tooltip и AccessKit action.
+- Tooltip и accessibility name совпадают: `Отменить очистку плейлиста (N с)`. Animation: 180 ms cubic ease-out, opacity `0→1`, scale `0.80→1.00`, exact reverse; committed reduced motion instant.
+- Neutral glyph/paint boundary documented in `mem:app-egui/artwork-boundary`; reusable animation contract in `mem:animation-core/visibility-2026-07-18`; reduced policy in `mem:settings-ui/reduced-motion-2026-07-18`.
+- Verification: animation-core 12 PASS, ui-artwork-egui 21 PASS, app-egui 664 PASS for both default and no-default features; strict Clippy, locked Rust 1.96 workspace check, refactor guardrails and diff check PASS. Full pre-PR remains blocked only by known pre-existing RUSTSEC-2026-0194 for transitive quick-xml 0.39.3, already tracked in `mem:core`.

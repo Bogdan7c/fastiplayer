@@ -133,6 +133,8 @@ pub(crate) enum PlaylistAction {
     CancelNavigation,
     RetrySave,
     GoCurrent(PlaylistGoCurrentTarget),
+    /// Отменяет authoritative последнюю destructive removal через runtime owner.
+    UndoRemoval,
     UrlFocusRestored,
 }
 

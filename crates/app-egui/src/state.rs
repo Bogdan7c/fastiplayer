@@ -147,6 +147,8 @@ pub(crate) struct PlaylistUiFrameModels<'a> {
     pub(crate) interaction: &'a crate::playlist_runtime::PlaylistInteractionModel,
     /// Global transport controls используют согласованный snapshot того же кадра.
     pub(crate) transport: &'a crate::playlist_runtime::PlaylistTransportUiModel,
+    /// Toolbar Undo получает отдельный read-only snapshot и runtime deadline.
+    pub(crate) undo: &'a crate::playlist_runtime::PlaylistUndoUiSnapshot,
 }
 
 /// Результат app-owned UI подготовки до platform output и tessellation.

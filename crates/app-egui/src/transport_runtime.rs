@@ -166,10 +166,6 @@ pub(crate) fn apply_transport_action(
                 "Global playlist wait Cancel обработан runtime owner-ом"
             );
         }
-        TransportControlAction::UndoRemoval => {
-            let outcome = playlist_runtime.undo_last_removal(std::time::Instant::now());
-            tracing::debug!(?outcome, "Global playlist Undo обработан runtime owner-ом");
-        }
     }
 }
 

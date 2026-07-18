@@ -56,7 +56,10 @@ pub(crate) use settings::{FutureDiscoveryPolicy, PlaylistSettingsStageError};
 pub(crate) use suspend_resume::{
     ResumeAttempt, ResumeCheckpointError, ResumePlaybackIntent, ResumePositionWarning,
 };
-pub(crate) use transport_ui::{NavigationControlAvailability, PlaylistTransportUiModel};
+pub(crate) use transport_ui::{
+    NavigationControlAvailability, PlaylistTransportUiModel, PlaylistUndoUiSnapshot,
+    RemovalUndoUiModel,
+};
 pub(crate) use ui_interaction::{
     PlaylistGoCurrentTarget, PlaylistInteractionModel, PlaylistProgressCancelScope,
     PlaylistProgressModel, PlaylistWaitDirection,
@@ -90,6 +93,8 @@ pub(crate) use actions::{
     InstalledMetadataCacheOutcome, PlaylistConfirmationApplyOutcome, UrlAppendActionOutcome,
     UrlAppendValidationError,
 };
+#[cfg(test)]
+pub(crate) use controller::ControllerRemovalUndoOutcome;
 pub(crate) use controller::PlaylistController;
 pub(crate) use controller::{
     AutomaticLifecycleOutcome, ControllerInitialQueuePlaybackAction,

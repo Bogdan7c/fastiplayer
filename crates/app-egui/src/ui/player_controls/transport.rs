@@ -20,7 +20,6 @@ pub(crate) enum TransportControlAction {
     SetShuffleEnabled { enabled: bool },
     SetRepeatMode { mode: playlist_core::RepeatMode },
     CancelNavigation,
-    UndoRemoval,
 }
 
 /// Направление боковой transport-кнопки связывает layout, glyph, label и typed action.
@@ -220,7 +219,7 @@ pub(super) fn render_global_status(
     model: &PlaylistTransportUiModel,
     actions: &mut Vec<ControlAction>,
 ) {
-    if model.global_status.is_none() && model.undo.is_none() {
+    if model.global_status.is_none() {
         return;
     }
     ui.horizontal_wrapped(|ui| {
@@ -229,17 +228,6 @@ pub(super) fn render_global_status(
             if status.can_cancel() && ui.button("Отменить ожидание").clicked() {
                 actions.push(ControlAction::Transport(
                     TransportControlAction::CancelNavigation,
-                ));
-            }
-        }
-        if let Some(undo) = model.undo {
-            let label = format!(
-                "Отменить {} ({} с)",
-                undo.kind_label, undo.seconds_remaining
-            );
-            if ui.button(label).clicked() {
-                actions.push(ControlAction::Transport(
-                    TransportControlAction::UndoRemoval,
                 ));
             }
         }
