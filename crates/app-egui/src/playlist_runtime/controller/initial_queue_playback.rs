@@ -115,7 +115,6 @@ impl PlaylistController {
 
         // Нельзя запускать paused target перед install-ом первого элемента.
         intent_dispatch.exact_current = None;
-        self.stop_after_current = None;
 
         if first_item_id == guard.target_item_id {
             return Ok(ControllerInitialQueuePlaybackAction::RestartCurrent {

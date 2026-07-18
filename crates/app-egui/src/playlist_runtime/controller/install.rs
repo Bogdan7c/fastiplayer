@@ -739,7 +739,6 @@ impl PlaylistController {
         self.active_media = Some(active_media);
         self.release_detached_tombstone_for_new_lineage(active_media);
         self.automatic_install_committed(active_media);
-        self.stop_after_current = None;
         self.pending_target = None;
         if let Some(item_id) = committed_item_id {
             self.runtime_errors.remove(&item_id);
@@ -790,7 +789,6 @@ impl PlaylistController {
         }
         self.release_detached_tombstone_for_new_lineage(active_media);
         self.automatic_install_committed(active_media);
-        self.stop_after_current = None;
         self.pending_target = None;
         self.publish_view(false);
         Ok(active_media)

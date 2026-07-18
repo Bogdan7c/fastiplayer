@@ -393,8 +393,6 @@ pub(crate) struct PlaylistProgressModel {
 pub(crate) struct PlaylistInteractionModel {
     pub(crate) structural_actions_enabled: bool,
     pub(crate) item_count: usize,
-    pub(crate) stop_after_current: bool,
-    pub(crate) stop_after_current_available: bool,
     pub(crate) url_editor_open: bool,
     pub(crate) url_text: String,
     pub(crate) url_request_focus: bool,
@@ -416,8 +414,6 @@ impl Default for PlaylistInteractionModel {
         Self {
             structural_actions_enabled: true,
             item_count: 0,
-            stop_after_current: false,
-            stop_after_current_available: false,
             url_editor_open: false,
             url_text: String::new(),
             url_request_focus: false,
@@ -561,11 +557,6 @@ impl PlaylistRuntime {
             structural_actions_enabled: controller
                 .is_some_and(|controller| controller.view_snapshot().structural_actions_enabled()),
             item_count: controller.map_or(0, |controller| controller.queue().len()),
-            stop_after_current: controller
-                .and_then(|controller| controller.stop_after_current())
-                .is_some(),
-            stop_after_current_available: controller
-                .is_some_and(|controller| controller.active_media().is_some()),
             url_editor_open: draft.is_open(),
             url_text: draft.text().to_string(),
             url_request_focus: draft.requests_focus(),

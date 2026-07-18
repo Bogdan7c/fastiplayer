@@ -42,3 +42,9 @@ Session 12 completed PASS on 2026-07-15. This memory extends `mem:app-egui/playl
 - Runtime сначала валидирует exact `PlaylistRuntimeBinding`, затем controller по-прежнему коррелирует binding generation + `MediaInstanceId` и edge-triggered exactly-once выбирает `OpenItem`/`ReplayCurrent`/Stop/Deferred. `player-core`, queue ownership и D08/Installed commit boundary не менялись.
 - Clean `Ended` не классифицируется по потенциально старому `last_error`; `Failed` остаётся отдельной Stop/Skip policy. Playlist runtime badge получает только secret-safe `PlayerErrorKind`, без произвольного текста нижнего слоя.
 - Regression coverage: production frame-order source contract, clean EOF -> next stable Item ID exactly once, repeated terminal no-op, stale `last_error` не меняет clean EOF, `Failed` skip и secret redaction. PASS: 586 app no-default tests, 23 player EOF tests, strict app Clippy, fmt, Rust 1.96 locked workspace check, guardrails, diff check и Serena diagnostics.
+
+
+## Current-state correction: D58 removed (2026-07-18)
+- Исторические D58/stop-after-current пункты выше больше не описывают production behavior. One-shot latch, toggle outcomes, deferred intent, clean-Ended/tombstone branches и special install cancellation cause удалены целиком по решению пользователя.
+- D42/D50/D53-D57 holds, D26 deferred automatic continuation/cancel, RepeatOne/RepeatQueue/StopAtEnd, manual navigation, explicit Neutral Stop и exact install barrier остаются без изменения и покрыты full workspace tests.
+- Актуальный removal contract: `mem:app-egui/stop-after-current-removed-2026-07-18`.

@@ -151,9 +151,6 @@ pub enum MediaInstallCancellationCause {
     /// Новый install intent заменил прежний запрос.
     Superseded,
 
-    /// Политика «остановиться после текущего» выиграла до commit barrier.
-    StopAfterCurrent,
-
     /// Явный transport Stop выиграл до commit barrier.
     TransportStop,
 

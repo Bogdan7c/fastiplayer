@@ -1480,7 +1480,6 @@ mod tests {
         let causes = [
             MediaInstallCancellationCause::UserCancelled,
             MediaInstallCancellationCause::Superseded,
-            MediaInstallCancellationCause::StopAfterCurrent,
             MediaInstallCancellationCause::TransportStop,
             MediaInstallCancellationCause::StructuralInvalidation,
             MediaInstallCancellationCause::LifecycleSuspended,

@@ -132,7 +132,6 @@ impl InitialQueuePlaybackCoordinator {
             }
             DiscoveryFinalOutcome::Cancelled(
                 DiscoveryCancellationCause::Superseded
-                | DiscoveryCancellationCause::StopAfterCurrent
                 | DiscoveryCancellationCause::TransportStop
                 | DiscoveryCancellationCause::StructuralInvalidation
                 | DiscoveryCancellationCause::LifecycleSuspended

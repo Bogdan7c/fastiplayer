@@ -120,7 +120,6 @@ impl PlaylistController {
         match outcome {
             ManualNavigationOutcome::OpenItem { item_id, preview } => {
                 self.pending_manual_traversal = None;
-                self.stop_after_current = None;
                 self.manual_navigation_cursor
                     .begin(preview, wait.origin, self.active_media);
                 ControllerManualNavigationOutcome::StartInstall {

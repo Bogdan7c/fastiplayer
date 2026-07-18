@@ -54,21 +54,6 @@ pub(super) fn show(
             output.push_action(PlaylistAction::Clear);
         }
 
-        let mut stop_after_current = model.stop_after_current;
-        let stop_response = ui
-            .add_enabled(
-                model.structural_actions_enabled && model.stop_after_current_available,
-                egui::Checkbox::new(&mut stop_after_current, "После текущего"),
-            )
-            .on_hover_text(if stop_after_current {
-                "Выключение не возобновит ранее отменённый переход"
-            } else {
-                "Остановиться после текущего; ожидающий переход будет отменён"
-            });
-        if stop_response.changed() {
-            output.push_action(PlaylistAction::SetStopAfterCurrent(stop_after_current));
-        }
-
         sort_menu(ui, model, output);
 
         if let Some(target) = model.go_current_target {
@@ -322,7 +307,8 @@ mod tests {
         assert!(!production_source.contains("SetShuffle"));
         assert!(!production_source.contains("Перемешать"));
         assert!(!production_source.contains("Повтор:"));
-        assert!(production_source.contains("После текущего"));
+        assert!(!production_source.contains("SetStopAfterCurrent"));
+        assert!(!production_source.contains("После текущего"));
         assert!(production_source.contains("Сортировка"));
     }
 }

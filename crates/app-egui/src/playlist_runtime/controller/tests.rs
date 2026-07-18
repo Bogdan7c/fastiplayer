@@ -630,7 +630,7 @@ fn d49_badge_correlation_and_d70_retention_do_not_dirty_queue() {
 }
 
 #[test]
-fn active_removal_detaches_identity_selected_stays_independent_and_latch_is_storage_only() {
+fn active_removal_detaches_identity_and_keeps_selection_independent() {
     let mut controller = PlaylistController::new();
     let item_ids = append_ids(&mut controller, 2);
     controller.select_row(Some(item_ids[1]));
@@ -659,7 +659,6 @@ fn active_removal_detaches_identity_selected_stays_independent_and_latch_is_stor
     assert!(!installed_rows[0].is_selected());
     assert!(installed_rows[1].is_selected());
     assert!(!installed_rows[1].is_active());
-    assert!(controller.set_stop_after_current(true));
     assert!(matches!(
         controller.remove_item(item_ids[0]),
         ControllerDestructiveRemovalOutcome::Removed(_)
@@ -670,12 +669,6 @@ fn active_removal_detaches_identity_selected_stays_independent_and_latch_is_stor
             .is_some_and(|active| active.item_id().is_none())
     );
     assert!(controller.view_snapshot().has_active_tombstone());
-    let latch = controller.stop_after_current().unwrap();
-    assert_eq!(latch.item_id(), Some(item_ids[0]));
-    assert_eq!(
-        latch.lineage_id(),
-        controller.active_media().unwrap().lineage_id()
-    );
 }
 
 #[test]

@@ -41,3 +41,8 @@ Session 09A completed PASS on 2026-07-14. This memory complements `mem:core`, `m
 ## Session 16A metadata Sort consumer contract
 - The neutral discovery crate was not given Sort/queue/app ownership. Existing `MetadataSortPreparation` remains a bounded local-only batch request with `AccumulateUntilTerminalAtomicApply`; it returns verified records, progress, exact failure counts and typed terminal outcomes. App orchestration decides which missing/untrusted local rows need it, correlates records back to Item IDs, and performs revalidation/commit.
 - Natural Sort and fingerprint-backed cached metadata create no discovery request. URL rows never enter local probing or network opening. Individual probe failures may remain a typed partial warning/missing sort group; cancellation/executor failure hands already verified records to the app-owned D44 salvage policy.
+
+
+## Cancellation vocabulary correction (2026-07-18)
+- После полного удаления product-фичи stop-after-current публичный `DiscoveryCancellationCause` содержит шесть причин: `UserCancelled`, `Superseded`, `TransportStop`, `StructuralInvalidation`, `LifecycleSuspended`, `LifecycleShutdown`. Удалённый `StopAfterCurrent` не должен возвращаться как неиспользуемый generic placeholder.
+- Executor/job cancellation semantics, first-writer-wins, bounded cleanup и app-neutral ownership не изменены; 52 focused tests и full workspace all-features suite прошли.

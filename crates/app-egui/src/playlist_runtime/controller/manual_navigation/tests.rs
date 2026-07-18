@@ -522,7 +522,6 @@ fn ended_cancel_stops_only_matching_ended_origin() {
             ..
         })
     ));
-    assert!(active_controller.stop_after_current().is_none());
 }
 
 #[test]

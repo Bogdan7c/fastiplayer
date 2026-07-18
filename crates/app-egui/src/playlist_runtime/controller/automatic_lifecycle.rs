@@ -52,7 +52,6 @@ pub(crate) enum AutomaticDeferredAvailability {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AutomaticStopCause {
     Domain(AutomaticStopReason),
-    StopAfterCurrent,
     ErrorPolicy,
     RepeatOneError,
     AllCandidatesFailed { attempted_count: usize },
@@ -389,12 +388,6 @@ impl PlaylistController {
                 AutomaticStopCause::Domain(AutomaticStopReason::CurrentItemAbsent),
             );
         };
-        if self.stop_after_current.is_some_and(|latch| {
-            latch.item_id() == Some(item_id) && latch.lineage_id() == active.lineage_id()
-        }) {
-            self.stop_after_current = None;
-            return self.stop_for_active(active, AutomaticStopCause::StopAfterCurrent);
-        }
         match self
             .queue
             .begin_automatic_traversal(AutomaticEndedIntent::new(self.repeat_mode))
@@ -457,13 +450,6 @@ impl PlaylistController {
                 active,
                 AutomaticStopCause::Domain(AutomaticStopReason::CurrentItemAbsent),
             );
-        }
-        let removed_item_id = tombstone.removed_item_id();
-        if self.stop_after_current.is_some_and(|latch| {
-            latch.item_id() == Some(removed_item_id) && latch.lineage_id() == active.lineage_id()
-        }) {
-            self.stop_after_current = None;
-            return self.stop_for_active(active, AutomaticStopCause::StopAfterCurrent);
         }
         let Some(plan) = tombstone.take_continuation() else {
             return self.stop_for_active(

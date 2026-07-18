@@ -429,36 +429,6 @@ fn guard_uses_exact_abort_then_latest_barrier_transport_without_fifo() {
 }
 
 #[test]
-fn stop_after_current_clears_wait_and_pre_ready_cause_is_distinct() {
-    let mut controller = PlaylistController::new();
-    let item_ids = append_items(&mut controller, 2);
-    install_active_fixture(&mut controller, item_ids[0], 110);
-    let scope_id = SiblingDiscoveryScopeId::from_non_zero(non_zero(11));
-    let ControllerManualNavigationOutcome::StartInstall { install } = controller.manual_navigation(
-        ManualNavigationDirection::Next,
-        TransportActionOrigin::Ui,
-        Duration::ZERO,
-        threshold(0),
-        DiscoveryManualWaitAvailability::MayProduceCandidate { scope_id },
-    ) else {
-        panic!("ready B")
-    };
-    accept_planned_install(&mut controller, 111, 121, install);
-    let StopAfterCurrentOutcome::Guarded(TransportGuardOutcome::CancelPendingThenExecute {
-        cause,
-        ..
-    }) = controller.toggle_stop_after_current(true, TransportActionOrigin::Ui)
-    else {
-        panic!("pre-ready latch must cancel exact request")
-    };
-    assert_eq!(cause, MediaInstallCancellationCause::StopAfterCurrent);
-    assert!(matches!(
-        controller.toggle_stop_after_current(false, TransportActionOrigin::Ui),
-        StopAfterCurrentOutcome::AppliedToCurrent { enabled: false }
-    ));
-}
-
-#[test]
 fn neutral_stop_sets_stopped_only_after_matching_success_and_mpris_navigation_starts_paused() {
     let mut controller = PlaylistController::new();
     let item_ids = append_items(&mut controller, 2);
@@ -536,100 +506,6 @@ fn cancel_winner_preserves_exact_terminal_cause() {
         panic!("cancel-winner Stop must address the old instance")
     };
     assert_eq!(request.media_instance_id, media_instance_id(140));
-}
-
-#[test]
-fn stop_after_current_terminal_executor_targets_winning_lineage_and_latest_toggle() {
-    let mut cancel_controller = PlaylistController::new();
-    let cancel_items = append_items(&mut cancel_controller, 2);
-    install_active_fixture(&mut cancel_controller, cancel_items[0], 170);
-    let ControllerPlayItemOutcome::StartInstall { install, .. } =
-        cancel_controller.play_item(cancel_items[1], TransportActionOrigin::Ui)
-    else {
-        panic!("start cancel-winner fixture")
-    };
-    accept_planned_install(&mut cancel_controller, 171, 181, install);
-    cancel_controller.on_ready_to_commit(media_open_request_id(171));
-    cancel_controller
-        .begin_authorization_dispatch(media_open_request_id(171))
-        .expect("dispatch pending");
-    assert!(matches!(
-        cancel_controller.toggle_stop_after_current(true, TransportActionOrigin::Ui),
-        StopAfterCurrentOutcome::Guarded(
-            TransportGuardOutcome::AwaitAuthorizationResolution { .. }
-        )
-    ));
-    let cancel_drain = cancel_controller
-        .resolve_authorization_dispatch(
-            media_open_request_id(171),
-            AuthorizationDispatchResolution::CancelWonBeforePlayerEnqueue {
-                cause: MediaInstallCancellationCause::StopAfterCurrent,
-            },
-        )
-        .expect("cancel resolution")
-        .expect("cancel terminal drain");
-    let Some(DeferredControllerIntent::Transport(cancel_intent)) = cancel_drain.deferred_intent
-    else {
-        panic!("cancel winner must retain latch intent")
-    };
-    assert!(matches!(
-        cancel_controller.execute_deferred_transport_intent(cancel_intent, deferred_context()),
-        DeferredTransportExecutionOutcome::StopAfterCurrent(
-            StopAfterCurrentOutcome::AppliedToCurrent { enabled: true }
-        )
-    ));
-    assert_eq!(
-        cancel_controller
-            .stop_after_current()
-            .expect("old lineage latch")
-            .item_id(),
-        Some(cancel_items[0])
-    );
-
-    let mut enqueue_controller = PlaylistController::new();
-    let enqueue_items = append_items(&mut enqueue_controller, 2);
-    install_active_fixture(&mut enqueue_controller, enqueue_items[0], 190);
-    let ControllerPlayItemOutcome::StartInstall { install, .. } =
-        enqueue_controller.play_item(enqueue_items[1], TransportActionOrigin::Ui)
-    else {
-        panic!("start enqueue-winner fixture")
-    };
-    accept_planned_install(&mut enqueue_controller, 191, 201, install);
-    enqueue_controller.on_ready_to_commit(media_open_request_id(191));
-    enqueue_controller
-        .begin_authorization_dispatch(media_open_request_id(191))
-        .expect("dispatch pending");
-    enqueue_controller.toggle_stop_after_current(true, TransportActionOrigin::Ui);
-    enqueue_controller.toggle_stop_after_current(false, TransportActionOrigin::Ui);
-    enqueue_controller
-        .resolve_authorization_dispatch(
-            media_open_request_id(191),
-            AuthorizationDispatchResolution::EnqueuedAtPlayerOwner,
-        )
-        .expect("enqueue winner");
-    let enqueue_drain = enqueue_controller
-        .on_installed(
-            media_open_request_id(191),
-            media_install_request_id(201),
-            media_instance_id(202),
-            PlaylistBindingGeneration(1),
-        )
-        .expect("installed");
-    let Some(DeferredControllerIntent::Transport(enqueue_intent)) = enqueue_drain.deferred_intent
-    else {
-        panic!("enqueue winner must retain latest toggle")
-    };
-    assert!(matches!(
-        enqueue_controller.execute_deferred_transport_intent(enqueue_intent, deferred_context()),
-        DeferredTransportExecutionOutcome::StopAfterCurrent(
-            StopAfterCurrentOutcome::AppliedToCurrent { enabled: false }
-        )
-    ));
-    assert_eq!(
-        enqueue_controller.active_media.unwrap().item_id(),
-        Some(enqueue_items[1])
-    );
-    assert_eq!(enqueue_controller.stop_after_current(), None);
 }
 
 #[test]

@@ -276,27 +276,3 @@ fn bounded_safe_summary(summary: Arc<str>) -> Arc<str> {
             .collect::<String>(),
     )
 }
-
-/// Runtime-only latch shell; `Ended` execution появится только в последующей session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct StopAfterCurrentLatch {
-    item_id: Option<PlaylistItemId>,
-    lineage_id: ActiveMediaLineageId,
-}
-
-impl StopAfterCurrentLatch {
-    pub(super) const fn new(active: ActiveMediaIdentity) -> Self {
-        Self {
-            item_id: active.item_id(),
-            lineage_id: active.lineage_id(),
-        }
-    }
-
-    pub(crate) const fn item_id(self) -> Option<PlaylistItemId> {
-        self.item_id
-    }
-
-    pub(crate) const fn lineage_id(self) -> ActiveMediaLineageId {
-        self.lineage_id
-    }
-}

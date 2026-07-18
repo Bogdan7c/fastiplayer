@@ -39,10 +39,6 @@ pub(crate) enum DeferredTransportIntent {
     Stop {
         origin: TransportActionOrigin,
     },
-    StopAfterCurrent {
-        enabled: bool,
-        origin: TransportActionOrigin,
-    },
     CancelManualNavigation,
 }
 
@@ -50,9 +46,6 @@ impl DeferredTransportIntent {
     const fn cancellation_cause(self) -> player_core::MediaInstallCancellationCause {
         match self {
             Self::Stop { .. } => player_core::MediaInstallCancellationCause::TransportStop,
-            Self::StopAfterCurrent { .. } => {
-                player_core::MediaInstallCancellationCause::StopAfterCurrent
-            }
             Self::PlayItem { .. } | Self::Navigate { .. } => {
                 player_core::MediaInstallCancellationCause::Superseded
             }

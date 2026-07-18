@@ -182,7 +182,6 @@ fn every_pre_barrier_cancellation_cause_remains_distinct() {
     let causes = [
         MediaInstallCancellationCause::UserCancelled,
         MediaInstallCancellationCause::Superseded,
-        MediaInstallCancellationCause::StopAfterCurrent,
         MediaInstallCancellationCause::TransportStop,
         MediaInstallCancellationCause::StructuralInvalidation,
         MediaInstallCancellationCause::LifecycleSuspended,
@@ -212,7 +211,6 @@ fn authorize_and_each_cancel_cause_follow_ordered_winner() {
     let causes = [
         MediaInstallCancellationCause::UserCancelled,
         MediaInstallCancellationCause::Superseded,
-        MediaInstallCancellationCause::StopAfterCurrent,
         MediaInstallCancellationCause::TransportStop,
         MediaInstallCancellationCause::StructuralInvalidation,
         MediaInstallCancellationCause::LifecycleSuspended,

@@ -184,28 +184,6 @@ pub(crate) enum TransportGuardOutcome {
     Fatal(super::install::PlaylistControllerInvariantViolation),
 }
 
-/// D58 toggle outcome фиксирует, что выключение никогда не resurrect-ит отменённый wait/request.
-pub(crate) enum StopAfterCurrentOutcome {
-    AppliedToCurrent {
-        enabled: bool,
-    },
-    ClearedManualWait {
-        enabled: bool,
-        wait_id: ManualNavigationWaitId,
-    },
-    ClearedManualWaitAndStoppedEndedCurrent {
-        wait_id: ManualNavigationWaitId,
-        item_id: PlaylistItemId,
-        media_instance_id: player_core::MediaInstanceId,
-    },
-    Guarded(TransportGuardOutcome),
-    NoActiveMedia,
-    StoppedEndedCurrent {
-        item_id: PlaylistItemId,
-        media_instance_id: player_core::MediaInstanceId,
-    },
-}
-
 /// Контекст повторной оценки ровно одного transport-intent после terminal drain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DeferredTransportExecutionContext {
@@ -219,7 +197,6 @@ pub(crate) enum DeferredTransportExecutionOutcome {
     PlayItem(ControllerPlayItemOutcome),
     Navigation(ControllerManualNavigationOutcome),
     NeutralStop(Option<Result<ExactMediaTransportRequest, TransportGuardOutcome>>),
-    StopAfterCurrent(StopAfterCurrentOutcome),
     CancelManualNavigation(ManualNavigationCancelOutcome),
 }
 
@@ -408,7 +385,6 @@ impl PlaylistController {
             };
         }
 
-        self.stop_after_current = None;
         ControllerPlayItemOutcome::StartInstall {
             install: PlannedPlaylistInstall {
                 item_id,
@@ -512,7 +488,6 @@ impl PlaylistController {
         };
         match self.queue.begin_manual_navigation(domain_intent) {
             ManualNavigationOutcome::OpenItem { item_id, preview } => {
-                self.stop_after_current = None;
                 self.manual_navigation_cursor
                     .begin(preview, origin, self.active_media);
                 ControllerManualNavigationOutcome::StartInstall {
@@ -540,7 +515,6 @@ impl PlaylistController {
             self.repeat_mode,
         ) {
             CursorStepOutcome::OpenItem { item_id } => {
-                self.stop_after_current = None;
                 let install = self.planned_manual_install(item_id, origin);
                 match superseded {
                     Some((expected_request_id, false)) => {
@@ -717,67 +691,6 @@ impl PlaylistController {
         false
     }
 
-    /// D58 cancel/defer использует тот же guard winner и один latest intent slot.
-    pub(crate) fn toggle_stop_after_current(
-        &mut self,
-        enabled: bool,
-        origin: TransportActionOrigin,
-    ) -> StopAfterCurrentOutcome {
-        if let Some(wait) = self.pending_manual_traversal.take() {
-            self.set_stop_after_current(enabled);
-            if enabled
-                && let super::automatic_lifecycle::AutomaticLifecycleOutcome::Stop {
-                    item_id: Some(item_id),
-                    media_instance_id,
-                    ..
-                } = self.stop_held_ended_without_reevaluation(
-                    super::automatic_lifecycle::AutomaticStopCause::StopAfterCurrent,
-                )
-            {
-                self.stop_after_current = None;
-                return StopAfterCurrentOutcome::ClearedManualWaitAndStoppedEndedCurrent {
-                    wait_id: wait.wait_id,
-                    item_id,
-                    media_instance_id,
-                };
-            }
-            return StopAfterCurrentOutcome::ClearedManualWait {
-                enabled,
-                wait_id: wait.wait_id,
-            };
-        }
-        if self.install_state.is_some() {
-            return StopAfterCurrentOutcome::Guarded(self.request_transport_guard(
-                DeferredTransportIntent::StopAfterCurrent { enabled, origin },
-            ));
-        }
-        let _discarded = self.manual_navigation_cursor.discard(
-            &self.queue,
-            player_core::MediaInstallCancellationCause::StopAfterCurrent,
-            None,
-        );
-        if self.active_media.is_none() {
-            return StopAfterCurrentOutcome::NoActiveMedia;
-        }
-        self.set_stop_after_current(enabled);
-        if enabled
-            && let super::automatic_lifecycle::AutomaticLifecycleOutcome::Stop {
-                item_id: Some(item_id),
-                media_instance_id,
-                ..
-            } = self.stop_held_ended_without_reevaluation(
-                super::automatic_lifecycle::AutomaticStopCause::StopAfterCurrent,
-            )
-        {
-            self.stop_after_current = None;
-            return StopAfterCurrentOutcome::StoppedEndedCurrent {
-                item_id,
-                media_instance_id,
-            };
-        }
-        StopAfterCurrentOutcome::AppliedToCurrent { enabled }
-    }
-
     /// Terminal drain вызывает этот boundary только после commit/abort и применения modes.
     pub(crate) fn execute_deferred_transport_intent(
         &mut self,
@@ -799,11 +712,6 @@ impl PlaylistController {
             }
             DeferredTransportIntent::Stop { origin } => {
                 DeferredTransportExecutionOutcome::NeutralStop(self.neutral_stop(origin))
-            }
-            DeferredTransportIntent::StopAfterCurrent { enabled, origin } => {
-                DeferredTransportExecutionOutcome::StopAfterCurrent(
-                    self.toggle_stop_after_current(enabled, origin),
-                )
             }
             DeferredTransportIntent::CancelManualNavigation => {
                 DeferredTransportExecutionOutcome::CancelManualNavigation(

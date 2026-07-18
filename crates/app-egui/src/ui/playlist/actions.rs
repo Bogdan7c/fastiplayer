@@ -43,7 +43,6 @@ pub(crate) enum PlaylistAction {
     SubmitUrl,
     CancelUrlEditor,
     Clear,
-    SetStopAfterCurrent(bool),
     Sort(SortCanonicalQueue),
     CancelProgress(PlaylistProgressCancelScope),
     CancelNavigation,

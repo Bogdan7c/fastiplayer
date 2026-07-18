@@ -11,8 +11,6 @@ pub enum DiscoveryCancellationCause {
     UserCancelled,
     /// Более новый intent заменил job.
     Superseded,
-    /// Stop-after-current снял необходимость navigation work.
-    StopAfterCurrent,
     /// Transport Stop отменил ожидающую работу.
     TransportStop,
     /// Structural revision сделала future apply недопустимым.

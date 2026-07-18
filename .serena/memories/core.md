@@ -77,3 +77,9 @@
 
 
 - yt-dlp playlist title enrichment completed 2026-07-17: service-owned cancellable `yt-dlp` metadata summary, app-owned bounded process-lifetime jobs, immediate post-append plus visible/restore enrichment, exact Item ID+locator patching, and post-Installed title reuse are documented in `mem:app-egui/ytdlp-playlist-metadata-2026-07-17`.
+
+
+## Stop-after-current removed (2026-07-18)
+- Пользовательская one-shot фича «После текущего» удалена целиком, а не только скрыта из UI. `app-egui` больше не хранит `StopAfterCurrentLatch`, не публикует `PlaylistAction::SetStopAfterCurrent`, не имеет D58 deferred transport/outcome/EOF policy и не отменяет navigation/install ради этой команды.
+- Обычные queue modes не изменены: `RepeatMode::{StopAtEnd, RepeatQueue, RepeatOne}`, автоматический переход, manual Next/Previous, explicit Stop, D50/D56/D57 и D26 deferred cancellation продолжают работать через существующие owner boundaries.
+- Публичные enum-ы `player_core::MediaInstallCancellationCause` и `playlist_discovery::DiscoveryCancellationCause` больше не содержат `StopAfterCurrent`; остальные typed cancellation distinctions сохранены. Focused и full all-features workspace suites, strict Clippy, fmt, locked Rust 1.96 check и refactor guardrails прошли. Детали: `mem:app-egui/stop-after-current-removed-2026-07-18`.

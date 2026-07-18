@@ -7,8 +7,7 @@ use winit::window::Window;
 
 use crate::playlist_runtime::{
     ControllerMoveItemOutcome, MetadataSortCancelOutcome, PlaylistProgressCancelScope,
-    PlaylistRuntime, RuntimeMoveItemOutcome, RuntimeRemovalOutcome, StopAfterCurrentOutcome,
-    TransportActionOrigin,
+    PlaylistRuntime, RuntimeMoveItemOutcome, RuntimeRemovalOutcome,
 };
 use crate::state::AppState;
 use crate::ui::playlist::PlaylistAction;
@@ -101,22 +100,6 @@ pub(crate) fn apply_playlist_actions(
                     runtime.set_playlist_safe_feedback("Не удалось очистить плейлист");
                     changed = true;
                 }
-            }
-            PlaylistAction::SetStopAfterCurrent(enabled) => {
-                let transition_was_pending = runtime
-                    .playlist_interaction_model()
-                    .navigation_cancel_available;
-                let outcome =
-                    runtime.toggle_playlist_stop_after_current(enabled, TransportActionOrigin::Ui);
-                if enabled
-                    && transition_was_pending
-                    && !matches!(outcome, None | Some(StopAfterCurrentOutcome::NoActiveMedia))
-                {
-                    runtime.set_playlist_safe_feedback(
-                        "Ожидающий переход отменён; выключение режима его не возобновит",
-                    );
-                }
-                changed |= !matches!(outcome, None | Some(StopAfterCurrentOutcome::NoActiveMedia));
             }
             PlaylistAction::Sort(intent) => {
                 if runtime.start_metadata_sort(intent).is_err() {

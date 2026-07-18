@@ -75,13 +75,6 @@ fn paused_resume_preserves_position_and_lineage_with_new_instance() {
     let mut runtime = runtime();
     let first_binding = runtime.bind_resumed_app_state().expect("first binding");
     let active = install_external(&mut runtime, first_binding, 11);
-    assert!(
-        runtime
-            .controller
-            .as_mut()
-            .expect("controller")
-            .set_stop_after_current(true)
-    );
     let captured = runtime
         .capture_suspended_media_checkpoint(
             first_binding,
@@ -110,16 +103,6 @@ fn paused_resume_preserves_position_and_lineage_with_new_instance() {
         .expect("same-lineage rebound");
     assert_eq!(rebound.lineage_id(), active.lineage_id());
     assert_eq!(rebound.media_instance_id(), new_instance);
-    assert_eq!(
-        runtime
-            .controller
-            .as_ref()
-            .expect("controller")
-            .stop_after_current()
-            .expect("same-lineage stop latch")
-            .lineage_id(),
-        active.lineage_id()
-    );
     assert_eq!(
         runtime.suspended_media_status(),
         ResumeCheckpointStatus::Empty
@@ -151,7 +134,7 @@ fn paused_resume_preserves_position_and_lineage_with_new_instance() {
 }
 
 #[test]
-fn tombstone_undo_and_stop_latch_survive_same_lineage_new_instance() {
+fn tombstone_undo_survives_same_lineage_new_instance() {
     let mut runtime = runtime();
     let first_binding = runtime.bind_resumed_app_state().expect("first binding");
     let item_id = match runtime
@@ -178,7 +161,6 @@ fn tombstone_undo_and_stop_latch_survive_same_lineage_new_instance() {
     runtime.controller.active_media = Some(active);
     runtime.suspended_media.active_source =
         Some(ActiveMediaSource::LocalFile("active-tombstone.mp4".into()));
-    assert!(runtime.controller.set_stop_after_current(true));
     let now = Instant::now();
     assert!(matches!(
         runtime.remove_playlist_item(item_id, now),
@@ -209,14 +191,6 @@ fn tombstone_undo_and_stop_latch_survive_same_lineage_new_instance() {
 
     assert_eq!(rebound.lineage_id(), active.lineage_id());
     assert!(runtime.removal_undo_status(now).is_some());
-    assert_eq!(
-        runtime
-            .controller
-            .stop_after_current()
-            .expect("stop latch survives")
-            .lineage_id(),
-        active.lineage_id()
-    );
     assert!(matches!(
         runtime.undo_last_removal(now + Duration::from_secs(1)),
         RemovalUndoOutcome::Restored { .. }
@@ -379,10 +353,8 @@ fn non_seekable_warning_and_explicit_open_supersede_do_not_mutate_lineage_early(
             .active_media(),
         Some(rebound)
     );
-    assert!(runtime.controller.set_stop_after_current(true));
     let explicitly_opened = install_external(&mut runtime, second_binding, 53);
     assert_ne!(explicitly_opened.lineage_id(), rebound.lineage_id());
-    assert!(runtime.controller.stop_after_current().is_none());
 }
 
 #[test]

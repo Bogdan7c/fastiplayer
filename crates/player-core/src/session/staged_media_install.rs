@@ -690,7 +690,6 @@ fn detached_cancellation_cause(
             DetachedVideoBackendCandidateCancellationCause::Disconnected
         }
         MediaInstallCancellationCause::UserCancelled
-        | MediaInstallCancellationCause::StopAfterCurrent
         | MediaInstallCancellationCause::TransportStop
         | MediaInstallCancellationCause::StructuralInvalidation => {
             DetachedVideoBackendCandidateCancellationCause::Requested

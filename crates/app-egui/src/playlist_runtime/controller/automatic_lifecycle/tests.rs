@@ -17,7 +17,7 @@ use crate::playlist_runtime::PlaylistBindingGeneration;
 use crate::playlist_runtime::controller::{
     ControllerManualNavigationOutcome, InstallReadyOutcome, ManualNavigationCancelOutcome,
     ManualNavigationFailureOutcome, ManualNavigationTerminalAction, PlannedPlaylistInstall,
-    PlaylistController, PlaylistInstallRequest, PreviousRestartThreshold, StopAfterCurrentOutcome,
+    PlaylistController, PlaylistInstallRequest, PreviousRestartThreshold,
 };
 use crate::playlist_runtime::identity::{
     ActiveMediaIdentity, ActiveMediaLineageId, TransportActionOrigin,
@@ -331,58 +331,6 @@ fn d50_exhaustion_reevaluates_matching_held_ended_exactly_once() {
 }
 
 #[test]
-fn d58_enable_during_d50_wait_consumes_matching_ended_edge() {
-    let (mut controller, item_ids, active) = controller_with_active(1, 0);
-    let item_id = item_ids[0];
-    let scope_id = super::super::transport::SiblingDiscoveryScopeId::from_non_zero(non_zero(402));
-    let waiting = controller.manual_navigation(
-        playlist_core::ManualNavigationDirection::Next,
-        TransportActionOrigin::Ui,
-        std::time::Duration::ZERO,
-        PreviousRestartThreshold::from_milliseconds(0).expect("zero is valid"),
-        super::super::transport::DiscoveryManualWaitAvailability::MayProduceCandidate { scope_id },
-    );
-    let ControllerManualNavigationOutcome::Waiting { wait_id, .. } = waiting else {
-        panic!("D50 must wait while discovery may produce a candidate");
-    };
-    assert!(matches!(
-        controller.observe_automatic_snapshot(
-            active.player_binding_generation(),
-            Some(active.media_instance_id()),
-            PlaybackState::Ended,
-            EndedSnapshotKind::Clean,
-            AutomaticDeferredAvailability::Unavailable,
-        ),
-        AutomaticLifecycleOutcome::HeldForExplicitIntent { .. }
-    ));
-
-    assert!(matches!(
-        controller.toggle_stop_after_current(true, TransportActionOrigin::Ui),
-        StopAfterCurrentOutcome::ClearedManualWaitAndStoppedEndedCurrent {
-            wait_id: stopped_wait_id,
-            item_id: stopped_item_id,
-            media_instance_id,
-        } if stopped_wait_id == wait_id
-            && stopped_item_id == item_id
-            && media_instance_id == active.media_instance_id()
-    ));
-    assert!(matches!(
-        controller.reevaluate_held_ended(AutomaticDeferredAvailability::Unavailable),
-        AutomaticLifecycleOutcome::NoAction
-    ));
-    assert!(matches!(
-        controller.observe_automatic_snapshot(
-            active.player_binding_generation(),
-            Some(active.media_instance_id()),
-            PlaybackState::Ended,
-            EndedSnapshotKind::Clean,
-            AutomaticDeferredAvailability::Unavailable,
-        ),
-        AutomaticLifecycleOutcome::NoAction
-    ));
-}
-
-#[test]
 fn d57_structural_invalidation_consumes_ended_hold_with_one_mutation_revision() {
     let (mut controller, _, active) = controller_with_active(2, 0);
     let install = planned_manual_next(&mut controller);
@@ -417,36 +365,6 @@ fn d57_structural_invalidation_consumes_ended_hold_with_one_mutation_revision() 
         ManualNavigationTerminalAction::StopEndedOrigin
     );
     assert_eq!(controller.dirty_revision().get(), dirty_before + 1);
-    assert!(matches!(
-        controller.reevaluate_held_ended(AutomaticDeferredAvailability::Unavailable),
-        AutomaticLifecycleOutcome::NoAction
-    ));
-}
-
-#[test]
-fn d58_enable_after_failed_cursor_stops_ended_current_and_toggle_off_does_not_replay() {
-    let (mut controller, _, active) = controller_with_active(2, 0);
-    let install = planned_manual_next(&mut controller);
-    let request_id = MediaOpenRequestId::from_non_zero(non_zero(113));
-    controller
-        .accept_install_request(install_request(113, 213, install))
-        .expect("manual request accepted");
-    let _held = controller.observe_automatic_snapshot(
-        active.player_binding_generation(),
-        Some(active.media_instance_id()),
-        PlaybackState::Ended,
-        EndedSnapshotKind::Clean,
-        AutomaticDeferredAvailability::Unavailable,
-    );
-    let _failed = controller.report_manual_navigation_target_failure(request_id);
-    assert!(matches!(
-        controller.toggle_stop_after_current(true, TransportActionOrigin::Ui),
-        StopAfterCurrentOutcome::StoppedEndedCurrent { .. }
-    ));
-    assert!(matches!(
-        controller.toggle_stop_after_current(false, TransportActionOrigin::Ui),
-        StopAfterCurrentOutcome::AppliedToCurrent { enabled: false }
-    ));
     assert!(matches!(
         controller.reevaluate_held_ended(AutomaticDeferredAvailability::Unavailable),
         AutomaticLifecycleOutcome::NoAction
@@ -616,55 +534,9 @@ fn late_admission_does_not_invalidate_ready_or_join_automatic_plan() {
 }
 
 #[test]
-fn stop_after_current_consumes_matching_edge_and_deferred_cancel_is_terminal() {
+fn deferred_automatic_cancel_is_terminal() {
     let (mut controller, _, active) = controller_with_active(1, 0);
-    controller.set_stop_after_current(true);
-    assert!(matches!(
-        controller.observe_automatic_snapshot(
-            active.player_binding_generation(),
-            Some(active.media_instance_id()),
-            PlaybackState::Ended,
-            EndedSnapshotKind::Clean,
-            AutomaticDeferredAvailability::Unavailable,
-        ),
-        AutomaticLifecycleOutcome::Stop {
-            cause: AutomaticStopCause::StopAfterCurrent,
-            ..
-        }
-    ));
-    assert!(controller.stop_after_current().is_none());
-
-    let _rearmed = controller.observe_automatic_snapshot(
-        active.player_binding_generation(),
-        Some(active.media_instance_id()),
-        PlaybackState::Playing,
-        EndedSnapshotKind::Clean,
-        AutomaticDeferredAvailability::Unavailable,
-    );
     let scope_id = super::super::transport::SiblingDiscoveryScopeId::from_non_zero(non_zero(301));
-    assert!(matches!(
-        controller.observe_automatic_snapshot(
-            active.player_binding_generation(),
-            Some(active.media_instance_id()),
-            PlaybackState::Ended,
-            EndedSnapshotKind::Clean,
-            AutomaticDeferredAvailability::MayProduceCandidate { scope_id },
-        ),
-        AutomaticLifecycleOutcome::Deferred { .. }
-    ));
-    assert!(matches!(
-        controller.toggle_stop_after_current(true, TransportActionOrigin::Ui),
-        StopAfterCurrentOutcome::StoppedEndedCurrent { .. }
-    ));
-    assert!(controller.stop_after_current().is_none());
-
-    let _rearmed = controller.observe_automatic_snapshot(
-        active.player_binding_generation(),
-        Some(active.media_instance_id()),
-        PlaybackState::Playing,
-        EndedSnapshotKind::Clean,
-        AutomaticDeferredAvailability::Unavailable,
-    );
     assert!(matches!(
         controller.observe_automatic_snapshot(
             active.player_binding_generation(),

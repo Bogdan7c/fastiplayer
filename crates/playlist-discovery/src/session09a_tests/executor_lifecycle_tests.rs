@@ -5,7 +5,6 @@ fn every_typed_cancellation_cause_is_first_writer_wins() {
     let causes = [
         DiscoveryCancellationCause::UserCancelled,
         DiscoveryCancellationCause::Superseded,
-        DiscoveryCancellationCause::StopAfterCurrent,
         DiscoveryCancellationCause::TransportStop,
         DiscoveryCancellationCause::StructuralInvalidation,
         DiscoveryCancellationCause::LifecycleSuspended,

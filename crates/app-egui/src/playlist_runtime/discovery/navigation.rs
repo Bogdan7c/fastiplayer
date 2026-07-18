@@ -16,7 +16,7 @@ use super::{ActiveDiscoveryScope, PlaylistDiscoveryCoordinator};
 use crate::playlist_runtime::controller::{
     AutomaticDeferredAvailability, AutomaticDiscoveryReadiness, AutomaticLifecycleOutcome,
     ControllerManualNavigationOutcome, DiscoveryManualWaitAvailability,
-    DiscoveryNavigationInterest, EndedSnapshotKind, StopAfterCurrentOutcome,
+    DiscoveryNavigationInterest, EndedSnapshotKind,
 };
 use crate::playlist_runtime::identity::TransportActionOrigin;
 use crate::playlist_runtime::{PlaylistController, PlaylistRuntime, PlaylistRuntimeBinding};
@@ -130,19 +130,6 @@ impl PlaylistRuntime {
             self.discovery.synchronize_navigation_interest(controller);
         }
         action
-    }
-
-    /// D58 очищает transition/action/priority, сохраняя сам bounded bulk scan.
-    pub(crate) fn toggle_playlist_stop_after_current(
-        &mut self,
-        enabled: bool,
-        origin: TransportActionOrigin,
-    ) -> Option<StopAfterCurrentOutcome> {
-        let controller = self.controller.as_mut()?;
-        let outcome = controller.toggle_stop_after_current(enabled, origin);
-        self.discovery.navigation_action = None;
-        self.discovery.synchronize_navigation_interest(controller);
-        Some(outcome)
     }
 
     pub(crate) const fn playlist_discovery_navigation_status(

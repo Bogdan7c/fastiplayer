@@ -25,7 +25,7 @@ use playlist_core::{
 
 use super::identity::{
     ActiveMediaIdentity, PlaylistItemErrorCategory, PlaylistItemErrorPhase,
-    PlaylistItemRuntimeError, StopAfterCurrentLatch,
+    PlaylistItemRuntimeError,
 };
 use super::view::{
     PlaylistDirtyRevision, PlaylistDirtySignal, PlaylistStructuralRevision, PlaylistViewSnapshot,
@@ -78,8 +78,7 @@ pub(crate) use transport::{
     ControllerManualNavigationOutcome, ControllerPlayItemOutcome, ControllerStableIntentDispatch,
     DeferredTransportExecutionContext, DeferredTransportExecutionOutcome,
     DiscoveryManualWaitAvailability, ManualNavigationWaitId, PlannedPlaylistInstall,
-    PreviousRestartThreshold, SiblingDiscoveryScopeId, StablePlaybackIntent,
-    StopAfterCurrentOutcome, TransportGuardOutcome,
+    PreviousRestartThreshold, SiblingDiscoveryScopeId, StablePlaybackIntent, TransportGuardOutcome,
 };
 
 /// Typed append результат сохраняет distinction между mutation и no-op.
@@ -150,7 +149,6 @@ pub(crate) struct PlaylistController {
     pub(super) next_lineage_identity: u64,
     install_state: Option<install::InstallState>,
     pub(super) protected_modes_generation: u64,
-    pub(super) stop_after_current: Option<StopAfterCurrentLatch>,
     pub(super) stable_playback_intent: transport::StablePlaybackIntent,
     pub(super) stable_intent_revision: u64,
     pub(super) transport_disposition: transport::AppTransportDisposition,
@@ -186,7 +184,6 @@ impl PlaylistController {
             next_lineage_identity: 1,
             install_state: None,
             protected_modes_generation: 0,
-            stop_after_current: None,
             stable_playback_intent: transport::StablePlaybackIntent::Paused,
             stable_intent_revision: 1,
             transport_disposition: transport::AppTransportDisposition::Active,
@@ -460,24 +457,6 @@ impl PlaylistController {
             self.worker_availability = availability;
             self.publish_view(false);
         }
-    }
-
-    /// Хранилище latch-а не исполняет `Ended` policy в Session 11A.
-    pub(crate) fn set_stop_after_current(&mut self, enabled: bool) -> bool {
-        let next_latch = if enabled {
-            self.active_media.map(StopAfterCurrentLatch::new)
-        } else {
-            None
-        };
-        if self.stop_after_current == next_latch {
-            return false;
-        }
-        self.stop_after_current = next_latch;
-        true
-    }
-
-    pub(crate) const fn stop_after_current(&self) -> Option<StopAfterCurrentLatch> {
-        self.stop_after_current
     }
 
     /// D56 accessibility hint не раскрывает UI внутренний cursor/hold.

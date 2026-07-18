@@ -94,7 +94,7 @@ pub(crate) use controller::{
     AutomaticLifecycleOutcome, ControllerInitialQueuePlaybackAction,
     ControllerManualNavigationOutcome, ControllerMoveItemOutcome, ControllerPlayItemOutcome,
     ControllerStableIntentDispatch, LocalFileSelectionDisposition, PlannedPlaylistInstall,
-    StablePlaybackIntent, StopAfterCurrentOutcome,
+    StablePlaybackIntent,
 };
 pub(crate) use controller::{StartupRestoreFailureOutcome, StartupRestoreTarget};
 pub(crate) use discovery::{MetadataSortCancelOutcome, PlaylistDiscoveryNavigationAction};
