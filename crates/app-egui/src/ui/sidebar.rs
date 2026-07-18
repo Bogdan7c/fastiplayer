@@ -3,15 +3,18 @@
 //! Этот модуль создаёт ровно один egui Panel. Playlist, Settings, URL и Info
 //! являются только сменяемым содержимым и не владеют шириной или resize-state.
 
-use egui::{Button, RichText, Ui};
+use egui::Ui;
 use rustiplayer_config::{MAX_SIDEBAR_WIDTH_POINTS, MIN_SIDEBAR_WIDTH_POINTS};
 
 use crate::settings_ui::{SettingsUiAction, SettingsUiModel, layout};
 use crate::state::{ContentSlideDirection, SidebarContentTransition, SidebarSection};
-use crate::ui::skin::{PlaylistRowStyle, PlaylistToolbarStyle};
+use crate::ui::skin::{PlaylistHeaderUndoStyle, PlaylistRowStyle, PlaylistToolbarStyle};
+use crate::ui::window_chrome::WindowChromeEdgeAlignment;
 use crate::ui::{media_info, playlist};
 
 const SIDEBAR_FILL: egui::Color32 = egui::Color32::from_rgb(18, 18, 18);
+
+mod header;
 
 /// Типизированная округлённая ширина на settings/persistence boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,9 +110,11 @@ pub(crate) struct SidebarRenderContext<'a> {
     pub(crate) playlist_model: Option<&'a crate::playlist_runtime::PlaylistViewModel>,
     pub(crate) playlist_row_style: PlaylistRowStyle,
     pub(crate) playlist_toolbar_style: PlaylistToolbarStyle,
+    pub(crate) playlist_header_undo_style: PlaylistHeaderUndoStyle,
     pub(crate) playlist_interaction: &'a crate::playlist_runtime::PlaylistInteractionModel,
     pub(crate) playlist_undo: &'a crate::playlist_runtime::PlaylistUndoUiSnapshot,
     pub(crate) visibility_motion: crate::ui::animation::VisibilityMotion,
+    pub(crate) window_chrome_edge_alignment: WindowChromeEdgeAlignment,
     pub(crate) playlist_state: &'a mut playlist::PlaylistUiState,
     pub(crate) playlist_output: &'a mut playlist::PlaylistUiOutput,
     pub(crate) settings_actions: &'a mut Vec<SettingsUiAction>,
@@ -288,86 +293,40 @@ fn content_child(
 
 /// Единственная точка выбора содержимого; Panel state здесь отсутствует.
 fn render_section(ui: &mut Ui, section: SidebarSection, context: &mut SidebarRenderContext<'_>) {
-    ui.push_id(("section", section as u8), |ui| match section {
-        SidebarSection::Playlist => {
-            render_simple_header(ui, "Плейлист", context.close_requested);
-            ui.separator();
-            playlist::show(
-                ui,
-                playlist::PlaylistShowInput {
-                    model: context.playlist_model,
-                    interaction: context.playlist_interaction,
-                    row_style: context.playlist_row_style,
-                    toolbar_style: context.playlist_toolbar_style,
-                    undo_snapshot: context.playlist_undo,
-                    visibility_motion: context.visibility_motion,
-                },
-                context.playlist_state,
-                context.playlist_output,
-            );
-        }
-        SidebarSection::Settings => {
-            render_settings_header(ui, context.settings_actions, context.close_requested);
-            ui.separator();
-            layout::show(ui, context.model, context.settings_actions);
-        }
-        SidebarSection::Url => {
-            render_simple_header(ui, "URL", context.close_requested);
-        }
-        SidebarSection::Info => {
-            render_simple_header(ui, "Информация", context.close_requested);
-            ui.separator();
-            egui::ScrollArea::vertical()
-                .id_salt("info_scroll")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.set_min_width(0.0);
-                    media_info::show(ui, context.snapshot);
-                });
-        }
-    });
-}
+    ui.push_id(("section", section as u8), |ui| {
+        // Header и separator принадлежат host и одинаковы для всех секций.
+        header::show(ui, section, context);
+        ui.separator();
 
-/// Settings X остаётся explicit Cancel/rollback.
-fn render_settings_header(
-    ui: &mut Ui,
-    actions: &mut Vec<SettingsUiAction>,
-    close_requested: &mut bool,
-) {
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Настройки").heading());
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .add(Button::new(RichText::new("×").strong()))
-                .on_hover_text("Отменить изменения и закрыть настройки")
-                .clicked()
-            {
-                actions.push(settings_sidebar_close_action());
-                *close_requested = true;
+        match section {
+            SidebarSection::Playlist => {
+                playlist::show(
+                    ui,
+                    playlist::PlaylistShowInput {
+                        model: context.playlist_model,
+                        interaction: context.playlist_interaction,
+                        row_style: context.playlist_row_style,
+                        toolbar_style: context.playlist_toolbar_style,
+                    },
+                    context.playlist_state,
+                    context.playlist_output,
+                );
             }
-        });
-    });
-}
-
-/// Остальные X только скрывают host.
-fn render_simple_header(ui: &mut Ui, title: &str, close_requested: &mut bool) {
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(title).heading());
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .add(Button::new(RichText::new("×").strong()))
-                .on_hover_text("Закрыть панель")
-                .clicked()
-            {
-                *close_requested = true;
+            SidebarSection::Settings => {
+                layout::show(ui, context.model, context.settings_actions);
             }
-        });
+            SidebarSection::Url => {}
+            SidebarSection::Info => {
+                egui::ScrollArea::vertical()
+                    .id_salt("info_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_min_width(0.0);
+                        media_info::show(ui, context.snapshot);
+                    });
+            }
+        }
     });
-}
-
-#[must_use]
-fn settings_sidebar_close_action() -> SettingsUiAction {
-    SettingsUiAction::Cancel
 }
 
 #[cfg(test)]
@@ -375,11 +334,6 @@ mod tests {
     use super::*;
     use egui::{Event, Modifiers, PointerButton, RawInput};
     use std::path::Path;
-
-    #[test]
-    fn settings_sidebar_close_maps_to_cancel() {
-        assert_eq!(settings_sidebar_close_action(), SettingsUiAction::Cancel);
-    }
 
     #[test]
     fn sidebar_source_has_exactly_one_panel_creation_site() {
@@ -516,8 +470,15 @@ mod tests {
     }
 
     fn sidebar_source() -> String {
-        let sidebar_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui/sidebar.rs");
-        std::fs::read_to_string(sidebar_path).expect("sidebar source is readable")
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let sidebar_path = manifest_dir.join("src/ui/sidebar.rs");
+        let header_path = manifest_dir.join("src/ui/sidebar/header.rs");
+        let sidebar_source =
+            std::fs::read_to_string(sidebar_path).expect("sidebar source is readable");
+        let header_source =
+            std::fs::read_to_string(header_path).expect("sidebar header source is readable");
+
+        format!("{sidebar_source}\n{header_source}")
     }
 
     fn render_host(

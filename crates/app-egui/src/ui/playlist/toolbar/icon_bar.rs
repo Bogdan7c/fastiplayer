@@ -6,18 +6,12 @@ use ui_artwork_egui::{
     ArtworkPainter, PlaylistToolbarButtonStyle, PlaylistToolbarGlyph, PlaylistToolbarPaintState,
 };
 
-use crate::playlist_runtime::{
-    PlaylistGoCurrentTarget, PlaylistInteractionModel, PlaylistUndoUiSnapshot,
-};
-use crate::ui::animation::VisibilityMotion;
+use crate::playlist_runtime::{PlaylistGoCurrentTarget, PlaylistInteractionModel};
 use crate::ui::skin::PlaylistToolbarStyle;
 
 use super::super::PlaylistUiOutput;
 use super::super::actions::PlaylistAction;
 use super::SORT_KEYS;
-
-/// Visibility/interaction отдельного зарезервированного Undo slot.
-mod undo;
 
 /// Стабильный порядок четырёх обычных действий слева.
 const LEFT_CONTROLS: [ToolbarControl; 4] = [
@@ -26,11 +20,11 @@ const LEFT_CONTROLS: [ToolbarControl; 4] = [
     ToolbarControl::Sort,
     ToolbarControl::CurrentItem,
 ];
-/// Четыре обычных controls плюс всегда зарезервированный Undo slot.
-const LEFT_SLOT_COUNT: usize = LEFT_CONTROLS.len() + 1;
+/// Четыре обычных controls образуют левую группу.
+const LEFT_SLOT_COUNT: usize = LEFT_CONTROLS.len();
 /// Gap существует только между соседними slot-ами левой группы.
 const LEFT_GAP_COUNT: usize = LEFT_SLOT_COUNT - 1;
-/// Правая метла добавляет шестой независимый slot в проверку overlap.
+/// Правая метла добавляет пятый независимый slot в проверку overlap.
 const TOTAL_SLOT_COUNT: usize = LEFT_SLOT_COUNT + 1;
 
 /// Intent одного toolbar control без знания его прямоугольника.
@@ -157,8 +151,6 @@ struct IconBarLayout {
     sort: Rect,
     /// Переход к текущему элементу.
     current_item: Rect,
-    /// Всегда зарезервированный Undo slot после Current Item.
-    undo: Rect,
     /// Очистка у правого края.
     clear: Rect,
 }
@@ -180,9 +172,7 @@ impl IconBarLayout {
 pub(super) fn show(
     ui: &mut Ui,
     model: &PlaylistInteractionModel,
-    undo_snapshot: &PlaylistUndoUiSnapshot,
     style: PlaylistToolbarStyle,
-    visibility_motion: VisibilityMotion,
     output: &mut PlaylistUiOutput,
 ) {
     let row_width = ui.available_width().max(0.0);
@@ -202,16 +192,6 @@ pub(super) fn show(
             output.push_action(action);
         }
     }
-
-    // Отдельный owner нового инварианта получает уже зарезервированный rect.
-    undo::show(
-        ui,
-        layout.undo,
-        undo_snapshot,
-        style,
-        visibility_motion,
-        output,
-    );
 
     let clear_control = ToolbarControl::Clear;
     let clear_presentation = clear_control.presentation(model);
@@ -244,9 +224,9 @@ fn icon_bar_layout(row_rect: Rect, style: PlaylistToolbarStyle) -> IconBarLayout
         pos2(row_rect.right() - clear_right_padding, row_rect.bottom()),
     );
     let requested_gap = style.button_gap.max(0.0);
-    // Даже у сверхузкого rect четыре gap не могут вытолкнуть Undo за Clear.
+    // Даже у сверхузкого rect три gap не могут вытолкнуть Current Item за Clear.
     let gap = requested_gap.min(content_rect.width().max(0.0) / LEFT_GAP_COUNT as f32);
-    // Пять левых slot-ов и один правый Clear делят оставшуюся ширину поровну.
+    // Четыре левых slot-а и один правый Clear делят оставшуюся ширину поровну.
     let maximum_non_overlapping_size =
         ((content_rect.width() - gap * LEFT_GAP_COUNT as f32).max(0.0) / TOTAL_SLOT_COUNT as f32)
             .max(0.0);
@@ -273,7 +253,6 @@ fn icon_bar_layout(row_rect: Rect, style: PlaylistToolbarStyle) -> IconBarLayout
         add_url: left_rect(1),
         sort: left_rect(2),
         current_item: left_rect(3),
-        undo: left_rect(4),
         clear,
     }
 }
@@ -349,8 +328,6 @@ fn paint_control(
             foreground,
             surface_fill,
             focus_visible: enabled && response.has_focus(),
-            opacity: 1.0,
-            content_scale: 1.0,
         },
         PlaylistToolbarButtonStyle {
             icon_extent: style.icon_extent,
@@ -477,20 +454,9 @@ mod tests {
         input: RawInput,
     ) -> Vec<PlaylistAction> {
         let mut output = PlaylistUiOutput::default();
-        let undo_snapshot = PlaylistUndoUiSnapshot {
-            undo: None,
-            next_wake_deadline: None,
-        };
         let _ = context.run_ui(input, |ui| {
             ui.set_width(420.0);
-            show(
-                ui,
-                model,
-                &undo_snapshot,
-                MinimalSkin.playlist_toolbar_style(),
-                VisibilityMotion::Standard,
-                &mut output,
-            );
+            show(ui, model, MinimalSkin.playlist_toolbar_style(), &mut output);
         });
         output.take_actions()
     }
@@ -571,7 +537,6 @@ mod tests {
             let layout = icon_bar_layout(row, style);
 
             assert_eq!(layout.add_files.size(), vec2(32.0, 32.0));
-            assert_eq!(layout.undo.size(), vec2(32.0, 32.0));
             assert_eq!(
                 layout.add_files.center().x - row.left(),
                 expected_first_center_inset
@@ -589,10 +554,6 @@ mod tests {
                 expected_center_step
             );
             assert_eq!(
-                layout.undo.center().x - layout.current_item.center().x,
-                expected_center_step
-            );
-            assert_eq!(
                 row.right() - layout.clear.right(),
                 style.clear_right_padding
             );
@@ -604,8 +565,7 @@ mod tests {
                 layout.clear.center().y - row.center().y,
                 style.button_center_y_offset
             );
-            assert!(layout.current_item.right() < layout.undo.left());
-            assert!(layout.undo.right() < layout.clear.left());
+            assert!(layout.current_item.right() < layout.clear.left());
         }
     }
 

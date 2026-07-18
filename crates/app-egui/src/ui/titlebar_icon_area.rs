@@ -48,10 +48,20 @@ impl TitlebarIconAreaAlignment {
         }
     }
 
-    /// Возвращает центр кнопки с заданным индексом.
+    /// Возвращает центр кнопки конкретной sidebar-секции.
     #[must_use]
-    fn button_center_x(self, index: usize) -> f32 {
-        self.first_button_center_x + self.button_center_step * index as f32
+    fn button_center_x(self, section: SidebarSection) -> f32 {
+        self.first_button_center_x + self.button_center_step * section_axis_index(section) as f32
+    }
+}
+
+/// Типизированно связывает sidebar intent со стабильной window-chrome осью.
+const fn section_axis_index(section: SidebarSection) -> usize {
+    match section {
+        SidebarSection::Playlist => 0,
+        SidebarSection::Settings => 1,
+        SidebarSection::Url => 2,
+        SidebarSection::Info => 3,
     }
 }
 
@@ -70,8 +80,8 @@ pub(crate) fn show(
     active_section: Option<SidebarSection>,
 ) -> TitlebarIconAreaOutput {
     let mut actions = Vec::new();
-    for (index, (section, tooltip)) in BUTTONS.into_iter().enumerate() {
-        let button_rect = button_rect(titlebar_rect, alignment, index);
+    for (section, tooltip) in BUTTONS {
+        let button_rect = button_rect(titlebar_rect, alignment, section);
         let response = ui
             .interact(
                 button_rect,
@@ -107,18 +117,18 @@ pub(crate) fn show(
 pub(crate) fn button_rect(
     titlebar_rect: Rect,
     alignment: TitlebarIconAreaAlignment,
-    index: usize,
+    section: SidebarSection,
 ) -> Rect {
     let top = titlebar_rect.center().y - BUTTON_HEIGHT * 0.5;
-    let left = alignment.button_center_x(index) - BUTTON_WIDTH * 0.5;
+    let left = alignment.button_center_x(section) - BUTTON_WIDTH * 0.5;
     Rect::from_min_size(pos2(left, top), vec2(BUTTON_WIDTH, BUTTON_HEIGHT))
 }
 
 /// Возвращает общий hit-rect всей левой группы, не захватывая край окна.
 #[must_use]
 pub(crate) fn button_group_rect(titlebar_rect: Rect, alignment: TitlebarIconAreaAlignment) -> Rect {
-    let first_button_rect = button_rect(titlebar_rect, alignment, 0);
-    let last_button_rect = button_rect(titlebar_rect, alignment, BUTTONS.len() - 1);
+    let first_button_rect = button_rect(titlebar_rect, alignment, SidebarSection::Playlist);
+    let last_button_rect = button_rect(titlebar_rect, alignment, SidebarSection::Info);
 
     Rect::from_min_max(first_button_rect.min, last_button_rect.max)
 }
@@ -200,9 +210,7 @@ mod tests {
         let titlebar = Rect::from_min_size(pos2(10.0, 5.0), vec2(900.0, 64.0));
         let first_button_center_x = titlebar.left() + 39.0;
         let alignment = TitlebarIconAreaAlignment::new(first_button_center_x, 40.0);
-        let rects: Vec<_> = (0..4)
-            .map(|index| button_rect(titlebar, alignment, index))
-            .collect();
+        let rects = BUTTONS.map(|(section, _)| button_rect(titlebar, alignment, section));
         assert_eq!(rects[0].center().x, first_button_center_x);
         assert!(rects.iter().all(|rect| rect.size() == vec2(36.0, 32.0)));
         assert!(
@@ -224,11 +232,11 @@ mod tests {
         assert_eq!(reserved.right(), button_group.right());
         assert_eq!(
             button_group.left(),
-            button_rect(titlebar, alignment, 0).left()
+            button_rect(titlebar, alignment, SidebarSection::Playlist).left()
         );
         assert_eq!(
             button_group.right(),
-            button_rect(titlebar, alignment, 3).right()
+            button_rect(titlebar, alignment, SidebarSection::Info).right()
         );
     }
 }

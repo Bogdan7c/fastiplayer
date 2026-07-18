@@ -22,12 +22,10 @@ const SORT_KEYS: [(PlaylistSortKey, &str); 6] = [
 pub(super) fn show(
     ui: &mut egui::Ui,
     model: &PlaylistInteractionModel,
-    undo_snapshot: &crate::playlist_runtime::PlaylistUndoUiSnapshot,
     style: PlaylistToolbarStyle,
-    visibility_motion: crate::ui::animation::VisibilityMotion,
     output: &mut PlaylistUiOutput,
 ) {
-    icon_bar::show(ui, model, undo_snapshot, style, visibility_motion, output);
+    icon_bar::show(ui, model, style, output);
 
     if model.url_editor_open {
         show_url_editor(ui, model, output);
@@ -237,6 +235,8 @@ mod tests {
         assert!(!production_source.contains("Повтор:"));
         assert!(!production_source.contains("SetStopAfterCurrent"));
         assert!(!production_source.contains("После текущего"));
+        assert!(!production_source.contains("UndoRemoval"));
+        assert!(!production_source.contains("PlaylistUndoUiSnapshot"));
         assert!(production_source.contains("PlaylistToolbarGlyph::Sort"));
         assert!(toolbar_source.contains("icon_bar::show"));
     }

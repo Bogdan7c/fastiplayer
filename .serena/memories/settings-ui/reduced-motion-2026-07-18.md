@@ -7,6 +7,6 @@
 - Default document и `current_schema_v6.toml` явно документируют поле; schema bump не нужен.
 - Проверки: config default/legacy/metadata/round-trip, settings Apply routing, committed snapshot, playback-rate и queue-mode motion tests.
 
-- Reusable visibility adapter использует typed `VisibilityMotion::{Standard, Reduced}` из committed config. В режиме Reduced fade и fade-scale мгновенно переходят к target в обоих направлениях; остаточный exit glyph не остаётся. Первый consumer — Playlist toolbar Undo. Контракт и тесты: `mem:animation-core/visibility-2026-07-18`.
+- Reusable visibility adapter использует typed `VisibilityMotion::{Standard, Reduced}` из committed config. В режиме Reduced fade и fade-scale мгновенно переходят к target в обоих направлениях; остаточный exit glyph не остаётся. Первый consumer — Playlist header Undo. Контракт и тесты: `mem:animation-core/visibility-2026-07-18`.
 
 Связанные memories: `mem:settings-ui/design`, `mem:config/schema-store-decomposition-s23`, `mem:app-egui/playlist-transport-s18a`, `mem:app-egui/playlist-toolbar-undo-2026-07-18`.

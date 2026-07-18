@@ -123,6 +123,33 @@ pub struct PlaylistRowStyle {
     pub active_stroke: Stroke,
 }
 
+/// Skin-owned геометрия и цвета Undo в заголовке Playlist.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaylistHeaderUndoStyle {
+    /// Сторона стабильной квадратной hit-area.
+    pub hit_area_size: f32,
+    /// Text style, с высотой которого совпадает итоговый видимый glyph.
+    pub glyph_text_style: egui::TextStyle,
+    /// Усиленный визуальный вес дуги и открытого наконечника.
+    pub glyph_stroke_width: f32,
+    /// Радиус hover/pressed surface.
+    pub surface_corner_radius: f32,
+    /// Цвет glyph без взаимодействия.
+    pub foreground_idle: Color32,
+    /// Цвет glyph под pointer и во время нажатия.
+    pub foreground_hover: Color32,
+    /// Цвет glyph при запрещённом interaction.
+    pub foreground_disabled: Color32,
+    /// Временная поверхность под pointer.
+    pub surface_hover: Color32,
+    /// Усиленная поверхность во время pointer/key press.
+    pub surface_pressed: Color32,
+    /// Контур keyboard focus.
+    pub focus_outline: Stroke,
+    /// Отступ focus outline внутрь hit-area.
+    pub focus_inset: f32,
+}
+
 /// Skin-owned геометрия и цвета компактного toolbar плейлиста.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlaylistToolbarStyle {
@@ -292,6 +319,10 @@ pub trait PlayerSkin: AssetProvider {
     #[must_use]
     fn playlist_row_style(&self) -> PlaylistRowStyle;
 
+    /// Возвращает explicit стиль Undo в заголовке Playlist.
+    #[must_use]
+    fn playlist_header_undo_style(&self) -> PlaylistHeaderUndoStyle;
+
     /// Возвращает explicit стиль иконного toolbar плейлиста.
     #[must_use]
     fn playlist_toolbar_style(&self) -> PlaylistToolbarStyle;
@@ -397,6 +428,27 @@ mod tests {
             controls_style.playback_button_stroke_width
         );
         assert_eq!(style.foreground_idle, controls_style.text_color);
+        for color in [
+            style.foreground_idle,
+            style.foreground_hover,
+            style.foreground_disabled,
+            style.surface_hover,
+            style.surface_pressed,
+            style.focus_outline.color,
+        ] {
+            assert_eq!(color.r(), color.g());
+            assert_eq!(color.g(), color.b());
+        }
+    }
+
+    /// Header Undo использует отдельный skin contract и точный heading-scale.
+    #[test]
+    fn minimal_playlist_header_undo_uses_heading_height_and_stronger_stroke() {
+        let style = MinimalSkin.playlist_header_undo_style();
+
+        assert_eq!(style.hit_area_size, 32.0);
+        assert_eq!(style.glyph_text_style, egui::TextStyle::Heading);
+        assert_eq!(style.glyph_stroke_width, 2.0);
         for color in [
             style.foreground_idle,
             style.foreground_hover,

@@ -15,6 +15,7 @@ mod settings_button;
 mod sidebar_buttons;
 mod timeline;
 mod transport_button;
+mod undo_button;
 mod video_dim_overlay;
 mod volume_button;
 mod volume_separator;
@@ -35,6 +36,7 @@ pub use queue_mode_controls::{QueueModeControlStyle, QueueModeGlyph, QueueModePa
 pub use sidebar_buttons::SidebarButtonGlyph;
 pub use timeline::{TimelinePaintState, TimelineStyle, timeline_track_rect};
 pub use transport_button::{TransportButtonStyle, TransportGlyph};
+pub use undo_button::{UndoButtonPaintState, UndoButtonStyle};
 pub use volume_button::VolumeGlyph;
 pub use volume_slider::{THUMB_RADIUS as VOLUME_THUMB_RADIUS, TRACK_HEIGHT as VOLUME_TRACK_HEIGHT};
 pub use window_controls::{WindowControlGlyph, WindowControlStyle};
@@ -147,6 +149,16 @@ impl<'a> ArtworkPainter<'a> {
         style: PlaylistToolbarButtonStyle,
     ) {
         playlist_toolbar::paint(self.painter, rect, glyph, state, style);
+    }
+
+    /// Рисует нейтральную анимированную Undo-кнопку в готовой hit-area.
+    pub fn undo_button(
+        self,
+        rect: egui::Rect,
+        state: UndoButtonPaintState,
+        style: UndoButtonStyle,
+    ) {
+        undo_button::paint(self.painter, rect, state, style);
     }
 
     /// Рисует кнопку полноэкранного режима.

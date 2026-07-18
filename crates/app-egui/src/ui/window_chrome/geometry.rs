@@ -2,8 +2,9 @@
 
 use egui::{Rect, pos2, vec2};
 
+use crate::state::SidebarSection;
 use crate::ui::skin::ControlsStyle;
-use crate::ui::titlebar_icon_area::TitlebarIconAreaAlignment;
+use crate::ui::titlebar_icon_area::{self, TitlebarIconAreaAlignment};
 
 /// Ширина каждой системной кнопки titlebar в логических UI points.
 const TITLEBAR_BUTTON_WIDTH_POINTS: f32 = 46.0;
@@ -46,6 +47,23 @@ impl WindowChromeEdgeAlignment {
         TitlebarIconAreaAlignment::new(
             window_rect.left() + self.left_axis_inset_points,
             self.left_axis_center_step_points,
+        )
+    }
+
+    /// Возвращает rect конкретной sidebar-секции на общей window-chrome сетке.
+    ///
+    /// Переданный container может быть обычным titlebar либо движущимся header
+    /// sidebar: ось всегда вычисляется относительно его текущего левого края.
+    #[must_use]
+    pub(crate) fn sidebar_section_button_rect(
+        self,
+        container_rect: Rect,
+        section: SidebarSection,
+    ) -> Rect {
+        titlebar_icon_area::button_rect(
+            container_rect,
+            self.left_icon_alignment(container_rect),
+            section,
         )
     }
 
@@ -219,8 +237,13 @@ mod tests {
         let chrome_rect = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 40.0));
         let edge_alignment = test_edge_alignment();
         let icon_alignment = edge_alignment.left_icon_alignment(chrome_rect);
-        let left_button_rects = [0, 1, 2, 3]
-            .map(|index| titlebar_icon_area::button_rect(chrome_rect, icon_alignment, index));
+        let left_button_rects = [
+            SidebarSection::Playlist,
+            SidebarSection::Settings,
+            SidebarSection::Url,
+            SidebarSection::Info,
+        ]
+        .map(|section| titlebar_icon_area::button_rect(chrome_rect, icon_alignment, section));
         let layout = test_layout(chrome_rect);
 
         assert_eq!(

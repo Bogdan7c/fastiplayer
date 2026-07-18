@@ -2,23 +2,6 @@
 
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2, pos2, vec2};
 
-/// Количество прямых сегментов, аппроксимирующих плавную Undo-дугу.
-const UNDO_ARC_SEGMENT_COUNT: usize = 12;
-/// Горизонтальное смещение центра Undo-дуги в долях icon extent.
-const UNDO_ARC_CENTER_X: f32 = 0.05;
-/// Вертикальное смещение центра Undo-дуги в долях icon extent.
-const UNDO_ARC_CENTER_Y: f32 = 0.07;
-/// Радиус Undo-дуги в долях icon extent.
-const UNDO_ARC_RADIUS: f32 = 0.36;
-/// Начальный угол открытой дуги: нижняя правая сторона остаётся незамкнутой.
-const UNDO_ARC_START_RADIANS: f32 = -25.0_f32.to_radians();
-/// Конечный угол задаёт против часовой стрелки движение к левому наконечнику.
-const UNDO_ARC_END_RADIANS: f32 = 160.0_f32.to_radians();
-/// Длина выраженного открытого наконечника в долях icon extent.
-const UNDO_ARROWHEAD_LENGTH: f32 = 0.20;
-/// Половина ширины основания наконечника в долях icon extent.
-const UNDO_ARROWHEAD_HALF_WIDTH: f32 = 0.10;
-
 /// Визуальный образ действия без зависимости от playlist domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaylistToolbarGlyph {
@@ -30,8 +13,6 @@ pub enum PlaylistToolbarGlyph {
     Sort,
     /// Список с Play-маркером на текущей строке.
     CurrentItem,
-    /// Открытая против часовой стрелки Undo-дуга с наконечником.
-    Undo,
     /// Метла для очистки списка.
     Clear,
 }
@@ -45,10 +26,6 @@ pub struct PlaylistToolbarPaintState {
     pub surface_fill: Color32,
     /// Нужен ли видимый keyboard-focus outline.
     pub focus_visible: bool,
-    /// Множитель прозрачности всей кнопки в диапазоне `0.0..=1.0`.
-    pub opacity: f32,
-    /// Масштаб glyph вокруг неизменного центра hit-area.
-    pub content_scale: f32,
 }
 
 /// Геометрия одной кнопки, не содержащая app-specific цветов состояний.
@@ -74,18 +51,9 @@ pub(crate) fn paint(
     state: PlaylistToolbarPaintState,
     style: PlaylistToolbarButtonStyle,
 ) {
-    // Artwork повторно защищает toolkit boundary от NaN и overshoot,
-    // даже если нормальный вызывающий путь уже использовал animation-core.
-    let opacity = normalized_unit_interval(state.opacity);
-    // Нулевой или некорректный scale не должен отражать либо раздувать glyph.
-    let content_scale = normalized_unit_interval(state.content_scale);
-    // Все resolved цвета получают один opacity, чтобы fade был согласованным.
-    let foreground = state.foreground.gamma_multiply(opacity);
-    let surface_fill = state.surface_fill.gamma_multiply(opacity);
-    let focus_outline = Stroke::new(
-        style.focus_outline.width,
-        style.focus_outline.color.gamma_multiply(opacity),
-    );
+    let foreground = state.foreground;
+    let surface_fill = state.surface_fill;
+    let focus_outline = style.focus_outline;
 
     if surface_fill != Color32::TRANSPARENT {
         painter.rect_filled(rect, style.surface_corner_radius.max(0.0), surface_fill);
@@ -101,8 +69,7 @@ pub(crate) fn paint(
     }
 
     let maximum_extent = rect.width().min(rect.height()).max(0.0);
-    // Масштаб применяется только к content rect: центр и hit-area не двигаются.
-    let icon_extent = style.icon_extent.clamp(0.0, maximum_extent) * content_scale;
+    let icon_extent = style.icon_extent.clamp(0.0, maximum_extent);
     let icon_rect = Rect::from_center_size(rect.center(), Vec2::splat(icon_extent));
     let stroke = Stroke::new(style.glyph_stroke_width.max(0.0), foreground);
 
@@ -111,17 +78,7 @@ pub(crate) fn paint(
         PlaylistToolbarGlyph::AddUrl => paint_add_url(painter, icon_rect, stroke),
         PlaylistToolbarGlyph::Sort => paint_sort(painter, icon_rect, stroke),
         PlaylistToolbarGlyph::CurrentItem => paint_current_item(painter, icon_rect, stroke),
-        PlaylistToolbarGlyph::Undo => paint_undo(painter, icon_rect, stroke),
         PlaylistToolbarGlyph::Clear => paint_clear(painter, icon_rect, stroke),
-    }
-}
-
-/// Нормализует внешний paint-параметр и не пропускает NaN в egui geometry.
-fn normalized_unit_interval(value: f32) -> f32 {
-    if value.is_nan() {
-        0.0
-    } else {
-        value.clamp(0.0, 1.0)
     }
 }
 
@@ -130,15 +87,6 @@ fn icon_point(icon_rect: Rect, x: f32, y: f32) -> Pos2 {
     pos2(
         icon_rect.center().x + icon_rect.width() * x,
         icon_rect.center().y + icon_rect.height() * y,
-    )
-}
-
-/// Возвращает точку Undo-окружности для угла в математической системе координат.
-fn undo_arc_point(icon_rect: Rect, angle: f32) -> Pos2 {
-    icon_point(
-        icon_rect,
-        UNDO_ARC_CENTER_X + UNDO_ARC_RADIUS * angle.cos(),
-        UNDO_ARC_CENTER_Y - UNDO_ARC_RADIUS * angle.sin(),
     )
 }
 
@@ -304,50 +252,6 @@ fn paint_current_item(painter: &Painter, icon_rect: Rect, stroke: Stroke) {
     ));
 }
 
-/// Рисует открытую против часовой стрелки дугу и заметный наконечник.
-fn paint_undo(painter: &Painter, icon_rect: Rect, stroke: Stroke) {
-    // Дуга строится слева направо в математических координатах, а знак Y
-    // инвертируется при переводе в экранную систему egui.
-    let arc_points = (0..=UNDO_ARC_SEGMENT_COUNT)
-        .map(|segment_index| {
-            // Доля сегмента детерминирована и включает обе границы дуги.
-            let segment_progress = segment_index as f32 / UNDO_ARC_SEGMENT_COUNT as f32;
-            // Равномерный угол даёт гладкую polyline без скрытых bezier-control points.
-            let angle = UNDO_ARC_START_RADIANS
-                + (UNDO_ARC_END_RADIANS - UNDO_ARC_START_RADIANS) * segment_progress;
-            // Нормализованная окружность масштабируется общим icon rect.
-            undo_arc_point(icon_rect, angle)
-        })
-        .collect::<Vec<_>>();
-    // Граничные точки вычисляются той же функцией и остаются доступны после move Vec.
-    let arc_start = undo_arc_point(icon_rect, UNDO_ARC_START_RADIANS);
-    let arrow_tip = undo_arc_point(icon_rect, UNDO_ARC_END_RADIANS);
-    // Единственная открытая polyline сохраняет стабильный визуальный вес дуги.
-    painter.add(Shape::line(arc_points, stroke));
-
-    // Конечная касательная показывает именно против часовой стрелки направление.
-    let arrow_direction = vec2(-UNDO_ARC_END_RADIANS.sin(), -UNDO_ARC_END_RADIANS.cos());
-    // Нормаль раскрывает две симметричные стороны наконечника.
-    let arrow_normal = vec2(-arrow_direction.y, arrow_direction.x);
-    // Конечная точка дуги одновременно является остриём стрелки.
-    // Основание смещено назад по касательной и раскрыто поперёк неё.
-    let arrow_base_center =
-        arrow_tip - arrow_direction * (icon_rect.width() * UNDO_ARROWHEAD_LENGTH);
-    // Два конца основания определяют выраженный открытый наконечник.
-    let arrow_half_width = icon_rect.width() * UNDO_ARROWHEAD_HALF_WIDTH;
-    let arrow_base_first = arrow_base_center + arrow_normal * arrow_half_width;
-    let arrow_base_second = arrow_base_center - arrow_normal * arrow_half_width;
-    // Обе стороны используют тот же stroke, поэтому дуга и наконечник едины.
-    painter.line_segment([arrow_tip, arrow_base_first], stroke);
-    painter.line_segment([arrow_tip, arrow_base_second], stroke);
-
-    // Малые круги превращают butt-caps egui polyline в визуально круглые концы.
-    let cap_radius = stroke.width * 0.5;
-    for cap_center in [arc_start, arrow_tip, arrow_base_first, arrow_base_second] {
-        painter.circle_filled(cap_center, cap_radius, stroke.color);
-    }
-}
-
 /// Наклонная ручка, муфта и цельный веер щетинок образуют силуэт метлы.
 fn paint_clear(painter: &Painter, icon_rect: Rect, stroke: Stroke) {
     painter.line_segment(
@@ -406,8 +310,6 @@ mod tests {
             foreground: Color32::from_gray(230),
             surface_fill,
             focus_visible,
-            opacity: 1.0,
-            content_scale: 1.0,
         }
     }
 
@@ -430,12 +332,11 @@ mod tests {
             PlaylistToolbarGlyph::AddUrl,
             PlaylistToolbarGlyph::Sort,
             PlaylistToolbarGlyph::CurrentItem,
-            PlaylistToolbarGlyph::Undo,
             PlaylistToolbarGlyph::Clear,
         ]
         .map(|glyph| glyph_output(glyph).shapes.len());
 
-        assert_eq!(actual_counts, [8, 4, 6, 7, 7, 9]);
+        assert_eq!(actual_counts, [8, 4, 6, 7, 9]);
     }
 
     #[test]
@@ -446,7 +347,6 @@ mod tests {
             PlaylistToolbarGlyph::AddUrl,
             PlaylistToolbarGlyph::Sort,
             PlaylistToolbarGlyph::CurrentItem,
-            PlaylistToolbarGlyph::Undo,
             PlaylistToolbarGlyph::Clear,
         ] {
             let output = glyph_output(glyph);
@@ -467,14 +367,13 @@ mod tests {
             PlaylistToolbarGlyph::AddUrl,
             PlaylistToolbarGlyph::Sort,
             PlaylistToolbarGlyph::CurrentItem,
-            PlaylistToolbarGlyph::Undo,
             PlaylistToolbarGlyph::Clear,
         ]
         .map(|glyph| format!("{:?}", glyph_output(glyph).shapes))
         .into_iter()
         .collect();
 
-        assert_eq!(fingerprints.len(), 6);
+        assert_eq!(fingerprints.len(), 5);
     }
 
     #[test]
@@ -501,78 +400,5 @@ mod tests {
                 decorated_shape.shape.visual_bounding_rect()
             );
         }
-    }
-
-    #[test]
-    fn undo_opacity_and_scale_preserve_the_hit_area_center() {
-        let full_output = glyph_output(PlaylistToolbarGlyph::Undo);
-        let animated_output = Context::default().run_ui(RawInput::default(), |ui| {
-            let mut animated_state = state(Color32::TRANSPARENT, false);
-            animated_state.opacity = 0.5;
-            animated_state.content_scale = 0.8;
-            paint(
-                ui.painter(),
-                hit_rect(),
-                PlaylistToolbarGlyph::Undo,
-                animated_state,
-                style(),
-            );
-        });
-
-        assert_eq!(animated_output.shapes.len(), full_output.shapes.len());
-        let full_bounds = full_output
-            .shapes
-            .iter()
-            .fold(Rect::NOTHING, |bounds, shape| {
-                bounds.union(shape.shape.visual_bounding_rect())
-            });
-        let animated_bounds = animated_output
-            .shapes
-            .iter()
-            .fold(Rect::NOTHING, |bounds, shape| {
-                bounds.union(shape.shape.visual_bounding_rect())
-            });
-        // Несимметричный glyph сам имеет смещённый visual center, поэтому при
-        // масштабировании вокруг hit-area его смещение тоже уменьшается на 0.8.
-        let hit_center = hit_rect().center();
-        let expected_animated_center = hit_center + (full_bounds.center() - hit_center) * 0.8;
-        assert!((animated_bounds.center().x - expected_animated_center.x).abs() < 0.1);
-        assert!((animated_bounds.center().y - expected_animated_center.y).abs() < 0.1);
-        assert!(animated_bounds.width() < full_bounds.width());
-        assert!(animated_bounds.height() < full_bounds.height());
-        assert!(animated_output.shapes.iter().all(|shape| {
-            let color = match &shape.shape {
-                Shape::Path(path) => match &path.stroke.color {
-                    egui::epaint::ColorMode::Solid(color) => *color,
-                    unexpected => panic!("неожиданный цвет Undo path: {unexpected:?}"),
-                },
-                Shape::LineSegment { stroke, .. } => stroke.color,
-                Shape::Circle(circle) => circle.fill,
-                unexpected => panic!("неожиданный Undo shape: {unexpected:?}"),
-            };
-            color.a() < Color32::from_gray(230).a()
-        }));
-    }
-
-    #[test]
-    fn undo_bounds_remain_stable_on_fractional_hidpi_coordinates() {
-        let fractional_rect = Rect::from_min_size(pos2(10.25, 20.75), Vec2::splat(28.0));
-        let bounds = fractional_rect.expand(style().glyph_stroke_width);
-        let output = Context::default().run_ui(RawInput::default(), |ui| {
-            paint(
-                ui.painter(),
-                fractional_rect,
-                PlaylistToolbarGlyph::Undo,
-                state(Color32::TRANSPARENT, false),
-                style(),
-            );
-        });
-
-        assert!(
-            output
-                .shapes
-                .iter()
-                .all(|shape| bounds.contains_rect(shape.shape.visual_bounding_rect()))
-        );
     }
 }

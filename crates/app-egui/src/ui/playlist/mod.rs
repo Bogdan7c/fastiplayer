@@ -1,6 +1,7 @@
 //! Read-only virtualized Playlist sidebar.
 
 mod actions;
+mod header_undo;
 mod renderer;
 mod row_interactions;
 mod status;
@@ -8,6 +9,7 @@ mod toolbar;
 mod virtualized_drag;
 
 pub(crate) use actions::PlaylistAction;
+pub(crate) use header_undo::show as show_header_undo;
 
 use std::sync::Arc;
 
@@ -118,10 +120,6 @@ pub(crate) struct PlaylistShowInput<'a> {
     pub(crate) row_style: crate::ui::skin::PlaylistRowStyle,
     /// Skin-owned геометрия и цвета toolbar.
     pub(crate) toolbar_style: crate::ui::skin::PlaylistToolbarStyle,
-    /// Отдельный authoritative Undo snapshot с countdown.
-    pub(crate) undo_snapshot: &'a crate::playlist_runtime::PlaylistUndoUiSnapshot,
-    /// Typed motion policy исключает позиционный reduced-motion `bool`.
-    pub(crate) visibility_motion: crate::ui::animation::VisibilityMotion,
 }
 
 impl PlaylistVisibleItemsHint {
@@ -146,8 +144,6 @@ pub(crate) fn show(
         interaction,
         row_style,
         toolbar_style,
-        undo_snapshot,
-        visibility_motion,
     } = input;
     let Some(model) = model else {
         status::show_unavailable(ui);
@@ -158,14 +154,7 @@ pub(crate) fn show(
         // Они не имеют права вернуть action, заменить viewport anchor или demand hint.
         let mut visual_state = PlaylistUiState::default();
         let mut discarded_output = PlaylistUiOutput::default();
-        toolbar::show(
-            ui,
-            interaction,
-            undo_snapshot,
-            toolbar_style,
-            visibility_motion,
-            &mut discarded_output,
-        );
+        toolbar::show(ui, interaction, toolbar_style, &mut discarded_output);
         status::show_summary(ui, model, &mut visual_state);
         renderer::show_rows(
             ui,
@@ -176,14 +165,7 @@ pub(crate) fn show(
         );
         return;
     }
-    toolbar::show(
-        ui,
-        interaction,
-        undo_snapshot,
-        toolbar_style,
-        visibility_motion,
-        output,
-    );
+    toolbar::show(ui, interaction, toolbar_style, output);
     status::show_summary(ui, model, state);
     renderer::show_rows(ui, model, row_style, state, output);
 }

@@ -1,43 +1,40 @@
-//! Зарезервированный Undo slot: visibility, interaction, accessibility и intent.
+//! Undo в заголовке Playlist: visibility, interaction, accessibility и intent.
 
 use std::time::Duration;
 
 use animation_core::Easing;
 use animation_core::visibility::{VisibilityEffect, VisibilitySample};
 use egui::{Color32, Key, Rect, Response, Sense, Ui, WidgetInfo, WidgetType};
-use ui_artwork_egui::{
-    ArtworkPainter, PlaylistToolbarButtonStyle, PlaylistToolbarGlyph, PlaylistToolbarPaintState,
-};
+use ui_artwork_egui::{ArtworkPainter, UndoButtonPaintState, UndoButtonStyle};
 
 use crate::playlist_runtime::{PlaylistUndoUiSnapshot, RemovalUndoUiModel};
 use crate::ui::animation::{
     VisibilityAnimation, VisibilityAnimationSpec, VisibilityMotion, VisibilityTarget,
 };
-use crate::ui::skin::PlaylistToolbarStyle;
+use crate::ui::skin::PlaylistHeaderUndoStyle;
 
-use super::super::super::PlaylistUiOutput;
-use super::super::super::actions::PlaylistAction;
+use super::PlaylistUiOutput;
+use super::actions::PlaylistAction;
 
-/// Stable egui Id visibility-анимации зарезервированного Undo slot.
-const VISIBILITY_ID_SUFFIX: &str = "playlist_toolbar_undo_visibility";
-/// Stable widget Id интерактивной Undo-кнопки не зависит от countdown.
-const WIDGET_ID_SUFFIX: &str = "playlist_toolbar_undo";
+/// Stable egui Id visibility-анимации header Undo.
+const VISIBILITY_ID_SUFFIX: &str = "playlist_header_undo_visibility";
+/// Stable widget Id не зависит от меняющегося countdown.
+const WIDGET_ID_SUFFIX: &str = "playlist_header_undo";
 /// Полная длительность появления и точного обратного исчезновения.
 const VISIBILITY_DURATION: Duration = Duration::from_millis(180);
 /// Полностью скрытый glyph сохраняет 80% content scale.
 const HIDDEN_CONTENT_SCALE: f32 = 0.80;
 
-/// Рисует Undo внутри rect, который основной toolbar резервирует всегда.
-pub(super) fn show(
+/// Рисует Undo внутри точного rect, которым владеет sidebar header.
+pub(crate) fn show(
     ui: &mut Ui,
     rect: Rect,
     snapshot: &PlaylistUndoUiSnapshot,
-    style: PlaylistToolbarStyle,
+    style: &PlaylistHeaderUndoStyle,
     motion: VisibilityMotion,
     output: &mut PlaylistUiOutput,
 ) {
-    // Animator вызывается на каждом активном кадре toolbar, даже без Undo:
-    // первый authoritative кадр поэтому начинает настоящий fade-in из нуля.
+    // Animator вызывается на каждом кадре Playlist header, даже без Undo.
     let target = if snapshot.undo.is_some() {
         VisibilityTarget::Visible
     } else {
@@ -59,7 +56,7 @@ pub(super) fn show(
     )
     .sample(ui);
 
-    // Authoritative Undo получает interaction сразу, независимо от малой opacity.
+    // Authoritative Undo интерактивен сразу, независимо от текущей opacity.
     if let Some(undo) = snapshot.undo
         && ui.is_enabled()
     {
@@ -79,25 +76,25 @@ fn render_control(
     rect: Rect,
     undo: RemovalUndoUiModel,
     visibility: VisibilitySample,
-    style: PlaylistToolbarStyle,
+    style: &PlaylistHeaderUndoStyle,
 ) -> Response {
-    // Tooltip и AccessKit используют одну строку, включая актуальный countdown.
+    // Tooltip и AccessKit получают одну строку с актуальным countdown.
     let action_label = undo.action_label();
     // Countdown не входит в Id, поэтому keyboard focus стабилен между секундами.
     let widget_id = ui.make_persistent_id(WIDGET_ID_SUFFIX);
-    // Полная зарезервированная hit-area доступна уже на первом fade-in кадре.
+    // Полная 32-point hit-area доступна уже на первом fade-in кадре.
     let response = ui.interact(rect, widget_id, Sense::click());
-    // Custom Painter artwork требует явного Button node и локализованного имени.
+    // Custom artwork требует явного Button node и локализованного имени.
     response.widget_info(|| {
         WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), action_label.clone())
     });
-    // Pointer click не оставляет декоративный focus outline; keyboard focus сохраняется.
+    // Pointer click не оставляет декоративный focus outline.
     if response.clicked() && response.interact_pointer_pos().is_some() {
         response.surrender_focus();
     }
     // Interaction state и visibility sample сходятся только в paint boundary.
     paint_interactive_control(ui, rect, style, &response, visibility);
-    // Tooltip появляется только у authoritative Response.
+    // Tooltip существует только у authoritative Response.
     response.on_hover_text(action_label)
 }
 
@@ -105,18 +102,16 @@ fn render_control(
 fn paint_interactive_control(
     ui: &Ui,
     rect: Rect,
-    style: PlaylistToolbarStyle,
+    style: &PlaylistHeaderUndoStyle,
     response: &Response,
     visibility: VisibilitySample,
 ) {
-    // Keyboard press использует ту же визуальную подложку, что pointer press.
+    // Keyboard press использует ту же временную surface, что pointer press.
     let keyboard_pressed = response.has_focus()
         && ui.input(|input| input.key_down(Key::Space) || input.key_down(Key::Enter));
-    // Нажатие остаётся только transient UI presentation.
     let pressed = response.is_pointer_button_down_on() || keyboard_pressed;
-    // Authoritative control находится в enabled UI; проверка сохраняет защиту helper-а.
     let enabled = ui.is_enabled();
-    // Foreground полностью определяется skin и текущим interaction state.
+    // Foreground полностью определяется skin и interaction state.
     let foreground = if !enabled {
         style.foreground_disabled
     } else if response.hovered() || pressed {
@@ -124,7 +119,7 @@ fn paint_interactive_control(
     } else {
         style.foreground_idle
     };
-    // Surface не появляется у disabled или idle glyph.
+    // Idle state намеренно не имеет постоянной подложки.
     let surface_fill = if !enabled {
         Color32::TRANSPARENT
     } else if pressed {
@@ -138,7 +133,7 @@ fn paint_interactive_control(
     paint(
         ui,
         rect,
-        PlaylistToolbarPaintState {
+        UndoButtonPaintState {
             foreground,
             surface_fill,
             focus_visible: enabled && response.has_focus(),
@@ -149,17 +144,17 @@ fn paint_interactive_control(
     );
 }
 
-/// Рисует остаточный exit glyph без регистрации widget/accessibility semantics.
+/// Рисует остаточный exit glyph без widget/accessibility semantics.
 fn paint_residual_glyph(
     ui: &Ui,
     rect: Rect,
     visibility: VisibilitySample,
-    style: PlaylistToolbarStyle,
+    style: &PlaylistHeaderUndoStyle,
 ) {
     paint(
         ui,
         rect,
-        PlaylistToolbarPaintState {
+        UndoButtonPaintState {
             foreground: style.foreground_idle,
             surface_fill: Color32::TRANSPARENT,
             focus_visible: false,
@@ -170,14 +165,15 @@ fn paint_residual_glyph(
     );
 }
 
-/// Единая artwork boundary не знает ни про Undo runtime, ни про interaction.
-fn paint(ui: &Ui, rect: Rect, paint_state: PlaylistToolbarPaintState, style: PlaylistToolbarStyle) {
-    ArtworkPainter::new(ui.painter()).playlist_toolbar_button(
+/// Единая artwork boundary не знает ни про runtime Undo, ни про interaction.
+fn paint(ui: &Ui, rect: Rect, paint_state: UndoButtonPaintState, style: &PlaylistHeaderUndoStyle) {
+    // Реальная Heading-высота разрешается из текущего egui font style.
+    let glyph_height = ui.text_style_height(&style.glyph_text_style);
+    ArtworkPainter::new(ui.painter()).undo_button(
         rect,
-        PlaylistToolbarGlyph::Undo,
         paint_state,
-        PlaylistToolbarButtonStyle {
-            icon_extent: style.icon_extent,
+        UndoButtonStyle {
+            glyph_height,
             glyph_stroke_width: style.glyph_stroke_width,
             surface_corner_radius: style.surface_corner_radius,
             focus_outline: style.focus_outline,
@@ -193,12 +189,12 @@ mod tests {
     use super::*;
     use crate::ui::skin::{MinimalSkin, PlayerSkin};
 
-    /// Стабильная 32x32-point hit-area совпадает с production toolbar slot.
+    /// Стабильная 32x32-point hit-area совпадает с production header.
     fn undo_rect() -> Rect {
         Rect::from_min_size(pos2(20.0, 20.0), vec2(32.0, 32.0))
     }
 
-    /// Создаёт authoritative Undo presentation для toolbar-тестов.
+    /// Создаёт authoritative Undo presentation для header-тестов.
     fn undo_snapshot(seconds_remaining: u64) -> PlaylistUndoUiSnapshot {
         PlaylistUndoUiSnapshot {
             undo: Some(RemovalUndoUiModel {
@@ -212,7 +208,7 @@ mod tests {
     /// Создаёт deterministic viewport для настоящего egui interaction pass.
     fn raw_input(events: Vec<Event>, time: f64) -> RawInput {
         RawInput {
-            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(120.0, 80.0))),
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(180.0, 100.0))),
             time: Some(time),
             predicted_dt: 0.01,
             events,
@@ -253,7 +249,7 @@ mod tests {
         )
     }
 
-    /// Рендерит production Undo owner и возвращает typed actions кадра.
+    /// Рендерит production header Undo и возвращает typed actions кадра.
     fn render_input(
         context: &Context,
         snapshot: &PlaylistUndoUiSnapshot,
@@ -261,15 +257,11 @@ mod tests {
         input: RawInput,
     ) -> Vec<PlaylistAction> {
         let mut output = PlaylistUiOutput::default();
+        let style = MinimalSkin.playlist_header_undo_style();
         let _ = context.run_ui(input, |ui| {
-            show(
-                ui,
-                undo_rect(),
-                snapshot,
-                MinimalSkin.playlist_toolbar_style(),
-                motion,
-                &mut output,
-            );
+            // Production sidebar сначала резервирует общий header rect.
+            ui.allocate_rect(undo_rect(), Sense::hover());
+            show(ui, undo_rect(), snapshot, &style, motion, &mut output);
         });
         output.take_actions()
     }
@@ -278,7 +270,10 @@ mod tests {
     fn control_frame(context: &Context, input: RawInput) -> (Vec<PlaylistAction>, bool) {
         let mut output = PlaylistUiOutput::default();
         let mut has_focus = false;
+        let style = MinimalSkin.playlist_header_undo_style();
         let _ = context.run_ui(input, |ui| {
+            // Focus regression также учитывает перекрывающий parent hover-area.
+            ui.allocate_rect(undo_rect(), Sense::hover());
             let response = render_control(
                 ui,
                 undo_rect(),
@@ -287,7 +282,7 @@ mod tests {
                     opacity: 1.0,
                     scale: 1.0,
                 },
-                MinimalSkin.playlist_toolbar_style(),
+                &style,
             );
             if response.clicked() {
                 output.push_action(PlaylistAction::UndoRemoval);
@@ -306,6 +301,33 @@ mod tests {
                 .action_label(),
             "Отменить очистку плейлиста (4 с)"
         );
+    }
+
+    #[test]
+    fn painted_glyph_height_matches_current_heading_font_height() {
+        let context = Context::default();
+        let style = MinimalSkin.playlist_header_undo_style();
+        let mut heading_height = 0.0;
+        let output = context.run_ui(RawInput::default(), |ui| {
+            heading_height = ui.text_style_height(&egui::TextStyle::Heading);
+            paint(
+                ui,
+                undo_rect(),
+                UndoButtonPaintState {
+                    foreground: style.foreground_idle,
+                    surface_fill: Color32::TRANSPARENT,
+                    focus_visible: false,
+                    opacity: 1.0,
+                    content_scale: 1.0,
+                },
+                &style,
+            );
+        });
+        let painted_bounds = output.shapes.iter().fold(Rect::NOTHING, |bounds, shape| {
+            bounds.union(shape.shape.visual_bounding_rect())
+        });
+
+        assert!((painted_bounds.height() - heading_height).abs() < 0.05);
     }
 
     #[test]
@@ -382,7 +404,7 @@ mod tests {
             next_wake_deadline: None,
         };
 
-        // Первый visible вызов инициализирует полное состояние, чтобы exit был видимым.
+        // Инициализируем visible state, чтобы следующий exit был видимым.
         assert!(
             render_input(
                 &context,
@@ -392,7 +414,7 @@ mod tests {
             )
             .is_empty()
         );
-        // Во время последующего fade-out на месте slot нет Response.
+        // Во время fade-out на месте кнопки нет Response.
         for (time, events) in [
             (0.01, vec![Event::PointerMoved(position)]),
             (0.02, vec![pointer_button(position, true)]),
@@ -418,6 +440,7 @@ mod tests {
             undo: None,
             next_wake_deadline: None,
         };
+        let style = MinimalSkin.playlist_header_undo_style();
 
         let active_output = context.run_ui(raw_input(Vec::new(), 0.0), |ui| {
             let mut output = PlaylistUiOutput::default();
@@ -425,7 +448,7 @@ mod tests {
                 ui,
                 undo_rect(),
                 &active_snapshot,
-                MinimalSkin.playlist_toolbar_style(),
+                &style,
                 VisibilityMotion::Reduced,
                 &mut output,
             );
@@ -436,7 +459,7 @@ mod tests {
                 ui,
                 undo_rect(),
                 &hidden_snapshot,
-                MinimalSkin.playlist_toolbar_style(),
+                &style,
                 VisibilityMotion::Reduced,
                 &mut output,
             );

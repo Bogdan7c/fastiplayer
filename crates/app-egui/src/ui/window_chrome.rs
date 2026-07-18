@@ -547,8 +547,13 @@ mod tests {
         let titlebar_rect = titlebar_rect_for_window(window_rect, titlebar_height_points);
         let icon_alignment = edge_alignment.left_icon_alignment(titlebar_rect);
         let left_icon_group = titlebar_icon_area::button_group_rect(titlebar_rect, icon_alignment);
-        let first_icon_rect = titlebar_icon_area::button_rect(titlebar_rect, icon_alignment, 0);
-        let last_icon_rect = titlebar_icon_area::button_rect(titlebar_rect, icon_alignment, 3);
+        let first_icon_rect = titlebar_icon_area::button_rect(
+            titlebar_rect,
+            icon_alignment,
+            SidebarSection::Playlist,
+        );
+        let last_icon_rect =
+            titlebar_icon_area::button_rect(titlebar_rect, icon_alignment, SidebarSection::Info);
         let right_button_block = titlebar_button_block_rect(titlebar_rect, edge_alignment);
 
         assert!(pointer_position_is_over_titlebar_interactive_block(
