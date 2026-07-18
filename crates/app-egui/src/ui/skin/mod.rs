@@ -128,8 +128,12 @@ pub struct PlaylistRowStyle {
 pub struct PlaylistToolbarStyle {
     /// Сторона квадратной hit-area каждой кнопки.
     pub button_size: f32,
+    /// Оптический сдвиг центра кнопок вниз внутри промежутка перед summary.
+    pub button_center_y_offset: f32,
     /// Интервал между четырьмя обычными действиями слева.
     pub button_gap: f32,
+    /// Симметричный отступ крайних кнопок от границ toolbar.
+    pub horizontal_padding: f32,
     /// Полный размер glyph внутри hit-area.
     pub icon_extent: f32,
     /// Единый визуальный вес открытых линий.
@@ -351,15 +355,22 @@ mod tests {
         }
     }
 
-    /// Toolbar остаётся компактным и использует только grayscale-токены MinimalSkin.
+    /// Toolbar совпадает по визуальному весу с transport-кнопками и не имеет цветного акцента.
     #[test]
-    fn minimal_playlist_toolbar_is_compact_and_has_no_color_accent() {
+    fn minimal_playlist_toolbar_matches_transport_weight_without_color_accent() {
         let style = MinimalSkin.playlist_toolbar_style();
+        let controls_style = MinimalSkin.controls_style();
 
-        assert_eq!(style.button_size, 28.0);
+        assert_eq!(style.button_size, controls_style.transport_button_size);
+        assert_eq!(style.button_center_y_offset, 8.0);
         assert_eq!(style.button_gap, 2.0);
-        assert_eq!(style.icon_extent, 16.0);
-        assert_eq!(style.glyph_stroke_width, 1.5);
+        assert_eq!(style.horizontal_padding, 18.0);
+        assert_eq!(style.icon_extent, 23.5);
+        assert_eq!(
+            style.glyph_stroke_width,
+            controls_style.playback_button_stroke_width
+        );
+        assert_eq!(style.foreground_idle, controls_style.text_color);
         for color in [
             style.foreground_idle,
             style.foreground_hover,

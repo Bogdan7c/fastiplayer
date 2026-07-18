@@ -118,16 +118,18 @@ impl PlayerSkin for MinimalSkin {
         }
     }
 
-    /// Возвращает компактный grayscale toolbar без системного button theme.
+    /// Возвращает контрастный grayscale toolbar в масштабе нижних transport-кнопок.
     fn playlist_toolbar_style(&self) -> PlaylistToolbarStyle {
         PlaylistToolbarStyle {
-            button_size: 28.0,
+            button_size: 32.0,
+            button_center_y_offset: 8.0,
             button_gap: 2.0,
-            icon_extent: 16.0,
-            glyph_stroke_width: 1.5,
+            horizontal_padding: 18.0,
+            icon_extent: 23.5,
+            glyph_stroke_width: 1.6,
             surface_corner_radius: 4.0,
-            foreground_idle: Color32::from_gray(170),
-            foreground_hover: Color32::from_gray(230),
+            foreground_idle: Color32::from_gray(230),
+            foreground_hover: Color32::from_gray(245),
             foreground_disabled: Color32::from_gray(105),
             surface_hover: Color32::from_rgba_unmultiplied(255, 255, 255, 28),
             surface_pressed: Color32::from_rgba_unmultiplied(255, 255, 255, 56),

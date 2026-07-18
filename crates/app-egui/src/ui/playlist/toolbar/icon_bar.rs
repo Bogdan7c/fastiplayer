@@ -170,6 +170,7 @@ pub(super) fn show(
     output: &mut PlaylistUiOutput,
 ) {
     let row_width = ui.available_width().max(0.0);
+    // Flow-height остаётся равной hit-area: дополнительная высота сдвинула бы весь summary вниз.
     let row_height = style.button_size.max(0.0);
     let (row_rect, _) = ui.allocate_exact_size(vec2(row_width, row_height), Sense::hover());
     let layout = icon_bar_layout(row_rect, style);
@@ -202,14 +203,25 @@ pub(super) fn show(
     }
 }
 
-/// Левая группа сохраняет заданный размер, а Clear остаётся у правого края.
+/// Левая группа сохраняет заданный размер, а крайние кнопки зеркалят боковые поля.
 fn icon_bar_layout(row_rect: Rect, style: PlaylistToolbarStyle) -> IconBarLayout {
+    let horizontal_padding = style
+        .horizontal_padding
+        .max(0.0)
+        .min(row_rect.width().max(0.0) * 0.5);
+    let content_rect = Rect::from_min_max(
+        pos2(row_rect.left() + horizontal_padding, row_rect.top()),
+        pos2(row_rect.right() - horizontal_padding, row_rect.bottom()),
+    );
     let requested_gap = style.button_gap.max(0.0);
-    let gap = requested_gap.min(row_rect.width().max(0.0) / 3.0);
-    let maximum_non_overlapping_size = ((row_rect.width() - gap * 3.0).max(0.0) / 5.0).max(0.0);
+    let gap = requested_gap.min(content_rect.width().max(0.0) / 3.0);
+    let maximum_non_overlapping_size = ((content_rect.width() - gap * 3.0).max(0.0) / 5.0).max(0.0);
     let button_size = style.button_size.max(0.0).min(maximum_non_overlapping_size);
     let button_extent = vec2(button_size, button_size);
-    let first_center = pos2(row_rect.left() + button_size * 0.5, row_rect.center().y);
+    // Внешний egui spacing уже оставляет место перед summary, поэтому rect можно
+    // оптически опустить в этот промежуток, не меняя положение следующего блока.
+    let button_center_y = content_rect.center().y + style.button_center_y_offset;
+    let first_center = pos2(content_rect.left() + button_size * 0.5, button_center_y);
     let center_step = button_size + gap;
     let left_rect = |index: usize| {
         Rect::from_center_size(
@@ -218,7 +230,7 @@ fn icon_bar_layout(row_rect: Rect, style: PlaylistToolbarStyle) -> IconBarLayout
         )
     };
     let clear = Rect::from_center_size(
-        pos2(row_rect.right() - button_size * 0.5, row_rect.center().y),
+        pos2(content_rect.right() - button_size * 0.5, button_center_y),
         button_extent,
     );
 
@@ -505,11 +517,20 @@ mod tests {
             let row = Rect::from_min_size(pos2(0.0, 0.0), vec2(width, style.button_size));
             let layout = icon_bar_layout(row, style);
 
-            assert_eq!(layout.add_files.size(), vec2(28.0, 28.0));
+            assert_eq!(layout.add_files.size(), vec2(32.0, 32.0));
             assert_eq!(layout.add_url.left() - layout.add_files.right(), 2.0);
             assert_eq!(layout.sort.left() - layout.add_url.right(), 2.0);
             assert_eq!(layout.current_item.left() - layout.sort.right(), 2.0);
-            assert_eq!(layout.clear.right(), row.right());
+            assert_eq!(layout.add_files.left() - row.left(), 18.0);
+            assert_eq!(row.right() - layout.clear.right(), 18.0);
+            assert_eq!(
+                layout.add_files.center().y - row.center().y,
+                style.button_center_y_offset
+            );
+            assert_eq!(
+                layout.clear.center().y - row.center().y,
+                style.button_center_y_offset
+            );
             assert!(layout.current_item.right() < layout.clear.left());
         }
     }
