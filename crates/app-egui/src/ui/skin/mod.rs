@@ -132,8 +132,10 @@ pub struct PlaylistToolbarStyle {
     pub button_center_y_offset: f32,
     /// Интервал между четырьмя обычными действиями слева.
     pub button_gap: f32,
-    /// Симметричный отступ крайних кнопок от границ toolbar.
-    pub horizontal_padding: f32,
+    /// Отступ левой группы от края sidebar.
+    pub left_group_padding: f32,
+    /// Отступ отдельной Clear-кнопки от правого края sidebar.
+    pub clear_right_padding: f32,
     /// Полный размер glyph внутри hit-area.
     pub icon_extent: f32,
     /// Единый визуальный вес открытых линий.
@@ -185,6 +187,9 @@ pub struct ControlsStyle {
 
     /// Смещение центральной play/pause-кнопки вверх относительно строки controls.
     pub playback_button_vertical_raise: f32,
+
+    /// Шаг общих левых осей titlebar и playlist toolbar.
+    pub left_edge_control_center_step: f32,
 
     /// Заливка центральной play/pause-кнопки при hover.
     pub playback_button_hover_fill: Color32,
@@ -260,6 +265,12 @@ impl ControlsStyle {
     #[must_use]
     pub(crate) fn bottom_edge_button_center_offset_points(self) -> f32 {
         self.playback_button_diameter * 0.5 + self.playback_button_vertical_raise
+    }
+
+    /// Возвращает inset первой общей левой оси относительно всего окна.
+    #[must_use]
+    pub(crate) fn left_edge_control_first_center_inset_points(self) -> f32 {
+        self.panel_margin.leftf() + self.bottom_edge_button_center_offset_points()
     }
 }
 
@@ -376,8 +387,10 @@ mod tests {
 
         assert_eq!(style.button_size, controls_style.transport_button_size);
         assert_eq!(style.button_center_y_offset, 8.0);
-        assert_eq!(style.button_gap, 2.0);
-        assert_eq!(style.horizontal_padding, 18.0);
+        assert_eq!(controls_style.left_edge_control_center_step, 40.0);
+        assert_eq!(style.button_gap, 8.0);
+        assert_eq!(style.left_group_padding, 23.0);
+        assert_eq!(style.clear_right_padding, 18.0);
         assert_eq!(style.icon_extent, 23.5);
         assert_eq!(
             style.glyph_stroke_width,

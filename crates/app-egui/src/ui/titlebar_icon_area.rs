@@ -7,7 +7,6 @@ use crate::state::SidebarSection;
 
 const BUTTON_WIDTH: f32 = 36.0;
 const BUTTON_HEIGHT: f32 = 32.0;
-const BUTTON_GAP: f32 = 4.0;
 const ACTIVE_FILL_ALPHA: u8 = 20;
 const ACTIVE_HOVER_FILL_ALPHA: u8 = 42;
 
@@ -29,6 +28,33 @@ pub(crate) struct TitlebarIconAreaStyle {
     pub(crate) button_hover_fill: Color32,
 }
 
+/// Горизонтальная сетка центров левой titlebar-группы.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TitlebarIconAreaAlignment {
+    /// Абсолютная X-координата центра первой кнопки.
+    first_button_center_x: f32,
+
+    /// Расстояние между центрами соседних кнопок.
+    button_center_step: f32,
+}
+
+impl TitlebarIconAreaAlignment {
+    /// Создаёт explicit alignment без скрытого знания о соседних UI-модулях.
+    #[must_use]
+    pub(crate) fn new(first_button_center_x: f32, button_center_step: f32) -> Self {
+        Self {
+            first_button_center_x,
+            button_center_step,
+        }
+    }
+
+    /// Возвращает центр кнопки с заданным индексом.
+    #[must_use]
+    fn button_center_x(self, index: usize) -> f32 {
+        self.first_button_center_x + self.button_center_step * index as f32
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct TitlebarIconAreaOutput {
     pub(crate) reserved_rect: Rect,
@@ -39,13 +65,13 @@ pub(crate) struct TitlebarIconAreaOutput {
 pub(crate) fn show(
     ui: &mut Ui,
     titlebar_rect: Rect,
-    first_button_center_x: f32,
+    alignment: TitlebarIconAreaAlignment,
     style: TitlebarIconAreaStyle,
     active_section: Option<SidebarSection>,
 ) -> TitlebarIconAreaOutput {
     let mut actions = Vec::new();
     for (index, (section, tooltip)) in BUTTONS.into_iter().enumerate() {
-        let button_rect = button_rect(titlebar_rect, first_button_center_x, index);
+        let button_rect = button_rect(titlebar_rect, alignment, index);
         let response = ui
             .interact(
                 button_rect,
@@ -68,35 +94,38 @@ pub(crate) fn show(
     }
 
     TitlebarIconAreaOutput {
-        reserved_rect: reserved_rect(titlebar_rect, first_button_center_x),
+        reserved_rect: reserved_rect(titlebar_rect, alignment),
         actions,
     }
 }
 
 /// Вычисляет кнопку относительно общей оси первой titlebar-иконки.
 ///
-/// Все последующие кнопки используют прежние ширину и gap, поэтому изменение
-/// оси перемещает левую группу целиком без внутренних деформаций.
+/// Все последующие кнопки используют skin-owned center step, поэтому titlebar
+/// и playlist toolbar могут разделять одну горизонтальную сетку.
 #[must_use]
-pub(crate) fn button_rect(titlebar_rect: Rect, first_button_center_x: f32, index: usize) -> Rect {
+pub(crate) fn button_rect(
+    titlebar_rect: Rect,
+    alignment: TitlebarIconAreaAlignment,
+    index: usize,
+) -> Rect {
     let top = titlebar_rect.center().y - BUTTON_HEIGHT * 0.5;
-    let first_button_left = first_button_center_x - BUTTON_WIDTH * 0.5;
-    let left = first_button_left + index as f32 * (BUTTON_WIDTH + BUTTON_GAP);
+    let left = alignment.button_center_x(index) - BUTTON_WIDTH * 0.5;
     Rect::from_min_size(pos2(left, top), vec2(BUTTON_WIDTH, BUTTON_HEIGHT))
 }
 
 /// Возвращает общий hit-rect всей левой группы, не захватывая край окна.
 #[must_use]
-pub(crate) fn button_group_rect(titlebar_rect: Rect, first_button_center_x: f32) -> Rect {
-    let first_button_rect = button_rect(titlebar_rect, first_button_center_x, 0);
-    let last_button_rect = button_rect(titlebar_rect, first_button_center_x, BUTTONS.len() - 1);
+pub(crate) fn button_group_rect(titlebar_rect: Rect, alignment: TitlebarIconAreaAlignment) -> Rect {
+    let first_button_rect = button_rect(titlebar_rect, alignment, 0);
+    let last_button_rect = button_rect(titlebar_rect, alignment, BUTTONS.len() - 1);
 
     Rect::from_min_max(first_button_rect.min, last_button_rect.max)
 }
 
 #[must_use]
-pub(crate) fn reserved_rect(titlebar_rect: Rect, first_button_center_x: f32) -> Rect {
-    let button_group_rect = button_group_rect(titlebar_rect, first_button_center_x);
+pub(crate) fn reserved_rect(titlebar_rect: Rect, alignment: TitlebarIconAreaAlignment) -> Rect {
+    let button_group_rect = button_group_rect(titlebar_rect, alignment);
 
     Rect::from_min_max(
         titlebar_rect.min,
@@ -170,8 +199,9 @@ mod tests {
     fn rects_have_required_order_size_and_spacing() {
         let titlebar = Rect::from_min_size(pos2(10.0, 5.0), vec2(900.0, 64.0));
         let first_button_center_x = titlebar.left() + 39.0;
+        let alignment = TitlebarIconAreaAlignment::new(first_button_center_x, 40.0);
         let rects: Vec<_> = (0..4)
-            .map(|index| button_rect(titlebar, first_button_center_x, index))
+            .map(|index| button_rect(titlebar, alignment, index))
             .collect();
         assert_eq!(rects[0].center().x, first_button_center_x);
         assert!(rects.iter().all(|rect| rect.size() == vec2(36.0, 32.0)));
@@ -187,17 +217,18 @@ mod tests {
     fn reserved_area_covers_inset_gaps_and_every_button() {
         let titlebar = Rect::from_min_size(pos2(10.0, 5.0), vec2(900.0, 32.0));
         let first_button_center_x = titlebar.left() + 39.0;
-        let reserved = reserved_rect(titlebar, first_button_center_x);
-        let button_group = button_group_rect(titlebar, first_button_center_x);
+        let alignment = TitlebarIconAreaAlignment::new(first_button_center_x, 40.0);
+        let reserved = reserved_rect(titlebar, alignment);
+        let button_group = button_group_rect(titlebar, alignment);
         assert_eq!(reserved.left(), titlebar.left());
         assert_eq!(reserved.right(), button_group.right());
         assert_eq!(
             button_group.left(),
-            button_rect(titlebar, first_button_center_x, 0).left()
+            button_rect(titlebar, alignment, 0).left()
         );
         assert_eq!(
             button_group.right(),
-            button_rect(titlebar, first_button_center_x, 3).right()
+            button_rect(titlebar, alignment, 3).right()
         );
     }
 }

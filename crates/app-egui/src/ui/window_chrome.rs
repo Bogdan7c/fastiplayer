@@ -182,11 +182,11 @@ pub(crate) fn show(ui: &mut Ui, input: WindowChromeInput<'_>) -> WindowChromeOut
         .frame(egui::Frame::NONE.fill(input.style.fill))
         .show_inside(ui, |ui| {
             let chrome_rect = ui.max_rect();
-            let first_button_center_x = input.edge_alignment.left_axis_x(chrome_rect);
+            let icon_alignment = input.edge_alignment.left_icon_alignment(chrome_rect);
             let icon_output = titlebar_icon_area::show(
                 ui,
                 chrome_rect,
-                first_button_center_x,
+                icon_alignment,
                 TitlebarIconAreaStyle {
                     icon_stroke: input.style.icon_stroke,
                     button_hover_fill: input.style.button_hover_fill,
@@ -402,10 +402,10 @@ fn titlebar_interactive_block_rects(
     edge_alignment: WindowChromeEdgeAlignment,
 ) -> [Rect; 2] {
     let titlebar_rect = titlebar_rect_for_window(window_rect, titlebar_height_points);
-    let first_button_center_x = edge_alignment.left_axis_x(titlebar_rect);
+    let icon_alignment = edge_alignment.left_icon_alignment(titlebar_rect);
 
     [
-        titlebar_icon_area::button_group_rect(titlebar_rect, first_button_center_x),
+        titlebar_icon_area::button_group_rect(titlebar_rect, icon_alignment),
         titlebar_button_block_rect(titlebar_rect, edge_alignment),
     ]
 }
@@ -507,11 +507,11 @@ mod tests {
 
     fn test_layout(chrome_rect: Rect) -> WindowChromeLayout {
         let edge_alignment = test_edge_alignment();
-        let first_button_center_x = edge_alignment.left_axis_x(chrome_rect);
+        let icon_alignment = edge_alignment.left_icon_alignment(chrome_rect);
 
         WindowChromeLayout::new(
             chrome_rect,
-            titlebar_icon_area::reserved_rect(chrome_rect, first_button_center_x),
+            titlebar_icon_area::reserved_rect(chrome_rect, icon_alignment),
             edge_alignment,
         )
     }
@@ -545,13 +545,10 @@ mod tests {
         let titlebar_height_points = 40.0;
         let edge_alignment = test_edge_alignment();
         let titlebar_rect = titlebar_rect_for_window(window_rect, titlebar_height_points);
-        let first_button_center_x = edge_alignment.left_axis_x(titlebar_rect);
-        let left_icon_group =
-            titlebar_icon_area::button_group_rect(titlebar_rect, first_button_center_x);
-        let first_icon_rect =
-            titlebar_icon_area::button_rect(titlebar_rect, first_button_center_x, 0);
-        let last_icon_rect =
-            titlebar_icon_area::button_rect(titlebar_rect, first_button_center_x, 3);
+        let icon_alignment = edge_alignment.left_icon_alignment(titlebar_rect);
+        let left_icon_group = titlebar_icon_area::button_group_rect(titlebar_rect, icon_alignment);
+        let first_icon_rect = titlebar_icon_area::button_rect(titlebar_rect, icon_alignment, 0);
+        let last_icon_rect = titlebar_icon_area::button_rect(titlebar_rect, icon_alignment, 3);
         let right_button_block = titlebar_button_block_rect(titlebar_rect, edge_alignment);
 
         assert!(pointer_position_is_over_titlebar_interactive_block(

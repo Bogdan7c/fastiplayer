@@ -3,6 +3,7 @@
 use egui::{Rect, pos2, vec2};
 
 use crate::ui::skin::ControlsStyle;
+use crate::ui::titlebar_icon_area::TitlebarIconAreaAlignment;
 
 /// Ширина каждой системной кнопки titlebar в логических UI points.
 const TITLEBAR_BUTTON_WIDTH_POINTS: f32 = 46.0;
@@ -19,6 +20,9 @@ pub(crate) struct WindowChromeEdgeAlignment {
     /// Расстояние от левого края окна до центра первой titlebar-кнопки.
     left_axis_inset_points: f32,
 
+    /// Шаг общей сетки центров titlebar и playlist toolbar.
+    left_axis_center_step_points: f32,
+
     /// Расстояние от правого края окна до центра Close.
     right_axis_inset_points: f32,
 }
@@ -30,15 +34,19 @@ impl WindowChromeEdgeAlignment {
         let content_edge_offset = controls_style.bottom_edge_button_center_offset_points();
 
         Self {
-            left_axis_inset_points: controls_style.panel_margin.leftf() + content_edge_offset,
+            left_axis_inset_points: controls_style.left_edge_control_first_center_inset_points(),
+            left_axis_center_step_points: controls_style.left_edge_control_center_step,
             right_axis_inset_points: controls_style.panel_margin.rightf() + content_edge_offset,
         }
     }
 
-    /// Возвращает абсолютную X-координату левой оси внутри окна.
+    /// Возвращает абсолютную сетку левых titlebar-кнопок внутри окна.
     #[must_use]
-    pub(super) fn left_axis_x(self, window_rect: Rect) -> f32 {
-        window_rect.left() + self.left_axis_inset_points
+    pub(super) fn left_icon_alignment(self, window_rect: Rect) -> TitlebarIconAreaAlignment {
+        TitlebarIconAreaAlignment::new(
+            window_rect.left() + self.left_axis_inset_points,
+            self.left_axis_center_step_points,
+        )
     }
 
     /// Возвращает абсолютную X-координату правой оси внутри окна.
@@ -182,11 +190,11 @@ mod tests {
 
     fn test_layout(chrome_rect: Rect) -> WindowChromeLayout {
         let edge_alignment = test_edge_alignment();
-        let first_button_center_x = edge_alignment.left_axis_x(chrome_rect);
+        let icon_alignment = edge_alignment.left_icon_alignment(chrome_rect);
 
         WindowChromeLayout::new(
             chrome_rect,
-            titlebar_icon_area::reserved_rect(chrome_rect, first_button_center_x),
+            titlebar_icon_area::reserved_rect(chrome_rect, icon_alignment),
             edge_alignment,
         )
     }
@@ -210,12 +218,19 @@ mod tests {
     fn button_groups_follow_bottom_control_axes_and_keep_spacing() {
         let chrome_rect = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 40.0));
         let edge_alignment = test_edge_alignment();
-        let first_button_center_x = edge_alignment.left_axis_x(chrome_rect);
-        let first_button_rect =
-            titlebar_icon_area::button_rect(chrome_rect, first_button_center_x, 0);
+        let icon_alignment = edge_alignment.left_icon_alignment(chrome_rect);
+        let left_button_rects = [0, 1, 2, 3]
+            .map(|index| titlebar_icon_area::button_rect(chrome_rect, icon_alignment, index));
         let layout = test_layout(chrome_rect);
 
-        assert_eq!(first_button_rect.center().x, first_button_center_x);
+        assert_eq!(
+            left_button_rects[0].center().x,
+            chrome_rect.left() + edge_alignment.left_axis_inset_points
+        );
+        assert!(left_button_rects.windows(2).all(|button_pair| {
+            button_pair[1].center().x - button_pair[0].center().x
+                == edge_alignment.left_axis_center_step_points
+        }));
         assert_eq!(
             layout.close_button_rect.center().x,
             edge_alignment.right_axis_x(chrome_rect)

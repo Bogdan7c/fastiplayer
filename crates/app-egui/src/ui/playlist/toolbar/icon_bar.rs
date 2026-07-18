@@ -203,15 +203,19 @@ pub(super) fn show(
     }
 }
 
-/// Левая группа сохраняет заданный размер, а крайние кнопки зеркалят боковые поля.
+/// Левая группа следует общей window-control сетке, а Clear хранит независимый правый отступ.
 fn icon_bar_layout(row_rect: Rect, style: PlaylistToolbarStyle) -> IconBarLayout {
-    let horizontal_padding = style
-        .horizontal_padding
+    let left_group_padding = style
+        .left_group_padding
+        .max(0.0)
+        .min(row_rect.width().max(0.0) * 0.5);
+    let clear_right_padding = style
+        .clear_right_padding
         .max(0.0)
         .min(row_rect.width().max(0.0) * 0.5);
     let content_rect = Rect::from_min_max(
-        pos2(row_rect.left() + horizontal_padding, row_rect.top()),
-        pos2(row_rect.right() - horizontal_padding, row_rect.bottom()),
+        pos2(row_rect.left() + left_group_padding, row_rect.top()),
+        pos2(row_rect.right() - clear_right_padding, row_rect.bottom()),
     );
     let requested_gap = style.button_gap.max(0.0);
     let gap = requested_gap.min(content_rect.width().max(0.0) / 3.0);
@@ -511,18 +515,38 @@ mod tests {
     }
 
     #[test]
-    fn layout_keeps_left_group_compact_and_clear_at_right_edge() {
+    fn layout_aligns_left_group_to_titlebar_axes_and_keeps_clear_at_right_edge() {
         let style = MinimalSkin.playlist_toolbar_style();
+        let controls_style = MinimalSkin.controls_style();
+        let expected_first_center_inset =
+            controls_style.left_edge_control_first_center_inset_points();
+        let expected_center_step = controls_style.left_edge_control_center_step;
+
         for width in [350.0, 420.0, 600.0] {
             let row = Rect::from_min_size(pos2(0.0, 0.0), vec2(width, style.button_size));
             let layout = icon_bar_layout(row, style);
 
             assert_eq!(layout.add_files.size(), vec2(32.0, 32.0));
-            assert_eq!(layout.add_url.left() - layout.add_files.right(), 2.0);
-            assert_eq!(layout.sort.left() - layout.add_url.right(), 2.0);
-            assert_eq!(layout.current_item.left() - layout.sort.right(), 2.0);
-            assert_eq!(layout.add_files.left() - row.left(), 18.0);
-            assert_eq!(row.right() - layout.clear.right(), 18.0);
+            assert_eq!(
+                layout.add_files.center().x - row.left(),
+                expected_first_center_inset
+            );
+            assert_eq!(
+                layout.add_url.center().x - layout.add_files.center().x,
+                expected_center_step
+            );
+            assert_eq!(
+                layout.sort.center().x - layout.add_url.center().x,
+                expected_center_step
+            );
+            assert_eq!(
+                layout.current_item.center().x - layout.sort.center().x,
+                expected_center_step
+            );
+            assert_eq!(
+                row.right() - layout.clear.right(),
+                style.clear_right_padding
+            );
             assert_eq!(
                 layout.add_files.center().y - row.center().y,
                 style.button_center_y_offset

@@ -65,6 +65,7 @@ impl PlayerSkin for MinimalSkin {
             playback_button_icon_extent: 18.0,
             playback_button_stroke_width: 1.6,
             playback_button_vertical_raise: 5.0,
+            left_edge_control_center_step: 40.0,
             playback_button_hover_fill: button_hover_fill,
             transport_button_size: 32.0,
             transport_button_center_distance: 64.0,
@@ -120,11 +121,18 @@ impl PlayerSkin for MinimalSkin {
 
     /// Возвращает контрастный grayscale toolbar в масштабе нижних transport-кнопок.
     fn playlist_toolbar_style(&self) -> PlaylistToolbarStyle {
+        let controls_style = self.controls_style();
+        let button_size = 32.0;
+        let first_button_center_inset =
+            controls_style.left_edge_control_first_center_inset_points();
+        let button_center_step = controls_style.left_edge_control_center_step;
+
         PlaylistToolbarStyle {
-            button_size: 32.0,
+            button_size,
             button_center_y_offset: 8.0,
-            button_gap: 2.0,
-            horizontal_padding: 18.0,
+            button_gap: (button_center_step - button_size).max(0.0),
+            left_group_padding: (first_button_center_inset - button_size * 0.5).max(0.0),
+            clear_right_padding: 18.0,
             icon_extent: 23.5,
             glyph_stroke_width: 1.6,
             surface_corner_radius: 4.0,
