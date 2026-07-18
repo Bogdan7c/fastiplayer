@@ -698,6 +698,12 @@ fn error_retry_and_failed_navigation_have_distinct_accessibility() {
 }
 
 #[test]
+fn routine_background_save_stays_silent() {
+    // Переключение трека обновляет сохранённый идентификатор текущего элемента без уведомления.
+    assert_eq!(save_message(PlaylistSaveView::Saving), None);
+}
+
+#[test]
 fn save_warning_exposes_retry_and_unavailable_row_stays_non_modal() {
     let (warning, _) = save_message(PlaylistSaveView::WarningRetryAvailable {
         occurrence_count: 3,

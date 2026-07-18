@@ -115,8 +115,8 @@ pub(super) enum StatusTone {
 
 pub(super) fn save_message(save: PlaylistSaveView) -> Option<(String, StatusTone)> {
     match save {
-        PlaylistSaveView::Idle => None,
-        PlaylistSaveView::Saving => Some(("Сохранение очереди…".to_owned(), StatusTone::Normal)),
+        // Обычное фоновое сохранение не требует действий пользователя и не должно мигать в UI.
+        PlaylistSaveView::Idle | PlaylistSaveView::Saving => None,
         PlaylistSaveView::WarningRetryAvailable { occurrence_count } => Some((
             format!(
                 "Не удалось сохранить очередь (попыток: {occurrence_count}). Повтор сохранения доступен"
