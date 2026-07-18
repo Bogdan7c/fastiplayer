@@ -5,7 +5,6 @@ use ui_artwork_egui::{ArtworkPainter, ButtonVisualState, SidebarButtonGlyph};
 
 use crate::state::SidebarSection;
 
-const LEFT_INSET: f32 = 8.0;
 const BUTTON_WIDTH: f32 = 36.0;
 const BUTTON_HEIGHT: f32 = 32.0;
 const BUTTON_GAP: f32 = 4.0;
@@ -40,12 +39,13 @@ pub(crate) struct TitlebarIconAreaOutput {
 pub(crate) fn show(
     ui: &mut Ui,
     titlebar_rect: Rect,
+    first_button_center_x: f32,
     style: TitlebarIconAreaStyle,
     active_section: Option<SidebarSection>,
 ) -> TitlebarIconAreaOutput {
     let mut actions = Vec::new();
     for (index, (section, tooltip)) in BUTTONS.into_iter().enumerate() {
-        let button_rect = button_rect(titlebar_rect, index);
+        let button_rect = button_rect(titlebar_rect, first_button_center_x, index);
         let response = ui
             .interact(
                 button_rect,
@@ -68,32 +68,39 @@ pub(crate) fn show(
     }
 
     TitlebarIconAreaOutput {
-        reserved_rect: reserved_rect(titlebar_rect),
+        reserved_rect: reserved_rect(titlebar_rect, first_button_center_x),
         actions,
     }
 }
 
+/// Вычисляет кнопку относительно общей оси первой titlebar-иконки.
+///
+/// Все последующие кнопки используют прежние ширину и gap, поэтому изменение
+/// оси перемещает левую группу целиком без внутренних деформаций.
 #[must_use]
-pub(crate) fn button_rect(titlebar_rect: Rect, index: usize) -> Rect {
+pub(crate) fn button_rect(titlebar_rect: Rect, first_button_center_x: f32, index: usize) -> Rect {
     let top = titlebar_rect.center().y - BUTTON_HEIGHT * 0.5;
-    let left = titlebar_rect.left() + LEFT_INSET + index as f32 * (BUTTON_WIDTH + BUTTON_GAP);
+    let first_button_left = first_button_center_x - BUTTON_WIDTH * 0.5;
+    let left = first_button_left + index as f32 * (BUTTON_WIDTH + BUTTON_GAP);
     Rect::from_min_size(pos2(left, top), vec2(BUTTON_WIDTH, BUTTON_HEIGHT))
 }
 
-/// Совместимый geometry helper для window-chrome layout tests.
+/// Возвращает общий hit-rect всей левой группы, не захватывая край окна.
 #[must_use]
-pub(crate) fn settings_button_rect(titlebar_rect: Rect) -> Rect {
-    button_rect(titlebar_rect, 1)
+pub(crate) fn button_group_rect(titlebar_rect: Rect, first_button_center_x: f32) -> Rect {
+    let first_button_rect = button_rect(titlebar_rect, first_button_center_x, 0);
+    let last_button_rect = button_rect(titlebar_rect, first_button_center_x, BUTTONS.len() - 1);
+
+    Rect::from_min_max(first_button_rect.min, last_button_rect.max)
 }
 
 #[must_use]
-pub(crate) fn reserved_rect(titlebar_rect: Rect) -> Rect {
+pub(crate) fn reserved_rect(titlebar_rect: Rect, first_button_center_x: f32) -> Rect {
+    let button_group_rect = button_group_rect(titlebar_rect, first_button_center_x);
+
     Rect::from_min_max(
         titlebar_rect.min,
-        pos2(
-            button_rect(titlebar_rect, BUTTONS.len() - 1).right(),
-            titlebar_rect.bottom(),
-        ),
+        pos2(button_group_rect.right(), titlebar_rect.bottom()),
     )
 }
 
@@ -162,8 +169,11 @@ mod tests {
     #[test]
     fn rects_have_required_order_size_and_spacing() {
         let titlebar = Rect::from_min_size(pos2(10.0, 5.0), vec2(900.0, 64.0));
-        let rects: Vec<_> = (0..4).map(|index| button_rect(titlebar, index)).collect();
-        assert_eq!(rects[0].left(), titlebar.left() + 8.0);
+        let first_button_center_x = titlebar.left() + 39.0;
+        let rects: Vec<_> = (0..4)
+            .map(|index| button_rect(titlebar, first_button_center_x, index))
+            .collect();
+        assert_eq!(rects[0].center().x, first_button_center_x);
         assert!(rects.iter().all(|rect| rect.size() == vec2(36.0, 32.0)));
         assert!(
             rects
@@ -176,8 +186,18 @@ mod tests {
     #[test]
     fn reserved_area_covers_inset_gaps_and_every_button() {
         let titlebar = Rect::from_min_size(pos2(10.0, 5.0), vec2(900.0, 32.0));
-        let reserved = reserved_rect(titlebar);
+        let first_button_center_x = titlebar.left() + 39.0;
+        let reserved = reserved_rect(titlebar, first_button_center_x);
+        let button_group = button_group_rect(titlebar, first_button_center_x);
         assert_eq!(reserved.left(), titlebar.left());
-        assert_eq!(reserved.right(), button_rect(titlebar, 3).right());
+        assert_eq!(reserved.right(), button_group.right());
+        assert_eq!(
+            button_group.left(),
+            button_rect(titlebar, first_button_center_x, 0).left()
+        );
+        assert_eq!(
+            button_group.right(),
+            button_rect(titlebar, first_button_center_x, 3).right()
+        );
     }
 }

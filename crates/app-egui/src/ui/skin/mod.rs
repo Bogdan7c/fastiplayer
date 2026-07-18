@@ -250,6 +250,19 @@ pub struct ControlsStyle {
     pub panel_margin: Margin,
 }
 
+impl ControlsStyle {
+    /// Возвращает расстояние от внутреннего края нижней панели до общей оси
+    /// центров крайних кнопок Open и Fullscreen.
+    ///
+    /// Строка controls имеет высоту `playback_button_diameter`, а все кнопки
+    /// подняты на `playback_button_vertical_raise`. Поэтому эта формула
+    /// одновременно сохраняет зеркальные боковой и нижний отступы.
+    #[must_use]
+    pub(crate) fn bottom_edge_button_center_offset_points(self) -> f32 {
+        self.playback_button_diameter * 0.5 + self.playback_button_vertical_raise
+    }
+}
+
 /// Общий контракт skin-а.
 pub trait PlayerSkin: AssetProvider {
     /// Возвращает typed id skin-а.

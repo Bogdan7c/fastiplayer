@@ -216,6 +216,7 @@ impl AppState {
             );
             skin::MinimalSkin
         });
+        let controls_style = selected_skin.controls_style();
         let animation_state = AnimationState::from_timeline(&player_snapshot.timeline);
         // Позиция анимации продвинута раньше в prepare_ui_frame; здесь только чтение.
         let sidebar_slide_progress = self.sidebar_controller.open_progress();
@@ -277,7 +278,10 @@ impl AppState {
                     title: "Rustiplayer",
                     height_points: titlebar_height_points,
                     is_maximized: window_is_maximized,
-                    style: WindowChromeStyle::from_controls_style(selected_skin.controls_style()),
+                    style: WindowChromeStyle::from_controls_style(controls_style),
+                    edge_alignment: window_chrome::WindowChromeEdgeAlignment::from_controls_style(
+                        controls_style,
+                    ),
                     active_sidebar_section: self.sidebar_controller.target(),
                 },
             );

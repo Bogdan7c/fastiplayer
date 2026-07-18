@@ -236,8 +236,8 @@ fn render_button_row(
 fn open_file_button_anchor_rect(row_rect: Rect, controls_style: ControlsStyle) -> Rect {
     let button_size = Vec2::splat(controls_style.fullscreen_button_size);
     let button_center_y = row_rect.center().y - controls_style.playback_button_vertical_raise;
-    let bottom_inset = row_rect.bottom() - (button_center_y + button_size.y * 0.5);
-    let button_center_x = row_rect.left() + bottom_inset + button_size.x * 0.5;
+    let button_center_x =
+        row_rect.left() + controls_style.bottom_edge_button_center_offset_points();
     let button_center = pos2(button_center_x, button_center_y);
 
     Rect::from_center_size(button_center, button_size)
@@ -259,8 +259,8 @@ fn playback_button_anchor_rect(row_rect: Rect, controls_style: ControlsStyle) ->
 fn fullscreen_button_anchor_rect(row_rect: Rect, controls_style: ControlsStyle) -> Rect {
     let button_size = Vec2::splat(controls_style.fullscreen_button_size);
     let button_center_y = row_rect.center().y - controls_style.playback_button_vertical_raise;
-    let bottom_inset = row_rect.bottom() - (button_center_y + button_size.y * 0.5);
-    let button_center_x = row_rect.right() - bottom_inset - button_size.x * 0.5;
+    let button_center_x =
+        row_rect.right() - controls_style.bottom_edge_button_center_offset_points();
     let button_center = pos2(button_center_x, button_center_y);
 
     Rect::from_center_size(button_center, button_size)
@@ -843,6 +843,36 @@ mod tests {
         let bottom_inset = row_rect.bottom() - button_rect.bottom();
 
         assert!((right_inset - bottom_inset).abs() < f32::EPSILON);
+    }
+
+    /// Проверяет общие window-edge оси, которые titlebar получает из того же skin-а.
+    #[test]
+    fn edge_button_centers_include_panel_margin_in_window_axis_insets() {
+        let controls_style = MinimalSkin.controls_style();
+        let window_rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 120.0));
+        let row_rect = Rect::from_min_size(
+            pos2(controls_style.panel_margin.leftf(), 40.0),
+            vec2(
+                window_rect.width()
+                    - controls_style.panel_margin.leftf()
+                    - controls_style.panel_margin.rightf(),
+                controls_style.playback_button_diameter,
+            ),
+        );
+        let open_file_button_rect = open_file_button_anchor_rect(row_rect, controls_style);
+        let fullscreen_button_rect = fullscreen_button_anchor_rect(row_rect, controls_style);
+        let content_edge_offset = controls_style.bottom_edge_button_center_offset_points();
+        let expected_left_axis_inset = controls_style.panel_margin.leftf() + content_edge_offset;
+        let expected_right_axis_inset = controls_style.panel_margin.rightf() + content_edge_offset;
+
+        assert_eq!(
+            open_file_button_rect.center().x - window_rect.left(),
+            expected_left_axis_inset
+        );
+        assert_eq!(
+            window_rect.right() - fullscreen_button_rect.center().x,
+            expected_right_axis_inset
+        );
     }
 
     /// Проверяет, что fullscreen-кнопка стоит на той же вертикальной оси, что play/pause.

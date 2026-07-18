@@ -28,6 +28,13 @@
 - `PersistentControlStyle` хранится в app skin и передаёт artwork все foreground/surface/focus токены; конкретные queue-mode кнопки не хардкодят цвета.
 - Characterization-тесты artwork закрепляют bounds, число/тип фигур, дополнительную геометрическую цифру `1` и active surface без изменения glyph geometry.
 
+## Custom titlebar edge alignment (2026-07-18)
+- `app-egui::ui::skin::ControlsStyle` владеет общей горизонтальной осью крайних bottom controls: offset от внутреннего content-edge равен половине `playback_button_diameter` плюс `playback_button_vertical_raise`; panel margin превращает его в inset от края всего окна.
+- Чистая геометрия custom titlebar живёт в `crates/app-egui/src/ui/window_chrome/geometry.rs`; interaction/actions остаются в `window_chrome.rs`, artwork glyph geometry не меняется.
+- Центр первой левой titlebar-кнопки совпадает с центром Open, вся левая группа сохраняет button size/gap; центр Close совпадает с Fullscreen, а Minimize/Maximize/Close остаются contiguous группой вместе с hover/hit rects.
+- Reserved/drag/resize geometry использует те же вычисленные оси. Resize guard покрывает фактические button-group rects, но не забирает свободные window corners.
+- Title rect симметрично резервирует большую из боковых occupied widths и остаётся центрированным относительно всего окна.
+
 
 ## Playlist row surfaces and separator (2026-07-18)
 - `ArtworkPainter` adds `reserve_playlist_row_background`, `playlist_row_background` and `playlist_row_separator`; implementation lives in the dedicated `ui-artwork-egui/src/playlist_row.rs` module and remains domain/UI-state neutral.
