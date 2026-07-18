@@ -10,6 +10,7 @@ use playlist_core::{
 };
 
 use super::identity::{ActiveMediaIdentity, PendingTarget, PlaylistItemRuntimeError};
+use super::selection::PlaylistSelectionSnapshot;
 
 /// Controller-owned structural revision для shared row storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -189,7 +190,7 @@ pub(crate) struct PlaylistViewSnapshot {
     rows: Arc<[PlaylistViewRow]>,
     row_indices: Arc<HashMap<PlaylistItemId, usize>>,
     errors: Arc<HashMap<PlaylistItemId, PlaylistItemRuntimeError>>,
-    selected_item_id: Option<PlaylistItemId>,
+    selection: PlaylistSelectionSnapshot,
     traversal_current: Option<TraversalCurrentItemId>,
     active_media: Option<ActiveMediaIdentity>,
     pending_target: Option<PendingTarget>,
@@ -210,7 +211,7 @@ impl PlaylistViewSnapshot {
             rows,
             row_indices,
             errors: Arc::new(HashMap::new()),
-            selected_item_id: None,
+            selection: PlaylistSelectionSnapshot::empty(),
             traversal_current: queue.traversal_current(),
             active_media: None,
             pending_target: None,
@@ -265,14 +266,21 @@ impl PlaylistViewSnapshot {
                 media_kind: row.media_kind,
                 active: active_item_id == Some(row.item_id),
                 pending: pending_item_id == Some(row.item_id),
-                selected: self.selected_item_id == Some(row.item_id),
+                selected: self.selection.is_selected(row.item_id),
                 runtime_error: self.errors.get(&row.item_id).cloned(),
             })
             .collect()
     }
 
-    pub(crate) const fn selected_item_id(&self) -> Option<PlaylistItemId> {
-        self.selected_item_id
+    pub(crate) fn selected_item_id(&self) -> Option<PlaylistItemId> {
+        self.selection
+            .interaction_cursor()
+            .filter(|item_id| self.selection.is_selected(*item_id))
+    }
+
+    /// Возвращает Arc-backed selection snapshot без копирования selected set.
+    pub(crate) fn selection(&self) -> &PlaylistSelectionSnapshot {
+        &self.selection
     }
 
     pub(crate) const fn traversal_current(&self) -> Option<TraversalCurrentItemId> {
@@ -328,7 +336,7 @@ pub(super) struct PlaylistViewState<'a> {
     pub queue: &'a PlaylistQueue,
     pub structural_revision: PlaylistStructuralRevision,
     pub errors: &'a HashMap<PlaylistItemId, PlaylistItemRuntimeError>,
-    pub selected_item_id: Option<PlaylistItemId>,
+    pub selection: PlaylistSelectionSnapshot,
     pub active_media: Option<ActiveMediaIdentity>,
     pub pending_target: Option<PendingTarget>,
     pub repeat_mode: RepeatMode,
@@ -355,7 +363,7 @@ pub(super) fn rebuild_snapshot(
             |(_, row_indices)| row_indices,
         ),
         errors: Arc::new(state.errors.clone()),
-        selected_item_id: state.selected_item_id,
+        selection: state.selection,
         traversal_current: state.queue.traversal_current(),
         active_media: state.active_media,
         pending_target: state.pending_target,

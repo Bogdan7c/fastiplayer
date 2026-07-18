@@ -4,7 +4,9 @@ use egui::{Color32, Margin};
 
 use crate::ui::animation::AnimationState;
 use crate::ui::assets::{AssetProvider, IconId};
-use crate::ui::skin::{ControlsStyle, PersistentControlStyle, PlayerSkin, SkinId, TimelineStyle};
+use crate::ui::skin::{
+    ControlsStyle, PersistentControlStyle, PlayerSkin, PlaylistRowStyle, SkinId, TimelineStyle,
+};
 
 /// Первый production skin для desktop player controls.
 #[derive(Debug, Clone, Copy, Default)]
@@ -94,6 +96,24 @@ impl PlayerSkin for MinimalSkin {
             fullscreen_icon_extent: 16.0,
             volume_slider_width: 96.0,
             panel_margin: Margin::symmetric(10, 6),
+        }
+    }
+
+    /// Возвращает белые Playlist row tokens без platform selection accent.
+    fn playlist_row_style(&self) -> PlaylistRowStyle {
+        let light_stroke = Color32::from_rgba_unmultiplied(245, 245, 245, 220);
+        PlaylistRowStyle {
+            hover_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 28),
+            selected_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 46),
+            selected_hover_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 64),
+            active_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 18),
+            separator_color: Color32::from_rgba_unmultiplied(255, 255, 255, 128),
+            insertion_stroke: egui::Stroke::new(1.5, light_stroke),
+            focus_stroke: egui::Stroke::new(1.0, light_stroke),
+            active_stroke: egui::Stroke::new(
+                1.0,
+                Color32::from_rgba_unmultiplied(235, 235, 235, 180),
+            ),
         }
     }
 

@@ -323,6 +323,7 @@ impl AppState {
                     snapshot: player_snapshot,
                     playlist_model: playlist_view_model.as_ref(),
                     playlist_interaction: playlist_models.interaction,
+                    playlist_row_style: selected_skin.playlist_row_style(),
                     playlist_state: &mut playlist_ui_state,
                     playlist_output: &mut playlist_ui_output,
                     settings_actions: &mut settings_actions,

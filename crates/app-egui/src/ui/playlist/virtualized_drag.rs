@@ -1,10 +1,14 @@
 //! UI-only drag lifecycle поверх fixed-height virtualized canonical rows.
 
+use std::collections::HashSet;
+use std::sync::Arc;
+
 use egui::{DragAndDrop, Pos2, Rect, Response};
 use playlist_core::{MoveItemIntent, PlaylistItemId};
 
+use super::actions::MoveItems;
 use super::{PlaylistAction, PlaylistUiOutput};
-use crate::playlist_runtime::PlaylistViewModel;
+use crate::playlist_runtime::{PlaylistStructuralRevision, PlaylistViewModel, UpdateSelection};
 
 const EDGE_ZONE_HEIGHT: f32 = 28.0;
 const EDGE_SCROLL_STEP: f32 = 14.0;
@@ -37,6 +41,9 @@ impl VirtualizedInsertionTarget {
 #[derive(Debug, Default)]
 pub(super) struct VirtualizedDragState {
     source_item_id: Option<PlaylistItemId>,
+    item_ids: Arc<[PlaylistItemId]>,
+    structural_revision: Option<PlaylistStructuralRevision>,
+    drop_targets: Arc<[VirtualizedInsertionTarget]>,
     capture_generation: u64,
     pointer_position: Option<Pos2>,
     viewport: Option<Rect>,
@@ -47,14 +54,28 @@ pub(super) struct VirtualizedDragState {
 
 pub(super) fn begin_from_response(
     response: &Response,
+    model: &PlaylistViewModel,
     item_id: PlaylistItemId,
+    row_is_selected: bool,
     state: &mut VirtualizedDragState,
+    output: &mut PlaylistUiOutput,
 ) {
     if !response.drag_started() {
         return;
     }
     state.capture_generation = state.capture_generation.wrapping_add(1).max(1);
     state.source_item_id = Some(item_id);
+    state.item_ids = if row_is_selected {
+        model.selected_item_ids()
+    } else {
+        output.push_action(PlaylistAction::UpdateSelection(UpdateSelection::Replace {
+            item_id,
+            structural_revision: model.structural_revision(),
+        }));
+        Arc::from([item_id])
+    };
+    state.structural_revision = Some(model.structural_revision());
+    state.drop_targets = build_drop_targets(model, &state.item_ids);
     state.pointer_position = response.interact_pointer_pos();
     state.insertion_target = None;
     state.requested_scroll_offset = None;
@@ -136,7 +157,8 @@ pub(super) fn finish_frame(
     state.viewport = Some(viewport);
     state.scroll_offset = scroll_offset;
     state.insertion_target = insertion_target(
-        model,
+        state,
+        model.item_count(),
         pointer_position.y - viewport.top(),
         scroll_offset,
         row_pitch,
@@ -144,12 +166,15 @@ pub(super) fn finish_frame(
 
     let released = ctx.input(|input| input.pointer.any_released());
     if released {
-        if let (Some(source_item_id), Some(target)) = (state.source_item_id, state.insertion_target)
+        if let (Some(target), Some(structural_revision)) =
+            (state.insertion_target, state.structural_revision)
+            && !state.item_ids.is_empty()
         {
-            output.push_action(PlaylistAction::Move {
-                item_id: source_item_id,
-                intent: target.into_move_intent(),
-            });
+            output.push_action(PlaylistAction::MoveItems(MoveItems::new(
+                Arc::clone(&state.item_ids),
+                target.into_move_intent(),
+                structural_revision,
+            )));
         }
         clear(ctx, state);
         return;
@@ -184,25 +209,53 @@ pub(super) fn marks_row(
 }
 
 fn insertion_target(
-    model: &PlaylistViewModel,
+    state: &VirtualizedDragState,
+    item_count: usize,
     pointer_y_in_viewport: f32,
     scroll_offset: f32,
     row_pitch: f32,
 ) -> Option<VirtualizedInsertionTarget> {
-    if model.is_empty() || !row_pitch.is_finite() || row_pitch <= 0.0 {
+    if item_count == 0 || !row_pitch.is_finite() || row_pitch <= 0.0 {
         return None;
     }
     let content_y = (scroll_offset + pointer_y_in_viewport).max(0.0);
-    let insertion_slot = ((content_y + row_pitch * 0.5) / row_pitch).floor() as usize;
-    if insertion_slot == 0 {
-        Some(VirtualizedInsertionTarget::ToFront)
-    } else if insertion_slot >= model.item_count() {
-        Some(VirtualizedInsertionTarget::ToBack)
-    } else {
-        model
-            .item_id_at(insertion_slot)
-            .map(VirtualizedInsertionTarget::Before)
+    let insertion_slot =
+        (((content_y + row_pitch * 0.5) / row_pitch).floor() as usize).min(item_count);
+    state.drop_targets.get(insertion_slot).copied()
+}
+
+/// Один O(N) drag-start precompute исключает selected anchor и per-frame queue scan.
+fn build_drop_targets(
+    model: &PlaylistViewModel,
+    selected_item_ids: &[PlaylistItemId],
+) -> Arc<[VirtualizedInsertionTarget]> {
+    let selected_item_ids: HashSet<_> = selected_item_ids.iter().copied().collect();
+    let canonical_item_ids = (0..model.item_count())
+        .filter_map(|row_index| model.item_id_at(row_index))
+        .collect::<Vec<_>>();
+    let retained_item_ids = canonical_item_ids
+        .iter()
+        .copied()
+        .filter(|item_id| !selected_item_ids.contains(item_id))
+        .collect::<Vec<_>>();
+    let mut retained_before_slot = 0;
+    let mut targets = Vec::with_capacity(canonical_item_ids.len() + 1);
+    for insertion_slot in 0..=canonical_item_ids.len() {
+        if insertion_slot > 0
+            && !selected_item_ids.contains(&canonical_item_ids[insertion_slot - 1])
+        {
+            retained_before_slot += 1;
+        }
+        let target = if retained_before_slot == 0 {
+            VirtualizedInsertionTarget::ToFront
+        } else if retained_before_slot >= retained_item_ids.len() {
+            VirtualizedInsertionTarget::ToBack
+        } else {
+            VirtualizedInsertionTarget::Before(retained_item_ids[retained_before_slot])
+        };
+        targets.push(target);
     }
+    targets.into()
 }
 
 fn edge_scroll_offset(
@@ -229,6 +282,16 @@ fn capture_is_current(ctx: &egui::Context, state: &VirtualizedDragState) -> bool
         payload.source_item_id == source_item_id
             && payload.capture_generation == state.capture_generation
     })
+}
+
+/// Row keyboard handler отличает active drag от обычного Escape selection clear.
+pub(super) fn is_active(state: &VirtualizedDragState) -> bool {
+    state.source_item_id.is_some()
+}
+
+/// Escape отменяет только playlist-owned drag и не трогает чужой DnD payload.
+pub(super) fn cancel(ctx: &egui::Context, state: &mut VirtualizedDragState) {
+    clear(ctx, state);
 }
 
 fn clear(ctx: &egui::Context, state: &mut VirtualizedDragState) {
@@ -274,21 +337,53 @@ mod tests {
     #[test]
     fn canonical_target_covers_first_middle_last_and_offscreen_rows() {
         let model = model(10_000);
+        let selected_item_ids = Arc::from([model.item_id_at(500).unwrap()]);
+        let state = VirtualizedDragState {
+            drop_targets: build_drop_targets(&model, &selected_item_ids),
+            ..VirtualizedDragState::default()
+        };
         let row_pitch = 40.0;
         assert_eq!(
-            insertion_target(&model, 0.0, 0.0, row_pitch),
+            insertion_target(&state, model.item_count(), 0.0, 0.0, row_pitch),
             Some(VirtualizedInsertionTarget::ToFront)
         );
         assert_eq!(
-            insertion_target(&model, 20.0, 5_000.0 * row_pitch, row_pitch),
+            insertion_target(
+                &state,
+                model.item_count(),
+                20.0,
+                5_000.0 * row_pitch,
+                row_pitch
+            ),
             model
                 .item_id_at(5_001)
                 .map(VirtualizedInsertionTarget::Before)
         );
         assert_eq!(
-            insertion_target(&model, 400.0, 9_990.0 * row_pitch, row_pitch),
+            insertion_target(
+                &state,
+                model.item_count(),
+                400.0,
+                9_990.0 * row_pitch,
+                row_pitch
+            ),
             Some(VirtualizedInsertionTarget::ToBack)
         );
+    }
+
+    #[test]
+    fn discontiguous_group_precompute_never_targets_selected_anchor() {
+        let model = model(5);
+        let selected_item_ids: Arc<[PlaylistItemId]> =
+            Arc::from([model.item_id_at(1).unwrap(), model.item_id_at(3).unwrap()]);
+        let selected_set: HashSet<_> = selected_item_ids.iter().copied().collect();
+        let targets = build_drop_targets(&model, &selected_item_ids);
+
+        assert_eq!(targets.len(), model.item_count() + 1);
+        assert!(targets.iter().all(|target| match target {
+            VirtualizedInsertionTarget::Before(item_id) => !selected_set.contains(item_id),
+            VirtualizedInsertionTarget::ToFront | VirtualizedInsertionTarget::ToBack => true,
+        }));
     }
 
     #[test]
@@ -345,12 +440,16 @@ mod tests {
             scroll_offset: 40.0,
             insertion_target: Some(VirtualizedInsertionTarget::ToBack),
             requested_scroll_offset: Some(54.0),
+            ..VirtualizedDragState::default()
         };
 
         clear(&ctx, &mut state);
 
         assert!(DragAndDrop::payload::<PlaylistDragPayload>(&ctx).is_none());
         assert_eq!(state.source_item_id, None);
+        assert!(state.item_ids.is_empty());
+        assert!(state.drop_targets.is_empty());
+        assert_eq!(state.structural_revision, None);
         assert_eq!(state.capture_generation, 7);
         assert_eq!(state.pointer_position, None);
         assert_eq!(state.viewport, None);

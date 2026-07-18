@@ -17,3 +17,12 @@
 - Focused Playlist UI: 24 PASS, включая click-vs-double, exact duplicate IDs, keyboard/context, first/middle/last/off-screen 10k target, owned/foreign-payload cleanup и edge start/stop.
 - Default-feature focused playlist: 211 PASS; sidebar: 13 PASS; full `app-egui --no-default-features`: 570 PASS; strict app Clippy, fmt, Rust 1.96 locked workspace check, refactor guardrails и diff check PASS.
 - Handoff: `user/playlist_queue_implementation_plan.md`. Следующая разрешённая сессия — 21.
+
+
+## Full-row desktop multi-select UI revision (2026-07-18)
+- Each virtualized row lays out non-selectable child labels, then registers exactly one full-width `Sense::click_and_drag` response. Index, media glyph, title, duration, badges and trailing edge therefore share click/double-click/right-click/hover/drag semantics; system text selection is disabled.
+- UI actions are intent-shaped: `UpdateSelection`, `RemoveSelected`, `RemoveUnselected` and `MoveItems`, with exact Arc-backed IDs and captured structural revision. Normal/Ctrl-or-Cmd/Shift/Ctrl-or-Cmd+Shift pointer selection, focused arrows/Home/End, Ctrl-or-Cmd+A, Escape, Enter and Delete follow desktop semantics without consuming global hotkeys outside row focus. Empty list background clears selection; Escape during drag cancels drag only.
+- Context click inside selection preserves the group; outside selection first selects the row. Double click preserves an existing group but plays the exact clicked row. Context menu exposes Play, Remove selected (N), and Remove all except selected (N); full queue scans happen only when an explicit range/select-all/bulk/drag-start event needs exact IDs, not during ordinary row rendering.
+- Virtualized drag captures selected IDs and structural revision once. Dragging an unselected row first collapses selection to it; selected rows move atomically as one canonical-order block. Drop slots exclude selected anchors, per-frame target lookup stays O(1), and Escape/lost capture clean ephemeral state.
+- Row visuals come only from `PlaylistRowStyle`: white alpha 28 hover, 46 selected, 64 selected+hover, white alpha 128 separator and light grayscale insertion/focus/active strokes. Playing remains independent through `▶`, active fill/stroke and accessibility selected state.
+- Headless egui tests cover every row column/edge plus double click, secondary click, drag/drop, keyboard focus/navigation/select-all, empty-area clear and disabled text selection. Focused Playlist UI 34 PASS; full app suites 643 PASS for both feature sets.

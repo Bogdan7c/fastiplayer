@@ -6,6 +6,7 @@ mod metadata_patch;
 mod navigation;
 mod outcomes;
 mod removal;
+mod reordering;
 mod reservation;
 mod shuffle;
 mod sort;
@@ -48,6 +49,7 @@ pub use removal::{
     PlaylistRemovalSnapshot, RemovalCurrentOutcome, RemovalSnapshotRestoreError,
     RemovalSnapshotRestoreOutcome,
 };
+pub use reordering::MoveItemsOutcome;
 pub use reservation::{PreparedQueueMutationToken, ReservedQueueMutation};
 pub use shuffle::{
     BulkRemoveError, BulkRemoveOutcome, MAX_SHUFFLE_HISTORY_ENTRIES, ShuffleHistoryCursor,

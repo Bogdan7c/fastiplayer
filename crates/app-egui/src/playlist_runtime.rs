@@ -46,6 +46,7 @@ mod removal_undo;
 )]
 mod replacement_confirmation;
 mod row_interactions;
+mod selection;
 mod settings;
 mod suspend_resume;
 mod transport_execution;
@@ -92,7 +93,7 @@ pub(crate) use actions::{
 pub(crate) use controller::PlaylistController;
 pub(crate) use controller::{
     AutomaticLifecycleOutcome, ControllerInitialQueuePlaybackAction,
-    ControllerManualNavigationOutcome, ControllerMoveItemOutcome, ControllerPlayItemOutcome,
+    ControllerManualNavigationOutcome, ControllerMoveItemsOutcome, ControllerPlayItemOutcome,
     ControllerStableIntentDispatch, LocalFileSelectionDisposition, PlannedPlaylistInstall,
     StablePlaybackIntent,
 };
@@ -120,7 +121,12 @@ pub(crate) use replacement_confirmation::{
     QueueReplacementConfirmationDecision, QueueReplacementConfirmationOutcome,
     TrustedStartupQueueReplacementIntent, safe_local_open_label,
 };
-pub(crate) use row_interactions::{RuntimeMoveItemOutcome, RuntimeRowPlayOutcome};
+pub(crate) use row_interactions::{
+    RuntimeMoveItemsOutcome, RuntimeRowPlayOutcome, RuntimeUpdateSelectionOutcome,
+};
+pub(crate) use selection::{
+    ClearSelectionCursor, PlaylistSelectionSnapshot, UpdateSelection, UpdateSelectionOutcome,
+};
 #[cfg(test)]
 pub(crate) use view::PlaylistVisibleRowTestFixture;
 pub(crate) use view::{PlaylistStructuralRevision, PlaylistViewSnapshot, PlaylistVisibleRow};

@@ -6,7 +6,7 @@
 
 pub mod minimal;
 
-use egui::{Color32, Frame, Margin};
+use egui::{Color32, Frame, Margin, Stroke};
 
 use crate::ui::animation::AnimationState;
 use crate::ui::assets::AssetProvider;
@@ -100,6 +100,27 @@ pub struct PersistentControlStyle {
     pub surface_pressed: Color32,
     /// Контур keyboard focus.
     pub focus_outline: Color32,
+}
+
+/// Цветовые токены Playlist row не зависят от системного selection theme.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlaylistRowStyle {
+    /// Hover обычной строки.
+    pub hover_fill: Color32,
+    /// Постоянная selection surface.
+    pub selected_fill: Color32,
+    /// Усиленная selection surface под pointer.
+    pub selected_hover_fill: Color32,
+    /// Независимая surface active playback.
+    pub active_fill: Color32,
+    /// Full-width physical-pixel separator.
+    pub separator_color: Color32,
+    /// Контур insertion target во время drag.
+    pub insertion_stroke: Stroke,
+    /// Контур keyboard interaction cursor.
+    pub focus_stroke: Stroke,
+    /// Независимый контур active playback.
+    pub active_stroke: Stroke,
 }
 
 /// Цвета и размеры панели controls.
@@ -210,6 +231,10 @@ pub trait PlayerSkin: AssetProvider {
     #[must_use]
     fn controls_style(&self) -> ControlsStyle;
 
+    /// Возвращает explicit Playlist row tokens без системного синего.
+    #[must_use]
+    fn playlist_row_style(&self) -> PlaylistRowStyle;
+
     /// Возвращает frame нижней панели.
     fn bottom_panel_frame(&self) -> Frame {
         Frame::NONE
@@ -261,5 +286,35 @@ mod tests {
         assert!(timeline_style.thumb_outline_width > 0.0);
         assert_eq!(timeline_style.track_outline_fill, expected_outline_fill);
         assert_eq!(timeline_style.thumb_outline_fill, expected_outline_fill);
+    }
+
+    /// Playlist row tokens закрепляют белые alpha-состояния и отсутствие blue accent.
+    #[test]
+    fn minimal_playlist_rows_use_exact_white_alpha_tokens_without_blue() {
+        let style = MinimalSkin.playlist_row_style();
+        assert_eq!(
+            style.hover_fill,
+            Color32::from_rgba_unmultiplied(255, 255, 255, 28)
+        );
+        assert_eq!(
+            style.selected_fill,
+            Color32::from_rgba_unmultiplied(255, 255, 255, 46)
+        );
+        assert_eq!(
+            style.selected_hover_fill,
+            Color32::from_rgba_unmultiplied(255, 255, 255, 64)
+        );
+        assert_eq!(
+            style.separator_color,
+            Color32::from_rgba_unmultiplied(255, 255, 255, 128)
+        );
+        for color in [
+            style.insertion_stroke.color,
+            style.focus_stroke.color,
+            style.active_stroke.color,
+        ] {
+            assert_eq!(color.r(), color.g());
+            assert_eq!(color.g(), color.b());
+        }
     }
 }

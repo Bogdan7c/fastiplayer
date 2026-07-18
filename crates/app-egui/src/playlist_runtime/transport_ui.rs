@@ -184,6 +184,8 @@ impl PlaylistRuntime {
                 ControllerRemovalKind::Remove => "удаление элемента",
                 ControllerRemovalKind::Clear => "очистку плейлиста",
                 ControllerRemovalKind::RemoveOthers => "удаление остальных элементов",
+                ControllerRemovalKind::RemoveSelected => "удаление выбранных элементов",
+                ControllerRemovalKind::RemoveUnselected => "удаление невыбранных элементов",
             },
             seconds_remaining: status.seconds_remaining,
         });

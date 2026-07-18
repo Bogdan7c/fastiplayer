@@ -138,7 +138,7 @@ fn remove_selected_uses_d47_fallback_and_clears_persisted_current_without_active
     assert!(matches!(
         outcome,
         ControllerDestructiveRemovalOutcome::Removed(ref removal)
-            if removal.selected_item_id_after == Some(item_ids[2])
+            if removal.selection_after.selected_cursor() == Some(item_ids[2])
                 && matches!(
                     removal.current_outcome,
                     playlist_core::RemovalCurrentOutcome::Detached { removed_item_id }

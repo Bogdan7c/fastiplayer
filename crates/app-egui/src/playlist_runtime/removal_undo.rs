@@ -1,5 +1,6 @@
 //! Единственный process-lifetime D40/D46 removal Undo slot.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use player_core::{MediaInstallRequestId, MediaInstanceId};
@@ -12,7 +13,7 @@ use super::controller::{
 };
 use super::identity::ActiveMediaIdentity;
 use super::identity::ActiveMediaLineageId;
-use super::view::{PlaylistDirtyRevision, PlaylistDirtySignal};
+use super::view::{PlaylistDirtyRevision, PlaylistDirtySignal, PlaylistStructuralRevision};
 use super::{PlaylistBindingGeneration, PlaylistRuntime};
 use crate::media_open::{CancellationDispatchOutcome, MediaOpenCommandError, MediaOpenRequestId};
 
@@ -58,9 +59,14 @@ pub(crate) enum RuntimeRemovalOutcome {
     NotFound {
         item_id: PlaylistItemId,
     },
+    DuplicateItemId {
+        item_id: PlaylistItemId,
+    },
     InvalidRetainedItem {
         item_id: PlaylistItemId,
     },
+    StaleStructuralRevision,
+    StaleSelection,
     NoChange,
     DeferredUntilStartupInstallResolution,
     InstallCommitLinearizing,
@@ -210,6 +216,40 @@ impl PlaylistRuntime {
         runtime_outcome
     }
 
+    /// Удаляет exact captured selection одним commit-ом и создаёт один Undo slot.
+    pub(crate) fn remove_selected_playlist_items(
+        &mut self,
+        item_ids: Arc<[PlaylistItemId]>,
+        structural_revision: PlaylistStructuralRevision,
+        now: Instant,
+    ) -> RuntimeRemovalOutcome {
+        let Some(controller) = self.controller.as_mut() else {
+            return RuntimeRemovalOutcome::LoadDecisionPending;
+        };
+        let dirty_before = controller.dirty_revision();
+        let outcome = controller.remove_selected_items(item_ids, structural_revision);
+        let runtime_outcome = self.store_removal_outcome(outcome, now);
+        self.publish_controller_mutation_if_dirty(dirty_before);
+        runtime_outcome
+    }
+
+    /// Удаляет exact captured complement selection одним commit-ом и одним Undo.
+    pub(crate) fn remove_unselected_playlist_items(
+        &mut self,
+        item_ids: Arc<[PlaylistItemId]>,
+        structural_revision: PlaylistStructuralRevision,
+        now: Instant,
+    ) -> RuntimeRemovalOutcome {
+        let Some(controller) = self.controller.as_mut() else {
+            return RuntimeRemovalOutcome::LoadDecisionPending;
+        };
+        let dirty_before = controller.dirty_revision();
+        let outcome = controller.remove_unselected_items(item_ids, structural_revision);
+        let runtime_outcome = self.store_removal_outcome(outcome, now);
+        self.publish_controller_mutation_if_dirty(dirty_before);
+        runtime_outcome
+    }
+
     fn store_removal_outcome(
         &mut self,
         outcome: ControllerDestructiveRemovalOutcome,
@@ -225,13 +265,13 @@ impl PlaylistRuntime {
                 });
                 let summary = RuntimeRemovalOutcome::Removed {
                     kind: removal.kind,
-                    selected_item_id: removal.selected_item_id_after,
+                    selected_item_id: removal.selection_after.selected_cursor(),
                     current_outcome: removal.current_outcome,
                     dirty: removal.dirty,
                     manual_navigation_invalidation: removal.manual_navigation_invalidation,
                     pending_cancellation,
                 };
-                let Some(undo) = RemovalUndoState::new(removal, now) else {
+                let Some(undo) = RemovalUndoState::new(*removal, now) else {
                     self.removal_undo = None;
                     return RuntimeRemovalOutcome::DeadlineOverflow;
                 };
@@ -242,8 +282,17 @@ impl PlaylistRuntime {
             ControllerDestructiveRemovalOutcome::NotFound { item_id } => {
                 RuntimeRemovalOutcome::NotFound { item_id }
             }
+            ControllerDestructiveRemovalOutcome::DuplicateItemId { item_id } => {
+                RuntimeRemovalOutcome::DuplicateItemId { item_id }
+            }
             ControllerDestructiveRemovalOutcome::InvalidRetainedItem { item_id } => {
                 RuntimeRemovalOutcome::InvalidRetainedItem { item_id }
+            }
+            ControllerDestructiveRemovalOutcome::StaleStructuralRevision => {
+                RuntimeRemovalOutcome::StaleStructuralRevision
+            }
+            ControllerDestructiveRemovalOutcome::StaleSelection => {
+                RuntimeRemovalOutcome::StaleSelection
             }
             ControllerDestructiveRemovalOutcome::NoChange => RuntimeRemovalOutcome::NoChange,
             ControllerDestructiveRemovalOutcome::InstallCommitLinearizing => {

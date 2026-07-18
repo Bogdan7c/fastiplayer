@@ -122,6 +122,7 @@ pub(crate) fn show(
     ui: &mut egui::Ui,
     model: Option<&PlaylistViewModel>,
     interaction: &PlaylistInteractionModel,
+    row_style: crate::ui::skin::PlaylistRowStyle,
     state: &mut PlaylistUiState,
     output: &mut PlaylistUiOutput,
 ) {
@@ -136,12 +137,18 @@ pub(crate) fn show(
         let mut discarded_output = PlaylistUiOutput::default();
         toolbar::show(ui, interaction, &mut discarded_output);
         status::show_summary(ui, model, &mut visual_state);
-        renderer::show_rows(ui, model, &mut visual_state, &mut discarded_output);
+        renderer::show_rows(
+            ui,
+            model,
+            row_style,
+            &mut visual_state,
+            &mut discarded_output,
+        );
         return;
     }
     toolbar::show(ui, interaction, output);
     status::show_summary(ui, model, state);
-    renderer::show_rows(ui, model, state, output);
+    renderer::show_rows(ui, model, row_style, state, output);
 }
 
 #[cfg(test)]

@@ -1,14 +1,21 @@
 //! Destructive queue mutations, detached active tombstone и controller-side Undo restore.
 
+use std::collections::HashSet;
+use std::sync::Arc;
+
 use playlist_core::{
     AutomaticEndedIntent, AutomaticTraversalPlan, AutomaticTraversalStart, BulkRemoveError,
     BulkRemoveOutcome, ClearQueueOutcome, PlaylistItemId, PlaylistRemovalSnapshot,
     RemovalCurrentOutcome, RemovalSnapshotRestoreError, RemoveItemOutcome, RepeatMode,
 };
 
-use super::{ManualNavigationInvalidation, PlaylistController, PlaylistDirtySignal};
+use super::{
+    ManualNavigationInvalidation, PlaylistController, PlaylistDirtySignal,
+    PlaylistStructuralRevision,
+};
 use crate::media_open::MediaOpenRequestId;
 use crate::playlist_runtime::identity::{ActiveMediaIdentity, ActiveMediaLineageId};
+use crate::playlist_runtime::selection::PlaylistSelectionSnapshot;
 
 #[cfg(test)]
 mod tests;
@@ -19,6 +26,8 @@ pub(crate) enum ControllerRemovalKind {
     Remove,
     Clear,
     RemoveOthers,
+    RemoveSelected,
+    RemoveUnselected,
 }
 
 /// Runtime-only detached active identity и domain-owned continuation plan.
@@ -58,8 +67,8 @@ impl DetachedActiveTombstone {
 pub(crate) struct ControllerDestructiveRemoval {
     pub(crate) kind: ControllerRemovalKind,
     pub(crate) snapshot: PlaylistRemovalSnapshot,
-    pub(crate) selected_item_id_before: Option<PlaylistItemId>,
-    pub(crate) selected_item_id_after: Option<PlaylistItemId>,
+    pub(crate) selection_before: PlaylistSelectionSnapshot,
+    pub(crate) selection_after: PlaylistSelectionSnapshot,
     pub(crate) current_outcome: RemovalCurrentOutcome,
     pub(crate) dirty: PlaylistDirtySignal,
     pub(crate) active_lineage_at_removal: Option<ActiveMediaLineageId>,
@@ -72,9 +81,19 @@ pub(crate) struct ControllerDestructiveRemoval {
 /// Typed action outcome не смешивает no-op, lock и revision failures.
 #[derive(Debug)]
 pub(crate) enum ControllerDestructiveRemovalOutcome {
-    Removed(ControllerDestructiveRemoval),
-    NotFound { item_id: PlaylistItemId },
-    InvalidRetainedItem { item_id: PlaylistItemId },
+    /// Heap indirection сохраняет error outcomes компактными; allocation бывает только на commit.
+    Removed(Box<ControllerDestructiveRemoval>),
+    NotFound {
+        item_id: PlaylistItemId,
+    },
+    DuplicateItemId {
+        item_id: PlaylistItemId,
+    },
+    InvalidRetainedItem {
+        item_id: PlaylistItemId,
+    },
+    StaleStructuralRevision,
+    StaleSelection,
     NoChange,
     InstallCommitLinearizing,
     FatalInvariant,
@@ -90,6 +109,19 @@ enum RemovalMutationError {
     NoChange,
     InstallCommitLinearizing,
     DomainRevisionExhausted,
+}
+
+/// Controller явно выбирает post-removal selection policy до domain commit-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionAfterRemoval {
+    /// Сохранить все surviving selected IDs, anchor и cursor.
+    PreserveSurvivors,
+    /// Снять selection и interaction cursor.
+    Clear,
+    /// Оставить единственный retained stable ID.
+    SelectSingle(PlaylistItemId),
+    /// Перенести selection/focus на ближайшую surviving строку.
+    SelectNearest,
 }
 
 impl RemovalMutationError {
@@ -138,33 +170,31 @@ impl PlaylistController {
         &mut self,
         item_id: PlaylistItemId,
     ) -> ControllerDestructiveRemovalOutcome {
-        let Some(removed_index) = self
-            .queue
-            .items()
-            .iter()
-            .position(|item| item.item_id() == item_id)
-        else {
+        if self.queue.item(item_id).is_none() {
             return ControllerDestructiveRemovalOutcome::NotFound { item_id };
+        }
+        let selection_policy = if self.selection.snapshot().is_selected(item_id) {
+            SelectionAfterRemoval::SelectNearest
+        } else {
+            SelectionAfterRemoval::PreserveSurvivors
         };
         self.commit_destructive_removal(
             ControllerRemovalKind::Remove,
-            Some(item_id),
-            move |controller| {
-                let outcome = controller.queue.remove(item_id);
-                match outcome {
-                    RemoveItemOutcome::Removed {
-                        current_outcome, ..
-                    } => Ok((current_outcome, Some(removed_index))),
-                    RemoveItemOutcome::InstallCommitLinearizing => {
-                        Err(RemovalMutationError::InstallCommitLinearizing)
-                    }
-                    RemoveItemOutcome::StructuralRevisionExhausted
-                    | RemoveItemOutcome::TraversalRevisionExhausted => {
-                        Err(RemovalMutationError::DomainRevisionExhausted)
-                    }
-                    RemoveItemOutcome::NotFound { .. } => {
-                        Err(RemovalMutationError::NotFound { item_id })
-                    }
+            Arc::from([item_id]),
+            selection_policy,
+            move |controller| match controller.queue.remove(item_id) {
+                RemoveItemOutcome::Removed {
+                    current_outcome, ..
+                } => Ok(current_outcome),
+                RemoveItemOutcome::InstallCommitLinearizing => {
+                    Err(RemovalMutationError::InstallCommitLinearizing)
+                }
+                RemoveItemOutcome::StructuralRevisionExhausted
+                | RemoveItemOutcome::TraversalRevisionExhausted => {
+                    Err(RemovalMutationError::DomainRevisionExhausted)
+                }
+                RemoveItemOutcome::NotFound { .. } => {
+                    Err(RemovalMutationError::NotFound { item_id })
                 }
             },
         )
@@ -172,11 +202,20 @@ impl PlaylistController {
 
     /// Clear немедленно оставляет active media detached и не посылает player Stop.
     pub(crate) fn clear_queue(&mut self) -> ControllerDestructiveRemovalOutcome {
-        self.commit_destructive_removal(ControllerRemovalKind::Clear, None, |controller| {
-            match controller.queue.clear() {
+        let removed_item_ids = self
+            .queue
+            .items()
+            .iter()
+            .map(|item| item.item_id())
+            .collect::<Vec<_>>();
+        self.commit_destructive_removal(
+            ControllerRemovalKind::Clear,
+            removed_item_ids.into(),
+            SelectionAfterRemoval::Clear,
+            |controller| match controller.queue.clear() {
                 ClearQueueOutcome::Cleared {
                     current_outcome, ..
-                } => Ok((current_outcome, None)),
+                } => Ok(current_outcome),
                 ClearQueueOutcome::AlreadyEmpty => Err(RemovalMutationError::NoChange),
                 ClearQueueOutcome::InstallCommitLinearizing => {
                     Err(RemovalMutationError::InstallCommitLinearizing)
@@ -185,8 +224,8 @@ impl PlaylistController {
                 | ClearQueueOutcome::TraversalRevisionExhausted => {
                     Err(RemovalMutationError::DomainRevisionExhausted)
                 }
-            }
-        })
+            },
+        )
     }
 
     /// Remove Others сохраняет retained stable ID и делает один bulk commit.
@@ -199,13 +238,21 @@ impl PlaylistController {
                 item_id: retained_item_id,
             };
         }
+        let removed_item_ids = self
+            .queue
+            .items()
+            .iter()
+            .map(|item| item.item_id())
+            .filter(|item_id| *item_id != retained_item_id)
+            .collect::<Vec<_>>();
         self.commit_destructive_removal(
             ControllerRemovalKind::RemoveOthers,
-            Some(retained_item_id),
+            removed_item_ids.into(),
+            SelectionAfterRemoval::SelectSingle(retained_item_id),
             |controller| match controller.queue.remove_others(retained_item_id) {
                 Ok(BulkRemoveOutcome::Removed {
                     current_outcome, ..
-                }) => Ok((current_outcome, None)),
+                }) => Ok(current_outcome),
                 Ok(BulkRemoveOutcome::NoItemsRequested | BulkRemoveOutcome::NoMatchingItems) => {
                     Err(RemovalMutationError::NoChange)
                 }
@@ -220,15 +267,131 @@ impl PlaylistController {
         )
     }
 
+    /// Удаляет exact current selection одним domain `remove_batch` commit-ом.
+    pub(crate) fn remove_selected_items(
+        &mut self,
+        item_ids: Arc<[PlaylistItemId]>,
+        expected_structural_revision: PlaylistStructuralRevision,
+    ) -> ControllerDestructiveRemovalOutcome {
+        let removed_item_ids =
+            match self.preflight_exact_removal_ids(&item_ids, expected_structural_revision) {
+                Ok(item_ids) => item_ids,
+                Err(outcome) => return outcome,
+            };
+        let selection = self.selection.snapshot();
+        if selection.selected_count() != removed_item_ids.len()
+            || removed_item_ids
+                .iter()
+                .any(|item_id| !selection.is_selected(*item_id))
+        {
+            return ControllerDestructiveRemovalOutcome::StaleSelection;
+        }
+        let domain_item_ids = Arc::clone(&item_ids);
+        self.commit_destructive_removal(
+            ControllerRemovalKind::RemoveSelected,
+            item_ids,
+            SelectionAfterRemoval::SelectNearest,
+            move |controller| match controller.queue.remove_batch(&domain_item_ids) {
+                Ok(BulkRemoveOutcome::Removed {
+                    current_outcome, ..
+                }) => Ok(current_outcome),
+                Ok(BulkRemoveOutcome::NoItemsRequested | BulkRemoveOutcome::NoMatchingItems) => {
+                    Err(RemovalMutationError::NoChange)
+                }
+                Err(BulkRemoveError::InstallCommitLinearizing) => {
+                    Err(RemovalMutationError::InstallCommitLinearizing)
+                }
+                Err(
+                    BulkRemoveError::StructuralRevisionExhausted
+                    | BulkRemoveError::TraversalRevisionExhausted,
+                ) => Err(RemovalMutationError::DomainRevisionExhausted),
+            },
+        )
+    }
+
+    /// Удаляет exact complement current selection одним domain commit-ом.
+    pub(crate) fn remove_unselected_items(
+        &mut self,
+        item_ids: Arc<[PlaylistItemId]>,
+        expected_structural_revision: PlaylistStructuralRevision,
+    ) -> ControllerDestructiveRemovalOutcome {
+        let removed_item_ids =
+            match self.preflight_exact_removal_ids(&item_ids, expected_structural_revision) {
+                Ok(item_ids) => item_ids,
+                Err(outcome) => return outcome,
+            };
+        let selection = self.selection.snapshot();
+        if selection.selected_count() + removed_item_ids.len() != self.queue.len()
+            || removed_item_ids
+                .iter()
+                .any(|item_id| selection.is_selected(*item_id))
+        {
+            return ControllerDestructiveRemovalOutcome::StaleSelection;
+        }
+        let domain_item_ids = Arc::clone(&item_ids);
+        self.commit_destructive_removal(
+            ControllerRemovalKind::RemoveUnselected,
+            item_ids,
+            SelectionAfterRemoval::PreserveSurvivors,
+            move |controller| match controller.queue.remove_batch(&domain_item_ids) {
+                Ok(BulkRemoveOutcome::Removed {
+                    current_outcome, ..
+                }) => Ok(current_outcome),
+                Ok(BulkRemoveOutcome::NoItemsRequested | BulkRemoveOutcome::NoMatchingItems) => {
+                    Err(RemovalMutationError::NoChange)
+                }
+                Err(BulkRemoveError::InstallCommitLinearizing) => {
+                    Err(RemovalMutationError::InstallCommitLinearizing)
+                }
+                Err(
+                    BulkRemoveError::StructuralRevisionExhausted
+                    | BulkRemoveError::TraversalRevisionExhausted,
+                ) => Err(RemovalMutationError::DomainRevisionExhausted),
+            },
+        )
+    }
+
+    /// Проверяет revision, uniqueness и committed membership exact bulk action-а.
+    fn preflight_exact_removal_ids(
+        &self,
+        item_ids: &[PlaylistItemId],
+        expected_structural_revision: PlaylistStructuralRevision,
+    ) -> Result<HashSet<PlaylistItemId>, ControllerDestructiveRemovalOutcome> {
+        if expected_structural_revision != self.structural_revision {
+            return Err(ControllerDestructiveRemovalOutcome::StaleStructuralRevision);
+        }
+        if item_ids.is_empty() {
+            return Err(ControllerDestructiveRemovalOutcome::NoChange);
+        }
+        let committed_item_ids: HashSet<_> = self
+            .queue
+            .items()
+            .iter()
+            .map(|item| item.item_id())
+            .collect();
+        let mut exact_item_ids = HashSet::with_capacity(item_ids.len());
+        for item_id in item_ids {
+            if !exact_item_ids.insert(*item_id) {
+                return Err(ControllerDestructiveRemovalOutcome::DuplicateItemId {
+                    item_id: *item_id,
+                });
+            }
+            if !committed_item_ids.contains(item_id) {
+                return Err(ControllerDestructiveRemovalOutcome::NotFound { item_id: *item_id });
+            }
+        }
+        Ok(exact_item_ids)
+    }
+
     /// Общая transaction сначала захватывает snapshot, затем публикует ровно одну mutation.
     fn commit_destructive_removal(
         &mut self,
         kind: ControllerRemovalKind,
-        retained_or_removed_item_id: Option<PlaylistItemId>,
+        removed_item_ids: Arc<[PlaylistItemId]>,
+        selection_policy: SelectionAfterRemoval,
         mutate: impl FnOnce(
             &mut PlaylistController,
-        )
-            -> Result<(RemovalCurrentOutcome, Option<usize>), RemovalMutationError>,
+        ) -> Result<RemovalCurrentOutcome, RemovalMutationError>,
     ) -> ControllerDestructiveRemovalOutcome {
         if self.fatal_invariant.is_some() {
             return ControllerDestructiveRemovalOutcome::FatalInvariant;
@@ -246,21 +409,15 @@ impl PlaylistController {
             return ControllerDestructiveRemovalOutcome::StructuralRevisionExhausted;
         };
 
-        let selected_before = self.selected_item_id;
+        let selection_before = self.selection.snapshot();
         let current_before = self.queue.traversal_current();
         let snapshot = self.queue.capture_removal_snapshot();
         let active_before = self.active_media;
-        let removed_active_item_id = active_before.and_then(ActiveMediaIdentity::item_id).filter(
-            |active_item_id| match kind {
-                ControllerRemovalKind::Remove => {
-                    Some(*active_item_id) == retained_or_removed_item_id
-                }
-                ControllerRemovalKind::Clear => true,
-                ControllerRemovalKind::RemoveOthers => {
-                    Some(*active_item_id) != retained_or_removed_item_id
-                }
-            },
-        );
+        let removed_item_ids: HashSet<_> = removed_item_ids.iter().copied().collect();
+        let fallback_index = self.nearest_survivor_index(&removed_item_ids);
+        let removed_active_item_id = active_before
+            .and_then(ActiveMediaIdentity::item_id)
+            .filter(|active_item_id| removed_item_ids.contains(active_item_id));
         let continuation = if kind == ControllerRemovalKind::Clear {
             None
         } else {
@@ -271,12 +428,16 @@ impl PlaylistController {
                 .and_then(|_| self.capture_removal_continuation())
         };
 
-        let (current_outcome, removed_index) = match mutate(self) {
+        let current_outcome = match mutate(self) {
             Ok(committed) => committed,
             Err(error) => return error.into_outcome(),
         };
 
-        self.apply_selection_after_removal(kind, retained_or_removed_item_id, removed_index);
+        self.apply_selection_after_removal(
+            selection_before.clone(),
+            selection_policy,
+            fallback_index,
+        );
         self.runtime_errors
             .retain(|item_id, _| self.queue.item(*item_id).is_some());
         if let (Some(active), Some(removed_item_id)) = (active_before, removed_active_item_id) {
@@ -296,12 +457,13 @@ impl PlaylistController {
         self.structural_revision = next_structural;
         let dirty = self.commit_dirty(next_dirty);
         self.publish_view(true);
+        let selection_after = self.selection.snapshot();
 
-        ControllerDestructiveRemovalOutcome::Removed(ControllerDestructiveRemoval {
+        ControllerDestructiveRemovalOutcome::Removed(Box::new(ControllerDestructiveRemoval {
             kind,
             snapshot,
-            selected_item_id_before: selected_before,
-            selected_item_id_after: self.selected_item_id,
+            selection_before,
+            selection_after,
             current_outcome,
             dirty,
             active_lineage_at_removal: active_before.map(ActiveMediaIdentity::lineage_id),
@@ -311,7 +473,7 @@ impl PlaylistController {
             active_tombstone_item_id: removed_active_item_id,
             manual_navigation_invalidation,
             pending_request_to_cancel,
-        })
+        }))
     }
 
     fn capture_removal_continuation(&self) -> Option<Box<AutomaticTraversalPlan>> {
@@ -331,27 +493,73 @@ impl PlaylistController {
         }
     }
 
+    /// Находит insertion position ближайшей surviving строки относительно selection cursor.
+    fn nearest_survivor_index(&self, removed_item_ids: &HashSet<PlaylistItemId>) -> Option<usize> {
+        let focus_origin = self
+            .selection
+            .interaction_cursor()
+            .filter(|item_id| removed_item_ids.contains(item_id))
+            .or_else(|| {
+                self.queue
+                    .items()
+                    .iter()
+                    .map(|item| item.item_id())
+                    .find(|item_id| removed_item_ids.contains(item_id))
+            })?;
+        let origin_index = self
+            .queue
+            .items()
+            .iter()
+            .position(|item| item.item_id() == focus_origin)?;
+        Some(
+            self.queue.items()[..origin_index]
+                .iter()
+                .filter(|item| !removed_item_ids.contains(&item.item_id()))
+                .count(),
+        )
+    }
+
+    /// Применяет заранее выбранную selection policy только после успешного domain commit-а.
     fn apply_selection_after_removal(
         &mut self,
-        kind: ControllerRemovalKind,
-        retained_or_removed_item_id: Option<PlaylistItemId>,
-        removed_index: Option<usize>,
+        selection_before: PlaylistSelectionSnapshot,
+        selection_policy: SelectionAfterRemoval,
+        fallback_index: Option<usize>,
     ) {
-        match kind {
-            ControllerRemovalKind::Clear => self.selected_item_id = None,
-            ControllerRemovalKind::RemoveOthers => {
-                self.selected_item_id = retained_or_removed_item_id;
+        match selection_policy {
+            SelectionAfterRemoval::PreserveSurvivors => {
+                self.selection.restore(selection_before, &self.queue);
             }
-            ControllerRemovalKind::Remove => {
-                if self.selected_item_id == retained_or_removed_item_id {
-                    self.selected_item_id = removed_index.and_then(|index| {
-                        self.queue
-                            .items()
-                            .get(index)
-                            .or_else(|| self.queue.items().last())
-                            .map(|item| item.item_id())
-                    });
-                }
+            SelectionAfterRemoval::Clear => {
+                self.selection
+                    .replace_after_removal(HashSet::new(), None, None);
+            }
+            SelectionAfterRemoval::SelectSingle(item_id) => {
+                let selected_item_ids = self
+                    .queue
+                    .item(item_id)
+                    .map(|_| HashSet::from([item_id]))
+                    .unwrap_or_default();
+                let cursor = (!selected_item_ids.is_empty()).then_some(item_id);
+                self.selection
+                    .replace_after_removal(selected_item_ids, cursor, cursor);
+            }
+            SelectionAfterRemoval::SelectNearest => {
+                let fallback_item_id = fallback_index.and_then(|index| {
+                    self.queue
+                        .items()
+                        .get(index)
+                        .or_else(|| self.queue.items().last())
+                        .map(|item| item.item_id())
+                });
+                let selected_item_ids = fallback_item_id
+                    .map(|item_id| HashSet::from([item_id]))
+                    .unwrap_or_default();
+                self.selection.replace_after_removal(
+                    selected_item_ids,
+                    fallback_item_id,
+                    fallback_item_id,
+                );
             }
         }
     }
@@ -376,9 +584,8 @@ impl PlaylistController {
             return ControllerRemovalUndoOutcome::Domain(error);
         }
 
-        self.selected_item_id = removal
-            .selected_item_id_before
-            .filter(|item_id| self.queue.item(*item_id).is_some());
+        self.selection
+            .restore(removal.selection_before, &self.queue);
         let reattached_active = match (
             removal.active_tombstone_lineage,
             removal.active_tombstone_item_id,
@@ -395,7 +602,7 @@ impl PlaylistController {
         let dirty = self.commit_dirty(next_dirty);
         self.publish_view(true);
         ControllerRemovalUndoOutcome::Restored {
-            selected_item_id: self.selected_item_id,
+            selected_item_id: self.selection.selected_cursor(),
             reattached_active,
             dirty,
         }

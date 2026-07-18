@@ -1,13 +1,17 @@
 //! Fixed-height `show_rows` renderer и stable viewport anchor.
 
 use egui::{Align, Layout, Sense, TextWrapMode, WidgetInfo, WidgetType};
-use playlist_core::PlaylistMediaKind;
+use playlist_core::{PlaylistItemId, PlaylistMediaKind};
 use ui_artwork_egui::{ArtworkPainter, MediaKindGlyph};
 
 use super::{
-    PlaylistUiOutput, PlaylistUiState, ViewportAnchor, row_interactions, virtualized_drag,
+    PlaylistAction, PlaylistUiOutput, PlaylistUiState, ViewportAnchor, row_interactions,
+    virtualized_drag,
 };
-use crate::playlist_runtime::{PlaylistViewModel, PlaylistVisibleRow};
+use crate::playlist_runtime::{
+    ClearSelectionCursor, PlaylistViewModel, PlaylistVisibleRow, UpdateSelection,
+};
+use crate::ui::skin::PlaylistRowStyle;
 
 pub(super) const ROW_HEIGHT: f32 = 34.0;
 pub(super) const TOOLTIP_MAX_WIDTH: f32 = 320.0;
@@ -16,9 +20,21 @@ pub(super) const MEDIA_KIND_WIDTH: f32 = 16.0;
 const DURATION_WIDTH: f32 = 50.0;
 const BADGES_WIDTH: f32 = 58.0;
 
+/// Read-only row dependencies группируются, чтобы boundary не превращался в список параметров.
+#[derive(Clone, Copy)]
+struct PlaylistRowRenderContext<'a> {
+    /// Authoritative immutable snapshot для selection, drag targets и stable IDs.
+    model: &'a PlaylistViewModel,
+    /// Skin-owned токены не читаются из глобальных egui visuals.
+    row_style: PlaylistRowStyle,
+    /// Одноразовый focus intent разрешён до начала virtualized row pass.
+    focus_item: Option<PlaylistItemId>,
+}
+
 pub(super) fn show_rows(
     ui: &mut egui::Ui,
     model: &PlaylistViewModel,
+    row_style: PlaylistRowStyle,
     state: &mut PlaylistUiState,
     output: &mut PlaylistUiOutput,
 ) {
@@ -59,19 +75,31 @@ pub(super) fn show_rows(
         |rows_ui, visible_range| {
             rows_ui.set_min_width(0.0);
             let visible_rows = model.visible_rows(visible_range.clone());
+            let row_context = PlaylistRowRenderContext {
+                model,
+                row_style,
+                focus_item,
+            };
             for (visible_offset, row) in visible_rows.iter().enumerate() {
                 output.record_visible(row.item_id());
                 render_row(
                     rows_ui,
-                    model,
+                    row_context,
                     visible_range.start + visible_offset,
                     row,
-                    focus_item == Some(row.item_id()),
                     state,
                     output,
                 );
             }
         },
+    );
+    clear_selection_from_empty_area(
+        ui,
+        model,
+        scroll_output.inner_rect,
+        scroll_output.state.offset.y,
+        row_pitch,
+        output,
     );
     virtualized_drag::finish_frame(
         ui.ctx(),
@@ -83,6 +111,36 @@ pub(super) fn show_rows(
         output,
     );
     update_viewport_anchor(model, state, row_pitch, scroll_output.state.offset.y);
+}
+
+/// Клик ниже последней строки снимает selection, не создавая fake row action.
+fn clear_selection_from_empty_area(
+    ui: &mut egui::Ui,
+    model: &PlaylistViewModel,
+    viewport: egui::Rect,
+    scroll_offset: f32,
+    row_pitch: f32,
+    output: &mut PlaylistUiOutput,
+) {
+    let content_bottom = viewport.top() + model.item_count() as f32 * row_pitch - scroll_offset;
+    let empty_top = content_bottom.clamp(viewport.top(), viewport.bottom());
+    if empty_top >= viewport.bottom() {
+        return;
+    }
+    let empty_rect = egui::Rect::from_min_max(
+        egui::pos2(viewport.left(), empty_top),
+        viewport.right_bottom(),
+    );
+    let response = ui.interact(
+        empty_rect,
+        ui.make_persistent_id("playlist_empty_area"),
+        Sense::click(),
+    );
+    if response.clicked_by(egui::PointerButton::Primary) {
+        output.push_action(PlaylistAction::UpdateSelection(UpdateSelection::Clear {
+            cursor: ClearSelectionCursor::Clear,
+        }));
+    }
 }
 
 pub(super) fn anchored_scroll_offset(
@@ -121,33 +179,18 @@ fn update_viewport_anchor(
 
 fn render_row(
     ui: &mut egui::Ui,
-    model: &PlaylistViewModel,
+    context: PlaylistRowRenderContext<'_>,
     row_index: usize,
     row: &PlaylistVisibleRow,
-    focus_requested: bool,
     state: &mut PlaylistUiState,
     output: &mut PlaylistUiOutput,
 ) {
     let item_id_value = row.item_id().expose_value_for_persistence();
     ui.push_id(("playlist_row", item_id_value), |ui| {
         let available_width = ui.available_width().max(1.0);
-        let (row_rect, response) = ui.allocate_exact_size(
-            egui::vec2(available_width, ROW_HEIGHT),
-            Sense::click_and_drag(),
-        );
-        let row_fill = row_fill(ui, row);
-        let row_stroke = if virtualized_drag::marks_row(
-            &state.drag,
-            row_index,
-            row.item_id(),
-            model.item_count(),
-        ) {
-            ui.visuals().selection.stroke
-        } else if row.is_active() {
-            ui.visuals().widgets.active.fg_stroke
-        } else {
-            egui::Stroke::NONE
-        };
+        let (row_id, row_rect) = ui.allocate_space(egui::vec2(available_width, ROW_HEIGHT));
+        let background_shape = ArtworkPainter::new(ui.painter()).reserve_playlist_row_background();
+
         let mut row_ui = ui.new_child(
             egui::UiBuilder::new()
                 .id_salt("content")
@@ -155,11 +198,10 @@ fn render_row(
                 .layout(Layout::left_to_right(Align::Center)),
         );
         row_ui.set_clip_rect(row_rect.intersect(ui.clip_rect()));
-        egui::Frame::new()
-            .fill(row_fill)
-            .stroke(row_stroke)
-            .show(&mut row_ui, |ui| render_row_content(ui, row_index, row));
+        render_row_content(&mut row_ui, row_index, row);
 
+        // Единственный full-width response регистрируется после layout всего content.
+        let response = ui.interact(row_rect, row_id, Sense::click_and_drag());
         let accessibility_text = accessibility_text(row_index, row);
         response.widget_info(|| {
             WidgetInfo::selected(
@@ -169,14 +211,34 @@ fn render_row(
                 &accessibility_text,
             )
         });
-        if focus_requested {
+        if context.focus_item == Some(row.item_id()) {
             response.scroll_to_me(Some(Align::Center));
             response.request_focus();
         }
+
+        let row_fill = row_fill(context.row_style, row, response.hovered());
+        let row_stroke = row_stroke(
+            context.row_style,
+            row,
+            response.has_focus(),
+            virtualized_drag::marks_row(
+                &state.drag,
+                row_index,
+                row.item_id(),
+                context.model.item_count(),
+            ),
+        );
+        ArtworkPainter::new(ui.painter()).playlist_row_background(
+            background_shape,
+            row_rect,
+            row_fill,
+            row_stroke,
+        );
+
         row_interactions::handle_row_response(
             ui,
             &response,
-            model,
+            context.model,
             row_index,
             row.item_id(),
             state,
@@ -185,16 +247,39 @@ fn render_row(
         egui::Tooltip::for_enabled(&response)
             .width(tooltip_width(response.rect.width()))
             .show(|ui| show_safe_tooltip(ui, row));
+        ArtworkPainter::new(ui.painter()).playlist_row_separator(
+            row_rect,
+            context.row_style.separator_color,
+            ui.ctx().pixels_per_point(),
+        );
     });
 }
 
-fn row_fill(ui: &egui::Ui, row: &PlaylistVisibleRow) -> egui::Color32 {
-    if row.is_selected() {
-        ui.visuals().selection.bg_fill
+fn row_fill(style: PlaylistRowStyle, row: &PlaylistVisibleRow, hovered: bool) -> egui::Color32 {
+    match (row.is_selected(), hovered, row.is_active()) {
+        (true, true, _) => style.selected_hover_fill,
+        (true, false, _) => style.selected_fill,
+        (false, true, _) => style.hover_fill,
+        (false, false, true) => style.active_fill,
+        (false, false, false) => egui::Color32::TRANSPARENT,
+    }
+}
+
+/// Stroke priority сохраняет insertion, focus и active playback различимыми.
+fn row_stroke(
+    style: PlaylistRowStyle,
+    row: &PlaylistVisibleRow,
+    focused: bool,
+    insertion_target: bool,
+) -> egui::Stroke {
+    if insertion_target {
+        style.insertion_stroke
+    } else if focused {
+        style.focus_stroke
     } else if row.is_active() {
-        ui.visuals().widgets.active.weak_bg_fill
+        style.active_stroke
     } else {
-        egui::Color32::TRANSPARENT
+        egui::Stroke::NONE
     }
 }
 
@@ -202,6 +287,7 @@ fn render_row_content(ui: &mut egui::Ui, row_index: usize, row: &PlaylistVisible
     ui.add_sized(
         [INDEX_WIDTH, ROW_HEIGHT],
         egui::Label::new(egui::RichText::new(format!("{}.", row_index + 1)).weak())
+            .selectable(false)
             .wrap_mode(TextWrapMode::Truncate),
     );
     render_media_kind_icon(ui, row.media_kind());
@@ -212,11 +298,14 @@ fn render_row_content(ui: &mut egui::Ui, row_index: usize, row: &PlaylistVisible
     ui.add_sized(
         [title_width, ROW_HEIGHT],
         egui::Label::new(egui::RichText::new(row.display_title()).strong())
+            .selectable(false)
             .wrap_mode(TextWrapMode::Truncate),
     );
     ui.add_sized(
         [DURATION_WIDTH, ROW_HEIGHT],
-        egui::Label::new(format_duration(row.duration())).wrap_mode(TextWrapMode::Truncate),
+        egui::Label::new(format_duration(row.duration()))
+            .selectable(false)
+            .wrap_mode(TextWrapMode::Truncate),
     );
     render_badges(ui, row);
 }
@@ -252,7 +341,7 @@ fn render_badges(ui: &mut egui::Ui, row: &PlaylistVisibleRow) {
         Layout::left_to_right(Align::Center),
         |ui| {
             if row.is_active() {
-                ui.strong("▶");
+                ui.add(egui::Label::new(egui::RichText::new("▶").strong()).selectable(false));
             } else {
                 ui.add_space(13.0);
             }
@@ -262,7 +351,10 @@ fn render_badges(ui: &mut egui::Ui, row: &PlaylistVisibleRow) {
                 ui.add_space(14.0);
             }
             if row.runtime_error().is_some() {
-                ui.colored_label(ui.visuals().error_fg_color, "!");
+                ui.add(
+                    egui::Label::new(egui::RichText::new("!").color(ui.visuals().error_fg_color))
+                        .selectable(false),
+                );
             } else {
                 ui.add_space(8.0);
             }

@@ -119,6 +119,38 @@ impl PlaylistViewModel {
         self.snapshot.item_id_at(row_index)
     }
 
+    /// Возвращает Arc-backed selection read model без копирования selected set.
+    pub(crate) fn selection(&self) -> &super::PlaylistSelectionSnapshot {
+        self.snapshot.selection()
+    }
+
+    /// Собирает selected IDs в canonical порядке только для explicit bulk event.
+    pub(crate) fn selected_item_ids(&self) -> Arc<[PlaylistItemId]> {
+        (0..self.item_count())
+            .filter_map(|row_index| self.item_id_at(row_index))
+            .filter(|item_id| self.selection().is_selected(*item_id))
+            .collect::<Vec<_>>()
+            .into()
+    }
+
+    /// Разрешает inclusive Shift-range одним bounded canonical slice traversal.
+    pub(crate) fn range_item_ids(
+        &self,
+        anchor_item_id: PlaylistItemId,
+        target_item_id: PlaylistItemId,
+    ) -> Option<Arc<[PlaylistItemId]>> {
+        let anchor_index = self.row_index(anchor_item_id)?;
+        let target_index = self.row_index(target_item_id)?;
+        let start = anchor_index.min(target_index);
+        let end = anchor_index.max(target_index);
+        Some(
+            (start..=end)
+                .filter_map(|row_index| self.item_id_at(row_index))
+                .collect::<Vec<_>>()
+                .into(),
+        )
+    }
+
     pub(crate) fn structural_actions_enabled(&self) -> bool {
         self.snapshot.structural_actions_enabled()
     }

@@ -27,3 +27,10 @@
 - `app-egui::ui::player_controls::queue_mode_controls` переводит authoritative playlist snapshot в нейтральный glyph/paint-state, владеет interaction, accessibility и stable egui IDs.
 - `PersistentControlStyle` хранится в app skin и передаёт artwork все foreground/surface/focus токены; конкретные queue-mode кнопки не хардкодят цвета.
 - Characterization-тесты artwork закрепляют bounds, число/тип фигур, дополнительную геометрическую цифру `1` и active surface без изменения glyph geometry.
+
+
+## Playlist row surfaces and separator (2026-07-18)
+- `ArtworkPainter` adds `reserve_playlist_row_background`, `playlist_row_background` and `playlist_row_separator`; implementation lives in the dedicated `ui-artwork-egui/src/playlist_row.rs` module and remains domain/UI-state neutral.
+- The app reserves a painter shape slot before content, obtains the single full-row response after layout, then fills that earlier slot so hover/selection stays behind text. Separator is painted last over the row using a pixel-aligned `1 / pixels_per_point` stroke spanning the exact row width; row height is unchanged.
+- `PlaylistRowStyle` remains app skin vocabulary and supplies fill/stroke/color tokens to the neutral facade. Artwork owns only geometry and shape ordering, never selection/playback semantics, hit-testing or commands.
+- Characterization tests cover one line, full width, exactly one physical pixel and alignment at 1.0/1.25/1.5/2.0/2.5 scale factors. `ui-artwork-egui` has 15 passing tests after this boundary change.

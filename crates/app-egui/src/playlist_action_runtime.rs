@@ -6,8 +6,9 @@ use render_wgpu_shell::Renderer;
 use winit::window::Window;
 
 use crate::playlist_runtime::{
-    ControllerMoveItemOutcome, MetadataSortCancelOutcome, PlaylistProgressCancelScope,
-    PlaylistRuntime, RuntimeMoveItemOutcome, RuntimeRemovalOutcome,
+    ControllerMoveItemsOutcome, MetadataSortCancelOutcome, PlaylistProgressCancelScope,
+    PlaylistRuntime, RuntimeMoveItemsOutcome, RuntimeRemovalOutcome, RuntimeUpdateSelectionOutcome,
+    UpdateSelectionOutcome,
 };
 use crate::state::AppState;
 use crate::ui::playlist::PlaylistAction;
@@ -23,8 +24,21 @@ pub(crate) fn apply_playlist_actions(
     let mut changed = false;
     for action in actions {
         match action {
-            PlaylistAction::Select(item_id) => {
-                changed |= runtime.select_playlist_row(Some(item_id));
+            PlaylistAction::UpdateSelection(update) => {
+                let outcome = runtime.update_playlist_selection(update);
+                changed |= matches!(
+                    outcome,
+                    RuntimeUpdateSelectionOutcome::Controller(UpdateSelectionOutcome::Updated)
+                );
+                if !matches!(
+                    outcome,
+                    RuntimeUpdateSelectionOutcome::Controller(
+                        UpdateSelectionOutcome::Updated | UpdateSelectionOutcome::NoChange
+                    )
+                ) {
+                    runtime.set_playlist_safe_feedback("Не удалось обновить выделение плейлиста");
+                    changed = true;
+                }
             }
             PlaylistAction::Play(item_id) => {
                 let outcome = runtime.play_playlist_row(item_id);
@@ -36,30 +50,46 @@ pub(crate) fn apply_playlist_actions(
                 }
                 changed = true;
             }
-            PlaylistAction::Remove(item_id) => {
-                let outcome = runtime.remove_playlist_item(item_id, Instant::now());
-                changed |= apply_removal_outcome(app_state, runtime, outcome, "удалить элемент");
-            }
-            PlaylistAction::RemoveOthers(item_id) => {
-                let outcome = runtime.remove_other_playlist_items(item_id, Instant::now());
+            PlaylistAction::RemoveSelected(action) => {
+                let (item_ids, structural_revision) = action.into_parts();
+                let outcome = runtime.remove_selected_playlist_items(
+                    item_ids,
+                    structural_revision,
+                    Instant::now(),
+                );
                 changed |= apply_removal_outcome(
                     app_state,
                     runtime,
                     outcome,
-                    "удалить остальные элементы",
+                    "удалить выбранные элементы",
                 );
             }
-            PlaylistAction::Move { item_id, intent } => {
-                let outcome = runtime.move_playlist_item(item_id, intent);
+            PlaylistAction::RemoveUnselected(action) => {
+                let (item_ids, structural_revision) = action.into_parts();
+                let outcome = runtime.remove_unselected_playlist_items(
+                    item_ids,
+                    structural_revision,
+                    Instant::now(),
+                );
+                changed |= apply_removal_outcome(
+                    app_state,
+                    runtime,
+                    outcome,
+                    "удалить невыбранные элементы",
+                );
+            }
+            PlaylistAction::MoveItems(action) => {
+                let (item_ids, intent, structural_revision) = action.into_parts();
+                let outcome = runtime.move_playlist_items(item_ids, intent, structural_revision);
                 changed |= matches!(
                     outcome,
-                    RuntimeMoveItemOutcome::Controller(ControllerMoveItemOutcome::Moved { .. })
+                    RuntimeMoveItemsOutcome::Controller(ControllerMoveItemsOutcome::Moved { .. })
                 );
                 if !matches!(
                     outcome,
-                    RuntimeMoveItemOutcome::Controller(
-                        ControllerMoveItemOutcome::Moved { .. }
-                            | ControllerMoveItemOutcome::AlreadyInPlace
+                    RuntimeMoveItemsOutcome::Controller(
+                        ControllerMoveItemsOutcome::Moved { .. }
+                            | ControllerMoveItemsOutcome::AlreadyInPlace { .. }
                     )
                 ) {
                     runtime.set_playlist_safe_feedback("Не удалось изменить порядок плейлиста");

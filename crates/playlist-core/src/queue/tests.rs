@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::time::{Duration, UNIX_EPOCH};
 
+use rand::SeedableRng;
+
 use crate::{
     CachedPlaylistMetadata, ForeignPathEncoding, ForeignPathPlatform, ForeignPlatformPath,
     LocalLocator, LocalSourceFingerprint, NextPlaylistItemId, PlaylistItemDraft, PlaylistItemId,
@@ -404,6 +406,175 @@ fn move_by_id_handles_edges_anchors_and_no_op() {
         queue.move_item(ids[0], MoveItemIntent::Before(item_id(999))),
         MoveItemOutcome::AnchorNotFound { .. }
     ));
+}
+
+#[test]
+fn group_move_preserves_canonical_order_and_unrelated_state() {
+    // Caller order намеренно перемешан: domain обязан сохранить canonical B/D.
+    let mut queue = PlaylistQueue::new();
+    let ids = appended_ids(
+        queue
+            .append_batch(
+                ["a", "b", "c", "d", "e"]
+                    .into_iter()
+                    .map(local_draft)
+                    .collect(),
+            )
+            .expect("append"),
+    );
+    queue
+        .set_traversal_current(ids[2])
+        .expect("committed current");
+    queue
+        .enable_shuffle_with_rng(&mut rand::rngs::StdRng::seed_from_u64(7))
+        .expect("shuffle enable");
+    let revisions_before = queue.revision_snapshot();
+    let allocator_before = queue.next_item_id_snapshot();
+    let current_before = queue.traversal_current();
+    let shuffle_before = queue.shuffle_traversal_snapshot();
+
+    assert_eq!(
+        queue.move_items(&[ids[3], ids[1]], MoveItemIntent::Before(ids[4])),
+        MoveItemsOutcome::Moved { item_count: 2 }
+    );
+    assert_eq!(
+        queue
+            .items()
+            .iter()
+            .map(|item| item.item_id())
+            .collect::<Vec<_>>(),
+        vec![ids[0], ids[2], ids[1], ids[3], ids[4]]
+    );
+    assert_eq!(
+        queue.revision_snapshot().structural(),
+        revisions_before
+            .structural()
+            .checked_next()
+            .expect("one structural revision")
+    );
+    assert_eq!(
+        queue.revision_snapshot().traversal(),
+        revisions_before.traversal()
+    );
+    assert_eq!(
+        queue.revision_snapshot().metadata(),
+        revisions_before.metadata()
+    );
+    assert_eq!(queue.next_item_id_snapshot(), allocator_before);
+    assert_eq!(queue.traversal_current(), current_before);
+    assert_eq!(queue.shuffle_traversal_snapshot(), shuffle_before);
+}
+
+#[test]
+fn group_move_rejects_invalid_requests_and_detects_noop_atomically() {
+    // Все rejection paths обязаны сохранить exact order и revisions.
+    let mut queue = PlaylistQueue::new();
+    let ids = appended_ids(
+        queue
+            .append_batch(["a", "b", "c", "d"].into_iter().map(local_draft).collect())
+            .expect("append"),
+    );
+    let order_before = queue.items().to_vec();
+    let revisions_before = queue.revision_snapshot();
+
+    assert_eq!(
+        queue.move_items(&[], MoveItemIntent::ToFront),
+        MoveItemsOutcome::NoItemsRequested
+    );
+    assert_eq!(
+        queue.move_items(&[ids[0], ids[0]], MoveItemIntent::ToBack),
+        MoveItemsOutcome::DuplicateItemId { item_id: ids[0] }
+    );
+    assert_eq!(
+        queue.move_items(&[item_id(999)], MoveItemIntent::ToBack),
+        MoveItemsOutcome::ItemNotFound {
+            item_id: item_id(999)
+        }
+    );
+    assert_eq!(
+        queue.move_items(&[ids[0]], MoveItemIntent::Before(item_id(999))),
+        MoveItemsOutcome::AnchorNotFound {
+            anchor_item_id: item_id(999)
+        }
+    );
+    assert_eq!(
+        queue.move_items(&[ids[0], ids[1]], MoveItemIntent::After(ids[1])),
+        MoveItemsOutcome::AnchorSelected {
+            anchor_item_id: ids[1]
+        }
+    );
+    assert_eq!(
+        queue.move_items(&[ids[0], ids[1]], MoveItemIntent::ToFront),
+        MoveItemsOutcome::AlreadyInPlace { item_count: 2 }
+    );
+    assert_eq!(queue.items(), order_before);
+    assert_eq!(queue.revision_snapshot(), revisions_before);
+}
+
+#[test]
+fn group_move_obeys_d08_and_revision_exhaustion_without_partial_order() {
+    // D08 linearization проверяется после чистой валидации, но до построения commit order.
+    let mut reserved_queue = PlaylistQueue::new();
+    let ids = appended_ids(
+        reserved_queue
+            .append_batch(vec![local_draft("a"), local_draft("b")])
+            .expect("append"),
+    );
+    let token = reserved_queue
+        .prepare_reserved_mutation(
+            reserved_queue.revision_snapshot(),
+            ReservedQueueMutation::select_committed(ids[0]),
+        )
+        .expect("reservation");
+    assert_eq!(
+        reserved_queue.move_items(&[ids[1]], MoveItemIntent::ToFront),
+        MoveItemsOutcome::InstallCommitLinearizing
+    );
+    reserved_queue.abort_reserved(token);
+
+    // Exhaustion доступна tests как child-модулю queue и не требует test-only public API.
+    let order_before = reserved_queue.items().to_vec();
+    reserved_queue.structural_revision = QueueRevision(u64::MAX);
+    assert_eq!(
+        reserved_queue.move_items(&[ids[1]], MoveItemIntent::ToFront),
+        MoveItemsOutcome::StructuralRevisionExhausted
+    );
+    assert_eq!(reserved_queue.items(), order_before);
+}
+
+#[test]
+fn group_move_scales_to_capacity_with_one_linear_commit() {
+    // 50k characterization ловит случайный O(N*K) lookup на production maximum.
+    let mut queue = PlaylistQueue::new();
+    let ids = appended_ids(
+        queue
+            .append_batch(
+                (0..MAX_PLAYLIST_ITEMS)
+                    .map(|index| local_draft(&format!("{index:05}.mkv")))
+                    .collect(),
+            )
+            .expect("capacity append"),
+    );
+    let selected = ids.iter().step_by(2).rev().copied().collect::<Vec<_>>();
+    let revision_before = queue.revision_snapshot().structural();
+
+    assert_eq!(
+        queue.move_items(&selected, MoveItemIntent::ToBack),
+        MoveItemsOutcome::Moved {
+            item_count: MAX_PLAYLIST_ITEMS / 2
+        }
+    );
+    assert_eq!(
+        queue.revision_snapshot().structural(),
+        revision_before
+            .checked_next()
+            .expect("one structural revision")
+    );
+    assert_eq!(queue.items()[MAX_PLAYLIST_ITEMS / 2].item_id(), ids[0]);
+    assert_eq!(
+        queue.items().last().map(|item| item.item_id()),
+        Some(ids[MAX_PLAYLIST_ITEMS - 2])
+    );
 }
 
 #[test]

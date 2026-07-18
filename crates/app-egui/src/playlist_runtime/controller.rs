@@ -27,6 +27,7 @@ use super::identity::{
     ActiveMediaIdentity, PlaylistItemErrorCategory, PlaylistItemErrorPhase,
     PlaylistItemRuntimeError,
 };
+use super::selection::{PlaylistSelectionState, UpdateSelection, UpdateSelectionOutcome};
 use super::view::{
     PlaylistDirtyRevision, PlaylistDirtySignal, PlaylistStructuralRevision, PlaylistViewSnapshot,
     PlaylistViewState, PlaylistWorkerAvailability, rebuild_snapshot,
@@ -68,7 +69,7 @@ pub(crate) use removal::{
     ControllerDestructiveRemovalOutcome, ControllerRemovalKind, ControllerRemovalUndoOutcome,
     DetachedActiveTombstone,
 };
-pub(crate) use reordering::ControllerMoveItemOutcome;
+pub(crate) use reordering::ControllerMoveItemsOutcome;
 #[allow(unused_imports)]
 pub(crate) use sorting::ControllerCanonicalSortError;
 pub(crate) use startup_restore::{StartupRestoreFailureOutcome, StartupRestoreTarget};
@@ -138,7 +139,7 @@ pub(crate) enum StartupControllerBuildError {
 /// Process-lifetime owner canonical queue и app-owned runtime identities.
 pub(crate) struct PlaylistController {
     pub(super) queue: PlaylistQueue,
-    pub(super) selected_item_id: Option<PlaylistItemId>,
+    pub(super) selection: PlaylistSelectionState,
     pub(super) active_media: Option<ActiveMediaIdentity>,
     pub(super) pending_target: Option<super::identity::PendingTarget>,
     pub(super) runtime_errors: HashMap<PlaylistItemId, PlaylistItemRuntimeError>,
@@ -173,7 +174,7 @@ impl PlaylistController {
         let view_snapshot = Arc::new(PlaylistViewSnapshot::initial(&queue));
         Self {
             queue,
-            selected_item_id: None,
+            selection: PlaylistSelectionState::default(),
             active_media: None,
             pending_target: None,
             runtime_errors: HashMap::new(),
@@ -268,8 +269,8 @@ impl PlaylistController {
         self.active_media
     }
 
-    pub(crate) const fn selected_item_id(&self) -> Option<PlaylistItemId> {
-        self.selected_item_id
+    pub(crate) fn selected_item_id(&self) -> Option<PlaylistItemId> {
+        self.selection.selected_cursor()
     }
 
     pub(crate) const fn dirty_revision(&self) -> PlaylistDirtyRevision {
@@ -284,15 +285,29 @@ impl PlaylistController {
         self.fatal_invariant
     }
 
-    /// Selection является presentation state и не запускает playback/dirty mutation.
-    pub(crate) fn select_row(&mut self, item_id: Option<PlaylistItemId>) -> bool {
-        let validated = item_id.filter(|candidate| self.queue.item(*candidate).is_some());
-        if self.selected_item_id == validated {
-            return false;
+    /// Применяет exact selection intent без playback, dirty-state или persistence.
+    pub(crate) fn update_selection(&mut self, update: UpdateSelection) -> UpdateSelectionOutcome {
+        let outcome = self
+            .selection
+            .apply(&self.queue, self.structural_revision, update);
+        if outcome == UpdateSelectionOutcome::Updated {
+            self.publish_view(false);
         }
-        self.selected_item_id = validated;
-        self.publish_view(false);
-        true
+        outcome
+    }
+
+    /// Compatibility adapter для controller-focused tests и старых non-UI callers.
+    pub(crate) fn select_row(&mut self, item_id: Option<PlaylistItemId>) -> bool {
+        let update = item_id.map_or(
+            UpdateSelection::Clear {
+                cursor: super::selection::ClearSelectionCursor::Clear,
+            },
+            |item_id| UpdateSelection::Replace {
+                item_id,
+                structural_revision: self.structural_revision,
+            },
+        );
+        self.update_selection(update) == UpdateSelectionOutcome::Updated
     }
 
     /// Append не меняет active/pending/current и никогда не запускает playback.
@@ -551,11 +566,14 @@ impl PlaylistController {
     }
 
     pub(super) fn publish_view(&mut self, structural_rows_changed: bool) {
+        if structural_rows_changed {
+            self.selection.retain_committed(&self.queue);
+        }
         let state = PlaylistViewState {
             queue: &self.queue,
             structural_revision: self.structural_revision,
             errors: &self.runtime_errors,
-            selected_item_id: self.selected_item_id,
+            selection: self.selection.snapshot(),
             active_media: self.active_media,
             pending_target: self.pending_target,
             repeat_mode: self.repeat_mode,

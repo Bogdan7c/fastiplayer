@@ -1,9 +1,14 @@
 //! Runtime adapters для row selection, explicit Play и canonical reorder.
 
+use std::sync::Arc;
+
 use playlist_core::{MoveItemIntent, PlaylistItemId};
 
-use super::controller::{ControllerMoveItemOutcome, ControllerPlayItemOutcome};
-use super::{PlaylistRuntime, TransportActionOrigin};
+use super::controller::{ControllerMoveItemsOutcome, ControllerPlayItemOutcome};
+use super::{
+    PlaylistRuntime, PlaylistStructuralRevision, TransportActionOrigin, UpdateSelection,
+    UpdateSelectionOutcome,
+};
 
 /// Load gate остаётся отдельным состоянием, а не маскируется как stale Item ID.
 pub(crate) enum RuntimeRowPlayOutcome {
@@ -11,19 +16,30 @@ pub(crate) enum RuntimeRowPlayOutcome {
     LoadDecisionPending,
 }
 
-/// Runtime move outcome сохраняет все controller/domain distinctions.
+/// Runtime selection outcome сохраняет startup load-gate отдельно от controller no-op.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RuntimeMoveItemOutcome {
-    Controller(ControllerMoveItemOutcome),
+pub(crate) enum RuntimeUpdateSelectionOutcome {
+    Controller(UpdateSelectionOutcome),
+    LoadDecisionPending,
+}
+
+/// Runtime group move сохраняет load-gate отдельно от controller/domain outcomes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeMoveItemsOutcome {
+    Controller(ControllerMoveItemsOutcome),
     LoadDecisionPending,
 }
 
 impl PlaylistRuntime {
-    /// Selection меняет только controller presentation snapshot.
-    pub(crate) fn select_playlist_row(&mut self, item_id: Option<PlaylistItemId>) -> bool {
-        self.controller
-            .as_mut()
-            .is_some_and(|controller| controller.select_row(item_id))
+    /// Exact selection action меняет только process-lifetime presentation state.
+    pub(crate) fn update_playlist_selection(
+        &mut self,
+        update: UpdateSelection,
+    ) -> RuntimeUpdateSelectionOutcome {
+        let Some(controller) = self.controller.as_mut() else {
+            return RuntimeUpdateSelectionOutcome::LoadDecisionPending;
+        };
+        RuntimeUpdateSelectionOutcome::Controller(controller.update_selection(update))
     }
 
     /// Explicit row Play supersede-ит только replacement prompt и использует D59/D60 controller.
@@ -36,21 +52,22 @@ impl PlaylistRuntime {
         RuntimeRowPlayOutcome::Controller(controller.play_item(item_id, TransportActionOrigin::Ui))
     }
 
-    /// Одна UI drop-команда становится не более чем одной persistent mutation.
-    pub(crate) fn move_playlist_item(
+    /// Одна group drop-команда становится не более чем одной persistent mutation.
+    pub(crate) fn move_playlist_items(
         &mut self,
-        item_id: PlaylistItemId,
+        item_ids: Arc<[PlaylistItemId]>,
         intent: MoveItemIntent,
-    ) -> RuntimeMoveItemOutcome {
+        structural_revision: PlaylistStructuralRevision,
+    ) -> RuntimeMoveItemsOutcome {
         let Some(controller) = self.controller.as_mut() else {
-            return RuntimeMoveItemOutcome::LoadDecisionPending;
+            return RuntimeMoveItemsOutcome::LoadDecisionPending;
         };
         let dirty_before = controller.dirty_revision();
-        let outcome = controller.move_item(item_id, intent);
-        if matches!(outcome, ControllerMoveItemOutcome::Moved { .. }) {
+        let outcome = controller.move_items(item_ids, intent, structural_revision);
+        if matches!(outcome, ControllerMoveItemsOutcome::Moved { .. }) {
             self.removal_undo = None;
         }
         self.publish_controller_mutation_if_dirty(dirty_before);
-        RuntimeMoveItemOutcome::Controller(outcome)
+        RuntimeMoveItemsOutcome::Controller(outcome)
     }
 }

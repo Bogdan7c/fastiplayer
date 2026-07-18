@@ -8,6 +8,7 @@ mod media_kind_icon;
 mod open_media_button;
 mod playback_button;
 mod playback_rate_button;
+mod playlist_row;
 mod queue_mode_controls;
 mod settings_button;
 mod sidebar_buttons;
@@ -105,6 +106,32 @@ impl<'a> ArtworkPainter<'a> {
     /// Рисует компактную нейтральную иконку типа медиа.
     pub fn media_kind_icon(self, rect: egui::Rect, glyph: MediaKindGlyph, stroke: egui::Stroke) {
         media_kind_icon::paint(self.painter, rect, glyph, stroke);
+    }
+
+    /// Резервирует background slot до content layout.
+    pub fn reserve_playlist_row_background(self) -> egui::layers::ShapeIdx {
+        playlist_row::reserve_background(self.painter)
+    }
+
+    /// Заполняет background slot после получения единственного full-row Response.
+    pub fn playlist_row_background(
+        self,
+        shape_index: egui::layers::ShapeIdx,
+        rect: egui::Rect,
+        fill: egui::Color32,
+        stroke: egui::Stroke,
+    ) {
+        playlist_row::paint_background(self.painter, shape_index, rect, fill, stroke);
+    }
+
+    /// Рисует full-width separator толщиной ровно один physical pixel.
+    pub fn playlist_row_separator(
+        self,
+        rect: egui::Rect,
+        color: egui::Color32,
+        pixels_per_point: f32,
+    ) {
+        playlist_row::paint_separator(self.painter, rect, color, pixels_per_point);
     }
 
     /// Рисует кнопку полноэкранного режима.
@@ -712,6 +739,42 @@ mod tests {
                     style
                 )) > 1
             );
+        }
+    }
+
+    #[test]
+    fn playlist_separator_spans_row_and_is_one_physical_pixel_on_hidpi() {
+        let row_rect = Rect::from_min_max(pos2(7.0, 11.0), pos2(307.0, 45.0));
+        let context = Context::default();
+        let output = context.run_ui(RawInput::default(), |ui| {
+            ArtworkPainter::new(ui.painter()).playlist_row_separator(
+                row_rect,
+                Color32::from_rgba_unmultiplied(255, 255, 255, 128),
+                2.0,
+            );
+        });
+        assert_eq!(output.shapes.len(), 1);
+        let Shape::LineSegment { points, stroke } = &output.shapes[0].shape else {
+            panic!("playlist separator должен быть одной line segment");
+        };
+        assert_eq!(
+            [points[0].x, points[1].x],
+            [row_rect.left(), row_rect.right()]
+        );
+        assert_eq!(stroke.width * 2.0, 1.0);
+        assert_eq!(points[0].y, points[1].y);
+        assert_eq!(points[0].y * 2.0 % 1.0, 0.5);
+    }
+
+    #[test]
+    fn playlist_separator_alignment_is_stable_across_scale_factors() {
+        let row_rect = Rect::from_min_max(pos2(2.0, 3.0), pos2(202.0, 37.0));
+        for pixels_per_point in [1.0, 1.25, 1.5, 2.0, 2.5] {
+            let (separator_y, stroke_width) =
+                playlist_row::separator_geometry(row_rect, pixels_per_point)
+                    .expect("valid row geometry");
+            assert!((stroke_width * pixels_per_point - 1.0).abs() < f32::EPSILON);
+            assert!(((separator_y * pixels_per_point).fract() - 0.5).abs() < f32::EPSILON);
         }
     }
 }

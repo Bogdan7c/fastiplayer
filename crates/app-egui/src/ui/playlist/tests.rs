@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use egui::{Event, Key, Modifiers, PointerButton, RawInput, Rect, pos2, vec2};
 use media_core::MediaDuration;
 use playlist_core::{
     CachedPlaylistMetadata, LocalLocator, MoveItemIntent, PlaylistItemDraft, PlaylistItemId,
@@ -11,7 +12,7 @@ use ui_artwork_egui::MediaKindGlyph;
 
 use super::renderer::{
     INDEX_WIDTH, MEDIA_KIND_WIDTH, ROW_HEIGHT, TOOLTIP_MAX_WIDTH, accessibility_text,
-    anchored_scroll_offset, media_kind_glyph, stable_row_id, tooltip_width,
+    anchored_scroll_offset, media_kind_glyph, show_rows, stable_row_id, tooltip_width,
 };
 use super::status::{navigation_message, save_message};
 use super::{PlaylistAction, PlaylistUiOutput, PlaylistUiState, ViewportAnchor};
@@ -19,6 +20,12 @@ use crate::playlist_runtime::{
     PlaylistInteractionModel, PlaylistLoadingView, PlaylistNavigationView, PlaylistSaveView,
     PlaylistViewModel, PlaylistVisibleRow, PlaylistVisibleRowTestFixture,
 };
+use crate::ui::skin::{MinimalSkin, PlayerSkin, PlaylistRowStyle};
+
+/// Focused UI tests используют те же explicit row tokens, что production MinimalSkin.
+fn row_style() -> PlaylistRowStyle {
+    MinimalSkin.playlist_row_style()
+}
 
 fn draft(index: usize) -> PlaylistItemDraft {
     let metadata =
@@ -50,6 +57,54 @@ fn model(queue: &PlaylistQueue, structural_revision: u64) -> PlaylistViewModel {
     )
 }
 
+/// Формирует deterministic viewport для настоящего headless egui interaction pass.
+fn playlist_raw_input(events: Vec<Event>, time: f64) -> RawInput {
+    RawInput {
+        screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(420.0, 120.0))),
+        time: Some(time),
+        events,
+        ..RawInput::default()
+    }
+}
+
+/// Строит pointer press/release с явной кнопкой для primary и context-menu сценариев.
+fn pointer_button(position: egui::Pos2, button: PointerButton, pressed: bool) -> Event {
+    Event::PointerButton {
+        pos: position,
+        button,
+        pressed,
+        modifiers: Modifiers::NONE,
+    }
+}
+
+/// Создаёт один non-repeat keyboard press с logical platform modifiers.
+fn key_press(key: Key, modifiers: Modifiers) -> Event {
+    Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }
+}
+
+/// Рендерит production playlist rows и возвращает только typed post-render actions кадра.
+fn render_playlist_input(
+    context: &egui::Context,
+    model: &PlaylistViewModel,
+    state: &mut PlaylistUiState,
+    input: RawInput,
+) -> Vec<PlaylistAction> {
+    let mut output = PlaylistUiOutput::default();
+    let _ = context.run_ui(input, |ui| {
+        // Фиксированный размер делает координаты колонок стабильными между input frames.
+        ui.set_width(420.0);
+        ui.set_height(120.0);
+        show_rows(ui, model, row_style(), state, &mut output);
+    });
+    output.take_actions()
+}
+
 #[test]
 fn loading_and_empty_are_distinct_model_states() {
     let queue = PlaylistQueue::new();
@@ -61,6 +116,309 @@ fn loading_and_empty_are_distinct_model_states() {
     assert!(ready.is_empty());
     assert_eq!(loading.loading(), PlaylistLoadingView::Loading);
     assert_eq!(ready.loading(), PlaylistLoadingView::Ready);
+}
+
+#[test]
+fn full_row_primary_click_hits_index_icon_title_duration_badges_and_trailing_edge() {
+    let queue = queue(1);
+    let model = model(&queue, 1);
+    let item_id = model.item_id_at(0).expect("fixture row");
+
+    // Точки покрывают все визуальные колонки и край строки, не завися от дочерних Label.
+    for (case_index, x) in [2.0, 44.0, 70.0, 210.0, 350.0, 395.0]
+        .into_iter()
+        .enumerate()
+    {
+        let context = egui::Context::default();
+        let mut state = PlaylistUiState::default();
+        let position = pos2(x, ROW_HEIGHT * 0.5);
+        let base_time = case_index as f64;
+
+        let hover_actions = render_playlist_input(
+            &context,
+            &model,
+            &mut state,
+            playlist_raw_input(vec![Event::PointerMoved(position)], base_time),
+        );
+        assert!(hover_actions.is_empty(), "hover at x={x}");
+        let press_actions = render_playlist_input(
+            &context,
+            &model,
+            &mut state,
+            playlist_raw_input(
+                vec![pointer_button(position, PointerButton::Primary, true)],
+                base_time + 0.01,
+            ),
+        );
+        assert!(press_actions.is_empty(), "press at x={x}");
+        let release_actions = render_playlist_input(
+            &context,
+            &model,
+            &mut state,
+            playlist_raw_input(
+                vec![pointer_button(position, PointerButton::Primary, false)],
+                base_time + 0.02,
+            ),
+        );
+        assert!(
+            matches!(
+                release_actions.as_slice(),
+                [PlaylistAction::UpdateSelection(
+                    crate::playlist_runtime::UpdateSelection::Replace {
+                        item_id: clicked_item_id,
+                        ..
+                    }
+                )] if *clicked_item_id == item_id
+            ),
+            "release at x={x} produced {release_actions:?}"
+        );
+    }
+}
+
+#[test]
+fn full_row_double_secondary_and_drag_use_the_same_stable_hit_area() {
+    let queue = queue(3);
+    let model = model(&queue, 1);
+    let first_item_id = model.item_id_at(0).expect("first row");
+
+    // Двойной primary click на правом краю запускает конкретную stable-ID строку.
+    let double_context = egui::Context::default();
+    let mut double_state = PlaylistUiState::default();
+    let edge = pos2(395.0, ROW_HEIGHT * 0.5);
+    render_playlist_input(
+        &double_context,
+        &model,
+        &mut double_state,
+        playlist_raw_input(vec![Event::PointerMoved(edge)], 1.0),
+    );
+    for (pressed, time) in [(true, 1.01), (false, 1.02), (true, 1.10)] {
+        render_playlist_input(
+            &double_context,
+            &model,
+            &mut double_state,
+            playlist_raw_input(
+                vec![pointer_button(edge, PointerButton::Primary, pressed)],
+                time,
+            ),
+        );
+    }
+    let double_actions = render_playlist_input(
+        &double_context,
+        &model,
+        &mut double_state,
+        playlist_raw_input(
+            vec![pointer_button(edge, PointerButton::Primary, false)],
+            1.11,
+        ),
+    );
+    assert!(
+        double_actions.contains(&PlaylistAction::Play(first_item_id)),
+        "double click produced {double_actions:?}"
+    );
+
+    // Secondary click на том же краю сначала выбирает невыбранную строку.
+    let secondary_context = egui::Context::default();
+    let mut secondary_state = PlaylistUiState::default();
+    render_playlist_input(
+        &secondary_context,
+        &model,
+        &mut secondary_state,
+        playlist_raw_input(vec![Event::PointerMoved(edge)], 2.0),
+    );
+    render_playlist_input(
+        &secondary_context,
+        &model,
+        &mut secondary_state,
+        playlist_raw_input(
+            vec![pointer_button(edge, PointerButton::Secondary, true)],
+            2.01,
+        ),
+    );
+    let secondary_actions = render_playlist_input(
+        &secondary_context,
+        &model,
+        &mut secondary_state,
+        playlist_raw_input(
+            vec![pointer_button(edge, PointerButton::Secondary, false)],
+            2.02,
+        ),
+    );
+    assert!(matches!(
+        secondary_actions.as_slice(),
+        [PlaylistAction::UpdateSelection(
+            crate::playlist_runtime::UpdateSelection::Replace {
+                item_id,
+                ..
+            }
+        )] if *item_id == first_item_id
+    ));
+
+    // Drag с title-column захватывает singleton и публикует group MoveItems на release.
+    let drag_context = egui::Context::default();
+    let mut drag_state = PlaylistUiState::default();
+    let drag_start = pos2(210.0, ROW_HEIGHT * 0.5);
+    let drag_end = pos2(210.0, ROW_HEIGHT * 2.5);
+    render_playlist_input(
+        &drag_context,
+        &model,
+        &mut drag_state,
+        playlist_raw_input(vec![Event::PointerMoved(drag_start)], 3.0),
+    );
+    render_playlist_input(
+        &drag_context,
+        &model,
+        &mut drag_state,
+        playlist_raw_input(
+            vec![pointer_button(drag_start, PointerButton::Primary, true)],
+            3.01,
+        ),
+    );
+    let drag_actions = render_playlist_input(
+        &drag_context,
+        &model,
+        &mut drag_state,
+        playlist_raw_input(vec![Event::PointerMoved(drag_end)], 3.02),
+    );
+    assert!(drag_actions.iter().any(|action| matches!(
+        action,
+        PlaylistAction::UpdateSelection(crate::playlist_runtime::UpdateSelection::Replace {
+            item_id,
+            ..
+        }) if *item_id == first_item_id
+    )));
+    let drop_actions = render_playlist_input(
+        &drag_context,
+        &model,
+        &mut drag_state,
+        playlist_raw_input(
+            vec![pointer_button(drag_end, PointerButton::Primary, false)],
+            3.03,
+        ),
+    );
+    assert!(
+        drop_actions
+            .iter()
+            .any(|action| matches!(action, PlaylistAction::MoveItems(_))),
+        "drop produced {drop_actions:?}"
+    );
+}
+
+#[test]
+fn focused_row_keyboard_navigation_select_all_and_empty_area_click_emit_typed_intents() {
+    let queue = queue(3);
+    let model = model(&queue, 1);
+    let context = egui::Context::default();
+    let mut state = PlaylistUiState::default();
+    let first_row = pos2(180.0, ROW_HEIGHT * 0.5);
+
+    // Реальный click даёт full-row widget keyboard focus для следующего input frame.
+    render_playlist_input(
+        &context,
+        &model,
+        &mut state,
+        playlist_raw_input(vec![Event::PointerMoved(first_row)], 1.0),
+    );
+    render_playlist_input(
+        &context,
+        &model,
+        &mut state,
+        playlist_raw_input(
+            vec![pointer_button(first_row, PointerButton::Primary, true)],
+            1.01,
+        ),
+    );
+    render_playlist_input(
+        &context,
+        &model,
+        &mut state,
+        playlist_raw_input(
+            vec![pointer_button(first_row, PointerButton::Primary, false)],
+            1.02,
+        ),
+    );
+
+    let navigation_actions = render_playlist_input(
+        &context,
+        &model,
+        &mut state,
+        playlist_raw_input(vec![key_press(Key::ArrowDown, Modifiers::NONE)], 1.03),
+    );
+    let second_item_id = model.item_id_at(1).expect("second row");
+    assert!(matches!(
+        navigation_actions.as_slice(),
+        [PlaylistAction::UpdateSelection(
+            crate::playlist_runtime::UpdateSelection::Replace {
+                item_id,
+                ..
+            }
+        )] if *item_id == second_item_id
+    ));
+
+    let select_all_actions = render_playlist_input(
+        &context,
+        &model,
+        &mut state,
+        playlist_raw_input(vec![key_press(Key::A, Modifiers::COMMAND)], 1.04),
+    );
+    assert!(matches!(
+        select_all_actions.as_slice(),
+        [PlaylistAction::UpdateSelection(
+            crate::playlist_runtime::UpdateSelection::SelectAll {
+                item_ids,
+                ..
+            }
+        )] if item_ids.len() == 3
+    ));
+
+    // Пространство после последней строки принадлежит list background, а не последней row.
+    let empty_area = pos2(180.0, 110.0);
+    render_playlist_input(
+        &context,
+        &model,
+        &mut state,
+        playlist_raw_input(vec![Event::PointerMoved(empty_area)], 2.0),
+    );
+    render_playlist_input(
+        &context,
+        &model,
+        &mut state,
+        playlist_raw_input(
+            vec![pointer_button(empty_area, PointerButton::Primary, true)],
+            2.01,
+        ),
+    );
+    let clear_actions = render_playlist_input(
+        &context,
+        &model,
+        &mut state,
+        playlist_raw_input(
+            vec![pointer_button(empty_area, PointerButton::Primary, false)],
+            2.02,
+        ),
+    );
+    assert_eq!(
+        clear_actions,
+        vec![PlaylistAction::UpdateSelection(
+            crate::playlist_runtime::UpdateSelection::Clear {
+                cursor: crate::playlist_runtime::ClearSelectionCursor::Clear,
+            }
+        )]
+    );
+}
+
+#[test]
+fn row_content_labels_explicitly_disable_text_selection() {
+    let renderer_source = include_str!("renderer.rs");
+    let row_content_start = renderer_source
+        .find("fn render_row_content")
+        .expect("row content symbol");
+    let tooltip_start = renderer_source
+        .find("fn show_safe_tooltip")
+        .expect("tooltip symbol");
+    let row_content_source = &renderer_source[row_content_start..tooltip_start];
+
+    assert_eq!(row_content_source.matches("Label::new").count(), 5);
+    assert_eq!(row_content_source.matches(".selectable(false)").count(), 5);
 }
 
 #[test]
@@ -108,7 +466,7 @@ fn zero_one_and_ten_thousand_rows_only_publish_viewport_hint() {
         egui::__run_test_ui(|ui| {
             ui.set_width(420.0);
             ui.set_max_height(180.0);
-            super::renderer::show_rows(ui, &model, &mut state, &mut output);
+            super::renderer::show_rows(ui, &model, row_style(), &mut state, &mut output);
         });
 
         assert!(output.visible_item_ids.len() <= super::MAX_VISIBLE_HINT_ITEMS);
@@ -178,7 +536,14 @@ fn disabled_animation_copy_does_not_replace_viewport_or_publish_hint() {
         ui.disable();
         ui.set_width(420.0);
         ui.set_max_height(180.0);
-        super::show(ui, Some(&model), &interaction, &mut state, &mut output);
+        super::show(
+            ui,
+            Some(&model),
+            &interaction,
+            row_style(),
+            &mut state,
+            &mut output,
+        );
     });
 
     assert_eq!(state.viewport_anchor.unwrap().item_id, top_item_id);

@@ -79,7 +79,7 @@ fn reorder_keeps_selected_active_and_pending_bound_to_exact_item_ids() {
     let outcome = controller.commit_canonical_sort(commit);
 
     assert!(outcome.domain.reordered());
-    assert_eq!(controller.selected_item_id, Some(item_ids[2]));
+    assert_eq!(controller.selected_item_id(), Some(item_ids[2]));
     assert_eq!(controller.active_media, Some(active));
     assert_eq!(controller.pending_target, Some(pending));
     assert_eq!(
