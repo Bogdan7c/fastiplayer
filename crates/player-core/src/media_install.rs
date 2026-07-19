@@ -20,12 +20,14 @@ pub use installed_media_release::{
     InstalledMediaRelease, InstalledMediaReleaseOutcome, InstalledMediaReleaseReceipt,
     InstalledMediaReleaseReceiptError,
 };
-pub(crate) use installed_state_restore::InstalledMediaTargetMatch;
 pub use installed_state_restore::{
     InstalledMediaRestoreFailureStage, InstalledMediaStateRestore,
     InstalledMediaStateRestoreOutcome, InstalledMediaStateRestoreReceipt,
     InstalledMediaStateRestoreReceiptError, InstalledPositionRestore,
     InstalledPositionUnavailableReason, InstalledSubtitleRestore, InstalledTrackRestore,
+};
+pub(crate) use installed_state_restore::{
+    InstalledMediaTargetMatch, PendingInstalledPositionRestore,
 };
 pub(crate) use playback_intent::{AcceptedPlaybackIntent, PlaybackIntentControl};
 pub use playback_intent::{

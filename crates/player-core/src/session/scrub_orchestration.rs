@@ -509,6 +509,10 @@ impl PlayerSession {
             return;
         }
 
+        self.fail_pending_seek_receipts(PlayerError::new(
+            PlayerErrorKind::SeekUnavailable,
+            format!("SeekLanding отменён внешней командой: {reason:?}"),
+        ));
         self.invalidate_in_flight_scrub_outputs_after_exit("seek landing external command cancel");
         self.seek_runtime.clear_active_commit();
         let _release_outcome =

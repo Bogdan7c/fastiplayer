@@ -3,7 +3,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use crossbeam_channel::{Receiver, TryRecvError};
+use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use media_core::TrackId;
 
 use crate::{MediaInstallRequestId, MediaInstanceId, PlayerError};
@@ -52,6 +52,18 @@ pub struct InstalledMediaStateRestore {
     pub subtitle_track: InstalledSubtitleRestore,
     /// Position action.
     pub position: InstalledPositionRestore,
+}
+
+/// Session-owned ожидание terminal seek outcome-а для exact installed restore.
+pub(crate) struct PendingInstalledPositionRestore {
+    /// Install request, который всё ещё должен владеть current instance.
+    pub request_id: MediaInstallRequestId,
+    /// Exact media instance, к которому был применён restore.
+    pub media_instance_id: MediaInstanceId,
+    /// Seek generation запрещает принять commit от заменившей операции.
+    pub seek_generation: u64,
+    /// Request-owned канал authoritative restore outcome-а.
+    pub outcome_tx: Sender<InstalledMediaStateRestoreOutcome>,
 }
 
 /// Этап, на котором owner отверг matching restore.

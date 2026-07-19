@@ -23,6 +23,8 @@ struct PendingStrongMediaStaging {
 
 /// Player protocol и post-Installed intent acknowledgement остаются разными этапами.
 enum PendingStrongMediaOpenPhase {
+    /// Временный маркер показывает, что текущая фаза вынута только на время одного poll.
+    Polling,
     Protocol {
         deferred_rejection: Option<PlaylistMediaOpenGateError>,
         pending_staging: Option<PendingStrongMediaStaging>,
@@ -38,6 +40,20 @@ enum PendingStrongMediaOpenPhase {
         resume_commit: InstalledResumeCommit,
         receipt: player_core::PlaybackIntentUpdateReceipt,
     },
+}
+
+impl PendingStrongMediaOpenPhase {
+    /// Забирает текущую фазу, не подменяя её другой реальной фазой транзакции.
+    fn take_for_poll(&mut self) -> Self {
+        std::mem::replace(self, Self::Polling)
+    }
+
+    /// Возвращает ожидающую фазу, только если вложенный шаг не установил successor.
+    fn retain_after_pending_poll(&mut self, waiting_phase: Self) {
+        if matches!(self, Self::Polling) {
+            *self = waiting_phase;
+        }
+    }
 }
 
 impl AppState {
@@ -249,14 +265,11 @@ impl AppState {
         let Some(mut pending) = self.pending_strong_media_open.take() else {
             return StrongMediaOpenPoll::Pending;
         };
-        let phase = std::mem::replace(
-            &mut pending.phase,
-            PendingStrongMediaOpenPhase::Protocol {
-                deferred_rejection: None,
-                pending_staging: None,
-            },
-        );
+        let phase = pending.phase.take_for_poll();
         let result = match phase {
+            PendingStrongMediaOpenPhase::Polling => {
+                StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::PendingPhaseStateLost))
+            }
             PendingStrongMediaOpenPhase::Protocol {
                 mut deferred_rejection,
                 mut pending_staging,
@@ -267,13 +280,13 @@ impl AppState {
                     &mut deferred_rejection,
                     &mut pending_staging,
                 );
-                if matches!(result, StrongMediaOpenPoll::Pending)
-                    && matches!(pending.phase, PendingStrongMediaOpenPhase::Protocol { .. })
-                {
-                    pending.phase = PendingStrongMediaOpenPhase::Protocol {
-                        deferred_rejection,
-                        pending_staging,
-                    };
+                if matches!(result, StrongMediaOpenPoll::Pending) {
+                    pending.phase.retain_after_pending_poll(
+                        PendingStrongMediaOpenPhase::Protocol {
+                            deferred_rejection,
+                            pending_staging,
+                        },
+                    );
                 }
                 result
             }
@@ -290,11 +303,13 @@ impl AppState {
                     &receipt,
                 );
                 if matches!(result, StrongMediaOpenPoll::Pending) {
-                    pending.phase = PendingStrongMediaOpenPhase::PlaybackIntent {
-                        installed,
-                        resume_commit,
-                        receipt,
-                    };
+                    pending.phase.retain_after_pending_poll(
+                        PendingStrongMediaOpenPhase::PlaybackIntent {
+                            installed,
+                            resume_commit,
+                            receipt,
+                        },
+                    );
                 }
                 result
             }
@@ -312,18 +327,15 @@ impl AppState {
                     requested_position,
                     &receipt,
                 );
-                if matches!(result, StrongMediaOpenPoll::Pending)
-                    && matches!(
-                        pending.phase,
-                        PendingStrongMediaOpenPhase::PositionRestore { .. }
-                    )
-                {
-                    pending.phase = PendingStrongMediaOpenPhase::PositionRestore {
-                        installed,
-                        media_instance_id,
-                        requested_position,
-                        receipt,
-                    };
+                if matches!(result, StrongMediaOpenPoll::Pending) {
+                    pending.phase.retain_after_pending_poll(
+                        PendingStrongMediaOpenPhase::PositionRestore {
+                            installed,
+                            media_instance_id,
+                            requested_position,
+                            receipt,
+                        },
+                    );
                 }
                 result
             }
@@ -523,6 +535,32 @@ impl AppState {
 mod tests {
     use super::*;
 
+    /// Pending receipt возвращает вынутую фазу, а явный successor остаётся владельцем slot-а.
+    #[test]
+    fn pending_poll_retains_waiting_phase_without_overwriting_successor() {
+        let mut waiting_slot = PendingStrongMediaOpenPhase::Protocol {
+            deferred_rejection: None,
+            pending_staging: None,
+        };
+        let waiting_phase = waiting_slot.take_for_poll();
+        assert!(matches!(waiting_slot, PendingStrongMediaOpenPhase::Polling));
+        waiting_slot.retain_after_pending_poll(waiting_phase);
+        assert!(matches!(
+            waiting_slot,
+            PendingStrongMediaOpenPhase::Protocol { .. }
+        ));
+
+        let mut advanced_slot = PendingStrongMediaOpenPhase::Protocol {
+            deferred_rejection: None,
+            pending_staging: None,
+        };
+        advanced_slot.retain_after_pending_poll(PendingStrongMediaOpenPhase::Polling);
+        assert!(matches!(
+            advanced_slot,
+            PendingStrongMediaOpenPhase::Protocol { .. }
+        ));
+    }
+
     /// Cancel-win разрешает fallback, а missing/fatal terminal остаётся sticky fatal.
     #[test]
     fn fallback_classification_accepts_only_proven_pre_barrier_terminal() {
@@ -544,5 +582,7 @@ mod tests {
         assert!(!fatal.is_proven_pre_barrier_failure());
         assert_eq!(fatal.terminal_request_id(), Some(request_id));
         assert!(!StrongMediaOpenError::MissingTerminal.is_proven_pre_barrier_failure());
+        assert!(StrongMediaOpenError::PendingPhaseStateLost.may_have_crossed_install_barrier());
+        assert!(!StrongMediaOpenError::PendingPhaseStateLost.is_proven_pre_barrier_failure());
     }
 }

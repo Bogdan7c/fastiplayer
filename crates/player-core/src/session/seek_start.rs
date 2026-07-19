@@ -39,7 +39,10 @@ use super::scrub_orchestration::{
 impl PlayerSession {
     pub(super) fn seek(&mut self, request: SeekRequest) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        self.fail_pending_exact_timeline_seek("seek superseded by another timeline command");
+        self.fail_pending_seek_receipts(PlayerError::new(
+            PlayerErrorKind::SeekUnavailable,
+            "seek superseded by another timeline command",
+        ));
         let replacing_active_seek_landing = self.seek_runtime.seek_landing_active();
         let resume_intent = self
             .seek_runtime

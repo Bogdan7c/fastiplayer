@@ -151,6 +151,8 @@ pub(crate) enum StrongMediaOpenError {
     Terminal(MediaOpenTerminalOutcome),
     #[error("media-open did not publish a terminal outcome")]
     MissingTerminal,
+    #[error("пошаговая strong media-open транзакция потеряла текущую фазу между poll-вызовами")]
+    PendingPhaseStateLost,
     #[error("exact post-Installed playback intent restore was rejected: {0:?}")]
     PlaybackIntent(player_core::PlaybackIntentUpdateOutcome),
     #[error("exact post-Installed playback intent dispatch failed: {0:?}")]
@@ -193,6 +195,7 @@ impl StrongMediaOpenError {
             self,
             Self::Completion(_)
                 | Self::MissingTerminal
+                | Self::PendingPhaseStateLost
                 | Self::PlaybackIntent(_)
                 | Self::PlaybackIntentDispatch(_)
                 | Self::PositionRestoreDispatch(_)

@@ -110,12 +110,9 @@ impl PlayerWorkerRuntime {
             WorkerCommand::RestoreInstalledMediaState {
                 restore,
                 outcome_tx,
-            } => {
-                let outcome = self.session.restore_installed_media_state(restore);
-                if outcome_tx.send(outcome).is_err() {
-                    warn!("Installed media restore outcome receiver was dropped");
-                }
-            }
+            } => self
+                .session
+                .begin_installed_media_state_restore(restore, outcome_tx),
             WorkerCommand::ReleaseInstalledMedia {
                 release,
                 outcome_tx,
@@ -188,7 +185,7 @@ impl PlayerWorkerRuntime {
                 }
             }
         }
-        self.session.reconcile_exact_timeline_seek_identity();
+        self.session.reconcile_pending_seek_receipt_identities();
     }
 
     /// Применяет typed runtime settings, которыми владеет worker.

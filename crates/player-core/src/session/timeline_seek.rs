@@ -16,7 +16,10 @@ impl PlayerSession {
         request: ExactTimelineSeekRequest,
         outcome_tx: Sender<ExactTimelineSeekOutcome>,
     ) {
-        self.fail_pending_exact_timeline_seek("seek superseded by a newer request");
+        self.fail_pending_exact_timeline_seek(PlayerError::new(
+            PlayerErrorKind::SeekUnavailable,
+            "seek superseded by a newer request",
+        ));
         if self.snapshot.media_instance_id != Some(request.media_instance_id) {
             let _ = outcome_tx.send(ExactTimelineSeekOutcome::StaleInstance {
                 request_id: request.request_id,
@@ -88,13 +91,13 @@ impl PlayerSession {
         let _ = pending.outcome_tx.send(outcome);
     }
 
-    pub(super) fn fail_pending_exact_timeline_seek(&mut self, reason: &'static str) {
+    pub(super) fn fail_pending_exact_timeline_seek(&mut self, error: PlayerError) {
         let Some(pending) = self.pending_exact_timeline_seek.take() else {
             return;
         };
         let _ = pending.outcome_tx.send(ExactTimelineSeekOutcome::Failed {
             request_id: pending.request.request_id,
-            error: PlayerError::new(PlayerErrorKind::SeekUnavailable, reason),
+            error,
         });
     }
 

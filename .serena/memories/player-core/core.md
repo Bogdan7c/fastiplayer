@@ -133,3 +133,7 @@
 - `player-core` exposes neutral `TimelineSeekRequestId`, `ExactTimelineSeekRequest`, request-owned receipt and typed terminal `ExactTimelineSeekOutcome` for app/MPRIS correlation; it contains no D-Bus/zbus types.
 - Admission checks exact `MediaInstanceId`, seekability and known range. SetPosition strict beyond-end -> InvalidRange; relative strict beyond-end -> BeyondEnd; equality is admitted. Matching seek commit alone yields Applied, while supersede/ordinary seek/timeout/instance replacement terminal-resolve without false Applied.
 - Focused tests: `crates/player-core/src/session/tests/timeline_seek.rs`. App/MPRIS routing contract: `mem:app-egui/playlist-desktop-transport-s18b`.
+
+## Terminal installed-position restore receipt (2026-07-19)
+- `InstalledMediaStateRestoreOutcome::Applied` для `SeekTo` теперь означает authoritative final seek commit, а не только принятие команды. `PlayerSession` удерживает pending receipt с exact request + media instance + seek generation; cancel/supersede/timeout/fatal закрывают его typed position failure, replacement media — `StaleInstance`.
+- Общая внутренняя settle-точка `session/seek_receipts.rs` обслуживает exact timeline и installed-position receipts, не меняя публичный API. Контракт не зависит от codec/container/backend. Подробности и regression: `mem:player-core/installed-position-restore-receipt-2026-07-19`.

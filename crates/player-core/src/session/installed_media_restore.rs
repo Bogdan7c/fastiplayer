@@ -1,14 +1,24 @@
 //! Player-owner применение exact-instance position/track restore intent-а.
 
-use crate::media_install::InstalledMediaTargetMatch;
+use crossbeam_channel::Sender;
+
+use crate::media_install::{InstalledMediaTargetMatch, PendingInstalledPositionRestore};
 use crate::{
     InstalledMediaRelease, InstalledMediaReleaseOutcome, InstalledMediaRestoreFailureStage,
     InstalledMediaStateRestore, InstalledMediaStateRestoreOutcome, InstalledPositionRestore,
     InstalledPositionUnavailableReason, InstalledSubtitleRestore, InstalledTrackRestore,
-    PlayerCommand, SeekRequest,
+    PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, SeekRequest,
 };
 
 use super::PlayerSession;
+
+/// Результат синхронной части restore до terminal seek commit-а.
+enum InstalledPositionRestoreStart {
+    /// Position менять не требовалось; restore уже полностью применён.
+    CompletedWithoutSeek,
+    /// Seek принят, а authoritative outcome должен дождаться exact generation commit-а.
+    AwaitingSeekCommit { seek_generation: u64 },
+}
 
 impl PlayerSession {
     /// Освобождает current media только при exact request+instance совпадении.
@@ -42,49 +52,65 @@ impl PlayerSession {
         }
     }
 
-    /// Применяет restore одним owner turn-ом только к correlated current instance.
-    pub(crate) fn restore_installed_media_state(
+    /// Начинает restore и удерживает receipt до terminal seek outcome-а.
+    pub(crate) fn begin_installed_media_state_restore(
         &mut self,
         restore: InstalledMediaStateRestore,
-    ) -> InstalledMediaStateRestoreOutcome {
+        outcome_tx: Sender<InstalledMediaStateRestoreOutcome>,
+    ) {
+        let media_instance_id = restore.media_instance_id;
+        match self.start_installed_media_state_restore(restore) {
+            Ok(InstalledPositionRestoreStart::CompletedWithoutSeek) => {
+                Self::publish_installed_restore_outcome(
+                    outcome_tx,
+                    InstalledMediaStateRestoreOutcome::Applied { media_instance_id },
+                );
+            }
+            Ok(InstalledPositionRestoreStart::AwaitingSeekCommit { seek_generation }) => {
+                self.pending_installed_position_restore = Some(PendingInstalledPositionRestore {
+                    request_id: restore.request_id,
+                    media_instance_id,
+                    seek_generation,
+                    outcome_tx,
+                });
+            }
+            Err(outcome) => Self::publish_installed_restore_outcome(outcome_tx, outcome),
+        }
+    }
+
+    /// Выполняет synchronous restore actions и классифицирует position lifecycle.
+    fn start_installed_media_state_restore(
+        &mut self,
+        restore: InstalledMediaStateRestore,
+    ) -> Result<InstalledPositionRestoreStart, InstalledMediaStateRestoreOutcome> {
         match self
             .playback_intent_control
             .match_installed_target(restore.request_id, restore.media_instance_id)
         {
             InstalledMediaTargetMatch::Matching => {}
             InstalledMediaTargetMatch::NotInstalledYet => {
-                return InstalledMediaStateRestoreOutcome::NotInstalledYet;
+                return Err(InstalledMediaStateRestoreOutcome::NotInstalledYet);
             }
             InstalledMediaTargetMatch::UnknownOrSupersededRequest => {
-                return InstalledMediaStateRestoreOutcome::UnknownOrSupersededRequest;
+                return Err(InstalledMediaStateRestoreOutcome::UnknownOrSupersededRequest);
             }
             InstalledMediaTargetMatch::StaleInstance => {
-                return InstalledMediaStateRestoreOutcome::StaleInstance;
+                return Err(InstalledMediaStateRestoreOutcome::StaleInstance);
             }
         }
 
         if self.snapshot.media_instance_id != Some(restore.media_instance_id) {
-            return InstalledMediaStateRestoreOutcome::StaleInstance;
+            return Err(InstalledMediaStateRestoreOutcome::StaleInstance);
         }
 
-        if let Err(outcome) = self.restore_video_track(restore.video_track) {
-            return outcome;
-        }
-        if let Err(outcome) = self.restore_audio_track(restore.audio_track) {
-            return outcome;
-        }
-        if let Err(outcome) = self.restore_subtitle_track(restore.subtitle_track) {
-            return outcome;
-        }
-        if let Err(outcome) =
-            self.restore_media_position(restore.media_instance_id, restore.position)
-        {
-            return outcome;
-        }
-
-        InstalledMediaStateRestoreOutcome::Applied {
-            media_instance_id: restore.media_instance_id,
-        }
+        self.fail_pending_installed_position_restore(PlayerError::new(
+            PlayerErrorKind::SeekUnavailable,
+            "installed position restore заменён новым matching restore",
+        ));
+        self.restore_video_track(restore.video_track)?;
+        self.restore_audio_track(restore.audio_track)?;
+        self.restore_subtitle_track(restore.subtitle_track)?;
+        self.start_media_position_restore(restore.media_instance_id, restore.position)
     }
 
     fn restore_video_track(
@@ -134,13 +160,13 @@ impl PlayerSession {
             })
     }
 
-    fn restore_media_position(
+    fn start_media_position_restore(
         &mut self,
         media_instance_id: crate::MediaInstanceId,
         restore: InstalledPositionRestore,
-    ) -> Result<(), InstalledMediaStateRestoreOutcome> {
+    ) -> Result<InstalledPositionRestoreStart, InstalledMediaStateRestoreOutcome> {
         let InstalledPositionRestore::SeekTo(position) = restore else {
-            return Ok(());
+            return Ok(InstalledPositionRestoreStart::CompletedWithoutSeek);
         };
         if !self.snapshot.timeline.seekable
             && self.snapshot.timeline.not_seekable_reason
@@ -153,12 +179,123 @@ impl PlayerSession {
                 reason: InstalledPositionUnavailableReason::SourceNotSeekable,
             });
         }
-        match self.dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(position.into()))) {
-            Ok(_) => Ok(()),
-            Err(error) => Err(InstalledMediaStateRestoreOutcome::Failed {
+
+        let first_seek_event = self.pending_events.len();
+        if let Err(error) =
+            self.dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(position.into())))
+        {
+            return Err(InstalledMediaStateRestoreOutcome::Failed {
                 stage: InstalledMediaRestoreFailureStage::Position,
                 error,
-            }),
+            });
+        }
+        if !self.seek_runtime.seek_landing_active() && !self.snapshot.timeline.seeking {
+            let error = self
+                .seek_start_error_since(first_seek_event)
+                .unwrap_or_else(|| {
+                    PlayerError::new(
+                        PlayerErrorKind::SeekUnavailable,
+                        "position restore не был принят seek transaction",
+                    )
+                });
+            return Err(InstalledMediaStateRestoreOutcome::Failed {
+                stage: InstalledMediaRestoreFailureStage::Position,
+                error,
+            });
+        }
+
+        Ok(InstalledPositionRestoreStart::AwaitingSeekCommit {
+            seek_generation: self.pipeline.seek_generation(),
+        })
+    }
+
+    /// Возвращает exact ошибку, опубликованную синхронной частью seek-а.
+    fn seek_start_error_since(&self, first_event: usize) -> Option<PlayerError> {
+        self.pending_events[first_event..]
+            .iter()
+            .rev()
+            .find_map(|correlated_event| match &correlated_event.event {
+                PlayerEvent::RecoverableError(error) | PlayerEvent::FatalError(error) => {
+                    Some(error.clone())
+                }
+                _ => None,
+            })
+    }
+
+    /// Публикует successful terminal только от matching generation и instance.
+    pub(super) fn finish_installed_position_restore(&mut self, seek_generation: u64) {
+        let Some(pending) = self.pending_installed_position_restore.take() else {
+            return;
+        };
+        let target_is_current = self.snapshot.media_instance_id == Some(pending.media_instance_id)
+            && self
+                .playback_intent_control
+                .match_installed_target(pending.request_id, pending.media_instance_id)
+                == InstalledMediaTargetMatch::Matching;
+        let outcome = if !target_is_current {
+            InstalledMediaStateRestoreOutcome::StaleInstance
+        } else if pending.seek_generation != seek_generation {
+            InstalledMediaStateRestoreOutcome::Failed {
+                stage: InstalledMediaRestoreFailureStage::Position,
+                error: PlayerError::new(
+                    PlayerErrorKind::SeekUnavailable,
+                    "position restore получил commit от другого seek generation",
+                ),
+            }
+        } else {
+            InstalledMediaStateRestoreOutcome::Applied {
+                media_instance_id: pending.media_instance_id,
+            }
+        };
+        Self::publish_installed_restore_outcome(pending.outcome_tx, outcome);
+    }
+
+    /// Закрывает pending restore typed position failure-ом без false `Applied`.
+    pub(super) fn fail_pending_installed_position_restore(&mut self, error: PlayerError) {
+        let Some(pending) = self.pending_installed_position_restore.take() else {
+            return;
+        };
+        Self::publish_installed_restore_outcome(
+            pending.outcome_tx,
+            InstalledMediaStateRestoreOutcome::Failed {
+                stage: InstalledMediaRestoreFailureStage::Position,
+                error,
+            },
+        );
+    }
+
+    /// Не позволяет прежнему instance дождаться commit-а уже нового media.
+    pub(crate) fn reconcile_installed_position_restore_identity(&mut self) {
+        let is_stale = self
+            .pending_installed_position_restore
+            .as_ref()
+            .is_some_and(|pending| {
+                self.snapshot.media_instance_id != Some(pending.media_instance_id)
+                    || self
+                        .playback_intent_control
+                        .match_installed_target(pending.request_id, pending.media_instance_id)
+                        != InstalledMediaTargetMatch::Matching
+            });
+        if !is_stale {
+            return;
+        }
+        let pending = self
+            .pending_installed_position_restore
+            .take()
+            .expect("stale pending installed restore was just observed");
+        Self::publish_installed_restore_outcome(
+            pending.outcome_tx,
+            InstalledMediaStateRestoreOutcome::StaleInstance,
+        );
+    }
+
+    /// Dropped receipt не меняет playback, но обязан остаться видимым в diagnostics.
+    fn publish_installed_restore_outcome(
+        outcome_tx: Sender<InstalledMediaStateRestoreOutcome>,
+        outcome: InstalledMediaStateRestoreOutcome,
+    ) {
+        if outcome_tx.send(outcome).is_err() {
+            tracing::warn!("Installed media restore outcome receiver was dropped");
         }
     }
 }

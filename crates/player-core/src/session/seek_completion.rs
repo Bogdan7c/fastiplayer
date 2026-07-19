@@ -152,7 +152,7 @@ impl PlayerSession {
         self.pipeline.set_media_clock_base(playback_position);
         self.pipeline.clear_monotonic_media_clock();
         self.publish_position_changed(playback_position);
-        self.finish_exact_timeline_seek(playback_position.into());
+        self.complete_pending_seek_receipts(playback_position.into(), seek_commit.generation);
         self.push_player_event(PlayerEvent::SeekCommitted(SeekCommitInfo {
             target_position: seek_commit.target_position.as_duration(),
             actual_position: seek_commit.actual_position.as_duration(),
@@ -278,7 +278,7 @@ impl PlayerSession {
                 timeout_blocker.metric_name()
             ),
         );
-        self.fail_pending_exact_timeline_seek("exact timeline seek timed out before commit");
+        self.fail_pending_seek_receipts(error.clone());
         self.record_recoverable_error(error);
     }
 }

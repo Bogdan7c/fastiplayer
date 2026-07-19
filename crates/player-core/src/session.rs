@@ -47,6 +47,7 @@ mod scrub_orchestration;
 mod seek_commit_gates;
 mod seek_completion;
 mod seek_diagnostics;
+mod seek_receipts;
 mod seek_start;
 mod seek_transaction;
 mod snapshot_builder;
@@ -143,6 +144,10 @@ pub struct PlayerSession {
     /// Request-owned completion активного external exact seek-а.
     pending_exact_timeline_seek:
         Option<crate::media_install::timeline_seek::PendingExactTimelineSeek>,
+
+    /// Request-owned completion position restore-а до exact seek commit-а.
+    pending_installed_position_restore:
+        Option<crate::media_install::PendingInstalledPositionRestore>,
 
     /// S17B bridge: neutral prepared working set плюс seek-owned promoted lease.
     prepared_seek_landing: PreparedSeekLandingRuntime,
@@ -604,6 +609,7 @@ impl PlayerSession {
 
     /// Отмечает fatal error от media pipeline.
     pub fn mark_fatal_error(&mut self, error: PlayerError) {
+        self.fail_pending_seek_receipts(error.clone());
         self.snapshot.last_error = Some(error.clone());
         self.set_playback_state(PlaybackState::Failed);
         self.push_player_event(PlayerEvent::FatalError(error));
@@ -1198,6 +1204,7 @@ impl Default for PlayerSession {
                 .expect("default frame-server config must validate"),
             seek_runtime: SeekRuntimeState::default(),
             pending_exact_timeline_seek: None,
+            pending_installed_position_restore: None,
             prepared_seek_landing: PreparedSeekLandingRuntime,
             pending_video_backend_reselection: None,
             last_audio_starvation_warn_at: None,
