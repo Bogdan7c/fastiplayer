@@ -50,7 +50,7 @@ pub(super) fn show(ui: &mut Ui, section: SidebarSection, context: &mut SidebarRe
             undo_rect,
             context.playlist_undo,
             &context.playlist_header_undo_style,
-            context.visibility_motion,
+            context.ui_motion,
             context.playlist_output,
         );
     }

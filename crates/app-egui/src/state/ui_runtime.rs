@@ -343,7 +343,7 @@ impl AppState {
                     playlist_row_style: selected_skin.playlist_row_style(),
                     playlist_toolbar_style: selected_skin.playlist_toolbar_style(),
                     playlist_header_undo_style: selected_skin.playlist_header_undo_style(),
-                    visibility_motion: crate::ui::animation::VisibilityMotion::from_reduced_motion(
+                    ui_motion: crate::ui::animation::UiMotion::from_reduced_motion(
                         self.committed_config_snapshot.reduced_motion(),
                     ),
                     window_chrome_edge_alignment,

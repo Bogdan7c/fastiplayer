@@ -355,6 +355,30 @@ impl PlaylistViewSnapshot {
         snapshot.structural_revision = PlaylistStructuralRevision(structural_revision);
         snapshot
     }
+
+    /// Строит deterministic read model подтверждённого active Item ID для UI tests.
+    #[cfg(test)]
+    pub(super) fn for_queue_with_active_item_for_test(
+        queue: &PlaylistQueue,
+        structural_revision: u64,
+        active_item_id: Option<PlaylistItemId>,
+    ) -> Self {
+        // Базовый helper сохраняет production row/index construction.
+        let mut snapshot = Self::for_queue_with_revision(queue, structural_revision);
+        // Ненулевые fixture identities не участвуют в UI assertions.
+        let fixture_identity = std::num::NonZeroU64::new(1).expect("fixture identity is non-zero");
+        // Только active media меняется относительно обычного read model fixture.
+        snapshot.active_media = active_item_id.map(|item_id| {
+            ActiveMediaIdentity::installed(
+                Some(item_id),
+                super::identity::ActiveMediaLineageId::from_non_zero(fixture_identity),
+                player_core::MediaInstanceId::from_non_zero(fixture_identity),
+                super::PlaylistBindingGeneration(1),
+            )
+        });
+        // Snapshot остаётся immutable после передачи ViewModel.
+        snapshot
+    }
 }
 
 pub(super) struct PlaylistViewState<'a> {

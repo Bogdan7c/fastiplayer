@@ -90,6 +90,29 @@ impl PlaylistViewModel {
         }
     }
 
+    /// Строит UI fixture с подтверждённым active Item ID без controller mutation.
+    #[cfg(test)]
+    pub(crate) fn for_queue_with_active_item_for_test(
+        queue: &playlist_core::PlaylistQueue,
+        structural_revision: u64,
+        loading: PlaylistLoadingView,
+        active_item_id: Option<PlaylistItemId>,
+    ) -> Self {
+        // Test-only boundary использует production snapshot row/index construction.
+        Self {
+            snapshot: Arc::new(PlaylistViewSnapshot::for_queue_with_active_item_for_test(
+                queue,
+                structural_revision,
+                active_item_id,
+            )),
+            loading,
+            probe: PlaylistProbeView::Idle,
+            save: PlaylistSaveView::Idle,
+            navigation: PlaylistNavigationView::Idle,
+            startup_warning: PlaylistStartupWarningView::None,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn revision(&self) -> super::view::PlaylistViewRevision {
         self.snapshot.revision()
@@ -105,6 +128,16 @@ impl PlaylistViewModel {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.snapshot.is_empty()
+    }
+
+    /// Возвращает только Item ID уже установленного media instance.
+    ///
+    /// Pending target и runtime error намеренно не участвуют: UI-анимация
+    /// должна реагировать лишь на подтверждённую смену authoritative identity.
+    pub(crate) fn active_item_id(&self) -> Option<PlaylistItemId> {
+        self.snapshot
+            .active_media()
+            .and_then(|active_media| active_media.item_id())
     }
 
     pub(crate) fn visible_rows(&self, range: Range<usize>) -> Vec<PlaylistVisibleRow> {

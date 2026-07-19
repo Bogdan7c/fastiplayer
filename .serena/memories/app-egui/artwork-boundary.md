@@ -55,3 +55,8 @@
 - `undo_button` владеет открытой против часовой стрелки дугой, round caps, усиленным незалитым наконечником 0.24/0.13, нормализацией opacity/scale и точным масштабированием visible bounds. При resolved Heading height glyph вместе со stroke имеет именно эту высоту; production stroke Minimal skin — 2.0 points.
 - `app-egui::ui::playlist::header_undo` владеет stable egui ID, hit-testing, pointer/keyboard focus, tooltip/AccessKit, countdown, visibility animation и typed `UndoRemoval`; `ui/sidebar/header.rs` владеет 32x32 hit-area и URL-axis layout. На fade-out app рисует только artwork без `Response`/accessibility node.
 - Characterization tests закрепляют усиленный наконечник, stroke, Heading-height, отсутствие idle surface при сохранённых hover/focus decorations, bounds внутри hit-area, centered scale и fractional HiDPI.
+
+## Active-track accent artwork (2026-07-19)
+- Нейтральный vector `Play` glyph подтверждённо играющего трека живёт в отдельном `ui-artwork-egui/src/active_track_glyph.rs` и доступен только через `ArtworkPainter::active_track_glyph(cell_rect, color)`. Геометрия не зависит от font, playlist Item ID, active/pending state, interaction или accessibility.
+- `ArtworkPainter::playlist_row_outline(...)` добавлен как neutral overlay boundary: app задаёт rect/stroke и ordering, artwork crate единолично вызывает Painter primitives. Existing reserved row background остаётся владельцем fill slot, separator остаётся physical-pixel owner-ом.
+- Playlist app renderer выводит moving fill/outline/glyph через facade и clipped ScrollArea painter; прямых Painter primitives в `app-egui` нет. Characterization tests закрепляют triangle bounds/symmetry, отдельные fill/outline/glyph shapes и точный fractional-HiDPI clip contract. `ui-artwork-egui`: 27 PASS.

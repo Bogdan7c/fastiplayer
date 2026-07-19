@@ -9,7 +9,7 @@ use ui_artwork_egui::{ArtworkPainter, UndoButtonPaintState, UndoButtonStyle};
 
 use crate::playlist_runtime::{PlaylistUndoUiSnapshot, RemovalUndoUiModel};
 use crate::ui::animation::{
-    VisibilityAnimation, VisibilityAnimationSpec, VisibilityMotion, VisibilityTarget,
+    UiMotion, VisibilityAnimation, VisibilityAnimationSpec, VisibilityTarget,
 };
 use crate::ui::skin::PlaylistHeaderUndoStyle;
 
@@ -31,7 +31,7 @@ pub(crate) fn show(
     rect: Rect,
     snapshot: &PlaylistUndoUiSnapshot,
     style: &PlaylistHeaderUndoStyle,
-    motion: VisibilityMotion,
+    motion: UiMotion,
     output: &mut PlaylistUiOutput,
 ) {
     // Animator вызывается на каждом кадре Playlist header, даже без Undo.
@@ -253,7 +253,7 @@ mod tests {
     fn render_input(
         context: &Context,
         snapshot: &PlaylistUndoUiSnapshot,
-        motion: VisibilityMotion,
+        motion: UiMotion,
         input: RawInput,
     ) -> Vec<PlaylistAction> {
         let mut output = PlaylistUiOutput::default();
@@ -345,7 +345,7 @@ mod tests {
             render_input(
                 &context,
                 &hidden_snapshot,
-                VisibilityMotion::Standard,
+                UiMotion::Standard,
                 raw_input(Vec::new(), 0.0),
             )
             .is_empty()
@@ -355,7 +355,7 @@ mod tests {
             render_input(
                 &context,
                 &active_snapshot,
-                VisibilityMotion::Standard,
+                UiMotion::Standard,
                 raw_input(vec![Event::PointerMoved(position)], 0.01),
             )
             .is_empty()
@@ -364,7 +364,7 @@ mod tests {
             render_input(
                 &context,
                 &active_snapshot,
-                VisibilityMotion::Standard,
+                UiMotion::Standard,
                 raw_input(vec![pointer_button(position, true)], 0.02),
             )
             .is_empty()
@@ -373,7 +373,7 @@ mod tests {
             render_input(
                 &context,
                 &active_snapshot,
-                VisibilityMotion::Standard,
+                UiMotion::Standard,
                 raw_input(vec![pointer_button(position, false)], 0.03),
             ),
             vec![PlaylistAction::UndoRemoval]
@@ -409,7 +409,7 @@ mod tests {
             render_input(
                 &context,
                 &active_snapshot,
-                VisibilityMotion::Standard,
+                UiMotion::Standard,
                 raw_input(Vec::new(), 0.0),
             )
             .is_empty()
@@ -424,7 +424,7 @@ mod tests {
                 render_input(
                     &context,
                     &hidden_snapshot,
-                    VisibilityMotion::Standard,
+                    UiMotion::Standard,
                     raw_input(events, time),
                 )
                 .is_empty()
@@ -449,7 +449,7 @@ mod tests {
                 undo_rect(),
                 &active_snapshot,
                 &style,
-                VisibilityMotion::Reduced,
+                UiMotion::Reduced,
                 &mut output,
             );
         });
@@ -460,7 +460,7 @@ mod tests {
                 undo_rect(),
                 &hidden_snapshot,
                 &style,
-                VisibilityMotion::Reduced,
+                UiMotion::Reduced,
                 &mut output,
             );
         });

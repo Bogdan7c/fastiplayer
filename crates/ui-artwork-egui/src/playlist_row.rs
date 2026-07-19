@@ -25,6 +25,16 @@ pub(crate) fn paint_background(
     );
 }
 
+/// Рисует отдельный overlay-контур после content без дублирования fill.
+pub(crate) fn paint_outline(painter: &Painter, rect: Rect, stroke: Stroke) {
+    // Пустой stroke не добавляет декоративную shape и не засоряет paint list.
+    if stroke == Stroke::NONE {
+        return;
+    }
+    // Внутренний stroke не выходит за row rect и предсказуемо клипуется viewport-ом.
+    painter.rect_stroke(rect, 0.0, stroke, StrokeKind::Inside);
+}
+
 /// Рисует separator поверх fill/content ровно одним physical pixel.
 pub(crate) fn paint_separator(
     painter: &Painter,

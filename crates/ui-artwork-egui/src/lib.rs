@@ -3,6 +3,7 @@
 //! Crate не знает о событиях, playback-состоянии и виджетах: вызывающая сторона
 //! передаёт только painter, прямоугольники и типизированное визуальное состояние.
 
+mod active_track_glyph;
 mod fullscreen_button;
 mod media_kind_icon;
 mod open_media_button;
@@ -52,6 +53,11 @@ impl<'a> ArtworkPainter<'a> {
     #[must_use]
     pub const fn new(painter: &'a Painter) -> Self {
         Self { painter }
+    }
+
+    /// Рисует нейтральный векторный glyph играющего элемента в заданной ячейке.
+    pub fn active_track_glyph(self, cell_rect: egui::Rect, color: egui::Color32) {
+        active_track_glyph::paint(self.painter, cell_rect, color);
     }
 
     /// Рисует центральную кнопку воспроизведения.
@@ -128,6 +134,11 @@ impl<'a> ArtworkPainter<'a> {
         stroke: egui::Stroke,
     ) {
         playlist_row::paint_background(self.painter, shape_index, rect, fill, stroke);
+    }
+
+    /// Рисует row overlay-контур поверх content без дополнительной подложки.
+    pub fn playlist_row_outline(self, rect: egui::Rect, stroke: egui::Stroke) {
+        playlist_row::paint_outline(self.painter, rect, stroke);
     }
 
     /// Рисует full-width separator толщиной ровно один physical pixel.
@@ -646,6 +657,87 @@ mod tests {
                 cell_rect.contains_rect(clipped_shape.shape.visual_bounding_rect())
             }));
         }
+    }
+
+    #[test]
+    fn active_track_glyph_has_stable_triangle_geometry_inside_badge_cell() {
+        // Дробные координаты моделируют типичный fractional HiDPI layout.
+        let cell_rect = Rect::from_min_size(pos2(287.25, 11.75), Vec2::new(13.0, 34.0));
+        // Production paint и test используют один geometry helper.
+        let points =
+            super::active_track_glyph::glyph_points(cell_rect).expect("positive badge cell");
+        // Все три вершины остаются внутри app-owned badge cell.
+        assert!(points.iter().all(|point| cell_rect.contains(*point)));
+        // Левая грань остаётся строго вертикальной.
+        assert_eq!(points[0].x, points[2].x);
+        // Острие направлено вправо и лежит на вертикальном центре.
+        assert!(points[1].x > points[0].x);
+        // Симметричные верх/низ не зависят от font rasterization.
+        assert_eq!(points[1].y - points[0].y, points[2].y - points[1].y);
+        // Facade создаёт ровно один filled vector shape.
+        assert_eq!(
+            painted_shape_count(|artwork| {
+                artwork.active_track_glyph(cell_rect, Color32::WHITE);
+            }),
+            1
+        );
+    }
+
+    #[test]
+    fn active_surface_keeps_fill_outline_and_hidpi_clip_contract() {
+        // Full row выходит ниже viewport-а, чтобы проверить реальный clipping metadata.
+        let row_rect = Rect::from_min_size(pos2(0.0, 0.0), Vec2::new(320.0, 34.0));
+        // Viewport обрезает нижние девять points строки.
+        let clip_rect = Rect::from_min_size(pos2(0.0, 0.0), Vec2::new(320.0, 25.0));
+        // Glyph cell совпадает с trailing badge geometry app renderer-а.
+        let glyph_cell = Rect::from_min_size(
+            pos2(262.0, row_rect.top()),
+            Vec2::new(13.0, row_rect.height()),
+        );
+        // Отдельный context изолирует active fill/outline/glyph shapes.
+        let context = Context::default();
+        // Реальный facade path использует clipped painter как production ScrollArea.
+        let output = context.run_ui(RawInput::default(), |ui| {
+            // Clip назначается до reservation, поэтому ShapeIdx сохраняет тот же контракт.
+            let painter = ui.painter().with_clip_rect(clip_rect);
+            // Artwork facade не получает playlist-domain state.
+            let artwork = ArtworkPainter::new(&painter);
+            // Fill slot резервируется раньше content.
+            let fill_shape = artwork.reserve_playlist_row_background();
+            // Active fill остаётся отдельным от overlay outline.
+            artwork.playlist_row_background(
+                fill_shape,
+                row_rect,
+                Color32::from_white_alpha(18),
+                Stroke::NONE,
+            );
+            // Outline рисуется поверх content отдельным вызовом.
+            artwork.playlist_row_outline(row_rect, Stroke::new(1.0, Color32::WHITE));
+            // Filled triangle завершает единый decorative accent.
+            artwork.active_track_glyph(glyph_cell, Color32::WHITE);
+        });
+        // Fill, outline и glyph создают отдельные ordered clipped shapes.
+        assert_eq!(output.shapes.len(), 3);
+        // Каждый decorative component наследует точный ScrollArea clip rect.
+        assert!(
+            output
+                .shapes
+                .iter()
+                .all(|clipped_shape| clipped_shape.clip_rect == clip_rect)
+        );
+        // Первая shape хранит fill без случайного outline stroke.
+        let Shape::Vec(fill_shapes) = &output.shapes[0].shape else {
+            panic!("active fill slot должен содержать grouped row background");
+        };
+        // Background helper сохраняет явное fill/stroke ordering.
+        assert_eq!(fill_shapes.len(), 2);
+        // Весь visual bounding rect остаётся в пределах full row geometry до clipping.
+        assert!(
+            output
+                .shapes
+                .iter()
+                .all(|shape| row_rect.contains_rect(shape.shape.visual_bounding_rect()))
+        );
     }
 
     #[test]

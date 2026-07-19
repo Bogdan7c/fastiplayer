@@ -29,16 +29,16 @@ impl VisibilityTarget {
     }
 }
 
-/// Пользовательская политика движения без позиционного `bool` в adapter API.
+/// Общая пользовательская политика движения без позиционного `bool` в UI API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum VisibilityMotion {
+pub(crate) enum UiMotion {
     /// Обычная анимация с указанной длительностью.
     Standard,
     /// Мгновенный переход для reduced-motion режима.
     Reduced,
 }
 
-impl VisibilityMotion {
+impl UiMotion {
     /// Переводит подтверждённую config-настройку в typed animation policy.
     pub(crate) const fn from_reduced_motion(reduced_motion: bool) -> Self {
         if reduced_motion {
@@ -61,7 +61,7 @@ pub(crate) struct VisibilityAnimationSpec {
     /// Toolkit-neutral преобразование progress в paint-параметры.
     pub(crate) effect: VisibilityEffect,
     /// Пользовательская политика движения.
-    pub(crate) motion: VisibilityMotion,
+    pub(crate) motion: UiMotion,
 }
 
 /// Полная спецификация одного переиспользуемого visibility-перехода.
@@ -93,7 +93,7 @@ impl VisibilityAnimation {
     #[must_use]
     pub(crate) fn sample(self, ui: &Ui) -> VisibilitySample {
         // Reduced motion не трогает animation manager и мгновенно отражает target.
-        if self.spec.motion == VisibilityMotion::Reduced || self.spec.duration.is_zero() {
+        if self.spec.motion == UiMotion::Reduced || self.spec.duration.is_zero() {
             return self.spec.effect.sample(self.spec.target.instant_progress());
         }
 
@@ -150,8 +150,7 @@ mod tests {
     use media_core::{MediaDuration, TimelineSnapshot};
 
     use super::{
-        AnimationState, VisibilityAnimation, VisibilityAnimationSpec, VisibilityMotion,
-        VisibilityTarget,
+        AnimationState, UiMotion, VisibilityAnimation, VisibilityAnimationSpec, VisibilityTarget,
     };
 
     /// Полная длительность synthetic visibility-перехода из UX-контракта.
@@ -188,7 +187,7 @@ mod tests {
                     duration: VISIBILITY_DURATION,
                     easing: Easing::EaseOutCubic,
                     effect: VisibilityEffect::FadeScale { hidden_scale: 0.80 },
-                    motion: VisibilityMotion::from_reduced_motion(reduced_motion),
+                    motion: UiMotion::from_reduced_motion(reduced_motion),
                 },
             )
             .sample(ui);

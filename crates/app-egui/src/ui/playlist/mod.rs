@@ -1,6 +1,7 @@
 //! Read-only virtualized Playlist sidebar.
 
 mod actions;
+mod active_accent;
 mod header_undo;
 mod renderer;
 mod row_interactions;
@@ -22,9 +23,11 @@ use crate::playlist_runtime::{
 
 const MAX_VISIBLE_HINT_ITEMS: usize = 256;
 
-/// UI-owned положение viewport; controller cursor/active identity сюда не попадают.
+/// UI-owned viewport и decorative accent без controller/playback ownership.
 #[derive(Debug, Default)]
 pub(crate) struct PlaylistUiState {
+    /// Эфемерная геометрия активного акцента принадлежит только UI.
+    active_accent: active_accent::ActiveAccentAnimationState,
     viewport_anchor: Option<ViewportAnchor>,
     observed_structural_revision: Option<PlaylistStructuralRevision>,
     go_current: Option<PlaylistGoCurrentTarget>,
@@ -120,6 +123,8 @@ pub(crate) struct PlaylistShowInput<'a> {
     pub(crate) row_style: crate::ui::skin::PlaylistRowStyle,
     /// Skin-owned геометрия и цвета toolbar.
     pub(crate) toolbar_style: crate::ui::skin::PlaylistToolbarStyle,
+    /// Общая typed policy обычного и reduced motion.
+    pub(crate) motion: crate::ui::animation::UiMotion,
 }
 
 impl PlaylistVisibleItemsHint {
@@ -144,6 +149,7 @@ pub(crate) fn show(
         interaction,
         row_style,
         toolbar_style,
+        motion,
     } = input;
     let Some(model) = model else {
         status::show_unavailable(ui);
@@ -160,6 +166,7 @@ pub(crate) fn show(
             ui,
             model,
             row_style,
+            motion,
             &mut visual_state,
             &mut discarded_output,
         );
@@ -167,7 +174,7 @@ pub(crate) fn show(
     }
     toolbar::show(ui, interaction, toolbar_style, output);
     status::show_summary(ui, model, state);
-    renderer::show_rows(ui, model, row_style, state, output);
+    renderer::show_rows(ui, model, row_style, motion, state, output);
 }
 
 #[cfg(test)]
