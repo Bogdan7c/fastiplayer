@@ -88,10 +88,26 @@ pub(super) trait PlaylistSaveDebouncePort {
     fn reschedule_debounce(&mut self, debounce_ms: u64) -> Result<(), String>;
 }
 
+/// Runtime adapter меняет только periodic deadline и сохраняет latest pending snapshot.
+pub(super) trait PlaylistResumeIntervalPort {
+    fn reschedule_resume_interval(&mut self, interval_ms: u64) -> Result<(), String>;
+}
+
 /// Stateful shell до подключения реального SaveWorker в Session 14.
 struct DetachedSaveDebouncePort {
     configured_debounce_ms: u64,
     pending_dirty_revision: Option<u64>,
+}
+
+struct DetachedResumeIntervalPort {
+    configured_interval_ms: u64,
+}
+
+impl PlaylistResumeIntervalPort for DetachedResumeIntervalPort {
+    fn reschedule_resume_interval(&mut self, interval_ms: u64) -> Result<(), String> {
+        self.configured_interval_ms = interval_ms;
+        Ok(())
+    }
 }
 
 impl DetachedSaveDebouncePort {
@@ -118,6 +134,7 @@ struct StagedPlaylistSettingsTransaction {
     previous_policy_revision: PlaylistDiscoveryPolicyRevision,
     frozen_scope: Option<FrozenDiscoveryScope>,
     debounce_changed: bool,
+    resume_interval_changed: bool,
 }
 
 /// Process-lifetime owner playlist settings и одной staged settings transaction.
@@ -126,6 +143,7 @@ pub(super) struct PlaylistSettingsOwner {
     future_discovery_policy_revision: PlaylistDiscoveryPolicyRevision,
     discovery_port: Box<dyn PlaylistDiscoverySettingsPort>,
     save_debounce_port: Box<dyn PlaylistSaveDebouncePort>,
+    resume_interval_port: Box<dyn PlaylistResumeIntervalPort>,
     staged: Option<StagedPlaylistSettingsTransaction>,
 }
 
@@ -138,6 +156,9 @@ impl PlaylistSettingsOwner {
             save_debounce_port: Box::new(DetachedSaveDebouncePort::new(
                 committed.state_save_debounce_ms,
             )),
+            resume_interval_port: Box::new(DetachedResumeIntervalPort {
+                configured_interval_ms: committed.resume_checkpoint_interval_ms,
+            }),
             staged: None,
         }
     }
@@ -205,6 +226,8 @@ impl PlaylistSettingsOwner {
 
         let debounce_changed =
             self.committed.state_save_debounce_ms != requested.state_save_debounce_ms;
+        let resume_interval_changed =
+            self.committed.resume_checkpoint_interval_ms != requested.resume_checkpoint_interval_ms;
         if debounce_changed
             && let Err(error) = self
                 .save_debounce_port
@@ -218,12 +241,50 @@ impl PlaylistSettingsOwner {
                     previous_policy_revision: self.future_discovery_policy_revision,
                     frozen_scope: Some(scope),
                     debounce_changed,
+                    resume_interval_changed,
                 });
                 return Err(PlaylistSettingsStageError::PartialFailure(format!(
                     "debounce reconfigure failed: {error}; exact discovery resume failed: {resume_error}"
                 )));
             }
             return Err(PlaylistSettingsStageError::Failed(error));
+        }
+        if resume_interval_changed
+            && let Err(error) = self
+                .resume_interval_port
+                .reschedule_resume_interval(requested.resume_checkpoint_interval_ms)
+        {
+            let mut compensation_failures = Vec::new();
+            if debounce_changed
+                && let Err(rollback_error) = self
+                    .save_debounce_port
+                    .reschedule_debounce(self.committed.state_save_debounce_ms)
+            {
+                compensation_failures.push(format!(
+                    "debounce rollback after resume interval failure: {rollback_error}"
+                ));
+            }
+            if let Some(scope) = frozen_scope
+                && let Err(resume_error) = self.discovery_port.resume_frozen_scan(scope)
+            {
+                compensation_failures.push(format!(
+                    "exact discovery resume after resume interval failure: {resume_error}"
+                ));
+            }
+            if compensation_failures.is_empty() {
+                return Err(PlaylistSettingsStageError::Failed(error));
+            }
+            self.staged = Some(StagedPlaylistSettingsTransaction {
+                previous: self.committed,
+                previous_policy_revision: self.future_discovery_policy_revision,
+                frozen_scope,
+                debounce_changed,
+                resume_interval_changed,
+            });
+            return Err(PlaylistSettingsStageError::PartialFailure(format!(
+                "resume interval reconfigure failed: {error}; {}",
+                compensation_failures.join("; ")
+            )));
         }
 
         let previous = self.committed;
@@ -238,6 +299,7 @@ impl PlaylistSettingsOwner {
             previous_policy_revision,
             frozen_scope,
             debounce_changed,
+            resume_interval_changed,
         });
         Ok(true)
     }
@@ -250,6 +312,10 @@ impl PlaylistSettingsOwner {
         if staged.debounce_changed {
             self.save_debounce_port
                 .reschedule_debounce(staged.previous.state_save_debounce_ms)?;
+        }
+        if staged.resume_interval_changed {
+            self.resume_interval_port
+                .reschedule_resume_interval(staged.previous.resume_checkpoint_interval_ms)?;
         }
         if let Some(scope) = staged.frozen_scope {
             self.discovery_port.resume_frozen_scan(scope)?;
@@ -296,6 +362,13 @@ impl PlaylistSettingsOwner {
         save_debounce_port: Box<dyn PlaylistSaveDebouncePort>,
     ) {
         self.save_debounce_port = save_debounce_port;
+    }
+
+    pub(super) fn install_resume_interval_port(
+        &mut self,
+        port: Box<dyn PlaylistResumeIntervalPort>,
+    ) {
+        self.resume_interval_port = port;
     }
 
     /// Подключает production D62 port process-lifetime discovery coordinator-а.
@@ -382,6 +455,20 @@ mod tests {
                 state.fail_next = false;
                 return Err("debounce rejected".to_string());
             }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct ResumeIntervalState {
+        calls: Vec<u64>,
+    }
+
+    struct RecordingResumeIntervalPort(Rc<RefCell<ResumeIntervalState>>);
+
+    impl PlaylistResumeIntervalPort for RecordingResumeIntervalPort {
+        fn reschedule_resume_interval(&mut self, interval_ms: u64) -> Result<(), String> {
+            self.0.borrow_mut().calls.push(interval_ms);
             Ok(())
         }
     }
@@ -560,5 +647,31 @@ mod tests {
         owner.initialize_new_queue_policy(&mut controller);
 
         assert_eq!(controller.repeat_mode, RepeatMode::RepeatOne);
+    }
+
+    #[test]
+    fn live_resume_interval_apply_and_rollback_use_exact_previous_value() {
+        let discovery = Rc::new(RefCell::new(DiscoveryState::default()));
+        let debounce = Rc::new(RefCell::new(DebounceState {
+            calls: Vec::new(),
+            latest_dirty_revision: 31,
+            fail_next: false,
+        }));
+        let resume_interval = Rc::new(RefCell::new(ResumeIntervalState::default()));
+        let mut owner = owner_with_ports(discovery, debounce);
+        owner.install_resume_interval_port(Box::new(RecordingResumeIntervalPort(
+            resume_interval.clone(),
+        )));
+        let mut controller = PlaylistController::new();
+        let requested = PlaylistConfig {
+            resume_checkpoint_interval_ms: 1_000,
+            ..PlaylistConfig::default()
+        };
+
+        assert!(owner.stage(requested, &mut controller).expect("stage"));
+        assert!(owner.rollback(&mut controller).expect("rollback"));
+
+        assert_eq!(resume_interval.borrow().calls, vec![1_000, 5_000]);
+        assert_eq!(owner.committed(), PlaylistConfig::default());
     }
 }

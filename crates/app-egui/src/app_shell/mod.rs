@@ -21,7 +21,7 @@ use crate::render_settings::{
     surface_present_settings_from_config, warn_legacy_tone_mapping_config,
 };
 use crate::system_capabilities::probe_system_capabilities;
-use playlist_state::PlaylistStateStore;
+use playlist_state::{PlaylistResumeStore, PlaylistStateStore};
 use render_wgpu_shell::Renderer;
 use rustiplayer_config::{ConfigPaths, LoadedConfig};
 use tracing::{debug, info, instrument};
@@ -170,10 +170,17 @@ impl AppShell {
         // последней: после неё constructor уже не может вернуть ошибку и detach-нуть thread.
         let settings_runtime =
             SettingsRuntime::from_loaded_config_with_wake_port(loaded_config, settings_wake_port)?;
-        let mut playlist_runtime = PlaylistRuntime::new_with_config(
+        let mut playlist_runtime = PlaylistRuntime::new_with_resume_policy(
             playlist_wake_port,
             settings_runtime.committed_config().playlist,
+            settings_runtime
+                .committed_config()
+                .player
+                .resume_last_position,
         );
+        playlist_runtime.install_playlist_resume_store(Arc::new(PlaylistResumeStore::new(
+            config_paths.playlist_resume_file(),
+        )));
         // Constructor доступен только после process bootstrap с acquired lease.
         playlist_runtime.start_desktop_transport(
             settings_runtime
@@ -410,6 +417,13 @@ impl AppShell {
 
         self.flush_sidebar_resize_for_lifecycle_boundary();
         let deadline = ShutdownDeadline::after(PROCESS_TERMINAL_SHUTDOWN_BUDGET);
+        if let Some(app_state) = self.app_state.as_mut()
+            && let Some(binding) = app_state.playlist_runtime_binding()
+        {
+            let snapshot = app_state.refresh_player_snapshot();
+            self.playlist_runtime
+                .force_resume_checkpoint_before_shutdown(binding, &snapshot);
+        }
 
         // Local job сначала извлекается из renderer owner-а, чтобы любой timeout
         // сохранил exact handle внутри process-lifetime AppShell.

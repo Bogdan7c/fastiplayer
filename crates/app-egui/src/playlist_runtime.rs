@@ -45,6 +45,8 @@ mod removal_undo;
     reason = "Session 16 generalized model is rendered by Session 19 UI"
 )]
 mod replacement_confirmation;
+mod resume_persistence;
+pub(crate) use resume_persistence::InstalledCheckpointPosition;
 mod row_interactions;
 mod selection;
 mod settings;
@@ -102,7 +104,7 @@ pub(crate) use controller::{
     ControllerStableIntentDispatch, LocalFileSelectionDisposition, PlannedPlaylistInstall,
     StablePlaybackIntent,
 };
-pub(crate) use controller::{StartupRestoreFailureOutcome, StartupRestoreTarget};
+pub(crate) use controller::{StartupPosition, StartupRestoreFailureOutcome, StartupRestoreTarget};
 pub(crate) use discovery::{MetadataSortCancelOutcome, PlaylistDiscoveryNavigationAction};
 pub(crate) use identity::TransportActionOrigin;
 #[allow(
@@ -293,6 +295,7 @@ pub(crate) struct PlaylistShutdownReport {
     pub(crate) media_open: ProcessOwnerShutdownOutcome,
     pub(crate) startup: startup::PlaylistStartupShutdownOutcome,
     pub(crate) persistence: persistence::PlaylistPersistenceShutdownOutcome,
+    pub(crate) resume_persistence: playlist_state::ResumeWorkerShutdownOutcome,
 }
 
 /// Результат нового terminal API с общей абсолютной границей времени.
@@ -388,6 +391,7 @@ pub(crate) struct PlaylistRuntime {
     startup: startup::PlaylistStartupOwner,
     /// Concrete state store, save worker и persistence read model живут process lifetime.
     persistence: persistence::PlaylistPersistenceOwner,
+    resume_persistence: resume_persistence::PlaylistResumePersistenceOwner,
     admission_open: Arc<AtomicBool>,
     #[allow(dead_code)] // Поле удерживает worker-side ports process lifetime.
     owner_ports: PlaylistOwnerPorts,
@@ -441,9 +445,19 @@ impl PlaylistRuntime {
     }
 
     /// Создаёт runtime с policy из уже валидированного startup config.
+    #[cfg(test)]
     pub(crate) fn new_with_config(
         wake_port: AppWakePort,
         playlist_config: rustiplayer_config::PlaylistConfig,
+    ) -> Self {
+        Self::new_with_resume_policy(wake_port, playlist_config, true)
+    }
+
+    /// Production constructor дополнительно принимает существующую player enable-policy.
+    pub(crate) fn new_with_resume_policy(
+        wake_port: AppWakePort,
+        playlist_config: rustiplayer_config::PlaylistConfig,
+        resume_last_position: bool,
     ) -> Self {
         let ui_interaction = ui_interaction::PlaylistUiInteractionOwner::new(wake_port.clone());
         let desktop_transport = desktop_transport::DesktopTransportOwner::new(wake_port.clone());
@@ -454,8 +468,13 @@ impl PlaylistRuntime {
         let admission_open = Arc::new(AtomicBool::new(true));
         let persistence =
             persistence::PlaylistPersistenceOwner::new(playlist_config.state_save_debounce_ms);
+        let resume_persistence = resume_persistence::PlaylistResumePersistenceOwner::new(
+            playlist_config.resume_checkpoint_interval_ms,
+            resume_last_position,
+        );
         let mut settings = settings::PlaylistSettingsOwner::new(playlist_config);
         settings.install_save_debounce_port(persistence.debounce_port());
+        settings.install_resume_interval_port(resume_persistence.interval_port());
         settings.install_discovery_port(discovery.settings_port());
         Self {
             lifecycle_generation: PlaylistLifecycleGeneration(0),
@@ -464,6 +483,7 @@ impl PlaylistRuntime {
             load_gate: PlaylistLoadGateState::PendingLoadDecision,
             startup,
             persistence,
+            resume_persistence,
             owner_ports: PlaylistOwnerPorts {
                 publisher,
                 admission_open: admission_open.clone(),
@@ -656,11 +676,13 @@ impl PlaylistRuntime {
         let persistence = self
             .persistence
             .shutdown_until(self.controller.as_ref(), deadline);
+        let resume_persistence = self.resume_persistence.shutdown_until(deadline);
         let report = PlaylistShutdownReport {
             ui_interaction,
             media_open,
             startup,
             persistence,
+            resume_persistence,
         };
 
         if report.requires_process_exit() {
@@ -707,6 +729,9 @@ impl PlaylistShutdownReport {
         ) || matches!(
             self.persistence,
             persistence::PlaylistPersistenceShutdownOutcome::TimedOut { .. }
+        ) || matches!(
+            self.resume_persistence,
+            playlist_state::ResumeWorkerShutdownOutcome::TimedOut
         )
     }
 
@@ -734,7 +759,20 @@ impl PlaylistShutdownReport {
             | persistence::PlaylistPersistenceShutdownOutcome::AlreadyCompleted
             | persistence::PlaylistPersistenceShutdownOutcome::TimedOut { .. } => false,
         };
-        ui_failed || media_failed || startup_failed || persistence_failed
+        let resume_persistence_failed = match self.resume_persistence {
+            playlist_state::ResumeWorkerShutdownOutcome::Completed {
+                final_report: Some(report),
+            } => !matches!(report.outcome, playlist_state::AtomicWriteOutcome::Durable),
+            playlist_state::ResumeWorkerShutdownOutcome::WorkerUnavailable => true,
+            playlist_state::ResumeWorkerShutdownOutcome::Completed { final_report: None }
+            | playlist_state::ResumeWorkerShutdownOutcome::AlreadyCompleted
+            | playlist_state::ResumeWorkerShutdownOutcome::TimedOut => false,
+        };
+        ui_failed
+            || media_failed
+            || startup_failed
+            || persistence_failed
+            || resume_persistence_failed
     }
 }
 
@@ -1024,6 +1062,7 @@ mod tests {
             persistence: persistence::PlaylistPersistenceShutdownOutcome::CompletedWithoutWorker {
                 save_block: None,
             },
+            resume_persistence: playlist_state::ResumeWorkerShutdownOutcome::AlreadyCompleted,
         };
 
         assert!(report.requires_process_exit());

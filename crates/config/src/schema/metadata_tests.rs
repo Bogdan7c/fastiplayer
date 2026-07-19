@@ -29,6 +29,7 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "playlist.playback_behavior",
     "playlist.error_behavior",
     "playlist.state_save_debounce_ms",
+    "playlist.resume_checkpoint_interval_ms",
     "playlist.previous_restart_threshold_ms",
     "video.preferred_backend",
     "video.max_decode_ahead_ms",
@@ -245,6 +246,12 @@ fn metadata_ranges_match_validation_constants() {
         "playlist.state_save_debounce_ms",
         validation::MIN_PLAYLIST_STATE_SAVE_DEBOUNCE_MS,
         validation::MAX_PLAYLIST_STATE_SAVE_DEBOUNCE_MS,
+    );
+    assert_integer_range(
+        &registry,
+        "playlist.resume_checkpoint_interval_ms",
+        validation::MIN_PLAYLIST_RESUME_CHECKPOINT_INTERVAL_MS,
+        validation::MAX_PLAYLIST_RESUME_CHECKPOINT_INTERVAL_MS,
     );
     assert_integer_range(
         &registry,

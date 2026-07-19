@@ -7,7 +7,7 @@
 - `[ui.sidebar].width_points: u16` добавлен backward-compatible без schema bump: serde default `420`, validation/Settings range `350..=600`, setting id `ui.sidebar.width_points`. Старый v6 без section загружается с default; поле появляется после следующего успешного сохранения.
 - Default/min/max sidebar constants экспортируются `rustiplayer-config` и являются единственным источником диапазона для UI/tests. `CommittedConfigSnapshot::sidebar_width_points()` — runtime getter.
 - Golden current document: `crates/config/tests/fixtures/current_schema_v6.toml`; byte-stable roundtrip сравнивает его с `AppConfig::default().to_pretty_toml()`.
-- `[playlist]` остаётся strict/defaulted group с `load_siblings`, `sibling_media_filter`, playback/error behavior, save debounce и previous restart threshold. Legacy documents без section получают `PlaylistConfig::default()` без обязательной startup rewrite; runtime contract — `mem:playlist/settings-s13`.
+- `[playlist]` остаётся strict/defaulted group с `load_siblings`, `sibling_media_filter`, playback/error behavior, save debounce, `resume_checkpoint_interval_ms` (default 5000, `1000..=60000`, step 1000) и previous restart threshold. `player.resume_last_position` теперь активирует sidecar capture/startup restore. Оба изменения backward-compatible и не повышают schema v6. Legacy documents без section получают `PlaylistConfig::default()` без обязательной startup rewrite; runtime contracts — `mem:playlist/settings-s13` и `mem:playlist/resume-position-sidecar-2026-07-19`.
 - Verification owner set: config/settings tests, app settings runtime tests, smoke current config generation+parse, refactor guardrails, locked workspace check, fmt/diff checks.
 
 ## Additive UI animation field (2026-07-18)

@@ -21,7 +21,7 @@ pub struct PlayerConfig {
     )]
     pub start_paused: bool,
 
-    /// Зарезервировано для будущего восстановления позиции.
+    /// Включает persistent checkpoint и startup restore текущего playlist media.
     #[setting(
         id = "player.resume_last_position",
         path = "player.resume_last_position",
@@ -31,7 +31,7 @@ pub struct PlayerConfig {
         label_id = "settings.player.resume_last_position.label",
         label_ru = "Восстанавливать позицию",
         description_id = "settings.player.resume_last_position.description",
-        description_ru = "Persistent policy для будущего восстановления последней позиции.",
+        description_ru = "Запоминать подтверждённую позицию текущего media и восстанавливать её при следующем запуске.",
         editor = "toggle",
         apply = "player.apply"
     )]

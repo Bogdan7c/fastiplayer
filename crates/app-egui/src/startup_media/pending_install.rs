@@ -52,6 +52,17 @@ impl StartupMediaController {
             }
             StrongMediaOpenPoll::Installed(installed) => {
                 app_state.record_installed_media_source(installed.source.clone());
+                if let Some(warning) = installed.position_warning {
+                    let message = format!(
+                        "Сохранённая позиция {}.{:03} с недоступна; media открыто на {}.{:03} с и оставлено на паузе",
+                        warning.requested_position.as_secs(),
+                        warning.requested_position.subsec_millis(),
+                        warning.available_position.as_secs(),
+                        warning.available_position.subsec_millis(),
+                    );
+                    self.startup_error = Some(message.clone());
+                    app_state.set_startup_error(message);
+                }
                 if matches!(installed.source, ActiveMediaSource::DirectMediaUrl(_)) {
                     tracing::info!("Startup direct media Installed");
                 }

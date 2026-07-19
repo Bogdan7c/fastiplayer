@@ -245,6 +245,9 @@ pub struct PlayerCommittedSettingsUpdate {
     /// App-owned policy settings, которые начинают действовать на следующем событии.
     pub event_policy_settings: Vec<SettingId>,
 
+    /// App-owned disk resume enable-policy; `None` означает unchanged.
+    pub resume_last_position: Option<bool>,
+
     /// Active media/pipeline rebuild intent для demux и codec-selection policy.
     pub media_pipeline: Option<PlayerMediaPipelineSettingsUpdate>,
 }
@@ -960,11 +963,16 @@ fn player_update_from_settings(
             .with_video_backend(preference, [PlayerRuntimeSettingId::VideoPreferredBackend]);
     }
 
+    let resume_last_position = event_policy_settings
+        .iter()
+        .any(|setting_id| setting_id.as_str() == "player.resume_last_position")
+        .then_some(current.player.resume_last_position);
     Ok(PlayerCommittedSettingsUpdate {
         player_core,
         audio_output_device_id: audio_output_device_changed
             .then(|| current.audio.output_device.clone()),
         event_policy_settings,
+        resume_last_position,
         media_pipeline: (!media_pipeline_settings.is_empty()).then(|| {
             PlayerMediaPipelineSettingsUpdate {
                 demux: current.player.demux,

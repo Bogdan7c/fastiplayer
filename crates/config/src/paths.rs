@@ -10,6 +10,9 @@ pub const CONFIG_FILE_NAME: &str = "config.toml";
 /// Имя отдельного файла состояния очереди рядом с пользовательским config.
 const PLAYLIST_STATE_FILE_NAME: &str = "playlist-state.json";
 
+/// Имя маленького sidecar последней подтверждённой позиции.
+const PLAYLIST_RESUME_FILE_NAME: &str = "playlist-resume.json";
+
 /// Имя стабильного lock artifact, который нельзя удалять между запусками.
 const APP_INSTANCE_LOCK_FILE_NAME: &str = "rustiplayer.instance.lock";
 
@@ -66,6 +69,12 @@ impl ConfigPaths {
         self.config_dir.join(PLAYLIST_STATE_FILE_NAME)
     }
 
+    /// Строит путь к position sidecar, не смешивая его с большим state очереди.
+    #[must_use]
+    pub fn playlist_resume_file(&self) -> PathBuf {
+        self.config_dir.join(PLAYLIST_RESUME_FILE_NAME)
+    }
+
     /// Строит путь к стабильному process-instance lock artifact.
     #[must_use]
     pub fn app_instance_lock_file(&self) -> PathBuf {
@@ -89,6 +98,10 @@ mod tests {
         assert_eq!(
             paths.playlist_state_file(),
             config_root.join("playlist-state.json")
+        );
+        assert_eq!(
+            paths.playlist_resume_file(),
+            config_root.join("playlist-resume.json")
         );
         assert_eq!(
             paths.app_instance_lock_file(),

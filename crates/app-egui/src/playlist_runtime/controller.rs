@@ -73,7 +73,9 @@ pub(crate) use removal::{
 pub(crate) use reordering::ControllerMoveItemsOutcome;
 #[allow(unused_imports)]
 pub(crate) use sorting::ControllerCanonicalSortError;
-pub(crate) use startup_restore::{StartupRestoreFailureOutcome, StartupRestoreTarget};
+pub(crate) use startup_restore::{
+    StartupPosition, StartupRestoreFailureOutcome, StartupRestoreTarget,
+};
 #[allow(unused_imports)]
 pub(crate) use transport::{
     AppTransportDisposition, ControllerManualNavigationAvailability,

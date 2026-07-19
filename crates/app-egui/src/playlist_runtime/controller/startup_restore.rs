@@ -20,9 +20,17 @@ use crate::playlist_runtime::identity::{
     PendingTargetOrigin, PlaylistItemErrorCategory, PlaylistItemErrorPhase,
 };
 
+/// Startup open всегда явно говорит, оставлять начало или восстанавливать checkpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StartupPosition {
+    KeepStart,
+    Restore(std::time::Duration),
+}
+
 /// Opaque startup target сохраняет exact traversal mutation до `Installed`.
 pub(crate) struct StartupRestoreTarget {
     pub(crate) locator: playlist_core::PlaylistLocator,
+    pub(crate) position: StartupPosition,
     pub(super) install: PlannedPlaylistInstall,
 }
 
@@ -35,6 +43,15 @@ impl StartupRestoreTarget {
     /// Restore и каждый D22 fallback несут неизменный paused intent.
     pub(crate) const fn playback_intent(&self) -> PlaybackIntent {
         self.install.playback_intent
+    }
+
+    /// Position policy читается strong-open транзакцией до передачи domain install plan.
+    pub(crate) const fn position(&self) -> StartupPosition {
+        self.position
+    }
+
+    pub(crate) fn set_position(&mut self, position: StartupPosition) {
+        self.position = position;
     }
 }
 
@@ -57,6 +74,7 @@ impl PlaylistController {
         Some(self.report_startup_restore_failure(
             StartupRestoreTarget {
                 locator,
+                position: StartupPosition::KeepStart,
                 install: PlannedPlaylistInstall {
                     item_id,
                     playback_intent: PlaybackIntent::StartPaused,
@@ -95,6 +113,7 @@ impl PlaylistController {
         let item = self.queue.item(item_id)?;
         Some(StartupRestoreTarget {
             locator: item.locator().clone(),
+            position: StartupPosition::KeepStart,
             install: self.planned_startup_restore_install(
                 item_id,
                 PlaylistInstallMutation::Reserved(
@@ -180,6 +199,7 @@ impl PlaylistController {
         StartupRestoreFailureOutcome::OpenItem {
             target: StartupRestoreTarget {
                 locator: item.locator().clone(),
+                position: StartupPosition::KeepStart,
                 install: self.planned_startup_restore_install(
                     item_id,
                     PlaylistInstallMutation::AutomaticTraversal(plan),

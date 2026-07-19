@@ -43,6 +43,7 @@ pub(crate) struct PreparedSingleMediaOpen {
     source: ActiveMediaSource,
     safe_label: SafeMediaLabel,
     playlist_target: Option<PreparedPlaylistTarget>,
+    startup_position: crate::playlist_runtime::StartupPosition,
 }
 
 /// App intent определяет domain reservation, не устройство coordinator-а.
@@ -67,6 +68,7 @@ impl PreparedSingleMediaOpen {
             source,
             safe_label,
             playlist_target: None,
+            startup_position: crate::playlist_runtime::StartupPosition::KeepStart,
         }
     }
 
@@ -82,6 +84,7 @@ impl PreparedSingleMediaOpen {
             source,
             safe_label,
             playlist_target: Some(PreparedPlaylistTarget::QueueReplacement(target_draft)),
+            startup_position: crate::playlist_runtime::StartupPosition::KeepStart,
         }
     }
 
@@ -92,21 +95,25 @@ impl PreparedSingleMediaOpen {
         safe_label: SafeMediaLabel,
         target: crate::playlist_runtime::StartupRestoreTarget,
     ) -> Self {
+        let startup_position = target.position();
         Self {
             prepared_media,
             source,
             safe_label,
             playlist_target: Some(PreparedPlaylistTarget::RestoredCurrent(target)),
+            startup_position,
         }
     }
 }
 
 /// Exact successful result, достаточный для settings restore и observable commit-а.
+#[derive(Clone)]
 pub(crate) struct InstalledSingleMediaOpen {
     pub(crate) player_request_id: MediaInstallRequestId,
     pub(crate) completion: MediaInstallCompletion,
     pub(crate) source: ActiveMediaSource,
     descriptor: Box<PreparedMediaDescriptor>,
+    pub(crate) position_warning: Option<crate::playlist_runtime::ResumePositionWarning>,
 }
 
 /// Результат одного неблокирующего шага renderer-bound strong install.
@@ -148,6 +155,12 @@ pub(crate) enum StrongMediaOpenError {
     PlaybackIntent(player_core::PlaybackIntentUpdateOutcome),
     #[error("exact post-Installed playback intent dispatch failed: {0:?}")]
     PlaybackIntentDispatch(crate::media_open::PlayerDispatchRejection),
+    #[error("exact post-Installed position restore dispatch failed: {0:?}")]
+    PositionRestoreDispatch(crate::media_open::PlayerDispatchRejection),
+    #[error("exact post-Installed position restore owner outcome was lost")]
+    PositionRestoreReceipt,
+    #[error("exact post-Installed position restore failed: {0:?}")]
+    PositionRestore(player_core::InstalledMediaStateRestoreOutcome),
     #[error("media-open authorization was accepted without enqueue barrier")]
     MissingAuthorizationBarrier,
     #[error("installed video candidate cannot replace missing active renderer pointers")]
@@ -182,6 +195,9 @@ impl StrongMediaOpenError {
                 | Self::MissingTerminal
                 | Self::PlaybackIntent(_)
                 | Self::PlaybackIntentDispatch(_)
+                | Self::PositionRestoreDispatch(_)
+                | Self::PositionRestoreReceipt
+                | Self::PositionRestore(_)
                 | Self::MissingActiveVideoPointers
                 | Self::PostInstalledVideo(_)
         )
@@ -433,6 +449,21 @@ impl AppState {
                             intent,
                         )
                         .map_err(StrongMediaOpenError::LineageRegistration)?;
+                    let installed_snapshot = self.refresh_player_snapshot();
+                    if installed_snapshot.media_instance_id == Some(media_instance_id) {
+                        let checkpoint_position = if installed_snapshot.timeline.seekable {
+                            crate::playlist_runtime::InstalledCheckpointPosition::Seekable(
+                                installed_snapshot.current_position,
+                            )
+                        } else {
+                            crate::playlist_runtime::InstalledCheckpointPosition::NonSeekable
+                        };
+                        playlist_runtime.record_installed_resume_checkpoint(
+                            binding.binding_generation(),
+                            media_instance_id,
+                            checkpoint_position,
+                        );
+                    }
                     if let Some(item_id) = active_media.item_id() {
                         let cache_outcome = playlist_runtime
                             .record_successful_item_open_metadata(item_id, &installed.descriptor);
@@ -500,6 +531,7 @@ impl AppState {
             completion,
             source,
             descriptor,
+            position_warning: None,
         })
     }
 

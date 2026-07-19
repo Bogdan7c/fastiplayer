@@ -595,6 +595,7 @@ fn player_default_volume_route_updates_policy_snapshot_only() {
                 .with_default_volume(0.25, [PlayerRuntimeSettingId::AudioDefaultVolume]),
             audio_output_device_id: None,
             event_policy_settings: Vec::new(),
+            resume_last_position: None,
             media_pipeline: None,
         })),
     };
@@ -626,6 +627,7 @@ fn selected_available_audio_device_is_passed_to_audio_owner() {
             player_core: PlayerRuntimeSettingsUpdate::empty(),
             audio_output_device_id: Some(selected_device_id.clone()),
             event_policy_settings: Vec::new(),
+            resume_last_position: None,
             media_pipeline: None,
         })),
     };
@@ -671,6 +673,7 @@ fn player_decoder_route_uses_live_pipeline_rebuild() {
             ),
             audio_output_device_id: None,
             event_policy_settings: Vec::new(),
+            resume_last_position: None,
             media_pipeline: None,
         })),
     };

@@ -58,6 +58,7 @@ impl PlaylistRuntime {
         let super::PlaylistLoadGateState::Open(lineage) = self.load_gate else {
             return;
         };
+        self.resume_persistence.activate_lineage(lineage);
         if let Err(error) = self
             .persistence
             .start_for_lineage(lineage, self.owner_ports.clone())

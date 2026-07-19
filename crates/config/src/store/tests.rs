@@ -30,6 +30,7 @@ fn playlist_defaults_match_session_13_contract() {
     );
     assert_eq!(playlist.error_behavior, crate::PlaylistErrorBehavior::Stop);
     assert_eq!(playlist.state_save_debounce_ms, 2_000);
+    assert_eq!(playlist.resume_checkpoint_interval_ms, 5_000);
     assert_eq!(playlist.previous_restart_threshold_ms, 5_000);
 }
 
@@ -76,6 +77,19 @@ fn playlist_bounds_are_inclusive_and_reject_neighbors() {
     let mut config = AppConfig::default();
     config.playlist.previous_restart_threshold_ms = 60_001;
     assert!(config.validate().is_err());
+
+    for value in [1_000, 60_000] {
+        let mut config = AppConfig::default();
+        config.playlist.resume_checkpoint_interval_ms = value;
+        config
+            .validate()
+            .expect("inclusive resume checkpoint interval accepted");
+    }
+    for value in [999, 60_001] {
+        let mut config = AppConfig::default();
+        config.playlist.resume_checkpoint_interval_ms = value;
+        assert!(config.validate().is_err());
+    }
 }
 
 #[test]

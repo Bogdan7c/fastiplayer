@@ -146,6 +146,28 @@ pub struct PlaylistConfig {
     )]
     pub state_save_debounce_ms: u64,
 
+    /// Интервал periodic checkpoint-а подтверждённой media position.
+    #[setting(
+        id = "playlist.resume_checkpoint_interval_ms",
+        path = "playlist.resume_checkpoint_interval_ms",
+        section = "playlist",
+        group = "persistence",
+        surface = "main-settings-window",
+        label_id = "settings.playlist.resume_checkpoint_interval_ms.label",
+        label_ru = "Интервал запоминания позиции",
+        description_id = "settings.playlist.resume_checkpoint_interval_ms.description",
+        description_ru = "Как часто во время воспроизведения обновлять маленький sidecar текущей позиции.",
+        help_id = "settings.playlist.resume_checkpoint_interval_ms.help",
+        help_ru = "Пауза, подтверждённый seek, остановка, конец media и штатное завершение сохраняются сразу.",
+        editor = "integer",
+        min = crate::validation::MIN_PLAYLIST_RESUME_CHECKPOINT_INTERVAL_MS,
+        max = crate::validation::MAX_PLAYLIST_RESUME_CHECKPOINT_INTERVAL_MS,
+        step = 1000,
+        unit = "ms",
+        apply = "playlist.apply"
+    )]
+    pub resume_checkpoint_interval_ms: u64,
+
     /// Порог restart-current для команды Previous.
     #[setting(
         id = "playlist.previous_restart_threshold_ms",
@@ -175,6 +197,7 @@ impl Default for PlaylistConfig {
             playback_behavior: PlaylistPlaybackBehavior::StopAfterLast,
             error_behavior: PlaylistErrorBehavior::Stop,
             state_save_debounce_ms: 2_000,
+            resume_checkpoint_interval_ms: 5_000,
             previous_restart_threshold_ms: 5_000,
         }
     }

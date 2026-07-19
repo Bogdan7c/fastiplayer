@@ -482,6 +482,13 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
             SettingApplyMechanism::WorkerReconfigure,
             WORKER_TESTS,
         ),
+        "playlist.resume_checkpoint_interval_ms" => SettingApplicationContract::new(
+            setting_name,
+            AppRuntimeRoute::Playlist,
+            SettingStateOwner::PlaylistPolicy,
+            SettingApplyMechanism::WorkerReconfigure,
+            WORKER_TESTS,
+        ),
         _ => return None,
     };
 
@@ -578,5 +585,15 @@ mod tests {
         assert_eq!(debounce.route, AppRuntimeRoute::Playlist);
         assert_eq!(debounce.state_owner, SettingStateOwner::PlaylistPolicy);
         assert_eq!(debounce.mechanism, SettingApplyMechanism::WorkerReconfigure);
+
+        let resume_interval = setting_application_contract(&SettingId::from(
+            "playlist.resume_checkpoint_interval_ms",
+        ))
+        .expect("playlist resume interval contract exists");
+        assert_eq!(resume_interval.route, AppRuntimeRoute::Playlist);
+        assert_eq!(
+            resume_interval.mechanism,
+            SettingApplyMechanism::WorkerReconfigure
+        );
     }
 }

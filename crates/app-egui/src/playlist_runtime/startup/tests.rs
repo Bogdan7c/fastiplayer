@@ -169,6 +169,7 @@ fn restored_current_and_skip_fallback_keep_start_paused_and_rows() {
         first.playback_intent(),
         player_core::PlaybackIntent::StartPaused
     );
+    assert_eq!(first.position(), super::super::StartupPosition::KeepStart);
     let fallback = runtime
         .report_startup_restore_failure(first, Arc::<str>::from("missing"))
         .expect("skip fallback");
@@ -176,6 +177,10 @@ fn restored_current_and_skip_fallback_keep_start_paused_and_rows() {
     assert_eq!(
         fallback.playback_intent(),
         player_core::PlaybackIntent::StartPaused
+    );
+    assert_eq!(
+        fallback.position(),
+        super::super::StartupPosition::KeepStart
     );
     assert_eq!(runtime.playlist_view_snapshot().len(), 3);
     assert!(

@@ -32,6 +32,11 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "resume_checkpoint_interval_ms = 5000",
+        "# Интервал periodic checkpoint-а позиции; lifecycle boundaries сохраняются сразу.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "previous_restart_threshold_ms = 5000",
         "# Порог restart-current для Previous; 0 отключает эту ветку.",
     );

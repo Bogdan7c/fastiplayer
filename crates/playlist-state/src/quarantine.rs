@@ -16,6 +16,16 @@ pub struct QuarantineFileName(OsString);
 impl QuarantineFileName {
     /// Deterministic filename `playlist-state.corrupt-<timestamp>.json`.
     pub fn from_timestamp(timestamp: SystemTime) -> Self {
+        Self::from_timestamp_with_stem(timestamp, "playlist-state")
+    }
+
+    /// Deterministic filename `playlist-resume.corrupt-<timestamp>.json`.
+    pub fn resume_from_timestamp(timestamp: SystemTime) -> Self {
+        Self::from_timestamp_with_stem(timestamp, "playlist-resume")
+    }
+
+    /// Общий formatter оставляет выбор artifact stem у typed public constructor-а.
+    fn from_timestamp_with_stem(timestamp: SystemTime, artifact_stem: &str) -> Self {
         let timestamp_label = match timestamp.duration_since(UNIX_EPOCH) {
             Ok(duration) => format!("{}-{:09}", duration.as_secs(), duration.subsec_nanos()),
             Err(error) => {
@@ -28,7 +38,7 @@ impl QuarantineFileName {
             }
         };
         Self(OsString::from(format!(
-            "playlist-state.corrupt-{timestamp_label}.json"
+            "{artifact_stem}.corrupt-{timestamp_label}.json"
         )))
     }
 

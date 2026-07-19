@@ -5,7 +5,7 @@ Session 13 completed PASS on 2026-07-15. This memory complements `mem:core`, `me
 ## Ownership
 - `rustiplayer-config::PlaylistConfig` owns strict/defaulted schema, defaults, enum ids, metadata and timing validation.
 - `rustiplayer-settings` owns dedicated `AppRuntimeRoute::Playlist`, typed full-policy payload and explicit application matrix rows.
-- `PlaylistRuntime` owns one process-lifetime `PlaylistSettingsOwner`: committed future discovery policy/revision, error policy, new-queue playback default, Previous threshold, debounce port and at most one staged settings transaction.
+- `PlaylistRuntime` owns one process-lifetime `PlaylistSettingsOwner`: committed future discovery policy/revision, error policy, new-queue playback default, Previous threshold, queue debounce port, resume-checkpoint interval port and at most one staged settings transaction. Resume interval live apply/rollback preserves the latest pending position snapshot; full contract: `mem:playlist/resume-position-sidecar-2026-07-19`.
 - `PlaylistController` still owns existing queue/repeat/error runtime. Live playback-default changes never mutate an existing queue; startup policy initializes only a new queue before future Session 14 persisted-state restore.
 
 ## Transaction and D62

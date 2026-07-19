@@ -49,6 +49,8 @@ playback_behavior = "stop_after_last"
 error_behavior = "stop"
 # Quiet period перед сохранением newest dirty playlist revision.
 state_save_debounce_ms = 2000
+# Интервал periodic checkpoint-а позиции; lifecycle boundaries сохраняются сразу.
+resume_checkpoint_interval_ms = 5000
 # Порог restart-current для Previous; 0 отключает эту ветку.
 previous_restart_threshold_ms = 5000
 

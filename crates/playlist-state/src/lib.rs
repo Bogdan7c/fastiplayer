@@ -9,6 +9,7 @@ mod dto;
 mod envelope;
 mod identity;
 mod quarantine;
+mod resume;
 mod snapshot;
 mod store;
 mod types;
@@ -22,6 +23,12 @@ pub use atomic_write::{
     NotReplacedFailure, NotReplacedStage,
 };
 pub use quarantine::QuarantineFileName;
+pub use resume::{
+    CURRENT_PLAYLIST_RESUME_SCHEMA_VERSION, PLAYLIST_RESUME_FILENAME, PlaylistResumeStore,
+    ResumeCheckpoint, ResumeCheckpointBuildError, ResumeCorruptCause, ResumeInspectionOutcome,
+    ResumeSaveRevision, ResumeSubmitOutcome, ResumeWorker, ResumeWorkerShutdownOutcome,
+    ResumeWorkerStartError, ResumeWriteReport, ResumeWriteSnapshot,
+};
 pub use snapshot::{ImmutableSaveSnapshot, SaveRevision, SaveRevisionExhausted};
 pub use store::PlaylistStateStore;
 pub use types::{

@@ -466,6 +466,7 @@ impl SettingsRuntimeRouteAppliers {
             player_core: update.player_core.clone(),
             audio_output_device_id: None,
             event_policy_settings: Vec::new(),
+            resume_last_position: None,
             media_pipeline: None,
         };
 

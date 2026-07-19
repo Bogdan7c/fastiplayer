@@ -147,7 +147,10 @@ impl SnapshotWriter for AtomicSnapshotWriter {
 }
 
 /// Выполняет same-directory replace и удаляет только созданный этим вызовом temp.
-fn write_serialized_json_atomic(target_path: &Path, serialized_json: &[u8]) -> AtomicWriteOutcome {
+pub(crate) fn write_serialized_json_atomic(
+    target_path: &Path,
+    serialized_json: &[u8],
+) -> AtomicWriteOutcome {
     let Some(target_file_name) = target_path.file_name() else {
         return AtomicWriteOutcome::NotReplaced(NotReplacedFailure {
             stage: NotReplacedStage::ValidateTargetPath,

@@ -201,6 +201,7 @@ pub(crate) fn apply_playlist_automatic_snapshot(
     let Some(binding) = app_state.playlist_runtime_binding() else {
         return;
     };
+    playlist_runtime.observe_resume_checkpoint_snapshot(binding, player_snapshot);
     let Some(outcome) =
         playlist_runtime.observe_playlist_automatic_snapshot(binding, player_snapshot)
     else {

@@ -352,17 +352,25 @@ impl AppState {
         playlist_runtime: &mut PlaylistRuntime,
     ) -> bool {
         let mut route_relative_beyond_end = false;
+        let playlist_binding = self.playlist_runtime_binding();
         self.playlist_transport
             .timeline_seek_receipts
             .retain(|receipt| match receipt.try_take_outcome() {
                 Ok(None) => true,
                 Ok(Some(ExactTimelineSeekOutcome::Applied {
                     request_id,
+                    media_instance_id,
                     position,
-                    ..
                 })) => {
                     let request_id = desktop_seek_request_id(request_id);
                     playlist_runtime.publish_desktop_seeked(request_id, position);
+                    if let Some(binding) = playlist_binding {
+                        playlist_runtime.record_confirmed_resume_seek(
+                            binding,
+                            media_instance_id,
+                            position.as_duration(),
+                        );
+                    }
                     false
                 }
                 Ok(Some(ExactTimelineSeekOutcome::BeyondEnd { request_id })) => {

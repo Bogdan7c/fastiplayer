@@ -138,6 +138,12 @@ pub(crate) const MIN_PLAYLIST_STATE_SAVE_DEBOUNCE_MS: u64 = 250;
 /// Максимальный playlist save debounce ограничивает окно возможной потери.
 pub(crate) const MAX_PLAYLIST_STATE_SAVE_DEBOUNCE_MS: u64 = 30_000;
 
+/// Минимальный checkpoint interval не допускает write storm.
+pub(crate) const MIN_PLAYLIST_RESUME_CHECKPOINT_INTERVAL_MS: u64 = 1_000;
+
+/// Максимальный interval ограничивает окно потери позиции при crash.
+pub(crate) const MAX_PLAYLIST_RESUME_CHECKPOINT_INTERVAL_MS: u64 = 60_000;
+
 /// Ноль отключает restart-current branch команды Previous.
 pub(crate) const MIN_PLAYLIST_PREVIOUS_RESTART_THRESHOLD_MS: u64 = 0;
 
@@ -206,6 +212,12 @@ fn validate_playlist_section(config: &AppConfig) -> ConfigResult<()> {
         config.playlist.state_save_debounce_ms,
         MIN_PLAYLIST_STATE_SAVE_DEBOUNCE_MS,
         MAX_PLAYLIST_STATE_SAVE_DEBOUNCE_MS,
+    )?;
+    validate_u64_range(
+        "playlist.resume_checkpoint_interval_ms",
+        config.playlist.resume_checkpoint_interval_ms,
+        MIN_PLAYLIST_RESUME_CHECKPOINT_INTERVAL_MS,
+        MAX_PLAYLIST_RESUME_CHECKPOINT_INTERVAL_MS,
     )?;
     validate_u64_range(
         "playlist.previous_restart_threshold_ms",

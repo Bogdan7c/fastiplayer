@@ -69,3 +69,8 @@ Session 06 completed PASS on 2026-07-14. This memory complements `mem:core`, `me
 
 - `PlaylistRuntime` now owns read-only inspection, explicit identity-revalidated quarantine, protected-state writer blocking, exact dirty snapshots, save worker wake/retry/durability view and terminal flush. Valid watermark is retained even when restore apply is superseded; Missing/quarantine success create persistent lineage, protected outcomes create only non-persistent generation-scoped lineage.
 - App integration and shutdown ownership details: `mem:app-egui/playlist-persistence-s14`.
+
+## Current-media resume sidecar (2026-07-19)
+
+- Frequent position persistence is deliberately separate from queue schema v1: `playlist-state::resume` owns strict `playlist-resume.json` schema v1, locator fingerprinting, quarantine, atomic latest-only writer and bounded terminal report; queue writes are never triggered by position updates.
+- Runtime/startup/config ownership and verification: `mem:playlist/resume-position-sidecar-2026-07-19`.

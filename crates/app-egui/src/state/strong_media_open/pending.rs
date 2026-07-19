@@ -2,6 +2,9 @@
 
 use super::*;
 
+mod resume;
+use resume::InstalledResumeCommit;
+
 /// Renderer-bound ownership незавершённой strong install транзакции.
 pub(crate) struct PendingStrongMediaOpen {
     request_id: MediaOpenRequestId,
@@ -9,6 +12,7 @@ pub(crate) struct PendingStrongMediaOpen {
     source: Option<ActiveMediaSource>,
     intent: PlaybackIntent,
     intent_revision: PlaybackIntentRevision,
+    startup_position: crate::playlist_runtime::StartupPosition,
     phase: PendingStrongMediaOpenPhase,
 }
 
@@ -23,9 +27,15 @@ enum PendingStrongMediaOpenPhase {
         deferred_rejection: Option<PlaylistMediaOpenGateError>,
         pending_staging: Option<PendingStrongMediaStaging>,
     },
-    PlaybackIntent {
+    PositionRestore {
         installed: InstalledSingleMediaOpen,
         media_instance_id: player_core::MediaInstanceId,
+        requested_position: std::time::Duration,
+        receipt: player_core::InstalledMediaStateRestoreReceipt,
+    },
+    PlaybackIntent {
+        installed: InstalledSingleMediaOpen,
+        resume_commit: InstalledResumeCommit,
         receipt: player_core::PlaybackIntentUpdateReceipt,
     },
 }
@@ -62,6 +72,7 @@ impl AppState {
             .map_err(StrongMediaOpenError::LineageRegistration)?;
         let source = prepared_input.source.clone();
         let playlist_target = prepared_input.playlist_target;
+        let startup_position = prepared_input.startup_position;
         let prepared_open = PreparedMediaOpen::from_caller_prepared(
             prepared_input.prepared_media,
             prepared_input.source,
@@ -108,6 +119,7 @@ impl AppState {
                     source: Some(source),
                     intent,
                     intent_revision: initial_revision,
+                    startup_position,
                     phase: PendingStrongMediaOpenPhase::Protocol {
                         deferred_rejection: Some(error),
                         pending_staging: None,
@@ -162,6 +174,7 @@ impl AppState {
             source: Some(source),
             intent,
             intent_revision: initial_revision,
+            startup_position,
             phase: PendingStrongMediaOpenPhase::Protocol {
                 deferred_rejection,
                 pending_staging: None,
@@ -213,6 +226,7 @@ impl AppState {
             source: None,
             intent,
             intent_revision,
+            startup_position: crate::playlist_runtime::StartupPosition::KeepStart,
             phase: PendingStrongMediaOpenPhase::Protocol {
                 deferred_rejection: None,
                 pending_staging: Some(PendingStrongMediaStaging {
@@ -265,21 +279,49 @@ impl AppState {
             }
             PendingStrongMediaOpenPhase::PlaybackIntent {
                 mut installed,
-                media_instance_id,
+                resume_commit,
                 receipt,
             } => {
                 let result = self.poll_strong_media_intent(
                     playlist_runtime,
-                    pending.request_id,
-                    pending.intent,
+                    &pending,
                     &mut installed,
-                    media_instance_id,
+                    resume_commit,
                     &receipt,
                 );
                 if matches!(result, StrongMediaOpenPoll::Pending) {
                     pending.phase = PendingStrongMediaOpenPhase::PlaybackIntent {
                         installed,
+                        resume_commit,
+                        receipt,
+                    };
+                }
+                result
+            }
+            PendingStrongMediaOpenPhase::PositionRestore {
+                mut installed,
+                media_instance_id,
+                requested_position,
+                receipt,
+            } => {
+                let result = self.poll_strong_media_position_restore(
+                    playlist_runtime,
+                    &mut pending,
+                    &mut installed,
+                    media_instance_id,
+                    requested_position,
+                    &receipt,
+                );
+                if matches!(result, StrongMediaOpenPoll::Pending)
+                    && matches!(
+                        pending.phase,
+                        PendingStrongMediaOpenPhase::PositionRestore { .. }
+                    )
+                {
+                    pending.phase = PendingStrongMediaOpenPhase::PositionRestore {
+                        installed,
                         media_instance_id,
+                        requested_position,
                         receipt,
                     };
                 }
@@ -474,143 +516,6 @@ impl AppState {
             }
         }
         StrongMediaOpenPoll::Pending
-    }
-
-    /// Installed забирается exactly once, затем начинается отдельный intent receipt phase.
-    fn begin_post_installed_intent(
-        &mut self,
-        playlist_runtime: &mut PlaylistRuntime,
-        pending: &mut PendingStrongMediaOpen,
-    ) -> StrongMediaOpenPoll {
-        let terminal = match playlist_runtime.take_media_open_terminal(pending.request_id) {
-            Ok(Some(terminal)) => terminal,
-            Ok(None) => {
-                return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::MissingTerminal));
-            }
-            Err(error) => {
-                return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::Command(error)));
-            }
-        };
-        let Some(candidate_owner) = pending.candidate_owner.take() else {
-            return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::MissingTerminal));
-        };
-        let Some(source) = pending.source.clone() else {
-            return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::MissingTerminal));
-        };
-        let installed = match self.finish_media_open_terminal(candidate_owner, source, terminal) {
-            Ok(installed) => installed,
-            Err(error) => return StrongMediaOpenPoll::completed(Err(error)),
-        };
-        let MediaInstallCompletion::Installed {
-            media_instance_id, ..
-        } = installed.completion
-        else {
-            return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::MissingTerminal));
-        };
-        let Some(next_revision) = pending.intent_revision.get().checked_add(1) else {
-            return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::MissingTerminal));
-        };
-        let exact_revision = PlaybackIntentRevision::from_non_zero(
-            NonZeroU64::new(next_revision).expect("checked increment remains non-zero"),
-        );
-        let receipt =
-            match self
-                .player_worker
-                .update_playback_intent(player_core::PlaybackIntentUpdate {
-                    request_id: installed.player_request_id,
-                    revision: exact_revision,
-                    intent: pending.intent,
-                }) {
-                Ok(receipt) => receipt,
-                Err(error) => {
-                    let rejection = match error {
-                        player_core::PlayerWorkerSendError::Full => {
-                            crate::media_open::PlayerDispatchRejection::Backpressure
-                        }
-                        player_core::PlayerWorkerSendError::Disconnected => {
-                            crate::media_open::PlayerDispatchRejection::Disconnected
-                        }
-                    };
-                    return StrongMediaOpenPoll::completed(Err(
-                        StrongMediaOpenError::PlaybackIntentDispatch(rejection),
-                    ));
-                }
-            };
-        pending.phase = PendingStrongMediaOpenPhase::PlaybackIntent {
-            installed,
-            media_instance_id,
-            receipt,
-        };
-        StrongMediaOpenPoll::Pending
-    }
-
-    /// Завершает lineage/domain commit только после неблокирующего intent acknowledgement.
-    fn poll_strong_media_intent(
-        &mut self,
-        playlist_runtime: &mut PlaylistRuntime,
-        request_id: MediaOpenRequestId,
-        intent: PlaybackIntent,
-        installed: &mut InstalledSingleMediaOpen,
-        media_instance_id: player_core::MediaInstanceId,
-        receipt: &player_core::PlaybackIntentUpdateReceipt,
-    ) -> StrongMediaOpenPoll {
-        let Some(outcome) = receipt.try_outcome() else {
-            return StrongMediaOpenPoll::Pending;
-        };
-        let confirmed_instance = match outcome {
-            player_core::PlaybackIntentUpdateOutcome::AppliedToInstalled { media_instance_id } => {
-                media_instance_id
-            }
-            outcome => {
-                return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::PlaybackIntent(
-                    outcome,
-                )));
-            }
-        };
-        if media_instance_id != confirmed_instance {
-            return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::PlaybackIntent(
-                player_core::PlaybackIntentUpdateOutcome::StaleInstance,
-            )));
-        }
-        let binding = match self.playlist_runtime_binding() {
-            Some(binding) => binding,
-            None => {
-                return StrongMediaOpenPoll::completed(Err(
-                    StrongMediaOpenError::LineageRegistration(
-                        crate::playlist_runtime::ResumeCheckpointError::StalePlayerBinding,
-                    ),
-                ));
-            }
-        };
-        let active_media = match playlist_runtime.register_successful_strong_install(
-            request_id,
-            installed.player_request_id,
-            media_instance_id,
-            binding,
-            installed.source.clone(),
-            intent,
-        ) {
-            Ok(active_media) => active_media,
-            Err(error) => {
-                return StrongMediaOpenPoll::completed(Err(
-                    StrongMediaOpenError::LineageRegistration(error),
-                ));
-            }
-        };
-        if let Some(item_id) = active_media.item_id() {
-            let cache_outcome = playlist_runtime
-                .record_successful_item_open_metadata(item_id, &installed.descriptor);
-            tracing::debug!(
-                ?cache_outcome,
-                "Exact Installed обновил last-known playlist metadata cache"
-            );
-        }
-        StrongMediaOpenPoll::completed(Ok(InstalledSingleMediaOpen {
-            player_request_id: installed.player_request_id,
-            completion: installed.completion.clone(),
-            source: installed.source.clone(),
-            descriptor: installed.descriptor.clone(),
-        }))
     }
 }
 

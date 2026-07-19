@@ -520,6 +520,10 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
         }
 
         if !update.event_policy_settings.is_empty() {
+            if let Some(enabled) = update.resume_last_position {
+                self.playlist_runtime
+                    .set_resume_last_position_enabled(enabled);
+            }
             report.push(PlayerRuntimeApplyGroupReport::accepted(
                 PlayerRuntimeApplyGroup::EventPolicy,
                 player_runtime_ids_from_setting_ids(&update.event_policy_settings),
