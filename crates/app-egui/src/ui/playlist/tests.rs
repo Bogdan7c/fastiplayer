@@ -19,7 +19,7 @@ use super::renderer::{
 use super::status::{navigation_message, save_message};
 use super::{PlaylistAction, PlaylistUiOutput, PlaylistUiState, ViewportAnchor};
 use crate::playlist_runtime::{
-    PlaylistGoCurrentTarget, PlaylistInteractionModel, PlaylistLoadingView, PlaylistNavigationView,
+    PlaylistGoCurrentTarget, PlaylistInteractionModel, PlaylistNavigationView, PlaylistSaveAttempt,
     PlaylistSaveView, PlaylistViewModel, PlaylistVisibleRow, PlaylistVisibleRowTestFixture,
 };
 use crate::ui::animation::UiMotion;
@@ -58,11 +58,7 @@ fn queue(item_count: usize) -> PlaylistQueue {
 }
 
 fn model(queue: &PlaylistQueue, structural_revision: u64) -> PlaylistViewModel {
-    PlaylistViewModel::for_queue_with_revision(
-        queue,
-        structural_revision,
-        PlaylistLoadingView::Ready,
-    )
+    PlaylistViewModel::for_queue_with_revision(queue, structural_revision)
 }
 
 /// Строит read model с подтверждённым active ID и без pending/controller shortcuts.
@@ -77,7 +73,6 @@ fn model_with_active(
     PlaylistViewModel::for_queue_with_active_item_for_test(
         queue,
         structural_revision,
-        PlaylistLoadingView::Ready,
         active_item_id,
     )
 }
@@ -151,19 +146,6 @@ fn render_playlist_input_with_motion(
         show_rows(ui, model, row_style(), motion, state, &mut output);
     });
     output.take_actions()
-}
-
-#[test]
-fn loading_and_empty_are_distinct_model_states() {
-    let queue = PlaylistQueue::new();
-    let loading =
-        PlaylistViewModel::for_queue_with_revision(&queue, 0, PlaylistLoadingView::Loading);
-    let ready = model(&queue, 0);
-
-    assert!(loading.is_empty());
-    assert!(ready.is_empty());
-    assert_eq!(loading.loading(), PlaylistLoadingView::Loading);
-    assert_eq!(ready.loading(), PlaylistLoadingView::Ready);
 }
 
 #[test]
@@ -1143,8 +1125,11 @@ fn error_retry_and_failed_navigation_have_distinct_accessibility() {
     assert!(failed_text.contains("Ошибка"));
     assert!(!failed_text.contains("повторная попытка"));
 
-    let (navigation, _) =
-        navigation_message(PlaylistNavigationView::AwaitingUserAfterFailure).expect("D55 status");
+    let (navigation, _) = navigation_message(PlaylistNavigationView::AwaitingUserAfterFailure {
+        item_id,
+        origin_already_ended: false,
+    })
+    .expect("D55 status");
     assert!(navigation.contains("Автоматический переход остановлен"));
     assert!(navigation.contains("Next, Previous или повтор"));
 }
@@ -1158,7 +1143,7 @@ fn routine_background_save_stays_silent() {
 #[test]
 fn save_warning_exposes_retry_and_unavailable_row_stays_non_modal() {
     let (warning, _) = save_message(PlaylistSaveView::WarningRetryAvailable {
-        occurrence_count: 3,
+        attempt: PlaylistSaveAttempt::for_test(3),
     })
     .expect("D69 warning");
     assert!(warning.contains("Повтор сохранения доступен"));

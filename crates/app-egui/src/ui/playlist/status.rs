@@ -1,10 +1,8 @@
 //! Единый privacy-safe status owner под Playlist toolbar.
 
+mod lifetime;
 mod presentation;
 
-use std::time::Duration;
-
-use animation_core::{Easing, SlideTransition};
 use egui::{Rect, Response, Sense, Ui, UiBuilder, pos2, vec2};
 
 use crate::playlist_runtime::{PlaylistInteractionModel, PlaylistViewModel};
@@ -18,78 +16,10 @@ use super::{PlaylistUiOutput, PlaylistUiState};
 #[cfg(test)]
 pub(super) use self::presentation::{navigation_message, save_message};
 
-/// Весь путь открытия или закрытия занимает ровно 180 мс.
-const STATUS_TRANSITION_DURATION: Duration = Duration::from_millis(180);
 /// Bounded status не может приблизиться к этой высоте; запас нужен только sizing pass.
 const STATUS_MEASUREMENT_MAX_HEIGHT_POINTS: f32 = 4_096.0;
 
-/// UI-only transition и последний безопасный snapshot для остаточной отрисовки.
-#[derive(Debug)]
-pub(super) struct PlaylistStatusAnimationState {
-    /// Линейная позиция сохраняет непрерывность при mid-flight reverse.
-    transition: SlideTransition,
-    /// Snapshot живёт только до полного завершения закрытия.
-    retained_presentation: Option<PlaylistStatusPresentation>,
-}
-
-impl Default for PlaylistStatusAnimationState {
-    fn default() -> Self {
-        Self {
-            transition: SlideTransition::closed(),
-            retained_presentation: None,
-        }
-    }
-}
-
-impl PlaylistStatusAnimationState {
-    /// Обновляет target и возвращает owned paint snapshot текущего кадра.
-    fn advance(
-        &mut self,
-        current_presentation: Option<PlaylistStatusPresentation>,
-        motion: UiMotion,
-        delta_seconds: f32,
-    ) -> PlaylistStatusAnimationFrame {
-        let authoritative = current_presentation.is_some();
-        if let Some(presentation) = current_presentation.as_ref() {
-            // Retained copy содержит только уже отформатированные privacy-safe строки.
-            self.retained_presentation = Some(presentation.clone());
-        }
-
-        self.transition.set_target_open(authoritative);
-        let duration_seconds = match motion {
-            UiMotion::Standard => STATUS_TRANSITION_DURATION.as_secs_f32(),
-            UiMotion::Reduced => 0.0,
-        };
-        self.transition.advance(delta_seconds, duration_seconds);
-
-        let progress = self.transition.eased_progress(Easing::EaseOutCubic);
-        if self.transition.is_fully_closed() {
-            // После последнего residual pixel старый snapshot больше не нужен.
-            self.retained_presentation = None;
-        }
-        let presentation = current_presentation.or_else(|| self.retained_presentation.clone());
-
-        PlaylistStatusAnimationFrame {
-            presentation,
-            progress,
-            authoritative,
-            needs_repaint: self.transition.is_animating(),
-        }
-    }
-}
-
-/// Все данные одного кадра отделены от persistent UI state.
-#[derive(Debug)]
-struct PlaylistStatusAnimationFrame {
-    /// Current либо residual safe snapshot.
-    presentation: Option<PlaylistStatusPresentation>,
-    /// Cubic progress задаёт только геометрию, без opacity.
-    progress: f32,
-    /// Только current snapshot имеет право публиковать action и менять focus.
-    authoritative: bool,
-    /// Repaint нужен лишь пока finite transition не достиг target.
-    needs_repaint: bool,
-}
+pub(super) use lifetime::PlaylistStatusLifetimeState;
 
 /// Результат invisible sizing pass разделяет content и стандартный separator.
 #[derive(Debug, Clone, Copy)]
@@ -114,10 +44,7 @@ impl PlaylistStatusLayoutMetrics {
 
 /// Интерактивен только единственный authoritative render pass.
 enum PlaylistStatusRenderAccess<'a> {
-    Authoritative {
-        state: &'a mut PlaylistUiState,
-        output: &'a mut PlaylistUiOutput,
-    },
+    Authoritative { output: &'a mut PlaylistUiOutput },
     Actionless,
 }
 
@@ -138,12 +65,17 @@ pub(super) fn show_status(
     ui.separator();
 
     let current_presentation = PlaylistStatusPresentation::from_models(model, interaction);
-    let delta_seconds = ui.input(|input| input.stable_dt).max(0.0);
+    // Egui frame time является единственным clock status lifetime owner-а.
+    let frame_time = ui.input(|input| input.time);
     let frame = state
         .status
-        .advance(current_presentation, motion, delta_seconds);
+        .advance(current_presentation, motion, frame_time);
     if frame.needs_repaint {
         ui.ctx().request_repaint();
+    }
+    if let Some(repaint_after) = frame.repaint_after {
+        // Egui сам оставит только ближайший delayed wake среди всех UI owners.
+        ui.ctx().request_repaint_after(repaint_after);
     }
 
     let Some(presentation) = frame.presentation else {
@@ -157,7 +89,7 @@ pub(super) fn show_status(
 
     let visible_rect = allocate_reveal_rect(ui, visible_height);
     let access = if frame.authoritative {
-        PlaylistStatusRenderAccess::Authoritative { state, output }
+        PlaylistStatusRenderAccess::Authoritative { output }
     } else {
         PlaylistStatusRenderAccess::Actionless
     };
@@ -176,15 +108,12 @@ fn allocate_reveal_rect(ui: &mut Ui, visible_height: f32) -> Rect {
     visible_rect
 }
 
-/// Disabled sidebar animation copy показывает current status полностью и без side effects.
-pub(super) fn show_disabled_copy(
-    ui: &mut Ui,
-    model: &PlaylistViewModel,
-    interaction: &PlaylistInteractionModel,
-) {
+/// Disabled sidebar copy показывает только ещё живой owner snapshot без side effects.
+pub(super) fn show_disabled_copy(ui: &mut Ui, state: &PlaylistUiState) {
     // Disabled copy сохраняет ту же постоянную верхнюю границу.
     ui.separator();
-    let Some(presentation) = PlaylistStatusPresentation::from_models(model, interaction) else {
+    let frame_time = ui.input(|input| input.time);
+    let Some(presentation) = state.status.actionless_copy(frame_time) else {
         return;
     };
 
@@ -286,42 +215,22 @@ fn render_status_row(
 ) {
     if let Some(action) = row.action() {
         ui.horizontal_wrapped(|ui| {
-            if let Some(message) = row.text() {
-                let _ = render_status_message(ui, message, row.tone(), row.kind());
-            }
+            let _ = render_status_message(ui, row.text(), row.tone(), row.kind());
             let _ = render_status_action(ui, action, access);
         });
         return;
     }
 
-    let Some(message) = row.text() else {
-        return;
-    };
-    let response = render_status_message(ui, message, row.tone(), row.kind());
-    if matches!(row.kind(), StatusRowKind::Tombstone)
-        && let PlaylistStatusRenderAccess::Authoritative { state, .. } = access
-        && state.take_tombstone_request()
-    {
-        response.scroll_to_me(Some(egui::Align::Center));
-        response.request_focus();
-    }
+    let _ = render_status_message(ui, row.text(), row.tone(), row.kind());
 }
 
-/// Рисует themed label; Loading добавляет spinner, но не меняет текст.
+/// Рисует themed privacy-safe label с wrapping.
 fn render_status_message(
     ui: &mut Ui,
     message: &str,
     tone: StatusTone,
     kind: StatusRowKind,
 ) -> Response {
-    if matches!(kind, StatusRowKind::Loading) {
-        return ui
-            .horizontal_wrapped(|ui| {
-                ui.spinner();
-                render_toned_label(ui, message, tone, StatusRowKind::Normal)
-            })
-            .inner;
-    }
     render_toned_label(ui, message, tone, kind)
 }
 
@@ -335,22 +244,14 @@ fn render_toned_label(
     let mut text = egui::RichText::new(message);
     text = match kind {
         StatusRowKind::Weak => text.weak(),
-        StatusRowKind::Small => text.small(),
-        StatusRowKind::Tombstone => text.strong(),
-        StatusRowKind::Normal | StatusRowKind::Loading => text,
+        StatusRowKind::Normal => text,
     };
     text = match tone {
-        StatusTone::Normal => text,
         StatusTone::Warning => text.color(ui.visuals().warn_fg_color),
         StatusTone::Error => text.color(ui.visuals().error_fg_color),
     };
 
-    let label = egui::Label::new(text).wrap();
-    if matches!(kind, StatusRowKind::Tombstone) {
-        ui.add(label.sense(Sense::focusable_noninteractive()))
-    } else {
-        ui.add(label)
-    }
+    ui.add(egui::Label::new(text).wrap())
 }
 
 /// Публикует action только из current authoritative presentation.

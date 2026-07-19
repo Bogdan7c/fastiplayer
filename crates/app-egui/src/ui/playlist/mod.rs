@@ -28,8 +28,8 @@ const MAX_VISIBLE_HINT_ITEMS: usize = 256;
 pub(crate) struct PlaylistUiState {
     /// Эфемерная геометрия активного акцента принадлежит только UI.
     active_accent: active_accent::ActiveAccentAnimationState,
-    /// Единый status owner хранит только transition и безопасный residual snapshot.
-    status: status::PlaylistStatusAnimationState,
+    /// Единый status owner хранит typed lifetime, deadlines и residual transition.
+    status: status::PlaylistStatusLifetimeState,
     viewport_anchor: Option<ViewportAnchor>,
     observed_structural_revision: Option<PlaylistStructuralRevision>,
     go_current: Option<PlaylistGoCurrentTarget>,
@@ -87,15 +87,6 @@ impl PlaylistUiState {
 
     pub(super) fn take_go_current(&mut self) -> Option<PlaylistGoCurrentTarget> {
         self.go_current.take()
-    }
-
-    pub(super) fn take_tombstone_request(&mut self) -> bool {
-        if matches!(self.go_current, Some(PlaylistGoCurrentTarget::Tombstone)) {
-            self.go_current = None;
-            true
-        } else {
-            false
-        }
     }
 
     /// D47 focus intent приходит только из controller-provided selected Item ID.
@@ -163,7 +154,7 @@ pub(crate) fn show(
         let mut visual_state = PlaylistUiState::default();
         let mut discarded_output = PlaylistUiOutput::default();
         toolbar::show(ui, interaction, toolbar_style, &mut discarded_output);
-        status::show_disabled_copy(ui, model, interaction);
+        status::show_disabled_copy(ui, state);
         renderer::show_rows(
             ui,
             model,

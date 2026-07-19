@@ -393,11 +393,7 @@ mod tests {
             )
         });
         queue.append_batch(drafts.collect()).unwrap();
-        PlaylistViewModel::for_queue_with_revision(
-            &queue,
-            1,
-            crate::playlist_runtime::PlaylistLoadingView::Ready,
-        )
+        PlaylistViewModel::for_queue_with_revision(&queue, 1)
     }
 
     #[test]

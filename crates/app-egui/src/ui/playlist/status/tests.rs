@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use egui::{Context, Event, Key, Modifiers, PointerButton, RawInput};
 use playlist_core::{
@@ -9,11 +10,14 @@ use playlist_core::{
 
 use super::*;
 use crate::playlist_runtime::{
-    PlaylistLoadingView, PlaylistProgressCancelScope, PlaylistProgressModel,
+    PlaylistInteractionModel, PlaylistSafeFeedback, PlaylistSafeFeedbackGeneration,
+};
+use crate::ui::playlist::status::presentation::{
+    PlaylistStatusProblemIdentity, PlaylistStatusRetention,
 };
 
 /// Строит минимальную read model для status layout.
-fn playlist_model(item_count: usize, loading: PlaylistLoadingView) -> PlaylistViewModel {
+fn playlist_model(item_count: usize) -> PlaylistViewModel {
     let mut queue = PlaylistQueue::new();
     if item_count > 0 {
         let drafts = (0..item_count)
@@ -32,7 +36,21 @@ fn playlist_model(item_count: usize, loading: PlaylistLoadingView) -> PlaylistVi
             .append_batch(drafts)
             .expect("status test queue must fit the playlist hard cap");
     }
-    PlaylistViewModel::for_queue_with_revision(&queue, 1, loading)
+    PlaylistViewModel::for_queue_with_revision(&queue, 1)
+}
+
+/// Создаёт safe event через production presentation boundary.
+fn safe_feedback(
+    generation: u64,
+    message: impl Into<std::sync::Arc<str>>,
+) -> PlaylistInteractionModel {
+    PlaylistInteractionModel {
+        safe_feedback: Some(PlaylistSafeFeedback {
+            generation: PlaylistSafeFeedbackGeneration(generation),
+            message: message.into(),
+        }),
+        ..PlaylistInteractionModel::default()
+    }
 }
 
 /// Возвращает полную высоту status owner-а в мгновенном reduced-motion режиме.
@@ -41,7 +59,10 @@ fn playlist_status_height(
     interaction: &PlaylistInteractionModel,
 ) -> f32 {
     let mut height = 0.0;
-    egui::__run_test_ui(|ui| {
+    let context = Context::default();
+    let _ = context.run_ui(raw_input(Vec::new(), 0.0), |ui| {
+        // Production sidebar ограничен по ширине; sizing pass должен реально проверить wrapping.
+        ui.set_width(220.0);
         let mut state = PlaylistUiState::default();
         let mut output = PlaylistUiOutput::default();
         let top_before_status = ui.cursor().top();
@@ -69,13 +90,17 @@ fn separator_height() -> f32 {
     height
 }
 
-/// Строит одну безопасную loading presentation для чистой математики transition.
-fn loading_presentation() -> PlaylistStatusPresentation {
-    PlaylistStatusPresentation::from_models(
-        &playlist_model(0, PlaylistLoadingView::Loading),
-        &PlaylistInteractionModel::default(),
-    )
-    .expect("loading fixture must create a status presentation")
+/// Строит одну event presentation для чистой математики transition.
+fn event_presentation(generation: u64) -> PlaylistStatusPresentation {
+    PlaylistStatusPresentation::from_rows(vec![PlaylistStatusRow::new(
+        PlaylistStatusProblemIdentity::SafeFeedback(PlaylistSafeFeedbackGeneration(generation)),
+        PlaylistStatusRetention::Event,
+        "Не удалось выполнить действие",
+        StatusTone::Warning,
+        StatusRowKind::Normal,
+        None,
+    )])
+    .expect("fixture contains one problem")
 }
 
 /// Создаёт deterministic input для настоящих pointer/keyboard action tests.
@@ -129,13 +154,11 @@ fn action_frame(
     action: PlaylistStatusAction,
     authoritative: bool,
 ) -> (Vec<super::super::actions::PlaylistAction>, Rect, bool, bool) {
-    let mut state = PlaylistUiState::default();
     let mut output = PlaylistUiOutput::default();
     let mut response_state = None;
     let _ = context.run_ui(input, |ui| {
         let mut access = if authoritative {
             PlaylistStatusRenderAccess::Authoritative {
-                state: &mut state,
                 output: &mut output,
             }
         } else {
@@ -150,9 +173,9 @@ fn action_frame(
 }
 
 #[test]
-fn ready_empty_and_populated_queues_keep_only_the_top_separator() {
-    let empty_model = playlist_model(0, PlaylistLoadingView::Ready);
-    let populated_model = playlist_model(30, PlaylistLoadingView::Ready);
+fn empty_and_populated_queues_keep_only_the_top_separator() {
+    let empty_model = playlist_model(0);
+    let populated_model = playlist_model(30);
     let baseline_height = separator_height();
 
     assert_eq!(
@@ -166,100 +189,107 @@ fn ready_empty_and_populated_queues_keep_only_the_top_separator() {
 }
 
 #[test]
-fn single_and_wrapped_multi_line_status_add_content_and_lower_separator() {
-    let model = playlist_model(0, PlaylistLoadingView::Loading);
-    let single_line_height = playlist_status_height(&model, &PlaylistInteractionModel::default());
-    let wrapped_interaction = PlaylistInteractionModel {
-        completion_details: Some(
-            "Длинная безопасная строка результата должна переноситься внутри одной общей status-области без расширения sidebar"
-                .into(),
+fn single_and_wrapped_problem_add_content_and_lower_separator() {
+    let model = playlist_model(0);
+    let single_line_height = playlist_status_height(&model, &safe_feedback(1, "Короткая ошибка"));
+    let wrapped_height = playlist_status_height(
+        &model,
+        &safe_feedback(
+            2,
+            "Длинная безопасная строка ошибки должна переноситься внутри одной общей status-области без расширения sidebar ".repeat(12),
         ),
-        ..PlaylistInteractionModel::default()
-    };
-    let wrapped_height = playlist_status_height(&model, &wrapped_interaction);
+    );
 
     assert!(single_line_height > separator_height() * 2.0);
-    assert!(wrapped_height > single_line_height);
+    assert!(
+        wrapped_height > single_line_height,
+        "wrapped={wrapped_height}, single={single_line_height}"
+    );
 }
 
 #[test]
-fn standard_slide_has_fixed_top_moving_bottom_and_exact_mid_flight_reverse() {
-    let presentation = loading_presentation();
-    let metrics = PlaylistStatusLayoutMetrics {
-        content_height: 32.0,
-        separator_height: 8.0,
-    };
-    let mut state = PlaylistStatusAnimationState::default();
+fn standard_slide_closes_after_deadline_and_reverses_for_new_problem() {
+    let mut state = PlaylistStatusLifetimeState::default();
+    let opened = state.advance(Some(event_presentation(1)), UiMotion::Standard, 0.0);
+    let settled = state.advance(Some(event_presentation(1)), UiMotion::Standard, 0.180);
+    let close_started = state.advance(Some(event_presentation(1)), UiMotion::Standard, 10.0);
+    let closing = state.advance(Some(event_presentation(1)), UiMotion::Standard, 10.090);
+    let reversed = state.advance(Some(event_presentation(2)), UiMotion::Standard, 10.090);
+    let reopening = state.advance(Some(event_presentation(2)), UiMotion::Standard, 10.135);
 
-    let start = state.advance(Some(presentation.clone()), UiMotion::Standard, 0.0);
-    let midpoint = state.advance(
-        Some(presentation.clone()),
-        UiMotion::Standard,
-        STATUS_TRANSITION_DURATION.as_secs_f32() * 0.5,
-    );
-    let opening_height = metrics.visible_height(midpoint.progress);
-    let reversed = state.advance(
-        None,
-        UiMotion::Standard,
-        STATUS_TRANSITION_DURATION.as_secs_f32() * 0.25,
-    );
-    let reversed_height = metrics.visible_height(reversed.progress);
-    let reopened = state.advance(
-        Some(presentation),
-        UiMotion::Standard,
-        STATUS_TRANSITION_DURATION.as_secs_f32() * 0.25,
-    );
-
-    assert_eq!(start.progress, 0.0);
-    assert!(opening_height > 0.0 && opening_height < metrics.full_height());
-    assert!(reversed_height < opening_height);
-    assert_eq!(reopened.progress, midpoint.progress);
-    let top = 24.0;
-    let opening_bottom = top + opening_height;
-    let reversed_bottom = top + reversed_height;
-    assert_eq!(top, 24.0);
-    assert!(reversed_bottom < opening_bottom);
+    assert_eq!(opened.progress, 0.0);
+    assert_eq!(settled.progress, 1.0);
+    assert_eq!(close_started.progress, 1.0);
+    assert!(closing.progress > 0.0 && closing.progress < 1.0);
+    assert_eq!(reversed.progress, closing.progress);
+    assert!(reopening.progress > reversed.progress);
 }
 
 #[test]
-fn slide_height_is_monotonic_and_repaint_stops_after_180_ms() {
-    let presentation = loading_presentation();
-    let metrics = PlaylistStatusLayoutMetrics {
-        content_height: 48.0,
-        separator_height: 8.0,
-    };
-    let mut state = PlaylistStatusAnimationState::default();
-    let mut heights = Vec::new();
+fn reduced_motion_closes_exactly_at_deadline_without_residual_snapshot() {
+    let mut state = PlaylistStatusLifetimeState::default();
 
-    for _ in 0..3 {
-        let frame = state.advance(
-            Some(presentation.clone()),
-            UiMotion::Standard,
-            STATUS_TRANSITION_DURATION.as_secs_f32() / 3.0,
-        );
-        heights.push(metrics.visible_height(frame.progress));
-    }
-    let settled = state.advance(Some(presentation), UiMotion::Standard, 0.01);
-
-    assert!(heights.windows(2).all(|pair| pair[0] <= pair[1]));
-    assert_eq!(heights.last().copied(), Some(metrics.full_height()));
-    assert!(!settled.needs_repaint);
-}
-
-#[test]
-fn reduced_motion_opens_and_closes_immediately_without_residual_snapshot() {
-    let presentation = loading_presentation();
-    let mut state = PlaylistStatusAnimationState::default();
-
-    let opened = state.advance(Some(presentation), UiMotion::Reduced, 0.0);
-    let closed = state.advance(None, UiMotion::Reduced, 0.0);
+    let opened = state.advance(Some(event_presentation(1)), UiMotion::Reduced, 0.0);
+    let before = state.advance(Some(event_presentation(1)), UiMotion::Reduced, 9.999);
+    let closed = state.advance(Some(event_presentation(1)), UiMotion::Reduced, 10.0);
 
     assert_eq!(opened.progress, 1.0);
-    assert!(opened.authoritative);
-    assert!(!opened.needs_repaint);
+    assert!(before.presentation.is_some());
     assert_eq!(closed.progress, 0.0);
     assert!(closed.presentation.is_none());
     assert!(!closed.needs_repaint);
+}
+
+#[test]
+fn settled_status_has_no_idle_repaint_and_schedules_only_nearest_deadline() {
+    let mut state = PlaylistStatusLifetimeState::default();
+    let first = state.advance(Some(event_presentation(1)), UiMotion::Standard, 2.0);
+    let settled = state.advance(Some(event_presentation(1)), UiMotion::Standard, 2.180);
+
+    assert!(first.needs_repaint);
+    assert!(!settled.needs_repaint);
+    assert_eq!(settled.repaint_after, Some(Duration::from_millis(9_820)));
+}
+
+#[test]
+fn production_ui_requests_one_delayed_wake_at_the_problem_deadline() {
+    let context = Context::default();
+    let model = playlist_model(0);
+    let interaction = safe_feedback(1, "Не удалось выполнить действие");
+    let mut state = PlaylistUiState::default();
+    let mut output = PlaylistUiOutput::default();
+
+    // Первый headless frame может сам запросить immediate repaint для инициализации шрифтов.
+    let _ = context.run_ui(raw_input(Vec::new(), 2.0), |ui| {
+        show_status(
+            ui,
+            &model,
+            &interaction,
+            UiMotion::Reduced,
+            &mut state,
+            &mut output,
+        );
+    });
+    let full_output = context.run_ui(raw_input(Vec::new(), 2.1), |ui| {
+        show_status(
+            ui,
+            &model,
+            &interaction,
+            UiMotion::Reduced,
+            &mut state,
+            &mut output,
+        );
+    });
+    let viewport_output = full_output
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .expect("root viewport output exists");
+
+    // Egui вычитает predicted_dt текущего frame-а, но не превращает wake в idle repaint.
+    assert!(
+        (Duration::from_millis(9_880)..=Duration::from_millis(9_900))
+            .contains(&viewport_output.repaint_delay)
+    );
 }
 
 #[test]
@@ -278,8 +308,6 @@ fn reveal_flow_reserves_exact_height_without_positive_frame_jump() {
 
 #[test]
 fn authoritative_status_actions_support_pointer_space_and_enter() {
-    let progress_action =
-        PlaylistStatusAction::CancelProgress(PlaylistProgressCancelScope::ManualAdd);
     let pointer_context = Context::default();
     let (_, retry_rect, _, _) = action_frame(
         &pointer_context,
@@ -311,32 +339,26 @@ fn authoritative_status_actions_support_pointer_space_and_enter() {
         vec![super::super::actions::PlaylistAction::RetrySave]
     );
 
-    for (action, key, expected) in [
-        (
-            progress_action,
-            Key::Space,
-            super::super::actions::PlaylistAction::CancelProgress(
-                PlaylistProgressCancelScope::ManualAdd,
-            ),
-        ),
-        (
-            PlaylistStatusAction::CancelNavigation {
-                origin_already_ended: false,
-            },
-            Key::Enter,
-            super::super::actions::PlaylistAction::CancelNavigation,
-        ),
-    ] {
-        let context = Context::default();
-        let _ = action_frame(&context, RawInput::default(), action, true);
-        let (_, _, tab_focused, _) = action_frame(&context, keyboard_input(Key::Tab), action, true);
-        let (actions, _, still_focused, _) =
-            action_frame(&context, keyboard_input(key), action, true);
+    let navigation_action = PlaylistStatusAction::CancelNavigation {
+        origin_already_ended: false,
+    };
+    let context = Context::default();
+    let _ = action_frame(&context, RawInput::default(), navigation_action, true);
+    let (_, _, tab_focused, _) =
+        action_frame(&context, keyboard_input(Key::Tab), navigation_action, true);
+    let (actions, _, still_focused, _) = action_frame(
+        &context,
+        keyboard_input(Key::Enter),
+        navigation_action,
+        true,
+    );
 
-        assert!(tab_focused);
-        assert!(still_focused);
-        assert_eq!(actions, vec![expected]);
-    }
+    assert!(tab_focused);
+    assert!(still_focused);
+    assert_eq!(
+        actions,
+        vec![super::super::actions::PlaylistAction::CancelNavigation]
+    );
 }
 
 #[test]
@@ -371,59 +393,30 @@ fn actionless_status_button_is_disabled_before_residual_paint() {
 }
 
 #[test]
-fn authoritative_tombstone_keeps_go_current_focus_semantics() {
-    let context = Context::default();
-    let presentation = PlaylistStatusPresentation::tombstone_for_test();
+fn disabled_copy_is_actionless_and_cannot_resurrect_expired_problem() {
+    let model = playlist_model(0);
+    let interaction = safe_feedback(1, "Не удалось выполнить действие");
     let mut state = PlaylistUiState::default();
     let mut output = PlaylistUiOutput::default();
-    state.request_go_current(crate::playlist_runtime::PlaylistGoCurrentTarget::Tombstone);
 
-    let _ = context.run_ui(raw_input(Vec::new(), 0.0), |ui| {
-        render_presentation(
+    egui::__run_test_ui(|ui| {
+        show_status(
             ui,
-            &presentation,
-            PlaylistStatusRenderAccess::Authoritative {
-                state: &mut state,
-                output: &mut output,
-            },
+            &model,
+            &interaction,
+            UiMotion::Reduced,
+            &mut state,
+            &mut output,
         );
     });
-
-    assert!(state.take_go_current().is_none());
-    assert!(context.memory(|memory| memory.focused().is_some()));
-    assert!(output.take_actions().is_empty());
-}
-
-#[test]
-fn residual_and_disabled_copies_are_actionless_and_do_not_mutate_authoritative_state() {
-    let model = playlist_model(0, PlaylistLoadingView::Ready);
-    let interaction = PlaylistInteractionModel {
-        progress: Some(PlaylistProgressModel {
-            stage: "Проверка файлов".into(),
-            processed: 1,
-            total: Some(2),
-            cancel_scope: PlaylistProgressCancelScope::ManualAdd,
-        }),
-        ..PlaylistInteractionModel::default()
-    };
-    let state = PlaylistUiState::default();
-    let mut output = PlaylistUiOutput::default();
+    let _ = state.status.advance(None, UiMotion::Reduced, 10.0);
     let authoritative_before = format!("{:?}", state.status);
 
     egui::__run_test_ui(|ui| {
         ui.disable();
-        show_disabled_copy(ui, &model, &interaction);
+        show_disabled_copy(ui, &state);
     });
 
-    assert_eq!(format!("{:?}", state.status), authoritative_before);
-    assert!(output.take_actions().is_empty());
-
-    // Measurement также получает actionless access и не трогает output/state.
-    egui::__run_test_ui(|ui| {
-        let presentation = PlaylistStatusPresentation::from_models(&model, &interaction)
-            .expect("progress fixture must create a presentation");
-        let _metrics = measure_status_layout(ui, &presentation);
-    });
     assert_eq!(format!("{:?}", state.status), authoritative_before);
     assert!(output.take_actions().is_empty());
 }

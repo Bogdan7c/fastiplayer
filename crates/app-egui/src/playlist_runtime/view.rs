@@ -221,7 +221,7 @@ pub(crate) struct PlaylistViewSnapshot {
     shuffle_enabled: bool,
     structural_action_availability: PlaylistStructuralActionAvailability,
     worker_availability: PlaylistWorkerAvailability,
-    awaiting_user_after_navigation_failure: bool,
+    navigation_failure_target: Option<PlaylistItemId>,
     active_tombstone: bool,
 }
 
@@ -242,7 +242,7 @@ impl PlaylistViewSnapshot {
             shuffle_enabled: queue.shuffle_enabled(),
             structural_action_availability: PlaylistStructuralActionAvailability::Available,
             worker_availability: PlaylistWorkerAvailability::Available,
-            awaiting_user_after_navigation_failure: false,
+            navigation_failure_target: None,
             active_tombstone: false,
         }
     }
@@ -328,8 +328,12 @@ impl PlaylistViewSnapshot {
         self.worker_availability
     }
 
+    pub(crate) const fn navigation_failure_target(&self) -> Option<PlaylistItemId> {
+        self.navigation_failure_target
+    }
+
     pub(crate) const fn awaiting_user_after_navigation_failure(&self) -> bool {
-        self.awaiting_user_after_navigation_failure
+        self.navigation_failure_target.is_some()
     }
 
     pub(crate) const fn has_active_tombstone(&self) -> bool {
@@ -391,7 +395,7 @@ pub(super) struct PlaylistViewState<'a> {
     pub repeat_mode: RepeatMode,
     pub structural_action_availability: PlaylistStructuralActionAvailability,
     pub worker_availability: PlaylistWorkerAvailability,
-    pub awaiting_user_after_navigation_failure: bool,
+    pub navigation_failure_target: Option<PlaylistItemId>,
     pub active_tombstone: bool,
 }
 
@@ -420,7 +424,7 @@ pub(super) fn rebuild_snapshot(
         shuffle_enabled: state.queue.shuffle_enabled(),
         structural_action_availability: state.structural_action_availability,
         worker_availability: state.worker_availability,
-        awaiting_user_after_navigation_failure: state.awaiting_user_after_navigation_failure,
+        navigation_failure_target: state.navigation_failure_target,
         active_tombstone: state.active_tombstone,
     }
 }

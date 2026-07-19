@@ -598,9 +598,7 @@ impl PlaylistController {
             repeat_mode: self.repeat_mode,
             structural_action_availability: self.structural_action_availability(),
             worker_availability: self.worker_availability,
-            awaiting_user_after_navigation_failure: self
-                .manual_navigation_cursor
-                .is_awaiting_user_after_failure(),
+            navigation_failure_target: self.manual_navigation_cursor.awaiting_failure_target(),
             active_tombstone: self.detached_active_tombstone.is_some(),
         };
         self.view_snapshot = Arc::new(rebuild_snapshot(

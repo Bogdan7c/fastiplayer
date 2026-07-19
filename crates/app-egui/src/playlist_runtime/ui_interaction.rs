@@ -14,7 +14,7 @@ use std::thread::{self, JoinHandle};
 use pollster::FutureExt as _;
 use winit::window::Window;
 
-use playlist_core::{ManualNavigationDirection, PlaylistItemId};
+use playlist_core::PlaylistItemId;
 
 use crate::app_wake::{AppWakePort, CompletionPublishError, OwnerMailboxReceiver, owner_mailbox};
 use crate::local_media;
@@ -24,10 +24,7 @@ use crate::process_shutdown::{
 };
 
 use super::PlaylistRuntime;
-use super::discovery::{
-    MetadataSortJobId, MetadataSortPhase, MetadataSortTerminalOutcome,
-    PlaylistDiscoveryNavigationStatus,
-};
+use super::discovery::{ManualAddCompletion, ManualAddTerminalOutcome, PlaylistDiscoveryStatus};
 use super::view::PlaylistStructuralActionAvailability;
 
 /// Безопасная ошибка формы: введённый locator сюда никогда не копируется.
@@ -283,7 +280,8 @@ pub(crate) struct PlaylistUiInteractionOwner {
     wake_port: AppWakePort,
     url_draft: PlaylistUrlDraftState,
     file_dialog: Option<PlaylistFileDialogJob>,
-    safe_feedback: Option<Arc<str>>,
+    safe_feedback: Option<PlaylistSafeFeedback>,
+    next_safe_feedback_generation: u64,
 }
 
 impl PlaylistUiInteractionOwner {
@@ -293,6 +291,7 @@ impl PlaylistUiInteractionOwner {
             url_draft: PlaylistUrlDraftState::default(),
             file_dialog: None,
             safe_feedback: None,
+            next_safe_feedback_generation: 1,
         }
     }
 
@@ -304,12 +303,22 @@ impl PlaylistUiInteractionOwner {
         &mut self.url_draft
     }
 
-    pub(crate) fn safe_feedback(&self) -> Option<&Arc<str>> {
+    pub(crate) fn safe_feedback(&self) -> Option<&PlaylistSafeFeedback> {
         self.safe_feedback.as_ref()
     }
 
     pub(crate) fn set_safe_feedback(&mut self, message: impl Into<Arc<str>>) {
-        self.safe_feedback = Some(message.into());
+        // Поколение является identity события; текст остаётся только presentation payload.
+        let generation = PlaylistSafeFeedbackGeneration(self.next_safe_feedback_generation);
+        // Ноль зарезервирован, поэтому после теоретического wrap начинаем новый цикл с единицы.
+        self.next_safe_feedback_generation = self.next_safe_feedback_generation.wrapping_add(1);
+        if self.next_safe_feedback_generation == 0 {
+            self.next_safe_feedback_generation = 1;
+        }
+        self.safe_feedback = Some(PlaylistSafeFeedback {
+            generation,
+            message: message.into(),
+        });
     }
 
     pub(crate) fn start_file_dialog(&mut self, window: &Window) -> Result<bool, String> {
@@ -358,21 +367,6 @@ impl PlaylistUiInteractionOwner {
     }
 }
 
-/// Какой background owner отменяет текущая inline-кнопка.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PlaylistProgressCancelScope {
-    ManualAdd,
-    SiblingDiscovery,
-    MetadataSort(MetadataSortJobId),
-}
-
-/// Privacy-safe направление D50 status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PlaylistWaitDirection {
-    Next,
-    Previous,
-}
-
 /// Одноразовый explicit scroll/focus target D80.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlaylistGoCurrentTarget {
@@ -380,13 +374,82 @@ pub(crate) enum PlaylistGoCurrentTarget {
     Tombstone,
 }
 
-/// Bounded progress одного foreground operation.
+/// Toolbar нужен только typed факт конфликтующей foreground-операции.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PlaylistProgressModel {
-    pub(crate) stage: Arc<str>,
-    pub(crate) processed: usize,
-    pub(crate) total: Option<usize>,
-    pub(crate) cancel_scope: PlaylistProgressCancelScope,
+pub(crate) enum PlaylistActiveOperation {
+    MetadataSort,
+    ManualAdd,
+    SiblingDiscovery,
+}
+
+/// Opaque identity terminal Manual Add не раскрывает executor handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlaylistManualAddEventId(pub(crate) u64);
+
+/// Privacy-safe accounting частичного Manual Add форматируется только в presentation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlaylistManualAddWarning {
+    pub(crate) event_id: PlaylistManualAddEventId,
+    pub(crate) kind: PlaylistManualAddWarningKind,
+    pub(crate) requested: usize,
+    pub(crate) added: usize,
+    pub(crate) unsupported_container: usize,
+    pub(crate) no_audio_video_tracks: usize,
+    pub(crate) probe_failed: usize,
+    pub(crate) capacity_rejected: usize,
+}
+
+/// Presentation различает partial accounting и owner-level terminal failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaylistManualAddWarningKind {
+    PartialResult,
+    Failed,
+}
+
+impl PlaylistManualAddWarning {
+    /// Успешный полный batch не является проблемным уведомлением.
+    fn from_completion(completion: &ManualAddCompletion) -> Option<Self> {
+        let has_rejections = completion.added < completion.requested
+            || completion.unsupported_container > 0
+            || completion.no_audio_video_tracks > 0
+            || completion.probe_failed > 0
+            || completion.capacity_rejected > 0;
+        let kind = match completion.outcome {
+            ManualAddTerminalOutcome::Cancelled
+            | ManualAddTerminalOutcome::SupersededQueueGeneration => return None,
+            ManualAddTerminalOutcome::Appended
+            | ManualAddTerminalOutcome::NoSuccessfulItems
+            | ManualAddTerminalOutcome::NoCapacity => {
+                if !has_rejections {
+                    return None;
+                }
+                PlaylistManualAddWarningKind::PartialResult
+            }
+            ManualAddTerminalOutcome::ExecutorDisconnected
+            | ManualAddTerminalOutcome::CommitRejected => PlaylistManualAddWarningKind::Failed,
+        };
+        Some(Self {
+            event_id: PlaylistManualAddEventId(completion.job_id.get()),
+            kind,
+            requested: completion.requested,
+            added: completion.added,
+            unsupported_container: completion.unsupported_container,
+            no_audio_video_tracks: completion.no_audio_video_tracks,
+            probe_failed: completion.probe_failed,
+            capacity_rejected: completion.capacity_rejected,
+        })
+    }
+}
+
+/// Монотонное поколение отделяет повтор одинакового safe текста от старого snapshot-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlaylistSafeFeedbackGeneration(pub(crate) u64);
+
+/// Safe feedback хранит текст как payload, но никогда не использует его как identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlaylistSafeFeedback {
+    pub(crate) generation: PlaylistSafeFeedbackGeneration,
+    pub(crate) message: Arc<str>,
 }
 
 /// Immutable interaction snapshot одного frame-а. Raw URL не реализует `Debug`.
@@ -399,14 +462,9 @@ pub(crate) struct PlaylistInteractionModel {
     pub(crate) url_request_focus: bool,
     pub(crate) url_safe_error: Option<PlaylistUrlDraftError>,
     pub(crate) file_dialog_open: bool,
-    pub(crate) progress: Option<PlaylistProgressModel>,
-    pub(crate) completion_summary: Option<Arc<str>>,
-    pub(crate) completion_details: Option<Arc<str>>,
-    pub(crate) safe_feedback: Option<Arc<str>>,
-    pub(crate) save_retry_available: bool,
-    pub(crate) wait_direction: Option<PlaylistWaitDirection>,
-    pub(crate) navigation_cancel_available: bool,
-    pub(crate) awaiting_failure_origin_ended: bool,
+    pub(crate) active_operation: Option<PlaylistActiveOperation>,
+    pub(crate) manual_add_warning: Option<PlaylistManualAddWarning>,
+    pub(crate) safe_feedback: Option<PlaylistSafeFeedback>,
     pub(crate) go_current_target: Option<PlaylistGoCurrentTarget>,
 }
 
@@ -420,14 +478,9 @@ impl Default for PlaylistInteractionModel {
             url_request_focus: false,
             url_safe_error: None,
             file_dialog_open: false,
-            progress: None,
-            completion_summary: None,
-            completion_details: None,
+            active_operation: None,
+            manual_add_warning: None,
             safe_feedback: None,
-            save_retry_available: false,
-            wait_direction: None,
-            navigation_cancel_available: false,
-            awaiting_failure_origin_ended: false,
             go_current_target: None,
         }
     }
@@ -439,108 +492,23 @@ impl PlaylistRuntime {
         let controller = self.controller.as_ref();
         let jobs = self.playlist_discovery_jobs_read_model();
         let sort = self.metadata_sort_read_model();
-        let progress = if let Some(job_id) = sort.active_job {
-            Some(PlaylistProgressModel {
-                stage: match sort.phase {
-                    Some(MetadataSortPhase::Probing) => "Подготовка метаданных".into(),
-                    Some(MetadataSortPhase::PreparingKeys) | None => "Подготовка сортировки".into(),
-                },
-                processed: sort.processed,
-                total: Some(sort.total),
-                cancel_scope: PlaylistProgressCancelScope::MetadataSort(job_id),
-            })
-        } else if let Some(progress) = jobs.manual_progress {
-            Some(PlaylistProgressModel {
-                stage: "Проверка добавляемых файлов".into(),
-                processed: progress.processed,
-                total: Some(progress.total),
-                cancel_scope: PlaylistProgressCancelScope::ManualAdd,
-            })
+        let active_operation = if sort.active_job.is_some() {
+            Some(PlaylistActiveOperation::MetadataSort)
+        } else if jobs.active_manual_jobs > 0 {
+            Some(PlaylistActiveOperation::ManualAdd)
         } else {
             match self.playlist_discovery_status() {
-                super::discovery::PlaylistDiscoveryStatus::Enumerating { .. } => {
-                    Some(PlaylistProgressModel {
-                        stage: "Поиск файлов".into(),
-                        processed: 0,
-                        total: None,
-                        cancel_scope: PlaylistProgressCancelScope::SiblingDiscovery,
-                    })
+                PlaylistDiscoveryStatus::Enumerating { .. }
+                | PlaylistDiscoveryStatus::Probing { .. } => {
+                    Some(PlaylistActiveOperation::SiblingDiscovery)
                 }
-                super::discovery::PlaylistDiscoveryStatus::Probing {
-                    processed, total, ..
-                } => Some(PlaylistProgressModel {
-                    stage: "Проверка файлов".into(),
-                    processed: *processed,
-                    total: Some(*total),
-                    cancel_scope: PlaylistProgressCancelScope::SiblingDiscovery,
-                }),
                 _ => None,
             }
         };
-        let mut completion_summaries = Vec::with_capacity(2);
-        if let Some(completion) = jobs.latest_manual_completion.as_ref() {
-            completion_summaries.push(format!(
-                "Добавлено {} из {}",
-                completion.added, completion.requested
-            ));
-        }
-        if let Some(completion) = sort.latest_completion.as_ref()
-            && matches!(
-                completion.outcome,
-                MetadataSortTerminalOutcome::Cancelled | MetadataSortTerminalOutcome::Invalidated
-            )
-        {
-            completion_summaries.push(format!(
-                "Сортировка отменена; обновлены данные {} файлов",
-                completion.metadata_updated
-            ));
-        }
-        let completion_summary = (!completion_summaries.is_empty())
-            .then(|| Arc::<str>::from(completion_summaries.join("\n")));
-        let completion_details = jobs
+        let manual_add_warning = jobs
             .latest_manual_completion
             .as_ref()
-            .and_then(|completion| {
-                let mut details = Vec::with_capacity(4);
-                if completion.unsupported_container > 0 {
-                    details.push(format!(
-                        "неподдерживаемый контейнер: {}",
-                        completion.unsupported_container
-                    ));
-                }
-                if completion.no_audio_video_tracks > 0 {
-                    details.push(format!(
-                        "без аудио/видео дорожек: {}",
-                        completion.no_audio_video_tracks
-                    ));
-                }
-                if completion.probe_failed > 0 {
-                    details.push(format!("ошибка проверки: {}", completion.probe_failed));
-                }
-                if completion.capacity_rejected > 0 {
-                    details.push(format!("не поместилось: {}", completion.capacity_rejected));
-                }
-                (!details.is_empty()).then(|| Arc::<str>::from(details.join("; ")))
-            });
-        let navigation_status = self.playlist_discovery_navigation_status();
-        let wait_direction = match navigation_status {
-            PlaylistDiscoveryNavigationStatus::WaitingManual { direction, .. } => {
-                Some(match direction {
-                    ManualNavigationDirection::Next => PlaylistWaitDirection::Next,
-                    ManualNavigationDirection::Previous => PlaylistWaitDirection::Previous,
-                })
-            }
-            _ => None,
-        };
-        let navigation_cancel_available = matches!(
-            navigation_status,
-            PlaylistDiscoveryNavigationStatus::WaitingManual { .. }
-                | PlaylistDiscoveryNavigationStatus::WaitingAutomatic { .. }
-        ) || controller.is_some_and(|controller| {
-            controller
-                .view_snapshot()
-                .awaiting_user_after_navigation_failure()
-        });
+            .and_then(PlaylistManualAddWarning::from_completion);
         let go_current_target = controller.and_then(|controller| {
             controller
                 .active_media()
@@ -565,16 +533,9 @@ impl PlaylistRuntime {
             url_request_focus: draft.requests_focus(),
             url_safe_error: draft.safe_error().cloned(),
             file_dialog_open: self.ui_interaction.dialog_is_open(),
-            progress,
-            completion_summary,
-            completion_details,
+            active_operation,
+            manual_add_warning,
             safe_feedback: self.ui_interaction.safe_feedback().cloned(),
-            save_retry_available: self.playlist_persistence_view().warning.is_some(),
-            wait_direction,
-            navigation_cancel_available,
-            awaiting_failure_origin_ended: controller.is_some_and(|controller| {
-                controller.awaiting_manual_navigation_failure_origin_ended()
-            }),
             go_current_target,
         }
     }

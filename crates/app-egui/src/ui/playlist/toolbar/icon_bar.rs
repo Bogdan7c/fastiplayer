@@ -106,7 +106,7 @@ impl ToolbarControl {
                 disabled_tooltip: "Сейчас нельзя изменять состав плейлиста",
             },
             Self::Sort => ToolbarPresentation {
-                availability: if model.item_count <= 1 || model.progress.is_some() {
+                availability: if model.item_count <= 1 || model.active_operation.is_some() {
                     ToolbarControlAvailability::Disabled
                 } else {
                     ToolbarControlAvailability::from_structural(
@@ -511,6 +511,7 @@ mod tests {
     use egui::{Context, Event, Key, Modifiers, PointerButton, RawInput, Rect, pos2, vec2};
 
     use super::*;
+    use crate::playlist_runtime::PlaylistActiveOperation;
     use crate::ui::skin::{MinimalSkin, PlayerSkin};
 
     /// Создаёт deterministic viewport для настоящего egui interaction pass.
@@ -777,6 +778,14 @@ mod tests {
                 },
             ),
             (ToolbarControl::Sort, PlaylistInteractionModel::default()),
+            (
+                ToolbarControl::Sort,
+                PlaylistInteractionModel {
+                    item_count: 3,
+                    active_operation: Some(PlaylistActiveOperation::ManualAdd),
+                    ..PlaylistInteractionModel::default()
+                },
+            ),
             (
                 ToolbarControl::CurrentItem,
                 PlaylistInteractionModel::default(),

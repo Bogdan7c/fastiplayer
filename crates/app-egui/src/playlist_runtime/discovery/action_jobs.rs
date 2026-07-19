@@ -31,6 +31,13 @@ const VISIBLE_REFRESH_VALID_CACHE_LIMIT: usize = 512;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ManualAddJobId(DiscoveryJobId);
 
+impl ManualAddJobId {
+    /// Возвращает opaque process-local число только для typed UI correlation.
+    pub(crate) const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
 /// Ошибка запуска не маскирует lifecycle/backpressure executor-а.
 #[derive(Debug)]
 pub(crate) enum ManualAddStartError {

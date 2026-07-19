@@ -86,6 +86,11 @@ pub(super) fn show_rows(
     state: &mut PlaylistUiState,
     output: &mut PlaylistUiOutput,
 ) {
+    // Tombstone больше не имеет status-row; intent всё равно потребляется ровно один раз.
+    let go_current_item = match state.take_go_current() {
+        Some(crate::playlist_runtime::PlaylistGoCurrentTarget::Row(item_id)) => Some(item_id),
+        Some(crate::playlist_runtime::PlaylistGoCurrentTarget::Tombstone) | None => None,
+    };
     if model.is_empty() {
         state.observed_structural_revision = Some(model.structural_revision());
         state.viewport_anchor = None;
@@ -96,10 +101,6 @@ pub(super) fn show_rows(
     }
 
     let row_pitch = ROW_HEIGHT + ui.spacing().item_spacing.y;
-    let go_current_item = match state.take_go_current() {
-        Some(crate::playlist_runtime::PlaylistGoCurrentTarget::Row(item_id)) => Some(item_id),
-        Some(crate::playlist_runtime::PlaylistGoCurrentTarget::Tombstone) | None => None,
-    };
     let focus_item = state.take_row_focus().or(go_current_item);
     let drag_was_active = virtualized_drag::is_active(&state.drag);
     let drag_offset = virtualized_drag::prepare_scroll_offset(

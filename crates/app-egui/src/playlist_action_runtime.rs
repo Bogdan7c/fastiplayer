@@ -6,9 +6,8 @@ use render_wgpu_shell::Renderer;
 use winit::window::Window;
 
 use crate::playlist_runtime::{
-    ControllerMoveItemsOutcome, MetadataSortCancelOutcome, PlaylistProgressCancelScope,
-    PlaylistRuntime, RemovalUndoOutcome, RuntimeMoveItemsOutcome, RuntimeRemovalOutcome,
-    RuntimeUpdateSelectionOutcome, UpdateSelectionOutcome,
+    ControllerMoveItemsOutcome, PlaylistRuntime, RemovalUndoOutcome, RuntimeMoveItemsOutcome,
+    RuntimeRemovalOutcome, RuntimeUpdateSelectionOutcome, UpdateSelectionOutcome,
 };
 use crate::state::AppState;
 use crate::ui::playlist::PlaylistAction;
@@ -136,20 +135,6 @@ pub(crate) fn apply_playlist_actions(
                     runtime.set_playlist_safe_feedback("Не удалось начать сортировку");
                 }
                 changed = true;
-            }
-            PlaylistAction::CancelProgress(scope) => {
-                changed |= match scope {
-                    PlaylistProgressCancelScope::ManualAdd => runtime.cancel_all_manual_file_adds(),
-                    PlaylistProgressCancelScope::SiblingDiscovery => {
-                        runtime.cancel_sibling_discovery_from_ui()
-                    }
-                    PlaylistProgressCancelScope::MetadataSort(job_id) => {
-                        matches!(
-                            runtime.cancel_metadata_sort(job_id),
-                            MetadataSortCancelOutcome::Requested
-                        )
-                    }
-                };
             }
             PlaylistAction::CancelNavigation => {
                 changed |= runtime.cancel_playlist_navigation_from_ui();

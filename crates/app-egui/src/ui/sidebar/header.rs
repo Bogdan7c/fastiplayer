@@ -239,7 +239,6 @@ mod tests {
     };
 
     use super::*;
-    use crate::playlist_runtime::PlaylistLoadingView;
     use crate::ui::skin::{MinimalSkin, PlayerSkin};
 
     /// Строит canonical Playlist queue с устойчивыми Item ID для header tests.
@@ -276,12 +275,7 @@ mod tests {
         active_item_id: Option<playlist_core::PlaylistItemId>,
     ) -> PlaylistViewModel {
         // Test-only constructor сохраняет production row/index construction.
-        PlaylistViewModel::for_queue_with_active_item_for_test(
-            queue,
-            1,
-            PlaylistLoadingView::Ready,
-            active_item_id,
-        )
+        PlaylistViewModel::for_queue_with_active_item_for_test(queue, 1, active_item_id)
     }
 
     /// Находит фактический цвет конкретного текста в headless egui output.

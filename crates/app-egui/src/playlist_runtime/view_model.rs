@@ -4,31 +4,43 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use playlist_core::PlaylistItemId;
+use playlist_state::SaveRevision;
 
 use super::PlaylistRuntime;
+use super::controller::SiblingDiscoveryScopeId;
 use super::discovery::{PlaylistDiscoveryNavigationStatus, PlaylistDiscoveryStatus};
 use super::persistence::{
     PlaylistPersistenceFault, PlaylistPersistenceView, PlaylistSaveDurability,
 };
-use super::startup::{PlaylistStartupPhase, PlaylistStartupView};
 use super::view::{PlaylistStructuralRevision, PlaylistViewSnapshot, PlaylistVisibleRow};
-
-/// Startup gate визуально не смешивается с доказанно пустой очередью.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PlaylistLoadingView {
-    Loading,
-    Ready,
-}
 
 /// Bounded probe/discovery summary уже не содержит filesystem locator-ов.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlaylistProbeView {
     Idle,
-    Enumerating,
-    Probing { processed: usize, total: usize },
-    ManualProbe { processed: usize, total: usize },
-    Completed,
-    Warning,
+    Warning { scope_id: SiblingDiscoveryScopeId },
+}
+
+/// Typed identity одной persistence-попытки не зависит от форматированного текста.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlaylistSaveAttempt {
+    revision: SaveRevision,
+    occurrence_count: u32,
+}
+
+impl PlaylistSaveAttempt {
+    /// Presentation читает только счётчик для privacy-safe текста.
+    pub(crate) const fn occurrence_count(self) -> u32 {
+        self.occurrence_count
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn for_test(occurrence_count: u32) -> Self {
+        Self {
+            revision: SaveRevision::FIRST,
+            occurrence_count,
+        }
+    }
 }
 
 /// Persistence summary сохраняет различие block, retryable warning и terminal fault.
@@ -36,20 +48,22 @@ pub(crate) enum PlaylistProbeView {
 pub(crate) enum PlaylistSaveView {
     Idle,
     Saving,
-    WarningRetryAvailable { occurrence_count: u32 },
+    WarningRetryAvailable { attempt: PlaylistSaveAttempt },
     Blocked,
     Fault(PlaylistPersistenceFault),
 }
 
-/// Navigation UI не получает cursor/preview ownership.
+/// Navigation UI получает только typed problem state без cursor/preview ownership.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlaylistNavigationView {
     Idle,
-    WaitingForCandidate,
-    AwaitingUserAfterFailure,
-    Exhausted,
-    Cancelled,
-    Fatal,
+    AwaitingUserAfterFailure {
+        item_id: PlaylistItemId,
+        origin_already_ended: bool,
+    },
+    Fatal {
+        scope_id: SiblingDiscoveryScopeId,
+    },
 }
 
 /// Startup warning намеренно остаётся общей privacy-safe категорией.
@@ -63,7 +77,6 @@ pub(crate) enum PlaylistStartupWarningView {
 #[derive(Debug, Clone)]
 pub(crate) struct PlaylistViewModel {
     snapshot: Arc<PlaylistViewSnapshot>,
-    loading: PlaylistLoadingView,
     probe: PlaylistProbeView,
     save: PlaylistSaveView,
     navigation: PlaylistNavigationView,
@@ -75,14 +88,12 @@ impl PlaylistViewModel {
     pub(crate) fn for_queue_with_revision(
         queue: &playlist_core::PlaylistQueue,
         structural_revision: u64,
-        loading: PlaylistLoadingView,
     ) -> Self {
         Self {
             snapshot: Arc::new(PlaylistViewSnapshot::for_queue_with_revision(
                 queue,
                 structural_revision,
             )),
-            loading,
             probe: PlaylistProbeView::Idle,
             save: PlaylistSaveView::Idle,
             navigation: PlaylistNavigationView::Idle,
@@ -95,7 +106,6 @@ impl PlaylistViewModel {
     pub(crate) fn for_queue_with_active_item_for_test(
         queue: &playlist_core::PlaylistQueue,
         structural_revision: u64,
-        loading: PlaylistLoadingView,
         active_item_id: Option<PlaylistItemId>,
     ) -> Self {
         // Test-only boundary использует production snapshot row/index construction.
@@ -105,12 +115,27 @@ impl PlaylistViewModel {
                 structural_revision,
                 active_item_id,
             )),
-            loading,
             probe: PlaylistProbeView::Idle,
             save: PlaylistSaveView::Idle,
             navigation: PlaylistNavigationView::Idle,
             startup_warning: PlaylistStartupWarningView::None,
         }
+    }
+
+    /// Focused status tests меняют только bounded problem summaries.
+    #[cfg(test)]
+    pub(crate) fn with_status_for_test(
+        mut self,
+        probe: PlaylistProbeView,
+        save: PlaylistSaveView,
+        navigation: PlaylistNavigationView,
+        startup_warning: PlaylistStartupWarningView,
+    ) -> Self {
+        self.probe = probe;
+        self.save = save;
+        self.navigation = navigation;
+        self.startup_warning = startup_warning;
+        self
     }
 
     #[cfg(test)]
@@ -184,20 +209,6 @@ impl PlaylistViewModel {
         )
     }
 
-    pub(crate) fn structural_action_availability(
-        &self,
-    ) -> super::view::PlaylistStructuralActionAvailability {
-        self.snapshot.structural_action_availability()
-    }
-
-    pub(crate) fn has_active_tombstone(&self) -> bool {
-        self.snapshot.has_active_tombstone()
-    }
-
-    pub(crate) const fn loading(&self) -> PlaylistLoadingView {
-        self.loading
-    }
-
     pub(crate) const fn probe(&self) -> PlaylistProbeView {
         self.probe
     }
@@ -231,14 +242,13 @@ impl PlaylistRuntime {
         let snapshot = self.playlist_view_snapshot();
         let startup = self.playlist_startup_view();
         let persistence = self.playlist_persistence_view();
-        let loading = loading_view(startup);
-        let probe = probe_view(
-            self.playlist_discovery_status(),
-            self.discovery.manual_probe_progress(),
-        );
+        let probe = probe_view(self.playlist_discovery_status());
         let save = save_view(persistence);
         let navigation = navigation_view(
-            snapshot.awaiting_user_after_navigation_failure(),
+            snapshot.navigation_failure_target(),
+            self.controller.as_ref().is_some_and(|controller| {
+                controller.awaiting_manual_navigation_failure_origin_ended()
+            }),
             self.playlist_discovery_navigation_status(),
         );
         let startup_warning = if startup.warning.is_some() {
@@ -248,7 +258,6 @@ impl PlaylistRuntime {
         };
         PlaylistViewModel {
             snapshot,
-            loading,
             probe,
             save,
             navigation,
@@ -257,36 +266,15 @@ impl PlaylistRuntime {
     }
 }
 
-fn loading_view(startup: PlaylistStartupView) -> PlaylistLoadingView {
-    match startup.phase {
-        PlaylistStartupPhase::PendingLoadDecision
-        | PlaylistStartupPhase::Inspecting
-        | PlaylistStartupPhase::ApplyingQuarantine => PlaylistLoadingView::Loading,
-        PlaylistStartupPhase::Ready | PlaylistStartupPhase::Shutdown => PlaylistLoadingView::Ready,
-    }
-}
-
-fn probe_view(
-    discovery: &PlaylistDiscoveryStatus,
-    manual_progress: Option<playlist_discovery::DiscoveryProgress>,
-) -> PlaylistProbeView {
-    if let Some(progress) = manual_progress {
-        return PlaylistProbeView::ManualProbe {
-            processed: progress.processed,
-            total: progress.total,
-        };
-    }
+fn probe_view(discovery: &PlaylistDiscoveryStatus) -> PlaylistProbeView {
     match discovery {
-        PlaylistDiscoveryStatus::Idle => PlaylistProbeView::Idle,
-        PlaylistDiscoveryStatus::Enumerating { .. } => PlaylistProbeView::Enumerating,
-        PlaylistDiscoveryStatus::Probing {
-            processed, total, ..
-        } => PlaylistProbeView::Probing {
-            processed: *processed,
-            total: *total,
+        PlaylistDiscoveryStatus::TargetOnlyWarning { scope_id, .. } => PlaylistProbeView::Warning {
+            scope_id: *scope_id,
         },
-        PlaylistDiscoveryStatus::Completed { .. } => PlaylistProbeView::Completed,
-        PlaylistDiscoveryStatus::TargetOnlyWarning { .. } => PlaylistProbeView::Warning,
+        PlaylistDiscoveryStatus::Idle
+        | PlaylistDiscoveryStatus::Enumerating { .. }
+        | PlaylistDiscoveryStatus::Probing { .. }
+        | PlaylistDiscoveryStatus::Completed { .. } => PlaylistProbeView::Idle,
     }
 }
 
@@ -299,7 +287,10 @@ fn save_view(persistence: PlaylistPersistenceView) -> PlaylistSaveView {
     }
     if let Some(warning) = persistence.warning {
         return PlaylistSaveView::WarningRetryAvailable {
-            occurrence_count: warning.occurrence_count,
+            attempt: PlaylistSaveAttempt {
+                revision: warning.revision,
+                occurrence_count: warning.occurrence_count,
+            },
         };
     }
     if matches!(
@@ -313,21 +304,25 @@ fn save_view(persistence: PlaylistPersistenceView) -> PlaylistSaveView {
 }
 
 fn navigation_view(
-    awaiting_user_after_failure: bool,
+    failed_target: Option<PlaylistItemId>,
+    origin_already_ended: bool,
     discovery: PlaylistDiscoveryNavigationStatus,
 ) -> PlaylistNavigationView {
-    if awaiting_user_after_failure {
-        return PlaylistNavigationView::AwaitingUserAfterFailure;
+    if let Some(item_id) = failed_target {
+        return PlaylistNavigationView::AwaitingUserAfterFailure {
+            item_id,
+            origin_already_ended,
+        };
     }
     match discovery {
         PlaylistDiscoveryNavigationStatus::Idle
-        | PlaylistDiscoveryNavigationStatus::TargetReady { .. } => PlaylistNavigationView::Idle,
-        PlaylistDiscoveryNavigationStatus::WaitingManual { .. }
-        | PlaylistDiscoveryNavigationStatus::WaitingAutomatic { .. } => {
-            PlaylistNavigationView::WaitingForCandidate
+        | PlaylistDiscoveryNavigationStatus::WaitingManual { .. }
+        | PlaylistDiscoveryNavigationStatus::WaitingAutomatic { .. }
+        | PlaylistDiscoveryNavigationStatus::TargetReady { .. }
+        | PlaylistDiscoveryNavigationStatus::Exhausted { .. }
+        | PlaylistDiscoveryNavigationStatus::Cancelled { .. } => PlaylistNavigationView::Idle,
+        PlaylistDiscoveryNavigationStatus::Fatal { scope_id } => {
+            PlaylistNavigationView::Fatal { scope_id }
         }
-        PlaylistDiscoveryNavigationStatus::Exhausted { .. } => PlaylistNavigationView::Exhausted,
-        PlaylistDiscoveryNavigationStatus::Cancelled { .. } => PlaylistNavigationView::Cancelled,
-        PlaylistDiscoveryNavigationStatus::Fatal { .. } => PlaylistNavigationView::Fatal,
     }
 }

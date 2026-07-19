@@ -6,8 +6,7 @@ use std::sync::Arc;
 use playlist_core::{MoveItemIntent, PlaylistItemId, SortCanonicalQueue};
 
 use crate::playlist_runtime::{
-    PlaylistGoCurrentTarget, PlaylistProgressCancelScope, PlaylistStructuralRevision,
-    UpdateSelection,
+    PlaylistGoCurrentTarget, PlaylistStructuralRevision, UpdateSelection,
 };
 
 /// Exact selected IDs для одного bulk removal commit-а.
@@ -129,7 +128,6 @@ pub(crate) enum PlaylistAction {
     CancelUrlEditor,
     Clear,
     Sort(SortCanonicalQueue),
-    CancelProgress(PlaylistProgressCancelScope),
     CancelNavigation,
     RetrySave,
     GoCurrent(PlaylistGoCurrentTarget),

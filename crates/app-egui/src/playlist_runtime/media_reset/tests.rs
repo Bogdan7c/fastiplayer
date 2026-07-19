@@ -44,7 +44,8 @@ fn latest_pending_reset_retries_full_and_disconnect_is_terminal() {
         runtime
             .playlist_interaction_model()
             .safe_feedback
-            .as_deref(),
+            .as_ref()
+            .map(|feedback| feedback.message.as_ref()),
         Some("Очередь очищена, но воспроизведение не удалось сбросить")
     );
 }
@@ -140,7 +141,8 @@ fn terminal_reset_failure_keeps_cleared_queue_and_reports_exact_safe_message() {
         runtime
             .playlist_interaction_model()
             .safe_feedback
-            .as_deref(),
+            .as_ref()
+            .map(|feedback| feedback.message.as_ref()),
         Some("Очередь очищена, но воспроизведение не удалось сбросить")
     );
 }

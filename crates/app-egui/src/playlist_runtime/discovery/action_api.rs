@@ -42,23 +42,6 @@ impl PlaylistRuntime {
         self.discovery.cancel_manual_add(job_id)
     }
 
-    /// Inline progress не хранит очередь job IDs и отменяет только Manual Add owner scope.
-    pub(crate) fn cancel_all_manual_file_adds(&mut self) -> bool {
-        self.discovery.action_jobs.cancel_all_manual_adds()
-    }
-
-    /// D27 отменяет sibling scan и связанный wait, но не откатывает committed batches.
-    pub(crate) fn cancel_sibling_discovery_from_ui(&mut self) -> bool {
-        let active = !matches!(
-            self.discovery.status(),
-            super::PlaylistDiscoveryStatus::Idle
-        );
-        let _ = self.cancel_global_playlist_navigation_wait();
-        self.discovery
-            .cancel_active(DiscoveryCancellationCause::UserCancelled);
-        active
-    }
-
     /// D31 принимает local refresh и service-owned YtDlp enrichment видимых rows.
     #[allow(
         dead_code,
@@ -180,12 +163,6 @@ impl PlaylistDiscoveryCoordinator {
 
     fn jobs_read_model(&self) -> PlaylistDiscoveryJobsReadModel {
         self.action_jobs.read_model()
-    }
-
-    pub(crate) const fn manual_probe_progress(
-        &self,
-    ) -> Option<playlist_discovery::DiscoveryProgress> {
-        self.action_jobs.manual_progress()
     }
 
     pub(super) fn cancel_action_jobs_for_queue_replacement(&mut self) {

@@ -63,9 +63,11 @@ pub(crate) use transport_ui::{
     NavigationControlAvailability, PlaylistTransportUiModel, PlaylistUndoUiSnapshot,
     RemovalUndoUiModel,
 };
+#[cfg(test)]
+pub(crate) use ui_interaction::{PlaylistActiveOperation, PlaylistSafeFeedback};
 pub(crate) use ui_interaction::{
-    PlaylistGoCurrentTarget, PlaylistInteractionModel, PlaylistProgressCancelScope,
-    PlaylistProgressModel, PlaylistWaitDirection,
+    PlaylistGoCurrentTarget, PlaylistInteractionModel, PlaylistManualAddEventId,
+    PlaylistManualAddWarning, PlaylistManualAddWarningKind, PlaylistSafeFeedbackGeneration,
 };
 #[allow(
     dead_code,
@@ -99,6 +101,7 @@ pub(crate) use actions::{
 #[cfg(test)]
 pub(crate) use controller::ControllerRemovalUndoOutcome;
 pub(crate) use controller::PlaylistController;
+pub(crate) use controller::SiblingDiscoveryScopeId;
 pub(crate) use controller::{
     AutomaticLifecycleOutcome, ControllerInitialQueuePlaybackAction,
     ControllerManualNavigationOutcome, ControllerMoveItemsOutcome, ControllerPlayItemOutcome,
@@ -106,7 +109,7 @@ pub(crate) use controller::{
     StablePlaybackIntent,
 };
 pub(crate) use controller::{StartupPosition, StartupRestoreFailureOutcome, StartupRestoreTarget};
-pub(crate) use discovery::{MetadataSortCancelOutcome, PlaylistDiscoveryNavigationAction};
+pub(crate) use discovery::PlaylistDiscoveryNavigationAction;
 pub(crate) use identity::TransportActionOrigin;
 pub(crate) use media_reset::PlaylistMediaResetReceiptDisposition;
 #[allow(
@@ -142,9 +145,11 @@ pub(crate) use view::{
     PlaylistStructuralActionAvailability, PlaylistStructuralRevision, PlaylistViewSnapshot,
     PlaylistVisibleRow,
 };
+#[cfg(test)]
+pub(crate) use view_model::PlaylistSaveAttempt;
 pub(crate) use view_model::{
-    PlaylistLoadingView, PlaylistNavigationView, PlaylistProbeView, PlaylistSaveView,
-    PlaylistStartupWarningView, PlaylistViewModel,
+    PlaylistNavigationView, PlaylistProbeView, PlaylistSaveView, PlaylistStartupWarningView,
+    PlaylistViewModel,
 };
 
 /// D66 generation меняется только при queue-identity replacement boundaries.

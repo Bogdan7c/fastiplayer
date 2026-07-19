@@ -282,6 +282,16 @@ impl ManualNavigationCursor {
         )
     }
 
+    /// UI read model получает только failed Item ID, не cursor/token ownership.
+    pub(super) fn awaiting_failure_target(&self) -> Option<PlaylistItemId> {
+        match self.state() {
+            Some(ManualNavigationPreviewState::AwaitingUserAfterFailure(failed_target)) => {
+                Some(failed_target.item_id())
+            }
+            Some(ManualNavigationPreviewState::Ready) | None => None,
+        }
+    }
+
     pub(super) fn observe_origin_ended(&mut self, active: ActiveMediaIdentity) -> bool {
         let context = self
             .preview
