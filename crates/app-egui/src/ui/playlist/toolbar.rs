@@ -1,10 +1,10 @@
-//! Toolbar/forms/progress renderer без I/O и business mutations.
+//! Toolbar и URL form renderer без I/O и business mutations.
 
 mod icon_bar;
 
 use playlist_core::PlaylistSortKey;
 
-use crate::playlist_runtime::{PlaylistInteractionModel, PlaylistWaitDirection};
+use crate::playlist_runtime::PlaylistInteractionModel;
 use crate::ui::skin::PlaylistToolbarStyle;
 
 use super::PlaylistUiOutput;
@@ -30,7 +30,6 @@ pub(super) fn show(
     if model.url_editor_open {
         show_url_editor(ui, model, output);
     }
-    show_operation_status(ui, model, output);
 }
 
 fn show_url_editor(
@@ -78,82 +77,9 @@ fn show_url_editor(
     });
 }
 
-fn show_operation_status(
-    ui: &mut egui::Ui,
-    model: &PlaylistInteractionModel,
-    output: &mut PlaylistUiOutput,
-) {
-    if let Some(progress) = &model.progress {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(progress_text(progress));
-            if ui.button("Отмена").clicked() {
-                output.push_action(PlaylistAction::CancelProgress(progress.cancel_scope));
-            }
-        });
-    }
-    if let Some(summary) = &model.completion_summary {
-        ui.label(summary.as_ref());
-    }
-    if let Some(details) = &model.completion_details {
-        ui.small(details.as_ref());
-    }
-    if let Some(feedback) = &model.safe_feedback {
-        ui.colored_label(ui.visuals().warn_fg_color, feedback.as_ref());
-    }
-    if model.save_retry_available {
-        ui.horizontal(|ui| {
-            ui.colored_label(ui.visuals().warn_fg_color, "Не удалось сохранить плейлист");
-            if ui.button("Повторить").clicked() {
-                output.push_action(PlaylistAction::RetrySave);
-            }
-        });
-    }
-    if let Some(direction) = model.wait_direction {
-        ui.label(wait_message(direction));
-    }
-    if model.navigation_cancel_available {
-        let tooltip = navigation_cancel_tooltip(model.awaiting_failure_origin_ended);
-        if ui
-            .button("Отменить переход")
-            .on_hover_text(tooltip)
-            .clicked()
-        {
-            output.push_action(PlaylistAction::CancelNavigation);
-        }
-    }
-}
-
-fn progress_text(progress: &crate::playlist_runtime::PlaylistProgressModel) -> String {
-    progress.total.map_or_else(
-        || format!("{}: {}", progress.stage, progress.processed),
-        |total| format!("{}: {} из {total}", progress.stage, progress.processed),
-    )
-}
-
-const fn wait_message(direction: PlaylistWaitDirection) -> &'static str {
-    match direction {
-        PlaylistWaitDirection::Next => "Ищу следующий трек…",
-        PlaylistWaitDirection::Previous => "Ищу предыдущий трек…",
-    }
-}
-
-const fn navigation_cancel_tooltip(origin_already_ended: bool) -> &'static str {
-    if origin_already_ended {
-        "Отменить переход; завершившееся воспроизведение останется остановленным"
-    } else {
-        "Отменить только ожидающий переход"
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use crate::playlist_runtime::{
-        PlaylistProgressCancelScope, PlaylistProgressModel, PlaylistWaitDirection,
-    };
-
-    use super::{SORT_KEYS, navigation_cancel_tooltip, progress_text, wait_message};
+    use super::SORT_KEYS;
 
     #[test]
     fn sort_menu_exposes_every_required_key_exactly_once() {
@@ -172,32 +98,6 @@ mod tests {
                 1
             );
         }
-    }
-
-    #[test]
-    fn progress_and_direction_text_keep_exact_scopes_distinct() {
-        let progress = PlaylistProgressModel {
-            stage: Arc::from("Проверка файлов"),
-            processed: 3,
-            total: Some(7),
-            cancel_scope: PlaylistProgressCancelScope::ManualAdd,
-        };
-
-        assert_eq!(progress_text(&progress), "Проверка файлов: 3 из 7");
-        assert_eq!(
-            wait_message(PlaylistWaitDirection::Next),
-            "Ищу следующий трек…"
-        );
-        assert_eq!(
-            wait_message(PlaylistWaitDirection::Previous),
-            "Ищу предыдущий трек…"
-        );
-    }
-
-    #[test]
-    fn ended_origin_cancel_tooltip_promises_stop_not_resume() {
-        assert!(navigation_cancel_tooltip(true).contains("останется остановленным"));
-        assert!(!navigation_cancel_tooltip(false).contains("останется остановленным"));
     }
 
     #[test]

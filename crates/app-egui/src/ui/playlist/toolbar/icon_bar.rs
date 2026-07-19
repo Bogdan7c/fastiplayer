@@ -289,9 +289,8 @@ fn icon_bar_layout(row_rect: Rect, style: PlaylistToolbarStyle) -> IconBarLayout
             .max(0.0);
     let button_size = style.button_size.max(0.0).min(maximum_non_overlapping_size);
     let button_extent = vec2(button_size, button_size);
-    // Внешний egui spacing уже оставляет место перед summary, поэтому rect можно
-    // оптически опустить в этот промежуток, не меняя положение следующего блока.
-    let button_center_y = content_rect.center().y + style.button_center_y_offset;
+    // Все пять hit-area используют точный центр выделенной 32-point toolbar row.
+    let button_center_y = content_rect.center().y;
     let first_center = pos2(content_rect.left() + button_size * 0.5, button_center_y);
     let center_step = button_size + gap;
     let left_rect = |index: usize| {
@@ -715,14 +714,11 @@ mod tests {
                 row.right() - layout.clear.right(),
                 style.clear_right_padding
             );
-            assert_eq!(
-                layout.add_files.center().y - row.center().y,
-                style.button_center_y_offset
-            );
-            assert_eq!(
-                layout.clear.center().y - row.center().y,
-                style.button_center_y_offset
-            );
+            assert_eq!(layout.add_files.center().y, row.center().y);
+            assert_eq!(layout.add_url.center().y, row.center().y);
+            assert_eq!(layout.sort.center().y, row.center().y);
+            assert_eq!(layout.current_item.center().y, row.center().y);
+            assert_eq!(layout.clear.center().y, row.center().y);
             assert!(layout.current_item.right() < layout.clear.left());
         }
     }

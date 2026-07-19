@@ -28,6 +28,8 @@ const MAX_VISIBLE_HINT_ITEMS: usize = 256;
 pub(crate) struct PlaylistUiState {
     /// Эфемерная геометрия активного акцента принадлежит только UI.
     active_accent: active_accent::ActiveAccentAnimationState,
+    /// Единый status owner хранит только transition и безопасный residual snapshot.
+    status: status::PlaylistStatusAnimationState,
     viewport_anchor: Option<ViewportAnchor>,
     observed_structural_revision: Option<PlaylistStructuralRevision>,
     go_current: Option<PlaylistGoCurrentTarget>,
@@ -117,7 +119,7 @@ pub(crate) struct PlaylistVisibleItemsHint {
 pub(crate) struct PlaylistShowInput<'a> {
     /// Revision-stable строки могут отсутствовать до runtime binding.
     pub(crate) model: Option<&'a PlaylistViewModel>,
-    /// Toolbar/forms/progress читают только authoritative interaction snapshot.
+    /// Toolbar/forms/status читают только authoritative interaction snapshot.
     pub(crate) interaction: &'a PlaylistInteractionModel,
     /// Skin-owned визуальные токены строк.
     pub(crate) row_style: crate::ui::skin::PlaylistRowStyle,
@@ -161,7 +163,7 @@ pub(crate) fn show(
         let mut visual_state = PlaylistUiState::default();
         let mut discarded_output = PlaylistUiOutput::default();
         toolbar::show(ui, interaction, toolbar_style, &mut discarded_output);
-        status::show_summary(ui, model, &mut visual_state);
+        status::show_disabled_copy(ui, model, interaction);
         renderer::show_rows(
             ui,
             model,
@@ -173,7 +175,7 @@ pub(crate) fn show(
         return;
     }
     toolbar::show(ui, interaction, toolbar_style, output);
-    status::show_summary(ui, model, state);
+    status::show_status(ui, model, interaction, motion, state, output);
     renderer::show_rows(ui, model, row_style, motion, state, output);
 }
 

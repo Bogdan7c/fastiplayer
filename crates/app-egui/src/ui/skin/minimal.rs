@@ -149,7 +149,6 @@ impl PlayerSkin for MinimalSkin {
 
         PlaylistToolbarStyle {
             button_size,
-            button_center_y_offset: 8.0,
             button_gap: (button_center_step - button_size).max(0.0),
             left_group_padding: (first_button_center_inset - button_size * 0.5).max(0.0),
             clear_right_padding: 18.0,

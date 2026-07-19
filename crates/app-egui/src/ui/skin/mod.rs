@@ -155,8 +155,6 @@ pub struct PlaylistHeaderUndoStyle {
 pub struct PlaylistToolbarStyle {
     /// Сторона квадратной hit-area каждой кнопки.
     pub button_size: f32,
-    /// Оптический сдвиг центра кнопок вниз внутри промежутка перед summary.
-    pub button_center_y_offset: f32,
     /// Интервал между четырьмя обычными действиями слева.
     pub button_gap: f32,
     /// Отступ левой группы от края sidebar.
@@ -417,7 +415,6 @@ mod tests {
         let controls_style = MinimalSkin.controls_style();
 
         assert_eq!(style.button_size, controls_style.transport_button_size);
-        assert_eq!(style.button_center_y_offset, 8.0);
         assert_eq!(controls_style.left_edge_control_center_step, 40.0);
         assert_eq!(style.button_gap, 8.0);
         assert_eq!(style.left_group_padding, 23.0);
