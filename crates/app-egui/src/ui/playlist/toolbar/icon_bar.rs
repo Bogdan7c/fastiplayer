@@ -1,6 +1,8 @@
 //! Компактный icon-only toolbar: layout, interaction, accessibility и actions.
 
-use egui::{Color32, Key, Popup, Rect, Response, Sense, Ui, WidgetInfo, WidgetType, pos2, vec2};
+use egui::{
+    Color32, Key, Popup, Rect, Response, Sense, Ui, UiBuilder, WidgetInfo, WidgetType, pos2, vec2,
+};
 use playlist_core::{SortCanonicalQueue, SortDirection};
 use ui_artwork_egui::{
     ArtworkPainter, PlaylistToolbarButtonStyle, PlaylistToolbarGlyph, PlaylistToolbarPaintState,
@@ -328,29 +330,42 @@ fn render_control(
             ToolbarControlAvailability::TemporarilyBlocked
         ) {
         // Hover-only Response блокирует action, но не умножает opacity краткого guard-кадра.
-        let response = ui.interact(rect, widget_id, Sense::hover());
-        response.widget_info(|| {
-            WidgetInfo::labeled(WidgetType::Button, false, control.accessible_label())
-        });
-        paint_control(ui, rect, control, style, &response);
-        response
+        interact_and_paint_control(
+            ui,
+            rect,
+            widget_id,
+            control,
+            style,
+            Sense::hover(),
+            presentation.availability,
+        )
+    } else if effective_enabled {
+        interact_and_paint_control(
+            ui,
+            rect,
+            widget_id,
+            control,
+            style,
+            Sense::click(),
+            presentation.availability,
+        )
     } else {
-        ui.add_enabled_ui(presentation.availability.interaction_enabled(), |ui| {
-            let response = ui.interact(rect, widget_id, Sense::click());
-            response.widget_info(|| {
-                WidgetInfo::labeled(
-                    WidgetType::Button,
-                    ui.is_enabled(),
-                    control.accessible_label(),
-                )
-            });
-            if response.clicked() && response.interact_pointer_pos().is_some() {
-                response.surrender_focus();
-            }
-            paint_control(ui, rect, control, style, &response);
-            response
-        })
-        .inner
+        // Прямой child не участвует в layout родителя, но сохраняет настоящий disabled Response.
+        let mut disabled_ui = ui.new_child(
+            UiBuilder::new()
+                .id_salt(("disabled_toolbar_control", control.id_suffix()))
+                .max_rect(rect),
+        );
+        disabled_ui.disable();
+        interact_and_paint_control(
+            &disabled_ui,
+            rect,
+            widget_id,
+            control,
+            style,
+            Sense::click(),
+            presentation.availability,
+        )
     };
 
     if effective_enabled {
@@ -360,6 +375,31 @@ fn render_control(
     } else {
         response.on_disabled_hover_text(presentation.disabled_tooltip)
     }
+}
+
+/// Регистрирует fixed-rect control без продвижения flow-cursor родительского toolbar.
+fn interact_and_paint_control(
+    ui: &Ui,
+    rect: Rect,
+    widget_id: egui::Id,
+    control: ToolbarControl,
+    style: PlaylistToolbarStyle,
+    sense: Sense,
+    availability: ToolbarControlAvailability,
+) -> Response {
+    let response = ui.interact(rect, widget_id, sense);
+    response.widget_info(|| {
+        WidgetInfo::labeled(
+            WidgetType::Button,
+            ui.is_enabled() && availability.interaction_enabled(),
+            control.accessible_label(),
+        )
+    });
+    if response.clicked() && response.interact_pointer_pos().is_some() {
+        response.surrender_focus();
+    }
+    paint_control(ui, rect, control, style, &response);
+    response
 }
 
 /// Отделяет app-owned interaction state от domain-neutral geometry.
@@ -576,6 +616,36 @@ mod tests {
         full_output.shapes
     }
 
+    /// Возвращает высоту, которую production icon bar занимает в поточном layout.
+    fn icon_bar_flow_height(model: &PlaylistInteractionModel) -> f32 {
+        let context = Context::default();
+        let mut flow_height = 0.0;
+        let _ = context.run_ui(raw_input(Vec::new(), 0.0), |ui| {
+            ui.set_width(420.0);
+            let top_before_toolbar = ui.cursor().top();
+            let mut output = PlaylistUiOutput::default();
+            show(ui, model, MinimalSkin.playlist_toolbar_style(), &mut output);
+            flow_height = ui.cursor().top() - top_before_toolbar;
+        });
+        flow_height
+    }
+
+    /// Возвращает высоту одной разрешённой flow-аллокации icon bar.
+    fn reserved_icon_bar_flow_height() -> f32 {
+        let context = Context::default();
+        let mut flow_height = 0.0;
+        let _ = context.run_ui(raw_input(Vec::new(), 0.0), |ui| {
+            ui.set_width(420.0);
+            let top_before_toolbar = ui.cursor().top();
+            let style = MinimalSkin.playlist_toolbar_style();
+            let row_width = ui.available_width().max(0.0);
+            let row_height = style.button_size.max(0.0);
+            let _ = ui.allocate_exact_size(vec2(row_width, row_height), Sense::hover());
+            flow_height = ui.cursor().top() - top_before_toolbar;
+        });
+        flow_height
+    }
+
     /// Выполняет полный hover/press/release цикл по центру control.
     fn click_control(
         context: &Context,
@@ -765,6 +835,29 @@ mod tests {
                 PlaylistGoCurrentTarget::Tombstone
             )]
         );
+    }
+
+    #[test]
+    fn transient_guard_preserves_icon_bar_flow_height() {
+        let available_model = PlaylistInteractionModel {
+            item_count: 3,
+            go_current_target: Some(PlaylistGoCurrentTarget::Tombstone),
+            ..PlaylistInteractionModel::default()
+        };
+        let transient_model = PlaylistInteractionModel {
+            structural_action_availability:
+                PlaylistStructuralActionAvailability::TemporarilyBlocked,
+            ..available_model.clone()
+        };
+        let unavailable_model = PlaylistInteractionModel {
+            structural_action_availability: PlaylistStructuralActionAvailability::Unavailable,
+            ..available_model.clone()
+        };
+
+        let available_height = icon_bar_flow_height(&available_model);
+        assert_eq!(available_height, reserved_icon_bar_flow_height());
+        assert_eq!(icon_bar_flow_height(&transient_model), available_height);
+        assert_eq!(icon_bar_flow_height(&unavailable_model), available_height);
     }
 
     #[test]
