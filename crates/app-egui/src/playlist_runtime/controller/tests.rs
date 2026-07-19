@@ -221,6 +221,12 @@ fn coordinator_acceptance_is_distinct_from_barrier_and_delayed_resolution_keeps_
     reserve_existing(&mut controller, 3, 13, item_id);
     let dirty_before = controller.dirty_revision();
 
+    assert_eq!(
+        controller.view_snapshot().structural_action_availability(),
+        PlaylistStructuralActionAvailability::TemporarilyBlocked
+    );
+    assert!(controller.queue_mode_actions_available());
+
     controller
         .begin_authorization_dispatch(request_id(3))
         .unwrap();
@@ -282,7 +288,10 @@ fn cancel_win_and_downstream_rejections_abort_without_watermark_burn() {
         assert_eq!(drain.active_media, None);
         assert_eq!(controller.dirty_revision(), dirty_before);
         assert_eq!(controller.queue().next_item_id_snapshot(), watermark_before);
-        assert!(controller.view_snapshot().structural_actions_enabled());
+        assert_eq!(
+            controller.view_snapshot().structural_action_availability(),
+            PlaylistStructuralActionAvailability::Available
+        );
     }
 }
 
@@ -317,6 +326,11 @@ fn enqueue_win_requires_exact_installed_and_commits_new_lineage_once() {
     let active = drain.active_media.unwrap();
     assert_eq!(active.item_id(), Some(item_id));
     assert_eq!(active.lineage_id().get(), 1);
+    assert_eq!(
+        controller.view_snapshot().structural_action_availability(),
+        PlaylistStructuralActionAvailability::Available
+    );
+    assert!(controller.queue_mode_actions_available());
     assert_eq!(
         controller.queue().traversal_current().unwrap().item_id(),
         item_id
@@ -413,6 +427,11 @@ fn mismatched_player_terminal_is_fatal_and_keeps_structural_lock() {
         controller.append(vec![draft(3)]),
         Err(ControllerAppendError::FatalInvariant)
     ));
+    assert_eq!(
+        controller.view_snapshot().structural_action_availability(),
+        PlaylistStructuralActionAvailability::Unavailable
+    );
+    assert!(!controller.queue_mode_actions_available());
 }
 
 #[test]

@@ -134,7 +134,10 @@ pub(crate) use selection::{
 };
 #[cfg(test)]
 pub(crate) use view::PlaylistVisibleRowTestFixture;
-pub(crate) use view::{PlaylistStructuralRevision, PlaylistViewSnapshot, PlaylistVisibleRow};
+pub(crate) use view::{
+    PlaylistStructuralActionAvailability, PlaylistStructuralRevision, PlaylistViewSnapshot,
+    PlaylistVisibleRow,
+};
 pub(crate) use view_model::{
     PlaylistLoadingView, PlaylistNavigationView, PlaylistProbeView, PlaylistSaveView,
     PlaylistStartupWarningView, PlaylistViewModel,

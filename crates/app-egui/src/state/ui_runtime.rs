@@ -221,6 +221,10 @@ impl AppState {
         let window_chrome_edge_alignment =
             window_chrome::WindowChromeEdgeAlignment::from_controls_style(controls_style);
         let animation_state = AnimationState::from_timeline(&player_snapshot.timeline);
+        // Затемнение stale video frame является underlay над видео, а не overlay
+        // над chrome. Цвет вычисляется до egui closure, чтобы внутри pass-а первым
+        // paint primitive-ом положить его под sidebar, transport и telemetry.
+        let stale_video_dim_color = selected_skin.stale_frame_dim_color(animation_state);
         // Позиция анимации продвинута раньше в prepare_ui_frame; здесь только чтение.
         let sidebar_slide_progress = self.sidebar_controller.open_progress();
         let show_telemetry = self.committed_config_snapshot.show_telemetry();
@@ -273,6 +277,13 @@ impl AppState {
         let egui_run_started_at = Instant::now();
         let full_output = self.egui_ctx.run_ui(egui_input, |ui| {
             video_viewport_rect = ui.max_rect();
+
+            // Video dim обязан быть первым egui primitive-ом: chrome, sidebar и
+            // transport рисуются поверх него и сохраняют собственные цвета.
+            if let Some(dim_color) = stale_video_dim_color {
+                ui_artwork_egui::ArtworkPainter::new(ui.painter())
+                    .video_dim_overlay(ui.max_rect(), dim_color);
+            }
 
             let stage_started_at = Instant::now();
             let window_chrome_output = window_chrome::show(
@@ -372,8 +383,6 @@ impl AppState {
                 error_message,
                 pending_message,
                 playlist_models.confirmation,
-                &selected_skin,
-                animation_state,
             );
             center_overlay_elapsed = stage_started_at.elapsed();
         });
@@ -767,18 +776,11 @@ impl AppState {
         error_message: Option<&str>,
         pending_message: Option<&str>,
         playlist_confirmation: Option<&crate::playlist_runtime::PendingPlaylistConfirmation>,
-        skin: &impl PlayerSkin,
-        animation_state: AnimationState,
     ) -> Option<crate::playlist_runtime::PlaylistConfirmationAction> {
         let mut confirmation_action = None;
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show_inside(ui, |ui| {
-                if let Some(dim_color) = skin.stale_frame_dim_color(animation_state) {
-                    ui_artwork_egui::ArtworkPainter::new(ui.painter())
-                        .video_dim_overlay(ui.max_rect(), dim_color);
-                }
-
                 if let Some(model) = playlist_confirmation {
                     confirmation_action =
                         crate::ui::queue_replacement_confirmation::render(ui, model);

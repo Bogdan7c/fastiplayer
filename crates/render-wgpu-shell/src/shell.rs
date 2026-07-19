@@ -546,9 +546,10 @@ impl Renderer {
             pixels_per_point: screen.pixels_per_point,
         };
 
-        // Обновляем egui текстуры (новые и удалённые).
+        // Загружаем новые/изменённые egui текстуры.
+        // Retired-текстуры остаются живы до submit-а текущих paint jobs.
         let stage_started_at = Instant::now();
-        self.egui_compositor.update_textures(
+        self.egui_compositor.upload_changed_textures(
             &self.gpu.device,
             &self.gpu.queue,
             &egui_textures_delta,
@@ -567,7 +568,7 @@ impl Renderer {
 
         // Обновляем egui буферы (vertex/index) перед рендерингом
         let stage_started_at = Instant::now();
-        self.egui_compositor.update_buffers(
+        let egui_callback_command_buffers = self.egui_compositor.update_buffers(
             &self.gpu.device,
             &self.gpu.queue,
             &mut encoder,
@@ -579,9 +580,9 @@ impl Renderer {
         // Получаем surface texture для текущего кадра
         let stage_started_at = Instant::now();
         let surface_acquire_started_at = stage_started_at;
-        let surface_texture = match self.gpu.surface.get_current_texture() {
+        let surface_texture_result = match self.gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(frame),
             wgpu::CurrentSurfaceTexture::Outdated => {
                 // Surface был уничтожен и воссоздан (например, при смене монитора)
                 self.gpu
@@ -589,36 +590,36 @@ impl Renderer {
                     .configure(&self.gpu.device, &self.gpu.surface_config);
                 match self.gpu.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(frame)
-                    | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+                    | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(frame),
                     other => {
                         tracing::error!(
                             "Не удалось получить surface texture после reconfigure: {:?}",
                             other
                         );
-                        return dropped_frame_after_surface_acquire(
+                        Err(dropped_frame_after_surface_acquire(
                             RenderFrameDropReason::SurfaceOutdatedRecoveryFailed,
                             renderer_started_at,
                             surface_acquire_started_at,
-                        );
+                        ))
                     }
                 }
             }
             wgpu::CurrentSurfaceTexture::Timeout => {
                 // Таймаут — пропускаем кадр, не блокируем
-                return dropped_frame_after_surface_acquire(
+                Err(dropped_frame_after_surface_acquire(
                     RenderFrameDropReason::SurfaceTimeout,
                     renderer_started_at,
                     surface_acquire_started_at,
-                );
+                ))
             }
             wgpu::CurrentSurfaceTexture::Occluded => {
                 // Окно скрыто другим окном — пропускаем кадр
                 tracing::debug!("Surface occluded — skipping frame");
-                return dropped_frame_after_surface_acquire(
+                Err(dropped_frame_after_surface_acquire(
                     RenderFrameDropReason::SurfaceOccluded,
                     renderer_started_at,
                     surface_acquire_started_at,
-                );
+                ))
             }
             wgpu::CurrentSurfaceTexture::Lost => {
                 // Surface потерян: сначала пробуем штатный reconfigure текущей surface.
@@ -628,20 +629,30 @@ impl Renderer {
                 self.gpu
                     .surface
                     .configure(&self.gpu.device, &self.gpu.surface_config);
-                return dropped_frame_after_surface_acquire(
+                Err(dropped_frame_after_surface_acquire(
                     RenderFrameDropReason::SurfaceLost,
                     renderer_started_at,
                     surface_acquire_started_at,
-                );
+                ))
             }
             wgpu::CurrentSurfaceTexture::Validation => {
                 // Validation error при получении surface texture — пропускаем кадр
                 tracing::warn!("Surface validation error — skipping frame");
-                return dropped_frame_after_surface_acquire(
+                Err(dropped_frame_after_surface_acquire(
                     RenderFrameDropReason::SurfaceValidation,
                     renderer_started_at,
                     surface_acquire_started_at,
-                );
+                ))
+            }
+        };
+        let surface_texture = match surface_texture_result {
+            Ok(surface_texture) => surface_texture,
+            Err(dropped_frame) => {
+                // Текущий encoder не будет submitted, поэтому его paint jobs больше
+                // не удерживают retired-текстуры. Предыдущие submit-ы уже переданы wgpu.
+                self.egui_compositor
+                    .free_retired_textures(&egui_textures_delta);
+                return dropped_frame;
             }
         };
         let surface_acquire_elapsed = stage_started_at.elapsed();
@@ -670,6 +681,9 @@ impl Renderer {
             Ok(_video_rendered) => {}
             Err(error) => {
                 tracing::error!(error = %error, "Video render failed");
+                // Encoder с egui paint jobs отбрасывается вместе с failed frame.
+                self.egui_compositor
+                    .free_retired_textures(&egui_textures_delta);
                 return RenderFrameOutcome::Failed(RenderFrameFailure::new(error.to_string()));
             }
         }
@@ -687,7 +701,15 @@ impl Renderer {
 
         // Отправляем команды на GPU
         let stage_started_at = Instant::now();
-        self.gpu.queue.submit(std::iter::once(encoder.finish()));
+        self.gpu.queue.submit(
+            egui_callback_command_buffers
+                .into_iter()
+                .chain(std::iter::once(encoder.finish())),
+        );
+        // После submit-а wgpu самостоятельно удерживает ресурсы до завершения GPU work.
+        // Теперь retired-текстуры можно безопасно уничтожить, не повреждая текущий кадр.
+        self.egui_compositor
+            .free_retired_textures(&egui_textures_delta);
         let queue_submit_elapsed = stage_started_at.elapsed();
 
         // Продвигаем wgpu callbacks для submitted work.

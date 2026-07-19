@@ -29,8 +29,9 @@ use super::identity::{
 };
 use super::selection::{PlaylistSelectionState, UpdateSelection, UpdateSelectionOutcome};
 use super::view::{
-    PlaylistDirtyRevision, PlaylistDirtySignal, PlaylistStructuralRevision, PlaylistViewSnapshot,
-    PlaylistViewState, PlaylistWorkerAvailability, rebuild_snapshot,
+    PlaylistDirtyRevision, PlaylistDirtySignal, PlaylistStructuralActionAvailability,
+    PlaylistStructuralRevision, PlaylistViewSnapshot, PlaylistViewState,
+    PlaylistWorkerAvailability, rebuild_snapshot,
 };
 
 #[allow(unused_imports)]
@@ -565,6 +566,22 @@ impl PlaylistController {
             .is_some_and(install::InstallState::holds_reservation)
     }
 
+    /// Описывает пользовательскую доступность structural intents без раскрытия install storage.
+    fn structural_action_availability(&self) -> PlaylistStructuralActionAvailability {
+        if self.fatal_invariant.is_some() {
+            PlaylistStructuralActionAvailability::Unavailable
+        } else if self.install_linearizing() {
+            PlaylistStructuralActionAvailability::TemporarilyBlocked
+        } else {
+            PlaylistStructuralActionAvailability::Available
+        }
+    }
+
+    /// Queue modes допускают intent во время commit-guard: owner сохранит desired value.
+    pub(crate) fn queue_mode_actions_available(&self) -> bool {
+        self.fatal_invariant.is_none()
+    }
+
     pub(super) fn publish_view(&mut self, structural_rows_changed: bool) {
         if structural_rows_changed {
             self.selection.retain_committed(&self.queue);
@@ -577,8 +594,7 @@ impl PlaylistController {
             active_media: self.active_media,
             pending_target: self.pending_target,
             repeat_mode: self.repeat_mode,
-            structural_actions_enabled: !self.install_linearizing()
-                && self.fatal_invariant.is_none(),
+            structural_action_availability: self.structural_action_availability(),
             worker_availability: self.worker_availability,
             awaiting_user_after_navigation_failure: self
                 .manual_navigation_cursor

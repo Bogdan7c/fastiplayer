@@ -26,3 +26,8 @@
 - Layout принадлежит `app-egui`: hit-area 32 pt, glyph 18 pt, preferred distance 156 pt, Shuffle зеркален Repeat, минимум 12 pt Next–Repeat; rate/Next зависят от reveal progress, сами queue-mode rect стабильны.
 - Accessibility использует selected button metadata, русские current/next labels, Tab + Space/Enter и pointer focus surrender.
 - Focused tests находятся в `crates/app-egui/src/ui/player_controls/queue_mode_controls/tests.rs`; artwork tests — в `crates/ui-artwork-egui/src/lib.rs`.
+
+## Queue-mode availability во время смены трека (2026-07-19)
+- D08/D39 install commit-guard не делает Shuffle/Repeat недоступными: `PlaylistController::request_queue_modes` принимает intent во время guarded install и сохраняет ровно одно desired value до commit/abort.
+- Поэтому `PlaylistTransportUiModel::queue_modes_enabled` теперь следует отдельному intent-method `PlaylistController::queue_mode_actions_available()`: false только при отсутствующем controller или fatal invariant, но true во всех кратких install-фазах. Structural Add/Sort/Clear gate остаётся отдельным typed boundary и не протекает в persistent transport.
+- Controller regression tests фиксируют TemporarilyBlocked structural availability вместе с доступными queue modes, возврат Available после Installed и обе недоступности после fatal mismatch.

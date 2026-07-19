@@ -6,7 +6,9 @@ use ui_artwork_egui::{
     ArtworkPainter, PlaylistToolbarButtonStyle, PlaylistToolbarGlyph, PlaylistToolbarPaintState,
 };
 
-use crate::playlist_runtime::{PlaylistGoCurrentTarget, PlaylistInteractionModel};
+use crate::playlist_runtime::{
+    PlaylistGoCurrentTarget, PlaylistInteractionModel, PlaylistStructuralActionAvailability,
+};
 use crate::ui::skin::PlaylistToolbarStyle;
 
 use super::super::PlaylistUiOutput;
@@ -80,7 +82,13 @@ impl ToolbarControl {
     fn presentation(self, model: &PlaylistInteractionModel) -> ToolbarPresentation {
         match self {
             Self::AddFiles => ToolbarPresentation {
-                enabled: model.structural_actions_enabled && !model.file_dialog_open,
+                availability: if model.file_dialog_open {
+                    ToolbarControlAvailability::Disabled
+                } else {
+                    ToolbarControlAvailability::from_structural(
+                        model.structural_action_availability,
+                    )
+                },
                 tooltip: "Добавить несколько файлов в конец плейлиста",
                 disabled_tooltip: if model.file_dialog_open {
                     "Диалог выбора файлов уже открыт"
@@ -89,24 +97,40 @@ impl ToolbarControl {
                 },
             },
             Self::AddUrl => ToolbarPresentation {
-                enabled: model.structural_actions_enabled,
+                availability: ToolbarControlAvailability::from_structural(
+                    model.structural_action_availability,
+                ),
                 tooltip: "Добавить медиа по URL в конец плейлиста",
                 disabled_tooltip: "Сейчас нельзя изменять состав плейлиста",
             },
             Self::Sort => ToolbarPresentation {
-                enabled: model.structural_actions_enabled
-                    && model.item_count > 1
-                    && model.progress.is_none(),
+                availability: if model.item_count <= 1 || model.progress.is_some() {
+                    ToolbarControlAvailability::Disabled
+                } else {
+                    ToolbarControlAvailability::from_structural(
+                        model.structural_action_availability,
+                    )
+                },
                 tooltip: "Однократно изменить порядок плейлиста",
                 disabled_tooltip: sort_disabled_tooltip(model),
             },
             Self::CurrentItem => ToolbarPresentation {
-                enabled: model.go_current_target.is_some(),
+                availability: if model.go_current_target.is_some() {
+                    ToolbarControlAvailability::Enabled
+                } else {
+                    ToolbarControlAvailability::Disabled
+                },
                 tooltip: current_item_tooltip(model.go_current_target),
                 disabled_tooltip: "Сейчас нет активного медиа",
             },
             Self::Clear => ToolbarPresentation {
-                enabled: model.structural_actions_enabled && model.item_count > 0,
+                availability: if model.item_count == 0 {
+                    ToolbarControlAvailability::Disabled
+                } else {
+                    ToolbarControlAvailability::from_structural(
+                        model.structural_action_availability,
+                    )
+                },
                 tooltip: "Очистить очередь; текущее воспроизведение продолжится",
                 disabled_tooltip: if model.item_count == 0 {
                     "Очередь уже пуста"
@@ -132,12 +156,38 @@ impl ToolbarControl {
 /// Тексты и availability вычисляются вместе, чтобы tooltip не расходился с boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ToolbarPresentation {
-    /// Может ли один click создать intent в текущем frame.
-    enabled: bool,
+    /// Interaction и paint различают краткий owner guard и настоящую недоступность.
+    availability: ToolbarControlAvailability,
     /// Полное объяснение доступного действия.
     tooltip: &'static str,
     /// Полное объяснение причины недоступности.
     disabled_tooltip: &'static str,
+}
+
+/// UI-состояние кнопки отделяет краткий owner guard от настоящей недоступности.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolbarControlAvailability {
+    Enabled,
+    TemporarilyBlocked,
+    Disabled,
+}
+
+impl ToolbarControlAvailability {
+    /// Переводит owner-owned structural gate в локальную presentation-семантику.
+    const fn from_structural(
+        availability: PlaylistStructuralActionAvailability,
+    ) -> ToolbarControlAvailability {
+        match availability {
+            PlaylistStructuralActionAvailability::Available => Self::Enabled,
+            PlaylistStructuralActionAvailability::TemporarilyBlocked => Self::TemporarilyBlocked,
+            PlaylistStructuralActionAvailability::Unavailable => Self::Disabled,
+        }
+    }
+
+    /// Только устойчиво доступная кнопка может породить typed action.
+    const fn interaction_enabled(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
 }
 
 /// Точные rect-ы всех кнопок внутри одной строки.
@@ -185,7 +235,12 @@ pub(super) fn show(
         let presentation = control.presentation(model);
         let response = render_control(ui, layout.rect(control), control, presentation, style);
         if control == ToolbarControl::Sort {
-            show_sort_menu(ui, &response, presentation.enabled, output);
+            show_sort_menu(
+                ui,
+                &response,
+                presentation.availability.interaction_enabled(),
+                output,
+            );
         } else if response.clicked()
             && let Some(action) = control.action(model)
         {
@@ -265,10 +320,22 @@ fn render_control(
     presentation: ToolbarPresentation,
     style: PlaylistToolbarStyle,
 ) -> Response {
-    let effective_enabled = ui.is_enabled() && presentation.enabled;
+    let effective_enabled = ui.is_enabled() && presentation.availability.interaction_enabled();
     let widget_id = ui.make_persistent_id(control.id_suffix());
-    let response = ui
-        .add_enabled_ui(presentation.enabled, |ui| {
+    let response = if ui.is_enabled()
+        && matches!(
+            presentation.availability,
+            ToolbarControlAvailability::TemporarilyBlocked
+        ) {
+        // Hover-only Response блокирует action, но не умножает opacity краткого guard-кадра.
+        let response = ui.interact(rect, widget_id, Sense::hover());
+        response.widget_info(|| {
+            WidgetInfo::labeled(WidgetType::Button, false, control.accessible_label())
+        });
+        paint_control(ui, rect, control, style, &response);
+        response
+    } else {
+        ui.add_enabled_ui(presentation.availability.interaction_enabled(), |ui| {
             let response = ui.interact(rect, widget_id, Sense::click());
             response.widget_info(|| {
                 WidgetInfo::labeled(
@@ -283,10 +350,13 @@ fn render_control(
             paint_control(ui, rect, control, style, &response);
             response
         })
-        .inner;
+        .inner
+    };
 
     if effective_enabled {
         response.on_hover_text(presentation.tooltip)
+    } else if response.enabled() {
+        response.on_hover_text(presentation.disabled_tooltip)
     } else {
         response.on_disabled_hover_text(presentation.disabled_tooltip)
     }
@@ -377,7 +447,7 @@ fn show_sort_menu(
 
 /// Tooltip сохраняет различие между неподходящей очередью, mutation gate и активной работой.
 fn sort_disabled_tooltip(model: &PlaylistInteractionModel) -> &'static str {
-    if !model.structural_actions_enabled {
+    if !model.structural_action_availability.allows_interaction() {
         "Сейчас нельзя изменять порядок плейлиста"
     } else if model.item_count <= 1 {
         "Для сортировки нужны хотя бы два элемента"
@@ -486,6 +556,24 @@ mod tests {
             has_focus = response.has_focus();
         });
         (output.take_actions(), has_focus)
+    }
+
+    /// Возвращает production paint shapes одной кнопки без pointer animation.
+    fn control_paint_shapes(
+        model: &PlaylistInteractionModel,
+        control: ToolbarControl,
+    ) -> Vec<egui::epaint::ClippedShape> {
+        let context = Context::default();
+        let full_output = context.run_ui(raw_input(Vec::new(), 0.0), |ui| {
+            render_control(
+                ui,
+                Rect::from_min_size(pos2(20.0, 20.0), vec2(28.0, 28.0)),
+                control,
+                control.presentation(model),
+                MinimalSkin.playlist_toolbar_style(),
+            );
+        });
+        full_output.shapes
     }
 
     /// Выполняет полный hover/press/release цикл по центру control.
@@ -617,7 +705,8 @@ mod tests {
             (
                 ToolbarControl::AddUrl,
                 PlaylistInteractionModel {
-                    structural_actions_enabled: false,
+                    structural_action_availability:
+                        PlaylistStructuralActionAvailability::Unavailable,
                     ..PlaylistInteractionModel::default()
                 },
             ),
@@ -634,6 +723,48 @@ mod tests {
             assert!(click_control(&context, &model, control).is_empty());
             assert!(!Popup::is_any_open(&context));
         }
+    }
+
+    #[test]
+    fn transient_guard_blocks_structural_actions_without_dimming_toolbar() {
+        let available_model = PlaylistInteractionModel {
+            item_count: 3,
+            go_current_target: Some(PlaylistGoCurrentTarget::Tombstone),
+            ..PlaylistInteractionModel::default()
+        };
+        let transient_model = PlaylistInteractionModel {
+            structural_action_availability:
+                PlaylistStructuralActionAvailability::TemporarilyBlocked,
+            ..available_model.clone()
+        };
+
+        for control in [
+            ToolbarControl::AddFiles,
+            ToolbarControl::AddUrl,
+            ToolbarControl::Sort,
+            ToolbarControl::Clear,
+        ] {
+            assert_eq!(
+                control_paint_shapes(&transient_model, control),
+                control_paint_shapes(&available_model, control),
+                "{control:?} должен сохранить обычный paint во время commit-guard"
+            );
+            assert!(
+                click_control(&Context::default(), &transient_model, control).is_empty(),
+                "{control:?} не должен публиковать structural action во время commit-guard"
+            );
+        }
+
+        assert_eq!(
+            click_control(
+                &Context::default(),
+                &transient_model,
+                ToolbarControl::CurrentItem,
+            ),
+            vec![PlaylistAction::GoCurrent(
+                PlaylistGoCurrentTarget::Tombstone
+            )]
+        );
     }
 
     #[test]

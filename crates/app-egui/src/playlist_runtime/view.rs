@@ -82,6 +82,29 @@ pub(crate) enum PlaylistWorkerAvailability {
     Unavailable,
 }
 
+/// Доступность структурных действий без утечки конкретной install-фазы в UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaylistStructuralActionAvailability {
+    /// Controller может сразу принять действие над составом или порядком очереди.
+    Available,
+    /// Краткий commit-guard запрещает действие, но не является пользовательской ошибкой.
+    TemporarilyBlocked,
+    /// Controller больше не может безопасно принимать структурные действия.
+    Unavailable,
+}
+
+impl PlaylistStructuralActionAvailability {
+    /// Разрешает публиковать structural intent только в устойчиво доступном состоянии.
+    pub(crate) const fn allows_interaction(self) -> bool {
+        matches!(self, Self::Available)
+    }
+
+    /// Inline-объяснение нужно только для устойчивой недоступности.
+    pub(crate) const fn requires_status_notice(self) -> bool {
+        matches!(self, Self::Unavailable)
+    }
+}
+
 /// Shared immutable строка; locator label создаётся только при structural rebuild-е.
 #[derive(Debug, Clone)]
 struct PlaylistViewRow {
@@ -196,7 +219,7 @@ pub(crate) struct PlaylistViewSnapshot {
     pending_target: Option<PendingTarget>,
     repeat_mode: RepeatMode,
     shuffle_enabled: bool,
-    structural_actions_enabled: bool,
+    structural_action_availability: PlaylistStructuralActionAvailability,
     worker_availability: PlaylistWorkerAvailability,
     awaiting_user_after_navigation_failure: bool,
     active_tombstone: bool,
@@ -217,7 +240,7 @@ impl PlaylistViewSnapshot {
             pending_target: None,
             repeat_mode: RepeatMode::StopAtEnd,
             shuffle_enabled: queue.shuffle_enabled(),
-            structural_actions_enabled: true,
+            structural_action_availability: PlaylistStructuralActionAvailability::Available,
             worker_availability: PlaylistWorkerAvailability::Available,
             awaiting_user_after_navigation_failure: false,
             active_tombstone: false,
@@ -295,8 +318,10 @@ impl PlaylistViewSnapshot {
         self.pending_target
     }
 
-    pub(crate) const fn structural_actions_enabled(&self) -> bool {
-        self.structural_actions_enabled
+    pub(crate) const fn structural_action_availability(
+        &self,
+    ) -> PlaylistStructuralActionAvailability {
+        self.structural_action_availability
     }
 
     pub(crate) const fn worker_availability(&self) -> PlaylistWorkerAvailability {
@@ -340,7 +365,7 @@ pub(super) struct PlaylistViewState<'a> {
     pub active_media: Option<ActiveMediaIdentity>,
     pub pending_target: Option<PendingTarget>,
     pub repeat_mode: RepeatMode,
-    pub structural_actions_enabled: bool,
+    pub structural_action_availability: PlaylistStructuralActionAvailability,
     pub worker_availability: PlaylistWorkerAvailability,
     pub awaiting_user_after_navigation_failure: bool,
     pub active_tombstone: bool,
@@ -369,7 +394,7 @@ pub(super) fn rebuild_snapshot(
         pending_target: state.pending_target,
         repeat_mode: state.repeat_mode,
         shuffle_enabled: state.queue.shuffle_enabled(),
-        structural_actions_enabled: state.structural_actions_enabled,
+        structural_action_availability: state.structural_action_availability,
         worker_availability: state.worker_availability,
         awaiting_user_after_navigation_failure: state.awaiting_user_after_navigation_failure,
         active_tombstone: state.active_tombstone,

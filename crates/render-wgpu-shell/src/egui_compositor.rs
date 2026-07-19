@@ -23,8 +23,12 @@ impl EguiCompositor {
         Self { renderer }
     }
 
-    /// Применяет изменения texture atlas-а до записи command buffer-а кадра.
-    pub fn update_textures(
+    /// Загружает новые и изменённые egui-текстуры до записи command buffer-а кадра.
+    ///
+    /// Retired-текстуры здесь намеренно не освобождаются: текущие paint jobs всё ещё
+    /// могут ссылаться на них. Владелец frame submission обязан вызвать
+    /// [`Self::free_retired_textures`] только после submit-а либо отказа от кадра.
+    pub fn upload_changed_textures(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -34,13 +38,23 @@ impl EguiCompositor {
             self.renderer
                 .update_texture(device, queue, *id, image_delta);
         }
+    }
 
+    /// Освобождает текстуры, которые egui больше не использует.
+    ///
+    /// Метод является отдельной boundary-операцией, чтобы порядок
+    /// `upload -> prepare -> render -> submit -> free` был виден в callsite.
+    pub fn free_retired_textures(&mut self, textures_delta: &egui::TexturesDelta) {
         for id in &textures_delta.free {
             self.renderer.free_texture(id);
         }
     }
 
-    /// Обновляет egui vertex/index buffers перед overlay pass-ом.
+    /// Обновляет egui vertex/index buffers и возвращает callback command buffers.
+    ///
+    /// `egui-wgpu` подготавливает пользовательские paint callbacks отдельно от
+    /// основного encoder-а. Владелец frame submission обязан отправить эти buffers
+    /// в ту же очередь перед command buffer-ом основного кадра.
     pub fn update_buffers(
         &mut self,
         device: &wgpu::Device,
@@ -48,9 +62,9 @@ impl EguiCompositor {
         encoder: &mut wgpu::CommandEncoder,
         paint_jobs: &[egui::epaint::ClippedPrimitive],
         screen_descriptor: &egui_wgpu::ScreenDescriptor,
-    ) {
+    ) -> Vec<wgpu::CommandBuffer> {
         self.renderer
-            .update_buffers(device, queue, encoder, paint_jobs, screen_descriptor);
+            .update_buffers(device, queue, encoder, paint_jobs, screen_descriptor)
     }
 
     /// Рендерит egui primitives поверх уже нарисованного video target-а.

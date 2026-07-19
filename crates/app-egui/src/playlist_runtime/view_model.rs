@@ -151,8 +151,10 @@ impl PlaylistViewModel {
         )
     }
 
-    pub(crate) fn structural_actions_enabled(&self) -> bool {
-        self.snapshot.structural_actions_enabled()
+    pub(crate) fn structural_action_availability(
+        &self,
+    ) -> super::view::PlaylistStructuralActionAvailability {
+        self.snapshot.structural_action_availability()
     }
 
     pub(crate) fn has_active_tombstone(&self) -> bool {

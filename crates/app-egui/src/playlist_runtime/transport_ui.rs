@@ -170,7 +170,7 @@ impl PlaylistRuntime {
                         .into(),
                     controller.repeat_mode(),
                     controller.queue().shuffle_enabled(),
-                    controller.view_snapshot().structural_actions_enabled(),
+                    controller.queue_mode_actions_available(),
                 )
             },
         );

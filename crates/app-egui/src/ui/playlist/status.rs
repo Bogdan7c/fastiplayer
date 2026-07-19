@@ -3,7 +3,7 @@
 use super::PlaylistUiState;
 use crate::playlist_runtime::{
     PlaylistLoadingView, PlaylistNavigationView, PlaylistProbeView, PlaylistSaveView,
-    PlaylistStartupWarningView, PlaylistViewModel,
+    PlaylistStartupWarningView, PlaylistStructuralActionAvailability, PlaylistViewModel,
 };
 
 pub(super) fn show_unavailable(ui: &mut egui::Ui) {
@@ -38,9 +38,7 @@ pub(super) fn show_summary(
     } else if model.is_empty() {
         ui.label("Очередь пуста");
     }
-    if !model.structural_actions_enabled() {
-        ui.weak("Изменения очереди временно недоступны");
-    }
+    show_structural_action_status(ui, model.structural_action_availability());
     if matches!(model.startup_warning(), PlaylistStartupWarningView::Present) {
         ui.colored_label(
             ui.visuals().warn_fg_color,
@@ -51,6 +49,16 @@ pub(super) fn show_summary(
     show_save(ui, model.save());
     show_navigation(ui, model.navigation());
     ui.separator();
+}
+
+/// Краткий commit-guard не занимает layout: это внутреннее, самозавершающееся состояние.
+fn show_structural_action_status(
+    ui: &mut egui::Ui,
+    availability: PlaylistStructuralActionAvailability,
+) {
+    if availability.requires_status_notice() {
+        ui.weak("Изменения очереди недоступны");
+    }
 }
 
 fn show_probe(ui: &mut egui::Ui, probe: PlaylistProbeView) {
@@ -156,5 +164,34 @@ pub(super) fn navigation_message(
         PlaylistNavigationView::Fatal => {
             Some(("Переход недоступен из-за ошибки службы", StatusTone::Error))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Возвращает высоту, которую structural status добавляет перед списком.
+    fn structural_status_height(availability: PlaylistStructuralActionAvailability) -> f32 {
+        let mut height = 0.0;
+        egui::__run_test_ui(|ui| {
+            let top_before_status = ui.cursor().top();
+            show_structural_action_status(ui, availability);
+            height = ui.cursor().top() - top_before_status;
+        });
+        height
+    }
+
+    #[test]
+    fn transient_structural_guard_never_moves_playlist_rows() {
+        let available_height =
+            structural_status_height(PlaylistStructuralActionAvailability::Available);
+        let transient_height =
+            structural_status_height(PlaylistStructuralActionAvailability::TemporarilyBlocked);
+        let unavailable_height =
+            structural_status_height(PlaylistStructuralActionAvailability::Unavailable);
+
+        assert_eq!(transient_height, available_height);
+        assert!(unavailable_height > available_height);
     }
 }

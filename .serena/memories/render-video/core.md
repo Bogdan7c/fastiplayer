@@ -31,3 +31,8 @@
 
 
 - Session 00C (2026-07-13) добавила bounded candidate video resource boundary без active callsite migration: neutral detached/configured backend typestate и generic request/reply port живут в `video-backend-api`; app-owned exact-renderer-generation max-one slot, concrete VA-API/DMA-BUF и FFmpeg/HostPlanar preparation driver и infallible post-Installed app pointer commit живут в `app-egui::video_pipeline_candidate`. Pre-barrier cancel/supersede/stale/suspend/disconnect освобождают split halves exactly once; accepted Installed token восстанавливается как commit-required при defensive drop и запрещает lifecycle cancel. Active queue/release callbacks не rebind-ятся при candidate creation/cancel. Полный handoff и проверки: `mem:investigations/playlist-session-00c-candidate-video-resources-2026-07-13`.
+
+## egui-wgpu frame lifecycle (2026-07-19)
+- `render-wgpu-shell::EguiCompositor` разделяет `TexturesDelta` на `upload_changed_textures` до prepare/render и `free_retired_textures` только после submit либо окончательного отказа от encoder-а. Текущие paint jobs поэтому не теряют texture/bind-group в своём frame-е.
+- `egui_wgpu::Renderer::update_buffers` возвращает callback command buffers; shell обязан submit-ить их перед основным encoder command buffer и не может молча отбрасывать. Порядок boundary: upload textures → update buffers → video → egui → submit callback+main → free retired textures → present.
+- Эта корректность подтверждена pinned `egui-wgpu 0.34.2`/официальной integration sequence и `render-wgpu-shell` 12-test suite; она отдельна от playlist transition visual-continuity fix.

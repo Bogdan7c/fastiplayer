@@ -28,6 +28,7 @@ use super::discovery::{
     MetadataSortJobId, MetadataSortPhase, MetadataSortTerminalOutcome,
     PlaylistDiscoveryNavigationStatus,
 };
+use super::view::PlaylistStructuralActionAvailability;
 
 /// Безопасная ошибка формы: введённый locator сюда никогда не копируется.
 #[derive(Clone, PartialEq, Eq)]
@@ -391,7 +392,7 @@ pub(crate) struct PlaylistProgressModel {
 /// Immutable interaction snapshot одного frame-а. Raw URL не реализует `Debug`.
 #[derive(Clone)]
 pub(crate) struct PlaylistInteractionModel {
-    pub(crate) structural_actions_enabled: bool,
+    pub(crate) structural_action_availability: PlaylistStructuralActionAvailability,
     pub(crate) item_count: usize,
     pub(crate) url_editor_open: bool,
     pub(crate) url_text: String,
@@ -412,7 +413,7 @@ pub(crate) struct PlaylistInteractionModel {
 impl Default for PlaylistInteractionModel {
     fn default() -> Self {
         Self {
-            structural_actions_enabled: true,
+            structural_action_availability: PlaylistStructuralActionAvailability::Available,
             item_count: 0,
             url_editor_open: false,
             url_text: String::new(),
@@ -554,8 +555,10 @@ impl PlaylistRuntime {
         });
         let draft = self.ui_interaction.url_draft();
         PlaylistInteractionModel {
-            structural_actions_enabled: controller
-                .is_some_and(|controller| controller.view_snapshot().structural_actions_enabled()),
+            structural_action_availability: controller.map_or(
+                PlaylistStructuralActionAvailability::Unavailable,
+                |controller| controller.view_snapshot().structural_action_availability(),
+            ),
             item_count: controller.map_or(0, |controller| controller.queue().len()),
             url_editor_open: draft.is_open(),
             url_text: draft.text().to_string(),
