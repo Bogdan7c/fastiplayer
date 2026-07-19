@@ -14,7 +14,7 @@ use ui_artwork_egui::MediaKindGlyph;
 
 use super::renderer::{
     INDEX_WIDTH, MEDIA_KIND_WIDTH, ROW_HEIGHT, TOOLTIP_MAX_WIDTH, accessibility_text,
-    anchored_scroll_offset, media_kind_glyph, show_rows, stable_row_id, tooltip_width,
+    anchored_scroll_offset, media_kind_glyph, row_fill, show_rows, stable_row_id, tooltip_width,
 };
 use super::status::{navigation_message, save_message};
 use super::{PlaylistAction, PlaylistUiOutput, PlaylistUiState, ViewportAnchor};
@@ -451,8 +451,62 @@ fn row_content_labels_explicitly_disable_text_selection() {
     assert_eq!(row_content_source.matches("Label::new").count(), 4);
     // Каждый оставшийся row label явно запрещает системное выделение текста.
     assert_eq!(row_content_source.matches(".selectable(false)").count(), 4);
-    // Active marker больше не является text widget: им владеет moving artwork layer.
+    // У активной строки больше нет отдельного декоративного Play-маркера.
     assert!(!row_content_source.contains("RichText::new(\"▶\")"));
+    // Renderer не должен возвращать удалённый векторный глиф через overlay.
+    assert!(!renderer_source.contains("active_track_glyph"));
+    // Обычный заголовок больше не получает forced strong foreground.
+    assert!(!row_content_source.contains("row.display_title()).strong()"));
+    // Контрастный foreground применяется только к authoritative active row.
+    assert!(row_content_source.contains("if row.is_active()"));
+    assert!(row_content_source.contains("title_text.color(row_style.active_title_color)"));
+    // Playback marker проходит через neutral artwork facade, а не text widget.
+    assert!(renderer_source.contains("artwork.playlist_row_marker"));
+}
+
+#[test]
+fn active_and_selection_keep_independent_row_visual_channels() {
+    // Оба состояния принадлежат одному fixture, чтобы проверить их совместную композицию.
+    let active_selected_row =
+        PlaylistVisibleRow::from_test_fixture(PlaylistVisibleRowTestFixture {
+            item_id: PlaylistItemId::from_persistence_value(41).unwrap(),
+            fallback_display_name: "active-selected.mkv".into(),
+            display_title: "Активная и выделенная строка".into(),
+            duration: Some(MediaDuration::from_secs(90)),
+            media_kind: PlaylistMediaKind::Video,
+            active: true,
+            pending: false,
+            selected: true,
+            safe_error_summary: None,
+        });
+    // Selection surface не исчезает из-за отдельного active marker-а.
+    assert_eq!(
+        row_fill(row_style(), &active_selected_row, false),
+        row_style().selected_fill
+    );
+    // Hover усиливает именно selection surface, не подменяя playback semantics.
+    assert_eq!(
+        row_fill(row_style(), &active_selected_row, true),
+        row_style().selected_hover_fill
+    );
+
+    // Active-only fixture подтверждает, что playback не маскируется selection fill-ом.
+    let active_only_row = PlaylistVisibleRow::from_test_fixture(PlaylistVisibleRowTestFixture {
+        item_id: PlaylistItemId::from_persistence_value(42).unwrap(),
+        fallback_display_name: "active-only.mkv".into(),
+        display_title: "Только активная строка".into(),
+        duration: Some(MediaDuration::from_secs(120)),
+        media_kind: PlaylistMediaKind::Video,
+        active: true,
+        pending: false,
+        selected: false,
+        safe_error_summary: None,
+    });
+    // Прозрачная row surface оставляет active fill/marker отдельному moving layer.
+    assert_eq!(
+        row_fill(row_style(), &active_only_row, false),
+        egui::Color32::TRANSPARENT
+    );
 }
 
 #[test]

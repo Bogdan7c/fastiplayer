@@ -24,9 +24,8 @@ pub(super) const TOOLTIP_MAX_WIDTH: f32 = 320.0;
 pub(super) const INDEX_WIDTH: f32 = 38.0;
 pub(super) const MEDIA_KIND_WIDTH: f32 = 16.0;
 const DURATION_WIDTH: f32 = 50.0;
-const BADGES_WIDTH: f32 = 58.0;
-/// Зарезервированная badge-ячейка moving `Play` glyph-а.
-const ACTIVE_GLYPH_CELL_WIDTH: f32 = 13.0;
+/// Ширина области служебных индикаторов без удалённого декоративного Play-глифа.
+const BADGES_WIDTH: f32 = 45.0;
 /// Большой frame stall не должен мгновенно проматывать UI transition.
 const MAX_ANIMATION_DELTA_SECONDS: f32 = 0.1;
 /// Минимальная скорость, считающаяся пользовательской kinetic-прокруткой.
@@ -330,13 +329,8 @@ fn paint_row_overlays(
             row_style.active_fill,
             egui::Stroke::NONE,
         );
-        // Active outline располагается поверх content, но ниже focus/insertion.
-        artwork.playlist_row_outline(active_rect, row_style.active_stroke);
-        // Glyph движется тем же rect sample и не создаёт AccessKit node.
-        artwork.active_track_glyph(
-            active_glyph_cell(active_rect),
-            row_style.active_stroke.color,
-        );
+        // Левый marker располагается поверх row surfaces, но ниже focus/insertion.
+        artwork.playlist_row_marker(active_rect, row_style.active_marker);
     }
 
     // Insertion/focus strokes имеют окончательный визуальный приоритет.
@@ -437,7 +431,12 @@ fn render_prepared_row(
     // Content клипуется точным row rect и текущим ScrollArea clip.
     row_ui.set_clip_rect(prepared.row_rect.intersect(ui.clip_rect()));
     // Text/pending/error layout остаётся статичным во время decorative transition.
-    render_row_content(&mut row_ui, prepared.row_index, &prepared.row);
+    render_row_content(
+        &mut row_ui,
+        prepared.row_index,
+        &prepared.row,
+        context.row_style,
+    );
 
     // Единственный full-width response регистрируется после layout всего content.
     let response = ui.interact(prepared.row_rect, prepared.row_id, Sense::click_and_drag());
@@ -501,7 +500,11 @@ fn render_prepared_row(
     }
 }
 
-fn row_fill(style: PlaylistRowStyle, row: &PlaylistVisibleRow, hovered: bool) -> egui::Color32 {
+pub(super) fn row_fill(
+    style: PlaylistRowStyle,
+    row: &PlaylistVisibleRow,
+    hovered: bool,
+) -> egui::Color32 {
     // Active fill принадлежит отдельному moving layer под row surfaces.
     match (row.is_selected(), hovered) {
         (true, true) => style.selected_hover_fill,
@@ -529,7 +532,12 @@ fn priority_row_stroke(
     }
 }
 
-fn render_row_content(ui: &mut egui::Ui, row_index: usize, row: &PlaylistVisibleRow) {
+fn render_row_content(
+    ui: &mut egui::Ui,
+    row_index: usize,
+    row: &PlaylistVisibleRow,
+    row_style: PlaylistRowStyle,
+) {
     ui.add_sized(
         [INDEX_WIDTH, ROW_HEIGHT],
         egui::Label::new(egui::RichText::new(format!("{}.", row_index + 1)).weak())
@@ -541,9 +549,15 @@ fn render_row_content(ui: &mut egui::Ui, row_index: usize, row: &PlaylistVisible
     let trailing_width = DURATION_WIDTH + BADGES_WIDTH;
     let spacing_width = ui.spacing().item_spacing.x * 2.0;
     let title_width = (ui.available_width() - trailing_width - spacing_width).max(24.0);
+    // Обычные строки используют стандартный foreground без прежнего forced strong color.
+    let mut title_text = egui::RichText::new(row.display_title());
+    // Только подтверждённая active identity получает skin-owned контрастный цвет.
+    if row.is_active() {
+        title_text = title_text.color(row_style.active_title_color);
+    }
     ui.add_sized(
         [title_width, ROW_HEIGHT],
-        egui::Label::new(egui::RichText::new(row.display_title()).strong())
+        egui::Label::new(title_text)
             .selectable(false)
             .wrap_mode(TextWrapMode::Truncate),
     );
@@ -586,8 +600,6 @@ fn render_badges(ui: &mut egui::Ui, row: &PlaylistVisibleRow) {
         egui::vec2(BADGES_WIDTH, ROW_HEIGHT),
         Layout::left_to_right(Align::Center),
         |ui| {
-            // Active glyph рисуется отдельным decorative overlay, поэтому layout всегда стабилен.
-            ui.add_space(ACTIVE_GLYPH_CELL_WIDTH);
             if row.is_pending() {
                 ui.add_sized([14.0, 14.0], egui::Spinner::new());
             } else {
@@ -603,19 +615,6 @@ fn render_badges(ui: &mut egui::Ui, row: &PlaylistVisibleRow) {
             }
         },
     );
-}
-
-/// Возвращает badge-ячейку moving glyph-а внутри full-width row rect.
-fn active_glyph_cell(row_rect: egui::Rect) -> egui::Rect {
-    // Badge group прижимается к правому краю после duration column.
-    let badge_left = (row_rect.right() - BADGES_WIDTH).max(row_rect.left());
-    // Узкая очередь безопасно уменьшает ячейку вместо выхода за row bounds.
-    let glyph_width = ACTIVE_GLYPH_CELL_WIDTH.min(row_rect.right() - badge_left);
-    // Полная высота строки даёт artwork owner-у стабильный центр.
-    egui::Rect::from_min_size(
-        egui::pos2(badge_left, row_rect.top()),
-        egui::vec2(glyph_width.max(0.0), row_rect.height()),
-    )
 }
 
 fn media_kind_text(media_kind: PlaylistMediaKind) -> &'static str {

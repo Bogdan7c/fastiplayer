@@ -113,14 +113,16 @@ pub struct PlaylistRowStyle {
     pub selected_hover_fill: Color32,
     /// Независимая surface active playback.
     pub active_fill: Color32,
+    /// Нейтральная геометрия и цвет левого active playback marker-а.
+    pub active_marker: ui_artwork_egui::PlaylistRowMarkerStyle,
+    /// Контрастный цвет заголовка подтверждённо активной строки.
+    pub active_title_color: Color32,
     /// Full-width physical-pixel separator.
     pub separator_color: Color32,
     /// Контур insertion target во время drag.
     pub insertion_stroke: Stroke,
     /// Контур keyboard interaction cursor.
     pub focus_stroke: Stroke,
-    /// Независимый контур active playback.
-    pub active_stroke: Stroke,
 }
 
 /// Skin-owned геометрия и цвета Undo в заголовке Playlist.
@@ -395,13 +397,24 @@ mod tests {
             Color32::from_rgba_unmultiplied(255, 255, 255, 64)
         );
         assert_eq!(
+            style.active_marker,
+            ui_artwork_egui::PlaylistRowMarkerStyle {
+                width: 3.0,
+                vertical_inset: 4.0,
+                corner_radius: 1.5,
+                fill: Color32::from_rgba_unmultiplied(245, 245, 245, 235),
+            }
+        );
+        assert_eq!(style.active_title_color, Color32::from_rgb(245, 245, 245));
+        assert_eq!(
             style.separator_color,
             Color32::from_rgba_unmultiplied(255, 255, 255, 128)
         );
         for color in [
             style.insertion_stroke.color,
             style.focus_stroke.color,
-            style.active_stroke.color,
+            style.active_marker.fill,
+            style.active_title_color,
         ] {
             assert_eq!(color.r(), color.g());
             assert_eq!(color.g(), color.b());

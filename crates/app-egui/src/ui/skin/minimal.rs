@@ -109,13 +109,22 @@ impl PlayerSkin for MinimalSkin {
             selected_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 46),
             selected_hover_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 64),
             active_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 18),
+            // Узкий left-edge marker отделяет playback от full-row selection surface.
+            active_marker: ui_artwork_egui::PlaylistRowMarkerStyle {
+                // Три points заметны при беглом взгляде и не перекрывают индекс.
+                width: 3.0,
+                // Четыре points отделяют marker от horizontal separator-ов.
+                vertical_inset: 4.0,
+                // Половина ширины превращает marker в аккуратную вертикальную капсулу.
+                corner_radius: 1.5,
+                // Почти непрозрачный grayscale остаётся ярче selection fill.
+                fill: Color32::from_rgba_unmultiplied(245, 245, 245, 235),
+            },
+            // Active title совпадает по тону с marker-ом без цветного theme accent.
+            active_title_color: Color32::from_rgb(245, 245, 245),
             separator_color: Color32::from_rgba_unmultiplied(255, 255, 255, 128),
             insertion_stroke: egui::Stroke::new(1.5, light_stroke),
             focus_stroke: egui::Stroke::new(1.0, light_stroke),
-            active_stroke: egui::Stroke::new(
-                1.0,
-                Color32::from_rgba_unmultiplied(235, 235, 235, 180),
-            ),
         }
     }
 
