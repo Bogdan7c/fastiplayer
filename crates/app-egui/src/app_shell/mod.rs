@@ -851,6 +851,7 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
                 let has_pending_background_job = self.startup_media.has_pending_startup_job()
                     || app_state.has_pending_prepared_media_strong()
                     || app_state.has_pending_playlist_transport()
+                    || self.playlist_runtime.has_pending_media_reset()
                     || app_state.has_pending_local_file_open()
                     || self.settings_runtime.has_pending_options_refresh()
                     || self

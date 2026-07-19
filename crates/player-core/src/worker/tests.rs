@@ -16,8 +16,9 @@ use video_present_core::VideoFrameLeaseConfig;
 
 use super::*;
 use crate::{
-    MediaInstallCompletion, MediaInstallPhase, MediaSource, PlaybackRate, PlaybackState,
-    PlayerRuntimeApplyOutcome, PlayerRuntimeSettingId, ScrubCommitPolicy, SeekRequest,
+    ExactMediaTransportAction, MediaInstallCompletion, MediaInstallPhase, MediaInstanceId,
+    MediaSource, PlaybackRate, PlaybackState, PlayerRuntimeApplyOutcome, PlayerRuntimeSettingId,
+    ScrubCommitPolicy, SeekRequest,
 };
 
 fn worker_config_for_tests() -> PlayerWorkerConfig {
@@ -1263,6 +1264,41 @@ fn command_sender_routes_player_commands_through_worker_queue() {
     assert_eq!(
         receive_player_command(&command_rx),
         PlayerCommand::end_scrub(ScrubCommitPolicy::CommitLatestTarget)
+    );
+}
+
+#[test]
+fn exact_reset_receipt_delivers_the_owner_result() {
+    let (command_sender, command_rx) = command_sender_for_tests();
+    let media_instance_id = MediaInstanceId::new_unique();
+    let request = ExactMediaTransportRequest {
+        media_instance_id,
+        action: ExactMediaTransportAction::ResetMedia,
+    };
+    let receipt = command_sender
+        .exact_media_transport(request)
+        .expect("exact reset command must enter the worker queue");
+
+    let WorkerCommand::ExactMediaTransport {
+        request: queued_request,
+        outcome_tx,
+    } = command_rx
+        .try_recv()
+        .expect("worker queue must retain the exact reset command")
+    else {
+        panic!("exact reset must use WorkerCommand::ExactMediaTransport");
+    };
+    assert_eq!(queued_request, request);
+    let owner_outcome = ExactMediaTransportOutcome::Applied { media_instance_id };
+    outcome_tx
+        .send(owner_outcome.clone())
+        .expect("request-owned receipt must still be alive");
+
+    assert_eq!(
+        receipt
+            .wait_for_outcome()
+            .expect("worker owner must publish one terminal outcome"),
+        owner_outcome
     );
 }
 

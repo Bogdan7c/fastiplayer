@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use player_core::{
-    MediaInstallCancellationCause, MediaInstallRequestId, MediaInstanceId, PlaybackIntentRevision,
-    PlaybackState,
+    ExactMediaTransportAction, MediaInstallCancellationCause, MediaInstallRequestId,
+    MediaInstanceId, PlaybackIntentRevision, PlaybackState,
 };
 use playlist_core::{
     CachedPlaylistMetadata, LocalLocator, PlaylistItemDraft, PlaylistItemId, PlaylistMediaKind,
@@ -441,7 +441,7 @@ fn removal_is_blocked_after_ready_reservation_and_does_not_abort_token() {
 }
 
 #[test]
-fn clear_has_empty_continuation_for_every_repeat_mode_and_keeps_tombstone_ended() {
+fn clear_resets_active_media_without_tombstone_for_every_repeat_mode() {
     for repeat_mode in [
         RepeatMode::StopAtEnd,
         RepeatMode::RepeatQueue,
@@ -449,32 +449,33 @@ fn clear_has_empty_continuation_for_every_repeat_mode_and_keeps_tombstone_ended(
     ] {
         let (mut controller, _ids, active) = controller_with_active(3, 1);
         controller.repeat_mode = repeat_mode;
-        let _clear = removed(controller.clear_queue());
-        assert!(
-            controller
-                .detached_active_tombstone
-                .as_ref()
-                .is_some_and(|tombstone| tombstone.continuation.is_none())
+        let clear = removed(controller.clear_queue());
+        assert_eq!(
+            clear.media_reset_request,
+            Some(player_core::ExactMediaTransportRequest {
+                media_instance_id: active.media_instance_id(),
+                action: ExactMediaTransportAction::ResetMedia,
+            })
         );
-        let outcome = controller.observe_automatic_snapshot(
+        assert!(controller.detached_active_tombstone.is_none());
+        assert!(controller.active_media().is_none());
+        assert!(!controller.view_snapshot().has_active_tombstone());
+        let ended_after_clear = controller.observe_automatic_snapshot(
             active.player_binding_generation(),
             Some(active.media_instance_id()),
             PlaybackState::Ended,
             EndedSnapshotKind::Clean,
             AutomaticDeferredAvailability::Unavailable,
         );
-        assert!(matches!(outcome, AutomaticLifecycleOutcome::Stop { .. }));
-        assert!(controller.detached_active_tombstone.is_some());
-        assert!(
-            controller
-                .active_media()
-                .is_some_and(|identity| identity.item_id().is_none())
-        );
+        assert!(!matches!(
+            ended_after_clear,
+            AutomaticLifecycleOutcome::OpenItem { .. }
+        ));
     }
 }
 
 #[test]
-fn clear_preserves_non_playlist_active_identity_without_creating_tombstone() {
+fn clear_resets_non_playlist_active_identity_without_creating_tombstone() {
     let (mut controller, _ids, playlist_active) = controller_with_active(2, 0);
     let external_active = ActiveMediaIdentity::installed(
         None,
@@ -484,10 +485,29 @@ fn clear_preserves_non_playlist_active_identity_without_creating_tombstone() {
     );
     controller.active_media = Some(external_active);
 
-    let _clear = removed(controller.clear_queue());
-    assert_eq!(controller.active_media(), Some(external_active));
+    let clear = removed(controller.clear_queue());
+    assert_eq!(
+        clear.media_reset_request,
+        Some(player_core::ExactMediaTransportRequest {
+            media_instance_id: external_active.media_instance_id(),
+            action: ExactMediaTransportAction::ResetMedia,
+        })
+    );
+    assert_eq!(controller.active_media(), None);
     assert!(controller.detached_active_tombstone.is_none());
     assert_ne!(external_active.lineage_id(), playlist_active.lineage_id());
+}
+
+#[test]
+fn clear_without_active_media_creates_no_reset_request() {
+    let (mut controller, _ids, _active) = controller_with_active(2, 0);
+    controller.active_media = None;
+
+    let clear = removed(controller.clear_queue());
+
+    assert_eq!(clear.media_reset_request, None);
+    assert!(controller.active_media().is_none());
+    assert!(controller.detached_active_tombstone.is_none());
 }
 
 #[test]
@@ -498,14 +518,16 @@ fn d47_remove_others_and_clear_selection_never_start_playback() {
     assert_eq!(controller.selected_item_id(), Some(ids[1]));
     assert_eq!(controller.active_media(), Some(active.detached()));
 
-    let _clear = removed(controller.clear_queue());
+    let clear = removed(controller.clear_queue());
     assert_eq!(controller.selected_item_id(), None);
     assert_eq!(
-        controller
-            .active_media()
-            .map(ActiveMediaIdentity::lineage_id),
-        Some(active.lineage_id())
+        clear
+            .media_reset_request
+            .map(|request| request.media_instance_id),
+        Some(active.media_instance_id())
     );
+    assert!(controller.active_media().is_none());
+    assert!(controller.detached_active_tombstone.is_none());
 }
 
 #[test]

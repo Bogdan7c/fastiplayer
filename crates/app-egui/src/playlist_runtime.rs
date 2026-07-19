@@ -33,6 +33,7 @@ pub(crate) mod discovery;
 )]
 mod identity;
 mod local_file_selection;
+mod media_reset;
 mod persistence;
 mod persistence_runtime;
 #[allow(
@@ -107,6 +108,7 @@ pub(crate) use controller::{
 pub(crate) use controller::{StartupPosition, StartupRestoreFailureOutcome, StartupRestoreTarget};
 pub(crate) use discovery::{MetadataSortCancelOutcome, PlaylistDiscoveryNavigationAction};
 pub(crate) use identity::TransportActionOrigin;
+pub(crate) use media_reset::PlaylistMediaResetReceiptDisposition;
 #[allow(
     unused_imports,
     reason = "typed persistence read model is consumed by upcoming playlist UI wiring"
@@ -404,6 +406,8 @@ pub(crate) struct PlaylistRuntime {
     controller: PlaylistControllerSlot,
     /// Ровно один process-lifetime last-action removal Undo slot.
     removal_undo: Option<removal_undo::RemovalUndoState>,
+    /// Последний exact Clear reset, ещё не принятый bounded player channel-ом.
+    media_reset: media_reset::PlaylistMediaResetOwner,
     /// D79 confirmation хранит secret-bearing intent вне renderer-bound `AppState`.
     replacement_confirmation: replacement_confirmation::QueueReplacementConfirmationState,
     /// D48 form и async multi-file dialog принадлежат process runtime.
@@ -492,6 +496,7 @@ impl PlaylistRuntime {
             owner_receiver,
             controller: PlaylistControllerSlot::pending(),
             removal_undo: None,
+            media_reset: media_reset::PlaylistMediaResetOwner::default(),
             replacement_confirmation:
                 replacement_confirmation::QueueReplacementConfirmationState::new(),
             ui_interaction,

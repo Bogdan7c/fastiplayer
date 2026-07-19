@@ -243,6 +243,36 @@ fn non_seekable_media_writes_explicit_null_and_non_persistent_lineage_writes_not
 }
 
 #[test]
+fn clear_writes_null_even_when_regular_resume_capture_is_disabled() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let resume_path = directory.path().join("clear-resume.json");
+    let resume_store = Arc::new(PlaylistResumeStore::new(&resume_path));
+    let (controller, generation, instance) = exact_controller("clear.mp4");
+    let mut owner = PlaylistResumePersistenceOwner::new(5_000, true);
+    owner.install_store(resume_store.clone());
+    owner.activate_lineage(PlaylistLineagePersistence::Persistent);
+    owner.record_installed(
+        &controller,
+        generation,
+        instance,
+        InstalledCheckpointPosition::Seekable(Duration::from_secs(55)),
+        Instant::now(),
+    );
+    owner.set_enabled(false);
+
+    owner.clear_after_playlist_clear(Instant::now());
+
+    assert!(matches!(
+        owner.shutdown_until(ShutdownDeadline::after(Duration::from_secs(2))),
+        ResumeWorkerShutdownOutcome::Completed { .. }
+    ));
+    assert!(matches!(
+        resume_store.inspect(),
+        ResumeInspectionOutcome::Loaded(None)
+    ));
+}
+
+#[test]
 fn live_interval_reschedule_preserves_pending_snapshot_and_changes_next_deadline() {
     let mut schedule = ResumeIntervalSchedule::new(5_000);
     let start = Instant::now();

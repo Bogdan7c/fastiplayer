@@ -122,7 +122,7 @@ fn second_removal_replaces_slot_with_immediate_pre_mutation_state() {
 }
 
 #[test]
-fn undo_second_clear_restores_pre_clear_tombstone_continuation() {
+fn undo_clear_restores_queue_but_not_pre_clear_tombstone_or_playback() {
     let (mut runtime, ids) = runtime_with_items(3);
     let active = install_active(&mut runtime, ids[0]);
     let now = Instant::now();
@@ -131,19 +131,22 @@ fn undo_second_clear_restores_pre_clear_tombstone_continuation() {
 
     assert!(matches!(
         runtime.undo_last_removal(now + Duration::from_secs(2)),
-        RemovalUndoOutcome::Restored { .. }
+        RemovalUndoOutcome::Restored {
+            reattached_active: false,
+            ..
+        }
     ));
-    let automatic = runtime.controller.observe_automatic_snapshot(
-        active.player_binding_generation(),
-        Some(active.media_instance_id()),
-        PlaybackState::Ended,
-        EndedSnapshotKind::Clean,
-        AutomaticDeferredAvailability::Unavailable,
+    assert!(runtime.controller.queue.item(ids[0]).is_none());
+    assert!(runtime.controller.queue.item(ids[1]).is_some());
+    assert!(runtime.controller.queue.item(ids[2]).is_some());
+    assert!(runtime.controller.active_media().is_none());
+    assert!(runtime.controller.detached_active_tombstone.is_none());
+    assert_eq!(
+        runtime
+            .pending_media_reset_request()
+            .map(|request| request.media_instance_id),
+        Some(active.media_instance_id())
     );
-    assert!(matches!(
-        automatic,
-        AutomaticLifecycleOutcome::OpenItem { install } if install.item_id == ids[1]
-    ));
 }
 
 #[test]
@@ -156,6 +159,7 @@ fn clear_and_remove_others_use_same_undo_and_restore_selection() {
         RuntimeRemovalOutcome::Removed { .. }
     ));
     assert!(clear_runtime.controller.queue.is_empty());
+    assert!(!clear_runtime.has_pending_media_reset());
     assert_eq!(
         clear_runtime
             .playlist_persistence_view()
@@ -194,6 +198,59 @@ fn clear_and_remove_others_use_same_undo_and_restore_selection() {
         } if selected == others_ids[1]
     ));
     assert_eq!(others_runtime.controller.queue.len(), 4);
+}
+
+#[test]
+fn undo_active_clear_restores_queue_current_and_selection_only() {
+    let now = Instant::now();
+    let (mut runtime, ids) = runtime_with_items(3);
+    let active = install_active(&mut runtime, ids[1]);
+    runtime.controller.select_row(Some(ids[2]));
+
+    assert!(matches!(
+        runtime.clear_playlist(now),
+        RuntimeRemovalOutcome::Removed { .. }
+    ));
+    assert!(runtime.controller.queue.is_empty());
+    assert!(runtime.controller.active_media().is_none());
+    assert!(runtime.controller.detached_active_tombstone.is_none());
+    assert!(
+        runtime
+            .playlist_interaction_model()
+            .go_current_target
+            .is_none()
+    );
+    assert_eq!(
+        runtime
+            .pending_media_reset_request()
+            .map(|request| request.media_instance_id),
+        Some(active.media_instance_id())
+    );
+
+    assert!(matches!(
+        runtime.undo_last_removal(now + Duration::from_secs(1)),
+        RemovalUndoOutcome::Restored {
+            selected_item_id: Some(selected),
+            reattached_active: false,
+        } if selected == ids[2]
+    ));
+    assert_eq!(runtime.controller.queue.len(), 3);
+    assert_eq!(
+        runtime
+            .controller
+            .queue
+            .traversal_current()
+            .map(|current| current.item_id()),
+        Some(ids[1])
+    );
+    assert!(runtime.controller.active_media().is_none());
+    assert!(runtime.controller.detached_active_tombstone.is_none());
+    assert_eq!(
+        runtime
+            .pending_media_reset_request()
+            .map(|request| request.media_instance_id),
+        Some(active.media_instance_id())
+    );
 }
 
 #[test]

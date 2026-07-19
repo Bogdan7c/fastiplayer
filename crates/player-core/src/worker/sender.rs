@@ -20,7 +20,7 @@ impl PlayerCommandSender {
             .map_err(PlayerWorkerSendError::from)
     }
 
-    /// Ставит exact-instance transport и возвращает receipt фактического owner apply.
+    /// Ставит exact-instance transport/reset и возвращает receipt фактического owner apply.
     pub fn exact_media_transport(
         &self,
         request: ExactMediaTransportRequest,

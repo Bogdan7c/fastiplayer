@@ -257,12 +257,18 @@ impl PlaylistRuntime {
     ) -> RuntimeRemovalOutcome {
         match outcome {
             ControllerDestructiveRemovalOutcome::Removed(removal) => {
+                let clears_media = removal.kind == ControllerRemovalKind::Clear;
+                let media_reset_request = removal.media_reset_request;
                 let pending_cancellation = removal.pending_request_to_cancel.map(|request_id| {
                     self.cancel_media_open(
                         request_id,
                         player_core::MediaInstallCancellationCause::StructuralInvalidation,
                     )
                 });
+                if clears_media {
+                    self.media_reset.schedule(media_reset_request);
+                    self.clear_resume_checkpoint_after_playlist_clear(now);
+                }
                 let summary = RuntimeRemovalOutcome::Removed {
                     kind: removal.kind,
                     selected_item_id: removal.selection_after.selected_cursor(),

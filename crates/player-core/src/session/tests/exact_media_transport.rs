@@ -53,6 +53,53 @@ fn exact_transport_rejects_stale_instance_without_touching_current() {
 }
 
 #[test]
+fn reset_media_fully_clears_matching_instance() {
+    let instance_id = media_instance_id(20);
+    let mut session = session_with_exact_media(instance_id);
+    session.set_playback_state(PlaybackState::Playing);
+
+    assert_eq!(
+        session.apply_exact_media_transport(request(
+            instance_id,
+            ExactMediaTransportAction::ResetMedia,
+        )),
+        ExactMediaTransportOutcome::Applied {
+            media_instance_id: instance_id,
+        }
+    );
+    assert_eq!(session.snapshot.media_instance_id, None);
+    assert_eq!(session.snapshot.source_label, None);
+    assert_eq!(session.snapshot.current_video_frame, None);
+    assert_eq!(session.playback_state(), PlaybackState::Stopped);
+    assert!(!session.pipeline.has_demuxer());
+}
+
+#[test]
+fn stale_reset_media_does_not_touch_newer_instance() {
+    let current_instance_id = media_instance_id(21);
+    let stale_instance_id = media_instance_id(22);
+    let mut session = session_with_exact_media(current_instance_id);
+    session.set_playback_state(PlaybackState::Playing);
+
+    assert_eq!(
+        session.apply_exact_media_transport(request(
+            stale_instance_id,
+            ExactMediaTransportAction::ResetMedia,
+        )),
+        ExactMediaTransportOutcome::StaleInstance {
+            requested_media_instance_id: stale_instance_id,
+            current_media_instance_id: Some(current_instance_id),
+        }
+    );
+    assert_eq!(
+        session.snapshot.media_instance_id,
+        Some(current_instance_id)
+    );
+    assert_eq!(session.playback_state(), PlaybackState::Playing);
+    assert!(session.pipeline.has_demuxer());
+}
+
+#[test]
 fn neutral_stop_pauses_then_seeks_matching_instance_without_destructive_reset() {
     let instance_id = media_instance_id(3);
     let mut session = session_with_exact_media(instance_id);

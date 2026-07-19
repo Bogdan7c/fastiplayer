@@ -111,10 +111,11 @@
 - `PlayerCommandSender::cancel_media_install_lossless` предназначен только для cleanup после доказанного pre-barrier dispatch rejection; он использует тот же bounded ordered stream и не является вторым install algorithm.
 - Единственный compatibility facade `PlayerWorker::load_prepared_media` остался только для focused tests с TODO удаления; production app references отсутствуют. Focused player suite: 516 PASS.
 
-## Session 11B exact media transport (2026-07-14)
-- Public `ExactMediaTransportRequest` targets one `MediaInstanceId` and carries `SetPlaybackIntent`, `RestartFromBeginning`, or non-destructive `NeutralStop`. `PlayerWorker::exact_media_transport` returns a request-owned receipt: command queue Full/Disconnected is separate from owner `Applied`, `StaleInstance`, stage-specific `Failed`/`PartiallyApplied`, and fatal `MissingOwnerOutcome`.
-- Owner execution is serialized in the worker turn. Neutral Stop is Pause then seek-to-zero without `reset_media_state`; a Pause-success/seek-failure is explicitly partial. Restart uses the existing replay-from-EOF path for clean Ended media, otherwise exact seek then requested Playing/Paused, and never affects a newer instance.
-- D52 remains the only pending-install Play/Pause path. App controller dispatches exact-current transport only when no pending install exists, preventing duplicate Play/Pause while keeping staged/just-installed correlation intact. Controller policy and verification are in `mem:app-egui/playlist-controller-s11b`.
+## Session 11B exact media transport (updated 2026-07-19)
+- Public `ExactMediaTransportRequest` targets one `MediaInstanceId` and carries `SetPlaybackIntent`, `RestartFromBeginning`, non-destructive `NeutralStop`, or explicit destructive `ResetMedia`. `PlayerWorker::exact_media_transport` returns a request-owned receipt: command queue Full/Disconnected is separate from owner `Applied`, `StaleInstance`, stage-specific `Failed`/`PartiallyApplied`, and fatal `MissingOwnerOutcome`.
+- Owner execution is serialized in the worker turn and checks the exact current `MediaInstanceId` before any mutation. `ResetMedia` calls the existing full `PlayerSession::stop`/`reset_media_state` lifecycle, clears media/pipeline/decoder/timeline ownership, and publishes `Stopped`; a stale reset cannot affect a newer instance. Reset failure uses `ExactMediaTransportFailureStage::ResetMedia`.
+- Neutral Stop remains Pause then seek-to-zero without `reset_media_state`; a Pause-success/seek-failure is explicitly partial. Restart uses the existing replay-from-EOF path for clean Ended media, otherwise exact seek then requested Playing/Paused, and never affects a newer instance.
+- D52 remains the only pending-install Play/Pause path. App controller dispatches exact-current transport only when no pending install exists, preventing duplicate Play/Pause while keeping staged/just-installed correlation intact. Clear-specific use of `ResetMedia` is documented in `mem:app-egui/playlist-controller-s12a`.
 
 
 ## Session 14 bounded worker termination (2026-07-15)

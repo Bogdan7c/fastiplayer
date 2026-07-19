@@ -26,7 +26,17 @@ struct QueuedPlaylistInstall {
 /// Receipt хранит controller intent, который разрешено commit-ить только после owner outcome.
 struct PendingExactTransportReceipt {
     receipt: ExactMediaTransportReceipt,
-    commits_neutral_stop: bool,
+    purpose: ExactTransportReceiptPurpose,
+}
+
+/// Один receipt driver обслуживает transport и полный Clear reset без смешения lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExactTransportReceiptPurpose {
+    OrdinaryTransport,
+    NeutralStop,
+    ClearMediaReset {
+        requested_media_instance_id: player_core::MediaInstanceId,
+    },
 }
 
 /// Bounded state: один active strong request, один latest queued D53 plan и receipts.
@@ -137,18 +147,19 @@ impl AppState {
         &mut self,
         request: ExactMediaTransportRequest,
     ) {
-        let commits_neutral_stop = matches!(
+        let purpose = if matches!(
             request.action,
             player_core::ExactMediaTransportAction::NeutralStop
-        );
+        ) {
+            ExactTransportReceiptPurpose::NeutralStop
+        } else {
+            ExactTransportReceiptPurpose::OrdinaryTransport
+        };
         match self.player_worker.exact_media_transport(request) {
             Ok(receipt) => {
                 self.playlist_transport
                     .exact_receipts
-                    .push(PendingExactTransportReceipt {
-                        receipt,
-                        commits_neutral_stop,
-                    });
+                    .push(PendingExactTransportReceipt { receipt, purpose });
                 self.mark_pending_worker_redraw();
             }
             Err(error) => {
@@ -199,6 +210,7 @@ impl AppState {
         playlist_runtime: &mut PlaylistRuntime,
         renderer: &Renderer,
     ) {
+        self.drive_pending_playlist_media_reset(playlist_runtime);
         self.poll_exact_playlist_transport_receipts(playlist_runtime);
         let route_relative_beyond_end = self.poll_exact_timeline_seek_receipts(playlist_runtime);
         if route_relative_beyond_end {
@@ -257,6 +269,33 @@ impl AppState {
         }
     }
 
+    /// Неблокирующе отправляет latest Clear reset через общий frame transport driver.
+    fn drive_pending_playlist_media_reset(&mut self, playlist_runtime: &mut PlaylistRuntime) {
+        let Some(request) = playlist_runtime.pending_media_reset_request() else {
+            return;
+        };
+        match self.player_worker.exact_media_transport(request) {
+            Ok(receipt) => {
+                playlist_runtime.mark_media_reset_dispatched(request);
+                self.playlist_transport
+                    .exact_receipts
+                    .push(PendingExactTransportReceipt {
+                        receipt,
+                        purpose: ExactTransportReceiptPurpose::ClearMediaReset {
+                            requested_media_instance_id: request.media_instance_id,
+                        },
+                    });
+                self.mark_pending_worker_redraw();
+            }
+            Err(error) => {
+                playlist_runtime.report_media_reset_send_error(request, error);
+                if error == player_core::PlayerWorkerSendError::Full {
+                    self.mark_pending_worker_redraw();
+                }
+            }
+        }
+    }
+
     pub(crate) fn has_pending_playlist_transport(&self) -> bool {
         self.playlist_transport.active_request_id.is_some()
             || !self.playlist_transport.exact_receipts.is_empty()
@@ -301,28 +340,63 @@ impl AppState {
 
     fn poll_exact_playlist_transport_receipts(&mut self, playlist_runtime: &mut PlaylistRuntime) {
         let had_pending_receipts = !self.playlist_transport.exact_receipts.is_empty();
-        self.playlist_transport.exact_receipts.retain(|pending| {
-            match pending.receipt.try_take_outcome() {
-                Ok(None) => true,
-                Ok(Some(outcome @ ExactMediaTransportOutcome::Applied { .. })) => {
-                    if pending.commits_neutral_stop {
-                        playlist_runtime.apply_neutral_stop_outcome(&outcome);
-                    }
-                    false
+        let mut retained_receipts =
+            Vec::with_capacity(self.playlist_transport.exact_receipts.len());
+        for pending in std::mem::take(&mut self.playlist_transport.exact_receipts) {
+            let terminal = match pending.receipt.try_take_outcome() {
+                Ok(None) => {
+                    retained_receipts.push(pending);
+                    continue;
                 }
-                Ok(Some(outcome)) => {
-                    warn!(
+                Ok(Some(outcome)) => Ok(outcome),
+                Err(error) => Err(error),
+            };
+            match pending.purpose {
+                ExactTransportReceiptPurpose::OrdinaryTransport => match terminal {
+                    Ok(ExactMediaTransportOutcome::Applied { .. }) => {}
+                    Ok(outcome) => warn!(
                         ?outcome,
                         "Exact playlist transport завершился typed failure/stale outcome"
-                    );
-                    false
-                }
-                Err(error) => {
-                    warn!(error = %error, "Exact playlist transport потерял owner outcome");
-                    false
+                    ),
+                    Err(error) => {
+                        warn!(error = %error, "Exact playlist transport потерял owner outcome");
+                    }
+                },
+                ExactTransportReceiptPurpose::NeutralStop => match terminal {
+                    Ok(outcome @ ExactMediaTransportOutcome::Applied { .. }) => {
+                        playlist_runtime.apply_neutral_stop_outcome(&outcome);
+                    }
+                    Ok(outcome) => warn!(
+                        ?outcome,
+                        "Exact playlist Stop завершился typed failure/stale outcome"
+                    ),
+                    Err(error) => {
+                        warn!(error = %error, "Exact playlist Stop потерял owner outcome");
+                    }
+                },
+                ExactTransportReceiptPurpose::ClearMediaReset {
+                    requested_media_instance_id,
+                } => {
+                    let disposition = playlist_runtime
+                        .apply_media_reset_receipt(requested_media_instance_id, terminal);
+                    let app_cleanup = (disposition
+                        == crate::playlist_runtime::PlaylistMediaResetReceiptDisposition::ClearAppMediaState)
+                        .then(|| {
+                            self.record_cleared_media_after_exact_reset(
+                                requested_media_instance_id,
+                            )
+                        });
+                    if app_cleanup
+                        == Some(super::media_jobs::ExactMediaResetCleanup::SupersededByNewSnapshot)
+                    {
+                        debug!(
+                            "App media reset cleanup пропущен: новый player snapshot уже победил"
+                        );
+                    }
                 }
             }
-        });
+        }
+        self.playlist_transport.exact_receipts = retained_receipts;
         if had_pending_receipts && self.playlist_transport.exact_receipts.is_empty() {
             debug!("Exact playlist transport receipts drained");
         }

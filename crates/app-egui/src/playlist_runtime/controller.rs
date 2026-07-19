@@ -66,9 +66,9 @@ pub(crate) use manual_navigation::{
 #[allow(unused_imports)]
 pub(crate) use metadata::ControllerMetadataPatchError;
 pub(crate) use removal::{
-    ControllerActiveMediaRebindOutcome, ControllerDestructiveRemoval,
-    ControllerDestructiveRemovalOutcome, ControllerRemovalKind, ControllerRemovalUndoOutcome,
-    DetachedActiveTombstone,
+    ControllerActiveMediaRebindOutcome, ControllerClearMediaResetCommit,
+    ControllerDestructiveRemoval, ControllerDestructiveRemovalOutcome, ControllerRemovalKind,
+    ControllerRemovalUndoOutcome, DetachedActiveTombstone,
 };
 pub(crate) use reordering::ControllerMoveItemsOutcome;
 #[allow(unused_imports)]

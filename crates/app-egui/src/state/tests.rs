@@ -1,3 +1,4 @@
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -855,6 +856,29 @@ fn player_lifecycle_events_invalidate_cached_present_frame_at_boundaries() {
             }
         )),
         None
+    );
+}
+
+#[test]
+fn exact_clear_cleanup_rejects_newer_snapshot_and_accepts_reset_or_absent_instance() {
+    let reset_instance = player_core::MediaInstanceId::from_non_zero(
+        NonZeroU64::new(701).expect("test instance is non-zero"),
+    );
+    let newer_instance = player_core::MediaInstanceId::from_non_zero(
+        NonZeroU64::new(702).expect("test instance is non-zero"),
+    );
+
+    assert_eq!(
+        super::media_jobs::classify_exact_media_reset_cleanup(Some(newer_instance), reset_instance,),
+        super::media_jobs::ExactMediaResetCleanup::SupersededByNewSnapshot
+    );
+    assert_eq!(
+        super::media_jobs::classify_exact_media_reset_cleanup(Some(reset_instance), reset_instance,),
+        super::media_jobs::ExactMediaResetCleanup::Cleared
+    );
+    assert_eq!(
+        super::media_jobs::classify_exact_media_reset_cleanup(None, reset_instance),
+        super::media_jobs::ExactMediaResetCleanup::Cleared
     );
 }
 

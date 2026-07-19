@@ -1,12 +1,16 @@
 //! Destructive queue mutations, detached active tombstone и controller-side Undo restore.
 
+mod clear;
+pub(crate) use clear::ControllerClearMediaResetCommit;
+
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use player_core::{ExactMediaTransportAction, ExactMediaTransportRequest};
 use playlist_core::{
     AutomaticEndedIntent, AutomaticTraversalPlan, AutomaticTraversalStart, BulkRemoveError,
-    BulkRemoveOutcome, ClearQueueOutcome, PlaylistItemId, PlaylistRemovalSnapshot,
-    RemovalCurrentOutcome, RemovalSnapshotRestoreError, RemoveItemOutcome, RepeatMode,
+    BulkRemoveOutcome, PlaylistItemId, PlaylistRemovalSnapshot, RemovalCurrentOutcome,
+    RemovalSnapshotRestoreError, RemoveItemOutcome, RepeatMode,
 };
 
 use super::{
@@ -71,6 +75,8 @@ pub(crate) struct ControllerDestructiveRemoval {
     pub(crate) selection_after: PlaylistSelectionSnapshot,
     pub(crate) current_outcome: RemovalCurrentOutcome,
     pub(crate) dirty: PlaylistDirtySignal,
+    /// Только Clear формирует exact полный reset текущего player media.
+    pub(crate) media_reset_request: Option<ExactMediaTransportRequest>,
     pub(crate) active_lineage_at_removal: Option<ActiveMediaLineageId>,
     pub(crate) active_tombstone_lineage: Option<ActiveMediaLineageId>,
     pub(crate) active_tombstone_item_id: Option<PlaylistItemId>,
@@ -122,6 +128,15 @@ enum SelectionAfterRemoval {
     SelectSingle(PlaylistItemId),
     /// Перенести selection/focus на ближайшую surviving строку.
     SelectNearest,
+}
+
+/// Политика явно разделяет обычный detach строки и полный Clear lifecycle reset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemovedActiveMediaPolicy {
+    /// Обычное удаление сохраняет playback и при необходимости создаёт tombstone.
+    DetachRemovedPlaylistItem,
+    /// Clear забывает любую active identity и требует exact reset её player instance.
+    ResetCurrentMedia,
 }
 
 impl RemovalMutationError {
@@ -182,6 +197,7 @@ impl PlaylistController {
             ControllerRemovalKind::Remove,
             Arc::from([item_id]),
             selection_policy,
+            RemovedActiveMediaPolicy::DetachRemovedPlaylistItem,
             move |controller| match controller.queue.remove(item_id) {
                 RemoveItemOutcome::Removed {
                     current_outcome, ..
@@ -195,34 +211,6 @@ impl PlaylistController {
                 }
                 RemoveItemOutcome::NotFound { .. } => {
                     Err(RemovalMutationError::NotFound { item_id })
-                }
-            },
-        )
-    }
-
-    /// Clear немедленно оставляет active media detached и не посылает player Stop.
-    pub(crate) fn clear_queue(&mut self) -> ControllerDestructiveRemovalOutcome {
-        let removed_item_ids = self
-            .queue
-            .items()
-            .iter()
-            .map(|item| item.item_id())
-            .collect::<Vec<_>>();
-        self.commit_destructive_removal(
-            ControllerRemovalKind::Clear,
-            removed_item_ids.into(),
-            SelectionAfterRemoval::Clear,
-            |controller| match controller.queue.clear() {
-                ClearQueueOutcome::Cleared {
-                    current_outcome, ..
-                } => Ok(current_outcome),
-                ClearQueueOutcome::AlreadyEmpty => Err(RemovalMutationError::NoChange),
-                ClearQueueOutcome::InstallCommitLinearizing => {
-                    Err(RemovalMutationError::InstallCommitLinearizing)
-                }
-                ClearQueueOutcome::StructuralRevisionExhausted
-                | ClearQueueOutcome::TraversalRevisionExhausted => {
-                    Err(RemovalMutationError::DomainRevisionExhausted)
                 }
             },
         )
@@ -249,6 +237,7 @@ impl PlaylistController {
             ControllerRemovalKind::RemoveOthers,
             removed_item_ids.into(),
             SelectionAfterRemoval::SelectSingle(retained_item_id),
+            RemovedActiveMediaPolicy::DetachRemovedPlaylistItem,
             |controller| match controller.queue.remove_others(retained_item_id) {
                 Ok(BulkRemoveOutcome::Removed {
                     current_outcome, ..
@@ -291,6 +280,7 @@ impl PlaylistController {
             ControllerRemovalKind::RemoveSelected,
             item_ids,
             SelectionAfterRemoval::SelectNearest,
+            RemovedActiveMediaPolicy::DetachRemovedPlaylistItem,
             move |controller| match controller.queue.remove_batch(&domain_item_ids) {
                 Ok(BulkRemoveOutcome::Removed {
                     current_outcome, ..
@@ -333,6 +323,7 @@ impl PlaylistController {
             ControllerRemovalKind::RemoveUnselected,
             item_ids,
             SelectionAfterRemoval::PreserveSurvivors,
+            RemovedActiveMediaPolicy::DetachRemovedPlaylistItem,
             move |controller| match controller.queue.remove_batch(&domain_item_ids) {
                 Ok(BulkRemoveOutcome::Removed {
                     current_outcome, ..
@@ -389,6 +380,7 @@ impl PlaylistController {
         kind: ControllerRemovalKind,
         removed_item_ids: Arc<[PlaylistItemId]>,
         selection_policy: SelectionAfterRemoval,
+        active_media_policy: RemovedActiveMediaPolicy,
         mutate: impl FnOnce(
             &mut PlaylistController,
         ) -> Result<RemovalCurrentOutcome, RemovalMutationError>,
@@ -418,14 +410,22 @@ impl PlaylistController {
         let removed_active_item_id = active_before
             .and_then(ActiveMediaIdentity::item_id)
             .filter(|active_item_id| removed_item_ids.contains(active_item_id));
-        let continuation = if kind == ControllerRemovalKind::Clear {
-            None
-        } else {
-            removed_active_item_id
+        let media_reset_request = match active_media_policy {
+            RemovedActiveMediaPolicy::DetachRemovedPlaylistItem => None,
+            RemovedActiveMediaPolicy::ResetCurrentMedia => {
+                active_before.map(|active| ExactMediaTransportRequest {
+                    media_instance_id: active.media_instance_id(),
+                    action: ExactMediaTransportAction::ResetMedia,
+                })
+            }
+        };
+        let continuation = match active_media_policy {
+            RemovedActiveMediaPolicy::DetachRemovedPlaylistItem => removed_active_item_id
                 .filter(|removed_item_id| {
                     current_before.is_some_and(|current| current.item_id() == *removed_item_id)
                 })
-                .and_then(|_| self.capture_removal_continuation())
+                .and_then(|_| self.capture_removal_continuation()),
+            RemovedActiveMediaPolicy::ResetCurrentMedia => None,
         };
 
         let current_outcome = match mutate(self) {
@@ -440,13 +440,23 @@ impl PlaylistController {
         );
         self.runtime_errors
             .retain(|item_id, _| self.queue.item(*item_id).is_some());
-        if let (Some(active), Some(removed_item_id)) = (active_before, removed_active_item_id) {
-            self.active_media = Some(active.detached());
-            self.detached_active_tombstone = Some(DetachedActiveTombstone {
-                removed_item_id,
-                active_lineage_id: active.lineage_id(),
-                continuation,
-            });
+        match active_media_policy {
+            RemovedActiveMediaPolicy::DetachRemovedPlaylistItem => {
+                if let (Some(active), Some(removed_item_id)) =
+                    (active_before, removed_active_item_id)
+                {
+                    self.active_media = Some(active.detached());
+                    self.detached_active_tombstone = Some(DetachedActiveTombstone {
+                        removed_item_id,
+                        active_lineage_id: active.lineage_id(),
+                        continuation,
+                    });
+                }
+            }
+            RemovedActiveMediaPolicy::ResetCurrentMedia => {
+                self.active_media = None;
+                self.detached_active_tombstone = None;
+            }
         }
         let pending_request_to_cancel = match self.retire_awaiting_install_for_removal() {
             Ok(request_id) => request_id,
@@ -466,11 +476,24 @@ impl PlaylistController {
             selection_after,
             current_outcome,
             dirty,
-            active_lineage_at_removal: active_before.map(ActiveMediaIdentity::lineage_id),
+            media_reset_request,
+            // Clear Undo восстанавливает только queue/selection и не reattach-ит playback.
+            active_lineage_at_removal: match active_media_policy {
+                RemovedActiveMediaPolicy::DetachRemovedPlaylistItem => {
+                    active_before.map(ActiveMediaIdentity::lineage_id)
+                }
+                RemovedActiveMediaPolicy::ResetCurrentMedia => None,
+            },
             // Undo reattach относится только к tombstone, созданному этой mutation.
-            active_tombstone_lineage: removed_active_item_id
-                .and_then(|_| active_before.map(ActiveMediaIdentity::lineage_id)),
-            active_tombstone_item_id: removed_active_item_id,
+            active_tombstone_lineage: match active_media_policy {
+                RemovedActiveMediaPolicy::DetachRemovedPlaylistItem => removed_active_item_id
+                    .and_then(|_| active_before.map(ActiveMediaIdentity::lineage_id)),
+                RemovedActiveMediaPolicy::ResetCurrentMedia => None,
+            },
+            active_tombstone_item_id: match active_media_policy {
+                RemovedActiveMediaPolicy::DetachRemovedPlaylistItem => removed_active_item_id,
+                RemovedActiveMediaPolicy::ResetCurrentMedia => None,
+            },
             manual_navigation_invalidation,
             pending_request_to_cancel,
         }))
@@ -564,7 +587,7 @@ impl PlaylistController {
         }
     }
 
-    /// Matching-lineage Undo reattach-ит текущий player instance без reopen.
+    /// Undo обычного removal reattach-ит lineage, а Undo Clear восстанавливает только queue.
     pub(crate) fn restore_destructive_removal(
         &mut self,
         removal: ControllerDestructiveRemoval,

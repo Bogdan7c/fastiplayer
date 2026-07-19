@@ -471,12 +471,13 @@ mod tests {
         );
         let controller = runtime.playlist_controller().expect("controller");
         assert!(controller.queue().is_empty());
-        assert!(
-            controller
-                .active_media()
-                .expect("installed identity")
-                .item_id()
-                .is_none()
+        assert!(controller.active_media().is_none());
+        assert!(!controller.view_snapshot().has_active_tombstone());
+        assert_eq!(
+            runtime
+                .pending_media_reset_request()
+                .map(|request| request.media_instance_id),
+            Some(instance_id(91))
         );
     }
 

@@ -6,7 +6,7 @@ use crossbeam_channel::{Receiver, TryRecvError};
 
 use crate::{MediaInstanceId, PlaybackIntent, PlayerError};
 
-/// Недеструктивное действие над уже установленным media.
+/// Exact действие над уже установленным media, включая явный полный reset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExactMediaTransportAction {
     /// Применяет stable Playing/Paused без seek и без uncorrelated fallback command-а.
@@ -15,6 +15,8 @@ pub enum ExactMediaTransportAction {
     RestartFromBeginning { intent: PlaybackIntent },
     /// Реализует нейтральный Stop как Pause, затем seek к нулю без очистки media owners.
     NeutralStop,
+    /// Полностью освобождает текущее media и переводит player в `Stopped`.
+    ResetMedia,
 }
 
 /// Exact request никогда не выводит identity из locator/title/текущего snapshot-а caller-а.
@@ -22,7 +24,7 @@ pub enum ExactMediaTransportAction {
 pub struct ExactMediaTransportRequest {
     /// Единственная media instance, над которой разрешено действие.
     pub media_instance_id: MediaInstanceId,
-    /// Typed transport intent без destructive `PlayerCommand::Stop`.
+    /// Typed intent без uncorrelated destructive `PlayerCommand::Stop`.
     pub action: ExactMediaTransportAction,
 }
 
@@ -35,6 +37,8 @@ pub enum ExactMediaTransportFailureStage {
     SeekToBeginning,
     /// Play после успешного seek не применился.
     Play,
+    /// Полный reset media не применился.
+    ResetMedia,
 }
 
 /// Authoritative owner outcome не выдаёт enqueue за фактическое применение.

@@ -113,6 +113,9 @@ pub(super) enum CachedPresentFrameDiscardReason {
     /// Player остановил текущий media.
     PlayerStopped,
 
+    /// Exact Clear receipt подтвердил полный player media reset.
+    PlaylistClearReset,
+
     /// Player перешёл в failed state.
     PlayerFailed,
 

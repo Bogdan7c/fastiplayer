@@ -321,7 +321,7 @@ impl PlayerWorker {
             .report_resource_previous_frame_reuse();
     }
 
-    /// Ставит exact-instance restart/neutral Stop с authoritative owner receipt-ом.
+    /// Ставит exact-instance transport/reset с authoritative owner receipt-ом.
     pub fn exact_media_transport(
         &self,
         request: ExactMediaTransportRequest,

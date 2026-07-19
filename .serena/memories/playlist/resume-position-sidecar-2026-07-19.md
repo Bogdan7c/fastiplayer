@@ -16,6 +16,7 @@
 - Only persistent lineage with writable inspected sidecar may write. Correlation requires exact current item, non-tombstone active media, player instance and `PlaylistBindingGeneration`. Stale instances/bindings, CLI/non-playlist active media and non-persistent/protected lineage are skipped.
 - During `Playing`, periodic capture uses `playlist.resume_checkpoint_interval_ms` (default 5000, validated `1000..=60000`, step 1000). Live reschedule changes only the next deadline and preserves pending/latest snapshot.
 - Immediate capture occurs after exact installed current change, exact seek receipt, transition to Paused/Stopped, Ended and terminal pre-player shutdown. Opening/Seeking/Scrubbing are never sampled by frame policy. Non-seekable media writes explicit null; Ended writes position zero.
+- Successful playlist Clear is a separate mandatory write reason: it immediately clears the loaded/observed checkpoint and submits explicit `checkpoint: null` for writable persistent lineage even when ordinary resume capture is disabled. Queue-only Undo does not restore or resubmit the old position, so neither Undo nor a later process start can resurrect it. Protected/non-persistent/read-only sidecars remain untouched.
 - Queue persistence is flushed before resume writer join under the shared terminal deadline. Crash ordering is safe: queue-new/resume-old or resume-new/queue-old mismatches are ignored by item+fingerprint correlation.
 
 ## Startup semantics

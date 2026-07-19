@@ -48,6 +48,16 @@ impl PlayerSession {
             ExactMediaTransportAction::RestartFromBeginning { intent } => {
                 self.apply_exact_restart(request.media_instance_id, intent)
             }
+            ExactMediaTransportAction::ResetMedia => match self.stop() {
+                Ok(()) => ExactMediaTransportOutcome::Applied {
+                    media_instance_id: request.media_instance_id,
+                },
+                Err(error) => ExactMediaTransportOutcome::Failed {
+                    media_instance_id: request.media_instance_id,
+                    stage: ExactMediaTransportFailureStage::ResetMedia,
+                    error,
+                },
+            },
         }
     }
 

@@ -376,8 +376,13 @@ impl PlaylistResumePersistenceOwner {
     }
 
     fn start_worker_if_allowed(&mut self) {
+        self.start_worker_for(ResumeWriteReason::PlaybackCapture);
+    }
+
+    /// Clear обязан записать `null` даже при отключённом обычном capture policy.
+    fn start_worker_for(&mut self, reason: ResumeWriteReason) {
         if self.worker.is_some()
-            || !self.enabled
+            || (reason == ResumeWriteReason::PlaybackCapture && !self.enabled)
             || !self.persistent_lineage
             || self.store_access != ResumeStoreAccess::Writable
         {
@@ -396,14 +401,24 @@ impl PlaylistResumePersistenceOwner {
     }
 
     fn submit_latest(&mut self, checkpoint: Option<ResumeCheckpoint>, now: Instant) {
-        if !self.enabled
+        self.submit_latest_for(checkpoint, now, ResumeWriteReason::PlaybackCapture);
+    }
+
+    /// Общая latest-only запись различает обычный capture и обязательный Clear tombstone.
+    fn submit_latest_for(
+        &mut self,
+        checkpoint: Option<ResumeCheckpoint>,
+        now: Instant,
+        reason: ResumeWriteReason,
+    ) {
+        if (reason == ResumeWriteReason::PlaybackCapture && !self.enabled)
             || !self.persistent_lineage
             || self.store_access != ResumeStoreAccess::Writable
             || self.last_requested.as_ref() == Some(&checkpoint)
         {
             return;
         }
-        self.start_worker_if_allowed();
+        self.start_worker_for(reason);
         let Some(worker) = self.worker.as_ref() else {
             return;
         };
@@ -435,6 +450,14 @@ impl PlaylistResumePersistenceOwner {
         if let CheckpointCapture::Write(checkpoint) = capture {
             self.submit_latest(checkpoint, now);
         }
+    }
+
+    /// Успешный Clear немедленно делает старую позицию недоступной для Undo/restart.
+    pub(super) fn clear_after_playlist_clear(&mut self, now: Instant) {
+        self.report_latest_attempt();
+        self.loaded_checkpoint = None;
+        self.last_observed_state = None;
+        self.submit_latest_for(None, now, ResumeWriteReason::PlaylistClear);
     }
 
     fn report_latest_attempt(&mut self) {
@@ -487,6 +510,13 @@ struct ExactActiveItem<'item> {
 enum CheckpointCapture {
     Skip,
     Write(Option<ResumeCheckpoint>),
+}
+
+/// Причина записи определяет, должна ли настройка capture блокировать sidecar update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResumeWriteReason {
+    PlaybackCapture,
+    PlaylistClear,
 }
 
 fn exact_active_item(
@@ -609,6 +639,11 @@ impl PlaylistRuntime {
             position,
             Instant::now(),
         );
+    }
+
+    /// Queue Clear очищает sidecar независимо от последующего Undo queue snapshot-а.
+    pub(crate) fn clear_resume_checkpoint_after_playlist_clear(&mut self, now: Instant) {
+        self.resume_persistence.clear_after_playlist_clear(now);
     }
 
     /// Terminal shell вызывает boundary до остановки player owner-а.
