@@ -6,9 +6,12 @@
 
 mod entry;
 mod id;
+mod import;
 mod item;
 mod locator;
 mod metadata;
+mod payload;
+mod playback_span;
 mod queue;
 mod repeat;
 
@@ -23,6 +26,11 @@ pub use id::{
     AllocatorRestoreError, NextPlaylistItemId, PlaylistItemId, PlaylistItemIdAllocator,
     PlaylistItemIdPersistenceError,
 };
+pub use import::{
+    MAX_PLAYLIST_IMPORT_COMPOUND_PARTS, PlaylistCompoundImportDraft,
+    PlaylistCompoundImportDraftError, PlaylistImportAvailability, PlaylistImportEntryDraft,
+    PlaylistSingleImportDraft,
+};
 pub use item::{PlaylistItem, PlaylistItemDraft, RestoredPlaylistItem};
 pub use locator::{
     ForeignPathEncoding, ForeignPathPlatform, ForeignPlatformPath, LocalLocator, PlaylistLocator,
@@ -32,6 +40,17 @@ pub use metadata::{
     CachedMetadataError, CachedPlaylistMetadata, LocalSourceFingerprint, MAX_CACHED_ARTISTS,
     PlaylistMediaKind,
 };
+pub use payload::{
+    CURRENT_DURABLE_REOPEN_PAYLOAD_VERSION, DurableReopenLocator, DurableReopenLocatorBuildError,
+    DurableReopenPayloadVersion, MAX_DURABLE_REOPEN_SERVICE_OWNER_BYTES,
+    MAX_DURABLE_REOPEN_SERVICE_PAYLOAD_BYTES, MAX_PLAYLIST_ANCILLARY_DISPLAY_NAME_BYTES,
+    MAX_PLAYLIST_ANCILLARY_FORMAT_IDENTITY_BYTES, MAX_PLAYLIST_ANCILLARY_IDENTITY_BYTES,
+    MAX_PLAYLIST_ANCILLARY_LANGUAGE_BYTES, MAX_PLAYLIST_ANCILLARY_TRACK_HINTS,
+    PlaylistAncillaryTrackHint, PlaylistAncillaryTrackOrigin, PlaylistAncillaryTrackSelectionKind,
+    PlaylistImportProvenance, PlaylistImportSourceKind, PlaylistPayloadBuildError,
+    PlaylistPayloadTextField, ServiceDurableReopenPayload, ServiceReopenMaterialKind,
+};
+pub use playback_span::{PlaylistPlaybackSpan, PlaylistPlaybackSpanError};
 pub use queue::{
     AddItemsError, AddItemsOutcome, AddPlaylistEntriesOutcome, AllocatedPlaylistEntries,
     AllocatedPlaylistItemIds, ApplyPreparedCanonicalSortError, ApplyPreparedCanonicalSortOutcome,

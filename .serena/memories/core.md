@@ -113,3 +113,7 @@
 - Append/discovery merge, remove/current detach, sort и move работают с group-block upcoming; fixed automatic failure chain пытается remaining parts по порядку без fake visits, late-entry admission или hidden group split. Ready/D08 reservation не меняет current/history; abort/stale/cancel сохраняют base, exact Installed коммитит current и opaque shuffle delta вместе. App controller focused test подтверждает exact part publication после matching Installed.
 - Public `ShuffleTraversalSnapshot::upcoming()` и restore errors теперь используют Entry IDs. Schema v1 `playlist-state` мапит legacy single upcoming в `PlaylistEntryId::Single` и typed-ошибкой `CompoundQueueRequiresSchemaV2` запрещает lossful compound flatten до запланированного S02.
 - Verification: 106 `playlist-core`, 41 `playlist-state`, 722 `app-egui` tests PASS; strict touched all-targets/all-features Clippy, Rust 1.96 workspace check, focused MSRV 1.92, rustfmt, refactor guardrails, diff check и Serena diagnostics PASS. Details: `mem:playlist/core`, `mem:playlist/state`.
+
+
+## Web media roadmap S01D neutral playlist payloads (2026-07-20)
+- `playlist-core` добавил neutral checked playback spans, bounded ancillary/import provenance, versioned/redacted `DurableReopenLocator` и ID-less Single/Compound import drafts без queue algorithm/persistence integration. Stable service child identity допускается только как bounded v1 webpage/original/extractor payload; format/manifest/fragment/key/signed endpoint/headers/cookies/auth/session material typed rejected. Full contract: `mem:playlist/core`.
