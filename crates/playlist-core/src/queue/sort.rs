@@ -122,7 +122,15 @@ impl PlaylistQueue {
             return SortCanonicalQueueOutcome::InstallCommitLinearizing;
         }
 
-        let mut prepared_entries = prepare_sort_entries(&self.items, intent.key, |_| {});
+        let mut sortable_items = self
+            .entries
+            .iter()
+            .filter_map(|entry| entry.as_single().cloned())
+            .collect::<Vec<_>>();
+        if sortable_items.len() != self.entries.len() {
+            return SortCanonicalQueueOutcome::AlreadyInCanonicalOrder;
+        }
+        let mut prepared_entries = prepare_sort_entries(&sortable_items, intent.key, |_| {});
         prepared_entries.sort_by(|left, right| compare_entries(left, right, intent.direction));
 
         let order_is_unchanged = prepared_entries
@@ -141,11 +149,15 @@ impl PlaylistQueue {
             .iter()
             .map(|entry| entry.original_index)
             .collect::<Vec<_>>();
-        apply_prepared_order(&mut self.items, &sorted_original_indices);
+        apply_prepared_order(&mut sortable_items, &sorted_original_indices);
+        self.entries = sortable_items
+            .into_iter()
+            .map(crate::PlaylistEntry::Single)
+            .collect();
         self.structural_revision = next_structural_revision;
 
         SortCanonicalQueueOutcome::Reordered {
-            item_count: self.items.len(),
+            item_count: self.entries.len(),
         }
     }
 }
@@ -397,7 +409,7 @@ fn compare_video_sequence(
 }
 
 /// Применяет доказанную permutation in-place, не меняя Item IDs или соседнее state.
-fn apply_prepared_order(items: &mut [PlaylistItem], sorted_original_indices: &[usize]) {
+fn apply_prepared_order<T>(items: &mut [T], sorted_original_indices: &[usize]) {
     let mut original_index_at_position = (0..items.len()).collect::<Vec<_>>();
     let mut position_of_original_index = (0..items.len()).collect::<Vec<_>>();
 

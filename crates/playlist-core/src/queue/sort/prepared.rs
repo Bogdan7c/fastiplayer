@@ -40,7 +40,8 @@ impl CanonicalSortSnapshot {
             .iter_playable_items()
             .cloned()
             .collect::<Vec<_>>();
-        prepare_metadata_patch_plan(&effective_items, metadata_patches).apply(&mut effective_items);
+        prepare_metadata_patch_plan(&effective_items, metadata_patches)
+            .apply_to_items(&mut effective_items);
 
         let mut prepared_items = 0usize;
         let entries = prepare_sort_entries_cancellable(
@@ -146,7 +147,7 @@ pub enum ApplyPreparedCanonicalSortError {
 
 /// Полностью проверенный linear commit: после выдачи owner применяет его без fallible шага.
 pub struct PreparedCanonicalSortCommit {
-    next_items: Vec<PlaylistItem>,
+    next_entries: Vec<crate::PlaylistEntry>,
     next_structural_revision: super::super::QueueRevision,
     next_metadata_revision: super::super::QueueRevision,
     outcome: ApplyPreparedCanonicalSortOutcome,
@@ -196,21 +197,20 @@ impl PlaylistQueue {
         {
             return Err(ApplyPreparedCanonicalSortError::StaleQueueRevision);
         }
-        let current_item_ids = self
-            .items
-            .iter()
-            .map(PlaylistItem::item_id)
-            .collect::<Vec<_>>();
+        let current_item_ids = self.iter_playable_ids().collect::<Vec<_>>();
         if current_item_ids.as_slice() != prepared.expected_item_ids.as_ref() {
             return Err(ApplyPreparedCanonicalSortError::StaleQueueRevision);
+        }
+        if self.top_level_entry_count() != self.retained_item_count() {
+            return Err(ApplyPreparedCanonicalSortError::InvalidPermutation);
         }
         let unique_sorted_ids = prepared
             .sorted_item_ids
             .iter()
             .copied()
             .collect::<HashSet<_>>();
-        if prepared.sorted_item_ids.len() != self.items.len()
-            || unique_sorted_ids.len() != self.items.len()
+        if prepared.sorted_item_ids.len() != self.retained_item_count()
+            || unique_sorted_ids.len() != self.retained_item_count()
             || !current_item_ids
                 .iter()
                 .all(|item_id| unique_sorted_ids.contains(item_id))
@@ -222,7 +222,8 @@ impl PlaylistQueue {
             return Err(ApplyPreparedCanonicalSortError::InstallCommitLinearizing);
         }
 
-        let metadata_plan = prepare_metadata_patch_plan(&self.items, &metadata_patches);
+        let metadata_plan =
+            prepare_metadata_patch_plan(self.iter_playable_items(), &metadata_patches);
         let next_metadata_revision = if metadata_plan.changed_metadata() {
             self.metadata_revision
                 .checked_next()
@@ -238,24 +239,30 @@ impl PlaylistQueue {
             self.structural_revision
         };
 
-        let mut next_items = self.items.clone();
-        let metadata = metadata_plan.apply(&mut next_items);
+        let mut next_entries = self.entries.clone();
+        let metadata = metadata_plan.apply_to_entries(&mut next_entries);
         if reordered {
-            let index_by_id = next_items
+            let index_by_id = next_entries
                 .iter()
                 .enumerate()
-                .map(|(index, item)| (item.item_id(), index))
+                .map(|(index, entry)| {
+                    let item_id = entry
+                        .as_single()
+                        .expect("single-only permutation preflight")
+                        .item_id();
+                    (item_id, index)
+                })
                 .collect::<HashMap<_, _>>();
             let sorted_original_indices = prepared
                 .sorted_item_ids
                 .iter()
                 .map(|item_id| index_by_id[item_id])
                 .collect::<Vec<_>>();
-            apply_prepared_order(&mut next_items, &sorted_original_indices);
+            apply_prepared_order(&mut next_entries, &sorted_original_indices);
         }
 
         Ok(PreparedCanonicalSortCommit {
-            next_items,
+            next_entries,
             next_structural_revision,
             next_metadata_revision,
             outcome: ApplyPreparedCanonicalSortOutcome {
@@ -270,7 +277,7 @@ impl PlaylistQueue {
         &mut self,
         commit: PreparedCanonicalSortCommit,
     ) -> ApplyPreparedCanonicalSortOutcome {
-        self.items = commit.next_items;
+        self.entries = commit.next_entries;
         if commit.outcome.metadata.changed_metadata() {
             self.metadata_revision = commit.next_metadata_revision;
         }

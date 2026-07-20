@@ -221,11 +221,13 @@ impl PlaylistQueue {
                 let shuffle_was_enabled = self.shuffle_traversal.is_some();
                 let allocated_item_ids = allocation_plan.allocated_item_ids.clone();
                 self.item_id_allocator.commit_allocation(&allocation_plan);
-                self.items = replacement_items;
+                self.entries = replacement_items
+                    .into_iter()
+                    .map(crate::PlaylistEntry::Single)
+                    .collect();
                 self.traversal_current = Some(traversal_current);
                 if shuffle_was_enabled {
-                    let canonical_item_ids: Vec<_> =
-                        self.items.iter().map(|item| item.item_id()).collect();
+                    let canonical_item_ids: Vec<_> = self.iter_playable_ids().collect();
                     let mut random = rand::rng();
                     self.shuffle_traversal = Some(super::shuffle::ShuffleTraversal::fresh(
                         &canonical_item_ids,
@@ -270,7 +272,7 @@ impl PlaylistQueue {
             .traversal_revision
             .checked_next()
             .ok_or(PrepareReservedMutationError::TraversalRevisionExhausted)?;
-        let existing_item_ids: HashSet<_> = self.items.iter().map(PlaylistItem::item_id).collect();
+        let existing_item_ids: HashSet<_> = self.iter_playable_ids().collect();
         let allocation_plan = self
             .item_id_allocator
             .preflight_allocation(candidate_item_count, &existing_item_ids)

@@ -85,7 +85,7 @@ impl fmt::Display for MoveItemsOutcome {
 }
 
 impl PlaylistQueue {
-    /// Перемещает requested IDs одним блоком в их текущем canonical порядке.
+    /// Перемещает requested single IDs одним блоком в их текущем canonical порядке.
     pub fn move_items(
         &mut self,
         requested_item_ids: &[PlaylistItemId],
@@ -95,7 +95,6 @@ impl PlaylistQueue {
             return MoveItemsOutcome::NoItemsRequested;
         }
 
-        // Один set одновременно валидирует uniqueness и обслуживает O(1) membership.
         let mut selected_item_ids = HashSet::with_capacity(requested_item_ids.len());
         for item_id in requested_item_ids {
             if !selected_item_ids.insert(*item_id) {
@@ -103,15 +102,17 @@ impl PlaylistQueue {
             }
         }
 
-        // Проверка committed membership остаётся O(N + K), включая очередь на 50k строк.
-        let committed_item_ids: HashSet<_> = self.items.iter().map(|item| item.item_id()).collect();
+        let committed_single_ids: HashSet<_> = self
+            .entries
+            .iter()
+            .filter_map(|entry| entry.as_single().map(|item| item.item_id()))
+            .collect();
         for item_id in requested_item_ids {
-            if !committed_item_ids.contains(item_id) {
+            if !committed_single_ids.contains(item_id) {
                 return MoveItemsOutcome::ItemNotFound { item_id: *item_id };
             }
         }
 
-        // Anchor обязан быть внешней stable границей перемещаемого блока.
         let anchor_item_id = match intent {
             MoveItemIntent::ToFront | MoveItemIntent::ToBack => None,
             MoveItemIntent::Before(anchor_item_id) | MoveItemIntent::After(anchor_item_id) => {
@@ -119,7 +120,7 @@ impl PlaylistQueue {
             }
         };
         if let Some(anchor_item_id) = anchor_item_id {
-            if !committed_item_ids.contains(&anchor_item_id) {
+            if !committed_single_ids.contains(&anchor_item_id) {
                 return MoveItemsOutcome::AnchorNotFound { anchor_item_id };
             }
             if selected_item_ids.contains(&anchor_item_id) {
@@ -131,39 +132,53 @@ impl PlaylistQueue {
             return MoveItemsOutcome::InstallCommitLinearizing;
         }
 
-        // Canonical scan игнорирует caller order и тем самым сохраняет взаимный порядок строк.
-        let selected_items = self
-            .items
+        let selected_entries = self
+            .entries
             .iter()
-            .filter(|item| selected_item_ids.contains(&item.item_id()))
+            .filter(|entry| {
+                entry
+                    .as_single()
+                    .is_some_and(|item| selected_item_ids.contains(&item.item_id()))
+            })
             .cloned()
             .collect::<Vec<_>>();
-        let mut retained_items = self
-            .items
+        let mut retained_entries = self
+            .entries
             .iter()
-            .filter(|item| !selected_item_ids.contains(&item.item_id()))
+            .filter(|entry| {
+                entry
+                    .as_single()
+                    .is_none_or(|item| !selected_item_ids.contains(&item.item_id()))
+            })
             .cloned()
             .collect::<Vec<_>>();
 
-        // Индекс вычисляется уже в retained order, поэтому удалённые строки его не сдвигают.
         let insertion_index = match intent {
             MoveItemIntent::ToFront => 0,
-            MoveItemIntent::ToBack => retained_items.len(),
-            MoveItemIntent::Before(anchor_item_id) => retained_items
+            MoveItemIntent::ToBack => retained_entries.len(),
+            MoveItemIntent::Before(anchor_item_id) => retained_entries
                 .iter()
-                .position(|item| item.item_id() == anchor_item_id)
+                .position(|entry| {
+                    entry
+                        .as_single()
+                        .is_some_and(|item| item.item_id() == anchor_item_id)
+                })
                 .expect("validated unselected anchor must remain committed"),
             MoveItemIntent::After(anchor_item_id) => {
-                retained_items
+                retained_entries
                     .iter()
-                    .position(|item| item.item_id() == anchor_item_id)
+                    .position(|entry| {
+                        entry
+                            .as_single()
+                            .is_some_and(|item| item.item_id() == anchor_item_id)
+                    })
                     .expect("validated unselected anchor must remain committed")
                     + 1
             }
         };
-        retained_items.splice(insertion_index..insertion_index, selected_items);
+        retained_entries.splice(insertion_index..insertion_index, selected_entries);
 
-        if retained_items == self.items {
+        if retained_entries == self.entries {
             return MoveItemsOutcome::AlreadyInPlace {
                 item_count: selected_item_ids.len(),
             };
@@ -172,8 +187,7 @@ impl PlaylistQueue {
             return MoveItemsOutcome::StructuralRevisionExhausted;
         };
 
-        // Единственная публикация не касается current, allocator, metadata или shuffle state.
-        self.items = retained_items;
+        self.entries = retained_entries;
         self.structural_revision = next_structural_revision;
         MoveItemsOutcome::Moved {
             item_count: selected_item_ids.len(),

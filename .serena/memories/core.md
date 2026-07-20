@@ -92,3 +92,9 @@
 - `playlist-core` internal algorithms/tests и `playlist-state` DTO/snapshot migration завершены без изменения canonical order, Item IDs, revisions или playlist-state schema v1.
 - S01Q завершил workspace migration: app view/selection/discovery/startup/desktop-MPRIS и diagnostics/tests используют intent-based iteration, stable-ID lookup и named counts; `PlaylistQueue::items()` и ambiguous production `len()` удалены. Selection ranges и removal fallback сохраняют stable-ID/revision authority, не используют queue slice для structural mutation; новых cached/parallel Vec или app-owned queue snapshots нет.
 - S01Q verification: `playlist-core` 82, `playlist-state` 40 и полный `app-egui` 719 tests PASS на Rust 1.96; strict Clippy, workspace all-features check, MSRV 1.92, rustfmt, Serena diagnostics и refactor guardrails PASS. Cargo-deny по-прежнему падает только на известные quick-xml RUSTSEC-2026-0194/0195. Details: `mem:playlist/core`, `mem:playlist/state`.
+
+## Web media roadmap S01A compound storage (2026-07-20)
+- `playlist-core` canonical storage теперь first-class `Single | Compound`: отдельный monotonic/no-burn Group ID allocator, structural `PlaylistEntryId`, ordered stable-ID parts с immutable ordinal, root locator provenance и cached group summary.
+- Новый atomic entry append/replace preflight публикует Item/Group watermarks только вместе; retained capacity считает parts, group-safe capped prefix никогда не режет compound, empty draft typed rejected, one-part group остаётся compound.
+- S01P reads работают поверх nested storage без queue cache: top-level и derived playable iteration — разные named views; owned flat snapshot создаётся только для explicit handoff. Metadata-only patches применяются к nested parts без structural/traversal revision.
+- S01B/S01C group-safe structural/shuffle/navigation scope не заявлен готовым; player identity/UI collapse state не переносились в core. Full contract и verification: `mem:playlist/core`.

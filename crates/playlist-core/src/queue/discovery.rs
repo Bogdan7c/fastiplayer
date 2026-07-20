@@ -102,16 +102,15 @@ impl PlaylistQueue {
             Some(item_id) => self
                 .index_of(item_id)
                 .ok_or(DiscoveryBatchInsertError::AnchorNotCommitted { item_id })?,
-            None => self.items.len(),
+            None => self.entries.len(),
         };
         let requested = drafts.len();
-        self.items
-            .len()
+        self.retained_item_count()
             .checked_add(requested)
             .filter(|resulting_len| *resulting_len <= MAX_PLAYLIST_ITEMS)
             .ok_or(DiscoveryBatchInsertError::Add(
                 AddItemsError::CapacityExceeded {
-                    current: self.items.len(),
+                    current: self.retained_item_count(),
                     requested,
                     maximum: MAX_PLAYLIST_ITEMS,
                 },
@@ -137,8 +136,10 @@ impl PlaylistQueue {
             shuffle_traversal.merge_new_items(&allocated_item_ids, random);
         }
         self.item_id_allocator.commit_allocation(&allocation_plan);
-        self.items
-            .splice(insertion_index..insertion_index, committed_items);
+        self.entries.splice(
+            insertion_index..insertion_index,
+            committed_items.map(crate::PlaylistEntry::Single),
+        );
         self.structural_revision = next_structural_revision;
 
         Ok(DiscoveryBatchInsertOutcome {

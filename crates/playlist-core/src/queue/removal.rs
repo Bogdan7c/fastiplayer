@@ -3,7 +3,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use crate::{PlaylistItem, PlaylistItemId, TraversalCurrentItemId};
+use crate::{PlaylistEntry, PlaylistItemId, TraversalCurrentItemId};
 
 use super::{PlaylistQueue, QueueRevision};
 
@@ -22,8 +22,9 @@ pub enum RemovalCurrentOutcome {
 /// Immutable pre-mutation snapshot не раскрывает shuffle/allocator storage наружу.
 #[derive(Clone)]
 pub struct PlaylistRemovalSnapshot {
-    items: Arc<[PlaylistItem]>,
+    entries: Arc<[PlaylistEntry]>,
     item_id_allocator: crate::PlaylistItemIdAllocator,
+    compound_group_id_allocator: crate::PlaylistCompoundGroupIdAllocator,
     traversal_current: Option<TraversalCurrentItemId>,
     structural_revision: QueueRevision,
     traversal_revision: QueueRevision,
@@ -35,7 +36,7 @@ impl fmt::Debug for PlaylistRemovalSnapshot {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("PlaylistRemovalSnapshot")
-            .field("item_count", &self.items.len())
+            .field("top_level_entry_count", &self.entries.len())
             .field("traversal_current", &self.traversal_current)
             .finish_non_exhaustive()
     }
@@ -72,8 +73,9 @@ impl PlaylistQueue {
     pub fn capture_removal_snapshot(&self) -> PlaylistRemovalSnapshot {
         PlaylistRemovalSnapshot {
             // Clone копирует только lightweight handles: payload каждой строки остаётся в Arc.
-            items: Arc::from(self.items.clone()),
+            entries: Arc::from(self.entries.clone()),
             item_id_allocator: self.item_id_allocator.clone(),
+            compound_group_id_allocator: self.compound_group_id_allocator.clone(),
             traversal_current: self.traversal_current,
             structural_revision: self.structural_revision,
             traversal_revision: self.traversal_revision,
@@ -100,6 +102,7 @@ impl PlaylistQueue {
         }
         if self.metadata_revision != snapshot.metadata_revision
             || self.item_id_allocator != snapshot.item_id_allocator
+            || self.compound_group_id_allocator != snapshot.compound_group_id_allocator
         {
             return Err(RemovalSnapshotRestoreError::StalePersistentState);
         }
@@ -123,7 +126,7 @@ impl PlaylistQueue {
             })
             .transpose()?;
 
-        self.items = snapshot.items.iter().cloned().collect();
+        self.entries = snapshot.entries.iter().cloned().collect();
         self.traversal_current = snapshot.traversal_current;
         self.shuffle_traversal = snapshot.shuffle_traversal;
         self.structural_revision = next_structural_revision;
@@ -145,7 +148,7 @@ impl PlaylistRemovalSnapshot {
         queue: &PlaylistQueue,
         item_id: PlaylistItemId,
     ) -> bool {
-        let snapshot_item = self.items.iter().find(|item| item.item_id() == item_id);
+        let snapshot_item = self.entries.iter().find_map(|entry| entry.item(item_id));
         let queue_item = queue.item(item_id);
         snapshot_item
             .zip(queue_item)

@@ -2,6 +2,7 @@
 
 mod automatic;
 mod discovery;
+mod entries;
 mod metadata_patch;
 mod navigation;
 mod outcomes;
@@ -20,12 +21,17 @@ use std::fmt;
 
 use crate::id::{ItemIdAllocationError, ItemIdAllocationPlan};
 use crate::{
-    NextPlaylistItemId, PlaylistItem, PlaylistItemDraft, PlaylistItemId, PlaylistItemIdAllocator,
+    NextPlaylistCompoundGroupId, NextPlaylistItemId, PlaylistCompoundGroupIdAllocator,
+    PlaylistEntry, PlaylistItem, PlaylistItemDraft, PlaylistItemId, PlaylistItemIdAllocator,
     RestoredPlaylistItem,
 };
 
 pub use discovery::{
     DiscoveryBatchInsertError, DiscoveryBatchInsertOutcome, StableInsertionAnchor,
+};
+pub use entries::{
+    AddPlaylistEntriesOutcome, AllocatedPlaylistEntries, CappedPlaylistEntriesAppendOutcome,
+    PlaylistEntriesMutationError, ReplacePlaylistEntriesOutcome,
 };
 pub use metadata_patch::{
     MetadataPatchBatchError, MetadataPatchBatchOutcome, MetadataPatchItemOutcome,
@@ -209,8 +215,9 @@ impl fmt::Debug for PlaylistQueueRestore {
 
 /// Единственный владелец canonical order и его mutation invariants.
 pub struct PlaylistQueue {
-    items: Vec<PlaylistItem>,
+    entries: Vec<PlaylistEntry>,
     item_id_allocator: PlaylistItemIdAllocator,
+    compound_group_id_allocator: PlaylistCompoundGroupIdAllocator,
     traversal_current: Option<TraversalCurrentItemId>,
     structural_revision: QueueRevision,
     traversal_revision: QueueRevision,
@@ -223,8 +230,9 @@ impl PlaylistQueue {
     /// Создаёт пустую новую lineage с первым будущим Item ID = 1.
     pub fn new() -> Self {
         Self {
-            items: Vec::new(),
+            entries: Vec::new(),
             item_id_allocator: PlaylistItemIdAllocator::initial(),
+            compound_group_id_allocator: PlaylistCompoundGroupIdAllocator::initial(),
             traversal_current: None,
             structural_revision: QueueRevision::INITIAL,
             traversal_revision: QueueRevision::INITIAL,
@@ -264,15 +272,17 @@ impl PlaylistQueue {
             Some(item_id) => return Err(QueueRestoreError::CurrentItemNotCommitted { item_id }),
             None => None,
         };
-        let items = snapshot
+        let entries = snapshot
             .restored_items
             .into_iter()
             .map(RestoredPlaylistItem::into_item)
+            .map(PlaylistEntry::Single)
             .collect();
 
         Ok(Self {
-            items,
+            entries,
             item_id_allocator,
+            compound_group_id_allocator: PlaylistCompoundGroupIdAllocator::initial(),
             traversal_current,
             structural_revision: QueueRevision::INITIAL,
             traversal_revision: QueueRevision::INITIAL,
@@ -284,7 +294,7 @@ impl PlaylistQueue {
 
     /// Сообщает emptiness без сканирования rows.
     pub const fn is_empty(&self) -> bool {
-        self.items.is_empty()
+        self.entries.is_empty()
     }
 
     /// Выполняет read-only lookup по stable Item ID.
@@ -301,6 +311,11 @@ impl PlaylistQueue {
     /// Снимает allocator high-watermark для persistence state.
     pub const fn next_item_id_snapshot(&self) -> NextPlaylistItemId {
         self.item_id_allocator.snapshot()
+    }
+
+    /// Снимает независимый Group ID high-watermark для будущего persistence v2.
+    pub const fn next_compound_group_id_snapshot(&self) -> NextPlaylistCompoundGroupId {
+        self.compound_group_id_allocator.snapshot()
     }
 
     /// Снимает независимые mutation revisions для precondition checks.
@@ -345,49 +360,20 @@ impl PlaylistQueue {
         drafts: Vec<PlaylistItemDraft>,
         random: &mut R,
     ) -> Result<AddItemsOutcome, AddItemsError> {
-        if self.active_reservation.is_some() {
-            return Err(AddItemsError::InstallCommitLinearizing);
-        }
-        if drafts.is_empty() {
-            return Ok(AddItemsOutcome::NoItemsProvided);
-        }
-        let requested = drafts.len();
-        let resulting_len = self
-            .items
-            .len()
-            .checked_add(requested)
-            .filter(|resulting_len| *resulting_len <= MAX_PLAYLIST_ITEMS)
-            .ok_or(AddItemsError::CapacityExceeded {
-                current: self.items.len(),
-                requested,
-                maximum: MAX_PLAYLIST_ITEMS,
-            })?;
-        let _ = resulting_len;
-        let next_structural_revision = self
-            .structural_revision
-            .checked_next()
-            .ok_or(AddItemsError::StructuralRevisionExhausted)?;
-        let existing_item_ids = self.existing_item_ids();
-        let allocation_plan = self
-            .item_id_allocator
-            .preflight_allocation(requested, &existing_item_ids)
-            .map_err(map_add_allocation_error)?;
-        let allocated_item_ids = allocation_plan.allocated_item_ids.clone();
-        let new_items = drafts
+        let entry_drafts = drafts
             .into_iter()
-            .zip(allocated_item_ids.iter().copied())
-            .map(|(draft, item_id)| draft.into_item(item_id));
+            .map(crate::PlaylistEntryDraft::Single)
+            .collect();
 
-        if let Some(shuffle_traversal) = &mut self.shuffle_traversal {
-            shuffle_traversal.merge_new_items(&allocated_item_ids, random);
+        match self
+            .append_entries_with_rng(entry_drafts, random)
+            .map_err(map_add_entries_error)?
+        {
+            AddPlaylistEntriesOutcome::NoEntriesProvided => Ok(AddItemsOutcome::NoItemsProvided),
+            AddPlaylistEntriesOutcome::Added(allocated) => Ok(AddItemsOutcome::Added(
+                AllocatedPlaylistItemIds(allocated.into_playable_item_ids()),
+            )),
         }
-        self.item_id_allocator.commit_allocation(&allocation_plan);
-        self.items.extend(new_items);
-        self.structural_revision = next_structural_revision;
-
-        Ok(AddItemsOutcome::Added(AllocatedPlaylistItemIds(
-            allocated_item_ids,
-        )))
     }
 
     /// D67 атомарно добавляет caller-ordered prefix, который помещается в hard cap.
@@ -398,7 +384,7 @@ impl PlaylistQueue {
         mut drafts: Vec<PlaylistItemDraft>,
     ) -> Result<CappedTailAppendOutcome, AddItemsError> {
         let requested = drafts.len();
-        let remaining_capacity = MAX_PLAYLIST_ITEMS.saturating_sub(self.items.len());
+        let remaining_capacity = MAX_PLAYLIST_ITEMS.saturating_sub(self.retained_item_count());
         let accepted = requested.min(remaining_capacity);
         let capacity_rejected = requested.saturating_sub(accepted);
         drafts.truncate(accepted);
@@ -428,85 +414,33 @@ impl PlaylistQueue {
         drafts: Vec<PlaylistItemDraft>,
         random: &mut R,
     ) -> Result<ReplaceQueueOutcome, ReplaceQueueError> {
-        if self.active_reservation.is_some() {
-            return Err(ReplaceQueueError::InstallCommitLinearizing);
-        }
-        if drafts.len() > MAX_PLAYLIST_ITEMS {
-            return Err(ReplaceQueueError::CapacityExceeded {
-                requested: drafts.len(),
-                maximum: MAX_PLAYLIST_ITEMS,
-            });
-        }
-        if drafts.is_empty() && self.items.is_empty() && self.traversal_current.is_none() {
-            return Ok(ReplaceQueueOutcome::AlreadyEmpty);
-        }
+        let entry_drafts = drafts
+            .into_iter()
+            .map(crate::PlaylistEntryDraft::Single)
+            .collect();
 
-        let next_structural_revision = self
-            .structural_revision
-            .checked_next()
-            .ok_or(ReplaceQueueError::StructuralRevisionExhausted)?;
-        let next_traversal_revision = self
-            .traversal_current
-            .map(|_| {
-                self.traversal_revision
-                    .checked_next()
-                    .ok_or(ReplaceQueueError::TraversalRevisionExhausted)
-            })
-            .transpose()?;
-        let traversal_current_effect = if self.traversal_current.is_some() {
-            TraversalCurrentEffect::Cleared
-        } else {
-            TraversalCurrentEffect::Preserved
-        };
-
-        if drafts.is_empty() {
-            let removed_item_count = self.items.len();
-            let replacement_shuffle = self
-                .shuffle_traversal
-                .as_ref()
-                .map(|_| shuffle::ShuffleTraversal::fresh(&[], None, random));
-            self.items.clear();
-            self.traversal_current = None;
-            self.shuffle_traversal = replacement_shuffle;
-            self.structural_revision = next_structural_revision;
-            if let Some(next_revision) = next_traversal_revision {
-                self.traversal_revision = next_revision;
-            }
-            return Ok(ReplaceQueueOutcome::Cleared {
+        match self
+            .replace_entries_with_rng(entry_drafts, random)
+            .map_err(map_replace_entries_error)?
+        {
+            ReplacePlaylistEntriesOutcome::AlreadyEmpty => Ok(ReplaceQueueOutcome::AlreadyEmpty),
+            ReplacePlaylistEntriesOutcome::Cleared {
                 removed_item_count,
                 traversal_current_effect,
-            });
+            } => Ok(ReplaceQueueOutcome::Cleared {
+                removed_item_count,
+                traversal_current_effect,
+            }),
+            ReplacePlaylistEntriesOutcome::Replaced {
+                allocated_entries,
+                traversal_current_effect,
+            } => Ok(ReplaceQueueOutcome::Replaced {
+                allocated_item_ids: AllocatedPlaylistItemIds(
+                    allocated_entries.into_playable_item_ids(),
+                ),
+                traversal_current_effect,
+            }),
         }
-
-        let existing_item_ids = self.existing_item_ids();
-        let allocation_plan = self
-            .item_id_allocator
-            .preflight_allocation(drafts.len(), &existing_item_ids)
-            .map_err(map_replace_allocation_error)?;
-        let allocated_item_ids = allocation_plan.allocated_item_ids.clone();
-        let replacement_items = drafts
-            .into_iter()
-            .zip(allocated_item_ids.iter().copied())
-            .map(|(draft, item_id)| draft.into_item(item_id))
-            .collect();
-        let replacement_shuffle = self
-            .shuffle_traversal
-            .as_ref()
-            .map(|_| shuffle::ShuffleTraversal::fresh(&allocated_item_ids, None, random));
-
-        self.item_id_allocator.commit_allocation(&allocation_plan);
-        self.items = replacement_items;
-        self.traversal_current = None;
-        self.shuffle_traversal = replacement_shuffle;
-        self.structural_revision = next_structural_revision;
-        if let Some(next_revision) = next_traversal_revision {
-            self.traversal_revision = next_revision;
-        }
-
-        Ok(ReplaceQueueOutcome::Replaced {
-            allocated_item_ids: AllocatedPlaylistItemIds(allocated_item_ids),
-            traversal_current_effect,
-        })
     }
 
     /// Удаляет exact committed identity, не выбирая successor автоматически.
@@ -532,21 +466,20 @@ impl PlaylistQueue {
             None
         };
 
+        let removed_item_ids = HashSet::from([item_id]);
+        let remaining_canonical_item_ids: Vec<_> = self
+            .iter_playable_items()
+            .filter(|item| item.item_id() != item_id)
+            .map(|item| item.item_id())
+            .collect();
         if let Some(shuffle_traversal) = &mut self.shuffle_traversal {
-            let removed_item_ids = HashSet::from([item_id]);
-            let remaining_canonical_item_ids: Vec<_> = self
-                .items
-                .iter()
-                .filter(|item| item.item_id() != item_id)
-                .map(|item| item.item_id())
-                .collect();
             shuffle_traversal.remove_items(
                 &removed_item_ids,
                 &remaining_canonical_item_ids,
                 clears_current,
             );
         }
-        self.items.remove(item_index);
+        self.entries.remove(item_index);
         self.structural_revision = next_structural_revision;
         let traversal_current_effect = if clears_current {
             self.traversal_current = None;
@@ -595,8 +528,8 @@ impl PlaylistQueue {
             return MoveItemOutcome::StructuralRevisionExhausted;
         };
 
-        let moved_item = self.items.remove(source_index);
-        self.items.insert(target_index, moved_item);
+        let moved_item = self.entries.remove(source_index);
+        self.entries.insert(target_index, moved_item);
         self.structural_revision = next_structural_revision;
 
         MoveItemOutcome::Moved { item_id }
@@ -607,7 +540,7 @@ impl PlaylistQueue {
         if self.active_reservation.is_some() {
             return ClearQueueOutcome::InstallCommitLinearizing;
         }
-        if self.items.is_empty() && self.traversal_current.is_none() {
+        if self.entries.is_empty() && self.traversal_current.is_none() {
             return ClearQueueOutcome::AlreadyEmpty;
         }
         let Some(next_structural_revision) = self.structural_revision.checked_next() else {
@@ -622,14 +555,14 @@ impl PlaylistQueue {
             None
         };
         let current_before = self.traversal_current;
-        let removed_item_count = self.items.len();
+        let removed_item_count = self.retained_item_count();
         let traversal_current_effect = if self.traversal_current.is_some() {
             TraversalCurrentEffect::Cleared
         } else {
             TraversalCurrentEffect::Preserved
         };
 
-        self.items.clear();
+        self.entries.clear();
         self.traversal_current = None;
         if self.shuffle_traversal.is_some() {
             self.shuffle_traversal = Some(shuffle::ShuffleTraversal::empty_idle());
@@ -697,8 +630,8 @@ impl PlaylistQueue {
             .checked_next()
             .ok_or(TraversalCurrentMutationError::TraversalRevisionExhausted)?;
 
+        let canonical_item_ids: Vec<_> = self.iter_playable_ids().collect();
         if let Some(shuffle_traversal) = &mut self.shuffle_traversal {
-            let canonical_item_ids: Vec<_> = self.items.iter().map(|item| item.item_id()).collect();
             shuffle_traversal.make_idle(&canonical_item_ids);
         }
         self.traversal_current = None;
@@ -708,12 +641,16 @@ impl PlaylistQueue {
 
     /// Возвращает set committed IDs для allocator collision preflight.
     fn existing_item_ids(&self) -> HashSet<PlaylistItemId> {
-        self.items.iter().map(PlaylistItem::item_id).collect()
+        self.iter_playable_ids().collect()
     }
 
     /// Ищет canonical position только внутри owner implementation.
     fn index_of(&self, item_id: PlaylistItemId) -> Option<usize> {
-        self.items.iter().position(|item| item.item_id() == item_id)
+        self.entries.iter().position(|entry| {
+            entry
+                .as_single()
+                .is_some_and(|item| item.item_id() == item_id)
+        })
     }
 
     /// Вычисляет final insertion index после удаления source row.
@@ -724,7 +661,7 @@ impl PlaylistQueue {
     ) -> Result<usize, PlaylistItemId> {
         match intent {
             MoveItemIntent::ToFront => Ok(0),
-            MoveItemIntent::ToBack => Ok(self.items.len().saturating_sub(1)),
+            MoveItemIntent::ToBack => Ok(self.entries.len().saturating_sub(1)),
             MoveItemIntent::Before(anchor_item_id) => {
                 let anchor_index = self.index_of(anchor_item_id).ok_or(anchor_item_id)?;
                 if anchor_index == source_index {
@@ -762,7 +699,12 @@ impl fmt::Debug for PlaylistQueue {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("PlaylistQueue")
-            .field("item_count", &self.items.len())
+            .field("top_level_entry_count", &self.entries.len())
+            .field("retained_item_count", &self.retained_item_count())
+            .field(
+                "next_compound_group_id",
+                &self.compound_group_id_allocator.snapshot(),
+            )
             .field("next_item_id", &self.item_id_allocator.snapshot())
             .field("traversal_current", &self.traversal_current)
             .field("revisions", &self.revision_snapshot())
@@ -780,12 +722,65 @@ fn map_add_allocation_error(error: ItemIdAllocationError) -> AddItemsError {
     }
 }
 
-/// Сохраняет typed distinction allocator exhaustion/collision для replace API.
-fn map_replace_allocation_error(error: ItemIdAllocationError) -> ReplaceQueueError {
+/// Адаптирует общий entry failure к legacy single-only append contract.
+fn map_add_entries_error(error: PlaylistEntriesMutationError) -> AddItemsError {
     match error {
-        ItemIdAllocationError::ArithmeticExhausted => ReplaceQueueError::ItemIdExhausted,
-        ItemIdAllocationError::Collision { item_id } => {
+        PlaylistEntriesMutationError::InstallCommitLinearizing => {
+            AddItemsError::InstallCommitLinearizing
+        }
+        PlaylistEntriesMutationError::CapacityExceeded {
+            current_retained_items,
+            requested_retained_items,
+            maximum,
+        } => AddItemsError::CapacityExceeded {
+            current: current_retained_items,
+            requested: requested_retained_items,
+            maximum,
+        },
+        PlaylistEntriesMutationError::ItemIdArithmeticExhausted => AddItemsError::ItemIdExhausted,
+        PlaylistEntriesMutationError::ItemIdCollision { item_id } => {
+            AddItemsError::ItemIdCollision { item_id }
+        }
+        PlaylistEntriesMutationError::StructuralRevisionExhausted => {
+            AddItemsError::StructuralRevisionExhausted
+        }
+        PlaylistEntriesMutationError::CompoundGroupIdArithmeticExhausted
+        | PlaylistEntriesMutationError::CompoundGroupIdCollision { .. }
+        | PlaylistEntriesMutationError::TraversalRevisionExhausted => {
+            unreachable!("single-only append does not allocate groups or traversal revision")
+        }
+    }
+}
+
+/// Адаптирует общий entry failure к legacy single-only replace contract.
+fn map_replace_entries_error(error: PlaylistEntriesMutationError) -> ReplaceQueueError {
+    match error {
+        PlaylistEntriesMutationError::InstallCommitLinearizing => {
+            ReplaceQueueError::InstallCommitLinearizing
+        }
+        PlaylistEntriesMutationError::CapacityExceeded {
+            requested_retained_items,
+            maximum,
+            ..
+        } => ReplaceQueueError::CapacityExceeded {
+            requested: requested_retained_items,
+            maximum,
+        },
+        PlaylistEntriesMutationError::ItemIdArithmeticExhausted => {
+            ReplaceQueueError::ItemIdExhausted
+        }
+        PlaylistEntriesMutationError::ItemIdCollision { item_id } => {
             ReplaceQueueError::ItemIdCollision { item_id }
+        }
+        PlaylistEntriesMutationError::StructuralRevisionExhausted => {
+            ReplaceQueueError::StructuralRevisionExhausted
+        }
+        PlaylistEntriesMutationError::TraversalRevisionExhausted => {
+            ReplaceQueueError::TraversalRevisionExhausted
+        }
+        PlaylistEntriesMutationError::CompoundGroupIdArithmeticExhausted
+        | PlaylistEntriesMutationError::CompoundGroupIdCollision { .. } => {
+            unreachable!("single-only replace does not allocate compound Group IDs")
         }
     }
 }

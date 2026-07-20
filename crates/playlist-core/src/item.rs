@@ -78,7 +78,7 @@ impl fmt::Debug for PlaylistItemDraft {
     }
 }
 
-/// Committed строка canonical очереди.
+/// Committed playable identity: top-level Single либо subordinate compound part.
 #[derive(Clone, PartialEq, Eq)]
 pub struct PlaylistItem {
     item_id: PlaylistItemId,

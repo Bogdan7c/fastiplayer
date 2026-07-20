@@ -561,9 +561,9 @@ impl PlaylistQueue {
         }
         let requested: HashSet<_> = requested_item_ids.iter().copied().collect();
         let committed_to_remove: HashSet<_> = self
-            .items
+            .entries
             .iter()
-            .map(|item| item.item_id())
+            .filter_map(|entry| entry.as_single().map(|item| item.item_id()))
             .filter(|item_id| requested.contains(item_id))
             .collect();
         if committed_to_remove.is_empty() {
@@ -584,9 +584,9 @@ impl PlaylistQueue {
             return Ok(BulkRemoveOutcome::NoMatchingItems);
         }
         let committed_to_remove: HashSet<_> = self
-            .items
+            .entries
             .iter()
-            .map(|item| item.item_id())
+            .filter_map(|entry| entry.as_single().map(|item| item.item_id()))
             .filter(|item_id| *item_id != retained_item_id)
             .collect();
         if committed_to_remove.is_empty() {
@@ -619,9 +619,7 @@ impl PlaylistQueue {
             })
             .transpose()?;
         let remaining_canonical_item_ids: Vec<_> = self
-            .items
-            .iter()
-            .map(|item| item.item_id())
+            .iter_playable_ids()
             .filter(|item_id| !committed_to_remove.contains(item_id))
             .collect();
         if let Some(shuffle_traversal) = &mut self.shuffle_traversal {
@@ -631,8 +629,11 @@ impl PlaylistQueue {
                 clears_current,
             );
         }
-        self.items
-            .retain(|item| !committed_to_remove.contains(&item.item_id()));
+        self.entries.retain(|entry| {
+            entry
+                .as_single()
+                .is_none_or(|item| !committed_to_remove.contains(&item.item_id()))
+        });
         self.structural_revision = next_structural_revision;
         let traversal_current_effect = if clears_current {
             self.traversal_current = None;
@@ -674,7 +675,7 @@ impl PlaylistQueue {
             .traversal_revision
             .checked_next()
             .ok_or(ShuffleToggleError::TraversalRevisionExhausted)?;
-        let canonical_item_ids: Vec<_> = self.items.iter().map(|item| item.item_id()).collect();
+        let canonical_item_ids: Vec<_> = self.iter_playable_ids().collect();
         self.shuffle_traversal = Some(ShuffleTraversal::fresh(
             &canonical_item_ids,
             self.traversal_current,
@@ -721,7 +722,7 @@ impl PlaylistQueue {
             return None;
         }
         let current_item_id = self.traversal_current?.item_id();
-        let canonical_item_ids: Vec<_> = self.items.iter().map(|item| item.item_id()).collect();
+        let canonical_item_ids: Vec<_> = self.iter_playable_ids().collect();
         Self::generated_cycle_first(&canonical_item_ids, current_item_id, random)
     }
 
