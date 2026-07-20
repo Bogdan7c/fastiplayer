@@ -98,3 +98,8 @@ Session 06 completed PASS on 2026-07-14. This memory complements `mem:core`, `me
 - `playlist-state` сохраняет serialization, queue/resume DTO, общий operation mutex с inspection/quarantine, worker retry/backoff и прежние публичные `AtomicWriteOutcome`/stage/cause types. Его adapter исчерпывающе переводит neutral outcomes, поэтому app/read-model API и поведение не изменились. Оба queue-state и resume writer используют один neutral protocol.
 - Focused evidence: 8 `atomic-file-store` tests покрывают real replace/0600, invalid target, create/write/flush/temp-sync/rename failures, post-rename durability-unconfirmed, exact cleanup, collision continuation и 32-attempt exhaustion без wildcard; все 47 прежних `playlist-state` tests и 19 app persistence tests PASS.
 - Guardrail фиксирует `atomic-file-store` как обязательный std-only neutral crate и разрешает `playlist-state -> atomic-file-store`, не разрешая обратную или app/player/UI/service dependency. Verification: Rust 1.96 focused tests, strict focused Clippy, Rust 1.96 workspace all-features locked check, focused MSRV 1.92 check, rustfmt, diff check, Serena diagnostics и refactor guardrails PASS.
+
+
+## S10 export isolation note (2026-07-20)
+- Pure M3U8/XSPF export не переиспользует private playlist-state DTO/serializer и не меняет schema v2, queue/resume atomic writers, save revision или dirty state. Downstream `playlist-io::PlaylistExportSnapshot` снимается отдельно через public immutable queue read boundary.
+- S11 сможет передать готовые export bytes в `atomic-file-store`, но не через playlist-state worker/schema. Full contract: `mem:playlist/io-s10-export-2026-07-20`.

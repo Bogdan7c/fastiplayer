@@ -162,3 +162,9 @@
 - Icon-only toolbar получил Import пятым left slot после неизменных Add Files/Add URL/Sort/Current Item axes; 32-point row и независимый Clear anchor сохранены. Menu публикует typed append/replace intent после render; новый neutral Import glyph принадлежит `ui-artwork-egui` и визуально отличается от Add Files.
 - Process-lifetime `PlaylistImportIoOwner` владеет одним async native single-root picker и bounded worker: filters только M3U/M3U8/XSPF, CUE отсутствует, а authoritative validation/expansion остаётся в `playlist-io`. Pure materializer строит S08 ID-less draft; UI не выполняет I/O/parser/queue mutation.
 - Preview показывает clean/partial/issues/truncation/sensitive/replace состояния и возвращает typed Continue/Cancel; existing composed confirmation остаётся единственным authoritative confirmation slot. Supersede подавляет также completion, уже опубликованный worker-ом, но ещё не применённый owner-ом. Full contract: `mem:app-egui/playlist-import-s09-2026-07-20`.
+
+
+## Web media roadmap S10 pure M3U8/XSPF export core (2026-07-20)
+- `playlist-io` теперь владеет immutable canonical top-level export snapshot, service/app-owned portable locator preflight, aggregated secret classification и pure UTF-8 M3U8/XSPF v1 serializers без filesystem/UI/runtime authority.
+- Selected compound экспортирует все source-order parts; M3U8 публикует typed flatten warning, XSPF сохраняет group range/root через versioned playlist extension. Local relative representation используется только при proven roundtrip; non-UTF/foreign/nonportable service identity typed rejected; transient transport material отсутствует в API.
+- Verification и полный contract: `mem:playlist/io-s10-export-2026-07-20`. `playlist-state` и queue mutation/public storage semantics не изменены; следующий scope — S11 writer/runtime/UI.

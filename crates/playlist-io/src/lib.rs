@@ -4,6 +4,7 @@
 //! и bounded local-only recursive expansion. Network I/O, service admission,
 //! media probe и mutation canonical queue остаются за пределами crate.
 
+mod export;
 mod hls;
 mod issue;
 mod limits;
@@ -13,6 +14,16 @@ mod m3u;
 mod model;
 mod source;
 mod xspf;
+
+pub use export::{
+    PlaylistExportDocumentTarget, PlaylistExportDocumentTargetError, PlaylistExportFormat,
+    PlaylistExportIneligible, PlaylistExportLocatorPolicy, PlaylistExportLocatorRejection,
+    PlaylistExportPreflightError, PlaylistExportScope, PlaylistExportSecretClassification,
+    PlaylistExportSnapshot, PlaylistExportSnapshotError, PlaylistExportSubject,
+    PlaylistExportWarning, PortablePlaylistExportUrl, PortablePlaylistExportUrlError,
+    PortableUrlSecretClassification, PreparedPlaylistExport, SerializedPlaylistExport,
+    preflight_playlist_export,
+};
 
 pub use issue::{M3uImportIssue, M3uImportIssueKind, M3uIssueSummary, M3uLineNumber};
 pub use limits::{

@@ -27,3 +27,9 @@ Focused tests: `crates/service-ytdlp/src/locator.rs`, service descriptor/process
 ## S05 playlist-io exact URI note (2026-07-20)
 - `playlist-io` generic M3U absolute hierarchical URI validates syntax через `url::Url`, но передаёт в `SecretUrlLocator` exact caller string, а не reserialized/normalized URL. Только relative URI получает newly resolved canonical identity. `M3uDocumentSource` и parse errors/Debug redacted.
 - Parser не делает scheme admission/fetch: hierarchical draft остаётся app registry input; opaque/non-network forms и remote-authority `file:` становятся typed bounded issues. HLS child/segment URI никогда не публикуются как queue rows. Full boundary: `mem:playlist/io-s05-m3u-hls-2026-07-20`.
+
+
+## S10 playlist export preflight note (2026-07-20)
+- `playlist-io::PlaylistExportLocatorPolicy: Send + Sync` — новая neutral service/app-owned граница: exact `SecretUrlLocator` и stable `ServiceDurableReopenPayload` могут попасть в M3U8/XSPF только как validated portable HTTP(S) `PortablePlaylistExportUrl` с explicit `Public|SensitiveDurableIdentity` classification.
+- Opaque service payload без owner-approved portable URL typed rejected; operational signed URL не является fallback и transport headers/cookies/candidate IDs отсутствуют в S10 type surface. Errors/Debug не содержат URL/path/service payload.
+- Aggregated `PlaylistExportSecretClassification` считает реально serialized track и XSPF group-root locators для будущего S11 confirmation/user-only writer policy. Full contract: `mem:playlist/io-s10-export-2026-07-20`.

@@ -179,3 +179,9 @@ Session 05 completed PASS on 2026-07-14. This memory complements `mem:core` and 
 - `PlaylistImportEntryDraft::into_queue_draft` — public ID-less materialization boundary перед app transaction commit. Local/URL durable locator становится legacy operational locator; opaque service child использует только local/URL provenance root, иначе typed `PlaylistImportMaterializationError`. Durable item/group payload сохраняется; IDs не выделяются до `PlaylistQueue` commit.
 - `PlaylistQueue::begin_replacement_detached_navigation` — intent-named manual preview только для app replacement disposition: Next выбирает первый, Previous последний source-order Item ID. Shuffle preview удаляет owning top-level Entry ID из upcoming, сохраняет compound block semantics и добавляет factual visit только после exact commit.
 - Full app transaction/lifecycle и verification: `mem:app-egui/playlist-import-s08-2026-07-20`.
+
+
+## S10 playlist-io export consumer note (2026-07-20)
+- `PlaylistExportSnapshot::capture(&PlaylistQueue, Full|Selected)` находится в downstream `playlist-io` и использует только public immutable top-level read boundary; `playlist-core` не получил serializer/I/O/service dependencies или новый mutator.
+- Snapshot клонирует selected `PlaylistEntry` payload-ы для ownership handoff, сохраняет canonical order/duplicates/whole compound parts и после capture не держит queue handle. Capture/preflight/serialize не меняют structural/traversal/metadata revisions, current, allocators или shuffle state.
+- Полный locator/format/service contract: `mem:playlist/io-s10-export-2026-07-20`.
