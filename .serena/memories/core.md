@@ -117,3 +117,9 @@
 
 ## Web media roadmap S01D neutral playlist payloads (2026-07-20)
 - `playlist-core` добавил neutral checked playback spans, bounded ancillary/import provenance, versioned/redacted `DurableReopenLocator` и ID-less Single/Compound import drafts без queue algorithm/persistence integration. Stable service child identity допускается только как bounded v1 webpage/original/extractor payload; format/manifest/fragment/key/signed endpoint/headers/cookies/auth/session material typed rejected. Full contract: `mem:playlist/core`.
+
+
+## Web media roadmap S01G compound-core hardening gate (2026-07-20)
+- S01G PASS без production/API/dependency changes: полный Serena audit подтвердил, что все `PlaylistQueue` mutators остаются у domain owner-а, app вызывает их только из serialized controller/runtime owner turns, а `playlist-discovery` не получил queue authority.
+- Добавлены focused proofs совместного Item/Group allocator high-watermark через Clear/compound replace/reserved single replacement, точного mixed-end `ExactSizeIterator` поверх compound storage и автоматического storage/module-size guardrail. Legacy slice/ambiguous queue len API и cached flat queue по-прежнему отсутствуют.
+- Verification: 122 playlist-core, 41 playlist-state, 722 app-egui tests PASS; strict Clippy, workspace check, MSRV 1.92, fmt, refactor guardrails, diff check и Serena diagnostics PASS. Cargo-deny падает только на прежние quick-xml RUSTSEC-2026-0194/0195. Full handoff: `mem:playlist/compound-hardening-s01g-2026-07-20`.

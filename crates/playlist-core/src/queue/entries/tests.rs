@@ -4,7 +4,7 @@ use crate::{
     CachedPlaylistMetadata, EmptyPlaylistCompoundDraft, MAX_PLAYLIST_ITEMS,
     NextPlaylistCompoundGroupId, PlaylistCompoundGroupDraft, PlaylistCompoundGroupIdAllocator,
     PlaylistEntryDraft, PlaylistEntryId, PlaylistItemDraft, PlaylistLocator, PlaylistMediaKind,
-    PlaylistMetadataPatch, PlaylistQueue, SecretUrlLocator,
+    PlaylistMetadataPatch, PlaylistQueue, ReservedQueueMutation, SecretUrlLocator,
 };
 
 use super::{
@@ -372,6 +372,136 @@ fn owned_snapshot_matches_derived_read_without_becoming_queue_cache() {
         captured_ids
     );
     assert_eq!(queue.retained_item_count(), 4);
+}
+
+#[test]
+fn item_and_group_high_watermarks_survive_clear_and_both_replacement_paths() {
+    // Первый one-part compound одновременно открывает Item и Group lineage.
+    let mut queue = PlaylistQueue::new();
+    let first_append = queue
+        .append_entries(vec![compound_draft("first-group", 1)])
+        .expect("first compound must commit");
+    let AddPlaylistEntriesOutcome::Added(first_allocation) = first_append else {
+        panic!("non-empty compound append must allocate identities");
+    };
+    let Some(PlaylistEntryId::Compound(first_group_id)) = first_allocation.iter_entry_ids().next()
+    else {
+        panic!("one-part compound must retain compound identity");
+    };
+
+    // После первой публикации оба следующих ID обязаны быть равны двум.
+    assert_eq!(first_group_id.expose_value_for_persistence(), 1);
+    assert_eq!(
+        queue.next_item_id_snapshot().expose_value_for_persistence(),
+        2
+    );
+    assert_eq!(
+        queue
+            .next_compound_group_id_snapshot()
+            .expose_value_for_persistence(),
+        2
+    );
+
+    // Clear удаляет entries, но не имеет права откатывать ни один allocator.
+    assert!(matches!(
+        queue.clear(),
+        crate::ClearQueueOutcome::Cleared { .. }
+    ));
+    assert_eq!(
+        queue.next_item_id_snapshot().expose_value_for_persistence(),
+        2
+    );
+    assert_eq!(
+        queue
+            .next_compound_group_id_snapshot()
+            .expose_value_for_persistence(),
+        2
+    );
+
+    // Compound replace обязан продолжить обе lineage, а не начать их заново.
+    let replacement = queue
+        .replace_entries(vec![compound_draft("replacement-group", 1)])
+        .expect("compound replacement must commit");
+    let ReplacePlaylistEntriesOutcome::Replaced {
+        allocated_entries, ..
+    } = replacement
+    else {
+        panic!("non-empty replacement must allocate identities");
+    };
+    let Some(PlaylistEntryId::Compound(replacement_group_id)) =
+        allocated_entries.iter_entry_ids().next()
+    else {
+        panic!("replacement must remain a compound entry");
+    };
+    assert_eq!(replacement_group_id.expose_value_for_persistence(), 2);
+    assert_eq!(
+        queue.next_item_id_snapshot().expose_value_for_persistence(),
+        3
+    );
+    assert_eq!(
+        queue
+            .next_compound_group_id_snapshot()
+            .expose_value_for_persistence(),
+        3
+    );
+
+    // Legacy strong-install replacement создаёт только Singles и не расходует Group IDs.
+    let reservation = queue
+        .prepare_reserved_mutation(
+            queue.revision_snapshot(),
+            ReservedQueueMutation::replace_with_current(
+                vec![item_draft("reserved-before")],
+                item_draft("reserved-current"),
+                vec![item_draft("reserved-after")],
+            ),
+        )
+        .expect("reserved single replacement must preflight");
+    let reservation_commit = queue.commit_reserved(reservation);
+    assert_eq!(
+        reservation_commit
+            .allocated_item_ids()
+            .as_slice()
+            .iter()
+            .map(|item_id| item_id.expose_value_for_persistence())
+            .collect::<Vec<_>>(),
+        vec![3, 4, 5]
+    );
+    assert_eq!(
+        queue
+            .next_compound_group_id_snapshot()
+            .expose_value_for_persistence(),
+        3
+    );
+
+    // Следующий compound доказывает отсутствие burn/regression после single-only replacement.
+    let final_append = queue
+        .append_entries(vec![compound_draft("final-group", 2)])
+        .expect("final compound must commit");
+    let AddPlaylistEntriesOutcome::Added(final_allocation) = final_append else {
+        panic!("non-empty final append must allocate identities");
+    };
+    let Some(PlaylistEntryId::Compound(final_group_id)) = final_allocation.iter_entry_ids().next()
+    else {
+        panic!("final entry must retain compound identity");
+    };
+    assert_eq!(final_group_id.expose_value_for_persistence(), 3);
+    assert_eq!(
+        final_allocation
+            .iter_playable_item_ids()
+            .map(|item_id| item_id.expose_value_for_persistence())
+            .collect::<Vec<_>>(),
+        vec![6, 7]
+    );
+    assert_eq!(
+        queue.next_item_id_snapshot().expose_value_for_persistence(),
+        8
+    );
+    assert_eq!(
+        queue
+            .next_compound_group_id_snapshot()
+            .expose_value_for_persistence(),
+        4
+    );
 }
 
 #[test]
