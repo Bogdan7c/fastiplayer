@@ -1,0 +1,21 @@
+[package]
+# Имя отражает единственную ответственность crate: durable atomic file replace.
+name = "atomic-file-store"
+# Версия синхронизирована с остальными first-party workspace crate-ами.
+version.workspace = true
+# Edition наследуется из workspace, чтобы не расходились языковые правила.
+edition.workspace = true
+# MSRV наследуется из workspace и проверяется общим CI.
+rust-version.workspace = true
+# Лицензия совпадает с остальным first-party кодом проекта.
+license.workspace = true
+
+[lib]
+# Rust-имя crate использует подчёркивания по стандартным правилам.
+name = "atomic_file_store"
+# Публичный boundary находится в одном небольшом production-модуле.
+path = "src/lib.rs"
+
+[dev-dependencies]
+# Временные каталоги нужны только focused filesystem tests.
+tempfile = "3"

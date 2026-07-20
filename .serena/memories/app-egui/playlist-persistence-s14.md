@@ -33,3 +33,8 @@
 
 ## Session 17 startup continuation (2026-07-16)
 - Startup load gate теперь полностью интегрирован с parallel CLI preparation, unopened restored fallback, protected runtime-only generation и post-gate bounded retained actions. Writer/allocator invariants не ослаблены. Полный контракт: `mem:app-egui/startup-orchestration-s17`.
+
+## S04 neutral atomic-file-store extraction (2026-07-20)
+- App persistence ownership и read model не изменились: `PlaylistRuntime` по-прежнему видит прежние `playlist-state::AtomicWriteOutcome`, различает `NotReplaced`/`ReplacedDurabilityUnconfirmed`/`Durable` и владеет retry/backoff/shutdown policy.
+- Низкоуровневый create-new/0600/write/flush/file-sync/rename/directory-sync/exact RAII cleanup теперь принадлежит std-only `atomic-file-store`; `playlist-state` сохраняет общий mutex с quarantine и переводит neutral outcome в прежний public API. Callers не получили temp naming, permission, cleanup или filesystem policy knobs.
+- 19 focused `app-egui` persistence/resume tests подтвердили behavior-neutral migration, включая read-model distinction и terminal flush.

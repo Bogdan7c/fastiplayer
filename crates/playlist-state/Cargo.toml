@@ -10,6 +10,8 @@ name = "playlist_state"
 path = "src/lib.rs"
 
 [dependencies]
+# Neutral owner выполняет единый atomic replace/durability protocol без знания JSON.
+atomic-file-store.workspace = true
 # Domain crate остаётся serde/I/O-neutral; persistence зависит от него только
 # через публичные snapshot/restore boundaries.
 playlist-core.workspace = true

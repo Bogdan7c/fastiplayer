@@ -23,6 +23,7 @@ METADATA_COMMAND = ("cargo", "metadata", "--no-deps", "--format-version", "1")
 
 CONTRACT_CRATES = frozenset(
     {
+        "atomic-file-store",
         "audio-core",
         "media-core",
         "natural-sort-key",
@@ -44,6 +45,7 @@ REQUIRED_ROLE_CRATES = frozenset(
     {
         "animation-core",
         "app-egui",
+        "atomic-file-store",
         "audio",
         "audio-core",
         "capability-core",
@@ -109,6 +111,9 @@ PLAYLIST_CORE_ALLOWED_DEPENDENCIES = frozenset(
 # Общий natural comparator остаётся std-only и не знает path/domain owners.
 NATURAL_SORT_KEY_ALLOWED_DEPENDENCIES = frozenset()
 
+# Atomic file store владеет только std filesystem durability protocol.
+ATOMIC_FILE_STORE_ALLOWED_DEPENDENCIES = frozenset()
+
 # Single-file discovery владеет filesystem/cancellation orchestration, но видит
 # Symphonia только через узкий neutral snapshot boundary в symphonia-demux.
 PLAYLIST_DISCOVERY_ALLOWED_DEPENDENCIES = frozenset(
@@ -124,7 +129,15 @@ PLAYLIST_DISCOVERY_ALLOWED_DEPENDENCIES = frozenset(
 # Persistence owner может видеть только neutral playlist/media contracts и
 # минимальный набор serde/hash/platform dependencies для bounded JSON I/O.
 PLAYLIST_STATE_ALLOWED_DEPENDENCIES = frozenset(
-    {"libc", "media-core", "playlist-core", "serde", "serde_json", "sha2"}
+    {
+        "atomic-file-store",
+        "libc",
+        "media-core",
+        "playlist-core",
+        "serde",
+        "serde_json",
+        "sha2",
+    }
 )
 
 FFMPEG_FORBIDDEN_DEPENDENCIES = frozenset(
@@ -702,6 +715,14 @@ def find_dependency_violations(
             frozenset({"natural-sort-key"}),
             NATURAL_SORT_KEY_ALLOWED_DEPENDENCIES,
             "natural-sort-key остаётся std-only neutral comparator",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"atomic-file-store"}),
+            ATOMIC_FILE_STORE_ALLOWED_DEPENDENCIES,
+            "atomic-file-store остаётся std-only neutral durability boundary",
         )
     )
     violations.extend(

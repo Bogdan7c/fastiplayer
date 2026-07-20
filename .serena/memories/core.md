@@ -128,3 +128,7 @@
 - Добавлен dependency-free `web-media-core`: service/runtime-neutral source/candidate/semantic identities, bounded redacted raw+parsed transport/container/codec values, typed muxed/separate/video-only/audio-only layouts, video/audio/subtitle descriptors, `BestPlayable`/`Exact`, deterministic preferred-height rank и static compatibility rejection vocabulary.
 - Semantic refresh identity source-scoped; candidate boundary отвергает cross-source semantic/subtitle identities. Unknown S00 identities сохраняются exact до 256 UTF-8 bytes без diagnostics leakage; provider/process/HTTP runtime/config/UI types отсутствуют.
 - Public contract, bounds, tests и verification подробно записаны в `mem:media-services/core`. Новый crate пока не подключён к `service-ytdlp`; mapping принадлежит будущей S19.
+
+## Web media roadmap S04 neutral atomic file durability (2026-07-20)
+- Добавлен std-only `atomic-file-store`: единый neutral owner create-new same-directory temp/Unix 0600/write/flush/file-sync/rename/directory-sync/exact-path RAII cleanup без playlist/app/config knowledge и без wildcard policy.
+- `playlist-state -> atomic-file-store`; `playlist-state` сохраняет JSON serialization, общий operation mutex с inspection/quarantine, worker retry policy и прежний public outcome API. Queue-state и resume sidecar мигрированы behavior-neutrally. Полный контракт и verification: `mem:playlist/state`, app ownership: `mem:app-egui/playlist-persistence-s14`.

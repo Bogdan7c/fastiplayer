@@ -408,6 +408,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "atomic-file-store"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3222,6 +3229,7 @@ dependencies = [
 name = "playlist-state"
 version = "0.1.0"
 dependencies = [
+ "atomic-file-store",
  "libc",
  "media-core",
  "playlist-core",
