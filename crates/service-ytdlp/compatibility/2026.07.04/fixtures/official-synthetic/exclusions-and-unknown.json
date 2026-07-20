@@ -1,0 +1,54 @@
+{
+  "fixture_schema_version": 1,
+  "source_release": "2026.07.04",
+  "source_commit": "fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9",
+  "source_contract": "yt_dlp/YoutubeDL.py:YoutubeDL.sanitize_info and official downloader implementations",
+  "provenance": "synthetic markers represent lossy repr output and private state without embedding a process-specific object address",
+  "redaction": "no live object, socket, cookie, header, user locator, or provider capture is present",
+  "fixtures": [
+    {
+      "fixture_id": "excluded-entries-generator",
+      "expected_classification": "RequiresLiveExtractorState",
+      "payload": {
+        "_type": "playlist",
+        "entries": "<repr-generator-not-reconstructible>"
+      }
+    },
+    {
+      "fixture_id": "excluded-private-live-state",
+      "expected_classification": "RequiresLiveExtractorState",
+      "payload": {
+        "protocol": "niconico_live",
+        "downloader_options": {
+          "ws": "<repr-websocket-response-not-reconstructible>",
+          "ws_url": "wss://socket.invalid/live",
+          "max_quality": "synthetic-quality"
+        },
+        "_bunnycdn_ping_data": {
+          "url": "https://ping.invalid/heartbeat",
+          "headers": {
+            "Authorization": "<redacted-authorization>"
+          },
+          "secret": "<redacted-private-secret>",
+          "context_id": "synthetic-context"
+        },
+        "_cookie_refresh_params": {
+          "m3u8_url": "https://manifest.invalid/private.m3u8",
+          "strm_id": "synthetic-stream",
+          "video_id": "synthetic-video"
+        }
+      }
+    },
+    {
+      "fixture_id": "future-unknown-identity",
+      "expected_classification": "IncompatibleYtDlpContract",
+      "payload": {
+        "protocol": "future_serializable_transport_v2",
+        "ext": "future_container",
+        "container": "future_container_profile",
+        "vcodec": "future_video_codec.01",
+        "acodec": "future_audio_codec.01"
+      }
+    }
+  ]
+}

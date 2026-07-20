@@ -1,0 +1,1094 @@
+{
+  "schema_version": 1,
+  "profile_id": "yt-dlp-2026.07.04-serializable-v1",
+  "profile_status": "inventory_complete_runtime_not_enabled",
+  "source": {
+    "repository": "https://github.com/yt-dlp/yt-dlp",
+    "release": "2026.07.04",
+    "tag": "2026.07.04",
+    "commit": "fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9",
+    "tree": "b14ea6bf92e81a98bdcf652f5e46977c1ee593cc",
+    "source_archive_url": "https://github.com/yt-dlp/yt-dlp/archive/refs/tags/2026.07.04.tar.gz",
+    "source_archive_sha256_observed_2026_07_20": "7fb7ca0509dd8f21263246d3d749a346e049fa9d3cfdef072e05c7bbd88d6fc0",
+    "release_url": "https://github.com/yt-dlp/yt-dlp/releases/tag/2026.07.04",
+    "contract_sources": [
+      "yt_dlp/extractor/common.py:InfoExtractor",
+      "yt_dlp/YoutubeDL.py:YoutubeDL._format_fields",
+      "yt_dlp/YoutubeDL.py:YoutubeDL.sanitize_info",
+      "yt_dlp/downloader/__init__.py:PROTOCOL_MAP",
+      "yt_dlp/options.py:create_parser"
+    ]
+  },
+  "bounds": {
+    "raw_identity_max_utf8_bytes": 256,
+    "raw_identity_fields": [
+      "protocol",
+      "ext",
+      "container",
+      "vcodec",
+      "acodec"
+    ],
+    "overflow_disposition": "incompatible_ytdlp_contract"
+  },
+  "invocations": {
+    "hermetic_inventory": {
+      "argv_before_url": [
+        "--ignore-config",
+        "--no-plugin-dirs",
+        "--quiet",
+        "--no-warnings",
+        "--simulate",
+        "--dump-single-json",
+        "--no-playlist"
+      ],
+      "url_placeholder": "<exact-http-or-https-locator>",
+      "loads_system_config": false,
+      "loads_plugins": false,
+      "loads_cookie_file": false,
+      "guarantee": "rustiplayer_owned_arguments_request_no_download_write_exec_postprocessor_or_mark_watched_behavior"
+    },
+    "hermetic_selected": {
+      "argv_before_selector": [
+        "--ignore-config",
+        "--no-plugin-dirs",
+        "--quiet",
+        "--no-warnings",
+        "--simulate",
+        "--dump-single-json",
+        "--no-playlist",
+        "--format"
+      ],
+      "selector_placeholder": "<rustiplayer-owned-selector>",
+      "url_placeholder": "<exact-http-or-https-locator>",
+      "loads_system_config": false,
+      "loads_plugins": false,
+      "loads_cookie_file": false,
+      "guarantee": "rustiplayer_owned_arguments_request_no_download_write_exec_postprocessor_or_mark_watched_behavior"
+    },
+    "manual_opt_in_inventory": {
+      "argv_before_url": [
+        "--quiet",
+        "--no-warnings",
+        "--simulate",
+        "--dump-single-json",
+        "--no-playlist"
+      ],
+      "url_placeholder": "<exact-http-or-https-locator>",
+      "loads_system_config": true,
+      "loads_plugins": true,
+      "loads_cookie_file": "user_config_may_enable",
+      "guarantee": "rustiplayer_owned_arguments_only",
+      "outside_app_guarantee": [
+        "trusted_user_config_may_add_side_effects",
+        "trusted_plugin_import_or_execution_may_add_side_effects",
+        "user_owned_cookie_jar_may_be_updated_by_system_yt_dlp"
+      ]
+    },
+    "manual_opt_in_selected": {
+      "argv_before_selector": [
+        "--quiet",
+        "--no-warnings",
+        "--simulate",
+        "--dump-single-json",
+        "--no-playlist",
+        "--format"
+      ],
+      "selector_placeholder": "<rustiplayer-owned-selector>",
+      "url_placeholder": "<exact-http-or-https-locator>",
+      "loads_system_config": true,
+      "loads_plugins": true,
+      "loads_cookie_file": "user_config_may_enable",
+      "guarantee": "rustiplayer_owned_arguments_only",
+      "outside_app_guarantee": [
+        "trusted_user_config_may_add_side_effects",
+        "trusted_plugin_import_or_execution_may_add_side_effects",
+        "user_owned_cookie_jar_may_be_updated_by_system_yt_dlp"
+      ]
+    }
+  },
+  "result_types": [
+    {
+      "identity": "missing_or_video",
+      "classification": "PublicSerializable",
+      "required_shape": "id_title_and_url_or_formats",
+      "future_session": "S15",
+      "fixture_id": "result-video-missing-type"
+    },
+    {
+      "identity": "playlist",
+      "classification": "PublicSerializable",
+      "required_shape": "bounded_concrete_entries",
+      "future_session": "S15",
+      "fixture_id": "result-playlist"
+    },
+    {
+      "identity": "multi_video",
+      "classification": "PublicSerializable",
+      "required_shape": "video_fields_and_bounded_concrete_entries",
+      "future_session": "S15",
+      "fixture_id": "result-multi-video"
+    },
+    {
+      "identity": "url",
+      "classification": "PublicSerializable",
+      "required_shape": "delegation_without_transparent_merge",
+      "future_session": "S15",
+      "fixture_id": "result-url"
+    },
+    {
+      "identity": "url_transparent",
+      "classification": "PublicSerializable",
+      "required_shape": "delegation_with_wrapper_metadata_priority",
+      "future_session": "S15",
+      "fixture_id": "result-url-transparent"
+    },
+    {
+      "identity": "entries_generator_or_unrecognized_iterable",
+      "classification": "RequiresLiveExtractorState",
+      "profile_disposition": "ProfileExcluded",
+      "future_session": "none_without_separate_architecture_decision",
+      "fixture_id": "excluded-entries-generator"
+    }
+  ],
+  "result_fields": [
+    {
+      "path": "_type",
+      "classification": "PublicSerializable",
+      "role": "topology_discriminator"
+    },
+    {
+      "path": "id",
+      "classification": "PublicSerializable",
+      "role": "extractor_media_identity"
+    },
+    {
+      "path": "title",
+      "classification": "PublicSerializable",
+      "role": "display_metadata"
+    },
+    {
+      "path": "entries",
+      "classification": "PublicSerializable",
+      "role": "bounded_concrete_topology_entries"
+    },
+    {
+      "path": "entries(generator_or_repr)",
+      "classification": "RequiresLiveExtractorState",
+      "role": "profile_excluded"
+    },
+    {
+      "path": "formats",
+      "classification": "PublicSerializable",
+      "role": "extractor_inventory"
+    },
+    {
+      "path": "requested_formats",
+      "classification": "PrivateSerializablePinned",
+      "role": "selected_compound_components_only"
+    },
+    {
+      "path": "requested_downloads",
+      "classification": "PrivateSerializablePinned",
+      "role": "legacy_selected_result_wrapper"
+    },
+    {
+      "path": "has_drm",
+      "classification": "PublicSerializable",
+      "role": "admission_rejection_marker"
+    },
+    {
+      "path": "format_id",
+      "classification": "PublicSerializable",
+      "role": "snapshot_local_selected_identity"
+    },
+    {
+      "path": "height",
+      "classification": "PublicSerializable",
+      "role": "selected_format_attribute"
+    },
+    {
+      "path": "fps",
+      "classification": "PublicSerializable",
+      "role": "selected_format_attribute"
+    },
+    {
+      "path": "vcodec",
+      "classification": "PublicSerializable",
+      "role": "bounded_selected_codec_identity"
+    },
+    {
+      "path": "acodec",
+      "classification": "PublicSerializable",
+      "role": "bounded_selected_codec_identity"
+    },
+    {
+      "path": "duration",
+      "classification": "PublicSerializable",
+      "role": "timeline_hint"
+    },
+    {
+      "path": "is_live",
+      "classification": "PublicSerializable",
+      "role": "live_state_hint"
+    },
+    {
+      "path": "live_status",
+      "classification": "PublicSerializable",
+      "role": "live_state_hint"
+    }
+  ],
+  "upstream_format_fields": [
+    "url",
+    "manifest_url",
+    "manifest_stream_number",
+    "ext",
+    "format",
+    "format_id",
+    "format_note",
+    "available_at",
+    "width",
+    "height",
+    "aspect_ratio",
+    "resolution",
+    "dynamic_range",
+    "tbr",
+    "abr",
+    "acodec",
+    "asr",
+    "audio_channels",
+    "vbr",
+    "fps",
+    "vcodec",
+    "container",
+    "filesize",
+    "filesize_approx",
+    "rows",
+    "columns",
+    "hls_media_playlist_data",
+    "player_url",
+    "protocol",
+    "fragment_base_url",
+    "fragments",
+    "is_from_start",
+    "is_dash_periods",
+    "request_data",
+    "preference",
+    "language",
+    "language_preference",
+    "quality",
+    "source_preference",
+    "cookies",
+    "http_headers",
+    "stretched_ratio",
+    "no_resume",
+    "has_drm",
+    "extra_param_to_segment_url",
+    "extra_param_to_key_url",
+    "hls_aes",
+    "downloader_options",
+    "impersonate",
+    "page_url",
+    "app",
+    "play_path",
+    "tc_url",
+    "flash_version",
+    "rtmp_live",
+    "rtmp_conn",
+    "rtmp_protocol",
+    "rtmp_real_time"
+  ],
+  "format_fields": [
+    {
+      "path": "url",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "manifest_url",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "manifest_stream_number",
+      "classification": "PrivateSerializablePinned",
+      "profile_disposition": "ProfileExcluded"
+    },
+    {
+      "path": "ext",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "format",
+      "classification": "PublicSerializable",
+      "profile_disposition": "DiagnosticOnly"
+    },
+    {
+      "path": "format_id",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SnapshotLocalIdentity"
+    },
+    {
+      "path": "format_note",
+      "classification": "PublicSerializable",
+      "profile_disposition": "DiagnosticOnly"
+    },
+    {
+      "path": "available_at",
+      "classification": "PublicSerializable",
+      "profile_disposition": "ProfileExcludedUntilLiveSession"
+    },
+    {
+      "path": "width",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "height",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "aspect_ratio",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "resolution",
+      "classification": "PublicSerializable",
+      "profile_disposition": "DiagnosticOnly"
+    },
+    {
+      "path": "dynamic_range",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "tbr",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "abr",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "acodec",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "asr",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "audio_channels",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "vbr",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "fps",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "vcodec",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "container",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "filesize",
+      "classification": "PublicSerializable",
+      "profile_disposition": "HintOnly"
+    },
+    {
+      "path": "filesize_approx",
+      "classification": "PublicSerializable",
+      "profile_disposition": "HintOnly"
+    },
+    {
+      "path": "rows",
+      "classification": "PublicSerializable",
+      "profile_disposition": "NonMediaExcluded"
+    },
+    {
+      "path": "columns",
+      "classification": "PublicSerializable",
+      "profile_disposition": "NonMediaExcluded"
+    },
+    {
+      "path": "hls_media_playlist_data",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "player_url",
+      "classification": "PublicSerializable",
+      "profile_disposition": "ProfileExcluded"
+    },
+    {
+      "path": "protocol",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedOrBoundedUnknown"
+    },
+    {
+      "path": "fragment_base_url",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "fragments[]",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "fragments(generator_or_repr)",
+      "classification": "RequiresLiveExtractorState",
+      "profile_disposition": "ProfileExcluded"
+    },
+    {
+      "path": "is_from_start",
+      "classification": "PublicSerializable",
+      "profile_disposition": "ProfileExcludedUntilLiveSession"
+    },
+    {
+      "path": "is_dash_periods",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "request_data(string)",
+      "classification": "PublicSerializable",
+      "profile_disposition": "ProfileExcluded"
+    },
+    {
+      "path": "request_data(bytes_or_repr)",
+      "classification": "RequiresLiveExtractorState",
+      "profile_disposition": "ProfileExcluded"
+    },
+    {
+      "path": "preference",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SelectionHint"
+    },
+    {
+      "path": "language",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SelectionHint"
+    },
+    {
+      "path": "language_preference",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SelectionHint"
+    },
+    {
+      "path": "quality",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SelectionHint"
+    },
+    {
+      "path": "source_preference",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SelectionHint"
+    },
+    {
+      "path": "cookies",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedSecretMaterialWithRedactedFixture"
+    },
+    {
+      "path": "http_headers",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedSecretMaterialWithRedactedFixture"
+    },
+    {
+      "path": "stretched_ratio",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "no_resume",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "has_drm",
+      "classification": "PublicSerializable",
+      "profile_disposition": "RejectWhenTrueOrMaybe"
+    },
+    {
+      "path": "extra_param_to_segment_url",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedSecretMaterialWithRedactedFixture"
+    },
+    {
+      "path": "extra_param_to_key_url",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedSecretMaterialWithRedactedFixture"
+    },
+    {
+      "path": "hls_aes",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedSecretMaterialWithRedactedFixture"
+    },
+    {
+      "path": "downloader_options",
+      "classification": "PrivateSerializablePinned",
+      "profile_disposition": "NeverExecute"
+    },
+    {
+      "path": "downloader_options.ws",
+      "classification": "RequiresLiveExtractorState",
+      "profile_disposition": "ProfileExcluded"
+    },
+    {
+      "path": "impersonate(string)",
+      "classification": "PublicSerializable",
+      "profile_disposition": "ProfileExcluded"
+    },
+    {
+      "path": "impersonate(object_repr)",
+      "classification": "RequiresLiveExtractorState",
+      "profile_disposition": "ProfileExcluded"
+    },
+    {
+      "path": "page_url",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "app",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "play_path",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "tc_url",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "flash_version",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "rtmp_live",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "rtmp_conn",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "rtmp_protocol",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "rtmp_real_time",
+      "classification": "PublicSerializable",
+      "profile_disposition": "SupportedWithFixture"
+    },
+    {
+      "path": "_bunnycdn_ping_data",
+      "classification": "PrivateSerializablePinned",
+      "profile_disposition": "ProfileExcluded"
+    },
+    {
+      "path": "_cookie_refresh_params",
+      "classification": "PrivateSerializablePinned",
+      "profile_disposition": "ProfileExcluded"
+    }
+  ],
+  "request_material_fields": [
+    {
+      "path": "url",
+      "decision": "supported_with_fixture",
+      "future_session": "S21T",
+      "fixture_id": "request-material-public"
+    },
+    {
+      "path": "manifest_url",
+      "decision": "supported_with_fixture",
+      "future_session": "S31",
+      "fixture_id": "request-material-public"
+    },
+    {
+      "path": "fragments[]",
+      "decision": "supported_only_as_bounded_concrete_array",
+      "future_session": "S31",
+      "fixture_id": "request-material-public"
+    },
+    {
+      "path": "fragment_base_url",
+      "decision": "supported_with_fixture",
+      "future_session": "S31",
+      "fixture_id": "request-material-public"
+    },
+    {
+      "path": "hls_media_playlist_data",
+      "decision": "supported_with_fixture",
+      "future_session": "S32",
+      "fixture_id": "request-material-public"
+    },
+    {
+      "path": "http_headers",
+      "decision": "supported_secret_material",
+      "future_session": "S21T",
+      "fixture_id": "request-material-secret-redacted"
+    },
+    {
+      "path": "cookies",
+      "decision": "supported_secret_material",
+      "future_session": "S26",
+      "fixture_id": "request-material-secret-redacted"
+    },
+    {
+      "path": "request_data",
+      "decision": "target_row_excluded_if_required",
+      "future_session": "none_without_profile_extension",
+      "fixture_id": "request-material-repr-excluded"
+    },
+    {
+      "path": "extra_param_to_segment_url",
+      "decision": "supported_secret_material",
+      "future_session": "S32",
+      "fixture_id": "request-material-secret-redacted"
+    },
+    {
+      "path": "extra_param_to_key_url",
+      "decision": "supported_secret_material",
+      "future_session": "S32",
+      "fixture_id": "request-material-secret-redacted"
+    },
+    {
+      "path": "hls_aes",
+      "decision": "supported_aes_128_only",
+      "future_session": "S32",
+      "fixture_id": "request-material-secret-redacted"
+    },
+    {
+      "path": "impersonate",
+      "decision": "target_row_excluded_if_required",
+      "future_session": "none_without_fingerprint_provider_decision",
+      "fixture_id": "request-material-repr-excluded"
+    },
+    {
+      "path": "downloader_options",
+      "decision": "never_execute_target_row_excluded_if_required",
+      "future_session": "none_without_separate_architecture_decision",
+      "fixture_id": "excluded-private-live-state"
+    },
+    {
+      "path": "page_url|app|play_path|tc_url|flash_version|rtmp_live|rtmp_conn|rtmp_protocol|rtmp_real_time",
+      "decision": "supported_with_fixture",
+      "future_session": "S39",
+      "fixture_id": "request-material-rtmp"
+    },
+    {
+      "path": "_bunnycdn_ping_data|_cookie_refresh_params",
+      "decision": "private_api_target_row_excluded",
+      "future_session": "S40P-separate-decision",
+      "fixture_id": "excluded-private-live-state"
+    }
+  ],
+  "protocol_aliases": [
+    {
+      "family": "progressive_http",
+      "aliases": [
+        "http",
+        "https"
+      ]
+    },
+    {
+      "family": "progressive_ftp",
+      "aliases": [
+        "ftp",
+        "ftps"
+      ]
+    },
+    {
+      "family": "hls",
+      "aliases": [
+        "m3u8",
+        "m3u8_native",
+        "m3u8_frag_urls"
+      ]
+    },
+    {
+      "family": "dash",
+      "aliases": [
+        "http_dash_segments",
+        "dash_frag_urls"
+      ]
+    },
+    {
+      "family": "dash_generator_excluded",
+      "aliases": [
+        "http_dash_segments_generator"
+      ]
+    },
+    {
+      "family": "smooth_streaming",
+      "aliases": [
+        "ism"
+      ]
+    },
+    {
+      "family": "hds",
+      "aliases": [
+        "f4m"
+      ]
+    },
+    {
+      "family": "rtmp",
+      "aliases": [
+        "rtmp",
+        "rtmpe",
+        "rtmp_ffmpeg"
+      ]
+    },
+    {
+      "family": "special_private_state_excluded",
+      "aliases": [
+        "bunnycdn",
+        "soopvod",
+        "niconico_live",
+        "fc2_live",
+        "websocket_frag"
+      ]
+    },
+    {
+      "family": "non_media_excluded",
+      "aliases": [
+        "mhtml",
+        "youtube_live_chat",
+        "youtube_live_chat_replay"
+      ]
+    }
+  ],
+  "codec_profiles": [
+    {
+      "id": "major-web-video",
+      "families": [
+        "vp8",
+        "vp9",
+        "av1",
+        "h264",
+        "h265"
+      ],
+      "expands_decoder_scope": false
+    },
+    {
+      "id": "webm-video",
+      "families": [
+        "vp8",
+        "vp9",
+        "av1"
+      ],
+      "expands_decoder_scope": false
+    },
+    {
+      "id": "webm-audio",
+      "families": [
+        "opus",
+        "vorbis"
+      ],
+      "expands_decoder_scope": false
+    },
+    {
+      "id": "proven-native-audio",
+      "families": [
+        "aac",
+        "adpcm",
+        "alac",
+        "flac",
+        "mp1",
+        "mp2",
+        "mp3",
+        "pcm",
+        "vorbis",
+        "opus"
+      ],
+      "expands_decoder_scope": false
+    }
+  ],
+  "target_rows": [
+    {
+      "id": "progressive-http-iso-bmff",
+      "status": "Target",
+      "transport": "http_or_https",
+      "container_profile": "iso_bmff_mp4_m4a",
+      "codec_profile_refs": [
+        "major-web-video",
+        "proven-native-audio"
+      ],
+      "future_sessions": [
+        "S22",
+        "S28A"
+      ],
+      "fixture_id": "target-progressive-http-iso-bmff"
+    },
+    {
+      "id": "progressive-http-matroska-webm",
+      "status": "Target",
+      "transport": "http_or_https",
+      "container_profile": "matroska_webm",
+      "codec_profile_refs": [
+        "webm-video",
+        "webm-audio"
+      ],
+      "future_sessions": [
+        "S22",
+        "S28B"
+      ],
+      "fixture_id": "target-progressive-http-webm"
+    },
+    {
+      "id": "progressive-http-proven-audio",
+      "status": "Target",
+      "transport": "http_or_https",
+      "container_profile": "ogg_flac_wav_aiff_caf_mpeg_audio",
+      "codec_profile_refs": [
+        "proven-native-audio"
+      ],
+      "future_sessions": [
+        "S22",
+        "S28C"
+      ],
+      "fixture_id": "target-progressive-http-audio"
+    },
+    {
+      "id": "hls-vod-ts",
+      "status": "Target",
+      "transport": "hls",
+      "container_profile": "mpeg_ts",
+      "codec_profile_refs": [
+        "major-web-video",
+        "proven-native-audio"
+      ],
+      "future_sessions": [
+        "S29",
+        "S31",
+        "S32"
+      ],
+      "fixture_id": "target-hls-ts"
+    },
+    {
+      "id": "hls-vod-fmp4",
+      "status": "Target",
+      "transport": "hls",
+      "container_profile": "fmp4_cmaf",
+      "codec_profile_refs": [
+        "major-web-video",
+        "proven-native-audio"
+      ],
+      "future_sessions": [
+        "S28A",
+        "S31",
+        "S32"
+      ],
+      "fixture_id": "target-hls-fmp4"
+    },
+    {
+      "id": "hls-live-dvr",
+      "status": "Target",
+      "transport": "hls",
+      "container_profile": "mpeg_ts_or_fmp4_cmaf",
+      "codec_profile_refs": [
+        "major-web-video",
+        "proven-native-audio"
+      ],
+      "future_sessions": [
+        "S31L",
+        "S33"
+      ],
+      "fixture_id": "target-hls-live"
+    },
+    {
+      "id": "dash-vod-fmp4",
+      "status": "Target",
+      "transport": "dash",
+      "container_profile": "fmp4_cmaf",
+      "codec_profile_refs": [
+        "major-web-video",
+        "proven-native-audio"
+      ],
+      "future_sessions": [
+        "S28A",
+        "S31",
+        "S34"
+      ],
+      "fixture_id": "target-dash-fmp4"
+    },
+    {
+      "id": "dash-vod-webm",
+      "status": "Target",
+      "transport": "dash",
+      "container_profile": "webm",
+      "codec_profile_refs": [
+        "webm-video",
+        "webm-audio"
+      ],
+      "future_sessions": [
+        "S28B",
+        "S31",
+        "S34"
+      ],
+      "fixture_id": "target-dash-webm"
+    },
+    {
+      "id": "dash-live-dvr",
+      "status": "Target",
+      "transport": "dash",
+      "container_profile": "fmp4_cmaf_or_webm",
+      "codec_profile_refs": [
+        "major-web-video",
+        "proven-native-audio"
+      ],
+      "future_sessions": [
+        "S31L",
+        "S35"
+      ],
+      "fixture_id": "target-dash-live"
+    },
+    {
+      "id": "ism-mss-fmp4",
+      "status": "Target",
+      "transport": "ism",
+      "container_profile": "fmp4",
+      "codec_profile_refs": [
+        "major-web-video",
+        "proven-native-audio"
+      ],
+      "future_sessions": [
+        "S28A",
+        "S31",
+        "S36"
+      ],
+      "fixture_id": "target-ism-fmp4"
+    },
+    {
+      "id": "ftp-ftps-progressive",
+      "status": "Target",
+      "transport": "ftp_or_ftps",
+      "container_profile": "existing_proven_progressive_containers",
+      "codec_profile_refs": [
+        "major-web-video",
+        "proven-native-audio"
+      ],
+      "future_sessions": [
+        "S37"
+      ],
+      "fixture_id": "target-ftps-progressive"
+    },
+    {
+      "id": "hds-f4m-f4f",
+      "status": "Target",
+      "transport": "hds_f4m",
+      "container_profile": "f4f_flv",
+      "codec_profile_refs": [
+        "major-web-video",
+        "proven-native-audio"
+      ],
+      "future_sessions": [
+        "S30",
+        "S31",
+        "S38"
+      ],
+      "fixture_id": "target-hds-f4f"
+    },
+    {
+      "id": "rtmp-family-flv",
+      "status": "Target",
+      "transport": "rtmp_rtmpe_or_rtmp_ffmpeg_identity_only",
+      "container_profile": "flv",
+      "codec_profile_refs": [
+        "major-web-video",
+        "proven-native-audio"
+      ],
+      "future_sessions": [
+        "S30",
+        "S39"
+      ],
+      "fixture_id": "target-rtmp-flv"
+    }
+  ],
+  "excluded_rows": [
+    {
+      "id": "rtsp-rtp-mms",
+      "status": "ProfileExcluded",
+      "reason": "roadmap_exclusion_and_release_removed_rtsp_mms_support"
+    },
+    {
+      "id": "dash-generator",
+      "status": "ProfileExcluded",
+      "reason": "requires_generator_or_re_extraction_state"
+    },
+    {
+      "id": "private-live-downloaders",
+      "status": "ProfileExcluded",
+      "reason": "requires_private_python_objects_threads_or_mutable_cookie_state"
+    },
+    {
+      "id": "drm",
+      "status": "ProfileExcluded",
+      "reason": "drm_and_encrypted_only_paths_are_out_of_scope"
+    },
+    {
+      "id": "third-party-plugin-contract",
+      "status": "ProfileExcluded",
+      "reason": "arbitrary_plugin_behavior_is_not_an_upstream_or_app_guarantee"
+    },
+    {
+      "id": "mpeg-ps",
+      "status": "ProfileExcludedProvisional",
+      "reason": "no_sanitized_corpus_and_no_proven_runtime_path_in_s00"
+    },
+    {
+      "id": "avi",
+      "status": "ProfileExcludedProvisional",
+      "reason": "no_sanitized_corpus_and_no_proven_runtime_path_in_s00"
+    },
+    {
+      "id": "asf-wmv-wma",
+      "status": "ProfileExcludedProvisional",
+      "reason": "no_sanitized_corpus_and_no_proven_runtime_path_in_s00"
+    },
+    {
+      "id": "rare-codec-families",
+      "status": "ProfileExcludedProvisional",
+      "reason": "codec_expansion_requires_separate_profile_extension_evidence"
+    }
+  ],
+  "corpus": {
+    "owner": "crates/service-ytdlp/compatibility/2026.07.04",
+    "official_synthetic_fixtures": [
+      "fixtures/official-synthetic/result-topologies.json",
+      "fixtures/official-synthetic/format-inventory.json",
+      "fixtures/official-synthetic/request-material.json",
+      "fixtures/official-synthetic/exclusions-and-unknown.json"
+    ],
+    "optional_capture_procedure": "CAPTURES.md",
+    "human_report": "REPORT.md"
+  }
+}

@@ -1,0 +1,223 @@
+{
+  "fixture_schema_version": 1,
+  "source_release": "2026.07.04",
+  "source_commit": "fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9",
+  "source_contract": "yt_dlp/extractor/common.py format fields and yt_dlp/YoutubeDL.py format selection",
+  "provenance": "synthetic formats cover only target profile identities; they are not claims about third-party providers",
+  "redaction": "all locators use reserved .invalid names and all format identities are synthetic",
+  "fixture_id": "format-inventory-separation",
+  "payload": {
+    "_type": "video",
+    "id": "synthetic-format-inventory",
+    "title": "Synthetic formats versus requested formats",
+    "formats": [
+      {
+        "fixture_id": "target-progressive-http-iso-bmff",
+        "format_id": "http-mp4-video",
+        "url": "https://media.invalid/video.mp4",
+        "protocol": "https",
+        "ext": "mp4",
+        "container": "mp4_dash",
+        "vcodec": "avc1.640028",
+        "acodec": "none",
+        "width": 1920,
+        "height": 1080,
+        "fps": 30.0,
+        "dynamic_range": "SDR"
+      },
+      {
+        "fixture_id": "target-progressive-http-webm",
+        "format_id": "http-webm-video",
+        "url": "https://media.invalid/video.webm",
+        "protocol": "https",
+        "ext": "webm",
+        "container": "webm",
+        "vcodec": "vp09.00.51.08",
+        "acodec": "none",
+        "width": 1920,
+        "height": 1080,
+        "fps": 60.0,
+        "dynamic_range": "SDR"
+      },
+      {
+        "fixture_id": "target-progressive-http-audio",
+        "format_id": "http-audio",
+        "url": "https://media.invalid/audio.opus",
+        "protocol": "https",
+        "ext": "opus",
+        "container": "ogg",
+        "vcodec": "none",
+        "acodec": "opus",
+        "asr": 48000,
+        "audio_channels": 2,
+        "abr": 128.0
+      },
+      {
+        "fixture_id": "target-hls-ts",
+        "format_id": "hls-ts",
+        "url": "https://manifest.invalid/vod-ts.m3u8",
+        "manifest_url": "https://manifest.invalid/master.m3u8",
+        "protocol": "m3u8_native",
+        "ext": "mp4",
+        "container": "mpegts",
+        "vcodec": "avc1.4d401f",
+        "acodec": "mp4a.40.2"
+      },
+      {
+        "fixture_id": "target-hls-fmp4",
+        "format_id": "hls-fmp4",
+        "url": "https://manifest.invalid/vod-cmaf.m3u8",
+        "manifest_url": "https://manifest.invalid/master.m3u8",
+        "protocol": "m3u8_native",
+        "ext": "mp4",
+        "container": "m4a_dash",
+        "vcodec": "avc1.640028",
+        "acodec": "mp4a.40.2"
+      },
+      {
+        "fixture_id": "target-hls-live",
+        "format_id": "hls-live",
+        "url": "https://manifest.invalid/live.m3u8",
+        "manifest_url": "https://manifest.invalid/live-master.m3u8",
+        "protocol": "m3u8_native",
+        "ext": "mp4",
+        "container": "mpegts",
+        "vcodec": "avc1.4d401f",
+        "acodec": "mp4a.40.2",
+        "is_from_start": false
+      },
+      {
+        "fixture_id": "target-dash-fmp4",
+        "format_id": "dash-fmp4",
+        "url": "https://manifest.invalid/dash/",
+        "manifest_url": "https://manifest.invalid/manifest.mpd",
+        "protocol": "http_dash_segments",
+        "ext": "mp4",
+        "container": "mp4_dash",
+        "vcodec": "av01.0.08M.08",
+        "acodec": "none",
+        "fragment_base_url": "https://segments.invalid/dash/",
+        "fragments": [
+          {
+            "path": "init.mp4"
+          },
+          {
+            "path": "segment-1.m4s",
+            "duration": 4.0,
+            "filesize": 65536
+          }
+        ]
+      },
+      {
+        "fixture_id": "target-dash-webm",
+        "format_id": "dash-webm",
+        "url": "https://manifest.invalid/dash-webm/",
+        "manifest_url": "https://manifest.invalid/manifest-webm.mpd",
+        "protocol": "http_dash_segments",
+        "ext": "webm",
+        "container": "webm_dash",
+        "vcodec": "vp09.00.41.08",
+        "acodec": "none",
+        "fragments": [
+          {
+            "url": "https://segments.invalid/webm/init.webm"
+          },
+          {
+            "url": "https://segments.invalid/webm/segment-1.webm",
+            "duration": 4.0
+          }
+        ]
+      },
+      {
+        "fixture_id": "target-dash-live",
+        "format_id": "dash-live",
+        "url": "https://manifest.invalid/live-dash/",
+        "manifest_url": "https://manifest.invalid/live.mpd",
+        "protocol": "http_dash_segments",
+        "ext": "mp4",
+        "container": "mp4_dash",
+        "vcodec": "avc1.640028",
+        "acodec": "none",
+        "is_from_start": false,
+        "fragments": [
+          {
+            "url": "https://segments.invalid/live/segment-current.m4s",
+            "duration": 2.0
+          }
+        ]
+      },
+      {
+        "fixture_id": "target-ism-fmp4",
+        "format_id": "ism-fmp4",
+        "url": "https://manifest.invalid/channel.ism/Manifest",
+        "manifest_url": "https://manifest.invalid/channel.ism/Manifest",
+        "protocol": "ism",
+        "ext": "ismv",
+        "container": "m4a_dash",
+        "vcodec": "avc1.640028",
+        "acodec": "mp4a.40.2"
+      },
+      {
+        "fixture_id": "target-ftps-progressive",
+        "format_id": "ftps-webm",
+        "url": "ftps://media.invalid/video.webm",
+        "protocol": "ftps",
+        "ext": "webm",
+        "container": "webm",
+        "vcodec": "vp9",
+        "acodec": "opus"
+      },
+      {
+        "fixture_id": "target-hds-f4f",
+        "format_id": "hds-f4f",
+        "url": "https://manifest.invalid/stream.f4m",
+        "manifest_url": "https://manifest.invalid/stream.f4m",
+        "protocol": "f4m",
+        "ext": "flv",
+        "container": "f4f",
+        "vcodec": "avc1.4d401f",
+        "acodec": "mp4a.40.2"
+      },
+      {
+        "fixture_id": "target-rtmp-flv",
+        "format_id": "rtmp-flv",
+        "url": "rtmpe://media.invalid/live",
+        "protocol": "rtmpe",
+        "ext": "flv",
+        "container": "flv",
+        "vcodec": "avc1.4d401f",
+        "acodec": "mp4a.40.2"
+      }
+    ],
+    "requested_formats": [
+      {
+        "format_id": "http-webm-video",
+        "url": "https://media.invalid/video.webm",
+        "protocol": "https",
+        "ext": "webm",
+        "container": "webm",
+        "vcodec": "vp09.00.51.08",
+        "acodec": "none"
+      },
+      {
+        "format_id": "http-audio",
+        "url": "https://media.invalid/audio.opus",
+        "protocol": "https",
+        "ext": "opus",
+        "container": "ogg",
+        "vcodec": "none",
+        "acodec": "opus"
+      }
+    ],
+    "format_id": "http-webm-video+http-audio",
+    "protocol": "https+https",
+    "ext": "webm",
+    "vcodec": "vp09.00.51.08",
+    "acodec": "opus",
+    "_version": {
+      "version": "2026.07.04",
+      "release_git_head": "fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9",
+      "repository": "yt-dlp/yt-dlp"
+    }
+  }
+}

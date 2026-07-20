@@ -1,0 +1,69 @@
+{
+  "fixture_schema_version": 1,
+  "source_release": "2026.07.04",
+  "source_commit": "fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9",
+  "source_contract": "yt_dlp/extractor/common.py public format fields plus pinned private fields named by official downloaders",
+  "provenance": "synthetic request material exercises serialized shapes without carrying usable credentials",
+  "redaction": "secrets are fixed non-secret markers; all locators use reserved .invalid names",
+  "fixtures": [
+    {
+      "fixture_id": "request-material-public",
+      "payload": {
+        "url": "https://manifest.invalid/media.m3u8",
+        "manifest_url": "https://manifest.invalid/master.m3u8",
+        "fragment_base_url": "https://segments.invalid/media/",
+        "fragments": [
+          {
+            "path": "init.mp4"
+          },
+          {
+            "url": "https://segments.invalid/media/segment-1.m4s",
+            "duration": 4.0,
+            "filesize": 32768
+          }
+        ],
+        "hls_media_playlist_data": "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-ENDLIST\n"
+      }
+    },
+    {
+      "fixture_id": "request-material-secret-redacted",
+      "payload": {
+        "http_headers": {
+          "User-Agent": "synthetic-agent/1.0",
+          "Authorization": "<redacted-authorization>"
+        },
+        "cookies": "<redacted-cookie>",
+        "extra_param_to_segment_url": "<redacted-segment-query>",
+        "extra_param_to_key_url": "<redacted-key-query>",
+        "hls_aes": {
+          "uri": "https://keys.invalid/aes-128.key",
+          "key": "<redacted-aes-128-key>",
+          "iv": "<redacted-aes-128-iv>"
+        }
+      }
+    },
+    {
+      "fixture_id": "request-material-repr-excluded",
+      "payload": {
+        "request_data": "<repr-bytes-not-reconstructible>",
+        "impersonate": "chrome-136:windows-10"
+      }
+    },
+    {
+      "fixture_id": "request-material-rtmp",
+      "payload": {
+        "page_url": "https://page.invalid/watch",
+        "app": "synthetic-app",
+        "play_path": "synthetic-play-path",
+        "tc_url": "rtmpe://media.invalid/live",
+        "flash_version": "synthetic-flash-version",
+        "rtmp_live": true,
+        "rtmp_conn": [
+          "S:synthetic"
+        ],
+        "rtmp_protocol": "rtmpe",
+        "rtmp_real_time": true
+      }
+    }
+  ]
+}

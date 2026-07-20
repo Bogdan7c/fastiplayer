@@ -1,0 +1,128 @@
+{
+  "fixture_schema_version": 1,
+  "source_release": "2026.07.04",
+  "source_commit": "fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9",
+  "source_contract": "yt_dlp/extractor/common.py:InfoExtractor result type documentation",
+  "provenance": "synthetic objects shaped only from the pinned public InfoDict contract",
+  "redaction": "no network or user material was used; all locators use reserved .invalid names",
+  "fixtures": [
+    {
+      "fixture_id": "result-video-missing-type",
+      "payload": {
+        "id": "synthetic-video",
+        "title": "Synthetic video",
+        "formats": [
+          {
+            "format_id": "synthetic-http",
+            "url": "https://media.invalid/video.webm",
+            "protocol": "https",
+            "ext": "webm",
+            "container": "webm",
+            "vcodec": "vp9",
+            "acodec": "opus"
+          }
+        ],
+        "_version": {
+          "version": "2026.07.04",
+          "release_git_head": "fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9",
+          "repository": "yt-dlp/yt-dlp"
+        }
+      }
+    },
+    {
+      "fixture_id": "result-playlist",
+      "payload": {
+        "_type": "playlist",
+        "id": "synthetic-playlist",
+        "title": "Synthetic playlist",
+        "entries": [
+          {
+            "_type": "url",
+            "url": "https://delegate.invalid/item/1",
+            "ie_key": "Synthetic"
+          },
+          {
+            "_type": "url_transparent",
+            "url": "https://delegate.invalid/item/2",
+            "ie_key": "Synthetic",
+            "title": "Wrapper-owned title"
+          }
+        ],
+        "_version": {
+          "version": "2026.07.04",
+          "release_git_head": "fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9",
+          "repository": "yt-dlp/yt-dlp"
+        }
+      }
+    },
+    {
+      "fixture_id": "result-multi-video",
+      "payload": {
+        "_type": "multi_video",
+        "id": "synthetic-compound",
+        "title": "Synthetic compound media",
+        "formats": [
+          {
+            "format_id": "summary-only",
+            "url": "https://media.invalid/summary.mp4",
+            "protocol": "https",
+            "ext": "mp4",
+            "container": "mp4",
+            "vcodec": "avc1.640028",
+            "acodec": "mp4a.40.2"
+          }
+        ],
+        "entries": [
+          {
+            "id": "part-1",
+            "title": "Part 1",
+            "url": "https://media.invalid/part-1.mp4",
+            "protocol": "https",
+            "ext": "mp4"
+          },
+          {
+            "id": "part-2",
+            "title": "Part 2",
+            "url": "https://media.invalid/part-2.mp4",
+            "protocol": "https",
+            "ext": "mp4"
+          }
+        ],
+        "_version": {
+          "version": "2026.07.04",
+          "release_git_head": "fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9",
+          "repository": "yt-dlp/yt-dlp"
+        }
+      }
+    },
+    {
+      "fixture_id": "result-url",
+      "payload": {
+        "_type": "url",
+        "url": "https://delegate.invalid/plain",
+        "ie_key": "Synthetic",
+        "title": "Non-authoritative wrapper title",
+        "_version": {
+          "version": "2026.07.04",
+          "release_git_head": "fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9",
+          "repository": "yt-dlp/yt-dlp"
+        }
+      }
+    },
+    {
+      "fixture_id": "result-url-transparent",
+      "payload": {
+        "_type": "url_transparent",
+        "url": "https://delegate.invalid/transparent",
+        "ie_key": "Synthetic",
+        "title": "Authoritative wrapper title",
+        "description": "Wrapper metadata has upstream-defined merge priority",
+        "_version": {
+          "version": "2026.07.04",
+          "release_git_head": "fdec00e0bf530dc6c3cc7b1dd780e95d9ae460e9",
+          "repository": "yt-dlp/yt-dlp"
+        }
+      }
+    }
+  ]
+}

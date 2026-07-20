@@ -2,6 +2,8 @@
 
 ## Актуальный generic yt-dlp/config v6 update (2026-07-17)
 
+- S00 (2026-07-20) добавил только checked-in compatibility evidence для official `yt-dlp 2026.07.04`, не runtime feature: canonical owner `crates/service-ytdlp/compatibility/2026.07.04/`, manifest `profile.json`, report/capture procedure/synthetic corpus и focused test `crates/service-ytdlp/tests/compatibility_profile.rs`. Manifest отдельно фиксирует будущий hermetic argv (`--ignore-config --no-plugin-dirs ... --simulate --dump-single-json`) и current manual opt-in argv; production process пока продолжает читать system/user config/plugins, их side effects и mutable user cookie jar остаются вне app guarantee. Полный контракт: `mem:media-services/core`.
+
 - Старый YouTube-only crate переименован в `service-ytdlp`; public/internal vocabulary — `YtDlp*`. Он является generic fallback для любого remaining absolute HTTP(S) URL после приоритетного `service-direct-media` adapter-а. `player-core`, decoder и renderer не изменены и получают только готовый `PreparedMedia`.
 - `YtDlpMediaLocator` хранит exact secret identity без query normalization; safe formatting скрывает userinfo/path/query/fragment. V1 admission принимает только single-item non-DRM direct HTTP(S) WebM VP9 video-only + WebM Opus audio-only. Подробности: `mem:media-services/core`, `mem:media-services/secret-safe-locators-s10b`.
 - App composition/reopen/suspend/settings/metadata variants называются `YtDlp`; metadata enrichment generic и остаётся side-effect-free относительно playback. См. `mem:app-egui/media-open-coordinator-s10c` и `mem:app-egui/ytdlp-playlist-metadata-2026-07-17`.
