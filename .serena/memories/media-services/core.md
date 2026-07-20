@@ -83,3 +83,9 @@
 - После выбора adapter-а registry больше не участвует: direct request не содержит yt-dlp fallback path, поэтому direct open failure не запускает второй adapter.
 - Query/userinfo locator-ы используют общий aggregated durable-locator acknowledgement. Sensitive yt-dlp append continuation сохраняет metadata source/config через confirmation и запускает enrichment только после matching commit.
 - Focused owners/tests: `crates/service-ytdlp/src/locator.rs`, `crates/app-egui/src/url_service_adapter.rs`, `crates/app-egui/src/url_service_adapter/tests.rs`, confirmation handoff в `crates/app-egui/src/playlist_runtime/actions.rs`.
+
+## S16 durable topology identity + app draft mapping (2026-07-20)
+
+- `service-ytdlp::topology::reopen` — canonical owner stable child reopen classification: `YtDlpDurableReopenPayload`, `YtDlpDurableReopenMaterialKind`, safe typed errors, owner/version/8 KiB constants и exact classifiers для topology identity/delegation target. Priority: webpage -> original -> extractor key+ID; v1 extractor grammar `[key_len:u16][key][id_len:u16][id]`. Raw payload раскрывается только intent-named persistence accessors, Debug показывает category+byte count.
+- App `url_topology_drafts` не кодирует service schema: он исчерпывающе переводит только три service stable material kinds в neutral `playlist-core::DurableReopenLocator`, а missing/oversized classification превращает в bounded safe issue. Exact root locator остаётся exact URL; extracted child остаётся service-owned, поэтому future reopen не попадает под accidental direct-media-first reclassification.
+- Video/Collection/MultiVideo/Delegation -> ID-less Single/Compound mapping, bounds/tests и S17 handoff: `mem:app-egui/ytdlp-topology-drafts-s16-2026-07-20`.

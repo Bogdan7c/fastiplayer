@@ -40,3 +40,8 @@ Focused tests: `crates/service-ytdlp/src/locator.rs`, service descriptor/process
 - Composition availability остаётся отдельной app boundary: HTTP(S) admitted по прежнему direct-first/fallback contract, а FTP(S)/RTMP требуют exact registered `ImplementedYtDlpInputProviderCapability`. Production extended registration пуст до готовности S37/S39 provider fixtures.
 - Более ранний no-prompt persistence policy для generic yt-dlp URL заменён roadmap-wide aggregated policy: любой exact locator с non-empty query либо userinfo требует sensitive durable-locator acknowledgement и для persistence, и для export. Raw identity по-прежнему раскрывается только intent-named open/persistence accessors.
 - `Debug`/`Display`/safe errors для active и unavailable extended schemes не содержат userinfo/path/query/fragment. Pending confirmation хранит opaque yt-dlp metadata continuation, а UI видит только bounded safe label/reasons.
+
+## S16 service-owned durable child payload (2026-07-20)
+
+- Stable extracted child/delegation identity теперь классифицирует и кодирует только `service-ytdlp::topology::reopen`: owner/version/8 KiB bound explicit, material kinds ограничены webpage/original/extractor identity, payload/error Debug redacted. App не создаёт собственный schema и только исчерпывающе переводит service descriptor в neutral `DurableReopenLocator`.
+- Exact root остаётся acknowledged URL identity; extracted child остаётся opaque service identity, поэтому direct-media-first registry не может случайно изменить service при reopen. Ephemeral format/manifest/fragment/key/signed/header/cookie/auth/session variants отсутствуют в service descriptor и fail-closed в neutral constructor. Full mapping: `mem:app-egui/ytdlp-topology-drafts-s16-2026-07-20`.

@@ -55,12 +55,16 @@ pub use topology::{
     DEFAULT_TOPOLOGY_DEPTH, DEFAULT_TOPOLOGY_ENTRY_COUNT, DEFAULT_TOPOLOGY_JSON_DEPTH,
     DEFAULT_TOPOLOGY_JSON_LINE_BYTES, DEFAULT_TOPOLOGY_STDERR_BYTES, DEFAULT_TOPOLOGY_STDOUT_BYTES,
     TOPOLOGY_IDENTITY_MAX_UTF8_BYTES, TOPOLOGY_LOCATOR_MAX_UTF8_BYTES,
-    TOPOLOGY_METADATA_MAX_UTF8_BYTES, YtDlpDelegationMetadataPolicy, YtDlpTopology,
-    YtDlpTopologyBudgetField, YtDlpTopologyBudgets, YtDlpTopologyCollection,
+    TOPOLOGY_METADATA_MAX_UTF8_BYTES, YT_DLP_DURABLE_REOPEN_PAYLOAD_MAX_BYTES,
+    YT_DLP_DURABLE_REOPEN_PAYLOAD_VERSION, YT_DLP_DURABLE_REOPEN_SERVICE_OWNER,
+    YtDlpDelegationMetadataPolicy, YtDlpDurableReopenClassificationError,
+    YtDlpDurableReopenIdentityInput, YtDlpDurableReopenMaterialKind, YtDlpDurableReopenPayload,
+    YtDlpTopology, YtDlpTopologyBudgetField, YtDlpTopologyBudgets, YtDlpTopologyCollection,
     YtDlpTopologyDelegation, YtDlpTopologyEntry, YtDlpTopologyEntryKind, YtDlpTopologyError,
     YtDlpTopologyIdentity, YtDlpTopologyInvalidResponseReason, YtDlpTopologyKind,
     YtDlpTopologyMetadata, YtDlpTopologyMultiVideo, YtDlpTopologyVideo,
     YtDlpUnavailableTopologyEntry, YtDlpUnavailableTopologyReason,
+    classify_yt_dlp_delegation_reopen_target, classify_yt_dlp_durable_reopen_identity,
     extract_yt_dlp_topology_with_budgets, extract_yt_dlp_topology_with_config,
 };
 

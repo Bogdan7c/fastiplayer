@@ -185,3 +185,8 @@ Exact CUE export identity теперь durable в `playlist-core`, additive pers
 - `service-ytdlp` получил public owned `Video | Playlist | MultiVideo | Delegation` topology boundary с unavailable rows, explicit `url`/`url_transparent` merge policy и без nonserializable runtime state.
 - Official CLI profile использует lazy line-delimited `--dump-json` + authoritative final `--dump-single-json`, `--flat-playlist --lazy-playlist`; `n_entries` не authoritative. Production system config/cookies/plugins остаются trusted external code, hermetic fixtures изолированы.
 - Process owner enforce-ит stdout/stderr/JSON-line/entry/JSON-depth/topology-depth/field budgets и kill+wait на cancellation/timeout/overflow; raw locator/direct endpoints/stderr redacted. Full contract: `mem:media-services/ytdlp-topology-s15-2026-07-20`.
+
+## Web media roadmap S16 app topology draft mapping (2026-07-20)
+- `app-egui::url_topology_drafts` чисто маппит уже extracted `YtDlpTopology` в ordered ID-less `PlaylistImportEntryDraft` + bounded safe issues без queue/allocator/commit/I/O authority и без второго URL parser-а.
+- Video -> Single, collections nested-flatten, MultiVideo -> first-class Compound; one part остаётся compound, zero retained parts даёт issue/no draft, stable unavailable сохраняется, missing identity становится issue, duplicates/order сохраняются.
+- Exact root остаётся exact durable URL; extracted child/delegation identity сохраняет service-ytdlp ownership через versioned stable service payload, поэтому direct-media-first не перехватывает reopen. Ephemeral transport material отсутствует/fail-closed. Full contract: `mem:app-egui/ytdlp-topology-drafts-s16-2026-07-20`.

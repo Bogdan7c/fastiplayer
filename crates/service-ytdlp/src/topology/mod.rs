@@ -7,6 +7,7 @@ mod parser;
 #[path = "parser/tests.rs"]
 mod parser_tests;
 mod process;
+mod reopen;
 
 use rustiplayer_config::YtDlpConfig;
 
@@ -22,6 +23,12 @@ pub use model::{
     YtDlpTopologyEntry, YtDlpTopologyEntryKind, YtDlpTopologyIdentity, YtDlpTopologyKind,
     YtDlpTopologyMetadata, YtDlpTopologyMultiVideo, YtDlpTopologyVideo,
     YtDlpUnavailableTopologyEntry, YtDlpUnavailableTopologyReason,
+};
+pub use reopen::{
+    YT_DLP_DURABLE_REOPEN_PAYLOAD_MAX_BYTES, YT_DLP_DURABLE_REOPEN_PAYLOAD_VERSION,
+    YT_DLP_DURABLE_REOPEN_SERVICE_OWNER, YtDlpDurableReopenClassificationError,
+    YtDlpDurableReopenIdentityInput, YtDlpDurableReopenMaterialKind, YtDlpDurableReopenPayload,
+    classify_yt_dlp_delegation_reopen_target, classify_yt_dlp_durable_reopen_identity,
 };
 
 use crate::YtDlpMediaLocator;

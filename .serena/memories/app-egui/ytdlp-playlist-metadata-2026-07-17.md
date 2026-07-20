@@ -9,3 +9,7 @@
 - Queue replacement/Clear/shutdown отменяют pending/active enrichment. Running child получает cancellation. Ошибки используют redacted safe label и bounded retry, без process-per-frame loop.
 - Focused coverage находится в `crates/app-egui/src/playlist_runtime/discovery/yt_dlp_metadata/tests.rs`, `playlist_runtime/actions.rs` и service metadata/process tests. Hermetic tests не требуют сети.
 - Актуальная service/privacy/config архитектура: `mem:media-services/core`, `mem:media-services/secret-safe-locators-s10b`, `mem:config/schema-v6-ytdlp-migration-2026-07-17`.
+
+## S16 topology draft consumer note (2026-07-20)
+- Новый `app-egui::url_topology_drafts` не вызывает metadata enrichment process повторно: он проецирует уже bounded topology title/duration в `CachedPlaylistMetadata`, сохраняет exact root provenance и service-owned child reopen identity, но не открывает media/network и не патчит queue.
+- Collection/compound preview mapping, unavailable/issues и durable payload contract: `mem:app-egui/ytdlp-topology-drafts-s16-2026-07-20`.

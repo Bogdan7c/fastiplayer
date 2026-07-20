@@ -191,3 +191,8 @@ Session 05 completed PASS on 2026-07-14. This memory complements `mem:core` and 
 - Downstream `playlist-io::cue` переиспользует существующие `PlaylistPlaybackSpan`, `PlaylistImportProvenance { source_kind: Cue }` и ID-less `PlaylistSingleImportDraft`; `playlist-core` API/storage/allocation/traversal не менялись.
 - Каждый CUE AUDIO track — Single draft; exact INDEX01 становится span start, same-FILE next INDEX01 — exclusive end, cross-FILE/last track — open EOF. Cue-specific INDEX00/02..99 и unknown commands остаются bounded preview provenance в `playlist-io`, а не новым queue payload.
 - Full parser contract/verification: `mem:playlist/io-s12-cue-2026-07-20`.
+
+## S16 app topology mapping consumer note (2026-07-20)
+- Downstream `app-egui::url_topology_drafts` теперь строит существующие ID-less `PlaylistSingleImportDraft`/`PlaylistCompoundImportDraft` из bounded `service-ytdlp` topology. `playlist-core` API/storage/allocator/traversal и S08 queue commit boundary не менялись.
+- One-part compound сохраняется first-class; zero-part отвергается до draft publication. Stable unavailable использует существующий `PlaylistImportAvailability::Unavailable`; exact root provenance и versioned stable service child payload используют прежние `DurableReopenLocator`/`PlaylistImportProvenance` invariants. Ephemeral material по-прежнему fail-closed.
+- Full app mapping contract/verification: `mem:app-egui/ytdlp-topology-drafts-s16-2026-07-20`.
