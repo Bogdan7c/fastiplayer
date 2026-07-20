@@ -1,12 +1,13 @@
 //! Нейтральный bounded boundary импорта и экспорта playlist-документов.
 //!
-//! Crate реализует generic M3U/HLS distinction и namespace-aware XSPF v1.
-//! Он не читает filesystem/network, не запускает service, не probe-ит media
-//! и не мутирует canonical queue.
+//! Crate реализует generic M3U/HLS distinction, namespace-aware XSPF v1
+//! и bounded local-only recursive expansion. Network I/O, service admission,
+//! media probe и mutation canonical queue остаются за пределами crate.
 
 mod hls;
 mod issue;
 mod limits;
+mod local_expansion;
 mod locator;
 mod m3u;
 mod model;
@@ -17,6 +18,17 @@ pub use issue::{M3uImportIssue, M3uImportIssueKind, M3uIssueSummary, M3uLineNumb
 pub use limits::{
     DEFAULT_MAX_M3U_DOCUMENT_BYTES, DEFAULT_MAX_M3U_ISSUES, DEFAULT_MAX_M3U_ITEMS,
     DEFAULT_MAX_M3U_LINE_BYTES, M3uParserLimits, M3uParserLimitsError,
+};
+pub use local_expansion::{
+    DEFAULT_MAX_LOCAL_EXPANSION_BYTES, DEFAULT_MAX_LOCAL_EXPANSION_DEPTH,
+    DEFAULT_MAX_LOCAL_EXPANSION_DIAGNOSTICS, DEFAULT_MAX_LOCAL_EXPANSION_DOCUMENTS,
+    DEFAULT_MAX_LOCAL_EXPANSION_ITEMS, DepthFirstExpandedEntries, ExpandedLocalPlaylistDocument,
+    ExpandedLocalPlaylistEntry, LocalPlaylistDocumentFormat, LocalPlaylistExpansion,
+    LocalPlaylistExpansionCancellation, LocalPlaylistExpansionIssue,
+    LocalPlaylistExpansionIssueKind, LocalPlaylistExpansionLimits,
+    LocalPlaylistExpansionLimitsError, LocalPlaylistExpansionRequest,
+    LocalPlaylistExpansionStartError, LocalPlaylistExpansionSummary,
+    UnexpandedLocalPlaylistInclude, expand_local_playlist,
 };
 pub use m3u::{M3uDeclaredFormat, M3uParseRequest, parse_m3u_document};
 pub use model::{

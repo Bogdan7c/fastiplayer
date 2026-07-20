@@ -148,3 +148,7 @@
 - `playlist-io` теперь владеет streaming namespace-aware XSPF v1 schema/model поверх единственного hardened `bounded-xml-reader` boundary: exact namespace/version, ordered/cardinality-checked trackList/tracks, inherited document/local `xml:base`, ordered 0..N location candidates без service admission и metadata duration-only hint.
 - Versioned Rustiplayer extension `urn:rustiplayer:xspf:playlist-extension:1` использует одну playlist-level minimal group запись (`firstTrack`, `trackCount`, root location) без per-track duplication; ranges валидируются линейно после flattened trackList.
 - Добавлен typed export URI eligibility без queue serializer: reversible percent-encoded native/file URL либо secret-safe rejection foreign/unrepresentable/service-owned identity. Full contract и verification: `mem:playlist/io-s06-xspf-2026-07-20`.
+
+## Web media roadmap S07 bounded nested local expansion (2026-07-20)
+- `playlist-io` стал общим local-only recursive owner для M3U/M3U8/XSPF includes: deterministic DFS tree, active-stack-only canonical cycle identity, reversible stored native/non-UTF paths, aggregate depth/document/byte/item/diagnostic budgets и per-request cancellation between documents.
+- Network playlist-looking URL остаётся leaf без fetch; local HLS typed unsupported. XSPF multi-location admission остаётся будущей S08 policy; recurse выполняется только для одного unambiguous local file candidate. Full contract: `mem:playlist/io-s07-nested-local-expansion-2026-07-20`.

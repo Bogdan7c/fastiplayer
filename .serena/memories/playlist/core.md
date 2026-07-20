@@ -170,3 +170,7 @@ Session 05 completed PASS on 2026-07-14. This memory complements `mem:core` and 
 - XSPF parser возвращает отдельную ID-less `XspfPlaylist` preview model с flattened tracks, ordered location candidates и optional group ranges; он намеренно не строит `PlaylistSingleImportDraft`/`PlaylistCompoundImportDraft`, потому что source-neutral admission/transaction принадлежит S08.
 - XSPF duration хранится только как `MediaDuration` hint и не создаёт `PlaylistPlaybackSpan`. Parser не получает allocator, queue handle, stable Item/Group IDs или mutation authority.
 - `XspfExportLocation` читает только explicit durable locator exposure для URI eligibility; queue snapshot/compound export transaction остаются S10. Полный contract: `mem:playlist/io-s06-xspf-2026-07-20`.
+
+## S07 nested local expansion consumer note (2026-07-20)
+- `playlist-core` API/queue/storage/allocation authority не изменились. `playlist-io` рекурсивно строит ID-less document tree из существующих `PlaylistSingleImportDraft` и XSPF track/group models; Item/Group IDs и canonical queue commit остаются будущей S08 transaction.
+- Canonical filesystem path не становится `DurableReopenLocator`: он transient только в active DFS cycle stack. Original native/non-UTF locators и failed-include payload сохраняются reversible. Полный S07 contract: `mem:playlist/io-s07-nested-local-expansion-2026-07-20`.
