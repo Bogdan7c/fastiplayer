@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "profile_id": "yt-dlp-2026.07.04-serializable-v1",
-  "profile_status": "inventory_complete_runtime_not_enabled",
+  "profile_status": "topology_runtime_enabled_candidate_runtime_legacy",
   "source": {
     "repository": "https://github.com/yt-dlp/yt-dlp",
     "release": "2026.07.04",
@@ -65,6 +65,26 @@
       "loads_cookie_file": false,
       "guarantee": "rustiplayer_owned_arguments_request_no_download_write_exec_postprocessor_or_mark_watched_behavior"
     },
+    "hermetic_topology": {
+      "argv_before_url": [
+        "--ignore-config",
+        "--no-plugin-dirs",
+        "--quiet",
+        "--no-warnings",
+        "--simulate",
+        "--dump-json",
+        "--dump-single-json",
+        "--flat-playlist",
+        "--lazy-playlist"
+      ],
+      "url_placeholder": "<exact-http-or-https-locator>",
+      "loads_system_config": false,
+      "loads_plugins": false,
+      "loads_cookie_file": false,
+      "output_contract": "line_delimited_lazy_entries_followed_by_authoritative_single_json_root",
+      "n_entries_authoritative": false,
+      "guarantee": "rustiplayer_owned_arguments_request_no_download_write_exec_postprocessor_or_mark_watched_behavior"
+    },
     "manual_opt_in_inventory": {
       "argv_before_url": [
         "--quiet",
@@ -98,6 +118,29 @@
       "loads_system_config": true,
       "loads_plugins": true,
       "loads_cookie_file": "user_config_may_enable",
+      "guarantee": "rustiplayer_owned_arguments_only",
+      "outside_app_guarantee": [
+        "trusted_user_config_may_add_side_effects",
+        "trusted_plugin_import_or_execution_may_add_side_effects",
+        "user_owned_cookie_jar_may_be_updated_by_system_yt_dlp"
+      ]
+    },
+    "manual_opt_in_topology": {
+      "argv_before_url": [
+        "--quiet",
+        "--no-warnings",
+        "--simulate",
+        "--dump-json",
+        "--dump-single-json",
+        "--flat-playlist",
+        "--lazy-playlist"
+      ],
+      "url_placeholder": "<exact-http-or-https-locator>",
+      "loads_system_config": true,
+      "loads_plugins": true,
+      "loads_cookie_file": "user_config_may_enable",
+      "output_contract": "line_delimited_lazy_entries_followed_by_authoritative_single_json_root",
+      "n_entries_authoritative": false,
       "guarantee": "rustiplayer_owned_arguments_only",
       "outside_app_guarantee": [
         "trusted_user_config_may_add_side_effects",

@@ -1,7 +1,8 @@
 # yt-dlp 2026.07.04 compatibility inventory
 
-Статус: S00 inventory завершён как checked-in доказательная граница. Runtime
-production playback не переключён на новый профиль и не изменён.
+Статус: S00 inventory завершён как checked-in доказательная граница. S15
+включил bounded topology extraction; candidate/playback runtime продолжает
+использовать прежний single-item profile.
 
 Machine-readable источник истины — `profile.json`. Этот отчёт объясняет решения,
 но не заменяет manifest и focused checks.
@@ -37,6 +38,24 @@ Hermetic selected result:
 ```text
 yt-dlp --ignore-config --no-plugin-dirs --quiet --no-warnings --simulate --dump-single-json --no-playlist --format <SELECTOR> <URL>
 ```
+
+Hermetic topology:
+
+```text
+yt-dlp --ignore-config --no-plugin-dirs --quiet --no-warnings --simulate --dump-json --dump-single-json --flat-playlist --lazy-playlist <URL>
+```
+
+Topology profile намеренно сочетает два official dump режима:
+
+- `--dump-json` публикует child entries line-by-line по мере lazy enumeration;
+- `--dump-single-json` завершает output authoritative root object-ом;
+- `--flat-playlist` не выполняет full extraction formats для child URL results;
+- `--lazy-playlist` отключает `n_entries`, поэтому Rustiplayer никогда не
+  использует это поле для allocation, progress или completeness.
+
+Production topology suffix не содержит hermetic prefix и продолжает читать
+trusted system config/plugins. Hermetic fake/fixture tests изолируют process
+environment и проверяют exact ordered argv.
 
 `--ignore-config` изолирует portable/home/user/system config. В этой версии
 реальный CLI reset plugin search — `--no-plugin-dirs`; upstream также понимает

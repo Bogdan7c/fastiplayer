@@ -67,3 +67,10 @@
 - Selection contract: `SelectionRequest::{BestPlayable, Exact}`; `PreferredHeightPolicy` даёт total rank exact → closest lower → closest higher → missing, не захватывая будущие HDR/playability/quality owners. Named width/height upper bound — 16,384 px; его расширение требует отдельного compatibility evidence.
 - `StaticCompatibilityRejection`/`ProfileExclusionReason` отделяют profile/metadata incompatibility от будущих operational provider/open errors и сохраняют safe evidence для unknown transport/container/codec cases.
 - Focused suite: 14 tests на bounds/redaction, raw preservation, aliases/conflicts, codec family+parameters, четыре layouts, source-safe semantic refresh, numeric bounds и deterministic preferred-height ordering. Rust 1.96 test/strict Clippy/workspace check, MSRV 1.92 check, fmt, refactor guardrails, diff check и Serena diagnostics PASS. `cargo-deny` по-прежнему падает только на известные transitive `quick-xml 0.39.3` RUSTSEC-2026-0194/0195; новый crate зависимостей не добавил. S19 позже владеет mapping public serialized yt-dlp formats в эти values.
+
+## S15 bounded yt-dlp topology extraction (2026-07-20)
+
+- `service-ytdlp` public boundary теперь извлекает owned `Video | Playlist | MultiVideo | Delegation` topology с typed unavailable rows; process/thread/cancellation state не выходит из service.
+- Exact topology argv сочетает official `--dump-json` lazy child lines с финальным authoritative `--dump-single-json`, плюс `--flat-playlist --lazy-playlist`; `n_entries` игнорируется. Production продолжает читать trusted system config/cookies/plugins, hermetic profile добавляет config/plugin isolation.
+- Stdout/stderr/line/entry/JSON-depth/topology-depth/field budgets, kill+wait cancel/timeout/overflow, redaction, missing `_type`, multi-video root validation и разные `url`/`url_transparent` merge policies закреплены focused tests.
+- Полный API/argv/ownership/test contract: `mem:media-services/ytdlp-topology-s15-2026-07-20`.

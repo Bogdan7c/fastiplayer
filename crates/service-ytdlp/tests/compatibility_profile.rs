@@ -485,6 +485,31 @@ fn invocation_profiles_keep_hermetic_and_manual_guarantees_separate() {
         ]
     );
 
+    // Topology profile сочетает lazy per-entry dump и authoritative root dump.
+    let hermetic_topology = invocations
+        .get("hermetic_topology")
+        .unwrap_or_else(|| panic!("hermetic topology invocation отсутствует"));
+    // Exact topology argv закрепляет flat/lazy semantics без child format extraction.
+    assert_eq!(
+        required_array(hermetic_topology, "argv_before_url"),
+        [
+            "--ignore-config",
+            "--no-plugin-dirs",
+            "--quiet",
+            "--no-warnings",
+            "--simulate",
+            "--dump-json",
+            "--dump-single-json",
+            "--flat-playlist",
+            "--lazy-playlist"
+        ]
+    );
+    // Lazy mode запрещает считать n_entries authoritative.
+    assert_eq!(
+        hermetic_topology.get("n_entries_authoritative"),
+        Some(&Value::Bool(false))
+    );
+
     // Проверяем отсутствие app-owned side-effect flags в обоих hermetic argv.
     let forbidden_arguments = [
         "--no-simulate",
@@ -502,6 +527,7 @@ fn invocation_profiles_keep_hermetic_and_manual_guarantees_separate() {
     for arguments in [
         required_array(hermetic_inventory, "argv_before_url"),
         required_array(hermetic_selected, "argv_before_selector"),
+        required_array(hermetic_topology, "argv_before_url"),
     ] {
         // Проверяем каждый app-owned argument.
         for argument in arguments {
@@ -570,6 +596,38 @@ fn invocation_profiles_keep_hermetic_and_manual_guarantees_separate() {
     assert_eq!(
         manual_selected.get("loads_plugins"),
         Some(&Value::Bool(true))
+    );
+
+    // Production topology сохраняет explicit trusted-system boundary.
+    let manual_topology = invocations
+        .get("manual_opt_in_topology")
+        .unwrap_or_else(|| panic!("manual topology invocation отсутствует"));
+    // Exact production suffix совпадает с process owner.
+    assert_eq!(
+        required_array(manual_topology, "argv_before_url"),
+        [
+            "--quiet",
+            "--no-warnings",
+            "--simulate",
+            "--dump-json",
+            "--dump-single-json",
+            "--flat-playlist",
+            "--lazy-playlist"
+        ]
+    );
+    // Production topology продолжает читать system config/plugins.
+    assert_eq!(
+        manual_topology.get("loads_system_config"),
+        Some(&Value::Bool(true))
+    );
+    assert_eq!(
+        manual_topology.get("loads_plugins"),
+        Some(&Value::Bool(true))
+    );
+    // Lazy root/entry completeness не зависит от n_entries.
+    assert_eq!(
+        manual_topology.get("n_entries_authoritative"),
+        Some(&Value::Bool(false))
     );
 }
 

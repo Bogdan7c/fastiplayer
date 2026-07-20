@@ -65,6 +65,32 @@ impl YtDlpProcessConfig {
             timeout: Duration::from_millis(yt_dlp_config.resolve_timeout_ms),
         })
     }
+
+    /// Строит ту же runtime policy, переводя только config validation в topology error.
+    pub(crate) fn from_yt_dlp_config_for_topology(
+        yt_dlp_config: &YtDlpConfig,
+    ) -> Result<Self, crate::topology::YtDlpTopologyError> {
+        if yt_dlp_config.resolve_timeout_ms == 0 {
+            return Err(crate::topology::YtDlpTopologyError::process(
+                anyhow::anyhow!("yt_dlp.resolve_timeout_ms должен быть положительным"),
+            ));
+        }
+
+        Ok(Self {
+            executable: YT_DLP_EXECUTABLE.to_string(),
+            timeout: Duration::from_millis(yt_dlp_config.resolve_timeout_ms),
+        })
+    }
+
+    /// Возвращает executable только process owner-у для spawn.
+    pub(crate) fn executable_for_spawn(&self) -> &str {
+        self.executable.as_str()
+    }
+
+    /// Возвращает validated extraction timeout.
+    pub(crate) const fn extraction_timeout(&self) -> Duration {
+        self.timeout
+    }
 }
 
 /// Собранный stdout/stderr внешнего процесса.

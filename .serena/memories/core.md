@@ -179,3 +179,9 @@
 
 ## CUE S14 boundary (2026-07-20)
 Exact CUE export identity теперь durable в `playlist-core`, additive persisted в playlist-state v2 и проецируется app-egui в neutral playback window; player-core остаётся CUE-free. Pure eligibility/serializer живут в playlist-io, UI кеширует full/selected availability по view revision. Детали и тесты: `mem:app-egui/cue-integration-s14-2026-07-20`.
+
+
+## Web media roadmap S15 bounded yt-dlp topology (2026-07-20)
+- `service-ytdlp` получил public owned `Video | Playlist | MultiVideo | Delegation` topology boundary с unavailable rows, explicit `url`/`url_transparent` merge policy и без nonserializable runtime state.
+- Official CLI profile использует lazy line-delimited `--dump-json` + authoritative final `--dump-single-json`, `--flat-playlist --lazy-playlist`; `n_entries` не authoritative. Production system config/cookies/plugins остаются trusted external code, hermetic fixtures изолированы.
+- Process owner enforce-ит stdout/stderr/JSON-line/entry/JSON-depth/topology-depth/field budgets и kill+wait на cancellation/timeout/overflow; raw locator/direct endpoints/stderr redacted. Full contract: `mem:media-services/ytdlp-topology-s15-2026-07-20`.

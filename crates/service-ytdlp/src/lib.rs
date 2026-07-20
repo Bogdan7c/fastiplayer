@@ -29,6 +29,7 @@ mod metadata;
 mod process;
 mod resolver;
 mod selection;
+mod topology;
 
 pub use admission::YtDlpCompatibilityRejection;
 pub use dto::{
@@ -48,6 +49,18 @@ pub use resolver::{
 pub use selection::{
     YtDlpCandidateRejection, YtDlpCandidateRejectionReason, YtDlpStreamSelectionError,
     select_yt_dlp_stream,
+};
+pub use topology::{
+    DEFAULT_TOPOLOGY_DEPTH, DEFAULT_TOPOLOGY_ENTRY_COUNT, DEFAULT_TOPOLOGY_JSON_DEPTH,
+    DEFAULT_TOPOLOGY_JSON_LINE_BYTES, DEFAULT_TOPOLOGY_STDERR_BYTES, DEFAULT_TOPOLOGY_STDOUT_BYTES,
+    TOPOLOGY_IDENTITY_MAX_UTF8_BYTES, TOPOLOGY_LOCATOR_MAX_UTF8_BYTES,
+    TOPOLOGY_METADATA_MAX_UTF8_BYTES, YtDlpDelegationMetadataPolicy, YtDlpTopology,
+    YtDlpTopologyBudgetField, YtDlpTopologyBudgets, YtDlpTopologyCollection,
+    YtDlpTopologyDelegation, YtDlpTopologyEntry, YtDlpTopologyEntryKind, YtDlpTopologyError,
+    YtDlpTopologyIdentity, YtDlpTopologyInvalidResponseReason, YtDlpTopologyKind,
+    YtDlpTopologyMetadata, YtDlpTopologyMultiVideo, YtDlpTopologyVideo,
+    YtDlpUnavailableTopologyEntry, YtDlpUnavailableTopologyReason,
+    extract_yt_dlp_topology_with_budgets, extract_yt_dlp_topology_with_config,
 };
 
 use http_refresh::{RefreshContext, YtDlpRefreshingRangeSource};
