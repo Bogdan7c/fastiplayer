@@ -110,3 +110,9 @@ Session 06 completed PASS on 2026-07-14. This memory complements `mem:core`, `me
 - Export target выбирается native save dialog после typed scope/format. Все semantic/locator checks и serialization завершаются до первой target mutation; sensitive locators сначала создают redacted process-lifetime continuation в generalized confirmation slot.
 - Единственная mutation-функция исчерпывающе сохраняет neutral outcomes `NotReplaced`, `ReplacedDurabilityUnconfirmed` и `Durable`. Unix target/temp остаются user-only (0600), exact-path cleanup и parent-directory durability принадлежат `atomic-file-store`.
 - Focused S11 tests подтверждают отсутствие queue revision/ID/dirty mutation, no-touch sensitive/cancel preflight, real durable 0600 write и post-rename durability distinction. Runtime/UI details: `mem:app-egui/playlist-export-s11-2026-07-20`.
+
+
+## S12 CUE persistence isolation note (2026-07-20)
+- S12 не менял playlist-state schema v2, DTO, writer, quarantine либо resume sidecar. Уже существующий durable payload сохраняет CUE draft root provenance/source ordinal и `PlaylistPlaybackSpan` после будущего queue commit.
+- Полный `CueDocument`, original 75-fps timestamps, INDEX00/02..99, unknown commands и CUE export eligibility являются preview-owned данными `playlist-io` и намеренно не добавлены в generic queue-state schema. Поэтому exact CUE re-export после утраты preview не обещан S12.
+- Full parser contract/verification: `mem:playlist/io-s12-cue-2026-07-20`.

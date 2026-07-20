@@ -4,6 +4,7 @@
 //! и bounded local-only recursive expansion. Network I/O, service admission,
 //! media probe и mutation canonical queue остаются за пределами crate.
 
+mod cue;
 mod export;
 mod hls;
 mod issue;
@@ -15,6 +16,14 @@ mod model;
 mod source;
 mod xspf;
 
+pub use cue::{
+    CUE_FRAMES_PER_SECOND, CueDocument, CueDocumentSource, CueExportIneligibility, CueFile,
+    CueFileType, CueFileTypeKind, CueIndex, CueLineNumber, CueParseError, CueParseErrorKind,
+    CueParseRequest, CueParserLimits, CueParserLimitsError, CueTextEncoding, CueTimestamp,
+    CueTrack, CueUnknownCommand, DEFAULT_MAX_CUE_DOCUMENT_BYTES, DEFAULT_MAX_CUE_FILES,
+    DEFAULT_MAX_CUE_LINE_BYTES, DEFAULT_MAX_CUE_RETAINED_TEXT_BYTES,
+    DEFAULT_MAX_CUE_UNKNOWN_COMMANDS, parse_cue_document,
+};
 pub use export::{
     PlaylistExportDocumentTarget, PlaylistExportDocumentTargetError, PlaylistExportFormat,
     PlaylistExportIneligible, PlaylistExportLocatorPolicy, PlaylistExportLocatorRejection,

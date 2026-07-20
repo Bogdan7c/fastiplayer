@@ -185,3 +185,9 @@ Session 05 completed PASS on 2026-07-14. This memory complements `mem:core` and 
 - `PlaylistExportSnapshot::capture(&PlaylistQueue, Full|Selected)` находится в downstream `playlist-io` и использует только public immutable top-level read boundary; `playlist-core` не получил serializer/I/O/service dependencies или новый mutator.
 - Snapshot клонирует selected `PlaylistEntry` payload-ы для ownership handoff, сохраняет canonical order/duplicates/whole compound parts и после capture не держит queue handle. Capture/preflight/serialize не меняют structural/traversal/metadata revisions, current, allocators или shuffle state.
 - Полный locator/format/service contract: `mem:playlist/io-s10-export-2026-07-20`.
+
+
+## S12 playlist-io CUE consumer note (2026-07-20)
+- Downstream `playlist-io::cue` переиспользует существующие `PlaylistPlaybackSpan`, `PlaylistImportProvenance { source_kind: Cue }` и ID-less `PlaylistSingleImportDraft`; `playlist-core` API/storage/allocation/traversal не менялись.
+- Каждый CUE AUDIO track — Single draft; exact INDEX01 становится span start, same-FILE next INDEX01 — exclusive end, cross-FILE/last track — open EOF. Cue-specific INDEX00/02..99 и unknown commands остаются bounded preview provenance в `playlist-io`, а не новым queue payload.
+- Full parser contract/verification: `mem:playlist/io-s12-cue-2026-07-20`.
