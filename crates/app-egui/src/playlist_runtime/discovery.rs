@@ -230,7 +230,7 @@ pub(crate) enum PlaylistDiscoveryWarning {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PlaylistDiscoveryInsertionHint {
     pub inserted_item_ids: Arc<[PlaylistItemId]>,
-    pub before_item_id: Option<PlaylistItemId>,
+    pub before_entry_id: Option<playlist_core::PlaylistEntryId>,
 }
 
 struct AppDiscoveryWake {
@@ -513,7 +513,7 @@ impl PlaylistDiscoveryCoordinator {
                         Ok(committed) => {
                             self.last_insertion_hint = Some(PlaylistDiscoveryInsertionHint {
                                 inserted_item_ids: Arc::from(committed.item_ids.clone()),
-                                before_item_id: committed.anchor.before_item_id(),
+                                before_entry_id: committed.anchor.before_entry_id(),
                             });
                             for (record, item_id) in records.iter().zip(committed.item_ids.iter()) {
                                 if let DiscoveryRecordKey::Manifest(key) = record.key() {

@@ -32,7 +32,9 @@ impl VirtualizedInsertionTarget {
         match self {
             Self::ToFront => MoveItemIntent::ToFront,
             Self::ToBack => MoveItemIntent::ToBack,
-            Self::Before(item_id) => MoveItemIntent::Before(item_id),
+            Self::Before(item_id) => {
+                MoveItemIntent::Before(playlist_core::PlaylistEntryId::Single(item_id))
+            }
         }
     }
 }

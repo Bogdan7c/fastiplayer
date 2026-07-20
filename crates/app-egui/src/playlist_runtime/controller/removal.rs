@@ -1,6 +1,7 @@
 //! Destructive queue mutations, detached active tombstone и controller-side Undo restore.
 
 mod clear;
+mod selection;
 pub(crate) use clear::ControllerClearMediaResetCommit;
 
 use std::collections::HashSet;
@@ -98,6 +99,13 @@ pub(crate) enum ControllerDestructiveRemovalOutcome {
     InvalidRetainedItem {
         item_id: PlaylistItemId,
     },
+    PartialCompoundSelection {
+        compound_entry_id: playlist_core::PlaylistEntryId,
+    },
+    CompoundPartTarget {
+        part_item_id: PlaylistItemId,
+        compound_entry_id: playlist_core::PlaylistEntryId,
+    },
     StaleStructuralRevision,
     StaleSelection,
     NoChange,
@@ -111,7 +119,13 @@ pub(crate) enum ControllerDestructiveRemovalOutcome {
 /// Внутренний mutation error остаётся маленьким и не несёт success snapshot variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RemovalMutationError {
-    NotFound { item_id: PlaylistItemId },
+    NotFound {
+        item_id: PlaylistItemId,
+    },
+    CompoundPartTarget {
+        part_item_id: PlaylistItemId,
+        compound_entry_id: playlist_core::PlaylistEntryId,
+    },
     NoChange,
     InstallCommitLinearizing,
     DomainRevisionExhausted,
@@ -143,6 +157,13 @@ impl RemovalMutationError {
     fn into_outcome(self) -> ControllerDestructiveRemovalOutcome {
         match self {
             Self::NotFound { item_id } => ControllerDestructiveRemovalOutcome::NotFound { item_id },
+            Self::CompoundPartTarget {
+                part_item_id,
+                compound_entry_id,
+            } => ControllerDestructiveRemovalOutcome::CompoundPartTarget {
+                part_item_id,
+                compound_entry_id,
+            },
             Self::NoChange => ControllerDestructiveRemovalOutcome::NoChange,
             Self::InstallCommitLinearizing => {
                 ControllerDestructiveRemovalOutcome::InstallCommitLinearizing
@@ -198,7 +219,10 @@ impl PlaylistController {
             Arc::from([item_id]),
             selection_policy,
             RemovedActiveMediaPolicy::DetachRemovedPlaylistItem,
-            move |controller| match controller.queue.remove(item_id) {
+            move |controller| match controller
+                .queue
+                .remove(playlist_core::PlaylistEntryId::Single(item_id))
+            {
                 RemoveItemOutcome::Removed {
                     current_outcome, ..
                 } => Ok(current_outcome),
@@ -212,6 +236,13 @@ impl PlaylistController {
                 RemoveItemOutcome::NotFound { .. } => {
                     Err(RemovalMutationError::NotFound { item_id })
                 }
+                RemoveItemOutcome::CompoundPartTarget {
+                    part_item_id,
+                    compound_entry_id,
+                } => Err(RemovalMutationError::CompoundPartTarget {
+                    part_item_id,
+                    compound_entry_id,
+                }),
             },
         )
     }
@@ -221,7 +252,8 @@ impl PlaylistController {
         &mut self,
         retained_item_id: PlaylistItemId,
     ) -> ControllerDestructiveRemovalOutcome {
-        if self.queue.item(retained_item_id).is_none() {
+        let retained_entry_id = playlist_core::PlaylistEntryId::Single(retained_item_id);
+        if self.queue.top_level_entry(retained_entry_id).is_none() {
             return ControllerDestructiveRemovalOutcome::InvalidRetainedItem {
                 item_id: retained_item_id,
             };
@@ -236,7 +268,7 @@ impl PlaylistController {
             removed_item_ids.into(),
             SelectionAfterRemoval::SelectSingle(retained_item_id),
             RemovedActiveMediaPolicy::DetachRemovedPlaylistItem,
-            |controller| match controller.queue.remove_others(retained_item_id) {
+            |controller| match controller.queue.remove_others(retained_entry_id) {
                 Ok(BulkRemoveOutcome::Removed {
                     current_outcome, ..
                 }) => Ok(current_outcome),
@@ -245,6 +277,9 @@ impl PlaylistController {
                 }
                 Err(BulkRemoveError::InstallCommitLinearizing) => {
                     Err(RemovalMutationError::InstallCommitLinearizing)
+                }
+                Err(BulkRemoveError::CompoundPartTarget { .. }) => {
+                    Err(RemovalMutationError::NoChange)
                 }
                 Err(
                     BulkRemoveError::StructuralRevisionExhausted
@@ -260,11 +295,12 @@ impl PlaylistController {
         item_ids: Arc<[PlaylistItemId]>,
         expected_structural_revision: PlaylistStructuralRevision,
     ) -> ControllerDestructiveRemovalOutcome {
-        let removed_item_ids =
+        let preflight =
             match self.preflight_exact_removal_ids(&item_ids, expected_structural_revision) {
-                Ok(item_ids) => item_ids,
+                Ok(preflight) => preflight,
                 Err(outcome) => return outcome,
             };
+        let removed_item_ids = preflight.item_ids;
         let selection = self.selection.snapshot();
         if selection.selected_count() != removed_item_ids.len()
             || removed_item_ids
@@ -273,13 +309,13 @@ impl PlaylistController {
         {
             return ControllerDestructiveRemovalOutcome::StaleSelection;
         }
-        let domain_item_ids = Arc::clone(&item_ids);
+        let domain_entry_ids = preflight.entry_ids;
         self.commit_destructive_removal(
             ControllerRemovalKind::RemoveSelected,
             item_ids,
             SelectionAfterRemoval::SelectNearest,
             RemovedActiveMediaPolicy::DetachRemovedPlaylistItem,
-            move |controller| match controller.queue.remove_batch(&domain_item_ids) {
+            move |controller| match controller.queue.remove_batch(&domain_entry_ids) {
                 Ok(BulkRemoveOutcome::Removed {
                     current_outcome, ..
                 }) => Ok(current_outcome),
@@ -288,6 +324,9 @@ impl PlaylistController {
                 }
                 Err(BulkRemoveError::InstallCommitLinearizing) => {
                     Err(RemovalMutationError::InstallCommitLinearizing)
+                }
+                Err(BulkRemoveError::CompoundPartTarget { .. }) => {
+                    Err(RemovalMutationError::NoChange)
                 }
                 Err(
                     BulkRemoveError::StructuralRevisionExhausted
@@ -303,26 +342,27 @@ impl PlaylistController {
         item_ids: Arc<[PlaylistItemId]>,
         expected_structural_revision: PlaylistStructuralRevision,
     ) -> ControllerDestructiveRemovalOutcome {
-        let removed_item_ids =
+        let preflight =
             match self.preflight_exact_removal_ids(&item_ids, expected_structural_revision) {
-                Ok(item_ids) => item_ids,
+                Ok(preflight) => preflight,
                 Err(outcome) => return outcome,
             };
+        let removed_item_ids = preflight.item_ids;
         let selection = self.selection.snapshot();
-        if selection.selected_count() + removed_item_ids.len() != self.queue.top_level_entry_count()
+        if selection.selected_count() + removed_item_ids.len() != self.queue.retained_item_count()
             || removed_item_ids
                 .iter()
                 .any(|item_id| selection.is_selected(*item_id))
         {
             return ControllerDestructiveRemovalOutcome::StaleSelection;
         }
-        let domain_item_ids = Arc::clone(&item_ids);
+        let domain_entry_ids = preflight.entry_ids;
         self.commit_destructive_removal(
             ControllerRemovalKind::RemoveUnselected,
             item_ids,
             SelectionAfterRemoval::PreserveSurvivors,
             RemovedActiveMediaPolicy::DetachRemovedPlaylistItem,
-            move |controller| match controller.queue.remove_batch(&domain_item_ids) {
+            move |controller| match controller.queue.remove_batch(&domain_entry_ids) {
                 Ok(BulkRemoveOutcome::Removed {
                     current_outcome, ..
                 }) => Ok(current_outcome),
@@ -332,39 +372,15 @@ impl PlaylistController {
                 Err(BulkRemoveError::InstallCommitLinearizing) => {
                     Err(RemovalMutationError::InstallCommitLinearizing)
                 }
+                Err(BulkRemoveError::CompoundPartTarget { .. }) => {
+                    Err(RemovalMutationError::NoChange)
+                }
                 Err(
                     BulkRemoveError::StructuralRevisionExhausted
                     | BulkRemoveError::TraversalRevisionExhausted,
                 ) => Err(RemovalMutationError::DomainRevisionExhausted),
             },
         )
-    }
-
-    /// Проверяет revision, uniqueness и committed membership exact bulk action-а.
-    fn preflight_exact_removal_ids(
-        &self,
-        item_ids: &[PlaylistItemId],
-        expected_structural_revision: PlaylistStructuralRevision,
-    ) -> Result<HashSet<PlaylistItemId>, ControllerDestructiveRemovalOutcome> {
-        if expected_structural_revision != self.structural_revision {
-            return Err(ControllerDestructiveRemovalOutcome::StaleStructuralRevision);
-        }
-        if item_ids.is_empty() {
-            return Err(ControllerDestructiveRemovalOutcome::NoChange);
-        }
-        let committed_item_ids: HashSet<_> = self.queue.iter_playable_ids().collect();
-        let mut exact_item_ids = HashSet::with_capacity(item_ids.len());
-        for item_id in item_ids {
-            if !exact_item_ids.insert(*item_id) {
-                return Err(ControllerDestructiveRemovalOutcome::DuplicateItemId {
-                    item_id: *item_id,
-                });
-            }
-            if !committed_item_ids.contains(item_id) {
-                return Err(ControllerDestructiveRemovalOutcome::NotFound { item_id: *item_id });
-            }
-        }
-        Ok(exact_item_ids)
     }
 
     /// Общая transaction сначала захватывает snapshot, затем публикует ровно одну mutation.

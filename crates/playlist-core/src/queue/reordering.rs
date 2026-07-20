@@ -1,36 +1,51 @@
 //! Атомарное перемещение нескольких canonical строк как одного блока.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::PlaylistItemId;
+use crate::{PlaylistEntryId, PlaylistItemId};
 
-use super::{MoveItemIntent, PlaylistQueue};
+use super::structural::StructuralEntryLookupError;
+use super::{MoveItemIntent, MoveItemOutcome, PlaylistQueue};
 
 /// Typed outcome группового перемещения не смешивает ошибки запроса и no-op.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MoveItemsOutcome {
-    /// Caller не передал ни одного stable Item ID.
+    /// Caller не передал ни одной structural identity.
     NoItemsRequested,
-    /// Один Item ID повторился, поэтому запрос неоднозначен.
-    DuplicateItemId {
+    /// Одна structural identity повторилась, поэтому запрос неоднозначен.
+    DuplicateEntryId {
         /// Первый обнаруженный повторяющийся ID.
-        item_id: PlaylistItemId,
+        entry_id: PlaylistEntryId,
     },
-    /// Один из requested Item ID отсутствует в committed queue.
-    ItemNotFound {
+    /// Одна из requested entries отсутствует в committed queue.
+    EntryNotFound {
         /// Первый отсутствующий ID в caller order.
-        item_id: PlaylistItemId,
+        entry_id: PlaylistEntryId,
+    },
+    /// Caller передал playable part вместо owning compound identity.
+    CompoundPartTarget {
+        /// Ошибочно переданный playable identity.
+        part_item_id: PlaylistItemId,
+        /// Required structural owner.
+        compound_entry_id: PlaylistEntryId,
     },
     /// Named anchor отсутствует в committed queue.
     AnchorNotFound {
         /// Отсутствующий anchor ID.
-        anchor_item_id: PlaylistItemId,
+        anchor_entry_id: PlaylistEntryId,
+    },
+    /// Anchor указывает на subordinate playable part.
+    CompoundPartAnchor {
+        /// Ошибочно переданный playable identity.
+        part_item_id: PlaylistItemId,
+        /// Required structural owner.
+        compound_entry_id: PlaylistEntryId,
     },
     /// Anchor входит в перемещаемую группу и потому не задаёт внешнюю границу.
     AnchorSelected {
         /// Requested anchor, принадлежащий группе.
-        anchor_item_id: PlaylistItemId,
+        anchor_entry_id: PlaylistEntryId,
     },
     /// Итоговый canonical order совпадает с текущим.
     AlreadyInPlace {
@@ -52,17 +67,33 @@ impl fmt::Display for MoveItemsOutcome {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoItemsRequested => formatter.write_str("не переданы строки для перемещения"),
-            Self::DuplicateItemId { item_id } => {
-                write!(formatter, "Item ID {item_id} передан повторно")
+            Self::DuplicateEntryId { entry_id } => {
+                write!(formatter, "Entry ID {entry_id:?} передан повторно")
             }
-            Self::ItemNotFound { item_id } => write!(formatter, "Item ID {item_id} не найден"),
-            Self::AnchorNotFound { anchor_item_id } => {
-                write!(formatter, "anchor {anchor_item_id} не найден")
+            Self::EntryNotFound { entry_id } => {
+                write!(formatter, "Entry ID {entry_id:?} не найден")
             }
-            Self::AnchorSelected { anchor_item_id } => {
+            Self::CompoundPartTarget {
+                part_item_id,
+                compound_entry_id,
+            } => write!(
+                formatter,
+                "{part_item_id} является частью {compound_entry_id:?}; требуется compound target"
+            ),
+            Self::AnchorNotFound { anchor_entry_id } => {
+                write!(formatter, "anchor {anchor_entry_id:?} не найден")
+            }
+            Self::CompoundPartAnchor {
+                part_item_id,
+                compound_entry_id,
+            } => write!(
+                formatter,
+                "anchor {part_item_id} является частью {compound_entry_id:?}"
+            ),
+            Self::AnchorSelected { anchor_entry_id } => {
                 write!(
                     formatter,
-                    "anchor {anchor_item_id} входит в перемещаемую группу"
+                    "anchor {anchor_entry_id:?} входит в перемещаемую группу"
                 )
             }
             Self::AlreadyInPlace { item_count } => {
@@ -85,46 +116,164 @@ impl fmt::Display for MoveItemsOutcome {
 }
 
 impl PlaylistQueue {
-    /// Перемещает requested single IDs одним блоком в их текущем canonical порядке.
+    /// Перемещает exact top-level entry относительно intent-named anchor.
+    pub fn move_item(
+        &mut self,
+        entry_id: PlaylistEntryId,
+        intent: MoveItemIntent,
+    ) -> MoveItemOutcome {
+        if self.active_reservation.is_some() {
+            return MoveItemOutcome::InstallCommitLinearizing;
+        }
+        let source_index = match self.resolve_top_level_entry_index(entry_id) {
+            Ok(source_index) => source_index,
+            Err(StructuralEntryLookupError::NotFound) => {
+                return MoveItemOutcome::EntryNotFound { entry_id };
+            }
+            Err(StructuralEntryLookupError::CompoundPart {
+                part_item_id,
+                compound_entry_id,
+            }) => {
+                return MoveItemOutcome::CompoundPartTarget {
+                    part_item_id,
+                    compound_entry_id,
+                };
+            }
+        };
+        let target_index = match self.move_target_index(source_index, intent) {
+            Ok(target_index) => target_index,
+            Err(StructuralEntryLookupError::NotFound) => {
+                let anchor_entry_id = intent
+                    .anchor()
+                    .expect("only anchored intent can fail anchor lookup");
+                return MoveItemOutcome::AnchorNotFound { anchor_entry_id };
+            }
+            Err(StructuralEntryLookupError::CompoundPart {
+                part_item_id,
+                compound_entry_id,
+            }) => {
+                return MoveItemOutcome::CompoundPartAnchor {
+                    part_item_id,
+                    compound_entry_id,
+                };
+            }
+        };
+
+        if source_index == target_index {
+            return MoveItemOutcome::AlreadyInPlace { entry_id };
+        }
+        let Some(next_structural_revision) = self.structural_revision.checked_next() else {
+            return MoveItemOutcome::StructuralRevisionExhausted;
+        };
+
+        let moved_entry = self.entries.remove(source_index);
+        self.entries.insert(target_index, moved_entry);
+        self.structural_revision = next_structural_revision;
+
+        MoveItemOutcome::Moved { entry_id }
+    }
+
+    /// Вычисляет final insertion index после удаления source entry.
+    fn move_target_index(
+        &self,
+        source_index: usize,
+        intent: MoveItemIntent,
+    ) -> Result<usize, StructuralEntryLookupError> {
+        match intent {
+            MoveItemIntent::ToFront => Ok(0),
+            MoveItemIntent::ToBack => Ok(self.entries.len().saturating_sub(1)),
+            MoveItemIntent::Before(anchor_entry_id) => {
+                let anchor_index = self.resolve_top_level_entry_index(anchor_entry_id)?;
+                if anchor_index == source_index {
+                    return Ok(source_index);
+                }
+                Ok(if source_index < anchor_index {
+                    anchor_index - 1
+                } else {
+                    anchor_index
+                })
+            }
+            MoveItemIntent::After(anchor_entry_id) => {
+                let anchor_index = self.resolve_top_level_entry_index(anchor_entry_id)?;
+                if anchor_index == source_index {
+                    return Ok(source_index);
+                }
+                let anchor_after_removal = if source_index < anchor_index {
+                    anchor_index - 1
+                } else {
+                    anchor_index
+                };
+                Ok(anchor_after_removal + 1)
+            }
+        }
+    }
+
+    /// Перемещает requested top-level entries одним блоком в canonical порядке.
     pub fn move_items(
         &mut self,
-        requested_item_ids: &[PlaylistItemId],
+        requested_entry_ids: &[PlaylistEntryId],
         intent: MoveItemIntent,
     ) -> MoveItemsOutcome {
-        if requested_item_ids.is_empty() {
+        if requested_entry_ids.is_empty() {
             return MoveItemsOutcome::NoItemsRequested;
         }
 
-        let mut selected_item_ids = HashSet::with_capacity(requested_item_ids.len());
-        for item_id in requested_item_ids {
-            if !selected_item_ids.insert(*item_id) {
-                return MoveItemsOutcome::DuplicateItemId { item_id: *item_id };
+        let mut selected_entry_ids = HashSet::with_capacity(requested_entry_ids.len());
+        for entry_id in requested_entry_ids {
+            if !selected_entry_ids.insert(*entry_id) {
+                return MoveItemsOutcome::DuplicateEntryId {
+                    entry_id: *entry_id,
+                };
             }
         }
 
-        let committed_single_ids: HashSet<_> = self
+        let committed_entry_ids = self
             .entries
             .iter()
-            .filter_map(|entry| entry.as_single().map(|item| item.item_id()))
-            .collect();
-        for item_id in requested_item_ids {
-            if !committed_single_ids.contains(item_id) {
-                return MoveItemsOutcome::ItemNotFound { item_id: *item_id };
+            .map(crate::PlaylistEntry::entry_id)
+            .collect::<HashSet<_>>();
+        let compound_entry_by_part = self
+            .entries
+            .iter()
+            .filter_map(crate::PlaylistEntry::as_compound)
+            .flat_map(|group| {
+                let compound_entry_id = PlaylistEntryId::Compound(group.group_id());
+                group
+                    .parts()
+                    .map(move |part| (part.item().item_id(), compound_entry_id))
+            })
+            .collect::<HashMap<_, _>>();
+        for entry_id in requested_entry_ids {
+            if committed_entry_ids.contains(entry_id) {
+                continue;
             }
+            if let PlaylistEntryId::Single(part_item_id) = entry_id
+                && let Some(compound_entry_id) = compound_entry_by_part.get(part_item_id)
+            {
+                return MoveItemsOutcome::CompoundPartTarget {
+                    part_item_id: *part_item_id,
+                    compound_entry_id: *compound_entry_id,
+                };
+            }
+            return MoveItemsOutcome::EntryNotFound {
+                entry_id: *entry_id,
+            };
         }
 
-        let anchor_item_id = match intent {
-            MoveItemIntent::ToFront | MoveItemIntent::ToBack => None,
-            MoveItemIntent::Before(anchor_item_id) | MoveItemIntent::After(anchor_item_id) => {
-                Some(anchor_item_id)
+        if let Some(anchor_entry_id) = intent.anchor() {
+            if !committed_entry_ids.contains(&anchor_entry_id) {
+                if let PlaylistEntryId::Single(part_item_id) = anchor_entry_id
+                    && let Some(compound_entry_id) = compound_entry_by_part.get(&part_item_id)
+                {
+                    return MoveItemsOutcome::CompoundPartAnchor {
+                        part_item_id,
+                        compound_entry_id: *compound_entry_id,
+                    };
+                }
+                return MoveItemsOutcome::AnchorNotFound { anchor_entry_id };
             }
-        };
-        if let Some(anchor_item_id) = anchor_item_id {
-            if !committed_single_ids.contains(&anchor_item_id) {
-                return MoveItemsOutcome::AnchorNotFound { anchor_item_id };
-            }
-            if selected_item_ids.contains(&anchor_item_id) {
-                return MoveItemsOutcome::AnchorSelected { anchor_item_id };
+            if selected_entry_ids.contains(&anchor_entry_id) {
+                return MoveItemsOutcome::AnchorSelected { anchor_entry_id };
             }
         }
 
@@ -135,43 +284,27 @@ impl PlaylistQueue {
         let selected_entries = self
             .entries
             .iter()
-            .filter(|entry| {
-                entry
-                    .as_single()
-                    .is_some_and(|item| selected_item_ids.contains(&item.item_id()))
-            })
+            .filter(|entry| selected_entry_ids.contains(&entry.entry_id()))
             .cloned()
             .collect::<Vec<_>>();
         let mut retained_entries = self
             .entries
             .iter()
-            .filter(|entry| {
-                entry
-                    .as_single()
-                    .is_none_or(|item| !selected_item_ids.contains(&item.item_id()))
-            })
+            .filter(|entry| !selected_entry_ids.contains(&entry.entry_id()))
             .cloned()
             .collect::<Vec<_>>();
 
         let insertion_index = match intent {
             MoveItemIntent::ToFront => 0,
             MoveItemIntent::ToBack => retained_entries.len(),
-            MoveItemIntent::Before(anchor_item_id) => retained_entries
+            MoveItemIntent::Before(anchor_entry_id) => retained_entries
                 .iter()
-                .position(|entry| {
-                    entry
-                        .as_single()
-                        .is_some_and(|item| item.item_id() == anchor_item_id)
-                })
+                .position(|entry| entry.entry_id() == anchor_entry_id)
                 .expect("validated unselected anchor must remain committed"),
-            MoveItemIntent::After(anchor_item_id) => {
+            MoveItemIntent::After(anchor_entry_id) => {
                 retained_entries
                     .iter()
-                    .position(|entry| {
-                        entry
-                            .as_single()
-                            .is_some_and(|item| item.item_id() == anchor_item_id)
-                    })
+                    .position(|entry| entry.entry_id() == anchor_entry_id)
                     .expect("validated unselected anchor must remain committed")
                     + 1
             }
@@ -180,7 +313,7 @@ impl PlaylistQueue {
 
         if retained_entries == self.entries {
             return MoveItemsOutcome::AlreadyInPlace {
-                item_count: selected_item_ids.len(),
+                item_count: selected_entry_ids.len(),
             };
         }
         let Some(next_structural_revision) = self.structural_revision.checked_next() else {
@@ -190,7 +323,7 @@ impl PlaylistQueue {
         self.entries = retained_entries;
         self.structural_revision = next_structural_revision;
         MoveItemsOutcome::Moved {
-            item_count: selected_item_ids.len(),
+            item_count: selected_entry_ids.len(),
         }
     }
 }

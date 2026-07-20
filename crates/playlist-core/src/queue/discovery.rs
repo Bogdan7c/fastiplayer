@@ -1,7 +1,8 @@
 //! Атомарная вставка уже admitted sibling batch по stable-ID anchor.
 
-use crate::{PlaylistItemDraft, PlaylistItemId};
+use crate::{PlaylistEntryId, PlaylistItemDraft, PlaylistItemId};
 
+use super::structural::StructuralEntryLookupError;
 use super::{
     AddItemsError, AllocatedPlaylistItemIds, MAX_PLAYLIST_ITEMS, PlaylistQueue,
     QueueRevisionSnapshot, map_add_allocation_error,
@@ -10,15 +11,15 @@ use super::{
 /// Stable-ID позиция вставки, не зависящая от текущего числового row index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StableInsertionAnchor {
-    before_item_id: Option<PlaylistItemId>,
+    before_entry_id: Option<PlaylistEntryId>,
 }
 
 impl StableInsertionAnchor {
     /// Вставляет batch непосредственно перед committed row.
     #[must_use]
-    pub const fn before(item_id: PlaylistItemId) -> Self {
+    pub const fn before(entry_id: PlaylistEntryId) -> Self {
         Self {
-            before_item_id: Some(item_id),
+            before_entry_id: Some(entry_id),
         }
     }
 
@@ -26,14 +27,14 @@ impl StableInsertionAnchor {
     #[must_use]
     pub const fn at_end() -> Self {
         Self {
-            before_item_id: None,
+            before_entry_id: None,
         }
     }
 
     /// Stable row, перед которой произошла вставка; `None` означает canonical end.
     #[must_use]
-    pub const fn before_item_id(self) -> Option<PlaylistItemId> {
-        self.before_item_id
+    pub const fn before_entry_id(self) -> Option<PlaylistEntryId> {
+        self.before_entry_id
     }
 }
 
@@ -55,7 +56,12 @@ pub enum DiscoveryBatchInsertError {
         actual: QueueRevisionSnapshot,
     },
     /// Stable anchor был удалён structural mutation-ом.
-    AnchorNotCommitted { item_id: PlaylistItemId },
+    AnchorNotCommitted { entry_id: PlaylistEntryId },
+    /// Caller передал subordinate part вместо owning compound anchor.
+    CompoundPartAnchor {
+        part_item_id: PlaylistItemId,
+        compound_entry_id: PlaylistEntryId,
+    },
     /// Общий atomic add preflight отклонил batch.
     Add(AddItemsError),
 }
@@ -98,10 +104,22 @@ impl PlaylistQueue {
                 anchor,
             });
         }
-        let insertion_index = match anchor.before_item_id {
-            Some(item_id) => self
-                .index_of(item_id)
-                .ok_or(DiscoveryBatchInsertError::AnchorNotCommitted { item_id })?,
+        let insertion_index = match anchor.before_entry_id {
+            Some(entry_id) => match self.resolve_top_level_entry_index(entry_id) {
+                Ok(entry_index) => entry_index,
+                Err(StructuralEntryLookupError::NotFound) => {
+                    return Err(DiscoveryBatchInsertError::AnchorNotCommitted { entry_id });
+                }
+                Err(StructuralEntryLookupError::CompoundPart {
+                    part_item_id,
+                    compound_entry_id,
+                }) => {
+                    return Err(DiscoveryBatchInsertError::CompoundPartAnchor {
+                        part_item_id,
+                        compound_entry_id,
+                    });
+                }
+            },
             None => self.entries.len(),
         };
         let requested = drafts.len();
@@ -181,7 +199,7 @@ mod tests {
         let outcome = queue
             .insert_discovery_batch_with_rng(
                 revision,
-                StableInsertionAnchor::before(target_id),
+                StableInsertionAnchor::before(crate::PlaylistEntryId::Single(target_id)),
                 vec![draft("before-2"), draft("before-1")],
                 &mut random,
             )
@@ -208,7 +226,7 @@ mod tests {
         assert!(matches!(
             queue.insert_discovery_batch(
                 stale,
-                StableInsertionAnchor::before(target_id),
+                StableInsertionAnchor::before(crate::PlaylistEntryId::Single(target_id)),
                 vec![draft("late")],
             ),
             Err(DiscoveryBatchInsertError::RevisionMismatch { .. })

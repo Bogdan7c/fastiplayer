@@ -406,7 +406,11 @@ fn batch_add_preserves_old_upcoming_order_and_bulk_remove_cleans_references() {
     );
 
     queue
-        .remove_batch(&[ids[1], ids[4], new_ids[1]])
+        .remove_batch(&[
+            crate::PlaylistEntryId::Single(ids[1]),
+            crate::PlaylistEntryId::Single(ids[4]),
+            crate::PlaylistEntryId::Single(new_ids[1]),
+        ])
         .expect("one bulk remove");
     let after_remove = queue.shuffle_traversal_snapshot().expect("after remove");
     for removed in [ids[1], ids[4], new_ids[1]] {
@@ -419,7 +423,7 @@ fn batch_add_preserves_old_upcoming_order_and_bulk_remove_cleans_references() {
     ));
     assert_eq!(previous_after_repair, ids[0]);
     assert!(matches!(
-        queue.remove(ids[2]),
+        queue.remove(crate::PlaylistEntryId::Single(ids[2])),
         crate::RemoveItemOutcome::Removed { .. }
     ));
     let idle_after_current_removal = queue
@@ -491,7 +495,10 @@ fn toggle_reset_and_reorder_preserve_required_boundaries() {
         .expect("enable shuffle");
     queue.commit_manual_play(ids[2]).expect("create history");
     let before_reorder = queue.shuffle_traversal_snapshot();
-    queue.move_item(ids[4], crate::MoveItemIntent::ToFront);
+    queue.move_item(
+        crate::PlaylistEntryId::Single(ids[4]),
+        crate::MoveItemIntent::ToFront,
+    );
     assert_eq!(queue.shuffle_traversal_snapshot(), before_reorder);
     assert_eq!(queue.disable_shuffle(), Ok(ShuffleToggleOutcome::Disabled));
     assert!(queue.shuffle_traversal_snapshot().is_none());

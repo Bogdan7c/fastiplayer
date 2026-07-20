@@ -98,3 +98,10 @@
 - Новый atomic entry append/replace preflight публикует Item/Group watermarks только вместе; retained capacity считает parts, group-safe capped prefix никогда не режет compound, empty draft typed rejected, one-part group остаётся compound.
 - S01P reads работают поверх nested storage без queue cache: top-level и derived playable iteration — разные named views; owned flat snapshot создаётся только для explicit handoff. Metadata-only patches применяются к nested parts без structural/traversal revision.
 - S01B/S01C group-safe structural/shuffle/navigation scope не заявлен готовым; player identity/UI collapse state не переносились в core. Full contract и verification: `mem:playlist/core`.
+
+
+## Web media roadmap S01B group-safe structural mutations (2026-07-20)
+- Все current structural mutation boundaries `playlist-core` теперь адресуют top-level `PlaylistEntryId`: single/bulk remove, remove-others, single/multi move, relative anchors, discovery insertion anchors и direct/prepared canonical sort. `PlaylistEntryId::Single(part_id)` получает typed compound-part rejection и никогда не мутирует subordinate part отдельно.
+- Sort готовит один key на top-level entry: Single использует item metadata/locator, Compound — cached group summary/root provenance; permutation переставляет entries и сохраняет exact part order/current Item ID. Prepared sort хранит expected/sorted Entry IDs, а metadata patches остаются Item-ID адресованными.
+- Removal Undo принимает только exact order-preserving deletion result, восстанавливает exact Item/Group IDs и отвергает unrelated reorder с той же revision delta. App structural selection preflight требует полного покрытия compound и линейно (`O(N+K)`) переводит playable selection в explicit Entry IDs.
+- Discovery anchor/read hint vocabulary использует `PlaylistEntryId`; текущие local-discovery commits остаются explicit Singles. Navigation, reservation, group-block shuffle traversal, UI compound presentation и persistence v2 остаются S01C/следующими scope. Details: `mem:playlist/core`, `mem:playlist/discovery`.

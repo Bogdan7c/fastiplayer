@@ -211,23 +211,6 @@ impl PreparedMetadataPatchPlan {
         self.outcome.changed_metadata()
     }
 
-    /// Применяет staged metadata к flat candidate storage prepared Sort-а.
-    pub(super) fn apply_to_items(
-        self,
-        items: &mut [crate::PlaylistItem],
-    ) -> MetadataPatchBatchOutcome {
-        let mut staged_cache_by_item_id = self.staged_cache_by_item_id;
-        for item in items {
-            if let Some((local_fingerprint, cached_metadata)) =
-                staged_cache_by_item_id.remove(&item.item_id())
-            {
-                item.replace_local_cache(local_fingerprint, cached_metadata);
-            }
-        }
-        debug_assert!(staged_cache_by_item_id.is_empty());
-        self.outcome
-    }
-
     /// Применяет staged metadata напрямую к nested canonical storage.
     pub(super) fn apply_to_entries(
         self,

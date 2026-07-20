@@ -6,16 +6,15 @@ use std::path::{Path, PathBuf};
 use natural_sort_key::PreparedNaturalKey;
 
 use crate::{
-    ForeignPathEncoding, ForeignPathPlatform, LocalLocator, PlaylistItem, PlaylistItemId,
-    PlaylistLocator,
+    ForeignPathEncoding, ForeignPathPlatform, LocalLocator, PlaylistEntryId, PlaylistLocator,
 };
 
-/// Полный total fallback natural name -> exact name -> locator -> Item ID.
+/// Полный total fallback natural name -> exact name -> locator -> Entry ID.
 pub(super) struct NaturalSortKey {
     natural_name: PreparedNaturalKey,
     exact_name: ExactNameKey,
     exact_locator: ExactLocatorKey,
-    item_id: PlaylistItemId,
+    entry_id: PlaylistEntryId,
 }
 
 impl Ord for NaturalSortKey {
@@ -24,7 +23,7 @@ impl Ord for NaturalSortKey {
             .cmp(&other.natural_name)
             .then_with(|| self.exact_name.cmp(&other.exact_name))
             .then_with(|| self.exact_locator.cmp(&other.exact_locator))
-            .then_with(|| self.item_id.cmp(&other.item_id))
+            .then_with(|| self.entry_id.cmp(&other.entry_id))
     }
 }
 
@@ -83,9 +82,12 @@ enum ExactForeignUnits {
 }
 
 /// Готовит natural + exact keys, сохраняя native/foreign/URL identity.
-pub(super) fn prepare_natural_sort_key(item: &PlaylistItem) -> NaturalSortKey {
-    let fallback_name = item.cached_metadata().fallback_display_name();
-    let (name_units, exact_locator) = match item.locator() {
+pub(super) fn prepare_natural_sort_key(
+    locator: &PlaylistLocator,
+    fallback_name: &str,
+    entry_id: PlaylistEntryId,
+) -> NaturalSortKey {
+    let (name_units, exact_locator) = match locator {
         PlaylistLocator::Local(LocalLocator::Native(path)) => {
             let filename = native_filename(path);
             (
@@ -115,7 +117,7 @@ pub(super) fn prepare_natural_sort_key(item: &PlaylistItem) -> NaturalSortKey {
         natural_name,
         exact_name: name_units,
         exact_locator,
-        item_id: item.item_id(),
+        entry_id,
     }
 }
 

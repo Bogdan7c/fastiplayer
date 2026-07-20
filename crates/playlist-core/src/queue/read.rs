@@ -105,6 +105,20 @@ impl PlaylistQueue {
             .find(|entry| entry.entry_id() == entry_id)
     }
 
+    /// Разрешает playable identity в явную structural identity её top-level owner-а.
+    pub fn structural_entry_id_for_item(&self, item_id: PlaylistItemId) -> Option<PlaylistEntryId> {
+        self.entries.iter().find_map(|entry| match entry {
+            PlaylistEntry::Single(item) if item.item_id() == item_id => Some(entry.entry_id()),
+            PlaylistEntry::Single(_) => None,
+            PlaylistEntry::Compound(group)
+                if group.parts().any(|part| part.item().item_id() == item_id) =>
+            {
+                Some(entry.entry_id())
+            }
+            PlaylistEntry::Compound(_) => None,
+        })
+    }
+
     /// Снимает immutable Arc-sharing playable snapshot для ownership handoff.
     ///
     /// Обычный синхронный read должен использовать borrowed iterators или lookup.

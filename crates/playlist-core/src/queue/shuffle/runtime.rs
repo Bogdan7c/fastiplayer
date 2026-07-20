@@ -9,13 +9,13 @@ use rand::{Rng, RngExt};
 use crate::{PlaylistItemId, RepeatMode};
 
 use super::super::{
-    PlaylistQueue, PlaylistQueueRestore, TraversalCurrentEffect, TraversalCurrentItemId,
-    TraversalCurrentMutationError, TraversalCurrentMutationOutcome,
+    PlaylistQueue, PlaylistQueueRestore, TraversalCurrentItemId, TraversalCurrentMutationError,
+    TraversalCurrentMutationOutcome,
 };
 use super::{
-    BulkRemoveError, BulkRemoveOutcome, MAX_SHUFFLE_HISTORY_ENTRIES, ShuffleHistoryCursor,
-    ShuffleQueueRestoreError, ShuffleToggleError, ShuffleToggleOutcome,
-    ShuffleTraversalRestoreError, ShuffleTraversalSnapshot,
+    MAX_SHUFFLE_HISTORY_ENTRIES, ShuffleHistoryCursor, ShuffleQueueRestoreError,
+    ShuffleToggleError, ShuffleToggleOutcome, ShuffleTraversalRestoreError,
+    ShuffleTraversalSnapshot,
 };
 
 /// Shared committed state: preview клонирует только `Arc`, а не O(N) vectors.
@@ -546,112 +546,6 @@ impl PlaylistQueue {
             .commit_direct_transition(item_id);
         self.traversal_revision = next_revision;
         Ok(TraversalCurrentMutationOutcome::Set(validated))
-    }
-
-    /// Удаляет requested IDs одним canonical retain и одним traversal rebuild.
-    pub fn remove_batch(
-        &mut self,
-        requested_item_ids: &[PlaylistItemId],
-    ) -> Result<BulkRemoveOutcome, BulkRemoveError> {
-        if self.active_reservation.is_some() {
-            return Err(BulkRemoveError::InstallCommitLinearizing);
-        }
-        if requested_item_ids.is_empty() {
-            return Ok(BulkRemoveOutcome::NoItemsRequested);
-        }
-        let requested: HashSet<_> = requested_item_ids.iter().copied().collect();
-        let committed_to_remove: HashSet<_> = self
-            .entries
-            .iter()
-            .filter_map(|entry| entry.as_single().map(|item| item.item_id()))
-            .filter(|item_id| requested.contains(item_id))
-            .collect();
-        if committed_to_remove.is_empty() {
-            return Ok(BulkRemoveOutcome::NoMatchingItems);
-        }
-        self.commit_bulk_remove(&committed_to_remove)
-    }
-
-    /// `Remove Others` сохраняет exact ID и не вызывает K одиночных removals.
-    pub fn remove_others(
-        &mut self,
-        retained_item_id: PlaylistItemId,
-    ) -> Result<BulkRemoveOutcome, BulkRemoveError> {
-        if self.active_reservation.is_some() {
-            return Err(BulkRemoveError::InstallCommitLinearizing);
-        }
-        if self.item(retained_item_id).is_none() {
-            return Ok(BulkRemoveOutcome::NoMatchingItems);
-        }
-        let committed_to_remove: HashSet<_> = self
-            .entries
-            .iter()
-            .filter_map(|entry| entry.as_single().map(|item| item.item_id()))
-            .filter(|item_id| *item_id != retained_item_id)
-            .collect();
-        if committed_to_remove.is_empty() {
-            return Ok(BulkRemoveOutcome::NoMatchingItems);
-        }
-        self.commit_bulk_remove(&committed_to_remove)
-    }
-
-    /// Общий preflight/commit сохраняет atomicity и один revision publish.
-    fn commit_bulk_remove(
-        &mut self,
-        committed_to_remove: &HashSet<PlaylistItemId>,
-    ) -> Result<BulkRemoveOutcome, BulkRemoveError> {
-        let next_structural_revision = self
-            .structural_revision
-            .checked_next()
-            .ok_or(BulkRemoveError::StructuralRevisionExhausted)?;
-        let clears_current = self
-            .traversal_current
-            .is_some_and(|current| committed_to_remove.contains(&current.item_id()));
-        let removed_current_item_id = self
-            .traversal_current
-            .map(TraversalCurrentItemId::item_id)
-            .filter(|_| clears_current);
-        let next_traversal_revision = clears_current
-            .then(|| {
-                self.traversal_revision
-                    .checked_next()
-                    .ok_or(BulkRemoveError::TraversalRevisionExhausted)
-            })
-            .transpose()?;
-        let remaining_canonical_item_ids: Vec<_> = self
-            .iter_playable_ids()
-            .filter(|item_id| !committed_to_remove.contains(item_id))
-            .collect();
-        if let Some(shuffle_traversal) = &mut self.shuffle_traversal {
-            shuffle_traversal.remove_items(
-                committed_to_remove,
-                &remaining_canonical_item_ids,
-                clears_current,
-            );
-        }
-        self.entries.retain(|entry| {
-            entry
-                .as_single()
-                .is_none_or(|item| !committed_to_remove.contains(&item.item_id()))
-        });
-        self.structural_revision = next_structural_revision;
-        let traversal_current_effect = if clears_current {
-            self.traversal_current = None;
-            self.traversal_revision =
-                next_traversal_revision.expect("preflighted traversal revision");
-            TraversalCurrentEffect::Cleared
-        } else {
-            TraversalCurrentEffect::Preserved
-        };
-        let current_outcome = match removed_current_item_id {
-            Some(removed_item_id) => crate::RemovalCurrentOutcome::Detached { removed_item_id },
-            None => crate::RemovalCurrentOutcome::Preserved(self.traversal_current),
-        };
-        Ok(BulkRemoveOutcome::Removed {
-            removed_item_count: committed_to_remove.len(),
-            traversal_current_effect,
-            current_outcome,
-        })
     }
 
     /// Production toggle получает автоматически seeded thread-local entropy.

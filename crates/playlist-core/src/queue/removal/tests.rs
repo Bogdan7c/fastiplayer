@@ -37,7 +37,7 @@ fn removal_snapshot_restores_current_order_and_allocator_as_new_mutation() {
     let allocator_before = queue.next_item_id_snapshot();
     let snapshot = queue.capture_removal_snapshot();
 
-    let removal = queue.remove(ids[1]);
+    let removal = queue.remove(crate::PlaylistEntryId::Single(ids[1]));
     assert!(matches!(
         removal,
         crate::RemoveItemOutcome::Removed {
@@ -73,7 +73,7 @@ fn removed_current_restart_state_is_idle_until_explicit_deterministic_navigation
     queue
         .set_traversal_current(ids[1])
         .expect("fixture current");
-    let _removed = queue.remove(ids[1]);
+    let _removed = queue.remove(crate::PlaylistEntryId::Single(ids[1]));
 
     assert!(queue.traversal_current().is_none());
     assert!(matches!(
@@ -99,7 +99,7 @@ fn snapshot_rejects_later_structural_mutation_instead_of_overwriting_it() {
         AddItemsOutcome::NoItemsProvided => panic!("fixture must append rows"),
     };
     let snapshot = queue.capture_removal_snapshot();
-    let _removed = queue.remove(ids[0]);
+    let _removed = queue.remove(crate::PlaylistEntryId::Single(ids[0]));
     let _later_append = queue.append_one(draft(3)).expect("later mutation");
 
     assert_eq!(
@@ -130,7 +130,7 @@ fn removal_undo_restores_exact_shuffle_history_cursor_and_upcoming() {
         .expect("shuffle snapshot before removal");
     let snapshot = queue.capture_removal_snapshot();
 
-    let _removed = queue.remove(ids[4]);
+    let _removed = queue.remove(crate::PlaylistEntryId::Single(ids[4]));
     queue
         .restore_removal_snapshot(snapshot)
         .expect("undo shuffle removal");

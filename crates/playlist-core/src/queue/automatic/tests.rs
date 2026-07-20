@@ -52,7 +52,7 @@ fn fixed_error_chain_excludes_late_admission_and_skips_removed_member_without_re
         panic!("one row was appended");
     };
     let late_id = late_ids.as_slice()[0];
-    let _removed = queue.remove(first_target);
+    let _removed = queue.remove(crate::PlaylistEntryId::Single(first_target));
 
     let failure = queue
         .prepare_automatic_traversal(*plan)

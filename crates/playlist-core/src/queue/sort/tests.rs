@@ -546,16 +546,19 @@ fn preparation_observer_proves_exactly_one_pass_per_item() {
     );
     let mut prepared_ids = Vec::new();
 
-    let playable_items = queue.iter_playable_items().cloned().collect::<Vec<_>>();
+    let top_level_entries = queue.iter_top_level_entries().cloned().collect::<Vec<_>>();
     let mut entries = prepare_sort_entries(
-        &playable_items,
+        &top_level_entries,
         PlaylistSortKey::NaturalFilename,
-        |item_id| prepared_ids.push(item_id),
+        |entry_id| prepared_ids.push(entry_id),
     );
     entries.sort_by(|left, right| compare_entries(left, right, SortDirection::Ascending));
 
-    assert_eq!(entries.len(), queue.retained_item_count());
-    assert_eq!(prepared_ids, canonical_ids(&queue));
+    assert_eq!(entries.len(), queue.top_level_entry_count());
+    assert_eq!(
+        prepared_ids,
+        queue.iter_top_level_entry_ids().collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -619,8 +622,9 @@ fn prepared_comparator_is_total_antisymmetric_and_transitive() {
         .map(|filename| local_draft(filename, unknown_metadata(filename)))
         .collect(),
     );
-    let playable_items = queue.iter_playable_items().cloned().collect::<Vec<_>>();
-    let entries = prepare_sort_entries(&playable_items, PlaylistSortKey::NaturalFilename, |_| {});
+    let top_level_entries = queue.iter_top_level_entries().cloned().collect::<Vec<_>>();
+    let entries =
+        prepare_sort_entries(&top_level_entries, PlaylistSortKey::NaturalFilename, |_| {});
 
     for direction in [SortDirection::Ascending, SortDirection::Descending] {
         for left in &entries {
@@ -682,7 +686,7 @@ fn background_plan_combines_metadata_and_order_in_one_guarded_commit() {
             || false,
         )
         .unwrap();
-    assert_eq!(prepared.statistics().prepared_items, 2);
+    assert_eq!(prepared.statistics().prepared_entries, 2);
 
     let outcome = queue
         .apply_prepared_canonical_sort(prepared, vec![patch])
@@ -740,7 +744,10 @@ fn background_preparation_cancel_and_stale_apply_never_publish_partial_order() {
         )
         .unwrap();
     assert!(matches!(
-        queue.move_item(ids_before[0], MoveItemIntent::ToBack),
+        queue.move_item(
+            crate::PlaylistEntryId::Single(ids_before[0]),
+            MoveItemIntent::ToBack,
+        ),
         crate::MoveItemOutcome::Moved { .. }
     ));
     assert_eq!(
@@ -772,7 +779,7 @@ fn fifty_thousand_background_keys_are_once_per_item_and_n_log_n_bounded() {
         )
         .unwrap();
     let statistics = prepared.statistics();
-    assert_eq!(statistics.prepared_items, 50_000);
-    assert_eq!(statistics.shared_item_handles, 50_000);
+    assert_eq!(statistics.prepared_entries, 50_000);
+    assert_eq!(statistics.shared_entry_handles, 50_000);
     assert!(statistics.comparisons <= 50_000 * 16);
 }

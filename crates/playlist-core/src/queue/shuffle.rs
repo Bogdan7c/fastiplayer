@@ -1,5 +1,6 @@
 //! Доменный shuffle traversal поверх неизменного canonical order.
 
+mod removal;
 mod runtime;
 mod types;
 

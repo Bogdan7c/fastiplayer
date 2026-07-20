@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::{AllocatorRestoreError, PlaylistItemId};
+use crate::{AllocatorRestoreError, PlaylistEntryId, PlaylistItemId};
 
 use super::{QueueRevisionSnapshot, RemovalCurrentOutcome, TraversalCurrentItemId};
 
@@ -305,17 +305,24 @@ impl std::error::Error for ReplaceQueueError {}
 /// Outcome identity-based remove.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RemoveItemOutcome {
-    /// Exact committed row удалена.
+    /// Exact committed top-level entry удалена.
     Removed {
-        /// Удалённая stable identity.
-        item_id: PlaylistItemId,
+        /// Удалённая structural identity.
+        entry_id: PlaylistEntryId,
         /// Влияние удаления на traversal current.
         traversal_current_effect: TraversalCurrentEffect,
         /// D71 persisted-current outcome без неявного successor-а.
         current_outcome: RemovalCurrentOutcome,
     },
-    /// Item ID отсутствует в committed queue.
-    NotFound { item_id: PlaylistItemId },
+    /// Structural identity отсутствует в committed queue.
+    NotFound { entry_id: PlaylistEntryId },
+    /// Caller передал playable part вместо owning compound identity.
+    CompoundPartTarget {
+        /// Ошибочно переданный stable playable identity.
+        part_item_id: PlaylistItemId,
+        /// Явная structural identity, которую обязан повторно отправить caller.
+        compound_entry_id: PlaylistEntryId,
+    },
     /// Reservation удерживает structural mutation lock.
     InstallCommitLinearizing,
     /// Structural revision нельзя продвинуть.
@@ -328,18 +335,26 @@ impl fmt::Debug for RemoveItemOutcome {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Removed {
-                item_id,
+                entry_id,
                 traversal_current_effect,
                 current_outcome,
             } => formatter
                 .debug_struct("Removed")
-                .field("item_id", item_id)
+                .field("entry_id", entry_id)
                 .field("traversal_current_effect", traversal_current_effect)
                 .field("current_outcome", current_outcome)
                 .finish(),
-            Self::NotFound { item_id } => formatter
+            Self::NotFound { entry_id } => formatter
                 .debug_struct("NotFound")
-                .field("item_id", item_id)
+                .field("entry_id", entry_id)
+                .finish(),
+            Self::CompoundPartTarget {
+                part_item_id,
+                compound_entry_id,
+            } => formatter
+                .debug_struct("CompoundPartTarget")
+                .field("part_item_id", part_item_id)
+                .field("compound_entry_id", compound_entry_id)
                 .finish(),
             Self::InstallCommitLinearizing => formatter.write_str("InstallCommitLinearizing"),
             Self::StructuralRevisionExhausted => formatter.write_str("StructuralRevisionExhausted"),
@@ -351,8 +366,15 @@ impl fmt::Debug for RemoveItemOutcome {
 impl fmt::Display for RemoveItemOutcome {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Removed { item_id, .. } => write!(formatter, "удалён {item_id}"),
-            Self::NotFound { item_id } => write!(formatter, "{item_id} не найден"),
+            Self::Removed { entry_id, .. } => write!(formatter, "удалён {entry_id:?}"),
+            Self::NotFound { entry_id } => write!(formatter, "{entry_id:?} не найден"),
+            Self::CompoundPartTarget {
+                part_item_id,
+                compound_entry_id,
+            } => write!(
+                formatter,
+                "{part_item_id} является частью {compound_entry_id:?}; требуется compound target"
+            ),
             Self::InstallCommitLinearizing => {
                 formatter.write_str("install commit временно блокирует remove")
             }
@@ -372,9 +394,19 @@ pub enum MoveItemIntent {
     /// Поместить строку последней.
     ToBack,
     /// Поместить строку непосредственно перед anchor ID.
-    Before(PlaylistItemId),
+    Before(PlaylistEntryId),
     /// Поместить строку непосредственно после anchor ID.
-    After(PlaylistItemId),
+    After(PlaylistEntryId),
+}
+
+impl MoveItemIntent {
+    /// Возвращает named structural anchor только для relative intent.
+    pub const fn anchor(self) -> Option<PlaylistEntryId> {
+        match self {
+            Self::ToFront | Self::ToBack => None,
+            Self::Before(entry_id) | Self::After(entry_id) => Some(entry_id),
+        }
+    }
 }
 
 impl fmt::Debug for MoveItemIntent {
@@ -382,13 +414,13 @@ impl fmt::Debug for MoveItemIntent {
         match self {
             Self::ToFront => formatter.write_str("MoveItemIntent::ToFront"),
             Self::ToBack => formatter.write_str("MoveItemIntent::ToBack"),
-            Self::Before(item_id) => formatter
+            Self::Before(entry_id) => formatter
                 .debug_tuple("MoveItemIntent::Before")
-                .field(item_id)
+                .field(entry_id)
                 .finish(),
-            Self::After(item_id) => formatter
+            Self::After(entry_id) => formatter
                 .debug_tuple("MoveItemIntent::After")
-                .field(item_id)
+                .field(entry_id)
                 .finish(),
         }
     }
@@ -399,8 +431,8 @@ impl fmt::Display for MoveItemIntent {
         match self {
             Self::ToFront => formatter.write_str("переместить в начало"),
             Self::ToBack => formatter.write_str("переместить в конец"),
-            Self::Before(item_id) => write!(formatter, "переместить перед {item_id}"),
-            Self::After(item_id) => write!(formatter, "переместить после {item_id}"),
+            Self::Before(entry_id) => write!(formatter, "переместить перед {entry_id:?}"),
+            Self::After(entry_id) => write!(formatter, "переместить после {entry_id:?}"),
         }
     }
 }
@@ -409,13 +441,23 @@ impl fmt::Display for MoveItemIntent {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum MoveItemOutcome {
     /// Canonical order изменён.
-    Moved { item_id: PlaylistItemId },
+    Moved { entry_id: PlaylistEntryId },
     /// Requested order уже достигнут.
-    AlreadyInPlace { item_id: PlaylistItemId },
-    /// Перемещаемая строка отсутствует.
-    ItemNotFound { item_id: PlaylistItemId },
+    AlreadyInPlace { entry_id: PlaylistEntryId },
+    /// Перемещаемая top-level entry отсутствует.
+    EntryNotFound { entry_id: PlaylistEntryId },
+    /// Caller передал playable part вместо owning compound identity.
+    CompoundPartTarget {
+        part_item_id: PlaylistItemId,
+        compound_entry_id: PlaylistEntryId,
+    },
     /// Anchor отсутствует.
-    AnchorNotFound { anchor_item_id: PlaylistItemId },
+    AnchorNotFound { anchor_entry_id: PlaylistEntryId },
+    /// Anchor указывает на playable part вместо owning compound identity.
+    CompoundPartAnchor {
+        part_item_id: PlaylistItemId,
+        compound_entry_id: PlaylistEntryId,
+    },
     /// Reservation удерживает structural mutation lock.
     InstallCommitLinearizing,
     /// Structural revision нельзя продвинуть.
@@ -425,21 +467,37 @@ pub enum MoveItemOutcome {
 impl fmt::Debug for MoveItemOutcome {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Moved { item_id } => formatter
+            Self::Moved { entry_id } => formatter
                 .debug_struct("Moved")
-                .field("item_id", item_id)
+                .field("entry_id", entry_id)
                 .finish(),
-            Self::AlreadyInPlace { item_id } => formatter
+            Self::AlreadyInPlace { entry_id } => formatter
                 .debug_struct("AlreadyInPlace")
-                .field("item_id", item_id)
+                .field("entry_id", entry_id)
                 .finish(),
-            Self::ItemNotFound { item_id } => formatter
-                .debug_struct("ItemNotFound")
-                .field("item_id", item_id)
+            Self::EntryNotFound { entry_id } => formatter
+                .debug_struct("EntryNotFound")
+                .field("entry_id", entry_id)
                 .finish(),
-            Self::AnchorNotFound { anchor_item_id } => formatter
+            Self::CompoundPartTarget {
+                part_item_id,
+                compound_entry_id,
+            } => formatter
+                .debug_struct("CompoundPartTarget")
+                .field("part_item_id", part_item_id)
+                .field("compound_entry_id", compound_entry_id)
+                .finish(),
+            Self::AnchorNotFound { anchor_entry_id } => formatter
                 .debug_struct("AnchorNotFound")
-                .field("anchor_item_id", anchor_item_id)
+                .field("anchor_entry_id", anchor_entry_id)
+                .finish(),
+            Self::CompoundPartAnchor {
+                part_item_id,
+                compound_entry_id,
+            } => formatter
+                .debug_struct("CompoundPartAnchor")
+                .field("part_item_id", part_item_id)
+                .field("compound_entry_id", compound_entry_id)
                 .finish(),
             Self::InstallCommitLinearizing => formatter.write_str("InstallCommitLinearizing"),
             Self::StructuralRevisionExhausted => formatter.write_str("StructuralRevisionExhausted"),
@@ -450,11 +508,29 @@ impl fmt::Debug for MoveItemOutcome {
 impl fmt::Display for MoveItemOutcome {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Moved { item_id } => write!(formatter, "{item_id} перемещён"),
-            Self::AlreadyInPlace { item_id } => write!(formatter, "{item_id} уже на месте"),
-            Self::ItemNotFound { item_id } => write!(formatter, "{item_id} не найден"),
-            Self::AnchorNotFound { anchor_item_id } => {
-                write!(formatter, "anchor {anchor_item_id} не найден")
+            Self::Moved { entry_id } => write!(formatter, "{entry_id:?} перемещён"),
+            Self::AlreadyInPlace { entry_id } => {
+                write!(formatter, "{entry_id:?} уже на месте")
+            }
+            Self::EntryNotFound { entry_id } => write!(formatter, "{entry_id:?} не найден"),
+            Self::CompoundPartTarget {
+                part_item_id,
+                compound_entry_id,
+            } => write!(
+                formatter,
+                "{part_item_id} является частью {compound_entry_id:?}; требуется compound target"
+            ),
+            Self::AnchorNotFound { anchor_entry_id } => {
+                write!(formatter, "anchor {anchor_entry_id:?} не найден")
+            }
+            Self::CompoundPartAnchor {
+                part_item_id,
+                compound_entry_id,
+            } => {
+                write!(
+                    formatter,
+                    "anchor {part_item_id} является частью {compound_entry_id:?}"
+                )
             }
             Self::InstallCommitLinearizing => {
                 formatter.write_str("install commit временно блокирует move")

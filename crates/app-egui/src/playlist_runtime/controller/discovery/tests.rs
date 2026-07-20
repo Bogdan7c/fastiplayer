@@ -33,7 +33,7 @@ fn accepted_batch_allocates_ids_only_with_natural_anchor_commit() {
     let committed = controller
         .commit_discovery_batch(
             continuation,
-            StableInsertionAnchor::before(target_id),
+            StableInsertionAnchor::before(playlist_core::PlaylistEntryId::Single(target_id)),
             vec![draft("before-2"), draft("before-1")],
         )
         .expect("batch commit");
@@ -44,7 +44,10 @@ fn accepted_batch_allocates_ids_only_with_natural_anchor_commit() {
         Some(target_id)
     );
     assert_ne!(controller.queue().next_item_id_snapshot(), watermark_before);
-    assert_eq!(committed.anchor.before_item_id(), Some(target_id));
+    assert_eq!(
+        committed.anchor.before_entry_id(),
+        Some(playlist_core::PlaylistEntryId::Single(target_id))
+    );
 }
 
 #[test]
@@ -60,7 +63,7 @@ fn stale_continuation_and_external_edit_preserve_allocator() {
     assert!(matches!(
         controller.commit_discovery_batch(
             continuation,
-            StableInsertionAnchor::before(target_id),
+            StableInsertionAnchor::before(playlist_core::PlaylistEntryId::Single(target_id)),
             vec![draft("stale")],
         ),
         Err(DiscoveryBatchCommitError::ContinuationMismatch)
@@ -78,7 +81,7 @@ fn accepted_batch_advances_expected_revision_without_self_cancellation() {
     let first_commit = controller
         .commit_discovery_batch(
             first,
-            StableInsertionAnchor::before(target_id),
+            StableInsertionAnchor::before(playlist_core::PlaylistEntryId::Single(target_id)),
             vec![draft("near")],
         )
         .expect("first batch");
@@ -86,7 +89,9 @@ fn accepted_batch_advances_expected_revision_without_self_cancellation() {
     let second_commit = controller
         .commit_discovery_batch(
             first_commit.continuation,
-            StableInsertionAnchor::before(first_commit.item_ids[0]),
+            StableInsertionAnchor::before(playlist_core::PlaylistEntryId::Single(
+                first_commit.item_ids[0],
+            )),
             vec![draft("far")],
         )
         .expect("second batch");

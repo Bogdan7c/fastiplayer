@@ -12,7 +12,10 @@ mod reordering;
 mod reservation;
 mod shuffle;
 mod sort;
+mod structural;
 
+#[cfg(test)]
+mod group_structural_tests;
 #[cfg(test)]
 mod tests;
 
@@ -443,98 +446,6 @@ impl PlaylistQueue {
         }
     }
 
-    /// Удаляет exact committed identity, не выбирая successor автоматически.
-    pub fn remove(&mut self, item_id: PlaylistItemId) -> RemoveItemOutcome {
-        if self.active_reservation.is_some() {
-            return RemoveItemOutcome::InstallCommitLinearizing;
-        }
-        let Some(item_index) = self.index_of(item_id) else {
-            return RemoveItemOutcome::NotFound { item_id };
-        };
-        let Some(next_structural_revision) = self.structural_revision.checked_next() else {
-            return RemoveItemOutcome::StructuralRevisionExhausted;
-        };
-        let clears_current = self
-            .traversal_current
-            .is_some_and(|current| current.item_id() == item_id);
-        let next_traversal_revision = if clears_current {
-            let Some(next_revision) = self.traversal_revision.checked_next() else {
-                return RemoveItemOutcome::TraversalRevisionExhausted;
-            };
-            Some(next_revision)
-        } else {
-            None
-        };
-
-        let removed_item_ids = HashSet::from([item_id]);
-        let remaining_canonical_item_ids: Vec<_> = self
-            .iter_playable_items()
-            .filter(|item| item.item_id() != item_id)
-            .map(|item| item.item_id())
-            .collect();
-        if let Some(shuffle_traversal) = &mut self.shuffle_traversal {
-            shuffle_traversal.remove_items(
-                &removed_item_ids,
-                &remaining_canonical_item_ids,
-                clears_current,
-            );
-        }
-        self.entries.remove(item_index);
-        self.structural_revision = next_structural_revision;
-        let traversal_current_effect = if clears_current {
-            self.traversal_current = None;
-            self.traversal_revision =
-                next_traversal_revision.expect("preflighted traversal revision");
-            TraversalCurrentEffect::Cleared
-        } else {
-            TraversalCurrentEffect::Preserved
-        };
-
-        let current_outcome = if clears_current {
-            RemovalCurrentOutcome::Detached {
-                removed_item_id: item_id,
-            }
-        } else {
-            RemovalCurrentOutcome::Preserved(self.traversal_current)
-        };
-        RemoveItemOutcome::Removed {
-            item_id,
-            traversal_current_effect,
-            current_outcome,
-        }
-    }
-
-    /// Перемещает exact Item ID относительно intent-named anchor.
-    pub fn move_item(
-        &mut self,
-        item_id: PlaylistItemId,
-        intent: MoveItemIntent,
-    ) -> MoveItemOutcome {
-        if self.active_reservation.is_some() {
-            return MoveItemOutcome::InstallCommitLinearizing;
-        }
-        let Some(source_index) = self.index_of(item_id) else {
-            return MoveItemOutcome::ItemNotFound { item_id };
-        };
-        let target_index = match self.move_target_index(source_index, intent) {
-            Ok(target_index) => target_index,
-            Err(anchor_item_id) => return MoveItemOutcome::AnchorNotFound { anchor_item_id },
-        };
-
-        if source_index == target_index {
-            return MoveItemOutcome::AlreadyInPlace { item_id };
-        }
-        let Some(next_structural_revision) = self.structural_revision.checked_next() else {
-            return MoveItemOutcome::StructuralRevisionExhausted;
-        };
-
-        let moved_item = self.entries.remove(source_index);
-        self.entries.insert(target_index, moved_item);
-        self.structural_revision = next_structural_revision;
-
-        MoveItemOutcome::Moved { item_id }
-    }
-
     /// Очищает canonical queue, current и сохраняет allocator high-watermark.
     pub fn clear(&mut self) -> ClearQueueOutcome {
         if self.active_reservation.is_some() {
@@ -651,41 +562,6 @@ impl PlaylistQueue {
                 .as_single()
                 .is_some_and(|item| item.item_id() == item_id)
         })
-    }
-
-    /// Вычисляет final insertion index после удаления source row.
-    fn move_target_index(
-        &self,
-        source_index: usize,
-        intent: MoveItemIntent,
-    ) -> Result<usize, PlaylistItemId> {
-        match intent {
-            MoveItemIntent::ToFront => Ok(0),
-            MoveItemIntent::ToBack => Ok(self.entries.len().saturating_sub(1)),
-            MoveItemIntent::Before(anchor_item_id) => {
-                let anchor_index = self.index_of(anchor_item_id).ok_or(anchor_item_id)?;
-                if anchor_index == source_index {
-                    return Ok(source_index);
-                }
-                Ok(if source_index < anchor_index {
-                    anchor_index - 1
-                } else {
-                    anchor_index
-                })
-            }
-            MoveItemIntent::After(anchor_item_id) => {
-                let anchor_index = self.index_of(anchor_item_id).ok_or(anchor_item_id)?;
-                if anchor_index == source_index {
-                    return Ok(source_index);
-                }
-                let anchor_after_removal = if source_index < anchor_index {
-                    anchor_index - 1
-                } else {
-                    anchor_index
-                };
-                Ok(anchor_after_removal + 1)
-            }
-        }
     }
 }
 

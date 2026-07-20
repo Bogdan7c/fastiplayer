@@ -329,7 +329,7 @@ impl MetadataSortOwner {
                 || {
                     self.active
                         .as_ref()
-                        .map_or(0, |active| active.snapshot.item_count())
+                        .map_or(0, |active| active.snapshot.entry_count())
                 },
                 |progress| progress.total,
             ),

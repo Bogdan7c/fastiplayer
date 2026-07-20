@@ -130,7 +130,10 @@ fn owned_snapshot_has_read_parity_but_never_becomes_mutation_authority() {
 
     // Structural mutation публикуется только через queue owner, snapshot остаётся прежним.
     assert!(matches!(
-        queue.move_item(committed_ids[0], MoveItemIntent::ToBack),
+        queue.move_item(
+            crate::PlaylistEntryId::Single(committed_ids[0]),
+            MoveItemIntent::ToBack,
+        ),
         MoveItemOutcome::Moved { .. }
     ));
     let original_locator = snapshot

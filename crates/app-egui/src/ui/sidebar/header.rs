@@ -398,7 +398,9 @@ mod tests {
             .nth(5)
             .expect("fixture должен содержать удаляемую playable строку");
         assert!(matches!(
-            populated_queue.remove(removed_active_item_id),
+            populated_queue.remove(playlist_core::PlaylistEntryId::Single(
+                removed_active_item_id,
+            )),
             RemoveItemOutcome::Removed { .. }
         ));
         let removed_active_model = playlist_model(&populated_queue, Some(removed_active_item_id));

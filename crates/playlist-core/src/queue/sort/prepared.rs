@@ -2,26 +2,25 @@
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use super::super::metadata_patch::prepare_metadata_patch_plan;
-use super::super::{
-    MetadataPatchBatchOutcome, OwnedPlayableItemsSnapshot, PlaylistMetadataPatch,
-    QueueRevisionSnapshot,
-};
+use super::super::{MetadataPatchBatchOutcome, PlaylistMetadataPatch, QueueRevisionSnapshot};
 use super::*;
+use crate::{PlaylistEntry, PlaylistEntryId};
 
 /// Cheap immutable handoff в background: тяжёлые locator/metadata payload остаются Arc-shared.
 #[derive(Clone)]
 pub struct CanonicalSortSnapshot {
-    items: OwnedPlayableItemsSnapshot,
+    entries: Arc<[PlaylistEntry]>,
     expected_revision: QueueRevisionSnapshot,
 }
 
 impl CanonicalSortSnapshot {
-    /// Число строк без раскрытия mutable queue storage.
+    /// Число top-level entries без раскрытия mutable queue storage.
     #[must_use]
-    pub fn item_count(&self) -> usize {
-        self.items.retained_item_count()
+    pub fn entry_count(&self) -> usize {
+        self.entries.len()
     }
 
     /// Подготавливает keys/permutation вне owner thread и проверяет cancel между chunks.
@@ -34,21 +33,30 @@ impl CanonicalSortSnapshot {
         if is_cancelled() {
             return Err(CanonicalSortPreparationCancelled);
         }
-        let expected_item_ids = self.items.iter_playable_ids().collect::<Vec<_>>();
-        let mut effective_items = self
-            .items
-            .iter_playable_items()
-            .cloned()
+        let expected_entry_ids = self
+            .entries
+            .iter()
+            .map(PlaylistEntry::entry_id)
             .collect::<Vec<_>>();
-        prepare_metadata_patch_plan(&effective_items, metadata_patches)
-            .apply_to_items(&mut effective_items);
+        let mut effective_entries = self.entries.iter().cloned().collect::<Vec<_>>();
+        let mut effective_items = Vec::new();
+        for entry in &effective_entries {
+            match entry {
+                PlaylistEntry::Single(item) => effective_items.push(item),
+                PlaylistEntry::Compound(group) => {
+                    effective_items.extend(group.parts().map(crate::PlaylistCompoundPart::item));
+                }
+            }
+        }
+        prepare_metadata_patch_plan(effective_items, metadata_patches)
+            .apply_to_entries(&mut effective_entries);
 
-        let mut prepared_items = 0usize;
+        let mut prepared_entries = 0usize;
         let entries = prepare_sort_entries_cancellable(
-            &effective_items,
+            &effective_entries,
             intent.key,
             &mut is_cancelled,
-            &mut prepared_items,
+            &mut prepared_entries,
         )?;
         let mut comparisons = 0usize;
         let sorted_entry_indices = stable_sorted_entry_indices(
@@ -57,19 +65,19 @@ impl CanonicalSortSnapshot {
             &mut is_cancelled,
             &mut comparisons,
         )?;
-        let sorted_item_ids = sorted_entry_indices
+        let sorted_entry_ids = sorted_entry_indices
             .iter()
-            .map(|entry_index| effective_items[entries[*entry_index].original_index].item_id())
+            .map(|entry_index| effective_entries[entries[*entry_index].original_index].entry_id())
             .collect::<Vec<_>>();
 
         Ok(PreparedCanonicalSort {
             expected_revision: self.expected_revision,
-            expected_item_ids: expected_item_ids.into_boxed_slice(),
-            sorted_item_ids: sorted_item_ids.into_boxed_slice(),
+            expected_entry_ids: expected_entry_ids.into_boxed_slice(),
+            sorted_entry_ids: sorted_entry_ids.into_boxed_slice(),
             statistics: CanonicalSortPreparationStatistics {
-                prepared_items,
+                prepared_entries,
                 comparisons,
-                shared_item_handles: effective_items.len(),
+                shared_entry_handles: effective_entries.len(),
             },
         })
     }
@@ -78,8 +86,8 @@ impl CanonicalSortSnapshot {
 /// Pure background plan без ссылок на live queue.
 pub struct PreparedCanonicalSort {
     expected_revision: QueueRevisionSnapshot,
-    expected_item_ids: Box<[PlaylistItemId]>,
-    sorted_item_ids: Box<[PlaylistItemId]>,
+    expected_entry_ids: Box<[PlaylistEntryId]>,
+    sorted_entry_ids: Box<[PlaylistEntryId]>,
     statistics: CanonicalSortPreparationStatistics,
 }
 
@@ -94,12 +102,12 @@ impl PreparedCanonicalSort {
 /// Bounded accounting одного prepare pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CanonicalSortPreparationStatistics {
-    /// Keys построены ровно по одному разу на item.
-    pub prepared_items: usize,
+    /// Keys построены ровно по одному разу на top-level entry.
+    pub prepared_entries: usize,
     /// Comparator calls остаются O(N log N).
     pub comparisons: usize,
-    /// Snapshot удерживает только cloned Arc-backed item handles.
-    pub shared_item_handles: usize,
+    /// Snapshot удерживает только cloned Arc-backed entry handles.
+    pub shared_entry_handles: usize,
 }
 
 /// Cancellation не публикует partial permutation.
@@ -170,7 +178,7 @@ impl PlaylistQueue {
     #[must_use]
     pub fn canonical_sort_snapshot(&self) -> CanonicalSortSnapshot {
         CanonicalSortSnapshot {
-            items: self.owned_playable_items_snapshot(),
+            entries: Arc::from(self.entries.clone()),
             expected_revision: self.revision_snapshot(),
         }
     }
@@ -197,27 +205,24 @@ impl PlaylistQueue {
         {
             return Err(ApplyPreparedCanonicalSortError::StaleQueueRevision);
         }
-        let current_item_ids = self.iter_playable_ids().collect::<Vec<_>>();
-        if current_item_ids.as_slice() != prepared.expected_item_ids.as_ref() {
+        let current_entry_ids = self.iter_top_level_entry_ids().collect::<Vec<_>>();
+        if current_entry_ids.as_slice() != prepared.expected_entry_ids.as_ref() {
             return Err(ApplyPreparedCanonicalSortError::StaleQueueRevision);
         }
-        if self.top_level_entry_count() != self.retained_item_count() {
-            return Err(ApplyPreparedCanonicalSortError::InvalidPermutation);
-        }
         let unique_sorted_ids = prepared
-            .sorted_item_ids
+            .sorted_entry_ids
             .iter()
             .copied()
             .collect::<HashSet<_>>();
-        if prepared.sorted_item_ids.len() != self.retained_item_count()
-            || unique_sorted_ids.len() != self.retained_item_count()
-            || !current_item_ids
+        if prepared.sorted_entry_ids.len() != self.top_level_entry_count()
+            || unique_sorted_ids.len() != self.top_level_entry_count()
+            || !current_entry_ids
                 .iter()
-                .all(|item_id| unique_sorted_ids.contains(item_id))
+                .all(|entry_id| unique_sorted_ids.contains(entry_id))
         {
             return Err(ApplyPreparedCanonicalSortError::InvalidPermutation);
         }
-        let reordered = current_item_ids.as_slice() != prepared.sorted_item_ids.as_ref();
+        let reordered = current_entry_ids.as_slice() != prepared.sorted_entry_ids.as_ref();
         if reordered && self.active_reservation.is_some() {
             return Err(ApplyPreparedCanonicalSortError::InstallCommitLinearizing);
         }
@@ -245,18 +250,12 @@ impl PlaylistQueue {
             let index_by_id = next_entries
                 .iter()
                 .enumerate()
-                .map(|(index, entry)| {
-                    let item_id = entry
-                        .as_single()
-                        .expect("single-only permutation preflight")
-                        .item_id();
-                    (item_id, index)
-                })
+                .map(|(index, entry)| (entry.entry_id(), index))
                 .collect::<HashMap<_, _>>();
             let sorted_original_indices = prepared
-                .sorted_item_ids
+                .sorted_entry_ids
                 .iter()
-                .map(|item_id| index_by_id[item_id])
+                .map(|entry_id| index_by_id[entry_id])
                 .collect::<Vec<_>>();
             apply_prepared_order(&mut next_entries, &sorted_original_indices);
         }
@@ -289,22 +288,27 @@ impl PlaylistQueue {
 }
 
 fn prepare_sort_entries_cancellable(
-    items: &[PlaylistItem],
+    top_level_entries: &[PlaylistEntry],
     sort_key: PlaylistSortKey,
     is_cancelled: &mut impl FnMut() -> bool,
-    prepared_items: &mut usize,
+    prepared_entries: &mut usize,
 ) -> Result<Vec<PreparedSortEntry>, CanonicalSortPreparationCancelled> {
-    let mut entries = Vec::with_capacity(items.len());
-    for (original_index, item) in items.iter().enumerate() {
+    let mut entries = Vec::with_capacity(top_level_entries.len());
+    for (original_index, entry) in top_level_entries.iter().enumerate() {
         if is_cancelled() {
             return Err(CanonicalSortPreparationCancelled);
         }
+        let (locator, metadata) = entry_sort_source(entry);
         entries.push(PreparedSortEntry {
             original_index,
-            primary: prepare_primary_key(item.cached_metadata(), sort_key),
-            natural_fallback: prepare_natural_sort_key(item),
+            primary: prepare_primary_key(metadata, sort_key),
+            natural_fallback: prepare_natural_sort_key(
+                locator,
+                metadata.fallback_display_name(),
+                entry.entry_id(),
+            ),
         });
-        *prepared_items += 1;
+        *prepared_entries += 1;
     }
     Ok(entries)
 }

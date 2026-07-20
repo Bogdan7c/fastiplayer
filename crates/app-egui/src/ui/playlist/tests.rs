@@ -1111,10 +1111,16 @@ fn insertion_before_inside_or_after_viewport_preserves_top_item_and_offset() {
         };
         match placement {
             InsertionPlacement::Before => {
-                queue.move_item(inserted_item_id, MoveItemIntent::Before(top_item_id));
+                queue.move_item(
+                    playlist_core::PlaylistEntryId::Single(inserted_item_id),
+                    MoveItemIntent::Before(playlist_core::PlaylistEntryId::Single(top_item_id)),
+                );
             }
             InsertionPlacement::Inside => {
-                queue.move_item(inserted_item_id, MoveItemIntent::After(inside_anchor));
+                queue.move_item(
+                    playlist_core::PlaylistEntryId::Single(inserted_item_id),
+                    MoveItemIntent::After(playlist_core::PlaylistEntryId::Single(inside_anchor)),
+                );
             }
             InsertionPlacement::After => {}
         }

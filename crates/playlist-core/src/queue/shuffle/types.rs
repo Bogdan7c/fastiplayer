@@ -211,6 +211,11 @@ pub enum BulkRemoveOutcome {
 pub enum BulkRemoveError {
     /// D08 reservation сейчас владеет mutation linearization.
     InstallCommitLinearizing,
+    /// Caller передал subordinate playable part вместо owning compound identity.
+    CompoundPartTarget {
+        part_item_id: PlaylistItemId,
+        compound_entry_id: crate::PlaylistEntryId,
+    },
     /// Structural revision исчерпана.
     StructuralRevisionExhausted,
     /// Current removal требует недоступную traversal revision.
@@ -223,6 +228,13 @@ impl fmt::Display for BulkRemoveError {
             Self::InstallCommitLinearizing => {
                 formatter.write_str("bulk remove заблокирован install commit")
             }
+            Self::CompoundPartTarget {
+                part_item_id,
+                compound_entry_id,
+            } => write!(
+                formatter,
+                "{part_item_id} является частью {compound_entry_id:?}; bulk remove требует group target"
+            ),
             Self::StructuralRevisionExhausted => {
                 formatter.write_str("bulk remove исчерпал structural revision")
             }

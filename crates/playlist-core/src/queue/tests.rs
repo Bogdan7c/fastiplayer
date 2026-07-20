@@ -5,8 +5,9 @@ use rand::SeedableRng;
 
 use crate::{
     CachedPlaylistMetadata, ForeignPathEncoding, ForeignPathPlatform, ForeignPlatformPath,
-    LocalLocator, LocalSourceFingerprint, NextPlaylistItemId, PlaylistItem, PlaylistItemDraft,
-    PlaylistItemId, PlaylistLocator, PlaylistMediaKind, RestoredPlaylistItem, SecretUrlLocator,
+    LocalLocator, LocalSourceFingerprint, NextPlaylistItemId, PlaylistEntryId, PlaylistItem,
+    PlaylistItemDraft, PlaylistItemId, PlaylistLocator, PlaylistMediaKind, RestoredPlaylistItem,
+    SecretUrlLocator,
 };
 
 use super::*;
@@ -34,6 +35,11 @@ fn url_draft(raw_url: &str) -> PlaylistItemDraft {
 /// Короткий persistence adapter для читаемых fixed IDs в tests.
 fn item_id(value: u64) -> PlaylistItemId {
     PlaylistItemId::from_persistence_value(value).expect("non-zero test ID")
+}
+
+/// Явно поднимает standalone playable identity до structural target.
+const fn single_entry(item_id: PlaylistItemId) -> PlaylistEntryId {
+    PlaylistEntryId::Single(item_id)
 }
 
 /// Извлекает IDs успешного append без bool/Option ambiguity.
@@ -144,7 +150,7 @@ fn remove_clear_and_replace_never_lower_allocator_high_watermark() {
             .expect("initial append"),
     );
     assert!(matches!(
-        queue.remove(ids[1]),
+        queue.remove(single_entry(ids[1])),
         RemoveItemOutcome::Removed { .. }
     ));
     assert_eq!(
@@ -293,11 +299,11 @@ fn reservation_keeps_future_ids_private_and_blocks_conflicting_mutators() {
         Err(ReplaceQueueError::InstallCommitLinearizing)
     );
     assert_eq!(
-        queue.remove(existing_id),
+        queue.remove(single_entry(existing_id)),
         RemoveItemOutcome::InstallCommitLinearizing
     );
     assert_eq!(
-        queue.move_item(existing_id, MoveItemIntent::ToFront),
+        queue.move_item(single_entry(existing_id), MoveItemIntent::ToFront),
         MoveItemOutcome::InstallCommitLinearizing
     );
     assert_eq!(queue.clear(), ClearQueueOutcome::InstallCommitLinearizing);
@@ -386,27 +392,42 @@ fn move_by_id_handles_edges_anchors_and_no_op() {
             .expect("append"),
     );
     assert_eq!(
-        queue.move_item(ids[0], MoveItemIntent::ToFront),
-        MoveItemOutcome::AlreadyInPlace { item_id: ids[0] }
+        queue.move_item(single_entry(ids[0]), MoveItemIntent::ToFront),
+        MoveItemOutcome::AlreadyInPlace {
+            entry_id: single_entry(ids[0])
+        }
     );
     assert_eq!(
-        queue.move_item(ids[2], MoveItemIntent::Before(ids[0])),
-        MoveItemOutcome::Moved { item_id: ids[2] }
+        queue.move_item(
+            single_entry(ids[2]),
+            MoveItemIntent::Before(single_entry(ids[0])),
+        ),
+        MoveItemOutcome::Moved {
+            entry_id: single_entry(ids[2])
+        }
     );
     assert_eq!(
         queue.iter_playable_ids().collect::<Vec<_>>(),
         vec![ids[2], ids[0], ids[1]]
     );
     assert_eq!(
-        queue.move_item(ids[2], MoveItemIntent::After(ids[1])),
-        MoveItemOutcome::Moved { item_id: ids[2] }
+        queue.move_item(
+            single_entry(ids[2]),
+            MoveItemIntent::After(single_entry(ids[1])),
+        ),
+        MoveItemOutcome::Moved {
+            entry_id: single_entry(ids[2])
+        }
     );
     assert_eq!(
         queue.iter_playable_ids().collect::<Vec<_>>(),
         vec![ids[0], ids[1], ids[2]]
     );
     assert!(matches!(
-        queue.move_item(ids[0], MoveItemIntent::Before(item_id(999))),
+        queue.move_item(
+            single_entry(ids[0]),
+            MoveItemIntent::Before(single_entry(item_id(999))),
+        ),
         MoveItemOutcome::AnchorNotFound { .. }
     ));
 }
@@ -437,7 +458,10 @@ fn group_move_preserves_canonical_order_and_unrelated_state() {
     let shuffle_before = queue.shuffle_traversal_snapshot();
 
     assert_eq!(
-        queue.move_items(&[ids[3], ids[1]], MoveItemIntent::Before(ids[4])),
+        queue.move_items(
+            &[single_entry(ids[3]), single_entry(ids[1])],
+            MoveItemIntent::Before(single_entry(ids[4])),
+        ),
         MoveItemsOutcome::Moved { item_count: 2 }
     );
     assert_eq!(
@@ -481,29 +505,43 @@ fn group_move_rejects_invalid_requests_and_detects_noop_atomically() {
         MoveItemsOutcome::NoItemsRequested
     );
     assert_eq!(
-        queue.move_items(&[ids[0], ids[0]], MoveItemIntent::ToBack),
-        MoveItemsOutcome::DuplicateItemId { item_id: ids[0] }
-    );
-    assert_eq!(
-        queue.move_items(&[item_id(999)], MoveItemIntent::ToBack),
-        MoveItemsOutcome::ItemNotFound {
-            item_id: item_id(999)
+        queue.move_items(
+            &[single_entry(ids[0]), single_entry(ids[0])],
+            MoveItemIntent::ToBack,
+        ),
+        MoveItemsOutcome::DuplicateEntryId {
+            entry_id: single_entry(ids[0])
         }
     );
     assert_eq!(
-        queue.move_items(&[ids[0]], MoveItemIntent::Before(item_id(999))),
+        queue.move_items(&[single_entry(item_id(999))], MoveItemIntent::ToBack),
+        MoveItemsOutcome::EntryNotFound {
+            entry_id: single_entry(item_id(999))
+        }
+    );
+    assert_eq!(
+        queue.move_items(
+            &[single_entry(ids[0])],
+            MoveItemIntent::Before(single_entry(item_id(999))),
+        ),
         MoveItemsOutcome::AnchorNotFound {
-            anchor_item_id: item_id(999)
+            anchor_entry_id: single_entry(item_id(999))
         }
     );
     assert_eq!(
-        queue.move_items(&[ids[0], ids[1]], MoveItemIntent::After(ids[1])),
+        queue.move_items(
+            &[single_entry(ids[0]), single_entry(ids[1])],
+            MoveItemIntent::After(single_entry(ids[1])),
+        ),
         MoveItemsOutcome::AnchorSelected {
-            anchor_item_id: ids[1]
+            anchor_entry_id: single_entry(ids[1])
         }
     );
     assert_eq!(
-        queue.move_items(&[ids[0], ids[1]], MoveItemIntent::ToFront),
+        queue.move_items(
+            &[single_entry(ids[0]), single_entry(ids[1])],
+            MoveItemIntent::ToFront,
+        ),
         MoveItemsOutcome::AlreadyInPlace { item_count: 2 }
     );
     assert_eq!(queue.iter_playable_ids().collect::<Vec<_>>(), order_before);
@@ -526,7 +564,7 @@ fn group_move_obeys_d08_and_revision_exhaustion_without_partial_order() {
         )
         .expect("reservation");
     assert_eq!(
-        reserved_queue.move_items(&[ids[1]], MoveItemIntent::ToFront),
+        reserved_queue.move_items(&[single_entry(ids[1])], MoveItemIntent::ToFront),
         MoveItemsOutcome::InstallCommitLinearizing
     );
     reserved_queue.abort_reserved(token);
@@ -535,7 +573,7 @@ fn group_move_obeys_d08_and_revision_exhaustion_without_partial_order() {
     let order_before = reserved_queue.iter_playable_ids().collect::<Vec<_>>();
     reserved_queue.structural_revision = QueueRevision(u64::MAX);
     assert_eq!(
-        reserved_queue.move_items(&[ids[1]], MoveItemIntent::ToFront),
+        reserved_queue.move_items(&[single_entry(ids[1])], MoveItemIntent::ToFront),
         MoveItemsOutcome::StructuralRevisionExhausted
     );
     assert_eq!(
@@ -557,7 +595,13 @@ fn group_move_scales_to_capacity_with_one_linear_commit() {
             )
             .expect("capacity append"),
     );
-    let selected = ids.iter().step_by(2).rev().copied().collect::<Vec<_>>();
+    let selected = ids
+        .iter()
+        .step_by(2)
+        .rev()
+        .copied()
+        .map(single_entry)
+        .collect::<Vec<_>>();
     let revision_before = queue.revision_snapshot().structural();
 
     assert_eq!(
@@ -596,7 +640,7 @@ fn removing_current_clears_cursor_without_assigning_successor() {
         .expect("committed current");
 
     assert!(matches!(
-        queue.remove(ids[0]),
+        queue.remove(single_entry(ids[0])),
         RemoveItemOutcome::Removed {
             traversal_current_effect: TraversalCurrentEffect::Cleared,
             ..
@@ -786,7 +830,7 @@ fn item_id_is_stable_across_move_and_metadata_patch() {
             .append_batch(vec![local_draft("a"), local_draft("b")])
             .expect("append"),
     );
-    queue.move_item(ids[0], MoveItemIntent::ToBack);
+    queue.move_item(single_entry(ids[0]), MoveItemIntent::ToBack);
     let moved_item = queue.item(ids[0]).expect("same ID after move");
     let patch = PlaylistMetadataPatch::new(
         ids[0],

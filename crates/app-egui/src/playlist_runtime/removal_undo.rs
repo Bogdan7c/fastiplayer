@@ -65,6 +65,13 @@ pub(crate) enum RuntimeRemovalOutcome {
     InvalidRetainedItem {
         item_id: PlaylistItemId,
     },
+    PartialCompoundSelection {
+        compound_entry_id: playlist_core::PlaylistEntryId,
+    },
+    CompoundPartTarget {
+        part_item_id: PlaylistItemId,
+        compound_entry_id: playlist_core::PlaylistEntryId,
+    },
     StaleStructuralRevision,
     StaleSelection,
     NoChange,
@@ -294,6 +301,16 @@ impl PlaylistRuntime {
             ControllerDestructiveRemovalOutcome::InvalidRetainedItem { item_id } => {
                 RuntimeRemovalOutcome::InvalidRetainedItem { item_id }
             }
+            ControllerDestructiveRemovalOutcome::PartialCompoundSelection { compound_entry_id } => {
+                RuntimeRemovalOutcome::PartialCompoundSelection { compound_entry_id }
+            }
+            ControllerDestructiveRemovalOutcome::CompoundPartTarget {
+                part_item_id,
+                compound_entry_id,
+            } => RuntimeRemovalOutcome::CompoundPartTarget {
+                part_item_id,
+                compound_entry_id,
+            },
             ControllerDestructiveRemovalOutcome::StaleStructuralRevision => {
                 RuntimeRemovalOutcome::StaleStructuralRevision
             }

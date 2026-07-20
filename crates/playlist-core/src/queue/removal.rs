@@ -1,11 +1,13 @@
 //! Opaque runtime-only snapshot для destructive removal Undo.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::{PlaylistEntry, PlaylistItemId, TraversalCurrentItemId};
+use crate::{PlaylistEntry, PlaylistEntryId, PlaylistItemId, TraversalCurrentItemId};
 
-use super::{PlaylistQueue, QueueRevision};
+use super::structural::StructuralEntryLookupError;
+use super::{PlaylistQueue, QueueRevision, RemoveItemOutcome, TraversalCurrentEffect};
 
 #[cfg(test)]
 mod tests;
@@ -17,6 +19,92 @@ pub enum RemovalCurrentOutcome {
     Preserved(Option<TraversalCurrentItemId>),
     /// Удалённый current отсоединён без назначения successor-а.
     Detached { removed_item_id: PlaylistItemId },
+}
+
+impl PlaylistQueue {
+    /// Удаляет exact top-level identity, не выбирая successor автоматически.
+    pub fn remove(&mut self, entry_id: PlaylistEntryId) -> RemoveItemOutcome {
+        if self.active_reservation.is_some() {
+            return RemoveItemOutcome::InstallCommitLinearizing;
+        }
+        let entry_index = match self.resolve_top_level_entry_index(entry_id) {
+            Ok(entry_index) => entry_index,
+            Err(StructuralEntryLookupError::NotFound) => {
+                return RemoveItemOutcome::NotFound { entry_id };
+            }
+            Err(StructuralEntryLookupError::CompoundPart {
+                part_item_id,
+                compound_entry_id,
+            }) => {
+                return RemoveItemOutcome::CompoundPartTarget {
+                    part_item_id,
+                    compound_entry_id,
+                };
+            }
+        };
+        let Some(next_structural_revision) = self.structural_revision.checked_next() else {
+            return RemoveItemOutcome::StructuralRevisionExhausted;
+        };
+        let removed_entry = &self.entries[entry_index];
+        let removed_item_ids = match removed_entry {
+            PlaylistEntry::Single(item) => HashSet::from([item.item_id()]),
+            PlaylistEntry::Compound(group) => group
+                .parts()
+                .map(|part| part.item().item_id())
+                .collect::<HashSet<_>>(),
+        };
+        let removed_current_item_id = self.traversal_current.and_then(|current| {
+            removed_item_ids
+                .contains(&current.item_id())
+                .then_some(current.item_id())
+        });
+        let clears_current = removed_current_item_id.is_some();
+        let next_traversal_revision = if clears_current {
+            let Some(next_revision) = self.traversal_revision.checked_next() else {
+                return RemoveItemOutcome::TraversalRevisionExhausted;
+            };
+            Some(next_revision)
+        } else {
+            None
+        };
+
+        let remaining_canonical_item_ids: Vec<_> = self
+            .iter_playable_items()
+            .filter(|item| !removed_item_ids.contains(&item.item_id()))
+            .map(|item| item.item_id())
+            .collect();
+        if let Some(shuffle_traversal) = &mut self.shuffle_traversal {
+            shuffle_traversal.remove_items(
+                &removed_item_ids,
+                &remaining_canonical_item_ids,
+                clears_current,
+            );
+        }
+        self.entries.remove(entry_index);
+        self.structural_revision = next_structural_revision;
+        let traversal_current_effect = if clears_current {
+            self.traversal_current = None;
+            self.traversal_revision =
+                next_traversal_revision.expect("preflighted traversal revision");
+            TraversalCurrentEffect::Cleared
+        } else {
+            TraversalCurrentEffect::Preserved
+        };
+
+        let current_outcome = if clears_current {
+            RemovalCurrentOutcome::Detached {
+                removed_item_id: removed_current_item_id
+                    .expect("clears_current requires a removed current part"),
+            }
+        } else {
+            RemovalCurrentOutcome::Preserved(self.traversal_current)
+        };
+        RemoveItemOutcome::Removed {
+            entry_id,
+            traversal_current_effect,
+            current_outcome,
+        }
+    }
 }
 
 /// Immutable pre-mutation snapshot не раскрывает shuffle/allocator storage наружу.
@@ -64,6 +152,8 @@ pub enum RemovalSnapshotRestoreError {
     StaleStructuralRevision,
     /// Metadata либо allocator изменились после захвата snapshot.
     StalePersistentState,
+    /// Current queue не является exact order-preserving результатом удаления из snapshot.
+    NotRemovalResult,
     /// Новую structural/traversal revision невозможно выделить.
     RevisionExhausted,
 }
@@ -105,6 +195,23 @@ impl PlaylistQueue {
             || self.compound_group_id_allocator != snapshot.compound_group_id_allocator
         {
             return Err(RemovalSnapshotRestoreError::StalePersistentState);
+        }
+        let current_entry_ids = self
+            .entries
+            .iter()
+            .map(crate::PlaylistEntry::entry_id)
+            .collect::<HashSet<_>>();
+        let expected_retained_entries = snapshot
+            .entries
+            .iter()
+            .filter(|entry| current_entry_ids.contains(&entry.entry_id()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if self.entries.len() >= snapshot.entries.len()
+            || expected_retained_entries != self.entries
+            || current_entry_ids.len() != self.entries.len()
+        {
+            return Err(RemovalSnapshotRestoreError::NotRemovalResult);
         }
         let snapshot_next_traversal = snapshot.traversal_revision.checked_next();
         if self.traversal_revision != snapshot.traversal_revision

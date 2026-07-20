@@ -46,3 +46,9 @@ Session 09A completed PASS on 2026-07-14. This memory complements `mem:core`, `m
 ## Cancellation vocabulary correction (2026-07-18)
 - После полного удаления product-фичи stop-after-current публичный `DiscoveryCancellationCause` содержит шесть причин: `UserCancelled`, `Superseded`, `TransportStop`, `StructuralInvalidation`, `LifecycleSuspended`, `LifecycleShutdown`. Удалённый `StopAfterCurrent` не должен возвращаться как неиспользуемый generic placeholder.
 - Executor/job cancellation semantics, first-writer-wins, bounded cleanup и app-neutral ownership не изменены; 52 focused tests и full workspace all-features suite прошли.
+
+
+## S01B structural anchor integration (2026-07-20)
+- Neutral `playlist-discovery` crate ownership/API не изменились: records по-прежнему не знают queue IDs и не мутируют canonical queue.
+- Domain/app commit boundary теперь использует `playlist-core::StableInsertionAnchor` с explicit `PlaylistEntryId`, а не ambiguous Item ID. Top-level compound anchor разрешён; subordinate part anchor и stale entry anchor дают разные typed atomic failures без allocator burn.
+- Current local sibling discovery records/target commits остаются standalone Singles, поэтому app mapping конструирует `PlaylistEntryId::Single` осознанно. Будущая compound-aware discovery policy обязана передавать owning `PlaylistEntryId::Compound`; insertion никогда не выбирает позицию внутри parts.

@@ -14,7 +14,9 @@ use media_core::{DiscNumber, MediaDuration, TrackNumber, TvEpisodeNumber, TvSeas
 
 use self::natural::{NaturalSortKey, prepare_natural_sort_key};
 use super::PlaylistQueue;
-use crate::{CachedPlaylistMetadata, PlaylistItem, PlaylistItemId, PlaylistMediaKind};
+use crate::{
+    CachedPlaylistMetadata, PlaylistEntry, PlaylistEntryId, PlaylistLocator, PlaylistMediaKind,
+};
 
 /// Выбранный пользователем canonical sort vocabulary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -81,8 +83,8 @@ impl SortCanonicalQueue {
 pub enum SortCanonicalQueueOutcome {
     /// Canonical order опубликован одной structural revision.
     Reordered {
-        /// Число Item IDs в атомарно опубликованном порядке.
-        item_count: usize,
+        /// Число top-level entries в атомарно опубликованном порядке.
+        entry_count: usize,
     },
     /// Comparator уже задавал текущий canonical order.
     AlreadyInCanonicalOrder,
@@ -101,8 +103,11 @@ impl fmt::Debug for SortCanonicalQueueOutcome {
 impl fmt::Display for SortCanonicalQueueOutcome {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Reordered { item_count } => {
-                write!(formatter, "canonical queue reordered ({item_count} items)")
+            Self::Reordered { entry_count } => {
+                write!(
+                    formatter,
+                    "canonical queue reordered ({entry_count} entries)"
+                )
             }
             Self::AlreadyInCanonicalOrder => formatter.write_str("canonical queue already sorted"),
             Self::InstallCommitLinearizing => {
@@ -122,15 +127,8 @@ impl PlaylistQueue {
             return SortCanonicalQueueOutcome::InstallCommitLinearizing;
         }
 
-        let mut sortable_items = self
-            .entries
-            .iter()
-            .filter_map(|entry| entry.as_single().cloned())
-            .collect::<Vec<_>>();
-        if sortable_items.len() != self.entries.len() {
-            return SortCanonicalQueueOutcome::AlreadyInCanonicalOrder;
-        }
-        let mut prepared_entries = prepare_sort_entries(&sortable_items, intent.key, |_| {});
+        let mut sortable_entries = self.entries.clone();
+        let mut prepared_entries = prepare_sort_entries(&sortable_entries, intent.key, |_| {});
         prepared_entries.sort_by(|left, right| compare_entries(left, right, intent.direction));
 
         let order_is_unchanged = prepared_entries
@@ -149,20 +147,17 @@ impl PlaylistQueue {
             .iter()
             .map(|entry| entry.original_index)
             .collect::<Vec<_>>();
-        apply_prepared_order(&mut sortable_items, &sorted_original_indices);
-        self.entries = sortable_items
-            .into_iter()
-            .map(crate::PlaylistEntry::Single)
-            .collect();
+        apply_prepared_order(&mut sortable_entries, &sorted_original_indices);
+        self.entries = sortable_entries;
         self.structural_revision = next_structural_revision;
 
         SortCanonicalQueueOutcome::Reordered {
-            item_count: self.entries.len(),
+            entry_count: self.entries.len(),
         }
     }
 }
 
-/// Один immutable набор ключей, подготовленный ровно один раз для одного item.
+/// Один immutable набор ключей, подготовленный ровно один раз для top-level entry.
 struct PreparedSortEntry {
     original_index: usize,
     primary: PreparedPrimaryKey,
@@ -218,17 +213,20 @@ struct VideoSequenceKey {
 
 /// O(N) preparation boundary; observer позволяет deterministic proof в tests.
 fn prepare_sort_entries(
-    items: &[PlaylistItem],
+    entries: &[PlaylistEntry],
     sort_key: PlaylistSortKey,
-    mut on_item_prepared: impl FnMut(PlaylistItemId),
+    mut on_entry_prepared: impl FnMut(PlaylistEntryId),
 ) -> Vec<PreparedSortEntry> {
-    items
+    entries
         .iter()
         .enumerate()
-        .map(|(original_index, item)| {
-            let natural_fallback = prepare_natural_sort_key(item);
-            let primary = prepare_primary_key(item.cached_metadata(), sort_key);
-            on_item_prepared(item.item_id());
+        .map(|(original_index, entry)| {
+            let (locator, metadata) = entry_sort_source(entry);
+            let entry_id = entry.entry_id();
+            let natural_fallback =
+                prepare_natural_sort_key(locator, metadata.fallback_display_name(), entry_id);
+            let primary = prepare_primary_key(metadata, sort_key);
+            on_entry_prepared(entry_id);
             PreparedSortEntry {
                 original_index,
                 primary,
@@ -236,6 +234,14 @@ fn prepare_sort_entries(
             }
         })
         .collect()
+}
+
+/// Выбирает owner-authored summary одного top-level entry без обращения к parts.
+fn entry_sort_source(entry: &PlaylistEntry) -> (&PlaylistLocator, &CachedPlaylistMetadata) {
+    match entry {
+        PlaylistEntry::Single(item) => (item.locator(), item.cached_metadata()),
+        PlaylistEntry::Compound(group) => (group.provenance_locator(), group.cached_summary()),
+    }
 }
 
 /// Строит только выбранный metadata primary key.

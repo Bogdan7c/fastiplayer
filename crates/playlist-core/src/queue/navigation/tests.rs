@@ -406,8 +406,13 @@ fn structural_change_invalidates_preview() {
         ids[1],
     );
     assert!(matches!(
-        queue.move_item(ids[2], crate::MoveItemIntent::ToFront),
-        crate::MoveItemOutcome::Moved { item_id } if item_id == ids[2]
+        queue.move_item(
+            crate::PlaylistEntryId::Single(ids[2]),
+            crate::MoveItemIntent::ToFront,
+        ),
+        crate::MoveItemOutcome::Moved {
+            entry_id: crate::PlaylistEntryId::Single(item_id)
+        } if item_id == ids[2]
     ));
     assert!(matches!(
         queue.continue_manual_navigation(

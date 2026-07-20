@@ -1,8 +1,11 @@
 //! Canonical reorder boundary без знания о UI drag geometry.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use playlist_core::{MoveItemIntent, MoveItemOutcome, MoveItemsOutcome, PlaylistItemId};
+use playlist_core::{
+    MoveItemIntent, MoveItemOutcome, MoveItemsOutcome, PlaylistEntryId, PlaylistItemId,
+};
 
 use super::{ManualNavigationInvalidation, PlaylistController};
 use crate::playlist_runtime::PlaylistStructuralRevision;
@@ -19,8 +22,16 @@ pub(crate) enum ControllerMoveItemOutcome {
     ItemNotFound {
         item_id: PlaylistItemId,
     },
+    CompoundPartTarget {
+        part_item_id: PlaylistItemId,
+        compound_entry_id: PlaylistEntryId,
+    },
     AnchorNotFound {
-        anchor_item_id: PlaylistItemId,
+        anchor_entry_id: PlaylistEntryId,
+    },
+    CompoundPartAnchor {
+        part_item_id: PlaylistItemId,
+        compound_entry_id: PlaylistEntryId,
     },
     InstallCommitLinearizing,
     FatalInvariant,
@@ -47,11 +58,18 @@ pub(crate) enum ControllerMoveItemsOutcome {
     ItemNotFound {
         item_id: PlaylistItemId,
     },
+    PartialCompoundSelection {
+        compound_entry_id: PlaylistEntryId,
+    },
     AnchorNotFound {
-        anchor_item_id: PlaylistItemId,
+        anchor_entry_id: PlaylistEntryId,
+    },
+    CompoundPartAnchor {
+        part_item_id: PlaylistItemId,
+        compound_entry_id: PlaylistEntryId,
     },
     AnchorSelected {
-        anchor_item_id: PlaylistItemId,
+        anchor_entry_id: PlaylistEntryId,
     },
     StaleStructuralRevision,
     InstallCommitLinearizing,
@@ -78,7 +96,10 @@ impl PlaylistController {
             return ControllerMoveItemOutcome::StructuralRevisionExhausted;
         };
 
-        match self.queue.move_item(item_id, intent) {
+        match self
+            .queue
+            .move_item(PlaylistEntryId::Single(item_id), intent)
+        {
             MoveItemOutcome::Moved { .. } => {
                 let manual_navigation_invalidation =
                     self.invalidate_manual_navigation_after_structural_mutation();
@@ -91,12 +112,27 @@ impl PlaylistController {
                 }
             }
             MoveItemOutcome::AlreadyInPlace { .. } => ControllerMoveItemOutcome::AlreadyInPlace,
-            MoveItemOutcome::ItemNotFound { item_id } => {
-                ControllerMoveItemOutcome::ItemNotFound { item_id }
+            MoveItemOutcome::EntryNotFound {
+                entry_id: PlaylistEntryId::Single(item_id),
+            } => ControllerMoveItemOutcome::ItemNotFound { item_id },
+            MoveItemOutcome::EntryNotFound { .. } => ControllerMoveItemOutcome::FatalInvariant,
+            MoveItemOutcome::CompoundPartTarget {
+                part_item_id,
+                compound_entry_id,
+            } => ControllerMoveItemOutcome::CompoundPartTarget {
+                part_item_id,
+                compound_entry_id,
+            },
+            MoveItemOutcome::AnchorNotFound { anchor_entry_id } => {
+                ControllerMoveItemOutcome::AnchorNotFound { anchor_entry_id }
             }
-            MoveItemOutcome::AnchorNotFound { anchor_item_id } => {
-                ControllerMoveItemOutcome::AnchorNotFound { anchor_item_id }
-            }
+            MoveItemOutcome::CompoundPartAnchor {
+                part_item_id,
+                compound_entry_id,
+            } => ControllerMoveItemOutcome::CompoundPartAnchor {
+                part_item_id,
+                compound_entry_id,
+            },
             MoveItemOutcome::InstallCommitLinearizing => {
                 ControllerMoveItemOutcome::InstallCommitLinearizing
             }
@@ -126,7 +162,52 @@ impl PlaylistController {
             return ControllerMoveItemsOutcome::StructuralRevisionExhausted;
         };
 
-        match self.queue.move_items(&item_ids, intent) {
+        let mut unique_item_ids = HashSet::with_capacity(item_ids.len());
+        for item_id in item_ids.iter().copied() {
+            if !unique_item_ids.insert(item_id) {
+                return ControllerMoveItemsOutcome::DuplicateItemId { item_id };
+            }
+        }
+
+        let mut entry_id_by_item = HashMap::with_capacity(self.queue.retained_item_count());
+        let mut part_ids_by_compound = HashMap::new();
+        for entry in self.queue.iter_top_level_entries() {
+            match entry {
+                playlist_core::PlaylistEntry::Single(item) => {
+                    entry_id_by_item.insert(item.item_id(), entry.entry_id());
+                }
+                playlist_core::PlaylistEntry::Compound(group) => {
+                    let entry_id = entry.entry_id();
+                    let part_ids = group
+                        .parts()
+                        .map(|part| part.item().item_id())
+                        .collect::<Vec<_>>();
+                    entry_id_by_item
+                        .extend(part_ids.iter().copied().map(|item_id| (item_id, entry_id)));
+                    part_ids_by_compound.insert(entry_id, part_ids);
+                }
+            }
+        }
+        let mut requested_entry_ids = Vec::new();
+        for item_id in item_ids.iter().copied() {
+            let Some(entry_id) = entry_id_by_item.get(&item_id).copied() else {
+                return ControllerMoveItemsOutcome::ItemNotFound { item_id };
+            };
+            if let Some(part_ids) = part_ids_by_compound.get(&entry_id)
+                && part_ids
+                    .iter()
+                    .any(|part_item_id| !unique_item_ids.contains(part_item_id))
+            {
+                return ControllerMoveItemsOutcome::PartialCompoundSelection {
+                    compound_entry_id: entry_id,
+                };
+            }
+            if !requested_entry_ids.contains(&entry_id) {
+                requested_entry_ids.push(entry_id);
+            }
+        }
+
+        match self.queue.move_items(&requested_entry_ids, intent) {
             MoveItemsOutcome::Moved { item_count } => {
                 let manual_navigation_invalidation =
                     self.invalidate_manual_navigation_after_structural_mutation();
@@ -143,17 +224,23 @@ impl PlaylistController {
             MoveItemsOutcome::AlreadyInPlace { item_count } => {
                 ControllerMoveItemsOutcome::AlreadyInPlace { item_count }
             }
-            MoveItemsOutcome::DuplicateItemId { item_id } => {
-                ControllerMoveItemsOutcome::DuplicateItemId { item_id }
+            MoveItemsOutcome::DuplicateEntryId { .. }
+            | MoveItemsOutcome::EntryNotFound { .. }
+            | MoveItemsOutcome::CompoundPartTarget { .. } => {
+                ControllerMoveItemsOutcome::FatalInvariant
             }
-            MoveItemsOutcome::ItemNotFound { item_id } => {
-                ControllerMoveItemsOutcome::ItemNotFound { item_id }
+            MoveItemsOutcome::AnchorNotFound { anchor_entry_id } => {
+                ControllerMoveItemsOutcome::AnchorNotFound { anchor_entry_id }
             }
-            MoveItemsOutcome::AnchorNotFound { anchor_item_id } => {
-                ControllerMoveItemsOutcome::AnchorNotFound { anchor_item_id }
-            }
-            MoveItemsOutcome::AnchorSelected { anchor_item_id } => {
-                ControllerMoveItemsOutcome::AnchorSelected { anchor_item_id }
+            MoveItemsOutcome::CompoundPartAnchor {
+                part_item_id,
+                compound_entry_id,
+            } => ControllerMoveItemsOutcome::CompoundPartAnchor {
+                part_item_id,
+                compound_entry_id,
+            },
+            MoveItemsOutcome::AnchorSelected { anchor_entry_id } => {
+                ControllerMoveItemsOutcome::AnchorSelected { anchor_entry_id }
             }
             MoveItemsOutcome::InstallCommitLinearizing => {
                 ControllerMoveItemsOutcome::InstallCommitLinearizing
@@ -170,7 +257,9 @@ mod tests {
     use std::path::PathBuf;
 
     use playlist_core::{
-        CachedPlaylistMetadata, LocalLocator, PlaylistItemDraft, PlaylistMediaKind,
+        AddPlaylistEntriesOutcome, CachedPlaylistMetadata, LocalLocator,
+        PlaylistCompoundGroupDraft, PlaylistEntryDraft, PlaylistItemDraft, PlaylistLocator,
+        PlaylistMediaKind,
     };
 
     use super::*;
@@ -222,11 +311,17 @@ mod tests {
         let dirty_before = controller.dirty_revision();
 
         assert_eq!(
-            controller.move_item(ids[0], MoveItemIntent::Before(ids[1])),
+            controller.move_item(
+                ids[0],
+                MoveItemIntent::Before(PlaylistEntryId::Single(ids[1])),
+            ),
             ControllerMoveItemOutcome::AlreadyInPlace
         );
         assert_eq!(
-            controller.move_item(ids[1], MoveItemIntent::Before(ids[1])),
+            controller.move_item(
+                ids[1],
+                MoveItemIntent::Before(PlaylistEntryId::Single(ids[1])),
+            ),
             ControllerMoveItemOutcome::AlreadyInPlace
         );
         assert_eq!(controller.dirty_revision(), dirty_before);
@@ -312,6 +407,64 @@ mod tests {
                 revision,
             ),
             ControllerMoveItemsOutcome::StaleStructuralRevision
+        );
+    }
+
+    #[test]
+    fn partial_compound_multi_select_is_rejected_before_domain_mutation() {
+        let mut controller = PlaylistController::new();
+        let compound = PlaylistCompoundGroupDraft::new(
+            PlaylistLocator::Local(LocalLocator::Native(PathBuf::from("album"))),
+            CachedPlaylistMetadata::new("album", PlaylistMediaKind::Audio),
+            vec![draft(1), draft(2)],
+        )
+        .expect("compound requires parts");
+        let AddPlaylistEntriesOutcome::Added(allocated) = controller
+            .queue
+            .append_entries(vec![
+                PlaylistEntryDraft::Single(draft(0)),
+                PlaylistEntryDraft::Compound(compound),
+            ])
+            .expect("mixed append")
+        else {
+            panic!("fixture append is non-empty");
+        };
+        let entry_ids = allocated.iter_entry_ids().collect::<Vec<_>>();
+        let item_ids = allocated.iter_playable_item_ids().collect::<Vec<_>>();
+        let revision = controller.structural_revision;
+        let order_before = controller
+            .queue
+            .iter_top_level_entry_ids()
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            controller.move_items(Arc::from([item_ids[1]]), MoveItemIntent::ToFront, revision,),
+            ControllerMoveItemsOutcome::PartialCompoundSelection {
+                compound_entry_id: entry_ids[1],
+            }
+        );
+        assert_eq!(
+            controller
+                .queue
+                .iter_top_level_entry_ids()
+                .collect::<Vec<_>>(),
+            order_before
+        );
+
+        assert!(matches!(
+            controller.move_items(
+                Arc::from([item_ids[1], item_ids[2]]),
+                MoveItemIntent::ToFront,
+                revision,
+            ),
+            ControllerMoveItemsOutcome::Moved { item_count: 1, .. }
+        ));
+        assert_eq!(
+            controller
+                .queue
+                .iter_top_level_entry_ids()
+                .collect::<Vec<_>>(),
+            [entry_ids[1], entry_ids[0]]
         );
     }
 }

@@ -7,7 +7,8 @@ use player_core::{
     MediaInstanceId, PlaybackIntentRevision, PlaybackState,
 };
 use playlist_core::{
-    CachedPlaylistMetadata, LocalLocator, PlaylistItemDraft, PlaylistItemId, PlaylistMediaKind,
+    AddPlaylistEntriesOutcome, CachedPlaylistMetadata, LocalLocator, PlaylistCompoundGroupDraft,
+    PlaylistEntryDraft, PlaylistItemDraft, PlaylistItemId, PlaylistLocator, PlaylistMediaKind,
     RemovalCurrentOutcome, RepeatMode, ReservedQueueMutation,
 };
 
@@ -71,6 +72,68 @@ fn removed(outcome: ControllerDestructiveRemovalOutcome) -> super::ControllerDes
         ControllerDestructiveRemovalOutcome::Removed(removal) => *removal,
         other => panic!("expected removal, got {other:?}"),
     }
+}
+
+#[test]
+fn selected_removal_rejects_partial_compound_and_commits_full_group() {
+    let mut controller = PlaylistController::new();
+    let compound = PlaylistCompoundGroupDraft::new(
+        PlaylistLocator::Local(LocalLocator::Native(PathBuf::from("album"))),
+        CachedPlaylistMetadata::new("album", PlaylistMediaKind::Audio),
+        vec![draft(1), draft(2)],
+    )
+    .expect("compound requires parts");
+    let AddPlaylistEntriesOutcome::Added(allocated) = controller
+        .queue
+        .append_entries(vec![
+            PlaylistEntryDraft::Single(draft(0)),
+            PlaylistEntryDraft::Compound(compound),
+        ])
+        .expect("mixed append")
+    else {
+        panic!("fixture append is non-empty");
+    };
+    let entry_ids = allocated.iter_entry_ids().collect::<Vec<_>>();
+    let item_ids = allocated.iter_playable_item_ids().collect::<Vec<_>>();
+    let revision = controller.structural_revision;
+    assert!(matches!(
+        controller.remove_item(item_ids[1]),
+        ControllerDestructiveRemovalOutcome::CompoundPartTarget {
+            part_item_id,
+            compound_entry_id,
+        } if part_item_id == item_ids[1] && compound_entry_id == entry_ids[1]
+    ));
+    assert_eq!(
+        controller.update_selection(crate::playlist_runtime::UpdateSelection::Replace {
+            item_id: item_ids[1],
+            structural_revision: revision,
+        }),
+        crate::playlist_runtime::UpdateSelectionOutcome::Updated
+    );
+
+    assert!(matches!(
+        controller.remove_selected_items(Arc::from([item_ids[1]]), revision),
+        ControllerDestructiveRemovalOutcome::PartialCompoundSelection {
+            compound_entry_id,
+        } if compound_entry_id == entry_ids[1]
+    ));
+    assert_eq!(controller.queue.retained_item_count(), 3);
+
+    assert_eq!(
+        controller.update_selection(crate::playlist_runtime::UpdateSelection::Toggle {
+            item_id: item_ids[2],
+            structural_revision: revision,
+        }),
+        crate::playlist_runtime::UpdateSelectionOutcome::Updated
+    );
+    assert!(matches!(
+        controller.remove_selected_items(Arc::from([item_ids[1], item_ids[2]]), revision,),
+        ControllerDestructiveRemovalOutcome::Removed(_)
+    ));
+    assert_eq!(
+        controller.queue.iter_playable_ids().collect::<Vec<_>>(),
+        [item_ids[0]]
+    );
 }
 
 fn install_request(

@@ -55,7 +55,9 @@ pub(super) fn insertion_anchor(
         .next()
         .map(|(_, item_id)| *item_id);
     Some(match next_committed {
-        Some(item_id) => StableInsertionAnchor::before(item_id),
+        Some(item_id) => {
+            StableInsertionAnchor::before(playlist_core::PlaylistEntryId::Single(item_id))
+        }
         None => StableInsertionAnchor::at_end(),
     })
 }
