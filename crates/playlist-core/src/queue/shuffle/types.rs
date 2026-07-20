@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::PlaylistItemId;
+use crate::{PlaylistEntryId, PlaylistItemId};
 
 use super::super::{QueueRestoreError, RemovalCurrentOutcome, TraversalCurrentEffect};
 
@@ -30,7 +30,7 @@ impl ShuffleHistoryCursor {
 pub struct ShuffleTraversalSnapshot {
     pub(in crate::queue::shuffle) history: Vec<PlaylistItemId>,
     pub(in crate::queue::shuffle) history_cursor: Option<ShuffleHistoryCursor>,
-    pub(in crate::queue::shuffle) upcoming: Vec<PlaylistItemId>,
+    pub(in crate::queue::shuffle) upcoming: Vec<PlaylistEntryId>,
 }
 
 impl ShuffleTraversalSnapshot {
@@ -38,7 +38,7 @@ impl ShuffleTraversalSnapshot {
     pub fn new(
         history: Vec<PlaylistItemId>,
         history_cursor: Option<ShuffleHistoryCursor>,
-        upcoming: Vec<PlaylistItemId>,
+        upcoming: Vec<PlaylistEntryId>,
     ) -> Self {
         Self {
             history,
@@ -57,8 +57,8 @@ impl ShuffleTraversalSnapshot {
         self.history_cursor
     }
 
-    /// Возвращает exact ordered upcoming текущего cycle.
-    pub fn upcoming(&self) -> &[PlaylistItemId] {
+    /// Возвращает exact ordered top-level entries текущего cycle.
+    pub fn upcoming(&self) -> &[PlaylistEntryId] {
         &self.upcoming
     }
 }
@@ -70,17 +70,20 @@ pub enum ShuffleTraversalRestoreError {
     HistoryLimitExceeded { restored: usize, maximum: usize },
     /// History ссылается на отсутствующую canonical identity.
     HistoryItemNotCommitted { item_id: PlaylistItemId },
-    /// Upcoming ссылается на отсутствующую canonical identity.
-    UpcomingItemNotCommitted { item_id: PlaylistItemId },
-    /// Set-like upcoming содержит duplicate identity.
-    DuplicateUpcomingItem { item_id: PlaylistItemId },
+    /// Upcoming ссылается на отсутствующую top-level identity.
+    UpcomingEntryNotCommitted { entry_id: PlaylistEntryId },
+    /// Set-like upcoming содержит duplicate top-level identity.
+    DuplicateUpcomingEntry { entry_id: PlaylistEntryId },
     /// Cursor отсутствует либо присутствует несогласованно с history/current.
     InvalidHistoryCursor,
     /// Factual cursor указывает не на persisted current.
     CurrentDoesNotMatchHistory { current_item_id: PlaylistItemId },
     /// Current не может одновременно оставаться в upcoming текущего cycle.
-    CurrentPresentInUpcoming { current_item_id: PlaylistItemId },
-    /// Idle shuffle обязан содержать все canonical IDs ровно по одному.
+    CurrentEntryPresentInUpcoming {
+        current_item_id: PlaylistItemId,
+        current_entry_id: PlaylistEntryId,
+    },
+    /// Idle shuffle обязан содержать все canonical Entry IDs ровно по одному.
     IdleUpcomingDoesNotCoverCanonicalQueue,
 }
 
@@ -97,14 +100,17 @@ impl fmt::Display for ShuffleTraversalRestoreError {
                     "shuffle history ссылается на отсутствующий item {item_id}"
                 )
             }
-            Self::UpcomingItemNotCommitted { item_id } => {
+            Self::UpcomingEntryNotCommitted { entry_id } => {
                 write!(
                     formatter,
-                    "shuffle upcoming ссылается на отсутствующий item {item_id}"
+                    "shuffle upcoming ссылается на отсутствующий top-level entry {entry_id:?}"
                 )
             }
-            Self::DuplicateUpcomingItem { item_id } => {
-                write!(formatter, "shuffle upcoming повторяет item {item_id}")
+            Self::DuplicateUpcomingEntry { entry_id } => {
+                write!(
+                    formatter,
+                    "shuffle upcoming повторяет top-level entry {entry_id:?}"
+                )
             }
             Self::InvalidHistoryCursor => {
                 formatter.write_str("shuffle history cursor не согласован с history/current")
@@ -113,9 +119,12 @@ impl fmt::Display for ShuffleTraversalRestoreError {
                 formatter,
                 "shuffle history cursor не указывает на current item {current_item_id}"
             ),
-            Self::CurrentPresentInUpcoming { current_item_id } => write!(
+            Self::CurrentEntryPresentInUpcoming {
+                current_item_id,
+                current_entry_id,
+            } => write!(
                 formatter,
-                "current item {current_item_id} ошибочно присутствует в shuffle upcoming"
+                "current item {current_item_id} и его entry {current_entry_id:?} ошибочно присутствуют в shuffle upcoming"
             ),
             Self::IdleUpcomingDoesNotCoverCanonicalQueue => formatter
                 .write_str("idle shuffle upcoming не содержит все canonical IDs ровно по одному"),

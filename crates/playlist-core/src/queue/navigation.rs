@@ -420,11 +420,12 @@ impl PlaylistQueue {
         };
         if let Some(shuffle_traversal) = &self.shuffle_traversal {
             let mut shuffle_preview = ShuffleManualPreview::new(shuffle_traversal);
-            let canonical_item_ids = self.iter_playable_ids().collect::<Vec<_>>();
+            let canonical_entry_ids = self.iter_top_level_entry_ids().collect::<Vec<_>>();
             let step = shuffle_preview.step(
                 intent.direction(),
                 intent.repeat_mode(),
-                &canonical_item_ids,
+                self,
+                &canonical_entry_ids,
                 self.traversal_current()
                     .map(TraversalCurrentItemId::item_id),
                 random,
@@ -503,11 +504,12 @@ impl PlaylistQueue {
     ) -> Result<ManualNavigationOutcome, ManualNavigationPreviewError> {
         self.validate_manual_preview(&preview)?;
         if let Some(mut shuffle_preview) = preview.shuffle_preview.take() {
-            let canonical_item_ids = self.iter_playable_ids().collect::<Vec<_>>();
+            let canonical_entry_ids = self.iter_top_level_entry_ids().collect::<Vec<_>>();
             let step = shuffle_preview.step(
                 intent.direction(),
                 intent.repeat_mode(),
-                &canonical_item_ids,
+                self,
+                &canonical_entry_ids,
                 self.traversal_current()
                     .map(TraversalCurrentItemId::item_id),
                 random,

@@ -132,14 +132,15 @@ impl PlaylistQueue {
                     .ok_or(BulkRemoveError::TraversalRevisionExhausted)
             })
             .transpose()?;
-        let remaining_canonical_item_ids: Vec<_> = self
-            .iter_playable_ids()
-            .filter(|item_id| !committed_item_ids_to_remove.contains(item_id))
+        let remaining_canonical_entry_ids: Vec<_> = self
+            .iter_top_level_entry_ids()
+            .filter(|entry_id| !committed_entries_to_remove.contains(entry_id))
             .collect();
         if let Some(shuffle_traversal) = &mut self.shuffle_traversal {
-            shuffle_traversal.remove_items(
+            shuffle_traversal.remove_entries_and_items(
+                committed_entries_to_remove,
                 &committed_item_ids_to_remove,
-                &remaining_canonical_item_ids,
+                &remaining_canonical_entry_ids,
                 clears_current,
             );
         }

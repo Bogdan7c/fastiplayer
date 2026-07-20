@@ -299,7 +299,8 @@ impl PlaylistQueue {
                 .iter_playable_ids()
                 .filter(|item_id| plan.eligible_item_ids.contains(item_id))
                 .collect();
-            shuffle_preview.retain_automatic_snapshot(&retained_item_ids);
+            let retained_entry_ids = self.retained_entry_ids_for_items(&retained_item_ids);
+            shuffle_preview.retain_automatic_snapshot(&retained_item_ids, &retained_entry_ids);
             shuffle_preview.commit_into(
                 self.shuffle_traversal
                     .as_mut()
@@ -316,9 +317,10 @@ impl PlaylistQueue {
         random: &mut R,
     ) -> Option<PlaylistItemId> {
         if plan.shuffle_preview.is_some() {
-            let canonical_item_ids: Vec<_> = self
-                .iter_playable_ids()
-                .filter(|item_id| plan.eligible_item_ids.contains(item_id))
+            let eligible_entry_ids = self.retained_entry_ids_for_items(&plan.eligible_item_ids);
+            let canonical_entry_ids: Vec<_> = self
+                .iter_top_level_entry_ids()
+                .filter(|entry_id| eligible_entry_ids.contains(entry_id))
                 .collect();
             let maximum_steps = plan.eligible_item_ids.len().saturating_mul(2).max(1);
             for _ in 0..maximum_steps {
@@ -326,7 +328,8 @@ impl PlaylistQueue {
                     Some(shuffle_preview) => shuffle_preview.step(
                         ManualNavigationDirection::Next,
                         plan.repeat_mode,
-                        &canonical_item_ids,
+                        self,
+                        &canonical_entry_ids,
                         self.traversal_current()
                             .map(TraversalCurrentItemId::item_id),
                         random,
@@ -376,7 +379,8 @@ impl PlaylistQueue {
         repeat_mode: RepeatMode,
     ) -> Vec<PlaylistItemId> {
         let current_index = self
-            .index_of(current_item_id)
+            .iter_playable_ids()
+            .position(|item_id| item_id == current_item_id)
             .expect("validated current remains committed");
         let mut candidates: Vec<_> = self.iter_playable_ids().skip(current_index + 1).collect();
         if repeat_mode == RepeatMode::RepeatQueue {

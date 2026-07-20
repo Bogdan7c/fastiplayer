@@ -633,8 +633,88 @@ fn shuffle_fast_skip_is_consumed_but_never_becomes_factual_history() {
         .expect("enabled shuffle snapshot");
     assert!(!snapshot.history().contains(&skipped_item));
     assert!(snapshot.history().contains(&latest_item));
-    assert!(!snapshot.upcoming().contains(&skipped_item));
-    assert!(!snapshot.upcoming().contains(&latest_item));
+    assert!(
+        !snapshot
+            .upcoming()
+            .contains(&playlist_core::PlaylistEntryId::Single(skipped_item))
+    );
+    assert!(
+        !snapshot
+            .upcoming()
+            .contains(&playlist_core::PlaylistEntryId::Single(latest_item))
+    );
+}
+
+#[test]
+fn compound_part_navigation_publishes_exact_current_only_after_matching_installed() {
+    let mut controller = PlaylistController::new();
+    let compound = playlist_core::PlaylistCompoundGroupDraft::new(
+        playlist_core::PlaylistLocator::Local(LocalLocator::Native(PathBuf::from("compound-root"))),
+        CachedPlaylistMetadata::new("compound-root", PlaylistMediaKind::Video),
+        vec![draft(301), draft(302), draft(303)],
+    )
+    .expect("compound fixture contains three parts");
+    let playlist_core::AddPlaylistEntriesOutcome::Added(allocated) = controller
+        .queue
+        .append_entries(vec![playlist_core::PlaylistEntryDraft::Compound(compound)])
+        .expect("append compound fixture")
+    else {
+        panic!("compound fixture must allocate identities");
+    };
+    let part_ids = allocated.iter_playable_item_ids().collect::<Vec<_>>();
+    install_active(&mut controller, part_ids[0], 301);
+
+    let ControllerManualNavigationOutcome::StartInstall { install } =
+        navigation(&mut controller, ManualNavigationDirection::Next)
+    else {
+        panic!("Next from first part must start second-part install")
+    };
+    assert_eq!(install.item_id, part_ids[1]);
+    accept_plan(&mut controller, 302, 312, install);
+    assert!(matches!(
+        controller.on_ready_to_commit(request_id(302)),
+        InstallReadyOutcome::RequestAuthorization { .. }
+    ));
+    assert_eq!(
+        controller
+            .queue
+            .traversal_current()
+            .map(|current| current.item_id()),
+        Some(part_ids[0])
+    );
+
+    controller
+        .begin_authorization_dispatch(request_id(302))
+        .expect("dispatch start");
+    controller
+        .resolve_authorization_dispatch(
+            request_id(302),
+            AuthorizationDispatchResolution::EnqueuedAtPlayerOwner,
+        )
+        .expect("enqueue resolution");
+    controller
+        .on_installed(
+            request_id(302),
+            player_request_id(312),
+            media_instance_id(313),
+            PlaylistBindingGeneration(1),
+        )
+        .expect("matching Installed commits exact part");
+
+    assert_eq!(
+        controller
+            .queue
+            .traversal_current()
+            .map(|current| current.item_id()),
+        Some(part_ids[1])
+    );
+    assert_eq!(
+        controller
+            .active_media
+            .expect("Installed publishes active media")
+            .item_id(),
+        Some(part_ids[1])
+    );
 }
 
 #[test]

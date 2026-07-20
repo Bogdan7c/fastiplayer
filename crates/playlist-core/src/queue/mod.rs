@@ -13,9 +13,12 @@ mod reservation;
 mod shuffle;
 mod sort;
 mod structural;
+mod traversal;
 
 #[cfg(test)]
 mod group_structural_tests;
+#[cfg(test)]
+mod group_traversal_tests;
 #[cfg(test)]
 mod tests;
 
@@ -518,8 +521,11 @@ impl PlaylistQueue {
             .checked_next()
             .ok_or(TraversalCurrentMutationError::TraversalRevisionExhausted)?;
 
+        let target_identity = self
+            .shuffle_visit_identity(item_id)
+            .expect("validated traversal target must have a top-level owner");
         if let Some(shuffle_traversal) = &mut self.shuffle_traversal {
-            shuffle_traversal.commit_direct_transition(item_id);
+            shuffle_traversal.commit_direct_transition(target_identity);
         }
         self.traversal_current = Some(validated);
         self.traversal_revision = next_revision;
@@ -541,9 +547,9 @@ impl PlaylistQueue {
             .checked_next()
             .ok_or(TraversalCurrentMutationError::TraversalRevisionExhausted)?;
 
-        let canonical_item_ids: Vec<_> = self.iter_playable_ids().collect();
+        let canonical_entry_ids: Vec<_> = self.iter_top_level_entry_ids().collect();
         if let Some(shuffle_traversal) = &mut self.shuffle_traversal {
-            shuffle_traversal.make_idle(&canonical_item_ids);
+            shuffle_traversal.make_idle(&canonical_entry_ids);
         }
         self.traversal_current = None;
         self.traversal_revision = next_revision;
@@ -553,15 +559,6 @@ impl PlaylistQueue {
     /// Возвращает set committed IDs для allocator collision preflight.
     fn existing_item_ids(&self) -> HashSet<PlaylistItemId> {
         self.iter_playable_ids().collect()
-    }
-
-    /// Ищет canonical position только внутри owner implementation.
-    fn index_of(&self, item_id: PlaylistItemId) -> Option<usize> {
-        self.entries.iter().position(|entry| {
-            entry
-                .as_single()
-                .is_some_and(|item| item.item_id() == item_id)
-        })
     }
 }
 

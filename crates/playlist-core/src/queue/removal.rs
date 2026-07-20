@@ -68,15 +68,15 @@ impl PlaylistQueue {
             None
         };
 
-        let remaining_canonical_item_ids: Vec<_> = self
-            .iter_playable_items()
-            .filter(|item| !removed_item_ids.contains(&item.item_id()))
-            .map(|item| item.item_id())
+        let remaining_canonical_entry_ids: Vec<_> = self
+            .iter_top_level_entry_ids()
+            .filter(|candidate_entry_id| *candidate_entry_id != entry_id)
             .collect();
         if let Some(shuffle_traversal) = &mut self.shuffle_traversal {
-            shuffle_traversal.remove_items(
+            shuffle_traversal.remove_entries_and_items(
+                &HashSet::from([entry_id]),
                 &removed_item_ids,
-                &remaining_canonical_item_ids,
+                &remaining_canonical_entry_ids,
                 clears_current,
             );
         }

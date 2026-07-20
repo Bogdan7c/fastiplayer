@@ -215,6 +215,12 @@ pub(crate) fn deserialize_supported_v1(
 impl PlaylistStateV1Dto {
     fn from_domain(snapshot: PlaylistStateSnapshot<'_>) -> Result<Self, StateSerializationError> {
         let queue = snapshot.queue();
+        if queue
+            .iter_top_level_entries()
+            .any(|entry| entry.as_compound().is_some())
+        {
+            return Err(StateSerializationError::CompoundQueueRequiresSchemaV2);
+        }
         let playable_items_snapshot = queue.owned_playable_items_snapshot();
         let items = playable_items_snapshot
             .iter_playable_items()
@@ -238,8 +244,15 @@ impl PlaylistStateV1Dto {
                     traversal
                         .upcoming()
                         .iter()
-                        .map(|item_id| item_id.expose_value_for_persistence())
-                        .collect(),
+                        .map(|entry_id| match entry_id {
+                            playlist_core::PlaylistEntryId::Single(item_id) => {
+                                Ok(item_id.expose_value_for_persistence())
+                            }
+                            playlist_core::PlaylistEntryId::Compound(_) => {
+                                Err(StateSerializationError::CompoundQueueRequiresSchemaV2)
+                            }
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
                 ),
                 None => (false, Vec::new(), Nullable(None), Vec::new()),
             };
@@ -306,7 +319,10 @@ impl PlaylistStateV1Dto {
 
         let queue = if self.shuffle_enabled {
             let history = persisted_ids(self.shuffle_history)?;
-            let upcoming = persisted_ids(self.shuffle_upcoming)?;
+            let upcoming = persisted_ids(self.shuffle_upcoming)?
+                .into_iter()
+                .map(playlist_core::PlaylistEntryId::Single)
+                .collect();
             let history_cursor = self
                 .shuffle_history_cursor
                 .0

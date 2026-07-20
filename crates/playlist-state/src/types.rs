@@ -208,6 +208,8 @@ impl fmt::Debug for InspectionOutcome {
 /// Privacy-safe failure сериализации domain snapshot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StateSerializationError {
+    /// Compound storage ожидает schema v2 и не может быть losslessly flattened в v1.
+    CompoundQueueRequiresSchemaV2,
     /// Domain time не помещается в canonical v1 seconds+nanos representation.
     TimeOutOfRange,
     /// Native path encoding недоступен для текущей target platform.
@@ -223,6 +225,9 @@ pub enum StateSerializationError {
 impl fmt::Display for StateSerializationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
+            Self::CompoundQueueRequiresSchemaV2 => {
+                "compound playlist нельзя без потерь сохранить в schema v1"
+            }
             Self::TimeOutOfRange => "playlist state time не помещается в schema v1",
             Self::UnsupportedNativePathEncoding => {
                 "native path encoding не поддержан schema v1 на этой платформе"

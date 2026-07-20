@@ -199,8 +199,11 @@ impl PlaylistQueue {
                 traversal_current,
                 traversal_revision_after_commit,
             } => {
+                let target_identity = self
+                    .shuffle_visit_identity(traversal_current.item_id())
+                    .expect("reserved committed target must have a top-level owner");
                 if let Some(shuffle_traversal) = &mut self.shuffle_traversal {
-                    shuffle_traversal.commit_direct_transition(traversal_current.item_id());
+                    shuffle_traversal.commit_direct_transition(target_identity);
                 }
                 self.traversal_current = Some(traversal_current);
                 if let Some(next_revision) = traversal_revision_after_commit {
@@ -227,11 +230,14 @@ impl PlaylistQueue {
                     .collect();
                 self.traversal_current = Some(traversal_current);
                 if shuffle_was_enabled {
-                    let canonical_item_ids: Vec<_> = self.iter_playable_ids().collect();
+                    let canonical_entry_ids: Vec<_> = self.iter_top_level_entry_ids().collect();
+                    let current = self
+                        .shuffle_visit_identity(traversal_current.item_id())
+                        .expect("reserved replacement current must have a top-level owner");
                     let mut random = rand::rng();
                     self.shuffle_traversal = Some(super::shuffle::ShuffleTraversal::fresh(
-                        &canonical_item_ids,
-                        Some(traversal_current),
+                        &canonical_entry_ids,
+                        Some(current),
                         &mut random,
                     ));
                 }

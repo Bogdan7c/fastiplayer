@@ -3,10 +3,10 @@
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
-use rand::seq::SliceRandom;
+use rand::prelude::SliceRandom;
 use rand::{Rng, RngExt};
 
-use crate::{PlaylistItemId, RepeatMode};
+use crate::{PlaylistEntryId, PlaylistItemId, RepeatMode};
 
 use super::super::{
     PlaylistQueue, PlaylistQueueRestore, TraversalCurrentItemId, TraversalCurrentMutationError,
@@ -23,12 +23,20 @@ use super::{
 pub(in crate::queue) struct ShuffleTraversal {
     history: Arc<Vec<PlaylistItemId>>,
     history_cursor: Option<usize>,
-    upcoming: Arc<VecDeque<PlaylistItemId>>,
+    upcoming: Arc<VecDeque<PlaylistEntryId>>,
+}
+
+/// Exact playable visit вместе с top-level block owner-ом.
+#[derive(Clone, Copy)]
+pub(in crate::queue) struct ShuffleVisitIdentity {
+    item_id: PlaylistItemId,
+    entry_id: PlaylistEntryId,
 }
 
 /// Один candidate, извлечённый из speculative upcoming.
 struct SpeculativeUpcomingStep {
     item_id: PlaylistItemId,
+    consumed_entry_id: Option<PlaylistEntryId>,
     started_new_cycle: bool,
 }
 
@@ -37,7 +45,7 @@ pub(in crate::queue) struct ShuffleManualPreview {
     base_history: Arc<Vec<PlaylistItemId>>,
     base_history_cursor: Option<usize>,
     logical_history_cursor: Option<usize>,
-    working_upcoming: Arc<VecDeque<PlaylistItemId>>,
+    working_upcoming: Arc<VecDeque<PlaylistEntryId>>,
     upcoming_steps: Vec<SpeculativeUpcomingStep>,
 }
 
@@ -66,14 +74,16 @@ impl ShuffleManualPreview {
         &mut self,
         direction: super::super::navigation::ManualNavigationDirection,
         repeat_mode: RepeatMode,
-        canonical_item_ids: &[PlaylistItemId],
+        queue: &PlaylistQueue,
+        canonical_entry_ids: &[PlaylistEntryId],
         committed_current_item_id: Option<PlaylistItemId>,
         random: &mut R,
     ) -> ShufflePreviewStep {
         match direction {
             super::super::navigation::ManualNavigationDirection::Next => self.step_next(
                 repeat_mode,
-                canonical_item_ids,
+                queue,
+                canonical_entry_ids,
                 committed_current_item_id,
                 random,
             ),
@@ -85,7 +95,8 @@ impl ShuffleManualPreview {
     fn step_next<R: Rng + ?Sized>(
         &mut self,
         repeat_mode: RepeatMode,
-        canonical_item_ids: &[PlaylistItemId],
+        queue: &PlaylistQueue,
+        canonical_entry_ids: &[PlaylistEntryId],
         committed_current_item_id: Option<PlaylistItemId>,
         random: &mut R,
     ) -> ShufflePreviewStep {
@@ -99,6 +110,26 @@ impl ShuffleManualPreview {
                 return ShufflePreviewStep::ReturnedToCommittedOrigin(item_id);
             }
             return ShufflePreviewStep::Target(item_id);
+        }
+
+        let latest_speculative_item_id = self
+            .upcoming_steps
+            .last()
+            .map(|step| step.item_id)
+            .or_else(|| {
+                self.logical_history_cursor
+                    .and_then(|cursor| self.base_history.get(cursor).copied())
+            })
+            .or(committed_current_item_id);
+        if let Some(next_part_item_id) = latest_speculative_item_id
+            .and_then(|item_id| queue.next_playable_item_id_in_entry(item_id))
+        {
+            self.upcoming_steps.push(SpeculativeUpcomingStep {
+                item_id: next_part_item_id,
+                consumed_entry_id: None,
+                started_new_cycle: false,
+            });
+            return ShufflePreviewStep::Target(next_part_item_id);
         }
 
         let mut started_new_cycle = false;
@@ -118,22 +149,27 @@ impl ShuffleManualPreview {
             else {
                 return ShufflePreviewStep::Boundary;
             };
+            let last_entry_id = queue.structural_entry_id_for_item(last_item_id);
             self.working_upcoming = Arc::new(ShuffleTraversal::new_cycle(
-                canonical_item_ids,
-                last_item_id,
+                canonical_entry_ids,
+                last_entry_id,
                 random,
             ));
             started_new_cycle = true;
         }
 
-        let item_id = Arc::make_mut(&mut self.working_upcoming)
-            .pop_front()
-            .expect("non-empty speculative upcoming after boundary handling");
-        self.upcoming_steps.push(SpeculativeUpcomingStep {
-            item_id,
-            started_new_cycle,
-        });
-        ShufflePreviewStep::Target(item_id)
+        while let Some(entry_id) = Arc::make_mut(&mut self.working_upcoming).pop_front() {
+            let Some(item_id) = queue.first_playable_item_id(entry_id) else {
+                continue;
+            };
+            self.upcoming_steps.push(SpeculativeUpcomingStep {
+                item_id,
+                consumed_entry_id: Some(entry_id),
+                started_new_cycle,
+            });
+            return ShufflePreviewStep::Target(item_id);
+        }
+        ShufflePreviewStep::Boundary
     }
 
     /// Backtrack возвращает candidate в preview upcoming либо двигает factual cursor назад.
@@ -141,8 +177,8 @@ impl ShuffleManualPreview {
         if let Some(step) = self.upcoming_steps.pop() {
             if step.started_new_cycle {
                 Arc::make_mut(&mut self.working_upcoming).clear();
-            } else {
-                Arc::make_mut(&mut self.working_upcoming).push_front(step.item_id);
+            } else if let Some(consumed_entry_id) = step.consumed_entry_id {
+                Arc::make_mut(&mut self.working_upcoming).push_front(consumed_entry_id);
             }
             if let Some(previous_step) = self.upcoming_steps.last() {
                 return ShufflePreviewStep::Target(previous_step.item_id);
@@ -201,6 +237,7 @@ impl ShuffleManualPreview {
     pub(in crate::queue) fn retain_automatic_snapshot(
         &mut self,
         retained_item_ids: &HashSet<PlaylistItemId>,
+        retained_entry_ids: &HashSet<PlaylistEntryId>,
     ) {
         let retained_base_cursor = retained_cursor_after_filter(
             self.base_history.as_slice(),
@@ -216,7 +253,7 @@ impl ShuffleManualPreview {
         self.base_history_cursor = retained_base_cursor;
         self.logical_history_cursor = retained_logical_cursor;
         Arc::make_mut(&mut self.working_upcoming)
-            .retain(|item_id| retained_item_ids.contains(item_id));
+            .retain(|entry_id| retained_entry_ids.contains(entry_id));
         self.upcoming_steps
             .retain(|step| retained_item_ids.contains(&step.item_id));
     }
@@ -248,17 +285,18 @@ impl ShuffleTraversal {
 
     /// Создаёт новый cycle, сохраняя current и исключая его из upcoming.
     pub(in crate::queue) fn fresh<R: Rng + ?Sized>(
-        canonical_item_ids: &[PlaylistItemId],
-        current: Option<TraversalCurrentItemId>,
+        canonical_entry_ids: &[PlaylistEntryId],
+        current: Option<ShuffleVisitIdentity>,
         random: &mut R,
     ) -> Self {
-        let current_item_id = current.map(TraversalCurrentItemId::item_id);
+        let current_item_id = current.map(|identity| identity.item_id);
+        let current_entry_id = current.map(|identity| identity.entry_id);
         let history = current_item_id.into_iter().collect();
         let history_cursor = current_item_id.map(|_| 0);
-        let mut upcoming: Vec<_> = canonical_item_ids
+        let mut upcoming: Vec<_> = canonical_entry_ids
             .iter()
             .copied()
-            .filter(|item_id| Some(*item_id) != current_item_id)
+            .filter(|entry_id| Some(*entry_id) != current_entry_id)
             .collect();
         upcoming.shuffle(random);
         Self {
@@ -272,7 +310,9 @@ impl ShuffleTraversal {
     fn restore(
         snapshot: ShuffleTraversalSnapshot,
         canonical_item_ids: &[PlaylistItemId],
+        canonical_entry_ids: &[PlaylistEntryId],
         current: Option<TraversalCurrentItemId>,
+        current_entry_id: Option<PlaylistEntryId>,
     ) -> Result<Self, ShuffleTraversalRestoreError> {
         if snapshot.history.len() > MAX_SHUFFLE_HISTORY_ENTRIES {
             return Err(ShuffleTraversalRestoreError::HistoryLimitExceeded {
@@ -281,6 +321,7 @@ impl ShuffleTraversal {
             });
         }
         let canonical_ids: HashSet<_> = canonical_item_ids.iter().copied().collect();
+        let canonical_entries: HashSet<_> = canonical_entry_ids.iter().copied().collect();
         for item_id in &snapshot.history {
             if !canonical_ids.contains(item_id) {
                 return Err(ShuffleTraversalRestoreError::HistoryItemNotCommitted {
@@ -289,15 +330,15 @@ impl ShuffleTraversal {
             }
         }
         let mut unique_upcoming = HashSet::with_capacity(snapshot.upcoming.len());
-        for item_id in &snapshot.upcoming {
-            if !canonical_ids.contains(item_id) {
-                return Err(ShuffleTraversalRestoreError::UpcomingItemNotCommitted {
-                    item_id: *item_id,
+        for entry_id in &snapshot.upcoming {
+            if !canonical_entries.contains(entry_id) {
+                return Err(ShuffleTraversalRestoreError::UpcomingEntryNotCommitted {
+                    entry_id: *entry_id,
                 });
             }
-            if !unique_upcoming.insert(*item_id) {
-                return Err(ShuffleTraversalRestoreError::DuplicateUpcomingItem {
-                    item_id: *item_id,
+            if !unique_upcoming.insert(*entry_id) {
+                return Err(ShuffleTraversalRestoreError::DuplicateUpcomingEntry {
+                    entry_id: *entry_id,
                 });
             }
         }
@@ -314,17 +355,22 @@ impl ShuffleTraversal {
                         current_item_id,
                     });
                 }
-                if unique_upcoming.contains(&current_item_id) {
-                    return Err(ShuffleTraversalRestoreError::CurrentPresentInUpcoming {
-                        current_item_id,
-                    });
+                let current_entry_id = current_entry_id
+                    .expect("validated current must resolve to one committed top-level entry");
+                if unique_upcoming.contains(&current_entry_id) {
+                    return Err(
+                        ShuffleTraversalRestoreError::CurrentEntryPresentInUpcoming {
+                            current_item_id,
+                            current_entry_id,
+                        },
+                    );
                 }
             }
             None => {
                 if !snapshot.history.is_empty() || history_cursor.is_some() {
                     return Err(ShuffleTraversalRestoreError::InvalidHistoryCursor);
                 }
-                if unique_upcoming != canonical_ids {
+                if unique_upcoming != canonical_entries {
                     return Err(
                         ShuffleTraversalRestoreError::IdleUpcomingDoesNotCoverCanonicalQueue,
                     );
@@ -348,15 +394,15 @@ impl ShuffleTraversal {
         }
     }
 
-    /// Возвращает первый persisted/generated upcoming target без mutation.
-    pub(in crate::queue) fn next_upcoming(&self) -> Option<PlaylistItemId> {
+    /// Возвращает первый persisted/generated upcoming entry без mutation.
+    pub(in crate::queue) fn next_upcoming(&self) -> Option<PlaylistEntryId> {
         self.upcoming.front().copied()
     }
 
     /// Коммитит обычный Play/navigation target как один factual visit.
-    pub(in crate::queue) fn commit_direct_transition(&mut self, target_item_id: PlaylistItemId) {
-        self.remove_from_upcoming(target_item_id);
-        self.append_factual_visit(target_item_id);
+    pub(in crate::queue) fn commit_direct_transition(&mut self, target: ShuffleVisitIdentity) {
+        self.remove_from_upcoming(target.entry_id);
+        self.append_factual_visit(target.item_id);
     }
 
     /// Перемещает cursor по уже factual history без создания duplicate visit.
@@ -379,20 +425,20 @@ impl ShuffleTraversal {
     }
 
     /// Удаляет ID из set-like upcoming, не меняя порядок остальных.
-    fn remove_from_upcoming(&mut self, target_item_id: PlaylistItemId) {
-        Arc::make_mut(&mut self.upcoming).retain(|item_id| *item_id != target_item_id);
+    fn remove_from_upcoming(&mut self, target_entry_id: PlaylistEntryId) {
+        Arc::make_mut(&mut self.upcoming).retain(|entry_id| *entry_id != target_entry_id);
     }
 
-    /// O(N+K) random merge сохраняет относительный порядок старого upcoming.
-    pub(in crate::queue) fn merge_new_items<R: Rng + ?Sized>(
+    /// O(N+K) random merge сохраняет относительный порядок старых upcoming entries.
+    pub(in crate::queue) fn merge_new_entries<R: Rng + ?Sized>(
         &mut self,
-        new_item_ids: &[PlaylistItemId],
+        new_entry_ids: &[PlaylistEntryId],
         random: &mut R,
     ) -> (usize, usize) {
-        if new_item_ids.is_empty() {
+        if new_entry_ids.is_empty() {
             return (0, 0);
         }
-        let mut shuffled_new = new_item_ids.to_vec();
+        let mut shuffled_new = new_entry_ids.to_vec();
         shuffled_new.shuffle(random);
         let old_upcoming = self.upcoming.as_ref();
         let old_upcoming_len = old_upcoming.len();
@@ -422,25 +468,26 @@ impl ShuffleTraversal {
     }
 
     /// Один retain/rebuild удаляет все references и чинит cursor.
-    pub(in crate::queue) fn remove_items(
+    pub(in crate::queue) fn remove_entries_and_items(
         &mut self,
+        removed_entry_ids: &HashSet<PlaylistEntryId>,
         removed_item_ids: &HashSet<PlaylistItemId>,
-        remaining_canonical_item_ids: &[PlaylistItemId],
+        remaining_canonical_entry_ids: &[PlaylistEntryId],
         current_was_removed: bool,
     ) -> (usize, usize) {
-        let upcoming_items_examined = self.upcoming.len();
+        let upcoming_entries_examined = self.upcoming.len();
         let history_items_examined = self.history.len();
-        Arc::make_mut(&mut self.upcoming).retain(|item_id| !removed_item_ids.contains(item_id));
+        Arc::make_mut(&mut self.upcoming).retain(|entry_id| !removed_entry_ids.contains(entry_id));
         if current_was_removed {
             self.history = Arc::new(Vec::new());
             self.history_cursor = None;
             let already_upcoming: HashSet<_> = self.upcoming.iter().copied().collect();
-            let missing = remaining_canonical_item_ids
+            let missing = remaining_canonical_entry_ids
                 .iter()
                 .copied()
-                .filter(|item_id| !already_upcoming.contains(item_id));
+                .filter(|entry_id| !already_upcoming.contains(entry_id));
             Arc::make_mut(&mut self.upcoming).extend(missing);
-            return (upcoming_items_examined, history_items_examined);
+            return (upcoming_entries_examined, history_items_examined);
         }
 
         let old_cursor = self.history_cursor;
@@ -456,33 +503,33 @@ impl ShuffleTraversal {
         if let Some(cursor) = old_cursor {
             self.history_cursor = Some(cursor - removed_before_or_at_cursor);
         }
-        (upcoming_items_examined, history_items_examined)
+        (upcoming_entries_examined, history_items_examined)
     }
 
     /// Приводит traversal к валидному persisted-idle state без reshuffle canonical rows.
-    pub(in crate::queue) fn make_idle(&mut self, canonical_item_ids: &[PlaylistItemId]) {
+    pub(in crate::queue) fn make_idle(&mut self, canonical_entry_ids: &[PlaylistEntryId]) {
         self.history = Arc::new(Vec::new());
         self.history_cursor = None;
-        let canonical_set: HashSet<_> = canonical_item_ids.iter().copied().collect();
-        Arc::make_mut(&mut self.upcoming).retain(|item_id| canonical_set.contains(item_id));
+        let canonical_set: HashSet<_> = canonical_entry_ids.iter().copied().collect();
+        Arc::make_mut(&mut self.upcoming).retain(|entry_id| canonical_set.contains(entry_id));
         let already_upcoming: HashSet<_> = self.upcoming.iter().copied().collect();
         Arc::make_mut(&mut self.upcoming).extend(
-            canonical_item_ids
+            canonical_entry_ids
                 .iter()
                 .copied()
-                .filter(|item_id| !already_upcoming.contains(item_id)),
+                .filter(|entry_id| !already_upcoming.contains(entry_id)),
         );
     }
 
     /// Создаёт новую permutation и не допускает last→same first при len > 1.
     pub(in crate::queue) fn new_cycle<R: Rng + ?Sized>(
-        canonical_item_ids: &[PlaylistItemId],
-        last_item_id: PlaylistItemId,
+        canonical_entry_ids: &[PlaylistEntryId],
+        last_entry_id: Option<PlaylistEntryId>,
         random: &mut R,
-    ) -> VecDeque<PlaylistItemId> {
-        let mut cycle = canonical_item_ids.to_vec();
+    ) -> VecDeque<PlaylistEntryId> {
+        let mut cycle = canonical_entry_ids.to_vec();
         cycle.shuffle(random);
-        if cycle.len() > 1 && cycle.first() == Some(&last_item_id) {
+        if cycle.len() > 1 && cycle.first().copied() == last_entry_id {
             let swap_index = random.random_range(1..cycle.len());
             cycle.swap(0, swap_index);
         }
@@ -498,10 +545,16 @@ impl PlaylistQueue {
     ) -> Result<Self, ShuffleQueueRestoreError> {
         let mut queue = Self::restore(queue_snapshot).map_err(ShuffleQueueRestoreError::Queue)?;
         let canonical_item_ids = queue.iter_playable_ids().collect::<Vec<_>>();
+        let canonical_entry_ids = queue.iter_top_level_entry_ids().collect::<Vec<_>>();
+        let current_entry_id = queue
+            .traversal_current
+            .and_then(|current| queue.structural_entry_id_for_item(current.item_id()));
         let traversal = ShuffleTraversal::restore(
             shuffle_snapshot,
             &canonical_item_ids,
+            &canonical_entry_ids,
             queue.traversal_current,
+            current_entry_id,
         )
         .map_err(ShuffleQueueRestoreError::Traversal)?;
         queue.shuffle_traversal = Some(traversal);
@@ -540,10 +593,13 @@ impl PlaylistQueue {
             .traversal_revision
             .checked_next()
             .ok_or(TraversalCurrentMutationError::TraversalRevisionExhausted)?;
+        let target_identity = self
+            .shuffle_visit_identity(item_id)
+            .expect("validated manual Play target must have a top-level owner");
         self.shuffle_traversal
             .as_mut()
             .expect("checked enabled shuffle")
-            .commit_direct_transition(item_id);
+            .commit_direct_transition(target_identity);
         self.traversal_revision = next_revision;
         Ok(TraversalCurrentMutationOutcome::Set(validated))
     }
@@ -569,10 +625,13 @@ impl PlaylistQueue {
             .traversal_revision
             .checked_next()
             .ok_or(ShuffleToggleError::TraversalRevisionExhausted)?;
-        let canonical_item_ids: Vec<_> = self.iter_playable_ids().collect();
+        let canonical_entry_ids: Vec<_> = self.iter_top_level_entry_ids().collect();
+        let current = self
+            .traversal_current
+            .and_then(|current| self.shuffle_visit_identity(current.item_id()));
         self.shuffle_traversal = Some(ShuffleTraversal::fresh(
-            &canonical_item_ids,
-            self.traversal_current,
+            &canonical_entry_ids,
+            current,
             random,
         ));
         self.traversal_revision = next_revision;
@@ -609,25 +668,40 @@ impl PlaylistQueue {
         }) {
             return traversal.history.get(forward_cursor).copied();
         }
-        if let Some(item_id) = traversal.next_upcoming() {
-            return Some(item_id);
+        let current_item_id = self.traversal_current?.item_id();
+        if let Some(next_part_item_id) = self.next_playable_item_id_in_entry(current_item_id) {
+            return Some(next_part_item_id);
+        }
+        if let Some(entry_id) = traversal.next_upcoming() {
+            return self.first_playable_item_id(entry_id);
         }
         if repeat_mode != RepeatMode::RepeatQueue {
             return None;
         }
-        let current_item_id = self.traversal_current?.item_id();
-        let canonical_item_ids: Vec<_> = self.iter_playable_ids().collect();
-        Self::generated_cycle_first(&canonical_item_ids, current_item_id, random)
+        let canonical_entry_ids: Vec<_> = self.iter_top_level_entry_ids().collect();
+        let current_entry_id = self.structural_entry_id_for_item(current_item_id);
+        Self::generated_cycle_first(self, &canonical_entry_ids, current_entry_id, random)
     }
 
     /// Выбирает first нового cycle, сохраняя правило last→different first.
     fn generated_cycle_first<R: Rng + ?Sized>(
-        canonical_item_ids: &[PlaylistItemId],
-        current_item_id: PlaylistItemId,
+        queue: &PlaylistQueue,
+        canonical_entry_ids: &[PlaylistEntryId],
+        current_entry_id: Option<PlaylistEntryId>,
         random: &mut R,
     ) -> Option<PlaylistItemId> {
-        ShuffleTraversal::new_cycle(canonical_item_ids, current_item_id, random)
+        ShuffleTraversal::new_cycle(canonical_entry_ids, current_entry_id, random)
             .front()
             .copied()
+            .and_then(|entry_id| queue.first_playable_item_id(entry_id))
+    }
+
+    /// Связывает exact playable target с top-level block identity.
+    pub(in crate::queue) fn shuffle_visit_identity(
+        &self,
+        item_id: PlaylistItemId,
+    ) -> Option<ShuffleVisitIdentity> {
+        self.structural_entry_id_for_item(item_id)
+            .map(|entry_id| ShuffleVisitIdentity { item_id, entry_id })
     }
 }

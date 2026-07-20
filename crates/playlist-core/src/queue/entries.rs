@@ -226,7 +226,7 @@ impl PlaylistQueue {
         let prepared = self.preflight_entry_allocation(drafts)?;
 
         if let Some(shuffle_traversal) = &mut self.shuffle_traversal {
-            shuffle_traversal.merge_new_items(&prepared.allocated.playable_item_ids, random);
+            shuffle_traversal.merge_new_entries(&prepared.allocated.entry_ids, random);
         }
         self.item_id_allocator
             .commit_allocation(&prepared.item_allocation_plan);
@@ -352,9 +352,10 @@ impl PlaylistQueue {
         }
 
         let prepared = self.preflight_entry_allocation(drafts)?;
-        let replacement_shuffle = self.shuffle_traversal.as_ref().map(|_| {
-            shuffle::ShuffleTraversal::fresh(&prepared.allocated.playable_item_ids, None, random)
-        });
+        let replacement_shuffle = self
+            .shuffle_traversal
+            .as_ref()
+            .map(|_| shuffle::ShuffleTraversal::fresh(&prepared.allocated.entry_ids, None, random));
 
         self.item_id_allocator
             .commit_allocation(&prepared.item_allocation_plan);

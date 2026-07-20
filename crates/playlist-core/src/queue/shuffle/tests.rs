@@ -6,9 +6,9 @@ use rand::rngs::StdRng;
 use crate::{
     AutomaticEndedIntent, AutomaticNavigationOutcome, CachedPlaylistMetadata, LocalLocator,
     MAX_SHUFFLE_HISTORY_ENTRIES, ManualNavigationIntent, ManualNavigationNoItem,
-    ManualNavigationOutcome, NextPlaylistItemId, PlaylistItemDraft, PlaylistItemId,
-    PlaylistMediaKind, PlaylistQueue, PlaylistQueueRestore, RepeatMode, RestoredPlaylistItem,
-    ShuffleHistoryCursor, ShuffleQueueRestoreError, ShuffleToggleOutcome,
+    ManualNavigationOutcome, NextPlaylistItemId, PlaylistEntryId, PlaylistItemDraft,
+    PlaylistItemId, PlaylistMediaKind, PlaylistQueue, PlaylistQueueRestore, RepeatMode,
+    RestoredPlaylistItem, ShuffleHistoryCursor, ShuffleQueueRestoreError, ShuffleToggleOutcome,
     ShuffleTraversalRestoreError, ShuffleTraversalSnapshot, TraversalCurrentMutationOutcome,
 };
 
@@ -29,6 +29,14 @@ fn queue_with_items(item_count: usize) -> (PlaylistQueue, Vec<PlaylistItemId>) {
         crate::AddItemsOutcome::NoItemsProvided => Vec::new(),
     };
     (queue, ids)
+}
+
+fn single_entry_ids(item_ids: &[PlaylistItemId]) -> Vec<PlaylistEntryId> {
+    item_ids
+        .iter()
+        .copied()
+        .map(PlaylistEntryId::Single)
+        .collect()
 }
 
 fn open_preview(
@@ -79,7 +87,13 @@ fn seeded_enable_has_exact_order_and_preserves_current() {
     );
     assert_eq!(
         snapshot.upcoming(),
-        &[ids[1], ids[0], ids[5], ids[3], ids[4]]
+        &[
+            PlaylistEntryId::Single(ids[1]),
+            PlaylistEntryId::Single(ids[0]),
+            PlaylistEntryId::Single(ids[5]),
+            PlaylistEntryId::Single(ids[3]),
+            PlaylistEntryId::Single(ids[4]),
+        ]
     );
     assert_eq!(
         queue.traversal_current().map(|current| current.item_id()),
@@ -98,7 +112,7 @@ fn restored_idle_shuffle_uses_first_upcoming_and_has_no_previous() {
     assert!(snapshot.history().is_empty());
     assert_eq!(
         snapshot.upcoming().iter().copied().collect::<HashSet<_>>(),
-        ids.iter().copied().collect()
+        single_entry_ids(&ids).into_iter().collect()
     );
 
     let first_upcoming = snapshot.upcoming()[0];
@@ -106,7 +120,7 @@ fn restored_idle_shuffle_uses_first_upcoming_and_has_no_previous() {
         ManualNavigationIntent::next(RepeatMode::StopAtEnd),
         &mut random,
     ));
-    assert_eq!(target, first_upcoming);
+    assert_eq!(Some(target), queue.first_playable_item_id(first_upcoming));
     assert!(matches!(
         queue.begin_manual_navigation_with_rng(
             ManualNavigationIntent::previous(RepeatMode::RepeatQueue),
@@ -149,8 +163,16 @@ fn fast_next_consumes_intermediate_without_fake_history_and_cancel_is_exact() {
         .shuffle_traversal_snapshot()
         .expect("committed traversal");
     assert_eq!(committed.history(), &[ids[0], latest_target]);
-    assert!(!committed.upcoming().contains(&first_target));
-    assert!(!committed.upcoming().contains(&latest_target));
+    assert!(
+        !committed
+            .upcoming()
+            .contains(&PlaylistEntryId::Single(first_target))
+    );
+    assert!(
+        !committed
+            .upcoming()
+            .contains(&PlaylistEntryId::Single(latest_target))
+    );
     let (previous_target, _) = open_preview(queue.begin_manual_navigation_with_rng(
         ManualNavigationIntent::previous(RepeatMode::StopAtEnd),
         &mut random,
@@ -326,7 +348,12 @@ fn repeat_queue_starts_new_cycle_without_last_to_same_first() {
         .shuffle_traversal_snapshot()
         .and_then(|snapshot| snapshot.upcoming().first().copied())
     {
-        queue.commit_manual_play(next).expect("consume cycle");
+        let next_item_id = queue
+            .first_playable_item_id(next)
+            .expect("single entry exposes one playable item");
+        queue
+            .commit_manual_play(next_item_id)
+            .expect("consume cycle");
     }
     let last_item_id = queue
         .traversal_current()
@@ -399,11 +426,11 @@ fn batch_add_preserves_old_upcoming_order_and_bulk_remove_cleans_references() {
         .filter(|item_id| old_upcoming.contains(item_id))
         .collect();
     assert_eq!(retained_old, old_upcoming);
-    assert!(
-        new_ids
-            .iter()
-            .all(|item_id| after_add.upcoming().contains(item_id))
-    );
+    assert!(new_ids.iter().all(|item_id| {
+        after_add
+            .upcoming()
+            .contains(&PlaylistEntryId::Single(*item_id))
+    }));
 
     queue
         .remove_batch(&[
@@ -415,7 +442,11 @@ fn batch_add_preserves_old_upcoming_order_and_bulk_remove_cleans_references() {
     let after_remove = queue.shuffle_traversal_snapshot().expect("after remove");
     for removed in [ids[1], ids[4], new_ids[1]] {
         assert!(!after_remove.history().contains(&removed));
-        assert!(!after_remove.upcoming().contains(&removed));
+        assert!(
+            !after_remove
+                .upcoming()
+                .contains(&PlaylistEntryId::Single(removed))
+        );
     }
     let (previous_after_repair, _) = open_preview(queue.begin_manual_navigation_with_rng(
         ManualNavigationIntent::previous(RepeatMode::StopAtEnd),
@@ -436,7 +467,7 @@ fn batch_add_preserves_old_upcoming_order_and_bulk_remove_cleans_references() {
             .iter()
             .copied()
             .collect::<HashSet<_>>(),
-        queue.iter_playable_ids().collect()
+        queue.iter_top_level_entry_ids().collect()
     );
 }
 
@@ -452,17 +483,20 @@ fn bulk_algorithms_report_one_linear_pass_over_each_input_collection() {
         .expect("snapshot before characterization")
         .upcoming()
         .len();
-    let synthetic_new_ids = [
-        PlaylistItemId::from_persistence_value(100).expect("synthetic ID"),
-        PlaylistItemId::from_persistence_value(101).expect("synthetic ID"),
-        PlaylistItemId::from_persistence_value(102).expect("synthetic ID"),
+    let synthetic_new_entry_ids = [
+        PlaylistEntryId::Single(PlaylistItemId::from_persistence_value(100).expect("synthetic ID")),
+        PlaylistEntryId::Single(PlaylistItemId::from_persistence_value(101).expect("synthetic ID")),
+        PlaylistEntryId::Single(PlaylistItemId::from_persistence_value(102).expect("synthetic ID")),
     ];
     let merge_work = queue
         .shuffle_traversal
         .as_mut()
         .expect("enabled traversal")
-        .merge_new_items(&synthetic_new_ids, &mut random);
-    assert_eq!(merge_work, (old_upcoming_len, synthetic_new_ids.len()));
+        .merge_new_entries(&synthetic_new_entry_ids, &mut random);
+    assert_eq!(
+        merge_work,
+        (old_upcoming_len, synthetic_new_entry_ids.len())
+    );
 
     queue
         .commit_manual_play(ids[0])
@@ -475,7 +509,12 @@ fn bulk_algorithms_report_one_linear_pass_over_each_input_collection() {
         .shuffle_traversal
         .as_mut()
         .expect("enabled traversal")
-        .remove_items(&HashSet::from([ids[0]]), &ids[1..], false);
+        .remove_entries_and_items(
+            &HashSet::from([PlaylistEntryId::Single(ids[0])]),
+            &HashSet::from([ids[0]]),
+            &single_entry_ids(&ids[1..]),
+            false,
+        );
     assert_eq!(
         remove_work,
         (
@@ -534,31 +573,34 @@ fn restore_accepts_repeated_history_and_rejects_all_corrupt_reference_shapes() {
     let valid = ShuffleTraversalSnapshot::new(
         vec![ids[0], ids[1], ids[0], ids[1]],
         Some(ShuffleHistoryCursor::from_index(3)),
-        vec![ids[2]],
+        vec![PlaylistEntryId::Single(ids[2])],
     );
     assert!(PlaylistQueue::restore_with_shuffle(queue_snapshot(), valid).is_ok());
 
     let duplicate_upcoming = ShuffleTraversalSnapshot::new(
         vec![ids[1]],
         Some(ShuffleHistoryCursor::from_index(0)),
-        vec![ids[2], ids[2]],
+        vec![
+            PlaylistEntryId::Single(ids[2]),
+            PlaylistEntryId::Single(ids[2]),
+        ],
     );
     assert!(matches!(
         PlaylistQueue::restore_with_shuffle(queue_snapshot(), duplicate_upcoming),
         Err(ShuffleQueueRestoreError::Traversal(
-            ShuffleTraversalRestoreError::DuplicateUpcomingItem { .. }
+            ShuffleTraversalRestoreError::DuplicateUpcomingEntry { .. }
         ))
     ));
     let missing = PlaylistItemId::from_persistence_value(99).expect("missing ID");
     let invalid_reference = ShuffleTraversalSnapshot::new(
         vec![ids[1]],
         Some(ShuffleHistoryCursor::from_index(0)),
-        vec![missing],
+        vec![PlaylistEntryId::Single(missing)],
     );
     assert!(matches!(
         PlaylistQueue::restore_with_shuffle(queue_snapshot(), invalid_reference),
         Err(ShuffleQueueRestoreError::Traversal(
-            ShuffleTraversalRestoreError::UpcomingItemNotCommitted { .. }
+            ShuffleTraversalRestoreError::UpcomingEntryNotCommitted { .. }
         ))
     ));
 
@@ -570,7 +612,14 @@ fn restore_accepts_repeated_history_and_rejects_all_corrupt_reference_shapes() {
         NextPlaylistItemId::from_persistence_value(4).expect("next ID"),
         None,
     );
-    let incomplete_idle = ShuffleTraversalSnapshot::new(Vec::new(), None, vec![ids[0], ids[1]]);
+    let incomplete_idle = ShuffleTraversalSnapshot::new(
+        Vec::new(),
+        None,
+        vec![
+            PlaylistEntryId::Single(ids[0]),
+            PlaylistEntryId::Single(ids[1]),
+        ],
+    );
     assert!(matches!(
         PlaylistQueue::restore_with_shuffle(idle_queue_snapshot, incomplete_idle),
         Err(ShuffleQueueRestoreError::Traversal(
@@ -587,7 +636,7 @@ fn automatic_shuffle_respects_repeat_one_stop_and_next_upcoming() {
     queue
         .enable_shuffle_with_rng(&mut random)
         .expect("enable shuffle");
-    let first_upcoming = queue
+    let first_upcoming_entry = queue
         .shuffle_traversal_snapshot()
         .expect("snapshot")
         .upcoming()[0];
@@ -597,7 +646,9 @@ fn automatic_shuffle_respects_repeat_one_stop_and_next_upcoming() {
             &mut random,
         ),
         AutomaticNavigationOutcome::OpenItem {
-            item_id: first_upcoming
+            item_id: queue
+                .first_playable_item_id(first_upcoming_entry)
+                .expect("single upcoming entry")
         }
     );
     assert_eq!(

@@ -149,9 +149,14 @@ impl PlaylistQueue {
             .into_iter()
             .zip(allocated_item_ids.iter().copied())
             .map(|(draft, item_id)| draft.into_item(item_id));
+        let allocated_entry_ids = allocated_item_ids
+            .iter()
+            .copied()
+            .map(PlaylistEntryId::Single)
+            .collect::<Vec<_>>();
 
         if let Some(shuffle_traversal) = &mut self.shuffle_traversal {
-            shuffle_traversal.merge_new_items(&allocated_item_ids, random);
+            shuffle_traversal.merge_new_entries(&allocated_entry_ids, random);
         }
         self.item_id_allocator.commit_allocation(&allocation_plan);
         self.entries.splice(

@@ -5,9 +5,10 @@ use std::time::{Duration, UNIX_EPOCH};
 use media_core::{DiscNumber, MediaDuration, TrackNumber, TvEpisodeNumber, TvSeasonNumber};
 use playlist_core::{
     CachedPlaylistMetadata, ForeignPathEncoding, ForeignPathPlatform, ForeignPlatformPath,
-    LocalLocator, LocalSourceFingerprint, NextPlaylistItemId, PlaylistItem, PlaylistItemDraft,
-    PlaylistItemId, PlaylistMediaKind, PlaylistQueue, PlaylistQueueRestore, RepeatMode,
-    RestoredPlaylistItem, SecretUrlLocator, ShuffleHistoryCursor, ShuffleTraversalSnapshot,
+    LocalLocator, LocalSourceFingerprint, NextPlaylistItemId, PlaylistCompoundGroupDraft,
+    PlaylistEntryDraft, PlaylistItem, PlaylistItemDraft, PlaylistItemId, PlaylistLocator,
+    PlaylistMediaKind, PlaylistQueue, PlaylistQueueRestore, RepeatMode, RestoredPlaylistItem,
+    SecretUrlLocator, ShuffleHistoryCursor, ShuffleTraversalSnapshot,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -16,7 +17,7 @@ use crate::store::inspect_state_with_test_limits;
 use crate::{
     CorruptStateCause, InspectionOutcome, PlaylistStateSnapshot, PlaylistStateStore,
     ProtectedStateCause, QuarantineFailureCause, QuarantineFileName, QuarantineOutcome,
-    serialize_state,
+    StateSerializationError, serialize_state,
 };
 
 fn item_id(value: u64) -> PlaylistItemId {
@@ -41,6 +42,36 @@ fn url_draft(url: &str, label: &str) -> PlaylistItemDraft {
 
 fn restored_url_item(id: u64, url: &str) -> RestoredPlaylistItem {
     RestoredPlaylistItem::new(item_id(id), url_draft(url, "url"))
+}
+
+#[test]
+fn schema_v1_rejects_compound_queue_instead_of_silently_flattening_parts() {
+    let mut queue = PlaylistQueue::new();
+    let compound = PlaylistCompoundGroupDraft::new(
+        PlaylistLocator::Local(LocalLocator::Native(PathBuf::from("compound-root"))),
+        minimal_metadata("compound-root"),
+        vec![
+            PlaylistItemDraft::local(
+                LocalLocator::Native(PathBuf::from("part-1.mp3")),
+                None,
+                minimal_metadata("part-1"),
+            ),
+            PlaylistItemDraft::local(
+                LocalLocator::Native(PathBuf::from("part-2.mp3")),
+                None,
+                minimal_metadata("part-2"),
+            ),
+        ],
+    )
+    .expect("compound fixture is non-empty");
+    queue
+        .append_entries(vec![PlaylistEntryDraft::Compound(compound)])
+        .expect("append compound fixture");
+
+    assert_eq!(
+        serialize_state(PlaylistStateSnapshot::new(&queue, RepeatMode::StopAtEnd)),
+        Err(StateSerializationError::CompoundQueueRequiresSchemaV2)
+    );
 }
 
 fn queue_with_ids(ids: &[u64], next_id: u64, current: Option<u64>) -> PlaylistQueue {
@@ -272,7 +303,7 @@ fn repeated_factual_history_and_exact_upcoming_roundtrip() {
     let shuffle = ShuffleTraversalSnapshot::new(
         vec![item_id(1), item_id(2), item_id(1), item_id(2)],
         Some(ShuffleHistoryCursor::from_index(3)),
-        vec![item_id(3)],
+        vec![playlist_core::PlaylistEntryId::Single(item_id(3))],
     );
     let queue = PlaylistQueue::restore_with_shuffle(base, shuffle).expect("valid repeated history");
     let expected_shuffle = queue.shuffle_traversal_snapshot();
@@ -315,7 +346,7 @@ fn allocator_high_watermark_never_reuses_removed_or_cleared_ids_across_loads() {
         .iter_playable_ids()
         .next_back()
         .expect("id 2 must be retained");
-    let _removed = queue.remove(removed_id);
+    let _removed = queue.remove(playlist_core::PlaylistEntryId::Single(removed_id));
     write_state(&state_path, &queue, RepeatMode::StopAtEnd);
     let (mut queue, _) = loaded(&store).into_parts();
 
