@@ -238,7 +238,12 @@ fn replacement_row_play_and_clear_supersede_but_selection_and_removal_preserve_p
         )))
         .expect("first confirmation");
     let first = pending_model(&runtime, first_admission);
-    let selected_id = runtime.controller.queue().items()[1].item_id();
+    let selected_id = runtime
+        .controller
+        .queue()
+        .iter_playable_ids()
+        .nth(1)
+        .expect("fixture должен содержать вторую playable строку");
     assert!(runtime.controller.select_row(Some(selected_id)));
     assert_eq!(
         runtime
@@ -247,7 +252,12 @@ fn replacement_row_play_and_clear_supersede_but_selection_and_removal_preserve_p
             .intent_id(),
         first.intent_id()
     );
-    let removed_id = runtime.controller.queue().items()[2].item_id();
+    let removed_id = runtime
+        .controller
+        .queue()
+        .iter_playable_ids()
+        .nth(2)
+        .expect("fixture должен содержать третью playable строку");
     let _removal = runtime.remove_playlist_item(removed_id, Instant::now());
     assert_eq!(
         runtime
@@ -300,7 +310,12 @@ fn replacement_row_play_and_clear_supersede_but_selection_and_removal_preserve_p
 #[test]
 fn current_playback_transport_and_selection_preserve_active_prompt_and_dirty_revision() {
     let mut runtime = runtime_with_queue(2);
-    let active_item_id = runtime.controller.queue().items()[0].item_id();
+    let active_item_id = runtime
+        .controller
+        .queue()
+        .iter_playable_ids()
+        .next()
+        .expect("fixture должен содержать active playable строку");
     runtime
         .controller
         .queue
@@ -329,7 +344,12 @@ fn current_playback_transport_and_selection_preserve_active_prompt_and_dirty_rev
             .controller
             .observe_player_snapshot_state(PlaybackState::Seeking)
     );
-    let selected_item_id = runtime.controller.queue().items()[1].item_id();
+    let selected_item_id = runtime
+        .controller
+        .queue()
+        .iter_playable_ids()
+        .nth(1)
+        .expect("fixture должен содержать вторую playable строку");
     assert!(runtime.controller.select_row(Some(selected_item_id)));
 
     assert_eq!(runtime.controller.active_media(), Some(active));

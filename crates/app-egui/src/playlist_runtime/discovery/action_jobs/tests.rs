@@ -169,11 +169,10 @@ fn manual_batch_is_natural_atomic_allows_duplicates_and_rebases_to_current_tail(
         .expect("completion");
     assert_eq!(completion.outcome, ManualAddTerminalOutcome::Appended);
     assert_eq!(completion.added, 3);
-    assert_eq!(controller.queue().len(), 4);
+    assert_eq!(controller.queue().top_level_entry_count(), 4);
     let names = controller
         .queue()
-        .items()
-        .iter()
+        .iter_playable_items()
         .map(|item| item.cached_metadata().fallback_display_name())
         .collect::<Vec<_>>();
     assert_eq!(
@@ -200,7 +199,7 @@ fn cancel_and_queue_generation_supersede_never_commit_unfinished_manual_batch() 
         }
         gate.release();
         drain_until_terminal(&mut jobs, &executor, &mut controller, completion_generation);
-        assert_eq!(controller.queue().len(), 0);
+        assert_eq!(controller.queue().top_level_entry_count(), 0);
         let outcome = jobs
             .read_model()
             .latest_manual_completion
@@ -277,7 +276,7 @@ fn duplicate_occurrences_keep_independent_probe_outcomes() {
         .expect("completion");
     assert_eq!(completion.added, 1);
     assert_eq!(completion.probe_failed, 1);
-    assert_eq!(controller.queue().len(), 1);
+    assert_eq!(controller.queue().top_level_entry_count(), 1);
 }
 
 #[test]
@@ -432,7 +431,7 @@ fn visible_failure_retains_row_and_allows_later_retry_without_dirty_mutation() {
     jobs.drain(Some(&executor), &mut controller, 1);
     drain_until_terminal(&mut jobs, &executor, &mut controller, 1);
 
-    assert_eq!(controller.queue().len(), 1);
+    assert_eq!(controller.queue().top_level_entry_count(), 1);
     assert_eq!(controller.dirty_revision(), dirty_before);
     assert!(
         controller.view_snapshot().visible_rows(0..1)[0]

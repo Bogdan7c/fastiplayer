@@ -228,9 +228,7 @@ impl PlaylistController {
         }
         let removed_item_ids = self
             .queue
-            .items()
-            .iter()
-            .map(|item| item.item_id())
+            .iter_playable_ids()
             .filter(|item_id| *item_id != retained_item_id)
             .collect::<Vec<_>>();
         self.commit_destructive_removal(
@@ -311,7 +309,7 @@ impl PlaylistController {
                 Err(outcome) => return outcome,
             };
         let selection = self.selection.snapshot();
-        if selection.selected_count() + removed_item_ids.len() != self.queue.len()
+        if selection.selected_count() + removed_item_ids.len() != self.queue.top_level_entry_count()
             || removed_item_ids
                 .iter()
                 .any(|item_id| selection.is_selected(*item_id))
@@ -354,12 +352,7 @@ impl PlaylistController {
         if item_ids.is_empty() {
             return Err(ControllerDestructiveRemovalOutcome::NoChange);
         }
-        let committed_item_ids: HashSet<_> = self
-            .queue
-            .items()
-            .iter()
-            .map(|item| item.item_id())
-            .collect();
+        let committed_item_ids: HashSet<_> = self.queue.iter_playable_ids().collect();
         let mut exact_item_ids = HashSet::with_capacity(item_ids.len());
         for item_id in item_ids {
             if !exact_item_ids.insert(*item_id) {
@@ -524,20 +517,18 @@ impl PlaylistController {
             .filter(|item_id| removed_item_ids.contains(item_id))
             .or_else(|| {
                 self.queue
-                    .items()
-                    .iter()
-                    .map(|item| item.item_id())
+                    .iter_playable_ids()
                     .find(|item_id| removed_item_ids.contains(item_id))
             })?;
         let origin_index = self
             .queue
-            .items()
-            .iter()
-            .position(|item| item.item_id() == focus_origin)?;
+            .iter_playable_ids()
+            .position(|item_id| item_id == focus_origin)?;
         Some(
-            self.queue.items()[..origin_index]
-                .iter()
-                .filter(|item| !removed_item_ids.contains(&item.item_id()))
+            self.queue
+                .iter_playable_ids()
+                .take(origin_index)
+                .filter(|item_id| !removed_item_ids.contains(item_id))
                 .count(),
         )
     }
@@ -570,10 +561,9 @@ impl PlaylistController {
             SelectionAfterRemoval::SelectNearest => {
                 let fallback_item_id = fallback_index.and_then(|index| {
                     self.queue
-                        .items()
-                        .get(index)
-                        .or_else(|| self.queue.items().last())
-                        .map(|item| item.item_id())
+                        .iter_playable_ids()
+                        .nth(index)
+                        .or_else(|| self.queue.iter_playable_ids().next_back())
                 });
                 let selected_item_ids = fallback_item_id
                     .map(|item_id| HashSet::from([item_id]))

@@ -333,7 +333,7 @@ mod tests {
             .expect("duplicate remains valid");
         assert_eq!(first, UrlAppendActionOutcome::Appended { item_count: 1 });
         assert_eq!(second, UrlAppendActionOutcome::Appended { item_count: 1 });
-        assert_eq!(runtime.controller.queue().len(), 2);
+        assert_eq!(runtime.controller.queue().top_level_entry_count(), 2);
         assert!(runtime.controller.active_media().is_none());
     }
 
@@ -361,7 +361,12 @@ mod tests {
 
         for _ in 0..200 {
             let _visible_change = runtime.drain_playlist_discovery();
-            if runtime.controller.queue().items()[0]
+            if runtime
+                .controller
+                .queue()
+                .iter_playable_items()
+                .next()
+                .expect("append должен оставить одну playable строку")
                 .cached_metadata()
                 .title()
                 .is_some()
@@ -371,7 +376,12 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
 
-        let item = &runtime.controller.queue().items()[0];
+        let item = runtime
+            .controller
+            .queue()
+            .iter_playable_items()
+            .next()
+            .expect("append должен оставить одну playable строку");
         assert_eq!(
             item.cached_metadata().title(),
             Some("Настоящее название из yt-dlp")
@@ -396,7 +406,7 @@ mod tests {
                 .expect("pure classification"),
             UrlAppendActionOutcome::AwaitingSensitivePersistenceDecision
         );
-        assert_eq!(runtime.controller.queue().len(), 0);
+        assert_eq!(runtime.controller.queue().top_level_entry_count(), 0);
         assert_eq!(runtime.controller.dirty_revision(), dirty_before);
         assert!(runtime.pending_queue_replacement_confirmation().is_none());
         let model = runtime
@@ -425,7 +435,7 @@ mod tests {
             }),
             PlaylistConfirmationApplyOutcome::UrlAppended { item_count: 1 }
         ));
-        assert_eq!(runtime.controller.queue().len(), 1);
+        assert_eq!(runtime.controller.queue().top_level_entry_count(), 1);
         assert!(runtime.pending_playlist_confirmation().is_none());
     }
 
@@ -444,7 +454,7 @@ mod tests {
             }),
             PlaylistConfirmationApplyOutcome::Cancelled
         ));
-        assert_eq!(runtime.controller.queue().len(), 0);
+        assert_eq!(runtime.controller.queue().top_level_entry_count(), 0);
 
         runtime
             .append_playlist_url(raw, &rustiplayer_config::YtDlpConfig::default())
@@ -526,6 +536,6 @@ mod tests {
             Some(20)
         );
         assert_eq!(item.cached_metadata().title(), Some("Actual title"));
-        assert_eq!(runtime.controller.queue().len(), 1);
+        assert_eq!(runtime.controller.queue().top_level_entry_count(), 1);
     }
 }

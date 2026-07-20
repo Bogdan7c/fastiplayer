@@ -310,8 +310,12 @@ fn superseded_valid_restore_keeps_allocator_watermark_without_restored_items() {
     );
 
     let controller = runtime.playlist_controller().expect("opened controller");
-    assert_eq!(controller.queue().len(), 1);
-    let allocated_id = controller.queue().items()[0].item_id();
+    assert_eq!(controller.queue().top_level_entry_count(), 1);
+    let allocated_id = controller
+        .queue()
+        .iter_playable_ids()
+        .next()
+        .expect("startup append должен создать playable строку");
     assert!(
         allocated_id > highest_id,
         "persisted watermark must not be reused"
@@ -355,7 +359,7 @@ fn mode_only_overlay_preserves_restore_and_commits_one_dirty_revision() {
     );
 
     let controller = runtime.playlist_controller().expect("opened controller");
-    assert_eq!(controller.queue().len(), 1);
+    assert_eq!(controller.queue().top_level_entry_count(), 1);
     assert_eq!(
         controller
             .queue()
@@ -643,7 +647,7 @@ fn blocking_large_inspection_keeps_draft_responsive_and_idless() {
             .playlist_controller()
             .expect("opened controller")
             .queue()
-            .len(),
+            .top_level_entry_count(),
         1
     );
 }

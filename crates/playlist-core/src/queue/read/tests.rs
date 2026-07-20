@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -50,42 +49,6 @@ fn compact_source(source: &str) -> String {
     source
         .chars()
         .filter(|character| !character.is_whitespace())
-        .collect()
-}
-
-/// Считает non-overlapping occurrences фиксированного source token sequence.
-fn occurrence_count(source: &str, needle: &str) -> usize {
-    source.match_indices(needle).count()
-}
-
-/// Строит exact per-file inventory только для файлов с оставшимися callsites.
-fn caller_inventory(
-    repository_root: &Path,
-    source_root: &Path,
-    count_calls: impl Fn(&str) -> usize,
-) -> BTreeMap<String, usize> {
-    rust_source_paths(source_root)
-        .into_iter()
-        .filter_map(|source_path| {
-            let source = fs::read_to_string(&source_path).expect("Rust source must be UTF-8");
-            let call_count = count_calls(&compact_source(&source));
-            (call_count > 0).then(|| {
-                let relative_path = source_path
-                    .strip_prefix(repository_root)
-                    .expect("source must remain under repository root")
-                    .to_string_lossy()
-                    .into_owned();
-                (relative_path, call_count)
-            })
-        })
-        .collect()
-}
-
-/// Превращает readable allowlist pairs в deterministic inventory map.
-fn expected_inventory(entries: &[(&str, usize)]) -> BTreeMap<String, usize> {
-    entries
-        .iter()
-        .map(|(path, count)| ((*path).to_owned(), *count))
         .collect()
 }
 
@@ -203,117 +166,19 @@ fn owned_snapshot_has_read_parity_but_never_becomes_mutation_authority() {
 }
 
 #[test]
-fn legacy_slice_and_ambiguous_len_callers_match_exact_s01q_inventory() {
-    // S01P мигрирует domain/state целиком, а app-wide callers намеренно оставляет S01Q.
+fn workspace_has_no_legacy_playlist_queue_read_surface_or_callers() {
+    // S01Q закрывает временный bridge и запрещает его возврат во всех dependent crates.
     let manifest_directory = Path::new(env!("CARGO_MANIFEST_DIR"));
     let repository_root = manifest_directory
         .parent()
         .and_then(Path::parent)
         .expect("playlist-core must live under repository crates directory");
-    let app_source_root = repository_root.join("crates/app-egui/src");
 
-    let items_inventory = caller_inventory(repository_root, &app_source_root, |source| {
-        occurrence_count(source, ".items()")
-    });
-    let expected_items_inventory = expected_inventory(&[
-        ("crates/app-egui/src/playlist_runtime/actions.rs", 2),
-        (
-            "crates/app-egui/src/playlist_runtime/controller/discovery/tests.rs",
-            2,
-        ),
-        (
-            "crates/app-egui/src/playlist_runtime/controller/initial_queue_playback.rs",
-            1,
-        ),
-        (
-            "crates/app-egui/src/playlist_runtime/controller/local_file_selection.rs",
-            2,
-        ),
-        (
-            "crates/app-egui/src/playlist_runtime/controller/removal.rs",
-            7,
-        ),
-        (
-            "crates/app-egui/src/playlist_runtime/controller/removal/clear.rs",
-            1,
-        ),
-        (
-            "crates/app-egui/src/playlist_runtime/controller/removal/tests.rs",
-            1,
-        ),
-        (
-            "crates/app-egui/src/playlist_runtime/controller/reordering.rs",
-            4,
-        ),
-        (
-            "crates/app-egui/src/playlist_runtime/controller/tests.rs",
-            2,
-        ),
-        (
-            "crates/app-egui/src/playlist_runtime/discovery/action_jobs/tests.rs",
-            1,
-        ),
-        (
-            "crates/app-egui/src/playlist_runtime/discovery/metadata_sort.rs",
-            1,
-        ),
-        (
-            "crates/app-egui/src/playlist_runtime/discovery/metadata_sort/tests.rs",
-            2,
-        ),
-        ("crates/app-egui/src/playlist_runtime/persistence.rs", 1),
-        (
-            "crates/app-egui/src/playlist_runtime/replacement_confirmation/tests.rs",
-            4,
-        ),
-        ("crates/app-egui/src/playlist_runtime/selection.rs", 5),
-        ("crates/app-egui/src/playlist_runtime/startup/tests.rs", 1),
-        ("crates/app-egui/src/playlist_runtime/view.rs", 1),
-        ("crates/app-egui/src/ui/playlist/tests.rs", 7),
-        ("crates/app-egui/src/ui/sidebar/header.rs", 2),
-    ]);
-    assert_eq!(items_inventory, expected_items_inventory);
-
-    let len_inventory = caller_inventory(repository_root, &app_source_root, |source| {
-        occurrence_count(source, "queue().len()") + occurrence_count(source, "queue.len()")
-    });
-    let expected_len_inventory = expected_inventory(&[
-        ("crates/app-egui/src/playlist_runtime.rs", 1),
-        ("crates/app-egui/src/playlist_runtime/actions.rs", 5),
-        ("crates/app-egui/src/playlist_runtime/controller.rs", 1),
-        (
-            "crates/app-egui/src/playlist_runtime/controller/automatic_lifecycle/tests.rs",
-            2,
-        ),
-        (
-            "crates/app-egui/src/playlist_runtime/controller/removal.rs",
-            1,
-        ),
-        (
-            "crates/app-egui/src/playlist_runtime/controller/tests.rs",
-            2,
-        ),
-        (
-            "crates/app-egui/src/playlist_runtime/discovery/action_jobs/tests.rs",
-            4,
-        ),
-        ("crates/app-egui/src/playlist_runtime/persistence.rs", 2),
-        (
-            "crates/app-egui/src/playlist_runtime/removal_undo/tests.rs",
-            4,
-        ),
-        ("crates/app-egui/src/playlist_runtime/selection.rs", 2),
-        ("crates/app-egui/src/playlist_runtime/startup/tests.rs", 3),
-        ("crates/app-egui/src/playlist_runtime/ui_interaction.rs", 1),
-        ("crates/app-egui/src/playlist_runtime/view.rs", 2),
-        ("crates/app-egui/src/ui/playlist/tests.rs", 1),
-    ]);
-    assert_eq!(len_inventory, expected_len_inventory);
-
-    // Новые/мигрированные crates не должны снова начать использовать legacy surface.
+    // Компиляция доказывает отсутствие typed callers, а source audit ловит возврат bridge заранее.
     for migrated_source_root in [
         manifest_directory.join("src"),
         repository_root.join("crates/playlist-state/src"),
+        repository_root.join("crates/app-egui/src"),
     ] {
         for source_path in rust_source_paths(&migrated_source_root) {
             if source_path.ends_with("queue/read/tests.rs") {
@@ -326,7 +191,7 @@ fn legacy_slice_and_ambiguous_len_callers_match_exact_s01q_inventory() {
                     && !compact_source.contains("queue().len()")
                     && !compact_source.contains("queue.len()")
                     && !compact_source.contains("self.len()"),
-                "migrated source returned to legacy queue read API: {}",
+                "workspace source returned to legacy queue read API: {}",
                 source_path.display()
             );
         }

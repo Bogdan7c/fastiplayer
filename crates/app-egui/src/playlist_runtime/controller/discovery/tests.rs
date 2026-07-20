@@ -39,7 +39,10 @@ fn accepted_batch_allocates_ids_only_with_natural_anchor_commit() {
         .expect("batch commit");
 
     assert_eq!(committed.item_ids.len(), 2);
-    assert_eq!(controller.queue().items()[2].item_id(), target_id);
+    assert_eq!(
+        controller.queue().iter_playable_ids().nth(2),
+        Some(target_id)
+    );
     assert_ne!(controller.queue().next_item_id_snapshot(), watermark_before);
     assert_eq!(committed.anchor.before_item_id(), Some(target_id));
 }
@@ -89,5 +92,8 @@ fn accepted_batch_advances_expected_revision_without_self_cancellation() {
         .expect("second batch");
 
     assert_eq!(second_commit.item_ids.len(), 1);
-    assert_eq!(controller.queue().items()[2].item_id(), target_id);
+    assert_eq!(
+        controller.queue().iter_playable_ids().nth(2),
+        Some(target_id)
+    );
 }

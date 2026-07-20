@@ -1041,7 +1041,7 @@ mod tests {
         let finished = runtime.playlist_interaction_model();
         assert!(!finished.url_editor_open);
         assert!(finished.url_text.is_empty());
-        assert_eq!(runtime.controller.queue().len(), 1);
+        assert_eq!(runtime.controller.queue().top_level_entry_count(), 1);
     }
 
     #[test]

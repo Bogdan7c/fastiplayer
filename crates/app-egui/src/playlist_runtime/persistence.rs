@@ -644,7 +644,11 @@ mod tests {
             crate::playlist_runtime::controller::ControllerAppendOutcome::Added { .. }
         ));
         let watermark = controller.queue().next_item_id_snapshot();
-        let first_item = controller.queue().items()[0].item_id();
+        let first_item = controller
+            .queue()
+            .iter_playable_ids()
+            .next()
+            .expect("fixture должен содержать первый playable item");
         assert!(controller.select_row(Some(first_item)));
 
         let (ports, _receiver) = owner_ports();
@@ -662,7 +666,7 @@ mod tests {
         let (loaded_queue, _) = loaded.into_parts();
         assert_eq!(loaded_queue.traversal_current(), None);
         assert_eq!(loaded_queue.next_item_id_snapshot(), watermark);
-        assert_eq!(loaded_queue.len(), 2);
+        assert_eq!(loaded_queue.retained_item_count(), 2);
         shutdown_worker(&mut owner);
     }
 
@@ -829,7 +833,7 @@ mod tests {
         let InspectionOutcome::Loaded(loaded) = store.inspect_state() else {
             panic!("shutdown snapshot must be readable");
         };
-        assert_eq!(loaded.queue().len(), 1);
+        assert_eq!(loaded.queue().retained_item_count(), 1);
     }
 
     #[test]

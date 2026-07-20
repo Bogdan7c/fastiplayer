@@ -325,9 +325,9 @@ impl PlaylistSelectionState {
                 match Self::validated_exact_set(queue, &item_ids, range_anchor, interaction_cursor)
                 {
                     Ok(selected_item_ids) => {
-                        if selected_item_ids.len() != queue.len() {
+                        if selected_item_ids.len() != queue.top_level_entry_count() {
                             return UpdateSelectionOutcome::IncompleteSelectAll {
-                                committed_count: queue.len(),
+                                committed_count: queue.top_level_entry_count(),
                                 captured_count: selected_item_ids.len(),
                             };
                         }
@@ -375,8 +375,7 @@ impl PlaylistSelectionState {
         {
             return;
         }
-        let committed_item_ids: HashSet<_> =
-            queue.items().iter().map(|item| item.item_id()).collect();
+        let committed_item_ids: HashSet<_> = queue.iter_playable_ids().collect();
         let mut selected_item_ids = self.selected_item_ids.as_ref().clone();
         selected_item_ids.retain(|item_id| committed_item_ids.contains(item_id));
         if selected_item_ids.len() != self.selected_item_ids.len() {
@@ -417,8 +416,7 @@ impl PlaylistSelectionState {
         range_anchor: Option<PlaylistItemId>,
         interaction_cursor: Option<PlaylistItemId>,
     ) -> Result<Arc<HashSet<PlaylistItemId>>, UpdateSelectionOutcome> {
-        let committed_item_ids: HashSet<_> =
-            queue.items().iter().map(|item| item.item_id()).collect();
+        let committed_item_ids: HashSet<_> = queue.iter_playable_ids().collect();
         let mut selected_item_ids = HashSet::with_capacity(item_ids.len());
         for item_id in item_ids {
             if !selected_item_ids.insert(*item_id) {
@@ -452,16 +450,14 @@ impl PlaylistSelectionState {
             Some(interaction_cursor),
         )?;
         let anchor_index = queue
-            .items()
-            .iter()
-            .position(|item| item.item_id() == range_anchor)
+            .iter_playable_ids()
+            .position(|item_id| item_id == range_anchor)
             .ok_or(UpdateSelectionOutcome::ItemNotFound {
                 item_id: range_anchor,
             })?;
         let cursor_index = queue
-            .items()
-            .iter()
-            .position(|item| item.item_id() == interaction_cursor)
+            .iter_playable_ids()
+            .position(|item_id| item_id == interaction_cursor)
             .ok_or(UpdateSelectionOutcome::ItemNotFound {
                 item_id: interaction_cursor,
             })?;
@@ -469,9 +465,11 @@ impl PlaylistSelectionState {
         let range_end = anchor_index.max(cursor_index);
         let expected_count = range_end - range_start + 1;
         let is_exact_range = selected_item_ids.len() == expected_count
-            && queue.items()[range_start..=range_end]
-                .iter()
-                .all(|item| selected_item_ids.contains(&item.item_id()));
+            && queue
+                .iter_playable_ids()
+                .skip(range_start)
+                .take(expected_count)
+                .all(|item_id| selected_item_ids.contains(&item_id));
         if !is_exact_range {
             return Err(UpdateSelectionOutcome::InvalidRangeItems);
         }

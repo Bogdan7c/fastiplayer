@@ -66,8 +66,7 @@ impl PlaylistController {
         }
 
         self.queue
-            .items()
-            .iter()
+            .iter_playable_items()
             .find_map(|item| {
                 item.locator()
                     .as_local()
@@ -132,7 +131,7 @@ mod tests {
         let LocalFileSelectionDisposition::PlayCommittedItem { item_id } = disposition else {
             panic!("same-directory committed row must be reused");
         };
-        assert_eq!(controller.queue.items()[1].item_id(), item_id);
+        assert_eq!(controller.queue.iter_playable_ids().nth(1), Some(item_id));
     }
 
     #[test]

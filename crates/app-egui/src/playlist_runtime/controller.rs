@@ -360,9 +360,9 @@ impl PlaylistController {
         if self.fatal_invariant.is_some() {
             return Err(ControllerAppendError::FatalInvariant);
         }
-        let accepted = drafts
-            .len()
-            .min(playlist_core::MAX_PLAYLIST_ITEMS.saturating_sub(self.queue.len()));
+        let accepted = drafts.len().min(
+            playlist_core::MAX_PLAYLIST_ITEMS.saturating_sub(self.queue.retained_item_count()),
+        );
         if accepted == 0 {
             return Ok(ControllerCappedAppendOutcome {
                 item_ids: Vec::new(),

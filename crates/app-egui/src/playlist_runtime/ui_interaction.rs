@@ -527,7 +527,8 @@ impl PlaylistRuntime {
                 PlaylistStructuralActionAvailability::Unavailable,
                 |controller| controller.view_snapshot().structural_action_availability(),
             ),
-            item_count: controller.map_or(0, |controller| controller.queue().len()),
+            item_count: controller
+                .map_or(0, |controller| controller.queue().top_level_entry_count()),
             url_editor_open: draft.is_open(),
             url_text: draft.text().to_string(),
             url_request_focus: draft.requests_focus(),

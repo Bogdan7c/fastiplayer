@@ -19,12 +19,7 @@ impl PlaylistController {
     /// Clear очищает queue и сразу отделяет Undo от прежнего playback lifecycle.
     pub(crate) fn clear_queue(&mut self) -> ControllerDestructiveRemovalOutcome {
         // Snapshot exact ID-ов нужен общей removal transaction для одной domain mutation.
-        let removed_item_ids = self
-            .queue
-            .items()
-            .iter()
-            .map(|item| item.item_id())
-            .collect::<Vec<_>>();
+        let removed_item_ids = self.queue.iter_playable_ids().collect::<Vec<_>>();
         self.commit_destructive_removal(
             ControllerRemovalKind::Clear,
             removed_item_ids.into(),

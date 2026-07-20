@@ -578,12 +578,7 @@ fn bulk_selected_removal_is_one_commit_and_undo_restores_full_selection() {
         removed(controller.remove_selected_items(Arc::from([ids[1], ids[2], ids[3]]), revision));
     assert_eq!(removal.kind, ControllerRemovalKind::RemoveSelected);
     assert_eq!(
-        controller
-            .queue()
-            .items()
-            .iter()
-            .map(|item| item.item_id())
-            .collect::<Vec<_>>(),
+        controller.queue().iter_playable_ids().collect::<Vec<_>>(),
         vec![ids[0], ids[4]]
     );
     assert_eq!(controller.selected_item_id(), Some(ids[4]));

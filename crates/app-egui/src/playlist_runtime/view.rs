@@ -432,9 +432,9 @@ pub(super) fn rebuild_snapshot(
 fn build_rows(
     queue: &PlaylistQueue,
 ) -> (Arc<[PlaylistViewRow]>, Arc<HashMap<PlaylistItemId, usize>>) {
-    let mut rows = Vec::with_capacity(queue.len());
-    let mut row_indices = HashMap::with_capacity(queue.len());
-    for (row_index, item) in queue.items().iter().enumerate() {
+    let mut rows = Vec::with_capacity(queue.top_level_entry_count());
+    let mut row_indices = HashMap::with_capacity(queue.top_level_entry_count());
+    for (row_index, item) in queue.iter_playable_items().enumerate() {
         let metadata = item.cached_metadata();
         let fallback_display_name: Arc<str> = Arc::from(metadata.fallback_display_name());
         let display_title = metadata

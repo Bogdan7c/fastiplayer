@@ -174,7 +174,7 @@ fn clear_and_remove_others_use_same_undo_and_restore_selection() {
             ..
         } if selected == clear_ids[2]
     ));
-    assert_eq!(clear_runtime.controller.queue.len(), 4);
+    assert_eq!(clear_runtime.controller.queue.top_level_entry_count(), 4);
     assert_eq!(
         clear_runtime
             .playlist_persistence_view()
@@ -189,7 +189,7 @@ fn clear_and_remove_others_use_same_undo_and_restore_selection() {
         others_runtime.remove_other_playlist_items(others_ids[1], now),
         RuntimeRemovalOutcome::Removed { .. }
     ));
-    assert_eq!(others_runtime.controller.queue.len(), 1);
+    assert_eq!(others_runtime.controller.queue.top_level_entry_count(), 1);
     assert!(matches!(
         others_runtime.undo_last_removal(now + Duration::from_secs(1)),
         RemovalUndoOutcome::Restored {
@@ -197,7 +197,7 @@ fn clear_and_remove_others_use_same_undo_and_restore_selection() {
             ..
         } if selected == others_ids[1]
     ));
-    assert_eq!(others_runtime.controller.queue.len(), 4);
+    assert_eq!(others_runtime.controller.queue.top_level_entry_count(), 4);
 }
 
 #[test]
@@ -234,7 +234,7 @@ fn undo_active_clear_restores_queue_current_and_selection_only() {
             reattached_active: false,
         } if selected == ids[2]
     ));
-    assert_eq!(runtime.controller.queue.len(), 3);
+    assert_eq!(runtime.controller.queue.top_level_entry_count(), 3);
     assert_eq!(
         runtime
             .controller

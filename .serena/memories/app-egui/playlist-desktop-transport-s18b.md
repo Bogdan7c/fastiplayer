@@ -31,3 +31,7 @@
 - Linux adapter decomposed: `platform/linux.rs` transport/interface, `platform/linux/snapshot_properties.rs`, `track_identity.rs`, `tests.rs`.
 - Focused tests include private dbus-daemon occupied nonqueued claim/no late acquisition, full property set/exclusions, capabilities/backpressure, fixed rate, stale/invalid SetPosition pre-enqueue no-op, identity stability, pre-gate/Ready mode semantics, relative arithmetic and player exact seek correlation.
 - Session verification: desktop-integration 23, player-core 534, app-egui no-default 548; strict touched-crate Clippy, fmt, Rust 1.96 locked workspace check, refactor guardrails and diff check PASS.
+
+## S01Q queue read-boundary migration (2026-07-20)
+- Desktop/MPRIS owner и neutral transport API не менялись: publication продолжает читать process-owned revisioned view/track lineage, не получает queue storage или mutation authority. App startup/view/controller callsites под transport мигрированы на intent-based queue reads; legacy `PlaylistQueue::items()`/`len()` удалены.
+- Полный `app-egui` suite 719/719 подтвердил MPRIS capabilities, commands, track identity, timeline seek и detached/suspend regression без изменения queue order, IDs или revisions.

@@ -172,12 +172,7 @@ fn cpu_cancel_returns_salvage_without_partial_reorder() {
                 .collect(),
         )
         .unwrap();
-    let ids_before = controller
-        .queue()
-        .items()
-        .iter()
-        .map(|item| item.item_id())
-        .collect::<Vec<_>>();
+    let ids_before = controller.queue().iter_playable_ids().collect::<Vec<_>>();
     let structural_revision = controller.view_snapshot().structural_revision();
     let cpu_executor = start_cpu_executor().unwrap();
     let mut owner =
@@ -200,12 +195,7 @@ fn cpu_cancel_returns_salvage_without_partial_reorder() {
         } if patches.is_empty()
     ));
     assert_eq!(
-        controller
-            .queue()
-            .items()
-            .iter()
-            .map(|item| item.item_id())
-            .collect::<Vec<_>>(),
+        controller.queue().iter_playable_ids().collect::<Vec<_>>(),
         ids_before
     );
 }

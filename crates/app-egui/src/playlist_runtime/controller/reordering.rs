@@ -202,7 +202,7 @@ mod tests {
             ControllerMoveItemOutcome::Moved { .. }
         ));
         assert_eq!(controller.selected_item_id(), Some(ids[2]));
-        assert_eq!(controller.queue().items()[3].item_id(), ids[0]);
+        assert_eq!(controller.queue().iter_playable_ids().nth(3), Some(ids[0]));
         assert_eq!(
             controller.queue.shuffle_traversal_snapshot(),
             shuffle_before
@@ -274,12 +274,7 @@ mod tests {
             ControllerMoveItemsOutcome::Moved { item_count: 2, .. }
         ));
         assert_eq!(
-            controller
-                .queue()
-                .items()
-                .iter()
-                .map(|item| item.item_id())
-                .collect::<Vec<_>>(),
+            controller.queue().iter_playable_ids().collect::<Vec<_>>(),
             vec![ids[1], ids[3], ids[0], ids[2], ids[4]]
         );
         let selection = controller.view_snapshot();
@@ -295,7 +290,7 @@ mod tests {
             dirty_before.checked_next().expect("one dirty revision")
         );
 
-        let order_before = controller.queue().items().to_vec();
+        let order_before = controller.queue().iter_playable_ids().collect::<Vec<_>>();
         assert_eq!(
             controller.move_items(
                 Arc::from([ids[1], ids[3]]),
@@ -304,7 +299,12 @@ mod tests {
             ),
             ControllerMoveItemsOutcome::AlreadyInPlace { item_count: 2 }
         );
-        assert_eq!(controller.queue().items(), order_before);
+        assert!(
+            controller
+                .queue()
+                .iter_playable_ids()
+                .eq(order_before.iter().copied())
+        );
         assert_eq!(
             controller.move_items(
                 Arc::from([ids[1], ids[3]]),

@@ -382,7 +382,10 @@ mod tests {
 
         // Первый, средний и последний active Item ID разрешаются через production index.
         for (zero_based_position, expected_text) in [(0, "1/30"), (5, "6/30"), (29, "30/30")] {
-            let active_item_id = populated_queue.items()[zero_based_position].item_id();
+            let active_item_id = populated_queue
+                .iter_playable_ids()
+                .nth(zero_based_position)
+                .expect("fixture должен содержать playable строку по заданной позиции");
             let active_model = playlist_model(&populated_queue, Some(active_item_id));
             let active_position = playlist_header_position(Some(&active_model))
                 .expect("active row in non-empty queue must be visible");
@@ -390,7 +393,10 @@ mod tests {
         }
 
         // Удалённый active ID больше не имеет canonical position, но total остаётся точным.
-        let removed_active_item_id = populated_queue.items()[5].item_id();
+        let removed_active_item_id = populated_queue
+            .iter_playable_ids()
+            .nth(5)
+            .expect("fixture должен содержать удаляемую playable строку");
         assert!(matches!(
             populated_queue.remove(removed_active_item_id),
             RemoveItemOutcome::Removed { .. }

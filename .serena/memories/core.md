@@ -87,7 +87,8 @@
 - Публичные enum-ы `player_core::MediaInstallCancellationCause` и `playlist_discovery::DiscoveryCancellationCause` больше не содержат `StopAfterCurrent`; остальные typed cancellation distinctions сохранены. Focused и full all-features workspace suites, strict Clippy, fmt, locked Rust 1.96 check и refactor guardrails прошли. Детали: `mem:app-egui/stop-after-current-removed-2026-07-18`.
 
 
-## Web media roadmap S01P queue read boundary (2026-07-20)
+## Web media roadmap S01P/S01Q queue read boundary (2026-07-20)
 - `playlist-core` получил future-proof read boundary без обещания contiguous queue storage: `iter_playable_items()`, `iter_playable_ids()`, stable-ID `item()`, intent counts `top_level_entry_count()`/`retained_item_count()` и immutable `OwnedPlayableItemsSnapshot` для async/persistence ownership handoff.
-- `playlist-core` internal algorithms/tests и `playlist-state` DTO/snapshot migration завершены без изменения canonical order, Item IDs, revisions или playlist-state schema v1. Legacy `PlaylistQueue::items()`/`len()` остаются только для S01Q app migration, без `#[deprecated]`.
-- Temporary focused inventory test фиксирует оставшиеся S01Q app callsites: 47 `items()` и 31 ambiguous `len()` occurrence; новые legacy callsites либо возврат legacy surface в migrated core/state ломают тест. Details: `mem:playlist/core`, `mem:playlist/state`.
+- `playlist-core` internal algorithms/tests и `playlist-state` DTO/snapshot migration завершены без изменения canonical order, Item IDs, revisions или playlist-state schema v1.
+- S01Q завершил workspace migration: app view/selection/discovery/startup/desktop-MPRIS и diagnostics/tests используют intent-based iteration, stable-ID lookup и named counts; `PlaylistQueue::items()` и ambiguous production `len()` удалены. Selection ranges и removal fallback сохраняют stable-ID/revision authority, не используют queue slice для structural mutation; новых cached/parallel Vec или app-owned queue snapshots нет.
+- S01Q verification: `playlist-core` 82, `playlist-state` 40 и полный `app-egui` 719 tests PASS на Rust 1.96; strict Clippy, workspace all-features check, MSRV 1.92, rustfmt, Serena diagnostics и refactor guardrails PASS. Cargo-deny по-прежнему падает только на известные quick-xml RUSTSEC-2026-0194/0195. Details: `mem:playlist/core`, `mem:playlist/state`.

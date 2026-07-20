@@ -282,23 +282,9 @@ impl PlaylistQueue {
         })
     }
 
-    /// Временный S01Q bridge для callers с неоднозначной count semantics.
-    ///
-    /// Новый код обязан выбирать `top_level_entry_count` или `retained_item_count`.
-    pub const fn len(&self) -> usize {
-        self.items.len()
-    }
-
     /// Сообщает emptiness без сканирования rows.
     pub const fn is_empty(&self) -> bool {
         self.items.is_empty()
-    }
-
-    /// Временный S01Q bridge для callers, ожидающих contiguous canonical slice.
-    ///
-    /// Новый код обязан использовать intent-based iterator, lookup или owned snapshot.
-    pub fn items(&self) -> &[PlaylistItem] {
-        &self.items
     }
 
     /// Выполняет read-only lookup по stable Item ID.

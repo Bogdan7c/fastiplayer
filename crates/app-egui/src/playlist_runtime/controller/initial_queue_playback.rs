@@ -102,9 +102,8 @@ impl PlaylistController {
 
         let first_item_id = self
             .queue
-            .items()
-            .first()
-            .map(playlist_core::PlaylistItem::item_id)
+            .iter_playable_ids()
+            .next()
             .ok_or(InitialQueuePlaybackPlanError::EmptyQueue)?;
         let playback_intent = playback_intent(guard.desired_intent);
         let Some(mut intent_dispatch) =

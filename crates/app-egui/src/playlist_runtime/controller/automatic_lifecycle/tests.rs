@@ -474,7 +474,7 @@ fn skip_chain_snapshot_excludes_late_row_and_keeps_failed_badge() {
         .find(|row| row.item_id() == ids[1])
         .expect("failed row remains committed");
     assert!(failed_row.runtime_error().is_some());
-    assert_eq!(controller.queue().len(), 3);
+    assert_eq!(controller.queue().retained_item_count(), 3);
 }
 
 #[test]
@@ -530,7 +530,7 @@ fn late_admission_does_not_invalidate_ready_or_join_automatic_plan() {
         controller.dirty_revision().get(),
         dirty_after_late_admission + 1
     );
-    assert_eq!(controller.queue().len(), 3);
+    assert_eq!(controller.queue().retained_item_count(), 3);
 }
 
 #[test]

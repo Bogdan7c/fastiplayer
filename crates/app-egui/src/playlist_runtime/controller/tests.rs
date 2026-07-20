@@ -185,7 +185,7 @@ fn ready_reservation_failure_preserves_queue_allocator_and_dirty_state() {
     );
     assert_eq!(controller.dirty_revision(), dirty_before);
     assert_eq!(controller.queue().next_item_id_snapshot(), watermark_before);
-    assert_eq!(controller.queue().items().len(), 1);
+    assert_eq!(controller.queue().retained_item_count(), 1);
     assert_eq!(controller.active_media(), None);
 }
 
@@ -371,7 +371,10 @@ fn replacement_ids_and_rows_stay_private_until_exact_installed_commit() {
         controller.on_ready_to_commit(request_id(31)),
         InstallReadyOutcome::RequestAuthorization { .. }
     ));
-    assert_eq!(controller.queue().items()[0].item_id(), old_item);
+    assert_eq!(
+        controller.queue().iter_playable_ids().next(),
+        Some(old_item)
+    );
     assert_eq!(controller.queue().next_item_id_snapshot(), old_watermark);
     assert_eq!(controller.view_snapshot().len(), 1);
 
@@ -393,7 +396,7 @@ fn replacement_ids_and_rows_stay_private_until_exact_installed_commit() {
         )
         .unwrap();
 
-    assert_eq!(controller.queue().len(), 3);
+    assert_eq!(controller.queue().top_level_entry_count(), 3);
     assert_eq!(controller.view_snapshot().len(), 3);
     assert!(controller.view_snapshot().structural_revision() > old_structural_revision);
     assert_ne!(controller.queue().next_item_id_snapshot(), old_watermark);
@@ -640,7 +643,7 @@ fn d49_badge_correlation_and_d70_retention_do_not_dirty_queue() {
         controller.mark_committed_source_unavailable(item_ids[1], Arc::from("файл не найден"),),
         RuntimeErrorCorrelationOutcome::Recorded
     );
-    assert_eq!(controller.queue().len(), 2);
+    assert_eq!(controller.queue().top_level_entry_count(), 2);
     assert_eq!(controller.dirty_revision(), dirty_before_errors);
     let rows = controller.view_snapshot().visible_rows(0..2);
     assert!(rows[0].runtime_error().is_some());

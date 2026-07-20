@@ -68,13 +68,21 @@ fn model_with_active(
     active_row_index: Option<usize>,
 ) -> PlaylistViewModel {
     // Индекс fixture разрешается через canonical queue Item ID.
-    let active_item_id = active_row_index.map(|row_index| queue.items()[row_index].item_id());
+    let active_item_id = active_row_index.map(|row_index| playable_item_id_at(queue, row_index));
     // Test-only view boundary меняет только ActiveMediaIdentity.
     PlaylistViewModel::for_queue_with_active_item_for_test(
         queue,
         structural_revision,
         active_item_id,
     )
+}
+
+/// Возвращает stable ID строки fixture, не раскрывая slice/index queue storage.
+fn playable_item_id_at(queue: &PlaylistQueue, row_index: usize) -> PlaylistItemId {
+    queue
+        .iter_playable_ids()
+        .nth(row_index)
+        .expect("fixture должен содержать playable строку по заданной позиции")
 }
 
 /// Формирует deterministic viewport для настоящего headless egui interaction pass.
@@ -712,7 +720,7 @@ fn offscreen_active_change_follows_without_traversing_full_queue() {
     // Даже 10k очередь публикует только bounded visible rows.
     assert!(output.visible_item_ids.len() <= super::MAX_VISIBLE_HINT_ITEMS);
     // Полного traversal через visible output не произошло.
-    assert!(output.visible_item_ids.len() < queue.len());
+    assert!(output.visible_item_ids.len() < queue.top_level_entry_count());
 
     // Следующий кадр продвигает auto-scroll по cubic curve.
     render_playlist_input(
@@ -753,7 +761,9 @@ fn viewing_another_queue_region_prevents_future_viewport_takeover() {
     );
 
     // Explicit Go Current на другую строку моделирует осознанный viewport intent пользователя.
-    state.request_go_current(PlaylistGoCurrentTarget::Row(queue.items()[50].item_id()));
+    state.request_go_current(PlaylistGoCurrentTarget::Row(playable_item_id_at(
+        &queue, 50,
+    )));
     // Существующий focus path центрирует строку и отменяет auto-follow.
     render_playlist_input(
         &context,
@@ -929,7 +939,7 @@ fn unchanged_confirmed_identity_does_not_restart_for_non_structural_updates() {
     // Intent-method возвращает только committed identity.
     assert_eq!(
         active_model.active_item_id(),
-        Some(queue.items()[2].item_id())
+        Some(playable_item_id_at(&queue, 2))
     );
     // Context/state моделируют повторный frame после любого non-structural update.
     let context = egui::Context::default();
@@ -994,7 +1004,7 @@ fn disabled_animation_copy_does_not_replace_viewport_or_publish_hint() {
     let queue = queue(100);
     // Authoritative model содержит видимый active accent.
     let model = model_with_active(&queue, 4, Some(0));
-    let top_item_id = queue.items()[33].item_id();
+    let top_item_id = playable_item_id_at(&queue, 33);
     // Сначала production-enabled pass создаёт реальную ephemeral accent geometry.
     let context = egui::Context::default();
     // State принадлежит authoritative Playlist content, а не sidebar transition copy.
@@ -1083,8 +1093,8 @@ fn insertion_before_inside_or_after_viewport_preserves_top_item_and_offset() {
         InsertionPlacement::After,
     ] {
         let mut queue = queue(20);
-        let top_item_id = queue.items()[8].item_id();
-        let inside_anchor = queue.items()[12].item_id();
+        let top_item_id = playable_item_id_at(&queue, 8);
+        let inside_anchor = playable_item_id_at(&queue, 12);
         let before = model(&queue, 1);
         let mut state = PlaylistUiState {
             viewport_anchor: Some(ViewportAnchor {
@@ -1130,7 +1140,7 @@ enum InsertionPlacement {
 fn active_only_revision_never_requests_hidden_scroll() {
     let queue = queue(30);
     let model = model(&queue, 5);
-    let top_item_id = queue.items()[11].item_id();
+    let top_item_id = playable_item_id_at(&queue, 11);
     let mut state = PlaylistUiState {
         viewport_anchor: Some(ViewportAnchor {
             item_id: top_item_id,

@@ -482,8 +482,7 @@ fn metadata_demands(
     }
     controller
         .queue()
-        .items()
-        .iter()
+        .iter_playable_items()
         .filter(|item| {
             item.local_fingerprint().is_none()
                 || selected_metadata_is_missing(item.cached_metadata(), sort_key)
