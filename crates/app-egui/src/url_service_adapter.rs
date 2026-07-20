@@ -12,7 +12,7 @@ pub(crate) struct StartupUrlLocator(Box<dyn StartupUrlServiceAdapter>);
 /// Typed source для необязательного фонового обогащения playlist metadata.
 #[derive(Clone)]
 pub(crate) enum PlaylistUrlMetadataSource {
-    /// Generic yt-dlp owner повторно использует exact HTTP(S) locator.
+    /// Generic yt-dlp owner повторно использует exact service-owned locator.
     YtDlp(service_ytdlp::YtDlpMediaLocator),
 }
 
@@ -75,6 +75,11 @@ impl StartupUrlLocator {
     pub(crate) fn playlist_metadata_source(&self) -> Option<PlaylistUrlMetadataSource> {
         self.0.playlist_metadata_source()
     }
+
+    /// Возвращает typed yt-dlp scheme только для app-owned capability admission.
+    fn yt_dlp_input_scheme(&self) -> Option<service_ytdlp::YtDlpInputScheme> {
+        self.0.yt_dlp_input_scheme()
+    }
 }
 
 impl fmt::Debug for StartupUrlLocator {
@@ -119,6 +124,10 @@ trait StartupUrlServiceAdapter: Send {
     }
 
     fn playlist_metadata_source(&self) -> Option<PlaylistUrlMetadataSource> {
+        None
+    }
+
+    fn yt_dlp_input_scheme(&self) -> Option<service_ytdlp::YtDlpInputScheme> {
         None
     }
 }
@@ -176,12 +185,21 @@ impl StartupUrlServiceAdapter for YtDlpStartupAdapter {
         self.locator.expose_secret_for_persistence()
     }
 
+    fn requires_sensitive_persistence_acknowledgement(&self) -> bool {
+        self.locator
+            .requires_sensitive_persistence_acknowledgement()
+    }
+
     fn requires_sensitive_export_acknowledgement(&self) -> bool {
         self.locator.requires_sensitive_export_acknowledgement()
     }
 
     fn playlist_metadata_source(&self) -> Option<PlaylistUrlMetadataSource> {
         Some(PlaylistUrlMetadataSource::YtDlp(self.locator.clone()))
+    }
+
+    fn yt_dlp_input_scheme(&self) -> Option<service_ytdlp::YtDlpInputScheme> {
+        Some(self.locator.input_scheme())
     }
 }
 
@@ -232,7 +250,7 @@ enum ServiceClassifierResult {
     NotUrl,
 
     /// Аргумент является URL, но этот service его не принял.
-    UnclaimedUrl { safe_error: Option<String> },
+    UnclaimedUrl { reason: StartupUrlUnsupportedReason },
 
     /// Service принял URL и вернул typed adapter с нормализованным locator-ом.
     Supported(StartupUrlLocator),
@@ -240,6 +258,97 @@ enum ServiceClassifierResult {
 
 /// Pure classifier, который один URL service регистрирует в app composition root.
 type StartupUrlServiceClassifier = fn(&str) -> ServiceClassifierResult;
+
+/// Typed capability, которую composition регистрирует только для готового provider-а.
+///
+/// Само наличие значения означает статус `Implemented`: `Planned` и
+/// `ProfileExcluded` rows нельзя представить этим типом и случайно включить.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ImplementedYtDlpInputProviderCapability {
+    input_scheme: service_ytdlp::YtDlpInputScheme,
+}
+
+#[cfg(test)]
+impl ImplementedYtDlpInputProviderCapability {
+    /// Создаёт registration row для одного exact scheme без alias expansion.
+    const fn exact(input_scheme: service_ytdlp::YtDlpInputScheme) -> Self {
+        Self { input_scheme }
+    }
+}
+
+/// App-owned registry отделяет pure service parsing от runtime availability.
+struct StartupUrlServiceRegistry<'capabilities> {
+    implemented_yt_dlp_input_providers: &'capabilities [ImplementedYtDlpInputProviderCapability],
+}
+
+impl StartupUrlServiceRegistry<'_> {
+    /// Выполняет direct-first traversal и фиксирует первый выбранный adapter.
+    fn classify(&self, argument: &str) -> StartupUrlClassification {
+        let mut recognized_url = false;
+        let mut last_rejection = None;
+
+        for classifier in STARTUP_URL_SERVICE_CLASSIFIERS {
+            match classifier(argument) {
+                ServiceClassifierResult::NotUrl => {}
+                ServiceClassifierResult::UnclaimedUrl { reason } => {
+                    recognized_url = true;
+                    last_rejection = Some(reason);
+                }
+                ServiceClassifierResult::Supported(locator) => {
+                    if let Some(input_scheme) =
+                        self.missing_implemented_provider_for_locator(&locator)
+                    {
+                        recognized_url = true;
+                        last_rejection = Some(
+                            StartupUrlUnsupportedReason::ImplementedProviderUnavailable {
+                                input_scheme,
+                            },
+                        );
+                    } else {
+                        return StartupUrlClassification::Supported(locator);
+                    }
+                }
+            }
+        }
+
+        if recognized_url {
+            let reason = last_rejection.unwrap_or(StartupUrlUnsupportedReason::NoRegisteredService);
+            StartupUrlClassification::Unsupported { reason }
+        } else {
+            StartupUrlClassification::NotUrl
+        }
+    }
+
+    /// Возвращает только extended scheme, которой не хватает exact provider row.
+    fn missing_implemented_provider_for_locator(
+        &self,
+        locator: &StartupUrlLocator,
+    ) -> Option<service_ytdlp::YtDlpInputScheme> {
+        let Some(input_scheme) = locator.yt_dlp_input_scheme() else {
+            // Direct-media admission полностью принадлежит его classifier-у.
+            return None;
+        };
+        if input_scheme.is_http_fallback()
+            || self
+                .implemented_yt_dlp_input_providers
+                .iter()
+                .any(|capability| capability.input_scheme == input_scheme)
+        {
+            None
+        } else {
+            Some(input_scheme)
+        }
+    }
+}
+
+/// S37/S39 ещё не зарегистрировали production provider capabilities.
+const PRODUCTION_YT_DLP_INPUT_PROVIDERS: &[ImplementedYtDlpInputProviderCapability] = &[];
+
+/// Единственный production registry используется CLI, toolbar, import и reopen.
+const PRODUCTION_STARTUP_URL_SERVICE_REGISTRY: StartupUrlServiceRegistry<'static> =
+    StartupUrlServiceRegistry {
+        implemented_yt_dlp_input_providers: PRODUCTION_YT_DLP_INPUT_PROVIDERS,
+    };
 
 /// Единственное место регистрации URL services; общий traversal не знает их семантику.
 const STARTUP_URL_SERVICE_CLASSIFIERS: &[StartupUrlServiceClassifier] = &[
@@ -256,38 +365,53 @@ pub(crate) enum StartupUrlClassification {
     Supported(StartupUrlLocator),
 
     /// URL выглядит сетевым, но ни один зарегистрированный adapter не принял его.
-    Unsupported { safe_error: String },
+    Unsupported {
+        /// Стабильная typed причина без raw input.
+        reason: StartupUrlUnsupportedReason,
+    },
 }
 
-/// Последовательно спрашивает зарегистрированные service owners без app parser-а.
-pub(crate) fn classify_startup_url(argument: &str) -> StartupUrlClassification {
-    let mut recognized_url = false;
-    let mut last_safe_error = None;
+/// Typed причины, по которым общий registry не выбрал URL adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StartupUrlUnsupportedReason {
+    /// Absolute URL синтаксически некорректен.
+    InvalidSyntax,
 
-    for classifier in STARTUP_URL_SERVICE_CLASSIFIERS {
-        match classifier(argument) {
-            ServiceClassifierResult::NotUrl => {}
-            ServiceClassifierResult::UnclaimedUrl { safe_error } => {
-                recognized_url = true;
-                if safe_error.is_some() {
-                    last_safe_error = safe_error;
-                }
-            }
-            ServiceClassifierResult::Supported(locator) => {
-                return StartupUrlClassification::Supported(locator);
-            }
-        }
-    }
+    /// Scheme не входит в exact approved service vocabulary.
+    UnsupportedScheme,
 
-    if recognized_url {
-        StartupUrlClassification::Unsupported {
-            safe_error: last_safe_error.unwrap_or_else(|| {
+    /// Scheme approved parser-ом, но transport provider ещё не `Implemented`.
+    ImplementedProviderUnavailable {
+        /// Exact approved scheme, для которого отсутствует registration row.
+        input_scheme: service_ytdlp::YtDlpInputScheme,
+    },
+
+    /// Ни один service не заявил URL после успешного URL recognition.
+    NoRegisteredService,
+}
+
+impl StartupUrlUnsupportedReason {
+    /// Формирует bounded message только из typed/static данных.
+    pub(crate) fn safe_error(self) -> String {
+        match self {
+            Self::InvalidSyntax => "NetworkError: некорректный URL".to_string(),
+            Self::UnsupportedScheme => {
+                "NetworkError: URL scheme не поддерживается media services".to_string()
+            }
+            Self::ImplementedProviderUnavailable { input_scheme } => format!(
+                "NetworkError: provider для `{}` ещё не реализован",
+                input_scheme.as_str()
+            ),
+            Self::NoRegisteredService => {
                 "NetworkError: URL не поддерживается media services".to_string()
-            }),
+            }
         }
-    } else {
-        StartupUrlClassification::NotUrl
     }
+}
+
+/// Последовательно спрашивает единый production registry без app parser-а.
+pub(crate) fn classify_startup_url(argument: &str) -> StartupUrlClassification {
+    PRODUCTION_STARTUP_URL_SERVICE_REGISTRY.classify(argument)
 }
 
 /// Повторно открывает persisted domain locator через тот же service registry, без app parser-а.
@@ -298,7 +422,7 @@ pub(crate) fn classify_playlist_url(
     classify_startup_url(locator.expose_secret_for_open())
 }
 
-/// Generic fallback adapter принимает любой оставшийся absolute HTTP(S) URL.
+/// Generic adapter pure-парсит exact approved schemes; registry решает availability.
 fn classify_yt_dlp_startup_url(argument: &str) -> ServiceClassifierResult {
     if !service_ytdlp::is_probably_url(argument) {
         return ServiceClassifierResult::NotUrl;
@@ -312,14 +436,12 @@ fn classify_yt_dlp_startup_url(argument: &str) -> ServiceClassifierResult {
         }
         Err(service_ytdlp::YtDlpLocatorParseError::InvalidSyntax) => {
             ServiceClassifierResult::UnclaimedUrl {
-                safe_error: Some("NetworkError: некорректный URL".to_string()),
+                reason: StartupUrlUnsupportedReason::InvalidSyntax,
             }
         }
         Err(service_ytdlp::YtDlpLocatorParseError::UnsupportedScheme) => {
             ServiceClassifierResult::UnclaimedUrl {
-                safe_error: Some(
-                    "NetworkError: yt-dlp поддерживает только HTTP(S) URL".to_string(),
-                ),
+                reason: StartupUrlUnsupportedReason::UnsupportedScheme,
             }
         }
     }
@@ -339,125 +461,19 @@ fn classify_direct_media_startup_url(argument: &str) -> ServiceClassifierResult 
         }
         Err(service_direct_media::DirectMediaOpenError::UnsupportedUrl {
             reason: service_direct_media::DirectMediaUrlUnsupportedReason::UnsupportedProtocol,
-        }) => {
-            let protocol = argument
-                .split_once("://")
-                .map_or("unknown", |(protocol, _)| protocol);
+        }) => ServiceClassifierResult::UnclaimedUrl {
+            reason: StartupUrlUnsupportedReason::UnsupportedScheme,
+        },
+        Err(service_direct_media::DirectMediaOpenError::InvalidUrl { .. }) => {
             ServiceClassifierResult::UnclaimedUrl {
-                safe_error: Some(format!(
-                    "NetworkError: protocol `{protocol}` не поддерживается; direct media v1 принимает только http(s)"
-                )),
+                reason: StartupUrlUnsupportedReason::InvalidSyntax,
             }
         }
-        Err(error) => ServiceClassifierResult::UnclaimedUrl {
-            safe_error: Some(format!(
-                "NetworkError: Direct media URL unsupported: {error}"
-            )),
+        Err(_) => ServiceClassifierResult::UnclaimedUrl {
+            reason: StartupUrlUnsupportedReason::NoRegisteredService,
         },
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use capability_core::SystemCapabilities;
-    use playlist_core::SecretUrlLocator;
-    use rustiplayer_config::AppConfig;
-
-    use super::{StartupUrlClassification, classify_playlist_url, classify_startup_url};
-
-    fn persistence_identity(locator: &super::StartupUrlLocator) -> String {
-        locator
-            .to_playlist_locator()
-            .expect("service locator должен создавать непустую domain identity")
-            .expose_secret_for_persistence()
-            .to_string()
-    }
-
-    #[test]
-    fn registry_keeps_exact_generic_identity_in_service_owner() {
-        let exact_url = "https://youtu.be/video-id?v=keep&si=preserve&unknown=preserve";
-        let classified = classify_startup_url(exact_url);
-        let StartupUrlClassification::Supported(locator) = classified else {
-            panic!("generic yt-dlp service должен принять HTTP(S) URL");
-        };
-
-        assert_eq!(persistence_identity(&locator), exact_url);
-    }
-
-    #[test]
-    fn direct_signed_url_keeps_exact_identity() {
-        let secret = "https://cdn.example.test/video.mp4?signature=a%2Bb&part=1+2";
-        let classified = classify_startup_url(secret);
-        let StartupUrlClassification::Supported(locator) = classified else {
-            panic!("generic direct service должен принять signed media URL");
-        };
-
-        assert_eq!(persistence_identity(&locator), secret);
-    }
-
-    #[test]
-    fn playlist_locator_reopens_through_same_service_registry() {
-        let domain_locator = SecretUrlLocator::from_reopenable_url(
-            "https://youtu.be/video-id?si=drop&future=preserve",
-        )
-        .expect("domain URL identity должна быть непустой");
-        let StartupUrlClassification::Supported(service_locator) =
-            classify_playlist_url(&domain_locator)
-        else {
-            panic!("persisted locator должен быть принят service registry");
-        };
-
-        assert_eq!(
-            persistence_identity(&service_locator),
-            "https://youtu.be/video-id?si=drop&future=preserve"
-        );
-    }
-
-    #[test]
-    fn unsupported_error_does_not_reflect_secret_input() {
-        let classified = classify_startup_url("https://user:password@[invalid-host]?token=secret");
-        let StartupUrlClassification::Unsupported { safe_error } = classified else {
-            panic!("синтаксически невалидный URL должен быть rejected");
-        };
-
-        assert!(!safe_error.contains("password"));
-        assert!(!safe_error.contains("secret"));
-        assert!(!safe_error.contains("private"));
-    }
-
-    #[test]
-    fn registry_prioritizes_direct_media_and_uses_yt_dlp_as_generic_fallback() {
-        let StartupUrlClassification::Supported(direct_locator) =
-            classify_startup_url("https://cdn.example.test/video.mp4?token=direct")
-        else {
-            panic!("direct media URL должен быть принят");
-        };
-        let direct_request = direct_locator
-            .into_media_open_source_request(&AppConfig::default(), &SystemCapabilities::empty(1))
-            .expect("direct request");
-        assert!(matches!(
-            direct_request,
-            crate::media_open::MediaOpenSourceRequest::Direct { .. }
-        ));
-
-        let exact_generic_url =
-            "https://user:password@media.example.test/article?token=generic#chapter";
-        let StartupUrlClassification::Supported(generic_locator) =
-            classify_startup_url(exact_generic_url)
-        else {
-            panic!("оставшийся HTTP(S) URL должен попасть в yt-dlp fallback");
-        };
-        assert_eq!(persistence_identity(&generic_locator), exact_generic_url);
-        assert!(
-            !generic_locator.requires_sensitive_persistence_acknowledgement(),
-            "утверждённая generic policy сохраняет exact yt-dlp URL без отдельного prompt"
-        );
-        let generic_request = generic_locator
-            .into_media_open_source_request(&AppConfig::default(), &SystemCapabilities::empty(1))
-            .expect("yt-dlp request");
-        assert!(matches!(
-            generic_request,
-            crate::media_open::MediaOpenSourceRequest::YtDlp { .. }
-        ));
-    }
-}
+mod tests;

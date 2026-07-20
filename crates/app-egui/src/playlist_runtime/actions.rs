@@ -62,6 +62,39 @@ struct CommittedUrlAppend {
     item_ids: Vec<PlaylistItemId>,
 }
 
+/// Opaque continuation сохраняет metadata intent через aggregated confirmation.
+pub(super) struct SensitiveUrlAppendContinuation {
+    draft: PlaylistItemDraft,
+    metadata_source: Option<PlaylistUrlMetadataSource>,
+    yt_dlp_config: rustiplayer_config::YtDlpConfig,
+}
+
+impl SensitiveUrlAppendContinuation {
+    /// Захватывает все данные, нужные после exact confirmation commit-а.
+    fn new(
+        draft: PlaylistItemDraft,
+        metadata_source: Option<PlaylistUrlMetadataSource>,
+        yt_dlp_config: rustiplayer_config::YtDlpConfig,
+    ) -> Self {
+        Self {
+            draft,
+            metadata_source,
+            yt_dlp_config,
+        }
+    }
+
+    /// Возвращает ownership только matching confirmation response-у.
+    fn into_parts(
+        self,
+    ) -> (
+        PlaylistItemDraft,
+        Option<PlaylistUrlMetadataSource>,
+        rustiplayer_config::YtDlpConfig,
+    ) {
+        (self.draft, self.metadata_source, self.yt_dlp_config)
+    }
+}
+
 impl PlaylistRuntime {
     /// Play/open success переносит descriptor cache только после exact Installed caller barrier.
     pub(crate) fn record_successful_item_open_metadata(
@@ -129,8 +162,10 @@ impl PlaylistRuntime {
         self.supersede_startup_media_apply();
         let locator = match classify_startup_url(input) {
             StartupUrlClassification::NotUrl => return Err(UrlAppendValidationError::NotUrl),
-            StartupUrlClassification::Unsupported { safe_error } => {
-                return Err(UrlAppendValidationError::Unsupported { safe_error });
+            StartupUrlClassification::Unsupported { reason } => {
+                return Err(UrlAppendValidationError::Unsupported {
+                    safe_error: reason.safe_error(),
+                });
             }
             StartupUrlClassification::Supported(locator) => locator,
         };
@@ -148,8 +183,10 @@ impl PlaylistRuntime {
         self.supersede_playlist_import_flow();
 
         if requires_ack {
+            let continuation =
+                SensitiveUrlAppendContinuation::new(draft, metadata_source, yt_dlp_config.clone());
             self.replacement_confirmation
-                .replace_with_sensitive_url_append(safe_label, draft)
+                .replace_with_sensitive_url_append(safe_label, continuation)
                 .map_err(|_| UrlAppendValidationError::ConfirmationIdentityExhausted)?;
             return Ok(UrlAppendActionOutcome::AwaitingSensitivePersistenceDecision);
         }
@@ -180,25 +217,8 @@ impl PlaylistRuntime {
                 PendingConfirmationTarget::QueueReplacement(target),
             ) => PlaylistConfirmationApplyOutcome::QueueReplacementConfirmed(target.admit()),
             PlaylistConfirmationResolution::Confirmed(
-                PendingConfirmationTarget::SensitiveUrlAppend(draft),
-            ) => match self
-                .commit_url_append(*draft)
-                .map(|committed| committed.outcome)
-            {
-                Ok(UrlAppendActionOutcome::Appended { item_count }) => {
-                    PlaylistConfirmationApplyOutcome::UrlAppended { item_count }
-                }
-                Ok(UrlAppendActionOutcome::NoCapacity) => {
-                    PlaylistConfirmationApplyOutcome::UrlNoCapacity
-                }
-                Ok(UrlAppendActionOutcome::DeferredUntilStartupInstallResolution) => {
-                    PlaylistConfirmationApplyOutcome::DeferredUntilStartupInstallResolution
-                }
-                Ok(UrlAppendActionOutcome::AwaitingSensitivePersistenceDecision) => {
-                    unreachable!("confirmed draft never re-enters acknowledgement")
-                }
-                Err(_) => PlaylistConfirmationApplyOutcome::CommitRejected,
-            },
+                PendingConfirmationTarget::SensitiveUrlAppend(continuation),
+            ) => self.commit_confirmed_sensitive_url_append(*continuation),
             PlaylistConfirmationResolution::Confirmed(PendingConfirmationTarget::Import(
                 continuation,
             )) => PlaylistConfirmationApplyOutcome::Import(
@@ -210,6 +230,40 @@ impl PlaylistRuntime {
                 self.confirm_playlist_export(continuation);
                 PlaylistConfirmationApplyOutcome::ExportWriterStarted
             }
+        }
+    }
+
+    /// Коммитит подтверждённый URL и восстанавливает захваченный metadata intent.
+    fn commit_confirmed_sensitive_url_append(
+        &mut self,
+        continuation: SensitiveUrlAppendContinuation,
+    ) -> PlaylistConfirmationApplyOutcome {
+        let (draft, metadata_source, yt_dlp_config) = continuation.into_parts();
+        match self.commit_url_append(draft) {
+            Ok(committed) => {
+                if let Some(metadata_source) = metadata_source {
+                    self.request_committed_url_metadata(
+                        &committed.item_ids,
+                        metadata_source,
+                        &yt_dlp_config,
+                    );
+                }
+                match committed.outcome {
+                    UrlAppendActionOutcome::Appended { item_count } => {
+                        PlaylistConfirmationApplyOutcome::UrlAppended { item_count }
+                    }
+                    UrlAppendActionOutcome::NoCapacity => {
+                        PlaylistConfirmationApplyOutcome::UrlNoCapacity
+                    }
+                    UrlAppendActionOutcome::DeferredUntilStartupInstallResolution => {
+                        PlaylistConfirmationApplyOutcome::DeferredUntilStartupInstallResolution
+                    }
+                    UrlAppendActionOutcome::AwaitingSensitivePersistenceDecision => {
+                        unreachable!("confirmed draft never re-enters acknowledgement")
+                    }
+                }
+            }
+            Err(_) => PlaylistConfirmationApplyOutcome::CommitRejected,
         }
     }
 
@@ -370,8 +424,18 @@ mod tests {
                     &yt_dlp_config,
                 )
                 .expect("YtDlp URL append"),
-            UrlAppendActionOutcome::Appended { item_count: 1 }
+            UrlAppendActionOutcome::AwaitingSensitivePersistenceDecision
         );
+        let confirmation = runtime
+            .pending_playlist_confirmation()
+            .expect("query-bearing yt-dlp locator требует aggregated confirmation");
+        assert!(matches!(
+            runtime.respond_to_playlist_confirmation(PlaylistConfirmationAction {
+                intent_id: confirmation.intent_id(),
+                decision: QueueReplacementConfirmationDecision::Confirm,
+            }),
+            PlaylistConfirmationApplyOutcome::UrlAppended { item_count: 1 }
+        ));
         assert!(runtime.controller.active_media().is_none());
 
         for _ in 0..200 {

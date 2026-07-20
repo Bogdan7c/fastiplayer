@@ -72,7 +72,7 @@ fn pending_model(
 }
 
 #[test]
-fn empty_queue_gates_sensitive_direct_but_admits_local_and_yt_dlp() {
+fn empty_queue_gates_sensitive_direct_and_yt_dlp_but_admits_local() {
     let mut local_runtime = runtime_with_queue(0);
     assert!(matches!(
         local_runtime
@@ -108,8 +108,13 @@ fn empty_queue_gates_sensitive_direct_but_admits_local_and_yt_dlp() {
         yt_dlp_runtime
             .admit_in_app_queue_replacement(InAppQueueReplacementIntent::service_url(yt_dlp))
             .expect("empty YtDlp admission"),
-        InAppQueueReplacementAdmission::StartNow(AdmittedQueueReplacementIntent::ServiceUrl(_))
+        InAppQueueReplacementAdmission::AwaitingConfirmation
     ));
+    let yt_dlp_model = yt_dlp_runtime
+        .pending_playlist_confirmation()
+        .expect("query-bearing yt-dlp locator требует sensitive-only confirmation");
+    assert!(!yt_dlp_model.reasons().queue_replacement());
+    assert!(yt_dlp_model.reasons().sensitive_url_persistence());
 }
 
 #[test]

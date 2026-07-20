@@ -39,7 +39,8 @@ pub use dto::{
 };
 pub use error::YtDlpServiceError;
 pub use locator::{
-    YtDlpDirectStreamUrl, YtDlpLocatorParseError, YtDlpMediaLocator, parse_yt_dlp_media_locator,
+    YtDlpDirectStreamUrl, YtDlpInputScheme, YtDlpLocatorParseError, YtDlpMediaLocator,
+    parse_yt_dlp_media_locator,
 };
 pub use metadata::{YtDlpPlaylistMetadata, resolve_yt_dlp_playlist_metadata_with_config};
 pub use resolver::{
@@ -83,14 +84,14 @@ use source_core::{CancellationToken, HttpHeader, SourceValidators};
 #[cfg(test)]
 use std::time::Duration;
 
-/// Проверяет, выглядит ли CLI-аргумент как web URL.
+/// Проверяет, выглядит ли CLI-аргумент как authority-style network URL.
 #[must_use]
 pub fn is_probably_url(argument: &str) -> bool {
-    // Явно поддерживаем только web URL, чтобы локальные пути с двоеточиями не ломали CLI.
-    argument.starts_with("https://") || argument.starts_with("http://")
+    // `://` отличает URL form от обычного local path с двоеточием.
+    argument.contains("://")
 }
 
-/// Проверяет, принадлежит ли web URL YtDlp route allowlist.
+/// Проверяет, входит ли absolute URL в pure S00-approved input vocabulary.
 #[must_use]
 pub fn is_supported_yt_dlp_url(argument: &str) -> bool {
     parse_yt_dlp_media_locator(argument).is_ok()
@@ -715,7 +716,7 @@ mod tests {
     }
 
     #[test]
-    fn yt_dlp_url_allowlist_accepts_known_hosts() {
+    fn yt_dlp_http_locator_accepts_every_legacy_youtube_host() {
         assert!(is_supported_yt_dlp_url("https://youtube.com/watch?v=abc"));
         assert!(is_supported_yt_dlp_url(
             "https://www.youtube.com/watch?v=abc"
@@ -728,14 +729,19 @@ mod tests {
     }
 
     #[test]
-    fn yt_dlp_generic_locator_accepts_http_and_rejects_non_http() {
+    fn yt_dlp_locator_accepts_http_and_exact_extended_schemes() {
         assert!(is_supported_yt_dlp_url(
             "https://cdn.example.test/video.mp4"
         ));
         assert!(is_supported_yt_dlp_url(
             "https://media.example.test/article/without-extension"
         ));
+        assert!(is_supported_yt_dlp_url(
+            "ftp://media.example.test/video.webm"
+        ));
+        assert!(is_supported_yt_dlp_url("rtmp://media.example.test/live"));
         assert!(!is_supported_yt_dlp_url("rtsp://youtube.com/watch?v=abc"));
+        assert!(!is_supported_yt_dlp_url("rtmps://media.example.test/live"));
     }
 
     /// Disabled adapter обязан завершиться typed ошибкой до запуска внешнего процесса.

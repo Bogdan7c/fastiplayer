@@ -33,3 +33,10 @@ Focused tests: `crates/service-ytdlp/src/locator.rs`, service descriptor/process
 - `playlist-io::PlaylistExportLocatorPolicy: Send + Sync` — новая neutral service/app-owned граница: exact `SecretUrlLocator` и stable `ServiceDurableReopenPayload` могут попасть в M3U8/XSPF только как validated portable HTTP(S) `PortablePlaylistExportUrl` с explicit `Public|SensitiveDurableIdentity` classification.
 - Opaque service payload без owner-approved portable URL typed rejected; operational signed URL не является fallback и transport headers/cookies/candidate IDs отсутствуют в S10 type surface. Errors/Debug не содержат URL/path/service payload.
 - Aggregated `PlaylistExportSecretClassification` считает реально serialized track и XSPF group-root locators для будущего S11 confirmation/user-only writer policy. Full contract: `mem:playlist/io-s10-export-2026-07-20`.
+
+## S15A locator/admission override (2026-07-20)
+
+- Более раннее утверждение этой memory о HTTP(S)-only `YtDlpMediaLocator` заменено: pure parser теперь принимает exact S00 vocabulary `http`/`https`/`ftp`/`ftps`/`rtmp`/`rtmpe` и хранит typed `YtDlpInputScheme`; иные variants не alias-normalized.
+- Composition availability остаётся отдельной app boundary: HTTP(S) admitted по прежнему direct-first/fallback contract, а FTP(S)/RTMP требуют exact registered `ImplementedYtDlpInputProviderCapability`. Production extended registration пуст до готовности S37/S39 provider fixtures.
+- Более ранний no-prompt persistence policy для generic yt-dlp URL заменён roadmap-wide aggregated policy: любой exact locator с non-empty query либо userinfo требует sensitive durable-locator acknowledgement и для persistence, и для export. Raw identity по-прежнему раскрывается только intent-named open/persistence accessors.
+- `Debug`/`Display`/safe errors для active и unavailable extended schemes не содержат userinfo/path/query/fragment. Pending confirmation хранит opaque yt-dlp metadata continuation, а UI видит только bounded safe label/reasons.

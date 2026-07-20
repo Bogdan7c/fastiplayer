@@ -74,3 +74,12 @@
 - Exact topology argv сочетает official `--dump-json` lazy child lines с финальным authoritative `--dump-single-json`, плюс `--flat-playlist --lazy-playlist`; `n_entries` игнорируется. Production продолжает читать trusted system config/cookies/plugins, hermetic profile добавляет config/plugin isolation.
 - Stdout/stderr/line/entry/JSON-depth/topology-depth/field budgets, kill+wait cancel/timeout/overflow, redaction, missing `_type`, multi-video root validation и разные `url`/`url_transparent` merge policies закреплены focused tests.
 - Полный API/argv/ownership/test contract: `mem:media-services/ytdlp-topology-s15-2026-07-20`.
+
+## S15A approved top-level input-scheme admission (2026-07-20)
+
+- `service-ytdlp::YtDlpInputScheme` — typed pure input vocabulary: exact `http`, `https`, `ftp`, `ftps`, `rtmp`, `rtmpe`. Locator parser сохраняет исходную строку byte-for-byte и не нормализует wire variants. `rtmps`/`rtmpt`/`rtmpte`, `rtmp_ffmpeg`, file/RTSP/RTP/MMS и unknown schemes typed rejected; `rtmp_ffmpeg` является invalid URI syntax, а не RTMP alias.
+- Input parsing не обещает transport availability. `app-egui::url_service_adapter` владеет единственным direct-first registry: HTTP(S) direct-media остаётся первым, любой remaining HTTP(S) остаётся yt-dlp fallback; extended scheme admitted только exact registration row типа `ImplementedYtDlpInputProviderCapability`.
+- Production extended capability list пуст, потому что S37/S39 providers ещё не реализованы. Поэтому FTP(S)/RTMP parser rows dormant и возвращают typed `ImplementedProviderUnavailable`; test registry доказывает absent/active и exact per-scheme registration без alias expansion.
+- После выбора adapter-а registry больше не участвует: direct request не содержит yt-dlp fallback path, поэтому direct open failure не запускает второй adapter.
+- Query/userinfo locator-ы используют общий aggregated durable-locator acknowledgement. Sensitive yt-dlp append continuation сохраняет metadata source/config через confirmation и запускает enrichment только после matching commit.
+- Focused owners/tests: `crates/service-ytdlp/src/locator.rs`, `crates/app-egui/src/url_service_adapter.rs`, `crates/app-egui/src/url_service_adapter/tests.rs`, confirmation handoff в `crates/app-egui/src/playlist_runtime/actions.rs`.

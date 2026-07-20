@@ -699,8 +699,8 @@ pub(crate) fn resolve_initial_media_argument(
             }
             return (Some(InitialMedia::Url(locator)), None);
         }
-        StartupUrlClassification::Unsupported { safe_error } => {
-            return (None, Some(safe_error));
+        StartupUrlClassification::Unsupported { reason } => {
+            return (None, Some(reason.safe_error()));
         }
     }
 
@@ -1080,7 +1080,7 @@ mod tests {
         assert!(
             startup_error
                 .as_deref()
-                .is_some_and(|error| error.contains("protocol `rtsp`"))
+                .is_some_and(|error| error.contains("scheme не поддерживается"))
         );
     }
 

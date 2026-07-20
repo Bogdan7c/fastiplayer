@@ -348,7 +348,7 @@ struct PendingQueueReplacementIntent {
 
 pub(super) enum PendingConfirmationTarget {
     QueueReplacement(QueueReplacementTarget),
-    SensitiveUrlAppend(Box<playlist_core::PlaylistItemDraft>),
+    SensitiveUrlAppend(Box<super::actions::SensitiveUrlAppendContinuation>),
     Import(ImportConfirmationContinuation),
     Export(super::export_io::PlaylistExportConfirmationContinuation),
 }
@@ -431,7 +431,7 @@ impl QueueReplacementConfirmationState {
     pub(super) fn replace_with_sensitive_url_append(
         &mut self,
         safe_label: SafeMediaLabel,
-        draft: playlist_core::PlaylistItemDraft,
+        continuation: super::actions::SensitiveUrlAppendContinuation,
     ) -> Result<(), QueueReplacementAdmissionError> {
         self.pending = None;
         let intent_id = QueueReplacementIntentId(self.next_intent_id);
@@ -449,7 +449,7 @@ impl QueueReplacementConfirmationState {
                     sensitive_playlist_export_locator_count: None,
                 },
             },
-            target: PendingConfirmationTarget::SensitiveUrlAppend(Box::new(draft)),
+            target: PendingConfirmationTarget::SensitiveUrlAppend(Box::new(continuation)),
         });
         Ok(())
     }
