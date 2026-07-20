@@ -1,8 +1,8 @@
 //! Нейтральный bounded boundary импорта и экспорта playlist-документов.
 //!
-//! S05 намеренно реализует только generic M3U dialect и строгую HLS
-//! classification. Crate не читает filesystem/network, не запускает service,
-//! не probe-ит media и не мутирует canonical queue.
+//! Crate реализует generic M3U/HLS distinction и namespace-aware XSPF v1.
+//! Он не читает filesystem/network, не запускает service, не probe-ит media
+//! и не мутирует canonical queue.
 
 mod hls;
 mod issue;
@@ -11,6 +11,7 @@ mod locator;
 mod m3u;
 mod model;
 mod source;
+mod xspf;
 
 pub use issue::{M3uImportIssue, M3uImportIssueKind, M3uIssueSummary, M3uLineNumber};
 pub use limits::{
@@ -23,4 +24,18 @@ pub use model::{
     LocalHlsManifestUnsupported, M3uDocument, M3uDurationHint, M3uExtInfHint, M3uParseError,
     M3uParseErrorKind,
 };
-pub use source::{M3uDocumentSource, M3uDocumentSourceError};
+pub use source::{
+    M3uDocumentSource, M3uDocumentSourceError, PlaylistDocumentSource, PlaylistDocumentSourceError,
+    XspfDocumentSource, XspfDocumentSourceError,
+};
+pub use xspf::{
+    DEFAULT_MAX_XSPF_ATTRIBUTE_BYTES, DEFAULT_MAX_XSPF_ATTRIBUTE_COUNT,
+    DEFAULT_MAX_XSPF_ATTRIBUTES_PER_ELEMENT, DEFAULT_MAX_XSPF_DEPTH,
+    DEFAULT_MAX_XSPF_DOCUMENT_BYTES, DEFAULT_MAX_XSPF_GROUPS, DEFAULT_MAX_XSPF_LOCATIONS_PER_TRACK,
+    DEFAULT_MAX_XSPF_NAMESPACE_BYTES, DEFAULT_MAX_XSPF_NAMESPACE_DECLARATIONS,
+    DEFAULT_MAX_XSPF_NAMESPACE_DECLARATIONS_PER_ELEMENT, DEFAULT_MAX_XSPF_TEXT_BYTES,
+    DEFAULT_MAX_XSPF_TOKENS, DEFAULT_MAX_XSPF_TRACKS, RUSTIPLAYER_XSPF_EXTENSION_NAMESPACE,
+    XSPF_NAMESPACE, XspfExportIneligible, XspfExportLocation, XspfGroup, XspfGroupTrackCount,
+    XspfLocationCandidate, XspfParseError, XspfParseErrorKind, XspfParseRequest, XspfParserLimits,
+    XspfPlaylist, XspfTrack, XspfTrackIndex, parse_xspf_document,
+};

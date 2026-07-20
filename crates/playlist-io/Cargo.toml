@@ -10,6 +10,8 @@ name = "playlist_io"
 path = "src/lib.rs"
 
 [dependencies]
+# Все недоверенные XML bytes проходят через единый project-owned security boundary.
+bounded-xml-reader.workspace = true
 # Parser возвращает уже существующие ID-less domain drafts, но не получает queue authority.
 playlist-core.workspace = true
 # Положительный EXTINF hint переводится в общий neutral duration vocabulary.

@@ -165,3 +165,8 @@ Session 05 completed PASS on 2026-07-14. This memory complements `mem:core` and 
 ## S05 playlist-io consumer note (2026-07-20)
 - Новый neutral `playlist-io` переиспользует S01D `PlaylistSingleImportDraft`/`PlaylistImportProvenance` как ID-less generic M3U preview payload. Это dependency `playlist-io -> playlist-core`; reverse dependency, queue handle, allocation или mutation authority не добавлены.
 - M3U/M3U8 provenance различается через существующий `PlaylistImportSourceKind`; positive EXTINF может заполнить cached `MediaDuration`/title, negative duration остаётся parser-owned unknown hint и не превращается в span/end. Полный parser contract: `mem:playlist/io-s05-m3u-hls-2026-07-20`.
+
+## S06 playlist-io XSPF consumer note (2026-07-20)
+- XSPF parser возвращает отдельную ID-less `XspfPlaylist` preview model с flattened tracks, ordered location candidates и optional group ranges; он намеренно не строит `PlaylistSingleImportDraft`/`PlaylistCompoundImportDraft`, потому что source-neutral admission/transaction принадлежит S08.
+- XSPF duration хранится только как `MediaDuration` hint и не создаёт `PlaylistPlaybackSpan`. Parser не получает allocator, queue handle, stable Item/Group IDs или mutation authority.
+- `XspfExportLocation` читает только explicit durable locator exposure для URI eligibility; queue snapshot/compound export transaction остаются S10. Полный contract: `mem:playlist/io-s06-xspf-2026-07-20`.

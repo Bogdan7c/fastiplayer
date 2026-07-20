@@ -143,3 +143,8 @@
 - Добавлен neutral `playlist-io`: byte-slice-only `M3uParseRequest` с explicit M3U/M3U8 intent, document source и budgets; generic preview возвращает ID-less `playlist-core` drafts, bounded issues и exact EXTINF hints без queue/I/O/service authority.
 - Content-first strict HLS pass выполняется до generic EXTINF interpretation: network HLS возвращает только `AdaptiveManifestReference`, local HLS — `LocalHlsManifestUnsupported`; segment URI никогда не становятся queue rows. RFC UTF-8/BOM/NFC/control/case/whitespace/attribute/topology invariants и secret-safe exact URL/base/file resolution покрыты focused tests.
 - Полный contract/verification/known scope: `mem:playlist/io-s05-m3u-hls-2026-07-20`.
+
+## Web media roadmap S06 secure XSPF v1 (2026-07-20)
+- `playlist-io` теперь владеет streaming namespace-aware XSPF v1 schema/model поверх единственного hardened `bounded-xml-reader` boundary: exact namespace/version, ordered/cardinality-checked trackList/tracks, inherited document/local `xml:base`, ordered 0..N location candidates без service admission и metadata duration-only hint.
+- Versioned Rustiplayer extension `urn:rustiplayer:xspf:playlist-extension:1` использует одну playlist-level minimal group запись (`firstTrack`, `trackCount`, root location) без per-track duplication; ranges валидируются линейно после flattened trackList.
+- Добавлен typed export URI eligibility без queue serializer: reversible percent-encoded native/file URL либо secret-safe rejection foreign/unrepresentable/service-owned identity. Full contract и verification: `mem:playlist/io-s06-xspf-2026-07-20`.

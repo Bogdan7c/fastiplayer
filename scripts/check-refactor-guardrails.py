@@ -112,10 +112,16 @@ PLAYLIST_CORE_ALLOWED_DEPENDENCIES = frozenset(
     {"media-core", "natural-sort-key", "rand"}
 )
 
-# Playlist document parser видит только neutral draft/time contracts и узкие
-# URI/NFC helpers; filesystem/network/app/service/player edges запрещены.
+# Playlist document parser видит neutral draft/time contracts, hardened XML
+# boundary и узкие URI/NFC helpers; filesystem/network/app/service/player edges запрещены.
 PLAYLIST_IO_ALLOWED_DEPENDENCIES = frozenset(
-    {"media-core", "playlist-core", "unicode-normalization", "url"}
+    {
+        "bounded-xml-reader",
+        "media-core",
+        "playlist-core",
+        "unicode-normalization",
+        "url",
+    }
 )
 
 # Общий natural comparator остаётся std-only и не знает path/domain owners.

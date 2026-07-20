@@ -3237,6 +3237,7 @@ dependencies = [
 name = "playlist-io"
 version = "0.1.0"
 dependencies = [
+ "bounded-xml-reader",
  "media-core",
  "playlist-core",
  "unicode-normalization",

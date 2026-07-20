@@ -3,9 +3,9 @@ use std::{fmt, path::PathBuf};
 use playlist_core::{DurableReopenLocator, LocalLocator, SecretUrlLocator};
 use url::Url;
 
-/// Locator самого playlist-документа и authoritative base resolution owner.
+/// Locator playlist-документа и общий authoritative base-resolution owner.
 #[derive(Clone, PartialEq, Eq)]
-pub enum M3uDocumentSource {
+pub enum PlaylistDocumentSource {
     /// Локальный exact native path.
     Local {
         /// Путь manifest/import document.
@@ -20,23 +20,23 @@ pub enum M3uDocumentSource {
     },
 }
 
-impl M3uDocumentSource {
+impl PlaylistDocumentSource {
     /// Создаёт local source без filesystem access.
     pub fn local(path: impl Into<PathBuf>) -> Self {
         Self::Local { path: path.into() }
     }
 
     /// Валидирует absolute hierarchical network base без fetch.
-    pub fn network(exact_uri: impl Into<String>) -> Result<Self, M3uDocumentSourceError> {
+    pub fn network(exact_uri: impl Into<String>) -> Result<Self, PlaylistDocumentSourceError> {
         let exact_uri = exact_uri.into();
         let parsed_uri =
-            Url::parse(&exact_uri).map_err(|_| M3uDocumentSourceError::InvalidNetworkUri)?;
+            Url::parse(&exact_uri).map_err(|_| PlaylistDocumentSourceError::InvalidNetworkUri)?;
 
         if parsed_uri.cannot_be_a_base() || parsed_uri.host_str().is_none() {
-            return Err(M3uDocumentSourceError::InvalidNetworkUri);
+            return Err(PlaylistDocumentSourceError::InvalidNetworkUri);
         }
         if parsed_uri.scheme() == "file" {
-            return Err(M3uDocumentSourceError::FileUriIsNotNetworkSource);
+            return Err(PlaylistDocumentSourceError::FileUriIsNotNetworkSource);
         }
 
         Ok(Self::Network {
@@ -45,7 +45,7 @@ impl M3uDocumentSource {
         })
     }
 
-    /// Сообщает, может ли valid HLS быть передан adaptive service-у.
+    /// Сообщает, получен ли playlist document по network URI.
     pub const fn is_network(&self) -> bool {
         matches!(self, Self::Network { .. })
     }
@@ -87,12 +87,12 @@ impl M3uDocumentSource {
     }
 }
 
-impl fmt::Debug for M3uDocumentSource {
+impl fmt::Debug for PlaylistDocumentSource {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Local { .. } => formatter.write_str("M3uDocumentSource::Local(<redacted>)"),
+            Self::Local { .. } => formatter.write_str("PlaylistDocumentSource::Local(<redacted>)"),
             Self::Network { parsed_uri, .. } => formatter
-                .debug_struct("M3uDocumentSource::Network")
+                .debug_struct("PlaylistDocumentSource::Network")
                 .field("host", &parsed_uri.host_str().unwrap_or("<unknown>"))
                 .finish_non_exhaustive(),
         }
@@ -101,14 +101,14 @@ impl fmt::Debug for M3uDocumentSource {
 
 /// Secret-safe ошибка source construction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum M3uDocumentSourceError {
+pub enum PlaylistDocumentSourceError {
     /// URI malformed, opaque или не имеет authority host.
     InvalidNetworkUri,
     /// `file:` должен входить через local source boundary.
     FileUriIsNotNetworkSource,
 }
 
-impl fmt::Display for M3uDocumentSourceError {
+impl fmt::Display for PlaylistDocumentSourceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidNetworkUri => {
@@ -121,4 +121,16 @@ impl fmt::Display for M3uDocumentSourceError {
     }
 }
 
-impl std::error::Error for M3uDocumentSourceError {}
+impl std::error::Error for PlaylistDocumentSourceError {}
+
+/// Backward-compatible имя source boundary для M3U callers.
+pub type M3uDocumentSource = PlaylistDocumentSource;
+
+/// Backward-compatible имя ошибки M3U source construction.
+pub type M3uDocumentSourceError = PlaylistDocumentSourceError;
+
+/// Format-specific имя того же source boundary для XSPF callers.
+pub type XspfDocumentSource = PlaylistDocumentSource;
+
+/// Format-specific имя ошибки XSPF source construction.
+pub type XspfDocumentSourceError = PlaylistDocumentSourceError;
