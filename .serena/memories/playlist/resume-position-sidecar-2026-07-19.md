@@ -39,3 +39,7 @@ Related memories: `mem:playlist/state`, `mem:app-egui/playlist-persistence-s14`,
 ## S13 playback-window уточнение (2026-07-20)
 - Resume sidecar читает `PlayerSnapshot`, поэтому сохраняет relative position ограниченного фрагмента, а не absolute demux time.
 - Reconstructible `ActiveMediaSource::PlaybackWindow` хранит neutral semantic identity независимо от queue row. Suspend resume и settings rebuild снимают wrapper для physical reopen, затем атомарно возвращают тот же window в `PreparedMedia` и descriptor; detached source поддерживается без `item_id`.
+
+
+## S14 CUE window note (2026-07-20)
+Persisted CUE item сохраняет exact 75-fps semantics в additive schema-v2 payload, а reopen проецирует durable span в существующий neutral playback-window contract. Resume sidecar остаётся locator-fingerprint/position authority и не получает CUE-specific типов; settings reopen и detached suspend продолжают восстанавливать тот же window. См. `mem:app-egui/cue-integration-s14-2026-07-20`.

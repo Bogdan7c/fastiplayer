@@ -4,6 +4,7 @@
 //! Он живёт в `AppShell`, а renderer-bound `AppState` получает короткоживущий binding
 //! с новой generation и exact ordered player port после resume.
 
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 
@@ -296,6 +297,7 @@ pub(crate) enum PlaylistMediaOpenGateError {
     InstallAdmission(controller::PlaylistInstallAdmissionError),
     InstallReservation(playlist_core::PrepareReservedMutationError),
     ControllerInvariant(controller::PlaylistControllerInvariantViolation),
+    InvalidPlaybackSpan,
     StalePlannedTarget,
 }
 
@@ -436,6 +438,8 @@ pub(crate) struct PlaylistRuntime {
     import_io: import_io::PlaylistImportIoOwner,
     /// S11 save dialog, pure preflight и atomic writer принадлежат process runtime.
     export_io: export_io::PlaylistExportIoOwner,
+    /// CUE scope scan кешируется по immutable view revision, а не повторяется каждый frame.
+    cue_export_availability_cache: RefCell<Option<export_io::CueExportAvailabilityCache>>,
     /// D48 form и async multi-file dialog принадлежат process runtime.
     ui_interaction: ui_interaction::PlaylistUiInteractionOwner,
     /// D66 stale guard для uncommitted Manual Add completions.
@@ -530,6 +534,7 @@ impl PlaylistRuntime {
             import_transaction: import_transaction::PlaylistImportTransactionState::new(),
             import_io,
             export_io,
+            cue_export_availability_cache: RefCell::new(None),
             ui_interaction,
             manual_add_queue_generation: ManualAddQueueGeneration::INITIAL,
             startup_media_apply_superseded: false,

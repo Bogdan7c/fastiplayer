@@ -5,8 +5,9 @@ use std::fmt;
 use crate::payload::validate_ancillary_track_count;
 use crate::{
     CachedPlaylistMetadata, DurableReopenLocator, LocalLocator, MAX_PLAYLIST_ITEMS,
-    PlaylistAncillaryTrackHint, PlaylistCompoundGroupDraft, PlaylistEntryDraft,
-    PlaylistImportProvenance, PlaylistItemDraft, PlaylistLocator, PlaylistPayloadBuildError,
+    PlaylistAncillaryTrackHint, PlaylistCompoundGroupDraft, PlaylistCueSemanticsAttachmentError,
+    PlaylistCueTrackExportSemantics, PlaylistEntryDraft, PlaylistImportProvenance,
+    PlaylistImportSourceKind, PlaylistItemDraft, PlaylistLocator, PlaylistPayloadBuildError,
     PlaylistPlaybackSpan, SecretUrlLocator,
 };
 
@@ -28,6 +29,7 @@ pub enum PlaylistImportAvailability {
 pub struct PlaylistSingleDurablePayload {
     reopen_locator: DurableReopenLocator,
     playback_span: Option<PlaylistPlaybackSpan>,
+    cue_export_semantics: Option<PlaylistCueTrackExportSemantics>,
     ancillary_track_hints: Box<[PlaylistAncillaryTrackHint]>,
     provenance: PlaylistImportProvenance,
     availability: PlaylistImportAvailability,
@@ -47,6 +49,7 @@ impl PlaylistSingleDurablePayload {
         Ok(Self {
             reopen_locator,
             playback_span,
+            cue_export_semantics: None,
             ancillary_track_hints: ancillary_track_hints.into_boxed_slice(),
             provenance,
             availability,
@@ -61,6 +64,29 @@ impl PlaylistSingleDurablePayload {
     /// Возвращает optional playback window.
     pub const fn playback_span(&self) -> Option<PlaylistPlaybackSpan> {
         self.playback_span
+    }
+
+    /// Присоединяет exact CUE semantics только к согласованному CUE span payload.
+    pub fn with_cue_export_semantics(
+        mut self,
+        semantics: PlaylistCueTrackExportSemantics,
+    ) -> Result<Self, PlaylistCueSemanticsAttachmentError> {
+        if self.provenance.source_kind() != PlaylistImportSourceKind::Cue {
+            return Err(PlaylistCueSemanticsAttachmentError::NonCueProvenance);
+        }
+        let span = self
+            .playback_span
+            .ok_or(PlaylistCueSemanticsAttachmentError::MissingPlaybackSpan)?;
+        if span.start() != semantics.index01().media_time() {
+            return Err(PlaylistCueSemanticsAttachmentError::PlaybackStartMismatch);
+        }
+        self.cue_export_semantics = Some(semantics);
+        Ok(self)
+    }
+
+    /// Возвращает optional exact CUE export semantics.
+    pub const fn cue_export_semantics(&self) -> Option<PlaylistCueTrackExportSemantics> {
+        self.cue_export_semantics
     }
 
     /// Возвращает bounded ancillary hints.
@@ -85,6 +111,7 @@ impl fmt::Debug for PlaylistSingleDurablePayload {
             .debug_struct("PlaylistSingleDurablePayload")
             .field("reopen_locator", &self.reopen_locator)
             .field("playback_span", &self.playback_span)
+            .field("cue_export_semantics", &self.cue_export_semantics)
             .field(
                 "ancillary_track_hint_count",
                 &self.ancillary_track_hints.len(),
@@ -179,6 +206,20 @@ impl PlaylistSingleImportDraft {
     /// Возвращает optional playback window.
     pub const fn playback_span(&self) -> Option<PlaylistPlaybackSpan> {
         self.durable_payload.playback_span()
+    }
+
+    /// Присоединяет exact CUE semantics до materialization в queue item.
+    pub fn with_cue_export_semantics(
+        mut self,
+        semantics: PlaylistCueTrackExportSemantics,
+    ) -> Result<Self, PlaylistCueSemanticsAttachmentError> {
+        self.durable_payload = self.durable_payload.with_cue_export_semantics(semantics)?;
+        Ok(self)
+    }
+
+    /// Возвращает optional exact CUE export semantics.
+    pub const fn cue_export_semantics(&self) -> Option<PlaylistCueTrackExportSemantics> {
+        self.durable_payload.cue_export_semantics()
     }
 
     /// Возвращает bounded ancillary hints.

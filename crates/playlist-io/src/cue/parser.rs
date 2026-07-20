@@ -5,9 +5,10 @@ use std::path::Path;
 
 use media_core::TrackNumber;
 use playlist_core::{
-    CachedPlaylistMetadata, DurableReopenLocator, LocalLocator, PlaylistImportAvailability,
-    PlaylistImportProvenance, PlaylistImportSourceKind, PlaylistMediaKind, PlaylistPlaybackSpan,
-    PlaylistSingleImportDraft,
+    CachedPlaylistMetadata, DurableReopenLocator, LocalLocator,
+    PlaylistCueDocumentExportEligibility, PlaylistCueFileType, PlaylistCueFrameIndex,
+    PlaylistCueTrackExportSemantics, PlaylistImportAvailability, PlaylistImportProvenance,
+    PlaylistImportSourceKind, PlaylistMediaKind, PlaylistPlaybackSpan, PlaylistSingleImportDraft,
 };
 
 use super::encoding::decode_cue_text;
@@ -287,6 +288,11 @@ impl ParserState {
             return Err(CueParseError::new(CueParseErrorKind::NoAudioTracks));
         }
 
+        let document_export_eligibility = if self.export_ineligibilities.is_empty() {
+            PlaylistCueDocumentExportEligibility::Exact
+        } else {
+            PlaylistCueDocumentExportEligibility::Ineligible
+        };
         let mut finished_tracks = Vec::with_capacity(self.tracks.len());
         for (track_index, track) in self.tracks.iter().enumerate() {
             let start = track
@@ -306,7 +312,13 @@ impl ParserState {
                     track_number: track.number,
                 })
             })?;
-            let import_draft = build_track_import_draft(&self, track, playback_span, track_index)?;
+            let import_draft = build_track_import_draft(
+                &self,
+                track,
+                playback_span,
+                track_index,
+                document_export_eligibility,
+            )?;
             finished_tracks.push(CueTrack::new(
                 track.number,
                 track.file_index,
@@ -569,6 +581,7 @@ fn build_track_import_draft(
     track: &TrackBuilder,
     playback_span: PlaylistPlaybackSpan,
     zero_based_track_index: usize,
+    document_export_eligibility: PlaylistCueDocumentExportEligibility,
 ) -> Result<PlaylistSingleImportDraft, CueParseError> {
     let fallback_title = track
         .title
@@ -600,6 +613,33 @@ fn build_track_import_draft(
         PlaylistImportSourceKind::Cue,
         Some(source_ordinal),
     );
+    let file = &parser.files[track.file_index].file;
+    let file_type = match file.file_type().kind() {
+        CueFileTypeKind::Wave => PlaylistCueFileType::Wave,
+        CueFileTypeKind::Aiff => PlaylistCueFileType::Aiff,
+        CueFileTypeKind::Mp3 => PlaylistCueFileType::Mp3,
+        CueFileTypeKind::Flac => PlaylistCueFileType::Flac,
+    };
+    let index00 = track
+        .indexes
+        .iter()
+        .find(|index| index.number() == 0)
+        .map(|index| index.timestamp())
+        .map(CueTimestamp::total_frames)
+        .map(PlaylistCueFrameIndex::new);
+    let index01 = track
+        .index01()
+        .ok_or_else(|| domain_draft_rejected(track.number))?
+        .timestamp()
+        .total_frames();
+    let export_semantics = PlaylistCueTrackExportSemantics::new(
+        file_type,
+        track.number,
+        index00,
+        PlaylistCueFrameIndex::new(index01),
+        document_export_eligibility,
+    )
+    .map_err(|_| domain_draft_rejected(track.number))?;
     PlaylistSingleImportDraft::new(
         parser.files[track.file_index]
             .file
@@ -611,6 +651,8 @@ fn build_track_import_draft(
         provenance,
         PlaylistImportAvailability::Available,
     )
+    .map_err(|_| domain_draft_rejected(track.number))?
+    .with_cue_export_semantics(export_semantics)
     .map_err(|_| domain_draft_rejected(track.number))
 }
 

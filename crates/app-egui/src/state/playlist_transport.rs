@@ -308,34 +308,43 @@ impl AppState {
         playlist_runtime: &PlaylistRuntime,
         install: &PlannedPlaylistInstall,
     ) -> Result<MediaOpenSourceRequest, &'static str> {
-        let locator = playlist_runtime
-            .locator_for_planned_install(install)
+        let open_intent = playlist_runtime
+            .media_open_intent_for_planned_install(install)
             .map_err(|_| "stale playlist target")?;
+        let locator = open_intent.locator();
         let config = self.committed_app_config();
-        if let Some(local) = locator.as_local() {
+        let physical_request = if let Some(local) = locator.as_local() {
             let path = local
                 .expose_native_path_for_open()
                 .ok_or("local path is unavailable on this platform")?;
-            return Ok(MediaOpenSourceRequest::Local {
+            MediaOpenSourceRequest::Local {
                 path: path.to_path_buf(),
                 expected_fingerprint: None,
                 demux_config: config.player.demux,
-            });
-        }
-        let secret_url = locator
-            .as_secret_url()
-            .ok_or("unsupported playlist locator")?;
-        let classified = classify_playlist_url(secret_url);
-        let StartupUrlClassification::Supported(locator) = classified else {
-            return Err("persisted URL is no longer supported");
+            }
+        } else {
+            let secret_url = locator
+                .as_secret_url()
+                .ok_or("unsupported playlist locator")?;
+            let classified = classify_playlist_url(secret_url);
+            let StartupUrlClassification::Supported(locator) = classified else {
+                return Err("persisted URL is no longer supported");
+            };
+            let capabilities = self
+                .system_capabilities_snapshot
+                .as_ref()
+                .ok_or("system capabilities are unavailable")?;
+            locator
+                .into_media_open_source_request(&config, capabilities)
+                .map_err(|_| "URL service rejected committed configuration")?
         };
-        let capabilities = self
-            .system_capabilities_snapshot
-            .as_ref()
-            .ok_or("system capabilities are unavailable")?;
-        locator
-            .into_media_open_source_request(&config, capabilities)
-            .map_err(|_| "URL service rejected committed configuration")
+        Ok(match open_intent.playback_window() {
+            Some(semantic_identity) => MediaOpenSourceRequest::PlaybackWindow {
+                source: Box::new(physical_request),
+                semantic_identity,
+            },
+            None => physical_request,
+        })
     }
 
     fn poll_exact_playlist_transport_receipts(&mut self, playlist_runtime: &mut PlaylistRuntime) {

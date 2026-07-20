@@ -9,7 +9,7 @@ use playlist_core::{
 };
 use url::Url;
 
-use super::PlaylistExportFormat;
+use super::{CueExportScopeIneligibility, PlaylistExportFormat};
 
 /// Absolute path будущего export document-а; filesystem access не выполняется.
 #[derive(Clone, PartialEq, Eq)]
@@ -222,6 +222,8 @@ pub enum PlaylistExportIneligible {
     UnrepresentableNativePath,
     /// Service owner не вернул portable URL.
     LocatorPolicy(PlaylistExportLocatorRejection),
+    /// Exact CUE scope не прошёл semantic preflight.
+    Cue(CueExportScopeIneligibility),
 }
 
 impl fmt::Display for PlaylistExportIneligible {
@@ -240,6 +242,7 @@ impl fmt::Display for PlaylistExportIneligible {
                 formatter.write_str("native path нельзя обратимо представить в export document")
             }
             Self::LocatorPolicy(reason) => reason.fmt(formatter),
+            Self::Cue(reason) => formatter.write_str(reason.safe_reason_ru()),
         }
     }
 }
@@ -379,6 +382,14 @@ fn preflight_local_locator(
             .unwrap_or_else(|| file_url.as_str().to_owned()),
         PlaylistExportFormat::Xspf => reversible_xspf_relative(&file_url, target)
             .unwrap_or_else(|| file_url.as_str().to_owned()),
+        PlaylistExportFormat::Cue => {
+            reversible_m3u8_relative(native_path, target).unwrap_or_else(|| {
+                native_path
+                    .to_str()
+                    .expect("strict UTF-8 preflight completed above")
+                    .to_owned()
+            })
+        }
     };
     Ok(PreparedExportLocator {
         serialized,

@@ -3,6 +3,7 @@
 //! Этот модуль намеренно не выполняет file I/O: S11 передаст готовые UTF-8 bytes
 //! в общий atomic writer только после пользовательского подтверждения.
 
+mod cue;
 mod locator;
 mod m3u8;
 mod snapshot;
@@ -12,6 +13,7 @@ use std::fmt;
 
 use playlist_core::{CachedPlaylistMetadata, PlaylistEntry, PlaylistItem};
 
+pub use cue::{CueExportScopeIneligibility, cue_export_scope_availability};
 pub use locator::{
     PlaylistExportDocumentTarget, PlaylistExportDocumentTargetError, PlaylistExportIneligible,
     PlaylistExportLocatorPolicy, PlaylistExportLocatorRejection,
@@ -29,6 +31,17 @@ pub enum PlaylistExportFormat {
     M3u8,
     /// Namespace-aware XSPF version 1.
     Xspf,
+    /// Exact 75-fps CUE AUDIO document.
+    Cue,
+}
+
+/// Snapshot-only format availability для renderer/app preflight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaylistExportAvailability {
+    /// Scope можно сериализовать без semantic loss.
+    Available,
+    /// CUE branch disabled с typed privacy-safe reason.
+    Disabled(CueExportScopeIneligibility),
 }
 
 /// Нефатальное свойство результата, которое caller обязан показать до записи.
@@ -45,6 +58,7 @@ pub enum PlaylistExportWarning {
 pub struct PreparedPlaylistExport {
     format: PlaylistExportFormat,
     tracks: Box<[PreparedExportTrack]>,
+    cue_tracks: Box<[PreparedCueTrack]>,
     groups: Box<[PreparedExportGroup]>,
     warnings: Box<[PlaylistExportWarning]>,
     secret_classification: PlaylistExportSecretClassification,
@@ -58,7 +72,7 @@ impl PreparedPlaylistExport {
 
     /// Возвращает canonical flattened track count.
     pub const fn track_count(&self) -> usize {
-        self.tracks.len()
+        self.tracks.len() + self.cue_tracks.len()
     }
 
     /// Возвращает format-specific warnings без их сокрытия внутри serializer-а.
@@ -76,6 +90,7 @@ impl PreparedPlaylistExport {
         let utf8_document = match self.format {
             PlaylistExportFormat::M3u8 => m3u8::serialize(self),
             PlaylistExportFormat::Xspf => xspf::serialize(self),
+            PlaylistExportFormat::Cue => cue::serialize(self),
         };
         SerializedPlaylistExport {
             format: self.format,
@@ -89,7 +104,7 @@ impl fmt::Debug for PreparedPlaylistExport {
         formatter
             .debug_struct("PreparedPlaylistExport")
             .field("format", &self.format)
-            .field("track_count", &self.tracks.len())
+            .field("track_count", &self.track_count())
             .field("group_count", &self.groups.len())
             .field("warnings", &self.warnings)
             .field("secret_classification", &self.secret_classification)
@@ -169,6 +184,8 @@ impl std::error::Error for PlaylistExportPreflightError {}
 /// Safe identity subject, для которого preflight не смог построить locator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlaylistExportSubject {
+    /// Scope-level invariant не относится к одной queue identity.
+    Scope,
     /// Конкретный playable item или subordinate part.
     Item(playlist_core::PlaylistItemId),
     /// Compound root locator, нужный XSPF extension.
@@ -178,6 +195,7 @@ pub enum PlaylistExportSubject {
 impl fmt::Display for PlaylistExportSubject {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Scope => formatter.write_str("export scope"),
             Self::Item(item_id) => write!(formatter, "item {item_id}"),
             Self::Compound(group_id) => write!(formatter, "compound group {group_id}"),
         }
@@ -191,6 +209,9 @@ pub fn preflight_playlist_export(
     target: &PlaylistExportDocumentTarget,
     locator_policy: &impl PlaylistExportLocatorPolicy,
 ) -> Result<PreparedPlaylistExport, PlaylistExportPreflightError> {
+    if format == PlaylistExportFormat::Cue {
+        return cue::preflight(snapshot, target, locator_policy);
+    }
     let mut tracks = Vec::with_capacity(snapshot.retained_item_count());
     let mut groups = Vec::new();
     let mut sensitive_locator_count = 0usize;
@@ -244,6 +265,7 @@ pub fn preflight_playlist_export(
     Ok(PreparedPlaylistExport {
         format,
         tracks: tracks.into_boxed_slice(),
+        cue_tracks: Box::new([]),
         groups: groups.into_boxed_slice(),
         warnings,
         secret_classification: PlaylistExportSecretClassification::from_sensitive_count(
@@ -276,6 +298,13 @@ fn preflight_track(
 struct PreparedExportTrack {
     locator: PreparedExportLocator,
     metadata: CachedPlaylistMetadata,
+}
+
+/// Internal exact CUE track record после scope и locator preflight.
+struct PreparedCueTrack {
+    locator: PreparedExportLocator,
+    metadata: CachedPlaylistMetadata,
+    semantics: playlist_core::PlaylistCueTrackExportSemantics,
 }
 
 /// Internal XSPF group range поверх flattened track list.

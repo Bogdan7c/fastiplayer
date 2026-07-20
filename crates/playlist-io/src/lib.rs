@@ -25,12 +25,13 @@ pub use cue::{
     DEFAULT_MAX_CUE_UNKNOWN_COMMANDS, parse_cue_document,
 };
 pub use export::{
-    PlaylistExportDocumentTarget, PlaylistExportDocumentTargetError, PlaylistExportFormat,
-    PlaylistExportIneligible, PlaylistExportLocatorPolicy, PlaylistExportLocatorRejection,
-    PlaylistExportPreflightError, PlaylistExportScope, PlaylistExportSecretClassification,
-    PlaylistExportSnapshot, PlaylistExportSnapshotError, PlaylistExportSubject,
-    PlaylistExportWarning, PortablePlaylistExportUrl, PortablePlaylistExportUrlError,
-    PortableUrlSecretClassification, PreparedPlaylistExport, SerializedPlaylistExport,
+    CueExportScopeIneligibility, PlaylistExportAvailability, PlaylistExportDocumentTarget,
+    PlaylistExportDocumentTargetError, PlaylistExportFormat, PlaylistExportIneligible,
+    PlaylistExportLocatorPolicy, PlaylistExportLocatorRejection, PlaylistExportPreflightError,
+    PlaylistExportScope, PlaylistExportSecretClassification, PlaylistExportSnapshot,
+    PlaylistExportSnapshotError, PlaylistExportSubject, PlaylistExportWarning,
+    PortablePlaylistExportUrl, PortablePlaylistExportUrlError, PortableUrlSecretClassification,
+    PreparedPlaylistExport, SerializedPlaylistExport, cue_export_scope_availability,
     preflight_playlist_export,
 };
 

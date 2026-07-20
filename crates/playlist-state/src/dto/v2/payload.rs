@@ -10,17 +10,19 @@ use playlist_core::{
     MAX_PLAYLIST_ANCILLARY_FORMAT_IDENTITY_BYTES, MAX_PLAYLIST_ANCILLARY_IDENTITY_BYTES,
     MAX_PLAYLIST_ANCILLARY_LANGUAGE_BYTES, MAX_PLAYLIST_ANCILLARY_TRACK_HINTS,
     PlaylistAncillaryTrackHint, PlaylistAncillaryTrackOrigin, PlaylistAncillaryTrackSelectionKind,
-    PlaylistCompoundDurablePayload, PlaylistImportAvailability, PlaylistImportProvenance,
-    PlaylistImportSourceKind, PlaylistPlaybackSpan, PlaylistSingleDurablePayload, SecretUrlLocator,
-    ServiceReopenMaterialKind,
+    PlaylistCompoundDurablePayload, PlaylistCueDocumentExportEligibility, PlaylistCueFileType,
+    PlaylistCueFrameIndex, PlaylistCueTrackExportSemantics, PlaylistImportAvailability,
+    PlaylistImportProvenance, PlaylistImportSourceKind, PlaylistPlaybackSpan,
+    PlaylistSingleDurablePayload, SecretUrlLocator, ServiceReopenMaterialKind,
 };
 
 use super::{
     DurableReopenLocatorV2Dto, MediaTimeV2Dto, Nullable, PlaylistAncillaryTrackHintV2Dto,
     PlaylistAncillaryTrackOriginV2Dto, PlaylistAncillaryTrackSelectionKindV2Dto,
-    PlaylistCompoundDurablePayloadV2Dto, PlaylistImportAvailabilityV2Dto,
-    PlaylistImportProvenanceV2Dto, PlaylistImportSourceKindV2Dto, PlaylistPlaybackSpanV2Dto,
-    PlaylistSingleDurablePayloadV2Dto, StableServiceMaterialKindV2Dto,
+    PlaylistCompoundDurablePayloadV2Dto, PlaylistCueDocumentExportEligibilityV2Dto,
+    PlaylistCueFileTypeV2Dto, PlaylistCueTrackExportSemanticsV2Dto,
+    PlaylistImportAvailabilityV2Dto, PlaylistImportProvenanceV2Dto, PlaylistImportSourceKindV2Dto,
+    PlaylistPlaybackSpanV2Dto, PlaylistSingleDurablePayloadV2Dto, StableServiceMaterialKindV2Dto,
 };
 use crate::StateSerializationError;
 use crate::dto::{DtoLoadError, LocalPathV1Dto, MAX_LOCATOR_TEXT_BYTES};
@@ -32,6 +34,9 @@ impl PlaylistSingleDurablePayloadV2Dto {
         Ok(Self {
             reopen_locator: DurableReopenLocatorV2Dto::from_domain(payload.reopen_locator())?,
             playback_span: Nullable(payload.playback_span().map(PlaylistPlaybackSpanV2Dto::from)),
+            cue_export_semantics: payload
+                .cue_export_semantics()
+                .map(PlaylistCueTrackExportSemanticsV2Dto::from_domain),
             ancillary_track_hints: payload
                 .ancillary_track_hints()
                 .iter()
@@ -65,14 +70,87 @@ impl PlaylistSingleDurablePayloadV2Dto {
             .into_iter()
             .map(PlaylistAncillaryTrackHintV2Dto::into_domain)
             .collect::<Result<Vec<_>, _>>()?;
-        PlaylistSingleDurablePayload::new(
+        let payload = PlaylistSingleDurablePayload::new(
             self.reopen_locator.into_domain()?,
             playback_span,
             hints,
             self.provenance.into_domain()?,
             self.availability.into(),
         )
+        .map_err(|_| DtoLoadError::DomainValue)?;
+        let cue_export_semantics = self
+            .cue_export_semantics
+            .map(PlaylistCueTrackExportSemanticsV2Dto::into_domain)
+            .transpose()?;
+        match cue_export_semantics {
+            Some(semantics) => payload
+                .with_cue_export_semantics(semantics)
+                .map_err(|_| DtoLoadError::DomainValue),
+            None => Ok(payload),
+        }
+    }
+}
+
+impl PlaylistCueTrackExportSemanticsV2Dto {
+    fn from_domain(semantics: PlaylistCueTrackExportSemantics) -> Self {
+        Self {
+            file_type: semantics.file_type().into(),
+            track_number: semantics.track_number(),
+            index00_total_frames: semantics.index00().map(PlaylistCueFrameIndex::total_frames),
+            index01_total_frames: semantics.index01().total_frames(),
+            document_eligibility: semantics.document_eligibility().into(),
+        }
+    }
+
+    fn into_domain(self) -> Result<PlaylistCueTrackExportSemantics, DtoLoadError> {
+        PlaylistCueTrackExportSemantics::new(
+            self.file_type.into(),
+            self.track_number,
+            self.index00_total_frames.map(PlaylistCueFrameIndex::new),
+            PlaylistCueFrameIndex::new(self.index01_total_frames),
+            self.document_eligibility.into(),
+        )
         .map_err(|_| DtoLoadError::DomainValue)
+    }
+}
+
+impl From<PlaylistCueFileType> for PlaylistCueFileTypeV2Dto {
+    fn from(value: PlaylistCueFileType) -> Self {
+        match value {
+            PlaylistCueFileType::Wave => Self::Wave,
+            PlaylistCueFileType::Aiff => Self::Aiff,
+            PlaylistCueFileType::Mp3 => Self::Mp3,
+            PlaylistCueFileType::Flac => Self::Flac,
+        }
+    }
+}
+
+impl From<PlaylistCueFileTypeV2Dto> for PlaylistCueFileType {
+    fn from(value: PlaylistCueFileTypeV2Dto) -> Self {
+        match value {
+            PlaylistCueFileTypeV2Dto::Wave => Self::Wave,
+            PlaylistCueFileTypeV2Dto::Aiff => Self::Aiff,
+            PlaylistCueFileTypeV2Dto::Mp3 => Self::Mp3,
+            PlaylistCueFileTypeV2Dto::Flac => Self::Flac,
+        }
+    }
+}
+
+impl From<PlaylistCueDocumentExportEligibility> for PlaylistCueDocumentExportEligibilityV2Dto {
+    fn from(value: PlaylistCueDocumentExportEligibility) -> Self {
+        match value {
+            PlaylistCueDocumentExportEligibility::Exact => Self::Exact,
+            PlaylistCueDocumentExportEligibility::Ineligible => Self::Ineligible,
+        }
+    }
+}
+
+impl From<PlaylistCueDocumentExportEligibilityV2Dto> for PlaylistCueDocumentExportEligibility {
+    fn from(value: PlaylistCueDocumentExportEligibilityV2Dto) -> Self {
+        match value {
+            PlaylistCueDocumentExportEligibilityV2Dto::Exact => Self::Exact,
+            PlaylistCueDocumentExportEligibilityV2Dto::Ineligible => Self::Ineligible,
+        }
     }
 }
 

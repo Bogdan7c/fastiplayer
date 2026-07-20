@@ -458,6 +458,8 @@ pub(crate) struct PlaylistInteractionModel {
     pub(crate) structural_action_availability: PlaylistStructuralActionAvailability,
     pub(crate) item_count: usize,
     pub(crate) selected_item_count: usize,
+    pub(crate) cue_full_export_availability: playlist_io::PlaylistExportAvailability,
+    pub(crate) cue_selected_export_availability: playlist_io::PlaylistExportAvailability,
     pub(crate) url_editor_open: bool,
     pub(crate) url_text: String,
     pub(crate) url_request_focus: bool,
@@ -477,6 +479,12 @@ impl Default for PlaylistInteractionModel {
             structural_action_availability: PlaylistStructuralActionAvailability::Available,
             item_count: 0,
             selected_item_count: 0,
+            cue_full_export_availability: playlist_io::PlaylistExportAvailability::Disabled(
+                playlist_io::CueExportScopeIneligibility::EmptyScope,
+            ),
+            cue_selected_export_availability: playlist_io::PlaylistExportAvailability::Disabled(
+                playlist_io::CueExportScopeIneligibility::EmptyScope,
+            ),
             url_editor_open: false,
             url_text: String::new(),
             url_request_focus: false,
@@ -528,6 +536,8 @@ impl PlaylistRuntime {
                 })
         });
         let draft = self.ui_interaction.url_draft();
+        let (cue_full_export_availability, cue_selected_export_availability) =
+            self.cue_export_availabilities();
         PlaylistInteractionModel {
             structural_action_availability: controller.map_or(
                 PlaylistStructuralActionAvailability::Unavailable,
@@ -538,6 +548,8 @@ impl PlaylistRuntime {
             selected_item_count: controller.map_or(0, |controller| {
                 controller.view_snapshot().selection().selected_count()
             }),
+            cue_full_export_availability,
+            cue_selected_export_availability,
             url_editor_open: draft.is_open(),
             url_text: draft.text().to_string(),
             url_request_focus: draft.requests_focus(),

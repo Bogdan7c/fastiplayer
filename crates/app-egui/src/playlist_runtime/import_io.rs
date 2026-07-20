@@ -4,6 +4,8 @@
 //! выполняет bounded `playlist-io` expansion в worker thread и возвращает
 //! source-neutral draft владельцу S08 transaction.
 
+use std::fs::File;
+use std::io::Read as _;
 use std::path::Path;
 use std::sync::{
     Arc,
@@ -14,9 +16,11 @@ use std::thread::{self, JoinHandle};
 use pollster::FutureExt as _;
 use winit::window::Window;
 
+use playlist_core::PlaylistImportEntryDraft;
 use playlist_io::{
-    LocalPlaylistExpansionCancellation, LocalPlaylistExpansionLimits,
-    LocalPlaylistExpansionRequest, M3uParserLimits, XspfParserLimits, expand_local_playlist,
+    CueDocumentSource, CueParseRequest, CueParserLimits, LocalPlaylistExpansionCancellation,
+    LocalPlaylistExpansionLimits, LocalPlaylistExpansionRequest, M3uParserLimits, XspfParserLimits,
+    expand_local_playlist, parse_cue_document,
 };
 
 use crate::app_wake::{AppWakePort, CompletionPublishError, OwnerMailboxReceiver, owner_mailbox};
@@ -75,9 +79,13 @@ impl PlaylistImportJob {
         let dialog = rfd::AsyncFileDialog::new()
             .set_parent(window)
             .set_title(import_dialog_title(intent))
-            .add_filter("Плейлисты M3U / M3U8 / XSPF", &["m3u", "m3u8", "xspf"])
+            .add_filter(
+                "Плейлисты M3U / M3U8 / XSPF / CUE",
+                &["m3u", "m3u8", "xspf", "cue"],
+            )
             .add_filter("M3U / M3U8", &["m3u", "m3u8"])
             .add_filter("XSPF", &["xspf"])
+            .add_filter("CUE", &["cue"])
             .pick_file();
         Self::spawn_runner(
             wake_port,
@@ -317,7 +325,7 @@ impl PlaylistRuntime {
             PlaylistImportJobCompletion::Failed(error) => {
                 let safe_message = match error {
                     PlaylistImportJobError::UnsupportedRootFormat => {
-                        "Выберите плейлист M3U, M3U8 или XSPF"
+                        "Выберите плейлист M3U, M3U8, XSPF или CUE"
                     }
                     PlaylistImportJobError::SourceRejected => {
                         "Файл не прошёл проверку формата плейлиста"
@@ -348,6 +356,13 @@ fn parse_selected_root(
     intent: PlaylistImportIntent,
     cancellation: &LocalPlaylistExpansionCancellation,
 ) -> PlaylistImportJobCompletion {
+    if root_path
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("cue"))
+    {
+        return parse_selected_cue_root(root_path, intent, cancellation);
+    }
     let request = LocalPlaylistExpansionRequest::new(
         root_path.to_path_buf(),
         LocalPlaylistExpansionLimits::default(),
@@ -374,6 +389,66 @@ fn parse_selected_root(
     PlaylistImportJobCompletion::Parsed { intent, draft }
 }
 
+/// Читает один CUE root строго в пределах S12 byte budget и materialize-ит Singles.
+fn parse_selected_cue_root(
+    root_path: &Path,
+    intent: PlaylistImportIntent,
+    cancellation: &LocalPlaylistExpansionCancellation,
+) -> PlaylistImportJobCompletion {
+    if !root_path.is_absolute() {
+        return PlaylistImportJobCompletion::Failed(PlaylistImportJobError::SourceRejected);
+    }
+    if cancellation.is_cancelled() {
+        return PlaylistImportJobCompletion::Cancelled;
+    }
+    let limits = CueParserLimits::default();
+    let maximum_plus_sentinel = match limits.max_document_bytes().checked_add(1) {
+        Some(limit) => limit,
+        None => return PlaylistImportJobCompletion::Failed(PlaylistImportJobError::SourceRejected),
+    };
+    let read_limit = match u64::try_from(maximum_plus_sentinel) {
+        Ok(limit) => limit,
+        Err(_) => {
+            return PlaylistImportJobCompletion::Failed(PlaylistImportJobError::SourceRejected);
+        }
+    };
+    let file = match File::open(root_path) {
+        Ok(file) => file,
+        Err(_) => {
+            return PlaylistImportJobCompletion::Failed(PlaylistImportJobError::SourceRejected);
+        }
+    };
+    let mut document_bytes = Vec::with_capacity(limits.max_document_bytes());
+    if file
+        .take(read_limit)
+        .read_to_end(&mut document_bytes)
+        .is_err()
+        || document_bytes.len() > limits.max_document_bytes()
+    {
+        return PlaylistImportJobCompletion::Failed(PlaylistImportJobError::SourceRejected);
+    }
+    if cancellation.is_cancelled() {
+        return PlaylistImportJobCompletion::Cancelled;
+    }
+    let document = match parse_cue_document(CueParseRequest::new(
+        &document_bytes,
+        CueDocumentSource::local(root_path.to_path_buf()),
+        limits,
+    )) {
+        Ok(document) => document,
+        Err(_) => {
+            return PlaylistImportJobCompletion::Failed(PlaylistImportJobError::SourceRejected);
+        }
+    };
+    let entries = document
+        .tracks()
+        .iter()
+        .map(|track| PlaylistImportEntryDraft::Single(track.import_draft().clone()))
+        .collect();
+    let draft = PlaylistImportDraft::new(entries, Vec::new(), None, 0);
+    PlaylistImportJobCompletion::Parsed { intent, draft }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -383,7 +458,7 @@ mod tests {
     use crate::app_wake::AppWakeOwner;
 
     #[test]
-    fn m3u_and_xspf_roots_use_authoritative_content_parsers() {
+    fn m3u_xspf_and_cue_roots_use_authoritative_content_parsers() {
         let directory = tempfile::tempdir().expect("temporary import directory");
         let m3u_path = directory.path().join("queue.m3u8");
         fs::write(&m3u_path, "#EXTM3U\n#EXTINF:12,Трек\nsong.mp3\n").expect("write M3U fixture");
@@ -401,10 +476,19 @@ mod tests {
 </playlist>"#,
         )
         .expect("write XSPF fixture");
+        let cue_path = directory.path().join("album.cue");
+        fs::write(
+            &cue_path,
+            "FILE \"album.flac\" FLAC\n\
+             TRACK 01 AUDIO\nINDEX 01 00:00:00\n\
+             TRACK 02 AUDIO\nINDEX 01 01:00:00\n",
+        )
+        .expect("write CUE fixture");
 
-        for (path, intent) in [
-            (&m3u_path, PlaylistImportIntent::AppendToQueue),
-            (&xspf_path, PlaylistImportIntent::ReplaceQueue),
+        for (path, intent, expected_entries) in [
+            (&m3u_path, PlaylistImportIntent::AppendToQueue, 1),
+            (&xspf_path, PlaylistImportIntent::ReplaceQueue, 1),
+            (&cue_path, PlaylistImportIntent::AppendToQueue, 2),
         ] {
             let completion =
                 parse_selected_root(path, intent, &LocalPlaylistExpansionCancellation::new());
@@ -417,7 +501,7 @@ mod tests {
             };
             let (entries, issues, truncated, _) = draft.test_summary();
             assert_eq!(actual_intent, intent);
-            assert_eq!(entries, 1);
+            assert_eq!(entries, expected_entries);
             assert_eq!(issues, 0);
             assert!(!truncated);
         }
@@ -440,16 +524,28 @@ mod tests {
         let (entries, issues, _, _) = draft.test_summary();
         assert_eq!(entries, 0);
         assert!(issues > 0);
+
+        let invalid_cue = directory.path().join("not-really-a-cue.cue");
+        fs::write(&invalid_cue, b"#EXTM3U\nsong.flac\n").expect("write mismatched CUE fixture");
+        let cue_completion = parse_selected_root(
+            &invalid_cue,
+            PlaylistImportIntent::AppendToQueue,
+            &LocalPlaylistExpansionCancellation::new(),
+        );
+        assert!(matches!(
+            cue_completion,
+            PlaylistImportJobCompletion::Failed(PlaylistImportJobError::SourceRejected)
+        ));
     }
 
     #[test]
     fn unsupported_root_format_is_rejected_before_filesystem_traversal() {
         let directory = tempfile::tempdir().expect("temporary import directory");
-        let cue_path = directory.path().join("future.cue");
-        fs::write(&cue_path, b"FILE \"album.flac\" WAVE").expect("write future CUE fixture");
+        let unsupported_path = directory.path().join("future.pls");
+        fs::write(&unsupported_path, b"[playlist]").expect("write unsupported fixture");
 
         let completion = parse_selected_root(
-            &cue_path,
+            &unsupported_path,
             PlaylistImportIntent::AppendToQueue,
             &LocalPlaylistExpansionCancellation::new(),
         );
@@ -469,10 +565,10 @@ mod tests {
             .expect("dialog runner call");
         let dialog_source = &source[dialog_start..dialog_end];
 
-        assert!(dialog_source.contains(r#"&["m3u", "m3u8", "xspf"]"#));
+        assert!(dialog_source.contains(r#"&["m3u", "m3u8", "xspf", "cue"]"#));
         assert!(dialog_source.contains(".pick_file()"));
         assert!(!dialog_source.contains(".pick_files()"));
-        assert!(!dialog_source.contains(r#""cue""#));
+        assert!(dialog_source.contains(r#".add_filter("CUE", &["cue"])"#));
     }
 
     #[test]

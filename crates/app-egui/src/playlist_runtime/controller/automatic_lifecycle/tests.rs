@@ -1,10 +1,14 @@
-use std::num::NonZeroU64;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use player_core::{MediaInstallRequestId, MediaInstanceId, PlaybackState};
 use playlist_core::{
-    CachedPlaylistMetadata, LocalLocator, PlaylistItemDraft, PlaylistMediaKind, RepeatMode,
+    CachedPlaylistMetadata, DurableReopenLocator, LocalLocator,
+    PlaylistCueDocumentExportEligibility, PlaylistCueFileType, PlaylistCueFrameIndex,
+    PlaylistCueTrackExportSemantics, PlaylistImportAvailability, PlaylistImportProvenance,
+    PlaylistImportSourceKind, PlaylistItemDraft, PlaylistMediaKind, PlaylistPlaybackSpan,
+    PlaylistSingleDurablePayload, RepeatMode,
 };
 
 use super::{
@@ -63,6 +67,83 @@ fn controller_with_active(
         ActiveMediaLineageId::from_non_zero(non_zero(71)),
         MediaInstanceId::from_non_zero(non_zero(81)),
         PlaylistBindingGeneration(91),
+    );
+    controller.active_media = Some(active);
+    (controller, ids, active)
+}
+
+fn controller_with_cue_active() -> (
+    PlaylistController,
+    Vec<playlist_core::PlaylistItemId>,
+    ActiveMediaIdentity,
+) {
+    let root = DurableReopenLocator::local(LocalLocator::Native(PathBuf::from(
+        "/music/disc/source.cue",
+    )));
+    let starts = [
+        PlaylistCueFrameIndex::new(0),
+        PlaylistCueFrameIndex::new(4_500),
+    ];
+    let drafts = starts
+        .into_iter()
+        .enumerate()
+        .map(|(index, start)| {
+            let end = starts.get(index + 1).copied();
+            let span = PlaylistPlaybackSpan::new(
+                start.media_time(),
+                end.map(PlaylistCueFrameIndex::media_time),
+            )
+            .expect("CUE playback span");
+            let semantics = PlaylistCueTrackExportSemantics::new(
+                PlaylistCueFileType::Flac,
+                u8::try_from(index + 1).expect("focused track number"),
+                None,
+                start,
+                PlaylistCueDocumentExportEligibility::Exact,
+            )
+            .expect("CUE export semantics");
+            let locator = LocalLocator::Native(PathBuf::from("/music/disc/album.flac"));
+            let payload = PlaylistSingleDurablePayload::new(
+                DurableReopenLocator::local(locator.clone()),
+                Some(span),
+                Vec::new(),
+                PlaylistImportProvenance::new(
+                    root.clone(),
+                    PlaylistImportSourceKind::Cue,
+                    NonZeroU32::new(u32::try_from(index + 1).expect("focused ordinal")),
+                ),
+                PlaylistImportAvailability::Available,
+            )
+            .expect("durable CUE payload")
+            .with_cue_export_semantics(semantics)
+            .expect("CUE payload attachment");
+            PlaylistItemDraft::local(
+                locator,
+                None,
+                CachedPlaylistMetadata::new(
+                    format!("CUE track {}", index + 1),
+                    PlaylistMediaKind::Audio,
+                ),
+            )
+            .with_durable_payload(payload)
+        })
+        .collect();
+    let mut controller = PlaylistController::new();
+    let ids = match controller.append(drafts).expect("append CUE tracks") {
+        crate::playlist_runtime::controller::ControllerAppendOutcome::Added {
+            item_ids, ..
+        } => item_ids,
+        _ => panic!("focused CUE append is non-empty"),
+    };
+    controller
+        .queue
+        .set_traversal_current(ids[0])
+        .expect("first CUE track becomes current");
+    let active = ActiveMediaIdentity::installed(
+        Some(ids[0]),
+        ActiveMediaLineageId::from_non_zero(non_zero(171)),
+        MediaInstanceId::from_non_zero(non_zero(181)),
+        PlaylistBindingGeneration(191),
     );
     controller.active_media = Some(active);
     (controller, ids, active)
@@ -223,6 +304,57 @@ fn repeat_one_replays_clean_ended_but_stops_error_associated_ended() {
             ..
         }
     ));
+}
+
+#[test]
+fn cue_clean_ended_advances_to_exact_next_track_item() {
+    let (mut controller, ids, active) = controller_with_cue_active();
+    let AutomaticLifecycleOutcome::OpenItem { install } = controller.observe_automatic_snapshot(
+        active.player_binding_generation(),
+        Some(active.media_instance_id()),
+        PlaybackState::Ended,
+        EndedSnapshotKind::Clean,
+        AutomaticDeferredAvailability::Unavailable,
+    ) else {
+        panic!("clean CUE window Ended must advance");
+    };
+    assert_eq!(install.item_id, ids[1]);
+    assert_eq!(
+        controller
+            .queue()
+            .traversal_current()
+            .map(|current| current.item_id()),
+        Some(ids[0]),
+        "current меняется только после matching Installed"
+    );
+}
+
+#[test]
+fn repeat_one_replays_exact_current_cue_track_item() {
+    let (mut controller, ids, active) = controller_with_cue_active();
+    controller.repeat_mode = RepeatMode::RepeatOne;
+    let AutomaticLifecycleOutcome::ReplayCurrent { .. } = controller.observe_automatic_snapshot(
+        active.player_binding_generation(),
+        Some(active.media_instance_id()),
+        PlaybackState::Ended,
+        EndedSnapshotKind::Clean,
+        AutomaticDeferredAvailability::Unavailable,
+    ) else {
+        panic!("RepeatOne must replay exact current CUE track");
+    };
+    assert_eq!(
+        controller
+            .queue()
+            .traversal_current()
+            .map(|current| current.item_id()),
+        Some(ids[0])
+    );
+    assert_eq!(
+        controller
+            .active_media()
+            .and_then(ActiveMediaIdentity::item_id),
+        Some(ids[0])
+    );
 }
 
 #[test]

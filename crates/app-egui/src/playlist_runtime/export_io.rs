@@ -4,6 +4,8 @@
 //! pure S10 preflight/serialization и только затем передаёт готовые bytes
 //! neutral S04 atomic writer-у. Queue, selection и dirty revisions не мутируются.
 
+mod cue_availability;
+
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::{
@@ -33,6 +35,8 @@ use crate::process_shutdown::{
 use crate::url_service_adapter::{StartupUrlClassification, classify_playlist_url};
 
 use super::PlaylistRuntime;
+
+pub(super) use cue_availability::CueExportAvailabilityCache;
 
 /// Пользовательский scope фиксируется до открытия save dialog.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -532,6 +536,7 @@ fn export_dialog_presentation(
     match request.format {
         PlaylistExportFormat::M3u8 => ("Плейлист M3U8", "m3u8", "Экспортировать плейлист в M3U8"),
         PlaylistExportFormat::Xspf => ("Плейлист XSPF", "xspf", "Экспортировать плейлист в XSPF"),
+        PlaylistExportFormat::Cue => ("CUE sheet", "cue", "Экспортировать треки в CUE"),
     }
 }
 
@@ -553,22 +558,7 @@ impl PlaylistRuntime {
             return false;
         }
         let selected_entry_ids = if request.scope == PlaylistExportScopeIntent::SelectedEntries {
-            let selection = controller.view_snapshot();
-            let mut entry_ids = queue
-                .iter_top_level_entry_ids()
-                .filter(|entry_id| {
-                    queue
-                        .top_level_entry(*entry_id)
-                        .is_some_and(|entry| match entry {
-                            PlaylistEntry::Single(item) => {
-                                selection.selection().is_selected(item.item_id())
-                            }
-                            PlaylistEntry::Compound(group) => group.parts().any(|part| {
-                                selection.selection().is_selected(part.item().item_id())
-                            }),
-                        })
-                })
-                .collect::<Vec<PlaylistEntryId>>();
+            let mut entry_ids = selected_export_entry_ids(controller);
             if entry_ids.is_empty() {
                 return false;
             }
@@ -672,6 +662,29 @@ impl PlaylistRuntime {
             }
         }
     }
+}
+
+/// Переводит playable selection в canonical top-level export scope.
+pub(super) fn selected_export_entry_ids(
+    controller: &super::controller::PlaylistController,
+) -> Vec<PlaylistEntryId> {
+    let queue = controller.queue();
+    let selection = controller.view_snapshot();
+    queue
+        .iter_top_level_entry_ids()
+        .filter(|entry_id| {
+            queue
+                .top_level_entry(*entry_id)
+                .is_some_and(|entry| match entry {
+                    PlaylistEntry::Single(item) => {
+                        selection.selection().is_selected(item.item_id())
+                    }
+                    PlaylistEntry::Compound(group) => group
+                        .parts()
+                        .any(|part| selection.selection().is_selected(part.item().item_id())),
+                })
+        })
+        .collect()
 }
 
 #[cfg(test)]

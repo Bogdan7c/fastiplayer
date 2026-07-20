@@ -175,3 +175,7 @@
 - Toolbar Export идёт шестым left slot после Import и требует typed scope + M3U8/XSPF до save dialog. Empty queue отключает control, empty selection — только selected branch. Sensitive locator preflight создаёт redacted continuation в generalized confirmation slot; late completion не вытесняет более новый prompt.
 - Готовые bytes записываются единственной app boundary-функцией через `atomic-file-store`, с typed overwrite intent от native save dialog, Unix 0600 и сохранением `NotReplaced`/`ReplacedDurabilityUnconfirmed`/`Durable`. URL sensitivity принадлежит service-owned policy; stable service payload export остаётся fail-closed до S19 owner mapping.
 - Neutral Export glyph принадлежит `ui-artwork-egui` и образует characterized tray-пару с Import. Полный contract/verification: `mem:app-egui/playlist-export-s11-2026-07-20`.
+
+
+## CUE S14 boundary (2026-07-20)
+Exact CUE export identity теперь durable в `playlist-core`, additive persisted в playlist-state v2 и проецируется app-egui в neutral playback window; player-core остаётся CUE-free. Pure eligibility/serializer живут в playlist-io, UI кеширует full/selected availability по view revision. Детали и тесты: `mem:app-egui/cue-integration-s14-2026-07-20`.

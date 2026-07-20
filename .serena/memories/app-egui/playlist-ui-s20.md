@@ -93,3 +93,7 @@
 - Popup требует explicit scope (`Весь плейлист` или `Выбранные (N)`) и затем explicit format (`M3U8`/`XSPF`) до native save dialog. Empty queue отключает весь control; empty selection отключает только selected branch; concurrent export dialog/job отключает повторный старт.
 - UI остаётся renderer-only: публикует typed `PlaylistAction::StartExport(PlaylistExportRequest)`, не читает filesystem, не сериализует документ и не мутирует queue. Pointer, Tab+Space/Enter, Russian AccessKit name/tooltips и disabled behavior покрыты focused tests.
 - Sensitive export переиспользует один generalized confirmation host, но имеет отдельную typed reason/continuation; late background completion не вытесняет более новый URL/import confirmation. Полный runtime/writer contract: `mem:app-egui/playlist-export-s11-2026-07-20`.
+
+
+## S14 CUE export UI (2026-07-20)
+Existing Export menu получил третий format `CUE`. Full/selected branches используют typed pure eligibility и показывают privacy-safe disabled reason. O(N) scope analysis кешируется отдельно по `PlaylistViewRevision`; набор toolbar slots, icon bar layout и geometry не менялись. См. `mem:app-egui/cue-integration-s14-2026-07-20`.

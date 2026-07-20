@@ -4,6 +4,7 @@
 //! Он владеет стабильной идентичностью строк, allocator high-watermark,
 //! canonical order, repeat/navigation policy и атомарными mutation boundaries.
 
+mod cue_semantics;
 mod entry;
 mod entry_restore;
 mod id;
@@ -16,6 +17,11 @@ mod playback_span;
 mod queue;
 mod repeat;
 
+pub use cue_semantics::{
+    PLAYLIST_CUE_FRAMES_PER_SECOND, PlaylistCueDocumentExportEligibility, PlaylistCueFileType,
+    PlaylistCueFrameIndex, PlaylistCueSemanticsAttachmentError, PlaylistCueTrackExportSemantics,
+    PlaylistCueTrackSemanticsError,
+};
 pub use entry::{
     CompoundGroupAllocatorRestoreError, EmptyPlaylistCompoundDraft, NextPlaylistCompoundGroupId,
     PlaylistCompoundGroup, PlaylistCompoundGroupDraft, PlaylistCompoundGroupId,

@@ -24,6 +24,24 @@ pub(crate) enum PlaylistTransportCancelOutcome {
     NoPendingWait,
 }
 
+/// Exact queue-owned open intent без раскрытия item payload storage app renderer-у.
+pub(crate) struct PlaylistMediaOpenIntent {
+    locator: PlaylistLocator,
+    playback_window: Option<player_core::MediaPlaybackWindow>,
+}
+
+impl PlaylistMediaOpenIntent {
+    /// Передаёт operational locator app service registry.
+    pub(crate) fn locator(&self) -> &PlaylistLocator {
+        &self.locator
+    }
+
+    /// Возвращает neutral playback window, если item является bounded fragment-ом.
+    pub(crate) const fn playback_window(&self) -> Option<player_core::MediaPlaybackWindow> {
+        self.playback_window
+    }
+}
+
 impl PlaylistRuntime {
     /// Commit-ит app-level Stopped только после exact player owner success.
     pub(crate) fn apply_neutral_stop_outcome(
@@ -35,11 +53,11 @@ impl PlaylistRuntime {
             .is_some_and(|controller| controller.apply_neutral_stop_outcome(outcome))
     }
 
-    /// Locator выдаётся только для exact queue revision/item из controller plan-а.
-    pub(crate) fn locator_for_planned_install(
+    /// Выдаёт locator + optional window только для exact revision/item controller plan-а.
+    pub(crate) fn media_open_intent_for_planned_install(
         &self,
         install: &PlannedPlaylistInstall,
-    ) -> Result<PlaylistLocator, PlaylistMediaOpenGateError> {
+    ) -> Result<PlaylistMediaOpenIntent, PlaylistMediaOpenGateError> {
         let controller = self
             .controller
             .as_ref()
@@ -47,11 +65,22 @@ impl PlaylistRuntime {
         if controller.queue().revision_snapshot() != install.expected_queue_revision {
             return Err(PlaylistMediaOpenGateError::StalePlannedTarget);
         }
-        controller
+        let item = controller
             .queue()
             .item(install.item_id)
-            .map(|item| item.locator().clone())
-            .ok_or(PlaylistMediaOpenGateError::StalePlannedTarget)
+            .ok_or(PlaylistMediaOpenGateError::StalePlannedTarget)?;
+        let playback_window = item
+            .durable_payload()
+            .and_then(playlist_core::PlaylistSingleDurablePayload::playback_span)
+            .map(|span| {
+                player_core::MediaPlaybackWindow::new(span.start(), span.end_exclusive())
+                    .map_err(|_| PlaylistMediaOpenGateError::InvalidPlaybackSpan)
+            })
+            .transpose()?;
+        Ok(PlaylistMediaOpenIntent {
+            locator: item.locator().clone(),
+            playback_window,
+        })
     }
 
     /// Связывает обычный manual/automatic plan с уже staged player request.
@@ -223,5 +252,79 @@ fn playlist_install_request(
         intent_revision: install.intent_revision,
         expected_queue_revision: install.expected_queue_revision,
         mutation: install.mutation,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU32;
+    use std::path::PathBuf;
+
+    use media_core::MediaTime;
+    use playlist_core::{
+        CachedPlaylistMetadata, DurableReopenLocator, LocalLocator, PlaylistImportAvailability,
+        PlaylistImportProvenance, PlaylistImportSourceKind, PlaylistItemDraft, PlaylistMediaKind,
+        PlaylistPlaybackSpan, PlaylistSingleDurablePayload,
+    };
+
+    use super::*;
+    use crate::app_wake::{AppWakeOwner, AppWakePort};
+    use crate::playlist_runtime::controller::{ControllerPlayItemOutcome, PlaylistController};
+
+    #[test]
+    fn planned_cue_item_maps_durable_span_to_neutral_open_intent() {
+        let physical_locator = LocalLocator::Native(PathBuf::from("/music/disc/album.flac"));
+        let span =
+            PlaylistPlaybackSpan::new(MediaTime::from_secs(60), Some(MediaTime::from_secs(120)))
+                .expect("valid CUE window");
+        let payload = PlaylistSingleDurablePayload::new(
+            DurableReopenLocator::local(physical_locator.clone()),
+            Some(span),
+            Vec::new(),
+            PlaylistImportProvenance::new(
+                DurableReopenLocator::local(LocalLocator::Native(PathBuf::from(
+                    "/music/disc/source.cue",
+                ))),
+                PlaylistImportSourceKind::Cue,
+                NonZeroU32::new(2),
+            ),
+            PlaylistImportAvailability::Available,
+        )
+        .expect("durable CUE payload");
+        let mut controller = PlaylistController::new();
+        let item_id = match controller
+            .append(vec![
+                PlaylistItemDraft::local(
+                    physical_locator.clone(),
+                    None,
+                    CachedPlaylistMetadata::new("CUE track 02", PlaylistMediaKind::Audio),
+                )
+                .with_durable_payload(payload),
+            ])
+            .expect("append CUE item")
+        {
+            crate::playlist_runtime::controller::ControllerAppendOutcome::Added {
+                item_ids,
+                ..
+            } => item_ids[0],
+            _ => panic!("focused append is non-empty"),
+        };
+        let ControllerPlayItemOutcome::StartInstall { install, .. } =
+            controller.play_item(item_id, TransportActionOrigin::Ui)
+        else {
+            panic!("first Play starts exact install");
+        };
+        let mut runtime =
+            PlaylistRuntime::new(AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime));
+        runtime.controller.install(controller);
+        let intent = runtime
+            .media_open_intent_for_planned_install(&install)
+            .expect("exact planned target");
+
+        assert_eq!(intent.locator(), &PlaylistLocator::Local(physical_locator));
+        let window = intent.playback_window().expect("CUE item keeps window");
+        assert_eq!(window.start(), MediaTime::from_secs(60));
+        assert_eq!(window.end_exclusive(), Some(MediaTime::from_secs(120)));
+        assert_eq!(install.item_id, item_id);
     }
 }

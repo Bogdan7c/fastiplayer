@@ -7,7 +7,8 @@ use super::*;
 use crate::{
     AddPlaylistEntriesOutcome, CURRENT_DURABLE_REOPEN_PAYLOAD_VERSION, LocalLocator,
     MAX_PLAYLIST_ANCILLARY_TRACK_HINTS, PlaylistAncillaryTrackOrigin,
-    PlaylistAncillaryTrackSelectionKind, PlaylistImportSourceKind, PlaylistItem, PlaylistMediaKind,
+    PlaylistAncillaryTrackSelectionKind, PlaylistCueDocumentExportEligibility, PlaylistCueFileType,
+    PlaylistCueFrameIndex, PlaylistImportSourceKind, PlaylistItem, PlaylistMediaKind,
     PlaylistQueue, ServiceReopenMaterialKind,
 };
 
@@ -28,6 +29,36 @@ fn single_draft_keeps_payloads_without_allocating_identity() {
     );
     assert!(draft.ancillary_track_hints().is_empty());
     assert!(draft.reopen_locator().expose_local_for_reopen().is_some());
+}
+
+#[test]
+fn cue_semantics_attach_only_to_matching_cue_span() {
+    let exact_semantics = PlaylistCueTrackExportSemantics::new(
+        PlaylistCueFileType::Flac,
+        1,
+        None,
+        PlaylistCueFrameIndex::new(375),
+        PlaylistCueDocumentExportEligibility::Exact,
+    )
+    .expect("valid CUE semantics");
+    let attached = single("album.flac", PlaylistImportAvailability::Available)
+        .with_cue_export_semantics(exact_semantics)
+        .expect("five-second span matches 375 CUE frames");
+    assert_eq!(attached.cue_export_semantics(), Some(exact_semantics));
+
+    let mismatched_semantics = PlaylistCueTrackExportSemantics::new(
+        PlaylistCueFileType::Flac,
+        1,
+        None,
+        PlaylistCueFrameIndex::new(376),
+        PlaylistCueDocumentExportEligibility::Exact,
+    )
+    .expect("individually valid CUE semantics");
+    assert_eq!(
+        single("album.flac", PlaylistImportAvailability::Available)
+            .with_cue_export_semantics(mismatched_semantics),
+        Err(PlaylistCueSemanticsAttachmentError::PlaybackStartMismatch)
+    );
 }
 
 #[test]

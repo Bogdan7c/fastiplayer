@@ -1,7 +1,7 @@
 //! Explicit scope/format menu icon-only Export control-а.
 
 use egui::{Popup, Response, Ui};
-use playlist_io::PlaylistExportFormat;
+use playlist_io::{PlaylistExportAvailability, PlaylistExportFormat};
 
 use crate::playlist_runtime::{
     PlaylistExportRequest, PlaylistExportScopeIntent, PlaylistInteractionModel,
@@ -10,9 +10,10 @@ use crate::playlist_runtime::{
 use super::super::{PlaylistAction, PlaylistUiOutput};
 
 /// Format выбирается отдельным menu item-ом после explicit scope.
-const EXPORT_FORMATS: [(PlaylistExportFormat, &str); 2] = [
+const EXPORT_FORMATS: [(PlaylistExportFormat, &str); 3] = [
     (PlaylistExportFormat::M3u8, "M3U8"),
     (PlaylistExportFormat::Xspf, "XSPF"),
+    (PlaylistExportFormat::Cue, "CUE"),
 ];
 
 /// Export menu не открывает dialog и не читает queue: он публикует typed intent.
@@ -35,6 +36,7 @@ pub(super) fn show(
             "Весь плейлист",
             PlaylistExportScopeIntent::FullPlaylist,
             scope_enabled(model, PlaylistExportScopeIntent::FullPlaylist),
+            model.cue_full_export_availability,
             output,
         );
         let selected_label = format!("Выбранные ({})", model.selected_item_count);
@@ -43,6 +45,7 @@ pub(super) fn show(
             &selected_label,
             PlaylistExportScopeIntent::SelectedEntries,
             scope_enabled(model, PlaylistExportScopeIntent::SelectedEntries),
+            model.cue_selected_export_availability,
             output,
         );
     });
@@ -62,12 +65,26 @@ fn show_scope_branch(
     label: &str,
     scope: PlaylistExportScopeIntent,
     enabled: bool,
+    cue_availability: PlaylistExportAvailability,
     output: &mut PlaylistUiOutput,
 ) {
     ui.add_enabled_ui(enabled, |ui| {
         ui.menu_button(label, |ui| {
             for (format, format_label) in EXPORT_FORMATS {
-                if ui.button(format_label).clicked() {
+                let format_availability = if format == PlaylistExportFormat::Cue {
+                    cue_availability
+                } else {
+                    PlaylistExportAvailability::Available
+                };
+                let enabled = format_availability == PlaylistExportAvailability::Available;
+                let response = ui.add_enabled(enabled, egui::Button::new(format_label));
+                let response = match format_availability {
+                    PlaylistExportAvailability::Available => response,
+                    PlaylistExportAvailability::Disabled(reason) => {
+                        response.on_disabled_hover_text(reason.safe_reason_ru())
+                    }
+                };
+                if response.clicked() {
                     output.push_action(PlaylistAction::StartExport(PlaylistExportRequest {
                         scope,
                         format,
@@ -90,6 +107,7 @@ mod tests {
             [
                 (PlaylistExportFormat::M3u8, "M3U8"),
                 (PlaylistExportFormat::Xspf, "XSPF"),
+                (PlaylistExportFormat::Cue, "CUE"),
             ]
         );
         let selected = PlaylistExportRequest {

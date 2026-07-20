@@ -67,3 +67,7 @@
 - URL registry выбирает direct-media до yt-dlp. После выбора adapter фиксирован, поэтому direct open failure не даёт hidden yt-dlp retry.
 - Metadata enrichment не меняет playback/coordinator lifecycle и revalidates exact Item ID + locator; см. `mem:app-egui/ytdlp-playlist-metadata-2026-07-17`.
 - Privacy/exact identity: `mem:media-services/secret-safe-locators-s10b`.
+
+
+## S14 CUE integration (2026-07-20)
+`PlaylistRuntime::media_open_intent_for_planned_install` теперь под одним exact queue revision/item guard возвращает physical locator и optional neutral `MediaPlaybackWindow`. App строит physical `MediaOpenSourceRequest` и только затем оборачивает его в `PlaybackWindow`, поэтому coordinator по-прежнему получает один source-neutral request, а CUE-типы не протекают в player-core. Полный контекст: `mem:app-egui/cue-integration-s14-2026-07-20`.

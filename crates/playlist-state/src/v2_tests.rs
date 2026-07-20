@@ -8,7 +8,8 @@ use playlist_core::{
     ForeignPathPlatform, ForeignPlatformPath, LocalLocator, NextPlaylistCompoundGroupId,
     NextPlaylistItemId, PlaylistAncillaryTrackHint, PlaylistAncillaryTrackOrigin,
     PlaylistAncillaryTrackSelectionKind, PlaylistCompoundDurablePayload,
-    PlaylistCompoundGroupDraft, PlaylistCompoundGroupId, PlaylistEntryId,
+    PlaylistCompoundGroupDraft, PlaylistCompoundGroupId, PlaylistCueDocumentExportEligibility,
+    PlaylistCueFileType, PlaylistCueFrameIndex, PlaylistCueTrackExportSemantics, PlaylistEntryId,
     PlaylistImportAvailability, PlaylistImportProvenance, PlaylistImportSourceKind,
     PlaylistItemDraft, PlaylistItemId, PlaylistLocator, PlaylistMediaKind, PlaylistPlaybackSpan,
     PlaylistQueue, PlaylistQueueRestore, PlaylistSingleDurablePayload, RepeatMode,
@@ -247,6 +248,67 @@ fn v2_roundtrip_preserves_top_level_order_current_shuffle_allocators_and_payload
     assert!(!safe_debug.contains("password"));
     assert!(!safe_debug.contains("token=secret"));
     assert!(!safe_debug.contains("stable-child-secret-identity"));
+}
+
+#[test]
+fn v2_roundtrip_preserves_exact_cue_frames_and_fail_closed_eligibility() {
+    let cue_root =
+        DurableReopenLocator::local(LocalLocator::Native("/music/disc/source.cue".into()));
+    let media_locator = LocalLocator::Native("/music/disc/album.flac".into());
+    let index01 = PlaylistCueFrameIndex::new(4_500);
+    let span = PlaylistPlaybackSpan::new(index01.media_time(), None).expect("valid EOF span");
+    let semantics = PlaylistCueTrackExportSemantics::new(
+        PlaylistCueFileType::Flac,
+        2,
+        Some(PlaylistCueFrameIndex::new(4_495)),
+        index01,
+        PlaylistCueDocumentExportEligibility::Ineligible,
+    )
+    .expect("valid exact CUE semantics");
+    let payload = PlaylistSingleDurablePayload::new(
+        DurableReopenLocator::local(media_locator.clone()),
+        Some(span),
+        Vec::new(),
+        PlaylistImportProvenance::new(cue_root, PlaylistImportSourceKind::Cue, NonZeroU32::new(2)),
+        PlaylistImportAvailability::Available,
+    )
+    .expect("valid durable payload")
+    .with_cue_export_semantics(semantics)
+    .expect("CUE provenance and span match");
+    let restored_item = RestoredPlaylistItem::new(
+        item_id(40),
+        PlaylistItemDraft::local(media_locator, None, metadata("cue-track"))
+            .with_durable_payload(payload),
+    );
+    let queue = PlaylistQueue::restore(PlaylistQueueRestore::from_entries(
+        vec![RestoredPlaylistEntry::Single(restored_item)],
+        next_item_id(41),
+        next_group_id(1),
+        Some(item_id(40)),
+    ))
+    .expect("focused CUE queue restores");
+    let encoded = serialize_state(PlaylistStateSnapshot::new(&queue, RepeatMode::RepeatOne))
+        .expect("CUE state serializes");
+    let temp_dir = TempDir::new().expect("tempdir");
+    let state_path = temp_dir.path().join("playlist-state.json");
+    fs::write(&state_path, encoded).expect("write CUE state");
+    let loaded = inspect_loaded(&state_path);
+    let (loaded_queue, _) = loaded.into_parts();
+    let restored = loaded_queue
+        .item(item_id(40))
+        .and_then(|item| item.durable_payload())
+        .and_then(PlaylistSingleDurablePayload::cue_export_semantics)
+        .expect("exact CUE semantics survive persistence");
+    assert_eq!(restored, semantics);
+    assert_eq!(
+        restored.index00().map(PlaylistCueFrameIndex::total_frames),
+        Some(4_495)
+    );
+    assert_eq!(restored.index01().total_frames(), 4_500);
+    assert_eq!(
+        restored.document_eligibility(),
+        PlaylistCueDocumentExportEligibility::Ineligible
+    );
 }
 
 #[test]

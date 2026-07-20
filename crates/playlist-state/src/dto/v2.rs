@@ -89,9 +89,41 @@ enum PlaylistEntryIdV2Dto {
 struct PlaylistSingleDurablePayloadV2Dto {
     reopen_locator: DurableReopenLocatorV2Dto,
     playback_span: Nullable<PlaylistPlaybackSpanV2Dto>,
+    /// Additive S14 field: старые schema-v2 документы корректно читаются как `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cue_export_semantics: Option<PlaylistCueTrackExportSemanticsV2Dto>,
     ancillary_track_hints: Vec<PlaylistAncillaryTrackHintV2Dto>,
     provenance: PlaylistImportProvenanceV2Dto,
     availability: PlaylistImportAvailabilityV2Dto,
+}
+
+/// Exact 75-fps CUE identity не восстанавливается из nanosecond playback span.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlaylistCueTrackExportSemanticsV2Dto {
+    file_type: PlaylistCueFileTypeV2Dto,
+    track_number: u8,
+    index00_total_frames: Option<u64>,
+    index01_total_frames: u64,
+    document_eligibility: PlaylistCueDocumentExportEligibilityV2Dto,
+}
+
+/// Closed CUE FILE type vocabulary.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PlaylistCueFileTypeV2Dto {
+    Wave,
+    Aiff,
+    Mp3,
+    Flac,
+}
+
+/// Fail-closed document-level semantic eligibility.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PlaylistCueDocumentExportEligibilityV2Dto {
+    Exact,
+    Ineligible,
 }
 
 /// Durable group payload не дублирует parts либо cached summary.
