@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use media_core::{TrackInfo, TrackKind};
+use media_core::{MediaTime, TrackInfo, TrackKind};
 use tracing::{info, warn};
 
 use crate::pipeline::{AudioSeekRuntimeState, DecodedAudioPacket};
@@ -10,7 +10,10 @@ use crate::{
     PlayerRuntimeAcceptedChange, SeekProgressBlocker, TrackId,
 };
 
-use super::{PlayerSession, tick::PlayerTickConfig};
+use super::{
+    PlayerSession, audio_playback_bounds::trim_decoded_audio_to_playback_bounds,
+    tick::PlayerTickConfig,
+};
 
 /// Чистый план выбора audio track-а без decoder/output side effects.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,10 +180,11 @@ impl PlayerSession {
                         return;
                     }
 
-                    let samples = trim_decoded_audio_to_clock_base(
+                    let samples = trim_decoded_audio_to_playback_bounds(
                         &decoded_samples,
                         packet_pts,
                         self.pipeline.media_clock_base(),
+                        self.playback_window_end().map(MediaTime::as_duration),
                         output_spec.sample_rate,
                         output_spec.channels(),
                     );
@@ -356,7 +360,7 @@ impl PlayerSession {
         }
 
         let replacement_clock = replacement_output.clock();
-        let media_position = self.snapshot.current_position;
+        let media_position = self.current_source_position;
         self.pipeline
             .install_audio_output(replacement_output, output_spec);
         self.pipeline.install_audio_clock(replacement_clock);
@@ -719,39 +723,4 @@ fn player_error_from_audio_decoder_factory_error(error: anyhow::Error) -> Player
         PlayerErrorKind::RuntimeError,
         format!("Audio error: {error}"),
     )
-}
-
-/// Возвращает срез audio samples, который начинается не раньше текущей media clock base.
-fn trim_decoded_audio_to_clock_base(
-    samples: &[f32],
-    packet_pts: Duration,
-    media_clock_base: Duration,
-    sample_rate: u32,
-    channels: u32,
-) -> &[f32] {
-    if packet_pts >= media_clock_base || sample_rate == 0 || channels == 0 {
-        return samples;
-    }
-
-    let channel_count = channels as usize;
-    let frame_count = samples.len() / channel_count;
-    if frame_count == 0 {
-        return &[];
-    }
-
-    let trim_duration = media_clock_base.saturating_sub(packet_pts);
-    let trim_frames = duration_to_audio_frames(trim_duration, sample_rate);
-    if trim_frames >= frame_count {
-        return &[];
-    }
-
-    let trim_samples = trim_frames.saturating_mul(channel_count);
-    &samples[trim_samples..]
-}
-
-/// Конвертирует duration в количество audio frames с округлением вниз.
-fn duration_to_audio_frames(duration: Duration, sample_rate: u32) -> usize {
-    let frames = duration.as_nanos().saturating_mul(u128::from(sample_rate)) / 1_000_000_000u128;
-
-    frames.min(usize::MAX as u128) as usize
 }

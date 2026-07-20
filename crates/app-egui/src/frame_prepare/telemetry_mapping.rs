@@ -30,6 +30,9 @@ pub(super) fn map_video_frame_telemetry_event(
         PlayerVideoDropReason::RenderAcquisitionTimeout => {
             VideoFrameTelemetryEvent::PlaybackDrop(VideoDropReason::Other)
         }
+        PlayerVideoDropReason::PlaybackWindow => {
+            VideoFrameTelemetryEvent::PlaybackDrop(VideoDropReason::Other)
+        }
     }
 }
 

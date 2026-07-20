@@ -16,3 +16,8 @@
 - Реальный regression fixture H.264/MKV после restart дошёл до final seek commit, затем Pause; последующий Play работал без `Invalid frame_num` flood. Workspace all-features tests на Rust 1.96 и strict Clippy прошли.
 
 Связанные memories: `mem:player-core/core`, `mem:playlist/resume-position-sidecar-2026-07-19`, `mem:app-egui/startup-orchestration-s17`.
+
+
+## S13 playback-window уточнение (2026-07-20)
+- `InstalledPositionRestore::SeekTo` всегда принимает публичную relative позицию активного window.
+- Pending receipt не завершается на demux seek: relative target переводится в absolute source time, а `Applied` публикуется только после matching seek commit, как и для media без window.

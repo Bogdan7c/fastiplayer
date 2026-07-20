@@ -473,7 +473,7 @@ impl ScrubTransactionLifecycle for PlayerSession {
                 frame_identity,
             }),
             FinishScrubPolicy::MatchPlaybackPosition => Ok(ScrubFinishResult::MatchedPlayback {
-                playback_position: self.snapshot.timeline.current_position,
+                playback_position: MediaTime::from_duration(self.current_source_position),
                 matched_frame_timing: frame_timing,
                 frame_identity,
             }),

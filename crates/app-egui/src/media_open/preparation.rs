@@ -17,6 +17,11 @@ pub(super) fn prepare_source(
     }
 
     match source_request {
+        MediaOpenSourceRequest::PlaybackWindow {
+            source,
+            semantic_identity,
+        } => prepare_source(*source, is_cancelled)
+            .map(|prepared| prepared.with_playback_window(semantic_identity)),
         MediaOpenSourceRequest::Local {
             path,
             expected_fingerprint,

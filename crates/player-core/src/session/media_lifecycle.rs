@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use frame_server_core::CancelScrubReason;
 use media_core::{DemuxSeekability, DemuxTrackListUpdate, TimelineSnapshot};
 use tracing::{debug, info, warn};
@@ -267,6 +269,10 @@ impl PlayerSession {
 
         self.pipeline.reset_media_slots();
         self.snapshot.media_instance_id = None;
+        self.current_source_position = Duration::ZERO;
+        self.source_duration = None;
+        self.playback_window = None;
+        self.reset_playback_window_end_observation();
         self.reset_diagnostics_for_media();
 
         self.clear_pending_video_backend_reselection();

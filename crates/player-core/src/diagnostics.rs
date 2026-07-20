@@ -90,6 +90,9 @@ pub enum VideoDropReason {
     /// Packet/frame отброшен как seek pre-roll до target кадра.
     SeekPreroll,
 
+    /// Frame находится до start либо на/после end активного playback window.
+    PlaybackWindow,
+
     /// Legacy: старый synchronous render request не получил reply в bounded budget.
     RenderAcquisitionTimeout,
 
@@ -109,6 +112,7 @@ impl VideoDropReason {
             Self::QueueOverflow => "queue_overflow",
             Self::StaleGeneration => "stale_generation",
             Self::SeekPreroll => "seek_preroll",
+            Self::PlaybackWindow => "playback_window",
             Self::RenderAcquisitionTimeout => "render_acquisition_timeout",
             Self::DecoderStarvation => "decoder_starvation",
             Self::Paused => "paused",
@@ -1131,6 +1135,10 @@ impl PlaybackDiagnostics {
                     self.snapshot.drops.seek_discard.saturating_add(1);
                 self.snapshot.drops.seek_preroll =
                     self.snapshot.drops.seek_preroll.saturating_add(1);
+            }
+            VideoDropReason::PlaybackWindow => {
+                self.snapshot.drops.playback_or_render =
+                    self.snapshot.drops.playback_or_render.saturating_add(1);
             }
             VideoDropReason::RenderAcquisitionTimeout => {
                 self.snapshot.drops.playback_or_render =

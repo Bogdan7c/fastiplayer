@@ -21,15 +21,17 @@ use crate::audio_boundary::{
 #[cfg(test)]
 use crate::decoder_boundary::PresentFrameResourceProviderHandle;
 use crate::media_install::PlaybackIntentControl;
+use crate::playback_window::PlaybackWindowEndState;
 use crate::seek_state::{PlaybackResumeIntent, SeekRuntimeState};
 use crate::{
     AudioDecoderFactory, AudioOutputFactory, AudioTempoProcessorFactory, CorrelatedPlayerEvent,
-    FrameCounters, PlaybackDiagnostics, PlaybackPipeline, PlaybackState, PlayerCommand,
-    PlayerCommandOutcome, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult,
+    FrameCounters, MediaPlaybackWindow, PlaybackDiagnostics, PlaybackPipeline, PlaybackState,
+    PlayerCommand, PlayerCommandOutcome, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult,
     PlayerRuntimeApplyError, PlayerRuntimeBoundaryActivity, PlayerSnapshot,
     PlayerVideoBackendInstallIntent, QualitySelection, SeekRequest, StartedVideoBackend, TrackId,
 };
 
+mod audio_playback_bounds;
 mod audio_runtime;
 mod audio_tempo_rate_change;
 mod audio_tempo_runtime;
@@ -83,6 +85,18 @@ use media_core::TrackInfo;
 pub struct PlayerSession {
     /// Последний базовый read-only snapshot без runtime diagnostics, зависящих от shell.
     snapshot: PlayerSnapshot,
+
+    /// Абсолютная clock position текущего source-а; наружу публикуется relative position.
+    current_source_position: Duration,
+
+    /// Физическая duration source-а до применения optional playback window.
+    source_duration: Option<Duration>,
+
+    /// Активное player-owned playback window текущего installed media.
+    playback_window: Option<MediaPlaybackWindow>,
+
+    /// Progress выбранных tracks к synthetic EOF bounded window.
+    playback_window_end_state: PlaybackWindowEndState,
 
     /// Media pipeline, закрытый от sibling modules за session-owned boundary methods.
     pipeline: PlaybackPipeline,
@@ -440,18 +454,23 @@ impl PlayerSession {
         // Публичный setter остаётся явной lifecycle-операцией: caller меняет
         // позицию и тем самым создаёт новый no-audio anchor в одной точке времени.
         let observed_at = Instant::now();
-        self.publish_clock_sample(position);
-        self.reanchor_no_audio_clock(position, observed_at);
+        let source_position = self.absolute_position_for_relative(position.into());
+        self.publish_clock_sample(source_position.as_duration());
+        self.reanchor_no_audio_clock(source_position.as_duration(), observed_at);
     }
 
-    /// Публикует измеренную clock position без изменения clock ownership или anchor-а.
-    fn publish_clock_sample(&mut self, position: Duration) {
-        if self.snapshot.current_position == position {
+    /// Публикует измеренную absolute source position как relative public position.
+    fn publish_clock_sample(&mut self, source_position: Duration) {
+        let relative_position =
+            self.relative_position_for_source(MediaTime::from_duration(source_position));
+        if self.current_source_position == source_position
+            && self.snapshot.timeline.current_position == relative_position
+        {
             return;
         }
 
-        self.snapshot
-            .set_timeline_position(MediaTime::from_duration(position));
+        self.current_source_position = source_position;
+        self.snapshot.set_timeline_position(relative_position);
     }
 
     /// Явно перепривязывает только no-audio clock на lifecycle boundary.
@@ -487,7 +506,7 @@ impl PlayerSession {
             return position;
         }
 
-        self.snapshot.current_position
+        self.current_source_position
     }
 
     /// Проецирует ближайшую wall-задержку в media position выбранного clock source.
@@ -574,7 +593,7 @@ impl PlayerSession {
         }
 
         self.pipeline.start_monotonic_media_clock(
-            self.snapshot.current_position,
+            self.current_source_position,
             now,
             self.snapshot.playback_rate,
         );
@@ -1143,27 +1162,123 @@ impl PlayerSession {
 
     /// Публикует редкое явное изменение позиции, например seek.
     fn publish_position_changed(&mut self, position: Duration) {
-        self.update_current_position(position);
-        self.push_player_event(PlayerEvent::PositionChanged(position));
+        self.publish_clock_sample(position);
+        self.reanchor_no_audio_clock(position, Instant::now());
+        let relative_position = self
+            .relative_position_for_source(MediaTime::from_duration(position))
+            .as_duration();
+        self.push_player_event(PlayerEvent::PositionChanged(relative_position));
     }
 
     /// Разрешает seek target в абсолютную media-позицию без изменения runtime seek policy.
     fn resolve_seek_target(&self, request: SeekRequest) -> MediaTime {
-        let target_position = request
+        let relative_target = request
             .target
             .resolve(self.snapshot.timeline.current_position);
 
-        self.snapshot
+        let clamped_relative = self
+            .snapshot
             .timeline
             .seekable_range
-            .map(|range| target_position.clamp_to(range))
-            .unwrap_or(target_position)
+            .map(|range| relative_target.clamp_to(range))
+            .unwrap_or(relative_target);
+        self.absolute_position_for_relative(clamped_relative)
     }
 
-    /// Синхронно обновляет legacy `Duration` и typed timeline duration.
-    fn set_snapshot_duration(&mut self, duration: Option<Duration>) {
-        self.snapshot
-            .set_timeline_duration(duration.map(MediaDuration::from_duration));
+    /// Синхронно обновляет physical source duration и public relative duration.
+    fn set_snapshot_duration(&mut self, source_duration: Option<Duration>) {
+        self.source_duration = source_duration;
+        let public_duration = self.playback_window.map_or_else(
+            || source_duration.map(MediaDuration::from_duration),
+            |window| window.relative_duration(source_duration),
+        );
+        self.snapshot.set_timeline_duration(public_duration);
+    }
+
+    /// Переводит absolute source position в bounded public relative position.
+    fn relative_position_for_source(&self, source_position: MediaTime) -> MediaTime {
+        self.playback_window.map_or(source_position, |window| {
+            window.relative_position(source_position, self.source_duration)
+        })
+    }
+
+    /// Переводит public relative position в absolute demux/source position.
+    fn absolute_position_for_relative(&self, relative_position: MediaTime) -> MediaTime {
+        self.playback_window.map_or(relative_position, |window| {
+            window.absolute_position(relative_position, self.source_duration)
+        })
+    }
+
+    /// Публикует absolute seek/scrub target в relative timeline snapshot.
+    fn set_timeline_target_from_source(&mut self, source_target: MediaTime) {
+        self.snapshot.timeline.target_position =
+            Some(self.relative_position_for_source(source_target));
+    }
+
+    /// Возвращает absolute exclusive end активного bounded window.
+    fn playback_window_end(&self) -> Option<MediaTime> {
+        self.playback_window
+            .and_then(MediaPlaybackWindow::end_exclusive)
+    }
+
+    /// Отбрасывает packet на/после bounded end и отмечает selected-track progress.
+    fn packet_is_outside_playback_window(&mut self, packet: &media_core::Packet) -> bool {
+        let Some(playback_window) = self.playback_window else {
+            return false;
+        };
+        if playback_window.admits_packet_at(packet.pts) {
+            return false;
+        }
+
+        let belongs_to_selected_track = match packet.kind {
+            media_core::TrackKind::Audio => {
+                self.pipeline.selected_audio_track_id() == Some(packet.track_id)
+            }
+            media_core::TrackKind::Video => {
+                self.pipeline.selected_video_track_id() == Some(packet.track_id)
+            }
+        };
+        if belongs_to_selected_track {
+            self.playback_window_end_state
+                .note_selected_track_end(packet.kind);
+        }
+        true
+    }
+
+    /// Проверяет audio packet, который целиком лежит до absolute window start.
+    ///
+    /// Пересекающий start packet сохраняется: audio runtime уже обрезает PCM по
+    /// установленному absolute media clock base, как при Accurate seek.
+    fn audio_packet_is_before_playback_window(&self, packet: &media_core::Packet) -> bool {
+        if packet.kind != media_core::TrackKind::Audio {
+            return false;
+        }
+        let Some(playback_window) = self.playback_window else {
+            return false;
+        };
+        let Some(packet_duration) = packet.duration else {
+            return false;
+        };
+        packet.pts.saturating_add(packet_duration) <= playback_window.start().as_duration()
+    }
+
+    /// Проверяет готовность synthetic EOF после пересечения end выбранными tracks.
+    fn playback_window_end_observed(&self) -> bool {
+        self.playback_window_end_state.all_selected_tracks_ended(
+            self.pipeline.selected_audio_track_id().is_some(),
+            self.pipeline.selected_video_track_id().is_some(),
+        )
+    }
+
+    /// Сбрасывает end progress после install/seek discontinuity.
+    fn reset_playback_window_end_observation(&mut self) {
+        self.playback_window_end_state.reset();
+    }
+
+    /// Проверяет decoded frame против absolute start/end активного window.
+    fn playback_window_admits_frame(&self, absolute_pts: Duration) -> bool {
+        self.playback_window
+            .is_none_or(|window| window.admits_frame_at(absolute_pts))
     }
 
     /// Сохраняет runtime error как user-facing ошибку.
@@ -1184,6 +1299,10 @@ impl Default for PlayerSession {
     fn default() -> Self {
         Self {
             snapshot: PlayerSnapshot::default(),
+            current_source_position: Duration::ZERO,
+            source_duration: None,
+            playback_window: None,
+            playback_window_end_state: PlaybackWindowEndState::default(),
             pipeline: PlaybackPipeline::default(),
             audio_decoder_factory: missing_audio_decoder_factory(),
             audio_output_factory: missing_audio_output_factory(),

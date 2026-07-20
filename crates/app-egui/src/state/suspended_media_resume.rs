@@ -269,17 +269,17 @@ impl AppState {
         source: &ActiveMediaSource,
     ) -> Result<MediaOpenSourceRequest, ResumeCheckpointError> {
         let config = self.committed_app_config();
-        match source {
-            ActiveMediaSource::LocalFile(path) => Ok(MediaOpenSourceRequest::Local {
+        let physical_request = match source.physical_source() {
+            ActiveMediaSource::LocalFile(path) => MediaOpenSourceRequest::Local {
                 path: path.clone(),
                 expected_fingerprint: None,
                 demux_config: config.player.demux,
-            }),
-            ActiveMediaSource::DirectMediaUrl(locator) => Ok(MediaOpenSourceRequest::Direct {
+            },
+            ActiveMediaSource::DirectMediaUrl(locator) => MediaOpenSourceRequest::Direct {
                 locator: locator.clone(),
                 network_config: config.network,
                 demux_config: config.player.demux,
-            }),
+            },
             ActiveMediaSource::YtDlpUrl {
                 source_locator,
                 selected_stream_identity,
@@ -288,7 +288,7 @@ impl AppState {
                     .system_capabilities_snapshot
                     .clone()
                     .ok_or(ResumeCheckpointError::PreparationFailed)?;
-                Ok(MediaOpenSourceRequest::YtDlp {
+                MediaOpenSourceRequest::YtDlp {
                     locator: source_locator.clone(),
                     required_stream_identity: Some(Box::new(selected_stream_identity.clone())),
                     network_config: config.network,
@@ -296,9 +296,13 @@ impl AppState {
                     demux_config: config.player.demux,
                     preferred_video_codec_order: config.player.preferred_video_codec_order,
                     system_capabilities: capabilities,
-                })
+                }
             }
-        }
+            ActiveMediaSource::PlaybackWindow { .. } => {
+                unreachable!("physical_source removes playback-window wrappers")
+            }
+        };
+        Ok(source.wrap_reopen_request(physical_request))
     }
 
     /// Неблокирующе продвигает ровно одну resume attempt по owner receipts.

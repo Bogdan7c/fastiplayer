@@ -480,6 +480,15 @@ impl PlayerSession {
             .map_err(|error| {
                 MediaInstallFailure::new(MediaInstallFailureStage::VideoStreamConfiguration, error)
             })?;
+        prepared_media.prepare_playback_window().map_err(|error| {
+            MediaInstallFailure::new(
+                MediaInstallFailureStage::PlaybackWindowPreparation,
+                PlayerError::new(
+                    PlayerErrorKind::SeekUnavailable,
+                    format!("Не удалось подготовить playback window: {error}"),
+                ),
+            )
+        })?;
 
         Ok(PreparedStagedMedia {
             prepared_media,

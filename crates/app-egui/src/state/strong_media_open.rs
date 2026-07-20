@@ -63,6 +63,10 @@ impl PreparedSingleMediaOpen {
         source: ActiveMediaSource,
         safe_label: SafeMediaLabel,
     ) -> Self {
+        let source = match prepared_media.playback_window() {
+            Some(window) => source.with_playback_window(window),
+            None => source,
+        };
         Self {
             prepared_media,
             source,
@@ -79,6 +83,10 @@ impl PreparedSingleMediaOpen {
         safe_label: SafeMediaLabel,
         target_draft: playlist_core::PlaylistItemDraft,
     ) -> Self {
+        let source = match prepared_media.playback_window() {
+            Some(window) => source.with_playback_window(window),
+            None => source,
+        };
         Self {
             prepared_media,
             source,
@@ -96,6 +104,10 @@ impl PreparedSingleMediaOpen {
         target: crate::playlist_runtime::StartupRestoreTarget,
     ) -> Self {
         let startup_position = target.position();
+        let source = match prepared_media.playback_window() {
+            Some(window) => source.with_playback_window(window),
+            None => source,
+        };
         Self {
             prepared_media,
             source,
@@ -103,6 +115,19 @@ impl PreparedSingleMediaOpen {
             playlist_target: Some(PreparedPlaylistTarget::RestoredCurrent(target)),
             startup_position,
         }
+    }
+
+    /// Повторно применяет preserved window к freshly reopened settings candidate.
+    #[must_use]
+    pub(crate) fn with_playback_window(
+        mut self,
+        playback_window: Option<player_core::MediaPlaybackWindow>,
+    ) -> Self {
+        if let Some(playback_window) = playback_window {
+            self.prepared_media = self.prepared_media.with_playback_window(playback_window);
+            self.source = self.source.with_playback_window(playback_window);
+        }
+        self
     }
 }
 

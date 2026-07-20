@@ -13,3 +13,8 @@
 - Focused coverage in `crates/player-core/src/session/tests/scrub.rs`: missing preview, policy-specific simple fallback, valid visible-vs-latest targets, stale scrub generation, source/backend/track mismatch, active live reuse, and decoder flush error.
 - Verified with `cargo test -p player-core` (478 tests), `cargo test -p app-egui` (241 tests), locked workspace check, strict Clippy for player/app, fmt, and refactor guardrails.
 - Related base knowledge: `mem:player-core/core`, `mem:frame-server/core`.
+
+
+## S13 playback-window уточнение (2026-07-20)
+- Seek/LiveScrub входы и `timeline.target_position` остаются relative к playback window.
+- Session переводит target в absolute source time ровно перед demux/decoder route; visible/live commit policy, generation gates и pending semantics не изменились.

@@ -298,7 +298,7 @@ impl PlayerSession {
             return Ok(());
         }
 
-        let current_position = self.snapshot.current_position;
+        let current_position = self.current_source_position;
         self.seek(SeekRequest::accurate(current_position))
     }
 

@@ -63,7 +63,10 @@ impl StartupMediaController {
                     self.startup_error = Some(message.clone());
                     app_state.set_startup_error(message);
                 }
-                if matches!(installed.source, ActiveMediaSource::DirectMediaUrl(_)) {
+                if matches!(
+                    installed.source.physical_source(),
+                    ActiveMediaSource::DirectMediaUrl(_)
+                ) {
                     tracing::info!("Startup direct media Installed");
                 }
                 if let Some((path, media_kind)) = pending_context.local_discovery

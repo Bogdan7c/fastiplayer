@@ -72,7 +72,11 @@ impl FrameSettingsRuntimeAdapter<'_> {
         let Some(active_source) = self.app_state.active_media_source() else {
             return AppRouteApplyResult::Applied;
         };
-        if matches!(&active_source, ActiveMediaSource::LocalFile(_)) && !config.rebuild_local_source
+        let playback_window = active_source.playback_window();
+        if matches!(
+            active_source.physical_source(),
+            ActiveMediaSource::LocalFile(_)
+        ) && !config.rebuild_local_source
         {
             return AppRouteApplyResult::Applied;
         }
@@ -106,7 +110,7 @@ impl FrameSettingsRuntimeAdapter<'_> {
             .collect::<Vec<_>>();
 
         let prepared_result: Result<crate::state::PreparedSingleMediaOpen, String> =
-            match active_source {
+            match active_source.into_physical_source() {
                 ActiveMediaSource::LocalFile(path) => {
                     match crate::local_media::prepare_local_file(&path, &config.demux) {
                         Ok(prepared_media) => {
@@ -215,10 +219,13 @@ impl FrameSettingsRuntimeAdapter<'_> {
                         }
                     }
                 }
+                ActiveMediaSource::PlaybackWindow { .. } => {
+                    unreachable!("into_physical_source removes playback-window wrappers")
+                }
             };
 
         let prepared_input = match prepared_result {
-            Ok(prepared_input) => prepared_input,
+            Ok(prepared_input) => prepared_input.with_playback_window(playback_window),
             Err(message) => return AppRouteApplyResult::Failed { message },
         };
         let installed = match self.app_state.install_prepared_media_strong(

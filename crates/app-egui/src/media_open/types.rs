@@ -98,6 +98,89 @@ pub(crate) enum ActiveMediaSource {
     },
     /// Exact functional direct locator с service-owned redacted formatting.
     DirectMediaUrl(service_direct_media::DirectMediaUrl),
+
+    /// Source плюс neutral semantic identity ограниченного playback window.
+    ///
+    /// Wrapper не знает CUE/Group/playlist vocabulary и остаётся reconstructible,
+    /// даже когда active media уже detached от исходной queue row.
+    PlaybackWindow {
+        source: Box<ActiveMediaSource>,
+        semantic_identity: player_core::MediaPlaybackWindow,
+    },
+}
+
+impl ActiveMediaSource {
+    /// Добавляет или заменяет единственную neutral playback-window identity.
+    #[must_use]
+    pub(crate) fn with_playback_window(
+        self,
+        semantic_identity: player_core::MediaPlaybackWindow,
+    ) -> Self {
+        let source = match self {
+            Self::PlaybackWindow { source, .. } => source,
+            source => Box::new(source),
+        };
+        Self::PlaybackWindow {
+            source,
+            semantic_identity,
+        }
+    }
+
+    /// Возвращает optional semantic identity без знания playlist/CUE origin-а.
+    #[must_use]
+    pub(crate) const fn playback_window(&self) -> Option<player_core::MediaPlaybackWindow> {
+        match self {
+            Self::PlaybackWindow {
+                semantic_identity, ..
+            } => Some(*semantic_identity),
+            Self::LocalFile(_) | Self::YtDlpUrl { .. } | Self::DirectMediaUrl(_) => None,
+        }
+    }
+
+    /// Возвращает физический source под optional semantic wrapper-ом.
+    #[must_use]
+    pub(crate) fn physical_source(&self) -> &Self {
+        match self {
+            Self::PlaybackWindow { source, .. } => source.physical_source(),
+            source => source,
+        }
+    }
+
+    /// Снимает optional wrapper для source-specific reopen dispatch-а.
+    #[must_use]
+    pub(crate) fn into_physical_source(self) -> Self {
+        match self {
+            Self::PlaybackWindow { source, .. } => source.into_physical_source(),
+            source => source,
+        }
+    }
+
+    /// Повторно применяет identity к freshly reopened prepared media.
+    #[must_use]
+    pub(crate) fn apply_to_prepared_media(
+        &self,
+        prepared_media: player_core::PreparedMedia,
+    ) -> player_core::PreparedMedia {
+        match self.playback_window() {
+            Some(window) => prepared_media.with_playback_window(window),
+            None => prepared_media,
+        }
+    }
+
+    /// Создаёт source request wrapper для suspend reopen через общий coordinator.
+    #[must_use]
+    pub(crate) fn wrap_reopen_request(
+        &self,
+        request: MediaOpenSourceRequest,
+    ) -> MediaOpenSourceRequest {
+        match self.playback_window() {
+            Some(semantic_identity) => MediaOpenSourceRequest::PlaybackWindow {
+                source: Box::new(request),
+                semantic_identity,
+            },
+            None => request,
+        }
+    }
 }
 
 impl fmt::Debug for ActiveMediaSource {
@@ -112,6 +195,14 @@ impl fmt::Debug for ActiveMediaSource {
             Self::DirectMediaUrl(locator) => formatter
                 .debug_tuple("DirectMediaUrl")
                 .field(locator)
+                .finish(),
+            Self::PlaybackWindow {
+                source,
+                semantic_identity,
+            } => formatter
+                .debug_struct("PlaybackWindow")
+                .field("source", source)
+                .field("semantic_identity", semantic_identity)
                 .finish(),
         }
     }
@@ -219,6 +310,62 @@ impl PreparedMediaDescriptor {
             | Self::CallerPrepared { source, .. } => source.clone(),
         }
     }
+
+    /// Сохраняет neutral window identity рядом с physical reopen source.
+    #[must_use]
+    fn with_playback_window(self, semantic_identity: player_core::MediaPlaybackWindow) -> Self {
+        match self {
+            Self::Local {
+                media_kind,
+                tracks,
+                duration,
+                metadata,
+                fingerprint,
+                source,
+                safe_label,
+                fingerprint_validation,
+            } => Self::Local {
+                media_kind,
+                tracks,
+                duration,
+                metadata,
+                fingerprint,
+                source: source.with_playback_window(semantic_identity),
+                safe_label,
+                fingerprint_validation,
+            },
+            Self::Direct {
+                tracks,
+                duration,
+                metadata,
+                source,
+                safe_label,
+            } => Self::Direct {
+                tracks,
+                duration,
+                metadata,
+                source: source.with_playback_window(semantic_identity),
+                safe_label,
+            },
+            Self::YtDlp {
+                tracks,
+                duration,
+                metadata,
+                source,
+                safe_label,
+            } => Self::YtDlp {
+                tracks,
+                duration,
+                metadata,
+                source: source.with_playback_window(semantic_identity),
+                safe_label,
+            },
+            Self::CallerPrepared { source, safe_label } => Self::CallerPrepared {
+                source: source.with_playback_window(semantic_identity),
+                safe_label,
+            },
+        }
+    }
 }
 
 /// Подготовленный demuxer плюс immutable descriptor до ownership transfer.
@@ -228,12 +375,28 @@ pub(crate) struct PreparedMediaOpen {
 }
 
 impl PreparedMediaOpen {
+    /// Применяет window одновременно к player payload и reconstructible descriptor.
+    #[must_use]
+    pub(super) fn with_playback_window(
+        self,
+        semantic_identity: player_core::MediaPlaybackWindow,
+    ) -> Self {
+        Self {
+            prepared_media: self.prepared_media.with_playback_window(semantic_identity),
+            descriptor: self.descriptor.with_playback_window(semantic_identity),
+        }
+    }
+
     /// Принимает demuxer, который уже открыл правильный startup/settings source owner.
     pub(crate) fn from_caller_prepared(
         prepared_media: player_core::PreparedMedia,
         source: ActiveMediaSource,
         safe_label: SafeMediaLabel,
     ) -> Self {
+        let source = match prepared_media.playback_window() {
+            Some(window) => source.with_playback_window(window),
+            None => source,
+        };
         Self {
             prepared_media,
             descriptor: PreparedMediaDescriptor::CallerPrepared { source, safe_label },
@@ -262,6 +425,10 @@ pub(crate) enum MediaOpenSourceRequest {
         demux_config: rustiplayer_config::PlayerDemuxConfig,
         preferred_video_codec_order: Vec<rustiplayer_config::VideoCodec>,
         system_capabilities: capability_core::SystemCapabilities,
+    },
+    PlaybackWindow {
+        source: Box<MediaOpenSourceRequest>,
+        semantic_identity: player_core::MediaPlaybackWindow,
     },
 }
 
@@ -477,5 +644,34 @@ mod tests {
         let label = SafeMediaLabel::from_service_safe_label(&raw_label);
 
         assert_eq!(label.as_str().chars().count(), SAFE_MEDIA_LABEL_MAX_CHARS);
+    }
+
+    #[test]
+    fn playback_window_identity_wraps_reopen_request_without_source_specific_types() {
+        let semantic_identity = player_core::MediaPlaybackWindow::new(
+            media_core::MediaTime::from_secs(10),
+            Some(media_core::MediaTime::from_secs(25)),
+        )
+        .expect("valid neutral window");
+        let source = ActiveMediaSource::LocalFile(PathBuf::from("fixture.flac"))
+            .with_playback_window(semantic_identity);
+        let request = source.wrap_reopen_request(MediaOpenSourceRequest::Local {
+            path: PathBuf::from("fixture.flac"),
+            expected_fingerprint: None,
+            demux_config: rustiplayer_config::PlayerDemuxConfig::default(),
+        });
+
+        assert_eq!(source.playback_window(), Some(semantic_identity));
+        assert!(matches!(
+            source.physical_source(),
+            ActiveMediaSource::LocalFile(_)
+        ));
+        assert!(matches!(
+            request,
+            MediaOpenSourceRequest::PlaybackWindow {
+                semantic_identity: actual,
+                ..
+            } if actual == semantic_identity
+        ));
     }
 }

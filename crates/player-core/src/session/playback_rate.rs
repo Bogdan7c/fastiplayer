@@ -86,7 +86,7 @@ impl PlayerSession {
             Ok(prepared_audio_change) => prepared_audio_change,
             Err(reject) => return PlayerCommandOutcome::Rejected(reject),
         };
-        let current_media_position = self.snapshot.current_position;
+        let current_media_position = self.current_source_position;
         let captured_audio_clock = self
             .pipeline
             .capture_paused_audio_clock_mapping(current_media_position);

@@ -72,7 +72,7 @@ pub(super) fn initial_scrub_generation_before_target(
 impl PlayerSession {
     pub(super) fn enter_seek_landing_public_scrubbing(&mut self, target_position: MediaTime) {
         self.set_playback_state(PlaybackState::Scrubbing);
-        self.snapshot.timeline.target_position = Some(target_position);
+        self.set_timeline_target_from_source(target_position);
         self.snapshot.timeline.seeking = false;
         self.snapshot.timeline.scrubbing = true;
         self.snapshot.timeline.stale_frame = self.pipeline.has_present_video_frame();
@@ -169,7 +169,7 @@ impl PlayerSession {
             live_scrub_diagnostics,
         );
         self.snapshot.timeline.scrubbing = true;
-        self.snapshot.timeline.target_position = Some(target_position);
+        self.set_timeline_target_from_source(target_position);
         if !self.snapshot.timeline.seeking {
             self.snapshot.timeline.stale_frame = false;
         }
@@ -258,7 +258,7 @@ impl PlayerSession {
                 .update_active_live_scrub_diagnostics(live_scrub_diagnostics);
             self.seek_runtime.request_live_scrub_commit(Instant::now());
             self.snapshot.timeline.scrubbing = true;
-            self.snapshot.timeline.target_position = Some(target);
+            self.set_timeline_target_from_source(target);
             return Ok(());
         }
 

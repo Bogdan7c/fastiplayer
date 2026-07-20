@@ -190,7 +190,7 @@ impl PlayerSession {
         let restored_position = self
             .pipeline
             .present_video_frame()
-            .map_or(self.snapshot.current_position, |frame| frame.pts);
+            .map_or(self.current_source_position, |frame| frame.pts);
         self.pipeline.set_media_clock_base(restored_position);
         self.pipeline.clear_monotonic_media_clock();
         self.pause_audio_output_for_seek();

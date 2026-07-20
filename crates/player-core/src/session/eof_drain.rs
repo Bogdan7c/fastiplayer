@@ -342,8 +342,9 @@ impl PlayerSession {
             return Ok(());
         }
 
+        let source_start = self.absolute_position_for_relative(MediaTime::ZERO);
         self.start_seek_transaction(
-            MediaTime::ZERO,
+            source_start,
             crate::SeekMode::Accurate,
             PlaybackResumeIntent::Play,
         )

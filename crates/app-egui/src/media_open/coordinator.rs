@@ -775,6 +775,7 @@ impl MediaOpenSourceRequest {
             Self::YtDlp { locator, .. } => {
                 SafeMediaLabel::from_service_safe_label(locator.safe_label())
             }
+            Self::PlaybackWindow { source, .. } => source.safe_label(),
         }
     }
 }

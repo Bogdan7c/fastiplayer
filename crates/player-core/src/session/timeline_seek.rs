@@ -81,7 +81,7 @@ impl PlayerSession {
             ExactTimelineSeekOutcome::Applied {
                 request_id: pending.request.request_id,
                 media_instance_id: pending.request.media_instance_id,
-                position,
+                position: self.relative_position_for_source(position),
             }
         } else {
             ExactTimelineSeekOutcome::StaleInstance {

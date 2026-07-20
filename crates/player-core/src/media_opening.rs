@@ -4,11 +4,13 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use media_core::{DemuxReadEvent, DemuxSeekability, Demuxer, MediaMetadata, TrackInfo, TrackKind};
+use media_core::{
+    DemuxReadEvent, DemuxSeekability, Demuxer, MediaMetadata, MediaTime, TrackInfo, TrackKind,
+};
 
 use self::prefetched_demuxer::PrefetchedDemuxer;
 
-use crate::MediaSource;
+use crate::{MediaPlaybackWindow, MediaSource};
 
 /// Безопасная, UI-ready информация об источнике без reopen credentials.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +36,7 @@ pub(crate) struct PreparedMediaSlots {
     pub(crate) source_label: Option<String>,
     pub(crate) tracks: Vec<TrackInfo>,
     pub(crate) source_info: MediaSourceInfo,
+    pub(crate) playback_window: Option<MediaPlaybackWindow>,
 }
 
 /// Cold staged-prefetch state хранится за indirection, чтобы не раздувать worker commands.
@@ -61,6 +64,9 @@ pub struct PreparedMedia {
 
     /// Seekability container-а, которую session публикует в timeline snapshot.
     pub(crate) seekability: DemuxSeekability,
+
+    /// Optional absolute playback window, которое player публикует как relative timeline.
+    playback_window: Option<MediaPlaybackWindow>,
 
     /// Cold replay state создаётся только если exact preflight действительно читает demuxer.
     prefetch_state: Option<Box<PreparedMediaPrefetchState>>,
@@ -143,6 +149,19 @@ impl PreparedMedia {
         self.seekability
     }
 
+    /// Возвращает neutral playback window без раскрытия demuxer ownership.
+    #[must_use]
+    pub const fn playback_window(&self) -> Option<MediaPlaybackWindow> {
+        self.playback_window
+    }
+
+    /// Устанавливает уже проверенный neutral playback window на prepared source.
+    #[must_use]
+    pub fn with_playback_window(mut self, playback_window: MediaPlaybackWindow) -> Self {
+        self.playback_window = Some(playback_window);
+        self
+    }
+
     /// Возвращает диагностику отсутствующего video track-а для текущего типа source.
     #[must_use]
     pub(crate) fn missing_video_track_message(&self) -> &'static str {
@@ -167,6 +186,30 @@ impl PreparedMedia {
             .expect("prefetch state initialized before demux read");
         prefetch_state.events.push_back(event.clone());
         Ok(event)
+    }
+
+    /// Проверяет и позиционирует candidate demuxer до strong-install Ready barrier.
+    pub(crate) fn prepare_playback_window(&mut self) -> anyhow::Result<()> {
+        let Some(playback_window) = self.playback_window else {
+            return Ok(());
+        };
+        playback_window.validate_source_duration(self.duration)?;
+        if playback_window.start() == MediaTime::ZERO {
+            return Ok(());
+        }
+        if !matches!(self.seekability, DemuxSeekability::Seekable) {
+            anyhow::bail!("playback window с ненулевым start требует seekable source");
+        }
+
+        let seek_result = self.demuxer.seek(playback_window.start().as_duration())?;
+        if seek_result.actual_position > playback_window.start() {
+            anyhow::bail!("demuxer positioned playback window after its requested absolute start");
+        }
+
+        // Video preflight мог прочитать packets до window seek. После reposition
+        // они принадлежат старой demux position и не должны попасть в новый pipeline.
+        self.prefetch_state = None;
+        Ok(())
     }
 
     /// Разбирает prepared media на slots, которые `PlaybackPipeline` устанавливает как владелец.
@@ -194,6 +237,7 @@ impl PreparedMedia {
             source_label,
             tracks: self.tracks,
             source_info: self.source_info,
+            playback_window: self.playback_window,
         }
     }
 
@@ -210,6 +254,7 @@ impl PreparedMedia {
             tracks,
             duration,
             seekability,
+            playback_window: None,
             prefetch_state: None,
             source_info,
         }

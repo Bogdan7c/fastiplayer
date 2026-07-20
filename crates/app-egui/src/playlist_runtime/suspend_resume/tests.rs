@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use player_core::{MediaInstallRequestId, MediaInstanceId, PlaybackState, PlayerSnapshot};
+use media_core::MediaTime;
+use player_core::{
+    MediaInstallRequestId, MediaInstanceId, MediaPlaybackWindow, PlaybackState, PlayerSnapshot,
+};
 use playlist_core::{CachedPlaylistMetadata, LocalLocator, PlaylistItemDraft, PlaylistMediaKind};
 
 use super::*;
@@ -131,6 +134,46 @@ fn paused_resume_preserves_position_and_lineage_with_new_instance() {
         )
         .expect("second lifecycle rebound");
     assert!(runtime.begin_suspended_media_resume(false).is_none());
+}
+
+#[test]
+fn detached_windowed_source_reopens_without_queue_row_or_cue_identity() {
+    let mut runtime = runtime();
+    let first_binding = runtime.bind_resumed_app_state().expect("first binding");
+    let playback_window =
+        MediaPlaybackWindow::new(MediaTime::from_secs(10), Some(MediaTime::from_secs(25)))
+            .expect("valid neutral window");
+    let source = ActiveMediaSource::LocalFile("detached-source.flac".into())
+        .with_playback_window(playback_window);
+    let active = runtime
+        .register_successful_strong_install(
+            MediaOpenRequestId::from_non_zero(non_zero(71)),
+            MediaInstallRequestId::from_non_zero(non_zero(71)),
+            MediaInstanceId::from_non_zero(non_zero(71)),
+            first_binding,
+            source,
+            player_core::PlaybackIntent::StartPaused,
+        )
+        .expect("detached install");
+    assert_eq!(active.item_id(), None);
+    let mut relative_snapshot = snapshot(active, PlaybackState::Paused, Duration::from_secs(4));
+    relative_snapshot.duration = Some(Duration::from_secs(15));
+    runtime
+        .capture_suspended_media_checkpoint(first_binding, &relative_snapshot)
+        .expect("windowed checkpoint");
+
+    runtime.suspend_app_state_binding();
+    let _second_binding = runtime.bind_resumed_app_state().expect("second binding");
+    let attempt = runtime
+        .begin_suspended_media_resume(false)
+        .expect("detached windowed resume attempt");
+
+    assert_eq!(attempt.position, Duration::from_secs(4));
+    assert_eq!(attempt.source.playback_window(), Some(playback_window));
+    assert!(matches!(
+        attempt.source.physical_source(),
+        ActiveMediaSource::LocalFile(_)
+    ));
 }
 
 #[test]

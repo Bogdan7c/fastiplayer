@@ -1,3 +1,7 @@
+use media_core::{MediaDuration, MediaTime};
+
+use crate::MediaPlaybackWindow;
+
 use super::*;
 
 impl PlayerSession {
@@ -20,16 +24,27 @@ impl PlayerSession {
             defer_video_backend_to_compatibility_adapter,
         } = prepared_commit;
 
+        let playback_window = prepared_media.playback_window();
+        let source_duration = prepared_media.duration();
+        let public_duration = playback_window.map_or(source_duration, |window| {
+            window
+                .relative_duration(source_duration)
+                .map(MediaDuration::as_duration)
+        });
         let media_summary = MediaSummary {
             title: prepared_media.media_title(),
             source_label: prepared_media.source_label(),
-            duration: prepared_media.duration(),
+            duration: public_duration,
         };
         let media_open_request = MediaOpenRequest::new(
             prepared_media.media_source(),
             accepted_intent.intent == PlaybackIntent::StartPlaying,
         );
         let seekability = prepared_media.seekability();
+        let playback_window_start = playback_window
+            .map(MediaPlaybackWindow::start)
+            .unwrap_or(MediaTime::ZERO)
+            .as_duration();
         let retired_render_generation = self.pipeline.render_generation();
         let frame_releases = self.prepare_retired_video_frame_releases();
         let retired_resources = self.pipeline.retire_media_resource_owners();
@@ -49,11 +64,15 @@ impl PlayerSession {
             source_label,
             tracks,
             source_info,
+            playback_window: installed_playback_window,
         } = prepared_media.into_pipeline_slots();
         self.pipeline
             .install_opened_media(demuxer, file_path, source_label, tracks);
         self.pipeline.update_media_source_info(source_info);
         self.reset_session_state_for_staged_media_commit();
+        debug_assert_eq!(playback_window, installed_playback_window);
+        self.playback_window = installed_playback_window;
+        self.reset_playback_window_end_observation();
 
         if let Some(audio_plan) = audio_plan {
             self.pipeline
@@ -80,7 +99,7 @@ impl PlayerSession {
         self.snapshot.media_instance_id = Some(media_instance_id);
         self.snapshot.media_title = media_summary.title.clone();
         self.snapshot.source_label = Some(media_summary.source_label.clone());
-        self.set_snapshot_duration(media_summary.duration);
+        self.set_snapshot_duration(source_duration);
         self.apply_demux_seekability(seekability);
         self.reset_playback_rate_for_media_load();
         self.snapshot.selected_tracks.audio_track = self.pipeline.selected_audio_track_id();
@@ -90,8 +109,11 @@ impl PlayerSession {
             PlaybackIntent::StartPaused => PlaybackState::Paused,
         };
         self.set_playback_state(committed_playback_state);
+        self.current_source_position = playback_window_start;
+        self.snapshot.set_timeline_position(MediaTime::ZERO);
+        self.pipeline.set_media_clock_base(playback_window_start);
         self.pipeline
-            .reset_audio_clock_sample(Duration::ZERO, Instant::now());
+            .reset_audio_clock_sample(playback_window_start, Instant::now());
         self.clear_error();
         self.push_player_event(PlayerEvent::MediaOpenRequested(media_open_request));
         self.push_player_event(PlayerEvent::MediaOpened(media_summary));
@@ -182,6 +204,10 @@ impl PlayerSession {
         self.seek_runtime.clear_simple_scrub();
         self.seek_runtime.clear_eof_fallback_video_position();
         self.snapshot.clear_timeline();
+        self.current_source_position = Duration::ZERO;
+        self.source_duration = None;
+        self.playback_window = None;
+        self.reset_playback_window_end_observation();
         self.snapshot.selected_tracks = TrackSelectionSnapshot::default();
         self.snapshot.tracks.clear();
         self.last_audio_starvation_warn_at = None;

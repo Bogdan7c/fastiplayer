@@ -414,6 +414,20 @@ pub(super) fn drain_decoded_video_frames(
         session.record_decoded_frame_diagnostics(&frame);
 
         let frame_pts = frame.pts;
+        if !session.playback_window_admits_frame(frame_pts) {
+            release_video_texture(session, frame.resource_handle);
+            record_video_drop(
+                session,
+                tick_result,
+                frame_pts,
+                PlayerVideoDropReason::PlaybackWindow,
+            );
+            tracing::debug!(
+                pts_ms = frame_pts.as_millis(),
+                "Dropping decoded frame outside active playback window"
+            );
+            continue;
+        }
         if session.should_drop_decoded_frame_for_seek(frame_pts) {
             session.note_decoded_pre_target_frame_dropped_for_seek_diagnostics();
             if session.can_keep_seek_preroll_fallback(frame_pts) {

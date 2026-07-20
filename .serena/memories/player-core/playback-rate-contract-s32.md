@@ -55,3 +55,8 @@
 - Player-core command/snapshot contracts не менялись. `app-egui` показывает reset indicator только для фактического non-`1x` snapshot и начинает 250-ms closing только после подтверждённого `PlaybackRate::NORMAL`; rejected reset оставляет кнопку раскрытой.
 - Wheel и scoped `+`/`-` сохраняют шаг 0.10x, но исключают `1x` из incremental UI-сетки: `1.10 -> 0.90` и `0.90 -> 1.10`; multi-step landing ровно на `1x` также переносится ещё на один шаг по направлению. Из исходного `1x` первый шаг остаётся 0.90/1.10.
 - Явные reset intents остаются двумя путями: клик по видимой кнопке и scoped клавиша `0`. Оба используют существующий `ControlAction::ResetPlaybackRate` -> `PlayerCommand::SetPlaybackRate(PlaybackRate::NORMAL)` и старую Playing/Paused/error policy.
+
+
+## S13 playback-window уточнение (2026-07-20)
+- Playback-rate/audio-clock internals используют absolute source position, тогда как snapshot и position events остаются relative к `MediaPlaybackWindow::start`.
+- Rate change не меняет window identity или обе позиции; bounded-end PCM обрезается до tempo/output path, поэтому ускорение не воспроизводит samples соседнего фрагмента.

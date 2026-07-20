@@ -34,3 +34,8 @@
 - Focused `resume_update_never_rewrites_large_playlist_state_file` и полный resume suite продолжают доказывать file/schema isolation после S02.
 
 Related memories: `mem:playlist/state`, `mem:app-egui/playlist-persistence-s14`, `mem:app-egui/startup-orchestration-s17`, `mem:playlist/settings-s13`, `mem:config/schema-store-decomposition-s23`.
+
+
+## S13 playback-window уточнение (2026-07-20)
+- Resume sidecar читает `PlayerSnapshot`, поэтому сохраняет relative position ограниченного фрагмента, а не absolute demux time.
+- Reconstructible `ActiveMediaSource::PlaybackWindow` хранит neutral semantic identity независимо от queue row. Suspend resume и settings rebuild снимают wrapper для physical reopen, затем атомарно возвращают тот же window в `PreparedMedia` и descriptor; detached source поддерживается без `item_id`.

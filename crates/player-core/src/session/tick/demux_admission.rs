@@ -27,7 +27,7 @@ use super::{
 use crate::pipeline::{VideoBacklogRecoveryRouteOutcome, VideoBacklogRecoveryScanLimit};
 use crate::{
     PendingAudioPacket, PendingVideoPacket, PipelineLatencyStage, PipelinePauseReason, PlayerError,
-    PlayerErrorKind, PlayerTickPacket, session::PlayerSession,
+    PlayerErrorKind, PlayerTickPacket, PlayerVideoDropReason, session::PlayerSession,
     session::audio_runtime::sanitize_audio_high_water_mark,
 };
 
@@ -323,6 +323,30 @@ pub(super) fn read_demux_packets(
             Ok(DemuxReadEvent::Packet(packet)) => {
                 let packet_pts = packet.pts;
                 let packet_duration = packet.duration;
+                if session.audio_packet_is_before_playback_window(&packet) {
+                    packets_read = packets_read.saturating_add(1);
+                    continue;
+                }
+                if session.packet_is_outside_playback_window(&packet) {
+                    packets_read = packets_read.saturating_add(1);
+                    if packet.kind == TrackKind::Video {
+                        session.record_video_drop(
+                            Some(packet_pts),
+                            PlayerVideoDropReason::PlaybackWindow,
+                        );
+                    }
+                    if session.playback_window_end_observed() {
+                        debug!(
+                            window_end_ms = ?session
+                                .playback_window_end()
+                                .map(|end| end.as_duration().as_millis()),
+                            "Playback window достиг synthetic EOF"
+                        );
+                        session.enter_eof_drain();
+                        break;
+                    }
+                    continue;
+                }
                 let aggregate_seek_audio_preroll = catch_up_deadline.is_some()
                     && packet.kind == TrackKind::Audio
                     && session

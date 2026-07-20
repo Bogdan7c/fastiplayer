@@ -190,6 +190,9 @@ pub enum MediaInstallFailureStage {
     /// Выбор/configure video stream завершился typed ошибкой.
     VideoStreamConfiguration,
 
+    /// Playback window не прошло source validation либо demux pre-seek до Ready.
+    PlaybackWindowPreparation,
+
     /// App resource owner не выдал matching detached backend/materializer pair.
     CandidateVideoResourceAcquisition,
 
@@ -208,13 +211,14 @@ pub enum MediaInstallFailureStage {
 
 impl MediaInstallFailureStage {
     /// Полный ordered inventory legacy и strong candidate stages после Session 00C1.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::LegacyResetSeekFloor,
         Self::LegacyResetDecoderFlush,
         Self::LegacyResetDecoderStream,
         Self::OpenTransition,
         Self::AudioTrackPlanning,
         Self::VideoStreamConfiguration,
+        Self::PlaybackWindowPreparation,
         Self::CandidateVideoResourceAcquisition,
         Self::CandidateVideoBackendMatching,
         Self::CandidateVideoBackendConfiguration,

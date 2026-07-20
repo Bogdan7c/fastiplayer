@@ -390,6 +390,7 @@ impl PlayerSession {
         seek_mode: SeekMode,
         resume_intent: PlaybackResumeIntent,
     ) -> PlayerResult<()> {
+        self.reset_playback_window_end_observation();
         if !self.snapshot.timeline.seekable {
             let reason = self
                 .snapshot
@@ -450,7 +451,7 @@ impl PlayerSession {
         self.clear_seek_preroll_fallback_frame();
         self.clear_queued_video_frames();
         self.pipeline.reset_clocks_for_seek(target_duration);
-        self.snapshot.timeline.target_position = Some(target_position);
+        self.set_timeline_target_from_source(target_position);
         self.snapshot.timeline.seeking = true;
         self.snapshot.timeline.stale_frame = self.pipeline.has_present_video_frame();
 

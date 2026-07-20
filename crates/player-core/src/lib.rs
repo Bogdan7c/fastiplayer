@@ -15,6 +15,7 @@ mod media_install;
 mod media_opening;
 mod pipeline;
 mod playback_rate;
+mod playback_window;
 mod render_lease_bridge;
 mod runtime_settings;
 mod seek_state;
@@ -106,6 +107,7 @@ pub use media_install::{
 pub use media_opening::{MediaSourceInfo, MediaSourceKind, PreparedMedia, PreparedMediaSource};
 pub(crate) use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};
 pub use playback_rate::{PlaybackRate, PlaybackRateValidationError};
+pub use playback_window::{MediaPlaybackWindow, MediaPlaybackWindowError};
 pub use runtime_settings::{
     PlayerRuntimeAcceptedChange, PlayerRuntimeApplyError, PlayerRuntimeApplyGroup,
     PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyOutcome, PlayerRuntimeApplyReport,

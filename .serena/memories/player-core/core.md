@@ -138,3 +138,11 @@
 ## Terminal installed-position restore receipt (2026-07-19)
 - `InstalledMediaStateRestoreOutcome::Applied` для `SeekTo` теперь означает authoritative final seek commit, а не только принятие команды. `PlayerSession` удерживает pending receipt с exact request + media instance + seek generation; cancel/supersede/timeout/fatal закрывают его typed position failure, replacement media — `StaleInstance`.
 - Общая внутренняя settle-точка `session/seek_receipts.rs` обслуживает exact timeline и installed-position receipts, не меняя публичный API. Контракт не зависит от codec/container/backend. Подробности и regression: `mem:player-core/installed-position-restore-receipt-2026-07-19`.
+
+
+## S13 neutral playback window (2026-07-20)
+- `MediaPlaybackWindow` — queue/CUE-free public value in `player-core`: absolute demux `start` and optional exclusive `end`; it is attached to `PreparedMedia` through `with_playback_window`.
+- Window validation and initial demux seek are fallible pre-Ready work (`MediaInstallFailureStage::PlaybackWindowPreparation`). After the Enqueued/authorization barrier no new recoverable rollback path was added.
+- `PlayerSession` owns absolute source position/duration/window internally; `PlayerSnapshot`, timeline targets, position events and receipts remain relative to window start. Ordinary Seek clamps; strict SetPosition keeps typed range rejection.
+- Bounded end is synthetic EOF through the existing drain contract. Packets/frames outside the window are dropped, crossing PCM is trimmed before tempo/output, and replay from `Ended` seeks to the absolute window start.
+- Focused tests live in `crates/player-core/src/session/tests/playback_window.rs`; pure PCM-bound tests live in `crates/player-core/src/session/audio_playback_bounds.rs`.
