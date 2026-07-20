@@ -5,7 +5,8 @@ use std::fmt;
 use std::num::{NonZeroU32, NonZeroU64};
 
 use crate::{
-    CachedPlaylistMetadata, PlaylistItem, PlaylistItemDraft, PlaylistItemId, PlaylistLocator,
+    CachedPlaylistMetadata, PlaylistCompoundDurablePayload, PlaylistItem, PlaylistItemDraft,
+    PlaylistItemId, PlaylistLocator,
 };
 
 /// Непрозрачная стабильная идентичность compound group.
@@ -71,6 +72,11 @@ impl std::error::Error for PlaylistCompoundGroupIdPersistenceError {}
 pub struct NextPlaylistCompoundGroupId(NonZeroU64);
 
 impl NextPlaylistCompoundGroupId {
+    /// Возвращает первый watermark новой lineage без allocation side effect.
+    pub const fn initial() -> Self {
+        Self(NonZeroU64::MIN)
+    }
+
     /// Валидирует сохранённый non-zero high-watermark.
     pub fn from_persistence_value(value: u64) -> Result<Self, CompoundGroupAllocatorRestoreError> {
         NonZeroU64::new(value)
@@ -327,6 +333,7 @@ pub struct PlaylistCompoundGroupDraft {
     provenance_locator: PlaylistLocator,
     cached_summary: CachedPlaylistMetadata,
     parts: Vec<PlaylistItemDraft>,
+    durable_payload: Option<PlaylistCompoundDurablePayload>,
 }
 
 impl PlaylistCompoundGroupDraft {
@@ -344,6 +351,7 @@ impl PlaylistCompoundGroupDraft {
             provenance_locator,
             cached_summary,
             parts,
+            durable_payload: None,
         })
     }
 
@@ -367,6 +375,17 @@ impl PlaylistCompoundGroupDraft {
         &self,
     ) -> impl ExactSizeIterator<Item = &PlaylistItemDraft> + DoubleEndedIterator + '_ {
         self.parts.iter()
+    }
+
+    /// Прикрепляет validated durable group payload без изменения part order.
+    pub fn with_durable_payload(mut self, payload: PlaylistCompoundDurablePayload) -> Self {
+        self.durable_payload = Some(payload);
+        self
+    }
+
+    /// Возвращает optional durable group payload для persistence.
+    pub const fn durable_payload(&self) -> Option<&PlaylistCompoundDurablePayload> {
+        self.durable_payload.as_ref()
     }
 }
 
@@ -464,6 +483,7 @@ pub struct PlaylistCompoundGroup {
     provenance_locator: PlaylistLocator,
     cached_summary: CachedPlaylistMetadata,
     parts: Box<[PlaylistCompoundPart]>,
+    durable_payload: Option<PlaylistCompoundDurablePayload>,
 }
 
 impl PlaylistCompoundGroup {
@@ -480,6 +500,11 @@ impl PlaylistCompoundGroup {
     /// Возвращает group-level cached summary.
     pub const fn cached_summary(&self) -> &CachedPlaylistMetadata {
         &self.cached_summary
+    }
+
+    /// Возвращает optional durable group payload без service dependency.
+    pub const fn durable_payload(&self) -> Option<&PlaylistCompoundDurablePayload> {
+        self.durable_payload.as_ref()
     }
 
     /// Итерирует ordered retained parts без раскрытия storage mutation.
@@ -531,6 +556,7 @@ impl PlaylistCompoundGroup {
             provenance_locator: draft.provenance_locator,
             cached_summary: draft.cached_summary,
             parts,
+            durable_payload: draft.durable_payload,
         }
     }
 }

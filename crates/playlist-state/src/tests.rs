@@ -17,7 +17,7 @@ use crate::store::inspect_state_with_test_limits;
 use crate::{
     CorruptStateCause, InspectionOutcome, PlaylistStateSnapshot, PlaylistStateStore,
     ProtectedStateCause, QuarantineFailureCause, QuarantineFileName, QuarantineOutcome,
-    StateSerializationError, serialize_state,
+    serialize_state,
 };
 
 fn item_id(value: u64) -> PlaylistItemId {
@@ -45,7 +45,7 @@ fn restored_url_item(id: u64, url: &str) -> RestoredPlaylistItem {
 }
 
 #[test]
-fn schema_v1_rejects_compound_queue_instead_of_silently_flattening_parts() {
+fn schema_v2_roundtrips_compound_queue_without_flattening_parts() {
     let mut queue = PlaylistQueue::new();
     let compound = PlaylistCompoundGroupDraft::new(
         PlaylistLocator::Local(LocalLocator::Native(PathBuf::from("compound-root"))),
@@ -68,9 +68,21 @@ fn schema_v1_rejects_compound_queue_instead_of_silently_flattening_parts() {
         .append_entries(vec![PlaylistEntryDraft::Compound(compound)])
         .expect("append compound fixture");
 
+    let serialized = serialize_state(PlaylistStateSnapshot::new(&queue, RepeatMode::StopAtEnd))
+        .expect("schema v2 сохраняет compound");
+    let serialized_json: serde_json::Value =
+        serde_json::from_slice(&serialized).expect("schema v2 JSON валиден");
+
+    assert_eq!(serialized_json["schema_version"].as_u64(), Some(2));
     assert_eq!(
-        serialize_state(PlaylistStateSnapshot::new(&queue, RepeatMode::StopAtEnd)),
-        Err(StateSerializationError::CompoundQueueRequiresSchemaV2)
+        serialized_json["entries"][0]["kind"].as_str(),
+        Some("compound")
+    );
+    assert_eq!(
+        serialized_json["entries"][0]["parts"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
     );
 }
 
@@ -391,7 +403,7 @@ fn invalid_allocator_values_are_supported_corrupt_without_repair() {
         let (_, cause) = corrupt_identity(PlaylistStateStore::new(&state_path).inspect_state());
         assert!(matches!(
             cause,
-            CorruptStateCause::InvalidV1Payload | CorruptStateCause::InvalidQueueState
+            CorruptStateCause::InvalidV2Payload | CorruptStateCause::InvalidQueueState
         ));
     }
 
@@ -426,8 +438,8 @@ fn envelope_budget_precedes_v1_limit_and_protects_incomplete_proof() {
     ));
 
     for tail in [
-        "\"schema_version\":2",
-        "\"schema_version\":1,\"schema_version\":2",
+        "\"schema_version\":3",
+        "\"schema_version\":1,\"schema_version\":3",
     ] {
         let protected = format!("{{\"padding\":\"{}\",{tail}}}", "x".repeat(300));
         fs::write(&state_path, protected).expect("write protected tail");
@@ -440,13 +452,13 @@ fn envelope_budget_precedes_v1_limit_and_protects_incomplete_proof() {
     }
 
     let newer = format!(
-        "{{\"padding\":\"{}\",\"schema_version\":2}}",
+        "{{\"padding\":\"{}\",\"schema_version\":3}}",
         "x".repeat(200)
     );
     fs::write(&state_path, &newer).expect("write newer");
     assert!(matches!(
         inspect_state_with_test_limits(&state_path, 512, 32),
-        InspectionOutcome::NewerSchemaSaveBlocked { schema_version: 2 }
+        InspectionOutcome::NewerSchemaSaveBlocked { schema_version: 3 }
     ));
     assert_eq!(
         fs::read_to_string(&state_path).expect("source retained"),
@@ -492,7 +504,7 @@ fn capacity_history_cap_and_unknown_enum_are_supported_corrupt() {
     });
     let over_capacity_bytes = serde_json::to_vec(&over_capacity).expect("capacity JSON");
     assert!(
-        over_capacity_bytes.len() as u64 <= crate::MAX_SUPPORTED_V1_STATE_BYTES,
+        over_capacity_bytes.len() as u64 <= crate::MAX_SUPPORTED_STATE_BYTES,
         "fixture must exercise domain cap rather than file cap"
     );
     fs::write(&state_path, over_capacity_bytes).expect("write over-cap state");
@@ -522,7 +534,7 @@ fn capacity_history_cap_and_unknown_enum_are_supported_corrupt() {
     )
     .expect("write enum state");
     let (_, cause) = corrupt_identity(PlaylistStateStore::new(&state_path).inspect_state());
-    assert_eq!(cause, CorruptStateCause::InvalidV1Payload);
+    assert_eq!(cause, CorruptStateCause::InvalidV2Payload);
 }
 
 #[test]

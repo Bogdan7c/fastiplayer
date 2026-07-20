@@ -5,6 +5,7 @@
 //! canonical order, repeat/navigation policy и атомарными mutation boundaries.
 
 mod entry;
+mod entry_restore;
 mod id;
 mod import;
 mod item;
@@ -22,14 +23,17 @@ pub use entry::{
     PlaylistCompoundMembership, PlaylistCompoundPart, PlaylistCompoundPartOrdinal, PlaylistEntry,
     PlaylistEntryDraft, PlaylistEntryId,
 };
+pub use entry_restore::{
+    RestoredPlaylistCompoundGroup, RestoredPlaylistCompoundGroupError, RestoredPlaylistEntry,
+};
 pub use id::{
     AllocatorRestoreError, NextPlaylistItemId, PlaylistItemId, PlaylistItemIdAllocator,
     PlaylistItemIdPersistenceError,
 };
 pub use import::{
-    MAX_PLAYLIST_IMPORT_COMPOUND_PARTS, PlaylistCompoundImportDraft,
-    PlaylistCompoundImportDraftError, PlaylistImportAvailability, PlaylistImportEntryDraft,
-    PlaylistSingleImportDraft,
+    MAX_PLAYLIST_IMPORT_COMPOUND_PARTS, PlaylistCompoundDurablePayload,
+    PlaylistCompoundImportDraft, PlaylistCompoundImportDraftError, PlaylistImportAvailability,
+    PlaylistImportEntryDraft, PlaylistSingleDurablePayload, PlaylistSingleImportDraft,
 };
 pub use item::{PlaylistItem, PlaylistItemDraft, RestoredPlaylistItem};
 pub use locator::{

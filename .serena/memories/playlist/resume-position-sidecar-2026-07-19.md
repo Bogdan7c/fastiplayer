@@ -29,4 +29,8 @@
 - Focused coverage lives in `playlist-state/src/resume/tests.rs`, `app-egui/src/playlist_runtime/resume_persistence/tests.rs`, playlist settings/startup tests, and existing player exact-restore tests. It covers strict/null/corrupt/newer schema, permissions, latest-only/report retention, queue-file isolation, exact stale/tombstone/protected gating, periodic/immediate/Ended policy, non-seekable null, interval reschedule and exact startup fingerprint.
 - PASS: focused suites; app all-features 693 tests; workspace tests/check on Rust 1.96; MSRV 1.92 check; strict all-features Clippy; strict rustdoc; fmt; refactor guardrails; diff check. `scripts/pre-pr-checks.sh` is externally blocked by new `quick-xml 0.39.3` advisories RUSTSEC-2026-0194/0195 plus unmaintained `audiopus_sys`; no dependency/baseline change was made. `scripts/coverage.sh check` reproduces the known workspace coverage ratchet defect; baseline was not updated.
 
+## S02 isolation confirmation (2026-07-20)
+- Playlist queue writer schema поднят до v2, но `playlist-resume.json`, `CURRENT_PLAYLIST_RESUME_SCHEMA_VERSION = 1`, checkpoint DTO, fingerprint, quarantine и writer lifecycle не изменены.
+- Focused `resume_update_never_rewrites_large_playlist_state_file` и полный resume suite продолжают доказывать file/schema isolation после S02.
+
 Related memories: `mem:playlist/state`, `mem:app-egui/playlist-persistence-s14`, `mem:app-egui/startup-orchestration-s17`, `mem:playlist/settings-s13`, `mem:config/schema-store-decomposition-s23`.

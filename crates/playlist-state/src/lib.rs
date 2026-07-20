@@ -17,6 +17,8 @@ mod worker;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod v2_tests;
 
 pub use atomic_write::{
     AtomicWriteOutcome, DurabilityRetryOutcome, DurabilityUnconfirmedCause, NotReplacedCause,
@@ -47,8 +49,8 @@ pub use worker::{
 /// Стабильное имя playlist state рядом с application config.
 pub const PLAYLIST_STATE_FILENAME: &str = "playlist-state.json";
 
-/// Текущая и единственная поддерживаемая disk schema.
-pub const CURRENT_PLAYLIST_STATE_SCHEMA_VERSION: u64 = 1;
+/// Текущая writer schema; reader также строго мигрирует legacy v1.
+pub const CURRENT_PLAYLIST_STATE_SCHEMA_VERSION: u64 = 2;
 
 /// Hard budget полного envelope proof.
 ///
@@ -62,8 +64,8 @@ pub const MAX_STATE_ENVELOPE_TOKEN_BYTES: usize = 1024 * 1024;
 /// Явный depth budget; serde_json recursion limit дополнительно остаётся включён.
 pub const MAX_STATE_ENVELOPE_NESTING_DEPTH: usize = 128;
 
-/// Меньший предел файла, который schema v1 разрешает полностью materialize-ить.
-pub const MAX_SUPPORTED_V1_STATE_BYTES: u64 = 32 * 1024 * 1024;
+/// Меньший предел supported playlist-state файла v1/v2.
+pub const MAX_SUPPORTED_STATE_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Сериализует immutable domain snapshot в deterministic pretty JSON.
 ///

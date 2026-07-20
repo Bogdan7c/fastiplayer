@@ -302,7 +302,7 @@ fn latest_only_shutdown_coalesces_snapshot_and_matching_allocator_watermark() {
     assert!(matches!(shutdown, SaveWorkerShutdownOutcome::Complete(_)));
     assert_eq!(writer.revisions(), vec![revision(2)]);
     let json = writer.json_snapshots();
-    assert_eq!(json[0]["items"].as_array().map(Vec::len), Some(2));
+    assert_eq!(json[0]["entries"].as_array().map(Vec::len), Some(2));
     assert_eq!(json[0]["next_item_id"].as_u64(), Some(3));
 }
 

@@ -117,13 +117,15 @@ impl fmt::Debug for InspectedFileIdentity {
     }
 }
 
-/// Supported-v1 причина, после которой app может явно запросить quarantine.
+/// Supported-schema причина, после которой app может явно запросить quarantine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CorruptStateCause {
     /// Полный v1 file превышает отдельный DTO budget.
     SupportedFileTooLarge,
     /// JSON v1 не соответствует строгой disk DTO форме.
     InvalidV1Payload,
+    /// JSON v2 не соответствует строгой disk DTO форме.
+    InvalidV2Payload,
     /// Variable-size поле нарушает именованный resource limit.
     ResourceLimitExceeded,
     /// DTO невозможно преобразовать в domain locator/cache/time types.
@@ -208,15 +210,15 @@ impl fmt::Debug for InspectionOutcome {
 /// Privacy-safe failure сериализации domain snapshot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StateSerializationError {
-    /// Compound storage ожидает schema v2 и не может быть losslessly flattened в v1.
-    CompoundQueueRequiresSchemaV2,
-    /// Domain time не помещается в canonical v1 seconds+nanos representation.
+    /// Domain time не помещается в canonical seconds+nanos representation.
     TimeOutOfRange,
     /// Native path encoding недоступен для текущей target platform.
     UnsupportedNativePathEncoding,
-    /// Snapshot нарушает v1 variable-size budget.
+    /// Durable locator нарушает closed stable-only invariant.
+    InvalidDurableReopenLocator,
+    /// Snapshot нарушает variable-size budget.
     ResourceLimitExceeded,
-    /// Готовый JSON превышает supported-v1 file budget.
+    /// Готовый JSON превышает supported file budget.
     SerializedStateTooLarge,
     /// serde_json не смог записать private DTO.
     JsonEncodingFailed,
@@ -225,15 +227,15 @@ pub enum StateSerializationError {
 impl fmt::Display for StateSerializationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
-            Self::CompoundQueueRequiresSchemaV2 => {
-                "compound playlist нельзя без потерь сохранить в schema v1"
-            }
-            Self::TimeOutOfRange => "playlist state time не помещается в schema v1",
+            Self::TimeOutOfRange => "playlist state time не помещается в disk schema",
             Self::UnsupportedNativePathEncoding => {
-                "native path encoding не поддержан schema v1 на этой платформе"
+                "native path encoding не поддержан disk schema на этой платформе"
             }
-            Self::ResourceLimitExceeded => "playlist state превышает resource limit schema v1",
-            Self::SerializedStateTooLarge => "playlist state превышает file limit schema v1",
+            Self::InvalidDurableReopenLocator => {
+                "playlist state содержит недопустимый durable reopen locator"
+            }
+            Self::ResourceLimitExceeded => "playlist state превышает resource limit",
+            Self::SerializedStateTooLarge => "playlist state превышает file limit",
             Self::JsonEncodingFailed => "playlist state не удалось сериализовать в JSON",
         };
         formatter.write_str(message)

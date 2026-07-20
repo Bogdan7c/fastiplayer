@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::{AllocatorRestoreError, PlaylistEntryId, PlaylistItemId};
+use crate::{PlaylistEntryId, PlaylistItemId};
 
 use super::{QueueRevisionSnapshot, RemovalCurrentOutcome, TraversalCurrentItemId};
 
@@ -707,62 +707,6 @@ impl fmt::Display for TraversalCurrentMutationError {
 }
 
 impl std::error::Error for TraversalCurrentMutationError {}
-
-/// Ошибка restore полного queue snapshot.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum QueueRestoreError {
-    /// Snapshot превышает hard capacity и не может быть усечён молча.
-    CapacityExceeded { restored: usize, maximum: usize },
-    /// Две restored строки имеют один stable Item ID.
-    DuplicateItemId { item_id: PlaylistItemId },
-    /// Allocator watermark не продолжает restored lineage.
-    InvalidAllocator(AllocatorRestoreError),
-    /// Persisted current не ссылается на committed row.
-    CurrentItemNotCommitted { item_id: PlaylistItemId },
-}
-
-impl fmt::Debug for QueueRestoreError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::CapacityExceeded { restored, maximum } => formatter
-                .debug_struct("CapacityExceeded")
-                .field("restored", restored)
-                .field("maximum", maximum)
-                .finish(),
-            Self::DuplicateItemId { item_id } => formatter
-                .debug_struct("DuplicateItemId")
-                .field("item_id", item_id)
-                .finish(),
-            Self::InvalidAllocator(error) => formatter
-                .debug_tuple("InvalidAllocator")
-                .field(error)
-                .finish(),
-            Self::CurrentItemNotCommitted { item_id } => formatter
-                .debug_struct("CurrentItemNotCommitted")
-                .field("item_id", item_id)
-                .finish(),
-        }
-    }
-}
-
-impl fmt::Display for QueueRestoreError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::CapacityExceeded { maximum, .. } => {
-                write!(formatter, "restored queue превышает лимит {maximum}")
-            }
-            Self::DuplicateItemId { item_id } => {
-                write!(formatter, "restored queue повторяет {item_id}")
-            }
-            Self::InvalidAllocator(error) => fmt::Display::fmt(error, formatter),
-            Self::CurrentItemNotCommitted { item_id } => {
-                write!(formatter, "restored current {item_id} отсутствует в queue")
-            }
-        }
-    }
-}
-
-impl std::error::Error for QueueRestoreError {}
 
 /// Ошибка полного reservation preflight до player authorization barrier.
 #[derive(Clone, Copy, PartialEq, Eq)]

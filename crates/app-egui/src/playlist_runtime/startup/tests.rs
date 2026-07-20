@@ -412,7 +412,7 @@ fn clear_and_media_replacement_supersede_only_restore_apply() {
 fn protected_versions_open_only_non_persistent_generation() {
     let cases = [
         (
-            br#"{"schema_version":2}"#.as_slice(),
+            br#"{"schema_version":3}"#.as_slice(),
             SaveBlockReason::NewerSchema,
         ),
         (

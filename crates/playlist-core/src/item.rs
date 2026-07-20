@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::{
     CachedPlaylistMetadata, LocalLocator, LocalSourceFingerprint, PlaylistItemId, PlaylistLocator,
-    SecretUrlLocator,
+    PlaylistSingleDurablePayload, SecretUrlLocator,
 };
 
 /// ID-less вход обычного add/replace domain boundary.
@@ -14,6 +14,7 @@ pub struct PlaylistItemDraft {
     locator: PlaylistLocator,
     local_fingerprint: Option<LocalSourceFingerprint>,
     cached_metadata: CachedPlaylistMetadata,
+    durable_payload: Option<PlaylistSingleDurablePayload>,
 }
 
 impl PlaylistItemDraft {
@@ -27,6 +28,7 @@ impl PlaylistItemDraft {
             locator: PlaylistLocator::Local(locator),
             local_fingerprint,
             cached_metadata,
+            durable_payload: None,
         }
     }
 
@@ -36,6 +38,7 @@ impl PlaylistItemDraft {
             locator: PlaylistLocator::Url(locator),
             local_fingerprint: None,
             cached_metadata,
+            durable_payload: None,
         }
     }
 
@@ -54,6 +57,18 @@ impl PlaylistItemDraft {
         &self.cached_metadata
     }
 
+    /// Прикрепляет validated durable payload, сохраняя legacy locator как
+    /// operational identity существующих app boundaries.
+    pub fn with_durable_payload(mut self, payload: PlaylistSingleDurablePayload) -> Self {
+        self.durable_payload = Some(payload);
+        self
+    }
+
+    /// Возвращает optional durable payload для persistence/future resolver.
+    pub const fn durable_payload(&self) -> Option<&PlaylistSingleDurablePayload> {
+        self.durable_payload.as_ref()
+    }
+
     /// Публикует draft вместе с allocator-owned ID только внутри queue commit.
     pub(crate) fn into_item(self, item_id: PlaylistItemId) -> PlaylistItem {
         PlaylistItem {
@@ -62,6 +77,7 @@ impl PlaylistItemDraft {
             payload: Arc::new(PlaylistItemPayload {
                 locator: self.locator,
                 cached_metadata: self.cached_metadata,
+                durable_payload: self.durable_payload,
             }),
         }
     }
@@ -92,6 +108,7 @@ pub struct PlaylistItem {
 struct PlaylistItemPayload {
     locator: PlaylistLocator,
     cached_metadata: CachedPlaylistMetadata,
+    durable_payload: Option<PlaylistSingleDurablePayload>,
 }
 
 impl PlaylistItem {
@@ -113,6 +130,11 @@ impl PlaylistItem {
     /// Возвращает immutable cached metadata.
     pub fn cached_metadata(&self) -> &CachedPlaylistMetadata {
         &self.payload.cached_metadata
+    }
+
+    /// Возвращает optional durable import payload без request material.
+    pub fn durable_payload(&self) -> Option<&PlaylistSingleDurablePayload> {
+        self.payload.durable_payload.as_ref()
     }
 
     /// Атомарно заменяет local freshness fingerprint и связанный metadata cache.

@@ -10,6 +10,7 @@ mod read;
 mod removal;
 mod reordering;
 mod reservation;
+mod restore;
 mod shuffle;
 mod sort;
 mod structural;
@@ -29,7 +30,6 @@ use crate::id::{ItemIdAllocationError, ItemIdAllocationPlan};
 use crate::{
     NextPlaylistCompoundGroupId, NextPlaylistItemId, PlaylistCompoundGroupIdAllocator,
     PlaylistEntry, PlaylistItem, PlaylistItemDraft, PlaylistItemId, PlaylistItemIdAllocator,
-    RestoredPlaylistItem,
 };
 
 pub use discovery::{
@@ -54,9 +54,9 @@ pub use navigation::{
 pub use outcomes::{
     AddItemsError, AddItemsOutcome, AllocatedPlaylistItemIds, CappedTailAppendOutcome,
     ClearQueueOutcome, MoveItemIntent, MoveItemOutcome, PrepareReservedMutationError,
-    QueueRestoreError, RemoveItemOutcome, ReplaceQueueError, ReplaceQueueOutcome,
-    ReservedMutationCommit, TraversalCurrentEffect, TraversalCurrentMutationError,
-    TraversalCurrentMutationOutcome, TraversalCurrentValidationError,
+    RemoveItemOutcome, ReplaceQueueError, ReplaceQueueOutcome, ReservedMutationCommit,
+    TraversalCurrentEffect, TraversalCurrentMutationError, TraversalCurrentMutationOutcome,
+    TraversalCurrentValidationError,
 };
 pub use read::OwnedPlayableItemsSnapshot;
 pub use removal::{
@@ -65,6 +65,7 @@ pub use removal::{
 };
 pub use reordering::MoveItemsOutcome;
 pub use reservation::{PreparedQueueMutationToken, ReservedQueueMutation};
+pub use restore::{PlaylistQueueRestore, QueueRestoreError};
 pub use shuffle::{
     BulkRemoveError, BulkRemoveOutcome, MAX_SHUFFLE_HISTORY_ENTRIES, ShuffleHistoryCursor,
     ShuffleQueueRestoreError, ShuffleToggleError, ShuffleToggleOutcome,
@@ -186,39 +187,6 @@ impl fmt::Display for TraversalCurrentItemId {
     }
 }
 
-/// Serde-neutral input полного persistence restore.
-pub struct PlaylistQueueRestore {
-    restored_items: Vec<RestoredPlaylistItem>,
-    next_item_id: NextPlaylistItemId,
-    traversal_current_item_id: Option<PlaylistItemId>,
-}
-
-impl PlaylistQueueRestore {
-    /// Собирает DTO-mapped restore input; все cross-field invariants проверяет queue.
-    pub fn new(
-        restored_items: Vec<RestoredPlaylistItem>,
-        next_item_id: NextPlaylistItemId,
-        traversal_current_item_id: Option<PlaylistItemId>,
-    ) -> Self {
-        Self {
-            restored_items,
-            next_item_id,
-            traversal_current_item_id,
-        }
-    }
-}
-
-impl fmt::Debug for PlaylistQueueRestore {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("PlaylistQueueRestore")
-            .field("restored_item_count", &self.restored_items.len())
-            .field("next_item_id", &self.next_item_id)
-            .field("traversal_current_item_id", &self.traversal_current_item_id)
-            .finish()
-    }
-}
-
 /// Единственный владелец canonical order и его mutation invariants.
 pub struct PlaylistQueue {
     entries: Vec<PlaylistEntry>,
@@ -246,56 +214,6 @@ impl PlaylistQueue {
             active_reservation: None,
             shuffle_traversal: None,
         }
-    }
-
-    /// Атомарно валидирует capacity, unique IDs, current и allocator watermark.
-    pub fn restore(snapshot: PlaylistQueueRestore) -> Result<Self, QueueRestoreError> {
-        if snapshot.restored_items.len() > MAX_PLAYLIST_ITEMS {
-            return Err(QueueRestoreError::CapacityExceeded {
-                restored: snapshot.restored_items.len(),
-                maximum: MAX_PLAYLIST_ITEMS,
-            });
-        }
-
-        let mut unique_item_ids = HashSet::with_capacity(snapshot.restored_items.len());
-        let mut restored_item_ids = Vec::with_capacity(snapshot.restored_items.len());
-
-        for restored_item in &snapshot.restored_items {
-            let item_id = restored_item.item_id();
-            if !unique_item_ids.insert(item_id) {
-                return Err(QueueRestoreError::DuplicateItemId { item_id });
-            }
-            restored_item_ids.push(item_id);
-        }
-
-        let item_id_allocator =
-            PlaylistItemIdAllocator::restore(snapshot.next_item_id, &restored_item_ids)
-                .map_err(QueueRestoreError::InvalidAllocator)?;
-        let traversal_current = match snapshot.traversal_current_item_id {
-            Some(item_id) if unique_item_ids.contains(&item_id) => {
-                Some(TraversalCurrentItemId(item_id))
-            }
-            Some(item_id) => return Err(QueueRestoreError::CurrentItemNotCommitted { item_id }),
-            None => None,
-        };
-        let entries = snapshot
-            .restored_items
-            .into_iter()
-            .map(RestoredPlaylistItem::into_item)
-            .map(PlaylistEntry::Single)
-            .collect();
-
-        Ok(Self {
-            entries,
-            item_id_allocator,
-            compound_group_id_allocator: PlaylistCompoundGroupIdAllocator::initial(),
-            traversal_current,
-            structural_revision: QueueRevision::INITIAL,
-            traversal_revision: QueueRevision::INITIAL,
-            metadata_revision: QueueRevision::INITIAL,
-            active_reservation: None,
-            shuffle_traversal: None,
-        })
     }
 
     /// Сообщает emptiness без сканирования rows.

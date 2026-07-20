@@ -43,7 +43,7 @@ fn atomic_write_replaces_complete_json_and_preserves_allocator_watermark() {
     let written_json: serde_json::Value =
         serde_json::from_slice(&fs::read(&target_path).expect("target читается после replace"))
             .expect("target содержит complete JSON");
-    assert_eq!(written_json["items"].as_array().map(Vec::len), Some(2));
+    assert_eq!(written_json["entries"].as_array().map(Vec::len), Some(2));
     assert_eq!(written_json["next_item_id"].as_u64(), Some(3));
 }
 

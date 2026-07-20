@@ -12,9 +12,10 @@ use playlist_core::{
 use serde::{Deserialize, Serialize};
 
 use crate::types::{LoadedPlaylistState, PlaylistStateSnapshot, StateSerializationError};
-use crate::{CURRENT_PLAYLIST_STATE_SCHEMA_VERSION, MAX_SUPPORTED_V1_STATE_BYTES};
+use crate::{CURRENT_PLAYLIST_STATE_SCHEMA_VERSION, MAX_SUPPORTED_STATE_BYTES};
 
 mod path;
+mod v2;
 
 use path::{LocalPathV1Dto, validate_domain_locator};
 
@@ -49,7 +50,7 @@ struct PlaylistStateV1Dto {
 /// вместе с canonical items внутри `capture_owned_state` и не может быть
 /// заменён либо вычислен отдельно перед записью.
 pub(crate) struct OwnedPlaylistStateSnapshot {
-    dto: PlaylistStateV1Dto,
+    dto: v2::PlaylistStateV2Dto,
 }
 
 /// Одна canonical row в exact persisted order.
@@ -141,7 +142,7 @@ pub(crate) fn capture_owned_state(
     snapshot: PlaylistStateSnapshot<'_>,
 ) -> Result<OwnedPlaylistStateSnapshot, StateSerializationError> {
     validate_domain_snapshot(snapshot)?;
-    let dto = PlaylistStateV1Dto::from_domain(snapshot)?;
+    let dto = v2::PlaylistStateV2Dto::from_domain(snapshot)?;
     dto.validate_resource_limits()
         .map_err(|_| StateSerializationError::ResourceLimitExceeded)?;
 
@@ -152,7 +153,7 @@ pub(crate) fn capture_owned_state(
 pub(crate) fn serialize_owned_state(
     snapshot: &OwnedPlaylistStateSnapshot,
 ) -> Result<Vec<u8>, StateSerializationError> {
-    let maximum_json_bytes = usize::try_from(MAX_SUPPORTED_V1_STATE_BYTES)
+    let maximum_json_bytes = usize::try_from(MAX_SUPPORTED_STATE_BYTES)
         .map_err(|_| StateSerializationError::SerializedStateTooLarge)?;
     let mut output = LimitedJsonBuffer::new(maximum_json_bytes.saturating_sub(1));
     let serialization_result = {
@@ -191,7 +192,7 @@ impl Write for LimitedJsonBuffer {
         };
         if next_length > self.maximum_bytes {
             self.exceeded_limit = true;
-            return Err(io::Error::other("playlist state JSON exceeds v1 limit"));
+            return Err(io::Error::other("playlist state JSON exceeds file limit"));
         }
         self.bytes.extend_from_slice(input);
         Ok(input.len())
@@ -202,78 +203,24 @@ impl Write for LimitedJsonBuffer {
     }
 }
 
-/// Парсит уже envelope-classified supported-v1 bytes.
-pub(crate) fn deserialize_supported_v1(
+/// Парсит уже envelope-classified supported schema bytes.
+pub(crate) fn deserialize_supported(
+    schema_version: u64,
     inspected_bytes: &[u8],
 ) -> Result<LoadedPlaylistState, DtoLoadError> {
-    let dto: PlaylistStateV1Dto =
-        serde_json::from_slice(inspected_bytes).map_err(|_| DtoLoadError::InvalidPayload)?;
-    dto.validate_resource_limits()?;
-    dto.into_domain()
+    match schema_version {
+        1 => {
+            let dto: PlaylistStateV1Dto = serde_json::from_slice(inspected_bytes)
+                .map_err(|_| DtoLoadError::InvalidPayload)?;
+            dto.validate_resource_limits()?;
+            dto.into_domain()
+        }
+        CURRENT_PLAYLIST_STATE_SCHEMA_VERSION => v2::deserialize(inspected_bytes),
+        _ => Err(DtoLoadError::InvalidPayload),
+    }
 }
 
 impl PlaylistStateV1Dto {
-    fn from_domain(snapshot: PlaylistStateSnapshot<'_>) -> Result<Self, StateSerializationError> {
-        let queue = snapshot.queue();
-        if queue
-            .iter_top_level_entries()
-            .any(|entry| entry.as_compound().is_some())
-        {
-            return Err(StateSerializationError::CompoundQueueRequiresSchemaV2);
-        }
-        let playable_items_snapshot = queue.owned_playable_items_snapshot();
-        let items = playable_items_snapshot
-            .iter_playable_items()
-            .map(PlaylistItemV1Dto::from_domain)
-            .collect::<Result<Vec<_>, _>>()?;
-        let shuffle_snapshot = queue.shuffle_traversal_snapshot();
-        let (shuffle_enabled, shuffle_history, shuffle_history_cursor, shuffle_upcoming) =
-            match shuffle_snapshot {
-                Some(traversal) => (
-                    true,
-                    traversal
-                        .history()
-                        .iter()
-                        .map(|item_id| item_id.expose_value_for_persistence())
-                        .collect(),
-                    Nullable(
-                        traversal
-                            .history_cursor()
-                            .map(|cursor| cursor.index() as u64),
-                    ),
-                    traversal
-                        .upcoming()
-                        .iter()
-                        .map(|entry_id| match entry_id {
-                            playlist_core::PlaylistEntryId::Single(item_id) => {
-                                Ok(item_id.expose_value_for_persistence())
-                            }
-                            playlist_core::PlaylistEntryId::Compound(_) => {
-                                Err(StateSerializationError::CompoundQueueRequiresSchemaV2)
-                            }
-                        })
-                        .collect::<Result<Vec<_>, _>>()?,
-                ),
-                None => (false, Vec::new(), Nullable(None), Vec::new()),
-            };
-
-        Ok(Self {
-            schema_version: CURRENT_PLAYLIST_STATE_SCHEMA_VERSION,
-            next_item_id: queue.next_item_id_snapshot().expose_value_for_persistence(),
-            items,
-            current_item_id: Nullable(
-                queue
-                    .traversal_current()
-                    .map(|current| current.item_id().expose_value_for_persistence()),
-            ),
-            repeat_mode: snapshot.repeat_mode().into(),
-            shuffle_enabled,
-            shuffle_history,
-            shuffle_history_cursor,
-            shuffle_upcoming,
-        })
-    }
-
     fn validate_resource_limits(&self) -> Result<(), DtoLoadError> {
         if self.items.len() > MAX_PLAYLIST_ITEMS
             || self.shuffle_history.len() > MAX_SHUFFLE_HISTORY_ENTRIES
@@ -297,7 +244,7 @@ impl PlaylistStateV1Dto {
     }
 
     fn into_domain(self) -> Result<LoadedPlaylistState, DtoLoadError> {
-        if self.schema_version != CURRENT_PLAYLIST_STATE_SCHEMA_VERSION {
+        if self.schema_version != 1 {
             return Err(DtoLoadError::DomainValue);
         }
 
@@ -367,6 +314,11 @@ impl PlaylistItemV1Dto {
     }
 
     fn into_domain(self) -> Result<RestoredPlaylistItem, DtoLoadError> {
+        let (item_id, draft) = self.into_draft()?;
+        Ok(RestoredPlaylistItem::new(item_id, draft))
+    }
+
+    fn into_draft(self) -> Result<(PlaylistItemId, PlaylistItemDraft), DtoLoadError> {
         let item_id = PlaylistItemId::from_persistence_value(self.item_id)
             .map_err(|_| DtoLoadError::QueueState)?;
         let metadata = self.cached_metadata.into_domain()?;
@@ -389,7 +341,7 @@ impl PlaylistItemV1Dto {
                 PlaylistItemDraft::url(locator, metadata)
             }
         };
-        Ok(RestoredPlaylistItem::new(item_id, draft))
+        Ok((item_id, draft))
     }
 }
 
@@ -409,6 +361,15 @@ impl PlaylistLocatorV1Dto {
         match self {
             Self::Local { path } => path.validate_resource_limits(),
             Self::Url { reopenable_url } => validate_text(reopenable_url, MAX_LOCATOR_TEXT_BYTES),
+        }
+    }
+
+    fn into_domain(self) -> Result<PlaylistLocator, DtoLoadError> {
+        match self {
+            Self::Local { path } => Ok(PlaylistLocator::Local(path.into_domain()?)),
+            Self::Url { reopenable_url } => SecretUrlLocator::from_reopenable_url(reopenable_url)
+                .map(PlaylistLocator::Url)
+                .map_err(|_| DtoLoadError::DomainValue),
         }
     }
 }
@@ -608,7 +569,7 @@ impl SerializationResourceBudget {
     fn new() -> Self {
         Self {
             accounted_bytes: 0,
-            maximum_bytes: MAX_SUPPORTED_V1_STATE_BYTES as usize,
+            maximum_bytes: MAX_SUPPORTED_STATE_BYTES as usize,
         }
     }
 

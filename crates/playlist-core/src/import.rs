@@ -20,22 +20,21 @@ pub enum PlaylistImportAvailability {
     Unavailable,
 }
 
-/// ID-less imported playable item со всеми нейтральными payload values.
+/// Durable часть imported playable item, которую queue и persistence хранят
+/// без знания parser-а, service adapter-а либо transport request material.
 #[derive(Clone, PartialEq, Eq)]
-pub struct PlaylistSingleImportDraft {
+pub struct PlaylistSingleDurablePayload {
     reopen_locator: DurableReopenLocator,
-    cached_metadata: CachedPlaylistMetadata,
     playback_span: Option<PlaylistPlaybackSpan>,
     ancillary_track_hints: Box<[PlaylistAncillaryTrackHint]>,
     provenance: PlaylistImportProvenance,
     availability: PlaylistImportAvailability,
 }
 
-impl PlaylistSingleImportDraft {
-    /// Создаёт bounded single draft без выделения `PlaylistItemId`.
+impl PlaylistSingleDurablePayload {
+    /// Создаёт validated durable payload до allocation/queue mutation.
     pub fn new(
         reopen_locator: DurableReopenLocator,
-        cached_metadata: CachedPlaylistMetadata,
         playback_span: Option<PlaylistPlaybackSpan>,
         ancillary_track_hints: Vec<PlaylistAncillaryTrackHint>,
         provenance: PlaylistImportProvenance,
@@ -45,7 +44,6 @@ impl PlaylistSingleImportDraft {
 
         Ok(Self {
             reopen_locator,
-            cached_metadata,
             playback_span,
             ancillary_track_hints: ancillary_track_hints.into_boxed_slice(),
             provenance,
@@ -56,11 +54,6 @@ impl PlaylistSingleImportDraft {
     /// Возвращает durable identity будущего open/resolve.
     pub const fn reopen_locator(&self) -> &DurableReopenLocator {
         &self.reopen_locator
-    }
-
-    /// Возвращает cached display/sort metadata.
-    pub const fn cached_metadata(&self) -> &CachedPlaylistMetadata {
-        &self.cached_metadata
     }
 
     /// Возвращает optional playback window.
@@ -84,12 +77,11 @@ impl PlaylistSingleImportDraft {
     }
 }
 
-impl fmt::Debug for PlaylistSingleImportDraft {
+impl fmt::Debug for PlaylistSingleDurablePayload {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("PlaylistSingleImportDraft")
+            .debug_struct("PlaylistSingleDurablePayload")
             .field("reopen_locator", &self.reopen_locator)
-            .field("cached_metadata", &"<redacted-metadata>")
             .field("playback_span", &self.playback_span)
             .field(
                 "ancillary_track_hint_count",
@@ -101,12 +93,128 @@ impl fmt::Debug for PlaylistSingleImportDraft {
     }
 }
 
+/// Durable group-level payload без cached summary и ordered parts.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PlaylistCompoundDurablePayload {
+    reopen_locator: DurableReopenLocator,
+    provenance: PlaylistImportProvenance,
+}
+
+impl PlaylistCompoundDurablePayload {
+    /// Создаёт durable group payload из уже validated neutral values.
+    pub const fn new(
+        reopen_locator: DurableReopenLocator,
+        provenance: PlaylistImportProvenance,
+    ) -> Self {
+        Self {
+            reopen_locator,
+            provenance,
+        }
+    }
+
+    /// Возвращает durable compound root identity.
+    pub const fn reopen_locator(&self) -> &DurableReopenLocator {
+        &self.reopen_locator
+    }
+
+    /// Возвращает durable root provenance.
+    pub const fn provenance(&self) -> &PlaylistImportProvenance {
+        &self.provenance
+    }
+}
+
+impl fmt::Debug for PlaylistCompoundDurablePayload {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PlaylistCompoundDurablePayload")
+            .field("reopen_locator", &self.reopen_locator)
+            .field("provenance", &self.provenance)
+            .finish()
+    }
+}
+
+/// ID-less imported playable item со всеми нейтральными payload values.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PlaylistSingleImportDraft {
+    cached_metadata: CachedPlaylistMetadata,
+    durable_payload: PlaylistSingleDurablePayload,
+}
+
+impl PlaylistSingleImportDraft {
+    /// Создаёт bounded single draft без выделения `PlaylistItemId`.
+    pub fn new(
+        reopen_locator: DurableReopenLocator,
+        cached_metadata: CachedPlaylistMetadata,
+        playback_span: Option<PlaylistPlaybackSpan>,
+        ancillary_track_hints: Vec<PlaylistAncillaryTrackHint>,
+        provenance: PlaylistImportProvenance,
+        availability: PlaylistImportAvailability,
+    ) -> Result<Self, PlaylistPayloadBuildError> {
+        let durable_payload = PlaylistSingleDurablePayload::new(
+            reopen_locator,
+            playback_span,
+            ancillary_track_hints,
+            provenance,
+            availability,
+        )?;
+
+        Ok(Self {
+            cached_metadata,
+            durable_payload,
+        })
+    }
+
+    /// Возвращает durable identity будущего open/resolve.
+    pub const fn reopen_locator(&self) -> &DurableReopenLocator {
+        self.durable_payload.reopen_locator()
+    }
+
+    /// Возвращает cached display/sort metadata.
+    pub const fn cached_metadata(&self) -> &CachedPlaylistMetadata {
+        &self.cached_metadata
+    }
+
+    /// Возвращает optional playback window.
+    pub const fn playback_span(&self) -> Option<PlaylistPlaybackSpan> {
+        self.durable_payload.playback_span()
+    }
+
+    /// Возвращает bounded ancillary hints.
+    pub fn ancillary_track_hints(&self) -> &[PlaylistAncillaryTrackHint] {
+        self.durable_payload.ancillary_track_hints()
+    }
+
+    /// Возвращает durable import provenance.
+    pub const fn provenance(&self) -> &PlaylistImportProvenance {
+        self.durable_payload.provenance()
+    }
+
+    /// Возвращает source-snapshot availability без runtime promise.
+    pub const fn availability(&self) -> PlaylistImportAvailability {
+        self.durable_payload.availability()
+    }
+
+    /// Возвращает цельный durable payload для будущего queue transaction.
+    pub const fn durable_payload(&self) -> &PlaylistSingleDurablePayload {
+        &self.durable_payload
+    }
+}
+
+impl fmt::Debug for PlaylistSingleImportDraft {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PlaylistSingleImportDraft")
+            .field("durable_payload", &self.durable_payload)
+            .field("cached_metadata", &"<redacted-metadata>")
+            .finish()
+    }
+}
+
 /// ID-less first-class compound import draft.
 #[derive(Clone, PartialEq, Eq)]
 pub struct PlaylistCompoundImportDraft {
-    reopen_locator: DurableReopenLocator,
     cached_summary: CachedPlaylistMetadata,
-    provenance: PlaylistImportProvenance,
+    durable_payload: PlaylistCompoundDurablePayload,
     parts: Box<[PlaylistSingleImportDraft]>,
 }
 
@@ -129,16 +237,15 @@ impl PlaylistCompoundImportDraft {
         }
 
         Ok(Self {
-            reopen_locator,
             cached_summary,
-            provenance,
+            durable_payload: PlaylistCompoundDurablePayload::new(reopen_locator, provenance),
             parts: parts.into_boxed_slice(),
         })
     }
 
     /// Возвращает durable compound root identity.
     pub const fn reopen_locator(&self) -> &DurableReopenLocator {
-        &self.reopen_locator
+        self.durable_payload.reopen_locator()
     }
 
     /// Возвращает cached group summary.
@@ -148,7 +255,12 @@ impl PlaylistCompoundImportDraft {
 
     /// Возвращает durable root provenance.
     pub const fn provenance(&self) -> &PlaylistImportProvenance {
-        &self.provenance
+        self.durable_payload.provenance()
+    }
+
+    /// Возвращает цельный durable group payload.
+    pub const fn durable_payload(&self) -> &PlaylistCompoundDurablePayload {
+        &self.durable_payload
     }
 
     /// Возвращает ordered source parts без ID и structural authority.
@@ -168,9 +280,8 @@ impl fmt::Debug for PlaylistCompoundImportDraft {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("PlaylistCompoundImportDraft")
-            .field("reopen_locator", &self.reopen_locator)
+            .field("durable_payload", &self.durable_payload)
             .field("cached_summary", &"<redacted-metadata>")
-            .field("provenance", &self.provenance)
             .field("retained_part_count", &self.parts.len())
             .finish()
     }

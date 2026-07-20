@@ -7,8 +7,7 @@ use crate::identity::{OpenSourceError, inspected_identity, open_regular_nofollow
 use crate::quarantine::{self, QuarantineFileName};
 use crate::types::{CorruptStateCause, InspectionOutcome, ProtectedStateCause, QuarantineOutcome};
 use crate::{
-    CURRENT_PLAYLIST_STATE_SCHEMA_VERSION, MAX_STATE_ENVELOPE_SCAN_BYTES,
-    MAX_SUPPORTED_V1_STATE_BYTES,
+    CURRENT_PLAYLIST_STATE_SCHEMA_VERSION, MAX_STATE_ENVELOPE_SCAN_BYTES, MAX_SUPPORTED_STATE_BYTES,
 };
 
 /// Process-local owner path и сериализации destructive state operations.
@@ -52,7 +51,7 @@ impl PlaylistStateStore {
         inspect_state_with_limits(
             &self.state_path,
             MAX_STATE_ENVELOPE_SCAN_BYTES,
-            MAX_SUPPORTED_V1_STATE_BYTES,
+            MAX_SUPPORTED_STATE_BYTES,
         )
     }
 
@@ -82,7 +81,7 @@ impl PlaylistStateStore {
 fn inspect_state_with_limits(
     state_path: &Path,
     envelope_limit_bytes: u64,
-    supported_v1_limit_bytes: u64,
+    supported_state_limit_bytes: u64,
 ) -> InspectionOutcome {
     let mut source = match open_regular_nofollow(state_path) {
         Ok(source) => source,
@@ -132,7 +131,10 @@ fn inspect_state_with_limits(
             schema_version: proof.schema_version,
         };
     }
-    if proof.schema_version != CURRENT_PLAYLIST_STATE_SCHEMA_VERSION {
+    if !matches!(
+        proof.schema_version,
+        1 | CURRENT_PLAYLIST_STATE_SCHEMA_VERSION
+    ) {
         return InspectionOutcome::UnrecognizedVersionSaveBlocked {
             cause: ProtectedStateCause::UnsupportedSchemaVersion,
         };
@@ -144,19 +146,22 @@ fn inspect_state_with_limits(
             cause: ProtectedStateCause::InvalidEnvelope,
         };
     }
-    if metadata_before_scan.len() > supported_v1_limit_bytes {
+    if metadata_before_scan.len() > supported_state_limit_bytes {
         return InspectionOutcome::CorruptNeedsQuarantine {
             inspected_identity: identity,
             cause: CorruptStateCause::SupportedFileTooLarge,
         };
     }
 
-    match dto::deserialize_supported_v1(&proof.inspected_bytes) {
+    match dto::deserialize_supported(proof.schema_version, &proof.inspected_bytes) {
         Ok(state) => InspectionOutcome::Loaded(state),
         Err(error) => InspectionOutcome::CorruptNeedsQuarantine {
             inspected_identity: identity,
             cause: match error {
-                DtoLoadError::InvalidPayload => CorruptStateCause::InvalidV1Payload,
+                DtoLoadError::InvalidPayload if proof.schema_version == 1 => {
+                    CorruptStateCause::InvalidV1Payload
+                }
+                DtoLoadError::InvalidPayload => CorruptStateCause::InvalidV2Payload,
                 DtoLoadError::ResourceLimit => CorruptStateCause::ResourceLimitExceeded,
                 DtoLoadError::DomainValue => CorruptStateCause::InvalidDomainValue,
                 DtoLoadError::QueueState => CorruptStateCause::InvalidQueueState,
@@ -170,7 +175,11 @@ fn inspect_state_with_limits(
 pub(crate) fn inspect_state_with_test_limits(
     state_path: &Path,
     envelope_limit_bytes: u64,
-    supported_v1_limit_bytes: u64,
+    supported_state_limit_bytes: u64,
 ) -> InspectionOutcome {
-    inspect_state_with_limits(state_path, envelope_limit_bytes, supported_v1_limit_bytes)
+    inspect_state_with_limits(
+        state_path,
+        envelope_limit_bytes,
+        supported_state_limit_bytes,
+    )
 }
