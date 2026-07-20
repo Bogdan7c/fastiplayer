@@ -21,6 +21,15 @@ pub(crate) struct PlaylistConfirmationReasons {
     sensitive_url_persistence: bool,
 }
 
+/// Stable presentation order composed reasons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaylistConfirmationReason {
+    /// Exact durable URL identities требуют aggregated acknowledgement.
+    SensitiveDurableLocatorPersistence,
+    /// Destructive replacement подтверждается непосредственно перед commit.
+    QueueReplacement,
+}
+
 impl PlaylistConfirmationReasons {
     pub(crate) const fn queue_replacement(self) -> bool {
         self.queue_replacement
@@ -32,6 +41,29 @@ impl PlaylistConfirmationReasons {
 
     const fn replacement_only(self) -> bool {
         self.queue_replacement && !self.sensitive_url_persistence
+    }
+
+    /// Строит reason set import transaction без forgeable `confirmed: bool`.
+    pub(super) const fn for_import(
+        sensitive_durable_locator_persistence: bool,
+        queue_replacement: bool,
+    ) -> Self {
+        Self {
+            queue_replacement,
+            sensitive_url_persistence: sensitive_durable_locator_persistence,
+        }
+    }
+
+    /// Итерирует reasons в product-defined порядке: sensitive, затем replacement.
+    pub(crate) fn ordered(self) -> impl Iterator<Item = PlaylistConfirmationReason> {
+        [
+            self.sensitive_url_persistence
+                .then_some(PlaylistConfirmationReason::SensitiveDurableLocatorPersistence),
+            self.queue_replacement
+                .then_some(PlaylistConfirmationReason::QueueReplacement),
+        ]
+        .into_iter()
+        .flatten()
     }
 }
 
@@ -292,6 +324,14 @@ struct PendingQueueReplacementIntent {
 pub(super) enum PendingConfirmationTarget {
     QueueReplacement(QueueReplacementTarget),
     SensitiveUrlAppend(Box<playlist_core::PlaylistItemDraft>),
+    Import(ImportConfirmationContinuation),
+}
+
+/// Exact staged import correlation, который не раскрывается UI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ImportConfirmationContinuation {
+    pub(super) preview_id: super::import_transaction::PlaylistImportPreviewId,
+    pub(super) generation: u64,
 }
 
 pub(super) enum PlaylistConfirmationResolution {
@@ -341,6 +381,12 @@ impl QueueReplacementConfirmationState {
 
     fn replacement_only_model(&self) -> Option<PendingQueueReplacementConfirmation> {
         let pending = self.pending.as_ref()?;
+        if !matches!(
+            &pending.target,
+            PendingConfirmationTarget::QueueReplacement(_)
+        ) {
+            return None;
+        }
         pending
             .model
             .reasons
@@ -380,6 +426,30 @@ impl QueueReplacementConfirmationState {
         Ok(())
     }
 
+    /// Занимает тот же authoritative slot import continuation-ом.
+    pub(super) fn replace_with_import(
+        &mut self,
+        safe_label: SafeMediaLabel,
+        reasons: PlaylistConfirmationReasons,
+        continuation: ImportConfirmationContinuation,
+    ) -> Result<(), QueueReplacementAdmissionError> {
+        self.pending = None;
+        let intent_id = QueueReplacementIntentId(self.next_intent_id);
+        self.next_intent_id = self
+            .next_intent_id
+            .checked_add(1)
+            .ok_or(QueueReplacementAdmissionError::IntentIdentityExhausted)?;
+        self.pending = Some(PendingQueueReplacementIntent {
+            model: PendingPlaylistConfirmation {
+                intent_id,
+                safe_label,
+                reasons,
+            },
+            target: PendingConfirmationTarget::Import(continuation),
+        });
+        Ok(())
+    }
+
     fn respond(
         &mut self,
         action: QueueReplacementConfirmationAction,
@@ -391,6 +461,12 @@ impl QueueReplacementConfirmationState {
             return QueueReplacementConfirmationOutcome::Stale;
         }
         if !pending.model.reasons.replacement_only() {
+            return QueueReplacementConfirmationOutcome::Stale;
+        }
+        if !matches!(
+            &pending.target,
+            PendingConfirmationTarget::QueueReplacement(_)
+        ) {
             return QueueReplacementConfirmationOutcome::Stale;
         }
 
@@ -454,6 +530,7 @@ impl PlaylistRuntime {
         {
             return Err(QueueReplacementAdmissionError::RuntimeShuttingDown);
         }
+        self.import_transaction.cancel();
         let requires_sensitive_persistence_acknowledgement = intent
             .target
             .requires_sensitive_persistence_acknowledgement();
@@ -507,6 +584,7 @@ impl PlaylistRuntime {
         {
             return Err(QueueReplacementAdmissionError::RuntimeShuttingDown);
         }
+        self.import_transaction.cancel();
         self.replacement_confirmation.cancel();
         Ok(intent.target.admit())
     }
@@ -552,11 +630,13 @@ impl PlaylistRuntime {
         reason = "playlist row UI wiring belongs to a later session"
     )]
     pub(crate) fn supersede_queue_replacement_confirmation_for_row_play(&mut self) {
+        self.import_transaction.cancel();
         self.replacement_confirmation.cancel();
     }
 
     /// Несовместимая structural replacement не оставляет response к старой queue lineage.
     pub(super) fn cancel_queue_replacement_confirmation_for_structural_replacement(&mut self) {
+        self.import_transaction.cancel();
         self.replacement_confirmation.cancel();
     }
 }

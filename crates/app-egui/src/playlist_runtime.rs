@@ -32,6 +32,11 @@ pub(crate) mod discovery;
     reason = "Session 11A identities become production callsite inputs in subsequent sessions"
 )]
 mod identity;
+#[allow(
+    dead_code,
+    reason = "S08 source-neutral import boundary is rendered by S09 UI"
+)]
+mod import_transaction;
 mod local_file_selection;
 mod media_reset;
 mod persistence;
@@ -415,6 +420,8 @@ pub(crate) struct PlaylistRuntime {
     media_reset: media_reset::PlaylistMediaResetOwner,
     /// D79 confirmation хранит secret-bearing intent вне renderer-bound `AppState`.
     replacement_confirmation: replacement_confirmation::QueueReplacementConfirmationState,
+    /// S08 latest-only import preview и staged commit принадлежат process runtime.
+    import_transaction: import_transaction::PlaylistImportTransactionState,
     /// D48 form и async multi-file dialog принадлежат process runtime.
     ui_interaction: ui_interaction::PlaylistUiInteractionOwner,
     /// D66 stale guard для uncommitted Manual Add completions.
@@ -504,6 +511,7 @@ impl PlaylistRuntime {
             media_reset: media_reset::PlaylistMediaResetOwner::default(),
             replacement_confirmation:
                 replacement_confirmation::QueueReplacementConfirmationState::new(),
+            import_transaction: import_transaction::PlaylistImportTransactionState::new(),
             ui_interaction,
             manual_add_queue_generation: ManualAddQueueGeneration::INITIAL,
             startup_media_apply_superseded: false,
@@ -674,6 +682,7 @@ impl PlaylistRuntime {
         self.admission_open.store(false, Ordering::Release);
         self.lifecycle = PlaylistRuntimeLifecycle::ShuttingDown;
         self.removal_undo = None;
+        self.import_transaction.cancel();
         self.replacement_confirmation.cancel();
         if let Some(controller) = self.controller.as_mut() {
             controller.release_detached_tombstone_for_shutdown();

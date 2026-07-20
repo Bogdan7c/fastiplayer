@@ -174,3 +174,8 @@ Session 05 completed PASS on 2026-07-14. This memory complements `mem:core` and 
 ## S07 nested local expansion consumer note (2026-07-20)
 - `playlist-core` API/queue/storage/allocation authority не изменились. `playlist-io` рекурсивно строит ID-less document tree из существующих `PlaylistSingleImportDraft` и XSPF track/group models; Item/Group IDs и canonical queue commit остаются будущей S08 transaction.
 - Canonical filesystem path не становится `DurableReopenLocator`: он transient только в active DFS cycle stack. Original native/non-UTF locators и failed-include payload сохраняются reversible. Полный S07 contract: `mem:playlist/io-s07-nested-local-expansion-2026-07-20`.
+
+## S08 import materialization и replacement-detached navigation (2026-07-20)
+- `PlaylistImportEntryDraft::into_queue_draft` — public ID-less materialization boundary перед app transaction commit. Local/URL durable locator становится legacy operational locator; opaque service child использует только local/URL provenance root, иначе typed `PlaylistImportMaterializationError`. Durable item/group payload сохраняется; IDs не выделяются до `PlaylistQueue` commit.
+- `PlaylistQueue::begin_replacement_detached_navigation` — intent-named manual preview только для app replacement disposition: Next выбирает первый, Previous последний source-order Item ID. Shuffle preview удаляет owning top-level Entry ID из upcoming, сохраняет compound block semantics и добавляет factual visit только после exact commit.
+- Full app transaction/lifecycle и verification: `mem:app-egui/playlist-import-s08-2026-07-20`.

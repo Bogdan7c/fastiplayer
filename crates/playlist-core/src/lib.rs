@@ -33,7 +33,8 @@ pub use id::{
 pub use import::{
     MAX_PLAYLIST_IMPORT_COMPOUND_PARTS, PlaylistCompoundDurablePayload,
     PlaylistCompoundImportDraft, PlaylistCompoundImportDraftError, PlaylistImportAvailability,
-    PlaylistImportEntryDraft, PlaylistSingleDurablePayload, PlaylistSingleImportDraft,
+    PlaylistImportEntryDraft, PlaylistImportMaterializationError, PlaylistSingleDurablePayload,
+    PlaylistSingleImportDraft,
 };
 pub use item::{PlaylistItem, PlaylistItemDraft, RestoredPlaylistItem};
 pub use locator::{

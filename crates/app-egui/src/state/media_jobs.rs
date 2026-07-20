@@ -375,6 +375,7 @@ impl AppState {
                 self.start_admitted_queue_replacement(intent);
             }
             crate::playlist_runtime::PlaylistConfirmationApplyOutcome::Cancelled
+            | crate::playlist_runtime::PlaylistConfirmationApplyOutcome::Import(_)
             | crate::playlist_runtime::PlaylistConfirmationApplyOutcome::UrlAppended { .. }
             | crate::playlist_runtime::PlaylistConfirmationApplyOutcome::UrlNoCapacity
             | crate::playlist_runtime::PlaylistConfirmationApplyOutcome::DeferredUntilStartupInstallResolution

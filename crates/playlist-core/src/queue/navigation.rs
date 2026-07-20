@@ -403,6 +403,40 @@ impl PlaylistQueue {
         self.begin_manual_navigation_with_rng(intent, &mut random)
     }
 
+    /// Начинает exact source-order navigation после interactive replacement.
+    ///
+    /// Обычный persisted-idle `Previous` остаётся no-op. Этот отдельный intent
+    /// существует только для replacement-detached disposition и выбирает
+    /// последнюю playable part без скрытого sequential scan.
+    pub fn begin_replacement_detached_navigation(
+        &self,
+        direction: ManualNavigationDirection,
+    ) -> ManualNavigationOutcome {
+        let target_item_id = match direction {
+            ManualNavigationDirection::Next => self.iter_playable_ids().next(),
+            ManualNavigationDirection::Previous => self.iter_playable_ids().next_back(),
+        };
+        let Some(target_item_id) = target_item_id else {
+            return ManualNavigationOutcome::NoItem(ManualNavigationNoItem::EmptyQueue);
+        };
+        let shuffle_preview = self.shuffle_traversal.as_ref().map(|traversal| {
+            let mut preview = ShuffleManualPreview::new(traversal);
+            preview.select_source_order_target(self, target_item_id);
+            preview
+        });
+        ManualNavigationOutcome::OpenItem {
+            item_id: target_item_id,
+            preview: ManualNavigationPreview {
+                expected_revision: self.revision_snapshot(),
+                origin: ManualNavigationOrigin::PersistedIdle,
+                latest_target_item_id: target_item_id,
+                has_left_committed_origin: true,
+                state: ManualNavigationPreviewState::Ready,
+                shuffle_preview,
+            },
+        }
+    }
+
     /// Начинает manual preview с injectable RNG для exact shuffle outcomes.
     pub fn begin_manual_navigation_with_rng<R: Rng + ?Sized>(
         &self,

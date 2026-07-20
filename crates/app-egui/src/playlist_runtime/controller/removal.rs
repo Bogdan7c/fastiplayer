@@ -465,6 +465,7 @@ impl PlaylistController {
             RemovedActiveMediaPolicy::ResetCurrentMedia => {
                 self.active_media = None;
                 self.detached_active_tombstone = None;
+                self.replacement_detached_disposition = None;
             }
         }
         let pending_request_to_cancel = match self.retire_awaiting_install_for_removal() {

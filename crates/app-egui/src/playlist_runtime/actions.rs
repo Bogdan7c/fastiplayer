@@ -37,6 +37,7 @@ pub(crate) enum UrlAppendActionOutcome {
 #[derive(Debug)]
 pub(crate) enum PlaylistConfirmationApplyOutcome {
     QueueReplacementConfirmed(AdmittedQueueReplacementIntent),
+    Import(super::import_transaction::PlaylistImportContinueOutcome),
     UrlAppended { item_count: usize },
     UrlNoCapacity,
     DeferredUntilStartupInstallResolution,
@@ -143,6 +144,7 @@ impl PlaylistRuntime {
         let draft = PlaylistItemDraft::url(playlist_locator, cached_metadata);
         // D25: любое Add снимает active sibling discovery, сохраняя уже committed batches.
         self.discovery.cancel_sibling_for_add();
+        self.import_transaction.cancel();
 
         if requires_ack {
             self.replacement_confirmation
@@ -169,6 +171,7 @@ impl PlaylistRuntime {
     ) -> PlaylistConfirmationApplyOutcome {
         match self.replacement_confirmation.respond_generalized(action) {
             PlaylistConfirmationResolution::Cancelled => {
+                self.import_transaction.cancel();
                 PlaylistConfirmationApplyOutcome::Cancelled
             }
             PlaylistConfirmationResolution::Stale => PlaylistConfirmationApplyOutcome::Stale,
@@ -195,6 +198,11 @@ impl PlaylistRuntime {
                 }
                 Err(_) => PlaylistConfirmationApplyOutcome::CommitRejected,
             },
+            PlaylistConfirmationResolution::Confirmed(PendingConfirmationTarget::Import(
+                continuation,
+            )) => PlaylistConfirmationApplyOutcome::Import(
+                self.confirm_staged_playlist_import(continuation),
+            ),
         }
     }
 

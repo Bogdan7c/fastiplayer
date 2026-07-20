@@ -5,9 +5,10 @@ use media_core::{MediaDuration, MediaTime};
 
 use super::*;
 use crate::{
-    CURRENT_DURABLE_REOPEN_PAYLOAD_VERSION, LocalLocator, MAX_PLAYLIST_ANCILLARY_TRACK_HINTS,
-    PlaylistAncillaryTrackOrigin, PlaylistAncillaryTrackSelectionKind, PlaylistImportSourceKind,
-    PlaylistMediaKind, ServiceReopenMaterialKind,
+    AddPlaylistEntriesOutcome, CURRENT_DURABLE_REOPEN_PAYLOAD_VERSION, LocalLocator,
+    MAX_PLAYLIST_ANCILLARY_TRACK_HINTS, PlaylistAncillaryTrackOrigin,
+    PlaylistAncillaryTrackSelectionKind, PlaylistImportSourceKind, PlaylistItem, PlaylistMediaKind,
+    PlaylistQueue, ServiceReopenMaterialKind,
 };
 
 #[test]
@@ -168,6 +169,110 @@ fn import_draft_debug_never_exposes_service_payload() {
 
     assert!(!debug.contains("secret.invalid"));
     assert!(!debug.contains("cookie=token"));
+}
+
+#[test]
+fn materialization_stays_idless_until_atomic_queue_commit() {
+    let import = PlaylistImportEntryDraft::from(single(
+        "materialized.flac",
+        PlaylistImportAvailability::Available,
+    ));
+    let queue_draft = import
+        .into_queue_draft()
+        .expect("operational local locator");
+    let mut queue = PlaylistQueue::new();
+
+    assert_eq!(
+        queue.next_item_id_snapshot().expose_value_for_persistence(),
+        1
+    );
+    let allocated = match queue.append_entries(vec![queue_draft]).expect("commit") {
+        AddPlaylistEntriesOutcome::Added(allocated) => allocated,
+        AddPlaylistEntriesOutcome::NoEntriesProvided => {
+            panic!("focused import must commit one entry")
+        }
+    };
+    assert_eq!(allocated.retained_item_count(), 1);
+    assert_eq!(
+        queue.next_item_id_snapshot().expose_value_for_persistence(),
+        2
+    );
+    assert!(
+        queue
+            .iter_playable_items()
+            .next()
+            .and_then(PlaylistItem::durable_payload)
+            .is_some()
+    );
+}
+
+#[test]
+fn service_child_uses_reopenable_root_without_exposing_service_payload() {
+    let service_locator = DurableReopenLocator::from_service_payload(
+        "yt-dlp",
+        CURRENT_DURABLE_REOPEN_PAYLOAD_VERSION,
+        ServiceReopenMaterialKind::StableExtractorIdentity,
+        b"stable-child-42".to_vec(),
+    )
+    .expect("service child");
+    let root_url =
+        SecretUrlLocator::from_reopenable_url("https://example.test/collection").expect("root");
+    let import = PlaylistSingleImportDraft::new(
+        service_locator,
+        metadata("child"),
+        None,
+        Vec::new(),
+        PlaylistImportProvenance::new(
+            DurableReopenLocator::url(root_url.clone()),
+            PlaylistImportSourceKind::Service,
+            NonZeroU32::new(1),
+        ),
+        PlaylistImportAvailability::Available,
+    )
+    .expect("service import");
+
+    let queue_draft = PlaylistImportEntryDraft::from(import)
+        .into_queue_draft()
+        .expect("URL root provides operational identity");
+    let PlaylistEntryDraft::Single(queue_draft) = queue_draft else {
+        panic!("single import stays single")
+    };
+    assert_eq!(queue_draft.locator().as_secret_url(), Some(&root_url));
+    assert!(matches!(
+        queue_draft
+            .durable_payload()
+            .map(PlaylistSingleDurablePayload::reopen_locator),
+        Some(DurableReopenLocator::ServicePayload(_))
+    ));
+}
+
+#[test]
+fn service_child_without_local_or_url_root_fails_before_queue_mutation() {
+    let service_locator = DurableReopenLocator::from_service_payload(
+        "yt-dlp",
+        CURRENT_DURABLE_REOPEN_PAYLOAD_VERSION,
+        ServiceReopenMaterialKind::StableExtractorIdentity,
+        b"stable-child".to_vec(),
+    )
+    .expect("service child");
+    let import = PlaylistSingleImportDraft::new(
+        service_locator.clone(),
+        metadata("child"),
+        None,
+        Vec::new(),
+        PlaylistImportProvenance::new(
+            service_locator,
+            PlaylistImportSourceKind::Service,
+            NonZeroU32::new(1),
+        ),
+        PlaylistImportAvailability::Available,
+    )
+    .expect("neutral draft may preserve service-only identity");
+
+    assert_eq!(
+        PlaylistImportEntryDraft::from(import).into_queue_draft(),
+        Err(PlaylistImportMaterializationError::ServiceLocatorWithoutOperationalRoot)
+    );
 }
 
 fn metadata(name: &str) -> CachedPlaylistMetadata {

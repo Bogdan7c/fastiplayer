@@ -636,6 +636,7 @@ impl PlaylistRuntime {
                 .set_safe_error(PlaylistUrlDraftError::new("Не удалось добавить URL")),
             super::PlaylistConfirmationApplyOutcome::Cancelled
             | super::PlaylistConfirmationApplyOutcome::Stale
+            | super::PlaylistConfirmationApplyOutcome::Import(_)
             | super::PlaylistConfirmationApplyOutcome::QueueReplacementConfirmed(_) => {}
         }
     }

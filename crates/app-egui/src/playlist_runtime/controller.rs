@@ -3,6 +3,7 @@
 mod automatic_lifecycle;
 mod discovery;
 mod discovery_navigation;
+mod import;
 mod initial_queue_playback;
 mod install;
 mod local_file_selection;
@@ -41,6 +42,10 @@ pub(crate) use automatic_lifecycle::{
 };
 pub(crate) use discovery::{DiscoveryContinuation, DiscoveryContinuationRevision};
 pub(crate) use discovery_navigation::{AutomaticDiscoveryReadiness, DiscoveryNavigationInterest};
+pub(crate) use import::{
+    ControllerImportCommitError, ControllerImportCommitOutcome, ImportReplacementDisposition,
+    ReplacementDetachedDisposition,
+};
 pub(crate) use initial_queue_playback::{
     ControllerInitialQueuePlaybackAction, InitialQueuePlaybackGuard,
     InitialQueuePlaybackGuardError, InitialQueuePlaybackPlanError,
@@ -160,6 +165,7 @@ pub(crate) struct PlaylistController {
     manual_navigation_cursor: manual_navigation::ManualNavigationCursor,
     automatic_lifecycle: automatic_lifecycle::AutomaticLifecycle,
     pub(super) detached_active_tombstone: Option<DetachedActiveTombstone>,
+    pub(super) replacement_detached_disposition: Option<ReplacementDetachedDisposition>,
     error_behavior: automatic_lifecycle::PlaylistErrorBehavior,
     pub(super) next_manual_wait_identity: u64,
     discovery_continuation_revision: DiscoveryContinuationRevision,
@@ -195,6 +201,7 @@ impl PlaylistController {
             manual_navigation_cursor: manual_navigation::ManualNavigationCursor::default(),
             automatic_lifecycle: automatic_lifecycle::AutomaticLifecycle::default(),
             detached_active_tombstone: None,
+            replacement_detached_disposition: None,
             error_behavior: automatic_lifecycle::PlaylistErrorBehavior::Stop,
             next_manual_wait_identity: 1,
             discovery_continuation_revision: DiscoveryContinuationRevision::INITIAL,

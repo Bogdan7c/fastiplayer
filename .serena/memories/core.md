@@ -152,3 +152,8 @@
 ## Web media roadmap S07 bounded nested local expansion (2026-07-20)
 - `playlist-io` стал общим local-only recursive owner для M3U/M3U8/XSPF includes: deterministic DFS tree, active-stack-only canonical cycle identity, reversible stored native/non-UTF paths, aggregate depth/document/byte/item/diagnostic budgets и per-request cancellation between documents.
 - Network playlist-looking URL остаётся leaf без fetch; local HLS typed unsupported. XSPF multi-location admission остаётся будущей S08 policy; recurse выполняется только для одного unambiguous local file candidate. Full contract: `mem:playlist/io-s07-nested-local-expansion-2026-07-20`.
+
+## Web media roadmap S08 source-neutral import transaction (2026-07-20)
+- `PlaylistRuntime` владеет одним latest-only source-neutral import preview/staged transaction с generation + structural-revision revalidation; typed intents — AppendToQueue, interactive ReplaceQueue и trusted StartupReplace. Partial/truncation принимаются explicit Continue, затем aggregated sensitive durable-locator + replacement reasons занимают прежний единый `PendingPlaylistConfirmation` slot в deterministic order.
+- Whole-entry capped prefix не режет compound; import materialization остаётся ID-less, а Item/Group IDs публикуются только domain append/replace commit-ом. App XSPF registry выбирает первый admissible ordered location без open/probe.
+- Interactive Replace не использует Clear/removal continuation: old active media detach-ится, clean Ended даёт exactly-once Stop, Next/Previous выбирают first/last source-order target с compound/shuffle accounting и без hidden failure scan. Full contract: `mem:app-egui/playlist-import-s08-2026-07-20`.

@@ -37,3 +37,7 @@
 - Exact same-directory committed selection bypasses destructive confirmation/preparation/discovery and enters the normal Row Play boundary. A different directory, missing local current, or same-directory path without an exact committed stable ID still uses the existing typed replacement confirmation and no-I/O-before-confirm workflow; no Item ID is forged.
 - Classification applies only to the main single-file Open route. Playlist toolbar `AddFiles` remains the independent Manual Add append pipeline and never receives replacement semantics.
 - Starting any new main-picker selection and explicit Row Play cancels only a pending guarded initial-directory start, not the active sibling discovery scope. Existing confirmation redaction, lifecycle, and trusted CLI contracts remain unchanged.
+
+## S08 source-neutral import continuation (2026-07-20)
+- `PendingPlaylistConfirmation` остаётся единственным authoritative slot-ом и получил typed import continuation target. Import partial/truncation решается preview Continue, после чего sensitive durable-locator acknowledgement и queue replacement компонуются в одном deterministic reason set; legacy replacement-only accessor дополнительно проверяет exact target variant и никогда не может подтвердить import continuation.
+- Новый import/URL/main-open/row-play/structural replacement/shutdown взаимно supersede staged import и slot; matching generalized Confirm повторно валидирует import generation + structural revision. Full transaction/lifecycle: `mem:app-egui/playlist-import-s08-2026-07-20`.

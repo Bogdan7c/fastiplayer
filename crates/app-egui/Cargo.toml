@@ -35,11 +35,13 @@ codec-core.workspace = true
 service-direct-media.workspace = true
 service-ytdlp.workspace = true
 playlist-core.workspace = true
+playlist-io.workspace = true
 playlist-discovery.workspace = true
 bounded-work-executor.workspace = true
 natural-sort-key.workspace = true
 playlist-state.workspace = true
 desktop-integration.workspace = true
+url.workspace = true
 
 # Linux-v1 instance lease: O_NOFOLLOW/O_CLOEXEC, fcntl и effective uid.
 libc.workspace = true

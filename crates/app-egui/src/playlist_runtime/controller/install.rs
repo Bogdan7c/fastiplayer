@@ -737,6 +737,7 @@ impl PlaylistController {
             binding_generation,
         );
         self.active_media = Some(active_media);
+        self.replacement_detached_disposition = None;
         self.release_detached_tombstone_for_new_lineage(active_media);
         self.automatic_install_committed(active_media);
         self.pending_target = None;
@@ -783,6 +784,7 @@ impl PlaylistController {
         let active_media =
             ActiveMediaIdentity::installed(None, lineage_id, media_instance_id, binding_generation);
         self.active_media = Some(active_media);
+        self.replacement_detached_disposition = None;
         self.stable_playback_intent = stable_intent;
         if stable_intent == super::StablePlaybackIntent::Playing {
             self.transport_disposition = super::AppTransportDisposition::Active;

@@ -457,7 +457,8 @@ impl PlaylistController {
             return self.continue_manual_cursor(direction, None);
         }
 
-        if direction == ManualNavigationDirection::Previous
+        if self.replacement_detached_disposition.is_none()
+            && direction == ManualNavigationDirection::Previous
             && restart_threshold.should_restart(current_position)
             && let Some(active) = self.active_media
         {
@@ -480,13 +481,18 @@ impl PlaylistController {
         origin: TransportActionOrigin,
         wait_availability: DiscoveryManualWaitAvailability,
     ) -> ControllerManualNavigationOutcome {
-        let domain_intent = match direction {
-            ManualNavigationDirection::Next => ManualNavigationIntent::next(self.repeat_mode),
-            ManualNavigationDirection::Previous => {
-                ManualNavigationIntent::previous(self.repeat_mode)
-            }
+        let navigation = if self.replacement_detached_disposition.is_some() {
+            self.queue.begin_replacement_detached_navigation(direction)
+        } else {
+            let domain_intent = match direction {
+                ManualNavigationDirection::Next => ManualNavigationIntent::next(self.repeat_mode),
+                ManualNavigationDirection::Previous => {
+                    ManualNavigationIntent::previous(self.repeat_mode)
+                }
+            };
+            self.queue.begin_manual_navigation(domain_intent)
         };
-        match self.queue.begin_manual_navigation(domain_intent) {
+        match navigation {
             ManualNavigationOutcome::OpenItem { item_id, preview } => {
                 self.manual_navigation_cursor
                     .begin(preview, origin, self.active_media);
@@ -686,6 +692,7 @@ impl PlaylistController {
             .is_some_and(|active| active.media_instance_id() == *media_instance_id)
         {
             self.transport_disposition = AppTransportDisposition::Stopped;
+            self.replacement_detached_disposition = None;
             return true;
         }
         false

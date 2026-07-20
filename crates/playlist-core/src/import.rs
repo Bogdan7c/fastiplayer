@@ -4,8 +4,10 @@ use std::fmt;
 
 use crate::payload::validate_ancillary_track_count;
 use crate::{
-    CachedPlaylistMetadata, DurableReopenLocator, MAX_PLAYLIST_ITEMS, PlaylistAncillaryTrackHint,
-    PlaylistImportProvenance, PlaylistPayloadBuildError, PlaylistPlaybackSpan,
+    CachedPlaylistMetadata, DurableReopenLocator, LocalLocator, MAX_PLAYLIST_ITEMS,
+    PlaylistAncillaryTrackHint, PlaylistCompoundGroupDraft, PlaylistEntryDraft,
+    PlaylistImportProvenance, PlaylistItemDraft, PlaylistLocator, PlaylistPayloadBuildError,
+    PlaylistPlaybackSpan, SecretUrlLocator,
 };
 
 /// Import preview не может потребовать больше Item IDs, чем canonical queue.
@@ -326,6 +328,34 @@ pub enum PlaylistImportEntryDraft {
     Compound(PlaylistCompoundImportDraft),
 }
 
+/// Ошибка materialization neutral import draft в ID-less queue draft.
+///
+/// Этот boundary не выделяет Item/Group IDs и не меняет очередь. Он только
+/// доказывает, что legacy operational locator можно получить из durable
+/// identity либо из root provenance будущего service-owned child-а.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaylistImportMaterializationError {
+    /// Service-owned child не содержит local/URL root для legacy app lookup.
+    ServiceLocatorWithoutOperationalRoot,
+    /// Private compound invariant был нарушен до queue boundary.
+    EmptyCompoundInvariant,
+}
+
+impl fmt::Display for PlaylistImportMaterializationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ServiceLocatorWithoutOperationalRoot => {
+                formatter.write_str("service import locator has no local/URL operational root")
+            }
+            Self::EmptyCompoundInvariant => {
+                formatter.write_str("compound import lost all parts before queue materialization")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PlaylistImportMaterializationError {}
+
 impl PlaylistImportEntryDraft {
     /// Возвращает retained Item ID demand без фактического allocation.
     pub const fn retained_item_count(&self) -> usize {
@@ -339,11 +369,90 @@ impl PlaylistImportEntryDraft {
     pub const fn is_compound(&self) -> bool {
         matches!(self, Self::Compound(_))
     }
+
+    /// Преобразует neutral import payload в queue-owned ID-less draft.
+    ///
+    /// Allocation остаётся внутри последующего `PlaylistQueue` commit-а.
+    pub fn into_queue_draft(
+        self,
+    ) -> Result<PlaylistEntryDraft, PlaylistImportMaterializationError> {
+        match self {
+            Self::Single(single) => materialize_single(single).map(PlaylistEntryDraft::Single),
+            Self::Compound(compound) => materialize_compound(compound),
+        }
+    }
 }
 
 impl From<PlaylistSingleImportDraft> for PlaylistImportEntryDraft {
     fn from(draft: PlaylistSingleImportDraft) -> Self {
         Self::Single(draft)
+    }
+}
+
+/// Materialize-ит один imported item, сохраняя полный durable payload.
+fn materialize_single(
+    draft: PlaylistSingleImportDraft,
+) -> Result<PlaylistItemDraft, PlaylistImportMaterializationError> {
+    let PlaylistSingleImportDraft {
+        cached_metadata,
+        durable_payload,
+    } = draft;
+    let operational_locator = operational_locator(
+        durable_payload.reopen_locator(),
+        durable_payload.provenance().root_locator(),
+    )?;
+    let queue_draft = match operational_locator {
+        PlaylistLocator::Local(locator) => PlaylistItemDraft::local(locator, None, cached_metadata),
+        PlaylistLocator::Url(locator) => PlaylistItemDraft::url(locator, cached_metadata),
+    };
+    Ok(queue_draft.with_durable_payload(durable_payload))
+}
+
+/// Materialize-ит group и все parts до любого allocator-owned commit-а.
+fn materialize_compound(
+    draft: PlaylistCompoundImportDraft,
+) -> Result<PlaylistEntryDraft, PlaylistImportMaterializationError> {
+    let PlaylistCompoundImportDraft {
+        cached_summary,
+        durable_payload,
+        parts,
+    } = draft;
+    let provenance_locator = operational_locator(
+        durable_payload.reopen_locator(),
+        durable_payload.provenance().root_locator(),
+    )?;
+    let materialized_parts = parts
+        .into_vec()
+        .into_iter()
+        .map(materialize_single)
+        .collect::<Result<Vec<_>, _>>()?;
+    let group =
+        PlaylistCompoundGroupDraft::new(provenance_locator, cached_summary, materialized_parts)
+            .map_err(|_| PlaylistImportMaterializationError::EmptyCompoundInvariant)?
+            .with_durable_payload(durable_payload);
+    Ok(PlaylistEntryDraft::Compound(group))
+}
+
+/// Выбирает reversible operational locator без service payload disclosure.
+fn operational_locator(
+    primary: &DurableReopenLocator,
+    root: &DurableReopenLocator,
+) -> Result<PlaylistLocator, PlaylistImportMaterializationError> {
+    durable_locator_as_queue_locator(primary)
+        .or_else(|| durable_locator_as_queue_locator(root))
+        .ok_or(PlaylistImportMaterializationError::ServiceLocatorWithoutOperationalRoot)
+}
+
+/// Клонирует только local/URL identity; opaque service bytes не раскрываются.
+fn durable_locator_as_queue_locator(locator: &DurableReopenLocator) -> Option<PlaylistLocator> {
+    match locator {
+        DurableReopenLocator::Local(locator) => {
+            Some(PlaylistLocator::Local(LocalLocator::clone(locator)))
+        }
+        DurableReopenLocator::Url(locator) => {
+            Some(PlaylistLocator::Url(SecretUrlLocator::clone(locator)))
+        }
+        DurableReopenLocator::ServicePayload(_) => None,
     }
 }
 

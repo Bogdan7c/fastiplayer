@@ -211,6 +211,28 @@ impl ShuffleManualPreview {
         }
     }
 
+    /// Готовит exact source-order target после interactive queue replacement.
+    ///
+    /// Replacement очищает persisted current, но product contract требует
+    /// `Next -> first` и `Previous -> last`, а не случайный shuffle target.
+    /// Exact top-level entry удаляется из upcoming целиком, поэтому compound
+    /// никогда не остаётся в shuffle cycle второй раз после выбора его part-а.
+    pub(in crate::queue) fn select_source_order_target(
+        &mut self,
+        queue: &PlaylistQueue,
+        target_item_id: PlaylistItemId,
+    ) {
+        let target_entry_id = queue
+            .structural_entry_id_for_item(target_item_id)
+            .expect("source-order target obtained from queue must retain its top-level entry");
+        Arc::make_mut(&mut self.working_upcoming).retain(|entry_id| *entry_id != target_entry_id);
+        self.upcoming_steps.push(SpeculativeUpcomingStep {
+            item_id: target_item_id,
+            consumed_entry_id: Some(target_entry_id),
+            started_new_cycle: false,
+        });
+    }
+
     /// Success публикует exact upcoming delta и только один factual target visit.
     pub(in crate::queue) fn commit_into(
         self,
