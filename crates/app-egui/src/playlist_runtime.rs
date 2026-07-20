@@ -59,6 +59,7 @@ mod suspend_resume;
 mod transport_execution;
 mod transport_ui;
 mod ui_interaction;
+mod url_import;
 pub(crate) use import_transaction::{
     PlaylistImportContinueOutcome, PlaylistImportIntent, PlaylistImportIssueKind,
     PlaylistImportPreview, PlaylistImportPreviewId, PlaylistImportRejectedCount,
@@ -315,6 +316,7 @@ enum PlaylistRuntimeLifecycle {
 pub(crate) struct PlaylistShutdownReport {
     pub(crate) ui_interaction: ProcessOwnerShutdownOutcome,
     pub(crate) import_io: ProcessOwnerShutdownOutcome,
+    pub(crate) url_import: ProcessOwnerShutdownOutcome,
     pub(crate) export_io: ProcessOwnerShutdownOutcome,
     pub(crate) media_open: ProcessOwnerShutdownOutcome,
     pub(crate) startup: startup::PlaylistStartupShutdownOutcome,
@@ -436,6 +438,8 @@ pub(crate) struct PlaylistRuntime {
     import_transaction: import_transaction::PlaylistImportTransactionState,
     /// S09 single-root picker и bounded parser job живут отдельно от UI renderer-а.
     import_io: import_io::PlaylistImportIoOwner,
+    /// S17 latest-only yt-dlp topology worker живёт process lifetime.
+    url_import: url_import::PlaylistUrlImportOwner,
     /// S11 save dialog, pure preflight и atomic writer принадлежат process runtime.
     export_io: export_io::PlaylistExportIoOwner,
     /// CUE scope scan кешируется по immutable view revision, а не повторяется каждый frame.
@@ -495,6 +499,7 @@ impl PlaylistRuntime {
     ) -> Self {
         let ui_interaction = ui_interaction::PlaylistUiInteractionOwner::new(wake_port.clone());
         let import_io = import_io::PlaylistImportIoOwner::new(wake_port.clone());
+        let url_import = url_import::PlaylistUrlImportOwner::new(wake_port.clone());
         let export_io = export_io::PlaylistExportIoOwner::new(wake_port.clone());
         let desktop_transport = desktop_transport::DesktopTransportOwner::new(wake_port.clone());
         let media_open = MediaOpenCoordinator::new(wake_port.clone());
@@ -533,6 +538,7 @@ impl PlaylistRuntime {
                 replacement_confirmation::QueueReplacementConfirmationState::new(),
             import_transaction: import_transaction::PlaylistImportTransactionState::new(),
             import_io,
+            url_import,
             export_io,
             cue_export_availability_cache: RefCell::new(None),
             ui_interaction,
@@ -653,8 +659,14 @@ impl PlaylistRuntime {
         let media_open_changed = self.media_open.drain();
         let dialog_changed = self.drain_playlist_file_dialog();
         let import_changed = self.drain_playlist_import_job();
+        let url_import_changed = self.drain_playlist_url_import_job();
         let export_changed = self.drain_playlist_export_job();
-        owner_changed || media_open_changed || dialog_changed || import_changed || export_changed
+        owner_changed
+            || media_open_changed
+            || dialog_changed
+            || import_changed
+            || url_import_changed
+            || export_changed
     }
 
     /// Cheap-clone read-only snapshot для renderer-bound AppState/будущего UI port-а.
@@ -716,6 +728,7 @@ impl PlaylistRuntime {
 
         let ui_interaction = self.ui_interaction.shutdown_until(deadline);
         let import_io = self.import_io.shutdown_until(deadline);
+        let url_import = self.url_import.shutdown_until(deadline);
         self.export_io.cancel_active();
         let export_io = self.export_io.shutdown_until(deadline);
         let media_open = self.media_open.shutdown_until(deadline);
@@ -727,6 +740,7 @@ impl PlaylistRuntime {
         let report = PlaylistShutdownReport {
             ui_interaction,
             import_io,
+            url_import,
             export_io,
             media_open,
             startup,
@@ -773,6 +787,13 @@ impl PlaylistShutdownReport {
                     ..
                 }
         ) || matches!(
+            self.url_import,
+            ProcessOwnerShutdownOutcome::TimedOut { .. }
+                | ProcessOwnerShutdownOutcome::ThreadPanicked {
+                    pending_threads: 1..,
+                    ..
+                }
+        ) || matches!(
             self.export_io,
             ProcessOwnerShutdownOutcome::TimedOut { .. }
                 | ProcessOwnerShutdownOutcome::ThreadPanicked {
@@ -805,6 +826,10 @@ impl PlaylistShutdownReport {
         );
         let import_failed = matches!(
             self.import_io,
+            ProcessOwnerShutdownOutcome::ThreadPanicked { .. }
+        );
+        let url_import_failed = matches!(
+            self.url_import,
             ProcessOwnerShutdownOutcome::ThreadPanicked { .. }
         );
         let export_failed = matches!(
@@ -841,6 +866,7 @@ impl PlaylistShutdownReport {
         };
         ui_failed
             || import_failed
+            || url_import_failed
             || export_failed
             || media_failed
             || startup_failed
@@ -1132,6 +1158,7 @@ mod tests {
             media_open: ProcessOwnerShutdownOutcome::TimedOut { pending_threads: 1 },
             ui_interaction: ProcessOwnerShutdownOutcome::Completed,
             import_io: ProcessOwnerShutdownOutcome::Completed,
+            url_import: ProcessOwnerShutdownOutcome::Completed,
             export_io: ProcessOwnerShutdownOutcome::Completed,
             startup: startup::PlaylistStartupShutdownOutcome::Completed,
             persistence: persistence::PlaylistPersistenceShutdownOutcome::CompletedWithoutWorker {

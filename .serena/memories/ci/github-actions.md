@@ -1,5 +1,9 @@
 # GitHub Actions CI
 
+## Current dependency-gate status after S04X (2026-07-20)
+
+- S04X закрыл прежние RUSTSEC-2026-0194/0195 через documented exact-source `wayland-scanner` patch на `quick-xml 0.41`; актуальный `cargo deny check` проходит advisories/bans/licenses/sources. Старые разделы ниже про blocking quick-xml gate — исторический статус до S04X, а не текущий blocker. Полный patch/XML contract: `mem:xml/core` и `mem:dependency-patches/core`.
+
 - Blocking CI definition lives in `.github/workflows/ci.yml`; exact commands are owned only by `scripts/ci-checks.sh`. `scripts/pre-pr-checks.sh` is a compatibility wrapper that invokes `scripts/ci-checks.sh all`.
 - Since Session 17, `format-guardrails` also runs `bash -n` for runtime acceptance scripts and `scripts/tests/playback-smoke-self-test.sh`; these checks validate CLI parsing and full current-schema config generation/production parse without GUI. Runtime hardware/media acceptance remains separate. See `mem:testing/playback-smoke`.
 - Stable blocking check names are: `Format and guardrails`, `Strict Clippy`, `Documentation`, `Workspace tests (all features)`, `app-egui (no default features)`, and `MSRV (Rust 1.92.0)`.

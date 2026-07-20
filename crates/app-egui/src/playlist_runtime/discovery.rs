@@ -24,10 +24,6 @@ pub(crate) use action_jobs::{
     PlaylistDiscoveryJobsReadModel, VisibleRefreshRequestOutcome,
 };
 pub(in crate::playlist_runtime) use yt_dlp_metadata::YtDlpMetadataDemand;
-#[cfg(test)]
-pub(in crate::playlist_runtime) use yt_dlp_metadata::{
-    YtDlpMetadataResolver, YtDlpMetadataTaskOutcome,
-};
 
 #[allow(unused_imports)]
 pub(crate) use navigation::{PlaylistDiscoveryNavigationAction, PlaylistDiscoveryNavigationStatus};

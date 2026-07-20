@@ -170,12 +170,4 @@ impl PlaylistDiscoveryCoordinator {
         self.metadata_sort.cancel_for_queue_replacement();
         self.yt_dlp_metadata.cancel_for_queue_replacement();
     }
-
-    #[cfg(test)]
-    pub(in crate::playlist_runtime) fn replace_yt_dlp_metadata_resolver_for_test(
-        &mut self,
-        resolver: std::sync::Arc<dyn super::YtDlpMetadataResolver>,
-    ) {
-        self.yt_dlp_metadata.replace_resolver_for_test(resolver);
-    }
 }

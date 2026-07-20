@@ -1,5 +1,9 @@
 # Core
 
+## S17 topology-first Add URL (2026-07-20)
+
+- Toolbar Add URL сохраняет direct-media-first routing: direct URL остаётся single append, yt-dlp URL теперь идёт через process-lifetime latest-only topology worker -> S16 ID-less mapping -> единственную S08 AppendToQueue preview/confirmation/commit transaction. Rapid submit/cancel/shutdown используют exact generation fencing; collection/multi_video, unavailable, metadata и whole-group capacity сохраняются без current/playback mutation. Полный контракт: `mem:app-egui/url-collection-import-s17-2026-07-20`.
+
 ## Актуальный generic yt-dlp/config v6 update (2026-07-17)
 
 - S00 (2026-07-20) добавил только checked-in compatibility evidence для official `yt-dlp 2026.07.04`, не runtime feature: canonical owner `crates/service-ytdlp/compatibility/2026.07.04/`, manifest `profile.json`, report/capture procedure/synthetic corpus и focused test `crates/service-ytdlp/tests/compatibility_profile.rs`. Manifest отдельно фиксирует будущий hermetic argv (`--ignore-config --no-plugin-dirs ... --simulate --dump-single-json`) и current manual opt-in argv; production process пока продолжает читать system/user config/plugins, их side effects и mutable user cookie jar остаются вне app guarantee. Полный контракт: `mem:media-services/core`.

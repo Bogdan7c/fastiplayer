@@ -7,9 +7,7 @@ use super::controller::ControllerCappedAppendOutcome;
 use super::replacement_confirmation::{PendingConfirmationTarget, PlaylistConfirmationResolution};
 use super::{AdmittedQueueReplacementIntent, PlaylistRuntime};
 use crate::media_open::SafeMediaLabel;
-use crate::url_service_adapter::{
-    PlaylistUrlMetadataSource, StartupUrlClassification, classify_startup_url,
-};
+use crate::url_service_adapter::{StartupUrlClassification, classify_startup_url};
 
 /// Pure URL append validation никогда не содержит исходную secret-bearing строку.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,16 +19,19 @@ pub(crate) enum UrlAppendValidationError {
     RuntimeShuttingDown,
     LoadDecisionPending,
     ConfirmationIdentityExhausted,
+    TopologyGenerationExhausted,
+    TopologyWorkerUnavailable,
     CommitRejected,
 }
 
-/// URL append либо committed сразу, либо ожидает exact D15 decision.
+/// URL append либо committed сразу, либо переходит в typed async/confirmation phase.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum UrlAppendActionOutcome {
     Appended { item_count: usize },
     NoCapacity,
     DeferredUntilStartupInstallResolution,
     AwaitingSensitivePersistenceDecision,
+    ResolvingTopology,
 }
 
 /// Generalized Confirm/Cancel result сохраняет replacement и append paths раздельно.
@@ -57,41 +58,20 @@ pub(crate) enum InstalledMetadataCacheOutcome {
     Rejected,
 }
 
-struct CommittedUrlAppend {
-    outcome: UrlAppendActionOutcome,
-    item_ids: Vec<PlaylistItemId>,
-}
-
-/// Opaque continuation сохраняет metadata intent через aggregated confirmation.
+/// Opaque continuation сохраняет direct URL draft через aggregated confirmation.
 pub(super) struct SensitiveUrlAppendContinuation {
     draft: PlaylistItemDraft,
-    metadata_source: Option<PlaylistUrlMetadataSource>,
-    yt_dlp_config: rustiplayer_config::YtDlpConfig,
 }
 
 impl SensitiveUrlAppendContinuation {
     /// Захватывает все данные, нужные после exact confirmation commit-а.
-    fn new(
-        draft: PlaylistItemDraft,
-        metadata_source: Option<PlaylistUrlMetadataSource>,
-        yt_dlp_config: rustiplayer_config::YtDlpConfig,
-    ) -> Self {
-        Self {
-            draft,
-            metadata_source,
-            yt_dlp_config,
-        }
+    fn new(draft: PlaylistItemDraft) -> Self {
+        Self { draft }
     }
 
     /// Возвращает ownership только matching confirmation response-у.
-    fn into_parts(
-        self,
-    ) -> (
-        PlaylistItemDraft,
-        Option<PlaylistUrlMetadataSource>,
-        rustiplayer_config::YtDlpConfig,
-    ) {
-        (self.draft, self.metadata_source, self.yt_dlp_config)
+    fn into_draft(self) -> PlaylistItemDraft {
+        self.draft
     }
 }
 
@@ -147,7 +127,7 @@ impl PlaylistRuntime {
         }
     }
 
-    /// Синхронно выполняет только classifier/commit; enrichment уходит в bounded worker.
+    /// Direct URL коммитит сразу, а yt-dlp URL передаёт latest-only topology owner-у.
     pub(crate) fn append_playlist_url(
         &mut self,
         input: &str,
@@ -169,8 +149,31 @@ impl PlaylistRuntime {
             }
             StartupUrlClassification::Supported(locator) => locator,
         };
+        // D25: любое Add снимает active sibling discovery, сохраняя уже committed batches.
+        self.discovery.cancel_sibling_for_add();
+        // Новый URL supersede-ит parser preview и предыдущую latest-only topology extraction.
+        self.supersede_playlist_import_flow();
+        // Старое acknowledgement нельзя применить к новому exact user locator.
+        self.replacement_confirmation.cancel();
+        if let Some(yt_dlp_locator) = locator.yt_dlp_topology_locator().cloned() {
+            let sensitive_durable_locator_count =
+                usize::from(locator.requires_sensitive_persistence_acknowledgement());
+            self.start_playlist_url_import(
+                yt_dlp_locator,
+                yt_dlp_config.clone(),
+                sensitive_durable_locator_count,
+            )
+            .map_err(|error| match error {
+                super::url_import::PlaylistUrlImportStartError::GenerationExhausted => {
+                    UrlAppendValidationError::TopologyGenerationExhausted
+                }
+                super::url_import::PlaylistUrlImportStartError::WorkerUnavailable => {
+                    UrlAppendValidationError::TopologyWorkerUnavailable
+                }
+            })?;
+            return Ok(UrlAppendActionOutcome::ResolvingTopology);
+        }
         let requires_ack = locator.requires_sensitive_persistence_acknowledgement();
-        let metadata_source = locator.playlist_metadata_source();
         let safe_label = SafeMediaLabel::from_service_safe_label(locator.safe_label());
         let cached_metadata =
             CachedPlaylistMetadata::new(locator.safe_label(), PlaylistMediaKind::Unknown);
@@ -178,28 +181,14 @@ impl PlaylistRuntime {
             .to_playlist_locator()
             .map_err(|_| UrlAppendValidationError::LocatorMapping)?;
         let draft = PlaylistItemDraft::url(playlist_locator, cached_metadata);
-        // D25: любое Add снимает active sibling discovery, сохраняя уже committed batches.
-        self.discovery.cancel_sibling_for_add();
-        self.supersede_playlist_import_flow();
-
         if requires_ack {
-            let continuation =
-                SensitiveUrlAppendContinuation::new(draft, metadata_source, yt_dlp_config.clone());
+            let continuation = SensitiveUrlAppendContinuation::new(draft);
             self.replacement_confirmation
                 .replace_with_sensitive_url_append(safe_label, continuation)
                 .map_err(|_| UrlAppendValidationError::ConfirmationIdentityExhausted)?;
             return Ok(UrlAppendActionOutcome::AwaitingSensitivePersistenceDecision);
         }
-        self.replacement_confirmation.cancel();
-        let committed = self.commit_url_append(draft)?;
-        if let Some(metadata_source) = metadata_source {
-            self.request_committed_url_metadata(
-                &committed.item_ids,
-                metadata_source,
-                yt_dlp_config,
-            );
-        }
-        Ok(committed.outcome)
+        self.commit_url_append(draft)
     }
 
     /// Matching generalized response consumes secret-bearing intent exactly once.
@@ -233,36 +222,29 @@ impl PlaylistRuntime {
         }
     }
 
-    /// Коммитит подтверждённый URL и восстанавливает захваченный metadata intent.
+    /// Коммитит подтверждённый direct URL без повторной classification или network I/O.
     fn commit_confirmed_sensitive_url_append(
         &mut self,
         continuation: SensitiveUrlAppendContinuation,
     ) -> PlaylistConfirmationApplyOutcome {
-        let (draft, metadata_source, yt_dlp_config) = continuation.into_parts();
-        match self.commit_url_append(draft) {
-            Ok(committed) => {
-                if let Some(metadata_source) = metadata_source {
-                    self.request_committed_url_metadata(
-                        &committed.item_ids,
-                        metadata_source,
-                        &yt_dlp_config,
-                    );
+        match self.commit_url_append(continuation.into_draft()) {
+            Ok(outcome) => match outcome {
+                UrlAppendActionOutcome::Appended { item_count } => {
+                    PlaylistConfirmationApplyOutcome::UrlAppended { item_count }
                 }
-                match committed.outcome {
-                    UrlAppendActionOutcome::Appended { item_count } => {
-                        PlaylistConfirmationApplyOutcome::UrlAppended { item_count }
-                    }
-                    UrlAppendActionOutcome::NoCapacity => {
-                        PlaylistConfirmationApplyOutcome::UrlNoCapacity
-                    }
-                    UrlAppendActionOutcome::DeferredUntilStartupInstallResolution => {
-                        PlaylistConfirmationApplyOutcome::DeferredUntilStartupInstallResolution
-                    }
-                    UrlAppendActionOutcome::AwaitingSensitivePersistenceDecision => {
-                        unreachable!("confirmed draft never re-enters acknowledgement")
-                    }
+                UrlAppendActionOutcome::NoCapacity => {
+                    PlaylistConfirmationApplyOutcome::UrlNoCapacity
                 }
-            }
+                UrlAppendActionOutcome::DeferredUntilStartupInstallResolution => {
+                    PlaylistConfirmationApplyOutcome::DeferredUntilStartupInstallResolution
+                }
+                UrlAppendActionOutcome::AwaitingSensitivePersistenceDecision => {
+                    unreachable!("confirmed draft never re-enters acknowledgement")
+                }
+                UrlAppendActionOutcome::ResolvingTopology => {
+                    unreachable!("confirmed direct draft never starts topology extraction")
+                }
+            },
             Err(_) => PlaylistConfirmationApplyOutcome::CommitRejected,
         }
     }
@@ -270,14 +252,11 @@ impl PlaylistRuntime {
     fn commit_url_append(
         &mut self,
         draft: PlaylistItemDraft,
-    ) -> Result<CommittedUrlAppend, UrlAppendValidationError> {
+    ) -> Result<UrlAppendActionOutcome, UrlAppendValidationError> {
         if self.controller.as_ref().is_none() {
             self.record_startup_prepared_add(vec![draft])
                 .map_err(|_| UrlAppendValidationError::CommitRejected)?;
-            return Ok(CommittedUrlAppend {
-                outcome: UrlAppendActionOutcome::DeferredUntilStartupInstallResolution,
-                item_ids: Vec::new(),
-            });
+            return Ok(UrlAppendActionOutcome::DeferredUntilStartupInstallResolution);
         }
         let startup_install_linearizing = self.startup_action_retention_is_active()
             && self.controller.as_ref().is_some_and(|controller| {
@@ -288,10 +267,7 @@ impl PlaylistRuntime {
         if startup_install_linearizing {
             self.retain_startup_prepared_add(vec![draft])
                 .map_err(|_| UrlAppendValidationError::CommitRejected)?;
-            return Ok(CommittedUrlAppend {
-                outcome: UrlAppendActionOutcome::DeferredUntilStartupInstallResolution,
-                item_ids: Vec::new(),
-            });
+            return Ok(UrlAppendActionOutcome::DeferredUntilStartupInstallResolution);
         }
         let controller = self
             .controller
@@ -302,58 +278,23 @@ impl PlaylistRuntime {
             .append_capped_tail(vec![draft])
             .map_err(|_| UrlAppendValidationError::CommitRejected)?;
         if item_ids.is_empty() {
-            return Ok(CommittedUrlAppend {
-                outcome: UrlAppendActionOutcome::NoCapacity,
-                item_ids,
-            });
+            return Ok(UrlAppendActionOutcome::NoCapacity);
         }
         self.publish_controller_mutation_if_dirty(dirty_before);
-        Ok(CommittedUrlAppend {
-            outcome: UrlAppendActionOutcome::Appended {
-                item_count: item_ids.len(),
-            },
-            item_ids,
+        Ok(UrlAppendActionOutcome::Appended {
+            item_count: item_ids.len(),
         })
-    }
-
-    /// После exact queue commit связывает service result только с выданными Item IDs.
-    fn request_committed_url_metadata(
-        &mut self,
-        item_ids: &[PlaylistItemId],
-        metadata_source: PlaylistUrlMetadataSource,
-        yt_dlp_config: &rustiplayer_config::YtDlpConfig,
-    ) {
-        let PlaylistUrlMetadataSource::YtDlp(yt_dlp_locator) = metadata_source;
-        let Some(controller) = self.controller.as_ref() else {
-            return;
-        };
-        let demands = item_ids
-            .iter()
-            .filter_map(|item_id| {
-                let item = controller.queue().item(*item_id)?;
-                Some(super::discovery::YtDlpMetadataDemand::new(
-                    *item_id,
-                    item.locator().clone(),
-                    yt_dlp_locator.clone(),
-                    yt_dlp_config.clone(),
-                ))
-            })
-            .collect();
-        let _request_outcome = self.discovery.request_yt_dlp_metadata(demands);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::Arc;
-    use std::thread;
-    use std::time::{Duration, SystemTime};
+    use std::time::SystemTime;
 
     use super::*;
     use crate::app_wake::{AppWakeOwner, AppWakePort};
     use crate::playlist_runtime::controller::ControllerAppendOutcome;
-    use crate::playlist_runtime::discovery::{YtDlpMetadataResolver, YtDlpMetadataTaskOutcome};
     use crate::playlist_runtime::{
         PlaylistConfirmationAction, QueueReplacementConfirmationDecision,
     };
@@ -363,26 +304,6 @@ mod tests {
             PlaylistRuntime::new(AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime));
         runtime.resolve_missing_state_for_test();
         runtime
-    }
-
-    struct ImmediateYtDlpMetadataResolver;
-
-    impl YtDlpMetadataResolver for ImmediateYtDlpMetadataResolver {
-        fn resolve(
-            &self,
-            _locator: &service_ytdlp::YtDlpMediaLocator,
-            _yt_dlp_config: &rustiplayer_config::YtDlpConfig,
-            cancellation: &bounded_work_executor::CancellationToken,
-        ) -> YtDlpMetadataTaskOutcome {
-            if cancellation.is_cancelled() {
-                YtDlpMetadataTaskOutcome::Cancelled
-            } else {
-                YtDlpMetadataTaskOutcome::Resolved {
-                    title: Some("Настоящее название из yt-dlp".to_string()),
-                    duration: Some(Duration::from_secs(77)),
-                }
-            }
-        }
     }
 
     #[test]
@@ -403,74 +324,6 @@ mod tests {
         assert_eq!(first, UrlAppendActionOutcome::Appended { item_count: 1 });
         assert_eq!(second, UrlAppendActionOutcome::Appended { item_count: 1 });
         assert_eq!(runtime.controller.queue().top_level_entry_count(), 2);
-        assert!(runtime.controller.active_media().is_none());
-    }
-
-    #[test]
-    fn yt_dlp_url_append_enriches_committed_row_without_playback() {
-        let mut runtime = runtime();
-        runtime
-            .discovery
-            .replace_yt_dlp_metadata_resolver_for_test(Arc::new(ImmediateYtDlpMetadataResolver));
-        let yt_dlp_config = rustiplayer_config::YtDlpConfig {
-            enabled: true,
-            ..rustiplayer_config::YtDlpConfig::default()
-        };
-
-        assert_eq!(
-            runtime
-                .append_playlist_url(
-                    "https://media.example.test/watch/title-test?token=exact",
-                    &yt_dlp_config,
-                )
-                .expect("YtDlp URL append"),
-            UrlAppendActionOutcome::AwaitingSensitivePersistenceDecision
-        );
-        let confirmation = runtime
-            .pending_playlist_confirmation()
-            .expect("query-bearing yt-dlp locator требует aggregated confirmation");
-        assert!(matches!(
-            runtime.respond_to_playlist_confirmation(PlaylistConfirmationAction {
-                intent_id: confirmation.intent_id(),
-                decision: QueueReplacementConfirmationDecision::Confirm,
-            }),
-            PlaylistConfirmationApplyOutcome::UrlAppended { item_count: 1 }
-        ));
-        assert!(runtime.controller.active_media().is_none());
-
-        for _ in 0..200 {
-            let _visible_change = runtime.drain_playlist_discovery();
-            if runtime
-                .controller
-                .queue()
-                .iter_playable_items()
-                .next()
-                .expect("append должен оставить одну playable строку")
-                .cached_metadata()
-                .title()
-                .is_some()
-            {
-                break;
-            }
-            thread::sleep(Duration::from_millis(5));
-        }
-
-        let item = runtime
-            .controller
-            .queue()
-            .iter_playable_items()
-            .next()
-            .expect("append должен оставить одну playable строку");
-        assert_eq!(
-            item.cached_metadata().title(),
-            Some("Настоящее название из yt-dlp")
-        );
-        assert_eq!(
-            item.cached_metadata().duration(),
-            Some(media_core::MediaDuration::from_duration(
-                Duration::from_secs(77)
-            ))
-        );
         assert!(runtime.controller.active_media().is_none());
     }
 

@@ -607,6 +607,9 @@ impl PlaylistRuntime {
             Ok(super::UrlAppendActionOutcome::DeferredUntilStartupInstallResolution) => {
                 self.ui_interaction.url_draft_mut().finish_success();
             }
+            Ok(super::UrlAppendActionOutcome::ResolvingTopology) => {
+                self.ui_interaction.url_draft_mut().finish_success();
+            }
             Ok(super::UrlAppendActionOutcome::NoCapacity) => self
                 .ui_interaction
                 .url_draft_mut()
@@ -628,6 +631,8 @@ impl PlaylistRuntime {
                     super::UrlAppendValidationError::LocatorMapping
                     | super::UrlAppendValidationError::MetadataMapping
                     | super::UrlAppendValidationError::ConfirmationIdentityExhausted
+                    | super::UrlAppendValidationError::TopologyGenerationExhausted
+                    | super::UrlAppendValidationError::TopologyWorkerUnavailable
                     | super::UrlAppendValidationError::CommitRejected => {
                         "Не удалось добавить URL".into()
                     }

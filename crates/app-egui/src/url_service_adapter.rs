@@ -76,6 +76,11 @@ impl StartupUrlLocator {
         self.0.playlist_metadata_source()
     }
 
+    /// Возвращает borrowed typed locator только для topology-first Add URL boundary.
+    pub(crate) fn yt_dlp_topology_locator(&self) -> Option<&service_ytdlp::YtDlpMediaLocator> {
+        self.0.yt_dlp_topology_locator()
+    }
+
     /// Возвращает typed yt-dlp scheme только для app-owned capability admission.
     fn yt_dlp_input_scheme(&self) -> Option<service_ytdlp::YtDlpInputScheme> {
         self.0.yt_dlp_input_scheme()
@@ -124,6 +129,10 @@ trait StartupUrlServiceAdapter: Send {
     }
 
     fn playlist_metadata_source(&self) -> Option<PlaylistUrlMetadataSource> {
+        None
+    }
+
+    fn yt_dlp_topology_locator(&self) -> Option<&service_ytdlp::YtDlpMediaLocator> {
         None
     }
 
@@ -196,6 +205,10 @@ impl StartupUrlServiceAdapter for YtDlpStartupAdapter {
 
     fn playlist_metadata_source(&self) -> Option<PlaylistUrlMetadataSource> {
         Some(PlaylistUrlMetadataSource::YtDlp(self.locator.clone()))
+    }
+
+    fn yt_dlp_topology_locator(&self) -> Option<&service_ytdlp::YtDlpMediaLocator> {
+        Some(&self.locator)
     }
 
     fn yt_dlp_input_scheme(&self) -> Option<service_ytdlp::YtDlpInputScheme> {

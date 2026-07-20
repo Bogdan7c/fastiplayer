@@ -275,6 +275,7 @@ impl PlaylistRuntime {
     /// Общая supersede boundary не позволяет late parser completion воскресить preview.
     pub(in crate::playlist_runtime) fn supersede_playlist_import_flow(&mut self) {
         self.import_io.cancel_active();
+        self.cancel_playlist_url_import();
         self.import_transaction.cancel();
     }
 
