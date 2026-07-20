@@ -25,6 +25,7 @@ CONTRACT_CRATES = frozenset(
     {
         "atomic-file-store",
         "audio-core",
+        "bounded-xml-reader",
         "media-core",
         "natural-sort-key",
         "playlist-core",
@@ -48,6 +49,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "atomic-file-store",
         "audio",
         "audio-core",
+        "bounded-xml-reader",
         "capability-core",
         "codec-core",
         "desktop-integration",
@@ -113,6 +115,9 @@ NATURAL_SORT_KEY_ALLOWED_DEPENDENCIES = frozenset()
 
 # Atomic file store владеет только std filesystem durability protocol.
 ATOMIC_FILE_STORE_ALLOWED_DEPENDENCIES = frozenset()
+
+# Hardened XML boundary не должен получить filesystem/network/domain dependencies.
+BOUNDED_XML_READER_ALLOWED_DEPENDENCIES = frozenset({"quick-xml", "thiserror"})
 
 # Single-file discovery владеет filesystem/cancellation orchestration, но видит
 # Symphonia только через узкий neutral snapshot boundary в symphonia-demux.
@@ -723,6 +728,14 @@ def find_dependency_violations(
             frozenset({"atomic-file-store"}),
             ATOMIC_FILE_STORE_ALLOWED_DEPENDENCIES,
             "atomic-file-store остаётся std-only neutral durability boundary",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"bounded-xml-reader"}),
+            BOUNDED_XML_READER_ALLOWED_DEPENDENCIES,
+            "bounded-xml-reader не получает filesystem/network/domain dependencies",
         )
     )
     violations.extend(

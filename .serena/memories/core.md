@@ -132,3 +132,8 @@
 ## Web media roadmap S04 neutral atomic file durability (2026-07-20)
 - Добавлен std-only `atomic-file-store`: единый neutral owner create-new same-directory temp/Unix 0600/write/flush/file-sync/rename/directory-sync/exact-path RAII cleanup без playlist/app/config knowledge и без wildcard policy.
 - `playlist-state -> atomic-file-store`; `playlist-state` сохраняет JSON serialization, общий operation mutex с inspection/quarantine, worker retry policy и прежний public outcome API. Queue-state и resume sidecar мигрированы behavior-neutrally. Полный контракт и verification: `mem:playlist/state`, app ownership: `mem:app-egui/playlist-persistence-s14`.
+
+
+## Web media roadmap S04X hardened XML boundary (2026-07-20)
+- `bounded-xml-reader` теперь владеет единым byte-slice-only untrusted XML boundary с обязательными caller-defined byte/depth/token/attribute/text/namespace budgets, project-owned events и отсутствием hidden I/O. DTD/DOCTYPE, external/custom entities, undeclared prefixes и XML 1.1 rejected; predefined/numeric XML 1.0 entities legal.
+- Transitively vulnerable `quick-xml 0.39.3` заменён на `0.41.0`; exact published `wayland-scanner 0.31.10` временно закрыт пятым локальным `[replace]` patch без window/UI stack migration. Cargo-deny advisory graph clean. Full contract: `mem:xml/core`; patch ownership/removal gate: `mem:dependency-patches/core`.

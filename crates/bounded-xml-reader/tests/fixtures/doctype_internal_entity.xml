@@ -1,0 +1,4 @@
+<!DOCTYPE playlist [
+  <!ENTITY secret "must never expand">
+]>
+<playlist>&secret;</playlist>

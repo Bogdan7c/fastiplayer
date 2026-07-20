@@ -26,3 +26,11 @@
 - First-party workspace packages inherit `license = "MIT"`; root `LICENSE` is standard MIT copyright 2026 Bogdan7c.
 - `deny.toml` is the blocking cargo-deny policy. MPL-2.0 is allowed only by named Symphonia exceptions. Unknown registries/Git and unlisted licenses fail; Git sources require a separately reviewed pinned revision plus owner/reason/removal criterion.
 - `directories 6` was replaced by permissive `etcetera 0.11` because `option-ext` introduced non-inventoried MPL-2.0.
+
+
+## S04X wayland-scanner advisory closure (2026-07-20)
+- Root `[replace]` now has five entries. `wayland-scanner:0.31.10` points to `crates/wayland-scanner-patch`, copied from the exact published crates.io archive and kept outside workspace membership with its own lock.
+- Owned patch delta is intentionally narrow: manifests select `quick-xml 0.41`, and `src/parse.rs` supplies `XmlVersion::Implicit1_0` to the changed decoding API. No winit/egui/Wayland behavior or generated protocol semantics are intentionally changed.
+- This closes RUSTSEC-2026-0194/0195 without a broad window-stack migration or cargo-deny exception. `cargo tree -i quick-xml --workspace --all-features` must contain only quick-xml 0.41 consumers; `cargo deny check advisories` must remain clean.
+- Removal gate: replace the local crate only when an upstream released `wayland-scanner` selected by the current window stack depends on a non-vulnerable quick-xml line and the direct patch tests plus full workspace/Wayland smoke pass. Do not retain the patch after that release is adopted.
+- Machine-readable provenance, SHA-256, direct tests and manual matrix live in `docs/dependency-patches.toml`; detailed dependency/source/license/MSRV audit is `docs/dependency-audit-s04x-2026-07-20.md`.

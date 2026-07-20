@@ -35,8 +35,11 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/settings-core
     crates/settings-derive
     crates/rustiplayer-settings
+    crates/web-media-core
+    crates/bounded-xml-reader
     crates/player-core
     crates/bounded-work-executor
+    crates/atomic-file-store
     crates/natural-sort-key
     crates/playlist-core
     crates/playlist-discovery
@@ -126,7 +129,7 @@ run_format_guardrails() {
     run_step "cargo metadata" run_cargo_metadata
     # Policy guard сверяет primary toolchain, MSRV и inheritance manifests.
     run_step "toolchain policy" python3 "${SCRIPT_DIRECTORY}/check-toolchain-policy.py"
-    # Inventory guard связывает четыре root replace с standalone manifests и lock-файлами.
+    # Inventory guard связывает пять root replace с standalone manifests и lock-файлами.
     run_step "dependency patch inventory" python3 "${SCRIPT_DIRECTORY}/check-dependency-patches.py"
     # Unit-тесты не позволяют самим policy scripts незаметно сломаться.
     run_step "guardrail unit tests" python3 -m unittest discover -s "${SCRIPT_DIRECTORY}/tests" -p 'test_*.py'
@@ -144,7 +147,7 @@ run_format_guardrails() {
     run_step "rustfmt" cargo fmt --all --check
 }
 
-# Функция проверяет workspace integration contracts всех четырёх local patches.
+# Функция проверяет workspace integration contracts всех пяти local patches.
 run_dependency_patches() {
     # Inventory проверяется до compile, чтобы structural failure был понятнее Cargo errors.
     run_step "dependency patch inventory" python3 "${SCRIPT_DIRECTORY}/check-dependency-patches.py"
@@ -170,7 +173,7 @@ run_dependencies() {
     local dependency_policy_status=0
     run_step "licenses, sources and duplicate inventory" \
         cargo deny check licenses bans sources || dependency_policy_status=$?
-    # Versioned inventory исключает четыре upstream patch directories и проверяется unit-тестом.
+    # Versioned inventory исключает пять upstream patch directories и проверяется unit-тестом.
     local unused_dependencies_status=0
     run_step "unused direct dependencies" cargo machete --with-metadata \
         "${WORKSPACE_CRATE_DIRECTORIES[@]}" \

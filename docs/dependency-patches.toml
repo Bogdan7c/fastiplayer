@@ -57,3 +57,18 @@ dependent_crates = ["audio"]
 focused_automated_tests = ["cargo test --manifest-path crates/symphonia-codec-aac-patch/Cargo.toml --locked", "cargo test -p audio --locked"]
 manual_media_matrix = ["AAC-LC 3.0/4.0/5.0/5.1/7.1", "AAC-LC 5.1 dialogue/LFE/surround channel identity", "AAC arbitrary unique element tags"]
 removal_gate = "Удалять только когда upstream принимает multichannel AAC-LC, сохраняет каноническую раскладку и проходит direct mapping tests, audio suite и 5.1 listening matrix."
+
+# Запись связывает security backport с опубликованным wayland-scanner 0.31.10.
+[[patch]]
+path = "crates/wayland-scanner-patch"
+package = "wayland-scanner"
+version = "0.31.10"
+upstream_repository = "https://github.com/Smithay/wayland-rs"
+# Checksum подтверждает exact crates.io archive, поверх которого изменён только dependency range.
+upstream_revision = "crates.io:sha256:9c324a910fd86ebdc364a3e61ec1f11737d3b1d6c273c0239ee8ff4bc0d24b4a"
+reason = "Узкий backport upstream-intended quick-xml 0.39 -> 0.41 и одного XmlVersion callsite закрывает RUSTSEC-2026-0194/0195 без широкого обновления window/Wayland stack."
+owned_diff_areas = ["Cargo.toml", "Cargo.toml.orig", "src/parse.rs"]
+dependent_crates = ["app-egui", "render-wgpu-shell", "video-vaapi"]
+focused_automated_tests = ["cargo test --manifest-path crates/wayland-scanner-patch/Cargo.toml --locked", "cargo check --workspace --all-features --locked", "cargo deny check"]
+manual_media_matrix = ["Wayland window startup", "egui clipboard/file dialog", "VA-API GBM/Wayland build integration"]
+removal_gate = "Удалить local patch сразу после crates.io release wayland-scanner, который допускает quick-xml >=0.41, при чистом cargo-deny и прохождении workspace/Wayland smoke checks."

@@ -1,0 +1,23 @@
+[package]
+# Имя подчёркивает главный контракт crate: XML читается только внутри явных budgets.
+name = "bounded-xml-reader"
+# Версия наследуется от workspace, как у остальных first-party crate-ов.
+version.workspace = true
+# Edition остаётся единой для всего проекта.
+edition.workspace = true
+# MSRV проверяется общим workspace gate на Rust 1.92.
+rust-version.workspace = true
+# First-party boundary распространяется под общей MIT license проекта.
+license.workspace = true
+
+[lib]
+# Rust-имя crate использует стандартное подчёркивание.
+name = "bounded_xml_reader"
+# Публичный facade отделён от внутренних budget/reader реализаций.
+path = "src/lib.rs"
+
+[dependencies]
+# quick-xml 0.41 содержит исправления RUSTSEC-2026-0194/0195 и bounded NsReader.
+quick-xml.workspace = true
+# thiserror формирует typed diagnostics без утечки parser-specific ошибок наружу.
+thiserror.workspace = true

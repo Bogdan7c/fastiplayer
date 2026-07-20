@@ -23,7 +23,7 @@ scripts/pre-pr-checks.sh
 crate-ов. Политика, локальная установка exact tool и процедура осознанного
 исключения описаны в `docs/code-coverage.md`.
 
-Четыре local dependency patches остаются вне workspace и проверяются своими
+Пять local dependency patches остаются вне workspace и проверяются своими
 manifest/lock парами. Их exact direct-команды и removal gates перечислены в
 `docs/dependency-patches.toml`; workspace integration воспроизводится командой
 `scripts/ci-checks.sh dependency-patches`. Реальные media cases по-прежнему
@@ -57,13 +57,14 @@ GitHub не предоставляет rulesets/branch protection для дан�
 - `Dependency patch (cros-codecs)`
 - `Dependency patch (symphonia-format-isomp4)`
 - `Dependency patch (symphonia-codec-aac)`
+- `Dependency patch (wayland-scanner)`
 - `Dependency patch integration`
 - `Coverage ratchet`
 
 Operational checklist:
 
 1. Требовать pull request перед merge в `main`.
-2. Требовать все двенадцать status checks выше.
+2. Требовать все тринадцать status checks выше.
 3. Требовать актуальную ветку перед merge (`Require branches to be up to date`).
 4. Запретить merge при failed, pending или stale required checks.
 5. Не добавлять `Real playback smoke (manual, non-blocking)` в required checks.

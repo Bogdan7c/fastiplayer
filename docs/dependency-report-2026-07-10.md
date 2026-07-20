@@ -1,5 +1,21 @@
 # Dependency report — 2026-07-10
 
+## Дополнение S04X — 2026-07-20
+
+Исторический blocker из отчёта ниже закрыт без broad window-stack migration и
+без `cargo-deny` ignore. Опубликованный `wayland-scanner 0.31.10` заменён узким
+инвентаризированным local patch-ем, который переводит его с `quick-xml 0.39` на
+`quick-xml 0.41` и адаптирует один `xml_content` callsite к explicit XML version.
+
+Текущий blocking dependency graph содержит только `quick-xml 0.41.0`;
+`cargo deny check` подтверждает `advisories ok, licenses ok, sources ok`.
+Patch removal gate и exact upstream archive checksum находятся в
+`docs/dependency-patches.toml`, полный parser/dependency audit — в
+`docs/dependency-audit-s04x-2026-07-20.md`.
+
+Следующий текст сохранён как evidence состояния на 2026-07-10 и не описывает
+актуальный advisory status после S04X.
+
 ## Результат
 
 Первый автоматизированный аудит выполнен `cargo-deny 0.20.2` и
