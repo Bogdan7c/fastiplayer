@@ -123,3 +123,8 @@
 - S01G PASS без production/API/dependency changes: полный Serena audit подтвердил, что все `PlaylistQueue` mutators остаются у domain owner-а, app вызывает их только из serialized controller/runtime owner turns, а `playlist-discovery` не получил queue authority.
 - Добавлены focused proofs совместного Item/Group allocator high-watermark через Clear/compound replace/reserved single replacement, точного mixed-end `ExactSizeIterator` поверх compound storage и автоматического storage/module-size guardrail. Legacy slice/ambiguous queue len API и cached flat queue по-прежнему отсутствуют.
 - Verification: 122 playlist-core, 41 playlist-state, 722 app-egui tests PASS; strict Clippy, workspace check, MSRV 1.92, fmt, refactor guardrails, diff check и Serena diagnostics PASS. Cargo-deny падает только на прежние quick-xml RUSTSEC-2026-0194/0195. Full handoff: `mem:playlist/compound-hardening-s01g-2026-07-20`.
+
+## Web media roadmap S03 neutral values (2026-07-20)
+- Добавлен dependency-free `web-media-core`: service/runtime-neutral source/candidate/semantic identities, bounded redacted raw+parsed transport/container/codec values, typed muxed/separate/video-only/audio-only layouts, video/audio/subtitle descriptors, `BestPlayable`/`Exact`, deterministic preferred-height rank и static compatibility rejection vocabulary.
+- Semantic refresh identity source-scoped; candidate boundary отвергает cross-source semantic/subtitle identities. Unknown S00 identities сохраняются exact до 256 UTF-8 bytes без diagnostics leakage; provider/process/HTTP runtime/config/UI types отсутствуют.
+- Public contract, bounds, tests и verification подробно записаны в `mem:media-services/core`. Новый crate пока не подключён к `service-ytdlp`; mapping принадлежит будущей S19.
