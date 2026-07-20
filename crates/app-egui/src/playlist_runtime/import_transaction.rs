@@ -68,6 +68,10 @@ impl PlaylistImportIssue {
 }
 
 /// Exact/at-least vocabulary не выдумывает недоказанный rejected tail.
+#[allow(
+    dead_code,
+    reason = "S08 tests and future parser receipts preserve exact-count vocabulary"
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PlaylistImportRejectedCount {
     /// Parser/capacity owner доказал точное число.
@@ -162,6 +166,16 @@ impl PlaylistImportDraft {
             sensitive_durable_locator_count,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_summary(&self) -> (usize, usize, bool, usize) {
+        (
+            self.entries.len(),
+            self.issues.len(),
+            self.source_truncation.is_some(),
+            self.sensitive_durable_locator_count,
+        )
+    }
 }
 
 /// Immutable read model единственного staged preview.
@@ -225,6 +239,71 @@ impl PlaylistImportPreview {
             || self.source_truncation.is_some()
             || self.capacity_truncation.is_some()
     }
+
+    /// Собирает focused UI fixture без queue/controller ownership.
+    #[cfg(test)]
+    pub(crate) fn for_ui_test(fixture: PlaylistImportPreviewUiFixture<'_>) -> Self {
+        let PlaylistImportPreviewUiFixture {
+            intent,
+            accepted,
+            issue_kinds,
+            source_rejected_at_least,
+            capacity_rejected,
+            sensitive_durable_locator_count,
+        } = fixture;
+        Self {
+            preview_id: PlaylistImportPreviewId(41),
+            intent,
+            accepted: PlaylistImportEntryCounts {
+                singles: accepted.singles,
+                groups: accepted.groups,
+                retained_items: accepted.retained_items,
+            },
+            issues: issue_kinds
+                .iter()
+                .copied()
+                .map(PlaylistImportIssue::new)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            omitted_issue_count: 0,
+            source_truncation: source_rejected_at_least.map(|count| {
+                PlaylistImportSourceTruncation::new(PlaylistImportRejectedCount::AtLeast(count))
+            }),
+            capacity_truncation: capacity_rejected.map(|capacity| {
+                PlaylistImportCapacityTruncation {
+                    rejected_entries: capacity.rejected_entries,
+                    rejected_items: capacity.rejected_items,
+                }
+            }),
+            sensitive_durable_locator_count,
+        }
+    }
+}
+
+/// Именованные accepted counts не требуют помнить порядок трёх `usize`.
+#[cfg(test)]
+pub(crate) struct PlaylistImportPreviewUiAcceptedFixture {
+    pub(crate) singles: usize,
+    pub(crate) groups: usize,
+    pub(crate) retained_items: usize,
+}
+
+/// Именованные capacity counts сохраняют различие entry и retained item.
+#[cfg(test)]
+pub(crate) struct PlaylistImportPreviewUiCapacityFixture {
+    pub(crate) rejected_entries: usize,
+    pub(crate) rejected_items: usize,
+}
+
+/// Именованный test-only input не превращает preview semantics в позиционные числа.
+#[cfg(test)]
+pub(crate) struct PlaylistImportPreviewUiFixture<'fixture> {
+    pub(crate) intent: PlaylistImportIntent,
+    pub(crate) accepted: PlaylistImportPreviewUiAcceptedFixture,
+    pub(crate) issue_kinds: &'fixture [PlaylistImportIssueKind],
+    pub(crate) source_rejected_at_least: Option<usize>,
+    pub(crate) capacity_rejected: Option<PlaylistImportPreviewUiCapacityFixture>,
+    pub(crate) sensitive_durable_locator_count: usize,
 }
 
 /// Continue либо коммитит, либо занимает generalized confirmation slot.

@@ -3,6 +3,7 @@
 mod actions;
 mod active_accent;
 mod header_undo;
+pub(crate) mod import_preview;
 mod renderer;
 mod row_interactions;
 mod status;
@@ -51,7 +52,7 @@ pub(crate) struct PlaylistUiOutput {
 }
 
 impl PlaylistUiOutput {
-    pub(super) fn push_action(&mut self, action: PlaylistAction) {
+    pub(crate) fn push_action(&mut self, action: PlaylistAction) {
         self.actions.push(action);
     }
 

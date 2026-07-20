@@ -382,7 +382,9 @@ impl AppState {
                 is_playing,
                 error_message,
                 pending_message,
+                playlist_models.import_preview,
                 playlist_models.confirmation,
+                &mut playlist_ui_output,
             );
             center_overlay_elapsed = stage_started_at.elapsed();
         });
@@ -775,7 +777,9 @@ impl AppState {
         is_playing: bool,
         error_message: Option<&str>,
         pending_message: Option<&str>,
+        playlist_import_preview: Option<&crate::playlist_runtime::PlaylistImportPreview>,
         playlist_confirmation: Option<&crate::playlist_runtime::PendingPlaylistConfirmation>,
+        playlist_output: &mut crate::ui::playlist::PlaylistUiOutput,
     ) -> Option<crate::playlist_runtime::PlaylistConfirmationAction> {
         let mut confirmation_action = None;
         egui::CentralPanel::default()
@@ -784,6 +788,10 @@ impl AppState {
                 if let Some(model) = playlist_confirmation {
                     confirmation_action =
                         crate::ui::queue_replacement_confirmation::render(ui, model);
+                } else if let Some(preview) = playlist_import_preview {
+                    if let Some(action) = crate::ui::playlist::import_preview::render(ui, preview) {
+                        playlist_output.push_action(action);
+                    }
                 } else if let Some(error) = error_message {
                     ui.vertical_centered(|ui| {
                         ui.add_space(40.0);

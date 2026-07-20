@@ -13,6 +13,8 @@ pub enum PlaylistToolbarGlyph {
     Sort,
     /// Список с Play-маркером на текущей строке.
     CurrentItem,
+    /// Стрелка импорта, входящая в playlist tray.
+    Import,
     /// Метла для очистки списка.
     Clear,
 }
@@ -78,6 +80,7 @@ pub(crate) fn paint(
         PlaylistToolbarGlyph::AddUrl => paint_add_url(painter, icon_rect, stroke),
         PlaylistToolbarGlyph::Sort => paint_sort(painter, icon_rect, stroke),
         PlaylistToolbarGlyph::CurrentItem => paint_current_item(painter, icon_rect, stroke),
+        PlaylistToolbarGlyph::Import => paint_import(painter, icon_rect, stroke),
         PlaylistToolbarGlyph::Clear => paint_clear(painter, icon_rect, stroke),
     }
 }
@@ -252,6 +255,34 @@ fn paint_current_item(painter: &Painter, icon_rect: Rect, stroke: Stroke) {
     ));
 }
 
+/// Стрелка входит в открытый tray и не повторяет стопку файлов с плюсом.
+fn paint_import(painter: &Painter, icon_rect: Rect, stroke: Stroke) {
+    painter.line_segment(
+        [
+            icon_point(icon_rect, 0.0, -0.44),
+            icon_point(icon_rect, 0.0, 0.14),
+        ],
+        stroke,
+    );
+    painter.add(Shape::line(
+        vec![
+            icon_point(icon_rect, -0.20, -0.02),
+            icon_point(icon_rect, 0.0, 0.18),
+            icon_point(icon_rect, 0.20, -0.02),
+        ],
+        stroke,
+    ));
+    painter.add(Shape::line(
+        vec![
+            icon_point(icon_rect, -0.40, 0.08),
+            icon_point(icon_rect, -0.40, 0.39),
+            icon_point(icon_rect, 0.40, 0.39),
+            icon_point(icon_rect, 0.40, 0.08),
+        ],
+        stroke,
+    ));
+}
+
 /// Наклонная ручка, муфта и цельный веер щетинок образуют силуэт метлы.
 fn paint_clear(painter: &Painter, icon_rect: Rect, stroke: Stroke) {
     painter.line_segment(
@@ -332,11 +363,12 @@ mod tests {
             PlaylistToolbarGlyph::AddUrl,
             PlaylistToolbarGlyph::Sort,
             PlaylistToolbarGlyph::CurrentItem,
+            PlaylistToolbarGlyph::Import,
             PlaylistToolbarGlyph::Clear,
         ]
         .map(|glyph| glyph_output(glyph).shapes.len());
 
-        assert_eq!(actual_counts, [8, 4, 6, 7, 9]);
+        assert_eq!(actual_counts, [8, 4, 6, 7, 3, 9]);
     }
 
     #[test]
@@ -347,6 +379,7 @@ mod tests {
             PlaylistToolbarGlyph::AddUrl,
             PlaylistToolbarGlyph::Sort,
             PlaylistToolbarGlyph::CurrentItem,
+            PlaylistToolbarGlyph::Import,
             PlaylistToolbarGlyph::Clear,
         ] {
             let output = glyph_output(glyph);
@@ -367,13 +400,24 @@ mod tests {
             PlaylistToolbarGlyph::AddUrl,
             PlaylistToolbarGlyph::Sort,
             PlaylistToolbarGlyph::CurrentItem,
+            PlaylistToolbarGlyph::Import,
             PlaylistToolbarGlyph::Clear,
         ]
         .map(|glyph| format!("{:?}", glyph_output(glyph).shapes))
         .into_iter()
         .collect();
 
-        assert_eq!(fingerprints.len(), 5);
+        assert_eq!(fingerprints.len(), 6);
+    }
+
+    #[test]
+    fn add_files_and_import_have_unmistakably_different_geometry() {
+        let add_files = format!("{:?}", glyph_output(PlaylistToolbarGlyph::AddFiles).shapes);
+        let import = format!("{:?}", glyph_output(PlaylistToolbarGlyph::Import).shapes);
+
+        assert_ne!(add_files, import);
+        assert_eq!(glyph_output(PlaylistToolbarGlyph::AddFiles).shapes.len(), 8);
+        assert_eq!(glyph_output(PlaylistToolbarGlyph::Import).shapes.len(), 3);
     }
 
     #[test]

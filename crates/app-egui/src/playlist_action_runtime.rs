@@ -6,8 +6,9 @@ use render_wgpu_shell::Renderer;
 use winit::window::Window;
 
 use crate::playlist_runtime::{
-    ControllerMoveItemsOutcome, PlaylistRuntime, RemovalUndoOutcome, RuntimeMoveItemsOutcome,
-    RuntimeRemovalOutcome, RuntimeUpdateSelectionOutcome, UpdateSelectionOutcome,
+    ControllerMoveItemsOutcome, PlaylistImportContinueOutcome, PlaylistRuntime, RemovalUndoOutcome,
+    RuntimeMoveItemsOutcome, RuntimeRemovalOutcome, RuntimeUpdateSelectionOutcome,
+    UpdateSelectionOutcome,
 };
 use crate::state::AppState;
 use crate::ui::playlist::PlaylistAction;
@@ -96,6 +97,41 @@ pub(crate) fn apply_playlist_actions(
                 }
             }
             PlaylistAction::AddFiles => changed |= runtime.start_playlist_file_dialog(window),
+            PlaylistAction::StartImport(intent) => {
+                changed |= runtime.start_playlist_import_dialog(window, intent);
+            }
+            PlaylistAction::ContinueImport(preview_id) => {
+                let outcome = runtime.continue_playlist_import(preview_id);
+                if !matches!(
+                    outcome,
+                    PlaylistImportContinueOutcome::AwaitingConfirmation
+                        | PlaylistImportContinueOutcome::Committed(_)
+                ) {
+                    runtime.set_playlist_safe_feedback(match outcome {
+                        PlaylistImportContinueOutcome::Stale => {
+                            "Предпросмотр импорта устарел; выберите файл ещё раз"
+                        }
+                        PlaylistImportContinueOutcome::RuntimeClosed => {
+                            "Импорт уже недоступен: приложение завершает работу"
+                        }
+                        PlaylistImportContinueOutcome::MaterializationRejected(_) => {
+                            "Импорт содержит неподдерживаемый источник медиа"
+                        }
+                        PlaylistImportContinueOutcome::CommitRejected(_) => {
+                            "Не удалось применить импорт без изменения плейлиста"
+                        }
+                        PlaylistImportContinueOutcome::ConfirmationIdentityExhausted => {
+                            "Не удалось открыть подтверждение импорта"
+                        }
+                        PlaylistImportContinueOutcome::AwaitingConfirmation
+                        | PlaylistImportContinueOutcome::Committed(_) => unreachable!(),
+                    });
+                }
+                changed = true;
+            }
+            PlaylistAction::CancelImport(preview_id) => {
+                changed |= runtime.cancel_playlist_import(preview_id);
+            }
             PlaylistAction::OpenUrlEditor => {
                 runtime.open_playlist_url_editor();
                 changed = true;

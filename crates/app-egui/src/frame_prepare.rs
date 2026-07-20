@@ -1153,6 +1153,7 @@ pub(crate) fn render_frame(
         let playlist_view_model = playlist_runtime.playlist_view_model();
         let _model_was_applied = app_state.update_playlist_view_model(binding, playlist_view_model);
     }
+    let playlist_import_preview = playlist_runtime.pending_playlist_import_preview();
     let playlist_confirmation = playlist_runtime.pending_playlist_confirmation();
     let playlist_interaction = playlist_runtime.playlist_interaction_model();
     // Один monotonic timestamp согласует countdown snapshot и его wake deadline.
@@ -1167,6 +1168,7 @@ pub(crate) fn render_frame(
         egui_input,
         &frame_context,
         crate::state::PlaylistUiFrameModels {
+            import_preview: playlist_import_preview.as_ref(),
             confirmation: playlist_confirmation.as_ref(),
             interaction: &playlist_interaction,
             transport: &transport_model,

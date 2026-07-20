@@ -32,10 +32,7 @@ pub(crate) mod discovery;
     reason = "Session 11A identities become production callsite inputs in subsequent sessions"
 )]
 mod identity;
-#[allow(
-    dead_code,
-    reason = "S08 source-neutral import boundary is rendered by S09 UI"
-)]
+mod import_io;
 mod import_transaction;
 mod local_file_selection;
 mod media_reset;
@@ -60,6 +57,15 @@ mod suspend_resume;
 mod transport_execution;
 mod transport_ui;
 mod ui_interaction;
+pub(crate) use import_transaction::{
+    PlaylistImportContinueOutcome, PlaylistImportIntent, PlaylistImportIssueKind,
+    PlaylistImportPreview, PlaylistImportPreviewId, PlaylistImportRejectedCount,
+};
+#[cfg(test)]
+pub(crate) use import_transaction::{
+    PlaylistImportPreviewUiAcceptedFixture, PlaylistImportPreviewUiCapacityFixture,
+    PlaylistImportPreviewUiFixture,
+};
 pub(crate) use settings::{FutureDiscoveryPolicy, PlaylistSettingsStageError};
 pub(crate) use suspend_resume::{
     ResumeAttempt, ResumeCheckpointError, ResumePlaybackIntent, ResumePositionWarning,
@@ -304,6 +310,7 @@ enum PlaylistRuntimeLifecycle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PlaylistShutdownReport {
     pub(crate) ui_interaction: ProcessOwnerShutdownOutcome,
+    pub(crate) import_io: ProcessOwnerShutdownOutcome,
     pub(crate) media_open: ProcessOwnerShutdownOutcome,
     pub(crate) startup: startup::PlaylistStartupShutdownOutcome,
     pub(crate) persistence: persistence::PlaylistPersistenceShutdownOutcome,
@@ -422,6 +429,8 @@ pub(crate) struct PlaylistRuntime {
     replacement_confirmation: replacement_confirmation::QueueReplacementConfirmationState,
     /// S08 latest-only import preview и staged commit принадлежат process runtime.
     import_transaction: import_transaction::PlaylistImportTransactionState,
+    /// S09 single-root picker и bounded parser job живут отдельно от UI renderer-а.
+    import_io: import_io::PlaylistImportIoOwner,
     /// D48 form и async multi-file dialog принадлежат process runtime.
     ui_interaction: ui_interaction::PlaylistUiInteractionOwner,
     /// D66 stale guard для uncommitted Manual Add completions.
@@ -476,6 +485,7 @@ impl PlaylistRuntime {
         resume_last_position: bool,
     ) -> Self {
         let ui_interaction = ui_interaction::PlaylistUiInteractionOwner::new(wake_port.clone());
+        let import_io = import_io::PlaylistImportIoOwner::new(wake_port.clone());
         let desktop_transport = desktop_transport::DesktopTransportOwner::new(wake_port.clone());
         let media_open = MediaOpenCoordinator::new(wake_port.clone());
         let startup = startup::PlaylistStartupOwner::new(wake_port.clone());
@@ -512,6 +522,7 @@ impl PlaylistRuntime {
             replacement_confirmation:
                 replacement_confirmation::QueueReplacementConfirmationState::new(),
             import_transaction: import_transaction::PlaylistImportTransactionState::new(),
+            import_io,
             ui_interaction,
             manual_add_queue_generation: ManualAddQueueGeneration::INITIAL,
             startup_media_apply_superseded: false,
@@ -629,7 +640,8 @@ impl PlaylistRuntime {
         let owner_changed = self.owner_receiver.drain().has_payload();
         let media_open_changed = self.media_open.drain();
         let dialog_changed = self.drain_playlist_file_dialog();
-        owner_changed || media_open_changed || dialog_changed
+        let import_changed = self.drain_playlist_import_job();
+        owner_changed || media_open_changed || dialog_changed || import_changed
     }
 
     /// Cheap-clone read-only snapshot для renderer-bound AppState/будущего UI port-а.
@@ -682,7 +694,7 @@ impl PlaylistRuntime {
         self.admission_open.store(false, Ordering::Release);
         self.lifecycle = PlaylistRuntimeLifecycle::ShuttingDown;
         self.removal_undo = None;
-        self.import_transaction.cancel();
+        self.supersede_playlist_import_flow();
         self.replacement_confirmation.cancel();
         if let Some(controller) = self.controller.as_mut() {
             controller.release_detached_tombstone_for_shutdown();
@@ -690,6 +702,7 @@ impl PlaylistRuntime {
         self.discovery.begin_shutdown();
 
         let ui_interaction = self.ui_interaction.shutdown_until(deadline);
+        let import_io = self.import_io.shutdown_until(deadline);
         let media_open = self.media_open.shutdown_until(deadline);
         let startup = self.startup.shutdown_until(deadline);
         let persistence = self
@@ -698,6 +711,7 @@ impl PlaylistRuntime {
         let resume_persistence = self.resume_persistence.shutdown_until(deadline);
         let report = PlaylistShutdownReport {
             ui_interaction,
+            import_io,
             media_open,
             startup,
             persistence,
@@ -736,6 +750,13 @@ impl PlaylistShutdownReport {
                     ..
                 }
         ) || matches!(
+            self.import_io,
+            ProcessOwnerShutdownOutcome::TimedOut { .. }
+                | ProcessOwnerShutdownOutcome::ThreadPanicked {
+                    pending_threads: 1..,
+                    ..
+                }
+        ) || matches!(
             self.media_open,
             ProcessOwnerShutdownOutcome::TimedOut { .. }
                 | ProcessOwnerShutdownOutcome::ThreadPanicked {
@@ -757,6 +778,10 @@ impl PlaylistShutdownReport {
     fn has_terminal_failure(self) -> bool {
         let ui_failed = matches!(
             self.ui_interaction,
+            ProcessOwnerShutdownOutcome::ThreadPanicked { .. }
+        );
+        let import_failed = matches!(
+            self.import_io,
             ProcessOwnerShutdownOutcome::ThreadPanicked { .. }
         );
         let media_failed = matches!(
@@ -788,6 +813,7 @@ impl PlaylistShutdownReport {
             | playlist_state::ResumeWorkerShutdownOutcome::TimedOut => false,
         };
         ui_failed
+            || import_failed
             || media_failed
             || startup_failed
             || persistence_failed
@@ -1077,6 +1103,7 @@ mod tests {
         let report = PlaylistShutdownReport {
             media_open: ProcessOwnerShutdownOutcome::TimedOut { pending_threads: 1 },
             ui_interaction: ProcessOwnerShutdownOutcome::Completed,
+            import_io: ProcessOwnerShutdownOutcome::Completed,
             startup: startup::PlaylistStartupShutdownOutcome::Completed,
             persistence: persistence::PlaylistPersistenceShutdownOutcome::CompletedWithoutWorker {
                 save_block: None,

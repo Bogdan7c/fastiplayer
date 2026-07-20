@@ -141,6 +141,8 @@ pub(crate) struct AppUiRenderTimings {
 
 /// Согласованные Playlist snapshots одного egui frame-а.
 pub(crate) struct PlaylistUiFrameModels<'a> {
+    /// S08 staged import preview показывается до queue/sensitive confirmation.
+    pub(crate) import_preview: Option<&'a crate::playlist_runtime::PlaylistImportPreview>,
     /// Единственная process-lifetime confirmation entity текущего кадра.
     pub(crate) confirmation: Option<&'a crate::playlist_runtime::PendingPlaylistConfirmation>,
     /// Immutable toolbar/forms/progress snapshot authoritative runtime-а.

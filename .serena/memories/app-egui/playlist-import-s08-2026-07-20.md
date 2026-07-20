@@ -21,4 +21,4 @@
 ## Verification
 - PASS: 9 focused playlist-core import tests; 12 focused app S08/XSPF tests; full `playlist-core` 125 tests; full `app-egui --no-default-features` 734 tests; Rust 1.96 workspace locked check; Rust 1.92 focused check; rustfmt; refactor guardrails; cargo-deny advisories/bans/licenses/sources; git diff check; Serena diagnostics on all new/changed boundary files.
 - Clippy нового/touched кода PASS с `-D warnings` после allowance только для двух pre-existing unrelated app `large_enum_variant` baseline diagnostics in `state/strong_media_open{,/pending}.rs`; unmodified strict invocation reports only those two baseline lints.
-- S09 UI ещё не реализован: preview/confirmation read models и action API готовы, но toolbar/preview renderer остаётся следующей session.
+- S09 UI и process-lifetime single-root import I/O owner реализованы: toolbar/menu, post-render typed actions, preview renderer, M3U/M3U8/XSPF dialog filters, authoritative `playlist-io` expansion и stale-completion suppression описаны в `mem:app-egui/playlist-import-s09-2026-07-20`.

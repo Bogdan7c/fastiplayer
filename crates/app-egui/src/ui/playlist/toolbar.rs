@@ -1,6 +1,7 @@
 //! Toolbar и URL form renderer без I/O и business mutations.
 
 mod icon_bar;
+mod import_menu;
 
 use playlist_core::PlaylistSortKey;
 

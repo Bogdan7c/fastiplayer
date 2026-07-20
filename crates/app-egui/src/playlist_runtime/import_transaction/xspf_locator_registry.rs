@@ -32,6 +32,7 @@ pub(crate) struct XspfLocationAdmission {
 
 impl XspfLocationAdmission {
     /// Возвращает первый admitted draft, если он существовал.
+    #[cfg(test)]
     pub(crate) const fn draft(&self) -> Option<&PlaylistSingleImportDraft> {
         self.draft.as_ref()
     }

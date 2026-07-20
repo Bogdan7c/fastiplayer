@@ -530,7 +530,7 @@ impl PlaylistRuntime {
         {
             return Err(QueueReplacementAdmissionError::RuntimeShuttingDown);
         }
-        self.import_transaction.cancel();
+        self.supersede_playlist_import_flow();
         let requires_sensitive_persistence_acknowledgement = intent
             .target
             .requires_sensitive_persistence_acknowledgement();
@@ -584,7 +584,7 @@ impl PlaylistRuntime {
         {
             return Err(QueueReplacementAdmissionError::RuntimeShuttingDown);
         }
-        self.import_transaction.cancel();
+        self.supersede_playlist_import_flow();
         self.replacement_confirmation.cancel();
         Ok(intent.target.admit())
     }
@@ -630,13 +630,13 @@ impl PlaylistRuntime {
         reason = "playlist row UI wiring belongs to a later session"
     )]
     pub(crate) fn supersede_queue_replacement_confirmation_for_row_play(&mut self) {
-        self.import_transaction.cancel();
+        self.supersede_playlist_import_flow();
         self.replacement_confirmation.cancel();
     }
 
     /// Несовместимая structural replacement не оставляет response к старой queue lineage.
     pub(super) fn cancel_queue_replacement_confirmation_for_structural_replacement(&mut self) {
-        self.import_transaction.cancel();
+        self.supersede_playlist_import_flow();
         self.replacement_confirmation.cancel();
     }
 }

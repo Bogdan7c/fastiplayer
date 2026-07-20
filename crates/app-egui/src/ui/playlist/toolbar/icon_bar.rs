@@ -17,14 +17,15 @@ use super::super::PlaylistUiOutput;
 use super::super::actions::PlaylistAction;
 use super::SORT_KEYS;
 
-/// Стабильный порядок четырёх обычных действий слева.
-const LEFT_CONTROLS: [ToolbarControl; 4] = [
+/// Первые четыре оси неизменны; Import занимает новый пятый slot слева.
+const LEFT_CONTROLS: [ToolbarControl; 5] = [
     ToolbarControl::AddFiles,
     ToolbarControl::AddUrl,
     ToolbarControl::Sort,
     ToolbarControl::CurrentItem,
+    ToolbarControl::Import,
 ];
-/// Четыре обычных controls образуют левую группу.
+/// Пять обычных controls образуют левую группу.
 const LEFT_SLOT_COUNT: usize = LEFT_CONTROLS.len();
 /// Gap существует только между соседними slot-ами левой группы.
 const LEFT_GAP_COUNT: usize = LEFT_SLOT_COUNT - 1;
@@ -42,6 +43,8 @@ enum ToolbarControl {
     Sort,
     /// Фокусирует текущий играющий элемент.
     CurrentItem,
+    /// Открывает explicit append/replace import menu.
+    Import,
     /// Очищает очередь, не останавливая detached playback.
     Clear,
 }
@@ -54,6 +57,7 @@ impl ToolbarControl {
             Self::AddUrl => "playlist_toolbar_add_url",
             Self::Sort => "playlist_toolbar_sort",
             Self::CurrentItem => "playlist_toolbar_current_item",
+            Self::Import => "playlist_toolbar_import",
             Self::Clear => "playlist_toolbar_clear",
         }
     }
@@ -65,6 +69,7 @@ impl ToolbarControl {
             Self::AddUrl => PlaylistToolbarGlyph::AddUrl,
             Self::Sort => PlaylistToolbarGlyph::Sort,
             Self::CurrentItem => PlaylistToolbarGlyph::CurrentItem,
+            Self::Import => PlaylistToolbarGlyph::Import,
             Self::Clear => PlaylistToolbarGlyph::Clear,
         }
     }
@@ -76,6 +81,7 @@ impl ToolbarControl {
             Self::AddUrl => "Добавить URL",
             Self::Sort => "Сортировать плейлист",
             Self::CurrentItem => "Перейти к текущему медиа",
+            Self::Import => "Импортировать плейлист",
             Self::Clear => "Очистить очередь",
         }
     }
@@ -125,6 +131,21 @@ impl ToolbarControl {
                 tooltip: current_item_tooltip(model.go_current_target),
                 disabled_tooltip: "Сейчас нет активного медиа",
             },
+            Self::Import => ToolbarPresentation {
+                availability: if model.import_dialog_open {
+                    ToolbarControlAvailability::Disabled
+                } else {
+                    ToolbarControlAvailability::from_structural(
+                        model.structural_action_availability,
+                    )
+                },
+                tooltip: "Импортировать M3U, M3U8 или XSPF",
+                disabled_tooltip: if model.import_dialog_open {
+                    "Диалог импорта уже открыт"
+                } else {
+                    "Сейчас нельзя изменять состав плейлиста"
+                },
+            },
             Self::Clear => ToolbarPresentation {
                 availability: if model.item_count == 0 {
                     ToolbarControlAvailability::Disabled
@@ -150,7 +171,7 @@ impl ToolbarControl {
             Self::AddUrl => Some(PlaylistAction::OpenUrlEditor),
             Self::CurrentItem => model.go_current_target.map(PlaylistAction::GoCurrent),
             Self::Clear => Some(PlaylistAction::Clear),
-            Self::Sort => None,
+            Self::Sort | Self::Import => None,
         }
     }
 }
@@ -203,6 +224,8 @@ struct IconBarLayout {
     sort: Rect,
     /// Переход к текущему элементу.
     current_item: Rect,
+    /// Import menu следует сразу после Current Item.
+    import: Rect,
     /// Очистка у правого края.
     clear: Rect,
 }
@@ -215,6 +238,7 @@ impl IconBarLayout {
             ToolbarControl::AddUrl => self.add_url,
             ToolbarControl::Sort => self.sort,
             ToolbarControl::CurrentItem => self.current_item,
+            ToolbarControl::Import => self.import,
             ToolbarControl::Clear => self.clear,
         }
     }
@@ -243,6 +267,8 @@ pub(super) fn show(
                 presentation.availability.interaction_enabled(),
                 output,
             );
+        } else if control == ToolbarControl::Import {
+            super::import_menu::show(ui, &response, model, output);
         } else if response.clicked()
             && let Some(action) = control.action(model)
         {
@@ -281,15 +307,15 @@ fn icon_bar_layout(row_rect: Rect, style: PlaylistToolbarStyle) -> IconBarLayout
         pos2(row_rect.right() - clear_right_padding, row_rect.bottom()),
     );
     let requested_gap = style.button_gap.max(0.0);
-    // Даже у сверхузкого rect три gap не могут вытолкнуть Current Item за Clear.
+    // Даже у сверхузкого rect четыре gap не могут вытолкнуть Import за Clear.
     let gap = requested_gap.min(content_rect.width().max(0.0) / LEFT_GAP_COUNT as f32);
-    // Четыре левых slot-а и один правый Clear делят оставшуюся ширину поровну.
+    // Пять левых slot-ов и один правый Clear делят оставшуюся ширину поровну.
     let maximum_non_overlapping_size =
         ((content_rect.width() - gap * LEFT_GAP_COUNT as f32).max(0.0) / TOTAL_SLOT_COUNT as f32)
             .max(0.0);
     let button_size = style.button_size.max(0.0).min(maximum_non_overlapping_size);
     let button_extent = vec2(button_size, button_size);
-    // Все пять hit-area используют точный центр выделенной 32-point toolbar row.
+    // Все шесть hit-area используют точный центр выделенной 32-point toolbar row.
     let button_center_y = content_rect.center().y;
     let first_center = pos2(content_rect.left() + button_size * 0.5, button_center_y);
     let center_step = button_size + gap;
@@ -309,6 +335,7 @@ fn icon_bar_layout(row_rect: Rect, style: PlaylistToolbarStyle) -> IconBarLayout
         add_url: left_rect(1),
         sort: left_rect(2),
         current_item: left_rect(3),
+        import: left_rect(4),
         clear,
     }
 }
@@ -588,7 +615,11 @@ mod tests {
                 control.presentation(model),
                 MinimalSkin.playlist_toolbar_style(),
             );
-            if response.clicked()
+            if control == ToolbarControl::Sort {
+                show_sort_menu(ui, &response, true, &mut output);
+            } else if control == ToolbarControl::Import {
+                super::super::import_menu::show(ui, &response, model, &mut output);
+            } else if response.clicked()
                 && let Some(action) = control.action(model)
             {
                 output.push_action(action);
@@ -712,6 +743,10 @@ mod tests {
                 expected_center_step
             );
             assert_eq!(
+                layout.import.center().x - layout.current_item.center().x,
+                expected_center_step
+            );
+            assert_eq!(
                 row.right() - layout.clear.right(),
                 style.clear_right_padding
             );
@@ -719,8 +754,9 @@ mod tests {
             assert_eq!(layout.add_url.center().y, row.center().y);
             assert_eq!(layout.sort.center().y, row.center().y);
             assert_eq!(layout.current_item.center().y, row.center().y);
+            assert_eq!(layout.import.center().y, row.center().y);
             assert_eq!(layout.clear.center().y, row.center().y);
-            assert!(layout.current_item.right() < layout.clear.left());
+            assert!(layout.import.right() < layout.clear.left());
         }
     }
 
@@ -760,6 +796,15 @@ mod tests {
     }
 
     #[test]
+    fn import_icon_opens_explicit_intent_menu_without_starting_io() {
+        let context = Context::default();
+        let model = PlaylistInteractionModel::default();
+
+        assert!(click_control(&context, &model, ToolbarControl::Import).is_empty());
+        assert!(Popup::is_any_open(&context));
+    }
+
+    #[test]
     fn disabled_controls_do_not_publish_actions_or_open_sort_popup() {
         let disabled_cases = [
             (
@@ -790,6 +835,13 @@ mod tests {
                 ToolbarControl::CurrentItem,
                 PlaylistInteractionModel::default(),
             ),
+            (
+                ToolbarControl::Import,
+                PlaylistInteractionModel {
+                    import_dialog_open: true,
+                    ..PlaylistInteractionModel::default()
+                },
+            ),
             (ToolbarControl::Clear, PlaylistInteractionModel::default()),
         ];
 
@@ -817,6 +869,7 @@ mod tests {
             ToolbarControl::AddFiles,
             ToolbarControl::AddUrl,
             ToolbarControl::Sort,
+            ToolbarControl::Import,
             ToolbarControl::Clear,
         ] {
             assert_eq!(
@@ -896,6 +949,37 @@ mod tests {
     }
 
     #[test]
+    fn import_menu_supports_tab_space_and_enter_activation() {
+        for activation_key in [Key::Space, Key::Enter] {
+            let context = Context::default();
+            let model = PlaylistInteractionModel::default();
+            let _ = control_frame(
+                &context,
+                &model,
+                ToolbarControl::Import,
+                RawInput::default(),
+            );
+            let (_, tab_focused) = control_frame(
+                &context,
+                &model,
+                ToolbarControl::Import,
+                keyboard_input(Key::Tab),
+            );
+            let (actions, still_focused) = control_frame(
+                &context,
+                &model,
+                ToolbarControl::Import,
+                keyboard_input(activation_key),
+            );
+
+            assert!(tab_focused);
+            assert!(still_focused);
+            assert!(actions.is_empty());
+            assert!(Popup::is_any_open(&context));
+        }
+    }
+
+    #[test]
     fn icon_only_controls_keep_explicit_russian_accessibility_names() {
         assert_eq!(
             ToolbarControl::AddFiles.accessible_label(),
@@ -909,6 +993,16 @@ mod tests {
         assert_eq!(
             ToolbarControl::CurrentItem.accessible_label(),
             "Перейти к текущему медиа"
+        );
+        assert_eq!(
+            ToolbarControl::Import.accessible_label(),
+            "Импортировать плейлист"
+        );
+        assert_eq!(
+            ToolbarControl::Import
+                .presentation(&PlaylistInteractionModel::default())
+                .tooltip,
+            "Импортировать M3U, M3U8 или XSPF"
         );
         assert_eq!(ToolbarControl::Clear.accessible_label(), "Очистить очередь");
     }

@@ -6,7 +6,8 @@ use std::sync::Arc;
 use playlist_core::{MoveItemIntent, PlaylistItemId, SortCanonicalQueue};
 
 use crate::playlist_runtime::{
-    PlaylistGoCurrentTarget, PlaylistStructuralRevision, UpdateSelection,
+    PlaylistGoCurrentTarget, PlaylistImportIntent, PlaylistImportPreviewId,
+    PlaylistStructuralRevision, UpdateSelection,
 };
 
 /// Exact selected IDs для одного bulk removal commit-а.
@@ -122,6 +123,12 @@ pub(crate) enum PlaylistAction {
     RemoveUnselected(RemoveUnselected),
     MoveItems(MoveItems),
     AddFiles,
+    /// Запускает single-root import dialog с явным append/replace intent.
+    StartImport(PlaylistImportIntent),
+    /// Продолжает exact staged preview; stale generation не оживляется.
+    ContinueImport(PlaylistImportPreviewId),
+    /// Отменяет exact staged preview без queue/player mutation.
+    CancelImport(PlaylistImportPreviewId),
     OpenUrlEditor,
     UpdateUrlDraft(PlaylistUrlDraftText),
     SubmitUrl,

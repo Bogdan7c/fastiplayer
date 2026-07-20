@@ -144,7 +144,7 @@ impl PlaylistRuntime {
         let draft = PlaylistItemDraft::url(playlist_locator, cached_metadata);
         // D25: любое Add снимает active sibling discovery, сохраняя уже committed batches.
         self.discovery.cancel_sibling_for_add();
-        self.import_transaction.cancel();
+        self.supersede_playlist_import_flow();
 
         if requires_ack {
             self.replacement_confirmation
@@ -171,7 +171,7 @@ impl PlaylistRuntime {
     ) -> PlaylistConfirmationApplyOutcome {
         match self.replacement_confirmation.respond_generalized(action) {
             PlaylistConfirmationResolution::Cancelled => {
-                self.import_transaction.cancel();
+                self.supersede_playlist_import_flow();
                 PlaylistConfirmationApplyOutcome::Cancelled
             }
             PlaylistConfirmationResolution::Stale => PlaylistConfirmationApplyOutcome::Stale,

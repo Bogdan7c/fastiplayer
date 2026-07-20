@@ -2,7 +2,7 @@
 
 > Имя memory историческое: Undo перенесён из toolbar в header Playlist.
 
-- Единственная Undo-точка UI находится в общей 32-point строке заголовка Playlist. Toolbar больше не получает `PlaylistUndoUiSnapshot`/`VisibilityMotion` и содержит только Add Files, Add URL, Sort, Current Item и Clear; четыре левых horizontal anchors и независимый Clear anchor сохранены на ширинах 350/420/600.
+- Единственная Undo-точка UI находится в общей 32-point строке заголовка Playlist. Toolbar больше не получает `PlaylistUndoUiSnapshot`/`VisibilityMotion`; S09 добавил Import пятым left slot после Current Item. Первые четыре horizontal anchors Add Files/Add URL/Sort/Current Item и независимый Clear anchor сохранены на ширинах 350/420/600. Подробности: `mem:app-egui/playlist-import-s09-2026-07-20`.
 - `PlaylistRuntime` остаётся owner восьмисекундного removal undo, expiry, invalidation и typed `RemovalUndoOutcome`. Read-only `PlaylistUndoUiSnapshot { undo, next_wake_deadline }` и `PlaylistAction::UndoRemoval` не изменены, поэтому countdown продолжает будить UI по authoritative deadline, а успешный restore переносит focus на exact controller-provided Item ID.
 - `ui/sidebar/header.rs` является частью sidebar geometry owner-а: он единожды резервирует точный header rect высотой 32 points для Playlist/Settings/URL/Info, вертикально центрирует heading и X, затем ставит одинаковый separator/content offset для всех секций.
 - `WindowChromeEdgeAlignment::sidebar_section_button_rect(container_rect, SidebarSection)` — типизированный grid boundary. Playlist header запрашивает `SidebarSection::Url`; Undo center X совпадает с верхней URL-кнопкой без hardcode `119`. При open/content slide rect считается относительно движущегося header, поэтому относительная ось сохраняется.
