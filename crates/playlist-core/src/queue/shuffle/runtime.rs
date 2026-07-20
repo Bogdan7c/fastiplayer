@@ -497,7 +497,7 @@ impl PlaylistQueue {
         shuffle_snapshot: ShuffleTraversalSnapshot,
     ) -> Result<Self, ShuffleQueueRestoreError> {
         let mut queue = Self::restore(queue_snapshot).map_err(ShuffleQueueRestoreError::Queue)?;
-        let canonical_item_ids: Vec<_> = queue.items().iter().map(|item| item.item_id()).collect();
+        let canonical_item_ids = queue.iter_playable_ids().collect::<Vec<_>>();
         let traversal = ShuffleTraversal::restore(
             shuffle_snapshot,
             &canonical_item_ids,

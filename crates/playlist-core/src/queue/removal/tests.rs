@@ -56,14 +56,7 @@ fn removal_snapshot_restores_current_order_and_allocator_as_new_mutation() {
             .map(|current| current.item_id()),
         Some(ids[1])
     );
-    assert_eq!(
-        queue
-            .items()
-            .iter()
-            .map(|item| item.item_id())
-            .collect::<Vec<_>>(),
-        ids
-    );
+    assert_eq!(queue.iter_playable_ids().collect::<Vec<_>>(), ids);
     assert_eq!(queue.next_item_id_snapshot(), allocator_before);
 }
 

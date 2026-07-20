@@ -2,16 +2,18 @@
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 use super::super::metadata_patch::prepare_metadata_patch_plan;
-use super::super::{MetadataPatchBatchOutcome, PlaylistMetadataPatch, QueueRevisionSnapshot};
+use super::super::{
+    MetadataPatchBatchOutcome, OwnedPlayableItemsSnapshot, PlaylistMetadataPatch,
+    QueueRevisionSnapshot,
+};
 use super::*;
 
 /// Cheap immutable handoff в background: тяжёлые locator/metadata payload остаются Arc-shared.
 #[derive(Clone)]
 pub struct CanonicalSortSnapshot {
-    items: Arc<[PlaylistItem]>,
+    items: OwnedPlayableItemsSnapshot,
     expected_revision: QueueRevisionSnapshot,
 }
 
@@ -19,7 +21,7 @@ impl CanonicalSortSnapshot {
     /// Число строк без раскрытия mutable queue storage.
     #[must_use]
     pub fn item_count(&self) -> usize {
-        self.items.len()
+        self.items.retained_item_count()
     }
 
     /// Подготавливает keys/permutation вне owner thread и проверяет cancel между chunks.
@@ -32,12 +34,12 @@ impl CanonicalSortSnapshot {
         if is_cancelled() {
             return Err(CanonicalSortPreparationCancelled);
         }
-        let expected_item_ids = self
+        let expected_item_ids = self.items.iter_playable_ids().collect::<Vec<_>>();
+        let mut effective_items = self
             .items
-            .iter()
-            .map(PlaylistItem::item_id)
+            .iter_playable_items()
+            .cloned()
             .collect::<Vec<_>>();
-        let mut effective_items = self.items.to_vec();
         prepare_metadata_patch_plan(&effective_items, metadata_patches).apply(&mut effective_items);
 
         let mut prepared_items = 0usize;
@@ -167,7 +169,7 @@ impl PlaylistQueue {
     #[must_use]
     pub fn canonical_sort_snapshot(&self) -> CanonicalSortSnapshot {
         CanonicalSortSnapshot {
-            items: Arc::from(self.items.clone()),
+            items: self.owned_playable_items_snapshot(),
             expected_revision: self.revision_snapshot(),
         }
     }

@@ -5,9 +5,9 @@ use std::time::{Duration, UNIX_EPOCH};
 use media_core::{DiscNumber, MediaDuration, TrackNumber, TvEpisodeNumber, TvSeasonNumber};
 use playlist_core::{
     CachedPlaylistMetadata, ForeignPathEncoding, ForeignPathPlatform, ForeignPlatformPath,
-    LocalLocator, LocalSourceFingerprint, NextPlaylistItemId, PlaylistItemDraft, PlaylistItemId,
-    PlaylistMediaKind, PlaylistQueue, PlaylistQueueRestore, RepeatMode, RestoredPlaylistItem,
-    SecretUrlLocator, ShuffleHistoryCursor, ShuffleTraversalSnapshot,
+    LocalLocator, LocalSourceFingerprint, NextPlaylistItemId, PlaylistItem, PlaylistItemDraft,
+    PlaylistItemId, PlaylistMediaKind, PlaylistQueue, PlaylistQueueRestore, RepeatMode,
+    RestoredPlaylistItem, SecretUrlLocator, ShuffleHistoryCursor, ShuffleTraversalSnapshot,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -54,6 +54,14 @@ fn queue_with_ids(ids: &[u64], next_id: u64, current: Option<u64>) -> PlaylistQu
         current.map(item_id),
     ))
     .expect("test queue must satisfy domain invariants")
+}
+
+/// Разрешает test position через borrowed playable read boundary.
+fn playable_item_at(queue: &PlaylistQueue, index: usize) -> &PlaylistItem {
+    queue
+        .iter_playable_items()
+        .nth(index)
+        .expect("test playable index must exist")
 }
 
 fn write_state(path: &Path, queue: &PlaylistQueue, repeat_mode: RepeatMode) -> Vec<u8> {
@@ -169,20 +177,32 @@ fn full_d12_cache_urls_and_every_local_encoding_roundtrip_exactly() {
 
     let loaded_state = loaded(&PlaylistStateStore::new(&state_path));
     assert_eq!(loaded_state.repeat_mode(), RepeatMode::RepeatOne);
-    assert_eq!(&loaded_state.queue().items()[..5], &queue.items()[..5]);
-    assert_eq!(&loaded_state.queue().items()[6..], &queue.items()[6..]);
-    assert_eq!(
-        loaded_state.queue().items()[5].cached_metadata(),
-        queue.items()[5].cached_metadata()
+    assert!(
+        loaded_state
+            .queue()
+            .iter_playable_items()
+            .take(5)
+            .eq(queue.iter_playable_items().take(5))
+    );
+    assert!(
+        loaded_state
+            .queue()
+            .iter_playable_items()
+            .skip(6)
+            .eq(queue.iter_playable_items().skip(6))
     );
     assert_eq!(
-        loaded_state.queue().items()[5].local_fingerprint(),
-        queue.items()[5].local_fingerprint()
+        playable_item_at(loaded_state.queue(), 5).cached_metadata(),
+        playable_item_at(&queue, 5).cached_metadata()
+    );
+    assert_eq!(
+        playable_item_at(loaded_state.queue(), 5).local_fingerprint(),
+        playable_item_at(&queue, 5).local_fingerprint()
     );
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;
-        let native_path = loaded_state.queue().items()[5]
+        let native_path = playable_item_at(loaded_state.queue(), 5)
             .locator()
             .as_local()
             .and_then(LocalLocator::expose_native_path_for_open)
@@ -228,7 +248,7 @@ fn native_non_utf8_path_roundtrips_without_loss() {
     assert!(json_text.contains("\"kind\": \"bytes\""));
 
     let loaded_state = loaded(&PlaylistStateStore::new(&state_path));
-    let loaded_path = loaded_state.queue().items()[0]
+    let loaded_path = playable_item_at(loaded_state.queue(), 0)
         .locator()
         .as_local()
         .and_then(LocalLocator::expose_native_path_for_open)
@@ -290,8 +310,11 @@ fn allocator_high_watermark_never_reuses_removed_or_cleared_ids_across_loads() {
     queue
         .append_one(url_draft("https://example.invalid/two", "two"))
         .expect("append id 2");
-    assert_eq!(queue.items().last().expect("id 2").item_id(), item_id(2));
-    let removed_id = queue.items().last().expect("id 2").item_id();
+    assert_eq!(queue.iter_playable_ids().next_back(), Some(item_id(2)));
+    let removed_id = queue
+        .iter_playable_ids()
+        .next_back()
+        .expect("id 2 must be retained");
     let _removed = queue.remove(removed_id);
     write_state(&state_path, &queue, RepeatMode::StopAtEnd);
     let (mut queue, _) = loaded(&store).into_parts();
@@ -299,7 +322,7 @@ fn allocator_high_watermark_never_reuses_removed_or_cleared_ids_across_loads() {
     queue
         .append_one(url_draft("https://example.invalid/three", "three"))
         .expect("append id 3 after removed high ID");
-    assert_eq!(queue.items().last().expect("id 3").item_id(), item_id(3));
+    assert_eq!(queue.iter_playable_ids().next_back(), Some(item_id(3)));
     let _cleared = queue.clear();
     write_state(&state_path, &queue, RepeatMode::StopAtEnd);
     let (mut queue, _) = loaded(&store).into_parts();
@@ -307,7 +330,7 @@ fn allocator_high_watermark_never_reuses_removed_or_cleared_ids_across_loads() {
     queue
         .append_one(url_draft("https://example.invalid/four", "four"))
         .expect("append id 4 after persisted empty Clear");
-    assert_eq!(queue.items().last().expect("id 4").item_id(), item_id(4));
+    assert_eq!(queue.iter_playable_ids().next_back(), Some(item_id(4)));
 }
 
 #[test]

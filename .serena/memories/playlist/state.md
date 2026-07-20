@@ -74,3 +74,9 @@ Session 06 completed PASS on 2026-07-14. This memory complements `mem:core`, `me
 
 - Frequent position persistence is deliberately separate from queue schema v1: `playlist-state::resume` owns strict `playlist-resume.json` schema v1, locator fingerprinting, quarantine, atomic latest-only writer and bounded terminal report; queue writes are never triggered by position updates.
 - Runtime/startup/config ownership and verification: `mem:playlist/resume-position-sidecar-2026-07-19`.
+
+
+## S01P read-boundary migration (2026-07-20)
+- playlist-state validation now uses `retained_item_count()` and borrowed `iter_playable_items()`; DTO capture uses `OwnedPlayableItemsSnapshot` as the explicit persistence ownership handoff before private v1 DTO materialization.
+- Disk schema v1, JSON ordering/fields, allocator watermark pairing, repeat/shuffle/current semantics, locator encoding and bounded validation behavior are unchanged. State tests no longer depend on queue slice/index/ambiguous len and retain full duplicate/non-UTF/allocator regression coverage.
+- Verification: all 40 playlist-state tests PASS on Rust 1.96; strict focused Clippy, Rust 1.96 workspace check, focused MSRV 1.92 check, rustfmt, Serena diagnostics and guardrails PASS. No dependency change; cargo-deny remains blocked only by known quick-xml RUSTSEC-2026-0194/0195.

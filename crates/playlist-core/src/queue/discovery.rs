@@ -187,7 +187,7 @@ mod tests {
             .expect("batch commit");
 
         assert_eq!(outcome.item_ids.as_slice().len(), 2);
-        assert_eq!(queue.items()[2].item_id(), target_id);
+        assert_eq!(queue.iter_playable_ids().nth(2), Some(target_id));
         assert_eq!(
             queue.next_item_id_snapshot().expose_value_for_persistence(),
             4

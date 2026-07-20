@@ -85,3 +85,9 @@
 - Пользовательская one-shot фича «После текущего» удалена целиком, а не только скрыта из UI. `app-egui` больше не хранит `StopAfterCurrentLatch`, не публикует `PlaylistAction::SetStopAfterCurrent`, не имеет D58 deferred transport/outcome/EOF policy и не отменяет navigation/install ради этой команды.
 - Обычные queue modes не изменены: `RepeatMode::{StopAtEnd, RepeatQueue, RepeatOne}`, автоматический переход, manual Next/Previous, explicit Stop, D50/D56/D57 и D26 deferred cancellation продолжают работать через существующие owner boundaries.
 - Публичные enum-ы `player_core::MediaInstallCancellationCause` и `playlist_discovery::DiscoveryCancellationCause` больше не содержат `StopAfterCurrent`; остальные typed cancellation distinctions сохранены. Focused и full all-features workspace suites, strict Clippy, fmt, locked Rust 1.96 check и refactor guardrails прошли. Детали: `mem:app-egui/stop-after-current-removed-2026-07-18`.
+
+
+## Web media roadmap S01P queue read boundary (2026-07-20)
+- `playlist-core` получил future-proof read boundary без обещания contiguous queue storage: `iter_playable_items()`, `iter_playable_ids()`, stable-ID `item()`, intent counts `top_level_entry_count()`/`retained_item_count()` и immutable `OwnedPlayableItemsSnapshot` для async/persistence ownership handoff.
+- `playlist-core` internal algorithms/tests и `playlist-state` DTO/snapshot migration завершены без изменения canonical order, Item IDs, revisions или playlist-state schema v1. Legacy `PlaylistQueue::items()`/`len()` остаются только для S01Q app migration, без `#[deprecated]`.
+- Temporary focused inventory test фиксирует оставшиеся S01Q app callsites: 47 `items()` и 31 ambiguous `len()` occurrence; новые legacy callsites либо возврат legacy surface в migrated core/state ломают тест. Details: `mem:playlist/core`, `mem:playlist/state`.

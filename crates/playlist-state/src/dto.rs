@@ -215,9 +215,9 @@ pub(crate) fn deserialize_supported_v1(
 impl PlaylistStateV1Dto {
     fn from_domain(snapshot: PlaylistStateSnapshot<'_>) -> Result<Self, StateSerializationError> {
         let queue = snapshot.queue();
-        let items = queue
-            .items()
-            .iter()
+        let playable_items_snapshot = queue.owned_playable_items_snapshot();
+        let items = playable_items_snapshot
+            .iter_playable_items()
             .map(PlaylistItemV1Dto::from_domain)
             .collect::<Result<Vec<_>, _>>()?;
         let shuffle_snapshot = queue.shuffle_traversal_snapshot();
@@ -518,12 +518,12 @@ fn validate_domain_snapshot(
     snapshot: PlaylistStateSnapshot<'_>,
 ) -> Result<(), StateSerializationError> {
     let queue = snapshot.queue();
-    if queue.len() > MAX_PLAYLIST_ITEMS {
+    if queue.retained_item_count() > MAX_PLAYLIST_ITEMS {
         return Err(StateSerializationError::ResourceLimitExceeded);
     }
 
     let mut budget = SerializationResourceBudget::new();
-    budget.add(queue.len().saturating_mul(512))?;
+    budget.add(queue.retained_item_count().saturating_mul(512))?;
     if let Some(shuffle) = queue.shuffle_traversal_snapshot() {
         if shuffle.history().len() > MAX_SHUFFLE_HISTORY_ENTRIES
             || shuffle.upcoming().len() > MAX_PLAYLIST_ITEMS
@@ -539,7 +539,7 @@ fn validate_domain_snapshot(
         )?;
     }
 
-    for item in queue.items() {
+    for item in queue.iter_playable_items() {
         validate_domain_locator(item.locator(), &mut budget)?;
         let metadata = item.cached_metadata();
         validate_domain_metadata_text(metadata.fallback_display_name(), &mut budget)?;

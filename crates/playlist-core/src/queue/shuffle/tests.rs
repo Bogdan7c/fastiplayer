@@ -432,7 +432,7 @@ fn batch_add_preserves_old_upcoming_order_and_bulk_remove_cleans_references() {
             .iter()
             .copied()
             .collect::<HashSet<_>>(),
-        queue.items().iter().map(|item| item.item_id()).collect()
+        queue.iter_playable_ids().collect()
     );
 }
 

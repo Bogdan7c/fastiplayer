@@ -35,7 +35,7 @@ fn queue_with_current(names: &[&str], current_index: usize) -> PlaylistQueue {
 #[test]
 fn fixed_error_chain_excludes_late_admission_and_skips_removed_member_without_replacement() {
     let mut queue = queue_with_current(&["a", "b", "c"], 0);
-    let original_ids: Vec<_> = queue.items().iter().map(|item| item.item_id()).collect();
+    let original_ids = queue.iter_playable_ids().collect::<Vec<_>>();
     let AutomaticTraversalStart::OpenItem {
         item_id: first_target,
         plan,

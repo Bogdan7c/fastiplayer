@@ -5,8 +5,8 @@ use rand::SeedableRng;
 
 use crate::{
     CachedPlaylistMetadata, ForeignPathEncoding, ForeignPathPlatform, ForeignPlatformPath,
-    LocalLocator, LocalSourceFingerprint, NextPlaylistItemId, PlaylistItemDraft, PlaylistItemId,
-    PlaylistLocator, PlaylistMediaKind, RestoredPlaylistItem, SecretUrlLocator,
+    LocalLocator, LocalSourceFingerprint, NextPlaylistItemId, PlaylistItem, PlaylistItemDraft,
+    PlaylistItemId, PlaylistLocator, PlaylistMediaKind, RestoredPlaylistItem, SecretUrlLocator,
 };
 
 use super::*;
@@ -44,6 +44,14 @@ fn appended_ids(outcome: AddItemsOutcome) -> Vec<PlaylistItemId> {
     }
 }
 
+/// Разрешает test position через новый borrowed playable read intent.
+fn playable_item_at(queue: &PlaylistQueue, index: usize) -> &PlaylistItem {
+    queue
+        .iter_playable_items()
+        .nth(index)
+        .expect("test playable index must exist")
+}
+
 #[test]
 fn first_id_empty_one_and_capacity_boundary_are_exact() {
     // Новая queue пуста, а allocator ещё указывает на первый ID = 1.
@@ -61,7 +69,7 @@ fn first_id_empty_one_and_capacity_boundary_are_exact() {
     let initial_ids = appended_ids(queue.append_batch(initial_drafts).expect("below cap"));
     assert_eq!(initial_ids.first(), Some(&item_id(1)));
     assert_eq!(initial_ids.last(), Some(&item_id(49_999)));
-    assert_eq!(queue.len(), 49_999);
+    assert_eq!(queue.retained_item_count(), 49_999);
 
     // D67 принимает только natural-prefix caller batch и не выдаёт ID rejected tail.
     let (final_id, capacity_rejected) = queue
@@ -70,7 +78,7 @@ fn first_id_empty_one_and_capacity_boundary_are_exact() {
         .into_parts();
     assert_eq!(final_id, vec![item_id(50_000)]);
     assert_eq!(capacity_rejected, 1);
-    assert_eq!(queue.len(), MAX_PLAYLIST_ITEMS);
+    assert_eq!(queue.retained_item_count(), MAX_PLAYLIST_ITEMS);
 
     // Следующий append typed-reject-ится без size/watermark mutation.
     let watermark_before_rejection = queue.next_item_id_snapshot();
@@ -78,7 +86,7 @@ fn first_id_empty_one_and_capacity_boundary_are_exact() {
         queue.append_one(local_draft("overflow")),
         Err(AddItemsError::CapacityExceeded { .. })
     ));
-    assert_eq!(queue.len(), MAX_PLAYLIST_ITEMS);
+    assert_eq!(queue.retained_item_count(), MAX_PLAYLIST_ITEMS);
     assert_eq!(queue.next_item_id_snapshot(), watermark_before_rejection);
     let (none, rejected) = queue
         .append_capped_tail(vec![local_draft("still-overflow")])
@@ -101,7 +109,10 @@ fn manual_duplicate_locators_receive_distinct_stable_ids() {
     );
 
     assert_eq!(ids, vec![item_id(1), item_id(2)]);
-    assert_eq!(queue.items()[0].locator(), queue.items()[1].locator());
+    assert_eq!(
+        playable_item_at(&queue, 0).locator(),
+        playable_item_at(&queue, 1).locator()
+    );
 }
 
 #[test]
@@ -334,7 +345,7 @@ fn exact_token_commit_publishes_replacement_and_current_in_one_step() {
         &[item_id(1), item_id(2), item_id(3)]
     );
     assert_eq!(commit.traversal_current().item_id(), item_id(2));
-    assert_eq!(queue.len(), 3);
+    assert_eq!(queue.retained_item_count(), 3);
     assert_eq!(queue.traversal_current(), Some(commit.traversal_current()));
     assert_eq!(
         queue.next_item_id_snapshot().expose_value_for_persistence(),
@@ -383,11 +394,7 @@ fn move_by_id_handles_edges_anchors_and_no_op() {
         MoveItemOutcome::Moved { item_id: ids[2] }
     );
     assert_eq!(
-        queue
-            .items()
-            .iter()
-            .map(|item| item.item_id())
-            .collect::<Vec<_>>(),
+        queue.iter_playable_ids().collect::<Vec<_>>(),
         vec![ids[2], ids[0], ids[1]]
     );
     assert_eq!(
@@ -395,11 +402,7 @@ fn move_by_id_handles_edges_anchors_and_no_op() {
         MoveItemOutcome::Moved { item_id: ids[2] }
     );
     assert_eq!(
-        queue
-            .items()
-            .iter()
-            .map(|item| item.item_id())
-            .collect::<Vec<_>>(),
+        queue.iter_playable_ids().collect::<Vec<_>>(),
         vec![ids[0], ids[1], ids[2]]
     );
     assert!(matches!(
@@ -438,11 +441,7 @@ fn group_move_preserves_canonical_order_and_unrelated_state() {
         MoveItemsOutcome::Moved { item_count: 2 }
     );
     assert_eq!(
-        queue
-            .items()
-            .iter()
-            .map(|item| item.item_id())
-            .collect::<Vec<_>>(),
+        queue.iter_playable_ids().collect::<Vec<_>>(),
         vec![ids[0], ids[2], ids[1], ids[3], ids[4]]
     );
     assert_eq!(
@@ -474,7 +473,7 @@ fn group_move_rejects_invalid_requests_and_detects_noop_atomically() {
             .append_batch(["a", "b", "c", "d"].into_iter().map(local_draft).collect())
             .expect("append"),
     );
-    let order_before = queue.items().to_vec();
+    let order_before = queue.iter_playable_ids().collect::<Vec<_>>();
     let revisions_before = queue.revision_snapshot();
 
     assert_eq!(
@@ -507,7 +506,7 @@ fn group_move_rejects_invalid_requests_and_detects_noop_atomically() {
         queue.move_items(&[ids[0], ids[1]], MoveItemIntent::ToFront),
         MoveItemsOutcome::AlreadyInPlace { item_count: 2 }
     );
-    assert_eq!(queue.items(), order_before);
+    assert_eq!(queue.iter_playable_ids().collect::<Vec<_>>(), order_before);
     assert_eq!(queue.revision_snapshot(), revisions_before);
 }
 
@@ -533,13 +532,16 @@ fn group_move_obeys_d08_and_revision_exhaustion_without_partial_order() {
     reserved_queue.abort_reserved(token);
 
     // Exhaustion доступна tests как child-модулю queue и не требует test-only public API.
-    let order_before = reserved_queue.items().to_vec();
+    let order_before = reserved_queue.iter_playable_ids().collect::<Vec<_>>();
     reserved_queue.structural_revision = QueueRevision(u64::MAX);
     assert_eq!(
         reserved_queue.move_items(&[ids[1]], MoveItemIntent::ToFront),
         MoveItemsOutcome::StructuralRevisionExhausted
     );
-    assert_eq!(reserved_queue.items(), order_before);
+    assert_eq!(
+        reserved_queue.iter_playable_ids().collect::<Vec<_>>(),
+        order_before
+    );
 }
 
 #[test]
@@ -570,9 +572,12 @@ fn group_move_scales_to_capacity_with_one_linear_commit() {
             .checked_next()
             .expect("one structural revision")
     );
-    assert_eq!(queue.items()[MAX_PLAYLIST_ITEMS / 2].item_id(), ids[0]);
     assert_eq!(
-        queue.items().last().map(|item| item.item_id()),
+        queue.iter_playable_ids().nth(MAX_PLAYLIST_ITEMS / 2),
+        Some(ids[0])
+    );
+    assert_eq!(
+        queue.iter_playable_ids().next_back(),
         Some(ids[MAX_PLAYLIST_ITEMS - 2])
     );
 }
@@ -615,12 +620,12 @@ fn metadata_batch_distinguishes_all_outcomes_and_preserves_other_state() {
             .expect("append"),
     );
     queue.set_traversal_current(ids[0]).expect("set current");
-    let order_before: Vec<_> = queue.items().iter().map(|item| item.item_id()).collect();
+    let order_before = queue.iter_playable_ids().collect::<Vec<_>>();
     let revisions_before = queue.revision_snapshot();
-    let first_locator = queue.items()[0].locator().clone();
-    let first_fingerprint = queue.items()[0].local_fingerprint();
-    let second_locator = queue.items()[1].locator().clone();
-    let unchanged_metadata = queue.items()[1].cached_metadata().clone();
+    let first_locator = playable_item_at(&queue, 0).locator().clone();
+    let first_fingerprint = playable_item_at(&queue, 0).local_fingerprint();
+    let second_locator = playable_item_at(&queue, 1).locator().clone();
+    let unchanged_metadata = playable_item_at(&queue, 1).cached_metadata().clone();
     let changed_metadata = CachedPlaylistMetadata::new("updated", PlaylistMediaKind::Audio)
         .with_title(Some("Verified title".to_owned()));
     let patches = vec![
@@ -633,13 +638,13 @@ fn metadata_batch_distinguishes_all_outcomes_and_preserves_other_state() {
         PlaylistMetadataPatch::new(
             ids[1],
             second_locator.clone(),
-            queue.items()[1].local_fingerprint(),
+            playable_item_at(&queue, 1).local_fingerprint(),
             unchanged_metadata.clone(),
         ),
         PlaylistMetadataPatch::new(
             ids[1],
             PlaylistLocator::Local(LocalLocator::Native(PathBuf::from("/other/source"))),
-            queue.items()[1].local_fingerprint(),
+            playable_item_at(&queue, 1).local_fingerprint(),
             changed_metadata.clone(),
         ),
         PlaylistMetadataPatch::new(item_id(999), second_locator, None, changed_metadata.clone()),
@@ -660,16 +665,15 @@ fn metadata_batch_distinguishes_all_outcomes_and_preserves_other_state() {
         ]
     );
     assert_eq!(outcome.applied_count(), 1);
-    assert_eq!(queue.items()[0].cached_metadata(), &changed_metadata);
-    assert_eq!(queue.items()[1].cached_metadata(), &unchanged_metadata);
     assert_eq!(
-        queue
-            .items()
-            .iter()
-            .map(|item| item.item_id())
-            .collect::<Vec<_>>(),
-        order_before
+        playable_item_at(&queue, 0).cached_metadata(),
+        &changed_metadata
     );
+    assert_eq!(
+        playable_item_at(&queue, 1).cached_metadata(),
+        &unchanged_metadata
+    );
+    assert_eq!(queue.iter_playable_ids().collect::<Vec<_>>(), order_before);
     assert_eq!(
         queue.traversal_current().map(|current| current.item_id()),
         Some(ids[0])
@@ -725,8 +729,8 @@ fn metadata_patch_is_allowed_during_reservation_and_does_not_break_commit() {
     // Metadata dimension не входит в D08 allocator/structural/traversal preconditions.
     let mut queue = PlaylistQueue::new();
     let id = appended_ids(queue.append_one(local_draft("a")).expect("append"))[0];
-    let locator = queue.items()[0].locator().clone();
-    let fingerprint = queue.items()[0].local_fingerprint();
+    let locator = playable_item_at(&queue, 0).locator().clone();
+    let fingerprint = playable_item_at(&queue, 0).local_fingerprint();
     let token = queue
         .prepare_reserved_mutation(
             queue.revision_snapshot(),
@@ -768,7 +772,7 @@ fn foreign_locator_survives_committed_item_without_lossy_conversion() {
     queue.append_one(draft).expect("append foreign locator");
 
     assert_eq!(
-        queue.items()[0].locator(),
+        playable_item_at(&queue, 0).locator(),
         &PlaylistLocator::Local(LocalLocator::Foreign(foreign_path))
     );
 }

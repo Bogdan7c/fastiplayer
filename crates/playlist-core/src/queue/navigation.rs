@@ -378,14 +378,17 @@ impl PlaylistQueue {
         let current_index = self
             .canonical_index_of(current_item_id)
             .expect("validated traversal current must remain committed");
-        if let Some(next_item) = self.items().get(current_index + 1) {
+        if let Some(next_item_id) = self.iter_playable_ids().nth(current_index + 1) {
             return AutomaticNavigationOutcome::OpenItem {
-                item_id: next_item.item_id(),
+                item_id: next_item_id,
             };
         }
         if intent.repeat_mode() == RepeatMode::RepeatQueue {
             return AutomaticNavigationOutcome::OpenItem {
-                item_id: self.items()[0].item_id(),
+                item_id: self
+                    .iter_playable_ids()
+                    .next()
+                    .expect("non-empty queue must expose first playable Item ID"),
             };
         }
         AutomaticNavigationOutcome::Stop(AutomaticStopReason::EndOfQueue { current_item_id })
@@ -417,8 +420,7 @@ impl PlaylistQueue {
         };
         if let Some(shuffle_traversal) = &self.shuffle_traversal {
             let mut shuffle_preview = ShuffleManualPreview::new(shuffle_traversal);
-            let canonical_item_ids: Vec<_> =
-                self.items().iter().map(|item| item.item_id()).collect();
+            let canonical_item_ids = self.iter_playable_ids().collect::<Vec<_>>();
             let step = shuffle_preview.step(
                 intent.direction(),
                 intent.repeat_mode(),
@@ -460,7 +462,10 @@ impl PlaylistQueue {
                 direction: intent.direction(),
             });
         };
-        let target_item_id = self.items()[target_index].item_id();
+        let target_item_id = self
+            .iter_playable_ids()
+            .nth(target_index)
+            .expect("validated canonical target index must resolve to an Item ID");
         let has_left_committed_origin = match origin {
             ManualNavigationOrigin::PersistedIdle => true,
             ManualNavigationOrigin::CommittedItem { item_id } => item_id != target_item_id,
@@ -498,8 +503,7 @@ impl PlaylistQueue {
     ) -> Result<ManualNavigationOutcome, ManualNavigationPreviewError> {
         self.validate_manual_preview(&preview)?;
         if let Some(mut shuffle_preview) = preview.shuffle_preview.take() {
-            let canonical_item_ids: Vec<_> =
-                self.items().iter().map(|item| item.item_id()).collect();
+            let canonical_item_ids = self.iter_playable_ids().collect::<Vec<_>>();
             let step = shuffle_preview.step(
                 intent.direction(),
                 intent.repeat_mode(),
@@ -528,7 +532,10 @@ impl PlaylistQueue {
                 },
             ));
         };
-        let target_item_id = self.items()[target_index].item_id();
+        let target_item_id = self
+            .iter_playable_ids()
+            .nth(target_index)
+            .expect("validated canonical target index must resolve to an Item ID");
         if preview.has_left_committed_origin
             && preview.origin
                 == (ManualNavigationOrigin::CommittedItem {
@@ -707,9 +714,8 @@ impl PlaylistQueue {
 
     /// Ищет canonical index через read-only owner surface.
     fn canonical_index_of(&self, item_id: PlaylistItemId) -> Option<usize> {
-        self.items()
-            .iter()
-            .position(|item| item.item_id() == item_id)
+        self.iter_playable_ids()
+            .position(|candidate_item_id| candidate_item_id == item_id)
     }
 
     /// Вычисляет соседний canonical index с manual repeat semantics D33.
@@ -718,7 +724,7 @@ impl PlaylistQueue {
         current_index: Option<usize>,
         intent: ManualNavigationIntent,
     ) -> Option<usize> {
-        let item_count = self.len();
+        let item_count = self.retained_item_count();
         match (current_index, intent.direction()) {
             (None, ManualNavigationDirection::Next) => Some(0),
             (None, ManualNavigationDirection::Previous) => None,

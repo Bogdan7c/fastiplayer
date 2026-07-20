@@ -75,13 +75,12 @@ fn queue_from_drafts(drafts: Vec<PlaylistItemDraft>) -> PlaylistQueue {
 }
 
 fn canonical_ids(queue: &PlaylistQueue) -> Vec<PlaylistItemId> {
-    queue.items().iter().map(|item| item.item_id()).collect()
+    queue.iter_playable_ids().collect()
 }
 
 fn fallback_names(queue: &PlaylistQueue) -> Vec<&str> {
     queue
-        .items()
-        .iter()
+        .iter_playable_items()
         .map(|item| item.cached_metadata().fallback_display_name())
         .collect()
 }
@@ -219,7 +218,10 @@ fn native_non_utf8_filename_uses_exact_bytes_without_panic() {
     );
 
     assert_eq!(
-        queue.items()[0]
+        queue
+            .iter_playable_items()
+            .next()
+            .expect("sorted queue must remain non-empty")
             .locator()
             .as_local()
             .and_then(LocalLocator::expose_native_path_for_persistence),
@@ -544,13 +546,15 @@ fn preparation_observer_proves_exactly_one_pass_per_item() {
     );
     let mut prepared_ids = Vec::new();
 
-    let mut entries =
-        prepare_sort_entries(queue.items(), PlaylistSortKey::NaturalFilename, |item_id| {
-            prepared_ids.push(item_id)
-        });
+    let playable_items = queue.iter_playable_items().cloned().collect::<Vec<_>>();
+    let mut entries = prepare_sort_entries(
+        &playable_items,
+        PlaylistSortKey::NaturalFilename,
+        |item_id| prepared_ids.push(item_id),
+    );
     entries.sort_by(|left, right| compare_entries(left, right, SortDirection::Ascending));
 
-    assert_eq!(entries.len(), queue.len());
+    assert_eq!(entries.len(), queue.retained_item_count());
     assert_eq!(prepared_ids, canonical_ids(&queue));
 }
 
@@ -580,8 +584,8 @@ fn ten_thousand_items_have_deterministic_non_timing_characterization() {
     assert_eq!(canonical_ids(&first_queue), canonical_ids(&second_queue));
     assert_eq!(
         first_queue
-            .items()
-            .first()
+            .iter_playable_items()
+            .next()
             .expect("non-empty characterization")
             .cached_metadata()
             .fallback_display_name(),
@@ -589,8 +593,8 @@ fn ten_thousand_items_have_deterministic_non_timing_characterization() {
     );
     assert_eq!(
         first_queue
-            .items()
-            .last()
+            .iter_playable_items()
+            .next_back()
             .expect("non-empty characterization")
             .cached_metadata()
             .fallback_display_name(),
@@ -615,7 +619,8 @@ fn prepared_comparator_is_total_antisymmetric_and_transitive() {
         .map(|filename| local_draft(filename, unknown_metadata(filename)))
         .collect(),
     );
-    let entries = prepare_sort_entries(queue.items(), PlaylistSortKey::NaturalFilename, |_| {});
+    let playable_items = queue.iter_playable_items().cloned().collect::<Vec<_>>();
+    let entries = prepare_sort_entries(&playable_items, PlaylistSortKey::NaturalFilename, |_| {});
 
     for direction in [SortDirection::Ascending, SortDirection::Descending] {
         for left in &entries {

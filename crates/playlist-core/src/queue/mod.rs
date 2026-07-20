@@ -5,6 +5,7 @@ mod discovery;
 mod metadata_patch;
 mod navigation;
 mod outcomes;
+mod read;
 mod removal;
 mod reordering;
 mod reservation;
@@ -45,6 +46,7 @@ pub use outcomes::{
     ReservedMutationCommit, TraversalCurrentEffect, TraversalCurrentMutationError,
     TraversalCurrentMutationOutcome, TraversalCurrentValidationError,
 };
+pub use read::OwnedPlayableItemsSnapshot;
 pub use removal::{
     PlaylistRemovalSnapshot, RemovalCurrentOutcome, RemovalSnapshotRestoreError,
     RemovalSnapshotRestoreOutcome,
@@ -280,7 +282,9 @@ impl PlaylistQueue {
         })
     }
 
-    /// Возвращает число committed canonical rows за O(1).
+    /// Временный S01Q bridge для callers с неоднозначной count semantics.
+    ///
+    /// Новый код обязан выбирать `top_level_entry_count` или `retained_item_count`.
     pub const fn len(&self) -> usize {
         self.items.len()
     }
@@ -290,14 +294,17 @@ impl PlaylistQueue {
         self.items.is_empty()
     }
 
-    /// Возвращает revision-stable read-only canonical slice.
+    /// Временный S01Q bridge для callers, ожидающих contiguous canonical slice.
+    ///
+    /// Новый код обязан использовать intent-based iterator, lookup или owned snapshot.
     pub fn items(&self) -> &[PlaylistItem] {
         &self.items
     }
 
-    /// Выполняет read-only lookup по stable identity.
+    /// Выполняет read-only lookup по stable Item ID.
     pub fn item(&self, item_id: PlaylistItemId) -> Option<&PlaylistItem> {
-        self.items.iter().find(|item| item.item_id() == item_id)
+        self.iter_playable_items()
+            .find(|item| item.item_id() == item_id)
     }
 
     /// Возвращает optional persisted cursor отдельно от active player state.
