@@ -160,3 +160,8 @@ Session 05 completed PASS on 2026-07-14. This memory complements `mem:core` and 
 - Canonical `PlaylistItem` и `PlaylistCompoundGroup` теперь могут хранить optional validated durable import payload, не меняя legacy locator/open behavior. Existing local/url/group constructors создают `None`; builders `with_durable_payload` используются persistence restore и будущей import transaction.
 - `PlaylistSingleDurablePayload`/`PlaylistCompoundDurablePayload` отделяют reopen/span/ancillary/provenance/availability от cached metadata и ID allocation. S01D import drafts переиспользуют эти payload types, поэтому persistence и будущий transaction не дублируют semantic fields.
 - Metadata patches/Undo Arc sharing, traversal, structural identity и app open boundaries не изменены. S02 verification: 122 core tests, strict Clippy, Rust 1.96 workspace check, MSRV 1.92, fmt и guardrails PASS.
+
+
+## S05 playlist-io consumer note (2026-07-20)
+- Новый neutral `playlist-io` переиспользует S01D `PlaylistSingleImportDraft`/`PlaylistImportProvenance` как ID-less generic M3U preview payload. Это dependency `playlist-io -> playlist-core`; reverse dependency, queue handle, allocation или mutation authority не добавлены.
+- M3U/M3U8 provenance различается через существующий `PlaylistImportSourceKind`; positive EXTINF может заполнить cached `MediaDuration`/title, negative duration остаётся parser-owned unknown hint и не превращается в span/end. Полный parser contract: `mem:playlist/io-s05-m3u-hls-2026-07-20`.

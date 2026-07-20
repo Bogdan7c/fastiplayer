@@ -1,0 +1,124 @@
+use std::{fmt, path::PathBuf};
+
+use playlist_core::{DurableReopenLocator, LocalLocator, SecretUrlLocator};
+use url::Url;
+
+/// Locator самого playlist-документа и authoritative base resolution owner.
+#[derive(Clone, PartialEq, Eq)]
+pub enum M3uDocumentSource {
+    /// Локальный exact native path.
+    Local {
+        /// Путь manifest/import document.
+        path: PathBuf,
+    },
+    /// Exact secret-safe absolute hierarchical URI.
+    Network {
+        /// Raw identity сохраняется только для explicit reopen.
+        exact_uri: String,
+        /// Parsed base не публикуется и используется только для resolution.
+        parsed_uri: Url,
+    },
+}
+
+impl M3uDocumentSource {
+    /// Создаёт local source без filesystem access.
+    pub fn local(path: impl Into<PathBuf>) -> Self {
+        Self::Local { path: path.into() }
+    }
+
+    /// Валидирует absolute hierarchical network base без fetch.
+    pub fn network(exact_uri: impl Into<String>) -> Result<Self, M3uDocumentSourceError> {
+        let exact_uri = exact_uri.into();
+        let parsed_uri =
+            Url::parse(&exact_uri).map_err(|_| M3uDocumentSourceError::InvalidNetworkUri)?;
+
+        if parsed_uri.cannot_be_a_base() || parsed_uri.host_str().is_none() {
+            return Err(M3uDocumentSourceError::InvalidNetworkUri);
+        }
+        if parsed_uri.scheme() == "file" {
+            return Err(M3uDocumentSourceError::FileUriIsNotNetworkSource);
+        }
+
+        Ok(Self::Network {
+            exact_uri,
+            parsed_uri,
+        })
+    }
+
+    /// Сообщает, может ли valid HLS быть передан adaptive service-у.
+    pub const fn is_network(&self) -> bool {
+        matches!(self, Self::Network { .. })
+    }
+
+    /// Возвращает local path только explicit local-open/import owner-у.
+    pub const fn expose_local_path(&self) -> Option<&PathBuf> {
+        match self {
+            Self::Local { path } => Some(path),
+            Self::Network { .. } => None,
+        }
+    }
+
+    /// Возвращает exact network identity только explicit reopen owner-у.
+    pub fn expose_network_uri(&self) -> Option<&str> {
+        match self {
+            Self::Network { exact_uri, .. } => Some(exact_uri),
+            Self::Local { .. } => None,
+        }
+    }
+
+    /// Возвращает parsed network base только внутри crate.
+    pub(crate) const fn parsed_network_uri(&self) -> Option<&Url> {
+        match self {
+            Self::Network { parsed_uri, .. } => Some(parsed_uri),
+            Self::Local { .. } => None,
+        }
+    }
+
+    /// Строит durable root provenance без lossy conversion.
+    pub(crate) fn durable_root(&self) -> DurableReopenLocator {
+        match self {
+            Self::Local { path } => DurableReopenLocator::local(LocalLocator::Native(path.clone())),
+            Self::Network { exact_uri, .. } => {
+                let secret_url = SecretUrlLocator::from_reopenable_url(exact_uri.clone())
+                    .expect("validated non-empty network source");
+                DurableReopenLocator::url(secret_url)
+            }
+        }
+    }
+}
+
+impl fmt::Debug for M3uDocumentSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Local { .. } => formatter.write_str("M3uDocumentSource::Local(<redacted>)"),
+            Self::Network { parsed_uri, .. } => formatter
+                .debug_struct("M3uDocumentSource::Network")
+                .field("host", &parsed_uri.host_str().unwrap_or("<unknown>"))
+                .finish_non_exhaustive(),
+        }
+    }
+}
+
+/// Secret-safe ошибка source construction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum M3uDocumentSourceError {
+    /// URI malformed, opaque или не имеет authority host.
+    InvalidNetworkUri,
+    /// `file:` должен входить через local source boundary.
+    FileUriIsNotNetworkSource,
+}
+
+impl fmt::Display for M3uDocumentSourceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidNetworkUri => {
+                formatter.write_str("playlist source не является absolute network URI")
+            }
+            Self::FileUriIsNotNetworkSource => {
+                formatter.write_str("file URI не является network playlist source")
+            }
+        }
+    }
+}
+
+impl std::error::Error for M3uDocumentSourceError {}

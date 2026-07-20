@@ -137,3 +137,9 @@
 ## Web media roadmap S04X hardened XML boundary (2026-07-20)
 - `bounded-xml-reader` теперь владеет единым byte-slice-only untrusted XML boundary с обязательными caller-defined byte/depth/token/attribute/text/namespace budgets, project-owned events и отсутствием hidden I/O. DTD/DOCTYPE, external/custom entities, undeclared prefixes и XML 1.1 rejected; predefined/numeric XML 1.0 entities legal.
 - Transitively vulnerable `quick-xml 0.39.3` заменён на `0.41.0`; exact published `wayland-scanner 0.31.10` временно закрыт пятым локальным `[replace]` patch без window/UI stack migration. Cargo-deny advisory graph clean. Full contract: `mem:xml/core`; patch ownership/removal gate: `mem:dependency-patches/core`.
+
+
+## Web media roadmap S05 M3U/M3U8 + HLS distinction (2026-07-20)
+- Добавлен neutral `playlist-io`: byte-slice-only `M3uParseRequest` с explicit M3U/M3U8 intent, document source и budgets; generic preview возвращает ID-less `playlist-core` drafts, bounded issues и exact EXTINF hints без queue/I/O/service authority.
+- Content-first strict HLS pass выполняется до generic EXTINF interpretation: network HLS возвращает только `AdaptiveManifestReference`, local HLS — `LocalHlsManifestUnsupported`; segment URI никогда не становятся queue rows. RFC UTF-8/BOM/NFC/control/case/whitespace/attribute/topology invariants и secret-safe exact URL/base/file resolution покрыты focused tests.
+- Полный contract/verification/known scope: `mem:playlist/io-s05-m3u-hls-2026-07-20`.

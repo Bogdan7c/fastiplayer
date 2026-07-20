@@ -42,6 +42,7 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/atomic-file-store
     crates/natural-sort-key
     crates/playlist-core
+    crates/playlist-io
     crates/playlist-discovery
     crates/playlist-state
     crates/media-core

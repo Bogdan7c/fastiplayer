@@ -23,3 +23,7 @@
 - System `yt-dlp` продолжает читать собственные config/cookies; app не хранит отдельные credentials и не добавляет `--ignore-config`.
 
 Focused tests: `crates/service-ytdlp/src/locator.rs`, service descriptor/process tests, `crates/app-egui/src/url_service_adapter.rs`, media-open redaction tests и playlist metadata stale/exact tests.
+
+## S05 playlist-io exact URI note (2026-07-20)
+- `playlist-io` generic M3U absolute hierarchical URI validates syntax через `url::Url`, но передаёт в `SecretUrlLocator` exact caller string, а не reserialized/normalized URL. Только relative URI получает newly resolved canonical identity. `M3uDocumentSource` и parse errors/Debug redacted.
+- Parser не делает scheme admission/fetch: hierarchical draft остаётся app registry input; opaque/non-network forms и remote-authority `file:` становятся typed bounded issues. HLS child/segment URI никогда не публикуются как queue rows. Full boundary: `mem:playlist/io-s05-m3u-hls-2026-07-20`.

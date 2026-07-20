@@ -29,6 +29,7 @@ CONTRACT_CRATES = frozenset(
         "media-core",
         "natural-sort-key",
         "playlist-core",
+        "playlist-io",
         "playlist-state",
         "codec-core",
         "settings-core",
@@ -59,6 +60,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "natural-sort-key",
         "player-core",
         "playlist-core",
+        "playlist-io",
         "playlist-discovery",
         "playlist-state",
         "render-core",
@@ -108,6 +110,12 @@ FRAME_SERVER_CORE_ALLOWED_DEPENDENCIES = frozenset(
 # UI/player/filesystem/serde/service edges должны появляться в верхних owners.
 PLAYLIST_CORE_ALLOWED_DEPENDENCIES = frozenset(
     {"media-core", "natural-sort-key", "rand"}
+)
+
+# Playlist document parser видит только neutral draft/time contracts и узкие
+# URI/NFC helpers; filesystem/network/app/service/player edges запрещены.
+PLAYLIST_IO_ALLOWED_DEPENDENCIES = frozenset(
+    {"media-core", "playlist-core", "unicode-normalization", "url"}
 )
 
 # Общий natural comparator остаётся std-only и не знает path/domain owners.
@@ -744,6 +752,14 @@ def find_dependency_violations(
             frozenset({"playlist-core"}),
             PLAYLIST_CORE_ALLOWED_DEPENDENCIES,
             "playlist-core зависит только от neutral metadata/natural-key contracts и rand",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"playlist-io"}),
+            PLAYLIST_IO_ALLOWED_DEPENDENCIES,
+            "playlist-io остаётся neutral parser boundary без filesystem/network/app/player/service deps",
         )
     )
     violations.extend(

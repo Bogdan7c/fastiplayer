@@ -258,6 +258,50 @@ class DependencyGraphPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_playlist_io_allows_only_neutral_parser_dependencies(self) -> None:
+        """Playlist parser не получает hidden I/O/app/service dependency."""
+
+        packages = complete_workspace_packages()
+        packages["playlist-io"] = package_with_dependencies(
+            "playlist-io",
+            (
+                ("media-core", None),
+                ("playlist-core", None),
+                ("unicode-normalization", None),
+                ("url", None),
+            ),
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "playlist-io"
+                for violation in passing_result.dependency_violations
+            )
+        )
+
+        packages["playlist-io"] = package_with_dependencies(
+            "playlist-io",
+            (
+                ("media-core", None),
+                ("playlist-core", None),
+                ("unicode-normalization", None),
+                ("url", None),
+                ("service-ytdlp", None),
+            ),
+        )
+        failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertTrue(
+            any(
+                violation.owner == "playlist-io"
+                and violation.dependency == "service-ytdlp"
+                for violation in failing_result.dependency_violations
+            )
+        )
+
     def test_natural_sort_key_rejects_every_normal_dependency(self) -> None:
         """Общий prepared comparator остаётся строго std-only."""
 

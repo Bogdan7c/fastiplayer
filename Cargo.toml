@@ -24,6 +24,7 @@ members = [
     "crates/atomic-file-store",
     "crates/natural-sort-key",
     "crates/playlist-core",
+    "crates/playlist-io",
     "crates/playlist-discovery",
     "crates/playlist-state",
     "crates/media-core",
@@ -160,6 +161,7 @@ bounded-work-executor = { version = "0.1.0", path = "crates/bounded-work-executo
 atomic-file-store = { version = "0.1.0", path = "crates/atomic-file-store" }
 natural-sort-key = { version = "0.1.0", path = "crates/natural-sort-key" }
 playlist-core = { version = "0.1.0", path = "crates/playlist-core" }
+playlist-io = { version = "0.1.0", path = "crates/playlist-io" }
 playlist-discovery = { version = "0.1.0", path = "crates/playlist-discovery" }
 playlist-state = { version = "0.1.0", path = "crates/playlist-state" }
 desktop-integration = { version = "0.1.0", path = "crates/desktop-integration" }
@@ -179,4 +181,5 @@ proc-macro2 = "1.0"
 quote = "1.0"
 syn = "2.0"
 url = "2.5"
+unicode-normalization = "0.1"
 quick-xml = "0.41"
