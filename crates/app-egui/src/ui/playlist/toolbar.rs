@@ -1,5 +1,6 @@
 //! Toolbar и URL form renderer без I/O и business mutations.
 
+mod export_menu;
 mod icon_bar;
 mod import_menu;
 

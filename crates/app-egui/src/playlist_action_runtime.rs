@@ -100,6 +100,9 @@ pub(crate) fn apply_playlist_actions(
             PlaylistAction::StartImport(intent) => {
                 changed |= runtime.start_playlist_import_dialog(window, intent);
             }
+            PlaylistAction::StartExport(request) => {
+                changed |= runtime.start_playlist_export(window, request);
+            }
             PlaylistAction::ContinueImport(preview_id) => {
                 let outcome = runtime.continue_playlist_import(preview_id);
                 if !matches!(

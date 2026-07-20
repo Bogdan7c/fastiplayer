@@ -103,3 +103,10 @@ Session 06 completed PASS on 2026-07-14. This memory complements `mem:core`, `me
 ## S10 export isolation note (2026-07-20)
 - Pure M3U8/XSPF export не переиспользует private playlist-state DTO/serializer и не меняет schema v2, queue/resume atomic writers, save revision или dirty state. Downstream `playlist-io::PlaylistExportSnapshot` снимается отдельно через public immutable queue read boundary.
 - S11 сможет передать готовые export bytes в `atomic-file-store`, но не через playlist-state worker/schema. Full contract: `mem:playlist/io-s10-export-2026-07-20`.
+
+
+## S11 app export writer isolation (2026-07-20)
+- `app-egui::playlist_runtime::export_io` передаёт уже preflighted/serialized export bytes напрямую neutral `atomic-file-store`; private playlist-state schema v2, `SaveWorker`, `SaveRevision`, queue/resume dirty state и playlist-state operation mutex не участвуют.
+- Export target выбирается native save dialog после typed scope/format. Все semantic/locator checks и serialization завершаются до первой target mutation; sensitive locators сначала создают redacted process-lifetime continuation в generalized confirmation slot.
+- Единственная mutation-функция исчерпывающе сохраняет neutral outcomes `NotReplaced`, `ReplacedDurabilityUnconfirmed` и `Durable`. Unix target/temp остаются user-only (0600), exact-path cleanup и parent-directory durability принадлежат `atomic-file-store`.
+- Focused S11 tests подтверждают отсутствие queue revision/ID/dirty mutation, no-touch sensitive/cancel preflight, real durable 0600 write и post-rename durability distinction. Runtime/UI details: `mem:app-egui/playlist-export-s11-2026-07-20`.

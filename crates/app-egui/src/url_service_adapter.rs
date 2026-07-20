@@ -66,6 +66,11 @@ impl StartupUrlLocator {
         self.0.requires_sensitive_persistence_acknowledgement()
     }
 
+    /// Export применяет более строгую service-owned portable-document policy.
+    pub(crate) fn requires_sensitive_export_acknowledgement(&self) -> bool {
+        self.0.requires_sensitive_export_acknowledgement()
+    }
+
     /// Возвращает service-owned metadata source, если adapter поддерживает enrichment.
     pub(crate) fn playlist_metadata_source(&self) -> Option<PlaylistUrlMetadataSource> {
         self.0.playlist_metadata_source()
@@ -107,6 +112,10 @@ trait StartupUrlServiceAdapter: Send {
 
     fn requires_sensitive_persistence_acknowledgement(&self) -> bool {
         false
+    }
+
+    fn requires_sensitive_export_acknowledgement(&self) -> bool {
+        self.requires_sensitive_persistence_acknowledgement()
     }
 
     fn playlist_metadata_source(&self) -> Option<PlaylistUrlMetadataSource> {
@@ -165,6 +174,10 @@ impl StartupUrlServiceAdapter for YtDlpStartupAdapter {
 
     fn expose_secret_for_persistence(&self) -> &str {
         self.locator.expose_secret_for_persistence()
+    }
+
+    fn requires_sensitive_export_acknowledgement(&self) -> bool {
+        self.locator.requires_sensitive_export_acknowledgement()
     }
 
     fn playlist_metadata_source(&self) -> Option<PlaylistUrlMetadataSource> {

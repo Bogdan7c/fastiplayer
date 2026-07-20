@@ -133,6 +133,7 @@ version = "0.1.0"
 dependencies = [
  "animation-core",
  "anyhow",
+ "atomic-file-store",
  "audio",
  "audio-signalsmith",
  "bounded-work-executor",

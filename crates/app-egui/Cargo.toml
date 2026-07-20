@@ -40,6 +40,7 @@ playlist-discovery.workspace = true
 bounded-work-executor.workspace = true
 natural-sort-key.workspace = true
 playlist-state.workspace = true
+atomic-file-store.workspace = true
 desktop-integration.workspace = true
 url.workspace = true
 

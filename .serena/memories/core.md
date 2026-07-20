@@ -168,3 +168,10 @@
 - `playlist-io` теперь владеет immutable canonical top-level export snapshot, service/app-owned portable locator preflight, aggregated secret classification и pure UTF-8 M3U8/XSPF v1 serializers без filesystem/UI/runtime authority.
 - Selected compound экспортирует все source-order parts; M3U8 публикует typed flatten warning, XSPF сохраняет group range/root через versioned playlist extension. Local relative representation используется только при proven roundtrip; non-UTF/foreign/nonportable service identity typed rejected; transient transport material отсутствует в API.
 - Verification и полный contract: `mem:playlist/io-s10-export-2026-07-20`. `playlist-state` и queue mutation/public storage semantics не изменены; следующий scope — S11 writer/runtime/UI.
+
+
+## Web media roadmap S11 export runtime/writer/toolbar (2026-07-20)
+- Process-lifetime `PlaylistRuntime` получил отдельного `PlaylistExportIoOwner`: maximum-one save-dialog/preflight/write job, monotonic generation, cooperative cancel, stale suppression, panic correlation и bounded shutdown/join. Immutable S10 snapshot снимается до background work; queue/current/selection/dirty state не мутируются.
+- Toolbar Export идёт шестым left slot после Import и требует typed scope + M3U8/XSPF до save dialog. Empty queue отключает control, empty selection — только selected branch. Sensitive locator preflight создаёт redacted continuation в generalized confirmation slot; late completion не вытесняет более новый prompt.
+- Готовые bytes записываются единственной app boundary-функцией через `atomic-file-store`, с typed overwrite intent от native save dialog, Unix 0600 и сохранением `NotReplaced`/`ReplacedDurabilityUnconfirmed`/`Durable`. URL sensitivity принадлежит service-owned policy; stable service payload export остаётся fail-closed до S19 owner mapping.
+- Neutral Export glyph принадлежит `ui-artwork-egui` и образует characterized tray-пару с Import. Полный contract/verification: `mem:app-egui/playlist-export-s11-2026-07-20`.

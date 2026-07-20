@@ -6,7 +6,7 @@ use std::sync::Arc;
 use playlist_core::{MoveItemIntent, PlaylistItemId, SortCanonicalQueue};
 
 use crate::playlist_runtime::{
-    PlaylistGoCurrentTarget, PlaylistImportIntent, PlaylistImportPreviewId,
+    PlaylistExportRequest, PlaylistGoCurrentTarget, PlaylistImportIntent, PlaylistImportPreviewId,
     PlaylistStructuralRevision, UpdateSelection,
 };
 
@@ -125,6 +125,8 @@ pub(crate) enum PlaylistAction {
     AddFiles,
     /// Запускает single-root import dialog с явным append/replace intent.
     StartImport(PlaylistImportIntent),
+    /// Запускает export с explicit scope/format до save dialog.
+    StartExport(PlaylistExportRequest),
     /// Продолжает exact staged preview; stale generation не оживляется.
     ContinueImport(PlaylistImportPreviewId),
     /// Отменяет exact staged preview без queue/player mutation.

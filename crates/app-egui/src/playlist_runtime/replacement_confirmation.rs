@@ -19,6 +19,7 @@ pub(crate) struct QueueReplacementIntentId(u64);
 pub(crate) struct PlaylistConfirmationReasons {
     queue_replacement: bool,
     sensitive_url_persistence: bool,
+    sensitive_playlist_export_locator_count: Option<usize>,
 }
 
 /// Stable presentation order composed reasons.
@@ -26,6 +27,8 @@ pub(crate) struct PlaylistConfirmationReasons {
 pub(crate) enum PlaylistConfirmationReason {
     /// Exact durable URL identities требуют aggregated acknowledgement.
     SensitiveDurableLocatorPersistence,
+    /// Export document содержит acknowledged durable identities.
+    SensitivePlaylistExport { locator_count: usize },
     /// Destructive replacement подтверждается непосредственно перед commit.
     QueueReplacement,
 }
@@ -39,8 +42,14 @@ impl PlaylistConfirmationReasons {
         self.sensitive_url_persistence
     }
 
+    pub(crate) const fn sensitive_playlist_export_locator_count(self) -> Option<usize> {
+        self.sensitive_playlist_export_locator_count
+    }
+
     const fn replacement_only(self) -> bool {
-        self.queue_replacement && !self.sensitive_url_persistence
+        self.queue_replacement
+            && !self.sensitive_url_persistence
+            && self.sensitive_playlist_export_locator_count.is_none()
     }
 
     /// Строит reason set import transaction без forgeable `confirmed: bool`.
@@ -51,6 +60,7 @@ impl PlaylistConfirmationReasons {
         Self {
             queue_replacement,
             sensitive_url_persistence: sensitive_durable_locator_persistence,
+            sensitive_playlist_export_locator_count: None,
         }
     }
 
@@ -59,6 +69,12 @@ impl PlaylistConfirmationReasons {
         [
             self.sensitive_url_persistence
                 .then_some(PlaylistConfirmationReason::SensitiveDurableLocatorPersistence),
+            self.sensitive_playlist_export_locator_count
+                .map(
+                    |locator_count| PlaylistConfirmationReason::SensitivePlaylistExport {
+                        locator_count,
+                    },
+                ),
             self.queue_replacement
                 .then_some(PlaylistConfirmationReason::QueueReplacement),
         ]
@@ -276,6 +292,15 @@ pub(crate) enum QueueReplacementAdmissionError {
     IntentIdentityExhausted,
 }
 
+/// Late export completion не расширяет admission errors синхронных user intents.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum ExportConfirmationInstallError {
+    #[error("a newer playlist confirmation already occupies the authoritative slot")]
+    SlotOccupied,
+    #[error("playlist confirmation identity space is exhausted")]
+    IntentIdentityExhausted,
+}
+
 /// Secret-bearing payload никогда не реализует automatic `Debug`/`Display`.
 pub(super) enum QueueReplacementTarget {
     LocalFile(PathBuf),
@@ -325,6 +350,7 @@ pub(super) enum PendingConfirmationTarget {
     QueueReplacement(QueueReplacementTarget),
     SensitiveUrlAppend(Box<playlist_core::PlaylistItemDraft>),
     Import(ImportConfirmationContinuation),
+    Export(super::export_io::PlaylistExportConfirmationContinuation),
 }
 
 /// Exact staged import correlation, который не раскрывается UI.
@@ -366,6 +392,7 @@ impl QueueReplacementConfirmationState {
             sensitive_url_persistence: intent
                 .target
                 .requires_sensitive_persistence_acknowledgement(),
+            sensitive_playlist_export_locator_count: None,
         };
         let model = PendingPlaylistConfirmation {
             intent_id,
@@ -419,6 +446,7 @@ impl QueueReplacementConfirmationState {
                 reasons: PlaylistConfirmationReasons {
                     queue_replacement: false,
                     sensitive_url_persistence: true,
+                    sensitive_playlist_export_locator_count: None,
                 },
             },
             target: PendingConfirmationTarget::SensitiveUrlAppend(Box::new(draft)),
@@ -446,6 +474,37 @@ impl QueueReplacementConfirmationState {
                 reasons,
             },
             target: PendingConfirmationTarget::Import(continuation),
+        });
+        Ok(())
+    }
+
+    /// Занимает generalized slot prepared export continuation-ом без target mutation.
+    pub(super) fn replace_with_export(
+        &mut self,
+        safe_label: SafeMediaLabel,
+        locator_count: usize,
+        continuation: super::export_io::PlaylistExportConfirmationContinuation,
+    ) -> Result<(), ExportConfirmationInstallError> {
+        // Late background completion не имеет права вытеснить более новый user intent.
+        if self.pending.is_some() {
+            return Err(ExportConfirmationInstallError::SlotOccupied);
+        }
+        let intent_id = QueueReplacementIntentId(self.next_intent_id);
+        self.next_intent_id = self
+            .next_intent_id
+            .checked_add(1)
+            .ok_or(ExportConfirmationInstallError::IntentIdentityExhausted)?;
+        self.pending = Some(PendingQueueReplacementIntent {
+            model: PendingPlaylistConfirmation {
+                intent_id,
+                safe_label,
+                reasons: PlaylistConfirmationReasons {
+                    queue_replacement: false,
+                    sensitive_url_persistence: false,
+                    sensitive_playlist_export_locator_count: Some(locator_count),
+                },
+            },
+            target: PendingConfirmationTarget::Export(continuation),
         });
         Ok(())
     }

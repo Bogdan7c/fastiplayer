@@ -12,6 +12,7 @@ use url::Url;
 pub struct YtDlpMediaLocator {
     exact_secret_identity: String,
     safe_label: String,
+    requires_sensitive_export_acknowledgement: bool,
 }
 
 impl YtDlpMediaLocator {
@@ -31,6 +32,12 @@ impl YtDlpMediaLocator {
     #[must_use]
     pub fn safe_label(&self) -> &str {
         &self.safe_label
+    }
+
+    /// Сообщает export owner-у, что portable document потребует подтверждения.
+    #[must_use]
+    pub const fn requires_sensitive_export_acknowledgement(&self) -> bool {
+        self.requires_sensitive_export_acknowledgement
     }
 }
 
@@ -74,10 +81,14 @@ pub fn parse_yt_dlp_media_locator(
     }
 
     let safe_label = yt_dlp_safe_label(&parsed_url);
+    let requires_sensitive_export_acknowledgement = !parsed_url.username().is_empty()
+        || parsed_url.password().is_some()
+        || parsed_url.query().is_some_and(|query| !query.is_empty());
 
     Ok(YtDlpMediaLocator {
         exact_secret_identity: argument.to_owned(),
         safe_label,
+        requires_sensitive_export_acknowledgement,
     })
 }
 
@@ -129,6 +140,18 @@ mod tests {
 
         assert_eq!(locator.expose_secret_for_persistence(), exact_url);
         assert_eq!(locator.expose_secret_for_open(), exact_url);
+        assert!(
+            locator.requires_sensitive_export_acknowledgement(),
+            "query-bearing exact identity обязана пройти aggregated acknowledgement"
+        );
+    }
+
+    #[test]
+    fn public_generic_url_does_not_require_sensitive_acknowledgement() {
+        let locator = parse_yt_dlp_media_locator("https://media.example.test/watch/123")
+            .expect("public generic URL должен пройти parse");
+
+        assert!(!locator.requires_sensitive_export_acknowledgement());
     }
 
     #[test]

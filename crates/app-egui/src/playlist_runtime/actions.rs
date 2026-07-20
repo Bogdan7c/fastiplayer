@@ -38,6 +38,7 @@ pub(crate) enum UrlAppendActionOutcome {
 pub(crate) enum PlaylistConfirmationApplyOutcome {
     QueueReplacementConfirmed(AdmittedQueueReplacementIntent),
     Import(super::import_transaction::PlaylistImportContinueOutcome),
+    ExportWriterStarted,
     UrlAppended { item_count: usize },
     UrlNoCapacity,
     DeferredUntilStartupInstallResolution,
@@ -203,6 +204,12 @@ impl PlaylistRuntime {
             )) => PlaylistConfirmationApplyOutcome::Import(
                 self.confirm_staged_playlist_import(continuation),
             ),
+            PlaylistConfirmationResolution::Confirmed(PendingConfirmationTarget::Export(
+                continuation,
+            )) => {
+                self.confirm_playlist_export(continuation);
+                PlaylistConfirmationApplyOutcome::ExportWriterStarted
+            }
         }
     }
 

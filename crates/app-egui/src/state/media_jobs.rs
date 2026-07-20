@@ -376,6 +376,7 @@ impl AppState {
             }
             crate::playlist_runtime::PlaylistConfirmationApplyOutcome::Cancelled
             | crate::playlist_runtime::PlaylistConfirmationApplyOutcome::Import(_)
+            | crate::playlist_runtime::PlaylistConfirmationApplyOutcome::ExportWriterStarted
             | crate::playlist_runtime::PlaylistConfirmationApplyOutcome::UrlAppended { .. }
             | crate::playlist_runtime::PlaylistConfirmationApplyOutcome::UrlNoCapacity
             | crate::playlist_runtime::PlaylistConfirmationApplyOutcome::DeferredUntilStartupInstallResolution

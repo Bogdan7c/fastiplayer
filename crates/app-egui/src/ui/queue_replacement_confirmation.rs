@@ -15,7 +15,12 @@ pub(crate) fn render(
         egui::Frame::group(ui.style()).show(ui, |ui| {
             let reasons = model.reasons();
             ui.heading(
-                if reasons.queue_replacement() && reasons.sensitive_url_persistence() {
+                if reasons
+                    .sensitive_playlist_export_locator_count()
+                    .is_some()
+                {
+                    "Экспортировать чувствительные адреса?"
+                } else if reasons.queue_replacement() && reasons.sensitive_url_persistence() {
                     "Подтвердить открытие и сохранение?"
                 } else if reasons.queue_replacement() {
                     "Заменить текущую очередь?"
@@ -31,6 +36,11 @@ pub(crate) fn render(
             }
             if reasons.sensitive_url_persistence() {
                 ui.label("URL содержит чувствительные параметры. Сохранить его в playlist-state?");
+            }
+            if let Some(locator_count) = reasons.sensitive_playlist_export_locator_count() {
+                ui.label(format!(
+                    "Файл будет содержать чувствительные адреса ({locator_count}). Сохранить его с доступом только для текущего пользователя?"
+                ));
             }
             ui.horizontal(|ui| {
                 if ui.button("Отмена").clicked() {

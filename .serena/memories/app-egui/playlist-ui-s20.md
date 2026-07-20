@@ -86,3 +86,10 @@
 - Обычный title больше не получает forced egui `.strong()` foreground; active title использует skin-owned gray-245 color. В pinned egui 0.34.2 `.strong()` меняет цвет, а не font weight, поэтому новый font asset/синтетический fake-bold не добавлялись. Index, media kind, duration, badges, row height, columns, hit-area и truncation contract не менялись.
 - `PlaylistRowMarkerStyle`/`ArtworkPainter::playlist_row_marker` принадлежат neutral `ui-artwork-egui`; `app-egui` владеет active identity mapping, paint ordering и title foreground. Controller/player/config/persistence API не менялись.
 - Focused Playlist UI — 78 PASS; `ui-artwork-egui` — 27 PASS; полный `app-egui` — 719 PASS с default и `--no-default-features`. Strict Clippy обоих feature-наборов, Rust 1.96 locked workspace check, fmt, diff check и refactor guardrails PASS.
+
+
+## S11 Export toolbar/runtime UI (2026-07-20)
+- Icon-only toolbar теперь содержит Export шестым left slot сразу после Import; первые Add Files/Add URL/Sort/Current Item axes, 32-point row и независимый Clear anchor сохранены. Headless layout regressions закрепляют widths 350/420/600.
+- Popup требует explicit scope (`Весь плейлист` или `Выбранные (N)`) и затем explicit format (`M3U8`/`XSPF`) до native save dialog. Empty queue отключает весь control; empty selection отключает только selected branch; concurrent export dialog/job отключает повторный старт.
+- UI остаётся renderer-only: публикует typed `PlaylistAction::StartExport(PlaylistExportRequest)`, не читает filesystem, не сериализует документ и не мутирует queue. Pointer, Tab+Space/Enter, Russian AccessKit name/tooltips и disabled behavior покрыты focused tests.
+- Sensitive export переиспользует один generalized confirmation host, но имеет отдельную typed reason/continuation; late background completion не вытесняет более новый URL/import confirmation. Полный runtime/writer contract: `mem:app-egui/playlist-export-s11-2026-07-20`.

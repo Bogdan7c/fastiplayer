@@ -457,12 +457,14 @@ pub(crate) struct PlaylistSafeFeedback {
 pub(crate) struct PlaylistInteractionModel {
     pub(crate) structural_action_availability: PlaylistStructuralActionAvailability,
     pub(crate) item_count: usize,
+    pub(crate) selected_item_count: usize,
     pub(crate) url_editor_open: bool,
     pub(crate) url_text: String,
     pub(crate) url_request_focus: bool,
     pub(crate) url_safe_error: Option<PlaylistUrlDraftError>,
     pub(crate) file_dialog_open: bool,
     pub(crate) import_dialog_open: bool,
+    pub(crate) export_dialog_open: bool,
     pub(crate) active_operation: Option<PlaylistActiveOperation>,
     pub(crate) manual_add_warning: Option<PlaylistManualAddWarning>,
     pub(crate) safe_feedback: Option<PlaylistSafeFeedback>,
@@ -474,12 +476,14 @@ impl Default for PlaylistInteractionModel {
         Self {
             structural_action_availability: PlaylistStructuralActionAvailability::Available,
             item_count: 0,
+            selected_item_count: 0,
             url_editor_open: false,
             url_text: String::new(),
             url_request_focus: false,
             url_safe_error: None,
             file_dialog_open: false,
             import_dialog_open: false,
+            export_dialog_open: false,
             active_operation: None,
             manual_add_warning: None,
             safe_feedback: None,
@@ -531,12 +535,16 @@ impl PlaylistRuntime {
             ),
             item_count: controller
                 .map_or(0, |controller| controller.queue().top_level_entry_count()),
+            selected_item_count: controller.map_or(0, |controller| {
+                controller.view_snapshot().selection().selected_count()
+            }),
             url_editor_open: draft.is_open(),
             url_text: draft.text().to_string(),
             url_request_focus: draft.requests_focus(),
             url_safe_error: draft.safe_error().cloned(),
             file_dialog_open: self.ui_interaction.dialog_is_open(),
             import_dialog_open: self.import_io.is_open(),
+            export_dialog_open: self.export_io.is_open(),
             active_operation,
             manual_add_warning,
             safe_feedback: self.ui_interaction.safe_feedback().cloned(),
@@ -640,6 +648,7 @@ impl PlaylistRuntime {
             super::PlaylistConfirmationApplyOutcome::Cancelled
             | super::PlaylistConfirmationApplyOutcome::Stale
             | super::PlaylistConfirmationApplyOutcome::Import(_)
+            | super::PlaylistConfirmationApplyOutcome::ExportWriterStarted
             | super::PlaylistConfirmationApplyOutcome::QueueReplacementConfirmed(_) => {}
         }
     }

@@ -62,3 +62,9 @@
 - Playlist renderer выводит moving active fill в ранний reserved slot, затем content/selection surface, после них moving marker, поверх marker — focus/insertion, последним — physical-pixel separator. Marker наследует clipped ScrollArea painter, не меняет layout/hit-area, не создаёт AccessKit node и движется по существующему `ActiveAccentAnimationState` rect.
 - Отдельный trailing vector `Play` glyph остаётся удалённым вместе с `active_track_glyph.rs`/старым facade. Active title получает отдельный grayscale foreground token; обычные title больше не используют egui `.strong()` (в pinned egui 0.34.2 это stronger color, а не отдельный bold font-face). Accessibility `Сейчас играет`, interaction и controller/player boundaries не менялись.
 - Characterization tests закрепляют exact marker geometry, invalid/collapsed no-shape, ordering, bounds и fractional-HiDPI clipping. После изменения `ui-artwork-egui` — 27 PASS; app default/no-default — 719 PASS; strict Clippy, Rust 1.96 locked workspace check, fmt, diff check и refactor guardrails PASS.
+
+
+## S11 paired playlist Export glyph (2026-07-20)
+- `PlaylistToolbarGlyph` теперь содержит семь neutral glyphs: AddFiles, AddUrl, Sort, CurrentItem, Import, Export и Clear. `Export` рисуется в `ui-artwork-egui::playlist_toolbar`; `app-egui` по-прежнему владеет layout/hit-area/accessibility/actions и не содержит прямых Painter primitives.
+- Import/Export используют один tray bounding geometry и одинаковые три shape-а, но стрелки направлены внутрь/наружу. Characterization tests требуют общую tray-геометрию, distinct fingerprints, bounds и decoration invariance.
+- Production Export — шестой left toolbar slot после Import; artwork crate не знает scope, format, queue selection, dialog или writer state. После S11 `ui-artwork-egui` имеет 29 passing tests.
