@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use egui::{Key, Modifiers, PointerButton, Response};
-use playlist_core::PlaylistItemId;
+use playlist_core::{PlaylistEntryId, PlaylistItemId};
 
 use super::actions::{RemoveSelected, RemoveUnselected};
 use super::{PlaylistAction, PlaylistUiOutput, PlaylistUiState, virtualized_drag};
@@ -19,10 +19,14 @@ pub(super) fn handle_row_response(
     state: &mut PlaylistUiState,
     output: &mut PlaylistUiOutput,
 ) {
-    let row_is_selected = model.selection().is_selected(item_id);
+    let Some(entry_id) = model.entry_id_at(row_index) else {
+        return;
+    };
+    let row_is_selected = model.selection().is_selected(entry_id);
     let modifiers = ui.input(|input| input.modifiers);
     for action in pointer_actions(
         model,
+        entry_id,
         item_id,
         row_is_selected,
         modifiers,
@@ -40,11 +44,13 @@ pub(super) fn handle_row_response(
 
     // Right-click внутри selection сохраняет группу; снаружи сначала выбирает строку.
     if response.secondary_clicked() && !row_is_selected {
-        output.push_action(PlaylistAction::UpdateSelection(replace_one(model, item_id)));
+        output.push_action(PlaylistAction::UpdateSelection(replace_one(
+            model, entry_id,
+        )));
     }
 
     if response.has_focus() {
-        handle_focused_keyboard(ui, model, row_index, item_id, state, output);
+        handle_focused_keyboard(ui, model, row_index, entry_id, item_id, state, output);
     }
 
     response.context_menu(|menu_ui| {
@@ -67,13 +73,13 @@ pub(super) fn handle_row_response(
             .clicked()
         {
             // Exact IDs материализуются только в момент destructive action.
-            let selected_item_ids = if row_is_selected {
-                model.selected_item_ids()
+            let selected_entry_ids = if row_is_selected {
+                model.selected_entry_ids()
             } else {
-                Arc::from([item_id])
+                Arc::from([entry_id])
             };
             output.push_action(PlaylistAction::RemoveSelected(RemoveSelected::new(
-                selected_item_ids,
+                selected_entry_ids,
                 model.structural_revision(),
             )));
             menu_ui.close();
@@ -87,10 +93,10 @@ pub(super) fn handle_row_response(
             .clicked()
         {
             // Complement тоже строится только после явного подтверждения кликом по menu item.
-            let unselected_item_ids =
-                unselected_for_effective_selection(model, row_is_selected, item_id);
+            let unselected_entry_ids =
+                unselected_for_effective_selection(model, row_is_selected, entry_id);
             output.push_action(PlaylistAction::RemoveUnselected(RemoveUnselected::new(
-                unselected_item_ids,
+                unselected_entry_ids,
                 model.structural_revision(),
             )));
             menu_ui.close();
@@ -100,6 +106,7 @@ pub(super) fn handle_row_response(
     virtualized_drag::begin_from_response(
         response,
         model,
+        entry_id,
         item_id,
         row_is_selected,
         &mut state.drag,
@@ -112,20 +119,21 @@ fn handle_focused_keyboard(
     ui: &mut egui::Ui,
     model: &PlaylistViewModel,
     row_index: usize,
+    entry_id: PlaylistEntryId,
     item_id: PlaylistItemId,
     state: &mut PlaylistUiState,
     output: &mut PlaylistUiOutput,
 ) {
     if take_key(ui, Modifiers::COMMAND, Key::A) {
-        let item_ids = all_item_ids(model);
+        let entry_ids = all_entry_ids(model);
         let range_anchor = model
             .selection()
             .range_anchor()
-            .or_else(|| item_ids.first().copied());
+            .or_else(|| entry_ids.first().copied());
         let interaction_cursor = model.selection().interaction_cursor().or(range_anchor);
         output.push_action(PlaylistAction::UpdateSelection(
             UpdateSelection::SelectAll {
-                item_ids,
+                entry_ids,
                 range_anchor,
                 interaction_cursor,
                 structural_revision: model.structural_revision(),
@@ -145,25 +153,25 @@ fn handle_focused_keyboard(
 
     let navigation = take_navigation_key(ui);
     if let Some((navigation_key, modifiers)) = navigation
-        && let Some(target_item_id) = navigation_target(model, row_index, navigation_key)
+        && let Some(target_entry_id) = navigation_target(model, row_index, navigation_key)
     {
         output.push_action(PlaylistAction::UpdateSelection(keyboard_selection_update(
             model,
-            item_id,
-            target_item_id,
+            entry_id,
+            target_entry_id,
             modifiers,
         )));
-        state.request_row_focus(target_item_id);
+        state.request_row_focus(target_entry_id);
     }
 
     if take_key(ui, Modifiers::NONE, Key::Enter) {
         output.push_action(PlaylistAction::Play(item_id));
     }
     if take_key(ui, Modifiers::NONE, Key::Delete) {
-        let selected_item_ids = model.selected_item_ids();
-        if !selected_item_ids.is_empty() {
+        let selected_entry_ids = model.selected_entry_ids();
+        if !selected_entry_ids.is_empty() {
             output.push_action(PlaylistAction::RemoveSelected(RemoveSelected::new(
-                selected_item_ids,
+                selected_entry_ids,
                 model.structural_revision(),
             )));
         }
@@ -173,6 +181,7 @@ fn handle_focused_keyboard(
 /// Pointer selection соблюдает обычные desktop Ctrl/Cmd/Shift combinations.
 fn pointer_actions(
     model: &PlaylistViewModel,
+    entry_id: PlaylistEntryId,
     item_id: PlaylistItemId,
     row_is_selected: bool,
     modifiers: Modifiers,
@@ -182,23 +191,25 @@ fn pointer_actions(
     if double_clicked {
         let mut actions = Vec::with_capacity(2);
         if !row_is_selected {
-            actions.push(PlaylistAction::UpdateSelection(replace_one(model, item_id)));
+            actions.push(PlaylistAction::UpdateSelection(replace_one(
+                model, entry_id,
+            )));
         }
         actions.push(PlaylistAction::Play(item_id));
         return actions;
     }
     if clicked {
         return vec![PlaylistAction::UpdateSelection(pointer_selection_update(
-            model, item_id, modifiers,
+            model, entry_id, modifiers,
         ))];
     }
     Vec::new()
 }
 
 /// Обычный replace intent используется click, right-click и unselected drag.
-fn replace_one(model: &PlaylistViewModel, item_id: PlaylistItemId) -> UpdateSelection {
+fn replace_one(model: &PlaylistViewModel, entry_id: PlaylistEntryId) -> UpdateSelection {
     UpdateSelection::Replace {
-        item_id,
+        entry_id,
         structural_revision: model.structural_revision(),
     }
 }
@@ -206,54 +217,54 @@ fn replace_one(model: &PlaylistViewModel, item_id: PlaylistItemId) -> UpdateSele
 /// Разрешает Shift-range только в момент explicit pointer event.
 fn pointer_selection_update(
     model: &PlaylistViewModel,
-    item_id: PlaylistItemId,
+    entry_id: PlaylistEntryId,
     modifiers: Modifiers,
 ) -> UpdateSelection {
     if modifiers.command && modifiers.shift {
-        return range_update(model, item_id, item_id, RangeSelectionMode::Add);
+        return range_update(model, entry_id, entry_id, RangeSelectionMode::Add);
     }
     if modifiers.shift {
-        return range_update(model, item_id, item_id, RangeSelectionMode::Replace);
+        return range_update(model, entry_id, entry_id, RangeSelectionMode::Replace);
     }
     if modifiers.command {
         return UpdateSelection::Toggle {
-            item_id,
+            entry_id,
             structural_revision: model.structural_revision(),
         };
     }
-    replace_one(model, item_id)
+    replace_one(model, entry_id)
 }
 
 /// Keyboard Ctrl/Cmd переносит cursor, а Shift расширяет exact range.
 fn keyboard_selection_update(
     model: &PlaylistViewModel,
-    current_item_id: PlaylistItemId,
-    target_item_id: PlaylistItemId,
+    current_entry_id: PlaylistEntryId,
+    target_entry_id: PlaylistEntryId,
     modifiers: Modifiers,
 ) -> UpdateSelection {
     if modifiers.command && modifiers.shift {
         return range_update(
             model,
-            current_item_id,
-            target_item_id,
+            current_entry_id,
+            target_entry_id,
             RangeSelectionMode::Add,
         );
     }
     if modifiers.shift {
         return range_update(
             model,
-            current_item_id,
-            target_item_id,
+            current_entry_id,
+            target_entry_id,
             RangeSelectionMode::Replace,
         );
     }
     if modifiers.command {
         return UpdateSelection::MoveCursor {
-            item_id: target_item_id,
+            entry_id: target_entry_id,
             structural_revision: model.structural_revision(),
         };
     }
-    replace_one(model, target_item_id)
+    replace_one(model, target_entry_id)
 }
 
 /// Typed range mode устраняет неочевидный positional bool.
@@ -266,8 +277,8 @@ enum RangeSelectionMode {
 /// Строит exact canonical range из stable anchor и target.
 fn range_update(
     model: &PlaylistViewModel,
-    fallback_anchor: PlaylistItemId,
-    target_item_id: PlaylistItemId,
+    fallback_anchor: PlaylistEntryId,
+    target_entry_id: PlaylistEntryId,
     mode: RangeSelectionMode,
 ) -> UpdateSelection {
     let range_anchor = model
@@ -275,29 +286,29 @@ fn range_update(
         .range_anchor()
         .or_else(|| model.selection().interaction_cursor())
         .unwrap_or(fallback_anchor);
-    let item_ids = model
-        .range_item_ids(range_anchor, target_item_id)
-        .unwrap_or_else(|| Arc::from([target_item_id]));
+    let entry_ids = model
+        .range_entry_ids(range_anchor, target_entry_id)
+        .unwrap_or_else(|| Arc::from([target_entry_id]));
     match mode {
         RangeSelectionMode::Replace => UpdateSelection::ReplaceRange {
-            item_ids,
+            entry_ids,
             range_anchor,
-            interaction_cursor: target_item_id,
+            interaction_cursor: target_entry_id,
             structural_revision: model.structural_revision(),
         },
         RangeSelectionMode::Add => UpdateSelection::AddRange {
-            item_ids,
+            entry_ids,
             range_anchor,
-            interaction_cursor: target_item_id,
+            interaction_cursor: target_entry_id,
             structural_revision: model.structural_revision(),
         },
     }
 }
 
 /// Собирает exact full queue только на Ctrl/Cmd+A.
-fn all_item_ids(model: &PlaylistViewModel) -> Arc<[PlaylistItemId]> {
+fn all_entry_ids(model: &PlaylistViewModel) -> Arc<[PlaylistEntryId]> {
     (0..model.item_count())
-        .filter_map(|row_index| model.item_id_at(row_index))
+        .filter_map(|row_index| model.entry_id_at(row_index))
         .collect::<Vec<_>>()
         .into()
 }
@@ -306,15 +317,15 @@ fn all_item_ids(model: &PlaylistViewModel) -> Arc<[PlaylistItemId]> {
 fn unselected_for_effective_selection(
     model: &PlaylistViewModel,
     row_is_selected: bool,
-    context_item_id: PlaylistItemId,
-) -> Arc<[PlaylistItemId]> {
+    context_entry_id: PlaylistEntryId,
+) -> Arc<[PlaylistEntryId]> {
     (0..model.item_count())
-        .filter_map(|row_index| model.item_id_at(row_index))
-        .filter(|item_id| {
+        .filter_map(|row_index| model.entry_id_at(row_index))
+        .filter(|entry_id| {
             if row_is_selected {
-                !model.selection().is_selected(*item_id)
+                !model.selection().is_selected(*entry_id)
             } else {
-                *item_id != context_item_id
+                *entry_id != context_entry_id
             }
         })
         .collect::<Vec<_>>()
@@ -361,7 +372,7 @@ fn navigation_target(
     model: &PlaylistViewModel,
     row_index: usize,
     key: RowNavigationKey,
-) -> Option<PlaylistItemId> {
+) -> Option<PlaylistEntryId> {
     let last_index = model.item_count().saturating_sub(1);
     let target_index = match key {
         RowNavigationKey::Up => row_index.saturating_sub(1),
@@ -369,7 +380,7 @@ fn navigation_target(
         RowNavigationKey::Home => 0,
         RowNavigationKey::End => last_index,
     };
-    model.item_id_at(target_index)
+    model.entry_id_at(target_index)
 }
 
 #[cfg(test)]
@@ -400,32 +411,41 @@ mod tests {
     fn click_double_click_and_modifiers_emit_exact_typed_intents() {
         let model = model(3);
         let first = model.item_id_at(0).unwrap();
+        let first_entry = model.entry_id_at(0).unwrap();
         assert!(matches!(
-            pointer_actions(&model, first, false, Modifiers::NONE, true, false).as_slice(),
+            pointer_actions(&model, first_entry, first, false, Modifiers::NONE, true, false).as_slice(),
             [PlaylistAction::UpdateSelection(UpdateSelection::Replace {
-                item_id,
+                entry_id,
                 ..
-            })] if *item_id == first
+            })] if *entry_id == first_entry
         ));
         assert_eq!(
-            pointer_actions(&model, first, true, Modifiers::NONE, true, true),
+            pointer_actions(
+                &model,
+                first_entry,
+                first,
+                true,
+                Modifiers::NONE,
+                true,
+                true
+            ),
             vec![PlaylistAction::Play(first)]
         );
         assert!(matches!(
-            pointer_actions(&model, first, false, Modifiers::COMMAND, true, false).as_slice(),
+            pointer_actions(&model, first_entry, first, false, Modifiers::COMMAND, true, false).as_slice(),
             [PlaylistAction::UpdateSelection(UpdateSelection::Toggle {
-                item_id,
+                entry_id,
                 ..
-            })] if *item_id == first
+            })] if *entry_id == first_entry
         ));
     }
 
     #[test]
     fn keyboard_navigation_keeps_exact_duplicate_ids() {
         let model = model(4);
-        let first = model.item_id_at(0).unwrap();
-        let second = model.item_id_at(1).unwrap();
-        let last = model.item_id_at(3).unwrap();
+        let first = model.entry_id_at(0).unwrap();
+        let second = model.entry_id_at(1).unwrap();
+        let last = model.entry_id_at(3).unwrap();
         assert_ne!(first, second);
         assert_eq!(
             navigation_target(&model, 1, RowNavigationKey::Up),
@@ -433,7 +453,7 @@ mod tests {
         );
         assert_eq!(
             navigation_target(&model, 1, RowNavigationKey::Down),
-            model.item_id_at(2)
+            model.entry_id_at(2)
         );
         assert_eq!(
             navigation_target(&model, 2, RowNavigationKey::Home),
@@ -450,11 +470,12 @@ mod tests {
         let model = model(4);
         let second = model.item_id_at(1).unwrap();
         assert_eq!(
-            unselected_for_effective_selection(&model, false, second).as_ref(),
+            unselected_for_effective_selection(&model, false, PlaylistEntryId::Single(second),)
+                .as_ref(),
             [
-                model.item_id_at(0).unwrap(),
-                model.item_id_at(2).unwrap(),
-                model.item_id_at(3).unwrap(),
+                model.entry_id_at(0).unwrap(),
+                model.entry_id_at(2).unwrap(),
+                model.entry_id_at(3).unwrap(),
             ]
         );
     }

@@ -3,7 +3,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use playlist_core::PlaylistItemId;
+use playlist_core::{PlaylistEntryId, PlaylistItemId};
 use playlist_state::SaveRevision;
 
 use super::PlaylistRuntime;
@@ -173,8 +173,18 @@ impl PlaylistViewModel {
         self.snapshot.row_index(item_id)
     }
 
+    /// Возвращает индекс top-level header по structural identity.
+    pub(crate) fn entry_row_index(&self, entry_id: PlaylistEntryId) -> Option<usize> {
+        self.snapshot.entry_row_index(entry_id)
+    }
+
     pub(crate) fn item_id_at(&self, row_index: usize) -> Option<PlaylistItemId> {
         self.snapshot.item_id_at(row_index)
+    }
+
+    /// Возвращает structural identity строки независимо от её play target.
+    pub(crate) fn entry_id_at(&self, row_index: usize) -> Option<PlaylistEntryId> {
+        self.snapshot.entry_id_at(row_index)
     }
 
     /// Возвращает Arc-backed selection read model без копирования selected set.
@@ -183,27 +193,27 @@ impl PlaylistViewModel {
     }
 
     /// Собирает selected IDs в canonical порядке только для explicit bulk event.
-    pub(crate) fn selected_item_ids(&self) -> Arc<[PlaylistItemId]> {
+    pub(crate) fn selected_entry_ids(&self) -> Arc<[PlaylistEntryId]> {
         (0..self.item_count())
-            .filter_map(|row_index| self.item_id_at(row_index))
-            .filter(|item_id| self.selection().is_selected(*item_id))
+            .filter_map(|row_index| self.entry_id_at(row_index))
+            .filter(|entry_id| self.selection().is_selected(*entry_id))
             .collect::<Vec<_>>()
             .into()
     }
 
     /// Разрешает inclusive Shift-range одним bounded canonical slice traversal.
-    pub(crate) fn range_item_ids(
+    pub(crate) fn range_entry_ids(
         &self,
-        anchor_item_id: PlaylistItemId,
-        target_item_id: PlaylistItemId,
-    ) -> Option<Arc<[PlaylistItemId]>> {
-        let anchor_index = self.row_index(anchor_item_id)?;
-        let target_index = self.row_index(target_item_id)?;
+        anchor_entry_id: PlaylistEntryId,
+        target_entry_id: PlaylistEntryId,
+    ) -> Option<Arc<[PlaylistEntryId]>> {
+        let anchor_index = self.entry_row_index(anchor_entry_id)?;
+        let target_index = self.entry_row_index(target_entry_id)?;
         let start = anchor_index.min(target_index);
         let end = anchor_index.max(target_index);
         Some(
             (start..=end)
-                .filter_map(|row_index| self.item_id_at(row_index))
+                .filter_map(|row_index| self.entry_id_at(row_index))
                 .collect::<Vec<_>>()
                 .into(),
         )

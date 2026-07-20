@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use playlist_core::{PlaylistItemId, PlaylistQueue};
+use playlist_core::{PlaylistEntryId, PlaylistQueue};
 
 use super::view::PlaylistStructuralRevision;
 
@@ -22,54 +22,54 @@ pub(crate) enum UpdateSelection {
     /// Обычный click/navigation заменяет selection одной строкой.
     Replace {
         /// Exact stable ID строки.
-        item_id: PlaylistItemId,
+        entry_id: PlaylistEntryId,
         /// Structural revision, из которой UI взял ID.
         structural_revision: PlaylistStructuralRevision,
     },
     /// Ctrl/Cmd+click переключает exact строку.
     Toggle {
         /// Exact stable ID строки.
-        item_id: PlaylistItemId,
+        entry_id: PlaylistEntryId,
         /// Structural revision, из которой UI взял ID.
         structural_revision: PlaylistStructuralRevision,
     },
     /// Shift заменяет selection exact canonical диапазоном.
     ReplaceRange {
         /// Уже разрешённые stable IDs диапазона в canonical порядке.
-        item_ids: Arc<[PlaylistItemId]>,
+        entry_ids: Arc<[PlaylistEntryId]>,
         /// Stable range anchor.
-        range_anchor: PlaylistItemId,
+        range_anchor: PlaylistEntryId,
         /// Строка, на которой заканчивается interaction.
-        interaction_cursor: PlaylistItemId,
+        interaction_cursor: PlaylistEntryId,
         /// Structural revision, на которой разрешён диапазон.
         structural_revision: PlaylistStructuralRevision,
     },
     /// Ctrl/Cmd+Shift добавляет exact canonical диапазон к selection.
     AddRange {
         /// Уже разрешённые stable IDs диапазона в canonical порядке.
-        item_ids: Arc<[PlaylistItemId]>,
+        entry_ids: Arc<[PlaylistEntryId]>,
         /// Сохраняемый stable range anchor.
-        range_anchor: PlaylistItemId,
+        range_anchor: PlaylistEntryId,
         /// Строка, на которой заканчивается interaction.
-        interaction_cursor: PlaylistItemId,
+        interaction_cursor: PlaylistEntryId,
         /// Structural revision, на которой разрешён диапазон.
         structural_revision: PlaylistStructuralRevision,
     },
     /// Ctrl/Cmd+A выбирает exact snapshot всей очереди.
     SelectAll {
         /// Все stable IDs в canonical порядке.
-        item_ids: Arc<[PlaylistItemId]>,
+        entry_ids: Arc<[PlaylistEntryId]>,
         /// Anchor следующего Shift-range.
-        range_anchor: Option<PlaylistItemId>,
+        range_anchor: Option<PlaylistEntryId>,
         /// Текущий keyboard interaction cursor.
-        interaction_cursor: Option<PlaylistItemId>,
+        interaction_cursor: Option<PlaylistEntryId>,
         /// Structural revision exact snapshot-а.
         structural_revision: PlaylistStructuralRevision,
     },
     /// Ctrl/Cmd+navigation переносит cursor без изменения selection.
     MoveCursor {
         /// Exact target строки.
-        item_id: PlaylistItemId,
+        entry_id: PlaylistEntryId,
         /// Structural revision, из которой UI взял target.
         structural_revision: PlaylistStructuralRevision,
     },
@@ -123,19 +123,19 @@ pub(crate) enum UpdateSelectionOutcome {
     /// UI action построен по старой structural revision.
     StaleStructuralRevision,
     /// Один exact ID отсутствует в committed queue.
-    ItemNotFound {
+    EntryNotFound {
         /// Первый отсутствующий ID.
-        item_id: PlaylistItemId,
+        entry_id: PlaylistEntryId,
     },
     /// Exact range содержит повторяющийся ID.
-    DuplicateItemId {
+    DuplicateEntryId {
         /// Первый обнаруженный повторяющийся ID.
-        item_id: PlaylistItemId,
+        entry_id: PlaylistEntryId,
     },
     /// Range contract не содержит anchor или interaction cursor.
     InvalidRangeBoundary {
         /// Boundary, отсутствующий в exact range.
-        item_id: PlaylistItemId,
+        entry_id: PlaylistEntryId,
     },
     /// Captured Shift-range не совпадает с canonical interval между boundary IDs.
     InvalidRangeItems,
@@ -151,65 +151,59 @@ pub(crate) enum UpdateSelectionOutcome {
 /// Arc-backed read model обеспечивает O(1) selected lookup в visible-row path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PlaylistSelectionSnapshot {
-    selected_item_ids: Arc<HashSet<PlaylistItemId>>,
-    range_anchor: Option<PlaylistItemId>,
-    interaction_cursor: Option<PlaylistItemId>,
+    selected_entry_ids: Arc<HashSet<PlaylistEntryId>>,
+    range_anchor: Option<PlaylistEntryId>,
+    interaction_cursor: Option<PlaylistEntryId>,
 }
 
 impl PlaylistSelectionSnapshot {
     /// Создаёт пустой process-lifetime selection snapshot.
     pub(super) fn empty() -> Self {
         Self {
-            selected_item_ids: Arc::new(HashSet::new()),
+            selected_entry_ids: Arc::new(HashSet::new()),
             range_anchor: None,
             interaction_cursor: None,
         }
     }
 
     /// O(1) membership lookup для виртуализированных строк.
-    pub(crate) fn is_selected(&self, item_id: PlaylistItemId) -> bool {
-        self.selected_item_ids.contains(&item_id)
+    pub(crate) fn is_selected(&self, entry_id: PlaylistEntryId) -> bool {
+        self.selected_entry_ids.contains(&entry_id)
     }
 
     /// Возвращает число выбранных stable IDs без обхода очереди.
     pub(crate) fn selected_count(&self) -> usize {
-        self.selected_item_ids.len()
+        self.selected_entry_ids.len()
     }
 
     /// Возвращает stable anchor для следующего Shift-range.
-    pub(crate) const fn range_anchor(&self) -> Option<PlaylistItemId> {
+    pub(crate) const fn range_anchor(&self) -> Option<PlaylistEntryId> {
         self.range_anchor
     }
 
     /// Возвращает keyboard/pointer interaction cursor независимо от playback.
-    pub(crate) const fn interaction_cursor(&self) -> Option<PlaylistItemId> {
+    pub(crate) const fn interaction_cursor(&self) -> Option<PlaylistEntryId> {
         self.interaction_cursor
-    }
-
-    /// Возвращает cursor только когда он входит в selected set.
-    pub(crate) fn selected_cursor(&self) -> Option<PlaylistItemId> {
-        self.interaction_cursor
-            .filter(|item_id| self.selected_item_ids.contains(item_id))
     }
 
     /// Даёт controller-у shared set для exact Undo restore без O(N) payload clone.
-    pub(super) fn selected_item_ids(&self) -> &Arc<HashSet<PlaylistItemId>> {
-        &self.selected_item_ids
+    pub(super) fn selected_entry_ids(&self) -> &Arc<HashSet<PlaylistEntryId>> {
+        &self.selected_entry_ids
     }
 }
 
 /// Mutable owner selection invariants; наружу публикуется только immutable snapshot.
 #[derive(Debug, Clone)]
 pub(super) struct PlaylistSelectionState {
-    selected_item_ids: Arc<HashSet<PlaylistItemId>>,
-    range_anchor: Option<PlaylistItemId>,
-    interaction_cursor: Option<PlaylistItemId>,
+    selected_entry_ids: Arc<HashSet<PlaylistEntryId>>,
+    range_anchor: Option<PlaylistEntryId>,
+    interaction_cursor: Option<PlaylistEntryId>,
 }
 
 impl Default for PlaylistSelectionState {
     fn default() -> Self {
         Self {
-            selected_item_ids: Arc::new(HashSet::new()),
+            selected_entry_ids: Arc::new(HashSet::new()),
             range_anchor: None,
             interaction_cursor: None,
         }
@@ -220,21 +214,21 @@ impl PlaylistSelectionState {
     /// Cheap snapshot clone разделяет неизменяемый selected set.
     pub(super) fn snapshot(&self) -> PlaylistSelectionSnapshot {
         PlaylistSelectionSnapshot {
-            selected_item_ids: Arc::clone(&self.selected_item_ids),
+            selected_entry_ids: Arc::clone(&self.selected_entry_ids),
             range_anchor: self.range_anchor,
             interaction_cursor: self.interaction_cursor,
         }
     }
 
     /// Возвращает interaction cursor для focus adapters.
-    pub(super) const fn interaction_cursor(&self) -> Option<PlaylistItemId> {
+    pub(super) const fn interaction_cursor(&self) -> Option<PlaylistEntryId> {
         self.interaction_cursor
     }
 
     /// Возвращает cursor только если он действительно входит в selection.
-    pub(super) fn selected_cursor(&self) -> Option<PlaylistItemId> {
+    pub(super) fn selected_cursor(&self) -> Option<PlaylistEntryId> {
         self.interaction_cursor
-            .filter(|item_id| self.selected_item_ids.contains(item_id))
+            .filter(|entry_id| self.selected_entry_ids.contains(entry_id))
     }
 
     /// Применяет exact intent только к matching structural snapshot.
@@ -252,64 +246,64 @@ impl PlaylistSelectionState {
         }
 
         let next = match update {
-            UpdateSelection::Replace { item_id, .. } => {
-                if queue.item(item_id).is_none() {
-                    return UpdateSelectionOutcome::ItemNotFound { item_id };
+            UpdateSelection::Replace { entry_id, .. } => {
+                if queue.top_level_entry(entry_id).is_none() {
+                    return UpdateSelectionOutcome::EntryNotFound { entry_id };
                 }
                 Self {
-                    selected_item_ids: Arc::new(HashSet::from([item_id])),
-                    range_anchor: Some(item_id),
-                    interaction_cursor: Some(item_id),
+                    selected_entry_ids: Arc::new(HashSet::from([entry_id])),
+                    range_anchor: Some(entry_id),
+                    interaction_cursor: Some(entry_id),
                 }
             }
-            UpdateSelection::Toggle { item_id, .. } => {
-                if queue.item(item_id).is_none() {
-                    return UpdateSelectionOutcome::ItemNotFound { item_id };
+            UpdateSelection::Toggle { entry_id, .. } => {
+                if queue.top_level_entry(entry_id).is_none() {
+                    return UpdateSelectionOutcome::EntryNotFound { entry_id };
                 }
-                let mut selected_item_ids = self.selected_item_ids.as_ref().clone();
-                if !selected_item_ids.remove(&item_id) {
-                    selected_item_ids.insert(item_id);
+                let mut selected_entry_ids = self.selected_entry_ids.as_ref().clone();
+                if !selected_entry_ids.remove(&entry_id) {
+                    selected_entry_ids.insert(entry_id);
                 }
                 Self {
-                    selected_item_ids: Arc::new(selected_item_ids),
-                    range_anchor: Some(item_id),
-                    interaction_cursor: Some(item_id),
+                    selected_entry_ids: Arc::new(selected_entry_ids),
+                    range_anchor: Some(entry_id),
+                    interaction_cursor: Some(entry_id),
                 }
             }
             UpdateSelection::ReplaceRange {
-                item_ids,
+                entry_ids,
                 range_anchor,
                 interaction_cursor,
                 ..
             } => match Self::validated_exact_range(
                 queue,
-                &item_ids,
+                &entry_ids,
                 range_anchor,
                 interaction_cursor,
             ) {
-                Ok(selected_item_ids) => Self {
-                    selected_item_ids,
+                Ok(selected_entry_ids) => Self {
+                    selected_entry_ids,
                     range_anchor: Some(range_anchor),
                     interaction_cursor: Some(interaction_cursor),
                 },
                 Err(outcome) => return outcome,
             },
             UpdateSelection::AddRange {
-                item_ids,
+                entry_ids,
                 range_anchor,
                 interaction_cursor,
                 ..
             } => match Self::validated_exact_range(
                 queue,
-                &item_ids,
+                &entry_ids,
                 range_anchor,
                 interaction_cursor,
             ) {
-                Ok(range_item_ids) => {
-                    let mut selected_item_ids = self.selected_item_ids.as_ref().clone();
-                    selected_item_ids.extend(range_item_ids.iter().copied());
+                Ok(range_entry_ids) => {
+                    let mut selected_entry_ids = self.selected_entry_ids.as_ref().clone();
+                    selected_entry_ids.extend(range_entry_ids.iter().copied());
                     Self {
-                        selected_item_ids: Arc::new(selected_item_ids),
+                        selected_entry_ids: Arc::new(selected_entry_ids),
                         range_anchor: Some(range_anchor),
                         interaction_cursor: Some(interaction_cursor),
                     }
@@ -317,22 +311,22 @@ impl PlaylistSelectionState {
                 Err(outcome) => return outcome,
             },
             UpdateSelection::SelectAll {
-                item_ids,
+                entry_ids,
                 range_anchor,
                 interaction_cursor,
                 ..
             } => {
-                match Self::validated_exact_set(queue, &item_ids, range_anchor, interaction_cursor)
+                match Self::validated_exact_set(queue, &entry_ids, range_anchor, interaction_cursor)
                 {
-                    Ok(selected_item_ids) => {
-                        if selected_item_ids.len() != queue.top_level_entry_count() {
+                    Ok(selected_entry_ids) => {
+                        if selected_entry_ids.len() != queue.top_level_entry_count() {
                             return UpdateSelectionOutcome::IncompleteSelectAll {
                                 committed_count: queue.top_level_entry_count(),
-                                captured_count: selected_item_ids.len(),
+                                captured_count: selected_entry_ids.len(),
                             };
                         }
                         Self {
-                            selected_item_ids,
+                            selected_entry_ids,
                             range_anchor,
                             interaction_cursor,
                         }
@@ -340,18 +334,18 @@ impl PlaylistSelectionState {
                     Err(outcome) => return outcome,
                 }
             }
-            UpdateSelection::MoveCursor { item_id, .. } => {
-                if queue.item(item_id).is_none() {
-                    return UpdateSelectionOutcome::ItemNotFound { item_id };
+            UpdateSelection::MoveCursor { entry_id, .. } => {
+                if queue.top_level_entry(entry_id).is_none() {
+                    return UpdateSelectionOutcome::EntryNotFound { entry_id };
                 }
                 Self {
-                    selected_item_ids: Arc::clone(&self.selected_item_ids),
+                    selected_entry_ids: Arc::clone(&self.selected_entry_ids),
                     range_anchor: self.range_anchor,
-                    interaction_cursor: Some(item_id),
+                    interaction_cursor: Some(entry_id),
                 }
             }
             UpdateSelection::Clear { cursor } => Self {
-                selected_item_ids: Arc::new(HashSet::new()),
+                selected_entry_ids: Arc::new(HashSet::new()),
                 range_anchor: None,
                 interaction_cursor: match cursor {
                     ClearSelectionCursor::Preserve => self.interaction_cursor,
@@ -369,41 +363,41 @@ impl PlaylistSelectionState {
 
     /// Structural mutations сохраняют только IDs, всё ещё принадлежащие queue.
     pub(super) fn retain_committed(&mut self, queue: &PlaylistQueue) {
-        if self.selected_item_ids.is_empty()
+        if self.selected_entry_ids.is_empty()
             && self.range_anchor.is_none()
             && self.interaction_cursor.is_none()
         {
             return;
         }
-        let committed_item_ids: HashSet<_> = queue.iter_playable_ids().collect();
-        let mut selected_item_ids = self.selected_item_ids.as_ref().clone();
-        selected_item_ids.retain(|item_id| committed_item_ids.contains(item_id));
-        if selected_item_ids.len() != self.selected_item_ids.len() {
-            self.selected_item_ids = Arc::new(selected_item_ids);
+        let committed_entry_ids: HashSet<_> = queue.iter_top_level_entry_ids().collect();
+        let mut selected_entry_ids = self.selected_entry_ids.as_ref().clone();
+        selected_entry_ids.retain(|entry_id| committed_entry_ids.contains(entry_id));
+        if selected_entry_ids.len() != self.selected_entry_ids.len() {
+            self.selected_entry_ids = Arc::new(selected_entry_ids);
         }
         self.range_anchor = self
             .range_anchor
-            .filter(|item_id| committed_item_ids.contains(item_id));
+            .filter(|entry_id| committed_entry_ids.contains(entry_id));
         self.interaction_cursor = self
             .interaction_cursor
-            .filter(|item_id| committed_item_ids.contains(item_id));
+            .filter(|entry_id| committed_entry_ids.contains(entry_id));
     }
 
     /// Removal owner публикует exact post-mutation selection и focus cursor.
     pub(super) fn replace_after_removal(
         &mut self,
-        selected_item_ids: HashSet<PlaylistItemId>,
-        range_anchor: Option<PlaylistItemId>,
-        interaction_cursor: Option<PlaylistItemId>,
+        selected_entry_ids: HashSet<PlaylistEntryId>,
+        range_anchor: Option<PlaylistEntryId>,
+        interaction_cursor: Option<PlaylistEntryId>,
     ) {
-        self.selected_item_ids = Arc::new(selected_item_ids);
+        self.selected_entry_ids = Arc::new(selected_entry_ids);
         self.range_anchor = range_anchor;
         self.interaction_cursor = interaction_cursor;
     }
 
     /// Undo восстанавливает весь selection snapshot и фильтрует его по restored queue.
     pub(super) fn restore(&mut self, snapshot: PlaylistSelectionSnapshot, queue: &PlaylistQueue) {
-        self.selected_item_ids = Arc::clone(snapshot.selected_item_ids());
+        self.selected_entry_ids = Arc::clone(snapshot.selected_entry_ids());
         self.range_anchor = snapshot.range_anchor();
         self.interaction_cursor = snapshot.interaction_cursor();
         self.retain_committed(queue);
@@ -412,73 +406,77 @@ impl PlaylistSelectionState {
     /// Валидирует exact range за O(N + K), не выполняя K линейных queue lookup-ов.
     fn validated_exact_set(
         queue: &PlaylistQueue,
-        item_ids: &[PlaylistItemId],
-        range_anchor: Option<PlaylistItemId>,
-        interaction_cursor: Option<PlaylistItemId>,
-    ) -> Result<Arc<HashSet<PlaylistItemId>>, UpdateSelectionOutcome> {
-        let committed_item_ids: HashSet<_> = queue.iter_playable_ids().collect();
-        let mut selected_item_ids = HashSet::with_capacity(item_ids.len());
-        for item_id in item_ids {
-            if !selected_item_ids.insert(*item_id) {
-                return Err(UpdateSelectionOutcome::DuplicateItemId { item_id: *item_id });
+        entry_ids: &[PlaylistEntryId],
+        range_anchor: Option<PlaylistEntryId>,
+        interaction_cursor: Option<PlaylistEntryId>,
+    ) -> Result<Arc<HashSet<PlaylistEntryId>>, UpdateSelectionOutcome> {
+        let committed_entry_ids: HashSet<_> = queue.iter_top_level_entry_ids().collect();
+        let mut selected_entry_ids = HashSet::with_capacity(entry_ids.len());
+        for entry_id in entry_ids {
+            if !selected_entry_ids.insert(*entry_id) {
+                return Err(UpdateSelectionOutcome::DuplicateEntryId {
+                    entry_id: *entry_id,
+                });
             }
-            if !committed_item_ids.contains(item_id) {
-                return Err(UpdateSelectionOutcome::ItemNotFound { item_id: *item_id });
-            }
-        }
-        for boundary_item_id in [range_anchor, interaction_cursor].into_iter().flatten() {
-            if !selected_item_ids.contains(&boundary_item_id) {
-                return Err(UpdateSelectionOutcome::InvalidRangeBoundary {
-                    item_id: boundary_item_id,
+            if !committed_entry_ids.contains(entry_id) {
+                return Err(UpdateSelectionOutcome::EntryNotFound {
+                    entry_id: *entry_id,
                 });
             }
         }
-        Ok(Arc::new(selected_item_ids))
+        for boundary_entry_id in [range_anchor, interaction_cursor].into_iter().flatten() {
+            if !selected_entry_ids.contains(&boundary_entry_id) {
+                return Err(UpdateSelectionOutcome::InvalidRangeBoundary {
+                    entry_id: boundary_entry_id,
+                });
+            }
+        }
+        Ok(Arc::new(selected_entry_ids))
     }
 
     /// Проверяет, что exact Shift payload совпадает с непрерывным canonical диапазоном.
     fn validated_exact_range(
         queue: &PlaylistQueue,
-        item_ids: &[PlaylistItemId],
-        range_anchor: PlaylistItemId,
-        interaction_cursor: PlaylistItemId,
-    ) -> Result<Arc<HashSet<PlaylistItemId>>, UpdateSelectionOutcome> {
-        let selected_item_ids = Self::validated_exact_set(
+        entry_ids: &[PlaylistEntryId],
+        range_anchor: PlaylistEntryId,
+        interaction_cursor: PlaylistEntryId,
+    ) -> Result<Arc<HashSet<PlaylistEntryId>>, UpdateSelectionOutcome> {
+        let selected_entry_ids = Self::validated_exact_set(
             queue,
-            item_ids,
+            entry_ids,
             Some(range_anchor),
             Some(interaction_cursor),
         )?;
         let anchor_index = queue
-            .iter_playable_ids()
-            .position(|item_id| item_id == range_anchor)
-            .ok_or(UpdateSelectionOutcome::ItemNotFound {
-                item_id: range_anchor,
+            .iter_top_level_entry_ids()
+            .position(|entry_id| entry_id == range_anchor)
+            .ok_or(UpdateSelectionOutcome::EntryNotFound {
+                entry_id: range_anchor,
             })?;
         let cursor_index = queue
-            .iter_playable_ids()
-            .position(|item_id| item_id == interaction_cursor)
-            .ok_or(UpdateSelectionOutcome::ItemNotFound {
-                item_id: interaction_cursor,
+            .iter_top_level_entry_ids()
+            .position(|entry_id| entry_id == interaction_cursor)
+            .ok_or(UpdateSelectionOutcome::EntryNotFound {
+                entry_id: interaction_cursor,
             })?;
         let range_start = anchor_index.min(cursor_index);
         let range_end = anchor_index.max(cursor_index);
         let expected_count = range_end - range_start + 1;
-        let is_exact_range = selected_item_ids.len() == expected_count
+        let is_exact_range = selected_entry_ids.len() == expected_count
             && queue
-                .iter_playable_ids()
+                .iter_top_level_entry_ids()
                 .skip(range_start)
                 .take(expected_count)
-                .all(|item_id| selected_item_ids.contains(&item_id));
+                .all(|entry_id| selected_entry_ids.contains(&entry_id));
         if !is_exact_range {
             return Err(UpdateSelectionOutcome::InvalidRangeItems);
         }
-        Ok(selected_item_ids)
+        Ok(selected_entry_ids)
     }
 
     /// Сравнивает логическое состояние, а не адрес Arc allocation.
     fn same_state(&self, other: &Self) -> bool {
-        self.selected_item_ids == other.selected_item_ids
+        self.selected_entry_ids == other.selected_entry_ids
             && self.range_anchor == other.range_anchor
             && self.interaction_cursor == other.interaction_cursor
     }
@@ -495,7 +493,7 @@ mod tests {
     use super::*;
 
     /// Строит committed queue и stable IDs без playback/runtime side effects.
-    fn queue() -> (PlaylistQueue, Vec<PlaylistItemId>) {
+    fn queue() -> (PlaylistQueue, Vec<PlaylistEntryId>) {
         let mut queue = PlaylistQueue::new();
         let outcome = queue
             .append_batch(
@@ -513,12 +511,13 @@ mod tests {
                     .collect(),
             )
             .expect("append");
-        let ids = match outcome {
-            playlist_core::AddItemsOutcome::Added(item_ids) => item_ids.into_vec(),
+        match outcome {
+            playlist_core::AddItemsOutcome::Added(_) => {}
             playlist_core::AddItemsOutcome::NoItemsProvided => {
                 panic!("fixture expected non-empty append")
             }
-        };
+        }
+        let ids = queue.iter_top_level_entry_ids().collect();
         (queue, ids)
     }
 
@@ -540,7 +539,7 @@ mod tests {
                 &queue,
                 revision,
                 UpdateSelection::Replace {
-                    item_id: ids[1],
+                    entry_id: ids[1],
                     structural_revision: revision,
                 },
             ),
@@ -551,7 +550,7 @@ mod tests {
                 &queue,
                 revision,
                 UpdateSelection::AddRange {
-                    item_ids: Arc::from([ids[1], ids[2], ids[3]]),
+                    entry_ids: Arc::from([ids[1], ids[2], ids[3]]),
                     range_anchor: ids[1],
                     interaction_cursor: ids[3],
                     structural_revision: revision,
@@ -572,7 +571,7 @@ mod tests {
                 &queue,
                 revision,
                 UpdateSelection::Toggle {
-                    item_id: ids[2],
+                    entry_id: ids[2],
                     structural_revision: revision,
                 },
             ),
@@ -586,7 +585,7 @@ mod tests {
                 &queue,
                 revision,
                 UpdateSelection::MoveCursor {
-                    item_id: ids[4],
+                    entry_id: ids[4],
                     structural_revision: revision,
                 },
             ),
@@ -605,7 +604,7 @@ mod tests {
             &queue,
             revision,
             UpdateSelection::Replace {
-                item_id: ids[0],
+                entry_id: ids[0],
                 structural_revision: revision,
             },
         );
@@ -616,7 +615,7 @@ mod tests {
                 &queue,
                 revision,
                 UpdateSelection::Replace {
-                    item_id: ids[1],
+                    entry_id: ids[1],
                     structural_revision: structural_revision(2),
                 },
             ),
@@ -627,20 +626,20 @@ mod tests {
                 &queue,
                 revision,
                 UpdateSelection::ReplaceRange {
-                    item_ids: Arc::from([ids[1], ids[1]]),
+                    entry_ids: Arc::from([ids[1], ids[1]]),
                     range_anchor: ids[1],
                     interaction_cursor: ids[1],
                     structural_revision: revision,
                 },
             ),
-            UpdateSelectionOutcome::DuplicateItemId { item_id: ids[1] }
+            UpdateSelectionOutcome::DuplicateEntryId { entry_id: ids[1] }
         );
         assert_eq!(
             selection.apply(
                 &queue,
                 revision,
                 UpdateSelection::ReplaceRange {
-                    item_ids: Arc::from([ids[1], ids[3]]),
+                    entry_ids: Arc::from([ids[1], ids[3]]),
                     range_anchor: ids[1],
                     interaction_cursor: ids[3],
                     structural_revision: revision,
@@ -653,7 +652,7 @@ mod tests {
                 &queue,
                 revision,
                 UpdateSelection::SelectAll {
-                    item_ids: Arc::from([ids[0], ids[1]]),
+                    entry_ids: Arc::from([ids[0], ids[1]]),
                     range_anchor: Some(ids[0]),
                     interaction_cursor: Some(ids[1]),
                     structural_revision: revision,
@@ -676,7 +675,7 @@ mod tests {
             &queue,
             revision,
             UpdateSelection::SelectAll {
-                item_ids: ids.clone().into(),
+                entry_ids: ids.clone().into(),
                 range_anchor: Some(ids[0]),
                 interaction_cursor: Some(ids[2]),
                 structural_revision: revision,

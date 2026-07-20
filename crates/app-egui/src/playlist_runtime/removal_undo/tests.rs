@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 
 use player_core::{MediaInstallRequestId, MediaInstanceId, PlaybackState};
 use playlist_core::{
-    CachedPlaylistMetadata, LocalLocator, PlaylistItemDraft, PlaylistItemId, PlaylistMediaKind,
+    CachedPlaylistMetadata, LocalLocator, PlaylistEntryId, PlaylistItemDraft, PlaylistItemId,
+    PlaylistMediaKind,
 };
 
 use super::{RemovalUndoOutcome, RuntimeRemovalOutcome};
@@ -170,9 +171,9 @@ fn clear_and_remove_others_use_same_undo_and_restore_selection() {
     assert!(matches!(
         clear_runtime.undo_last_removal(now + Duration::from_secs(1)),
         RemovalUndoOutcome::Restored {
-            selected_item_id: Some(selected),
+            selected_entry_id: Some(selected),
             ..
-        } if selected == clear_ids[2]
+        } if selected == PlaylistEntryId::Single(clear_ids[2])
     ));
     assert_eq!(clear_runtime.controller.queue.top_level_entry_count(), 4);
     assert_eq!(
@@ -193,9 +194,9 @@ fn clear_and_remove_others_use_same_undo_and_restore_selection() {
     assert!(matches!(
         others_runtime.undo_last_removal(now + Duration::from_secs(1)),
         RemovalUndoOutcome::Restored {
-            selected_item_id: Some(selected),
+            selected_entry_id: Some(selected),
             ..
-        } if selected == others_ids[1]
+        } if selected == PlaylistEntryId::Single(others_ids[1])
     ));
     assert_eq!(others_runtime.controller.queue.top_level_entry_count(), 4);
 }
@@ -230,9 +231,9 @@ fn undo_active_clear_restores_queue_current_and_selection_only() {
     assert!(matches!(
         runtime.undo_last_removal(now + Duration::from_secs(1)),
         RemovalUndoOutcome::Restored {
-            selected_item_id: Some(selected),
+            selected_entry_id: Some(selected),
             reattached_active: false,
-        } if selected == ids[2]
+        } if selected == PlaylistEntryId::Single(ids[2])
     ));
     assert_eq!(runtime.controller.queue.top_level_entry_count(), 3);
     assert_eq!(

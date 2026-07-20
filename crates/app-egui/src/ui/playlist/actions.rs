@@ -3,7 +3,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use playlist_core::{MoveItemIntent, PlaylistItemId, SortCanonicalQueue};
+use playlist_core::{MoveItemIntent, PlaylistEntryId, PlaylistItemId, SortCanonicalQueue};
 
 use crate::playlist_runtime::{
     PlaylistExportRequest, PlaylistGoCurrentTarget, PlaylistImportIntent, PlaylistImportPreviewId,
@@ -13,57 +13,57 @@ use crate::playlist_runtime::{
 /// Exact selected IDs для одного bulk removal commit-а.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RemoveSelected {
-    item_ids: Arc<[PlaylistItemId]>,
+    entry_ids: Arc<[PlaylistEntryId]>,
     structural_revision: PlaylistStructuralRevision,
 }
 
 impl RemoveSelected {
     /// Captures revision-stable selected IDs после explicit UI event.
     pub(crate) fn new(
-        item_ids: Arc<[PlaylistItemId]>,
+        entry_ids: Arc<[PlaylistEntryId]>,
         structural_revision: PlaylistStructuralRevision,
     ) -> Self {
         Self {
-            item_ids,
+            entry_ids,
             structural_revision,
         }
     }
 
     /// Передаёт exact action payload runtime owner-у.
-    pub(crate) fn into_parts(self) -> (Arc<[PlaylistItemId]>, PlaylistStructuralRevision) {
-        (self.item_ids, self.structural_revision)
+    pub(crate) fn into_parts(self) -> (Arc<[PlaylistEntryId]>, PlaylistStructuralRevision) {
+        (self.entry_ids, self.structural_revision)
     }
 }
 
 /// Exact unselected IDs для атомарного `remove_batch`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RemoveUnselected {
-    item_ids: Arc<[PlaylistItemId]>,
+    entry_ids: Arc<[PlaylistEntryId]>,
     structural_revision: PlaylistStructuralRevision,
 }
 
 impl RemoveUnselected {
     /// Captures revision-stable complement selection после explicit UI event.
     pub(crate) fn new(
-        item_ids: Arc<[PlaylistItemId]>,
+        entry_ids: Arc<[PlaylistEntryId]>,
         structural_revision: PlaylistStructuralRevision,
     ) -> Self {
         Self {
-            item_ids,
+            entry_ids,
             structural_revision,
         }
     }
 
     /// Передаёт exact action payload runtime owner-у.
-    pub(crate) fn into_parts(self) -> (Arc<[PlaylistItemId]>, PlaylistStructuralRevision) {
-        (self.item_ids, self.structural_revision)
+    pub(crate) fn into_parts(self) -> (Arc<[PlaylistEntryId]>, PlaylistStructuralRevision) {
+        (self.entry_ids, self.structural_revision)
     }
 }
 
 /// Exact group drag payload с typed insertion intent и capture revision.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MoveItems {
-    item_ids: Arc<[PlaylistItemId]>,
+    entry_ids: Arc<[PlaylistEntryId]>,
     intent: MoveItemIntent,
     structural_revision: PlaylistStructuralRevision,
 }
@@ -71,12 +71,12 @@ pub(crate) struct MoveItems {
 impl MoveItems {
     /// Captures stable IDs once at drag start and one resolved intent at drop.
     pub(crate) fn new(
-        item_ids: Arc<[PlaylistItemId]>,
+        entry_ids: Arc<[PlaylistEntryId]>,
         intent: MoveItemIntent,
         structural_revision: PlaylistStructuralRevision,
     ) -> Self {
         Self {
-            item_ids,
+            entry_ids,
             intent,
             structural_revision,
         }
@@ -86,11 +86,11 @@ impl MoveItems {
     pub(crate) fn into_parts(
         self,
     ) -> (
-        Arc<[PlaylistItemId]>,
+        Arc<[PlaylistEntryId]>,
         MoveItemIntent,
         PlaylistStructuralRevision,
     ) {
-        (self.item_ids, self.intent, self.structural_revision)
+        (self.entry_ids, self.intent, self.structural_revision)
     }
 }
 

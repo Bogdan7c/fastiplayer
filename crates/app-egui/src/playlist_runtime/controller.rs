@@ -24,6 +24,12 @@ use playlist_core::{
     ShuffleToggleError,
 };
 
+use super::compound_view::{
+    CompoundCurrentItemScrollTarget, CompoundHeaderPlayAction, CompoundHeaderPlayTarget,
+    CompoundPartPlayAction, CompoundPartPlayTarget, CompoundRuntimeViewSnapshot,
+    CompoundRuntimeViewState, ToggleCompoundDisclosure, ToggleCompoundDisclosureOutcome,
+    resolve_header_play_target, resolve_part_play_target,
+};
 use super::identity::{
     ActiveMediaIdentity, PlaylistItemErrorCategory, PlaylistItemErrorPhase,
     PlaylistItemRuntimeError,
@@ -148,6 +154,8 @@ pub(crate) enum StartupControllerBuildError {
 pub(crate) struct PlaylistController {
     pub(super) queue: PlaylistQueue,
     pub(super) selection: PlaylistSelectionState,
+    compound_view_state: CompoundRuntimeViewState,
+    compound_view_snapshot: Arc<CompoundRuntimeViewSnapshot>,
     pub(super) active_media: Option<ActiveMediaIdentity>,
     pub(super) pending_target: Option<super::identity::PendingTarget>,
     pub(super) runtime_errors: HashMap<PlaylistItemId, PlaylistItemRuntimeError>,
@@ -180,10 +188,20 @@ impl PlaylistController {
     /// Создаёт чистую новую lineage без persistence/load wiring Session 14.
     pub(crate) fn new() -> Self {
         let queue = PlaylistQueue::new();
+        let selection = PlaylistSelectionState::default();
+        let compound_view_state = CompoundRuntimeViewState::default();
+        let compound_view_snapshot = Arc::new(compound_view_state.snapshot(
+            &queue,
+            PlaylistStructuralRevision::INITIAL,
+            None,
+            &selection.snapshot(),
+        ));
         let view_snapshot = Arc::new(PlaylistViewSnapshot::initial(&queue));
         Self {
             queue,
-            selection: PlaylistSelectionState::default(),
+            selection,
+            compound_view_state,
+            compound_view_snapshot,
             active_media: None,
             pending_target: None,
             runtime_errors: HashMap::new(),
@@ -266,6 +284,53 @@ impl PlaylistController {
         self.view_snapshot.clone()
     }
 
+    /// Возвращает renderer-neutral S17G snapshot с disclosure child projections.
+    pub(crate) fn compound_view_snapshot(&self) -> Arc<CompoundRuntimeViewSnapshot> {
+        Arc::clone(&self.compound_view_snapshot)
+    }
+
+    /// Меняет только UI-only disclosure и не трогает queue/selection/dirty state.
+    pub(crate) fn toggle_compound_disclosure(
+        &mut self,
+        action: ToggleCompoundDisclosure,
+    ) -> ToggleCompoundDisclosureOutcome {
+        let outcome =
+            self.compound_view_state
+                .toggle(&self.queue, self.structural_revision, action);
+        if matches!(
+            outcome,
+            ToggleCompoundDisclosureOutcome::Expanded | ToggleCompoundDisclosureOutcome::Collapsed
+        ) {
+            self.publish_compound_view();
+        }
+        outcome
+    }
+
+    /// Разрешает один exact header target, но сам не запускает открытие.
+    pub(crate) fn compound_header_play_target(
+        &self,
+        action: CompoundHeaderPlayAction,
+    ) -> CompoundHeaderPlayTarget {
+        resolve_header_play_target(&self.queue, self.structural_revision, action)
+    }
+
+    /// Проверяет exact child identity без structural selection mutation.
+    pub(crate) fn compound_part_play_target(
+        &self,
+        action: CompoundPartPlayAction,
+    ) -> CompoundPartPlayTarget {
+        resolve_part_play_target(&self.queue, self.structural_revision, action)
+    }
+
+    /// Current Item выбирает header либо раскрытый exact child без auto-expand.
+    pub(crate) fn compound_current_item_scroll_target(
+        &self,
+    ) -> Option<CompoundCurrentItemScrollTarget> {
+        let current_item_id = self.queue.traversal_current()?.item_id();
+        self.compound_view_snapshot
+            .current_item_scroll_target(current_item_id)
+    }
+
     pub(crate) fn queue(&self) -> &PlaylistQueue {
         &self.queue
     }
@@ -279,7 +344,20 @@ impl PlaylistController {
         self.active_media
     }
 
+    /// Test-only compatibility projection; production structural APIs возвращают Entry ID.
+    #[cfg(test)]
     pub(crate) fn selected_item_id(&self) -> Option<PlaylistItemId> {
+        let selected_entry_id = self.selection.selected_cursor()?;
+        match self.queue.top_level_entry(selected_entry_id)? {
+            playlist_core::PlaylistEntry::Single(item) => Some(item.item_id()),
+            playlist_core::PlaylistEntry::Compound(group) => {
+                group.parts().next().map(|part| part.item().item_id())
+            }
+        }
+    }
+
+    /// Возвращает authoritative structural selection cursor.
+    pub(crate) fn selected_entry_id(&self) -> Option<playlist_core::PlaylistEntryId> {
         self.selection.selected_cursor()
     }
 
@@ -306,15 +384,23 @@ impl PlaylistController {
         outcome
     }
 
-    /// Compatibility adapter для controller-focused tests и старых non-UI callers.
+    /// Test-only compatibility adapter для старых controller-focused fixtures.
+    #[cfg(test)]
     pub(crate) fn select_row(&mut self, item_id: Option<PlaylistItemId>) -> bool {
         let update = item_id.map_or(
             UpdateSelection::Clear {
                 cursor: super::selection::ClearSelectionCursor::Clear,
             },
-            |item_id| UpdateSelection::Replace {
-                item_id,
-                structural_revision: self.structural_revision,
+            |item_id| {
+                self.queue.structural_entry_id_for_item(item_id).map_or(
+                    UpdateSelection::Clear {
+                        cursor: super::selection::ClearSelectionCursor::Clear,
+                    },
+                    |entry_id| UpdateSelection::Replace {
+                        entry_id,
+                        structural_revision: self.structural_revision,
+                    },
+                )
             },
         );
         self.update_selection(update) == UpdateSelectionOutcome::Updated
@@ -594,6 +680,8 @@ impl PlaylistController {
     pub(super) fn publish_view(&mut self, structural_rows_changed: bool) {
         if structural_rows_changed {
             self.selection.retain_committed(&self.queue);
+            self.compound_view_state
+                .retain_committed_groups(&self.queue);
         }
         let state = PlaylistViewState {
             queue: &self.queue,
@@ -612,6 +700,17 @@ impl PlaylistController {
             &self.view_snapshot,
             state,
             structural_rows_changed,
+        ));
+        self.publish_compound_view();
+    }
+
+    /// S17G snapshot всегда строится из того же controller-owned authoritative state.
+    fn publish_compound_view(&mut self) {
+        self.compound_view_snapshot = Arc::new(self.compound_view_state.snapshot(
+            &self.queue,
+            self.structural_revision,
+            self.active_media,
+            &self.selection.snapshot(),
         ));
     }
 

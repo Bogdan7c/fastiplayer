@@ -7,8 +7,8 @@ use egui::{
 };
 use media_core::MediaDuration;
 use playlist_core::{
-    CachedPlaylistMetadata, LocalLocator, MoveItemIntent, PlaylistItemDraft, PlaylistItemId,
-    PlaylistMediaKind, PlaylistQueue,
+    CachedPlaylistMetadata, LocalLocator, MoveItemIntent, PlaylistEntryId, PlaylistItemDraft,
+    PlaylistItemId, PlaylistMediaKind, PlaylistQueue,
 };
 use ui_artwork_egui::MediaKindGlyph;
 
@@ -203,10 +203,10 @@ fn full_row_primary_click_hits_index_icon_title_duration_badges_and_trailing_edg
                 release_actions.as_slice(),
                 [PlaylistAction::UpdateSelection(
                     crate::playlist_runtime::UpdateSelection::Replace {
-                        item_id: clicked_item_id,
+                        entry_id: clicked_entry_id,
                         ..
                     }
-                )] if *clicked_item_id == item_id
+                )] if *clicked_entry_id == PlaylistEntryId::Single(item_id)
             ),
             "release at x={x} produced {release_actions:?}"
         );
@@ -285,10 +285,10 @@ fn full_row_double_secondary_and_drag_use_the_same_stable_hit_area() {
         secondary_actions.as_slice(),
         [PlaylistAction::UpdateSelection(
             crate::playlist_runtime::UpdateSelection::Replace {
-                item_id,
+                entry_id,
                 ..
             }
-        )] if *item_id == first_item_id
+        )] if *entry_id == PlaylistEntryId::Single(first_item_id)
     ));
 
     // Drag с title-column захватывает singleton и публикует group MoveItems на release.
@@ -320,9 +320,9 @@ fn full_row_double_secondary_and_drag_use_the_same_stable_hit_area() {
     assert!(drag_actions.iter().any(|action| matches!(
         action,
         PlaylistAction::UpdateSelection(crate::playlist_runtime::UpdateSelection::Replace {
-            item_id,
+            entry_id,
             ..
-        }) if *item_id == first_item_id
+        }) if *entry_id == PlaylistEntryId::Single(first_item_id)
     )));
     let drop_actions = render_playlist_input(
         &drag_context,
@@ -386,10 +386,10 @@ fn focused_row_keyboard_navigation_select_all_and_empty_area_click_emit_typed_in
         navigation_actions.as_slice(),
         [PlaylistAction::UpdateSelection(
             crate::playlist_runtime::UpdateSelection::Replace {
-                item_id,
+                entry_id,
                 ..
             }
-        )] if *item_id == second_item_id
+        )] if *entry_id == PlaylistEntryId::Single(second_item_id)
     ));
 
     let select_all_actions = render_playlist_input(
@@ -402,10 +402,10 @@ fn focused_row_keyboard_navigation_select_all_and_empty_area_click_emit_typed_in
         select_all_actions.as_slice(),
         [PlaylistAction::UpdateSelection(
             crate::playlist_runtime::UpdateSelection::SelectAll {
-                item_ids,
+                entry_ids,
                 ..
             }
-        )] if item_ids.len() == 3
+        )] if entry_ids.len() == 3
     ));
 
     // Пространство после последней строки принадлежит list background, а не последней row.
@@ -1076,13 +1076,21 @@ fn shared_model_clone_does_not_clone_full_row_strings() {
 }
 
 #[test]
-fn stable_row_id_depends_on_item_identity_not_row_index() {
+fn stable_row_id_depends_on_entry_identity_not_row_index() {
     let parent = egui::Id::new("playlist-test");
     let first = PlaylistItemId::from_persistence_value(41).unwrap();
     let second = PlaylistItemId::from_persistence_value(42).unwrap();
 
-    assert_eq!(stable_row_id(parent, first), stable_row_id(parent, first));
-    assert_ne!(stable_row_id(parent, first), stable_row_id(parent, second));
+    let first_entry = PlaylistEntryId::Single(first);
+    let second_entry = PlaylistEntryId::Single(second);
+    assert_eq!(
+        stable_row_id(parent, first_entry),
+        stable_row_id(parent, first_entry)
+    );
+    assert_ne!(
+        stable_row_id(parent, first_entry),
+        stable_row_id(parent, second_entry)
+    );
 }
 
 #[test]

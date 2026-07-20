@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use egui::{DragAndDrop, Pos2, Rect, Response};
-use playlist_core::{MoveItemIntent, PlaylistItemId};
+use playlist_core::{MoveItemIntent, PlaylistEntryId, PlaylistItemId};
 
 use super::actions::MoveItems;
 use super::{PlaylistAction, PlaylistUiOutput};
@@ -24,7 +24,7 @@ struct PlaylistDragPayload {
 pub(super) enum VirtualizedInsertionTarget {
     ToFront,
     ToBack,
-    Before(PlaylistItemId),
+    Before(PlaylistEntryId),
 }
 
 impl VirtualizedInsertionTarget {
@@ -32,9 +32,7 @@ impl VirtualizedInsertionTarget {
         match self {
             Self::ToFront => MoveItemIntent::ToFront,
             Self::ToBack => MoveItemIntent::ToBack,
-            Self::Before(item_id) => {
-                MoveItemIntent::Before(playlist_core::PlaylistEntryId::Single(item_id))
-            }
+            Self::Before(entry_id) => MoveItemIntent::Before(entry_id),
         }
     }
 }
@@ -43,7 +41,7 @@ impl VirtualizedInsertionTarget {
 #[derive(Debug, Default)]
 pub(super) struct VirtualizedDragState {
     source_item_id: Option<PlaylistItemId>,
-    item_ids: Arc<[PlaylistItemId]>,
+    entry_ids: Arc<[PlaylistEntryId]>,
     structural_revision: Option<PlaylistStructuralRevision>,
     drop_targets: Arc<[VirtualizedInsertionTarget]>,
     capture_generation: u64,
@@ -57,6 +55,7 @@ pub(super) struct VirtualizedDragState {
 pub(super) fn begin_from_response(
     response: &Response,
     model: &PlaylistViewModel,
+    entry_id: PlaylistEntryId,
     item_id: PlaylistItemId,
     row_is_selected: bool,
     state: &mut VirtualizedDragState,
@@ -67,17 +66,17 @@ pub(super) fn begin_from_response(
     }
     state.capture_generation = state.capture_generation.wrapping_add(1).max(1);
     state.source_item_id = Some(item_id);
-    state.item_ids = if row_is_selected {
-        model.selected_item_ids()
+    state.entry_ids = if row_is_selected {
+        model.selected_entry_ids()
     } else {
         output.push_action(PlaylistAction::UpdateSelection(UpdateSelection::Replace {
-            item_id,
+            entry_id,
             structural_revision: model.structural_revision(),
         }));
-        Arc::from([item_id])
+        Arc::from([entry_id])
     };
     state.structural_revision = Some(model.structural_revision());
-    state.drop_targets = build_drop_targets(model, &state.item_ids);
+    state.drop_targets = build_drop_targets(model, &state.entry_ids);
     state.pointer_position = response.interact_pointer_pos();
     state.insertion_target = None;
     state.requested_scroll_offset = None;
@@ -170,10 +169,10 @@ pub(super) fn finish_frame(
     if released {
         if let (Some(target), Some(structural_revision)) =
             (state.insertion_target, state.structural_revision)
-            && !state.item_ids.is_empty()
+            && !state.entry_ids.is_empty()
         {
             output.push_action(PlaylistAction::MoveItems(MoveItems::new(
-                Arc::clone(&state.item_ids),
+                Arc::clone(&state.entry_ids),
                 target.into_move_intent(),
                 structural_revision,
             )));
@@ -199,13 +198,13 @@ pub(super) fn finish_frame(
 pub(super) fn marks_row(
     state: &VirtualizedDragState,
     row_index: usize,
-    row_item_id: PlaylistItemId,
+    row_entry_id: PlaylistEntryId,
     item_count: usize,
 ) -> bool {
     match state.insertion_target {
         Some(VirtualizedInsertionTarget::ToFront) => row_index == 0,
         Some(VirtualizedInsertionTarget::ToBack) => row_index + 1 == item_count,
-        Some(VirtualizedInsertionTarget::Before(item_id)) => row_item_id == item_id,
+        Some(VirtualizedInsertionTarget::Before(entry_id)) => row_entry_id == entry_id,
         None => false,
     }
 }
@@ -229,31 +228,31 @@ fn insertion_target(
 /// Один O(N) drag-start precompute исключает selected anchor и per-frame queue scan.
 fn build_drop_targets(
     model: &PlaylistViewModel,
-    selected_item_ids: &[PlaylistItemId],
+    selected_entry_ids: &[PlaylistEntryId],
 ) -> Arc<[VirtualizedInsertionTarget]> {
-    let selected_item_ids: HashSet<_> = selected_item_ids.iter().copied().collect();
-    let canonical_item_ids = (0..model.item_count())
-        .filter_map(|row_index| model.item_id_at(row_index))
+    let selected_entry_ids: HashSet<_> = selected_entry_ids.iter().copied().collect();
+    let canonical_entry_ids = (0..model.item_count())
+        .filter_map(|row_index| model.entry_id_at(row_index))
         .collect::<Vec<_>>();
-    let retained_item_ids = canonical_item_ids
+    let retained_entry_ids = canonical_entry_ids
         .iter()
         .copied()
-        .filter(|item_id| !selected_item_ids.contains(item_id))
+        .filter(|entry_id| !selected_entry_ids.contains(entry_id))
         .collect::<Vec<_>>();
     let mut retained_before_slot = 0;
-    let mut targets = Vec::with_capacity(canonical_item_ids.len() + 1);
-    for insertion_slot in 0..=canonical_item_ids.len() {
+    let mut targets = Vec::with_capacity(canonical_entry_ids.len() + 1);
+    for insertion_slot in 0..=canonical_entry_ids.len() {
         if insertion_slot > 0
-            && !selected_item_ids.contains(&canonical_item_ids[insertion_slot - 1])
+            && !selected_entry_ids.contains(&canonical_entry_ids[insertion_slot - 1])
         {
             retained_before_slot += 1;
         }
         let target = if retained_before_slot == 0 {
             VirtualizedInsertionTarget::ToFront
-        } else if retained_before_slot >= retained_item_ids.len() {
+        } else if retained_before_slot >= retained_entry_ids.len() {
             VirtualizedInsertionTarget::ToBack
         } else {
-            VirtualizedInsertionTarget::Before(retained_item_ids[retained_before_slot])
+            VirtualizedInsertionTarget::Before(retained_entry_ids[retained_before_slot])
         };
         targets.push(target);
     }
@@ -335,9 +334,9 @@ mod tests {
     #[test]
     fn canonical_target_covers_first_middle_last_and_offscreen_rows() {
         let model = model(10_000);
-        let selected_item_ids = Arc::from([model.item_id_at(500).unwrap()]);
+        let selected_entry_ids = Arc::from([model.entry_id_at(500).unwrap()]);
         let state = VirtualizedDragState {
-            drop_targets: build_drop_targets(&model, &selected_item_ids),
+            drop_targets: build_drop_targets(&model, &selected_entry_ids),
             ..VirtualizedDragState::default()
         };
         let row_pitch = 40.0;
@@ -354,7 +353,7 @@ mod tests {
                 row_pitch
             ),
             model
-                .item_id_at(5_001)
+                .entry_id_at(5_001)
                 .map(VirtualizedInsertionTarget::Before)
         );
         assert_eq!(
@@ -372,14 +371,14 @@ mod tests {
     #[test]
     fn discontiguous_group_precompute_never_targets_selected_anchor() {
         let model = model(5);
-        let selected_item_ids: Arc<[PlaylistItemId]> =
-            Arc::from([model.item_id_at(1).unwrap(), model.item_id_at(3).unwrap()]);
-        let selected_set: HashSet<_> = selected_item_ids.iter().copied().collect();
-        let targets = build_drop_targets(&model, &selected_item_ids);
+        let selected_entry_ids: Arc<[PlaylistEntryId]> =
+            Arc::from([model.entry_id_at(1).unwrap(), model.entry_id_at(3).unwrap()]);
+        let selected_set: HashSet<_> = selected_entry_ids.iter().copied().collect();
+        let targets = build_drop_targets(&model, &selected_entry_ids);
 
         assert_eq!(targets.len(), model.item_count() + 1);
         assert!(targets.iter().all(|target| match target {
-            VirtualizedInsertionTarget::Before(item_id) => !selected_set.contains(item_id),
+            VirtualizedInsertionTarget::Before(entry_id) => !selected_set.contains(entry_id),
             VirtualizedInsertionTarget::ToFront | VirtualizedInsertionTarget::ToBack => true,
         }));
     }
@@ -387,13 +386,13 @@ mod tests {
     #[test]
     fn marker_uses_stable_id_not_transient_widget_reference() {
         let model = model(3);
-        let middle = model.item_id_at(1).unwrap();
+        let middle = model.entry_id_at(1).unwrap();
         let state = VirtualizedDragState {
             insertion_target: Some(VirtualizedInsertionTarget::Before(middle)),
             ..VirtualizedDragState::default()
         };
         assert!(marks_row(&state, 1, middle, 3));
-        assert!(!marks_row(&state, 0, model.item_id_at(0).unwrap(), 3));
+        assert!(!marks_row(&state, 0, model.entry_id_at(0).unwrap(), 3));
     }
 
     #[test]
@@ -445,7 +444,7 @@ mod tests {
 
         assert!(DragAndDrop::payload::<PlaylistDragPayload>(&ctx).is_none());
         assert_eq!(state.source_item_id, None);
-        assert!(state.item_ids.is_empty());
+        assert!(state.entry_ids.is_empty());
         assert!(state.drop_targets.is_empty());
         assert_eq!(state.structural_revision, None);
         assert_eq!(state.capture_generation, 7);

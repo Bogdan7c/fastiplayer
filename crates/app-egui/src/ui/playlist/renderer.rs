@@ -2,7 +2,7 @@
 
 use egui::layers::ShapeIdx;
 use egui::{Align, Layout, Sense, TextWrapMode, WidgetInfo, WidgetType};
-use playlist_core::{PlaylistItemId, PlaylistMediaKind};
+use playlist_core::{PlaylistEntryId, PlaylistItemId, PlaylistMediaKind};
 use ui_artwork_egui::{ArtworkPainter, MediaKindGlyph};
 
 use super::{
@@ -39,7 +39,7 @@ struct PlaylistRowRenderContext<'a> {
     /// Skin-owned токены не читаются из глобальных egui visuals.
     row_style: PlaylistRowStyle,
     /// Одноразовый focus intent разрешён до начала virtualized row pass.
-    focus_item: Option<PlaylistItemId>,
+    focus_entry: Option<PlaylistEntryId>,
 }
 
 /// Первый visible pass резервирует geometry и background slots без content paint.
@@ -100,7 +100,11 @@ pub(super) fn show_rows(
     }
 
     let row_pitch = ROW_HEIGHT + ui.spacing().item_spacing.y;
-    let focus_item = state.take_row_focus().or(go_current_item);
+    let focus_entry = state.take_row_focus().or_else(|| {
+        go_current_item
+            .and_then(|item_id| model.row_index(item_id))
+            .and_then(|row_index| model.entry_id_at(row_index))
+    });
     let drag_was_active = virtualized_drag::is_active(&state.drag);
     let drag_offset = virtualized_drag::prepare_scroll_offset(
         ui.ctx(),
@@ -109,7 +113,7 @@ pub(super) fn show_rows(
         row_pitch,
     );
     let manual_scroll_input = state.active_accent.has_manual_scroll_input(ui.ctx());
-    let explicit_viewport_intent = focus_item.is_some();
+    let explicit_viewport_intent = focus_entry.is_some();
     let manual_viewport_override =
         manual_scroll_input || drag_was_active || explicit_viewport_intent;
     let delta_seconds = ui
@@ -126,8 +130,8 @@ pub(super) fn show_rows(
         delta_seconds,
         manual_viewport_override,
     });
-    let anchored_offset = focus_item
-        .and_then(|item_id| model.row_index(item_id))
+    let anchored_offset = focus_entry
+        .and_then(|entry_id| model.entry_row_index(entry_id))
         .map(|index| index as f32 * row_pitch)
         .or(drag_offset)
         .or(accent_scroll_offset)
@@ -149,7 +153,7 @@ pub(super) fn show_rows(
             let row_context = PlaylistRowRenderContext {
                 model,
                 row_style,
-                focus_item,
+                focus_entry,
             };
             render_visible_rows_in_two_passes(
                 rows_ui,
@@ -242,11 +246,11 @@ fn render_visible_rows_in_two_passes(
     for (visible_offset, row) in visible_rows.into_iter().enumerate() {
         // Canonical index восстанавливается из начала egui visible range.
         let row_index = first_visible_row_index + visible_offset;
-        // Stable Item ID изолирует auto IDs duplicate locator rows.
-        let item_id_value = row.item_id().expose_value_for_persistence();
+        // Stable top-level identity изолирует Single и Compound header rows.
+        let entry_id = row.entry_id();
         // Scope нужен только для стабильного row interaction ID первого pass.
         let prepared_row = ui
-            .push_id(("playlist_row", item_id_value), |row_ui| {
+            .push_id(("playlist_row", entry_id), |row_ui| {
                 // Каждая surface занимает всю доступную ширину ScrollArea content.
                 let available_width = row_ui.available_width().max(1.0);
                 // Allocation продвигает layout ровно один раз.
@@ -421,10 +425,7 @@ fn render_prepared_row(
     // Второй pass использует готовую geometry и не продвигает parent layout повторно.
     let mut row_ui = ui.new_child(
         egui::UiBuilder::new()
-            .id_salt((
-                "playlist_row_content",
-                prepared.row.item_id().expose_value_for_persistence(),
-            ))
+            .id_salt(("playlist_row_content", prepared.row.entry_id()))
             .max_rect(prepared.row_rect)
             .layout(Layout::left_to_right(Align::Center)),
     );
@@ -452,7 +453,7 @@ fn render_prepared_row(
         )
     });
     // Explicit focus/Go Current использует существующий egui center contract.
-    if context.focus_item == Some(prepared.row.item_id()) {
+    if context.focus_entry == Some(prepared.row.entry_id()) {
         response.scroll_to_me(Some(Align::Center));
         response.request_focus();
     }
@@ -489,7 +490,7 @@ fn render_prepared_row(
         virtualized_drag::marks_row(
             &state.drag,
             prepared.row_index,
-            prepared.row.item_id(),
+            prepared.row.entry_id(),
             context.model.item_count(),
         ),
     );
@@ -704,7 +705,7 @@ pub(super) fn tooltip_width(row_width: f32) -> f32 {
 #[cfg(test)]
 pub(super) fn stable_row_id(
     parent_id: egui::Id,
-    item_id: playlist_core::PlaylistItemId,
+    entry_id: playlist_core::PlaylistEntryId,
 ) -> egui::Id {
-    parent_id.with(("playlist_row", item_id.expose_value_for_persistence()))
+    parent_id.with(("playlist_row", entry_id))
 }

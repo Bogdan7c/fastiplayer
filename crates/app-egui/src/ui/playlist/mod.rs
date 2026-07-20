@@ -15,7 +15,7 @@ pub(crate) use header_undo::show as show_header_undo;
 
 use std::sync::Arc;
 
-use playlist_core::PlaylistItemId;
+use playlist_core::{PlaylistEntryId, PlaylistItemId};
 
 use crate::playlist_runtime::{
     PlaylistGoCurrentTarget, PlaylistInteractionModel, PlaylistRuntimeBinding,
@@ -34,7 +34,7 @@ pub(crate) struct PlaylistUiState {
     viewport_anchor: Option<ViewportAnchor>,
     observed_structural_revision: Option<PlaylistStructuralRevision>,
     go_current: Option<PlaylistGoCurrentTarget>,
-    focus_row: Option<PlaylistItemId>,
+    focus_row: Option<PlaylistEntryId>,
     drag: virtualized_drag::VirtualizedDragState,
 }
 
@@ -90,12 +90,12 @@ impl PlaylistUiState {
         self.go_current.take()
     }
 
-    /// D47 focus intent приходит только из controller-provided selected Item ID.
-    pub(crate) fn request_row_focus(&mut self, item_id: PlaylistItemId) {
-        self.focus_row = Some(item_id);
+    /// D47 focus intent приходит только из controller-provided selected Entry ID.
+    pub(crate) fn request_row_focus(&mut self, entry_id: PlaylistEntryId) {
+        self.focus_row = Some(entry_id);
     }
 
-    pub(super) fn take_row_focus(&mut self) -> Option<PlaylistItemId> {
+    pub(super) fn take_row_focus(&mut self) -> Option<PlaylistEntryId> {
         self.focus_row.take()
     }
 }

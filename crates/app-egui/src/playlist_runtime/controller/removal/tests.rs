@@ -8,8 +8,8 @@ use player_core::{
 };
 use playlist_core::{
     AddPlaylistEntriesOutcome, CachedPlaylistMetadata, LocalLocator, PlaylistCompoundGroupDraft,
-    PlaylistEntryDraft, PlaylistItemDraft, PlaylistItemId, PlaylistLocator, PlaylistMediaKind,
-    RemovalCurrentOutcome, RepeatMode, ReservedQueueMutation,
+    PlaylistEntryDraft, PlaylistEntryId, PlaylistItemDraft, PlaylistItemId, PlaylistLocator,
+    PlaylistMediaKind, RemovalCurrentOutcome, RepeatMode, ReservedQueueMutation,
 };
 
 use super::{
@@ -75,7 +75,7 @@ fn removed(outcome: ControllerDestructiveRemovalOutcome) -> super::ControllerDes
 }
 
 #[test]
-fn selected_removal_rejects_partial_compound_and_commits_full_group() {
+fn selected_removal_uses_explicit_compound_identity_and_commits_full_group() {
     let mut controller = PlaylistController::new();
     let compound = PlaylistCompoundGroupDraft::new(
         PlaylistLocator::Local(LocalLocator::Native(PathBuf::from("album"))),
@@ -105,29 +105,14 @@ fn selected_removal_rejects_partial_compound_and_commits_full_group() {
     ));
     assert_eq!(
         controller.update_selection(crate::playlist_runtime::UpdateSelection::Replace {
-            item_id: item_ids[1],
+            entry_id: entry_ids[1],
             structural_revision: revision,
         }),
         crate::playlist_runtime::UpdateSelectionOutcome::Updated
     );
 
     assert!(matches!(
-        controller.remove_selected_items(Arc::from([item_ids[1]]), revision),
-        ControllerDestructiveRemovalOutcome::PartialCompoundSelection {
-            compound_entry_id,
-        } if compound_entry_id == entry_ids[1]
-    ));
-    assert_eq!(controller.queue.retained_item_count(), 3);
-
-    assert_eq!(
-        controller.update_selection(crate::playlist_runtime::UpdateSelection::Toggle {
-            item_id: item_ids[2],
-            structural_revision: revision,
-        }),
-        crate::playlist_runtime::UpdateSelectionOutcome::Updated
-    );
-    assert!(matches!(
-        controller.remove_selected_items(Arc::from([item_ids[1], item_ids[2]]), revision,),
+        controller.remove_selected_items(Arc::from([entry_ids[1]]), revision),
         ControllerDestructiveRemovalOutcome::Removed(_)
     ));
     assert_eq!(
@@ -224,10 +209,10 @@ fn matching_lineage_undo_reattaches_after_same_lineage_new_player_instance() {
     assert!(matches!(
         outcome,
         ControllerRemovalUndoOutcome::Restored {
-            selected_item_id: Some(selected),
+            selected_entry_id: Some(selected),
             reattached_active: true,
             ..
-        } if selected == ids[1]
+        } if selected == PlaylistEntryId::Single(ids[1])
     ));
     let reattached = controller.active_media().expect("reattached active");
     assert_eq!(reattached.item_id(), Some(ids[1]));
@@ -607,8 +592,8 @@ fn d47_remove_first_middle_last_and_only_choose_same_index_previous_or_none() {
         let removal = removed(controller.remove_item(ids[removed_index]));
         let expected_selection = expected_index.map(|index| ids[index]);
         assert_eq!(
-            removal.selection_after.selected_cursor(),
-            expected_selection
+            removal.selection_after.interaction_cursor(),
+            expected_selection.map(playlist_core::PlaylistEntryId::Single)
         );
         assert_eq!(controller.selected_item_id(), expected_selection);
         assert!(controller.active_media().is_none());
@@ -618,27 +603,34 @@ fn d47_remove_first_middle_last_and_only_choose_same_index_previous_or_none() {
 #[test]
 fn bulk_selected_removal_is_one_commit_and_undo_restores_full_selection() {
     let (mut controller, ids, _active) = controller_with_active(5, 2);
+    let entry_ids = ids
+        .iter()
+        .copied()
+        .map(playlist_core::PlaylistEntryId::Single)
+        .collect::<Vec<_>>();
     let revision = controller.structural_revision;
     assert_eq!(
         controller.update_selection(crate::playlist_runtime::UpdateSelection::ReplaceRange {
-            item_ids: Arc::from([ids[1], ids[2], ids[3]]),
-            range_anchor: ids[1],
-            interaction_cursor: ids[3],
+            entry_ids: Arc::from([entry_ids[1], entry_ids[2], entry_ids[3]]),
+            range_anchor: entry_ids[1],
+            interaction_cursor: entry_ids[3],
             structural_revision: revision,
         }),
         crate::playlist_runtime::UpdateSelectionOutcome::Updated
     );
     assert_eq!(
         controller.update_selection(crate::playlist_runtime::UpdateSelection::MoveCursor {
-            item_id: ids[2],
+            entry_id: entry_ids[2],
             structural_revision: revision,
         }),
         crate::playlist_runtime::UpdateSelectionOutcome::Updated
     );
     let dirty_before = controller.dirty_revision();
 
-    let removal =
-        removed(controller.remove_selected_items(Arc::from([ids[1], ids[2], ids[3]]), revision));
+    let removal = removed(controller.remove_selected_items(
+        Arc::from([entry_ids[1], entry_ids[2], entry_ids[3]]),
+        revision,
+    ));
     assert_eq!(removal.kind, ControllerRemovalKind::RemoveSelected);
     assert_eq!(
         controller.queue().iter_playable_ids().collect::<Vec<_>>(),
@@ -653,41 +645,47 @@ fn bulk_selected_removal_is_one_commit_and_undo_restores_full_selection() {
     assert!(matches!(
         controller.restore_destructive_removal(removal),
         ControllerRemovalUndoOutcome::Restored {
-            selected_item_id: Some(selected_item_id),
+            selected_entry_id: Some(selected_entry_id),
             reattached_active: true,
             ..
-        } if selected_item_id == ids[2]
+        } if selected_entry_id == PlaylistEntryId::Single(ids[2])
     ));
     let restored_selection = controller.view_snapshot();
     assert_eq!(restored_selection.selection().selected_count(), 3);
-    assert!(restored_selection.selection().is_selected(ids[1]));
-    assert!(restored_selection.selection().is_selected(ids[2]));
-    assert!(restored_selection.selection().is_selected(ids[3]));
+    assert!(restored_selection.selection().is_selected(entry_ids[1]));
+    assert!(restored_selection.selection().is_selected(entry_ids[2]));
+    assert!(restored_selection.selection().is_selected(entry_ids[3]));
 }
 
 #[test]
 fn bulk_unselected_removal_preserves_selected_active_current_and_rejects_stale_capture() {
     let (mut controller, ids, active) = controller_with_active(5, 2);
+    let entry_ids = ids
+        .iter()
+        .copied()
+        .map(playlist_core::PlaylistEntryId::Single)
+        .collect::<Vec<_>>();
     let revision = controller.structural_revision;
     assert_eq!(
         controller.update_selection(crate::playlist_runtime::UpdateSelection::ReplaceRange {
-            item_ids: Arc::from([ids[1], ids[2], ids[3]]),
-            range_anchor: ids[1],
-            interaction_cursor: ids[3],
+            entry_ids: Arc::from([entry_ids[1], entry_ids[2], entry_ids[3]]),
+            range_anchor: entry_ids[1],
+            interaction_cursor: entry_ids[3],
             structural_revision: revision,
         }),
         crate::playlist_runtime::UpdateSelectionOutcome::Updated
     );
     assert_eq!(
         controller.update_selection(crate::playlist_runtime::UpdateSelection::MoveCursor {
-            item_id: ids[2],
+            entry_id: entry_ids[2],
             structural_revision: revision,
         }),
         crate::playlist_runtime::UpdateSelectionOutcome::Updated
     );
 
-    let removal =
-        removed(controller.remove_unselected_items(Arc::from([ids[0], ids[4]]), revision));
+    let removal = removed(
+        controller.remove_unselected_items(Arc::from([entry_ids[0], entry_ids[4]]), revision),
+    );
     assert_eq!(removal.kind, ControllerRemovalKind::RemoveUnselected);
     assert_eq!(controller.active_media(), Some(active));
     assert_eq!(
@@ -699,10 +697,13 @@ fn bulk_unselected_removal_preserves_selected_active_current_and_rejects_stale_c
     );
     let selection = controller.view_snapshot();
     assert_eq!(selection.selection().selected_count(), 3);
-    assert_eq!(selection.selection().interaction_cursor(), Some(ids[2]));
+    assert_eq!(
+        selection.selection().interaction_cursor(),
+        Some(entry_ids[2])
+    );
 
     assert!(matches!(
-        controller.remove_unselected_items(Arc::from([ids[1]]), revision,),
+        controller.remove_unselected_items(Arc::from([entry_ids[1]]), revision,),
         ControllerDestructiveRemovalOutcome::StaleStructuralRevision
     ));
 }

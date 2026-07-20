@@ -21,6 +21,7 @@ use crate::process_shutdown::{ProcessOwnerShutdownOutcome, ShutdownDeadline};
     reason = "Session 16 action API is rendered by Session 19 UI"
 )]
 mod actions;
+mod compound_view;
 #[allow(
     dead_code,
     reason = "Session 11A publishes controller foundation before Session 11B/12 UI callsites"
@@ -111,6 +112,11 @@ mod view_model;
 pub(crate) use actions::{
     InstalledMetadataCacheOutcome, PlaylistConfirmationApplyOutcome, UrlAppendActionOutcome,
     UrlAppendValidationError,
+};
+pub(crate) use compound_view::{
+    CompoundCurrentItemScrollTarget, CompoundHeaderPlayAction, CompoundHeaderPlayTarget,
+    CompoundPartPlayAction, CompoundPartPlayTarget, CompoundRuntimeViewSnapshot,
+    ToggleCompoundDisclosure, ToggleCompoundDisclosureOutcome,
 };
 #[cfg(test)]
 pub(crate) use controller::ControllerRemovalUndoOutcome;

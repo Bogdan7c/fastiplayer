@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use media_core::MediaDuration;
 use playlist_core::{
-    PlaylistItemId, PlaylistMediaKind, PlaylistQueue, RepeatMode, TraversalCurrentItemId,
+    PlaylistEntry, PlaylistEntryId, PlaylistItemId, PlaylistMediaKind, PlaylistQueue, RepeatMode,
+    TraversalCurrentItemId,
 };
 
 use super::identity::{ActiveMediaIdentity, PendingTarget, PlaylistItemRuntimeError};
@@ -108,6 +109,7 @@ impl PlaylistStructuralActionAvailability {
 /// Shared immutable строка; locator label создаётся только при structural rebuild-е.
 #[derive(Debug, Clone)]
 struct PlaylistViewRow {
+    entry_id: PlaylistEntryId,
     item_id: PlaylistItemId,
     fallback_display_name: Arc<str>,
     display_title: Arc<str>,
@@ -118,6 +120,7 @@ struct PlaylistViewRow {
 /// Только запрошенные видимые строки получают лёгкие clones `Arc`.
 #[derive(Debug, Clone)]
 pub(crate) struct PlaylistVisibleRow {
+    entry_id: PlaylistEntryId,
     item_id: PlaylistItemId,
     fallback_display_name: Arc<str>,
     display_title: Arc<str>,
@@ -144,6 +147,11 @@ pub(crate) struct PlaylistVisibleRowTestFixture {
 }
 
 impl PlaylistVisibleRow {
+    /// Возвращает top-level structural identity строки.
+    pub(crate) const fn entry_id(&self) -> PlaylistEntryId {
+        self.entry_id
+    }
+
     pub(crate) const fn item_id(&self) -> PlaylistItemId {
         self.item_id
     }
@@ -192,6 +200,7 @@ impl PlaylistVisibleRow {
             )
         });
         Self {
+            entry_id: PlaylistEntryId::Single(fixture.item_id),
             item_id: fixture.item_id,
             fallback_display_name: Arc::from(fixture.fallback_display_name),
             display_title: Arc::from(fixture.display_title),
@@ -212,6 +221,7 @@ pub(crate) struct PlaylistViewSnapshot {
     structural_revision: PlaylistStructuralRevision,
     rows: Arc<[PlaylistViewRow]>,
     row_indices: Arc<HashMap<PlaylistItemId, usize>>,
+    entry_indices: Arc<HashMap<PlaylistEntryId, usize>>,
     errors: Arc<HashMap<PlaylistItemId, PlaylistItemRuntimeError>>,
     selection: PlaylistSelectionSnapshot,
     traversal_current: Option<TraversalCurrentItemId>,
@@ -227,12 +237,13 @@ pub(crate) struct PlaylistViewSnapshot {
 
 impl PlaylistViewSnapshot {
     pub(super) fn initial(queue: &PlaylistQueue) -> Self {
-        let (rows, row_indices) = build_rows(queue);
+        let built_rows = build_rows(queue);
         Self {
             revision: PlaylistViewRevision::INITIAL,
             structural_revision: PlaylistStructuralRevision::INITIAL,
-            rows,
-            row_indices,
+            rows: built_rows.rows,
+            row_indices: built_rows.row_indices,
+            entry_indices: built_rows.entry_indices,
             errors: Arc::new(HashMap::new()),
             selection: PlaylistSelectionSnapshot::empty(),
             traversal_current: queue.traversal_current(),
@@ -268,9 +279,19 @@ impl PlaylistViewSnapshot {
         self.row_indices.get(&item_id).copied()
     }
 
+    /// O(1) lookup structural header не зависит от числа частей группы.
+    pub(crate) fn entry_row_index(&self, entry_id: PlaylistEntryId) -> Option<usize> {
+        self.entry_indices.get(&entry_id).copied()
+    }
+
     /// Один direct row access обновляет top-visible anchor без поиска по queue.
     pub(crate) fn item_id_at(&self, row_index: usize) -> Option<PlaylistItemId> {
         self.rows.get(row_index).map(|row| row.item_id)
+    }
+
+    /// Возвращает top-level structural identity строки.
+    pub(crate) fn entry_id_at(&self, row_index: usize) -> Option<PlaylistEntryId> {
+        self.rows.get(row_index).map(|row| row.entry_id)
     }
 
     /// Сложность строго пропорциональна bounded visible range, а не всей queue.
@@ -282,23 +303,26 @@ impl PlaylistViewSnapshot {
         self.rows[start..end]
             .iter()
             .map(|row| PlaylistVisibleRow {
+                entry_id: row.entry_id,
                 item_id: row.item_id,
                 fallback_display_name: row.fallback_display_name.clone(),
                 display_title: row.display_title.clone(),
                 duration: row.duration,
                 media_kind: row.media_kind,
-                active: active_item_id == Some(row.item_id),
-                pending: pending_item_id == Some(row.item_id),
-                selected: self.selection.is_selected(row.item_id),
+                active: active_item_id.and_then(|item_id| self.row_indices.get(&item_id))
+                    == self.entry_indices.get(&row.entry_id),
+                pending: pending_item_id.and_then(|item_id| self.row_indices.get(&item_id))
+                    == self.entry_indices.get(&row.entry_id),
+                selected: self.selection.is_selected(row.entry_id),
                 runtime_error: self.errors.get(&row.item_id).cloned(),
             })
             .collect()
     }
 
-    pub(crate) fn selected_item_id(&self) -> Option<PlaylistItemId> {
+    pub(crate) fn selected_entry_id(&self) -> Option<PlaylistEntryId> {
         self.selection
             .interaction_cursor()
-            .filter(|item_id| self.selection.is_selected(*item_id))
+            .filter(|entry_id| self.selection.is_selected(*entry_id))
     }
 
     /// Возвращает Arc-backed selection snapshot без копирования selected set.
@@ -410,10 +434,14 @@ pub(super) fn rebuild_snapshot(
         structural_revision: state.structural_revision,
         rows: rebuilt_rows
             .as_ref()
-            .map_or_else(|| previous.rows.clone(), |(rows, _)| rows.clone()),
-        row_indices: rebuilt_rows.map_or_else(
+            .map_or_else(|| previous.rows.clone(), |built| built.rows.clone()),
+        row_indices: rebuilt_rows.as_ref().map_or_else(
             || previous.row_indices.clone(),
-            |(_, row_indices)| row_indices,
+            |built| built.row_indices.clone(),
+        ),
+        entry_indices: rebuilt_rows.map_or_else(
+            || previous.entry_indices.clone(),
+            |built| built.entry_indices,
         ),
         errors: Arc::new(state.errors.clone()),
         selection: state.selection,
@@ -429,26 +457,56 @@ pub(super) fn rebuild_snapshot(
     }
 }
 
-fn build_rows(
-    queue: &PlaylistQueue,
-) -> (Arc<[PlaylistViewRow]>, Arc<HashMap<PlaylistItemId, usize>>) {
+/// Результат одного structural прохода не смешивает индексы playable item и top-level entry.
+struct BuiltPlaylistRows {
+    rows: Arc<[PlaylistViewRow]>,
+    row_indices: Arc<HashMap<PlaylistItemId, usize>>,
+    entry_indices: Arc<HashMap<PlaylistEntryId, usize>>,
+}
+
+fn build_rows(queue: &PlaylistQueue) -> BuiltPlaylistRows {
     let mut rows = Vec::with_capacity(queue.top_level_entry_count());
-    let mut row_indices = HashMap::with_capacity(queue.top_level_entry_count());
-    for (row_index, item) in queue.iter_playable_items().enumerate() {
-        let metadata = item.cached_metadata();
+    let mut row_indices = HashMap::with_capacity(queue.retained_item_count());
+    let mut entry_indices = HashMap::with_capacity(queue.top_level_entry_count());
+    for (row_index, entry) in queue.iter_top_level_entries().enumerate() {
+        let (representative_item, metadata) = match entry {
+            PlaylistEntry::Single(item) => (item, item.cached_metadata()),
+            PlaylistEntry::Compound(group) => {
+                let first_part = group
+                    .parts()
+                    .next()
+                    .expect("validated compound group always retains a part");
+                (first_part.item(), group.cached_summary())
+            }
+        };
         let fallback_display_name: Arc<str> = Arc::from(metadata.fallback_display_name());
         let display_title = metadata
             .title()
             .filter(|title| !title.trim().is_empty())
             .map_or_else(|| fallback_display_name.clone(), Arc::from);
         rows.push(PlaylistViewRow {
-            item_id: item.item_id(),
+            entry_id: entry.entry_id(),
+            item_id: representative_item.item_id(),
             fallback_display_name,
             display_title,
             duration: metadata.duration(),
             media_kind: metadata.media_kind(),
         });
-        row_indices.insert(item.item_id(), row_index);
+        match entry {
+            PlaylistEntry::Single(item) => {
+                row_indices.insert(item.item_id(), row_index);
+            }
+            PlaylistEntry::Compound(group) => {
+                for part in group.parts() {
+                    row_indices.insert(part.item().item_id(), row_index);
+                }
+            }
+        }
+        entry_indices.insert(entry.entry_id(), row_index);
     }
-    (rows.into(), Arc::new(row_indices))
+    BuiltPlaylistRows {
+        rows: rows.into(),
+        row_indices: Arc::new(row_indices),
+        entry_indices: Arc::new(entry_indices),
+    }
 }

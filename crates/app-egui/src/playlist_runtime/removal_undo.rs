@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use player_core::{MediaInstallRequestId, MediaInstanceId};
-use playlist_core::{PlaylistItemId, RemovalCurrentOutcome};
+use playlist_core::{PlaylistEntryId, PlaylistItemId, RemovalCurrentOutcome};
 
 use super::controller::{
     ControllerDestructiveRemoval, ControllerDestructiveRemovalOutcome, ControllerRemovalKind,
@@ -50,7 +50,7 @@ pub(crate) struct RemovalUndoStatus {
 pub(crate) enum RuntimeRemovalOutcome {
     Removed {
         kind: ControllerRemovalKind,
-        selected_item_id: Option<PlaylistItemId>,
+        selected_entry_id: Option<PlaylistEntryId>,
         current_outcome: RemovalCurrentOutcome,
         dirty: PlaylistDirtySignal,
         manual_navigation_invalidation: Option<ManualNavigationInvalidation>,
@@ -61,6 +61,12 @@ pub(crate) enum RuntimeRemovalOutcome {
     },
     DuplicateItemId {
         item_id: PlaylistItemId,
+    },
+    DuplicateEntryId {
+        entry_id: PlaylistEntryId,
+    },
+    EntryNotFound {
+        entry_id: PlaylistEntryId,
     },
     InvalidRetainedItem {
         item_id: PlaylistItemId,
@@ -89,7 +95,7 @@ pub(crate) enum RuntimeRemovalOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RemovalUndoOutcome {
     Restored {
-        selected_item_id: Option<PlaylistItemId>,
+        selected_entry_id: Option<PlaylistEntryId>,
         reattached_active: bool,
     },
     Unavailable,
@@ -226,7 +232,7 @@ impl PlaylistRuntime {
     /// Удаляет exact captured selection одним commit-ом и создаёт один Undo slot.
     pub(crate) fn remove_selected_playlist_items(
         &mut self,
-        item_ids: Arc<[PlaylistItemId]>,
+        entry_ids: Arc<[PlaylistEntryId]>,
         structural_revision: PlaylistStructuralRevision,
         now: Instant,
     ) -> RuntimeRemovalOutcome {
@@ -234,7 +240,7 @@ impl PlaylistRuntime {
             return RuntimeRemovalOutcome::LoadDecisionPending;
         };
         let dirty_before = controller.dirty_revision();
-        let outcome = controller.remove_selected_items(item_ids, structural_revision);
+        let outcome = controller.remove_selected_items(entry_ids, structural_revision);
         let runtime_outcome = self.store_removal_outcome(outcome, now);
         self.publish_controller_mutation_if_dirty(dirty_before);
         runtime_outcome
@@ -243,7 +249,7 @@ impl PlaylistRuntime {
     /// Удаляет exact captured complement selection одним commit-ом и одним Undo.
     pub(crate) fn remove_unselected_playlist_items(
         &mut self,
-        item_ids: Arc<[PlaylistItemId]>,
+        entry_ids: Arc<[PlaylistEntryId]>,
         structural_revision: PlaylistStructuralRevision,
         now: Instant,
     ) -> RuntimeRemovalOutcome {
@@ -251,7 +257,7 @@ impl PlaylistRuntime {
             return RuntimeRemovalOutcome::LoadDecisionPending;
         };
         let dirty_before = controller.dirty_revision();
-        let outcome = controller.remove_unselected_items(item_ids, structural_revision);
+        let outcome = controller.remove_unselected_items(entry_ids, structural_revision);
         let runtime_outcome = self.store_removal_outcome(outcome, now);
         self.publish_controller_mutation_if_dirty(dirty_before);
         runtime_outcome
@@ -278,7 +284,10 @@ impl PlaylistRuntime {
                 }
                 let summary = RuntimeRemovalOutcome::Removed {
                     kind: removal.kind,
-                    selected_item_id: removal.selection_after.selected_cursor(),
+                    selected_entry_id: self
+                        .controller
+                        .as_ref()
+                        .and_then(|controller| controller.selected_entry_id()),
                     current_outcome: removal.current_outcome,
                     dirty: removal.dirty,
                     manual_navigation_invalidation: removal.manual_navigation_invalidation,
@@ -297,6 +306,12 @@ impl PlaylistRuntime {
             }
             ControllerDestructiveRemovalOutcome::DuplicateItemId { item_id } => {
                 RuntimeRemovalOutcome::DuplicateItemId { item_id }
+            }
+            ControllerDestructiveRemovalOutcome::DuplicateEntryId { entry_id } => {
+                RuntimeRemovalOutcome::DuplicateEntryId { entry_id }
+            }
+            ControllerDestructiveRemovalOutcome::EntryNotFound { entry_id } => {
+                RuntimeRemovalOutcome::EntryNotFound { entry_id }
             }
             ControllerDestructiveRemovalOutcome::InvalidRetainedItem { item_id } => {
                 RuntimeRemovalOutcome::InvalidRetainedItem { item_id }
@@ -378,13 +393,13 @@ impl PlaylistRuntime {
         let removal = undo.removal.clone();
         match controller.restore_destructive_removal(removal) {
             ControllerRemovalUndoOutcome::Restored {
-                selected_item_id,
+                selected_entry_id,
                 reattached_active,
                 ..
             } => {
                 self.removal_undo = None;
                 let outcome = RemovalUndoOutcome::Restored {
-                    selected_item_id,
+                    selected_entry_id,
                     reattached_active,
                 };
                 self.publish_controller_mutation_if_dirty(dirty_before);

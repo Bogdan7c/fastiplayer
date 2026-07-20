@@ -51,9 +51,9 @@ pub(crate) fn apply_playlist_actions(
                 changed = true;
             }
             PlaylistAction::RemoveSelected(action) => {
-                let (item_ids, structural_revision) = action.into_parts();
+                let (entry_ids, structural_revision) = action.into_parts();
                 let outcome = runtime.remove_selected_playlist_items(
-                    item_ids,
+                    entry_ids,
                     structural_revision,
                     Instant::now(),
                 );
@@ -65,9 +65,9 @@ pub(crate) fn apply_playlist_actions(
                 );
             }
             PlaylistAction::RemoveUnselected(action) => {
-                let (item_ids, structural_revision) = action.into_parts();
+                let (entry_ids, structural_revision) = action.into_parts();
                 let outcome = runtime.remove_unselected_playlist_items(
-                    item_ids,
+                    entry_ids,
                     structural_revision,
                     Instant::now(),
                 );
@@ -79,8 +79,8 @@ pub(crate) fn apply_playlist_actions(
                 );
             }
             PlaylistAction::MoveItems(action) => {
-                let (item_ids, intent, structural_revision) = action.into_parts();
-                let outcome = runtime.move_playlist_items(item_ids, intent, structural_revision);
+                let (entry_ids, intent, structural_revision) = action.into_parts();
+                let outcome = runtime.move_playlist_items(entry_ids, intent, structural_revision);
                 changed |= matches!(
                     outcome,
                     RuntimeMoveItemsOutcome::Controller(ControllerMoveItemsOutcome::Moved { .. })
@@ -193,10 +193,10 @@ pub(crate) fn apply_playlist_actions(
                 let outcome = runtime.undo_last_removal(Instant::now());
                 // UI side effect выбирается из typed outcome без потери причины отказа.
                 match undo_removal_ui_effect(outcome) {
-                    UndoRemovalUiEffect::Restored { selected_item_id } => {
-                        // Focus возвращается exact selected item из восстановленного snapshot-а.
-                        if let Some(selected_item_id) = selected_item_id {
-                            app_state.request_playlist_row_focus(selected_item_id);
+                    UndoRemovalUiEffect::Restored { selected_entry_id } => {
+                        // Focus возвращается exact structural entry из восстановленного snapshot-а.
+                        if let Some(selected_entry_id) = selected_entry_id {
+                            app_state.request_playlist_row_focus(selected_entry_id);
                         }
                         tracing::debug!(
                             ?outcome,
@@ -233,9 +233,9 @@ pub(crate) fn apply_playlist_actions(
 /// UI-эффект typed Undo outcome не раскрывает controller storage вызывающему коду.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UndoRemovalUiEffect {
-    /// Snapshot восстановлен; exact selected item может отсутствовать у пустого selection.
+    /// Snapshot восстановлен; exact selected entry может отсутствовать у пустого selection.
     Restored {
-        selected_item_id: Option<playlist_core::PlaylistItemId>,
+        selected_entry_id: Option<playlist_core::PlaylistEntryId>,
     },
     /// Undo отклонён; пользователю показывается безопасная локализованная причина.
     Rejected { safe_message: &'static str },
@@ -245,8 +245,8 @@ enum UndoRemovalUiEffect {
 fn undo_removal_ui_effect(outcome: RemovalUndoOutcome) -> UndoRemovalUiEffect {
     match outcome {
         RemovalUndoOutcome::Restored {
-            selected_item_id, ..
-        } => UndoRemovalUiEffect::Restored { selected_item_id },
+            selected_entry_id, ..
+        } => UndoRemovalUiEffect::Restored { selected_entry_id },
         RemovalUndoOutcome::Unavailable => UndoRemovalUiEffect::Rejected {
             safe_message: "Отмена удаления уже недоступна",
         },
@@ -269,11 +269,11 @@ fn apply_removal_outcome(
     action_label: &'static str,
 ) -> bool {
     if let RuntimeRemovalOutcome::Removed {
-        selected_item_id, ..
+        selected_entry_id, ..
     } = outcome
     {
-        if let Some(selected_item_id) = selected_item_id {
-            app_state.request_playlist_row_focus(selected_item_id);
+        if let Some(selected_entry_id) = selected_entry_id {
+            app_state.request_playlist_row_focus(selected_entry_id);
         }
         return true;
     }
@@ -289,7 +289,7 @@ fn apply_removal_outcome(
 
 #[cfg(test)]
 mod tests {
-    use playlist_core::PlaylistItemId;
+    use playlist_core::{PlaylistEntryId, PlaylistItemId};
 
     use super::{UndoRemovalUiEffect, undo_removal_ui_effect};
     use crate::playlist_runtime::{ControllerRemovalUndoOutcome, RemovalUndoOutcome};
@@ -298,15 +298,16 @@ mod tests {
     fn successful_undo_preserves_exact_restored_focus_target() {
         let selected_item_id =
             PlaylistItemId::from_persistence_value(41).expect("test ItemId должен быть ненулевым");
+        let selected_entry_id = PlaylistEntryId::Single(selected_item_id);
         let outcome = RemovalUndoOutcome::Restored {
-            selected_item_id: Some(selected_item_id),
+            selected_entry_id: Some(selected_entry_id),
             reattached_active: true,
         };
 
         assert_eq!(
             undo_removal_ui_effect(outcome),
             UndoRemovalUiEffect::Restored {
-                selected_item_id: Some(selected_item_id)
+                selected_entry_id: Some(selected_entry_id)
             }
         );
     }

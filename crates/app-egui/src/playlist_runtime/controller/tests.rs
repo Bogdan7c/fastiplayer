@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use player_core::{MediaInstallRequestId, MediaInstanceId, PlaybackIntentRevision};
 use playlist_core::{
-    CachedPlaylistMetadata, LocalLocator, PlaylistItemDraft, PlaylistItemId, PlaylistMediaKind,
-    PrepareReservedMutationError, RepeatMode, ReservedQueueMutation,
+    CachedPlaylistMetadata, LocalLocator, PlaylistEntryId, PlaylistItemDraft, PlaylistItemId,
+    PlaylistMediaKind, PrepareReservedMutationError, RepeatMode, ReservedQueueMutation,
 };
 
 use super::*;
@@ -122,7 +122,10 @@ fn append_does_not_start_playback_and_visible_access_reuses_shared_rows() {
         selection_snapshot.shared_title_identity(73),
         shared_title_identity
     );
-    assert_eq!(selection_snapshot.selected_item_id(), Some(item_ids[73]));
+    assert_eq!(
+        selection_snapshot.selected_entry_id(),
+        Some(PlaylistEntryId::Single(item_ids[73]))
+    );
     assert_eq!(selection_snapshot.active_media(), None);
     assert_eq!(selection_snapshot.pending_target(), None);
 }
@@ -138,7 +141,8 @@ fn remove_selected_uses_d47_fallback_and_clears_persisted_current_without_active
     assert!(matches!(
         outcome,
         ControllerDestructiveRemovalOutcome::Removed(ref removal)
-            if removal.selection_after.selected_cursor() == Some(item_ids[2])
+            if removal.selection_after.interaction_cursor()
+                == Some(PlaylistEntryId::Single(item_ids[2]))
                 && matches!(
                     removal.current_outcome,
                     playlist_core::RemovalCurrentOutcome::Detached { removed_item_id }

@@ -14,9 +14,7 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 
-use playlist_core::{
-    PlaylistEntry, PlaylistEntryId, SecretUrlLocator, ServiceDurableReopenPayload,
-};
+use playlist_core::{PlaylistEntryId, SecretUrlLocator, ServiceDurableReopenPayload};
 use playlist_io::{
     PlaylistExportDocumentTarget, PlaylistExportFormat, PlaylistExportLocatorPolicy,
     PlaylistExportLocatorRejection, PlaylistExportScope, PlaylistExportSecretClassification,
@@ -664,7 +662,7 @@ impl PlaylistRuntime {
     }
 }
 
-/// Переводит playable selection в canonical top-level export scope.
+/// Возвращает canonical top-level export scope без part-to-group inference.
 pub(super) fn selected_export_entry_ids(
     controller: &super::controller::PlaylistController,
 ) -> Vec<PlaylistEntryId> {
@@ -672,18 +670,7 @@ pub(super) fn selected_export_entry_ids(
     let selection = controller.view_snapshot();
     queue
         .iter_top_level_entry_ids()
-        .filter(|entry_id| {
-            queue
-                .top_level_entry(*entry_id)
-                .is_some_and(|entry| match entry {
-                    PlaylistEntry::Single(item) => {
-                        selection.selection().is_selected(item.item_id())
-                    }
-                    PlaylistEntry::Compound(group) => group
-                        .parts()
-                        .any(|part| selection.selection().is_selected(part.item().item_id())),
-                })
-        })
+        .filter(|entry_id| selection.selection().is_selected(*entry_id))
         .collect()
 }
 

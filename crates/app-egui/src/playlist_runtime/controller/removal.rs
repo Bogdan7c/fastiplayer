@@ -10,8 +10,8 @@ use std::sync::Arc;
 use player_core::{ExactMediaTransportAction, ExactMediaTransportRequest};
 use playlist_core::{
     AutomaticEndedIntent, AutomaticTraversalPlan, AutomaticTraversalStart, BulkRemoveError,
-    BulkRemoveOutcome, PlaylistItemId, PlaylistRemovalSnapshot, RemovalCurrentOutcome,
-    RemovalSnapshotRestoreError, RemoveItemOutcome, RepeatMode,
+    BulkRemoveOutcome, PlaylistEntry, PlaylistEntryId, PlaylistItemId, PlaylistRemovalSnapshot,
+    RemovalCurrentOutcome, RemovalSnapshotRestoreError, RemoveItemOutcome, RepeatMode,
 };
 
 use super::{
@@ -96,6 +96,12 @@ pub(crate) enum ControllerDestructiveRemovalOutcome {
     DuplicateItemId {
         item_id: PlaylistItemId,
     },
+    DuplicateEntryId {
+        entry_id: PlaylistEntryId,
+    },
+    EntryNotFound {
+        entry_id: PlaylistEntryId,
+    },
     InvalidRetainedItem {
         item_id: PlaylistItemId,
     },
@@ -139,7 +145,7 @@ enum SelectionAfterRemoval {
     /// Снять selection и interaction cursor.
     Clear,
     /// Оставить единственный retained stable ID.
-    SelectSingle(PlaylistItemId),
+    SelectSingle(PlaylistEntryId),
     /// Перенести selection/focus на ближайшую surviving строку.
     SelectNearest,
 }
@@ -179,7 +185,7 @@ impl RemovalMutationError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ControllerRemovalUndoOutcome {
     Restored {
-        selected_item_id: Option<PlaylistItemId>,
+        selected_entry_id: Option<PlaylistEntryId>,
         reattached_active: bool,
         dirty: PlaylistDirtySignal,
     },
@@ -209,14 +215,15 @@ impl PlaylistController {
         if self.queue.item(item_id).is_none() {
             return ControllerDestructiveRemovalOutcome::NotFound { item_id };
         }
-        let selection_policy = if self.selection.snapshot().is_selected(item_id) {
+        let removed_entry_id = PlaylistEntryId::Single(item_id);
+        let selection_policy = if self.selection.snapshot().is_selected(removed_entry_id) {
             SelectionAfterRemoval::SelectNearest
         } else {
             SelectionAfterRemoval::PreserveSurvivors
         };
         self.commit_destructive_removal(
             ControllerRemovalKind::Remove,
-            Arc::from([item_id]),
+            Arc::from([removed_entry_id]),
             selection_policy,
             RemovedActiveMediaPolicy::DetachRemovedPlaylistItem,
             move |controller| match controller
@@ -258,15 +265,15 @@ impl PlaylistController {
                 item_id: retained_item_id,
             };
         }
-        let removed_item_ids = self
+        let removed_entry_ids = self
             .queue
-            .iter_playable_ids()
-            .filter(|item_id| *item_id != retained_item_id)
+            .iter_top_level_entry_ids()
+            .filter(|entry_id| *entry_id != retained_entry_id)
             .collect::<Vec<_>>();
         self.commit_destructive_removal(
             ControllerRemovalKind::RemoveOthers,
-            removed_item_ids.into(),
-            SelectionAfterRemoval::SelectSingle(retained_item_id),
+            removed_entry_ids.into(),
+            SelectionAfterRemoval::SelectSingle(retained_entry_id),
             RemovedActiveMediaPolicy::DetachRemovedPlaylistItem,
             |controller| match controller.queue.remove_others(retained_entry_id) {
                 Ok(BulkRemoveOutcome::Removed {
@@ -292,27 +299,25 @@ impl PlaylistController {
     /// Удаляет exact current selection одним domain `remove_batch` commit-ом.
     pub(crate) fn remove_selected_items(
         &mut self,
-        item_ids: Arc<[PlaylistItemId]>,
+        entry_ids: Arc<[PlaylistEntryId]>,
         expected_structural_revision: PlaylistStructuralRevision,
     ) -> ControllerDestructiveRemovalOutcome {
-        let preflight =
-            match self.preflight_exact_removal_ids(&item_ids, expected_structural_revision) {
-                Ok(preflight) => preflight,
+        let domain_entry_ids =
+            match self.preflight_exact_removal_entries(&entry_ids, expected_structural_revision) {
+                Ok(entry_ids) => entry_ids,
                 Err(outcome) => return outcome,
             };
-        let removed_item_ids = preflight.item_ids;
         let selection = self.selection.snapshot();
-        if selection.selected_count() != removed_item_ids.len()
-            || removed_item_ids
+        if selection.selected_count() != domain_entry_ids.len()
+            || domain_entry_ids
                 .iter()
-                .any(|item_id| !selection.is_selected(*item_id))
+                .any(|entry_id| !selection.is_selected(*entry_id))
         {
             return ControllerDestructiveRemovalOutcome::StaleSelection;
         }
-        let domain_entry_ids = preflight.entry_ids;
         self.commit_destructive_removal(
             ControllerRemovalKind::RemoveSelected,
-            item_ids,
+            entry_ids,
             SelectionAfterRemoval::SelectNearest,
             RemovedActiveMediaPolicy::DetachRemovedPlaylistItem,
             move |controller| match controller.queue.remove_batch(&domain_entry_ids) {
@@ -339,27 +344,25 @@ impl PlaylistController {
     /// Удаляет exact complement current selection одним domain commit-ом.
     pub(crate) fn remove_unselected_items(
         &mut self,
-        item_ids: Arc<[PlaylistItemId]>,
+        entry_ids: Arc<[PlaylistEntryId]>,
         expected_structural_revision: PlaylistStructuralRevision,
     ) -> ControllerDestructiveRemovalOutcome {
-        let preflight =
-            match self.preflight_exact_removal_ids(&item_ids, expected_structural_revision) {
-                Ok(preflight) => preflight,
+        let domain_entry_ids =
+            match self.preflight_exact_removal_entries(&entry_ids, expected_structural_revision) {
+                Ok(entry_ids) => entry_ids,
                 Err(outcome) => return outcome,
             };
-        let removed_item_ids = preflight.item_ids;
         let selection = self.selection.snapshot();
-        if selection.selected_count() + removed_item_ids.len() != self.queue.retained_item_count()
-            || removed_item_ids
+        if selection.selected_count() + domain_entry_ids.len() != self.queue.top_level_entry_count()
+            || domain_entry_ids
                 .iter()
-                .any(|item_id| selection.is_selected(*item_id))
+                .any(|entry_id| selection.is_selected(*entry_id))
         {
             return ControllerDestructiveRemovalOutcome::StaleSelection;
         }
-        let domain_entry_ids = preflight.entry_ids;
         self.commit_destructive_removal(
             ControllerRemovalKind::RemoveUnselected,
-            item_ids,
+            entry_ids,
             SelectionAfterRemoval::PreserveSurvivors,
             RemovedActiveMediaPolicy::DetachRemovedPlaylistItem,
             move |controller| match controller.queue.remove_batch(&domain_entry_ids) {
@@ -387,7 +390,7 @@ impl PlaylistController {
     fn commit_destructive_removal(
         &mut self,
         kind: ControllerRemovalKind,
-        removed_item_ids: Arc<[PlaylistItemId]>,
+        removed_entry_ids: Arc<[PlaylistEntryId]>,
         selection_policy: SelectionAfterRemoval,
         active_media_policy: RemovedActiveMediaPolicy,
         mutate: impl FnOnce(
@@ -414,8 +417,23 @@ impl PlaylistController {
         let current_before = self.queue.traversal_current();
         let snapshot = self.queue.capture_removal_snapshot();
         let active_before = self.active_media;
-        let removed_item_ids: HashSet<_> = removed_item_ids.iter().copied().collect();
-        let fallback_index = self.nearest_survivor_index(&removed_item_ids);
+        let removed_entry_ids: HashSet<_> = removed_entry_ids.iter().copied().collect();
+        let mut removed_item_ids = HashSet::new();
+        for entry in self
+            .queue
+            .iter_top_level_entries()
+            .filter(|entry| removed_entry_ids.contains(&entry.entry_id()))
+        {
+            match entry {
+                PlaylistEntry::Single(item) => {
+                    removed_item_ids.insert(item.item_id());
+                }
+                PlaylistEntry::Compound(group) => {
+                    removed_item_ids.extend(group.parts().map(|part| part.item().item_id()));
+                }
+            }
+        }
+        let fallback_index = self.nearest_survivor_index(&removed_entry_ids);
         let removed_active_item_id = active_before
             .and_then(ActiveMediaIdentity::item_id)
             .filter(|active_item_id| removed_item_ids.contains(active_item_id));
@@ -527,25 +545,28 @@ impl PlaylistController {
     }
 
     /// Находит insertion position ближайшей surviving строки относительно selection cursor.
-    fn nearest_survivor_index(&self, removed_item_ids: &HashSet<PlaylistItemId>) -> Option<usize> {
+    fn nearest_survivor_index(
+        &self,
+        removed_entry_ids: &HashSet<PlaylistEntryId>,
+    ) -> Option<usize> {
         let focus_origin = self
             .selection
             .interaction_cursor()
-            .filter(|item_id| removed_item_ids.contains(item_id))
+            .filter(|entry_id| removed_entry_ids.contains(entry_id))
             .or_else(|| {
                 self.queue
-                    .iter_playable_ids()
-                    .find(|item_id| removed_item_ids.contains(item_id))
+                    .iter_top_level_entry_ids()
+                    .find(|entry_id| removed_entry_ids.contains(entry_id))
             })?;
         let origin_index = self
             .queue
-            .iter_playable_ids()
-            .position(|item_id| item_id == focus_origin)?;
+            .iter_top_level_entry_ids()
+            .position(|entry_id| entry_id == focus_origin)?;
         Some(
             self.queue
-                .iter_playable_ids()
+                .iter_top_level_entry_ids()
                 .take(origin_index)
-                .filter(|item_id| !removed_item_ids.contains(item_id))
+                .filter(|entry_id| !removed_entry_ids.contains(entry_id))
                 .count(),
         )
     }
@@ -565,30 +586,30 @@ impl PlaylistController {
                 self.selection
                     .replace_after_removal(HashSet::new(), None, None);
             }
-            SelectionAfterRemoval::SelectSingle(item_id) => {
-                let selected_item_ids = self
+            SelectionAfterRemoval::SelectSingle(entry_id) => {
+                let selected_entry_ids = self
                     .queue
-                    .item(item_id)
-                    .map(|_| HashSet::from([item_id]))
+                    .top_level_entry(entry_id)
+                    .map(|_| HashSet::from([entry_id]))
                     .unwrap_or_default();
-                let cursor = (!selected_item_ids.is_empty()).then_some(item_id);
+                let cursor = (!selected_entry_ids.is_empty()).then_some(entry_id);
                 self.selection
-                    .replace_after_removal(selected_item_ids, cursor, cursor);
+                    .replace_after_removal(selected_entry_ids, cursor, cursor);
             }
             SelectionAfterRemoval::SelectNearest => {
-                let fallback_item_id = fallback_index.and_then(|index| {
+                let fallback_entry_id = fallback_index.and_then(|index| {
                     self.queue
-                        .iter_playable_ids()
+                        .iter_top_level_entry_ids()
                         .nth(index)
-                        .or_else(|| self.queue.iter_playable_ids().next_back())
+                        .or_else(|| self.queue.iter_top_level_entry_ids().next_back())
                 });
-                let selected_item_ids = fallback_item_id
-                    .map(|item_id| HashSet::from([item_id]))
+                let selected_entry_ids = fallback_entry_id
+                    .map(|entry_id| HashSet::from([entry_id]))
                     .unwrap_or_default();
                 self.selection.replace_after_removal(
-                    selected_item_ids,
-                    fallback_item_id,
-                    fallback_item_id,
+                    selected_entry_ids,
+                    fallback_entry_id,
+                    fallback_entry_id,
                 );
             }
         }
@@ -632,7 +653,7 @@ impl PlaylistController {
         let dirty = self.commit_dirty(next_dirty);
         self.publish_view(true);
         ControllerRemovalUndoOutcome::Restored {
-            selected_item_id: self.selection.selected_cursor(),
+            selected_entry_id: self.selected_entry_id(),
             reattached_active,
             dirty,
         }
