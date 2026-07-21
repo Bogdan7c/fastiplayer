@@ -570,14 +570,6 @@ impl PlaybackPipeline {
         self.tracks.len()
     }
 
-    /// Читает следующий packet через demux boundary, сохраняя absent-demuxer как no-op.
-    #[cfg(test)]
-    pub(crate) fn demux_next_packet(
-        &mut self,
-    ) -> Option<anyhow::Result<Option<media_core::Packet>>> {
-        self.demuxer.as_mut().map(|demuxer| demuxer.next_packet())
-    }
-
     /// Читает следующий demux event, сохраняя absent-demuxer как no-op.
     pub(crate) fn demux_next_event(&mut self) -> Option<anyhow::Result<DemuxReadEvent>> {
         self.demuxer.as_mut().map(|demuxer| demuxer.next_event())

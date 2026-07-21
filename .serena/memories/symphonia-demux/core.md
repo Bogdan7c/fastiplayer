@@ -35,3 +35,10 @@
 - `DualStreamDemuxer` больше не владеет generic composition: он остаётся тонким VP9 admission/compatibility adapter и делегирует boxed A/V interleave, remap, lifecycle и seek `demux_api::CompositeAvDemuxer`.
 - Observable public mapping `1=video, 2=audio` сохранён; seek/runtime error signatures не менялись. Generic composition details см. `mem:demux-api/core`.
 - Factory focused tests: `crates/symphonia-demux/src/factory/tests.rs`; compatibility seek tests остаются в `dual_stream_demuxer.rs`.
+
+## S21R event-first runtime migration (2026-07-21)
+
+- `SymphoniaDemuxer` и `DualStreamDemuxer` реализуют только required `media_core::Demuxer::next_event`; legacy generic `next_packet` compatibility loop удалён. Symphonia `FormatReader::next_packet` остаётся concrete upstream API внутри backend-а и test readers, а не neutral Demuxer boundary.
+- `ResetRequired`, metadata, packet и EOF теперь всегда наблюдаются как exact ordered `DemuxReadEvent`; тест `next_event_exposes_reset_lifecycle_before_following_packet` заменил старую packet-only compatibility семантику.
+- Concrete finite Symphonia seek verification не производит temporary readiness; невозможное появление этого event-а fail-closed через typed `DemuxError::UnexpectedTemporaryReadinessDuringSeekVerification`, без panic/busy loop.
+- `DualStreamDemuxer` получает bounded readiness/interleave semantics от `demux_api::CompositeAvDemuxer`; public track IDs и seek behavior не изменились. Full 132-test lib regression PASS на Rust 1.96.

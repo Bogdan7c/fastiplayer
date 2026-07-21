@@ -2,7 +2,7 @@
 //!
 //! Архитектура:
 //! ```text
-//! Demuxer::next_packet() → media_core::Packet { kind: Audio, data: encoded audio }
+//! Demuxer::next_event() → DemuxReadEvent::Packet { kind: Audio, data: encoded audio }
 //!     ↓
 //! AudioDecoder::decode(EncodedAudioPacket) → Vec<f32> (PCM interleaved)
 //!     ↓

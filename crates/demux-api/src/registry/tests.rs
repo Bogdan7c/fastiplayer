@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
-use media_core::{DemuxSeekResult, Demuxer, MediaTime, Packet, TrackInfo};
+use media_core::{DemuxReadEvent, DemuxSeekResult, Demuxer, MediaTime, TrackInfo};
 use source_core::{
     ByteSource, CancellationToken, NotSeekableReason, Seekability, SourceError, SourceFingerprint,
     SourceResult, SourceValidators,
@@ -35,8 +35,8 @@ impl Demuxer for EmptyDemuxer {
         None
     }
 
-    fn next_packet(&mut self) -> anyhow::Result<Option<Packet>> {
-        Ok(None)
+    fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+        Ok(DemuxReadEvent::EndOfStream)
     }
 
     fn seek(&mut self, timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {

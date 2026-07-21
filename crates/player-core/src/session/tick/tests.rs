@@ -36,6 +36,9 @@ struct AdmissionTestDemuxer {
     /// Packet FIFO позволяет проверить настоящий `read_demux_packets` route.
     packets: VecDeque<media_core::Packet>,
 
+    /// Explicit lifecycle/readiness events имеют приоритет над finite packet FIFO.
+    events: VecDeque<media_core::DemuxReadEvent>,
+
     /// Optional counter доказывает, что admission остановился до demux boundary.
     packet_read_count: Option<Arc<AtomicUsize>>,
 }
@@ -46,6 +49,7 @@ impl AdmissionTestDemuxer {
         Self {
             tracks: Vec::new(),
             packets: VecDeque::new(),
+            events: VecDeque::new(),
             packet_read_count: None,
         }
     }
@@ -58,6 +62,17 @@ impl AdmissionTestDemuxer {
         Self {
             tracks,
             packets: packets.into_iter().collect(),
+            events: VecDeque::new(),
+            packet_read_count: None,
+        }
+    }
+
+    /// Создаёт demuxer с exact event script для lifecycle/readiness admission tests.
+    fn with_events(events: impl IntoIterator<Item = media_core::DemuxReadEvent>) -> Self {
+        Self {
+            tracks: Vec::new(),
+            packets: VecDeque::new(),
+            events: events.into_iter().collect(),
             packet_read_count: None,
         }
     }
@@ -81,11 +96,16 @@ impl media_core::Demuxer for AdmissionTestDemuxer {
     }
 
     /// Возвращает scripted packet FIFO, а после него — штатный EOF.
-    fn next_packet(&mut self) -> anyhow::Result<Option<media_core::Packet>> {
+    fn next_event(&mut self) -> anyhow::Result<media_core::DemuxReadEvent> {
         if let Some(packet_read_count) = &self.packet_read_count {
             packet_read_count.fetch_add(1, Ordering::Relaxed);
         }
-        Ok(self.packets.pop_front())
+        if let Some(event) = self.events.pop_front() {
+            return Ok(event);
+        }
+        Ok(media_core::finite_packet_read_event(
+            self.packets.pop_front(),
+        ))
     }
 
     /// Seek возвращает requested point, чтобы fake оставался честным `Demuxer`.
@@ -2724,6 +2744,41 @@ fn read_demux_packets_without_demuxer_is_noop() {
     );
 
     assert_eq!(packets_read, 0);
+    assert!(tick_result.demuxed_packets.is_empty());
+    assert!(!tick_result.demux_backpressured);
+    assert!(session.snapshot().last_error.is_none());
+}
+
+#[test]
+fn temporary_demux_readiness_stops_current_pass_without_eof_or_error_mapping() {
+    let mut session = PlayerSession::new();
+    let tick_config = PlayerTickConfig::default();
+    let mut tick_result = PlayerTickResult::default();
+    let read_count = Arc::new(AtomicUsize::new(0));
+    let retry_hint = media_core::DemuxRetryHint::new(Duration::from_millis(25))
+        .expect("focused retry delay должен быть допустим");
+    let demuxer = AdmissionTestDemuxer::with_events([
+        media_core::DemuxReadEvent::TemporarilyUnavailable(retry_hint),
+        media_core::DemuxReadEvent::EndOfStream,
+    ])
+    .with_packet_read_count(Arc::clone(&read_count));
+    session
+        .pipeline
+        .install_opened_media(Box::new(demuxer), None, None, Vec::new());
+    session
+        .dispatch_command(PlayerCommand::Play)
+        .expect("play intent должен примениться к focused session");
+
+    let packets_read = read_demux_packets(
+        &mut session,
+        &tick_config,
+        &mut tick_result,
+        tick_config.max_demux_packets_per_tick,
+        None,
+    );
+
+    assert_eq!(packets_read, 0);
+    assert_eq!(read_count.load(Ordering::Relaxed), 1);
     assert!(tick_result.demuxed_packets.is_empty());
     assert!(!tick_result.demux_backpressured);
     assert!(session.snapshot().last_error.is_none());

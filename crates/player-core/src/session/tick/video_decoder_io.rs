@@ -1020,7 +1020,7 @@ mod tests {
     use super::*;
     use codec_core::{BitDepth, ChromaSubsampling, H264Profile, VideoProfile};
     use media_core::{
-        DemuxSeekResult, Demuxer, Packet, TimeBase, TrackInfo, TrackKind, VideoTrackMetadata,
+        DemuxSeekResult, Demuxer, TimeBase, TrackInfo, TrackKind, VideoTrackMetadata,
     };
     use video_frame_contract::VideoFramePixelLayout;
 
@@ -1110,8 +1110,8 @@ mod tests {
             Some(Duration::from_secs(1))
         }
 
-        fn next_packet(&mut self) -> anyhow::Result<Option<Packet>> {
-            Ok(None)
+        fn next_event(&mut self) -> anyhow::Result<media_core::DemuxReadEvent> {
+            Ok(media_core::DemuxReadEvent::EndOfStream)
         }
 
         fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {

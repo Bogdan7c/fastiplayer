@@ -101,6 +101,10 @@ pub enum DemuxError {
         /// Keyframe-классификация первого selected video packet-а, если он был найден.
         first_video_keyframe: Option<PacketKeyframe>,
     },
+
+    /// Concrete finite FormatReader path не должен публиковать live readiness.
+    #[error("Finite Symphonia seek verification неожиданно получила temporary readiness")]
+    UnexpectedTemporaryReadinessDuringSeekVerification,
 }
 
 impl DemuxError {

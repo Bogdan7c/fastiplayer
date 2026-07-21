@@ -7,8 +7,7 @@ use std::time::Duration;
 use anyhow::Result;
 use media_core::{
     DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
-    DemuxTrackListUpdate, Demuxer, Packet as OurPacket, TimelineNotSeekableReason, TrackId,
-    TrackInfo,
+    DemuxTrackListUpdate, Demuxer, TimelineNotSeekableReason, TrackId, TrackInfo,
 };
 use source_core::{
     ByteSource, CancellationToken, Seekability as SourceSeekability, SourceError, SourceResult,
@@ -592,17 +591,6 @@ impl Demuxer for SymphoniaDemuxer {
 
     fn seekability(&self) -> DemuxSeekability {
         self.seekability
-    }
-
-    fn next_packet(&mut self) -> Result<Option<OurPacket>> {
-        loop {
-            match self.next_event()? {
-                DemuxReadEvent::Packet(packet) => return Ok(Some(packet)),
-                DemuxReadEvent::EndOfStream => return Ok(None),
-                DemuxReadEvent::TracksChanged(_) => continue,
-                DemuxReadEvent::MediaMetadataChanged(_) => continue,
-            }
-        }
     }
 
     fn next_event(&mut self) -> Result<DemuxReadEvent> {

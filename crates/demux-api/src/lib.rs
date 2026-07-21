@@ -16,6 +16,7 @@ pub use composite::{
     CompositeAvDemuxer, CompositeAvDemuxerError, CompositeAvPublicTrackIds,
     CompositeAvTrackSelection, CompositeComponent, CompositeComponentLeadPolicy,
     CompositeComponentLeadPolicyError, CompositeComponentReadError, CompositeComponentSeekError,
+    CompositePendingPacketTooLargeError,
 };
 pub use identity::{
     DemuxContainerId, DemuxFactoryId, DemuxFixtureId, DemuxIdentityError, DemuxMimeType,

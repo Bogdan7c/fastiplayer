@@ -1228,11 +1228,11 @@ fn demux_boundaries_preserve_eof_and_seek_results() {
         Vec::new(),
     );
 
-    let packet_result = pipeline
-        .demux_next_packet()
+    let event = pipeline
+        .demux_next_event()
         .expect("installed demuxer должен быть видим через boundary")
         .expect("fake demuxer не должен возвращать ошибку");
-    assert!(packet_result.is_none());
+    assert_eq!(event, DemuxReadEvent::EndOfStream);
 
     let seek_result = pipeline
         .seek_demuxer(DemuxSeekRequest::accurate(Duration::from_secs(3)))
@@ -2180,8 +2180,8 @@ impl Demuxer for SourceSlotFakeDemuxer {
         Some(Duration::from_secs(30))
     }
 
-    fn next_packet(&mut self) -> anyhow::Result<Option<media_core::Packet>> {
-        Ok(None)
+    fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+        Ok(DemuxReadEvent::EndOfStream)
     }
 
     fn seek(&mut self, timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {

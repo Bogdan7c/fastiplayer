@@ -130,6 +130,75 @@ pub struct DemuxTrackListUpdate {
     pub duration: Option<Duration>,
 }
 
+/// Минимальная задержка повторного чтения, не допускающая немедленный busy loop.
+const MIN_DEMUX_RETRY_AFTER: Duration = Duration::from_millis(1);
+
+/// Максимальная задержка одного retry hint, ограничивающая ошибочный provider input.
+const MAX_DEMUX_RETRY_AFTER: Duration = Duration::from_secs(60);
+
+/// Ошибка построения bounded neutral retry hint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum DemuxRetryHintError {
+    /// Задержка меньше process-level safety minimum.
+    #[error("demux retry delay {requested:?} меньше минимума {minimum:?}")]
+    TooShort {
+        /// Значение, которое передал provider или adapter.
+        requested: Duration,
+        /// Минимальная безопасная задержка.
+        minimum: Duration,
+    },
+
+    /// Задержка больше process-level safety maximum.
+    #[error("demux retry delay {requested:?} превышает максимум {maximum:?}")]
+    TooLong {
+        /// Значение, которое передал provider или adapter.
+        requested: Duration,
+        /// Максимальная допустимая задержка.
+        maximum: Duration,
+    },
+}
+
+/// Bounded neutral подсказка о самом раннем безопасном повторном чтении.
+///
+/// Тип намеренно не несёт provider state, absolute deadline или player generation:
+/// этими данными владеют transport и player lifecycle соответственно.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DemuxRetryHint {
+    /// Проверенная относительная задержка до следующей попытки.
+    retry_after: Duration,
+}
+
+impl DemuxRetryHint {
+    /// Минимальная задержка, которая не превращает readiness в busy polling.
+    pub const MIN_RETRY_AFTER: Duration = MIN_DEMUX_RETRY_AFTER;
+
+    /// Максимальная задержка одного hint; более длинное ожидание дробится provider-ом.
+    pub const MAX_RETRY_AFTER: Duration = MAX_DEMUX_RETRY_AFTER;
+
+    /// Проверяет safety bounds и создаёт provider-neutral retry hint.
+    pub fn new(retry_after: Duration) -> Result<Self, DemuxRetryHintError> {
+        if retry_after < Self::MIN_RETRY_AFTER {
+            return Err(DemuxRetryHintError::TooShort {
+                requested: retry_after,
+                minimum: Self::MIN_RETRY_AFTER,
+            });
+        }
+        if retry_after > Self::MAX_RETRY_AFTER {
+            return Err(DemuxRetryHintError::TooLong {
+                requested: retry_after,
+                maximum: Self::MAX_RETRY_AFTER,
+            });
+        }
+        Ok(Self { retry_after })
+    }
+
+    /// Возвращает earliest относительную задержку для consumer-owned scheduler-а.
+    #[must_use]
+    pub const fn retry_after(self) -> Duration {
+        self.retry_after
+    }
+}
+
 impl DemuxTrackListUpdate {
     /// Создаёт явный update без раскрытия внутреннего storage demuxer-а.
     #[must_use]
@@ -147,11 +216,28 @@ pub enum DemuxReadEvent {
     /// Demuxer дошёл до конца stream-а.
     EndOfStream,
 
+    /// Source может продолжиться, но прямо сейчас следующий event ещё не готов.
+    ///
+    /// Событие не является packet, EOF или error и не меняет tracks/timeline state.
+    TemporarilyUnavailable(DemuxRetryHint),
+
     /// Container изменил track list, и decoder configs нужно построить заново.
     TracksChanged(DemuxTrackListUpdate),
 
     /// Нормализованные теги/контейнер изменились без изменения decoder topology.
     MediaMetadataChanged(crate::MediaMetadata),
+}
+
+/// Адаптирует finite/legacy packet result к единственному generic event contract-у.
+///
+/// Helper намеренно принимает уже успешный packet result: runtime error contract
+/// остаётся у concrete reader-а и не смешивается с EOF или temporary readiness.
+#[must_use]
+pub fn finite_packet_read_event(packet: Option<Packet>) -> DemuxReadEvent {
+    match packet {
+        Some(packet) => DemuxReadEvent::Packet(packet),
+        None => DemuxReadEvent::EndOfStream,
+    }
 }
 
 /// Trait, абстрагирующий источник media packets.
@@ -181,19 +267,11 @@ pub trait Demuxer: Send {
         }
     }
 
-    /// Возвращает следующий packet или `None`, если demuxer дошёл до EOF.
-    fn next_packet(&mut self) -> anyhow::Result<Option<Packet>>;
-
-    /// Возвращает следующий packet-level или lifecycle event из demuxer-а.
+    /// Возвращает следующий packet-level, lifecycle или readiness event.
     ///
-    /// Default сохраняет legacy contract для demuxer-ов, которые не имеют
-    /// lifecycle событий: packet остаётся packet-ом, `None` становится EOF.
-    fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
-        match self.next_packet()? {
-            Some(packet) => Ok(DemuxReadEvent::Packet(packet)),
-            None => Ok(DemuxReadEvent::EndOfStream),
-        }
-    }
+    /// Это единственный generic read method: finite packet-only реализации явно
+    /// используют `finite_packet_read_event`, не теряя различие EOF/readiness/error.
+    fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent>;
 
     /// Выполняет legacy accurate seek к позиции на media timeline.
     ///
@@ -244,8 +322,8 @@ mod tests {
             self.duration
         }
 
-        fn next_packet(&mut self) -> anyhow::Result<Option<Packet>> {
-            Ok(None)
+        fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+            Ok(finite_packet_read_event(None))
         }
 
         fn seek(&mut self, timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
@@ -279,8 +357,8 @@ mod tests {
             None
         }
 
-        fn next_packet(&mut self) -> anyhow::Result<Option<Packet>> {
-            Ok(self.packet.take())
+        fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+            Ok(finite_packet_read_event(self.packet.take()))
         }
 
         fn seek(&mut self, timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
@@ -304,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn default_next_event_maps_legacy_packet_and_eof() {
+    fn finite_packet_adapter_preserves_packet_then_eof_parity() {
         let mut demuxer = PacketThenEofDemuxer::new(test_packet());
 
         let first_event = demuxer
@@ -316,6 +394,42 @@ mod tests {
             .next_event()
             .expect("legacy EOF должен стать read event");
         assert_eq!(second_event, DemuxReadEvent::EndOfStream);
+    }
+
+    #[test]
+    fn retry_hint_accepts_exact_bounds_and_rejects_outside_values() {
+        let minimum = DemuxRetryHint::new(DemuxRetryHint::MIN_RETRY_AFTER)
+            .expect("exact minimum должен быть допустим");
+        let maximum = DemuxRetryHint::new(DemuxRetryHint::MAX_RETRY_AFTER)
+            .expect("exact maximum должен быть допустим");
+
+        assert_eq!(minimum.retry_after(), DemuxRetryHint::MIN_RETRY_AFTER);
+        assert_eq!(maximum.retry_after(), DemuxRetryHint::MAX_RETRY_AFTER);
+        assert!(matches!(
+            DemuxRetryHint::new(Duration::ZERO),
+            Err(DemuxRetryHintError::TooShort { .. })
+        ));
+        assert!(matches!(
+            DemuxRetryHint::new(DemuxRetryHint::MAX_RETRY_AFTER + Duration::from_nanos(1)),
+            Err(DemuxRetryHintError::TooLong { .. })
+        ));
+    }
+
+    #[test]
+    fn temporary_unavailable_is_not_packet_eof_or_error_mapping() {
+        let hint = DemuxRetryHint::new(Duration::from_millis(25))
+            .expect("focused retry delay должен быть допустим");
+        let temporary_event = DemuxReadEvent::TemporarilyUnavailable(hint);
+
+        assert_eq!(
+            temporary_event,
+            DemuxReadEvent::TemporarilyUnavailable(hint)
+        );
+        assert_ne!(temporary_event, finite_packet_read_event(None));
+        assert!(matches!(
+            finite_packet_read_event(Some(test_packet())),
+            DemuxReadEvent::Packet(_)
+        ));
     }
 
     #[test]

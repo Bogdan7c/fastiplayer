@@ -239,6 +239,11 @@ impl SymphoniaDemuxer {
                     }
                 }
                 DemuxReadEvent::MediaMetadataChanged(_) => continue,
+                DemuxReadEvent::TemporarilyUnavailable(_) => {
+                    return Err(
+                        DemuxError::UnexpectedTemporaryReadinessDuringSeekVerification.into(),
+                    );
+                }
                 DemuxReadEvent::EndOfStream => {
                     buffered_events.push_back(event);
 

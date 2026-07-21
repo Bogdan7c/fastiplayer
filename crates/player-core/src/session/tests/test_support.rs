@@ -110,20 +110,15 @@ impl Demuxer for FakeDemuxer {
         self.seekability
     }
 
-    fn next_packet(&mut self) -> anyhow::Result<Option<media_core::Packet>> {
-        Ok(self.packets.pop_front())
-    }
-
     fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
         if let Some(ref event_read_count) = self.event_read_count {
             event_read_count.fetch_add(1, Ordering::Relaxed);
         }
 
         let Some(event) = self.events.pop_front() else {
-            return match self.next_packet()? {
-                Some(packet) => Ok(DemuxReadEvent::Packet(packet)),
-                None => Ok(DemuxReadEvent::EndOfStream),
-            };
+            return Ok(media_core::finite_packet_read_event(
+                self.packets.pop_front(),
+            ));
         };
 
         if let DemuxReadEvent::TracksChanged(ref track_update) = event {

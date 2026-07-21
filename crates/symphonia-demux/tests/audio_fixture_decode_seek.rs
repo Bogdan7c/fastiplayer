@@ -246,6 +246,10 @@ fn drain_demuxer_to_real_eof(
             DemuxReadEvent::Packet(_)
             | DemuxReadEvent::TracksChanged(_)
             | DemuxReadEvent::MediaMetadataChanged(_) => {}
+            DemuxReadEvent::TemporarilyUnavailable(hint) => bail!(
+                "{}: finite fixture неожиданно вернула temporary readiness {hint:?}",
+                path.display()
+            ),
             DemuxReadEvent::EndOfStream => {
                 ensure!(
                     selected_packets > 0,
@@ -279,6 +283,10 @@ fn first_selected_audio_packet_after_replay(
             DemuxReadEvent::Packet(_)
             | DemuxReadEvent::TracksChanged(_)
             | DemuxReadEvent::MediaMetadataChanged(_) => {}
+            DemuxReadEvent::TemporarilyUnavailable(hint) => bail!(
+                "{}: finite replay неожиданно вернул temporary readiness {hint:?}",
+                path.display()
+            ),
             DemuxReadEvent::EndOfStream => bail!(
                 "{}: EOF arrived before selected audio replay packet",
                 path.display()
@@ -316,6 +324,10 @@ fn first_selected_audio_packet_covering_target(
             DemuxReadEvent::Packet(_)
             | DemuxReadEvent::TracksChanged(_)
             | DemuxReadEvent::MediaMetadataChanged(_) => {}
+            DemuxReadEvent::TemporarilyUnavailable(hint) => bail!(
+                "{}: finite seek неожиданно вернул temporary readiness {hint:?}",
+                path.display()
+            ),
             DemuxReadEvent::EndOfStream => {
                 bail!("{}: EOF arrived before target audio packet", path.display())
             }
@@ -390,6 +402,9 @@ fn decode_next_audio_samples(
             DemuxReadEvent::Packet(_)
             | DemuxReadEvent::TracksChanged(_)
             | DemuxReadEvent::MediaMetadataChanged(_) => {}
+            DemuxReadEvent::TemporarilyUnavailable(hint) => {
+                bail!("finite decode fixture неожиданно вернула temporary readiness {hint:?}")
+            }
             DemuxReadEvent::EndOfStream => {
                 bail!("EOF arrived before decoded audio samples {phase}")
             }

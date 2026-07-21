@@ -172,6 +172,16 @@ impl StagedVideoPacketProbeReader {
                         .push_back(packet.data);
                 }
                 DemuxReadEvent::Packet(_) | DemuxReadEvent::MediaMetadataChanged(_) => {}
+                DemuxReadEvent::TemporarilyUnavailable(hint) => {
+                    // S21W заменит этот pre-S21W capability guard resumable staged outcome-ом.
+                    return Err(PlayerError::new(
+                        PlayerErrorKind::DemuxError,
+                        format!(
+                            "Readiness-enabled staged source требует resumable S21W handoff (retry_after={:?})",
+                            hint.retry_after()
+                        ),
+                    ));
+                }
                 DemuxReadEvent::TracksChanged(_) => {
                     return Err(PlayerError::new(
                         PlayerErrorKind::DemuxError,

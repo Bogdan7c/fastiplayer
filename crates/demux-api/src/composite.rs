@@ -1,19 +1,20 @@
-use std::cmp::Ordering;
 use std::time::Duration;
 
 use anyhow::Result;
 use media_core::{
-    DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
-    DemuxTrackListUpdate, Demuxer, MediaMetadata, MediaTime, Packet, TrackId, TrackInfo, TrackKind,
-    TrackTimestamp,
+    DemuxReadEvent, DemuxRetryHint, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult,
+    DemuxSeekability, DemuxTrackListUpdate, Demuxer, MediaMetadata, MediaTime, Packet, TrackId,
+    TrackInfo, TrackKind, TrackTimestamp,
 };
 use tracing::debug;
 
 mod policy;
+mod readiness;
 mod track_layout;
 
 pub use policy::{CompositeComponentLeadPolicy, CompositeComponentLeadPolicyError};
 
+use readiness::ComponentLeadProgress;
 use track_layout::{
     collision_safe_audio_track_id, composite_duration, merge_media_metadata, remapped_tracks,
     selected_track,
@@ -112,6 +113,20 @@ pub struct CompositeComponentReadError {
     pub source: anyhow::Error,
 }
 
+/// Typed safety failure не позволяет удержать oversized packet в pending state.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "{component:?} component packet size {packet_bytes} превышает composite pending limit {maximum_bytes}"
+)]
+pub struct CompositePendingPacketTooLargeError {
+    /// Component, который вернул oversized selected packet.
+    pub component: CompositeComponent,
+    /// Фактический размер encoded payload.
+    pub packet_bytes: usize,
+    /// Validated byte ceiling из component lead policy.
+    pub maximum_bytes: usize,
+}
+
 /// Typed seek failure показывает, успела ли video side изменить cursor.
 #[derive(Debug, thiserror::Error)]
 #[error(
@@ -131,6 +146,8 @@ pub struct CompositeComponentSeekError {
 enum PendingFillOutcome {
     /// Pending packet/EOF state готов к interleave decision.
     Ready,
+    /// Component пока не может выдать новый event и сообщает earliest retry.
+    TemporarilyUnavailable(DemuxRetryHint),
     /// Один component обновил track list; composite публикует merged snapshot.
     TracksChanged(DemuxTrackListUpdate),
     /// Один component обновил metadata; composite публикует merged snapshot.
@@ -179,9 +196,9 @@ pub struct CompositeAvDemuxer {
     tracks: Vec<TrackInfo>,
     /// Video-primary duration semantics сохраняют existing dual-stream behavior.
     duration: Option<Duration>,
-    /// Не больше одного pending video packet в S21.
+    /// Не больше одного validated pending video packet.
     pending_video_packet: Option<Packet>,
-    /// Не больше одного pending audio packet в S21.
+    /// Не больше одного validated pending audio packet.
     pending_audio_packet: Option<Packet>,
     /// Terminal state video component-а.
     video_eof: bool,
@@ -191,8 +208,12 @@ pub struct CompositeAvDemuxer {
     post_seek_audio_bootstrap: PostSeekAudioBootstrap,
     /// Video-primary, audio-fallback metadata snapshot.
     media_metadata: MediaMetadata,
-    /// Validated bound, который S21R расширит до readiness gating.
+    /// Validated timestamp/bootstrap lead policy.
     lead_policy: CompositeComponentLeadPolicy,
+    /// Video-side timestamp/bootstrap progress.
+    video_lead_progress: ComponentLeadProgress,
+    /// Audio-side timestamp/bootstrap progress.
+    audio_lead_progress: ComponentLeadProgress,
 }
 
 impl CompositeAvDemuxer {
@@ -274,6 +295,8 @@ impl CompositeAvDemuxer {
             post_seek_audio_bootstrap: PostSeekAudioBootstrap::Inactive,
             media_metadata,
             lead_policy,
+            video_lead_progress: ComponentLeadProgress::default(),
+            audio_lead_progress: ComponentLeadProgress::default(),
         })
     }
 
@@ -302,6 +325,8 @@ impl CompositeAvDemuxer {
         self.video_eof = false;
         self.audio_eof = false;
         self.post_seek_audio_bootstrap = PostSeekAudioBootstrap::Inactive;
+        self.video_lead_progress = ComponentLeadProgress::default();
+        self.audio_lead_progress = ComponentLeadProgress::default();
     }
 
     /// Читает exact selected video packet или один lifecycle event.
@@ -321,14 +346,19 @@ impl CompositeAvDemuxer {
                 DemuxReadEvent::Packet(packet)
                     if packet.track_id == self.selection.video_track_id =>
                 {
-                    self.pending_video_packet =
-                        Some(packet.with_track_id(self.public_video_track_id));
+                    self.store_pending_packet(
+                        CompositeComponent::Video,
+                        packet.with_track_id(self.public_video_track_id),
+                    )?;
                     return Ok(PendingFillOutcome::Ready);
                 }
                 DemuxReadEvent::Packet(_) => continue,
                 DemuxReadEvent::EndOfStream => {
                     self.video_eof = true;
                     return Ok(PendingFillOutcome::Ready);
+                }
+                DemuxReadEvent::TemporarilyUnavailable(hint) => {
+                    return Ok(PendingFillOutcome::TemporarilyUnavailable(hint));
                 }
                 DemuxReadEvent::TracksChanged(_) => return self.refresh_tracks_after_inner_reset(),
                 DemuxReadEvent::MediaMetadataChanged(_) => {
@@ -355,14 +385,19 @@ impl CompositeAvDemuxer {
                 DemuxReadEvent::Packet(packet)
                     if packet.track_id == self.selection.audio_track_id =>
                 {
-                    self.pending_audio_packet =
-                        Some(packet.with_track_id(self.public_audio_track_id));
+                    self.store_pending_packet(
+                        CompositeComponent::Audio,
+                        packet.with_track_id(self.public_audio_track_id),
+                    )?;
                     return Ok(PendingFillOutcome::Ready);
                 }
                 DemuxReadEvent::Packet(_) => continue,
                 DemuxReadEvent::EndOfStream => {
                     self.audio_eof = true;
                     return Ok(PendingFillOutcome::Ready);
+                }
+                DemuxReadEvent::TemporarilyUnavailable(hint) => {
+                    return Ok(PendingFillOutcome::TemporarilyUnavailable(hint));
                 }
                 DemuxReadEvent::TracksChanged(_) => return self.refresh_tracks_after_inner_reset(),
                 DemuxReadEvent::MediaMetadataChanged(_) => {
@@ -401,6 +436,8 @@ impl CompositeAvDemuxer {
         self.pending_video_packet = None;
         self.pending_audio_packet = None;
         self.post_seek_audio_bootstrap = PostSeekAudioBootstrap::Inactive;
+        self.video_lead_progress = ComponentLeadProgress::default();
+        self.audio_lead_progress = ComponentLeadProgress::default();
         Ok(PendingFillOutcome::TracksChanged(
             DemuxTrackListUpdate::new(self.tracks.clone(), self.duration),
         ))
@@ -420,8 +457,9 @@ impl CompositeAvDemuxer {
         if self.post_seek_audio_bootstrap == PostSeekAudioBootstrap::Inactive {
             return None;
         }
+        let packet = self.pending_audio_packet.take()?;
         self.post_seek_audio_bootstrap = PostSeekAudioBootstrap::Inactive;
-        self.pending_audio_packet.take()
+        Some(packet)
     }
 
     /// Собирает один seek result merged timeline с stable public track IDs.
@@ -485,55 +523,8 @@ impl Demuxer for CompositeAvDemuxer {
         }
     }
 
-    fn next_packet(&mut self) -> Result<Option<Packet>> {
-        loop {
-            match self.next_event()? {
-                DemuxReadEvent::Packet(packet) => return Ok(Some(packet)),
-                DemuxReadEvent::EndOfStream => return Ok(None),
-                DemuxReadEvent::TracksChanged(_) | DemuxReadEvent::MediaMetadataChanged(_) => {}
-            }
-        }
-    }
-
     fn next_event(&mut self) -> Result<DemuxReadEvent> {
-        match self.fill_pending_video_event()? {
-            PendingFillOutcome::TracksChanged(update) => {
-                return Ok(DemuxReadEvent::TracksChanged(update));
-            }
-            PendingFillOutcome::MediaMetadataChanged(metadata) => {
-                return Ok(DemuxReadEvent::MediaMetadataChanged(metadata));
-            }
-            PendingFillOutcome::Ready => {}
-        }
-        match self.fill_pending_audio_event()? {
-            PendingFillOutcome::TracksChanged(update) => {
-                return Ok(DemuxReadEvent::TracksChanged(update));
-            }
-            PendingFillOutcome::MediaMetadataChanged(metadata) => {
-                return Ok(DemuxReadEvent::MediaMetadataChanged(metadata));
-            }
-            PendingFillOutcome::Ready => {}
-        }
-        if let Some(audio_packet) = self.take_post_seek_audio_bootstrap_packet() {
-            return Ok(DemuxReadEvent::Packet(audio_packet));
-        }
-        match (
-            self.pending_video_packet.take(),
-            self.pending_audio_packet.take(),
-        ) {
-            (Some(video_packet), Some(audio_packet)) => {
-                if video_packet.presentation_order_cmp(&audio_packet) != Ordering::Greater {
-                    self.pending_audio_packet = Some(audio_packet);
-                    Ok(DemuxReadEvent::Packet(video_packet))
-                } else {
-                    self.pending_video_packet = Some(video_packet);
-                    Ok(DemuxReadEvent::Packet(audio_packet))
-                }
-            }
-            (Some(video_packet), None) => Ok(DemuxReadEvent::Packet(video_packet)),
-            (None, Some(audio_packet)) => Ok(DemuxReadEvent::Packet(audio_packet)),
-            (None, None) => Ok(DemuxReadEvent::EndOfStream),
-        }
+        self.read_next_composite_event()
     }
 
     fn seek(&mut self, timestamp: Duration) -> Result<DemuxSeekResult> {

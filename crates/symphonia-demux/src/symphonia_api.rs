@@ -12,7 +12,7 @@ use symphonia::core::units::{Time, TimeBase, Timestamp};
 
 use crate::error::DemuxError;
 
-/// Owned Symphonia reader, который demuxer хранит между вызовами `next_packet`.
+/// Owned Symphonia reader, который demuxer хранит между generic `next_event` вызовами.
 pub(crate) type FormatReaderBox<'source> = Box<dyn FormatReader + 'source>;
 
 /// Создаёт probe hint из расширения, не раскрывая Symphonia API в demuxer-е.

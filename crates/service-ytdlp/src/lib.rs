@@ -1316,12 +1316,12 @@ mod tests {
                 reason: TimelineNotSeekableReason::SourceNotSeekable
             }
         );
-        assert!(
+        assert!(matches!(
             demuxer
-                .next_packet()
-                .expect("fallback playback reads packets")
-                .is_some()
-        );
+                .next_event()
+                .expect("fallback playback reads packets"),
+            media_core::DemuxReadEvent::Packet(_)
+        ));
         assert!(
             video_server
                 .requests()
@@ -1498,12 +1498,12 @@ mod tests {
                 reason: TimelineNotSeekableReason::SourceNotSeekable
             }
         ));
-        assert!(
+        assert!(matches!(
             demuxer
-                .next_packet()
-                .expect("selected fallback reads packets")
-                .is_some()
-        );
+                .next_event()
+                .expect("selected fallback reads packets"),
+            media_core::DemuxReadEvent::Packet(_)
+        ));
     }
 
     #[test]

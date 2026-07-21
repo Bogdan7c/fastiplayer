@@ -408,6 +408,14 @@ pub(super) fn read_demux_packets(
                 session.enter_eof_drain();
                 break;
             }
+            Ok(DemuxReadEvent::TemporarilyUnavailable(hint)) => {
+                trace!(
+                    retry_after_ms = hint.retry_after().as_millis(),
+                    "Demux временно не готов; retry scheduling принадлежит S21W"
+                );
+                // Readiness не является packet, EOF или error и не мутирует lifecycle.
+                break;
+            }
             Ok(DemuxReadEvent::TracksChanged(track_update)) => {
                 session.note_demux_tracks_changed_for_seek_preroll_diagnostics();
                 session.handle_demux_track_list_update(track_update);

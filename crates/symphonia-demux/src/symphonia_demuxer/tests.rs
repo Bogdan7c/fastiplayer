@@ -809,7 +809,7 @@ fn reset_required_keeps_media_info_duration_when_tracks_do_not_have_duration() {
 }
 
 #[test]
-fn next_packet_compatibility_skips_reset_lifecycle_event() {
+fn next_event_exposes_reset_lifecycle_before_following_packet() {
     let reader = FakeFormatReader::new(
         vec![aac_audio_track_with_timing(
             2,
@@ -833,11 +833,17 @@ fn next_packet_compatibility_skips_reset_lifecycle_event() {
     )
     .expect("fake demuxer должен открыться");
 
-    let packet = demuxer
-        .next_packet()
-        .expect("compat next_packet не должен считать ResetRequired ошибкой")
+    let track_event = demuxer
+        .next_event()
+        .expect("ResetRequired должен стать lifecycle event");
+    let packet_event = demuxer
+        .next_event()
         .expect("следующий packet нового track-а должен быть доступен");
+    let DemuxReadEvent::Packet(packet) = packet_event else {
+        panic!("после TracksChanged ожидался packet, получено {packet_event:?}");
+    };
 
+    assert!(matches!(track_event, DemuxReadEvent::TracksChanged(_)));
     assert_eq!(packet.track_id, TrackId::new(3));
     assert_eq!(packet.kind, TrackKind::Audio);
 }
@@ -892,10 +898,12 @@ fn preview_seek_clears_decode_point_prebuffer_without_verification() {
     demuxer
         .seek_with_request(DemuxSeekRequest::preview(Duration::from_secs(10)))
         .expect("preview-mode seek не должен запускать DecodePointBefore verification");
-    let packet = demuxer
-        .next_packet()
-        .expect("preview packet должен читаться после seek")
-        .expect("preview-mode seek не должен съесть post-seek packet");
+    let packet_event = demuxer
+        .next_event()
+        .expect("preview packet должен читаться после seek");
+    let DemuxReadEvent::Packet(packet) = packet_event else {
+        panic!("preview-mode seek должен вернуть packet, получено {packet_event:?}");
+    };
 
     assert_eq!(packet.pts, Duration::from_secs(11));
     assert_eq!(
@@ -1270,10 +1278,12 @@ fn decode_point_before_seek_success_prebuffers_verified_video_packet() {
             Duration::from_millis(500),
         ))
         .expect("keyframe packet до target должен принять DecodePointBefore");
-    let packet = demuxer
-        .next_packet()
-        .expect("prebuffered packet должен читаться без ошибки")
-        .expect("verification не должна терять packet");
+    let packet_event = demuxer
+        .next_event()
+        .expect("prebuffered packet должен читаться без ошибки");
+    let DemuxReadEvent::Packet(packet) = packet_event else {
+        panic!("verification должна сохранить packet, получено {packet_event:?}");
+    };
 
     assert_eq!(
         seek_result.actual_position,
@@ -1307,10 +1317,12 @@ fn decode_point_before_seek_accepts_startup_keyframe_after_zero() {
     let seek_result = demuxer
         .seek_with_request(DemuxSeekRequest::decode_point_before(Duration::ZERO))
         .expect("стартовый keyframe сразу после zero seek должен приниматься");
-    let packet = demuxer
-        .next_packet()
-        .expect("startup packet должен остаться в prebuffer")
-        .expect("verification не должна терять startup packet");
+    let packet_event = demuxer
+        .next_event()
+        .expect("startup packet должен остаться в prebuffer");
+    let DemuxReadEvent::Packet(packet) = packet_event else {
+        panic!("verification должна сохранить startup packet, получено {packet_event:?}");
+    };
 
     assert_eq!(
         seek_result.actual_position,
@@ -1456,10 +1468,12 @@ fn decode_point_before_seek_accepts_unknown_keyframe_before_target() {
             Duration::from_millis(500),
         ))
         .expect("unknown keyframe до target не должен блокировать seek полностью");
-    let packet = demuxer
-        .next_packet()
-        .expect("prebuffered packet должен читаться")
-        .expect("packet должен вернуться pipeline");
+    let packet_event = demuxer
+        .next_event()
+        .expect("prebuffered packet должен читаться");
+    let DemuxReadEvent::Packet(packet) = packet_event else {
+        panic!("packet должен вернуться pipeline, получено {packet_event:?}");
+    };
 
     assert_eq!(
         seek_result.actual_position,
@@ -1688,14 +1702,20 @@ fn decode_point_before_accepts_keyframe_after_initial_inter_frame_in_prefix() {
             Duration::from_millis(116_449),
         ))
         .expect("verification должен принять keyframe внутри bounded prefix-а");
-    let first_packet = demuxer
-        .next_packet()
-        .expect("prebuffered inter-frame должен читаться")
-        .expect("verification prefix должен сохранить первый packet");
-    let accepted_packet = demuxer
-        .next_packet()
-        .expect("prebuffered keyframe должен читаться")
-        .expect("verification prefix должен сохранить accepted keyframe");
+    let first_event = demuxer
+        .next_event()
+        .expect("prebuffered inter-frame должен читаться");
+    let DemuxReadEvent::Packet(first_packet) = first_event else {
+        panic!("verification prefix должен сохранить первый packet, получено {first_event:?}");
+    };
+    let accepted_event = demuxer
+        .next_event()
+        .expect("prebuffered keyframe должен читаться");
+    let DemuxReadEvent::Packet(accepted_packet) = accepted_event else {
+        panic!(
+            "verification prefix должен сохранить accepted keyframe, получено {accepted_event:?}"
+        );
+    };
 
     assert_eq!(
         seek_result.actual_position,
@@ -2003,15 +2023,15 @@ fn metadata_revisions_precede_packets_without_changing_packet_order() {
 }
 
 #[test]
-fn normal_eof_returns_none_without_error() {
+fn normal_eof_returns_terminal_event_without_error() {
     let mut demuxer =
         fake_demuxer_with_options(Vec::new(), HashMap::new(), DemuxerOptions::default());
 
-    let packet = demuxer
-        .next_packet()
+    let event = demuxer
+        .next_event()
         .expect("normal EOF не должен быть ошибкой");
 
-    assert!(packet.is_none());
+    assert_eq!(event, DemuxReadEvent::EndOfStream);
 }
 
 #[test]
@@ -2068,11 +2088,11 @@ fn subtitle_packets_are_skipped_without_unknown_track_error() {
     )
     .expect("subtitle track не должен ломать open");
 
-    let packet = demuxer
-        .next_packet()
+    let event = demuxer
+        .next_event()
         .expect("subtitle packet должен быть пропущен без fatal ошибки");
 
-    assert!(packet.is_none());
+    assert_eq!(event, DemuxReadEvent::EndOfStream);
 }
 
 #[test]
@@ -2086,11 +2106,11 @@ fn unexpected_eof_error_is_kept_as_defensive_eof_fallback() {
         DemuxerOptions::default(),
     );
 
-    let packet = demuxer
-        .next_packet()
+    let event = demuxer
+        .next_event()
         .expect("defensive UnexpectedEof fallback должен остаться EOF");
 
-    assert!(packet.is_none());
+    assert_eq!(event, DemuxReadEvent::EndOfStream);
 }
 
 #[test]
@@ -2116,8 +2136,8 @@ fn decode_error_from_format_reader_is_parse_error_without_retry() {
     .expect("fake demuxer должен открыться");
 
     let error = demuxer
-        .next_packet()
-        .expect_err("structural DecodeError из next_packet должен быть fatal");
+        .next_event()
+        .expect_err("structural DecodeError из next_event должен быть fatal");
     let demux_error = error
         .downcast_ref::<DemuxError>()
         .expect("fatal должен остаться typed DemuxError");
@@ -2146,7 +2166,7 @@ fn packet_for_unknown_track_is_fatal() {
     );
 
     let error = demuxer
-        .next_packet()
+        .next_event()
         .expect_err("unknown track должен быть fatal");
     let demux_error = error
         .downcast_ref::<DemuxError>()
@@ -2177,14 +2197,18 @@ fn uncertain_vp9_keyframe_probe_is_returned_without_demux_error() {
         DemuxerOptions::default(),
     );
 
-    let first_packet = demuxer
-        .next_packet()
-        .expect("неуверенная keyframe-проба не должна становиться fatal corruption")
-        .expect("packet с неизвестным keyframe должен быть возвращён");
-    let second_packet = demuxer
-        .next_packet()
-        .expect("повторная неуверенная keyframe-проба не должна копить corruption counter")
-        .expect("второй packet с неизвестным keyframe должен быть возвращён");
+    let first_event = demuxer
+        .next_event()
+        .expect("неуверенная keyframe-проба не должна становиться fatal corruption");
+    let DemuxReadEvent::Packet(first_packet) = first_event else {
+        panic!("packet с неизвестным keyframe должен быть возвращён: {first_event:?}");
+    };
+    let second_event = demuxer
+        .next_event()
+        .expect("повторная неуверенная keyframe-проба не должна копить corruption counter");
+    let DemuxReadEvent::Packet(second_packet) = second_event else {
+        panic!("второй packet с неизвестным keyframe должен быть возвращён: {second_event:?}");
+    };
 
     assert_eq!(first_packet.pts, Duration::ZERO);
     assert_eq!(first_packet.keyframe, PacketKeyframe::Unknown);

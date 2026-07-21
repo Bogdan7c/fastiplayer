@@ -5,15 +5,16 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use media_core::{
-    DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
-    DemuxTrackListUpdate, Demuxer, DiscNumber, MediaContainerMetadata, MediaMetadata,
-    MediaTagMetadata, MediaTime, Packet, TrackId, TrackInfo, TrackKind, TrackNumber,
+    DemuxReadEvent, DemuxRetryHint, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult,
+    DemuxSeekability, DemuxTrackListUpdate, Demuxer, DiscNumber, MediaContainerMetadata,
+    MediaMetadata, MediaTagMetadata, MediaTime, Packet, TrackId, TrackInfo, TrackKind, TrackNumber,
     TvEpisodeNumber, TvSeasonNumber,
 };
 
 use super::{
     CompositeAvDemuxer, CompositeAvTrackSelection, CompositeComponent,
     CompositeComponentLeadPolicy, CompositeComponentLeadPolicyError, CompositeComponentSeekError,
+    CompositePendingPacketTooLargeError,
 };
 
 /// Scripted component поддерживает lifecycle/seek tests без concrete container backend-а.
@@ -64,16 +65,6 @@ impl Demuxer for ScriptedDemuxer {
 
     fn duration(&self) -> Option<Duration> {
         self.duration
-    }
-
-    fn next_packet(&mut self) -> anyhow::Result<Option<Packet>> {
-        loop {
-            match self.next_event()? {
-                DemuxReadEvent::Packet(packet) => return Ok(Some(packet)),
-                DemuxReadEvent::EndOfStream => return Ok(None),
-                DemuxReadEvent::TracksChanged(_) | DemuxReadEvent::MediaMetadataChanged(_) => {}
-            }
-        }
     }
 
     fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
@@ -128,6 +119,12 @@ fn packet(id: u32, kind: TrackKind, pts_ms: u64, marker: &'static [u8]) -> Packe
         kind == TrackKind::Video,
         Bytes::from_static(marker),
     )
+}
+
+/// Строит validated retry hint без повторения bounds boilerplate в сценариях.
+fn retry_hint(retry_after_ms: u64) -> DemuxRetryHint {
+    DemuxRetryHint::new(Duration::from_millis(retry_after_ms))
+        .expect("focused retry delay должен быть допустим")
 }
 
 fn lead_policy() -> CompositeComponentLeadPolicy {
@@ -352,9 +349,6 @@ fn component_seekability_is_conjunctive() {
                 reason: media_core::TimelineNotSeekableReason::SourceNotSeekable,
             }
         }
-        fn next_packet(&mut self) -> anyhow::Result<Option<Packet>> {
-            self.0.next_packet()
-        }
         fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
             self.0.next_event()
         }
@@ -441,4 +435,231 @@ fn metadata_merge_preserves_video_precedence_and_audio_fallbacks() {
         merged_metadata.tags.tv_episode_number,
         Some(TvEpisodeNumber::new(5))
     );
+}
+
+#[test]
+fn both_unavailable_components_return_minimum_earliest_retry() {
+    let video_events = VecDeque::from([
+        DemuxReadEvent::TemporarilyUnavailable(retry_hint(50)),
+        DemuxReadEvent::EndOfStream,
+    ]);
+    let audio_events = VecDeque::from([
+        DemuxReadEvent::TemporarilyUnavailable(retry_hint(20)),
+        DemuxReadEvent::EndOfStream,
+    ]);
+    let (mut composite, _, _) = composite(
+        vec![track(11, TrackKind::Video, "V_H264", 10_000)],
+        vec![track(22, TrackKind::Audio, "A_AAC", 10_000)],
+        video_events,
+        audio_events,
+        SeekBehavior::Success(MediaTime::ZERO),
+        SeekBehavior::Success(MediaTime::ZERO),
+    );
+
+    let event = composite
+        .next_event()
+        .expect("temporary readiness не должна становиться error");
+
+    assert_eq!(
+        event,
+        DemuxReadEvent::TemporarilyUnavailable(retry_hint(20))
+    );
+    assert!(!composite.video_eof);
+    assert!(!composite.audio_eof);
+}
+
+#[test]
+fn bootstrap_starvation_reaches_cap_and_recovers_in_event_order() {
+    let video_events = VecDeque::from([
+        DemuxReadEvent::Packet(packet(11, TrackKind::Video, 0, b"v0")),
+        DemuxReadEvent::Packet(packet(11, TrackKind::Video, 40, b"v40")),
+        DemuxReadEvent::Packet(packet(11, TrackKind::Video, 80, b"v80")),
+        DemuxReadEvent::EndOfStream,
+    ]);
+    let audio_events = VecDeque::from([
+        DemuxReadEvent::TemporarilyUnavailable(retry_hint(10)),
+        DemuxReadEvent::TemporarilyUnavailable(retry_hint(10)),
+        DemuxReadEvent::TemporarilyUnavailable(retry_hint(10)),
+        DemuxReadEvent::Packet(packet(22, TrackKind::Audio, 0, b"a0")),
+        DemuxReadEvent::Packet(packet(22, TrackKind::Audio, 40, b"a40")),
+        DemuxReadEvent::Packet(packet(22, TrackKind::Audio, 80, b"a80")),
+        DemuxReadEvent::EndOfStream,
+    ]);
+    let (mut composite, _, _) = composite(
+        vec![track(11, TrackKind::Video, "V_H264", 10_000)],
+        vec![track(22, TrackKind::Audio, "A_AAC", 10_000)],
+        video_events,
+        audio_events,
+        SeekBehavior::Success(MediaTime::ZERO),
+        SeekBehavior::Success(MediaTime::ZERO),
+    );
+
+    let first_video = composite
+        .next_event()
+        .expect("один bootstrap packet разрешён policy");
+    assert!(matches!(
+        first_video,
+        DemuxReadEvent::Packet(ref packet) if packet.data.as_ref() == b"v0"
+    ));
+
+    let first_capped_retry = composite
+        .next_event()
+        .expect("достижение cap должно быть readiness, а не error");
+    let second_capped_retry = composite
+        .next_event()
+        .expect("долгая starvation должна сохранять readiness");
+    assert_eq!(
+        first_capped_retry,
+        DemuxReadEvent::TemporarilyUnavailable(retry_hint(10))
+    );
+    assert_eq!(second_capped_retry, first_capped_retry);
+    assert_eq!(
+        composite
+            .pending_video_packet
+            .as_ref()
+            .map(|packet| packet.data.len()),
+        Some(b"v40".len())
+    );
+    assert!(composite.pending_audio_packet.is_none());
+
+    let mut recovered_markers = Vec::new();
+    loop {
+        match composite
+            .next_event()
+            .expect("recovery должна сохранить packet/event order")
+        {
+            DemuxReadEvent::Packet(packet) => recovered_markers.push(packet.data),
+            DemuxReadEvent::EndOfStream => break,
+            DemuxReadEvent::TemporarilyUnavailable(_) => {
+                panic!("scripted component уже восстановился")
+            }
+            DemuxReadEvent::TracksChanged(_) | DemuxReadEvent::MediaMetadataChanged(_) => {
+                panic!("fixture не содержит lifecycle events")
+            }
+        }
+    }
+    assert_eq!(
+        recovered_markers,
+        vec![
+            Bytes::from_static(b"a0"),
+            Bytes::from_static(b"v40"),
+            Bytes::from_static(b"a40"),
+            Bytes::from_static(b"v80"),
+            Bytes::from_static(b"a80"),
+        ]
+    );
+}
+
+#[test]
+fn timestamp_lead_holds_one_packet_until_lagging_component_recovers() {
+    let video_events = VecDeque::from([
+        DemuxReadEvent::Packet(packet(11, TrackKind::Video, 0, b"v0")),
+        DemuxReadEvent::Packet(packet(11, TrackKind::Video, 4_000, b"v4000")),
+        DemuxReadEvent::Packet(packet(11, TrackKind::Video, 6_000, b"v6000")),
+        DemuxReadEvent::EndOfStream,
+    ]);
+    let audio_events = VecDeque::from([
+        DemuxReadEvent::Packet(packet(22, TrackKind::Audio, 0, b"a0")),
+        DemuxReadEvent::TemporarilyUnavailable(retry_hint(15)),
+        DemuxReadEvent::TemporarilyUnavailable(retry_hint(15)),
+        DemuxReadEvent::TemporarilyUnavailable(retry_hint(15)),
+        DemuxReadEvent::Packet(packet(22, TrackKind::Audio, 5_500, b"a5500")),
+        DemuxReadEvent::EndOfStream,
+    ]);
+    let (mut composite, _, _) = composite(
+        vec![track(11, TrackKind::Video, "V_H264", 10_000)],
+        vec![track(22, TrackKind::Audio, "A_AAC", 10_000)],
+        video_events,
+        audio_events,
+        SeekBehavior::Success(MediaTime::ZERO),
+        SeekBehavior::Success(MediaTime::ZERO),
+    );
+
+    assert!(matches!(
+        composite.next_event().expect("video zero packet"),
+        DemuxReadEvent::Packet(ref packet) if packet.data.as_ref() == b"v0"
+    ));
+    assert!(matches!(
+        composite.next_event().expect("audio zero packet"),
+        DemuxReadEvent::Packet(ref packet) if packet.data.as_ref() == b"a0"
+    ));
+    assert!(matches!(
+        composite
+            .next_event()
+            .expect("ready side может идти внутри timestamp lead"),
+        DemuxReadEvent::Packet(ref packet) if packet.data.as_ref() == b"v4000"
+    ));
+    assert_eq!(
+        composite.next_event().expect("timestamp lead cap"),
+        DemuxReadEvent::TemporarilyUnavailable(retry_hint(15))
+    );
+    assert_eq!(
+        composite.next_event().expect("continued starvation"),
+        DemuxReadEvent::TemporarilyUnavailable(retry_hint(15))
+    );
+    assert_eq!(
+        composite
+            .pending_video_packet
+            .as_ref()
+            .map(|packet| packet.data.as_ref()),
+        Some(b"v6000".as_slice())
+    );
+    assert!(matches!(
+        composite.next_event().expect("lagging audio recovery"),
+        DemuxReadEvent::Packet(ref packet) if packet.data.as_ref() == b"a5500"
+    ));
+    assert!(matches!(
+        composite.next_event().expect("held video recovery"),
+        DemuxReadEvent::Packet(ref packet) if packet.data.as_ref() == b"v6000"
+    ));
+}
+
+#[test]
+fn oversized_pending_packet_fails_before_composite_retains_it() {
+    let video_tracks = vec![track(11, TrackKind::Video, "V_H264", 10_000)];
+    let audio_tracks = vec![track(22, TrackKind::Audio, "A_AAC", 10_000)];
+    let video_demuxer = ScriptedDemuxer::new(
+        video_tracks,
+        Some(Duration::from_secs(10)),
+        VecDeque::from([DemuxReadEvent::Packet(packet(
+            11,
+            TrackKind::Video,
+            0,
+            b"oversized",
+        ))]),
+        SeekBehavior::Success(MediaTime::ZERO),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    let audio_demuxer = ScriptedDemuxer::new(
+        audio_tracks,
+        Some(Duration::from_secs(10)),
+        VecDeque::from([DemuxReadEvent::TemporarilyUnavailable(retry_hint(10))]),
+        SeekBehavior::Success(MediaTime::ZERO),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    let policy = CompositeComponentLeadPolicy::new(
+        Duration::from_secs(5),
+        NonZeroUsize::new(2).expect("non-zero packet cap"),
+        NonZeroUsize::new(3).expect("non-zero byte cap"),
+    )
+    .expect("small focused policy remains within safety ceilings");
+    let mut composite = CompositeAvDemuxer::new(
+        Box::new(video_demuxer),
+        Box::new(audio_demuxer),
+        CompositeAvTrackSelection::new(TrackId::new(11), TrackId::new(22)),
+        policy,
+    )
+    .expect("composite opens before first packet read");
+
+    let error = composite
+        .next_event()
+        .expect_err("oversized pending packet должен нарушить memory invariant");
+    let typed_error = error
+        .downcast_ref::<CompositePendingPacketTooLargeError>()
+        .expect("ошибка должна сохранять typed composite safety context");
+
+    assert_eq!(typed_error.component, CompositeComponent::Video);
+    assert_eq!(typed_error.packet_bytes, b"oversized".len());
+    assert_eq!(typed_error.maximum_bytes, 3);
+    assert!(composite.pending_video_packet.is_none());
 }

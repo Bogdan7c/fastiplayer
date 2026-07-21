@@ -13,8 +13,9 @@ mod time;
 mod track;
 
 pub use demux::{
-    DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
-    DemuxTrackListUpdate, Demuxer, MediaDemuxError,
+    DemuxReadEvent, DemuxRetryHint, DemuxRetryHintError, DemuxSeekMode, DemuxSeekRequest,
+    DemuxSeekResult, DemuxSeekability, DemuxTrackListUpdate, Demuxer, MediaDemuxError,
+    finite_packet_read_event,
 };
 pub use metadata::{
     DiscNumber, MediaContainerMetadata, MediaMetadata, MediaTagMetadata, TrackNumber,

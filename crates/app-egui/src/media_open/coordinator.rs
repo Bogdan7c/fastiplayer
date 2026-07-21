@@ -832,7 +832,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, SystemTime};
 
-    use media_core::{DemuxSeekResult, Demuxer, Packet};
+    use media_core::{DemuxSeekResult, Demuxer};
     use playlist_discovery::{LocalMediaFingerprint, LocalMediaKind};
     use service_ytdlp::{
         YtDlpDirectStreamDescriptor, YtDlpDirectStreamUrl, YtDlpDynamicRange,
@@ -865,8 +865,8 @@ mod tests {
             None
         }
 
-        fn next_packet(&mut self) -> anyhow::Result<Option<Packet>> {
-            Ok(None)
+        fn next_event(&mut self) -> anyhow::Result<media_core::DemuxReadEvent> {
+            Ok(media_core::DemuxReadEvent::EndOfStream)
         }
 
         fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {

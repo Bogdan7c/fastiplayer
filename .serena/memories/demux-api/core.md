@@ -22,8 +22,9 @@
 - `TracksChanged` пересобирает merged snapshot, сохраняя public IDs; metadata остаётся video-primary, audio заполняет только пропуски.
 - Seek сохраняет старые runtime signatures: video получает исходный request, audio получает Accurate для DecodePointBefore; partial failure сохраняется в downcastable `CompositeComponentSeekError`.
 - Duration fallback: selected video track → selected audio track → video demux duration → audio demux duration.
-- Bounded `CompositeComponentLeadPolicy` вынесена в `src/composite/policy.rs`; S21 использует один pending packet. Реальная readiness/`next_event`-only read migration остаётся S21R.
-- Runtime owner: `src/composite.rs`; track validation/remap/static metadata: `src/composite/track_layout.rs`.
+- Bounded `CompositeComponentLeadPolicy` живёт в `src/composite/policy.rs`; S21R применяет timestamp lead после появления comparable PTS и bootstrap packet/byte caps до него.
+- Readiness/lead accounting вынесен в `src/composite/readiness.rs`: не больше одного validated pending packet на component, oversized pending payload даёт typed `CompositePendingPacketTooLargeError`, required unavailable hints объединяются по minimum earliest retry, EOF component больше не ограничивает живой peer, общий EOS публикуется только после terminal state обеих required components.
+- `media_core::Demuxer` теперь required `next_event`-only; generic `next_packet` отсутствует. Runtime owner: `src/composite.rs`; track validation/remap/static metadata: `src/composite/track_layout.rs`.
 
 ## Проверки
 

@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use media_core::{
-    DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, Packet,
-    TrackInfo, TrackKind,
+    DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, TrackInfo,
+    TrackKind,
 };
 
 use crate::symphonia_demuxer::SymphoniaDemuxer;
@@ -92,10 +92,6 @@ impl Demuxer for DualStreamDemuxer {
 
     fn seekability(&self) -> DemuxSeekability {
         self.inner.seekability()
-    }
-
-    fn next_packet(&mut self) -> Result<Option<Packet>> {
-        self.inner.next_packet()
     }
 
     fn next_event(&mut self) -> Result<DemuxReadEvent> {
@@ -623,6 +619,9 @@ mod tests {
                 }
                 DemuxReadEvent::TracksChanged(_) => continue,
                 DemuxReadEvent::MediaMetadataChanged(_) => continue,
+                DemuxReadEvent::TemporarilyUnavailable(hint) => panic!(
+                    "finite post-seek fixture не должна возвращать temporary readiness: {hint:?}"
+                ),
                 DemuxReadEvent::EndOfStream => panic!("audio bootstrap ended before audio packet"),
             }
         }
@@ -641,10 +640,12 @@ mod tests {
                 10,
             )))
             .expect("dual DecodePointBefore seek succeeds");
-        let packet = demuxer
-            .next_packet()
-            .expect("post-seek packet read should not fail")
-            .expect("post-seek packet should exist");
+        let packet_event = demuxer
+            .next_event()
+            .expect("post-seek packet read should not fail");
+        let DemuxReadEvent::Packet(packet) = packet_event else {
+            panic!("post-seek packet должен существовать, получено {packet_event:?}");
+        };
 
         assert_eq!(packet.kind, TrackKind::Video);
         assert_eq!(packet.pts, Duration::from_secs(4));

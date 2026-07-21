@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use media_core::{
     DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, MediaMetadata,
-    Packet, TrackInfo,
+    TrackInfo,
 };
 
 /// Сохраняет наблюдаемый demux order после чтения candidate header-а до commit-а.
@@ -59,7 +59,9 @@ impl PrefetchedDemuxer {
             DemuxReadEvent::MediaMetadataChanged(metadata) => {
                 self.visible_media_metadata = Some(metadata.clone());
             }
-            DemuxReadEvent::Packet(_) | DemuxReadEvent::EndOfStream => {}
+            DemuxReadEvent::Packet(_)
+            | DemuxReadEvent::EndOfStream
+            | DemuxReadEvent::TemporarilyUnavailable(_) => {}
         }
     }
 
@@ -95,17 +97,6 @@ impl Demuxer for PrefetchedDemuxer {
         self.visible_seekability
     }
 
-    /// Сохраняет legacy packet-only contract, пропуская lifecycle events после их применения.
-    fn next_packet(&mut self) -> anyhow::Result<Option<Packet>> {
-        loop {
-            match self.next_event()? {
-                DemuxReadEvent::Packet(packet) => return Ok(Some(packet)),
-                DemuxReadEvent::EndOfStream => return Ok(None),
-                DemuxReadEvent::TracksChanged(_) | DemuxReadEvent::MediaMetadataChanged(_) => {}
-            }
-        }
-    }
-
     /// Сначала возвращает prefetched events, затем продолжает реальный demuxer.
     fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
         let event = match self.replay_events.pop_front() {
@@ -128,5 +119,76 @@ impl Demuxer for PrefetchedDemuxer {
         let seek_result = self.inner.seek_with_request(request)?;
         self.refresh_visible_snapshots_after_seek();
         Ok(seek_result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use media_core::{DemuxRetryHint, MediaTime};
+
+    /// Finite inner demuxer доказывает переход replay wrapper-а к underlying source.
+    struct FiniteInnerDemuxer {
+        /// Scripted события после исчерпания replay queue.
+        events: VecDeque<DemuxReadEvent>,
+    }
+
+    impl Demuxer for FiniteInnerDemuxer {
+        fn tracks(&self) -> &[TrackInfo] {
+            &[]
+        }
+
+        fn duration(&self) -> Option<Duration> {
+            Some(Duration::from_secs(99))
+        }
+
+        fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+            Ok(self
+                .events
+                .pop_front()
+                .unwrap_or(DemuxReadEvent::EndOfStream))
+        }
+
+        fn seek(&mut self, timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+            Ok(DemuxSeekResult {
+                requested_position: MediaTime::from_duration(timestamp),
+                actual_position: MediaTime::from_duration(timestamp),
+                actual_track_timestamp: None,
+            })
+        }
+    }
+
+    #[test]
+    fn temporary_replay_event_preserves_visible_snapshots_and_identity() {
+        let retry_hint = DemuxRetryHint::new(Duration::from_millis(25))
+            .expect("focused retry delay должен быть допустим");
+        let temporary_event = DemuxReadEvent::TemporarilyUnavailable(retry_hint);
+        let inner = FiniteInnerDemuxer {
+            events: VecDeque::from([DemuxReadEvent::EndOfStream]),
+        };
+        let mut demuxer = PrefetchedDemuxer::new(
+            Box::new(inner),
+            Vec::new(),
+            Some(Duration::from_secs(10)),
+            DemuxSeekability::Seekable,
+            None,
+            VecDeque::from([temporary_event.clone()]),
+        );
+
+        let replayed_event = demuxer
+            .next_event()
+            .expect("temporary replay event не должен становиться error");
+
+        assert_eq!(replayed_event, temporary_event);
+        assert_eq!(demuxer.duration(), Some(Duration::from_secs(10)));
+        assert_eq!(demuxer.seekability(), DemuxSeekability::Seekable);
+        assert!(demuxer.tracks().is_empty());
+        assert_eq!(
+            demuxer
+                .next_event()
+                .expect("после replay wrapper должен продолжить inner source"),
+            DemuxReadEvent::EndOfStream
+        );
     }
 }

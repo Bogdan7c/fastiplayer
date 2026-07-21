@@ -102,6 +102,6 @@
 - Full ownership, identity, request-material, HLS compatibility, limitations and verification contract: `mem:media-services/ytdlp-candidate-normalization-s19-2026-07-21`.
 
 
-## S21 demux registration boundary (2026-07-21)
+## S21/S21R demux registration и event-first read boundary (2026-07-21)
 
-Neutral typed demux registry/composition теперь принадлежит `demux-api`; подробные contracts и расположение tests см. `mem:demux-api/core`. Media services и composition roots должны передавать typed input capability/hints/budget и регистрировать concrete factories, не встраивая probe/container policy обратно в service owner. Runtime `media_core::Demuxer` в S21 не мигрирован; `next_event`-only readiness migration остаётся S21R.
+Neutral typed demux registry/composition принадлежит `demux-api`; подробные contracts и tests см. `mem:demux-api/core`. `media_core::Demuxer` теперь read-only через required `next_event`; generic `next_packet` удалён. `DemuxReadEvent::TemporarilyUnavailable(DemuxRetryHint)` является отдельной nonterminal readiness identity, не EOF/error/track mutation, а finite packet mapping централизован в `media_core::finite_packet_read_event`. Media services/composition roots должны передавать typed input capability/hints/budget и concrete factories, не встраивая probe/container policy обратно в service owner. Readiness-enabled staged install и generation-fenced player retry scheduling остаются S21W; current services до него не публикуют temporary readiness в staged preflight.

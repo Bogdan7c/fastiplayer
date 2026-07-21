@@ -146,3 +146,8 @@
 - `PlayerSession` owns absolute source position/duration/window internally; `PlayerSnapshot`, timeline targets, position events and receipts remain relative to window start. Ordinary Seek clamps; strict SetPosition keeps typed range rejection.
 - Bounded end is synthetic EOF through the existing drain contract. Packets/frames outside the window are dropped, crossing PCM is trimmed before tempo/output, and replay from `Ended` seeks to the absolute window start.
 - Focused tests live in `crates/player-core/src/session/tests/playback_window.rs`; pure PCM-bound tests live in `crates/player-core/src/session/audio_playback_bounds.rs`.
+
+## S21R event-first demux consumption (2026-07-21)
+- `PlaybackPipeline` exposes only `demux_next_event`; test-only generic `demux_next_packet` boundary удалён. `PrefetchedDemuxer` replay-ит `TemporarilyUnavailable` byte-for-byte и не меняет visible tracks/duration/seekability/metadata.
+- Installed `read_demux_packets` прекращает текущий pass на temporary readiness без packet budget, EOF/drain/error/backpressure mutation и без второго demux read в том же tick. Focused test: `temporary_demux_readiness_stops_current_pass_without_eof_or_error_mapping`.
+- Exact retry deadline, media-instance/source/seek generation fencing и resumable staged preflight принадлежат S21W. До S21W readiness-enabled source не допускается через strong staged packet probe: boundary возвращает явный pre-commit capability error и сохраняет старый installed media; current VOD demuxers temporary readiness не производят.
