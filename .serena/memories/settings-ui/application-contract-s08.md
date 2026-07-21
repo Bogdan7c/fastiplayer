@@ -1,5 +1,12 @@
 # Settings Apply Contract — Session 08
 
+## S20Q — global preferred video height (2026-07-21)
+
+- `yt_dlp.preferred_video_height` имеет explicit checked contract `MediaService / MediaSourceLifecycle / MediaSourceRebuild` с pipeline test scenarios.
+- Apply вызывает existing strong active-YtDlp reopen с reselection; quality-only route не перестраивает local/direct source, mixed network+quality сохраняет remote rebuild. Persisted config содержит только global preference; per-item override остаётся runtime-only.
+- Полный config/selection contract: `mem:config/schema-v7-quality-preference-2026-07-21`.
+
+
 - Session 08 (2026-07-11) added the checked application matrix in `crates/rustiplayer-settings/src/application_contract.rs`.
 - `SettingApplicationContract` maps every editable `AppConfig` descriptor to exactly one `AppRuntimeRoute`, `SettingStateOwner`, intent-based `SettingApplyMechanism`, rollback owner, and focused test scenario set.
 - The mapping deliberately matches stable setting ids explicitly rather than by prefix. `every_editable_setting_has_one_checked_live_application_contract` iterates the generated registry, so a newly editable descriptor without a matrix row fails the focused test.

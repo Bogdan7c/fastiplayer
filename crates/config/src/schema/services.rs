@@ -1,6 +1,91 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use super::YtDlpHdrSelection;
+
+/// Верхняя граница persisted preference, синхронизированная app boundary с `web-media-core`.
+pub const MAX_PREFERRED_VIDEO_HEIGHT: u32 = 16_384;
+
+/// Проверенная глобальная высота video representation в пикселях.
+///
+/// Тип принадлежит config crate и намеренно ничего не знает о feature-level
+/// `web_media_core::VideoHeight`; их связывает только composition root приложения.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "u32", into = "u32")]
+pub struct PreferredVideoHeight(u32);
+
+impl PreferredVideoHeight {
+    /// Создаёт preference только для поддерживаемого ненулевого диапазона.
+    pub const fn new(pixels: u32) -> Result<Self, PreferredVideoHeightError> {
+        if pixels == 0 {
+            return Err(PreferredVideoHeightError::Zero);
+        }
+        if pixels > MAX_PREFERRED_VIDEO_HEIGHT {
+            return Err(PreferredVideoHeightError::TooLarge {
+                provided_pixels: pixels,
+                maximum_pixels: MAX_PREFERRED_VIDEO_HEIGHT,
+            });
+        }
+        Ok(Self(pixels))
+    }
+
+    /// Возвращает проверенную высоту в пикселях.
+    #[must_use]
+    pub const fn pixels(self) -> u32 {
+        self.0
+    }
+}
+
+impl TryFrom<u32> for PreferredVideoHeight {
+    type Error = PreferredVideoHeightError;
+
+    /// Валидирует raw TOML/settings значение на config boundary.
+    fn try_from(pixels: u32) -> Result<Self, Self::Error> {
+        Self::new(pixels)
+    }
+}
+
+impl From<PreferredVideoHeight> for u32 {
+    /// Возвращает scalar для стабильной TOML-сериализации newtype-а.
+    fn from(height: PreferredVideoHeight) -> Self {
+        height.pixels()
+    }
+}
+
+/// Ошибка config-owned проверки preferred video height.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreferredVideoHeightError {
+    /// Ноль не описывает video representation и не используется как скрытый `None`.
+    Zero,
+    /// Значение превышает именованную compatibility-границу.
+    TooLarge {
+        /// Полученное значение.
+        provided_pixels: u32,
+        /// Максимально допустимое значение.
+        maximum_pixels: u32,
+    },
+}
+
+impl fmt::Display for PreferredVideoHeightError {
+    /// Форматирует безопасную ошибку без media locator-ов или других secrets.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Zero => {
+                formatter.write_str("предпочитаемая высота видео должна быть больше нуля")
+            }
+            Self::TooLarge {
+                provided_pixels,
+                maximum_pixels,
+            } => write!(
+                formatter,
+                "предпочитаемая высота видео {provided_pixels} превышает максимум {maximum_pixels}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PreferredVideoHeightError {}
 
 /// Настройки аудио.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, settings_derive::SettingsSchema)]
@@ -219,64 +304,19 @@ impl Default for NetworkConfig {
 }
 
 /// Настройки YtDlp/service слоя.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, settings_derive::SettingsSchema)]
-#[settings(require_all_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct YtDlpConfig {
     /// Разрешает YtDlp adapter.
-    #[setting(
-        id = "yt_dlp.enabled",
-        path = "yt_dlp.enabled",
-        section = "yt_dlp",
-        group = "service",
-        surface = "main-settings-window",
-        label_id = "settings.yt_dlp.enabled.label",
-        label_ru = "YtDlp adapter",
-        description_id = "settings.yt_dlp.enabled.description",
-        description_ru = "Разрешает YtDlp service adapter.",
-        editor = "toggle",
-        apply = "yt_dlp.apply"
-    )]
     pub enabled: bool,
 
     /// Политика выбора SDR/HDR stream-а до открытия media bytes.
-    #[setting(
-        id = "yt_dlp.hdr_selection",
-        path = "yt_dlp.hdr_selection",
-        section = "yt_dlp",
-        group = "service",
-        surface = "main-settings-window",
-        label_id = "settings.yt_dlp.hdr_selection.label",
-        label_ru = "Динамический диапазон YtDlp",
-        description_id = "settings.yt_dlp.hdr_selection.description",
-        description_ru = "Выбирать только SDR или предпочитать HDR при полной поддержке decoder и renderer с автоматическим SDR fallback.",
-        editor = "select",
-        apply = "yt_dlp.apply",
-        options(
-            option(id = "sdr_only", label_id = "settings.yt_dlp.hdr_selection.sdr_only", label_ru = "Только SDR", value = YtDlpHdrSelection::SdrOnly),
-            option(id = "prefer_hdr", label_id = "settings.yt_dlp.hdr_selection.prefer_hdr", label_ru = "Предпочитать HDR", value = YtDlpHdrSelection::PreferHdrWhenAvailable),
-        )
-    )]
     pub hdr_selection: YtDlpHdrSelection,
 
+    /// Глобальная preferred height; `None` сохраняет обычный `BestPlayable`.
+    pub preferred_video_height: Option<PreferredVideoHeight>,
+
     /// Максимальное время подготовки direct stream metadata через `yt-dlp`.
-    #[setting(
-        id = "yt_dlp.resolve_timeout_ms",
-        path = "yt_dlp.resolve_timeout_ms",
-        section = "yt_dlp",
-        group = "service",
-        surface = "main-settings-window",
-        label_id = "settings.yt_dlp.resolve_timeout_ms.label",
-        label_ru = "YtDlp resolve timeout",
-        description_id = "settings.yt_dlp.resolve_timeout_ms.description",
-        description_ru = "Максимальное время подготовки direct stream metadata через yt-dlp.",
-        editor = "integer",
-        min = 1,
-        max = crate::validation::MAX_YT_DLP_RESOLVE_TIMEOUT_MS,
-        step = 100,
-        unit = "ms",
-        apply = "yt_dlp.apply"
-    )]
     pub resolve_timeout_ms: u64,
 }
 
@@ -286,6 +326,7 @@ impl Default for YtDlpConfig {
         Self {
             enabled: true,
             hdr_selection: YtDlpHdrSelection::SdrOnly,
+            preferred_video_height: None,
             resolve_timeout_ms: 30_000,
         }
     }

@@ -4,6 +4,7 @@ use capability_core::{SelectedVideoStream, SystemCapabilities, UnsupportedVideoR
 use codec_core::{VideoCodec, VideoDecodeRequirement};
 use rustiplayer_config::YtDlpHdrSelection;
 use thiserror::Error;
+use web_media_core::{PreferredHeightPolicy, VideoHeight, VideoHeightError};
 
 use crate::{
     YtDlpDynamicRange, YtDlpStreamCandidate, YtDlpStreamCandidates, YtDlpVideoRequirement,
@@ -26,6 +27,12 @@ pub enum YtDlpCandidateRejectionReason {
 
     /// Codec отсутствует в пользовательском порядке предпочтения.
     CodecNotPreferred,
+
+    /// Service сообщил высоту за пределами neutral video contract.
+    InvalidVideoHeight {
+        /// Точная checked-value ошибка neutral owner-а.
+        error: VideoHeightError,
+    },
 
     /// Полный decoder/frame-contract/renderer intersection отклонил candidate.
     Capability(UnsupportedVideoRequirement),
@@ -63,11 +70,12 @@ pub enum YtDlpStreamSelectionError {
     },
 }
 
-/// Выбирает stream по codec order и HDR policy, не открывая ни одного media source.
+/// Выбирает stream по HDR/codec/height policy, не открывая media source.
 pub fn select_yt_dlp_stream(
     stream_candidates: &YtDlpStreamCandidates,
     preferred_codecs: &[VideoCodec],
     hdr_selection: YtDlpHdrSelection,
+    preferred_height: PreferredHeightPolicy,
     system_capabilities: &SystemCapabilities,
 ) -> Result<SelectedVideoStream, YtDlpStreamSelectionError> {
     if stream_candidates.candidates.is_empty() {
@@ -90,6 +98,7 @@ pub fn select_yt_dlp_stream(
                 *preferred_codec,
                 *dynamic_range,
                 hdr_selection,
+                preferred_height,
                 system_capabilities,
                 &mut rejections,
             ) {
@@ -154,24 +163,32 @@ fn intrinsic_rejection(
         return Some(YtDlpCandidateRejectionReason::UnknownDynamicRange);
     }
 
+    if let Err(error) = candidate_video_height(candidate) {
+        return Some(YtDlpCandidateRejectionReason::InvalidVideoHeight { error });
+    }
+
     (!preferred_codecs.contains(&requirement.codec))
         .then_some(YtDlpCandidateRejectionReason::CodecNotPreferred)
 }
 
-/// Выбирает лучший по quality candidate внутри одного codec/dynamic-range bucket-а.
+/// Выбирает лучший по height/quality внутри одного codec/dynamic-range bucket-а.
 fn select_best_matching_candidate(
     stream_candidates: &YtDlpStreamCandidates,
     preferred_codec: VideoCodec,
     expected_dynamic_range: YtDlpDynamicRange,
     hdr_selection: YtDlpHdrSelection,
+    preferred_height: PreferredHeightPolicy,
     system_capabilities: &SystemCapabilities,
     rejections: &mut Vec<YtDlpCandidateRejection>,
 ) -> Option<SelectedVideoStream> {
     let mut ordered_candidates = stream_candidates.candidates.iter().collect::<Vec<_>>();
     ordered_candidates.sort_by(|left, right| {
-        right
-            .quality_score
-            .cmp(&left.quality_score)
+        preferred_height
+            .compare(
+                candidate_video_height(left).ok().flatten(),
+                candidate_video_height(right).ok().flatten(),
+            )
+            .then_with(|| right.quality_score.cmp(&left.quality_score))
             .then_with(|| left.stream_id.cmp(&right.stream_id))
     });
 
@@ -213,6 +230,13 @@ fn select_best_matching_candidate(
     }
 
     None
+}
+
+/// Валидирует optional service height через neutral web-media owner.
+fn candidate_video_height(
+    candidate: &YtDlpStreamCandidate,
+) -> Result<Option<VideoHeight>, VideoHeightError> {
+    candidate.height.map(VideoHeight::new).transpose()
 }
 
 /// Принимает dynamic range только когда отдельный manifest field согласован с typed color metadata.
@@ -365,6 +389,21 @@ mod tests {
         }
     }
 
+    /// Строит candidate с согласованной manifest/capability высотой.
+    fn candidate_with_height(
+        stream_id: &str,
+        is_hdr: bool,
+        height: u32,
+        quality_score: i64,
+    ) -> YtDlpStreamCandidate {
+        let mut candidate = candidate(stream_id, is_hdr, quality_score);
+        candidate.height = Some(height);
+        candidate.video_requirement = YtDlpVideoRequirement::Ready(
+            vp9_requirement(is_hdr).with_resolution(height.saturating_mul(16) / 9, height),
+        );
+        candidate
+    }
+
     /// Строит inert descriptor: selection обязана читать metadata, но не URL bytes.
     fn descriptor(kind: YtDlpStreamKind, format_id: &str) -> YtDlpDirectStreamDescriptor {
         YtDlpDirectStreamDescriptor {
@@ -404,6 +443,7 @@ mod tests {
             &candidates,
             &[VideoCodec::Vp9],
             YtDlpHdrSelection::PreferHdrWhenAvailable,
+            PreferredHeightPolicy::NoPreference,
             &capabilities(true),
         )
         .expect("playable HDR is preferred before SDR regardless of quality score");
@@ -422,6 +462,7 @@ mod tests {
             &candidates,
             &[VideoCodec::Vp9],
             YtDlpHdrSelection::PreferHdrWhenAvailable,
+            PreferredHeightPolicy::NoPreference,
             &capabilities(false),
         )
         .expect("renderer-incompatible HDR must fall back to playable SDR");
@@ -437,6 +478,7 @@ mod tests {
             &candidates,
             &[VideoCodec::Vp9],
             YtDlpHdrSelection::SdrOnly,
+            PreferredHeightPolicy::NoPreference,
             &capabilities(true),
         )
         .expect_err("SdrOnly must reject even playable HDR");
@@ -459,6 +501,7 @@ mod tests {
             &candidates,
             &[VideoCodec::Vp9],
             YtDlpHdrSelection::PreferHdrWhenAvailable,
+            PreferredHeightPolicy::NoPreference,
             &capabilities(true),
         )
         .expect("HDR-only list is playable when full intersection passes");
@@ -468,6 +511,7 @@ mod tests {
             &candidates,
             &[VideoCodec::Vp9],
             YtDlpHdrSelection::PreferHdrWhenAvailable,
+            PreferredHeightPolicy::NoPreference,
             &capabilities(false),
         )
         .expect_err("HDR-only list without renderer intersection has no SDR fallback");
@@ -491,6 +535,7 @@ mod tests {
             &candidates,
             &[VideoCodec::Vp9],
             YtDlpHdrSelection::SdrOnly,
+            PreferredHeightPolicy::NoPreference,
             &capabilities(false),
         )
         .expect("UnknownDynamicRange must not stop search before later SDR");
@@ -513,6 +558,7 @@ mod tests {
             &candidates,
             &[VideoCodec::Vp9],
             YtDlpHdrSelection::SdrOnly,
+            PreferredHeightPolicy::NoPreference,
             &capabilities(false),
         )
         .expect_err("missing typed color metadata must not be guessed as SDR");
@@ -524,6 +570,150 @@ mod tests {
                     rejection.stream_id == "unknown"
                         && rejection.reason == YtDlpCandidateRejectionReason::UnknownDynamicRange
                 })
+        ));
+    }
+
+    #[test]
+    fn preferred_height_uses_exact_then_lower_then_higher_before_quality_score() {
+        let policy = PreferredHeightPolicy::Prefer(
+            web_media_core::PreferredVideoHeight::new(1080).expect("1080 валидно"),
+        );
+        let exact_candidates = stream_candidates(vec![
+            candidate_with_height("higher", false, 1440, 10_000),
+            candidate_with_height("lower", false, 720, 20_000),
+            candidate_with_height("exact", false, 1080, 1),
+        ]);
+        let exact = select_yt_dlp_stream(
+            &exact_candidates,
+            &[VideoCodec::Vp9],
+            YtDlpHdrSelection::SdrOnly,
+            policy,
+            &capabilities(false),
+        )
+        .expect("exact height должна победить quality score");
+        assert_eq!(exact.stream_id, "exact");
+
+        let fallback_candidates = stream_candidates(vec![
+            candidate_with_height("higher-near", false, 1200, 30_000),
+            candidate_with_height("lower-far", false, 480, 40_000),
+            candidate_with_height("lower-near", false, 720, 1),
+        ]);
+        let lower = select_yt_dlp_stream(
+            &fallback_candidates,
+            &[VideoCodec::Vp9],
+            YtDlpHdrSelection::SdrOnly,
+            policy,
+            &capabilities(false),
+        )
+        .expect("closest lower должна победить любой higher fallback");
+        assert_eq!(lower.stream_id, "lower-near");
+
+        let higher_candidates = stream_candidates(vec![
+            candidate_with_height("higher-far", false, 2160, 50_000),
+            candidate_with_height("higher-near", false, 1200, 1),
+        ]);
+        let higher = select_yt_dlp_stream(
+            &higher_candidates,
+            &[VideoCodec::Vp9],
+            YtDlpHdrSelection::SdrOnly,
+            policy,
+            &capabilities(false),
+        )
+        .expect("closest higher должна завершить fallback");
+        assert_eq!(higher.stream_id, "higher-near");
+    }
+
+    #[test]
+    fn no_height_preference_keeps_best_playable_quality_order() {
+        let candidates = stream_candidates(vec![
+            candidate_with_height("lower-quality", false, 1080, 1),
+            candidate_with_height("best-quality", false, 720, 10_000),
+        ]);
+
+        let selected = select_yt_dlp_stream(
+            &candidates,
+            &[VideoCodec::Vp9],
+            YtDlpHdrSelection::SdrOnly,
+            PreferredHeightPolicy::NoPreference,
+            &capabilities(false),
+        )
+        .expect("None preference должна сохранить BestPlayable ordering");
+
+        assert_eq!(selected.stream_id, "best-quality");
+    }
+
+    #[test]
+    fn hdr_bucket_remains_stronger_than_preferred_height() {
+        let candidates = stream_candidates(vec![
+            candidate_with_height("sdr-exact", false, 1080, 100_000),
+            candidate_with_height("hdr-lower", true, 720, 1),
+        ]);
+        let policy = PreferredHeightPolicy::Prefer(
+            web_media_core::PreferredVideoHeight::new(1080).expect("1080 валидно"),
+        );
+
+        let selected = select_yt_dlp_stream(
+            &candidates,
+            &[VideoCodec::Vp9],
+            YtDlpHdrSelection::PreferHdrWhenAvailable,
+            policy,
+            &capabilities(true),
+        )
+        .expect("playable HDR bucket должен остаться первым");
+
+        assert_eq!(selected.stream_id, "hdr-lower");
+    }
+
+    #[test]
+    fn codec_policy_filters_exact_height_before_height_ranking() {
+        let mut omitted_codec = candidate_with_height("h264-exact", false, 1080, 100_000);
+        omitted_codec.video_requirement = YtDlpVideoRequirement::Ready(
+            VideoDecodeRequirement::new(VideoCodec::H264)
+                .with_resolution(1920, 1080)
+                .with_color(VideoColorMetadata::sdr_bt709_limited()),
+        );
+        let candidates = stream_candidates(vec![
+            omitted_codec,
+            candidate_with_height("vp9-lower", false, 720, 1),
+        ]);
+        let policy = PreferredHeightPolicy::Prefer(
+            web_media_core::PreferredVideoHeight::new(1080).expect("1080 валидно"),
+        );
+
+        let selected = select_yt_dlp_stream(
+            &candidates,
+            &[VideoCodec::Vp9],
+            YtDlpHdrSelection::SdrOnly,
+            policy,
+            &capabilities(false),
+        )
+        .expect("height не должна вернуть codec вне configured policy");
+
+        assert_eq!(selected.stream_id, "vp9-lower");
+    }
+
+    #[test]
+    fn invalid_candidate_height_is_typed_rejection() {
+        let candidates = stream_candidates(vec![candidate_with_height("zero", false, 0, 1)]);
+
+        let error = select_yt_dlp_stream(
+            &candidates,
+            &[VideoCodec::Vp9],
+            YtDlpHdrSelection::SdrOnly,
+            PreferredHeightPolicy::NoPreference,
+            &capabilities(false),
+        )
+        .expect_err("zero height не должна превращаться в missing metadata");
+
+        assert!(matches!(
+            error,
+            YtDlpStreamSelectionError::NoPlayableSdr { rejections }
+                if rejections.iter().any(|rejection| matches!(
+                    rejection.reason,
+                    YtDlpCandidateRejectionReason::InvalidVideoHeight {
+                        error: VideoHeightError::Zero
+                    }
+                ))
         ));
     }
 }

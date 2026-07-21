@@ -80,6 +80,7 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "network.read_timeout_ms",
     "yt_dlp.enabled",
     "yt_dlp.hdr_selection",
+    "yt_dlp.preferred_video_height",
     "yt_dlp.resolve_timeout_ms",
     "ui.show_telemetry",
     "ui.language",
@@ -725,6 +726,68 @@ fn generated_accessors_read_and_reset_values_from_default_documents() {
         )
         .expect("reset should read from provided default document");
     assert_eq!(config.audio.volume, custom_default.audio.volume);
+}
+
+#[test]
+fn preferred_height_settings_accessor_preserves_best_playable_and_validated_choices() {
+    let registry = registry();
+    let setting_id = SettingId::from("yt_dlp.preferred_video_height");
+    let descriptor = registry
+        .descriptor(&setting_id)
+        .expect("preferred height descriptor exists");
+    assert!(matches!(
+        descriptor.editor,
+        SettingEditor::Select(SelectDescriptor::Static { .. })
+    ));
+
+    let mut config = AppConfig::default();
+    assert_eq!(
+        registry
+            .get_value(&config, &setting_id)
+            .expect("default preferred height readable"),
+        SettingValue::Select("best_playable".into())
+    );
+
+    registry
+        .set_value(
+            &mut config,
+            &setting_id,
+            SettingValue::Select("2160".into()),
+        )
+        .expect("valid fixed height applies");
+    assert_eq!(
+        config.yt_dlp.preferred_video_height,
+        Some(PreferredVideoHeight::new(2160).expect("2160 валидно"))
+    );
+
+    let invalid = registry.set_value(
+        &mut config,
+        &setting_id,
+        SettingValue::Select((MAX_PREFERRED_VIDEO_HEIGHT + 1).to_string().into()),
+    );
+    assert!(invalid.is_err());
+    assert_eq!(
+        config.yt_dlp.preferred_video_height,
+        Some(PreferredVideoHeight::new(2160).expect("2160 валидно"))
+    );
+
+    registry
+        .set_value(
+            &mut config,
+            &setting_id,
+            SettingValue::Select("best_playable".into()),
+        )
+        .expect("best-playable mode applies");
+    assert_eq!(config.yt_dlp.preferred_video_height, None);
+
+    config.yt_dlp.preferred_video_height =
+        Some(PreferredVideoHeight::new(1234).expect("custom height валидна"));
+    assert_eq!(
+        registry
+            .get_value(&config, &setting_id)
+            .expect("custom TOML height readable"),
+        SettingValue::Select("1234".into())
+    );
 }
 
 fn registry() -> SettingsRegistry<AppConfig> {

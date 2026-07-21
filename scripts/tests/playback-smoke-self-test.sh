@@ -54,8 +54,8 @@ require_output "${dry_run_output}" "cargo build --release -p app-egui"
 current_config_path="${temporary_directory}/current-config.toml"
 cargo run --quiet --locked -p rustiplayer-config --example smoke_config -- \
     generate-current "${current_config_path}" software
-# Ключи доказывают current schema v6, playback overrides и generic yt-dlp HDR default.
-grep -Fqx 'schema_version = 6' "${current_config_path}"
+# Ключи доказывают current schema v7, playback overrides и generic yt-dlp HDR default.
+grep -Fqx 'schema_version = 7' "${current_config_path}"
 grep -Fqx 'start_paused = false' "${current_config_path}"
 grep -Fqx 'preferred_backend = "software"' "${current_config_path}"
 grep -Fqx '[yt_dlp]' "${current_config_path}"

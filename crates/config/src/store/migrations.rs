@@ -1,6 +1,6 @@
 use crate::{
     AppConfig, CURRENT_SCHEMA_VERSION, LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3,
-    LEGACY_SCHEMA_VERSION_4, LEGACY_SCHEMA_VERSION_5,
+    LEGACY_SCHEMA_VERSION_4, LEGACY_SCHEMA_VERSION_5, LEGACY_SCHEMA_VERSION_6,
 };
 
 pub(super) const REMOVED_HARDWARE_DECODE_ONLY_KEY: &str = "hardware_decode_only";
@@ -34,7 +34,7 @@ pub(super) fn normalize_document(toml_document: &mut toml::Value) {
     }
 }
 
-/// Поднимает поддерживаемые v2-v5 структуры до текущей in-memory версии.
+/// Поднимает поддерживаемые v2-v6 структуры до текущей in-memory версии.
 pub(super) fn upgrade_config(config: &mut AppConfig) {
     if matches!(
         config.schema_version,
@@ -42,6 +42,7 @@ pub(super) fn upgrade_config(config: &mut AppConfig) {
             | LEGACY_SCHEMA_VERSION_3
             | LEGACY_SCHEMA_VERSION_4
             | LEGACY_SCHEMA_VERSION_5
+            | LEGACY_SCHEMA_VERSION_6
     ) {
         config.schema_version = CURRENT_SCHEMA_VERSION;
     }
@@ -108,9 +109,9 @@ mod tests {
 
     /// Current schema не получает послаблений для удалённых legacy-ключей.
     #[test]
-    fn v6_document_keeps_removed_keys_for_strict_parser_rejection() {
+    fn v7_document_keeps_removed_keys_for_strict_parser_rejection() {
         let mut document: toml::Value =
-            toml::from_str("schema_version = 6\n[frame_server]\nhover_preview_enabled = true\n")
+            toml::from_str("schema_version = 7\n[frame_server]\nhover_preview_enabled = true\n")
                 .expect("current fixture");
 
         normalize_document(&mut document);

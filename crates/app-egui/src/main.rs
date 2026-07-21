@@ -33,6 +33,7 @@ mod url_service_adapter;
 mod url_topology_drafts;
 mod video_pipeline_candidate;
 mod video_pipeline_selector;
+mod web_media_quality;
 
 use anyhow::{Context, Result};
 use tracing::info;

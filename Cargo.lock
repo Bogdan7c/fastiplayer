@@ -175,6 +175,7 @@ dependencies = [
  "video-frame-contract",
  "video-present-core",
  "video-vaapi",
+ "web-media-core",
  "wgpu",
  "winit",
 ]

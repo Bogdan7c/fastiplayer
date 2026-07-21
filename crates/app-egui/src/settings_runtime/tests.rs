@@ -1821,6 +1821,63 @@ fn transaction_multi_group_success_commits_runtime_and_toml() {
     remove_file_if_exists(&path);
 }
 
+/// Global quality Apply проходит MediaService owner, сохраняется и не создаёт item override key.
+#[test]
+fn preferred_video_height_apply_persists_global_only_and_reopens_settings() {
+    let config = custom_config_for_test();
+    let path = temp_config_path("preferred-video-height");
+    remove_file_if_exists(&path);
+    let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
+        config.clone(),
+        path.clone(),
+    ))
+    .expect("settings runtime должен построиться");
+    let mut adapter =
+        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+
+    run_runtime_actions(
+        &mut runtime,
+        vec![
+            SettingsUiAction::Open,
+            SettingsUiAction::SetValue {
+                setting_id: SettingId::from("yt_dlp.preferred_video_height"),
+                value: SettingValue::Select("1080".into()),
+            },
+            SettingsUiAction::Apply,
+        ],
+        &mut adapter,
+    );
+
+    let report = runtime
+        .latest_apply_report()
+        .expect("успешный report должен сохраниться");
+    assert_eq!(report.final_state, ApplyFinalState::FullyApplied);
+    assert_eq!(adapter.media_updates, 1);
+    assert_eq!(
+        runtime
+            .committed_config()
+            .yt_dlp
+            .preferred_video_height
+            .map(rustiplayer_config::PreferredVideoHeight::pixels),
+        Some(1080)
+    );
+
+    let persisted = fs::read_to_string(&path).expect("persisted config readable");
+    assert!(persisted.contains("preferred_video_height = 1080"));
+    assert!(!persisted.contains("item_video_height_override"));
+
+    let reopened = rustiplayer_config::load_from_path(&path).expect("persisted settings reopen");
+    assert_eq!(
+        reopened
+            .config
+            .yt_dlp
+            .preferred_video_height
+            .map(rustiplayer_config::PreferredVideoHeight::pixels),
+        Some(1080)
+    );
+    remove_file_if_exists(&path);
+}
+
 /// Проверяет failure второй owner group и reverse rollback первой без TOML.
 #[test]
 fn transaction_second_group_failure_rolls_back_first_group_without_persistence() {

@@ -34,6 +34,7 @@ capability-core.workspace = true
 codec-core.workspace = true
 service-direct-media.workspace = true
 service-ytdlp.workspace = true
+web-media-core.workspace = true
 playlist-core.workspace = true
 playlist-io.workspace = true
 playlist-discovery.workspace = true

@@ -1,4 +1,4 @@
-/// Добавляет русские комментарии к полям schema version 6 в default TOML.
+/// Добавляет русские комментарии к полям schema version 7 в default TOML.
 pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     insert_default_config_comment(
         toml_text,

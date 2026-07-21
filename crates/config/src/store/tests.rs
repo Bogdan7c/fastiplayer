@@ -4,8 +4,9 @@ use super::migrations::{REMOVED_FRAME_SERVER_HOVER_KEYS, REMOVED_HARDWARE_DECODE
 use super::*;
 use crate::{
     CURRENT_SCHEMA_VERSION, FrameServerConfig, FrameServerLiveScrubDecodeModeConfig,
-    HdrToSdrOperatorConfig, LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3, PausedCommitBehavior,
-    ToneMappingMode, VideoBackendPreference, YtDlpHdrSelection, validation,
+    HdrToSdrOperatorConfig, LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3,
+    MAX_PREFERRED_VIDEO_HEIGHT, PausedCommitBehavior, PreferredVideoHeight, ToneMappingMode,
+    VideoBackendPreference, YtDlpHdrSelection, validation,
 };
 
 /// Проверяет, что default schema остаётся самосогласованной.
@@ -50,7 +51,7 @@ fn legacy_v5_without_playlist_uses_defaults_without_startup_rewrite() {
         fs::read_to_string(&config_path).expect("legacy file remains readable"),
         legacy_text
     );
-    assert_eq!(CURRENT_SCHEMA_VERSION, 6);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 7);
 }
 
 #[test]
@@ -134,7 +135,7 @@ resolve_timeout_ms = 30000
         loaded.config.yt_dlp.hdr_selection,
         YtDlpHdrSelection::SdrOnly
     );
-    assert_eq!(loaded.config.schema_version, 6);
+    assert_eq!(loaded.config.schema_version, 7);
 }
 
 /// Все поддерживаемые legacy-схемы переименовывают `[youtube]` без потери значений.
@@ -161,7 +162,8 @@ resolve_timeout_ms = 4321
 
         let loaded = load_from_path(&config_path).expect("legacy yt-dlp config loads");
 
-        assert_eq!(loaded.config.schema_version, 6);
+        assert_eq!(loaded.config.schema_version, 7);
+        assert_eq!(loaded.config.yt_dlp.preferred_video_height, None);
         assert!(!loaded.config.yt_dlp.enabled);
         assert_eq!(
             loaded.config.yt_dlp.hdr_selection,
@@ -178,9 +180,9 @@ resolve_timeout_ms = 4321
     }
 }
 
-/// Current v6 не принимает старую секцию и удалённый placeholder.
+/// Current v7 не принимает старую секцию и удалённый placeholder.
 #[test]
-fn schema_v6_strictly_rejects_legacy_youtube_section_and_placeholder() {
+fn schema_v7_strictly_rejects_legacy_youtube_section_and_placeholder() {
     for legacy_fragment in [
         "[youtube]\nenabled = true\n",
         "[yt_dlp]\nprefer_account_session = true\n",
@@ -189,11 +191,11 @@ fn schema_v6_strictly_rejects_legacy_youtube_section_and_placeholder() {
         let config_path = temp_dir.path().join("config.toml");
         fs::write(
             &config_path,
-            format!("schema_version = 6\n\n{legacy_fragment}"),
+            format!("schema_version = 7\n\n{legacy_fragment}"),
         )
-        .expect("strict v6 fixture written");
+        .expect("strict v7 fixture written");
 
-        let error = load_from_path(&config_path).expect_err("legacy v6 key rejected");
+        let error = load_from_path(&config_path).expect_err("legacy v7 key rejected");
         assert!(
             error.to_string().contains("youtube")
                 || error.to_string().contains("prefer_account_session")
@@ -214,7 +216,7 @@ fn yt_dlp_hdr_selection_stable_ids_roundtrip() {
             &config_path,
             format!(
                 r#"
-schema_version = 6
+schema_version = 7
 
 [yt_dlp]
 hdr_selection = "{stable_id}"
@@ -231,8 +233,78 @@ hdr_selection = "{stable_id}"
             .to_pretty_toml()
             .expect("HDR selection config serializes");
         assert!(generated.contains(&format!("hdr_selection = \"{stable_id}\"")));
-        assert!(generated.contains("schema_version = 6"));
+        assert!(generated.contains("schema_version = 7"));
     }
+}
+
+/// Schema v6 получает новый optional default и поднимается до v7 без startup rewrite.
+#[test]
+fn schema_v6_without_preferred_height_migrates_to_best_playable() {
+    let temp_dir = tempfile::tempdir().expect("temp dir created");
+    let config_path = temp_dir.path().join("config.toml");
+    let legacy_text = r#"
+schema_version = 6
+
+[yt_dlp]
+enabled = true
+hdr_selection = "sdr_only"
+resolve_timeout_ms = 30000
+"#;
+    fs::write(&config_path, legacy_text).expect("schema v6 config written");
+
+    let loaded = load_from_path(&config_path).expect("schema v6 config loads");
+
+    assert_eq!(loaded.config.schema_version, 7);
+    assert_eq!(loaded.config.yt_dlp.preferred_video_height, None);
+    assert!(!loaded.created);
+    assert_eq!(
+        fs::read_to_string(&config_path).expect("legacy file remains readable"),
+        legacy_text
+    );
+}
+
+/// Preferred height roundtrip сохраняет scalar, а bounds проверяются при parse.
+#[test]
+fn preferred_video_height_roundtrips_and_rejects_invalid_bounds() {
+    let valid_height = PreferredVideoHeight::new(2160).expect("2160 валидно");
+    let mut config = AppConfig::default();
+    config.yt_dlp.preferred_video_height = Some(valid_height);
+    let serialized = config.to_pretty_toml().expect("config serializes");
+    assert!(serialized.contains("preferred_video_height = 2160"));
+
+    let temp_dir = tempfile::tempdir().expect("temp dir created");
+    let config_path = temp_dir.path().join("config.toml");
+    fs::write(&config_path, serialized).expect("preferred height config written");
+    let loaded = load_from_path(&config_path).expect("preferred height config loads");
+    assert_eq!(
+        loaded.config.yt_dlp.preferred_video_height,
+        Some(valid_height)
+    );
+    assert!(
+        !loaded
+            .config
+            .to_pretty_toml()
+            .expect("loaded config serializes")
+            .contains("item_override")
+    );
+
+    for invalid_height in [0, MAX_PREFERRED_VIDEO_HEIGHT + 1] {
+        fs::write(
+            &config_path,
+            format!("schema_version = 7\n\n[yt_dlp]\npreferred_video_height = {invalid_height}\n"),
+        )
+        .expect("invalid preferred height fixture written");
+        let error = load_from_path(&config_path).expect_err("invalid height rejected");
+        assert!(error.to_string().contains("предпочитаемая высота видео"));
+    }
+
+    fs::write(
+        &config_path,
+        "schema_version = 7\n\n[yt_dlp]\nitem_video_height_override = 720\n",
+    )
+    .expect("runtime-only override fixture written");
+    let error = load_from_path(&config_path).expect_err("runtime-only override rejected in TOML");
+    assert!(error.to_string().contains("item_video_height_override"));
 }
 
 /// Проверяет, что render.color_adjustment defaults являются identity.
@@ -298,13 +370,13 @@ fn render_hdr_to_sdr_defaults_are_valid_phase10_baseline() {
     assert_eq!(config.render.tone_mapping, ToneMappingMode::Disabled);
 }
 
-/// Проверяет defaults текущей schema version 6.
+/// Проверяет defaults текущей schema version 7.
 #[test]
-fn schema_version_6_defaults_include_seek_network_and_ui_skin() {
+fn schema_version_7_defaults_include_seek_network_and_ui_skin() {
     let config = AppConfig::default();
 
     assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 6);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 7);
     assert_eq!(config.player.seek.commit_timeout_ms, 10_000);
     assert_eq!(config.player.seek.resume_audio_min_buffer_ms, 50);
     assert_eq!(config.player.seek.resume_audio_gate_timeout_ms, 250);
@@ -340,6 +412,7 @@ fn schema_version_6_defaults_include_seek_network_and_ui_skin() {
     assert_eq!(config.network.connect_timeout_ms, 15_000);
     assert_eq!(config.network.read_timeout_ms, 15_000);
     assert_eq!(config.yt_dlp.resolve_timeout_ms, 30_000);
+    assert_eq!(config.yt_dlp.preferred_video_height, None);
     assert_eq!(config.ui.skin, "minimal");
     assert_eq!(config.ui.window.titlebar_height_px, 40);
     assert_eq!(config.ui.settings.live_preview_max_hz, 60);
@@ -448,7 +521,7 @@ fn missing_config_is_created_with_defaults() {
     assert!(loaded.config.render.color_adjustment.is_identity());
 
     let created_toml = fs::read_to_string(&loaded.path).expect("created config readable");
-    assert!(created_toml.contains("schema_version = 6"));
+    assert!(created_toml.contains("schema_version = 7"));
     assert!(created_toml.contains("[player.seek]"));
     assert!(created_toml.contains("# Настройки seek commit"));
     assert!(created_toml.contains("commit_timeout_ms = 10000"));
@@ -475,6 +548,7 @@ fn missing_config_is_created_with_defaults() {
     assert!(created_toml.contains("prefetch_chunk_mb = 8"));
     assert!(created_toml.contains("# Timeout подготовки metadata через системный yt-dlp"));
     assert!(created_toml.contains("resolve_timeout_ms = 30000"));
+    assert!(!created_toml.contains("preferred_video_height"));
     assert!(!created_toml.contains("index_fingerprint_sample_kb"));
     assert!(created_toml.contains("# UI skin id"));
     assert!(created_toml.contains("skin = \"minimal\""));
@@ -574,7 +648,7 @@ skin = "minimal"
     assert_eq!(loaded.config.ui.animations.sidebar_slide_duration_ms, 500);
 }
 
-/// Проверяет additive/defaulted reduced-motion поле на старом current-schema документе.
+/// Проверяет additive/defaulted reduced-motion поле на legacy schema v6 документе.
 #[test]
 fn schema_v6_without_reduced_motion_loads_safe_default_and_roundtrips_field() {
     let temp_dir = tempfile::tempdir().expect("temp dir created");
@@ -603,7 +677,7 @@ sidebar_slide_duration_ms = 500
     assert!(saved.contains("reduced_motion = true"));
 }
 
-/// Проверяет backward compatibility текущей schema v6 без нового sidebar-поля
+/// Проверяет backward compatibility legacy schema v6 без нового sidebar-поля
 /// и появление поля после следующего успешного атомарного сохранения.
 #[test]
 fn schema_v6_without_sidebar_width_loads_default_and_roundtrips_new_field() {

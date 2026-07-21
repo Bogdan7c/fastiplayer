@@ -47,7 +47,25 @@ struct ActiveMediaReconfigureConfig {
     demux: rustiplayer_config::PlayerDemuxConfig,
     preferred_video_codec_order: Vec<rustiplayer_config::VideoCodec>,
     reselect_yt_dlp_stream: bool,
+    rebuild_remote_source: bool,
     rebuild_local_source: bool,
+}
+
+/// Stable setting id, единственный YtDlp policy change с active-source reselection.
+const PREFERRED_VIDEO_HEIGHT_SETTING_ID: &str = "yt_dlp.preferred_video_height";
+
+/// Проверяет intent переоткрыть active YtDlp source с новым global preference.
+fn requires_yt_dlp_stream_reselection(affected_settings: &[SettingId]) -> bool {
+    affected_settings
+        .iter()
+        .any(|setting_id| setting_id.as_str() == PREFERRED_VIDEO_HEIGHT_SETTING_ID)
+}
+
+/// Проверяет, содержит ли route изменение transport/network policy.
+fn requires_remote_source_rebuild(affected_settings: &[SettingId]) -> bool {
+    affected_settings
+        .iter()
+        .any(|setting_id| setting_id.as_str().starts_with("network."))
 }
 
 /// Сохраняет различие между доказанным pre-barrier failure и mutation, требующей rollback.
@@ -73,6 +91,14 @@ impl FrameSettingsRuntimeAdapter<'_> {
             return AppRouteApplyResult::Applied;
         };
         let playback_window = active_source.playback_window();
+        if matches!(
+            active_source.physical_source(),
+            ActiveMediaSource::DirectMediaUrl(_)
+        ) && !config.rebuild_remote_source
+        {
+            // Global YtDlp quality policy не должна перестраивать direct-media source.
+            return AppRouteApplyResult::Applied;
+        }
         if matches!(
             active_source.physical_source(),
             ActiveMediaSource::LocalFile(_)
@@ -467,6 +493,7 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
                 demux: app_config.player.demux,
                 preferred_video_codec_order: app_config.player.preferred_video_codec_order,
                 reselect_yt_dlp_stream,
+                rebuild_remote_source: true,
                 rebuild_local_source: true,
             });
             let affected_settings =
@@ -547,9 +574,12 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
         update: &MediaServiceRuntimeSettingsUpdate,
         affected_settings: &[SettingId],
     ) -> AppRouteApplyResult {
-        if affected_settings
-            .iter()
-            .all(|setting_id| setting_id.as_str().starts_with("yt_dlp."))
+        let preferred_height_changed = requires_yt_dlp_stream_reselection(affected_settings);
+        let network_source_changed = requires_remote_source_rebuild(affected_settings);
+        if !preferred_height_changed
+            && affected_settings
+                .iter()
+                .all(|setting_id| setting_id.as_str().starts_with("yt_dlp."))
         {
             return self.app_state.apply_media_service_runtime_settings(update);
         }
@@ -562,9 +592,33 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
             yt_dlp: app_config.yt_dlp,
             demux: app_config.player.demux,
             preferred_video_codec_order: app_config.player.preferred_video_codec_order,
-            reselect_yt_dlp_stream: false,
+            reselect_yt_dlp_stream: preferred_height_changed,
+            rebuild_remote_source: network_source_changed,
             rebuild_local_source: false,
         })
+    }
+}
+
+#[cfg(test)]
+mod quality_preference_tests {
+    use super::*;
+
+    #[test]
+    fn only_global_preferred_height_requests_yt_dlp_reselection() {
+        assert!(requires_yt_dlp_stream_reselection(&[SettingId::from(
+            PREFERRED_VIDEO_HEIGHT_SETTING_ID,
+        )]));
+        assert!(!requires_yt_dlp_stream_reselection(&[
+            SettingId::from("yt_dlp.hdr_selection"),
+            SettingId::from("yt_dlp.item_video_height_override"),
+        ]));
+        assert!(!requires_remote_source_rebuild(&[SettingId::from(
+            PREFERRED_VIDEO_HEIGHT_SETTING_ID,
+        )]));
+        assert!(requires_remote_source_rebuild(&[
+            SettingId::from(PREFERRED_VIDEO_HEIGHT_SETTING_ID),
+            SettingId::from("network.read_ahead_mb"),
+        ]));
     }
 }
 

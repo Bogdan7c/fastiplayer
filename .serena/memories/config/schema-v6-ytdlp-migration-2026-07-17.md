@@ -1,5 +1,7 @@
 # Config schema v6: generic yt-dlp service (2026-07-17)
 
+> Historical v6 migration contract. Current schema is v7; see `mem:config/schema-v7-quality-preference-2026-07-21`.
+
 - `CURRENT_SCHEMA_VERSION = 6`; поддерживаемые legacy versions остаются v2-v5.
 - Current typed owner: `rustiplayer_config::YtDlpConfig` в `AppConfig::yt_dlp`, с `enabled`, `hdr_selection: YtDlpHdrSelection` и `resolve_timeout_ms`. Stable section/setting IDs: `[yt_dlp]`, `yt_dlp.enabled`, `yt_dlp.hdr_selection`, `yt_dlp.resolve_timeout_ms`.
 - До strict Serde parse migration для schema v2-v5 переименовывает table `[youtube]` в `[yt_dlp]`, сохраняет `enabled`, HDR policy и timeout, удаляет legacy placeholder `prefer_account_session`, затем поднимает schema_version до 6.

@@ -10,6 +10,7 @@ mod services;
 mod ui;
 mod version;
 mod video;
+mod yt_dlp_settings;
 
 #[cfg(test)]
 mod metadata_tests;
@@ -22,7 +23,7 @@ pub use ui::*;
 pub use version::CURRENT_SCHEMA_VERSION;
 pub(crate) use version::{
     LEGACY_SCHEMA_VERSION_2, LEGACY_SCHEMA_VERSION_3, LEGACY_SCHEMA_VERSION_4,
-    LEGACY_SCHEMA_VERSION_5,
+    LEGACY_SCHEMA_VERSION_5, LEGACY_SCHEMA_VERSION_6,
 };
 pub use video::*;
 

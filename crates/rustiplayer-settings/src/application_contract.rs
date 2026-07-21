@@ -455,6 +455,13 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
                 POLICY_TESTS,
             )
         }
+        "yt_dlp.preferred_video_height" => SettingApplicationContract::new(
+            setting_name,
+            AppRuntimeRoute::MediaService,
+            SettingStateOwner::MediaSourceLifecycle,
+            SettingApplyMechanism::MediaSourceRebuild,
+            PIPELINE_TESTS,
+        ),
         "frame_server.live_scrub_enabled"
         | "frame_server.live_scrub_decode_mode"
         | "frame_server.live_scrub_max_hz" => SettingApplicationContract::new(
@@ -594,6 +601,33 @@ mod tests {
         assert_eq!(
             resume_interval.mechanism,
             SettingApplyMechanism::WorkerReconfigure
+        );
+    }
+
+    #[test]
+    fn preferred_video_height_uses_media_reopen_contract() {
+        let contract =
+            setting_application_contract(&SettingId::from("yt_dlp.preferred_video_height"))
+                .expect("preferred height contract exists");
+
+        assert_eq!(contract.route, AppRuntimeRoute::MediaService);
+        assert_eq!(
+            contract.state_owner,
+            SettingStateOwner::MediaSourceLifecycle
+        );
+        assert_eq!(
+            contract.mechanism,
+            SettingApplyMechanism::MediaSourceRebuild
+        );
+        assert!(
+            contract
+                .focused_tests
+                .contains(&SettingApplyTestScenario::ActiveMediaPlaying)
+        );
+        assert!(
+            contract
+                .focused_tests
+                .contains(&SettingApplyTestScenario::RollbackRestoresRuntime)
         );
     }
 }

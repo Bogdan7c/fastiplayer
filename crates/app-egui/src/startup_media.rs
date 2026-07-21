@@ -26,6 +26,7 @@ use crate::state::AppState;
 use crate::url_service_adapter::{
     StartupUrlClassification, StartupUrlLocator, classify_startup_url,
 };
+use crate::web_media_quality::preferred_height_policy;
 
 mod orchestration;
 mod pending_install;
@@ -618,6 +619,7 @@ pub(crate) fn resolve_yt_dlp_startup_media(
         &stream_candidates,
         preferred_video_codec_order,
         yt_dlp_config.hdr_selection,
+        preferred_height_policy(yt_dlp_config.preferred_video_height),
         system_capabilities,
     )
     .context("Не удалось выбрать YtDlp stream по codec policy и system capabilities")?;
@@ -663,6 +665,7 @@ fn select_yt_dlp_startup_candidate_with_codec_order(
     stream_candidates: &YtDlpStreamCandidates,
     preferred_video_codec_order: &[ConfigVideoCodec],
     hdr_selection: YtDlpHdrSelection,
+    preferred_height: web_media_core::PreferredHeightPolicy,
     system_capabilities: &SystemCapabilities,
 ) -> std::result::Result<SelectedVideoStream, service_ytdlp::YtDlpStreamSelectionError> {
     let preferred_runtime_codecs = preferred_video_codec_order
@@ -675,6 +678,7 @@ fn select_yt_dlp_startup_candidate_with_codec_order(
         stream_candidates,
         &preferred_runtime_codecs,
         hdr_selection,
+        preferred_height,
         system_capabilities,
     )
 }
@@ -690,6 +694,7 @@ fn select_yt_dlp_startup_candidate(
         stream_candidates,
         &AppConfig::default().player.preferred_video_codec_order,
         hdr_selection,
+        preferred_height_policy(None),
         system_capabilities,
     )
 }
@@ -1186,6 +1191,7 @@ mod tests {
             &candidates,
             &[ConfigVideoCodec::Av1, ConfigVideoCodec::Vp9],
             YtDlpHdrSelection::SdrOnly,
+            preferred_height_policy(None),
             &capabilities,
         )
         .expect("policy must continue to the first supported configured codec");
@@ -1195,6 +1201,7 @@ mod tests {
             &candidates,
             &[ConfigVideoCodec::Av1],
             YtDlpHdrSelection::SdrOnly,
+            preferred_height_policy(None),
             &capabilities,
         )
         .expect_err("codec omitted from policy must not be selected");
