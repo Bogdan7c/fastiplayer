@@ -171,6 +171,14 @@ impl StartupMediaController {
                     expected != playlist_runtime.playlist_startup_view().restore_generation
                 })
                 || playlist_runtime.startup_media_apply_was_superseded();
+        if let Some(playlist_changed) = self.drive_startup_playlist_import(
+            app_state,
+            playlist_runtime,
+            renderer,
+            structurally_superseded,
+        ) {
+            return changed || playlist_changed;
+        }
         if let Some(pending_install) = self.orchestration.pending_install.as_mut() {
             if structurally_superseded && !pending_install.superseded {
                 pending_install.superseded = true;
@@ -318,7 +326,7 @@ impl StartupMediaController {
             .hold_prepared(prepared, playlist_runtime.allocator_load_gate_is_open());
     }
 
-    fn handle_preparation_failure(
+    pub(super) fn handle_preparation_failure(
         &mut self,
         safe_error: String,
         app_state: &mut crate::state::AppState,

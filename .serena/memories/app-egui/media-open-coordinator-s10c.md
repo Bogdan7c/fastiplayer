@@ -71,3 +71,9 @@
 
 ## S14 CUE integration (2026-07-20)
 `PlaylistRuntime::media_open_intent_for_planned_install` теперь под одним exact queue revision/item guard возвращает physical locator и optional neutral `MediaPlaybackWindow`. App строит physical `MediaOpenSourceRequest` и только затем оборачивает его в `PlaybackWindow`, поэтому coordinator по-прежнему получает один source-neutral request, а CUE-типы не протекают в player-core. Полный контекст: `mem:app-egui/cue-integration-s14-2026-07-20`.
+
+
+## S17S committed-playlist startup consumer (2026-07-21)
+- Startup playlist не добавляет новый media-open coordinator или parser. После successful `StartupReplace` commit `AppState::begin_startup_playlist_install` materializes exact committed locator/window и входит в существующий stepwise strong-open protocol.
+- Boundary принимает один prevalidated `PlannedPlaylistInstall`; queue revision и source-order first Item проверены runtime receipt-ом до source materialization. Synchronous source/strong rejection маркирует только этот Item failed и не вызывает normal transport queue, sibling fallback или sequential scan.
+- Existing Ready authorization, EnqueuedAtPlayerOwner/Installed, cancel-win, fatal/post-barrier и startup retained-action semantics не изменены.

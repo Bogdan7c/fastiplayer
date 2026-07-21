@@ -29,6 +29,7 @@ use crate::url_service_adapter::{
 
 mod orchestration;
 mod pending_install;
+mod playlist;
 mod shutdown;
 
 pub(crate) use orchestration::StartupMediaPhase;
@@ -42,6 +43,9 @@ pub(crate) const STARTUP_MEDIA_POLL_INTERVAL: Duration = Duration::from_millis(5
 pub(crate) enum InitialMedia {
     /// Локальный файл.
     File(PathBuf),
+
+    /// Recognized local playlist, который проходит trusted `StartupReplace`.
+    Playlist(PathBuf),
 
     /// URL, уже классифицированный одним service-owned adapter-ом.
     Url(StartupUrlLocator),
@@ -300,6 +304,9 @@ pub(crate) struct StartupMediaController {
     /// Local CLI/restore preparation принадлежит startup owner-у, а не UI picker-у.
     local_startup_job: Option<crate::local_file_open::LocalFileOpenJob>,
 
+    /// Playlist parser/preview/commit живёт в PlaylistRuntime, а controller хранит winner intent.
+    startup_playlist_pending: bool,
+
     /// Winner/fallback state удерживает prepared ownership до allocator gate.
     orchestration: StartupMediaOrchestration,
 
@@ -344,6 +351,7 @@ impl StartupMediaController {
             yt_dlp_startup_job: None,
             direct_media_startup_job: None,
             local_startup_job: None,
+            startup_playlist_pending: false,
             orchestration: StartupMediaOrchestration::new(cli_requested),
             cli_url_target_draft: None,
             startup_config: None,
@@ -374,6 +382,10 @@ impl StartupMediaController {
                     .as_ref()
                     .map(|_| "Подготовка local media...")
             })
+            .or_else(|| {
+                self.startup_playlist_pending
+                    .then_some("Импорт startup playlist...")
+            })
     }
 
     /// Сообщает shell scheduler-у, нужно ли продолжать polling startup jobs.
@@ -381,6 +393,7 @@ impl StartupMediaController {
         self.yt_dlp_startup_job.is_some()
             || self.direct_media_startup_job.is_some()
             || self.local_startup_job.is_some()
+            || self.startup_playlist_pending
             || self.orchestration.has_pending_work()
     }
 
@@ -421,6 +434,26 @@ impl StartupMediaController {
         self.orchestration
             .begin_target(StartupMediaTarget::CliReplacement);
 
+        if let InitialMedia::Playlist(path) = &initial_media {
+            match playlist_runtime.start_startup_playlist_import(path.clone()) {
+                Ok(true) => {
+                    self.startup_playlist_pending = true;
+                    app_state.set_startup_pending("Импорт startup playlist...".to_owned());
+                }
+                Ok(false) => {
+                    self.orchestration.preparation_failed();
+                    app_state.set_startup_error(
+                        "Startup playlist import уже занят другим заданием".to_owned(),
+                    );
+                }
+                Err(error) => {
+                    self.orchestration.preparation_failed();
+                    app_state.set_startup_error(error);
+                }
+            }
+            return;
+        }
+
         let trusted_intent = match initial_media {
             InitialMedia::File(path) => {
                 crate::playlist_runtime::TrustedStartupQueueReplacementIntent::local_file(path)
@@ -446,6 +479,9 @@ impl StartupMediaController {
                     ),
                 ));
                 crate::playlist_runtime::TrustedStartupQueueReplacementIntent::service_url(locator)
+            }
+            InitialMedia::Playlist(_) => {
+                unreachable!("playlist startup intent returned before media admission")
             }
         };
         let admitted =
@@ -683,10 +719,11 @@ pub(crate) fn resolve_initial_media_argument(
     let utf8_argument = match argument.into_string() {
         Ok(argument) => argument,
         Err(native_argument) => {
-            return (
-                Some(InitialMedia::File(PathBuf::from(native_argument))),
-                None,
-            );
+            let native_path = PathBuf::from(native_argument);
+            if playlist::is_recognized_startup_playlist_path(&native_path) {
+                return (Some(InitialMedia::Playlist(native_path)), None);
+            }
+            return (Some(InitialMedia::File(native_path)), None);
         }
     };
 
@@ -705,7 +742,11 @@ pub(crate) fn resolve_initial_media_argument(
     }
 
     // Всё остальное считаем локальным путём, как работало раньше.
-    (Some(InitialMedia::File(PathBuf::from(utf8_argument))), None)
+    let local_path = PathBuf::from(utf8_argument);
+    if playlist::is_recognized_startup_playlist_path(&local_path) {
+        return (Some(InitialMedia::Playlist(local_path)), None);
+    }
+    (Some(InitialMedia::File(local_path)), None)
 }
 
 #[cfg(test)]
@@ -879,6 +920,7 @@ mod tests {
             }),
             direct_media_startup_job: None,
             local_startup_job: None,
+            startup_playlist_pending: false,
             orchestration: StartupMediaOrchestration::new(false),
             cli_url_target_draft: None,
             startup_config: None,
@@ -919,6 +961,7 @@ mod tests {
             }),
             direct_media_startup_job: None,
             local_startup_job: None,
+            startup_playlist_pending: false,
             orchestration: StartupMediaOrchestration::new(false),
             cli_url_target_draft: None,
             startup_config: None,
@@ -983,6 +1026,24 @@ mod tests {
             initial_media,
             Some(InitialMedia::File(path)) if path == Path::new("/tmp/sample.mp4")
         ));
+    }
+
+    #[test]
+    fn cli_route_classifies_each_supported_playlist_format_before_local_media_open() {
+        for path in [
+            "/tmp/list.m3u",
+            "/tmp/list.M3U8",
+            "/tmp/list.xspf",
+            "/tmp/list.CUE",
+        ] {
+            let (initial_media, startup_error) =
+                resolve_initial_media_argument(Some(path.into()), &AppConfig::default());
+            assert!(startup_error.is_none(), "{path}");
+            assert!(matches!(
+                initial_media,
+                Some(InitialMedia::Playlist(actual_path)) if actual_path == Path::new(path)
+            ));
+        }
     }
 
     #[cfg(unix)]

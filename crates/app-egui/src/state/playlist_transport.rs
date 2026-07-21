@@ -11,7 +11,7 @@ use player_core::{
 use render_wgpu_shell::Renderer;
 use tracing::{debug, warn};
 
-use super::{AppState, StrongMediaOpenPoll};
+use super::{AppState, StrongMediaOpenError, StrongMediaOpenPoll};
 use crate::media_open::{MediaOpenRequestId, MediaOpenSourceRequest};
 use crate::playlist_runtime::{
     ControllerStableIntentDispatch, PlannedPlaylistInstall, PlaylistRuntime,
@@ -50,7 +50,59 @@ pub(super) struct PlaylistTransportRuntimeState {
     intent_receipts: Vec<player_core::PlaybackIntentUpdateReceipt>,
 }
 
+/// Startup first-item start сохраняет source-admission и coordinator failure отдельно.
+#[derive(Debug)]
+pub(crate) enum StartupPlaylistInstallStartError {
+    /// Committed locator/window/config не построили source request.
+    Source(&'static str),
+    /// Общий strong-open protocol отклонил start.
+    Strong(StrongMediaOpenError),
+}
+
+impl std::fmt::Display for StartupPlaylistInstallStartError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Source(reason) => write!(formatter, "startup playlist source rejected: {reason}"),
+            Self::Strong(error) => {
+                write!(formatter, "startup playlist strong-open rejected: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for StartupPlaylistInstallStartError {}
+
 impl AppState {
+    /// Запускает exact post-commit first item без normal transport queue и sibling scan.
+    pub(crate) fn begin_startup_playlist_install(
+        &mut self,
+        playlist_runtime: &mut PlaylistRuntime,
+        renderer: &Renderer,
+        install: PlannedPlaylistInstall,
+    ) -> Result<(), StartupPlaylistInstallStartError> {
+        let item_id = install.item_id;
+        let source_request = match self.playlist_source_request(playlist_runtime, &install) {
+            Ok(source_request) => source_request,
+            Err(error) => {
+                playlist_runtime.report_unstaged_playlist_navigation_failure(item_id);
+                return Err(StartupPlaylistInstallStartError::Source(error));
+            }
+        };
+        match self.begin_playlist_source_media_strong(
+            playlist_runtime,
+            renderer,
+            source_request,
+            install,
+            None,
+        ) {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                playlist_runtime.report_unstaged_playlist_navigation_failure(item_id);
+                Err(StartupPlaylistInstallStartError::Strong(error))
+            }
+        }
+    }
+
     /// Превращает exact controller plan в source request и запускает общий strong protocol.
     pub(crate) fn begin_planned_playlist_install(
         &mut self,

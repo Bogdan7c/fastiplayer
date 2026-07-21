@@ -90,6 +90,8 @@ pub(crate) use ui_interaction::{
     reason = "Session 14 bootstrap/save-worker integration consumes this startup boundary"
 )]
 mod startup;
+mod startup_import;
+pub(crate) use startup_import::StartupPlaylistImportTerminal;
 mod startup_retained;
 mod startup_runtime;
 #[allow(unused_imports)]
@@ -447,6 +449,8 @@ pub(crate) struct PlaylistRuntime {
     import_transaction: import_transaction::PlaylistImportTransactionState,
     /// S09 single-root picker и bounded parser job живут отдельно от UI renderer-а.
     import_io: import_io::PlaylistImportIoOwner,
+    /// S17S связывает trusted startup parse/preview/commit с exact first-item open receipt.
+    startup_import: startup_import::StartupPlaylistImportState,
     /// S17 latest-only yt-dlp topology worker живёт process lifetime.
     url_import: url_import::PlaylistUrlImportOwner,
     /// S11 save dialog, pure preflight и atomic writer принадлежат process runtime.
@@ -547,6 +551,7 @@ impl PlaylistRuntime {
                 replacement_confirmation::QueueReplacementConfirmationState::new(),
             import_transaction: import_transaction::PlaylistImportTransactionState::new(),
             import_io,
+            startup_import: startup_import::StartupPlaylistImportState::default(),
             url_import,
             export_io,
             cue_export_availability_cache: RefCell::new(None),

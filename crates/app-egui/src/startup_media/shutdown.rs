@@ -52,6 +52,7 @@ impl StartupMediaController {
         self.terminal_shutdown_started = true;
         self.orchestration.phase = super::StartupMediaPhase::Shutdown;
         self.orchestration.prepared = None;
+        self.startup_playlist_pending = false;
 
         // Все owners сначала теряют admission/apply authority и получают cancel,
         // только после этого общий deadline расходуется на bounded join.

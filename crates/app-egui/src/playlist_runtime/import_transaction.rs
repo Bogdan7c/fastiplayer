@@ -512,16 +512,21 @@ impl PlaylistRuntime {
 
     /// Cancel exact preview не затрагивает queue/current/playback.
     pub(crate) fn cancel_playlist_import(&mut self, preview_id: PlaylistImportPreviewId) -> bool {
-        let matches = self
+        let matching_intent = self
             .import_transaction
             .staged
             .as_ref()
-            .is_some_and(|staged| staged.preview.preview_id == preview_id);
-        if matches {
+            .filter(|staged| staged.preview.preview_id == preview_id)
+            .map(|staged| staged.preview.intent);
+        if let Some(intent) = matching_intent {
             self.import_transaction.cancel();
             self.replacement_confirmation.cancel();
+            if intent == PlaylistImportIntent::StartupReplace {
+                self.startup_import
+                    .finish(super::startup_import::StartupPlaylistImportTerminal::Cancelled);
+            }
         }
-        matches
+        matching_intent.is_some()
     }
 
     /// Matching generalized confirmation revalidates generation/revision again.
@@ -548,6 +553,7 @@ impl PlaylistRuntime {
             self.import_transaction.staged = Some(staged);
             return PlaylistImportContinueOutcome::Stale;
         }
+        let intent = staged.preview.intent;
         let queue_drafts = match staged
             .accepted_entries
             .into_iter()
@@ -557,14 +563,24 @@ impl PlaylistRuntime {
             Ok(drafts) => drafts,
             Err(error) => {
                 self.import_transaction.cancel();
+                if intent == PlaylistImportIntent::StartupReplace {
+                    self.fail_startup_playlist_import(
+                        "Startup playlist содержит неподдерживаемый source locator",
+                    );
+                }
                 return PlaylistImportContinueOutcome::MaterializationRejected(error);
             }
         };
         let Some(controller) = self.controller.as_mut() else {
             self.import_transaction.cancel();
+            if intent == PlaylistImportIntent::StartupReplace {
+                self.fail_startup_playlist_import(
+                    "Playlist controller недоступен для startup commit",
+                );
+            }
             return PlaylistImportContinueOutcome::RuntimeClosed;
         };
-        let outcome = match staged.preview.intent {
+        let outcome = match intent {
             PlaylistImportIntent::AppendToQueue => {
                 controller.commit_import_append(staged.expected_revision, queue_drafts)
             }
@@ -580,6 +596,19 @@ impl PlaylistRuntime {
             ),
         };
         self.import_transaction.cancel();
+        if intent == PlaylistImportIntent::StartupReplace {
+            match &outcome {
+                Ok(ControllerImportCommitOutcome::Committed { allocated, .. }) => {
+                    self.finish_startup_playlist_commit(allocated.iter_playable_item_ids().next());
+                }
+                Ok(ControllerImportCommitOutcome::NoEntriesProvided) => {
+                    self.finish_startup_playlist_commit(None);
+                }
+                Err(_) => self.fail_startup_playlist_import(
+                    "Startup playlist commit отклонён без queue mutation",
+                ),
+            }
+        }
         match outcome {
             Ok(committed) => PlaylistImportContinueOutcome::Committed(committed),
             Err(error) => PlaylistImportContinueOutcome::CommitRejected(error),

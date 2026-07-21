@@ -130,6 +130,8 @@ pub(crate) enum TransportActionOrigin {
     Ui,
     /// Process-lifetime MPRIS adapter; Stopped disposition сохраняется отдельно.
     Mpris,
+    /// Trusted CLI/desktop startup intent до первого committed queue open.
+    Startup,
 }
 
 /// Pending target остаётся отдельным от active/current до exact install commit-а.

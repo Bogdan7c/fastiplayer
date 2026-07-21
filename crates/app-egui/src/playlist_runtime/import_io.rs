@@ -6,7 +6,7 @@
 
 use std::fs::File;
 use std::io::Read as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -98,6 +98,24 @@ impl PlaylistImportJob {
                     return PlaylistImportJobCompletion::Cancelled;
                 }
                 parse_selected_root(handle.path(), intent, &expansion_cancellation)
+            },
+        )
+    }
+
+    /// Запускает тот же authoritative parser для trusted CLI/desktop path без dialog-а.
+    fn spawn_path(
+        root_path: PathBuf,
+        wake_port: AppWakePort,
+        intent: PlaylistImportIntent,
+    ) -> Result<Self, String> {
+        Self::spawn_runner(
+            wake_port,
+            "playlist-startup-import",
+            move |worker_cancel, expansion_cancellation| {
+                if worker_cancel.load(Ordering::Acquire) {
+                    return PlaylistImportJobCompletion::Cancelled;
+                }
+                parse_selected_root(&root_path, intent, &expansion_cancellation)
             },
         )
     }
@@ -242,6 +260,23 @@ impl PlaylistImportIoOwner {
         Ok(true)
     }
 
+    /// Принимает exact startup path, сохраняя single-job и wake/thread semantics owner-а.
+    pub(super) fn start_path(
+        &mut self,
+        root_path: PathBuf,
+        intent: PlaylistImportIntent,
+    ) -> Result<bool, String> {
+        if self.job.is_some() {
+            return Ok(false);
+        }
+        self.job = Some(PlaylistImportJob::spawn_path(
+            root_path,
+            self.wake_port.clone(),
+            intent,
+        )?);
+        Ok(true)
+    }
+
     fn drain(&mut self) -> Option<PlaylistImportJobCompletion> {
         let job = self.job.as_mut()?;
         let completion = job.drain()?;
@@ -277,6 +312,7 @@ impl PlaylistRuntime {
         self.import_io.cancel_active();
         self.cancel_playlist_url_import();
         self.import_transaction.cancel();
+        self.startup_import.supersede();
     }
 
     /// Запускает explicit append/replace import после post-render action drain.
@@ -295,6 +331,7 @@ impl PlaylistRuntime {
         if self.import_io.is_open() {
             return false;
         }
+        self.supersede_startup_media_apply();
         self.supersede_playlist_import_flow();
         self.replacement_confirmation.cancel();
         match self.import_io.start(window, intent) {
@@ -309,14 +346,33 @@ impl PlaylistRuntime {
 
     /// Применяет worker completion только на serialized runtime owner turn.
     pub(in crate::playlist_runtime) fn drain_playlist_import_job(&mut self) -> bool {
+        let mut changed = self.stage_held_startup_playlist_draft();
         let Some(completion) = self.import_io.drain() else {
-            return false;
+            return changed;
         };
         match completion {
-            PlaylistImportJobCompletion::Cancelled => false,
+            PlaylistImportJobCompletion::Cancelled => {
+                if self.startup_import.is_active() {
+                    self.startup_import
+                        .finish(super::startup_import::StartupPlaylistImportTerminal::Cancelled);
+                    changed = true;
+                }
+                changed
+            }
             PlaylistImportJobCompletion::Parsed { intent, draft } => {
+                if intent == PlaylistImportIntent::StartupReplace
+                    && self.controller.as_ref().is_none()
+                {
+                    self.startup_import.hold_draft(draft);
+                    return true;
+                }
                 if let Err(error) = self.stage_playlist_import(intent, draft) {
                     tracing::warn!(?error, "Playlist import preview не прошёл S08 staging");
+                    if intent == PlaylistImportIntent::StartupReplace {
+                        self.fail_startup_playlist_import(
+                            "Startup playlist preview не прошёл allocator gate",
+                        );
+                    }
                     self.set_playlist_safe_feedback(
                         "Импорт устарел или сейчас недоступен; выберите файл ещё раз",
                     );
@@ -335,10 +391,31 @@ impl PlaylistRuntime {
                         "Не удалось обработать файл плейлиста"
                     }
                 };
+                if self.startup_import.is_active() {
+                    self.fail_startup_playlist_import(safe_message);
+                }
                 self.set_playlist_safe_feedback(safe_message);
                 true
             }
         }
+    }
+
+    /// Stages parser result только после canonical allocator/load decision.
+    fn stage_held_startup_playlist_draft(&mut self) -> bool {
+        if self.controller.as_ref().is_none() {
+            return false;
+        }
+        let Some(draft) = self.startup_import.take_held_draft() else {
+            return false;
+        };
+        if let Err(error) = self.stage_playlist_import(PlaylistImportIntent::StartupReplace, draft)
+        {
+            tracing::warn!(?error, "Held startup playlist draft не прошёл S08 staging");
+            self.fail_startup_playlist_import(
+                "Startup playlist preview устарел до открытия allocator gate",
+            );
+        }
+        true
     }
 }
 
