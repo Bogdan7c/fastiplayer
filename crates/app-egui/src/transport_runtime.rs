@@ -271,6 +271,37 @@ pub(crate) fn apply_desktop_commands(
 ) -> bool {
     let mut visible_change = false;
     for command in commands {
+        let player_dependent = matches!(
+            &command.action,
+            DesktopTransportAction::Next
+                | DesktopTransportAction::Previous
+                | DesktopTransportAction::Play
+                | DesktopTransportAction::Pause
+                | DesktopTransportAction::PlayPause
+                | DesktopTransportAction::Seek { .. }
+                | DesktopTransportAction::SetPosition { .. }
+                | DesktopTransportAction::SetRatePause
+        );
+        if player_dependent
+            && !playlist_runtime.desktop_control_binding_matches(
+                command.observed_control_revision,
+                app_state.playlist_runtime_binding(),
+                player_snapshot,
+            )
+        {
+            match &command.action {
+                DesktopTransportAction::Seek { request_id, .. }
+                | DesktopTransportAction::SetPosition { request_id, .. } => {
+                    playlist_runtime.record_desktop_seek_outcome(
+                        DesktopTimelineSeekOutcome::StaleInstance {
+                            request_id: *request_id,
+                        },
+                    );
+                }
+                _ => {}
+            }
+            continue;
+        }
         let action = command.action;
         match action {
             DesktopTransportAction::Next => request_navigation(

@@ -15,9 +15,10 @@ use zbus::{fdo, interface};
 
 use crate::{
     DesktopBackendKind, DesktopCommand, DesktopCommandRequestId, DesktopCommandSink,
-    DesktopIntegrationError, DesktopIntegrationEvent, DesktopIntegrationResult, DesktopLoopStatus,
-    DesktopSnapshotChange, DesktopSnapshotView, DesktopTimelineSeekOutcome, DesktopTransportAction,
-    EffectiveVolume, LatestSnapshotHandle, LatestSnapshotSource, TimelineSeekRequestId,
+    DesktopControlRevision, DesktopIntegrationError, DesktopIntegrationEvent,
+    DesktopIntegrationResult, DesktopLoopStatus, DesktopSnapshotChange, DesktopSnapshotView,
+    DesktopTimelineSeekOutcome, DesktopTransportAction, EffectiveVolume, LatestSnapshotHandle,
+    LatestSnapshotSource, TimelineSeekRequestId,
 };
 
 use super::{BackendControlCommand, BackendHandle};
@@ -306,10 +307,18 @@ impl MprisPlayerInterface {
         Ok(DesktopCommandRequestId::new(non_zero))
     }
 
-    fn send_action(&self, action: DesktopTransportAction) -> fdo::Result<()> {
+    fn send_action(
+        &self,
+        action: DesktopTransportAction,
+        observed_control_revision: Option<DesktopControlRevision>,
+    ) -> fdo::Result<()> {
         let request_id = self.next_request_id()?;
         self.command_sink
-            .send_desktop_command(DesktopCommand { request_id, action })
+            .send_desktop_command(DesktopCommand {
+                request_id,
+                observed_control_revision,
+                action,
+            })
             .map_err(to_fdo_error)
     }
 
@@ -319,11 +328,16 @@ impl MprisPlayerInterface {
             .ok_or_else(|| fdo::Error::Failed("seek request id exhausted".to_string()))
     }
 
-    fn send_seek(&self, offset_microseconds: i64) -> fdo::Result<()> {
+    fn send_seek(
+        &self,
+        offset_microseconds: i64,
+        observed_control_revision: DesktopControlRevision,
+    ) -> fdo::Result<()> {
         let request_id = self.next_request_id()?;
         self.command_sink
             .send_desktop_command(DesktopCommand {
                 request_id,
+                observed_control_revision: Some(observed_control_revision),
                 action: DesktopTransportAction::Seek {
                     request_id: Self::seek_request_id(request_id)?,
                     offset_microseconds,
@@ -336,45 +350,54 @@ impl MprisPlayerInterface {
 #[interface(name = "org.mpris.MediaPlayer2.Player")]
 impl MprisPlayerInterface {
     fn next(&self) -> fdo::Result<()> {
-        if !self.desktop_view()?.capabilities.can_go_next {
+        let view = self.desktop_view()?;
+        if !view.capabilities.can_go_next {
             return Ok(());
         }
-        self.send_action(DesktopTransportAction::Next)
+        self.send_action(DesktopTransportAction::Next, view.control_revision)
     }
     fn previous(&self) -> fdo::Result<()> {
-        if !self.desktop_view()?.capabilities.can_go_previous {
+        let view = self.desktop_view()?;
+        if !view.capabilities.can_go_previous {
             return Ok(());
         }
-        self.send_action(DesktopTransportAction::Previous)
+        self.send_action(DesktopTransportAction::Previous, view.control_revision)
     }
     fn pause(&self) -> fdo::Result<()> {
-        if !self.desktop_view()?.capabilities.can_pause {
+        let view = self.desktop_view()?;
+        if !view.capabilities.can_pause {
             return Ok(());
         }
-        self.send_action(DesktopTransportAction::Pause)
+        self.send_action(DesktopTransportAction::Pause, view.control_revision)
     }
     fn play_pause(&self) -> fdo::Result<()> {
-        if !self.desktop_view()?.capabilities.can_pause {
+        let view = self.desktop_view()?;
+        if !view.capabilities.can_pause {
             return Err(fdo::Error::Failed(
                 "PlayPause is unavailable while CanPause is false".to_string(),
             ));
         }
-        self.send_action(DesktopTransportAction::PlayPause)
+        self.send_action(DesktopTransportAction::PlayPause, view.control_revision)
     }
     fn stop(&self) -> fdo::Result<()> {
-        self.send_action(DesktopTransportAction::Stop)
+        self.send_action(DesktopTransportAction::Stop, None)
     }
     fn play(&self) -> fdo::Result<()> {
-        if !self.desktop_view()?.capabilities.can_play {
+        let view = self.desktop_view()?;
+        if !view.capabilities.can_play {
             return Ok(());
         }
-        self.send_action(DesktopTransportAction::Play)
+        self.send_action(DesktopTransportAction::Play, view.control_revision)
     }
     fn seek(&self, offset_microseconds: i64) -> fdo::Result<()> {
-        if !self.desktop_view()?.capabilities.can_seek {
+        let view = self.desktop_view()?;
+        if !view.capabilities.can_seek {
             return Ok(());
         }
-        self.send_seek(offset_microseconds)
+        let Some(control_revision) = view.control_revision else {
+            return Ok(());
+        };
+        self.send_seek(offset_microseconds, control_revision)
     }
     fn set_position(
         &self,
@@ -411,6 +434,7 @@ impl MprisPlayerInterface {
         self.command_sink
             .send_desktop_command(DesktopCommand {
                 request_id: command_request_id,
+                observed_control_revision: view.control_revision,
                 action: DesktopTransportAction::SetPosition {
                     request_id,
                     track_key,
@@ -431,7 +455,7 @@ impl MprisPlayerInterface {
     fn set_loop_status(&self, value: &str) -> fdo::Result<()> {
         let status = DesktopLoopStatus::from_mpris_str(value)
             .ok_or_else(|| fdo::Error::InvalidArgs(format!("invalid LoopStatus: {value}")))?;
-        self.send_action(DesktopTransportAction::SetLoopStatus(status))
+        self.send_action(DesktopTransportAction::SetLoopStatus(status), None)
     }
     #[zbus(property(emits_changed_signal = "const"))]
     fn rate(&self) -> f64 {
@@ -443,10 +467,11 @@ impl MprisPlayerInterface {
             return Err(fdo::Error::InvalidArgs("Rate must be finite".to_string()));
         }
         if rate == 0.0 {
-            if !self.desktop_view()?.capabilities.can_pause {
+            let view = self.desktop_view()?;
+            if !view.capabilities.can_pause {
                 return Ok(());
             }
-            return self.send_action(DesktopTransportAction::SetRatePause);
+            return self.send_action(DesktopTransportAction::SetRatePause, view.control_revision);
         }
         Ok(())
     }
@@ -456,7 +481,7 @@ impl MprisPlayerInterface {
     }
     #[zbus(property)]
     fn set_shuffle(&self, shuffle: bool) -> fdo::Result<()> {
-        self.send_action(DesktopTransportAction::SetShuffle(shuffle))
+        self.send_action(DesktopTransportAction::SetShuffle(shuffle), None)
     }
     #[zbus(property(emits_changed_signal = "false"))]
     fn metadata(&self) -> fdo::Result<HashMap<String, OwnedValue>> {
@@ -470,7 +495,7 @@ impl MprisPlayerInterface {
     fn set_volume(&self, volume: f64) -> fdo::Result<()> {
         let effective = EffectiveVolume::from_mpris(volume)
             .map_err(|_| fdo::Error::InvalidArgs("Volume must be finite".to_string()))?;
-        self.send_action(DesktopTransportAction::SetVolume(effective))
+        self.send_action(DesktopTransportAction::SetVolume(effective), None)
     }
     #[zbus(property(emits_changed_signal = "false"))]
     fn position(&self) -> fdo::Result<i64> {

@@ -52,3 +52,9 @@ Serena per-file diagnostics для новых core files чистые. Посл�
 - `PlaylistLayoutIdentity` — typed pair structural/disclosure revisions. Она меняется при structural mutation или successful disclosure toggle, но не при active/error/pending-only publication; viewport anchor и active-accent geometry обязаны инвалидироваться по ней, а не по общей presentation revision.
 - Disclosure state остаётся process-lifetime owner-ом controller-а. Toggle публикует согласованные ordinary+compound snapshots без dirty/structural mutation. Header/part Play и disclosure идут через typed, structural-revision-fenced actions/outcomes; part Play не меняет structural selection.
 - Expanded child rows не являются structural entries: они не получают drag/remove/reorder API. Drag geometry внутри children canonicalizes к границе всей compound group.
+
+
+## S17M external-control follow-up (2026-07-21)
+- Compound UI disclosure остаётся чистой presentation state и отсутствует во входах `external_projection`; collapsed/expanded snapshot даёт identical external binding и metadata.
+- External current/track identity — exact subordinate part Item ID. Header остаётся только structural/app action и использует существующий S17G current-in-group/first-part resolver, без fake MPRIS track и без повторного target scan.
+- Part metadata/context и stale exact binding policy документированы в `mem:app-egui/playlist-desktop-transport-s18b`.

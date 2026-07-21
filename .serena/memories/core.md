@@ -194,3 +194,7 @@ Exact CUE export identity теперь durable в `playlist-core`, additive pers
 - `app-egui::url_topology_drafts` чисто маппит уже extracted `YtDlpTopology` в ordered ID-less `PlaylistImportEntryDraft` + bounded safe issues без queue/allocator/commit/I/O authority и без второго URL parser-а.
 - Video -> Single, collections nested-flatten, MultiVideo -> first-class Compound; one part остаётся compound, zero retained parts даёт issue/no draft, stable unavailable сохраняется, missing identity становится issue, duplicates/order сохраняются.
 - Exact root остаётся exact durable URL; extracted child/delegation identity сохраняет service-ytdlp ownership через versioned stable service payload, поэтому direct-media-first не перехватывает reopen. Ephemeral transport material отсутствует/fail-closed. Full contract: `mem:app-egui/ytdlp-topology-drafts-s16-2026-07-20`.
+
+
+## S17M compound MPRIS/external projection (2026-07-21)
+- Process-lifetime desktop owner теперь публикует exact compound part projection и fence-ит player-dependent external commands стабильной `DesktopControlRevision`, повторно проверяя queue revision/current, active part, media instance и player binding generation. Group header не является MPRIS track; metadata использует part title и bounded redacted group context. Полный контракт: `mem:app-egui/playlist-desktop-transport-s18b`.

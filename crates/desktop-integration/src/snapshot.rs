@@ -39,6 +39,28 @@ impl DesktopSnapshotRevision {
     }
 }
 
+/// Ревизия exact playback binding, наблюдавшегося внешним контроллером.
+///
+/// В отличие от [`DesktopSnapshotRevision`] она не меняется от одного только
+/// движения timeline. App owner обновляет её при смене queue/current,
+/// media instance либо player generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DesktopControlRevision(u64);
+
+impl DesktopControlRevision {
+    /// Создаёт непрозрачную app-owned ревизию без раскрытия queue/player типов.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Возвращает значение только для correlation и focused tests.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
 /// Динамические capability свойства MPRIS Player.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DesktopCapabilities {
@@ -54,6 +76,8 @@ pub struct DesktopCapabilities {
 pub struct DesktopMetadata {
     pub track_key: Option<DesktopTrackKey>,
     pub title: Option<String>,
+    /// Безопасный bounded контекст compound/collection; locator сюда не попадает.
+    pub collection_context: Option<String>,
     pub source_label: Option<String>,
     pub duration: Option<MediaDuration>,
 }
@@ -69,6 +93,8 @@ pub struct DesktopSeeked {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DesktopSnapshotView {
     pub revision: DesktopSnapshotRevision,
+    /// Exact active playback binding для fencing внешних transport-команд.
+    pub control_revision: Option<DesktopControlRevision>,
     pub playback_status: DesktopPlaybackStatus,
     pub metadata: DesktopMetadata,
     pub position: MediaTime,
@@ -84,6 +110,7 @@ impl DesktopSnapshotView {
     pub fn neutral(volume: EffectiveVolume) -> Self {
         Self {
             revision: DesktopSnapshotRevision::INITIAL,
+            control_revision: None,
             playback_status: DesktopPlaybackStatus::Stopped,
             metadata: DesktopMetadata::default(),
             position: MediaTime::ZERO,

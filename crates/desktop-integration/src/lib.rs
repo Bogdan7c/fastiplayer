@@ -23,6 +23,6 @@ pub use event::{DesktopBackendKind, DesktopIntegrationEvent};
 pub use runtime::{DesktopIntegration, LatestSnapshotHandle, LatestSnapshotSource};
 pub use shutdown::{DesktopIntegrationShutdownOutcome, DesktopIntegrationShutdownTransportFailure};
 pub use snapshot::{
-    DesktopCapabilities, DesktopMetadata, DesktopPlaybackStatus, DesktopSeeked,
-    DesktopSnapshotChange, DesktopSnapshotRevision, DesktopSnapshotView,
+    DesktopCapabilities, DesktopControlRevision, DesktopMetadata, DesktopPlaybackStatus,
+    DesktopSeeked, DesktopSnapshotChange, DesktopSnapshotRevision, DesktopSnapshotView,
 };

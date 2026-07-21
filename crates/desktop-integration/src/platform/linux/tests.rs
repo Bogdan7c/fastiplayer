@@ -10,13 +10,14 @@ use zbus::zvariant::ObjectPath;
 use super::track_identity::media_duration_to_mpris_microseconds;
 use super::*;
 use crate::{
-    DesktopCapabilities, DesktopMetadata, DesktopPlaybackStatus, DesktopSnapshotRevision,
-    DesktopTrackKey,
+    DesktopCapabilities, DesktopControlRevision, DesktopMetadata, DesktopPlaybackStatus,
+    DesktopSnapshotRevision, DesktopTrackKey,
 };
 
 fn view() -> DesktopSnapshotView {
     DesktopSnapshotView {
         revision: DesktopSnapshotRevision::new(1),
+        control_revision: Some(DesktopControlRevision::new(7)),
         playback_status: DesktopPlaybackStatus::Playing,
         metadata: DesktopMetadata::default(),
         position: MediaTime::from_secs(42),
@@ -190,6 +191,30 @@ fn fixed_rate_setter_only_enqueues_pause_for_zero() {
         commands[0].action,
         DesktopTransportAction::SetRatePause
     ));
+    assert_eq!(
+        commands[0].observed_control_revision,
+        Some(DesktopControlRevision::new(7))
+    );
+}
+
+#[test]
+fn compound_collection_context_uses_standard_metadata_without_source_label_leak() {
+    let mut metadata = DesktopMetadata {
+        track_key: Some(DesktopTrackKey::ExternalMedia { lineage: 17 }),
+        title: Some("Exact part".to_owned()),
+        collection_context: Some("Group · Part 2/3".to_owned()),
+        source_label: Some("https://example.invalid/stream?token=must-not-leak".to_owned()),
+        duration: None,
+    };
+    let values = mpris_metadata_values(&metadata).expect("MPRIS metadata projection");
+    assert!(values.contains_key("xesam:title"));
+    assert!(values.contains_key("xesam:album"));
+    assert!(!format!("{values:?}").contains("token="));
+
+    metadata.collection_context = None;
+    let values_without_context =
+        mpris_metadata_values(&metadata).expect("MPRIS metadata without group context");
+    assert!(!values_without_context.contains_key("xesam:album"));
 }
 
 #[test]
@@ -212,6 +237,7 @@ fn stale_and_invalid_set_position_are_noop_before_backpressured_enqueue() {
     snapshot.metadata = DesktopMetadata {
         track_key: Some(DesktopTrackKey::ExternalMedia { lineage: 17 }),
         title: None,
+        collection_context: None,
         source_label: None,
         duration: Some(MediaDuration::from_secs(60)),
     };

@@ -55,6 +55,12 @@ pub(super) fn mpris_metadata_values(
             owned_value_from_string(title.clone())?,
         );
     }
+    if let Some(collection_context) = &metadata.collection_context {
+        values.insert(
+            "xesam:album".to_string(),
+            owned_value_from_string(collection_context.clone())?,
+        );
+    }
     if let Some(duration) = metadata.duration {
         values.insert(
             "mpris:length".to_string(),

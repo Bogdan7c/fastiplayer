@@ -30,6 +30,7 @@ mod controller;
 mod desktop_transport;
 pub(crate) mod discovery;
 mod export_io;
+mod external_projection;
 #[allow(
     dead_code,
     reason = "Session 11A identities become production callsite inputs in subsequent sessions"

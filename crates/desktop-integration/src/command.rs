@@ -2,7 +2,7 @@ use std::num::NonZeroU64;
 
 use media_core::MediaTime;
 
-use crate::DesktopIntegrationResult;
+use crate::{DesktopControlRevision, DesktopIntegrationResult};
 
 /// Нейтральный идентификатор desktop-команды, не связанный с D-Bus serial.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -210,6 +210,8 @@ pub enum DesktopTransportAction {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DesktopCommand {
     pub request_id: DesktopCommandRequestId,
+    /// Binding snapshot-а, из которого backend разрешил player-dependent action.
+    pub observed_control_revision: Option<DesktopControlRevision>,
     pub action: DesktopTransportAction,
 }
 

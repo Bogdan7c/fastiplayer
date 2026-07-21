@@ -4,9 +4,9 @@ use std::num::NonZeroU64;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
 use desktop_integration::{
-    DesktopCapabilities, DesktopCommand, DesktopCommandSink, DesktopIntegration,
-    DesktopIntegrationError, DesktopIntegrationResult, DesktopIntegrationShutdownOutcome,
-    DesktopLoopStatus, DesktopMetadata, DesktopPlaybackStatus, DesktopSeeked,
+    DesktopCapabilities, DesktopCommand, DesktopCommandSink, DesktopControlRevision,
+    DesktopIntegration, DesktopIntegrationError, DesktopIntegrationResult,
+    DesktopIntegrationShutdownOutcome, DesktopLoopStatus, DesktopPlaybackStatus, DesktopSeeked,
     DesktopSnapshotRevision, DesktopSnapshotView, DesktopTimelineSeekOutcome, DesktopTrackKey,
     EffectiveVolume, TimelineSeekRequestId,
 };
@@ -15,13 +15,16 @@ use player_core::{PlaybackState, PlayerSnapshot};
 use playlist_core::RepeatMode;
 use tracing::{debug, warn};
 
-use super::PlaylistRuntime;
 use super::controller::AppTransportDisposition;
 use super::controller::{
     ControllerStableIntentDispatch, StablePlaybackIntent, TransportGuardOutcome,
 };
+use super::external_projection::{
+    ExternalPlaybackBinding, ExternalPlaybackProjection, capture_binding,
+};
 use super::identity::TransportActionOrigin;
 use super::transport_ui::NavigationControlAvailability;
+use super::{PlaylistRuntime, PlaylistRuntimeBinding};
 use crate::app_wake::{AppWakePort, WakeDelivery};
 use crate::process_shutdown::ShutdownDeadline;
 
@@ -55,6 +58,8 @@ pub(super) struct DesktopTransportOwner {
     command_rx: Receiver<DesktopCommand>,
     command_sink: DesktopMailboxSink,
     revision: u64,
+    control_revision: u64,
+    control_binding: Option<ExternalPlaybackBinding>,
     effective_volume: EffectiveVolume,
     pending_player_volume: Option<EffectiveVolume>,
     active_track_key: Option<DesktopTrackKey>,
@@ -80,6 +85,8 @@ impl DesktopTransportOwner {
                 wake_port,
             },
             revision: 0,
+            control_revision: 0,
+            control_binding: None,
             effective_volume,
             pending_player_volume: None,
             active_track_key: None,
@@ -87,6 +94,30 @@ impl DesktopTransportOwner {
             last_snapshot,
             last_seek_outcome: None,
         }
+    }
+
+    /// Обновляет control revision только при фактической смене exact binding-а.
+    fn observe_control_binding(
+        &mut self,
+        binding: Option<ExternalPlaybackBinding>,
+    ) -> Option<DesktopControlRevision> {
+        if self.control_binding != binding {
+            self.control_revision = self.control_revision.saturating_add(1);
+            self.control_binding = binding;
+        }
+        self.control_binding
+            .map(|_| DesktopControlRevision::new(self.control_revision))
+    }
+
+    /// Сверяет command token и повторно захваченный authoritative binding.
+    fn control_binding_matches(
+        &self,
+        observed_revision: Option<DesktopControlRevision>,
+        current_binding: Option<ExternalPlaybackBinding>,
+    ) -> bool {
+        observed_revision == self.last_snapshot.control_revision
+            && observed_revision.is_some()
+            && current_binding == self.control_binding
     }
 
     /// AppShell вызывает этот boundary только после successful process lease.
@@ -139,15 +170,24 @@ impl DesktopTransportOwner {
         let Some(lineage) = active_lineage else {
             return;
         };
-        if self.active_lineage == Some(lineage) {
+        if item_id.is_none()
+            && self.active_lineage == Some(lineage)
+            && matches!(
+                self.active_track_key,
+                Some(DesktopTrackKey::PlaylistItem { .. })
+            )
+        {
+            return;
+        }
+        let next_track_key = item_id
+            .map_or(DesktopTrackKey::ExternalMedia { lineage }, |item_id| {
+                DesktopTrackKey::PlaylistItem { lineage, item_id }
+            });
+        if self.active_lineage == Some(lineage) && self.active_track_key == Some(next_track_key) {
             return;
         }
         self.active_lineage = Some(lineage);
-        self.active_track_key = Some(
-            item_id.map_or(DesktopTrackKey::ExternalMedia { lineage }, |item_id| {
-                DesktopTrackKey::PlaylistItem { lineage, item_id }
-            }),
-        );
+        self.active_track_key = Some(next_track_key);
     }
 
     pub(super) fn publish_from_player(
@@ -155,18 +195,19 @@ impl DesktopTransportOwner {
         player_snapshot: &PlayerSnapshot,
         runtime: &mut PlaylistRuntime,
     ) {
-        let active = runtime
-            .playlist_controller()
-            .and_then(|controller| controller.active_media());
-        let active_instance = active.map(|identity| identity.media_instance_id());
-        let active_lineage =
-            active.map(|identity| identity.lineage_id().expose_value_for_correlation());
-        let item_id = active
-            .and_then(|identity| identity.item_id())
+        let projection = ExternalPlaybackProjection::capture(runtime, player_snapshot);
+        let active_lineage = projection
+            .as_ref()
+            .map(|projection| projection.active_lineage);
+        let item_id = projection
+            .as_ref()
+            .and_then(|projection| projection.active_part_item_id)
             .and_then(|item_id| NonZeroU64::new(item_id.expose_value_for_persistence()));
         self.observe_installed_track(active_lineage, item_id);
+        let control_revision =
+            self.observe_control_binding(projection.as_ref().map(|projection| projection.binding));
 
-        let has_binding = active.is_some() && player_snapshot.media_instance_id == active_instance;
+        let has_binding = projection.is_some();
         if has_binding
             && let Ok(player_volume) = EffectiveVolume::from_player(player_snapshot.volume)
         {
@@ -190,12 +231,12 @@ impl DesktopTransportOwner {
             .timeline
             .duration
             .or_else(|| player_snapshot.duration.map(MediaDuration::from_duration));
-        let mut metadata = DesktopMetadata {
-            track_key: self.active_track_key,
-            title: player_snapshot.media_title.clone(),
-            source_label: player_snapshot.source_label.clone(),
-            duration,
-        };
+        let mut metadata = projection.map_or_else(
+            || self.last_snapshot.metadata.clone(),
+            |projection| projection.metadata,
+        );
+        metadata.track_key = self.active_track_key;
+        metadata.duration = has_binding.then_some(duration).flatten();
         if metadata.track_key == self.last_snapshot.metadata.track_key {
             metadata.title = metadata
                 .title
@@ -221,6 +262,7 @@ impl DesktopTransportOwner {
         self.revision = self.revision.saturating_add(1);
         let view = DesktopSnapshotView {
             revision: DesktopSnapshotRevision::new(self.revision),
+            control_revision,
             playback_status,
             metadata,
             position: player_snapshot.timeline.current_position,
@@ -242,9 +284,11 @@ impl DesktopTransportOwner {
     }
 
     pub(super) fn publish_detached(&mut self) {
+        self.observe_control_binding(None);
         self.revision = self.revision.saturating_add(1);
         let mut view = self.last_snapshot.clone();
         view.revision = DesktopSnapshotRevision::new(self.revision);
+        view.control_revision = None;
         view.playback_status = DesktopPlaybackStatus::Stopped;
         view.capabilities = DesktopCapabilities::default();
         view.position = MediaTime::ZERO;
@@ -322,6 +366,25 @@ impl PlaylistRuntime {
         self.desktop_transport
             .as_ref()
             .is_some_and(|owner| owner.active_track_matches(track_key))
+    }
+
+    /// Проверяет snapshot token вместе с текущими queue/player identities.
+    pub(crate) fn desktop_control_binding_matches(
+        &self,
+        observed_revision: Option<DesktopControlRevision>,
+        runtime_binding: Option<PlaylistRuntimeBinding>,
+        player_snapshot: &PlayerSnapshot,
+    ) -> bool {
+        let Some(runtime_binding) = runtime_binding else {
+            return false;
+        };
+        if self.validate_binding(runtime_binding).is_err() {
+            return false;
+        }
+        let current_binding = capture_binding(self, player_snapshot);
+        self.desktop_transport
+            .as_ref()
+            .is_some_and(|owner| owner.control_binding_matches(observed_revision, current_binding))
     }
 
     pub(crate) fn start_desktop_transport(&mut self, initial_volume: f32) {
@@ -457,15 +520,28 @@ mod tests {
         owner.observe_installed_track(Some(7), Some(first_item_id));
         let first_key = owner.active_track_key;
 
-        // Same-lineage reinstall и tombstone не меняю exported path.
+        // Exact same-part reinstall не меняет exported path.
+        owner.observe_installed_track(Some(7), Some(first_item_id));
+        assert_eq!(owner.active_track_key, first_key);
+
+        // Даже при нарушенной upstream lineage exact другая part не наследует старый track key.
         owner.observe_installed_track(Some(7), Some(replacement_item_id));
-        assert_eq!(owner.active_track_key, first_key);
+        assert_eq!(
+            owner.active_track_key,
+            Some(DesktopTrackKey::PlaylistItem {
+                lineage: 7,
+                item_id: replacement_item_id,
+            })
+        );
+        let replacement_key = owner.active_track_key;
+
+        // Tombstone не превращает последний playlist track в fake external media.
         owner.observe_installed_track(Some(7), None);
-        assert_eq!(owner.active_track_key, first_key);
+        assert_eq!(owner.active_track_key, replacement_key);
 
         // Pending/failure/suspend не стирают последний successful install.
         owner.observe_installed_track(None, None);
-        assert_eq!(owner.active_track_key, first_key);
+        assert_eq!(owner.active_track_key, replacement_key);
 
         owner.observe_installed_track(Some(8), Some(replacement_item_id));
         assert_eq!(
