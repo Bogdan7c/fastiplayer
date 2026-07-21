@@ -5506,6 +5506,18 @@ name = "web-media-core"
 version = "0.1.0"
 
 [[package]]
+name = "web-media-playback-plan"
+version = "0.1.0"
+dependencies = [
+ "audio-core",
+ "capability-core",
+ "codec-core",
+ "demux-api",
+ "video-frame-contract",
+ "web-media-core",
+]
+
+[[package]]
 name = "web-media-transport-api"
 version = "0.1.0"
 dependencies = [

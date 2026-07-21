@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::num::NonZeroU32;
 
-use crate::CandidateIdentity;
+use crate::{CandidateIdentity, SemanticIdentity};
 
 /// Верхняя граница neutral video height.
 ///
@@ -142,18 +142,67 @@ pub enum PreferredHeightRank {
     Missing,
 }
 
+/// Exact selection identity с snapshot-local и semantic доказательствами.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExactSelectionIdentity {
+    /// Snapshot-local identity, которую нельзя переносить между extraction generation.
+    exact: CandidateIdentity,
+    /// Refresh-stable attributes, защищающие от reuse exact ID с другим смыслом.
+    semantic: SemanticIdentity,
+}
+
+impl ExactSelectionIdentity {
+    /// Связывает exact и semantic identities одной source lineage.
+    pub fn new(
+        exact: CandidateIdentity,
+        semantic: SemanticIdentity,
+    ) -> Result<Self, ExactSelectionIdentityError> {
+        if exact.source() != semantic.source() {
+            return Err(ExactSelectionIdentityError::SourceMismatch);
+        }
+
+        Ok(Self { exact, semantic })
+    }
+
+    /// Возвращает snapshot-local identity.
+    pub const fn exact(&self) -> &CandidateIdentity {
+        &self.exact
+    }
+
+    /// Возвращает refresh-stable semantic identity.
+    pub const fn semantic(&self) -> &SemanticIdentity {
+        &self.semantic
+    }
+}
+
+/// Ошибка построения Exact selection identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExactSelectionIdentityError {
+    /// Exact и semantic identities принадлежат разным source lineages.
+    SourceMismatch,
+}
+
+impl fmt::Display for ExactSelectionIdentityError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("exact и semantic identities принадлежат разным sources")
+    }
+}
+
+impl std::error::Error for ExactSelectionIdentityError {}
+
 /// Намерение выбора candidate-а.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SelectionRequest {
     /// Выбрать лучший полностью playable candidate.
     BestPlayable,
-    /// Выбрать exact candidate только в matching extraction snapshot.
-    Exact(CandidateIdentity),
+    /// Выбрать exact candidate только при совпадении snapshot и semantic attributes.
+    Exact(ExactSelectionIdentity),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{CandidateFormatIdentity, ExtractionGeneration, SourceIdentity};
 
     /// Policy сортирует exact, lower и higher buckets строго по D09.
     #[test]
@@ -184,6 +233,23 @@ mod tests {
                 Some(4320),
                 None,
             ]
+        );
+    }
+
+    /// Exact identity не позволяет случайно связать разные source lineages.
+    #[test]
+    fn exact_selection_identity_rejects_cross_source_semantic_identity() {
+        let exact = CandidateIdentity::new(
+            SourceIdentity::new(1),
+            ExtractionGeneration::new(1),
+            CandidateFormatIdentity::new("format-1").expect("format identity валидна"),
+        );
+        let semantic =
+            SemanticIdentity::new(SourceIdentity::new(2), "semantic-1").expect("semantic валидна");
+
+        assert_eq!(
+            ExactSelectionIdentity::new(exact, semantic),
+            Err(ExactSelectionIdentityError::SourceMismatch)
         );
     }
 

@@ -38,6 +38,6 @@ pub use normalized::{
     RtmpVariant, TransportFamily,
 };
 pub use selection::{
-    MAX_VIDEO_HEIGHT, PreferredHeightPolicy, PreferredHeightRank, PreferredVideoHeight,
-    SelectionRequest, VideoHeight, VideoHeightError,
+    ExactSelectionIdentity, ExactSelectionIdentityError, MAX_VIDEO_HEIGHT, PreferredHeightPolicy,
+    PreferredHeightRank, PreferredVideoHeight, SelectionRequest, VideoHeight, VideoHeightError,
 };

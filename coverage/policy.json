@@ -40,7 +40,9 @@
     "video-frame-contract",
     "video-present-core",
     "vp9-parser",
-    "web-media-core"
+    "web-media-core",
+    "web-media-playback-plan",
+    "web-media-transport-api"
   ],
   "informational_crates": [
     "app-egui",

@@ -48,6 +48,24 @@ impl DemuxInputCapabilities {
         Self(self.0 | capability.bit())
     }
 
+    /// Объединяет два immutable capability sets.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Возвращает только input shapes, объявленные обеими сторонами boundary.
+    #[must_use]
+    pub const fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
+    /// Проверяет наличие хотя бы одной общей input shape.
+    #[must_use]
+    pub const fn intersects(self, other: Self) -> bool {
+        !self.intersection(other).is_empty()
+    }
+
     /// Проверяет поддержку exact input shape.
     #[must_use]
     pub const fn contains(self, capability: DemuxInputCapability) -> bool {
@@ -234,5 +252,24 @@ impl fmt::Debug for DemuxInput {
             .debug_struct("DemuxInput")
             .field("capability", &self.capability())
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DemuxInputCapabilities, DemuxInputCapability};
+
+    /// Set operations сохраняют точное пересечение transport/demux shapes.
+    #[test]
+    fn capability_sets_union_and_intersect_without_guessing() {
+        let seekable = DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes);
+        let streaming = DemuxInputCapabilities::only(DemuxInputCapability::StreamingBytes);
+        let both = seekable.union(streaming);
+
+        assert!(both.contains(DemuxInputCapability::SeekableBytes));
+        assert!(both.contains(DemuxInputCapability::StreamingBytes));
+        assert_eq!(both.intersection(seekable), seekable);
+        assert!(both.intersects(streaming));
+        assert!(!seekable.intersects(streaming));
     }
 }

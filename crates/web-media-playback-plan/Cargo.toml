@@ -1,0 +1,16 @@
+[package]
+name = "web-media-playback-plan"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+audio-core.workspace = true
+capability-core.workspace = true
+codec-core.workspace = true
+demux-api.workspace = true
+web-media-core.workspace = true
+
+[dev-dependencies]
+video-frame-contract.workspace = true

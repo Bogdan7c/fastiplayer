@@ -8,3 +8,7 @@
 - `SdrOnly` допускает только SDR. `PreferHdrWhenAvailable` сначала проверяет HDR через полный `SystemCapabilities` intersection (decoder + frame contract + renderer + HDR-to-SDR), затем автоматически откатывается к SDR; strict HDR-required режима нет. Global preferred height применяется только внутри уже выбранного HDR/codec bucket-а: exact -> lower -> higher, поэтому не ослабляет HDR или codec policy.
 - Bare `vp9` нормализуется в VP9 Profile 0 / 8-bit / 4:2:0 с `VideoColorMetadata::sdr_bt709_limited()`. Bare `vp9` с HDR hint остаётся insufficient; подробный VP9 Profile 2 сохраняет typed HDR metadata requirements.
 - Focused tests: `crates/service-ytdlp/src/selection.rs`, resolver tests, `crates/config/src/store/tests.rs`, `crates/app-egui/src/startup_media.rs`.
+
+## S21C follow-up (2026-07-21)
+- Neutral selection policy вынесена в `web-media-playback-plan`: HDR/codec/container tie-breaks применяются только после capability filtering и S20Q preferred-height bucket.
+- Exact stale semantics теперь проверяют exact и semantic identity через `ExactSelectionIdentity`; детали: `mem:media-services/web-playback-planner-s21c-2026-07-21`.

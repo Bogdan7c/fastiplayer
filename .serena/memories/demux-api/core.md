@@ -31,3 +31,7 @@
 Focused tests находятся в `src/registry/tests.rs` и `src/composite/tests.rs`: hints agree/disagree, duplicates, seekable/streaming/segments replay, truncated/cancel/no-match, H.264+AAC fake composition, collisions, one-side EOF, partial seek failure и `TracksChanged`.
 
 Связанные memories: `mem:media-services/core`, `mem:symphonia-demux/core`.
+
+## S21C capability composition (2026-07-21)
+- `DemuxInputCapabilities` получил intent-level set operations `union`, `intersection`, `intersects`; neutral planner использует immutable demux snapshot для container/input-shape rejection до I/O.
+- Детали: `mem:media-services/web-playback-planner-s21c-2026-07-21`.

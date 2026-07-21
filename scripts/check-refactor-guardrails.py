@@ -42,6 +42,7 @@ CONTRACT_CRATES = frozenset(
         "capability-core",
         "frame-server-core",
         "web-media-core",
+        "web-media-playback-plan",
         "web-media-transport-api",
     }
 )
@@ -85,6 +86,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "video-ffmpeg",
         "video-vaapi",
         "web-media-core",
+        "web-media-playback-plan",
         "web-media-transport-api",
     }
 )
@@ -141,6 +143,18 @@ BOUNDED_XML_READER_ALLOWED_DEPENDENCIES = frozenset({"quick-xml", "thiserror"})
 
 # Neutral web-media values не должны напрямую знать process/service/network/app owners.
 WEB_MEDIA_CORE_ALLOWED_DEPENDENCIES = frozenset()
+
+# Pure web-media planner пересекает только neutral snapshots и не знает
+# concrete provider/service/app/player implementations.
+WEB_MEDIA_PLAYBACK_PLAN_ALLOWED_DEPENDENCIES = frozenset(
+    {
+        "audio-core",
+        "capability-core",
+        "codec-core",
+        "demux-api",
+        "web-media-core",
+    }
+)
 
 # Neutral web transport API переиспользует только source HTTP primitives и
 # normalized web identities; concrete provider/demux/player/service edges запрещены.
@@ -843,6 +857,14 @@ def find_dependency_violations(
             frozenset({"web-media-core"}),
             WEB_MEDIA_CORE_ALLOWED_DEPENDENCIES,
             "web-media-core остаётся std-only neutral value contract",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"web-media-playback-plan"}),
+            WEB_MEDIA_PLAYBACK_PLAN_ALLOWED_DEPENDENCIES,
+            "web-media-playback-plan остаётся pure neutral capability planner",
         )
     )
     violations.extend(

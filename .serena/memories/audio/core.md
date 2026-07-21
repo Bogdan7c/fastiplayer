@@ -50,3 +50,8 @@
 - `app-egui::AppState` создаёт один production audio decoder factory, сохраняет его immutable capability snapshot отдельно от video `SystemCapabilities` и предоставляет app-owned accessor для будущего S21C selection; `player-core`/services/web-media-core не получают Symphonia types.
 - Focused coverage: production registry parity, empty registry + disabled Opus fallback, neutral fake provider, structural read-only scan без decoder construction/state mutation и typed unknown-family rejection.
 - Проверки: `cargo test -p audio-core -p audio`, `cargo check --workspace`, `cargo test -p app-egui --no-run`, strict Clippy для `audio-core`/`audio`, strict rustdoc, fmt, diff check, refactor guardrails и Serena diagnostics PASS. Workspace/app all-target strict Clippy остаётся blocked двумя pre-existing `app-egui` `large_enum_variant` diagnostics в `state/strong_media_open{,/pending}.rs`.
+
+
+## S21C consumer (2026-07-21)
+- `web-media-playback-plan` принимает immutable S20 `AudioDecodeCapabilitySnapshot` как часть общего playback capability snapshot и возвращает typed audio-layer rejection; decoder при планировании не создаётся.
+- Детали: `mem:media-services/web-playback-planner-s21c-2026-07-21`.
