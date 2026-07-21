@@ -94,3 +94,9 @@
 ## S18 playlist/topology hardening gate (2026-07-21)
 - Existing yt-dlp Video/Playlist/MultiVideo/Delegation extraction, durable reopen mapping, URL Append-only and redaction suites вошли в milestone PASS; production service API/process logic не менялись.
 - `web-media-core` теперь required std-only neutral contract в dependency guardrails и blocking coverage inventory. Полный handoff: `mem:playlist/topology-hardening-s18-2026-07-21`.
+
+## S19 generic yt-dlp candidate normalization (2026-07-21)
+
+- `service-ytdlp` now maps public serialized yt-dlp formats into neutral `web-media-core` values through a versioned, secret-safe candidate snapshot API. Inventory rows stay one-to-one visible accepted/rejected entries; selected results use one ordinary component or exact validated compound components without Cartesian expansion.
+- Exact selection is snapshot/generation-bound; cross-extraction recovery is semantic and layout-checked, with typed stale/ambiguous failures. Provider request material stays in schema v1 and rejects non-reconstructible/private requirements visibly.
+- Full ownership, identity, request-material, HLS compatibility, limitations and verification contract: `mem:media-services/ytdlp-candidate-normalization-s19-2026-07-21`.

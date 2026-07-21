@@ -4039,6 +4039,7 @@ dependencies = [
  "tracing",
  "url",
  "video-frame-contract",
+ "web-media-core",
 ]
 
 [[package]]

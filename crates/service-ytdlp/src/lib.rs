@@ -20,6 +20,7 @@ const KIB_BYTES: u64 = 1024;
 const MIB_BYTES: u64 = KIB_BYTES * 1024;
 
 mod admission;
+mod candidate;
 mod dto;
 mod error;
 mod http_refresh;
@@ -32,6 +33,15 @@ mod selection;
 mod topology;
 
 pub use admission::YtDlpCompatibilityRejection;
+pub use candidate::{
+    YT_DLP_REQUEST_MATERIAL_SCHEMA_VERSION, YtDlpCandidateComponentRequestSummary,
+    YtDlpCandidateComponentRole, YtDlpCandidateEntry, YtDlpCandidateMatch, YtDlpCandidateMatchKind,
+    YtDlpCandidateNormalizationRejection, YtDlpCandidateOrigin, YtDlpCandidateRematchError,
+    YtDlpCandidateSelection, YtDlpCandidateSelectionError, YtDlpCandidateSnapshot,
+    YtDlpNormalizedCandidate, YtDlpRejectedCandidate, YtDlpRequestMaterial,
+    YtDlpRequestMaterialSummary, YtDlpRequestMaterialV1, YtDlpRequestMaterialViolation,
+    YtDlpSelectedCandidateShape, resolve_yt_dlp_candidate_snapshot_with_config,
+};
 pub use dto::{
     YtDlpDirectStreamDescriptor, YtDlpDirectStreams, YtDlpDynamicRange,
     YtDlpInsufficientVideoMetadata, YtDlpStreamCandidate, YtDlpStreamCandidates, YtDlpStreamKind,

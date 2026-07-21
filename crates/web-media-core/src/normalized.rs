@@ -339,13 +339,41 @@ impl ContainerIdentity {
             .filter(|family| *family != ContainerFamily::Unknown);
 
         match (extension, container) {
-            (Some(left), Some(right)) if left != right => Err(ContainerHintConflict {
-                extension: left,
-                container: right,
-            }),
-            (Some(family), _) | (_, Some(family)) => Ok(Some(family)),
+            (Some(left), Some(right)) => resolve_compatible_container_family(left, right)
+                .map(Some)
+                .ok_or(ContainerHintConflict {
+                    extension: left,
+                    container: right,
+                }),
+            (Some(family), None) | (None, Some(family)) => Ok(Some(family)),
             (None, None) => Ok(None),
         }
+    }
+}
+
+/// Разрешает только доказанные refinement-отношения между container hints.
+///
+/// `ext` обычно описывает внешний тип файла, а `container` может уточнять его
+/// внутренний профиль. Поэтому fMP4 не конфликтует с MP4, WebM — с Matroska,
+/// а F4F — с FLV. Любая иная пара остаётся настоящим typed conflict.
+fn resolve_compatible_container_family(
+    extension: ContainerFamily,
+    container: ContainerFamily,
+) -> Option<ContainerFamily> {
+    if extension == container {
+        return Some(extension);
+    }
+
+    match (extension, container) {
+        (ContainerFamily::IsoBmff, ContainerFamily::FragmentedIsoBmff)
+        | (ContainerFamily::FragmentedIsoBmff, ContainerFamily::IsoBmff) => {
+            Some(ContainerFamily::FragmentedIsoBmff)
+        }
+        (ContainerFamily::Matroska, ContainerFamily::WebM)
+        | (ContainerFamily::WebM, ContainerFamily::Matroska) => Some(ContainerFamily::WebM),
+        (ContainerFamily::Flv, ContainerFamily::F4f)
+        | (ContainerFamily::F4f, ContainerFamily::Flv) => Some(ContainerFamily::F4f),
+        _ => None,
     }
 }
 
@@ -663,5 +691,24 @@ mod tests {
                 container: ContainerFamily::IsoBmff,
             })
         );
+    }
+
+    /// Более точный container hint не конфликтует с совместимым file extension.
+    #[test]
+    fn container_refinement_pairs_resolve_to_the_more_specific_family() {
+        let cases = [
+            ("mp4", "mp4_dash", ContainerFamily::FragmentedIsoBmff),
+            ("mkv", "webm", ContainerFamily::WebM),
+            ("flv", "f4f", ContainerFamily::F4f),
+        ];
+
+        for (extension, container, expected) in cases {
+            let identity = ContainerIdentity::parse(
+                Some(RawExtensionIdentity::new(extension).expect("ext валиден")),
+                Some(RawContainerIdentity::new(container).expect("container валиден")),
+            );
+
+            assert_eq!(identity.consistent_family(), Ok(Some(expected)));
+        }
     }
 }

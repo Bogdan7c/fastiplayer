@@ -4,7 +4,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use rustiplayer_config::YtDlpConfig;
+use serde::de::DeserializeOwned;
 
+use crate::candidate::YtDlpCandidateDocument;
 use crate::dto::YtDlpMetadata;
 use crate::error::YtDlpServiceError;
 
@@ -193,6 +195,23 @@ pub(crate) fn resolve_yt_dlp_candidate_metadata_with_cancellation(
     process_config: &YtDlpProcessConfig,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<YtDlpMetadata, YtDlpServiceError> {
+    resolve_yt_dlp_candidate_document_with_cancellation(video_url, process_config, is_cancelled)
+}
+
+/// Получает S19 candidate document через тот же inventory invocation.
+pub(crate) fn resolve_yt_dlp_candidate_document(
+    video_url: &str,
+    process_config: &YtDlpProcessConfig,
+) -> Result<YtDlpCandidateDocument, YtDlpServiceError> {
+    resolve_yt_dlp_candidate_document_with_cancellation(video_url, process_config, &|| false)
+}
+
+/// Единственный process path для typed candidate JSON consumers.
+fn resolve_yt_dlp_candidate_document_with_cancellation<T: DeserializeOwned>(
+    video_url: &str,
+    process_config: &YtDlpProcessConfig,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<T, YtDlpServiceError> {
     let command_arguments = [
         "--quiet",
         "--no-warnings",

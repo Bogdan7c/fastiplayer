@@ -24,6 +24,7 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 symphonia-demux.workspace = true
 url = { workspace = true }
+web-media-core = { workspace = true }
 
 [dev-dependencies]
 media-core = { workspace = true }
