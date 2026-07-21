@@ -190,6 +190,9 @@ pub enum MediaInstallFailureStage {
     /// Выбор/configure video stream завершился typed ошибкой.
     VideoStreamConfiguration,
 
+    /// Resumable video preflight не завершился до bounded wall-clock deadline-а.
+    VideoPreflightTimeout,
+
     /// Playback window не прошло source validation либо demux pre-seek до Ready.
     PlaybackWindowPreparation,
 
@@ -211,13 +214,14 @@ pub enum MediaInstallFailureStage {
 
 impl MediaInstallFailureStage {
     /// Полный ordered inventory legacy и strong candidate stages после Session 00C1.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::LegacyResetSeekFloor,
         Self::LegacyResetDecoderFlush,
         Self::LegacyResetDecoderStream,
         Self::OpenTransition,
         Self::AudioTrackPlanning,
         Self::VideoStreamConfiguration,
+        Self::VideoPreflightTimeout,
         Self::PlaybackWindowPreparation,
         Self::CandidateVideoResourceAcquisition,
         Self::CandidateVideoBackendMatching,

@@ -483,6 +483,12 @@ pub enum WorkerWakeupReason {
     /// Worker ждёт короткий poll готовности decoder thread-а без привязки к video FPS.
     DecodeReadiness,
 
+    /// Установленный demuxer запретил новый read до exact-generation deadline-а.
+    DemuxRetryDeadline,
+
+    /// Staged preflight ожидает readiness retry либо terminal wall-clock deadline.
+    StagedPreflightDeadline,
+
     /// Следующий wakeup привязан к PTS первого queued frame.
     FramePtsDeadline,
 
@@ -504,6 +510,8 @@ impl WorkerWakeupReason {
             Self::Idle => "idle",
             Self::PipelineWorkReady => "pipeline_work_ready",
             Self::DecodeReadiness => "decode_readiness",
+            Self::DemuxRetryDeadline => "demux_retry_deadline",
+            Self::StagedPreflightDeadline => "staged_preflight_deadline",
             Self::FramePtsDeadline => "frame_pts_deadline",
             Self::FrameReady => "frame_ready",
             Self::SeekOrPreroll => "seek_or_preroll",

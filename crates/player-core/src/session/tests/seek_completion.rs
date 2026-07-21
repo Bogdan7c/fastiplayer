@@ -40,10 +40,12 @@ fn playing_final_seek_harness_with_actual_position(
     harness
 }
 
+/// Pending seek сохраняет typed timeout, даже если demux ждёт будущий retry deadline.
 #[test]
 fn commit_timeout_pauses_and_reports_recoverable_seek_error() {
     let mut session = PlayerSession::new();
     install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);
+    session.snapshot.media_instance_id = Some(crate::MediaInstanceId::new_unique());
 
     session.dispatch_command(PlayerCommand::Play).unwrap();
     session
@@ -51,6 +53,10 @@ fn commit_timeout_pauses_and_reports_recoverable_seek_error() {
             MediaTime::from_secs(5),
         )))
         .unwrap();
+    let retry_hint = media_core::DemuxRetryHint::new(Duration::from_secs(1))
+        .expect("seek timeout fixture использует допустимый bounded retry");
+    session.schedule_installed_demux_retry(Instant::now(), retry_hint);
+    assert!(session.installed_demux_read_is_blocked(Instant::now()));
     let timeout_now = session
         .seek_commit()
         .expect("final seek должен быть активен до timeout")
@@ -144,6 +150,7 @@ fn final_seek_timeout_keeps_old_present_frame_stale() {
     ));
 }
 
+/// Готовые downstream gates завершают pending seek, пока новый demux read ещё запрещён.
 #[test]
 fn final_ready_gates_after_budget_commit_instead_of_timeout() {
     let mut session = PlayerSession::new();
@@ -154,12 +161,17 @@ fn final_ready_gates_after_budget_commit_instead_of_timeout() {
             fake_track(2, TrackKind::Audio),
         ],
     );
+    session.snapshot.media_instance_id = Some(crate::MediaInstanceId::new_unique());
 
     session
         .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
             MediaTime::from_secs(6),
         )))
         .unwrap();
+    let retry_hint = media_core::DemuxRetryHint::new(Duration::from_secs(1))
+        .expect("seek recovery fixture использует допустимый bounded retry");
+    session.schedule_installed_demux_retry(Instant::now(), retry_hint);
+    assert!(session.installed_demux_read_is_blocked(Instant::now()));
     present_frame_for_current_seek_generation(&mut session, Duration::from_secs(6), 42);
     let seek_commit = session
         .seek_commit()

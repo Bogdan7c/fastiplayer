@@ -41,7 +41,10 @@ impl PlayerWorker {
                     audio_output_factory,
                 )
                 .with_audio_tempo_processor_factory(audio_tempo_processor_factory)
-                .with_playback_intent_control(Arc::clone(&playback_intent_control));
+                .with_playback_intent_control(Arc::clone(&playback_intent_control))
+                .with_staged_video_preflight_timeout(
+                    config.tick_config.staged_video_preflight_timeout,
+                );
                 session.apply_frame_server_policy_config(frame_server_config);
                 if let Err(error) =
                     session.dispatch_command(PlayerCommand::SetVolume(config.default_volume))

@@ -258,6 +258,10 @@ pub(super) fn read_demux_packets(
     packet_budget: usize,
     catch_up_deadline: Option<Instant>,
 ) -> usize {
+    if session.installed_demux_read_is_blocked(Instant::now()) {
+        return 0;
+    }
+
     let mut packets_read = 0usize;
     let mut dropped_seek_audio_preroll_packets = 0usize;
     let mut staged_video_recovery_packets = 0usize;
@@ -354,6 +358,9 @@ pub(super) fn read_demux_packets(
                 let packet_telemetry = (!aggregate_seek_audio_preroll)
                     .then(|| PlayerTickPacket::from_demuxed_packet(&packet));
                 let route_outcome = route_demuxed_packet(session, packet);
+                // Возвращаем прежний play intent только после того, как packet действительно
+                // пересёк playback-window boundary и был передан downstream владельцу.
+                session.complete_installed_demux_retry_after_event();
                 if aggregate_seek_audio_preroll {
                     tick_result.record_dropped_seek_audio_preroll_packet();
                 } else if route_outcome.uses_aggregated_recovery_telemetry() {
@@ -387,6 +394,7 @@ pub(super) fn read_demux_packets(
                 }
             }
             Ok(DemuxReadEvent::EndOfStream) => {
+                session.clear_installed_demux_retry_after_terminal_event();
                 debug!(
                     current_position_ms =
                         session.snapshot().current_position.as_secs_f64() * 1000.0,
@@ -409,14 +417,16 @@ pub(super) fn read_demux_packets(
                 break;
             }
             Ok(DemuxReadEvent::TemporarilyUnavailable(hint)) => {
+                session.schedule_installed_demux_retry(Instant::now(), hint);
                 trace!(
                     retry_after_ms = hint.retry_after().as_millis(),
-                    "Demux временно не готов; retry scheduling принадлежит S21W"
+                    "Demux временно не готов; exact-generation retry запланирован"
                 );
                 // Readiness не является packet, EOF или error и не мутирует lifecycle.
                 break;
             }
             Ok(DemuxReadEvent::TracksChanged(track_update)) => {
+                session.clear_installed_demux_retry_after_terminal_event();
                 session.note_demux_tracks_changed_for_seek_preroll_diagnostics();
                 session.handle_demux_track_list_update(track_update);
                 // Track-list reset меняет generation и decoder/audio selections; следующий
@@ -429,6 +439,7 @@ pub(super) fn read_demux_packets(
                 continue;
             }
             Err(error) => {
+                session.clear_installed_demux_retry_after_terminal_event();
                 session.note_demux_error_for_seek_preroll_diagnostics();
                 tracing::warn!(error = %error, "Ошибка чтения packet");
                 session.mark_fatal_error(PlayerError::new(

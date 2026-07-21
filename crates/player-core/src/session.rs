@@ -25,10 +25,11 @@ use crate::playback_window::PlaybackWindowEndState;
 use crate::seek_state::{PlaybackResumeIntent, SeekRuntimeState};
 use crate::{
     AudioDecoderFactory, AudioOutputFactory, AudioTempoProcessorFactory, CorrelatedPlayerEvent,
-    FrameCounters, MediaPlaybackWindow, PlaybackDiagnostics, PlaybackPipeline, PlaybackState,
-    PlayerCommand, PlayerCommandOutcome, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult,
-    PlayerRuntimeApplyError, PlayerRuntimeBoundaryActivity, PlayerSnapshot,
-    PlayerVideoBackendInstallIntent, QualitySelection, SeekRequest, StartedVideoBackend, TrackId,
+    FrameCounters, MediaInstallCancellationCause, MediaPlaybackWindow, PlaybackDiagnostics,
+    PlaybackPipeline, PlaybackState, PlayerCommand, PlayerCommandOutcome, PlayerError,
+    PlayerErrorKind, PlayerEvent, PlayerResult, PlayerRuntimeApplyError,
+    PlayerRuntimeBoundaryActivity, PlayerSnapshot, PlayerVideoBackendInstallIntent,
+    QualitySelection, SeekRequest, StartedVideoBackend, TrackId,
 };
 
 mod audio_playback_bounds;
@@ -36,6 +37,7 @@ mod audio_runtime;
 mod audio_tempo_rate_change;
 mod audio_tempo_runtime;
 mod capability_selection;
+mod demux_retry;
 mod diagnostics_sink;
 mod eof_drain;
 mod exact_media_transport;
@@ -64,6 +66,7 @@ use self::audio_runtime::{
     AudioAutoplayReadiness, AudioDecoderInitSpec, audio_decoder_init_spec_from_tracks,
     classify_autoplay_audio_readiness, classify_seek_audio_gate,
 };
+use self::demux_retry::DemuxRetryRuntime;
 use self::eof_drain::EofDrainRuntime;
 use self::media_lifecycle::MediaLifecycleState;
 use self::prepared_seek::PreparedSeekLandingRuntime;
@@ -130,6 +133,12 @@ pub struct PlayerSession {
 
     /// Единственная bounded strong media transaction либо её last terminal tombstone.
     staged_media_install: StagedMediaInstallRegistry,
+
+    /// Wall-clock policy resumable staged video preflight-а.
+    staged_video_preflight_timeout: Duration,
+
+    /// Retry state временно не готового demuxer-а для exact installed generation.
+    demux_retry: DemuxRetryRuntime,
 
     /// Shared D52 linearization state между sender boundary и player owner turn-ом.
     playback_intent_control: Arc<PlaybackIntentControl>,
@@ -214,6 +223,12 @@ impl PlayerSession {
             audio_output_factory,
             ..Self::default()
         }
+    }
+
+    /// Применяет worker-owned wall-clock policy staged preflight-а.
+    pub(crate) fn with_staged_video_preflight_timeout(mut self, timeout: Duration) -> Self {
+        self.staged_video_preflight_timeout = timeout;
+        self
     }
 
     /// Создаёт session с audio decoder factory, переданной composition layer-ом.
@@ -1109,7 +1124,9 @@ impl PlayerSession {
 
     /// Переводит session в stopped state.
     fn shutdown(&mut self) -> PlayerResult<()> {
+        self.cancel_active_staged_media_install(MediaInstallCancellationCause::LifecycleShutdown);
         self.shutdown_requested = true;
+        self.clear_installed_demux_retry();
         self.push_player_event(PlayerEvent::ShutdownRequested);
         self.set_playback_state(PlaybackState::Stopped);
         Ok(())
@@ -1313,6 +1330,9 @@ impl Default for PlayerSession {
             pending_scrub_events: Vec::new(),
             media_lifecycle: MediaLifecycleState::default(),
             staged_media_install: StagedMediaInstallRegistry::default(),
+            staged_video_preflight_timeout: PlayerTickConfig::default()
+                .staged_video_preflight_timeout,
+            demux_retry: DemuxRetryRuntime::default(),
             playback_intent_control: Arc::new(PlaybackIntentControl::default()),
             shutdown_requested: false,
             eof_drain: EofDrainRuntime::default(),

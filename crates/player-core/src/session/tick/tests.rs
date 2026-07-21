@@ -2518,7 +2518,7 @@ fn selected_audio_without_output_allows_demux_until_first_audio_packet() {
         &tick_config,
         false
     ));
-    assert!(demux_work_available(&session, &tick_config));
+    assert!(demux_work_available(&session, &tick_config, Instant::now()));
 
     enqueue_pending_audio_packet(&mut session, audio_track_id);
 
@@ -2527,7 +2527,11 @@ fn selected_audio_without_output_allows_demux_until_first_audio_packet() {
         &tick_config,
         false
     ));
-    assert!(!demux_work_available(&session, &tick_config));
+    assert!(!demux_work_available(
+        &session,
+        &tick_config,
+        Instant::now()
+    ));
 }
 
 #[test]
@@ -2550,7 +2554,11 @@ fn high_water_audio_blocks_more_demux_when_pending_audio_waits() {
         &tick_config,
         false
     ));
-    assert!(!demux_work_available(&session, &tick_config));
+    assert!(!demux_work_available(
+        &session,
+        &tick_config,
+        Instant::now()
+    ));
     assert_eq!(
         demux_backpressure_reason(&session, &tick_config, false),
         Some(PipelinePauseReason::DemuxBackpressure)
@@ -2577,7 +2585,11 @@ fn audio_only_high_water_blocks_demux_when_pending_audio_is_empty() {
         &tick_config,
         false
     ));
-    assert!(!demux_work_available(&session, &tick_config));
+    assert!(!demux_work_available(
+        &session,
+        &tick_config,
+        Instant::now()
+    ));
     assert_eq!(
         demux_backpressure_reason(&session, &tick_config, false),
         Some(PipelinePauseReason::DemuxBackpressure)
@@ -2621,7 +2633,7 @@ fn low_water_audio_catchup_still_allows_bounded_demux() {
         &tick_config,
         true
     ));
-    assert!(demux_work_available(&session, &tick_config));
+    assert!(demux_work_available(&session, &tick_config, Instant::now()));
 }
 
 #[test]
@@ -2645,8 +2657,12 @@ fn video_queue_pressure_does_not_block_selected_audio_bootstrap() {
         .pipeline
         .enqueue_queued_video_frame(decoded_frame(Duration::ZERO, 1));
 
-    assert!(demux_work_available(&session, &tick_config));
-    assert!(immediate_pipeline_work_available(&session, &tick_config));
+    assert!(demux_work_available(&session, &tick_config, Instant::now()));
+    assert!(immediate_pipeline_work_available(
+        &session,
+        &tick_config,
+        Instant::now()
+    ));
 }
 
 #[test]
@@ -2674,8 +2690,16 @@ fn video_only_demux_admission_still_waits_for_present_queue() {
         &tick_config,
         false
     ));
-    assert!(!demux_work_available(&session, &tick_config));
-    assert!(!immediate_pipeline_work_available(&session, &tick_config));
+    assert!(!demux_work_available(
+        &session,
+        &tick_config,
+        Instant::now()
+    ));
+    assert!(!immediate_pipeline_work_available(
+        &session,
+        &tick_config,
+        Instant::now()
+    ));
     assert_eq!(
         demux_backpressure_reason(&session, &tick_config, false),
         Some(PipelinePauseReason::WaitingForPresentQueue)
@@ -2782,6 +2806,157 @@ fn temporary_demux_readiness_stops_current_pass_without_eof_or_error_mapping() {
     assert!(tick_result.demuxed_packets.is_empty());
     assert!(!tick_result.demux_backpressured);
     assert!(session.snapshot().last_error.is_none());
+}
+
+/// Installed retry запрещает повторный read до deadline-а и возвращает play intent по packet-у.
+#[test]
+fn installed_demux_retry_avoids_busy_spin_and_recovers_buffering_on_packet() {
+    let mut session = PlayerSession::new();
+    let tick_config = PlayerTickConfig::default();
+    let read_count = Arc::new(AtomicUsize::new(0));
+    let retry_hint = media_core::DemuxRetryHint::new(Duration::from_millis(20))
+        .expect("focused retry delay должен быть допустим");
+    let recovered_packet = media_core::Packet::new(
+        media_core::TrackId::new(7),
+        TrackKind::Video,
+        Duration::ZERO,
+        None,
+        true,
+        Bytes::from_static(&[0x82, 0x49, 0x83, 0x42]),
+    );
+    let demuxer = AdmissionTestDemuxer::with_events([
+        media_core::DemuxReadEvent::TemporarilyUnavailable(retry_hint),
+        media_core::DemuxReadEvent::Packet(recovered_packet),
+        media_core::DemuxReadEvent::EndOfStream,
+    ])
+    .with_packet_read_count(Arc::clone(&read_count));
+    session
+        .pipeline
+        .install_opened_media(Box::new(demuxer), None, None, Vec::new());
+    session.snapshot.media_instance_id = Some(crate::MediaInstanceId::new_unique());
+    session.set_playback_state(PlaybackState::Playing);
+    let mut first_tick_result = PlayerTickResult::default();
+
+    assert_eq!(
+        read_demux_packets(&mut session, &tick_config, &mut first_tick_result, 1, None,),
+        0
+    );
+    session.enter_buffering_for_demux_underrun_if_needed();
+    assert_eq!(session.playback_state(), PlaybackState::Buffering);
+    assert_eq!(read_count.load(Ordering::Relaxed), 1);
+
+    let wakeup = session.worker_wakeup_plan(
+        Instant::now(),
+        &tick_config,
+        Duration::from_millis(5),
+        Duration::from_millis(250),
+    );
+    assert_eq!(wakeup.reason, WorkerWakeupReason::DemuxRetryDeadline);
+    assert!(wakeup.delay.is_some_and(|delay| !delay.is_zero()));
+    let mut blocked_tick_result = PlayerTickResult::default();
+    assert_eq!(
+        read_demux_packets(
+            &mut session,
+            &tick_config,
+            &mut blocked_tick_result,
+            1,
+            None,
+        ),
+        0
+    );
+    assert_eq!(read_count.load(Ordering::Relaxed), 1);
+
+    std::thread::sleep(Duration::from_millis(25));
+    let mut recovered_tick_result = PlayerTickResult::default();
+    assert_eq!(
+        read_demux_packets(
+            &mut session,
+            &tick_config,
+            &mut recovered_tick_result,
+            1,
+            None,
+        ),
+        1
+    );
+    assert_eq!(read_count.load(Ordering::Relaxed), 2);
+    assert_eq!(session.playback_state(), PlaybackState::Playing);
+    assert!(session.snapshot().last_error.is_none());
+    assert!(!session.is_eof_draining());
+}
+
+/// Seek, media replacement и shutdown инвалидируют старый retry fence без ожидания deadline-а.
+#[test]
+fn installed_demux_retry_deadline_is_stale_after_seek_replace_and_shutdown() {
+    let mut session = PlayerSession::new();
+    let tick_config = PlayerTickConfig::default();
+    let retry_hint = media_core::DemuxRetryHint::new(Duration::from_millis(50))
+        .expect("focused retry delay должен быть допустим");
+    session.pipeline.install_opened_media(
+        Box::new(AdmissionTestDemuxer::new()),
+        None,
+        None,
+        Vec::new(),
+    );
+    session.snapshot.media_instance_id = Some(crate::MediaInstanceId::new_unique());
+    session.set_playback_state(PlaybackState::Playing);
+    session.schedule_installed_demux_retry(Instant::now(), retry_hint);
+
+    assert!(session.installed_demux_read_is_blocked(Instant::now()));
+    session.pipeline.begin_seek_generation();
+
+    assert!(!session.installed_demux_read_is_blocked(Instant::now()));
+    let wakeup = session.worker_wakeup_plan(
+        Instant::now(),
+        &tick_config,
+        Duration::from_millis(5),
+        Duration::from_millis(250),
+    );
+    assert_ne!(wakeup.reason, WorkerWakeupReason::DemuxRetryDeadline);
+
+    session.schedule_installed_demux_retry(Instant::now(), retry_hint);
+    assert!(session.installed_demux_read_is_blocked(Instant::now()));
+    session.snapshot.media_instance_id = Some(crate::MediaInstanceId::new_unique());
+    assert!(!session.installed_demux_read_is_blocked(Instant::now()));
+
+    session.schedule_installed_demux_retry(Instant::now(), retry_hint);
+    assert!(session.installed_demux_read_is_blocked(Instant::now()));
+    session
+        .dispatch_command(PlayerCommand::Shutdown)
+        .expect("shutdown должен очистить installed demux retry");
+    assert!(!session.installed_demux_read_is_blocked(Instant::now()));
+    let wakeup_after_shutdown = session.worker_wakeup_plan(
+        Instant::now(),
+        &tick_config,
+        Duration::from_millis(5),
+        Duration::from_millis(250),
+    );
+    assert_ne!(
+        wakeup_after_shutdown.reason,
+        WorkerWakeupReason::DemuxRetryDeadline
+    );
+}
+
+/// Равный demux deadline не вытесняет уже выбранную existing pipeline work.
+#[test]
+fn demux_retry_tie_break_preserves_existing_work_first() {
+    let mut session = PlayerSession::new();
+    session.snapshot.media_instance_id = Some(crate::MediaInstanceId::new_unique());
+    let planned_at = Instant::now();
+    let shared_delay = Duration::from_millis(20);
+    let retry_hint = media_core::DemuxRetryHint::new(shared_delay)
+        .expect("focused retry delay должен быть допустим");
+    session.schedule_installed_demux_retry(planned_at, retry_hint);
+    let existing_plan = PlayerWorkerWakeupPlan {
+        delay: Some(shared_delay),
+        reason: WorkerWakeupReason::PipelineWorkReady,
+        frame_timing: None,
+        wait_for_decoder_activity: false,
+    };
+
+    let selected_plan = prefer_earlier_demux_retry(&session, planned_at, existing_plan);
+
+    assert_eq!(selected_plan.reason, WorkerWakeupReason::PipelineWorkReady);
+    assert_eq!(selected_plan.delay, Some(shared_delay));
 }
 
 #[test]

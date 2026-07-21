@@ -195,6 +195,7 @@ impl PlayerSession {
 
     /// Очищает session-owned media state без fallible decoder/audio lifecycle calls.
     fn reset_session_state_for_staged_media_commit(&mut self) {
+        self.clear_installed_demux_retry();
         self.reset_diagnostics_for_media();
         self.clear_pending_video_backend_reselection();
         self.media_lifecycle.clear_pending_autoplay();

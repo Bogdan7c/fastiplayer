@@ -127,6 +127,9 @@ pub struct PlayerTickConfig {
     /// Максимальное время ожидания seek commit gates.
     pub seek_commit_timeout: Duration,
 
+    /// Общий wall-clock budget resumable staged video preflight-а.
+    pub staged_video_preflight_timeout: Duration,
+
     /// Минимальный audio buffer перед resume после seek.
     pub seek_resume_audio_min_buffer_ms: f64,
 
@@ -181,6 +184,7 @@ impl Default for PlayerTickConfig {
             audio_demux_low_water_mark_ms: 100.0,
             audio_preroll_target_ms: 50.0,
             seek_commit_timeout: Duration::from_millis(10_000),
+            staged_video_preflight_timeout: Duration::from_millis(15_000),
             seek_resume_audio_min_buffer_ms: 50.0,
             seek_resume_audio_gate_timeout: Duration::from_millis(250),
             seek_resume_video_min_ready_frames: 3,

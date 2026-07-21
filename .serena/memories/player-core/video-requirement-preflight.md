@@ -33,3 +33,12 @@ Strong media install раньше разрешал отложить неполн
 - codec-core policy/AV1/H.265/VP8 tests в `requirement_preflight.rs`.
 
 Проверки 2026-07-17: full `scripts/ci-checks.sh tests`, strict Clippy для codec-core/video-backend-api/player-core/app-egui, fmt, diff-check и refactor guardrails — PASS.
+
+
+## S21W resumable packet probe (2026-07-21)
+
+- Staged video preflight теперь player-owned continuation: `StagedMediaPreparation::Pending(PendingStagedPreflight)` сохраняет `PreparedMedia`, audio plan, `StagedVideoPlanner`/reader budget+uncertainty progress, protocol/resource port, retry и timeout deadlines.
+- Pre-install fence состоит из exact `MediaInstallRequestId + StagedPreflightGeneration`; `MediaInstanceId` создаётся только после готового video plan и playback-window preparation.
+- `DemuxReadEvent::TemporarilyUnavailable` возвращает `Pending(DemuxRetryHint)`, не добавляется в `PreparedMedia` replay queue и не расходует packet/event/byte probe budgets. Следующий worker tick после deadline продолжает тот же planner, не начинает probe заново.
+- `MediaInstallFailureStage::VideoPreflightTimeout` terminal-resolve-ит wall-clock expiry. Supersede/cancel/shutdown сохраняют прежние typed causes и exactly-once completion; detached backend до успешного preflight не запрашивается.
+- Early authorization остаётся `MediaInstallControlOutcome::NotReady`; Ready→Authorize→Installed commit barrier и exact response ordering не изменены.

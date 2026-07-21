@@ -173,13 +173,16 @@ impl PreparedMedia {
     /// Event клонируется только на нейтральной boundary: encoded payload использует
     /// reference-counted bytes, а оригинал остаётся в replay queue для будущего media.
     pub(crate) fn prefetch_next_event_for_video_probe(&mut self) -> anyhow::Result<DemuxReadEvent> {
+        let event = self.demuxer.next_event()?;
+        if matches!(event, DemuxReadEvent::TemporarilyUnavailable(_)) {
+            return Ok(event);
+        }
         if self.prefetch_state.is_none() {
             self.prefetch_state = Some(Box::new(PreparedMediaPrefetchState {
                 initial_media_metadata: self.demuxer.media_metadata(),
                 events: VecDeque::new(),
             }));
         }
-        let event = self.demuxer.next_event()?;
         let prefetch_state = self
             .prefetch_state
             .as_mut()

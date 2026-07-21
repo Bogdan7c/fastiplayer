@@ -77,3 +77,10 @@
 - Startup playlist не добавляет новый media-open coordinator или parser. После successful `StartupReplace` commit `AppState::begin_startup_playlist_install` materializes exact committed locator/window и входит в существующий stepwise strong-open protocol.
 - Boundary принимает один prevalidated `PlannedPlaylistInstall`; queue revision и source-order first Item проверены runtime receipt-ом до source materialization. Synchronous source/strong rejection маркирует только этот Item failed и не вызывает normal transport queue, sibling fallback или sequential scan.
 - Existing Ready authorization, EnqueuedAtPlayerOwner/Installed, cancel-win, fatal/post-barrier и startup retained-action semantics не изменены.
+
+
+## S21W player-side staged continuation compatibility (2026-07-21)
+
+- App coordinator protocol не изменился: receipt по-прежнему различает Accepted/ReadyToCommit/Installed/terminal failure, а authorization до Ready получает `NotReady`.
+- Player worker теперь может удерживать staged request в resumable preflight до demux retry/timeout deadline; coordinator не должен busy-poll-ить, повторно отправлять stage request или считать отсутствие immediate Ready ошибкой.
+- Supersede/cancel/shutdown сохраняют exact `MediaInstallRequestId`, прежние typed cancellation causes и exactly-once terminal response. Commit barrier и current-media preservation до authorization остались прежними.

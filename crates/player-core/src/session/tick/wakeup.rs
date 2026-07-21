@@ -146,7 +146,7 @@ impl PlayerSession {
         decoder_activity_status: &VideoDecoderActivityStatus,
     ) -> PlayerWorkerWakeupPlan {
         if !self.playback_state().is_playback_active() && !self.seek_landing_decode_active() {
-            return PlayerWorkerWakeupPlan::idle();
+            return prefer_earlier_staged_preflight(self, now, PlayerWorkerWakeupPlan::idle());
         }
 
         let frame_timing = front_frame_timing(self, tick_config, now);
@@ -159,7 +159,7 @@ impl PlayerSession {
             );
         }
 
-        if immediate_pipeline_work_available(self, tick_config) {
+        if immediate_pipeline_work_available(self, tick_config, now) {
             let reason = if matches!(
                 self.playback_state(),
                 PlaybackState::Buffering | PlaybackState::Seeking
@@ -176,67 +176,121 @@ impl PlayerSession {
         let front_frame_delay = front_frame_scheduler_delay(self, tick_config, now);
 
         if decoder_readiness_poll_needed(self, tick_config) {
-            return decoder_readiness_wakeup_plan(
+            let existing_plan = decoder_readiness_wakeup_plan(
                 audio_refill_delay,
                 front_frame_delay,
                 decoder_readiness_poll_interval,
                 frame_timing,
                 decoder_activity_status.can_wait_for_activity(),
             );
+            return prefer_earlier_demux_retry(self, now, existing_plan);
         }
 
         if let Some(front_frame_delay) = front_frame_delay {
             if let Some(audio_refill_delay) =
                 audio_refill_delay.filter(|delay| *delay < front_frame_delay)
             {
-                return PlayerWorkerWakeupPlan::after(
+                let existing_plan = PlayerWorkerWakeupPlan::after(
                     audio_refill_delay,
                     WorkerWakeupReason::PipelineWorkReady,
                     frame_timing,
                 );
+                return prefer_earlier_demux_retry(self, now, existing_plan);
             }
 
-            return PlayerWorkerWakeupPlan::after(
+            let existing_plan = PlayerWorkerWakeupPlan::after(
                 front_frame_delay,
                 WorkerWakeupReason::FramePtsDeadline,
                 frame_timing,
             );
+            return prefer_earlier_demux_retry(self, now, existing_plan);
         }
 
         if let Some(audio_refill_delay) = audio_refill_delay {
-            return PlayerWorkerWakeupPlan::after(
+            let existing_plan = PlayerWorkerWakeupPlan::after(
                 audio_refill_delay,
                 WorkerWakeupReason::PipelineWorkReady,
                 frame_timing,
             );
+            return prefer_earlier_demux_retry(self, now, existing_plan);
         }
 
         if seek_transition_needs_progress(self) {
-            return PlayerWorkerWakeupPlan::after(
+            let existing_plan = PlayerWorkerWakeupPlan::after(
                 coarse_progress_interval,
                 WorkerWakeupReason::SeekOrPreroll,
                 frame_timing,
             );
+            return prefer_earlier_demux_retry(self, now, existing_plan);
         }
 
         if self.eof_drain_needs_progress() {
-            return PlayerWorkerWakeupPlan::after(
+            let existing_plan = PlayerWorkerWakeupPlan::after(
                 coarse_progress_interval,
                 WorkerWakeupReason::CoarseProgress,
                 frame_timing,
             );
+            return prefer_earlier_demux_retry(self, now, existing_plan);
         }
 
         if active_pipeline_needs_coarse_progress(self) {
-            return PlayerWorkerWakeupPlan::after(
+            let existing_plan = PlayerWorkerWakeupPlan::after(
                 coarse_progress_interval,
                 WorkerWakeupReason::CoarseProgress,
                 frame_timing,
             );
+            return prefer_earlier_demux_retry(self, now, existing_plan);
         }
 
-        PlayerWorkerWakeupPlan::idle()
+        prefer_earlier_demux_retry(self, now, PlayerWorkerWakeupPlan::idle())
     }
+}
+
+/// Выбирает demux deadline только когда он строго раньше existing work.
+pub(super) fn prefer_earlier_demux_retry(
+    session: &PlayerSession,
+    now: Instant,
+    existing_plan: PlayerWorkerWakeupPlan,
+) -> PlayerWorkerWakeupPlan {
+    let Some(retry_delay) = session.installed_demux_retry_delay(now) else {
+        return prefer_earlier_staged_preflight(session, now, existing_plan);
+    };
+    if existing_plan
+        .delay
+        .is_some_and(|delay| delay <= retry_delay)
+    {
+        return prefer_earlier_staged_preflight(session, now, existing_plan);
+    }
+
+    let demux_plan = PlayerWorkerWakeupPlan::after(
+        retry_delay,
+        WorkerWakeupReason::DemuxRetryDeadline,
+        existing_plan.frame_timing,
+    );
+    prefer_earlier_staged_preflight(session, now, demux_plan)
+}
+
+/// Добавляет staged retry/timeout, сохраняя existing-work-first при равенстве.
+fn prefer_earlier_staged_preflight(
+    session: &PlayerSession,
+    now: Instant,
+    existing_plan: PlayerWorkerWakeupPlan,
+) -> PlayerWorkerWakeupPlan {
+    let Some(staged_delay) = session.staged_preflight_wakeup_delay(now) else {
+        return existing_plan;
+    };
+    if existing_plan
+        .delay
+        .is_some_and(|delay| delay <= staged_delay)
+    {
+        return existing_plan;
+    }
+
+    PlayerWorkerWakeupPlan::after(
+        staged_delay,
+        WorkerWakeupReason::StagedPreflightDeadline,
+        existing_plan.frame_timing,
+    )
 }
 
 /// Выбирает bounded decoder-readiness deadline без busy-spin.
@@ -312,12 +366,13 @@ pub(super) fn audio_refill_work_can_be_scheduled(session: &PlayerSession) -> boo
 pub(super) fn immediate_pipeline_work_available(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
+    now: Instant,
 ) -> bool {
     if pending_audio_work_available(session, tick_config) {
         return true;
     }
 
-    let demux_available = demux_work_available(session, tick_config);
+    let demux_available = demux_work_available(session, tick_config, now);
     if !seek_admission_active(session)
         && session.can_present_video()
         && session.pipeline.video_present_queue_len() >= video_present_queue_target(tick_config)
@@ -463,8 +518,12 @@ fn decoder_send_queue_reached_tick_capacity(
 pub(super) fn demux_work_available(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
+    now: Instant,
 ) -> bool {
     if !session.is_demuxing_active() || !session.pipeline.has_demuxer() {
+        return false;
+    }
+    if session.installed_demux_read_is_blocked(now) {
         return false;
     }
 

@@ -8,7 +8,7 @@ use codec_core::{
     VideoRequirementProbe, VideoRequirementUncertainty, preflight_video_requirement,
     probe_video_packet_requirement_with_codec_private, resolve_video_metadata,
 };
-use media_core::{DemuxReadEvent, TrackInfo, TrackKind};
+use media_core::{DemuxReadEvent, DemuxRetryHint, TrackInfo, TrackKind};
 
 use crate::{PlayerError, PlayerErrorKind, PlayerResult, PreparedMedia, TrackId};
 
@@ -101,6 +101,64 @@ struct StagedVideoPacketProbeReader {
     reached_end_of_stream: bool,
 }
 
+/// Результат одного resumable packet-probe прохода.
+enum StagedPacketProbeOutcome {
+    /// Exact codec requirement найден без потери prefetch replay events.
+    Resolved(VideoDecodeRequirement),
+
+    /// Source пока не готов; тот же reader должен продолжить после deadline-а.
+    Pending(DemuxRetryHint),
+}
+
+/// Progress выбора video track-а, живущий между worker wakeup-ами.
+pub(super) struct StagedVideoPlanner {
+    /// Стабильный список candidate tracks из исходного prepared snapshot-а.
+    video_tracks: Vec<TrackInfo>,
+
+    /// Индекс candidate-а, который сейчас проверяется.
+    next_track_index: usize,
+
+    /// Общий reader/budget всех candidate tracks одного request-а.
+    packet_probe_reader: StagedVideoPacketProbeReader,
+
+    /// Последняя codec uncertainty текущего packet-probe candidate-а.
+    active_last_uncertainty: Option<VideoRequirementUncertainty>,
+
+    /// Последняя recoverable причина перехода к следующему candidate track-у.
+    last_rejection: Option<PlayerError>,
+
+    /// Source-specific сообщение при исчерпании всех candidate tracks.
+    missing_message: String,
+}
+
+impl StagedVideoPlanner {
+    /// Создаёт planning state без demux I/O.
+    pub(super) fn new(prepared_media: &PreparedMedia) -> Self {
+        Self {
+            video_tracks: prepared_media
+                .tracks()
+                .iter()
+                .filter(|track| track.kind == TrackKind::Video)
+                .cloned()
+                .collect(),
+            next_track_index: 0,
+            packet_probe_reader: StagedVideoPacketProbeReader::new(),
+            active_last_uncertainty: None,
+            last_rejection: None,
+            missing_message: prepared_media.missing_video_track_message().to_owned(),
+        }
+    }
+}
+
+/// Результат resumable video planning owner-step-а.
+pub(super) enum StagedVideoPlanningOutcome {
+    /// Video plan полностью готов либо media не содержит video.
+    Ready(Option<StagedVideoTrackPlan>),
+
+    /// Тот же request/progress должен продолжиться после retry hint-а.
+    Pending(DemuxRetryHint),
+}
+
 impl StagedVideoPacketProbeReader {
     /// Создаёт пустой reader для одного staged candidate media.
     fn new() -> Self {
@@ -117,15 +175,14 @@ impl StagedVideoPacketProbeReader {
         prepared_media: &mut PreparedMedia,
         track: &TrackInfo,
         container_source: Option<VideoMetadataSource>,
-    ) -> PlayerResult<VideoDecodeRequirement> {
+        last_uncertainty: &mut Option<VideoRequirementUncertainty>,
+    ) -> PlayerResult<StagedPacketProbeOutcome> {
         let codec = VideoCodec::from_container_codec_id(&track.codec_id).ok_or_else(|| {
             PlayerError::new(
                 PlayerErrorKind::UnsupportedVideoCodec,
                 format!("Неизвестный video codec `{}`", track.codec_id),
             )
         })?;
-        let mut last_uncertainty = None;
-
         while let Some(packet_bytes) = self
             .packets_by_track
             .get_mut(&track.id)
@@ -136,9 +193,9 @@ impl StagedVideoPacketProbeReader {
                 &packet_bytes,
                 track.codec_private.as_deref(),
                 container_source.clone(),
-                &mut last_uncertainty,
+                last_uncertainty,
             )? {
-                return Ok(requirement);
+                return Ok(StagedPacketProbeOutcome::Resolved(requirement));
             }
         }
 
@@ -151,8 +208,9 @@ impl StagedVideoPacketProbeReader {
                         format!("Не удалось прочитать video header candidate-а: {error}"),
                     )
                 })?;
-            self.budget.observe(&event)?;
-
+            if !matches!(event, DemuxReadEvent::TemporarilyUnavailable(_)) {
+                self.budget.observe(&event)?;
+            }
             match event {
                 DemuxReadEvent::Packet(packet) if packet.track_id == track.id => {
                     if let Some(requirement) = probe_packet_requirement(
@@ -160,9 +218,9 @@ impl StagedVideoPacketProbeReader {
                         &packet.data,
                         track.codec_private.as_deref(),
                         container_source.clone(),
-                        &mut last_uncertainty,
+                        last_uncertainty,
                     )? {
-                        return Ok(requirement);
+                        return Ok(StagedPacketProbeOutcome::Resolved(requirement));
                     }
                 }
                 DemuxReadEvent::Packet(packet) if packet.kind == TrackKind::Video => {
@@ -173,14 +231,7 @@ impl StagedVideoPacketProbeReader {
                 }
                 DemuxReadEvent::Packet(_) | DemuxReadEvent::MediaMetadataChanged(_) => {}
                 DemuxReadEvent::TemporarilyUnavailable(hint) => {
-                    // S21W заменит этот pre-S21W capability guard resumable staged outcome-ом.
-                    return Err(PlayerError::new(
-                        PlayerErrorKind::DemuxError,
-                        format!(
-                            "Readiness-enabled staged source требует resumable S21W handoff (retry_after={:?})",
-                            hint.retry_after()
-                        ),
-                    ));
+                    return Ok(StagedPacketProbeOutcome::Pending(hint));
                 }
                 DemuxReadEvent::TracksChanged(_) => {
                     return Err(PlayerError::new(
@@ -195,6 +246,7 @@ impl StagedVideoPacketProbeReader {
         }
 
         let uncertainty_suffix = last_uncertainty
+            .as_ref()
             .map(|uncertainty| format!(" Последний codec probe: {uncertainty:?}."))
             .unwrap_or_default();
         Err(PlayerError::new(
@@ -212,34 +264,27 @@ impl PlayerSession {
     ///
     /// Exact mode сначала завершает codec evidence preflight, затем выбирает output
     /// из общего capability snapshot-а. Compatibility mode не делает demux I/O.
-    pub(super) fn plan_staged_video_track(
+    pub(super) fn resume_staged_video_track_plan(
         &self,
         prepared_media: &mut PreparedMedia,
         planning_mode: StagedVideoPlanningMode,
-    ) -> PlayerResult<Option<StagedVideoTrackPlan>> {
-        let video_tracks = prepared_media
-            .tracks()
-            .iter()
-            .filter(|track| track.kind == TrackKind::Video)
-            .cloned()
-            .collect::<Vec<_>>();
-        if video_tracks.is_empty() {
-            return Ok(None);
+        planner: &mut StagedVideoPlanner,
+    ) -> PlayerResult<StagedVideoPlanningOutcome> {
+        if planner.video_tracks.is_empty() {
+            return Ok(StagedVideoPlanningOutcome::Ready(None));
         }
 
-        let missing_message = prepared_media.missing_video_track_message();
-        let mut packet_probe_reader = StagedVideoPacketProbeReader::new();
-        let mut last_rejection = None;
-
-        for track in &video_tracks {
+        while let Some(track) = planner.video_tracks.get(planner.next_track_index) {
             let Some(codec) = VideoCodec::from_container_codec_id(&track.codec_id) else {
-                last_rejection = Some(PlayerError::new(
+                planner.last_rejection = Some(PlayerError::new(
                     PlayerErrorKind::UnsupportedVideoCodec,
                     format!(
                         "Video codec `{}` не поддерживается candidate capability model",
                         track.codec_id
                     ),
                 ));
+                planner.next_track_index = planner.next_track_index.saturating_add(1);
+                planner.active_last_uncertainty = None;
                 continue;
             };
             let container_source = video_metadata_source_from_track(track);
@@ -251,14 +296,20 @@ impl PlayerSession {
             let requirement = match resolve_staged_preflight_requirement(
                 preflight,
                 planning_mode,
-                &mut packet_probe_reader,
+                &mut planner.packet_probe_reader,
                 prepared_media,
                 track,
                 container_source,
+                &mut planner.active_last_uncertainty,
             ) {
-                Ok(requirement) => requirement,
+                Ok(StagedRequirementOutcome::Resolved(requirement)) => requirement,
+                Ok(StagedRequirementOutcome::Pending(hint)) => {
+                    return Ok(StagedVideoPlanningOutcome::Pending(hint));
+                }
                 Err(error) if can_try_next_video_track_after_error(&error.kind) => {
-                    last_rejection = Some(error);
+                    planner.last_rejection = Some(error);
+                    planner.next_track_index = planner.next_track_index.saturating_add(1);
+                    planner.active_last_uncertainty = None;
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -275,7 +326,10 @@ impl PlayerSession {
                         None
                     }
                     Err(error) => {
-                        last_rejection = Some(player_error_from_unsupported_requirement(error));
+                        planner.last_rejection =
+                            Some(player_error_from_unsupported_requirement(error));
+                        planner.next_track_index = planner.next_track_index.saturating_add(1);
+                        planner.active_last_uncertainty = None;
                         continue;
                     }
                 },
@@ -297,7 +351,9 @@ impl PlayerSession {
                 match video_stream_decode_config_from_track(track, &requirement, frame_contract) {
                     Ok(stream_config) => stream_config,
                     Err(error) if can_try_next_video_track_after_error(&error.kind) => {
-                        last_rejection = Some(error);
+                        planner.last_rejection = Some(error);
+                        planner.next_track_index = planner.next_track_index.saturating_add(1);
+                        planner.active_last_uncertainty = None;
                         continue;
                     }
                     Err(error) => return Err(error),
@@ -309,19 +365,33 @@ impl PlayerSession {
                 None => StagedVideoBackendPlan::CompatibilityDeferred,
             };
 
-            return Ok(Some(StagedVideoTrackPlan {
-                track_id: track.id,
-                requirement,
-                frame_contract,
-                stream_config,
-                backend_plan,
-            }));
+            return Ok(StagedVideoPlanningOutcome::Ready(Some(
+                StagedVideoTrackPlan {
+                    track_id: track.id,
+                    requirement,
+                    frame_contract,
+                    stream_config,
+                    backend_plan,
+                },
+            )));
         }
 
-        Err(last_rejection.unwrap_or_else(|| {
-            PlayerError::new(PlayerErrorKind::UnsupportedVideoCodec, missing_message)
+        Err(planner.last_rejection.take().unwrap_or_else(|| {
+            PlayerError::new(
+                PlayerErrorKind::UnsupportedVideoCodec,
+                planner.missing_message.clone(),
+            )
         }))
     }
+}
+
+/// Requirement step отделяет readiness pause от настоящей preflight ошибки.
+enum StagedRequirementOutcome {
+    /// Requirement полностью доказан.
+    Resolved(VideoDecodeRequirement),
+
+    /// Demux source требует повторить тот же probe позже.
+    Pending(DemuxRetryHint),
 }
 
 /// Превращает registry preflight в requirement с учётом strong/compatibility режима.
@@ -332,23 +402,39 @@ fn resolve_staged_preflight_requirement(
     prepared_media: &mut PreparedMedia,
     track: &TrackInfo,
     container_source: Option<VideoMetadataSource>,
-) -> PlayerResult<VideoDecodeRequirement> {
+    last_uncertainty: &mut Option<VideoRequirementUncertainty>,
+) -> PlayerResult<StagedRequirementOutcome> {
     match preflight {
-        VideoRequirementPreflight::Resolved(resolved) => Ok(resolved.requirement),
+        VideoRequirementPreflight::Resolved(resolved) => {
+            Ok(StagedRequirementOutcome::Resolved(resolved.requirement))
+        }
         VideoRequirementPreflight::PacketProbeRequired(initial)
             if planning_mode == StagedVideoPlanningMode::CompatibilityDeferredAllowed =>
         {
-            Ok(initial.requirement)
+            Ok(StagedRequirementOutcome::Resolved(initial.requirement))
         }
-        VideoRequirementPreflight::PacketProbeRequired(_) => packet_probe_reader
-            .resolve_requirement_for_track(prepared_media, track, container_source),
+        VideoRequirementPreflight::PacketProbeRequired(_) => {
+            match packet_probe_reader.resolve_requirement_for_track(
+                prepared_media,
+                track,
+                container_source,
+                last_uncertainty,
+            )? {
+                StagedPacketProbeOutcome::Resolved(requirement) => {
+                    Ok(StagedRequirementOutcome::Resolved(requirement))
+                }
+                StagedPacketProbeOutcome::Pending(hint) => {
+                    Ok(StagedRequirementOutcome::Pending(hint))
+                }
+            }
+        }
         VideoRequirementPreflight::Rejected(rejection) => {
             Err(player_error_from_requirement_rejection(rejection))
         }
         VideoRequirementPreflight::Unavailable { initial, .. }
             if planning_mode == StagedVideoPlanningMode::CompatibilityDeferredAllowed =>
         {
-            Ok(initial.requirement)
+            Ok(StagedRequirementOutcome::Resolved(initial.requirement))
         }
         VideoRequirementPreflight::Unavailable { reason, .. } => Err(PlayerError::new(
             PlayerErrorKind::UnsupportedVideoCodec,

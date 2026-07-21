@@ -151,3 +151,13 @@
 - `PlaybackPipeline` exposes only `demux_next_event`; test-only generic `demux_next_packet` boundary удалён. `PrefetchedDemuxer` replay-ит `TemporarilyUnavailable` byte-for-byte и не меняет visible tracks/duration/seekability/metadata.
 - Installed `read_demux_packets` прекращает текущий pass на temporary readiness без packet budget, EOF/drain/error/backpressure mutation и без второго demux read в том же tick. Focused test: `temporary_demux_readiness_stops_current_pass_without_eof_or_error_mapping`.
 - Exact retry deadline, media-instance/source/seek generation fencing и resumable staged preflight принадлежат S21W. До S21W readiness-enabled source не допускается через strong staged packet probe: boundary возвращает явный pre-commit capability error и сохраняет старый installed media; current VOD demuxers temporary readiness не производят.
+
+
+## S21W: nonblocking demux retry и resumable staged preflight (2026-07-21)
+
+- `PlayerSession` владеет installed `DemuxRetryRuntime`: absolute retry deadline fenced exact `MediaInstanceId + PlaybackPipeline::seek_generation()`. Stale fence после replace/seek игнорируется; commit/reset/shutdown очищают runtime.
+- `read_demux_packets` запрещает новый demux read до deadline, но tick продолжает decoder/render/audio-clock work. `TemporarilyUnavailable` не является packet/EOF/error и не меняет tracks, timeline, pending seek либо drain lifecycle.
+- Реальный downstream underrun переводит только прежний `Playing` intent в existing `Buffering`; routed packet возвращает сохранённый `Playing`/`Paused` intent. Playback-window rejected packets recovery не подтверждают.
+- `WorkerWakeupReason::DemuxRetryDeadline` и `StagedPreflightDeadline` входят в existing `PlayerWorkerWakeupPlan`; минимальный deadline выигрывает, при равенстве сохраняется existing-work-first.
+- `PlayerTickConfig::staged_video_preflight_timeout` задаёт bounded wall-clock timeout (default 15s), который worker передаёт session builder-у.
+- Проверки: `cargo test -p player-core`, `cargo clippy -p player-core --all-targets -- -D warnings`, `cargo +1.96.0 check --workspace --locked`, `scripts/check-refactor-guardrails.py`.

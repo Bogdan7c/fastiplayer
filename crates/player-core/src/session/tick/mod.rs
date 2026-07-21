@@ -40,6 +40,7 @@ impl PlayerSession {
     pub fn tick(&mut self, tick_context: PlayerTickContext) -> PlayerTickResult {
         let mut tick_result = PlayerTickResult::default();
 
+        self.service_pending_staged_preflight(tick_context.now);
         self.update_position_for_tick(tick_context.now);
 
         let seek_fast_preroll_tick_handled =
@@ -71,6 +72,7 @@ impl PlayerSession {
         self.diagnose_audio_output_starvation(tick_context.now);
 
         process_pending_video_packets(self, tick_context, &mut tick_result);
+        self.enter_buffering_for_demux_underrun_if_needed();
         self.finish_seek_commit_if_ready(tick_context.now, &tick_context.config);
         if let Err(error) =
             self.finish_autoplay_preroll_if_ready(tick_context.config.audio_preroll_target_ms)

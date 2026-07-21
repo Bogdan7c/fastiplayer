@@ -1,6 +1,7 @@
 use std::num::NonZeroU64;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata, VideoProfile, Vp9Profile};
@@ -23,8 +24,8 @@ use crate::{
     AuthorizeInstallCommit, CancelMediaInstall, DecodeThreadError, MediaInstallCancellationCause,
     MediaInstallCompletion, MediaInstallControl, MediaInstallControlOutcome,
     MediaInstallFailureStage, MediaInstallReceipt, MediaInstallRequestId, MediaInstanceId,
-    PlaybackIntent, PlaybackIntentRevision, PlaybackState, PlayerError, PlayerErrorKind,
-    PreparedMedia, StartedVideoBackend,
+    PlaybackIntent, PlaybackIntentRevision, PlaybackState, PlayerCommand, PlayerError,
+    PlayerErrorKind, PlayerTickConfig, PreparedMedia, StartedVideoBackend, WorkerWakeupReason,
 };
 
 /// Shared observable state fake resource port-а после передачи его player owner-у.
@@ -53,6 +54,21 @@ struct FakeResourcePort {
 
     /// Shared counters/statuses для assertions после move в session.
     state: Arc<Mutex<FakeResourcePortState>>,
+}
+
+/// Создаёт VP9 candidate, который останавливает preflight на первом temporary event-е.
+fn pending_vp9_prepared_media(label: &str) -> PreparedMedia {
+    let mut video_track = fake_track(1, TrackKind::Video);
+    video_track.video = Some(VideoTrackMetadata::empty());
+    let retry_hint = media_core::DemuxRetryHint::new(Duration::from_millis(25))
+        .expect("focused staged retry hint должен быть допустим");
+    let mut demuxer = FakeDemuxer::new(
+        vec![video_track],
+        Some(Duration::from_secs(42)),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    demuxer.push_event(DemuxReadEvent::TemporarilyUnavailable(retry_hint));
+    PreparedMedia::from_external_label(label, Box::new(demuxer))
 }
 
 impl FakeResourcePort {
@@ -364,6 +380,257 @@ fn vp9_hdr_packet_preflight_selects_p010_and_replays_interleaved_audio() {
             .expect("prefetched video event должен читаться без ошибки"),
         DemuxReadEvent::Packet(video_packet)
     );
+}
+
+/// Temporary readiness обязан оставить request pre-Ready и продолжить тот же probe state.
+#[test]
+fn staged_video_preflight_resumes_without_replaying_temporary_readiness() {
+    let mut session = PlayerSession::new();
+    session.set_system_capabilities(capabilities_with_phase10_vp9_profile2_hdr());
+    let old_instance_id = install_old_media(&mut session, PlaybackState::Paused);
+    let mut video_track = fake_track(1, TrackKind::Video);
+    let mut video_metadata = VideoTrackMetadata::empty();
+    video_metadata.coded_width = Some(3_840);
+    video_metadata.coded_height = Some(2_160);
+    video_metadata.color = Some(bt2020_pq_limited());
+    video_track.video = Some(video_metadata);
+    let audio_track = fake_track(2, TrackKind::Audio);
+    let audio_packet = fake_audio_packet(
+        crate::TrackId::new(2),
+        Duration::ZERO,
+        Duration::from_millis(20),
+    );
+    let video_packet = Packet::new(
+        crate::TrackId::new(1),
+        TrackKind::Video,
+        Duration::ZERO,
+        None,
+        true,
+        vp9_profile2_10bit_bt2020_keyframe(3_840, 2_160),
+    );
+    let retry_hint = media_core::DemuxRetryHint::new(Duration::from_millis(25))
+        .expect("focused staged retry hint должен быть допустим");
+    let event_read_count = Arc::new(AtomicUsize::new(0));
+    let mut demuxer = FakeDemuxer::new(
+        vec![video_track, audio_track],
+        Some(Duration::from_secs(42)),
+        Arc::new(Mutex::new(Vec::new())),
+    )
+    .with_event_read_count(Arc::clone(&event_read_count));
+    demuxer.push_event(DemuxReadEvent::TemporarilyUnavailable(retry_hint));
+    demuxer.push_event(DemuxReadEvent::Packet(audio_packet.clone()));
+    demuxer.push_event(DemuxReadEvent::Packet(video_packet.clone()));
+    let request_id = MediaInstallRequestId::from_non_zero(
+        NonZeroU64::new(101).expect("test request id is non-zero"),
+    );
+    let decoder = SharedFakeVideoDecoderThread::new();
+    let (resource_port, resource_state) = FakeResourcePort::available(decoder);
+    let (receipt, install_port) = MediaInstallReceipt::new(request_id);
+
+    session.stage_prepared_media_install(
+        request_id,
+        PreparedMedia::from_external_label("resumable-vp9-hdr", Box::new(demuxer)),
+        PlaybackIntent::StartPaused,
+        PlaybackIntentRevision::INITIAL,
+        install_port,
+        Box::new(resource_port),
+    );
+
+    assert!(receipt.try_take_ready_to_commit().is_none());
+    assert_eq!(event_read_count.load(Ordering::Relaxed), 1);
+    assert_eq!(session.snapshot().media_instance_id, Some(old_instance_id));
+    assert_eq!(
+        session.apply_staged_media_install_control(MediaInstallControl::Authorize(
+            AuthorizeInstallCommit { request_id },
+        )),
+        MediaInstallControlOutcome::NotReady
+    );
+    assert!(session.has_staged_media_install());
+    assert!(receipt.try_take_completion().is_none());
+    let wakeup = session.worker_wakeup_plan(
+        Instant::now(),
+        &PlayerTickConfig::default(),
+        Duration::from_millis(5),
+        Duration::from_millis(250),
+    );
+    assert_eq!(wakeup.reason, WorkerWakeupReason::StagedPreflightDeadline);
+    assert!(wakeup.delay.is_some_and(|delay| !delay.is_zero()));
+    assert_eq!(
+        resource_state
+            .lock()
+            .expect("fake resource state lock")
+            .request_count,
+        0
+    );
+    session.service_pending_staged_preflight(Instant::now());
+    assert_eq!(event_read_count.load(Ordering::Relaxed), 1);
+
+    session.service_pending_staged_preflight(Instant::now() + Duration::from_millis(30));
+
+    assert!(receipt.try_take_ready_to_commit().is_some());
+    assert_eq!(event_read_count.load(Ordering::Relaxed), 3);
+    assert_eq!(
+        resource_state
+            .lock()
+            .expect("fake resource state lock")
+            .request_count,
+        1
+    );
+    assert_eq!(
+        session.apply_staged_media_install_control(MediaInstallControl::Authorize(
+            AuthorizeInstallCommit { request_id },
+        )),
+        MediaInstallControlOutcome::AuthorizationAccepted
+    );
+    assert_eq!(
+        session
+            .pipeline
+            .demux_next_event()
+            .expect("installed demuxer должен существовать")
+            .expect("prefetched audio event должен сохраниться"),
+        DemuxReadEvent::Packet(audio_packet)
+    );
+    assert_eq!(
+        session
+            .pipeline
+            .demux_next_event()
+            .expect("installed demuxer должен существовать")
+            .expect("prefetched video event должен сохраниться"),
+        DemuxReadEvent::Packet(video_packet)
+    );
+}
+
+/// Wall-clock timeout terminal-resolve-ит pending request до Ready barrier-а.
+#[test]
+fn staged_video_preflight_timeout_is_typed_and_exactly_once() {
+    let mut session =
+        PlayerSession::new().with_staged_video_preflight_timeout(Duration::from_millis(10));
+    session.set_system_capabilities(capabilities_with_phase10_vp9_profile2_hdr());
+    let mut video_track = fake_track(1, TrackKind::Video);
+    video_track.video = Some(VideoTrackMetadata::empty());
+    let retry_hint = media_core::DemuxRetryHint::new(Duration::from_millis(25))
+        .expect("focused staged retry hint должен быть допустим");
+    let mut demuxer = FakeDemuxer::new(
+        vec![video_track],
+        Some(Duration::from_secs(42)),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    demuxer.push_event(DemuxReadEvent::TemporarilyUnavailable(retry_hint));
+    let request_id = MediaInstallRequestId::from_non_zero(
+        NonZeroU64::new(102).expect("test request id is non-zero"),
+    );
+    let (resource_port, resource_state) =
+        FakeResourcePort::available(SharedFakeVideoDecoderThread::new());
+    let (receipt, install_port) = MediaInstallReceipt::new(request_id);
+
+    session.stage_prepared_media_install(
+        request_id,
+        PreparedMedia::from_external_label("timed-out-vp9", Box::new(demuxer)),
+        PlaybackIntent::StartPaused,
+        PlaybackIntentRevision::INITIAL,
+        install_port,
+        Box::new(resource_port),
+    );
+    session.service_pending_staged_preflight(Instant::now() + Duration::from_millis(15));
+
+    assert!(receipt.try_take_ready_to_commit().is_none());
+    assert!(matches!(
+        receipt.try_take_completion(),
+        Some(MediaInstallCompletion::Failed { failure, .. })
+            if failure.stage == MediaInstallFailureStage::VideoPreflightTimeout
+    ));
+    assert!(receipt.try_take_completion().is_none());
+    assert_eq!(
+        resource_state
+            .lock()
+            .expect("fake resource state lock")
+            .request_count,
+        0
+    );
+    assert!(!session.has_staged_media_install());
+}
+
+/// Pending preflight сохраняет exact cancellation cause при cancel, supersede и shutdown.
+#[test]
+fn pending_staged_preflight_terminal_resolves_each_request_exactly_once() {
+    let mut session = PlayerSession::new();
+    session.set_system_capabilities(capabilities_with_phase10_vp9_profile2_hdr());
+    let old_instance_id = install_old_media(&mut session, PlaybackState::Paused);
+    let request_ids = [103_u64, 104, 105].map(|raw_request_id| {
+        MediaInstallRequestId::from_non_zero(
+            NonZeroU64::new(raw_request_id).expect("test request id is non-zero"),
+        )
+    });
+    let mut receipts = Vec::new();
+    let mut resource_states = Vec::new();
+
+    for (index, request_id) in request_ids.into_iter().enumerate() {
+        let (resource_port, resource_state) =
+            FakeResourcePort::available(SharedFakeVideoDecoderThread::new());
+        let (receipt, install_port) = MediaInstallReceipt::new(request_id);
+        session.stage_prepared_media_install(
+            request_id,
+            pending_vp9_prepared_media(&format!("pending-vp9-{index}")),
+            PlaybackIntent::StartPaused,
+            PlaybackIntentRevision::INITIAL,
+            install_port,
+            Box::new(resource_port),
+        );
+        assert!(receipt.try_take_ready_to_commit().is_none());
+        receipts.push(receipt);
+        resource_states.push(resource_state);
+
+        if index == 0 {
+            assert_eq!(
+                session.apply_staged_media_install_control(MediaInstallControl::Cancel(
+                    CancelMediaInstall {
+                        request_id,
+                        cause: MediaInstallCancellationCause::UserCancelled,
+                    },
+                )),
+                MediaInstallControlOutcome::CancellationAccepted
+            );
+        }
+    }
+
+    assert!(matches!(
+        receipts[0].try_take_completion(),
+        Some(MediaInstallCompletion::Cancelled {
+            cause: MediaInstallCancellationCause::UserCancelled,
+            ..
+        })
+    ));
+    assert!(matches!(
+        receipts[1].try_take_completion(),
+        Some(MediaInstallCompletion::Cancelled {
+            cause: MediaInstallCancellationCause::Superseded,
+            ..
+        })
+    ));
+    session
+        .dispatch_command(PlayerCommand::Shutdown)
+        .expect("shutdown должен terminal-resolve pending preflight");
+    assert!(matches!(
+        receipts[2].try_take_completion(),
+        Some(MediaInstallCompletion::Cancelled {
+            cause: MediaInstallCancellationCause::LifecycleShutdown,
+            ..
+        })
+    ));
+    assert!(
+        receipts
+            .iter()
+            .all(|receipt| receipt.try_take_completion().is_none())
+    );
+    assert!(resource_states.iter().all(|resource_state| {
+        resource_state
+            .lock()
+            .expect("fake resource state lock")
+            .request_count
+            == 0
+    }));
+    assert_eq!(session.snapshot().media_instance_id, Some(old_instance_id));
+    assert!(!session.has_staged_media_install());
 }
 
 #[test]

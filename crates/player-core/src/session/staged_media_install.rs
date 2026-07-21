@@ -26,7 +26,9 @@ use crate::{
 
 use super::PlayerSession;
 use super::audio_runtime::audio_decoder_init_spec_from_tracks;
-use super::staged_video_preflight::StagedVideoPlanningMode;
+use super::staged_video_preflight::{
+    StagedVideoPlanner, StagedVideoPlanningMode, StagedVideoPlanningOutcome,
+};
 
 mod commit;
 
@@ -38,14 +40,61 @@ struct StagedMediaInstall {
     /// Session 00B phase/terminal state machine.
     protocol: MediaInstallProtocol,
 
-    /// Prepared media/player plan, который ещё не стал active.
-    prepared_media: Option<PreparedStagedMedia>,
+    /// Resumable preflight либо полностью готовый commit payload.
+    preparation: StagedMediaPreparation,
 
     /// Configured detached backend half либо `None` для media без video.
     started_video_backend: Option<StartedVideoBackend>,
 
     /// Strong app port либо `None` только у временного compatibility facade.
     video_resource_port: Option<MediaInstallVideoResourcePort>,
+}
+
+/// Typed generation request-owned staged preflight-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StagedPreflightGeneration(u64);
+
+/// Fence до появления будущего `MediaInstanceId`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StagedPreflightFence {
+    /// Exact install request не позволяет продолжить superseded candidate.
+    request_id: MediaInstallRequestId,
+
+    /// Owner generation защищает от повторного использования registry slot-а.
+    generation: StagedPreflightGeneration,
+}
+
+/// Preparation state одного active staged request-а.
+enum StagedMediaPreparation {
+    /// Preflight временно остановлен readiness event-ом.
+    Pending(PendingStagedPreflight),
+
+    /// Все fallible player/backend stages завершены до Ready barrier-а.
+    Ready(Option<PreparedStagedMedia>),
+}
+
+/// Player-owned continuation staged video preflight-а.
+struct PendingStagedPreflight {
+    /// Request + staged-generation fence continuation-а.
+    fence: StagedPreflightFence,
+
+    /// Detached media остаётся у player owner-а до terminal outcome.
+    prepared_media: PreparedMedia,
+
+    /// Audio plan вычисляется один раз и не повторяет fallible работу после retry.
+    audio_plan: Option<StagedAudioTrackPlan>,
+
+    /// Exact/compatibility policy исходного ingress-а.
+    video_planning_mode: StagedVideoPlanningMode,
+
+    /// Packet reader, budgets и current-track progress сохраняются между wakeup-ами.
+    video_planner: StagedVideoPlanner,
+
+    /// Earliest retry текущего temporary readiness event-а.
+    retry_deadline: Option<Instant>,
+
+    /// Независимый terminal wall-clock deadline всего preflight-а.
+    timeout_deadline: Instant,
 }
 
 /// Bounded owner slot: максимум одна staged transaction и один terminal tombstone.
@@ -56,6 +105,9 @@ pub(super) struct StagedMediaInstallRegistry {
 
     /// Последний terminal request нужен для typed duplicate rejection после cleanup.
     last_terminal_request_id: Option<MediaInstallRequestId>,
+
+    /// Монотонная owner generation новых preflight continuation-ов.
+    next_preflight_generation: u64,
 }
 
 /// Чистый audio plan candidate-а без decoder/output side effects.
@@ -274,7 +326,7 @@ impl PlayerSession {
         initial_intent: PlaybackIntent,
         initial_intent_revision: PlaybackIntentRevision,
         install_port: Arc<dyn MediaInstallPhaseCompletionPort>,
-        mut video_resource_port: Option<MediaInstallVideoResourcePort>,
+        video_resource_port: Option<MediaInstallVideoResourcePort>,
     ) {
         self.cancel_active_staged_media_install(MediaInstallCancellationCause::Superseded);
         self.playback_intent_control.register_staged_request(
@@ -285,49 +337,213 @@ impl PlayerSession {
             },
         );
 
-        let mut protocol = MediaInstallProtocol::accept(request_id, install_port);
+        let protocol = MediaInstallProtocol::accept(request_id, install_port);
         let video_planning_mode = if video_resource_port.is_some() {
             StagedVideoPlanningMode::ExactBackendRequired
         } else {
             StagedVideoPlanningMode::CompatibilityDeferredAllowed
         };
-        let prepared_media = match self.prepare_staged_media(prepared_media, video_planning_mode) {
-            Ok(prepared_media) => prepared_media,
-            Err(failure) => {
-                protocol.complete_failed(failure);
+        let audio_plan = match plan_staged_audio_track(prepared_media.tracks()) {
+            Ok(audio_plan) => audio_plan,
+            Err(error) => {
+                let mut protocol = protocol;
+                protocol.complete_failed(MediaInstallFailure::new(
+                    MediaInstallFailureStage::AudioTrackPlanning,
+                    error,
+                ));
                 self.playback_intent_control
                     .forget_staged_request(request_id);
                 self.staged_media_install.last_terminal_request_id = Some(request_id);
                 return;
             }
         };
+        if self.is_shutdown_requested() {
+            let mut protocol = protocol;
+            protocol.complete_failed(MediaInstallFailure::new(
+                MediaInstallFailureStage::OpenTransition,
+                PlayerError::new(
+                    PlayerErrorKind::InvalidCommand,
+                    "Player session уже завершает shutdown",
+                ),
+            ));
+            self.playback_intent_control
+                .forget_staged_request(request_id);
+            self.staged_media_install.last_terminal_request_id = Some(request_id);
+            return;
+        }
 
-        let started_video_backend = match video_resource_port.as_mut() {
+        self.staged_media_install.next_preflight_generation = self
+            .staged_media_install
+            .next_preflight_generation
+            .saturating_add(1);
+        let generation =
+            StagedPreflightGeneration(self.staged_media_install.next_preflight_generation);
+        let started_at = Instant::now();
+        let timeout_deadline = started_at
+            .checked_add(self.staged_video_preflight_timeout)
+            .unwrap_or(started_at);
+        let video_planner = StagedVideoPlanner::new(&prepared_media);
+
+        self.staged_media_install.active = Some(StagedMediaInstall {
+            request_id,
+            protocol,
+            preparation: StagedMediaPreparation::Pending(PendingStagedPreflight {
+                fence: StagedPreflightFence {
+                    request_id,
+                    generation,
+                },
+                prepared_media,
+                audio_plan,
+                video_planning_mode,
+                video_planner,
+                retry_deadline: None,
+                timeout_deadline,
+            }),
+            started_video_backend: None,
+            video_resource_port,
+        });
+        self.service_pending_staged_preflight(started_at);
+    }
+
+    /// Продолжает один exact staged preflight owner-step без блокировки worker loop-а.
+    pub(crate) fn service_pending_staged_preflight(&mut self, now: Instant) {
+        let Some(mut staged_install) = self.staged_media_install.active.take() else {
+            return;
+        };
+        let preparation = std::mem::replace(
+            &mut staged_install.preparation,
+            StagedMediaPreparation::Ready(None),
+        );
+        let StagedMediaPreparation::Pending(mut pending) = preparation else {
+            staged_install.preparation = preparation;
+            self.staged_media_install.active = Some(staged_install);
+            return;
+        };
+        let current_generation =
+            StagedPreflightGeneration(self.staged_media_install.next_preflight_generation);
+        if pending.fence.request_id != staged_install.request_id
+            || pending.fence.generation != current_generation
+        {
+            self.finish_staged_preflight_failure(
+                staged_install,
+                MediaInstallFailure::new(
+                    MediaInstallFailureStage::VideoStreamConfiguration,
+                    PlayerError::new(
+                        PlayerErrorKind::RuntimeError,
+                        "Staged preflight потерял exact request fence",
+                    ),
+                ),
+            );
+            return;
+        }
+        if now >= pending.timeout_deadline {
+            self.finish_staged_preflight_failure(
+                staged_install,
+                MediaInstallFailure::new(
+                    MediaInstallFailureStage::VideoPreflightTimeout,
+                    PlayerError::new(
+                        PlayerErrorKind::DemuxError,
+                        "Staged video preflight превысил bounded wall-clock deadline",
+                    ),
+                ),
+            );
+            return;
+        }
+        if pending
+            .retry_deadline
+            .is_some_and(|retry_deadline| now < retry_deadline)
+        {
+            staged_install.preparation = StagedMediaPreparation::Pending(pending);
+            self.staged_media_install.active = Some(staged_install);
+            return;
+        }
+
+        pending.retry_deadline = None;
+        let video_plan = match self.resume_staged_video_track_plan(
+            &mut pending.prepared_media,
+            pending.video_planning_mode,
+            &mut pending.video_planner,
+        ) {
+            Ok(StagedVideoPlanningOutcome::Ready(video_plan)) => video_plan,
+            Ok(StagedVideoPlanningOutcome::Pending(hint)) => {
+                pending.retry_deadline = Some(now.checked_add(hint.retry_after()).unwrap_or(now));
+                staged_install.preparation = StagedMediaPreparation::Pending(pending);
+                self.staged_media_install.active = Some(staged_install);
+                return;
+            }
+            Err(failure) => {
+                self.finish_staged_preflight_failure(
+                    staged_install,
+                    MediaInstallFailure::new(
+                        MediaInstallFailureStage::VideoStreamConfiguration,
+                        failure,
+                    ),
+                );
+                return;
+            }
+        };
+        if let Err(error) = pending.prepared_media.prepare_playback_window() {
+            self.finish_staged_preflight_failure(
+                staged_install,
+                MediaInstallFailure::new(
+                    MediaInstallFailureStage::PlaybackWindowPreparation,
+                    PlayerError::new(
+                        PlayerErrorKind::SeekUnavailable,
+                        format!("Не удалось подготовить playback window: {error}"),
+                    ),
+                ),
+            );
+            return;
+        }
+        let prepared_media = PreparedStagedMedia {
+            prepared_media: pending.prepared_media,
+            audio_plan: pending.audio_plan,
+            video_plan,
+            media_instance_id: MediaInstanceId::new_unique(),
+        };
+        let started_video_backend = match staged_install.video_resource_port.as_mut() {
             Some(video_resource_port) => match prepare_detached_video_backend(
-                request_id,
+                staged_install.request_id,
                 &prepared_media,
                 video_resource_port.as_mut(),
             ) {
                 Ok(started_video_backend) => started_video_backend,
                 Err(failure) => {
-                    protocol.complete_failed(failure);
-                    self.playback_intent_control
-                        .forget_staged_request(request_id);
-                    self.staged_media_install.last_terminal_request_id = Some(request_id);
+                    self.finish_staged_preflight_failure(staged_install, failure);
                     return;
                 }
             },
             None => None,
         };
 
-        protocol.mark_ready_to_commit();
-        self.staged_media_install.active = Some(StagedMediaInstall {
-            request_id,
-            protocol,
-            prepared_media: Some(prepared_media),
-            started_video_backend,
-            video_resource_port,
-        });
+        staged_install.protocol.mark_ready_to_commit();
+        staged_install.preparation = StagedMediaPreparation::Ready(Some(prepared_media));
+        staged_install.started_video_backend = started_video_backend;
+        self.staged_media_install.active = Some(staged_install);
+    }
+
+    /// Terminal-resolve-ит pre-Ready failure ровно один раз.
+    fn finish_staged_preflight_failure(
+        &mut self,
+        mut staged_install: StagedMediaInstall,
+        failure: MediaInstallFailure,
+    ) {
+        staged_install.protocol.complete_failed(failure);
+        self.playback_intent_control
+            .forget_staged_request(staged_install.request_id);
+        self.staged_media_install.last_terminal_request_id = Some(staged_install.request_id);
+    }
+
+    /// Возвращает ближайший retry/timeout deadline active staged continuation-а.
+    #[must_use]
+    pub(crate) fn staged_preflight_wakeup_delay(&self, now: Instant) -> Option<Duration> {
+        let staged_install = self.staged_media_install.active.as_ref()?;
+        let StagedMediaPreparation::Pending(pending) = &staged_install.preparation else {
+            return None;
+        };
+        let retry_deadline = pending.retry_deadline.unwrap_or(now);
+        let nearest_deadline = retry_deadline.min(pending.timeout_deadline);
+        Some(nearest_deadline.saturating_duration_since(now))
     }
 
     /// Применяет exact authorization/cancel в ordered owner stream.
@@ -363,7 +579,12 @@ impl PlayerSession {
 
         let (outcome, cancellation_cause) = match control {
             MediaInstallControl::Authorize(authorization) => {
-                let Some(prepared_media) = staged_install.prepared_media.take() else {
+                let StagedMediaPreparation::Ready(prepared_media) = &mut staged_install.preparation
+                else {
+                    self.staged_media_install.active = Some(staged_install);
+                    return MediaInstallControlOutcome::NotReady;
+                };
+                let Some(prepared_media) = prepared_media.take() else {
                     self.staged_media_install.last_terminal_request_id =
                         Some(staged_install.request_id);
                     return MediaInstallControlOutcome::AlreadyTerminal;
@@ -454,48 +675,6 @@ impl PlayerSession {
     /// Read-only invariant hook для focused bounded-ownership tests.
     pub(crate) fn has_staged_media_install(&self) -> bool {
         self.staged_media_install.active.is_some()
-    }
-
-    /// Выполняет все pure/fallible player preflight stages без active-state mutation.
-    fn prepare_staged_media(
-        &self,
-        mut prepared_media: PreparedMedia,
-        video_planning_mode: StagedVideoPlanningMode,
-    ) -> Result<PreparedStagedMedia, MediaInstallFailure> {
-        if self.is_shutdown_requested() {
-            return Err(MediaInstallFailure::new(
-                MediaInstallFailureStage::OpenTransition,
-                PlayerError::new(
-                    PlayerErrorKind::InvalidCommand,
-                    "Player session уже завершает shutdown",
-                ),
-            ));
-        }
-
-        let audio_plan = plan_staged_audio_track(prepared_media.tracks()).map_err(|error| {
-            MediaInstallFailure::new(MediaInstallFailureStage::AudioTrackPlanning, error)
-        })?;
-        let video_plan = self
-            .plan_staged_video_track(&mut prepared_media, video_planning_mode)
-            .map_err(|error| {
-                MediaInstallFailure::new(MediaInstallFailureStage::VideoStreamConfiguration, error)
-            })?;
-        prepared_media.prepare_playback_window().map_err(|error| {
-            MediaInstallFailure::new(
-                MediaInstallFailureStage::PlaybackWindowPreparation,
-                PlayerError::new(
-                    PlayerErrorKind::SeekUnavailable,
-                    format!("Не удалось подготовить playback window: {error}"),
-                ),
-            )
-        })?;
-
-        Ok(PreparedStagedMedia {
-            prepared_media,
-            audio_plan,
-            video_plan,
-            media_instance_id: MediaInstanceId::new_unique(),
-        })
     }
 }
 
