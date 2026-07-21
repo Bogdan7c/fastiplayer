@@ -38,3 +38,15 @@
 - `crates/audio/src/output.rs` остаётся facade/runtime owner-ом `AudioOutput`, CPAL stream и ring-buffer callback. Device capability/fallback selection находится в `output/configuration.rs`, pause/resume stream lifecycle — в `output/lifecycle.rs`, sample conversion + tempo output protection — в `output/processing.rs`, stateful packet-boundary linear resampling — в `output/resampler.rs`.
 - Public API не изменился. Channel order/downmix, CPAL format/rate fallback, buffer targets, clock anchors/underrun accounting, direct/tempo protection policy, resampler carry/reset и tempo latency сохранены behavior-neutral.
 - Полный census и два bounded follow-up prompt-а (`audio-core` facade и evaluation `audio-timestretch` adapter) находятся в `user/session_27c_audio_census_and_followups_2026-07-11.md`.
+
+
+## S20 read-only audio decode capability (2026-07-21)
+
+- `audio-core` теперь владеет neutral read-only boundary: `AudioDecodeCodecFamily`, typed `AudioDecodeCodecFamilyQuery`, distinct `AudioDecodeCapability::{Available, Unavailable}`, `AudioDecodeCapabilityQueryError::UnknownCodecFamily`, compact immutable `AudioDecodeCapabilitySnapshot` и `AudioDecodeCapabilityProvider`.
+- Snapshot — `Copy` bitset без interior mutability; его query/iteration не создают decoder, не аллоцируют промежуточные collections и не смешивают unknown family с известной, но runtime-unavailable family.
+- Family capability относится только к exact codec identities, уже прошедшим versioned static compatibility profile. Это не wildcard для любого будущего raw `adpcm*`/`pcm*`; future S21C обязан сначала выполнить static profile validation, затем intersect-ить runtime snapshot.
+- Concrete `audio::ProductionAudioDecoderFactory` снимает snapshot через read-only Symphonia 0.6 `CodecRegistry::get_audio_decoder`; scanner boundary не содержит factory/create method. Opus декларируется через существующий concrete fallback, а не через fallible decoder construction.
+- Current proven matrix: AAC, ADPCM (Symphonia registered MS/IMA WAV/IMA QT set), ALAC, FLAC, MP1/MP2/MP3, interleaved PCM registered set, Vorbis и Opus fallback. Mapped, но незарегистрированные G.722/G.726 и planar PCM не используются как runtime evidence.
+- `app-egui::AppState` создаёт один production audio decoder factory, сохраняет его immutable capability snapshot отдельно от video `SystemCapabilities` и предоставляет app-owned accessor для будущего S21C selection; `player-core`/services/web-media-core не получают Symphonia types.
+- Focused coverage: production registry parity, empty registry + disabled Opus fallback, neutral fake provider, structural read-only scan без decoder construction/state mutation и typed unknown-family rejection.
+- Проверки: `cargo test -p audio-core -p audio`, `cargo check --workspace`, `cargo test -p app-egui --no-run`, strict Clippy для `audio-core`/`audio`, strict rustdoc, fmt, diff check, refactor guardrails и Serena diagnostics PASS. Workspace/app all-target strict Clippy остаётся blocked двумя pre-existing `app-egui` `large_enum_variant` diagnostics в `state/strong_media_open{,/pending}.rs`.

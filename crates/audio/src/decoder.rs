@@ -15,7 +15,8 @@ use symphonia::core::errors::Error as SymphoniaError;
 use tracing::{info, warn};
 
 pub use audio_core::{
-    AudioChannelLayout, AudioChannelPosition, AudioDecoder, AudioDecoderConfig, AudioDecoderError,
+    AudioChannelLayout, AudioChannelPosition, AudioDecodeCapabilityProvider,
+    AudioDecodeCapabilitySnapshot, AudioDecoder, AudioDecoderConfig, AudioDecoderError,
     AudioDecoderFactory, AudioDecoderHandle, AudioPacketTimeBase, AudioPacketTiming,
     EncodedAudioPacket,
 };
@@ -23,6 +24,7 @@ pub use audio_core::{
 /// Максимальное количество samples на packet для Opus fallback (120ms @ 48kHz stereo).
 const MAX_OPUS_SAMPLES_PER_PACKET: usize = 48000 * 2 * 120 / 1000;
 
+mod capability;
 mod conversion;
 
 use conversion::{
@@ -34,9 +36,30 @@ use conversion::{
 #[cfg(test)]
 use symphonia::core::codecs::audio::well_known as symphonia_audio_codec;
 
+use capability::production_audio_decode_capability_snapshot;
+
 /// Production decoder factory, которая скрывает Symphonia registry и Opus fallback.
-#[derive(Debug, Default)]
-pub struct ProductionAudioDecoderFactory;
+#[derive(Debug)]
+pub struct ProductionAudioDecoderFactory {
+    /// Immutable snapshot того же runtime decode path, которым владеет factory.
+    decode_capabilities: AudioDecodeCapabilitySnapshot,
+}
+
+impl Default for ProductionAudioDecoderFactory {
+    /// Снимает read-only capability snapshot без создания decoder-а.
+    fn default() -> Self {
+        Self {
+            decode_capabilities: production_audio_decode_capability_snapshot(),
+        }
+    }
+}
+
+impl AudioDecodeCapabilityProvider for ProductionAudioDecoderFactory {
+    /// Возвращает precomputed immutable snapshot без registry scan на каждом query.
+    fn audio_decode_capability_snapshot(&self) -> AudioDecodeCapabilitySnapshot {
+        self.decode_capabilities
+    }
+}
 
 impl AudioDecoderFactory for ProductionAudioDecoderFactory {
     /// Создаёт concrete decoder через production helper без раскрытия backend-а caller-у.

@@ -230,6 +230,9 @@ pub struct AppState {
     /// Read-only snapshot последнего capability report-а для app-owned selector-а.
     system_capabilities_snapshot: Option<SystemCapabilities>,
 
+    /// Runtime-available audio decode snapshot без concrete registry types.
+    audio_decode_capability_snapshot: audio::AudioDecodeCapabilitySnapshot,
+
     /// Exact renderer binding и immutable playlist view без controller ownership.
     playlist_attachment: Option<crate::playlist_runtime::PlaylistAppStateAttachment>,
 
@@ -358,9 +361,14 @@ impl AppState {
             Some(winit::window::Theme::Dark),
             None,
         );
+        let audio_decoder_factory = Arc::new(audio::ProductionAudioDecoderFactory::default());
+        let audio_decode_capability_snapshot =
+            audio::AudioDecodeCapabilityProvider::audio_decode_capability_snapshot(
+                audio_decoder_factory.as_ref(),
+            );
         let worker_config =
             PlayerWorkerConfig::from_app_config(committed_config_snapshot.as_config())
-                .with_audio_decoder_factory(Arc::new(audio::ProductionAudioDecoderFactory))
+                .with_audio_decoder_factory(audio_decoder_factory)
                 .with_audio_output_factory(Arc::new(audio::CpalAudioOutputFactory::new(
                     audio_output_device_controller,
                 )))
@@ -376,7 +384,7 @@ impl AppState {
         let sidebar_host_state =
             SidebarHostState::from_committed(committed_config_snapshot.sidebar_width_points());
 
-        Ok(Self {
+        let app_state = Self {
             egui_ctx,
             egui_winit_state,
             player_worker,
@@ -385,6 +393,7 @@ impl AppState {
             telemetry,
             committed_config_snapshot,
             system_capabilities_snapshot: None,
+            audio_decode_capability_snapshot,
             playlist_attachment: None,
             playlist_ui_state: crate::ui::playlist::PlaylistUiState::default(),
             startup_error,
@@ -416,7 +425,22 @@ impl AppState {
             sidebar_controller: SidebarController::default(),
             sidebar_host_state,
             sidebar_slide_last_tick: None,
-        })
+        };
+        tracing::debug!(
+            available_audio_decode_family_count = app_state
+                .audio_decode_capability_snapshot()
+                .available_families()
+                .count(),
+            "Composition сохранила immutable audio decode capability snapshot"
+        );
+
+        Ok(app_state)
+    }
+
+    /// Возвращает immutable runtime snapshot для app-owned web-media selection.
+    #[must_use]
+    pub const fn audio_decode_capability_snapshot(&self) -> audio::AudioDecodeCapabilitySnapshot {
+        self.audio_decode_capability_snapshot
     }
 
     /// Закрывает renderer-bound player после process desktop admission shutdown-а в AppShell.

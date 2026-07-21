@@ -21,12 +21,13 @@ pub mod output;
 mod output_adapter;
 
 pub use audio_core::{
-    AudioChannelLayout, AudioChannelLayoutError, AudioChannelPosition, AudioDecoder,
-    AudioDecoderConfig, AudioDecoderError, AudioDecoderFactory, AudioDecoderHandle,
-    AudioOutputClockTiming, AudioOutputFactory, AudioOutputInputFrameCount, AudioOutputSpec,
-    AudioOutputStreamFrameCount, AudioOutputWriteError, AudioOutputWriteIntent,
-    AudioOutputWriteReport, AudioPacketTimeBase, AudioPacketTiming, EncodedAudioPacket,
-    PlayerAudioClock, PlayerAudioOutput,
+    AudioChannelLayout, AudioChannelLayoutError, AudioChannelPosition, AudioDecodeCapability,
+    AudioDecodeCapabilityProvider, AudioDecodeCapabilityQueryError, AudioDecodeCapabilitySnapshot,
+    AudioDecodeCodecFamily, AudioDecodeCodecFamilyQuery, AudioDecoder, AudioDecoderConfig,
+    AudioDecoderError, AudioDecoderFactory, AudioDecoderHandle, AudioOutputClockTiming,
+    AudioOutputFactory, AudioOutputInputFrameCount, AudioOutputSpec, AudioOutputStreamFrameCount,
+    AudioOutputWriteError, AudioOutputWriteIntent, AudioOutputWriteReport, AudioPacketTimeBase,
+    AudioPacketTiming, EncodedAudioPacket, PlayerAudioClock, PlayerAudioOutput,
 };
 pub use clock::AudioClock;
 pub use decoder::{ProductionAudioDecoderFactory, SymphoniaAudioDecoder, create_audio_decoder};

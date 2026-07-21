@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 mod channel_layout;
+mod decode_capability;
 mod tempo;
 
 use std::sync::Arc;
@@ -16,6 +17,10 @@ use anyhow::Result;
 use thiserror::Error;
 
 pub use channel_layout::{AudioChannelLayout, AudioChannelLayoutError, AudioChannelPosition};
+pub use decode_capability::{
+    AudioDecodeCapability, AudioDecodeCapabilityProvider, AudioDecodeCapabilityQueryError,
+    AudioDecodeCapabilitySnapshot, AudioDecodeCodecFamily, AudioDecodeCodecFamilyQuery,
+};
 pub use tempo::{
     AudioTempoChannelCount, AudioTempoDecodedMedia, AudioTempoFrameCount, AudioTempoFrameSpan,
     AudioTempoOutputProgressMapping, AudioTempoOutputSegmentCollection,
