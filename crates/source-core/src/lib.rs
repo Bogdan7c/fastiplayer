@@ -12,6 +12,7 @@ mod config;
 mod error;
 mod http;
 mod http_locator;
+mod http_policy;
 mod local;
 mod metadata;
 
@@ -23,7 +24,12 @@ pub use config::SourceRuntimeConfig;
 pub use error::{SourceError, SourceResult};
 pub use http::{HttpHeader, HttpRangeSource, HttpRangeSourceConfig};
 pub use http_locator::SecretHttpUrl;
+pub use http_policy::{
+    HttpHeaderValidationError, HttpOrigin, HttpPathScope, HttpPathScopeError, HttpRequestTarget,
+    HttpRequestTargetError, HttpScheme, ValidatedHttpHeaders,
+};
 pub use local::{LocalFileMetadataSnapshot, LocalFileSource};
 pub use metadata::{
     ByteSource, NotSeekableReason, Seekability, SourceFingerprint, SourceValidators,
+    StreamingByteSource,
 };

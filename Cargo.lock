@@ -4280,6 +4280,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -5503,6 +5504,15 @@ dependencies = [
 [[package]]
 name = "web-media-core"
 version = "0.1.0"
+
+[[package]]
+name = "web-media-transport-api"
+version = "0.1.0"
+dependencies = [
+ "source-core",
+ "thiserror 2.0.18",
+ "web-media-core",
+]
 
 [[package]]
 name = "web-sys"

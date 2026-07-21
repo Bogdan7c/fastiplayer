@@ -105,3 +105,9 @@
 ## S21/S21R demux registration и event-first read boundary (2026-07-21)
 
 Neutral typed demux registry/composition принадлежит `demux-api`; подробные contracts и tests см. `mem:demux-api/core`. `media_core::Demuxer` теперь read-only через required `next_event`; generic `next_packet` удалён. `DemuxReadEvent::TemporarilyUnavailable(DemuxRetryHint)` является отдельной nonterminal readiness identity, не EOF/error/track mutation, а finite packet mapping централизован в `media_core::finite_packet_read_event`. Media services/composition roots должны передавать typed input capability/hints/budget и concrete factories, не встраивая probe/container policy обратно в service owner. Readiness-enabled staged install и generation-fenced player retry scheduling остаются S21W; current services до него не публикуют temporary readiness в staged preflight.
+
+## S21T neutral web transport boundary (2026-07-21)
+
+- Новый `web-media-transport-api` создаёт provider registry/open/refresh boundary до первого provider-а и зависит только от `web-media-core`, `source-core`, `thiserror`. Exact+semantic component identity, runtime source generation, VOD/live, seekable/cancellation-aware streaming, typed unavailable/unsupported/auth/transport/refresh outcomes и scoped request material не знают yt-dlp DTO, demux/player/queue/UI.
+- `source-core` владеет exact-secret `HttpRequestTarget`, normalized origin/path policy evidence, validated headers и `StreamingByteSource` с cancellation token на каждом read. `SecretRequestContext` покрывает headers/cookies/request_data/segment+key overrides и fail-closed проверяет origin + segment-boundary path + secure scope; cross-host redirect secrets не получает.
+- Первый concrete `web-media-http`, direct-media adapter migration и yt-dlp material mapping остаются S21U/S26. Полный API/test/limitation contract: `mem:media-services/web-transport-s21t-2026-07-21`.

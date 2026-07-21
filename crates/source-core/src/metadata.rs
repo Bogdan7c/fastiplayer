@@ -96,3 +96,14 @@ pub trait ByteSource: Send {
     /// Возвращает fingerprint source-а для source/cache ownership.
     fn fingerprint(&self) -> SourceFingerprint;
 }
+
+/// Forward-only cancellation-aware byte stream для non-seekable network sources.
+///
+/// В отличие от `std::io::Read`, contract принимает cooperative cancellation на
+/// каждом чтении. Concrete HTTP provider обязан прерывать blocking I/O либо
+/// bounded worker wait при отмене; demux/player layers не должны изобретать
+/// второй transport-specific cancellation path.
+pub trait StreamingByteSource: Send {
+    /// Читает следующую порцию bytes либо возвращает typed source error.
+    fn read(&mut self, output: &mut [u8], cancellation: &CancellationToken) -> SourceResult<usize>;
+}

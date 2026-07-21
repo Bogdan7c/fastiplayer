@@ -18,6 +18,7 @@ members = [
     "crates/settings-derive",
     "crates/rustiplayer-settings",
     "crates/web-media-core",
+    "crates/web-media-transport-api",
     "crates/bounded-xml-reader",
     "crates/player-core",
     "crates/bounded-work-executor",
@@ -175,6 +176,7 @@ service-ytdlp = { version = "0.1.0", path = "crates/service-ytdlp" }
 source-core = { version = "0.1.0", path = "crates/source-core" }
 media-prefetch = { version = "0.1.0", path = "crates/media-prefetch" }
 web-media-core = { version = "0.1.0", path = "crates/web-media-core" }
+web-media-transport-api = { version = "0.1.0", path = "crates/web-media-transport-api" }
 bounded-xml-reader = { version = "0.1.0", path = "crates/bounded-xml-reader" }
 settings-core = { version = "0.1.0", path = "crates/settings-core" }
 settings-derive = { version = "0.1.0", path = "crates/settings-derive" }

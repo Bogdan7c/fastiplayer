@@ -331,6 +331,51 @@ class DependencyGraphPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_web_media_transport_api_keeps_neutral_boundary(self) -> None:
+        """Transport API видит identities/source primitives, но не service/demux/player."""
+
+        packages = complete_workspace_packages()
+        packages["web-media-transport-api"] = package_with_dependencies(
+            "web-media-transport-api",
+            (
+                ("source-core", None),
+                ("thiserror", None),
+                ("web-media-core", None),
+            ),
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "web-media-transport-api"
+                for violation in passing_result.dependency_violations
+            )
+        )
+
+        packages["web-media-transport-api"] = package_with_dependencies(
+            "web-media-transport-api",
+            (
+                ("source-core", None),
+                ("thiserror", None),
+                ("web-media-core", None),
+                ("demux-api", None),
+                ("player-core", None),
+                ("service-ytdlp", None),
+            ),
+        )
+        failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertEqual(
+            {
+                violation.dependency
+                for violation in failing_result.dependency_violations
+                if violation.owner == "web-media-transport-api"
+            },
+            {"demux-api", "player-core", "service-ytdlp"},
+        )
+
     def test_natural_sort_key_rejects_every_normal_dependency(self) -> None:
         """Общий prepared comparator остаётся строго std-only."""
 
