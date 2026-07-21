@@ -1,0 +1,20 @@
+[package]
+name = "web-media-http"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+media-prefetch.workspace = true
+source-core.workspace = true
+web-media-transport-api.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+base64 = "0.22"
+demux-api.workspace = true
+media-core.workspace = true
+rustiplayer-config.workspace = true
+symphonia-demux.workspace = true
+web-media-core.workspace = true

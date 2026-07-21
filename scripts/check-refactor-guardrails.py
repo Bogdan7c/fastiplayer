@@ -86,6 +86,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "video-ffmpeg",
         "video-vaapi",
         "web-media-core",
+        "web-media-http",
         "web-media-playback-plan",
         "web-media-transport-api",
     }
@@ -160,6 +161,12 @@ WEB_MEDIA_PLAYBACK_PLAN_ALLOWED_DEPENDENCIES = frozenset(
 # normalized web identities; concrete provider/demux/player/service edges запрещены.
 WEB_MEDIA_TRANSPORT_API_ALLOWED_DEPENDENCIES = frozenset(
     {"source-core", "thiserror", "web-media-core"}
+)
+
+# Concrete HTTP provider переиспользует единственные владельцы HTTP source и
+# prefetch policy; service/demux/player/client dependencies здесь запрещены.
+WEB_MEDIA_HTTP_ALLOWED_DEPENDENCIES = frozenset(
+    {"media-prefetch", "source-core", "web-media-transport-api"}
 )
 
 # Neutral demux composition владеет только typed input/probe/runtime contracts.
@@ -873,6 +880,14 @@ def find_dependency_violations(
             frozenset({"web-media-transport-api"}),
             WEB_MEDIA_TRANSPORT_API_ALLOWED_DEPENDENCIES,
             "web-media-transport-api остаётся neutral provider/secret/network boundary",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"web-media-http"}),
+            WEB_MEDIA_HTTP_ALLOWED_DEPENDENCIES,
+            "web-media-http переиспользует только neutral transport API, source-core и media-prefetch",
         )
     )
     violations.extend(

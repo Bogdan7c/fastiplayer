@@ -7,16 +7,13 @@
 use std::time::Duration;
 
 use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig};
-use source_core::{
-    ByteSource, HttpRangeSource, HttpRangeSourceConfig, NotSeekableReason, SecretHttpUrl,
-    Seekability, SourceError, SourceRuntimeConfig,
-};
+use source_core::{NotSeekableReason, SourceError, SourceRuntimeConfig};
 use symphonia_demux::{DemuxSeekability, Demuxer, DemuxerOptions, MediaMetadata, TrackInfo};
 use thiserror::Error;
-use tracing::debug;
 use url::Url;
 
 mod locator;
+mod transport;
 
 pub use locator::DirectMediaUrl;
 
@@ -270,6 +267,85 @@ pub enum DirectMediaOpenError {
         #[source]
         source: symphonia_demux::DemuxError,
     },
+
+    /// Static HTTP provider registration нарушила compile-time contract.
+    #[error("HTTP transport provider нельзя собрать для {locator}: {source}")]
+    HttpProvider {
+        /// Redacted direct-media locator.
+        locator: DirectMediaUrl,
+        /// Static provider descriptor error.
+        #[source]
+        source: web_media_http::WebMediaHttpProviderBuildError,
+    },
+
+    /// Neutral transport registry отклонил provider registration.
+    #[error("HTTP transport registry отклонил provider для {locator}: {source}")]
+    TransportRegistry {
+        /// Redacted direct-media locator.
+        locator: DirectMediaUrl,
+        /// Typed registry error без request payload.
+        #[source]
+        source: web_media_transport_api::TransportRegistryError,
+    },
+
+    /// Neutral transport open завершился typed operational error-ом.
+    #[error("HTTP transport не открыл direct media {locator}: {source}")]
+    TransportOpen {
+        /// Redacted direct-media locator.
+        locator: DirectMediaUrl,
+        /// S21T typed error без raw URL/header/body.
+        #[source]
+        source: web_media_transport_api::TransportOpenError,
+    },
+
+    /// Static identity/hint/request assembly нарушила internal direct adapter contract.
+    #[error("direct media adapter contract нарушен для {locator}: {reason}")]
+    AdapterContract {
+        /// Redacted direct-media locator.
+        locator: DirectMediaUrl,
+        /// Фиксированная safe причина без locator payload.
+        reason: &'static str,
+    },
+
+    /// Symphonia factory descriptor не прошёл neutral identity validation.
+    #[error("demux factory registration нельзя собрать для {locator}: {source}")]
+    DemuxIdentity {
+        /// Redacted direct-media locator.
+        locator: DirectMediaUrl,
+        /// Neutral identity grammar error.
+        #[source]
+        source: demux_api::DemuxIdentityError,
+    },
+
+    /// Neutral demux registry отклонил factory registration.
+    #[error("demux registry отклонил factory для {locator}: {source}")]
+    DemuxRegistry {
+        /// Redacted direct-media locator.
+        locator: DirectMediaUrl,
+        /// Typed registration error.
+        #[source]
+        source: demux_api::DemuxRegistryError,
+    },
+
+    /// Neutral registry не смог probe/open container.
+    #[error("demux registry не открыл {locator}: {source}")]
+    DemuxOpen {
+        /// Redacted direct-media locator.
+        locator: DirectMediaUrl,
+        /// Typed bounded probe/factory error.
+        #[source]
+        source: demux_api::DemuxOpenError,
+    },
+
+    /// Non-Range demux worker не запустился до публикации prepared media.
+    #[error("progressive demux worker не запустился для {locator}: {source}")]
+    ProgressiveDemuxStartup {
+        /// Redacted direct-media locator.
+        locator: DirectMediaUrl,
+        /// Typed worker startup error.
+        #[source]
+        source: demux_api::ProgressiveDemuxStartupError,
+    },
 }
 
 /// Проверяет, выглядит ли строка как URL с authority-style scheme.
@@ -307,60 +383,12 @@ pub fn open_direct_media_url_with_options(
     prefetch_config: media_prefetch::PrefetchConfig,
     demuxer_options: DemuxerOptions,
 ) -> Result<DirectMediaOpenResult, DirectMediaOpenError> {
-    let source = HttpRangeSource::open(HttpRangeSourceConfig::new(
-        SecretHttpUrl::from_secret_for_open(direct_url.expose_secret_for_open()),
-        Vec::new(),
+    transport::open_direct_media_url_with_options(
+        direct_url,
         source_config,
-    ))
-    .map_err(|source| DirectMediaOpenError::Source {
-        locator: direct_url.clone(),
-        source,
-    })?;
-
-    if let Seekability::NotSeekable { reason } = source.seekability() {
-        return Err(DirectMediaOpenError::NonSeekable {
-            locator: direct_url.clone(),
-            reason,
-        });
-    }
-
-    debug!(
-        source = %direct_url,
-        extension = direct_url.extension().as_extension_hint(),
-        "Direct media HTTP Range source открыт как seekable"
-    );
-
-    let extension_hint = direct_url.extension().as_extension_hint();
-    let source_label = direct_url.safe_label().to_string();
-    let prefetch_source =
-        media_prefetch::PrefetchingByteSource::new(Box::new(source), prefetch_config).map_err(
-            |source| DirectMediaOpenError::PrefetchStartup {
-                locator: direct_url.clone(),
-                source,
-            },
-        )?;
-    let demuxer = symphonia_demux::SymphoniaDemuxer::from_byte_source_with_options(
-        prefetch_source,
-        extension_hint,
-        &source_label,
+        prefetch_config,
         demuxer_options,
     )
-    .map_err(|source| DirectMediaOpenError::Demux {
-        locator: direct_url.clone(),
-        extension_hint,
-        source,
-    })?;
-    let tracks = demuxer.tracks().to_vec();
-    let duration = demuxer.duration();
-    let seekability = demuxer.seekability();
-
-    Ok(DirectMediaOpenResult {
-        source_label,
-        demuxer: Box::new(demuxer),
-        tracks,
-        duration,
-        seekability,
-    })
 }
 
 /// Валидирует URL components и извлекает supported extension из path.
@@ -511,6 +539,7 @@ mod tests {
     use std::thread::{self, JoinHandle};
 
     use rustiplayer_config::{NetworkConfig, PlayerDemuxConfig};
+    use symphonia_demux::DemuxSeekability;
 
     use super::{
         DirectMediaExtension, DirectMediaOpenError, DirectMediaUrlUnsupportedReason,
@@ -908,19 +937,22 @@ mod tests {
     }
 
     #[test]
-    fn non_range_http_source_returns_typed_non_seekable_error() {
-        let server =
-            TestHttpServer::spawn(b"not a real mp4".to_vec(), TestHttpBehavior::IgnoreRange);
+    fn non_range_http_source_opens_progressive_without_range() {
+        let server = TestHttpServer::spawn(minimal_pcm_wav(), TestHttpBehavior::IgnoreRange);
         let locator = parse_direct_media_url(&server.url("/video.mp4"))
             .expect("test URL должен пройти pure classification");
-        let error = open_direct_media_url(
+        let opened = open_direct_media_url(
             &locator,
             &NetworkConfig::default(),
             &PlayerDemuxConfig::default(),
         )
-        .expect_err("HTTP 200 на Range probe должен стать typed non-seekable");
+        .expect("HTTP 200 probe response должен продолжиться progressive path-ом");
 
-        assert!(matches!(error, DirectMediaOpenError::NonSeekable { .. }));
+        assert!(matches!(
+            opened.seekability(),
+            DemuxSeekability::NotSeekable { .. }
+        ));
+        assert!(!opened.tracks().is_empty());
     }
 
     #[test]

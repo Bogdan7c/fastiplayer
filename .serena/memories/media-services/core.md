@@ -117,3 +117,11 @@ Neutral typed demux registry/composition принадлежит `demux-api`; п�
 - До I/O playable layout выбирает pure crate `web-media-playback-plan`; composition передаёт immutable transport, demux, video/system и S20 audio capability snapshots.
 - `SelectionRequest::Exact` теперь использует source-safe `ExactSelectionIdentity` (exact + semantic identity); operational open failures не относятся к planner rejection.
 - Подробности и проверки: `mem:media-services/web-playback-planner-s21c-2026-07-21`.
+
+
+## S22 concrete progressive HTTP provider (2026-07-22)
+
+- `web-media-http` is the only new concrete provider and depends normally only on `source-core`, `media-prefetch`, and S21T `web-media-transport-api`; dependency guardrails enforce this.
+- `source-core::HttpSourceSession` owns the single manual-redirect reqwest client and reuses the first Range probe response/client for both Range and non-Range outcomes.
+- `service-direct-media` consumes it through the neutral contract. `service-ytdlp` remains extractor/descriptor owner without a concrete HTTP dependency.
+- Full details and focused proofs: `mem:media-services/progressive-http-s22-2026-07-22`.

@@ -83,6 +83,9 @@ pub struct HttpRangeSource {
     /// Базовые headers direct URL-а.
     headers: HeaderMap,
 
+    /// Ephemeral request body, который нужно повторять для каждого Range request-а.
+    request_body: Option<Vec<u8>>,
+
     /// Текущий byte cursor.
     position: u64,
 
@@ -108,6 +111,7 @@ impl fmt::Debug for HttpRangeSource {
             .debug_struct("HttpRangeSource")
             .field("url", &self.url)
             .field("headers", &"<redacted>")
+            .field("has_request_body", &self.request_body.is_some())
             .field("position", &self.position)
             .field("seekability", &self.seekability)
             .field("validators", &self.validators)
@@ -135,10 +139,44 @@ impl HttpRangeSource {
             client,
             url: config.url,
             headers,
+            request_body: None,
             position: 0,
             seekability: probe.seekability,
             validators: probe.validators,
             content_length: probe.content_length,
+            fingerprint,
+            diagnostics: RangeDiagnostics::default(),
+        })
+    }
+
+    /// Строит seekable source из уже проверенного `206` ответа одного HTTP session-а.
+    pub(crate) fn from_partial_content_probe(
+        client: Client,
+        url: SecretHttpUrl,
+        headers: HeaderMap,
+        request_body: Option<Vec<u8>>,
+        response_headers: &HeaderMap,
+    ) -> SourceResult<Self> {
+        let parsed_range = parse_content_range_header(&url, response_headers)?;
+        if parsed_range.start != 0 || parsed_range.end_inclusive != 0 {
+            return Err(SourceError::InvalidContentRange {
+                url,
+                header: "<unexpected-probe-range>".to_string(),
+            });
+        }
+        let validators = validators_from_headers(response_headers);
+        let content_length = parsed_range.total_length;
+        let fingerprint = build_http_fingerprint(&url, content_length, &validators);
+
+        Ok(Self {
+            client,
+            url,
+            headers,
+            request_body,
+            position: 0,
+            seekability: Seekability::Seekable,
+            validators,
+            content_length,
             fingerprint,
             diagnostics: RangeDiagnostics::default(),
         })
@@ -201,8 +239,14 @@ impl HttpRangeSource {
             .diagnostics
             .bytes_requested
             .saturating_add(length as u64);
-        let response =
-            send_range_request(&self.client, &self.url, &self.headers, &range, "range-read")?;
+        let response = send_range_request(
+            &self.client,
+            &self.url,
+            &self.headers,
+            self.request_body.as_deref(),
+            &range,
+            "range-read",
+        )?;
 
         if response.status() != StatusCode::PARTIAL_CONTENT {
             if response.status() == StatusCode::OK {
@@ -350,7 +394,7 @@ fn probe_seekability(
     headers: &HeaderMap,
 ) -> SourceResult<ProbeResult> {
     let probe_range = ByteRange::new(0, 1);
-    let response = send_range_request(client, url, headers, &probe_range, "range-probe")?;
+    let response = send_range_request(client, url, headers, None, &probe_range, "range-probe")?;
     let validators = validators_from_headers(response.headers());
 
     if response.status() == StatusCode::PARTIAL_CONTENT {
@@ -392,6 +436,7 @@ fn send_range_request(
     client: &Client,
     url: &SecretHttpUrl,
     headers: &HeaderMap,
+    request_body: Option<&[u8]>,
     range: &ByteRange,
     operation: &'static str,
 ) -> SourceResult<reqwest::blocking::Response> {
@@ -406,9 +451,17 @@ fn send_range_request(
         })?,
     );
 
-    client
-        .get(url.expose_secret_for_open())
-        .headers(request_headers)
+    let request = match request_body {
+        Some(body) => client
+            .post(url.expose_secret_for_open())
+            .headers(request_headers)
+            .body(body.to_vec()),
+        None => client
+            .get(url.expose_secret_for_open())
+            .headers(request_headers),
+    };
+
+    request
         .send()
         .map_err(|source| map_reqwest_error(operation, url, source))
 }
@@ -479,7 +532,7 @@ fn read_response_body_into(
 }
 
 /// Строит reqwest HeaderMap из внешних headers.
-fn build_header_map(headers: &[HttpHeader]) -> SourceResult<HeaderMap> {
+pub(crate) fn build_header_map(headers: &[HttpHeader]) -> SourceResult<HeaderMap> {
     let mut header_map = HeaderMap::new();
 
     for header in headers {
@@ -565,7 +618,7 @@ fn bounded_read_length(offset: u64, requested_length: usize, content_length: Opt
 }
 
 /// Нормализует reqwest errors в player/UI-friendly source errors.
-fn map_reqwest_error(
+pub(crate) fn map_reqwest_error(
     operation: &'static str,
     url: &SecretHttpUrl,
     source: reqwest::Error,

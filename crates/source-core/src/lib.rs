@@ -13,6 +13,7 @@ mod error;
 mod http;
 mod http_locator;
 mod http_policy;
+mod http_session;
 mod local;
 mod metadata;
 
@@ -27,6 +28,10 @@ pub use http_locator::SecretHttpUrl;
 pub use http_policy::{
     HttpHeaderValidationError, HttpOrigin, HttpPathScope, HttpPathScopeError, HttpRequestTarget,
     HttpRequestTargetError, HttpScheme, ValidatedHttpHeaders,
+};
+pub use http_session::{
+    HttpRedirectHop, HttpRedirectRequestBehavior, HttpRequestBody, HttpSingleHopRequest,
+    HttpSourceHop, HttpSourceSession, HttpStreamingSource,
 };
 pub use local::{LocalFileMetadataSnapshot, LocalFileSource};
 pub use metadata::{

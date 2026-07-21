@@ -37,6 +37,7 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/rustiplayer-settings
     crates/web-media-core
     crates/web-media-playback-plan
+    crates/web-media-http
     crates/web-media-transport-api
     crates/bounded-xml-reader
     crates/player-core

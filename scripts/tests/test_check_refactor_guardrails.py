@@ -376,6 +376,51 @@ class DependencyGraphPolicyTests(unittest.TestCase):
             {"demux-api", "player-core", "service-ytdlp"},
         )
 
+    def test_web_media_http_reuses_source_and_prefetch_owners(self) -> None:
+        """Concrete HTTP provider не создаёт второй client/cache/service owner."""
+
+        packages = complete_workspace_packages()
+        packages["web-media-http"] = package_with_dependencies(
+            "web-media-http",
+            (
+                ("media-prefetch", None),
+                ("source-core", None),
+                ("web-media-transport-api", None),
+            ),
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "web-media-http"
+                for violation in passing_result.dependency_violations
+            )
+        )
+
+        packages["web-media-http"] = package_with_dependencies(
+            "web-media-http",
+            (
+                ("media-prefetch", None),
+                ("source-core", None),
+                ("web-media-transport-api", None),
+                ("reqwest", None),
+                ("service-direct-media", None),
+                ("demux-api", None),
+            ),
+        )
+        failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertEqual(
+            {
+                violation.dependency
+                for violation in failing_result.dependency_violations
+                if violation.owner == "web-media-http"
+            },
+            {"demux-api", "reqwest", "service-direct-media"},
+        )
+
     def test_natural_sort_key_rejects_every_normal_dependency(self) -> None:
         """Общий prepared comparator остаётся строго std-only."""
 

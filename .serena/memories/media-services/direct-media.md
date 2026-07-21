@@ -19,3 +19,11 @@
 - `service-direct-media` policy не расширялась: только HTTP(S) с explicit supported media extension. FTP(S)/RTMP никогда не передаются direct opener-у.
 - App-owned единый URL registry сохраняет register order direct-media → yt-dlp. Успешная direct classification фиксирует `MediaOpenSourceRequest::Direct`; последующая open failure не возвращается в registry и не вызывает yt-dlp retry.
 - Extended yt-dlp input schemes gated отдельно registered `Implemented` provider capability; production S15A list пуст до S37/S39. Это не transport feature `service-direct-media`.
+
+
+## S22 progressive HTTP migration (2026-07-22)
+
+- Classification, `DirectMediaUrl`, safe labels and locator/error redaction remain service-owned and unchanged.
+- Open adapter now uses `web-media-http` only through S21T `TransportRegistry`, then neutral `DemuxRegistry` with `SymphoniaDemuxFactory`; see `mem:media-services/progressive-http-s22-2026-07-22`.
+- Range responses retain existing seekable + media-prefetch behavior. Non-Range `200` responses become forward-only progressive demux instead of `NonSeekable` rejection.
+- MP4/MOV, MKV and WebM supply both extension and real container hints. Adapter constructs all registries/demuxers before returning `DirectMediaOpenResult`, so failures remain before player mutation.

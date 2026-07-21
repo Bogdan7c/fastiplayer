@@ -4023,6 +4023,8 @@ dependencies = [
 name = "service-direct-media"
 version = "0.1.0"
 dependencies = [
+ "demux-api",
+ "media-core",
  "media-prefetch",
  "rustiplayer-config",
  "source-core",
@@ -4030,6 +4032,9 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "url",
+ "web-media-core",
+ "web-media-http",
+ "web-media-transport-api",
 ]
 
 [[package]]
@@ -5504,6 +5509,22 @@ dependencies = [
 [[package]]
 name = "web-media-core"
 version = "0.1.0"
+
+[[package]]
+name = "web-media-http"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "demux-api",
+ "media-core",
+ "media-prefetch",
+ "rustiplayer-config",
+ "source-core",
+ "symphonia-demux",
+ "web-media-core",
+ "web-media-transport-api",
+]
 
 [[package]]
 name = "web-media-playback-plan"

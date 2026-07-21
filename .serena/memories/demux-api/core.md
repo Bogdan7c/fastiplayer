@@ -35,3 +35,12 @@ Focused tests находятся в `src/registry/tests.rs` и `src/composite/te
 ## S21C capability composition (2026-07-21)
 - `DemuxInputCapabilities` получил intent-level set operations `union`, `intersection`, `intersects`; neutral planner использует immutable demux snapshot для container/input-shape rejection до I/O.
 - Детали: `mem:media-services/web-playback-planner-s21c-2026-07-21`.
+
+
+## S22 progressive demux boundary (2026-07-22)
+
+- `DemuxInput::streaming_source` adapts a cancellation-aware S21T `StreamingByteSource` to the byte-stream registry input.
+- `ProgressiveDemuxer` is the neutral owner of a separate blocking inner-demux worker. Player-facing `next_event` only polls a bounded event/encoded-byte queue and returns `TemporarilyUnavailable` when empty.
+- This worker is required because exposing `WouldBlock` from the middle of a concrete container parser can lose partially consumed parser state.
+- Full queue backpressures the worker; oversized packets fail typed; drop requests stop/cancellation without joining on player owner. A RAII completion guard prevents endless readiness after backend panic.
+- See `mem:media-services/progressive-http-s22-2026-07-22` for the concrete HTTP path.

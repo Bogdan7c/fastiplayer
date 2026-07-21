@@ -1,9 +1,11 @@
 use std::fmt;
 use std::io::Read;
+use std::sync::Mutex;
 
 use bytes::Bytes;
 use source_core::{
     ByteSource, CancellationToken, Seekability, SourceFingerprint, SourceResult, SourceValidators,
+    StreamingByteSource,
 };
 
 /// Ровно одна форма input, которую demux factory умеет открыть.
@@ -143,6 +145,40 @@ pub trait DemuxByteStream: Read + Send + Sync {}
 
 impl<Reader> DemuxByteStream for Reader where Reader: Read + Send + Sync {}
 
+/// Адаптер cancellation-aware streaming source-а к blocking container reader-у.
+///
+/// Blocking допустим только на progressive demux worker-е. Player owner никогда
+/// не вызывает этот reader напрямую и получает neutral readiness events.
+struct StreamingSourceByteReader {
+    /// Mutex даёт требуемый Symphonia `Sync`, сохраняя единственного mutable reader owner-а.
+    source: Mutex<Box<dyn StreamingByteSource>>,
+    /// Shared token прерывает network read при drop/supersede.
+    cancellation: CancellationToken,
+}
+
+impl StreamingSourceByteReader {
+    /// Связывает source с exact lifecycle cancellation token-ом.
+    fn new(source: Box<dyn StreamingByteSource>, cancellation: CancellationToken) -> Self {
+        Self {
+            source: Mutex::new(source),
+            cancellation,
+        }
+    }
+}
+
+impl Read for StreamingSourceByteReader {
+    /// Делегирует blocking read только cancellation-aware source primitive-у.
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        let mut source = self
+            .source
+            .lock()
+            .map_err(|_| std::io::Error::other("streaming source mutex poisoned"))?;
+        source
+            .read(output, &self.cancellation)
+            .map_err(std::io::Error::other)
+    }
+}
+
 /// Monotonic sequence identity одного ordered segment-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OrderedSegmentSequence(u64);
@@ -225,6 +261,18 @@ impl DemuxInput {
     #[must_use]
     pub fn byte_stream(reader: Box<dyn DemuxByteStream>) -> Self {
         Self::ByteStream(reader)
+    }
+
+    /// Адаптирует S21T streaming source для concrete blocking factory open/read.
+    #[must_use]
+    pub fn streaming_source(
+        source: Box<dyn StreamingByteSource>,
+        cancellation: CancellationToken,
+    ) -> Self {
+        Self::byte_stream(Box::new(StreamingSourceByteReader::new(
+            source,
+            cancellation,
+        )))
     }
 
     /// Стирает concrete ordered segment provider type.

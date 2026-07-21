@@ -10,6 +10,7 @@ mod composite;
 mod identity;
 mod input;
 mod probe;
+mod progressive;
 mod registry;
 
 pub use composite::{
@@ -30,6 +31,10 @@ pub use input::{
 pub use probe::{
     DemuxHintRelationship, DemuxHints, DemuxProbeConfidence, DemuxProbeDecision, DemuxProbeMatch,
     DemuxProbeRejection, DemuxProbeRequest, DemuxSniffBudget, DemuxSniffBudgetError,
+};
+pub use progressive::{
+    ProgressiveDemuxBufferLimits, ProgressiveDemuxPacketTooLargeError,
+    ProgressiveDemuxStartupError, ProgressiveDemuxWorkerStoppedError, ProgressiveDemuxer,
 };
 pub use registry::{
     DemuxContainerRegistration, DemuxFactory, DemuxFactoryDescriptor, DemuxFactoryOpenError,

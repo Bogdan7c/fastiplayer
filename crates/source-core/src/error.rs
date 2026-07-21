@@ -111,6 +111,16 @@ pub enum SourceError {
         status: StatusCode,
     },
 
+    /// Redirect response не содержит безопасно разрешимый HTTP(S) target.
+    #[error("HTTP redirect для {url} отклонён source parser-ом: {reason}")]
+    InvalidHttpRedirect {
+        /// Redacted URL текущего hop-а.
+        url: SecretHttpUrl,
+
+        /// Фиксированная категория ошибки без server-provided payload.
+        reason: &'static str,
+    },
+
     /// HTTP source не подтвердил Range чтение через `206 Partial Content`.
     #[error("HTTP source не поддерживает обязательный Range seek: {reason}")]
     HttpRangeUnsupported {
@@ -163,6 +173,7 @@ impl SourceError {
             | Self::InvalidHttpHeaderName { .. }
             | Self::InvalidHttpHeaderValue { .. }
             | Self::HttpClientBuild { .. }
+            | Self::InvalidHttpRedirect { .. }
             | Self::HttpRangeUnsupported { .. }
             | Self::InvalidContentRange { .. }
             | Self::NotSeekable { .. } => false,

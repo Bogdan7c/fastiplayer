@@ -212,3 +212,8 @@ Workspace содержит neutral `crates/demux-api` между `media-core`/`s
 ## S21T neutral web transport boundary (2026-07-21)
 
 - Добавлен `web-media-transport-api`: neutral exact provider/component/open/refresh contract, generation fencing, VOD/live + seekable/streaming result shape, validated redirect policy и origin/path/secure-scoped ephemeral secrets. `source-core` теперь владеет checked HTTP target/origin/path/header values и cancellation-aware `StreamingByteSource`; concrete HTTP provider/cache/prefetch/demux/player integration не добавлены. Полный контракт и verification: `mem:media-services/web-transport-s21t-2026-07-21`.
+
+
+## S22 architecture delta (2026-07-22)
+
+Progressive direct HTTP is now a complete neutral path: `source-core::HttpSourceSession` -> `web-media-http` S21T provider -> `demux-api` registry/progressive worker -> existing player lifecycle. Direct-media classification/privacy stay unchanged; yt-dlp does not own concrete HTTP. See `mem:media-services/progressive-http-s22-2026-07-22`.
