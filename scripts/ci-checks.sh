@@ -46,6 +46,7 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/playlist-discovery
     crates/playlist-state
     crates/media-core
+    crates/demux-api
     crates/symphonia-demux
     crates/audio
     crates/vp9-parser

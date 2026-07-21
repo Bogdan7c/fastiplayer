@@ -2,6 +2,7 @@ mod byte_source;
 pub mod demuxer;
 pub mod dual_stream_demuxer;
 pub mod error;
+mod factory;
 mod local_probe;
 mod matroska_metadata;
 mod options;
@@ -18,6 +19,7 @@ pub use demuxer::{
 };
 pub use dual_stream_demuxer::DualStreamDemuxer;
 pub use error::DemuxError;
+pub use factory::SymphoniaDemuxFactory;
 pub use local_probe::{
     ContainerProbeError, ContainerProbeSnapshot, ContainerTrackTopology,
     probe_open_local_media_file,

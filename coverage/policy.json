@@ -18,6 +18,7 @@
     "capability-core",
     "codec-core",
     "config",
+    "demux-api",
     "frame-server-core",
     "media-core",
     "media-prefetch",

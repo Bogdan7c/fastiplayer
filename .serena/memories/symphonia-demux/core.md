@@ -26,3 +26,12 @@
 - It classifies topology from `CodecParameters::{Audio,Video}` rather than decoder availability, so null/unknown codec IDs retain their known track type. It never calls `next_packet`, creates no decoder, and does not run playback-specific Matroska video/cue pre-scans.
 - Probe errors preserve `UnsupportedContainer`, I/O, malformed/other `ProbeFailure`, and confirmed cancellation. Symphonia `Interrupted` is cancellation only when the token confirms it; probe-time `IoError(UnexpectedEof)` means a truncated header and maps to `ProbeFailure`. This is intentionally separate from the legacy playback `next_packet` EOF fallback above. Existing `SymphoniaDemuxer` playback probe/error mapping is unchanged.
 - Full discovery ownership, explicit-Play prohibition and verification are in `mem:playlist/discovery`.
+
+
+## S21 factory/composite migration (2026-07-21)
+
+- `SymphoniaDemuxFactory` регистрирует existing backend в neutral `demux-api::DemuxRegistry` для seekable и streaming byte inputs; ordered segments намеренно не заявлены.
+- Bounded signature sniff авторитетнее hints; конфликтующий extension не передаётся в backend open. Registration fixture IDs: generated PCM WAV, WebM VP9+Opus, MP4 H.264+AAC.
+- `DualStreamDemuxer` больше не владеет generic composition: он остаётся тонким VP9 admission/compatibility adapter и делегирует boxed A/V interleave, remap, lifecycle и seek `demux_api::CompositeAvDemuxer`.
+- Observable public mapping `1=video, 2=audio` сохранён; seek/runtime error signatures не менялись. Generic composition details см. `mem:demux-api/core`.
+- Factory focused tests: `crates/symphonia-demux/src/factory/tests.rs`; compatibility seek tests остаются в `dual_stream_demuxer.rs`.

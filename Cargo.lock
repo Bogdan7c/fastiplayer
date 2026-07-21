@@ -1189,6 +1189,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "demux-api"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "media-core",
+ "source-core",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "desktop-integration"
 version = "0.1.0"
 dependencies = [
@@ -4448,6 +4460,7 @@ dependencies = [
  "audio",
  "bytes",
  "codec-core",
+ "demux-api",
  "media-core",
  "source-core",
  "symphonia",

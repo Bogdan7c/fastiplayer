@@ -3,21 +3,15 @@
 //! Этот demuxer объединяет независимые video-only и audio-only `SymphoniaDemuxer`
 //! в один поток packets, чтобы app layer не зависел от происхождения streams.
 
-mod media_metadata;
-
-use std::cmp::Ordering;
 use std::time::Duration;
 
 use anyhow::Result;
 use media_core::{
-    DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
-    DemuxTrackListUpdate, Demuxer, MediaTime, Packet, TrackId, TrackInfo, TrackKind,
-    TrackTimestamp,
+    DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, Packet,
+    TrackInfo, TrackKind,
 };
-use tracing::debug;
 
 use crate::symphonia_demuxer::SymphoniaDemuxer;
-use media_metadata::merge_media_metadata;
 
 /// Track id для video после remap.
 const REMAPPED_VIDEO_TRACK_ID: u32 = 1;
@@ -25,426 +19,95 @@ const REMAPPED_VIDEO_TRACK_ID: u32 = 1;
 /// Track id для audio после remap.
 const REMAPPED_AUDIO_TRACK_ID: u32 = 2;
 
-/// Результат заполнения pending slot-а из одного stream demuxer-а.
-enum PendingFillOutcome {
-    /// Pending slot заполнен packet-ом, stream дошёл до EOF или уже был готов.
-    Ready,
+/// Максимальный временной разрыв одного заранее считанного component packet-а.
+const DUAL_STREAM_MAX_COMPONENT_LEAD: Duration = Duration::from_secs(5 * 60);
 
-    /// Внутренний demuxer сообщил новый track list, и composite boundary должен отдать event.
-    TracksChanged(DemuxTrackListUpdate),
-    MediaMetadataChanged(media_core::MediaMetadata),
-}
+/// Жёсткий memory ceiling для одного pending packet до S21R readiness migration.
+const DUAL_STREAM_PENDING_BYTE_LIMIT: usize = 16 * 1024 * 1024;
 
-/// Одноразовая post-seek policy для вывода audio после video-safe seek-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PostSeekAudioBootstrap {
-    /// Обычный interleave по PTS без специальных правил.
-    Inactive,
-
-    /// После `DecodePointBefore` один готовый audio packet можно отдать раньше video preroll.
-    DecodePointBeforePending,
-}
-
-impl PostSeekAudioBootstrap {
-    /// Возвращает policy, которую нужно включить после успешного seek-а двух stream-ов.
-    fn for_seek_results(
-        request: DemuxSeekRequest,
-        video_seek: DemuxSeekResult,
-        audio_seek: DemuxSeekResult,
-    ) -> Self {
-        if request.mode == DemuxSeekMode::DecodePointBefore
-            && audio_seek.actual_position > video_seek.actual_position
-        {
-            Self::DecodePointBeforePending
-        } else {
-            Self::Inactive
-        }
-    }
-}
-
-/// Demuxer, который интерливит packets из отдельных video/audio demuxer-ов по PTS.
+/// Compatibility adapter для прежнего VP9+audio WebM open path.
+///
+/// Codec-specific admission остаётся здесь, а track remap/interleave/seek/lifecycle
+/// принадлежат neutral `demux-api::CompositeAvDemuxer`.
 pub struct DualStreamDemuxer {
-    /// Demuxer video-only WebM.
-    video_demuxer: SymphoniaDemuxer,
-
-    /// Demuxer audio-only WebM.
-    audio_demuxer: SymphoniaDemuxer,
-
-    /// Информация о remapped tracks.
-    tracks: Vec<TrackInfo>,
-
-    /// Общая duration, если удалось извлечь хотя бы из одного stream.
-    duration: Option<Duration>,
-
-    /// Следующий video packet, уже прочитанный для сравнения PTS.
-    pending_video_packet: Option<Packet>,
-
-    /// Следующий audio packet, уже прочитанный для сравнения PTS.
-    pending_audio_packet: Option<Packet>,
-
-    /// Video stream дошёл до EOF.
-    video_eof: bool,
-
-    /// Audio stream дошёл до EOF.
-    audio_eof: bool,
-
-    /// Bounded policy, которая не даёт первому audio после seek-а застрять за video preroll.
-    post_seek_audio_bootstrap: PostSeekAudioBootstrap,
-    media_metadata: media_core::MediaMetadata,
+    /// Neutral owner всей A/V composition state и invariants.
+    inner: demux_api::CompositeAvDemuxer,
 }
 
 impl DualStreamDemuxer {
-    /// Создаёт объединённый demuxer из video-only и audio-only WebM demuxer-ов.
+    /// Сохраняет прежний VP9+audio admission и передаёт composition neutral owner-у.
     pub fn new(video_demuxer: SymphoniaDemuxer, audio_demuxer: SymphoniaDemuxer) -> Result<Self> {
-        // Выбираем первый VP9 video track.
-        let video_track = video_demuxer
+        // Этот adapter намеренно остаётся VP9-specific ради compatibility текущего yt-dlp path.
+        let video_track_id = video_demuxer
             .tracks()
             .iter()
             .find(|track| track.kind == TrackKind::Video && track.codec_id == "V_VP9")
-            .cloned()
+            .map(|track| track.id)
             .ok_or_else(|| anyhow::anyhow!("Streaming video WebM не содержит VP9 video track"))?;
-
-        // Выбираем первый audio track с параметрами для Opus decoder.
-        let audio_track = audio_demuxer
+        // Audio codec admission по-прежнему принадлежит existing downstream decoder selection.
+        let audio_track_id = audio_demuxer
             .tracks()
             .iter()
             .find(|track| track.kind == TrackKind::Audio)
-            .cloned()
+            .map(|track| track.id)
             .ok_or_else(|| anyhow::anyhow!("Streaming audio WebM не содержит audio track"))?;
-
-        // Remap нужен, потому что в двух отдельных WebM оба track id часто равны 1.
-        let mut remapped_video_track = video_track;
-        remapped_video_track.id = TrackId::new(REMAPPED_VIDEO_TRACK_ID);
-
-        let mut remapped_audio_track = audio_track;
-        remapped_audio_track.id = TrackId::new(REMAPPED_AUDIO_TRACK_ID);
-
-        let duration = remapped_video_track
-            .duration
-            .or(remapped_audio_track.duration)
-            .or_else(|| video_demuxer.duration())
-            .or_else(|| audio_demuxer.duration());
-
-        let media_metadata = merge_media_metadata(
-            video_demuxer.media_metadata(),
-            audio_demuxer.media_metadata(),
+        // S21 сохраняет один pending packet на component; S21R применит timestamp lead к readiness.
+        let bootstrap_byte_limit = std::num::NonZeroUsize::new(DUAL_STREAM_PENDING_BYTE_LIMIT)
+            .ok_or_else(|| {
+                anyhow::anyhow!("composite bootstrap byte limit должен быть ненулевым")
+            })?;
+        let lead_policy = demux_api::CompositeComponentLeadPolicy::single_pending_packet(
+            DUAL_STREAM_MAX_COMPONENT_LEAD,
+            bootstrap_byte_limit,
+        )?;
+        let selection = demux_api::CompositeAvTrackSelection::new(video_track_id, audio_track_id);
+        // Старый public mapping 1=video/2=audio является observable player behavior.
+        let public_track_ids = demux_api::CompositeAvPublicTrackIds::new(
+            media_core::TrackId::new(REMAPPED_VIDEO_TRACK_ID),
+            media_core::TrackId::new(REMAPPED_AUDIO_TRACK_ID),
         );
-        Ok(Self {
-            video_demuxer,
-            audio_demuxer,
-            tracks: vec![remapped_video_track, remapped_audio_track],
-            duration,
-            pending_video_packet: None,
-            pending_audio_packet: None,
-            video_eof: false,
-            audio_eof: false,
-            post_seek_audio_bootstrap: PostSeekAudioBootstrap::Inactive,
-            media_metadata,
-        })
-    }
-
-    /// Сбрасывает local read-state перед новой попыткой seek-а.
-    fn clear_post_seek_read_state(&mut self) {
-        self.pending_video_packet = None;
-        self.pending_audio_packet = None;
-        self.video_eof = false;
-        self.audio_eof = false;
-        self.post_seek_audio_bootstrap = PostSeekAudioBootstrap::Inactive;
-    }
-
-    /// Читает следующий video packet или возвращает lifecycle update внутреннего stream-а.
-    fn fill_pending_video_event(&mut self) -> Result<PendingFillOutcome> {
-        // Уже есть packet для сравнения PTS.
-        if self.pending_video_packet.is_some() || self.video_eof {
-            return Ok(PendingFillOutcome::Ready);
-        }
-
-        // Пропускаем не-video packets на всякий случай, хотя stream должен быть video-only.
-        loop {
-            match self.video_demuxer.next_event()? {
-                DemuxReadEvent::Packet(packet) if packet.kind == TrackKind::Video => {
-                    let packet = packet.with_track_id(TrackId::new(REMAPPED_VIDEO_TRACK_ID));
-                    self.pending_video_packet = Some(packet);
-                    return Ok(PendingFillOutcome::Ready);
-                }
-                DemuxReadEvent::Packet(_) => continue,
-                DemuxReadEvent::EndOfStream => {
-                    self.video_eof = true;
-                    return Ok(PendingFillOutcome::Ready);
-                }
-                DemuxReadEvent::TracksChanged(_) => {
-                    return self.refresh_tracks_after_inner_reset();
-                }
-                DemuxReadEvent::MediaMetadataChanged(_) => {
-                    self.media_metadata = merge_media_metadata(
-                        self.video_demuxer.media_metadata(),
-                        self.audio_demuxer.media_metadata(),
-                    );
-                    return Ok(PendingFillOutcome::MediaMetadataChanged(
-                        self.media_metadata.clone(),
-                    ));
-                }
-            }
-        }
-    }
-
-    /// Читает следующий audio packet или возвращает lifecycle update внутреннего stream-а.
-    fn fill_pending_audio_event(&mut self) -> Result<PendingFillOutcome> {
-        // Уже есть packet для сравнения PTS.
-        if self.pending_audio_packet.is_some() || self.audio_eof {
-            return Ok(PendingFillOutcome::Ready);
-        }
-
-        // Пропускаем не-audio packets на всякий случай, хотя stream должен быть audio-only.
-        loop {
-            match self.audio_demuxer.next_event()? {
-                DemuxReadEvent::Packet(packet) if packet.kind == TrackKind::Audio => {
-                    let packet = packet.with_track_id(TrackId::new(REMAPPED_AUDIO_TRACK_ID));
-                    self.pending_audio_packet = Some(packet);
-                    return Ok(PendingFillOutcome::Ready);
-                }
-                DemuxReadEvent::Packet(_) => continue,
-                DemuxReadEvent::EndOfStream => {
-                    self.audio_eof = true;
-                    return Ok(PendingFillOutcome::Ready);
-                }
-                DemuxReadEvent::TracksChanged(_) => {
-                    return self.refresh_tracks_after_inner_reset();
-                }
-                DemuxReadEvent::MediaMetadataChanged(_) => {
-                    self.media_metadata = merge_media_metadata(
-                        self.video_demuxer.media_metadata(),
-                        self.audio_demuxer.media_metadata(),
-                    );
-                    return Ok(PendingFillOutcome::MediaMetadataChanged(
-                        self.media_metadata.clone(),
-                    ));
-                }
-            }
-        }
-    }
-
-    /// Перестраивает remapped composite tracks после reset одного из внутренних demuxer-ов.
-    fn refresh_tracks_after_inner_reset(&mut self) -> Result<PendingFillOutcome> {
-        let video_track = self
-            .video_demuxer
-            .tracks()
-            .iter()
-            .find(|track| track.kind == TrackKind::Video && track.codec_id == "V_VP9")
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Streaming video demuxer потерял VP9 video track"))?;
-        let audio_track = self
-            .audio_demuxer
-            .tracks()
-            .iter()
-            .find(|track| track.kind == TrackKind::Audio)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Streaming audio demuxer потерял audio track"))?;
-        let mut remapped_video_track = video_track;
-        let mut remapped_audio_track = audio_track;
-
-        remapped_video_track.id = TrackId::new(REMAPPED_VIDEO_TRACK_ID);
-        remapped_audio_track.id = TrackId::new(REMAPPED_AUDIO_TRACK_ID);
-
-        self.duration = remapped_video_track
-            .duration
-            .or(remapped_audio_track.duration)
-            .or_else(|| self.video_demuxer.duration())
-            .or_else(|| self.audio_demuxer.duration());
-        self.tracks = vec![remapped_video_track, remapped_audio_track];
-        self.pending_video_packet = None;
-        self.pending_audio_packet = None;
-        self.post_seek_audio_bootstrap = PostSeekAudioBootstrap::Inactive;
-
-        Ok(PendingFillOutcome::TracksChanged(
-            DemuxTrackListUpdate::new(self.tracks.clone(), self.duration),
-        ))
-    }
-
-    /// Забирает первый post-seek audio packet раньше PTS-interleave-а, если policy arm-нута.
-    fn take_post_seek_audio_bootstrap_packet(&mut self) -> Option<Packet> {
-        if self.post_seek_audio_bootstrap == PostSeekAudioBootstrap::Inactive {
-            return None;
-        }
-
-        self.post_seek_audio_bootstrap = PostSeekAudioBootstrap::Inactive;
-        self.pending_audio_packet.take()
-    }
-
-    /// Собирает seek result двух stream-ов в один результат merged timeline.
-    fn composite_seek_result(
-        request: DemuxSeekRequest,
-        video_seek: DemuxSeekResult,
-        audio_seek: DemuxSeekResult,
-    ) -> DemuxSeekResult {
-        let video_seek = remap_seek_result_track(video_seek, TrackId::new(REMAPPED_VIDEO_TRACK_ID));
-        let audio_seek = remap_seek_result_track(audio_seek, TrackId::new(REMAPPED_AUDIO_TRACK_ID));
-        let composite_seek = match request.mode {
-            DemuxSeekMode::DecodePointBefore => video_seek,
-            DemuxSeekMode::Accurate | DemuxSeekMode::Preview => {
-                earliest_stream_seek_result(video_seek, audio_seek)
-            }
-        };
-
-        if video_seek.actual_position != audio_seek.actual_position {
-            debug!(
-                mode = ?request.mode,
-                requested_ms = request.timestamp.as_millis(),
-                video_actual_ms = video_seek.actual_position.as_duration().as_millis(),
-                audio_actual_ms = audio_seek.actual_position.as_duration().as_millis(),
-                composite_actual_ms = composite_seek.actual_position.as_duration().as_millis(),
-                "Dual stream seek вернул разные actual positions"
-            );
-        }
-
-        DemuxSeekResult {
-            requested_position: MediaTime::from_duration(request.timestamp),
-            actual_position: composite_seek.actual_position,
-            actual_track_timestamp: composite_seek.actual_track_timestamp,
-        }
-    }
-}
-
-/// Переводит raw seek timestamp внутреннего stream-а в remapped track id merged demuxer-а.
-fn remap_seek_result_track(
-    mut seek_result: DemuxSeekResult,
-    remapped_track_id: TrackId,
-) -> DemuxSeekResult {
-    seek_result.actual_track_timestamp =
-        seek_result
-            .actual_track_timestamp
-            .map(|actual_track_timestamp| TrackTimestamp {
-                track_id: remapped_track_id,
-                ..actual_track_timestamp
-            });
-    seek_result
-}
-
-/// Выбирает stream, который реально начнёт interleaved packet stream раньше остальных.
-fn earliest_stream_seek_result(
-    video_seek: DemuxSeekResult,
-    audio_seek: DemuxSeekResult,
-) -> DemuxSeekResult {
-    if audio_seek.actual_position < video_seek.actual_position {
-        audio_seek
-    } else {
-        video_seek
+        let inner = demux_api::CompositeAvDemuxer::new_with_public_track_ids(
+            Box::new(video_demuxer),
+            Box::new(audio_demuxer),
+            selection,
+            public_track_ids,
+            lead_policy,
+        )?;
+        Ok(Self { inner })
     }
 }
 
 impl Demuxer for DualStreamDemuxer {
     fn tracks(&self) -> &[TrackInfo] {
-        &self.tracks
+        self.inner.tracks()
     }
 
     fn duration(&self) -> Option<Duration> {
-        self.duration
+        self.inner.duration()
     }
 
     fn media_metadata(&self) -> Option<media_core::MediaMetadata> {
-        Some(self.media_metadata.clone())
+        self.inner.media_metadata()
     }
 
     fn seekability(&self) -> DemuxSeekability {
-        match (
-            self.video_demuxer.seekability(),
-            self.audio_demuxer.seekability(),
-        ) {
-            (DemuxSeekability::Seekable, DemuxSeekability::Seekable) => DemuxSeekability::Seekable,
-            (DemuxSeekability::NotSeekable { reason }, _) => {
-                DemuxSeekability::NotSeekable { reason }
-            }
-            (_, DemuxSeekability::NotSeekable { reason }) => {
-                DemuxSeekability::NotSeekable { reason }
-            }
-        }
+        self.inner.seekability()
     }
 
     fn next_packet(&mut self) -> Result<Option<Packet>> {
-        loop {
-            match self.next_event()? {
-                DemuxReadEvent::Packet(packet) => return Ok(Some(packet)),
-                DemuxReadEvent::EndOfStream => return Ok(None),
-                DemuxReadEvent::TracksChanged(_) => continue,
-                DemuxReadEvent::MediaMetadataChanged(_) => continue,
-            }
-        }
+        self.inner.next_packet()
     }
 
     fn next_event(&mut self) -> Result<DemuxReadEvent> {
-        match self.fill_pending_video_event()? {
-            PendingFillOutcome::TracksChanged(update) => {
-                return Ok(DemuxReadEvent::TracksChanged(update));
-            }
-            PendingFillOutcome::MediaMetadataChanged(metadata) => {
-                return Ok(DemuxReadEvent::MediaMetadataChanged(metadata));
-            }
-            PendingFillOutcome::Ready => {}
-        }
-        match self.fill_pending_audio_event()? {
-            PendingFillOutcome::TracksChanged(update) => {
-                return Ok(DemuxReadEvent::TracksChanged(update));
-            }
-            PendingFillOutcome::MediaMetadataChanged(metadata) => {
-                return Ok(DemuxReadEvent::MediaMetadataChanged(metadata));
-            }
-            PendingFillOutcome::Ready => {}
-        }
-
-        if let Some(audio_packet) = self.take_post_seek_audio_bootstrap_packet() {
-            return Ok(DemuxReadEvent::Packet(audio_packet));
-        }
-
-        match (
-            self.pending_video_packet.take(),
-            self.pending_audio_packet.take(),
-        ) {
-            (Some(video_packet), Some(audio_packet)) => {
-                if video_packet.presentation_order_cmp(&audio_packet) != Ordering::Greater {
-                    self.pending_audio_packet = Some(audio_packet);
-                    Ok(DemuxReadEvent::Packet(video_packet))
-                } else {
-                    self.pending_video_packet = Some(video_packet);
-                    Ok(DemuxReadEvent::Packet(audio_packet))
-                }
-            }
-            (Some(video_packet), None) => Ok(DemuxReadEvent::Packet(video_packet)),
-            (None, Some(audio_packet)) => Ok(DemuxReadEvent::Packet(audio_packet)),
-            (None, None) => Ok(DemuxReadEvent::EndOfStream),
-        }
+        self.inner.next_event()
     }
 
     fn seek(&mut self, timestamp: Duration) -> Result<DemuxSeekResult> {
-        self.seek_with_request(DemuxSeekRequest::accurate(timestamp))
+        self.inner.seek(timestamp)
     }
 
     fn seek_with_request(&mut self, request: DemuxSeekRequest) -> Result<DemuxSeekResult> {
-        self.clear_post_seek_read_state();
-
-        let video_seek = self.video_demuxer.seek_with_request(request)?;
-        let audio_seek_request = audio_seek_request_for_dual_stream(request);
-        let audio_seek = self.audio_demuxer.seek_with_request(audio_seek_request)?;
-        self.post_seek_audio_bootstrap =
-            PostSeekAudioBootstrap::for_seek_results(request, video_seek, audio_seek);
-
-        Ok(Self::composite_seek_result(request, video_seek, audio_seek))
-    }
-}
-
-/// Выбирает seek-семантику отдельного audio stream-а внутри adaptive dual-stream media.
-///
-/// `DecodePointBefore` нужен video stream-у: после decoder flush он обязан начать с
-/// decode-safe keyframe/cue не позже пользовательской цели. Audio stream не владеет
-/// этим инвариантом и может иметь более грубую packet granularity (например, Opus
-/// по 20 мс). Поэтому строгая video-проверка для audio ошибочно отвергала корректное
-/// приземление на несколько миллисекунд после цели и останавливала весь seek.
-///
-/// Composite result и decode anchor по-прежнему принадлежат video stream-у, а
-/// `PostSeekAudioBootstrap` сохраняет существующее выравнивание audio с video preroll.
-fn audio_seek_request_for_dual_stream(request: DemuxSeekRequest) -> DemuxSeekRequest {
-    match request.mode {
-        DemuxSeekMode::DecodePointBefore => DemuxSeekRequest::accurate(request.timestamp),
-        DemuxSeekMode::Accurate | DemuxSeekMode::Preview => request,
+        self.inner.seek_with_request(request)
     }
 }
 
@@ -454,8 +117,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use bytes::Bytes;
-    use media_core::{Packet, TimeBase as MediaTimeBase, TrackId, TrackKind, TrackTimestamp};
+    use media_core::{MediaTime, TrackId, TrackKind};
     use symphonia::core::audio::{Channels, Position};
     use symphonia::core::codecs::CodecParameters;
     use symphonia::core::codecs::audio::AudioCodecParameters;
@@ -589,38 +251,6 @@ mod tests {
         {
             unreachable!("fake reader не возвращает MediaSourceStream")
         }
-    }
-
-    fn marker_packet(kind: TrackKind) -> Packet {
-        Packet::new(
-            TrackId::new(99),
-            kind,
-            Duration::from_millis(1),
-            None,
-            kind == TrackKind::Video,
-            Bytes::from_static(b"marker"),
-        )
-    }
-
-    fn marker_packet_with_raw_pts(kind: TrackKind, raw_pts_units: i64) -> Packet {
-        let time_base = MediaTimeBase::new(1, 1_000).expect("valid test time base");
-
-        Packet::new(
-            TrackId::new(99),
-            kind,
-            Duration::ZERO,
-            None,
-            kind == TrackKind::Video,
-            Bytes::from_static(b"marker"),
-        )
-        .with_track_timestamps(
-            Some(TrackTimestamp::new(
-                TrackId::new(99),
-                raw_pts_units,
-                time_base,
-            )),
-            None,
-        )
     }
 
     fn required_seek_timestamp(tracks: &[Track], target: SeekTo) -> Timestamp {
@@ -766,29 +396,21 @@ mod tests {
     }
 
     #[test]
-    fn seek_seeks_both_streams_and_clears_pending_state() {
-        let (mut demuxer, _video_seek_log, _audio_seek_log) = fake_dual_stream_demuxer(500, 500);
-        demuxer.pending_video_packet = Some(marker_packet(TrackKind::Video));
-        demuxer.pending_audio_packet = Some(marker_packet(TrackKind::Audio));
-        demuxer.video_eof = true;
-        demuxer.audio_eof = true;
-
+    fn seek_seeks_both_streams_through_neutral_composite() {
+        let (mut demuxer, video_seek_log, audio_seek_log) = fake_dual_stream_demuxer(500, 500);
         let result = demuxer
             .seek(Duration::from_millis(500))
             .expect("dual seek succeeds");
-
         assert_eq!(
             result.requested_position,
             media_core::MediaTime::from_duration(Duration::from_millis(500))
         );
-        assert!(demuxer.pending_video_packet.is_none());
-        assert!(demuxer.pending_audio_packet.is_none());
-        assert!(!demuxer.video_eof);
-        assert!(!demuxer.audio_eof);
+        assert_eq!(video_seek_log.lock().expect("video seek log").len(), 1);
+        assert_eq!(audio_seek_log.lock().expect("audio seek log").len(), 1);
     }
 
     #[test]
-    fn failed_audio_seek_after_video_success_clears_composite_pending_state() {
+    fn failed_audio_seek_after_video_success_is_typed_partial_failure() {
         let video_seek_log = Arc::new(Mutex::new(Vec::new()));
         let audio_seek_log = Arc::new(Mutex::new(Vec::new()));
         let video_demuxer = fake_stream_demuxer(
@@ -812,49 +434,17 @@ mod tests {
         .expect("fake audio demuxer должен открыться");
         let mut demuxer =
             DualStreamDemuxer::new(video_demuxer, audio_demuxer).expect("dual demuxer opens");
-
-        demuxer.pending_video_packet = Some(marker_packet(TrackKind::Video));
-        demuxer.pending_audio_packet = Some(marker_packet(TrackKind::Audio));
-        demuxer.video_eof = true;
-        demuxer.audio_eof = true;
-
         let error = demuxer
             .seek_with_request(DemuxSeekRequest::preview(Duration::from_secs(10)))
             .expect_err("audio seek failure должен прервать composite seek");
-
-        assert!(format!("{error}").contains("fake audio seek failure"));
-        assert!(demuxer.pending_video_packet.is_none());
-        assert!(demuxer.pending_audio_packet.is_none());
-        assert!(!demuxer.video_eof);
-        assert!(!demuxer.audio_eof);
-        assert_eq!(
-            video_seek_log
-                .lock()
-                .expect("video seek log mutex should not be poisoned")
-                .len(),
-            1
-        );
-        assert_eq!(
-            audio_seek_log
-                .lock()
-                .expect("audio seek log mutex should not be poisoned")
-                .len(),
-            1
-        );
-    }
-
-    #[test]
-    fn interleaving_orders_pending_packets_by_raw_signed_pts_before_media_pts() {
-        let (mut demuxer, _video_seek_log, _audio_seek_log) = fake_dual_stream_demuxer(0, 0);
-        demuxer.pending_video_packet = Some(marker_packet_with_raw_pts(TrackKind::Video, -25));
-        demuxer.pending_audio_packet = Some(marker_packet_with_raw_pts(TrackKind::Audio, -10));
-
-        let packet = demuxer
-            .next_packet()
-            .expect("pending packet read should not fail")
-            .expect("one pending packet should be returned");
-
-        assert_eq!(packet.kind, TrackKind::Video);
+        let typed = error
+            .downcast_ref::<demux_api::CompositeComponentSeekError>()
+            .expect("typed composite seek error");
+        assert_eq!(typed.component, demux_api::CompositeComponent::Audio);
+        assert!(typed.video_seek_completed);
+        assert!(format!("{error:#}").contains("fake audio seek failure"));
+        assert_eq!(video_seek_log.lock().expect("video seek log").len(), 1);
+        assert_eq!(audio_seek_log.lock().expect("audio seek log").len(), 1);
     }
 
     #[test]

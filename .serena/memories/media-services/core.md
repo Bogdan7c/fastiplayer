@@ -100,3 +100,8 @@
 - `service-ytdlp` now maps public serialized yt-dlp formats into neutral `web-media-core` values through a versioned, secret-safe candidate snapshot API. Inventory rows stay one-to-one visible accepted/rejected entries; selected results use one ordinary component or exact validated compound components without Cartesian expansion.
 - Exact selection is snapshot/generation-bound; cross-extraction recovery is semantic and layout-checked, with typed stale/ambiguous failures. Provider request material stays in schema v1 and rejects non-reconstructible/private requirements visibly.
 - Full ownership, identity, request-material, HLS compatibility, limitations and verification contract: `mem:media-services/ytdlp-candidate-normalization-s19-2026-07-21`.
+
+
+## S21 demux registration boundary (2026-07-21)
+
+Neutral typed demux registry/composition теперь принадлежит `demux-api`; подробные contracts и расположение tests см. `mem:demux-api/core`. Media services и composition roots должны передавать typed input capability/hints/budget и регистрировать concrete factories, не встраивая probe/container policy обратно в service owner. Runtime `media_core::Demuxer` в S21 не мигрирован; `next_event`-only readiness migration остаётся S21R.

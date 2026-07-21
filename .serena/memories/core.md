@@ -203,3 +203,8 @@ Exact CUE export identity теперь durable в `playlist-core`, additive pers
 ## S18 playlist/topology hardening gate (2026-07-21)
 - Milestone playlist/topology доказан без новой feature logic: canonical top-level consumers, отсутствие legacy queue slices/parallel canonical Vec, secret-safe presentation, full format/topology/runtime/persistence matrix и verification описаны в `mem:playlist/topology-hardening-s18-2026-07-21`.
 - Coverage inventory теперь включает `atomic-file-store`, `bounded-xml-reader`, `playlist-io`, `web-media-core`; `web-media-core` закреплён как std-only neutral contract. Coverage baseline не переписывался из-за отдельного известного relocation blocker-а.
+
+
+## Workspace boundary: demux-api (S21, 2026-07-21)
+
+Workspace содержит neutral `crates/demux-api` между `media-core`/`source-core` contracts и concrete `symphonia-demux`. Он владеет typed demux input/probe/registry и generic composite A/V semantics; подробности см. `mem:demux-api/core`. Dependency guardrails, cargo-machete inventory и blocking coverage policy включают новый crate.

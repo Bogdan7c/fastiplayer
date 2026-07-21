@@ -28,6 +28,7 @@ members = [
     "crates/playlist-discovery",
     "crates/playlist-state",
     "crates/media-core",
+    "crates/demux-api",
     "crates/symphonia-demux",
     "crates/audio",
     "crates/vp9-parser",
@@ -167,6 +168,7 @@ playlist-state = { version = "0.1.0", path = "crates/playlist-state" }
 desktop-integration = { version = "0.1.0", path = "crates/desktop-integration" }
 frame-server-core = { version = "0.1.0", path = "crates/frame-server-core" }
 media-core = { version = "0.1.0", path = "crates/media-core" }
+demux-api = { version = "0.1.0", path = "crates/demux-api" }
 symphonia-demux = { version = "0.1.0", path = "crates/symphonia-demux" }
 service-direct-media = { version = "0.1.0", path = "crates/service-direct-media" }
 service-ytdlp = { version = "0.1.0", path = "crates/service-ytdlp" }

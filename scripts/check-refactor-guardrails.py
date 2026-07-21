@@ -32,6 +32,7 @@ CONTRACT_CRATES = frozenset(
         "playlist-io",
         "playlist-state",
         "codec-core",
+        "demux-api",
         "settings-core",
         "video-frame-contract",
         "video-core",
@@ -55,6 +56,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "capability-core",
         "codec-core",
         "desktop-integration",
+        "demux-api",
         "frame-server-core",
         "media-prefetch",
         "media-core",
@@ -137,6 +139,19 @@ BOUNDED_XML_READER_ALLOWED_DEPENDENCIES = frozenset({"quick-xml", "thiserror"})
 
 # Neutral web-media values не должны напрямую знать process/service/network/app owners.
 WEB_MEDIA_CORE_ALLOWED_DEPENDENCIES = frozenset()
+
+# Neutral demux composition владеет только typed input/probe/runtime contracts.
+# Concrete container backends, player, services и UI остаются внешними adapters.
+DEMUX_API_ALLOWED_DEPENDENCIES = frozenset(
+    {
+        "anyhow",
+        "bytes",
+        "media-core",
+        "source-core",
+        "thiserror",
+        "tracing",
+    }
+)
 
 # Single-file discovery владеет filesystem/cancellation orchestration, но видит
 # Symphonia только через узкий neutral snapshot boundary в symphonia-demux.
@@ -245,6 +260,7 @@ LOW_LEVEL_CRATES = frozenset(
     {
         "audio",
         "codec-core",
+        "demux-api",
         "media-core",
         "symphonia-demux",
         "webm-demux",
@@ -819,6 +835,14 @@ def find_dependency_violations(
             frozenset({"web-media-core"}),
             WEB_MEDIA_CORE_ALLOWED_DEPENDENCIES,
             "web-media-core остаётся std-only neutral value contract",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"demux-api"}),
+            DEMUX_API_ALLOWED_DEPENDENCIES,
+            "demux-api остаётся neutral registry/composition boundary без concrete backend/player/service/UI deps",
         )
     )
     violations.extend(
