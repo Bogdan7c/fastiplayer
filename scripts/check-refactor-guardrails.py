@@ -40,6 +40,7 @@ CONTRACT_CRATES = frozenset(
         "render-core",
         "capability-core",
         "frame-server-core",
+        "web-media-core",
     }
 )
 
@@ -80,6 +81,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "video-present-core",
         "video-ffmpeg",
         "video-vaapi",
+        "web-media-core",
     }
 )
 
@@ -132,6 +134,9 @@ ATOMIC_FILE_STORE_ALLOWED_DEPENDENCIES = frozenset()
 
 # Hardened XML boundary не должен получить filesystem/network/domain dependencies.
 BOUNDED_XML_READER_ALLOWED_DEPENDENCIES = frozenset({"quick-xml", "thiserror"})
+
+# Neutral web-media values не должны напрямую знать process/service/network/app owners.
+WEB_MEDIA_CORE_ALLOWED_DEPENDENCIES = frozenset()
 
 # Single-file discovery владеет filesystem/cancellation orchestration, но видит
 # Symphonia только через узкий neutral snapshot boundary в symphonia-demux.
@@ -465,6 +470,62 @@ PREPARED_BRANCH_PROMOTION_PATTERNS = (
     ),
 )
 
+# S18 закрепляет canonical top-level read boundary у каждого structural consumer-а.
+PLAYLIST_TOPOLOGY_SOURCE_ANCHORS = (
+    (
+        Path("crates/playlist-state/src/dto/v2.rs"),
+        ("iter_top_level_entries()",),
+        "playlist-state v2 обязан сохранять canonical top-level entry order",
+    ),
+    (
+        Path("crates/playlist-io/src/export/snapshot.rs"),
+        ("iter_top_level_entries()",),
+        "playlist export обязан снимать canonical top-level entry snapshot",
+    ),
+    (
+        Path("crates/app-egui/src/playlist_runtime/view.rs"),
+        ("iter_top_level_entries()",),
+        "Playlist UI read model обязан строиться из canonical top-level entries",
+    ),
+    (
+        Path("crates/app-egui/src/playlist_runtime/compound_view.rs"),
+        ("iter_top_level_entries()",),
+        "compound view обязан выводить child rows из canonical top-level entries",
+    ),
+    (
+        Path("crates/app-egui/src/playlist_runtime/external_projection.rs"),
+        ("top_level_entry(entry_id)",),
+        "external projection обязан разрешать compound context через canonical top-level entry",
+    ),
+)
+
+# Structural consumers не должны снова подменять top-level order derived playable traversal-ом.
+PLAYLIST_TOPOLOGY_DERIVED_READ_PATTERNS = (
+    (
+        re.compile(r"\biter_playable_(?:items|ids)\s*\("),
+        "persistence/UI/external structural consumer не должен flatten canonical top-level entries",
+    ),
+    (
+        re.compile(r"\bowned_playable_items_snapshot\s*\("),
+        "persistence/UI/external structural consumer не должен хранить derived playable snapshot как canonical state",
+    ),
+)
+
+# Presentation и external-control owners получают только redacted values, не raw identities.
+PLAYLIST_SECRET_PRESENTATION_PATHS = (
+    Path("crates/app-egui/src/ui/playlist"),
+    Path("crates/app-egui/src/playlist_runtime/external_projection.rs"),
+    Path("crates/desktop-integration/src"),
+)
+
+# Intent-named raw access остаётся только persistence/open/service owners выше presentation слоя.
+PLAYLIST_SECRET_PRESENTATION_PATTERNS = (
+    (
+        re.compile(r"\bexpose_(?:secret|payload)_for_(?:open|persistence)\s*\("),
+        "Playlist UI/external projection не должны раскрывать secret-bearing identity",
+    ),
+)
+
 REQUIRED_SOURCE_ANCHORS = ()
 
 RequiredSourceAnchor = tuple[Path, tuple[str, ...], str]
@@ -755,6 +816,14 @@ def find_dependency_violations(
     violations.extend(
         find_disallowed_dependencies(
             dependency_map,
+            frozenset({"web-media-core"}),
+            WEB_MEDIA_CORE_ALLOWED_DEPENDENCIES,
+            "web-media-core остаётся std-only neutral value contract",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
             frozenset({"playlist-core"}),
             PLAYLIST_CORE_ALLOWED_DEPENDENCIES,
             "playlist-core зависит только от neutral metadata/natural-key contracts и rand",
@@ -894,6 +963,7 @@ def find_source_policy_violations(
     violations.extend(find_main_video_second_session_violations(repo_root))
     violations.extend(find_prepared_branch_promotion_violations(repo_root))
     violations.extend(find_app_egui_custom_paint_violations(repo_root))
+    violations.extend(find_playlist_topology_boundary_violations(repo_root))
     violations.extend(
         find_required_source_anchor_violations(repo_root, required_source_anchors)
     )
@@ -901,6 +971,43 @@ def find_source_policy_violations(
         violations,
         key=lambda violation: (str(violation.path), violation.line_number, violation.rule),
     )
+
+
+def find_playlist_topology_boundary_violations(
+    repo_root: Path,
+) -> list[SourcePolicyViolation]:
+    """Закрепляет S18 canonical-read и secret-safe presentation boundaries."""
+
+    # Временные unit-test repositories без playlist-core не обязаны собирать весь S18 tree.
+    playlist_read_boundary = repo_root / "crates/playlist-core/src/queue/read.rs"
+    if not playlist_read_boundary.is_file():
+        return []
+
+    # Exact anchors делают исчезновение одного из canonical consumers явным failure.
+    violations = find_required_source_anchor_violations(
+        repo_root,
+        PLAYLIST_TOPOLOGY_SOURCE_ANCHORS,
+    )
+    # В этих structural owners derived playable traversal не может стать authority.
+    structural_consumer_paths = tuple(
+        relative_path for relative_path, _, _ in PLAYLIST_TOPOLOGY_SOURCE_ANCHORS
+    )
+    violations.extend(
+        find_regex_violations_in_paths(
+            repo_root,
+            structural_consumer_paths,
+            PLAYLIST_TOPOLOGY_DERIVED_READ_PATTERNS,
+        )
+    )
+    # UI и external transport никогда не получают intent для raw secret access.
+    violations.extend(
+        find_regex_violations_in_paths(
+            repo_root,
+            PLAYLIST_SECRET_PRESENTATION_PATHS,
+            PLAYLIST_SECRET_PRESENTATION_PATTERNS,
+        )
+    )
+    return violations
 
 
 def find_app_egui_custom_paint_violations(repo_root: Path) -> list[SourcePolicyViolation]:
@@ -1092,7 +1199,7 @@ def find_required_source_anchor_violations(
     repo_root: Path,
     required_source_anchors: tuple[RequiredSourceAnchor, ...] = REQUIRED_SOURCE_ANCHORS,
 ) -> list[SourcePolicyViolation]:
-    """Проверяет наличие focused тестов и boundary callsites, закрепляющих S31 policy."""
+    """Проверяет наличие focused тестов и boundary callsites из versioned policy."""
 
     violations: list[SourcePolicyViolation] = []
     for relative_path, required_anchors, rule in required_source_anchors:

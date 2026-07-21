@@ -104,3 +104,8 @@ Existing Export menu получил третий format `CUE`. Full/selected bra
 - Header имеет full-row structural selection/drag/context semantics, отдельную disclosure hit-zone, Space/assistive toggle и Enter typed Play-current-or-first. Child click/Space/Enter публикует только exact `PlayCompoundPart`; child focus и navigation не создают selection/remove/reorder intents. Up/Down/Home/End ходят по visible stable `CompoundRuntimeRowId` projections.
 - AccessKit: header использует collapsing-header/button node с explicit expanded state и русским group label; каждая part — отдельный actionable button с ordinal/runtime label. Active group получает мягкий skin surface, exact active part — существующий playback accent/title channel; structural selection сохраняет более высокий fill priority.
 - Focused coverage: collapsed/expanded one/many, Current Item header/part, active+selected projection, pointer disclosure/child, Space/Enter/navigation, AccessKit names/expanded, atomic reorder slots, widths 350/420/600 без repaint flicker. Full `app-egui --all-features`: 793 PASS; focused compound: 15 PASS, включая реальный AccessKit Click action; `ui-artwork-egui`: 32 PASS. Refactor guardrails and clippy excluding two pre-existing large-enum warnings pass.
+
+
+## S18 topology milestone gate (2026-07-21)
+- Ordinary/compound Playlist UI read models и external projection закреплены на canonical top-level entry API; child rows остаются derived presentation и не получают structural authority.
+- Новый secret source guardrail запрещает raw locator/service payload access в Playlist UI, external projection и desktop integration. Runtime/UI API не менялись. Полный verdict: `mem:playlist/topology-hardening-s18-2026-07-21`.

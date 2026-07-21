@@ -302,6 +302,35 @@ class DependencyGraphPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_web_media_core_rejects_every_normal_dependency(self) -> None:
+        """Normalized web-media values остаются std-only и service-neutral."""
+
+        packages = complete_workspace_packages()
+        packages["web-media-core"] = package_with_dependencies("web-media-core", ())
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "web-media-core"
+                for violation in passing_result.dependency_violations
+            )
+        )
+
+        packages["web-media-core"] = package_with_dependencies(
+            "web-media-core", (("service-ytdlp", None),)
+        )
+        failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertTrue(
+            any(
+                violation.owner == "web-media-core"
+                and violation.dependency == "service-ytdlp"
+                for violation in failing_result.dependency_violations
+            )
+        )
+
     def test_natural_sort_key_rejects_every_normal_dependency(self) -> None:
         """Общий prepared comparator остаётся строго std-only."""
 
@@ -528,6 +557,67 @@ class SourceTextPolicyTests(unittest.TestCase):
         self.assertEqual(anchor_path, violations[0].path)
         self.assertEqual(rule, violations[0].rule)
         self.assertIn("reuse_main_decoder", violations[0].matched_text)
+
+    def test_playlist_topology_boundaries_pass_and_reject_flattening_or_secret_access(
+        self,
+    ) -> None:
+        """S18 принимает canonical consumers и ловит оба запрещённых shortcut-а."""
+
+        # Presence marker включает S18 policy только для полного playlist tree.
+        self.repository.write(
+            "crates/playlist-core/src/queue/read.rs",
+            "pub fn iter_top_level_entries() {}\n",
+        )
+        # Каждый structural consumer получает свой intent-named canonical anchor.
+        for relative_path, anchors, _ in GUARDRAIL.PLAYLIST_TOPOLOGY_SOURCE_ANCHORS:
+            self.repository.write(relative_path, "\n".join(anchors) + "\n")
+        # Directory roots secret-аудита получают безопасные presentation fixtures.
+        self.repository.write(
+            "crates/app-egui/src/ui/playlist/mod.rs",
+            "fn render_redacted_playlist() {}\n",
+        )
+        self.repository.write(
+            "crates/desktop-integration/src/lib.rs",
+            "pub struct RedactedDesktopSnapshot;\n",
+        )
+        self.assertEqual(
+            [],
+            GUARDRAIL.find_playlist_topology_boundary_violations(self.repository.root),
+        )
+
+        # Derived traversal не может заменить top-level order в persistence owner-е.
+        state_path = "crates/playlist-state/src/dto/v2.rs"
+        self.repository.write(
+            state_path,
+            "iter_top_level_entries()\nqueue.iter_playable_items();\n",
+        )
+        flattening_violations = GUARDRAIL.find_playlist_topology_boundary_violations(
+            self.repository.root
+        )
+        self.assertTrue(
+            any(
+                violation.path == Path(state_path)
+                and "flatten canonical" in violation.rule
+                for violation in flattening_violations
+            )
+        )
+
+        # External read model не получает raw persistence/open identity даже для metadata.
+        external_path = "crates/app-egui/src/playlist_runtime/external_projection.rs"
+        self.repository.write(
+            external_path,
+            "top_level_entry(entry_id)\nlocator.expose_secret_for_persistence();\n",
+        )
+        secret_violations = GUARDRAIL.find_playlist_topology_boundary_violations(
+            self.repository.root
+        )
+        self.assertTrue(
+            any(
+                violation.path == Path(external_path)
+                and "secret-bearing identity" in violation.rule
+                for violation in secret_violations
+            )
+        )
 
     def test_failure_output_contains_file_and_rule(self) -> None:
         """CLI diagnostic остаётся actionable: path и policy rule печатаются вместе."""

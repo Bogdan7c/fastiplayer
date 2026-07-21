@@ -379,24 +379,30 @@ fn full_command_queue_returns_latest_snapshot_to_caller() {
 
 #[test]
 fn wake_is_coalesced_until_drain_and_terminal_report_is_exactly_once() {
+    // Mailbox policy проверяется напрямую: worker thread не должен добавлять scheduler race в assert.
     let failure = NotReplacedFailure {
         stage: NotReplacedStage::WriteTempFile,
         cause: NotReplacedCause::Io(io::ErrorKind::WriteZero),
     };
-    let writer = Arc::new(ScriptedWriter::new(
-        [AtomicWriteOutcome::NotReplaced(failure)],
-        [],
-    ));
+    let report = SaveAttemptReport {
+        revision: revision(1),
+        outcome: SaveAttemptOutcome::FullWrite(AtomicWriteOutcome::NotReplaced(failure)),
+    };
+    let warning = SaveWarning {
+        revision: revision(1),
+        failure: SaveWarningFailure::NotReplaced(failure),
+        occurrence_count: 1,
+    };
     let wake_port = Arc::new(CountingWakePort::default());
-    let worker = started_test_worker(writer, wake_port.clone());
-    worker
-        .submit_snapshot(captured_snapshot(revision(1), 1))
-        .expect("snapshot принимается");
-    worker.retry_now().expect("retry принимается");
+    let mailbox = WorkerMailbox::new(wake_port.clone());
+
+    // Оба payload публикуются до drain и обязаны разделить один outstanding wake edge.
+    mailbox.publish_attempt(report);
+    mailbox.publish_warning(Some(warning));
 
     wake_port.wait_for_count(1);
     assert_eq!(wake_port.count(), 1);
-    let first_drain = worker.drain_events();
+    let first_drain = mailbox.drain();
     assert_eq!(
         first_drain
             .iter()
@@ -411,12 +417,8 @@ fn wake_is_coalesced_until_drain_and_terminal_report_is_exactly_once() {
             SaveWorkerEvent::WarningChanged(Some(_))
         ]
     ));
-    assert!(worker.drain_events().is_empty());
-
-    assert!(matches!(
-        worker.shutdown(None, Duration::from_secs(2)),
-        SaveWorkerShutdownOutcome::Complete(_)
-    ));
+    // Повторный drain не может продублировать terminal report либо warning state.
+    assert!(mailbox.drain().is_empty());
 }
 
 #[test]

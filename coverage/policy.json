@@ -11,8 +11,10 @@
   ],
   "blocking_crates": [
     "animation-core",
+    "atomic-file-store",
     "audio-core",
     "bounded-work-executor",
+    "bounded-xml-reader",
     "capability-core",
     "codec-core",
     "config",
@@ -23,6 +25,7 @@
     "player-core",
     "playlist-core",
     "playlist-discovery",
+    "playlist-io",
     "playlist-state",
     "render-core",
     "rustiplayer-settings",
@@ -35,7 +38,8 @@
     "video-core",
     "video-frame-contract",
     "video-present-core",
-    "vp9-parser"
+    "vp9-parser",
+    "web-media-core"
   ],
   "informational_crates": [
     "app-egui",

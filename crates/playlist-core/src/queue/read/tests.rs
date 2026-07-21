@@ -333,6 +333,7 @@ fn workspace_has_no_legacy_playlist_queue_read_surface_or_callers() {
     // Компиляция доказывает отсутствие typed callers, а source audit ловит возврат bridge заранее.
     for migrated_source_root in [
         manifest_directory.join("src"),
+        repository_root.join("crates/playlist-io/src"),
         repository_root.join("crates/playlist-state/src"),
         repository_root.join("crates/app-egui/src"),
     ] {

@@ -198,3 +198,8 @@ Exact CUE export identity теперь durable в `playlist-core`, additive pers
 
 ## S17M compound MPRIS/external projection (2026-07-21)
 - Process-lifetime desktop owner теперь публикует exact compound part projection и fence-ит player-dependent external commands стабильной `DesktopControlRevision`, повторно проверяя queue revision/current, active part, media instance и player binding generation. Group header не является MPRIS track; metadata использует part title и bounded redacted group context. Полный контракт: `mem:app-egui/playlist-desktop-transport-s18b`.
+
+
+## S18 playlist/topology hardening gate (2026-07-21)
+- Milestone playlist/topology доказан без новой feature logic: canonical top-level consumers, отсутствие legacy queue slices/parallel canonical Vec, secret-safe presentation, full format/topology/runtime/persistence matrix и verification описаны в `mem:playlist/topology-hardening-s18-2026-07-21`.
+- Coverage inventory теперь включает `atomic-file-store`, `bounded-xml-reader`, `playlist-io`, `web-media-core`; `web-media-core` закреплён как std-only neutral contract. Coverage baseline не переписывался из-за отдельного известного relocation blocker-а.

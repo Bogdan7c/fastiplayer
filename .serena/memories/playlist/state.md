@@ -116,3 +116,8 @@ Session 06 completed PASS on 2026-07-14. This memory complements `mem:core`, `me
 - S12 не менял playlist-state schema v2, DTO, writer, quarantine либо resume sidecar. Уже существующий durable payload сохраняет CUE draft root provenance/source ordinal и `PlaylistPlaybackSpan` после будущего queue commit.
 - Полный `CueDocument`, original 75-fps timestamps, INDEX00/02..99, unknown commands и CUE export eligibility являются preview-owned данными `playlist-io` и намеренно не добавлены в generic queue-state schema. Поэтому exact CUE re-export после утраты preview не обещан S12.
 - Full parser contract/verification: `mem:playlist/io-s12-cue-2026-07-20`.
+
+
+## S18 topology milestone gate (2026-07-21)
+- Schema v2 canonical top-level capture и отдельный resume schema v1 подтверждены milestone matrix; production persistence semantics не менялись. Source guardrail теперь требует `dto/v2.rs` top-level entry API.
+- Старый scheduler-dependent worker mailbox test переведён на прямую deterministic проверку coalesced wake + exactly-once payload; production worker/mailbox code не менялся. Полный handoff: `mem:playlist/topology-hardening-s18-2026-07-21`.

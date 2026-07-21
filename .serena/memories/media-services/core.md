@@ -89,3 +89,8 @@
 - `service-ytdlp::topology::reopen` — canonical owner stable child reopen classification: `YtDlpDurableReopenPayload`, `YtDlpDurableReopenMaterialKind`, safe typed errors, owner/version/8 KiB constants и exact classifiers для topology identity/delegation target. Priority: webpage -> original -> extractor key+ID; v1 extractor grammar `[key_len:u16][key][id_len:u16][id]`. Raw payload раскрывается только intent-named persistence accessors, Debug показывает category+byte count.
 - App `url_topology_drafts` не кодирует service schema: он исчерпывающе переводит только три service stable material kinds в neutral `playlist-core::DurableReopenLocator`, а missing/oversized classification превращает в bounded safe issue. Exact root locator остаётся exact URL; extracted child остаётся service-owned, поэтому future reopen не попадает под accidental direct-media-first reclassification.
 - Video/Collection/MultiVideo/Delegation -> ID-less Single/Compound mapping, bounds/tests и S17 handoff: `mem:app-egui/ytdlp-topology-drafts-s16-2026-07-20`.
+
+
+## S18 playlist/topology hardening gate (2026-07-21)
+- Existing yt-dlp Video/Playlist/MultiVideo/Delegation extraction, durable reopen mapping, URL Append-only and redaction suites вошли в milestone PASS; production service API/process logic не менялись.
+- `web-media-core` теперь required std-only neutral contract в dependency guardrails и blocking coverage inventory. Полный handoff: `mem:playlist/topology-hardening-s18-2026-07-21`.

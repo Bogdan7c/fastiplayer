@@ -196,3 +196,8 @@ Session 05 completed PASS on 2026-07-14. This memory complements `mem:core` and 
 - Downstream `app-egui::url_topology_drafts` теперь строит существующие ID-less `PlaylistSingleImportDraft`/`PlaylistCompoundImportDraft` из bounded `service-ytdlp` topology. `playlist-core` API/storage/allocator/traversal и S08 queue commit boundary не менялись.
 - One-part compound сохраняется first-class; zero-part отвергается до draft publication. Stable unavailable использует существующий `PlaylistImportAvailability::Unavailable`; exact root provenance и versioned stable service child payload используют прежние `DurableReopenLocator`/`PlaylistImportProvenance` invariants. Ephemeral material по-прежнему fail-closed.
 - Full app mapping contract/verification: `mem:app-egui/ytdlp-topology-drafts-s16-2026-07-20`.
+
+
+## S18 topology milestone gate (2026-07-21)
+- Production domain/API не менялись. Guardrail фиксирует единственный canonical `Vec<PlaylistEntry>`, top-level read API у persistence/export/UI/external consumers и derived playable traversal без второго canonical Vec; legacy read audit теперь также сканирует `playlist-io`.
+- Full verdict/reference audit/verification: `mem:playlist/topology-hardening-s18-2026-07-21`.
