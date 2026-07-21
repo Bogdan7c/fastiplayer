@@ -6,6 +6,7 @@ use animation_core::{Easing, SlideTransition};
 use egui::{Pos2, Rect, pos2, vec2};
 use playlist_core::PlaylistItemId;
 
+use crate::playlist_runtime::PlaylistLayoutIdentity;
 use crate::ui::animation::UiMotion;
 
 /// Длительность перехода между одновременно видимыми строками.
@@ -32,8 +33,8 @@ pub(super) struct ActiveAccentAnimationState {
     current_rect: Option<Rect>,
     /// Последний viewport после всех egui clamp и пользовательских interaction.
     last_authoritative_viewport: Option<AuthoritativeViewport>,
-    /// Structural revision хранится как opaque монотонное значение из typed model.
-    observed_structural_revision: Option<u64>,
+    /// Layout identity включает structural и disclosure изменения, но не presentation noise.
+    observed_layout_identity: Option<PlaylistLayoutIdentity>,
 }
 
 /// Именованный input начала кадра не смешивает domain identity и UI policy.
@@ -41,8 +42,8 @@ pub(super) struct ActiveAccentAnimationState {
 pub(super) struct BeginFrameInput {
     /// Подтверждённый Item ID; pending target сюда не передаётся.
     pub(super) active_item_id: Option<PlaylistItemId>,
-    /// Текущее opaque значение structural revision.
-    pub(super) structural_revision: u64,
+    /// Текущая typed identity геометрии virtualized list.
+    pub(super) layout_identity: PlaylistLayoutIdentity,
     /// Индекс authoritative цели разрешается одним O(1) lookup у view model.
     pub(super) target_row_index: Option<usize>,
     /// Число строк нужно только для безопасного clamp follow offset.
@@ -161,9 +162,9 @@ enum ViewportEdge {
 
 impl ActiveAccentAnimationState {
     /// Сбрасывает геометрию для доказанно пустой очереди без persistence side effects.
-    pub(super) fn observe_empty(&mut self, structural_revision: u64) {
+    pub(super) fn observe_empty(&mut self, layout_identity: PlaylistLayoutIdentity) {
         // Empty model становится новым authoritative наблюдением.
-        self.observed_structural_revision = Some(structural_revision);
+        self.observed_layout_identity = Some(layout_identity);
         // У пустой очереди подтверждённого row Item ID быть не может.
         self.observed_active_item_id = None;
         // Previous ID не нужен после structural reset.
@@ -326,16 +327,16 @@ impl ActiveAccentAnimationState {
     /// Обрабатывает authoritative identity и при необходимости создаёт новый transition.
     fn observe_authoritative_identity(&mut self, input: BeginFrameInput) -> bool {
         // Первое наблюдение и structural change никогда не используют старую row geometry.
-        let first_observation = self.observed_structural_revision.is_none();
+        let first_observation = self.observed_layout_identity.is_none();
         // Любое изменение rows инвалидирует stable index и content-coordinate mapping.
         let structural_change = self
-            .observed_structural_revision
-            .is_some_and(|revision| revision != input.structural_revision);
+            .observed_layout_identity
+            .is_some_and(|identity| identity != input.layout_identity);
         // Старый ID нужен только для различения Some→Some от Stop/первого старта.
         let previous_authoritative_id = self.observed_active_item_id;
 
         // Новая structural revision становится authoritative до любых ранних выходов.
-        self.observed_structural_revision = Some(input.structural_revision);
+        self.observed_layout_identity = Some(input.layout_identity);
         // Новый подтверждённый ID сразу становится источником accessibility снаружи state.
         self.observed_active_item_id = input.active_item_id;
         // Paint target всегда совпадает с подтверждённой identity.
@@ -687,8 +688,8 @@ mod tests {
     use super::{
         ActiveAccentAnimationState, AuthoritativeViewport, AuthoritativeViewportInput,
         BeginFrameInput, EDGE_ARRIVAL_START, EDGE_DEPARTURE_END, FOLLOW_TRANSITION_DURATION,
-        FinishFrameInput, NEARBY_TRANSITION_DURATION, UiMotion, ViewportControl,
-        centered_scroll_offset, edge_hold_rect, lerp_rect,
+        FinishFrameInput, NEARBY_TRANSITION_DURATION, PlaylistLayoutIdentity, UiMotion,
+        ViewportControl, centered_scroll_offset, edge_hold_rect, lerp_rect,
     };
     use egui::{Rect, pos2, vec2};
     use playlist_core::PlaylistItemId;
@@ -783,13 +784,13 @@ mod tests {
             target_item_id: Some(item_id(1)),
             current_rect: viewport().row_rect(2),
             last_authoritative_viewport: Some(viewport()),
-            observed_structural_revision: Some(7),
+            observed_layout_identity: Some(PlaylistLayoutIdentity::for_test(7)),
             ..ActiveAccentAnimationState::default()
         };
         // Новая подтверждённая цель находится вне viewport-а.
         let requested_offset = state.begin_frame(BeginFrameInput {
             active_item_id: Some(item_id(2)),
-            structural_revision: 7,
+            layout_identity: PlaylistLayoutIdentity::for_test(7),
             target_row_index: Some(9),
             item_count: 10,
             row_pitch: 34.0,
@@ -819,14 +820,14 @@ mod tests {
             target_item_id: Some(item_id(1)),
             current_rect: Some(initial_rect),
             last_authoritative_viewport: Some(initial_viewport),
-            observed_structural_revision: Some(9),
+            observed_layout_identity: Some(PlaylistLayoutIdentity::for_test(9)),
             ..ActiveAccentAnimationState::default()
         };
 
         // Первый Some→Some запускает nearby transition без продвижения в стартовом кадре.
         state.begin_frame(BeginFrameInput {
             active_item_id: Some(item_id(2)),
-            structural_revision: 9,
+            layout_identity: PlaylistLayoutIdentity::for_test(9),
             target_row_index: Some(3),
             item_count: 10,
             row_pitch: 34.0,
@@ -847,7 +848,7 @@ mod tests {
         // Половина 220-ms timeline создаёт текущий cubic visual sample.
         state.begin_frame(BeginFrameInput {
             active_item_id: Some(item_id(2)),
-            structural_revision: 9,
+            layout_identity: PlaylistLayoutIdentity::for_test(9),
             target_row_index: Some(3),
             item_count: 10,
             row_pitch: 34.0,
@@ -867,7 +868,7 @@ mod tests {
         // Быстрый следующий Some→Some создаёт новый timeline из текущего sample.
         state.begin_frame(BeginFrameInput {
             active_item_id: Some(item_id(3)),
-            structural_revision: 9,
+            layout_identity: PlaylistLayoutIdentity::for_test(9),
             target_row_index: Some(4),
             item_count: 10,
             row_pitch: 34.0,

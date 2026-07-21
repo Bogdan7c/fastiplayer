@@ -45,3 +45,10 @@ Focused tests покрывают collapsed/expanded one/many, active collapsed s
 - `cargo fmt --all -- --check` и `git diff --check`: passed.
 
 Serena per-file diagnostics для новых core files чистые. После cross-file focus type migration rust-analyzer внутри Serena показывал stale errors в трёх consumer files, хотя fresh cargo test/clippy полностью их скомпилировали; source owner files diagnostics clean.
+
+
+## S17V renderer projection follow-up (2026-07-21)
+- `CompoundRuntimeViewSnapshot` теперь является единственным layout read model для virtualized Playlist: каждая bounded visible projection несёт `CompoundRuntimeVisibleRow { row identity, PlaylistVisibleRow presentation, part position }`, O(1) row/current lookup и перевод visible insertion slot в atomic top-level structural slot.
+- `PlaylistLayoutIdentity` — typed pair structural/disclosure revisions. Она меняется при structural mutation или successful disclosure toggle, но не при active/error/pending-only publication; viewport anchor и active-accent geometry обязаны инвалидироваться по ней, а не по общей presentation revision.
+- Disclosure state остаётся process-lifetime owner-ом controller-а. Toggle публикует согласованные ordinary+compound snapshots без dirty/structural mutation. Header/part Play и disclosure идут через typed, structural-revision-fenced actions/outcomes; part Play не меняет structural selection.
+- Expanded child rows не являются structural entries: они не получают drag/remove/reorder API. Drag geometry внутри children canonicalizes к границе всей compound group.

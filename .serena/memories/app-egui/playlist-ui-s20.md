@@ -97,3 +97,10 @@
 
 ## S14 CUE export UI (2026-07-20)
 Existing Export menu получил третий format `CUE`. Full/selected branches используют typed pure eligibility и показывают privacy-safe disabled reason. O(N) scope analysis кешируется отдельно по `PlaylistViewRevision`; набор toolbar slots, icon bar layout и geometry не менялись. См. `mem:app-egui/cue-integration-s14-2026-07-20`.
+
+
+## S17V compound renderer and accessibility (2026-07-21)
+- Existing `ui/playlist/renderer.rs` остаётся единственным fixed-height `ScrollArea::show_rows` composition owner и единственным sidebar list. Compound-specific content, fill priority, pointer/keyboard behavior, tooltip и AccessKit живут в `ui/playlist/compound_rows.rs`; shared row presentation helpers вынесены в `ui/playlist/row_content.rs`. Renderer после декомпозиции — 632 строки.
+- Header имеет full-row structural selection/drag/context semantics, отдельную disclosure hit-zone, Space/assistive toggle и Enter typed Play-current-or-first. Child click/Space/Enter публикует только exact `PlayCompoundPart`; child focus и navigation не создают selection/remove/reorder intents. Up/Down/Home/End ходят по visible stable `CompoundRuntimeRowId` projections.
+- AccessKit: header использует collapsing-header/button node с explicit expanded state и русским group label; каждая part — отдельный actionable button с ordinal/runtime label. Active group получает мягкий skin surface, exact active part — существующий playback accent/title channel; structural selection сохраняет более высокий fill priority.
+- Focused coverage: collapsed/expanded one/many, Current Item header/part, active+selected projection, pointer disclosure/child, Space/Enter/navigation, AccessKit names/expanded, atomic reorder slots, widths 350/420/600 без repaint flicker. Full `app-egui --all-features`: 793 PASS; focused compound: 15 PASS, включая реальный AccessKit Click action; `ui-artwork-egui`: 32 PASS. Refactor guardrails and clippy excluding two pre-existing large-enum warnings pass.

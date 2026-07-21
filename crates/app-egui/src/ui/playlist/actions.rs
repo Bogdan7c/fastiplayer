@@ -6,8 +6,9 @@ use std::sync::Arc;
 use playlist_core::{MoveItemIntent, PlaylistEntryId, PlaylistItemId, SortCanonicalQueue};
 
 use crate::playlist_runtime::{
-    PlaylistExportRequest, PlaylistGoCurrentTarget, PlaylistImportIntent, PlaylistImportPreviewId,
-    PlaylistStructuralRevision, UpdateSelection,
+    CompoundHeaderPlayAction, CompoundPartPlayAction, PlaylistExportRequest,
+    PlaylistGoCurrentTarget, PlaylistImportIntent, PlaylistImportPreviewId,
+    PlaylistStructuralRevision, ToggleCompoundDisclosure, UpdateSelection,
 };
 
 /// Exact selected IDs для одного bulk removal commit-а.
@@ -119,6 +120,12 @@ impl fmt::Debug for PlaylistUrlDraftText {
 pub(crate) enum PlaylistAction {
     UpdateSelection(UpdateSelection),
     Play(PlaylistItemId),
+    /// Header activation резолвится runtime owner-ом в current-in-group либо first part.
+    PlayCompoundHeader(CompoundHeaderPlayAction),
+    /// Child activation сохраняет explicit group membership и exact part identity.
+    PlayCompoundPart(CompoundPartPlayAction),
+    /// Disclosure меняет только process-lifetime UI state controller-а.
+    ToggleCompoundDisclosure(ToggleCompoundDisclosure),
     RemoveSelected(RemoveSelected),
     RemoveUnselected(RemoveUnselected),
     MoveItems(MoveItems),

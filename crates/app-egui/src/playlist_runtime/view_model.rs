@@ -1,5 +1,6 @@
 //! Runtime-owned immutable model для read-only Playlist sidebar.
 
+#[cfg(test)]
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -7,12 +8,17 @@ use playlist_core::{PlaylistEntryId, PlaylistItemId};
 use playlist_state::SaveRevision;
 
 use super::PlaylistRuntime;
+use super::compound_view::CompoundRuntimeViewSnapshot;
+#[cfg(test)]
+use super::compound_view::CompoundRuntimeViewState;
 use super::controller::SiblingDiscoveryScopeId;
 use super::discovery::{PlaylistDiscoveryNavigationStatus, PlaylistDiscoveryStatus};
 use super::persistence::{
     PlaylistPersistenceFault, PlaylistPersistenceView, PlaylistSaveDurability,
 };
-use super::view::{PlaylistStructuralRevision, PlaylistViewSnapshot, PlaylistVisibleRow};
+#[cfg(test)]
+use super::view::PlaylistVisibleRow;
+use super::view::{PlaylistStructuralRevision, PlaylistViewSnapshot};
 
 /// Bounded probe/discovery summary уже не содержит filesystem locator-ов.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +83,7 @@ pub(crate) enum PlaylistStartupWarningView {
 #[derive(Debug, Clone)]
 pub(crate) struct PlaylistViewModel {
     snapshot: Arc<PlaylistViewSnapshot>,
+    compound_snapshot: Arc<CompoundRuntimeViewSnapshot>,
     probe: PlaylistProbeView,
     save: PlaylistSaveView,
     navigation: PlaylistNavigationView,
@@ -89,16 +96,7 @@ impl PlaylistViewModel {
         queue: &playlist_core::PlaylistQueue,
         structural_revision: u64,
     ) -> Self {
-        Self {
-            snapshot: Arc::new(PlaylistViewSnapshot::for_queue_with_revision(
-                queue,
-                structural_revision,
-            )),
-            probe: PlaylistProbeView::Idle,
-            save: PlaylistSaveView::Idle,
-            navigation: PlaylistNavigationView::Idle,
-            startup_warning: PlaylistStartupWarningView::None,
-        }
+        Self::for_queue_with_compound_state_for_test(queue, structural_revision, None, &[])
     }
 
     /// Строит UI fixture с подтверждённым active Item ID без controller mutation.
@@ -108,13 +106,59 @@ impl PlaylistViewModel {
         structural_revision: u64,
         active_item_id: Option<PlaylistItemId>,
     ) -> Self {
-        // Test-only boundary использует production snapshot row/index construction.
-        Self {
-            snapshot: Arc::new(PlaylistViewSnapshot::for_queue_with_active_item_for_test(
+        Self::for_queue_with_compound_state_for_test(
+            queue,
+            structural_revision,
+            active_item_id,
+            &[],
+        )
+    }
+
+    /// UI tests раскрывают explicit groups через тот же production disclosure owner.
+    #[cfg(test)]
+    pub(crate) fn for_queue_with_compound_state_for_test(
+        queue: &playlist_core::PlaylistQueue,
+        structural_revision: u64,
+        active_item_id: Option<PlaylistItemId>,
+        expanded_entry_ids: &[PlaylistEntryId],
+    ) -> Self {
+        use std::collections::HashMap;
+
+        use super::compound_view::{CompoundRuntimeProjectionState, ToggleCompoundDisclosure};
+
+        // Базовый snapshot остаётся owner-ом runtime identity и selection fixtures.
+        let snapshot = Arc::new(PlaylistViewSnapshot::for_queue_with_active_item_for_test(
+            queue,
+            structural_revision,
+            active_item_id,
+        ));
+        // Disclosure state строится typed toggle-ами, а не прямой записью private set-а.
+        let mut compound_state = CompoundRuntimeViewState::default();
+        for entry_id in expanded_entry_ids {
+            let _ = compound_state.toggle(
                 queue,
-                structural_revision,
-                active_item_id,
-            )),
+                snapshot.structural_revision(),
+                ToggleCompoundDisclosure {
+                    compound_entry_id: *entry_id,
+                    structural_revision: snapshot.structural_revision(),
+                },
+            );
+        }
+        // Focused UI fixture не добавляет pending/error state без отдельного сценария.
+        let runtime_errors = HashMap::new();
+        let compound_snapshot = Arc::new(compound_state.snapshot(
+            queue,
+            CompoundRuntimeProjectionState {
+                structural_revision: snapshot.structural_revision(),
+                active_media: snapshot.active_media(),
+                pending_target: snapshot.pending_target(),
+                runtime_errors: &runtime_errors,
+                selection: snapshot.selection(),
+            },
+        ));
+        Self {
+            snapshot,
+            compound_snapshot,
             probe: PlaylistProbeView::Idle,
             save: PlaylistSaveView::Idle,
             navigation: PlaylistNavigationView::Idle,
@@ -143,6 +187,11 @@ impl PlaylistViewModel {
         self.snapshot.revision()
     }
 
+    /// Layout identity исключает active/error-only publications из geometry invalidation.
+    pub(crate) fn layout_identity(&self) -> super::PlaylistLayoutIdentity {
+        self.compound_snapshot.layout_identity()
+    }
+
     pub(crate) fn structural_revision(&self) -> PlaylistStructuralRevision {
         self.snapshot.structural_revision()
     }
@@ -165,8 +214,14 @@ impl PlaylistViewModel {
             .and_then(|active_media| active_media.item_id())
     }
 
+    #[cfg(test)]
     pub(crate) fn visible_rows(&self, range: Range<usize>) -> Vec<PlaylistVisibleRow> {
         self.snapshot.visible_rows(range)
+    }
+
+    /// Compound renderer читает immutable snapshot того же controller publication.
+    pub(crate) fn compound_snapshot(&self) -> &CompoundRuntimeViewSnapshot {
+        &self.compound_snapshot
     }
 
     pub(crate) fn row_index(&self, item_id: PlaylistItemId) -> Option<usize> {
@@ -178,6 +233,7 @@ impl PlaylistViewModel {
         self.snapshot.entry_row_index(entry_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn item_id_at(&self, row_index: usize) -> Option<PlaylistItemId> {
         self.snapshot.item_id_at(row_index)
     }
@@ -268,6 +324,9 @@ impl PlaylistRuntime {
         };
         PlaylistViewModel {
             snapshot,
+            compound_snapshot: self
+                .compound_playlist_view_snapshot()
+                .unwrap_or_else(|| Arc::new(CompoundRuntimeViewSnapshot::empty())),
             probe,
             save,
             navigation,

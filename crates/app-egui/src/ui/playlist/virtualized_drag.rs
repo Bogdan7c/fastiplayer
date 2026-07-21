@@ -8,7 +8,9 @@ use playlist_core::{MoveItemIntent, PlaylistEntryId, PlaylistItemId};
 
 use super::actions::MoveItems;
 use super::{PlaylistAction, PlaylistUiOutput};
-use crate::playlist_runtime::{PlaylistStructuralRevision, PlaylistViewModel, UpdateSelection};
+use crate::playlist_runtime::{
+    CompoundRuntimeViewSnapshot, PlaylistStructuralRevision, PlaylistViewModel, UpdateSelection,
+};
 
 const EDGE_ZONE_HEIGHT: f32 = 28.0;
 const EDGE_SCROLL_STEP: f32 = 14.0;
@@ -132,7 +134,7 @@ pub(super) fn prepare_scroll_offset(
 pub(super) fn finish_frame(
     ctx: &egui::Context,
     state: &mut VirtualizedDragState,
-    model: &PlaylistViewModel,
+    compound_snapshot: &CompoundRuntimeViewSnapshot,
     viewport: Rect,
     scroll_offset: f32,
     row_pitch: f32,
@@ -157,9 +159,9 @@ pub(super) fn finish_frame(
     state.pointer_position = Some(pointer_position);
     state.viewport = Some(viewport);
     state.scroll_offset = scroll_offset;
-    state.insertion_target = insertion_target(
+    state.insertion_target = compound_insertion_target(
         state,
-        model.item_count(),
+        compound_snapshot,
         pointer_position.y - viewport.top(),
         scroll_offset,
         row_pitch,
@@ -185,7 +187,8 @@ pub(super) fn finish_frame(
         return;
     }
 
-    let maximum_offset = (model.item_count() as f32 * row_pitch - viewport.height()).max(0.0);
+    let maximum_offset =
+        (compound_snapshot.visible_row_count() as f32 * row_pitch - viewport.height()).max(0.0);
     let can_scroll_up =
         pointer_position.y <= viewport.top() + EDGE_ZONE_HEIGHT && scroll_offset > 0.0;
     let can_scroll_down = pointer_position.y >= viewport.bottom() - EDGE_ZONE_HEIGHT
@@ -198,17 +201,36 @@ pub(super) fn finish_frame(
 pub(super) fn marks_row(
     state: &VirtualizedDragState,
     row_index: usize,
-    row_entry_id: PlaylistEntryId,
+    row_entry_id: Option<PlaylistEntryId>,
     item_count: usize,
 ) -> bool {
     match state.insertion_target {
         Some(VirtualizedInsertionTarget::ToFront) => row_index == 0,
         Some(VirtualizedInsertionTarget::ToBack) => row_index + 1 == item_count,
-        Some(VirtualizedInsertionTarget::Before(entry_id)) => row_entry_id == entry_id,
+        Some(VirtualizedInsertionTarget::Before(entry_id)) => row_entry_id == Some(entry_id),
         None => false,
     }
 }
 
+/// Visible child slots схлопываются в atomic structural boundary compound snapshot-а.
+fn compound_insertion_target(
+    state: &VirtualizedDragState,
+    compound_snapshot: &CompoundRuntimeViewSnapshot,
+    pointer_y_in_viewport: f32,
+    scroll_offset: f32,
+    row_pitch: f32,
+) -> Option<VirtualizedInsertionTarget> {
+    let visible_slot = insertion_slot(
+        compound_snapshot.visible_row_count(),
+        pointer_y_in_viewport,
+        scroll_offset,
+        row_pitch,
+    )?;
+    let structural_slot = compound_snapshot.structural_insertion_slot(visible_slot);
+    state.drop_targets.get(structural_slot).copied()
+}
+
+#[cfg(test)]
 fn insertion_target(
     state: &VirtualizedDragState,
     item_count: usize,
@@ -216,13 +238,23 @@ fn insertion_target(
     scroll_offset: f32,
     row_pitch: f32,
 ) -> Option<VirtualizedInsertionTarget> {
+    let insertion_slot =
+        insertion_slot(item_count, pointer_y_in_viewport, scroll_offset, row_pitch)?;
+    state.drop_targets.get(insertion_slot).copied()
+}
+
+/// Pure geometry возвращает bounded visible insertion slot без structural knowledge.
+fn insertion_slot(
+    item_count: usize,
+    pointer_y_in_viewport: f32,
+    scroll_offset: f32,
+    row_pitch: f32,
+) -> Option<usize> {
     if item_count == 0 || !row_pitch.is_finite() || row_pitch <= 0.0 {
         return None;
     }
     let content_y = (scroll_offset + pointer_y_in_viewport).max(0.0);
-    let insertion_slot =
-        (((content_y + row_pitch * 0.5) / row_pitch).floor() as usize).min(item_count);
-    state.drop_targets.get(insertion_slot).copied()
+    Some((((content_y + row_pitch * 0.5) / row_pitch).floor() as usize).min(item_count))
 }
 
 /// Один O(N) drag-start precompute исключает selected anchor и per-frame queue scan.
@@ -391,8 +423,13 @@ mod tests {
             insertion_target: Some(VirtualizedInsertionTarget::Before(middle)),
             ..VirtualizedDragState::default()
         };
-        assert!(marks_row(&state, 1, middle, 3));
-        assert!(!marks_row(&state, 0, model.entry_id_at(0).unwrap(), 3));
+        assert!(marks_row(&state, 1, Some(middle), 3));
+        assert!(!marks_row(
+            &state,
+            0,
+            Some(model.entry_id_at(0).unwrap()),
+            3
+        ));
     }
 
     #[test]

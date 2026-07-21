@@ -25,8 +25,8 @@ use playlist_core::{
 };
 
 use super::compound_view::{
-    CompoundCurrentItemScrollTarget, CompoundHeaderPlayAction, CompoundHeaderPlayTarget,
-    CompoundPartPlayAction, CompoundPartPlayTarget, CompoundRuntimeViewSnapshot,
+    CompoundHeaderPlayAction, CompoundHeaderPlayTarget, CompoundPartPlayAction,
+    CompoundPartPlayTarget, CompoundRuntimeProjectionState, CompoundRuntimeViewSnapshot,
     CompoundRuntimeViewState, ToggleCompoundDisclosure, ToggleCompoundDisclosureOutcome,
     resolve_header_play_target, resolve_part_play_target,
 };
@@ -189,12 +189,17 @@ impl PlaylistController {
     pub(crate) fn new() -> Self {
         let queue = PlaylistQueue::new();
         let selection = PlaylistSelectionState::default();
+        let runtime_errors = HashMap::new();
         let compound_view_state = CompoundRuntimeViewState::default();
         let compound_view_snapshot = Arc::new(compound_view_state.snapshot(
             &queue,
-            PlaylistStructuralRevision::INITIAL,
-            None,
-            &selection.snapshot(),
+            CompoundRuntimeProjectionState {
+                structural_revision: PlaylistStructuralRevision::INITIAL,
+                active_media: None,
+                pending_target: None,
+                runtime_errors: &runtime_errors,
+                selection: &selection.snapshot(),
+            },
         ));
         let view_snapshot = Arc::new(PlaylistViewSnapshot::initial(&queue));
         Self {
@@ -204,7 +209,7 @@ impl PlaylistController {
             compound_view_snapshot,
             active_media: None,
             pending_target: None,
-            runtime_errors: HashMap::new(),
+            runtime_errors,
             repeat_mode: RepeatMode::StopAtEnd,
             structural_revision: PlaylistStructuralRevision::INITIAL,
             dirty_revision: PlaylistDirtyRevision::CLEAN,
@@ -301,7 +306,8 @@ impl PlaylistController {
             outcome,
             ToggleCompoundDisclosureOutcome::Expanded | ToggleCompoundDisclosureOutcome::Collapsed
         ) {
-            self.publish_compound_view();
+            // Disclosure меняет visible row layout, поэтому оба frame snapshots публикуются вместе.
+            self.publish_view(false);
         }
         outcome
     }
@@ -320,15 +326,6 @@ impl PlaylistController {
         action: CompoundPartPlayAction,
     ) -> CompoundPartPlayTarget {
         resolve_part_play_target(&self.queue, self.structural_revision, action)
-    }
-
-    /// Current Item выбирает header либо раскрытый exact child без auto-expand.
-    pub(crate) fn compound_current_item_scroll_target(
-        &self,
-    ) -> Option<CompoundCurrentItemScrollTarget> {
-        let current_item_id = self.queue.traversal_current()?.item_id();
-        self.compound_view_snapshot
-            .current_item_scroll_target(current_item_id)
     }
 
     pub(crate) fn queue(&self) -> &PlaylistQueue {
@@ -708,9 +705,13 @@ impl PlaylistController {
     fn publish_compound_view(&mut self) {
         self.compound_view_snapshot = Arc::new(self.compound_view_state.snapshot(
             &self.queue,
-            self.structural_revision,
-            self.active_media,
-            &self.selection.snapshot(),
+            CompoundRuntimeProjectionState {
+                structural_revision: self.structural_revision,
+                active_media: self.active_media,
+                pending_target: self.pending_target,
+                runtime_errors: &self.runtime_errors,
+                selection: &self.selection.snapshot(),
+            },
         ));
     }
 

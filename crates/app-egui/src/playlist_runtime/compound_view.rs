@@ -1,9 +1,5 @@
 //! Process-lifetime compound presentation model без зависимости от egui renderer.
 //!
-//! Публичные внутри crate row/action методы подготавливают S17V consumer и поэтому
-//! намеренно ещё не вызываются production renderer-ом в этой сессии.
-#![allow(dead_code)]
-
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -12,9 +8,9 @@ use playlist_core::{
     PlaylistItemId, PlaylistQueue,
 };
 
-use super::identity::ActiveMediaIdentity;
+use super::identity::{ActiveMediaIdentity, PendingTarget, PlaylistItemRuntimeError};
 use super::selection::PlaylistSelectionSnapshot;
-use super::view::PlaylistStructuralRevision;
+use super::view::{PlaylistStructuralRevision, PlaylistVisibleRow, PlaylistVisibleRowState};
 
 /// Stable identity различает structural header и subordinate projection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -55,8 +51,47 @@ pub(crate) enum CompoundRuntimeRow {
         compound_entry_id: PlaylistEntryId,
         part_item_id: PlaylistItemId,
         ordinal: PlaylistCompoundPartOrdinal,
+        retained_part_count: usize,
         active: bool,
     },
+}
+
+/// Положение child внутри визуально цельной group geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompoundPartPosition {
+    /// Единственная retained part одновременно начинает и завершает connector.
+    Only,
+    /// Первая часть многочастной группы.
+    First,
+    /// Промежуточная часть многочастной группы.
+    Middle,
+    /// Последняя часть завершает вертикальный connector.
+    Last,
+}
+
+/// Одна visible projection связывает proven identity с immutable presentation.
+#[derive(Debug, Clone)]
+pub(crate) struct CompoundRuntimeVisibleRow {
+    row: CompoundRuntimeRow,
+    presentation: PlaylistVisibleRow,
+    part_position: Option<CompoundPartPosition>,
+}
+
+impl CompoundRuntimeVisibleRow {
+    /// Identity/ownership shape остаётся отделённой от display metadata.
+    pub(crate) const fn row(&self) -> CompoundRuntimeRow {
+        self.row
+    }
+
+    /// Общая presentation vocabulary переиспользует обычные row helpers.
+    pub(crate) const fn presentation(&self) -> &PlaylistVisibleRow {
+        &self.presentation
+    }
+
+    /// Geometry position существует только у subordinate part.
+    pub(crate) const fn part_position(&self) -> Option<CompoundPartPosition> {
+        self.part_position
+    }
 }
 
 impl CompoundRuntimeRow {
@@ -86,8 +121,38 @@ impl CompoundRuntimeRow {
     }
 
     /// Child projection никогда не masquerade-ит как draggable/removable row.
+    #[cfg(test)]
     pub(crate) const fn is_subordinate_part(self) -> bool {
         matches!(self, Self::CompoundPart { .. })
+    }
+}
+
+/// Pair identity меняется только когда геометрия visible list действительно могла измениться.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlaylistLayoutIdentity {
+    structural_revision: u64,
+    disclosure_revision: u64,
+}
+
+impl PlaylistLayoutIdentity {
+    /// Named constructor не заставляет UI упаковывать две независимые revisions в число.
+    pub(crate) const fn from_parts(
+        structural_revision: PlaylistStructuralRevision,
+        disclosure_revision: u64,
+    ) -> Self {
+        Self {
+            structural_revision: structural_revision.get(),
+            disclosure_revision,
+        }
+    }
+
+    /// Animation unit tests не зависят от controller allocator-а revisions.
+    #[cfg(test)]
+    pub(crate) const fn for_test(structural_revision: u64) -> Self {
+        Self {
+            structural_revision,
+            disclosure_revision: 0,
+        }
     }
 }
 
@@ -95,20 +160,45 @@ impl CompoundRuntimeRow {
 #[derive(Debug, Clone)]
 pub(crate) struct CompoundRuntimeViewSnapshot {
     structural_revision: PlaylistStructuralRevision,
-    rows: Arc<[CompoundRuntimeRow]>,
+    layout_identity: PlaylistLayoutIdentity,
+    rows: Arc<[CompoundRuntimeVisibleRow]>,
     top_level_entry_count: usize,
     header_indices: Arc<HashMap<PlaylistEntryId, usize>>,
     part_indices: Arc<HashMap<PlaylistItemId, usize>>,
     entry_id_by_item: Arc<HashMap<PlaylistItemId, PlaylistEntryId>>,
+    structural_slot_by_visible_slot: Arc<[usize]>,
 }
 
 impl CompoundRuntimeViewSnapshot {
+    /// Pending runtime публикует согласованный пустой snapshot без fake controller owner-а.
+    pub(super) fn empty() -> Self {
+        Self {
+            structural_revision: PlaylistStructuralRevision::INITIAL,
+            layout_identity: PlaylistLayoutIdentity::from_parts(
+                PlaylistStructuralRevision::INITIAL,
+                0,
+            ),
+            rows: Arc::from([]),
+            top_level_entry_count: 0,
+            header_indices: Arc::new(HashMap::new()),
+            part_indices: Arc::new(HashMap::new()),
+            entry_id_by_item: Arc::new(HashMap::new()),
+            structural_slot_by_visible_slot: Arc::from([0]),
+        }
+    }
+
     /// Snapshot generation fence обязателен для всех row actions.
     pub(crate) const fn structural_revision(&self) -> PlaylistStructuralRevision {
         self.structural_revision
     }
 
+    /// Renderer invalidation не реагирует на active/error-only presentation revisions.
+    pub(crate) const fn layout_identity(&self) -> PlaylistLayoutIdentity {
+        self.layout_identity
+    }
+
     /// Domain top-level count не зависит от disclosure state.
+    #[cfg(test)]
     pub(crate) const fn top_level_entry_count(&self) -> usize {
         self.top_level_entry_count
     }
@@ -119,10 +209,55 @@ impl CompoundRuntimeViewSnapshot {
     }
 
     /// Bounded virtualization slice возвращает owned Copy projections.
+    #[cfg(test)]
     pub(crate) fn visible_rows(&self, range: std::ops::Range<usize>) -> Vec<CompoundRuntimeRow> {
         let start = range.start.min(self.rows.len());
         let end = range.end.min(self.rows.len()).max(start);
+        self.rows[start..end]
+            .iter()
+            .map(CompoundRuntimeVisibleRow::row)
+            .collect()
+    }
+
+    /// S17V получает metadata только для bounded visible range.
+    pub(crate) fn visible_presented_rows(
+        &self,
+        range: std::ops::Range<usize>,
+    ) -> Vec<CompoundRuntimeVisibleRow> {
+        let start = range.start.min(self.rows.len());
+        let end = range.end.min(self.rows.len()).max(start);
         self.rows[start..end].to_vec()
+    }
+
+    /// Stable row lookup обслуживает focus и Current Item без renderer scan-а.
+    pub(crate) fn row_index(&self, row_id: CompoundRuntimeRowId) -> Option<usize> {
+        match row_id {
+            CompoundRuntimeRowId::Entry(entry_id) => self.header_indices.get(&entry_id).copied(),
+            CompoundRuntimeRowId::Part { part_item_id, .. } => {
+                self.part_indices.get(&part_item_id).copied()
+            }
+        }
+    }
+
+    /// Visible navigation читает ровно одну projection по индексу.
+    pub(crate) fn row_id_at(&self, row_index: usize) -> Option<CompoundRuntimeRowId> {
+        self.rows.get(row_index).map(|row| row.row().row_id())
+    }
+
+    /// Exact active part указывает на child только пока group раскрыта.
+    pub(crate) fn active_row_index(&self, active_item_id: PlaylistItemId) -> Option<usize> {
+        self.part_indices.get(&active_item_id).copied().or_else(|| {
+            let entry_id = self.entry_id_by_item.get(&active_item_id)?;
+            self.header_indices.get(entry_id).copied()
+        })
+    }
+
+    /// Visible drag slot переводится в atomic top-level slot и не разрезает group.
+    pub(crate) fn structural_insertion_slot(&self, visible_slot: usize) -> usize {
+        self.structural_slot_by_visible_slot
+            .get(visible_slot.min(self.rows.len()))
+            .copied()
+            .unwrap_or(self.top_level_entry_count)
     }
 
     /// Current Item скроллит к child только когда он реально раскрыт.
@@ -138,6 +273,7 @@ impl CompoundRuntimeViewSnapshot {
     }
 
     /// Header lookup используется collapsed group fallback без auto-expand.
+    #[cfg(test)]
     pub(crate) fn header_row_index(&self, entry_id: PlaylistEntryId) -> Option<usize> {
         self.header_indices.get(&entry_id).copied()
     }
@@ -207,16 +343,30 @@ pub(crate) enum CompoundPartPlayTarget {
 #[derive(Debug, Default)]
 pub(super) struct CompoundRuntimeViewState {
     expanded_group_ids: HashSet<PlaylistCompoundGroupId>,
+    disclosure_revision: u64,
+}
+
+/// Именованный owner-state сохраняет различия active, pending, error и selection.
+pub(super) struct CompoundRuntimeProjectionState<'a> {
+    pub(super) structural_revision: PlaylistStructuralRevision,
+    pub(super) active_media: Option<ActiveMediaIdentity>,
+    pub(super) pending_target: Option<PendingTarget>,
+    pub(super) runtime_errors: &'a HashMap<PlaylistItemId, PlaylistItemRuntimeError>,
+    pub(super) selection: &'a PlaylistSelectionSnapshot,
 }
 
 impl CompoundRuntimeViewState {
     /// Удаляет disclosure для групп, которых больше нет в committed queue.
     pub(super) fn retain_committed_groups(&mut self, queue: &PlaylistQueue) {
+        let previous_count = self.expanded_group_ids.len();
         self.expanded_group_ids.retain(|group_id| {
             queue
                 .top_level_entry(PlaylistEntryId::Compound(*group_id))
                 .is_some()
         });
+        if self.expanded_group_ids.len() != previous_count {
+            self.disclosure_revision = self.disclosure_revision.saturating_add(1);
+        }
     }
 
     /// Toggle меняет только process-lifetime UI state.
@@ -235,42 +385,64 @@ impl CompoundRuntimeViewState {
         if queue.top_level_entry(action.compound_entry_id).is_none() {
             return ToggleCompoundDisclosureOutcome::EntryNotFound;
         }
-        if self.expanded_group_ids.remove(&group_id) {
+        let outcome = if self.expanded_group_ids.remove(&group_id) {
             ToggleCompoundDisclosureOutcome::Collapsed
         } else {
             self.expanded_group_ids.insert(group_id);
             ToggleCompoundDisclosureOutcome::Expanded
-        }
+        };
+        self.disclosure_revision = self.disclosure_revision.saturating_add(1);
+        outcome
     }
 
     /// Строит renderer-neutral rows из authoritative queue/current/active/selection.
     pub(super) fn snapshot(
         &self,
         queue: &PlaylistQueue,
-        structural_revision: PlaylistStructuralRevision,
-        active_media: Option<ActiveMediaIdentity>,
-        selection: &PlaylistSelectionSnapshot,
+        state: CompoundRuntimeProjectionState<'_>,
     ) -> CompoundRuntimeViewSnapshot {
-        let active_item_id = active_media.and_then(ActiveMediaIdentity::item_id);
+        let active_item_id = state.active_media.and_then(ActiveMediaIdentity::item_id);
+        let pending_item_id = state.pending_target.and_then(PendingTarget::item_id);
         let current_item_id = queue.traversal_current().map(|current| current.item_id());
         let mut rows =
             Vec::with_capacity(queue.top_level_entry_count() + self.expanded_group_ids.len());
         let mut header_indices = HashMap::with_capacity(queue.top_level_entry_count());
         let mut part_indices = HashMap::new();
         let mut entry_id_by_item = HashMap::with_capacity(queue.retained_item_count());
+        let mut structural_slot_by_visible_slot =
+            Vec::with_capacity(queue.top_level_entry_count() + self.expanded_group_ids.len() + 1);
+        structural_slot_by_visible_slot.push(0);
 
-        for entry in queue.iter_top_level_entries() {
+        for (top_level_index, entry) in queue.iter_top_level_entries().enumerate() {
             let entry_id = entry.entry_id();
             header_indices.insert(entry_id, rows.len());
             match entry {
                 PlaylistEntry::Single(item) => {
-                    entry_id_by_item.insert(item.item_id(), entry_id);
-                    rows.push(CompoundRuntimeRow::Single {
-                        entry_id,
-                        item_id: item.item_id(),
-                        active: active_item_id == Some(item.item_id()),
-                        selected: selection.is_selected(entry_id),
+                    let item_id = item.item_id();
+                    let active = active_item_id == Some(item_id);
+                    let selected = state.selection.is_selected(entry_id);
+                    entry_id_by_item.insert(item_id, entry_id);
+                    rows.push(CompoundRuntimeVisibleRow {
+                        row: CompoundRuntimeRow::Single {
+                            entry_id,
+                            item_id,
+                            active,
+                            selected,
+                        },
+                        presentation: PlaylistVisibleRow::from_cached_metadata(
+                            entry_id,
+                            item_id,
+                            item.cached_metadata(),
+                            PlaylistVisibleRowState {
+                                active,
+                                pending: pending_item_id == Some(item_id),
+                                selected,
+                                runtime_error: state.runtime_errors.get(&item_id).cloned(),
+                            },
+                        ),
+                        part_position: None,
                     });
+                    structural_slot_by_visible_slot.push(top_level_index + 1);
                 }
                 PlaylistEntry::Compound(group) => {
                     entry_id_by_item
@@ -280,6 +452,10 @@ impl CompoundRuntimeViewState {
                         .parts()
                         .map(|part| part.item().item_id())
                         .find(|part_item_id| Some(*part_item_id) == active_item_id);
+                    let pending_part_item_id = group
+                        .parts()
+                        .map(|part| part.item().item_id())
+                        .find(|part_item_id| Some(*part_item_id) == pending_item_id);
                     let current_part_item_id = group
                         .parts()
                         .map(|part| part.item().item_id())
@@ -290,25 +466,75 @@ impl CompoundRuntimeViewState {
                         .expect("validated compound group always retains a part")
                         .item()
                         .item_id();
-                    rows.push(CompoundRuntimeRow::CompoundHeader {
-                        entry_id,
-                        group_id: group.group_id(),
-                        retained_part_count: group.retained_part_count(),
-                        expanded,
-                        active_part_item_id,
-                        header_play_item_id: current_part_item_id.unwrap_or(first_part_item_id),
-                        selected: selection.is_selected(entry_id),
+                    let header_play_item_id = current_part_item_id.unwrap_or(first_part_item_id);
+                    let selected = state.selection.is_selected(entry_id);
+                    rows.push(CompoundRuntimeVisibleRow {
+                        row: CompoundRuntimeRow::CompoundHeader {
+                            entry_id,
+                            group_id: group.group_id(),
+                            retained_part_count: group.retained_part_count(),
+                            expanded,
+                            active_part_item_id,
+                            header_play_item_id,
+                            selected,
+                        },
+                        presentation: PlaylistVisibleRow::from_cached_metadata(
+                            entry_id,
+                            header_play_item_id,
+                            group.cached_summary(),
+                            PlaylistVisibleRowState {
+                                active: active_part_item_id.is_some(),
+                                pending: pending_part_item_id.is_some(),
+                                selected,
+                                runtime_error: state
+                                    .runtime_errors
+                                    .get(&header_play_item_id)
+                                    .cloned(),
+                            },
+                        ),
+                        part_position: None,
                     });
+                    structural_slot_by_visible_slot.push(top_level_index + 1);
                     if expanded {
-                        for part in group.parts() {
+                        let retained_part_count = group.retained_part_count();
+                        for (part_index, part) in group.parts().enumerate() {
                             let part_item_id = part.item().item_id();
+                            let active = active_item_id == Some(part_item_id);
+                            let part_position = if retained_part_count == 1 {
+                                CompoundPartPosition::Only
+                            } else if part_index == 0 {
+                                CompoundPartPosition::First
+                            } else if part_index + 1 == retained_part_count {
+                                CompoundPartPosition::Last
+                            } else {
+                                CompoundPartPosition::Middle
+                            };
                             part_indices.insert(part_item_id, rows.len());
-                            rows.push(CompoundRuntimeRow::CompoundPart {
-                                compound_entry_id: entry_id,
-                                part_item_id,
-                                ordinal: part.membership().ordinal(),
-                                active: active_item_id == Some(part_item_id),
+                            rows.push(CompoundRuntimeVisibleRow {
+                                row: CompoundRuntimeRow::CompoundPart {
+                                    compound_entry_id: entry_id,
+                                    part_item_id,
+                                    ordinal: part.membership().ordinal(),
+                                    retained_part_count,
+                                    active,
+                                },
+                                presentation: PlaylistVisibleRow::from_cached_metadata(
+                                    entry_id,
+                                    part_item_id,
+                                    part.item().cached_metadata(),
+                                    PlaylistVisibleRowState {
+                                        active,
+                                        pending: pending_item_id == Some(part_item_id),
+                                        selected: false,
+                                        runtime_error: state
+                                            .runtime_errors
+                                            .get(&part_item_id)
+                                            .cloned(),
+                                    },
+                                ),
+                                part_position: Some(part_position),
                             });
+                            structural_slot_by_visible_slot.push(top_level_index + 1);
                         }
                     }
                 }
@@ -316,12 +542,17 @@ impl CompoundRuntimeViewState {
         }
 
         CompoundRuntimeViewSnapshot {
-            structural_revision,
+            structural_revision: state.structural_revision,
+            layout_identity: PlaylistLayoutIdentity::from_parts(
+                state.structural_revision,
+                self.disclosure_revision,
+            ),
             rows: rows.into(),
             top_level_entry_count: queue.top_level_entry_count(),
             header_indices: Arc::new(header_indices),
             part_indices: Arc::new(part_indices),
             entry_id_by_item: Arc::new(entry_id_by_item),
+            structural_slot_by_visible_slot: structural_slot_by_visible_slot.into(),
         }
     }
 }

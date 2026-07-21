@@ -2,9 +2,11 @@
 
 mod actions;
 mod active_accent;
+mod compound_rows;
 mod header_undo;
 pub(crate) mod import_preview;
 mod renderer;
+mod row_content;
 mod row_interactions;
 mod status;
 mod toolbar;
@@ -18,8 +20,8 @@ use std::sync::Arc;
 use playlist_core::{PlaylistEntryId, PlaylistItemId};
 
 use crate::playlist_runtime::{
-    PlaylistGoCurrentTarget, PlaylistInteractionModel, PlaylistRuntimeBinding,
-    PlaylistStructuralRevision, PlaylistViewModel,
+    CompoundRuntimeRowId, PlaylistGoCurrentTarget, PlaylistInteractionModel,
+    PlaylistRuntimeBinding, PlaylistViewModel,
 };
 
 const MAX_VISIBLE_HINT_ITEMS: usize = 256;
@@ -32,9 +34,9 @@ pub(crate) struct PlaylistUiState {
     /// Единый status owner хранит typed lifetime, deadlines и residual transition.
     status: status::PlaylistStatusLifetimeState,
     viewport_anchor: Option<ViewportAnchor>,
-    observed_structural_revision: Option<PlaylistStructuralRevision>,
+    observed_playlist_layout_identity: Option<crate::playlist_runtime::PlaylistLayoutIdentity>,
     go_current: Option<PlaylistGoCurrentTarget>,
-    focus_row: Option<PlaylistEntryId>,
+    focus_row: Option<CompoundRuntimeRowId>,
     drag: virtualized_drag::VirtualizedDragState,
 }
 
@@ -92,10 +94,15 @@ impl PlaylistUiState {
 
     /// D47 focus intent приходит только из controller-provided selected Entry ID.
     pub(crate) fn request_row_focus(&mut self, entry_id: PlaylistEntryId) {
-        self.focus_row = Some(entry_id);
+        self.focus_row = Some(CompoundRuntimeRowId::Entry(entry_id));
     }
 
-    pub(super) fn take_row_focus(&mut self) -> Option<PlaylistEntryId> {
+    /// Roving keyboard focus может указывать и на subordinate part projection.
+    pub(super) fn request_visible_row_focus(&mut self, row_id: CompoundRuntimeRowId) {
+        self.focus_row = Some(row_id);
+    }
+
+    pub(super) fn take_row_focus(&mut self) -> Option<CompoundRuntimeRowId> {
         self.focus_row.take()
     }
 }

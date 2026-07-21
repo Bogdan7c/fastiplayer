@@ -1,16 +1,13 @@
 //! Runtime adapters для row selection, explicit Play и canonical reorder.
 //!
-//! Compound adapters являются S17G boundary для следующего S17V renderer wiring.
-#![allow(dead_code)]
-
 use std::sync::Arc;
 
 use playlist_core::{MoveItemIntent, PlaylistEntryId, PlaylistItemId};
 
 use super::controller::{ControllerMoveItemsOutcome, ControllerPlayItemOutcome};
 use super::{
-    CompoundCurrentItemScrollTarget, CompoundHeaderPlayAction, CompoundHeaderPlayTarget,
-    CompoundPartPlayAction, CompoundPartPlayTarget, CompoundRuntimeViewSnapshot, PlaylistRuntime,
+    CompoundHeaderPlayAction, CompoundHeaderPlayTarget, CompoundPartPlayAction,
+    CompoundPartPlayTarget, CompoundRuntimeViewSnapshot, PlaylistRuntime,
     PlaylistStructuralRevision, ToggleCompoundDisclosure, ToggleCompoundDisclosureOutcome,
     TransportActionOrigin, UpdateSelection, UpdateSelectionOutcome,
 };
@@ -115,15 +112,6 @@ impl PlaylistRuntime {
             }
             rejected => RuntimeCompoundPartPlayOutcome::Rejected(rejected),
         }
-    }
-
-    /// Current Item не раскрывает group автоматически.
-    pub(crate) fn compound_current_item_scroll_target(
-        &self,
-    ) -> Option<CompoundCurrentItemScrollTarget> {
-        self.controller
-            .as_ref()
-            .and_then(|controller| controller.compound_current_item_scroll_target())
     }
 
     /// Exact selection action меняет только process-lifetime presentation state.

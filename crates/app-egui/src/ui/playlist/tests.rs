@@ -7,20 +7,23 @@ use egui::{
 };
 use media_core::MediaDuration;
 use playlist_core::{
-    CachedPlaylistMetadata, LocalLocator, MoveItemIntent, PlaylistEntryId, PlaylistItemDraft,
-    PlaylistItemId, PlaylistMediaKind, PlaylistQueue,
+    AddPlaylistEntriesOutcome, CachedPlaylistMetadata, LocalLocator, MoveItemIntent,
+    PlaylistCompoundGroupDraft, PlaylistEntryDraft, PlaylistEntryId, PlaylistItemDraft,
+    PlaylistItemId, PlaylistLocator, PlaylistMediaKind, PlaylistQueue,
 };
 use ui_artwork_egui::MediaKindGlyph;
 
-use super::renderer::{
+use super::renderer::{anchored_scroll_offset, row_fill, show_rows};
+use super::row_content::{
     INDEX_WIDTH, MEDIA_KIND_WIDTH, ROW_HEIGHT, TOOLTIP_MAX_WIDTH, accessibility_text,
-    anchored_scroll_offset, media_kind_glyph, row_fill, show_rows, stable_row_id, tooltip_width,
+    media_kind_glyph, stable_row_id, tooltip_width,
 };
 use super::status::{navigation_message, save_message};
 use super::{PlaylistAction, PlaylistUiOutput, PlaylistUiState, ViewportAnchor};
 use crate::playlist_runtime::{
-    PlaylistGoCurrentTarget, PlaylistInteractionModel, PlaylistNavigationView, PlaylistSaveAttempt,
-    PlaylistSaveView, PlaylistViewModel, PlaylistVisibleRow, PlaylistVisibleRowTestFixture,
+    CompoundRuntimeRowId, PlaylistGoCurrentTarget, PlaylistInteractionModel,
+    PlaylistNavigationView, PlaylistSaveAttempt, PlaylistSaveView, PlaylistViewModel,
+    PlaylistVisibleRow, PlaylistVisibleRowTestFixture,
 };
 use crate::ui::animation::UiMotion;
 use crate::ui::skin::{MinimalSkin, PlayerSkin, PlaylistRowStyle, PlaylistToolbarStyle};
@@ -447,13 +450,14 @@ fn focused_row_keyboard_navigation_select_all_and_empty_area_click_emit_typed_in
 #[test]
 fn row_content_labels_explicitly_disable_text_selection() {
     let renderer_source = include_str!("renderer.rs");
-    let row_content_start = renderer_source
+    let row_content_module_source = include_str!("row_content.rs");
+    let row_content_start = row_content_module_source
         .find("fn render_row_content")
         .expect("row content symbol");
-    let tooltip_start = renderer_source
+    let tooltip_start = row_content_module_source
         .find("fn show_safe_tooltip")
         .expect("tooltip symbol");
-    let row_content_source = &renderer_source[row_content_start..tooltip_start];
+    let row_content_source = &row_content_module_source[row_content_start..tooltip_start];
 
     // Index, title, duration и error остаются четырьмя невыделяемыми text labels.
     assert_eq!(row_content_source.matches("Label::new").count(), 4);
@@ -1024,7 +1028,7 @@ fn disabled_animation_copy_does_not_replace_viewport_or_publish_hint() {
         intra_row_offset: 6.0,
     });
     // Structural observation также не должно заменяться visual copy.
-    state.observed_structural_revision = Some(model.structural_revision());
+    state.observed_playlist_layout_identity = Some(model.layout_identity());
     // Go-current intent отсутствует в этом regression.
     state.go_current = None;
     let mut output = PlaylistUiOutput::default();
@@ -1109,7 +1113,7 @@ fn insertion_before_inside_or_after_viewport_preserves_top_item_and_offset() {
                 item_id: top_item_id,
                 intra_row_offset: 7.5,
             }),
-            observed_structural_revision: Some(before.structural_revision()),
+            observed_playlist_layout_identity: Some(before.layout_identity()),
             go_current: None,
             ..PlaylistUiState::default()
         };
@@ -1160,7 +1164,7 @@ fn active_only_revision_never_requests_hidden_scroll() {
             item_id: top_item_id,
             intra_row_offset: 4.0,
         }),
-        observed_structural_revision: Some(model.structural_revision()),
+        observed_playlist_layout_identity: Some(model.layout_identity()),
         go_current: None,
         ..PlaylistUiState::default()
     };
@@ -1260,4 +1264,276 @@ fn long_and_unicode_safe_text_does_not_expand_visible_hint() {
 
     assert!(text.contains("безопасное отображение non-UTF-8 имени"));
     assert!(text.contains("Тип: Аудио"));
+}
+
+/// Создаёт один compound header с двумя exact playable parts без filesystem I/O.
+fn compound_queue() -> (PlaylistQueue, PlaylistEntryId, Vec<PlaylistItemId>) {
+    let group = PlaylistCompoundGroupDraft::new(
+        PlaylistLocator::Local(LocalLocator::Native(PathBuf::from("album"))),
+        CachedPlaylistMetadata::new("Альбом", PlaylistMediaKind::Audio),
+        vec![draft(1), draft(2)],
+    )
+    .expect("compound fixture содержит две части");
+    let mut queue = PlaylistQueue::new();
+    let AddPlaylistEntriesOutcome::Added(allocated) = queue
+        .append_entries(vec![PlaylistEntryDraft::Compound(group)])
+        .expect("compound fixture добавляется атомарно")
+    else {
+        panic!("непустой compound fixture обязан выделить identities");
+    };
+    let entry_id = allocated.iter_entry_ids().next().expect("header identity");
+    let part_item_ids = allocated.iter_playable_item_ids().collect();
+    (queue, entry_id, part_item_ids)
+}
+
+/// Выполняет полный pointer click через реальные egui press/release frames.
+fn click_playlist_position(
+    context: &egui::Context,
+    model: &PlaylistViewModel,
+    state: &mut PlaylistUiState,
+    position: egui::Pos2,
+    base_time: f64,
+) -> Vec<PlaylistAction> {
+    let _ = render_playlist_input(
+        context,
+        model,
+        state,
+        playlist_raw_input(vec![Event::PointerMoved(position)], base_time),
+    );
+    let _ = render_playlist_input(
+        context,
+        model,
+        state,
+        playlist_raw_input(
+            vec![pointer_button(position, PointerButton::Primary, true)],
+            base_time + 0.01,
+        ),
+    );
+    render_playlist_input(
+        context,
+        model,
+        state,
+        playlist_raw_input(
+            vec![pointer_button(position, PointerButton::Primary, false)],
+            base_time + 0.02,
+        ),
+    )
+}
+
+#[test]
+fn compound_disclosure_and_child_pointer_publish_only_their_typed_actions() {
+    let (queue, compound_entry_id, part_item_ids) = compound_queue();
+    let collapsed = PlaylistViewModel::for_queue_with_compound_state_for_test(&queue, 1, None, &[]);
+    let expanded = PlaylistViewModel::for_queue_with_compound_state_for_test(
+        &queue,
+        1,
+        None,
+        &[compound_entry_id],
+    );
+
+    let disclosure_actions = click_playlist_position(
+        &egui::Context::default(),
+        &collapsed,
+        &mut PlaylistUiState::default(),
+        pos2(8.0, ROW_HEIGHT * 0.5),
+        1.0,
+    );
+    assert!(matches!(
+        disclosure_actions.as_slice(),
+        [PlaylistAction::ToggleCompoundDisclosure(action)]
+            if action.compound_entry_id == compound_entry_id
+    ));
+
+    let row_pitch = ROW_HEIGHT + 8.0;
+    let child_actions = click_playlist_position(
+        &egui::Context::default(),
+        &expanded,
+        &mut PlaylistUiState::default(),
+        pos2(120.0, row_pitch + ROW_HEIGHT * 0.5),
+        2.0,
+    );
+    assert!(matches!(
+        child_actions.as_slice(),
+        [PlaylistAction::PlayCompoundPart(action)]
+            if action.compound_entry_id == compound_entry_id
+                && action.part_item_id == part_item_ids[0]
+    ));
+}
+
+#[test]
+fn compound_space_enter_and_visible_navigation_preserve_child_selection_invariant() {
+    let (queue, compound_entry_id, part_item_ids) = compound_queue();
+    let model = PlaylistViewModel::for_queue_with_compound_state_for_test(
+        &queue,
+        3,
+        None,
+        &[compound_entry_id],
+    );
+    let context = egui::Context::default();
+    let mut state = PlaylistUiState::default();
+
+    state.request_visible_row_focus(CompoundRuntimeRowId::Entry(compound_entry_id));
+    let _ = render_playlist_input(
+        &context,
+        &model,
+        &mut state,
+        playlist_raw_input(Vec::new(), 1.0),
+    );
+    let space_actions = render_playlist_input(
+        &context,
+        &model,
+        &mut state,
+        playlist_raw_input(vec![key_press(Key::Space, Modifiers::NONE)], 1.1),
+    );
+    assert!(matches!(
+        space_actions.as_slice(),
+        [PlaylistAction::ToggleCompoundDisclosure(action)]
+            if action.compound_entry_id == compound_entry_id
+    ));
+
+    state.request_visible_row_focus(CompoundRuntimeRowId::Part {
+        compound_entry_id,
+        part_item_id: part_item_ids[0],
+    });
+    let _ = render_playlist_input(
+        &context,
+        &model,
+        &mut state,
+        playlist_raw_input(Vec::new(), 2.0),
+    );
+    let enter_actions = render_playlist_input(
+        &context,
+        &model,
+        &mut state,
+        playlist_raw_input(vec![key_press(Key::Enter, Modifiers::NONE)], 2.1),
+    );
+    assert!(matches!(
+        enter_actions.as_slice(),
+        [PlaylistAction::PlayCompoundPart(action)] if action.part_item_id == part_item_ids[0]
+    ));
+
+    let down_actions = render_playlist_input(
+        &context,
+        &model,
+        &mut state,
+        playlist_raw_input(vec![key_press(Key::ArrowDown, Modifiers::NONE)], 2.2),
+    );
+    assert!(down_actions.is_empty());
+    assert_eq!(
+        state.focus_row,
+        Some(CompoundRuntimeRowId::Part {
+            compound_entry_id,
+            part_item_id: part_item_ids[1],
+        })
+    );
+}
+
+#[test]
+fn compound_accesskit_exposes_expanded_header_and_child_buttons() {
+    let (queue, compound_entry_id, _) = compound_queue();
+    let model = PlaylistViewModel::for_queue_with_compound_state_for_test(
+        &queue,
+        5,
+        None,
+        &[compound_entry_id],
+    );
+    let context = egui::Context::default();
+    context.enable_accesskit();
+    let mut state = PlaylistUiState::default();
+    let mut output = PlaylistUiOutput::default();
+    let full_output = context.run_ui(playlist_raw_input(Vec::new(), 1.0), |ui| {
+        ui.set_width(420.0);
+        ui.set_height(120.0);
+        show_rows(
+            ui,
+            &model,
+            row_style(),
+            UiMotion::Reduced,
+            &mut state,
+            &mut output,
+        );
+    });
+    let update = full_output
+        .platform_output
+        .accesskit_update
+        .expect("AccessKit tree update");
+    let header_node_id = update
+        .nodes
+        .iter()
+        .find_map(|(node_id, node)| (node.is_expanded() == Some(true)).then_some(*node_id))
+        .expect("expanded header AccessKit node");
+    let nodes: Vec<_> = update.nodes.iter().map(|(_, node)| node).collect();
+    assert!(nodes.iter().any(|node| node.is_expanded() == Some(true)));
+    assert_eq!(
+        nodes
+            .iter()
+            .filter(|node| {
+                node.label()
+                    .is_some_and(|label| label.contains("Вложенная часть"))
+            })
+            .count(),
+        2,
+        "обе exact parts должны иметь отдельные accessible names"
+    );
+
+    let assistive_actions = render_playlist_input(
+        &context,
+        &model,
+        &mut state,
+        playlist_raw_input(
+            vec![Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    action: egui::accesskit::Action::Click,
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: header_node_id,
+                    data: None,
+                },
+            )],
+            1.1,
+        ),
+    );
+    assert!(
+        matches!(
+            assistive_actions.as_slice(),
+            [PlaylistAction::ToggleCompoundDisclosure(action)]
+                if action.compound_entry_id == compound_entry_id
+        ),
+        "assistive actions: {assistive_actions:?}"
+    );
+}
+
+#[test]
+fn compound_rows_keep_same_visible_identities_at_supported_widths() {
+    let (queue, compound_entry_id, part_item_ids) = compound_queue();
+    let model = PlaylistViewModel::for_queue_with_compound_state_for_test(
+        &queue,
+        8,
+        Some(part_item_ids[1]),
+        &[compound_entry_id],
+    );
+    for width in [350.0, 420.0, 600.0] {
+        let context = egui::Context::default();
+        let mut state = PlaylistUiState::default();
+        let mut output = PlaylistUiOutput::default();
+        let _ = context.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(width, 160.0))),
+                ..RawInput::default()
+            },
+            |ui| {
+                ui.set_width(width);
+                ui.set_height(160.0);
+                show_rows(
+                    ui,
+                    &model,
+                    row_style(),
+                    UiMotion::Reduced,
+                    &mut state,
+                    &mut output,
+                );
+            },
+        );
+        assert_eq!(output.visible_item_ids.as_slice(), part_item_ids.as_slice());
+        assert!(!state.active_accent.needs_repaint());
+    }
 }

@@ -7,8 +7,9 @@ use winit::window::Window;
 
 use crate::playlist_runtime::{
     ControllerMoveItemsOutcome, PlaylistImportContinueOutcome, PlaylistRuntime, RemovalUndoOutcome,
-    RuntimeMoveItemsOutcome, RuntimeRemovalOutcome, RuntimeUpdateSelectionOutcome,
-    UpdateSelectionOutcome,
+    RuntimeCompoundHeaderPlayOutcome, RuntimeCompoundPartPlayOutcome, RuntimeMoveItemsOutcome,
+    RuntimeRemovalOutcome, RuntimeToggleCompoundDisclosureOutcome, RuntimeUpdateSelectionOutcome,
+    ToggleCompoundDisclosureOutcome, UpdateSelectionOutcome,
 };
 use crate::state::AppState;
 use crate::ui::playlist::PlaylistAction;
@@ -47,6 +48,61 @@ pub(crate) fn apply_playlist_actions(
                 );
                 if !applied {
                     runtime.set_playlist_safe_feedback("Не удалось запустить выбранный элемент");
+                }
+                changed = true;
+            }
+            PlaylistAction::PlayCompoundHeader(action) => {
+                let applied = match runtime.play_compound_header(action) {
+                    RuntimeCompoundHeaderPlayOutcome::Play(outcome) => {
+                        crate::transport_runtime::apply_playlist_row_play(
+                            app_state, runtime, renderer, outcome,
+                        )
+                    }
+                    RuntimeCompoundHeaderPlayOutcome::Rejected(reason) => {
+                        tracing::debug!(?reason, "Compound header Play отклонён typed boundary");
+                        false
+                    }
+                    RuntimeCompoundHeaderPlayOutcome::LoadDecisionPending => false,
+                };
+                if !applied {
+                    runtime.set_playlist_safe_feedback(
+                        "Не удалось запустить выбранную составную запись",
+                    );
+                }
+                changed = true;
+            }
+            PlaylistAction::PlayCompoundPart(action) => {
+                let applied = match runtime.play_compound_part(action) {
+                    RuntimeCompoundPartPlayOutcome::Play(outcome) => {
+                        crate::transport_runtime::apply_playlist_row_play(
+                            app_state, runtime, renderer, outcome,
+                        )
+                    }
+                    RuntimeCompoundPartPlayOutcome::Rejected(reason) => {
+                        tracing::debug!(?reason, "Compound part Play отклонён typed boundary");
+                        false
+                    }
+                    RuntimeCompoundPartPlayOutcome::LoadDecisionPending => false,
+                };
+                if !applied {
+                    runtime.set_playlist_safe_feedback(
+                        "Не удалось запустить выбранную часть составной записи",
+                    );
+                }
+                changed = true;
+            }
+            PlaylistAction::ToggleCompoundDisclosure(action) => {
+                let outcome = runtime.toggle_compound_disclosure(action);
+                if !matches!(
+                    outcome,
+                    RuntimeToggleCompoundDisclosureOutcome::Controller(
+                        ToggleCompoundDisclosureOutcome::Expanded
+                            | ToggleCompoundDisclosureOutcome::Collapsed
+                    )
+                ) {
+                    runtime.set_playlist_safe_feedback(
+                        "Не удалось изменить раскрытие составной записи",
+                    );
                 }
                 changed = true;
             }

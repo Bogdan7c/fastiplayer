@@ -1,9 +1,8 @@
 //! Fixed-height `show_rows` renderer и stable viewport anchor.
 
 use egui::layers::ShapeIdx;
-use egui::{Align, Layout, Sense, TextWrapMode, WidgetInfo, WidgetType};
-use playlist_core::{PlaylistEntryId, PlaylistItemId, PlaylistMediaKind};
-use ui_artwork_egui::{ArtworkPainter, MediaKindGlyph};
+use egui::{Align, Layout, Sense, WidgetInfo, WidgetType};
+use ui_artwork_egui::ArtworkPainter;
 
 use super::{
     PlaylistAction, PlaylistUiOutput, PlaylistUiState, ViewportAnchor,
@@ -11,21 +10,20 @@ use super::{
         AuthoritativeViewport, AuthoritativeViewportInput, BeginFrameInput, FinishFrameInput,
         ViewportControl,
     },
+    compound_rows,
+    row_content::{
+        ROW_HEIGHT, accessibility_text, render_row_content, show_safe_tooltip, tooltip_width,
+    },
     row_interactions, virtualized_drag,
 };
 use crate::playlist_runtime::{
-    ClearSelectionCursor, PlaylistViewModel, PlaylistVisibleRow, UpdateSelection,
+    ClearSelectionCursor, CompoundCurrentItemScrollTarget, CompoundRuntimeRow,
+    CompoundRuntimeRowId, CompoundRuntimeViewSnapshot, CompoundRuntimeVisibleRow,
+    PlaylistViewModel, PlaylistVisibleRow, UpdateSelection,
 };
 use crate::ui::animation::UiMotion;
 use crate::ui::skin::PlaylistRowStyle;
 
-pub(super) const ROW_HEIGHT: f32 = 34.0;
-pub(super) const TOOLTIP_MAX_WIDTH: f32 = 320.0;
-pub(super) const INDEX_WIDTH: f32 = 38.0;
-pub(super) const MEDIA_KIND_WIDTH: f32 = 16.0;
-const DURATION_WIDTH: f32 = 50.0;
-/// Ширина области служебных индикаторов без удалённого декоративного Play-глифа.
-const BADGES_WIDTH: f32 = 45.0;
 /// Большой frame stall не должен мгновенно проматывать UI transition.
 const MAX_ANIMATION_DELTA_SECONDS: f32 = 0.1;
 /// Минимальная скорость, считающаяся пользовательской kinetic-прокруткой.
@@ -36,10 +34,12 @@ const MANUAL_SCROLL_VELOCITY_EPSILON: f32 = 0.01;
 struct PlaylistRowRenderContext<'a> {
     /// Authoritative immutable snapshot для selection, drag targets и stable IDs.
     model: &'a PlaylistViewModel,
+    /// Compound snapshot является единственным visible-row layout owner-ом.
+    compound_snapshot: &'a CompoundRuntimeViewSnapshot,
     /// Skin-owned токены не читаются из глобальных egui visuals.
     row_style: PlaylistRowStyle,
     /// Одноразовый focus intent разрешён до начала virtualized row pass.
-    focus_entry: Option<PlaylistEntryId>,
+    focus_row: Option<CompoundRuntimeRowId>,
 }
 
 /// Первый visible pass резервирует geometry и background slots без content paint.
@@ -47,7 +47,7 @@ struct PreparedPlaylistRow {
     /// Canonical индекс нужен interaction/accessibility и drag target.
     row_index: usize,
     /// Bounded visible read model переносится без повторного snapshot lookup.
-    row: PlaylistVisibleRow,
+    row: CompoundRuntimeVisibleRow,
     /// Один stable full-width interaction ID принадлежит всей строке.
     row_id: egui::Id,
     /// Экранный rect строки не меняется во втором pass.
@@ -85,35 +85,46 @@ pub(super) fn show_rows(
     state: &mut PlaylistUiState,
     output: &mut PlaylistUiOutput,
 ) {
+    // Один immutable S17V snapshot задаёт visible identities и disclosure layout.
+    let compound_snapshot = model.compound_snapshot();
     // Tombstone больше не имеет status-row; intent всё равно потребляется ровно один раз.
     let go_current_item = match state.take_go_current() {
         Some(crate::playlist_runtime::PlaylistGoCurrentTarget::Row(item_id)) => Some(item_id),
         Some(crate::playlist_runtime::PlaylistGoCurrentTarget::Tombstone) | None => None,
     };
     if model.is_empty() {
-        state.observed_structural_revision = Some(model.structural_revision());
+        state.observed_playlist_layout_identity = Some(model.layout_identity());
         state.viewport_anchor = None;
-        state
-            .active_accent
-            .observe_empty(model.structural_revision().get());
+        state.active_accent.observe_empty(model.layout_identity());
         return;
     }
 
     let row_pitch = ROW_HEIGHT + ui.spacing().item_spacing.y;
-    let focus_entry = state.take_row_focus().or_else(|| {
-        go_current_item
-            .and_then(|item_id| model.row_index(item_id))
-            .and_then(|row_index| model.entry_id_at(row_index))
+    let focus_row = state.take_row_focus().or_else(|| {
+        go_current_item.and_then(|item_id| {
+            match compound_snapshot.current_item_scroll_target(item_id)? {
+                CompoundCurrentItemScrollTarget::Header(entry_id) => {
+                    Some(CompoundRuntimeRowId::Entry(entry_id))
+                }
+                CompoundCurrentItemScrollTarget::Part(part_item_id) => {
+                    let entry_id = model.entry_id_at(model.row_index(part_item_id)?)?;
+                    Some(CompoundRuntimeRowId::Part {
+                        compound_entry_id: entry_id,
+                        part_item_id,
+                    })
+                }
+            }
+        })
     });
     let drag_was_active = virtualized_drag::is_active(&state.drag);
     let drag_offset = virtualized_drag::prepare_scroll_offset(
         ui.ctx(),
         &mut state.drag,
-        model.item_count(),
+        compound_snapshot.visible_row_count(),
         row_pitch,
     );
     let manual_scroll_input = state.active_accent.has_manual_scroll_input(ui.ctx());
-    let explicit_viewport_intent = focus_entry.is_some();
+    let explicit_viewport_intent = focus_row.is_some();
     let manual_viewport_override =
         manual_scroll_input || drag_was_active || explicit_viewport_intent;
     let delta_seconds = ui
@@ -122,16 +133,17 @@ pub(super) fn show_rows(
     let active_item_id = model.active_item_id();
     let accent_scroll_offset = state.active_accent.begin_frame(BeginFrameInput {
         active_item_id,
-        structural_revision: model.structural_revision().get(),
-        target_row_index: active_item_id.and_then(|item_id| model.row_index(item_id)),
-        item_count: model.item_count(),
+        layout_identity: model.layout_identity(),
+        target_row_index: active_item_id
+            .and_then(|item_id| compound_snapshot.active_row_index(item_id)),
+        item_count: compound_snapshot.visible_row_count(),
         row_pitch,
         motion,
         delta_seconds,
         manual_viewport_override,
     });
-    let anchored_offset = focus_entry
-        .and_then(|entry_id| model.entry_row_index(entry_id))
+    let anchored_offset = focus_row
+        .and_then(|row_id| compound_snapshot.row_index(row_id))
         .map(|index| index as f32 * row_pitch)
         .or(drag_offset)
         .or(accent_scroll_offset)
@@ -146,21 +158,22 @@ pub(super) fn show_rows(
     let scroll_output = scroll_area.show_rows(
         ui,
         ROW_HEIGHT,
-        model.item_count(),
+        compound_snapshot.visible_row_count(),
         |rows_ui, visible_range| {
             rows_ui.set_min_width(0.0);
-            let visible_rows = model.visible_rows(visible_range.clone());
+            let visible_rows = compound_snapshot.visible_presented_rows(visible_range.clone());
             let row_context = PlaylistRowRenderContext {
                 model,
+                compound_snapshot,
                 row_style,
-                focus_entry,
+                focus_row,
             };
             render_visible_rows_in_two_passes(
                 rows_ui,
                 row_context,
                 visible_range.start,
                 visible_rows,
-                active_item_id,
+                active_item_id.and_then(|item_id| compound_snapshot.active_row_index(item_id)),
                 state,
                 output,
             )
@@ -168,7 +181,7 @@ pub(super) fn show_rows(
     );
     clear_selection_from_empty_area(
         ui,
-        model,
+        compound_snapshot.visible_row_count(),
         scroll_output.inner_rect,
         scroll_output.state.offset.y,
         row_pitch,
@@ -177,7 +190,7 @@ pub(super) fn show_rows(
     virtualized_drag::finish_frame(
         ui.ctx(),
         &mut state.drag,
-        model,
+        compound_snapshot,
         scroll_output.inner_rect,
         scroll_output.state.offset.y,
         row_pitch,
@@ -199,7 +212,7 @@ pub(super) fn show_rows(
                     scroll_offset: scroll_output.state.offset.y,
                     row_pitch,
                     row_height: ROW_HEIGHT,
-                    item_count: model.item_count(),
+                    item_count: compound_snapshot.visible_row_count(),
                     reference_row_index,
                     reference_row_rect,
                     control: if manual_override_after_render {
@@ -224,7 +237,12 @@ pub(super) fn show_rows(
     if state.active_accent.needs_repaint() {
         ui.ctx().request_repaint();
     }
-    update_viewport_anchor(model, state, row_pitch, scroll_output.state.offset.y);
+    update_viewport_anchor(
+        compound_snapshot,
+        state,
+        row_pitch,
+        scroll_output.state.offset.y,
+    );
 }
 
 /// Выполняет два прохода только по bounded visible rows.
@@ -232,8 +250,8 @@ fn render_visible_rows_in_two_passes(
     ui: &mut egui::Ui,
     context: PlaylistRowRenderContext<'_>,
     first_visible_row_index: usize,
-    visible_rows: Vec<PlaylistVisibleRow>,
-    active_item_id: Option<PlaylistItemId>,
+    visible_rows: Vec<CompoundRuntimeVisibleRow>,
+    active_row_index: Option<usize>,
     state: &mut PlaylistUiState,
     output: &mut PlaylistUiOutput,
 ) -> VisibleRowsPaintPlan {
@@ -247,10 +265,10 @@ fn render_visible_rows_in_two_passes(
         // Canonical index восстанавливается из начала egui visible range.
         let row_index = first_visible_row_index + visible_offset;
         // Stable top-level identity изолирует Single и Compound header rows.
-        let entry_id = row.entry_id();
+        let stable_row_id = row.row().row_id();
         // Scope нужен только для стабильного row interaction ID первого pass.
         let prepared_row = ui
-            .push_id(("playlist_row", entry_id), |row_ui| {
+            .push_id(("playlist_row", stable_row_id), |row_ui| {
                 // Каждая surface занимает всю доступную ширину ScrollArea content.
                 let available_width = row_ui.available_width().max(1.0);
                 // Allocation продвигает layout ровно один раз.
@@ -278,10 +296,10 @@ fn render_visible_rows_in_two_passes(
         .first()
         .map(|prepared| (prepared.row_index, prepared.row_rect));
     // Active target rect ищется только среди уже bounded visible records.
-    let active_target_rect = active_item_id.and_then(|target_item_id| {
+    let active_target_rect = active_row_index.and_then(|target_row_index| {
         prepared_rows
             .iter()
-            .find(|prepared| prepared.row.item_id() == target_item_id)
+            .find(|prepared| prepared.row_index == target_row_index)
             .map(|prepared| prepared.row_rect)
     });
     // Overlay plan имеет ту же bounded ёмкость.
@@ -290,7 +308,7 @@ fn render_visible_rows_in_two_passes(
     // Второй pass рисует content и регистрирует interaction по готовой геометрии.
     for prepared_row in &prepared_rows {
         // Demand hint публикуется один раз на реально отрисованную строку.
-        output.record_visible(prepared_row.row.item_id());
+        output.record_visible(prepared_row.row.presentation().item_id());
         // Overlay stroke откладывается до moving active outline.
         row_overlays.push(render_prepared_row(
             ui,
@@ -354,13 +372,13 @@ fn paint_row_overlays(
 /// Клик ниже последней строки снимает selection, не создавая fake row action.
 fn clear_selection_from_empty_area(
     ui: &mut egui::Ui,
-    model: &PlaylistViewModel,
+    visible_row_count: usize,
     viewport: egui::Rect,
     scroll_offset: f32,
     row_pitch: f32,
     output: &mut PlaylistUiOutput,
 ) {
-    let content_bottom = viewport.top() + model.item_count() as f32 * row_pitch - scroll_offset;
+    let content_bottom = viewport.top() + visible_row_count as f32 * row_pitch - scroll_offset;
     let empty_top = content_bottom.clamp(viewport.top(), viewport.bottom());
     if empty_top >= viewport.bottom() {
         return;
@@ -386,26 +404,35 @@ pub(super) fn anchored_scroll_offset(
     state: &mut PlaylistUiState,
     row_pitch: f32,
 ) -> Option<f32> {
-    let revision = model.structural_revision();
-    let previous_revision = state.observed_structural_revision.replace(revision)?;
-    if previous_revision == revision {
+    let layout_identity = model.layout_identity();
+    let previous_identity = state
+        .observed_playlist_layout_identity
+        .replace(layout_identity)?;
+    if previous_identity == layout_identity {
         return None;
     }
     let anchor = state.viewport_anchor?;
-    model.row_index(anchor.item_id).map(|row_index| {
-        row_index as f32 * row_pitch + anchor.intra_row_offset.clamp(0.0, row_pitch)
-    })
+    model
+        .compound_snapshot()
+        .active_row_index(anchor.item_id)
+        .map(|row_index| {
+            row_index as f32 * row_pitch + anchor.intra_row_offset.clamp(0.0, row_pitch)
+        })
 }
 
 fn update_viewport_anchor(
-    model: &PlaylistViewModel,
+    compound_snapshot: &CompoundRuntimeViewSnapshot,
     state: &mut PlaylistUiState,
     row_pitch: f32,
     scroll_offset: f32,
 ) {
-    let top_row_index =
-        ((scroll_offset / row_pitch).floor() as usize).min(model.item_count().saturating_sub(1));
-    let Some(item_id) = model.item_id_at(top_row_index) else {
+    let top_row_index = ((scroll_offset / row_pitch).floor() as usize)
+        .min(compound_snapshot.visible_row_count().saturating_sub(1));
+    let Some(item_id) = compound_snapshot
+        .visible_presented_rows(top_row_index..top_row_index.saturating_add(1))
+        .first()
+        .map(|row| row.presentation().item_id())
+    else {
         state.viewport_anchor = None;
         return;
     };
@@ -422,76 +449,147 @@ fn render_prepared_row(
     state: &mut PlaylistUiState,
     output: &mut PlaylistUiOutput,
 ) -> PlaylistRowOverlay {
+    // Projection identity задаёт interaction policy, presentation — только display metadata.
+    let projection = prepared.row.row();
+    let presentation = prepared.row.presentation();
+    // Top-level numbering не меняется при раскрытии либо сворачивании children.
+    let structural_entry_id = projection.structural_entry_id().or(match projection {
+        CompoundRuntimeRow::CompoundPart {
+            compound_entry_id, ..
+        } => Some(compound_entry_id),
+        CompoundRuntimeRow::Single { .. } | CompoundRuntimeRow::CompoundHeader { .. } => None,
+    });
+    let top_level_index = structural_entry_id
+        .and_then(|entry_id| context.model.entry_row_index(entry_id))
+        .unwrap_or(prepared.row_index);
     // Второй pass использует готовую geometry и не продвигает parent layout повторно.
     let mut row_ui = ui.new_child(
         egui::UiBuilder::new()
-            .id_salt(("playlist_row_content", prepared.row.entry_id()))
+            .id_salt(("playlist_row_content", projection.row_id()))
             .max_rect(prepared.row_rect)
             .layout(Layout::left_to_right(Align::Center)),
     );
     // Content клипуется точным row rect и текущим ScrollArea clip.
     row_ui.set_clip_rect(prepared.row_rect.intersect(ui.clip_rect()));
-    // Text/pending/error layout остаётся статичным во время decorative transition.
-    render_row_content(
-        &mut row_ui,
-        prepared.row_index,
+    // Compound rail/disclosure не создаёт собственный widget либо AccessKit node.
+    compound_rows::paint_compound_artwork(
+        &row_ui,
+        prepared.row_rect,
         &prepared.row,
         context.row_style,
     );
+    // Text/pending/error layout остаётся статичным во время decorative transition.
+    match projection {
+        CompoundRuntimeRow::Single { .. } => {
+            render_row_content(
+                &mut row_ui,
+                top_level_index,
+                presentation,
+                context.row_style,
+            );
+        }
+        CompoundRuntimeRow::CompoundHeader { .. } | CompoundRuntimeRow::CompoundPart { .. } => {
+            compound_rows::render_content(
+                &mut row_ui,
+                top_level_index,
+                &prepared.row,
+                context.row_style,
+            );
+        }
+    }
 
     // Единственный full-width response регистрируется после layout всего content.
-    let response = ui.interact(prepared.row_rect, prepared.row_id, Sense::click_and_drag());
-    // Accessibility сразу читает authoritative active flag, а не moving paint rect.
-    let accessibility_text = accessibility_text(prepared.row_index, &prepared.row);
-    // Selectable node остаётся единственным AccessKit элементом строки.
-    response.widget_info(|| {
-        WidgetInfo::selected(
-            WidgetType::SelectableLabel,
-            ui.is_enabled(),
-            prepared.row.is_selected(),
-            &accessibility_text,
-        )
-    });
+    let response = ui.interact(
+        prepared.row_rect,
+        prepared.row_id,
+        compound_rows::interaction_sense(projection),
+    );
+    match projection {
+        CompoundRuntimeRow::Single { .. } => {
+            // Accessibility сразу читает authoritative active flag, а не moving paint rect.
+            let accessibility_text = accessibility_text(top_level_index, presentation);
+            response.widget_info(|| {
+                WidgetInfo::selected(
+                    WidgetType::SelectableLabel,
+                    ui.is_enabled(),
+                    presentation.is_selected(),
+                    &accessibility_text,
+                )
+            });
+        }
+        CompoundRuntimeRow::CompoundHeader { .. } | CompoundRuntimeRow::CompoundPart { .. } => {
+            compound_rows::configure_accessibility(ui, &response, top_level_index, &prepared.row);
+        }
+    }
     // Explicit focus/Go Current использует существующий egui center contract.
-    if context.focus_entry == Some(prepared.row.entry_id()) {
+    if context.focus_row == Some(projection.row_id()) {
         response.scroll_to_me(Some(Align::Center));
         response.request_focus();
     }
 
-    // Hover/selection fill расположен над active fill, но под content.
-    let row_fill = row_fill(context.row_style, &prepared.row, response.hovered());
+    // Interaction публикует typed actions; child path не получает structural mutation APIs.
+    let mut row_interaction_context = row_interactions::RowInteractionContext {
+        model: context.model,
+        compound_snapshot: context.compound_snapshot,
+        visible_row_index: prepared.row_index,
+        state,
+        output,
+    };
+    let interaction = match projection {
+        CompoundRuntimeRow::Single {
+            entry_id, item_id, ..
+        } => {
+            row_interactions::handle_row_response(
+                ui,
+                &response,
+                entry_id,
+                row_interactions::StructuralRowActivation::Single { item_id },
+                0.0,
+                &mut row_interaction_context,
+            );
+            compound_rows::CompoundRowInteractionResult {
+                fill: row_fill(context.row_style, presentation, response.hovered()),
+                focused: response.has_focus(),
+            }
+        }
+        CompoundRuntimeRow::CompoundHeader { .. } | CompoundRuntimeRow::CompoundPart { .. } => {
+            compound_rows::handle_interaction(
+                ui,
+                &response,
+                &prepared.row,
+                context.row_style,
+                &mut row_interaction_context,
+            )
+        }
+    };
     // Background slot не содержит outline: priority strokes рисуются последним pass.
     ArtworkPainter::new(ui.painter()).playlist_row_background(
         prepared.background_shape,
         prepared.row_rect,
-        row_fill,
+        interaction.fill,
         egui::Stroke::NONE,
     );
-
-    // Interaction mapping по-прежнему публикует только typed post-render actions.
-    row_interactions::handle_row_response(
-        ui,
-        &response,
-        context.model,
-        prepared.row_index,
-        prepared.row.item_id(),
-        state,
-        output,
-    );
     // Tooltip остаётся привязанным к единственному full-width response.
-    egui::Tooltip::for_enabled(&response)
-        .width(tooltip_width(response.rect.width()))
-        .show(|ui| show_safe_tooltip(ui, &prepared.row));
+    match projection {
+        CompoundRuntimeRow::Single { .. } => {
+            egui::Tooltip::for_enabled(&response)
+                .width(tooltip_width(response.rect.width()))
+                .show(|ui| show_safe_tooltip(ui, presentation));
+        }
+        CompoundRuntimeRow::CompoundHeader { .. } | CompoundRuntimeRow::CompoundPart { .. } => {
+            compound_rows::show_tooltip(&response, &prepared.row);
+        }
+    }
 
     // Insertion/focus вычисляются после interaction и откладываются до overlay pass.
     let priority_stroke = priority_row_stroke(
         context.row_style,
-        response.has_focus(),
+        interaction.focused,
         virtualized_drag::marks_row(
-            &state.drag,
+            &row_interaction_context.state.drag,
             prepared.row_index,
-            prepared.row.entry_id(),
-            context.model.item_count(),
+            projection.structural_entry_id(),
+            context.compound_snapshot.visible_row_count(),
         ),
     );
     // Overlay record не хранит widget/Response между кадрами.
@@ -531,181 +629,4 @@ fn priority_row_stroke(
     } else {
         egui::Stroke::NONE
     }
-}
-
-fn render_row_content(
-    ui: &mut egui::Ui,
-    row_index: usize,
-    row: &PlaylistVisibleRow,
-    row_style: PlaylistRowStyle,
-) {
-    ui.add_sized(
-        [INDEX_WIDTH, ROW_HEIGHT],
-        egui::Label::new(egui::RichText::new(format!("{}.", row_index + 1)).weak())
-            .selectable(false)
-            .wrap_mode(TextWrapMode::Truncate),
-    );
-    render_media_kind_icon(ui, row.media_kind());
-
-    let trailing_width = DURATION_WIDTH + BADGES_WIDTH;
-    let spacing_width = ui.spacing().item_spacing.x * 2.0;
-    let title_width = (ui.available_width() - trailing_width - spacing_width).max(24.0);
-    // Обычные строки используют стандартный foreground без прежнего forced strong color.
-    let mut title_text = egui::RichText::new(row.display_title());
-    // Только подтверждённая active identity получает skin-owned контрастный цвет.
-    if row.is_active() {
-        title_text = title_text.color(row_style.active_title_color);
-    }
-    ui.add_sized(
-        [title_width, ROW_HEIGHT],
-        egui::Label::new(title_text)
-            .selectable(false)
-            .wrap_mode(TextWrapMode::Truncate),
-    );
-    ui.add_sized(
-        [DURATION_WIDTH, ROW_HEIGHT],
-        egui::Label::new(format_duration(row.duration()))
-            .selectable(false)
-            .wrap_mode(TextWrapMode::Truncate),
-    );
-    render_badges(ui, row);
-}
-
-/// Резервирует компактную неинтерактивную ячейку и передаёт рисование artwork-crate.
-fn render_media_kind_icon(ui: &mut egui::Ui, media_kind: PlaylistMediaKind) {
-    // `Sense::hover` не создаёт click/drag-владельца и сохраняет взаимодействие с целой строкой.
-    let (response, painter) =
-        ui.allocate_painter(egui::vec2(MEDIA_KIND_WIDTH, ROW_HEIGHT), Sense::hover());
-    // Цвет и толщина берутся из текущей темы, поэтому glyph наследует состояние интерфейса.
-    let stroke = ui.visuals().widgets.noninteractive.fg_stroke;
-    // App-level выполняет только типизированное отображение domain-вида в визуальный glyph.
-    ArtworkPainter::new(&painter).media_kind_icon(
-        response.rect,
-        media_kind_glyph(media_kind),
-        stroke,
-    );
-}
-
-/// Переводит playlist-domain тип в нейтральный artwork-контракт.
-pub(super) const fn media_kind_glyph(media_kind: PlaylistMediaKind) -> MediaKindGlyph {
-    // Полный match не позволит молча забыть новый domain-вариант.
-    match media_kind {
-        PlaylistMediaKind::Unknown => MediaKindGlyph::Unknown,
-        PlaylistMediaKind::Audio => MediaKindGlyph::Audio,
-        PlaylistMediaKind::Video => MediaKindGlyph::Video,
-    }
-}
-
-fn render_badges(ui: &mut egui::Ui, row: &PlaylistVisibleRow) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(BADGES_WIDTH, ROW_HEIGHT),
-        Layout::left_to_right(Align::Center),
-        |ui| {
-            if row.is_pending() {
-                ui.add_sized([14.0, 14.0], egui::Spinner::new());
-            } else {
-                ui.add_space(14.0);
-            }
-            if row.runtime_error().is_some() {
-                ui.add(
-                    egui::Label::new(egui::RichText::new("!").color(ui.visuals().error_fg_color))
-                        .selectable(false),
-                );
-            } else {
-                ui.add_space(8.0);
-            }
-        },
-    );
-}
-
-fn media_kind_text(media_kind: PlaylistMediaKind) -> &'static str {
-    match media_kind {
-        PlaylistMediaKind::Unknown => "Медиа",
-        PlaylistMediaKind::Audio => "Аудио",
-        PlaylistMediaKind::Video => "Видео",
-    }
-}
-
-fn format_duration(duration: Option<media_core::MediaDuration>) -> String {
-    let Some(duration) = duration else {
-        return "—".to_owned();
-    };
-    let total_seconds = duration.as_duration().as_secs();
-    let hours = total_seconds / 3_600;
-    let minutes = (total_seconds % 3_600) / 60;
-    let seconds = total_seconds % 60;
-    if hours > 0 {
-        format!("{hours}:{minutes:02}:{seconds:02}")
-    } else {
-        format!("{minutes}:{seconds:02}")
-    }
-}
-
-pub(super) fn accessibility_text(row_index: usize, row: &PlaylistVisibleRow) -> String {
-    let mut text = format!(
-        "Элемент {}. {}. Тип: {}. Длительность: {}.",
-        row_index + 1,
-        row.display_title(),
-        media_kind_text(row.media_kind()),
-        format_duration(row.duration())
-    );
-    if row.display_title() != row.fallback_display_name() {
-        text.push_str(" Имя файла: ");
-        text.push_str(row.fallback_display_name());
-        text.push('.');
-    }
-    if row.is_active() {
-        text.push_str(" Сейчас играет.");
-    }
-    if row.is_selected() {
-        text.push_str(" Выбрано.");
-    }
-    match (row.runtime_error(), row.is_pending()) {
-        (Some(error), true) => {
-            text.push_str(
-                " Предыдущая попытка завершилась ошибкой; выполняется повторная попытка. Ошибка: ",
-            );
-            text.push_str(error.safe_summary());
-            text.push('.');
-        }
-        (Some(error), false) => {
-            text.push_str(" Ошибка: ");
-            text.push_str(error.safe_summary());
-            text.push('.');
-        }
-        (None, true) => text.push_str(" Выполняется открытие."),
-        (None, false) => {}
-    }
-    text
-}
-
-fn show_safe_tooltip(ui: &mut egui::Ui, row: &PlaylistVisibleRow) {
-    ui.add(egui::Label::new(row.display_title()).wrap_mode(TextWrapMode::Wrap));
-    if row.display_title() != row.fallback_display_name() {
-        ui.add(
-            egui::Label::new(egui::RichText::new(row.fallback_display_name()).weak())
-                .wrap_mode(TextWrapMode::Wrap),
-        );
-    }
-    if let Some(error) = row.runtime_error() {
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(error.safe_summary()).color(ui.visuals().error_fg_color),
-            )
-            .wrap_mode(TextWrapMode::Wrap),
-        );
-    }
-}
-
-/// Ограничивает tooltip шириной строки и не выпускает длинное имя поверх всего видео.
-pub(super) fn tooltip_width(row_width: f32) -> f32 {
-    row_width.clamp(1.0, TOOLTIP_MAX_WIDTH)
-}
-
-#[cfg(test)]
-pub(super) fn stable_row_id(
-    parent_id: egui::Id,
-    entry_id: playlist_core::PlaylistEntryId,
-) -> egui::Id {
-    parent_id.with(("playlist_row", entry_id))
 }

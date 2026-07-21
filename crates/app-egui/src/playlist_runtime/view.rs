@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use media_core::MediaDuration;
 use playlist_core::{
-    PlaylistEntry, PlaylistEntryId, PlaylistItemId, PlaylistMediaKind, PlaylistQueue, RepeatMode,
-    TraversalCurrentItemId,
+    CachedPlaylistMetadata, PlaylistEntry, PlaylistEntryId, PlaylistItemId, PlaylistMediaKind,
+    PlaylistQueue, RepeatMode, TraversalCurrentItemId,
 };
 
 use super::identity::{ActiveMediaIdentity, PendingTarget, PlaylistItemRuntimeError};
@@ -130,6 +130,48 @@ pub(crate) struct PlaylistVisibleRow {
     pending: bool,
     selected: bool,
     runtime_error: Option<PlaylistItemRuntimeError>,
+}
+
+/// Именованное runtime-состояние не заставляет projection callsite передавать мутные bool-ы.
+pub(super) struct PlaylistVisibleRowState {
+    /// Подтверждённый installed media относится к этой presentation-строке.
+    pub(super) active: bool,
+    /// Strong-open этой presentation-строки ещё не завершён.
+    pub(super) pending: bool,
+    /// Structural selection применяется только к top-level entry.
+    pub(super) selected: bool,
+    /// Exact item error не смешивается с pending либо отсутствующим ресурсом.
+    pub(super) runtime_error: Option<PlaylistItemRuntimeError>,
+}
+
+impl PlaylistVisibleRow {
+    /// Строит renderer-neutral presentation из owner-provided metadata и runtime state.
+    pub(super) fn from_cached_metadata(
+        entry_id: PlaylistEntryId,
+        item_id: PlaylistItemId,
+        metadata: &CachedPlaylistMetadata,
+        state: PlaylistVisibleRowState,
+    ) -> Self {
+        // Fallback сохраняется отдельно для tooltip/accessibility, даже если есть title.
+        let fallback_display_name: Arc<str> = Arc::from(metadata.fallback_display_name());
+        // Пустой metadata title не должен вытеснять безопасное fallback-имя.
+        let display_title = metadata
+            .title()
+            .filter(|title| !title.trim().is_empty())
+            .map_or_else(|| fallback_display_name.clone(), Arc::from);
+        Self {
+            entry_id,
+            item_id,
+            fallback_display_name,
+            display_title,
+            duration: metadata.duration(),
+            media_kind: metadata.media_kind(),
+            active: state.active,
+            pending: state.pending,
+            selected: state.selected,
+            runtime_error: state.runtime_error,
+        }
+    }
 }
 
 /// Именованный fixture не даёт тестам перепутать визуальные состояния строки.

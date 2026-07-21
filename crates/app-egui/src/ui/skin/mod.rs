@@ -113,6 +113,22 @@ pub struct PlaylistRowStyle {
     pub selected_hover_fill: Color32,
     /// Независимая surface active playback.
     pub active_fill: Color32,
+    /// Постоянная surface отличает compound header даже без disclosure icon.
+    pub compound_header_fill: Color32,
+    /// Hover compound header не смешивается с selection surface.
+    pub compound_header_hover_fill: Color32,
+    /// Раскрытая active group получает мягкий group-level accent.
+    pub compound_active_header_fill: Color32,
+    /// Child surface поддерживает визуальную вложенность без selection semantics.
+    pub compound_child_fill: Color32,
+    /// Hover exact child показывает его отдельную play hit-area.
+    pub compound_child_hover_fill: Color32,
+    /// Neutral rail/disclosure geometry принадлежит artwork crate.
+    pub compound_artwork: ui_artwork_egui::CompoundPlaylistRowStyle,
+    /// Leading hit-area disclosure не зависит от длины title.
+    pub compound_disclosure_hit_width: f32,
+    /// Child content получает явный геометрический отступ от header columns.
+    pub compound_child_indent: f32,
     /// Нейтральная геометрия и цвет левого active playback marker-а.
     pub active_marker: ui_artwork_egui::PlaylistRowMarkerStyle,
     /// Контрастный цвет заголовка подтверждённо активной строки.
@@ -415,10 +431,15 @@ mod tests {
             style.focus_stroke.color,
             style.active_marker.fill,
             style.active_title_color,
+            style.compound_artwork.rail_color,
+            style.compound_artwork.active_rail_color,
+            style.compound_artwork.disclosure_color,
         ] {
             assert_eq!(color.r(), color.g());
             assert_eq!(color.g(), color.b());
         }
+        assert_eq!(style.compound_disclosure_hit_width, 32.0);
+        assert_eq!(style.compound_child_indent, 20.0);
     }
 
     /// Toolbar совпадает по визуальному весу с transport-кнопками и не имеет цветного акцента.

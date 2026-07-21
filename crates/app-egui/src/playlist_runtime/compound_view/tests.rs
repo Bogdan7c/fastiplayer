@@ -2,7 +2,7 @@
 
 use std::num::NonZeroU64;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use player_core::MediaInstanceId;
 use playlist_core::{
@@ -84,6 +84,22 @@ const fn revision() -> PlaylistStructuralRevision {
     PlaylistStructuralRevision::INITIAL
 }
 
+/// Focused S17G fixtures не добавляют runtime error/pending state без явного теста.
+fn projection_state(
+    active_media: Option<ActiveMediaIdentity>,
+    selection: &PlaylistSelectionSnapshot,
+) -> CompoundRuntimeProjectionState<'_> {
+    static EMPTY_RUNTIME_ERRORS: LazyLock<HashMap<PlaylistItemId, PlaylistItemRuntimeError>> =
+        LazyLock::new(HashMap::new);
+    CompoundRuntimeProjectionState {
+        structural_revision: revision(),
+        active_media,
+        pending_target: None,
+        runtime_errors: &EMPTY_RUNTIME_ERRORS,
+        selection,
+    }
+}
+
 /// Строит typed header action с explicit compound identity.
 const fn header_action(
     compound_entry_id: PlaylistEntryId,
@@ -118,9 +134,7 @@ fn collapsed_and_expanded_rows_keep_top_level_count_separate_for_one_and_many_pa
 
     let collapsed = disclosure.snapshot(
         &queue,
-        revision(),
-        Some(active_identity(item_ids[3])),
-        &selection.snapshot(),
+        projection_state(Some(active_identity(item_ids[3])), &selection.snapshot()),
     );
     assert_eq!(collapsed.top_level_entry_count(), 4);
     assert_eq!(collapsed.visible_row_count(), 4);
@@ -158,9 +172,12 @@ fn collapsed_and_expanded_rows_keep_top_level_count_separate_for_one_and_many_pa
     );
     let expanded = disclosure.snapshot(
         &queue,
-        revision(),
-        Some(active_identity(item_ids[3])),
-        &selection.snapshot(),
+        projection_state(Some(active_identity(item_ids[3])), &selection.snapshot()),
+    );
+    assert_ne!(
+        collapsed.layout_identity(),
+        expanded.layout_identity(),
+        "disclosure меняет layout identity без fake structural mutation"
     );
     assert_eq!(expanded.top_level_entry_count(), 4);
     assert_eq!(expanded.visible_row_count(), 8);
@@ -172,6 +189,13 @@ fn collapsed_and_expanded_rows_keep_top_level_count_separate_for_one_and_many_pa
             ..
         } if *part_item_id == item_ids[3]
     )));
+    assert_eq!(
+        (0..=expanded.visible_row_count())
+            .map(|visible_slot| expanded.structural_insertion_slot(visible_slot))
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2, 2, 3, 3, 3, 3, 4],
+        "child geometry не должна разрешать insertion внутрь compound group"
+    );
 }
 
 #[test]
@@ -264,7 +288,7 @@ fn structural_range_is_collapse_independent_and_part_play_preserves_selection() 
     assert_eq!(after_part_click.range_anchor(), Some(entry_ids[0]));
     assert_eq!(after_part_click.interaction_cursor(), Some(entry_ids[2]));
 
-    let expanded = disclosure.snapshot(&queue, revision(), None, &after_part_click);
+    let expanded = disclosure.snapshot(&queue, projection_state(None, &after_part_click));
     let child = expanded
         .visible_rows(0..expanded.visible_row_count())
         .into_iter()
@@ -290,7 +314,7 @@ fn current_item_targets_header_when_collapsed_and_exact_part_when_expanded() {
     let mut disclosure = CompoundRuntimeViewState::default();
     let selection = PlaylistSelectionState::default().snapshot();
 
-    let collapsed = disclosure.snapshot(&queue, revision(), None, &selection);
+    let collapsed = disclosure.snapshot(&queue, projection_state(None, &selection));
     assert_eq!(
         collapsed.current_item_scroll_target(item_ids[3]),
         Some(CompoundCurrentItemScrollTarget::Header(entry_ids[2]))
@@ -305,7 +329,7 @@ fn current_item_targets_header_when_collapsed_and_exact_part_when_expanded() {
             structural_revision: revision(),
         },
     );
-    let expanded = disclosure.snapshot(&queue, revision(), None, &selection);
+    let expanded = disclosure.snapshot(&queue, projection_state(None, &selection));
     assert_eq!(
         expanded.current_item_scroll_target(item_ids[3]),
         Some(CompoundCurrentItemScrollTarget::Part(item_ids[3]))
@@ -371,14 +395,10 @@ fn stale_group_and_part_actions_are_rejected_before_state_changes() {
         ),
         CompoundPartPlayTarget::PartNotInGroup
     );
+    let empty_selection = PlaylistSelectionState::default().snapshot();
     assert_eq!(
         disclosure
-            .snapshot(
-                &queue,
-                revision(),
-                None,
-                &PlaylistSelectionState::default().snapshot(),
-            )
+            .snapshot(&queue, projection_state(None, &empty_selection))
             .visible_row_count(),
         4,
         "stale toggle не должен раскрывать group"

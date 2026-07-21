@@ -109,6 +109,33 @@ impl PlayerSkin for MinimalSkin {
             selected_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 46),
             selected_hover_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 64),
             active_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 18),
+            // Постоянная слабая поверхность отличает compound от обычного media.
+            compound_header_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 10),
+            // Hover остаётся слабее выбранной structural строки.
+            compound_header_hover_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 32),
+            // Active group получает отдельную surface только пока exact child видим.
+            compound_active_header_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 24),
+            // Child background связывает раскрытые части в один визуальный блок.
+            compound_child_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 5),
+            // Hover child остаётся ниже обычного structural selection.
+            compound_child_hover_fill: Color32::from_rgba_unmultiplied(255, 255, 255, 22),
+            // Geometry и grayscale-токены передаются neutral artwork boundary.
+            compound_artwork: ui_artwork_egui::CompoundPlaylistRowStyle {
+                rail_x_offset: 5.0,
+                header_top_inset: 4.0,
+                child_connector_length: 14.0,
+                disclosure_center_x: 17.0,
+                disclosure_half_extent: 4.0,
+                rail_stroke_width: 2.0,
+                disclosure_stroke_width: 1.6,
+                rail_color: Color32::from_rgba_unmultiplied(210, 210, 210, 150),
+                active_rail_color: Color32::from_rgba_unmultiplied(245, 245, 245, 235),
+                disclosure_color: Color32::from_rgba_unmultiplied(230, 230, 230, 220),
+            },
+            // 32 points дают доступный pointer target независимо от glyph extent.
+            compound_disclosure_hit_width: 32.0,
+            // 20 points визуально отделяют child title от header title.
+            compound_child_indent: 20.0,
             // Узкий left-edge marker отделяет playback от full-row selection surface.
             active_marker: ui_artwork_egui::PlaylistRowMarkerStyle {
                 // Три points заметны при беглом взгляде и не перекрывают индекс.

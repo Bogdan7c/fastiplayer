@@ -115,8 +115,9 @@ pub(crate) use actions::{
 };
 pub(crate) use compound_view::{
     CompoundCurrentItemScrollTarget, CompoundHeaderPlayAction, CompoundHeaderPlayTarget,
-    CompoundPartPlayAction, CompoundPartPlayTarget, CompoundRuntimeViewSnapshot,
-    ToggleCompoundDisclosure, ToggleCompoundDisclosureOutcome,
+    CompoundPartPlayAction, CompoundPartPlayTarget, CompoundPartPosition, CompoundRuntimeRow,
+    CompoundRuntimeRowId, CompoundRuntimeViewSnapshot, CompoundRuntimeVisibleRow,
+    PlaylistLayoutIdentity, ToggleCompoundDisclosure, ToggleCompoundDisclosureOutcome,
 };
 #[cfg(test)]
 pub(crate) use controller::ControllerRemovalUndoOutcome;
@@ -155,7 +156,8 @@ pub(crate) use replacement_confirmation::{
     TrustedStartupQueueReplacementIntent, safe_local_open_label,
 };
 pub(crate) use row_interactions::{
-    RuntimeMoveItemsOutcome, RuntimeRowPlayOutcome, RuntimeUpdateSelectionOutcome,
+    RuntimeCompoundHeaderPlayOutcome, RuntimeCompoundPartPlayOutcome, RuntimeMoveItemsOutcome,
+    RuntimeRowPlayOutcome, RuntimeToggleCompoundDisclosureOutcome, RuntimeUpdateSelectionOutcome,
 };
 pub(crate) use selection::{
     ClearSelectionCursor, PlaylistSelectionSnapshot, UpdateSelection, UpdateSelectionOutcome,

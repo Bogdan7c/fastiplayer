@@ -68,3 +68,9 @@
 - `PlaylistToolbarGlyph` теперь содержит семь neutral glyphs: AddFiles, AddUrl, Sort, CurrentItem, Import, Export и Clear. `Export` рисуется в `ui-artwork-egui::playlist_toolbar`; `app-egui` по-прежнему владеет layout/hit-area/accessibility/actions и не содержит прямых Painter primitives.
 - Import/Export используют один tray bounding geometry и одинаковые три shape-а, но стрелки направлены внутрь/наружу. Characterization tests требуют общую tray-геометрию, distinct fingerprints, bounds и decoration invariance.
 - Production Export — шестой left toolbar slot после Import; artwork crate не знает scope, format, queue selection, dialog или writer state. После S11 `ui-artwork-egui` имеет 29 passing tests.
+
+
+## Compound playlist row artwork (S17V, 2026-07-21)
+- Neutral geometry lives in `ui-artwork-egui/src/compound_playlist_row.rs`: `CompoundPlaylistRowKind`, `CompoundPlaylistPartPosition`, `CompoundPlaylistRowStyle` and `ArtworkPainter::compound_playlist_row(...)`. Artwork owns disclosure chevron, group rail/connectors, clipping/validation and no playlist IDs, actions, selection or AccessKit semantics.
+- `app-egui::PlaylistRowStyle` owns compound header/child surfaces, active-group surface, indent/disclosure hit width and neutral artwork style. `ui/playlist/compound_rows.rs` maps runtime projection into artwork vocabulary and owns interaction/accessibility.
+- Characterization covers collapsed/expanded chevron orientation, only/first/middle/last connector geometry and invalid geometry no-shape. Direct Painter primitives remain absent from app-egui; refactor guardrail passes.

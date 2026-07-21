@@ -3,6 +3,7 @@
 //! Crate не знает о событиях, playback-состоянии и виджетах: вызывающая сторона
 //! передаёт только painter, прямоугольники и типизированное визуальное состояние.
 
+mod compound_playlist_row;
 mod fullscreen_button;
 mod media_kind_icon;
 mod open_media_button;
@@ -139,6 +140,16 @@ impl<'a> ArtworkPainter<'a> {
     /// Рисует нейтральный вертикальный row-маркер без layout и interaction.
     pub fn playlist_row_marker(self, rect: egui::Rect, style: PlaylistRowMarkerStyle) {
         playlist_row::paint_marker(self.painter, rect, style);
+    }
+
+    /// Рисует disclosure и соединяющий compound accent без interaction semantics.
+    pub fn compound_playlist_row(
+        self,
+        rect: egui::Rect,
+        kind: CompoundPlaylistRowKind,
+        style: CompoundPlaylistRowStyle,
+    ) {
+        compound_playlist_row::paint(self.painter, rect, kind, style);
     }
 
     /// Рисует full-width separator толщиной ровно один physical pixel.
@@ -931,3 +942,6 @@ mod tests {
         }
     }
 }
+pub use compound_playlist_row::{
+    CompoundPlaylistPartPosition, CompoundPlaylistRowKind, CompoundPlaylistRowStyle,
+};
