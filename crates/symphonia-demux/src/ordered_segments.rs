@@ -1,7 +1,7 @@
 //! Bounded adapter neutral ordered segments -> forward-only Symphonia byte stream.
 //!
-//! Этот модуль валидирует только transport lifecycle и sequence. ISO BMFF boxes
-//! по-прежнему разбирает единственный project-owned `symphonia-format-isomp4-patch`.
+//! Этот модуль валидирует только transport lifecycle и sequence. Container bytes
+//! по-прежнему разбирает единственный зарегистрированный Symphonia format reader.
 
 use std::io::{self, Read};
 use std::sync::{Arc, Mutex};
@@ -12,34 +12,34 @@ use demux_api::{
     OrderedSegment, OrderedSegmentKind, OrderedSegmentReadError, OrderedSegmentSource,
 };
 use media_core::{
-    DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, MediaMetadata,
-    TimelineNotSeekableReason, TrackInfo,
+    DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, DemuxTrackListUpdate,
+    Demuxer, MediaMetadata, TimelineNotSeekableReason, TrackInfo,
 };
 use source_core::CancellationToken;
 
 use crate::{DemuxError, SymphoniaDemuxer};
 
-/// Typed нарушение finite ordered ISO BMFF lifecycle-а.
+/// Typed нарушение container-neutral finite ordered lifecycle-а.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OrderedSegmentLifecycleError {
     /// Source завершился до обязательного initialization segment-а.
-    #[error("ordered ISO BMFF source завершился до initialization segment")]
+    #[error("ordered media source завершился до initialization segment")]
     MissingInitializationSegment,
     /// Media segment нельзя интерпретировать без первого initialization segment-а.
-    #[error("ordered ISO BMFF media segment {sequence} получен до initialization segment")]
+    #[error("ordered media segment {sequence} получен до initialization segment")]
     MediaBeforeInitialization {
         /// Transport-owned sequence ошибочного media segment-а.
         sequence: u64,
     },
     /// Finite profile не поддерживает смену initialization state/discontinuity.
-    #[error("ordered ISO BMFF повторно получил initialization segment {sequence}")]
+    #[error("ordered media source повторно получил initialization segment {sequence}")]
     RepeatedInitializationSegment {
         /// Transport-owned sequence повторного initialization segment-а.
         sequence: u64,
     },
     /// Media sequence обязан строго возрастать; gaps допустимы, duplicate/decrease — нет.
     #[error(
-        "ordered ISO BMFF sequence не возрастает: previous={previous_sequence}, current={current_sequence}"
+        "ordered media sequence не возрастает: previous={previous_sequence}, current={current_sequence}"
     )]
     NonIncreasingSequence {
         /// Последний принятый init/media sequence.
@@ -48,7 +48,7 @@ pub enum OrderedSegmentLifecycleError {
         current_sequence: u64,
     },
     /// Пустой segment не является initialization либо media segment profile-а.
-    #[error("ordered ISO BMFF segment {sequence} с ролью {kind:?} не содержит bytes")]
+    #[error("ordered media segment {sequence} с ролью {kind:?} не содержит bytes")]
     EmptySegment {
         /// Transport-owned sequence пустого segment-а.
         sequence: u64,
@@ -104,28 +104,20 @@ impl OrderedSegmentFailureObserver {
     }
 }
 
-/// Runtime boundary finite ordered ISO BMFF поверх existing Symphonia parser-а.
+/// Runtime boundary finite ordered media поверх existing Symphonia parser-а.
 pub(crate) struct OrderedSegmentDemuxer {
     /// Единственный container parser; wrapper владеет только source-level policy.
     inner: SymphoniaDemuxer,
-    /// Immutable public tracks с ordered-only нормализацией unknown duration.
+    /// Текущий public track snapshot с ordered-only нормализацией unknown duration.
     tracks: Vec<TrackInfo>,
     /// Container duration с ordered-only нормализацией zero как unknown.
     duration: Option<Duration>,
 }
 
 impl OrderedSegmentDemuxer {
-    /// Фиксирует immutable track snapshot и non-seekable policy ordered source-а.
+    /// Фиксирует начальный track snapshot и non-seekable policy ordered source-а.
     pub(crate) fn new(inner: SymphoniaDemuxer) -> Self {
-        let tracks = inner
-            .tracks()
-            .iter()
-            .cloned()
-            .map(|mut track| {
-                track.duration = track.duration.filter(|duration| !duration.is_zero());
-                track
-            })
-            .collect();
+        let tracks = normalized_ordered_tracks(inner.tracks());
         let duration = inner.duration().filter(|duration| !duration.is_zero());
         Self {
             inner,
@@ -133,6 +125,18 @@ impl OrderedSegmentDemuxer {
             duration,
         }
     }
+}
+
+/// Нормализует только ordered-specific представление неизвестной длительности.
+fn normalized_ordered_tracks(tracks: &[TrackInfo]) -> Vec<TrackInfo> {
+    tracks
+        .iter()
+        .cloned()
+        .map(|mut track| {
+            track.duration = track.duration.filter(|duration| !duration.is_zero());
+            track
+        })
+        .collect()
 }
 
 impl Demuxer for OrderedSegmentDemuxer {
@@ -155,19 +159,29 @@ impl Demuxer for OrderedSegmentDemuxer {
     }
 
     fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
-        self.inner.next_event()
+        match self.inner.next_event()? {
+            DemuxReadEvent::TracksChanged(track_update) => {
+                self.tracks = normalized_ordered_tracks(&track_update.tracks);
+                self.duration = track_update.duration.filter(|duration| !duration.is_zero());
+                Ok(DemuxReadEvent::TracksChanged(DemuxTrackListUpdate::new(
+                    self.tracks.clone(),
+                    self.duration,
+                )))
+            }
+            event => Ok(event),
+        }
     }
 
     fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
         Err(DemuxError::SeekUnavailable(
-            "finite ordered ISO BMFF input не поддерживает seek".to_owned(),
+            "finite ordered media input не поддерживает seek".to_owned(),
         )
         .into())
     }
 
     fn seek_with_request(&mut self, _request: DemuxSeekRequest) -> anyhow::Result<DemuxSeekResult> {
         Err(DemuxError::SeekUnavailable(
-            "finite ordered ISO BMFF input не поддерживает seek".to_owned(),
+            "finite ordered media input не поддерживает seek".to_owned(),
         )
         .into())
     }
@@ -211,7 +225,7 @@ impl Read for OrderedSegmentReader {
         }
         self.state
             .lock()
-            .map_err(|_| io::Error::other("ordered ISO BMFF reader state poisoned"))?
+            .map_err(|_| io::Error::other("ordered media reader state poisoned"))?
             .read_into(destination)
     }
 }
@@ -301,7 +315,7 @@ impl OrderedSegmentReaderState {
             }
             (OrderedSegmentLifecycle::Finished, _) => {
                 return Err(io::Error::other(
-                    "ordered ISO BMFF reader получил segment после terminal EOF",
+                    "ordered media reader получил segment после terminal EOF",
                 ));
             }
         };

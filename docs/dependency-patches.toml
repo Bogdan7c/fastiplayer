@@ -58,6 +58,20 @@ focused_automated_tests = ["cargo test --manifest-path crates/symphonia-codec-aa
 manual_media_matrix = ["AAC-LC 3.0/4.0/5.0/5.1/7.1", "AAC-LC 5.1 dialogue/LFE/surround channel identity", "AAC arbitrary unique element tags"]
 removal_gate = "Удалять только когда upstream принимает multichannel AAC-LC, сохраняет каноническую раскладку и проходит direct mapping tests, audio suite и 5.1 listening matrix."
 
+# Запись связывает Matroska/WebM fork с точным опубликованным архивом Symphonia 0.6.0.
+[[patch]]
+path = "crates/symphonia-format-mkv-patch"
+package = "symphonia-format-mkv"
+version = "0.6.0"
+upstream_repository = "https://github.com/pdeljanov/Symphonia"
+upstream_revision = "crates.io:sha256:fb17713e134f5ad316c2690fa3104590ccc85842cdbcf82c3cd1a845cb08aa74"
+reason = "Matroska CodecState должен обновлять track codec parameters и давать ResetRequired строго до зависимых packets; объявленная EBML структура не должна превращать truncation в clean EOF."
+owned_diff_areas = ["src/codecs.rs", "src/demuxer.rs", "src/ebml.rs", "src/lacing.rs", "src/segment.rs"]
+dependent_crates = ["symphonia-demux", "audio"]
+focused_automated_tests = ["cargo test --manifest-path crates/symphonia-format-mkv-patch/Cargo.toml --locked", "cargo test -p symphonia-demux -p web-media-http -p codec-core -p audio --locked"]
+manual_media_matrix = ["WebM VP8/VP9/AV1 + Opus/Vorbis", "Matroska/WebM none/Xiph/fixed/EBML lacing", "CodecState decoder recreation ordering", "cues/no-cues seek", "progressive Range/non-Range и finite ordered Init→Media"]
+removal_gate = "Удалять только после upstream-эквивалента CodecState → ResetRequired ordering и structural truncation semantics, с прохождением direct patch suite, hermetic S28B proof и явной Matroska/WebM media matrix."
+
 # Запись связывает security backport с опубликованным wayland-scanner 0.31.10.
 [[patch]]
 path = "crates/wayland-scanner-patch"

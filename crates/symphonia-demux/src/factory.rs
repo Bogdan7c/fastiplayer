@@ -23,8 +23,8 @@ const SYMPHONIA_BYTE_INPUT_CAPABILITIES: DemuxInputCapabilities =
     DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes)
         .with(DemuxInputCapability::StreamingBytes);
 
-/// ISO BMFF row дополнительно принимает finite ordered init/media segments.
-const SYMPHONIA_ISO_BMFF_INPUT_CAPABILITIES: DemuxInputCapabilities =
+/// Контейнеры, для которых доказано finite `Init -> Media*` byte concatenation.
+const SYMPHONIA_FRAGMENTED_INPUT_CAPABILITIES: DemuxInputCapabilities =
     SYMPHONIA_BYTE_INPUT_CAPABILITIES.with(DemuxInputCapability::OrderedSegments);
 
 /// Existing Symphonia backend как neutral project-owned factory registration.
@@ -44,6 +44,8 @@ impl SymphoniaDemuxFactory {
             vec![
                 DemuxFixtureId::new("symphonia/generated-pcm-wav")?,
                 DemuxFixtureId::new("symphonia/webm-vp9-opus")?,
+                DemuxFixtureId::new("symphonia/generated-webm-s28b")?,
+                DemuxFixtureId::new("symphonia/generated-matroska-ordered-s28b")?,
                 DemuxFixtureId::new("symphonia/mp4-h264-aac")?,
             ],
         );
@@ -121,7 +123,13 @@ impl DemuxFactory for SymphoniaDemuxFactory {
             return Err(DemuxFactoryOpenError::Cancelled);
         }
         let extension_hint = self.extension_hint(&request).to_owned();
-        let ordered_iso_bmff_selected = request.selected_probe.container.as_str() == "iso-bmff";
+        let ordered_input_supported = self
+            .container_registration(request.selected_probe.container.as_str())
+            .is_some_and(|registration| {
+                registration
+                    .input_capabilities()
+                    .contains(DemuxInputCapability::OrderedSegments)
+            });
         let cancellation = request.cancellation;
         let demuxer_result: Result<Box<dyn Demuxer + Send>, DemuxError> = match request.input {
             DemuxInput::ByteSource(source) => SymphoniaDemuxer::from_byte_source_with_options(
@@ -139,7 +147,7 @@ impl DemuxFactory for SymphoniaDemuxFactory {
             )
             .map(|demuxer| Box::new(demuxer) as Box<dyn Demuxer + Send>),
             DemuxInput::OrderedSegments(source) => {
-                if !ordered_iso_bmff_selected {
+                if !ordered_input_supported {
                     return Err(DemuxFactoryOpenError::UnsupportedInput {
                         capability: DemuxInputCapability::OrderedSegments,
                     });
@@ -223,6 +231,14 @@ fn detect_container_for_input(
         || top_level_box_type == Some(b"moof".as_slice())
     {
         ContainerDetection::Match("iso-bmff")
+    } else if bytes.starts_with(b"\x1f\x43\xb6\x75") {
+        // Media row Matroska/WebM начинается с Cluster и не содержит init bytes.
+        // Match нужен, чтобы adapter вернул точный MediaBeforeInit lifecycle error.
+        if hint_names_container(hints, "webm") {
+            ContainerDetection::Match("webm")
+        } else {
+            ContainerDetection::Match("matroska")
+        }
     } else {
         ContainerDetection::NoMatch
     }
@@ -334,19 +350,19 @@ fn symphonia_container_registrations() -> Result<Vec<DemuxContainerRegistration>
     Ok(vec![
         registration(
             "iso-bmff",
-            SYMPHONIA_ISO_BMFF_INPUT_CAPABILITIES,
+            SYMPHONIA_FRAGMENTED_INPUT_CAPABILITIES,
             &["mp4", "m4a", "m4v", "mov", "3gp", "3g2"],
             &["audio/mp4", "video/mp4", "video/quicktime"],
         )?,
         registration(
             "matroska",
-            SYMPHONIA_BYTE_INPUT_CAPABILITIES,
+            SYMPHONIA_FRAGMENTED_INPUT_CAPABILITIES,
             &["mkv", "mka", "mks"],
             &["video/x-matroska"],
         )?,
         registration(
             "webm",
-            SYMPHONIA_BYTE_INPUT_CAPABILITIES,
+            SYMPHONIA_FRAGMENTED_INPUT_CAPABILITIES,
             &["webm", "weba"],
             &["audio/webm", "video/webm"],
         )?,

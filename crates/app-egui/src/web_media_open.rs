@@ -674,7 +674,10 @@ mod tests {
         ] {
             let expected_family_inputs = if matches!(
                 family,
-                ContainerFamily::IsoBmff | ContainerFamily::FragmentedIsoBmff
+                ContainerFamily::IsoBmff
+                    | ContainerFamily::FragmentedIsoBmff
+                    | ContainerFamily::Matroska
+                    | ContainerFamily::WebM
             ) {
                 expected_inputs.with(DemuxInputCapability::OrderedSegments)
             } else {

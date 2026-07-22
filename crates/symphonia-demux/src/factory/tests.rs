@@ -16,6 +16,7 @@ use super::{ContainerDetection, SymphoniaDemuxFactory, detect_container};
 use crate::{DemuxerOptions, probe_open_local_media_file};
 
 mod fragmented_isomp4;
+mod matroska;
 mod ordered_segments;
 
 /// Counter гарантирует unique temp path даже при parallel unit tests одного process-а.
@@ -67,9 +68,9 @@ fn generated_pcm_wav() -> Vec<u8> {
     wav
 }
 
-/// Factory capabilities добавляют ordered input только ISO BMFF row.
+/// Factory capabilities добавляют ordered input только доказанным fragmented rows.
 #[test]
-fn descriptor_declares_ordered_segments_only_for_iso_bmff() {
+fn descriptor_declares_ordered_segments_only_for_proven_fragmented_containers() {
     let factory = SymphoniaDemuxFactory::new(DemuxerOptions::default()).expect("factory");
     let descriptor = factory.descriptor();
     for registration in &descriptor.containers {
@@ -86,8 +87,11 @@ fn descriptor_declares_ordered_segments_only_for_iso_bmff() {
         );
         assert_eq!(
             capabilities.contains(DemuxInputCapability::OrderedSegments),
-            registration.container.as_str() == "iso-bmff",
-            "только ISO BMFF должен рекламировать ordered input"
+            matches!(
+                registration.container.as_str(),
+                "iso-bmff" | "matroska" | "webm"
+            ),
+            "ordered input разрешён только ISO BMFF и Matroska/WebM"
         );
     }
     assert!(!descriptor.fixture_ids.is_empty());

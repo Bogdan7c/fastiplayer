@@ -486,6 +486,37 @@ fn classic_iso_bmff_local_and_range_preserve_timing_seek_and_codec_private() {
     assert_classic_iso_bmff_contract(range_audio.demuxer.as_mut(), TrackKind::Audio);
 }
 
+/// Real generated WebM проходит seekable HTTP Range transport и тот же demux registry.
+#[test]
+fn progressive_webm_range_reads_muxed_packet_timeline() {
+    let mut muxed = open_component(
+        decode_fixture(MUXED_WEBM_BASE64),
+        "webm",
+        "webm",
+        MediaComponentRole::Muxed,
+        23,
+        FixtureOriginMode::ByteRanges,
+    );
+    assert_eq!(muxed.demuxer.seekability(), DemuxSeekability::Seekable);
+    assert!(
+        muxed
+            .demuxer
+            .tracks()
+            .iter()
+            .any(|track| track.kind == TrackKind::Video)
+    );
+    assert!(
+        muxed
+            .demuxer
+            .tracks()
+            .iter()
+            .any(|track| track.kind == TrackKind::Audio)
+    );
+    let first_packet = next_packet(muxed.demuxer.as_mut());
+    assert!(first_packet.duration.is_some());
+    assert!(muxed.demuxer.duration().is_some());
+}
+
 #[test]
 fn mov_and_3gp_brands_open_by_signature_without_extension() {
     for brand in [*b"qt  ", *b"3gp6"] {

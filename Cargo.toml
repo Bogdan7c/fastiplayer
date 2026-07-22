@@ -46,13 +46,14 @@ members = [
     "crates/video-vaapi",
     "crates/service-ytdlp",
 ]
-# Эти пять каталогов — инвентаризированные upstream patch crates из [replace].
+# Эти шесть каталогов — инвентаризированные upstream patch crates из [replace].
 # Они намеренно не наследуют first-party workspace metadata и MIT license.
 exclude = [
     "crates/cros-codecs-patch",
     "crates/cros-libva-patch",
     "crates/symphonia-codec-aac-patch",
     "crates/symphonia-format-isomp4-patch",
+    "crates/symphonia-format-mkv-patch",
     "crates/wayland-scanner-patch",
 ]
 resolver = "2"
@@ -71,6 +72,9 @@ resolver = "2"
 # Symphonia MP4: composition offsets, stss seek sync samples, display orientation,
 # MP4 color/HDR raw tags и QuickTime/iOS LPCM packet coalescing.
 "symphonia-format-isomp4:0.6.0" = { path = "crates/symphonia-format-isomp4-patch" }
+# Symphonia Matroska/WebM: CodecState lifecycle до зависимых packet-ов и
+# container-owned structural truncation без второго EBML parser-а.
+"symphonia-format-mkv:0.6.0" = { path = "crates/symphonia-format-mkv-patch" }
 # Patch для Symphonia AAC: upstream 0.6.0 отклоняет AAC-LC с >2 каналов
 # ("aac: aac too complex"), хотя декодер многоканален. Сняли guard, чтобы играл 5.1 AAC.
 # Можно удалить когда upstream снимет ограничение по числу каналов.
