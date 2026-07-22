@@ -4,12 +4,16 @@ use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use bytes::Bytes;
-use demux_api::{DemuxHints, DemuxInput, DemuxRegistry, DemuxSniffBudget, OrderedSegmentKind};
+use demux_api::{
+    DemuxFactory, DemuxHints, DemuxInput, DemuxInputCapability, DemuxRegistry, DemuxSniffBudget,
+    OrderedSegmentKind,
+};
 use media_core::{DemuxReadEvent, DemuxSeekRequest, Demuxer, Packet, TrackKind};
 use source_core::{CancellationToken, LocalFileSource};
 
 use super::ordered_segments::{open_ordered, segment};
 use super::{SymphoniaDemuxFactory, TemporaryMediaFile};
+use crate::factory::{ContainerDetection, detect_container};
 use crate::{DemuxError, DemuxerOptions};
 
 /// EBML element IDs, которые нужны ровно для generated proof corpus-а.
@@ -62,6 +66,25 @@ enum VideoCodecFixture {
     Vp8,
     Vp9,
     Av1,
+}
+
+/// Точный `DocType` отделяет Matroska evidence от WebM evidence в одном corpus builder-е.
+#[derive(Clone, Copy)]
+enum MatroskaDocumentType {
+    /// Полный Matroska container identity.
+    Matroska,
+    /// Ограниченный WebM container identity.
+    Webm,
+}
+
+impl MatroskaDocumentType {
+    /// Возвращает exact EBML `DocType`, который увидит production sniff.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Matroska => "matroska",
+            Self::Webm => "webm",
+        }
+    }
 }
 
 impl VideoCodecFixture {
@@ -148,8 +171,8 @@ fn string(element_id: &[u8], value: &str) -> Vec<u8> {
     element(element_id, value.as_bytes())
 }
 
-/// Формирует обязательный EBML header с явным WebM DocType.
-fn ebml_header() -> Vec<u8> {
+/// Формирует обязательный EBML header с выбранным exact `DocType`.
+fn ebml_header(document_type: MatroskaDocumentType) -> Vec<u8> {
     master(
         id::EBML,
         &[
@@ -157,7 +180,7 @@ fn ebml_header() -> Vec<u8> {
             unsigned(id::EBML_READ_VERSION, 1),
             unsigned(id::EBML_MAX_ID_LENGTH, 4),
             unsigned(id::EBML_MAX_SIZE_LENGTH, 8),
-            string(id::DOC_TYPE, "webm"),
+            string(id::DOC_TYPE, document_type.as_str()),
             unsigned(id::DOC_TYPE_VERSION, 4),
             unsigned(id::DOC_TYPE_READ_VERSION, 2),
         ],
@@ -342,8 +365,17 @@ fn second_cluster() -> Vec<u8> {
     )
 }
 
-/// Собирает WebM fixture с optional Cues; никакой production parser здесь не дублируется.
+/// Собирает обычный WebM fixture для существующей S28B regression matrix.
 fn fixture(codec: VideoCodecFixture, with_cues: bool) -> MatroskaFixture {
+    fixture_for_document_type(MatroskaDocumentType::Webm, codec, with_cues)
+}
+
+/// Собирает Matroska/WebM fixture с exact `DocType` и optional Cues.
+fn fixture_for_document_type(
+    document_type: MatroskaDocumentType,
+    codec: VideoCodecFixture,
+    with_cues: bool,
+) -> MatroskaFixture {
     let info = info();
     let tracks = master(
         id::TRACKS,
@@ -362,7 +394,7 @@ fn fixture(codec: VideoCodecFixture, with_cues: bool) -> MatroskaFixture {
         )
     });
 
-    let mut init = ebml_header();
+    let mut init = ebml_header(document_type);
     init.extend_from_slice(&unknown_size_segment_header());
     init.extend_from_slice(&info);
     init.extend_from_slice(&tracks);
@@ -415,7 +447,7 @@ fn read_all(
     let mut track_changes = Vec::new();
     let mut packet_counts_at_track_change = Vec::new();
     loop {
-        match demuxer.next_event().expect("read generated WebM") {
+        match demuxer.next_event().expect("read generated Matroska/WebM") {
             DemuxReadEvent::Packet(packet) => packets.push(packet),
             DemuxReadEvent::TracksChanged(update) => {
                 packet_counts_at_track_change.push(packets.len());
@@ -430,6 +462,71 @@ fn read_all(
             }
         }
     }
+}
+
+/// Exact Matroska `DocType` обязан иметь собственное local и ordered evidence.
+#[test]
+fn exact_matroska_doctype_opens_local_and_ordered_inputs() {
+    let generated =
+        fixture_for_document_type(MatroskaDocumentType::Matroska, VideoCodecFixture::Vp9, true);
+    assert!(matches!(
+        detect_container(&generated.init, &DemuxHints::none()),
+        ContainerDetection::Match("matroska")
+    ));
+
+    let factory = SymphoniaDemuxFactory::new(DemuxerOptions::default()).expect("factory");
+    let descriptor = factory.descriptor();
+    let registration = descriptor
+        .containers
+        .iter()
+        .find(|registration| registration.container.as_str() == "matroska")
+        .expect("exact Matroska registration");
+    for capability in [
+        DemuxInputCapability::SeekableBytes,
+        DemuxInputCapability::StreamingBytes,
+        DemuxInputCapability::OrderedSegments,
+    ] {
+        assert!(
+            registration.input_capabilities().contains(capability),
+            "Matroska registration должна сохранять capability {capability:?}"
+        );
+    }
+    assert!(
+        descriptor.fixture_ids.iter().any(|fixture_id| {
+            fixture_id.as_str() == "symphonia/generated-matroska-ordered-s28b"
+        })
+    );
+
+    let (_fixture_file, mut local_demuxer) = open_local(&generated.whole());
+    let (local_packets, local_track_changes, _, local_clean_eof) = read_all(local_demuxer.as_mut());
+    assert!(local_clean_eof);
+    assert_eq!(local_packets.len(), 9);
+    assert_eq!(local_track_changes.len(), 1);
+
+    let ordered = vec![
+        segment(
+            0,
+            OrderedSegmentKind::Initialization,
+            Bytes::from(generated.init),
+        ),
+        segment(
+            1,
+            OrderedSegmentKind::Media,
+            Bytes::from(generated.media[0].clone()),
+        ),
+        segment(
+            2,
+            OrderedSegmentKind::Media,
+            Bytes::from(generated.media[1].clone()),
+        ),
+    ];
+    let mut ordered_demuxer = open_ordered(ordered, CancellationToken::new(), None)
+        .expect("finite ordered Matroska should open");
+    let (ordered_packets, ordered_track_changes, _, ordered_clean_eof) =
+        read_all(ordered_demuxer.as_mut());
+    assert!(ordered_clean_eof);
+    assert_eq!(ordered_packets.len(), 9);
+    assert_eq!(ordered_track_changes.len(), 1);
 }
 
 #[test]

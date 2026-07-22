@@ -1,8 +1,9 @@
-//! Минимальный extractor Matroska/WebM video metadata, которую Symphonia 0.6 не отдаёт
-//! в текущую neutral model.
+//! Bounded fail-open индексатор Matroska/WebM metadata и cue anchors, которые
+//! Symphonia 0.6 не отдаёт в текущую neutral model.
 //!
-//! Этот модуль не заменяет demuxer. Он читает только metadata-дерево `Tracks` до decode,
-//! чтобы сохранить `Colour`/HDR elements для раннего выбора video path.
+//! Модуль читает только structural `Tracks`/`Colour` и `SeekHead`/`Cues`. Он не
+//! разбирает `Cluster`, `Block`, lacing или packet payload: единственным владельцем
+//! container/packet demux остаётся exact `symphonia-format-mkv` patch.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -1082,6 +1083,36 @@ mod tests {
             extract_cue_index_from_cues_bytes(&bytes, MATROSKA_DEFAULT_TIMESTAMP_SCALE_NS);
 
         assert!(cue_index.is_none());
+    }
+
+    /// Packet-bearing `Cluster` остаётся opaque для bounded metadata/cue indexer-а.
+    #[test]
+    fn cluster_payload_is_opaque_to_bounded_metadata_and_cue_indexer() {
+        const TEST_ID_CLUSTER: u64 = 0x1F43_B675;
+
+        let hidden_video_track = master(
+            ID_TRACK_ENTRY,
+            vec![
+                unsigned(ID_TRACK_NUMBER, 2),
+                unsigned(ID_TRACK_TYPE, 1),
+                ascii(ID_CODEC_ID, "V_VP9"),
+                master(ID_VIDEO, vec![]),
+            ],
+        );
+        let hidden_tracks = master(ID_TRACKS, vec![hidden_video_track]);
+        let hidden_cues = master(ID_CUES, vec![cue_point(5, vec![2])]);
+        let bytes = master(
+            ID_SEGMENT,
+            vec![master(TEST_ID_CLUSTER, vec![hidden_tracks, hidden_cues])],
+        );
+
+        let video_track_scan = scan_video_tracks_from_bytes(&bytes);
+        assert!(!video_track_scan.tracks_found);
+        assert!(video_track_scan.video_tracks.is_empty());
+
+        let cue_read_plan = scan_cue_read_plan_from_bytes(&bytes);
+        assert!(cue_read_plan.cue_index.is_empty());
+        assert!(cue_read_plan.cues_absolute_position.is_none());
     }
 
     fn master(id: u64, children: Vec<Vec<u8>>) -> Vec<u8> {

@@ -197,6 +197,22 @@ DEMUX_API_ALLOWED_DEPENDENCIES = frozenset(
     }
 )
 
+# Existing Symphonia adapter не получает второй parser для уже принадлежащих
+# exact format patches ISO BMFF, Matroska/WebM и CAF. Новые container families
+# проходят отдельный architecture gate и не маскируются dependency fallback-ом.
+SYMPHONIA_DEMUX_FORBIDDEN_ALTERNATIVE_PARSER_DEPENDENCIES = frozenset(
+    {
+        "ebml",
+        "ebml-iterable",
+        "matroska",
+        "matroska-demuxer",
+        "mp4",
+        "mp4parse",
+        "webm-demux",
+        "webm-iterable",
+    }
+)
+
 # Single-file discovery владеет filesystem/cancellation orchestration, но видит
 # Symphonia только через узкий neutral snapshot boundary в symphonia-demux.
 PLAYLIST_DISCOVERY_ALLOWED_DEPENDENCIES = frozenset(
@@ -663,6 +679,79 @@ PROGRESSIVE_WEB_TRANSIENT_SECRET_PATTERNS = (
     ),
 )
 
+# S28G включается только в repository, где существует concrete Symphonia factory.
+EXISTING_DEMUX_BOUNDARY_MARKER = Path("crates/symphonia-demux/src/factory.rs")
+
+# Эти crates участвуют в reuse foundation и поэтому остаются blocking coverage owners.
+EXISTING_DEMUX_REQUIRED_BLOCKING_CRATES = frozenset(
+    {"demux-api", "symphonia-demux", "web-media-http"}
+)
+
+# Exact anchors связывают registration inventory, отдельный Matroska DocType proof,
+# bounded scanner exception и human evidence artifact в один hardening gate.
+EXISTING_DEMUX_SOURCE_ANCHORS = (
+    (
+        Path("crates/symphonia-demux/src/factory.rs"),
+        (
+            "symphonia/generated-fmp4-s28a",
+            "symphonia/generated-matroska-ordered-s28b",
+            "symphonia/s28c-mpeg-layer-3",
+        ),
+        "S28G factory descriptor обязан сохранять exact S28A/B/C fixture inventory",
+    ),
+    (
+        Path("crates/symphonia-demux/src/factory/tests.rs"),
+        ("descriptor_lists_exact_s28_foundation_fixture_ids",),
+        "S28G fixture inventory обязан иметь focused exact regression test",
+    ),
+    (
+        Path("crates/symphonia-demux/src/factory/tests/matroska.rs"),
+        ("exact_matroska_doctype_opens_local_and_ordered_inputs",),
+        "Matroska registration нельзя доказывать только WebM DocType fixture-ом",
+    ),
+    (
+        Path("crates/symphonia-demux/src/matroska_metadata.rs"),
+        ("cluster_payload_is_opaque_to_bounded_metadata_and_cue_indexer",),
+        "bounded Matroska metadata/cue indexer обязан сохранять opaque Cluster proof",
+    ),
+    (
+        Path("docs/existing-demux-s28g.md"),
+        (
+            "# S28G: existing-demux hardening gate",
+            "symphonia/generated-fmp4-s28a",
+            "symphonia/generated-matroska-ordered-s28b",
+            "Known coverage limitation",
+        ),
+        "S28G aggregate evidence artifact обязан оставаться полным и честным",
+    ),
+)
+
+# Проверяются только объявления production parser-а. Комментарии, assertions и
+# test-only corpus builders могут свободно называть Cluster/Block/lacing.
+EXISTING_DEMUX_PACKET_PARSER_DECLARATION_PATTERNS = (
+    (
+        re.compile(
+            r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const|static)\s+"
+            r"(?:ID_)?(?:CLUSTER|SIMPLE_BLOCK|BLOCK_GROUP|BLOCK|CODEC_STATE)\b",
+            re.IGNORECASE,
+        ),
+        "Matroska packet element IDs принадлежат exact symphonia-format-mkv patch",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:pub(?:\([^)]*\))?\s+)?fn\s+\w*"
+            r"(?:cluster|simple_block|block_group|matroska_block|lacing|packet_payload)"
+            r"\w*\s*\(",
+            re.IGNORECASE,
+        ),
+        "Matroska Cluster/Block/lacing parsing принадлежит exact symphonia-format-mkv patch",
+    ),
+)
+
+RUST_TEST_MODULE_START = re.compile(
+    r"(?m)^\s*#\[cfg\(test\)\]\s*\n\s*mod\s+tests\s*\{"
+)
+
 REQUIRED_SOURCE_ANCHORS = ()
 
 RequiredSourceAnchor = tuple[Path, tuple[str, ...], str]
@@ -999,6 +1088,14 @@ def find_dependency_violations(
         )
     )
     violations.extend(
+        find_forbidden_dependencies(
+            dependency_map,
+            frozenset({"symphonia-demux"}),
+            SYMPHONIA_DEMUX_FORBIDDEN_ALTERNATIVE_PARSER_DEPENDENCIES,
+            "symphonia-demux переиспользует exact Symphonia format patches и не добавляет второй container parser",
+        )
+    )
+    violations.extend(
         find_disallowed_dependencies(
             dependency_map,
             frozenset({"playlist-core"}),
@@ -1142,6 +1239,7 @@ def find_source_policy_violations(
     violations.extend(find_app_egui_custom_paint_violations(repo_root))
     violations.extend(find_playlist_topology_boundary_violations(repo_root))
     violations.extend(find_progressive_web_boundary_violations(repo_root))
+    violations.extend(find_existing_demux_boundary_violations(repo_root))
     violations.extend(
         find_required_source_anchor_violations(repo_root, required_source_anchors)
     )
@@ -1220,6 +1318,139 @@ def find_progressive_web_boundary_violations(
             PROGRESSIVE_WEB_TRANSIENT_SECRET_PATTERNS,
         )
     )
+    return violations
+
+
+def find_existing_demux_boundary_violations(
+    repo_root: Path,
+) -> list[SourcePolicyViolation]:
+    """Закрепляет S28G parser ownership, evidence и coverage classification."""
+
+    # Минимальные unit-test repositories без Symphonia factory не собирают S28G tree.
+    if not (repo_root / EXISTING_DEMUX_BOUNDARY_MARKER).is_file():
+        return []
+
+    violations = find_required_source_anchor_violations(
+        repo_root,
+        EXISTING_DEMUX_SOURCE_ANCHORS,
+    )
+    violations.extend(find_existing_demux_packet_parser_violations(repo_root))
+    violations.extend(find_existing_demux_coverage_policy_violations(repo_root))
+    return violations
+
+
+def find_existing_demux_packet_parser_violations(
+    repo_root: Path,
+) -> list[SourcePolicyViolation]:
+    """Ловит production Matroska packet parser declarations вне exact format patch."""
+
+    source_root = repo_root / "crates/symphonia-demux/src"
+    if not source_root.is_dir():
+        return []
+
+    violations: list[SourcePolicyViolation] = []
+    for source_path in sorted(source_root.rglob("*.rs")):
+        relative_path = source_path.relative_to(repo_root)
+        if "tests" in relative_path.parts or relative_path.name == "tests.rs":
+            continue
+
+        source_text = read_text_lossy(source_path)
+        test_module_match = RUST_TEST_MODULE_START.search(source_text)
+        if test_module_match is not None:
+            source_text = source_text[: test_module_match.start()]
+
+        for line_number, line in enumerate(source_text.splitlines(), start=1):
+            for pattern, rule in EXISTING_DEMUX_PACKET_PARSER_DECLARATION_PATTERNS:
+                if pattern.search(line):
+                    violations.append(
+                        SourcePolicyViolation(
+                            path=relative_path,
+                            line_number=line_number,
+                            rule=rule,
+                            matched_text=line.strip(),
+                        )
+                    )
+    return violations
+
+
+def find_existing_demux_coverage_policy_violations(
+    repo_root: Path,
+) -> list[SourcePolicyViolation]:
+    """Проверяет blocking classification owners, входящих в S28G foundation."""
+
+    relative_path = Path("coverage/policy.json")
+    policy_path = repo_root / relative_path
+    if not policy_path.is_file():
+        return [
+            SourcePolicyViolation(
+                path=relative_path,
+                line_number=0,
+                rule="S28G требует checked-in coverage policy",
+                matched_text="coverage policy is missing",
+            )
+        ]
+
+    try:
+        policy = json.loads(read_text_lossy(policy_path))
+    except (json.JSONDecodeError, OSError) as error:
+        return [
+            SourcePolicyViolation(
+                path=relative_path,
+                line_number=0,
+                rule="S28G coverage policy должна быть валидным JSON object",
+                matched_text=str(error),
+            )
+        ]
+
+    if not isinstance(policy, dict):
+        return [
+            SourcePolicyViolation(
+                path=relative_path,
+                line_number=0,
+                rule="S28G coverage policy должна быть JSON object",
+                matched_text=f"получен {type(policy).__name__}",
+            )
+        ]
+
+    blocking_rows = policy.get("blocking_crates")
+    informational_rows = policy.get("informational_crates")
+    if not isinstance(blocking_rows, list) or not all(
+        isinstance(crate_name, str) for crate_name in blocking_rows
+    ):
+        return [
+            SourcePolicyViolation(
+                path=relative_path,
+                line_number=0,
+                rule="S28G coverage policy требует string array `blocking_crates`",
+                matched_text=repr(blocking_rows),
+            )
+        ]
+    if not isinstance(informational_rows, list) or not all(
+        isinstance(crate_name, str) for crate_name in informational_rows
+    ):
+        return [
+            SourcePolicyViolation(
+                path=relative_path,
+                line_number=0,
+                rule="S28G coverage policy требует string array `informational_crates`",
+                matched_text=repr(informational_rows),
+            )
+        ]
+
+    blocking_crates = frozenset(blocking_rows)
+    informational_crates = frozenset(informational_rows)
+    violations = []
+    for crate_name in sorted(EXISTING_DEMUX_REQUIRED_BLOCKING_CRATES):
+        if crate_name in blocking_crates and crate_name not in informational_crates:
+            continue
+        violations.append(
+            SourcePolicyViolation(
+                path=relative_path,
+                line_number=0,
+                rule="S28G demux foundation crates обязаны оставаться blocking coverage owners",
+                matched_text=f"crate `{crate_name}` не имеет exact blocking classification",
+            )
+        )
     return violations
 
 

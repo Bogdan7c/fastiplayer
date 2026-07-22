@@ -99,6 +99,37 @@ fn descriptor_declares_ordered_segments_only_for_proven_fragmented_containers() 
     assert!(!descriptor.fixture_ids.is_empty());
 }
 
+/// Descriptor inventory обязан точно связывать S28A/B/C rows с hermetic evidence.
+#[test]
+fn descriptor_lists_exact_s28_foundation_fixture_ids() {
+    let factory = SymphoniaDemuxFactory::new(DemuxerOptions::default()).expect("factory");
+    let mut actual_fixture_ids = factory
+        .descriptor()
+        .fixture_ids
+        .iter()
+        .map(|fixture_id| fixture_id.as_str())
+        .collect::<Vec<_>>();
+    let mut expected_fixture_ids = vec![
+        "symphonia/generated-fmp4-s28a",
+        "symphonia/generated-matroska-ordered-s28b",
+        "symphonia/generated-pcm-wav",
+        "symphonia/generated-webm-s28b",
+        "symphonia/mp4-h264-aac",
+        "symphonia/s28c-aiff-pcm",
+        "symphonia/s28c-caf-pcm",
+        "symphonia/s28c-mpeg-layer-1",
+        "symphonia/s28c-mpeg-layer-2",
+        "symphonia/s28c-mpeg-layer-3",
+        "symphonia/s28c-native-flac",
+        "symphonia/s28c-ogg-opus",
+        "symphonia/s28c-wave-pcm",
+        "symphonia/webm-vp9-opus",
+    ];
+    actual_fixture_ids.sort_unstable();
+    expected_fixture_ids.sort_unstable();
+    assert_eq!(actual_fixture_ids, expected_fixture_ids);
+}
+
 /// Content signature имеет приоритет и сохраняет explicit hint disagreement.
 #[test]
 fn wave_signature_overrides_disagreeing_mp4_hint() {

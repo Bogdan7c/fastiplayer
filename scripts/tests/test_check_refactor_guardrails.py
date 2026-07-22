@@ -467,6 +467,45 @@ class DependencyGraphPolicyTests(unittest.TestCase):
             {"media-prefetch", "reqwest", "symphonia-demux", "web-media-http"},
         )
 
+    def test_symphonia_demux_rejects_second_existing_container_parser(self) -> None:
+        """Existing format rows остаются у exact Symphonia patches без fallback parser-а."""
+
+        packages = complete_workspace_packages()
+        packages["symphonia-demux"] = package_with_dependencies(
+            "symphonia-demux",
+            (("demux-api", None), ("media-core", None), ("symphonia", None)),
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "symphonia-demux"
+                for violation in passing_result.dependency_violations
+            )
+        )
+
+        packages["symphonia-demux"] = package_with_dependencies(
+            "symphonia-demux",
+            tuple(
+                (dependency_name, None)
+                for dependency_name in sorted(
+                    GUARDRAIL.SYMPHONIA_DEMUX_FORBIDDEN_ALTERNATIVE_PARSER_DEPENDENCIES
+                )
+            ),
+        )
+        failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertEqual(
+            GUARDRAIL.SYMPHONIA_DEMUX_FORBIDDEN_ALTERNATIVE_PARSER_DEPENDENCIES,
+            {
+                violation.dependency
+                for violation in failing_result.dependency_violations
+                if violation.owner == "symphonia-demux"
+            },
+        )
+
     def test_natural_sort_key_rejects_every_normal_dependency(self) -> None:
         """Общий prepared comparator остаётся строго std-only."""
 
@@ -693,6 +732,102 @@ class SourceTextPolicyTests(unittest.TestCase):
         self.assertEqual(anchor_path, violations[0].path)
         self.assertEqual(rule, violations[0].rule)
         self.assertIn("reuse_main_decoder", violations[0].matched_text)
+
+    def test_existing_demux_parser_policy_ignores_words_but_rejects_parser_code(
+        self,
+    ) -> None:
+        """S28G проверяет production declarations, а не комментарии или test corpus."""
+
+        scanner_path = "crates/symphonia-demux/src/matroska_metadata.rs"
+        self.repository.write(
+            scanner_path,
+            "// Cluster, Block и lacing описывают запрещённую границу.\n"
+            "fn parse_tracks() {}\n"
+            "#[cfg(test)]\n"
+            "mod tests {\n"
+            "    const ID_SIMPLE_BLOCK: u64 = 0xA3;\n"
+            "    fn parse_lacing_fixture() {}\n"
+            "}\n",
+        )
+        self.assertEqual(
+            [],
+            GUARDRAIL.find_existing_demux_packet_parser_violations(
+                self.repository.root
+            ),
+        )
+
+        self.repository.write(
+            scanner_path,
+            "const ID_SIMPLE_BLOCK: u64 = 0xA3;\n"
+            "fn parse_matroska_block_payload() {}\n",
+        )
+        violations = GUARDRAIL.find_existing_demux_packet_parser_violations(
+            self.repository.root
+        )
+        self.assertEqual(2, len(violations))
+        self.assertTrue(all(violation.line_number > 0 for violation in violations))
+        self.assertTrue(
+            all("symphonia-format-mkv patch" in violation.rule for violation in violations)
+        )
+
+    def test_existing_demux_boundary_requires_fixture_and_document_anchors(
+        self,
+    ) -> None:
+        """S28G aggregate guardrail связывает descriptor, tests и human artifact."""
+
+        for relative_path, anchors, _ in GUARDRAIL.EXISTING_DEMUX_SOURCE_ANCHORS:
+            self.repository.write(relative_path, "\n".join(anchors) + "\n")
+        self.repository.write(
+            "coverage/policy.json",
+            '{"blocking_crates":["demux-api","symphonia-demux","web-media-http"],'
+            '"informational_crates":[]}',
+        )
+        self.assertEqual(
+            [],
+            GUARDRAIL.find_existing_demux_boundary_violations(self.repository.root),
+        )
+
+        factory_path = Path("crates/symphonia-demux/src/factory.rs")
+        self.repository.write(factory_path, "symphonia/generated-webm-s28b\n")
+        violations = GUARDRAIL.find_existing_demux_boundary_violations(
+            self.repository.root
+        )
+        self.assertTrue(
+            any(
+                violation.path == factory_path
+                and "fixture inventory" in violation.rule
+                for violation in violations
+            )
+        )
+
+    def test_existing_demux_coverage_classification_is_exact_and_blocking(
+        self,
+    ) -> None:
+        """Demux foundation нельзя незаметно перевести в informational coverage."""
+
+        coverage_path = "coverage/policy.json"
+        self.repository.write(
+            coverage_path,
+            '{"blocking_crates":["demux-api","symphonia-demux","web-media-http"],'
+            '"informational_crates":[]}',
+        )
+        self.assertEqual(
+            [],
+            GUARDRAIL.find_existing_demux_coverage_policy_violations(
+                self.repository.root
+            ),
+        )
+
+        self.repository.write(
+            coverage_path,
+            '{"blocking_crates":["demux-api","web-media-http"],'
+            '"informational_crates":["symphonia-demux"]}',
+        )
+        violations = GUARDRAIL.find_existing_demux_coverage_policy_violations(
+            self.repository.root
+        )
+        self.assertEqual(1, len(violations))
+        self.assertIn("symphonia-demux", violations[0].matched_text)
 
     def test_playlist_topology_boundaries_pass_and_reject_flattening_or_secret_access(
         self,

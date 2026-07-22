@@ -1,5 +1,10 @@
 # Core
 
+## S28G existing-demux hardening gate (2026-07-22)
+
+- S28A/B/C сведены в один reuse foundation без новой runtime feature logic и без изменения demux API/seek/event semantics. Exact Matroska `DocType`, fMP4 identity, полный fixture inventory, blocking coverage classification и parser-ownership guardrails закреплены hermetic evidence.
+- Matroska packet/container parsing остаётся только в exact `symphonia-format-mkv` patch; `matroska_metadata.rs` — осознанный bounded fail-open индексатор `Tracks`/`Colour`/`SeekHead`/`Cues`, которому запрещено разрастаться до Cluster/Block/lacing/packet parsing. Полный handoff: `mem:symphonia-demux/existing-demux-s28g-2026-07-22`.
+
 ## S28C current audio-container proof (2026-07-22)
 
 - Existing Ogg/Opus, CAF/PCM, WAVE/PCM, AIFF/PCM, native FLAC and distinct MP1/MP2/MP3 paths are now proven hermetically across local, progressive Range/non-Range, S20/S21C capability intersection, codec-private/packet timing, duration/seek, malformed/cancel/sniff and Ogg reset lifecycle.

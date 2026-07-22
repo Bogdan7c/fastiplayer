@@ -47,6 +47,7 @@ impl SymphoniaDemuxFactory {
                 DemuxFixtureId::new("symphonia/generated-webm-s28b")?,
                 DemuxFixtureId::new("symphonia/generated-matroska-ordered-s28b")?,
                 DemuxFixtureId::new("symphonia/mp4-h264-aac")?,
+                DemuxFixtureId::new("symphonia/generated-fmp4-s28a")?,
                 DemuxFixtureId::new("symphonia/s28c-ogg-opus")?,
                 DemuxFixtureId::new("symphonia/s28c-caf-pcm")?,
                 DemuxFixtureId::new("symphonia/s28c-wave-pcm")?,

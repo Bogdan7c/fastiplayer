@@ -3,9 +3,11 @@
 ## Профиль и границы владения
 
 S28B закрывает finite local/progressive Matroska/WebM и finite serialized
-`Initialization -> Media*` rows. Единственным container parser-ом остаётся exact
-`symphonia-format-mkv 0.6.0`; проектный fork не дублирует EBML parsing и меняет
-только доказанные upstream gaps.
+`Initialization -> Media*` rows. Единственным packet/container parser-ом остаётся
+exact `symphonia-format-mkv 0.6.0`; он владеет `Cluster`, `Block`, lacing и packet
+payload. `symphonia-demux::matroska_metadata` отдельно остаётся bounded fail-open
+индексатором structural `Tracks`/`Colour` и `SeekHead`/`Cues`: он не спускается в
+packet-bearing элементы и не является вторым demuxer-ом.
 
 Перед реализацией lifecycle сверялся с официальной документацией Symphonia 0.6:
 `FormatReader::next_packet()` обязан вернуть `ResetRequired`, когда вызывающий код
@@ -19,7 +21,8 @@ S28B закрывает finite local/progressive Matroska/WebM и finite seriali
   Symphonia track parameters и публикует `ResetRequired` до первого зависимого
   packet-а;
 - `symphonia-demux` отображает этот lifecycle в neutral `TracksChanged`, владеет
-  cue-aware `DecodePointBefore`, track/packet mapping и exact container capabilities;
+  cue-aware `DecodePointBefore`, bounded metadata/cue indexing, track/packet mapping
+  и exact container capabilities;
 - existing `demux-api` ordered adapter валидирует finite Init/Media lifecycle,
   sequence, empty rows, source errors и cancellation; он не знает EBML;
 - `web-media-http` выбирает seekable Range либо forward-only non-Range byte source
@@ -31,10 +34,10 @@ S28B закрывает finite local/progressive Matroska/WebM и finite seriali
 
 | Требование | Hermetic proof |
 |---|---|
-| Local без extension | `factory::tests::matroska::local_webm_proves_lacing_audio_timing_duration_and_codec_state_order` открывает generated WebM через `LocalFileSource` и signature sniff с `DemuxHints::none()`. |
+| Local без extension | `factory::tests::matroska::local_webm_proves_lacing_audio_timing_duration_and_codec_state_order` открывает generated WebM через `LocalFileSource` и signature sniff с `DemuxHints::none()`. `exact_matroska_doctype_opens_local_and_ordered_inputs` отдельно доказывает exact `DocType=matroska`, чтобы WebM corpus не подменял Matroska registration row. |
 | Progressive HTTP Range | `progressive_webm_range_reads_muxed_packet_timeline` обслуживает real muxed VP9+Opus WebM через bounded `206`, проверяет seekable source, A/V tracks, packet duration и media duration. |
 | Progressive HTTP non-Range | `progressive_mp4_m4a_and_webm_open_with_real_hints_and_non_range_input` использует один forward-only `200` body и сохраняет честный `NotSeekable`. |
-| Finite ordered rows | `ordered_webm_init_and_multiple_media_rows_preserve_packets_and_cancellation` передаёт один init и два media Cluster rows через production registry, читает все packets до clean EOF и отдельно проверяет cancellation. Capability рекламируется только для ISO BMFF, Matroska и WebM. |
+| Finite ordered rows | `ordered_webm_init_and_multiple_media_rows_preserve_packets_and_cancellation` передаёт один init и два media Cluster rows через production registry, читает все packets до clean EOF и отдельно проверяет cancellation. `exact_matroska_doctype_opens_local_and_ordered_inputs` повторяет open для exact Matroska row. Capability рекламируется только для ISO BMFF, Matroska и WebM. |
 | Cues и no-cues | `vp8_vp9_av1_and_cues_no_cues_decode_point_before_are_proven` выполняет текущий `DecodePointBefore` для обоих вариантов; focused cue-anchor/retry инварианты остаются в `symphonia_demuxer::tests::decode_point_before_matroska_*`. |
 | None/Xiph/fixed/EBML lacing | Generated corpus формирует четыре независимых Block layout-а и проверяет exact девять frame payload-ов, PTS 0..800 ms и 100 ms duration каждого frame-а. |
 | `CodecState` | Тот же corpus меняет VP9 state в `BlockGroup`: patch обновляет codec private, затем neutral boundary публикует ровно один `TracksChanged`, и только после него отдаёт packet `0x50`. Ordered wrapper одновременно обновляет последующий public `tracks()` snapshot. Direct patch test проверяет замену codec-specific extra data без потери независимых video extra-data records. |
@@ -64,5 +67,6 @@ lockfile. Удаление допустимо только после released u
 - Test fixture проверяет container/demux contracts и codec identities, а не
   декодирует synthetic payload bytes. Реальный decode diversity остаётся в
   opt-in `scripts/media-regression.sh` и codec/backend suites.
-- Второй EBML/Matroska parser, FFmpeg demux fallback, новые codecs и DASH network
-  composition не добавлялись.
+- Второй packet/container parser, FFmpeg demux fallback, новые codecs и DASH network
+  composition не добавлялись. Bounded metadata/cue indexer остаётся явным
+  архитектурным исключением и не должен расширяться до `Cluster`/`Block`/lacing.

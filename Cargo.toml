@@ -76,8 +76,9 @@ resolver = "2"
 # Symphonia CAF: forward-only scan останавливается перед data payload и сохраняет
 # structural truncation errors без изменения общего MediaSourceStream EOF contract.
 "symphonia-format-caf:0.6.0" = { path = "crates/symphonia-format-caf-patch" }
-# Symphonia Matroska/WebM: CodecState lifecycle до зависимых packet-ов и
-# container-owned structural truncation без второго EBML parser-а.
+# Symphonia Matroska/WebM: единственный packet/container parser владеет CodecState
+# lifecycle и structural truncation. Bounded metadata/cue indexer в adapter-е не
+# разбирает Cluster/Block/lacing и не является вторым packet parser-ом.
 "symphonia-format-mkv:0.6.0" = { path = "crates/symphonia-format-mkv-patch" }
 # Patch для Symphonia AAC: upstream 0.6.0 отклоняет AAC-LC с >2 каналов
 # ("aac: aac too complex"), хотя декодер многоканален. Сняли guard, чтобы играл 5.1 AAC.
