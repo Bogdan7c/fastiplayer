@@ -7,7 +7,7 @@
 
 ## S23 queue-owned web open (2026-07-22)
 
-- Current yt-dlp playback no longer uses the historical WebM-only service opener. `app-egui::web_media_open` composes S19 candidates -> S21C planner -> S22 transport/demux; `PlaylistRuntime` retains exact Item/revision/barrier ownership and publishes current/active only after exact Installed.
+- Current yt-dlp playback no longer uses the historical WebM-only service opener. `app-egui::web_media_open` composes S19 candidates -> S21C planner -> S22 transport/demux; `PlaylistRuntime` retains exact Item/revision/barrier ownership and publishes current/active only after exact Installed. S26 maps effective system yt-dlp headers/cookies into scoped ephemeral transport state with per-source Set-Cookie handling and zero persistence; full boundary: `mem:media-services/ytdlp-system-auth-s26-2026-07-22`.
 - `service-ytdlp` owns extractor/topology/locator/metadata plus neutral planning/transport mapping, with no concrete HTTP/demux/player dependencies. Exact rebuild stores `YtDlpCandidateSelection` and performs fresh-generation semantic rematch.
 - Full boundaries, cancellation, S26 auth limitation and verification: `mem:app-egui/queue-owned-web-open-s23-2026-07-22`.
 

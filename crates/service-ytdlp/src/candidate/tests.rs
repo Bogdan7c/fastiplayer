@@ -1,11 +1,11 @@
 use rustiplayer_config::YtDlpConfig;
 use serde_json::{Value, json};
-use source_core::CancellationToken;
+use source_core::{CancellationToken, HttpRequestTarget};
 use web_media_core::{
     DynamicRange, ExtractionGeneration, ProfileExclusionReason, SourceIdentity,
     StaticCompatibilityRejection, StreamLayout, StreamLayoutKind,
 };
-use web_media_transport_api::{SourceGeneration, TransportProviderId};
+use web_media_transport_api::{SecretRequestPurpose, SourceGeneration, TransportProviderId};
 
 use super::model::{
     YtDlpCandidateComponentRole, YtDlpCandidateEntry, YtDlpCandidateMatchKind,
@@ -558,6 +558,12 @@ fn planning_and_transport_share_the_same_exact_candidate() {
         components[0].container(),
         web_media_core::ContainerFamily::WebM
     );
+    let request = components
+        .into_iter()
+        .next()
+        .expect("single component")
+        .into_request();
+    assert!(request.secrets().is_empty());
 }
 
 /// Queue metadata и exact candidate должны происходить из одного extraction snapshot-а.
@@ -589,11 +595,126 @@ fn candidate_snapshot_keeps_playlist_metadata_with_its_generation() {
     assert_eq!(snapshot.generation(), ExtractionGeneration::new(12));
 }
 
-/// S26-owned auth material не теряется и до S26 даёт recoverable pre-barrier rejection.
+/// S26 маппит effective Authorization/Cookie state в один scoped secret context.
 #[test]
-fn transport_rejects_authorized_material_instead_of_dropping_headers() {
+fn transport_maps_authorized_material_with_origin_path_and_secure_scope() {
     let mut protected = progressive_format("protected", "webm", "webm", "vp9", "opus");
-    protected["http_headers"] = json!({"Authorization": "Bearer secret"});
+    protected["http_headers"] = json!({
+        "Authorization": "Bearer secret",
+        "Cookie": "session=cookie-secret"
+    });
+    let snapshot = snapshot(json!({"formats": [protected]}), 1);
+    let candidate = accepted_inventory(&snapshot, 0);
+    let context = super::YtDlpTransportRequestContext::new(
+        TransportProviderId::new("progressive-http").expect("provider ID"),
+        SourceGeneration::new(1),
+        CancellationToken::new(),
+    );
+
+    let request = candidate
+        .transport_components(&context)
+        .expect("serialized auth должен стать scoped request")
+        .into_iter()
+        .next()
+        .expect("single protected component")
+        .into_request();
+    let material = request
+        .secrets()
+        .material_for(request.target(), SecretRequestPurpose::PrimaryResource)
+        .expect("initial target находится в собственном scope");
+    assert_eq!(material.headers_for_request().len(), 1);
+    assert_eq!(material.headers_for_request()[0].name, "Authorization");
+    assert_eq!(material.headers_for_request()[0].value, "Bearer secret");
+    assert_eq!(
+        material.cookies_for_request(),
+        Some(b"session=cookie-secret".as_slice())
+    );
+
+    let same_path_child = HttpRequestTarget::parse_exact("https://media.invalid/protected/segment")
+        .expect("same-path target");
+    let sibling_path = HttpRequestTarget::parse_exact("https://media.invalid/private")
+        .expect("sibling-path target");
+    let cross_origin = HttpRequestTarget::parse_exact("https://cdn.invalid/protected")
+        .expect("cross-origin target");
+    let downgrade =
+        HttpRequestTarget::parse_exact("http://media.invalid/protected").expect("downgrade target");
+    assert!(
+        request
+            .secrets()
+            .material_for(&same_path_child, SecretRequestPurpose::PrimaryResource)
+            .is_some()
+    );
+    assert!(
+        request
+            .secrets()
+            .material_for(&sibling_path, SecretRequestPurpose::PrimaryResource)
+            .is_none()
+    );
+    assert!(
+        request
+            .secrets()
+            .material_for(&cross_origin, SecretRequestPurpose::PrimaryResource)
+            .is_none()
+    );
+    assert!(
+        request
+            .secrets()
+            .material_for(&downgrade, SecretRequestPurpose::PrimaryResource)
+            .is_none()
+    );
+
+    let diagnostic = format!("{snapshot:?} {request:?}");
+    assert!(!diagnostic.contains("Bearer secret"));
+    assert!(!diagnostic.contains("cookie-secret"));
+}
+
+/// Fresh extraction строит новый auth context и не наследует старый cookie jar.
+#[test]
+fn refresh_reextraction_replaces_serialized_authorization_state() {
+    let protected_format = |generation_cookie: &str| {
+        let mut protected = progressive_format("protected", "webm", "webm", "vp9", "opus");
+        protected["cookies"] = json!(format!("session={generation_cookie}"));
+        protected
+    };
+    let first = snapshot(json!({"formats": [protected_format("first-secret")]}), 1);
+    let refreshed = snapshot(json!({"formats": [protected_format("second-secret")]}), 2);
+    let context = super::YtDlpTransportRequestContext::new(
+        TransportProviderId::new("progressive-http").expect("provider ID"),
+        SourceGeneration::new(1),
+        CancellationToken::new(),
+    );
+
+    let serialized_cookie = |candidate: &YtDlpNormalizedCandidate| {
+        let request = candidate
+            .transport_components(&context)
+            .expect("protected component maps")
+            .into_iter()
+            .next()
+            .expect("single component")
+            .into_request();
+        request
+            .secrets()
+            .material_for(request.target(), SecretRequestPurpose::PrimaryResource)
+            .and_then(|material| material.cookies_for_request().map(ToOwned::to_owned))
+            .expect("serialized cookie exists")
+    };
+
+    assert_eq!(
+        serialized_cookie(accepted_inventory(&first, 0)),
+        b"session=first-secret"
+    );
+    assert_eq!(
+        serialized_cookie(accepted_inventory(&refreshed, 0)),
+        b"session=second-secret"
+    );
+}
+
+/// Две competing Cookie serializations не получают неявный приоритет.
+#[test]
+fn conflicting_cookie_serializations_are_typed_incompatible() {
+    let mut protected = progressive_format("protected", "webm", "webm", "vp9", "opus");
+    protected["http_headers"] = json!({"Cookie": "header=secret"});
+    protected["cookies"] = json!("field=secret");
     let snapshot = snapshot(json!({"formats": [protected]}), 1);
     let candidate = accepted_inventory(&snapshot, 0);
     let context = super::YtDlpTransportRequestContext::new(
@@ -604,11 +725,11 @@ fn transport_rejects_authorized_material_instead_of_dropping_headers() {
 
     let error = candidate
         .transport_components(&context)
-        .expect_err("S26 authorization mapping ещё не должна выполняться молча");
+        .expect_err("conflicting cookies должны fail closed");
     assert!(matches!(
         error,
         super::YtDlpTransportRequestError::RequestMaterial(
-            YtDlpRequestMaterialViolation::AuthorizationMappingPending
+            YtDlpRequestMaterialViolation::ConflictingCookieMaterial
         )
     ));
     assert!(!format!("{error:?} {error}").contains("secret"));

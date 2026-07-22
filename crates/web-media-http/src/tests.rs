@@ -30,10 +30,17 @@ enum TestServerBehavior {
     FullBody,
     /// Range request получает exact partial response.
     Range,
+    /// Range response обновляет session cookie перед последующими reads.
+    RangeWithSetCookie { serialized_cookie: String },
     /// Любой request требует authentication.
     Unauthorized,
     /// `/start` перенаправляет на caller-provided target, остальные path получают body.
     Redirect { target: String },
+    /// Redirect пытается расширить cookie на другой origin.
+    RedirectWithSetCookie {
+        target: String,
+        serialized_cookie: String,
+    },
 }
 
 /// Локальный server хранит только test-owned request capture.
@@ -113,6 +120,11 @@ impl TestServer {
             .iter()
             .any(|request| request.contains(needle))
     }
+
+    /// Клонирует bounded fixture requests для assertions по порядку hops.
+    fn captured_requests(&self) -> Vec<String> {
+        self.requests.lock().expect("request capture mutex").clone()
+    }
 }
 
 impl Drop for TestServer {
@@ -144,6 +156,9 @@ fn handle_connection(
     match behavior {
         TestServerBehavior::FullBody => respond_full(stream, body),
         TestServerBehavior::Range => respond_range(stream, body, &request),
+        TestServerBehavior::RangeWithSetCookie { serialized_cookie } => {
+            respond_range_with_set_cookie(stream, body, &request, serialized_cookie);
+        }
         TestServerBehavior::Unauthorized => {
             stream
                 .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
@@ -157,6 +172,18 @@ fn handle_connection(
                 .expect("write redirect response");
         }
         TestServerBehavior::Redirect { .. } => respond_full(stream, body),
+        TestServerBehavior::RedirectWithSetCookie {
+            target,
+            serialized_cookie,
+        } if request.starts_with("GET /start ") => {
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {target}\r\nSet-Cookie: {serialized_cookie}\r\nContent-Length: 0\r\n\r\n"
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write redirect with Set-Cookie response");
+        }
+        TestServerBehavior::RedirectWithSetCookie { .. } => respond_full(stream, body),
     }
 }
 
@@ -191,6 +218,26 @@ fn respond_full(stream: &mut TcpStream, body: &[u8]) {
 
 /// Возвращает exact requested byte range.
 fn respond_range(stream: &mut TcpStream, body: &[u8], request: &str) {
+    respond_range_with_optional_cookie(stream, body, request, None);
+}
+
+/// Возвращает range и сохраняет scoped Set-Cookie в per-source session.
+fn respond_range_with_set_cookie(
+    stream: &mut TcpStream,
+    body: &[u8],
+    request: &str,
+    serialized_cookie: &str,
+) {
+    respond_range_with_optional_cookie(stream, body, request, Some(serialized_cookie));
+}
+
+/// Общий exact range response builder с optional Set-Cookie fixture header.
+fn respond_range_with_optional_cookie(
+    stream: &mut TcpStream,
+    body: &[u8],
+    request: &str,
+    serialized_cookie: Option<&str>,
+) {
     let range = request
         .lines()
         .find_map(|line| line.strip_prefix("range: bytes="))
@@ -205,8 +252,11 @@ fn respond_range(stream: &mut TcpStream, body: &[u8], request: &str) {
     let end = end.parse::<usize>().expect("range end");
     let end = end.min(body.len().saturating_sub(1));
     let selected = &body[start..=end];
+    let set_cookie_header = serialized_cookie
+        .map(|cookie| format!("Set-Cookie: {cookie}\r\n"))
+        .unwrap_or_default();
     let headers = format!(
-        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\n\r\n",
+        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\n{set_cookie_header}\r\n",
         selected.len(),
         body.len()
     );
@@ -243,6 +293,27 @@ fn request(
     authorization: Option<&str>,
     cancellation: CancellationToken,
 ) -> TransportOpenRequest {
+    request_with_serialized_cookies(
+        provider,
+        url,
+        role,
+        source_generation,
+        authorization,
+        None,
+        cancellation,
+    )
+}
+
+/// Строит request с раздельными Authorization и serialized Cookie boundaries.
+fn request_with_serialized_cookies(
+    provider: web_media_transport_api::TransportProviderId,
+    url: &str,
+    role: MediaComponentRole,
+    source_generation: u64,
+    authorization: Option<&str>,
+    serialized_cookies: Option<&str>,
+    cancellation: CancellationToken,
+) -> TransportOpenRequest {
     let target = HttpRequestTarget::parse_exact(url).expect("valid test target");
     let source = SourceIdentity::new(7);
     let exact = CandidateIdentity::new(
@@ -272,9 +343,14 @@ fn request(
     let headers = authorization
         .map(|value| vec![HttpHeader::new("authorization", value)])
         .unwrap_or_default();
-    let secrets = SecretRequestContext::builder(scope)
-        .with_headers(ValidatedHttpHeaders::new(headers).expect("validated headers"))
-        .build();
+    let mut secret_builder = SecretRequestContext::builder(scope)
+        .with_headers(ValidatedHttpHeaders::new(headers).expect("validated headers"));
+    if let Some(serialized_cookies) = serialized_cookies {
+        secret_builder = secret_builder
+            .with_serialized_cookies(serialized_cookies)
+            .expect("validated serialized cookies");
+    }
+    let secrets = secret_builder.build();
     TransportOpenRequest::new(
         provider,
         component,
@@ -357,6 +433,85 @@ fn range_source_uses_existing_prefetch_path() {
 }
 
 #[test]
+fn set_cookie_refreshes_subsequent_range_requests_inside_source_scope() {
+    let body = b"cookie-refresh-range-body".to_vec();
+    let server = TestServer::spawn(
+        body.clone(),
+        TestServerBehavior::RangeWithSetCookie {
+            serialized_cookie: "session=refreshed-secret; Path=/".to_owned(),
+        },
+    );
+    let (registry, provider) = registry();
+    let opened = registry
+        .open(request_with_serialized_cookies(
+            provider,
+            &server.url("/media.mp4"),
+            MediaComponentRole::Muxed,
+            1,
+            None,
+            Some("session=initial-secret"),
+            CancellationToken::new(),
+        ))
+        .expect("open cookie-protected range source");
+    let mut source = opened.into_input().into_seekable().expect("seekable input");
+    let mut output = vec![0_u8; body.len()];
+    source
+        .read(&mut output, &CancellationToken::new())
+        .expect("range read after Set-Cookie");
+
+    let requests = server.captured_requests();
+    assert!(
+        requests
+            .first()
+            .is_some_and(|request| request.contains("initial-secret"))
+    );
+    assert!(
+        requests
+            .iter()
+            .skip(1)
+            .any(|request| request.contains("refreshed-secret"))
+    );
+    assert!(
+        requests
+            .iter()
+            .skip(1)
+            .all(|request| !request.contains("initial-secret"))
+    );
+}
+
+#[test]
+fn cookie_jar_is_isolated_between_source_opens() {
+    let server = TestServer::spawn(b"isolated".to_vec(), TestServerBehavior::FullBody);
+    let (registry, provider) = registry();
+    registry
+        .open(request_with_serialized_cookies(
+            provider.clone(),
+            &server.url("/first.webm"),
+            MediaComponentRole::Muxed,
+            1,
+            None,
+            Some("session=first-source-secret"),
+            CancellationToken::new(),
+        ))
+        .expect("first protected source opens");
+    registry
+        .open(request(
+            provider,
+            &server.url("/second.webm"),
+            MediaComponentRole::Muxed,
+            2,
+            None,
+            CancellationToken::new(),
+        ))
+        .expect("second public source opens");
+
+    let requests = server.captured_requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].contains("first-source-secret"));
+    assert!(!requests[1].contains("first-source-secret"));
+}
+
+#[test]
 fn muxed_separate_video_only_and_audio_only_share_one_provider_contract() {
     let body = b"component".to_vec();
     let server = TestServer::spawn(body, TestServerBehavior::FullBody);
@@ -409,6 +564,34 @@ fn cross_origin_redirect_never_forwards_authorization_header() {
 
     assert!(redirect_server.captured_value(secret));
     assert!(!target_server.captured_value(secret));
+}
+
+#[test]
+fn cross_origin_redirect_never_forwards_initial_or_set_cookie_state() {
+    let target_server = TestServer::spawn(b"redirected".to_vec(), TestServerBehavior::FullBody);
+    let redirect_server = TestServer::spawn(
+        Vec::new(),
+        TestServerBehavior::RedirectWithSetCookie {
+            target: target_server.url("/final.webm"),
+            serialized_cookie: "session=redirect-secret; Domain=127.0.0.1; Path=/".to_owned(),
+        },
+    );
+    let (registry, provider) = registry();
+    registry
+        .open(request_with_serialized_cookies(
+            provider,
+            &redirect_server.url("/start"),
+            MediaComponentRole::Muxed,
+            1,
+            None,
+            Some("session=initial-secret"),
+            CancellationToken::new(),
+        ))
+        .expect("cross-origin redirect strips cookie state");
+
+    assert!(redirect_server.captured_value("initial-secret"));
+    assert!(!target_server.captured_value("initial-secret"));
+    assert!(!target_server.captured_value("redirect-secret"));
 }
 
 #[test]
@@ -488,12 +671,13 @@ fn cancellation_and_stale_refresh_reject_before_network_mutation() {
     assert_eq!(server.request_count(), 0);
 
     let first = registry
-        .open(request(
+        .open(request_with_serialized_cookies(
             provider.clone(),
             &server.url("/refresh.webm"),
             MediaComponentRole::Muxed,
             1,
             None,
+            Some("session=initial-refresh-secret"),
             CancellationToken::new(),
         ))
         .expect("initial open");
@@ -515,6 +699,26 @@ fn cancellation_and_stale_refresh_reject_before_network_mutation() {
         TransportRefreshError::StaleSourceGeneration { .. }
     ));
 
+    let active_replacement = request_with_serialized_cookies(
+        provider.clone(),
+        &server.url("/refresh.webm"),
+        MediaComponentRole::Muxed,
+        2,
+        None,
+        Some("session=reextracted-refresh-secret"),
+        CancellationToken::new(),
+    );
+    let active_refresh = TransportRefreshRequest::new(first.identity().clone(), active_replacement)
+        .expect("active refresh identity");
+    registry
+        .refresh_if_current(active_refresh, SourceGeneration::new(1))
+        .expect("active refresh opens replacement generation");
+    let refresh_requests = server.captured_requests();
+    assert_eq!(refresh_requests.len(), 2);
+    assert!(refresh_requests[0].contains("initial-refresh-secret"));
+    assert!(refresh_requests[1].contains("reextracted-refresh-secret"));
+    assert!(!refresh_requests[1].contains("initial-refresh-secret"));
+
     let mismatched_replacement = request(
         provider,
         &server.url("/refresh.webm"),
@@ -530,5 +734,5 @@ fn cancellation_and_stale_refresh_reject_before_network_mutation() {
         mismatch_error,
         TransportRefreshRequestError::SemanticIdentityChanged
     );
-    assert_eq!(server.request_count(), 1);
+    assert_eq!(server.request_count(), 2);
 }

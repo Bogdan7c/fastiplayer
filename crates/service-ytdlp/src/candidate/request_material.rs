@@ -173,9 +173,9 @@ pub enum YtDlpRequestMaterialViolation {
     /// Secret/request строка превысила named bound.
     #[error("request field exceeds the safety limit")]
     RequestFieldTooLong,
-    /// S26 ещё не разрешил scoped forwarding effective headers/cookies.
-    #[error("scoped HTTP authorization mapping is not available before S26")]
-    AuthorizationMappingPending,
+    /// Cookie одновременно пришёл отдельным field и обычным HTTP header-ом.
+    #[error("cookie authorization material has conflicting serializations")]
+    ConflictingCookieMaterial,
     /// Progressive S22 provider не владеет segment/manifest/RTMP material.
     #[error("request material does not belong to progressive HTTP")]
     NonProgressiveMaterial,
@@ -203,15 +203,57 @@ impl SecretText {
     }
 }
 
+/// Заимствованный progressive subset с effective serialized auth state.
+pub(super) struct YtDlpProgressiveHttpRequestMaterial<'a> {
+    /// Проверенный S19 material owner, который не раскрывается за пределы adapter-а.
+    material: &'a YtDlpRequestMaterialV1,
+    /// Primary target, наличие которого доказал constructor.
+    target: &'a SecretText,
+    /// Единственная effective Cookie serialization после conflict checks.
+    serialized_cookies: Option<&'a SecretText>,
+}
+
+impl YtDlpProgressiveHttpRequestMaterial<'_> {
+    /// Раскрывает primary target только transport request constructor-у.
+    pub(super) fn target(&self) -> &str {
+        self.target.expose_secret_for_transport()
+    }
+
+    /// Итерирует effective headers, исключая Cookie с отдельной typed boundary.
+    pub(super) fn headers(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.material
+            .http_headers
+            .iter()
+            .filter(|(name, _value)| !name.eq_ignore_ascii_case("cookie"))
+            .map(|(name, value)| (name.as_str(), value.expose_secret_for_transport()))
+    }
+
+    /// Возвращает единственную доказанную serialized Cookie форму.
+    pub(super) fn serialized_cookies(&self) -> Option<&str> {
+        self.serialized_cookies
+            .map(SecretText::expose_secret_for_transport)
+    }
+}
+
 impl YtDlpRequestMaterial {
-    /// Возвращает progressive HTTP target только для S23 public/no-auth subset-а.
-    ///
-    /// Headers/cookies намеренно не отбрасываются молча: их scoped propagation
-    /// принадлежит S26 и до него завершается typed pre-barrier ошибкой.
-    pub(super) fn progressive_http_target(&self) -> Result<&str, YtDlpRequestMaterialViolation> {
+    /// Доказывает progressive HTTP subset и возвращает effective serialized auth.
+    pub(super) fn progressive_http_request_material(
+        &self,
+    ) -> Result<YtDlpProgressiveHttpRequestMaterial<'_>, YtDlpRequestMaterialViolation> {
         let Self::V1(material) = self;
-        if !material.http_headers.is_empty() || material.cookies.is_some() {
-            return Err(YtDlpRequestMaterialViolation::AuthorizationMappingPending);
+        let mut cookie_headers = material
+            .http_headers
+            .iter()
+            .filter(|(name, _value)| name.eq_ignore_ascii_case("cookie"))
+            .map(|(_name, value)| value);
+        let cookie_header = cookie_headers.next();
+        if cookie_headers.next().is_some()
+            || matches!(
+                (cookie_header, material.cookies.as_ref()),
+                (Some(header), Some(field)) if header != field
+            )
+        {
+            return Err(YtDlpRequestMaterialViolation::ConflictingCookieMaterial);
         }
         if !material.fragments.is_empty()
             || material.fragment_base_url.is_some()
@@ -223,11 +265,15 @@ impl YtDlpRequestMaterial {
         {
             return Err(YtDlpRequestMaterialViolation::NonProgressiveMaterial);
         }
-        material
+        let target = material
             .url
             .as_ref()
-            .map(SecretText::expose_secret_for_transport)
-            .ok_or(YtDlpRequestMaterialViolation::MissingPrimaryUrl)
+            .ok_or(YtDlpRequestMaterialViolation::MissingPrimaryUrl)?;
+        Ok(YtDlpProgressiveHttpRequestMaterial {
+            material,
+            target,
+            serialized_cookies: material.cookies.as_ref().or(cookie_header),
+        })
     }
 }
 

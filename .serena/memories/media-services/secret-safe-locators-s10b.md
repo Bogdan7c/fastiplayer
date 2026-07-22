@@ -20,7 +20,7 @@
 
 - Никакой automatic `Debug`/`Display`, tracing field, UI/source label, typed error, reqwest chain, HTTP fingerprint или process stderr summary не содержит locator userinfo/path/query/fragment, signed direct URL/header values либо extractor format identity.
 - `YtDlpServiceError` сохраняет категории cancellation/timeout/process/extractor/collection/compatibility/transport/demux без raw payload. Non-zero extractor error сообщает только bounded stderr byte count.
-- System `yt-dlp` продолжает читать собственные config/cookies; app не хранит отдельные credentials и не добавляет `--ignore-config`.
+- System `yt-dlp` продолжает читать собственные config/cookies; app не хранит отдельные credentials и не добавляет `--ignore-config`. Начиная с S26, effective serialized headers/cookies свежей extraction generation маппятся только в origin/path/secure-scoped `SecretRequestContext` и per-source ephemeral Set-Cookie jar без config/state/export/logging surface; см. `mem:media-services/ytdlp-system-auth-s26-2026-07-22`.
 
 Focused tests: `crates/service-ytdlp/src/locator.rs`, service descriptor/process tests, `crates/app-egui/src/url_service_adapter.rs`, media-open redaction tests и playlist metadata stale/exact tests.
 

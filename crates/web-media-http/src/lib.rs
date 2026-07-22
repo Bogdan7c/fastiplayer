@@ -7,11 +7,13 @@
 
 use std::error::Error;
 use std::fmt;
+use std::sync::Arc;
 
 use media_prefetch::{PrefetchConfig, PrefetchingByteSource};
 use source_core::{
     HttpHeader, HttpRedirectRequestBehavior, HttpRequestBody, HttpScheme, HttpSingleHopRequest,
-    HttpSourceHop, HttpSourceSession, SourceError, SourceRuntimeConfig,
+    HttpSourceHop, HttpSourceSession, ScopedHttpCookieJar, ScopedHttpCookieJarError, SourceError,
+    SourceRuntimeConfig,
 };
 use web_media_transport_api::{
     AuthenticationFailure, ProviderDescriptor, ProviderDescriptorError, ProviderOpenError,
@@ -114,7 +116,8 @@ impl WebMediaHttpProvider {
         &self,
         request: &TransportOpenRequest,
     ) -> Result<ProviderOpenOutput, ProviderOpenError> {
-        let session = HttpSourceSession::new(&self.source_config)
+        let cookie_jar = scoped_cookie_jar_for_request(request)?;
+        let session = HttpSourceSession::new_with_cookie_jar(&self.source_config, cookie_jar)
             .map_err(|source| map_source_open_error(&source, SecretDelivery::NotSent))?;
         let mut current_target = request.target().clone();
         let mut completed_hops = RedirectHopCount::none();
@@ -253,6 +256,32 @@ struct RequestMaterial {
     secret_delivery: SecretDelivery,
 }
 
+/// Создаёт отдельный jar каждого component open/refresh generation-а.
+fn scoped_cookie_jar_for_request(
+    request: &TransportOpenRequest,
+) -> Result<Arc<ScopedHttpCookieJar>, ProviderOpenError> {
+    let initial_material = request
+        .secrets()
+        .material_for(request.target(), SecretRequestPurpose::PrimaryResource)
+        .ok_or(ProviderOpenError::Authentication(
+            AuthenticationFailure::SecretScopeRejected,
+        ))?;
+    let cookie_jar = ScopedHttpCookieJar::new(
+        request.secrets().scope().request_scope_proof(),
+        request.target(),
+        initial_material.cookies_for_request(),
+    )
+    .map_err(|error| match error {
+        ScopedHttpCookieJarError::InitialTargetOutsideScope => {
+            ProviderOpenError::Authentication(AuthenticationFailure::SecretScopeRejected)
+        }
+        ScopedHttpCookieJarError::InvalidSerializedCookies => {
+            ProviderOpenError::Unsupported(UnsupportedTransportReason::RequestMaterial)
+        }
+    })?;
+    Ok(Arc::new(cookie_jar))
+}
+
 /// Извлекает секреты только через intent-named S21T scope boundary.
 fn request_material_for_target(
     request: &TransportOpenRequest,
@@ -281,27 +310,23 @@ fn request_material_for_target(
         .ok_or(ProviderOpenError::Authentication(
             AuthenticationFailure::SecretScopeRejected,
         ))?;
-    let mut headers = material.headers_for_request().to_vec();
-    if let Some(serialized_cookies) = material.cookies_for_request() {
-        if headers
-            .iter()
-            .any(|header| header.name.eq_ignore_ascii_case("cookie"))
-        {
-            return Err(ProviderOpenError::Unsupported(
-                UnsupportedTransportReason::RequestMaterial,
-            ));
-        }
-        let cookie_value = std::str::from_utf8(serialized_cookies).map_err(|_| {
-            ProviderOpenError::Unsupported(UnsupportedTransportReason::RequestMaterial)
-        })?;
-        headers.push(HttpHeader::new("cookie", cookie_value));
+    let headers = material.headers_for_request().to_vec();
+    if headers
+        .iter()
+        .any(|header| header.name.eq_ignore_ascii_case("cookie"))
+    {
+        return Err(ProviderOpenError::Unsupported(
+            UnsupportedTransportReason::RequestMaterial,
+        ));
     }
     let request_body = match (request_body_forwarding, material.request_data_for_request()) {
         (RequestBodyForwarding::Preserve, Some(bytes)) => HttpRequestBody::Bytes(bytes.to_vec()),
         (RequestBodyForwarding::Preserve | RequestBodyForwarding::Drop, None)
         | (RequestBodyForwarding::Drop, Some(_)) => HttpRequestBody::Absent,
     };
-    let secret_delivery = if headers.is_empty() && !request_body.is_present() {
+    let has_scoped_cookies = material.cookies_for_request().is_some();
+    let secret_delivery = if headers.is_empty() && !request_body.is_present() && !has_scoped_cookies
+    {
         SecretDelivery::NotSent
     } else {
         SecretDelivery::Sent

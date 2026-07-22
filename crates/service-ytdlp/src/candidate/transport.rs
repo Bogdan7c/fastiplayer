@@ -1,6 +1,9 @@
 //! Provider-neutral mapping S19 request material-а в S21T open requests.
 
-use source_core::{CancellationToken, HttpPathScope, HttpRequestTarget};
+use source_core::{
+    CancellationToken, HttpHeader, HttpHeaderValidationError, HttpPathScope, HttpRequestTarget,
+    ValidatedHttpHeaders,
+};
 use thiserror::Error;
 use web_media_core::{ContainerFamily, StreamLayout};
 use web_media_transport_api::{
@@ -92,6 +95,9 @@ pub enum YtDlpTransportRequestError {
     /// Neutral request rejected scoped-material contract.
     #[error("YtDlp transport request нарушает secret scope contract")]
     Request(#[source] TransportOpenRequestError),
+    /// Extractor headers/cookies нельзя безопасно сериализовать как HTTP fields.
+    #[error("YtDlp HTTP authorization material имеет недопустимую serialization")]
+    AuthorizationSerialization(#[source] HttpHeaderValidationError),
     /// Descriptor layout не совпал с service-owned component roles.
     #[error("YtDlp component roles не совпадают с descriptor layout")]
     LayoutMismatch,
@@ -108,24 +114,34 @@ impl YtDlpNormalizedCandidate {
             let role = media_component_role(component.role);
             let container = component_container(self.descriptor().layout(), component.role)
                 .ok_or(YtDlpTransportRequestError::LayoutMismatch)?;
-            let target = HttpRequestTarget::parse_exact(
-                component
-                    .material
-                    .progressive_http_target()
-                    .map_err(YtDlpTransportRequestError::RequestMaterial)?,
-            )
-            .map_err(YtDlpTransportRequestError::Target)?;
+            let request_material = component
+                .material
+                .progressive_http_request_material()
+                .map_err(YtDlpTransportRequestError::RequestMaterial)?;
+            let target = HttpRequestTarget::parse_exact(request_material.target())
+                .map_err(YtDlpTransportRequestError::Target)?;
             let identity = MediaComponentIdentity::new(
                 self.descriptor().identity().clone(),
                 self.descriptor().semantic_identity().clone(),
                 role,
             )
             .map_err(YtDlpTransportRequestError::Identity)?;
-            let root_path =
-                HttpPathScope::new("/").expect("static root HTTP path scope must remain valid");
-            let secrets =
-                SecretRequestContext::builder(SecretRequestScope::from_target(&target, root_path))
-                    .build();
+            let path_scope = HttpPathScope::from_target_path(&target);
+            let secret_scope = SecretRequestScope::from_target(&target, path_scope);
+            let serialized_headers = request_material
+                .headers()
+                .map(|(name, value)| HttpHeader::new(name, value))
+                .collect::<Vec<_>>();
+            let serialized_headers = ValidatedHttpHeaders::new(serialized_headers)
+                .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
+            let mut secret_builder =
+                SecretRequestContext::builder(secret_scope).with_headers(serialized_headers);
+            if let Some(serialized_cookies) = request_material.serialized_cookies() {
+                secret_builder = secret_builder
+                    .with_serialized_cookies(serialized_cookies)
+                    .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
+            }
+            let secrets = secret_builder.build();
             let redirect_limit = RedirectHopLimit::new(PUBLIC_MEDIA_REDIRECT_HOPS)
                 .map_err(YtDlpTransportRequestError::RedirectLimit)?;
             let request = TransportOpenRequest::new(

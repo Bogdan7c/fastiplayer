@@ -3,8 +3,8 @@
 use std::fmt;
 
 use source_core::{
-    HttpHeader, HttpHeaderValidationError, HttpOrigin, HttpPathScope, HttpRequestTarget,
-    HttpScheme, ValidatedHttpHeaders,
+    HttpHeader, HttpHeaderValidationError, HttpPathScope, HttpRequestScope, HttpRequestTarget,
+    HttpScopeSecurity, ValidatedHttpHeaders,
 };
 
 /// Требование к transport security при forwarding secrets.
@@ -32,44 +32,40 @@ pub enum SecretRequestPurpose {
 /// Origin + path + secure scope одного ephemeral context-а.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SecretRequestScope {
-    /// Exact normalized security origin.
-    origin: HttpOrigin,
-    /// Segment-boundary-aware path subtree.
-    path: HttpPathScope,
-    /// TLS forwarding requirement.
-    secure: SecretForwardingRequirement,
+    /// Shared low-level proof для secret forwarding и ephemeral cookie jar.
+    request_scope: HttpRequestScope,
 }
 
 impl SecretRequestScope {
     /// Строит safe scope от проверенного initial target-а.
     #[must_use]
     pub fn from_target(target: &HttpRequestTarget, path: HttpPathScope) -> Self {
-        let secure = if target.scheme() == HttpScheme::Https {
-            SecretForwardingRequirement::SecureOnly
-        } else {
-            SecretForwardingRequirement::ValidatedHttpOrHttps
-        };
         Self {
-            origin: target.origin().clone(),
-            path,
-            secure,
+            request_scope: HttpRequestScope::from_target(target, path),
         }
     }
 
     /// Проверяет все три scope dimensions до раскрытия material.
     #[must_use]
     pub fn allows(&self, target: &HttpRequestTarget) -> bool {
-        let secure_allowed = match self.secure {
-            SecretForwardingRequirement::SecureOnly => target.scheme() == HttpScheme::Https,
-            SecretForwardingRequirement::ValidatedHttpOrHttps => true,
-        };
-        secure_allowed && self.origin == *target.origin() && self.path.allows_target(target)
+        self.request_scope.allows(target)
     }
 
     /// Возвращает secure requirement для provider diagnostics без secrets.
     #[must_use]
     pub const fn secure_requirement(&self) -> SecretForwardingRequirement {
-        self.secure
+        match self.request_scope.security() {
+            HttpScopeSecurity::SecureOnly => SecretForwardingRequirement::SecureOnly,
+            HttpScopeSecurity::ValidatedHttpOrHttps => {
+                SecretForwardingRequirement::ValidatedHttpOrHttps
+            }
+        }
+    }
+
+    /// Клонирует тот же proof для concrete per-source cookie jar.
+    #[must_use]
+    pub fn request_scope_proof(&self) -> HttpRequestScope {
+        self.request_scope.clone()
     }
 }
 
@@ -78,9 +74,7 @@ impl fmt::Debug for SecretRequestScope {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("SecretRequestScope")
-            .field("origin", &self.origin)
-            .field("path", &self.path)
-            .field("secure", &self.secure)
+            .field("request_scope", &self.request_scope)
             .finish()
     }
 }

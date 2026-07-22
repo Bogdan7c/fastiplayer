@@ -6,6 +6,7 @@
 
 use std::fmt;
 use std::io::Read;
+use std::sync::Arc;
 
 use reqwest::StatusCode;
 use reqwest::blocking::{Client, Response};
@@ -14,8 +15,8 @@ use reqwest::redirect::Policy;
 
 use crate::http::{build_header_map, map_reqwest_error};
 use crate::{
-    CancellationToken, HttpHeader, HttpRangeSource, HttpRequestTarget, SecretHttpUrl, SourceError,
-    SourceResult, SourceRuntimeConfig, StreamingByteSource,
+    CancellationToken, HttpHeader, HttpRangeSource, HttpRequestTarget, ScopedHttpCookieJar,
+    SecretHttpUrl, SourceError, SourceResult, SourceRuntimeConfig, StreamingByteSource,
 };
 
 /// Семантика request body после конкретного HTTP redirect status-а.
@@ -172,12 +173,32 @@ pub struct HttpSourceSession {
 }
 
 impl HttpSourceSession {
-    /// Создаёт session до первого network side effect-а.
+    /// Создаёт session без cookie state до первого network side effect-а.
     pub fn new(source_config: &SourceRuntimeConfig) -> SourceResult<Self> {
-        let client = Client::builder()
+        Self::build(source_config, None)
+    }
+
+    /// Создаёт session с caller-scoped ephemeral cookie jar.
+    pub fn new_with_cookie_jar(
+        source_config: &SourceRuntimeConfig,
+        cookie_jar: Arc<ScopedHttpCookieJar>,
+    ) -> SourceResult<Self> {
+        Self::build(source_config, Some(cookie_jar))
+    }
+
+    /// Собирает один blocking client; jar никогда не разделяется между sources неявно.
+    fn build(
+        source_config: &SourceRuntimeConfig,
+        cookie_jar: Option<Arc<ScopedHttpCookieJar>>,
+    ) -> SourceResult<Self> {
+        let mut client_builder = Client::builder()
             .connect_timeout(source_config.connect_timeout())
             .timeout(source_config.read_timeout())
-            .redirect(Policy::none())
+            .redirect(Policy::none());
+        if let Some(cookie_jar) = cookie_jar {
+            client_builder = client_builder.cookie_provider(cookie_jar);
+        }
+        let client = client_builder
             .build()
             .map_err(|source| SourceError::HttpClientBuild { source })?;
         Ok(Self { client })

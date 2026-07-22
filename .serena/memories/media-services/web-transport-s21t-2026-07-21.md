@@ -18,6 +18,7 @@
 ## Secret и redirect policy
 
 - `SecretRequestContext` ephemeral и не имеет persistence/serde surface. Named builder заранее покрывает validated serialized headers, serialized cookies, primary-resource `request_data`, media-segment query override и encryption-key query override без yt-dlp type leakage.
+- S26 extension (2026-07-22): `SecretRequestScope` делегирует origin/path/secure checks shared `source-core::HttpRequestScope`; concrete provider клонирует тот же proof в per-source `ScopedHttpCookieJar`. Initial Cookie сохраняется exact, in-scope Set-Cookie обновляет Range session, а jar read/write дополнительно blocked вне scope. Full details: `mem:media-services/ytdlp-system-auth-s26-2026-07-22`.
 - Доступ к material возможен только через `material_for(target, purpose)`; одновременно проверяются normalized origin, segment-boundary path subtree и secure requirement. HTTPS initial target автоматически создаёт SecureOnly scope.
 - Request body выдаётся только `PrimaryResource`; segment/key overrides выдаются только соответствующему `SecretRequestPurpose`.
 - `RedirectPolicy` использует typed `RedirectHopLimit`/`RedirectHopCount`, exact origin policy и HTTPS downgrade policy. Cross-origin redirect может быть разрешён только как without-secrets candidate; сам `SecretRequestContext` всё равно fail-closed отклоняет cross-origin/path/downgrade target.

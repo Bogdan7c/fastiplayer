@@ -21,6 +21,15 @@ pub enum HttpScheme {
     Https,
 }
 
+/// Требование transport security для scoped HTTP request material.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HttpScopeSecurity {
+    /// Scope, созданный от HTTPS resource-а, запрещает downgrade на HTTP.
+    SecureOnly,
+    /// Scope, созданный от HTTP resource-а, допускает проверенные HTTP(S) targets.
+    ValidatedHttpOrHttps,
+}
+
 impl HttpScheme {
     /// Возвращает canonical scheme label без пользовательского payload.
     #[must_use]
@@ -173,6 +182,62 @@ impl fmt::Display for HttpRequestTarget {
             self.origin.host(),
             self.origin.effective_port()
         )
+    }
+}
+
+/// Низкоуровневое доказательство origin/path/secure scope для HTTP material.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct HttpRequestScope {
+    /// Exact normalized security origin.
+    origin: HttpOrigin,
+    /// Segment-boundary-aware path subtree.
+    path: HttpPathScope,
+    /// Запрет HTTPS downgrade либо разрешение validated HTTP(S).
+    security: HttpScopeSecurity,
+}
+
+impl HttpRequestScope {
+    /// Строит scope от уже проверенного initial target-а и explicit path boundary.
+    #[must_use]
+    pub fn from_target(target: &HttpRequestTarget, path: HttpPathScope) -> Self {
+        let security = if target.scheme() == HttpScheme::Https {
+            HttpScopeSecurity::SecureOnly
+        } else {
+            HttpScopeSecurity::ValidatedHttpOrHttps
+        };
+        Self {
+            origin: target.origin().clone(),
+            path,
+            security,
+        }
+    }
+
+    /// Проверяет origin, path boundary и HTTPS downgrade до раскрытия material.
+    #[must_use]
+    pub fn allows(&self, target: &HttpRequestTarget) -> bool {
+        let security_allowed = match self.security {
+            HttpScopeSecurity::SecureOnly => target.scheme() == HttpScheme::Https,
+            HttpScopeSecurity::ValidatedHttpOrHttps => true,
+        };
+        security_allowed && self.origin == *target.origin() && self.path.allows_target(target)
+    }
+
+    /// Возвращает только typed security requirement без locator payload.
+    #[must_use]
+    pub const fn security(&self) -> HttpScopeSecurity {
+        self.security
+    }
+}
+
+impl fmt::Debug for HttpRequestScope {
+    /// Path остаётся redacted через `HttpPathScope::Debug`.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpRequestScope")
+            .field("origin", &self.origin)
+            .field("path", &self.path)
+            .field("security", &self.security)
+            .finish()
     }
 }
 

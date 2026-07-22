@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "cookies", "rustls-tls"] }
 rustiplayer-config = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

@@ -17,7 +17,7 @@
 - Старые public WebM-only opener/selection DTO и implementation удалены: `admission.rs`, `selection.rs`, `resolver.rs`, `http_refresh.rs`, `http_stream.rs`, `YtDlpStreamingMedia`, `YtDlpSelectedStreamIdentity` и `open_*media_from*`. Временного forwarding adapter нет.
 - Selected result и inventory остаются раздельными; accepted iteration ставит selected result первым, чтобы duplicate exact ID не потерял richer request material. Planning и transport используют один exact `CandidateIdentity`.
 - S19 snapshot теперь содержит title/duration того же `--dump-single-json` generation; второй metadata extractor process не запускается.
-- До S26 headers/cookies не отбрасываются: `transport_components` возвращает typed `AuthorizationMappingPending` pre-barrier error. Fragments/HLS/RTMP/non-progressive request material также fail-closed; текущий S23 production slice открывает public progressive HTTP(S) candidates.
+- S26 снял прежнее `AuthorizationMappingPending` limitation: progressive effective headers/cookies маппятся в scoped `SecretRequestContext`, а concrete HTTP session использует per-source ephemeral Set-Cookie jar. Fragments/HLS/RTMP/non-progressive request material по-прежнему fail-closed. Полный auth boundary: `mem:media-services/ytdlp-system-auth-s26-2026-07-22`.
 
 ## Lifecycle и cancellation
 
