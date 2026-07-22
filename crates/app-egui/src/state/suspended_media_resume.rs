@@ -283,6 +283,7 @@ impl AppState {
             ActiveMediaSource::YtDlpUrl {
                 source_locator,
                 candidate_selection,
+                stream_configuration,
             } => {
                 let capabilities = self
                     .system_capabilities_snapshot
@@ -290,8 +291,9 @@ impl AppState {
                     .ok_or(ResumeCheckpointError::PreparationFailed)?;
                 MediaOpenSourceRequest::YtDlp {
                     locator: source_locator.clone(),
-                    selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent::Exact(
+                    selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent::exact(
                         candidate_selection.clone(),
+                        stream_configuration.preference(),
                     ),
                     network_config: config.network,
                     yt_dlp_config: config.yt_dlp,

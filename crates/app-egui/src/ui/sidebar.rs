@@ -10,7 +10,7 @@ use crate::settings_ui::{SettingsUiAction, SettingsUiModel, layout};
 use crate::state::{ContentSlideDirection, SidebarContentTransition, SidebarSection};
 use crate::ui::skin::{PlaylistHeaderUndoStyle, PlaylistRowStyle, PlaylistToolbarStyle};
 use crate::ui::window_chrome::WindowChromeEdgeAlignment;
-use crate::ui::{media_info, playlist};
+use crate::ui::{media_info, playlist, url_sidebar};
 
 const SIDEBAR_FILL: egui::Color32 = egui::Color32::from_rgb(18, 18, 18);
 
@@ -107,6 +107,7 @@ pub(crate) struct SidebarOutput {
 pub(crate) struct SidebarRenderContext<'a> {
     pub(crate) model: &'a SettingsUiModel,
     pub(crate) snapshot: &'a player_core::PlayerSnapshot,
+    pub(crate) url_model: &'a crate::web_media_stream_model::UrlSidebarModel,
     pub(crate) playlist_model: Option<&'a crate::playlist_runtime::PlaylistViewModel>,
     pub(crate) playlist_row_style: PlaylistRowStyle,
     pub(crate) playlist_toolbar_style: PlaylistToolbarStyle,
@@ -316,7 +317,9 @@ fn render_section(ui: &mut Ui, section: SidebarSection, context: &mut SidebarRen
             SidebarSection::Settings => {
                 layout::show(ui, context.model, context.settings_actions);
             }
-            SidebarSection::Url => {}
+            SidebarSection::Url => {
+                url_sidebar::show(ui, context.url_model);
+            }
             SidebarSection::Info => {
                 egui::ScrollArea::vertical()
                     .id_salt("info_scroll")

@@ -1,5 +1,10 @@
 # Core
 
+## S24 URL sidebar stream model (2026-07-22)
+
+- Existing URL sidebar теперь показывает только active web-media configuration: safe source label, S21C-playable resolutions/formats, active/pending projection, global-vs-item preference, group-part scope, VOD/seek/buffering/refresh и bounded safe failure. Local source не активирует web model; direct-media не получает fake choices.
+- Safe inventory проходит тот же S19→S21C→S23 preparation и публикуется только с exact Installed `ActiveMediaSource`; secrets/raw identities отсутствуют. Единственный sidebar Panel/geometry owner сохранён. Полный boundary и S25 limitation: `mem:app-egui/sidebar-controller`.
+
 ## S23 queue-owned web open (2026-07-22)
 
 - Current yt-dlp playback no longer uses the historical WebM-only service opener. `app-egui::web_media_open` composes S19 candidates -> S21C planner -> S22 transport/demux; `PlaylistRuntime` retains exact Item/revision/barrier ownership and publishes current/active only after exact Installed.

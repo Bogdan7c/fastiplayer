@@ -56,6 +56,9 @@ pub(crate) struct PreparedYtDlpStartupMedia {
 
     /// Exact+semantic token, по которому restore выполняет fresh extraction/rematch.
     pub(crate) candidate_selection: service_ytdlp::YtDlpCandidateSelection,
+
+    /// UI-safe inventory того же extraction snapshot-а.
+    pub(crate) stream_configuration: crate::web_media_stream_model::WebMediaStreamConfiguration,
 }
 
 /// Результат фоновой подготовки CLI YtDlp URL.
@@ -630,6 +633,7 @@ pub(crate) fn resolve_yt_dlp_startup_media(
     Ok(PreparedYtDlpStartupMedia {
         demuxer: prepared.demuxer,
         candidate_selection: prepared.candidate_selection,
+        stream_configuration: prepared.stream_configuration,
     })
 }
 

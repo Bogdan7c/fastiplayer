@@ -181,11 +181,15 @@ impl FrameSettingsRuntimeAdapter<'_> {
                 ActiveMediaSource::YtDlpUrl {
                     source_locator,
                     candidate_selection,
+                    stream_configuration,
                 } => {
                     let selection_intent = if config.reselect_yt_dlp_stream {
                         crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable
                     } else {
-                        crate::web_media_open::YtDlpCandidateOpenIntent::Exact(candidate_selection)
+                        crate::web_media_open::YtDlpCandidateOpenIntent::exact(
+                            candidate_selection,
+                            stream_configuration.preference(),
+                        )
                     };
                     let system_capabilities =
                         probe_system_capabilities(self.renderer.render_capabilities());
@@ -215,6 +219,7 @@ impl FrameSettingsRuntimeAdapter<'_> {
                                 ActiveMediaSource::YtDlpUrl {
                                     source_locator,
                                     candidate_selection: Box::new(prepared.candidate_selection),
+                                    stream_configuration: Box::new(prepared.stream_configuration),
                                 },
                                 safe_label,
                             ))

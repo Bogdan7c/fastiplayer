@@ -44,3 +44,9 @@
 - Изменение host architecture требует обновить эту memory и focused UI/layout guardrails.
 
 Текущая реализация и конкретные sidebar-инварианты: `mem:app-egui/sidebar-controller`. Painter boundary: `mem:app-egui/artwork-boundary`.
+
+## S24 concrete URL entity (2026-07-22)
+
+- URL stream configuration подтверждает host/entity boundary: новый `ui/url_sidebar.rs` является только content renderer-ом `SidebarSection::Url`; единственный `egui::Panel::left(app_sidebar)` остаётся в `ui/sidebar.rs`.
+- Entity получает immutable secret-safe `UrlSidebarModel`, не владеет width/open/animation/viewport и не имеет URL input либо queue mutation. Local/direct/YtDlp являются typed content states одного host-а, а не отдельными panels.
+- Regression guardrail отдельно проверяет отсутствие `Panel::` в URL content module; общий sidebar suite проверяет единственный shared constructor и сохранение geometry/resize behavior.

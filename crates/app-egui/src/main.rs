@@ -35,6 +35,7 @@ mod video_pipeline_candidate;
 mod video_pipeline_selector;
 mod web_media_open;
 mod web_media_quality;
+mod web_media_stream_model;
 
 use anyhow::{Context, Result};
 use tracing::info;

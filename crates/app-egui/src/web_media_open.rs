@@ -61,7 +61,30 @@ pub(crate) enum YtDlpCandidateOpenIntent {
     /// Первичное открытие либо явная runtime override/reselection.
     BestPlayable,
     /// Restore/rebuild обязан сохранить semantic candidate identity.
-    Exact(Box<YtDlpCandidateSelection>),
+    Exact(Box<YtDlpExactCandidateOpenIntent>),
+}
+
+/// Один heap-owned exact reopen intent не раздувает каждый source request enum.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct YtDlpExactCandidateOpenIntent {
+    /// Предыдущий exact selection для semantic rematch в fresh snapshot-е.
+    selection: Box<YtDlpCandidateSelection>,
+    /// Исходная global/item policy не должна теряться при suspend/reopen.
+    preference: crate::web_media_stream_model::WebMediaSelectionPreference,
+}
+
+impl YtDlpCandidateOpenIntent {
+    /// Собирает exact reopen intent с сохранением preference и компактного enum layout.
+    #[must_use]
+    pub(crate) fn exact(
+        selection: Box<YtDlpCandidateSelection>,
+        preference: crate::web_media_stream_model::WebMediaSelectionPreference,
+    ) -> Self {
+        Self::Exact(Box::new(YtDlpExactCandidateOpenIntent {
+            selection,
+            preference,
+        }))
+    }
 }
 
 /// Результат pre-barrier подготовки, который ещё не меняет player/queue state.
@@ -72,6 +95,8 @@ pub(crate) struct PreparedYtDlpWebMedia {
     pub(crate) playlist_metadata: service_ytdlp::YtDlpPlaylistMetadata,
     /// Exact установленный выбор для active source и последующего rematch-а.
     pub(crate) candidate_selection: YtDlpCandidateSelection,
+    /// Secret-safe inventory, публикуемый только вместе с exact Installed source.
+    pub(crate) stream_configuration: crate::web_media_stream_model::WebMediaStreamConfiguration,
 }
 
 /// Открывает YtDlp locator одним S19 → S21C → S22 production path-ом.
@@ -89,6 +114,14 @@ pub(crate) fn prepare_yt_dlp_web_media(
     is_cancelled: impl Fn() -> bool,
 ) -> Result<PreparedYtDlpWebMedia> {
     ensure_not_cancelled(&is_cancelled)?;
+    let selection_preference = match &intent {
+        YtDlpCandidateOpenIntent::BestPlayable => {
+            crate::web_media_stream_model::WebMediaSelectionPreference::from_global_config(
+                yt_dlp_config,
+            )
+        }
+        YtDlpCandidateOpenIntent::Exact(exact) => exact.preference,
+    };
     let (candidate_snapshot, selection_request) =
         resolve_candidate_snapshot(locator, yt_dlp_config, intent, &is_cancelled)
             .context("Не удалось подготовить exact YtDlp candidate snapshot")?;
@@ -119,6 +152,16 @@ pub(crate) fn prepare_yt_dlp_web_media(
     let candidate_selection = candidate_snapshot
         .selection_for(selected_candidate)
         .context("Не удалось сохранить exact YtDlp candidate selection")?;
+    let stream_configuration =
+        crate::web_media_stream_model::WebMediaStreamConfiguration::from_yt_dlp_snapshot(
+            &candidate_snapshot,
+            &planning_snapshot,
+            capabilities,
+            &policy,
+            &candidate_selection,
+            selection_preference,
+        )
+        .context("Не удалось построить secret-safe URL sidebar stream model")?;
     let playlist_metadata = candidate_snapshot.playlist_metadata().clone();
     ensure_not_cancelled(&is_cancelled)?;
     let demuxer = runtime
@@ -129,6 +172,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
         demuxer,
         playlist_metadata,
         candidate_selection,
+        stream_configuration,
     })
 }
 
@@ -299,7 +343,8 @@ fn resolve_candidate_snapshot(
                 )?;
             Ok((snapshot, SelectionRequest::BestPlayable))
         }
-        YtDlpCandidateOpenIntent::Exact(previous) => {
+        YtDlpCandidateOpenIntent::Exact(exact) => {
+            let previous = exact.selection;
             let source = previous.exact_identity().source();
             let generation_value = previous
                 .exact_identity()

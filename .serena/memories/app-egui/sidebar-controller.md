@@ -17,3 +17,12 @@
 - Painter primitives, including active background, live in `ui-artwork-egui`; app-egui owns hit-testing/actions only.
 - Hiding/switching away from Settings preserves its draft/live preview. Re-entering an existing draft refreshes dynamic options without `begin_edit`. Settings X/Cancel rolls back; successful OK closes through visibility reconciliation; Apply stays open.
 - Session 18: Playlist content routes to `ui/playlist/` inside the same single host. Authoritative copy owns persistent viewport anchor/output; disabled outgoing/incoming animation copies render with temporary Playlist UI state and discarded output, so they cannot overwrite anchor or duplicate visible metadata demand. См. `mem:app-egui/playlist-ui-s18`.
+
+## S24 URL sidebar stream model (2026-07-22)
+
+- `web_media_stream_model.rs` владеет secret-safe read-only projection активной web-media конфигурации; `ui/url_sidebar.rs` только рисует её внутри существующего `SidebarSection::Url`. Второго `Panel`, URL input, browser/profile controls и queue actions нет.
+- Safe inventory строится в единственном S19→S21C→S23 preparation path-е из accepted candidates минус полный S21C rejection set. UI получает только layout, resolution/fps/bitrate, container/codec enums; raw URL, headers/cookies, candidate/semantic IDs и extractor payload отсутствуют.
+- `ActiveMediaSource::YtDlpUrl` несёт exact selection отдельно от boxed `WebMediaStreamConfiguration`. Конфигурация публикуется только вместе с exact Installed source и сохраняет preference через suspend/exact reopen; settings BestPlayable reselection заново берёт current global config.
+- `UrlSidebarController` не дублирует active source: active model строится из `AppState::active_media_source`. Ephemeral pending/error fenced exact source+extraction generation; runtime item override различает exact `PlaylistItemId` и source lineage. S25 владеет фактической установкой pending/override и controlled same-item switch.
+- Local source даёт inactive URL model; direct-media показывает service-owned safe label и VOD/seek/buffering state без fake format choices; YtDlp показывает active/pending, global-vs-item preference, group-part scope, VOD/seek/buffering/refresh-on-reopen и bounded safe failure category.
+- Focused tests: local/direct/audio-only/one-many/group part/current+stale generation/item override fencing/secret safety и отсутствие второго Panel. Полный `cargo test -p app-egui`: 817 PASS.

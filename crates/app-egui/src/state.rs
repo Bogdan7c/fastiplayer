@@ -321,6 +321,9 @@ pub struct AppState {
     /// Анимация выезда settings sidebar; runtime open-state остаётся целью перехода.
     sidebar_controller: SidebarController,
 
+    /// Ephemeral pending/error state URL content; Installed source остаётся authoritative.
+    url_sidebar_controller: crate::web_media_stream_model::UrlSidebarController,
+
     /// Единственный владелец live geometry общей панели для всех sidebar sections.
     sidebar_host_state: SidebarHostState,
 
@@ -423,6 +426,7 @@ impl AppState {
             timeline_ui_state: TimelineUiState::default(),
             telemetry_panel_cache: TelemetryPanelCache::default(),
             sidebar_controller: SidebarController::default(),
+            url_sidebar_controller: crate::web_media_stream_model::UrlSidebarController::default(),
             sidebar_host_state,
             sidebar_slide_last_tick: None,
         };

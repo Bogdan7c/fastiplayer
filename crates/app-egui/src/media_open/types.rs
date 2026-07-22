@@ -93,8 +93,12 @@ pub(crate) enum ActiveMediaSource {
     LocalFile(PathBuf),
     /// Stable normalized YtDlp locator + exact selected candidate token.
     YtDlpUrl {
+        /// Reconstructible exact source identity; Debug/Display остаются redacted.
         source_locator: service_ytdlp::YtDlpMediaLocator,
+        /// Exact selection для fresh semantic rematch при controlled reopen.
         candidate_selection: Box<service_ytdlp::YtDlpCandidateSelection>,
+        /// UI-safe installed inventory без URL, headers/cookies и candidate IDs.
+        stream_configuration: Box<crate::web_media_stream_model::WebMediaStreamConfiguration>,
     },
     /// Exact functional direct locator с service-owned redacted formatting.
     DirectMediaUrl(service_direct_media::DirectMediaUrl),

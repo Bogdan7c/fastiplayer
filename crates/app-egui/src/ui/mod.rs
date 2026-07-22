@@ -14,4 +14,5 @@ pub mod sidebar;
 pub mod skin;
 pub mod timeline;
 pub mod titlebar_icon_area;
+pub(crate) mod url_sidebar;
 pub mod window_chrome;

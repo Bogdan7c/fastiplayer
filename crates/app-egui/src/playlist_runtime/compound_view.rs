@@ -244,6 +244,15 @@ impl CompoundRuntimeViewSnapshot {
         self.rows.get(row_index).map(|row| row.row().row_id())
     }
 
+    /// Возвращает structural owner playable item-а даже для collapsed compound part-а.
+    #[must_use]
+    pub(crate) fn structural_entry_id_for_item(
+        &self,
+        item_id: PlaylistItemId,
+    ) -> Option<PlaylistEntryId> {
+        self.entry_id_by_item.get(&item_id).copied()
+    }
+
     /// Exact active part указывает на child только пока group раскрыта.
     pub(crate) fn active_row_index(&self, active_item_id: PlaylistItemId) -> Option<usize> {
         self.part_indices.get(&active_item_id).copied().or_else(|| {
