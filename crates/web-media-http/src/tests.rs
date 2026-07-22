@@ -15,13 +15,14 @@ use web_media_core::{
     SourceIdentity,
 };
 use web_media_transport_api::{
-    MediaComponentIdentity, MediaComponentRole, MediaPresentation, RedirectHopLimit,
-    RedirectPolicy, SecretRequestContext, SecretRequestScope, SourceGeneration, TransportInput,
-    TransportOpenError, TransportOpenRequest, TransportProvider, TransportRefreshError,
-    TransportRefreshRequest, TransportRefreshRequestError, TransportRegistry,
+    HttpRangeRequestLimit, MediaComponentIdentity, MediaComponentRole, MediaPresentation,
+    RedirectHopLimit, RedirectPolicy, SecretRequestContext, SecretRequestScope, SourceGeneration,
+    TransportInput, TransportOpenError, TransportOpenRequest, TransportProvider,
+    TransportRefreshError, TransportRefreshRequest, TransportRefreshRequestError,
+    TransportRegistry,
 };
 
-use super::WebMediaHttpProvider;
+use super::{WebMediaHttpProvider, prefetch_config_with_source_limit};
 
 /// Поведение hermetic HTTP fixture server-а.
 #[derive(Clone)]
@@ -267,7 +268,7 @@ fn respond_range_with_optional_cookie(
 }
 
 /// Создаёт concrete provider registry с production dependency shape.
-fn registry() -> (
+pub(super) fn registry() -> (
     TransportRegistry,
     web_media_transport_api::TransportProviderId,
 ) {
@@ -285,7 +286,7 @@ fn registry() -> (
 }
 
 /// Строит exact request для одной component role/generation.
-fn request(
+pub(super) fn request(
     provider: web_media_transport_api::TransportProviderId,
     url: &str,
     role: MediaComponentRole,
@@ -305,7 +306,7 @@ fn request(
 }
 
 /// Строит request с раздельными Authorization и serialized Cookie boundaries.
-fn request_with_serialized_cookies(
+pub(super) fn request_with_serialized_cookies(
     provider: web_media_transport_api::TransportProviderId,
     url: &str,
     role: MediaComponentRole,
@@ -383,6 +384,19 @@ fn read_streaming_body(mut source: Box<dyn StreamingByteSource>) -> Vec<u8> {
     output
 }
 
+/// Возвращает запрошенное число bytes из одного bounded Range header-а.
+fn requested_http_range_bytes(request: &str) -> Option<u64> {
+    let range_header = request
+        .lines()
+        .find(|line| line.to_ascii_lowercase().starts_with("range:"))?;
+    let (_name, raw_value) = range_header.split_once(':')?;
+    let byte_range = raw_value.trim().strip_prefix("bytes=")?;
+    let (start, end) = byte_range.split_once('-')?;
+    let start = start.parse::<u64>().ok()?;
+    let end = end.parse::<u64>().ok()?;
+    end.checked_sub(start)?.checked_add(1)
+}
+
 #[test]
 fn non_range_reuses_probe_response_without_duplicate_request() {
     let body = b"progressive-body".to_vec();
@@ -430,6 +444,72 @@ fn range_source_uses_existing_prefetch_path() {
 
     assert_eq!(&output[..read], body.as_slice());
     assert!(server.request_count() >= 2);
+}
+
+#[test]
+fn source_range_limit_caps_initial_and_follow_up_prefetch_requests() {
+    const RANGE_LIMIT_BYTES: u64 = 64 * 1024;
+    let body = vec![0x5a; (RANGE_LIMIT_BYTES * 3) as usize];
+    let server = TestServer::spawn(body, TestServerBehavior::Range);
+    let (registry, provider) = registry();
+    let range_limit =
+        HttpRangeRequestLimit::new(RANGE_LIMIT_BYTES).expect("positive source range limit");
+    let open_request = request(
+        provider,
+        &server.url("/limited.mp4"),
+        MediaComponentRole::Muxed,
+        1,
+        None,
+        CancellationToken::new(),
+    )
+    .with_http_range_request_limit(range_limit);
+    let opened = registry
+        .open(open_request)
+        .expect("range-limited source opens");
+    let mut source = opened.into_input().into_seekable().expect("seekable input");
+    let mut output = vec![0_u8; RANGE_LIMIT_BYTES as usize];
+    source
+        .read(&mut output, &CancellationToken::new())
+        .expect("limited prefetch read");
+
+    let requested_ranges = server
+        .captured_requests()
+        .iter()
+        .filter_map(|request| requested_http_range_bytes(request))
+        .collect::<Vec<_>>();
+    assert!(
+        requested_ranges.iter().any(|bytes| *bytes > 1),
+        "fixture должен увидеть хотя бы один prefetch range после probe"
+    );
+    assert!(
+        requested_ranges
+            .iter()
+            .all(|bytes| *bytes <= RANGE_LIMIT_BYTES),
+        "ни один HTTP Range не должен превышать source-specific limit"
+    );
+}
+
+#[test]
+fn source_range_limit_preserves_global_memory_window() {
+    let default_config = media_prefetch::PrefetchConfig::default();
+    let range_limit = HttpRangeRequestLimit::new(1024 * 1024).expect("strict source limit");
+    let effective_config = prefetch_config_with_source_limit(default_config, Some(range_limit))
+        .expect("typed limit сохраняет prefetch invariants");
+
+    assert_eq!(
+        effective_config.initial_chunk_bytes(),
+        default_config.initial_chunk_bytes()
+    );
+    assert_eq!(effective_config.chunk_bytes(), 1024 * 1024);
+    assert_eq!(
+        effective_config.window_bytes(),
+        default_config.window_bytes()
+    );
+
+    let youtube_limit = HttpRangeRequestLimit::new(10 * 1024 * 1024).expect("YouTube limit");
+    let youtube_config = prefetch_config_with_source_limit(default_config, Some(youtube_limit))
+        .expect("мягкий source limit сохраняет global policy");
+    assert_eq!(youtube_config, default_config);
 }
 
 #[test]

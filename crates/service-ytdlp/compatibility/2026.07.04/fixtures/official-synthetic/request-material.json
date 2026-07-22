@@ -11,6 +11,9 @@
       "payload": {
         "url": "https://manifest.invalid/media.m3u8",
         "manifest_url": "https://manifest.invalid/master.m3u8",
+        "downloader_options": {
+          "http_chunk_size": 10485760
+        },
         "fragment_base_url": "https://segments.invalid/media/",
         "fragments": [
           {

@@ -58,7 +58,9 @@ impl VaapiCodecAdapterFactory {
             (VideoCodec::Vp9, VideoProfile::Vp9(Vp9Profile::Profile2)) => {
                 format.bit_depth == BitDepth::Ten && format.chroma == ChromaSubsampling::Yuv420
             }
-            (VideoCodec::H264, VideoProfile::H264(_)) => {
+            (VideoCodec::H264, VideoProfile::H264(profile))
+                if is_implemented_h264_profile(profile) =>
+            {
                 format.bit_depth == BitDepth::Eight && format.chroma == ChromaSubsampling::Yuv420
             }
             (VideoCodec::H265, VideoProfile::H265(H265Profile::Main)) => {
@@ -70,6 +72,17 @@ impl VaapiCodecAdapterFactory {
             _ => false,
         }
     }
+}
+
+/// Хранит единственный production whitelist H.264 profiles для probe и stream config.
+fn is_implemented_h264_profile(profile: H264Profile) -> bool {
+    matches!(
+        profile,
+        H264Profile::Baseline
+            | H264Profile::ConstrainedBaseline
+            | H264Profile::Main
+            | H264Profile::High
+    )
 }
 
 /// Валидирует VP9 config против production adapter matrix.
@@ -155,10 +168,14 @@ fn reject_unsupported_h264_config(
         return Some(rejection);
     }
 
-    if let Some(profile) = config.profile
-        && !matches!(profile, VideoProfile::H264(_))
-    {
-        return Some(VideoStreamConfigRejection::UnsupportedProfile { profile });
+    if let Some(profile) = config.profile {
+        let supported_profile = matches!(
+            profile,
+            VideoProfile::H264(h264_profile) if is_implemented_h264_profile(h264_profile)
+        );
+        if !supported_profile {
+            return Some(VideoStreamConfigRejection::UnsupportedProfile { profile });
+        }
     }
 
     if let Some(rejection) = reject_optional_bit_depth(config.bit_depth, BitDepth::Eight)

@@ -505,6 +505,17 @@ fn formats_for_va_profile(
                 max_resolution,
             );
         }
+        libva::VAProfile::VAProfileH264Baseline => {
+            push_matching_rt_format(
+                &mut formats,
+                rt_format_mask,
+                VideoCodec::H264,
+                VideoProfile::H264(H264Profile::Baseline),
+                &[ChromaSubsampling::Yuv420],
+                &[BitDepth::Eight],
+                max_resolution,
+            );
+        }
         libva::VAProfile::VAProfileH264ConstrainedBaseline => {
             push_matching_rt_format(
                 &mut formats,
@@ -721,6 +732,7 @@ fn profile_label(profile: libva::VAProfile::Type) -> String {
         libva::VAProfile::VAProfileVP9Profile3 => "VAProfileVP9Profile3".to_string(),
         libva::VAProfile::VAProfileAV1Profile0 => "VAProfileAV1Profile0".to_string(),
         libva::VAProfile::VAProfileAV1Profile1 => "VAProfileAV1Profile1".to_string(),
+        libva::VAProfile::VAProfileH264Baseline => "VAProfileH264Baseline".to_string(),
         libva::VAProfile::VAProfileH264ConstrainedBaseline => {
             "VAProfileH264ConstrainedBaseline".to_string()
         }
@@ -897,6 +909,67 @@ mod tests {
         assert_eq!(formats[0].profile, VideoProfile::H264(H264Profile::High));
         assert_eq!(formats[0].bit_depth, BitDepth::Eight);
         assert_eq!(formats[0].chroma, ChromaSubsampling::Yuv420);
+    }
+
+    /// Проверяет, что ordinary Baseline появляется только из exact VA profile,
+    /// а неподдерживаемый 10-bit RT format не расширяет production matrix.
+    #[test]
+    fn h264_baseline_va_profile_maps_to_exact_8bit_yuv420_slot() {
+        let formats = formats_for_va_profile(
+            libva::VAProfile::VAProfileH264Baseline,
+            libva::VA_RT_FORMAT_YUV420 | libva::VA_RT_FORMAT_YUV420_10,
+            MaxResolution {
+                width: Some(1920),
+                height: Some(1080),
+            },
+        );
+
+        assert_eq!(formats.len(), 1);
+        assert_eq!(formats[0].codec, VideoCodec::H264);
+        assert_eq!(
+            formats[0].profile,
+            VideoProfile::H264(H264Profile::Baseline)
+        );
+        assert_eq!(formats[0].bit_depth, BitDepth::Eight);
+        assert_eq!(formats[0].chroma, ChromaSubsampling::Yuv420);
+        assert_eq!(formats[0].max_width, Some(1920));
+        assert_eq!(formats[0].max_height, Some(1080));
+    }
+
+    /// Закрепляет отсутствие опасного alias ordinary Baseline на Constrained Baseline.
+    #[test]
+    fn constrained_baseline_va_profile_does_not_advertise_ordinary_baseline() {
+        let formats = formats_for_va_profile(
+            libva::VAProfile::VAProfileH264ConstrainedBaseline,
+            libva::VA_RT_FORMAT_YUV420,
+            MaxResolution {
+                width: Some(1920),
+                height: Some(1080),
+            },
+        );
+
+        assert_eq!(formats.len(), 1);
+        assert_eq!(
+            formats[0].profile,
+            VideoProfile::H264(H264Profile::ConstrainedBaseline)
+        );
+        assert_ne!(
+            formats[0].profile,
+            VideoProfile::H264(H264Profile::Baseline)
+        );
+    }
+
+    /// Фиксирует безопасные labels обоих разных VA-API Baseline profiles.
+    #[test]
+    fn h264_baseline_profile_labels_are_distinct() {
+        assert_eq!(
+            profile_label(libva::VAProfile::VAProfileH264Baseline),
+            "VAProfileH264Baseline"
+        );
+        assert_eq!(
+            profile_label(libva::VAProfile::VAProfileH264ConstrainedBaseline),
+            "VAProfileH264ConstrainedBaseline"
+        );
     }
 
     #[test]

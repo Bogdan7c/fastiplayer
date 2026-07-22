@@ -34,7 +34,7 @@ pub fn h264_sps_metadata_from_packet(
     Err(H264RequirementError::MissingSequenceParameterSet)
 }
 
-/// Парсит SPS NAL unit и подтверждает v1 supported subset: 8-bit 4:2:0 CBP/Main/High.
+/// Парсит SPS NAL unit и подтверждает v1 supported subset: 8-bit 4:2:0 Baseline/CBP/Main/High.
 pub fn parse_h264_sps_metadata(nal_unit_bytes: &[u8]) -> Result<H264SpsMetadata, H264SpsError> {
     let nal_header = parse_nal_header(nal_unit_bytes).map_err(|error| match error {
         H264ByteStreamError::EmptyNalUnit => H264SpsError::EmptyNalUnit,
@@ -55,12 +55,13 @@ pub fn parse_h264_sps_metadata(nal_unit_bytes: &[u8]) -> Result<H264SpsMetadata,
     let profile_idc = bit_reader.read_u8()?;
     let constraint_flags = bit_reader.read_u8()?;
     let level_idc = bit_reader.read_u8()?;
+    let profile_indication = H264ProfileIndication::new(profile_idc, constraint_flags);
     let profile =
-        validate_h264_profile(profile_idc, constraint_flags).map_err(|unsupported_profile| {
+        h264_profile_from_indication(profile_indication).map_err(|unsupported_profile| {
             H264SpsError::UnsupportedProfile {
-                profile_idc,
-                constraint_flags,
-                reason: unsupported_profile.reason,
+                profile_idc: unsupported_profile.indication().profile_idc(),
+                constraint_flags: unsupported_profile.indication().constraint_flags(),
+                reason: unsupported_profile.reason(),
             }
         })?;
     let _seq_parameter_set_id = bit_reader.read_ue()?;
@@ -179,35 +180,122 @@ impl fmt::Display for H264RequirementError {
 
 impl std::error::Error for H264RequirementError {}
 
-pub(super) fn validate_h264_profile(
+/// Raw AVC profile indication из SPS, `avcC` или RFC 6381 codec string.
+///
+/// Тип не позволяет вызывающему коду перепутать `profile_idc` с compatibility byte
+/// при передаче данных через codec/service boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct H264ProfileIndication {
+    /// Значение `profile_idc`.
     profile_idc: u8,
+
+    /// Compatibility byte с constraint flags.
     constraint_flags: u8,
-) -> Result<H264Profile, UnsupportedH264Profile> {
-    match profile_idc {
-        66 if constraint_flags & 0b0100_0000 != 0 => Ok(H264Profile::ConstrainedBaseline),
-        66 => Err(UnsupportedH264Profile {
-            reason: "Baseline without constrained-baseline flag is not enabled in v1",
-        }),
+}
+
+impl H264ProfileIndication {
+    /// Создаёт indication из явно названных AVC полей.
+    #[must_use]
+    pub const fn new(profile_idc: u8, constraint_flags: u8) -> Self {
+        Self {
+            profile_idc,
+            constraint_flags,
+        }
+    }
+
+    /// Возвращает исходный `profile_idc`.
+    #[must_use]
+    pub const fn profile_idc(self) -> u8 {
+        self.profile_idc
+    }
+
+    /// Возвращает исходный compatibility byte с constraint flags.
+    #[must_use]
+    pub const fn constraint_flags(self) -> u8 {
+        self.constraint_flags
+    }
+}
+
+/// Typed отказ классификации AVC profile indication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnsupportedH264ProfileIndication {
+    /// Indication, которую codec policy не поддерживает.
+    indication: H264ProfileIndication,
+
+    /// Стабильная безопасная причина отказа.
+    reason: &'static str,
+}
+
+impl UnsupportedH264ProfileIndication {
+    /// Создаёт typed отказ без потери исходной profile indication.
+    #[must_use]
+    pub const fn new(indication: H264ProfileIndication, reason: &'static str) -> Self {
+        Self { indication, reason }
+    }
+
+    /// Возвращает отвергнутую profile indication.
+    #[must_use]
+    pub const fn indication(self) -> H264ProfileIndication {
+        self.indication
+    }
+
+    /// Возвращает стабильную безопасную причину отказа.
+    #[must_use]
+    pub const fn reason(self) -> &'static str {
+        self.reason
+    }
+}
+
+impl fmt::Display for UnsupportedH264ProfileIndication {
+    /// Форматирует отказ без container/service-specific контекста.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "unsupported H.264 profile indication: profile_idc={}, constraint_flags=0x{:02x}: {}",
+            self.indication.profile_idc(),
+            self.indication.constraint_flags(),
+            self.reason
+        )
+    }
+}
+
+impl std::error::Error for UnsupportedH264ProfileIndication {}
+
+/// Классифицирует raw AVC profile indication в единый neutral H.264 profile.
+pub fn h264_profile_from_indication(
+    indication: H264ProfileIndication,
+) -> Result<H264Profile, UnsupportedH264ProfileIndication> {
+    match indication.profile_idc() {
+        66 if indication.constraint_flags() & 0b0100_0000 != 0 => {
+            Ok(H264Profile::ConstrainedBaseline)
+        }
+        66 => Ok(H264Profile::Baseline),
         77 => Ok(H264Profile::Main),
         100 => Ok(H264Profile::High),
-        110 => Err(UnsupportedH264Profile {
-            reason: "High 10 profile is reserved for a future zero-copy path",
-        }),
-        122 => Err(UnsupportedH264Profile {
-            reason: "High 4:2:2 profile is reserved for a future zero-copy path",
-        }),
-        244 => Err(UnsupportedH264Profile {
-            reason: "High 4:4:4 profile is reserved for a future zero-copy path",
-        }),
-        118 => Err(UnsupportedH264Profile {
-            reason: "Multiview High profile is not part of H.264 v1",
-        }),
-        128 => Err(UnsupportedH264Profile {
-            reason: "Stereo High profile is not part of H.264 v1",
-        }),
-        _ => Err(UnsupportedH264Profile {
-            reason: "profile is not part of H.264 v1",
-        }),
+        110 => Err(UnsupportedH264ProfileIndication::new(
+            indication,
+            "High 10 profile is reserved for a future zero-copy path",
+        )),
+        122 => Err(UnsupportedH264ProfileIndication::new(
+            indication,
+            "High 4:2:2 profile is reserved for a future zero-copy path",
+        )),
+        244 => Err(UnsupportedH264ProfileIndication::new(
+            indication,
+            "High 4:4:4 profile is reserved for a future zero-copy path",
+        )),
+        118 => Err(UnsupportedH264ProfileIndication::new(
+            indication,
+            "Multiview High profile is not part of H.264 v1",
+        )),
+        128 => Err(UnsupportedH264ProfileIndication::new(
+            indication,
+            "Stereo High profile is not part of H.264 v1",
+        )),
+        _ => Err(UnsupportedH264ProfileIndication::new(
+            indication,
+            "profile is not part of H.264 v1",
+        )),
     }
 }
 
@@ -216,11 +304,6 @@ fn profile_uses_high_syntax(profile_idc: u8) -> bool {
         profile_idc,
         100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135
     )
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct UnsupportedH264Profile {
-    pub(super) reason: &'static str,
 }
 
 fn read_bit_depth_from_sps(bit_reader: &mut H264BitReader<'_>) -> Result<u8, H264SpsError> {

@@ -220,11 +220,11 @@ impl VideoCapabilityRejection {
     #[must_use]
     pub fn user_message(&self) -> String {
         match self {
-            Self::NoAvailableBackend => "hardware video backend недоступен".to_string(),
+            Self::NoAvailableBackend => "video decode backend недоступен".to_string(),
             Self::NoAvailableRenderer => "renderer backend недоступен".to_string(),
             Self::UnsupportedCodec { codec } => format!("codec {codec} не поддерживается"),
             Self::UnsupportedProfile { codec: _, profile } => {
-                format!("profile {profile} не поддерживается аппаратным backend-ом")
+                format!("profile {profile} не поддерживается доступными video decode backend-ами")
             }
             Self::UnsupportedBitDepth { codec, bit_depth } => format!(
                 "{codec} {bit_depth} не поддерживается: для этой bit depth нет production decode/render path"
@@ -1116,7 +1116,9 @@ mod tests {
             error.rejections.first(),
             Some(VideoCapabilityRejection::UnsupportedProfile { .. })
         ));
-        assert!(error.user_message().contains("profile VP9 Profile 2"));
+        let message = error.user_message();
+        assert!(message.contains("profile VP9 Profile 2"));
+        assert!(message.contains("доступными video decode backend-ами"));
     }
 
     #[test]

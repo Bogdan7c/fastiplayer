@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use serde_json::{Map, Value};
+use web_media_transport_api::HttpRangeRequestLimit;
 
 use super::raw::YtDlpSerializedFormat;
 
@@ -18,6 +19,8 @@ const MAX_REQUEST_SECRET_UTF8_BYTES: usize = 65_536;
 const MAX_INLINE_HLS_UTF8_BYTES: usize = 2 * 1024 * 1024;
 /// Максимальное число RTMP connection arguments.
 const MAX_RTMP_CONNECTION_ARGUMENTS: usize = 128;
+/// Максимальный extractor-provided предел одного HTTP Range-запроса.
+const MAX_HTTP_RANGE_REQUEST_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Versioned transient request material одного format component-а.
 ///
@@ -70,6 +73,8 @@ pub struct YtDlpRequestMaterialV1 {
     hls_media_playlist_data: Option<SecretText>,
     /// Transient headers.
     http_headers: BTreeMap<String, SecretText>,
+    /// Нейтральный source-specific предел одного HTTP Range-запроса.
+    http_range_request_limit: Option<HttpRangeRequestLimit>,
     /// Scoped cookies.
     cookies: Option<SecretText>,
     /// Segment query material.
@@ -92,6 +97,9 @@ impl YtDlpRequestMaterialV1 {
             has_fragment_base_url: self.fragment_base_url.is_some(),
             has_inline_hls: self.hls_media_playlist_data.is_some(),
             header_count: self.http_headers.len(),
+            http_range_request_limit_bytes: self
+                .http_range_request_limit
+                .map(HttpRangeRequestLimit::maximum_bytes),
             has_cookies: self.cookies.is_some(),
             has_segment_query: self.extra_param_to_segment_url.is_some(),
             has_key_query: self.extra_param_to_key_url.is_some(),
@@ -125,6 +133,8 @@ pub struct YtDlpRequestMaterialSummary {
     pub has_inline_hls: bool,
     /// Число transient headers.
     pub header_count: usize,
+    /// Optional верхняя граница одного HTTP Range-запроса в bytes.
+    pub http_range_request_limit_bytes: Option<u64>,
     /// Scoped cookies присутствуют.
     pub has_cookies: bool,
     /// Segment query material присутствует.
@@ -161,6 +171,9 @@ pub enum YtDlpRequestMaterialViolation {
     /// Candidate зависит от internal downloader state.
     #[error("private downloader state is required")]
     DownloaderStateRequired,
+    /// `downloader_options.http_chunk_size` не является bounded positive integer.
+    #[error("invalid HTTP chunk size")]
+    InvalidHttpChunkSize,
     /// Candidate зависит от pinned private extractor state.
     #[error("private extractor state is required")]
     PrivateExtractorStateRequired,
@@ -232,6 +245,11 @@ impl YtDlpProgressiveHttpRequestMaterial<'_> {
     pub(super) fn serialized_cookies(&self) -> Option<&str> {
         self.serialized_cookies
             .map(SecretText::expose_secret_for_transport)
+    }
+
+    /// Возвращает проверенный source-specific предел одного HTTP Range-запроса.
+    pub(super) const fn http_range_request_limit(&self) -> Option<HttpRangeRequestLimit> {
+        self.material.http_range_request_limit
     }
 }
 
@@ -352,6 +370,9 @@ pub(super) fn normalize_request_material(
             MAX_INLINE_HLS_UTF8_BYTES,
         )?,
         http_headers: normalize_headers(format.http_headers.as_ref())?,
+        http_range_request_limit: normalize_http_range_request_limit(
+            format.downloader_options.as_ref(),
+        )?,
         cookies: normalize_cookies(format.cookies.as_ref())?,
         extra_param_to_segment_url: optional_secret(
             format.extra_param_to_segment_url.clone(),
@@ -378,13 +399,38 @@ fn reject_excluded_material(
     if format.impersonate.is_some() {
         return Err(YtDlpRequestMaterialViolation::ImpersonationRequired);
     }
-    if format.downloader_options.is_some() {
-        return Err(YtDlpRequestMaterialViolation::DownloaderStateRequired);
-    }
     if format.bunnycdn_ping_data.is_some() || format.cookie_refresh_params.is_some() {
         return Err(YtDlpRequestMaterialViolation::PrivateExtractorStateRequired);
     }
     Ok(())
+}
+
+/// Выделяет только безопасный declarative `http_chunk_size` из downloader options.
+///
+/// Любой иной ключ остаётся fail-closed: Rustiplayer не исполняет downloader
+/// state и не пытается угадывать семантику будущих yt-dlp options.
+fn normalize_http_range_request_limit(
+    raw_downloader_options: Option<&Value>,
+) -> Result<Option<HttpRangeRequestLimit>, YtDlpRequestMaterialViolation> {
+    let Some(raw_downloader_options) = raw_downloader_options else {
+        return Ok(None);
+    };
+    let Some(downloader_options) = raw_downloader_options.as_object() else {
+        return Err(YtDlpRequestMaterialViolation::DownloaderStateRequired);
+    };
+    if downloader_options.is_empty() {
+        return Ok(None);
+    }
+    if downloader_options.len() != 1 || !downloader_options.contains_key("http_chunk_size") {
+        return Err(YtDlpRequestMaterialViolation::DownloaderStateRequired);
+    }
+    let maximum_bytes = downloader_options["http_chunk_size"]
+        .as_u64()
+        .filter(|maximum_bytes| *maximum_bytes <= MAX_HTTP_RANGE_REQUEST_BYTES)
+        .ok_or(YtDlpRequestMaterialViolation::InvalidHttpChunkSize)?;
+    HttpRangeRequestLimit::new(maximum_bytes)
+        .map(Some)
+        .map_err(|_| YtDlpRequestMaterialViolation::InvalidHttpChunkSize)
 }
 
 /// Нормализует optional secret string с named cap.

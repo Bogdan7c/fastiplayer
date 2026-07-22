@@ -3,7 +3,7 @@ use std::io;
 use reqwest::StatusCode;
 use thiserror::Error;
 
-use crate::SecretHttpUrl;
+use crate::{HttpRangeRedirectRejection, SecretHttpUrl};
 
 use crate::NotSeekableReason;
 
@@ -121,6 +121,16 @@ pub enum SourceError {
         reason: &'static str,
     },
 
+    /// Transport policy отклонила redirect, возникший во время Range read-а.
+    #[error("HTTP Range redirect для {url} отклонён: {reason}")]
+    HttpRangeRedirectRejected {
+        /// Redacted URL текущего hop-а.
+        url: SecretHttpUrl,
+
+        /// Стабильная typed причина без target/header/cookie payload-а.
+        reason: HttpRangeRedirectRejection,
+    },
+
     /// HTTP source не подтвердил Range чтение через `206 Partial Content`.
     #[error("HTTP source не поддерживает обязательный Range seek: {reason}")]
     HttpRangeUnsupported {
@@ -174,6 +184,7 @@ impl SourceError {
             | Self::InvalidHttpHeaderValue { .. }
             | Self::HttpClientBuild { .. }
             | Self::InvalidHttpRedirect { .. }
+            | Self::HttpRangeRedirectRejected { .. }
             | Self::HttpRangeUnsupported { .. }
             | Self::InvalidContentRange { .. }
             | Self::NotSeekable { .. } => false,

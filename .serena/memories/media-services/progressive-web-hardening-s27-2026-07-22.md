@@ -1,47 +1,57 @@
 # S27 — Progressive/web UX hardening gate (2026-07-22)
 
 ## Итог
-- Hermetic часть S27 закрыта и прошла полный workspace test gate.
-- Production Rust, public/internal API и dependency graph не менялись: milestone закреплён guardrails, документацией и opt-in manual runner-ом.
-- Реальный network/GUI прогон не выполнялся, потому что пользователь не передал explicit URL. Его честный статус: `MANUAL REVIEW REQUIRED`, а не автоматический PASS.
+
+- Milestone закрыт для regression URL `https://youtu.be/QTQP64pvv34`: свежий debug binary проходит реальное yt-dlp extraction, queue-owned preparation, seekable progressive open, H.264/AAC demux и playback без прежних ошибок `planner не нашёл playable candidate` и `302 Found во время range-read`.
+- Доказаны обе decode ветки:
+  - HW: AMD Radeon 780M, `VA-API H.264`, 640x368, NV12 DMA-BUF zero-copy, AAC через Symphonia/CPAL.
+  - SW: при test-only недоступном VA driver capability probe оставляет один backend и выбирает `ffmpeg-software` + `ffmpeg-host-upload-wgpu`; тот же H.264/AAC URL открывается и играет.
+- Manual runner по контракту всё равно пишет `MANUAL REVIEW REQUIRED`, потому что не превращает визуальную UX-проверку в ложный автоматический PASS. Он принимает только explicit user URLs и сохраняет только sanitized evidence.
+
+## Три независимых root cause
+
+1. yt-dlp 2026.07.04 добавляет `downloader_options.http_chunk_size=10485760` к реальным HTTP formats. Старый normalizer blanket-reject-ил любое `downloader_options`, поэтому все media rows исчезали.
+2. После переноса chunk hint format 18 с `avc1.42001E` выявил отсутствие ordinary H.264 Baseline; из-за существующего all-or-nothing `planning_snapshot()` этот один `RuntimeRequirement` обрывал весь snapshot. Shared typed classifier теперь различает Baseline / ConstrainedBaseline / Main / High, поэтому этот реальный row становится representable. Общая all-or-nothing семантика planning adapter-а не менялась и остаётся отдельным known limitation для будущего accepted-but-unrepresentable профиля.
+3. Initial `Range: bytes=0-0` получал `206`, но поздний CDN `302` возникал уже в background prefetch. Initial redirects обрабатывал `web-media-http`, а `HttpRangeSource` раньше превращал read-time 3xx в fatal `HttpStatus`.
 
 ## Архитектурные владельцы
-- `app-egui::web_media_open` остаётся единственным composition root для yt-dlp web playback.
-- `service-ytdlp` владеет extraction/normalization/profile exclusion/neutral request mapping и не может зависеть от concrete HTTP/cache/demux/player owners.
-- `web-media-http` владеет progressive HTTP Range/non-Range, redirects, scoped auth/cookies и cancellation/stale fencing.
-- PlaylistRuntime/media-open coordinator владеют queue reservation и Ready/authorization/Enqueued/Installed barrier.
-- URL sidebar отображает только secret-safe projection и не создаёт второй URL ingress.
-- Exact acknowledged locator хранится отдельно от transient `HttpRequestTarget`, `ScopedHttpCookieJar`, `SecretRequestContext`, `TransportOpenRequest` и `YtDlpRequestMaterial`.
 
-## Gate
-- `scripts/check-refactor-guardrails.py` проверяет:
-  - все startup/preparation/settings yt-dlp ingress используют `crate::web_media_open::prepare_yt_dlp_web_media(...)`;
-  - `service-ytdlp` не тянет concrete runtime owners;
-  - legacy WebM-only opener/test names отсутствуют;
-  - transient transport/auth types не попали в config/playlist/sidebar persistence owners;
-  - S27 runner и его self-test подключены.
-- `coverage/policy.json` классифицирует `web-media-http` как blocking crate.
-- Старые `selected_webm_*` manual aliases удалены из `scripts/media-regression.sh`.
-- Playback smoke/schema diagnostics теперь называют актуальную config schema v7.
+- `service-ytdlp` остаётся extraction/normalization/request-mapping owner. Он принимает только exact bounded positive `http_chunk_size` и переносит его как neutral `HttpRangeRequestLimit`; arbitrary downloader config/private live state не исполняется и остаётся typed rejection.
+- `codec-core` владеет `H264ProfileIndication` и exact profile classification для codec tags, avcC и SPS. Capability report schema v7 сериализует distinct `baseline`.
+- FFmpeg SW рекламирует/принимает ordinary Baseline 8-bit 4:2:0 через host-planar contract.
+- VA-API рекламирует Baseline только при exact `VAProfileH264Baseline`; cros-codecs различает ordinary/constrained Baseline по SPS constraint evidence и не подменяет их Main.
+- `source-core` владеет физическими Range requests, parsed redirect target, per-logical-read hop count, cancellation и method/body mechanics.
+- `web-media-http` владеет redirect authorization и scoped secret rematerialization. Automatic reqwest redirects остаются выключены.
+- Каждый logical read/retry начинает redirect chain с immutable stable base material. Redirected target/headers/body локальны цепочке. Cross-origin stripping и 302→GET монотонны; последующий 307 не может воскресить body.
+- `app-egui::web_media_open` остаётся единственным composition root. Queue Ready/authorize/Enqueued/Installed boundary, URL sidebar, exact durable locator и transient secrets не смешаны.
 
-## Manual runner
-- `scripts/progressive-web-smoke.sh` принимает только repeatable explicit `--url` с absolute HTTP(S), обязательный новый `--report`, optional `--duration`, `--binary`, `--dry-run`.
-- Нет default corpus, URL discovery, positional URL или file scheme.
-- Runner не переопределяет `XDG_CONFIG_HOME`, поэтому production process сохраняет обычный system/user yt-dlp config lookup.
-- Raw stdout/stderr живёт только в process-unique temporary directory; report получает только sanitized evidence.
-- Sanitizer удаляет exact input URL, любые HTTP(S) endpoint и строки, похожие на transport headers, cookies, request material или extractor payload.
-- Report создаётся с owner-only umask, не перезаписывается и всегда требует ручной проверки checklist-а.
-- Raw temporary files удаляются обычным EXIT/INT/TERM trap; SIGKILL остаётся общей OS limitation.
+## Focused regression proof
+
+- Source test: два logical reads каждый идут stable base POST → 302 → 307 → final 206; hop counts `0,1,0,1`; middle/final остаются GET без body; Range diagnostics считают шесть физических requests.
+- HTTP provider integration: поздний cross-origin redirect проходит через настоящий prefetch к final 206; target не получает Authorization, initial Cookie или base Set-Cookie.
+- Candidate tests: VP9 neighbor, `avc1.42001E` ordinary Baseline и `avc1.42E01E` ConstrainedBaseline остаются отдельными playable planning rows.
+- HW/SW focused tests проверяют exact profile matching, условную VA profile рекламу, SPS→VA mapping и FFmpeg host-planar acceptance.
 
 ## Проверки
-- `scripts/ci-checks.sh format-guardrails`: PASS.
-- `scripts/ci-checks.sh tests`: PASS для всего workspace и doc-tests.
-- Focused web/audio/config/service tests: PASS.
-- `cargo +1.96.0 clippy -p service-ytdlp -p web-media-http -p app-egui -p player-core --all-targets --locked -- -D warnings`: PASS.
-- Runner self-test доказывает no-args NOT RUN, strict URL parsing, repeated URLs, no overwrite, dry-run и отсутствие URL/header/cookie/extractor secrets в report.
+
+- Affected test command прошёл для `app-egui`, codec/capability/service/source/demux/HW/SW/transport/planner crates; `app-egui` — 825 tests, `video-vaapi` — 137 tests.
+- Strict affected all-targets Clippy с `-D warnings`: PASS.
+- Debug build `cargo +1.96.0 build --locked -p app-egui`: PASS.
+- `cargo fmt --all --check`, `git diff --check`, `bash -n scripts/progressive-web-smoke.sh`, `scripts/check-refactor-guardrails.py`: PASS.
+- Live sanitized reports: HW 30-second timebox and forced-SW 25-second timebox both ended only by expected runner timeout status 124, without planner/range fatal.
+
+## Known separate limitation
+
+- The strong staged web install currently can lose an explicit `video.preferred_backend=software` preference and choose available hardware after the app initially selected the software pipeline. S27 did not widen scope into that pre-existing preference-propagation architecture; SW fallback itself is proven by making hardware unavailable. Track this separately if exact user-forced backend selection is required.
 
 ## Связанные memories
+
 - `mem:core`
 - `mem:media-services/core`
+- `mem:media-services/progressive-http-s22-2026-07-22`
+- `mem:media-services/web-transport-s21t-2026-07-21`
+- `mem:codec-core/h264`
+- `mem:video-ffmpeg/software-design`
+- `mem:video-vaapi/core`
 - `mem:app-egui/media-open-coordinator-s10c`
 - `mem:app-egui/sidebar-controller`

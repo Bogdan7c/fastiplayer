@@ -962,7 +962,7 @@ impl SupportedVideoDecodeFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{VideoProfile, Vp9Profile};
+    use crate::{H264Profile, VideoProfile, Vp9Profile};
 
     #[test]
     fn container_codec_id_normalizes_common_names() {
@@ -1042,6 +1042,28 @@ mod tests {
         let requirement = VideoDecodeRequirement::new(VideoCodec::Vp9);
 
         assert!(supported_format.satisfies(&requirement));
+    }
+
+    #[test]
+    fn baseline_requirement_matches_only_exact_baseline_output() {
+        let requirement = VideoDecodeRequirement::new(VideoCodec::H264)
+            .with_profile(VideoProfile::H264(H264Profile::Baseline))
+            .with_bit_depth(BitDepth::Eight)
+            .with_chroma(ChromaSubsampling::Yuv420);
+        let supported_format = |profile| SupportedVideoDecodeFormat {
+            codec: VideoCodec::H264,
+            profile: VideoProfile::H264(profile),
+            bit_depth: BitDepth::Eight,
+            chroma: ChromaSubsampling::Yuv420,
+            max_width: None,
+            max_height: None,
+            max_fps: None,
+            hdr_input: false,
+        };
+
+        assert!(supported_format(H264Profile::Baseline).satisfies(&requirement));
+        assert!(!supported_format(H264Profile::ConstrainedBaseline).satisfies(&requirement));
+        assert!(!supported_format(H264Profile::Main).satisfies(&requirement));
     }
 
     #[test]

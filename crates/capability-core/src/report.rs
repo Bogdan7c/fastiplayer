@@ -10,7 +10,10 @@ use video_frame_contract::{VideoFrameContract, VideoFrameTransferPath};
 pub type CapabilitySchemaVersion = u32;
 
 /// Текущая версия capability report.
-pub const CURRENT_CAPABILITY_SCHEMA_VERSION: CapabilitySchemaVersion = 6;
+///
+/// Версия 7 добавляет отдельное сериализованное значение H.264 Baseline и тем
+/// самым не позволяет старому consumer-у спутать его с Constrained Baseline.
+pub const CURRENT_CAPABILITY_SCHEMA_VERSION: CapabilitySchemaVersion = 7;
 
 /// Provider, который умеет построить capabilities для одного video backend.
 pub trait VideoCapabilityProvider {
@@ -463,6 +466,12 @@ mod tests {
         fn probe(&self) -> BackendCapabilities {
             self.capabilities.clone()
         }
+    }
+
+    /// Закрепляет schema bump для отдельного сериализованного H.264 Baseline.
+    #[test]
+    fn capability_report_schema_tracks_distinct_h264_baseline_profile() {
+        assert_eq!(CURRENT_CAPABILITY_SCHEMA_VERSION, 7);
     }
 
     /// Собирает минимальный available backend report для filtering tests.

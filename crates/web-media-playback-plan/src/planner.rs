@@ -551,6 +551,105 @@ pub enum PlaybackComponent {
     Audio,
 }
 
+/// Secret-safe сводка слоёв, из-за которых planner не смог выбрать candidate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PlaybackPlanningFailureSummary {
+    /// Количество candidates, для которых planner сохранил typed rejection.
+    rejected_candidates: usize,
+    /// Количество отсутствующих transport paths среди всех physical components.
+    transport_rejections: usize,
+    /// Количество отсутствующих или несовместимых demux paths.
+    demux_rejections: usize,
+    /// Количество несовместимых video decode requirements.
+    video_rejections: usize,
+    /// Количество отсутствующих или отвергнутых audio decode capabilities.
+    audio_rejections: usize,
+    /// Количество explicit selection-policy exclusions.
+    policy_rejections: usize,
+}
+
+impl PlaybackPlanningFailureSummary {
+    /// Возвращает число candidates с typed rejection.
+    pub const fn rejected_candidates(self) -> usize {
+        self.rejected_candidates
+    }
+
+    /// Возвращает число transport-layer отказов.
+    pub const fn transport_rejections(self) -> usize {
+        self.transport_rejections
+    }
+
+    /// Возвращает число demux-layer отказов.
+    pub const fn demux_rejections(self) -> usize {
+        self.demux_rejections
+    }
+
+    /// Возвращает число video capability отказов.
+    pub const fn video_rejections(self) -> usize {
+        self.video_rejections
+    }
+
+    /// Возвращает число audio capability отказов.
+    pub const fn audio_rejections(self) -> usize {
+        self.audio_rejections
+    }
+
+    /// Возвращает число policy-layer отказов.
+    pub const fn policy_rejections(self) -> usize {
+        self.policy_rejections
+    }
+
+    /// Учитывает одну typed причину без копирования candidate identity.
+    fn record_reason(&mut self, reason: &CandidateRejectionReason) {
+        match reason {
+            CandidateRejectionReason::Capability(CandidateCapabilityRejection::Transport(_)) => {
+                self.transport_rejections += 1;
+            }
+            CandidateRejectionReason::Capability(CandidateCapabilityRejection::Demux(_)) => {
+                self.demux_rejections += 1;
+            }
+            CandidateRejectionReason::Capability(CandidateCapabilityRejection::Video {
+                ..
+            }) => {
+                self.video_rejections += 1;
+            }
+            CandidateRejectionReason::Capability(
+                CandidateCapabilityRejection::AudioUnavailable { .. }
+                | CandidateCapabilityRejection::AudioQueryRejected { .. },
+            ) => {
+                self.audio_rejections += 1;
+            }
+            CandidateRejectionReason::Policy(_) => {
+                self.policy_rejections += 1;
+            }
+        }
+    }
+
+    /// Учитывает один candidate rejection и все независимые physical-layer причины.
+    fn record_candidate(&mut self, rejection: &CandidateRejection) {
+        self.rejected_candidates += 1;
+        for reason in rejection.reasons() {
+            self.record_reason(reason);
+        }
+    }
+}
+
+impl std::fmt::Display for PlaybackPlanningFailureSummary {
+    /// Печатает только bounded counters без source/candidate/request identities.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "rejected_candidates={}, transport={}, demux={}, video={}, audio={}, policy={}",
+            self.rejected_candidates,
+            self.transport_rejections,
+            self.demux_rejections,
+            self.video_rejections,
+            self.audio_rejections,
+            self.policy_rejections,
+        )
+    }
+}
+
 /// Selection failure, отделённый от static compatibility и operational open failures.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlaybackPlanningError {
@@ -576,6 +675,30 @@ pub enum PlaybackPlanningError {
         /// Typed diagnostics всех отклонённых candidates.
         rejections: Box<[CandidateRejection]>,
     },
+}
+
+impl PlaybackPlanningError {
+    /// Агрегирует только safe rejection categories для production diagnostics.
+    #[must_use]
+    pub fn safe_summary(&self) -> PlaybackPlanningFailureSummary {
+        let mut summary = PlaybackPlanningFailureSummary::default();
+        match self {
+            Self::ExactCandidateNotPlayable(rejection) => {
+                summary.record_candidate(rejection);
+            }
+            Self::NoPlayableCandidates { rejections } => {
+                for rejection in rejections {
+                    summary.record_candidate(rejection);
+                }
+            }
+            Self::EmptyCandidates
+            | Self::ExactSourceMismatch
+            | Self::StaleExactIdentity { .. }
+            | Self::ExactCandidateUnavailable
+            | Self::ExactSemanticIdentityChanged => {}
+        }
+        summary
+    }
 }
 
 impl std::fmt::Display for PlaybackPlanningError {

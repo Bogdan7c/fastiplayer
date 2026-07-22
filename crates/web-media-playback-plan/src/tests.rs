@@ -73,6 +73,19 @@ fn absent_transport_demux_video_and_audio_are_exact_typed_rejections() {
             family: AudioDecodeCodecFamily::Opus,
         })
     )));
+
+    let failure = PlaybackPlanningError::ExactCandidateNotPlayable(rejection);
+    let summary = failure.safe_summary();
+    assert_eq!(summary.rejected_candidates(), 1);
+    assert_eq!(summary.transport_rejections(), 1);
+    assert_eq!(summary.demux_rejections(), 1);
+    assert_eq!(summary.video_rejections(), 1);
+    assert_eq!(summary.audio_rejections(), 1);
+    assert_eq!(summary.policy_rejections(), 0);
+    assert_eq!(
+        summary.to_string(),
+        "rejected_candidates=1, transport=1, demux=1, video=1, audio=1, policy=0"
+    );
 }
 
 /// Muxed/separate/video-only/audio-only проходят один pure planning boundary.

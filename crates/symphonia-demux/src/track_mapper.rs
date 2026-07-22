@@ -537,6 +537,7 @@ fn av1_profile_from_symphonia(profile: CodecProfile) -> Option<Av1Profile> {
 /// Мапит subset H.264 profiles, который уже представлен в codec-core.
 fn h264_profile_from_symphonia(profile: CodecProfile) -> Option<H264Profile> {
     match profile {
+        video_profile::CODEC_PROFILE_H264_BASELINE => Some(H264Profile::Baseline),
         video_profile::CODEC_PROFILE_H264_CONSTRAINED_BASELINE => {
             Some(H264Profile::ConstrainedBaseline)
         }
@@ -890,9 +891,9 @@ mod tests {
     use std::collections::HashMap;
 
     use codec_core::{
-        Av1Profile, BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, HdrMetadata,
-        MatrixCoefficients, TransferFunction, VideoColorMetadata, VideoDisplayOrientation,
-        VideoProfile, Vp9Profile,
+        Av1Profile, BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, H264Profile,
+        HdrMetadata, MatrixCoefficients, TransferFunction, VideoColorMetadata,
+        VideoDisplayOrientation, VideoProfile, Vp9Profile,
     };
     use media_core::{TrackId, TrackKind, VideoTrackMetadata};
     use symphonia::core::codecs::CodecParameters;
@@ -901,13 +902,14 @@ mod tests {
     use symphonia::core::codecs::subtitle::SubtitleCodecParameters;
     use symphonia::core::codecs::subtitle::well_known as subtitle_codec;
     use symphonia::core::codecs::video::well_known::extra_data::VIDEO_EXTRA_DATA_ID_AV1_DECODER_CONFIG;
+    use symphonia::core::codecs::video::well_known::profiles as video_profile;
     use symphonia::core::codecs::video::{VideoCodecParameters, VideoExtraData};
     use symphonia::core::formats::Track;
     use symphonia::core::units::{Duration as SymphoniaDuration, TimeBase};
 
     use super::{
-        TrackEntryKind, UnsupportedTrackKind, build_track_entry, map_tracks,
-        map_tracks_with_video_metadata, take_matroska_video_track_for_mapping,
+        TrackEntryKind, UnsupportedTrackKind, build_track_entry, h264_profile_from_symphonia,
+        map_tracks, map_tracks_with_video_metadata, take_matroska_video_track_for_mapping,
         tracks_may_need_matroska_video_metadata,
     };
     use crate::matroska_metadata::MatroskaVideoTrack;
@@ -1161,6 +1163,18 @@ mod tests {
 
         assert_eq!(entry.supported_kind(), Some(TrackKind::Video));
         assert_eq!(entry.codec_id, "V_VP9");
+    }
+
+    #[test]
+    fn symphonia_h264_baseline_profile_preserves_exact_neutral_profile() {
+        assert_eq!(
+            h264_profile_from_symphonia(video_profile::CODEC_PROFILE_H264_BASELINE),
+            Some(H264Profile::Baseline)
+        );
+        assert_eq!(
+            h264_profile_from_symphonia(video_profile::CODEC_PROFILE_H264_CONSTRAINED_BASELINE),
+            Some(H264Profile::ConstrainedBaseline)
+        );
     }
 
     #[test]

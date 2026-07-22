@@ -158,6 +158,33 @@ fn open_request(
     .expect("valid open request")
 }
 
+/// Source-specific Range policy отсутствует по умолчанию и добавляется named intent-method-ом.
+#[test]
+fn open_request_carries_typed_http_range_request_limit() {
+    let request_without_limit = open_request(
+        TransportProviderId::new("range-policy").expect("valid provider ID"),
+        component_identity(1, "range-policy"),
+        SourceGeneration::new(1),
+        CancellationToken::new(),
+    );
+    assert_eq!(request_without_limit.http_range_request_limit(), None);
+
+    let limit = HttpRangeRequestLimit::new(10 * 1024 * 1024).expect("positive range limit");
+    let request_with_limit = request_without_limit.with_http_range_request_limit(limit);
+    assert_eq!(request_with_limit.http_range_request_limit(), Some(limit));
+    assert_eq!(
+        request_with_limit
+            .http_range_request_limit()
+            .expect("range limit")
+            .maximum_bytes(),
+        10 * 1024 * 1024
+    );
+    assert_eq!(
+        HttpRangeRequestLimit::new(0),
+        Err(HttpRangeRequestLimitError::Zero)
+    );
+}
+
 /// Empty registry возвращает typed unavailable, active fake открывает exact component.
 #[test]
 fn absent_and_active_fake_provider_are_distinct_outcomes() {

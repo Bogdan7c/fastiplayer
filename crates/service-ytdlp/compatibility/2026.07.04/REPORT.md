@@ -120,7 +120,11 @@ Sanitizer:
   требует живого Python/extractor state.
 
 `downloader_options` — internal поле и никогда не исполняется Rustiplayer.
-`downloader_options.ws`, `http_dash_segments_generator`, `niconico_live`,
+Единственное узкое исключение — bounded positive integer
+`downloader_options.http_chunk_size`: оно нормализуется в нейтральный предел
+одного HTTP Range-запроса, а не передаётся downloader-у как executable config.
+Любой иной ключ остаётся fail-closed. `downloader_options.ws`,
+`http_dash_segments_generator`, `niconico_live`,
 `fc2_live`, `websocket_frag`, `_bunnycdn_ping_data` и
 `_cookie_refresh_params` исключены. BunnyCDN/Soop downloaders сами названы
 upstream private и зависят от background ping/cookie refresh state.
@@ -173,7 +177,8 @@ Fixture `format-inventory.json` содержит тринадцать inventory 
   semantics: bytes после generic sanitizer становятся lossy `repr`;
 - `impersonate` исключает row: строка после sanitization не доказывает наличие и
   реализацию browser fingerprint;
-- `downloader_options` не исполняется;
+- `downloader_options` не исполняется; exact bounded `http_chunk_size`
+  переносится только как neutral HTTP Range policy, остальные shapes исключают row;
 - private provider request state исключает row и требует отдельной S40P-card.
 
 Secret fixtures содержат только fixed redaction markers. Procedure optional

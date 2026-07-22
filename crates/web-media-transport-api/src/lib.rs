@@ -33,8 +33,9 @@ pub use registry::{
     TransportRegistryError,
 };
 pub use request::{
-    MediaPresentation, OpenedComponentIdentity, TransportOpenRequest, TransportOpenRequestError,
-    TransportRefreshRequest, TransportRefreshRequestError,
+    HttpRangeRequestLimit, HttpRangeRequestLimitError, MediaPresentation, OpenedComponentIdentity,
+    TransportOpenRequest, TransportOpenRequestError, TransportRefreshRequest,
+    TransportRefreshRequestError,
 };
 pub use resource::{
     OpenedTransport, RefreshedTransport, TransportInput, TransportInputError, TransportSeekability,

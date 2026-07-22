@@ -316,7 +316,7 @@ redact_runtime_log() {
                 next
             }
             sanitized_line = replace_exact($0, exact_url)
-            gsub(/https?:\/\/[^[:space:]<>\"]+/, "<redacted-url>", sanitized_line)
+            gsub(/https?:\/\/[^[:space:]<>"]+/, "<redacted-url>", sanitized_line)
             print sanitized_line
         }
     ' "${raw_log_path}"

@@ -138,13 +138,29 @@ pub(crate) fn prepare_yt_dlp_web_media(
         system_capabilities,
         audio_capabilities,
     );
+    let planning_candidate_count = planning_snapshot.candidates().len();
+    let normalization_rejection_count = candidate_snapshot
+        .inventory()
+        .iter()
+        .filter(|entry| entry.rejected().is_some())
+        .count()
+        + usize::from(
+            candidate_snapshot
+                .selected()
+                .is_some_and(|entry| entry.rejected().is_some()),
+        );
     let outcome = plan_playback(
         &planning_snapshot,
         capabilities,
         &selection_request,
         &policy,
     )
-    .context("YtDlp planner не нашёл playable candidate")?;
+    .map_err(|error| {
+        let safe_summary = error.safe_summary();
+        anyhow::Error::new(error).context(format!(
+            "YtDlp planner не нашёл playable candidate (planning_candidates={planning_candidate_count}, normalization_rejections={normalization_rejection_count}, {safe_summary})"
+        ))
+    })?;
     let selected_candidate = candidate_snapshot
         .accepted_candidates()
         .find(|candidate| candidate.descriptor().identity() == outcome.selected().exact_identity())

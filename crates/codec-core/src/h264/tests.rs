@@ -1,5 +1,6 @@
 use crate::{
-    H264Profile, VideoCodec, VideoRequirementProbe, VideoRequirementRejection,
+    BitDepth, ChromaSubsampling, H264Profile, H264ProfileIndication, VideoCodec,
+    VideoRequirementProbe, VideoRequirementRejection, h264_profile_from_indication,
     probe_video_packet_keyframe, probe_video_packet_requirement_with_codec_private,
 };
 
@@ -20,6 +21,18 @@ fn constrained_baseline_sps() -> Vec<u8> {
         bit_depth_minus8: 0,
         width: 1_280,
         height: 720,
+    })
+}
+
+fn baseline_sps() -> Vec<u8> {
+    build_sps(BuildSpsOptions {
+        profile_idc: 66,
+        constraint_flags: 0,
+        level_idc: 30,
+        chroma_format_idc: 1,
+        bit_depth_minus8: 0,
+        width: 640,
+        height: 368,
     })
 }
 
@@ -383,6 +396,67 @@ fn avcc_requirement_parser_extracts_supported_sps_metadata() {
     assert_eq!(metadata.profile, H264Profile::ConstrainedBaseline);
     assert_eq!(metadata.width, 1_280);
     assert_eq!(metadata.height, 720);
+}
+
+#[test]
+fn profile_indication_distinguishes_baseline_from_constrained_baseline() {
+    let baseline_indication = H264ProfileIndication::new(66, 0);
+    let constrained_baseline_indication = H264ProfileIndication::new(66, 0b0100_0000);
+
+    assert_eq!(baseline_indication.profile_idc(), 66);
+    assert_eq!(baseline_indication.constraint_flags(), 0);
+    assert_eq!(
+        h264_profile_from_indication(baseline_indication),
+        Ok(H264Profile::Baseline)
+    );
+    assert_eq!(
+        h264_profile_from_indication(constrained_baseline_indication),
+        Ok(H264Profile::ConstrainedBaseline)
+    );
+
+    let unsupported_indication = H264ProfileIndication::new(110, 0);
+    let unsupported_error = h264_profile_from_indication(unsupported_indication)
+        .expect_err("High 10 должен остаться вне текущего H.264 profile subset");
+    assert_eq!(unsupported_error.indication(), unsupported_indication);
+    assert!(unsupported_error.reason().contains("High 10"));
+}
+
+#[test]
+fn ordinary_baseline_avcc_and_requirement_probe_preserve_exact_profile() {
+    let sequence_parameter_set = baseline_sps();
+    let picture_parameter_set = pps();
+    let record_bytes = avcc(4, &sequence_parameter_set, &picture_parameter_set);
+    let metadata = h264_sps_metadata_from_avc_decoder_configuration_record(&record_bytes)
+        .expect("обычный Baseline avcC должен дать SPS metadata");
+
+    assert_eq!(metadata.profile, H264Profile::Baseline);
+    assert_eq!(metadata.bit_depth, BitDepth::Eight);
+    assert_eq!(metadata.chroma, ChromaSubsampling::Yuv420);
+    assert_eq!((metadata.width, metadata.height), (640, 368));
+
+    let avcc_packet = avcc_access_unit(H264NalLengthSize::FOUR, &[idr_slice()]);
+    let probe = probe_video_packet_requirement_with_codec_private(
+        VideoCodec::H264,
+        &avcc_packet,
+        Some(&record_bytes),
+    );
+    let VideoRequirementProbe::Candidate(candidate) = probe else {
+        panic!("обычный Baseline avcC должен стать requirement candidate");
+    };
+
+    assert_eq!(
+        candidate.requirement.profile,
+        Some(crate::VideoProfile::H264(H264Profile::Baseline))
+    );
+    assert_eq!(candidate.requirement.bit_depth, Some(BitDepth::Eight));
+    assert_eq!(
+        candidate.requirement.chroma,
+        Some(ChromaSubsampling::Yuv420)
+    );
+    assert_eq!(
+        candidate.surface_format,
+        Some(crate::VideoFramePixelLayout::Nv12)
+    );
 }
 
 struct BuildSpsOptions {

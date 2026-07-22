@@ -78,6 +78,9 @@ impl fmt::Display for Av1Profile {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum H264Profile {
+    /// Baseline profile без constrained-baseline ограничения.
+    Baseline,
+
     /// Constrained Baseline profile.
     ConstrainedBaseline,
 
@@ -92,6 +95,7 @@ impl fmt::Display for H264Profile {
     /// Возвращает короткое имя profile для report/UI.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
+            Self::Baseline => "Baseline",
             Self::ConstrainedBaseline => "Constrained Baseline",
             Self::Main => "Main",
             Self::High => "High",

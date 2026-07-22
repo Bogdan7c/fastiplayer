@@ -74,4 +74,7 @@ pub fn resolve_yt_dlp_candidate_snapshot_with_config_and_cancellation(
 }
 
 #[cfg(test)]
+mod planning_tests;
+
+#[cfg(test)]
 mod tests;

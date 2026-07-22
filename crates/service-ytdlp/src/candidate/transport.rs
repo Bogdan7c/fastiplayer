@@ -144,7 +144,7 @@ impl YtDlpNormalizedCandidate {
             let secrets = secret_builder.build();
             let redirect_limit = RedirectHopLimit::new(PUBLIC_MEDIA_REDIRECT_HOPS)
                 .map_err(YtDlpTransportRequestError::RedirectLimit)?;
-            let request = TransportOpenRequest::new(
+            let mut request = TransportOpenRequest::new(
                 context.provider.clone(),
                 identity,
                 target,
@@ -155,6 +155,9 @@ impl YtDlpNormalizedCandidate {
                 context.cancellation.clone(),
             )
             .map_err(YtDlpTransportRequestError::Request)?;
+            if let Some(http_range_request_limit) = request_material.http_range_request_limit() {
+                request = request.with_http_range_request_limit(http_range_request_limit);
+            }
             components.push(YtDlpTransportComponent {
                 role,
                 container,

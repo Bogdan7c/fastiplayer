@@ -592,6 +592,11 @@
       "profile_disposition": "NeverExecute"
     },
     {
+      "path": "downloader_options.http_chunk_size",
+      "classification": "PrivateSerializablePinned",
+      "profile_disposition": "SupportedAsNeutralHttpRangeRequestLimit"
+    },
+    {
       "path": "downloader_options.ws",
       "classification": "RequiresLiveExtractorState",
       "profile_disposition": "ProfileExcluded"
@@ -737,9 +742,15 @@
     },
     {
       "path": "downloader_options",
-      "decision": "never_execute_target_row_excluded_if_required",
-      "future_session": "none_without_separate_architecture_decision",
-      "fixture_id": "excluded-private-live-state"
+      "decision": "only_exact_http_chunk_size_is_normalized_unknown_shape_excluded",
+      "future_session": "S27",
+      "fixture_id": "request-material-public"
+    },
+    {
+      "path": "downloader_options.http_chunk_size",
+      "decision": "supported_as_bounded_positive_http_range_request_limit",
+      "future_session": "S27",
+      "fixture_id": "request-material-public"
     },
     {
       "path": "page_url|app|play_path|tc_url|flash_version|rtmp_live|rtmp_conn|rtmp_protocol|rtmp_real_time",

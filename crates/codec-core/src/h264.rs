@@ -664,11 +664,12 @@ pub fn parse_avc_decoder_configuration_record(
 
     let profile_idc = record_bytes[1];
     let profile_compatibility = record_bytes[2];
-    validate_h264_profile(profile_idc, profile_compatibility).map_err(|unsupported_profile| {
+    let profile_indication = H264ProfileIndication::new(profile_idc, profile_compatibility);
+    h264_profile_from_indication(profile_indication).map_err(|unsupported_profile| {
         AvcDecoderConfigurationRecordError::UnsupportedProfile {
-            profile_idc,
-            profile_compatibility,
-            reason: unsupported_profile.reason,
+            profile_idc: unsupported_profile.indication().profile_idc(),
+            profile_compatibility: unsupported_profile.indication().constraint_flags(),
+            reason: unsupported_profile.reason(),
         }
     })?;
 

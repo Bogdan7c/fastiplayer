@@ -257,6 +257,12 @@ fn ffmpeg_software_output_specs() -> &'static [FfmpegSoftwareOutputSpec] {
 /// Единый source of truth для raw software outputs, profile labels и layout diagnostics.
 const FFMPEG_SOFTWARE_OUTPUT_SPECS: &[FfmpegSoftwareOutputSpec] = &[
     output_spec(
+        VideoProfile::H264(H264Profile::Baseline),
+        BitDepth::Eight,
+        ChromaSubsampling::Yuv420,
+        VideoFramePixelLayout::Yuv420Planar8,
+    ),
+    output_spec(
         VideoProfile::H264(H264Profile::ConstrainedBaseline),
         BitDepth::Eight,
         ChromaSubsampling::Yuv420,
@@ -476,6 +482,39 @@ mod tests {
             output.decode_format.profile == VideoProfile::H265(H265Profile::Main422_12)
                 && output.frame_contract.pixel_layout == VideoFramePixelLayout::Yuv422Planar12Le
         }));
+    }
+
+    #[test]
+    fn probe_success_registers_exact_h264_baseline_software_output() {
+        let provider = FfmpegSoftwareCapabilityProvider::with_runtime_probe(successful_probe);
+        let capabilities = provider.probe();
+        let baseline_output = capabilities
+            .raw_supported_outputs
+            .iter()
+            .find(|output| {
+                output.decode_format.profile == VideoProfile::H264(H264Profile::Baseline)
+            })
+            .expect("successful FFmpeg probe должен объявлять exact H.264 Baseline output");
+
+        assert_eq!(
+            baseline_output.decode_format.codec,
+            codec_core::VideoCodec::H264
+        );
+        assert_eq!(baseline_output.decode_format.bit_depth, BitDepth::Eight);
+        assert_eq!(
+            baseline_output.decode_format.chroma,
+            ChromaSubsampling::Yuv420
+        );
+        assert_eq!(
+            baseline_output.frame_contract,
+            VideoFrameContract::host_yuv420_planar8()
+        );
+        assert!(
+            capabilities
+                .raw_profiles
+                .iter()
+                .any(|label| label == "H.264 Baseline")
+        );
     }
 
     /// Проверяет, что missing runtime не публикует raw outputs и сохраняет diagnostic.

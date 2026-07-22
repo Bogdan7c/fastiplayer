@@ -2,8 +2,9 @@
 
 use audio_core::AudioDecodeCodecFamily;
 use codec_core::{
-    Av1Profile, BitDepth, ChromaSubsampling, H264Profile, H265Profile, VideoCodec,
+    Av1Profile, BitDepth, ChromaSubsampling, H264ProfileIndication, H265Profile, VideoCodec,
     VideoColorMetadata, VideoDecodeRequirement, VideoProfile, Vp8Profile, Vp9Profile,
+    h264_profile_from_indication,
 };
 use thiserror::Error;
 use web_media_core::{CodecFamily, CodecKind, DynamicRange, StreamLayout, VideoTrackDescriptor};
@@ -178,14 +179,11 @@ fn h264_profile(
         .ok_or(YtDlpPlanningSnapshotError::RuntimeRequirement)?;
     let profile_idc = u8::from_str_radix(&avcoti[0..2], 16)
         .map_err(|_| YtDlpPlanningSnapshotError::RuntimeRequirement)?;
-    let constraints = u8::from_str_radix(&avcoti[2..4], 16)
+    let constraint_flags = u8::from_str_radix(&avcoti[2..4], 16)
         .map_err(|_| YtDlpPlanningSnapshotError::RuntimeRequirement)?;
-    let profile = match profile_idc {
-        0x42 if constraints & 0x40 != 0 => H264Profile::ConstrainedBaseline,
-        0x4d => H264Profile::Main,
-        0x64 => H264Profile::High,
-        _ => return Err(YtDlpPlanningSnapshotError::RuntimeRequirement),
-    };
+    let profile =
+        h264_profile_from_indication(H264ProfileIndication::new(profile_idc, constraint_flags))
+            .map_err(|_| YtDlpPlanningSnapshotError::RuntimeRequirement)?;
     Ok(requirement
         .with_profile(VideoProfile::H264(profile))
         .with_bit_depth(BitDepth::Eight)

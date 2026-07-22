@@ -11,17 +11,19 @@ use std::sync::Arc;
 
 use media_prefetch::{PrefetchConfig, PrefetchingByteSource};
 use source_core::{
-    HttpHeader, HttpRedirectRequestBehavior, HttpRequestBody, HttpScheme, HttpSingleHopRequest,
-    HttpSourceHop, HttpSourceSession, ScopedHttpCookieJar, ScopedHttpCookieJarError, SourceError,
+    HttpHeader, HttpRequestBody, HttpScheme, HttpSingleHopRequest, HttpSourceHop,
+    HttpSourceSession, ScopedHttpCookieJar, ScopedHttpCookieJarError, SourceError,
     SourceRuntimeConfig,
 };
 use web_media_transport_api::{
-    AuthenticationFailure, ProviderDescriptor, ProviderDescriptorError, ProviderOpenError,
-    ProviderOpenOutput, ProviderRefreshError, RedirectHopCount, RefreshSupport,
-    SecretRequestPurpose, TransportFailure, TransportInput, TransportOpenRequest,
-    TransportProvider, TransportProviderId, TransportProviderIdError, TransportRefreshRequest,
-    UnsupportedTransportReason,
+    AuthenticationFailure, HttpRangeRequestLimit, ProviderDescriptor, ProviderDescriptorError,
+    ProviderOpenError, ProviderOpenOutput, ProviderRefreshError, RefreshSupport,
+    SecretRequestContext, SecretRequestPurpose, TransportFailure, TransportInput,
+    TransportOpenRequest, TransportProvider, TransportProviderId, TransportProviderIdError,
+    TransportRefreshRequest, UnsupportedTransportReason,
 };
+
+use crate::range_redirect::{RedirectChainState, ScopedRangeRedirectHandler};
 
 /// Stable registry identity concrete progressive HTTP provider-а.
 pub const WEB_MEDIA_HTTP_PROVIDER_ID: &str = "progressive-http";
@@ -120,9 +122,7 @@ impl WebMediaHttpProvider {
         let session = HttpSourceSession::new_with_cookie_jar(&self.source_config, cookie_jar)
             .map_err(|source| map_source_open_error(&source, SecretDelivery::NotSent))?;
         let mut current_target = request.target().clone();
-        let mut completed_hops = RedirectHopCount::none();
-        let mut secret_forwarding = SecretForwarding::Scoped;
-        let mut request_body_forwarding = RequestBodyForwarding::Preserve;
+        let mut redirect_state = RedirectChainState::initial();
 
         loop {
             if request.cancellation().is_cancelled() {
@@ -130,10 +130,10 @@ impl WebMediaHttpProvider {
             }
 
             let request_material = request_material_for_target(
-                request,
+                request.secrets(),
                 &current_target,
-                secret_forwarding,
-                request_body_forwarding,
+                redirect_state.secret_forwarding(),
+                redirect_state.request_body_forwarding(),
             )?;
             let secret_delivery = request_material.secret_delivery;
             let hop_request = HttpSingleHopRequest::new(
@@ -144,42 +144,28 @@ impl WebMediaHttpProvider {
 
             match session.open_single_hop(hop_request, request.cancellation()) {
                 Ok(HttpSourceHop::Redirect(redirect)) => {
-                    let authorization = request
-                        .redirects()
-                        .authorize_redirect(&current_target, redirect.target(), completed_hops)
-                        .map_err(|_| {
-                            ProviderOpenError::Transport(TransportFailure::RedirectRejected)
-                        })?;
-                    secret_forwarding = if authorization.permits_secret_scope_check() {
-                        SecretForwarding::Scoped
-                    } else {
-                        SecretForwarding::Stripped
-                    };
-                    if secret_forwarding == SecretForwarding::Scoped
-                        && !request.secrets().is_empty()
-                        && request
-                            .secrets()
-                            .material_for(redirect.target(), SecretRequestPurpose::PrimaryResource)
-                            .is_none()
-                    {
-                        return Err(ProviderOpenError::Authentication(
-                            AuthenticationFailure::SecretScopeRejected,
-                        ));
-                    }
-                    if redirect.request_behavior()
-                        == HttpRedirectRequestBehavior::SwitchToGetWithoutBody
-                    {
-                        request_body_forwarding = RequestBodyForwarding::Drop;
-                    }
-                    completed_hops =
-                        RedirectHopCount::new(completed_hops.value().checked_add(1).ok_or(
-                            ProviderOpenError::Transport(TransportFailure::RedirectRejected),
-                        )?);
+                    redirect_state = redirect_state.authorize_next(
+                        request.redirects(),
+                        request.secrets(),
+                        &current_target,
+                        &redirect,
+                    )?;
                     current_target = redirect.target().clone();
                 }
                 Ok(HttpSourceHop::Seekable(source)) => {
+                    let effective_prefetch_config = prefetch_config_with_source_limit(
+                        self.prefetch_config,
+                        request.http_range_request_limit(),
+                    )?;
+                    let source = source.with_range_redirect_handler(Box::new(
+                        ScopedRangeRedirectHandler::new(
+                            request.redirects(),
+                            request.secrets().clone(),
+                            redirect_state,
+                        ),
+                    ));
                     let prefetch_source =
-                        PrefetchingByteSource::new(Box::new(source), self.prefetch_config)
+                        PrefetchingByteSource::new(Box::new(source), effective_prefetch_config)
                             .map_err(|_| {
                                 ProviderOpenError::Transport(TransportFailure::NetworkUnavailable)
                             })?;
@@ -189,7 +175,7 @@ impl WebMediaHttpProvider {
                         })?;
                     return Ok(ProviderOpenOutput::new(
                         current_target,
-                        completed_hops,
+                        redirect_state.completed_hops(),
                         request.presentation(),
                         input,
                     ));
@@ -197,7 +183,7 @@ impl WebMediaHttpProvider {
                 Ok(HttpSourceHop::Streaming(source)) => {
                     return Ok(ProviderOpenOutput::new(
                         current_target,
-                        completed_hops,
+                        redirect_state.completed_hops(),
                         request.presentation(),
                         TransportInput::streaming(source),
                     ));
@@ -208,6 +194,26 @@ impl WebMediaHttpProvider {
             }
         }
     }
+}
+
+/// Совмещает global prefetch policy с более строгим source-specific Range limit.
+///
+/// Window остаётся global memory policy, а оба фактических read chunk-а
+/// ограничиваются extractor-provided верхней границей.
+fn prefetch_config_with_source_limit(
+    default_config: PrefetchConfig,
+    source_limit: Option<HttpRangeRequestLimit>,
+) -> Result<PrefetchConfig, ProviderOpenError> {
+    let Some(source_limit) = source_limit else {
+        return Ok(default_config);
+    };
+    let maximum_bytes = source_limit.maximum_bytes();
+    PrefetchConfig::new(
+        default_config.initial_chunk_bytes().min(maximum_bytes),
+        default_config.chunk_bytes().min(maximum_bytes),
+        default_config.window_bytes(),
+    )
+    .map_err(|_| ProviderOpenError::Transport(TransportFailure::InvalidResponse))
 }
 
 impl fmt::Debug for WebMediaHttpProvider {
@@ -284,12 +290,12 @@ fn scoped_cookie_jar_for_request(
 
 /// Извлекает секреты только через intent-named S21T scope boundary.
 fn request_material_for_target(
-    request: &TransportOpenRequest,
+    secrets: &SecretRequestContext,
     target: &source_core::HttpRequestTarget,
     secret_forwarding: SecretForwarding,
     request_body_forwarding: RequestBodyForwarding,
 ) -> Result<RequestMaterial, ProviderOpenError> {
-    if request.secrets().is_empty() {
+    if secrets.is_empty() {
         return Ok(RequestMaterial {
             headers: Vec::new(),
             request_body: HttpRequestBody::Absent,
@@ -304,8 +310,7 @@ fn request_material_for_target(
         });
     }
 
-    let material = request
-        .secrets()
+    let material = secrets
         .material_for(target, SecretRequestPurpose::PrimaryResource)
         .ok_or(ProviderOpenError::Authentication(
             AuthenticationFailure::SecretScopeRejected,
@@ -373,6 +378,9 @@ fn map_source_open_error(
         | SourceError::HttpStatus { .. } => {
             ProviderOpenError::Transport(TransportFailure::NetworkUnavailable)
         }
+        SourceError::HttpRangeRedirectRejected { .. } => {
+            ProviderOpenError::Transport(TransportFailure::RedirectRejected)
+        }
     }
 }
 
@@ -385,6 +393,11 @@ fn map_refresh_error(source: ProviderOpenError) -> ProviderRefreshError {
         ProviderOpenError::Cancelled => ProviderRefreshError::Cancelled,
     }
 }
+
+mod range_redirect;
+
+#[cfg(test)]
+mod range_redirect_tests;
 
 #[cfg(test)]
 mod tests;

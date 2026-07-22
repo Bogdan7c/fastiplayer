@@ -48,7 +48,7 @@ impl HttpRequestBody {
 
     /// Передаёт body seekable source-у для последующих Range request-ов.
     #[must_use]
-    fn into_bytes(self) -> Option<Vec<u8>> {
+    pub(crate) fn into_bytes(self) -> Option<Vec<u8>> {
         match self {
             Self::Absent => None,
             Self::Bytes(bytes) => Some(bytes),
@@ -92,6 +92,126 @@ impl HttpRedirectHop {
     #[must_use]
     pub const fn request_behavior(&self) -> HttpRedirectRequestBehavior {
         self.request_behavior
+    }
+}
+
+/// Безопасная категория отказа read-time redirect policy без secret payload-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HttpRangeRedirectRejection {
+    /// Redirect нарушает bounded origin/secure/hop policy.
+    PolicyRejected,
+    /// Новый target не входит в разрешённую область transient secret material.
+    SecretScopeRejected,
+    /// Scoped headers/body не удалось безопасно выразить как HTTP request.
+    RequestMaterialRejected,
+}
+
+/// Число уже завершённых redirect hop-ов внутри одного логического Range read-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HttpRangeRedirectHopCount(u8);
+
+impl HttpRangeRedirectHopCount {
+    /// Начинает новую независимую redirect chain.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self(0)
+    }
+
+    /// Возвращает точное число завершённых hop-ов policy owner-у.
+    #[must_use]
+    pub const fn value(self) -> u8 {
+        self.0
+    }
+
+    /// Продвигает bounded counter после успешно авторизованного hop-а.
+    #[must_use]
+    pub const fn checked_next(self) -> Option<Self> {
+        match self.0.checked_add(1) {
+            Some(next) => Some(Self(next)),
+            None => None,
+        }
+    }
+}
+
+/// Может ли следующий hop сохранить фактическое body текущего Range request-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HttpRangeRedirectBodyForwarding {
+    /// Сохранить текущее body, только если HTTP redirect semantics тоже разрешает это.
+    PreserveCurrent,
+    /// Принудительно удалить body из следующего hop-а.
+    Drop,
+}
+
+impl fmt::Display for HttpRangeRedirectRejection {
+    /// Форматирует только стабильную категорию, не target и не secret material.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let reason = match self {
+            Self::PolicyRejected => "redirect-policy-rejected",
+            Self::SecretScopeRejected => "secret-scope-rejected",
+            Self::RequestMaterialRejected => "request-material-rejected",
+        };
+        formatter.write_str(reason)
+    }
+}
+
+/// Transport-owned policy hook для redirect-а, возникшего после seekable open.
+///
+/// `source-core` владеет HTTP Range механикой, но намеренно не знает service
+/// secret scopes. Реализация обязана вернуть уже авторизованный и очищенный
+/// material следующего hop-а либо typed safe rejection.
+pub trait HttpRangeRedirectHandler: Send {
+    /// Начинает независимую redirect chain одного логического Range read-а.
+    ///
+    /// Source вызывает boundary заново и перед retry, поэтому transport обязан
+    /// сбросить sticky forwarding state к состоянию stable base request-а.
+    fn begin_range_request(&mut self);
+
+    /// Авторизует один redirect и строит material следующего exact hop-а.
+    fn material_for_redirect(
+        &mut self,
+        current_target: &HttpRequestTarget,
+        redirect: &HttpRedirectHop,
+        completed_hops: HttpRangeRedirectHopCount,
+    ) -> Result<HttpRangeRedirectRequestMaterial, HttpRangeRedirectRejection>;
+}
+
+/// Scope-filtered material следующего read-time redirect hop-а.
+///
+/// Target намеренно отсутствует: `source-core` уже разобрал `Location` и сам
+/// использует `HttpRedirectHop::target()`, поэтому policy owner не может
+/// случайно вернуть material для другого адреса.
+pub struct HttpRangeRedirectRequestMaterial {
+    /// Уже scope-filtered transport headers.
+    headers: Vec<HttpHeader>,
+    /// Least-authority разрешение сохранить уже существующее request body.
+    body_forwarding: HttpRangeRedirectBodyForwarding,
+}
+
+impl HttpRangeRedirectRequestMaterial {
+    /// Создаёт material только после transport-owned policy проверки.
+    #[must_use]
+    pub fn new(headers: Vec<HttpHeader>, body_forwarding: HttpRangeRedirectBodyForwarding) -> Self {
+        Self {
+            headers,
+            body_forwarding,
+        }
+    }
+
+    /// Передаёт redacted material Range source-у.
+    #[must_use]
+    pub(crate) fn into_parts(self) -> (Vec<HttpHeader>, HttpRangeRedirectBodyForwarding) {
+        (self.headers, self.body_forwarding)
+    }
+}
+
+impl fmt::Debug for HttpRangeRedirectRequestMaterial {
+    /// Показывает только форму material-а без header/body values.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpRangeRedirectRequestMaterial")
+            .field("header_count", &self.headers.len())
+            .field("body_forwarding", &self.body_forwarding)
+            .finish()
     }
 }
 
@@ -247,7 +367,7 @@ impl HttpSourceSession {
             StatusCode::PARTIAL_CONTENT => {
                 let source = HttpRangeSource::from_partial_content_probe(
                     self.client.clone(),
-                    secret_url,
+                    request.target,
                     build_header_map(&request.headers)?,
                     request.request_body.into_bytes(),
                     response.headers(),
@@ -332,7 +452,7 @@ impl StreamingByteSource for HttpStreamingSource {
 }
 
 /// Разрешает `Location` относительно текущего target-а без отражения payload в error-е.
-fn parse_redirect_hop(
+pub(crate) fn parse_redirect_hop(
     current_target: &HttpRequestTarget,
     current_url: &SecretHttpUrl,
     status: StatusCode,

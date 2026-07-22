@@ -32,8 +32,10 @@ pub use http_policy::{
     HttpRequestTarget, HttpRequestTargetError, HttpScheme, HttpScopeSecurity, ValidatedHttpHeaders,
 };
 pub use http_session::{
-    HttpRedirectHop, HttpRedirectRequestBehavior, HttpRequestBody, HttpSingleHopRequest,
-    HttpSourceHop, HttpSourceSession, HttpStreamingSource,
+    HttpRangeRedirectBodyForwarding, HttpRangeRedirectHandler, HttpRangeRedirectHopCount,
+    HttpRangeRedirectRejection, HttpRangeRedirectRequestMaterial, HttpRedirectHop,
+    HttpRedirectRequestBehavior, HttpRequestBody, HttpSingleHopRequest, HttpSourceHop,
+    HttpSourceSession, HttpStreamingSource,
 };
 pub use local::{LocalFileMetadataSnapshot, LocalFileSource};
 pub use metadata::{

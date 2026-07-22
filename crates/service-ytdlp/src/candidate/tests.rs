@@ -368,6 +368,93 @@ fn excluded_request_data_and_impersonation_remain_visible_rejections() {
     assert!(!diagnostic.contains("chrome-136"));
 }
 
+/// Текущая YouTube shape с `http_chunk_size = 10 MiB` остаётся playable.
+#[test]
+fn youtube_http_chunk_size_becomes_neutral_range_request_limit() {
+    let mut youtube_format =
+        progressive_format("youtube-2026-07-04", "webm", "webm", "vp9", "opus");
+    youtube_format["downloader_options"] = json!({"http_chunk_size": 10 * 1024 * 1024});
+    let snapshot = snapshot(json!({"formats": [youtube_format]}), 13);
+
+    let candidate = accepted_inventory(&snapshot, 0);
+    let material_summary = candidate
+        .component_request_summaries()
+        .next()
+        .expect("single YouTube component")
+        .material;
+    assert_eq!(
+        material_summary.http_range_request_limit_bytes,
+        Some(10 * 1024 * 1024)
+    );
+
+    let context = super::YtDlpTransportRequestContext::new(
+        TransportProviderId::new("progressive-http").expect("provider ID"),
+        SourceGeneration::new(1),
+        CancellationToken::new(),
+    );
+    let request = candidate
+        .transport_components(&context)
+        .expect("safe YouTube downloader hint должен пройти transport boundary")
+        .into_iter()
+        .next()
+        .expect("single YouTube component")
+        .into_request();
+    assert_eq!(
+        request
+            .http_range_request_limit()
+            .expect("typed range request limit")
+            .maximum_bytes(),
+        10 * 1024 * 1024
+    );
+}
+
+/// Неизвестный downloader state и невалидные chunk limits остаются fail-closed.
+#[test]
+fn downloader_options_reject_unknown_state_and_invalid_http_chunk_sizes() {
+    let mut unknown_option = progressive_format("unknown-option", "webm", "webm", "vp9", "opus");
+    unknown_option["downloader_options"] = json!({"future_private_state": true});
+    let mut mixed_options = progressive_format("mixed-options", "webm", "webm", "vp9", "opus");
+    mixed_options["downloader_options"] =
+        json!({"http_chunk_size": 10 * 1024 * 1024, "ws": "private-state"});
+    let mut zero_chunk = progressive_format("zero-chunk", "webm", "webm", "vp9", "opus");
+    zero_chunk["downloader_options"] = json!({"http_chunk_size": 0});
+    let mut fractional_chunk =
+        progressive_format("fractional-chunk", "webm", "webm", "vp9", "opus");
+    fractional_chunk["downloader_options"] = json!({"http_chunk_size": 1.5});
+    let mut oversized_chunk = progressive_format("oversized-chunk", "webm", "webm", "vp9", "opus");
+    oversized_chunk["downloader_options"] = json!({"http_chunk_size": 65 * 1024 * 1024});
+    let snapshot = snapshot(
+        json!({
+            "formats": [
+                unknown_option,
+                mixed_options,
+                zero_chunk,
+                fractional_chunk,
+                oversized_chunk
+            ]
+        }),
+        14,
+    );
+
+    for index in 0..=1 {
+        assert_eq!(
+            rejected_inventory(&snapshot, index),
+            &YtDlpCandidateNormalizationRejection::RequestMaterial(
+                YtDlpRequestMaterialViolation::DownloaderStateRequired
+            )
+        );
+    }
+    for index in 2..=4 {
+        assert_eq!(
+            rejected_inventory(&snapshot, index),
+            &YtDlpCandidateNormalizationRejection::RequestMaterial(
+                YtDlpRequestMaterialViolation::InvalidHttpChunkSize
+            )
+        );
+    }
+    assert!(!format!("{snapshot:?}").contains("private-state"));
+}
+
 /// Duplicate format ID не удаляется и не становится вторым selectable candidate-ом.
 #[test]
 fn duplicate_format_identity_is_a_visible_rejection() {

@@ -1,6 +1,7 @@
 //! Typed open/refresh requests и generation fences.
 
 use std::fmt;
+use std::num::NonZeroU64;
 
 use source_core::{CancellationToken, HttpRequestTarget};
 
@@ -16,6 +17,40 @@ pub enum MediaPresentation {
     Vod,
     /// Обновляемый live resource.
     Live,
+}
+
+/// Верхняя граница одного HTTP Range-запроса для конкретного media source.
+///
+/// Тип описывает транспортное намерение и не хранит provider-specific config:
+/// HTTP owner сам решает, как совместить этот предел со своей prefetch policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HttpRangeRequestLimit {
+    /// Проверенный ненулевой предел в bytes.
+    maximum_bytes: NonZeroU64,
+}
+
+impl HttpRangeRequestLimit {
+    /// Создаёт предел, запрещая бессмысленный нулевой Range-запрос.
+    pub const fn new(maximum_bytes: u64) -> Result<Self, HttpRangeRequestLimitError> {
+        let Some(maximum_bytes) = NonZeroU64::new(maximum_bytes) else {
+            return Err(HttpRangeRequestLimitError::Zero);
+        };
+        Ok(Self { maximum_bytes })
+    }
+
+    /// Возвращает максимальный размер одного Range-запроса в bytes.
+    #[must_use]
+    pub const fn maximum_bytes(self) -> u64 {
+        self.maximum_bytes.get()
+    }
+}
+
+/// Ошибка построения source-specific HTTP Range policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum HttpRangeRequestLimitError {
+    /// Нулевой предел не может породить корректный byte range.
+    #[error("HTTP Range request limit должен быть больше нуля")]
+    Zero,
 }
 
 /// Exact identity успешно открытого runtime component-а.
@@ -80,6 +115,8 @@ pub struct TransportOpenRequest {
     secrets: SecretRequestContext,
     /// Bounded redirect policy.
     redirects: RedirectPolicy,
+    /// Optional source-specific верхняя граница одного HTTP Range-запроса.
+    http_range_request_limit: Option<HttpRangeRequestLimit>,
     /// Shared cooperative cancellation.
     cancellation: CancellationToken,
 }
@@ -108,8 +145,19 @@ impl TransportOpenRequest {
             source_generation,
             secrets,
             redirects,
+            http_range_request_limit: None,
             cancellation,
         })
+    }
+
+    /// Добавляет проверенную source-specific HTTP Range policy.
+    #[must_use]
+    pub fn with_http_range_request_limit(
+        mut self,
+        http_range_request_limit: HttpRangeRequestLimit,
+    ) -> Self {
+        self.http_range_request_limit = Some(http_range_request_limit);
+        self
     }
 
     /// Возвращает exact provider selection.
@@ -154,6 +202,12 @@ impl TransportOpenRequest {
         self.redirects
     }
 
+    /// Возвращает optional предел одного HTTP Range-запроса для source-а.
+    #[must_use]
+    pub const fn http_range_request_limit(&self) -> Option<HttpRangeRequestLimit> {
+        self.http_range_request_limit
+    }
+
     /// Возвращает shared cancellation token.
     #[must_use]
     pub const fn cancellation(&self) -> &CancellationToken {
@@ -183,6 +237,7 @@ impl fmt::Debug for TransportOpenRequest {
             .field("source_generation", &self.source_generation)
             .field("secrets", &self.secrets)
             .field("redirects", &self.redirects)
+            .field("http_range_request_limit", &self.http_range_request_limit)
             .field("cancelled", &self.cancellation.is_cancelled())
             .finish()
     }

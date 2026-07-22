@@ -569,7 +569,10 @@ fn validate_profile_supported(
         VideoProfile::Av1(profile) => matches!(profile, Av1Profile::Main | Av1Profile::High),
         VideoProfile::H264(profile) => matches!(
             profile,
-            H264Profile::ConstrainedBaseline | H264Profile::Main | H264Profile::High
+            H264Profile::Baseline
+                | H264Profile::ConstrainedBaseline
+                | H264Profile::Main
+                | H264Profile::High
         ),
         VideoProfile::H265(profile) => matches!(
             profile,
@@ -825,6 +828,24 @@ mod tests {
         assert_eq!(
             plan.accepted_pixel_formats().iter().collect::<Vec<_>>(),
             vec![SoftwarePixelFormat::Yuv420Planar10Le]
+        );
+    }
+
+    #[test]
+    fn stream_plan_accepts_h264_baseline_with_exact_planar_8bit_contract() {
+        let requirement = VideoDecodeRequirement::new(VideoCodec::H264)
+            .with_profile(VideoProfile::H264(H264Profile::Baseline))
+            .with_bit_depth(BitDepth::Eight)
+            .with_chroma(ChromaSubsampling::Yuv420);
+        let contract = VideoFrameContract::host_yuv420_planar8();
+        let plan = plan_ffmpeg_software_decode(&requirement, contract)
+            .expect("FFmpeg software path должен принимать H.264 Baseline 8-bit 4:2:0");
+
+        assert_eq!(plan.decoder_id(), FfmpegDecoderId::H264);
+        assert_eq!(plan.frame_contract(), contract);
+        assert_eq!(
+            plan.accepted_pixel_formats().iter().collect::<Vec<_>>(),
+            vec![SoftwarePixelFormat::Yuv420Planar8]
         );
     }
 

@@ -23,7 +23,8 @@ pub use capability::{
 pub use planner::{
     CandidateCapabilityRejection, CandidatePolicyRejection, CandidateRejection,
     CandidateRejectionReason, DemuxCapabilityRejection, PlaybackComponent, PlaybackPlan,
-    PlaybackPlanningError, PlaybackPlanningOutcome, TransportCapabilityRejection, plan_playback,
+    PlaybackPlanningError, PlaybackPlanningFailureSummary, PlaybackPlanningOutcome,
+    TransportCapabilityRejection, plan_playback,
 };
 pub use policy::{
     ContainerPreferenceRank, HdrSelectionPolicy, PlaybackSelectionPolicy, SelectionPolicyBuildError,

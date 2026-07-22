@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use codec_core::{
-    BitDepth, ChromaSubsampling, H264Packetization, H264ParameterSetInjection, H265NalUnit,
-    H265Packetization, H265ParameterSetInjection, H265Profile, SupportedVideoDecodeFormat,
-    VideoCodec, VideoProfile, Vp9Profile, h264_access_unit_to_annex_b_into,
-    h265_access_unit_to_annex_b_into,
+    BitDepth, ChromaSubsampling, H264Packetization, H264ParameterSetInjection, H264Profile,
+    H265NalUnit, H265Packetization, H265ParameterSetInjection, H265Profile,
+    SupportedVideoDecodeFormat, VideoCodec, VideoProfile, Vp9Profile,
+    h264_access_unit_to_annex_b_into, h265_access_unit_to_annex_b_into,
     h265_decode_requirement_from_hevc_decoder_configuration_record, h265_nal_units,
     parse_avc_decoder_configuration_record, parse_hevc_decoder_configuration_record,
     video_frame_pixel_layout_from_decode_requirement,
@@ -868,10 +868,10 @@ mod tests {
         Bytes::from_static(&[1, 100, 0, 31, 0xff, 0xe1, 0, 2, 0x67, 0x64, 1, 0, 1, 0x68])
     }
 
-    /// Собирает H.264 stream config с AVCC packetization для adapter policy tests.
-    fn h264_stream_config() -> H264VaapiStreamConfig {
-        let config = VideoStreamDecodeConfig {
-            profile: Some(VideoProfile::H264(H264Profile::High)),
+    /// Собирает neutral H.264 config с известными AVCC metadata для factory tests.
+    fn h264_decode_config(profile: H264Profile) -> VideoStreamDecodeConfig {
+        VideoStreamDecodeConfig {
+            profile: Some(VideoProfile::H264(profile)),
             bit_depth: Some(BitDepth::Eight),
             chroma: Some(ChromaSubsampling::Yuv420),
             frame_contract: dma_buf_contract_for_surface(VideoFramePixelLayout::Nv12),
@@ -882,8 +882,12 @@ mod tests {
                 },
             )),
             ..stream_config(VideoCodec::H264)
-        };
+        }
+    }
 
+    /// Собирает H.264 backend config с AVCC packetization для adapter policy tests.
+    fn h264_stream_config() -> H264VaapiStreamConfig {
+        let config = h264_decode_config(H264Profile::High);
         H264VaapiStreamConfig::from_decode_config(&config)
             .expect("valid test avcC должен проходить H.264 configure boundary")
     }
@@ -1265,21 +1269,27 @@ mod tests {
     /// Проверяет H.264 adapter matrix: metadata slot теперь production-ready.
     #[test]
     fn factory_accepts_h264_after_packetization_and_avcc_are_known() {
-        let config = VideoStreamDecodeConfig {
-            profile: Some(VideoProfile::H264(H264Profile::High)),
-            bit_depth: Some(BitDepth::Eight),
-            chroma: Some(ChromaSubsampling::Yuv420),
-            frame_contract: dma_buf_contract_for_surface(VideoFramePixelLayout::Nv12),
-            codec_private: Some(valid_h264_avcc_private()),
-            packetization: Some(VideoStreamPacketization::H264(
-                H264Packetization::AvccLengthPrefixed {
-                    nal_length_size: H264NalLengthSize::FOUR,
-                },
-            )),
-            ..stream_config(VideoCodec::H264)
-        };
+        let config = h264_decode_config(H264Profile::High);
 
         assert!(VaapiCodecAdapterFactory::stream_config_rejection(&config).is_none());
+    }
+
+    /// Проверяет весь явно поддержанный H.264 profile whitelist на общей NV12 границе.
+    #[test]
+    fn factory_accepts_each_implemented_h264_profile() {
+        for profile in [
+            H264Profile::Baseline,
+            H264Profile::ConstrainedBaseline,
+            H264Profile::Main,
+            H264Profile::High,
+        ] {
+            let config = h264_decode_config(profile);
+
+            assert!(
+                VaapiCodecAdapterFactory::stream_config_rejection(&config).is_none(),
+                "implemented H.264 profile должен приниматься: {profile:?}"
+            );
+        }
     }
 
     /// Проверяет typed отказ до H.264 packetization proof.
@@ -1528,6 +1538,10 @@ mod tests {
             hdr_input: false,
             ..supported_vp9.clone()
         };
+        let supported_h264_baseline = SupportedVideoDecodeFormat {
+            profile: VideoProfile::H264(H264Profile::Baseline),
+            ..supported_h264.clone()
+        };
         let rejected_h264_high10 = SupportedVideoDecodeFormat {
             profile: VideoProfile::H264(H264Profile::High),
             codec: VideoCodec::H264,
@@ -1563,6 +1577,9 @@ mod tests {
         ));
         assert!(VaapiCodecAdapterFactory::supports_decode_format(
             &supported_h264
+        ));
+        assert!(VaapiCodecAdapterFactory::supports_decode_format(
+            &supported_h264_baseline
         ));
         assert!(!VaapiCodecAdapterFactory::supports_decode_format(
             &rejected_h264_high10

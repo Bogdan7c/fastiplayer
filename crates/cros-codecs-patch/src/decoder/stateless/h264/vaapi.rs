@@ -51,12 +51,12 @@ impl VaStreamInfo for &Rc<Sps> {
 
         match profile {
             Profile::Baseline => {
-                if self.constraint_set0_flag {
+                // constraint_set1_flag отделяет Constrained Baseline от ordinary
+                // Baseline; подмена ordinary профиля на Main/CB здесь запрещена.
+                if self.constraint_set1_flag {
                     Ok(libva::VAProfile::VAProfileH264ConstrainedBaseline)
                 } else {
-                    Err(anyhow!(
-                        "Unsupported stream: profile_idc=66, but constraint_set0_flag is unset"
-                    ))
+                    Ok(libva::VAProfile::VAProfileH264Baseline)
                 }
             }
             Profile::Main => Ok(libva::VAProfile::VAProfileH264Main),
@@ -557,10 +557,12 @@ impl<V: VideoFrame> StatelessDecoder<H264, VaapiBackend<V>> {
 
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
+
     use libva::Display;
 
     use crate::bitstream_utils::NalIterator;
-    use crate::codec::h264::parser::Nalu;
+    use crate::codec::h264::parser::{Nalu, Sps};
     use crate::decoder::stateless::h264::H264;
     use crate::decoder::stateless::tests::test_decode_stream;
     use crate::decoder::stateless::tests::TestStream;
@@ -569,6 +571,38 @@ mod tests {
     use crate::utils::simple_playback_loop;
     use crate::utils::simple_playback_loop_owned_frames;
     use crate::DecodedFormat;
+
+    use super::VaStreamInfo;
+
+    /// Проверяет exact VA profile mapping без VA display и hardware state.
+    #[test]
+    fn h264_sps_maps_baseline_profiles_without_unsafe_aliases() {
+        for (constraint_set1_flag, expected_profile) in [
+            (false, libva::VAProfile::VAProfileH264Baseline),
+            (true, libva::VAProfile::VAProfileH264ConstrainedBaseline),
+        ] {
+            let sps = Rc::new(Sps {
+                profile_idc: 66,
+                constraint_set0_flag: false,
+                constraint_set1_flag,
+                ..Sps::default()
+            });
+
+            assert_eq!((&sps).va_profile().unwrap(), expected_profile);
+        }
+    }
+
+    /// Защищает неизменное Main/High mapping при расширении Baseline path.
+    #[test]
+    fn h264_sps_keeps_main_and_high_va_profile_mapping() {
+        for (profile_idc, expected_profile) in
+            [(77, libva::VAProfile::VAProfileH264Main), (100, libva::VAProfile::VAProfileH264High)]
+        {
+            let sps = Rc::new(Sps { profile_idc, ..Sps::default() });
+
+            assert_eq!((&sps).va_profile().unwrap(), expected_profile);
+        }
+    }
 
     /// Run `test` using the vaapi decoder, in both blocking and non-blocking modes.
     fn test_decoder_vaapi(

@@ -2,14 +2,17 @@ use std::fmt;
 use std::io::Read;
 
 use reqwest::StatusCode;
-use reqwest::blocking::Client;
+use reqwest::blocking::{Client, Response};
 use reqwest::header::{
     CONTENT_LENGTH, CONTENT_RANGE, ETAG, HeaderMap, HeaderName, HeaderValue, LAST_MODIFIED, RANGE,
 };
 
+use crate::http_session::parse_redirect_hop;
 use crate::{
-    ByteSource, CancellationToken, NotSeekableReason, RangeDiagnostics, SecretHttpUrl, Seekability,
-    SourceError, SourceFingerprint, SourceResult, SourceRuntimeConfig, SourceValidators,
+    ByteSource, CancellationToken, HttpRangeRedirectBodyForwarding, HttpRangeRedirectHandler,
+    HttpRangeRedirectHopCount, HttpRedirectRequestBehavior, HttpRequestTarget, NotSeekableReason,
+    RangeDiagnostics, SecretHttpUrl, Seekability, SourceError, SourceFingerprint, SourceResult,
+    SourceRuntimeConfig, SourceValidators,
 };
 
 /// HTTP header, который внешний service layer передал как данные direct URL-а.
@@ -77,14 +80,20 @@ pub struct HttpRangeSource {
     /// Reqwest blocking client с timeout-ами из config.
     client: Client,
 
-    /// Direct media URL.
+    /// Stable base URL, с которого начинается каждый логический Range read.
     url: SecretHttpUrl,
+
+    /// Stable base target для безопасного разрешения relative redirect-а.
+    target: HttpRequestTarget,
 
     /// Базовые headers direct URL-а.
     headers: HeaderMap,
 
     /// Ephemeral request body, который нужно повторять для каждого Range request-а.
     request_body: Option<Vec<u8>>,
+
+    /// Transport-owned policy hook; legacy direct source не следует read-time redirect-ам.
+    redirect_handler: Option<Box<dyn HttpRangeRedirectHandler>>,
 
     /// Текущий byte cursor.
     position: u64,
@@ -112,6 +121,7 @@ impl fmt::Debug for HttpRangeSource {
             .field("url", &self.url)
             .field("headers", &"<redacted>")
             .field("has_request_body", &self.request_body.is_some())
+            .field("has_redirect_handler", &self.redirect_handler.is_some())
             .field("position", &self.position)
             .field("seekability", &self.seekability)
             .field("validators", &self.validators)
@@ -135,11 +145,21 @@ impl HttpRangeSource {
         let fingerprint =
             build_http_fingerprint(&config.url, probe.content_length, &probe.validators);
 
+        let target =
+            HttpRequestTarget::parse_exact(config.url.expose_secret_for_open()).map_err(|_| {
+                SourceError::InvalidHttpRedirect {
+                    url: config.url.clone(),
+                    reason: "invalid-current-target",
+                }
+            })?;
+
         Ok(Self {
             client,
             url: config.url,
+            target,
             headers,
             request_body: None,
+            redirect_handler: None,
             position: 0,
             seekability: probe.seekability,
             validators: probe.validators,
@@ -152,11 +172,13 @@ impl HttpRangeSource {
     /// Строит seekable source из уже проверенного `206` ответа одного HTTP session-а.
     pub(crate) fn from_partial_content_probe(
         client: Client,
-        url: SecretHttpUrl,
+        target: HttpRequestTarget,
         headers: HeaderMap,
         request_body: Option<Vec<u8>>,
         response_headers: &HeaderMap,
     ) -> SourceResult<Self> {
+        let url =
+            SecretHttpUrl::from_secret_for_open(target.expose_secret_for_request().to_owned());
         let parsed_range = parse_content_range_header(&url, response_headers)?;
         if parsed_range.start != 0 || parsed_range.end_inclusive != 0 {
             return Err(SourceError::InvalidContentRange {
@@ -171,8 +193,10 @@ impl HttpRangeSource {
         Ok(Self {
             client,
             url,
+            target,
             headers,
             request_body,
+            redirect_handler: None,
             position: 0,
             seekability: Seekability::Seekable,
             validators,
@@ -180,6 +204,16 @@ impl HttpRangeSource {
             fingerprint,
             diagnostics: RangeDiagnostics::default(),
         })
+    }
+
+    /// Подключает policy owner-а для redirect-ов последующих Range request-ов.
+    #[must_use]
+    pub fn with_range_redirect_handler(
+        mut self,
+        redirect_handler: Box<dyn HttpRangeRedirectHandler>,
+    ) -> Self {
+        self.redirect_handler = Some(redirect_handler);
+        self
     }
 
     /// Возвращает текущие HTTP Range counters.
@@ -234,44 +268,130 @@ impl HttpRangeSource {
 
         let length = output.len();
         let range = ByteRange::new(offset, length);
-        self.diagnostics.range_requests = self.diagnostics.range_requests.saturating_add(1);
-        self.diagnostics.bytes_requested = self
-            .diagnostics
-            .bytes_requested
-            .saturating_add(length as u64);
-        let response = send_range_request(
-            &self.client,
-            &self.url,
-            &self.headers,
-            self.request_body.as_deref(),
-            &range,
-            "range-read",
-        )?;
+        let mut current_target = self.target.clone();
+        let mut current_url = self.url.clone();
+        let mut current_headers = self.headers.clone();
+        let mut current_request_body = self.request_body.clone();
+        let mut completed_redirect_hops = HttpRangeRedirectHopCount::none();
+        if let Some(redirect_handler) = self.redirect_handler.as_mut() {
+            redirect_handler.begin_range_request();
+        }
 
-        if response.status() != StatusCode::PARTIAL_CONTENT {
-            if response.status() == StatusCode::OK {
-                return Err(SourceError::HttpRangeUnsupported {
-                    reason: NotSeekableReason::HttpRangeStatus {
-                        status: response.status().as_u16(),
+        loop {
+            if cancellation.is_cancelled() {
+                return Err(SourceError::Cancelled);
+            }
+
+            self.diagnostics.range_requests = self.diagnostics.range_requests.saturating_add(1);
+            self.diagnostics.bytes_requested = self
+                .diagnostics
+                .bytes_requested
+                .saturating_add(length as u64);
+            let response = send_range_request(
+                &self.client,
+                &current_url,
+                &current_headers,
+                current_request_body.as_deref(),
+                &range,
+                "range-read",
+            )?;
+
+            if response.status().is_redirection() {
+                let (next_target, next_url, next_headers, next_request_body) = self
+                    .follow_range_redirect(
+                        &current_target,
+                        &current_url,
+                        current_request_body.as_deref(),
+                        completed_redirect_hops,
+                        &response,
+                    )?;
+                current_target = next_target;
+                current_url = next_url;
+                current_headers = next_headers;
+                current_request_body = next_request_body;
+                completed_redirect_hops = completed_redirect_hops.checked_next().ok_or(
+                    SourceError::HttpRangeRedirectRejected {
+                        url: current_url.clone(),
+                        reason: crate::HttpRangeRedirectRejection::PolicyRejected,
                     },
+                )?;
+                continue;
+            }
+
+            if response.status() != StatusCode::PARTIAL_CONTENT {
+                if response.status() == StatusCode::OK {
+                    return Err(SourceError::HttpRangeUnsupported {
+                        reason: NotSeekableReason::HttpRangeStatus {
+                            status: response.status().as_u16(),
+                        },
+                    });
+                }
+
+                return Err(SourceError::HttpStatus {
+                    operation: "range-read",
+                    url: current_url,
+                    status: response.status(),
                 });
             }
 
+            validate_content_range(&current_url, response.headers(), &range)?;
+            let bytes_read =
+                read_response_body_into(&current_url, response, offset, output, cancellation)?;
+            self.diagnostics.bytes_read = self
+                .diagnostics
+                .bytes_read
+                .saturating_add(bytes_read as u64);
+            return Ok(bytes_read);
+        }
+    }
+
+    /// Передаёт read-time redirect policy owner-у, не меняя stable base source-а.
+    fn follow_range_redirect(
+        &mut self,
+        current_target: &HttpRequestTarget,
+        current_url: &SecretHttpUrl,
+        current_request_body: Option<&[u8]>,
+        completed_hops: HttpRangeRedirectHopCount,
+        response: &Response,
+    ) -> SourceResult<(HttpRequestTarget, SecretHttpUrl, HeaderMap, Option<Vec<u8>>)> {
+        let redirect =
+            parse_redirect_hop(current_target, current_url, response.status(), response)?;
+        let Some(redirect_handler) = self.redirect_handler.as_mut() else {
             return Err(SourceError::HttpStatus {
                 operation: "range-read",
-                url: self.url.clone(),
+                url: current_url.clone(),
                 status: response.status(),
             });
-        }
+        };
+        let next_material = redirect_handler
+            .material_for_redirect(current_target, &redirect, completed_hops)
+            .map_err(|reason| SourceError::HttpRangeRedirectRejected {
+                url: current_url.clone(),
+                reason,
+            })?;
+        let next_target = redirect.target().clone();
+        let request_behavior = redirect.request_behavior();
+        let (next_headers, body_forwarding) = next_material.into_parts();
+        let next_url =
+            SecretHttpUrl::from_secret_for_open(next_target.expose_secret_for_request().to_owned());
+        let next_headers = build_header_map(&next_headers)?;
+        let next_request_body = match (request_behavior, body_forwarding) {
+            (
+                HttpRedirectRequestBehavior::PreserveMethodAndBody,
+                HttpRangeRedirectBodyForwarding::PreserveCurrent,
+            ) => current_request_body.map(<[u8]>::to_vec),
+            (
+                HttpRedirectRequestBehavior::PreserveMethodAndBody
+                | HttpRedirectRequestBehavior::SwitchToGetWithoutBody,
+                HttpRangeRedirectBodyForwarding::Drop,
+            )
+            | (
+                HttpRedirectRequestBehavior::SwitchToGetWithoutBody,
+                HttpRangeRedirectBodyForwarding::PreserveCurrent,
+            ) => None,
+        };
 
-        validate_content_range(&self.url, response.headers(), &range)?;
-        let bytes_read =
-            read_response_body_into(&self.url, response, offset, output, cancellation)?;
-        self.diagnostics.bytes_read = self
-            .diagnostics
-            .bytes_read
-            .saturating_add(bytes_read as u64);
-        Ok(bytes_read)
+        Ok((next_target, next_url, next_headers, next_request_body))
     }
 
     /// Учитывает ошибку range path в diagnostics.
@@ -657,6 +777,9 @@ fn build_http_fingerprint(
             .unwrap_or("no-last-modified")
     ))
 }
+
+#[cfg(test)]
+mod range_redirect_tests;
 
 #[cfg(test)]
 mod tests {

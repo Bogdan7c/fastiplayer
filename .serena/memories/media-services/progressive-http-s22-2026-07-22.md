@@ -8,6 +8,7 @@
 - Его normal dependencies намеренно ограничены только `source-core`, `media-prefetch`, `web-media-transport-api`. Это закреплено `scripts/check-refactor-guardrails.py`; прямые `reqwest`, demux, player и service dependencies запрещены.
 - `source-core::HttpSourceSession` — единственный owner reqwest client-а для component open: automatic redirects выключены, каждый hop возвращается provider-у для S21T policy решения.
 - Первый request всегда `Range: bytes=0-0`. Корректный `206` превращается в `HttpRangeSource` с тем же Client и существующим `media-prefetch`; `200` сохраняет уже открытый response как `HttpStreamingSource`, поэтому duplicate probe/download request отсутствует.
+- Для seekable source `web-media-http` совмещает global `PrefetchConfig` с optional `TransportOpenRequest::http_range_request_limit()` через `min`: initial/chunk никогда не увеличиваются, window остаётся global memory policy. Поэтому yt-dlp `http_chunk_size` ограничивает каждый последующий Range request, но никак не влияет на non-Range streaming path.
 - Request body выражен typed `HttpRequestBody`; `307/308` сохраняют method/body, `301/302/303` переключают последующие hops на GET без body.
 - S21T `SecretRequestContext` извлекается только после scope проверки. Cross-origin redirects strip credentials; same-origin redirect без секретов разрешён даже вне пустого secret scope. URL/header/body не попадают в Debug/errors.
 - Refresh проходит только через S21T exact semantic identity и source-generation fences; mismatch/stale cancellation отсекаются до network side effect.
@@ -43,3 +44,10 @@
 - `app-egui::web_media_open` is now the yt-dlp composition root over the same S22 `WebMediaHttpProvider`, `TransportRegistry`, `DemuxRegistry` and progressive wrapper used by the direct-media vertical slice.
 - `service-ytdlp` maps S19 candidates into neutral S21C planning data and S21T requests, but still has no concrete HTTP/demux dependencies. Its legacy WebM-only opener and direct reqwest/prefetch/demux stack are deleted.
 - S26 authorization mapping is not guessed: candidates requiring headers/cookies return typed pre-barrier `AuthorizationMappingPending` without dropping secret material. Full flow: `mem:app-egui/queue-owned-web-open-s23-2026-07-22`.
+
+## S27 read-time Range redirects (2026-07-22)
+
+- Initial redirects and redirects returned by later seekable Range reads share the same transport-owned `RedirectPolicy`/`SecretRequestContext` semantics. Reqwest automatic redirects remain disabled.
+- `source-core::HttpRangeSource` owns physical Range mechanics, parses each `Location`, counts each physical request and checks cancellation before every hop. Every logical read and retry starts from immutable stable base target/headers/body; redirected material is local to that chain.
+- `web-media-http::ScopedRangeRedirectHandler` owns only redirect policy, ephemeral secret context and sticky per-read forwarding state. Cross-origin transitions monotonically strip headers/cookies/body; `301/302/303` monotonically switch to GET. `source-core` independently prevents a later `307/308` from resurrecting an already dropped body.
+- Focused proof covers stable-base restart across repeated reads, `POST -> 302 -> 307` body non-resurrection, per-physical-request diagnostics and a real prefetch cross-origin redirect that reaches final `206` without Authorization/initial Cookie/Set-Cookie leakage.
