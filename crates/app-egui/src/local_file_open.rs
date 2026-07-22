@@ -78,6 +78,9 @@ pub(crate) struct LocalFileOpenJob {
     /// Cooperative terminal cancellation между dialog и дорогой preparation.
     cancellation_requested: Arc<AtomicBool>,
 
+    /// Тот же cooperative state передаётся source/demux scan-ам.
+    source_cancellation: source_core::CancellationToken,
+
     /// `true`, когда worker уже joined и повторный shutdown является no-op.
     terminal_shutdown_completed: bool,
 }
@@ -90,6 +93,7 @@ impl LocalFileOpenJob {
     ) -> std::result::Result<Self, String> {
         let (mailbox_publisher, mailbox_receiver) = owner_mailbox(wake_port);
         let cancellation_requested = Arc::new(AtomicBool::new(false));
+        let source_cancellation = source_core::CancellationToken::new();
         let worker_cancellation_requested = Arc::clone(&cancellation_requested);
         let file_dialog_future = rfd::AsyncFileDialog::new()
             .set_parent(window)
@@ -134,6 +138,7 @@ impl LocalFileOpenJob {
             mailbox_receiver,
             join_handle,
             cancellation_requested,
+            source_cancellation,
         ))
     }
 
@@ -145,6 +150,8 @@ impl LocalFileOpenJob {
     ) -> std::result::Result<Self, String> {
         let (mailbox_publisher, mailbox_receiver) = owner_mailbox(wake_port);
         let cancellation_requested = Arc::new(AtomicBool::new(false));
+        let source_cancellation = source_core::CancellationToken::new();
+        let worker_source_cancellation = source_cancellation.clone();
         let worker_cancellation_requested = Arc::clone(&cancellation_requested);
         let join_handle = thread::Builder::new()
             .name("local-file-preparation".to_string())
@@ -162,19 +169,20 @@ impl LocalFileOpenJob {
                     debug!("Event loop закрыт; local-file progress оставлен без wake retry");
                 }
 
-                let prepare_result =
-                    prepare_local_open(&selected_path, &demux_config, None, || {
-                        worker_cancellation_requested.load(Ordering::Acquire)
-                    })
-                    .map(|prepared| LocalFileOpenResult::Prepared {
-                        prepared: Box::new(prepared),
-                    })
-                    .unwrap_or_else(|error| {
-                        LocalFileOpenResult::PrepareFailed {
-                            path: selected_path,
-                            error: format!("{error:#}"),
-                        }
-                    });
+                let prepare_result = prepare_local_open(
+                    &selected_path,
+                    &demux_config,
+                    None,
+                    worker_source_cancellation,
+                    || worker_cancellation_requested.load(Ordering::Acquire),
+                )
+                .map(|prepared| LocalFileOpenResult::Prepared {
+                    prepared: Box::new(prepared),
+                })
+                .unwrap_or_else(|error| LocalFileOpenResult::PrepareFailed {
+                    path: selected_path,
+                    error: format!("{error:#}"),
+                });
 
                 if worker_cancellation_requested.load(Ordering::Acquire) {
                     publish_local_file_completion(
@@ -191,6 +199,7 @@ impl LocalFileOpenJob {
             mailbox_receiver,
             join_handle,
             cancellation_requested,
+            source_cancellation,
         ))
     }
 
@@ -198,12 +207,14 @@ impl LocalFileOpenJob {
         mailbox_receiver: OwnerMailboxReceiver<PathBuf, LocalFileOpenResult>,
         join_handle: JoinHandle<()>,
         cancellation_requested: Arc<AtomicBool>,
+        source_cancellation: source_core::CancellationToken,
     ) -> Self {
         Self {
             mailbox_receiver,
             join_handle: Some(join_handle),
             pending_completion: None,
             cancellation_requested,
+            source_cancellation,
             terminal_shutdown_completed: false,
         }
     }
@@ -259,6 +270,7 @@ impl LocalFileOpenJob {
         }
 
         self.cancellation_requested.store(true, Ordering::Release);
+        self.source_cancellation.cancel();
 
         match join_thread_until(&mut self.join_handle, deadline) {
             FinishedThreadJoin::AlreadyJoined | FinishedThreadJoin::Joined => {
@@ -282,6 +294,7 @@ impl LocalFileOpenJob {
 impl Drop for LocalFileOpenJob {
     fn drop(&mut self) {
         self.cancellation_requested.store(true, Ordering::Release);
+        self.source_cancellation.cancel();
         let Some(join_handle) = self.join_handle.take() else {
             return;
         };
@@ -348,6 +361,7 @@ mod tests {
             join_handle: Some(join_handle),
             pending_completion: None,
             cancellation_requested: Arc::new(AtomicBool::new(false)),
+            source_cancellation: source_core::CancellationToken::new(),
             terminal_shutdown_completed: false,
         }
     }
@@ -410,12 +424,14 @@ mod tests {
                 std::thread::yield_now();
             }
         }));
+        let source_cancellation = job.source_cancellation.clone();
 
         assert_eq!(
             job.shutdown_until(ShutdownDeadline::after(Duration::from_millis(1))),
             ProcessOwnerShutdownOutcome::TimedOut { pending_threads: 1 }
         );
         assert!(job.join_handle.is_some());
+        assert!(source_cancellation.is_cancelled());
 
         release.store(true, Ordering::Release);
         assert_eq!(

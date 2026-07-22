@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use bytes::Bytes;
 use demux_api::{
-    OrderedSegment, OrderedSegmentKind, OrderedSegmentReadError, OrderedSegmentSequence,
-    OrderedSegmentSource,
+    OrderedSegment, OrderedSegmentDiscontinuity, OrderedSegmentKind, OrderedSegmentReadError,
+    OrderedSegmentSequence, OrderedSegmentSource,
 };
 use source_core::CancellationToken;
 
@@ -45,6 +45,7 @@ fn segment(sequence: u64, kind: OrderedSegmentKind, bytes: &'static [u8]) -> Ord
     OrderedSegment {
         sequence: OrderedSegmentSequence::new(sequence),
         kind,
+        discontinuity: OrderedSegmentDiscontinuity::Continuous,
         bytes: Bytes::from_static(bytes),
     }
 }
@@ -84,6 +85,27 @@ fn reader_preserves_boundaries_and_accepts_strictly_increasing_gaps() {
     let second_media_bytes = reader.read(&mut destination).expect("read second media");
     assert_eq!(&destination[..second_media_bytes], b"media-two");
     assert_eq!(reader.read(&mut destination).expect("terminal EOF"), 0);
+}
+
+#[test]
+fn discontinuity_fails_closed_before_installing_segment_bytes() {
+    let mut discontinuous = segment(20, OrderedSegmentKind::Media, b"new-timeline");
+    discontinuous.discontinuity = OrderedSegmentDiscontinuity::StartsNewTimeline;
+    let mut reader = reader([
+        segment(10, OrderedSegmentKind::Initialization, b"init"),
+        discontinuous,
+    ]);
+    let mut destination = [0_u8; 32];
+    assert_eq!(reader.read(&mut destination).expect("init"), b"init".len());
+
+    let error = reader
+        .read(&mut destination)
+        .expect_err("finite Symphonia adapter must reject discontinuity");
+
+    assert_eq!(
+        lifecycle_error(&error),
+        &OrderedSegmentLifecycleError::DiscontinuityRequiresSessionReset { sequence: 20 }
+    );
 }
 
 #[test]

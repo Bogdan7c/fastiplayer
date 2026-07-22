@@ -96,6 +96,7 @@ pub(super) fn segment(sequence: u64, kind: OrderedSegmentKind, bytes: Bytes) -> 
     OrderedSegment {
         sequence: OrderedSegmentSequence::new(sequence),
         kind,
+        discontinuity: demux_api::OrderedSegmentDiscontinuity::Continuous,
         bytes,
     }
 }

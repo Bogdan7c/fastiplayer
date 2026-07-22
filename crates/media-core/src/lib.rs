@@ -27,4 +27,4 @@ pub use time::{
     TimelineRange, TimelineSnapshot, TrackDuration, TrackDurationUnits, TrackTimestamp,
     TrackTimestampUnits,
 };
-pub use track::{TrackId, TrackInfo, TrackKind, VideoTrackMetadata};
+pub use track::{TrackId, TrackInfo, TrackKind, VideoPacketFraming, VideoTrackMetadata};

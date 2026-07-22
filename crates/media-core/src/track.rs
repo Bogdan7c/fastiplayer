@@ -57,6 +57,21 @@ pub enum TrackKind {
     Audio,
 }
 
+/// Доказанный способ framing-а compressed video packets на demux boundary.
+///
+/// Тип намеренно не знает ни MPEG-TS, ни MP4: он описывает bytes, которые
+/// получит decoder, и источник доказательства для length-prefixed framing-а.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum VideoPacketFraming {
+    /// Demuxer не смог доказать framing до чтения packets; legacy probe решает позже.
+    #[default]
+    Unspecified,
+    /// Каждый packet содержит Annex-B start-code NAL units.
+    AnnexB,
+    /// NAL units имеют length prefix, размер которого задаёт codec configuration record.
+    LengthPrefixedFromCodecConfiguration,
+}
+
 /// Информация о media-треке, которую demuxer отдаёт до чтения packets.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackInfo {
@@ -91,6 +106,9 @@ pub struct TrackInfo {
 /// Container metadata видеотрека без backend-specific ресурсов.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VideoTrackMetadata {
+    /// Framing compressed elementary packets на выходе demuxer-а.
+    pub packet_framing: VideoPacketFraming,
+
     /// Coded width из container track header.
     pub coded_width: Option<u32>,
 
@@ -118,6 +136,7 @@ impl VideoTrackMetadata {
     #[must_use]
     pub const fn empty() -> Self {
         Self {
+            packet_framing: VideoPacketFraming::Unspecified,
             coded_width: None,
             coded_height: None,
             profile: None,
@@ -137,7 +156,8 @@ impl VideoTrackMetadata {
             || self.bit_depth.is_some()
             || self.chroma.is_some()
             || self.color.is_some()
-            || self.orientation != VideoDisplayOrientation::Identity;
+            || self.orientation != VideoDisplayOrientation::Identity
+            || self.packet_framing != VideoPacketFraming::Unspecified;
 
         has_metadata.then_some(self)
     }

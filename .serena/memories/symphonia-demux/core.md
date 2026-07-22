@@ -1,3 +1,9 @@
+## S29 adjacent neutral-boundary migration (2026-07-22)
+
+- MPEG-TS не добавлен в Symphonia: отдельный first-party owner — `mpeg-ts-demux`. App local composition регистрирует обе factories через `demux-api`.
+- Symphonia track mapping помечает H.264/H.265 tracks с непустым avcC/hvcC как `VideoPacketFraming::LengthPrefixedFromCodecConfiguration`; legacy tracks без доказательства остаются `Unspecified`.
+- Finite ordered adapter явно отвергает `OrderedSegmentDiscontinuity::StartsNewTimeline` как `DiscontinuityRequiresSessionReset`; silent ignore запрещён. MPEG-TS adapter обрабатывает marker самостоятельно. Полный TS handoff: `mem:mpeg-ts-demux/core`.
+
 # Symphonia Demux Core
 
 ## S28C current audio-container proof (2026-07-22)

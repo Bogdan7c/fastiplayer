@@ -59,6 +59,7 @@ mod staged_media_install;
 mod staged_video_preflight;
 mod tick;
 mod timeline_seek;
+mod video_packet_framing;
 mod video_requirement_error;
 
 #[cfg(test)]

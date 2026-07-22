@@ -3,22 +3,19 @@ use capability_core::{
 };
 use codec_core::{
     BitDepth, ChromaSubsampling, VideoCodec, VideoDecodeRequirement, VideoMetadataSource,
-    parse_avc_decoder_configuration_record, parse_hevc_decoder_configuration_record,
     resolve_video_metadata,
     unsupported_requirement_can_be_refined_by_packet_probe as codec_requirement_can_be_refined_by_packet_probe,
     video_requirement_needs_packet_refinement,
 };
 use media_core::{TrackInfo, TrackKind};
 use tracing::info;
-use video_core::{
-    VideoStreamConfigRejection, VideoStreamConfigResult, VideoStreamDecodeConfig,
-    VideoStreamPacketization,
-};
+use video_core::{VideoStreamConfigRejection, VideoStreamConfigResult, VideoStreamDecodeConfig};
 use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
 use crate::event::VideoBackendSelectionRequest;
 use crate::{PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, SeekRequest, TrackId};
 
+use super::video_packet_framing::{h264_packetization_from_track, h265_packetization_from_track};
 use super::{PendingVideoBackendReselection, PlayerSession};
 
 /// Принятый video stream после capability validation.
@@ -625,62 +622,6 @@ pub(super) fn fallback_frame_contract_for_unprobed_requirement(
     } else {
         VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::ComposedLayers)
     }
-}
-
-/// Достаёт H.264 packetization из codec-private, если adapter уже подтвердил `avcC`.
-fn h264_packetization_from_track(
-    track: &TrackInfo,
-) -> PlayerResult<Option<VideoStreamPacketization>> {
-    let Some(codec_private) = track
-        .codec_private
-        .as_ref()
-        .filter(|bytes| !bytes.is_empty())
-    else {
-        return Ok(None);
-    };
-
-    let record = parse_avc_decoder_configuration_record(codec_private).map_err(|error| {
-        PlayerError::new(
-            PlayerErrorKind::UnsupportedVideoCodec,
-            format!(
-                "H.264 track `{}` codec_private не является поддержанным avcC: {error}",
-                track.id
-            ),
-        )
-    })?;
-
-    Ok(Some(VideoStreamPacketization::H264(record.packetization())))
-}
-
-/// Достаёт H.265 packetization из `hvcC`, если container уже доказал framing.
-fn h265_packetization_from_track(
-    track: &TrackInfo,
-) -> PlayerResult<Option<VideoStreamPacketization>> {
-    let Some(codec_private) = track
-        .codec_private
-        .as_ref()
-        .filter(|bytes| !bytes.is_empty())
-    else {
-        return Err(PlayerError::new(
-            PlayerErrorKind::UnsupportedVideoCodec,
-            format!(
-                "H.265 track `{}` не содержит hvcC codec_private; packetization нельзя доказать до decoder config",
-                track.id
-            ),
-        ));
-    };
-
-    let record = parse_hevc_decoder_configuration_record(codec_private).map_err(|error| {
-        PlayerError::new(
-            PlayerErrorKind::UnsupportedVideoCodec,
-            format!(
-                "H.265 track `{}` codec_private не является поддержанным hvcC: {error}",
-                track.id
-            ),
-        )
-    })?;
-
-    Ok(Some(VideoStreamPacketization::H265(record.packetization())))
 }
 
 /// Переводит decoder configure outcome в player policy без мутации selection state.

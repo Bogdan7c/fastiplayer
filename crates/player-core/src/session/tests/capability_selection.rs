@@ -308,6 +308,81 @@ fn h265_stream_config_rejects_missing_hvcc_with_typed_codec_error() {
 }
 
 #[test]
+fn h264_annex_b_evidence_configures_decoder_without_avcc() {
+    let mut session = PlayerSession::new();
+    let fake_decoder = SharedFakeVideoDecoderThread::new();
+    let video_track_id = TrackId::new(21);
+    let mut track = h264_track_with_avcc(video_track_id.get());
+    track.codec_private = None;
+    track.video.as_mut().expect("video metadata").packet_framing =
+        media_core::VideoPacketFraming::AnnexB;
+    install_tracks_for_capability_selection(&mut session, vec![track]);
+    session
+        .pipeline
+        .set_video_decoder_thread(fake_decoder.clone());
+
+    session
+        .dispatch_command(PlayerCommand::SelectVideoTrack(video_track_id))
+        .expect("explicit H.264 Annex-B framing");
+
+    assert!(matches!(
+        fake_decoder
+            .stream_config()
+            .and_then(|config| config.packetization),
+        Some(video_core::VideoStreamPacketization::H264(
+            codec_core::H264Packetization::AnnexB
+        ))
+    ));
+}
+
+#[test]
+fn h265_annex_b_evidence_configures_decoder_without_hvcc() {
+    let mut session = PlayerSession::new();
+    let fake_decoder = SharedFakeVideoDecoderThread::new();
+    let video_track_id = TrackId::new(22);
+    let mut track = h265_track_with_hvcc(video_track_id.get());
+    track.codec_private = None;
+    track.video.as_mut().expect("video metadata").packet_framing =
+        media_core::VideoPacketFraming::AnnexB;
+    install_tracks_for_capability_selection(&mut session, vec![track]);
+    session
+        .pipeline
+        .set_video_decoder_thread(fake_decoder.clone());
+
+    session
+        .dispatch_command(PlayerCommand::SelectVideoTrack(video_track_id))
+        .expect("explicit H.265 Annex-B framing");
+
+    assert!(matches!(
+        fake_decoder
+            .stream_config()
+            .and_then(|config| config.packetization),
+        Some(video_core::VideoStreamPacketization::H265(
+            codec_core::H265Packetization::AnnexB
+        ))
+    ));
+}
+
+#[test]
+fn explicit_annex_b_conflicting_with_codec_private_is_typed_rejection() {
+    let mut session = PlayerSession::new();
+    let fake_decoder = SharedFakeVideoDecoderThread::new();
+    let video_track_id = TrackId::new(23);
+    let mut track = h265_track_with_hvcc(video_track_id.get());
+    track.video.as_mut().expect("video metadata").packet_framing =
+        media_core::VideoPacketFraming::AnnexB;
+    install_tracks_for_capability_selection(&mut session, vec![track]);
+    session.pipeline.set_video_decoder_thread(fake_decoder);
+
+    let error = session
+        .dispatch_command(PlayerCommand::SelectVideoTrack(video_track_id))
+        .expect_err("conflicting authoritative framing evidence");
+
+    assert_eq!(error.kind, PlayerErrorKind::UnsupportedVideoCodec);
+    assert!(error.message.contains("одновременно объявляет Annex-B"));
+}
+
+#[test]
 fn fake_backend_accepts_vp9_h264_vp9_switch_without_restart() {
     let mut session = PlayerSession::new();
     let fake_decoder = SharedFakeVideoDecoderThread::new();
@@ -664,6 +739,7 @@ fn h264_track_with_avcc(track_id: u32) -> TrackInfo {
     metadata.chroma = Some(ChromaSubsampling::Yuv420);
     metadata.coded_width = Some(1280);
     metadata.coded_height = Some(720);
+    metadata.packet_framing = media_core::VideoPacketFraming::LengthPrefixedFromCodecConfiguration;
     track.codec_id = "V_MPEG4/ISO/AVC".to_string();
     track.codec_private = Some(h264_avcc_codec_private());
     track.video = Some(metadata);
@@ -690,6 +766,7 @@ fn h265_track_with_hvcc(track_id: u32) -> TrackInfo {
     metadata.chroma = Some(ChromaSubsampling::Yuv420);
     metadata.coded_width = Some(3840);
     metadata.coded_height = Some(2160);
+    metadata.packet_framing = media_core::VideoPacketFraming::LengthPrefixedFromCodecConfiguration;
     track.codec_id = "V_MPEGH/ISO/HEVC".to_string();
     track.codec_private = Some(h265_hvcc_codec_private());
     track.video = Some(metadata);

@@ -32,6 +32,7 @@ pub(super) fn prepare_source(
                 &path,
                 &demux_config,
                 expected_fingerprint,
+                cancellation.source_token(),
                 || cancellation.is_cancelled(),
             )
             .map(super::local::PreparedLocalOpenResult::into_prepared_open)

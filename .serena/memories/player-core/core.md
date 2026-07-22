@@ -1,3 +1,7 @@
+## S29 explicit video packet framing (2026-07-22)
+
+- Session framing resolution вынесено в `session/video_packet_framing.rs` и потребляет neutral `media_core::VideoPacketFraming`, не container identity. Explicit Annex-B H.264/H.265 работает без avcC/hvcC; length-prefixed rows по-прежнему парсят codec configuration record; `Unspecified` сохраняет legacy H.264 packet refinement и прежний typed H.265 rejection без hvcC. Противоречивые Annex-B + length-prefixed codec configuration evidence fail-closed.
+
 # Player Core
 
 - `player-core` root modules from `src/lib.rs`: `audio_boundary`, `command`, `decoder_boundary`, `diagnostics`, `error`, `event`, `media_opening`, `pipeline`, `render_lease_bridge`, `seek_state`, `session`, `snapshot`, `state`, `worker`, `worker_scheduler`. Tick orchestration lives under the session boundary at `src/session/tick/`; `mod.rs` owns the main `PlayerSession::tick` loop and position update, `types.rs` owns public tick DTO/config/result types, `tests.rs` owns tick module tests, and child modules own demux admission, presentation scheduling, decoder I/O, and worker wakeup planning. Root `lib.rs` re-exports the public tick types so external API paths stay unchanged.

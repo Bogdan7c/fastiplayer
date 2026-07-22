@@ -1,3 +1,8 @@
+## S29 ordered discontinuity + MPEG-TS factory (2026-07-22)
+
+- `OrderedSegment` теперь несёт typed `OrderedSegmentDiscontinuity::{Continuous, StartsNewTimeline}`. MPEG-TS использует marker для decoder/timestamp reset и публикует `TracksChanged` перед зависимым packet; Symphonia finite adapter fail-closed возвращает `DiscontinuityRequiresSessionReset`, а не молча игнорирует marker.
+- Новый `mpeg-ts-demux::MpegTsDemuxFactory` регистрирует exact container `mpeg-ts`, extension `ts`, MIME `video/mp2t` и честные ByteSource/ByteStream/OrderedSegments capabilities. 192-byte M2TS не рекламируется. Подробности: `mem:mpeg-ts-demux/core`.
+
 # demux-api — S21 neutral demux boundary
 
 ## Роль

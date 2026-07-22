@@ -1132,6 +1132,7 @@ mod tests {
             sample_rate: None,
             channels: None,
             video: Some(VideoTrackMetadata {
+                packet_framing: media_core::VideoPacketFraming::Unspecified,
                 coded_width: Some(1280),
                 coded_height: Some(720),
                 profile: Some(VideoProfile::H264(H264Profile::High)),

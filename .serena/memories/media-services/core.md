@@ -1,3 +1,8 @@
+## S29 local MPEG-TS composition (2026-07-22)
+
+- Production local-file open/rebuild больше не вызывает Symphonia напрямую: app-owned helper строит `DemuxRegistry` с Symphonia и MPEG-TS factories над одним уже открытым `LocalFileSource`. Content signature authoritative даже для extensionless/conflicting extension; `.ts` — только UI hint.
+- Source cancellation проходит через registry probe/open и bounded TS index scan и сохраняется как typed Cancelled; same-handle fingerprint/final revalidation не изменены. Web/direct-media/HLS/network paths S29 не менял. Container contract: `mem:mpeg-ts-demux/core`.
+
 # Media Services
 
 > **Superseded notice (2026-07-03):** любые упоминания hover preview, hover predecode, hover budget/reservation, timeline-hover prepare или hover overlay ниже являются историческими и не описывают активный контракт. Актуальные owners и запреты: `mem:core` и `mem:frame-server/core`. Остальная non-hover информация этой memory остаётся действующей.

@@ -7,7 +7,7 @@ use codec_core::{
     VideoDisplayOrientation, VideoProfile, Vp9Profile,
     av1_decode_requirement_from_decoder_configuration_record,
 };
-use media_core::{TrackId, TrackInfo, TrackKind, VideoTrackMetadata};
+use media_core::{TrackId, TrackInfo, TrackKind, VideoPacketFraming, VideoTrackMetadata};
 use symphonia::core::codecs::audio::well_known as audio_codec;
 use symphonia::core::codecs::audio::{AudioCodecId, CODEC_ID_NULL_AUDIO};
 use symphonia::core::codecs::subtitle::well_known as subtitle_codec;
@@ -350,7 +350,7 @@ fn build_track_info(
         .codec_params
         .as_ref()
         .and_then(codec_private_from_codec_params);
-    let video = (kind == TrackKind::Video)
+    let mut video = (kind == TrackKind::Video)
         .then(|| {
             merge_video_metadata(
                 video_metadata_from_symphonia_track(track),
@@ -360,6 +360,18 @@ fn build_track_info(
             )
         })
         .flatten();
+    if codec_private
+        .as_ref()
+        .is_some_and(|bytes| !bytes.is_empty())
+        && matches!(
+            track_entry.codec_id.as_str(),
+            "V_MPEG4/ISO/AVC" | "V_MPEGH/ISO/HEVC"
+        )
+    {
+        video
+            .get_or_insert_with(VideoTrackMetadata::empty)
+            .packet_framing = VideoPacketFraming::LengthPrefixedFromCodecConfiguration;
+    }
 
     Some(TrackInfo {
         id: TrackId::new(track.id),
@@ -459,6 +471,7 @@ fn video_metadata_from_symphonia_track(track: &Track) -> Option<VideoTrackMetada
     let av1_requirement = av1_requirement_from_symphonia_video_params(video_params);
 
     VideoTrackMetadata {
+        packet_framing: VideoPacketFraming::Unspecified,
         coded_width: video_params.width.map(u32::from),
         coded_height: video_params.height.map(u32::from),
         profile: video_params
@@ -895,7 +908,7 @@ mod tests {
         HdrMetadata, MatrixCoefficients, TransferFunction, VideoColorMetadata,
         VideoDisplayOrientation, VideoProfile, Vp9Profile,
     };
-    use media_core::{TrackId, TrackKind, VideoTrackMetadata};
+    use media_core::{TrackId, TrackKind, VideoPacketFraming, VideoTrackMetadata};
     use symphonia::core::codecs::CodecParameters;
     use symphonia::core::codecs::audio::AudioCodecParameters;
     use symphonia::core::codecs::audio::well_known as audio_codec;
@@ -1029,6 +1042,7 @@ mod tests {
 
     fn video_track_metadata(width: u32, height: Option<u32>) -> VideoTrackMetadata {
         VideoTrackMetadata {
+            packet_framing: VideoPacketFraming::Unspecified,
             coded_width: Some(width),
             coded_height: height,
             profile: None,
@@ -1048,6 +1062,7 @@ mod tests {
 
     fn hdr_video_track_metadata() -> VideoTrackMetadata {
         VideoTrackMetadata {
+            packet_framing: VideoPacketFraming::Unspecified,
             coded_width: None,
             coded_height: None,
             profile: None,

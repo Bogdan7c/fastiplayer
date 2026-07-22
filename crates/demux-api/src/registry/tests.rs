@@ -19,8 +19,8 @@ use crate::{
     DemuxContainerId, DemuxFactoryId, DemuxFixtureId, DemuxHintRelationship, DemuxHints,
     DemuxInput, DemuxInputCapabilities, DemuxInputCapability, DemuxProbeConfidence,
     DemuxProbeDecision, DemuxProbeMatch, DemuxProbeRejection, DemuxProbeRequest, DemuxSniffBudget,
-    DemuxSourceExtension, OrderedSegment, OrderedSegmentKind, OrderedSegmentReadError,
-    OrderedSegmentSequence, OrderedSegmentSource,
+    DemuxSourceExtension, OrderedSegment, OrderedSegmentDiscontinuity, OrderedSegmentKind,
+    OrderedSegmentReadError, OrderedSegmentSequence, OrderedSegmentSource,
 };
 
 /// Fake runtime demuxer нужен только для проверки open composition.
@@ -537,11 +537,13 @@ fn ordered_segment_input_replays_consumed_segments() {
         OrderedSegment {
             sequence: OrderedSegmentSequence::new(0),
             kind: OrderedSegmentKind::Initialization,
+            discontinuity: OrderedSegmentDiscontinuity::Continuous,
             bytes: Bytes::from_static(b"TEST"),
         },
         OrderedSegment {
             sequence: OrderedSegmentSequence::new(1),
             kind: OrderedSegmentKind::Media,
+            discontinuity: OrderedSegmentDiscontinuity::Continuous,
             bytes: Bytes::from_static(b"media"),
         },
     ]);

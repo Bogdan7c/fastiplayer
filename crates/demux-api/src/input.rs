@@ -206,6 +206,16 @@ pub enum OrderedSegmentKind {
     Media,
 }
 
+/// Явный lifecycle-маркер на границе transport -> demux.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OrderedSegmentDiscontinuity {
+    /// Segment продолжает текущую decoder/timestamp generation.
+    #[default]
+    Continuous,
+    /// Перед segment-ом начинается новая decoder/timestamp generation.
+    StartsNewTimeline,
+}
+
 /// Один immutable segment с явной ролью и порядком.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderedSegment {
@@ -213,6 +223,8 @@ pub struct OrderedSegment {
     pub sequence: OrderedSegmentSequence,
     /// Роль bytes в segmented container stream.
     pub kind: OrderedSegmentKind,
+    /// Явно сообщает demuxer-у о смене timeline/config generation.
+    pub discontinuity: OrderedSegmentDiscontinuity,
     /// Exact segment bytes без container parsing на transport boundary.
     pub bytes: Bytes,
 }

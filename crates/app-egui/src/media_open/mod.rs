@@ -17,7 +17,7 @@ mod executor;
     dead_code,
     reason = "Session 10C precedes production callsite migration in 10D"
 )]
-mod local;
+pub(crate) mod local;
 #[allow(
     dead_code,
     reason = "Session 10C precedes production callsite migration in 10D"

@@ -22,6 +22,7 @@
     "frame-server-core",
     "media-core",
     "media-prefetch",
+    "mpeg-ts-demux",
     "natural-sort-key",
     "player-core",
     "playlist-core",

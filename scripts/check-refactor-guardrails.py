@@ -63,6 +63,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "media-prefetch",
         "media-core",
         "natural-sort-key",
+        "mpeg-ts-demux",
         "player-core",
         "playlist-core",
         "playlist-io",
@@ -194,6 +195,20 @@ DEMUX_API_ALLOWED_DEPENDENCIES = frozenset(
         "source-core",
         "thiserror",
         "tracing",
+    }
+)
+
+# First-party MPEG-TS parser зависит только от neutral byte/demux/media/codec contracts.
+# HLS, HTTP, player, UI, Symphonia и FFmpeg не должны протекать в reusable container owner.
+MPEG_TS_DEMUX_ALLOWED_DEPENDENCIES = frozenset(
+    {
+        "anyhow",
+        "bytes",
+        "codec-core",
+        "demux-api",
+        "media-core",
+        "source-core",
+        "thiserror",
     }
 )
 
@@ -1085,6 +1100,14 @@ def find_dependency_violations(
             frozenset({"demux-api"}),
             DEMUX_API_ALLOWED_DEPENDENCIES,
             "demux-api остаётся neutral registry/composition boundary без concrete backend/player/service/UI deps",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"mpeg-ts-demux"}),
+            MPEG_TS_DEMUX_ALLOWED_DEPENDENCIES,
+            "mpeg-ts-demux остаётся reusable container owner без HLS/network/player/UI/FFmpeg deps",
         )
     )
     violations.extend(

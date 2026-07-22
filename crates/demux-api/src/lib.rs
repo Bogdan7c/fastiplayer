@@ -25,8 +25,8 @@ pub use identity::{
 };
 pub use input::{
     DemuxByteSource, DemuxByteStream, DemuxInput, DemuxInputCapabilities, DemuxInputCapability,
-    OrderedSegment, OrderedSegmentKind, OrderedSegmentReadError, OrderedSegmentSequence,
-    OrderedSegmentSource,
+    OrderedSegment, OrderedSegmentDiscontinuity, OrderedSegmentKind, OrderedSegmentReadError,
+    OrderedSegmentSequence, OrderedSegmentSource,
 };
 pub use probe::{
     DemuxHintRelationship, DemuxHints, DemuxProbeConfidence, DemuxProbeDecision, DemuxProbeMatch,

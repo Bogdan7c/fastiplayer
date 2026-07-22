@@ -1,3 +1,9 @@
+## S29 MPEG-TS demux + local playback (2026-07-22)
+
+- Новый first-party crate `mpeg-ts-demux` владеет reusable 188-byte MPEG-TS path: bounded sync/resync, PAT/PMT и fail-closed multi-program selection, continuity/PES, independent PTS/DTS wrap, PCR evidence, H.264/H.265 Annex-B AU assembly across PES, AAC/ADTS и header-proven MP1/2/3, config/keyframe lifecycle, typed discontinuity/`TracksChanged`, streaming/ordered inputs и capped sparse VOD index с bounded on-demand expansion. 192-byte M2TS, private/LATM/AC-3 stream types, HLS и network policy остаются вне S29.
+- Локальные файлы теперь открываются через app-owned `DemuxRegistry` с Symphonia + MPEG-TS factories над тем же `LocalFileSource`; signature сильнее extension, `.ts` добавлен в picker hints, cancellation/fingerprint/revalidation остаются typed и one-handle.
+- Neutral `media_core::VideoPacketFraming` отделяет Annex-B от codec-configuration-derived length-prefixed packets; player-core больше не требует fake hvcC для H.265 TS. Полный handoff: `mem:mpeg-ts-demux/core`.
+
 # Core
 
 ## S28G existing-demux hardening gate (2026-07-22)

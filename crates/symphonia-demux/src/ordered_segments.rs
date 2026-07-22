@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use demux_api::{
-    OrderedSegment, OrderedSegmentKind, OrderedSegmentReadError, OrderedSegmentSource,
+    OrderedSegment, OrderedSegmentDiscontinuity, OrderedSegmentKind, OrderedSegmentReadError,
+    OrderedSegmentSource,
 };
 use media_core::{
     DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, DemuxTrackListUpdate,
@@ -22,6 +23,12 @@ use crate::{DemuxError, SymphoniaDemuxer};
 /// Typed нарушение container-neutral finite ordered lifecycle-а.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OrderedSegmentLifecycleError {
+    /// Этот finite adapter не умеет безопасно пересоздать Symphonia format state.
+    #[error("ordered media discontinuity перед segment {sequence} требует adaptive session reset")]
+    DiscontinuityRequiresSessionReset {
+        /// Первый segment новой timeline generation.
+        sequence: u64,
+    },
     /// Source завершился до обязательного initialization segment-а.
     #[error("ordered media source завершился до initialization segment")]
     MissingInitializationSegment,
@@ -280,6 +287,11 @@ impl OrderedSegmentReaderState {
     /// Валидирует lifecycle без частичной mutation, затем устанавливает current segment.
     fn install_segment(&mut self, segment: OrderedSegment) -> io::Result<()> {
         let sequence = segment.sequence.get();
+        if segment.discontinuity == OrderedSegmentDiscontinuity::StartsNewTimeline {
+            return Err(self.lifecycle_error(
+                OrderedSegmentLifecycleError::DiscontinuityRequiresSessionReset { sequence },
+            ));
+        }
         let next_lifecycle = match (self.lifecycle, segment.kind) {
             (
                 OrderedSegmentLifecycle::AwaitingInitialization,
