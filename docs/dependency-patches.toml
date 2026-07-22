@@ -32,6 +32,19 @@ removal_gate = "Удалять только когда upstream содержит
 
 # Запись связывает MP4 fork с точным опубликованным архивом Symphonia 0.6.0.
 [[patch]]
+path = "crates/symphonia-format-caf-patch"
+package = "symphonia-format-caf"
+version = "0.6.0"
+upstream_repository = "https://github.com/pdeljanov/Symphonia"
+upstream_revision = "crates.io:sha256:cde3ca76633d3400ab57195456c09f8a58d775ff5452329f3f212b6efc8622f5"
+reason = "CAF forward-only scan должен остановиться перед data payload, а declared data truncation не должно превращаться в short packet или clean EOS."
+owned_diff_areas = ["src/chunks.rs", "src/demuxer.rs"]
+dependent_crates = ["symphonia-demux", "audio"]
+focused_automated_tests = ["cargo test --manifest-path crates/symphonia-format-caf-patch/Cargo.toml --locked", "cargo test -p symphonia-demux -p web-media-http -p audio --locked"]
+manual_media_matrix = ["CAF PCM local seek", "CAF PCM progressive HTTP Range", "CAF PCM progressive non-Range playback и typed seek rejection", "CAF malformed/truncated input"]
+removal_gate = "Удалять только после upstream-эквивалента forward-only CAF open/read с сохранением seekable scan и structural truncation semantics, с прохождением direct patch suite и S28C progressive proof."
+
+[[patch]]
 path = "crates/symphonia-format-isomp4-patch"
 package = "symphonia-format-isomp4"
 version = "0.6.0"

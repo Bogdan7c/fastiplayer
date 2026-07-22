@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::Result;
 use media_core::{
     DemuxReadEvent, DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
-    DemuxTrackListUpdate, Demuxer, TimelineNotSeekableReason, TrackId, TrackInfo,
+    DemuxTrackListUpdate, Demuxer, MediaDemuxError, TimelineNotSeekableReason, TrackId, TrackInfo,
 };
 use source_core::{
     ByteSource, CancellationToken, Seekability as SourceSeekability, SourceError, SourceResult,
@@ -606,6 +606,13 @@ impl Demuxer for SymphoniaDemuxer {
     }
 
     fn seek_with_request(&mut self, request: DemuxSeekRequest) -> Result<DemuxSeekResult> {
+        if let DemuxSeekability::NotSeekable { reason } = self.seekability {
+            return Err(MediaDemuxError::SeekUnavailable {
+                reason: format!("source/container boundary помечен как non-seekable: {reason:?}"),
+            }
+            .into());
+        }
+
         let retained_lifecycle_events = self.take_pending_lifecycle_events();
         let was_at_end_of_stream = self.end_of_stream_reached;
 

@@ -55,3 +55,8 @@
 ## S21C consumer (2026-07-21)
 - `web-media-playback-plan` принимает immutable S20 `AudioDecodeCapabilitySnapshot` как часть общего playback capability snapshot и возвращает typed audio-layer rejection; decoder при планировании не создаётся.
 - Детали: `mem:media-services/web-playback-planner-s21c-2026-07-21`.
+
+## S28C audio-container proof consumer (2026-07-22)
+
+- Parameterized planner proof закрепляет exact S20 intersection для current Ogg/Opus, CAF/WAVE/AIFF PCM, native FLAC и отдельных MP1/MP2/MP3 rows. Available exact family проходит до audio-only plan, отсутствующая family даёт typed `AudioUnavailable` до I/O и decoder construction.
+- S20 API и production registry matrix не менялись. Container/transport/packet proof и CAF limitation: `mem:symphonia-demux/audio-containers-s28c-2026-07-22`.

@@ -17,6 +17,8 @@ use crate::{
     plan_playback,
 };
 
+#[path = "tests/audio_containers.rs"]
+mod audio_containers;
 #[path = "tests/support.rs"]
 mod support;
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Проверяет обслуживаемость шести standalone dependency patches."""
+"""Проверяет обслуживаемость семи standalone dependency patches."""
 
 # pathlib даёт типизированные пути без зависимости от текущего каталога.
 from pathlib import Path
@@ -99,9 +99,9 @@ def validate() -> list[str]:
         # Точное совпадение предотвращает незаметный запуск через root workspace.
         if expected_command not in patch["focused_automated_tests"]:
             errors.append(f"{patch_path}: отсутствует direct locked test command")
-    # Ровно шесть записей защищают от удаления replace без обновления policy.
-    if len(inventory.get("patch", [])) != 6:
-        errors.append("docs/dependency-patches.toml: ожидаются ровно шесть patch записей")
+    # Ровно семь записей защищают от удаления replace без обновления policy.
+    if len(inventory.get("patch", [])) != 7:
+        errors.append("docs/dependency-patches.toml: ожидаются ровно семь patch записей")
     # Возвращаем полный набор нарушений вызывающему runner-у.
     return errors
 
@@ -117,7 +117,7 @@ def main() -> int:
     if errors:
         return 1
     # Короткое подтверждение показывает число проверенных forks.
-    print("Dependency patch inventory: проверены 6 standalone patch crates")
+    print("Dependency patch inventory: проверены 7 standalone patch crates")
     # Ноль означает полное соответствие inventory и manifests.
     return 0
 

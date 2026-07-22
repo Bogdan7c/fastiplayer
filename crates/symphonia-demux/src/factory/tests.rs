@@ -15,6 +15,8 @@ use source_core::{CancellationToken, LocalFileSource};
 use super::{ContainerDetection, SymphoniaDemuxFactory, detect_container};
 use crate::{DemuxerOptions, probe_open_local_media_file};
 
+mod audio_containers;
+mod audio_fixtures;
 mod fragmented_isomp4;
 mod matroska;
 mod ordered_segments;

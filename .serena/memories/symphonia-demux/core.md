@@ -1,5 +1,11 @@
 # Symphonia Demux Core
 
+## S28C current audio-container proof (2026-07-22)
+
+- Existing Ogg/Opus, CAF/PCM, WAVE/PCM, AIFF/PCM, native FLAC and distinct MP1/MP2/MP3 rows now have hermetic local + real progressive Range/non-Range proof through S20/S21/S22. Non-Range seek is rejected at the neutral demux boundary without state mutation; chained Ogg remains `TracksChanged`.
+- CAF forward-only support is provided by the exact 0.6.0 local format replacement and requires stream-friendly pre-data configuration ordering. Full matrix, patch contract, limitations and checks: `mem:symphonia-demux/audio-containers-s28c-2026-07-22`.
+
+
 - YouTube/adaptive `DualStreamDemuxer` разделяет seek-инварианты потоков: исходный `DemuxSeekMode::DecodePointBefore` остаётся строгим только для video demuxer-а, который владеет decode-safe keyframe/cue anchor; отдельный audio demuxer получает `DemuxSeekRequest::accurate` на исходную пользовательскую timestamp. Это обязательно для packetized audio вроде Opus: допустимое container landing на несколько миллисекунд после target из-за 20 ms packet granularity не должно проваливать video SeekLanding. Composite `DecodePointBefore` result по-прежнему берётся из video seek, а `PostSeekAudioBootstrap` сохраняет audio-before-long-video-preroll ordering. Focused tests: `decode_point_before_uses_video_anchor_and_audio_accurate_seek` и `decode_point_before_accepts_audio_packet_granularity_after_target` в `dual_stream_demuxer.rs`; реальный YouTube VP9+Opus runtime trace 2026-07-17 подтвердил несколько `Scrubbing -> Playing` commit-ов без ручного Play.
 
 - `symphonia-demux` owns the concrete Symphonia `FormatReader` state and maps container read results into neutral `media_core::DemuxReadEvent` / typed `DemuxError`. Its format-level metadata adapter maps exact Symphonia 0.6 typed `StandardTag::{DiscNumber, TrackNumber, TvSeasonNumber, TvEpisodeNumber}` values into the corresponding `media-core` newtypes and never parses raw tag strings; dual video/audio metadata merge lives in `dual_stream_demuxer/media_metadata.rs` and remains video-primary/audio-fallback.

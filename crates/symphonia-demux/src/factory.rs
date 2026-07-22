@@ -47,6 +47,14 @@ impl SymphoniaDemuxFactory {
                 DemuxFixtureId::new("symphonia/generated-webm-s28b")?,
                 DemuxFixtureId::new("symphonia/generated-matroska-ordered-s28b")?,
                 DemuxFixtureId::new("symphonia/mp4-h264-aac")?,
+                DemuxFixtureId::new("symphonia/s28c-ogg-opus")?,
+                DemuxFixtureId::new("symphonia/s28c-caf-pcm")?,
+                DemuxFixtureId::new("symphonia/s28c-wave-pcm")?,
+                DemuxFixtureId::new("symphonia/s28c-aiff-pcm")?,
+                DemuxFixtureId::new("symphonia/s28c-native-flac")?,
+                DemuxFixtureId::new("symphonia/s28c-mpeg-layer-1")?,
+                DemuxFixtureId::new("symphonia/s28c-mpeg-layer-2")?,
+                DemuxFixtureId::new("symphonia/s28c-mpeg-layer-3")?,
             ],
         );
         Ok(Self {
@@ -323,9 +331,14 @@ fn hint_names_container(hints: &DemuxHints, container_id: &str) -> bool {
             })
 }
 
-/// MPEG audio syncword сохраняет layer/version bits для отсечения случайного `0xff`.
+/// MPEG audio syncword отклоняет reserved version/layer до выбора backend-а.
 fn is_mpeg_audio_sync(bytes: &[u8]) -> bool {
-    bytes.len() >= 2 && bytes[0] == 0xff && bytes[1] & 0xe0 == 0xe0
+    if bytes.len() < 2 || bytes[0] != 0xff || bytes[1] & 0xe0 != 0xe0 {
+        return false;
+    }
+    let version_bits = (bytes[1] >> 3) & 0x03;
+    let layer_bits = (bytes[1] >> 1) & 0x03;
+    version_bits != 0x01 && layer_bits != 0
 }
 
 /// Возвращает extension, который включает existing container-specific pre-scan path.

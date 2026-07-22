@@ -1,5 +1,11 @@
 # Core
 
+## S28C current audio-container proof (2026-07-22)
+
+- Existing Ogg/Opus, CAF/PCM, WAVE/PCM, AIFF/PCM, native FLAC and distinct MP1/MP2/MP3 paths are now proven hermetically across local, progressive Range/non-Range, S20/S21C capability intersection, codec-private/packet timing, duration/seek, malformed/cancel/sniff and Ogg reset lifecycle.
+- User-selected full progressive CAF support is implemented by an inventoried exact `symphonia-format-caf 0.6.0` replacement. Stable boundaries and limitation: `mem:symphonia-demux/audio-containers-s28c-2026-07-22`; patch maintenance: `mem:dependency-patches/core`.
+
+
 ## S24 URL sidebar stream model (2026-07-22)
 
 - Existing URL sidebar теперь показывает только active web-media configuration: safe source label, S21C-playable resolutions/formats, active/pending projection, global-vs-item preference, group-part scope, VOD/seek/buffering/refresh и bounded safe failure. Local source не активирует web model; direct-media не получает fake choices.
