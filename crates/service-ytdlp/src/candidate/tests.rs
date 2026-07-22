@@ -1,9 +1,11 @@
 use rustiplayer_config::YtDlpConfig;
 use serde_json::{Value, json};
+use source_core::CancellationToken;
 use web_media_core::{
     DynamicRange, ExtractionGeneration, ProfileExclusionReason, SourceIdentity,
     StaticCompatibilityRejection, StreamLayout, StreamLayoutKind,
 };
+use web_media_transport_api::{SourceGeneration, TransportProviderId};
 
 use super::model::{
     YtDlpCandidateComponentRole, YtDlpCandidateEntry, YtDlpCandidateMatchKind,
@@ -510,5 +512,130 @@ fn video_dynamic_range(candidate: &YtDlpNormalizedCandidate) -> DynamicRange {
             video.video().dynamic_range()
         }
         StreamLayout::AudioOnly(_) => panic!("audio-only candidate не имеет dynamic range"),
+    }
+}
+
+/// S23 mapping сохраняет exact candidate identity и строит один neutral public request.
+#[test]
+fn planning_and_transport_share_the_same_exact_candidate() {
+    let snapshot = snapshot(
+        json!({
+            "formats": [progressive_format(
+                "muxed-webm",
+                "webm",
+                "webm",
+                "vp9",
+                "opus"
+            )]
+        }),
+        7,
+    );
+    let candidate = accepted_inventory(&snapshot, 0);
+    let planning = snapshot
+        .planning_snapshot()
+        .expect("public progressive candidate должен планироваться");
+    assert_eq!(planning.candidates().len(), 1);
+    assert_eq!(
+        planning.candidates()[0].descriptor().identity(),
+        candidate.descriptor().identity()
+    );
+
+    let provider = TransportProviderId::new("progressive-http").expect("provider ID");
+    let context = super::YtDlpTransportRequestContext::new(
+        provider,
+        SourceGeneration::new(1),
+        CancellationToken::new(),
+    );
+    let components = candidate
+        .transport_components(&context)
+        .expect("public component должен стать neutral request");
+    assert_eq!(components.len(), 1);
+    assert_eq!(
+        components[0].role(),
+        web_media_transport_api::MediaComponentRole::Muxed
+    );
+    assert_eq!(
+        components[0].container(),
+        web_media_core::ContainerFamily::WebM
+    );
+}
+
+/// Queue metadata и exact candidate должны происходить из одного extraction snapshot-а.
+#[test]
+fn candidate_snapshot_keeps_playlist_metadata_with_its_generation() {
+    let snapshot = snapshot(
+        json!({
+            "title": "  Название из extractor-а  ",
+            "duration": 42.25,
+            "formats": [progressive_format(
+                "metadata-webm",
+                "webm",
+                "webm",
+                "vp9",
+                "opus"
+            )]
+        }),
+        12,
+    );
+
+    assert_eq!(
+        snapshot.playlist_metadata().title(),
+        Some("Название из extractor-а")
+    );
+    assert_eq!(
+        snapshot.playlist_metadata().duration(),
+        Some(std::time::Duration::from_millis(42_250))
+    );
+    assert_eq!(snapshot.generation(), ExtractionGeneration::new(12));
+}
+
+/// S26-owned auth material не теряется и до S26 даёт recoverable pre-barrier rejection.
+#[test]
+fn transport_rejects_authorized_material_instead_of_dropping_headers() {
+    let mut protected = progressive_format("protected", "webm", "webm", "vp9", "opus");
+    protected["http_headers"] = json!({"Authorization": "Bearer secret"});
+    let snapshot = snapshot(json!({"formats": [protected]}), 1);
+    let candidate = accepted_inventory(&snapshot, 0);
+    let context = super::YtDlpTransportRequestContext::new(
+        TransportProviderId::new("progressive-http").expect("provider ID"),
+        SourceGeneration::new(1),
+        CancellationToken::new(),
+    );
+
+    let error = candidate
+        .transport_components(&context)
+        .expect_err("S26 authorization mapping ещё не должна выполняться молча");
+    assert!(matches!(
+        error,
+        super::YtDlpTransportRequestError::RequestMaterial(
+            YtDlpRequestMaterialViolation::AuthorizationMappingPending
+        )
+    ));
+    assert!(!format!("{error:?} {error}").contains("secret"));
+}
+
+/// S23 запрещает вернуть второй service-owned WebM/HTTP/demux playback stack.
+#[test]
+fn public_surface_and_manifest_have_no_legacy_webm_opener() {
+    let public_surface = include_str!("../lib.rs");
+    let service_manifest = include_str!("../../Cargo.toml");
+    let forbidden_public_symbols = [
+        concat!("open_streaming_", "media_from"),
+        concat!("open_seekable_", "vod_from"),
+        concat!("YtDlpStreaming", "Media"),
+        concat!("YtDlpSelectedStream", "Identity"),
+    ];
+
+    for forbidden_symbol in forbidden_public_symbols {
+        assert!(
+            !public_surface.contains(forbidden_symbol),
+            "legacy playback symbol снова появился в public surface"
+        );
+    }
+    for forbidden_dependency in ["reqwest", "symphonia-demux", "web-media-http"] {
+        assert!(
+            !service_manifest.contains(forbidden_dependency),
+            "service-ytdlp снова владеет transport/demux dependency"
+        );
     }
 }

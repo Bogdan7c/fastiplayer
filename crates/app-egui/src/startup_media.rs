@@ -7,13 +7,11 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use capability_core::{SelectedVideoStream, SystemCapabilities};
+use capability_core::SystemCapabilities;
 use codec_core::VideoCodec as RuntimeVideoCodec;
 use rustiplayer_config::{
-    AppConfig, NetworkConfig, PlayerDemuxConfig, VideoCodec as ConfigVideoCodec, YtDlpConfig,
-    YtDlpHdrSelection,
+    AppConfig, NetworkConfig, PlayerDemuxConfig, VideoCodec as ConfigVideoCodec,
 };
-use service_ytdlp::YtDlpStreamCandidates;
 use tracing::{debug, info, warn};
 
 #[cfg(test)]
@@ -26,7 +24,6 @@ use crate::state::AppState;
 use crate::url_service_adapter::{
     StartupUrlClassification, StartupUrlLocator, classify_startup_url,
 };
-use crate::web_media_quality::preferred_height_policy;
 
 mod orchestration;
 mod pending_install;
@@ -52,13 +49,13 @@ pub(crate) enum InitialMedia {
     Url(StartupUrlLocator),
 }
 
-/// Подготовленный YtDlp playback source и compact identity выбранной stream-пары.
+/// Подготовленный YtDlp playback source и exact identity выбранного candidate-а.
 pub(crate) struct PreparedYtDlpStartupMedia {
-    /// Уже открытый demuxer для текущего playback open.
-    pub(crate) streaming_media: service_ytdlp::YtDlpStreamingMedia,
+    /// Уже открытый neutral S22 demuxer для текущего playback open.
+    pub(crate) demuxer: Box<dyn media_core::Demuxer + Send>,
 
-    /// Минимальная identity, по которой повторное открытие может восстановить тот же выбор.
-    pub(crate) selected_stream_identity: service_ytdlp::YtDlpSelectedStreamIdentity,
+    /// Exact+semantic token, по которому restore выполняет fresh extraction/rematch.
+    pub(crate) candidate_selection: service_ytdlp::YtDlpCandidateSelection,
 }
 
 /// Результат фоновой подготовки CLI YtDlp URL.
@@ -87,6 +84,9 @@ struct YtDlpStartupJob {
 
     /// Cooperative cancellation не даёт позднему результату apply authority.
     cancellation_requested: Arc<AtomicBool>,
+
+    /// Тот же cancellation state прерывает S22 transport/demux blocking work.
+    source_cancellation: source_core::CancellationToken,
 }
 
 impl YtDlpStartupJob {
@@ -95,16 +95,15 @@ impl YtDlpStartupJob {
         source_locator: service_ytdlp::YtDlpMediaLocator,
         app_config: AppConfig,
         system_capabilities: SystemCapabilities,
+        audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
         wake_port: AppWakePort,
     ) -> std::result::Result<Self, String> {
         let (result_publisher, result_receiver) = owner_mailbox(wake_port);
         let thread_locator = source_locator.clone();
-        let network_config = app_config.network.clone();
-        let yt_dlp_config = app_config.yt_dlp.clone();
-        let demux_config = app_config.player.demux;
-        let preferred_video_codec_order = app_config.player.preferred_video_codec_order;
         let cancellation_requested = Arc::new(AtomicBool::new(false));
         let worker_cancellation_requested = Arc::clone(&cancellation_requested);
+        let source_cancellation = source_core::CancellationToken::new();
+        let worker_source_cancellation = source_cancellation.clone();
         let join_handle = thread::Builder::new()
             .name("yt_dlp-startup-resolver".to_string())
             .spawn(move || {
@@ -113,11 +112,11 @@ impl YtDlpStartupJob {
                 } else {
                     resolve_yt_dlp_startup_media(
                         &thread_locator,
-                        &network_config,
-                        &yt_dlp_config,
-                        &demux_config,
-                        &preferred_video_codec_order,
+                        &app_config,
                         &system_capabilities,
+                        audio_capabilities,
+                        worker_source_cancellation,
+                        || worker_cancellation_requested.load(Ordering::Acquire),
                     )
                     .map_err(|error| format!("{error:#}"))
                 };
@@ -147,6 +146,7 @@ impl YtDlpStartupJob {
             join_handle: Some(join_handle),
             pending_result: None,
             cancellation_requested,
+            source_cancellation,
         })
     }
 
@@ -553,6 +553,7 @@ impl StartupMediaController {
             source_locator,
             app_config.clone(),
             system_capabilities.clone(),
+            app_state.audio_decode_capability_snapshot(),
             self.wake_port.clone(),
         ) {
             Ok(job) => {
@@ -606,47 +607,29 @@ impl StartupMediaController {
 /// Выполняет production chain: service candidates -> capability selection -> demux open.
 pub(crate) fn resolve_yt_dlp_startup_media(
     source_locator: &service_ytdlp::YtDlpMediaLocator,
-    network_config: &NetworkConfig,
-    yt_dlp_config: &YtDlpConfig,
-    demux_config: &PlayerDemuxConfig,
-    preferred_video_codec_order: &[ConfigVideoCodec],
+    app_config: &AppConfig,
     system_capabilities: &SystemCapabilities,
+    audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
+    cancellation: source_core::CancellationToken,
+    is_cancelled: impl Fn() -> bool,
 ) -> Result<PreparedYtDlpStartupMedia> {
-    let stream_candidates =
-        service_ytdlp::resolve_yt_dlp_stream_candidates_with_config(source_locator, yt_dlp_config)
-            .context("Не удалось получить YtDlp stream candidates")?;
-    let selected_stream = select_yt_dlp_startup_candidate_with_codec_order(
-        &stream_candidates,
-        preferred_video_codec_order,
-        yt_dlp_config.hdr_selection,
-        preferred_height_policy(yt_dlp_config.preferred_video_height),
-        system_capabilities,
-    )
-    .context("Не удалось выбрать YtDlp stream по codec policy и system capabilities")?;
-
-    let selected_stream_identity = service_ytdlp::YtDlpSelectedStreamIdentity::from_candidates(
-        &stream_candidates,
-        &selected_stream.stream_id,
-    )
-    .context("Не удалось сохранить выбранную YtDlp stream identity")?;
-    let streaming_media = service_ytdlp::open_streaming_media_from_candidates_with_demux_config(
+    let prepared = crate::web_media_open::prepare_yt_dlp_web_media(
         source_locator,
-        &stream_candidates,
-        &selected_stream.stream_id,
-        network_config,
-        yt_dlp_config,
-        demux_config,
+        &app_config.network,
+        &app_config.yt_dlp,
+        &app_config.player.demux,
+        &app_config.player.preferred_video_codec_order,
+        system_capabilities,
+        audio_capabilities,
+        crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable,
+        cancellation,
+        is_cancelled,
     )
-    .with_context(|| {
-        format!(
-            "Не удалось открыть выбранный YtDlp stream {}",
-            selected_stream.stream_id
-        )
-    })?;
+    .context("Не удалось подготовить YtDlp media через candidate transport path")?;
 
     Ok(PreparedYtDlpStartupMedia {
-        streaming_media,
-        selected_stream_identity,
+        demuxer: prepared.demuxer,
+        candidate_selection: prepared.candidate_selection,
     })
 }
 
@@ -658,45 +641,6 @@ pub(crate) fn resolve_direct_media_startup_media(
 ) -> Result<service_direct_media::DirectMediaOpenResult> {
     service_direct_media::open_direct_media_url(source_locator, network_config, demux_config)
         .context("Не удалось открыть direct media URL")
-}
-
-/// Делегирует service-owned policy выбор до открытия media bytes.
-fn select_yt_dlp_startup_candidate_with_codec_order(
-    stream_candidates: &YtDlpStreamCandidates,
-    preferred_video_codec_order: &[ConfigVideoCodec],
-    hdr_selection: YtDlpHdrSelection,
-    preferred_height: web_media_core::PreferredHeightPolicy,
-    system_capabilities: &SystemCapabilities,
-) -> std::result::Result<SelectedVideoStream, service_ytdlp::YtDlpStreamSelectionError> {
-    let preferred_runtime_codecs = preferred_video_codec_order
-        .iter()
-        .copied()
-        .map(runtime_video_codec)
-        .collect::<Vec<_>>();
-
-    service_ytdlp::select_yt_dlp_stream(
-        stream_candidates,
-        &preferred_runtime_codecs,
-        hdr_selection,
-        preferred_height,
-        system_capabilities,
-    )
-}
-
-/// Test helper с default codec policy и явной HDR policy.
-#[cfg(test)]
-fn select_yt_dlp_startup_candidate(
-    stream_candidates: &YtDlpStreamCandidates,
-    hdr_selection: YtDlpHdrSelection,
-    system_capabilities: &SystemCapabilities,
-) -> std::result::Result<SelectedVideoStream, service_ytdlp::YtDlpStreamSelectionError> {
-    select_yt_dlp_startup_candidate_with_codec_order(
-        stream_candidates,
-        &AppConfig::default().player.preferred_video_codec_order,
-        hdr_selection,
-        preferred_height_policy(None),
-        system_capabilities,
-    )
 }
 
 /// Сопоставляет user-facing codec policy с нейтральным capability vocabulary.
@@ -760,140 +704,8 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
-    use capability_core::{
-        BackendCapabilities, BackendDriverInfo, BackendProbeStatus, SupportedVideoOutput,
-        SystemCapabilities,
-    };
-    use codec_core::{
-        BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, DecodeBackendId,
-        MatrixCoefficients, SupportedVideoDecodeFormat, TransferFunction, VideoCodec,
-        VideoColorMetadata, VideoDecodeRequirement, VideoProfile, Vp9Profile,
-    };
-    use render_core::RenderCapabilities;
-    use service_ytdlp::{
-        YtDlpDirectStreamDescriptor, YtDlpDynamicRange, YtDlpInsufficientVideoMetadata,
-        YtDlpStreamCandidate, YtDlpStreamCandidates, YtDlpStreamKind, YtDlpVideoRequirement,
-    };
-    use source_core::SourceValidators;
-    use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
-
     use super::*;
     use crate::process_shutdown::{ProcessOwnerShutdownOutcome, ShutdownDeadline};
-
-    fn capabilities_with_vp9_profile0() -> SystemCapabilities {
-        let decode_format = SupportedVideoDecodeFormat {
-            codec: VideoCodec::Vp9,
-            profile: VideoProfile::Vp9(Vp9Profile::Profile0),
-            bit_depth: BitDepth::Eight,
-            chroma: ChromaSubsampling::Yuv420,
-            max_width: Some(4096),
-            max_height: Some(2304),
-            max_fps: None,
-            hdr_input: false,
-        };
-        let output = SupportedVideoOutput {
-            backend: DecodeBackendId::vaapi(),
-            decode_format,
-            frame_contract: VideoFrameContract::dma_buf_nv12(DmaBufImageLayout::SeparateLayers),
-        };
-
-        SystemCapabilities {
-            schema_version: capability_core::CURRENT_CAPABILITY_SCHEMA_VERSION,
-            probed_at_unix_seconds: 1,
-            video_backends: vec![BackendCapabilities {
-                backend_id: DecodeBackendId::vaapi(),
-                display_name: "VA-API".to_string(),
-                status: BackendProbeStatus::Available,
-                driver: BackendDriverInfo::default(),
-                raw_supported_outputs: vec![output.clone()],
-                raw_profiles: Vec::new(),
-                raw_entrypoints: Vec::new(),
-                raw_rt_formats: Vec::new(),
-                quirks: Vec::new(),
-                diagnostics: Vec::new(),
-            }],
-            render_backends: vec![RenderCapabilities::wgpu_nv12(Some(4096))],
-            playable_video_outputs: vec![output],
-        }
-    }
-
-    fn yt_dlp_descriptor(kind: YtDlpStreamKind, format_id: &str) -> YtDlpDirectStreamDescriptor {
-        let kind_label = match kind {
-            YtDlpStreamKind::Video => "video",
-            YtDlpStreamKind::Audio => "audio",
-        };
-
-        YtDlpDirectStreamDescriptor {
-            kind,
-            url: service_ytdlp::YtDlpDirectStreamUrl::from_secret_for_open(format!(
-                "http://media.test/{format_id}.webm"
-            )),
-            headers: Vec::new(),
-            format_id: Some(format_id.to_string()),
-            service_media_id: Some("media-id".to_string()),
-            validators: SourceValidators::default(),
-            duration: Some(Duration::from_secs(120)),
-            live: false,
-            description: format!("{kind_label} descriptor"),
-        }
-    }
-
-    fn vp9_requirement(profile: Vp9Profile, bit_depth: BitDepth) -> VideoDecodeRequirement {
-        let color = match profile {
-            Vp9Profile::Profile2 | Vp9Profile::Profile3 => VideoColorMetadata::container(
-                ColorRange::Limited,
-                MatrixCoefficients::Bt2020,
-                ColorPrimaries::Bt2020,
-                TransferFunction::Pq,
-                None,
-            ),
-            Vp9Profile::Profile0 | Vp9Profile::Profile1 => VideoColorMetadata::sdr_bt709_limited(),
-        };
-
-        VideoDecodeRequirement::new(VideoCodec::Vp9)
-            .with_profile(VideoProfile::Vp9(profile))
-            .with_bit_depth(bit_depth)
-            .with_chroma(ChromaSubsampling::Yuv420)
-            .with_resolution(1920, 1080)
-            .with_frame_rate(60.0)
-            .with_color(color)
-    }
-
-    fn ready_yt_dlp_candidate(
-        stream_id: &str,
-        format_id: &str,
-        requirement: VideoDecodeRequirement,
-        quality_score: i64,
-    ) -> YtDlpStreamCandidate {
-        let dynamic_range = if requirement.requires_hdr_processing() {
-            YtDlpDynamicRange::Hdr
-        } else {
-            YtDlpDynamicRange::Sdr
-        };
-        YtDlpStreamCandidate {
-            stream_id: stream_id.to_string(),
-            format_id: Some(format!("{format_id}+251")),
-            video: yt_dlp_descriptor(YtDlpStreamKind::Video, format_id),
-            audio: Some(yt_dlp_descriptor(YtDlpStreamKind::Audio, "251")),
-            height: requirement.height,
-            fps: requirement.fps,
-            vcodec: Some("vp09.00.10.08".to_string()),
-            acodec: Some("opus".to_string()),
-            dynamic_range,
-            video_requirement: YtDlpVideoRequirement::Ready(requirement),
-            quality_score,
-        }
-    }
-
-    fn yt_dlp_candidates(candidates: Vec<YtDlpStreamCandidate>) -> YtDlpStreamCandidates {
-        YtDlpStreamCandidates {
-            title: Some("sample".to_string()),
-            service_media_id: Some("media-id".to_string()),
-            duration: Some(Duration::from_secs(120)),
-            live: false,
-            candidates,
-        }
-    }
 
     #[test]
     fn controller_exposes_startup_error_for_app_state_creation() {
@@ -922,6 +734,7 @@ mod tests {
                 join_handle: None,
                 pending_result: None,
                 cancellation_requested: Arc::new(AtomicBool::new(false)),
+                source_cancellation: source_core::CancellationToken::new(),
             }),
             direct_media_startup_job: None,
             local_startup_job: None,
@@ -963,6 +776,7 @@ mod tests {
                 join_handle: Some(join_handle),
                 pending_result: None,
                 cancellation_requested: Arc::new(AtomicBool::new(false)),
+                source_cancellation: source_core::CancellationToken::new(),
             }),
             direct_media_startup_job: None,
             local_startup_job: None,
@@ -992,6 +806,15 @@ mod tests {
             ProcessOwnerShutdownOutcome::TimedOut { pending_threads: 1 }
         );
         assert!(controller.yt_dlp_startup_job.is_some());
+        assert!(
+            controller
+                .yt_dlp_startup_job
+                .as_ref()
+                .expect("timed-out job сохраняет ownership")
+                .source_cancellation
+                .is_cancelled(),
+            "startup shutdown должен прервать transport token до bounded join"
+        );
 
         release.store(true, Ordering::Release);
         assert_eq!(
@@ -1148,209 +971,5 @@ mod tests {
                 .as_deref()
                 .is_some_and(|error| error.contains("scheme не поддерживается"))
         );
-    }
-
-    #[test]
-    fn yt_dlp_startup_selection_picks_supported_candidate_before_demux_open() {
-        let candidates = yt_dlp_candidates(vec![
-            ready_yt_dlp_candidate(
-                "hdr-p010",
-                "315",
-                vp9_requirement(Vp9Profile::Profile2, BitDepth::Ten),
-                10_000,
-            ),
-            ready_yt_dlp_candidate(
-                "sdr-nv12",
-                "303",
-                vp9_requirement(Vp9Profile::Profile0, BitDepth::Eight),
-                1_000,
-            ),
-        ]);
-
-        let selected = select_yt_dlp_startup_candidate(
-            &candidates,
-            YtDlpHdrSelection::SdrOnly,
-            &capabilities_with_vp9_profile0(),
-        )
-        .expect("supported SDR candidate is selected");
-
-        assert_eq!(selected.stream_id, "sdr-nv12");
-    }
-
-    #[test]
-    fn yt_dlp_startup_codec_policy_uses_first_supported_configured_codec() {
-        let candidates = yt_dlp_candidates(vec![ready_yt_dlp_candidate(
-            "vp9-video",
-            "247",
-            vp9_requirement(Vp9Profile::Profile0, BitDepth::Eight),
-            100,
-        )]);
-        let capabilities = capabilities_with_vp9_profile0();
-
-        let selected = select_yt_dlp_startup_candidate_with_codec_order(
-            &candidates,
-            &[ConfigVideoCodec::Av1, ConfigVideoCodec::Vp9],
-            YtDlpHdrSelection::SdrOnly,
-            preferred_height_policy(None),
-            &capabilities,
-        )
-        .expect("policy must continue to the first supported configured codec");
-        assert_eq!(selected.stream_id, "vp9-video");
-
-        let error = select_yt_dlp_startup_candidate_with_codec_order(
-            &candidates,
-            &[ConfigVideoCodec::Av1],
-            YtDlpHdrSelection::SdrOnly,
-            preferred_height_policy(None),
-            &capabilities,
-        )
-        .expect_err("codec omitted from policy must not be selected");
-        assert!(matches!(
-            error,
-            service_ytdlp::YtDlpStreamSelectionError::NoPlayableSdr { .. }
-        ));
-    }
-
-    #[test]
-    fn yt_dlp_startup_selection_returns_typed_capability_rejection() {
-        let candidates = yt_dlp_candidates(vec![ready_yt_dlp_candidate(
-            "sdr-nv12",
-            "303",
-            vp9_requirement(Vp9Profile::Profile0, BitDepth::Eight),
-            1_000,
-        )]);
-
-        let error = select_yt_dlp_startup_candidate(
-            &candidates,
-            YtDlpHdrSelection::SdrOnly,
-            &SystemCapabilities::empty(1),
-        )
-        .expect_err("empty capabilities reject ready candidate");
-
-        assert!(matches!(
-            error,
-            service_ytdlp::YtDlpStreamSelectionError::NoPlayableSdr { rejections }
-                if rejections.iter().any(|rejection| matches!(
-                    rejection.reason,
-                    service_ytdlp::YtDlpCandidateRejectionReason::Capability(_)
-                ))
-        ));
-    }
-
-    #[test]
-    fn yt_dlp_startup_selection_reports_insufficient_service_metadata() {
-        let mut candidate = ready_yt_dlp_candidate(
-            "plain-vp9",
-            "248",
-            VideoDecodeRequirement::new(VideoCodec::Vp9),
-            1_000,
-        );
-        candidate.video_requirement =
-            YtDlpVideoRequirement::Insufficient(YtDlpInsufficientVideoMetadata {
-                reason: "missing VP9 profile metadata".to_string(),
-                partial_requirement: Some(VideoDecodeRequirement::new(VideoCodec::Vp9)),
-            });
-        let candidates = yt_dlp_candidates(vec![candidate]);
-
-        let error = select_yt_dlp_startup_candidate(
-            &candidates,
-            YtDlpHdrSelection::SdrOnly,
-            &capabilities_with_vp9_profile0(),
-        )
-        .expect_err("insufficient service metadata is rejected before selection");
-
-        assert!(matches!(
-            error,
-            service_ytdlp::YtDlpStreamSelectionError::NoPlayableSdr { rejections }
-                if rejections.iter().any(|rejection| {
-                    rejection.stream_id == "plain-vp9"
-                        && matches!(
-                            &rejection.reason,
-                            service_ytdlp::YtDlpCandidateRejectionReason::InsufficientVideoMetadata { reason }
-                                if reason.contains("missing VP9 profile metadata")
-                        )
-                })
-        ));
-    }
-
-    #[test]
-    fn yt_dlp_startup_selection_rejects_candidate_without_audio_companion() {
-        let mut candidate = ready_yt_dlp_candidate(
-            "video-without-audio",
-            "303",
-            vp9_requirement(Vp9Profile::Profile0, BitDepth::Eight),
-            1_000,
-        );
-        candidate.audio = None;
-        let candidates = yt_dlp_candidates(vec![candidate]);
-
-        let error = select_yt_dlp_startup_candidate(
-            &candidates,
-            YtDlpHdrSelection::SdrOnly,
-            &capabilities_with_vp9_profile0(),
-        )
-        .expect_err("video-only candidate is not openable by current service path");
-
-        assert!(matches!(
-            error,
-            service_ytdlp::YtDlpStreamSelectionError::NoPlayableSdr { rejections }
-                if rejections.iter().any(|rejection| {
-                    rejection.stream_id == "video-without-audio"
-                        && rejection.reason
-                            == service_ytdlp::YtDlpCandidateRejectionReason::MissingAudioCompanion
-                })
-        ));
-    }
-
-    #[test]
-    fn yt_dlp_startup_sdr_only_selects_sdr_candidate() {
-        // Явная пользовательская политика SdrOnly не допускает HDR даже при
-        // более высоком quality score.
-        let mut hdr_requirement = vp9_requirement(Vp9Profile::Profile2, BitDepth::Ten);
-        hdr_requirement.hdr = true;
-        let candidates = yt_dlp_candidates(vec![
-            ready_yt_dlp_candidate("hdr-stream", "315", hdr_requirement, 10_000),
-            ready_yt_dlp_candidate(
-                "sdr-nv12",
-                "303",
-                vp9_requirement(Vp9Profile::Profile0, BitDepth::Eight),
-                1_000,
-            ),
-        ]);
-
-        let selected = select_yt_dlp_startup_candidate(
-            &candidates,
-            YtDlpHdrSelection::SdrOnly,
-            &capabilities_with_vp9_profile0(),
-        )
-        .expect("SDR candidate остаётся выбираемым при отключённом HDR");
-
-        assert_eq!(selected.stream_id, "sdr-nv12");
-    }
-
-    #[test]
-    fn yt_dlp_startup_sdr_only_reports_no_playable_sdr_for_hdr_only_list() {
-        // Единственный кандидат — HDR, поэтому SdrOnly возвращает отдельную
-        // typed ошибку отсутствия playable SDR.
-        let mut hdr_requirement = vp9_requirement(Vp9Profile::Profile2, BitDepth::Ten);
-        hdr_requirement.hdr = true;
-        let candidates = yt_dlp_candidates(vec![ready_yt_dlp_candidate(
-            "hdr-only",
-            "315",
-            hdr_requirement,
-            10_000,
-        )]);
-
-        let error = select_yt_dlp_startup_candidate(
-            &candidates,
-            YtDlpHdrSelection::SdrOnly,
-            &capabilities_with_vp9_profile0(),
-        )
-        .expect_err("HDR-only кандидат отфильтрован до capability selection");
-
-        assert!(matches!(
-            error,
-            service_ytdlp::YtDlpStreamSelectionError::NoPlayableSdr { .. }
-        ));
     }
 }

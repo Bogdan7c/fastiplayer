@@ -28,9 +28,7 @@ use crate::renderer_recreation::{LiveRendererRecreation, RendererLifecycleCoordi
 use crate::settings_runtime::{
     CommittedConfigSnapshot, SettingsRuntime, SettingsRuntimeReconfigureHost,
 };
-use crate::startup_media::{
-    resolve_direct_media_startup_media, resolve_yt_dlp_startup_media, runtime_video_codec,
-};
+use crate::startup_media::{resolve_direct_media_startup_media, runtime_video_codec};
 use crate::state::{
     ActiveMediaSource, AppState, BackendSwapVideoPhase, MainVisualOverrideAcquisition,
     RenderablePresentFrame, VideoPipelineRebuildError, VideoPipelineRebuildRequest,

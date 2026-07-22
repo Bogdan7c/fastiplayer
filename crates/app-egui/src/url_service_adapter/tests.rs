@@ -76,7 +76,11 @@ fn registry_prioritizes_direct_media_and_freezes_chosen_adapter_without_open_fal
         panic!("direct media URL должен быть принят");
     };
     let direct_request = direct_locator
-        .into_media_open_source_request(&AppConfig::default(), &SystemCapabilities::empty(1))
+        .into_media_open_source_request(
+            &AppConfig::default(),
+            &SystemCapabilities::empty(1),
+            audio::AudioDecodeCapabilitySnapshot::empty(),
+        )
         .expect("direct request");
     assert!(matches!(
         direct_request,
@@ -96,7 +100,11 @@ fn registry_prioritizes_direct_media_and_freezes_chosen_adapter_without_open_fal
         "exact query/userinfo обязаны пройти aggregated durable-locator acknowledgement"
     );
     let generic_request = generic_locator
-        .into_media_open_source_request(&AppConfig::default(), &SystemCapabilities::empty(1))
+        .into_media_open_source_request(
+            &AppConfig::default(),
+            &SystemCapabilities::empty(1),
+            audio::AudioDecodeCapabilitySnapshot::empty(),
+        )
         .expect("yt-dlp request");
     assert!(matches!(
         generic_request,

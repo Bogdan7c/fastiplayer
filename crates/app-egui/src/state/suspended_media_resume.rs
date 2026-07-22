@@ -282,7 +282,7 @@ impl AppState {
             },
             ActiveMediaSource::YtDlpUrl {
                 source_locator,
-                selected_stream_identity,
+                candidate_selection,
             } => {
                 let capabilities = self
                     .system_capabilities_snapshot
@@ -290,12 +290,15 @@ impl AppState {
                     .ok_or(ResumeCheckpointError::PreparationFailed)?;
                 MediaOpenSourceRequest::YtDlp {
                     locator: source_locator.clone(),
-                    required_stream_identity: Some(Box::new(selected_stream_identity.clone())),
+                    selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent::Exact(
+                        candidate_selection.clone(),
+                    ),
                     network_config: config.network,
                     yt_dlp_config: config.yt_dlp,
                     demux_config: config.player.demux,
                     preferred_video_codec_order: config.player.preferred_video_codec_order,
                     system_capabilities: capabilities,
+                    audio_capabilities: self.audio_decode_capability_snapshot(),
                 }
             }
             ActiveMediaSource::PlaybackWindow { .. } => {

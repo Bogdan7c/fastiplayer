@@ -10,9 +10,9 @@ use super::{
 /// Выполняет ровно один source-specific preparation flow.
 pub(super) fn prepare_source(
     source_request: MediaOpenSourceRequest,
-    is_cancelled: impl Fn() -> bool,
+    cancellation: &super::executor::PreparationCancellation,
 ) -> Result<PreparedMediaOpen, MediaPreparationFailureKind> {
-    if is_cancelled() {
+    if cancellation.is_cancelled() {
         return Err(MediaPreparationFailureKind::Cancelled);
     }
 
@@ -20,7 +20,7 @@ pub(super) fn prepare_source(
         MediaOpenSourceRequest::PlaybackWindow {
             source,
             semantic_identity,
-        } => prepare_source(*source, is_cancelled)
+        } => prepare_source(*source, cancellation)
             .map(|prepared| prepared.with_playback_window(semantic_identity)),
         MediaOpenSourceRequest::Local {
             path,
@@ -32,7 +32,7 @@ pub(super) fn prepare_source(
                 &path,
                 &demux_config,
                 expected_fingerprint,
-                is_cancelled,
+                || cancellation.is_cancelled(),
             )
             .map(super::local::PreparedLocalOpenResult::into_prepared_open)
             .map_err(|error| {
@@ -63,7 +63,7 @@ pub(super) fn prepare_source(
                 tracing::warn!(source = %safe_label, error = %error, "Подготовка direct media завершилась ошибкой");
                 MediaPreparationFailureKind::DirectOpen
             })?;
-            if is_cancelled() {
+            if cancellation.is_cancelled() {
                 return Err(MediaPreparationFailureKind::Cancelled);
             }
             let tracks = opened.tracks().to_vec();
@@ -84,67 +84,45 @@ pub(super) fn prepare_source(
         }
         MediaOpenSourceRequest::YtDlp {
             locator,
-            required_stream_identity,
+            selection_intent,
             network_config,
             yt_dlp_config,
             demux_config,
             preferred_video_codec_order,
             system_capabilities,
+            audio_capabilities,
         } => {
             let safe_label = SafeMediaLabel::from_service_safe_label(locator.safe_label());
-            let prepared = match required_stream_identity {
-                Some(selected_stream_identity) => {
-                    let streaming_media = service_ytdlp::open_streaming_media_from_selected_identity_with_demux_config(
-                        &locator,
-                        &selected_stream_identity,
-                        &network_config,
-                        &yt_dlp_config,
-                        &demux_config,
-                    )
-                    .map_err(|error| {
-                        tracing::warn!(source = %safe_label, error = %error, "Повторная подготовка exact YtDlp media завершилась ошибкой");
-                        MediaPreparationFailureKind::YtDlpOpen
-                    })?;
-                    crate::startup_media::PreparedYtDlpStartupMedia {
-                        streaming_media,
-                        selected_stream_identity: *selected_stream_identity,
-                    }
-                }
-                None => crate::startup_media::resolve_yt_dlp_startup_media(
-                    &locator,
-                    &network_config,
-                    &yt_dlp_config,
-                    &demux_config,
-                    &preferred_video_codec_order,
-                    &system_capabilities,
-                )
-                .map_err(|error| {
-                    tracing::warn!(source = %safe_label, error = %error, "Подготовка YtDlp media завершилась ошибкой");
-                    MediaPreparationFailureKind::YtDlpOpen
-                })?,
-            };
-            if is_cancelled() {
+            let prepared = crate::web_media_open::prepare_yt_dlp_web_media(
+                &locator,
+                &network_config,
+                &yt_dlp_config,
+                &demux_config,
+                &preferred_video_codec_order,
+                &system_capabilities,
+                audio_capabilities,
+                selection_intent,
+                cancellation.source_token(),
+                || cancellation.is_cancelled(),
+            )
+            .map_err(|error| {
+                tracing::warn!(source = %safe_label, error = %error, "Подготовка YtDlp media завершилась ошибкой");
+                MediaPreparationFailureKind::YtDlpOpen
+            })?;
+            if cancellation.is_cancelled() {
                 return Err(MediaPreparationFailureKind::Cancelled);
             }
-            let service_metadata = prepared.streaming_media.playlist_metadata();
-            let tracks = prepared.streaming_media.demuxer.tracks().to_vec();
-            let demux_duration = prepared.streaming_media.demuxer.duration();
-            let demux_metadata = prepared
-                .streaming_media
-                .demuxer
-                .media_metadata()
-                .unwrap_or_default()
-                .tags;
+            let tracks = prepared.demuxer.tracks().to_vec();
+            let demux_duration = prepared.demuxer.duration();
+            let demux_metadata = prepared.demuxer.media_metadata().unwrap_or_default().tags;
             let (duration, metadata) = merge_yt_dlp_playlist_metadata(
                 demux_duration,
                 demux_metadata,
-                service_metadata.title(),
-                service_metadata.duration(),
+                prepared.playlist_metadata.title(),
+                prepared.playlist_metadata.duration(),
             );
-            let prepared_media = PreparedMedia::from_external_label(
-                safe_label.as_str(),
-                prepared.streaming_media.demuxer,
-            );
+            let prepared_media =
+                PreparedMedia::from_external_label(safe_label.as_str(), prepared.demuxer);
             Ok(PreparedMediaOpen {
                 prepared_media,
                 descriptor: PreparedMediaDescriptor::YtDlp {
@@ -153,7 +131,7 @@ pub(super) fn prepare_source(
                     metadata,
                     source: ActiveMediaSource::YtDlpUrl {
                         source_locator: locator,
-                        selected_stream_identity: prepared.selected_stream_identity,
+                        candidate_selection: Box::new(prepared.candidate_selection),
                     },
                     safe_label,
                 },

@@ -23,6 +23,7 @@ type PreparationTask = Box<dyn FnOnce(&PreparationCancellation) -> PreparationRe
 /// Cooperative token хранит exact caller cause, а не безликий boolean.
 pub(super) struct PreparationCancellation {
     cancelled: AtomicBool,
+    source_cancellation: source_core::CancellationToken,
     state_lost: AtomicBool,
     cause: Mutex<Option<MediaInstallCancellationCause>>,
 }
@@ -31,6 +32,7 @@ impl PreparationCancellation {
     pub(super) fn new() -> Self {
         Self {
             cancelled: AtomicBool::new(false),
+            source_cancellation: source_core::CancellationToken::new(),
             state_lost: AtomicBool::new(false),
             cause: Mutex::new(None),
         }
@@ -47,11 +49,17 @@ impl PreparationCancellation {
                 self.state_lost.store(true, Ordering::Release);
             }
         }
+        self.source_cancellation.cancel();
         self.cancelled.store(true, Ordering::Release);
     }
 
     pub(super) fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Передаёт transport/demux слоям clone того же cooperative cancellation state.
+    pub(super) fn source_token(&self) -> source_core::CancellationToken {
+        self.source_cancellation.clone()
     }
 
     pub(super) fn cause(&self) -> Result<Option<MediaInstallCancellationCause>, ()> {
@@ -352,6 +360,17 @@ mod shutdown_tests {
             executor.shutdown_until(ShutdownDeadline::after(Duration::from_secs(1))),
             ProcessOwnerShutdownOutcome::AlreadyCompleted
         );
+    }
+
+    #[test]
+    fn cancellation_reaches_source_transport_token() {
+        let cancellation = PreparationCancellation::new();
+        let source_token = cancellation.source_token();
+
+        cancellation.cancel(MediaInstallCancellationCause::LifecycleShutdown);
+
+        assert!(cancellation.is_cancelled());
+        assert!(source_token.is_cancelled());
     }
 
     #[test]

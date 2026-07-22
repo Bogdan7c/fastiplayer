@@ -138,30 +138,50 @@ pub struct YtDlpRequestMaterialSummary {
 }
 
 /// Typed причина отказа request-material normalization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum YtDlpRequestMaterialViolation {
     /// Fragments не являются bounded concrete array.
+    #[error("invalid fragment list")]
     InvalidFragments,
     /// Fragment count превысил internal safety cap.
+    #[error("fragment count exceeds the safety limit")]
     TooManyFragments,
     /// HTTP headers имеют неподдерживаемую форму или размер.
+    #[error("invalid HTTP headers")]
     InvalidHttpHeaders,
     /// Cookies имеют неподдерживаемую форму или размер.
+    #[error("invalid cookies")]
     InvalidCookies,
     /// `request_data` требуется строке, но исключён S00 profile.
+    #[error("request_data is required")]
     RequestDataRequired,
     /// Candidate требует browser impersonation provider-а.
+    #[error("browser impersonation is required")]
     ImpersonationRequired,
     /// Candidate зависит от internal downloader state.
+    #[error("private downloader state is required")]
     DownloaderStateRequired,
     /// Candidate зависит от pinned private extractor state.
+    #[error("private extractor state is required")]
     PrivateExtractorStateRequired,
     /// HLS AES shape нельзя доказанно интерпретировать как v1 material.
+    #[error("invalid HLS AES material")]
     InvalidHlsAes,
     /// RTMP connection arguments имеют неподдерживаемую форму.
+    #[error("invalid RTMP connection arguments")]
     InvalidRtmpConnectionArguments,
     /// Secret/request строка превысила named bound.
+    #[error("request field exceeds the safety limit")]
     RequestFieldTooLong,
+    /// S26 ещё не разрешил scoped forwarding effective headers/cookies.
+    #[error("scoped HTTP authorization mapping is not available before S26")]
+    AuthorizationMappingPending,
+    /// Progressive S22 provider не владеет segment/manifest/RTMP material.
+    #[error("request material does not belong to progressive HTTP")]
+    NonProgressiveMaterial,
+    /// Progressive resource не содержит primary URL.
+    #[error("progressive request has no primary URL")]
+    MissingPrimaryUrl,
 }
 
 /// Secret string без plaintext `Debug`/`Display`.
@@ -175,6 +195,39 @@ impl SecretText {
             return Err(YtDlpRequestMaterialViolation::RequestFieldTooLong);
         }
         Ok(Self(exact))
+    }
+
+    /// Передаёт exact secret только transport adapter-у после owner-side checks.
+    pub(super) fn expose_secret_for_transport(&self) -> &str {
+        &self.0
+    }
+}
+
+impl YtDlpRequestMaterial {
+    /// Возвращает progressive HTTP target только для S23 public/no-auth subset-а.
+    ///
+    /// Headers/cookies намеренно не отбрасываются молча: их scoped propagation
+    /// принадлежит S26 и до него завершается typed pre-barrier ошибкой.
+    pub(super) fn progressive_http_target(&self) -> Result<&str, YtDlpRequestMaterialViolation> {
+        let Self::V1(material) = self;
+        if !material.http_headers.is_empty() || material.cookies.is_some() {
+            return Err(YtDlpRequestMaterialViolation::AuthorizationMappingPending);
+        }
+        if !material.fragments.is_empty()
+            || material.fragment_base_url.is_some()
+            || material.hls_media_playlist_data.is_some()
+            || material.extra_param_to_segment_url.is_some()
+            || material.extra_param_to_key_url.is_some()
+            || material.hls_aes.is_some()
+            || material.rtmp.is_some()
+        {
+            return Err(YtDlpRequestMaterialViolation::NonProgressiveMaterial);
+        }
+        material
+            .url
+            .as_ref()
+            .map(SecretText::expose_secret_for_transport)
+            .ok_or(YtDlpRequestMaterialViolation::MissingPrimaryUrl)
     }
 }
 

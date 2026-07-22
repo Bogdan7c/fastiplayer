@@ -27,3 +27,10 @@
 - Только successful queue commit публикует `StartupPlaylistCommitReceipt { first_item_id, expected_queue_revision }`. `plan_startup_playlist_first_install` повторно валидирует exact queue revision и source-order first Item ID, затем строит один `ReservedQueueMutation::select_committed` plan. Никакого sibling/next scan при первом failure нет; synchronous source/strong rejection помечает только exact first Item failed.
 - Startup controller сохраняет прежние CLI winner, restored fallback, generation/supersede, retained-action и stepwise strong-open gates. Manual row/group Play и interactive import supersede-ят незавершённый startup playlist flow. CUE first target сохраняет `MediaPlaybackWindow`.
 - Focused tests: все четыре формата, empty/partial/capacity, CUE window, structural competition, exact first failure/no scan, commit-before-open и exact Item/Group allocator accounting. Verification: 805 app tests с default и no-default features, Rust 1.96 locked workspace check, fmt, refactor guardrails, diff check, touched-file diagnostics и strict Clippy кроме двух известных pre-existing `large_enum_variant` baseline warnings.
+
+
+## S23 yt-dlp startup integration (2026-07-22)
+
+- CLI/restored yt-dlp preparation now uses the single S19 -> S21C -> S22 app composition path; the old service-owned WebM opener no longer exists. Startup winner/fallback, allocator gate and exact Installed ordering are unchanged.
+- `YtDlpStartupJob` propagates both its atomic lifecycle callback to the cancellable extractor and a shared `source_core::CancellationToken` to transport/demux; shutdown cancels both before bounded join.
+- Current details and limitations: `mem:app-egui/queue-owned-web-open-s23-2026-07-22`.

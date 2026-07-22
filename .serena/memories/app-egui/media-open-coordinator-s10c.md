@@ -84,3 +84,10 @@
 - App coordinator protocol не изменился: receipt по-прежнему различает Accepted/ReadyToCommit/Installed/terminal failure, а authorization до Ready получает `NotReady`.
 - Player worker теперь может удерживать staged request в resumable preflight до demux retry/timeout deadline; coordinator не должен busy-poll-ить, повторно отправлять stage request или считать отсутствие immediate Ready ошибкой.
 - Supersede/cancel/shutdown сохраняют exact `MediaInstallRequestId`, прежние typed cancellation causes и exactly-once terminal response. Commit barrier и current-media preservation до authorization остались прежними.
+
+
+## S23 queue-owned web open integration (2026-07-22)
+
+- Current yt-dlp path supersedes the historical selected-stream/WebM notes above: `ActiveMediaSource::YtDlpUrl` stores exact `YtDlpCandidateSelection`, and app composition runs S19 -> S21C -> S22 through `web_media_open.rs`. Full contract: `mem:app-egui/queue-owned-web-open-s23-2026-07-22`.
+- Coordinator phases and barrier did not change. All recoverable extraction/planning/transport/demux failures are pre-authorization and preserve old playback; only exact Installed publishes active/current. Enqueued work remains commit-must-finish.
+- Generic `PreparationCancellation` now propagates a shared `source_core::CancellationToken` into S22 transport/progressive demux while retaining the exact typed cancellation cause.

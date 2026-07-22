@@ -48,9 +48,10 @@ impl StartupUrlLocator {
         self,
         app_config: &AppConfig,
         system_capabilities: &SystemCapabilities,
+        audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
     ) -> Result<crate::media_open::MediaOpenSourceRequest, String> {
         self.0
-            .into_media_open_source_request(app_config, system_capabilities)
+            .into_media_open_source_request(app_config, system_capabilities, audio_capabilities)
     }
 
     /// Переносит уже нормализованную service identity в service-neutral playlist domain.
@@ -115,6 +116,7 @@ trait StartupUrlServiceAdapter: Send {
         self: Box<Self>,
         app_config: &AppConfig,
         system_capabilities: &SystemCapabilities,
+        audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
     ) -> Result<crate::media_open::MediaOpenSourceRequest, String>;
 
     #[allow(dead_code)] // Используется только intent-named domain mapping-ом выше.
@@ -177,16 +179,18 @@ impl StartupUrlServiceAdapter for YtDlpStartupAdapter {
         self: Box<Self>,
         app_config: &AppConfig,
         system_capabilities: &SystemCapabilities,
+        audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
     ) -> Result<crate::media_open::MediaOpenSourceRequest, String> {
         self.validate_config(app_config)?;
         Ok(crate::media_open::MediaOpenSourceRequest::YtDlp {
             locator: self.locator,
-            required_stream_identity: None,
+            selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable,
             network_config: app_config.network.clone(),
             yt_dlp_config: app_config.yt_dlp.clone(),
             demux_config: app_config.player.demux,
             preferred_video_codec_order: app_config.player.preferred_video_codec_order.clone(),
             system_capabilities: system_capabilities.clone(),
+            audio_capabilities,
         })
     }
 
@@ -239,6 +243,7 @@ impl StartupUrlServiceAdapter for DirectMediaStartupAdapter {
         self: Box<Self>,
         app_config: &AppConfig,
         _system_capabilities: &SystemCapabilities,
+        _audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
     ) -> Result<crate::media_open::MediaOpenSourceRequest, String> {
         Ok(crate::media_open::MediaOpenSourceRequest::Direct {
             locator: self.locator,

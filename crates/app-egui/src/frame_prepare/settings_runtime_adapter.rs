@@ -180,69 +180,46 @@ impl FrameSettingsRuntimeAdapter<'_> {
                 }
                 ActiveMediaSource::YtDlpUrl {
                     source_locator,
-                    selected_stream_identity,
+                    candidate_selection,
                 } => {
-                    if config.reselect_yt_dlp_stream {
-                        let system_capabilities =
-                            probe_system_capabilities(self.renderer.render_capabilities());
-                        match resolve_yt_dlp_startup_media(
-                            &source_locator,
-                            &config.network,
-                            &config.yt_dlp,
-                            &config.demux,
-                            &config.preferred_video_codec_order,
-                            &system_capabilities,
-                        ) {
-                            Ok(prepared) => {
-                                let prepared_media = PreparedMedia::from_external_label(
-                                    prepared.streaming_media.description,
-                                    prepared.streaming_media.demuxer,
-                                );
-                                let safe_label =
-                                    crate::media_open::SafeMediaLabel::from_service_safe_label(
-                                        source_locator.safe_label(),
-                                    );
-                                Ok(crate::state::PreparedSingleMediaOpen::new(
-                                    prepared_media,
-                                    ActiveMediaSource::YtDlpUrl {
-                                        source_locator,
-                                        selected_stream_identity: prepared.selected_stream_identity,
-                                    },
-                                    safe_label,
-                                ))
-                            }
-                            Err(error) => Err(format!("YtDlp media rebuild failed: {error:#}")),
-                        }
+                    let selection_intent = if config.reselect_yt_dlp_stream {
+                        crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable
                     } else {
-                        match service_ytdlp::open_seekable_vod_from_selected_identity_with_demux_config(
-                            &source_locator,
-                            &selected_stream_identity,
-                            &config.network,
-                            &config.yt_dlp,
-                            &config.demux,
-                        ) {
-                            Ok(streaming_media) => {
-                                let prepared_media = PreparedMedia::from_external_label(
-                                    streaming_media.description,
-                                    streaming_media.demuxer,
+                        crate::web_media_open::YtDlpCandidateOpenIntent::Exact(candidate_selection)
+                    };
+                    let system_capabilities =
+                        probe_system_capabilities(self.renderer.render_capabilities());
+                    match crate::web_media_open::prepare_yt_dlp_web_media(
+                        &source_locator,
+                        &config.network,
+                        &config.yt_dlp,
+                        &config.demux,
+                        &config.preferred_video_codec_order,
+                        &system_capabilities,
+                        self.app_state.audio_decode_capability_snapshot(),
+                        selection_intent,
+                        source_core::CancellationToken::new(),
+                        || false,
+                    ) {
+                        Ok(prepared) => {
+                            let prepared_media = PreparedMedia::from_external_label(
+                                source_locator.safe_label(),
+                                prepared.demuxer,
+                            );
+                            let safe_label =
+                                crate::media_open::SafeMediaLabel::from_service_safe_label(
+                                    source_locator.safe_label(),
                                 );
-                                let safe_label =
-                                    crate::media_open::SafeMediaLabel::from_service_safe_label(
-                                        source_locator.safe_label(),
-                                    );
-                                Ok(crate::state::PreparedSingleMediaOpen::new(
-                                    prepared_media,
-                                    ActiveMediaSource::YtDlpUrl {
-                                        source_locator,
-                                        selected_stream_identity,
-                                    },
-                                    safe_label,
-                                ))
-                            }
-                            Err(error) => Err(format!(
-                                "selected YtDlp media rebuild failed without changing stream: {error}"
-                            )),
+                            Ok(crate::state::PreparedSingleMediaOpen::new(
+                                prepared_media,
+                                ActiveMediaSource::YtDlpUrl {
+                                    source_locator,
+                                    candidate_selection: Box::new(prepared.candidate_selection),
+                                },
+                                safe_label,
+                            ))
                         }
+                        Err(error) => Err(format!("YtDlp media rebuild failed: {error:#}")),
                     }
                 }
                 ActiveMediaSource::PlaybackWindow { .. } => {

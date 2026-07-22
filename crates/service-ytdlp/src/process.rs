@@ -6,37 +6,14 @@ use std::time::{Duration, Instant};
 use rustiplayer_config::YtDlpConfig;
 use serde::de::DeserializeOwned;
 
-use crate::candidate::YtDlpCandidateDocument;
 use crate::dto::YtDlpMetadata;
 use crate::error::YtDlpServiceError;
-
-/// Legacy env contract сохраняется, чтобы generic migration не ломала ручные smoke-сценарии.
-const FORMAT_SELECTOR_ENV: &str = "VIDEO_PLAYER_YOUTUBE_FORMAT_SELECTOR";
 
 /// Имя production binary, через который service получает direct stream metadata.
 const YT_DLP_EXECUTABLE: &str = "yt-dlp";
 
 /// Интервал polling-а child process: маленький, но без busy-loop.
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
-
-/// Selector `yt-dlp` по умолчанию для поддерживаемых тестовых потоков.
-///
-/// Приоритет намеренно идёт от самого тяжёлого SDR-теста к более лёгким:
-/// 4K60 -> 4K30 -> 1080p60 -> 1080p.
-///
-/// Важно: `vcodec=vp9` выбран строго, без `vp9.2`.
-/// `vp9.2` обычно означает HDR/10-bit, а текущий production renderer Phase 9
-/// рассчитан на NV12/8-bit для обычного playback path.
-const DEFAULT_FORMAT_SELECTOR: &str = concat!(
-    "bestvideo[ext=webm][vcodec=vp9][height=2160][fps>=60]+",
-    "bestaudio[ext=webm][acodec=opus]/",
-    "bestvideo[ext=webm][vcodec=vp9][height=2160]+",
-    "bestaudio[ext=webm][acodec=opus]/",
-    "bestvideo[ext=webm][vcodec=vp9][height=1080][fps>=60]+",
-    "bestaudio[ext=webm][acodec=opus]/",
-    "bestvideo[ext=webm][vcodec=vp9][height=1080]+",
-    "bestaudio[ext=webm][acodec=opus]"
-);
 
 /// Верхняя граница счётчика stderr в safe diagnostic context.
 const MAX_REPORTED_STDERR_BYTES: usize = 1_048_576;
@@ -136,59 +113,6 @@ enum ProcessWaitOutcome {
     Cancelled,
 }
 
-/// Получает metadata и выбранные direct URLs через `yt-dlp`.
-pub(crate) fn resolve_yt_dlp_metadata(
-    video_url: &str,
-    process_config: &YtDlpProcessConfig,
-) -> Result<YtDlpMetadata, YtDlpServiceError> {
-    resolve_yt_dlp_metadata_with_cancellation(video_url, process_config, &|| false)
-}
-
-/// Получает metadata и позволяет process-lifetime owner-у прервать `yt-dlp`.
-pub(crate) fn resolve_yt_dlp_metadata_with_cancellation(
-    video_url: &str,
-    process_config: &YtDlpProcessConfig,
-    is_cancelled: &dyn Fn() -> bool,
-) -> Result<YtDlpMetadata, YtDlpServiceError> {
-    // Выбираем selector из env или используем тестовую policy по умолчанию.
-    let format_selector = yt_dlp_format_selector();
-    let command_arguments = [
-        "--quiet",
-        "--no-warnings",
-        "--simulate",
-        "--dump-single-json",
-        "--no-playlist",
-        "--format",
-        format_selector.as_str(),
-        video_url,
-    ];
-
-    let command_output = run_process_with_timeout_and_cancellation(
-        process_config.executable.as_str(),
-        &command_arguments,
-        process_config.timeout,
-        is_cancelled,
-    )?;
-
-    // Любая ошибка selection/access должна стать понятной ошибкой UI.
-    ensure_yt_dlp_success(command_output.status, &command_output.stderr)?;
-
-    // JSON должен быть валидным UTF-8.
-    let stdout_text =
-        String::from_utf8(command_output.stdout).map_err(YtDlpServiceError::invalid_response)?;
-
-    // Парсим typed JSON, чтобы не ходить по magic string paths руками.
-    serde_json::from_str(&stdout_text).map_err(YtDlpServiceError::invalid_response)
-}
-
-/// Получает manifest formats без применения текущего service default selector-а.
-pub(crate) fn resolve_yt_dlp_candidate_metadata(
-    video_url: &str,
-    process_config: &YtDlpProcessConfig,
-) -> Result<YtDlpMetadata, YtDlpServiceError> {
-    resolve_yt_dlp_candidate_metadata_with_cancellation(video_url, process_config, &|| false)
-}
-
 /// Получает общий manifest JSON без playback selector-а и поддерживает отмену.
 pub(crate) fn resolve_yt_dlp_candidate_metadata_with_cancellation(
     video_url: &str,
@@ -198,16 +122,8 @@ pub(crate) fn resolve_yt_dlp_candidate_metadata_with_cancellation(
     resolve_yt_dlp_candidate_document_with_cancellation(video_url, process_config, is_cancelled)
 }
 
-/// Получает S19 candidate document через тот же inventory invocation.
-pub(crate) fn resolve_yt_dlp_candidate_document(
-    video_url: &str,
-    process_config: &YtDlpProcessConfig,
-) -> Result<YtDlpCandidateDocument, YtDlpServiceError> {
-    resolve_yt_dlp_candidate_document_with_cancellation(video_url, process_config, &|| false)
-}
-
 /// Единственный process path для typed candidate JSON consumers.
-fn resolve_yt_dlp_candidate_document_with_cancellation<T: DeserializeOwned>(
+pub(crate) fn resolve_yt_dlp_candidate_document_with_cancellation<T: DeserializeOwned>(
     video_url: &str,
     process_config: &YtDlpProcessConfig,
     is_cancelled: &dyn Fn() -> bool,
@@ -366,32 +282,6 @@ fn terminate_process(child: &mut Child) -> Result<(), YtDlpServiceError> {
 
     child.wait().map_err(YtDlpServiceError::process)?;
     Ok(())
-}
-
-/// Возвращает selector `yt-dlp` для выбора тестового YtDlp формата.
-fn yt_dlp_format_selector() -> String {
-    // Env override нужен для ручных тестов новых кодеков/разрешений без перекомпиляции.
-    if let Ok(configured_selector) = std::env::var(FORMAT_SELECTOR_ENV) {
-        // Пустая строка почти всегда ошибка конфигурации, поэтому не используем её.
-        if !configured_selector.trim().is_empty() {
-            return configured_selector;
-        }
-    }
-
-    // По умолчанию используем ограниченный VP9/Opus WebM selector для текущего pipeline.
-    DEFAULT_FORMAT_SELECTOR.to_string()
-}
-
-/// Преобразует неуспешный exit code `yt-dlp` в читаемую ошибку.
-fn ensure_yt_dlp_success(status: ExitStatus, stderr_bytes: &[u8]) -> Result<(), YtDlpServiceError> {
-    // Нулевой exit code означает, что `yt-dlp` считает selection успешным.
-    if status.success() {
-        return Ok(());
-    }
-
-    Err(YtDlpServiceError::ExtractorRejection {
-        stderr_bytes: stderr_bytes.len().min(MAX_REPORTED_STDERR_BYTES),
-    })
 }
 
 /// Преобразует ошибку metadata-only candidates command в читаемую ошибку.

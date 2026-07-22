@@ -1,0 +1,615 @@
+//! Единый app-owned candidate → transport → demux composition path для YtDlp media.
+//!
+//! Queue/media-open владеют моментом commit-а, `service-ytdlp` — extraction и
+//! request material, pure planner — выбором playable candidate, а этот модуль
+//! только соединяет concrete runtime registries до существующего commit barrier.
+
+use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
+use anyhow::{Context, Result, anyhow, bail};
+use demux_api::{
+    CompositeAvDemuxer, CompositeAvTrackSelection, CompositeComponentLeadPolicy, DemuxContainerId,
+    DemuxFactory, DemuxHints, DemuxInput, DemuxInputCapabilities, DemuxInputCapability,
+    DemuxRegistry, DemuxSniffBudget, DemuxSourceExtension, ProgressiveDemuxBufferLimits,
+    ProgressiveDemuxer,
+};
+use media_core::{DemuxRetryHint, Demuxer, TrackId, TrackKind};
+use rustiplayer_config::{
+    NetworkConfig, PlayerDemuxConfig, VideoCodec as ConfigVideoCodec, YtDlpConfig,
+    YtDlpHdrSelection,
+};
+use service_ytdlp::{
+    YtDlpCandidateSelection, YtDlpCandidateSnapshot, YtDlpMediaLocator, YtDlpNormalizedCandidate,
+    YtDlpTransportRequestContext,
+};
+use source_core::{CancellationToken, SourceRuntimeConfig};
+use symphonia_demux::{DemuxerOptions, SymphoniaDemuxFactory};
+use web_media_core::{
+    ContainerFamily, ExactSelectionIdentity, ExtractionGeneration, HttpScheme, SelectionRequest,
+    SourceIdentity, TransportFamily,
+};
+use web_media_http::WebMediaHttpProvider;
+use web_media_playback_plan::{
+    DemuxCapabilityRegistration, DemuxCapabilitySnapshot, HdrSelectionPolicy,
+    PlaybackCapabilitySnapshot, PlaybackSelectionPolicy, TransportCapabilityRegistration,
+    TransportCapabilitySnapshot, plan_playback,
+};
+use web_media_transport_api::{
+    MediaComponentRole, SourceGeneration, TransportInput, TransportProvider, TransportRegistry,
+    TransportSeekability,
+};
+
+/// Один кибибайт в bytes для checked config conversion.
+const KIB_BYTES: u64 = 1024;
+/// Один мебибайт в bytes для checked config conversion.
+const MIB_BYTES: u64 = KIB_BYTES * 1024;
+/// Runtime generation первого transport open-а внутри одного preparation attempt-а.
+const INITIAL_TRANSPORT_GENERATION: u64 = 1;
+/// Extraction generation первого immutable candidate snapshot-а.
+const INITIAL_EXTRACTION_GENERATION: u64 = 1;
+/// Separate A/V не должен опережать companion более чем на этот интервал.
+const COMPOSITE_MAX_TIMESTAMP_LEAD: Duration = Duration::from_millis(500);
+
+/// Process-local source identity allocator не связывает neutral core с queue ID representation.
+static NEXT_YT_DLP_SOURCE_IDENTITY: AtomicU64 = AtomicU64::new(1);
+
+/// Намерение selection: новый лучший playable candidate либо semantic rematch старого exact выбора.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum YtDlpCandidateOpenIntent {
+    /// Первичное открытие либо явная runtime override/reselection.
+    BestPlayable,
+    /// Restore/rebuild обязан сохранить semantic candidate identity.
+    Exact(Box<YtDlpCandidateSelection>),
+}
+
+/// Результат pre-barrier подготовки, который ещё не меняет player/queue state.
+pub(crate) struct PreparedYtDlpWebMedia {
+    /// Player-facing demuxer выбранного single либо compound candidate-а.
+    pub(crate) demuxer: Box<dyn Demuxer + Send>,
+    /// Service metadata из того же extraction snapshot-а, что и exact selection.
+    pub(crate) playlist_metadata: service_ytdlp::YtDlpPlaylistMetadata,
+    /// Exact установленный выбор для active source и последующего rematch-а.
+    pub(crate) candidate_selection: YtDlpCandidateSelection,
+}
+
+/// Открывает YtDlp locator одним S19 → S21C → S22 production path-ом.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_yt_dlp_web_media(
+    locator: &YtDlpMediaLocator,
+    network_config: &NetworkConfig,
+    yt_dlp_config: &YtDlpConfig,
+    demux_config: &PlayerDemuxConfig,
+    preferred_video_codec_order: &[ConfigVideoCodec],
+    system_capabilities: &capability_core::SystemCapabilities,
+    audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
+    intent: YtDlpCandidateOpenIntent,
+    cancellation: CancellationToken,
+    is_cancelled: impl Fn() -> bool,
+) -> Result<PreparedYtDlpWebMedia> {
+    ensure_not_cancelled(&is_cancelled)?;
+    let (candidate_snapshot, selection_request) =
+        resolve_candidate_snapshot(locator, yt_dlp_config, intent, &is_cancelled)
+            .context("Не удалось подготовить exact YtDlp candidate snapshot")?;
+    let planning_snapshot = candidate_snapshot
+        .planning_snapshot()
+        .context("Не удалось выразить YtDlp candidates через playback planner")?;
+    let runtime = WebOpenRuntime::new(network_config, demux_config)
+        .context("Не удалось собрать web-media runtime registries")?;
+    let policy = selection_policy(yt_dlp_config, preferred_video_codec_order)
+        .context("Не удалось собрать YtDlp playback selection policy")?;
+    let capabilities = PlaybackCapabilitySnapshot::new(
+        &runtime.transport_capabilities,
+        &runtime.demux_capabilities,
+        system_capabilities,
+        audio_capabilities,
+    );
+    let outcome = plan_playback(
+        &planning_snapshot,
+        capabilities,
+        &selection_request,
+        &policy,
+    )
+    .context("YtDlp planner не нашёл playable candidate")?;
+    let selected_candidate = candidate_snapshot
+        .accepted_candidates()
+        .find(|candidate| candidate.descriptor().identity() == outcome.selected().exact_identity())
+        .ok_or_else(|| anyhow!("planner выбрал отсутствующий YtDlp candidate"))?;
+    let candidate_selection = candidate_snapshot
+        .selection_for(selected_candidate)
+        .context("Не удалось сохранить exact YtDlp candidate selection")?;
+    let playlist_metadata = candidate_snapshot.playlist_metadata().clone();
+    ensure_not_cancelled(&is_cancelled)?;
+    let demuxer = runtime
+        .open_candidate(selected_candidate, cancellation, &is_cancelled)
+        .context("Не удалось открыть выбранный YtDlp candidate")?;
+    ensure_not_cancelled(&is_cancelled)?;
+    Ok(PreparedYtDlpWebMedia {
+        demuxer,
+        playlist_metadata,
+        candidate_selection,
+    })
+}
+
+/// Держит concrete providers/factories и immutable capability snapshots одного attempt-а.
+struct WebOpenRuntime {
+    /// Единственный S22 transport registry.
+    transport_registry: TransportRegistry,
+    /// Единственный neutral demux registry.
+    demux_registry: DemuxRegistry,
+    /// Provider capabilities для pure planner-а.
+    transport_capabilities: TransportCapabilitySnapshot,
+    /// Factory capabilities для pure planner-а.
+    demux_capabilities: DemuxCapabilitySnapshot,
+    /// Exact provider ID нужен service-owned neutral request adapter-у.
+    provider_id: web_media_transport_api::TransportProviderId,
+    /// Validated source policy нужна bounded sniff deadline.
+    source_config: SourceRuntimeConfig,
+    /// Existing prefetch policy переиспользуется для readiness limits.
+    prefetch_config: media_prefetch::PrefetchConfig,
+}
+
+impl WebOpenRuntime {
+    /// Создаёт registries без network I/O и снимок именно зарегистрированных capabilities.
+    fn new(network_config: &NetworkConfig, demux_config: &PlayerDemuxConfig) -> Result<Self> {
+        let source_config = SourceRuntimeConfig::from_network_config(network_config)
+            .context("Network config нельзя преобразовать в source runtime policy")?;
+        let prefetch_config = prefetch_config(network_config)?;
+        let provider = WebMediaHttpProvider::new(source_config.clone(), prefetch_config)
+            .context("Не удалось создать progressive HTTP provider")?;
+        let provider_id = provider.descriptor().provider_id().clone();
+        let mut transport_registry = TransportRegistry::new();
+        transport_registry
+            .register(Box::new(provider))
+            .context("Не удалось зарегистрировать progressive HTTP provider")?;
+
+        let demuxer_options = DemuxerOptions::from_max_consecutive_corrupted_packets(
+            demux_config.max_consecutive_corrupted_packets,
+        )
+        .context("Player demux config нарушает validated runtime bounds")?;
+        let demux_factory = SymphoniaDemuxFactory::new(demuxer_options)
+            .context("Не удалось создать Symphonia demux factory")?;
+        let demux_capabilities = demux_capabilities(demux_factory.descriptor())?;
+        let mut demux_registry = DemuxRegistry::new();
+        demux_registry
+            .register(Box::new(demux_factory))
+            .context("Не удалось зарегистрировать Symphonia demux factory")?;
+
+        Ok(Self {
+            transport_registry,
+            demux_registry,
+            transport_capabilities: progressive_http_capabilities()?,
+            demux_capabilities,
+            provider_id,
+            source_config,
+            prefetch_config,
+        })
+    }
+
+    /// Открывает physical resources candidate-а и проверяет actual demux track shape.
+    fn open_candidate(
+        &self,
+        candidate: &YtDlpNormalizedCandidate,
+        cancellation: CancellationToken,
+        is_cancelled: &impl Fn() -> bool,
+    ) -> Result<Box<dyn Demuxer + Send>> {
+        let request_context = YtDlpTransportRequestContext::new(
+            self.provider_id.clone(),
+            SourceGeneration::new(INITIAL_TRANSPORT_GENERATION),
+            cancellation.clone(),
+        );
+        let components = candidate
+            .transport_components(&request_context)
+            .context("YtDlp request material нельзя выразить через S22 transport")?;
+        let mut opened_components = Vec::with_capacity(components.len());
+        for component in components {
+            ensure_not_cancelled(is_cancelled)?;
+            let role = component.role();
+            let container = component.container();
+            let opened_transport = self
+                .transport_registry
+                .open(component.into_request())
+                .context("Progressive HTTP provider не открыл YtDlp component")?;
+            let transport_seekability = opened_transport.seekability();
+            let demux_input = match opened_transport.into_input() {
+                TransportInput::Seekable(source) => DemuxInput::byte_source(source),
+                TransportInput::Streaming(source) => {
+                    DemuxInput::streaming_source(source, cancellation.clone())
+                }
+            };
+            let demuxer = self.open_demuxer(
+                demux_input,
+                transport_seekability,
+                container,
+                cancellation.clone(),
+            )?;
+            validate_component_tracks(role, demuxer.as_ref())?;
+            opened_components.push(OpenedCandidateComponent { role, demuxer });
+        }
+        compose_candidate_components(opened_components, self.prefetch_config)
+    }
+
+    /// Открывает один resource через registry и адаптирует blocking streaming demuxer к readiness.
+    fn open_demuxer(
+        &self,
+        input: DemuxInput,
+        seekability: TransportSeekability,
+        container: ContainerFamily,
+        cancellation: CancellationToken,
+    ) -> Result<Box<dyn Demuxer + Send>> {
+        let hints = demux_hints(container)?;
+        let sniff_bytes = usize::try_from(self.prefetch_config.initial_chunk_bytes())
+            .ok()
+            .and_then(NonZeroUsize::new)
+            .ok_or_else(|| {
+                anyhow!("prefetch initial chunk нельзя использовать как sniff budget")
+            })?;
+        let sniff_budget = DemuxSniffBudget::new(
+            sniff_bytes,
+            NonZeroUsize::MIN,
+            self.source_config.read_timeout(),
+        )
+        .context("Source read timeout нельзя использовать как demux sniff deadline")?;
+        let demuxer = self
+            .demux_registry
+            .open(input, hints, sniff_budget, cancellation.clone())
+            .context("Demux registry не открыл YtDlp component")?;
+        match seekability {
+            TransportSeekability::Seekable => Ok(demuxer),
+            TransportSeekability::Streaming => {
+                let limits = progressive_limits(self.prefetch_config)?;
+                let retry_hint = DemuxRetryHint::new(DemuxRetryHint::MIN_RETRY_AFTER)
+                    .context("Minimum demux retry hint нарушает media-core bounds")?;
+                let progressive =
+                    ProgressiveDemuxer::new(demuxer, cancellation, limits, retry_hint)
+                        .context("Не удалось запустить progressive demux worker")?;
+                Ok(Box::new(progressive))
+            }
+        }
+    }
+}
+
+/// Открытый physical component до layout composition.
+struct OpenedCandidateComponent {
+    /// Exact semantic role из selected candidate.
+    role: MediaComponentRole,
+    /// Уже проверенный concrete demuxer.
+    demuxer: Box<dyn Demuxer + Send>,
+}
+
+/// Разрешает fresh snapshot либо re-extract + semantic rematch для exact restore.
+fn resolve_candidate_snapshot(
+    locator: &YtDlpMediaLocator,
+    yt_dlp_config: &YtDlpConfig,
+    intent: YtDlpCandidateOpenIntent,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<(YtDlpCandidateSnapshot, SelectionRequest)> {
+    match intent {
+        YtDlpCandidateOpenIntent::BestPlayable => {
+            let source = next_source_identity()?;
+            let generation = ExtractionGeneration::new(INITIAL_EXTRACTION_GENERATION);
+            let snapshot =
+                service_ytdlp::resolve_yt_dlp_candidate_snapshot_with_config_and_cancellation(
+                    locator,
+                    source,
+                    generation,
+                    yt_dlp_config,
+                    is_cancelled,
+                )?;
+            Ok((snapshot, SelectionRequest::BestPlayable))
+        }
+        YtDlpCandidateOpenIntent::Exact(previous) => {
+            let source = previous.exact_identity().source();
+            let generation_value = previous
+                .exact_identity()
+                .generation()
+                .value()
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("YtDlp extraction generation space исчерпан"))?;
+            let snapshot =
+                service_ytdlp::resolve_yt_dlp_candidate_snapshot_with_config_and_cancellation(
+                    locator,
+                    source,
+                    ExtractionGeneration::new(generation_value),
+                    yt_dlp_config,
+                    is_cancelled,
+                )?;
+            let matched = snapshot
+                .rematch_exact(&previous)
+                .context("Fresh YtDlp snapshot не содержит semantic match exact selection")?;
+            let exact = ExactSelectionIdentity::new(
+                matched.candidate().descriptor().identity().clone(),
+                matched.candidate().descriptor().semantic_identity().clone(),
+            )
+            .context("Rematched YtDlp identities нарушают source lineage")?;
+            Ok((snapshot, SelectionRequest::Exact(exact)))
+        }
+    }
+}
+
+/// Выдаёт новую non-zero process-local source lineage без URL/queue representation coupling.
+fn next_source_identity() -> Result<SourceIdentity> {
+    let source_value = NEXT_YT_DLP_SOURCE_IDENTITY
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .map_err(|_| anyhow!("YtDlp source identity space исчерпан"))?;
+    Ok(SourceIdentity::new(source_value))
+}
+
+/// Строит pure selection policy из committed user config.
+fn selection_policy(
+    yt_dlp_config: &YtDlpConfig,
+    preferred_video_codec_order: &[ConfigVideoCodec],
+) -> Result<PlaybackSelectionPolicy> {
+    let hdr = match yt_dlp_config.hdr_selection {
+        YtDlpHdrSelection::SdrOnly => HdrSelectionPolicy::SdrOnly,
+        YtDlpHdrSelection::PreferHdrWhenAvailable => HdrSelectionPolicy::PreferHdrWhenAvailable,
+    };
+    let codecs = preferred_video_codec_order
+        .iter()
+        .copied()
+        .map(crate::startup_media::runtime_video_codec)
+        .collect();
+    let containers = vec![
+        ContainerFamily::WebM,
+        ContainerFamily::IsoBmff,
+        ContainerFamily::FragmentedIsoBmff,
+        ContainerFamily::Matroska,
+        ContainerFamily::Ogg,
+        ContainerFamily::Flac,
+        ContainerFamily::MpegAudio,
+        ContainerFamily::Wav,
+        ContainerFamily::Aiff,
+        ContainerFamily::Caf,
+    ];
+    PlaybackSelectionPolicy::new(
+        hdr,
+        codecs,
+        crate::web_media_quality::preferred_height_policy(yt_dlp_config.preferred_video_height),
+        containers,
+    )
+    .map_err(Into::into)
+}
+
+/// Объявляет только реальные output shapes зарегистрированного S22 provider-а.
+fn progressive_http_capabilities() -> Result<TransportCapabilitySnapshot> {
+    let outputs = DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes)
+        .with(DemuxInputCapability::StreamingBytes);
+    let http = TransportCapabilityRegistration::new(
+        TransportFamily::ProgressiveHttp(HttpScheme::Http),
+        outputs,
+    )?;
+    let https = TransportCapabilityRegistration::new(
+        TransportFamily::ProgressiveHttp(HttpScheme::Https),
+        outputs,
+    )?;
+    Ok(TransportCapabilitySnapshot::new(vec![http, https]))
+}
+
+/// Строит planner snapshot непосредственно из concrete factory descriptor-а.
+fn demux_capabilities(
+    descriptor: &demux_api::DemuxFactoryDescriptor,
+) -> Result<DemuxCapabilitySnapshot> {
+    let mut registrations = Vec::new();
+    for registration in &descriptor.containers {
+        let families = container_families_for_demux_id(registration.container.as_str())
+            .ok_or_else(|| anyhow!("Неизвестный container ID в Symphonia descriptor"))?;
+        for family in families {
+            registrations.push(DemuxCapabilityRegistration::new(
+                *family,
+                descriptor.input_capabilities,
+            )?);
+        }
+    }
+    Ok(DemuxCapabilitySnapshot::new(registrations))
+}
+
+/// Согласует Symphonia registry ID с neutral planning family.
+fn container_families_for_demux_id(id: &str) -> Option<&'static [ContainerFamily]> {
+    match id {
+        "iso-bmff" => Some(&[ContainerFamily::IsoBmff, ContainerFamily::FragmentedIsoBmff]),
+        "matroska" => Some(&[ContainerFamily::Matroska]),
+        "webm" => Some(&[ContainerFamily::WebM]),
+        "ogg" => Some(&[ContainerFamily::Ogg]),
+        "caf" => Some(&[ContainerFamily::Caf]),
+        "wave" => Some(&[ContainerFamily::Wav]),
+        "aiff" => Some(&[ContainerFamily::Aiff]),
+        "flac" => Some(&[ContainerFamily::Flac]),
+        "mpeg-audio" => Some(&[ContainerFamily::MpegAudio]),
+        _ => None,
+    }
+}
+
+/// Передаёт registry согласованные extension и container hints выбранной family.
+fn demux_hints(family: ContainerFamily) -> Result<DemuxHints> {
+    let (container_id, extension) = match family {
+        ContainerFamily::IsoBmff | ContainerFamily::FragmentedIsoBmff => ("iso-bmff", "mp4"),
+        ContainerFamily::Matroska => ("matroska", "mkv"),
+        ContainerFamily::WebM => ("webm", "webm"),
+        ContainerFamily::Ogg => ("ogg", "ogg"),
+        ContainerFamily::Flac => ("flac", "flac"),
+        ContainerFamily::Wav => ("wave", "wav"),
+        ContainerFamily::Aiff => ("aiff", "aiff"),
+        ContainerFamily::Caf => ("caf", "caf"),
+        ContainerFamily::MpegAudio => ("mpeg-audio", "mp3"),
+        _ => bail!("Selected YtDlp container не принадлежит Symphonia registry"),
+    };
+    Ok(DemuxHints::none()
+        .with_extension(DemuxSourceExtension::new(extension)?)
+        .with_container(DemuxContainerId::new(container_id)?))
+}
+
+/// Переиспользует network prefetch knobs без второго cache/read-ahead policy.
+fn prefetch_config(network_config: &NetworkConfig) -> Result<media_prefetch::PrefetchConfig> {
+    let initial_chunk_bytes = network_config
+        .prefetch_initial_chunk_kb
+        .checked_mul(KIB_BYTES)
+        .ok_or_else(|| anyhow!("network.prefetch_initial_chunk_kb overflow"))?;
+    let chunk_bytes = network_config
+        .prefetch_chunk_mb
+        .checked_mul(MIB_BYTES)
+        .ok_or_else(|| anyhow!("network.prefetch_chunk_mb overflow"))?;
+    let window_bytes = network_config
+        .read_ahead_mb
+        .checked_mul(MIB_BYTES)
+        .ok_or_else(|| anyhow!("network.read_ahead_mb overflow"))?;
+    media_prefetch::PrefetchConfig::new(initial_chunk_bytes, chunk_bytes, window_bytes)
+        .map_err(Into::into)
+}
+
+/// Делит existing prefetch RAM window на bounded progressive readiness slots.
+fn progressive_limits(
+    prefetch_config: media_prefetch::PrefetchConfig,
+) -> Result<ProgressiveDemuxBufferLimits> {
+    let event_capacity = prefetch_config
+        .window_bytes()
+        .div_ceil(prefetch_config.chunk_bytes());
+    let event_capacity = usize::try_from(event_capacity)
+        .ok()
+        .and_then(NonZeroUsize::new)
+        .ok_or_else(|| anyhow!("prefetch window нельзя преобразовать в event capacity"))?;
+    let encoded_byte_capacity = usize::try_from(prefetch_config.window_bytes())
+        .ok()
+        .and_then(NonZeroUsize::new)
+        .ok_or_else(|| anyhow!("prefetch window нельзя преобразовать в byte capacity"))?;
+    Ok(ProgressiveDemuxBufferLimits::new(
+        event_capacity,
+        encoded_byte_capacity,
+    ))
+}
+
+/// Проверяет actual tracks, чтобы descriptor shape не подменял runtime evidence.
+fn validate_component_tracks(role: MediaComponentRole, demuxer: &dyn Demuxer) -> Result<()> {
+    let has_video = selected_track(demuxer, TrackKind::Video).is_some();
+    let has_audio = selected_track(demuxer, TrackKind::Audio).is_some();
+    let shape_matches = match role {
+        MediaComponentRole::Muxed => has_video && has_audio,
+        MediaComponentRole::Video => has_video,
+        MediaComponentRole::Audio => has_audio,
+        MediaComponentRole::Subtitle => false,
+    };
+    if !shape_matches {
+        bail!("Opened YtDlp component tracks не совпадают с selected descriptor role");
+    }
+    Ok(())
+}
+
+/// Композирует single layout либо ровно одну separate video/audio пару.
+fn compose_candidate_components(
+    mut components: Vec<OpenedCandidateComponent>,
+    prefetch_config: media_prefetch::PrefetchConfig,
+) -> Result<Box<dyn Demuxer + Send>> {
+    if components.len() == 1 {
+        return Ok(components.remove(0).demuxer);
+    }
+    if components.len() != 2 {
+        bail!("YtDlp candidate содержит неподдерживаемое число physical components");
+    }
+    let video_index = components
+        .iter()
+        .position(|component| component.role == MediaComponentRole::Video)
+        .ok_or_else(|| anyhow!("Separate YtDlp candidate не содержит video component"))?;
+    let video = components.remove(video_index).demuxer;
+    let audio_index = components
+        .iter()
+        .position(|component| component.role == MediaComponentRole::Audio)
+        .ok_or_else(|| anyhow!("Separate YtDlp candidate не содержит audio component"))?;
+    let audio = components.remove(audio_index).demuxer;
+    let video_track = selected_track(video.as_ref(), TrackKind::Video)
+        .ok_or_else(|| anyhow!("Separate video demuxer не содержит video track"))?;
+    let audio_track = selected_track(audio.as_ref(), TrackKind::Audio)
+        .ok_or_else(|| anyhow!("Separate audio demuxer не содержит audio track"))?;
+    let bootstrap_bytes = usize::try_from(prefetch_config.initial_chunk_bytes())
+        .ok()
+        .and_then(NonZeroUsize::new)
+        .ok_or_else(|| anyhow!("prefetch initial chunk нельзя использовать для A/V lead policy"))?;
+    let lead_policy = CompositeComponentLeadPolicy::single_pending_packet(
+        COMPOSITE_MAX_TIMESTAMP_LEAD,
+        bootstrap_bytes,
+    )
+    .context("Prefetch initial chunk нарушает composite A/V safety bounds")?;
+    let composite = CompositeAvDemuxer::new(
+        video,
+        audio,
+        CompositeAvTrackSelection::new(video_track, audio_track),
+        lead_policy,
+    )
+    .context("Не удалось скомпоновать separate YtDlp A/V demuxers")?;
+    Ok(Box::new(composite))
+}
+
+/// Возвращает первый track нужного kind-а как explicit composition selection.
+fn selected_track(demuxer: &dyn Demuxer, kind: TrackKind) -> Option<TrackId> {
+    demuxer
+        .tracks()
+        .iter()
+        .find(|track| track.kind == kind)
+        .map(|track| track.id)
+}
+
+/// Проверяет caller-owned cancellation между потенциально дорогими boundaries.
+fn ensure_not_cancelled(is_cancelled: &impl Fn() -> bool) -> Result<()> {
+    if is_cancelled() {
+        bail!("YtDlp web media preparation отменена");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Shutdown cancellation завершается до запуска extractor/network side effects.
+    #[test]
+    fn cancellation_is_a_pre_barrier_failure() {
+        let locator =
+            service_ytdlp::parse_yt_dlp_media_locator("https://media.example.test/watch?id=secret")
+                .expect("valid test locator");
+        let result = prepare_yt_dlp_web_media(
+            &locator,
+            &NetworkConfig::default(),
+            &YtDlpConfig::default(),
+            &PlayerDemuxConfig::default(),
+            &[ConfigVideoCodec::Vp9],
+            &capability_core::SystemCapabilities::empty(1),
+            audio::AudioDecodeCapabilitySnapshot::empty(),
+            YtDlpCandidateOpenIntent::BestPlayable,
+            CancellationToken::new(),
+            || true,
+        );
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("cancelled preparation не должна запускать yt-dlp"),
+        };
+        let diagnostic = format!("{error:#}");
+        assert!(diagnostic.contains("отменена"));
+        assert!(!diagnostic.contains("secret"));
+    }
+
+    /// Concrete Symphonia descriptor и planner snapshot не расходятся по S22 containers.
+    #[test]
+    fn demux_capability_snapshot_is_derived_from_registered_factory() {
+        let factory =
+            SymphoniaDemuxFactory::new(DemuxerOptions::default()).expect("Symphonia factory");
+        let capabilities = demux_capabilities(factory.descriptor()).expect("capability snapshot");
+        for family in [
+            ContainerFamily::IsoBmff,
+            ContainerFamily::FragmentedIsoBmff,
+            ContainerFamily::Matroska,
+            ContainerFamily::WebM,
+            ContainerFamily::Ogg,
+            ContainerFamily::Flac,
+            ContainerFamily::Wav,
+            ContainerFamily::Aiff,
+            ContainerFamily::Caf,
+            ContainerFamily::MpegAudio,
+        ] {
+            assert!(
+                !capabilities.input_capabilities_for(family).is_empty(),
+                "family {family:?} должна принадлежать registered factory"
+            );
+        }
+    }
+}

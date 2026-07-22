@@ -387,7 +387,11 @@ impl AppState {
                 .as_ref()
                 .ok_or("system capabilities are unavailable")?;
             locator
-                .into_media_open_source_request(&config, capabilities)
+                .into_media_open_source_request(
+                    &config,
+                    capabilities,
+                    self.audio_decode_capability_snapshot(),
+                )
                 .map_err(|_| "URL service rejected committed configuration")?
         };
         Ok(match open_intent.playback_window() {

@@ -14,6 +14,7 @@ impl YtDlpStartupJob {
     /// Cooperative-cancel-ит resolver и bounded-join-ит finished handle.
     fn shutdown_until(&mut self, deadline: ShutdownDeadline) -> ProcessOwnerShutdownOutcome {
         self.cancellation_requested.store(true, Ordering::Release);
+        self.source_cancellation.cancel();
         shutdown_single_thread(&mut self.join_handle, deadline)
     }
 }

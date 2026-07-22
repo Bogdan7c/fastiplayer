@@ -5,6 +5,8 @@ use web_media_core::{
     StaticCompatibilityRejection,
 };
 
+use crate::metadata::YtDlpPlaylistMetadata;
+
 use super::request_material::{
     YtDlpRequestMaterial, YtDlpRequestMaterialSummary, YtDlpRequestMaterialViolation,
 };
@@ -31,11 +33,11 @@ pub struct YtDlpCandidateComponentRequestSummary {
 
 /// Service-owned component request с explicit role.
 #[derive(Clone, PartialEq)]
-struct YtDlpCandidateComponentRequest {
+pub(super) struct YtDlpCandidateComponentRequest {
     /// Semantic role component-а.
-    role: YtDlpCandidateComponentRole,
+    pub(super) role: YtDlpCandidateComponentRole,
     /// Transient request material.
-    material: YtDlpRequestMaterial,
+    pub(super) material: YtDlpRequestMaterial,
 }
 
 /// Источник normalized candidate внутри snapshot-а.
@@ -127,7 +129,7 @@ pub struct YtDlpNormalizedCandidate {
     /// Service-neutral descriptor.
     descriptor: CandidateDescriptor,
     /// Один request resource для single result, два — только для compound merge.
-    component_requests: Box<[YtDlpCandidateComponentRequest]>,
+    pub(super) component_requests: Box<[YtDlpCandidateComponentRequest]>,
 }
 
 impl YtDlpNormalizedCandidate {
@@ -235,6 +237,8 @@ pub struct YtDlpCandidateSnapshot {
     source: SourceIdentity,
     /// Extraction generation для stale fencing.
     generation: ExtractionGeneration,
+    /// Playlist metadata из этого же immutable extraction snapshot-а.
+    playlist_metadata: YtDlpPlaylistMetadata,
     /// Один entry на каждую исходную `formats[]` row.
     inventory: Box<[YtDlpCandidateEntry]>,
     /// Корневой selected result, не смешанный с inventory.
@@ -250,6 +254,11 @@ impl YtDlpCandidateSnapshot {
     /// Возвращает immutable generation.
     pub const fn generation(&self) -> ExtractionGeneration {
         self.generation
+    }
+
+    /// Возвращает metadata, согласованную с candidate inventory и generation.
+    pub const fn playlist_metadata(&self) -> &YtDlpPlaylistMetadata {
+        &self.playlist_metadata
     }
 
     /// Возвращает полный visible inventory, включая rejection rows.
@@ -273,10 +282,10 @@ impl YtDlpCandidateSnapshot {
         if candidate.descriptor().identity().generation() != self.generation {
             return Err(YtDlpCandidateSelectionError::ForeignGeneration);
         }
-        let belongs_to_inventory = self
-            .accepted_inventory()
-            .any(|inventory_candidate| inventory_candidate.descriptor() == candidate.descriptor());
-        if !belongs_to_inventory {
+        let belongs_to_snapshot = self
+            .accepted_candidates()
+            .any(|snapshot_candidate| snapshot_candidate.descriptor() == candidate.descriptor());
+        if !belongs_to_snapshot {
             return Err(YtDlpCandidateSelectionError::CandidateNotInInventory);
         }
         Ok(YtDlpCandidateSelection {
@@ -297,7 +306,7 @@ impl YtDlpCandidateSnapshot {
 
         if self.generation == selected_identity.generation() {
             let Some(candidate) = self
-                .accepted_inventory()
+                .accepted_candidates()
                 .find(|candidate| candidate.descriptor().identity() == selected_identity)
             else {
                 return Err(YtDlpCandidateRematchError::StaleExactIdentity);
@@ -313,7 +322,7 @@ impl YtDlpCandidateSnapshot {
             });
         }
 
-        let mut semantic_matches = self.accepted_inventory().filter(|candidate| {
+        let mut semantic_matches = self.accepted_candidates().filter(|candidate| {
             candidate.descriptor().semantic_identity() == selected_semantic
                 && candidate.descriptor().layout() == selection.descriptor.layout()
         });
@@ -333,40 +342,51 @@ impl YtDlpCandidateSnapshot {
     pub(super) fn new(
         source: SourceIdentity,
         generation: ExtractionGeneration,
+        playlist_metadata: YtDlpPlaylistMetadata,
         inventory: Vec<YtDlpCandidateEntry>,
         selected: Option<YtDlpCandidateEntry>,
     ) -> Self {
         Self {
             source,
             generation,
+            playlist_metadata,
             inventory: inventory.into_boxed_slice(),
             selected,
         }
     }
 
-    /// Итерирует только accepted inventory candidates.
-    fn accepted_inventory(&self) -> impl Iterator<Item = &YtDlpNormalizedCandidate> {
-        self.inventory
-            .iter()
-            .filter_map(YtDlpCandidateEntry::accepted)
+    /// Итерирует selected result перед inventory, сохраняя richer request material при duplicate ID.
+    pub fn accepted_candidates(&self) -> impl Iterator<Item = &YtDlpNormalizedCandidate> {
+        self.selected
+            .as_ref()
+            .and_then(YtDlpCandidateEntry::accepted)
+            .into_iter()
+            .chain(
+                self.inventory
+                    .iter()
+                    .filter_map(YtDlpCandidateEntry::accepted),
+            )
     }
 }
 
 /// Process-local exact selection хранит ID, generation и semantic attributes.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct YtDlpCandidateSelection {
     /// Полный neutral descriptor нужен для validated semantic rematch.
     descriptor: CandidateDescriptor,
 }
 
 /// Typed отказ создания selection token-а из foreign/non-inventory candidate-а.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum YtDlpCandidateSelectionError {
     /// Candidate принадлежит другой source lineage.
+    #[error("candidate принадлежит другой source lineage")]
     ForeignSource,
     /// Candidate принадлежит другому extraction generation.
+    #[error("candidate принадлежит другой extraction generation")]
     ForeignGeneration,
     /// Candidate не найден среди accepted rows snapshot-а.
+    #[error("candidate отсутствует среди accepted snapshot rows")]
     CandidateNotInInventory,
 }
 
@@ -413,14 +433,18 @@ impl<'snapshot> YtDlpCandidateMatch<'snapshot> {
 }
 
 /// Typed Exact/rematch failure без format identities в diagnostic payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum YtDlpCandidateRematchError {
     /// Snapshot принадлежит другой source lineage.
+    #[error("snapshot принадлежит другой source lineage")]
     SourceMismatch,
     /// Exact ID устарел и semantic match отсутствует.
+    #[error("exact identity устарела и semantic match отсутствует")]
     StaleExactIdentity,
     /// Same-generation ID найден, но semantic attributes изменились.
+    #[error("same-generation candidate изменил semantic attributes")]
     ExactAttributesChanged,
     /// Semantic identity не уникальна после attribute validation.
+    #[error("semantic identity неоднозначна после attribute validation")]
     AmbiguousSemanticIdentity,
 }

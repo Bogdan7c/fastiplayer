@@ -545,11 +545,11 @@ impl StartupMediaController {
                 let prepared = *prepared;
                 let source = ActiveMediaSource::YtDlpUrl {
                     source_locator: source_locator.clone(),
-                    selected_stream_identity: prepared.selected_stream_identity,
+                    candidate_selection: Box::new(prepared.candidate_selection),
                 };
                 let prepared_media = player_core::PreparedMedia::from_external_label(
-                    prepared.streaming_media.description,
-                    prepared.streaming_media.demuxer,
+                    source_locator.safe_label(),
+                    prepared.demuxer,
                 );
                 let input = self.prepared_url_input(
                     prepared_media,

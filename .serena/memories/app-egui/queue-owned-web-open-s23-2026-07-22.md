@@ -1,0 +1,33 @@
+# S23 — Queue-owned web open integration (2026-07-22)
+
+Связанные memories: `mem:core`, `mem:app-egui/media-open-coordinator-s10c`, `mem:app-egui/startup-orchestration-s17`, `mem:media-services/progressive-http-s22-2026-07-22`, `mem:media-services/web-playback-planner-s21c-2026-07-21`, `mem:media-services/web-transport-s21t-2026-07-21`, `mem:player-core/core`.
+
+## Ownership и production flow
+
+- `PlaylistRuntime` по-прежнему единолично владеет exact Item ID, queue revision, reservation/commit barrier, manual/automatic/compound navigation, remove/tombstone и current/active binding. Ни `service-ytdlp`, ни `web_media_open` не получили queue vocabulary или commit authority.
+- Новый app composition module `crates/app-egui/src/web_media_open.rs` — единственный yt-dlp playback composition path: S19 `YtDlpCandidateSnapshot` -> S21C `plan_playback` -> S22 `TransportRegistry`/`WebMediaHttpProvider` -> `DemuxRegistry`/`SymphoniaDemuxFactory` -> single demuxer либо neutral `CompositeAvDemuxer` для separate A/V.
+- `BestPlayable` используется для нового Play и явной settings reselect policy. `Exact(YtDlpCandidateSelection)` используется для suspend/resume/settings rebuild: выполняется fresh extraction с той же `SourceIdentity`, следующей `ExtractionGeneration` и semantic rematch; ambiguous/missing/changed candidate fail-closed до barrier.
+- `PreparedYtDlpWebMedia` содержит demuxer, exact installed candidate token и `YtDlpPlaylistMetadata` из того же extraction snapshot. Demux metadata остаётся primary; service title/duration только заполняют отсутствующие значения.
+- `ActiveMediaSource::YtDlpUrl` хранит locator и boxed exact candidate selection. Source становится current/active только через прежний Ready -> explicit authorize -> EnqueuedAtPlayerOwner -> exact Installed protocol.
+- CLI, restored current, MPRIS/manual/automatic queue transport, compound part Play, suspend/resume и settings проходят через существующие typed locator/active-source boundaries. URL классификация остаётся в одном `StartupUrlServiceRegistry`; direct-media имеет приоритет, выбранный adapter не меняется после open failure.
+
+## Service boundaries и удалённый legacy path
+
+- `service-ytdlp` теперь владеет extraction/topology/locator/metadata и преобразованием S19 candidate в S21C planning snapshot + neutral S21T `TransportOpenRequest`. Он не зависит от `reqwest`, `web-media-http`, `media-prefetch`, `symphonia-demux` или player/app crates.
+- Старые public WebM-only opener/selection DTO и implementation удалены: `admission.rs`, `selection.rs`, `resolver.rs`, `http_refresh.rs`, `http_stream.rs`, `YtDlpStreamingMedia`, `YtDlpSelectedStreamIdentity` и `open_*media_from*`. Временного forwarding adapter нет.
+- Selected result и inventory остаются раздельными; accepted iteration ставит selected result первым, чтобы duplicate exact ID не потерял richer request material. Planning и transport используют один exact `CandidateIdentity`.
+- S19 snapshot теперь содержит title/duration того же `--dump-single-json` generation; второй metadata extractor process не запускается.
+- До S26 headers/cookies не отбрасываются: `transport_components` возвращает typed `AuthorizationMappingPending` pre-barrier error. Fragments/HLS/RTMP/non-progressive request material также fail-closed; текущий S23 production slice открывает public progressive HTTP(S) candidates.
+
+## Lifecycle и cancellation
+
+- Recoverable extraction/planning/transport/demux failure остаётся до authorization barrier и сохраняет старое playback. После `EnqueuedAtPlayerOwner` прежний coordinator обязан закончить exact Installed/fatal path.
+- `PreparationCancellation` теперь владеет cloneable `source_core::CancellationToken`; cancel/supersede/suspend/shutdown одновременно сохраняет typed player cancellation cause и прерывает S22 transport/progressive demux.
+- Candidate resolver использует существующий cancellable yt-dlp process primitive, поэтому running extractor также останавливается. CLI startup job передаёт и atomic cancellation callback, и тот же source token; shutdown отменяет их до bounded join.
+
+## Focused proof и проверки
+
+- `service-ytdlp`: exact/semantic rematch, selected compound, muxed/separate shapes, planning/transport exact parity, snapshot metadata generation, S26 auth preservation, cancellation, redaction и source-level guard against legacy public opener/dependencies.
+- `app-egui`: coordinator barrier/cancel winner, exact revision/intent, local/direct prepared parity, compound part Installed-only current publication, stale/remove/tombstone, automatic compound traversal, restore/settings compensation, startup shutdown token propagation.
+- S22 neighbor tests покрывают Range/non-Range, MP4/M4A/WebM, separate A/V composition, generation fences и planner exact/stale semantics.
+- Проверено: `scripts/ci-checks.sh tests` (workspace PASS), `cargo test -p app-egui` (805 PASS), `cargo test -p service-ytdlp` (48 PASS), S22 focused packages PASS, `cargo clippy -p service-ytdlp --all-targets -- -D warnings`, `cargo machete --with-metadata crates/service-ytdlp crates/app-egui`, `scripts/check-refactor-guardrails.py`, fmt/diff-check/reference audit и Serena diagnostics. App Clippy остаётся с двумя прежними untouched `large_enum_variant` warnings в `state/strong_media_open.rs` и `state/strong_media_open/pending.rs`.

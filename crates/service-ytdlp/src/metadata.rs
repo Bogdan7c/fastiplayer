@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use rustiplayer_config::YtDlpConfig;
 
-use crate::admission::ensure_single_item;
+use crate::dto::YtDlpMetadata;
 use crate::error::YtDlpServiceError;
 use crate::locator::YtDlpMediaLocator;
 use crate::process::{YtDlpProcessConfig, resolve_yt_dlp_candidate_metadata_with_cancellation};
@@ -21,6 +21,14 @@ impl YtDlpPlaylistMetadata {
             title: normalized_title(title),
             duration,
         }
+    }
+
+    /// Нормализует raw seconds из extractor JSON внутри metadata-owned boundary.
+    pub(crate) fn from_extractor_seconds(
+        title: Option<String>,
+        duration_seconds: Option<f64>,
+    ) -> Self {
+        Self::from_extractor(title, duration_from_seconds(duration_seconds))
     }
 
     /// Возвращает непустое нормализованное название ролика.
@@ -54,10 +62,22 @@ pub fn resolve_yt_dlp_playlist_metadata_with_config(
     )?;
     ensure_single_item(&metadata)?;
 
-    Ok(YtDlpPlaylistMetadata::from_extractor(
+    Ok(YtDlpPlaylistMetadata::from_extractor_seconds(
         metadata.title,
-        duration_from_seconds(metadata.duration),
+        metadata.duration,
     ))
+}
+
+/// Отделяет metadata-only single item от collection без playback admission policy.
+fn ensure_single_item(metadata: &YtDlpMetadata) -> Result<(), YtDlpServiceError> {
+    let collection_type = metadata
+        .entry_type
+        .as_deref()
+        .is_some_and(|entry_type| matches!(entry_type, "playlist" | "multi_video"));
+    if collection_type || metadata.entries.is_some() {
+        return Err(YtDlpServiceError::CollectionUrl);
+    }
+    Ok(())
 }
 
 /// Убирает только внешние пробелы и не подменяет настоящее service title.

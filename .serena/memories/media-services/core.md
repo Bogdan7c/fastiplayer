@@ -125,3 +125,10 @@ Neutral typed demux registry/composition принадлежит `demux-api`; п�
 - `source-core::HttpSourceSession` owns the single manual-redirect reqwest client and reuses the first Range probe response/client for both Range and non-Range outcomes.
 - `service-direct-media` consumes it through the neutral contract. `service-ytdlp` remains extractor/descriptor owner without a concrete HTTP dependency.
 - Full details and focused proofs: `mem:media-services/progressive-http-s22-2026-07-22`.
+
+
+## S23 queue-owned yt-dlp open (2026-07-22)
+
+- Current playback integration supersedes historical service-owned WebM opener notes: `service-ytdlp` stops at extraction/topology/locator/metadata plus neutral S19 planning/S21T request mapping; app composition owns S21C selection and S22 HTTP/demux registries.
+- Legacy `YtDlpStreamingMedia`, selected-stream DTOs and direct reqwest/prefetch/Symphonia opener modules are deleted. Exact reconstruction uses `YtDlpCandidateSelection` with fresh-generation semantic rematch.
+- Current contract and S26 limitation: `mem:app-egui/queue-owned-web-open-s23-2026-07-22`.

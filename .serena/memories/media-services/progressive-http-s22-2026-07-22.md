@@ -36,3 +36,10 @@
 - Embedded tiny real fixtures открывают MP4, M4A и WebM по non-Range HTTP; separate MP4 video + M4A audio проходят через neutral `CompositeAvDemuxer`.
 - `demux-api` tests доказывают non-blocking player read, bounded oversized packet failure и cancellation/backpressure on drop.
 - `service-direct-media` tests фиксируют Range/non-Range parity.
+
+
+## S23 yt-dlp production consumer (2026-07-22)
+
+- `app-egui::web_media_open` is now the yt-dlp composition root over the same S22 `WebMediaHttpProvider`, `TransportRegistry`, `DemuxRegistry` and progressive wrapper used by the direct-media vertical slice.
+- `service-ytdlp` maps S19 candidates into neutral S21C planning data and S21T requests, but still has no concrete HTTP/demux dependencies. Its legacy WebM-only opener and direct reqwest/prefetch/demux stack are deleted.
+- S26 authorization mapping is not guessed: candidates requiring headers/cookies return typed pre-barrier `AuthorizationMappingPending` without dropping secret material. Full flow: `mem:app-egui/queue-owned-web-open-s23-2026-07-22`.

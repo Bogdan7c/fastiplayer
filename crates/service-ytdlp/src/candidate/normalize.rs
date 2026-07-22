@@ -8,6 +8,8 @@ use web_media_core::{
     SemanticIdentity, SourceIdentity, StreamLayout,
 };
 
+use crate::metadata::YtDlpPlaylistMetadata;
+
 use super::descriptor::normalize_format_parts;
 use super::model::{
     YtDlpCandidateComponentRole, YtDlpCandidateEntry, YtDlpCandidateNormalizationRejection,
@@ -23,6 +25,8 @@ pub(crate) fn normalize_candidate_document(
     source: SourceIdentity,
     generation: ExtractionGeneration,
 ) -> YtDlpCandidateSnapshot {
+    let playlist_metadata =
+        YtDlpPlaylistMetadata::from_extractor_seconds(document.title, document.duration);
     let mut seen_format_identities = HashSet::new();
     let inventory = document
         .formats
@@ -46,7 +50,7 @@ pub(crate) fn normalize_candidate_document(
         generation,
     );
 
-    YtDlpCandidateSnapshot::new(source, generation, inventory, selected)
+    YtDlpCandidateSnapshot::new(source, generation, playlist_metadata, inventory, selected)
 }
 
 /// Сохраняет одну visible inventory row даже при rejection.

@@ -164,36 +164,6 @@ pub fn parse_yt_dlp_media_locator(
     })
 }
 
-/// Exact direct-stream URL, который может содержать подпись и expiry query.
-#[derive(Clone, PartialEq, Eq)]
-pub struct YtDlpDirectStreamUrl(String);
-
-impl YtDlpDirectStreamUrl {
-    /// Принимает exact signed identity для последующего HTTP open.
-    #[must_use]
-    pub fn from_secret_for_open(secret_url: impl Into<String>) -> Self {
-        Self(secret_url.into())
-    }
-
-    /// Раскрывает signed identity только transport boundary.
-    #[must_use]
-    pub fn expose_secret_for_open(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Debug for YtDlpDirectStreamUrl {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("YtDlpDirectStreamUrl(<redacted>)")
-    }
-}
-
-impl fmt::Display for YtDlpDirectStreamUrl {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("YtDlp direct stream <redacted>")
-    }
-}
-
 fn yt_dlp_safe_label(url: &Url) -> String {
     let host = url.host_str().unwrap_or("unknown-host");
     format!("yt-dlp media ({host})")

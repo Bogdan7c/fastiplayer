@@ -1,6 +1,5 @@
 use thiserror::Error;
 
-use crate::admission::YtDlpCompatibilityRejection;
 use crate::locator::YtDlpLocatorParseError;
 
 /// Typed ошибка generic `yt-dlp` service boundary.
@@ -52,29 +51,6 @@ pub enum YtDlpServiceError {
     /// URL описывает коллекцию, которую v1 не раскрывает в playback queue.
     #[error("URL описывает коллекцию, а не один media item")]
     CollectionUrl,
-
-    /// Extractor metadata не содержит совместимую direct WebM VP9+Opus пару.
-    #[error("yt-dlp не нашёл совместимые direct WebM VP9+Opus streams: {reason}")]
-    NoCompatibleStreams {
-        /// Typed admission-причина для UI/tests без parsing текста ошибки.
-        reason: YtDlpCompatibilityRejection,
-    },
-
-    /// Direct HTTP source не удалось открыть/прочитать.
-    #[error("не удалось открыть direct HTTP stream от yt-dlp")]
-    TransportFailure {
-        /// Secret-safe transport chain от `source-core`.
-        #[source]
-        source: anyhow::Error,
-    },
-
-    /// Совместимые byte streams не прошли demux/probe.
-    #[error("не удалось открыть WebM demuxer для yt-dlp streams")]
-    DemuxFailure {
-        /// Demux chain использует только service-safe labels.
-        #[source]
-        source: anyhow::Error,
-    },
 }
 
 impl YtDlpServiceError {
@@ -88,20 +64,6 @@ impl YtDlpServiceError {
     /// Строит invalid-response failure для UTF-8/JSON contract-а.
     pub(crate) fn invalid_response(source: impl Into<anyhow::Error>) -> Self {
         Self::InvalidExtractorResponse {
-            source: source.into(),
-        }
-    }
-
-    /// Строит transport failure с уже secret-safe source chain.
-    pub(crate) fn transport(source: impl Into<anyhow::Error>) -> Self {
-        Self::TransportFailure {
-            source: source.into(),
-        }
-    }
-
-    /// Строит demux failure с уже redacted source label.
-    pub(crate) fn demux(source: impl Into<anyhow::Error>) -> Self {
-        Self::DemuxFailure {
             source: source.into(),
         }
     }

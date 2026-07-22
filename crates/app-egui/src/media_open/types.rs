@@ -91,10 +91,10 @@ impl fmt::Display for SafeMediaLabel {
 pub(crate) enum ActiveMediaSource {
     /// Exact native path; `Debug` ниже не раскрывает его.
     LocalFile(PathBuf),
-    /// Stable normalized YtDlp locator + exact selected stream pair.
+    /// Stable normalized YtDlp locator + exact selected candidate token.
     YtDlpUrl {
         source_locator: service_ytdlp::YtDlpMediaLocator,
-        selected_stream_identity: service_ytdlp::YtDlpSelectedStreamIdentity,
+        candidate_selection: Box<service_ytdlp::YtDlpCandidateSelection>,
     },
     /// Exact functional direct locator с service-owned redacted formatting.
     DirectMediaUrl(service_direct_media::DirectMediaUrl),
@@ -190,7 +190,7 @@ impl fmt::Debug for ActiveMediaSource {
             Self::YtDlpUrl { source_locator, .. } => formatter
                 .debug_struct("YtDlpUrl")
                 .field("source_locator", source_locator)
-                .field("selected_stream_identity", &"<selected-stream>")
+                .field("candidate_selection", &"<exact-candidate>")
                 .finish(),
             Self::DirectMediaUrl(locator) => formatter
                 .debug_tuple("DirectMediaUrl")
@@ -419,12 +419,13 @@ pub(crate) enum MediaOpenSourceRequest {
     },
     YtDlp {
         locator: service_ytdlp::YtDlpMediaLocator,
-        required_stream_identity: Option<Box<service_ytdlp::YtDlpSelectedStreamIdentity>>,
+        selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent,
         network_config: rustiplayer_config::NetworkConfig,
         yt_dlp_config: rustiplayer_config::YtDlpConfig,
         demux_config: rustiplayer_config::PlayerDemuxConfig,
         preferred_video_codec_order: Vec<rustiplayer_config::VideoCodec>,
         system_capabilities: capability_core::SystemCapabilities,
+        audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
     },
     PlaybackWindow {
         source: Box<MediaOpenSourceRequest>,

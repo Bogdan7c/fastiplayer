@@ -8,6 +8,10 @@ use serde_json::Value;
 /// подменяет inventory и рассматривается только при compound reconstruction.
 #[derive(Deserialize)]
 pub(crate) struct YtDlpCandidateDocument {
+    /// Название media из того же extraction snapshot-а, что и candidates.
+    pub(crate) title: Option<String>,
+    /// Длительность media в секундах из того же extraction snapshot-а.
+    pub(crate) duration: Option<f64>,
     /// Public extractor inventory.
     pub(crate) formats: Option<Vec<YtDlpSerializedFormat>>,
     /// Pinned selected compound components.

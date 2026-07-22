@@ -111,7 +111,7 @@ impl MediaOpenCoordinator {
     ) -> Result<MediaOpenStartOutcome, MediaOpenStartError> {
         let safe_label = source_request.safe_label();
         self.start_with_task(client_key, mode, safe_label, move |cancellation| {
-            super::preparation::prepare_source(source_request, || cancellation.is_cancelled())
+            super::preparation::prepare_source(source_request, cancellation)
         })
     }
 
@@ -834,12 +834,6 @@ mod tests {
 
     use media_core::{DemuxSeekResult, Demuxer};
     use playlist_discovery::{LocalMediaFingerprint, LocalMediaKind};
-    use service_ytdlp::{
-        YtDlpDirectStreamDescriptor, YtDlpDirectStreamUrl, YtDlpDynamicRange,
-        YtDlpInsufficientVideoMetadata, YtDlpSelectedStreamIdentity, YtDlpStreamCandidate,
-        YtDlpStreamKind, YtDlpVideoRequirement,
-    };
-    use source_core::SourceValidators;
     use video_backend_api::{
         DetachedVideoBackendCandidateCancellationCause, DetachedVideoBackendCandidateStatus,
         DetachedVideoBackendPortError, DetachedVideoBackendReply, DetachedVideoBackendRequest,
@@ -1065,40 +1059,6 @@ mod tests {
             safe_label: SafeMediaLabel::from_service_safe_label("fixture.wav"),
             fingerprint_validation: crate::media_open::LocalFingerprintValidation::Matched,
         })
-    }
-
-    fn yt_dlp_selected_stream_identity() -> YtDlpSelectedStreamIdentity {
-        let candidate = YtDlpStreamCandidate {
-            stream_id: "video-251".to_owned(),
-            format_id: Some("251+140".to_owned()),
-            video: YtDlpDirectStreamDescriptor {
-                kind: YtDlpStreamKind::Video,
-                url: YtDlpDirectStreamUrl::from_secret_for_open(
-                    "https://media.example.test/video?signature=secret",
-                ),
-                headers: Vec::new(),
-                format_id: Some("251".to_owned()),
-                service_media_id: Some("service-id".to_owned()),
-                validators: SourceValidators::default(),
-                duration: None,
-                live: false,
-                description: "safe video stream".to_owned(),
-            },
-            audio: None,
-            height: Some(1080),
-            fps: Some(30.0),
-            vcodec: Some("vp9".to_owned()),
-            acodec: None,
-            dynamic_range: YtDlpDynamicRange::Sdr,
-            video_requirement: YtDlpVideoRequirement::Insufficient(
-                YtDlpInsufficientVideoMetadata {
-                    reason: "test fixture".to_owned(),
-                    partial_requirement: None,
-                },
-            ),
-            quality_score: 1,
-        };
-        YtDlpSelectedStreamIdentity::from_candidate(&candidate)
     }
 
     fn wait_until_prepared(coordinator: &mut MediaOpenCoordinator) -> MediaOpenRequestId {
@@ -1339,32 +1299,28 @@ mod tests {
     }
 
     #[test]
-    fn direct_and_yt_dlp_descriptors_follow_the_same_prepared_phase() {
+    fn local_and_direct_descriptors_follow_the_same_prepared_phase() {
         let direct_locator = service_direct_media::parse_direct_media_url(
             "https://media.example.test/movie.mp4?token=secret",
         )
         .expect("direct locator");
-        let yt_dlp_locator = service_ytdlp::parse_yt_dlp_media_locator(
-            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-        )
-        .expect("YtDlp locator");
         let descriptors = [
+            PreparedMediaDescriptor::Local {
+                media_kind: LocalMediaKind::AudioOnly,
+                tracks: Vec::new(),
+                duration: None,
+                metadata: media_core::MediaTagMetadata::default(),
+                fingerprint: LocalMediaFingerprint::new(7, SystemTime::UNIX_EPOCH),
+                source: ActiveMediaSource::LocalFile("fixture.wav".into()),
+                safe_label: SafeMediaLabel::from_service_safe_label("fixture.wav"),
+                fingerprint_validation: crate::media_open::LocalFingerprintValidation::Matched,
+            },
             PreparedMediaDescriptor::Direct {
                 tracks: Vec::new(),
                 duration: None,
                 metadata: media_core::MediaTagMetadata::default(),
                 source: ActiveMediaSource::DirectMediaUrl(direct_locator),
                 safe_label: SafeMediaLabel::from_service_safe_label("media.example.test"),
-            },
-            PreparedMediaDescriptor::YtDlp {
-                tracks: Vec::new(),
-                duration: None,
-                metadata: media_core::MediaTagMetadata::default(),
-                source: ActiveMediaSource::YtDlpUrl {
-                    source_locator: yt_dlp_locator,
-                    selected_stream_identity: yt_dlp_selected_stream_identity(),
-                },
-                safe_label: SafeMediaLabel::from_service_safe_label("youtube.com"),
             },
         ];
 
@@ -1383,8 +1339,8 @@ mod tests {
                     .snapshot()
                     .expect("prepared snapshot")
                     .descriptor,
-                Some(PreparedMediaDescriptor::Direct { .. })
-                    | Some(PreparedMediaDescriptor::YtDlp { .. })
+                Some(PreparedMediaDescriptor::Local { .. })
+                    | Some(PreparedMediaDescriptor::Direct { .. })
             ));
         }
     }
