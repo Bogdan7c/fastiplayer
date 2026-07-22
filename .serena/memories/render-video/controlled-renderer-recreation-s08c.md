@@ -11,3 +11,7 @@
 - Focused fake lifecycle tests: success, no active video, resource busy, creation failure+restore, device lost+rollback failure, active DMA-BUF lease order, HostPlanar preservation, commit failure, resize/fullscreen conflict+retry. Settings tests закрепляют commit snapshot only after success и same-draft retry. Exactly-once release guard имеет render-wgpu-video unit test.
 - Проверки 08C: app-egui 234 tests; player-core 474; render-wgpu-video 92; render-wgpu-shell 12; rustiplayer-settings 15; strict targeted Clippy; `cargo +1.96.0 check --workspace --locked`; refactor guardrails; playback smoke probe-only including installed FFmpeg runtime probe.
 - End-to-end persistence order всё ещё принадлежит Session 08D: settings-core пока persist-ит перед runtime apply и фиксирует `PersistedRuntimeDiverged` на failure; 08C не удаляет этот transitional contract.
+
+## S25 integration note (2026-07-22)
+- Controlled same-item candidate switching reuses the existing player-selected candidate ownership and renderer-generation commit path; it adds no second renderer/backend authority. Same/cross-class swaps retain exactly-once candidate release, and audio-only installs explicitly finish the present-frame freeze after generation change.
+- See `mem:app-egui/same-item-candidate-switch-s25-2026-07-22`.

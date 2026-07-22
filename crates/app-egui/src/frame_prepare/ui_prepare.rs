@@ -25,6 +25,7 @@ pub(super) struct PreparedUiFrame {
     pub(super) playlist_confirmation_action:
         Option<crate::playlist_runtime::PlaylistConfirmationAction>,
     pub(super) playlist_actions: Vec<crate::ui::playlist::PlaylistAction>,
+    pub(super) url_sidebar_action: Option<crate::web_media_stream_model::UrlSidebarAction>,
     pub(super) playlist_visible_items_hint: Option<crate::ui::playlist::PlaylistVisibleItemsHint>,
     pub(super) timings: UiPrepareTimings,
 }
@@ -73,6 +74,7 @@ pub(super) fn prepare_ui_frame(
         window_chrome_actions,
         playlist_confirmation_action,
         playlist_actions,
+        url_sidebar_action,
         playlist_visible_items_hint,
         video_viewport_rect,
         video_exclusion_rects,
@@ -125,6 +127,7 @@ pub(super) fn prepare_ui_frame(
         window_chrome_actions,
         playlist_confirmation_action,
         playlist_actions,
+        url_sidebar_action,
         playlist_visible_items_hint,
         timings: UiPrepareTimings {
             total: ui_prepare_started_at.elapsed(),

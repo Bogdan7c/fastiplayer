@@ -48,7 +48,7 @@ pub(crate) struct PreparedSingleMediaOpen {
 
 /// App intent определяет domain reservation, не устройство coordinator-а.
 enum PreparedPlaylistTarget {
-    QueueReplacement(playlist_core::PlaylistItemDraft),
+    QueueReplacement(Box<playlist_core::PlaylistItemDraft>),
     RestoredCurrent(crate::playlist_runtime::StartupRestoreTarget),
     Planned {
         install: crate::playlist_runtime::PlannedPlaylistInstall,
@@ -91,7 +91,9 @@ impl PreparedSingleMediaOpen {
             prepared_media,
             source,
             safe_label,
-            playlist_target: Some(PreparedPlaylistTarget::QueueReplacement(target_draft)),
+            playlist_target: Some(PreparedPlaylistTarget::QueueReplacement(Box::new(
+                target_draft,
+            ))),
             startup_position: crate::playlist_runtime::StartupPosition::KeepStart,
         }
     }
@@ -190,6 +192,8 @@ pub(crate) enum StrongMediaOpenError {
     PositionRestore(player_core::InstalledMediaStateRestoreOutcome),
     #[error("media-open authorization was accepted without enqueue barrier")]
     MissingAuthorizationBarrier,
+    #[error("same-lineage media switch lost its expected active instance before barrier")]
+    SameLineageStale,
     #[error("installed video candidate cannot replace missing active renderer pointers")]
     MissingActiveVideoPointers,
     #[error("post-Installed app video pointer commit violated correlation: {0:?}")]
@@ -240,7 +244,7 @@ impl StrongMediaOpenError {
                     | MediaOpenTerminalOutcome::PreparationFailed { .. }
                     | MediaOpenTerminalOutcome::PlayerRejected { .. }
                     | MediaOpenTerminalOutcome::PlayerFailed { .. }
-            )
+            ) | Self::SameLineageStale
         )
     }
 }
@@ -331,7 +335,7 @@ impl AppState {
                     .accept_explicit_target_install(
                         request_id,
                         player_request_id,
-                        target_draft,
+                        *target_draft,
                         initial_revision,
                     ),
                 PreparedPlaylistTarget::RestoredCurrent(target) => playlist_runtime

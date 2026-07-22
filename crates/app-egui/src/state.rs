@@ -64,6 +64,7 @@ pub(crate) use media_jobs::playback_intent_from_snapshot;
 mod playlist_attachment;
 mod playlist_transport;
 mod present_frame_cache;
+mod same_item_candidate_switch;
 mod sidebar_controller;
 mod strong_media_open;
 mod suspended_media_resume;
@@ -176,6 +177,9 @@ pub(crate) struct RenderedAppUi {
 
     /// Playlist toolbar/form actions применяются shell-ом после egui closure.
     pub(crate) playlist_actions: Vec<crate::ui::playlist::PlaylistAction>,
+
+    /// Typed URL candidate intent применяется после egui closure без queue mutation.
+    pub(crate) url_sidebar_action: Option<crate::web_media_stream_model::UrlSidebarAction>,
 
     /// Bounded read-only visibility hint для demand metadata refresh.
     pub(crate) playlist_visible_items_hint: Option<crate::ui::playlist::PlaylistVisibleItemsHint>,
@@ -303,6 +307,9 @@ pub struct AppState {
     /// Renderer-bound startup install, который UI loop продвигает только неблокирующими шагами.
     pending_strong_media_open: Option<strong_media_open::PendingStrongMediaOpen>,
 
+    /// S25 transaction metadata поверх общего strong media-open envelope-а.
+    same_item_candidate_switch: Option<same_item_candidate_switch::PendingSameItemCandidateSwitch>,
+
     /// Renderer-bound execution state UI playlist transport-а; traversal остаётся в runtime.
     playlist_transport: playlist_transport::PlaylistTransportRuntimeState,
 
@@ -420,6 +427,7 @@ impl AppState {
             active_media_source: None,
             suspended_media_resume: None,
             pending_strong_media_open: None,
+            same_item_candidate_switch: None,
             playlist_transport: playlist_transport::PlaylistTransportRuntimeState::default(),
             local_file_open_job: None,
             local_file_open_wake_port,

@@ -1,27 +1,35 @@
-//! Read-only содержимое URL-секции внутри единственного sidebar host-а.
+//! Содержимое URL-секции и typed same-item selection intents.
 
 use egui::{RichText, Ui};
 use web_media_core::{CodecFamily, ContainerFamily, StreamLayoutKind};
 
 use crate::web_media_stream_model::{
-    UrlSidebarItemScope, UrlSidebarModel, UrlSidebarPlaybackStatus, UrlSidebarSafeError,
-    WebMediaCandidatePresentation, WebMediaSelectionPreference,
+    UrlSidebarAction, UrlSidebarItemScope, UrlSidebarModel, UrlSidebarPlaybackStatus,
+    UrlSidebarSafeError, WebMediaCandidatePresentation, WebMediaSelectionPreference,
+    WebMediaStreamGeneration,
 };
 
-/// Рисует active web-media configuration без URL input и queue actions.
-pub(crate) fn show(ui: &mut Ui, model: &UrlSidebarModel) {
+/// Рисует active web-media configuration и возвращает один same-item intent.
+pub(crate) fn show(ui: &mut Ui, model: &UrlSidebarModel) -> Option<UrlSidebarAction> {
     egui::ScrollArea::vertical()
         .id_salt("url_stream_configuration_scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.set_min_width(0.0);
             match model {
-                UrlSidebarModel::Inactive => show_inactive(ui),
+                UrlSidebarModel::Inactive => {
+                    show_inactive(ui);
+                    None
+                }
                 UrlSidebarModel::DirectMedia {
                     source_label,
                     status,
-                } => show_direct_media(ui, source_label, *status),
+                } => {
+                    show_direct_media(ui, source_label, *status);
+                    None
+                }
                 UrlSidebarModel::YtDlp {
+                    generation,
                     source_label,
                     candidates,
                     active_candidate,
@@ -32,6 +40,7 @@ pub(crate) fn show(ui: &mut Ui, model: &UrlSidebarModel) {
                     safe_error,
                 } => show_yt_dlp(
                     ui,
+                    *generation,
                     source_label,
                     candidates,
                     active_candidate,
@@ -42,7 +51,8 @@ pub(crate) fn show(ui: &mut Ui, model: &UrlSidebarModel) {
                     *safe_error,
                 ),
             }
-        });
+        })
+        .inner
 }
 
 fn show_inactive(ui: &mut Ui) {
@@ -66,6 +76,7 @@ fn show_direct_media(ui: &mut Ui, source_label: &str, status: UrlSidebarPlayback
 #[allow(clippy::too_many_arguments)]
 fn show_yt_dlp(
     ui: &mut Ui,
+    generation: WebMediaStreamGeneration,
     source_label: &str,
     candidates: &[WebMediaCandidatePresentation],
     active_candidate: &WebMediaCandidatePresentation,
@@ -74,7 +85,7 @@ fn show_yt_dlp(
     item_scope: UrlSidebarItemScope,
     status: UrlSidebarPlaybackStatus,
     safe_error: Option<UrlSidebarSafeError>,
-) {
+) -> Option<UrlSidebarAction> {
     ui.heading("Web-медиа");
     wrapped_value(ui, "Источник", source_label);
     wrapped_value(ui, "Применение", item_scope_label(item_scope));
@@ -92,14 +103,22 @@ fn show_yt_dlp(
     ui.label(RichText::new(candidate_section_title(candidates)).strong());
     if candidates.is_empty() {
         ui.label("Нет доступных playable форматов.");
-        return;
+        return None;
     }
 
-    for candidate in candidates {
+    let mut action = None;
+    let switch_in_progress = pending_candidate.is_some();
+    for (candidate_index, candidate) in candidates.iter().enumerate() {
         let active = candidate == active_candidate;
         let pending = pending_candidate.is_some_and(|pending| pending == candidate);
-        show_candidate(ui, candidate, active, pending);
+        if show_candidate(ui, candidate, active, pending, switch_in_progress) {
+            action = Some(UrlSidebarAction::SelectCandidate {
+                generation,
+                candidate_index,
+            });
+        }
     }
+    action
 }
 
 fn status_grid(ui: &mut Ui, status: UrlSidebarPlaybackStatus) {
@@ -142,7 +161,8 @@ fn show_candidate(
     candidate: &WebMediaCandidatePresentation,
     active: bool,
     pending: bool,
-) {
+    switch_in_progress: bool,
+) -> bool {
     ui.group(|ui| {
         ui.set_min_width(0.0);
         let state = if pending {
@@ -155,7 +175,13 @@ fn show_candidate(
         ui.label(RichText::new(state).strong());
         ui.label(candidate_primary_label(candidate));
         ui.weak(candidate_format_label(candidate));
-    });
+        ui.add_enabled(
+            !active && !switch_in_progress,
+            egui::Button::new("Переключить"),
+        )
+        .clicked()
+    })
+    .inner
 }
 
 fn candidate_section_title(candidates: &[WebMediaCandidatePresentation]) -> &'static str {
@@ -236,6 +262,11 @@ fn item_scope_label(scope: UrlSidebarItemScope) -> &'static str {
 fn safe_error_label(error: UrlSidebarSafeError) -> &'static str {
     match error {
         UrlSidebarSafeError::SourceUnavailable => "Web-источник временно недоступен.",
+        UrlSidebarSafeError::CandidateSwitchBusy => "Переключение уже выполняется.",
+        UrlSidebarSafeError::CandidateSwitchStale => {
+            "Список форматов устарел; выберите формат ещё раз."
+        }
+        UrlSidebarSafeError::CandidateSwitchCancelled => "Переключение отменено.",
     }
 }
 

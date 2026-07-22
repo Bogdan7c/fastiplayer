@@ -135,7 +135,7 @@ pub(crate) use controller::{
 pub(crate) use controller::{StartupPosition, StartupRestoreFailureOutcome, StartupRestoreTarget};
 pub(crate) use discovery::PlaylistDiscoveryNavigationAction;
 pub(crate) use export_io::{PlaylistExportRequest, PlaylistExportScopeIntent};
-pub(crate) use identity::TransportActionOrigin;
+pub(crate) use identity::{ActiveMediaIdentity, TransportActionOrigin};
 pub(crate) use media_reset::PlaylistMediaResetReceiptDisposition;
 #[allow(
     unused_imports,

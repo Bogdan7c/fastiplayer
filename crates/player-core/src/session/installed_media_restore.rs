@@ -7,7 +7,7 @@ use crate::{
     InstalledMediaRelease, InstalledMediaReleaseOutcome, InstalledMediaRestoreFailureStage,
     InstalledMediaStateRestore, InstalledMediaStateRestoreOutcome, InstalledPositionRestore,
     InstalledPositionUnavailableReason, InstalledSubtitleRestore, InstalledTrackRestore,
-    PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, SeekRequest,
+    InstalledVolumeRestore, PlayerCommand, PlayerError, PlayerErrorKind, PlayerEvent, SeekRequest,
 };
 
 use super::PlayerSession;
@@ -110,7 +110,23 @@ impl PlayerSession {
         self.restore_video_track(restore.video_track)?;
         self.restore_audio_track(restore.audio_track)?;
         self.restore_subtitle_track(restore.subtitle_track)?;
+        self.restore_volume(restore.volume)?;
         self.start_media_position_restore(restore.media_instance_id, restore.position)
+    }
+
+    /// Применяет volume только после exact request/instance validation выше.
+    fn restore_volume(
+        &mut self,
+        restore: InstalledVolumeRestore,
+    ) -> Result<(), InstalledMediaStateRestoreOutcome> {
+        let InstalledVolumeRestore::Set(volume) = restore else {
+            return Ok(());
+        };
+        self.set_volume(volume)
+            .map_err(|error| InstalledMediaStateRestoreOutcome::Failed {
+                stage: InstalledMediaRestoreFailureStage::Volume,
+                error,
+            })
     }
 
     fn restore_video_track(

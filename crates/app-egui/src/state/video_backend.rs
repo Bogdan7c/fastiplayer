@@ -530,6 +530,11 @@ impl AppState {
         let worker_switched = player_snapshot.render_generation != from_generation;
         let new_backend_frame_ready =
             worker_switched && player_snapshot.current_video_frame.is_some();
+        let switched_to_audio_only = worker_switched
+            && !player_snapshot
+                .tracks
+                .iter()
+                .any(|track| track.kind == media_core::TrackKind::Video);
         let frozen_source_stale = self
             .backend_swap_frozen_frame
             .as_ref()
@@ -537,7 +542,7 @@ impl AppState {
                 frozen.source_label.as_deref() != player_snapshot.source_label.as_deref()
             });
 
-        if new_backend_frame_ready || frozen_source_stale {
+        if new_backend_frame_ready || switched_to_audio_only || frozen_source_stale {
             self.finish_backend_swap_video_freeze();
             return BackendSwapVideoPhase::NotSwapping;
         }

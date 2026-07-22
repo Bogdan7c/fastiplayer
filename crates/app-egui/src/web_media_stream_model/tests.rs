@@ -29,6 +29,7 @@ fn configuration(
     WebMediaStreamConfiguration {
         generation,
         candidates: candidates.into(),
+        candidate_selections: Arc::from([]),
         active_candidate,
         preference: WebMediaSelectionPreference::GlobalBestPlayable,
     }
@@ -171,6 +172,81 @@ fn current_generation_exposes_pending_candidate_and_bounded_failure() {
 }
 
 #[test]
+fn candidate_switch_selector_is_single_flight_and_pre_barrier_failure_restores_it() {
+    let generation = WebMediaStreamGeneration {
+        source: 21,
+        extraction: 4,
+    };
+    let pending = candidate(Some(720), false);
+    let mut controller = UrlSidebarController::default();
+
+    assert_eq!(
+        controller.record_candidate_switch_started(generation, pending.clone()),
+        Ok(())
+    );
+    assert_eq!(
+        controller.record_candidate_switch_started(generation, pending),
+        Err(UrlSidebarTransitionError::Busy)
+    );
+    assert!(
+        controller.record_candidate_switch_failed(
+            generation,
+            UrlSidebarSafeError::CandidateSwitchCancelled,
+        )
+    );
+    assert!(controller.pending_candidate.is_none());
+    assert_eq!(
+        controller.safe_error.as_ref().map(|error| error.error),
+        Some(UrlSidebarSafeError::CandidateSwitchCancelled)
+    );
+}
+
+#[test]
+fn detached_installed_switch_publishes_runtime_override_for_fresh_generation() {
+    let previous_generation = WebMediaStreamGeneration {
+        source: 22,
+        extraction: 7,
+    };
+    let installed_generation = WebMediaStreamGeneration {
+        source: 22,
+        extraction: 8,
+    };
+    let active = candidate(Some(1440), false);
+    let configuration = configuration(installed_generation, vec![active.clone()], active);
+    let mut controller = UrlSidebarController::default();
+    controller
+        .record_candidate_switch_started(previous_generation, candidate(Some(1440), false))
+        .expect("selector должен стать pending");
+
+    assert!(controller.record_candidate_switch_installed(
+        previous_generation,
+        installed_generation,
+        None,
+        Some(1440),
+    ));
+    let model = controller.model_from_source(
+        UrlSidebarSourceProjection::YtDlp {
+            source_label: "example.test",
+            configuration: &configuration,
+        },
+        &PlayerSnapshot::empty(),
+        UrlSidebarItemBinding {
+            scope: UrlSidebarItemScope::Detached,
+            item_id: None,
+        },
+    );
+
+    assert!(matches!(
+        model,
+        UrlSidebarModel::YtDlp {
+            preference: WebMediaSelectionPreference::ItemOverride(Some(1440)),
+            pending_candidate: None,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn item_override_requires_exact_item_and_source_lineage() {
     let item_id = playlist_core::PlaylistItemId::from_persistence_value(17)
         .expect("non-zero fixture Item ID");
@@ -185,7 +261,7 @@ fn item_override_requires_exact_item_and_source_lineage() {
         safe_error: None,
         item_override: Some(ItemOverrideState {
             source_lineage: generation.source,
-            item_id,
+            item_id: Some(item_id),
             preferred_height: Some(720),
         }),
     };

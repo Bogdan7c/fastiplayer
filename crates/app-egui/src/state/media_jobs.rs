@@ -188,6 +188,7 @@ impl AppState {
                 player_core::InstalledSubtitleRestore::KeepDefault,
                 player_core::InstalledSubtitleRestore::Select,
             ),
+            volume: player_core::InstalledVolumeRestore::Set(snapshot.volume),
             position: if snapshot.current_position > Duration::ZERO {
                 player_core::InstalledPositionRestore::SeekTo(snapshot.current_position)
             } else {

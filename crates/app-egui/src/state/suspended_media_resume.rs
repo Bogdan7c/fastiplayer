@@ -509,6 +509,7 @@ impl AppState {
                     video_track: InstalledTrackRestore::KeepDefault,
                     audio_track: InstalledTrackRestore::KeepDefault,
                     subtitle_track: InstalledSubtitleRestore::KeepDefault,
+                    volume: player_core::InstalledVolumeRestore::KeepCurrent,
                     position: InstalledPositionRestore::SeekTo(attempt.position),
                 };
                 match self.player_worker.restore_installed_media_state(restore) {

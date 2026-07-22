@@ -37,8 +37,17 @@ pub enum InstalledPositionRestore {
     SeekTo(Duration),
 }
 
+/// Явное восстановление громкости exact installed media instance-а.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum InstalledVolumeRestore {
+    /// Сохраняет актуальную громкость player session без дополнительной записи.
+    KeepCurrent,
+    /// Применяет свежую громкость, снятую непосредственно перед install barrier-ом.
+    Set(f32),
+}
+
 /// Полный exact-instance restore intent после correlated `Installed`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct InstalledMediaStateRestore {
     /// Exact install request, который создал target instance.
     pub request_id: MediaInstallRequestId,
@@ -50,6 +59,8 @@ pub struct InstalledMediaStateRestore {
     pub audio_track: InstalledTrackRestore,
     /// Subtitle track action.
     pub subtitle_track: InstalledSubtitleRestore,
+    /// Exact volume action.
+    pub volume: InstalledVolumeRestore,
     /// Position action.
     pub position: InstalledPositionRestore,
 }
@@ -75,6 +86,8 @@ pub enum InstalledMediaRestoreFailureStage {
     AudioTrack,
     /// Subtitle track selection.
     SubtitleTrack,
+    /// Volume validation/application.
+    Volume,
     /// Absolute seek dispatch внутри player owner-а.
     Position,
 }

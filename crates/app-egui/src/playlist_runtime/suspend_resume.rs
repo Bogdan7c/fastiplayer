@@ -482,6 +482,37 @@ impl PlaylistRuntime {
         Ok(active_media)
     }
 
+    /// S25 публикует новый player instance той же lineage без queue/traversal commit-а.
+    pub(crate) fn complete_same_item_candidate_switch(
+        &mut self,
+        expected_active: ActiveMediaIdentity,
+        media_instance_id: MediaInstanceId,
+        binding: PlaylistRuntimeBinding,
+        source: ActiveMediaSource,
+    ) -> Result<ActiveMediaIdentity, ResumeCheckpointError> {
+        self.validate_binding(binding)
+            .map_err(|_| ResumeCheckpointError::StalePlayerBinding)?;
+        let outcome = self
+            .controller
+            .as_mut()
+            .ok_or(ResumeCheckpointError::ControllerInvariant)?
+            .rebind_active_media_same_lineage(
+                expected_active,
+                media_instance_id,
+                binding.binding_generation(),
+            );
+        let active_media = match outcome {
+            super::controller::ControllerActiveMediaRebindOutcome::Rebound { active_media } => {
+                active_media
+            }
+            super::controller::ControllerActiveMediaRebindOutcome::Stale { .. } => {
+                return Err(ResumeCheckpointError::StalePlayerInstance);
+            }
+        };
+        self.suspended_media.active_source = Some(source);
+        Ok(active_media)
+    }
+
     /// Typed read model для UI/tests; checkpoint payload и source не раскрываются.
     pub(crate) fn suspended_media_status(&self) -> ResumeCheckpointStatus {
         self.suspended_media.status()

@@ -4,6 +4,8 @@ use super::*;
 
 mod resume;
 use resume::InstalledResumeCommit;
+mod same_lineage;
+use same_lineage::PendingStrongLineageCommit;
 
 /// Renderer-bound ownership незавершённой strong install транзакции.
 pub(crate) struct PendingStrongMediaOpen {
@@ -13,12 +15,22 @@ pub(crate) struct PendingStrongMediaOpen {
     intent: PlaybackIntent,
     intent_revision: PlaybackIntentRevision,
     startup_position: crate::playlist_runtime::StartupPosition,
+    lineage_commit: PendingStrongLineageCommit,
+    pre_barrier_failure: Option<StrongMediaOpenError>,
     phase: PendingStrongMediaOpenPhase,
 }
 
 struct PendingStrongMediaStaging {
     video_resource_port: player_core::MediaInstallVideoResourcePort,
-    playlist_target: PreparedPlaylistTarget,
+    admission: PendingStrongMediaAdmission,
+}
+
+/// Staging явно различает queue admission и S25 install без queue mutation.
+enum PendingStrongMediaAdmission {
+    /// Queue/controller получит existing planned install guard.
+    Playlist(PreparedPlaylistTarget),
+    /// Same-item switch не создаёт reservation, traversal visit либо новую lineage.
+    SameLineage,
 }
 
 /// Player protocol и post-Installed intent acknowledgement остаются разными этапами.
@@ -136,6 +148,8 @@ impl AppState {
                     intent,
                     intent_revision: initial_revision,
                     startup_position,
+                    lineage_commit: PendingStrongLineageCommit::NewLineageOrQueue,
+                    pre_barrier_failure: None,
                     phase: PendingStrongMediaOpenPhase::Protocol {
                         deferred_rejection: Some(error),
                         pending_staging: None,
@@ -151,7 +165,7 @@ impl AppState {
                     .accept_explicit_target_install(
                         request_id,
                         player_request_id,
-                        target_draft,
+                        *target_draft,
                         initial_revision,
                     ),
                 PreparedPlaylistTarget::RestoredCurrent(target) => playlist_runtime
@@ -191,6 +205,8 @@ impl AppState {
             intent,
             intent_revision: initial_revision,
             startup_position,
+            lineage_commit: PendingStrongLineageCommit::NewLineageOrQueue,
+            pre_barrier_failure: None,
             phase: PendingStrongMediaOpenPhase::Protocol {
                 deferred_rejection,
                 pending_staging: None,
@@ -243,14 +259,78 @@ impl AppState {
             intent,
             intent_revision,
             startup_position: crate::playlist_runtime::StartupPosition::KeepStart,
+            lineage_commit: PendingStrongLineageCommit::NewLineageOrQueue,
+            pre_barrier_failure: None,
             phase: PendingStrongMediaOpenPhase::Protocol {
                 deferred_rejection: None,
                 pending_staging: Some(PendingStrongMediaStaging {
                     video_resource_port,
-                    playlist_target: PreparedPlaylistTarget::Planned {
-                        install,
-                        supersedes,
-                    },
+                    admission: PendingStrongMediaAdmission::Playlist(
+                        PreparedPlaylistTarget::Planned {
+                            install,
+                            supersedes,
+                        },
+                    ),
+                }),
+            },
+        });
+        Ok(request_id)
+    }
+
+    /// Запускает background source prepare без queue reservation и новой lineage.
+    pub(crate) fn begin_same_lineage_source_media_strong(
+        &mut self,
+        playlist_runtime: &mut PlaylistRuntime,
+        renderer: &Renderer,
+        source_request: MediaOpenSourceRequest,
+        expected_active: crate::playlist_runtime::ActiveMediaIdentity,
+        intent: PlaybackIntent,
+    ) -> Result<MediaOpenRequestId, StrongMediaOpenError> {
+        if self.pending_strong_media_open.is_some() {
+            return Err(StrongMediaOpenError::Start(MediaOpenStartError::Busy));
+        }
+        let request_id = match playlist_runtime.start_media_open(
+            SINGLE_MEDIA_CLIENT_KEY,
+            source_request,
+            MediaOpenStartMode::RequireIdle,
+        )? {
+            MediaOpenStartOutcome::Accepted { request_id } => request_id,
+            MediaOpenStartOutcome::Coalesced { .. } => {
+                return Err(StrongMediaOpenError::Start(MediaOpenStartError::Busy));
+            }
+        };
+        let driver = WgpuCandidateVideoPipelineResourceDriver::new(
+            renderer.instance(),
+            renderer.adapter(),
+            renderer.device(),
+            renderer.queue(),
+        );
+        let (candidate_owner, video_resource_port) = player_selected_video_candidate_boundary(
+            self.renderer_generation,
+            self.player_worker.decoder_thread_config(),
+            driver,
+        );
+        let initial_revision = PlaybackIntentRevision::from_non_zero(
+            NonZeroU64::new(1).expect("revision is non-zero"),
+        );
+        self.pending_strong_media_open = Some(PendingStrongMediaOpen {
+            request_id,
+            candidate_owner: Some(candidate_owner),
+            source: None,
+            intent,
+            intent_revision: initial_revision,
+            startup_position: crate::playlist_runtime::StartupPosition::KeepStart,
+            lineage_commit: PendingStrongLineageCommit::SameLineage {
+                expected_active,
+                restore: None,
+                rebound_after_installed: false,
+            },
+            pre_barrier_failure: None,
+            phase: PendingStrongMediaOpenPhase::Protocol {
+                deferred_rejection: None,
+                pending_staging: Some(PendingStrongMediaStaging {
+                    video_resource_port,
+                    admission: PendingStrongMediaAdmission::SameLineage,
                 }),
             },
         });
@@ -408,6 +488,20 @@ impl AppState {
                 if deferred_rejection.is_some() {
                     return StrongMediaOpenPoll::Pending;
                 }
+                if let Err(error) =
+                    self.capture_same_lineage_restore_before_barrier(playlist_runtime, pending)
+                {
+                    pending.pre_barrier_failure = Some(error);
+                    return match playlist_runtime.cancel_media_open_lossless(
+                        pending.request_id,
+                        MediaInstallCancellationCause::StructuralInvalidation,
+                    ) {
+                        Ok(_) => StrongMediaOpenPoll::Pending,
+                        Err(error) => StrongMediaOpenPoll::completed(Err(
+                            StrongMediaOpenError::Command(error),
+                        )),
+                    };
+                }
                 let authorization = if playlist_runtime.playlist_install_matches(pending.request_id)
                 {
                     playlist_runtime.authorize_ready_target_install(pending.request_id)
@@ -452,6 +546,9 @@ impl AppState {
                         )));
                     }
                 };
+                if let Some(error) = pending.pre_barrier_failure.take() {
+                    return StrongMediaOpenPoll::completed(Err(error));
+                }
                 StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::Terminal(terminal)))
             }
         }
@@ -491,12 +588,16 @@ impl AppState {
                 return StrongMediaOpenPoll::Pending;
             }
         };
-        let admission = match staging.playlist_target {
+        let playlist_target = match staging.admission {
+            PendingStrongMediaAdmission::Playlist(playlist_target) => playlist_target,
+            PendingStrongMediaAdmission::SameLineage => return StrongMediaOpenPoll::Pending,
+        };
+        let admission = match playlist_target {
             PreparedPlaylistTarget::QueueReplacement(target_draft) => playlist_runtime
                 .accept_explicit_target_install(
                     pending.request_id,
                     player_request_id,
-                    target_draft,
+                    *target_draft,
                     pending.intent_revision,
                 ),
             PreparedPlaylistTarget::RestoredCurrent(target) => playlist_runtime

@@ -212,6 +212,7 @@ fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_install
             video_track: InstalledTrackRestore::KeepDefault,
             audio_track: InstalledTrackRestore::KeepDefault,
             subtitle_track: InstalledSubtitleRestore::KeepDefault,
+            volume: crate::InstalledVolumeRestore::KeepCurrent,
             position: InstalledPositionRestore::KeepStart,
         })
         .expect("restore transport должен принять command");
@@ -249,6 +250,7 @@ fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_install
             video_track: InstalledTrackRestore::KeepDefault,
             audio_track: InstalledTrackRestore::KeepDefault,
             subtitle_track: InstalledSubtitleRestore::Select(TrackId::new(99)),
+            volume: crate::InstalledVolumeRestore::Set(0.37),
             position: InstalledPositionRestore::SeekTo(Duration::from_secs(2)),
         })
         .expect("exact restore transport должен принять command");
@@ -260,6 +262,36 @@ fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_install
             media_instance_id: installed_instance,
         }
     );
+    wait_until(|| {
+        (worker
+            .latest_snapshot(crate::FrameCounters::default())
+            .volume
+            - 0.37)
+            .abs()
+            .lt(&f32::EPSILON)
+            .then_some(())
+    });
+
+    let failed_volume_restore = worker
+        .restore_installed_media_state(InstalledMediaStateRestore {
+            request_id,
+            media_instance_id: installed_instance,
+            video_track: InstalledTrackRestore::KeepDefault,
+            audio_track: InstalledTrackRestore::KeepDefault,
+            subtitle_track: InstalledSubtitleRestore::KeepDefault,
+            volume: crate::InstalledVolumeRestore::Set(f32::NAN),
+            position: InstalledPositionRestore::KeepStart,
+        })
+        .expect("volume restore transport должен принять command");
+    assert!(matches!(
+        failed_volume_restore
+            .wait_for_outcome()
+            .expect("volume failure должен быть authoritative owner outcome"),
+        InstalledMediaStateRestoreOutcome::Failed {
+            stage: crate::InstalledMediaRestoreFailureStage::Volume,
+            ..
+        }
+    ));
 
     let failed_track_restore = worker
         .restore_installed_media_state(InstalledMediaStateRestore {
@@ -268,6 +300,7 @@ fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_install
             video_track: InstalledTrackRestore::Select(TrackId::new(100)),
             audio_track: InstalledTrackRestore::KeepDefault,
             subtitle_track: InstalledSubtitleRestore::KeepDefault,
+            volume: crate::InstalledVolumeRestore::KeepCurrent,
             position: InstalledPositionRestore::KeepStart,
         })
         .expect("track restore transport должен принять command");
@@ -362,6 +395,7 @@ fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_install
             video_track: InstalledTrackRestore::KeepDefault,
             audio_track: InstalledTrackRestore::KeepDefault,
             subtitle_track: InstalledSubtitleRestore::KeepDefault,
+            volume: crate::InstalledVolumeRestore::KeepCurrent,
             position: InstalledPositionRestore::KeepStart,
         })
         .expect("stale restore transport всё ещё может быть принят");
@@ -426,6 +460,7 @@ fn exact_restore_reports_typed_position_unavailable_for_non_seekable_source() {
             video_track: InstalledTrackRestore::KeepDefault,
             audio_track: InstalledTrackRestore::KeepDefault,
             subtitle_track: InstalledSubtitleRestore::KeepDefault,
+            volume: crate::InstalledVolumeRestore::KeepCurrent,
             position: InstalledPositionRestore::SeekTo(requested_position),
         })
         .expect("restore command должна быть принята");

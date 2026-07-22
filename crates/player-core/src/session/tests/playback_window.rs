@@ -291,6 +291,7 @@ fn installed_restore_stays_pending_and_maps_relative_target_until_absolute_commi
             video_track: InstalledTrackRestore::KeepDefault,
             audio_track: InstalledTrackRestore::KeepDefault,
             subtitle_track: InstalledSubtitleRestore::KeepDefault,
+            volume: crate::InstalledVolumeRestore::KeepCurrent,
             position: InstalledPositionRestore::SeekTo(Duration::from_secs(4)),
         },
         outcome_tx,

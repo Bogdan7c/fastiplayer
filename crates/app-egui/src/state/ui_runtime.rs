@@ -246,6 +246,7 @@ impl AppState {
         let playlist_runtime_binding = self.playlist_runtime_binding();
         let mut playlist_ui_state = std::mem::take(&mut self.playlist_ui_state);
         let mut playlist_ui_output = crate::ui::playlist::PlaylistUiOutput::default();
+        let mut url_sidebar_action = None;
         let mut timeline_ui_state = std::mem::take(&mut self.timeline_ui_state);
         let pre_ui_setup_elapsed = pre_ui_setup_started_at.elapsed();
         let mut telemetry_panel_cache_elapsed = Duration::ZERO;
@@ -355,6 +356,7 @@ impl AppState {
                     window_chrome_edge_alignment,
                     playlist_state: &mut playlist_ui_state,
                     playlist_output: &mut playlist_ui_output,
+                    url_action: &mut url_sidebar_action,
                     settings_actions: &mut settings_actions,
                     close_requested: &mut sidebar_close_requested,
                 },
@@ -420,6 +422,7 @@ impl AppState {
             window_chrome_actions,
             playlist_confirmation_action,
             playlist_actions: playlist_ui_output.take_actions(),
+            url_sidebar_action,
             playlist_visible_items_hint: playlist_runtime_binding
                 .and_then(|binding| playlist_ui_output.into_visible_hint(binding)),
             video_viewport_rect,

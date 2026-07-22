@@ -253,6 +253,105 @@ fn same_lineage_rebind_rejects_stale_old_instance_and_binding() {
 }
 
 #[test]
+fn same_lineage_rebind_preserves_queue_revisions_current_shuffle_and_lineage() {
+    let (mut controller, ids, active_before) = controller_with_active(4, 2);
+    controller
+        .queue
+        .enable_shuffle()
+        .expect("shuffle fixture должен включиться");
+    let revisions_before = controller.queue.revision_snapshot();
+    let current_before = controller.queue.traversal_current();
+    let shuffle_before = controller
+        .queue
+        .shuffle_traversal_snapshot()
+        .expect("enabled shuffle имеет snapshot");
+
+    let outcome = controller.rebind_active_media_same_lineage(
+        active_before,
+        MediaInstanceId::from_non_zero(non_zero(184)),
+        PlaylistBindingGeneration(194),
+    );
+    let ControllerActiveMediaRebindOutcome::Rebound { active_media } = outcome else {
+        panic!("matching same-lineage rebind должен завершиться успешно");
+    };
+
+    assert_eq!(controller.queue.revision_snapshot(), revisions_before);
+    assert_eq!(controller.queue.traversal_current(), current_before);
+    assert_eq!(
+        controller
+            .queue
+            .traversal_current()
+            .map(playlist_core::TraversalCurrentItemId::item_id),
+        Some(ids[2])
+    );
+    assert_eq!(
+        controller
+            .queue
+            .shuffle_traversal_snapshot()
+            .expect("rebind не выключает shuffle"),
+        shuffle_before
+    );
+    assert_eq!(active_media.item_id(), active_before.item_id());
+    assert_eq!(active_media.lineage_id(), active_before.lineage_id());
+    assert_ne!(
+        active_media.media_instance_id(),
+        active_before.media_instance_id()
+    );
+}
+
+#[test]
+fn same_lineage_rebind_preserves_exact_compound_part_current() {
+    let mut controller = PlaylistController::new();
+    let compound = PlaylistCompoundGroupDraft::new(
+        PlaylistLocator::Local(LocalLocator::Native(PathBuf::from("cue-image.flac"))),
+        CachedPlaylistMetadata::new("cue-image", PlaylistMediaKind::Audio),
+        vec![draft(1), draft(2), draft(3)],
+    )
+    .expect("compound fixture requires parts");
+    let AddPlaylistEntriesOutcome::Added(allocated) = controller
+        .queue
+        .append_entries(vec![PlaylistEntryDraft::Compound(compound)])
+        .expect("compound append")
+    else {
+        panic!("compound fixture is non-empty");
+    };
+    let part_ids = allocated.iter_playable_item_ids().collect::<Vec<_>>();
+    controller
+        .queue
+        .set_traversal_current(part_ids[1])
+        .expect("middle compound part is committed");
+    let active_before = ActiveMediaIdentity::installed(
+        Some(part_ids[1]),
+        ActiveMediaLineageId::from_non_zero(non_zero(201)),
+        MediaInstanceId::from_non_zero(non_zero(202)),
+        PlaylistBindingGeneration(203),
+    );
+    controller.active_media = Some(active_before);
+    let revisions_before = controller.queue.revision_snapshot();
+
+    let outcome = controller.rebind_active_media_same_lineage(
+        active_before,
+        MediaInstanceId::from_non_zero(non_zero(204)),
+        PlaylistBindingGeneration(205),
+    );
+
+    assert!(matches!(
+        outcome,
+        ControllerActiveMediaRebindOutcome::Rebound { active_media }
+            if active_media.item_id() == Some(part_ids[1])
+                && active_media.lineage_id() == active_before.lineage_id()
+    ));
+    assert_eq!(controller.queue.revision_snapshot(), revisions_before);
+    assert_eq!(
+        controller
+            .queue
+            .traversal_current()
+            .map(playlist_core::TraversalCurrentItemId::item_id),
+        Some(part_ids[1])
+    );
+}
+
+#[test]
 fn every_repeat_mode_continues_tombstone_without_replaying_removed_item() {
     for repeat_mode in [
         RepeatMode::StopAtEnd,

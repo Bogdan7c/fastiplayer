@@ -52,3 +52,8 @@ generation 1`. Дополняет `mem:video-ffmpeg/sw-to-hw-backend-swap-frame-
 ## Проверено
 player-core 369 тестов, app-egui 149, guardrails OK, fmt clean. Session 25 AV1
 (SDR+HDR+software) и contract-recompute тест не регрессировали.
+
+
+## S25 same-item source switch (2026-07-22)
+- Same-item exact Installed reuses this frozen-frame lifecycle before candidate pointer commit for both same-class and cross-class backend changes. The old frame remains Arc-owned until the new render generation presents a frame.
+- A generation switch to an audio-only source is also a terminal freeze condition; it releases the old frozen frame instead of waiting forever for an impossible video frame. Full orchestration: `mem:app-egui/same-item-candidate-switch-s25-2026-07-22`.

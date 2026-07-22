@@ -201,3 +201,8 @@ Session 05 completed PASS on 2026-07-14. This memory complements `mem:core` and 
 ## S18 topology milestone gate (2026-07-21)
 - Production domain/API не менялись. Guardrail фиксирует единственный canonical `Vec<PlaylistEntry>`, top-level read API у persistence/export/UI/external consumers и derived playable traversal без второго canonical Vec; legacy read audit теперь также сканирует `playlist-io`.
 - Full verdict/reference audit/verification: `mem:playlist/topology-hardening-s18-2026-07-21`.
+
+
+## S25 same-item candidate switch (2026-07-22)
+- S25 is an app/runtime rebind, not a queue mutation. Exact Installed calls `PlaylistController::rebind_active_media_same_lineage`; Item ID, current, structural/traversal revisions and shuffle history/upcoming/cursor remain unchanged. Detached active media stays detached and does not invent queue current.
+- The switch must not create a D08 reservation and must not call `register_external_strong_install`, because that would create a new lineage. Full contract: `mem:app-egui/same-item-candidate-switch-s25-2026-07-22`.

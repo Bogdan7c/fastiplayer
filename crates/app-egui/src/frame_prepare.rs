@@ -1181,6 +1181,7 @@ pub(crate) fn render_frame(
     let window_chrome_actions = std::mem::take(&mut prepared_ui_frame.window_chrome_actions);
     let playlist_confirmation_action = prepared_ui_frame.playlist_confirmation_action.take();
     let playlist_actions = std::mem::take(&mut prepared_ui_frame.playlist_actions);
+    let url_sidebar_action = prepared_ui_frame.url_sidebar_action.take();
     let playlist_visible_items_hint = prepared_ui_frame.playlist_visible_items_hint.take();
     let mut ui_prepare_timings = prepared_ui_frame.timings;
     ui_prepare_timings.total = stage_started_at.elapsed();
@@ -1240,6 +1241,17 @@ pub(crate) fn render_frame(
         renderer,
         playlist_actions,
     );
+    let url_action_requested_repaint = match url_sidebar_action {
+        Some(action) => {
+            if let Err(error) =
+                app_state.apply_url_sidebar_action(action, playlist_runtime, renderer)
+            {
+                tracing::warn!(error = %error, "URL candidate switch intent отклонён");
+            }
+            true
+        }
+        None => false,
+    };
     if let Some(hint) = playlist_visible_items_hint
         && playlist_runtime.validate_binding(hint.binding()).is_ok()
     {
@@ -1270,6 +1282,7 @@ pub(crate) fn render_frame(
         playlist_runtime,
         renderer,
     );
+    app_state.poll_same_item_candidate_switch(playlist_runtime);
     app_state.poll_playlist_transport(playlist_runtime, renderer);
 
     let settings_preview_tick = match settings_runtime.apply_due_preview(renderer, Instant::now()) {
@@ -1341,7 +1354,8 @@ pub(crate) fn render_frame(
             app_state.take_pending_worker_redraw()
                 || egui_requested_repaint
                 || settings_action_requested_repaint
-                || playlist_action_requested_repaint,
+                || playlist_action_requested_repaint
+                || url_action_requested_repaint,
         ),
         close_requested: chrome_close_requested,
         next_ui_wake_deadline: earliest_ui_wake_deadline(

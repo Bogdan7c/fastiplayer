@@ -177,6 +177,46 @@ fn detached_windowed_source_reopens_without_queue_row_or_cue_identity() {
 }
 
 #[test]
+fn detached_same_item_switch_rebinds_instance_without_inventing_queue_current() {
+    let mut runtime = runtime();
+    let binding = runtime.bind_resumed_app_state().expect("active binding");
+    let active_before = install_external(&mut runtime, binding, 72);
+    let revisions_before = runtime
+        .controller
+        .as_ref()
+        .expect("controller")
+        .queue()
+        .revision_snapshot();
+    let replacement_source = ActiveMediaSource::LocalFile("replacement.flac".into());
+
+    let active_after = runtime
+        .complete_same_item_candidate_switch(
+            active_before,
+            MediaInstanceId::from_non_zero(non_zero(73)),
+            binding,
+            replacement_source.clone(),
+        )
+        .expect("same-lineage detached rebind");
+
+    assert_eq!(active_after.item_id(), None);
+    assert_eq!(active_after.lineage_id(), active_before.lineage_id());
+    assert_eq!(runtime.playlist_view_snapshot().traversal_current(), None);
+    assert_eq!(
+        runtime
+            .controller
+            .as_ref()
+            .expect("controller")
+            .queue()
+            .revision_snapshot(),
+        revisions_before
+    );
+    assert_eq!(
+        runtime.suspended_media.active_source.as_ref(),
+        Some(&replacement_source)
+    );
+}
+
+#[test]
 fn tombstone_undo_survives_same_lineage_new_instance() {
     let mut runtime = runtime();
     let first_binding = runtime.bind_resumed_app_state().expect("first binding");

@@ -96,13 +96,13 @@ pub use media_install::{
     InstalledMediaStateRestoreOutcome, InstalledMediaStateRestoreReceipt,
     InstalledMediaStateRestoreReceiptError, InstalledPositionRestore,
     InstalledPositionUnavailableReason, InstalledSubtitleRestore, InstalledTrackRestore,
-    MediaInstallCancellationCause, MediaInstallCommitPoint, MediaInstallCompletion,
-    MediaInstallControl, MediaInstallControlOutcome, MediaInstallFailure, MediaInstallFailureStage,
-    MediaInstallPhase, MediaInstallPhaseCompletionPort, MediaInstallReceipt,
-    MediaInstallReceiptSignal, MediaInstallReceiptWaitError, MediaInstallRequestId,
-    MediaInstallVideoResourcePort, MediaInstanceId, PlaybackIntent, PlaybackIntentRevision,
-    PlaybackIntentUpdate, PlaybackIntentUpdateOutcome, PlaybackIntentUpdateReceipt,
-    TimelineSeekKind, TimelineSeekRequestId,
+    InstalledVolumeRestore, MediaInstallCancellationCause, MediaInstallCommitPoint,
+    MediaInstallCompletion, MediaInstallControl, MediaInstallControlOutcome, MediaInstallFailure,
+    MediaInstallFailureStage, MediaInstallPhase, MediaInstallPhaseCompletionPort,
+    MediaInstallReceipt, MediaInstallReceiptSignal, MediaInstallReceiptWaitError,
+    MediaInstallRequestId, MediaInstallVideoResourcePort, MediaInstanceId, PlaybackIntent,
+    PlaybackIntentRevision, PlaybackIntentUpdate, PlaybackIntentUpdateOutcome,
+    PlaybackIntentUpdateReceipt, TimelineSeekKind, TimelineSeekRequestId,
 };
 pub use media_opening::{MediaSourceInfo, MediaSourceKind, PreparedMedia, PreparedMediaSource};
 pub(crate) use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};

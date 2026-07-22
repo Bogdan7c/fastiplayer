@@ -54,6 +54,7 @@ fn begin_position_restore(
             video_track: InstalledTrackRestore::KeepDefault,
             audio_track: InstalledTrackRestore::KeepDefault,
             subtitle_track: InstalledSubtitleRestore::KeepDefault,
+            volume: crate::InstalledVolumeRestore::KeepCurrent,
             position: InstalledPositionRestore::SeekTo(Duration::from_secs(7)),
         },
         outcome_tx,

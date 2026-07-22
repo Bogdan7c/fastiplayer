@@ -118,6 +118,7 @@ pub(crate) struct SidebarRenderContext<'a> {
     pub(crate) window_chrome_edge_alignment: WindowChromeEdgeAlignment,
     pub(crate) playlist_state: &'a mut playlist::PlaylistUiState,
     pub(crate) playlist_output: &'a mut playlist::PlaylistUiOutput,
+    pub(crate) url_action: &'a mut Option<crate::web_media_stream_model::UrlSidebarAction>,
     pub(crate) settings_actions: &'a mut Vec<SettingsUiAction>,
     pub(crate) close_requested: &'a mut bool,
 }
@@ -318,7 +319,7 @@ fn render_section(ui: &mut Ui, section: SidebarSection, context: &mut SidebarRen
                 layout::show(ui, context.model, context.settings_actions);
             }
             SidebarSection::Url => {
-                url_sidebar::show(ui, context.url_model);
+                *context.url_action = url_sidebar::show(ui, context.url_model);
             }
             SidebarSection::Info => {
                 egui::ScrollArea::vertical()

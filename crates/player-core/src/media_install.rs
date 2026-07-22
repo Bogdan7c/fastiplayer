@@ -25,6 +25,7 @@ pub use installed_state_restore::{
     InstalledMediaStateRestoreOutcome, InstalledMediaStateRestoreReceipt,
     InstalledMediaStateRestoreReceiptError, InstalledPositionRestore,
     InstalledPositionUnavailableReason, InstalledSubtitleRestore, InstalledTrackRestore,
+    InstalledVolumeRestore,
 };
 pub(crate) use installed_state_restore::{
     InstalledMediaTargetMatch, PendingInstalledPositionRestore,

@@ -91,3 +91,8 @@
 - Current yt-dlp path supersedes the historical selected-stream/WebM notes above: `ActiveMediaSource::YtDlpUrl` stores exact `YtDlpCandidateSelection`, and app composition runs S19 -> S21C -> S22 through `web_media_open.rs`. Full contract: `mem:app-egui/queue-owned-web-open-s23-2026-07-22`.
 - Coordinator phases and barrier did not change. All recoverable extraction/planning/transport/demux failures are pre-authorization and preserve old playback; only exact Installed publishes active/current. Enqueued work remains commit-must-finish.
 - Generic `PreparationCancellation` now propagates a shared `source_core::CancellationToken` into S22 transport/progressive demux while retaining the exact typed cancellation cause.
+
+
+## S25 same-lineage consumer (2026-07-22)
+- The coordinator protocol remains policy-neutral. Its shared stepwise strong envelope now carries explicit playlist-vs-same-lineage admission and lineage-commit policies; S25 prepares a fresh exact semantic rematch without queue admission, captures controls at ReadyToCommit, and follows the existing CommitMustFinish rule after enqueue.
+- Exact Installed performs same-lineage rebind before fallible post-install restore and never uses external strong registration. Full contract: `mem:app-egui/same-item-candidate-switch-s25-2026-07-22`.
