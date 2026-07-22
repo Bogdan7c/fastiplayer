@@ -169,6 +169,21 @@ WEB_MEDIA_HTTP_ALLOWED_DEPENDENCIES = frozenset(
     {"media-prefetch", "source-core", "web-media-transport-api"}
 )
 
+# yt-dlp service заканчивается на extractor/descriptor/neutral request mapping.
+# Concrete HTTP, cache, demux и player ownership остаются у composition owners.
+SERVICE_YTDLP_FORBIDDEN_DEPENDENCIES = frozenset(
+    {
+        "app-egui",
+        "demux-api",
+        "media-prefetch",
+        "player-core",
+        "reqwest",
+        "service-direct-media",
+        "symphonia-demux",
+        "web-media-http",
+    }
+)
+
 # Neutral demux composition владеет только typed input/probe/runtime contracts.
 # Concrete container backends, player, services и UI остаются внешними adapters.
 DEMUX_API_ALLOWED_DEPENDENCIES = frozenset(
@@ -571,6 +586,83 @@ PLAYLIST_SECRET_PRESENTATION_PATTERNS = (
     ),
 )
 
+# S27 фиксирует три production consumer-а единственной app-owned web-open composition.
+PROGRESSIVE_WEB_SOURCE_ANCHORS = (
+    (
+        Path("crates/app-egui/src/startup_media.rs"),
+        ("crate::web_media_open::prepare_yt_dlp_web_media(",),
+        "CLI startup обязан использовать единый progressive web-open composition path",
+    ),
+    (
+        Path("crates/app-egui/src/media_open/preparation.rs"),
+        ("crate::web_media_open::prepare_yt_dlp_web_media(",),
+        "queue media-open обязан использовать единый progressive web-open composition path",
+    ),
+    (
+        Path("crates/app-egui/src/frame_prepare/settings_runtime_adapter.rs"),
+        ("crate::web_media_open::prepare_yt_dlp_web_media(",),
+        "settings rebuild обязан использовать единый progressive web-open composition path",
+    ),
+    (
+        Path("crates/service-ytdlp/src/candidate/tests.rs"),
+        ("public_surface_and_manifest_have_no_legacy_webm_opener",),
+        "service-ytdlp обязан сохранять focused proof удаления legacy WebM opener-а",
+    ),
+    (
+        Path("scripts/progressive-web-smoke.sh"),
+        ("--url", "redact_runtime_log", "MANUAL REVIEW REQUIRED"),
+        "manual progressive runner обязан принимать explicit URL и писать только redacted report",
+    ),
+    (
+        Path("scripts/tests/progressive-web-smoke-self-test.sh"),
+        ("<redacted-url>", "<redacted-secret-line>"),
+        "manual progressive runner обязан иметь focused redaction self-test",
+    ),
+)
+
+# Старые service-owned WebM opener symbols не должны вернуться ни в Rust, ни в runtime scripts.
+PROGRESSIVE_WEB_LEGACY_SCAN_PATHS = (
+    Path("crates/app-egui/src"),
+    Path("crates/service-ytdlp/src"),
+    Path("crates/service-ytdlp/Cargo.toml"),
+    Path("scripts/media-regression.sh"),
+    Path("scripts/playback-smoke.sh"),
+    Path("scripts/progressive-web-smoke.sh"),
+    Path("scripts/runtime-acceptance.sh"),
+)
+
+PROGRESSIVE_WEB_LEGACY_PATTERNS = (
+    (
+        re.compile(
+            r"\b(?:open_streaming_media_from|open_seekable_vod_from|"
+            r"YtDlpStreamingMedia|YtDlpSelectedStreamIdentity|"
+            r"selected_webm_(?:opens|falls_back|live))"
+        ),
+        "legacy service-owned WebM opener/runtime scenario запрещён после S27",
+    ),
+)
+
+# Durable state, config и URL presentation не должны знать transient transport/auth types.
+PROGRESSIVE_WEB_TRANSIENT_SECRET_SCAN_PATHS = (
+    Path("crates/config/src"),
+    Path("crates/playlist-core/src"),
+    Path("crates/playlist-io/src"),
+    Path("crates/playlist-state/src"),
+    Path("crates/app-egui/src/ui/url_sidebar.rs"),
+    Path("crates/app-egui/src/web_media_stream_model.rs"),
+    Path("crates/app-egui/src/web_media_stream_model"),
+)
+
+PROGRESSIVE_WEB_TRANSIENT_SECRET_PATTERNS = (
+    (
+        re.compile(
+            r"\b(?:HttpRequestTarget|ScopedHttpCookieJar|SecretRequestContext|"
+            r"TransportOpenRequest|YtDlpRequestMaterial)\b"
+        ),
+        "durable state/config/URL UI не должны зависеть от transient transport secrets",
+    ),
+)
+
 REQUIRED_SOURCE_ANCHORS = ()
 
 RequiredSourceAnchor = tuple[Path, tuple[str, ...], str]
@@ -891,6 +983,14 @@ def find_dependency_violations(
         )
     )
     violations.extend(
+        find_forbidden_dependencies(
+            dependency_map,
+            frozenset({"service-ytdlp"}),
+            SERVICE_YTDLP_FORBIDDEN_DEPENDENCIES,
+            "service-ytdlp не владеет concrete HTTP/cache/demux/player playback stack",
+        )
+    )
+    violations.extend(
         find_disallowed_dependencies(
             dependency_map,
             frozenset({"demux-api"}),
@@ -1041,6 +1141,7 @@ def find_source_policy_violations(
     violations.extend(find_prepared_branch_promotion_violations(repo_root))
     violations.extend(find_app_egui_custom_paint_violations(repo_root))
     violations.extend(find_playlist_topology_boundary_violations(repo_root))
+    violations.extend(find_progressive_web_boundary_violations(repo_root))
     violations.extend(
         find_required_source_anchor_violations(repo_root, required_source_anchors)
     )
@@ -1082,6 +1183,41 @@ def find_playlist_topology_boundary_violations(
             repo_root,
             PLAYLIST_SECRET_PRESENTATION_PATHS,
             PLAYLIST_SECRET_PRESENTATION_PATTERNS,
+        )
+    )
+    return violations
+
+
+def find_progressive_web_boundary_violations(
+    repo_root: Path,
+) -> list[SourcePolicyViolation]:
+    """Закрепляет S27 single-open и durable-vs-transient web boundaries."""
+
+    # Минимальные unit-test repositories без app web composition не собирают весь S27 tree.
+    progressive_web_boundary = repo_root / "crates/app-egui/src/web_media_open.rs"
+    if not progressive_web_boundary.is_file():
+        return []
+
+    # Exact anchors удерживают startup, queue и settings на одном composition path-е.
+    violations = find_required_source_anchor_violations(
+        repo_root,
+        PROGRESSIVE_WEB_SOURCE_ANCHORS,
+    )
+    # Legacy symbols проверяются и в Rust source, и в executable manual tooling.
+    violations.extend(
+        find_regex_violations_in_paths(
+            repo_root,
+            PROGRESSIVE_WEB_LEGACY_SCAN_PATHS,
+            PROGRESSIVE_WEB_LEGACY_PATTERNS,
+            suffixes=frozenset({".rs", ".sh", ".toml"}),
+        )
+    )
+    # Durable/presentation owners получают только acknowledged locator и safe projection.
+    violations.extend(
+        find_regex_violations_in_paths(
+            repo_root,
+            PROGRESSIVE_WEB_TRANSIENT_SECRET_SCAN_PATHS,
+            PROGRESSIVE_WEB_TRANSIENT_SECRET_PATTERNS,
         )
     )
     return violations
@@ -1324,11 +1460,13 @@ def find_regex_violations_in_paths(
     repo_root: Path,
     relative_paths: tuple[Path, ...],
     patterns: tuple[tuple[re.Pattern[str], str], ...],
+    *,
+    suffixes: frozenset[str] = RUST_SOURCE_SUFFIXES,
 ) -> list[SourcePolicyViolation]:
     """Ищет regex guardrails в точечных файлах/директориях."""
 
     violations: list[SourcePolicyViolation] = []
-    for relative_path in iter_paths_with_suffixes(repo_root, relative_paths, RUST_SOURCE_SUFFIXES):
+    for relative_path in iter_paths_with_suffixes(repo_root, relative_paths, suffixes):
         violations.extend(find_regex_line_violations(repo_root, relative_path, patterns))
     return violations
 

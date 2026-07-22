@@ -229,3 +229,8 @@ Workspace содержит neutral `crates/demux-api` между `media-core`/`s
 ## S22 architecture delta (2026-07-22)
 
 Progressive direct HTTP is now a complete neutral path: `source-core::HttpSourceSession` -> `web-media-http` S21T provider -> `demux-api` registry/progressive worker -> existing player lifecycle. Direct-media classification/privacy stay unchanged; yt-dlp does not own concrete HTTP. See `mem:media-services/progressive-http-s22-2026-07-22`.
+
+
+## S27 progressive/web hardening gate (2026-07-22)
+- Hermetic milestone evidence, architectural guardrails and secret-safe opt-in manual runner are documented in `mem:media-services/progressive-web-hardening-s27-2026-07-22`.
+- Production Rust/API/dependencies did not change; actual network/GUI acceptance remains explicit-user-URL-only and `MANUAL REVIEW REQUIRED`.

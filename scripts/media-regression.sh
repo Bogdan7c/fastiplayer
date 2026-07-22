@@ -56,9 +56,6 @@ audio-matroska-end-seek        Matroska/WebM Opus with public non-zero duration.
 audio-matroska-late-seeks      Matroska/WebM Opus longer than 8 s with late seek coverage.
 audio-wavpack-unsupported      Standalone WavPack expected to remain unsupported.
 direct-http-range              MP4, MOV, MKV, or WebM readable through HTTP Range.
-ytdlp-range                    WebM readable through paired seekable yt-dlp Range sources.
-ytdlp-fallback                 WebM readable through paired non-Range streaming sources.
-ytdlp-live                     WebM readable as a live/non-seekable streaming source.
 EOF
 }
 
@@ -150,9 +147,6 @@ scenario_test_command() {
         audio-matroska-late-seeks) printf '%s\n' 'symphonia-demux|audio_fixture_decode_seek|matroska_opus_aggressive_late_seeks_reach_near_target_packets' ;;
         audio-wavpack-unsupported) printf '%s\n' 'symphonia-demux|audio_fixture_decode_seek|wavpack_remains_explicitly_unsupported' ;;
         direct-http-range) printf '%s\n' 'service-direct-media|lib|tests::selected_media_opens_over_direct_http_range' ;;
-        ytdlp-range) printf '%s\n' 'service-ytdlp|lib|tests::selected_webm_opens_over_yt_dlp_range_sources' ;;
-        ytdlp-fallback) printf '%s\n' 'service-ytdlp|lib|tests::selected_webm_falls_back_when_yt_dlp_range_is_rejected' ;;
-        ytdlp-live) printf '%s\n' 'service-ytdlp|lib|tests::selected_webm_live_source_skips_yt_dlp_range_probe' ;;
         *) return 1 ;;
     esac
 }

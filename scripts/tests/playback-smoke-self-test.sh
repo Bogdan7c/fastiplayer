@@ -46,7 +46,7 @@ dry_run_output="$(${PLAYBACK_SMOKE} --mode full --dry-run --duration 1 \
     --vp9 "${temporary_directory}/vp9.mp4" \
     --av1 "${temporary_directory}/av1.mp4" \
     --h264 "${temporary_directory}/h264.mp4" 2>&1)"
-require_output "${dry_run_output}" "schema v6"
+require_output "${dry_run_output}" "schema v7"
 require_output "${dry_run_output}" 'yt_dlp.hdr_selection = "sdr_only"'
 require_output "${dry_run_output}" "cargo build --release -p app-egui"
 

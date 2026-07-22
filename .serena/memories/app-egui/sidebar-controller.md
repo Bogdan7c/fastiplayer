@@ -26,3 +26,7 @@
 - `UrlSidebarController` не дублирует active source: active model строится из `AppState::active_media_source`. Ephemeral pending/error fenced exact source+extraction generation; runtime item override различает exact `PlaylistItemId` и source lineage. S25 владеет фактической установкой pending/override и controlled same-item switch.
 - Local source даёт inactive URL model; direct-media показывает service-owned safe label и VOD/seek/buffering state без fake format choices; YtDlp показывает active/pending, global-vs-item preference, group-part scope, VOD/seek/buffering/refresh-on-reopen и bounded safe failure category.
 - Focused tests: local/direct/audio-only/one-many/group part/current+stale generation/item override fencing/secret safety и отсутствие второго Panel. Полный `cargo test -p app-egui`: 817 PASS.
+
+## S27 evidence note (2026-07-22)
+- URL sidebar remains a secret-safe projection with no second URL ingress; guardrails reject transient transport/auth types in sidebar/config/playlist persistence owners.
+- Full evidence and explicit-URL manual workflow: `mem:media-services/progressive-web-hardening-s27-2026-07-22`.

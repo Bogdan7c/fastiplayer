@@ -41,6 +41,7 @@
     "video-present-core",
     "vp9-parser",
     "web-media-core",
+    "web-media-http",
     "web-media-playback-plan",
     "web-media-transport-api"
   ],

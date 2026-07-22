@@ -421,6 +421,52 @@ class DependencyGraphPolicyTests(unittest.TestCase):
             {"demux-api", "reqwest", "service-direct-media"},
         )
 
+    def test_service_ytdlp_stops_before_concrete_playback_owners(self) -> None:
+        """Extractor service не возвращает удалённый HTTP/WebM/player ownership."""
+
+        packages = complete_workspace_packages()
+        packages["service-ytdlp"] = package_with_dependencies(
+            "service-ytdlp",
+            (
+                ("source-core", None),
+                ("web-media-core", None),
+                ("web-media-playback-plan", None),
+                ("web-media-transport-api", None),
+            ),
+        )
+        passing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "service-ytdlp"
+                for violation in passing_result.dependency_violations
+            )
+        )
+
+        packages["service-ytdlp"] = package_with_dependencies(
+            "service-ytdlp",
+            (
+                ("source-core", None),
+                ("web-media-core", None),
+                ("media-prefetch", None),
+                ("reqwest", None),
+                ("symphonia-demux", None),
+                ("web-media-http", None),
+            ),
+        )
+        failing_result = GUARDRAIL.evaluate_dependency_graph_policies(
+            packages, frozenset()
+        )
+        self.assertEqual(
+            {
+                violation.dependency
+                for violation in failing_result.dependency_violations
+                if violation.owner == "service-ytdlp"
+            },
+            {"media-prefetch", "reqwest", "symphonia-demux", "web-media-http"},
+        )
+
     def test_natural_sort_key_rejects_every_normal_dependency(self) -> None:
         """Общий prepared comparator остаётся строго std-only."""
 
@@ -706,6 +752,74 @@ class SourceTextPolicyTests(unittest.TestCase):
                 violation.path == Path(external_path)
                 and "secret-bearing identity" in violation.rule
                 for violation in secret_violations
+            )
+        )
+
+    def test_progressive_web_boundaries_reject_legacy_openers_and_transient_persistence(
+        self,
+    ) -> None:
+        """S27 удерживает single-open path и secret separation в полном app tree."""
+
+        # Presence marker включает S27 policy только для repository с web composition.
+        self.repository.write(
+            "crates/app-egui/src/web_media_open.rs",
+            "pub fn prepare_yt_dlp_web_media() {}\n",
+        )
+        # Каждый production consumer и manual runner получает свой exact anchor.
+        for relative_path, anchors, _ in GUARDRAIL.PROGRESSIVE_WEB_SOURCE_ANCHORS:
+            self.repository.write(relative_path, "\n".join(anchors) + "\n")
+        # Остальные точечные runtime paths создаются безопасными до fail-инъекций.
+        for relative_path in GUARDRAIL.PROGRESSIVE_WEB_LEGACY_SCAN_PATHS:
+            absolute_path = self.repository.root / relative_path
+            if absolute_path.exists():
+                continue
+            self.repository.write(relative_path, "# safe progressive runtime path\n")
+        # Directory roots durable/presentation scan-а должны существовать даже без fixtures.
+        for relative_path in GUARDRAIL.PROGRESSIVE_WEB_TRANSIENT_SECRET_SCAN_PATHS:
+            absolute_path = self.repository.root / relative_path
+            if relative_path.suffix:
+                if not absolute_path.exists():
+                    self.repository.write(relative_path, "// safe projection\n")
+                continue
+            absolute_path.mkdir(parents=True, exist_ok=True)
+
+        self.assertEqual(
+            [],
+            GUARDRAIL.find_progressive_web_boundary_violations(self.repository.root),
+        )
+
+        # Старый WebM-only manual scenario снова сделал бы удалённый path видимым.
+        legacy_path = Path("scripts/media-regression.sh")
+        self.repository.write(
+            legacy_path,
+            "selected_webm_opens_over_yt_dlp_range_sources\n",
+        )
+        legacy_violations = GUARDRAIL.find_progressive_web_boundary_violations(
+            self.repository.root
+        )
+        self.assertTrue(
+            any(
+                violation.path == legacy_path
+                and "legacy service-owned WebM opener" in violation.rule
+                for violation in legacy_violations
+            )
+        )
+
+        # После удаления legacy fixture durable config не может принять auth transport type.
+        self.repository.write(legacy_path, "# safe progressive runtime path\n")
+        durable_path = Path("crates/config/src/transient_auth.rs")
+        self.repository.write(
+            durable_path,
+            "pub struct PersistedAuth(SecretRequestContext);\n",
+        )
+        transient_violations = GUARDRAIL.find_progressive_web_boundary_violations(
+            self.repository.root
+        )
+        self.assertTrue(
+            any(
+                violation.path == durable_path
+                and "transient transport secrets" in violation.rule
+                for violation in transient_violations
             )
         )
 

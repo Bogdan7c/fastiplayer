@@ -139,7 +139,7 @@ run_acceptance_command() {
 report_hermetic_runtime_skips() {
     printf 'SKIP: FFmpeg installed-runtime probe требует runtime-software suite; runtime acceptance not satisfied\n' >&2
     printf 'SKIP: 17 local-media demux regressions требуют explicit scenario/path; fixture acceptance not satisfied\n' >&2
-    printf 'SKIP: direct HTTP и yt-dlp network regressions требуют explicit URL/path; network acceptance not satisfied\n' >&2
+    printf 'SKIP: progressive web regressions требуют scripts/progressive-web-smoke.sh с explicit --url/--report; network acceptance not satisfied\n' >&2
     printf 'SKIP: VA-API/WGPU playback требует vaapi-hardware или playback-matrix suite; hardware acceptance not satisfied\n' >&2
 }
 

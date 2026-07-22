@@ -96,3 +96,8 @@
 ## S25 same-lineage consumer (2026-07-22)
 - The coordinator protocol remains policy-neutral. Its shared stepwise strong envelope now carries explicit playlist-vs-same-lineage admission and lineage-commit policies; S25 prepares a fresh exact semantic rematch without queue admission, captures controls at ReadyToCommit, and follows the existing CommitMustFinish rule after enqueue.
 - Exact Installed performs same-lineage rebind before fallible post-install restore and never uses external strong registration. Full contract: `mem:app-egui/same-item-candidate-switch-s25-2026-07-22`.
+
+
+## S27 evidence note (2026-07-22)
+- Guardrails now prove every yt-dlp startup/preparation/settings ingress composes through `app-egui::web_media_open`; queue Ready/authorization/Enqueued/Installed ownership is unchanged.
+- Full gate and manual-runner contract: `mem:media-services/progressive-web-hardening-s27-2026-07-22`.

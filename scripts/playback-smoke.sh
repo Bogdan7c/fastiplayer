@@ -470,7 +470,7 @@ write_scenario_config() {
     # Создаём только isolated config tree текущего сценария.
     mkdir -p -- "$(dirname -- "${config_file}")"
 
-    # Config-crate остаётся единственным владельцем полного набора schema v6 fields/defaults.
+    # Config-crate остаётся единственным владельцем полного набора schema v7 fields/defaults.
     cargo run --quiet --locked -p rustiplayer-config --example smoke_config -- \
         generate-current "${config_file}" "${backend_preference}"
 
@@ -493,7 +493,7 @@ run_playback_scenario() {
     # Dry-run печатает команду и не требует существования binary/logs.
     if [[ "${dry_run}" == "true" ]]; then
         printf '\n==> playback scenario: %s\n' "${scenario_name}" >&2
-        printf 'Would write full current config: schema v6, video.preferred_backend = "%s", player.start_paused = false, yt_dlp.hdr_selection = "sdr_only"\n' "${backend_preference}" >&2
+        printf 'Would write full current config: schema v7, video.preferred_backend = "%s", player.start_paused = false, yt_dlp.hdr_selection = "sdr_only"\n' "${backend_preference}" >&2
         print_command env \
             "XDG_CONFIG_HOME=<tmp>/configs/${scenario_name}" \
             "RUST_LOG=${SMOKE_RUST_LOG}" \

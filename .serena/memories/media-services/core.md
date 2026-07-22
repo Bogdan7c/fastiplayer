@@ -132,3 +132,8 @@ Neutral typed demux registry/composition принадлежит `demux-api`; п�
 - Current playback integration supersedes historical service-owned WebM opener notes: `service-ytdlp` stops at extraction/topology/locator/metadata plus neutral S19 planning/S21T request mapping; app composition owns S21C selection and S22 HTTP/demux registries.
 - Legacy `YtDlpStreamingMedia`, selected-stream DTOs and direct reqwest/prefetch/Symphonia opener modules are deleted. Exact reconstruction uses `YtDlpCandidateSelection` with fresh-generation semantic rematch.
 - Current contract and S26 limitation: `mem:app-egui/queue-owned-web-open-s23-2026-07-22`.
+
+
+## S27 hardening gate (2026-07-22)
+- `service-ytdlp` remains extraction/normalization/request-mapping only; guardrails now reject concrete HTTP/cache/demux/player dependencies and legacy WebM-only openers.
+- Progressive Range/non-Range, scoped system auth, cancellation/stale and secret-safe manual evidence workflow are recorded in `mem:media-services/progressive-web-hardening-s27-2026-07-22`.
