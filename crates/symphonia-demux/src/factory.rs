@@ -9,10 +9,23 @@ use demux_api::{
 };
 use media_core::Demuxer;
 
-use crate::{DemuxerOptions, SymphoniaDemuxer};
+use crate::ordered_segments::{
+    OrderedSegmentDemuxer, OrderedSegmentFailureObserver, OrderedSegmentReader,
+};
+use crate::symphonia_api::SymphoniaError;
+use crate::{DemuxError, DemuxerOptions, SymphoniaDemuxer};
 
 /// Safe label не содержит URL/path/fingerprint concrete source-а.
 const REGISTRY_SOURCE_LABEL: &str = "demux-registry-input";
+
+/// Current byte-oriented Symphonia readers одинаково поддерживают seekable и forward-only input.
+const SYMPHONIA_BYTE_INPUT_CAPABILITIES: DemuxInputCapabilities =
+    DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes)
+        .with(DemuxInputCapability::StreamingBytes);
+
+/// ISO BMFF row дополнительно принимает finite ordered init/media segments.
+const SYMPHONIA_ISO_BMFF_INPUT_CAPABILITIES: DemuxInputCapabilities =
+    SYMPHONIA_BYTE_INPUT_CAPABILITIES.with(DemuxInputCapability::OrderedSegments);
 
 /// Existing Symphonia backend как neutral project-owned factory registration.
 pub struct SymphoniaDemuxFactory {
@@ -27,8 +40,6 @@ impl SymphoniaDemuxFactory {
     pub fn new(demuxer_options: DemuxerOptions) -> Result<Self, DemuxIdentityError> {
         let descriptor = DemuxFactoryDescriptor::new(
             DemuxFactoryId::new("symphonia")?,
-            DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes)
-                .with(DemuxInputCapability::StreamingBytes),
             symphonia_container_registrations()?,
             vec![
                 DemuxFixtureId::new("symphonia/generated-pcm-wav")?,
@@ -71,16 +82,11 @@ impl DemuxFactory for SymphoniaDemuxFactory {
         if request.cancellation.is_cancelled() {
             return DemuxProbeDecision::Rejected(DemuxProbeRejection::Cancelled);
         }
-        if !self
-            .descriptor
-            .input_capabilities
-            .contains(request.input_capability)
-        {
-            return DemuxProbeDecision::Rejected(DemuxProbeRejection::UnsupportedInput {
-                capability: request.input_capability,
-            });
-        }
-        let detected_container = match detect_container(request.sniffed_bytes, request.hints) {
+        let detected_container = match detect_container_for_input(
+            request.sniffed_bytes,
+            request.hints,
+            request.input_capability,
+        ) {
             ContainerDetection::Match(container_id) => container_id,
             ContainerDetection::Truncated { required_bytes } => {
                 return DemuxProbeDecision::Rejected(DemuxProbeRejection::Truncated {
@@ -95,6 +101,11 @@ impl DemuxFactory for SymphoniaDemuxFactory {
                 reason: "Symphonia detector вернул незарегистрированный container ID".to_owned(),
             });
         };
+        if !registration.supports_input(request.input_capability) {
+            return DemuxProbeDecision::Rejected(DemuxProbeRejection::UnsupportedInput {
+                capability: request.input_capability,
+            });
+        }
         DemuxProbeDecision::Match(DemuxProbeMatch {
             container: registration.container.clone(),
             confidence: DemuxProbeConfidence::Signature,
@@ -110,30 +121,74 @@ impl DemuxFactory for SymphoniaDemuxFactory {
             return Err(DemuxFactoryOpenError::Cancelled);
         }
         let extension_hint = self.extension_hint(&request).to_owned();
-        let demuxer = match request.input {
+        let ordered_iso_bmff_selected = request.selected_probe.container.as_str() == "iso-bmff";
+        let cancellation = request.cancellation;
+        let demuxer_result: Result<Box<dyn Demuxer + Send>, DemuxError> = match request.input {
             DemuxInput::ByteSource(source) => SymphoniaDemuxer::from_byte_source_with_options(
                 source,
                 &extension_hint,
                 REGISTRY_SOURCE_LABEL,
                 self.demuxer_options,
-            ),
+            )
+            .map(|demuxer| Box::new(demuxer) as Box<dyn Demuxer + Send>),
             DemuxInput::ByteStream(reader) => SymphoniaDemuxer::from_stream_with_options(
                 reader,
                 &extension_hint,
                 REGISTRY_SOURCE_LABEL,
                 self.demuxer_options,
-            ),
-            DemuxInput::OrderedSegments(_) => {
-                return Err(DemuxFactoryOpenError::UnsupportedInput {
-                    capability: DemuxInputCapability::OrderedSegments,
-                });
+            )
+            .map(|demuxer| Box::new(demuxer) as Box<dyn Demuxer + Send>),
+            DemuxInput::OrderedSegments(source) => {
+                if !ordered_iso_bmff_selected {
+                    return Err(DemuxFactoryOpenError::UnsupportedInput {
+                        capability: DemuxInputCapability::OrderedSegments,
+                    });
+                }
+                let (reader, failure_observer) =
+                    OrderedSegmentReader::new_observed(source, cancellation.clone());
+                SymphoniaDemuxer::from_stream_with_options(
+                    reader,
+                    &extension_hint,
+                    REGISTRY_SOURCE_LABEL,
+                    self.demuxer_options,
+                )
+                .map_err(|error| preserve_ordered_stream_error(error, &failure_observer))
+                .map(OrderedSegmentDemuxer::new)
+                .map(|demuxer| Box::new(demuxer) as Box<dyn Demuxer + Send>)
             }
-        }
-        .map_err(|error| DemuxFactoryOpenError::Backend(error.into()))?;
-        if request.cancellation.is_cancelled() {
+        };
+
+        let demuxer = match demuxer_result {
+            Ok(demuxer) => demuxer,
+            Err(_) if cancellation.is_cancelled() => {
+                return Err(DemuxFactoryOpenError::Cancelled);
+            }
+            Err(error) => return Err(DemuxFactoryOpenError::Backend(error.into())),
+        };
+        if cancellation.is_cancelled() {
             return Err(DemuxFactoryOpenError::Cancelled);
         }
-        Ok(Box::new(demuxer))
+        Ok(demuxer)
+    }
+}
+
+/// Восстанавливает concrete ordered-input error после eager Symphonia probe-а.
+///
+/// Symphonia перебирает format readers и может заменить исходный I/O failure
+/// финальным `no suitable format reader`; observer сохраняет первую точную причину.
+fn preserve_ordered_stream_error(
+    error: DemuxError,
+    failure_observer: &OrderedSegmentFailureObserver,
+) -> DemuxError {
+    if let Some(observed_error) = failure_observer.demux_error() {
+        return observed_error;
+    }
+
+    match error {
+        DemuxError::Parse(SymphoniaError::IoError(error)) => {
+            crate::error::preserve_ordered_input_error(error)
+        }
+        other => other,
     }
 }
 
@@ -148,6 +203,29 @@ enum ContainerDetection {
     },
     /// Ни одна Symphonia registration не подтверждена.
     NoMatch,
+}
+
+/// Ordered media-first input получает factory match, чтобы adapter вернул typed lifecycle error.
+fn detect_container_for_input(
+    bytes: &[u8],
+    hints: &DemuxHints,
+    input_capability: DemuxInputCapability,
+) -> ContainerDetection {
+    let detection = detect_container(bytes, hints);
+    if !matches!(detection, ContainerDetection::NoMatch)
+        || input_capability != DemuxInputCapability::OrderedSegments
+    {
+        return detection;
+    }
+
+    let top_level_box_type = bytes.get(4..8);
+    if top_level_box_type == Some(b"styp".as_slice())
+        || top_level_box_type == Some(b"moof".as_slice())
+    {
+        ContainerDetection::Match("iso-bmff")
+    } else {
+        ContainerDetection::NoMatch
+    }
 }
 
 /// Выполняет bounded magic sniff; hints используются только для EBML subtype.
@@ -256,36 +334,71 @@ fn symphonia_container_registrations() -> Result<Vec<DemuxContainerRegistration>
     Ok(vec![
         registration(
             "iso-bmff",
+            SYMPHONIA_ISO_BMFF_INPUT_CAPABILITIES,
             &["mp4", "m4a", "m4v", "mov", "3gp", "3g2"],
             &["audio/mp4", "video/mp4", "video/quicktime"],
         )?,
-        registration("matroska", &["mkv", "mka", "mks"], &["video/x-matroska"])?,
-        registration("webm", &["webm", "weba"], &["audio/webm", "video/webm"])?,
+        registration(
+            "matroska",
+            SYMPHONIA_BYTE_INPUT_CAPABILITIES,
+            &["mkv", "mka", "mks"],
+            &["video/x-matroska"],
+        )?,
+        registration(
+            "webm",
+            SYMPHONIA_BYTE_INPUT_CAPABILITIES,
+            &["webm", "weba"],
+            &["audio/webm", "video/webm"],
+        )?,
         registration(
             "ogg",
+            SYMPHONIA_BYTE_INPUT_CAPABILITIES,
             &["ogg", "oga", "ogv", "opus", "spx"],
             &["application/ogg", "audio/ogg", "video/ogg"],
         )?,
-        registration("caf", &["caf"], &["audio/x-caf"])?,
-        registration("wave", &["wav", "wave"], &["audio/wav", "audio/x-wav"])?,
+        registration(
+            "caf",
+            SYMPHONIA_BYTE_INPUT_CAPABILITIES,
+            &["caf"],
+            &["audio/x-caf"],
+        )?,
+        registration(
+            "wave",
+            SYMPHONIA_BYTE_INPUT_CAPABILITIES,
+            &["wav", "wave"],
+            &["audio/wav", "audio/x-wav"],
+        )?,
         registration(
             "aiff",
+            SYMPHONIA_BYTE_INPUT_CAPABILITIES,
             &["aif", "aiff", "aifc"],
             &["audio/aiff", "audio/x-aiff"],
         )?,
-        registration("flac", &["flac"], &["audio/flac"])?,
-        registration("mpeg-audio", &["mp1", "mp2", "mp3"], &["audio/mpeg"])?,
+        registration(
+            "flac",
+            SYMPHONIA_BYTE_INPUT_CAPABILITIES,
+            &["flac"],
+            &["audio/flac"],
+        )?,
+        registration(
+            "mpeg-audio",
+            SYMPHONIA_BYTE_INPUT_CAPABILITIES,
+            &["mp1", "mp2", "mp3"],
+            &["audio/mpeg"],
+        )?,
     ])
 }
 
-/// Преобразует checked static string slices в owned neutral descriptor values.
+/// Преобразует checked static values в один capability-aware neutral registration row.
 fn registration(
     container: &str,
+    input_capabilities: DemuxInputCapabilities,
     extensions: &[&str],
     mime_types: &[&str],
 ) -> Result<DemuxContainerRegistration, DemuxIdentityError> {
     Ok(DemuxContainerRegistration::new(
         DemuxContainerId::new(container)?,
+        input_capabilities,
         extensions
             .iter()
             .map(|extension| DemuxSourceExtension::new(*extension))

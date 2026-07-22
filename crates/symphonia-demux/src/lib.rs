@@ -6,6 +6,7 @@ mod factory;
 mod local_probe;
 mod matroska_metadata;
 mod options;
+mod ordered_segments;
 mod packet_mapper;
 mod seek_mapper;
 pub mod streaming_source;
@@ -29,5 +30,6 @@ pub use options::{
     DEFAULT_DECODE_POINT_BEFORE_PREROLL, DEFAULT_DECODE_POINT_BEFORE_VERIFICATION_PACKET_LIMIT,
     DEFAULT_MAX_CONSECUTIVE_CORRUPTED_PACKETS, DemuxerOptions,
 };
+pub use ordered_segments::OrderedSegmentLifecycleError;
 pub use streaming_source::{StreamingByteReader, StreamingByteWriter};
 pub use symphonia_demuxer::SymphoniaDemuxer;

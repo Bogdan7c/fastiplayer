@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use demux_api::OrderedSegmentReadError;
 use media_core::{DemuxSeekMode, PacketKeyframe};
+
+use crate::OrderedSegmentLifecycleError;
 
 /// Ошибки demuxer.
 #[derive(Debug, thiserror::Error)]
@@ -20,6 +23,14 @@ pub enum DemuxError {
 
     #[error("Ошибка чтения: {0}")]
     Io(#[from] std::io::Error),
+
+    /// Typed lifecycle violation finite ordered ISO BMFF source-а.
+    #[error(transparent)]
+    OrderedSegmentLifecycle(#[from] OrderedSegmentLifecycleError),
+
+    /// Typed operational failure neutral ordered segment source-а.
+    #[error(transparent)]
+    OrderedSegmentSource(#[from] OrderedSegmentReadError),
 
     #[error("Ошибка парсинга: {0}")]
     Parse(#[from] symphonia::core::errors::Error),
@@ -105,6 +116,20 @@ pub enum DemuxError {
     /// Concrete finite FormatReader path не должен публиковать live readiness.
     #[error("Finite Symphonia seek verification неожиданно получила temporary readiness")]
     UnexpectedTemporaryReadinessDuringSeekVerification,
+}
+
+/// Поднимает typed ordered-input error из `io::Error`, не меняя обычный I/O path.
+pub(crate) fn preserve_ordered_input_error(error: std::io::Error) -> DemuxError {
+    if let Some(inner_error) = error.get_ref() {
+        if let Some(lifecycle_error) = inner_error.downcast_ref::<OrderedSegmentLifecycleError>() {
+            return lifecycle_error.clone().into();
+        }
+        if let Some(source_error) = inner_error.downcast_ref::<OrderedSegmentReadError>() {
+            return source_error.clone().into();
+        }
+    }
+
+    DemuxError::Io(error)
 }
 
 impl DemuxError {

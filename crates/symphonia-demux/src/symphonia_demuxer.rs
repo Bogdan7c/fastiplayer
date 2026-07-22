@@ -508,7 +508,7 @@ impl SymphoniaDemuxer {
                     return Ok(DemuxReadEvent::EndOfStream);
                 }
                 Err(SymphoniaError::IoError(error)) => {
-                    return Err(DemuxError::Io(error).into());
+                    return Err(crate::error::preserve_ordered_input_error(error).into());
                 }
                 Err(SymphoniaError::ResetRequired) => {
                     let track_update = self.refresh_track_list_after_reset()?;

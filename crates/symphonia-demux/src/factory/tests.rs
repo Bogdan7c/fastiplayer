@@ -15,6 +15,9 @@ use source_core::{CancellationToken, LocalFileSource};
 use super::{ContainerDetection, SymphoniaDemuxFactory, detect_container};
 use crate::{DemuxerOptions, probe_open_local_media_file};
 
+mod fragmented_isomp4;
+mod ordered_segments;
+
 /// Counter гарантирует unique temp path даже при parallel unit tests одного process-а.
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -64,15 +67,30 @@ fn generated_pcm_wav() -> Vec<u8> {
     wav
 }
 
-/// Factory capabilities честно исключают ordered segments до отдельного adapter-а.
+/// Factory capabilities добавляют ordered input только ISO BMFF row.
 #[test]
-fn descriptor_declares_seekable_and_streaming_but_not_segments() {
+fn descriptor_declares_ordered_segments_only_for_iso_bmff() {
     let factory = SymphoniaDemuxFactory::new(DemuxerOptions::default()).expect("factory");
-    let capabilities = factory.descriptor().input_capabilities;
-    assert!(capabilities.contains(DemuxInputCapability::SeekableBytes));
-    assert!(capabilities.contains(DemuxInputCapability::StreamingBytes));
-    assert!(!capabilities.contains(DemuxInputCapability::OrderedSegments));
-    assert!(!factory.descriptor().fixture_ids.is_empty());
+    let descriptor = factory.descriptor();
+    for registration in &descriptor.containers {
+        let capabilities = registration.input_capabilities();
+        assert!(
+            capabilities.contains(DemuxInputCapability::SeekableBytes),
+            "{} должен сохранить seekable input",
+            registration.container
+        );
+        assert!(
+            capabilities.contains(DemuxInputCapability::StreamingBytes),
+            "{} должен сохранить streaming input",
+            registration.container
+        );
+        assert_eq!(
+            capabilities.contains(DemuxInputCapability::OrderedSegments),
+            registration.container.as_str() == "iso-bmff",
+            "только ISO BMFF должен рекламировать ordered input"
+        );
+    }
+    assert!(!descriptor.fixture_ids.is_empty());
 }
 
 /// Content signature имеет приоритет и сохраняет explicit hint disagreement.
@@ -106,6 +124,10 @@ fn truncated_and_no_match_are_distinct() {
         detect_container(b"not-media", &DemuxHints::none()),
         ContainerDetection::NoMatch
     ));
+    assert!(matches!(
+        detect_container(b"\0\0\0\x18fty", &DemuxHints::none()),
+        ContainerDetection::Truncated { required_bytes: 8 }
+    ));
 
     let cancellation = CancellationToken::new();
     cancellation.cancel();
@@ -113,7 +135,7 @@ fn truncated_and_no_match_are_distinct() {
     assert!(matches!(
         factory.probe(DemuxProbeRequest {
             hints: &DemuxHints::none(),
-            sniffed_bytes: b"RIFF",
+            sniffed_bytes: b"\0\0\0\x18ftypisom",
             input_capability: DemuxInputCapability::SeekableBytes,
             cancellation: &cancellation,
         }),

@@ -30,7 +30,7 @@
 
 ## S21 factory/composite migration (2026-07-21)
 
-- `SymphoniaDemuxFactory` регистрирует existing backend в neutral `demux-api::DemuxRegistry` для seekable и streaming byte inputs; ordered segments намеренно не заявлены.
+- `SymphoniaDemuxFactory` регистрирует existing backend в neutral `demux-api::DemuxRegistry` через per-container input capabilities: все текущие containers сохраняют seekable + streaming bytes, а только ISO BMFF дополнительно рекламирует finite `OrderedSegments`. Ordered adapter валидирует один Init первым, затем строго возрастающие Media sequence; media-before-init, repeated init, empty segment, duplicate/decreasing sequence, cancellation и source failure остаются typed. Он удерживает только current segment, делегирует boxes существующему isomp4 patch, публикует `NotSeekable` и не выдумывает неизвестную duration. Полный S28A contract: `mem:symphonia-demux/iso-bmff-fmp4-s28a-2026-07-22`.
 - Bounded signature sniff авторитетнее hints; конфликтующий extension не передаётся в backend open. Registration fixture IDs: generated PCM WAV, WebM VP9+Opus, MP4 H.264+AAC.
 - `DualStreamDemuxer` больше не владеет generic composition: он остаётся тонким VP9 admission/compatibility adapter и делегирует boxed A/V interleave, remap, lifecycle и seek `demux_api::CompositeAvDemuxer`.
 - Observable public mapping `1=video, 2=audio` сохранён; seek/runtime error signatures не менялись. Generic composition details см. `mem:demux-api/core`.

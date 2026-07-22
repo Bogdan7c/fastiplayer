@@ -49,25 +49,9 @@ impl TrunAtom {
         self.flags & TrunAtom::SAMPLE_DURATION_PRESENT != 0
     }
 
-    // Indicates if the duration of the first sample is provided.
-    pub fn is_first_sample_duration_present(&self) -> bool {
-        match self.first_sample_flags {
-            Some(flags) => flags & TrunAtom::FIRST_SAMPLE_FLAGS_PRESENT != 0,
-            None => false,
-        }
-    }
-
     /// Indicates if sample sizes are provided.
     pub fn is_sample_size_present(&self) -> bool {
         self.flags & TrunAtom::SAMPLE_SIZE_PRESENT != 0
-    }
-
-    /// Indicates if the size for the first sample is provided.
-    pub fn is_first_sample_size_present(&self) -> bool {
-        match self.first_sample_flags {
-            Some(flags) => flags & TrunAtom::SAMPLE_SIZE_PRESENT != 0,
-            None => false,
-        }
     }
 
     /// Indicates if sample flags are provided.
@@ -87,15 +71,8 @@ impl TrunAtom {
         if self.is_sample_duration_present() {
             self.total_sample_duration
         } else {
-            // The duration of all samples in the track fragment are not explictly known.
-            if self.sample_count > 0 && self.is_first_sample_duration_present() {
-                // The first sample has an explictly recorded duration.
-                u64::from(self.sample_duration[0])
-                    + u64::from(self.sample_count - 1) * u64::from(default_dur)
-            } else {
-                // All samples have the default duration.
-                u64::from(self.sample_count) * u64::from(default_dur)
-            }
+            // Без per-sample duration все samples используют единый default из tfhd/trex.
+            u64::from(self.sample_count) * u64::from(default_dur)
         }
     }
 
@@ -103,9 +80,6 @@ impl TrunAtom {
     pub fn total_size(&self, default_size: u32) -> u64 {
         if self.is_sample_size_present() {
             self.total_sample_size
-        } else if self.sample_count > 0 && self.is_first_sample_size_present() {
-            u64::from(self.sample_size[0])
-                + u64::from(self.sample_count - 1) * u64::from(default_size)
         } else {
             u64::from(self.sample_count) * u64::from(default_size)
         }
@@ -132,14 +106,7 @@ impl TrunAtom {
             (ts, dur)
         } else {
             // The duration of all samples in the track fragment are not unique.
-            let ts = if sample_num_rel > 0 && self.is_first_sample_duration_present() {
-                // The first sample has a unique duration.
-                u64::from(self.sample_duration[0])
-                    + u64::from(sample_num_rel - 1) * u64::from(default_dur)
-            } else {
-                // Zero or more samples with identical durations.
-                u64::from(sample_num_rel) * u64::from(default_dur)
-            };
+            let ts = u64::from(sample_num_rel) * u64::from(default_dur);
 
             (ts, default_dur)
         }
@@ -156,6 +123,46 @@ impl TrunAtom {
         }
     }
 
+    /// Возвращает effective ISO sample flags с приоритетом `trun` -> first -> default.
+    pub fn effective_sample_flags(&self, sample_num_rel: u32, default_flags: u32) -> u32 {
+        debug_assert!(sample_num_rel < self.sample_count);
+
+        if self.are_sample_flags_present() {
+            self.sample_flags[sample_num_rel as usize]
+        } else if sample_num_rel == 0 {
+            self.first_sample_flags.unwrap_or(default_flags)
+        } else {
+            default_flags
+        }
+    }
+
+    /// Проверяет, доказывают ли effective flags random-access sample.
+    pub fn is_proven_sync_sample(&self, sample_num_rel: u32, default_flags: u32) -> bool {
+        const SAMPLE_IS_NON_SYNC_SAMPLE: u32 = 0x0001_0000;
+        const SAMPLE_DEPENDS_ON_MASK: u32 = 0x0300_0000;
+        const SAMPLE_DEPENDS_ON_NO_OTHERS: u32 = 0x0200_0000;
+
+        let flags = self.effective_sample_flags(sample_num_rel, default_flags);
+        flags & SAMPLE_IS_NON_SYNC_SAMPLE == 0
+            && flags & SAMPLE_DEPENDS_ON_MASK == SAMPLE_DEPENDS_ON_NO_OTHERS
+    }
+
+    /// Находит ближайший доказанный sync sample не позднее указанного sample этого run-а.
+    pub fn sync_sample_at_or_before(
+        &self,
+        sample_num_rel: u32,
+        default_flags: u32,
+    ) -> Option<u32> {
+        if self.sample_count == 0 {
+            return None;
+        }
+
+        let last_candidate = sample_num_rel.min(self.sample_count - 1);
+        (0..=last_candidate)
+            .rev()
+            .find(|&candidate| self.is_proven_sync_sample(candidate, default_flags))
+    }
+
     /// Get the size of a sample. The desired sample is specified by the trun-relative sample
     /// number, `sample_num_rel`.
     pub fn sample_size(&self, sample_num_rel: u32, default_size: u32) -> u32 {
@@ -163,8 +170,6 @@ impl TrunAtom {
 
         if self.is_sample_size_present() {
             self.sample_size[sample_num_rel as usize]
-        } else if sample_num_rel == 0 && self.is_first_sample_size_present() {
-            self.sample_size[0]
         } else {
             default_size
         }
@@ -189,14 +194,7 @@ impl TrunAtom {
             (offset, self.sample_size[sample_num_rel as usize])
         } else {
             // The size of all samples in the track are not unique.
-            let offset = if sample_num_rel > 0 && self.is_first_sample_size_present() {
-                // The first sample has a unique size.
-                u64::from(self.sample_size[0])
-                    + u64::from(sample_num_rel - 1) * u64::from(default_size)
-            } else {
-                // Zero or more identically sized samples.
-                u64::from(sample_num_rel) * u64::from(default_size)
-            };
+            let offset = u64::from(sample_num_rel) * u64::from(default_size);
 
             (offset, default_size)
         }
@@ -219,24 +217,15 @@ impl TrunAtom {
                 sample_num += 1;
             }
         } else {
-            if self.sample_count > 0 && self.is_first_sample_duration_present() {
-                // The first sample duration is unique.
-                let first_sample_dur = u64::from(self.sample_duration[0]);
-
-                if ts_delta >= first_sample_dur {
-                    ts_delta -= first_sample_dur;
-                    sample_num += 1;
-                } else {
-                    ts_delta -= ts_delta;
-                }
-            }
-
             sample_num += ts_delta.checked_div(u64::from(default_dur)).unwrap_or(0) as u32;
         }
 
         sample_num
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 impl Atom for TrunAtom {
     fn read<R: ReadAtom>(it: &mut AtomIterator<R>, _header: &AtomHeader) -> Result<Self> {

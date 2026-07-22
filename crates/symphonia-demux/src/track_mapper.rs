@@ -1504,6 +1504,21 @@ mod tests {
         assert_eq!(mapping.tracks[0].duration, None);
         assert_eq!(mapping.duration, None);
 
+        let zero_duration_track =
+            vp9_video_track_with_timing(1, Some(SymphoniaDuration::new(0)), None);
+        let mut zero_duration_metadata_by_track = HashMap::new();
+        let zero_duration_mapping =
+            map_tracks(&[zero_duration_track], &mut zero_duration_metadata_by_track);
+
+        assert_eq!(
+            zero_duration_mapping.tracks[0].duration,
+            Some(std::time::Duration::ZERO)
+        );
+        assert_eq!(
+            zero_duration_mapping.duration,
+            Some(std::time::Duration::ZERO)
+        );
+
         let timed_track =
             vp9_video_track_with_timing(1, Some(SymphoniaDuration::new(2_500)), Some(99));
         let mut empty_metadata_by_track = HashMap::new();

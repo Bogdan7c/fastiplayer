@@ -6,7 +6,10 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 use symphonia_core::errors::{Error, Result, decode_error};
 
-use crate::atoms::{Co64Atom, MoofAtom, MoovAtom, StcoAtom, TrafAtom, stsz::SampleSize};
+use crate::atoms::{
+    Co64Atom, MoofAtom, MoovAtom, StcoAtom, TrafAtom, TrunAtom, hdlr::HandlerType,
+    stsz::SampleSize,
+};
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -104,7 +107,11 @@ pub struct MoofSegment {
 
 impl MoofSegment {
     /// Instantiate a new segment from a `MoofAtom`.
-    pub fn new(moof: MoofAtom, moov: Arc<MoovAtom>, prev: &dyn StreamSegment) -> MoofSegment {
+    pub fn new(
+        moof: MoofAtom,
+        moov: Arc<MoovAtom>,
+        prev: &dyn StreamSegment,
+    ) -> Result<MoofSegment> {
         let mvex = moov.mvex.as_ref().expect("mvex atom present");
 
         let mut seq = Vec::with_capacity(mvex.trexs.len());
@@ -113,7 +120,6 @@ impl MoofSegment {
         for (track_num, trex) in mvex.trexs.iter().enumerate() {
             let mut info = SequenceInfo {
                 first_sample: prev.track_sample_range(track_num).end,
-                first_ts: prev.track_ts_range(track_num).end,
                 ..Default::default()
             };
 
@@ -123,6 +129,10 @@ impl MoofSegment {
                     continue;
                 }
 
+                // `tfdt` задаёт абсолютный DTS первого sample; предыдущая длительность не может
+                // подменять non-zero start, gap или иной точный media timeline.
+                info.first_ts = traf.tfdt.base_media_decode_time;
+
                 // Calculate the total duration of all runs in the fragment for the track.
                 let default_dur = traf
                     .tfhd
@@ -130,17 +140,26 @@ impl MoofSegment {
                     .unwrap_or(trex.default_sample_duration);
 
                 for trun in traf.truns.iter() {
-                    info.total_sample_duration += trun.total_duration(default_dur);
+                    info.total_sample_duration = info
+                        .total_sample_duration
+                        .checked_add(trun.total_duration(default_dur))
+                        .ok_or(Error::DecodeError("isomp4: fragment duration overflow"))?;
                 }
 
                 info.total_sample_count = traf.total_sample_count;
+                info.first_sample
+                    .checked_add(info.total_sample_count)
+                    .ok_or(Error::DecodeError("isomp4: fragment sample count overflow"))?;
+                info.first_ts
+                    .checked_add(info.total_sample_duration)
+                    .ok_or(Error::DecodeError("isomp4: fragment decode time overflow"))?;
                 info.traf_idx = Some(traf_idx);
             }
 
             seq.push(info);
         }
 
-        MoofSegment { moof, moov, seq }
+        Ok(MoofSegment { moof, moov, seq })
     }
 
     /// Try to get the Track Fragment atom associated with the track identified by `track_num`.
@@ -150,6 +169,49 @@ impl MoofSegment {
             .traf_idx
             .map(|idx| &self.moof.trafs[idx])
     }
+
+    /// Возвращает exact handler track-а через container track id, не угадывая его по codec-у.
+    fn track_handler_type(&self, track_num: usize) -> Result<&HandlerType> {
+        let track_id = self.moov.mvex.as_ref().expect("mvex atom present").trexs[track_num].track_id;
+        self.moov
+            .traks
+            .iter()
+            .find(|track| track.tkhd.id == track_id)
+            .map(|track| &track.mdia.hdlr.handler_type)
+            .ok_or(Error::DecodeError("isomp4: fragment track has no matching handler"))
+    }
+}
+
+/// Выбирает decode landing: video требует доказанный RAP, остальные handlers — timestamp sample.
+fn fragment_seek_sample_rel(
+    handler_type: &HandlerType,
+    truns: &[TrunAtom],
+    run_starts: &[u32],
+    candidate_run_idx: usize,
+    candidate_sample_rel: u32,
+    default_flags: u32,
+) -> Option<u32> {
+    if handler_type != &HandlerType::Video {
+        return Some(candidate_sample_rel);
+    }
+
+    for run_idx in (0..=candidate_run_idx).rev() {
+        let trun = &truns[run_idx];
+        let run_start = run_starts[run_idx];
+        let run_candidate = if run_idx == candidate_run_idx {
+            candidate_sample_rel - run_start
+        } else {
+            trun.sample_count.saturating_sub(1)
+        };
+
+        if let Some(sync_sample_rel) =
+            trun.sync_sample_at_or_before(run_candidate, default_flags)
+        {
+            return Some(run_start + sync_sample_rel);
+        }
+    }
+
+    None
 }
 
 impl StreamSegment for MoofSegment {
@@ -182,7 +244,9 @@ impl StreamSegment for MoofSegment {
             // sample.
             if sample_num_rel < trun.sample_count {
                 let (ts, dur) = trun.sample_timing(sample_num_rel, default_dur);
-                let dts = trun_ts_offset + ts;
+                let dts = trun_ts_offset
+                    .checked_add(ts)
+                    .ok_or(Error::DecodeError("isomp4: sample decode time overflow"))?;
                 let pts =
                     apply_composition_offset(dts, trun.sample_composition_offset(sample_num_rel))?;
 
@@ -192,7 +256,9 @@ impl StreamSegment for MoofSegment {
             let trun_dur = trun.total_duration(default_dur);
 
             sample_num_rel -= trun.sample_count;
-            trun_ts_offset += trun_dur;
+            trun_ts_offset = trun_ts_offset
+                .checked_add(trun_dur)
+                .ok_or(Error::DecodeError("isomp4: fragment decode time overflow"))?;
         }
 
         Ok(None)
@@ -205,30 +271,57 @@ impl StreamSegment for MoofSegment {
             None => return Ok(None),
         };
 
-        let mut sample_num = self.seq[track_num].first_sample;
-        let mut ts_accum = self.seq[track_num].first_ts;
+        let sequence = &self.seq[track_num];
+        if sequence.total_sample_count == 0 || ts < sequence.first_ts {
+            return Ok(None);
+        }
+
+        let mut sample_num_rel = 0_u32;
+        let mut ts_accum = sequence.first_ts;
+        let mut candidate_run = None;
+        let mut run_starts = Vec::with_capacity(traf.truns.len());
 
         let default_dur = traf
             .tfhd
             .default_sample_duration
             .unwrap_or(self.moov.mvex.as_ref().unwrap().trexs[track_num].default_sample_duration);
+        let default_flags = traf
+            .tfhd
+            .default_sample_flags
+            .unwrap_or(self.moov.mvex.as_ref().unwrap().trexs[track_num].default_sample_flags);
 
-        for trun in traf.truns.iter() {
+        for (run_idx, trun) in traf.truns.iter().enumerate() {
+            run_starts.push(sample_num_rel);
             // Get the total duration of this track run.
             let trun_dur = trun.total_duration(default_dur);
 
-            // If the timestamp after the track run is greater than the desired timestamp, then the
-            // desired sample must be in this run of samples.
-            if ts_accum + trun_dur > ts {
-                sample_num += trun.ts_sample(ts - ts_accum, default_dur);
-                return Ok(Some(sample_num));
+            if ts_accum.saturating_add(trun_dur) > ts {
+                let run_sample = trun
+                    .ts_sample(ts - ts_accum, default_dur)
+                    .min(trun.sample_count.saturating_sub(1));
+                candidate_run = Some((run_idx, sample_num_rel + run_sample));
+                break;
             }
 
-            sample_num += trun.sample_count;
+            sample_num_rel += trun.sample_count;
             ts_accum += trun_dur;
         }
 
-        Ok(None)
+        let (candidate_run_idx, candidate_sample_rel) = candidate_run.unwrap_or_else(|| {
+            let last_run_idx = traf.truns.len().saturating_sub(1);
+            (last_run_idx, sequence.total_sample_count - 1)
+        });
+
+        let handler_type = self.track_handler_type(track_num)?;
+        let sample_num_rel = fragment_seek_sample_rel(
+            handler_type,
+            &traf.truns,
+            &run_starts,
+            candidate_run_idx,
+            candidate_sample_rel,
+            default_flags,
+        );
+        Ok(sample_num_rel.map(|sample_num_rel| sequence.first_sample + sample_num_rel))
     }
 
     fn sample_data(
@@ -311,6 +404,9 @@ impl StreamSegment for MoofSegment {
         track.first_ts..track.first_ts + track.total_sample_duration
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 fn get_chunk_offset(
     stco: &Option<StcoAtom>,

@@ -94,9 +94,10 @@ impl TrackState {
         }
 
         // Populate timing information.
-        track
-            .with_time_base(TimeBase::from_recip(timespan.timescale))
-            .with_duration(timespan.duration);
+        track.with_time_base(TimeBase::from_recip(timespan.timescale));
+        if let Some(duration) = timespan.duration {
+            track.with_duration(duration);
+        }
 
         // If the track is an audio track, and the timescale is equal to the sample rate, then the
         // number of frames is equal to the duration. This is the case for almost all audio tracks.
@@ -105,7 +106,9 @@ impl TrackState {
         if let Some(CodecParameters::Audio(audio)) = &track.codec_params {
             if let Some(sample_rate) = audio.sample_rate {
                 if sample_rate == timespan.timescale.get() {
-                    track.with_num_frames(timespan.duration.get());
+                    if let Some(duration) = timespan.duration {
+                        track.with_num_frames(duration.get());
+                    }
                 }
             }
         }
@@ -246,10 +249,10 @@ fn collect_pcm_packet_span(
 
         // LPCM frame-samples должны быть соседними во времени. Если таблицы показывают разрыв,
         // завершаем текущий packet до разрыва и не меняем семантику следующих samples.
-        if sample_count > 0 {
-            if expected_pts != Some(timing.pts) || expected_dts != Some(timing.dts) {
-                break;
-            }
+        if sample_count > 0
+            && (expected_pts != Some(timing.pts) || expected_dts != Some(timing.dts))
+        {
+            break;
         }
 
         let sample_data_desc = seg.sample_data(track_num, sample_num, false)?;
@@ -339,20 +342,20 @@ fn collect_pcm_packet_span(
 #[derive(Debug)]
 pub struct TimeSpan {
     pub timescale: NonZero<u32>,
-    pub duration: Duration,
+    pub duration: Option<Duration>,
 }
 
 impl Default for TimeSpan {
     fn default() -> Self {
         Self {
             timescale: NonZero::new(1).unwrap(),
-            duration: Duration::ZERO,
+            duration: None,
         }
     }
 }
 
 impl TimeSpan {
-    pub fn new(timescale: NonZero<u32>, duration: Duration) -> Self {
+    pub fn new(timescale: NonZero<u32>, duration: Option<Duration>) -> Self {
         TimeSpan {
             timescale,
             duration,
@@ -420,7 +423,7 @@ impl<'s> IsoMp4Reader<'s> {
                     // Calculate the total duration, per track, from the segment index atoms.
                     let sidx_timespan = sidx_timespans
                         .entry(sidx.reference_id)
-                        .or_insert(TimeSpan::new(sidx.timescale, Duration::ZERO));
+                        .or_insert(TimeSpan::new(sidx.timescale, Some(Duration::ZERO)));
 
                     if sidx_timespan.timescale != sidx.timescale {
                         return unsupported_error(
@@ -428,12 +431,15 @@ impl<'s> IsoMp4Reader<'s> {
                         );
                     }
 
-                    // Don't overflow.
-                    // TODO: Duration should maybe be None since SIDX is non-authoritative.
-                    sidx_timespan.duration = sidx_timespan
-                        .duration
-                        .checked_add(Duration::new(sidx.total_duration))
-                        .ok_or(Error::DecodeError("isomp4: sidx total duration overflow"))?
+                    // Matching `reference_id` и timescale делают authored subsegment durations
+                    // существующим container authority; сумма всё равно обязана не переполняться.
+                    sidx_timespan.duration = Some(
+                        sidx_timespan
+                            .duration
+                            .expect("sidx accumulator always has a duration")
+                            .checked_add(Duration::new(sidx.total_duration))
+                            .ok_or(Error::DecodeError("isomp4: sidx total duration overflow"))?,
+                    )
                 }
                 AtomType::MediaData | AtomType::MovieFragment => {
                     // The mdat atom contains the codec bitstream data. For fragmented streams, a
@@ -529,7 +535,9 @@ impl<'s> IsoMp4Reader<'s> {
                     .get(&trak.tkhd.id)
                     .map(|sidx_tspan| TimeSpan::new(sidx_tspan.timescale, sidx_tspan.duration))
                     .unwrap_or_else(|| {
-                        TimeSpan::new(trak.mdia.mdhd.timescale, trak.mdia.mdhd.duration.into())
+                        let duration = (trak.mdia.mdhd.duration != 0)
+                            .then(|| Duration::new(trak.mdia.mdhd.duration));
+                        TimeSpan::new(trak.mdia.mdhd.timescale, duration)
                     })
             } else {
                 // If non-fragmented, use the total duration (media timescale) from the track's
@@ -539,7 +547,7 @@ impl<'s> IsoMp4Reader<'s> {
                 // TODO: Support edits. Once supported, prefer the tkhd duration.
                 let duration = Duration::from(trak.mdia.minf.stbl.stts.total_duration);
 
-                TimeSpan::new(trak.mdia.mdhd.timescale, duration)
+                TimeSpan::new(trak.mdia.mdhd.timescale, Some(duration))
             };
 
             let (track_state, track) = TrackState::make(t, trak, &timespan);
@@ -561,9 +569,32 @@ impl<'s> IsoMp4Reader<'s> {
         let segs: Vec<Box<dyn StreamSegment>> = vec![Box::new(MoovSegment::new(moov.clone()))];
 
         // Populate media information.
-        let mut media_info = MediaInfo::new();
-        media_info.with_time_base(TimeBase::from_recip(moov.mvhd.timescale));
-        media_info.with_duration(Duration::new(moov.mvhd.duration));
+        let mut media_info = if moov.is_fragmented() && moov.mvhd.duration == 0 {
+            if let Some(fragment_duration) = moov
+                .mvex
+                .as_ref()
+                .and_then(|mvex| mvex.mehd.as_ref())
+                .map(|mehd| mehd.fragment_duration)
+            {
+                let mut info = MediaInfo::new();
+                info.with_time_base(TimeBase::from_recip(moov.mvhd.timescale));
+                info.with_duration(Duration::new(fragment_duration));
+                info
+            } else {
+                // Без movie-level duration разрешено публиковать только доказанный track duration
+                // из `sidx` или non-zero `mdhd`; иначе длительность остаётся неизвестной.
+                MediaInfo::from_tracks(&tracks)
+            }
+        } else {
+            let mut info = MediaInfo::new();
+            info.with_time_base(TimeBase::from_recip(moov.mvhd.timescale));
+            info.with_duration(Duration::new(moov.mvhd.duration));
+            info
+        };
+
+        if media_info.time_base.is_none() {
+            media_info.with_time_base(TimeBase::from_recip(moov.mvhd.timescale));
+        }
 
         Ok(IsoMp4Reader {
             iter: it,
@@ -765,7 +796,7 @@ impl<'s> IsoMp4Reader<'s> {
                         let last_seg = self.segs.last().unwrap();
 
                         // Create a new segment for the moof atom.
-                        let seg = MoofSegment::new(moof, self.moov.clone(), last_seg.as_ref());
+                        let seg = MoofSegment::new(moof, self.moov.clone(), last_seg.as_ref())?;
 
                         // Segments should have a monotonic sequence number.
                         if seg.sequence_num() <= last_seg.sequence_num() {
@@ -815,16 +846,23 @@ impl<'s> IsoMp4Reader<'s> {
         }
 
         let mut seg_skip = 0;
+        let mut best_seek_location = None;
 
         let seek_loc = 'locate: loop {
             // Iterate over all segments and attempt to find the segment and sample number that
             // contains the desired timestamp. Skip segments already examined.
             for (seg_idx, seg) in self.segs.iter().enumerate().skip(seg_skip) {
+                let ts_range = seg.track_ts_range(track_num);
+                if !ts_range.is_empty() && ts_range.start > ts.get() as u64 {
+                    break 'locate best_seek_location
+                        .ok_or(Error::SeekError(SeekErrorKind::OutOfRange))?;
+                }
+
                 if let Some(sample_num) = seg.ts_sample(track_num, ts.get() as u64)? {
-                    break 'locate SeekLocation {
+                    best_seek_location = Some(SeekLocation {
                         seg_idx,
                         sample_num,
-                    };
+                    });
                 }
 
                 // Mark the segment as examined.
@@ -833,7 +871,7 @@ impl<'s> IsoMp4Reader<'s> {
 
             // Otherwise, try to read more segments from the stream.
             if !self.try_read_more_segments()? {
-                return seek_error(SeekErrorKind::OutOfRange);
+                break best_seek_location.ok_or(Error::SeekError(SeekErrorKind::OutOfRange))?;
             }
         };
 

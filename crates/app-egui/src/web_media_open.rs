@@ -460,7 +460,7 @@ fn demux_capabilities(
         for family in families {
             registrations.push(DemuxCapabilityRegistration::new(
                 *family,
-                descriptor.input_capabilities,
+                registration.input_capabilities(),
             )?);
         }
     }
@@ -621,6 +621,9 @@ fn ensure_not_cancelled(is_cancelled: &impl Fn() -> bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use demux_api::{
+        DemuxContainerRegistration, DemuxFactoryDescriptor, DemuxFactoryId, DemuxFixtureId,
+    };
 
     /// Shutdown cancellation завершается до запуска extractor/network side effects.
     #[test]
@@ -655,6 +658,8 @@ mod tests {
         let factory =
             SymphoniaDemuxFactory::new(DemuxerOptions::default()).expect("Symphonia factory");
         let capabilities = demux_capabilities(factory.descriptor()).expect("capability snapshot");
+        let expected_inputs = DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes)
+            .with(DemuxInputCapability::StreamingBytes);
         for family in [
             ContainerFamily::IsoBmff,
             ContainerFamily::FragmentedIsoBmff,
@@ -667,10 +672,64 @@ mod tests {
             ContainerFamily::Caf,
             ContainerFamily::MpegAudio,
         ] {
-            assert!(
-                !capabilities.input_capabilities_for(family).is_empty(),
-                "family {family:?} должна принадлежать registered factory"
+            let expected_family_inputs = if matches!(
+                family,
+                ContainerFamily::IsoBmff | ContainerFamily::FragmentedIsoBmff
+            ) {
+                expected_inputs.with(DemuxInputCapability::OrderedSegments)
+            } else {
+                expected_inputs
+            };
+            assert_eq!(
+                capabilities.input_capabilities_for(family),
+                expected_family_inputs,
+                "family {family:?} должна получить exact registered inputs"
             );
         }
+    }
+
+    /// Planner projection не переносит capability между соседними container rows.
+    #[test]
+    fn demux_capability_snapshot_preserves_per_container_input_sets() {
+        let iso_inputs = DemuxInputCapabilities::only(DemuxInputCapability::OrderedSegments);
+        let webm_inputs = DemuxInputCapabilities::only(DemuxInputCapability::StreamingBytes);
+        let descriptor = DemuxFactoryDescriptor::new(
+            DemuxFactoryId::new("synthetic-per-container").expect("factory ID"),
+            vec![
+                DemuxContainerRegistration::new(
+                    DemuxContainerId::new("iso-bmff").expect("ISO BMFF container ID"),
+                    iso_inputs,
+                    vec![],
+                    vec![],
+                ),
+                DemuxContainerRegistration::new(
+                    DemuxContainerId::new("webm").expect("WebM container ID"),
+                    webm_inputs,
+                    vec![],
+                    vec![],
+                ),
+            ],
+            vec![DemuxFixtureId::new("synthetic/per-container").expect("fixture ID")],
+        );
+
+        let capabilities = demux_capabilities(&descriptor).expect("capability snapshot");
+        assert_eq!(
+            capabilities.input_capabilities_for(ContainerFamily::IsoBmff),
+            iso_inputs
+        );
+        assert_eq!(
+            capabilities.input_capabilities_for(ContainerFamily::FragmentedIsoBmff),
+            iso_inputs
+        );
+        assert_eq!(
+            capabilities.input_capabilities_for(ContainerFamily::WebM),
+            webm_inputs
+        );
+        assert!(
+            !capabilities
+                .input_capabilities_for(ContainerFamily::WebM)
+                .contains(DemuxInputCapability::OrderedSegments),
+            "WebM не должен наследовать synthetic ISO ordered capability"
+        );
     }
 }

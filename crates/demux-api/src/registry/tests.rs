@@ -51,25 +51,39 @@ impl Demuxer for EmptyDemuxer {
 /// Factory распознаёт exact `TEST` signature и записывает replayed input.
 struct RecordingFactory {
     descriptor: DemuxFactoryDescriptor,
+    probed_container: DemuxContainerId,
     opened_bytes: Arc<Mutex<Vec<u8>>>,
 }
 
 impl RecordingFactory {
     fn new(factory_id: &str, container_id: &str, opened_bytes: Arc<Mutex<Vec<u8>>>) -> Self {
+        let input_capabilities = DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes)
+            .with(DemuxInputCapability::StreamingBytes)
+            .with(DemuxInputCapability::OrderedSegments);
         let container = DemuxContainerRegistration::new(
             DemuxContainerId::new(container_id).expect("container ID"),
+            input_capabilities,
             vec![DemuxSourceExtension::new("test").expect("extension")],
             vec![],
         );
+        Self::with_registrations(factory_id, vec![container], container_id, opened_bytes)
+    }
+
+    /// Строит multi-container fake, где probe намеренно выбирает один exact row.
+    fn with_registrations(
+        factory_id: &str,
+        registrations: Vec<DemuxContainerRegistration>,
+        probed_container_id: &str,
+        opened_bytes: Arc<Mutex<Vec<u8>>>,
+    ) -> Self {
         Self {
             descriptor: DemuxFactoryDescriptor::new(
                 DemuxFactoryId::new(factory_id).expect("factory ID"),
-                DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes)
-                    .with(DemuxInputCapability::StreamingBytes)
-                    .with(DemuxInputCapability::OrderedSegments),
-                vec![container],
+                registrations,
                 vec![DemuxFixtureId::new("registry/test-signature").expect("fixture ID")],
             ),
+            probed_container: DemuxContainerId::new(probed_container_id)
+                .expect("probed container ID"),
             opened_bytes,
         }
     }
@@ -96,7 +110,10 @@ impl DemuxFactory for RecordingFactory {
         if !request.sniffed_bytes.starts_with(signature) {
             return DemuxProbeDecision::NoMatch;
         }
-        let container = &self.descriptor.containers[0];
+        let container = self
+            .descriptor
+            .container_registration(&self.probed_container)
+            .expect("fake probe container registration");
         DemuxProbeDecision::Match(DemuxProbeMatch {
             container: container.container.clone(),
             confidence: DemuxProbeConfidence::Signature,
@@ -312,6 +329,157 @@ fn duplicate_registration_is_rejected() {
         duplicate_container,
         DemuxRegistryError::DuplicateContainer { .. }
     ));
+
+    let repeated_container_id =
+        DemuxContainerId::new("repeated-container").expect("repeated container ID");
+    let repeated_capabilities = DemuxInputCapabilities::only(DemuxInputCapability::StreamingBytes);
+    let repeated_rows = vec![
+        DemuxContainerRegistration::new(
+            repeated_container_id.clone(),
+            repeated_capabilities,
+            vec![],
+            vec![],
+        ),
+        DemuxContainerRegistration::new(
+            repeated_container_id,
+            repeated_capabilities,
+            vec![],
+            vec![],
+        ),
+    ];
+    let duplicate_inside_factory = DemuxRegistry::new()
+        .register(Box::new(RecordingFactory::with_registrations(
+            "internally-duplicated",
+            repeated_rows,
+            "repeated-container",
+            Arc::new(Mutex::new(Vec::new())),
+        )))
+        .expect_err("duplicate container row внутри одного factory");
+    assert!(matches!(
+        duplicate_inside_factory,
+        DemuxRegistryError::DuplicateContainer { .. }
+    ));
+}
+
+/// Capability соседнего container row не расширяет contract фактически matched row.
+#[test]
+fn registry_validates_the_exact_container_and_input_pair() {
+    let seekable_only = DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes);
+    let ordered_only = DemuxInputCapabilities::only(DemuxInputCapability::OrderedSegments);
+    let seekable_container = DemuxContainerRegistration::new(
+        DemuxContainerId::new("seekable-container").expect("seekable container ID"),
+        seekable_only,
+        vec![],
+        vec![],
+    );
+    let ordered_container = DemuxContainerRegistration::new(
+        DemuxContainerId::new("ordered-container").expect("ordered container ID"),
+        ordered_only,
+        vec![],
+        vec![],
+    );
+    let factory = RecordingFactory::with_registrations(
+        "per-container",
+        vec![seekable_container, ordered_container],
+        "seekable-container",
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    assert!(
+        factory
+            .descriptor()
+            .input_capabilities()
+            .contains(DemuxInputCapability::OrderedSegments),
+        "aggregate нужен только для factory prefilter"
+    );
+    assert!(
+        !factory.descriptor().containers[0].supports_input(DemuxInputCapability::OrderedSegments),
+        "neighbor capability не должна протечь в matched row"
+    );
+
+    let mut registry = DemuxRegistry::new();
+    registry
+        .register(Box::new(factory))
+        .expect("per-container factory registration");
+    registry
+        .probe_sample(
+            DemuxInputCapability::SeekableBytes,
+            &DemuxHints::none(),
+            b"TEST",
+            &CancellationToken::never_cancelled(),
+        )
+        .expect("matched container поддерживает seekable input");
+
+    let rejected = registry
+        .probe_sample(
+            DemuxInputCapability::OrderedSegments,
+            &DemuxHints::none(),
+            b"TEST",
+            &CancellationToken::never_cancelled(),
+        )
+        .expect_err("matched container не поддерживает ordered input");
+    assert!(matches!(
+        rejected,
+        DemuxOpenError::ProbeRejected(DemuxProbeRejection::UnsupportedInput {
+            capability: DemuxInputCapability::OrderedSegments,
+        })
+    ));
+}
+
+/// Empty capability отклоняется на exact container row с понятной диагностикой.
+#[test]
+fn registration_rejects_a_container_without_input_capabilities() {
+    let empty_container = DemuxContainerRegistration::new(
+        DemuxContainerId::new("empty-container").expect("empty container ID"),
+        DemuxInputCapabilities::default(),
+        vec![],
+        vec![],
+    );
+    let factory = RecordingFactory::with_registrations(
+        "empty-capabilities",
+        vec![empty_container],
+        "empty-container",
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    let mut registry = DemuxRegistry::new();
+    let error = registry
+        .register(Box::new(factory))
+        .expect_err("empty container capabilities");
+    assert!(matches!(
+        error,
+        DemuxRegistryError::MissingInputCapabilities { container, .. }
+            if container.as_str() == "empty-container"
+    ));
+}
+
+/// Per-container filtering не меняет прежний tie contract разных owners.
+#[test]
+fn equally_strong_matches_remain_ambiguous() {
+    let opened_bytes = Arc::new(Mutex::new(Vec::new()));
+    let mut registry = DemuxRegistry::new();
+    registry
+        .register(Box::new(RecordingFactory::new(
+            "first-factory",
+            "first-container",
+            Arc::clone(&opened_bytes),
+        )))
+        .expect("first factory");
+    registry
+        .register(Box::new(RecordingFactory::new(
+            "second-factory",
+            "second-container",
+            opened_bytes,
+        )))
+        .expect("second factory");
+
+    let error = registry
+        .probe_sample(
+            DemuxInputCapability::StreamingBytes,
+            &DemuxHints::none(),
+            b"TEST",
+            &CancellationToken::never_cancelled(),
+        )
+        .expect_err("equal signature matches must stay ambiguous");
+    assert!(matches!(error, DemuxOpenError::AmbiguousMatch { .. }));
 }
 
 /// Seekable source cursor возвращается к исходной позиции после bounded sniff.

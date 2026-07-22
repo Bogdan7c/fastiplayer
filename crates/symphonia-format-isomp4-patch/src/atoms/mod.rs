@@ -5,7 +5,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::{io::SeekFrom, num::NonZeroU64};
+use std::{io::{ErrorKind, SeekFrom}, num::NonZeroU64};
 
 use symphonia_core::io::{MediaSource, ReadBytes, SeekBuffered};
 
@@ -55,6 +55,7 @@ pub(crate) mod stsd;
 pub(crate) mod stss;
 pub(crate) mod stsz;
 pub(crate) mod stts;
+pub(crate) mod tfdt;
 pub(crate) mod tfhd;
 pub(crate) mod tkhd;
 pub(crate) mod traf;
@@ -104,6 +105,7 @@ pub use stsd::StsdAtom;
 pub use stss::StssAtom;
 pub use stsz::StszAtom;
 pub use stts::SttsAtom;
+pub use tfdt::TfdtAtom;
 pub use tfhd::TfhdAtom;
 pub use tkhd::TkhdAtom;
 pub use traf::TrafAtom;
@@ -251,6 +253,7 @@ pub enum AtomType {
     TrackArtistUrl,
     TrackExtends,
     TrackFragment,
+    TrackFragmentDecodeTime,
     TrackFragmentHeader,
     TrackFragmentRun,
     TrackHeader,
@@ -354,6 +357,7 @@ impl From<[u8; 4]> for AtomType {
             b"stss" => AtomType::SyncSample,
             b"stsz" => AtomType::SampleSize,
             b"stts" => AtomType::TimeToSample,
+            b"tfdt" => AtomType::TrackFragmentDecodeTime,
             b"tfhd" => AtomType::TrackFragmentHeader,
             b"tkhd" => AtomType::TrackHeader,
             b"traf" => AtomType::TrackFragment,
@@ -491,6 +495,15 @@ impl From<symphonia_core::errors::Error> for AtomError {
     }
 }
 
+/// Не даёт физическому обрыву внутри объявленной структуры маскироваться под clean EOF.
+fn structural_io_error(err: std::io::Error) -> AtomError {
+    if err.kind() == ErrorKind::UnexpectedEof {
+        AtomError::UnexpectedEndOfAtom
+    } else {
+        AtomError::from(err)
+    }
+}
+
 /// Atom iterator result.
 pub type Result<T> = std::result::Result<T, AtomError>;
 
@@ -531,8 +544,14 @@ impl AtomHeader {
     pub fn read<R: ReadBytes>(reader: &mut R) -> Result<AtomHeader> {
         let atom_pos = reader.pos();
 
-        let atom_len = u64::from(reader.read_be_u32()?);
-        let atom_type = AtomType::from(reader.read_quad_bytes()?);
+        let atom_len = match reader.read_be_u32() {
+            Ok(atom_len) => u64::from(atom_len),
+            Err(err) if err.kind() == ErrorKind::UnexpectedEof && reader.pos() > atom_pos => {
+                return Err(AtomError::UnexpectedEndOfAtom);
+            }
+            Err(err) => return Err(AtomError::from(err)),
+        };
+        let atom_type = AtomType::from(reader.read_quad_bytes().map_err(structural_io_error)?);
 
         let (header_len, atom_len) = match atom_len {
             0 => {
@@ -541,7 +560,7 @@ impl AtomHeader {
             }
             1 => {
                 // An atom size of 1 indicates a 64-bit atom size should be read.
-                let large_atom_len = reader.read_be_u64()?;
+                let large_atom_len = reader.read_be_u64().map_err(structural_io_error)?;
 
                 // The atom size should be atleast the size of the header.
                 if large_atom_len < u64::from(AtomHeader::LARGE_HEADER_SIZE) {
@@ -644,7 +663,10 @@ impl<R: ReadAtom> AtomIterator<R> {
     /// Discards any unread data from the previous atom.
     pub(crate) fn next_header(&mut self) -> Result<Option<&AtomHeader>> {
         // If there is a pending atom, or it wasn't fully consumed, skip over it now.
-        let _ = self.skip_atom();
+        match self.skip_atom() {
+            Ok(()) | Err(AtomError::NoPendingAtom) => {}
+            Err(err) => return Err(err),
+        }
 
         // Get the parent atom's end position, if available
         let parent_end = self.stack.last().map(|parent| parent.end()).unwrap_or(self.len);
@@ -661,9 +683,8 @@ impl<R: ReadAtom> AtomIterator<R> {
                 return Err(AtomError::Overrun);
             }
             else if parent_end - pos < u64::from(AtomHeader::HEADER_SIZE) {
-                // Remaining data length is not enough for another atom header to be read.
-                // Iteration of the current parent atom is done.
-                return Ok(None);
+                // Ненулевой хвост короче header-а означает обрыв объявленной структуры.
+                return Err(AtomError::UnexpectedEndOfAtom);
             }
         }
 
@@ -701,9 +722,8 @@ impl<R: ReadAtom> AtomIterator<R> {
 
             if let Some(child_end) = atom.end() {
                 if child_end > parent_end {
-                    log::debug!("atom end position exceeds parent's end position, skipping atom");
-                    self.reader.ignore_bytes(parent_end - pos)?;
-                    return Ok(None);
+                    log::debug!("atom end position exceeds parent's end position");
+                    return Err(AtomError::UnexpectedEndOfAtom);
                 }
             }
         }
@@ -729,7 +749,7 @@ impl<R: ReadAtom> AtomIterator<R> {
                 if pos < end {
                     // The atom has unread data, skip it.
                     // log::debug!("skipping {} unread bytes", end - pos);
-                    self.reader.ignore_bytes(end - pos)?;
+                    self.reader.ignore_bytes(end - pos).map_err(structural_io_error)?;
                 }
             }
             _ => {
@@ -820,7 +840,9 @@ impl<R: ReadAtom> AtomIterator<R> {
                 // The stream is not seekable but the desired seek position is ahead of the reader's
                 // current position, thus the seek can be emulated by ignoring the bytes up to the
                 // the desired seek position.
-                self.reader.ignore_bytes(pos - self.reader.pos())?;
+                self.reader
+                    .ignore_bytes(pos - self.reader.pos())
+                    .map_err(structural_io_error)?;
             }
             else {
                 // The stream is not seekable and the desired seek position falls outside the lower
@@ -869,7 +891,7 @@ impl<R: ReadAtom> AtomIterator<R> {
         self.seek_reader(pos)?;
 
         // Do the read.
-        let data = self.reader.read_boxed_slice_exact(len)?;
+        let data = self.reader.read_boxed_slice_exact(len).map_err(structural_io_error)?;
 
         Ok(data)
     }
@@ -905,15 +927,14 @@ impl<R: ReadAtom> AtomIterator<R> {
     /// Reads the extended header fields.
     #[inline]
     pub(crate) fn read_extended_header(&mut self) -> Result<(u8, u32)> {
-        self.ensure_parent_atom_data(4)?;
-        Ok((self.reader.read_u8()?, self.reader.read_be_u24()?))
+        Ok((self.read_u8()?, self.read_u24()?))
     }
 
     /// Reads exactly the number of bytes required to fill be provided buffer or returns an error.
     #[inline]
     pub(crate) fn read_buf_exact(&mut self, buf: &mut [u8]) -> Result<()> {
         self.ensure_parent_atom_data(buf.len() as u64)?;
-        Ok(self.reader.read_buf_exact(buf)?)
+        self.reader.read_buf_exact(buf).map_err(structural_io_error)
     }
 
     /// Reads exactly the number of bytes requested, and returns a boxed slice of the data or an
@@ -921,14 +942,14 @@ impl<R: ReadAtom> AtomIterator<R> {
     #[inline]
     pub(crate) fn read_boxed_slice_exact(&mut self, len: usize) -> Result<Box<[u8]>> {
         self.ensure_parent_atom_data(len as u64)?;
-        Ok(self.reader.read_boxed_slice_exact(len)?)
+        self.reader.read_boxed_slice_exact(len).map_err(structural_io_error)
     }
 
     /// Ignores the specified number of bytes from the stream or returns an error.
     #[inline]
     pub(crate) fn ignore_bytes(&mut self, count: u64) -> Result<()> {
         self.ensure_parent_atom_data(count)?;
-        Ok(self.reader.ignore_bytes(count)?)
+        self.reader.ignore_bytes(count).map_err(structural_io_error)
     }
 
     /// Read a null-terminated UTF-8 string.
@@ -949,7 +970,7 @@ impl<R: ReadAtom> AtomIterator<R> {
                 return Err(AtomError::UnexpectedEndOfAtom);
             }
 
-            let byte = self.reader.read_u8()?;
+            let byte = self.reader.read_u8().map_err(structural_io_error)?;
             num_bytes += 1;
 
             // Break at the null-terminator. Do not add it to the string buffer.
@@ -968,14 +989,14 @@ impl<R: ReadAtom> AtomIterator<R> {
     #[inline]
     pub(crate) fn read_byte(&mut self) -> Result<u8> {
         self.ensure_parent_atom_data(std::mem::size_of::<u8>() as u64)?;
-        Ok(self.reader.read_byte()?)
+        self.reader.read_byte().map_err(structural_io_error)
     }
 
     /// Reads two bytes from the stream and returns them in read-order or an error.
     #[inline]
     pub(crate) fn read_double_bytes(&mut self) -> Result<[u8; 2]> {
         self.ensure_parent_atom_data(std::mem::size_of::<[u8; 2]>() as u64)?;
-        Ok(self.reader.read_double_bytes()?)
+        self.reader.read_double_bytes().map_err(structural_io_error)
     }
 
     /// Reads three bytes from the stream and returns them in read-order or an error.
@@ -983,14 +1004,14 @@ impl<R: ReadAtom> AtomIterator<R> {
     #[inline]
     pub(crate) fn read_triple_bytes(&mut self) -> Result<[u8; 3]> {
         self.ensure_parent_atom_data(std::mem::size_of::<[u8; 3]>() as u64)?;
-        Ok(self.reader.read_triple_bytes()?)
+        self.reader.read_triple_bytes().map_err(structural_io_error)
     }
 
     /// Reads four bytes from the stream and returns them in read-order or an error.
     #[inline]
     pub(crate) fn read_quad_bytes(&mut self) -> Result<[u8; 4]> {
         self.ensure_parent_atom_data(std::mem::size_of::<[u8; 4]>() as u64)?;
-        Ok(self.reader.read_quad_bytes()?)
+        self.reader.read_quad_bytes().map_err(structural_io_error)
     }
 
     /// Reads a single unsigned byte from the stream and returns it or an error.
@@ -1090,3 +1111,6 @@ impl<R: ReadAtom> AtomIterator<R> {
         Ok(f64::from_be_bytes(buf))
     }
 }
+
+#[cfg(test)]
+mod tests;

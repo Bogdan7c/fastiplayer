@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use media_core::Demuxer;
 use source_core::CancellationToken;
@@ -19,6 +19,8 @@ use input_replay::sniff_and_restore_input;
 pub struct DemuxContainerRegistration {
     /// Stable neutral container identity.
     pub container: DemuxContainerId,
+    /// Exact input shapes, которые runtime factory умеет открыть для этого container-а.
+    input_capabilities: DemuxInputCapabilities,
     /// Extensions без ведущей точки.
     pub extensions: Vec<DemuxSourceExtension>,
     /// Canonical MIME aliases.
@@ -30,14 +32,28 @@ impl DemuxContainerRegistration {
     #[must_use]
     pub fn new(
         container: DemuxContainerId,
+        input_capabilities: DemuxInputCapabilities,
         extensions: Vec<DemuxSourceExtension>,
         mime_types: Vec<DemuxMimeType>,
     ) -> Self {
         Self {
             container,
+            input_capabilities,
             extensions,
             mime_types,
         }
+    }
+
+    /// Возвращает exact input shapes только текущего container registration row.
+    #[must_use]
+    pub const fn input_capabilities(&self) -> DemuxInputCapabilities {
+        self.input_capabilities
+    }
+
+    /// Проверяет поддержку input shape без обращения к aggregate factory capability.
+    #[must_use]
+    pub const fn supports_input(&self, capability: DemuxInputCapability) -> bool {
+        self.input_capabilities.contains(capability)
     }
 
     /// Сравнивает каждый присутствующий hint с exact container registration.
@@ -72,8 +88,6 @@ impl DemuxContainerRegistration {
 pub struct DemuxFactoryDescriptor {
     /// Stable factory identity для duplicate/diagnostics.
     pub factory_id: DemuxFactoryId,
-    /// Все input shapes, которые factory реально умеет открыть.
-    pub input_capabilities: DemuxInputCapabilities,
     /// Container identities и их exact metadata aliases.
     pub containers: Vec<DemuxContainerRegistration>,
     /// Focused fixture evidence, сопровождающее registration.
@@ -85,16 +99,36 @@ impl DemuxFactoryDescriptor {
     #[must_use]
     pub fn new(
         factory_id: DemuxFactoryId,
-        input_capabilities: DemuxInputCapabilities,
         containers: Vec<DemuxContainerRegistration>,
         fixture_ids: Vec<DemuxFixtureId>,
     ) -> Self {
         Self {
             factory_id,
-            input_capabilities,
             containers,
             fixture_ids,
         }
+    }
+
+    /// Объединяет capabilities всех rows только для быстрого factory prefilter-а.
+    ///
+    /// Решение о конкретной паре `(container, input)` всегда принимает registration row.
+    #[must_use]
+    pub fn input_capabilities(&self) -> DemuxInputCapabilities {
+        self.containers.iter().fold(
+            DemuxInputCapabilities::default(),
+            |aggregate, registration| aggregate.union(registration.input_capabilities()),
+        )
+    }
+
+    /// Возвращает exact registration одного canonical container-а.
+    #[must_use]
+    pub fn container_registration(
+        &self,
+        container: &DemuxContainerId,
+    ) -> Option<&DemuxContainerRegistration> {
+        self.containers
+            .iter()
+            .find(|registration| &registration.container == container)
     }
 }
 
@@ -166,11 +200,15 @@ pub enum DemuxRegistryError {
         /// Ранее зарегистрированный owner.
         existing_factory_id: DemuxFactoryId,
     },
-    /// Factory без input capability никогда не может быть выбран.
-    #[error("demux factory `{factory_id}` не объявил input capabilities")]
+    /// Container row без input capability никогда не может быть выбран честно.
+    #[error(
+        "demux factory `{factory_id}` не объявил input capabilities для container `{container}`"
+    )]
     MissingInputCapabilities {
         /// Invalid factory identity.
         factory_id: DemuxFactoryId,
+        /// Invalid container registration.
+        container: DemuxContainerId,
     },
     /// Factory без container registration не имеет typed selection evidence.
     #[error("demux factory `{factory_id}` не объявил containers")]
@@ -240,14 +278,19 @@ impl DemuxRegistry {
     /// Добавляет factory после проверки owner uniqueness и evidence completeness.
     pub fn register(&mut self, factory: Box<dyn DemuxFactory>) -> Result<(), DemuxRegistryError> {
         let descriptor = factory.descriptor();
-        if descriptor.input_capabilities.is_empty() {
-            return Err(DemuxRegistryError::MissingInputCapabilities {
-                factory_id: descriptor.factory_id.clone(),
-            });
-        }
         if descriptor.containers.is_empty() {
             return Err(DemuxRegistryError::MissingContainers {
                 factory_id: descriptor.factory_id.clone(),
+            });
+        }
+        if let Some(registration) = descriptor
+            .containers
+            .iter()
+            .find(|registration| registration.input_capabilities().is_empty())
+        {
+            return Err(DemuxRegistryError::MissingInputCapabilities {
+                factory_id: descriptor.factory_id.clone(),
+                container: registration.container.clone(),
             });
         }
         if descriptor.fixture_ids.is_empty() {
@@ -263,6 +306,16 @@ impl DemuxRegistry {
             return Err(DemuxRegistryError::DuplicateFactory {
                 factory_id: descriptor.factory_id.clone(),
             });
+        }
+
+        let mut declared_containers = BTreeSet::new();
+        for registration in &descriptor.containers {
+            if !declared_containers.insert(&registration.container) {
+                return Err(DemuxRegistryError::DuplicateContainer {
+                    container: registration.container.clone(),
+                    existing_factory_id: descriptor.factory_id.clone(),
+                });
+            }
         }
 
         let existing_containers = self
@@ -348,11 +401,8 @@ impl DemuxRegistry {
         let mut strongest_rejection = None;
 
         for (factory_index, factory) in self.factories.iter().enumerate() {
-            if !factory
-                .descriptor()
-                .input_capabilities
-                .contains(input_capability)
-            {
+            let descriptor = factory.descriptor();
+            if !descriptor.input_capabilities().contains(input_capability) {
                 continue;
             }
             let decision = factory.probe(DemuxProbeRequest {
@@ -362,10 +412,33 @@ impl DemuxRegistry {
                 cancellation,
             });
             match decision {
-                DemuxProbeDecision::Match(matched) => matches.push(SelectedFactory {
-                    factory_index,
-                    matched,
-                }),
+                DemuxProbeDecision::Match(matched) => {
+                    match descriptor.container_registration(&matched.container) {
+                        Some(registration) if registration.supports_input(input_capability) => {
+                            matches.push(SelectedFactory {
+                                factory_index,
+                                matched,
+                            });
+                        }
+                        Some(_) => {
+                            strongest_rejection = choose_probe_rejection(
+                                strongest_rejection,
+                                DemuxProbeRejection::UnsupportedInput {
+                                    capability: input_capability,
+                                },
+                            );
+                        }
+                        None => {
+                            strongest_rejection = choose_probe_rejection(
+                                strongest_rejection,
+                                DemuxProbeRejection::Malformed {
+                                    reason: "demux factory matched незарегистрированный container"
+                                        .to_owned(),
+                                },
+                            );
+                        }
+                    }
+                }
                 DemuxProbeDecision::NoMatch => {}
                 DemuxProbeDecision::Rejected(rejection) => {
                     strongest_rejection = choose_probe_rejection(strongest_rejection, rejection);

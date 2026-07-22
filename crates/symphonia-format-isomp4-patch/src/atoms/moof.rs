@@ -43,6 +43,9 @@ impl Atom for MoofAtom {
         if mfhd.is_none() {
             return decode_error("isomp4 (moof): missing mfhd atom");
         }
+        if trafs.is_empty() {
+            return decode_error("isomp4 (moof): missing traf atom");
+        }
 
         // The position of the first byte of the entire moof atom.
         let moof_base_pos = header.pos();
