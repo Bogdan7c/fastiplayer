@@ -1,0 +1,19 @@
+[package]
+name = "web-media-adaptive"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bytes.workspace = true
+demux-api.workspace = true
+media-core.workspace = true
+source-core.workspace = true
+thiserror.workspace = true
+web-media-transport-api.workspace = true
+
+[dev-dependencies]
+rustiplayer-config.workspace = true
+web-media-core.workspace = true

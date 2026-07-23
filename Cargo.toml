@@ -21,6 +21,7 @@ members = [
     "crates/web-media-playback-plan",
     "crates/web-media-transport-api",
     "crates/web-media-http",
+    "crates/web-media-adaptive",
     "crates/bounded-xml-reader",
     "crates/player-core",
     "crates/bounded-work-executor",
@@ -193,6 +194,7 @@ media-prefetch = { version = "0.1.0", path = "crates/media-prefetch" }
 web-media-core = { version = "0.1.0", path = "crates/web-media-core" }
 web-media-playback-plan = { version = "0.1.0", path = "crates/web-media-playback-plan" }
 web-media-transport-api = { version = "0.1.0", path = "crates/web-media-transport-api" }
+web-media-adaptive = { version = "0.1.0", path = "crates/web-media-adaptive" }
 web-media-http = { version = "0.1.0", path = "crates/web-media-http" }
 bounded-xml-reader = { version = "0.1.0", path = "crates/bounded-xml-reader" }
 settings-core = { version = "0.1.0", path = "crates/settings-core" }

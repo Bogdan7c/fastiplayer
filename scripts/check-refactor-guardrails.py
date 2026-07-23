@@ -88,6 +88,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "video-ffmpeg",
         "video-vaapi",
         "web-media-core",
+        "web-media-adaptive",
         "web-media-http",
         "web-media-playback-plan",
         "web-media-transport-api",
@@ -169,6 +170,20 @@ WEB_MEDIA_TRANSPORT_API_ALLOWED_DEPENDENCIES = frozenset(
 # prefetch policy; service/demux/player/client dependencies здесь запрещены.
 WEB_MEDIA_HTTP_ALLOWED_DEPENDENCIES = frozenset(
     {"media-prefetch", "source-core", "web-media-transport-api"}
+)
+
+# Shared adaptive owner использует только neutral HTTP/policy/demux boundaries.
+# Concrete HLS/DASH parser, reqwest, service, player, UI и cache edges запрещены.
+WEB_MEDIA_ADAPTIVE_ALLOWED_DEPENDENCIES = frozenset(
+    {
+        "anyhow",
+        "bytes",
+        "demux-api",
+        "media-core",
+        "source-core",
+        "thiserror",
+        "web-media-transport-api",
+    }
 )
 
 # yt-dlp service заканчивается на extractor/descriptor/neutral request mapping.
@@ -1099,6 +1114,14 @@ def find_dependency_violations(
             frozenset({"web-media-http"}),
             WEB_MEDIA_HTTP_ALLOWED_DEPENDENCIES,
             "web-media-http переиспользует только neutral transport API, source-core и media-prefetch",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"web-media-adaptive"}),
+            WEB_MEDIA_ADAPTIVE_ALLOWED_DEPENDENCIES,
+            "web-media-adaptive остаётся shared manifest/segment lifecycle без concrete parser/player/UI/reqwest",
         )
     )
     violations.extend(

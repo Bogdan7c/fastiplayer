@@ -1,3 +1,7 @@
+## S31 adaptive transport foundation (2026-07-23)
+
+- Shared provider-neutral owner — `web-media-adaptive`: bounded manifest/full-segment/exact-Range lifecycle, retry/cancel, generation fencing, VOD/live/DVR vocabulary, separate component clocks и explicit nonblocking readiness. HTTP mechanics остаются в `source-core`, secrets/redirects — в S21T; HLS/DASH policy сюда не входит. Existing ordered demux API не ломался; handoff: `mem:media-services/adaptive-transport-s31-2026-07-23`.
+
 ## S30 web FLV/F4F registration (2026-07-23)
 
 - `app-egui::web_media_demux_registry` является малым S30 composition owner-ом Symphonia и FLV/F4F registry + planner snapshot. MPEG-TS здесь намеренно не зарегистрирован; существующий S29 local MPEG-TS composition остаётся отдельным.

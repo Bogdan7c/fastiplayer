@@ -456,7 +456,7 @@ impl ByteSource for HttpRangeSource {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ByteRange {
+pub(crate) struct ByteRange {
     /// Начальный byte offset.
     start: u64,
 
@@ -466,7 +466,7 @@ struct ByteRange {
 
 impl ByteRange {
     /// Создаёт bounded byte range.
-    const fn new(start: u64, length: usize) -> Self {
+    pub(crate) const fn new(start: u64, length: usize) -> Self {
         Self { start, length }
     }
 
@@ -478,7 +478,7 @@ impl ByteRange {
     }
 
     /// Форматирует header `Range`.
-    fn header_value(self) -> String {
+    pub(crate) fn header_value(self) -> String {
         format!("bytes={}-{}", self.start, self.end_inclusive())
     }
 }
@@ -587,7 +587,7 @@ fn send_range_request(
 }
 
 /// Валидирует, что `Content-Range` соответствует запрошенному range.
-fn validate_content_range(
+pub(crate) fn validate_content_range(
     url: &SecretHttpUrl,
     headers: &HeaderMap,
     range: &ByteRange,

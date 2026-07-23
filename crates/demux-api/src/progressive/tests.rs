@@ -13,7 +13,8 @@ use media_core::{
 use source_core::CancellationToken;
 
 use super::{
-    ProgressiveDemuxBufferLimits, ProgressiveDemuxPacketTooLargeError, ProgressiveDemuxer,
+    ProgressiveDemuxBufferLimits, ProgressiveDemuxPacketTooLargeError,
+    ProgressiveDemuxStartupError, ProgressiveDemuxer,
 };
 
 /// Blocking fake сохраняет главный production invariant: inner read может ждать сколько угодно.
@@ -91,6 +92,33 @@ impl Demuxer for CountingPacketDemuxer {
     }
 }
 
+/// Seekable fake доказывает, что deferred wrapper не скрывает seek contract.
+struct SeekableDeferredDemuxer;
+
+impl Demuxer for SeekableDeferredDemuxer {
+    fn tracks(&self) -> &[TrackInfo] {
+        &[]
+    }
+
+    fn duration(&self) -> Option<Duration> {
+        None
+    }
+
+    fn seekability(&self) -> DemuxSeekability {
+        DemuxSeekability::Seekable
+    }
+
+    fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+        Ok(DemuxReadEvent::EndOfStream)
+    }
+
+    fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+        Err(anyhow::anyhow!(
+            "deferred seekable fake не должен дойти до seek"
+        ))
+    }
+}
+
 /// Строит explicit маленькие limits для focused tests.
 fn limits(max_events: usize, max_bytes: usize) -> ProgressiveDemuxBufferLimits {
     ProgressiveDemuxBufferLimits::new(
@@ -144,6 +172,74 @@ fn blocked_inner_read_returns_readiness_without_blocking_player_owner() {
         poll_until_event(&mut progressive).expect("terminal event"),
         DemuxReadEvent::EndOfStream
     ));
+}
+
+#[test]
+fn deferred_open_failure_is_nonblocking_and_preserves_typed_error() {
+    let mut progressive = ProgressiveDemuxer::new_deferred(
+        || {
+            thread::sleep(Duration::from_millis(40));
+            Err(anyhow::anyhow!("deferred-open-test-failure"))
+        },
+        CancellationToken::new(),
+        limits(2, 1024),
+        retry_hint(),
+    )
+    .expect("deferred worker starts");
+
+    let started_at = Instant::now();
+    assert!(matches!(
+        progressive.next_event().expect("readiness event"),
+        DemuxReadEvent::TemporarilyUnavailable(_)
+    ));
+    assert!(started_at.elapsed() < Duration::from_millis(20));
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        match progressive.next_event() {
+            Ok(DemuxReadEvent::TemporarilyUnavailable(_)) => {
+                assert!(Instant::now() < deadline, "deferred failure timed out");
+                thread::sleep(DemuxRetryHint::MIN_RETRY_AFTER);
+            }
+            Err(error) => {
+                assert_eq!(error.to_string(), "deferred-open-test-failure");
+                break;
+            }
+            Ok(other) => panic!("unexpected deferred event: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn deferred_open_rejects_seekable_inner_instead_of_hiding_seekability() {
+    let mut progressive = ProgressiveDemuxer::new_deferred(
+        || Ok(Box::new(SeekableDeferredDemuxer)),
+        CancellationToken::new(),
+        limits(2, 1024),
+        retry_hint(),
+    )
+    .expect("deferred worker starts");
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        match progressive.next_event() {
+            Ok(DemuxReadEvent::TemporarilyUnavailable(_)) => {
+                assert!(Instant::now() < deadline, "deferred rejection timed out");
+                thread::sleep(DemuxRetryHint::MIN_RETRY_AFTER);
+            }
+            Err(error) => {
+                assert!(
+                    error
+                        .downcast_ref::<ProgressiveDemuxStartupError>()
+                        .is_some_and(|source| {
+                            matches!(source, ProgressiveDemuxStartupError::SeekableInput)
+                        })
+                );
+                break;
+            }
+            Ok(other) => panic!("unexpected deferred event: {other:?}"),
+        }
+    }
 }
 
 #[test]

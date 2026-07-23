@@ -159,6 +159,24 @@ impl HttpRequestTarget {
     pub fn expose_secret_for_request(&self) -> &str {
         self.exact.expose_secret_for_open()
     }
+
+    /// Разрешает URI reference относительно exact effective response target-а.
+    pub fn resolve_reference(&self, reference: &str) -> Result<Self, HttpRequestTargetError> {
+        let base = Url::parse(self.exact.expose_secret_for_open())
+            .map_err(|_| HttpRequestTargetError::InvalidSyntax)?;
+        let resolved = base
+            .join(reference)
+            .map_err(|_| HttpRequestTargetError::InvalidSyntax)?;
+        Self::parse_exact(resolved)
+    }
+
+    /// Заменяет только query exact target-а scoped secret override-ом.
+    pub fn with_query_override(&self, query: &str) -> Result<Self, HttpRequestTargetError> {
+        let mut parsed = Url::parse(self.exact.expose_secret_for_open())
+            .map_err(|_| HttpRequestTargetError::InvalidSyntax)?;
+        parsed.set_query(Some(query));
+        Self::parse_exact(parsed)
+    }
 }
 
 impl fmt::Debug for HttpRequestTarget {

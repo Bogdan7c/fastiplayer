@@ -1,3 +1,7 @@
+## S31 adaptive secret reuse (2026-07-23)
+
+- `web-media-adaptive` не создаёт durable locator/auth surface: он принимает S21T `TransportOpenRequest`, применяет scoped manifest/segment purpose material, manual redirect authorization и ephemeral cookie jar. Cross-origin hop монотонно снимает header/query secrets; raw targets/material не попадают в Debug/errors. См. `mem:media-services/adaptive-transport-s31-2026-07-23`.
+
 # Secret-safe URL/service locator boundaries — актуально 2026-07-17
 
 Эта memory дополняет `mem:core`, `mem:media-services/core`, `mem:media-services/direct-media` и `mem:playlist/core`.

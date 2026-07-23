@@ -289,7 +289,7 @@ impl fmt::Debug for HttpSingleHopRequest {
 #[derive(Clone)]
 pub struct HttpSourceSession {
     /// Blocking client с caller-owned timeout policy и выключенными redirect-ами.
-    client: Client,
+    pub(crate) client: Client,
 }
 
 impl HttpSourceSession {

@@ -361,6 +361,7 @@ fn map_source_open_error(
             ProviderOpenError::Authentication(failure)
         }
         SourceError::InvalidHttpRedirect { .. }
+        | SourceError::HttpBodyTooLarge { .. }
         | SourceError::InvalidContentRange { .. }
         | SourceError::HttpRangeUnsupported { .. }
         | SourceError::NotSeekable { .. }

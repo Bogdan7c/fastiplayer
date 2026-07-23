@@ -11,6 +11,7 @@ mod cancellation;
 mod config;
 mod error;
 mod http;
+mod http_bounded;
 mod http_cookie;
 mod http_locator;
 mod http_policy;
@@ -25,6 +26,10 @@ pub use cancellation::CancellationToken;
 pub use config::SourceRuntimeConfig;
 pub use error::{SourceError, SourceResult};
 pub use http::{HttpHeader, HttpRangeSource, HttpRangeSourceConfig};
+pub use http_bounded::{
+    HttpBoundedByteRange, HttpBoundedFetchHop, HttpBoundedFetchKind, HttpBoundedFetchRequest,
+    HttpBoundedResponse,
+};
 pub use http_cookie::{ScopedHttpCookieJar, ScopedHttpCookieJarError};
 pub use http_locator::SecretHttpUrl;
 pub use http_policy::{

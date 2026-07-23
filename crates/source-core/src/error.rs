@@ -111,6 +111,19 @@ pub enum SourceError {
         status: StatusCode,
     },
 
+    /// HTTP body превысил caller-owned bounded resource limit.
+    #[error("HTTP body `{operation}` для {url} превысил лимит {maximum_bytes} bytes")]
+    HttpBodyTooLarge {
+        /// Стабильная категория операции без внешнего payload-а.
+        operation: &'static str,
+
+        /// Redacted URL источника.
+        url: SecretHttpUrl,
+
+        /// Exact caller-owned upper bound.
+        maximum_bytes: usize,
+    },
+
     /// Redirect response не содержит безопасно разрешимый HTTP(S) target.
     #[error("HTTP redirect для {url} отклонён source parser-ом: {reason}")]
     InvalidHttpRedirect {
@@ -183,6 +196,7 @@ impl SourceError {
             | Self::InvalidHttpHeaderName { .. }
             | Self::InvalidHttpHeaderValue { .. }
             | Self::HttpClientBuild { .. }
+            | Self::HttpBodyTooLarge { .. }
             | Self::InvalidHttpRedirect { .. }
             | Self::HttpRangeRedirectRejected { .. }
             | Self::HttpRangeUnsupported { .. }

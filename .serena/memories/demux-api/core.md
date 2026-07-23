@@ -1,3 +1,7 @@
+## S31 deferred adaptive open (2026-07-23)
+
+- Existing finite `OrderedSegmentSource` сохранён. Новый adaptive poll-source живёт в `web-media-adaptive`; `BlockingOrderedSegmentAdapter` используется только внутри `ProgressiveDemuxer::new_deferred`, который переносит initial segment readiness, registry sniff/open и parser reads на worker и возвращает player-owner-у S21R `TemporarilyUnavailable`. Seekable inner typed rejected, а не молча downgraded. Полный handoff: `mem:media-services/adaptive-transport-s31-2026-07-23`.
+
 ## S29 ordered discontinuity + MPEG-TS factory (2026-07-22)
 
 - `OrderedSegment` теперь несёт typed `OrderedSegmentDiscontinuity::{Continuous, StartsNewTimeline}`. MPEG-TS использует marker для decoder/timestamp reset и публикует `TracksChanged` перед зависимым packet; Symphonia finite adapter fail-closed возвращает `DiscontinuityRequiresSessionReset`, а не молча игнорирует marker.

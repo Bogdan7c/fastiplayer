@@ -5644,6 +5644,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "web-media-adaptive"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "demux-api",
+ "media-core",
+ "rustiplayer-config",
+ "source-core",
+ "thiserror 2.0.18",
+ "web-media-core",
+ "web-media-transport-api",
+]
+
+[[package]]
 name = "web-media-core"
 version = "0.1.0"
 

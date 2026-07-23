@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use media_core::{
-    DemuxReadEvent, DemuxRetryHint, DemuxSeekResult, DemuxSeekability, Demuxer, MediaDemuxError,
-    MediaMetadata, TrackInfo,
+    DemuxReadEvent, DemuxRetryHint, DemuxSeekResult, DemuxSeekability, DemuxTrackListUpdate,
+    Demuxer, MediaDemuxError, MediaMetadata, TimelineNotSeekableReason, TrackInfo,
 };
 use source_core::CancellationToken;
 
@@ -140,6 +140,87 @@ impl ProgressiveDemuxer {
             visible_duration,
             visible_metadata,
             visible_seekability,
+            shared,
+            retry_hint,
+            cancellation,
+            end_of_stream_reached: false,
+        })
+    }
+
+    /// Запускает blocking registry sniff/open и последующий demux в одном worker-е.
+    ///
+    /// Это boundary segmented sources: initial segment readiness не блокирует
+    /// player-owner и не маскируется под EOF. До завершения open caller видит
+    /// пустой track snapshot и `TemporarilyUnavailable`; первый worker event
+    /// публикует реальные tracks.
+    pub fn new_deferred<F>(
+        open_inner: F,
+        cancellation: CancellationToken,
+        limits: ProgressiveDemuxBufferLimits,
+        retry_hint: DemuxRetryHint,
+    ) -> std::result::Result<Self, ProgressiveDemuxStartupError>
+    where
+        F: FnOnce() -> Result<Box<dyn Demuxer + Send>> + Send + 'static,
+    {
+        let shared = Arc::new(ProgressiveSharedState::new(limits));
+        let worker_shared = Arc::clone(&shared);
+        let worker_cancellation = cancellation.clone();
+        thread::Builder::new()
+            .name("adaptive-demux-open".to_owned())
+            .spawn(move || {
+                let _completion = ProgressiveWorkerCompletion::new(Arc::clone(&worker_shared));
+                let inner = match open_inner() {
+                    Ok(inner) => inner,
+                    Err(source) => {
+                        let _ = push_progressive_message(
+                            &worker_shared,
+                            &worker_cancellation,
+                            ProgressiveMessage::Failure(source),
+                        );
+                        return;
+                    }
+                };
+                if matches!(inner.seekability(), DemuxSeekability::Seekable) {
+                    let _ = push_progressive_message(
+                        &worker_shared,
+                        &worker_cancellation,
+                        ProgressiveMessage::Failure(anyhow::Error::new(
+                            ProgressiveDemuxStartupError::SeekableInput,
+                        )),
+                    );
+                    return;
+                }
+                let initial_tracks = DemuxReadEvent::TracksChanged(DemuxTrackListUpdate::new(
+                    inner.tracks().to_vec(),
+                    inner.duration(),
+                ));
+                if !push_progressive_message(
+                    &worker_shared,
+                    &worker_cancellation,
+                    ProgressiveMessage::Event(initial_tracks),
+                ) {
+                    return;
+                }
+                if let Some(metadata) = inner.media_metadata()
+                    && !push_progressive_message(
+                        &worker_shared,
+                        &worker_cancellation,
+                        ProgressiveMessage::Event(DemuxReadEvent::MediaMetadataChanged(metadata)),
+                    )
+                {
+                    return;
+                }
+                run_progressive_worker(inner, worker_shared, worker_cancellation);
+            })
+            .map_err(|source| ProgressiveDemuxStartupError::WorkerSpawn { source })?;
+
+        Ok(Self {
+            visible_tracks: Vec::new(),
+            visible_duration: None,
+            visible_metadata: None,
+            visible_seekability: DemuxSeekability::NotSeekable {
+                reason: TimelineNotSeekableReason::UnknownTimeline,
+            },
             shared,
             retry_hint,
             cancellation,

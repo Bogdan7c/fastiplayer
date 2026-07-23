@@ -1,3 +1,7 @@
+## S31 shared adaptive HTTP note (2026-07-23)
+
+- `source-core` получил generic `fetch_bounded_single_hop` для metadata/media full GET и exact Range с manual redirects; его использует новый `web-media-adaptive`. Existing direct-media S22 open/classification/prefetch flow не менялся и не маршрутизируется через adaptive owner. Полный boundary: `mem:media-services/adaptive-transport-s31-2026-07-23`.
+
 # Direct Media Service
 
 > **Superseded notice (2026-07-03):** любые упоминания hover preview, hover predecode, hover budget/reservation, timeline-hover prepare или hover overlay ниже являются историческими и не описывают активный контракт. Актуальные owners и запреты: `mem:core` и `mem:frame-server/core`. Остальная non-hover информация этой memory остаётся действующей.

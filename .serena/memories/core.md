@@ -1,3 +1,7 @@
+## S31 adaptive transport foundation (2026-07-23)
+
+- Новый `web-media-adaptive` владеет bounded manifest/segment fetch, retry/backoff/cancel, generation/refresh fencing, neutral VOD/live/DVR + per-component clock metadata и explicit nonblocking segment readiness. `source-core` остаётся единственным HTTP owner; S21T secret/redirect policy переиспользована. Existing finite `OrderedSegmentSource` не ломался; deferred demux open выполняет initial readiness/sniff/parser на worker-е и публикует S21R `TemporarilyUnavailable` player-owner-у. Полный handoff: `mem:media-services/adaptive-transport-s31-2026-07-23`.
+
 ## S30 FLV/F4F demux (2026-07-23)
 
 - Новый first-party `flv-demux` реализует bounded raw FLV и strict F4F ordered-segment adapter с selected legacy/enhanced codec mappings, config/keyframe lifecycle, AMF0 index, transactional seek и recovery.
