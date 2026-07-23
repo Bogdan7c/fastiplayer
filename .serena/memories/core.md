@@ -1,3 +1,8 @@
+## S30 FLV/F4F demux (2026-07-23)
+
+- Новый first-party `flv-demux` реализует bounded raw FLV и strict F4F ordered-segment adapter с selected legacy/enhanced codec mappings, config/keyframe lifecycle, AMF0 index, transactional seek и recovery.
+- App web demux composition S30 агрегирует Symphonia + FLV/F4F из exact descriptor rows; accidental MPEG-TS web registration/hint отсутствует (существующий local S29 path не менялся). `f4v` исправлен на ISO-BMFF, `f4f` остаётся только OrderedSegments. Полный handoff: `mem:flv-demux/core`.
+
 ## S29 MPEG-TS demux + local playback (2026-07-22)
 
 - Новый first-party crate `mpeg-ts-demux` владеет reusable 188-byte MPEG-TS path: bounded sync/resync, PAT/PMT и fail-closed multi-program selection, continuity/PES, independent PTS/DTS wrap, PCR evidence, H.264/H.265 Annex-B AU assembly across PES, AAC/ADTS и header-proven MP1/2/3, config/keyframe lifecycle, typed discontinuity/`TracksChanged`, streaming/ordered inputs и capped sparse VOD index с bounded on-demand expansion. 192-byte M2TS, private/LATM/AC-3 stream types, HLS и network policy остаются вне S29.

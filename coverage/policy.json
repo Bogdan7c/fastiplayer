@@ -20,6 +20,7 @@
     "config",
     "demux-api",
     "frame-server-core",
+    "flv-demux",
     "media-core",
     "media-prefetch",
     "mpeg-ts-demux",

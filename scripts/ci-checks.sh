@@ -50,6 +50,7 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/playlist-state
     crates/media-core
     crates/demux-api
+    crates/flv-demux
     crates/mpeg-ts-demux
     crates/symphonia-demux
     crates/audio

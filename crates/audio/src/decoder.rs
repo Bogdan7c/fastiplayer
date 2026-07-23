@@ -7,6 +7,8 @@
 //! - `SymphoniaAudioDecoder` владеет Symphonia decoder registry object-ом.
 //! - `OpusFallbackDecoder` остаётся приватным adapter-ом, потому что Symphonia 0.6
 //!   распознаёт Opus codec id, но не предоставляет Opus audio decoder backend.
+//! - `SwfAdpcmDecoder` до Symphonia принимает только exact `A_ADPCM_SWF` и
+//!   декодирует каждый packet независимо по нормативным 4096-sample блокам.
 //! - Все decoder-ы возвращают interleaved `Vec<f32>`, как ожидает CPAL output path.
 
 use anyhow::{Context, Result};
@@ -26,6 +28,9 @@ const MAX_OPUS_SAMPLES_PER_PACKET: usize = 48000 * 2 * 120 / 1000;
 
 mod capability;
 mod conversion;
+mod swf_adpcm;
+
+pub use swf_adpcm::SwfAdpcmDecodeError;
 
 use conversion::{
     audio_channel_layout_from_symphonia, audio_codec_parameters,
@@ -37,6 +42,7 @@ use conversion::{
 use symphonia::core::codecs::audio::well_known as symphonia_audio_codec;
 
 use capability::production_audio_decode_capability_snapshot;
+use swf_adpcm::{SWF_ADPCM_CODEC_ID, SwfAdpcmDecoder};
 
 /// Production decoder factory, которая скрывает Symphonia registry и Opus fallback.
 #[derive(Debug)]
@@ -70,6 +76,10 @@ impl AudioDecoderFactory for ProductionAudioDecoderFactory {
 
 /// Создаёт codec-neutral decoder object для заданного audio track config.
 pub fn create_audio_decoder(config: AudioDecoderConfig) -> Result<AudioDecoderHandle> {
+    if config.codec_id() == SWF_ADPCM_CODEC_ID {
+        return Ok(Box::new(SwfAdpcmDecoder::new(&config)?) as AudioDecoderHandle);
+    }
+
     match SymphoniaAudioDecoder::new(&config) {
         Ok(decoder) => Ok(Box::new(decoder) as AudioDecoderHandle),
         Err(error) if should_use_opus_fallback(&config, &error) => {
@@ -450,6 +460,45 @@ mod tests {
         assert_eq!(
             stereo_decoder.channel_layout(),
             Some(AudioChannelLayout::stereo())
+        );
+    }
+
+    /// Exact SWF identity обрабатывается project-owned fallback до Symphonia lookup.
+    #[test]
+    fn factory_creates_exact_swf_adpcm_fallback() {
+        let mono_decoder =
+            create_audio_decoder(AudioDecoderConfig::new(17, "A_ADPCM_SWF", 44_100, 1))
+                .expect("exact SWF ADPCM decoder should be created");
+        let stereo_decoder =
+            create_audio_decoder(AudioDecoderConfig::new(18, "A_ADPCM_SWF", 22_050, 2))
+                .expect("stereo SWF ADPCM decoder should be created");
+
+        assert_eq!(mono_decoder.sample_rate(), 44_100);
+        assert_eq!(
+            mono_decoder.channel_layout(),
+            Some(AudioChannelLayout::mono())
+        );
+        assert_eq!(stereo_decoder.channels(), 2);
+        assert_eq!(
+            stereo_decoder.channel_layout(),
+            Some(AudioChannelLayout::stereo())
+        );
+    }
+
+    /// Похожая строка не должна эвристически попасть в SWF fallback.
+    #[test]
+    fn factory_does_not_normalize_swf_adpcm_identity() {
+        let error =
+            match create_audio_decoder(AudioDecoderConfig::new(17, "a_adpcm_swf", 44_100, 1)) {
+                Ok(_) => panic!("lookalike codec identity must remain unsupported"),
+                Err(error) => error,
+            };
+
+        assert_eq!(
+            error.downcast_ref::<AudioDecoderError>(),
+            Some(&AudioDecoderError::UnsupportedCodec {
+                codec_id: "a_adpcm_swf".to_string(),
+            })
         );
     }
 

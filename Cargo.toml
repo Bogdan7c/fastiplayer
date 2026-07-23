@@ -33,6 +33,7 @@ members = [
     "crates/media-core",
     "crates/demux-api",
     "crates/mpeg-ts-demux",
+    "crates/flv-demux",
     "crates/symphonia-demux",
     "crates/audio",
     "crates/vp9-parser",
@@ -183,6 +184,7 @@ frame-server-core = { version = "0.1.0", path = "crates/frame-server-core" }
 media-core = { version = "0.1.0", path = "crates/media-core" }
 demux-api = { version = "0.1.0", path = "crates/demux-api" }
 mpeg-ts-demux = { version = "0.1.0", path = "crates/mpeg-ts-demux" }
+flv-demux = { version = "0.1.0", path = "crates/flv-demux" }
 symphonia-demux = { version = "0.1.0", path = "crates/symphonia-demux" }
 service-direct-media = { version = "0.1.0", path = "crates/service-direct-media" }
 service-ytdlp = { version = "0.1.0", path = "crates/service-ytdlp" }

@@ -551,7 +551,7 @@ fn validate_raw_identity(
 /// Нормализует ext/container token без изменения raw owner-а.
 fn parse_container_family(raw: &str) -> ContainerFamily {
     match raw.to_ascii_lowercase().as_str() {
-        "mp4" | "m4a" | "m4v" | "mov" | "isom" => ContainerFamily::IsoBmff,
+        "mp4" | "m4a" | "m4v" | "mov" | "isom" | "f4v" => ContainerFamily::IsoBmff,
         "fmp4" | "cmaf" | "m4a_dash" | "mp4_dash" => ContainerFamily::FragmentedIsoBmff,
         "mkv" | "matroska" => ContainerFamily::Matroska,
         "webm" | "webm_dash" => ContainerFamily::WebM,
@@ -562,7 +562,7 @@ fn parse_container_family(raw: &str) -> ContainerFamily {
         "caf" => ContainerFamily::Caf,
         "mp1" | "mp2" | "mp3" | "mpeg_audio" => ContainerFamily::MpegAudio,
         "ts" | "m2ts" | "mpegts" => ContainerFamily::MpegTs,
-        "flv" | "f4v" => ContainerFamily::Flv,
+        "flv" => ContainerFamily::Flv,
         "f4f" => ContainerFamily::F4f,
         "mpg" | "mpeg" | "mpegps" => ContainerFamily::MpegProgramStream,
         "avi" => ContainerFamily::Avi,
@@ -710,5 +710,23 @@ mod tests {
 
             assert_eq!(identity.consistent_family(), Ok(Some(expected)));
         }
+    }
+
+    /// F4V — ISO-BMFF identity, тогда как F4F остаётся отдельным Adobe fragment path.
+    #[test]
+    fn f4v_routes_to_iso_bmff_without_collapsing_f4f_into_flv() {
+        let f4v = ContainerIdentity::parse(
+            Some(RawExtensionIdentity::new("f4v").expect("ext валиден")),
+            None,
+        );
+        let f4f = ContainerIdentity::parse(
+            Some(RawExtensionIdentity::new("f4f").expect("ext валиден")),
+            None,
+        );
+
+        assert_eq!(f4v.extension_family(), Some(ContainerFamily::IsoBmff));
+        assert_eq!(f4v.consistent_family(), Ok(Some(ContainerFamily::IsoBmff)));
+        assert_eq!(f4f.extension_family(), Some(ContainerFamily::F4f));
+        assert_eq!(f4f.consistent_family(), Ok(Some(ContainerFamily::F4f)));
     }
 }

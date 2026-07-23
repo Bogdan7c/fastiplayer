@@ -20,6 +20,16 @@ pub(super) enum OpusFallbackAvailability {
     Unavailable,
 }
 
+/// Project-owned SWF ADPCM fallback доступен независимо от Symphonia registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SwfAdpcmFallbackAvailability {
+    /// Exact `A_ADPCM_SWF` decoder собран в production factory.
+    Available,
+    /// Тестовый variant без project-owned SWF decoder-а.
+    #[cfg(test)]
+    Unavailable,
+}
+
 /// Минимальная read-only граница над concrete registry.
 ///
 /// В trait намеренно отсутствует decoder factory method: capability scan физически
@@ -41,6 +51,7 @@ pub(super) fn production_audio_decode_capability_snapshot() -> AudioDecodeCapabi
     audio_decode_capability_snapshot(
         symphonia::default::get_codecs(),
         OpusFallbackAvailability::Available,
+        SwfAdpcmFallbackAvailability::Available,
     )
 }
 
@@ -48,11 +59,12 @@ pub(super) fn production_audio_decode_capability_snapshot() -> AudioDecodeCapabi
 fn audio_decode_capability_snapshot(
     registry: &impl RegisteredAudioDecoderLookup,
     opus_fallback: OpusFallbackAvailability,
+    swf_adpcm_fallback: SwfAdpcmFallbackAvailability,
 ) -> AudioDecodeCapabilitySnapshot {
     let mut snapshot = AudioDecodeCapabilitySnapshot::empty();
 
     for family in AudioDecodeCodecFamily::ALL {
-        if family_is_available(registry, family, opus_fallback) {
+        if family_is_available(registry, family, opus_fallback, swf_adpcm_fallback) {
             snapshot = snapshot.with_available_family(family);
         }
     }
@@ -65,15 +77,21 @@ fn family_is_available(
     registry: &impl RegisteredAudioDecoderLookup,
     family: AudioDecodeCodecFamily,
     opus_fallback: OpusFallbackAvailability,
+    swf_adpcm_fallback: SwfAdpcmFallbackAvailability,
 ) -> bool {
     if family == AudioDecodeCodecFamily::Opus {
         return opus_fallback == OpusFallbackAvailability::Available;
     }
 
-    required_symphonia_codecs(family)
+    let symphonia_set_available = required_symphonia_codecs(family)
         .iter()
         .copied()
-        .all(|codec_id| registry.has_registered_audio_decoder(codec_id))
+        .all(|codec_id| registry.has_registered_audio_decoder(codec_id));
+    if family == AudioDecodeCodecFamily::Adpcm {
+        return symphonia_set_available
+            && swf_adpcm_fallback == SwfAdpcmFallbackAvailability::Available;
+    }
+    symphonia_set_available
 }
 
 /// Возвращает exact Symphonia registrations, доказанные current compatibility profile.
@@ -127,8 +145,8 @@ mod tests {
 
     use super::{
         AudioDecodeCodecFamily, OpusFallbackAvailability, RegisteredAudioDecoderLookup,
-        audio_decode_capability_snapshot, production_audio_decode_capability_snapshot,
-        required_symphonia_codecs,
+        SwfAdpcmFallbackAvailability, audio_decode_capability_snapshot,
+        production_audio_decode_capability_snapshot, required_symphonia_codecs,
     };
 
     /// Read-only fake registry считает lookup-и и не имеет decoder-construction API.
@@ -168,8 +186,11 @@ mod tests {
     #[test]
     fn absent_registry_and_disabled_fallback_report_every_family_unavailable() {
         let registry = symphonia::core::codecs::registry::CodecRegistry::new();
-        let snapshot =
-            audio_decode_capability_snapshot(&registry, OpusFallbackAvailability::Unavailable);
+        let snapshot = audio_decode_capability_snapshot(
+            &registry,
+            OpusFallbackAvailability::Unavailable,
+            SwfAdpcmFallbackAvailability::Unavailable,
+        );
 
         assert_eq!(snapshot.available_families().count(), 0);
         assert_eq!(
@@ -188,8 +209,11 @@ mod tests {
             all_registered: true,
         };
 
-        let snapshot =
-            audio_decode_capability_snapshot(&registry, OpusFallbackAvailability::Available);
+        let snapshot = audio_decode_capability_snapshot(
+            &registry,
+            OpusFallbackAvailability::Available,
+            SwfAdpcmFallbackAvailability::Available,
+        );
 
         let expected_registry_queries = AudioDecodeCodecFamily::ALL
             .into_iter()
@@ -200,6 +224,33 @@ mod tests {
         assert_eq!(
             snapshot.query(AudioDecodeCodecFamilyQuery::Unknown),
             Err(AudioDecodeCapabilityQueryError::UnknownCodecFamily)
+        );
+    }
+
+    /// ADPCM family не считается полной без exact SWF fallback-а.
+    #[test]
+    fn adpcm_family_requires_project_owned_swf_fallback() {
+        let registry = CountingRegistryLookup {
+            query_count: Cell::new(0),
+            all_registered: true,
+        };
+        let snapshot = audio_decode_capability_snapshot(
+            &registry,
+            OpusFallbackAvailability::Available,
+            SwfAdpcmFallbackAvailability::Unavailable,
+        );
+
+        assert_eq!(
+            snapshot.query(AudioDecodeCodecFamilyQuery::Known(
+                AudioDecodeCodecFamily::Adpcm,
+            )),
+            Ok(AudioDecodeCapability::Unavailable)
+        );
+        assert_eq!(
+            snapshot.query(AudioDecodeCodecFamilyQuery::Known(
+                AudioDecodeCodecFamily::Aac,
+            )),
+            Ok(AudioDecodeCapability::Available)
         );
     }
 }

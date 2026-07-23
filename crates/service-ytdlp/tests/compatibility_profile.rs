@@ -424,6 +424,65 @@ fn manifest_has_exact_source_and_no_schema_conflicts() {
     }
 }
 
+/// S30 закрепляет exact SWF ADPCM identity и не расширяет её до всей ADPCM family.
+#[test]
+fn manifest_proves_exact_swf_adpcm_decoder_scope() {
+    let (profile, _) = load_profile_and_corpus();
+    let audio_profile = required_array(&profile, "codec_profiles")
+        .iter()
+        .find(|codec_profile| required_string(codec_profile, "id") == "proven-native-audio")
+        .expect("proven-native-audio codec profile отсутствует");
+    let exact_scope = required_array(audio_profile, "exact_decoder_scope");
+
+    assert_eq!(exact_scope.len(), 1);
+    let swf_scope = &exact_scope[0];
+    assert_eq!(
+        required_string(swf_scope, "container_codec_id"),
+        "A_ADPCM_SWF"
+    );
+    assert_eq!(
+        required_string(swf_scope, "owner"),
+        "audio::SwfAdpcmDecoder"
+    );
+    assert_eq!(
+        required_array(swf_scope, "channels"),
+        &[Value::from(1), Value::from(2)]
+    );
+    assert_eq!(
+        required_array(swf_scope, "bits_per_code"),
+        &[
+            Value::from(2),
+            Value::from(3),
+            Value::from(4),
+            Value::from(5),
+        ]
+    );
+    assert_eq!(
+        swf_scope.get("full_block_sample_frames"),
+        Some(&Value::from(4096))
+    );
+    assert_eq!(
+        swf_scope.get("partial_final_block"),
+        Some(&Value::Bool(true))
+    );
+    assert_eq!(
+        swf_scope.get("partial_final_requires_complete_channel_code_groups"),
+        Some(&Value::Bool(true))
+    );
+    assert_eq!(
+        required_string(swf_scope, "reference"),
+        "https://ffmpeg.org/doxygen/trunk/adpcm_8c_source.html"
+    );
+    assert_eq!(
+        swf_scope.get("cross_packet_state"),
+        Some(&Value::Bool(false))
+    );
+    assert_eq!(
+        audio_profile.get("expands_decoder_scope"),
+        Some(&Value::Bool(false))
+    );
+}
+
 /// Проверяет safety-critical argv обоих режимов.
 #[test]
 fn invocation_profiles_keep_hermetic_and_manual_guarantees_separate() {

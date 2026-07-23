@@ -60,3 +60,14 @@
 
 - Parameterized planner proof закрепляет exact S20 intersection для current Ogg/Opus, CAF/WAVE/AIFF PCM, native FLAC и отдельных MP1/MP2/MP3 rows. Available exact family проходит до audio-only plan, отсутствующая family даёт typed `AudioUnavailable` до I/O и decoder construction.
 - S20 API и production registry matrix не менялись. Container/transport/packet proof и CAF limitation: `mem:symphonia-demux/audio-containers-s28c-2026-07-22`.
+
+
+## S30 exact SWF ADPCM fallback (2026-07-23)
+
+- Конкретный `audio` crate (не нейтральный `audio-core`) владеет встроенным декодером Flash/SWF ADPCM для точного codec identity `A_ADPCM_SWF`.
+- `create_audio_decoder()` маршрутизирует этот identity в project fallback до Symphonia; похожие строки и другие ADPCM dialects не подменяются.
+- Поддерживаются mono/stereo и 2/3/4/5-bit коды. Полный block содержит 4096 frames, но final block packet-а может быть partial: после channel headers принимаются только целые interleaved channel code groups и нулевой byte-alignment tail. Delta считается нормативным bitwise accumulation отдельных shifted-step contributions (не сворачивается в одно умножение); reference — FFmpeg `libavcodec/adpcm.c`. Между packet-ами скрытого predictor/index state нет; `reset()` детерминированно no-op.
+- Декодер строго проверяет header/index/alignment/truncation и возвращает typed `SwfAdpcmDecodeError`; при ошибке partial PCM наружу не выдаётся.
+- Семейство ADPCM считается доступным только вместе: существующий Symphonia scope плюс exact SWF fallback. Neutral capability/media contracts не расширялись.
+- Focused tests находятся в `crates/audio/src/decoder/swf_adpcm.rs`; factory/capability contract tests — рядом с соответствующими владельцами.
+- Связанный codec foundation: `mem:codec-core/vp-flv-foundation-s30`.

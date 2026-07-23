@@ -10,8 +10,8 @@ use crate::{
     h264_sps_metadata_from_packet, h265_decode_requirement_from_hevc_decoder_configuration_record,
     h265_decode_requirement_from_packet, infer_h264_packetization, infer_h265_packetization,
     parse_hevc_decoder_configuration_record, probe_av1_packet_keyframe, probe_h264_packet_keyframe,
-    probe_h265_packet_decode_start, probe_vp9_packet_requirement, resolve_vp9_metadata,
-    video_frame_pixel_layout_from_decode_requirement,
+    probe_h265_packet_decode_start, probe_vp8_packet_keyframe, probe_vp9_packet_requirement,
+    resolve_vp9_metadata, video_frame_pixel_layout_from_decode_requirement,
 };
 
 /// Codec-neutral source metadata, пришедшая из manifest/container до decode.
@@ -442,6 +442,15 @@ pub fn probe_video_packet_keyframe_with_codec_private(
     codec_private: Option<&[u8]>,
 ) -> VideoPacketKeyframeProbe {
     match codec {
+        VideoCodec::Vp8 => match probe_vp8_packet_keyframe(packet_bytes) {
+            Ok(keyframe) => VideoPacketKeyframeProbe::Keyframe(keyframe),
+            Err(error) => {
+                VideoPacketKeyframeProbe::Uncertain(VideoRequirementUncertainty::ParseError {
+                    codec,
+                    reason: error.to_string(),
+                })
+            }
+        },
         VideoCodec::Vp9 => match vp9_parser::parse_uncompressed_header(packet_bytes) {
             Ok(frame_info) => VideoPacketKeyframeProbe::Keyframe(frame_info.keyframe),
             Err(error) => {
@@ -497,7 +506,6 @@ pub fn probe_video_packet_keyframe_with_codec_private(
                 })
             }
         },
-        other_codec => VideoPacketKeyframeProbe::AdapterUnavailable { codec: other_codec },
     }
 }
 
@@ -1335,6 +1343,32 @@ mod tests {
         let probe = probe_video_packet_keyframe(VideoCodec::Vp9, &packet_bytes);
 
         assert_eq!(probe, VideoPacketKeyframeProbe::Keyframe(true));
+    }
+
+    /// VP8 keyframe проходит через тот же codec-neutral adapter boundary.
+    #[test]
+    fn vp8_keyframe_probe_returns_codec_neutral_result() {
+        let packet_bytes = [0xe0, 0x00, 0x00, 0x9d, 0x01, 0x2a, 0x40, 0x00, 0x40, 0x00];
+
+        assert_eq!(
+            probe_video_packet_keyframe(VideoCodec::Vp8, &packet_bytes),
+            VideoPacketKeyframeProbe::Keyframe(true)
+        );
+    }
+
+    /// Повреждённый VP8 keyframe остаётся recoverable uncertainty с typed причиной.
+    #[test]
+    fn vp8_keyframe_probe_reports_uncertain_parse_result() {
+        let packet_bytes = [0xe0, 0x00, 0x00, 0x00, 0x01, 0x2a, 0x40, 0x00, 0x40, 0x00];
+
+        let probe = probe_video_packet_keyframe(VideoCodec::Vp8, &packet_bytes);
+        assert!(matches!(
+            probe,
+            VideoPacketKeyframeProbe::Uncertain(VideoRequirementUncertainty::ParseError {
+                codec: VideoCodec::Vp8,
+                ..
+            })
+        ));
     }
 
     /// Проверяет, что VP9 inter-frame не становится ложным keyframe.

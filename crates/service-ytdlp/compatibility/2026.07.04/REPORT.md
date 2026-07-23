@@ -217,6 +217,19 @@ Target rows не обещают, что runtime уже реализован. О�
 только VP8/VP9/AV1/H.264/H.265, уже присутствующие в neutral model. Audio —
 только текущий proven native set из implementation plan.
 
+S30 уточняет один exact codec внутри уже существующей `adpcm` family:
+`A_ADPCM_SWF` принадлежит project-owned `audio::SwfAdpcmDecoder`, поддерживает
+только mono/stereo и 2/3/4/5-bit codes. Полный block содержит 4096 frames, но
+последний block packet-а может быть короче: после channel headers принимаются
+только целые interleaved channel code groups и нулевой byte-alignment tail. Это
+не wildcard для похожих строк и не разрешение подменять SWF layout на MS/IMA
+ADPCM. Поле `cross_packet_state: false` закрепляет reset/seek invariant decoder-а.
+
+Reference arithmetic и partial-final sample counting сверены с primary FFmpeg
+implementation: [`libavcodec/adpcm.c`](https://ffmpeg.org/doxygen/trunk/adpcm_8c_source.html).
+Delta складывается из отдельно сдвинутых step contributions с integer rounding
+на каждом сдвиге; алгебраически сворачивать это в одно умножение нельзя.
+
 Каждая Target row связана с future session(s) и `fixture_id`; focused test
 проверяет обе ссылки.
 

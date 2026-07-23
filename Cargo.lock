@@ -143,6 +143,7 @@ dependencies = [
  "desktop-integration",
  "egui",
  "egui-winit",
+ "flv-demux",
  "frame-server-core",
  "libc",
  "media-core",
@@ -440,6 +441,7 @@ dependencies = [
  "opus",
  "ringbuf",
  "symphonia",
+ "thiserror 2.0.18",
  "tracing",
 ]
 
@@ -831,6 +833,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "video-frame-contract",
  "vp9-parser",
 ]
@@ -1623,6 +1626,20 @@ checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
+]
+
+[[package]]
+name = "flv-demux"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "codec-core",
+ "demux-api",
+ "media-core",
+ "source-core",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -11,9 +11,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use demux_api::{
     CompositeAvDemuxer, CompositeAvTrackSelection, CompositeComponentLeadPolicy, DemuxContainerId,
-    DemuxFactory, DemuxHints, DemuxInput, DemuxInputCapabilities, DemuxInputCapability,
-    DemuxRegistry, DemuxSniffBudget, DemuxSourceExtension, ProgressiveDemuxBufferLimits,
-    ProgressiveDemuxer,
+    DemuxHints, DemuxInput, DemuxInputCapabilities, DemuxInputCapability, DemuxRegistry,
+    DemuxSniffBudget, DemuxSourceExtension, ProgressiveDemuxBufferLimits, ProgressiveDemuxer,
 };
 use media_core::{DemuxRetryHint, Demuxer, TrackId, TrackKind};
 use rustiplayer_config::{
@@ -25,16 +24,16 @@ use service_ytdlp::{
     YtDlpTransportRequestContext,
 };
 use source_core::{CancellationToken, SourceRuntimeConfig};
-use symphonia_demux::{DemuxerOptions, SymphoniaDemuxFactory};
+use symphonia_demux::DemuxerOptions;
 use web_media_core::{
     ContainerFamily, ExactSelectionIdentity, ExtractionGeneration, HttpScheme, SelectionRequest,
     SourceIdentity, TransportFamily,
 };
 use web_media_http::WebMediaHttpProvider;
 use web_media_playback_plan::{
-    DemuxCapabilityRegistration, DemuxCapabilitySnapshot, HdrSelectionPolicy,
-    PlaybackCapabilitySnapshot, PlaybackSelectionPolicy, TransportCapabilityRegistration,
-    TransportCapabilitySnapshot, plan_playback,
+    DemuxCapabilitySnapshot, HdrSelectionPolicy, PlaybackCapabilitySnapshot,
+    PlaybackSelectionPolicy, TransportCapabilityRegistration, TransportCapabilitySnapshot,
+    plan_playback,
 };
 use web_media_transport_api::{
     MediaComponentRole, SourceGeneration, TransportInput, TransportProvider, TransportRegistry,
@@ -228,19 +227,15 @@ impl WebOpenRuntime {
             demux_config.max_consecutive_corrupted_packets,
         )
         .context("Player demux config нарушает validated runtime bounds")?;
-        let demux_factory = SymphoniaDemuxFactory::new(demuxer_options)
-            .context("Не удалось создать Symphonia demux factory")?;
-        let demux_capabilities = demux_capabilities(demux_factory.descriptor())?;
-        let mut demux_registry = DemuxRegistry::new();
-        demux_registry
-            .register(Box::new(demux_factory))
-            .context("Не удалось зарегистрировать Symphonia demux factory")?;
+        let demux_composition =
+            crate::web_media_demux_registry::WebDemuxComposition::new(demuxer_options)
+                .context("Не удалось собрать web demux registry")?;
 
         Ok(Self {
             transport_registry,
-            demux_registry,
+            demux_registry: demux_composition.registry,
             transport_capabilities: progressive_http_capabilities()?,
-            demux_capabilities,
+            demux_capabilities: demux_composition.capabilities,
             provider_id,
             source_config,
             prefetch_config,
@@ -449,40 +444,6 @@ fn progressive_http_capabilities() -> Result<TransportCapabilitySnapshot> {
     Ok(TransportCapabilitySnapshot::new(vec![http, https]))
 }
 
-/// Строит planner snapshot непосредственно из concrete factory descriptor-а.
-fn demux_capabilities(
-    descriptor: &demux_api::DemuxFactoryDescriptor,
-) -> Result<DemuxCapabilitySnapshot> {
-    let mut registrations = Vec::new();
-    for registration in &descriptor.containers {
-        let families = container_families_for_demux_id(registration.container.as_str())
-            .ok_or_else(|| anyhow!("Неизвестный container ID в Symphonia descriptor"))?;
-        for family in families {
-            registrations.push(DemuxCapabilityRegistration::new(
-                *family,
-                registration.input_capabilities(),
-            )?);
-        }
-    }
-    Ok(DemuxCapabilitySnapshot::new(registrations))
-}
-
-/// Согласует Symphonia registry ID с neutral planning family.
-fn container_families_for_demux_id(id: &str) -> Option<&'static [ContainerFamily]> {
-    match id {
-        "iso-bmff" => Some(&[ContainerFamily::IsoBmff, ContainerFamily::FragmentedIsoBmff]),
-        "matroska" => Some(&[ContainerFamily::Matroska]),
-        "webm" => Some(&[ContainerFamily::WebM]),
-        "ogg" => Some(&[ContainerFamily::Ogg]),
-        "caf" => Some(&[ContainerFamily::Caf]),
-        "wave" => Some(&[ContainerFamily::Wav]),
-        "aiff" => Some(&[ContainerFamily::Aiff]),
-        "flac" => Some(&[ContainerFamily::Flac]),
-        "mpeg-audio" => Some(&[ContainerFamily::MpegAudio]),
-        _ => None,
-    }
-}
-
 /// Передаёт registry согласованные extension и container hints выбранной family.
 fn demux_hints(family: ContainerFamily) -> Result<DemuxHints> {
     let (container_id, extension) = match family {
@@ -495,7 +456,9 @@ fn demux_hints(family: ContainerFamily) -> Result<DemuxHints> {
         ContainerFamily::Aiff => ("aiff", "aiff"),
         ContainerFamily::Caf => ("caf", "caf"),
         ContainerFamily::MpegAudio => ("mpeg-audio", "mp3"),
-        _ => bail!("Selected YtDlp container не принадлежит Symphonia registry"),
+        ContainerFamily::Flv => ("flv", "flv"),
+        ContainerFamily::F4f => ("f4f", "f4f"),
+        _ => bail!("Selected YtDlp container не зарегистрирован в web demux registry"),
     };
     Ok(DemuxHints::none()
         .with_extension(DemuxSourceExtension::new(extension)?)
@@ -655,9 +618,13 @@ mod tests {
     /// Concrete Symphonia descriptor и planner snapshot не расходятся по S22 containers.
     #[test]
     fn demux_capability_snapshot_is_derived_from_registered_factory() {
-        let factory =
-            SymphoniaDemuxFactory::new(DemuxerOptions::default()).expect("Symphonia factory");
-        let capabilities = demux_capabilities(factory.descriptor()).expect("capability snapshot");
+        use demux_api::DemuxFactory;
+
+        let factory = symphonia_demux::SymphoniaDemuxFactory::new(DemuxerOptions::default())
+            .expect("Symphonia factory");
+        let capabilities =
+            crate::web_media_demux_registry::capabilities_for_descriptors([factory.descriptor()])
+                .expect("capability snapshot");
         let expected_inputs = DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes)
             .with(DemuxInputCapability::StreamingBytes);
         for family in [
@@ -715,7 +682,9 @@ mod tests {
             vec![DemuxFixtureId::new("synthetic/per-container").expect("fixture ID")],
         );
 
-        let capabilities = demux_capabilities(&descriptor).expect("capability snapshot");
+        let capabilities =
+            crate::web_media_demux_registry::capabilities_for_descriptors([&descriptor])
+                .expect("capability snapshot");
         assert_eq!(
             capabilities.input_capabilities_for(ContainerFamily::IsoBmff),
             iso_inputs

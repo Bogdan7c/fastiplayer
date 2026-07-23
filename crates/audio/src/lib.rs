@@ -30,7 +30,9 @@ pub use audio_core::{
     AudioPacketTiming, EncodedAudioPacket, PlayerAudioClock, PlayerAudioOutput,
 };
 pub use clock::AudioClock;
-pub use decoder::{ProductionAudioDecoderFactory, SymphoniaAudioDecoder, create_audio_decoder};
+pub use decoder::{
+    ProductionAudioDecoderFactory, SwfAdpcmDecodeError, SymphoniaAudioDecoder, create_audio_decoder,
+};
 pub use devices::{
     AudioOutputDeviceController, AudioOutputDeviceError, AudioOutputDeviceInfo,
     AudioOutputDeviceSelectionChange, DEFAULT_AUDIO_OUTPUT_DEVICE_ID, list_output_devices,

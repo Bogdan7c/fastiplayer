@@ -1,3 +1,8 @@
+## S30 adjacent FLV/F4F owner (2026-07-23)
+
+- FLV/F4F parsing не добавлялся в Symphonia adapter: отдельный `flv-demux` зарегистрирован рядом через app-owned multi-factory composition.
+- `f4v` остаётся ISO-BMFF/S28A route; `flv` и ordered-only `f4f` принадлежат новому first-party owner-у. См. `mem:flv-demux/core`.
+
 ## S29 adjacent neutral-boundary migration (2026-07-22)
 
 - MPEG-TS не добавлен в Symphonia: отдельный first-party owner — `mpeg-ts-demux`. App local composition регистрирует обе factories через `demux-api`.

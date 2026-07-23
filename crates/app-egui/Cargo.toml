@@ -33,6 +33,7 @@ source-core.workspace = true
 capability-core.workspace = true
 codec-core.workspace = true
 demux-api.workspace = true
+flv-demux.workspace = true
 mpeg-ts-demux.workspace = true
 media-prefetch.workspace = true
 service-direct-media.workspace = true

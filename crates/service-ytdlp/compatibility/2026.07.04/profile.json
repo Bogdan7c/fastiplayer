@@ -883,6 +883,27 @@
         "vorbis",
         "opus"
       ],
+      "exact_decoder_scope": [
+        {
+          "container_codec_id": "A_ADPCM_SWF",
+          "owner": "audio::SwfAdpcmDecoder",
+          "channels": [
+            1,
+            2
+          ],
+          "bits_per_code": [
+            2,
+            3,
+            4,
+            5
+          ],
+          "full_block_sample_frames": 4096,
+          "partial_final_block": true,
+          "partial_final_requires_complete_channel_code_groups": true,
+          "reference": "https://ffmpeg.org/doxygen/trunk/adpcm_8c_source.html",
+          "cross_packet_state": false
+        }
+      ],
       "expands_decoder_scope": false
     }
   ],

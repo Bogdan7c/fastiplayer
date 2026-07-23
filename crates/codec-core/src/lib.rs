@@ -12,7 +12,9 @@ mod h265;
 mod model;
 mod profile;
 mod requirement_preflight;
+mod vp8;
 mod vp9;
+mod vp_configuration;
 
 pub use adapter::{
     VideoMetadataSource, VideoPacketKeyframeProbe, VideoRequirementCandidate,
@@ -67,6 +69,11 @@ pub use requirement_preflight::{
     video_requirement_evidence_policy,
 };
 pub use video_frame_contract::VideoFramePixelLayout;
+pub use vp_configuration::{
+    VpChromaSubsampling, VpCodecConfiguration, VpCodecConfigurationError,
+    VpCodecConfigurationLayout, parse_vp_codec_configuration,
+};
+pub use vp8::{Vp8PacketHeaderError, probe_vp8_packet_keyframe};
 pub use vp9::{
     Vp9DecodedFormatRequirement, Vp9MetadataConflict, Vp9MetadataDiagnostic, Vp9MetadataField,
     Vp9MetadataSource, Vp9RequirementCandidate, Vp9RequirementProbe, Vp9RequirementRejection,

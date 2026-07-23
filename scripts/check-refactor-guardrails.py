@@ -60,6 +60,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "desktop-integration",
         "demux-api",
         "frame-server-core",
+        "flv-demux",
         "media-prefetch",
         "media-core",
         "natural-sort-key",
@@ -201,6 +202,20 @@ DEMUX_API_ALLOWED_DEPENDENCIES = frozenset(
 # First-party MPEG-TS parser зависит только от neutral byte/demux/media/codec contracts.
 # HLS, HTTP, player, UI, Symphonia и FFmpeg не должны протекать в reusable container owner.
 MPEG_TS_DEMUX_ALLOWED_DEPENDENCIES = frozenset(
+    {
+        "anyhow",
+        "bytes",
+        "codec-core",
+        "demux-api",
+        "media-core",
+        "source-core",
+        "thiserror",
+    }
+)
+
+# First-party FLV/F4F parser зависит только от neutral byte/demux/media/codec contracts.
+# HDS/RTMP network state, player, UI, Symphonia и FFmpeg не входят в container owner.
+FLV_DEMUX_ALLOWED_DEPENDENCIES = frozenset(
     {
         "anyhow",
         "bytes",
@@ -1108,6 +1123,14 @@ def find_dependency_violations(
             frozenset({"mpeg-ts-demux"}),
             MPEG_TS_DEMUX_ALLOWED_DEPENDENCIES,
             "mpeg-ts-demux остаётся reusable container owner без HLS/network/player/UI/FFmpeg deps",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"flv-demux"}),
+            FLV_DEMUX_ALLOWED_DEPENDENCIES,
+            "flv-demux остаётся reusable FLV/F4F owner без HDS/RTMP network/player/UI/FFmpeg deps",
         )
     )
     violations.extend(

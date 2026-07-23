@@ -13,3 +13,4 @@ ringbuf = "0.4"
 opus = "0.3"
 anyhow = { workspace = true }
 tracing = { workspace = true }
+thiserror = { workspace = true }
