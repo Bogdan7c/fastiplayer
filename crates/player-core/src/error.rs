@@ -39,6 +39,9 @@ pub enum PlayerErrorKind {
     /// Seek transaction не дождался commit gates за отведённое время.
     SeekTimeout,
 
+    /// Dynamic live window сдвинулся за выбранную seek target.
+    SeekTargetExpired,
+
     /// Decoder thread не смог сбросить старое state перед seek transaction.
     DecoderFlushFailed,
 

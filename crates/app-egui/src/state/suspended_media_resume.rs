@@ -510,7 +510,14 @@ impl AppState {
                     audio_track: InstalledTrackRestore::KeepDefault,
                     subtitle_track: InstalledSubtitleRestore::KeepDefault,
                     volume: player_core::InstalledVolumeRestore::KeepCurrent,
-                    position: InstalledPositionRestore::SeekTo(attempt.position),
+                    position: match attempt.position {
+                        crate::playlist_runtime::SuspendedTimelineResumePosition::KeepStart => {
+                            InstalledPositionRestore::KeepStart
+                        }
+                        crate::playlist_runtime::SuspendedTimelineResumePosition::SeekTo(
+                            position,
+                        ) => InstalledPositionRestore::SeekTo(position),
+                    },
                 };
                 match self.player_worker.restore_installed_media_state(restore) {
                     Ok(receipt) => ResumeDrive::Replace(ResumePhase::Seeking {

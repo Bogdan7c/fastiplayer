@@ -39,6 +39,7 @@ mod audio_tempo_runtime;
 mod capability_selection;
 mod demux_retry;
 mod diagnostics_sink;
+mod dynamic_timeline;
 mod eof_drain;
 mod exact_media_transport;
 mod installed_media_restore;
@@ -68,6 +69,8 @@ use self::audio_runtime::{
     classify_autoplay_audio_readiness, classify_seek_audio_gate,
 };
 use self::demux_retry::DemuxRetryRuntime;
+use self::dynamic_timeline::DynamicTimelineRuntime;
+pub(crate) use self::dynamic_timeline::DynamicTimelineWaitSource;
 use self::eof_drain::EofDrainRuntime;
 use self::media_lifecycle::MediaLifecycleState;
 use self::prepared_seek::PreparedSeekLandingRuntime;
@@ -98,6 +101,9 @@ pub struct PlayerSession {
 
     /// Активное player-owned playback window текущего installed media.
     playback_window: Option<MediaPlaybackWindow>,
+
+    /// Active dynamic live port, observed revision и disconnect fence.
+    dynamic_timeline: DynamicTimelineRuntime,
 
     /// Progress выбранных tracks к synthetic EOF bounded window.
     playback_window_end_state: PlaybackWindowEndState,
@@ -1189,10 +1195,30 @@ impl PlayerSession {
     }
 
     /// Разрешает seek target в абсолютную media-позицию без изменения runtime seek policy.
-    fn resolve_seek_target(&self, request: SeekRequest) -> MediaTime {
+    fn resolve_seek_target(&self, request: SeekRequest) -> PlayerResult<MediaTime> {
         let relative_target = request
             .target
             .resolve(self.snapshot.timeline.current_position);
+
+        if self.snapshot.timeline.mode == media_core::TimelineMode::Live {
+            let range = self.snapshot.timeline.seekable_range.ok_or_else(|| {
+                PlayerError::new(
+                    PlayerErrorKind::SeekUnavailable,
+                    "Live source does not currently expose a DVR window",
+                )
+            })?;
+            if !range.contains(relative_target) {
+                return Err(PlayerError::new(
+                    PlayerErrorKind::SeekTargetExpired,
+                    format!(
+                        "Live seek target {} ms is outside latest DVR range {:?}",
+                        relative_target.as_duration().as_millis(),
+                        range
+                    ),
+                ));
+            }
+            return Ok(relative_target);
+        }
 
         let clamped_relative = self
             .snapshot
@@ -1200,7 +1226,7 @@ impl PlayerSession {
             .seekable_range
             .map(|range| relative_target.clamp_to(range))
             .unwrap_or(relative_target);
-        self.absolute_position_for_relative(clamped_relative)
+        Ok(self.absolute_position_for_relative(clamped_relative))
     }
 
     /// Синхронно обновляет physical source duration и public relative duration.
@@ -1320,6 +1346,7 @@ impl Default for PlayerSession {
             current_source_position: Duration::ZERO,
             source_duration: None,
             playback_window: None,
+            dynamic_timeline: DynamicTimelineRuntime::default(),
             playback_window_end_state: PlaybackWindowEndState::default(),
             pipeline: PlaybackPipeline::default(),
             audio_decoder_factory: missing_audio_decoder_factory(),

@@ -26,6 +26,8 @@ use crate::process_shutdown::ShutdownDeadline;
 pub(crate) enum InstalledCheckpointPosition {
     Seekable(Duration),
     NonSeekable,
+    /// Live media никогда не создаёт и не очищает persistent checkpoint.
+    Live,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,7 +270,9 @@ impl PlaylistResumePersistenceOwner {
         if immediate_position.is_none() && !periodic_due {
             return;
         }
-        let position = if snapshot.timeline.seekable {
+        let position = if snapshot.timeline.mode == media_core::TimelineMode::Live {
+            InstalledCheckpointPosition::Live
+        } else if snapshot.timeline.seekable {
             InstalledCheckpointPosition::Seekable(
                 immediate_position.unwrap_or(snapshot.current_position),
             )
@@ -338,7 +342,9 @@ impl PlaylistResumePersistenceOwner {
         ) {
             return;
         }
-        let position = if snapshot.timeline.seekable {
+        let position = if snapshot.timeline.mode == media_core::TimelineMode::Live {
+            InstalledCheckpointPosition::Live
+        } else if snapshot.timeline.seekable {
             InstalledCheckpointPosition::Seekable(
                 if snapshot.playback_state == PlaybackState::Ended {
                     Duration::ZERO
@@ -575,6 +581,7 @@ fn checkpoint_for_item(
             }
         }
         InstalledCheckpointPosition::NonSeekable => CheckpointCapture::Write(None),
+        InstalledCheckpointPosition::Live => CheckpointCapture::Skip,
     }
 }
 

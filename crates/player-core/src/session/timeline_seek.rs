@@ -1,7 +1,7 @@
 //! Exact correlated timeline seek, завершаемый только фактическим seek commit-ом.
 
 use crossbeam_channel::Sender;
-use media_core::MediaTime;
+use media_core::{MediaTime, TimelineRange};
 
 use crate::{
     ExactTimelineSeekOutcome, ExactTimelineSeekRequest, PlayerError, PlayerErrorKind, SeekRequest,
@@ -29,6 +29,20 @@ impl PlayerSession {
         if !self.snapshot.timeline.seekable || !self.pipeline.has_demuxer() {
             let _ = outcome_tx.send(ExactTimelineSeekOutcome::NotSeekable {
                 request_id: request.request_id,
+            });
+            return;
+        }
+        if self.snapshot.timeline.mode == media_core::TimelineMode::Live
+            && !self
+                .snapshot
+                .timeline
+                .seekable_range
+                .is_some_and(|range| range.contains(request.target))
+        {
+            let _ = outcome_tx.send(ExactTimelineSeekOutcome::Expired {
+                request_id: request.request_id,
+                requested_position: request.target,
+                available_range: self.snapshot.timeline.seekable_range,
             });
             return;
         }
@@ -89,6 +103,21 @@ impl PlayerSession {
             }
         };
         let _ = pending.outcome_tx.send(outcome);
+    }
+
+    /// Terminal-resolve-ит exact request отдельным typed expiry outcome.
+    pub(super) fn expire_pending_exact_timeline_seek(
+        &mut self,
+        available_range: Option<TimelineRange>,
+    ) {
+        let Some(pending) = self.pending_exact_timeline_seek.take() else {
+            return;
+        };
+        let _ = pending.outcome_tx.send(ExactTimelineSeekOutcome::Expired {
+            request_id: pending.request.request_id,
+            requested_position: pending.request.target,
+            available_range,
+        });
     }
 
     pub(super) fn fail_pending_exact_timeline_seek(&mut self, error: PlayerError) {

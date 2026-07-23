@@ -126,7 +126,10 @@ impl PreparedSingleMediaOpen {
         playback_window: Option<player_core::MediaPlaybackWindow>,
     ) -> Self {
         if let Some(playback_window) = playback_window {
-            self.prepared_media = self.prepared_media.with_playback_window(playback_window);
+            self.prepared_media = self
+                .prepared_media
+                .with_playback_window(playback_window)
+                .expect("active static source cannot contain a dynamic live timeline");
             self.source = self.source.with_playback_window(playback_window);
         }
         self
@@ -483,13 +486,16 @@ impl AppState {
                         .map_err(StrongMediaOpenError::LineageRegistration)?;
                     let installed_snapshot = self.refresh_player_snapshot();
                     if installed_snapshot.media_instance_id == Some(media_instance_id) {
-                        let checkpoint_position = if installed_snapshot.timeline.seekable {
-                            crate::playlist_runtime::InstalledCheckpointPosition::Seekable(
-                                installed_snapshot.current_position,
-                            )
-                        } else {
-                            crate::playlist_runtime::InstalledCheckpointPosition::NonSeekable
-                        };
+                        let checkpoint_position =
+                            if installed_snapshot.timeline.mode == media_core::TimelineMode::Live {
+                                crate::playlist_runtime::InstalledCheckpointPosition::Live
+                            } else if installed_snapshot.timeline.seekable {
+                                crate::playlist_runtime::InstalledCheckpointPosition::Seekable(
+                                    installed_snapshot.current_position,
+                                )
+                            } else {
+                                crate::playlist_runtime::InstalledCheckpointPosition::NonSeekable
+                            };
                         playlist_runtime.record_installed_resume_checkpoint(
                             binding.binding_generation(),
                             media_instance_id,

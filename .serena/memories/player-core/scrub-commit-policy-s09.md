@@ -18,3 +18,7 @@
 ## S13 playback-window уточнение (2026-07-20)
 - Seek/LiveScrub входы и `timeline.target_position` остаются relative к playback window.
 - Session переводит target в absolute source time ровно перед demux/decoder route; visible/live commit policy, generation gates и pending semantics не изменились.
+
+## S31L dynamic live/DVR уточнение (2026-07-23)
+- При sliding live window player повторно проверяет и active `SeekCommitState.target_position`, и public latest scrub target. Выпавший active route завершается typed `SeekTargetExpired`, даже если более новая pointer target ещё находится внутри DVR range.
+- `CommitVisiblePreview` дополнительно проверяет timing показанного кадра против последнего DVR range. Выпавший preview получает `VisibleScrubPreviewUnavailableReason::OutsideLatestLiveRange` и сохраняет старую policy: exact fallback к валидной latest pointer target, без seek к просроченному кадру.

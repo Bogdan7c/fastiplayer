@@ -20,6 +20,8 @@ pub(crate) enum AppWakeOwner {
     SettingsDynamicOptions,
     /// Process-lifetime playlist runtime и его будущие coordinators.
     PlaylistRuntime,
+    /// Player-visible dynamic timeline revision без payload.
+    PlayerTimeline,
 }
 
 /// Лёгкое typed событие winit: payload остаётся в owner mailbox-е.
@@ -208,7 +210,7 @@ impl AppWakePort {
     }
 
     /// UI очистил текущий edge перед обязательной повторной проверкой mailbox-а.
-    fn clear_pending_for_drain(&self) {
+    pub(crate) fn clear_pending_for_drain(&self) {
         self.inner.wake_pending.store(false, Ordering::Release);
     }
 

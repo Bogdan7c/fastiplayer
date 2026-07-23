@@ -212,7 +212,10 @@ impl PlayerWorkerRuntime {
                 false
             }
             Some(wait_plan) => self.wait_for_worker_wakeup_with_timeout(wait_plan),
-            None => self.wait_for_worker_wakeup_until_event(),
+            None => {
+                let timeline_activity = self.session.dynamic_timeline_wait_source();
+                self.wait_for_worker_wakeup_until_event(timeline_activity)
+            }
         }
     }
 
@@ -238,6 +241,25 @@ impl PlayerWorkerRuntime {
                 .decoder_activity
                 .as_ref()
                 .filter(|activity| !self.decoder_activity.source_is_disabled(activity.source_id));
+            let timeline_activity = wait_plan.timeline_activity.as_ref();
+
+            if let Some(timeline_activity) = timeline_activity
+                && self.session.dynamic_timeline_changed_after_arm(
+                    timeline_activity.port_generation,
+                    timeline_activity.observed_revision,
+                )
+            {
+                let _ = timeline_activity.activity_receiver.try_recv();
+                self.publish_session_outputs();
+                if let Some(wake) = self.config.timeline_activity_wake.as_ref() {
+                    wake.wake_player_timeline();
+                }
+                return false;
+            }
+            let timeline_receiver = timeline_activity
+                .map(|activity| activity.activity_receiver.clone())
+                .unwrap_or_else(crossbeam_channel::never);
+            let timeline_generation = timeline_activity.map(|activity| activity.port_generation);
 
             let wait_outcome = if let Some(decoder_activity) = decoder_activity {
                 if let DecoderActivityWaitAction::RunPlaybackTick =
@@ -250,10 +272,17 @@ impl PlayerWorkerRuntime {
                 self.wait_for_worker_timed_event_with_decoder_activity(
                     wakeup,
                     decoder_activity,
+                    &timeline_receiver,
+                    timeline_generation,
                     timeout,
                 )
             } else {
-                self.wait_for_worker_timed_event_without_decoder_activity(wakeup, timeout)
+                self.wait_for_worker_timed_event_without_decoder_activity(
+                    wakeup,
+                    &timeline_receiver,
+                    timeline_generation,
+                    timeout,
+                )
             };
 
             match wait_outcome {
@@ -303,6 +332,8 @@ impl PlayerWorkerRuntime {
         &mut self,
         wakeup: PlannedWorkerWakeup,
         decoder_activity: &DecoderActivityWaitSource,
+        timeline_receiver: &crossbeam_channel::Receiver<()>,
+        timeline_generation: Option<media_core::DynamicMediaTimelinePortGeneration>,
         timeout: Duration,
     ) -> WorkerTimedWaitOutcome {
         let decoder_pulse_receiver = decoder_activity.pulse_receiver.clone();
@@ -342,6 +373,9 @@ impl PlayerWorkerRuntime {
                         WorkerTimedWaitOutcome::ContinueWaiting
                     }
                 }
+            }
+            recv(timeline_receiver) -> activity_result => {
+                self.handle_dynamic_timeline_activity(timeline_generation, activity_result)
             }
             recv(self.render_bridge.render_release_receiver()) -> release_result => {
                 self.render_bridge
@@ -386,6 +420,8 @@ impl PlayerWorkerRuntime {
     fn wait_for_worker_timed_event_without_decoder_activity(
         &mut self,
         wakeup: PlannedWorkerWakeup,
+        timeline_receiver: &crossbeam_channel::Receiver<()>,
+        timeline_generation: Option<media_core::DynamicMediaTimelinePortGeneration>,
         timeout: Duration,
     ) -> WorkerTimedWaitOutcome {
         crossbeam_channel::select_biased! {
@@ -404,6 +440,9 @@ impl PlayerWorkerRuntime {
                 WorkerTimedWaitOutcome::Finished {
                     shutdown_requested: true,
                 }
+            }
+            recv(timeline_receiver) -> activity_result => {
+                self.handle_dynamic_timeline_activity(timeline_generation, activity_result)
             }
             recv(self.render_bridge.render_release_receiver()) -> release_result => {
                 self.render_bridge
@@ -477,14 +516,43 @@ impl PlayerWorkerRuntime {
         }
     }
 
-    /// Блокируется без timeout, когда playback idle.
-    fn wait_for_worker_wakeup_until_event(&mut self) -> bool {
+    fn wait_for_worker_wakeup_until_event(
+        &mut self,
+        timeline_activity: Option<crate::session::DynamicTimelineWaitSource>,
+    ) -> bool {
+        if let Some(timeline_activity) = timeline_activity.as_ref()
+            && self.session.dynamic_timeline_changed_after_arm(
+                timeline_activity.port_generation,
+                timeline_activity.observed_revision,
+            )
+        {
+            let _ = timeline_activity.activity_receiver.try_recv();
+            self.publish_session_outputs();
+            if let Some(wake) = self.config.timeline_activity_wake.as_ref() {
+                wake.wake_player_timeline();
+            }
+            return false;
+        }
+        let timeline_receiver = timeline_activity
+            .as_ref()
+            .map(|activity| activity.activity_receiver.clone())
+            .unwrap_or_else(crossbeam_channel::never);
+        let timeline_generation = timeline_activity
+            .as_ref()
+            .map(|activity| activity.port_generation);
+
         crossbeam_channel::select_biased! {
             recv(self.playback_intent_wake_rx) -> _ => {
                 self.handle_playback_intent_wakeup()
             }
             recv(self.command_rx) -> command_result => {
                 self.handle_command_wakeup(command_result)
+            }
+            recv(timeline_receiver) -> activity_result => {
+                matches!(
+                    self.handle_dynamic_timeline_activity(timeline_generation, activity_result),
+                    WorkerTimedWaitOutcome::Finished { shutdown_requested: true }
+                )
             }
             recv(self.render_bridge.render_release_receiver()) -> release_result => {
                 self.render_bridge
@@ -545,6 +613,7 @@ impl PlayerWorkerRuntime {
         Some(PlannedWorkerWait {
             wakeup,
             decoder_activity,
+            timeline_activity: self.session.dynamic_timeline_wait_source(),
         })
     }
 

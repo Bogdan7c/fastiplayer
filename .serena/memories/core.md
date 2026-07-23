@@ -1,3 +1,10 @@
+## S31L neutral dynamic live/DVR timeline (2026-07-23)
+
+- Provider-neutral live timeline contract now lives in `media-core`; player owns installed generation/revision projection and worker wait integration, app owns UI/desktop wake projection.
+- Live is durationless, optional-DVR, never silently clamps expired targets, and never persists a resume checkpoint.
+- Static CUE playback windows and live timeline mode are a typed mutually-exclusive `PreparedMedia` intent.
+- Full contract and test locations: `mem:player-core/dynamic-live-timeline-s31l-2026-07-23`.
+
 ## S31 adaptive transport foundation (2026-07-23)
 
 - Новый `web-media-adaptive` владеет bounded manifest/segment fetch, retry/backoff/cancel, generation/refresh fencing, neutral VOD/live/DVR + per-component clock metadata и explicit nonblocking segment readiness. `source-core` остаётся единственным HTTP owner; S21T secret/redirect policy переиспользована. Existing finite `OrderedSegmentSource` не ломался; deferred demux open выполняет initial readiness/sniff/parser на worker-е и публикует S21R `TemporarilyUnavailable` player-owner-у. Полный handoff: `mem:media-services/adaptive-transport-s31-2026-07-23`.

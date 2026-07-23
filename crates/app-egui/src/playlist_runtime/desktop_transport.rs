@@ -227,10 +227,14 @@ impl DesktopTransportOwner {
         } else {
             map_playback_status(player_snapshot.playback_state)
         };
-        let duration = player_snapshot
-            .timeline
-            .duration
-            .or_else(|| player_snapshot.duration.map(MediaDuration::from_duration));
+        let duration = if player_snapshot.timeline.mode == media_core::TimelineMode::Live {
+            None
+        } else {
+            player_snapshot
+                .timeline
+                .duration
+                .or_else(|| player_snapshot.duration.map(MediaDuration::from_duration))
+        };
         let mut metadata = projection.map_or_else(
             || self.last_snapshot.metadata.clone(),
             |projection| projection.metadata,
@@ -244,7 +248,9 @@ impl DesktopTransportOwner {
             metadata.source_label = metadata
                 .source_label
                 .or_else(|| self.last_snapshot.metadata.source_label.clone());
-            metadata.duration = metadata.duration.or(self.last_snapshot.metadata.duration);
+            if player_snapshot.timeline.mode != media_core::TimelineMode::Live {
+                metadata.duration = metadata.duration.or(self.last_snapshot.metadata.duration);
+            }
         }
         let (loop_status, shuffle) =
             runtime
@@ -566,6 +572,22 @@ mod tests {
         assert_eq!(
             owner.last_seek_outcome,
             Some(DesktopTimelineSeekOutcome::StaleTrack { request_id })
+        );
+    }
+
+    #[test]
+    fn expired_live_seek_does_not_publish_false_seeked_signal() {
+        let mut owner = owner();
+        let request_id = TimelineSeekRequestId::new(NonZeroU64::new(10).expect("non-zero"));
+        let revision_before = owner.last_snapshot.revision;
+
+        owner.record_seek_outcome(DesktopTimelineSeekOutcome::Expired { request_id });
+
+        assert_eq!(owner.last_snapshot.revision, revision_before);
+        assert_eq!(owner.last_snapshot.seeked, None);
+        assert_eq!(
+            owner.last_seek_outcome,
+            Some(DesktopTimelineSeekOutcome::Expired { request_id })
         );
     }
 }

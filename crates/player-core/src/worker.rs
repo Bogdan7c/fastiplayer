@@ -62,6 +62,7 @@ mod handle;
 mod media_install_compatibility;
 mod runtime_commands;
 mod runtime_publish;
+mod runtime_timeline;
 mod runtime_wait;
 mod sender;
 mod staged_media_install;
@@ -135,6 +136,15 @@ pub struct PlayerWorkerConfig {
 
     /// Validated S19 scrub/scheduler policy snapshot для session-owned live scrub route.
     pub frame_server_config: ValidatedFrameServerConfig,
+
+    /// App-owned bridge, который будит UI после player-visible live revision.
+    pub timeline_activity_wake: Option<Arc<dyn PlayerWorkerTimelineWake>>,
+}
+
+/// Минимальный bridge: payload и policy остаются в player snapshot.
+pub trait PlayerWorkerTimelineWake: Send + Sync {
+    /// Будит owner UI после уже применённой player-visible revision.
+    fn wake_player_timeline(&self);
 }
 
 impl fmt::Debug for PlayerWorkerConfig {
@@ -157,6 +167,10 @@ impl fmt::Debug for PlayerWorkerConfig {
                 &"<dyn AudioTempoProcessorFactory>",
             )
             .field("frame_server_config", &self.frame_server_config)
+            .field(
+                "timeline_activity_wake",
+                &self.timeline_activity_wake.as_ref().map(|_| "<configured>"),
+            )
             .finish()
     }
 }
@@ -177,6 +191,7 @@ impl PlayerWorkerConfig {
             frame_server_config: RuntimeFrameServerConfig::default()
                 .validate()
                 .expect("default frame-server config must validate"),
+            timeline_activity_wake: None,
         }
     }
 
@@ -193,6 +208,7 @@ impl PlayerWorkerConfig {
             audio_output_factory: missing_audio_output_factory(),
             audio_tempo_processor_factory: missing_audio_tempo_processor_factory(),
             frame_server_config: Self::frame_server_config_from_app_config(config),
+            timeline_activity_wake: None,
         }
     }
 
@@ -223,6 +239,16 @@ impl PlayerWorkerConfig {
         audio_tempo_processor_factory: Arc<dyn AudioTempoProcessorFactory>,
     ) -> Self {
         self.audio_tempo_processor_factory = audio_tempo_processor_factory;
+        self
+    }
+
+    /// Подключает app-owned wake bridge без переноса timeline payload.
+    #[must_use]
+    pub fn with_timeline_activity_wake(
+        mut self,
+        timeline_activity_wake: Arc<dyn PlayerWorkerTimelineWake>,
+    ) -> Self {
+        self.timeline_activity_wake = Some(timeline_activity_wake);
         self
     }
 
@@ -686,7 +712,7 @@ struct WorkerDecoderActivityState {
     next_source_id: DecoderActivitySourceId,
 }
 
-/// Полный worker wait plan: playback deadline плюс optional decoder activity source.
+/// Полный worker wait plan: playback deadline плюс optional activity sources.
 #[derive(Debug, Clone)]
 struct PlannedWorkerWait {
     /// Playback wakeup, уже выбранный scheduler-ом.
@@ -694,6 +720,9 @@ struct PlannedWorkerWait {
 
     /// Decoder activity source используется только если plan явно попросил wait.
     decoder_activity: Option<DecoderActivityWaitSource>,
+
+    /// Dynamic timeline source остаётся активным даже в Paused.
+    timeline_activity: Option<crate::session::DynamicTimelineWaitSource>,
 }
 
 /// Результат одной итерации timed `select!`.

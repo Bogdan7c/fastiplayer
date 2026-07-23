@@ -6,7 +6,8 @@ use frame_server_core::{
     ScrubRequestKind, ValidatedFrameServerConfig,
 };
 use media_core::{
-    MediaDuration, MediaTime, TimeBase, TimelinePreviewState, TrackKind, TrackTimestamp,
+    MediaDuration, MediaTime, TimeBase, TimelineMode, TimelinePreviewState, TrackKind,
+    TrackTimestamp,
 };
 use tracing::{debug, warn};
 
@@ -117,7 +118,7 @@ impl PlayerSession {
     /// Запоминает последнюю цель scrub без изменения текущей playback позиции.
     pub(super) fn update_scrub(&mut self, request: SeekRequest) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        self.store_simple_scrub_request(request, None);
+        self.store_simple_scrub_request(request, None)?;
         Ok(())
     }
 
@@ -128,13 +129,13 @@ impl PlayerSession {
         live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
     ) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
-        let target_position = self.resolve_seek_target(request);
+        let target_position = self.resolve_seek_target(request)?;
         let confirmed_playback_state = self
             .seek_runtime
             .simple_scrub_confirmed_playback_state()
             .unwrap_or_else(|| self.playback_state_for_new_simple_scrub());
         let resume_intent = PlaybackResumeIntent::from_playback_state(confirmed_playback_state);
-        self.store_simple_scrub_request(request, live_scrub_diagnostics);
+        self.store_simple_scrub_request(request, live_scrub_diagnostics)?;
         let live_scrub_diagnostics =
             live_scrub_diagnostics.or_else(|| self.seek_runtime.simple_scrub_live_diagnostics());
 
@@ -154,13 +155,12 @@ impl PlayerSession {
         Ok(())
     }
 
-    /// Запоминает latest scrub target и переводит timeline в public scrubbing state.
     fn store_simple_scrub_request(
         &mut self,
         request: SeekRequest,
         live_scrub_diagnostics: Option<LiveScrubDiagnostics>,
-    ) {
-        let target_position = self.resolve_seek_target(request);
+    ) -> PlayerResult<()> {
+        let target_position = self.resolve_seek_target(request)?;
         let confirmed_playback_state = self.playback_state_for_new_simple_scrub();
         self.enter_simple_scrub_public_state();
         self.seek_runtime.store_simple_scrub_request(
@@ -173,6 +173,7 @@ impl PlayerSession {
         if !self.snapshot.timeline.seeking {
             self.snapshot.timeline.stale_frame = false;
         }
+        Ok(())
     }
 
     /// Проверяет stable visible-preview DTO против текущего player-owned route/frame state.
@@ -228,6 +229,18 @@ impl PlayerSession {
             || preview.timing.pts != identity_track_pts
         {
             return Err(VisibleScrubPreviewUnavailableReason::TimingIdentityMismatch);
+        }
+
+        if self.snapshot.timeline.mode == TimelineMode::Live {
+            let available_range = self.snapshot.timeline.seekable_range;
+            if !available_range.is_some_and(|range| range.contains(preview.timing.media_time)) {
+                return Err(
+                    VisibleScrubPreviewUnavailableReason::OutsideLatestLiveRange {
+                        preview_position: preview.timing.media_time,
+                        available_range,
+                    },
+                );
+            }
         }
 
         if self.current_present_frame_identity() != Some(preview.frame_identity) {
@@ -300,7 +313,7 @@ impl PlayerSession {
             });
         };
 
-        let latest_target = self.resolve_seek_target(latest_request);
+        let latest_target = self.resolve_seek_target(latest_request)?;
         let resume_intent = PlaybackResumeIntent::from_playback_state(confirmed_playback_state);
 
         match policy {

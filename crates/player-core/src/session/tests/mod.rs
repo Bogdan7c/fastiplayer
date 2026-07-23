@@ -48,6 +48,7 @@ mod audio_runtime;
 mod capability_selection;
 mod decoder_boundary;
 mod diagnostics_sink;
+mod dynamic_timeline;
 mod eof_drain;
 mod exact_media_transport;
 mod installed_media_restore;

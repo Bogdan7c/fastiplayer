@@ -1,3 +1,7 @@
+## S31L live desktop transport (2026-07-23)
+
+For `TimelineMode::Live`, desktop/MPRIS metadata never exposes `mpris:length`; `CanSeek` follows current DVR availability/range. Exact targets that age out resolve `Expired` and must not emit `Seeked`. See `mem:player-core/dynamic-live-timeline-s31l-2026-07-23`.
+
 # Session 18B — process-lifetime desktop/MPRIS transport (2026-07-16)
 
 ## Ownership и lifecycle

@@ -93,6 +93,9 @@ pub(crate) struct AppShell {
     /// Port копируется в каждый renderer-bound AppState при resume.
     local_file_open_wake_port: crate::app_wake::AppWakePort,
 
+    /// Payload-free bridge для dynamic timeline worker revision.
+    player_timeline_wake_port: crate::app_wake::AppWakePort,
+
     /// Exact local-file job переживает renderer suspend без detach или process flush.
     suspended_local_file_open_job: Option<LocalFileOpenJob>,
 
@@ -166,6 +169,7 @@ impl AppShell {
         let local_file_wake_port = wake_proxy.port(AppWakeOwner::LocalFileOpen);
         let settings_wake_port = wake_proxy.port(AppWakeOwner::SettingsDynamicOptions);
         let playlist_wake_port = wake_proxy.port(AppWakeOwner::PlaylistRuntime);
+        let player_timeline_wake_port = wake_proxy.port(AppWakeOwner::PlayerTimeline);
         // Сначала строятся все fallible process owners. Inspection запускается
         // последней: после неё constructor уже не может вернуть ошибку и detach-нуть thread.
         let settings_runtime =
@@ -206,6 +210,7 @@ impl AppShell {
             ),
             playlist_runtime,
             local_file_open_wake_port: local_file_wake_port,
+            player_timeline_wake_port,
             suspended_local_file_open_job: None,
             settings_runtime,
             background_poll_scheduler: BackgroundPollScheduler::new(),
@@ -259,6 +264,7 @@ impl AppShell {
             self.settings_runtime.audio_output_device_controller(),
             self.startup_media.startup_error_message(),
             self.local_file_open_wake_port.clone(),
+            self.player_timeline_wake_port.clone(),
         ) {
             Ok(app_state) => app_state,
             Err(error) => {
@@ -669,6 +675,22 @@ impl ApplicationHandler<AppWakeEvent> for AppShell {
                 self.settings_runtime.poll_dynamic_options_refresh()
             }
             AppWakeOwner::PlaylistRuntime => self.drain_playlist_persistence(),
+            AppWakeOwner::PlayerTimeline => {
+                self.player_timeline_wake_port.clear_pending_for_drain();
+                match self.app_state.as_mut() {
+                    Some(app_state) => {
+                        match app_state.refresh_player_snapshot_if_timeline_changed() {
+                            Some(player_snapshot) => {
+                                self.playlist_runtime
+                                    .publish_desktop_snapshot(&player_snapshot);
+                                true
+                            }
+                            None => false,
+                        }
+                    }
+                    None => false,
+                }
+            }
         };
 
         request_redraw_for_visible_wake(self.window.as_deref(), visible_mutation);

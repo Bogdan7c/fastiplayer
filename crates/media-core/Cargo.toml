@@ -13,4 +13,5 @@ path = "src/lib.rs"
 anyhow.workspace = true
 bytes.workspace = true
 codec-core.workspace = true
+crossbeam-channel.workspace = true
 thiserror.workspace = true

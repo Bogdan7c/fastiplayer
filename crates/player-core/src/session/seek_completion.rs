@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use media_core::TimelinePreviewState;
+use media_core::{TimelinePreviewState, TimelineRange};
 use tracing::{debug, warn};
 
 use crate::seek_state::{FinalSeekCommitPosition, PlaybackResumeIntent, SeekCommitState};
@@ -276,6 +276,45 @@ impl PlayerSession {
                 seek_commit.target_position.as_duration().as_millis(),
                 seek_commit.actual_position.as_duration().as_millis(),
                 timeout_blocker.metric_name()
+            ),
+        );
+        self.fail_pending_seek_receipts(error.clone());
+        self.record_recoverable_error(error);
+    }
+
+    /// Прерывает pending live seek, когда authoritative DVR window уже не содержит target.
+    pub(super) fn fail_dynamic_seek_target_expired(
+        &mut self,
+        seek_commit: SeekCommitState,
+        available_range: Option<TimelineRange>,
+    ) {
+        if let Err(error) = self.clear_active_seek_decoder_output_floor("dynamic seek expiry") {
+            self.mark_fatal_error(error);
+            return;
+        }
+
+        self.expire_pending_exact_timeline_seek(available_range);
+        self.seek_runtime.clear_active_commit();
+        self.clear_prepared_seek_landing_with_diagnostics();
+        self.seek_runtime.clear_trace();
+        self.seek_runtime.clear_seek_landing();
+        self.seek_runtime.clear_simple_scrub();
+        self.seek_runtime.clear_eof_fallback_video_position();
+        self.clear_seek_preroll_fallback_frame();
+        self.snapshot.timeline.target_position = None;
+        self.snapshot.timeline.seeking = false;
+        self.snapshot.timeline.scrubbing = false;
+        self.snapshot.timeline.preview_state = TimelinePreviewState::Failed;
+        self.snapshot.timeline.stale_frame = self.pipeline.has_present_video_frame();
+        self.pause_audio_output_for_seek();
+        self.set_playback_state(PlaybackState::Paused);
+
+        let error = PlayerError::new(
+            PlayerErrorKind::SeekTargetExpired,
+            format!(
+                "Live seek target {} ms expired outside latest DVR range {:?}",
+                seek_commit.target_position.as_duration().as_millis(),
+                available_range
             ),
         );
         self.fail_pending_seek_receipts(error.clone());

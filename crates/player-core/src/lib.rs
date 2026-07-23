@@ -104,7 +104,10 @@ pub use media_install::{
     PlaybackIntentRevision, PlaybackIntentUpdate, PlaybackIntentUpdateOutcome,
     PlaybackIntentUpdateReceipt, TimelineSeekKind, TimelineSeekRequestId,
 };
-pub use media_opening::{MediaSourceInfo, MediaSourceKind, PreparedMedia, PreparedMediaSource};
+pub use media_opening::{
+    MediaSourceInfo, MediaSourceKind, PreparedMedia, PreparedMediaSource,
+    PreparedMediaTimelineMode, PreparedMediaTimelineModeError,
+};
 pub(crate) use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};
 pub use playback_rate::{PlaybackRate, PlaybackRateValidationError};
 pub use playback_window::{MediaPlaybackWindow, MediaPlaybackWindowError};
@@ -136,5 +139,5 @@ pub use worker::{
     MediaInstallControlReceipt, MediaInstallControlReceiptError, PlayerCommandSender,
     PlayerRenderError, PlayerRenderErrorKind, PlayerWorker, PlayerWorkerConfig, PlayerWorkerEvent,
     PlayerWorkerJoinError, PlayerWorkerSendError, PlayerWorkerShutdownDeadline,
-    PlayerWorkerShutdownOutcome, PlayerWorkerShutdownRequestOutcome,
+    PlayerWorkerShutdownOutcome, PlayerWorkerShutdownRequestOutcome, PlayerWorkerTimelineWake,
 };

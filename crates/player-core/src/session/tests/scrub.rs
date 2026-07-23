@@ -972,6 +972,36 @@ fn live_scrub_harness_with_visible_preview() -> SeekRegressionHarness {
     harness
 }
 
+/// Переводит готовый scrub harness в live mode через session-owned install boundary.
+fn install_live_timeline_on_scrub_harness(
+    harness: &mut SeekRegressionHarness,
+    generation: u64,
+    range_start: MediaTime,
+    range_end: MediaTime,
+) {
+    let non_zero_generation =
+        std::num::NonZeroU64::new(generation).expect("test generation must be non-zero");
+    let media_instance_id = crate::MediaInstanceId::from_non_zero(non_zero_generation);
+    let port_generation = media_core::DynamicMediaTimelinePortGeneration::new(non_zero_generation);
+    let seekable_range =
+        media_core::TimelineRange::new(range_start, range_end).expect("ordered live test range");
+    let state = media_core::DynamicMediaTimelineState::with_dvr(range_end, seekable_range)
+        .expect("valid live test state");
+    let (port, _publisher) =
+        media_core::dynamic_media_timeline(media_core::DynamicMediaTimelineInitial {
+            port_generation,
+            source_epoch: media_core::DynamicMediaTimelineEpoch::new(1),
+            state,
+        });
+
+    harness.session.set_snapshot_duration(None);
+    harness.session.snapshot.media_instance_id = Some(media_instance_id);
+    harness.session.install_timeline_mode(
+        media_instance_id,
+        crate::PreparedMediaTimelineMode::Live { port },
+    );
+}
+
 /// Valid visible preview коммитится по frame timing, а не по более новой pointer target.
 #[test]
 fn commit_visible_preview_and_latest_target_produce_different_exact_targets() {
@@ -1037,6 +1067,83 @@ fn commit_visible_preview_and_latest_target_produce_different_exact_targets() {
             .session
             .seek_commit()
             .expect("latest policy должен открыть exact SeekLanding")
+            .target_position,
+        latest_target
+    );
+}
+
+#[test]
+fn sliding_live_window_expires_active_scrub_route_even_if_latest_pointer_remains_inside() {
+    let mut harness = live_scrub_harness_with_visible_preview();
+    harness
+        .session
+        .dispatch_command(PlayerCommand::UpdateScrub(SeekRequest::absolute(
+            MediaTime::from_secs(10),
+        )))
+        .expect("latest pointer remains inside the future DVR range");
+
+    install_live_timeline_on_scrub_harness(
+        &mut harness,
+        71,
+        MediaTime::from_secs(9),
+        MediaTime::from_secs(12),
+    );
+
+    assert!(harness.session.seek_commit().is_none());
+    assert_eq!(
+        harness
+            .session
+            .snapshot()
+            .last_error
+            .as_ref()
+            .expect("expired active scrub route records a typed recoverable error")
+            .kind,
+        PlayerErrorKind::SeekTargetExpired
+    );
+}
+
+#[test]
+fn visible_preview_outside_latest_live_range_falls_back_to_valid_pointer_target() {
+    let latest_target = MediaTime::from_secs(10);
+    let mut harness = live_scrub_harness_with_visible_preview();
+    harness
+        .session
+        .dispatch_command(PlayerCommand::UpdateScrub(SeekRequest::absolute(
+            latest_target,
+        )))
+        .expect("latest pointer remains inside the future DVR range");
+    install_live_timeline_on_scrub_harness(
+        &mut harness,
+        72,
+        MediaTime::from_secs(8),
+        MediaTime::from_secs(12),
+    );
+
+    let outcome = harness
+        .session
+        .dispatch_command(PlayerCommand::end_scrub(
+            ScrubCommitPolicy::CommitVisiblePreview,
+        ))
+        .expect("expired visible preview falls back to the valid pointer target");
+
+    assert!(matches!(
+        outcome,
+        crate::PlayerCommandOutcome::ScrubCommit(
+            ScrubCommitOutcome::VisiblePreviewUnavailableFallbackToLatestTarget {
+                target,
+                reason:
+                    VisibleScrubPreviewUnavailableReason::OutsideLatestLiveRange {
+                        preview_position,
+                        available_range: Some(_),
+                    },
+            }
+        ) if target == latest_target && preview_position == MediaTime::from_millis(7_900)
+    ));
+    assert_eq!(
+        harness
+            .session
+            .seek_commit()
+            .expect("fallback opens the existing exact SeekLanding route")
             .target_position,
         latest_target
     );

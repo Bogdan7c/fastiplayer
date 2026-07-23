@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::num::NonZeroU64;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -34,6 +35,7 @@ fn worker_config_for_tests() -> PlayerWorkerConfig {
         frame_server_config: frame_server_core::FrameServerConfig::default()
             .validate()
             .expect("default frame-server config must validate"),
+        timeline_activity_wake: None,
     }
 }
 
@@ -754,6 +756,85 @@ fn worker_starts_accepts_commands_publishes_snapshot_and_shutdowns() {
 
     assert_eq!(snapshot.playback_state, PlaybackState::Playing);
     worker.shutdown().unwrap();
+}
+
+#[test]
+fn paused_idle_worker_wakes_on_sliding_live_window_and_publishes_latest_snapshot() {
+    #[derive(Clone)]
+    struct TestTimelineWake {
+        wake_tx: crossbeam_channel::Sender<()>,
+    }
+
+    impl PlayerWorkerTimelineWake for TestTimelineWake {
+        fn wake_player_timeline(&self) {
+            let _ = self.wake_tx.try_send(());
+        }
+    }
+
+    let (wake_tx, wake_rx) = bounded(1);
+    let config = worker_config_for_tests()
+        .with_timeline_activity_wake(Arc::new(TestTimelineWake { wake_tx }));
+    let mut worker = PlayerWorker::spawn(config).expect("worker starts");
+    let initial_range = media_core::TimelineRange::new(
+        media_core::MediaTime::from_secs(20),
+        media_core::MediaTime::from_secs(60),
+    )
+    .expect("initial DVR range");
+    let (port, publisher) =
+        media_core::dynamic_media_timeline(media_core::DynamicMediaTimelineInitial {
+            port_generation: media_core::DynamicMediaTimelinePortGeneration::new(
+                NonZeroU64::new(70).expect("port generation"),
+            ),
+            source_epoch: media_core::DynamicMediaTimelineEpoch::new(1),
+            state: media_core::DynamicMediaTimelineState::with_dvr(
+                media_core::MediaTime::from_secs(60),
+                initial_range,
+            )
+            .expect("initial DVR state"),
+        });
+    let demuxer = WorkerFakeDemuxer {
+        tracks: Vec::new(),
+        duration: None,
+        seek_request_log: Arc::new(Mutex::new(Vec::new())),
+    };
+    let prepared_media = PreparedMedia::from_external_label("worker-live", Box::new(demuxer))
+        .with_dynamic_timeline(port)
+        .expect("duration-less worker media accepts live timeline");
+    let _receipt = worker
+        .load_prepared_media(prepared_media, false)
+        .expect("live install command accepted");
+    let _initial = wait_for_snapshot(&mut worker, |snapshot| {
+        snapshot.timeline.live_revision.is_some()
+            && snapshot.playback_state == PlaybackState::Paused
+    });
+
+    let moved_range = media_core::TimelineRange::new(
+        media_core::MediaTime::from_secs(30),
+        media_core::MediaTime::from_secs(70),
+    )
+    .expect("moved DVR range");
+    publisher
+        .publish(
+            media_core::DynamicMediaTimelineEpoch::new(2),
+            media_core::DynamicMediaTimelineState::with_dvr(
+                media_core::MediaTime::from_secs(70),
+                moved_range,
+            )
+            .expect("moved DVR state"),
+        )
+        .expect("publish moved DVR range");
+
+    wake_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("paused worker emits app wake");
+    let moved = worker.latest_snapshot(FrameCounters::default());
+    assert_eq!(moved.timeline.seekable_range, Some(moved_range));
+    assert_eq!(
+        moved.timeline.live_edge,
+        Some(media_core::MediaTime::from_secs(70))
+    );
+
+    worker.shutdown().expect("worker shutdown");
 }
 
 #[test]
@@ -1483,6 +1564,7 @@ fn render_feedback_does_not_postpone_playback_timeout() {
     let shutdown_requested = runtime.wait_for_worker_wakeup_with_timeout(PlannedWorkerWait {
         wakeup,
         decoder_activity: None,
+        timeline_activity: None,
     });
     let waited_for = wait_started_at.elapsed();
 

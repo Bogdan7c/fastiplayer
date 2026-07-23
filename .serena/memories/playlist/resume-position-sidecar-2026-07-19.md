@@ -1,3 +1,7 @@
+## S31L live checkpoint rule (2026-07-23)
+
+Dynamic live media (`TimelineMode::Live`) never writes, restores, or synthesizes a persistent resume position. Ordinary observation, forced capture, confirmed exact seek recording, startup restore, strong-open restore, and suspend restore all gate on timeline mode; live uses typed KeepStart/Skip semantics. See `mem:player-core/dynamic-live-timeline-s31l-2026-07-23`.
+
 # Playlist current-media resume sidecar (2026-07-19)
 
 ## Ownership and boundaries

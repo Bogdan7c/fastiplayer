@@ -25,7 +25,7 @@ pub(crate) enum ResumePlaybackIntent {
 pub(crate) struct SuspendedMediaCheckpoint {
     pub(crate) source: ActiveMediaSource,
     pub(crate) expected_active: ActiveMediaIdentity,
-    pub(crate) position: Duration,
+    pub(crate) position: SuspendedTimelineResumePosition,
     pub(crate) intent: ResumePlaybackIntent,
     pub(crate) consumed_eof_edge: bool,
     pub(crate) terminal_failure: bool,
@@ -79,8 +79,17 @@ pub(crate) enum SuspendCheckpointOutcome {
 pub(crate) struct ResumeAttempt {
     pub(crate) source: ActiveMediaSource,
     pub(crate) expected_active: ActiveMediaIdentity,
-    pub(crate) position: Duration,
+    pub(crate) position: SuspendedTimelineResumePosition,
     pub(crate) intent: ResumePlaybackIntent,
+}
+
+/// Explicit suspend/settings timeline intent без fake live position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SuspendedTimelineResumePosition {
+    /// Fresh live opener остаётся на своей authoritative logical позиции.
+    KeepStart,
+    /// Static media восстанавливает подтверждённую позицию.
+    SeekTo(Duration),
 }
 
 /// Process-lifetime storage active source + optional suspended checkpoint.
@@ -363,10 +372,14 @@ impl PlaylistRuntime {
                 super::controller::StablePlaybackIntent::Paused => ResumePlaybackIntent::Paused,
             }
         };
-        let position = if consumed_eof_edge {
-            snapshot.duration.unwrap_or(snapshot.current_position)
+        let position = if snapshot.timeline.mode == media_core::TimelineMode::Live {
+            SuspendedTimelineResumePosition::KeepStart
+        } else if consumed_eof_edge {
+            SuspendedTimelineResumePosition::SeekTo(
+                snapshot.duration.unwrap_or(snapshot.current_position),
+            )
         } else {
-            snapshot.current_position
+            SuspendedTimelineResumePosition::SeekTo(snapshot.current_position)
         };
         self.suspended_media.checkpoint = Some(SuspendedMediaCheckpoint {
             source,

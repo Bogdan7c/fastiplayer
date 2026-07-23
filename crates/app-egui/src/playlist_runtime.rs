@@ -58,6 +58,7 @@ mod row_interactions;
 mod selection;
 mod settings;
 mod suspend_resume;
+pub(crate) use suspend_resume::SuspendedTimelineResumePosition;
 mod transport_execution;
 mod transport_ui;
 mod ui_interaction;

@@ -142,6 +142,19 @@ fn full_dynamic_properties_exclude_position_rate_and_can_control() {
 }
 
 #[test]
+fn live_dvr_projection_keeps_can_seek_but_omits_mpris_length() {
+    let mut live_view = view();
+    live_view.metadata.duration = None;
+    live_view.capabilities.can_seek = true;
+
+    let metadata = mpris_metadata_values(&live_view.metadata).expect("live metadata");
+    assert!(!metadata.contains_key("mpris:length"));
+    let properties = full_dynamic_player_properties(&live_view).expect("live properties");
+    assert!(properties.contains_key("CanSeek"));
+    assert_eq!(live_view.position, MediaTime::from_secs(42));
+}
+
+#[test]
 fn mpris_duration_conversion_saturates_to_i64() {
     assert_eq!(
         media_duration_to_mpris_microseconds(MediaDuration::from_secs(2)),

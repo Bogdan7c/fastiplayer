@@ -272,6 +272,7 @@ impl PlayerSession {
         self.current_source_position = Duration::ZERO;
         self.source_duration = None;
         self.playback_window = None;
+        self.dynamic_timeline = super::dynamic_timeline::DynamicTimelineRuntime::default();
         self.reset_playback_window_end_observation();
         self.reset_diagnostics_for_media();
 

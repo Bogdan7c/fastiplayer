@@ -59,6 +59,9 @@ pub enum DesktopTimelineSeekOutcome {
     NotSeekable {
         request_id: TimelineSeekRequestId,
     },
+    Expired {
+        request_id: TimelineSeekRequestId,
+    },
     Failed {
         request_id: TimelineSeekRequestId,
     },
@@ -79,6 +82,7 @@ impl DesktopTimelineSeekOutcome {
             | Self::StaleTrack { request_id }
             | Self::StaleInstance { request_id }
             | Self::NotSeekable { request_id }
+            | Self::Expired { request_id }
             | Self::Failed { request_id }
             | Self::BeyondEnd { request_id }
             | Self::ArithmeticOverflow { request_id } => request_id,

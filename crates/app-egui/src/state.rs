@@ -342,6 +342,17 @@ pub struct AppState {
 /// анимация продолжается плавно, а не прыгает к концу.
 const MAX_SIDEBAR_SLIDE_FRAME_DT_SECONDS: f32 = 0.1;
 
+/// Payload-free adapter между player worker и process-owned winit wake port.
+struct PlayerTimelineWakeBridge {
+    wake_port: AppWakePort,
+}
+
+impl player_core::PlayerWorkerTimelineWake for PlayerTimelineWakeBridge {
+    fn wake_player_timeline(&self) {
+        let _delivery = self.wake_port.request_wake();
+    }
+}
+
 impl AppState {
     /// Создаёт новое состояние приложения и запускает playback worker.
     #[instrument(skip(
@@ -349,7 +360,8 @@ impl AppState {
         telemetry,
         committed_config_snapshot,
         startup_error,
-        local_file_open_wake_port
+        local_file_open_wake_port,
+        player_timeline_wake_port
     ))]
     pub fn new(
         window: &Window,
@@ -358,6 +370,7 @@ impl AppState {
         audio_output_device_controller: audio::AudioOutputDeviceController,
         startup_error: Option<String>,
         local_file_open_wake_port: AppWakePort,
+        player_timeline_wake_port: AppWakePort,
     ) -> anyhow::Result<Self> {
         let egui_ctx = egui::Context::default();
         egui_ctx.set_theme(egui::Theme::Dark);
@@ -376,6 +389,10 @@ impl AppState {
             audio::AudioDecodeCapabilityProvider::audio_decode_capability_snapshot(
                 audio_decoder_factory.as_ref(),
             );
+        let timeline_activity_wake: Arc<dyn player_core::PlayerWorkerTimelineWake> =
+            Arc::new(PlayerTimelineWakeBridge {
+                wake_port: player_timeline_wake_port,
+            });
         let worker_config =
             PlayerWorkerConfig::from_app_config(committed_config_snapshot.as_config())
                 .with_audio_decoder_factory(audio_decoder_factory)
@@ -384,7 +401,8 @@ impl AppState {
                 )))
                 .with_audio_tempo_processor_factory(Arc::new(
                     audio_signalsmith::SignalsmithTempoProcessorFactory,
-                ));
+                ))
+                .with_timeline_activity_wake(timeline_activity_wake);
         let player_worker = PlayerWorker::spawn(worker_config)?;
         if let Err(error) = player_worker.try_send_command(PlayerCommand::SetVolume(
             committed_config_snapshot.default_volume_for_new_media(),
@@ -629,6 +647,20 @@ impl AppState {
             .latest_snapshot(self.frame_counters_snapshot());
         self.last_player_snapshot = player_snapshot.clone();
         player_snapshot
+    }
+
+    /// Drain-ит worker snapshot только если wake действительно принёс новую live revision.
+    pub(crate) fn refresh_player_snapshot_if_timeline_changed(&mut self) -> Option<PlayerSnapshot> {
+        let previous_identity = (
+            self.last_player_snapshot.media_instance_id,
+            self.last_player_snapshot.timeline.live_revision,
+        );
+        let player_snapshot = self.refresh_player_snapshot();
+        let current_identity = (
+            player_snapshot.media_instance_id,
+            player_snapshot.timeline.live_revision,
+        );
+        (current_identity != previous_identity).then_some(player_snapshot)
     }
 
     /// Возвращает `true`, пока shell должен поддерживать непрерывные redraw-и.

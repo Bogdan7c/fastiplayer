@@ -91,7 +91,10 @@ fn paused_resume_preserves_position_and_lineage_with_new_instance() {
     let attempt = runtime
         .begin_suspended_media_resume(false)
         .expect("automatic paused resume");
-    assert_eq!(attempt.position, Duration::from_secs(37));
+    assert_eq!(
+        attempt.position,
+        SuspendedTimelineResumePosition::SeekTo(Duration::from_secs(37))
+    );
     assert_eq!(attempt.intent, ResumePlaybackIntent::Paused);
     assert_eq!(attempt.expected_active.lineage_id(), active.lineage_id());
 
@@ -124,7 +127,10 @@ fn paused_resume_preserves_position_and_lineage_with_new_instance() {
         .begin_suspended_media_resume(false)
         .expect("second lifecycle attempt");
     assert_eq!(second_attempt.expected_active, rebound);
-    assert_eq!(second_attempt.position, Duration::from_secs(44));
+    assert_eq!(
+        second_attempt.position,
+        SuspendedTimelineResumePosition::SeekTo(Duration::from_secs(44))
+    );
     runtime
         .complete_suspended_media_resume(
             rebound,
@@ -134,6 +140,35 @@ fn paused_resume_preserves_position_and_lineage_with_new_instance() {
         )
         .expect("second lifecycle rebound");
     assert!(runtime.begin_suspended_media_resume(false).is_none());
+}
+
+#[test]
+fn live_suspend_resume_uses_explicit_keep_start_without_fake_position() {
+    let mut runtime = runtime();
+    let binding = runtime.bind_resumed_app_state().expect("binding");
+    let active = install_external(&mut runtime, binding, 14);
+    let mut live_snapshot = snapshot(active, PlaybackState::Paused, Duration::from_secs(137));
+    live_snapshot.duration = None;
+    live_snapshot.timeline.mode = media_core::TimelineMode::Live;
+    live_snapshot.timeline.seekable = true;
+    live_snapshot.timeline.seekable_range = media_core::TimelineRange::new(
+        media_core::MediaTime::from_secs(100),
+        media_core::MediaTime::from_secs(140),
+    );
+
+    assert_eq!(
+        runtime
+            .capture_suspended_media_checkpoint(binding, &live_snapshot)
+            .expect("live checkpoint capture"),
+        SuspendCheckpointOutcome::Captured
+    );
+    runtime.suspend_app_state_binding();
+    let _new_binding = runtime.bind_resumed_app_state().expect("new binding");
+    let attempt = runtime
+        .begin_suspended_media_resume(false)
+        .expect("live resume attempt");
+
+    assert_eq!(attempt.position, SuspendedTimelineResumePosition::KeepStart);
 }
 
 #[test]
@@ -168,7 +203,10 @@ fn detached_windowed_source_reopens_without_queue_row_or_cue_identity() {
         .begin_suspended_media_resume(false)
         .expect("detached windowed resume attempt");
 
-    assert_eq!(attempt.position, Duration::from_secs(4));
+    assert_eq!(
+        attempt.position,
+        SuspendedTimelineResumePosition::SeekTo(Duration::from_secs(4))
+    );
     assert_eq!(attempt.source.playback_window(), Some(playback_window));
     assert!(matches!(
         attempt.source.physical_source(),
@@ -312,7 +350,10 @@ fn playing_intent_is_restored_only_as_post_seek_attempt_intent() {
         .begin_suspended_media_resume(false)
         .expect("playing resume attempt");
     assert_eq!(attempt.intent, ResumePlaybackIntent::Playing);
-    assert_eq!(attempt.position, Duration::from_secs(9));
+    assert_eq!(
+        attempt.position,
+        SuspendedTimelineResumePosition::SeekTo(Duration::from_secs(9))
+    );
 }
 
 #[test]
@@ -331,7 +372,10 @@ fn ended_checkpoint_becomes_paused_at_end_and_carries_consumed_eof_edge() {
         .begin_suspended_media_resume(false)
         .expect("ended resume attempt");
     assert_eq!(attempt.intent, ResumePlaybackIntent::Paused);
-    assert_eq!(attempt.position, Duration::from_secs(120));
+    assert_eq!(
+        attempt.position,
+        SuspendedTimelineResumePosition::SeekTo(Duration::from_secs(120))
+    );
 
     let rebound_instance = MediaInstanceId::from_non_zero(non_zero(32));
     let rebound = runtime

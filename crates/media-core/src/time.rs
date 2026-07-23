@@ -574,6 +574,19 @@ pub enum TimelineNotSeekableReason {
 
     /// Индекс контейнера или network range metadata ещё не готов.
     IndexUnavailable,
+
+    /// Live source работает, но DVR window сейчас отсутствует.
+    LiveWindowUnavailable,
+}
+
+/// Нейтральный режим публичной timeline.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum TimelineMode {
+    /// Обычная finite/streaming media timeline.
+    #[default]
+    Static,
+    /// Dynamic live timeline с optional DVR window.
+    Live,
 }
 
 /// Compatibility-состояние исторического preview-контракта внутри interactive scrub.
@@ -611,6 +624,9 @@ impl Default for TimelinePreviewState {
 /// Полный snapshot timeline-состояния без ссылок на player/backend internals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TimelineSnapshot {
+    /// Static либо dynamic live режим.
+    pub mode: TimelineMode,
+
     /// Текущая позиция playback на нормализованной media timeline.
     pub current_position: MediaTime,
 
@@ -619,6 +635,15 @@ pub struct TimelineSnapshot {
 
     /// Полная длительность media, если она известна.
     pub duration: Option<MediaDuration>,
+
+    /// Последний известный live edge; для static media всегда `None`.
+    pub live_edge: Option<MediaTime>,
+
+    /// Source epoch dynamic timeline; для static media всегда `None`.
+    pub live_epoch: Option<crate::DynamicMediaTimelineEpoch>,
+
+    /// Consumer revision dynamic timeline; для static media всегда `None`.
+    pub live_revision: Option<crate::DynamicMediaTimelineRevision>,
 
     /// Seekable-диапазон, если источник уже сообщил его.
     pub seekable_range: Option<TimelineRange>,
@@ -648,9 +673,13 @@ impl TimelineSnapshot {
     pub fn seekable_vod(duration: MediaDuration) -> Self {
         let end = MediaTime::from_duration(duration.as_duration());
         Self {
+            mode: TimelineMode::Static,
             current_position: MediaTime::ZERO,
             target_position: None,
             duration: Some(duration),
+            live_edge: None,
+            live_epoch: None,
+            live_revision: None,
             seekable_range: Some(TimelineRange::from_bounds_saturating(MediaTime::ZERO, end)),
             seekable: true,
             not_seekable_reason: None,
@@ -666,9 +695,13 @@ impl Default for TimelineSnapshot {
     /// Создаёт timeline для пустой player session.
     fn default() -> Self {
         Self {
+            mode: TimelineMode::Static,
             current_position: MediaTime::ZERO,
             target_position: None,
             duration: None,
+            live_edge: None,
+            live_epoch: None,
+            live_revision: None,
             seekable_range: None,
             seekable: false,
             not_seekable_reason: Some(TimelineNotSeekableReason::NoMedia),

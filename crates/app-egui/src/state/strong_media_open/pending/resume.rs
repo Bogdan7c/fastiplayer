@@ -83,7 +83,10 @@ impl AppState {
             self.record_installed_media_source(installed.source.clone());
             *rebound_after_installed = true;
         }
-        let initial_checkpoint_position = if snapshot.timeline.seekable {
+        let is_live = snapshot.timeline.mode == media_core::TimelineMode::Live;
+        let initial_checkpoint_position = if is_live {
+            crate::playlist_runtime::InstalledCheckpointPosition::Live
+        } else if snapshot.timeline.seekable {
             crate::playlist_runtime::InstalledCheckpointPosition::Seekable(
                 snapshot.current_position,
             )
@@ -113,7 +116,7 @@ impl AppState {
                     restore.selected_tracks.subtitle_track,
                 ),
                 volume: player_core::InstalledVolumeRestore::Set(restore.volume),
-                position: if restore.position > std::time::Duration::ZERO {
+                position: if !is_live && restore.position > std::time::Duration::ZERO {
                     player_core::InstalledPositionRestore::SeekTo(restore.position)
                 } else {
                     player_core::InstalledPositionRestore::KeepStart
@@ -145,6 +148,14 @@ impl AppState {
                 initial_checkpoint_position,
                 None,
             ),
+            crate::playlist_runtime::StartupPosition::Restore(_) if is_live => self
+                .begin_playback_intent(
+                    pending,
+                    installed,
+                    media_instance_id,
+                    initial_checkpoint_position,
+                    None,
+                ),
             crate::playlist_runtime::StartupPosition::Restore(requested_position)
                 if snapshot.timeline.seekable
                     && snapshot

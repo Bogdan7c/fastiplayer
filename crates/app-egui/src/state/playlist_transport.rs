@@ -492,6 +492,8 @@ impl AppState {
     ) -> bool {
         let mut route_relative_beyond_end = false;
         let playlist_binding = self.playlist_runtime_binding();
+        let resume_seek_checkpoint_allowed =
+            self.last_player_snapshot.timeline.mode != media_core::TimelineMode::Live;
         self.playlist_transport
             .timeline_seek_receipts
             .retain(|receipt| match receipt.try_take_outcome() {
@@ -503,7 +505,7 @@ impl AppState {
                 })) => {
                     let request_id = desktop_seek_request_id(request_id);
                     playlist_runtime.publish_desktop_seeked(request_id, position);
-                    if let Some(binding) = playlist_binding {
+                    if resume_seek_checkpoint_allowed && let Some(binding) = playlist_binding {
                         playlist_runtime.record_confirmed_resume_seek(
                             binding,
                             media_instance_id,
@@ -535,6 +537,11 @@ impl AppState {
                         }
                         ExactTimelineSeekOutcome::NotSeekable { request_id } => {
                             desktop_integration::DesktopTimelineSeekOutcome::NotSeekable {
+                                request_id: desktop_seek_request_id(request_id),
+                            }
+                        }
+                        ExactTimelineSeekOutcome::Expired { request_id, .. } => {
+                            desktop_integration::DesktopTimelineSeekOutcome::Expired {
                                 request_id: desktop_seek_request_id(request_id),
                             }
                         }

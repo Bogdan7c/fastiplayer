@@ -25,6 +25,10 @@ impl PlayerSession {
         } = prepared_commit;
 
         let playback_window = prepared_media.playback_window();
+        let installs_dynamic_timeline = matches!(
+            prepared_media.timeline_mode(),
+            crate::PreparedMediaTimelineMode::Live { .. }
+        );
         let source_duration = prepared_media.duration();
         let public_duration = playback_window.map_or(source_duration, |window| {
             window
@@ -64,14 +68,12 @@ impl PlayerSession {
             source_label,
             tracks,
             source_info,
-            playback_window: installed_playback_window,
+            timeline_mode,
         } = prepared_media.into_pipeline_slots();
         self.pipeline
             .install_opened_media(demuxer, file_path, source_label, tracks);
         self.pipeline.update_media_source_info(source_info);
         self.reset_session_state_for_staged_media_commit();
-        debug_assert_eq!(playback_window, installed_playback_window);
-        self.playback_window = installed_playback_window;
         self.reset_playback_window_end_observation();
 
         if let Some(audio_plan) = audio_plan {
@@ -99,8 +101,16 @@ impl PlayerSession {
         self.snapshot.media_instance_id = Some(media_instance_id);
         self.snapshot.media_title = media_summary.title.clone();
         self.snapshot.source_label = Some(media_summary.source_label.clone());
-        self.set_snapshot_duration(source_duration);
-        self.apply_demux_seekability(seekability);
+        if installs_dynamic_timeline {
+            self.set_snapshot_duration(source_duration);
+            self.install_timeline_mode(media_instance_id, timeline_mode);
+        } else {
+            self.install_timeline_mode(media_instance_id, timeline_mode);
+            self.set_snapshot_duration(source_duration);
+        }
+        if !installs_dynamic_timeline {
+            self.apply_demux_seekability(seekability);
+        }
         self.reset_playback_rate_for_media_load();
         self.snapshot.selected_tracks.audio_track = self.pipeline.selected_audio_track_id();
         self.snapshot.selected_tracks.video_track = self.pipeline.selected_video_track_id();
@@ -109,11 +119,16 @@ impl PlayerSession {
             PlaybackIntent::StartPaused => PlaybackState::Paused,
         };
         self.set_playback_state(committed_playback_state);
-        self.current_source_position = playback_window_start;
-        self.snapshot.set_timeline_position(MediaTime::ZERO);
-        self.pipeline.set_media_clock_base(playback_window_start);
-        self.pipeline
-            .reset_audio_clock_sample(playback_window_start, Instant::now());
+        if installs_dynamic_timeline {
+            self.pipeline
+                .reset_audio_clock_sample(self.current_source_position, Instant::now());
+        } else {
+            self.current_source_position = playback_window_start;
+            self.snapshot.set_timeline_position(MediaTime::ZERO);
+            self.pipeline.set_media_clock_base(playback_window_start);
+            self.pipeline
+                .reset_audio_clock_sample(playback_window_start, Instant::now());
+        }
         self.clear_error();
         self.push_player_event(PlayerEvent::MediaOpenRequested(media_open_request));
         self.push_player_event(PlayerEvent::MediaOpened(media_summary));
@@ -208,6 +223,7 @@ impl PlayerSession {
         self.current_source_position = Duration::ZERO;
         self.source_duration = None;
         self.playback_window = None;
+        self.dynamic_timeline = super::super::dynamic_timeline::DynamicTimelineRuntime::default();
         self.reset_playback_window_end_observation();
         self.snapshot.selected_tracks = TrackSelectionSnapshot::default();
         self.snapshot.tracks.clear();

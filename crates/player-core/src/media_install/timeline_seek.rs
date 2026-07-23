@@ -3,7 +3,7 @@
 use std::{fmt, num::NonZeroU64};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
-use media_core::MediaTime;
+use media_core::{MediaTime, TimelineRange};
 
 use crate::{MediaInstanceId, PlayerError};
 
@@ -58,6 +58,11 @@ pub enum ExactTimelineSeekOutcome {
     },
     NotSeekable {
         request_id: TimelineSeekRequestId,
+    },
+    Expired {
+        request_id: TimelineSeekRequestId,
+        requested_position: MediaTime,
+        available_range: Option<TimelineRange>,
     },
     Failed {
         request_id: TimelineSeekRequestId,

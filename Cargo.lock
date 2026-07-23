@@ -2509,6 +2509,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "codec-core",
+ "crossbeam-channel",
  "thiserror 2.0.18",
 ]
 

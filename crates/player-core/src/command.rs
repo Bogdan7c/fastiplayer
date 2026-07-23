@@ -4,7 +4,7 @@ use std::time::Duration;
 use frame_server_core::{
     LiveScrubDiagnostics, ScrubFrameTiming, ScrubStaleReason, ScrubTrackSelection,
 };
-use media_core::{MediaTime, TrackId};
+use media_core::{MediaTime, TimelineRange, TrackId};
 use video_present_core::VideoPresentFrameIdentity;
 
 use crate::{PlaybackRate, PlaybackState};
@@ -203,6 +203,15 @@ pub enum VisibleScrubPreviewUnavailableReason {
 
     /// Timing DTO и stable frame identity содержат разные PTS.
     TimingIdentityMismatch,
+
+    /// Видимый кадр уже выпал из последнего live/DVR window.
+    OutsideLatestLiveRange {
+        /// Позиция сохранённого preview.
+        preview_position: MediaTime,
+
+        /// Последний authoritative DVR range; `None` означает потерю DVR window.
+        available_range: Option<TimelineRange>,
+    },
 }
 
 /// Семантический результат применения `EndScrub`.

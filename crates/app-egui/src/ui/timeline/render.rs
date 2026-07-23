@@ -66,7 +66,7 @@ pub fn render_time_labels(
     inline_status: Option<&str>,
 ) {
     let position_text = format_media_time(Some(state.display_position(timeline)));
-    let duration_text = format_media_duration(timeline.duration);
+    let duration_text = timeline_right_label(timeline);
     ui.horizontal(|ui| {
         ui.monospace(position_text);
         if let Some(inline_status) = inline_status {
@@ -77,6 +77,21 @@ pub fn render_time_labels(
             ui.monospace(duration_text);
         });
     });
+}
+
+/// Live mode не маскируется под finite duration и явно показывает moving DVR range.
+fn timeline_right_label(timeline: &TimelineSnapshot) -> String {
+    if timeline.mode != media_core::TimelineMode::Live {
+        return format_media_duration(timeline.duration);
+    }
+    match timeline.seekable_range {
+        Some(range) => format!(
+            "DVR {}–{} · LIVE",
+            format_media_time(Some(range.start)),
+            format_media_time(Some(range.end))
+        ),
+        None => "LIVE".to_owned(),
+    }
 }
 
 fn pointer_input_from_response(
@@ -169,5 +184,21 @@ mod tests {
     fn thumb_outline_remains_larger_than_thumb() {
         let style = style();
         assert!(style.thumb_radius + style.thumb_outline_width > style.thumb_radius);
+    }
+
+    #[test]
+    fn live_labels_distinguish_no_dvr_and_non_zero_dvr() {
+        let mut timeline = TimelineSnapshot {
+            mode: media_core::TimelineMode::Live,
+            live_edge: Some(media_core::MediaTime::from_secs(70)),
+            ..TimelineSnapshot::default()
+        };
+        assert_eq!(timeline_right_label(&timeline), "LIVE");
+
+        timeline.seekable_range = media_core::TimelineRange::new(
+            media_core::MediaTime::from_secs(30),
+            media_core::MediaTime::from_secs(70),
+        );
+        assert_eq!(timeline_right_label(&timeline), "DVR 00:30–01:10 · LIVE");
     }
 }

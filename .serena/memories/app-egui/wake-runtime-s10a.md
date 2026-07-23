@@ -1,3 +1,7 @@
+## S31L PlayerTimeline wake owner (2026-07-23)
+
+`PlayerWorkerTimelineWake` is a payload-free bridge into `AppWakeOwner::PlayerTimeline`. The player snapshot remains the payload owner; UI refreshes only when `(media_instance_id, live_revision)` changed, publishes desktop/MPRIS state and requests redraw. This wake must remain active while playback is paused. See `mem:player-core/dynamic-live-timeline-s31l-2026-07-23`.
+
 # App wake bridge и process-lifetime PlaylistRuntime (Session 10A)
 
 Session 10A завершена PASS 2026-07-14. Детальный handoff находится в `user/playlist_queue_implementation_plan.md`.

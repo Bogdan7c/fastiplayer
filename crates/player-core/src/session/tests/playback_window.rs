@@ -29,7 +29,8 @@ fn prepared_window_media(
     )
     .expect("test playback window must be valid");
     let prepared_media = PreparedMedia::from_external_label("windowed-source", Box::new(demuxer))
-        .with_playback_window(playback_window);
+        .with_playback_window(playback_window)
+        .expect("static test media accepts playback window");
     (prepared_media, seek_log)
 }
 
@@ -418,7 +419,8 @@ fn out_of_source_window_fails_before_replacing_active_media() {
     );
     let invalid_media =
         PreparedMedia::from_external_label("invalid-window", Box::new(invalid_demuxer))
-            .with_playback_window(invalid_window);
+            .with_playback_window(invalid_window)
+            .expect("static test media accepts playback window");
     session.load_prepared_media_with_autoplay(invalid_media, false);
 
     assert_eq!(session.snapshot().media_instance_id, active_instance);

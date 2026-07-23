@@ -166,7 +166,9 @@ impl ActiveMediaSource {
         prepared_media: player_core::PreparedMedia,
     ) -> player_core::PreparedMedia {
         match self.playback_window() {
-            Some(window) => prepared_media.with_playback_window(window),
+            Some(window) => prepared_media
+                .with_playback_window(window)
+                .expect("active static source cannot contain a dynamic live timeline"),
             None => prepared_media,
         }
     }
@@ -386,7 +388,10 @@ impl PreparedMediaOpen {
         semantic_identity: player_core::MediaPlaybackWindow,
     ) -> Self {
         Self {
-            prepared_media: self.prepared_media.with_playback_window(semantic_identity),
+            prepared_media: self
+                .prepared_media
+                .with_playback_window(semantic_identity)
+                .expect("prepared static descriptor cannot contain a dynamic live timeline"),
             descriptor: self.descriptor.with_playback_window(semantic_identity),
         }
     }

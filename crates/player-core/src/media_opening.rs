@@ -1,11 +1,13 @@
 mod prefetched_demuxer;
 
 use std::collections::VecDeque;
+use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use media_core::{
-    DemuxReadEvent, DemuxSeekability, Demuxer, MediaMetadata, MediaTime, TrackInfo, TrackKind,
+    DemuxReadEvent, DemuxSeekability, Demuxer, DynamicMediaTimelinePort, MediaMetadata, MediaTime,
+    TrackInfo, TrackKind,
 };
 
 use self::prefetched_demuxer::PrefetchedDemuxer;
@@ -36,8 +38,60 @@ pub(crate) struct PreparedMediaSlots {
     pub(crate) source_label: Option<String>,
     pub(crate) tracks: Vec<TrackInfo>,
     pub(crate) source_info: MediaSourceInfo,
-    pub(crate) playback_window: Option<MediaPlaybackWindow>,
+    pub(crate) timeline_mode: PreparedMediaTimelineMode,
 }
+
+/// Взаимоисключающий timeline intent подготовленного media.
+#[derive(Debug)]
+pub enum PreparedMediaTimelineMode {
+    /// Static media с optional bounded playback window.
+    Static {
+        /// Absolute source window для CUE/fragment playback.
+        playback_window: Option<MediaPlaybackWindow>,
+    },
+    /// Dynamic live media; duration всегда неизвестна.
+    Live {
+        /// Read-only source-owned timeline port.
+        port: DynamicMediaTimelinePort,
+    },
+}
+
+impl Default for PreparedMediaTimelineMode {
+    fn default() -> Self {
+        Self::Static {
+            playback_window: None,
+        }
+    }
+}
+
+/// Ошибка попытки собрать противоречивый static/live candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreparedMediaTimelineModeError {
+    /// Static playback window нельзя добавить к уже live candidate.
+    PlaybackWindowConflictsWithLiveTimeline,
+    /// Live timeline нельзя добавить к уже bounded static candidate.
+    LiveTimelineConflictsWithPlaybackWindow,
+    /// Live media не публикует конечную duration.
+    LiveTimelineRequiresUnknownDuration,
+}
+
+impl fmt::Display for PreparedMediaTimelineModeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::PlaybackWindowConflictsWithLiveTimeline => {
+                "static playback window conflicts with dynamic live timeline"
+            }
+            Self::LiveTimelineConflictsWithPlaybackWindow => {
+                "dynamic live timeline conflicts with static playback window"
+            }
+            Self::LiveTimelineRequiresUnknownDuration => {
+                "dynamic live timeline requires duration=None"
+            }
+        })
+    }
+}
+
+impl std::error::Error for PreparedMediaTimelineModeError {}
 
 /// Cold staged-prefetch state хранится за indirection, чтобы не раздувать worker commands.
 struct PreparedMediaPrefetchState {
@@ -65,8 +119,8 @@ pub struct PreparedMedia {
     /// Seekability container-а, которую session публикует в timeline snapshot.
     pub(crate) seekability: DemuxSeekability,
 
-    /// Optional absolute playback window, которое player публикует как relative timeline.
-    playback_window: Option<MediaPlaybackWindow>,
+    /// Единственный static либо live timeline intent.
+    timeline_mode: PreparedMediaTimelineMode,
 
     /// Cold replay state создаётся только если exact preflight действительно читает demuxer.
     prefetch_state: Option<Box<PreparedMediaPrefetchState>>,
@@ -152,14 +206,45 @@ impl PreparedMedia {
     /// Возвращает neutral playback window без раскрытия demuxer ownership.
     #[must_use]
     pub const fn playback_window(&self) -> Option<MediaPlaybackWindow> {
-        self.playback_window
+        match &self.timeline_mode {
+            PreparedMediaTimelineMode::Static { playback_window } => *playback_window,
+            PreparedMediaTimelineMode::Live { .. } => None,
+        }
     }
 
-    /// Устанавливает уже проверенный neutral playback window на prepared source.
+    /// Устанавливает playback window, не позволяя затереть live intent.
+    pub fn with_playback_window(
+        mut self,
+        playback_window: MediaPlaybackWindow,
+    ) -> Result<Self, PreparedMediaTimelineModeError> {
+        if matches!(self.timeline_mode, PreparedMediaTimelineMode::Live { .. }) {
+            return Err(PreparedMediaTimelineModeError::PlaybackWindowConflictsWithLiveTimeline);
+        }
+        self.timeline_mode = PreparedMediaTimelineMode::Static {
+            playback_window: Some(playback_window),
+        };
+        Ok(self)
+    }
+
+    /// Устанавливает dynamic live timeline до staged Ready barrier.
+    pub fn with_dynamic_timeline(
+        mut self,
+        port: DynamicMediaTimelinePort,
+    ) -> Result<Self, PreparedMediaTimelineModeError> {
+        if self.duration.is_some() {
+            return Err(PreparedMediaTimelineModeError::LiveTimelineRequiresUnknownDuration);
+        }
+        if self.playback_window().is_some() {
+            return Err(PreparedMediaTimelineModeError::LiveTimelineConflictsWithPlaybackWindow);
+        }
+        self.timeline_mode = PreparedMediaTimelineMode::Live { port };
+        Ok(self)
+    }
+
+    /// Возвращает timeline intent без доступа к demuxer ownership.
     #[must_use]
-    pub fn with_playback_window(mut self, playback_window: MediaPlaybackWindow) -> Self {
-        self.playback_window = Some(playback_window);
-        self
+    pub const fn timeline_mode(&self) -> &PreparedMediaTimelineMode {
+        &self.timeline_mode
     }
 
     /// Возвращает диагностику отсутствующего video track-а для текущего типа source.
@@ -193,7 +278,7 @@ impl PreparedMedia {
 
     /// Проверяет и позиционирует candidate demuxer до strong-install Ready barrier.
     pub(crate) fn prepare_playback_window(&mut self) -> anyhow::Result<()> {
-        let Some(playback_window) = self.playback_window else {
+        let Some(playback_window) = self.playback_window() else {
             return Ok(());
         };
         playback_window.validate_source_duration(self.duration)?;
@@ -240,7 +325,7 @@ impl PreparedMedia {
             source_label,
             tracks: self.tracks,
             source_info: self.source_info,
-            playback_window: self.playback_window,
+            timeline_mode: self.timeline_mode,
         }
     }
 
@@ -257,7 +342,7 @@ impl PreparedMedia {
             tracks,
             duration,
             seekability,
-            playback_window: None,
+            timeline_mode: PreparedMediaTimelineMode::default(),
             prefetch_state: None,
             source_info,
         }

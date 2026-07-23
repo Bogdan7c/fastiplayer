@@ -243,6 +243,28 @@ fn non_seekable_media_writes_explicit_null_and_non_persistent_lineage_writes_not
 }
 
 #[test]
+fn live_media_never_writes_or_clears_persistent_resume_checkpoint() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let resume_path = directory.path().join("live-resume.json");
+    let store = Arc::new(PlaylistResumeStore::new(&resume_path));
+    let (controller, generation, instance) = exact_controller("live.m3u8");
+    let mut owner = PlaylistResumePersistenceOwner::new(5_000, true);
+    owner.install_store(store);
+    owner.activate_lineage(PlaylistLineagePersistence::Persistent);
+
+    owner.record_installed(
+        &controller,
+        generation,
+        instance,
+        InstalledCheckpointPosition::Live,
+        Instant::now(),
+    );
+
+    assert_eq!(owner.next_revision, 1);
+    assert!(!resume_path.exists());
+}
+
+#[test]
 fn clear_writes_null_even_when_regular_resume_capture_is_disabled() {
     let directory = tempfile::tempdir().expect("temp directory");
     let resume_path = directory.path().join("clear-resume.json");
