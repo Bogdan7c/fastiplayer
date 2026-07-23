@@ -1,0 +1,155 @@
+//! Focused evidence для provider-neutral blocking resource boundary.
+
+use super::*;
+
+fn fetch(
+    context: &AdaptiveHttpContext,
+    target: HttpRequestTarget,
+    purpose: AdaptiveResourcePurpose,
+    query_application: AdaptiveResourceQueryApplication,
+) -> Result<AdaptiveFetchedResource, AdaptiveTransportError> {
+    context.fetch_resource_blocking(AdaptiveResourceFetchRequest::full(
+        SourceGeneration::new(1),
+        target,
+        NonZeroUsize::new(64).expect("resource bound"),
+        purpose,
+        query_application,
+    ))
+}
+
+#[test]
+fn merge_replaces_duplicate_keys_and_reapplies_on_same_origin_redirect() {
+    let server = LocalServer::start(|index, _| match index {
+        0 => response(
+            "302 Found",
+            &[(
+                "Location",
+                "/final?existing=redirect&duplicate=stale".to_owned(),
+            )],
+            b"",
+        ),
+        _ => response("200 OK", &[], b"resource"),
+    });
+    let initial_target = server.target("/segment?existing=initial&duplicate=old&duplicate=older");
+    let context = context(
+        &initial_target,
+        CancellationToken::new(),
+        same_origin_redirects(),
+        Some("Bearer scoped"),
+        Some("duplicate=new-one&duplicate=new-two&added=1"),
+    );
+    let fetched = fetch(
+        &context,
+        initial_target,
+        AdaptiveResourcePurpose::MediaSegment,
+        AdaptiveResourceQueryApplication::MergeScopedAddition,
+    )
+    .expect("redirected merged fetch");
+    assert_eq!(fetched.bytes(), b"resource");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    for request in &requests {
+        assert!(request.request_line.contains("duplicate=new-one"));
+        assert!(request.request_line.contains("duplicate=new-two"));
+        assert!(request.request_line.contains("added=1"));
+        assert!(!request.request_line.contains("duplicate=old"));
+        assert!(!request.request_line.contains("duplicate=stale"));
+    }
+    assert!(requests[0].request_line.contains("existing=initial"));
+    assert!(requests[1].request_line.contains("existing=redirect"));
+}
+
+#[test]
+fn merge_and_headers_are_stripped_monotonically_on_cross_origin_redirect() {
+    let final_server = LocalServer::start(|_, _| response("200 OK", &[], b"resource"));
+    let final_target = final_server.target("/final?public=1");
+    let location = final_target.expose_secret_for_request().to_owned();
+    let initial_server = LocalServer::start(move |_, _| {
+        response("302 Found", &[("Location", location.clone())], b"")
+    });
+    let initial_target = initial_server.target("/segment");
+    let context = context(
+        &initial_target,
+        CancellationToken::new(),
+        RedirectPolicy::cross_origin_without_secrets(
+            RedirectHopLimit::new(4).expect("redirect limit"),
+        ),
+        Some("Bearer scoped-secret"),
+        Some("token=query-secret"),
+    );
+    fetch(
+        &context,
+        initial_target,
+        AdaptiveResourcePurpose::MediaSegment,
+        AdaptiveResourceQueryApplication::MergeScopedAddition,
+    )
+    .expect("cross-origin fetch");
+    let initial = initial_server.requests();
+    assert!(initial[0].headers.contains("scoped-secret"));
+    assert!(initial[0].request_line.contains("query-secret"));
+    let final_requests = final_server.requests();
+    assert!(!final_requests[0].headers.contains("scoped-secret"));
+    assert!(!final_requests[0].request_line.contains("query-secret"));
+    assert!(final_requests[0].request_line.contains("public=1"));
+}
+
+#[test]
+fn projected_key_fallback_merges_while_exact_aes_uri_bypasses_query() {
+    let server = LocalServer::start(|_, _| response("200 OK", &[], b"0123456789abcdef"));
+    let manifest_target = server.target("/master.m3u8");
+    let context = context_with_queries(
+        &manifest_target,
+        CancellationToken::new(),
+        same_origin_redirects(),
+        None,
+        Some("fallback=segment"),
+        Some("fallback=segment"),
+        MediaPresentation::Vod,
+    );
+    fetch(
+        &context,
+        server.target("/manifest-key?kept=1"),
+        AdaptiveResourcePurpose::EncryptionKey,
+        AdaptiveResourceQueryApplication::MergeScopedAddition,
+    )
+    .expect("manifest key merge");
+    fetch(
+        &context,
+        server.target("/aes-replacement?exact=1"),
+        AdaptiveResourcePurpose::EncryptionKey,
+        AdaptiveResourceQueryApplication::BypassScopedQuery,
+    )
+    .expect("exact AES replacement");
+    let requests = server.requests();
+    assert!(requests[0].request_line.contains("kept=1"));
+    assert!(requests[0].request_line.contains("fallback=segment"));
+    assert!(requests[1].request_line.contains("exact=1"));
+    assert!(!requests[1].request_line.contains("fallback=segment"));
+}
+
+#[test]
+fn stale_generation_is_rejected_before_network_side_effect() {
+    let server = LocalServer::start(|_, _| response("200 OK", &[], b"resource"));
+    let manifest_target = server.target("/master.m3u8");
+    let context = context(
+        &manifest_target,
+        CancellationToken::new(),
+        same_origin_redirects(),
+        None,
+        None,
+    );
+    let stale = context
+        .fetch_resource_blocking(AdaptiveResourceFetchRequest::full(
+            SourceGeneration::new(2),
+            server.target("/stale"),
+            NonZeroUsize::new(64).expect("resource bound"),
+            AdaptiveResourcePurpose::Manifest,
+            AdaptiveResourceQueryApplication::BypassScopedQuery,
+        ))
+        .expect_err("stale generation");
+    assert!(matches!(
+        stale,
+        AdaptiveTransportError::StaleGeneration { .. }
+    ));
+    assert_eq!(server.request_count(), 0);
+}

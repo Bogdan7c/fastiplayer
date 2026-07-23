@@ -151,6 +151,7 @@ pub(crate) struct WebMediaStreamConfiguration {
     candidate_selections: Arc<[YtDlpCandidateSelection]>,
     active_candidate: WebMediaCandidatePresentation,
     preference: WebMediaSelectionPreference,
+    hls_subtitle_renditions: Arc<[crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition]>,
 }
 
 impl fmt::Debug for WebMediaStreamConfiguration {
@@ -161,6 +162,10 @@ impl fmt::Debug for WebMediaStreamConfiguration {
             .field("candidate_count", &self.candidates.len())
             .field("active_candidate", &self.active_candidate)
             .field("preference", &self.preference)
+            .field(
+                "hls_subtitle_rendition_count",
+                &self.hls_subtitle_renditions().len(),
+            )
             .finish()
     }
 }
@@ -226,6 +231,7 @@ impl WebMediaStreamConfiguration {
             candidate_selections: candidate_selections.into(),
             active_candidate,
             preference,
+            hls_subtitle_renditions: Arc::from([]),
         })
     }
 
@@ -247,6 +253,22 @@ impl WebMediaStreamConfiguration {
     #[must_use]
     pub(crate) fn active_candidate(&self) -> &WebMediaCandidatePresentation {
         &self.active_candidate
+    }
+
+    /// Связывает descriptors только с exact подготовленным HLS candidate-ом.
+    pub(crate) fn with_hls_subtitle_renditions(
+        mut self,
+        renditions: Arc<[crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition]>,
+    ) -> Self {
+        self.hls_subtitle_renditions = renditions;
+        self
+    }
+
+    /// Возвращает installed descriptors без URI и без возможности скрытого fetch-а.
+    pub(crate) fn hls_subtitle_renditions(
+        &self,
+    ) -> &[crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition] {
+        &self.hls_subtitle_renditions
     }
 
     /// Возвращает exact+semantic token только после generation/index validation.

@@ -21,6 +21,7 @@
     "demux-api",
     "frame-server-core",
     "flv-demux",
+    "hls-playlist-core",
     "media-core",
     "media-prefetch",
     "mpeg-ts-demux",
@@ -44,6 +45,7 @@
     "vp9-parser",
     "web-media-core",
     "web-media-adaptive",
+    "web-media-hls",
     "web-media-http",
     "web-media-playback-plan",
     "web-media-transport-api"

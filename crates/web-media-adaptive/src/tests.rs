@@ -33,6 +33,8 @@ use web_media_transport_api::{
 
 use super::*;
 
+mod blocking_resource_fetch;
+
 const TEST_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone)]
@@ -153,12 +155,13 @@ fn context(
     authorization: Option<&str>,
     segment_query: Option<&str>,
 ) -> AdaptiveHttpContext {
-    context_with_presentation(
+    context_with_queries(
         target,
         cancellation,
         redirects,
         authorization,
         segment_query,
+        None,
         MediaPresentation::Vod,
     )
 }
@@ -169,6 +172,26 @@ fn context_with_presentation(
     redirects: RedirectPolicy,
     authorization: Option<&str>,
     segment_query: Option<&str>,
+    presentation: MediaPresentation,
+) -> AdaptiveHttpContext {
+    context_with_queries(
+        target,
+        cancellation,
+        redirects,
+        authorization,
+        segment_query,
+        None,
+        presentation,
+    )
+}
+
+fn context_with_queries(
+    target: &HttpRequestTarget,
+    cancellation: CancellationToken,
+    redirects: RedirectPolicy,
+    authorization: Option<&str>,
+    segment_query: Option<&str>,
+    key_query: Option<&str>,
     presentation: MediaPresentation,
 ) -> AdaptiveHttpContext {
     let source = SourceIdentity::new(71);
@@ -190,6 +213,10 @@ fn context_with_presentation(
     if let Some(query) = segment_query {
         secrets = secrets
             .with_segment_query_override(SecretQueryOverride::new(query).expect("query override"));
+    }
+    if let Some(query) = key_query {
+        secrets = secrets
+            .with_key_query_override(SecretQueryOverride::new(query).expect("key query override"));
     }
     let request = TransportOpenRequest::new(
         TransportProviderId::new("adaptive-test").expect("provider id"),

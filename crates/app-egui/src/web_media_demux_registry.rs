@@ -6,6 +6,7 @@
 use anyhow::{Context, Result, anyhow};
 use demux_api::{DemuxFactory, DemuxFactoryDescriptor, DemuxRegistry};
 use flv_demux::{FlvDemuxFactory, FlvDemuxOptions};
+use mpeg_ts_demux::{MpegTsDemuxFactory, MpegTsDemuxOptions};
 use symphonia_demux::{DemuxerOptions, SymphoniaDemuxFactory};
 use web_media_core::ContainerFamily;
 use web_media_playback_plan::{DemuxCapabilityRegistration, DemuxCapabilitySnapshot};
@@ -38,6 +39,32 @@ impl WebDemuxComposition {
             registry
                 .register(factory)
                 .context("Не удалось зарегистрировать web demux factory")?;
+        }
+        Ok(Self {
+            registry,
+            capabilities,
+        })
+    }
+
+    /// Регистрирует только concrete TS/fMP4 owners для HLS ordered-segment path-а.
+    pub(crate) fn new_hls(symphonia_options: DemuxerOptions) -> Result<Self> {
+        let factories: Vec<Box<dyn DemuxFactory>> = vec![
+            Box::new(
+                SymphoniaDemuxFactory::new(symphonia_options)
+                    .context("Не удалось создать HLS Symphonia demux factory")?,
+            ),
+            Box::new(
+                MpegTsDemuxFactory::new(MpegTsDemuxOptions::default())
+                    .context("Не удалось создать HLS MPEG-TS demux factory")?,
+            ),
+        ];
+        let capabilities =
+            capabilities_for_descriptors(factories.iter().map(|factory| factory.descriptor()))?;
+        let mut registry = DemuxRegistry::new();
+        for factory in factories {
+            registry
+                .register(factory)
+                .context("Не удалось зарегистрировать HLS demux factory")?;
         }
         Ok(Self {
             registry,
@@ -80,6 +107,7 @@ fn container_families_for_demux_id(id: &str) -> Option<&'static [ContainerFamily
         "mpeg-audio" => Some(&[ContainerFamily::MpegAudio]),
         "flv" => Some(&[ContainerFamily::Flv]),
         "f4f" => Some(&[ContainerFamily::F4f]),
+        "mpeg-ts" => Some(&[ContainerFamily::MpegTs]),
         _ => None,
     }
 }
@@ -122,6 +150,18 @@ mod tests {
                 .capabilities
                 .input_capabilities_for(ContainerFamily::MpegTs),
             DemuxInputCapabilities::default()
+        );
+    }
+
+    #[test]
+    fn hls_composition_adds_ordered_ts_without_changing_progressive_composition() {
+        let composition =
+            WebDemuxComposition::new_hls(DemuxerOptions::default()).expect("HLS composition");
+        assert!(
+            composition
+                .capabilities
+                .input_capabilities_for(ContainerFamily::MpegTs)
+                .contains(DemuxInputCapability::OrderedSegments)
         );
     }
 }

@@ -1,5 +1,9 @@
 # S31 — Adaptive transport foundation (2026-07-23)
 
+## S32B additive resource-fetch boundary
+
+- `AdaptiveHttpContext::fetch_resource_blocking` is the provider-neutral blocking-worker API for bounded manifest/media/init/key resources over the same S31 session/retry/redirect/cookie/cancel policy. Query application is typed replacement vs HLS merge vs bypass; HLS/parser/AES/demux policy remains outside this crate. Consumer contract: `mem:media-services/hls-vod-s32b-2026-07-23`.
+
 ## Итог
 
 - Новый workspace crate `web-media-adaptive` владеет shared provider-neutral manifest/segment lifecycle для будущих HLS/DASH/ISM/HDS consumers.

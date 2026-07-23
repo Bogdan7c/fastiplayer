@@ -190,6 +190,8 @@ impl AdaptiveManifestFetcher {
                 byte_range: None,
                 maximum_body_bytes: self.context.limits.maximum_manifest_bytes,
                 purpose: FetchPurpose::Manifest,
+                query_application:
+                    crate::fetch::AdaptiveResourceQueryApplication::ApplyScopedReplacement,
             };
             match self.executor.try_submit(job) {
                 Ok(submitted) => pending.submitted = submitted,

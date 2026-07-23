@@ -425,6 +425,24 @@ fn registry_validates_the_exact_container_and_input_pair() {
     ));
 }
 
+#[test]
+fn required_container_rejects_a_different_proven_signature_before_factory_open() {
+    let opened_bytes = Arc::new(Mutex::new(Vec::new()));
+    let registry = registry_with_recording_factory(Arc::clone(&opened_bytes));
+    let error = registry
+        .open_required_container(
+            DemuxInput::byte_source(Box::new(MemoryByteSource::new(b"TEST-payload", true))),
+            DemuxHints::none(),
+            sniff_budget(),
+            CancellationToken::never_cancelled(),
+            DemuxContainerId::new("different-container").expect("required container"),
+        )
+        .err()
+        .unwrap_or_else(|| panic!("required container must be content-proven"));
+    assert!(matches!(error, DemuxOpenError::UnexpectedContainer { .. }));
+    assert!(opened_bytes.lock().expect("opened bytes mutex").is_empty());
+}
+
 /// Empty capability отклоняется на exact container row с понятной диагностикой.
 #[test]
 fn registration_rejects_a_container_without_input_capabilities() {

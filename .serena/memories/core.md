@@ -1,3 +1,11 @@
+## S32B HLS VOD runtime before seek/app integration (2026-07-23)
+
+- `web-media-hls` now prepares uninstalled master/media VOD runtime with strict TS/fMP4 evidence, MAP/ranges, alternate audio, AES and discontinuity epochs over S31 fetch + injected neutral demux registry. Runtime is intentionally NotSeekable and app-unwired until S32C. Full handoff: `mem:media-services/hls-vod-s32b-2026-07-23`.
+
+## S32A HLS VOD parser/request/AES foundation (2026-07-23)
+
+- Shared `hls-playlist-core` now owns bounded RFC 8216 master/media parsing and initial-profile rejection; `playlist-io` reuses it for classification. `web-media-hls` owns audited AES-128/key state, while service-ytdlp publishes exact inline/query/hls_aes intent and source-core owns query merge. Network/demux is S32B and decode-safe seek/app integration is S32C. Full handoff: `mem:media-services/hls-vod-s32a-2026-07-23`.
+
 ## S31L neutral dynamic live/DVR timeline (2026-07-23)
 
 - Provider-neutral live timeline contract now lives in `media-core`; player owns installed generation/revision projection and worker wait integration, app owns UI/desktop wake projection.

@@ -8,13 +8,15 @@ use thiserror::Error;
 use web_media_core::{ContainerFamily, StreamLayout};
 use web_media_transport_api::{
     MediaComponentIdentity, MediaComponentIdentityError, MediaComponentRole, MediaPresentation,
-    RedirectHopLimit, RedirectHopLimitError, RedirectPolicy, SecretRequestContext,
-    SecretRequestScope, SourceGeneration, TransportOpenRequest, TransportOpenRequestError,
-    TransportProviderId,
+    RedirectHopLimit, RedirectHopLimitError, RedirectPolicy, SecretQueryOverrideError,
+    SecretRequestContext, SecretRequestScope, SourceGeneration, TransportOpenRequest,
+    TransportOpenRequestError, TransportProviderId,
 };
 
 use super::model::{YtDlpCandidateComponentRole, YtDlpNormalizedCandidate};
-use super::request_material::YtDlpRequestMaterialViolation;
+use super::request_material::{
+    YtDlpHlsRequestMaterial, YtDlpHlsRequestMaterialViolation, YtDlpRequestMaterialViolation,
+};
 
 /// Bounded redirect budget public CDN resource-а.
 const PUBLIC_MEDIA_REDIRECT_HOPS: u8 = 8;
@@ -83,6 +85,12 @@ pub enum YtDlpTransportRequestError {
     /// Request material не принадлежит реализованному progressive/public subset-у.
     #[error("YtDlp request material нельзя открыть progressive HTTP transport-ом")]
     RequestMaterial(#[source] YtDlpRequestMaterialViolation),
+    /// Request material не является single-resource HLS profile.
+    #[error("YtDlp request material нельзя выразить как HLS open request")]
+    HlsRequestMaterial(#[source] YtDlpHlsRequestMaterialViolation),
+    /// Scoped segment/key query не прошли shared secret policy.
+    #[error("YtDlp HLS query override нарушает secret scope contract")]
+    HlsQueryProjection(#[source] SecretQueryOverrideError),
     /// Extractor вернул syntactically invalid либо non-HTTP target.
     #[error("YtDlp component содержит недопустимый HTTP target")]
     Target(#[source] source_core::HttpRequestTargetError),
@@ -101,9 +109,84 @@ pub enum YtDlpTransportRequestError {
     /// Descriptor layout не совпал с service-owned component roles.
     #[error("YtDlp component roles не совпадают с descriptor layout")]
     LayoutMismatch,
+    /// Initial HLS profile принимает один selected manifest resource.
+    #[error("YtDlp HLS candidate должен содержать ровно один manifest component")]
+    HlsComponentCount,
 }
 
 impl YtDlpNormalizedCandidate {
+    /// Возвращает validated borrowed HLS material единственного manifest component-а.
+    pub fn hls_request_material(
+        &self,
+    ) -> Result<YtDlpHlsRequestMaterial<'_>, YtDlpTransportRequestError> {
+        let [component] = self.component_requests.as_ref() else {
+            return Err(YtDlpTransportRequestError::HlsComponentCount);
+        };
+        component
+            .material
+            .hls_request_material()
+            .map_err(YtDlpTransportRequestError::HlsRequestMaterial)
+    }
+
+    /// Проецирует HLS headers/cookies/segment+key queries в один neutral request.
+    pub fn hls_transport_request(
+        &self,
+        context: &YtDlpTransportRequestContext,
+    ) -> Result<TransportOpenRequest, YtDlpTransportRequestError> {
+        let [component] = self.component_requests.as_ref() else {
+            return Err(YtDlpTransportRequestError::HlsComponentCount);
+        };
+        let hls_material = component
+            .material
+            .hls_request_material()
+            .map_err(YtDlpTransportRequestError::HlsRequestMaterial)?;
+        let authorization_material = component
+            .material
+            .http_authorization_material()
+            .map_err(YtDlpTransportRequestError::RequestMaterial)?;
+        let target =
+            HttpRequestTarget::parse_exact(hls_material.manifest().selected_url_for_resolution())
+                .map_err(YtDlpTransportRequestError::Target)?;
+        let role = media_component_role(component.role);
+        let identity = MediaComponentIdentity::new(
+            self.descriptor().identity().clone(),
+            self.descriptor().semantic_identity().clone(),
+            role,
+        )
+        .map_err(YtDlpTransportRequestError::Identity)?;
+        let path_scope = HttpPathScope::from_target_path(&target);
+        let secret_scope = SecretRequestScope::from_target(&target, path_scope);
+        let serialized_headers = authorization_material
+            .headers()
+            .map(|(name, value)| HttpHeader::new(name, value))
+            .collect::<Vec<_>>();
+        let serialized_headers = ValidatedHttpHeaders::new(serialized_headers)
+            .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
+        let mut secret_builder =
+            SecretRequestContext::builder(secret_scope).with_headers(serialized_headers);
+        if let Some(serialized_cookies) = authorization_material.serialized_cookies() {
+            secret_builder = secret_builder
+                .with_serialized_cookies(serialized_cookies)
+                .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
+        }
+        secret_builder = hls_material
+            .project_scoped_queries(secret_builder)
+            .map_err(YtDlpTransportRequestError::HlsQueryProjection)?;
+        let redirect_limit = RedirectHopLimit::new(PUBLIC_MEDIA_REDIRECT_HOPS)
+            .map_err(YtDlpTransportRequestError::RedirectLimit)?;
+        TransportOpenRequest::new(
+            context.provider.clone(),
+            identity,
+            target,
+            MediaPresentation::Vod,
+            context.source_generation,
+            secret_builder.build(),
+            RedirectPolicy::cross_origin_without_secrets(redirect_limit),
+            context.cancellation.clone(),
+        )
+        .map_err(YtDlpTransportRequestError::Request)
+    }
+
     /// Строит один request для single candidate либо два для exact compound merge.
     pub fn transport_components(
         &self,

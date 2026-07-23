@@ -1,3 +1,15 @@
+## S32C HLS VOD production integration (2026-07-23)
+
+- HLS VOD is integrated through app-owned exact candidate composition and the existing Installed barrier. Decode-safe seek is generation-fenced; separate alternate AUDIO seeks through an atomic two-component transaction; subtitles remain descriptor-only. Master/audio selection is exact and fail-closed, with no DEFAULT/AUTOSELECT fallback. Full contract and current limitation: `mem:media-services/hls-vod-s32c-2026-07-23`.
+
+## S32B HLS VOD runtime before seek/app integration (2026-07-23)
+
+- `web-media-hls::prepare_hls_vod` owns uninstalled HLS master/media orchestration, scoped resource fetching, TS/fMP4 ordered demux, alternate audio, AES key cache and discontinuity epochs. Concrete factories are injected by composition; seek/app commit is S32C. Full contract: `mem:media-services/hls-vod-s32b-2026-07-23`.
+
+## S32A HLS VOD parser/request/AES foundation (2026-07-23)
+
+- `hls-playlist-core` is the shared pure RFC 8216 parser/model owner; `playlist-io` is only a classification adapter. `web-media-hls` owns initial VOD profile + audited AES-128/key state; service-ytdlp publishes exact inline/query/hls_aes material, and source-core owns additive query merge. HTTP/demux remains S32B, seek/app integration S32C. Full contract: `mem:media-services/hls-vod-s32a-2026-07-23`.
+
 ## S31 adaptive transport foundation (2026-07-23)
 
 - Shared provider-neutral owner — `web-media-adaptive`: bounded manifest/full-segment/exact-Range lifecycle, retry/cancel, generation fencing, VOD/live/DVR vocabulary, separate component clocks и explicit nonblocking readiness. HTTP mechanics остаются в `source-core`, secrets/redirects — в S21T; HLS/DASH policy сюда не входит. Existing ordered demux API не ломался; handoff: `mem:media-services/adaptive-transport-s31-2026-07-23`.

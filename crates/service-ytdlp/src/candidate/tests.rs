@@ -342,6 +342,50 @@ fn hls_request_material_preserves_approved_shape_in_safe_summary() {
     }
 }
 
+#[test]
+fn hls_transport_projection_accepts_hls_fields_without_progressive_profile_rejection() {
+    let snapshot = snapshot(
+        json!({
+            "formats": [{
+                "format_id": "hls-runtime",
+                "url": "https://media.invalid/private/media.m3u8",
+                "protocol": "m3u8_native",
+                "ext": "ts",
+                "container": "mpegts",
+                "vcodec": "avc1.640028",
+                "acodec": "mp4a.40.2",
+                "width": 1280,
+                "height": 720,
+                "hls_media_playlist_data":
+                    "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\none.ts\n#EXT-X-ENDLIST\n",
+                "http_headers": {"Authorization": "Bearer hls-secret"},
+                "cookies": "session=hls-cookie",
+                "extra_param_to_segment_url": "segment_token=secret",
+                "extra_param_to_key_url": "key_token=secret"
+            }]
+        }),
+        1,
+    );
+    let candidate = accepted_inventory(&snapshot, 0);
+    let context = super::YtDlpTransportRequestContext::new(
+        TransportProviderId::new("progressive-http").expect("provider ID"),
+        SourceGeneration::new(1),
+        CancellationToken::new(),
+    );
+
+    let request = candidate
+        .hls_transport_request(&context)
+        .expect("HLS projection must not apply progressive exclusions");
+    assert_eq!(
+        request.target().origin().scheme(),
+        source_core::HttpScheme::Https
+    );
+    let diagnostic = format!("{snapshot:?} {request:?}");
+    for secret in ["hls-secret", "hls-cookie", "segment_token", "key_token"] {
+        assert!(!diagnostic.contains(secret));
+    }
+}
+
 /// request_data и impersonation не маскируются как playable material.
 #[test]
 fn excluded_request_data_and_impersonation_remain_visible_rejections() {

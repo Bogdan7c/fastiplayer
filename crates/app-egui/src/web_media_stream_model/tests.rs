@@ -32,7 +32,34 @@ fn configuration(
         candidate_selections: Arc::from([]),
         active_candidate,
         preference: WebMediaSelectionPreference::GlobalBestPlayable,
+        hls_subtitle_renditions: Arc::from([]),
     }
+}
+
+#[test]
+fn installed_hls_subtitles_survive_configuration_clone_without_locator() {
+    let generation = WebMediaStreamGeneration {
+        source: 1,
+        extraction: 1,
+    };
+    let active_candidate = candidate(Some(720), false);
+    let rendition = crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition::fixture(
+        "subs",
+        "English",
+        Some("en"),
+        Some("public.accessibility.transcribes-spoken-dialog"),
+        false,
+    );
+    let configured = configuration(generation, vec![active_candidate.clone()], active_candidate)
+        .with_hls_subtitle_renditions(Arc::from([rendition]));
+    let rebuilt = configured.clone();
+    let [retained] = rebuilt.hls_subtitle_renditions() else {
+        panic!("exact installed rendition должен сохраниться");
+    };
+    assert_eq!(retained.group_id(), "subs");
+    assert_eq!(retained.name(), "English");
+    assert_eq!(retained.language(), Some("en"));
+    assert!(!format!("{retained:?}").contains("://"));
 }
 
 fn binding(scope: UrlSidebarItemScope) -> UrlSidebarItemBinding {

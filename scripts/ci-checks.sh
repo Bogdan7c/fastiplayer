@@ -39,6 +39,7 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/web-media-playback-plan
     crates/web-media-http
     crates/web-media-adaptive
+    crates/web-media-hls
     crates/web-media-transport-api
     crates/bounded-xml-reader
     crates/player-core
@@ -47,6 +48,7 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/natural-sort-key
     crates/playlist-core
     crates/playlist-io
+    crates/hls-playlist-core
     crates/playlist-discovery
     crates/playlist-state
     crates/media-core

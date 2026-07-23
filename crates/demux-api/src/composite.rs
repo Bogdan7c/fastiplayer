@@ -67,6 +67,18 @@ impl CompositeAvPublicTrackIds {
             audio_track_id,
         }
     }
+
+    /// Stable public video track ID.
+    #[must_use]
+    pub const fn video_track_id(self) -> TrackId {
+        self.video_track_id
+    }
+
+    /// Stable public audio track ID.
+    #[must_use]
+    pub const fn audio_track_id(self) -> TrackId {
+        self.audio_track_id
+    }
 }
 
 /// Construction/track-remap failure до публикации composite runtime handle.

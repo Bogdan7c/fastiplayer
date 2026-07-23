@@ -191,6 +191,50 @@ class ArtworkBoundaryGuardrailTests(unittest.TestCase):
 class DependencyGraphPolicyTests(unittest.TestCase):
     """Доказывает pass/fail поведение manifest/dependency-graph policies."""
 
+    def test_hls_runtime_accepts_concrete_demux_only_as_dev_composition(self) -> None:
+        """Production HLS graph neutral, а hermetic fixtures могут собрать concrete registry."""
+
+        for dependency_name in ("mpeg-ts-demux", "symphonia-demux"):
+            with self.subTest(dependency=dependency_name, kind="normal"):
+                packages = {
+                    "web-media-hls": package_with_dependencies(
+                        "web-media-hls",
+                        ((dependency_name, None),),
+                    )
+                }
+                violations = GUARDRAIL.find_dependency_violations(
+                    GUARDRAIL.direct_normal_dependencies(packages),
+                    GUARDRAIL.direct_all_manifest_dependencies(packages),
+                    frozenset(),
+                )
+                self.assertTrue(
+                    any(
+                        violation.owner == "web-media-hls"
+                        and violation.dependency == dependency_name
+                        for violation in violations
+                    )
+                )
+
+            with self.subTest(dependency=dependency_name, kind="dev"):
+                packages = {
+                    "web-media-hls": package_with_dependencies(
+                        "web-media-hls",
+                        ((dependency_name, "dev"),),
+                    )
+                }
+                violations = GUARDRAIL.find_dependency_violations(
+                    GUARDRAIL.direct_normal_dependencies(packages),
+                    GUARDRAIL.direct_all_manifest_dependencies(packages),
+                    frozenset(),
+                )
+                self.assertFalse(
+                    any(
+                        violation.owner == "web-media-hls"
+                        and violation.dependency == dependency_name
+                        for violation in violations
+                    )
+                )
+
     def test_forbidden_direction_allows_forward_edge_and_rejects_reverse_edge(self) -> None:
         """Neutral backend API direction разрешена, backend -> player-core запрещена."""
 
@@ -265,9 +309,9 @@ class DependencyGraphPolicyTests(unittest.TestCase):
         packages["playlist-io"] = package_with_dependencies(
             "playlist-io",
             (
+                ("hls-playlist-core", None),
                 ("media-core", None),
                 ("playlist-core", None),
-                ("unicode-normalization", None),
                 ("url", None),
             ),
         )
@@ -284,9 +328,9 @@ class DependencyGraphPolicyTests(unittest.TestCase):
         packages["playlist-io"] = package_with_dependencies(
             "playlist-io",
             (
+                ("hls-playlist-core", None),
                 ("media-core", None),
                 ("playlist-core", None),
-                ("unicode-normalization", None),
                 ("url", None),
                 ("service-ytdlp", None),
             ),

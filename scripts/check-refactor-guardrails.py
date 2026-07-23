@@ -41,6 +41,7 @@ CONTRACT_CRATES = frozenset(
         "render-core",
         "capability-core",
         "frame-server-core",
+        "hls-playlist-core",
         "web-media-core",
         "web-media-playback-plan",
         "web-media-transport-api",
@@ -61,6 +62,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "demux-api",
         "frame-server-core",
         "flv-demux",
+        "hls-playlist-core",
         "media-prefetch",
         "media-core",
         "natural-sort-key",
@@ -89,6 +91,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "video-vaapi",
         "web-media-core",
         "web-media-adaptive",
+        "web-media-hls",
         "web-media-http",
         "web-media-playback-plan",
         "web-media-transport-api",
@@ -129,11 +132,16 @@ PLAYLIST_CORE_ALLOWED_DEPENDENCIES = frozenset(
 PLAYLIST_IO_ALLOWED_DEPENDENCIES = frozenset(
     {
         "bounded-xml-reader",
+        "hls-playlist-core",
         "media-core",
         "playlist-core",
-        "unicode-normalization",
         "url",
     }
+)
+
+# Shared RFC 8216 owner выполняет только pure text/reference validation.
+HLS_PLAYLIST_CORE_ALLOWED_DEPENDENCIES = frozenset(
+    {"thiserror", "unicode-normalization", "url"}
 )
 
 # Общий natural comparator остаётся std-only и не знает path/domain owners.
@@ -183,6 +191,25 @@ WEB_MEDIA_ADAPTIVE_ALLOWED_DEPENDENCIES = frozenset(
         "source-core",
         "thiserror",
         "web-media-transport-api",
+    }
+)
+
+# HLS runtime владеет concrete manifest policy и переиспользует только neutral
+# adaptive/source/demux contracts. Concrete container owners допустимы лишь в dev fixtures.
+WEB_MEDIA_HLS_ALLOWED_DEPENDENCIES = frozenset(
+    {
+        "aes",
+        "anyhow",
+        "bytes",
+        "cbc",
+        "demux-api",
+        "hls-playlist-core",
+        "media-core",
+        "source-core",
+        "thiserror",
+        "web-media-adaptive",
+        "web-media-transport-api",
+        "zeroize",
     }
 )
 
@@ -1122,6 +1149,22 @@ def find_dependency_violations(
             frozenset({"web-media-adaptive"}),
             WEB_MEDIA_ADAPTIVE_ALLOWED_DEPENDENCIES,
             "web-media-adaptive остаётся shared manifest/segment lifecycle без concrete parser/player/UI/reqwest",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"hls-playlist-core"}),
+            HLS_PLAYLIST_CORE_ALLOWED_DEPENDENCIES,
+            "hls-playlist-core остаётся pure RFC parser/model без runtime owners",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"web-media-hls"}),
+            WEB_MEDIA_HLS_ALLOWED_DEPENDENCIES,
+            "web-media-hls ограничен HLS policy и neutral transport/demux contracts без concrete demux backends",
         )
     )
     violations.extend(

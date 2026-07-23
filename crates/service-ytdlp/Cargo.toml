@@ -22,3 +22,5 @@ url = { workspace = true }
 web-media-core = { workspace = true }
 web-media-playback-plan = { workspace = true }
 web-media-transport-api = { workspace = true }
+# Ephemeral headers/cookies/HLS key material очищаются при drop.
+zeroize.workspace = true

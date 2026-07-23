@@ -1,3 +1,7 @@
+## S32B exact required-container open (2026-07-23)
+
+- `DemuxRegistry::open_required_container` preserves normal registry sniff/replay/open but rejects a content-proven different container through typed `DemuxOpenError::UnexpectedContainer`. HLS composition injects a reusable registry and never selects TS/fMP4 from extension or MAP presence. Full consumer contract: `mem:media-services/hls-vod-s32b-2026-07-23`.
+
 ## S31 deferred adaptive open (2026-07-23)
 
 - Existing finite `OrderedSegmentSource` сохранён. Новый adaptive poll-source живёт в `web-media-adaptive`; `BlockingOrderedSegmentAdapter` используется только внутри `ProgressiveDemuxer::new_deferred`, который переносит initial segment readiness, registry sniff/open и parser reads на worker и возвращает player-owner-у S21R `TemporarilyUnavailable`. Seekable inner typed rejected, а не молча downgraded. Полный handoff: `mem:media-services/adaptive-transport-s31-2026-07-23`.

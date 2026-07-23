@@ -34,6 +34,8 @@ mod url_topology_drafts;
 mod video_pipeline_candidate;
 mod video_pipeline_selector;
 mod web_media_demux_registry;
+mod web_media_hls_open;
+mod web_media_hls_subtitles;
 mod web_media_open;
 mod web_media_quality;
 mod web_media_stream_model;

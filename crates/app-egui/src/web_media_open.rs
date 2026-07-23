@@ -5,6 +5,7 @@
 //! только соединяет concrete runtime registries до существующего commit barrier.
 
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -179,12 +180,14 @@ pub(crate) fn prepare_yt_dlp_web_media(
         .context("Не удалось построить secret-safe URL sidebar stream model")?;
     let playlist_metadata = candidate_snapshot.playlist_metadata().clone();
     ensure_not_cancelled(&is_cancelled)?;
-    let demuxer = runtime
+    let opened_candidate = runtime
         .open_candidate(selected_candidate, cancellation, &is_cancelled)
         .context("Не удалось открыть выбранный YtDlp candidate")?;
+    let stream_configuration =
+        stream_configuration.with_hls_subtitle_renditions(opened_candidate.subtitles);
     ensure_not_cancelled(&is_cancelled)?;
     Ok(PreparedYtDlpWebMedia {
-        demuxer,
+        demuxer: opened_candidate.demuxer,
         playlist_metadata,
         candidate_selection,
         stream_configuration,
@@ -196,7 +199,9 @@ struct WebOpenRuntime {
     /// Единственный S22 transport registry.
     transport_registry: TransportRegistry,
     /// Единственный neutral demux registry.
-    demux_registry: DemuxRegistry,
+    demux_registry: Arc<DemuxRegistry>,
+    /// HLS-only TS/fMP4 ordered-segment registry.
+    hls_demux_registry: Arc<DemuxRegistry>,
     /// Provider capabilities для pure planner-а.
     transport_capabilities: TransportCapabilitySnapshot,
     /// Factory capabilities для pure planner-а.
@@ -205,6 +210,8 @@ struct WebOpenRuntime {
     provider_id: web_media_transport_api::TransportProviderId,
     /// Validated source policy нужна bounded sniff deadline.
     source_config: SourceRuntimeConfig,
+    /// Caller config нужен для named adaptive RAM budgets.
+    network_config: NetworkConfig,
     /// Existing prefetch policy переиспользуется для readiness limits.
     prefetch_config: media_prefetch::PrefetchConfig,
 }
@@ -230,14 +237,28 @@ impl WebOpenRuntime {
         let demux_composition =
             crate::web_media_demux_registry::WebDemuxComposition::new(demuxer_options)
                 .context("Не удалось собрать web demux registry")?;
+        let hls_demux_composition =
+            crate::web_media_demux_registry::WebDemuxComposition::new_hls(demuxer_options)
+                .context("Не удалось собрать HLS demux registry")?;
+        let demux_capabilities = DemuxCapabilitySnapshot::new(
+            demux_composition
+                .capabilities
+                .registrations()
+                .iter()
+                .chain(hls_demux_composition.capabilities.registrations())
+                .cloned()
+                .collect(),
+        );
 
         Ok(Self {
             transport_registry,
-            demux_registry: demux_composition.registry,
+            demux_registry: Arc::new(demux_composition.registry),
+            hls_demux_registry: Arc::new(hls_demux_composition.registry),
             transport_capabilities: progressive_http_capabilities()?,
-            demux_capabilities: demux_composition.capabilities,
+            demux_capabilities,
             provider_id,
             source_config,
+            network_config: network_config.clone(),
             prefetch_config,
         })
     }
@@ -248,7 +269,18 @@ impl WebOpenRuntime {
         candidate: &YtDlpNormalizedCandidate,
         cancellation: CancellationToken,
         is_cancelled: &impl Fn() -> bool,
-    ) -> Result<Box<dyn Demuxer + Send>> {
+    ) -> Result<crate::web_media_hls_open::PreparedHlsCandidate> {
+        if crate::web_media_hls_open::candidate_is_hls(candidate) {
+            ensure_not_cancelled(is_cancelled)?;
+            return crate::web_media_hls_open::prepare_hls_candidate(
+                candidate,
+                self.provider_id.clone(),
+                &self.source_config,
+                &self.network_config,
+                Arc::clone(&self.hls_demux_registry),
+                cancellation,
+            );
+        }
         let request_context = YtDlpTransportRequestContext::new(
             self.provider_id.clone(),
             SourceGeneration::new(INITIAL_TRANSPORT_GENERATION),
@@ -282,7 +314,12 @@ impl WebOpenRuntime {
             validate_component_tracks(role, demuxer.as_ref())?;
             opened_components.push(OpenedCandidateComponent { role, demuxer });
         }
-        compose_candidate_components(opened_components, self.prefetch_config)
+        compose_candidate_components(opened_components, self.prefetch_config).map(|demuxer| {
+            crate::web_media_hls_open::PreparedHlsCandidate {
+                demuxer,
+                subtitles: Arc::from([]),
+            }
+        })
     }
 
     /// Открывает один resource через registry и адаптирует blocking streaming demuxer к readiness.
@@ -441,7 +478,11 @@ fn progressive_http_capabilities() -> Result<TransportCapabilitySnapshot> {
         TransportFamily::ProgressiveHttp(HttpScheme::Https),
         outputs,
     )?;
-    Ok(TransportCapabilitySnapshot::new(vec![http, https]))
+    let hls = TransportCapabilityRegistration::new(
+        TransportFamily::Hls,
+        DemuxInputCapabilities::only(crate::web_media_hls_open::hls_transport_input()),
+    )?;
+    Ok(TransportCapabilitySnapshot::new(vec![http, https, hls]))
 }
 
 /// Передаёт registry согласованные extension и container hints выбранной family.

@@ -177,6 +177,62 @@ impl HttpRequestTarget {
         parsed.set_query(Some(query));
         Self::parse_exact(parsed)
     }
+
+    /// Сливает extractor query parameters с target query по semantics pinned yt-dlp.
+    ///
+    /// Existing keys сохраняют порядок, override заменяет все значения совпавшего
+    /// key, новые keys добавляются в конце. Пустые значения отбрасываются так же,
+    /// как `urllib.parse.parse_qs(..., keep_blank_values=False)`.
+    pub fn merge_extractor_query_parameters(
+        &self,
+        query_parameters: &str,
+    ) -> Result<Self, HttpRequestTargetError> {
+        let mut parsed = Url::parse(self.exact.expose_secret_for_open())
+            .map_err(|_| HttpRequestTargetError::InvalidSyntax)?;
+        let mut merged = grouped_non_empty_query_pairs(parsed.query().unwrap_or_default());
+        let overrides = grouped_non_empty_query_pairs(query_parameters);
+        if overrides.is_empty() {
+            return Ok(self.clone());
+        }
+        for (override_key, override_values) in overrides {
+            if let Some((_, existing_values)) = merged
+                .iter_mut()
+                .find(|(existing_key, _)| existing_key == &override_key)
+            {
+                *existing_values = override_values;
+            } else {
+                merged.push((override_key, override_values));
+            }
+        }
+        let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+        for (key, values) in merged {
+            for value in values {
+                serializer.append_pair(&key, &value);
+            }
+        }
+        let merged_query = serializer.finish();
+        parsed.set_query((!merged_query.is_empty()).then_some(&merged_query));
+        Self::parse_exact(parsed)
+    }
+}
+
+/// Группирует decoded query pairs, сохраняя first-key и duplicate-value order.
+fn grouped_non_empty_query_pairs(query: &str) -> Vec<(String, Vec<String>)> {
+    let mut grouped = Vec::<(String, Vec<String>)>::new();
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        if value.is_empty() {
+            continue;
+        }
+        if let Some((_, values)) = grouped
+            .iter_mut()
+            .find(|(existing_key, _)| existing_key == key.as_ref())
+        {
+            values.push(value.into_owned());
+        } else {
+            grouped.push((key.into_owned(), vec![value.into_owned()]));
+        }
+    }
+    grouped
 }
 
 impl fmt::Debug for HttpRequestTarget {
@@ -415,6 +471,51 @@ mod tests {
         assert!(!formatted.contains("secret"));
         assert!(!formatted.contains("private"));
         assert!(!formatted.contains("token"));
+    }
+
+    #[test]
+    fn extractor_query_merge_replaces_keys_and_preserves_duplicates_and_encoding() {
+        let target = HttpRequestTarget::parse_exact(
+            "https://media.example.invalid/seg.ts?a=old&a=older&keep=one+two&blank=#frag",
+        )
+        .expect("valid target");
+
+        let merged = target
+            .merge_extractor_query_parameters("a=new%20value&a=second&added=%2Fpath&empty=")
+            .expect("valid merged target");
+
+        assert_eq!(
+            merged.expose_secret_for_request(),
+            "https://media.example.invalid/seg.ts?a=new+value&a=second&keep=one+two&added=%2Fpath#frag"
+        );
+    }
+
+    #[test]
+    fn extractor_query_merge_does_not_change_existing_replacement_api() {
+        let target =
+            HttpRequestTarget::parse_exact("https://example.invalid/s?a=1").expect("valid target");
+
+        assert_eq!(
+            target
+                .with_query_override("b=2")
+                .expect("replacement")
+                .expose_secret_for_request(),
+            "https://example.invalid/s?b=2"
+        );
+        assert_eq!(
+            target
+                .merge_extractor_query_parameters("b=2")
+                .expect("merge")
+                .expose_secret_for_request(),
+            "https://example.invalid/s?a=1&b=2"
+        );
+        assert_eq!(
+            target
+                .merge_extractor_query_parameters("ignored=&flag")
+                .expect("empty parsed override is exact no-op")
+                .expose_secret_for_request(),
+            "https://example.invalid/s?a=1"
+        );
     }
 
     /// Scheme/host failures не отражают untrusted locator в error text.

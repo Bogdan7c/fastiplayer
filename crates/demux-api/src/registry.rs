@@ -233,6 +233,26 @@ pub struct DemuxProbeSelection {
     pub matched: DemuxProbeMatch,
 }
 
+/// Результат content-proven open с exact container identity выбранного factory.
+pub struct DemuxProbedOpen {
+    demuxer: Box<dyn Demuxer + Send>,
+    container: DemuxContainerId,
+}
+
+impl DemuxProbedOpen {
+    /// Возвращает container, доказанный bounded content sniff-ом.
+    #[must_use]
+    pub const fn container(&self) -> &DemuxContainerId {
+        &self.container
+    }
+
+    /// Передаёт открытый demuxer вызывающему owner-у.
+    #[must_use]
+    pub fn into_demuxer(self) -> Box<dyn Demuxer + Send> {
+        self.demuxer
+    }
+}
+
 /// Typed registry probe/open failure.
 #[derive(Debug, thiserror::Error)]
 pub enum DemuxOpenError {
@@ -248,6 +268,14 @@ pub enum DemuxOpenError {
     /// Probe узнал input, но terminal typed rejection запрещает open.
     #[error("demux probe отклонён")]
     ProbeRejected(#[source] DemuxProbeRejection),
+    /// Content sniff доказал другой container, чем требовал concrete manifest owner.
+    #[error("demux content container не совпадает с required container")]
+    UnexpectedContainer {
+        /// Required intent после manifest/profile validation.
+        expected: DemuxContainerId,
+        /// Фактически доказанный content sniff-ом container.
+        matched: DemuxContainerId,
+    },
     /// Выбранный factory не смог открыть восстановленный input.
     #[error("demux factory `{factory_id}` отклонил open")]
     FactoryRejected {
@@ -370,22 +398,77 @@ impl DemuxRegistry {
         sniff_budget: DemuxSniffBudget,
         cancellation: CancellationToken,
     ) -> Result<Box<dyn Demuxer + Send>, DemuxOpenError> {
+        self.open_with_optional_container(input, hints, sniff_budget, cancellation, None)
+            .map(DemuxProbedOpen::into_demuxer)
+    }
+
+    /// Открывает input и возвращает exact container identity из того же content probe.
+    pub fn open_probed(
+        &self,
+        input: DemuxInput,
+        hints: DemuxHints,
+        sniff_budget: DemuxSniffBudget,
+        cancellation: CancellationToken,
+    ) -> Result<DemuxProbedOpen, DemuxOpenError> {
+        self.open_with_optional_container(input, hints, sniff_budget, cancellation, None)
+    }
+
+    /// Открывает input только если content sniff доказал exact required container.
+    ///
+    /// Manifest owner использует этот intent-boundary вместо extension/MIME guess-а. Existing
+    /// generic `open` сохраняет прежнюю selection semantics.
+    pub fn open_required_container(
+        &self,
+        input: DemuxInput,
+        hints: DemuxHints,
+        sniff_budget: DemuxSniffBudget,
+        cancellation: CancellationToken,
+        required_container: DemuxContainerId,
+    ) -> Result<Box<dyn Demuxer + Send>, DemuxOpenError> {
+        self.open_with_optional_container(
+            input,
+            hints,
+            sniff_budget,
+            cancellation,
+            Some(required_container),
+        )
+        .map(DemuxProbedOpen::into_demuxer)
+    }
+
+    fn open_with_optional_container(
+        &self,
+        input: DemuxInput,
+        hints: DemuxHints,
+        sniff_budget: DemuxSniffBudget,
+        cancellation: CancellationToken,
+        required_container: Option<DemuxContainerId>,
+    ) -> Result<DemuxProbedOpen, DemuxOpenError> {
         ensure_active(&cancellation)?;
         let input_capability = input.capability();
         let (restored_input, sniffed_bytes) =
             sniff_and_restore_input(input, sniff_budget, &cancellation)?;
         let selected =
             self.select_factory(input_capability, &hints, &sniffed_bytes, &cancellation)?;
+        if let Some(expected) = required_container
+            && selected.matched.container != expected
+        {
+            return Err(DemuxOpenError::UnexpectedContainer {
+                expected,
+                matched: selected.matched.container.clone(),
+            });
+        }
         let factory = &self.factories[selected.factory_index];
         let factory_id = factory.descriptor().factory_id.clone();
-        factory
+        let container = selected.matched.container.clone();
+        let demuxer = factory
             .open(DemuxOpenRequest {
                 input: restored_input,
                 hints,
                 selected_probe: selected.matched,
                 cancellation,
             })
-            .map_err(|source| DemuxOpenError::FactoryRejected { factory_id, source })
+            .map_err(|source| DemuxOpenError::FactoryRejected { factory_id, source })?;
+        Ok(DemuxProbedOpen { demuxer, container })
     }
 
     /// Выбирает unique strongest probe match без order-based fallback-а.

@@ -22,6 +22,8 @@ members = [
     "crates/web-media-transport-api",
     "crates/web-media-http",
     "crates/web-media-adaptive",
+    "crates/hls-playlist-core",
+    "crates/web-media-hls",
     "crates/bounded-xml-reader",
     "crates/player-core",
     "crates/bounded-work-executor",
@@ -178,6 +180,7 @@ atomic-file-store = { version = "0.1.0", path = "crates/atomic-file-store" }
 natural-sort-key = { version = "0.1.0", path = "crates/natural-sort-key" }
 playlist-core = { version = "0.1.0", path = "crates/playlist-core" }
 playlist-io = { version = "0.1.0", path = "crates/playlist-io" }
+hls-playlist-core = { version = "0.1.0", path = "crates/hls-playlist-core" }
 playlist-discovery = { version = "0.1.0", path = "crates/playlist-discovery" }
 playlist-state = { version = "0.1.0", path = "crates/playlist-state" }
 desktop-integration = { version = "0.1.0", path = "crates/desktop-integration" }
@@ -195,6 +198,7 @@ web-media-core = { version = "0.1.0", path = "crates/web-media-core" }
 web-media-playback-plan = { version = "0.1.0", path = "crates/web-media-playback-plan" }
 web-media-transport-api = { version = "0.1.0", path = "crates/web-media-transport-api" }
 web-media-adaptive = { version = "0.1.0", path = "crates/web-media-adaptive" }
+web-media-hls = { version = "0.1.0", path = "crates/web-media-hls" }
 web-media-http = { version = "0.1.0", path = "crates/web-media-http" }
 bounded-xml-reader = { version = "0.1.0", path = "crates/bounded-xml-reader" }
 settings-core = { version = "0.1.0", path = "crates/settings-core" }
@@ -206,3 +210,7 @@ syn = "2.0"
 url = "2.5"
 unicode-normalization = "0.1"
 quick-xml = "0.41"
+# RustCrypto остаётся за project-owned HLS boundary; exact versions упрощают аудит.
+aes = { version = "=0.9.1", default-features = false, features = ["zeroize"] }
+cbc = { version = "=0.2.1", default-features = false, features = ["block-padding", "zeroize"] }
+zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }

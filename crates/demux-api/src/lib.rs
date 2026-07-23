@@ -35,8 +35,10 @@ pub use probe::{
 pub use progressive::{
     ProgressiveDemuxBufferLimits, ProgressiveDemuxPacketTooLargeError,
     ProgressiveDemuxStartupError, ProgressiveDemuxWorkerStoppedError, ProgressiveDemuxer,
+    ProgressiveSeekAnchorMismatchError, ProgressiveSeekController,
 };
 pub use registry::{
     DemuxContainerRegistration, DemuxFactory, DemuxFactoryDescriptor, DemuxFactoryOpenError,
-    DemuxOpenError, DemuxOpenRequest, DemuxProbeSelection, DemuxRegistry, DemuxRegistryError,
+    DemuxOpenError, DemuxOpenRequest, DemuxProbeSelection, DemuxProbedOpen, DemuxRegistry,
+    DemuxRegistryError,
 };

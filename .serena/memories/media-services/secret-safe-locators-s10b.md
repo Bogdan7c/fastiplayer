@@ -1,3 +1,11 @@
+## S32B HLS redirect/resource secret runtime (2026-07-23)
+
+- Adaptive resource fetch now has explicit scoped replacement/HLS merge/query-bypass modes. Same-origin redirects reapply authorized merged segment/key query material; cross-origin strips it monotonically. Key cache is epoch-local and zeroizing; external hls_aes URI bypasses key query. Full contract: `mem:media-services/hls-vod-s32b-2026-07-23`.
+
+## S32A HLS request/AES secret boundary (2026-07-23)
+
+- Inline manifest/query/hls_aes material remains ephemeral and redacted; inline data creates a typed zero-manifest-fetch state, selected `url` is the base, segment/key queries use pinned merge/fallback, external `hls_aes.uri` bypasses key-query merge, and key/IV/plaintext buffers zeroize. Full contract: `mem:media-services/hls-vod-s32a-2026-07-23`.
+
 ## S31 adaptive secret reuse (2026-07-23)
 
 - `web-media-adaptive` не создаёт durable locator/auth surface: он принимает S21T `TransportOpenRequest`, применяет scoped manifest/segment purpose material, manual redirect authorization и ephemeral cookie jar. Cross-origin hop монотонно снимает header/query secrets; raw targets/material не попадают в Debug/errors. См. `mem:media-services/adaptive-transport-s31-2026-07-23`.

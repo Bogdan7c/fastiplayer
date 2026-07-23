@@ -21,8 +21,10 @@ pub use model::{
 };
 pub use planning::YtDlpPlanningSnapshotError;
 pub use request_material::{
-    YT_DLP_REQUEST_MATERIAL_SCHEMA_VERSION, YtDlpRequestMaterial, YtDlpRequestMaterialSummary,
-    YtDlpRequestMaterialV1, YtDlpRequestMaterialViolation,
+    YT_DLP_REQUEST_MATERIAL_SCHEMA_VERSION, YtDlpHlsAesOverride, YtDlpHlsManifestInput,
+    YtDlpHlsManifestInputKind, YtDlpHlsRequestMaterial, YtDlpHlsRequestMaterialViolation,
+    YtDlpRequestMaterial, YtDlpRequestMaterialSummary, YtDlpRequestMaterialV1,
+    YtDlpRequestMaterialViolation,
 };
 pub use transport::{
     YtDlpTransportComponent, YtDlpTransportRequestContext, YtDlpTransportRequestError,

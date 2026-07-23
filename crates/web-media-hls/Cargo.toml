@@ -1,0 +1,28 @@
+[package]
+name = "web-media-hls"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Exact audited RustCrypto stack; no native backend or runtime feature selection.
+aes.workspace = true
+anyhow.workspace = true
+bytes.workspace = true
+cbc.workspace = true
+demux-api.workspace = true
+hls-playlist-core.workspace = true
+media-core.workspace = true
+source-core.workspace = true
+thiserror.workspace = true
+web-media-adaptive.workspace = true
+web-media-transport-api.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+# Concrete factories живут только в hermetic composition fixtures.
+mpeg-ts-demux.workspace = true
+rustiplayer-config.workspace = true
+symphonia-demux.workspace = true
+web-media-core.workspace = true

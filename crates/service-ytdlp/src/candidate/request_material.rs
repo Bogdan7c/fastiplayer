@@ -3,8 +3,16 @@ use std::fmt;
 
 use serde_json::{Map, Value};
 use web_media_transport_api::HttpRangeRequestLimit;
+use zeroize::Zeroizing;
 
 use super::raw::YtDlpSerializedFormat;
+
+mod hls;
+
+pub use hls::{
+    YtDlpHlsAesOverride, YtDlpHlsManifestInput, YtDlpHlsManifestInputKind, YtDlpHlsRequestMaterial,
+    YtDlpHlsRequestMaterialViolation,
+};
 
 /// Версия service-owned schema transient request material.
 pub const YT_DLP_REQUEST_MATERIAL_SCHEMA_VERSION: u16 = 1;
@@ -199,7 +207,7 @@ pub enum YtDlpRequestMaterialViolation {
 
 /// Secret string без plaintext `Debug`/`Display`.
 #[derive(Clone, PartialEq)]
-struct SecretText(String);
+struct SecretText(Zeroizing<String>);
 
 impl SecretText {
     /// Проверяет field-specific byte cap и сохраняет exact string.
@@ -207,7 +215,7 @@ impl SecretText {
         if exact.len() > maximum_bytes {
             return Err(YtDlpRequestMaterialViolation::RequestFieldTooLong);
         }
-        Ok(Self(exact))
+        Ok(Self(Zeroizing::new(exact)))
     }
 
     /// Передаёт exact secret только transport adapter-у после owner-side checks.
@@ -224,6 +232,26 @@ pub(super) struct YtDlpProgressiveHttpRequestMaterial<'a> {
     target: &'a SecretText,
     /// Единственная effective Cookie serialization после conflict checks.
     serialized_cookies: Option<&'a SecretText>,
+}
+
+/// Общая HTTP authorization projection без progressive/HLS profile guessing.
+pub(super) struct YtDlpHttpAuthorizationMaterial<'a> {
+    material: &'a YtDlpRequestMaterialV1,
+    serialized_cookies: Option<&'a SecretText>,
+}
+
+impl YtDlpHttpAuthorizationMaterial<'_> {
+    pub(super) fn headers(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.material
+            .http_headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.expose_secret_for_transport()))
+    }
+
+    pub(super) fn serialized_cookies(&self) -> Option<&str> {
+        self.serialized_cookies
+            .map(SecretText::expose_secret_for_transport)
+    }
 }
 
 impl YtDlpProgressiveHttpRequestMaterial<'_> {
@@ -254,10 +282,10 @@ impl YtDlpProgressiveHttpRequestMaterial<'_> {
 }
 
 impl YtDlpRequestMaterial {
-    /// Доказывает progressive HTTP subset и возвращает effective serialized auth.
-    pub(super) fn progressive_http_request_material(
+    /// Проверяет только общие headers/cookies, не смешивая transport profile semantics.
+    pub(super) fn http_authorization_material(
         &self,
-    ) -> Result<YtDlpProgressiveHttpRequestMaterial<'_>, YtDlpRequestMaterialViolation> {
+    ) -> Result<YtDlpHttpAuthorizationMaterial<'_>, YtDlpRequestMaterialViolation> {
         let Self::V1(material) = self;
         let mut cookie_headers = material
             .http_headers
@@ -273,6 +301,18 @@ impl YtDlpRequestMaterial {
         {
             return Err(YtDlpRequestMaterialViolation::ConflictingCookieMaterial);
         }
+        Ok(YtDlpHttpAuthorizationMaterial {
+            material,
+            serialized_cookies: material.cookies.as_ref().or(cookie_header),
+        })
+    }
+
+    /// Доказывает progressive HTTP subset и возвращает effective serialized auth.
+    pub(super) fn progressive_http_request_material(
+        &self,
+    ) -> Result<YtDlpProgressiveHttpRequestMaterial<'_>, YtDlpRequestMaterialViolation> {
+        let Self::V1(material) = self;
+        let authorization = self.http_authorization_material()?;
         if !material.fragments.is_empty()
             || material.fragment_base_url.is_some()
             || material.hls_media_playlist_data.is_some()
@@ -290,8 +330,15 @@ impl YtDlpRequestMaterial {
         Ok(YtDlpProgressiveHttpRequestMaterial {
             material,
             target,
-            serialized_cookies: material.cookies.as_ref().or(cookie_header),
+            serialized_cookies: authorization.serialized_cookies,
         })
+    }
+
+    /// Доказывает exact pinned native-HLS request-material subset.
+    pub fn hls_request_material(
+        &self,
+    ) -> Result<YtDlpHlsRequestMaterial<'_>, YtDlpHlsRequestMaterialViolation> {
+        hls::hls_request_material(self)
     }
 }
 

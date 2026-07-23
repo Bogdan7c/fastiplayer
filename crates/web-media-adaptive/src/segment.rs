@@ -322,6 +322,8 @@ impl AdaptiveOrderedSegmentSource {
                 byte_range,
                 maximum_body_bytes,
                 purpose: FetchPurpose::MediaSegment,
+                query_application:
+                    crate::fetch::AdaptiveResourceQueryApplication::ApplyScopedReplacement,
             };
             match self.executor.try_submit(job) {
                 Ok(submitted) => active.submitted = submitted,

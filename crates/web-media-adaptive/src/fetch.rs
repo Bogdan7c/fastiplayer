@@ -4,6 +4,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use source_core::{
     CancellationToken, HttpBoundedByteRange, HttpBoundedFetchHop, HttpBoundedFetchKind,
@@ -66,6 +67,76 @@ impl AdaptiveHttpContext {
     pub const fn cancellation(&self) -> &CancellationToken {
         &self.cancellation
     }
+
+    /// Возвращает generation, к которой привязан весь immutable HTTP context.
+    #[must_use]
+    pub const fn source_generation(&self) -> SourceGeneration {
+        self.initial_generation
+    }
+
+    /// Возвращает configured body bound конкретного provider-neutral resource class.
+    #[must_use]
+    pub const fn maximum_resource_bytes(
+        &self,
+        purpose: AdaptiveResourcePurpose,
+    ) -> std::num::NonZeroUsize {
+        match purpose {
+            AdaptiveResourcePurpose::Manifest => self.limits.maximum_manifest_bytes,
+            AdaptiveResourcePurpose::MediaSegment
+            | AdaptiveResourcePurpose::Initialization
+            | AdaptiveResourcePurpose::EncryptionKey => self.limits.maximum_segment_bytes,
+        }
+    }
+
+    /// Выполняет один bounded adaptive resource fetch на уже выделенном blocking worker-е.
+    ///
+    /// Метод намеренно не создаёт второй HTTP client или retry stack. Concrete manifest owner
+    /// вызывает его только вне player-owner thread, а shared S31 redirect/cookie/cancel policy
+    /// остаётся внутри этого crate.
+    pub fn fetch_resource_blocking(
+        &self,
+        request: AdaptiveResourceFetchRequest,
+    ) -> Result<AdaptiveFetchedResource, AdaptiveTransportError> {
+        if self.cancellation.is_cancelled() {
+            return Err(AdaptiveTransportError::Cancelled);
+        }
+        if request.generation != self.initial_generation {
+            return Err(AdaptiveTransportError::StaleGeneration {
+                current: self.initial_generation,
+                received: request.generation,
+            });
+        }
+        request.validate_bound(self.limits)?;
+        let mut attempt = std::num::NonZeroU8::MIN;
+        loop {
+            let result = fetch_with_redirects(
+                self,
+                FetchJob {
+                    id: 0,
+                    generation: request.generation,
+                    target: request.target.clone(),
+                    byte_range: request.byte_range,
+                    maximum_body_bytes: request.maximum_body_bytes,
+                    purpose: request.purpose.into(),
+                    query_application: request.query_application,
+                },
+            );
+            match result {
+                Ok(success) => {
+                    return Ok(AdaptiveFetchedResource {
+                        final_target: success.final_target,
+                        bytes: success.bytes,
+                    });
+                }
+                Err(error) if error.is_retryable() && attempt < self.retry.maximum_attempts() => {
+                    wait_for_retry(self, self.retry.backoff_after(attempt))?;
+                    attempt = std::num::NonZeroU8::new(attempt.get().saturating_add(1))
+                        .unwrap_or(attempt);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
 }
 
 impl fmt::Debug for AdaptiveHttpContext {
@@ -115,6 +186,147 @@ pub enum AdaptiveTransportError {
         /// Rejected generation.
         received: SourceGeneration,
     },
+    /// Caller попытался обойти общий configured bound конкретного resource класса.
+    #[error("adaptive resource request превышает configured {purpose:?} bound")]
+    ResourceBoundExceeded {
+        /// Resource class без locator или secret material.
+        purpose: AdaptiveResourcePurpose,
+    },
+}
+
+/// Provider-neutral purpose одного bounded adaptive resource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdaptiveResourcePurpose {
+    /// Master или media manifest.
+    Manifest,
+    /// Media segment/fragment.
+    MediaSegment,
+    /// Initialization resource, например ISO BMFF init section.
+    Initialization,
+    /// Encryption key resource.
+    EncryptionKey,
+}
+
+/// Явно отделяет shared S21T replacement от уже composed provider target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdaptiveResourceQueryApplication {
+    /// Применить generic purpose-scoped query replacement из S21T material.
+    ApplyScopedReplacement,
+    /// Слить purpose-scoped query material с target на каждом разрешённом redirect hop.
+    MergeScopedAddition,
+    /// Намеренно не применять query material, сохранив scoped headers/cookies.
+    BypassScopedQuery,
+}
+
+/// Один generation-fenced bounded resource request без manifest-specific типов.
+#[derive(Debug, Clone)]
+pub struct AdaptiveResourceFetchRequest {
+    generation: SourceGeneration,
+    target: HttpRequestTarget,
+    byte_range: Option<HttpBoundedByteRange>,
+    maximum_body_bytes: std::num::NonZeroUsize,
+    purpose: AdaptiveResourcePurpose,
+    query_application: AdaptiveResourceQueryApplication,
+}
+
+impl AdaptiveResourceFetchRequest {
+    /// Создаёт full-body request с явным purpose и query contract.
+    #[must_use]
+    pub const fn full(
+        generation: SourceGeneration,
+        target: HttpRequestTarget,
+        maximum_body_bytes: std::num::NonZeroUsize,
+        purpose: AdaptiveResourcePurpose,
+        query_application: AdaptiveResourceQueryApplication,
+    ) -> Self {
+        Self {
+            generation,
+            target,
+            byte_range: None,
+            maximum_body_bytes,
+            purpose,
+            query_application,
+        }
+    }
+
+    /// Создаёт exact Range request; source-core проверит `206` и `Content-Range`.
+    #[must_use]
+    pub const fn range(
+        generation: SourceGeneration,
+        target: HttpRequestTarget,
+        byte_range: HttpBoundedByteRange,
+        maximum_body_bytes: std::num::NonZeroUsize,
+        purpose: AdaptiveResourcePurpose,
+        query_application: AdaptiveResourceQueryApplication,
+    ) -> Self {
+        Self {
+            generation,
+            target,
+            byte_range: Some(byte_range),
+            maximum_body_bytes,
+            purpose,
+            query_application,
+        }
+    }
+
+    fn validate_bound(
+        &self,
+        limits: AdaptiveTransportLimits,
+    ) -> Result<(), AdaptiveTransportError> {
+        let maximum_allowed = match self.purpose {
+            AdaptiveResourcePurpose::Manifest => limits.maximum_manifest_bytes,
+            AdaptiveResourcePurpose::MediaSegment
+            | AdaptiveResourcePurpose::Initialization
+            | AdaptiveResourcePurpose::EncryptionKey => limits.maximum_segment_bytes,
+        };
+        let requested_bytes = self.byte_range.map_or_else(
+            || u64::try_from(self.maximum_body_bytes.get()).unwrap_or(u64::MAX),
+            |range| u64::try_from(range.length().get()).unwrap_or(u64::MAX),
+        );
+        let maximum_allowed = u64::try_from(maximum_allowed.get()).unwrap_or(u64::MAX);
+        if requested_bytes > maximum_allowed {
+            return Err(AdaptiveTransportError::ResourceBoundExceeded {
+                purpose: self.purpose,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Успешно загруженный resource и effective post-redirect base.
+pub struct AdaptiveFetchedResource {
+    final_target: HttpRequestTarget,
+    bytes: Vec<u8>,
+}
+
+impl AdaptiveFetchedResource {
+    /// Effective target нужен concrete manifest owner-у как base URI.
+    #[must_use]
+    pub const fn final_target(&self) -> &HttpRequestTarget {
+        &self.final_target
+    }
+
+    /// Передаёт bytes следующему bounded parser/crypto owner-у.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Передаёт владение bytes без дополнительного копирования.
+    #[must_use]
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
+impl fmt::Debug for AdaptiveFetchedResource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AdaptiveFetchedResource")
+            .field("final_target", &self.final_target)
+            .field("bytes", &self.bytes.len())
+            .finish()
+    }
 }
 
 impl AdaptiveTransportError {
@@ -135,7 +347,8 @@ impl AdaptiveTransportError {
             | Self::SecretScopeRejected
             | Self::ExplicitCookieHeader
             | Self::WorkerStopped
-            | Self::StaleGeneration { .. } => false,
+            | Self::StaleGeneration { .. }
+            | Self::ResourceBoundExceeded { .. } => false,
         }
     }
 }
@@ -155,20 +368,35 @@ fn map_cookie_jar_error(error: ScopedHttpCookieJarError) -> AdaptiveTransportErr
 pub(crate) enum FetchPurpose {
     Manifest,
     MediaSegment,
+    Initialization,
+    EncryptionKey,
+}
+
+impl From<AdaptiveResourcePurpose> for FetchPurpose {
+    fn from(purpose: AdaptiveResourcePurpose) -> Self {
+        match purpose {
+            AdaptiveResourcePurpose::Manifest => Self::Manifest,
+            AdaptiveResourcePurpose::MediaSegment => Self::MediaSegment,
+            AdaptiveResourcePurpose::Initialization => Self::Initialization,
+            AdaptiveResourcePurpose::EncryptionKey => Self::EncryptionKey,
+        }
+    }
 }
 
 impl FetchPurpose {
     const fn secret_purpose(self) -> SecretRequestPurpose {
         match self {
             Self::Manifest => SecretRequestPurpose::Manifest,
-            Self::MediaSegment => SecretRequestPurpose::MediaSegment,
+            Self::MediaSegment | Self::Initialization => SecretRequestPurpose::MediaSegment,
+            Self::EncryptionKey => SecretRequestPurpose::EncryptionKey,
         }
     }
 
     const fn fetch_kind(self) -> HttpBoundedFetchKind {
         match self {
             Self::Manifest => HttpBoundedFetchKind::Metadata,
-            Self::MediaSegment => HttpBoundedFetchKind::Media,
+            Self::MediaSegment | Self::Initialization => HttpBoundedFetchKind::Media,
+            Self::EncryptionKey => HttpBoundedFetchKind::Metadata,
         }
     }
 }
@@ -181,6 +409,7 @@ pub(crate) struct FetchJob {
     pub byte_range: Option<HttpBoundedByteRange>,
     pub maximum_body_bytes: std::num::NonZeroUsize,
     pub purpose: FetchPurpose,
+    pub query_application: AdaptiveResourceQueryApplication,
 }
 
 #[derive(Debug)]
@@ -275,8 +504,13 @@ fn fetch_with_redirects(
     let mut forward_secrets = true;
 
     loop {
-        let (request_target, headers) =
-            request_material(&context.secrets, &target, job.purpose, forward_secrets)?;
+        let (request_target, headers) = request_material(
+            &context.secrets,
+            &target,
+            job.purpose,
+            job.query_application,
+            forward_secrets,
+        )?;
         let request = match job.byte_range {
             Some(byte_range) => HttpBoundedFetchRequest::range(
                 request_target,
@@ -319,6 +553,7 @@ fn request_material(
     secrets: &SecretRequestContext,
     target: &HttpRequestTarget,
     purpose: FetchPurpose,
+    query_application: AdaptiveResourceQueryApplication,
     forward_secrets: bool,
 ) -> Result<(HttpRequestTarget, Vec<HttpHeader>), AdaptiveTransportError> {
     if !forward_secrets || secrets.is_empty() {
@@ -334,9 +569,36 @@ fn request_material(
     {
         return Err(AdaptiveTransportError::ExplicitCookieHeader);
     }
-    let request_target = match material.query_override_for_request() {
-        Some(query) => target.with_query_override(query.expose_secret_for_request())?,
-        None => target.clone(),
+    let request_target = match (query_application, material.query_override_for_request()) {
+        (AdaptiveResourceQueryApplication::ApplyScopedReplacement, Some(query)) => {
+            target.with_query_override(query.expose_secret_for_request())?
+        }
+        (AdaptiveResourceQueryApplication::MergeScopedAddition, Some(query)) => {
+            target.merge_extractor_query_parameters(query.expose_secret_for_request())?
+        }
+        (
+            AdaptiveResourceQueryApplication::ApplyScopedReplacement
+            | AdaptiveResourceQueryApplication::MergeScopedAddition
+            | AdaptiveResourceQueryApplication::BypassScopedQuery,
+            _,
+        ) => target.clone(),
     };
     Ok((request_target, headers))
+}
+
+fn wait_for_retry(
+    context: &AdaptiveHttpContext,
+    delay: Duration,
+) -> Result<(), AdaptiveTransportError> {
+    let deadline = Instant::now() + delay;
+    loop {
+        if context.cancellation.is_cancelled() {
+            return Err(AdaptiveTransportError::Cancelled);
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(());
+        }
+        thread::sleep((deadline - now).min(Duration::from_millis(10)));
+    }
 }

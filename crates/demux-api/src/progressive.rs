@@ -5,21 +5,26 @@
 //! neutral `TemporarilyUnavailable`, поэтому parser никогда не прерывается
 //! посреди container element-а через небезопасный `WouldBlock`.
 
-use std::collections::VecDeque;
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::Result;
 use media_core::{
-    DemuxReadEvent, DemuxRetryHint, DemuxSeekResult, DemuxSeekability, DemuxTrackListUpdate,
-    Demuxer, MediaDemuxError, MediaMetadata, TimelineNotSeekableReason, TrackInfo,
+    DemuxReadEvent, DemuxRetryHint, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability,
+    DemuxTrackListUpdate, Demuxer, MediaDemuxError, MediaMetadata, TimelineNotSeekableReason,
+    TrackInfo,
 };
 use source_core::CancellationToken;
 
-/// Максимальная пауза worker-а до повторной проверки cancellation при backpressure.
-const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(25);
+mod worker;
+
+use worker::{
+    ProgressiveMessage, ProgressivePushOutcome, ProgressiveSeekCommand, ProgressiveSharedState,
+    ProgressiveWorkerCompletion, push_progressive_message, run_progressive_worker,
+    run_seekable_progressive_worker,
+};
 
 /// Named bounds player-facing progressive event queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +67,9 @@ pub enum ProgressiveDemuxStartupError {
     /// Seekable source должен оставаться на обычном synchronous demux path-е.
     #[error("progressive demux worker принимает только non-seekable input")]
     SeekableInput,
+    /// Seekable constructor требует честно seekable inner contract.
+    #[error("seekable progressive demux worker получил non-seekable input")]
+    SeekableInputRequired,
     /// OS не смог создать отдельный demux worker.
     #[error("не удалось создать progressive demux worker: {source}")]
     WorkerSpawn {
@@ -88,6 +96,52 @@ pub struct ProgressiveDemuxPacketTooLargeError {
 #[error("progressive demux worker завершился без terminal outcome")]
 pub struct ProgressiveDemuxWorkerStoppedError;
 
+/// Provider-neutral nonblocking preview seek-а, выполняемого blocking worker-ом позже.
+///
+/// Controller не выполняет I/O и не меняет parser state. Он обязан вернуть только
+/// доказанный container packet boundary, который worker сможет воспроизвести тем же
+/// `DemuxSeekRequest`. Это позволяет player-owner-у начать preroll без ожидания сети.
+#[derive(Clone)]
+pub struct ProgressiveSeekController {
+    preview: Arc<dyn Fn(DemuxSeekRequest) -> Result<DemuxSeekResult> + Send + Sync>,
+}
+
+impl ProgressiveSeekController {
+    /// Создаёт controller из bounded provider-owned seek index lookup.
+    pub fn new<F>(preview: F) -> Self
+    where
+        F: Fn(DemuxSeekRequest) -> Result<DemuxSeekResult> + Send + Sync + 'static,
+    {
+        Self {
+            preview: Arc::new(preview),
+        }
+    }
+
+    /// Возвращает доказанный результат, не выполняя blocking work.
+    fn preview(&self, request: DemuxSeekRequest) -> Result<DemuxSeekResult> {
+        (self.preview)(request)
+    }
+}
+
+impl std::fmt::Debug for ProgressiveSeekController {
+    /// Не раскрывает provider-owned index internals.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProgressiveSeekController")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Worker воспроизвёл иной anchor, чем controller уже отдал player-у.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("progressive seek worker вернул anchor {worker_actual:?}, ожидался {preview_actual:?}")]
+pub struct ProgressiveSeekAnchorMismatchError {
+    /// Доказанный preview, по которому player начал preroll.
+    pub preview_actual: media_core::MediaTime,
+    /// Фактический anchor replacement parser-а.
+    pub worker_actual: media_core::MediaTime,
+}
+
 /// Player-facing nonblocking demuxer поверх отдельного blocking worker-а.
 pub struct ProgressiveDemuxer {
     /// Последний опубликованный track snapshot.
@@ -98,6 +152,8 @@ pub struct ProgressiveDemuxer {
     visible_metadata: Option<MediaMetadata>,
     /// Exact non-seekable source/container outcome.
     visible_seekability: DemuxSeekability,
+    /// Optional target-specific preview для seekable blocking inner-а.
+    seek_controller: Option<ProgressiveSeekController>,
     /// Bounded worker-to-player handoff.
     shared: Arc<ProgressiveSharedState>,
     /// Earliest safe retry hint для пустой, но живой очереди.
@@ -140,6 +196,7 @@ impl ProgressiveDemuxer {
             visible_duration,
             visible_metadata,
             visible_seekability,
+            seek_controller: None,
             shared,
             retry_hint,
             cancellation,
@@ -175,6 +232,7 @@ impl ProgressiveDemuxer {
                         let _ = push_progressive_message(
                             &worker_shared,
                             &worker_cancellation,
+                            0,
                             ProgressiveMessage::Failure(source),
                         );
                         return;
@@ -184,6 +242,7 @@ impl ProgressiveDemuxer {
                     let _ = push_progressive_message(
                         &worker_shared,
                         &worker_cancellation,
+                        0,
                         ProgressiveMessage::Failure(anyhow::Error::new(
                             ProgressiveDemuxStartupError::SeekableInput,
                         )),
@@ -194,18 +253,28 @@ impl ProgressiveDemuxer {
                     inner.tracks().to_vec(),
                     inner.duration(),
                 ));
-                if !push_progressive_message(
-                    &worker_shared,
-                    &worker_cancellation,
-                    ProgressiveMessage::Event(initial_tracks),
+                if !matches!(
+                    push_progressive_message(
+                        &worker_shared,
+                        &worker_cancellation,
+                        0,
+                        ProgressiveMessage::Event(initial_tracks),
+                    ),
+                    ProgressivePushOutcome::Published
                 ) {
                     return;
                 }
                 if let Some(metadata) = inner.media_metadata()
-                    && !push_progressive_message(
-                        &worker_shared,
-                        &worker_cancellation,
-                        ProgressiveMessage::Event(DemuxReadEvent::MediaMetadataChanged(metadata)),
+                    && !matches!(
+                        push_progressive_message(
+                            &worker_shared,
+                            &worker_cancellation,
+                            0,
+                            ProgressiveMessage::Event(DemuxReadEvent::MediaMetadataChanged(
+                                metadata,
+                            )),
+                        ),
+                        ProgressivePushOutcome::Published
                     )
                 {
                     return;
@@ -221,6 +290,99 @@ impl ProgressiveDemuxer {
             visible_seekability: DemuxSeekability::NotSeekable {
                 reason: TimelineNotSeekableReason::UnknownTimeline,
             },
+            seek_controller: None,
+            shared,
+            retry_hint,
+            cancellation,
+            end_of_stream_reached: false,
+        })
+    }
+
+    /// Запускает seekable blocking demuxer с nonblocking command/result boundary.
+    ///
+    /// `open_inner` и все последующие `seek_with_request` выполняются только на
+    /// worker-е. Player-facing `seek_with_request` вызывает лишь controller preview,
+    /// очищает старую generation queue и публикует latest seek command.
+    pub fn new_deferred_seekable<F>(
+        open_inner: F,
+        seek_controller: ProgressiveSeekController,
+        cancellation: CancellationToken,
+        limits: ProgressiveDemuxBufferLimits,
+        retry_hint: DemuxRetryHint,
+    ) -> std::result::Result<Self, ProgressiveDemuxStartupError>
+    where
+        F: FnOnce() -> Result<Box<dyn Demuxer + Send>> + Send + 'static,
+    {
+        let shared = Arc::new(ProgressiveSharedState::new(limits));
+        let worker_shared = Arc::clone(&shared);
+        let worker_cancellation = cancellation.clone();
+        thread::Builder::new()
+            .name("adaptive-seekable-demux-open".to_owned())
+            .spawn(move || {
+                let _completion = ProgressiveWorkerCompletion::new(Arc::clone(&worker_shared));
+                let inner = match open_inner() {
+                    Ok(inner) => inner,
+                    Err(source) => {
+                        let _ = push_progressive_message(
+                            &worker_shared,
+                            &worker_cancellation,
+                            0,
+                            ProgressiveMessage::Failure(source),
+                        );
+                        return;
+                    }
+                };
+                if !matches!(inner.seekability(), DemuxSeekability::Seekable) {
+                    let _ = push_progressive_message(
+                        &worker_shared,
+                        &worker_cancellation,
+                        0,
+                        ProgressiveMessage::Failure(anyhow::Error::new(
+                            ProgressiveDemuxStartupError::SeekableInputRequired,
+                        )),
+                    );
+                    return;
+                }
+                let initial_tracks = DemuxReadEvent::TracksChanged(DemuxTrackListUpdate::new(
+                    inner.tracks().to_vec(),
+                    inner.duration(),
+                ));
+                if !matches!(
+                    push_progressive_message(
+                        &worker_shared,
+                        &worker_cancellation,
+                        0,
+                        ProgressiveMessage::Event(initial_tracks),
+                    ),
+                    ProgressivePushOutcome::Published
+                ) {
+                    return;
+                }
+                if let Some(metadata) = inner.media_metadata()
+                    && !matches!(
+                        push_progressive_message(
+                            &worker_shared,
+                            &worker_cancellation,
+                            0,
+                            ProgressiveMessage::Event(DemuxReadEvent::MediaMetadataChanged(
+                                metadata,
+                            )),
+                        ),
+                        ProgressivePushOutcome::Published
+                    )
+                {
+                    return;
+                }
+                run_seekable_progressive_worker(inner, worker_shared, worker_cancellation);
+            })
+            .map_err(|source| ProgressiveDemuxStartupError::WorkerSpawn { source })?;
+
+        Ok(Self {
+            visible_tracks: Vec::new(),
+            visible_duration: None,
+            visible_metadata: None,
+            visible_seekability: DemuxSeekability::Seekable,
+            seek_controller: Some(seek_controller),
             shared,
             retry_hint,
             cancellation,
@@ -233,6 +395,7 @@ impl ProgressiveDemuxer {
         match event {
             DemuxReadEvent::TracksChanged(update) => {
                 self.visible_tracks = update.tracks.clone();
+                self.visible_duration = update.duration;
             }
             DemuxReadEvent::MediaMetadataChanged(metadata) => {
                 self.visible_metadata = Some(metadata.clone());
@@ -274,11 +437,22 @@ impl Demuxer for ProgressiveDemuxer {
 
         let message = {
             let mut queue = self.shared.lock_queue();
+            while queue
+                .messages
+                .front()
+                .is_some_and(|envelope| envelope.generation != queue.current_generation)
+            {
+                if let Some(stale) = queue.messages.pop_front() {
+                    queue.queued_encoded_bytes = queue
+                        .queued_encoded_bytes
+                        .saturating_sub(stale.message.encoded_bytes());
+                }
+            }
             let message = queue.messages.pop_front();
             if let Some(message) = &message {
                 queue.queued_encoded_bytes = queue
                     .queued_encoded_bytes
-                    .saturating_sub(message.encoded_bytes());
+                    .saturating_sub(message.message.encoded_bytes());
                 self.shared.capacity_available.notify_all();
             }
             if message.is_none() && queue.worker_stopped {
@@ -287,7 +461,7 @@ impl Demuxer for ProgressiveDemuxer {
             message
         };
 
-        match message {
+        match message.map(|envelope| envelope.message) {
             Some(ProgressiveMessage::Event(event)) => {
                 self.apply_visible_event(&event);
                 Ok(event)
@@ -298,11 +472,34 @@ impl Demuxer for ProgressiveDemuxer {
     }
 
     /// Progressive non-Range input не публикует ложную seek поддержку.
-    fn seek(&mut self, _timestamp: Duration) -> Result<DemuxSeekResult> {
-        Err(MediaDemuxError::SeekUnavailable {
-            reason: "progressive HTTP source не поддерживает byte seek".to_owned(),
+    fn seek(&mut self, timestamp: Duration) -> Result<DemuxSeekResult> {
+        self.seek_with_request(DemuxSeekRequest::accurate(timestamp))
+    }
+
+    /// Публикует command без ожидания network/parser worker-а.
+    fn seek_with_request(&mut self, request: DemuxSeekRequest) -> Result<DemuxSeekResult> {
+        let Some(controller) = &self.seek_controller else {
+            return Err(MediaDemuxError::SeekUnavailable {
+                reason: "progressive HTTP source не поддерживает byte seek".to_owned(),
+            }
+            .into());
+        };
+        let preview = controller.preview(request)?;
+        let mut queue = self.shared.lock_queue();
+        if queue.worker_stopped {
+            return Err(ProgressiveDemuxWorkerStoppedError.into());
         }
-        .into())
+        queue.current_generation = queue.current_generation.wrapping_add(1);
+        queue.messages.clear();
+        queue.queued_encoded_bytes = 0;
+        queue.pending_seek = Some(ProgressiveSeekCommand {
+            generation: queue.current_generation,
+            request,
+            preview,
+        });
+        self.end_of_stream_reached = false;
+        self.shared.capacity_available.notify_all();
+        Ok(preview)
     }
 }
 
@@ -314,214 +511,6 @@ impl Drop for ProgressiveDemuxer {
         queue.stop_requested = true;
         self.shared.capacity_available.notify_all();
     }
-}
-
-/// Одно owned сообщение bounded queue.
-enum ProgressiveMessage {
-    /// Exact demux event, прочитанный worker-ом.
-    Event(DemuxReadEvent),
-    /// Downcastable concrete demux/source failure.
-    Failure(anyhow::Error),
-}
-
-impl ProgressiveMessage {
-    /// Считает только encoded packet payload, не Rust allocation overhead.
-    fn encoded_bytes(&self) -> usize {
-        match self {
-            Self::Event(DemuxReadEvent::Packet(packet)) => packet.data.len(),
-            Self::Event(
-                DemuxReadEvent::EndOfStream
-                | DemuxReadEvent::TemporarilyUnavailable(_)
-                | DemuxReadEvent::TracksChanged(_)
-                | DemuxReadEvent::MediaMetadataChanged(_),
-            )
-            | Self::Failure(_) => 0,
-        }
-    }
-}
-
-/// Mutex-protected queue accounting.
-struct ProgressiveQueueState {
-    /// FIFO сохраняет exact inner event order.
-    messages: VecDeque<ProgressiveMessage>,
-    /// Сумма encoded packet bytes в `messages`.
-    queued_encoded_bytes: usize,
-    /// Drop/supersede запрещает worker-у читать следующий event.
-    stop_requested: bool,
-    /// Worker больше не сможет опубликовать message.
-    worker_stopped: bool,
-}
-
-/// Shared queue + backpressure coordination.
-struct ProgressiveSharedState {
-    /// Caller-owned queue limits.
-    limits: ProgressiveDemuxBufferLimits,
-    /// Единственная authority mutable queue state.
-    queue: Mutex<ProgressiveQueueState>,
-    /// Consumer pop/drop будит producer без busy loop-а.
-    capacity_available: Condvar,
-}
-
-/// RAII-предохранитель публикует terminal worker state даже при panic backend-а.
-struct ProgressiveWorkerCompletion {
-    /// Shared queue, которую player-facing handle продолжает опрашивать.
-    shared: Arc<ProgressiveSharedState>,
-}
-
-impl ProgressiveWorkerCompletion {
-    /// Привязывает terminal notification к lifetime worker closure.
-    #[must_use]
-    fn new(shared: Arc<ProgressiveSharedState>) -> Self {
-        Self { shared }
-    }
-}
-
-impl Drop for ProgressiveWorkerCompletion {
-    /// Не позволяет player owner-у бесконечно ждать после неожиданного worker panic-а.
-    fn drop(&mut self) {
-        mark_worker_stopped(&self.shared);
-    }
-}
-
-impl ProgressiveSharedState {
-    /// Создаёт пустую bounded queue до worker spawn-а.
-    fn new(limits: ProgressiveDemuxBufferLimits) -> Self {
-        Self {
-            limits,
-            queue: Mutex::new(ProgressiveQueueState {
-                messages: VecDeque::new(),
-                queued_encoded_bytes: 0,
-                stop_requested: false,
-                worker_stopped: false,
-            }),
-            capacity_available: Condvar::new(),
-        }
-    }
-
-    /// Poison означает internal invariant failure; восстанавливаем owned state для shutdown.
-    fn lock_queue(&self) -> MutexGuard<'_, ProgressiveQueueState> {
-        self.queue
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-}
-
-/// Единственный owner blocking inner demuxer-а.
-fn run_progressive_worker(
-    mut inner: Box<dyn Demuxer + Send>,
-    shared: Arc<ProgressiveSharedState>,
-    cancellation: CancellationToken,
-) {
-    loop {
-        if cancellation.is_cancelled() || shared.lock_queue().stop_requested {
-            mark_worker_stopped(&shared);
-            return;
-        }
-
-        match inner.next_event() {
-            Ok(DemuxReadEvent::TemporarilyUnavailable(hint)) => {
-                wait_for_inner_retry(&shared, &cancellation, hint.retry_after());
-            }
-            Ok(event) => {
-                let terminal = matches!(event, DemuxReadEvent::EndOfStream);
-                if !push_progressive_message(
-                    &shared,
-                    &cancellation,
-                    ProgressiveMessage::Event(event),
-                ) {
-                    mark_worker_stopped(&shared);
-                    return;
-                }
-                if terminal {
-                    mark_worker_stopped(&shared);
-                    return;
-                }
-            }
-            Err(source) => {
-                let _ = push_progressive_message(
-                    &shared,
-                    &cancellation,
-                    ProgressiveMessage::Failure(source),
-                );
-                mark_worker_stopped(&shared);
-                return;
-            }
-        }
-    }
-}
-
-/// Публикует message только после bounded byte/event admission.
-fn push_progressive_message(
-    shared: &ProgressiveSharedState,
-    cancellation: &CancellationToken,
-    mut message: ProgressiveMessage,
-) -> bool {
-    let encoded_bytes = message.encoded_bytes();
-    let oversized_packet = encoded_bytes > shared.limits.max_pending_encoded_bytes();
-    if oversized_packet {
-        message = ProgressiveMessage::Failure(
-            ProgressiveDemuxPacketTooLargeError {
-                packet_bytes: encoded_bytes,
-                budget_bytes: shared.limits.max_pending_encoded_bytes(),
-            }
-            .into(),
-        );
-    }
-
-    let admitted_bytes = message.encoded_bytes();
-    let mut queue = shared.lock_queue();
-    loop {
-        if cancellation.is_cancelled() || queue.stop_requested {
-            return false;
-        }
-        let has_event_capacity = queue.messages.len() < shared.limits.max_pending_events();
-        let has_byte_capacity = queue
-            .queued_encoded_bytes
-            .checked_add(admitted_bytes)
-            .is_some_and(|total| total <= shared.limits.max_pending_encoded_bytes());
-        if has_event_capacity && has_byte_capacity {
-            queue.queued_encoded_bytes = queue.queued_encoded_bytes.saturating_add(admitted_bytes);
-            queue.messages.push_back(message);
-            return !oversized_packet;
-        }
-
-        let wait_result = shared
-            .capacity_available
-            .wait_timeout(queue, CANCELLATION_POLL_INTERVAL);
-        queue = match wait_result {
-            Ok((queue, _)) => queue,
-            Err(poisoned) => poisoned.into_inner().0,
-        };
-    }
-}
-
-/// Ждёт provider hint либо lifecycle cancellation без packet queue mutation.
-fn wait_for_inner_retry(
-    shared: &ProgressiveSharedState,
-    cancellation: &CancellationToken,
-    retry_after: Duration,
-) {
-    let started_at = Instant::now();
-    let mut queue = shared.lock_queue();
-    while started_at.elapsed() < retry_after {
-        if cancellation.is_cancelled() || queue.stop_requested {
-            return;
-        }
-        let remaining = retry_after.saturating_sub(started_at.elapsed());
-        let wait_duration = remaining.min(CANCELLATION_POLL_INTERVAL);
-        let wait_result = shared.capacity_available.wait_timeout(queue, wait_duration);
-        queue = match wait_result {
-            Ok((queue, _)) => queue,
-            Err(poisoned) => poisoned.into_inner().0,
-        };
-    }
-}
-
-/// Публикует worker terminal state после последнего message-а.
-fn mark_worker_stopped(shared: &ProgressiveSharedState) {
-    let mut queue = shared.lock_queue();
-    queue.worker_stopped = true;
-    shared.capacity_available.notify_all();
 }
 
 #[cfg(test)]

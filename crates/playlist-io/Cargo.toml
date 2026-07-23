@@ -12,11 +12,11 @@ path = "src/lib.rs"
 [dependencies]
 # Все недоверенные XML bytes проходят через единый project-owned security boundary.
 bounded-xml-reader.workspace = true
+# Единственный lexical/structural HLS owner; playlist-io оставляет только classification mapping.
+hls-playlist-core.workspace = true
 # Parser возвращает уже существующие ID-less domain drafts, но не получает queue authority.
 playlist-core.workspace = true
 # Положительный EXTINF hint переводится в общий neutral duration vocabulary.
 media-core.workspace = true
 # WHATWG parser даёт единый syntax/base/file-URI boundary без самописного percent decoding.
 url.workspace = true
-# RFC 8216 требует authoritative NFC check без изменения исходного текста.
-unicode-normalization.workspace = true
