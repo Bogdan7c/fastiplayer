@@ -1,3 +1,8 @@
+## S33 live endpoint refresh secret boundary (2026-07-24)
+
+- HLS manifest/segment/init/key expiry is signalled only as typed reason + resource kind + generation; raw targets/status payloads/auth material never cross into Debug/errors/player state.
+- App-owned bounded yt-dlp re-extraction exact-rematches the prior semantic candidate, builds a fresh scoped transport generation and atomically replaces live runtime material. Old URL/query/header/cookie/key bytes are not persisted or reused across generation; full lifecycle: `mem:media-services/hls-live-s33-2026-07-24`.
+
 ## S32B HLS redirect/resource secret runtime (2026-07-23)
 
 - Adaptive resource fetch now has explicit scoped replacement/HLS merge/query-bypass modes. Same-origin redirects reapply authorized merged segment/key query material; cross-origin strips it monotonically. Key cache is epoch-local and zeroizing; external hls_aes URI bypasses key query. Full contract: `mem:media-services/hls-vod-s32b-2026-07-23`.

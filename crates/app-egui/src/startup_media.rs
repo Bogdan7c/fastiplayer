@@ -59,6 +59,9 @@ pub(crate) struct PreparedYtDlpStartupMedia {
 
     /// UI-safe inventory того же extraction snapshot-а.
     pub(crate) stream_configuration: crate::web_media_stream_model::WebMediaStreamConfiguration,
+
+    /// S31L publication boundary для HLS live; VOD оставляет поле пустым.
+    pub(crate) timeline_port: Option<media_core::DynamicMediaTimelinePort>,
 }
 
 /// Результат фоновой подготовки CLI YtDlp URL.
@@ -634,6 +637,7 @@ pub(crate) fn resolve_yt_dlp_startup_media(
         demuxer: prepared.demuxer,
         candidate_selection: prepared.candidate_selection,
         stream_configuration: prepared.stream_configuration,
+        timeline_port: prepared.timeline_port,
     })
 }
 

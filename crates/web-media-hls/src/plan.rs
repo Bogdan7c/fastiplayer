@@ -108,6 +108,29 @@ pub(crate) fn build_component_plan(
     base: &HttpRequestTarget,
     overrides: &HlsRequestOverrides,
 ) -> Result<HlsComponentPlan, HlsPlanError> {
+    build_component_plan_with_epoch_strategy(media, container, base, overrides, false)
+}
+
+/// Строит live-only plan, где каждый media segment является отдельным epoch.
+///
+/// Такая стратегия дороже finite VOD plan-а, но сохраняет точную связь
+/// segment identity с packet/RAP без расширения generic demux API.
+pub(crate) fn build_segment_scoped_component_plan(
+    media: &MediaPlaylist,
+    container: HlsRequiredContainer,
+    base: &HttpRequestTarget,
+    overrides: &HlsRequestOverrides,
+) -> Result<HlsComponentPlan, HlsPlanError> {
+    build_component_plan_with_epoch_strategy(media, container, base, overrides, true)
+}
+
+fn build_component_plan_with_epoch_strategy(
+    media: &MediaPlaylist,
+    container: HlsRequiredContainer,
+    base: &HttpRequestTarget,
+    overrides: &HlsRequestOverrides,
+    segment_scoped_epochs: bool,
+) -> Result<HlsComponentPlan, HlsPlanError> {
     if media.segments.is_empty() {
         return Err(HlsPlanError::EmptyMediaPlaylist);
     }
@@ -130,7 +153,8 @@ pub(crate) fn build_component_plan(
 
     for segment in &media.segments {
         let map_changed = segment.initialization_map != current_map;
-        let starts_epoch = !current_resources.is_empty() && (segment.discontinuity || map_changed);
+        let starts_epoch = !current_resources.is_empty()
+            && (segment_scoped_epochs || segment.discontinuity || map_changed);
         if starts_epoch {
             epochs.push(HlsEpochPlan {
                 resources: std::mem::take(&mut current_resources),
@@ -334,7 +358,7 @@ impl RangeCursor {
     }
 }
 
-fn parse_hls_duration(duration: &HlsDuration) -> Result<Duration, HlsPlanError> {
+pub(crate) fn parse_hls_duration(duration: &HlsDuration) -> Result<Duration, HlsPlanError> {
     let text = duration.as_decimal_str();
     let (seconds_text, fractional_text) = text.split_once('.').unwrap_or((text, ""));
     let mut seconds = seconds_text

@@ -206,10 +206,23 @@ impl FrameSettingsRuntimeAdapter<'_> {
                         || false,
                     ) {
                         Ok(prepared) => {
-                            let prepared_media = PreparedMedia::from_external_label(
+                            let mut prepared_media = PreparedMedia::from_external_label(
                                 source_locator.safe_label(),
                                 prepared.demuxer,
                             );
+                            if let Some(timeline_port) = prepared.timeline_port {
+                                prepared_media =
+                                    match prepared_media.with_dynamic_timeline(timeline_port) {
+                                        Ok(prepared_media) => prepared_media,
+                                        Err(error) => {
+                                            return AppRouteApplyResult::Failed {
+                                                message: format!(
+                                                    "HLS live timeline rebuild failed: {error}"
+                                                ),
+                                            };
+                                        }
+                                    };
+                            }
                             let safe_label =
                                 crate::media_open::SafeMediaLabel::from_service_safe_label(
                                     source_locator.safe_label(),

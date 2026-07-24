@@ -15,7 +15,7 @@ use web_media_transport_api::SourceGeneration;
 
 use crate::plan::{HlsComponentPlan, HlsEpochPlan};
 use crate::seek::{HlsSeekAnchor, HlsSeekAnchorKind, SharedHlsSeekIndex};
-use crate::source::HlsEpochSegmentSource;
+use crate::source::{HlsEpochSegmentSource, HlsResourceExpiryObserver, SharedHlsKeyCache};
 use crate::{HlsRequiredContainer, HlsVodOpenPolicy};
 
 /// Cloneable construction recipe для offside transactional component replacement.
@@ -414,7 +414,7 @@ impl Demuxer for HlsComponentDemuxer {
     }
 }
 
-fn open_epoch(
+pub(crate) fn open_epoch(
     container: HlsRequiredContainer,
     epoch: HlsEpochPlan,
     http: AdaptiveHttpContext,
@@ -436,6 +436,40 @@ fn open_epoch(
                 .context("invalid static HLS container identity")?,
         )
         .context("HLS epoch container sniff/open failed")
+}
+
+/// Live-only open с HLS-private expiry observation boundary.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn open_epoch_with_key_cache_and_observer(
+    container: HlsRequiredContainer,
+    epoch: HlsEpochPlan,
+    http: AdaptiveHttpContext,
+    generation: SourceGeneration,
+    policy: HlsVodOpenPolicy,
+    registry: Arc<DemuxRegistry>,
+    key_cache: SharedHlsKeyCache,
+    expiry_observer: Option<Arc<dyn HlsResourceExpiryObserver>>,
+) -> Result<Box<dyn Demuxer + Send>> {
+    let cancellation = http.cancellation().clone();
+    let source = HlsEpochSegmentSource::new_with_key_cache_and_observer(
+        http,
+        generation,
+        epoch,
+        policy.maximum_key_resource_bytes,
+        key_cache,
+        expiry_observer,
+    );
+    registry
+        .open_required_container(
+            DemuxInput::ordered_segments(Box::new(source)),
+            DemuxHints::none(),
+            policy.demux_sniff_budget,
+            cancellation,
+            container
+                .demux_container_id()
+                .context("invalid static HLS live container identity")?,
+        )
+        .context("HLS live segment container sniff/open failed")
 }
 
 fn packet_matches_anchor(packet: &Packet, anchor: HlsSeekAnchor) -> bool {

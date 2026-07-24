@@ -266,7 +266,7 @@ pub fn prepare_hls_vod(request: HlsVodOpenRequest) -> Result<HlsVodOpenResult, H
     })
 }
 
-fn validate_key_fetch_bound(request: &HlsVodOpenRequest) -> Result<(), HlsVodOpenError> {
+pub(crate) fn validate_key_fetch_bound(request: &HlsVodOpenRequest) -> Result<(), HlsVodOpenError> {
     if request.policy.maximum_seek_index_entries.get() < 2 {
         return Err(HlsVodOpenError::SeekIndexBoundTooSmall);
     }
@@ -421,7 +421,7 @@ fn validate_and_plan_media(
     Ok(plan)
 }
 
-fn required_main_container(
+pub(crate) fn required_main_container(
     request: &HlsVodOpenRequest,
 ) -> Result<HlsRequiredContainer, HlsVodOpenError> {
     match request.containers.main {
@@ -433,7 +433,7 @@ fn required_main_container(
     }
 }
 
-fn required_audio_container(
+pub(crate) fn required_audio_container(
     media: &MediaPlaylist,
     base: &HttpRequestTarget,
     request: &HlsVodOpenRequest,

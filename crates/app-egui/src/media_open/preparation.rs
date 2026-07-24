@@ -116,14 +116,29 @@ pub(super) fn prepare_source(
             let tracks = prepared.demuxer.tracks().to_vec();
             let demux_duration = prepared.demuxer.duration();
             let demux_metadata = prepared.demuxer.media_metadata().unwrap_or_default().tags;
+            let playlist_duration = service_duration_for_timeline(
+                prepared.timeline_port.as_ref(),
+                prepared.playlist_metadata.duration(),
+            );
             let (duration, metadata) = merge_yt_dlp_playlist_metadata(
                 demux_duration,
                 demux_metadata,
                 prepared.playlist_metadata.title(),
-                prepared.playlist_metadata.duration(),
+                playlist_duration,
             );
-            let prepared_media =
-                PreparedMedia::from_external_label(safe_label.as_str(), prepared.demuxer);
+            let prepared_media = prepare_yt_dlp_player_media(
+                safe_label.as_str(),
+                prepared.demuxer,
+                prepared.timeline_port,
+            )
+            .map_err(|error| {
+                tracing::warn!(
+                    source = %safe_label,
+                    error = %error,
+                    "HLS live timeline не прошёл PreparedMedia boundary"
+                );
+                MediaPreparationFailureKind::YtDlpOpen
+            })?;
             Ok(PreparedMediaOpen {
                 prepared_media,
                 descriptor: PreparedMediaDescriptor::YtDlp {
@@ -139,6 +154,31 @@ pub(super) fn prepare_source(
                 },
             })
         }
+    }
+}
+
+/// Устанавливает live port до возврата candidate-а к общему commit barrier.
+fn prepare_yt_dlp_player_media(
+    safe_label: &str,
+    demuxer: Box<dyn media_core::Demuxer + Send>,
+    timeline_port: Option<media_core::DynamicMediaTimelinePort>,
+) -> Result<PreparedMedia, player_core::PreparedMediaTimelineModeError> {
+    let prepared = PreparedMedia::from_external_label(safe_label, demuxer);
+    match timeline_port {
+        Some(port) => prepared.with_dynamic_timeline(port),
+        None => Ok(prepared),
+    }
+}
+
+/// Service duration не превращает dynamic live candidate в finite media.
+fn service_duration_for_timeline(
+    timeline_port: Option<&media_core::DynamicMediaTimelinePort>,
+    service_duration: Option<std::time::Duration>,
+) -> Option<std::time::Duration> {
+    if timeline_port.is_some() {
+        None
+    } else {
+        service_duration
     }
 }
 
@@ -161,11 +201,41 @@ fn merge_yt_dlp_playlist_metadata(
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU64;
     use std::time::Duration;
 
-    use media_core::MediaTagMetadata;
+    use media_core::{
+        DemuxSeekResult, Demuxer, DynamicMediaTimelineEpoch, DynamicMediaTimelineInitial,
+        DynamicMediaTimelinePortGeneration, DynamicMediaTimelineState, MediaTagMetadata,
+    };
+    use player_core::PreparedMediaTimelineMode;
 
-    use super::merge_yt_dlp_playlist_metadata;
+    use super::{
+        merge_yt_dlp_playlist_metadata, prepare_yt_dlp_player_media, service_duration_for_timeline,
+    };
+
+    #[derive(Default)]
+    struct LiveFakeDemuxer;
+
+    impl Demuxer for LiveFakeDemuxer {
+        fn tracks(&self) -> &[media_core::TrackInfo] {
+            &[]
+        }
+
+        fn duration(&self) -> Option<Duration> {
+            None
+        }
+
+        fn next_event(&mut self) -> anyhow::Result<media_core::DemuxReadEvent> {
+            Ok(media_core::DemuxReadEvent::TemporarilyUnavailable(
+                media_core::DemuxRetryHint::new(Duration::from_millis(1)).expect("test retry hint"),
+            ))
+        }
+
+        fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+            panic!("fake live demux seek is outside preparation test")
+        }
+    }
 
     #[test]
     fn yt_dlp_service_metadata_fills_missing_demux_values() {
@@ -197,5 +267,29 @@ mod tests {
         assert_eq!(duration, Some(Duration::from_secs(91)));
         assert_eq!(metadata.title.as_deref(), Some("Название из контейнера"));
         assert_eq!(metadata.artists, ["Автор".to_string()]);
+    }
+
+    #[test]
+    fn live_timeline_is_installed_before_barrier_and_service_duration_stays_unknown() {
+        let (timeline_port, _publisher) =
+            media_core::dynamic_media_timeline(DynamicMediaTimelineInitial {
+                port_generation: DynamicMediaTimelinePortGeneration::new(
+                    NonZeroU64::new(1).expect("non-zero test generation"),
+                ),
+                source_epoch: DynamicMediaTimelineEpoch::new(0),
+                state: DynamicMediaTimelineState::without_dvr(Duration::from_secs(30).into()),
+            });
+        assert_eq!(
+            service_duration_for_timeline(Some(&timeline_port), Some(Duration::from_secs(3_600))),
+            None
+        );
+        let prepared =
+            prepare_yt_dlp_player_media("live", Box::new(LiveFakeDemuxer), Some(timeline_port))
+                .expect("live timeline attaches before barrier");
+        assert_eq!(prepared.duration(), None);
+        assert!(matches!(
+            prepared.timeline_mode(),
+            PreparedMediaTimelineMode::Live { .. }
+        ));
     }
 }

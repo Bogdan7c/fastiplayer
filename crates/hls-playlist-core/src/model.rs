@@ -124,6 +124,11 @@ pub struct MediaSegment {
     pub byte_range: Option<ByteRange>,
     pub discontinuity: bool,
     pub media_sequence: u64,
+    /// RFC discontinuity sequence этого сегмента.
+    ///
+    /// В отличие от media sequence это значение можно сопоставлять между
+    /// выбранными renditions вместе с relative timeline.
+    pub discontinuity_sequence: u64,
     pub initialization_map: Option<InitializationMap>,
     pub key: Option<HlsKeyDeclaration>,
 }
@@ -204,6 +209,8 @@ pub enum HlsPlaylistType {
 pub struct MediaPlaylist {
     pub target_duration_seconds: u64,
     pub media_sequence: u64,
+    /// Значение `EXT-X-DISCONTINUITY-SEQUENCE`, либо RFC default `0`.
+    pub discontinuity_sequence: u64,
     pub segments: Box<[MediaSegment]>,
     pub key_declarations: Box<[HlsKeyDeclaration]>,
     pub end_list: bool,

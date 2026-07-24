@@ -16,8 +16,8 @@ pub use model::{
     YtDlpCandidateComponentRequestSummary, YtDlpCandidateComponentRole, YtDlpCandidateEntry,
     YtDlpCandidateMatch, YtDlpCandidateMatchKind, YtDlpCandidateNormalizationRejection,
     YtDlpCandidateOrigin, YtDlpCandidateRematchError, YtDlpCandidateSelection,
-    YtDlpCandidateSelectionError, YtDlpCandidateSnapshot, YtDlpNormalizedCandidate,
-    YtDlpRejectedCandidate, YtDlpSelectedCandidateShape,
+    YtDlpCandidateSelectionError, YtDlpCandidateSnapshot, YtDlpLiveIntent,
+    YtDlpNormalizedCandidate, YtDlpRejectedCandidate, YtDlpSelectedCandidateShape,
 };
 pub use planning::YtDlpPlanningSnapshotError;
 pub use request_material::{

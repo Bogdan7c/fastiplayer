@@ -11,6 +11,25 @@ use super::request_material::{
     YtDlpRequestMaterial, YtDlpRequestMaterialSummary, YtDlpRequestMaterialViolation,
 };
 
+/// Typed public live intent одного immutable extraction snapshot-а.
+///
+/// Значение не выводится из duration или отсутствующего HLS `ENDLIST`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum YtDlpLiveIntent {
+    /// Extractor не опубликовал live fields; live admission запрещён.
+    Unspecified,
+    /// Сейчас идёт публично сериализуемый live stream.
+    Live,
+    /// Обычный VOD либо уже обработанная запись бывшего live.
+    NotLive,
+    /// Трансляция ещё не началась.
+    Upcoming,
+    /// Live завершён, но VOD ещё не готов.
+    PostLive,
+    /// Поля противоречат друг другу либо содержат неизвестный status.
+    Incompatible,
+}
+
 /// Роль request component-а без позиционной семантики.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum YtDlpCandidateComponentRole {
@@ -239,6 +258,8 @@ pub struct YtDlpCandidateSnapshot {
     generation: ExtractionGeneration,
     /// Playlist metadata из этого же immutable extraction snapshot-а.
     playlist_metadata: YtDlpPlaylistMetadata,
+    /// Explicit extractor-owned live intent этого же generation.
+    live_intent: YtDlpLiveIntent,
     /// Один entry на каждую исходную `formats[]` row.
     inventory: Box<[YtDlpCandidateEntry]>,
     /// Корневой selected result, не смешанный с inventory.
@@ -259,6 +280,11 @@ impl YtDlpCandidateSnapshot {
     /// Возвращает metadata, согласованную с candidate inventory и generation.
     pub const fn playlist_metadata(&self) -> &YtDlpPlaylistMetadata {
         &self.playlist_metadata
+    }
+
+    /// Возвращает explicit live intent без эвристик по transport/container.
+    pub const fn live_intent(&self) -> YtDlpLiveIntent {
+        self.live_intent
     }
 
     /// Возвращает полный visible inventory, включая rejection rows.
@@ -343,6 +369,7 @@ impl YtDlpCandidateSnapshot {
         source: SourceIdentity,
         generation: ExtractionGeneration,
         playlist_metadata: YtDlpPlaylistMetadata,
+        live_intent: YtDlpLiveIntent,
         inventory: Vec<YtDlpCandidateEntry>,
         selected: Option<YtDlpCandidateEntry>,
     ) -> Self {
@@ -350,6 +377,7 @@ impl YtDlpCandidateSnapshot {
             source,
             generation,
             playlist_metadata,
+            live_intent,
             inventory: inventory.into_boxed_slice(),
             selected,
         }

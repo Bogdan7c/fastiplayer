@@ -1,7 +1,8 @@
 use hls_playlist_core::{
     HlsKeyMethod, HlsParseErrorKind, HlsParseRequest, HlsParserLimits, HlsPlaylist,
     HlsProfileError, MediaContainerIntent, is_hls_candidate, parse_hls_playlist,
-    validate_initial_profile, validate_vod_profile,
+    validate_initial_profile, validate_live_profile, validate_live_refresh_profile,
+    validate_vod_profile,
 };
 
 fn parse(text: &str) -> Result<HlsPlaylist, hls_playlist_core::HlsParseError> {
@@ -97,6 +98,9 @@ fn media_preserves_ranges_map_discontinuity_and_key_rotation() {
         panic!("expected media");
     };
     assert_eq!(media.segments[0].media_sequence, 42);
+    assert_eq!(media.discontinuity_sequence, 0);
+    assert_eq!(media.segments[0].discontinuity_sequence, 0);
+    assert_eq!(media.segments[1].discontinuity_sequence, 1);
     assert!(matches!(
         media.segments[0].key.as_ref().map(|key| &key.method),
         Some(HlsKeyMethod::Aes128)
@@ -106,6 +110,83 @@ fn media_preserves_ranges_map_discontinuity_and_key_rotation() {
     assert!(media.segments[1].key.is_none());
     validate_vod_profile(&playlist, Some(MediaContainerIntent::FragmentedMp4))
         .expect("initial fMP4 VOD profile");
+}
+
+#[test]
+fn discontinuity_sequence_is_persisted_and_advanced_per_segment() {
+    let playlist = parse(
+        "#EXTM3U\n\
+         #EXT-X-TARGETDURATION:6\n\
+         #EXT-X-MEDIA-SEQUENCE:100\n\
+         #EXT-X-DISCONTINUITY-SEQUENCE:7\n\
+         #EXTINF:6,\n\
+         a.ts\n\
+         #EXT-X-DISCONTINUITY\n\
+         #EXTINF:6,\n\
+         b.ts\n",
+    )
+    .expect("valid live media");
+    let HlsPlaylist::Media(media) = playlist else {
+        panic!("expected media");
+    };
+    assert_eq!(media.discontinuity_sequence, 7);
+    assert_eq!(media.segments[0].discontinuity_sequence, 7);
+    assert_eq!(media.segments[1].discontinuity_sequence, 8);
+}
+
+#[test]
+fn live_profile_distinguishes_initial_refresh_end_and_ll_hls() {
+    let initial = parse(
+        "#EXTM3U\n\
+         #EXT-X-TARGETDURATION:6\n\
+         #EXT-X-MEDIA-SEQUENCE:5\n\
+         #EXTINF:6,\n\
+         a.ts\n",
+    )
+    .expect("valid initial live media");
+    assert!(validate_live_profile(&initial, Some(MediaContainerIntent::TransportStream)).is_ok());
+
+    let ended = parse(
+        "#EXTM3U\n\
+         #EXT-X-TARGETDURATION:6\n\
+         #EXTINF:6,\n\
+         a.ts\n\
+         #EXT-X-ENDLIST\n",
+    )
+    .expect("valid ended media");
+    assert_eq!(
+        validate_live_profile(&ended, Some(MediaContainerIntent::TransportStream)),
+        Err(HlsProfileError::EndedLivePlaylist)
+    );
+    assert!(
+        validate_live_refresh_profile(&ended, Some(MediaContainerIntent::TransportStream)).is_ok()
+    );
+
+    let event = parse(
+        "#EXTM3U\n\
+         #EXT-X-PLAYLIST-TYPE:EVENT\n\
+         #EXT-X-TARGETDURATION:6\n\
+         #EXTINF:6,\n\
+         a.ts\n",
+    )
+    .expect("valid EVENT media");
+    assert_eq!(
+        validate_live_profile(&event, Some(MediaContainerIntent::TransportStream)),
+        Err(HlsProfileError::LivePlaylistType)
+    );
+
+    let low_latency = parse(
+        "#EXTM3U\n\
+         #EXT-X-TARGETDURATION:6\n\
+         #EXT-X-PART-INF:PART-TARGET=1\n\
+         #EXTINF:6,\n\
+         a.ts\n",
+    )
+    .expect("syntactically valid LL-HLS media");
+    assert_eq!(
+        validate_live_profile(&low_latency, Some(MediaContainerIntent::TransportStream)),
+        Err(HlsProfileError::LowLatencySemantics)
+    );
 }
 
 #[test]

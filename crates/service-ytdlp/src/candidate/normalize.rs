@@ -13,8 +13,8 @@ use crate::metadata::YtDlpPlaylistMetadata;
 use super::descriptor::normalize_format_parts;
 use super::model::{
     YtDlpCandidateComponentRole, YtDlpCandidateEntry, YtDlpCandidateNormalizationRejection,
-    YtDlpCandidateOrigin, YtDlpCandidateSnapshot, YtDlpNormalizedCandidate, YtDlpRejectedCandidate,
-    YtDlpSelectedCandidateShape,
+    YtDlpCandidateOrigin, YtDlpCandidateSnapshot, YtDlpLiveIntent, YtDlpNormalizedCandidate,
+    YtDlpRejectedCandidate, YtDlpSelectedCandidateShape,
 };
 use super::raw::{YtDlpCandidateDocument, YtDlpSerializedFormat};
 use super::request_material::YtDlpRequestMaterial;
@@ -25,6 +25,7 @@ pub(crate) fn normalize_candidate_document(
     source: SourceIdentity,
     generation: ExtractionGeneration,
 ) -> YtDlpCandidateSnapshot {
+    let live_intent = normalize_live_intent(document.is_live, document.live_status.as_deref());
     let playlist_metadata =
         YtDlpPlaylistMetadata::from_extractor_seconds(document.title, document.duration);
     let mut seen_format_identities = HashSet::new();
@@ -50,7 +51,29 @@ pub(crate) fn normalize_candidate_document(
         generation,
     );
 
-    YtDlpCandidateSnapshot::new(source, generation, playlist_metadata, inventory, selected)
+    YtDlpCandidateSnapshot::new(
+        source,
+        generation,
+        playlist_metadata,
+        live_intent,
+        inventory,
+        selected,
+    )
+}
+
+/// Сводит official `is_live/live_status` fields в один fail-closed intent.
+fn normalize_live_intent(is_live: Option<bool>, live_status: Option<&str>) -> YtDlpLiveIntent {
+    use YtDlpLiveIntent::{Incompatible, Live, NotLive, PostLive, Unspecified, Upcoming};
+
+    match (is_live, live_status) {
+        (None, None) => Unspecified,
+        (Some(true), None | Some("is_live")) | (None, Some("is_live")) => Live,
+        (Some(false), None | Some("not_live" | "was_live"))
+        | (None, Some("not_live" | "was_live")) => NotLive,
+        (Some(false) | None, Some("is_upcoming")) => Upcoming,
+        (Some(false) | None, Some("post_live")) => PostLive,
+        _ => Incompatible,
+    }
 }
 
 /// Сохраняет одну visible inventory row даже при rejection.

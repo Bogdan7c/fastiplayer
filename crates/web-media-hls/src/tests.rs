@@ -7,7 +7,9 @@ use media_core::{TrackId, TrackInfo, TrackKind};
 use source_core::HttpRequestTarget;
 
 use crate::open::{HlsVodOpenError, codec_sets_match, select_master, validate_track_shape};
-use crate::plan::{HlsPlanError, PlannedKeySource, build_component_plan};
+use crate::plan::{
+    HlsPlanError, PlannedKeySource, build_component_plan, build_segment_scoped_component_plan,
+};
 use crate::{
     ExtractorAesOverride, HlsAudioLayoutIntent, HlsAudioRenditionEvidence,
     HlsMainTrackLayoutIntent, HlsRequestOverrides, HlsRequiredContainer, HlsVariantSelectionIntent,
@@ -247,6 +249,50 @@ fn discontinuity_and_map_change_create_monotonic_epochs() {
     assert_eq!(plan.epochs[0].timeline_start.as_secs(), 0);
     assert_eq!(plan.epochs[1].timeline_start.as_secs(), 4);
     assert_eq!(plan.epochs[2].timeline_start.as_secs(), 8);
+}
+
+#[test]
+fn live_ts_and_fmp4_plans_keep_exact_segment_scoped_epochs() {
+    let ts = parse_media(
+        "#EXTM3U\n\
+         #EXT-X-TARGETDURATION:4\n\
+         #EXTINF:4,\n\
+         a.ts\n\
+         #EXTINF:4,\n\
+         b.ts\n",
+    );
+    let ts_plan = build_segment_scoped_component_plan(
+        &ts,
+        HlsRequiredContainer::TransportStream,
+        &base(),
+        &HlsRequestOverrides::new(None),
+    )
+    .expect("segment-scoped TS plan");
+    assert_eq!(ts_plan.epochs.len(), ts.segments.len());
+
+    let fmp4 = parse_media(
+        "#EXTM3U\n\
+         #EXT-X-TARGETDURATION:4\n\
+         #EXT-X-MAP:URI=\"init.mp4\"\n\
+         #EXTINF:4,\n\
+         a.m4s\n\
+         #EXTINF:4,\n\
+         b.m4s\n",
+    );
+    let fmp4_plan = build_segment_scoped_component_plan(
+        &fmp4,
+        HlsRequiredContainer::FragmentedMp4,
+        &base(),
+        &HlsRequestOverrides::new(None),
+    )
+    .expect("segment-scoped fMP4 plan");
+    assert_eq!(fmp4_plan.epochs.len(), fmp4.segments.len());
+    assert!(
+        fmp4_plan
+            .epochs
+            .iter()
+            .all(|epoch| epoch.resources.len() == 2)
+    );
 }
 
 #[test]

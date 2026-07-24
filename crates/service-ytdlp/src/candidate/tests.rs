@@ -10,7 +10,7 @@ use web_media_transport_api::{SecretRequestPurpose, SourceGeneration, TransportP
 use super::model::{
     YtDlpCandidateComponentRole, YtDlpCandidateEntry, YtDlpCandidateMatchKind,
     YtDlpCandidateNormalizationRejection, YtDlpCandidateRematchError, YtDlpCandidateSelectionError,
-    YtDlpNormalizedCandidate,
+    YtDlpLiveIntent, YtDlpNormalizedCandidate,
 };
 use super::normalize::normalize_candidate_document;
 use super::raw::YtDlpCandidateDocument;
@@ -36,6 +36,55 @@ fn accepted_inventory(
     snapshot.inventory()[ordinal]
         .accepted()
         .expect("candidate должен быть accepted")
+}
+
+#[test]
+fn official_live_fields_form_explicit_fail_closed_intent() {
+    let live = snapshot(
+        json!({
+            "is_live": true,
+            "live_status": "is_live",
+            "formats": [progressive_format(
+                "live",
+                "mp4",
+                "mp4",
+                "avc1.640028",
+                "mp4a.40.2"
+            )]
+        }),
+        1,
+    );
+    assert_eq!(live.live_intent(), YtDlpLiveIntent::Live);
+
+    let absent = snapshot(
+        json!({
+            "formats": [progressive_format(
+                "unspecified",
+                "mp4",
+                "mp4",
+                "avc1.640028",
+                "mp4a.40.2"
+            )]
+        }),
+        1,
+    );
+    assert_eq!(absent.live_intent(), YtDlpLiveIntent::Unspecified);
+
+    let conflict = snapshot(
+        json!({
+            "is_live": true,
+            "live_status": "not_live",
+            "formats": [progressive_format(
+                "conflict",
+                "mp4",
+                "mp4",
+                "avc1.640028",
+                "mp4a.40.2"
+            )]
+        }),
+        1,
+    );
+    assert_eq!(conflict.live_intent(), YtDlpLiveIntent::Incompatible);
 }
 
 /// Возвращает rejection reason по ordinal.

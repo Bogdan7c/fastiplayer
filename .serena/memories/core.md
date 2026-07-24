@@ -1,3 +1,8 @@
+## S33 HLS live/DVR (2026-07-24)
+
+- Explicit yt-dlp live intent now opens a provider-owned HLS live runtime with independent rendition refresh, segment-scoped TS/fMP4 provenance, proven sliding DVR through the existing S31L port, durationless `TracksChanged`, ENDLIST drain and typed LL-HLS exclusion.
+- Expired manifest/segment/init/key endpoints use secret-safe single-flight app-owned re-extraction + semantic rematch + atomic fresh transport generation; player-core API and queue/barrier ownership are unchanged. Full contract: `mem:media-services/hls-live-s33-2026-07-24`.
+
 ## S32B HLS VOD runtime before seek/app integration (2026-07-23)
 
 - `web-media-hls` now prepares uninstalled master/media VOD runtime with strict TS/fMP4 evidence, MAP/ranges, alternate audio, AES and discontinuity epochs over S31 fetch + injected neutral demux registry. Runtime is intentionally NotSeekable and app-unwired until S32C. Full handoff: `mem:media-services/hls-vod-s32b-2026-07-23`.

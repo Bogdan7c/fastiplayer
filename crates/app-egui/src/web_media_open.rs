@@ -4,7 +4,7 @@
 //! request material, pure planner — выбором playable candidate, а этот модуль
 //! только соединяет concrete runtime registries до существующего commit barrier.
 
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -15,14 +15,17 @@ use demux_api::{
     DemuxHints, DemuxInput, DemuxInputCapabilities, DemuxInputCapability, DemuxRegistry,
     DemuxSniffBudget, DemuxSourceExtension, ProgressiveDemuxBufferLimits, ProgressiveDemuxer,
 };
-use media_core::{DemuxRetryHint, Demuxer, TrackId, TrackKind};
+use media_core::{
+    DemuxRetryHint, Demuxer, DynamicMediaTimelinePort, DynamicMediaTimelinePortGeneration, TrackId,
+    TrackKind,
+};
 use rustiplayer_config::{
     NetworkConfig, PlayerDemuxConfig, VideoCodec as ConfigVideoCodec, YtDlpConfig,
     YtDlpHdrSelection,
 };
 use service_ytdlp::{
-    YtDlpCandidateSelection, YtDlpCandidateSnapshot, YtDlpMediaLocator, YtDlpNormalizedCandidate,
-    YtDlpTransportRequestContext,
+    YtDlpCandidateSelection, YtDlpCandidateSnapshot, YtDlpLiveIntent, YtDlpMediaLocator,
+    YtDlpNormalizedCandidate, YtDlpTransportRequestContext,
 };
 use source_core::{CancellationToken, SourceRuntimeConfig};
 use symphonia_demux::DemuxerOptions;
@@ -30,6 +33,7 @@ use web_media_core::{
     ContainerFamily, ExactSelectionIdentity, ExtractionGeneration, HttpScheme, SelectionRequest,
     SourceIdentity, TransportFamily,
 };
+use web_media_hls::HlsEndpointRefreshPort;
 use web_media_http::WebMediaHttpProvider;
 use web_media_playback_plan::{
     DemuxCapabilitySnapshot, HdrSelectionPolicy, PlaybackCapabilitySnapshot,
@@ -54,6 +58,8 @@ const COMPOSITE_MAX_TIMESTAMP_LEAD: Duration = Duration::from_millis(500);
 
 /// Process-local source identity allocator не связывает neutral core с queue ID representation.
 static NEXT_YT_DLP_SOURCE_IDENTITY: AtomicU64 = AtomicU64::new(1);
+/// Process-local identity allocator для S31L timeline ports.
+static NEXT_DYNAMIC_TIMELINE_PORT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// Намерение selection: новый лучший playable candidate либо semantic rematch старого exact выбора.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +103,8 @@ pub(crate) struct PreparedYtDlpWebMedia {
     pub(crate) candidate_selection: YtDlpCandidateSelection,
     /// Secret-safe inventory, публикуемый только вместе с exact Installed source.
     pub(crate) stream_configuration: crate::web_media_stream_model::WebMediaStreamConfiguration,
+    /// Neutral S31L port присутствует только у proven HLS live runtime.
+    pub(crate) timeline_port: Option<DynamicMediaTimelinePort>,
 }
 
 /// Открывает YtDlp locator одним S19 → S21C → S22 production path-ом.
@@ -168,6 +176,20 @@ pub(crate) fn prepare_yt_dlp_web_media(
     let candidate_selection = candidate_snapshot
         .selection_for(selected_candidate)
         .context("Не удалось сохранить exact YtDlp candidate selection")?;
+    let endpoint_refresh: Option<Arc<dyn HlsEndpointRefreshPort>> =
+        (candidate_snapshot.live_intent() == YtDlpLiveIntent::Live).then(|| {
+            Arc::new(
+                crate::web_media_hls_refresh::AppHlsEndpointRefreshPort::new(
+                    locator.clone(),
+                    yt_dlp_config.clone(),
+                    network_config.clone(),
+                    runtime.source_config.clone(),
+                    runtime.provider_id.clone(),
+                    candidate_selection.clone(),
+                    cancellation.clone(),
+                ),
+            ) as Arc<dyn HlsEndpointRefreshPort>
+        });
     let stream_configuration =
         crate::web_media_stream_model::WebMediaStreamConfiguration::from_yt_dlp_snapshot(
             &candidate_snapshot,
@@ -181,7 +203,14 @@ pub(crate) fn prepare_yt_dlp_web_media(
     let playlist_metadata = candidate_snapshot.playlist_metadata().clone();
     ensure_not_cancelled(&is_cancelled)?;
     let opened_candidate = runtime
-        .open_candidate(selected_candidate, cancellation, &is_cancelled)
+        .open_candidate(
+            selected_candidate,
+            candidate_snapshot.live_intent(),
+            endpoint_refresh,
+            next_dynamic_timeline_port_generation()?,
+            cancellation,
+            &is_cancelled,
+        )
         .context("Не удалось открыть выбранный YtDlp candidate")?;
     let stream_configuration =
         stream_configuration.with_hls_subtitle_renditions(opened_candidate.subtitles);
@@ -191,6 +220,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
         playlist_metadata,
         candidate_selection,
         stream_configuration,
+        timeline_port: opened_candidate.timeline_port,
     })
 }
 
@@ -267,6 +297,9 @@ impl WebOpenRuntime {
     fn open_candidate(
         &self,
         candidate: &YtDlpNormalizedCandidate,
+        live_intent: YtDlpLiveIntent,
+        endpoint_refresh: Option<Arc<dyn HlsEndpointRefreshPort>>,
+        timeline_port_generation: DynamicMediaTimelinePortGeneration,
         cancellation: CancellationToken,
         is_cancelled: &impl Fn() -> bool,
     ) -> Result<crate::web_media_hls_open::PreparedHlsCandidate> {
@@ -279,7 +312,16 @@ impl WebOpenRuntime {
                 &self.network_config,
                 Arc::clone(&self.hls_demux_registry),
                 cancellation,
+                live_intent,
+                endpoint_refresh,
+                timeline_port_generation,
             );
+        }
+        if !matches!(
+            live_intent,
+            YtDlpLiveIntent::Unspecified | YtDlpLiveIntent::NotLive
+        ) {
+            bail!("live yt-dlp candidate не имеет совместимого HLS transport profile");
         }
         let request_context = YtDlpTransportRequestContext::new(
             self.provider_id.clone(),
@@ -318,6 +360,7 @@ impl WebOpenRuntime {
             crate::web_media_hls_open::PreparedHlsCandidate {
                 demuxer,
                 subtitles: Arc::from([]),
+                timeline_port: None,
             }
         })
     }
@@ -429,6 +472,18 @@ fn next_source_identity() -> Result<SourceIdentity> {
         })
         .map_err(|_| anyhow!("YtDlp source identity space исчерпан"))?;
     Ok(SourceIdentity::new(source_value))
+}
+
+/// Выдаёт non-zero generation отдельному dynamic timeline port-у.
+fn next_dynamic_timeline_port_generation() -> Result<DynamicMediaTimelinePortGeneration> {
+    let generation_value = NEXT_DYNAMIC_TIMELINE_PORT_GENERATION
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .map_err(|_| anyhow!("dynamic timeline port generation space исчерпан"))?;
+    let generation_value = NonZeroU64::new(generation_value)
+        .ok_or_else(|| anyhow!("dynamic timeline port generation не может быть нулевым"))?;
+    Ok(DynamicMediaTimelinePortGeneration::new(generation_value))
 }
 
 /// Строит pure selection policy из committed user config.

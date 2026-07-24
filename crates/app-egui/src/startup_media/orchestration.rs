@@ -548,10 +548,19 @@ impl StartupMediaController {
                     candidate_selection: Box::new(prepared.candidate_selection),
                     stream_configuration: Box::new(prepared.stream_configuration),
                 };
-                let prepared_media = player_core::PreparedMedia::from_external_label(
+                let mut prepared_media = player_core::PreparedMedia::from_external_label(
                     source_locator.safe_label(),
                     prepared.demuxer,
                 );
+                if let Some(timeline_port) = prepared.timeline_port {
+                    prepared_media = match prepared_media.with_dynamic_timeline(timeline_port) {
+                        Ok(prepared_media) => prepared_media,
+                        Err(error) => {
+                            self.handle_install_failure(error.to_string(), is_cli, app_state);
+                            return true;
+                        }
+                    };
+                }
                 let input = self.prepared_url_input(
                     prepared_media,
                     source.clone(),

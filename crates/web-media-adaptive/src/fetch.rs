@@ -194,6 +194,17 @@ pub enum AdaptiveTransportError {
     },
 }
 
+impl AdaptiveTransportError {
+    /// Возвращает HTTP status без URL/request payload для higher-level policy.
+    #[must_use]
+    pub fn http_status_code(&self) -> Option<u16> {
+        match self {
+            Self::Source(SourceError::HttpStatus { status, .. }) => Some(status.as_u16()),
+            _ => None,
+        }
+    }
+}
+
 /// Provider-neutral purpose одного bounded adaptive resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdaptiveResourcePurpose {

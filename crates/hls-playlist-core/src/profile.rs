@@ -100,6 +100,54 @@ pub fn validate_vod_profile(
     Ok(())
 }
 
+/// Проверяет initial S33 sliding-live profile.
+///
+/// Live intent приходит от service descriptor-а. Эта функция намеренно не
+/// выводит live только из отсутствующего `EXT-X-ENDLIST`.
+pub fn validate_live_profile(
+    playlist: &HlsPlaylist,
+    container_intent: Option<MediaContainerIntent>,
+) -> Result<(), HlsProfileError> {
+    validate_live_media_profile(playlist, container_intent, false)
+}
+
+/// Проверяет очередной S33 refresh snapshot.
+///
+/// `EXT-X-ENDLIST` допустим только на refresh: runtime после уже принятых
+/// packets явно завершит live stream через обычный terminal drain.
+pub fn validate_live_refresh_profile(
+    playlist: &HlsPlaylist,
+    container_intent: Option<MediaContainerIntent>,
+) -> Result<(), HlsProfileError> {
+    validate_live_media_profile(playlist, container_intent, true)
+}
+
+fn validate_live_media_profile(
+    playlist: &HlsPlaylist,
+    container_intent: Option<MediaContainerIntent>,
+    allow_end_list: bool,
+) -> Result<(), HlsProfileError> {
+    let HlsPlaylist::Media(media) = playlist else {
+        return Err(HlsProfileError::MasterPlaylist);
+    };
+    if media.end_list && !allow_end_list {
+        return Err(HlsProfileError::EndedLivePlaylist);
+    }
+    if media.playlist_type.is_some() {
+        return Err(HlsProfileError::LivePlaylistType);
+    }
+    validate_initial_profile(playlist)?;
+    if container_intent == Some(MediaContainerIntent::FragmentedMp4)
+        && media
+            .segments
+            .iter()
+            .any(|segment| segment.initialization_map.is_none())
+    {
+        return Err(HlsProfileError::FragmentedMp4MapRequired);
+    }
+    Ok(())
+}
+
 fn validate_common_semantics(
     protocol_version: Option<u64>,
     has_start_offset: bool,

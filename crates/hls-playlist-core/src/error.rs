@@ -51,6 +51,10 @@ pub enum HlsProfileError {
     MasterPlaylist,
     #[error("media playlist не содержит EXT-X-ENDLIST")]
     NonVod,
+    #[error("media playlist уже завершён и не является initial live snapshot")]
+    EndedLivePlaylist,
+    #[error("EXT-X-PLAYLIST-TYPE несовместим со sliding live profile")]
+    LivePlaylistType,
     #[error("HLS encryption method не входит в initial profile")]
     UnsupportedEncryptionMethod,
     #[error("HLS key format не равен identity")]

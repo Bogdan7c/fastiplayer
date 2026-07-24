@@ -20,4 +20,7 @@ pub use model::{
     MediaSegment, VariantStream,
 };
 pub use parser::{HlsParseRequest, is_hls_candidate, parse_hls_playlist};
-pub use profile::{validate_initial_profile, validate_vod_profile};
+pub use profile::{
+    validate_initial_profile, validate_live_profile, validate_live_refresh_profile,
+    validate_vod_profile,
+};

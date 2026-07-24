@@ -1,3 +1,8 @@
+## S33 HLS live/DVR production integration (2026-07-24)
+
+- `web-media-hls::live` owns selected rendition refresh, exact segment-scoped TS/fMP4 provenance, rolling RAP/audio evidence and atomic S31L timeline publication. `service-ytdlp` supplies explicit public live intent; app owns bounded endpoint re-extraction/rematch and installs the neutral timeline port before the existing barrier.
+- Manifest/segment/init/key 401/403/404/410 recover through a secret-safe single-flight next-generation transport replacement while demux reports existing temporary readiness. LL-HLS/ABR/private live state remain excluded. Full contract and tests: `mem:media-services/hls-live-s33-2026-07-24`.
+
 ## S32C HLS VOD production integration (2026-07-23)
 
 - HLS VOD is integrated through app-owned exact candidate composition and the existing Installed barrier. Decode-safe seek is generation-fenced; separate alternate AUDIO seeks through an atomic two-component transaction; subtitles remain descriptor-only. Master/audio selection is exact and fail-closed, with no DEFAULT/AUTOSELECT fallback. Full contract and current limitation: `mem:media-services/hls-vod-s32c-2026-07-23`.

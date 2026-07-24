@@ -7,7 +7,7 @@ use demux_api::{
     ProgressiveDemuxBufferLimits,
 };
 use hls_playlist_core::HlsParserLimits;
-use media_core::DemuxRetryHint;
+use media_core::{DemuxRetryHint, DynamicMediaTimelineEpoch, DynamicMediaTimelinePortGeneration};
 use source_core::HttpRequestTarget;
 use web_media_adaptive::AdaptiveHttpContext;
 use web_media_transport_api::SourceGeneration;
@@ -84,6 +84,7 @@ impl fmt::Debug for SecretInlineMediaPlaylist {
 }
 
 /// Exact extractor overrides, применяемые только HLS owner-ом.
+#[derive(Clone)]
 pub struct HlsRequestOverrides {
     aes: Option<ExtractorAesOverride>,
 }
@@ -196,6 +197,71 @@ pub struct HlsVodOpenRequest {
     pub demux_registry: Arc<DemuxRegistry>,
     /// Explicit parser/demux/backpressure policy.
     pub policy: HlsVodOpenPolicy,
+}
+
+/// Причина app-owned fresh endpoint extraction без URL/status payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HlsEndpointRefreshReason {
+    AuthorizationExpired,
+    ResourceExpired,
+}
+
+impl HlsEndpointRefreshReason {
+    /// Классифицирует только statuses, доказательно означающие expiry/re-authorization.
+    #[must_use]
+    pub(crate) const fn from_http_status(status: u16) -> Option<Self> {
+        match status {
+            401 | 403 => Some(Self::AuthorizationExpired),
+            404 | 410 => Some(Self::ResourceExpired),
+            _ => None,
+        }
+    }
+}
+
+/// Neutral request от HLS refresh owner-а к app process owner-у.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HlsEndpointRefreshRequest {
+    pub previous_generation: SourceGeneration,
+    pub reason: HlsEndpointRefreshReason,
+}
+
+/// Fresh transport material после app-owned re-extraction и semantic rematch.
+pub struct HlsEndpointRefreshReply {
+    pub http: AdaptiveHttpContext,
+    pub generation: SourceGeneration,
+    pub manifest: HlsManifestInput,
+    pub overrides: HlsRequestOverrides,
+}
+
+/// Bounded typed отказ app-owned refresh owner-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum HlsEndpointRefreshError {
+    #[error("HLS endpoint refresh cancelled")]
+    Cancelled,
+    #[error("fresh extraction не содержит semantic candidate match")]
+    SemanticRematchFailed,
+    #[error("fresh candidate больше не является compatible public HLS live")]
+    IncompatibleLiveCandidate,
+    #[error("HLS endpoint refresh owner disconnected")]
+    OwnerDisconnected,
+    #[error("HLS endpoint refresh attempts exhausted")]
+    AttemptsExhausted,
+}
+
+/// App-owned process boundary; implementation не выполняется demux worker-ом.
+pub trait HlsEndpointRefreshPort: Send + Sync {
+    fn refresh(
+        &self,
+        request: HlsEndpointRefreshRequest,
+    ) -> Result<HlsEndpointRefreshReply, HlsEndpointRefreshError>;
+}
+
+/// Полный S33 live open intent поверх proven S32 common request.
+pub struct HlsLiveOpenRequest {
+    pub common: HlsVodOpenRequest,
+    pub endpoint_refresh: Arc<dyn HlsEndpointRefreshPort>,
+    pub timeline_port_generation: DynamicMediaTimelinePortGeneration,
+    pub initial_source_epoch: DynamicMediaTimelineEpoch,
 }
 
 impl fmt::Debug for HlsVodOpenRequest {

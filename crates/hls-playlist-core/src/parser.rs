@@ -102,6 +102,8 @@ struct Parser<'a> {
     target_duration: Option<u64>,
     initial_media_sequence: u64,
     next_media_sequence: u64,
+    initial_discontinuity_sequence: u64,
+    next_discontinuity_sequence: u64,
     end_list: bool,
     active_key: Option<HlsKeyDeclaration>,
     next_key_declaration_sequence: u64,
@@ -144,6 +146,8 @@ impl<'a> Parser<'a> {
             target_duration: None,
             initial_media_sequence: 0,
             next_media_sequence: 0,
+            initial_discontinuity_sequence: 0,
+            next_discontinuity_sequence: 0,
             end_list: false,
             active_key: None,
             next_key_declaration_sequence: 0,
@@ -234,6 +238,7 @@ impl<'a> Parser<'a> {
             return Ok(HlsPlaylist::Media(MediaPlaylist {
                 target_duration_seconds,
                 media_sequence: self.initial_media_sequence,
+                discontinuity_sequence: self.initial_discontinuity_sequence,
                 segments: self.segments.into_boxed_slice(),
                 key_declarations: self.key_declarations.into_boxed_slice(),
                 end_list: self.end_list,
@@ -332,7 +337,9 @@ impl<'a> Parser<'a> {
                 if !self.segments.is_empty() || self.saw_discontinuity {
                     return Err(required(tag.line));
                 }
-                parse_u64(required_value(&tag)?, tag.line)?;
+                let sequence = parse_u64(required_value(&tag)?, tag.line)?;
+                self.initial_discontinuity_sequence = sequence;
+                self.next_discontinuity_sequence = sequence;
             }
             "#EXT-X-KEY" => {
                 let attributes = self.attributes(&tag)?;
@@ -465,13 +472,21 @@ impl<'a> Parser<'a> {
         if self.segments.len() >= self.limits.max_segments() {
             return Err(HlsParseError::new(HlsParseErrorKind::SegmentLimitExceeded));
         }
+        let discontinuity = self.pending_discontinuity.take().is_some();
+        if discontinuity {
+            self.next_discontinuity_sequence = self
+                .next_discontinuity_sequence
+                .checked_add(1)
+                .ok_or_else(|| syntax(line.number))?;
+        }
         self.segments.push(MediaSegment {
             uri: ExactReference::new(line.text),
             duration,
             title,
             byte_range: self.pending_range.take().map(|(range, _)| range),
-            discontinuity: self.pending_discontinuity.take().is_some(),
+            discontinuity,
             media_sequence: self.next_media_sequence,
+            discontinuity_sequence: self.next_discontinuity_sequence,
             initialization_map: self.active_map.clone(),
             key: self.active_key.clone(),
         });

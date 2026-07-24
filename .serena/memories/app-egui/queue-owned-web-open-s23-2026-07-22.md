@@ -1,5 +1,7 @@
 # S23 — Queue-owned web open integration (2026-07-22)
 
+> S33 extension (2026-07-24): explicit public yt-dlp live intent composes `web-media-hls` live runtime plus an app-owned bounded endpoint-refresh/rematch port. Normal/startup/settings preparation installs the neutral S31L port before the same Ready → authorize → enqueue → Installed barrier and never publishes service finite duration for live. Queue/current ownership is unchanged. Full contract: `mem:media-services/hls-live-s33-2026-07-24`.
+
 > S32C extension (2026-07-23): `web_media_hls_open` composes exact yt-dlp HLS material, concrete TS/fMP4 registry, strict master/alternate-audio evidence and subtitle descriptors through the same Ready → authorize → enqueue → Installed barrier. HLS decode-safe seek and atomic separate A/V replacement are documented in `mem:media-services/hls-vod-s32c-2026-07-23`.
 
 Связанные memories: `mem:core`, `mem:app-egui/media-open-coordinator-s10c`, `mem:app-egui/startup-orchestration-s17`, `mem:media-services/progressive-http-s22-2026-07-22`, `mem:media-services/web-playback-planner-s21c-2026-07-21`, `mem:media-services/web-transport-s21t-2026-07-21`, `mem:player-core/core`.

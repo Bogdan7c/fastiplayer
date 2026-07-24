@@ -12,6 +12,10 @@ pub(crate) struct YtDlpCandidateDocument {
     pub(crate) title: Option<String>,
     /// Длительность media в секундах из того же extraction snapshot-а.
     pub(crate) duration: Option<f64>,
+    /// Public extractor live flag.
+    pub(crate) is_live: Option<bool>,
+    /// Public extractor live lifecycle status.
+    pub(crate) live_status: Option<String>,
     /// Public extractor inventory.
     pub(crate) formats: Option<Vec<YtDlpSerializedFormat>>,
     /// Pinned selected compound components.

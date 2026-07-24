@@ -10,7 +10,10 @@ use demux_api::{
     ProgressiveDemuxBufferLimits,
 };
 use hls_playlist_core::HlsParserLimits;
-use media_core::{DemuxRetryHint, Demuxer};
+use media_core::{
+    DemuxRetryHint, Demuxer, DynamicMediaTimelineEpoch, DynamicMediaTimelinePort,
+    DynamicMediaTimelinePortGeneration,
+};
 use rustiplayer_config::NetworkConfig;
 use service_ytdlp::{
     YtDlpHlsManifestInputKind, YtDlpNormalizedCandidate, YtDlpTransportRequestContext,
@@ -20,9 +23,10 @@ use web_media_adaptive::{AdaptiveHttpContext, AdaptiveRetryPolicy, AdaptiveTrans
 use web_media_core::{ContainerFamily, StreamLayout, TransportFamily};
 use web_media_hls::{
     ExtractorAesOverride, HlsAudioLayoutIntent, HlsAudioRenditionEvidence,
-    HlsComponentContainerIntent, HlsContainerEvidence, HlsMainTrackLayoutIntent, HlsManifestInput,
-    HlsRequestOverrides, HlsRequiredContainer, HlsVariantSelectionIntent, HlsVodOpenPolicy,
-    HlsVodOpenRequest, SecretInlineMediaPlaylist, prepare_hls_vod,
+    HlsComponentContainerIntent, HlsContainerEvidence, HlsEndpointRefreshPort, HlsLiveOpenRequest,
+    HlsMainTrackLayoutIntent, HlsManifestInput, HlsRequestOverrides, HlsRequiredContainer,
+    HlsVariantSelectionIntent, HlsVodOpenPolicy, HlsVodOpenRequest, SecretInlineMediaPlaylist,
+    prepare_hls_live, prepare_hls_vod,
 };
 use web_media_transport_api::{SourceGeneration, TransportProviderId};
 
@@ -30,6 +34,13 @@ use web_media_transport_api::{SourceGeneration, TransportProviderId};
 pub(crate) struct PreparedHlsCandidate {
     pub(crate) demuxer: Box<dyn Demuxer + Send>,
     pub(crate) subtitles: Arc<[crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition]>,
+    pub(crate) timeline_port: Option<DynamicMediaTimelinePort>,
+}
+
+pub(crate) struct HlsProjectedRuntimeMaterial {
+    pub(crate) http: AdaptiveHttpContext,
+    pub(crate) manifest: HlsManifestInput,
+    pub(crate) overrides: HlsRequestOverrides,
 }
 
 /// Typed граница между single-master alternate audio и extractor compound resources.
@@ -68,9 +79,100 @@ pub(crate) fn prepare_hls_candidate(
     network_config: &NetworkConfig,
     demux_registry: Arc<DemuxRegistry>,
     cancellation: CancellationToken,
+    live_intent: service_ytdlp::YtDlpLiveIntent,
+    endpoint_refresh: Option<Arc<dyn HlsEndpointRefreshPort>>,
+    timeline_port_generation: DynamicMediaTimelinePortGeneration,
 ) -> Result<PreparedHlsCandidate> {
     let generation = SourceGeneration::new(1);
-    let context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation.clone());
+    let projected = project_hls_runtime_material(
+        candidate,
+        provider_id,
+        generation,
+        source_config,
+        network_config,
+        cancellation,
+    )?;
+    let HlsProjectedRuntimeMaterial {
+        http,
+        manifest,
+        overrides,
+    } = projected;
+    let (selection, containers) = selection_and_containers(candidate.descriptor().layout())?;
+    let policy = hls_policy(adaptive_limits(network_config)?)?;
+    if live_intent == service_ytdlp::YtDlpLiveIntent::Live {
+        let endpoint_refresh = endpoint_refresh
+            .ok_or_else(|| anyhow!("HLS live candidate потерял app endpoint refresh port"))?;
+        let opened = prepare_hls_live(HlsLiveOpenRequest {
+            common: HlsVodOpenRequest {
+                http,
+                generation,
+                manifest,
+                selection,
+                overrides,
+                containers,
+                demux_registry,
+                policy,
+            },
+            endpoint_refresh,
+            timeline_port_generation,
+            initial_source_epoch: DynamicMediaTimelineEpoch::new(0),
+        })
+        .context("HLS live preflight завершился ошибкой")?;
+        let subtitles = opened
+            .subtitle_renditions()
+            .iter()
+            .map(crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition::from_prepared)
+            .collect::<Vec<_>>()
+            .into();
+        let (demuxer, timeline_port, _) = opened.into_parts();
+        return Ok(PreparedHlsCandidate {
+            demuxer,
+            subtitles,
+            timeline_port: Some(timeline_port),
+        });
+    }
+    if !matches!(
+        live_intent,
+        service_ytdlp::YtDlpLiveIntent::Unspecified | service_ytdlp::YtDlpLiveIntent::NotLive
+    ) {
+        return Err(anyhow!(
+            "yt-dlp live intent несовместим с HLS playback profile"
+        ));
+    }
+    let opened = prepare_hls_vod(HlsVodOpenRequest {
+        http,
+        generation,
+        manifest,
+        selection,
+        overrides,
+        containers,
+        demux_registry,
+        policy,
+    })
+    .context("HLS VOD preflight завершился ошибкой")?;
+    let subtitles = opened
+        .subtitle_renditions()
+        .iter()
+        .map(crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition::from_prepared)
+        .collect::<Vec<_>>()
+        .into();
+    Ok(PreparedHlsCandidate {
+        demuxer: opened.into_demuxer(),
+        subtitles,
+        timeline_port: None,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn project_hls_runtime_material(
+    candidate: &YtDlpNormalizedCandidate,
+    provider_id: TransportProviderId,
+    generation: SourceGeneration,
+    source_config: &SourceRuntimeConfig,
+    network_config: &NetworkConfig,
+    cancellation: CancellationToken,
+) -> Result<HlsProjectedRuntimeMaterial> {
+    let context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation);
     let transport_request = candidate
         .hls_transport_request(&context)
         .context("Не удалось спроецировать yt-dlp HLS transport material")?;
@@ -103,7 +205,6 @@ pub(crate) fn prepare_hls_candidate(
         })
         .transpose()
         .context("yt-dlp hls_aes нарушил validated AES boundary")?;
-    let (selection, containers) = selection_and_containers(candidate.descriptor().layout())?;
     let adaptive_limits = adaptive_limits(network_config)?;
     let http = AdaptiveHttpContext::new(
         transport_request,
@@ -117,27 +218,10 @@ pub(crate) fn prepare_hls_candidate(
         .context("HLS retry policy invalid")?,
     )
     .context("Не удалось создать HLS adaptive HTTP context")?;
-    let policy = hls_policy(adaptive_limits)?;
-    let opened = prepare_hls_vod(HlsVodOpenRequest {
+    Ok(HlsProjectedRuntimeMaterial {
         http,
-        generation,
         manifest,
-        selection,
         overrides: HlsRequestOverrides::new(aes),
-        containers,
-        demux_registry,
-        policy,
-    })
-    .context("HLS VOD preflight завершился ошибкой")?;
-    let subtitles = opened
-        .subtitle_renditions()
-        .iter()
-        .map(crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition::from_prepared)
-        .collect::<Vec<_>>()
-        .into();
-    Ok(PreparedHlsCandidate {
-        demuxer: opened.into_demuxer(),
-        subtitles,
     })
 }
 
@@ -246,7 +330,7 @@ fn required_container(container: ContainerFamily) -> Result<HlsRequiredContainer
     }
 }
 
-fn adaptive_limits(network: &NetworkConfig) -> Result<AdaptiveTransportLimits> {
+pub(crate) fn adaptive_limits(network: &NetworkConfig) -> Result<AdaptiveTransportLimits> {
     let maximum_segment_bytes = usize::try_from(network.memory_cache_mb)
         .ok()
         .and_then(|megabytes| megabytes.checked_mul(1_024 * 1_024))
@@ -259,7 +343,7 @@ fn adaptive_limits(network: &NetworkConfig) -> Result<AdaptiveTransportLimits> {
     ))
 }
 
-fn hls_policy(limits: AdaptiveTransportLimits) -> Result<HlsVodOpenPolicy> {
+pub(crate) fn hls_policy(limits: AdaptiveTransportLimits) -> Result<HlsVodOpenPolicy> {
     Ok(HlsVodOpenPolicy {
         parser_limits: HlsParserLimits::default(),
         demux_sniff_budget: DemuxSniffBudget::new(
