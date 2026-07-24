@@ -33,4 +33,12 @@
 - `player-core/src/worker/tests.rs`: paused idle worker wakes on a sliding live window.
 - App/desktop tests cover live resume suppression, suspend KeepStart, expired MPRIS seek, capability/range and labels.
 
-Related: `mem:player-core/core`, `mem:player-core/scrub-commit-policy-s09`, `mem:playlist/resume-position-sidecar-2026-07-19`, `mem:app-egui/wake-runtime-s10a`, `mem:app-egui/playlist-desktop-transport-s18b`.
+## S35S installed same-item restore extension (2026-07-24)
+
+- `PlayerSession` now owns the fresh-generation DVR decision for `InstalledPositionRestore::RestoreLiveSameItemPosition`: it observes the latest snapshot of the exact installed port before deciding.
+- A retained target uses the existing exact seek lifecycle. An expired/no-DVR target starts no seek, sets the fresh provider safe edge and returns typed `AdjustedToLiveEdge` with an exact reason.
+- App cannot inspect/clamp the range and never persists a live checkpoint. Old/new generations remain isolated; cancellation and committed replacement have focused exactly-once release coverage.
+- Expiry after a retained seek has already started continues to use the existing typed S31L seek-expiry outcome; there is no automatic second jump-to-edge transaction.
+- Full handoff: `mem:app-egui/live-same-item-candidate-switch-s35s-2026-07-24`.
+
+Related: `mem:player-core/core`, `mem:player-core/scrub-commit-policy-s09`, `mem:playlist/resume-position-sidecar-2026-07-19`, `mem:app-egui/wake-runtime-s10a`, `mem:app-egui/playlist-desktop-transport-s18b`, `mem:app-egui/live-same-item-candidate-switch-s35s-2026-07-24`.

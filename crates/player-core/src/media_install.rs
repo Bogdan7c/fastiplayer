@@ -21,11 +21,11 @@ pub use installed_media_release::{
     InstalledMediaReleaseReceiptError,
 };
 pub use installed_state_restore::{
-    InstalledMediaRestoreFailureStage, InstalledMediaStateRestore,
-    InstalledMediaStateRestoreOutcome, InstalledMediaStateRestoreReceipt,
-    InstalledMediaStateRestoreReceiptError, InstalledPositionRestore,
-    InstalledPositionUnavailableReason, InstalledSubtitleRestore, InstalledTrackRestore,
-    InstalledVolumeRestore,
+    InstalledLiveEdgeAdjustmentReason, InstalledMediaRestoreFailureStage,
+    InstalledMediaStateRestore, InstalledMediaStateRestoreOutcome,
+    InstalledMediaStateRestoreReceipt, InstalledMediaStateRestoreReceiptError,
+    InstalledPositionRestore, InstalledPositionUnavailableReason, InstalledSubtitleRestore,
+    InstalledTrackRestore, InstalledVolumeRestore,
 };
 pub(crate) use installed_state_restore::{
     InstalledMediaTargetMatch, PendingInstalledPositionRestore,

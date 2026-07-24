@@ -35,6 +35,27 @@ pub enum InstalledPositionRestore {
     KeepStart,
     /// Запускает exact absolute seek только для matching installed instance-а.
     SeekTo(Duration),
+    /// Восстанавливает абсолютную live-позицию same-item switch-а по свежему timeline.
+    ///
+    /// Player сам перечитывает latest snapshot установленного live port-а: retained
+    /// DVR target проходит обычный seek lifecycle, а expired/no-DVR target принимает
+    /// provider-declared safe live edge без app-side range inspection или clamp-а.
+    RestoreLiveSameItemPosition {
+        /// Абсолютная позиция старого live instance-а перед commit barrier-ом.
+        previous_absolute_position: Duration,
+    },
+}
+
+/// Причина, по которой live same-item restore принял свежий safe live edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstalledLiveEdgeAdjustmentReason {
+    /// Новый provider не объявил DVR range, поэтому seek старой позиции невозможен.
+    DvrWindowUnavailable,
+    /// Старая абсолютная позиция уже не входит в свежий DVR range нового port-а.
+    PreviousPositionOutsideDvr {
+        /// Fresh provider-owned range, использованный для exact membership check-а.
+        available_range: media_core::TimelineRange,
+    },
 }
 
 /// Явное восстановление громкости exact installed media instance-а.
@@ -104,6 +125,17 @@ pub enum InstalledPositionUnavailableReason {
 pub enum InstalledMediaStateRestoreOutcome {
     /// Все requested actions применены к exact instance.
     Applied { media_instance_id: MediaInstanceId },
+    /// Live same-item restore принял fresh provider-declared safe edge.
+    AdjustedToLiveEdge {
+        /// Exact instance, к которому применена корректировка.
+        media_instance_id: MediaInstanceId,
+        /// Абсолютная позиция старого instance-а, которую пытались сохранить.
+        requested_position: Duration,
+        /// Fresh safe live edge нового generation.
+        live_edge: Duration,
+        /// Typed причина отказа от восстановления старой позиции.
+        reason: InstalledLiveEdgeAdjustmentReason,
+    },
     /// Media установлено, но exact requested position недоступна у этого source.
     PositionUnavailable {
         media_instance_id: MediaInstanceId,

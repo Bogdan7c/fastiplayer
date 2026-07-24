@@ -11,11 +11,18 @@ use crate::{
 };
 
 use super::PlayerSession;
+use super::dynamic_timeline::LiveSameItemPositionRestoreDecision;
 
 /// Результат синхронной части restore до terminal seek commit-а.
 enum InstalledPositionRestoreStart {
     /// Position менять не требовалось; restore уже полностью применён.
     CompletedWithoutSeek,
+    /// Fresh live snapshot потребовал explicit safe-edge adjustment.
+    AdjustedToLiveEdge {
+        requested_position: std::time::Duration,
+        live_edge: std::time::Duration,
+        reason: crate::InstalledLiveEdgeAdjustmentReason,
+    },
     /// Seek принят, а authoritative outcome должен дождаться exact generation commit-а.
     AwaitingSeekCommit { seek_generation: u64 },
 }
@@ -64,6 +71,21 @@ impl PlayerSession {
                 Self::publish_installed_restore_outcome(
                     outcome_tx,
                     InstalledMediaStateRestoreOutcome::Applied { media_instance_id },
+                );
+            }
+            Ok(InstalledPositionRestoreStart::AdjustedToLiveEdge {
+                requested_position,
+                live_edge,
+                reason,
+            }) => {
+                Self::publish_installed_restore_outcome(
+                    outcome_tx,
+                    InstalledMediaStateRestoreOutcome::AdjustedToLiveEdge {
+                        media_instance_id,
+                        requested_position,
+                        live_edge,
+                        reason,
+                    },
                 );
             }
             Ok(InstalledPositionRestoreStart::AwaitingSeekCommit { seek_generation }) => {
@@ -181,8 +203,30 @@ impl PlayerSession {
         media_instance_id: crate::MediaInstanceId,
         restore: InstalledPositionRestore,
     ) -> Result<InstalledPositionRestoreStart, InstalledMediaStateRestoreOutcome> {
-        let InstalledPositionRestore::SeekTo(position) = restore else {
-            return Ok(InstalledPositionRestoreStart::CompletedWithoutSeek);
+        let position = match restore {
+            InstalledPositionRestore::KeepStart => {
+                return Ok(InstalledPositionRestoreStart::CompletedWithoutSeek);
+            }
+            InstalledPositionRestore::SeekTo(position) => position,
+            InstalledPositionRestore::RestoreLiveSameItemPosition {
+                previous_absolute_position,
+            } => match self.decide_live_same_item_position_restore(
+                media_instance_id,
+                previous_absolute_position,
+            )? {
+                LiveSameItemPositionRestoreDecision::RestoreRetainedPosition(position) => position,
+                LiveSameItemPositionRestoreDecision::AdjustedToLiveEdge {
+                    requested_position,
+                    live_edge,
+                    reason,
+                } => {
+                    return Ok(InstalledPositionRestoreStart::AdjustedToLiveEdge {
+                        requested_position,
+                        live_edge,
+                        reason,
+                    });
+                }
+            },
         };
         if !self.snapshot.timeline.seekable
             && self.snapshot.timeline.not_seekable_reason

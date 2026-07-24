@@ -1,5 +1,9 @@
 //! Post-Installed восстановление позиции до playback intent и lineage registration.
 
+use super::live_same_item_restore::{
+    PendingPositionRestore, PositionRestoreOutcomeRoute, PositionRestoreTimeline,
+    route_position_restore_outcome, same_lineage_position_restore,
+};
 use super::{
     AppState, InstalledSingleMediaOpen, MediaInstallCompletion, NonZeroU64,
     PendingStrongLineageCommit, PendingStrongMediaOpen, PendingStrongMediaOpenPhase,
@@ -99,6 +103,8 @@ impl AppState {
                     StrongMediaOpenError::PendingPhaseStateLost,
                 ));
             };
+            let (position, timeline) =
+                same_lineage_position_restore(snapshot.timeline.mode, restore.position);
             let restore_request = player_core::InstalledMediaStateRestore {
                 request_id: installed.player_request_id,
                 media_instance_id,
@@ -116,11 +122,7 @@ impl AppState {
                     restore.selected_tracks.subtitle_track,
                 ),
                 volume: player_core::InstalledVolumeRestore::Set(restore.volume),
-                position: if !is_live && restore.position > std::time::Duration::ZERO {
-                    player_core::InstalledPositionRestore::SeekTo(restore.position)
-                } else {
-                    player_core::InstalledPositionRestore::KeepStart
-                },
+                position,
             };
             return match self
                 .player_worker
@@ -130,8 +132,11 @@ impl AppState {
                     pending.phase = PendingStrongMediaOpenPhase::PositionRestore {
                         installed,
                         media_instance_id,
-                        requested_position: restore.position,
-                        receipt,
+                        restore: PendingPositionRestore {
+                            requested_position: restore.position,
+                            timeline,
+                            receipt,
+                        },
                     };
                     StrongMediaOpenPoll::Pending
                 }
@@ -188,8 +193,11 @@ impl AppState {
                         pending.phase = PendingStrongMediaOpenPhase::PositionRestore {
                             installed,
                             media_instance_id,
-                            requested_position,
-                            receipt,
+                            restore: PendingPositionRestore {
+                                requested_position,
+                                timeline: PositionRestoreTimeline::Static,
+                                receipt,
+                            },
                         };
                         StrongMediaOpenPoll::Pending
                     }
@@ -205,11 +213,11 @@ impl AppState {
 
     pub(super) fn poll_strong_media_position_restore(
         &mut self,
-        _playlist_runtime: &mut PlaylistRuntime,
         pending: &mut PendingStrongMediaOpen,
         installed: &mut InstalledSingleMediaOpen,
         media_instance_id: player_core::MediaInstanceId,
         requested_position: std::time::Duration,
+        timeline: PositionRestoreTimeline,
         receipt: &player_core::InstalledMediaStateRestoreReceipt,
     ) -> StrongMediaOpenPoll {
         let outcome = match receipt.try_take_outcome() {
@@ -221,32 +229,23 @@ impl AppState {
                 ));
             }
         };
-        match outcome {
-            player_core::InstalledMediaStateRestoreOutcome::Applied {
-                media_instance_id: applied,
-            } if applied == media_instance_id => self.begin_playback_intent(
+        match route_position_restore_outcome(
+            outcome,
+            media_instance_id,
+            requested_position,
+            timeline,
+        ) {
+            PositionRestoreOutcomeRoute::Resume {
+                checkpoint_position,
+                warning,
+            } => self.begin_playback_intent(
                 pending,
                 installed.clone(),
                 media_instance_id,
-                crate::playlist_runtime::InstalledCheckpointPosition::Seekable(requested_position),
-                None,
+                checkpoint_position,
+                warning,
             ),
-            player_core::InstalledMediaStateRestoreOutcome::PositionUnavailable {
-                media_instance_id: applied,
-                requested_position,
-                available_position,
-                ..
-            } if applied == media_instance_id => self.begin_playback_intent(
-                pending,
-                installed.clone(),
-                media_instance_id,
-                crate::playlist_runtime::InstalledCheckpointPosition::NonSeekable,
-                Some(crate::playlist_runtime::ResumePositionWarning {
-                    requested_position,
-                    available_position,
-                }),
-            ),
-            outcome => {
+            PositionRestoreOutcomeRoute::Fail(outcome) => {
                 StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::PositionRestore(outcome)))
             }
         }

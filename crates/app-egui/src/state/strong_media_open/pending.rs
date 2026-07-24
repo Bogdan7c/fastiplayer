@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod live_same_item_restore;
 mod resume;
 use resume::InstalledResumeCommit;
 mod same_lineage;
@@ -44,8 +45,7 @@ enum PendingStrongMediaOpenPhase {
     PositionRestore {
         installed: InstalledSingleMediaOpen,
         media_instance_id: player_core::MediaInstanceId,
-        requested_position: std::time::Duration,
-        receipt: player_core::InstalledMediaStateRestoreReceipt,
+        restore: live_same_item_restore::PendingPositionRestore,
     },
     PlaybackIntent {
         installed: InstalledSingleMediaOpen,
@@ -396,24 +396,22 @@ impl AppState {
             PendingStrongMediaOpenPhase::PositionRestore {
                 mut installed,
                 media_instance_id,
-                requested_position,
-                receipt,
+                restore,
             } => {
                 let result = self.poll_strong_media_position_restore(
-                    playlist_runtime,
                     &mut pending,
                     &mut installed,
                     media_instance_id,
-                    requested_position,
-                    &receipt,
+                    restore.requested_position,
+                    restore.timeline,
+                    &restore.receipt,
                 );
                 if matches!(result, StrongMediaOpenPoll::Pending) {
                     pending.phase.retain_after_pending_poll(
                         PendingStrongMediaOpenPhase::PositionRestore {
                             installed,
                             media_instance_id,
-                            requested_position,
-                            receipt,
+                            restore,
                         },
                     );
                 }

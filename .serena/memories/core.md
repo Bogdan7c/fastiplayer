@@ -1,3 +1,8 @@
+## S35S neutral live same-item candidate switch (2026-07-24)
+
+- Proven S25 same-lineage switching now restores an old absolute position only when it remains inside the latest fresh-generation DVR range; expired/no-DVR switches keep the provider-declared safe live edge and return typed `AdjustedToLiveEdge`.
+- The decision is player-owned over the installed `DynamicMediaTimelinePort`; app keeps exact Installed/rebind ordering and live checkpoints remain non-persistent. Full boundary, tests and post-install seek-expiry limitation: `mem:app-egui/live-same-item-candidate-switch-s35s-2026-07-24`.
+
 ## S35 strict DASH live/DVR (2026-07-24)
 
 - Production dynamic DASH now supports the deliberately narrow checked-in timing profile: direct UTC midpoint synchronization, SegmentTemplate+SegmentTimeline with PTO, strict Period timing, A/V availability intersection, publish-ordered refresh, sliding DVR and endpoint re-extraction through existing S31L/player boundaries.

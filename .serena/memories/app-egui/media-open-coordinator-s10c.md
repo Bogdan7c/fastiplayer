@@ -101,3 +101,9 @@
 ## S27 evidence note (2026-07-22)
 - Guardrails now prove every yt-dlp startup/preparation/settings ingress composes through `app-egui::web_media_open`; queue Ready/authorization/Enqueued/Installed ownership is unchanged.
 - Full gate and manual-runner contract: `mem:media-services/progressive-web-hardening-s27-2026-07-22`.
+
+## S35S live same-lineage consumer (2026-07-24)
+
+- Coordinator phases remain unchanged. Live candidate switching uses the existing S25 envelope: old playback until commit, exact Installed, same-lineage rebind, then player-owned live position restore and playback intent.
+- App forwards the captured old absolute position but never reads the fresh DVR range. Player returns either existing seek-backed `Applied` or typed `AdjustedToLiveEdge`; both retain non-persistent `Live` checkpoint semantics.
+- Full contract: `mem:app-egui/live-same-item-candidate-switch-s35s-2026-07-24`.

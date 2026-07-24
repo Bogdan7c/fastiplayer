@@ -4,7 +4,7 @@ use crossbeam_channel::Receiver;
 use frame_server_core::CancelScrubReason;
 use media_core::{
     DynamicMediaTimelinePort, DynamicMediaTimelinePortGeneration, DynamicMediaTimelineRevision,
-    DynamicMediaTimelineSnapshot, TimelineMode, TimelineNotSeekableReason,
+    DynamicMediaTimelineSnapshot, MediaTime, TimelineMode, TimelineNotSeekableReason,
 };
 
 use crate::{MediaInstanceId, PreparedMediaTimelineMode};
@@ -31,6 +31,19 @@ struct DynamicTimelineBinding {
 #[derive(Debug, Default)]
 pub(super) struct DynamicTimelineRuntime {
     binding: Option<DynamicTimelineBinding>,
+}
+
+/// Player-owned решение live same-item restore по fresh snapshot текущего port-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LiveSameItemPositionRestoreDecision {
+    /// Старая абсолютная позиция всё ещё доступна и должна пройти exact seek lifecycle.
+    RestoreRetainedPosition(std::time::Duration),
+    /// Новая live generation уже стартовала с provider-declared safe edge.
+    AdjustedToLiveEdge {
+        requested_position: std::time::Duration,
+        live_edge: std::time::Duration,
+        reason: crate::InstalledLiveEdgeAdjustmentReason,
+    },
 }
 
 impl PlayerSession {
@@ -173,6 +186,58 @@ impl PlayerSession {
         } else {
             self.expire_all_dynamic_seek_targets();
         }
+    }
+
+    /// Перечитывает latest snapshot exact installed live port-а и решает restore.
+    pub(super) fn decide_live_same_item_position_restore(
+        &mut self,
+        media_instance_id: MediaInstanceId,
+        previous_absolute_position: std::time::Duration,
+    ) -> Result<LiveSameItemPositionRestoreDecision, crate::InstalledMediaStateRestoreOutcome> {
+        let Some(binding) = self.dynamic_timeline.binding.as_ref() else {
+            return Err(crate::InstalledMediaStateRestoreOutcome::StaleInstance);
+        };
+        if binding.media_instance_id != media_instance_id
+            || self.snapshot.media_instance_id != Some(media_instance_id)
+        {
+            return Err(crate::InstalledMediaStateRestoreOutcome::StaleInstance);
+        }
+
+        let fresh_snapshot = binding.port.observe().snapshot;
+        self.apply_dynamic_timeline_snapshot(fresh_snapshot, false);
+
+        let requested_media_time = MediaTime::from_duration(previous_absolute_position);
+        if fresh_snapshot
+            .state
+            .seekable_range()
+            .is_some_and(|range| range.contains(requested_media_time))
+        {
+            return Ok(
+                LiveSameItemPositionRestoreDecision::RestoreRetainedPosition(
+                    previous_absolute_position,
+                ),
+            );
+        }
+
+        let reason = match fresh_snapshot.state.seekable_range() {
+            Some(available_range) => {
+                crate::InstalledLiveEdgeAdjustmentReason::PreviousPositionOutsideDvr {
+                    available_range,
+                }
+            }
+            None => crate::InstalledLiveEdgeAdjustmentReason::DvrWindowUnavailable,
+        };
+        let live_edge = fresh_snapshot.state.live_edge().as_duration();
+        self.current_source_position = live_edge;
+        self.snapshot
+            .set_timeline_position(fresh_snapshot.state.live_edge());
+        self.pipeline.set_media_clock_base(live_edge);
+
+        Ok(LiveSameItemPositionRestoreDecision::AdjustedToLiveEdge {
+            requested_position: previous_absolute_position,
+            live_edge,
+            reason,
+        })
     }
 
     fn expire_dynamic_seek_target_outside(&mut self, available_range: media_core::TimelineRange) {

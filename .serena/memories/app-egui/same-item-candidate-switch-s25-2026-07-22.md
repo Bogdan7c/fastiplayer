@@ -25,4 +25,11 @@
 ## Verification
 - Focused tests cover fresh Playing/Paused capture, exact/disabled subtitle restore, applicable A/V tracks, exact volume and typed invalid-volume failure, playback-window relative seek, detached active source, compound part current, selector busy/stale/failure state, queue/traversal/shuffle/lineage preservation, and existing same/cross-backend/cancel/release scenarios.
 - Final verification: 568 `player-core` tests PASS; 825 `app-egui --no-default-features` tests PASS; strict all-targets Clippy for both touched crates, default-feature app check, rustfmt, refactor guardrails, diff check and Serena diagnostics PASS.
-- Related memories: `mem:playlist/core`, `mem:app-egui/media-open-coordinator-s10c`, `mem:render-video/live-backend-swap-present-frame-freeze`.
+## S35S live extension (2026-07-24)
+
+- Same-lineage live restore now sends the captured old absolute position as `InstalledPositionRestore::RestoreLiveSameItemPosition`; app never reads/clamps the fresh DVR range.
+- Player decides against the latest installed new-generation timeline: retained DVR targets use the existing exact seek lifecycle, while expired/no-DVR targets return typed `AdjustedToLiveEdge` and keep a `Live` checkpoint.
+- Exact Installed → same-lineage rebind → restore/intent ordering, CommitMustFinish, selector cancellation and playlist/traversal/shuffle/lineage invariants are unchanged.
+- Full contract: `mem:app-egui/live-same-item-candidate-switch-s35s-2026-07-24`.
+
+- Related memories: `mem:playlist/core`, `mem:app-egui/media-open-coordinator-s10c`, `mem:render-video/live-backend-swap-present-frame-freeze`, `mem:app-egui/live-same-item-candidate-switch-s35s-2026-07-24`.
