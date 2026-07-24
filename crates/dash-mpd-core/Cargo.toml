@@ -8,3 +8,4 @@ license.workspace = true
 [dependencies]
 bounded-xml-reader.workspace = true
 thiserror.workspace = true
+time.workspace = true

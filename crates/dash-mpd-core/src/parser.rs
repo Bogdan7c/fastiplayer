@@ -10,7 +10,7 @@ use crate::model::{
 use crate::template::DashTemplateString;
 
 /// Narrow static profile allowlist, доказанный checked-in S34 matrix.
-const SUPPORTED_DASH_PROFILES: &[&str] = &[
+pub(super) const SUPPORTED_DASH_PROFILES: &[&str] = &[
     "urn:mpeg:dash:profile:full:2011",
     "urn:mpeg:dash:profile:isoff-on-demand:2011",
     "urn:mpeg:dash:profile:isoff-live:2011",
@@ -37,7 +37,7 @@ pub struct DashMpdLimits {
 
 impl DashMpdLimits {
     /// Проверяет, что ни один model cap не отключён нулём.
-    fn validate(self) -> Result<Self, DashMpdError> {
+    pub(super) fn validate(self) -> Result<Self, DashMpdError> {
         let values = [
             self.maximum_periods,
             self.maximum_adaptation_sets_per_period,
@@ -64,23 +64,23 @@ pub struct DashMpdParseRequest<'document> {
 }
 
 /// Небольшой cursor централизует XML error mapping.
-struct EventCursor<'document> {
+pub(super) struct EventCursor<'document> {
     /// Hardened project-owned reader.
-    reader: BoundedXmlReader<'document>,
+    pub(super) reader: BoundedXmlReader<'document>,
 }
 
 /// Period до вычисления omitted start/duration.
-struct ParsedPeriod {
+pub(super) struct ParsedPeriod {
     /// Optional schema identifier.
-    id: Option<String>,
+    pub(super) id: Option<String>,
     /// Optional explicit start.
-    start_milliseconds: Option<u64>,
+    pub(super) start_milliseconds: Option<u64>,
     /// Optional explicit duration.
-    duration_milliseconds: Option<u64>,
+    pub(super) duration_milliseconds: Option<u64>,
     /// Period BaseURL.
-    base_url: Option<DashBaseUrl>,
+    pub(super) base_url: Option<DashBaseUrl>,
     /// Parsed adaptations.
-    adaptation_sets: Box<[DashAdaptationSet]>,
+    pub(super) adaptation_sets: Box<[DashAdaptationSet]>,
 }
 
 /// Наследуемые media hints AdaptationSet.
@@ -96,7 +96,7 @@ struct MediaHints {
 
 impl EventCursor<'_> {
     /// Возвращает следующий project-owned event.
-    fn next_event(&mut self) -> Result<Option<XmlEvent>, DashMpdError> {
+    pub(super) fn next_event(&mut self) -> Result<Option<XmlEvent>, DashMpdError> {
         self.reader.next_event().map_err(DashMpdError::from_xml)
     }
 }
@@ -172,7 +172,7 @@ pub fn parse_dash_mpd(request: DashMpdParseRequest<'_>) -> Result<DashMpd, DashM
 }
 
 /// Проверяет каждый comma-separated profile как exact allowlisted identifier.
-fn validate_profiles(profiles: Option<&str>) -> Result<(), DashMpdError> {
+pub(super) fn validate_profiles(profiles: Option<&str>) -> Result<(), DashMpdError> {
     let Some(profiles) = profiles else {
         return Ok(());
     };
@@ -185,7 +185,7 @@ fn validate_profiles(profiles: Option<&str>) -> Result<(), DashMpdError> {
 }
 
 /// Разбирает Period без предположений о следующем Period.
-fn parse_period(
+pub(super) fn parse_period(
     cursor: &mut EventCursor<'_>,
     element: XmlElement,
     limits: DashMpdLimits,
@@ -471,7 +471,7 @@ fn parse_empty_representation(
 }
 
 /// Вычисляет exact contiguous Period timeline.
-fn finalize_periods(
+pub(super) fn finalize_periods(
     parsed: Vec<ParsedPeriod>,
     presentation_duration: Option<u64>,
 ) -> Result<(Box<[DashPeriod]>, u64), DashMpdError> {
@@ -513,18 +513,33 @@ fn finalize_periods(
 }
 
 /// Парсит BaseURL как text-only leaf.
-fn parse_base_url(
+pub(super) fn parse_base_url(
     cursor: &mut EventCursor<'_>,
     element: XmlElement,
     limits: DashMpdLimits,
 ) -> Result<DashBaseUrl, DashMpdError> {
-    validate_attributes(&element, &["serviceLocation"])?;
+    validate_attributes(
+        &element,
+        &[
+            "serviceLocation",
+            "availabilityTimeOffset",
+            "availabilityTimeComplete",
+        ],
+    )?;
+    let availability_time_offset_nanoseconds =
+        optional_decimal_seconds_nanoseconds_attribute(&element, "availabilityTimeOffset")?;
+    let availability_time_complete =
+        optional_boolean_attribute(&element, "availabilityTimeComplete")?;
     let text = read_text_leaf(cursor, "BaseURL", limits)?;
-    Ok(DashBaseUrl::new(DashUrlReference::new(text)))
+    Ok(DashBaseUrl::with_availability(
+        DashUrlReference::new(text),
+        availability_time_offset_nanoseconds,
+        availability_time_complete,
+    ))
 }
 
 /// Сохраняет cardinality 0..1 BaseURL на одном уровне.
-fn set_single_base_url(
+pub(super) fn set_single_base_url(
     slot: &mut Option<DashBaseUrl>,
     value: DashBaseUrl,
 ) -> Result<(), DashMpdError> {
@@ -576,7 +591,7 @@ fn read_text_leaf(
 }
 
 /// Проверяет expanded name и exact DASH namespace.
-fn require_name(
+pub(super) fn require_name(
     name: &XmlExpandedName,
     local_name: &str,
     kind: DashMpdErrorKind,
@@ -588,12 +603,15 @@ fn require_name(
 }
 
 /// Exact namespace/local-name predicate.
-fn is_name(name: &XmlExpandedName, local_name: &str) -> bool {
+pub(super) fn is_name(name: &XmlExpandedName, local_name: &str) -> bool {
     name.namespace_uri() == Some(DASH_MPD_NAMESPACE) && name.local_name() == local_name
 }
 
 /// Разрешает только перечисленные unqualified attributes и запрещает xlink.
-fn validate_attributes(element: &XmlElement, allowed: &[&str]) -> Result<(), DashMpdError> {
+pub(super) fn validate_attributes(
+    element: &XmlElement,
+    allowed: &[&str],
+) -> Result<(), DashMpdError> {
     for attribute in element.attributes() {
         if attribute.name().namespace_uri().is_some()
             || !allowed.contains(&attribute.name().local_name())
@@ -605,7 +623,7 @@ fn validate_attributes(element: &XmlElement, allowed: &[&str]) -> Result<(), Das
 }
 
 /// Находит unqualified attribute.
-fn optional_attribute<'element>(
+pub(super) fn optional_attribute<'element>(
     element: &'element XmlElement,
     name: &str,
 ) -> Result<Option<&'element str>, DashMpdError> {
@@ -622,7 +640,7 @@ fn optional_attribute<'element>(
 }
 
 /// Читает bounded optional string.
-fn bounded_optional_attribute(
+pub(super) fn bounded_optional_attribute(
     element: &XmlElement,
     name: &str,
     limits: DashMpdLimits,

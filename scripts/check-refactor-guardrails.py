@@ -147,9 +147,9 @@ HLS_PLAYLIST_CORE_ALLOWED_DEPENDENCIES = frozenset(
     {"thiserror", "unicode-normalization", "url"}
 )
 
-# DASH schema owner зависит только от hardened XML boundary и typed errors.
+# DASH schema owner зависит только от hardened XML boundary, exact UTC parser и typed errors.
 DASH_MPD_CORE_ALLOWED_DEPENDENCIES = frozenset(
-    {"bounded-xml-reader", "thiserror"}
+    {"bounded-xml-reader", "thiserror", "time"}
 )
 
 # Общий natural comparator остаётся std-only и не знает path/domain owners.
@@ -1189,7 +1189,7 @@ def find_dependency_violations(
             dependency_map,
             frozenset({"dash-mpd-core"}),
             DASH_MPD_CORE_ALLOWED_DEPENDENCIES,
-            "dash-mpd-core остаётся pure static MPD schema/model без HTTP/demux/app/yt-dlp",
+            "dash-mpd-core остаётся pure MPD schema/timing model без HTTP/demux/app/yt-dlp",
         )
     )
     violations.extend(

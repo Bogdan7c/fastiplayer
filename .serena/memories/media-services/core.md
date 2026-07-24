@@ -1,3 +1,8 @@
+## S35 strict DASH live/DVR production integration (2026-07-24)
+
+- `dash-mpd-core` owns strict dynamic timing parsing; `web-media-dash` owns UTC synchronization, SegmentTimeline/PTO planning, selected A/V availability intersection, publish-ordered refresh, endpoint continuity and the S31L adapter; app owns immutable semantic refresh identity plus monotonic transport generation and staged atomic endpoint replacement.
+- Only direct UTC, complete segments and the checked-in SegmentTemplate+SegmentTimeline contract are admitted. Unknown timing, gaps/overlaps/Period-boundary crossing and LL-DASH partial availability fail closed. Full contract: `mem:media-services/dash-live-s35-2026-07-24`.
+
 ## S34 static DASH VOD production integration (2026-07-24)
 
 - `dash-mpd-core` owns the bounded static MPD profile; `web-media-dash` owns exact manifest/serialized planning, component-scoped HTTP contexts, fMP4/WebM readiness and receipted seek; app composition enables DASH only after successful pre-barrier preparation.

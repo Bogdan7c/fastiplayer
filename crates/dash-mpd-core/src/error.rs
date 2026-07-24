@@ -7,12 +7,14 @@ pub enum DashMpdErrorKind {
     Xml,
     /// Корень или namespace не соответствуют DASH MPD.
     InvalidRoot,
-    /// Live/dynamic MPD не входит в S34 VOD.
+    /// Static parser не принимает live/dynamic MPD.
     DynamicPresentation,
     /// Declared DASH profile не входит в доказанный S34 static allowlist.
     UnsupportedProfile,
     /// Обязательное поле отсутствует или имеет неверную форму.
     InvalidAttribute,
+    /// Бесконечный availability offset требует исключённых partial/LL semantics.
+    UnsupportedAvailabilityOffset,
     /// Неизвестная playback-changing конструкция не поддержана.
     UnsupportedConstruct,
     /// DRM/ContentProtection не поддерживается.

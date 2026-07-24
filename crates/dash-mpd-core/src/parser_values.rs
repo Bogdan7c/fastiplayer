@@ -11,8 +11,72 @@ fn positive_u64_attribute(
     Ok(value)
 }
 
+/// Читает exact signed decimal seconds с максимум nanosecond precision.
+fn optional_decimal_seconds_nanoseconds_attribute(
+    element: &XmlElement,
+    name: &str,
+) -> Result<Option<i128>, DashMpdError> {
+    optional_attribute(element, name)?
+        .map(parse_decimal_seconds_nanoseconds)
+        .transpose()
+}
+
+/// Читает XML boolean в canonical lexical forms.
+fn optional_boolean_attribute(
+    element: &XmlElement,
+    name: &str,
+) -> Result<Option<bool>, DashMpdError> {
+    optional_attribute(element, name)?
+        .map(|value| match value {
+            "true" | "1" => Ok(true),
+            "false" | "0" => Ok(false),
+            _ => Err(DashMpdError::new(DashMpdErrorKind::InvalidAttribute)),
+        })
+        .transpose()
+}
+
+/// Преобразует decimal seconds без floating-point округления.
+fn parse_decimal_seconds_nanoseconds(value: &str) -> Result<i128, DashMpdError> {
+    if value.eq_ignore_ascii_case("INF") {
+        return Err(DashMpdError::new(
+            DashMpdErrorKind::UnsupportedAvailabilityOffset,
+        ));
+    }
+    let (negative, unsigned) = value
+        .strip_prefix('-')
+        .map_or((false, value), |rest| (true, rest));
+    let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+    if whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || fraction.len() > 9
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(DashMpdError::new(DashMpdErrorKind::InvalidAttribute));
+    }
+    let whole_nanoseconds = whole
+        .parse::<i128>()
+        .ok()
+        .and_then(|seconds| seconds.checked_mul(1_000_000_000))
+        .ok_or_else(|| DashMpdError::new(DashMpdErrorKind::InvalidAttribute))?;
+    let mut fraction_text = fraction.to_owned();
+    while fraction_text.len() < 9 {
+        fraction_text.push('0');
+    }
+    let fraction_nanoseconds = if fraction_text.is_empty() {
+        0
+    } else {
+        fraction_text
+            .parse::<i128>()
+            .map_err(|_| DashMpdError::new(DashMpdErrorKind::InvalidAttribute))?
+    };
+    let magnitude = whole_nanoseconds
+        .checked_add(fraction_nanoseconds)
+        .ok_or_else(|| DashMpdError::new(DashMpdErrorKind::InvalidAttribute))?;
+    Ok(if negative { -magnitude } else { magnitude })
+}
+
 /// Читает restricted ISO 8601 duration.
-fn optional_duration_attribute(
+pub(super) fn optional_duration_attribute(
     element: &XmlElement,
     name: &str,
 ) -> Result<Option<u64>, DashMpdError> {

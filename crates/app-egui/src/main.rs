@@ -35,6 +35,7 @@ mod video_pipeline_candidate;
 mod video_pipeline_selector;
 mod web_media_adaptive_config;
 mod web_media_dash_open;
+mod web_media_dash_refresh;
 mod web_media_demux_registry;
 mod web_media_hls_open;
 mod web_media_hls_refresh;

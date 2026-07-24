@@ -1,5 +1,7 @@
 //! Blocking multi-period component demuxer с fresh parser per Period/config epoch.
 
+mod timestamp;
+
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,7 +18,8 @@ use web_media_transport_api::SourceGeneration;
 
 use crate::plan::{DashComponentPeriodPlan, DashComponentPlan, DashPeriodInputPlan};
 use crate::request::{DashSerializedFragmentKind, DashVodOpenPolicy};
-use crate::source::DashOrderedSegmentSource;
+use crate::source::{DashLiveTransportProvider, DashOrderedSegmentSource};
+use timestamp::{globalize_packet_timestamp, globalize_seek_result, timestamp_mapping_for_open};
 
 /// Candidate fragment завершился без decode-safe video/audio anchor-а.
 #[derive(Debug, thiserror::Error)]
@@ -36,6 +39,8 @@ pub(crate) struct DashComponentFactory {
     policy: DashVodOpenPolicy,
     /// Injected neutral registry.
     registry: Arc<DemuxRegistry>,
+    /// Optional dynamic endpoint owner.
+    live_transport: Option<Arc<dyn DashLiveTransportProvider>>,
 }
 
 impl DashComponentFactory {
@@ -53,6 +58,26 @@ impl DashComponentFactory {
             generation,
             policy,
             registry,
+            live_transport: None,
+        }
+    }
+
+    /// Фиксирует live endpoint owner для каждого init/media fetch-а.
+    pub(crate) fn new_live(
+        plan: DashComponentPlan,
+        http: AdaptiveHttpContext,
+        generation: SourceGeneration,
+        policy: DashVodOpenPolicy,
+        registry: Arc<DemuxRegistry>,
+        live_transport: Arc<dyn DashLiveTransportProvider>,
+    ) -> Self {
+        Self {
+            plan,
+            http,
+            generation,
+            policy,
+            registry,
+            live_transport: Some(live_transport),
         }
     }
 
@@ -64,6 +89,7 @@ impl DashComponentFactory {
             self.generation,
             self.policy,
             Arc::clone(&self.registry),
+            self.live_transport.clone(),
         )
     }
 
@@ -83,6 +109,7 @@ impl DashComponentFactory {
                     self.generation,
                     self.policy,
                     Arc::clone(&self.registry),
+                    self.live_transport.clone(),
                     period_index,
                     media_index,
                 )?;
@@ -124,6 +151,7 @@ impl DashComponentFactory {
                 self.generation,
                 self.policy,
                 Arc::clone(&self.registry),
+                self.live_transport.clone(),
                 period_index,
                 media_index,
             )?;
@@ -180,8 +208,18 @@ impl DashComponentDemuxer {
         generation: SourceGeneration,
         policy: DashVodOpenPolicy,
         registry: Arc<DemuxRegistry>,
+        live_transport: Option<Arc<dyn DashLiveTransportProvider>>,
     ) -> Result<Self> {
-        let mut component = Self::open_from_period(plan, http, generation, policy, registry, 0, 0)?;
+        let mut component = Self::open_from_period(
+            plan,
+            http,
+            generation,
+            policy,
+            registry,
+            live_transport,
+            0,
+            0,
+        )?;
         component.validate_required_track_shape()?;
         if matches!(
             component.factory.plan.periods[0].input,
@@ -200,6 +238,7 @@ impl DashComponentDemuxer {
         generation: SourceGeneration,
         policy: DashVodOpenPolicy,
         registry: Arc<DemuxRegistry>,
+        live_transport: Option<Arc<dyn DashLiveTransportProvider>>,
         period_index: usize,
         first_media_index: usize,
     ) -> Result<Self> {
@@ -207,17 +246,17 @@ impl DashComponentDemuxer {
             .periods
             .get(period_index)
             .ok_or_else(|| anyhow::anyhow!("DASH Period отсутствует в immutable plan"))?;
-        let resource_offset = ordered_resource_start(period, first_media_index)?;
-        let current_timeline_start = period
-            .timeline_start
-            .checked_add(resource_offset)
-            .ok_or_else(|| anyhow::anyhow!("DASH Period/resource timestamp overflow"))?;
-        let (current, preserve_inner_timestamps) = open_period(
+        let (current_timeline_start, current_timestamp_origin) =
+            timestamp_mapping_for_open(period, first_media_index)?;
+        let current = open_period(
             period,
             http.clone(),
             generation,
             policy,
             Arc::clone(&registry),
+            live_transport
+                .clone()
+                .map(|provider| (provider, plan.media_kind)),
             first_media_index,
         )?;
         let duration = plan.duration;
@@ -236,14 +275,24 @@ impl DashComponentDemuxer {
             .collect();
         let metadata = current.media_metadata();
         let remaining_periods = ((period_index + 1)..plan.periods.len()).collect();
-        let factory = DashComponentFactory::new(plan, http, generation, policy, registry);
+        let factory = match live_transport {
+            Some(live_transport) => DashComponentFactory::new_live(
+                plan,
+                http,
+                generation,
+                policy,
+                registry,
+                live_transport,
+            ),
+            None => DashComponentFactory::new(plan, http, generation, policy, registry),
+        };
         Ok(Self {
             factory,
             remaining_periods,
             current_period_index: period_index,
             current,
             current_timeline_start,
-            current_timestamp_origin: preserve_inner_timestamps.then_some(Duration::ZERO),
+            current_timestamp_origin,
             public_tracks,
             track_mapping,
             duration,
@@ -335,20 +384,25 @@ impl DashComponentDemuxer {
             return Ok(false);
         };
         let period = &self.factory.plan.periods[period_index];
-        let period_timeline_start = period.timeline_start;
         let is_ordered = matches!(period.input, DashPeriodInputPlan::Ordered { .. });
-        let (current, preserve_inner_timestamps) = open_period(
+        let (period_timeline_start, period_timestamp_origin) =
+            timestamp_mapping_for_open(period, 0)?;
+        let current = open_period(
             period,
             self.factory.http.clone(),
             self.factory.generation,
             self.factory.policy,
             Arc::clone(&self.factory.registry),
+            self.factory
+                .live_transport
+                .clone()
+                .map(|provider| (provider, self.factory.plan.media_kind)),
             0,
         )?;
         self.current_period_index = period_index;
         self.current = current;
         self.current_timeline_start = period_timeline_start;
-        self.current_timestamp_origin = preserve_inner_timestamps.then_some(Duration::ZERO);
+        self.current_timestamp_origin = period_timestamp_origin;
         let current_tracks = self.current.tracks().to_vec();
         self.refresh_track_mapping(&current_tracks)?;
         self.validate_required_track_shape()?;
@@ -397,18 +451,11 @@ impl DashComponentDemuxer {
         let origin = *self
             .current_timestamp_origin
             .get_or_insert_with(|| packet.dts.map_or(packet.pts, |dts| packet.pts.min(dts)));
-        packet.pts = packet
-            .pts
-            .saturating_sub(origin)
-            .checked_add(self.current_timeline_start)
-            .ok_or_else(|| anyhow::anyhow!("DASH global packet PTS overflow"))?;
+        packet.pts =
+            globalize_packet_timestamp(packet.pts, origin, self.current_timeline_start, "PTS")?;
         packet.dts = packet
             .dts
-            .map(|dts| {
-                dts.saturating_sub(origin)
-                    .checked_add(self.current_timeline_start)
-                    .ok_or_else(|| anyhow::anyhow!("DASH global packet DTS overflow"))
-            })
+            .map(|dts| globalize_packet_timestamp(dts, origin, self.current_timeline_start, "DTS"))
             .transpose()?;
         Ok(packet)
     }
@@ -496,8 +543,12 @@ fn open_period(
     generation: SourceGeneration,
     policy: DashVodOpenPolicy,
     registry: Arc<DemuxRegistry>,
+    live_transport: Option<(
+        Arc<dyn DashLiveTransportProvider>,
+        dash_mpd_core::DashMediaKind,
+    )>,
     first_media_index: usize,
-) -> Result<(Box<dyn Demuxer + Send>, bool)> {
+) -> Result<Box<dyn Demuxer + Send>> {
     let cancellation = http.cancellation().clone();
     let container = demux_container_id(period.container)?;
     match &period.input {
@@ -505,14 +556,27 @@ fn open_period(
             resources,
             query_application,
         } => {
-            let source = DashOrderedSegmentSource::new(
-                http,
-                generation,
-                resources,
-                *query_application,
-                policy.maximum_fragment_bytes,
-                first_media_index,
-            )?;
+            let source = match live_transport {
+                Some((live_transport, media_kind)) => DashOrderedSegmentSource::new_live(
+                    http,
+                    generation,
+                    resources,
+                    *query_application,
+                    policy.maximum_fragment_bytes,
+                    first_media_index,
+                    live_transport,
+                    media_kind,
+                    period.timeline_start,
+                )?,
+                None => DashOrderedSegmentSource::new(
+                    http,
+                    generation,
+                    resources,
+                    *query_application,
+                    policy.maximum_fragment_bytes,
+                    first_media_index,
+                )?,
+            };
             let demuxer = registry
                 .open_required_container(
                     DemuxInput::ordered_segments(Box::new(source)),
@@ -522,7 +586,7 @@ fn open_period(
                     container,
                 )
                 .context("DASH ordered Period container sniff/open failed")?;
-            Ok((demuxer, false))
+            Ok(demuxer)
         }
         DashPeriodInputPlan::Range {
             target,
@@ -547,7 +611,7 @@ fn open_period(
                     container,
                 )
                 .context("DASH SegmentBase container sniff/open failed")?;
-            Ok((demuxer, true))
+            Ok(demuxer)
         }
     }
 }
@@ -596,40 +660,6 @@ fn media_index_for_target(period: &DashComponentPeriodPlan, target: Duration) ->
             .unwrap_or(0),
         DashPeriodInputPlan::Range { .. } => 0,
     }
-}
-
-/// Возвращает selected ordered resource start либо zero для Range/initial open.
-fn ordered_resource_start(
-    period: &DashComponentPeriodPlan,
-    first_media_index: usize,
-) -> Result<Duration> {
-    match &period.input {
-        DashPeriodInputPlan::Ordered { resources, .. } => resources
-            .iter()
-            .filter(|resource| resource.kind == DashSerializedFragmentKind::Media)
-            .nth(first_media_index)
-            .and_then(|resource| resource.timeline_start)
-            .ok_or_else(|| anyhow::anyhow!("DASH media fragment index отсутствует")),
-        DashPeriodInputPlan::Range { .. } => Ok(Duration::ZERO),
-    }
-}
-
-/// Переводит inner SegmentBase seek result в global presentation time.
-fn globalize_seek_result(
-    inner: DemuxSeekResult,
-    requested: Duration,
-    period_start: Duration,
-) -> Result<DemuxSeekResult> {
-    let actual = inner
-        .actual_position
-        .as_duration()
-        .checked_add(period_start)
-        .ok_or_else(|| anyhow::anyhow!("DASH seek result timestamp overflow"))?;
-    Ok(DemuxSeekResult {
-        requested_position: MediaTime::from_duration(requested),
-        actual_position: MediaTime::from_duration(actual),
-        actual_track_timestamp: inner.actual_track_timestamp,
-    })
 }
 
 /// Считает encoded bytes одного scan event-а.

@@ -2,8 +2,11 @@
 
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
+use dash_mpd_core::DashMediaKind;
 use demux_api::{
     OrderedSegment, OrderedSegmentDiscontinuity, OrderedSegmentKind, OrderedSegmentReadError,
     OrderedSegmentSequence, OrderedSegmentSource,
@@ -32,6 +35,28 @@ pub(crate) struct DashOrderedSegmentSource {
     maximum_fragment_bytes: NonZeroUsize,
     /// Monotonic ordered segment sequence.
     next_sequence: u64,
+    /// Optional atomic live transport owner.
+    live_transport: Option<Arc<dyn DashLiveTransportProvider>>,
+    /// Selected component identity для endpoint resource remap.
+    live_media_kind: Option<DashMediaKind>,
+    /// Global Period identity для endpoint resource remap.
+    live_period_timeline_start: Option<Duration>,
+}
+
+/// Узкий live transport boundary без MPD/player/app vocabulary.
+pub(crate) trait DashLiveTransportProvider: Send + Sync {
+    /// Возвращает current context/generation одним atomic read.
+    fn current_transport(
+        &self,
+    ) -> Result<(AdaptiveHttpContext, SourceGeneration), AdaptiveTransportError>;
+    /// Remap-ит exact failed resource через single-flight endpoint refresh.
+    fn recover_expired_resource(
+        &self,
+        failed_generation: SourceGeneration,
+        media_kind: DashMediaKind,
+        period_timeline_start: Duration,
+        failed_resource: &DashPlannedResource,
+    ) -> Result<DashPlannedResource, AdaptiveTransportError>;
 }
 
 impl DashOrderedSegmentSource {
@@ -71,7 +96,37 @@ impl DashOrderedSegmentSource {
             query_application,
             maximum_fragment_bytes,
             next_sequence: 0,
+            live_transport: None,
+            live_media_kind: None,
+            live_period_timeline_start: None,
         })
+    }
+
+    /// Создаёт live source с generation-aware endpoint replacement.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_live(
+        http: AdaptiveHttpContext,
+        generation: SourceGeneration,
+        resources: &[DashPlannedResource],
+        query_application: AdaptiveResourceQueryApplication,
+        maximum_fragment_bytes: NonZeroUsize,
+        first_media_index: usize,
+        live_transport: Arc<dyn DashLiveTransportProvider>,
+        media_kind: DashMediaKind,
+        period_timeline_start: Duration,
+    ) -> Result<Self, OrderedSegmentReadError> {
+        let mut source = Self::new(
+            http,
+            generation,
+            resources,
+            query_application,
+            maximum_fragment_bytes,
+            first_media_index,
+        )?;
+        source.live_transport = Some(live_transport);
+        source.live_media_kind = Some(media_kind);
+        source.live_period_timeline_start = Some(period_timeline_start);
+        Ok(source)
     }
 
     /// Загружает один exact resource с role-specific secret scope.
@@ -83,26 +138,76 @@ impl DashOrderedSegmentSource {
             DashSerializedFragmentKind::Initialization => AdaptiveResourcePurpose::Initialization,
             DashSerializedFragmentKind::Media => AdaptiveResourcePurpose::MediaSegment,
         };
-        let request = match resource.byte_range {
+        let (http, generation) = match &self.live_transport {
+            Some(provider) => provider.current_transport()?,
+            None => (self.http.clone(), self.generation),
+        };
+        let request = Self::resource_request(
+            resource,
+            generation,
+            self.maximum_fragment_bytes,
+            purpose,
+            self.query_application,
+        );
+        match http.fetch_resource_blocking(request) {
+            Ok(resource) => Ok(resource.into_bytes()),
+            Err(error)
+                if self.live_transport.is_some()
+                    && matches!(error.http_status_code(), Some(401 | 403 | 404 | 410)) =>
+            {
+                let provider = self.live_transport.as_ref().expect("checked live provider");
+                let media_kind = self
+                    .live_media_kind
+                    .expect("live source always has component identity");
+                let period_timeline_start = self
+                    .live_period_timeline_start
+                    .expect("live source always has Period identity");
+                let fresh_resource = provider.recover_expired_resource(
+                    generation,
+                    media_kind,
+                    period_timeline_start,
+                    resource,
+                )?;
+                let (fresh_http, fresh_generation) = provider.current_transport()?;
+                fresh_http
+                    .fetch_resource_blocking(Self::resource_request(
+                        &fresh_resource,
+                        fresh_generation,
+                        self.maximum_fragment_bytes,
+                        purpose,
+                        self.query_application,
+                    ))
+                    .map(web_media_adaptive::AdaptiveFetchedResource::into_bytes)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Строит exact request для fixed либо refreshed generation.
+    fn resource_request(
+        resource: &DashPlannedResource,
+        generation: SourceGeneration,
+        maximum_fragment_bytes: NonZeroUsize,
+        purpose: AdaptiveResourcePurpose,
+        query_application: AdaptiveResourceQueryApplication,
+    ) -> AdaptiveResourceFetchRequest {
+        match resource.byte_range {
             Some(byte_range) => AdaptiveResourceFetchRequest::range(
-                self.generation,
+                generation,
                 resource.target.clone(),
                 byte_range,
                 byte_range.length(),
                 purpose,
-                self.query_application,
+                query_application,
             ),
             None => AdaptiveResourceFetchRequest::full(
-                self.generation,
+                generation,
                 resource.target.clone(),
-                self.maximum_fragment_bytes,
+                maximum_fragment_bytes,
                 purpose,
-                self.query_application,
+                query_application,
             ),
-        };
-        self.http
-            .fetch_resource_blocking(request)
-            .map(web_media_adaptive::AdaptiveFetchedResource::into_bytes)
+        }
     }
 }
 

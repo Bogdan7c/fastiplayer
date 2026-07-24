@@ -6,7 +6,7 @@ use std::time::Duration;
 use dash_mpd_core::{
     DashAddressing, DashBaseUrl, DashContainer, DashInitialization, DashMediaKind, DashMpd,
     DashPeriod, DashRepresentation, DashSegmentBase, DashSegmentList, DashSegmentTemplate,
-    DashTemplateContext, DashTemplateError, IndexRange, expand_timeline,
+    DashTemplateContext, DashTemplateError, IndexRange,
 };
 use source_core::{HttpBoundedByteRange, HttpRequestTarget};
 use thiserror::Error;
@@ -20,8 +20,11 @@ use crate::selection::{
     select_representation,
 };
 
+mod timeline;
+use timeline::{DashTimelinePlanningIntent, plan_template_timeline, units_to_duration};
+
 /// Один ordered init/media resource и его explicit presentation interval.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct DashPlannedResource {
     /// Role для existing ordered demux boundary.
     pub kind: DashSerializedFragmentKind,
@@ -63,8 +66,19 @@ pub(crate) struct DashComponentPeriodPlan {
     pub timeline_start: Duration,
     /// Exact finite Period duration.
     pub duration: Duration,
+    /// Правило перевода container timestamps в global presentation timeline.
+    pub timestamp_mapping: DashTimestampMapping,
     /// Addressing-specific demux input.
     pub input: DashPeriodInputPlan,
+}
+
+/// Private timestamp boundary не позволяет component demuxer-у угадывать origin.
+#[derive(Clone, Copy)]
+pub(crate) enum DashTimestampMapping {
+    /// Serialized/SegmentList input сохраняет proven S34 normalization от первого packet-а.
+    NormalizeAtFirstPacket,
+    /// Explicit template timestamps остаются на media timeline и вычитают ровно PTO.
+    MediaTimeOrigin(Duration),
 }
 
 /// Immutable component plan.
@@ -79,6 +93,7 @@ pub(crate) struct DashComponentPlan {
 }
 
 /// Planned muxed/single либо aligned separate presentation.
+#[derive(Clone)]
 pub(crate) enum DashPresentationPlan {
     /// Один component.
     Single(DashComponentPlan),
@@ -133,6 +148,18 @@ pub enum DashPlanError {
     /// Separate components имеют разные fragment boundaries.
     #[error("separate DASH components are not exactly aligned")]
     ComponentAlignmentMismatch,
+    /// Raw SegmentTimeline содержит gap между соседними references.
+    #[error("DASH SegmentTimeline contains a gap")]
+    TimelineGap,
+    /// Raw SegmentTimeline содержит overlap между соседними references.
+    #[error("DASH SegmentTimeline contains an overlap")]
+    TimelineOverlap,
+    /// Segment reference пересекает Period boundary и требует unsupported sample clipping.
+    #[error("DASH segment reference crosses a Period boundary")]
+    SegmentCrossesPeriodBoundary,
+    /// Static presentation не покрывает Period точно и непрерывно.
+    #[error("static DASH SegmentTemplate does not cover the complete Period")]
+    IncompleteStaticPeriod,
     /// Checked duration/timestamp arithmetic overflow.
     #[error("DASH timeline arithmetic overflow")]
     TimelineOverflow,
@@ -145,14 +172,50 @@ pub(crate) fn build_manifest_plan(
     selection: &DashPresentationSelection,
     maximum_segments: NonZeroUsize,
 ) -> Result<DashPresentationPlan, DashPlanError> {
+    build_manifest_plan_with_intent(
+        mpd,
+        manifest_base,
+        selection,
+        maximum_segments,
+        DashTimelinePlanningIntent::StaticCompletePeriod,
+    )
+}
+
+/// Строит dynamic snapshot, где sliding head/tail допустимы, но gaps/overlaps запрещены.
+pub(crate) fn build_dynamic_manifest_plan(
+    mpd: &DashMpd,
+    manifest_base: &HttpRequestTarget,
+    selection: &DashPresentationSelection,
+    maximum_segments: NonZeroUsize,
+) -> Result<DashPresentationPlan, DashPlanError> {
+    build_manifest_plan_with_intent(
+        mpd,
+        manifest_base,
+        selection,
+        maximum_segments,
+        DashTimelinePlanningIntent::DynamicSnapshot,
+    )
+}
+
+/// Общий S34/S35 planner различает lifecycle через intent, а не positional bool.
+fn build_manifest_plan_with_intent(
+    mpd: &DashMpd,
+    manifest_base: &HttpRequestTarget,
+    selection: &DashPresentationSelection,
+    maximum_segments: NonZeroUsize,
+    intent: DashTimelinePlanningIntent,
+) -> Result<DashPresentationPlan, DashPlanError> {
     match selection {
         DashPresentationSelection::Single { main } => {
-            let component = build_manifest_component(mpd, manifest_base, main, maximum_segments)?;
+            let component =
+                build_manifest_component(mpd, manifest_base, main, maximum_segments, intent)?;
             Ok(DashPresentationPlan::Single(component))
         }
         DashPresentationSelection::Separate { video, audio } => {
-            let video = build_manifest_component(mpd, manifest_base, video, maximum_segments)?;
-            let audio = build_manifest_component(mpd, manifest_base, audio, maximum_segments)?;
+            let video =
+                build_manifest_component(mpd, manifest_base, video, maximum_segments, intent)?;
+            let audio =
+                build_manifest_component(mpd, manifest_base, audio, maximum_segments, intent)?;
             validate_period_alignment(&video, &audio)?;
             Ok(DashPresentationPlan::Separate { video, audio })
         }
@@ -201,6 +264,7 @@ fn build_manifest_component(
     manifest_base: &HttpRequestTarget,
     evidence: &crate::DashRepresentationEvidence,
     maximum_segments: NonZeroUsize,
+    intent: DashTimelinePlanningIntent,
 ) -> Result<DashComponentPlan, DashPlanError> {
     let mpd_base = resolve_optional_base(manifest_base, mpd.base_url.as_ref())?;
     let mut periods = Vec::with_capacity(mpd.periods.len());
@@ -211,6 +275,7 @@ fn build_manifest_component(
             selected,
             &mpd_base,
             maximum_segments,
+            intent,
         )?);
     }
     Ok(DashComponentPlan {
@@ -226,6 +291,7 @@ fn build_manifest_period(
     selected: SelectedDashRepresentation<'_>,
     mpd_base: &HttpRequestTarget,
     maximum_segments: NonZeroUsize,
+    intent: DashTimelinePlanningIntent,
 ) -> Result<DashComponentPeriodPlan, DashPlanError> {
     let period_base = resolve_optional_base(mpd_base, period.base_url.as_ref())?;
     let adaptation_base =
@@ -233,37 +299,54 @@ fn build_manifest_period(
     let representation_base =
         resolve_optional_base(&adaptation_base, selected.representation.base_url.as_ref())?;
     let duration = Duration::from_millis(period.duration_milliseconds);
-    let input = match &selected.representation.addressing {
-        DashAddressing::Template(template) => DashPeriodInputPlan::Ordered {
-            resources: plan_template(
+    let (input, timestamp_mapping) = match &selected.representation.addressing {
+        DashAddressing::Template(template) => {
+            let (resources, media_time_origin) = plan_template(
                 selected.representation,
                 template,
                 &representation_base,
                 duration,
                 maximum_segments,
-            )?,
-            query_application: AdaptiveResourceQueryApplication::ApplyScopedReplacement,
-        },
-        DashAddressing::List(list) => DashPeriodInputPlan::Ordered {
-            resources: plan_list(list, &representation_base, duration, maximum_segments)?,
-            query_application: AdaptiveResourceQueryApplication::ApplyScopedReplacement,
-        },
+                intent,
+            )?;
+            (
+                DashPeriodInputPlan::Ordered {
+                    resources,
+                    query_application: AdaptiveResourceQueryApplication::ApplyScopedReplacement,
+                },
+                DashTimestampMapping::MediaTimeOrigin(media_time_origin),
+            )
+        }
+        DashAddressing::List(list) => (
+            DashPeriodInputPlan::Ordered {
+                resources: plan_list(list, &representation_base, duration, maximum_segments)?,
+                query_application: AdaptiveResourceQueryApplication::ApplyScopedReplacement,
+            },
+            DashTimestampMapping::NormalizeAtFirstPacket,
+        ),
         DashAddressing::Base(segment_base) => {
             validate_segment_base(segment_base)?;
+            (
+                DashPeriodInputPlan::Range {
+                    target: representation_base,
+                    query_application: AdaptiveResourceQueryApplication::ApplyScopedReplacement,
+                },
+                DashTimestampMapping::MediaTimeOrigin(Duration::ZERO),
+            )
+        }
+        DashAddressing::SingleResource => (
             DashPeriodInputPlan::Range {
                 target: representation_base,
                 query_application: AdaptiveResourceQueryApplication::ApplyScopedReplacement,
-            }
-        }
-        DashAddressing::SingleResource => DashPeriodInputPlan::Range {
-            target: representation_base,
-            query_application: AdaptiveResourceQueryApplication::ApplyScopedReplacement,
-        },
+            },
+            DashTimestampMapping::MediaTimeOrigin(Duration::ZERO),
+        ),
     };
     Ok(DashComponentPeriodPlan {
         container: selected.representation.container,
         timeline_start: Duration::from_millis(period.start_milliseconds),
         duration,
+        timestamp_mapping,
         input,
     })
 }
@@ -275,60 +358,20 @@ fn plan_template(
     base: &HttpRequestTarget,
     period_duration: Duration,
     maximum_segments: NonZeroUsize,
-) -> Result<Vec<DashPlannedResource>, DashPlanError> {
-    let period_units = duration_to_units(period_duration, template.timescale)?;
-    let points = if let Some(segment_duration) = template.duration {
-        let count = period_units
-            .checked_add(segment_duration.saturating_sub(1))
-            .ok_or(DashPlanError::TimelineOverflow)?
-            / segment_duration;
-        let count = usize::try_from(count).map_err(|_| DashPlanError::SegmentBoundExceeded)?;
-        if count > maximum_segments.get() {
-            return Err(DashPlanError::SegmentBoundExceeded);
-        }
-        (0..count)
-            .map(|index| {
-                let index = u64::try_from(index).map_err(|_| DashPlanError::TimelineOverflow)?;
-                let start_time = index
-                    .checked_mul(segment_duration)
-                    .ok_or(DashPlanError::TimelineOverflow)?;
-                Ok(dash_mpd_core::DashSegmentPoint {
-                    number: template
-                        .start_number
-                        .checked_add(index)
-                        .ok_or(DashPlanError::TimelineOverflow)?,
-                    start_time,
-                    duration: segment_duration.min(period_units.saturating_sub(start_time)),
-                })
-            })
-            .collect::<Result<Vec<_>, DashPlanError>>()?
-    } else {
-        expand_timeline(
-            &template.timeline,
-            template.start_number,
-            Some(period_units),
-            maximum_segments.get(),
-        )?
-        .segments
-        .into_vec()
-    };
+    intent: DashTimelinePlanningIntent,
+) -> Result<(Vec<DashPlannedResource>, Duration), DashPlanError> {
+    let timeline = plan_template_timeline(template, period_duration, maximum_segments, intent)?;
+    let points = timeline.segments;
     let first_point = points
         .first()
         .ok_or(DashPlanError::InvalidSerializedLifecycle)?;
-    let covered_units = points
-        .last()
-        .and_then(|point| point.start_time.checked_add(point.duration))
-        .ok_or(DashPlanError::TimelineOverflow)?;
-    if covered_units != period_units {
-        return Err(DashPlanError::ComponentAlignmentMismatch);
-    }
     let mut resources = Vec::with_capacity(points.len().saturating_add(1));
     if let Some(initialization) = &template.initialization {
         let reference = initialization.expand(DashTemplateContext {
             representation_id: &representation.id,
             bandwidth: representation.bandwidth,
             number: first_point.number,
-            time: first_point.start_time,
+            time: first_point.raw_start_time,
         })?;
         resources.push(DashPlannedResource {
             kind: DashSerializedFragmentKind::Initialization,
@@ -343,17 +386,17 @@ fn plan_template(
             representation_id: &representation.id,
             bandwidth: representation.bandwidth,
             number: point.number,
-            time: point.start_time,
+            time: point.raw_start_time,
         })?;
         resources.push(DashPlannedResource {
             kind: DashSerializedFragmentKind::Media,
             target: resolve_reference(base, &reference)?,
             byte_range: None,
-            timeline_start: Some(units_to_duration(point.start_time, template.timescale)?),
+            timeline_start: Some(point.presentation_start),
             duration: Some(units_to_duration(point.duration, template.timescale)?),
         });
     }
-    Ok(resources)
+    Ok((resources, timeline.media_time_origin))
 }
 
 /// Строит explicit SegmentList resources.
@@ -507,6 +550,7 @@ fn build_serialized_component(
             container: component.container,
             timeline_start: Duration::ZERO,
             duration: timeline_start,
+            timestamp_mapping: DashTimestampMapping::NormalizeAtFirstPacket,
             input: DashPeriodInputPlan::Ordered {
                 resources,
                 query_application: component.query_application,
@@ -598,29 +642,4 @@ fn index_range_to_bounded(range: IndexRange) -> Result<HttpBoundedByteRange, Das
         .and_then(NonZeroUsize::new)
         .ok_or(DashPlanError::InvalidByteRange)?;
     HttpBoundedByteRange::new(range.start(), length).map_err(|_| DashPlanError::InvalidByteRange)
-}
-
-/// Требует exact integral Period duration в addressing timescale.
-fn duration_to_units(duration: Duration, timescale: u64) -> Result<u64, DashPlanError> {
-    let nanoseconds = duration.as_nanos();
-    let scaled = nanoseconds
-        .checked_mul(u128::from(timescale))
-        .ok_or(DashPlanError::TimelineOverflow)?;
-    if scaled % 1_000_000_000 != 0 {
-        return Err(DashPlanError::NonIntegralPeriodTimescale);
-    }
-    u64::try_from(scaled / 1_000_000_000).map_err(|_| DashPlanError::TimelineOverflow)
-}
-
-/// Переводит component clock units в exact `Duration`.
-fn units_to_duration(units: u64, timescale: u64) -> Result<Duration, DashPlanError> {
-    let nanoseconds = u128::from(units)
-        .checked_mul(1_000_000_000)
-        .ok_or(DashPlanError::TimelineOverflow)?;
-    if nanoseconds % u128::from(timescale) != 0 {
-        return Err(DashPlanError::NonIntegralPeriodTimescale);
-    }
-    let nanoseconds = u64::try_from(nanoseconds / u128::from(timescale))
-        .map_err(|_| DashPlanError::TimelineOverflow)?;
-    Ok(Duration::from_nanos(nanoseconds))
 }

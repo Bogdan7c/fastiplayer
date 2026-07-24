@@ -1,3 +1,8 @@
+## S35 strict DASH live/DVR (2026-07-24)
+
+- Production dynamic DASH now supports the deliberately narrow checked-in timing profile: direct UTC midpoint synchronization, SegmentTemplate+SegmentTimeline with PTO, strict Period timing, A/V availability intersection, publish-ordered refresh, sliding DVR and endpoint re-extraction through existing S31L/player boundaries.
+- Unknown/ambiguous timing, timeline gaps/overlaps/boundary-crossing segments, `availabilityTimeComplete=false` and all partial/chunked LL-DASH semantics fail closed as typed profile exclusions. Full ownership, defaults, fences, tests and limitations: `mem:media-services/dash-live-s35-2026-07-24`.
+
 ## S34 static DASH VOD (2026-07-24)
 
 - Production DASH now supports exact static MPD and serialized `http_dash_segments` inputs, proven fMP4/WebM muxed/single/separate layouts, bounded Periods and nonblocking generation-fenced receipted seek through the existing install barrier.

@@ -6,14 +6,17 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use bounded_xml_reader::XmlBudgets;
-use dash_mpd_core::{DashContainer, DashMediaKind, DashMpdLimits};
+use dash_mpd_core::{DashContainer, DashMediaKind, DashMpdLimits, DashUtcTimestamp};
 use demux_api::{
     CompositeComponentLeadPolicy, DemuxRegistry, DemuxSniffBudget,
     ProgressiveAsyncSeekEnqueueError, ProgressiveAsyncSeekHandle, ProgressiveAsyncSeekLimits,
     ProgressiveAsyncSeekOutcome, ProgressiveDemuxBufferLimits, ProgressiveSeekFence,
     ProgressiveSeekRequestId,
 };
-use media_core::{DemuxRetryHint, Demuxer};
+use media_core::{
+    DemuxRetryHint, Demuxer, DynamicMediaTimelineEpoch, DynamicMediaTimelinePort,
+    DynamicMediaTimelinePortGeneration,
+};
 use player_core::{
     PreparedDemuxSeekEnqueueError, PreparedDemuxSeekOutcome, PreparedDemuxSeekPort,
     PreparedDemuxSeekReceipt, PreparedDemuxSeekRequestId,
@@ -34,10 +37,11 @@ use web_media_core::{
     VideoTrackDescriptor,
 };
 use web_media_dash::{
-    DashManifestInput, DashPresentationSelection, DashRepresentationEvidence,
-    DashResourceReference, DashSerializedComponent, DashSerializedFragment,
-    DashSerializedFragmentKind, DashSerializedPresentation, DashVideoDimensions,
-    DashVodHttpContext, DashVodInput, DashVodOpenPolicy, DashVodOpenRequest, prepare_dash_vod,
+    DashEndpointRefreshPort, DashLiveOpenRequest, DashManifestInput, DashPresentationSelection,
+    DashRepresentationEvidence, DashResourceReference, DashSerializedComponent,
+    DashSerializedFragment, DashSerializedFragmentKind, DashSerializedPresentation,
+    DashVideoDimensions, DashVodHttpContext, DashVodInput, DashVodOpenPolicy, DashVodOpenRequest,
+    DashWallClock, prepare_dash_live, prepare_dash_vod,
 };
 use web_media_transport_api::{MediaComponentRole, TransportProviderId};
 
@@ -47,6 +51,21 @@ pub(crate) struct PreparedDashCandidate {
     pub(crate) demuxer: Box<dyn Demuxer + Send>,
     /// Provider-neutral seek port exact этого runtime-а.
     pub(crate) seek_port: Arc<dyn PreparedDemuxSeekPort>,
+    /// Dynamic S31L port; static VOD сохраняет `None`.
+    pub(crate) timeline_port: Option<DynamicMediaTimelinePort>,
+}
+
+/// Production local wall clock; direct UTCTiming offset применяется provider-ом.
+struct SystemDashWallClock;
+
+impl DashWallClock for SystemDashWallClock {
+    fn now_utc(&self) -> DashUtcTimestamp {
+        let unix_nanoseconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| i128::try_from(duration.as_nanos()).unwrap_or(i128::MAX))
+            .unwrap_or_default();
+        DashUtcTimestamp::from_unix_nanoseconds(unix_nanoseconds)
+    }
 }
 
 /// Adapter не переносит DASH vocabulary в player-core.
@@ -121,7 +140,7 @@ pub(crate) fn candidate_is_dash(candidate: &YtDlpNormalizedCandidate) -> bool {
     }
 }
 
-/// Выполняет static DASH preparation целиком до player/queue commit barrier-а.
+/// Выполняет static либо strict dynamic DASH preparation до player/queue commit barrier-а.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_dash_candidate(
     candidate: &YtDlpNormalizedCandidate,
@@ -131,8 +150,9 @@ pub(crate) fn prepare_dash_candidate(
     demux_registry: Arc<DemuxRegistry>,
     cancellation: CancellationToken,
     live_intent: YtDlpLiveIntent,
+    endpoint_refresh: Option<Arc<dyn DashEndpointRefreshPort>>,
+    timeline_port_generation: DynamicMediaTimelinePortGeneration,
 ) -> Result<PreparedDashCandidate> {
-    ensure_static_dash_intent(live_intent)?;
     let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
     let request_context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation);
     let service_components = candidate
@@ -145,6 +165,40 @@ pub(crate) fn prepare_dash_candidate(
         .collect::<Result<Vec<_>>>()?;
     let selection = presentation_selection(candidate.descriptor().layout())?;
     let (http, input) = presentation_input(projected_components)?;
+    if live_intent == YtDlpLiveIntent::Live {
+        let DashVodHttpContext::Manifest(http) = http else {
+            bail!("serialized dynamic DASH fragments исключены S35 profile");
+        };
+        let DashVodInput::Manifest(manifest) = input else {
+            bail!("serialized dynamic DASH fragments исключены S35 profile");
+        };
+        let endpoint_refresh = endpoint_refresh
+            .ok_or_else(|| anyhow!("DASH live candidate потерял app endpoint refresh port"))?;
+        let opened = prepare_dash_live(DashLiveOpenRequest {
+            http,
+            generation,
+            manifest,
+            selection,
+            demux_registry,
+            policy: dash_policy(limits)?,
+            wall_clock: Arc::new(SystemDashWallClock),
+            timeline_port_generation,
+            initial_source_epoch: DynamicMediaTimelineEpoch::new(0),
+            endpoint_refresh,
+        })
+        .context("DASH live preflight завершился ошибкой")?;
+        let (demuxer, seek_handle, timeline_port) = opened.into_parts();
+        let seek_port: Arc<dyn PreparedDemuxSeekPort> = Arc::new(DashPreparedDemuxSeekPort {
+            handle: seek_handle
+                .ok_or_else(|| anyhow!("DASH live runtime не опубликовал receipted seek handle"))?,
+        });
+        return Ok(PreparedDashCandidate {
+            demuxer: Box::new(demuxer),
+            seek_port,
+            timeline_port: Some(timeline_port),
+        });
+    }
+    ensure_static_dash_intent(live_intent)?;
     let opened = prepare_dash_vod(DashVodOpenRequest {
         http,
         generation,
@@ -160,6 +214,7 @@ pub(crate) fn prepare_dash_candidate(
     Ok(PreparedDashCandidate {
         demuxer: Box::new(opened.into_demuxer()),
         seek_port,
+        timeline_port: None,
     })
 }
 
@@ -188,6 +243,31 @@ fn project_component<'candidate>(
         material,
         http,
     })
+}
+
+/// Fresh endpoint refresh переиспользует тот же exact projection path.
+pub(crate) fn project_dash_live_runtime_material(
+    candidate: &YtDlpNormalizedCandidate,
+    provider_id: TransportProviderId,
+    generation: web_media_transport_api::SourceGeneration,
+    source_config: &SourceRuntimeConfig,
+    network_config: &NetworkConfig,
+    cancellation: CancellationToken,
+) -> Result<(Box<AdaptiveHttpContext>, DashManifestInput)> {
+    let request_context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation);
+    let limits = crate::web_media_adaptive_config::adaptive_transport_limits(network_config)?;
+    let projected = candidate
+        .dash_transport_components(&request_context)?
+        .into_iter()
+        .map(|component| project_component(component, source_config, limits))
+        .collect::<Result<Vec<_>>>()?;
+    let (http, input) = presentation_input(projected)?;
+    match (http, input) {
+        (DashVodHttpContext::Manifest(http), DashVodInput::Manifest(manifest)) => {
+            Ok((http, manifest))
+        }
+        _ => bail!("fresh DASH live candidate не является manifest-backed"),
+    }
 }
 
 /// Строит exact MPD либо serialized input и сохраняет component-scoped contexts.

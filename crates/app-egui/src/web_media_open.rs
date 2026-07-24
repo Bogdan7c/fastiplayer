@@ -33,6 +33,7 @@ use web_media_core::{
     ContainerFamily, ExactSelectionIdentity, ExtractionGeneration, HttpScheme, SelectionRequest,
     SourceIdentity, TransportFamily,
 };
+use web_media_dash::DashEndpointRefreshPort;
 use web_media_hls::HlsEndpointRefreshPort;
 use web_media_http::WebMediaHttpProvider;
 use web_media_playback_plan::{
@@ -121,6 +122,14 @@ struct OpenedWebCandidate {
     demux_seek_port: Option<Arc<dyn player_core::PreparedDemuxSeekPort>>,
 }
 
+/// Source-specific live refresh ports, собранные одним app composition boundary.
+struct AdaptiveEndpointRefreshPorts {
+    /// HLS endpoint owner присутствует только для выбранного HLS live candidate.
+    hls: Option<Arc<dyn HlsEndpointRefreshPort>>,
+    /// DASH endpoint owner присутствует только для выбранного DASH live candidate.
+    dash: Option<Arc<dyn DashEndpointRefreshPort>>,
+}
+
 /// Открывает YtDlp locator одним S19 → S21C → S22 production path-ом.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_yt_dlp_web_media(
@@ -190,8 +199,10 @@ pub(crate) fn prepare_yt_dlp_web_media(
     let candidate_selection = candidate_snapshot
         .selection_for(selected_candidate)
         .context("Не удалось сохранить exact YtDlp candidate selection")?;
-    let endpoint_refresh: Option<Arc<dyn HlsEndpointRefreshPort>> =
-        (candidate_snapshot.live_intent() == YtDlpLiveIntent::Live).then(|| {
+    let hls_endpoint_refresh: Option<Arc<dyn HlsEndpointRefreshPort>> =
+        (candidate_snapshot.live_intent() == YtDlpLiveIntent::Live
+            && crate::web_media_hls_open::candidate_is_hls(selected_candidate))
+        .then(|| {
             Arc::new(
                 crate::web_media_hls_refresh::AppHlsEndpointRefreshPort::new(
                     locator.clone(),
@@ -204,6 +215,26 @@ pub(crate) fn prepare_yt_dlp_web_media(
                 ),
             ) as Arc<dyn HlsEndpointRefreshPort>
         });
+    let dash_endpoint_refresh: Option<Arc<dyn DashEndpointRefreshPort>> =
+        (candidate_snapshot.live_intent() == YtDlpLiveIntent::Live
+            && crate::web_media_dash_open::candidate_is_dash(selected_candidate))
+        .then(|| {
+            Arc::new(
+                crate::web_media_dash_refresh::AppDashEndpointRefreshPort::new(
+                    locator.clone(),
+                    yt_dlp_config.clone(),
+                    network_config.clone(),
+                    runtime.source_config.clone(),
+                    runtime.provider_id.clone(),
+                    candidate_selection.clone(),
+                    cancellation.clone(),
+                ),
+            ) as Arc<dyn DashEndpointRefreshPort>
+        });
+    let endpoint_refresh_ports = AdaptiveEndpointRefreshPorts {
+        hls: hls_endpoint_refresh,
+        dash: dash_endpoint_refresh,
+    };
     let stream_configuration =
         crate::web_media_stream_model::WebMediaStreamConfiguration::from_yt_dlp_snapshot(
             &candidate_snapshot,
@@ -220,7 +251,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
         .open_candidate(
             selected_candidate,
             candidate_snapshot.live_intent(),
-            endpoint_refresh,
+            endpoint_refresh_ports,
             next_dynamic_timeline_port_generation()?,
             cancellation,
             &is_cancelled,
@@ -313,7 +344,7 @@ impl WebOpenRuntime {
         &self,
         candidate: &YtDlpNormalizedCandidate,
         live_intent: YtDlpLiveIntent,
-        endpoint_refresh: Option<Arc<dyn HlsEndpointRefreshPort>>,
+        endpoint_refresh_ports: AdaptiveEndpointRefreshPorts,
         timeline_port_generation: DynamicMediaTimelinePortGeneration,
         cancellation: CancellationToken,
         is_cancelled: &impl Fn() -> bool,
@@ -328,7 +359,7 @@ impl WebOpenRuntime {
                 Arc::clone(&self.hls_demux_registry),
                 cancellation,
                 live_intent,
-                endpoint_refresh,
+                endpoint_refresh_ports.hls,
                 timeline_port_generation,
             )?;
             return Ok(OpenedWebCandidate {
@@ -348,11 +379,13 @@ impl WebOpenRuntime {
                 Arc::clone(&self.demux_registry),
                 cancellation,
                 live_intent,
+                endpoint_refresh_ports.dash,
+                timeline_port_generation,
             )?;
             return Ok(OpenedWebCandidate {
                 demuxer: prepared.demuxer,
                 subtitles: Arc::from([]),
-                timeline_port: None,
+                timeline_port: prepared.timeline_port,
                 demux_seek_port: Some(prepared.seek_port),
             });
         }

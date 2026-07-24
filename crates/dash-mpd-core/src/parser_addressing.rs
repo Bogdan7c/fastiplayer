@@ -42,6 +42,8 @@ fn parse_empty_segment_template(
             "presentationTimeOffset",
             "media",
             "initialization",
+            "availabilityTimeOffset",
+            "availabilityTimeComplete",
         ],
     )?;
     let media = required_bounded_attribute(&element, "media", limits)?;
@@ -59,6 +61,10 @@ fn parse_empty_segment_template(
         initialization,
         duration: optional_u64_attribute(&element, "duration")?,
         timeline: Box::new([]),
+        availability_time_offset_nanoseconds:
+            optional_decimal_seconds_nanoseconds_attribute(&element, "availabilityTimeOffset")?,
+        availability_time_complete:
+            optional_boolean_attribute(&element, "availabilityTimeComplete")?,
     })
 }
 

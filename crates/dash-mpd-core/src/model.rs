@@ -24,12 +24,24 @@ impl DashUrlReference {
 pub struct DashBaseUrl {
     /// Lexical reference разрешается runtime-ом относительно effective MPD URL.
     reference: DashUrlReference,
+    /// Optional signed availability offset в nanoseconds.
+    pub availability_time_offset_nanoseconds: Option<i128>,
+    /// Optional completeness flag; отсутствие означает default `true`.
+    pub availability_time_complete: Option<bool>,
 }
 
 impl DashBaseUrl {
-    /// Создаётся schema parser-ом после cardinality/text checks.
-    pub(crate) fn new(reference: DashUrlReference) -> Self {
-        Self { reference }
+    /// Создаётся parser-ом вместе с dynamic availability attributes.
+    pub(crate) fn with_availability(
+        reference: DashUrlReference,
+        availability_time_offset_nanoseconds: Option<i128>,
+        availability_time_complete: Option<bool>,
+    ) -> Self {
+        Self {
+            reference,
+            availability_time_offset_nanoseconds,
+            availability_time_complete,
+        }
     }
 
     /// Возвращает следующую ссылку цепочки BaseURL inheritance.
@@ -160,6 +172,10 @@ pub struct DashSegmentTemplate {
     pub duration: Option<u64>,
     /// Explicit timeline alternative duration-у.
     pub timeline: Box<[DashTimelineEntry]>,
+    /// Optional signed availability offset в nanoseconds.
+    pub availability_time_offset_nanoseconds: Option<i128>,
+    /// Optional completeness flag; отсутствие означает default `true`.
+    pub availability_time_complete: Option<bool>,
 }
 
 /// Ровно один addressing mode после inheritance resolution.

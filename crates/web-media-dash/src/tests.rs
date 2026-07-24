@@ -454,9 +454,10 @@ fn template_timeline_applies_every_base_url_level_and_init() {
           <Period duration="PT4S"><BaseURL>period/</BaseURL>
             <AdaptationSet mimeType="video/mp4" contentType="video" codecs="avc1.4d401f">
               <BaseURL>adaptation/</BaseURL>
-              <SegmentTemplate timescale="1000" initialization="init-$RepresentationID$.mp4"
+              <SegmentTemplate timescale="1000" presentationTimeOffset="9000"
+                  initialization="init-$RepresentationID$.mp4"
                   media="chunk-$Time$.m4s">
-                <SegmentTimeline><S t="0" d="2000" r="1"/></SegmentTimeline>
+                <SegmentTimeline><S t="9000" d="2000" r="1"/></SegmentTimeline>
               </SegmentTemplate>
               <Representation id="v1" bandwidth="10"><BaseURL>representation/</BaseURL></Representation>
             </AdaptationSet>
@@ -485,7 +486,7 @@ fn template_timeline_applies_every_base_url_level_and_init() {
     );
     assert_eq!(
         resources[2].target.expose_secret_for_request(),
-        "https://media.example/root/mpd/period/adaptation/representation/chunk-2000.m4s"
+        "https://media.example/root/mpd/period/adaptation/representation/chunk-11000.m4s"
     );
     assert_eq!(resources[2].timeline_start, Some(Duration::from_secs(2)));
 }
