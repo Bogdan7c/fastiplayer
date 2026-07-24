@@ -1,3 +1,8 @@
+## S34 static DASH VOD (2026-07-24)
+
+- Production DASH now supports exact static MPD and serialized `http_dash_segments` inputs, proven fMP4/WebM muxed/single/separate layouts, bounded Periods and nonblocking generation-fenced receipted seek through the existing install barrier.
+- Pure MPD ownership is `dash-mpd-core`; runtime orchestration is `web-media-dash`; `service-ytdlp` remains request-material only; app owns composition; player sees only a neutral prepared-demux seek port. Full contract: `mem:media-services/dash-vod-s34-2026-07-24`.
+
 ## S33 HLS live/DVR (2026-07-24)
 
 - Explicit yt-dlp live intent now opens a provider-owned HLS live runtime with independent rendition refresh, segment-scoped TS/fMP4 provenance, proven sliding DVR through the existing S31L port, durationless `TracksChanged`, ENDLIST drain and typed LL-HLS exclusion.

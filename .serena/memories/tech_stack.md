@@ -1,5 +1,7 @@
 # Tech Stack
 
+- Static DASH VOD uses first-party `dash-mpd-core` (pure S04X-backed MPD profile) and `web-media-dash` (bounded exact MPD/serialized transport orchestration). Concrete fMP4/WebM parsing remains in the existing Symphonia registrations injected through `demux-api`; no DASH/container parser dependency was added. Player integration is a provider-neutral receipted seek trait in `player-core`. See `mem:media-services/dash-vod-s34-2026-07-24`.
+
 - Language: Rust, workspace edition `2024`, workspace MSRV `rust-version = "1.92"`, Cargo resolver `2`. Development and CI are pinned to Rust `1.96.0`, while CI validates both Rust `1.92.0` (MSRV) and `1.96.0` separately.
 - Main UI/window stack: `winit 0.30`, `egui 0.34`, `egui-winit 0.34`, `egui-wgpu 0.34`.
 - Render/GPU: `wgpu 29` with `vulkan` feature; production renderer crates are `render-wgpu-video` (pure WGPU NV12/P010 video renderer/materializer boundary) and `render-wgpu-shell` (WGPU device/surface/egui composition shell).

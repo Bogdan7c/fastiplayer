@@ -10,6 +10,7 @@ mod adapter;
 mod config;
 mod fetch;
 mod manifest;
+mod range_source;
 mod segment;
 mod timeline;
 
@@ -21,6 +22,9 @@ pub use fetch::{
 };
 pub use manifest::{
     AdaptiveManifestFetcher, ManifestBaseUri, ManifestFetchRequest, ManifestPoll, ManifestResource,
+};
+pub use range_source::{
+    AdaptiveRangeByteSource, AdaptiveRangeSourceConfig, AdaptiveRangeSourceOpenError,
 };
 pub use segment::{
     AdaptiveOrderedSegmentSource, AdaptiveSegmentCompletion, AdaptiveSegmentDescriptor,

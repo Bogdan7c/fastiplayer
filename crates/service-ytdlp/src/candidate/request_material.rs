@@ -7,8 +7,14 @@ use zeroize::Zeroizing;
 
 use super::raw::YtDlpSerializedFormat;
 
+mod dash;
 mod hls;
 
+pub use dash::{
+    YtDlpDashFragment, YtDlpDashFragmentLocatorKind, YtDlpDashFragmentRole, YtDlpDashInput,
+    YtDlpDashInputKind, YtDlpDashRequestContext, YtDlpDashRequestMaterial,
+    YtDlpDashRequestMaterialViolation,
+};
 pub use hls::{
     YtDlpHlsAesOverride, YtDlpHlsManifestInput, YtDlpHlsManifestInputKind, YtDlpHlsRequestMaterial,
     YtDlpHlsRequestMaterialViolation,
@@ -19,6 +25,10 @@ pub const YT_DLP_REQUEST_MATERIAL_SCHEMA_VERSION: u16 = 1;
 
 /// Максимальное число concrete fragments одной format row.
 const MAX_REQUEST_FRAGMENTS: usize = 10_000;
+/// Максимальная serialized duration одного fragment-а (24 часа).
+const MAX_REQUEST_FRAGMENT_DURATION_SECONDS: f64 = 24.0 * 60.0 * 60.0;
+/// Максимальная serialized filesize одного fragment-а (64 GiB).
+const MAX_REQUEST_FRAGMENT_BYTE_LENGTH: u64 = 64 * 1024 * 1024 * 1024;
 /// Максимальное число transient HTTP headers.
 const MAX_REQUEST_HEADERS: usize = 128;
 /// Максимальная длина secret/request строки.
@@ -77,6 +87,8 @@ pub struct YtDlpRequestMaterialV1 {
     fragments: Box<[YtDlpRequestFragment]>,
     /// Base endpoint для relative fragments.
     fragment_base_url: Option<SecretText>,
+    /// Upstream marker: fragments пересекают DASH Period boundaries.
+    is_dash_periods: bool,
     /// Inline HLS media playlist.
     hls_media_playlist_data: Option<SecretText>,
     /// Transient headers.
@@ -103,6 +115,7 @@ impl YtDlpRequestMaterialV1 {
             has_manifest_url: self.manifest_url.is_some(),
             fragment_count: self.fragments.len(),
             has_fragment_base_url: self.fragment_base_url.is_some(),
+            is_dash_periods: self.is_dash_periods,
             has_inline_hls: self.hls_media_playlist_data.is_some(),
             header_count: self.http_headers.len(),
             http_range_request_limit_bytes: self
@@ -137,6 +150,8 @@ pub struct YtDlpRequestMaterialSummary {
     pub fragment_count: usize,
     /// Fragment base присутствует.
     pub has_fragment_base_url: bool,
+    /// Upstream сообщил multi-period DASH serialization.
+    pub is_dash_periods: bool,
     /// Inline HLS manifest присутствует.
     pub has_inline_hls: bool,
     /// Число transient headers.
@@ -340,6 +355,13 @@ impl YtDlpRequestMaterial {
     ) -> Result<YtDlpHlsRequestMaterial<'_>, YtDlpHlsRequestMaterialViolation> {
         hls::hls_request_material(self)
     }
+
+    /// Проецирует DASH-only manifest/fragments/request context.
+    pub fn dash_request_material(
+        &self,
+    ) -> Result<YtDlpDashRequestMaterial<'_>, YtDlpDashRequestMaterialViolation> {
+        dash::dash_request_material(self)
+    }
 }
 
 impl fmt::Debug for SecretText {
@@ -412,6 +434,7 @@ pub(super) fn normalize_request_material(
             format.fragment_base_url.clone(),
             MAX_REQUEST_SECRET_UTF8_BYTES,
         )?,
+        is_dash_periods: format.is_dash_periods.unwrap_or(false),
         hls_media_playlist_data: optional_secret(
             format.hls_media_playlist_data.clone(),
             MAX_INLINE_HLS_UTF8_BYTES,
@@ -533,6 +556,11 @@ fn normalize_fragment(
     }
     let duration_seconds = optional_non_negative_f64(fragment, "duration")?;
     let byte_length = optional_u64(fragment, "filesize")?;
+    if duration_seconds.is_some_and(|duration| duration > MAX_REQUEST_FRAGMENT_DURATION_SECONDS)
+        || byte_length.is_some_and(|length| length > MAX_REQUEST_FRAGMENT_BYTE_LENGTH)
+    {
+        return Err(YtDlpRequestMaterialViolation::InvalidFragments);
+    }
 
     Ok(YtDlpRequestFragment {
         url,

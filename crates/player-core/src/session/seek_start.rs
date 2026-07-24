@@ -43,6 +43,7 @@ impl PlayerSession {
             PlayerErrorKind::SeekUnavailable,
             "seek superseded by another timeline command",
         ));
+        self.prepared_demux_seek.supersede_pending();
         let replacing_active_seek_landing = self.seek_runtime.seek_landing_active();
         let resume_intent = self
             .seek_runtime
@@ -481,6 +482,31 @@ impl PlayerSession {
             self.pipeline.reset_audio_clock();
         }
 
+        match self.prepared_demux_seek.enqueue(
+            demux_seek_request,
+            self.snapshot.media_instance_id,
+            generation,
+            target_position,
+            seek_mode,
+            resume_intent,
+        ) {
+            Ok(true) => {
+                debug!(
+                    kind = "seek",
+                    target_ms = target_duration.as_millis(),
+                    demux_mode = ?demux_seek_request.mode,
+                    generation,
+                    "Demux seek передан worker-receipted runtime-у"
+                );
+                return Ok(());
+            }
+            Ok(false) => {}
+            Err(error) => {
+                self.fail_started_demux_seek(error);
+                return Ok(());
+            }
+        }
+
         let seek_result = {
             debug!(
                 kind = "seek",
@@ -500,56 +526,77 @@ impl PlayerSession {
 
         match seek_result {
             Ok(result) => {
-                debug!(
-                    kind = "seek",
-                    target_ms = target_duration.as_millis(),
-                    actual_ms = result.actual_position.as_duration().as_millis(),
-                    actual_track_timestamp = ?result.actual_track_timestamp,
-                    demux_mode = ?demux_seek_request.mode,
-                    generation,
-                    pipeline_generation = self.pipeline.seek_generation(),
-                    selected_video_track_id = ?self.pipeline.selected_video_track_id(),
-                    selected_audio_track_id = ?self.pipeline.selected_audio_track_id(),
-                    "Demux seek transaction accepted"
-                );
-                self.seek_runtime.begin_trace(generation);
-                let seek_commit = SeekCommitState {
+                self.accept_demux_seek_result(
                     generation,
                     seek_mode,
                     target_position,
-                    actual_position: result.actual_position,
-                    started_at: Instant::now(),
                     resume_intent,
-                };
-                self.reanchor_clocks_after_seek_accept(seek_commit);
-                self.seek_runtime.set_active_commit(seek_commit);
-                if let Err(error) = self.apply_decoder_output_floor_for_seek(seek_commit) {
-                    self.seek_runtime.clear_active_commit();
-                    self.clear_prepared_seek_landing_with_diagnostics();
-                    self.seek_runtime.clear_trace();
-                    self.seek_runtime.clear_simple_scrub();
-                    self.seek_runtime.clear_eof_fallback_video_position();
-                    self.clear_seek_preroll_fallback_frame();
-                    self.mark_fatal_error(error);
-                    return Ok(());
-                }
+                    result,
+                );
                 Ok(())
             }
             Err(error) => {
-                self.seek_runtime.clear_active_commit();
-                self.clear_prepared_seek_landing_with_diagnostics();
-                self.seek_runtime.clear_trace();
-                self.seek_runtime.clear_simple_scrub();
-                self.snapshot.timeline.scrubbing = false;
-                self.snapshot.timeline.seeking = false;
-                self.snapshot.timeline.stale_frame = false;
-                self.set_playback_state(PlaybackState::Paused);
-                self.snapshot.timeline.target_position = None;
                 let player_error = player_error_from_demux_seek_error(error);
-                self.record_recoverable_error(player_error);
+                self.fail_started_demux_seek(player_error);
                 Ok(())
             }
         }
+    }
+
+    /// Принимает authoritative synchronous либо worker-receipted demux anchor.
+    pub(super) fn accept_demux_seek_result(
+        &mut self,
+        generation: u64,
+        seek_mode: SeekMode,
+        target_position: MediaTime,
+        resume_intent: PlaybackResumeIntent,
+        result: media_core::DemuxSeekResult,
+    ) {
+        debug!(
+            kind = "seek",
+            target_ms = target_position.as_duration().as_millis(),
+            actual_ms = result.actual_position.as_duration().as_millis(),
+            actual_track_timestamp = ?result.actual_track_timestamp,
+            generation,
+            pipeline_generation = self.pipeline.seek_generation(),
+            selected_video_track_id = ?self.pipeline.selected_video_track_id(),
+            selected_audio_track_id = ?self.pipeline.selected_audio_track_id(),
+            "Demux seek transaction accepted"
+        );
+        self.seek_runtime.begin_trace(generation);
+        let seek_commit = SeekCommitState {
+            generation,
+            seek_mode,
+            target_position,
+            actual_position: result.actual_position,
+            started_at: Instant::now(),
+            resume_intent,
+        };
+        self.reanchor_clocks_after_seek_accept(seek_commit);
+        self.seek_runtime.set_active_commit(seek_commit);
+        if let Err(error) = self.apply_decoder_output_floor_for_seek(seek_commit) {
+            self.seek_runtime.clear_active_commit();
+            self.clear_prepared_seek_landing_with_diagnostics();
+            self.seek_runtime.clear_trace();
+            self.seek_runtime.clear_simple_scrub();
+            self.seek_runtime.clear_eof_fallback_video_position();
+            self.clear_seek_preroll_fallback_frame();
+            self.mark_fatal_error(error);
+        }
+    }
+
+    /// Закрывает уже начатую seek transition без false position commit-а.
+    pub(super) fn fail_started_demux_seek(&mut self, player_error: PlayerError) {
+        self.seek_runtime.clear_active_commit();
+        self.clear_prepared_seek_landing_with_diagnostics();
+        self.seek_runtime.clear_trace();
+        self.seek_runtime.clear_simple_scrub();
+        self.snapshot.timeline.scrubbing = false;
+        self.snapshot.timeline.seeking = false;
+        self.snapshot.timeline.stale_frame = false;
+        self.set_playback_state(PlaybackState::Paused);
+        self.snapshot.timeline.target_position = None;
+        self.record_recoverable_error(player_error);
     }
 
     /// Останавливает audio stream для seek, не меняя high-level playback state.

@@ -13,8 +13,11 @@ use media_core::{
 use source_core::CancellationToken;
 
 use super::{
-    ProgressiveDemuxBufferLimits, ProgressiveDemuxPacketTooLargeError,
-    ProgressiveDemuxStartupError, ProgressiveDemuxer, ProgressiveSeekController,
+    ProgressiveAsyncSeekEnqueueError, ProgressiveAsyncSeekHandle, ProgressiveAsyncSeekLimits,
+    ProgressiveAsyncSeekOutcome, ProgressiveAsyncSeekReceipt, ProgressiveDemuxBufferLimits,
+    ProgressiveDemuxPacketTooLargeError, ProgressiveDemuxStartupError, ProgressiveDemuxer,
+    ProgressiveRuntimeGeneration, ProgressiveSeekController, ProgressiveSeekFence,
+    ProgressiveSeekRequestId,
 };
 
 /// Blocking fake сохраняет главный production invariant: inner read может ждать сколько угодно.
@@ -196,6 +199,133 @@ struct SupersededReadFailureDemuxer {
     packet_emitted: bool,
 }
 
+/// Seekable fake возвращает authoritative anchor, отличный от requested timestamp.
+struct OffsetReceiptSeekDemuxer {
+    /// Счётчик доказывает, что stale fence не дошёл до inner.
+    seek_count: Arc<AtomicUsize>,
+}
+
+impl Demuxer for OffsetReceiptSeekDemuxer {
+    fn tracks(&self) -> &[TrackInfo] {
+        &[]
+    }
+
+    fn duration(&self) -> Option<Duration> {
+        Some(Duration::from_secs(10))
+    }
+
+    fn seekability(&self) -> DemuxSeekability {
+        DemuxSeekability::Seekable
+    }
+
+    fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+        Ok(DemuxReadEvent::EndOfStream)
+    }
+
+    fn seek(&mut self, timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+        self.seek_with_request(DemuxSeekRequest::accurate(timestamp))
+    }
+
+    fn seek_with_request(&mut self, request: DemuxSeekRequest) -> anyhow::Result<DemuxSeekResult> {
+        self.seek_count.fetch_add(1, Ordering::SeqCst);
+        let actual_position = request.timestamp.saturating_sub(Duration::from_secs(1));
+        Ok(DemuxSeekResult {
+            requested_position: MediaTime::from_duration(request.timestamp),
+            actual_position: MediaTime::from_duration(actual_position),
+            actual_track_timestamp: None,
+        })
+    }
+}
+
+/// Первый receipt seek блокируется; следующие выполняются сразу.
+struct SlowReceiptSeekDemuxer {
+    /// Worker сообщает момент ownership первого command-а.
+    first_seek_started: SyncSender<()>,
+    /// Test освобождает первый blocking seek после enqueue новых intents.
+    release_first_seek: Receiver<()>,
+    /// Число выполненных seek commands.
+    seek_count: usize,
+}
+
+impl Demuxer for SlowReceiptSeekDemuxer {
+    fn tracks(&self) -> &[TrackInfo] {
+        &[]
+    }
+
+    fn duration(&self) -> Option<Duration> {
+        Some(Duration::from_secs(10))
+    }
+
+    fn seekability(&self) -> DemuxSeekability {
+        DemuxSeekability::Seekable
+    }
+
+    fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+        Ok(DemuxReadEvent::EndOfStream)
+    }
+
+    fn seek(&mut self, timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+        self.seek_with_request(DemuxSeekRequest::accurate(timestamp))
+    }
+
+    fn seek_with_request(&mut self, request: DemuxSeekRequest) -> anyhow::Result<DemuxSeekResult> {
+        self.seek_count = self.seek_count.saturating_add(1);
+        if self.seek_count == 1 {
+            self.first_seek_started
+                .send(())
+                .expect("test receiver должен жить");
+            self.release_first_seek
+                .recv()
+                .expect("test обязан освободить blocking seek");
+        }
+        Ok(DemuxSeekResult {
+            requested_position: MediaTime::from_duration(request.timestamp),
+            actual_position: MediaTime::from_duration(request.timestamp),
+            actual_track_timestamp: None,
+        })
+    }
+}
+
+/// Первый seek падает транзакционно, второй подтверждает живой worker.
+struct FirstReceiptSeekFailsDemuxer {
+    /// Число вызовов выбирает scripted outcome.
+    seek_count: usize,
+}
+
+impl Demuxer for FirstReceiptSeekFailsDemuxer {
+    fn tracks(&self) -> &[TrackInfo] {
+        &[]
+    }
+
+    fn duration(&self) -> Option<Duration> {
+        Some(Duration::from_secs(10))
+    }
+
+    fn seekability(&self) -> DemuxSeekability {
+        DemuxSeekability::Seekable
+    }
+
+    fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+        Ok(DemuxReadEvent::EndOfStream)
+    }
+
+    fn seek(&mut self, timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+        self.seek_with_request(DemuxSeekRequest::accurate(timestamp))
+    }
+
+    fn seek_with_request(&mut self, request: DemuxSeekRequest) -> anyhow::Result<DemuxSeekResult> {
+        self.seek_count = self.seek_count.saturating_add(1);
+        if self.seek_count == 1 {
+            anyhow::bail!("scripted transactional seek failure");
+        }
+        Ok(DemuxSeekResult {
+            requested_position: MediaTime::from_duration(request.timestamp),
+            actual_position: MediaTime::from_duration(request.timestamp),
+            actual_track_timestamp: None,
+        })
+    }
+}
+
 impl Demuxer for SupersededReadFailureDemuxer {
     fn tracks(&self) -> &[TrackInfo] {
         &[]
@@ -318,6 +448,52 @@ fn poll_until_event(progressive: &mut ProgressiveDemuxer) -> anyhow::Result<Demu
             }
             event => return Ok(event),
         }
+    }
+}
+
+/// Строит typed fence без magic identities внутри test cases.
+fn receipt_fence(runtime_generation: u64, request_id: u64) -> ProgressiveSeekFence {
+    ProgressiveSeekFence {
+        runtime_generation: ProgressiveRuntimeGeneration::new(runtime_generation),
+        request_id: ProgressiveSeekRequestId::new(request_id),
+    }
+}
+
+/// Создаёт seekable receipt runtime и сохраняет control handle до type erasure.
+fn receipted_runtime(
+    inner: Box<dyn Demuxer + Send>,
+    cancellation: CancellationToken,
+    maximum_outstanding_receipts: usize,
+) -> (ProgressiveDemuxer, ProgressiveAsyncSeekHandle) {
+    let progressive = ProgressiveDemuxer::new_receipted_seekable(
+        inner,
+        cancellation,
+        limits(4, 16),
+        retry_hint(),
+        ProgressiveRuntimeGeneration::new(7),
+        ProgressiveAsyncSeekLimits::new(
+            NonZeroUsize::new(maximum_outstanding_receipts).expect("test bound ненулевой"),
+        ),
+    )
+    .expect("receipt worker запускается");
+    let handle = progressive
+        .async_seek_handle()
+        .expect("receipt capability опубликована");
+    (progressive, handle)
+}
+
+/// Ждёт только в test thread-е; production poll остаётся строго nonblocking.
+fn poll_until_receipt(handle: &ProgressiveAsyncSeekHandle) -> ProgressiveAsyncSeekReceipt {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        if let Some(receipt) = handle.poll_receipt() {
+            return receipt;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "worker обязан опубликовать terminal receipt"
+        );
+        thread::sleep(DemuxRetryHint::MIN_RETRY_AFTER);
     }
 }
 
@@ -619,4 +795,256 @@ fn stale_read_failure_does_not_stop_worker_before_pending_seek() {
         panic!("post-seek packet expected");
     };
     assert_eq!(packet.pts, Duration::from_secs(3));
+}
+
+#[test]
+fn legacy_runtime_rejects_async_seek_capability_without_changing_legacy_contract() {
+    let (_sender, receiver) = sync_channel(1);
+    let progressive = ProgressiveDemuxer::new(
+        Box::new(BlockingChannelDemuxer { receiver }),
+        CancellationToken::new(),
+        limits(4, 16),
+        retry_hint(),
+    )
+    .expect("legacy progressive runtime starts");
+
+    let error = progressive
+        .enqueue_async_seek(
+            receipt_fence(7, 1),
+            DemuxSeekRequest::accurate(Duration::from_secs(1)),
+        )
+        .expect_err("legacy runtime не должен притворяться receipt-capable");
+    assert_eq!(error, ProgressiveAsyncSeekEnqueueError::CapabilityAbsent);
+}
+
+#[test]
+fn receipted_seek_publishes_authoritative_result_exactly_once() {
+    let seek_count = Arc::new(AtomicUsize::new(0));
+    let (_progressive, handle) = receipted_runtime(
+        Box::new(OffsetReceiptSeekDemuxer {
+            seek_count: Arc::clone(&seek_count),
+        }),
+        CancellationToken::new(),
+        2,
+    );
+    let fence = receipt_fence(7, 1);
+    handle
+        .enqueue(fence, DemuxSeekRequest::accurate(Duration::from_secs(5)))
+        .expect("valid request accepted");
+
+    let receipt = poll_until_receipt(&handle);
+    assert_eq!(receipt.fence, fence);
+    let ProgressiveAsyncSeekOutcome::Succeeded(result) = receipt.outcome else {
+        panic!("authoritative success receipt expected");
+    };
+    assert_eq!(
+        result.actual_position,
+        MediaTime::from_duration(Duration::from_secs(4))
+    );
+    assert_eq!(seek_count.load(Ordering::SeqCst), 1);
+    assert_eq!(handle.poll_receipt(), None, "receipt is at-most-once");
+}
+
+#[test]
+fn stale_fence_is_receipted_without_touching_inner_parser() {
+    let seek_count = Arc::new(AtomicUsize::new(0));
+    let (_progressive, handle) = receipted_runtime(
+        Box::new(OffsetReceiptSeekDemuxer {
+            seek_count: Arc::clone(&seek_count),
+        }),
+        CancellationToken::new(),
+        2,
+    );
+    let stale_fence = receipt_fence(6, 1);
+    handle
+        .enqueue(
+            stale_fence,
+            DemuxSeekRequest::accurate(Duration::from_secs(5)),
+        )
+        .expect("stale request получает terminal receipt");
+
+    assert_eq!(
+        poll_until_receipt(&handle),
+        ProgressiveAsyncSeekReceipt {
+            fence: stale_fence,
+            outcome: ProgressiveAsyncSeekOutcome::Stale,
+        }
+    );
+    assert_eq!(seek_count.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn receipt_bound_and_monotonic_identity_are_enforced_until_drain() {
+    let (_progressive, handle) = receipted_runtime(
+        Box::new(OffsetReceiptSeekDemuxer {
+            seek_count: Arc::new(AtomicUsize::new(0)),
+        }),
+        CancellationToken::new(),
+        1,
+    );
+    handle
+        .enqueue(
+            receipt_fence(7, 1),
+            DemuxSeekRequest::accurate(Duration::from_secs(1)),
+        )
+        .expect("first request accepted");
+    assert_eq!(
+        handle
+            .enqueue(
+                receipt_fence(7, 1),
+                DemuxSeekRequest::accurate(Duration::from_secs(2)),
+            )
+            .expect_err("identity must increase"),
+        ProgressiveAsyncSeekEnqueueError::NonMonotonicRequestIdentity
+    );
+    assert_eq!(
+        handle
+            .enqueue(
+                receipt_fence(7, 2),
+                DemuxSeekRequest::accurate(Duration::from_secs(2)),
+            )
+            .expect_err("undrained receipt retains capacity"),
+        ProgressiveAsyncSeekEnqueueError::ReceiptQueueFull
+    );
+
+    let first_receipt = poll_until_receipt(&handle);
+    assert_eq!(
+        first_receipt.fence.request_id,
+        ProgressiveSeekRequestId::new(1)
+    );
+    handle
+        .enqueue(
+            receipt_fence(7, 2),
+            DemuxSeekRequest::accurate(Duration::from_secs(2)),
+        )
+        .expect("drain releases exact capacity");
+    assert_eq!(
+        poll_until_receipt(&handle).fence.request_id,
+        ProgressiveSeekRequestId::new(2)
+    );
+}
+
+#[test]
+fn rapid_seek_supersedes_in_flight_and_pending_requests() {
+    let (started_sender, started_receiver) = sync_channel(1);
+    let (release_sender, release_receiver) = sync_channel(1);
+    let (_progressive, handle) = receipted_runtime(
+        Box::new(SlowReceiptSeekDemuxer {
+            first_seek_started: started_sender,
+            release_first_seek: release_receiver,
+            seek_count: 0,
+        }),
+        CancellationToken::new(),
+        3,
+    );
+    handle
+        .enqueue(
+            receipt_fence(7, 1),
+            DemuxSeekRequest::accurate(Duration::from_secs(1)),
+        )
+        .expect("first request accepted");
+    started_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .expect("worker owns first blocking seek");
+    handle
+        .enqueue(
+            receipt_fence(7, 2),
+            DemuxSeekRequest::accurate(Duration::from_secs(2)),
+        )
+        .expect("second request accepted");
+    handle
+        .enqueue(
+            receipt_fence(7, 3),
+            DemuxSeekRequest::accurate(Duration::from_secs(3)),
+        )
+        .expect("third request supersedes pending second");
+    release_sender.send(()).expect("release first seek");
+
+    let mut outcomes = [None; 3];
+    for _ in 0..3 {
+        let receipt = poll_until_receipt(&handle);
+        let index =
+            usize::try_from(receipt.fence.request_id.value() - 1).expect("small test identity");
+        outcomes[index] = Some(receipt.outcome);
+    }
+    assert_eq!(
+        outcomes,
+        [
+            Some(ProgressiveAsyncSeekOutcome::Superseded),
+            Some(ProgressiveAsyncSeekOutcome::Superseded),
+            Some(ProgressiveAsyncSeekOutcome::Succeeded(DemuxSeekResult {
+                requested_position: MediaTime::from_duration(Duration::from_secs(3)),
+                actual_position: MediaTime::from_duration(Duration::from_secs(3)),
+                actual_track_timestamp: None,
+            })),
+        ]
+    );
+    assert_eq!(handle.poll_receipt(), None);
+}
+
+#[test]
+fn failed_receipted_seek_does_not_kill_transactional_worker() {
+    let (_progressive, handle) = receipted_runtime(
+        Box::new(FirstReceiptSeekFailsDemuxer { seek_count: 0 }),
+        CancellationToken::new(),
+        2,
+    );
+    handle
+        .enqueue(
+            receipt_fence(7, 1),
+            DemuxSeekRequest::accurate(Duration::from_secs(1)),
+        )
+        .expect("first request accepted");
+    assert_eq!(
+        poll_until_receipt(&handle).outcome,
+        ProgressiveAsyncSeekOutcome::Failed
+    );
+    handle
+        .enqueue(
+            receipt_fence(7, 2),
+            DemuxSeekRequest::accurate(Duration::from_secs(2)),
+        )
+        .expect("worker remains available after transactional error");
+    assert!(matches!(
+        poll_until_receipt(&handle).outcome,
+        ProgressiveAsyncSeekOutcome::Succeeded(_)
+    ));
+}
+
+#[test]
+fn cancellation_terminalizes_in_flight_receipted_seek() {
+    let (started_sender, started_receiver) = sync_channel(1);
+    let (release_sender, release_receiver) = sync_channel(1);
+    let cancellation = CancellationToken::new();
+    let (_progressive, handle) = receipted_runtime(
+        Box::new(SlowReceiptSeekDemuxer {
+            first_seek_started: started_sender,
+            release_first_seek: release_receiver,
+            seek_count: 0,
+        }),
+        cancellation.clone(),
+        1,
+    );
+    let fence = receipt_fence(7, 1);
+    handle
+        .enqueue(fence, DemuxSeekRequest::accurate(Duration::from_secs(1)))
+        .expect("request accepted");
+    started_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .expect("worker owns blocking seek");
+    cancellation.cancel();
+    release_sender.send(()).expect("release cancelled seek");
+
+    assert_eq!(
+        poll_until_receipt(&handle),
+        ProgressiveAsyncSeekReceipt {
+            fence,
+            outcome: ProgressiveAsyncSeekOutcome::Cancelled,
+        }
+    );
+    assert_eq!(
+        handle.poll_receipt(),
+        None,
+        "cancellation emits one receipt"
+    );
 }

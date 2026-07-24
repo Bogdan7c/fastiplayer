@@ -552,6 +552,9 @@ impl StartupMediaController {
                     source_locator.safe_label(),
                     prepared.demuxer,
                 );
+                if let Some(port) = prepared.demux_seek_port {
+                    prepared_media = prepared_media.with_worker_receipted_demux_seek(port);
+                }
                 if let Some(timeline_port) = prepared.timeline_port {
                     prepared_media = match prepared_media.with_dynamic_timeline(timeline_port) {
                         Ok(prepared_media) => prepared_media,

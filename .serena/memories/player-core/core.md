@@ -1,3 +1,7 @@
+## S34 worker-receipted prepared-demux seek (2026-07-24)
+
+`PreparedMedia` may install a provider-neutral `PreparedDemuxSeekPort`; session owns exact request/media-instance/seek-generation/requested-target fences and only an exact successful receipt enters the existing final seek commit. Polling is nonblocking, demux reads pause while pending, stale/error/cancel/supersede receipts never publish position, and legacy media stays synchronous. DASH-specific ownership remains outside player-core; details: `mem:media-services/dash-vod-s34-2026-07-24`.
+
 ## S31L dynamic live/DVR timeline (2026-07-23)
 
 `PlayerSession` now owns a generation-fenced dynamic timeline binding installed through typed `PreparedMediaTimelineMode`. Worker timed/idle waits use observe→arm→recheck around a capacity-one activity signal and publish revisions even while paused. Live `duration=None`; no DVR means non-seekable; live seek targets outside the latest range produce typed expiry and are never clamped. See `mem:player-core/dynamic-live-timeline-s31l-2026-07-23`.

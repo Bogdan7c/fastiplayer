@@ -3,6 +3,7 @@ mod prefetched_demuxer;
 use std::collections::VecDeque;
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use media_core::{
@@ -12,7 +13,7 @@ use media_core::{
 
 use self::prefetched_demuxer::PrefetchedDemuxer;
 
-use crate::{MediaPlaybackWindow, MediaSource};
+use crate::{MediaPlaybackWindow, MediaSource, PreparedDemuxSeekMode, PreparedDemuxSeekPort};
 
 /// Безопасная, UI-ready информация об источнике без reopen credentials.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +40,7 @@ pub(crate) struct PreparedMediaSlots {
     pub(crate) tracks: Vec<TrackInfo>,
     pub(crate) source_info: MediaSourceInfo,
     pub(crate) timeline_mode: PreparedMediaTimelineMode,
+    pub(crate) demux_seek_mode: PreparedDemuxSeekMode,
 }
 
 /// Взаимоисключающий timeline intent подготовленного media.
@@ -121,6 +123,9 @@ pub struct PreparedMedia {
 
     /// Единственный static либо live timeline intent.
     timeline_mode: PreparedMediaTimelineMode,
+
+    /// Explicit synchronous либо worker-receipted demux seek boundary.
+    demux_seek_mode: PreparedDemuxSeekMode,
 
     /// Cold replay state создаётся только если exact preflight действительно читает demuxer.
     prefetch_state: Option<Box<PreparedMediaPrefetchState>>,
@@ -241,6 +246,16 @@ impl PreparedMedia {
         Ok(self)
     }
 
+    /// Прикрепляет exact worker-receipted demux seek port до player install barrier-а.
+    #[must_use]
+    pub fn with_worker_receipted_demux_seek(
+        mut self,
+        port: Arc<dyn PreparedDemuxSeekPort>,
+    ) -> Self {
+        self.demux_seek_mode = PreparedDemuxSeekMode::WorkerReceipted { port };
+        self
+    }
+
     /// Возвращает timeline intent без доступа к demuxer ownership.
     #[must_use]
     pub const fn timeline_mode(&self) -> &PreparedMediaTimelineMode {
@@ -326,6 +341,7 @@ impl PreparedMedia {
             tracks: self.tracks,
             source_info: self.source_info,
             timeline_mode: self.timeline_mode,
+            demux_seek_mode: self.demux_seek_mode,
         }
     }
 
@@ -343,6 +359,7 @@ impl PreparedMedia {
             duration,
             seekability,
             timeline_mode: PreparedMediaTimelineMode::default(),
+            demux_seek_mode: PreparedDemuxSeekMode::default(),
             prefetch_state: None,
             source_info,
         }

@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 
 use source_core::{
     CancellationToken, HttpBoundedByteRange, HttpBoundedFetchHop, HttpBoundedFetchKind,
-    HttpBoundedFetchRequest, HttpHeader, HttpRequestTarget, HttpSourceSession, ScopedHttpCookieJar,
-    ScopedHttpCookieJarError, SourceError, SourceRuntimeConfig,
+    HttpBoundedFetchRequest, HttpHeader, HttpRangeResponseMetadata, HttpRequestTarget,
+    HttpSourceSession, ScopedHttpCookieJar, ScopedHttpCookieJarError, SourceError,
+    SourceRuntimeConfig,
 };
 use web_media_transport_api::{
     MediaPresentation, RedirectHopCount, RedirectPolicyError, SecretRequestContext,
@@ -126,6 +127,7 @@ impl AdaptiveHttpContext {
                     return Ok(AdaptiveFetchedResource {
                         final_target: success.final_target,
                         bytes: success.bytes,
+                        range_metadata: success.range_metadata,
                     });
                 }
                 Err(error) if error.is_retryable() && attempt < self.retry.maximum_attempts() => {
@@ -308,6 +310,7 @@ impl AdaptiveResourceFetchRequest {
 pub struct AdaptiveFetchedResource {
     final_target: HttpRequestTarget,
     bytes: Vec<u8>,
+    range_metadata: Option<HttpRangeResponseMetadata>,
 }
 
 impl AdaptiveFetchedResource {
@@ -321,6 +324,12 @@ impl AdaptiveFetchedResource {
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    /// Возвращает validated wire metadata exact Range response-а.
+    #[must_use]
+    pub const fn range_metadata(&self) -> Option<&HttpRangeResponseMetadata> {
+        self.range_metadata.as_ref()
     }
 
     /// Передаёт владение bytes без дополнительного копирования.
@@ -427,6 +436,7 @@ pub(crate) struct FetchJob {
 pub(crate) struct FetchSuccess {
     pub final_target: HttpRequestTarget,
     pub bytes: Vec<u8>,
+    pub range_metadata: Option<HttpRangeResponseMetadata>,
 }
 
 #[derive(Debug)]
@@ -541,9 +551,11 @@ fn fetch_with_redirects(
             .fetch_bounded_single_hop(request, &context.cancellation)?
         {
             HttpBoundedFetchHop::Complete(response) => {
+                let range_metadata = response.range_metadata().cloned();
                 return Ok(FetchSuccess {
                     final_target: target,
                     bytes: response.into_bytes(),
+                    range_metadata,
                 });
             }
             HttpBoundedFetchHop::Redirect(redirect) => {

@@ -496,15 +496,15 @@ struct ProbeResult {
 }
 
 #[derive(Debug)]
-struct ParsedContentRange {
+pub(crate) struct ParsedContentRange {
     /// Начальный offset response range.
-    start: u64,
+    pub(crate) start: u64,
 
     /// Конечный offset response range включительно.
-    end_inclusive: u64,
+    pub(crate) end_inclusive: u64,
 
     /// Общая длина source-а, если server её сообщил.
-    total_length: Option<u64>,
+    pub(crate) total_length: Option<u64>,
 }
 
 /// Выполняет `Range: bytes=0-0` и подтверждает seekability только через 206.
@@ -591,7 +591,7 @@ pub(crate) fn validate_content_range(
     url: &SecretHttpUrl,
     headers: &HeaderMap,
     range: &ByteRange,
-) -> SourceResult<()> {
+) -> SourceResult<ParsedContentRange> {
     let parsed_range = parse_content_range_header(url, headers)?;
     if parsed_range.start != range.start || parsed_range.end_inclusive != range.end_inclusive() {
         return Err(SourceError::InvalidContentRange {
@@ -599,8 +599,17 @@ pub(crate) fn validate_content_range(
             header: "<unexpected range>".to_string(),
         });
     }
+    if parsed_range
+        .total_length
+        .is_some_and(|total_length| total_length <= parsed_range.end_inclusive)
+    {
+        return Err(SourceError::InvalidContentRange {
+            url: url.clone(),
+            header: "<inconsistent total length>".to_string(),
+        });
+    }
 
-    Ok(())
+    Ok(parsed_range)
 }
 
 /// Читает ровно ожидаемое количество bytes из response body в caller buffer.
@@ -673,7 +682,7 @@ pub(crate) fn build_header_map(headers: &[HttpHeader]) -> SourceResult<HeaderMap
 }
 
 /// Достаёт validators из HTTP response headers.
-fn validators_from_headers(headers: &HeaderMap) -> SourceValidators {
+pub(crate) fn validators_from_headers(headers: &HeaderMap) -> SourceValidators {
     SourceValidators {
         etag: headers
             .get(ETAG)

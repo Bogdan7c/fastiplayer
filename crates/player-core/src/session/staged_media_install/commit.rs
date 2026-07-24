@@ -69,11 +69,13 @@ impl PlayerSession {
             tracks,
             source_info,
             timeline_mode,
+            demux_seek_mode,
         } = prepared_media.into_pipeline_slots();
         self.pipeline
             .install_opened_media(demuxer, file_path, source_label, tracks);
         self.pipeline.update_media_source_info(source_info);
         self.reset_session_state_for_staged_media_commit();
+        self.prepared_demux_seek.install(demux_seek_mode);
         self.reset_playback_window_end_observation();
 
         if let Some(audio_plan) = audio_plan {
@@ -215,6 +217,7 @@ impl PlayerSession {
         self.clear_pending_video_backend_reselection();
         self.media_lifecycle.clear_pending_autoplay();
         self.seek_runtime.clear_active_commit();
+        self.prepared_demux_seek.reset();
         self.prepared_seek_landing.clear_promoted_seek_ownership();
         self.seek_runtime.clear_trace();
         self.seek_runtime.clear_simple_scrub();

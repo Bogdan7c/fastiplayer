@@ -1,5 +1,9 @@
 # Hardened XML Boundary
 
+## S34 DASH consumer (2026-07-24)
+
+- `dash-mpd-core` is the static DASH schema/profile owner and consumes only `bounded-xml-reader` project events with caller-supplied XML and schema budgets. It adds no second XML parser or hidden I/O; dynamic MPD, DTD/entities, ContentProtection and unsupported required constructs fail closed. Full profile: `mem:media-services/dash-vod-s34-2026-07-24`.
+
 ## S04X (2026-07-20)
 
 - `bounded-xml-reader` — единственная project-owned граница для будущего parsing untrusted XML. Она принимает только caller-owned `&[u8]`, поэтому не владеет filesystem/network I/O и не может скрыто загружать external entities/resources.

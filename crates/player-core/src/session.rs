@@ -45,6 +45,7 @@ mod exact_media_transport;
 mod installed_media_restore;
 mod media_lifecycle;
 mod playback_rate;
+mod prepared_demux_seek;
 mod prepared_seek;
 mod render_leases;
 mod scrub_driver;
@@ -73,6 +74,7 @@ use self::dynamic_timeline::DynamicTimelineRuntime;
 pub(crate) use self::dynamic_timeline::DynamicTimelineWaitSource;
 use self::eof_drain::EofDrainRuntime;
 use self::media_lifecycle::MediaLifecycleState;
+use self::prepared_demux_seek::PreparedDemuxSeekRuntime;
 use self::prepared_seek::PreparedSeekLandingRuntime;
 pub(crate) use self::render_leases::{LeasedPresentFrame, PresentFrameIdentity};
 use self::staged_media_install::StagedMediaInstallRegistry;
@@ -170,6 +172,9 @@ pub struct PlayerSession {
 
     /// Runtime state seek transaction/scrub/trace markers, которым владеет session.
     seek_runtime: SeekRuntimeState,
+
+    /// Exact prepared-media demux seek port и pending receipt fence.
+    prepared_demux_seek: PreparedDemuxSeekRuntime,
 
     /// Request-owned completion активного external exact seek-а.
     pending_exact_timeline_seek:
@@ -1370,6 +1375,7 @@ impl Default for PlayerSession {
                 .validate()
                 .expect("default frame-server config must validate"),
             seek_runtime: SeekRuntimeState::default(),
+            prepared_demux_seek: PreparedDemuxSeekRuntime::default(),
             pending_exact_timeline_seek: None,
             pending_installed_position_restore: None,
             prepared_seek_landing: PreparedSeekLandingRuntime,

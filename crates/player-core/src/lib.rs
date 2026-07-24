@@ -16,6 +16,7 @@ mod media_opening;
 mod pipeline;
 mod playback_rate;
 mod playback_window;
+mod prepared_demux_seek;
 mod render_lease_bridge;
 mod runtime_settings;
 mod seek_state;
@@ -111,6 +112,10 @@ pub use media_opening::{
 pub(crate) use pipeline::{PendingAudioPacket, PendingVideoPacket, PlaybackPipeline};
 pub use playback_rate::{PlaybackRate, PlaybackRateValidationError};
 pub use playback_window::{MediaPlaybackWindow, MediaPlaybackWindowError};
+pub use prepared_demux_seek::{
+    PreparedDemuxSeekEnqueueError, PreparedDemuxSeekMode, PreparedDemuxSeekOutcome,
+    PreparedDemuxSeekPort, PreparedDemuxSeekReceipt, PreparedDemuxSeekRequestId,
+};
 pub use runtime_settings::{
     PlayerRuntimeAcceptedChange, PlayerRuntimeApplyError, PlayerRuntimeApplyGroup,
     PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyOutcome, PlayerRuntimeApplyReport,

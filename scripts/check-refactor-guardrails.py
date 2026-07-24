@@ -26,6 +26,7 @@ CONTRACT_CRATES = frozenset(
         "atomic-file-store",
         "audio-core",
         "bounded-xml-reader",
+        "dash-mpd-core",
         "media-core",
         "natural-sort-key",
         "playlist-core",
@@ -56,6 +57,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "audio",
         "audio-core",
         "bounded-xml-reader",
+        "dash-mpd-core",
         "capability-core",
         "codec-core",
         "desktop-integration",
@@ -91,6 +93,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "video-vaapi",
         "web-media-core",
         "web-media-adaptive",
+        "web-media-dash",
         "web-media-hls",
         "web-media-http",
         "web-media-playback-plan",
@@ -142,6 +145,11 @@ PLAYLIST_IO_ALLOWED_DEPENDENCIES = frozenset(
 # Shared RFC 8216 owner выполняет только pure text/reference validation.
 HLS_PLAYLIST_CORE_ALLOWED_DEPENDENCIES = frozenset(
     {"thiserror", "unicode-normalization", "url"}
+)
+
+# DASH schema owner зависит только от hardened XML boundary и typed errors.
+DASH_MPD_CORE_ALLOWED_DEPENDENCIES = frozenset(
+    {"bounded-xml-reader", "thiserror"}
 )
 
 # Общий natural comparator остаётся std-only и не знает path/domain owners.
@@ -210,6 +218,23 @@ WEB_MEDIA_HLS_ALLOWED_DEPENDENCIES = frozenset(
         "web-media-adaptive",
         "web-media-transport-api",
         "zeroize",
+    }
+)
+
+# DASH VOD runtime владеет manifest/serialized planning и использует только
+# pure MPD schema плюс neutral adaptive/source/demux contracts.
+WEB_MEDIA_DASH_ALLOWED_DEPENDENCIES = frozenset(
+    {
+        "anyhow",
+        "bounded-xml-reader",
+        "bytes",
+        "dash-mpd-core",
+        "demux-api",
+        "media-core",
+        "source-core",
+        "thiserror",
+        "web-media-adaptive",
+        "web-media-transport-api",
     }
 )
 
@@ -1162,9 +1187,25 @@ def find_dependency_violations(
     violations.extend(
         find_disallowed_dependencies(
             dependency_map,
+            frozenset({"dash-mpd-core"}),
+            DASH_MPD_CORE_ALLOWED_DEPENDENCIES,
+            "dash-mpd-core остаётся pure static MPD schema/model без HTTP/demux/app/yt-dlp",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
             frozenset({"web-media-hls"}),
             WEB_MEDIA_HLS_ALLOWED_DEPENDENCIES,
             "web-media-hls ограничен HLS policy и neutral transport/demux contracts без concrete demux backends",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"web-media-dash"}),
+            WEB_MEDIA_DASH_ALLOWED_DEPENDENCIES,
+            "web-media-dash ограничен static DASH policy и neutral transport/demux contracts",
         )
     )
     violations.extend(

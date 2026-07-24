@@ -435,6 +435,76 @@ fn hls_transport_projection_accepts_hls_fields_without_progressive_profile_rejec
     }
 }
 
+#[test]
+fn dash_transport_projection_preserves_serialized_roles_and_scoped_request_context() {
+    let snapshot = snapshot(
+        json!({
+            "formats": [{
+                "format_id": "dash-runtime",
+                "url": "https://media.invalid/private/manifest.mpd",
+                "protocol": "http_dash_segments",
+                "ext": "webm",
+                "container": "webm",
+                "vcodec": "none",
+                "acodec": "opus",
+                "fragment_base_url": "https://media.invalid/private/",
+                "fragments": [
+                    {"path": "init.webm"},
+                    {"path": "one.webm", "duration": 1.0}
+                ],
+                "http_headers": {"Authorization": "Bearer dash-secret"},
+                "cookies": "session=dash-cookie",
+                "extra_param_to_segment_url": "segment_token=secret"
+            }]
+        }),
+        1,
+    );
+    let candidate = accepted_inventory(&snapshot, 0);
+    let context = super::YtDlpTransportRequestContext::new(
+        TransportProviderId::new("progressive-http").expect("provider ID"),
+        SourceGeneration::new(1),
+        CancellationToken::new(),
+    );
+
+    let mut projected = candidate
+        .dash_transport_components(&context)
+        .expect("serialized DASH projection");
+    assert_eq!(projected.len(), 1);
+    let (_, _, material, request) = projected.remove(0).into_parts();
+    let roles = material
+        .input()
+        .fragments()
+        .map(|fragment| fragment.role())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        roles,
+        vec![
+            super::YtDlpDashFragmentRole::Initialization,
+            super::YtDlpDashFragmentRole::Media
+        ]
+    );
+    assert_eq!(
+        request.target().expose_secret_for_request(),
+        "https://media.invalid/private/init.webm"
+    );
+    let media_target = HttpRequestTarget::parse_exact("https://media.invalid/private/one.webm")
+        .expect("media target");
+    let scoped = request
+        .secrets()
+        .material_for(&media_target, SecretRequestPurpose::MediaSegment)
+        .expect("same scoped media target");
+    assert_eq!(
+        scoped
+            .query_override_for_request()
+            .map(|query| query.expose_secret_for_request()),
+        Some("segment_token=secret")
+    );
+    let diagnostic = format!("{snapshot:?} {material:?} {request:?}");
+    for secret in ["dash-secret", "dash-cookie", "segment_token"] {
+        assert!(!diagnostic.contains(secret));
+    }
+}
+
 /// request_data и impersonation не маскируются как playable material.
 #[test]
 fn excluded_request_data_and_impersonation_remain_visible_rejections() {

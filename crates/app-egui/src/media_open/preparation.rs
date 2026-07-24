@@ -1,5 +1,7 @@
 //! Production adapters существующих local/direct/YtDlp preparation owners.
 
+use std::sync::Arc;
+
 use player_core::PreparedMedia;
 
 use super::{
@@ -130,6 +132,7 @@ pub(super) fn prepare_source(
                 safe_label.as_str(),
                 prepared.demuxer,
                 prepared.timeline_port,
+                prepared.demux_seek_port,
             )
             .map_err(|error| {
                 tracing::warn!(
@@ -162,8 +165,12 @@ fn prepare_yt_dlp_player_media(
     safe_label: &str,
     demuxer: Box<dyn media_core::Demuxer + Send>,
     timeline_port: Option<media_core::DynamicMediaTimelinePort>,
+    demux_seek_port: Option<Arc<dyn player_core::PreparedDemuxSeekPort>>,
 ) -> Result<PreparedMedia, player_core::PreparedMediaTimelineModeError> {
-    let prepared = PreparedMedia::from_external_label(safe_label, demuxer);
+    let mut prepared = PreparedMedia::from_external_label(safe_label, demuxer);
+    if let Some(port) = demux_seek_port {
+        prepared = prepared.with_worker_receipted_demux_seek(port);
+    }
     match timeline_port {
         Some(port) => prepared.with_dynamic_timeline(port),
         None => Ok(prepared),
@@ -283,9 +290,13 @@ mod tests {
             service_duration_for_timeline(Some(&timeline_port), Some(Duration::from_secs(3_600))),
             None
         );
-        let prepared =
-            prepare_yt_dlp_player_media("live", Box::new(LiveFakeDemuxer), Some(timeline_port))
-                .expect("live timeline attaches before barrier");
+        let prepared = prepare_yt_dlp_player_media(
+            "live",
+            Box::new(LiveFakeDemuxer),
+            Some(timeline_port),
+            None,
+        )
+        .expect("live timeline attaches before barrier");
         assert_eq!(prepared.duration(), None);
         assert!(matches!(
             prepared.timeline_mode(),

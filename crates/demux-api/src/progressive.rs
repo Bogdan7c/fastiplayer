@@ -18,8 +18,14 @@ use media_core::{
 };
 use source_core::CancellationToken;
 
+mod async_seek;
 mod worker;
 
+pub use async_seek::{
+    ProgressiveAsyncSeekEnqueueError, ProgressiveAsyncSeekHandle, ProgressiveAsyncSeekLimits,
+    ProgressiveAsyncSeekOutcome, ProgressiveAsyncSeekReceipt, ProgressiveRuntimeGeneration,
+    ProgressiveSeekFence, ProgressiveSeekRequestId,
+};
 use worker::{
     ProgressiveMessage, ProgressivePushOutcome, ProgressiveSeekCommand, ProgressiveSharedState,
     ProgressiveWorkerCompletion, push_progressive_message, run_progressive_worker,
@@ -188,6 +194,54 @@ impl ProgressiveDemuxer {
             .spawn(move || {
                 let _completion = ProgressiveWorkerCompletion::new(Arc::clone(&worker_shared));
                 run_progressive_worker(inner, worker_shared, worker_cancellation);
+            })
+            .map_err(|source| ProgressiveDemuxStartupError::WorkerSpawn { source })?;
+
+        Ok(Self {
+            visible_tracks,
+            visible_duration,
+            visible_metadata,
+            visible_seekability,
+            seek_controller: None,
+            shared,
+            retry_hint,
+            cancellation,
+            end_of_stream_reached: false,
+        })
+    }
+
+    /// Запускает уже открытый seekable inner с bounded asynchronous seek receipts.
+    ///
+    /// Runtime возвращает обычный [`Demuxer`] event stream, а cloneable control
+    /// handle можно сохранить отдельно до type erasure в player composition.
+    pub fn new_receipted_seekable(
+        inner: Box<dyn Demuxer + Send>,
+        cancellation: CancellationToken,
+        limits: ProgressiveDemuxBufferLimits,
+        retry_hint: DemuxRetryHint,
+        runtime_generation: ProgressiveRuntimeGeneration,
+        async_limits: ProgressiveAsyncSeekLimits,
+    ) -> std::result::Result<Self, ProgressiveDemuxStartupError> {
+        let visible_seekability = inner.seekability();
+        if !matches!(visible_seekability, DemuxSeekability::Seekable) {
+            return Err(ProgressiveDemuxStartupError::SeekableInputRequired);
+        }
+
+        let visible_tracks = inner.tracks().to_vec();
+        let visible_duration = inner.duration();
+        let visible_metadata = inner.media_metadata();
+        let shared = Arc::new(ProgressiveSharedState::new_receipted(
+            limits,
+            runtime_generation,
+            async_limits,
+        ));
+        let worker_shared = Arc::clone(&shared);
+        let worker_cancellation = cancellation.clone();
+        thread::Builder::new()
+            .name("progressive-receipted-seek".to_owned())
+            .spawn(move || {
+                let _completion = ProgressiveWorkerCompletion::new(Arc::clone(&worker_shared));
+                run_seekable_progressive_worker(inner, worker_shared, worker_cancellation);
             })
             .map_err(|source| ProgressiveDemuxStartupError::WorkerSpawn { source })?;
 
@@ -390,6 +444,38 @@ impl ProgressiveDemuxer {
         })
     }
 
+    /// Возвращает opt-in control handle до помещения demuxer-а в trait object.
+    #[must_use]
+    pub fn async_seek_handle(&self) -> Option<ProgressiveAsyncSeekHandle> {
+        let runtime_generation = self
+            .shared
+            .lock_queue()
+            .async_seek
+            .as_ref()
+            .map(|state| state.runtime_generation)?;
+        Some(ProgressiveAsyncSeekHandle {
+            shared: Arc::clone(&self.shared),
+            runtime_generation,
+        })
+    }
+
+    /// Convenience boundary для concrete owner-а до type erasure.
+    pub fn enqueue_async_seek(
+        &self,
+        fence: ProgressiveSeekFence,
+        request: DemuxSeekRequest,
+    ) -> std::result::Result<(), ProgressiveAsyncSeekEnqueueError> {
+        let Some(handle) = self.async_seek_handle() else {
+            return Err(ProgressiveAsyncSeekEnqueueError::CapabilityAbsent);
+        };
+        handle.enqueue(fence, request)
+    }
+
+    /// Nonblocking convenience poll для concrete owner-а.
+    pub fn poll_async_seek_receipt(&self) -> Option<ProgressiveAsyncSeekReceipt> {
+        self.async_seek_handle()?.poll_receipt()
+    }
+
     /// Применяет lifecycle snapshot ровно при публикации соответствующего event-а.
     fn apply_visible_event(&mut self, event: &DemuxReadEvent) {
         match event {
@@ -492,7 +578,7 @@ impl Demuxer for ProgressiveDemuxer {
         queue.current_generation = queue.current_generation.wrapping_add(1);
         queue.messages.clear();
         queue.queued_encoded_bytes = 0;
-        queue.pending_seek = Some(ProgressiveSeekCommand {
+        queue.pending_seek = Some(ProgressiveSeekCommand::Previewed {
             generation: queue.current_generation,
             request,
             preview,

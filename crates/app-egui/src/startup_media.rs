@@ -62,6 +62,9 @@ pub(crate) struct PreparedYtDlpStartupMedia {
 
     /// S31L publication boundary для HLS live; VOD оставляет поле пустым.
     pub(crate) timeline_port: Option<media_core::DynamicMediaTimelinePort>,
+
+    /// Worker-receipted static DASH seek boundary.
+    pub(crate) demux_seek_port: Option<Arc<dyn player_core::PreparedDemuxSeekPort>>,
 }
 
 /// Результат фоновой подготовки CLI YtDlp URL.
@@ -638,6 +641,7 @@ pub(crate) fn resolve_yt_dlp_startup_media(
         candidate_selection: prepared.candidate_selection,
         stream_configuration: prepared.stream_configuration,
         timeline_port: prepared.timeline_port,
+        demux_seek_port: prepared.demux_seek_port,
     })
 }
 

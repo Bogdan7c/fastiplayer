@@ -56,6 +56,7 @@ mod media_lifecycle;
 mod playback;
 mod playback_rate;
 mod playback_window;
+mod prepared_demux_seek;
 mod scrub;
 mod scrub_driver;
 mod seek_commit_gates;

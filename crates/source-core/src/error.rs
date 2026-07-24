@@ -7,6 +7,34 @@ use crate::{HttpRangeRedirectRejection, SecretHttpUrl};
 
 use crate::NotSeekableReason;
 
+/// Secret-safe категория отказа верхнеуровневой HTTP request policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HttpRequestPolicyFailure {
+    /// Request target не прошёл безопасное разрешение.
+    TargetResolution,
+    /// Manual redirect policy отклонила следующий hop.
+    RedirectRejected,
+    /// Scoped secret material нельзя применить к target-у.
+    SecretScopeRejected,
+    /// Bounded transport worker неожиданно завершился.
+    WorkerStopped,
+    /// Request принадлежит superseded generation.
+    StaleGeneration,
+    /// Request превышает caller-owned resource bound.
+    ResourceBoundExceeded,
+    /// Generic headers содержали запрещённый explicit Cookie.
+    ExplicitCookieHeader,
+}
+
+/// Причина изменения bytes одной HTTP representation внутри static generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HttpRepresentationChange {
+    /// Сервер изменил доказанную полную длину resource-а.
+    TotalLength,
+    /// Сервер изменил либо убрал representation validator.
+    Validators,
+}
+
 /// Результат операций source слоя.
 pub type SourceResult<T> = Result<T, SourceError>;
 
@@ -151,6 +179,20 @@ pub enum SourceError {
         reason: NotSeekableReason,
     },
 
+    /// Верхнеуровневая HTTP policy отказала без раскрытия request material.
+    #[error("HTTP request policy rejected source operation: {reason:?}")]
+    HttpRequestPolicyRejected {
+        /// Стабильная secret-safe категория.
+        reason: HttpRequestPolicyFailure,
+    },
+
+    /// Static representation изменилась внутри одной source generation.
+    #[error("HTTP representation changed during bounded Range reads: {reason:?}")]
+    HttpRepresentationChanged {
+        /// Поле доказанного representation identity, которое изменилось.
+        reason: HttpRepresentationChange,
+    },
+
     /// Header `Content-Range` отсутствует или не соответствует формату bytes range.
     #[error("некорректный Content-Range от HTTP source {url}: {header}")]
     InvalidContentRange {
@@ -200,6 +242,8 @@ impl SourceError {
             | Self::InvalidHttpRedirect { .. }
             | Self::HttpRangeRedirectRejected { .. }
             | Self::HttpRangeUnsupported { .. }
+            | Self::HttpRequestPolicyRejected { .. }
+            | Self::HttpRepresentationChanged { .. }
             | Self::InvalidContentRange { .. }
             | Self::NotSeekable { .. } => false,
         }

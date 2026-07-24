@@ -160,6 +160,12 @@ impl HttpRequestTarget {
         self.exact.expose_secret_for_open()
     }
 
+    /// Возвращает opaque hash exact identity без раскрытия locator-а.
+    #[must_use]
+    pub fn stable_identity_hash(&self) -> u64 {
+        self.exact.stable_identity_hash()
+    }
+
     /// Разрешает URI reference относительно exact effective response target-а.
     pub fn resolve_reference(&self, reference: &str) -> Result<Self, HttpRequestTargetError> {
         let base = Url::parse(self.exact.expose_secret_for_open())

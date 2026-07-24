@@ -19,13 +19,24 @@ impl SourceFingerprint {
 }
 
 /// HTTP-style validators, если source может подтвердить стабильность bytes.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct SourceValidators {
     /// Entity tag из HTTP response.
     pub etag: Option<String>,
 
     /// Last-Modified из HTTP response.
     pub last_modified: Option<String>,
+}
+
+impl std::fmt::Debug for SourceValidators {
+    /// Не раскрывает server-provided validator values.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SourceValidators")
+            .field("has_etag", &self.etag.is_some())
+            .field("has_last_modified", &self.last_modified.is_some())
+            .finish()
+    }
 }
 
 /// Причина, по которой source нельзя безопасно seek-ать.

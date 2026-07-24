@@ -25,6 +25,8 @@ members = [
     "crates/hls-playlist-core",
     "crates/web-media-hls",
     "crates/bounded-xml-reader",
+    "crates/dash-mpd-core",
+    "crates/web-media-dash",
     "crates/player-core",
     "crates/bounded-work-executor",
     "crates/atomic-file-store",
@@ -201,6 +203,8 @@ web-media-adaptive = { version = "0.1.0", path = "crates/web-media-adaptive" }
 web-media-hls = { version = "0.1.0", path = "crates/web-media-hls" }
 web-media-http = { version = "0.1.0", path = "crates/web-media-http" }
 bounded-xml-reader = { version = "0.1.0", path = "crates/bounded-xml-reader" }
+dash-mpd-core = { version = "0.1.0", path = "crates/dash-mpd-core" }
+web-media-dash = { version = "0.1.0", path = "crates/web-media-dash" }
 settings-core = { version = "0.1.0", path = "crates/settings-core" }
 settings-derive = { version = "0.1.0", path = "crates/settings-derive" }
 rustiplayer-settings = { version = "0.1.0", path = "crates/rustiplayer-settings" }

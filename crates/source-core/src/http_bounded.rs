@@ -7,11 +7,13 @@ use std::num::NonZeroUsize;
 use reqwest::StatusCode;
 use reqwest::header::{HeaderValue, RANGE};
 
-use crate::http::{ByteRange, build_header_map, map_reqwest_error, validate_content_range};
+use crate::http::{
+    ByteRange, build_header_map, map_reqwest_error, validate_content_range, validators_from_headers,
+};
 use crate::http_session::parse_redirect_hop;
 use crate::{
     CancellationToken, HttpHeader, HttpRedirectHop, HttpRequestTarget, HttpSourceSession,
-    SecretHttpUrl, SourceError, SourceResult,
+    SecretHttpUrl, SourceError, SourceResult, SourceValidators,
 };
 
 /// Optional exact byte range для одного bounded resource request-а.
@@ -136,17 +138,74 @@ impl fmt::Debug for HttpBoundedFetchRequest {
 }
 
 /// Успешно прочитанный bounded HTTP resource.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
+pub struct HttpRangeResponseMetadata {
+    /// Полная длина representation из validated `Content-Range`, если server её сообщил.
+    total_resource_bytes: Option<u64>,
+    /// Exact representation validators; значения доступны только transport owner-у.
+    validators: SourceValidators,
+}
+
+impl HttpRangeResponseMetadata {
+    /// Возвращает доказанную полную длину representation.
+    #[must_use]
+    pub const fn total_resource_bytes(&self) -> Option<u64> {
+        self.total_resource_bytes
+    }
+
+    /// Передаёт validators следующему secret-aware transport boundary.
+    #[must_use]
+    pub fn validators(&self) -> SourceValidators {
+        self.validators.clone()
+    }
+}
+
+impl fmt::Debug for HttpRangeResponseMetadata {
+    /// Не раскрывает значения ETag и Last-Modified.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpRangeResponseMetadata")
+            .field("total_resource_bytes", &self.total_resource_bytes)
+            .field("has_etag", &self.validators.etag.is_some())
+            .field(
+                "has_last_modified",
+                &self.validators.last_modified.is_some(),
+            )
+            .finish()
+    }
+}
+
+/// Успешно прочитанный bounded HTTP resource.
+#[derive(Clone, PartialEq, Eq)]
 pub struct HttpBoundedResponse {
     /// Exact body без container/metadata parsing.
     bytes: Vec<u8>,
+    /// Validated wire metadata только для exact Range response.
+    range_metadata: Option<HttpRangeResponseMetadata>,
 }
 
 impl HttpBoundedResponse {
+    /// Возвращает Range metadata, не раскрывая header values через formatting.
+    #[must_use]
+    pub const fn range_metadata(&self) -> Option<&HttpRangeResponseMetadata> {
+        self.range_metadata.as_ref()
+    }
+
     /// Передаёт exact body transport owner-у.
     #[must_use]
     pub fn into_bytes(self) -> Vec<u8> {
         self.bytes
+    }
+}
+
+impl fmt::Debug for HttpBoundedResponse {
+    /// Показывает только размер body и safe Range metadata.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpBoundedResponse")
+            .field("body_bytes", &self.bytes.len())
+            .field("range_metadata", &self.range_metadata)
+            .finish()
     }
 }
 
@@ -202,7 +261,7 @@ impl HttpSourceSession {
                 .map(HttpBoundedFetchHop::Redirect);
         }
 
-        match request.byte_range {
+        let range_metadata = match request.byte_range {
             None if response.status() != StatusCode::OK => {
                 return Err(SourceError::HttpStatus {
                     operation: request.kind.operation(),
@@ -226,10 +285,14 @@ impl HttpSourceSession {
             }
             Some(byte_range) => {
                 let range = ByteRange::new(byte_range.start, byte_range.length.get());
-                validate_content_range(&secret_url, response.headers(), &range)?;
+                let parsed_range = validate_content_range(&secret_url, response.headers(), &range)?;
+                Some(HttpRangeResponseMetadata {
+                    total_resource_bytes: parsed_range.total_length,
+                    validators: validators_from_headers(response.headers()),
+                })
             }
-            None => {}
-        }
+            None => None,
+        };
 
         let maximum_body_bytes = request.maximum_body_bytes.get();
         let mut bytes = Vec::with_capacity(maximum_body_bytes.min(64 * 1024));
@@ -268,6 +331,9 @@ impl HttpSourceSession {
                 actual_bytes: bytes.len(),
             });
         }
-        Ok(HttpBoundedFetchHop::Complete(HttpBoundedResponse { bytes }))
+        Ok(HttpBoundedFetchHop::Complete(HttpBoundedResponse {
+            bytes,
+            range_metadata,
+        }))
     }
 }

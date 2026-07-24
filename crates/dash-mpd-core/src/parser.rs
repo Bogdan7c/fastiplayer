@@ -1,0 +1,682 @@
+use bounded_xml_reader::{BoundedXmlReader, XmlBudgets, XmlElement, XmlEvent, XmlExpandedName};
+
+use crate::error::{DashMpdError, DashMpdErrorKind};
+use crate::model::{
+    DASH_MPD_NAMESPACE, DashAdaptationSet, DashAddressing, DashBaseUrl, DashContainer,
+    DashInitialization, DashMediaKind, DashMpd, DashPeriod, DashRepresentation, DashSegmentBase,
+    DashSegmentList, DashSegmentListEntry, DashSegmentTemplate, DashTimelineEntry,
+    DashUrlReference, IndexRange,
+};
+use crate::template::DashTemplateString;
+
+/// Narrow static profile allowlist, доказанный checked-in S34 matrix.
+const SUPPORTED_DASH_PROFILES: &[&str] = &[
+    "urn:mpeg:dash:profile:full:2011",
+    "urn:mpeg:dash:profile:isoff-on-demand:2011",
+    "urn:mpeg:dash:profile:isoff-live:2011",
+    "urn:mpeg:dash:profile:isoff-main:2011",
+    "urn:mpeg:dash:profile:webm-on-demand:2012",
+];
+
+/// Schema/model caps, которые caller выбирает независимо от XML budgets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DashMpdLimits {
+    /// Максимум Period.
+    pub maximum_periods: usize,
+    /// Максимум AdaptationSet внутри Period.
+    pub maximum_adaptation_sets_per_period: usize,
+    /// Максимум Representation внутри AdaptationSet.
+    pub maximum_representations_per_adaptation_set: usize,
+    /// Максимум SegmentURL внутри SegmentList.
+    pub maximum_segments_per_list: usize,
+    /// Максимум `S` внутри SegmentTimeline.
+    pub maximum_timeline_entries: usize,
+    /// Максимум bytes одного schema string/text.
+    pub maximum_schema_string_bytes: usize,
+}
+
+impl DashMpdLimits {
+    /// Проверяет, что ни один model cap не отключён нулём.
+    fn validate(self) -> Result<Self, DashMpdError> {
+        let values = [
+            self.maximum_periods,
+            self.maximum_adaptation_sets_per_period,
+            self.maximum_representations_per_adaptation_set,
+            self.maximum_segments_per_list,
+            self.maximum_timeline_entries,
+            self.maximum_schema_string_bytes,
+        ];
+        if values.contains(&0) {
+            return Err(DashMpdError::new(DashMpdErrorKind::LimitExceeded));
+        }
+        Ok(self)
+    }
+}
+
+/// Complete pure parse request.
+pub struct DashMpdParseRequest<'document> {
+    /// Caller-owned MPD bytes.
+    pub document_bytes: &'document [u8],
+    /// Complete hardened XML budgets.
+    pub xml_budgets: XmlBudgets,
+    /// DASH schema/model caps.
+    pub limits: DashMpdLimits,
+}
+
+/// Небольшой cursor централизует XML error mapping.
+struct EventCursor<'document> {
+    /// Hardened project-owned reader.
+    reader: BoundedXmlReader<'document>,
+}
+
+/// Period до вычисления omitted start/duration.
+struct ParsedPeriod {
+    /// Optional schema identifier.
+    id: Option<String>,
+    /// Optional explicit start.
+    start_milliseconds: Option<u64>,
+    /// Optional explicit duration.
+    duration_milliseconds: Option<u64>,
+    /// Period BaseURL.
+    base_url: Option<DashBaseUrl>,
+    /// Parsed adaptations.
+    adaptation_sets: Box<[DashAdaptationSet]>,
+}
+
+/// Наследуемые media hints AdaptationSet.
+#[derive(Clone, Default)]
+struct MediaHints {
+    /// MIME type.
+    mime_type: Option<String>,
+    /// DASH contentType.
+    content_type: Option<String>,
+    /// Codec list.
+    codecs: Option<String>,
+}
+
+impl EventCursor<'_> {
+    /// Возвращает следующий project-owned event.
+    fn next_event(&mut self) -> Result<Option<XmlEvent>, DashMpdError> {
+        self.reader.next_event().map_err(DashMpdError::from_xml)
+    }
+}
+
+/// Единственный static DASH MPD entry point.
+pub fn parse_dash_mpd(request: DashMpdParseRequest<'_>) -> Result<DashMpd, DashMpdError> {
+    let limits = request.limits.validate()?;
+    let reader = BoundedXmlReader::new(request.document_bytes, request.xml_budgets)
+        .map_err(DashMpdError::from_xml)?;
+    let mut cursor = EventCursor { reader };
+    let root = match cursor.next_event()? {
+        Some(XmlEvent::StartElement(element)) => element,
+        _ => return Err(DashMpdError::new(DashMpdErrorKind::InvalidRoot)),
+    };
+    require_name(root.name(), "MPD", DashMpdErrorKind::InvalidRoot)?;
+    let presentation_duration = optional_duration_attribute(&root, "mediaPresentationDuration")?;
+    let presentation_type = optional_attribute(&root, "type")?.unwrap_or("static");
+    if presentation_type != "static" {
+        return Err(DashMpdError::new(DashMpdErrorKind::DynamicPresentation));
+    }
+    validate_profiles(optional_attribute(&root, "profiles")?)?;
+    validate_attributes(
+        &root,
+        &[
+            "id",
+            "type",
+            "profiles",
+            "minBufferTime",
+            "mediaPresentationDuration",
+            "maxSegmentDuration",
+        ],
+    )?;
+
+    let mut base_url = None;
+    let mut periods = Vec::new();
+    loop {
+        match cursor.next_event()? {
+            Some(XmlEvent::StartElement(element)) if is_name(element.name(), "BaseURL") => {
+                set_single_base_url(&mut base_url, parse_base_url(&mut cursor, element, limits)?)?;
+            }
+            Some(XmlEvent::StartElement(element)) if is_name(element.name(), "Period") => {
+                if periods.len() >= limits.maximum_periods {
+                    return Err(DashMpdError::new(DashMpdErrorKind::LimitExceeded));
+                }
+                periods.push(parse_period(&mut cursor, element, limits)?);
+            }
+            Some(XmlEvent::StartElement(element))
+                if is_name(element.name(), "ContentProtection") =>
+            {
+                return Err(DashMpdError::new(DashMpdErrorKind::ContentProtection));
+            }
+            Some(XmlEvent::EmptyElement(element))
+                if is_name(element.name(), "ContentProtection") =>
+            {
+                return Err(DashMpdError::new(DashMpdErrorKind::ContentProtection));
+            }
+            Some(XmlEvent::EndElement(name)) if is_name(&name, "MPD") => break,
+            Some(XmlEvent::Text(text)) if text.content().trim().is_empty() => {}
+            Some(_) | None => {
+                return Err(DashMpdError::new(DashMpdErrorKind::UnsupportedConstruct));
+            }
+        }
+    }
+    if cursor.next_event()?.is_some() || periods.is_empty() {
+        return Err(DashMpdError::new(DashMpdErrorKind::InvalidRoot));
+    }
+    let (periods, total_duration) = finalize_periods(periods, presentation_duration)?;
+    Ok(DashMpd {
+        media_presentation_duration_milliseconds: total_duration,
+        base_url,
+        periods,
+    })
+}
+
+/// Проверяет каждый comma-separated profile как exact allowlisted identifier.
+fn validate_profiles(profiles: Option<&str>) -> Result<(), DashMpdError> {
+    let Some(profiles) = profiles else {
+        return Ok(());
+    };
+    for profile in profiles.split(',').map(str::trim) {
+        if profile.is_empty() || !SUPPORTED_DASH_PROFILES.contains(&profile) {
+            return Err(DashMpdError::new(DashMpdErrorKind::UnsupportedProfile));
+        }
+    }
+    Ok(())
+}
+
+/// Разбирает Period без предположений о следующем Period.
+fn parse_period(
+    cursor: &mut EventCursor<'_>,
+    element: XmlElement,
+    limits: DashMpdLimits,
+) -> Result<ParsedPeriod, DashMpdError> {
+    validate_attributes(&element, &["id", "start", "duration"])?;
+    let id = bounded_optional_attribute(&element, "id", limits)?;
+    let start_milliseconds = optional_duration_attribute(&element, "start")?;
+    let duration_milliseconds = optional_duration_attribute(&element, "duration")?;
+    let mut base_url = None;
+    let mut adaptation_sets = Vec::new();
+    loop {
+        match cursor.next_event()? {
+            Some(XmlEvent::StartElement(child)) if is_name(child.name(), "BaseURL") => {
+                set_single_base_url(&mut base_url, parse_base_url(cursor, child, limits)?)?;
+            }
+            Some(XmlEvent::StartElement(child)) if is_name(child.name(), "AdaptationSet") => {
+                if adaptation_sets.len() >= limits.maximum_adaptation_sets_per_period {
+                    return Err(DashMpdError::new(DashMpdErrorKind::LimitExceeded));
+                }
+                adaptation_sets.push(parse_adaptation_set(cursor, child, limits)?);
+            }
+            Some(XmlEvent::StartElement(child)) if is_name(child.name(), "ContentProtection") => {
+                return Err(DashMpdError::new(DashMpdErrorKind::ContentProtection));
+            }
+            Some(XmlEvent::EmptyElement(child)) if is_name(child.name(), "ContentProtection") => {
+                return Err(DashMpdError::new(DashMpdErrorKind::ContentProtection));
+            }
+            Some(XmlEvent::EmptyElement(child)) if is_name(child.name(), "ContentProtection") => {
+                return Err(DashMpdError::new(DashMpdErrorKind::ContentProtection));
+            }
+            Some(XmlEvent::EndElement(name)) if is_name(&name, "Period") => break,
+            Some(XmlEvent::Text(text)) if text.content().trim().is_empty() => {}
+            Some(_) | None => {
+                return Err(DashMpdError::new(DashMpdErrorKind::UnsupportedConstruct));
+            }
+        }
+    }
+    if adaptation_sets.is_empty() {
+        return Err(DashMpdError::new(DashMpdErrorKind::MalformedSchema));
+    }
+    Ok(ParsedPeriod {
+        id,
+        start_milliseconds,
+        duration_milliseconds,
+        base_url,
+        adaptation_sets: adaptation_sets.into_boxed_slice(),
+    })
+}
+
+/// Разбирает AdaptationSet и применяет его addressing к Representation без собственного.
+fn parse_adaptation_set(
+    cursor: &mut EventCursor<'_>,
+    element: XmlElement,
+    limits: DashMpdLimits,
+) -> Result<DashAdaptationSet, DashMpdError> {
+    validate_attributes(
+        &element,
+        &[
+            "id",
+            "mimeType",
+            "contentType",
+            "codecs",
+            "lang",
+            "segmentAlignment",
+            "startWithSAP",
+        ],
+    )?;
+    let id = bounded_optional_attribute(&element, "id", limits)?;
+    let hints = media_hints(&element, limits)?;
+    let mut base_url = None;
+    let mut inherited_addressing = None;
+    let mut representations = Vec::new();
+    loop {
+        match cursor.next_event()? {
+            Some(XmlEvent::StartElement(child)) if is_name(child.name(), "BaseURL") => {
+                set_single_base_url(&mut base_url, parse_base_url(cursor, child, limits)?)?;
+            }
+            Some(XmlEvent::StartElement(child)) if is_name(child.name(), "SegmentTemplate") => {
+                set_single_addressing(
+                    &mut inherited_addressing,
+                    DashAddressing::Template(parse_segment_template(cursor, child, limits)?),
+                )?;
+            }
+            Some(XmlEvent::EmptyElement(child)) if is_name(child.name(), "SegmentTemplate") => {
+                set_single_addressing(
+                    &mut inherited_addressing,
+                    DashAddressing::Template(parse_empty_segment_template_leaf(child, limits)?),
+                )?;
+            }
+            Some(XmlEvent::StartElement(child)) if is_name(child.name(), "SegmentList") => {
+                set_single_addressing(
+                    &mut inherited_addressing,
+                    DashAddressing::List(parse_segment_list(cursor, child, limits)?),
+                )?;
+            }
+            Some(XmlEvent::StartElement(child)) if is_name(child.name(), "SegmentBase") => {
+                set_single_addressing(
+                    &mut inherited_addressing,
+                    DashAddressing::Base(parse_segment_base(cursor, child, limits)?),
+                )?;
+            }
+            Some(XmlEvent::EmptyElement(child)) if is_name(child.name(), "SegmentBase") => {
+                set_single_addressing(
+                    &mut inherited_addressing,
+                    DashAddressing::Base(parse_empty_segment_base(child)?),
+                )?;
+            }
+            Some(XmlEvent::StartElement(child)) if is_name(child.name(), "Representation") => {
+                if representations.len() >= limits.maximum_representations_per_adaptation_set {
+                    return Err(DashMpdError::new(DashMpdErrorKind::LimitExceeded));
+                }
+                representations.push(parse_representation(
+                    cursor,
+                    child,
+                    limits,
+                    &hints,
+                    inherited_addressing.clone(),
+                )?);
+            }
+            Some(XmlEvent::EmptyElement(child)) if is_name(child.name(), "Representation") => {
+                if representations.len() >= limits.maximum_representations_per_adaptation_set {
+                    return Err(DashMpdError::new(DashMpdErrorKind::LimitExceeded));
+                }
+                representations.push(parse_empty_representation(
+                    child,
+                    limits,
+                    &hints,
+                    inherited_addressing.clone(),
+                )?);
+            }
+            Some(XmlEvent::StartElement(child)) if is_name(child.name(), "ContentProtection") => {
+                return Err(DashMpdError::new(DashMpdErrorKind::ContentProtection));
+            }
+            Some(XmlEvent::EmptyElement(child)) if is_name(child.name(), "ContentProtection") => {
+                return Err(DashMpdError::new(DashMpdErrorKind::ContentProtection));
+            }
+            Some(XmlEvent::EndElement(name)) if is_name(&name, "AdaptationSet") => break,
+            Some(XmlEvent::Text(text)) if text.content().trim().is_empty() => {}
+            Some(_) | None => {
+                return Err(DashMpdError::new(DashMpdErrorKind::UnsupportedConstruct));
+            }
+        }
+    }
+    if representations.is_empty() {
+        return Err(DashMpdError::new(DashMpdErrorKind::MalformedSchema));
+    }
+    Ok(DashAdaptationSet {
+        id,
+        base_url,
+        representations: representations.into_boxed_slice(),
+    })
+}
+
+/// Разбирает Representation и доказывает container/component shape.
+fn parse_representation(
+    cursor: &mut EventCursor<'_>,
+    element: XmlElement,
+    limits: DashMpdLimits,
+    inherited_hints: &MediaHints,
+    inherited_addressing: Option<DashAddressing>,
+) -> Result<DashRepresentation, DashMpdError> {
+    validate_attributes(
+        &element,
+        &[
+            "id",
+            "bandwidth",
+            "mimeType",
+            "contentType",
+            "codecs",
+            "width",
+            "height",
+            "audioSamplingRate",
+            "startWithSAP",
+        ],
+    )?;
+    let id = required_bounded_attribute(&element, "id", limits)?;
+    let bandwidth = optional_u64_attribute(&element, "bandwidth")?;
+    let width = optional_positive_u32_attribute(&element, "width")?;
+    let height = optional_positive_u32_attribute(&element, "height")?;
+    let own_hints = media_hints(&element, limits)?;
+    let effective_hints = merge_hints(inherited_hints, own_hints);
+    let mut base_url = None;
+    let mut own_addressing = None;
+    loop {
+        match cursor.next_event()? {
+            Some(XmlEvent::StartElement(child)) if is_name(child.name(), "BaseURL") => {
+                set_single_base_url(&mut base_url, parse_base_url(cursor, child, limits)?)?;
+            }
+            Some(XmlEvent::StartElement(child)) if is_name(child.name(), "SegmentTemplate") => {
+                set_single_addressing(
+                    &mut own_addressing,
+                    DashAddressing::Template(parse_segment_template(cursor, child, limits)?),
+                )?;
+            }
+            Some(XmlEvent::EmptyElement(child)) if is_name(child.name(), "SegmentTemplate") => {
+                set_single_addressing(
+                    &mut own_addressing,
+                    DashAddressing::Template(parse_empty_segment_template_leaf(child, limits)?),
+                )?;
+            }
+            Some(XmlEvent::StartElement(child)) if is_name(child.name(), "SegmentList") => {
+                set_single_addressing(
+                    &mut own_addressing,
+                    DashAddressing::List(parse_segment_list(cursor, child, limits)?),
+                )?;
+            }
+            Some(XmlEvent::StartElement(child)) if is_name(child.name(), "SegmentBase") => {
+                set_single_addressing(
+                    &mut own_addressing,
+                    DashAddressing::Base(parse_segment_base(cursor, child, limits)?),
+                )?;
+            }
+            Some(XmlEvent::EmptyElement(child)) if is_name(child.name(), "SegmentBase") => {
+                set_single_addressing(
+                    &mut own_addressing,
+                    DashAddressing::Base(parse_empty_segment_base(child)?),
+                )?;
+            }
+            Some(XmlEvent::StartElement(child)) if is_name(child.name(), "ContentProtection") => {
+                return Err(DashMpdError::new(DashMpdErrorKind::ContentProtection));
+            }
+            Some(XmlEvent::EndElement(name)) if is_name(&name, "Representation") => break,
+            Some(XmlEvent::Text(text)) if text.content().trim().is_empty() => {}
+            Some(_) | None => {
+                return Err(DashMpdError::new(DashMpdErrorKind::UnsupportedConstruct));
+            }
+        }
+    }
+    let (container, media_kind, codecs) = classify_media(&effective_hints)?;
+    Ok(DashRepresentation {
+        id,
+        bandwidth,
+        width,
+        height,
+        container,
+        media_kind,
+        codecs,
+        base_url,
+        addressing: own_addressing
+            .or(inherited_addressing)
+            .unwrap_or(DashAddressing::SingleResource),
+    })
+}
+
+/// Разбирает attributes-only Representation с inherited addressing.
+fn parse_empty_representation(
+    element: XmlElement,
+    limits: DashMpdLimits,
+    inherited_hints: &MediaHints,
+    inherited_addressing: Option<DashAddressing>,
+) -> Result<DashRepresentation, DashMpdError> {
+    validate_attributes(
+        &element,
+        &[
+            "id",
+            "bandwidth",
+            "mimeType",
+            "contentType",
+            "codecs",
+            "width",
+            "height",
+            "audioSamplingRate",
+            "startWithSAP",
+        ],
+    )?;
+    let id = required_bounded_attribute(&element, "id", limits)?;
+    let bandwidth = optional_u64_attribute(&element, "bandwidth")?;
+    let width = optional_positive_u32_attribute(&element, "width")?;
+    let height = optional_positive_u32_attribute(&element, "height")?;
+    let effective_hints = merge_hints(inherited_hints, media_hints(&element, limits)?);
+    let (container, media_kind, codecs) = classify_media(&effective_hints)?;
+    Ok(DashRepresentation {
+        id,
+        bandwidth,
+        width,
+        height,
+        container,
+        media_kind,
+        codecs,
+        base_url: None,
+        addressing: inherited_addressing.unwrap_or(DashAddressing::SingleResource),
+    })
+}
+
+/// Вычисляет exact contiguous Period timeline.
+fn finalize_periods(
+    parsed: Vec<ParsedPeriod>,
+    presentation_duration: Option<u64>,
+) -> Result<(Box<[DashPeriod]>, u64), DashMpdError> {
+    let mut periods = Vec::with_capacity(parsed.len());
+    let mut expected_start = 0_u64;
+    for (index, period) in parsed.iter().enumerate() {
+        let start = period.start_milliseconds.unwrap_or(expected_start);
+        if start != expected_start {
+            return Err(DashMpdError::new(DashMpdErrorKind::InvalidPeriodTimeline));
+        }
+        let duration = period
+            .duration_milliseconds
+            .or_else(|| {
+                parsed
+                    .get(index + 1)
+                    .and_then(|next| next.start_milliseconds)
+                    .and_then(|next_start| next_start.checked_sub(start))
+            })
+            .or_else(|| presentation_duration.and_then(|total| total.checked_sub(start)))
+            .filter(|duration| *duration > 0)
+            .ok_or_else(|| DashMpdError::new(DashMpdErrorKind::InvalidPeriodTimeline))?;
+        expected_start = start
+            .checked_add(duration)
+            .ok_or_else(|| DashMpdError::new(DashMpdErrorKind::InvalidPeriodTimeline))?;
+        periods.push(DashPeriod {
+            id: period.id.clone(),
+            start_milliseconds: start,
+            duration_milliseconds: duration,
+            base_url: period.base_url.clone(),
+            adaptation_sets: period.adaptation_sets.clone(),
+        });
+    }
+    if let Some(declared) = presentation_duration
+        && declared != expected_start
+    {
+        return Err(DashMpdError::new(DashMpdErrorKind::InvalidPeriodTimeline));
+    }
+    Ok((periods.into_boxed_slice(), expected_start))
+}
+
+/// Парсит BaseURL как text-only leaf.
+fn parse_base_url(
+    cursor: &mut EventCursor<'_>,
+    element: XmlElement,
+    limits: DashMpdLimits,
+) -> Result<DashBaseUrl, DashMpdError> {
+    validate_attributes(&element, &["serviceLocation"])?;
+    let text = read_text_leaf(cursor, "BaseURL", limits)?;
+    Ok(DashBaseUrl::new(DashUrlReference::new(text)))
+}
+
+/// Сохраняет cardinality 0..1 BaseURL на одном уровне.
+fn set_single_base_url(
+    slot: &mut Option<DashBaseUrl>,
+    value: DashBaseUrl,
+) -> Result<(), DashMpdError> {
+    if slot.replace(value).is_some() {
+        return Err(DashMpdError::new(DashMpdErrorKind::MultipleBaseUrls));
+    }
+    Ok(())
+}
+
+/// Сохраняет ровно один addressing mode на уровне.
+fn set_single_addressing(
+    slot: &mut Option<DashAddressing>,
+    value: DashAddressing,
+) -> Result<(), DashMpdError> {
+    if slot.replace(value).is_some() {
+        return Err(DashMpdError::new(DashMpdErrorKind::InvalidAddressing));
+    }
+    Ok(())
+}
+
+/// Text-only leaf reader.
+fn read_text_leaf(
+    cursor: &mut EventCursor<'_>,
+    expected_end: &str,
+    limits: DashMpdLimits,
+) -> Result<String, DashMpdError> {
+    let mut text = String::new();
+    loop {
+        match cursor.next_event()? {
+            Some(XmlEvent::Text(chunk)) => {
+                if text.len().saturating_add(chunk.content().len())
+                    > limits.maximum_schema_string_bytes
+                {
+                    return Err(DashMpdError::new(DashMpdErrorKind::LimitExceeded));
+                }
+                text.push_str(chunk.content());
+            }
+            Some(XmlEvent::EndElement(name)) if is_name(&name, expected_end) => break,
+            Some(_) | None => {
+                return Err(DashMpdError::new(DashMpdErrorKind::MalformedSchema));
+            }
+        }
+    }
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(DashMpdError::new(DashMpdErrorKind::InvalidAttribute));
+    }
+    Ok(trimmed.to_owned())
+}
+
+/// Проверяет expanded name и exact DASH namespace.
+fn require_name(
+    name: &XmlExpandedName,
+    local_name: &str,
+    kind: DashMpdErrorKind,
+) -> Result<(), DashMpdError> {
+    if !is_name(name, local_name) {
+        return Err(DashMpdError::new(kind));
+    }
+    Ok(())
+}
+
+/// Exact namespace/local-name predicate.
+fn is_name(name: &XmlExpandedName, local_name: &str) -> bool {
+    name.namespace_uri() == Some(DASH_MPD_NAMESPACE) && name.local_name() == local_name
+}
+
+/// Разрешает только перечисленные unqualified attributes и запрещает xlink.
+fn validate_attributes(element: &XmlElement, allowed: &[&str]) -> Result<(), DashMpdError> {
+    for attribute in element.attributes() {
+        if attribute.name().namespace_uri().is_some()
+            || !allowed.contains(&attribute.name().local_name())
+        {
+            return Err(DashMpdError::new(DashMpdErrorKind::UnsupportedConstruct));
+        }
+    }
+    Ok(())
+}
+
+/// Находит unqualified attribute.
+fn optional_attribute<'element>(
+    element: &'element XmlElement,
+    name: &str,
+) -> Result<Option<&'element str>, DashMpdError> {
+    let mut found = None;
+    for attribute in element.attributes() {
+        if attribute.name().namespace_uri().is_none()
+            && attribute.name().local_name() == name
+            && found.replace(attribute.value()).is_some()
+        {
+            return Err(DashMpdError::new(DashMpdErrorKind::InvalidAttribute));
+        }
+    }
+    Ok(found)
+}
+
+/// Читает bounded optional string.
+fn bounded_optional_attribute(
+    element: &XmlElement,
+    name: &str,
+    limits: DashMpdLimits,
+) -> Result<Option<String>, DashMpdError> {
+    optional_attribute(element, name)?
+        .map(|value| bounded_string(value, limits))
+        .transpose()
+}
+
+/// Читает bounded required string.
+fn required_bounded_attribute(
+    element: &XmlElement,
+    name: &str,
+    limits: DashMpdLimits,
+) -> Result<String, DashMpdError> {
+    let value = optional_attribute(element, name)?
+        .ok_or_else(|| DashMpdError::new(DashMpdErrorKind::InvalidAttribute))?;
+    bounded_string(value, limits)
+}
+
+/// Применяет единый string cap.
+fn bounded_string(value: &str, limits: DashMpdLimits) -> Result<String, DashMpdError> {
+    if value.is_empty() || value.len() > limits.maximum_schema_string_bytes {
+        return Err(DashMpdError::new(DashMpdErrorKind::LimitExceeded));
+    }
+    Ok(value.to_owned())
+}
+
+/// Читает optional unsigned integer.
+fn optional_u64_attribute(element: &XmlElement, name: &str) -> Result<Option<u64>, DashMpdError> {
+    optional_attribute(element, name)?
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| DashMpdError::new(DashMpdErrorKind::InvalidAttribute))
+        })
+        .transpose()
+}
+
+/// Читает optional positive dimension без silent truncation.
+fn optional_positive_u32_attribute(
+    element: &XmlElement,
+    name: &str,
+) -> Result<Option<u32>, DashMpdError> {
+    optional_attribute(element, name)?
+        .map(|value| {
+            value
+                .parse::<u32>()
+                .ok()
+                .filter(|dimension| *dimension > 0)
+                .ok_or_else(|| DashMpdError::new(DashMpdErrorKind::InvalidAttribute))
+        })
+        .transpose()
+}
+
+include!("parser_values.rs");
+include!("parser_addressing.rs");

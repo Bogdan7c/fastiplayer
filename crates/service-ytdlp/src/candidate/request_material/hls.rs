@@ -265,6 +265,7 @@ mod tests {
             manifest_url: Some(secret("https://wrong.invalid/master.m3u8")),
             fragments: Box::new([]),
             fragment_base_url: None,
+            is_dash_periods: false,
             hls_media_playlist_data: inline.map(|value| {
                 SecretText::bounded(value.to_owned(), MAX_INLINE_HLS_UTF8_BYTES)
                     .expect("bounded inline")

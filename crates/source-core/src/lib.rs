@@ -24,11 +24,11 @@ pub use cache::{
 };
 pub use cancellation::CancellationToken;
 pub use config::SourceRuntimeConfig;
-pub use error::{SourceError, SourceResult};
+pub use error::{HttpRepresentationChange, HttpRequestPolicyFailure, SourceError, SourceResult};
 pub use http::{HttpHeader, HttpRangeSource, HttpRangeSourceConfig};
 pub use http_bounded::{
     HttpBoundedByteRange, HttpBoundedFetchHop, HttpBoundedFetchKind, HttpBoundedFetchRequest,
-    HttpBoundedResponse,
+    HttpBoundedResponse, HttpRangeResponseMetadata,
 };
 pub use http_cookie::{ScopedHttpCookieJar, ScopedHttpCookieJarError};
 pub use http_locator::SecretHttpUrl;

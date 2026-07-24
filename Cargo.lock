@@ -149,8 +149,10 @@ dependencies = [
  "audio",
  "audio-signalsmith",
  "bounded-work-executor",
+ "bounded-xml-reader",
  "capability-core",
  "codec-core",
+ "dash-mpd-core",
  "demux-api",
  "desktop-integration",
  "egui",
@@ -194,6 +196,7 @@ dependencies = [
  "video-vaapi",
  "web-media-adaptive",
  "web-media-core",
+ "web-media-dash",
  "web-media-hls",
  "web-media-http",
  "web-media-playback-plan",
@@ -1176,6 +1179,14 @@ name = "cursor-icon"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
+
+[[package]]
+name = "dash-mpd-core"
+version = "0.1.0"
+dependencies = [
+ "bounded-xml-reader",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "dasp"
@@ -5762,6 +5773,25 @@ dependencies = [
 [[package]]
 name = "web-media-core"
 version = "0.1.0"
+
+[[package]]
+name = "web-media-dash"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bounded-xml-reader",
+ "bytes",
+ "dash-mpd-core",
+ "demux-api",
+ "media-core",
+ "rustiplayer-config",
+ "source-core",
+ "symphonia-demux",
+ "thiserror 2.0.18",
+ "web-media-adaptive",
+ "web-media-core",
+ "web-media-transport-api",
+]
 
 [[package]]
 name = "web-media-hls"

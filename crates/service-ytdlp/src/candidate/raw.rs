@@ -75,6 +75,8 @@ pub(crate) struct YtDlpSerializedFormat {
     pub(crate) fragments: Option<Value>,
     /// Base locator для relative fragments.
     pub(crate) fragment_base_url: Option<String>,
+    /// Upstream marker: serialized fragments span multiple DASH Period.
+    pub(crate) is_dash_periods: Option<bool>,
     /// Inline HLS media playlist.
     pub(crate) hls_media_playlist_data: Option<String>,
     /// Transient HTTP headers.

@@ -8,8 +8,9 @@ use media_core::{DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, Demuxer};
 use source_core::CancellationToken;
 
 use super::{
+    ProgressiveAsyncSeekLimits, ProgressiveAsyncSeekOutcome, ProgressiveAsyncSeekReceipt,
     ProgressiveDemuxBufferLimits, ProgressiveDemuxPacketTooLargeError,
-    ProgressiveSeekAnchorMismatchError,
+    ProgressiveRuntimeGeneration, ProgressiveSeekAnchorMismatchError, ProgressiveSeekFence,
 };
 
 /// Максимальная пауза worker-а до повторной проверки cancellation при backpressure.
@@ -33,13 +34,58 @@ pub(super) struct ProgressiveMessageEnvelope {
 
 /// Latest-only seek command из player-owner в blocking worker.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct ProgressiveSeekCommand {
-    /// Generation, которая становится единственной publishable после command-а.
-    pub(super) generation: u64,
-    /// Исходная container-neutral цель.
-    pub(super) request: DemuxSeekRequest,
-    /// Уже опубликованный player-у доказанный anchor.
-    pub(super) preview: DemuxSeekResult,
+pub(super) enum ProgressiveSeekCommand {
+    /// Legacy path уже синхронно отдал caller-у доказанный preview.
+    Previewed {
+        /// Generation, которая становится единственной publishable после command-а.
+        generation: u64,
+        /// Исходная container-neutral цель.
+        request: DemuxSeekRequest,
+        /// Уже опубликованный player-у доказанный anchor.
+        preview: DemuxSeekResult,
+    },
+    /// Opt-in path публикует authoritative result отдельным terminal receipt-ом.
+    Receipted {
+        /// Generation, которая становится единственной publishable после command-а.
+        generation: u64,
+        /// Исходная container-neutral цель.
+        request: DemuxSeekRequest,
+        /// Stable caller identity и runtime fence.
+        fence: ProgressiveSeekFence,
+    },
+}
+
+impl ProgressiveSeekCommand {
+    /// Возвращает generation, принадлежащую command-у.
+    pub(super) const fn generation(self) -> u64 {
+        match self {
+            Self::Previewed { generation, .. } | Self::Receipted { generation, .. } => generation,
+        }
+    }
+
+    /// Возвращает fence только для receipted path-а.
+    pub(super) const fn receipt_fence(self) -> Option<ProgressiveSeekFence> {
+        match self {
+            Self::Previewed { .. } => None,
+            Self::Receipted { fence, .. } => Some(fence),
+        }
+    }
+}
+
+/// Opt-in bounded receipt runtime state.
+pub(super) struct ProgressiveAsyncSeekState {
+    /// Generation конкретного progressive runtime-а.
+    pub(super) runtime_generation: ProgressiveRuntimeGeneration,
+    /// Общий bound pending, in-flight и completed-but-not-drained requests.
+    pub(super) limits: ProgressiveAsyncSeekLimits,
+    /// Последняя accepted monotonic identity.
+    pub(super) last_accepted_request_id: Option<u64>,
+    /// Число accepted requests без drained terminal receipt-а.
+    pub(super) outstanding_receipts: usize,
+    /// FIFO terminal receipts, доступных consumer-у.
+    pub(super) completed_receipts: VecDeque<ProgressiveAsyncSeekReceipt>,
+    /// Terminal outcomes, которые должен опубликовать только worker.
+    pub(super) worker_pending_receipts: VecDeque<ProgressiveAsyncSeekReceipt>,
 }
 
 impl ProgressiveMessage {
@@ -72,6 +118,10 @@ pub(super) struct ProgressiveQueueState {
     pub(super) current_generation: u64,
     /// Latest-only command; rapid seek заменяет ещё не начатую старую цель.
     pub(super) pending_seek: Option<ProgressiveSeekCommand>,
+    /// Fence command-а, который worker уже вынул из pending slot-а.
+    pub(super) in_flight_receipt: Option<ProgressiveSeekFence>,
+    /// Optional receipt capability; legacy constructors оставляют её absent.
+    pub(super) async_seek: Option<ProgressiveAsyncSeekState>,
 }
 
 /// Shared queue + backpressure coordination.
@@ -108,6 +158,33 @@ impl Drop for ProgressiveWorkerCompletion {
 impl ProgressiveSharedState {
     /// Создаёт пустую bounded queue до worker spawn-а.
     pub(super) fn new(limits: ProgressiveDemuxBufferLimits) -> Self {
+        Self::new_with_async_seek(limits, None)
+    }
+
+    /// Создаёт очередь с opt-in bounded asynchronous seek receipts.
+    pub(super) fn new_receipted(
+        limits: ProgressiveDemuxBufferLimits,
+        runtime_generation: ProgressiveRuntimeGeneration,
+        async_limits: ProgressiveAsyncSeekLimits,
+    ) -> Self {
+        Self::new_with_async_seek(
+            limits,
+            Some(ProgressiveAsyncSeekState {
+                runtime_generation,
+                limits: async_limits,
+                last_accepted_request_id: None,
+                outstanding_receipts: 0,
+                completed_receipts: VecDeque::new(),
+                worker_pending_receipts: VecDeque::new(),
+            }),
+        )
+    }
+
+    /// Общий constructor сохраняет одну инициализацию queue invariants.
+    fn new_with_async_seek(
+        limits: ProgressiveDemuxBufferLimits,
+        async_seek: Option<ProgressiveAsyncSeekState>,
+    ) -> Self {
         Self {
             limits,
             queue: Mutex::new(ProgressiveQueueState {
@@ -117,6 +194,8 @@ impl ProgressiveSharedState {
                 worker_stopped: false,
                 current_generation: 0,
                 pending_seek: None,
+                in_flight_receipt: None,
+                async_seek,
             }),
             capacity_available: Condvar::new(),
         }
@@ -188,52 +267,91 @@ pub(super) fn run_seekable_progressive_worker(
     let mut generation = 0_u64;
     let mut reached_end = false;
     loop {
+        publish_worker_pending_receipts(&shared);
         if cancellation.is_cancelled() || shared.lock_queue().stop_requested {
             mark_worker_stopped(&shared);
             return;
         }
         let seek_command = {
             let mut queue = shared.lock_queue();
-            queue.pending_seek.take()
+            let command = queue.pending_seek.take();
+            queue.in_flight_receipt = command.and_then(ProgressiveSeekCommand::receipt_fence);
+            command
         };
         if let Some(command) = seek_command {
-            generation = command.generation;
+            generation = command.generation();
             reached_end = false;
-            match inner.seek_with_request(command.request) {
-                Ok(worker_result) if worker_result == command.preview => {}
-                Ok(worker_result) => {
-                    let outcome = push_progressive_message(
-                        &shared,
-                        &cancellation,
-                        generation,
-                        ProgressiveMessage::Failure(anyhow::Error::new(
-                            ProgressiveSeekAnchorMismatchError {
-                                preview_actual: command.preview.actual_position,
-                                worker_actual: worker_result.actual_position,
-                            },
-                        )),
-                    );
-                    match outcome {
-                        ProgressivePushOutcome::Published | ProgressivePushOutcome::Stopped => {
-                            mark_worker_stopped(&shared);
-                            return;
+            match command {
+                ProgressiveSeekCommand::Previewed {
+                    request, preview, ..
+                } => match inner.seek_with_request(request) {
+                    Ok(worker_result) if worker_result == preview => {}
+                    Ok(worker_result) => {
+                        let outcome = push_progressive_message(
+                            &shared,
+                            &cancellation,
+                            generation,
+                            ProgressiveMessage::Failure(anyhow::Error::new(
+                                ProgressiveSeekAnchorMismatchError {
+                                    preview_actual: preview.actual_position,
+                                    worker_actual: worker_result.actual_position,
+                                },
+                            )),
+                        );
+                        match outcome {
+                            ProgressivePushOutcome::Published | ProgressivePushOutcome::Stopped => {
+                                mark_worker_stopped(&shared);
+                                return;
+                            }
+                            ProgressivePushOutcome::Stale => continue,
                         }
-                        ProgressivePushOutcome::Stale => continue,
                     }
-                }
-                Err(source) => {
-                    let outcome = push_progressive_message(
+                    Err(source) => {
+                        let outcome = push_progressive_message(
+                            &shared,
+                            &cancellation,
+                            generation,
+                            ProgressiveMessage::Failure(source),
+                        );
+                        match outcome {
+                            ProgressivePushOutcome::Published | ProgressivePushOutcome::Stopped => {
+                                mark_worker_stopped(&shared);
+                                return;
+                            }
+                            ProgressivePushOutcome::Stale => continue,
+                        }
+                    }
+                },
+                ProgressiveSeekCommand::Receipted { request, fence, .. } => {
+                    let runtime_is_current = shared
+                        .lock_queue()
+                        .async_seek
+                        .as_ref()
+                        .is_some_and(|state| state.runtime_generation == fence.runtime_generation);
+                    let worker_result = if runtime_is_current {
+                        Some(inner.seek_with_request(request))
+                    } else {
+                        None
+                    };
+                    let outcome = receipted_seek_outcome(
                         &shared,
                         &cancellation,
                         generation,
-                        ProgressiveMessage::Failure(source),
+                        runtime_is_current,
+                        worker_result,
                     );
-                    match outcome {
-                        ProgressivePushOutcome::Published | ProgressivePushOutcome::Stopped => {
-                            mark_worker_stopped(&shared);
-                            return;
-                        }
-                        ProgressivePushOutcome::Stale => continue,
+                    publish_async_seek_receipt(
+                        &shared,
+                        ProgressiveAsyncSeekReceipt { fence, outcome },
+                    );
+                    if matches!(
+                        outcome,
+                        ProgressiveAsyncSeekOutcome::Cancelled
+                            | ProgressiveAsyncSeekOutcome::Superseded
+                            | ProgressiveAsyncSeekOutcome::Stale
+                            | ProgressiveAsyncSeekOutcome::Failed
+                    ) {
+                        continue;
                     }
                 }
             }
@@ -281,10 +399,68 @@ pub(super) fn run_seekable_progressive_worker(
     }
 }
 
+/// Выбирает ровно один terminal outcome после возврата blocking inner seek-а.
+fn receipted_seek_outcome(
+    shared: &ProgressiveSharedState,
+    cancellation: &CancellationToken,
+    generation: u64,
+    runtime_is_current: bool,
+    worker_result: Option<anyhow::Result<DemuxSeekResult>>,
+) -> ProgressiveAsyncSeekOutcome {
+    if !runtime_is_current {
+        return ProgressiveAsyncSeekOutcome::Stale;
+    }
+    if cancellation.is_cancelled() || shared.lock_queue().stop_requested {
+        return ProgressiveAsyncSeekOutcome::Cancelled;
+    }
+    if shared.lock_queue().current_generation != generation {
+        return ProgressiveAsyncSeekOutcome::Superseded;
+    }
+    match worker_result.expect("current runtime всегда выполняет inner seek") {
+        Ok(result) => ProgressiveAsyncSeekOutcome::Succeeded(result),
+        Err(_source) => ProgressiveAsyncSeekOutcome::Failed,
+    }
+}
+
+/// Переносит terminal receipts из worker-owned staging в consumer FIFO.
+fn publish_worker_pending_receipts(shared: &ProgressiveSharedState) {
+    let mut queue = shared.lock_queue();
+    let Some(async_seek) = queue.async_seek.as_mut() else {
+        return;
+    };
+    while let Some(receipt) = async_seek.worker_pending_receipts.pop_front() {
+        async_seek.completed_receipts.push_back(receipt);
+    }
+}
+
+/// Публикует worker-computed receipt без blocking и без отдельного unbounded channel-а.
+fn publish_async_seek_receipt(
+    shared: &ProgressiveSharedState,
+    receipt: ProgressiveAsyncSeekReceipt,
+) {
+    let mut queue = shared.lock_queue();
+    if queue.in_flight_receipt == Some(receipt.fence) {
+        queue.in_flight_receipt = None;
+    }
+    let Some(async_seek) = queue.async_seek.as_mut() else {
+        return;
+    };
+    async_seek.completed_receipts.push_back(receipt);
+    shared.capacity_available.notify_all();
+}
+
 /// EOF worker ждёт command/cancellation без busy loop-а и без ложного terminal stop.
 fn wait_for_seek_command(shared: &ProgressiveSharedState, cancellation: &CancellationToken) {
     let queue = shared.lock_queue();
-    if cancellation.is_cancelled() || queue.stop_requested || queue.pending_seek.is_some() {
+    let has_pending_receipt = queue
+        .async_seek
+        .as_ref()
+        .is_some_and(|state| !state.worker_pending_receipts.is_empty());
+    if cancellation.is_cancelled()
+        || queue.stop_requested
+        || queue.pending_seek.is_some()
+        || has_pending_receipt
+    {
         return;
     }
     let _wait_result = shared
@@ -382,6 +558,37 @@ fn wait_for_inner_retry(
 /// Публикует worker terminal state после последнего message-а.
 fn mark_worker_stopped(shared: &ProgressiveSharedState) {
     let mut queue = shared.lock_queue();
+    let stop_outcome = if queue.stop_requested {
+        ProgressiveAsyncSeekOutcome::Cancelled
+    } else {
+        ProgressiveAsyncSeekOutcome::Failed
+    };
+    let pending_receipt_fence = queue
+        .pending_seek
+        .take()
+        .and_then(ProgressiveSeekCommand::receipt_fence);
+    let in_flight_receipt_fence = queue.in_flight_receipt.take();
+    if let Some(async_seek) = queue.async_seek.as_mut() {
+        while let Some(receipt) = async_seek.worker_pending_receipts.pop_front() {
+            async_seek.completed_receipts.push_back(receipt);
+        }
+        if let Some(fence) = pending_receipt_fence {
+            async_seek
+                .completed_receipts
+                .push_back(ProgressiveAsyncSeekReceipt {
+                    fence,
+                    outcome: stop_outcome,
+                });
+        }
+        if let Some(fence) = in_flight_receipt_fence {
+            async_seek
+                .completed_receipts
+                .push_back(ProgressiveAsyncSeekReceipt {
+                    fence,
+                    outcome: stop_outcome,
+                });
+        }
+    }
     queue.worker_stopped = true;
     shared.capacity_available.notify_all();
 }

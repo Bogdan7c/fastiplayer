@@ -105,6 +105,20 @@ pub(crate) struct PreparedYtDlpWebMedia {
     pub(crate) stream_configuration: crate::web_media_stream_model::WebMediaStreamConfiguration,
     /// Neutral S31L port присутствует только у proven HLS live runtime.
     pub(crate) timeline_port: Option<DynamicMediaTimelinePort>,
+    /// Worker-receipted demux seek port присутствует только у static DASH.
+    pub(crate) demux_seek_port: Option<Arc<dyn player_core::PreparedDemuxSeekPort>>,
+}
+
+/// Общий pre-barrier runtime result concrete transport branches.
+struct OpenedWebCandidate {
+    /// Player-facing demuxer.
+    demuxer: Box<dyn Demuxer + Send>,
+    /// Descriptor-only HLS subtitles.
+    subtitles: Arc<[crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition]>,
+    /// Dynamic timeline only для proven live provider-а.
+    timeline_port: Option<DynamicMediaTimelinePort>,
+    /// Async demux seek only для provider-а, который требует worker receipt.
+    demux_seek_port: Option<Arc<dyn player_core::PreparedDemuxSeekPort>>,
 }
 
 /// Открывает YtDlp locator одним S19 → S21C → S22 production path-ом.
@@ -221,6 +235,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
         candidate_selection,
         stream_configuration,
         timeline_port: opened_candidate.timeline_port,
+        demux_seek_port: opened_candidate.demux_seek_port,
     })
 }
 
@@ -302,10 +317,10 @@ impl WebOpenRuntime {
         timeline_port_generation: DynamicMediaTimelinePortGeneration,
         cancellation: CancellationToken,
         is_cancelled: &impl Fn() -> bool,
-    ) -> Result<crate::web_media_hls_open::PreparedHlsCandidate> {
+    ) -> Result<OpenedWebCandidate> {
         if crate::web_media_hls_open::candidate_is_hls(candidate) {
             ensure_not_cancelled(is_cancelled)?;
-            return crate::web_media_hls_open::prepare_hls_candidate(
+            let prepared = crate::web_media_hls_open::prepare_hls_candidate(
                 candidate,
                 self.provider_id.clone(),
                 &self.source_config,
@@ -315,7 +330,31 @@ impl WebOpenRuntime {
                 live_intent,
                 endpoint_refresh,
                 timeline_port_generation,
-            );
+            )?;
+            return Ok(OpenedWebCandidate {
+                demuxer: prepared.demuxer,
+                subtitles: prepared.subtitles,
+                timeline_port: prepared.timeline_port,
+                demux_seek_port: None,
+            });
+        }
+        if crate::web_media_dash_open::candidate_is_dash(candidate) {
+            ensure_not_cancelled(is_cancelled)?;
+            let prepared = crate::web_media_dash_open::prepare_dash_candidate(
+                candidate,
+                self.provider_id.clone(),
+                &self.source_config,
+                &self.network_config,
+                Arc::clone(&self.demux_registry),
+                cancellation,
+                live_intent,
+            )?;
+            return Ok(OpenedWebCandidate {
+                demuxer: prepared.demuxer,
+                subtitles: Arc::from([]),
+                timeline_port: None,
+                demux_seek_port: Some(prepared.seek_port),
+            });
         }
         if !matches!(
             live_intent,
@@ -357,10 +396,11 @@ impl WebOpenRuntime {
             opened_components.push(OpenedCandidateComponent { role, demuxer });
         }
         compose_candidate_components(opened_components, self.prefetch_config).map(|demuxer| {
-            crate::web_media_hls_open::PreparedHlsCandidate {
+            OpenedWebCandidate {
                 demuxer,
                 subtitles: Arc::from([]),
                 timeline_port: None,
+                demux_seek_port: None,
             }
         })
     }
@@ -537,7 +577,14 @@ fn progressive_http_capabilities() -> Result<TransportCapabilitySnapshot> {
         TransportFamily::Hls,
         DemuxInputCapabilities::only(crate::web_media_hls_open::hls_transport_input()),
     )?;
-    Ok(TransportCapabilitySnapshot::new(vec![http, https, hls]))
+    let dash = TransportCapabilityRegistration::new(
+        TransportFamily::Dash,
+        DemuxInputCapabilities::only(DemuxInputCapability::OrderedSegments)
+            .with(DemuxInputCapability::SeekableBytes),
+    )?;
+    Ok(TransportCapabilitySnapshot::new(vec![
+        http, https, hls, dash,
+    ]))
 }
 
 /// Передаёт registry согласованные extension и container hints выбранной family.
@@ -798,6 +845,25 @@ mod tests {
                 .input_capabilities_for(ContainerFamily::WebM)
                 .contains(DemuxInputCapability::OrderedSegments),
             "WebM не должен наследовать synthetic ISO ordered capability"
+        );
+    }
+
+    /// Planner видит DASH только после появления concrete S34 runtime-а и его exact shapes.
+    #[test]
+    fn transport_capability_snapshot_advertises_dash_ordered_and_range_inputs() {
+        let capabilities =
+            progressive_http_capabilities().expect("transport capability snapshot builds");
+        let dash_inputs = capabilities.output_inputs_for(TransportFamily::Dash);
+
+        assert_eq!(
+            dash_inputs,
+            DemuxInputCapabilities::only(DemuxInputCapability::OrderedSegments)
+                .with(DemuxInputCapability::SeekableBytes)
+        );
+        assert_eq!(
+            capabilities.output_inputs_for(TransportFamily::Hls),
+            DemuxInputCapabilities::only(crate::web_media_hls_open::hls_transport_input()),
+            "DASH registration не должна менять соседний HLS provider"
         );
     }
 }

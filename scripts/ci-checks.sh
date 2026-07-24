@@ -39,9 +39,11 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/web-media-playback-plan
     crates/web-media-http
     crates/web-media-adaptive
+    crates/web-media-dash
     crates/web-media-hls
     crates/web-media-transport-api
     crates/bounded-xml-reader
+    crates/dash-mpd-core
     crates/player-core
     crates/bounded-work-executor
     crates/atomic-file-store

@@ -1,3 +1,8 @@
+## S34 static DASH VOD production integration (2026-07-24)
+
+- `dash-mpd-core` owns the bounded static MPD profile; `web-media-dash` owns exact manifest/serialized planning, component-scoped HTTP contexts, fMP4/WebM readiness and receipted seek; app composition enables DASH only after successful pre-barrier preparation.
+- `service-ytdlp` retains authoritative MPD versus serialized-fragment type-state and secret-scoped request material without concrete runtime deps. Full ownership, fences, tests and limitations: `mem:media-services/dash-vod-s34-2026-07-24`.
+
 ## S33 HLS live/DVR production integration (2026-07-24)
 
 - `web-media-hls::live` owns selected rendition refresh, exact segment-scoped TS/fMP4 provenance, rolling RAP/audio evidence and atomic S31L timeline publication. `service-ytdlp` supplies explicit public live intent; app owns bounded endpoint re-extraction/rematch and installs the neutral timeline port before the existing barrier.

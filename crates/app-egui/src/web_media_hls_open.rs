@@ -83,7 +83,7 @@ pub(crate) fn prepare_hls_candidate(
     endpoint_refresh: Option<Arc<dyn HlsEndpointRefreshPort>>,
     timeline_port_generation: DynamicMediaTimelinePortGeneration,
 ) -> Result<PreparedHlsCandidate> {
-    let generation = SourceGeneration::new(1);
+    let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
     let projected = project_hls_runtime_material(
         candidate,
         provider_id,
@@ -98,7 +98,9 @@ pub(crate) fn prepare_hls_candidate(
         overrides,
     } = projected;
     let (selection, containers) = selection_and_containers(candidate.descriptor().layout())?;
-    let policy = hls_policy(adaptive_limits(network_config)?)?;
+    let policy = hls_policy(crate::web_media_adaptive_config::adaptive_transport_limits(
+        network_config,
+    )?)?;
     if live_intent == service_ytdlp::YtDlpLiveIntent::Live {
         let endpoint_refresh = endpoint_refresh
             .ok_or_else(|| anyhow!("HLS live candidate потерял app endpoint refresh port"))?;
@@ -205,7 +207,8 @@ pub(crate) fn project_hls_runtime_material(
         })
         .transpose()
         .context("yt-dlp hls_aes нарушил validated AES boundary")?;
-    let adaptive_limits = adaptive_limits(network_config)?;
+    let adaptive_limits =
+        crate::web_media_adaptive_config::adaptive_transport_limits(network_config)?;
     let http = AdaptiveHttpContext::new(
         transport_request,
         source_config,
@@ -328,19 +331,6 @@ fn required_container(container: ContainerFamily) -> Result<HlsRequiredContainer
             "HLS container {other:?} не входит в TS/fMP4 profile"
         )),
     }
-}
-
-pub(crate) fn adaptive_limits(network: &NetworkConfig) -> Result<AdaptiveTransportLimits> {
-    let maximum_segment_bytes = usize::try_from(network.memory_cache_mb)
-        .ok()
-        .and_then(|megabytes| megabytes.checked_mul(1_024 * 1_024))
-        .and_then(NonZeroUsize::new)
-        .ok_or_else(|| anyhow!("network.memory_cache_mb нельзя выразить как HLS byte budget"))?;
-    Ok(AdaptiveTransportLimits::new(
-        NonZeroUsize::new(2 * 1_024 * 1_024).expect("manifest budget"),
-        maximum_segment_bytes,
-        NonZeroUsize::new(8_192).expect("VOD segment descriptor budget"),
-    ))
 }
 
 pub(crate) fn hls_policy(limits: AdaptiveTransportLimits) -> Result<HlsVodOpenPolicy> {

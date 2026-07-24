@@ -364,6 +364,8 @@ fn map_source_open_error(
         | SourceError::HttpBodyTooLarge { .. }
         | SourceError::InvalidContentRange { .. }
         | SourceError::HttpRangeUnsupported { .. }
+        | SourceError::HttpRequestPolicyRejected { .. }
+        | SourceError::HttpRepresentationChanged { .. }
         | SourceError::NotSeekable { .. }
         | SourceError::InvalidHttpHeaderName { .. }
         | SourceError::InvalidHttpHeaderValue { .. } => {

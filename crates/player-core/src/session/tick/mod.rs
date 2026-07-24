@@ -41,6 +41,7 @@ impl PlayerSession {
         let mut tick_result = PlayerTickResult::default();
 
         self.service_pending_staged_preflight(tick_context.now);
+        self.service_prepared_demux_seek_receipts();
         self.update_position_for_tick(tick_context.now);
 
         let seek_fast_preroll_tick_handled =
@@ -48,6 +49,7 @@ impl PlayerSession {
 
         if !seek_fast_preroll_tick_handled
             && self.is_demuxing_active()
+            && !self.prepared_demux_seek.receipt_pending()
             && self.pipeline.has_demuxer()
         {
             let demux_packet_budget = demux_packet_budget_for_tick(self, &tick_context.config);

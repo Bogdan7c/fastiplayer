@@ -1,3 +1,7 @@
+## S34 DASH request-context boundary (2026-07-24)
+
+- Static DASH MPD/serialized inputs keep fresh headers/cookies/segment query only in S21T contexts. Segmented credentials are scoped to the authoritative MPD/fragment directory plus exact origin/secure proof; separate serialized video/audio keep independent contexts. Cross-origin redirects strip secrets monotonically, and raw MPD/fragment/auth values remain absent from Debug/errors/player state. Full contract: `mem:media-services/dash-vod-s34-2026-07-24`.
+
 ## S33 live endpoint refresh secret boundary (2026-07-24)
 
 - HLS manifest/segment/init/key expiry is signalled only as typed reason + resource kind + generation; raw targets/status payloads/auth material never cross into Debug/errors/player state.
