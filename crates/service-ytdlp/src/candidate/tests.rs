@@ -584,6 +584,98 @@ fn hls_request_material_preserves_approved_shape_in_safe_summary() {
     }
 }
 
+/// HDS S00 row проецируется в один VOD manifest request с directory-scoped secrets.
+#[test]
+fn hds_transport_projection_preserves_manifest_scope_and_lifecycle() {
+    let snapshot = snapshot(
+        json!({
+            "formats": [{
+                "format_id": "hds-f4f",
+                "url": "https://manifest.invalid/hds/stream.f4m?token=url-secret",
+                "manifest_url": "https://manifest.invalid/hds/stream.f4m?token=manifest-secret",
+                "protocol": "f4m",
+                "ext": "flv",
+                "container": "f4f",
+                "vcodec": "avc1.4d401f",
+                "acodec": "mp4a.40.2",
+                "http_headers": {"Authorization": "Bearer hds-header-secret"},
+                "cookies": "session=hds-cookie-secret"
+            }]
+        }),
+        9,
+    );
+    let candidate = accepted_inventory(&snapshot, 0);
+    let cancellation = CancellationToken::new();
+    let provider = TransportProviderId::new("hds-manifest-http").expect("provider ID");
+    let context = super::YtDlpTransportRequestContext::new(
+        provider.clone(),
+        SourceGeneration::new(13),
+        cancellation.clone(),
+    );
+
+    let request = candidate
+        .hds_transport_request(&context)
+        .expect("approved HDS row должен проецироваться");
+
+    assert_eq!(request.provider(), &provider);
+    assert_eq!(request.presentation(), MediaPresentation::Vod);
+    assert_eq!(request.source_generation(), SourceGeneration::new(13));
+    assert_eq!(request.component().role(), MediaComponentRole::Muxed);
+    assert_eq!(
+        http_transport_target(&request).expose_secret_for_request(),
+        "https://manifest.invalid/hds/stream.f4m?token=manifest-secret"
+    );
+
+    let initial_material = request
+        .secrets()
+        .material_for(
+            http_transport_target(&request),
+            SecretRequestPurpose::PrimaryResource,
+        )
+        .expect("manifest target должен находиться в HDS scope");
+    assert_eq!(
+        initial_material.headers_for_request()[0].value,
+        "Bearer hds-header-secret"
+    );
+    assert_eq!(
+        initial_material.cookies_for_request(),
+        Some(b"session=hds-cookie-secret".as_slice())
+    );
+
+    let child_manifest = HttpRequestTarget::parse_exact("https://manifest.invalid/hds/child.f4m")
+        .expect("same-directory child target");
+    let f4f_fragment =
+        HttpRequestTarget::parse_exact("https://manifest.invalid/hds/streamSeg1-Frag1")
+            .expect("same-directory F4F target");
+    let cross_origin = HttpRequestTarget::parse_exact("https://cdn.invalid/hds/streamSeg1-Frag1")
+        .expect("cross-origin target");
+    assert!(
+        request
+            .secrets()
+            .material_for(&child_manifest, SecretRequestPurpose::PrimaryResource)
+            .is_some()
+    );
+    assert!(
+        request
+            .secrets()
+            .material_for(&f4f_fragment, SecretRequestPurpose::PrimaryResource)
+            .is_some()
+    );
+    assert!(
+        request
+            .secrets()
+            .material_for(&cross_origin, SecretRequestPurpose::PrimaryResource)
+            .is_none()
+    );
+
+    let diagnostic = format!("{snapshot:?} {request:?}");
+    assert!(!diagnostic.contains("hds-header-secret"));
+    assert!(!diagnostic.contains("hds-cookie-secret"));
+
+    cancellation.cancel();
+    assert!(request.cancellation().is_cancelled());
+}
+
 #[test]
 fn hls_transport_projection_accepts_hls_fields_without_progressive_profile_rejection() {
     let snapshot = snapshot(

@@ -1,0 +1,18 @@
+[package]
+name = "web-media-hds"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bounded-xml-reader.workspace = true
+demux-api.workspace = true
+hds-manifest-core.workspace = true
+media-core.workspace = true
+source-core.workspace = true
+url.workspace = true
+web-media-adaptive.workspace = true
+web-media-core.workspace = true
+web-media-transport-api.workspace = true

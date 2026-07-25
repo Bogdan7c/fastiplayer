@@ -159,6 +159,7 @@ dependencies = [
  "egui-winit",
  "flv-demux",
  "frame-server-core",
+ "hds-manifest-core",
  "hls-playlist-core",
  "libc",
  "media-core",
@@ -198,6 +199,7 @@ dependencies = [
  "web-media-core",
  "web-media-dash",
  "web-media-ftp",
+ "web-media-hds",
  "web-media-hls",
  "web-media-http",
  "web-media-playback-plan",
@@ -2073,6 +2075,14 @@ name = "hashbrown"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f467dd6dccf739c208452f8014c75c18bb8301b050ad1cfb27153803edb0f51"
+
+[[package]]
+name = "hds-manifest-core"
+version = "0.1.0"
+dependencies = [
+ "bounded-xml-reader",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "heck"
@@ -4597,7 +4607,6 @@ dependencies = [
  "reqwest",
  "rustiplayer-config",
  "rustls",
- "rustls-pki-types",
  "suppaftp",
  "tempfile",
  "thiserror 2.0.18",
@@ -5920,10 +5929,24 @@ dependencies = [
 name = "web-media-ftp"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "rustiplayer-config",
  "source-core",
- "thiserror 2.0.18",
+ "web-media-core",
+ "web-media-transport-api",
+]
+
+[[package]]
+name = "web-media-hds"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bounded-xml-reader",
+ "demux-api",
+ "hds-manifest-core",
+ "media-core",
+ "source-core",
+ "url",
+ "web-media-adaptive",
  "web-media-core",
  "web-media-transport-api",
 ]

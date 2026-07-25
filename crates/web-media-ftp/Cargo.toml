@@ -7,10 +7,8 @@ license.workspace = true
 
 [dependencies]
 source-core.workspace = true
-thiserror.workspace = true
 web-media-transport-api.workspace = true
 
 [dev-dependencies]
-anyhow.workspace = true
 rustiplayer-config.workspace = true
 web-media-core.workspace = true

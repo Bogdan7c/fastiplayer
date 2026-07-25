@@ -116,7 +116,12 @@ pub(super) fn prepare_source(
                 return Err(MediaPreparationFailureKind::Cancelled);
             }
             let tracks = prepared.demuxer.tracks().to_vec();
-            let demux_duration = prepared.demuxer.duration();
+            let demux_duration = prepared.playback_window.and_then(|window| {
+                window
+                    .end_exclusive()
+                    .and_then(|end| end.as_duration().checked_sub(window.start().as_duration()))
+            });
+            let demux_duration = demux_duration.or_else(|| prepared.demuxer.duration());
             let demux_metadata = prepared.demuxer.media_metadata().unwrap_or_default().tags;
             let playlist_duration = service_duration_for_timeline(
                 prepared.timeline_port.as_ref(),
@@ -133,12 +138,13 @@ pub(super) fn prepare_source(
                 prepared.demuxer,
                 prepared.timeline_port,
                 prepared.demux_seek_port,
+                prepared.playback_window,
             )
             .map_err(|error| {
                 tracing::warn!(
                     source = %safe_label,
                     error = %error,
-                    "HLS live timeline не прошёл PreparedMedia boundary"
+                    "YtDlp timeline mode не прошёл PreparedMedia boundary"
                 );
                 MediaPreparationFailureKind::YtDlpOpen
             })?;
@@ -178,10 +184,14 @@ fn prepare_yt_dlp_player_media(
     demuxer: Box<dyn media_core::Demuxer + Send>,
     timeline_port: Option<media_core::DynamicMediaTimelinePort>,
     demux_seek_port: Option<Arc<dyn player_core::PreparedDemuxSeekPort>>,
+    playback_window: Option<player_core::MediaPlaybackWindow>,
 ) -> Result<PreparedMedia, player_core::PreparedMediaTimelineModeError> {
     let mut prepared = PreparedMedia::from_external_label(safe_label, demuxer);
     if let Some(port) = demux_seek_port {
         prepared = prepared.with_worker_receipted_demux_seek(port);
+    }
+    if let Some(window) = playback_window {
+        prepared = prepared.with_playback_window(window)?;
     }
     match timeline_port {
         Some(port) => prepared.with_dynamic_timeline(port),
@@ -341,6 +351,7 @@ mod tests {
             "live",
             Box::new(LiveFakeDemuxer),
             Some(timeline_port),
+            None,
             None,
         )
         .expect("live timeline attaches before barrier");

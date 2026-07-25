@@ -38,8 +38,11 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/web-media-core
     crates/web-media-playback-plan
     crates/web-media-http
+    crates/web-media-ftp
     crates/web-media-adaptive
     crates/web-media-dash
+    crates/hds-manifest-core
+    crates/web-media-hds
     crates/web-media-smooth
     crates/web-media-hls
     crates/web-media-transport-api

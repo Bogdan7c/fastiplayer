@@ -9,6 +9,7 @@ use zeroize::Zeroizing;
 use super::raw::YtDlpSerializedFormat;
 
 mod dash;
+mod hds;
 mod hls;
 mod smooth;
 
@@ -17,6 +18,7 @@ pub use dash::{
     YtDlpDashInputKind, YtDlpDashRequestContext, YtDlpDashRequestMaterial,
     YtDlpDashRequestMaterialViolation,
 };
+pub use hds::{YtDlpHdsManifestRequestMaterial, YtDlpHdsManifestRequestMaterialViolation};
 pub use hls::{
     YtDlpHlsAesOverride, YtDlpHlsManifestInput, YtDlpHlsManifestInputKind, YtDlpHlsRequestMaterial,
     YtDlpHlsRequestMaterialViolation,
@@ -408,6 +410,13 @@ impl YtDlpRequestMaterial {
         &self,
     ) -> Result<YtDlpDashRequestMaterial<'_>, YtDlpDashRequestMaterialViolation> {
         dash::dash_request_material(self)
+    }
+
+    /// Проецирует manifest-only material для approved HDS F4M/F4F VOD profile.
+    pub fn hds_manifest_request_material(
+        &self,
+    ) -> Result<YtDlpHdsManifestRequestMaterial<'_>, YtDlpHdsManifestRequestMaterialViolation> {
+        hds::hds_manifest_request_material(self)
     }
 
     /// Проецирует exact manifest-only material для approved ISM VOD profile.

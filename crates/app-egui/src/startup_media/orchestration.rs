@@ -555,6 +555,15 @@ impl StartupMediaController {
                 if let Some(port) = prepared.demux_seek_port {
                     prepared_media = prepared_media.with_worker_receipted_demux_seek(port);
                 }
+                if let Some(window) = prepared.playback_window {
+                    prepared_media = match prepared_media.with_playback_window(window) {
+                        Ok(prepared_media) => prepared_media,
+                        Err(error) => {
+                            self.handle_install_failure(error.to_string(), is_cli, app_state);
+                            return true;
+                        }
+                    };
+                }
                 if let Some(timeline_port) = prepared.timeline_port {
                     prepared_media = match prepared_media.with_dynamic_timeline(timeline_port) {
                         Ok(prepared_media) => prepared_media,

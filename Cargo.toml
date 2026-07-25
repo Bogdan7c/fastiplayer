@@ -23,6 +23,8 @@ members = [
     "crates/web-media-http",
     "crates/web-media-ftp",
     "crates/web-media-adaptive",
+    "crates/hds-manifest-core",
+    "crates/web-media-hds",
     "crates/hls-playlist-core",
     "crates/web-media-hls",
     "crates/bounded-xml-reader",
@@ -205,10 +207,12 @@ web-media-core = { version = "0.1.0", path = "crates/web-media-core" }
 web-media-playback-plan = { version = "0.1.0", path = "crates/web-media-playback-plan" }
 web-media-transport-api = { version = "0.1.0", path = "crates/web-media-transport-api" }
 web-media-adaptive = { version = "0.1.0", path = "crates/web-media-adaptive" }
+web-media-hds = { version = "0.1.0", path = "crates/web-media-hds" }
 web-media-hls = { version = "0.1.0", path = "crates/web-media-hls" }
 web-media-http = { version = "0.1.0", path = "crates/web-media-http" }
 web-media-ftp = { version = "0.1.0", path = "crates/web-media-ftp" }
 bounded-xml-reader = { version = "0.1.0", path = "crates/bounded-xml-reader" }
+hds-manifest-core = { version = "0.1.0", path = "crates/hds-manifest-core" }
 dash-mpd-core = { version = "0.1.0", path = "crates/dash-mpd-core" }
 smooth-streaming-manifest-core = { version = "0.1.0", path = "crates/smooth-streaming-manifest-core" }
 smooth-streaming-fmp4 = { version = "0.1.0", path = "crates/smooth-streaming-fmp4" }

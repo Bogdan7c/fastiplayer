@@ -1,3 +1,9 @@
+## S38 HDS/F4M/F4F VOD (2026-07-25)
+
+- Approved S00 row `hds-f4m-f4f` exists; no approved HDS live/DVR row exists, so S38 remains VOD-only and creates no S38L/S31L/S35S card.
+- `hds-manifest-core` owns bounded S04X F4M 1.0/2.0 and strict Adobe `abst/asrt/afrt` parsing, including pre-allocation count checks, exact first/tail fragment mapping, matching timescales and fail-closed discontinuities. `web-media-hds` owns S31 ordered fetch, S30 F4F reuse and transactional VOD seek. No second provider/parser, external downloader or FFmpeg.
+- Absolute HDS timestamps remain provider-owned: `web-media-hds` exposes a neutral absolute presentation window and app-egui maps it to player-owned `MediaPlaybackWindow`, so public VOD position starts at zero without rewriting packets. Automatic selection uses global `PreferredHeightPolicy`; `HdsRenditionCatalog` plus `Exact(HdsRenditionId)` remains the future UI stream-picker boundary. Full handoff: `mem:media-services/hds-s38-2026-07-25`.
+
 ## S36P4–P6 production Smooth VOD runtime (2026-07-25)
 
 - The exact approved muxed ISM fMP4 H.264+AAC static-VOD row is now production-wired. `web-media-smooth` owns injected stable A/V demux composition plus transactional receipted seek; app owns ordered-only planner registration, concrete shared S28A/F3A registry injection, bounded policies and two-phase fresh C3 finalization through the existing Installed barrier.

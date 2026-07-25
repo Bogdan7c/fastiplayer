@@ -7,6 +7,7 @@
 mod component_variants;
 #[cfg(test)]
 mod component_variants_tests;
+mod hds;
 mod smooth;
 
 use std::num::{NonZeroU64, NonZeroUsize};
@@ -99,8 +100,10 @@ pub(crate) struct PreparedYtDlpWebMedia {
     pub(crate) stream_configuration: crate::web_media_stream_model::WebMediaStreamConfiguration,
     /// Neutral S31L port присутствует только у proven HLS live runtime.
     pub(crate) timeline_port: Option<DynamicMediaTimelinePort>,
-    /// Worker-receipted demux seek port присутствует у static DASH и Smooth VOD.
+    /// Worker-receipted demux seek port присутствует у static DASH/Smooth/HDS VOD.
     pub(crate) demux_seek_port: Option<Arc<dyn player_core::PreparedDemuxSeekPort>>,
+    /// Optional absolute source window для zero-based public presentation.
+    pub(crate) playback_window: Option<player_core::MediaPlaybackWindow>,
 }
 
 /// Общий pre-barrier runtime result concrete transport branches.
@@ -113,6 +116,8 @@ struct OpenedWebCandidate {
     timeline_port: Option<DynamicMediaTimelinePort>,
     /// Async demux seek only для provider-а, который требует worker receipt.
     demux_seek_port: Option<Arc<dyn player_core::PreparedDemuxSeekPort>>,
+    /// Provider-owned absolute source window до player commit.
+    playback_window: Option<player_core::MediaPlaybackWindow>,
     /// Fresh provider result финализируется до authorization barrier.
     component_variants: PreparedComponentVariantCatalog,
 }
@@ -292,6 +297,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
         stream_configuration,
         timeline_port: opened_candidate.timeline_port,
         demux_seek_port: opened_candidate.demux_seek_port,
+        playback_window: opened_candidate.playback_window,
     })
 }
 
@@ -406,7 +412,29 @@ impl WebOpenRuntime {
                 subtitles: Arc::from([]),
                 timeline_port: None,
                 demux_seek_port: Some(prepared.seek_port),
+                playback_window: None,
                 component_variants: prepared.component_variants,
+            });
+        }
+        if hds::candidate_is_hds(candidate) {
+            ensure_not_cancelled(is_cancelled)?;
+            let prepared = hds::prepare_hds_candidate(
+                candidate,
+                self.provider_id.clone(),
+                &self.source_config,
+                &self.network_config,
+                Arc::clone(&self.demux_registry),
+                cancellation,
+                live_intent,
+                preferred_height,
+            )?;
+            return Ok(OpenedWebCandidate {
+                demuxer: prepared.demuxer,
+                subtitles: Arc::from([]),
+                timeline_port: None,
+                demux_seek_port: Some(prepared.seek_port),
+                playback_window: Some(prepared.playback_window),
+                component_variants: PreparedComponentVariantCatalog::Unavailable,
             });
         }
         if crate::web_media_hls_open::candidate_is_hls(candidate) {
@@ -427,6 +455,7 @@ impl WebOpenRuntime {
                 subtitles: prepared.subtitles,
                 timeline_port: prepared.timeline_port,
                 demux_seek_port: None,
+                playback_window: None,
                 component_variants: PreparedComponentVariantCatalog::Unavailable,
             });
         }
@@ -448,6 +477,7 @@ impl WebOpenRuntime {
                 subtitles: Arc::from([]),
                 timeline_port: prepared.timeline_port,
                 demux_seek_port: Some(prepared.seek_port),
+                playback_window: None,
                 component_variants: PreparedComponentVariantCatalog::Unavailable,
             });
         }
@@ -497,6 +527,7 @@ impl WebOpenRuntime {
                 subtitles: Arc::from([]),
                 timeline_port: None,
                 demux_seek_port: None,
+                playback_window: None,
                 component_variants: PreparedComponentVariantCatalog::Unavailable,
             }
         })
@@ -714,8 +745,12 @@ fn progressive_transport_capabilities() -> Result<TransportCapabilitySnapshot> {
         TransportFamily::SmoothStreaming,
         DemuxInputCapabilities::only(DemuxInputCapability::OrderedSegments),
     )?;
+    let hds = TransportCapabilityRegistration::new(
+        TransportFamily::Hds,
+        DemuxInputCapabilities::only(DemuxInputCapability::OrderedSegments),
+    )?;
     Ok(TransportCapabilitySnapshot::new(vec![
-        http, https, ftp, ftps, hls, dash, smooth,
+        http, https, ftp, ftps, hls, dash, smooth, hds,
     ]))
 }
 

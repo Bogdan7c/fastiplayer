@@ -214,6 +214,18 @@ impl FrameSettingsRuntimeAdapter<'_> {
                                 prepared_media =
                                     prepared_media.with_worker_receipted_demux_seek(port);
                             }
+                            if let Some(window) = prepared.playback_window {
+                                prepared_media = match prepared_media.with_playback_window(window) {
+                                    Ok(prepared_media) => prepared_media,
+                                    Err(error) => {
+                                        return AppRouteApplyResult::Failed {
+                                            message: format!(
+                                                "YtDlp playback window rebuild failed: {error}"
+                                            ),
+                                        };
+                                    }
+                                };
+                            }
                             if let Some(timeline_port) = prepared.timeline_port {
                                 prepared_media =
                                     match prepared_media.with_dynamic_timeline(timeline_port) {

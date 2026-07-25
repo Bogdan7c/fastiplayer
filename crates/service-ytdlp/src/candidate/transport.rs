@@ -19,9 +19,9 @@ use super::model::{
 };
 use super::request_material::{
     YtDlpDashFragmentLocatorKind, YtDlpDashInputKind, YtDlpDashRequestMaterial,
-    YtDlpDashRequestMaterialViolation, YtDlpHlsRequestMaterial, YtDlpHlsRequestMaterialViolation,
-    YtDlpRequestMaterialViolation, YtDlpSmoothManifestRequestMaterial,
-    YtDlpSmoothManifestRequestMaterialViolation,
+    YtDlpDashRequestMaterialViolation, YtDlpHdsManifestRequestMaterialViolation,
+    YtDlpHlsRequestMaterial, YtDlpHlsRequestMaterialViolation, YtDlpRequestMaterialViolation,
+    YtDlpSmoothManifestRequestMaterial, YtDlpSmoothManifestRequestMaterialViolation,
 };
 
 /// Bounded redirect budget public CDN resource-а.
@@ -175,6 +175,9 @@ pub enum YtDlpTransportRequestError {
     /// Request material не соответствует static DASH profile.
     #[error("YtDlp request material нельзя выразить как DASH open request")]
     DashRequestMaterial(#[source] YtDlpDashRequestMaterialViolation),
+    /// Request material не соответствует static HDS F4M/F4F VOD profile.
+    #[error("YtDlp request material нельзя выразить как HDS manifest request")]
+    HdsRequestMaterial(#[source] YtDlpHdsManifestRequestMaterialViolation),
     /// Request material не соответствует manifest-only Smooth Streaming profile.
     #[error("YtDlp request material нельзя выразить как Smooth manifest request")]
     SmoothRequestMaterial(#[source] YtDlpSmoothManifestRequestMaterialViolation),
@@ -196,6 +199,12 @@ pub enum YtDlpTransportRequestError {
     /// Smooth manifest target нарушил neutral HTTP target contract после material proof.
     #[error("YtDlp Smooth manifest содержит недопустимый HTTP target")]
     SmoothTarget(#[source] source_core::HttpRequestTargetError),
+    /// HDS manifest target нарушил neutral HTTP target contract.
+    #[error("YtDlp HDS manifest содержит недопустимый HTTP target")]
+    HdsTarget(#[source] source_core::HttpRequestTargetError),
+    /// HDS child/media resources cannot receive a safe path scope.
+    #[error("YtDlp HDS manifest target cannot create a resource path scope")]
+    HdsTargetResolution,
     /// Candidate exact/semantic identities нарушили source lineage.
     #[error("YtDlp component identity нарушает source lineage")]
     Identity(#[source] MediaComponentIdentityError),
@@ -238,6 +247,18 @@ pub enum YtDlpTransportRequestError {
     /// Approved Smooth row обязан содержать AAC audio.
     #[error("YtDlp Smooth candidate использует неподдерживаемый audio codec")]
     SmoothAudioCodec,
+    /// S38 HDS base profile accepts one muxed component.
+    #[error("YtDlp HDS candidate должен содержать ровно один muxed component")]
+    HdsComponentShape,
+    /// HDS component role must be muxed.
+    #[error("YtDlp HDS component должен иметь muxed role")]
+    HdsComponentRole,
+    /// Descriptor transport must be HDS.
+    #[error("YtDlp HDS candidate использует другую transport family")]
+    HdsTransport,
+    /// S30 F4F container is required.
+    #[error("YtDlp HDS candidate использует неподдерживаемый container")]
+    HdsContainer,
 }
 
 impl YtDlpNormalizedCandidate {
@@ -363,6 +384,54 @@ impl YtDlpNormalizedCandidate {
         secret_builder = hls_material
             .project_scoped_queries(secret_builder)
             .map_err(YtDlpTransportRequestError::HlsQueryProjection)?;
+        let redirect_limit = RedirectHopLimit::new(PUBLIC_MEDIA_REDIRECT_HOPS)
+            .map_err(YtDlpTransportRequestError::RedirectLimit)?;
+        TransportOpenRequest::new(
+            context.provider.clone(),
+            identity,
+            target,
+            MediaPresentation::Vod,
+            context.source_generation,
+            secret_builder.build(),
+            RedirectPolicy::cross_origin_without_secrets(redirect_limit),
+            context.cancellation.clone(),
+        )
+        .map_err(YtDlpTransportRequestError::Request)
+    }
+
+    /// Строит один secret-scoped VOD request для F4M hierarchy root-а.
+    pub fn hds_transport_request(
+        &self,
+        context: &YtDlpTransportRequestContext,
+    ) -> Result<TransportOpenRequest, YtDlpTransportRequestError> {
+        let component = hds_manifest_component(self)?;
+        let material = component
+            .material
+            .hds_manifest_request_material()
+            .map_err(YtDlpTransportRequestError::HdsRequestMaterial)?;
+        let target = HttpRequestTarget::parse_exact(material.manifest_target_for_fetch())
+            .map_err(YtDlpTransportRequestError::HdsTarget)?;
+        let identity = MediaComponentIdentity::new(
+            self.descriptor().identity().clone(),
+            self.descriptor().semantic_identity().clone(),
+            MediaComponentRole::Muxed,
+        )
+        .map_err(YtDlpTransportRequestError::Identity)?;
+        let path_scope = hds_resource_path_scope(&target)?;
+        let secret_scope = SecretRequestScope::from_target(&target, path_scope);
+        let serialized_headers = material
+            .headers()
+            .map(|(name, value)| HttpHeader::new(name, value))
+            .collect::<Vec<_>>();
+        let serialized_headers = ValidatedHttpHeaders::new(serialized_headers)
+            .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
+        let mut secret_builder =
+            SecretRequestContext::builder(secret_scope).with_headers(serialized_headers);
+        if let Some(serialized_cookies) = material.serialized_cookies() {
+            secret_builder = secret_builder
+                .with_serialized_cookies(serialized_cookies)
+                .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
+        }
         let redirect_limit = RedirectHopLimit::new(PUBLIC_MEDIA_REDIRECT_HOPS)
             .map_err(YtDlpTransportRequestError::RedirectLimit)?;
         TransportOpenRequest::new(
@@ -611,6 +680,28 @@ fn smooth_manifest_component(
     Ok(component)
 }
 
+/// Доказывает exact single-component HDS F4M/F4F VOD profile.
+fn hds_manifest_component(
+    candidate: &YtDlpNormalizedCandidate,
+) -> Result<&YtDlpCandidateComponentRequest, YtDlpTransportRequestError> {
+    let [component] = candidate.component_requests.as_ref() else {
+        return Err(YtDlpTransportRequestError::HdsComponentShape);
+    };
+    let StreamLayout::Muxed(muxed) = candidate.descriptor().layout() else {
+        return Err(YtDlpTransportRequestError::HdsComponentShape);
+    };
+    if component.role != YtDlpCandidateComponentRole::Muxed {
+        return Err(YtDlpTransportRequestError::HdsComponentRole);
+    }
+    if muxed.transport().family() != TransportFamily::Hds {
+        return Err(YtDlpTransportRequestError::HdsTransport);
+    }
+    if muxed.container().consistent_family().ok() != Some(Some(ContainerFamily::F4f)) {
+        return Err(YtDlpTransportRequestError::HdsContainer);
+    }
+    Ok(component)
+}
+
 /// Собирает S26-compatible ephemeral headers/cookies для одного manifest source-а.
 fn smooth_manifest_secret_context(
     material: &YtDlpSmoothManifestRequestMaterial<'_>,
@@ -632,6 +723,22 @@ fn smooth_manifest_secret_context(
             .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
     }
     Ok(secret_builder.build())
+}
+
+/// HDS hierarchy and fragment URLs share the manifest directory secret scope.
+fn hds_resource_path_scope(
+    target: &HttpRequestTarget,
+) -> Result<HttpPathScope, YtDlpTransportRequestError> {
+    let parsed = Url::parse(target.expose_secret_for_request())
+        .map_err(|_| YtDlpTransportRequestError::HdsTargetResolution)?;
+    let path = parsed.path();
+    let directory = if path.ends_with('/') {
+        path.to_owned()
+    } else {
+        path.rsplit_once('/')
+            .map_or_else(|| "/".to_owned(), |(parent, _)| format!("{parent}/"))
+    };
+    HttpPathScope::new(directory).map_err(|_| YtDlpTransportRequestError::HdsTargetResolution)
 }
 
 /// Выбирает request-scope anchor без fallback между authoritative inputs.

@@ -23,10 +23,11 @@ pub use planning::YtDlpPlanningSnapshotError;
 pub use request_material::{
     YT_DLP_REQUEST_MATERIAL_SCHEMA_VERSION, YtDlpDashFragment, YtDlpDashFragmentLocatorKind,
     YtDlpDashFragmentRole, YtDlpDashInput, YtDlpDashInputKind, YtDlpDashRequestContext,
-    YtDlpDashRequestMaterial, YtDlpDashRequestMaterialViolation, YtDlpHlsAesOverride,
-    YtDlpHlsManifestInput, YtDlpHlsManifestInputKind, YtDlpHlsRequestMaterial,
-    YtDlpHlsRequestMaterialViolation, YtDlpRequestMaterial, YtDlpRequestMaterialSummary,
-    YtDlpRequestMaterialV1, YtDlpRequestMaterialViolation, YtDlpSmoothManifestRequestMaterial,
+    YtDlpDashRequestMaterial, YtDlpDashRequestMaterialViolation, YtDlpHdsManifestRequestMaterial,
+    YtDlpHdsManifestRequestMaterialViolation, YtDlpHlsAesOverride, YtDlpHlsManifestInput,
+    YtDlpHlsManifestInputKind, YtDlpHlsRequestMaterial, YtDlpHlsRequestMaterialViolation,
+    YtDlpRequestMaterial, YtDlpRequestMaterialSummary, YtDlpRequestMaterialV1,
+    YtDlpRequestMaterialViolation, YtDlpSmoothManifestRequestMaterial,
     YtDlpSmoothManifestRequestMaterialViolation, YtDlpSmoothUnsupportedRequestMaterial,
 };
 pub use transport::{
