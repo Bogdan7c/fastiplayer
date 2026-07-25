@@ -636,22 +636,48 @@ mod tests {
     /// Protocol aliases нормализуются по S00 manifest.
     #[test]
     fn transport_aliases_map_to_manifest_families() {
+        // HLS alias обязан остаться в concrete adaptive family.
         let hls = NormalizedTransport::parse(
             RawTransportIdentity::new("m3u8_native").expect("identity валидна"),
         );
+        // DASH alias обязан остаться в concrete adaptive family.
         let dash = NormalizedTransport::parse(
             RawTransportIdentity::new("dash_frag_urls").expect("identity валидна"),
         );
+        // Generator identity хранится отдельно от serializable DASH fragments.
         let generator = NormalizedTransport::parse(
             RawTransportIdentity::new("http_dash_segments_generator").expect("identity валидна"),
         );
 
+        // Known HLS alias не теряет family semantics.
         assert_eq!(hls.family(), TransportFamily::Hls);
+        // Known DASH alias не теряет family semantics.
         assert_eq!(dash.family(), TransportFamily::Dash);
+        // Generator остаётся typed exclusion без generic provider fallback.
         assert_eq!(
             generator.family(),
             TransportFamily::KnownExcluded(KnownExcludedTransport::DashGenerator)
         );
+
+        // Каждая special identity обязана оставаться exact member-ом одной excluded family.
+        for special_identity in [
+            "bunnycdn",
+            "soopvod",
+            "niconico_live",
+            "fc2_live",
+            "websocket_frag",
+        ] {
+            // Парсим exact raw identity без alias normalization между providers.
+            let special_transport = NormalizedTransport::parse(
+                RawTransportIdentity::new(special_identity).expect("identity валидна"),
+            );
+            // Serializable protocol string не является admission воспроизводимого provider-а.
+            assert_eq!(
+                special_transport.family(),
+                TransportFamily::KnownExcluded(KnownExcludedTransport::PrivateLiveState),
+                "special identity `{special_identity}` неожиданно получила provider family"
+            );
+        }
     }
 
     /// Codec parser отделяет family от exact parameters.

@@ -761,7 +761,7 @@
     {
       "path": "_bunnycdn_ping_data|_cookie_refresh_params",
       "decision": "private_api_target_row_excluded",
-      "future_session": "S40P-separate-decision",
+      "future_session": "none_without_public_serializable_profile_extension",
       "fixture_id": "excluded-private-live-state"
     }
   ],

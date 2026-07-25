@@ -1,3 +1,8 @@
+## S40 serializable special-provider gate (2026-07-25)
+
+- S40 завершён как доказанный no-op: S00 не содержит отдельной `PublicSerializable` special-provider target row, поэтому `S40P-*` cards и дополнительные S41 dependencies не созданы.
+- `bunnycdn`/`soopvod`/`niconico_live`/`fc2_live`/`websocket_frag` остаются exact typed exclusions; JSON-сериализуемость `protocol` не является provider admission. Production API/dependencies и Python helper/IPC не менялись. Full evidence: `mem:media-services/serializable-special-provider-s40-2026-07-25`.
+
 ## S39 exact RTMP family gate (2026-07-25)
 
 - S39 завершён как доказанный no-op: aggregate `rtmp-family-flv` остаётся только identity-only S00 inventory, а exact `rtmp`/`rtmpe` не имеют deterministic wire/crypto fixtures и остаются provisional exclusions. `rtmp_ffmpeg` — жёсткий non-wire exclusion; TLS/tunnel variants не alias-нормализуются.

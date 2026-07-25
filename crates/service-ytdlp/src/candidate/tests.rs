@@ -790,30 +790,77 @@ fn dash_transport_projection_preserves_serialized_roles_and_scoped_request_conte
     }
 }
 
-/// request_data и impersonation не маскируются как playable material.
+/// Невоспроизводимое request material не маскируется как playable descriptor.
 #[test]
-fn excluded_request_data_and_impersonation_remain_visible_rejections() {
+fn non_reconstructible_request_material_remains_visible_and_redacted() {
+    // Serialized request body остаётся отдельным typed exclusion.
     let mut request_data = progressive_format("request-data", "mp4", "mp4", "h264", "aac");
+    // Synthetic marker проверяет redaction и не содержит реального секрета.
     request_data["request_data"] = json!("serialized-body-secret");
+    // Browser impersonation требует недоказанного fingerprint provider-а.
     let mut impersonation = progressive_format("impersonation", "mp4", "mp4", "h264", "aac");
+    // Synthetic browser identity не должна попасть в diagnostics.
     impersonation["impersonate"] = json!("chrome-136:windows-10");
-    let snapshot = snapshot(json!({"formats": [request_data, impersonation]}), 5);
+    // BunnyCDN private ping state не является public provider descriptor-ом.
+    let mut private_ping = progressive_format("private-ping", "mp4", "mp4", "h264", "aac");
+    // Synthetic private state проверяет fail-closed mapping без network I/O.
+    private_ping["_bunnycdn_ping_data"] = json!({"secret": "private-ping-secret"});
+    // Mutable cookie refresh state также принадлежит живому extractor runtime.
+    let mut private_cookie_refresh =
+        progressive_format("private-cookie", "mp4", "mp4", "h264", "aac");
+    // Synthetic refresh identity не должна пережить normalization или попасть в diagnostics.
+    private_cookie_refresh["_cookie_refresh_params"] = json!({"video_id": "private-refresh-video"});
+    // Один snapshot позволяет проверить видимость каждой independent rejection row.
+    let snapshot = snapshot(
+        json!({
+            "formats": [
+                request_data,
+                impersonation,
+                private_ping,
+                private_cookie_refresh
+            ]
+        }),
+        5,
+    );
 
+    // Request body возвращает точную owner-specific причину.
     assert_eq!(
         rejected_inventory(&snapshot, 0),
         &YtDlpCandidateNormalizationRejection::RequestMaterial(
             YtDlpRequestMaterialViolation::RequestDataRequired
         )
     );
+    // Impersonation не схлопывается с private extractor state.
     assert_eq!(
         rejected_inventory(&snapshot, 1),
         &YtDlpCandidateNormalizationRejection::RequestMaterial(
             YtDlpRequestMaterialViolation::ImpersonationRequired
         )
     );
+    // BunnyCDN private state требует живого extractor owner-а.
+    assert_eq!(
+        rejected_inventory(&snapshot, 2),
+        &YtDlpCandidateNormalizationRejection::RequestMaterial(
+            YtDlpRequestMaterialViolation::PrivateExtractorStateRequired
+        )
+    );
+    // Mutable cookie refresh state возвращает ту же точную boundary-причину.
+    assert_eq!(
+        rejected_inventory(&snapshot, 3),
+        &YtDlpCandidateNormalizationRejection::RequestMaterial(
+            YtDlpRequestMaterialViolation::PrivateExtractorStateRequired
+        )
+    );
+    // Debug projection обязан оставаться bounded и secret-safe.
     let diagnostic = format!("{snapshot:?}");
+    // Request body marker не отражается в Debug.
     assert!(!diagnostic.contains("serialized-body-secret"));
+    // Browser fingerprint identity не отражается в Debug.
     assert!(!diagnostic.contains("chrome-136"));
+    // Private ping secret не отражается в Debug.
+    assert!(!diagnostic.contains("private-ping-secret"));
+    // Private refresh identity не отражается в Debug.
+    assert!(!diagnostic.contains("private-refresh-video"));
 }
 
 /// Текущая YouTube shape с `http_chunk_size = 10 MiB` остаётся playable.
@@ -1014,21 +1061,50 @@ fn exact_selection_stales_locally_and_semantically_rematches_after_reextraction(
     );
 }
 
-/// Unknown transport и explicit DRM сохраняются как profile-visible rows.
+/// Unknown transport и explicit profile exclusions сохраняются как видимые rows.
 #[test]
 fn unknown_and_profile_excluded_candidates_remain_visible() {
+    // Future unknown identity остаётся bounded и не получает generic fallback.
     let mut unknown = progressive_format("unknown", "mp4", "mp4", "h264", "aac");
+    // Exact raw identity сохраняется внутри typed rejection.
     unknown["protocol"] = json!("future_transport_v2");
+    // DRM остаётся отдельной profile-exclusion причиной.
     let mut drm = progressive_format("drm", "mp4", "mp4", "h264", "aac");
+    // Explicit flag запрещает candidate admission до transport selection.
     drm["has_drm"] = json!(true);
-    let snapshot = snapshot(json!({"formats": [unknown, drm]}), 11);
+    // Каждая special provider identity получает собственную inventory row.
+    let special_rows = [
+        "bunnycdn",
+        "soopvod",
+        "niconico_live",
+        "fc2_live",
+        "websocket_frag",
+    ]
+    .into_iter()
+    .map(|special_protocol| {
+        // Descriptor остаётся обычным synthetic progressive shape только для проверки transport gate.
+        let mut special_row = progressive_format(special_protocol, "mp4", "mp4", "h264", "aac");
+        // Exact protocol identity не нормализуется между special providers.
+        special_row["protocol"] = json!(special_protocol);
+        // Возвращаем independent inventory row.
+        special_row
+    })
+    .collect::<Vec<_>>();
+    // Собираем один ordered inventory без cloning provider descriptors.
+    let mut candidate_rows = vec![unknown, drm];
+    // Special rows продолжают source order после общих rejection cases.
+    candidate_rows.extend(special_rows);
+    // Snapshot сохраняет unknown, DRM и все exact special rows в source order.
+    let snapshot = snapshot(json!({"formats": candidate_rows}), 11);
 
+    // Future unknown transport остаётся видимым typed rejection.
     assert!(matches!(
         rejected_inventory(&snapshot, 0),
         YtDlpCandidateNormalizationRejection::Static(
             StaticCompatibilityRejection::UnknownTransport { .. }
         )
     ));
+    // DRM получает точную profile owner-причину.
     assert_eq!(
         rejected_inventory(&snapshot, 1),
         &YtDlpCandidateNormalizationRejection::Static(
@@ -1037,6 +1113,18 @@ fn unknown_and_profile_excluded_candidates_remain_visible() {
             }
         )
     );
+    // Каждая special identity остаётся отдельной rejected inventory row.
+    for rejected_index in 2..7 {
+        // Serializable protocol string не отменяет потребность в live extractor state.
+        assert_eq!(
+            rejected_inventory(&snapshot, rejected_index),
+            &YtDlpCandidateNormalizationRejection::Static(
+                StaticCompatibilityRejection::ProfileExcluded {
+                    reason: ProfileExclusionReason::RequiresLiveExtractorState
+                }
+            )
+        );
+    }
 }
 
 /// Достаёт video dynamic range из любой video-bearing shape.

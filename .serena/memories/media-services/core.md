@@ -1,3 +1,8 @@
+## S40 serializable special-provider gate (2026-07-25)
+
+- Canonical S00 profile содержит zero public-serializable special-provider target rows: все current targets принадлежат S22–S39, а special private/live identities остаются exclusions. Поэтому S40 — no-op без provider/API/dependency changes и без `S40P-*` cards.
+- Future promotion требует сначала exact S00 row/stable ID/fixture, затем отдельную обсуждаемую owner-specific card. Full boundary and tests: `mem:media-services/serializable-special-provider-s40-2026-07-25`.
+
 ## S39 exact RTMP family gate (2026-07-25)
 
 - Aggregate S00 `rtmp-family-flv` proves only serialized identity/material inventory, not an exact wire variant. Plain RTMP lacks a deterministic handshake/chunk/message/play fixture; RTMPE additionally lacks required crypto/encrypted payload evidence.

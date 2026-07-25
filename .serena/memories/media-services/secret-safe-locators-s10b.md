@@ -1,3 +1,8 @@
+## S40 special-provider secret boundary (2026-07-25)
+
+- No approved S40 row means no special provider receives raw WebSocket/ping/cookie-refresh material. `downloader_options.ws`, private ping/cookie fields and representative fixture values remain typed excluded and redacted; no Python helper/IPC or durable secret surface was added.
+- Exact no-op contract and focused redaction tests: `mem:media-services/serializable-special-provider-s40-2026-07-25`.
+
 ## S39 RTMP no-op secret boundary (2026-07-25)
 
 - S00 RTMP public fields remain bounded private `service-ytdlp` request material with no public transport projection. Identity-only fixtures do not authorize transport use of `page_url`, `tc_url`, app/play path or connection arguments.

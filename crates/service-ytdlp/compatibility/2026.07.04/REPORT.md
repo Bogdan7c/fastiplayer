@@ -179,7 +179,31 @@ Fixture `format-inventory.json` содержит тринадцать inventory 
   реализацию browser fingerprint;
 - `downloader_options` не исполняется; exact bounded `http_chunk_size`
   переносится только как neutral HTTP Range policy, остальные shapes исключают row;
-- private provider request state исключает row и требует отдельной S40P-card.
+- private provider request state исключает row. S40 доказал отсутствие
+  `PublicSerializable` special-provider target rows, поэтому ни одной
+  `S40P-*` card не создано. Будущее расширение сначала обязано добавить в S00
+  отдельную public-serializable target row с stable ID и exact fixture, а уже
+  затем пройти обсуждаемую owner-specific `S40P-<stable-row-id>` card.
+
+## S40 special-provider gate result
+
+S40 завершён как доказанный no-op. `PublicSerializable` у scalar поля
+`protocol` означает только воспроизводимую JSON-форму самой строки и не является
+provider admission. Все текущие S00 target rows уже принадлежат конкретным
+S22–S39 transport/provider sessions; ни одна row не ссылается на S40 или
+`S40P-*`.
+
+Special identities `bunnycdn`, `soopvod`, `niconico_live`, `fc2_live` и
+`websocket_frag` остаются в exact alias family
+`special_private_state_excluded`. Для них нет отдельной S00 target row и exact
+deterministic transport-to-demux fixture. Representative checked-in fixture
+дополнительно доказывает lossy WebSocket `repr` и private refresh/ping state,
+которые не образуют переносимый descriptor.
+
+Поэтому S40 не добавляет provider owner, descriptor schema,
+transport-to-demux mapping, dependency, Python helper или IPC. S41 имеет только
+обычную dependency на завершённый S40 gate и не получает дополнительных
+`S40P-*` dependencies.
 
 Secret fixtures содержат только fixed redaction markers. Procedure optional
 network captures находится в `CAPTURES.md`.
