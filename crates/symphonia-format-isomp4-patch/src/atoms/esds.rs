@@ -29,9 +29,9 @@ impl Atom for EsdsAtom {
         let (_, _) = it.read_extended_header()?;
 
         // The ES descriptor occupies the entire atom.
-        let size = it
-            .data_left()?
-            .ok_or(Error::DecodeError("isomp4 (esds): expected atom size to be known"))?;
+        let size = it.data_left()?.ok_or(Error::DecodeError(
+            "isomp4 (esds): expected atom size to be known",
+        ))?;
 
         let mut descriptor = None;
 
@@ -54,7 +54,9 @@ impl Atom for EsdsAtom {
             return decode_error("isomp4 (esds): missing es descriptor in esds");
         }
 
-        Ok(EsdsAtom { es_desc: descriptor.unwrap() })
+        Ok(EsdsAtom {
+            es_desc: descriptor.unwrap(),
+        })
     }
 }
 
@@ -103,9 +105,10 @@ impl EsdsAtom {
         }
 
         if let Some(ds_config) = self.es_desc.dec_config.dec_specific_info {
-            entry
-                .extra_data
-                .push(VideoExtraData { id: VIDEO_EXTRA_DATA_ID_NULL, data: ds_config.extra_data });
+            entry.extra_data.push(VideoExtraData {
+                id: VIDEO_EXTRA_DATA_ID_NULL,
+                data: ds_config.extra_data,
+            });
         }
 
         Ok(())

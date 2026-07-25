@@ -95,9 +95,15 @@ impl Atom for SttsAtom {
             };
             total_duration = next_duration;
 
-            entries.push(SampleDurationEntry { sample_count, sample_delta });
+            entries.push(SampleDurationEntry {
+                sample_count,
+                sample_delta,
+            });
         }
 
-        Ok(SttsAtom { entries, total_duration })
+        Ok(SttsAtom {
+            entries,
+            total_duration,
+        })
     }
 }

@@ -64,19 +64,25 @@ pub(crate) fn convert_packet(
     let track_duration = packet_track_duration(track_id, track_entry.time_base, packet.dur);
     let keyframe = packet_keyframe(track_entry, track_kind, &packet.data);
 
-    Ok(MediaPacket {
+    let mut media_packet = MediaPacket::new_with_keyframe_unbounded(
         track_id,
-        kind: track_kind,
+        track_kind,
         pts,
-        track_pts,
         dts,
-        track_dts,
-        duration,
-        track_duration,
-        byte_offset: None,
         keyframe,
-        data: Bytes::from(packet.data),
-    })
+        Bytes::from(packet.data),
+    )
+    .with_track_timestamps(track_pts, track_dts);
+
+    if let Some(duration) = duration {
+        media_packet = media_packet.with_duration(duration);
+    }
+
+    if let Some(track_duration) = track_duration {
+        media_packet = media_packet.with_track_duration(track_duration);
+    }
+
+    Ok(media_packet)
 }
 
 /// Сохраняет packet timestamp в signed units исходного track-а, если metadata дала time base.

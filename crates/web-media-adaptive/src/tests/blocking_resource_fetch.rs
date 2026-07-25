@@ -153,3 +153,88 @@ fn stale_generation_is_rejected_before_network_side_effect() {
     ));
     assert_eq!(server.request_count(), 0);
 }
+
+#[test]
+fn context_derives_forwarding_intent_without_exposing_or_widening_scope() {
+    let scoped_server = LocalServer::start(|_, _| response("200 OK", &[], b"scoped"));
+    let foreign_server = LocalServer::start(|_, _| response("200 OK", &[], b"foreign"));
+    let scoped_target = scoped_server.target("/manifest");
+    let context = context(
+        &scoped_target,
+        CancellationToken::new(),
+        same_origin_redirects(),
+        Some("Bearer intent-secret"),
+        Some("token=intent-secret"),
+    );
+
+    assert_eq!(
+        context.resource_secret_forwarding_for(&scoped_server.target("/segment")),
+        AdaptiveResourceSecretForwarding::ForwardScoped
+    );
+    assert_eq!(
+        context.resource_secret_forwarding_for(&foreign_server.target("/segment")),
+        AdaptiveResourceSecretForwarding::Suppress
+    );
+    fetch(
+        &context,
+        scoped_server.target("/segment"),
+        AdaptiveResourcePurpose::MediaSegment,
+        AdaptiveResourceQueryApplication::BypassScopedQuery,
+    )
+    .expect("scoped server lifecycle");
+    context
+        .fetch_resource_blocking(
+            AdaptiveResourceFetchRequest::full(
+                SourceGeneration::new(1),
+                foreign_server.target("/segment"),
+                NonZeroUsize::new(64).expect("resource bound"),
+                AdaptiveResourcePurpose::MediaSegment,
+                AdaptiveResourceQueryApplication::BypassScopedQuery,
+            )
+            .with_secret_forwarding(AdaptiveResourceSecretForwarding::Suppress),
+        )
+        .expect("foreign server lifecycle");
+}
+
+#[test]
+fn explicit_suppress_fetches_out_of_scope_and_retries_without_any_secret_material() {
+    let scoped_server = LocalServer::start(|_, _| response("200 OK", &[], b"manifest"));
+    let foreign_server = LocalServer::start(|index, _| match index {
+        0 => response("500 Internal Server Error", &[], b"retry"),
+        _ => response("200 OK", &[], b"resource"),
+    });
+    let scoped_target = scoped_server.target("/manifest");
+    let context = context(
+        &scoped_target,
+        CancellationToken::new(),
+        same_origin_redirects(),
+        Some("Bearer suppress-secret"),
+        Some("token=suppress-query"),
+    );
+    let foreign_target = foreign_server.target("/segment?public=1");
+    let request = AdaptiveResourceFetchRequest::full(
+        SourceGeneration::new(1),
+        foreign_target,
+        NonZeroUsize::new(64).expect("resource bound"),
+        AdaptiveResourcePurpose::MediaSegment,
+        AdaptiveResourceQueryApplication::MergeScopedAddition,
+    )
+    .with_secret_forwarding(AdaptiveResourceSecretForwarding::Suppress);
+    let diagnostics = format!("{request:?}");
+
+    let fetched = context
+        .fetch_resource_blocking(request)
+        .expect("suppressed out-of-scope retry");
+
+    assert_eq!(fetched.bytes(), b"resource");
+    let requests = foreign_server.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| {
+        !request.headers.contains("suppress-secret")
+            && !request.request_line.contains("suppress-query")
+            && request.request_line.contains("public=1")
+    }));
+    assert!(!diagnostics.contains("suppress-secret"));
+    assert!(!diagnostics.contains("suppress-query"));
+    assert!(!diagnostics.contains("/segment"));
+}

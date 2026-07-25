@@ -6,7 +6,7 @@ fn enqueue_diagnostics_probe_packets(session: &mut PlayerSession) {
 
     session
         .pipeline
-        .enqueue_pending_audio_packet(PendingAudioPacket::new(
+        .enqueue_pending_audio_packet(PendingAudioPacket::new_unbounded(
             TrackId::new(1),
             Duration::from_millis(10),
             None,

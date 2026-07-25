@@ -1,5 +1,9 @@
 # S23 — Queue-owned web open integration (2026-07-22)
 
+> S36 extension (2026-07-25): exact muxed ISM/MSS fMP4 H.264+AAC static VOD now composes through `web_media_open::smooth`. App owns planner registration, bounded policy, one injected S28A/F3A registry, fresh C3 catalog generation/finalization and neutral receipted seek projection; `web-media-smooth` owns manifest/sources/demux transaction. The same Ready → authorize → Installed barrier remains authoritative. Full contract: `mem:media-services/smooth-vod-runtime-s36p4-p6-2026-07-25`.
+
+> S34/S35 extension (2026-07-24): static and dynamic DASH material is now owned by `web-media-dash` and app composition through the same queue/barrier architecture. Therefore older statements below that all DASH/non-progressive material is globally fail-closed are historical; only material without an implemented exact provider remains rejected. Full contracts: `mem:media-services/dash-vod-s34-2026-07-24` and `mem:media-services/dash-live-s35-2026-07-24`.
+
 > S33 extension (2026-07-24): explicit public yt-dlp live intent composes `web-media-hls` live runtime plus an app-owned bounded endpoint-refresh/rematch port. Normal/startup/settings preparation installs the neutral S31L port before the same Ready → authorize → enqueue → Installed barrier and never publishes service finite duration for live. Queue/current ownership is unchanged. Full contract: `mem:media-services/hls-live-s33-2026-07-24`.
 
 > S32C extension (2026-07-23): `web_media_hls_open` composes exact yt-dlp HLS material, concrete TS/fMP4 registry, strict master/alternate-audio evidence and subtitle descriptors through the same Ready → authorize → enqueue → Installed barrier. HLS decode-safe seek and atomic separate A/V replacement are documented in `mem:media-services/hls-vod-s32c-2026-07-23`.
@@ -21,7 +25,7 @@
 - Старые public WebM-only opener/selection DTO и implementation удалены: `admission.rs`, `selection.rs`, `resolver.rs`, `http_refresh.rs`, `http_stream.rs`, `YtDlpStreamingMedia`, `YtDlpSelectedStreamIdentity` и `open_*media_from*`. Временного forwarding adapter нет.
 - Selected result и inventory остаются раздельными; accepted iteration ставит selected result первым, чтобы duplicate exact ID не потерял richer request material. Planning и transport используют один exact `CandidateIdentity`.
 - S19 snapshot теперь содержит title/duration того же `--dump-single-json` generation; второй metadata extractor process не запускается.
-- S26 снял прежнее `AuthorizationMappingPending` limitation: progressive effective headers/cookies маппятся в scoped `SecretRequestContext`, а concrete HTTP session использует per-source ephemeral Set-Cookie jar. Fragments/HLS/RTMP/non-progressive request material по-прежнему fail-closed. Полный auth boundary: `mem:media-services/ytdlp-system-auth-s26-2026-07-22`.
+- S26 снял прежнее `AuthorizationMappingPending` limitation: progressive effective headers/cookies маппятся в scoped `SecretRequestContext`, а concrete HTTP session использует per-source ephemeral Set-Cookie jar. Request material без exact implemented owner по-прежнему fail-closed; HLS и DASH уже имеют более новые concrete owners, а ISM получает отдельную S36 projection/provider цепочку. Полный auth boundary: `mem:media-services/ytdlp-system-auth-s26-2026-07-22`.
 
 ## Lifecycle и cancellation
 

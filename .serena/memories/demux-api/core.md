@@ -1,3 +1,13 @@
+## S36P4/P5 deferred receipted Smooth runtime (2026-07-25)
+
+- `ProgressiveDemuxer::new_deferred_receipted_seekable` additively combines worker-deferred concrete open with the existing generation-fenced async seek receipt vocabulary. Preview planning is pure; seek execution and replacement stay on the worker. Existing constructors and non-seekable behavior are unchanged.
+- `web-media-smooth` uses this boundary to build stable video/audio adapters and transactionally swap a complete `CompositeAvDemuxer`; failure preserves the active pair. Full contract: `mem:media-services/smooth-vod-runtime-s36p4-p6-2026-07-25`.
+
+## S36F3A presentation-window ordered boundary (2026-07-25)
+
+- `demux-api` now has a parallel window-aware ordered segment/source outcome contract; existing `OrderedSegment` and `DemuxInput` are unchanged. `symphonia-demux` opens each windowed ISO media fragment as isolated shared `init + one media` bytes and tags packets from exact segment provenance, never by overlapping PTS/read-ahead state.
+- Strict init/sequence/discontinuity/stable-track/readiness/EOS/cancellation rules and player transport-only handoff: `mem:media-services/presentation-window-transport-s36f3a-2026-07-25`.
+
 ## S32B exact required-container open (2026-07-23)
 
 - `DemuxRegistry::open_required_container` preserves normal registry sniff/replay/open but rejects a content-proven different container through typed `DemuxOpenError::UnexpectedContainer`. HLS composition injects a reusable registry and never selects TS/fMP4 from extension or MAP presence. Full consumer contract: `mem:media-services/hls-vod-s32b-2026-07-23`.

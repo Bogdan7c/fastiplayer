@@ -55,7 +55,10 @@ impl Atom for HdlrAtom {
             b"subt" => HandlerType::Subtitle,
             b"text" => HandlerType::Text,
             hdlr => {
-                warn!("unknown handler type '{}'", std::str::from_utf8(hdlr).unwrap_or("????"));
+                warn!(
+                    "unknown handler type '{}'",
+                    std::str::from_utf8(hdlr).unwrap_or("????")
+                );
                 HandlerType::Other(*hdlr)
             }
         };
@@ -68,7 +71,9 @@ impl Atom for HdlrAtom {
         let name = {
             let size = it
                 .data_left()?
-                .ok_or(Error::DecodeError("isomp4 (hdlr): expected atom size to be known"))?
+                .ok_or(Error::DecodeError(
+                    "isomp4 (hdlr): expected atom size to be known",
+                ))?
                 .min(MAX_HDLR_NAME_BYTES as u64);
 
             let buf = it.read_boxed_slice_exact(size as usize)?;

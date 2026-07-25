@@ -198,7 +198,7 @@ mod tests {
         duration_seconds: u64,
         keyframe: bool,
     ) -> Packet {
-        let mut packet = Packet::new(
+        let mut packet = Packet::new_unbounded(
             TrackId::new(1),
             kind,
             Duration::from_secs(start_seconds),

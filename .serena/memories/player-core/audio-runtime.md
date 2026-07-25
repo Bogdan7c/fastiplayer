@@ -1,5 +1,9 @@
 # Player Core Audio Runtime
 
+- S36F3B now enforces bounded packet windows with exact checked rational frame math at `DecodedPcmPacketBoundary` before tempo/history/output. Packet and global/CUE frame ranges intersect in the original decoded frame domain and produce one borrowed slice; fully outside packets decode for codec state but create/write/account no output. Unbounded behavior remains unchanged. See `mem:player-core/exact-pcm-presentation-window-s36f3b-2026-07-25`.
+
+- S36F3A carries `PacketPresentationWindow` through private `PendingAudioPacket` storage and generation/requeue lifecycle to `DecodedPcmPacketBoundary` immediately after PCM decode and before existing global/CUE trim. F3A is transport-only and leaves samples/accounting unchanged; decoder/audio public traits remain unchanged. Exact clipping belongs to F3B. See `mem:media-services/presentation-window-transport-s36f3a-2026-07-25`.
+
 - Audio runtime orchestration is extracted to `crates/player-core/src/session/audio_runtime.rs` under the `session` boundary.
 - The module owns internal audio decoder init spec planning, lazy decoder creation from `AudioDecoderFactory`, lazy output creation from `AudioOutputFactory`, audio packet decode/write processing, autoplay audio readiness, seek audio gate classification helpers, audio high-water normalization, audio clock/buffer accessors, `disable_selected_audio_path`, and `init_audio_pipeline`.
 - `audio-core` remains the neutral contract boundary. `player-core` still stores factory trait objects and uses `audio_core::AudioDecoderConfig`, `EncodedAudioPacket`, `AudioOutputSpec`, and trait-object output/clock contracts without depending on the concrete `audio` crate.

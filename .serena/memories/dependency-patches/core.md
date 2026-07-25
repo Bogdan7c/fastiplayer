@@ -4,6 +4,19 @@
 - These replacements are not feature toggles. Removing any `[replace]` or doing a large upstream bump changes the playback risk profile and requires an explicit architecture/maintenance decision plus a media regression matrix. Do not mix patch removal/upstream sync with feature work.
 - Cargo override semantics checked via Context7/Cargo Book on 2026-06-20: root-level overrides affect dependency resolution transitively. Several local patch crates are not normal workspace members; practical validation usually goes through dependent workspace crates such as `video-vaapi`, `symphonia-demux`, `audio`, and the whole workspace.
 
+## S36P2 Smooth provider preparation dependent (2026-07-25)
+
+- `web-media-smooth` directly consumes the local ISO patch initialization-limit/API boundary and is now listed in the machine-readable dependent/focused integration matrix. Its P2 catalog advertises only qualities whose init was already built successfully. Full contract: `mem:media-services/smooth-manifest-catalog-s36p2-2026-07-25`.
+
+## S36F2 Smooth mapper dependent (2026-07-25)
+
+- New first-party `smooth-streaming-fmp4` is a guarded dependent of the local ISO patch. It is the only Smooth-specific consumer of the opt-in init/media builders and keeps ManifestWindow admission outside the generic patch. Dependency inventory and integration gates now include this crate. Full contract: `mem:media-services/smooth-streaming-fmp4-mapper-s36f2-2026-07-25`.
+
+## S36F1B Smooth/PIFF reconstruction extension (2026-07-25)
+
+- `symphonia-format-isomp4` now also owns the opt-in bounded generic fragmented-MP4 reconstruction API: separate single-track H.264/AAC-LC `ftyp+moov` initialization and canonical inspected `moof+mdat` media output. It preserves exact sample bytes/timing/flags and coded coverage, uses mandatory budgets/cancellation/fallible allocation, and never interprets Smooth ManifestWindow or retimes overhang.
+- Existing `IsoMp4Reader`, registry and local/progressive/HLS/DASH runtime paths are unchanged; later S36 composition is the only intended caller. Exact public boundary, fixtures, round-trip proofs and removal implications: `mem:media-services/smooth-streaming-fmp4-s36f1b-2026-07-25`.
+
 ## Why Each Patch Is Still Needed
 
 - `symphonia-format-caf`: exact 0.6.0 replacement for S28C forward-only CAF. It stops initial chunk scan at `data` on non-seekable sources while preserving seekable full scan/seek-back, and exact-reads declared fixed/variable packets so structural truncation cannot become a short packet or clean EOS. Stream-friendly CAF must place `desc` and required codec configuration before `data`. Removal gate and tests live in `docs/dependency-patches.toml`; full proof: `mem:symphonia-demux/audio-containers-s28c-2026-07-22`.

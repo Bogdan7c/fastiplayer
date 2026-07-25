@@ -3,6 +3,7 @@ use std::io::Read;
 use std::sync::Mutex;
 
 use bytes::Bytes;
+use media_core::{DemuxRetryHint, PacketPresentationWindow};
 use source_core::{
     ByteSource, CancellationToken, Seekability, SourceFingerprint, SourceResult, SourceValidators,
     StreamingByteSource,
@@ -250,6 +251,82 @@ pub trait OrderedSegmentSource: Send {
         &mut self,
         cancellation: &CancellationToken,
     ) -> Result<Option<OrderedSegment>, OrderedSegmentReadError>;
+}
+
+/// Отдельный ordered segment contract с обязательным presentation-window intent.
+///
+/// Существующий [`OrderedSegment`] намеренно не расширяется: старые finite
+/// container пути не получают скрытый новый field или новую семантику.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PresentationWindowOrderedSegment {
+    /// Initialization bytes, которые не несут packet presentation window.
+    Initialization {
+        /// Monotonic transport/session sequence.
+        sequence: OrderedSegmentSequence,
+        /// Явный lifecycle marker.
+        discontinuity: OrderedSegmentDiscontinuity,
+        /// Exact initialization bytes.
+        bytes: Bytes,
+    },
+    /// Media bytes с обязательным bounded либо explicit unbounded intent.
+    Media {
+        /// Monotonic transport/session sequence.
+        sequence: OrderedSegmentSequence,
+        /// Явный lifecycle marker.
+        discontinuity: OrderedSegmentDiscontinuity,
+        /// Exact media fragment bytes.
+        bytes: Bytes,
+        /// Authoritative presentation intent для каждого packet-а fragment-а.
+        presentation_window: PacketPresentationWindow,
+    },
+}
+
+impl PresentationWindowOrderedSegment {
+    /// Возвращает sequence независимо от variant-а.
+    #[must_use]
+    pub const fn sequence(&self) -> OrderedSegmentSequence {
+        match self {
+            Self::Initialization { sequence, .. } | Self::Media { sequence, .. } => *sequence,
+        }
+    }
+
+    /// Возвращает discontinuity независимо от variant-а.
+    #[must_use]
+    pub const fn discontinuity(&self) -> OrderedSegmentDiscontinuity {
+        match self {
+            Self::Initialization { discontinuity, .. } | Self::Media { discontinuity, .. } => {
+                *discontinuity
+            }
+        }
+    }
+
+    /// Возвращает exact immutable bytes независимо от variant-а.
+    #[must_use]
+    pub const fn bytes(&self) -> &Bytes {
+        match self {
+            Self::Initialization { bytes, .. } | Self::Media { bytes, .. } => bytes,
+        }
+    }
+}
+
+/// Nonblocking результат одного чтения window-aware ordered source-а.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PresentationWindowOrderedSegmentReadOutcome {
+    /// Следующий segment готов.
+    Segment(PresentationWindowOrderedSegment),
+    /// Source остаётся живым, но следующий segment ещё не готов.
+    TemporarilyUnavailable(DemuxRetryHint),
+    /// Source терминально завершён.
+    EndOfStream,
+}
+
+/// Neutral window-aware ordered source; provider/manifest state остаётся снаружи.
+pub trait PresentationWindowOrderedSegmentSource: Send {
+    /// Читает ровно один outcome с cooperative cancellation.
+    fn next_segment(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<PresentationWindowOrderedSegmentReadOutcome, OrderedSegmentReadError>;
 }
 
 /// Owned input, который registry передаёт ровно одному выбранному factory.

@@ -1,0 +1,26 @@
+[package]
+name = "web-media-smooth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bounded-xml-reader.workspace = true
+bytes.workspace = true
+demux-api.workspace = true
+media-core.workspace = true
+sha2.workspace = true
+smooth-streaming-fmp4.workspace = true
+smooth-streaming-manifest-core.workspace = true
+source-core.workspace = true
+symphonia-format-isomp4.workspace = true
+thiserror.workspace = true
+web-media-adaptive.workspace = true
+web-media-core.workspace = true
+web-media-transport-api.workspace = true
+
+[dev-dependencies]
+rustiplayer-config.workspace = true
+symphonia-demux.workspace = true

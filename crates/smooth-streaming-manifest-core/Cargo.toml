@@ -1,0 +1,10 @@
+[package]
+name = "smooth-streaming-manifest-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bounded-xml-reader.workspace = true
+thiserror.workspace = true

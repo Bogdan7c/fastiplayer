@@ -37,6 +37,8 @@
     "service-direct-media",
     "settings-core",
     "settings-derive",
+    "smooth-streaming-fmp4",
+    "smooth-streaming-manifest-core",
     "source-core",
     "symphonia-demux",
     "video-backend-api",
@@ -49,6 +51,7 @@
     "web-media-dash",
     "web-media-hls",
     "web-media-http",
+    "web-media-smooth",
     "web-media-playback-plan",
     "web-media-transport-api"
   ],

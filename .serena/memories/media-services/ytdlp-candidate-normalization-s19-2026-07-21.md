@@ -1,3 +1,7 @@
+# S36P1 extension (2026-07-25)
+
+Exact normalized ISM muxed H.264/AAC/fMP4 candidates now expose a service-owned typed VOD manifest projection into neutral S21T `TransportOpenRequest`; yt-dlp DTO/material does not cross into the future Smooth provider. Unsupported serialized fragment/query/HLS/DASH/RTMP/range state rejects visibly. Full contract: `mem:media-services/smooth-request-projection-s36p1-2026-07-25`.
+
 # S19 generic yt-dlp candidate normalization (2026-07-21)
 
 - `service-ytdlp` owns deserialization of public serialized yt-dlp format fields, request-material reconstruction and provider-specific normalization. `web-media-core` remains the neutral owner of identities, parsed/raw protocol-container-codec values, layouts and static rejection vocabulary.

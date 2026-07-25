@@ -111,7 +111,7 @@ fn track(id: u32, kind: TrackKind, codec_id: &str, duration_ms: u64) -> TrackInf
 }
 
 fn packet(id: u32, kind: TrackKind, pts_ms: u64, marker: &'static [u8]) -> Packet {
-    Packet::new(
+    Packet::new_unbounded(
         TrackId::new(id),
         kind,
         Duration::from_millis(pts_ms),

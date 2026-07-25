@@ -444,6 +444,104 @@ impl ProgressiveDemuxer {
         })
     }
 
+    /// Запускает deferred seekable inner с bounded asynchronous seek receipts.
+    ///
+    /// В отличие от [`Self::new_receipted_seekable`], initial blocking open тоже
+    /// выполняется на worker-е. Player/app owner сразу получает nonblocking
+    /// runtime и cloneable generation-fenced seek handle.
+    pub fn new_deferred_receipted_seekable<F>(
+        open_inner: F,
+        seek_controller: ProgressiveSeekController,
+        cancellation: CancellationToken,
+        limits: ProgressiveDemuxBufferLimits,
+        retry_hint: DemuxRetryHint,
+        runtime_generation: ProgressiveRuntimeGeneration,
+        async_limits: ProgressiveAsyncSeekLimits,
+    ) -> std::result::Result<Self, ProgressiveDemuxStartupError>
+    where
+        F: FnOnce() -> Result<Box<dyn Demuxer + Send>> + Send + 'static,
+    {
+        let shared = Arc::new(ProgressiveSharedState::new_receipted(
+            limits,
+            runtime_generation,
+            async_limits,
+        ));
+        let worker_shared = Arc::clone(&shared);
+        let worker_cancellation = cancellation.clone();
+        thread::Builder::new()
+            .name("adaptive-receipted-demux-open".to_owned())
+            .spawn(move || {
+                let _completion = ProgressiveWorkerCompletion::new(Arc::clone(&worker_shared));
+                let inner = match open_inner() {
+                    Ok(inner) => inner,
+                    Err(source) => {
+                        let _ = push_progressive_message(
+                            &worker_shared,
+                            &worker_cancellation,
+                            0,
+                            ProgressiveMessage::Failure(source),
+                        );
+                        return;
+                    }
+                };
+                if !matches!(inner.seekability(), DemuxSeekability::Seekable) {
+                    let _ = push_progressive_message(
+                        &worker_shared,
+                        &worker_cancellation,
+                        0,
+                        ProgressiveMessage::Failure(anyhow::Error::new(
+                            ProgressiveDemuxStartupError::SeekableInputRequired,
+                        )),
+                    );
+                    return;
+                }
+                let initial_tracks = DemuxReadEvent::TracksChanged(DemuxTrackListUpdate::new(
+                    inner.tracks().to_vec(),
+                    inner.duration(),
+                ));
+                if !matches!(
+                    push_progressive_message(
+                        &worker_shared,
+                        &worker_cancellation,
+                        0,
+                        ProgressiveMessage::Event(initial_tracks),
+                    ),
+                    ProgressivePushOutcome::Published
+                ) {
+                    return;
+                }
+                if let Some(metadata) = inner.media_metadata()
+                    && !matches!(
+                        push_progressive_message(
+                            &worker_shared,
+                            &worker_cancellation,
+                            0,
+                            ProgressiveMessage::Event(DemuxReadEvent::MediaMetadataChanged(
+                                metadata,
+                            )),
+                        ),
+                        ProgressivePushOutcome::Published
+                    )
+                {
+                    return;
+                }
+                run_seekable_progressive_worker(inner, worker_shared, worker_cancellation);
+            })
+            .map_err(|source| ProgressiveDemuxStartupError::WorkerSpawn { source })?;
+
+        Ok(Self {
+            visible_tracks: Vec::new(),
+            visible_duration: None,
+            visible_metadata: None,
+            visible_seekability: DemuxSeekability::Seekable,
+            seek_controller: Some(seek_controller),
+            shared,
+            retry_hint,
+            cancellation,
+            end_of_stream_reached: false,
+        })
+    }
+
     /// Возвращает opt-in control handle до помещения demuxer-а в trait object.
     #[must_use]
     pub fn async_seek_handle(&self) -> Option<ProgressiveAsyncSeekHandle> {

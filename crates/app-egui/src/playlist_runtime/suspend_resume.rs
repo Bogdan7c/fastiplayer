@@ -495,8 +495,8 @@ impl PlaylistRuntime {
         Ok(active_media)
     }
 
-    /// S25 публикует новый player instance той же lineage без queue/traversal commit-а.
-    pub(crate) fn complete_same_item_candidate_switch(
+    /// S25/S36 публикуют новый player instance той же lineage без queue/traversal commit-а.
+    pub(crate) fn complete_same_item_media_switch(
         &mut self,
         expected_active: ActiveMediaIdentity,
         media_instance_id: MediaInstanceId,

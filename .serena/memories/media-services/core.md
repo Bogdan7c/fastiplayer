@@ -1,3 +1,88 @@
+## S36P4–P6 production Smooth VOD runtime (2026-07-25)
+
+- The exact approved muxed ISM fMP4 H.264+AAC static-VOD row is now production-wired. `web-media-smooth` owns injected stable A/V demux composition plus transactional receipted seek; app owns ordered-only planner registration, concrete shared S28A/F3A registry injection, bounded policies and two-phase fresh C3 finalization through the existing Installed barrier.
+- Live/DVR, DRM/private state, other layouts and codec families remain typed incompatible; no approved live row means no S36L card. Full contract and verification: `mem:media-services/smooth-vod-runtime-s36p4-p6-2026-07-25`.
+
+## S36P3 selected finite Smooth fragment sources (2026-07-25)
+
+- `web-media-smooth` now consumes an exact prepared C3 selection into lazy finite video/audio sources. It resolves sealed F2 paths from the effective manifest base, uses bounded S31 fetch plus F1/F2 reconstruction, advances only after a complete cancellation-fenced transaction, latches deterministic redacted failures, and publishes exact bounded audio windows only when F2 proves clipping is pending.
+- Cross-origin effective manifest continuation uses the additive typed S31 `Suppress` intent, so fragments receive no retained header/cookie/query secrets; same-origin and all existing HLS/DASH default resource requests remain `ForwardScoped`. Root/video ends are exact-equal; audio may naturally end earlier without silence/tolerance. Full contract: `mem:media-services/smooth-fragment-sources-s36p3-2026-07-25`.
+
+## S36P2 Smooth manifest preparation and C3 catalog (2026-07-25)
+
+- New guarded `web-media-smooth` performs one neutral S31 manifest fetch, keeps the post-redirect base private, parses the sealed VOD manifest and requires exact one-video/one-audio full-span alignment.
+- Every quality maps and builds init before a truthful immutable VideoAndAudio catalog is published. Semantic keys are versioned length-framed SHA-256 values independent of XML order/index/URL; C3 height policy and deterministic audio default are reused without Cartesian expansion.
+- Full contract and gates: `mem:media-services/smooth-manifest-catalog-s36p2-2026-07-25`.
+
+## S36P1 ISM manifest request projection (2026-07-25)
+
+- `service-ytdlp` now maps only exact muxed Smooth H.264/AAC/fMP4 VOD material into one neutral S21T manifest request. Equal `url`/`manifest_url`, validated headers/cookies, identity/generation/cancellation and secret scope are preserved; unowned fragment/query/HLS/DASH/RTMP/range state rejects typed before I/O.
+- Future Smooth provider receives no yt-dlp DTO or durable secret state. Full contract: `mem:media-services/smooth-request-projection-s36p1-2026-07-25`.
+
+## S36F3B exact PCM clipping (2026-07-25)
+
+- `player-core` now enforces bounded packet presentation windows after decode and before tempo/history/output using checked same-clock rational ceil math. Packet and legacy global/CUE ranges intersect once in the original frame domain; removed frames never reach accounting or output, while Unbounded behavior remains unchanged.
+- Approved Smooth proof removes 2,048 frames from the first AAC fragment and zero from the exact one-tick overhang of the second. Full contract: `mem:player-core/exact-pcm-presentation-window-s36f3b-2026-07-25`.
+
+## S36F3A exact packet-window transport (2026-07-25)
+
+- `media-core` owns exact bounded/unbounded packet presentation windows; all legacy producers are explicitly unbounded. A parallel demux-api/Symphonia ordered ISO path opens each `init + one media` in isolation so overlapping Smooth PTS cannot corrupt segment provenance.
+- `player-core` transports the window through pending audio generation/requeue fences to a borrowed decoded-PCM boundary without applying clipping yet. Public decoder/audio traits and old format behavior remain unchanged.
+- Full boundary and verification: `mem:media-services/presentation-window-transport-s36f3a-2026-07-25`.
+
+## S36F2 Smooth manifest-to-fMP4 mapper (2026-07-25)
+
+- New pure `smooth-streaming-fmp4` maps sealed manifest streams/qualities/templates into the opt-in ISO patch builders and seals fragment identity/window/reconstruction intent without HTTP, demux, player or seek dependencies.
+- Manifest windows and coded coverage compare as exact same-clock ticks. Exact A/V is admitted; start mismatch/underrun/video overhang reject; audio overhang remains `PendingExactAudioClipping` with unchanged bytes and exact metadata. No tolerance, retiming or fake clipping capability exists in F2.
+- Full mapping, guardrails and exact 426_666/1-tick evidence: `mem:media-services/smooth-streaming-fmp4-mapper-s36f2-2026-07-25`.
+
+## S36F1B generic fragmented-MP4 reconstruction (2026-07-25)
+
+- The existing `symphonia-format-isomp4-patch` is the single ISO-BMFF owner for new opt-in builders: separate bounded H.264/AAC-LC single-track initialization segments and canonical inspected `moof+mdat` media fragments.
+- The boundary preserves exact sample bytes/timing/flags and `FragmentCodedCoverage`, uses typed budgets/cancellation/fallible allocation, and never receives ManifestWindow or retimes Smooth audio overhang. Existing demux/runtime formats remain unchanged until later S36 composition.
+- Full contract and exact Unified Streaming round-trip evidence: `mem:media-services/smooth-streaming-fmp4-s36f1b-2026-07-25`.
+
+## S36D secure Smooth Streaming VOD manifest (2026-07-24)
+
+- New pure `smooth-streaming-manifest-core` owns the sealed MS-SSTR v2.0/v2.2 VOD parser/model and depends only on S04X `bounded-xml-reader` plus `thiserror`. Public construction is parse-only; downstream receives exact read-only clocks, compact timelines, typed qualities/stream identity and safe fragment-template rendering.
+- Approved profile is H.264/AVC + AAC-LC only. DRM/private/unknown/live/DVR/vendor/other-codec constructs fail closed; codec-private bytes, counts, repeat expansion and custom attributes are bounded per-stream and globally. `c@r` is one-based total count and v2.2-only.
+- Timelines stay O(runs), compare cross-timescale times exactly, fit presentation duration and prove a nonempty common playback interval. S28A/fMP4/HTTP/open/seek remain downstream cards; no approved live row or S36L exists.
+- Full contract: `mem:media-services/smooth-streaming-vod-s36d-2026-07-24`.
+
+## S36C3B app runtime component switching (2026-07-24)
+
+- The URL sidebar now emits secret-safe component selection actions which the app model validates against both parent extraction and component-catalog generations before constructing a semantic-only exact-parent reopen intent.
+- Candidate and component selection share one `PendingSameItemSwitch` and the existing strong media-open envelope. Component reopen fresh-rematches the requested axis, preserves the independent other axis, and never changes global/item preferred-height policy; candidate reopen uses provider default and remains the height-override owner.
+- Exact Installed completion reuses same-lineage rebind/restore/render-freeze semantics without queue/traversal/shuffle mutation. Request, source-lineage and fresh Installed component-catalog invariants are checked before UI publication; impossible mismatches emit bounded secret-safe error diagnostics.
+- Existing progressive/HLS/DASH still publish `Unavailable`; Smooth is now the first production `Installed` component catalog and follows the P6 boundary in `mem:media-services/smooth-vod-runtime-s36p4-p6-2026-07-25`.
+
+## S36C3A pre-barrier component finalization (2026-07-24)
+
+- Exact yt-dlp reopen intent now explicitly distinguishes provider default from a semantic component selection. Suspend and non-reselection settings rebuild preserve installed semantic component selection; BestPlayable and parent candidate switch reset to provider default without changing preference policy.
+- Every concrete open returns `PreparedComponentVariantCatalog::{Unavailable, Installed}`. Current progressive/HLS/DASH are explicitly unavailable. A pure pre-barrier finalizer implements the full default/semantic × unavailable/installed matrix; requested semantic selection never falls back, and only a successfully finalized fresh configuration enters the prepared descriptor. Typed failures map to `MediaPreparationFailureKind::ComponentCatalogUnavailable` without string parsing.
+
+## S36C2 app-owned component model and dormant UI (2026-07-24)
+
+- `app-egui::web_media_stream_model::component_variants` owns `Unavailable | Installed` component state. Installed state correlates the catalog with the exact active parent, canonicalizes the supplied selection through the catalog, stores additive shape-typed V+A presentation and exposes only safe numeric/enum metadata.
+- Model-local actions fence parent extraction and component catalog generations, validate axis/index/no-op and emit only a semantic rematch request; component choice does not mutate candidate/global preferred-height policy. The existing URL sidebar always shows independent Video/Audio sections, but buttons remain physically disabled until S36C3 connects the single S25 strong-reopen transaction. `UrlSidebarAction` and player lifecycle are unchanged by C2.
+
+## S36C1 semantic-only component rematch (2026-07-24)
+
+- `ComponentVariantSelection::semantic_rematch_request()` emits only layout-shaped refresh-stable component identities; snapshot-local parent/component identities, extraction generation and catalog generation are absent by type.
+- `ComponentVariantCatalog::rematch_semantic()` independently resolves required video/audio identities into exact rows of the fresh catalog, with typed source/parent/axis/layout/missing-semantic failures, no fallback and no Cartesian inventory. Duplicate semantic rows remain rejected at catalog admission. App/S25 handoff remains S36C2/C3.
+
+## S36B neutral component-variant boundary (2026-07-24)
+
+- `web-media-core::variant` owns a std-only, provider-neutral catalog for manifest-discovered component variants: exact catalog identity is parent `ExactSelectionIdentity` + independent `ComponentVariantCatalogGeneration`, while refresh-stable component identity is parent `SemanticIdentity` + component axis + bounded opaque semantic key.
+- Catalog shapes are only `VideoAndAudio | VideoOnly | AudioOnly`; muxed remains candidate-level and has no component catalog. Required axes are non-empty, caller-bounded, exact/semantic unique and stored additively as `V + A`, never a materialized Cartesian product.
+- Validated immutable selection contains exactly one row per required axis. Video/audio replacement returns a new selection, preserves the other axis byte-for-byte and keeps the old selection unchanged on typed failure. Existing `PreferredHeightPolicy` is reused without a new product tie-break. App/S25/runtime/provider integration remains S36C+.
+
+## S36A exact ISM/MSS profile split (2026-07-24)
+
+- S00 aggregate Target `ism-mss-fmp4` superseded by exact `ism-mss-base-h264-aac-fmp4`, still referencing unchanged evidence fixture `target-ism-fmp4`, but now through narrow H.264 and AAC codec profiles only.
+- Other existing ISM video/audio codec families and ISM live/DVR are explicit `ProfileExcludedProvisional`; promotion requires a family-specific exact fixture, profile extension and separate implementation card. No approved ISM live row exists, so no `S36L-*` card/dependency is created.
+- Focused traceability owner: `crates/service-ytdlp/tests/compatibility_profile_s36a.rs`. Production provider/runtime/API and dependency graph remain unchanged by S36A.
+
 ## S35 strict DASH live/DVR production integration (2026-07-24)
 
 - `dash-mpd-core` owns strict dynamic timing parsing; `web-media-dash` owns UTC synchronization, SegmentTimeline/PTO planning, selected A/V availability intersection, publish-ordered refresh, endpoint continuity and the S31L adapter; app owns immutable semantic refresh identity plus monotonic transport generation and staged atomic endpoint replacement.

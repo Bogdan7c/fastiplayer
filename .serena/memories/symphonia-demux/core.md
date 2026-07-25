@@ -1,3 +1,9 @@
+## S36F3A provenance-aware windowed ISO adapter (2026-07-25)
+
+- `PresentationWindowOrderedIsoMp4Demuxer` is a separate not-seekable adapter that opens each media fragment through the existing ISO factory as shared `init + exactly one media`, validates a stable single-track snapshot and assigns the declared packet window before publication. It never infers fragment provenance from PTS or buffered reader state; existing finite ordered adapters are unchanged.
+- S36P6 adds `new_with_registry`, which reuses one composition-owned `Arc<DemuxRegistry>` while the adapter itself fixes required identity to `iso-bmff`; the old options constructor stays behavior-compatible. This prevents a parallel registry and prevents caller-selected container drift.
+- Full lifecycle/error/cancellation/player handoff: `mem:media-services/presentation-window-transport-s36f3a-2026-07-25`; production Smooth composition: `mem:media-services/smooth-vod-runtime-s36p4-p6-2026-07-25`.
+
 ## S30 adjacent FLV/F4F owner (2026-07-23)
 
 - FLV/F4F parsing не добавлялся в Symphonia adapter: отдельный `flv-demux` зарегистрирован рядом через app-owned multi-factory composition.

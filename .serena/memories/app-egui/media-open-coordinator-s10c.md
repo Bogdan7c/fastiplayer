@@ -102,6 +102,17 @@
 - Guardrails now prove every yt-dlp startup/preparation/settings ingress composes through `app-egui::web_media_open`; queue Ready/authorization/Enqueued/Installed ownership is unchanged.
 - Full gate and manual-runner contract: `mem:media-services/progressive-web-hardening-s27-2026-07-22`.
 
+## S36C3A component-aware exact reopen preparation (2026-07-24)
+
+- `YtDlpCandidateOpenIntent::Exact` carries a named component intent: provider default or a semantic-only component request. BestPlayable/parent candidate switch use provider default; suspend and exact non-reselection settings rebuild preserve the Installed semantic request.
+- Concrete candidate preparation returns an explicit component-catalog result. Current providers return `Unavailable`; future providers may return a fresh catalog plus exact default. The app finalizes provider-default/rematch semantics before Ready/authorization and places only the finalized stream configuration into the prepared descriptor. Semantic+Unavailable and rematch/install failures are typed pre-barrier failures; coordinator phases and commit-must-finish protocol are unchanged.
+
+## S36C3B component same-lineage consumer (2026-07-24)
+
+- Candidate and component sidebar selections share one S25 same-lineage strong-open slot; the coordinator remains policy-neutral and receives only the already validated source request.
+- Component semantic rematch and fresh catalog installation finish during preparation, before Ready/authorization. Exact Installed then uses the same `PlaylistRuntime::complete_same_item_media_switch` rebind, state restore and render-freeze path as candidate switching.
+- Completion validates matching outer request, source lineage and Installed component catalog before selector publication. These checks do not create rollback after the barrier; impossible mismatches are bounded invariant diagnostics.
+
 ## S35S live same-lineage consumer (2026-07-24)
 
 - Coordinator phases remain unchanged. Live candidate switching uses the existing S25 envelope: old playback until commit, exact Installed, same-lineage rebind, then player-owned live position restore and playback intent.

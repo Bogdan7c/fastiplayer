@@ -25,8 +25,10 @@ pub use candidate::{
     YtDlpHlsRequestMaterialViolation, YtDlpLiveIntent, YtDlpNormalizedCandidate,
     YtDlpPlanningSnapshotError, YtDlpRejectedCandidate, YtDlpRequestMaterial,
     YtDlpRequestMaterialSummary, YtDlpRequestMaterialV1, YtDlpRequestMaterialViolation,
-    YtDlpSelectedCandidateShape, YtDlpTransportComponent, YtDlpTransportRequestContext,
-    YtDlpTransportRequestError, resolve_yt_dlp_candidate_snapshot_with_config,
+    YtDlpSelectedCandidateShape, YtDlpSmoothManifestRequestMaterial,
+    YtDlpSmoothManifestRequestMaterialViolation, YtDlpSmoothUnsupportedRequestMaterial,
+    YtDlpTransportComponent, YtDlpTransportRequestContext, YtDlpTransportRequestError,
+    resolve_yt_dlp_candidate_snapshot_with_config,
     resolve_yt_dlp_candidate_snapshot_with_config_and_cancellation,
 };
 pub use error::YtDlpServiceError;

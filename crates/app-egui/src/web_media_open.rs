@@ -4,6 +4,11 @@
 //! request material, pure planner — выбором playable candidate, а этот модуль
 //! только соединяет concrete runtime registries до существующего commit barrier.
 
+mod component_variants;
+#[cfg(test)]
+mod component_variants_tests;
+mod smooth;
+
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -46,6 +51,14 @@ use web_media_transport_api::{
     TransportSeekability,
 };
 
+pub(crate) use component_variants::{
+    ComponentVariantFinalizationError, YtDlpComponentSelectionOpenIntent,
+    YtDlpExactCandidateOpenIntent,
+};
+use component_variants::{
+    PreparedComponentVariantCatalog, finalize_component_variant_configuration,
+};
+
 /// Один кибибайт в bytes для checked config conversion.
 const KIB_BYTES: u64 = 1024;
 /// Один мебибайт в bytes для checked config conversion.
@@ -61,6 +74,8 @@ const COMPOSITE_MAX_TIMESTAMP_LEAD: Duration = Duration::from_millis(500);
 static NEXT_YT_DLP_SOURCE_IDENTITY: AtomicU64 = AtomicU64::new(1);
 /// Process-local identity allocator для S31L timeline ports.
 static NEXT_DYNAMIC_TIMELINE_PORT_GENERATION: AtomicU64 = AtomicU64::new(1);
+/// Process-local allocator независимой generation component catalog-а.
+static NEXT_COMPONENT_VARIANT_CATALOG_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// Намерение selection: новый лучший playable candidate либо semantic rematch старого exact выбора.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,29 +84,6 @@ pub(crate) enum YtDlpCandidateOpenIntent {
     BestPlayable,
     /// Restore/rebuild обязан сохранить semantic candidate identity.
     Exact(Box<YtDlpExactCandidateOpenIntent>),
-}
-
-/// Один heap-owned exact reopen intent не раздувает каждый source request enum.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct YtDlpExactCandidateOpenIntent {
-    /// Предыдущий exact selection для semantic rematch в fresh snapshot-е.
-    selection: Box<YtDlpCandidateSelection>,
-    /// Исходная global/item policy не должна теряться при suspend/reopen.
-    preference: crate::web_media_stream_model::WebMediaSelectionPreference,
-}
-
-impl YtDlpCandidateOpenIntent {
-    /// Собирает exact reopen intent с сохранением preference и компактного enum layout.
-    #[must_use]
-    pub(crate) fn exact(
-        selection: Box<YtDlpCandidateSelection>,
-        preference: crate::web_media_stream_model::WebMediaSelectionPreference,
-    ) -> Self {
-        Self::Exact(Box::new(YtDlpExactCandidateOpenIntent {
-            selection,
-            preference,
-        }))
-    }
 }
 
 /// Результат pre-barrier подготовки, который ещё не меняет player/queue state.
@@ -106,7 +98,7 @@ pub(crate) struct PreparedYtDlpWebMedia {
     pub(crate) stream_configuration: crate::web_media_stream_model::WebMediaStreamConfiguration,
     /// Neutral S31L port присутствует только у proven HLS live runtime.
     pub(crate) timeline_port: Option<DynamicMediaTimelinePort>,
-    /// Worker-receipted demux seek port присутствует только у static DASH.
+    /// Worker-receipted demux seek port присутствует у static DASH и Smooth VOD.
     pub(crate) demux_seek_port: Option<Arc<dyn player_core::PreparedDemuxSeekPort>>,
 }
 
@@ -120,6 +112,8 @@ struct OpenedWebCandidate {
     timeline_port: Option<DynamicMediaTimelinePort>,
     /// Async demux seek only для provider-а, который требует worker receipt.
     demux_seek_port: Option<Arc<dyn player_core::PreparedDemuxSeekPort>>,
+    /// Fresh provider result финализируется до authorization barrier.
+    component_variants: PreparedComponentVariantCatalog,
 }
 
 /// Source-specific live refresh ports, собранные одним app composition boundary.
@@ -128,6 +122,22 @@ struct AdaptiveEndpointRefreshPorts {
     hls: Option<Arc<dyn HlsEndpointRefreshPort>>,
     /// DASH endpoint owner присутствует только для выбранного DASH live candidate.
     dash: Option<Arc<dyn DashEndpointRefreshPort>>,
+}
+
+/// Named context одного concrete candidate open-а.
+struct WebCandidateOpenContext {
+    /// Extractor-declared live/VOD intent.
+    live_intent: YtDlpLiveIntent,
+    /// Provider-specific endpoint refresh owners.
+    endpoint_refresh_ports: AdaptiveEndpointRefreshPorts,
+    /// Reserved neutral timeline generation для live provider-а.
+    timeline_port_generation: DynamicMediaTimelinePortGeneration,
+    /// Fresh component catalog должен применить этот exact reopen intent.
+    component_selection_intent: YtDlpComponentSelectionOpenIntent,
+    /// App-owned quality preference для provider default selection.
+    preferred_height: web_media_core::PreferredHeightPolicy,
+    /// Общая cancellation generation transport/demux runtime-а.
+    cancellation: CancellationToken,
 }
 
 /// Открывает YtDlp locator одним S19 → S21C → S22 production path-ом.
@@ -145,6 +155,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
     is_cancelled: impl Fn() -> bool,
 ) -> Result<PreparedYtDlpWebMedia> {
     ensure_not_cancelled(&is_cancelled)?;
+    let component_selection_intent = intent.component_selection_intent();
     let selection_preference = match &intent {
         YtDlpCandidateOpenIntent::BestPlayable => {
             crate::web_media_stream_model::WebMediaSelectionPreference::from_global_config(
@@ -250,15 +261,28 @@ pub(crate) fn prepare_yt_dlp_web_media(
     let opened_candidate = runtime
         .open_candidate(
             selected_candidate,
-            candidate_snapshot.live_intent(),
-            endpoint_refresh_ports,
-            next_dynamic_timeline_port_generation()?,
-            cancellation,
+            WebCandidateOpenContext {
+                live_intent: candidate_snapshot.live_intent(),
+                endpoint_refresh_ports,
+                timeline_port_generation: next_dynamic_timeline_port_generation()?,
+                component_selection_intent: component_selection_intent.clone(),
+                preferred_height: crate::web_media_quality::preferred_height_policy(
+                    yt_dlp_config.preferred_video_height,
+                ),
+                cancellation,
+            },
             &is_cancelled,
         )
         .context("Не удалось открыть выбранный YtDlp candidate")?;
     let stream_configuration =
         stream_configuration.with_hls_subtitle_renditions(opened_candidate.subtitles);
+    ensure_not_cancelled(&is_cancelled)?;
+    let stream_configuration = finalize_component_variant_configuration(
+        stream_configuration,
+        component_selection_intent,
+        opened_candidate.component_variants,
+    )
+    .context("Не удалось финализировать fresh component variant configuration")?;
     ensure_not_cancelled(&is_cancelled)?;
     Ok(PreparedYtDlpWebMedia {
         demuxer: opened_candidate.demuxer,
@@ -343,12 +367,38 @@ impl WebOpenRuntime {
     fn open_candidate(
         &self,
         candidate: &YtDlpNormalizedCandidate,
-        live_intent: YtDlpLiveIntent,
-        endpoint_refresh_ports: AdaptiveEndpointRefreshPorts,
-        timeline_port_generation: DynamicMediaTimelinePortGeneration,
-        cancellation: CancellationToken,
+        context: WebCandidateOpenContext,
         is_cancelled: &impl Fn() -> bool,
     ) -> Result<OpenedWebCandidate> {
+        let WebCandidateOpenContext {
+            live_intent,
+            endpoint_refresh_ports,
+            timeline_port_generation,
+            component_selection_intent,
+            preferred_height,
+            cancellation,
+        } = context;
+        if smooth::candidate_is_smooth(candidate) {
+            ensure_not_cancelled(is_cancelled)?;
+            let prepared = smooth::prepare_smooth_candidate(
+                candidate,
+                self.provider_id.clone(),
+                &self.source_config,
+                &self.network_config,
+                Arc::clone(&self.demux_registry),
+                cancellation,
+                live_intent,
+                component_selection_intent,
+                preferred_height,
+            )?;
+            return Ok(OpenedWebCandidate {
+                demuxer: prepared.demuxer,
+                subtitles: Arc::from([]),
+                timeline_port: None,
+                demux_seek_port: Some(prepared.seek_port),
+                component_variants: prepared.component_variants,
+            });
+        }
         if crate::web_media_hls_open::candidate_is_hls(candidate) {
             ensure_not_cancelled(is_cancelled)?;
             let prepared = crate::web_media_hls_open::prepare_hls_candidate(
@@ -367,6 +417,7 @@ impl WebOpenRuntime {
                 subtitles: prepared.subtitles,
                 timeline_port: prepared.timeline_port,
                 demux_seek_port: None,
+                component_variants: PreparedComponentVariantCatalog::Unavailable,
             });
         }
         if crate::web_media_dash_open::candidate_is_dash(candidate) {
@@ -387,6 +438,7 @@ impl WebOpenRuntime {
                 subtitles: Arc::from([]),
                 timeline_port: prepared.timeline_port,
                 demux_seek_port: Some(prepared.seek_port),
+                component_variants: PreparedComponentVariantCatalog::Unavailable,
             });
         }
         if !matches!(
@@ -434,6 +486,7 @@ impl WebOpenRuntime {
                 subtitles: Arc::from([]),
                 timeline_port: None,
                 demux_seek_port: None,
+                component_variants: PreparedComponentVariantCatalog::Unavailable,
             }
         })
     }
@@ -559,6 +612,29 @@ fn next_dynamic_timeline_port_generation() -> Result<DynamicMediaTimelinePortGen
     Ok(DynamicMediaTimelinePortGeneration::new(generation_value))
 }
 
+/// Выдаёт отдельную app-owned generation свежему component catalog-у.
+fn next_component_variant_catalog_generation()
+-> Result<web_media_core::ComponentVariantCatalogGeneration> {
+    allocate_component_variant_catalog_generation(&NEXT_COMPONENT_VARIANT_CATALOG_GENERATION)
+}
+
+/// Выдаёт generation из переданного authority-owned allocator-а.
+fn allocate_component_variant_catalog_generation(
+    allocator: &AtomicU64,
+) -> Result<web_media_core::ComponentVariantCatalogGeneration> {
+    let generation_value = allocator
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .map_err(|_| anyhow!("component variant catalog generation space исчерпан"))?;
+    if generation_value == 0 {
+        bail!("component variant catalog generation не может быть нулевой");
+    }
+    Ok(web_media_core::ComponentVariantCatalogGeneration::new(
+        generation_value,
+    ))
+}
+
 /// Строит pure selection policy из committed user config.
 fn selection_policy(
     yt_dlp_config: &YtDlpConfig,
@@ -615,8 +691,12 @@ fn progressive_http_capabilities() -> Result<TransportCapabilitySnapshot> {
         DemuxInputCapabilities::only(DemuxInputCapability::OrderedSegments)
             .with(DemuxInputCapability::SeekableBytes),
     )?;
+    let smooth = TransportCapabilityRegistration::new(
+        TransportFamily::SmoothStreaming,
+        DemuxInputCapabilities::only(DemuxInputCapability::OrderedSegments),
+    )?;
     Ok(TransportCapabilitySnapshot::new(vec![
-        http, https, hls, dash,
+        http, https, hls, dash, smooth,
     ]))
 }
 
@@ -881,7 +961,32 @@ mod tests {
         );
     }
 
-    /// Planner видит DASH только после появления concrete S34 runtime-а и его exact shapes.
+    /// Component catalog generation монотонна и fail-closed при исчерпании.
+    #[test]
+    fn component_variant_catalog_generation_is_monotonic_and_overflow_checked() {
+        let allocator = AtomicU64::new(41);
+
+        assert_eq!(
+            allocate_component_variant_catalog_generation(&allocator)
+                .expect("first catalog generation")
+                .value(),
+            41
+        );
+        assert_eq!(
+            allocate_component_variant_catalog_generation(&allocator)
+                .expect("second catalog generation")
+                .value(),
+            42
+        );
+
+        allocator.store(u64::MAX, Ordering::Relaxed);
+        assert!(
+            allocate_component_variant_catalog_generation(&allocator).is_err(),
+            "исчерпанный allocator не должен оборачивать catalog generation"
+        );
+    }
+
+    /// Planner видит exact adaptive input shapes только после concrete runtimes.
     #[test]
     fn transport_capability_snapshot_advertises_dash_ordered_and_range_inputs() {
         let capabilities =
@@ -897,6 +1002,11 @@ mod tests {
             capabilities.output_inputs_for(TransportFamily::Hls),
             DemuxInputCapabilities::only(crate::web_media_hls_open::hls_transport_input()),
             "DASH registration не должна менять соседний HLS provider"
+        );
+        assert_eq!(
+            capabilities.output_inputs_for(TransportFamily::SmoothStreaming),
+            DemuxInputCapabilities::only(DemuxInputCapability::OrderedSegments),
+            "S36 Smooth runtime должен рекламировать только реально используемый ordered input"
         );
     }
 }

@@ -8,6 +8,7 @@ mod matroska_metadata;
 mod options;
 mod ordered_segments;
 mod packet_mapper;
+mod presentation_window_ordered;
 mod seek_mapper;
 pub mod streaming_source;
 mod symphonia_api;
@@ -31,5 +32,9 @@ pub use options::{
     DEFAULT_MAX_CONSECUTIVE_CORRUPTED_PACKETS, DemuxerOptions,
 };
 pub use ordered_segments::OrderedSegmentLifecycleError;
+pub use presentation_window_ordered::{
+    PresentationWindowOrderedIsoMp4Demuxer, PresentationWindowOrderedIsoMp4Error,
+    PresentationWindowOrderedTrackField,
+};
 pub use streaming_source::{StreamingByteReader, StreamingByteWriter};
 pub use symphonia_demuxer::SymphoniaDemuxer;

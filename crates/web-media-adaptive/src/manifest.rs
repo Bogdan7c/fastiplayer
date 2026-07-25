@@ -192,6 +192,7 @@ impl AdaptiveManifestFetcher {
                 purpose: FetchPurpose::Manifest,
                 query_application:
                     crate::fetch::AdaptiveResourceQueryApplication::ApplyScopedReplacement,
+                secret_forwarding: crate::AdaptiveResourceSecretForwarding::ForwardScoped,
             };
             match self.executor.try_submit(job) {
                 Ok(submitted) => pending.submitted = submitted,

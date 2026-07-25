@@ -89,6 +89,19 @@ impl AdaptiveHttpContext {
         }
     }
 
+    /// Выводит opaque secret-forwarding intent для retained effective target.
+    #[must_use]
+    pub fn resource_secret_forwarding_for(
+        &self,
+        target: &HttpRequestTarget,
+    ) -> AdaptiveResourceSecretForwarding {
+        if self.secrets.scope().allows(target) {
+            AdaptiveResourceSecretForwarding::ForwardScoped
+        } else {
+            AdaptiveResourceSecretForwarding::Suppress
+        }
+    }
+
     /// Выполняет один bounded adaptive resource fetch на уже выделенном blocking worker-е.
     ///
     /// Метод намеренно не создаёт второй HTTP client или retry stack. Concrete manifest owner
@@ -120,6 +133,7 @@ impl AdaptiveHttpContext {
                     maximum_body_bytes: request.maximum_body_bytes,
                     purpose: request.purpose.into(),
                     query_application: request.query_application,
+                    secret_forwarding: request.secret_forwarding,
                 },
             );
             match result {
@@ -231,6 +245,15 @@ pub enum AdaptiveResourceQueryApplication {
     BypassScopedQuery,
 }
 
+/// Явный intent раскрытия transient request secrets для одного resource lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdaptiveResourceSecretForwarding {
+    /// Применять только material, разрешённый retained S21T scope.
+    ForwardScoped,
+    /// Не запрашивать headers, cookies или query material у retained secret context.
+    Suppress,
+}
+
 /// Один generation-fenced bounded resource request без manifest-specific типов.
 #[derive(Debug, Clone)]
 pub struct AdaptiveResourceFetchRequest {
@@ -240,6 +263,7 @@ pub struct AdaptiveResourceFetchRequest {
     maximum_body_bytes: std::num::NonZeroUsize,
     purpose: AdaptiveResourcePurpose,
     query_application: AdaptiveResourceQueryApplication,
+    secret_forwarding: AdaptiveResourceSecretForwarding,
 }
 
 impl AdaptiveResourceFetchRequest {
@@ -259,6 +283,7 @@ impl AdaptiveResourceFetchRequest {
             maximum_body_bytes,
             purpose,
             query_application,
+            secret_forwarding: AdaptiveResourceSecretForwarding::ForwardScoped,
         }
     }
 
@@ -279,7 +304,18 @@ impl AdaptiveResourceFetchRequest {
             maximum_body_bytes,
             purpose,
             query_application,
+            secret_forwarding: AdaptiveResourceSecretForwarding::ForwardScoped,
         }
+    }
+
+    /// Заменяет default `ForwardScoped` на caller-proven typed intent.
+    #[must_use]
+    pub const fn with_secret_forwarding(
+        mut self,
+        secret_forwarding: AdaptiveResourceSecretForwarding,
+    ) -> Self {
+        self.secret_forwarding = secret_forwarding;
+        self
     }
 
     fn validate_bound(
@@ -430,6 +466,7 @@ pub(crate) struct FetchJob {
     pub maximum_body_bytes: std::num::NonZeroUsize,
     pub purpose: FetchPurpose,
     pub query_application: AdaptiveResourceQueryApplication,
+    pub secret_forwarding: AdaptiveResourceSecretForwarding,
 }
 
 #[derive(Debug)]
@@ -522,7 +559,10 @@ fn fetch_with_redirects(
     }
     let mut target = job.target;
     let mut completed_hops = RedirectHopCount::none();
-    let mut forward_secrets = true;
+    let mut forward_secrets = matches!(
+        job.secret_forwarding,
+        AdaptiveResourceSecretForwarding::ForwardScoped
+    );
 
     loop {
         let (request_target, headers) = request_material(

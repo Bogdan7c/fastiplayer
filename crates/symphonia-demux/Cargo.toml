@@ -18,3 +18,4 @@ source-core = { workspace = true }
 
 [dev-dependencies]
 audio = { workspace = true }
+symphonia-format-isomp4.workspace = true

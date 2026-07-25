@@ -371,7 +371,7 @@ mod tests {
     }
 
     fn test_packet() -> Packet {
-        Packet::new(
+        Packet::new_unbounded(
             crate::TrackId::new(7),
             crate::TrackKind::Audio,
             Duration::from_millis(25),

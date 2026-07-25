@@ -494,7 +494,7 @@ fn audio_only_play_and_tick_do_not_require_video_decoder() {
     );
     let audio_time_base = media_core::TimeBase::new(1, 48_000).expect("valid audio time base");
     demuxer.packets.push_back(
-        media_core::Packet::new(
+        media_core::Packet::new_unbounded(
             TrackId::new(2),
             TrackKind::Audio,
             Duration::from_millis(10),

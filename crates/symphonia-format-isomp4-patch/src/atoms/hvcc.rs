@@ -42,7 +42,11 @@ impl Atom for HvcCAtom {
 
         let hevc_config = HEVCDecoderConfigurationRecord::read(&extra_data.data)?;
 
-        Ok(Self { extra_data, profile: hevc_config.profile, level: hevc_config.level })
+        Ok(Self {
+            extra_data,
+            profile: hevc_config.profile,
+            level: hevc_config.level,
+        })
     }
 }
 

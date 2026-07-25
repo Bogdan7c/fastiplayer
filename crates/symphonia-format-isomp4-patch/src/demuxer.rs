@@ -9,10 +9,10 @@ use symphonia_core::codecs::CodecParameters;
 use symphonia_core::codecs::audio::AudioCodecId;
 use symphonia_core::codecs::audio::well_known::{
     CODEC_ID_PCM_F32BE, CODEC_ID_PCM_F32LE, CODEC_ID_PCM_F64BE, CODEC_ID_PCM_F64LE,
-    CODEC_ID_PCM_S16BE, CODEC_ID_PCM_S16LE, CODEC_ID_PCM_S24BE, CODEC_ID_PCM_S24LE,
-    CODEC_ID_PCM_S32BE, CODEC_ID_PCM_S32LE, CODEC_ID_PCM_S8, CODEC_ID_PCM_U16BE,
-    CODEC_ID_PCM_U16LE, CODEC_ID_PCM_U24BE, CODEC_ID_PCM_U24LE, CODEC_ID_PCM_U32BE,
-    CODEC_ID_PCM_U32LE, CODEC_ID_PCM_U8,
+    CODEC_ID_PCM_S8, CODEC_ID_PCM_S16BE, CODEC_ID_PCM_S16LE, CODEC_ID_PCM_S24BE,
+    CODEC_ID_PCM_S24LE, CODEC_ID_PCM_S32BE, CODEC_ID_PCM_S32LE, CODEC_ID_PCM_U8,
+    CODEC_ID_PCM_U16BE, CODEC_ID_PCM_U16LE, CODEC_ID_PCM_U24BE, CODEC_ID_PCM_U24LE,
+    CODEC_ID_PCM_U32BE, CODEC_ID_PCM_U32LE,
 };
 use symphonia_core::support_format;
 
@@ -185,8 +185,7 @@ fn pcm_packet_sample_limit(track: &Track, sample_duration: Duration) -> Option<u
         .max_frames_per_packet
         .filter(|max_frames_per_packet| *max_frames_per_packet > 1)
         .unwrap_or(u64::from(PCM_FRAMES_PER_READER_PACKET));
-    let bounded_sample_limit =
-        requested_sample_limit.min(u64::from(PCM_FRAMES_PER_READER_PACKET));
+    let bounded_sample_limit = requested_sample_limit.min(u64::from(PCM_FRAMES_PER_READER_PACKET));
 
     Some(u32::try_from(bounded_sample_limit).unwrap_or(PCM_FRAMES_PER_READER_PACKET))
 }
@@ -1212,8 +1211,8 @@ impl From<AtomError> for Error {
 mod tests {
     use std::ops::Range;
 
-    use symphonia_core::codecs::audio::well_known::{CODEC_ID_AAC, CODEC_ID_PCM_S16LE};
     use symphonia_core::codecs::audio::AudioCodecParameters;
+    use symphonia_core::codecs::audio::well_known::{CODEC_ID_AAC, CODEC_ID_PCM_S16LE};
 
     use super::*;
 

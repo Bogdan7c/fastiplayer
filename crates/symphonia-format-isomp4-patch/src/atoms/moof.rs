@@ -50,6 +50,10 @@ impl Atom for MoofAtom {
         // The position of the first byte of the entire moof atom.
         let moof_base_pos = header.pos();
 
-        Ok(MoofAtom { moof_base_pos, mfhd: mfhd.unwrap(), trafs })
+        Ok(MoofAtom {
+            moof_base_pos,
+            mfhd: mfhd.unwrap(),
+            trafs,
+        })
     }
 }

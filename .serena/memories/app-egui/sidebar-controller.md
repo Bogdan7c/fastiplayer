@@ -27,6 +27,13 @@
 - Local source даёт inactive URL model; direct-media показывает service-owned safe label и VOD/seek/buffering state без fake format choices; YtDlp показывает active/pending, global-vs-item preference, group-part scope, VOD/seek/buffering/refresh-on-reopen и bounded safe failure category.
 - Focused tests: local/direct/audio-only/one-many/group part/current+stale generation/item override fencing/secret safety и отсутствие второго Panel. Полный `cargo test -p app-egui`: 817 PASS.
 
+## S36C2/C3 component-variant sidebar and actions (2026-07-24)
+
+- The existing single URL sidebar has stable independent `Видео` and `Аудио` sections sourced from app-owned shape-typed component presentation. UI receives only resolution/fps/bitrate/sample-rate/channel count and known codec/dynamic-range enums; variant keys, exact/semantic identities, raw codec strings/language and locator material remain outside the projection.
+- `Unavailable`, `VideoAndAudio`, `VideoOnly` and `AudioOnly` render honestly without a Cartesian inventory or second Panel. Only non-active Installed rows are enabled; the active row is inert, unavailable/missing axes stay disabled, and one common pending state disables both candidate and component rows.
+- UI publishes only safe `UrlSidebarAction::SelectComponentVariant { parent_generation, catalog_generation, component, variant_index }`. Model-local validation resolves it to a semantic-only reopen request; exact parent/component identities remain inside the model/open boundaries.
+- Candidate and component actions share one latest strong-open transaction slot. Candidate selection keeps provider-default component choice and updates item preferred-height override; component selection rematches a fresh catalog, preserves the other axis and does not mutate global/item height preference. Same-frame candidate click has deterministic priority.
+
 ## S27 evidence note (2026-07-22)
 - URL sidebar remains a secret-safe projection with no second URL ingress; guardrails reject transient transport/auth types in sidebar/config/playlist persistence owners.
 - Full evidence and explicit-URL manual workflow: `mem:media-services/progressive-web-hardening-s27-2026-07-22`.

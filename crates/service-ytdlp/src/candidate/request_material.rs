@@ -9,6 +9,7 @@ use super::raw::YtDlpSerializedFormat;
 
 mod dash;
 mod hls;
+mod smooth;
 
 pub use dash::{
     YtDlpDashFragment, YtDlpDashFragmentLocatorKind, YtDlpDashFragmentRole, YtDlpDashInput,
@@ -18,6 +19,10 @@ pub use dash::{
 pub use hls::{
     YtDlpHlsAesOverride, YtDlpHlsManifestInput, YtDlpHlsManifestInputKind, YtDlpHlsRequestMaterial,
     YtDlpHlsRequestMaterialViolation,
+};
+pub use smooth::{
+    YtDlpSmoothManifestRequestMaterial, YtDlpSmoothManifestRequestMaterialViolation,
+    YtDlpSmoothUnsupportedRequestMaterial,
 };
 
 /// Версия service-owned schema transient request material.
@@ -361,6 +366,14 @@ impl YtDlpRequestMaterial {
         &self,
     ) -> Result<YtDlpDashRequestMaterial<'_>, YtDlpDashRequestMaterialViolation> {
         dash::dash_request_material(self)
+    }
+
+    /// Проецирует exact manifest-only material для approved ISM VOD profile.
+    pub fn smooth_manifest_request_material(
+        &self,
+    ) -> Result<YtDlpSmoothManifestRequestMaterial<'_>, YtDlpSmoothManifestRequestMaterialViolation>
+    {
+        smooth::smooth_manifest_request_material(self)
     }
 }
 

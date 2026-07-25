@@ -46,7 +46,11 @@ impl Atom for AvcCAtom {
 
         let avc_config = AVCDecoderConfigurationRecord::read(&extra_data.data)?;
 
-        Ok(Self { extra_data, profile: avc_config.profile, level: avc_config.level })
+        Ok(Self {
+            extra_data,
+            profile: avc_config.profile,
+            level: avc_config.level,
+        })
     }
 }
 

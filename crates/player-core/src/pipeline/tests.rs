@@ -11,6 +11,8 @@ use audio_core::{
 use codec_core::VideoCodec;
 use media_core::{MediaTime, TrackKind};
 
+mod audio_packet_window;
+
 /// Создаёт decoded frame без реальных GPU resources для проверки pipeline storage.
 fn decoded_frame_for_tests(pts: Duration, resource_handle: u64) -> video_core::DecodedFrame {
     video_core::DecodedFrame {
@@ -505,7 +507,7 @@ fn demux_track_list_update_invalidates_decoder_dependent_state() {
         48_000,
         2,
     )));
-    pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new(
+    pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new_unbounded(
         old_audio_track,
         Duration::ZERO,
         None,
@@ -781,7 +783,7 @@ fn audio_eof_drain_state_preserves_queue_output_and_playback_distinctions() {
         AudioEofDrainState::NoOutput
     );
 
-    pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new(
+    pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new_unbounded(
         audio_track_id,
         Duration::ZERO,
         None,
@@ -1259,7 +1261,7 @@ fn selected_track_boundaries_manage_ids_requirement_and_clear_only_selection() {
         Some("selected-track-test".to_owned()),
         source_tracks,
     );
-    pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new(
+    pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new_unbounded(
         audio_track_id,
         Duration::from_millis(1),
         None,
@@ -1387,7 +1389,7 @@ fn pending_packet_queue_boundaries_preserve_fifo_order_and_lengths() {
     assert!(pipeline.pending_audio_packet_is_empty());
     assert!(pipeline.pending_video_packet_is_empty());
 
-    pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new(
+    pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new_unbounded(
         audio_track_id,
         Duration::from_millis(10),
         None,
@@ -1395,7 +1397,7 @@ fn pending_packet_queue_boundaries_preserve_fifo_order_and_lengths() {
         generation,
         Bytes::from_static(b"audio-10"),
     ));
-    pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new(
+    pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new_unbounded(
         audio_track_id,
         Duration::from_millis(20),
         None,
@@ -1429,13 +1431,13 @@ fn pending_packet_queue_boundaries_preserve_fifo_order_and_lengths() {
     assert_eq!(
         pipeline
             .pop_pending_audio_packet_front()
-            .map(|packet| packet.pts),
+            .map(|packet| packet.pts()),
         Some(Duration::from_millis(10))
     );
     assert_eq!(
         pipeline
             .pop_pending_audio_packet_front()
-            .map(|packet| packet.pts),
+            .map(|packet| packet.pts()),
         Some(Duration::from_millis(20))
     );
     assert_eq!(
@@ -2095,7 +2097,7 @@ fn clear_pending_packets_for_seek_does_not_touch_selection_or_decoder_state() {
     pipeline.select_video_track(video_track_id, requirement.clone());
     pipeline.mark_video_decoder_bootstrapped();
     pipeline.note_video_packet_sent_to_decoder();
-    pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new(
+    pipeline.enqueue_pending_audio_packet(PendingAudioPacket::new_unbounded(
         audio_track_id,
         Duration::from_millis(10),
         None,

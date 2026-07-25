@@ -10,6 +10,7 @@ mod identity;
 mod layout;
 mod normalized;
 mod selection;
+mod variant;
 
 pub use compatibility::{
     ProfileExclusionReason, StaticCompatibilityRejection, StaticDescriptorField,
@@ -40,4 +41,14 @@ pub use normalized::{
 pub use selection::{
     ExactSelectionIdentity, ExactSelectionIdentityError, MAX_VIDEO_HEIGHT, PreferredHeightPolicy,
     PreferredHeightRank, PreferredVideoHeight, SelectionRequest, VideoHeight, VideoHeightError,
+};
+pub use variant::{
+    AudioComponentVariant, ComponentKind, ComponentVariantCatalog, ComponentVariantCatalogEntries,
+    ComponentVariantCatalogGeneration, ComponentVariantCatalogIdentity,
+    ComponentVariantCatalogLimit, ComponentVariantCatalogLimitError, ComponentVariantError,
+    ComponentVariantExactIdentity, ComponentVariantExactKey, ComponentVariantKeyError,
+    ComponentVariantSelection, ComponentVariantSelectionRequest, ComponentVariantSemanticIdentity,
+    ComponentVariantSemanticKey, ComponentVariantSemanticSelectionRequest,
+    MAX_COMPONENT_VARIANT_CATALOG_ENTRIES, MAX_COMPONENT_VARIANT_KEY_UTF8_BYTES,
+    VideoComponentVariant,
 };

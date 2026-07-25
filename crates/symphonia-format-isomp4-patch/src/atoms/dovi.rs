@@ -35,7 +35,9 @@ impl Atom for DoviAtom {
             data: it.read_boxed_slice_exact(len)?,
         };
 
-        Ok(Self { extra_data: dovi_data })
+        Ok(Self {
+            extra_data: dovi_data,
+        })
     }
 }
 

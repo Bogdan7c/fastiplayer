@@ -302,7 +302,7 @@ fn vp9_hdr_packet_preflight_selects_p010_and_replays_interleaved_audio() {
         Duration::from_millis(20),
     );
     let encoded_video = vp9_profile2_10bit_bt2020_keyframe(3_840, 2_160);
-    let video_packet = Packet::new(
+    let video_packet = Packet::new_unbounded(
         crate::TrackId::new(1),
         TrackKind::Video,
         Duration::ZERO,
@@ -400,7 +400,7 @@ fn staged_video_preflight_resumes_without_replaying_temporary_readiness() {
         Duration::ZERO,
         Duration::from_millis(20),
     );
-    let video_packet = Packet::new(
+    let video_packet = Packet::new_unbounded(
         crate::TrackId::new(1),
         TrackKind::Video,
         Duration::ZERO,

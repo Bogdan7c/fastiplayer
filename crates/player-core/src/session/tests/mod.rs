@@ -44,6 +44,7 @@ use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
 mod test_support;
 
+mod audio_packet_window;
 mod audio_runtime;
 mod capability_selection;
 mod decoder_boundary;

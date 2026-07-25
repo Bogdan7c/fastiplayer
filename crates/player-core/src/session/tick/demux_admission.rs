@@ -493,12 +493,12 @@ pub(super) fn route_demuxed_packet(
             }
 
             let packet_timing = audio_packet_timing_from_media_packet(&packet);
+            let presentation_window = packet.presentation_window();
             let pending_packet = PendingAudioPacket::with_timing(
                 packet.track_id,
                 packet.pts,
-                packet.dts,
-                packet.duration,
                 packet_timing,
+                presentation_window,
                 generation,
                 packet.data,
             );

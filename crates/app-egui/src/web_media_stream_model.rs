@@ -11,7 +11,8 @@ use std::sync::Arc;
 use player_core::{PlaybackState, PlayerSnapshot};
 use service_ytdlp::{YtDlpCandidateSelection, YtDlpCandidateSnapshot};
 use web_media_core::{
-    CandidateDescriptor, CodecFamily, CodecKind, ContainerFamily, StreamLayout, StreamLayoutKind,
+    CandidateDescriptor, CodecFamily, CodecKind, ContainerFamily, ExactSelectionIdentity,
+    StreamLayout, StreamLayoutKind,
 };
 use web_media_playback_plan::{
     PlanningCandidateSnapshot, PlaybackCapabilitySnapshot, PlaybackSelectionPolicy, plan_playback,
@@ -19,6 +20,19 @@ use web_media_playback_plan::{
 
 use crate::media_open::ActiveMediaSource;
 use crate::playlist_runtime::PlaylistViewModel;
+
+pub(crate) mod component_variants;
+use component_variants::{
+    ActiveParentCandidateSelection, WebMediaComponentVariantConfiguration,
+    WebMediaComponentVariantProjection,
+};
+mod sidebar_action;
+pub(crate) use sidebar_action::{
+    UrlSidebarAction, UrlSidebarPendingSelection, UrlSidebarTransitionError,
+};
+
+#[cfg(test)]
+pub(crate) mod component_variants_tests;
 
 /// Поколение extraction snapshot-а без candidate format identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +50,18 @@ impl WebMediaStreamGeneration {
             source: identity.source().value(),
             extraction: identity.generation().value(),
         }
+    }
+
+    /// Строит synthetic generation только для hermetic UI/state тестов.
+    #[cfg(test)]
+    pub(crate) const fn for_test(source: u64, extraction: u64) -> Self {
+        Self { source, extraction }
+    }
+
+    /// Проверяет, что fresh extraction принадлежит той же source lineage.
+    #[must_use]
+    pub(crate) const fn has_same_source_lineage(self, other: Self) -> bool {
+        self.source == other.source
     }
 }
 
@@ -147,10 +173,13 @@ impl WebMediaCandidatePresentation {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct WebMediaStreamConfiguration {
     generation: WebMediaStreamGeneration,
+    active_parent: ExactSelectionIdentity,
+    active_parent_selection: ActiveParentCandidateSelection,
     candidates: Arc<[WebMediaCandidatePresentation]>,
     candidate_selections: Arc<[YtDlpCandidateSelection]>,
     active_candidate: WebMediaCandidatePresentation,
     preference: WebMediaSelectionPreference,
+    component_variants: WebMediaComponentVariantConfiguration,
     hls_subtitle_renditions: Arc<[crate::web_media_hls_subtitles::InstalledHlsSubtitleRendition]>,
 }
 
@@ -162,6 +191,7 @@ impl fmt::Debug for WebMediaStreamConfiguration {
             .field("candidate_count", &self.candidates.len())
             .field("active_candidate", &self.active_candidate)
             .field("preference", &self.preference)
+            .field("component_variants", &self.component_variants)
             .field(
                 "hls_subtitle_rendition_count",
                 &self.hls_subtitle_renditions().len(),
@@ -181,6 +211,11 @@ impl WebMediaStreamConfiguration {
         preference: WebMediaSelectionPreference,
     ) -> Result<Self, WebMediaStreamModelBuildError> {
         let active_identity = active_selection.exact_identity();
+        let active_parent = ExactSelectionIdentity::new(
+            active_identity.clone(),
+            active_selection.semantic_identity().clone(),
+        )
+        .map_err(|_| WebMediaStreamModelBuildError::InvalidActiveCandidateIdentity)?;
         // BestPlayable оценивает весь inventory один раз и возвращает typed rejection
         // каждого недоступного candidate-а; source order не участвует в selection.
         let availability = plan_playback(
@@ -227,10 +262,15 @@ impl WebMediaStreamConfiguration {
             active_candidate.ok_or(WebMediaStreamModelBuildError::ActiveCandidateMissing)?;
         Ok(Self {
             generation: WebMediaStreamGeneration::from_selection(active_selection),
+            active_parent,
+            active_parent_selection: ActiveParentCandidateSelection::Installed(Box::new(
+                active_selection.clone(),
+            )),
             candidates: candidates.into(),
             candidate_selections: candidate_selections.into(),
             active_candidate,
             preference,
+            component_variants: WebMediaComponentVariantConfiguration::Unavailable,
             hls_subtitle_renditions: Arc::from([]),
         })
     }
@@ -289,6 +329,7 @@ pub(crate) enum WebMediaStreamModelBuildError {
     AvailabilityPlanningFailed,
     InvalidCandidateContainer,
     CandidateSelectionFailed,
+    InvalidActiveCandidateIdentity,
     ActiveCandidateMissing,
     ActiveCandidateNotPlayable,
 }
@@ -304,6 +345,9 @@ impl fmt::Display for WebMediaStreamModelBuildError {
             }
             Self::CandidateSelectionFailed => {
                 "playable candidate не удалось связать с exact switch token"
+            }
+            Self::InvalidActiveCandidateIdentity => {
+                "exact и semantic active candidate identities имеют разный source"
             }
             Self::ActiveCandidateMissing => "active candidate отсутствует в safe inventory",
             Self::ActiveCandidateNotPlayable => "active candidate не прошёл capability planning",
@@ -335,28 +379,9 @@ pub(crate) struct UrlSidebarPlaybackStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UrlSidebarSafeError {
     SourceUnavailable,
-    CandidateSwitchBusy,
-    CandidateSwitchStale,
-    CandidateSwitchCancelled,
-}
-
-/// Typed UI intent не раскрывает candidate identity либо service locator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UrlSidebarAction {
-    /// Выбирает candidate из exact installed generation по безопасному индексу.
-    SelectCandidate {
-        generation: WebMediaStreamGeneration,
-        candidate_index: usize,
-    },
-}
-
-impl UrlSidebarAction {
-    /// Возвращает generation для bounded rejection projection до любого source lookup-а.
-    pub(crate) const fn generation(self) -> WebMediaStreamGeneration {
-        match self {
-            Self::SelectCandidate { generation, .. } => generation,
-        }
-    }
+    SameItemSwitchBusy,
+    SameItemSwitchStale,
+    SameItemSwitchCancelled,
 }
 
 /// Модель одной секции существующего sidebar host-а.
@@ -372,7 +397,8 @@ pub(crate) enum UrlSidebarModel {
         source_label: Arc<str>,
         candidates: Arc<[WebMediaCandidatePresentation]>,
         active_candidate: WebMediaCandidatePresentation,
-        pending_candidate: Option<WebMediaCandidatePresentation>,
+        pending_selection: Option<Box<UrlSidebarPendingSelection>>,
+        component_variants: Box<WebMediaComponentVariantProjection>,
         preference: WebMediaSelectionPreference,
         item_scope: UrlSidebarItemScope,
         status: UrlSidebarPlaybackStatus,
@@ -383,22 +409,9 @@ pub(crate) enum UrlSidebarModel {
 /// Ephemeral pending/error state; active state читается только из Installed source.
 #[derive(Debug, Default)]
 pub(crate) struct UrlSidebarController {
-    pending_candidate: Option<PendingCandidateState>,
+    pending_selection: Option<UrlSidebarPendingSelection>,
     safe_error: Option<SafeErrorState>,
     item_override: Option<ItemOverrideState>,
-}
-
-/// Ошибка ephemeral selector transition до запуска media-open транзакции.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UrlSidebarTransitionError {
-    /// Уже есть один pending same-item switch.
-    Busy,
-}
-
-#[derive(Debug)]
-struct PendingCandidateState {
-    generation: WebMediaStreamGeneration,
-    candidate: WebMediaCandidatePresentation,
 }
 
 #[derive(Debug)]
@@ -434,59 +447,77 @@ enum UrlSidebarSourceProjection<'source> {
 impl UrlSidebarController {
     /// Новый Installed source завершает/инвалидирует весь ephemeral state прошлого поколения.
     pub(crate) fn record_installed_source(&mut self) {
-        self.pending_candidate = None;
+        self.pending_selection = None;
         self.safe_error = None;
     }
 
-    /// Публикует pending selector только для одной exact generation.
-    pub(crate) fn record_candidate_switch_started(
+    /// Публикует один typed pending selector для общего candidate/component reopen.
+    pub(crate) fn record_switch_started(
         &mut self,
-        generation: WebMediaStreamGeneration,
-        candidate: WebMediaCandidatePresentation,
+        pending_selection: UrlSidebarPendingSelection,
     ) -> Result<(), UrlSidebarTransitionError> {
-        if self.pending_candidate.is_some() {
+        if self.pending_selection.is_some() {
             return Err(UrlSidebarTransitionError::Busy);
         }
         self.safe_error = None;
-        self.pending_candidate = Some(PendingCandidateState {
-            generation,
-            candidate,
-        });
+        self.pending_selection = Some(pending_selection);
         Ok(())
     }
 
     /// Pre-barrier failure снимает только matching pending selector.
-    pub(crate) fn record_candidate_switch_failed(
+    pub(crate) fn record_switch_failed(
         &mut self,
-        generation: WebMediaStreamGeneration,
+        expected_pending: &UrlSidebarPendingSelection,
+        visible_generation: WebMediaStreamGeneration,
         error: UrlSidebarSafeError,
     ) -> bool {
         let matching_pending = self
-            .pending_candidate
+            .pending_selection
             .as_ref()
-            .is_some_and(|pending| pending.generation == generation);
+            .is_some_and(|pending| pending == expected_pending);
         if !matching_pending {
             return false;
         }
-        self.pending_candidate = None;
-        self.safe_error = Some(SafeErrorState { generation, error });
+        self.pending_selection = None;
+        self.safe_error = Some(SafeErrorState {
+            generation: visible_generation,
+            error,
+        });
         true
     }
 
-    /// Start rejection показывает safe ошибку, даже если pending selector ещё не публиковался.
-    pub(crate) fn record_candidate_switch_rejected(
+    /// Terminal failure допускает уже опубликованный Installed source, который
+    /// штатно очистил projection, но никогда не стирает другой pending switch.
+    pub(crate) fn record_switch_terminal_failed(
+        &mut self,
+        expected_pending: &UrlSidebarPendingSelection,
+        visible_generation: WebMediaStreamGeneration,
+        error: UrlSidebarSafeError,
+    ) -> bool {
+        if self
+            .pending_selection
+            .as_ref()
+            .is_some_and(|pending| pending != expected_pending)
+        {
+            return false;
+        }
+        self.pending_selection = None;
+        self.safe_error = Some(SafeErrorState {
+            generation: visible_generation,
+            error,
+        });
+        true
+    }
+
+    /// Pre-start rejection не может стереть уже выполняющийся typed switch.
+    pub(crate) fn record_switch_start_rejected(
         &mut self,
         generation: WebMediaStreamGeneration,
         error: UrlSidebarSafeError,
     ) -> bool {
-        if self
-            .pending_candidate
-            .as_ref()
-            .is_some_and(|pending| pending.generation != generation)
-        {
+        if self.pending_selection.is_some() {
             return false;
         }
-        self.pending_candidate = None;
         self.safe_error = Some(SafeErrorState { generation, error });
         true
     }
@@ -494,26 +525,23 @@ impl UrlSidebarController {
     /// Exact Installed публикует runtime-only item/source preference новой generation.
     pub(crate) fn record_candidate_switch_installed(
         &mut self,
-        previous_generation: WebMediaStreamGeneration,
         installed_generation: WebMediaStreamGeneration,
         item_id: Option<playlist_core::PlaylistItemId>,
         preferred_height: Option<u32>,
-    ) -> bool {
-        let matching_pending = self
-            .pending_candidate
-            .as_ref()
-            .is_none_or(|pending| pending.generation == previous_generation);
-        if !matching_pending {
-            return false;
-        }
-        self.pending_candidate = None;
+    ) {
+        self.pending_selection = None;
         self.safe_error = None;
         self.item_override = Some(ItemOverrideState {
             source_lineage: installed_generation.source,
             item_id,
             preferred_height,
         });
-        true
+    }
+
+    /// Component Installed снимает selector, не меняя candidate/item preference.
+    pub(crate) fn record_component_switch_installed(&mut self) {
+        self.pending_selection = None;
+        self.safe_error = None;
     }
 
     /// Строит read-only model; stale pending/error generation никогда не показывается.
@@ -570,11 +598,15 @@ impl UrlSidebarController {
                     source_label: Arc::from(source_label),
                     candidates: Arc::from(stream_configuration.candidates()),
                     active_candidate: stream_configuration.active_candidate().clone(),
-                    pending_candidate: self
-                        .pending_candidate
+                    pending_selection: self
+                        .pending_selection
                         .as_ref()
-                        .filter(|pending| pending.generation == generation)
-                        .map(|pending| pending.candidate.clone()),
+                        .filter(|pending| pending.parent_generation() == generation)
+                        .cloned()
+                        .map(Box::new),
+                    component_variants: Box::new(
+                        stream_configuration.component_variant_projection(),
+                    ),
                     preference: self
                         .item_override
                         .as_ref()

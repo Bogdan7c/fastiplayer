@@ -32,6 +32,7 @@ use crate::{
     QualitySelection, SeekRequest, StartedVideoBackend, TrackId,
 };
 
+mod audio_packet_window;
 mod audio_playback_bounds;
 mod audio_runtime;
 mod audio_tempo_rate_change;

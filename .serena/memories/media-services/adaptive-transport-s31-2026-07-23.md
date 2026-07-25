@@ -29,6 +29,7 @@
 ## Secret/redirect invariants
 
 - Automatic redirects выключены. Каждый hop проходит S21T `RedirectPolicy`; cross-origin forwarding монотонно лишается header/query secret material.
+- S36P3 additive boundary: `AdaptiveResourceSecretForwarding::{ForwardScoped, Suppress}` позволяет provider-у явно начать resource lifecycle без retained secret material. Existing full/range constructors по умолчанию остаются `ForwardScoped`; Suppress не извлекает headers/cookies/query, сохраняется через retries, а redirects никогда не восстанавливают forwarding. Smooth выводит intent один раз из effective manifest target; HLS/DASH behavior не изменён. Полный consumer contract: `mem:media-services/smooth-fragment-sources-s36p3-2026-07-25`.
 - Manifest и media segment используют разные `SecretRequestPurpose`; explicit Cookie header запрещён, cookies живут только в scoped ephemeral jar. Raw URL/header/cookie/query не появляются в Debug/errors/tracing.
 - `HttpRequestTarget::with_query_override` применяется только к scoped S21T query material; durable/persistence surfaces не добавлены.
 

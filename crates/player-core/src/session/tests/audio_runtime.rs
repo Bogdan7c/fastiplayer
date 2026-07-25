@@ -14,7 +14,13 @@ use crate::{
     AudioTempoSegment, AudioTempoSegmentId, AudioTempoStretchedOutput, PlaybackRate,
     PlaybackRateAudioTempoRejectReason, PlayerCommandReject,
 };
-use audio_core::{AudioTempoOutputSegmentSpan, AudioTempoOutputSegmentSpans};
+use audio_core::{
+    AudioChannelLayout, AudioPacketTimeBase, AudioPacketTiming, AudioTempoOutputSegmentSpan,
+    AudioTempoOutputSegmentSpans,
+};
+use media_core::{ExactPresentationWindow, PacketPresentationWindow, TimeBase, TrackTimestamp};
+
+use super::audio_packet_window::RecordingPcmDecoder;
 
 #[derive(Clone)]
 struct FakeTempoFactoryHandle {
@@ -718,6 +724,69 @@ fn non_normal_rate_audio_runtime_writes_tempo_processor_output() {
             AudioOutputWriteIntent::TempoProcessed,
             AudioOutputWriteIntent::TempoProcessed,
         ]
+    );
+}
+
+#[test]
+fn bounded_packet_clips_pcm_before_tempo_processor() {
+    let (output_factory, _output_factory_handle) = ScriptedAudioOutputFactory::success(0.0, None);
+    let (tempo_factory, tempo_factory_handle) = FakeTempoFactory::new();
+    let mut session = PlayerSession::with_audio_output_factory(output_factory)
+        .with_audio_tempo_processor_factory(tempo_factory);
+    let track_id = TrackId::new(2);
+    let decoded_inputs = Arc::new(Mutex::new(Vec::new()));
+    session.pipeline.select_audio_track(track_id);
+    session
+        .pipeline
+        .install_audio_decoder(Box::new(RecordingPcmDecoder::new(
+            decoded_inputs,
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            4,
+            2,
+        )));
+    let output_spec = AudioOutputSpec::new(4, AudioChannelLayout::stereo());
+    session
+        .ensure_audio_output_for_decoded_spec(output_spec)
+        .expect("audio output should be created");
+    session
+        .write_decoded_audio_samples_at_current_rate(&[0.25, 0.5], output_spec)
+        .expect("warmup history");
+    session.set_playback_state(PlaybackState::Paused);
+    assert_eq!(
+        session
+            .dispatch_command(PlayerCommand::SetPlaybackRate(
+                PlaybackRate::new(2.0).expect("valid 2x rate"),
+            ))
+            .expect("rate command"),
+        PlayerCommandOutcome::Applied
+    );
+    let time_base = TimeBase::new(1, 4).expect("valid exact test clock");
+    let presentation_window = PacketPresentationWindow::Bounded(
+        ExactPresentationWindow::new(
+            TrackTimestamp::new(track_id, 1, time_base),
+            TrackTimestamp::new(track_id, 3, time_base),
+        )
+        .expect("valid bounded window"),
+    );
+    let packet_timing = AudioPacketTiming::from_track_units(
+        AudioPacketTimeBase::new(1, 4).expect("valid audio packet clock"),
+        0,
+        None,
+        None,
+    );
+
+    session.process_audio_packet_with_timing(
+        track_id,
+        Duration::ZERO,
+        packet_timing,
+        presentation_window,
+        session.pipeline.seek_generation(),
+        b"tempo-clipped",
+    );
+
+    assert_eq!(
+        tempo_factory_handle.processed_inputs(),
+        vec![vec![3.0, 4.0, 5.0, 6.0]]
     );
 }
 

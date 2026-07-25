@@ -1246,7 +1246,7 @@ pub(crate) fn render_frame(
             if let Err(error) =
                 app_state.apply_url_sidebar_action(action, playlist_runtime, renderer)
             {
-                tracing::warn!(error = %error, "URL candidate switch intent отклонён");
+                tracing::warn!(error = %error, "URL same-item switch intent отклонён");
             }
             true
         }
@@ -1282,7 +1282,7 @@ pub(crate) fn render_frame(
         playlist_runtime,
         renderer,
     );
-    app_state.poll_same_item_candidate_switch(playlist_runtime);
+    app_state.poll_same_item_switch(playlist_runtime);
     app_state.poll_playlist_transport(playlist_runtime, renderer);
 
     let settings_preview_tick = match settings_runtime.apply_due_preview(renderer, Instant::now()) {

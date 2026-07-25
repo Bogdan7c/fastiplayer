@@ -80,7 +80,7 @@ impl Demuxer for CountingPacketDemuxer {
 
     fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
         let sequence = self.read_count.fetch_add(1, Ordering::SeqCst);
-        Ok(DemuxReadEvent::Packet(Packet::new(
+        Ok(DemuxReadEvent::Packet(Packet::new_unbounded(
             TrackId::new(1),
             TrackKind::Audio,
             Duration::from_millis(sequence as u64),
@@ -155,7 +155,7 @@ impl Demuxer for SlowFailingSeekDemuxer {
             return Ok(DemuxReadEvent::EndOfStream);
         }
         self.packet_emitted = true;
-        Ok(DemuxReadEvent::Packet(Packet::new(
+        Ok(DemuxReadEvent::Packet(Packet::new_unbounded(
             TrackId::new(1),
             TrackKind::Audio,
             self.position,
@@ -350,7 +350,7 @@ impl Demuxer for SupersededReadFailureDemuxer {
             return Ok(DemuxReadEvent::EndOfStream);
         }
         self.packet_emitted = true;
-        Ok(DemuxReadEvent::Packet(Packet::new(
+        Ok(DemuxReadEvent::Packet(Packet::new_unbounded(
             TrackId::new(1),
             TrackKind::Audio,
             self.position,
@@ -393,7 +393,7 @@ impl Demuxer for CommandSeekableDemuxer {
             return Ok(DemuxReadEvent::EndOfStream);
         }
         self.packet_emitted = true;
-        Ok(DemuxReadEvent::Packet(Packet::new(
+        Ok(DemuxReadEvent::Packet(Packet::new_unbounded(
             TrackId::new(1),
             TrackKind::Audio,
             self.position,
@@ -594,7 +594,7 @@ fn oversized_packet_fails_with_typed_bounded_error() {
         ProgressiveDemuxer::new(inner, CancellationToken::new(), limits(2, 4), retry_hint())
             .expect("progressive worker starts");
     sender
-        .send(DemuxReadEvent::Packet(Packet::new(
+        .send(DemuxReadEvent::Packet(Packet::new_unbounded(
             TrackId::new(1),
             TrackKind::Video,
             Duration::ZERO,

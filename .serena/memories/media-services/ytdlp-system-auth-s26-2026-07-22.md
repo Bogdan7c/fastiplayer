@@ -1,5 +1,9 @@
 # S26 — System yt-dlp authorization propagation (2026-07-22)
 
+## S36P1 extension (2026-07-25)
+
+ISM manifest projection reuses S26 validated headers, ephemeral serialized cookies, target path scope and cross-origin secret stripping. It rejects unowned segment/key query overrides and never persists or exports secret material. Full contract: `mem:media-services/smooth-request-projection-s36p1-2026-07-25`.
+
 Связанные знания: `mem:core`, `mem:media-services/secret-safe-locators-s10b`, `mem:media-services/web-transport-s21t-2026-07-21`, `mem:app-egui/queue-owned-web-open-s23-2026-07-22`, `mem:config/schema-v6-ytdlp-migration-2026-07-17`.
 
 ## Ownership и production flow

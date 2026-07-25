@@ -398,19 +398,15 @@ mod tests {
     }
 
     fn video_packet(pts: Duration, keyframe: PacketKeyframe) -> Packet {
-        Packet {
-            track_id: TrackId::new(1),
-            kind: TrackKind::Video,
+        Packet::new_with_keyframe_unbounded(
+            TrackId::new(1),
+            TrackKind::Video,
             pts,
-            track_pts: None,
-            dts: Some(pts),
-            track_dts: None,
-            duration: Some(Duration::from_secs(1)),
-            track_duration: None,
-            byte_offset: None,
+            Some(pts),
             keyframe,
-            data: Bytes::new(),
-        }
+            Bytes::new(),
+        )
+        .with_duration(Duration::from_secs(1))
     }
 
     #[test]

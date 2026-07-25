@@ -684,19 +684,15 @@ fn decode_queued_packet(
 ) -> DecodeQueuedPacketResult {
     let packet_receive_latency = queued_packet.enqueued_at.elapsed();
     let decode_packet = &queued_packet.packet;
-    let packet = Packet {
-        track_id: decode_packet.track_id,
-        kind: TrackKind::Video,
-        pts: decode_packet.pts,
-        track_pts: None,
-        dts: decode_packet.dts,
-        track_dts: decode_packet.track_dts,
-        duration: None,
-        track_duration: None,
-        keyframe: decode_packet.keyframe.into(),
-        byte_offset: None,
-        data: decode_packet.encoded_bytes.clone(),
-    };
+    let packet = Packet::new_with_keyframe_unbounded(
+        decode_packet.track_id,
+        TrackKind::Video,
+        decode_packet.pts,
+        decode_packet.dts,
+        decode_packet.keyframe.into(),
+        decode_packet.encoded_bytes.clone(),
+    )
+    .with_track_timestamps(None, decode_packet.track_dts);
 
     let decode_result = decoder.decode_packet_for_thread(&packet, decode_packet.generation);
 

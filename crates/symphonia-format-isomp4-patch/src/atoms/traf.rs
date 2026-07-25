@@ -47,9 +47,8 @@ impl Atom for TrafAtom {
                     let trun = it.read_atom::<TrunAtom>()?;
 
                     // Increment the total sample count.
-                    total_sample_count = total_sample_count
-                        .checked_add(trun.sample_count)
-                        .ok_or({
+                    total_sample_count =
+                        total_sample_count.checked_add(trun.sample_count).ok_or({
                             crate::atoms::AtomError::Other(
                                 symphonia_core::errors::Error::DecodeError(
                                     "isomp4 (traf): total sample count overflow",
@@ -79,7 +78,12 @@ impl Atom for TrafAtom {
             return decode_error("isomp4 (traf): trun present for empty-duration fragment");
         }
 
-        Ok(TrafAtom { tfhd, tfdt: tfdt.unwrap(), truns, total_sample_count })
+        Ok(TrafAtom {
+            tfhd,
+            tfdt: tfdt.unwrap(),
+            truns,
+            total_sample_count,
+        })
     }
 }
 

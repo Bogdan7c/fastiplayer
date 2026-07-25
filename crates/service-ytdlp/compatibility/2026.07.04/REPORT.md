@@ -208,7 +208,7 @@ Target rows не обещают, что runtime уже реализован. О�
   containers/codecs;
 - HLS VOD/live: MPEG-TS и fMP4/CMAF;
 - DASH VOD/live: fMP4/CMAF и WebM;
-- ISM/MSS fMP4;
+- ISM/MSS base/VOD fMP4 только для exact H.264/AAC evidence;
 - FTP/FTPS progressive на уже доказанных container/codec families;
 - HDS/F4M/F4F;
 - RTMP family с public serialized request fields.
@@ -232,6 +232,23 @@ Delta складывается из отдельно сдвинутых step con
 
 Каждая Target row связана с future session(s) и `fixture_id`; focused test
 проверяет обе ссылки.
+
+S36A заменяет прежнюю aggregate row `ism-mss-fmp4` на стабильную exact row
+`ism-mss-base-h264-aac-fmp4`. Existing fixture `target-ism-fmp4` не изменён:
+он доказывает только serialized `ism` manifest identity, fMP4 и codec identities
+`avc1.640028`/`mp4a.40.2`. Поэтому Target ссылается на отдельные narrow profiles
+`ism-base-video-h264` и `ism-base-audio-aac`, а не на все major web video и
+proven native audio families.
+
+Остальные уже известные video families (`vp8`, `vp9`, `av1`, `h265`) и audio
+families (`adpcm`, `alac`, `flac`, `mp1`, `mp2`, `mp3`, `pcm`, `vorbis`,
+`opus`) перечислены exact provisional sets. Их promotion требует отдельного
+profile extension, отдельной implementation card и собственного exact fixture,
+а не переиспользования H.264/AAC evidence.
+
+Approved ISM live/DVR Target row в S00 отсутствует. `ism-mss-live-dvr` остаётся
+`ProfileExcludedProvisional`; S36A не создаёт `S36L-*` dependency/card.
+Будущее promotion live/DVR также требует отдельной card и exact live fixture.
 
 ## Explicit exclusions and provisional gaps
 

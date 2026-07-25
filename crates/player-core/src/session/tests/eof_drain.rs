@@ -638,7 +638,7 @@ fn audio_only_eof_drain_processes_pending_audio_before_ending() {
     install_ready_audio_runtime(&mut session, 0.0, None);
     session
         .pipeline
-        .enqueue_pending_audio_packet(PendingAudioPacket::new(
+        .enqueue_pending_audio_packet(PendingAudioPacket::new_unbounded(
             TrackId::new(2),
             Duration::ZERO,
             None,

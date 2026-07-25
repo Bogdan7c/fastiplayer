@@ -16,6 +16,28 @@
 mod atoms;
 mod demuxer;
 mod fp;
+// Реконструкция fragment/init остаётся внутри единственного ISO-BMFF owner-а.
+#[allow(dead_code)]
+mod fragment_reconstruction;
 mod stream;
 
 pub use demuxer::IsoMp4Reader;
+pub use fragment_reconstruction::{
+    FragmentAacAudioSpecificConfig, FragmentAacChannelCount, FragmentAacLcConfiguration,
+    FragmentAacSampleRate, FragmentArithmeticOperation, FragmentBaseDecodeTime, FragmentBoxKind,
+    FragmentBoxType, FragmentCodecConfigurationIssue, FragmentCodecKind, FragmentCodedCoverage,
+    FragmentDrmEvidence, FragmentH264Configuration, FragmentH264PictureParameterSet,
+    FragmentH264SequenceParameterSet, FragmentInitializationCodec, FragmentInitializationError,
+    FragmentInitializationField, FragmentInitializationLimitBuildError,
+    FragmentInitializationLimitKind, FragmentInitializationLimits,
+    FragmentInitializationLimitsBuilder, FragmentInitializationRequest,
+    FragmentInitializationSegment, FragmentInspectionError, FragmentInspectionLimitBuildError,
+    FragmentInspectionLimitKind, FragmentInspectionLimits, FragmentInspectionLimitsBuilder,
+    FragmentMediaBoxType, FragmentMediaKind, FragmentPrivateExtension, FragmentReconstructionError,
+    FragmentReconstructionRequest, FragmentSampleDefaults, FragmentStructureContext,
+    FragmentTimescale, FragmentTimingEvidence, FragmentTrackId, FragmentTrackReconstructionIntent,
+    FragmentUnsupportedLayout, FragmentVideoDimensions, FragmentVideoHeight, FragmentVideoWidth,
+    FragmentWriteArithmeticOperation, FragmentWriteCancellationPhase, FragmentWriteError,
+    FragmentWriteLimitBuildError, FragmentWriteLimits, ReconstructedMediaSegment,
+    build_fragmented_initialization_segment, reconstruct_media_fragment,
+};

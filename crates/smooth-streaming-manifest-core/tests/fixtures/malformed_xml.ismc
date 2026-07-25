@@ -1,0 +1,2 @@
+<SmoothStreamingMedia MajorVersion="2" MinorVersion="0" Duration="10000000">
+  <StreamIndex Type="video" Chunks="1" QualityLevels="1" Url="q({bitrate})/v({start time})">

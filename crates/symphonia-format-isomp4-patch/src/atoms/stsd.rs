@@ -339,7 +339,10 @@ impl Atom for AudioSampleEntry {
                     atom.fill_audio_sample_entry(&mut entry)?;
                 }
                 _ => {
-                    debug!("unknown audio sample entry sub-atom: {:?}.", entry_header.atom_type());
+                    debug!(
+                        "unknown audio sample entry sub-atom: {:?}.",
+                        entry_header.atom_type()
+                    );
                 }
             }
         }
@@ -405,8 +408,7 @@ fn lpcm_codec_id(bits_per_sample: u32, lpcm_flags: u32) -> AudioCodecId {
             64 => CODEC_ID_PCM_F64LE,
             _ => CODEC_ID_NULL_AUDIO,
         }
-    }
-    else {
+    } else {
         // Integer sample format.
         if is_signed {
             // Signed-integer sample format.
@@ -420,8 +422,7 @@ fn lpcm_codec_id(bits_per_sample: u32, lpcm_flags: u32) -> AudioCodecId {
                 32 => CODEC_ID_PCM_S32LE,
                 _ => CODEC_ID_NULL_AUDIO,
             }
-        }
-        else {
+        } else {
             // Unsigned-integer sample format.
             match bits_per_sample {
                 8 => CODEC_ID_PCM_U8,
@@ -441,7 +442,9 @@ fn lpcm_codec_id(bits_per_sample: u32, lpcm_flags: u32) -> AudioCodecId {
 fn pcm_channels(num_channels: u32) -> Result<Channels> {
     match num_channels {
         1 => Ok(Channels::Positioned(Position::FRONT_LEFT)),
-        2 => Ok(Channels::Positioned(Position::FRONT_LEFT | Position::FRONT_RIGHT)),
+        2 => Ok(Channels::Positioned(
+            Position::FRONT_LEFT | Position::FRONT_RIGHT,
+        )),
         _ => decode_error("isomp4: invalid number of channels"),
     }
 }
@@ -704,7 +707,10 @@ impl Atom for VisualSampleEntry {
                     entry.content_light_level = Some(it.read_atom::<ContentLightLevelAtom>()?);
                 }
                 _ => {
-                    debug!("unknown visual sample entry sub-atom: {:?}.", entry_header.atom_type());
+                    debug!(
+                        "unknown visual sample entry sub-atom: {:?}.",
+                        entry_header.atom_type()
+                    );
                 }
             }
         }
@@ -798,7 +804,11 @@ impl Atom for SubtitleSampleEntry {
             }
         }
 
-        Ok(SubtitleSampleEntry { btrt, txtc, codec_specific })
+        Ok(SubtitleSampleEntry {
+            btrt,
+            txtc,
+            codec_specific,
+        })
     }
 }
 
@@ -850,7 +860,10 @@ pub struct ClapAtom {
 
 impl Atom for ClapAtom {
     fn read<R: ReadAtom>(reader: &mut AtomIterator<R>, _header: &AtomHeader) -> Result<Self> {
-        Ok(ClapAtom { h_spacing: reader.read_u32()?, v_spacing: reader.read_u32()? })
+        Ok(ClapAtom {
+            h_spacing: reader.read_u32()?,
+            v_spacing: reader.read_u32()?,
+        })
     }
 }
 

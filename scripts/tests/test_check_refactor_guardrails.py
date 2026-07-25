@@ -191,6 +191,96 @@ class ArtworkBoundaryGuardrailTests(unittest.TestCase):
 class DependencyGraphPolicyTests(unittest.TestCase):
     """Доказывает pass/fail поведение manifest/dependency-graph policies."""
 
+    def test_smooth_manifest_core_accepts_only_hardened_xml_and_typed_errors(self) -> None:
+        """D1 crate не получает скрытый URL/network/media/runtime dependency edge."""
+
+        allowed_packages = {
+            "smooth-streaming-manifest-core": package_with_dependencies(
+                "smooth-streaming-manifest-core",
+                (("bounded-xml-reader", None), ("thiserror", None)),
+            )
+        }
+        allowed_violations = GUARDRAIL.find_dependency_violations(
+            GUARDRAIL.direct_normal_dependencies(allowed_packages),
+            GUARDRAIL.direct_all_manifest_dependencies(allowed_packages),
+            frozenset({"bounded-xml-reader", "thiserror"}),
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "smooth-streaming-manifest-core"
+                for violation in allowed_violations
+            )
+        )
+
+        forbidden_packages = {
+            "smooth-streaming-manifest-core": package_with_dependencies(
+                "smooth-streaming-manifest-core",
+                (("url", None),),
+            )
+        }
+        forbidden_violations = GUARDRAIL.find_dependency_violations(
+            GUARDRAIL.direct_normal_dependencies(forbidden_packages),
+            GUARDRAIL.direct_all_manifest_dependencies(forbidden_packages),
+            frozenset({"url"}),
+        )
+        self.assertTrue(
+            any(
+                violation.owner == "smooth-streaming-manifest-core"
+                and violation.dependency == "url"
+                for violation in forbidden_violations
+            )
+        )
+
+    def test_smooth_fmp4_accepts_only_manifest_patch_and_typed_errors(self) -> None:
+        """F2 adapter не получает скрытый transport/demux/player dependency edge."""
+
+        allowed_packages = {
+            "smooth-streaming-fmp4": package_with_dependencies(
+                "smooth-streaming-fmp4",
+                (
+                    ("smooth-streaming-manifest-core", None),
+                    ("symphonia-format-isomp4", None),
+                    ("thiserror", None),
+                ),
+            )
+        }
+        allowed_violations = GUARDRAIL.find_dependency_violations(
+            GUARDRAIL.direct_normal_dependencies(allowed_packages),
+            GUARDRAIL.direct_all_manifest_dependencies(allowed_packages),
+            frozenset(
+                {
+                    "smooth-streaming-manifest-core",
+                    "symphonia-format-isomp4",
+                    "thiserror",
+                }
+            ),
+        )
+        self.assertFalse(
+            any(
+                violation.owner == "smooth-streaming-fmp4"
+                for violation in allowed_violations
+            )
+        )
+
+        forbidden_packages = {
+            "smooth-streaming-fmp4": package_with_dependencies(
+                "smooth-streaming-fmp4",
+                (("web-media-http", None),),
+            )
+        }
+        forbidden_violations = GUARDRAIL.find_dependency_violations(
+            GUARDRAIL.direct_normal_dependencies(forbidden_packages),
+            GUARDRAIL.direct_all_manifest_dependencies(forbidden_packages),
+            frozenset({"web-media-http"}),
+        )
+        self.assertTrue(
+            any(
+                violation.owner == "smooth-streaming-fmp4"
+                and violation.dependency == "web-media-http"
+                for violation in forbidden_violations
+            )
+        )
+
     def test_hls_runtime_accepts_concrete_demux_only_as_dev_composition(self) -> None:
         """Production HLS graph neutral, а hermetic fixtures могут собрать concrete registry."""
 

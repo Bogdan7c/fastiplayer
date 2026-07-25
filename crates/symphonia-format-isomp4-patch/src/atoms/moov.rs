@@ -82,6 +82,11 @@ impl Atom for MoovAtom {
             }
         }
 
-        Ok(MoovAtom { mvhd: mvhd.unwrap(), traks, mvex, udta })
+        Ok(MoovAtom {
+            mvhd: mvhd.unwrap(),
+            traks,
+            mvex,
+            udta,
+        })
     }
 }

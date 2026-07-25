@@ -3,11 +3,16 @@
 use egui::{RichText, Ui};
 use web_media_core::{CodecFamily, ContainerFamily, StreamLayoutKind};
 
+use crate::web_media_stream_model::component_variants::WebMediaComponentVariantProjection;
 use crate::web_media_stream_model::{
-    UrlSidebarAction, UrlSidebarItemScope, UrlSidebarModel, UrlSidebarPlaybackStatus,
-    UrlSidebarSafeError, WebMediaCandidatePresentation, WebMediaSelectionPreference,
-    WebMediaStreamGeneration,
+    UrlSidebarAction, UrlSidebarItemScope, UrlSidebarModel, UrlSidebarPendingSelection,
+    UrlSidebarPlaybackStatus, UrlSidebarSafeError, WebMediaCandidatePresentation,
+    WebMediaSelectionPreference, WebMediaStreamGeneration,
 };
+
+mod component_variants;
+#[cfg(test)]
+mod component_variants_tests;
 
 /// Рисует active web-media configuration и возвращает один same-item intent.
 pub(crate) fn show(ui: &mut Ui, model: &UrlSidebarModel) -> Option<UrlSidebarAction> {
@@ -33,7 +38,8 @@ pub(crate) fn show(ui: &mut Ui, model: &UrlSidebarModel) -> Option<UrlSidebarAct
                     source_label,
                     candidates,
                     active_candidate,
-                    pending_candidate,
+                    pending_selection,
+                    component_variants,
                     preference,
                     item_scope,
                     status,
@@ -44,7 +50,8 @@ pub(crate) fn show(ui: &mut Ui, model: &UrlSidebarModel) -> Option<UrlSidebarAct
                     source_label,
                     candidates,
                     active_candidate,
-                    pending_candidate.as_ref(),
+                    pending_selection.as_deref(),
+                    component_variants,
                     *preference,
                     *item_scope,
                     *status,
@@ -80,7 +87,8 @@ fn show_yt_dlp(
     source_label: &str,
     candidates: &[WebMediaCandidatePresentation],
     active_candidate: &WebMediaCandidatePresentation,
-    pending_candidate: Option<&WebMediaCandidatePresentation>,
+    pending_selection: Option<&UrlSidebarPendingSelection>,
+    component_variants: &WebMediaComponentVariantProjection,
     preference: WebMediaSelectionPreference,
     item_scope: UrlSidebarItemScope,
     status: UrlSidebarPlaybackStatus,
@@ -101,24 +109,43 @@ fn show_yt_dlp(
 
     ui.add_space(12.0);
     ui.label(RichText::new(candidate_section_title(candidates)).strong());
+    let mut action = None;
     if candidates.is_empty() {
         ui.label("Нет доступных playable форматов.");
-        return None;
-    }
-
-    let mut action = None;
-    let switch_in_progress = pending_candidate.is_some();
-    for (candidate_index, candidate) in candidates.iter().enumerate() {
-        let active = candidate == active_candidate;
-        let pending = pending_candidate.is_some_and(|pending| pending == candidate);
-        if show_candidate(ui, candidate, active, pending, switch_in_progress) {
-            action = Some(UrlSidebarAction::SelectCandidate {
-                generation,
-                candidate_index,
-            });
+    } else {
+        for (candidate_index, candidate) in candidates.iter().enumerate() {
+            let active = candidate == active_candidate;
+            let pending = matches!(
+                pending_selection,
+                Some(UrlSidebarPendingSelection::Candidate {
+                    candidate: pending_candidate,
+                    ..
+                }) if pending_candidate == candidate
+            );
+            if action.is_none()
+                && show_candidate(ui, candidate, active, pending, pending_selection.is_some())
+            {
+                action = Some(UrlSidebarAction::SelectCandidate {
+                    generation,
+                    candidate_index,
+                });
+            }
         }
     }
-    action
+
+    let component_action =
+        component_variants::show(ui, generation, component_variants, pending_selection);
+    choose_single_sidebar_action(action, component_action)
+}
+
+/// Один frame публикует не более одного intent; candidate сохраняет прежний приоритет.
+fn choose_single_sidebar_action(
+    candidate_action: Option<UrlSidebarAction>,
+    component_action: Option<
+        crate::web_media_stream_model::component_variants::ComponentVariantSelectionAction,
+    >,
+) -> Option<UrlSidebarAction> {
+    candidate_action.or(component_action.map(UrlSidebarAction::SelectComponentVariant))
 }
 
 fn status_grid(ui: &mut Ui, status: UrlSidebarPlaybackStatus) {
@@ -262,11 +289,11 @@ fn item_scope_label(scope: UrlSidebarItemScope) -> &'static str {
 fn safe_error_label(error: UrlSidebarSafeError) -> &'static str {
     match error {
         UrlSidebarSafeError::SourceUnavailable => "Web-источник временно недоступен.",
-        UrlSidebarSafeError::CandidateSwitchBusy => "Переключение уже выполняется.",
-        UrlSidebarSafeError::CandidateSwitchStale => {
-            "Список форматов устарел; выберите формат ещё раз."
+        UrlSidebarSafeError::SameItemSwitchBusy => "Переключение уже выполняется.",
+        UrlSidebarSafeError::SameItemSwitchStale => {
+            "Список вариантов устарел; выберите нужную строку ещё раз."
         }
-        UrlSidebarSafeError::CandidateSwitchCancelled => "Переключение отменено.",
+        UrlSidebarSafeError::SameItemSwitchCancelled => "Переключение отменено.",
     }
 }
 
@@ -329,5 +356,26 @@ mod tests {
         let source = include_str!("url_sidebar.rs");
         let panel_constructor_prefix = format!("{}{}", "Panel", "::");
         assert_eq!(source.matches(&panel_constructor_prefix).count(), 0);
+    }
+
+    #[test]
+    fn candidate_action_wins_if_candidate_and_component_click_in_same_frame() {
+        let generation = crate::web_media_stream_model::WebMediaStreamGeneration::for_test(3, 5);
+        let candidate_action = crate::web_media_stream_model::UrlSidebarAction::SelectCandidate {
+            generation,
+            candidate_index: 2,
+        };
+        let component_action =
+            crate::web_media_stream_model::component_variants::ComponentVariantSelectionAction {
+                parent_generation: generation,
+                catalog_generation: web_media_core::ComponentVariantCatalogGeneration::new(8),
+                component: web_media_core::ComponentKind::Audio,
+                variant_index: 1,
+            };
+
+        assert_eq!(
+            super::choose_single_sidebar_action(Some(candidate_action), Some(component_action),),
+            Some(candidate_action)
+        );
     }
 }

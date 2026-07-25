@@ -5,7 +5,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::{io::{ErrorKind, SeekFrom}, num::NonZeroU64};
+use std::{
+    io::{ErrorKind, SeekFrom},
+    num::NonZeroU64,
+};
 
 use symphonia_core::io::{MediaSource, ReadBytes, SeekBuffered};
 
@@ -509,12 +512,16 @@ pub type Result<T> = std::result::Result<T, AtomError>;
 
 /// Convenience function to create a decode error within an `AtomError`.
 pub(crate) fn decode_error<T>(desc: &'static str) -> Result<T> {
-    Err(AtomError::Other(symphonia_core::errors::Error::DecodeError(desc)))
+    Err(AtomError::Other(
+        symphonia_core::errors::Error::DecodeError(desc),
+    ))
 }
 
 /// Convenience function to create an unsupport feature error within an `AtomError`.
 pub(crate) fn unsupported_error<T>(feature: &'static str) -> Result<T> {
-    Err(AtomError::Other(symphonia_core::errors::Error::Unsupported(feature)))
+    Err(AtomError::Other(
+        symphonia_core::errors::Error::Unsupported(feature),
+    ))
 }
 
 /// A super-trait of `ReadBytes` and `SeekBuffered` that all readers of `AtomIterator` must
@@ -567,7 +574,10 @@ impl AtomHeader {
                     return Err(AtomError::InvalidAtomSize);
                 }
 
-                (AtomHeader::LARGE_HEADER_SIZE, NonZeroU64::new(large_atom_len))
+                (
+                    AtomHeader::LARGE_HEADER_SIZE,
+                    NonZeroU64::new(large_atom_len),
+                )
             }
             _ => {
                 // The atom size should be atleast the size of the header.
@@ -584,7 +594,12 @@ impl AtomHeader {
             return Err(AtomError::InvalidAtomSize);
         }
 
-        Ok(AtomHeader { atom_type, atom_pos, atom_len, header_len })
+        Ok(AtomHeader {
+            atom_type,
+            atom_pos,
+            atom_len,
+            header_len,
+        })
     }
 
     /// Get the atom type.
@@ -615,7 +630,8 @@ impl AtomHeader {
     ///
     /// NOTE: This size includes any UUID, version, or flags fields.
     pub fn data_size(&self) -> Option<u64> {
-        self.atom_len.map(|atom_len| atom_len.get() - u64::from(self.header_len))
+        self.atom_len
+            .map(|atom_len| atom_len.get() - u64::from(self.header_len))
     }
 }
 
@@ -641,7 +657,12 @@ impl<R: ReadAtom> AtomIterator<R> {
     /// Instantiate a new atom iterator.
     pub(crate) fn new(reader: R, len: Option<u64>) -> Self {
         let stack = Vec::with_capacity(MAX_ITERATION_DEPTH);
-        AtomIterator { reader, stack, pending: None, len }
+        AtomIterator {
+            reader,
+            stack,
+            pending: None,
+            len,
+        }
     }
 
     /// Consume the iterator and return the inner reader.
@@ -669,20 +690,22 @@ impl<R: ReadAtom> AtomIterator<R> {
         }
 
         // Get the parent atom's end position, if available
-        let parent_end = self.stack.last().map(|parent| parent.end()).unwrap_or(self.len);
+        let parent_end = self
+            .stack
+            .last()
+            .map(|parent| parent.end())
+            .unwrap_or(self.len);
 
         if let Some(parent_end) = parent_end {
             let pos = self.reader.pos();
 
             if pos == parent_end {
                 return Ok(None);
-            }
-            else if pos > parent_end {
+            } else if pos > parent_end {
                 // The parent atom was overrun.
                 log::warn!("overran atom by {} bytes", pos - parent_end);
                 return Err(AtomError::Overrun);
-            }
-            else if parent_end - pos < u64::from(AtomHeader::HEADER_SIZE) {
+            } else if parent_end - pos < u64::from(AtomHeader::HEADER_SIZE) {
                 // Ненулевой хвост короче header-а означает обрыв объявленной структуры.
                 return Err(AtomError::UnexpectedEndOfAtom);
             }
@@ -703,7 +726,13 @@ impl<R: ReadAtom> AtomIterator<R> {
         // If the atom has an unknown size (it extends to the end of the file), then all parent
         // atoms must also have an unknown size. In practice, only top-level atoms should have an
         // unknown size.
-        if atom.size().is_none() && self.stack.iter().rev().any(|parent| parent.size().is_some()) {
+        if atom.size().is_none()
+            && self
+                .stack
+                .iter()
+                .rev()
+                .any(|parent| parent.size().is_some())
+        {
             // Seek back to the start of the atom since it is impossible to proceed past this.
             self.reader.seek_buffered(atom.pos());
             return Err(AtomError::UnexpectedUnknownSizeAtom);
@@ -749,7 +778,9 @@ impl<R: ReadAtom> AtomIterator<R> {
                 if pos < end {
                     // The atom has unread data, skip it.
                     // log::debug!("skipping {} unread bytes", end - pos);
-                    self.reader.ignore_bytes(end - pos).map_err(structural_io_error)?;
+                    self.reader
+                        .ignore_bytes(end - pos)
+                        .map_err(structural_io_error)?;
                 }
             }
             _ => {
@@ -835,16 +866,14 @@ impl<R: ReadAtom> AtomIterator<R> {
             if self.reader.is_seekable() {
                 // Fallback to a slow seek if the stream is seekable.
                 self.reader.seek(SeekFrom::Start(pos))?;
-            }
-            else if pos > self.reader.pos() {
+            } else if pos > self.reader.pos() {
                 // The stream is not seekable but the desired seek position is ahead of the reader's
                 // current position, thus the seek can be emulated by ignoring the bytes up to the
                 // the desired seek position.
                 self.reader
                     .ignore_bytes(pos - self.reader.pos())
                     .map_err(structural_io_error)?;
-            }
-            else {
+            } else {
                 // The stream is not seekable and the desired seek position falls outside the lower
                 // bound of the buffer cache. This sample cannot be read.
                 return Err(AtomError::SeekOutOfRange);
@@ -891,7 +920,10 @@ impl<R: ReadAtom> AtomIterator<R> {
         self.seek_reader(pos)?;
 
         // Do the read.
-        let data = self.reader.read_boxed_slice_exact(len).map_err(structural_io_error)?;
+        let data = self
+            .reader
+            .read_boxed_slice_exact(len)
+            .map_err(structural_io_error)?;
 
         Ok(data)
     }
@@ -905,7 +937,11 @@ impl<R: ReadAtom> AtomIterator<R> {
     /// Ensure there is no pending atom read.
     #[inline]
     fn ensure_no_pending_atom(&self) -> Result<()> {
-        if self.pending.is_some() { Err(AtomError::UnexpectedReadOperation) } else { Ok(()) }
+        if self.pending.is_some() {
+            Err(AtomError::UnexpectedReadOperation)
+        } else {
+            Ok(())
+        }
     }
 
     /// Ensure there is no pending atom read, and that there is enough data left in the parent atom
@@ -942,7 +978,9 @@ impl<R: ReadAtom> AtomIterator<R> {
     #[inline]
     pub(crate) fn read_boxed_slice_exact(&mut self, len: usize) -> Result<Box<[u8]>> {
         self.ensure_parent_atom_data(len as u64)?;
-        self.reader.read_boxed_slice_exact(len).map_err(structural_io_error)
+        self.reader
+            .read_boxed_slice_exact(len)
+            .map_err(structural_io_error)
     }
 
     /// Ignores the specified number of bytes from the stream or returns an error.

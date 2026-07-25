@@ -1,6 +1,6 @@
 use super::*;
 
-fn candidate(height: Option<u32>, audio_only: bool) -> WebMediaCandidatePresentation {
+pub(super) fn candidate(height: Option<u32>, audio_only: bool) -> WebMediaCandidatePresentation {
     WebMediaCandidatePresentation {
         layout: if audio_only {
             StreamLayoutKind::AudioOnly
@@ -28,12 +28,28 @@ fn configuration(
 ) -> WebMediaStreamConfiguration {
     WebMediaStreamConfiguration {
         generation,
+        active_parent: exact_parent(generation),
+        active_parent_selection: ActiveParentCandidateSelection::ProjectionFixture,
         candidates: candidates.into(),
         candidate_selections: Arc::from([]),
         active_candidate,
         preference: WebMediaSelectionPreference::GlobalBestPlayable,
+        component_variants: WebMediaComponentVariantConfiguration::Unavailable,
         hls_subtitle_renditions: Arc::from([]),
     }
+}
+
+fn exact_parent(generation: WebMediaStreamGeneration) -> ExactSelectionIdentity {
+    let source = web_media_core::SourceIdentity::new(generation.source);
+    let exact = web_media_core::CandidateIdentity::new(
+        source,
+        web_media_core::ExtractionGeneration::new(generation.extraction),
+        web_media_core::CandidateFormatIdentity::new("active-parent")
+            .expect("fixture exact identity валидна"),
+    );
+    let semantic = web_media_core::SemanticIdentity::new(source, "semantic-parent")
+        .expect("fixture semantic identity валидна");
+    ExactSelectionIdentity::new(exact, semantic).expect("fixture source lineage совпадает")
 }
 
 #[test]
@@ -118,8 +134,8 @@ fn one_and_many_candidate_inventory_preserve_active_projection() {
 #[test]
 fn stale_generation_hides_pending_candidate_and_safe_error() {
     let controller = UrlSidebarController {
-        pending_candidate: Some(PendingCandidateState {
-            generation: WebMediaStreamGeneration {
+        pending_selection: Some(UrlSidebarPendingSelection::Candidate {
+            parent_generation: WebMediaStreamGeneration {
                 source: 4,
                 extraction: 8,
             },
@@ -149,14 +165,14 @@ fn stale_generation_hides_pending_candidate_and_safe_error() {
         binding(UrlSidebarItemScope::SingleItem),
     );
     let UrlSidebarModel::YtDlp {
-        pending_candidate,
+        pending_selection,
         safe_error,
         ..
     } = model
     else {
         panic!("ожидалась YtDlp model");
     };
-    assert_eq!(pending_candidate, None);
+    assert_eq!(pending_selection, None);
     assert_eq!(safe_error, None);
 }
 
@@ -170,8 +186,8 @@ fn current_generation_exposes_pending_candidate_and_bounded_failure() {
     let pending = candidate(Some(720), false);
     let configuration = configuration(generation, vec![pending.clone(), active.clone()], active);
     let controller = UrlSidebarController {
-        pending_candidate: Some(PendingCandidateState {
-            generation,
+        pending_selection: Some(UrlSidebarPendingSelection::Candidate {
+            parent_generation: generation,
             candidate: pending.clone(),
         }),
         safe_error: Some(SafeErrorState {
@@ -188,14 +204,19 @@ fn current_generation_exposes_pending_candidate_and_bounded_failure() {
         &PlayerSnapshot::empty(),
         binding(UrlSidebarItemScope::SingleItem),
     );
+    let UrlSidebarModel::YtDlp {
+        pending_selection,
+        safe_error,
+        ..
+    } = model
+    else {
+        panic!("ожидалась YtDlp model");
+    };
     assert!(matches!(
-        model,
-        UrlSidebarModel::YtDlp {
-            pending_candidate: Some(candidate),
-            safe_error: Some(UrlSidebarSafeError::SourceUnavailable),
-            ..
-        } if candidate == pending
+        pending_selection.as_deref(),
+        Some(UrlSidebarPendingSelection::Candidate { candidate, .. }) if candidate == &pending
     ));
+    assert_eq!(safe_error, Some(UrlSidebarSafeError::SourceUnavailable));
 }
 
 #[test]
@@ -205,26 +226,37 @@ fn candidate_switch_selector_is_single_flight_and_pre_barrier_failure_restores_i
         extraction: 4,
     };
     let pending = candidate(Some(720), false);
+    let pending_selection = UrlSidebarPendingSelection::Candidate {
+        parent_generation: generation,
+        candidate: pending,
+    };
     let mut controller = UrlSidebarController::default();
 
     assert_eq!(
-        controller.record_candidate_switch_started(generation, pending.clone()),
+        controller.record_switch_started(pending_selection.clone()),
         Ok(())
     );
     assert_eq!(
-        controller.record_candidate_switch_started(generation, pending),
+        controller.record_switch_started(pending_selection.clone()),
         Err(UrlSidebarTransitionError::Busy)
     );
     assert!(
-        controller.record_candidate_switch_failed(
-            generation,
-            UrlSidebarSafeError::CandidateSwitchCancelled,
-        )
+        !controller
+            .record_switch_start_rejected(generation, UrlSidebarSafeError::SameItemSwitchBusy,)
     );
-    assert!(controller.pending_candidate.is_none());
+    assert_eq!(
+        controller.pending_selection.as_ref(),
+        Some(&pending_selection)
+    );
+    assert!(controller.record_switch_failed(
+        &pending_selection,
+        generation,
+        UrlSidebarSafeError::SameItemSwitchCancelled,
+    ));
+    assert!(controller.pending_selection.is_none());
     assert_eq!(
         controller.safe_error.as_ref().map(|error| error.error),
-        Some(UrlSidebarSafeError::CandidateSwitchCancelled)
+        Some(UrlSidebarSafeError::SameItemSwitchCancelled)
     );
 }
 
@@ -241,16 +273,15 @@ fn detached_installed_switch_publishes_runtime_override_for_fresh_generation() {
     let active = candidate(Some(1440), false);
     let configuration = configuration(installed_generation, vec![active.clone()], active);
     let mut controller = UrlSidebarController::default();
+    let pending_selection = UrlSidebarPendingSelection::Candidate {
+        parent_generation: previous_generation,
+        candidate: candidate(Some(1440), false),
+    };
     controller
-        .record_candidate_switch_started(previous_generation, candidate(Some(1440), false))
+        .record_switch_started(pending_selection)
         .expect("selector должен стать pending");
 
-    assert!(controller.record_candidate_switch_installed(
-        previous_generation,
-        installed_generation,
-        None,
-        Some(1440),
-    ));
+    controller.record_candidate_switch_installed(installed_generation, None, Some(1440));
     let model = controller.model_from_source(
         UrlSidebarSourceProjection::YtDlp {
             source_label: "example.test",
@@ -267,7 +298,48 @@ fn detached_installed_switch_publishes_runtime_override_for_fresh_generation() {
         model,
         UrlSidebarModel::YtDlp {
             preference: WebMediaSelectionPreference::ItemOverride(Some(1440)),
-            pending_candidate: None,
+            pending_selection: None,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn component_completion_keeps_existing_item_override_unchanged() {
+    let installed_generation = WebMediaStreamGeneration {
+        source: 23,
+        extraction: 9,
+    };
+    let active = candidate(Some(1440), false);
+    let configuration = configuration(installed_generation, vec![active.clone()], active);
+    let mut controller = UrlSidebarController {
+        pending_selection: None,
+        safe_error: None,
+        item_override: Some(ItemOverrideState {
+            source_lineage: installed_generation.source,
+            item_id: None,
+            preferred_height: Some(1440),
+        }),
+    };
+    controller.record_component_switch_installed();
+
+    let model = controller.model_from_source(
+        UrlSidebarSourceProjection::YtDlp {
+            source_label: "example.test",
+            configuration: &configuration,
+        },
+        &PlayerSnapshot::empty(),
+        UrlSidebarItemBinding {
+            scope: UrlSidebarItemScope::Detached,
+            item_id: None,
+        },
+    );
+
+    assert!(matches!(
+        model,
+        UrlSidebarModel::YtDlp {
+            preference: WebMediaSelectionPreference::ItemOverride(Some(1440)),
+            pending_selection: None,
             ..
         }
     ));
@@ -284,7 +356,7 @@ fn item_override_requires_exact_item_and_source_lineage() {
     let active = candidate(Some(1080), false);
     let configuration = configuration(generation, vec![active.clone()], active);
     let controller = UrlSidebarController {
-        pending_candidate: None,
+        pending_selection: None,
         safe_error: None,
         item_override: Some(ItemOverrideState {
             source_lineage: generation.source,

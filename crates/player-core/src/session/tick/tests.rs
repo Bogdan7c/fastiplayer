@@ -28,6 +28,8 @@ use crate::{
     PlayerSession, PresentFrameResourceProviderHandle, StartedVideoBackend, WorkerWakeupReason,
 };
 
+mod audio_packet_window;
+
 /// Scripted demuxer для focused admission tests без реального container backend-а.
 struct AdmissionTestDemuxer {
     /// Track list хранится внутри fake, чтобы выполнить `Demuxer::tracks` contract.
@@ -225,7 +227,7 @@ fn enqueue_pending_audio_packet(session: &mut PlayerSession, track_id: TrackId) 
     let generation = session.pipeline.seek_generation();
     session
         .pipeline
-        .enqueue_pending_audio_packet(PendingAudioPacket::new(
+        .enqueue_pending_audio_packet(PendingAudioPacket::new_unbounded(
             track_id,
             Duration::ZERO,
             None,
@@ -2070,7 +2072,7 @@ fn demux_audio_catchup_preserves_runway_until_stream_provides_proven_keyframe() 
     let demuxer = AdmissionTestDemuxer::with_packets(
         tracks.clone(),
         [
-            media_core::Packet::new(
+            media_core::Packet::new_unbounded(
                 selected_video_track_id,
                 TrackKind::Video,
                 Duration::from_millis(10),
@@ -2078,7 +2080,7 @@ fn demux_audio_catchup_preserves_runway_until_stream_provides_proven_keyframe() 
                 false,
                 Bytes::from_static(b"scan-interframe-1"),
             ),
-            media_core::Packet::new(
+            media_core::Packet::new_unbounded(
                 selected_video_track_id,
                 TrackKind::Video,
                 Duration::from_millis(11),
@@ -2086,7 +2088,7 @@ fn demux_audio_catchup_preserves_runway_until_stream_provides_proven_keyframe() 
                 false,
                 Bytes::from_static(b"scan-interframe-2"),
             ),
-            media_core::Packet::new(
+            media_core::Packet::new_unbounded(
                 selected_audio_track_id,
                 TrackKind::Audio,
                 Duration::from_millis(12),
@@ -2094,7 +2096,7 @@ fn demux_audio_catchup_preserves_runway_until_stream_provides_proven_keyframe() 
                 false,
                 Bytes::from_static(b"catchup-audio"),
             ),
-            media_core::Packet::new(
+            media_core::Packet::new_unbounded(
                 selected_video_track_id,
                 TrackKind::Video,
                 recovery_keyframe_pts,
@@ -2204,7 +2206,7 @@ fn normal_rate_audio_pressure_never_enters_video_backlog_recovery() {
     let packet_read_count = Arc::new(AtomicUsize::new(0));
     let demuxer = AdmissionTestDemuxer::with_packets(
         Vec::new(),
-        [media_core::Packet::new(
+        [media_core::Packet::new_unbounded(
             selected_video_track_id,
             TrackKind::Video,
             Duration::from_millis(10),
@@ -2265,7 +2267,7 @@ fn video_backlog_recovery_scan_limit_bounds_packets_and_tick_telemetry() {
     let selected_audio_track_id = TrackId::new(2);
     let packet_read_count = Arc::new(AtomicUsize::new(0));
     let demux_packets = (0..100u64).map(|packet_index| {
-        media_core::Packet::new(
+        media_core::Packet::new_unbounded(
             selected_video_track_id,
             TrackKind::Video,
             Duration::from_millis(100 + packet_index),
@@ -2381,7 +2383,7 @@ fn production_recovery_scan_reaches_keyframe_after_target_asset_long_gop() {
     let packet_read_count = Arc::new(AtomicUsize::new(0));
     let mut demux_packets = (0..420u64)
         .map(|packet_index| {
-            media_core::Packet::new(
+            media_core::Packet::new_unbounded(
                 selected_video_track_id,
                 TrackKind::Video,
                 Duration::from_millis(100 + packet_index),
@@ -2392,7 +2394,7 @@ fn production_recovery_scan_reaches_keyframe_after_target_asset_long_gop() {
         })
         .collect::<Vec<_>>();
     let recovery_keyframe_pts = Duration::from_millis(520);
-    demux_packets.push(media_core::Packet::new(
+    demux_packets.push(media_core::Packet::new_unbounded(
         selected_video_track_id,
         TrackKind::Video,
         recovery_keyframe_pts,
@@ -2816,7 +2818,7 @@ fn installed_demux_retry_avoids_busy_spin_and_recovers_buffering_on_packet() {
     let read_count = Arc::new(AtomicUsize::new(0));
     let retry_hint = media_core::DemuxRetryHint::new(Duration::from_millis(20))
         .expect("focused retry delay должен быть допустим");
-    let recovered_packet = media_core::Packet::new(
+    let recovered_packet = media_core::Packet::new_unbounded(
         media_core::TrackId::new(7),
         TrackKind::Video,
         Duration::ZERO,
@@ -2965,7 +2967,7 @@ fn route_demuxed_audio_packet_preserves_shared_payload_and_metadata() {
     let payload = Bytes::from(vec![0x4f, 0x70, 0x75, 0x73]);
     let payload_ptr = payload.as_ptr();
     let time_base = media_core::TimeBase::new(1, 48_000).expect("valid audio time base");
-    let packet = media_core::Packet::new(
+    let packet = media_core::Packet::new_unbounded(
         TrackId::new(2),
         TrackKind::Audio,
         Duration::from_millis(42),
@@ -2998,25 +3000,29 @@ fn route_demuxed_audio_packet_preserves_shared_payload_and_metadata() {
         .pop_pending_audio_packet_front()
         .expect("audio packet должен попасть в pending audio queue");
 
-    assert_eq!(pending_packet.track_id, TrackId::new(2));
-    assert_eq!(pending_packet.pts, Duration::from_millis(42));
+    assert_eq!(pending_packet.track_id(), TrackId::new(2));
+    assert_eq!(pending_packet.pts(), Duration::from_millis(42));
     assert_eq!(
-        pending_packet.generation,
+        pending_packet.generation(),
         session.pipeline.seek_generation()
     );
-    assert_eq!(pending_packet.timing.pts_units(), 2_016);
-    assert_eq!(pending_packet.timing.dts_units(), Some(1_920));
-    assert_eq!(pending_packet.timing.duration_units(), Some(960));
+    assert_eq!(
+        pending_packet.presentation_window(),
+        media_core::PacketPresentationWindow::Unbounded
+    );
+    assert_eq!(pending_packet.timing().pts_units(), 2_016);
+    assert_eq!(pending_packet.timing().dts_units(), Some(1_920));
+    assert_eq!(pending_packet.timing().duration_units(), Some(960));
     assert_eq!(
         pending_packet
-            .timing
+            .timing()
             .time_base()
             .expect("audio pending packet должен сохранить raw time base")
             .denom(),
         48_000
     );
-    assert_eq!(pending_packet.encoded_bytes.as_ptr(), payload_ptr);
-    assert_eq!(&pending_packet.encoded_bytes[..], b"Opus");
+    assert_eq!(pending_packet.encoded_bytes().as_ptr(), payload_ptr);
+    assert_eq!(pending_packet.encoded_bytes(), b"Opus");
 }
 
 #[test]
@@ -3025,7 +3031,7 @@ fn route_demuxed_video_packet_preserves_shared_payload_keyframe_and_pts() {
     let payload = Bytes::from(vec![0x82, 0x49, 0x83, 0x42]);
     let payload_ptr = payload.as_ptr();
     let time_base = media_core::TimeBase::new(1, 90_000).expect("valid video time base");
-    let packet = media_core::Packet::new(
+    let packet = media_core::Packet::new_unbounded(
         TrackId::new(1),
         TrackKind::Video,
         Duration::from_millis(120),

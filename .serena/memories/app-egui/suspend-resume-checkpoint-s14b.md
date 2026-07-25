@@ -28,6 +28,16 @@ Session 14B completed PASS on 2026-07-15. This memory extends `mem:app-egui/play
 - A genuinely new explicit strong open first terminal-resolves any in-progress resume with typed Superseded cause, then clears the checkpoint. Every successful external strong install registers a new controller lineage together with its actual stable install intent; playlist-reserved installs retain their existing commit path.
 - Exact selected YouTube identity is reopened through the service-owned selected-stream resolver, preserving live/non-seekable fallback without choosing a different stream silently.
 
+## S36C3A component selection preservation (2026-07-24)
+
+- Exact yt-dlp suspend/resume now reconstructs the same parent candidate with the Installed component selection represented only by refresh-stable semantic identities. No old exact component/catalog generation crosses the reopen boundary.
+- An unavailable component catalog preserves provider-default semantics; a requested semantic selection that cannot be supplied/rematched fails before authorization and keeps the suspend checkpoint for the existing explicit Retry path. Live `KeepStart` and player-owned restore semantics are unchanged.
+
+## S36C3B pending component switch at suspend (2026-07-24)
+
+- Suspend resolves the generalized `PendingSameItemSwitch`, so candidate and component transactions follow the same lossless pre-barrier cancel versus commit-winner drain protocol. There is still one strong-open lifecycle slot and no hidden component worker.
+- If a component switch wins the barrier, fresh Installed configuration is rebound before checkpoint capture; subsequent suspend/resume preserves its semantic component selection through the S36C3A path. Height preference ownership remains unchanged.
+
 ## Player-core boundaries
 
 - `InstalledMediaRelease` and its request-owned receipt target exact request+instance. Outcomes are Applied, Absent, StaleInstance, Failed, and MissingOwnerOutcome at receipt level. Validation and release occur in one serialized player-owner turn, so a late cleanup cannot affect newer media.

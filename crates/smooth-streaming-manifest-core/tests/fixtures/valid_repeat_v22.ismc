@@ -1,0 +1,6 @@
+<SmoothStreamingMedia MajorVersion="2" MinorVersion="2" TimeScale="10" Duration="20" StreamIndexCount="1">
+  <StreamIndex Type="video" Chunks="2" QualityLevels="1" Url="QualityLevels({bitrate})/Fragments(video={start_time})">
+    <QualityLevel Index="0" Bitrate="1000" FourCC="AVC1" MaxWidth="640" MaxHeight="360" CodecPrivateData="000000016742000A0000000168CE"/>
+    <c t="0" d="10" r="2"/>
+  </StreamIndex>
+</SmoothStreamingMedia>

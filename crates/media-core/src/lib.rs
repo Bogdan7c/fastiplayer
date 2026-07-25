@@ -10,6 +10,7 @@ mod demux;
 mod dynamic_timeline;
 mod metadata;
 mod packet;
+mod presentation_window;
 mod time;
 mod track;
 
@@ -30,6 +31,10 @@ pub use metadata::{
     TvEpisodeNumber, TvSeasonNumber,
 };
 pub use packet::{Packet, PacketKeyframe};
+pub use presentation_window::{
+    ExactPresentationWindow, ExactPresentationWindowError, PacketPresentationWindow,
+    PacketPresentationWindowAssignmentError,
+};
 pub use time::{
     MediaDuration, MediaTime, TimeBase, TimelineMode, TimelineNotSeekableReason,
     TimelinePreviewState, TimelineRange, TimelineSnapshot, TrackDuration, TrackDurationUnits,

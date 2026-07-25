@@ -7,8 +7,7 @@
 use symphonia_core::errors::{Error, Result, decode_error};
 
 use crate::atoms::{
-    Co64Atom, MoofAtom, MoovAtom, StcoAtom, TrafAtom, TrunAtom, hdlr::HandlerType,
-    stsz::SampleSize,
+    Co64Atom, MoofAtom, MoovAtom, StcoAtom, TrafAtom, TrunAtom, hdlr::HandlerType, stsz::SampleSize,
 };
 
 use std::ops::Range;
@@ -172,13 +171,16 @@ impl MoofSegment {
 
     /// Возвращает exact handler track-а через container track id, не угадывая его по codec-у.
     fn track_handler_type(&self, track_num: usize) -> Result<&HandlerType> {
-        let track_id = self.moov.mvex.as_ref().expect("mvex atom present").trexs[track_num].track_id;
+        let track_id =
+            self.moov.mvex.as_ref().expect("mvex atom present").trexs[track_num].track_id;
         self.moov
             .traks
             .iter()
             .find(|track| track.tkhd.id == track_id)
             .map(|track| &track.mdia.hdlr.handler_type)
-            .ok_or(Error::DecodeError("isomp4: fragment track has no matching handler"))
+            .ok_or(Error::DecodeError(
+                "isomp4: fragment track has no matching handler",
+            ))
     }
 }
 
@@ -204,9 +206,7 @@ fn fragment_seek_sample_rel(
             trun.sample_count.saturating_sub(1)
         };
 
-        if let Some(sync_sample_rel) =
-            trun.sync_sample_at_or_before(run_candidate, default_flags)
-        {
+        if let Some(sync_sample_rel) = trun.sync_sample_at_or_before(run_candidate, default_flags) {
             return Some(run_start + sync_sample_rel);
         }
     }

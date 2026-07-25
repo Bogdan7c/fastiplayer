@@ -186,9 +186,9 @@ impl FrameSettingsRuntimeAdapter<'_> {
                     let selection_intent = if config.reselect_yt_dlp_stream {
                         crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable
                     } else {
-                        crate::web_media_open::YtDlpCandidateOpenIntent::exact(
+                        crate::web_media_open::YtDlpCandidateOpenIntent::exact_preserving_installed_stream_configuration(
                             candidate_selection,
-                            stream_configuration.preference(),
+                            &stream_configuration,
                         )
                     };
                     let system_capabilities =

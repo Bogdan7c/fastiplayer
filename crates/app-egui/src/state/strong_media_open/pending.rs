@@ -21,6 +21,14 @@ pub(crate) struct PendingStrongMediaOpen {
     phase: PendingStrongMediaOpenPhase,
 }
 
+impl PendingStrongMediaOpen {
+    /// Возвращает exact coordinator request для outer consumer correlation.
+    #[must_use]
+    pub(crate) const fn request_id(&self) -> MediaOpenRequestId {
+        self.request_id
+    }
+}
+
 struct PendingStrongMediaStaging {
     video_resource_port: player_core::MediaInstallVideoResourcePort,
     admission: PendingStrongMediaAdmission,

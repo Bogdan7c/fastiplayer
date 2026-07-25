@@ -68,7 +68,11 @@ impl Atom for Av1CAtom {
             _ => return decode_error("isomp4 (av1C): reserved seq_profile"),
         };
 
-        Ok(Self { extra_data, profile, level })
+        Ok(Self {
+            extra_data,
+            profile,
+            level,
+        })
     }
 }
 

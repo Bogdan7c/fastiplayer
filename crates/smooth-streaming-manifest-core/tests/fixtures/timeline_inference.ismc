@@ -1,0 +1,7 @@
+<SmoothStreamingMedia MajorVersion="2" MinorVersion="2" Duration="30000000">
+  <StreamIndex Type="audio" Name="audio-main" Language="en-US" TimeScale="10" Chunks="3" QualityLevels="1" Url="q({bitrate})/a({start time})">
+    <QualityLevel Index="7" Bitrate="96000" FourCC="AACL" SamplingRate="48000" Channels="2" BitsPerSample="16" PacketSize="4" AudioTag="255"/>
+    <c t="0" r="2"/>
+    <c t="20" d="10"/>
+  </StreamIndex>
+</SmoothStreamingMedia>

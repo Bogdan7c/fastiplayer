@@ -148,11 +148,7 @@ impl TrunAtom {
     }
 
     /// Находит ближайший доказанный sync sample не позднее указанного sample этого run-а.
-    pub fn sync_sample_at_or_before(
-        &self,
-        sample_num_rel: u32,
-        default_flags: u32,
-    ) -> Option<u32> {
+    pub fn sync_sample_at_or_before(&self, sample_num_rel: u32, default_flags: u32) -> Option<u32> {
         if self.sample_count == 0 {
             return None;
         }

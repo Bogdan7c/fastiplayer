@@ -17,6 +17,11 @@ use super::{
 const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// Одно owned сообщение bounded queue.
+///
+/// `DemuxReadEvent` намеренно остаётся inline: queue уже ограничена по числу
+/// сообщений и encoded bytes, а `Box` добавил бы heap allocation на каждый
+/// packet только ради выравнивания размеров двух внутренних вариантов.
+#[allow(clippy::large_enum_variant)]
 pub(super) enum ProgressiveMessage {
     /// Exact demux event, прочитанный worker-ом.
     Event(DemuxReadEvent),

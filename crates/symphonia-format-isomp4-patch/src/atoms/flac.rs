@@ -53,7 +53,10 @@ impl Atom for FlacAtom {
         let extra_data = it.read_boxed_slice_exact(block_header.block_len as usize)?;
         let stream_info = StreamInfo::read(&mut BufReader::new(&extra_data))?;
 
-        Ok(FlacAtom { stream_info, extra_data })
+        Ok(FlacAtom {
+            stream_info,
+            extra_data,
+        })
     }
 }
 

@@ -552,6 +552,8 @@ pub(crate) enum MediaPreparationFailureKind {
     LocalSourceChanged,
     DirectOpen,
     YtDlpOpen,
+    /// Fresh component catalog отсутствует либо не прошёл typed rematch/install.
+    ComponentCatalogUnavailable,
     Cancelled,
     StaleResult,
     WorkerPanicked,

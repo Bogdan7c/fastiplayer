@@ -299,7 +299,7 @@ fn seek_transaction_clears_pending_packets_and_calls_demux_seek() {
     );
     session
         .pipeline
-        .enqueue_pending_audio_packet(PendingAudioPacket::new(
+        .enqueue_pending_audio_packet(PendingAudioPacket::new_unbounded(
             TrackId::new(2),
             Duration::ZERO,
             None,

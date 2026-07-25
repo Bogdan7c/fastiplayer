@@ -228,7 +228,7 @@ fn detached_same_item_switch_rebinds_instance_without_inventing_queue_current() 
     let replacement_source = ActiveMediaSource::LocalFile("replacement.flac".into());
 
     let active_after = runtime
-        .complete_same_item_candidate_switch(
+        .complete_same_item_media_switch(
             active_before,
             MediaInstanceId::from_non_zero(non_zero(73)),
             binding,

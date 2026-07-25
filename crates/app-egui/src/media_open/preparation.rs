@@ -110,7 +110,7 @@ pub(super) fn prepare_source(
             )
             .map_err(|error| {
                 tracing::warn!(source = %safe_label, error = %error, "Подготовка YtDlp media завершилась ошибкой");
-                MediaPreparationFailureKind::YtDlpOpen
+                classify_yt_dlp_preparation_failure(&error)
             })?;
             if cancellation.is_cancelled() {
                 return Err(MediaPreparationFailureKind::Cancelled);
@@ -157,6 +157,18 @@ pub(super) fn prepare_source(
                 },
             })
         }
+    }
+}
+
+/// Сохраняет точную typed причину component finalization через anyhow context chain.
+fn classify_yt_dlp_preparation_failure(error: &anyhow::Error) -> MediaPreparationFailureKind {
+    if error
+        .downcast_ref::<crate::web_media_open::ComponentVariantFinalizationError>()
+        .is_some()
+    {
+        MediaPreparationFailureKind::ComponentCatalogUnavailable
+    } else {
+        MediaPreparationFailureKind::YtDlpOpen
     }
 }
 
@@ -218,8 +230,11 @@ mod tests {
     use player_core::PreparedMediaTimelineMode;
 
     use super::{
-        merge_yt_dlp_playlist_metadata, prepare_yt_dlp_player_media, service_duration_for_timeline,
+        classify_yt_dlp_preparation_failure, merge_yt_dlp_playlist_metadata,
+        prepare_yt_dlp_player_media, service_duration_for_timeline,
     };
+    use crate::media_open::MediaPreparationFailureKind;
+    use crate::web_media_open::ComponentVariantFinalizationError;
 
     #[derive(Default)]
     struct LiveFakeDemuxer;
@@ -274,6 +289,38 @@ mod tests {
         assert_eq!(duration, Some(Duration::from_secs(91)));
         assert_eq!(metadata.title.as_deref(), Some("Название из контейнера"));
         assert_eq!(metadata.artists, ["Автор".to_string()]);
+    }
+
+    #[test]
+    fn typed_component_failure_survives_anyhow_context_without_string_parsing() {
+        let typed_failures = [
+            ComponentVariantFinalizationError::ComponentCatalogUnavailable,
+            ComponentVariantFinalizationError::SemanticRematch(
+                web_media_core::ComponentVariantError::LayoutMismatch,
+            ),
+            ComponentVariantFinalizationError::Installation(
+                crate::web_media_stream_model::component_variants::ComponentVariantInstallationError::ActiveParentMismatch,
+            ),
+        ];
+
+        for typed_failure in typed_failures {
+            let error =
+                anyhow::Error::new(typed_failure).context("наружный YtDlp preparation context");
+            assert_eq!(
+                classify_yt_dlp_preparation_failure(&error),
+                MediaPreparationFailureKind::ComponentCatalogUnavailable
+            );
+        }
+    }
+
+    #[test]
+    fn unrelated_ytdlp_failure_keeps_generic_classification() {
+        let error = anyhow::anyhow!("обычная provider ошибка");
+
+        assert_eq!(
+            classify_yt_dlp_preparation_failure(&error),
+            MediaPreparationFailureKind::YtDlpOpen
+        );
     }
 
     #[test]

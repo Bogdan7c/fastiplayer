@@ -40,10 +40,13 @@ readonly -a WORKSPACE_CRATE_DIRECTORIES=(
     crates/web-media-http
     crates/web-media-adaptive
     crates/web-media-dash
+    crates/web-media-smooth
     crates/web-media-hls
     crates/web-media-transport-api
     crates/bounded-xml-reader
     crates/dash-mpd-core
+    crates/smooth-streaming-manifest-core
+    crates/smooth-streaming-fmp4
     crates/player-core
     crates/bounded-work-executor
     crates/atomic-file-store
@@ -169,8 +172,8 @@ run_format_guardrails() {
 run_dependency_patches() {
     # Inventory проверяется до compile, чтобы structural failure был понятнее Cargo errors.
     run_step "dependency patch inventory" python3 "${SCRIPT_DIRECTORY}/check-dependency-patches.py"
-    # Три dependent crates покрывают VA-API, MP4/Matroska demux и AAC audio boundaries.
-    run_step "dependency patch integration tests" cargo test -p video-vaapi -p symphonia-demux -p audio --locked
+    # Dependent crates покрывают VA-API, MP4/Matroska demux, AAC audio, Smooth fMP4 adapter и preparation boundary.
+    run_step "dependency patch integration tests" cargo test -p video-vaapi -p symphonia-demux -p audio -p smooth-streaming-fmp4 -p web-media-smooth --locked
 }
 
 # Функция запускает единый dependency-health boundary.

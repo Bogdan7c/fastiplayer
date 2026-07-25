@@ -257,7 +257,7 @@ impl FlvDemuxer {
             .saturating_add(i128::from(encoded.composition_offset_ms));
         let presentation_ms = u64::try_from(presentation_ms.max(0)).unwrap_or(u64::MAX);
         let dts = Duration::from_millis(decoded_timestamp_ms);
-        let packet = Packet::new_with_keyframe(
+        let packet = Packet::new_with_keyframe_unbounded(
             encoded.track_id,
             encoded.kind,
             Duration::from_millis(presentation_ms),

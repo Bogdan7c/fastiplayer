@@ -33,6 +33,7 @@ use crate::{
 use video_core::VideoDecoderThreadHandle;
 mod audio;
 mod audio_clock_mapping;
+mod audio_packet_window;
 mod media_slots;
 mod render_resources;
 mod retired_video_decoders;
@@ -42,6 +43,7 @@ mod video_backlog_recovery;
 mod video_decoder;
 
 use audio_clock_mapping::{AudioClockMediaMapping, PlannedAudioOutputSpan};
+pub(crate) use audio_packet_window::PendingAudioPacket;
 use video_backlog_recovery::VideoBacklogRecoveryState;
 pub(crate) use video_backlog_recovery::{
     VideoBacklogRecoveryRouteOutcome, VideoBacklogRecoveryScanLimit,
@@ -386,66 +388,6 @@ impl MonotonicMediaClockAnchor {
         self.media_position
             .checked_add(elapsed_media_time)
             .unwrap_or(Duration::MAX)
-    }
-}
-
-/// Сырой audio packet, который ждёт decode из-за backpressure audio buffer.
-pub(crate) struct PendingAudioPacket {
-    /// Track ID нужен, чтобы не отправить packet неактивного audio track в decoder.
-    pub(crate) track_id: TrackId,
-
-    /// Presentation timestamp packet-а на абсолютной media timeline.
-    pub(crate) pts: Duration,
-
-    /// Raw packet timing в container units для decoder boundary.
-    pub(crate) timing: audio_core::AudioPacketTiming,
-
-    /// Seek generation, в котором packet был прочитан из demuxer.
-    pub(crate) generation: u64,
-
-    /// Encoded audio bytes владеют shared payload-ом без копии между demuxer и player queue.
-    pub(crate) encoded_bytes: Bytes,
-}
-
-impl PendingAudioPacket {
-    /// Создаёт ожидающий audio packet с явным track id и codec bytes.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) fn new(
-        track_id: TrackId,
-        pts: Duration,
-        _dts: Option<Duration>,
-        _duration: Option<Duration>,
-        generation: u64,
-        encoded_bytes: Bytes,
-    ) -> Self {
-        Self {
-            track_id,
-            pts,
-            timing: audio_core::AudioPacketTiming::unknown(),
-            generation,
-            encoded_bytes,
-        }
-    }
-
-    /// Создаёт ожидающий audio packet с raw container timing для decoder-а.
-    #[must_use]
-    pub(crate) fn with_timing(
-        track_id: TrackId,
-        pts: Duration,
-        _dts: Option<Duration>,
-        _duration: Option<Duration>,
-        timing: audio_core::AudioPacketTiming,
-        generation: u64,
-        encoded_bytes: Bytes,
-    ) -> Self {
-        Self {
-            track_id,
-            pts,
-            timing,
-            generation,
-            encoded_bytes,
-        }
     }
 }
 

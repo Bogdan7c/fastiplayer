@@ -271,9 +271,11 @@ fn add_generic_tag<R: ReadAtom>(
         if let Some(raw_value) = parse_tag_value(value_atom.data_type, &value_atom.data) {
             let std_tag = map(&raw_value);
             builder.add_tag(Tag::new_from_parts(raw_key, raw_value, std_tag));
-        }
-        else {
-            warn!("unsupported data type {:?} for {:?} tag", value_atom.data_type, tag.atom_type);
+        } else {
+            warn!(
+                "unsupported data type {:?} for {:?} tag",
+                value_atom.data_type, tag.atom_type
+            );
         }
     }
 
@@ -400,9 +402,11 @@ fn add_advisory_tag<R: ReadAtom>(
                     StandardTag::ContentAdvisory(advisory),
                 ));
             }
-        }
-        else {
-            warn!("unsupported data type {:?} for {:?} tag", value_atom.data_type, tag.atom_type);
+        } else {
+            warn!(
+                "unsupported data type {:?} for {:?} tag",
+                value_atom.data_type, tag.atom_type
+            );
         }
     }
 
@@ -450,9 +454,11 @@ fn add_media_type_tag<R: ReadAtom>(
                     StandardTag::MediaFormat(Arc::new(String::from(media_type))),
                 ));
             }
-        }
-        else {
-            warn!("unsupported data type {:?} for {:?} tag", value_atom.data_type, tag.atom_type);
+        } else {
+            warn!(
+                "unsupported data type {:?} for {:?} tag",
+                value_atom.data_type, tag.atom_type
+            );
         }
     }
 
@@ -518,9 +524,11 @@ fn add_rating_tag<R: ReadAtom>(
                     StandardTag::Rating(10_000 * rating),
                 ));
             }
-        }
-        else {
-            warn!("unsupported data type {:?} for {:?} tag", value_atom.data_type, tag.atom_type);
+        } else {
+            warn!(
+                "unsupported data type {:?} for {:?} tag",
+                value_atom.data_type, tag.atom_type
+            );
         }
     }
 
@@ -539,9 +547,11 @@ fn add_freeform_tag<R: ReadAtom>(
         if let Some(value) = parse_tag_value(value_atom.data_type, &value_atom.data) {
             // Try to map iTunes freeform tags to standard tag keys.
             let _ = itunes::parse_itunes_tag(tag.full_name(), value, builder);
-        }
-        else {
-            warn!("unsupported data type {:?} for freeform tag", value_atom.data_type);
+        } else {
+            warn!(
+                "unsupported data type {:?} for freeform tag",
+                value_atom.data_type
+            );
         }
     }
 
@@ -592,9 +602,9 @@ impl Atom for MetaTagDataAtom {
         // The data payload is the remainder of the atom.
         let data = {
             // TODO: Apply the metadata limit.
-            let size = it
-                .data_left()?
-                .ok_or(Error::DecodeError("isomp4 (data): expected atom size to be known"))?;
+            let size = it.data_left()?.ok_or(Error::DecodeError(
+                "isomp4 (data): expected atom size to be known",
+            ))?;
 
             it.read_boxed_slice_exact(size as usize)?
         };
@@ -614,9 +624,9 @@ impl Atom for MetaTagNamespaceAtom {
     fn read<R: ReadAtom>(it: &mut AtomIterator<R>, _header: &AtomHeader) -> Result<Self> {
         let (_, _) = it.read_extended_header()?;
 
-        let size = it
-            .data_left()?
-            .ok_or(Error::DecodeError("isomp4 (ilst): expected atom size to be known"))?;
+        let size = it.data_left()?.ok_or(Error::DecodeError(
+            "isomp4 (ilst): expected atom size to be known",
+        ))?;
 
         // TODO: Apply a metadata limit.
         let buf = it.read_boxed_slice_exact(size as usize)?;
@@ -686,7 +696,12 @@ impl Atom for MetaTagAtom {
             }
         }
 
-        Ok(MetaTagAtom { atom_type, values, mean, name })
+        Ok(MetaTagAtom {
+            atom_type,
+            values,
+            mean,
+            name,
+        })
     }
 }
 
@@ -933,7 +948,9 @@ impl Atom for IlstAtom {
             }
         }
 
-        Ok(IlstAtom { metadata: mb.build() })
+        Ok(IlstAtom {
+            metadata: mb.build(),
+        })
     }
 }
 

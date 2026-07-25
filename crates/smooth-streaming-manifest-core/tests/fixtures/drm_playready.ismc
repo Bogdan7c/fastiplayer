@@ -1,0 +1,5 @@
+<SmoothStreamingMedia MajorVersion="2" MinorVersion="0" Duration="10000000">
+  <Protection>
+    <ProtectionHeader SystemID="{9A04F079-9840-4286-AB92-E65BE0885F95}">opaque</ProtectionHeader>
+  </Protection>
+</SmoothStreamingMedia>

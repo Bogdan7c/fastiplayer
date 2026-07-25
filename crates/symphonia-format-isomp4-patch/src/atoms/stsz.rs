@@ -42,11 +42,13 @@ impl Atom for StszAtom {
             }
 
             SampleSize::Variable(entries)
-        }
-        else {
+        } else {
             SampleSize::Constant(sample_size)
         };
 
-        Ok(StszAtom { sample_count, sample_sizes })
+        Ok(StszAtom {
+            sample_count,
+            sample_sizes,
+        })
     }
 }

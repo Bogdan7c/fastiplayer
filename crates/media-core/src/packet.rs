@@ -2,7 +2,11 @@ use std::time::Duration;
 
 use bytes::Bytes;
 
-use crate::{TrackDuration, TrackId, TrackKind, TrackTimestamp};
+use crate::{
+    ExactPresentationWindow, PacketPresentationWindow, PacketPresentationWindowAssignmentError,
+    TrackDuration, TrackId, TrackKind, TrackTimestamp,
+    presentation_window::validate_packet_track_clock,
+};
 
 /// Keyframe-классификация video packet-а на границе demux -> player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,14 +89,17 @@ pub struct Packet {
     /// Явная keyframe-классификация для video packets.
     pub keyframe: PacketKeyframe,
 
+    /// Точная граница показа, которой владеет neutral packet boundary.
+    presentation_window: PacketPresentationWindow,
+
     /// Сырые codec bytes: VP9 frame, Opus packet и т.д.
     pub data: Bytes,
 }
 
 impl Packet {
-    /// Создаёт packet с явными timestamp-ами и codec bytes.
+    /// Создаёт packet без точного ограничения presentation interval.
     #[must_use]
-    pub const fn new(
+    pub const fn new_unbounded(
         track_id: TrackId,
         kind: TrackKind,
         pts: Duration,
@@ -111,13 +118,14 @@ impl Packet {
             track_duration: None,
             byte_offset: None,
             keyframe: PacketKeyframe::from_known(keyframe),
+            presentation_window: PacketPresentationWindow::Unbounded,
             data,
         }
     }
 
-    /// Создаёт packet с явной трёхсостоянийной keyframe-классификацией.
+    /// Создаёт unbounded packet с явной трёхсостоянийной keyframe-классификацией.
     #[must_use]
-    pub const fn new_with_keyframe(
+    pub const fn new_with_keyframe_unbounded(
         track_id: TrackId,
         kind: TrackKind,
         pts: Duration,
@@ -136,8 +144,60 @@ impl Packet {
             track_duration: None,
             byte_offset: None,
             keyframe,
+            presentation_window: PacketPresentationWindow::Unbounded,
             data,
         }
+    }
+
+    /// Возвращает точное presentation-ограничение без раскрытия внутреннего хранения.
+    #[must_use]
+    pub const fn presentation_window(&self) -> PacketPresentationWindow {
+        self.presentation_window
+    }
+
+    /// Присоединяет заранее проверенное exact-окно к согласованному packet track clock.
+    pub fn try_with_bounded_presentation_window(
+        mut self,
+        window: ExactPresentationWindow,
+    ) -> Result<Self, PacketPresentationWindowAssignmentError> {
+        let window_track_id = window.start().track_id;
+        if self.track_id != window_track_id {
+            return Err(PacketPresentationWindowAssignmentError::TrackMismatch {
+                packet_track_id: self.track_id,
+                window_track_id,
+            });
+        }
+
+        let track_pts = self
+            .track_pts
+            .ok_or(PacketPresentationWindowAssignmentError::MissingPacketPresentationTimestamp)?;
+        validate_packet_track_clock(
+            self.track_id,
+            track_pts.track_id,
+            track_pts.time_base,
+            window,
+        )?;
+
+        if let Some(track_dts) = self.track_dts {
+            validate_packet_track_clock(
+                self.track_id,
+                track_dts.track_id,
+                track_dts.time_base,
+                window,
+            )?;
+        }
+
+        if let Some(track_duration) = self.track_duration {
+            validate_packet_track_clock(
+                self.track_id,
+                track_duration.track_id,
+                track_duration.time_base,
+                window,
+            )?;
+        }
+
+        self.presentation_window = PacketPresentationWindow::Bounded(window);
+        Ok(self)
     }
 
     /// Создаёт копию packet-а с исходными signed timestamp-ами container track-а.
@@ -174,6 +234,8 @@ impl Packet {
         if let Some(track_duration) = self.track_duration {
             self.track_duration = Some(track_duration.with_track_id(track_id));
         }
+
+        self.presentation_window = self.presentation_window.with_track_id(track_id);
 
         self
     }
@@ -218,12 +280,14 @@ mod tests {
     use bytes::Bytes;
 
     use crate::{
-        Packet, PacketKeyframe, TimeBase, TrackDuration, TrackId, TrackKind, TrackTimestamp,
+        ExactPresentationWindow, Packet, PacketKeyframe, PacketPresentationWindow,
+        PacketPresentationWindowAssignmentError, TimeBase, TrackDuration, TrackId, TrackKind,
+        TrackTimestamp,
     };
 
     #[test]
     fn packet_keeps_track_timestamp_and_payload() {
-        let packet = Packet::new(
+        let packet = Packet::new_unbounded(
             TrackId::new(7),
             TrackKind::Video,
             Duration::from_millis(42),
@@ -244,7 +308,7 @@ mod tests {
 
     #[test]
     fn packet_can_keep_unknown_keyframe_classification() {
-        let packet = Packet::new_with_keyframe(
+        let packet = Packet::new_with_keyframe_unbounded(
             TrackId::new(7),
             TrackKind::Video,
             Duration::from_millis(42),
@@ -259,7 +323,7 @@ mod tests {
 
     #[test]
     fn packet_can_keep_container_duration() {
-        let packet = Packet::new(
+        let packet = Packet::new_unbounded(
             TrackId::new(7),
             TrackKind::Audio,
             Duration::from_millis(42),
@@ -277,7 +341,7 @@ mod tests {
         let time_base = TimeBase::new(1, 48_000).expect("valid time base");
         let track_duration = TrackDuration::new(TrackId::new(7), 960, time_base);
 
-        let packet = Packet::new(
+        let packet = Packet::new_unbounded(
             TrackId::new(7),
             TrackKind::Audio,
             Duration::from_millis(42),
@@ -306,7 +370,7 @@ mod tests {
         let track_pts = TrackTimestamp::new(TrackId::new(7), -25, time_base);
         let track_dts = TrackTimestamp::new(TrackId::new(7), -50, time_base);
 
-        let packet = Packet::new(
+        let packet = Packet::new_unbounded(
             TrackId::new(7),
             TrackKind::Video,
             Duration::ZERO,
@@ -324,7 +388,7 @@ mod tests {
     #[test]
     fn packet_track_id_remap_updates_raw_timestamp_owner() {
         let time_base = TimeBase::new(1, 1_000).expect("valid time base");
-        let packet = Packet::new(
+        let packet = Packet::new_unbounded(
             TrackId::new(1),
             TrackKind::Audio,
             Duration::from_millis(10),
@@ -359,7 +423,7 @@ mod tests {
     #[test]
     fn packet_track_id_remap_updates_raw_duration_owner() {
         let time_base = TimeBase::new(1, 48_000).expect("valid time base");
-        let packet = Packet::new(
+        let packet = Packet::new_unbounded(
             TrackId::new(1),
             TrackKind::Audio,
             Duration::from_millis(10),
@@ -384,7 +448,7 @@ mod tests {
     #[test]
     fn packet_presentation_order_uses_raw_signed_timestamps_when_available() {
         let time_base = TimeBase::new(1, 1_000).expect("valid time base");
-        let earlier_packet = Packet::new(
+        let earlier_packet = Packet::new_unbounded(
             TrackId::new(1),
             TrackKind::Video,
             Duration::ZERO,
@@ -396,7 +460,7 @@ mod tests {
             Some(TrackTimestamp::new(TrackId::new(1), -25, time_base)),
             None,
         );
-        let later_packet = Packet::new(
+        let later_packet = Packet::new_unbounded(
             TrackId::new(2),
             TrackKind::Audio,
             Duration::ZERO,
@@ -413,5 +477,203 @@ mod tests {
             earlier_packet.presentation_order_cmp(&later_packet),
             std::cmp::Ordering::Less
         );
+    }
+
+    #[test]
+    fn unbounded_constructor_records_explicit_unbounded_window() {
+        let packet = Packet::new_unbounded(
+            TrackId::new(1),
+            TrackKind::Video,
+            Duration::from_millis(10),
+            None,
+            true,
+            Bytes::from_static(b"video"),
+        );
+
+        assert_eq!(
+            packet.presentation_window(),
+            PacketPresentationWindow::Unbounded
+        );
+    }
+
+    #[test]
+    fn packet_accepts_bounded_window_for_same_track_clock() {
+        let track_id = TrackId::new(1);
+        let time_base = TimeBase::new(1, 1_000).expect("valid time base");
+        let window = ExactPresentationWindow::new(
+            TrackTimestamp::new(track_id, 10, time_base),
+            TrackTimestamp::new(track_id, 20, time_base),
+        )
+        .expect("test window should be valid");
+        let packet = Packet::new_unbounded(
+            track_id,
+            TrackKind::Video,
+            Duration::from_millis(10),
+            None,
+            true,
+            Bytes::from_static(b"video"),
+        )
+        .with_track_timestamps(Some(TrackTimestamp::new(track_id, 10, time_base)), None)
+        .try_with_bounded_presentation_window(window)
+        .expect("matching packet and window should be accepted");
+
+        assert_eq!(
+            packet.presentation_window(),
+            PacketPresentationWindow::Bounded(window)
+        );
+    }
+
+    #[test]
+    fn packet_without_raw_pts_rejects_bounded_window_and_reusable_value_stays_unbounded() {
+        let track_id = TrackId::new(1);
+        let time_base = TimeBase::new(1, 1_000).expect("valid time base");
+        let window = ExactPresentationWindow::new(
+            TrackTimestamp::new(track_id, 10, time_base),
+            TrackTimestamp::new(track_id, 20, time_base),
+        )
+        .expect("test window should be valid");
+        let packet = Packet::new_unbounded(
+            track_id,
+            TrackKind::Video,
+            Duration::from_millis(10),
+            None,
+            true,
+            Bytes::from_static(b"video"),
+        );
+        let reusable_packet = packet.clone();
+
+        let error = packet
+            .try_with_bounded_presentation_window(window)
+            .expect_err("packet without raw PTS should be rejected");
+
+        assert_eq!(
+            error,
+            PacketPresentationWindowAssignmentError::MissingPacketPresentationTimestamp
+        );
+        assert_eq!(
+            reusable_packet.presentation_window(),
+            PacketPresentationWindow::Unbounded
+        );
+
+        let bounded_packet = reusable_packet
+            .with_track_timestamps(Some(TrackTimestamp::new(track_id, 10, time_base)), None)
+            .try_with_bounded_presentation_window(window)
+            .expect("the same packet value with raw PTS should be accepted");
+        assert_eq!(
+            bounded_packet.presentation_window(),
+            PacketPresentationWindow::Bounded(window)
+        );
+    }
+
+    #[test]
+    fn packet_rejects_bounded_window_for_different_track() {
+        let time_base = TimeBase::new(1, 1_000).expect("valid time base");
+        let window = ExactPresentationWindow::new(
+            TrackTimestamp::new(TrackId::new(2), 10, time_base),
+            TrackTimestamp::new(TrackId::new(2), 20, time_base),
+        )
+        .expect("test window should be valid");
+        let packet = Packet::new_unbounded(
+            TrackId::new(1),
+            TrackKind::Video,
+            Duration::from_millis(10),
+            None,
+            true,
+            Bytes::from_static(b"video"),
+        );
+
+        let error = packet
+            .try_with_bounded_presentation_window(window)
+            .expect_err("different packet and window tracks should be rejected");
+
+        assert!(matches!(
+            error,
+            PacketPresentationWindowAssignmentError::TrackMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn packet_rejects_bounded_window_for_different_raw_time_base() {
+        let track_id = TrackId::new(1);
+        let packet_time_base = TimeBase::new(1, 90_000).expect("valid packet time base");
+        let window_time_base = TimeBase::new(1, 1_000).expect("valid window time base");
+        let window = ExactPresentationWindow::new(
+            TrackTimestamp::new(track_id, 10, window_time_base),
+            TrackTimestamp::new(track_id, 20, window_time_base),
+        )
+        .expect("test window should be valid");
+        let packet = Packet::new_unbounded(
+            track_id,
+            TrackKind::Video,
+            Duration::from_millis(10),
+            None,
+            true,
+            Bytes::from_static(b"video"),
+        )
+        .with_track_timestamps(
+            Some(TrackTimestamp::new(track_id, 900, packet_time_base)),
+            None,
+        );
+
+        let error = packet
+            .try_with_bounded_presentation_window(window)
+            .expect_err("different packet and window time bases should be rejected");
+
+        assert!(matches!(
+            error,
+            PacketPresentationWindowAssignmentError::TimeBaseMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn packet_track_id_remap_preserves_payload_timing_and_bounded_window() {
+        let original_track_id = TrackId::new(1);
+        let remapped_track_id = TrackId::new(2);
+        let time_base = TimeBase::new(1, 1_000).expect("valid time base");
+        let window = ExactPresentationWindow::new(
+            TrackTimestamp::new(original_track_id, 10, time_base),
+            TrackTimestamp::new(original_track_id, 20, time_base),
+        )
+        .expect("test window should be valid");
+        let original_packet = Packet::new_with_keyframe_unbounded(
+            original_track_id,
+            TrackKind::Video,
+            Duration::from_millis(10),
+            Some(Duration::from_millis(8)),
+            PacketKeyframe::Unknown,
+            Bytes::from_static(b"video"),
+        )
+        .with_track_timestamps(
+            Some(TrackTimestamp::new(original_track_id, 10, time_base)),
+            Some(TrackTimestamp::new(original_track_id, 8, time_base)),
+        )
+        .with_duration(Duration::from_millis(4))
+        .with_track_duration(TrackDuration::new(original_track_id, 4, time_base))
+        .with_byte_offset(42)
+        .try_with_bounded_presentation_window(window)
+        .expect("matching packet and window should be accepted");
+
+        let remapped_packet = original_packet.clone().with_track_id(remapped_track_id);
+        let PacketPresentationWindow::Bounded(remapped_window) =
+            remapped_packet.presentation_window()
+        else {
+            panic!("bounded window should remain bounded after track remap");
+        };
+
+        assert_eq!(remapped_packet.track_id, remapped_track_id);
+        assert_eq!(remapped_window.start().track_id, remapped_track_id);
+        assert_eq!(remapped_window.end_exclusive().track_id, remapped_track_id);
+        assert_eq!(remapped_window.start().units, window.start().units);
+        assert_eq!(
+            remapped_window.end_exclusive().units,
+            window.end_exclusive().units
+        );
+        assert_eq!(remapped_packet.kind, original_packet.kind);
+        assert_eq!(remapped_packet.pts, original_packet.pts);
+        assert_eq!(remapped_packet.dts, original_packet.dts);
+        assert_eq!(remapped_packet.duration, original_packet.duration);
+        assert_eq!(remapped_packet.byte_offset, original_packet.byte_offset);
+        assert_eq!(remapped_packet.keyframe, original_packet.keyframe);
+        assert_eq!(remapped_packet.data, original_packet.data);
     }
 }

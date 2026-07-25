@@ -291,9 +291,9 @@ impl AppState {
                     .ok_or(ResumeCheckpointError::PreparationFailed)?;
                 MediaOpenSourceRequest::YtDlp {
                     locator: source_locator.clone(),
-                    selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent::exact(
+                    selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent::exact_preserving_installed_stream_configuration(
                         candidate_selection.clone(),
-                        stream_configuration.preference(),
+                        stream_configuration,
                     ),
                     network_config: config.network,
                     yt_dlp_config: config.yt_dlp,

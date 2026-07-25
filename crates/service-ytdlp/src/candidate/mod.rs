@@ -26,7 +26,8 @@ pub use request_material::{
     YtDlpDashRequestMaterial, YtDlpDashRequestMaterialViolation, YtDlpHlsAesOverride,
     YtDlpHlsManifestInput, YtDlpHlsManifestInputKind, YtDlpHlsRequestMaterial,
     YtDlpHlsRequestMaterialViolation, YtDlpRequestMaterial, YtDlpRequestMaterialSummary,
-    YtDlpRequestMaterialV1, YtDlpRequestMaterialViolation,
+    YtDlpRequestMaterialV1, YtDlpRequestMaterialViolation, YtDlpSmoothManifestRequestMaterial,
+    YtDlpSmoothManifestRequestMaterialViolation, YtDlpSmoothUnsupportedRequestMaterial,
 };
 pub use transport::{
     YtDlpDashTransportComponent, YtDlpTransportComponent, YtDlpTransportRequestContext,

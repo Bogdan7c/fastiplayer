@@ -27,6 +27,8 @@ CONTRACT_CRATES = frozenset(
         "audio-core",
         "bounded-xml-reader",
         "dash-mpd-core",
+        "smooth-streaming-manifest-core",
+        "smooth-streaming-fmp4",
         "media-core",
         "natural-sort-key",
         "playlist-core",
@@ -58,6 +60,8 @@ REQUIRED_ROLE_CRATES = frozenset(
         "audio-core",
         "bounded-xml-reader",
         "dash-mpd-core",
+        "smooth-streaming-manifest-core",
+        "smooth-streaming-fmp4",
         "capability-core",
         "codec-core",
         "desktop-integration",
@@ -96,6 +100,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "web-media-dash",
         "web-media-hls",
         "web-media-http",
+        "web-media-smooth",
         "web-media-playback-plan",
         "web-media-transport-api",
     }
@@ -150,6 +155,17 @@ HLS_PLAYLIST_CORE_ALLOWED_DEPENDENCIES = frozenset(
 # DASH schema owner зависит только от hardened XML boundary, exact UTC parser и typed errors.
 DASH_MPD_CORE_ALLOWED_DEPENDENCIES = frozenset(
     {"bounded-xml-reader", "thiserror", "time"}
+)
+
+# Smooth Streaming schema owner зависит только от hardened XML boundary и typed errors.
+SMOOTH_STREAMING_MANIFEST_CORE_ALLOWED_DEPENDENCIES = frozenset(
+    {"bounded-xml-reader", "thiserror"}
+)
+
+# Smooth fMP4 adapter пересекает только sealed manifest model и единственного
+# ISO-BMFF reconstruction owner-а; transport/demux/player edges запрещены.
+SMOOTH_STREAMING_FMP4_ALLOWED_DEPENDENCIES = frozenset(
+    {"smooth-streaming-manifest-core", "symphonia-format-isomp4", "thiserror"}
 )
 
 # Общий natural comparator остаётся std-only и не знает path/domain owners.
@@ -234,6 +250,28 @@ WEB_MEDIA_DASH_ALLOWED_DEPENDENCIES = frozenset(
         "source-core",
         "thiserror",
         "web-media-adaptive",
+        "web-media-transport-api",
+    }
+)
+
+# Smooth VOD runtime пересекает hardened XML/schema/F2/F1 owners, neutral
+# adaptive/source/C3/transport contracts и neutral P4/P5 demux orchestration.
+# Concrete demux backend, player, service и UI остаются у composition layers.
+WEB_MEDIA_SMOOTH_ALLOWED_DEPENDENCIES = frozenset(
+    {
+        "anyhow",
+        "bounded-xml-reader",
+        "bytes",
+        "demux-api",
+        "media-core",
+        "sha2",
+        "smooth-streaming-fmp4",
+        "smooth-streaming-manifest-core",
+        "source-core",
+        "symphonia-format-isomp4",
+        "thiserror",
+        "web-media-adaptive",
+        "web-media-core",
         "web-media-transport-api",
     }
 )
@@ -1195,6 +1233,22 @@ def find_dependency_violations(
     violations.extend(
         find_disallowed_dependencies(
             dependency_map,
+            frozenset({"smooth-streaming-manifest-core"}),
+            SMOOTH_STREAMING_MANIFEST_CORE_ALLOWED_DEPENDENCIES,
+            "smooth-streaming-manifest-core остаётся pure MS-SSTR schema/timing model без runtime owners",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"smooth-streaming-fmp4"}),
+            SMOOTH_STREAMING_FMP4_ALLOWED_DEPENDENCIES,
+            "smooth-streaming-fmp4 остаётся pure manifest-to-ISO-BMFF adapter без transport/demux/player owners",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
             frozenset({"web-media-hls"}),
             WEB_MEDIA_HLS_ALLOWED_DEPENDENCIES,
             "web-media-hls ограничен HLS policy и neutral transport/demux contracts без concrete demux backends",
@@ -1206,6 +1260,14 @@ def find_dependency_violations(
             frozenset({"web-media-dash"}),
             WEB_MEDIA_DASH_ALLOWED_DEPENDENCIES,
             "web-media-dash ограничен static DASH policy и neutral transport/demux contracts",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"web-media-smooth"}),
+            WEB_MEDIA_SMOOTH_ALLOWED_DEPENDENCIES,
+            "web-media-smooth ограничен Smooth VOD preparation и neutral transport/C3/demux contracts",
         )
     )
     violations.extend(

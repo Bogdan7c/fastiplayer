@@ -1,3 +1,8 @@
+## S36 Smooth Streaming static VOD (2026-07-25)
+
+- Production web-media open now supports the single approved S00 ISM/MSS row: strict muxed fMP4 H.264 + AAC-LC static VOD with bounded S04X manifest parsing, quality catalog, URL templates/timeline repeats, F1/F2 reconstruction, exact audio presentation windows, stable A/V composition and transactional receipted seek.
+- `web-media-smooth` owns provider-neutral preparation/sources/demux orchestration; app injects the existing S28A/F3A Symphonia registry and publishes the fresh C3 selection only through the normal Ready → authorize → Installed barrier. ISM live/DVR and other codecs remain excluded and no S36L card exists. Full contract: `mem:media-services/smooth-vod-runtime-s36p4-p6-2026-07-25`.
+
 ## S35S neutral live same-item candidate switch (2026-07-24)
 
 - Proven S25 same-lineage switching now restores an old absolute position only when it remains inside the latest fresh-generation DVR range; expired/no-DVR switches keep the provider-declared safe live edge and return typed `AdjustedToLiveEdge`.

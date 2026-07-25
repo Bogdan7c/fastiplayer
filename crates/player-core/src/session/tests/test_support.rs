@@ -1701,7 +1701,7 @@ pub(super) fn present_frame_for_current_seek_generation(
 
 /// Создаёт keyframe video packet для session-level demux/reset tests.
 pub(super) fn fake_video_packet(track_id: TrackId, pts: Duration) -> media_core::Packet {
-    media_core::Packet::new(
+    media_core::Packet::new_unbounded(
         track_id,
         TrackKind::Video,
         pts,
@@ -1717,7 +1717,7 @@ pub(super) fn fake_video_packet_with_keyframe(
     pts: Duration,
     keyframe: PacketKeyframe,
 ) -> media_core::Packet {
-    media_core::Packet::new_with_keyframe(
+    media_core::Packet::new_with_keyframe_unbounded(
         track_id,
         TrackKind::Video,
         pts,
@@ -1733,7 +1733,7 @@ pub(super) fn fake_audio_packet(
     pts: Duration,
     duration: Duration,
 ) -> media_core::Packet {
-    media_core::Packet::new(
+    media_core::Packet::new_unbounded(
         track_id,
         TrackKind::Audio,
         pts,

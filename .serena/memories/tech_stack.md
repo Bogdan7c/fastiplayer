@@ -1,5 +1,13 @@
 # Tech Stack
 
+- `web-media-smooth` is the guarded concrete Smooth static-VOD preparation, selected fragment-source and neutral demux/seek orchestration owner. It reuses S31 transport, sealed S36D/F2/F1 contracts, C3 values and `demux-api`, but has no service/app/player/concrete-HTTP or concrete-Symphonia dependency. App injects the existing S28A/F3A registry, and `ProgressiveDemuxer` owns blocking readiness plus transactional receipts. See `mem:media-services/smooth-manifest-catalog-s36p2-2026-07-25`, `mem:media-services/smooth-fragment-sources-s36p3-2026-07-25` and `mem:media-services/smooth-vod-runtime-s36p4-p6-2026-07-25`.
+
+- `smooth-streaming-fmp4` is a pure first-party adapter with exactly `smooth-streaming-manifest-core`, `symphonia-format-isomp4`, and `thiserror` normal dependencies. It maps validated Smooth H.264/AAC-LC tracks into generic init/media reconstruction and returns audio overhang only as pending exact PCM clipping; transport/demux/player remain downstream. See `mem:media-services/smooth-streaming-fmp4-mapper-s36f2-2026-07-25`.
+
+- Smooth/PIFF fragmented-MP4 reconstruction reuses the local `symphonia-format-isomp4-patch` as the sole ISO-BMFF owner. Its new opt-in public API separately builds bounded H.264/AAC-LC init segments and canonical media fragments from inspected samples; it does not alter existing demux registrations or local/progressive/HLS/DASH paths and does not own ManifestWindow policy. See `mem:media-services/smooth-streaming-fmp4-s36f1b-2026-07-25`.
+
+- Smooth Streaming VOD manifest parsing uses first-party `smooth-streaming-manifest-core`, a sealed pure S04X-backed MS-SSTR v2.0/v2.2 H.264/AAC-LC contract crate. Its only normal dependencies are `bounded-xml-reader` and `thiserror`; HTTP, fMP4/Symphonia, player, seek and app composition remain separate downstream owners. See `mem:media-services/smooth-streaming-vod-s36d-2026-07-24`.
+
 - Static DASH VOD uses first-party `dash-mpd-core` (pure S04X-backed MPD profile) and `web-media-dash` (bounded exact MPD/serialized transport orchestration). Concrete fMP4/WebM parsing remains in the existing Symphonia registrations injected through `demux-api`; no DASH/container parser dependency was added. Player integration is a provider-neutral receipted seek trait in `player-core`. See `mem:media-services/dash-vod-s34-2026-07-24`.
 
 - Language: Rust, workspace edition `2024`, workspace MSRV `rust-version = "1.92"`, Cargo resolver `2`. Development and CI are pinned to Rust `1.96.0`, while CI validates both Rust `1.92.0` (MSRV) and `1.96.0` separately.

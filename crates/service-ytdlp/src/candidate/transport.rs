@@ -6,7 +6,7 @@ use source_core::{
 };
 use thiserror::Error;
 use url::Url;
-use web_media_core::{ContainerFamily, StreamLayout};
+use web_media_core::{CodecFamily, CodecKind, ContainerFamily, StreamLayout, TransportFamily};
 use web_media_transport_api::{
     MediaComponentIdentity, MediaComponentIdentityError, MediaComponentRole, MediaPresentation,
     RedirectHopLimit, RedirectHopLimitError, RedirectPolicy, SecretQueryOverrideError,
@@ -14,11 +14,14 @@ use web_media_transport_api::{
     TransportOpenRequestError, TransportProviderId,
 };
 
-use super::model::{YtDlpCandidateComponentRole, YtDlpNormalizedCandidate};
+use super::model::{
+    YtDlpCandidateComponentRequest, YtDlpCandidateComponentRole, YtDlpNormalizedCandidate,
+};
 use super::request_material::{
     YtDlpDashFragmentLocatorKind, YtDlpDashInputKind, YtDlpDashRequestMaterial,
     YtDlpDashRequestMaterialViolation, YtDlpHlsRequestMaterial, YtDlpHlsRequestMaterialViolation,
-    YtDlpRequestMaterialViolation,
+    YtDlpRequestMaterialViolation, YtDlpSmoothManifestRequestMaterial,
+    YtDlpSmoothManifestRequestMaterialViolation,
 };
 
 /// Bounded redirect budget public CDN resource-а.
@@ -140,6 +143,9 @@ pub enum YtDlpTransportRequestError {
     /// Request material не соответствует static DASH profile.
     #[error("YtDlp request material нельзя выразить как DASH open request")]
     DashRequestMaterial(#[source] YtDlpDashRequestMaterialViolation),
+    /// Request material не соответствует manifest-only Smooth Streaming profile.
+    #[error("YtDlp request material нельзя выразить как Smooth manifest request")]
+    SmoothRequestMaterial(#[source] YtDlpSmoothManifestRequestMaterialViolation),
     /// Scoped segment/key query не прошли shared secret policy.
     #[error("YtDlp HLS query override нарушает secret scope contract")]
     HlsQueryProjection(#[source] SecretQueryOverrideError),
@@ -152,6 +158,9 @@ pub enum YtDlpTransportRequestError {
     /// Extractor вернул syntactically invalid либо non-HTTP target.
     #[error("YtDlp component содержит недопустимый HTTP target")]
     Target(#[source] source_core::HttpRequestTargetError),
+    /// Smooth manifest target нарушил neutral HTTP target contract после material proof.
+    #[error("YtDlp Smooth manifest содержит недопустимый HTTP target")]
+    SmoothTarget(#[source] source_core::HttpRequestTargetError),
     /// Candidate exact/semantic identities нарушили source lineage.
     #[error("YtDlp component identity нарушает source lineage")]
     Identity(#[source] MediaComponentIdentityError),
@@ -170,6 +179,27 @@ pub enum YtDlpTransportRequestError {
     /// Initial HLS profile принимает один selected manifest resource.
     #[error("YtDlp HLS candidate должен содержать ровно один manifest component")]
     HlsComponentCount,
+    /// Smooth VOD candidate обязан содержать ровно один request component.
+    #[error("YtDlp Smooth candidate должен содержать ровно один manifest component")]
+    SmoothComponentCount,
+    /// Единственный Smooth component обязан иметь semantic role `Muxed`.
+    #[error("YtDlp Smooth component должен иметь muxed role")]
+    SmoothComponentRole,
+    /// Smooth VOD projection принимает только muxed descriptor layout.
+    #[error("YtDlp Smooth candidate должен иметь muxed layout")]
+    SmoothLayout,
+    /// Descriptor transport обязан быть exact Smooth Streaming.
+    #[error("YtDlp Smooth candidate использует другую transport family")]
+    SmoothTransport,
+    /// Approved Smooth row обязан описывать fragmented ISO BMFF container.
+    #[error("YtDlp Smooth candidate использует неподдерживаемый container")]
+    SmoothContainer,
+    /// Approved Smooth row обязан содержать H.264 video.
+    #[error("YtDlp Smooth candidate использует неподдерживаемый video codec")]
+    SmoothVideoCodec,
+    /// Approved Smooth row обязан содержать AAC audio.
+    #[error("YtDlp Smooth candidate использует неподдерживаемый audio codec")]
+    SmoothAudioCodec,
 }
 
 impl YtDlpNormalizedCandidate {
@@ -310,6 +340,41 @@ impl YtDlpNormalizedCandidate {
         .map_err(YtDlpTransportRequestError::Request)
     }
 
+    /// Строит один secret-scoped VOD request для exact muxed H.264+AAC ISM manifest-а.
+    pub fn smooth_manifest_transport_request(
+        &self,
+        context: &YtDlpTransportRequestContext,
+    ) -> Result<TransportOpenRequest, YtDlpTransportRequestError> {
+        let component = smooth_manifest_component(self)?;
+        let material = component
+            .material
+            .smooth_manifest_request_material()
+            .map_err(YtDlpTransportRequestError::SmoothRequestMaterial)?;
+        let target = HttpRequestTarget::parse_exact(material.manifest_target_for_fetch())
+            .map_err(YtDlpTransportRequestError::SmoothTarget)?;
+        let identity = MediaComponentIdentity::new(
+            self.descriptor().identity().clone(),
+            self.descriptor().semantic_identity().clone(),
+            MediaComponentRole::Muxed,
+        )
+        .map_err(YtDlpTransportRequestError::Identity)?;
+        let secrets = smooth_manifest_secret_context(&material, &target)?;
+        let redirect_limit = RedirectHopLimit::new(PUBLIC_MEDIA_REDIRECT_HOPS)
+            .map_err(YtDlpTransportRequestError::RedirectLimit)?;
+
+        TransportOpenRequest::new(
+            context.provider.clone(),
+            identity,
+            target,
+            MediaPresentation::Vod,
+            context.source_generation,
+            secrets,
+            RedirectPolicy::cross_origin_without_secrets(redirect_limit),
+            context.cancellation.clone(),
+        )
+        .map_err(YtDlpTransportRequestError::Request)
+    }
+
     /// Строит один request для single candidate либо два для exact compound merge.
     pub fn transport_components(
         &self,
@@ -372,6 +437,58 @@ impl YtDlpNormalizedCandidate {
         }
         Ok(components)
     }
+}
+
+/// Доказывает exact candidate-level Smooth Streaming profile до material projection.
+fn smooth_manifest_component(
+    candidate: &YtDlpNormalizedCandidate,
+) -> Result<&YtDlpCandidateComponentRequest, YtDlpTransportRequestError> {
+    let [component] = candidate.component_requests.as_ref() else {
+        return Err(YtDlpTransportRequestError::SmoothComponentCount);
+    };
+    let StreamLayout::Muxed(muxed) = candidate.descriptor().layout() else {
+        return Err(YtDlpTransportRequestError::SmoothLayout);
+    };
+    if component.role != YtDlpCandidateComponentRole::Muxed {
+        return Err(YtDlpTransportRequestError::SmoothComponentRole);
+    }
+    if muxed.transport().family() != TransportFamily::SmoothStreaming {
+        return Err(YtDlpTransportRequestError::SmoothTransport);
+    }
+    if muxed.container().consistent_family().ok() != Some(Some(ContainerFamily::FragmentedIsoBmff))
+    {
+        return Err(YtDlpTransportRequestError::SmoothContainer);
+    }
+    if muxed.video().codec().kind() != CodecKind::Known(CodecFamily::H264) {
+        return Err(YtDlpTransportRequestError::SmoothVideoCodec);
+    }
+    if muxed.audio().codec().kind() != CodecKind::Known(CodecFamily::Aac) {
+        return Err(YtDlpTransportRequestError::SmoothAudioCodec);
+    }
+    Ok(component)
+}
+
+/// Собирает S26-compatible ephemeral headers/cookies для одного manifest source-а.
+fn smooth_manifest_secret_context(
+    material: &YtDlpSmoothManifestRequestMaterial<'_>,
+    target: &HttpRequestTarget,
+) -> Result<SecretRequestContext, YtDlpTransportRequestError> {
+    let path_scope = HttpPathScope::from_target_path(target);
+    let secret_scope = SecretRequestScope::from_target(target, path_scope);
+    let serialized_headers = material
+        .headers()
+        .map(|(name, value)| HttpHeader::new(name, value))
+        .collect::<Vec<_>>();
+    let serialized_headers = ValidatedHttpHeaders::new(serialized_headers)
+        .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
+    let mut secret_builder =
+        SecretRequestContext::builder(secret_scope).with_headers(serialized_headers);
+    if let Some(serialized_cookies) = material.serialized_cookies() {
+        secret_builder = secret_builder
+            .with_serialized_cookies(serialized_cookies)
+            .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
+    }
+    Ok(secret_builder.build())
 }
 
 /// Выбирает request-scope anchor без fallback между authoritative inputs.

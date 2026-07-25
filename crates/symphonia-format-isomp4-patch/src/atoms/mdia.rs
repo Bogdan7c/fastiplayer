@@ -51,6 +51,10 @@ impl Atom for MdiaAtom {
             return decode_error("isomp4 (mdia): missing minf atom");
         }
 
-        Ok(MdiaAtom { mdhd: mdhd.unwrap(), hdlr: hdlr.unwrap(), minf: minf.unwrap() })
+        Ok(MdiaAtom {
+            mdhd: mdhd.unwrap(),
+            hdlr: hdlr.unwrap(),
+            minf: minf.unwrap(),
+        })
     }
 }

@@ -26,6 +26,9 @@ members = [
     "crates/web-media-hls",
     "crates/bounded-xml-reader",
     "crates/dash-mpd-core",
+    "crates/smooth-streaming-manifest-core",
+    "crates/smooth-streaming-fmp4",
+    "crates/web-media-smooth",
     "crates/web-media-dash",
     "crates/player-core",
     "crates/bounded-work-executor",
@@ -205,6 +208,10 @@ web-media-hls = { version = "0.1.0", path = "crates/web-media-hls" }
 web-media-http = { version = "0.1.0", path = "crates/web-media-http" }
 bounded-xml-reader = { version = "0.1.0", path = "crates/bounded-xml-reader" }
 dash-mpd-core = { version = "0.1.0", path = "crates/dash-mpd-core" }
+smooth-streaming-manifest-core = { version = "0.1.0", path = "crates/smooth-streaming-manifest-core" }
+smooth-streaming-fmp4 = { version = "0.1.0", path = "crates/smooth-streaming-fmp4" }
+symphonia-format-isomp4 = "0.6"
+web-media-smooth = { version = "0.1.0", path = "crates/web-media-smooth" }
 web-media-dash = { version = "0.1.0", path = "crates/web-media-dash" }
 settings-core = { version = "0.1.0", path = "crates/settings-core" }
 settings-derive = { version = "0.1.0", path = "crates/settings-derive" }

@@ -1,5 +1,11 @@
 # Hardened XML Boundary
 
+## S36D Smooth Streaming VOD consumer (2026-07-24)
+
+- `smooth-streaming-manifest-core` is the sealed MS-SSTR VOD schema/profile owner and consumes only `bounded-xml-reader` project events with caller-supplied XML and schema budgets. It adds no second XML parser or I/O.
+- Smooth schema names must be unqualified; namespaced items are typed private extensions, unknown unqualified items are unsupported constructs, and Protection is typed DRM. DTD/external entities remain exact S04X failures with the original `XmlReadError` source.
+- Full profile, timeline, codec and cancellation contract: `mem:media-services/smooth-streaming-vod-s36d-2026-07-24`.
+
 ## S34 DASH consumer (2026-07-24)
 
 - `dash-mpd-core` is the static DASH schema/profile owner and consumes only `bounded-xml-reader` project events with caller-supplied XML and schema budgets. It adds no second XML parser or hidden I/O; dynamic MPD, DTD/entities, ContentProtection and unsupported required constructs fail closed. Full profile: `mem:media-services/dash-vod-s34-2026-07-24`.

@@ -25,6 +25,14 @@
 ## Verification
 - Focused tests cover fresh Playing/Paused capture, exact/disabled subtitle restore, applicable A/V tracks, exact volume and typed invalid-volume failure, playback-window relative seek, detached active source, compound part current, selector busy/stale/failure state, queue/traversal/shuffle/lineage preservation, and existing same/cross-backend/cancel/release scenarios.
 - Final verification: 568 `player-core` tests PASS; 825 `app-egui --no-default-features` tests PASS; strict all-targets Clippy for both touched crates, default-feature app check, rustfmt, refactor guardrails, diff check and Serena diagnostics PASS.
+## S36C3 generalized same-item component switch (2026-07-24)
+
+- S25's transaction metadata is generalized to one `PendingSameItemSwitch` with typed `SameItemSwitchKind::{Candidate, Component}` over the same strong media-open envelope; candidate and component actions cannot race or occupy separate lifecycle slots.
+- Component actions are validated by the app-owned model before start and become semantic-only intents over the exact active parent. Fresh preparation must install/rematch a fresh component catalog before the existing player barrier; there is no fallback to provider default when the requested semantic variant disappeared.
+- Candidate reopen intentionally uses provider-default component selection and remains the only path that updates the item preferred-height override. Component reopen preserves the independent other A/V axis and never mutates global or per-item height preference.
+- URL sidebar pending/error state is shared across candidate/component selectors. Exact request id, source lineage and fresh Installed component catalog are checked at completion; impossible post-Installed mismatches are logged as bounded invariant diagnostics and mapped to the secret-safe stale UI category.
+- `PlaylistRuntime::complete_same_item_media_switch` retains the original same-lineage contract: no queue/traversal/shuffle mutation, no invented current item, and the same render freeze/commit-must-finish semantics.
+
 ## S35S live extension (2026-07-24)
 
 - Same-lineage live restore now sends the captured old absolute position as `InstalledPositionRestore::RestoreLiveSameItemPosition`; app never reads/clamps the fresh DVR range.

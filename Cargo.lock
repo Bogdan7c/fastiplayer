@@ -200,6 +200,7 @@ dependencies = [
  "web-media-hls",
  "web-media-http",
  "web-media-playback-plan",
+ "web-media-smooth",
  "web-media-transport-api",
  "wgpu",
  "winit",
@@ -4458,6 +4459,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "smooth-streaming-fmp4"
+version = "0.1.0"
+dependencies = [
+ "bounded-xml-reader",
+ "smooth-streaming-manifest-core",
+ "symphonia-format-isomp4 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "smooth-streaming-manifest-core"
+version = "0.1.0"
+dependencies = [
+ "bounded-xml-reader",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "socket2"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4680,6 +4699,7 @@ dependencies = [
  "media-core",
  "source-core",
  "symphonia",
+ "symphonia-format-isomp4 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -5842,6 +5862,28 @@ dependencies = [
  "demux-api",
  "video-frame-contract",
  "web-media-core",
+]
+
+[[package]]
+name = "web-media-smooth"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bounded-xml-reader",
+ "bytes",
+ "demux-api",
+ "media-core",
+ "rustiplayer-config",
+ "sha2",
+ "smooth-streaming-fmp4",
+ "smooth-streaming-manifest-core",
+ "source-core",
+ "symphonia-demux",
+ "symphonia-format-isomp4 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "thiserror 2.0.18",
+ "web-media-adaptive",
+ "web-media-core",
+ "web-media-transport-api",
 ]
 
 [[package]]

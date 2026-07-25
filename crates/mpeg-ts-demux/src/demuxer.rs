@@ -489,7 +489,7 @@ impl MpegTsDemuxer {
         } else {
             TrackKind::Audio
         };
-        let mut packet = Packet::new_with_keyframe(
+        let mut packet = Packet::new_with_keyframe_unbounded(
             track_id,
             track_kind,
             media_pts,

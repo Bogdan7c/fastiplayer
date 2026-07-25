@@ -52,10 +52,15 @@ impl Atom for SidxAtom {
         let anchor = header
             .size()
             .map(|atom_len| header.pos() + atom_len.get())
-            .ok_or(Error::DecodeError("isomp4 (sidx): expected atom size to be known"))?;
+            .ok_or(Error::DecodeError(
+                "isomp4 (sidx): expected atom size to be known",
+            ))?;
 
         let (earliest_pts, first_offset) = match version {
-            0 => (u64::from(it.read_u32()?), anchor + u64::from(it.read_u32()?)),
+            0 => (
+                u64::from(it.read_u32()?),
+                anchor + u64::from(it.read_u32()?),
+            ),
             1 => (it.read_u64()?, anchor + it.read_u64()?),
             _ => return decode_error("isomp4 (sidx): invalid version"),
         };
@@ -84,7 +89,11 @@ impl Atom for SidxAtom {
             // Ignore SAP
             let _ = it.read_u32()?;
 
-            references.push(SidxReference { reference_type, reference_size, subsegment_duration });
+            references.push(SidxReference {
+                reference_type,
+                reference_size,
+                subsegment_duration,
+            });
         }
 
         Ok(SidxAtom {

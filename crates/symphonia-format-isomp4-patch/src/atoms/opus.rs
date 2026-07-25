@@ -35,10 +35,9 @@ impl Atom for OpusAtom {
         // The dops atom contains an Opus identification header excluding the OpusHead magic
         // signature. Therefore, the atom data length should be atleast as long as the shortest
         // Opus identification header.
-        let data_len = header
-            .data_size()
-            .ok_or(Error::DecodeError("isomp4 (opus): expected atom size to be known"))?
-            as usize;
+        let data_len = header.data_size().ok_or(Error::DecodeError(
+            "isomp4 (opus): expected atom size to be known",
+        ))? as usize;
 
         if data_len < MIN_OPUS_EXTRA_DATA_SIZE - OPUS_MAGIC_LEN {
             return decode_error("isomp4 (opus): opus identification header too short");

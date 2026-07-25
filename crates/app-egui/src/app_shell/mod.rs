@@ -356,7 +356,7 @@ impl AppShell {
             let resume_checkpoint_already_exists =
                 self.playlist_runtime.has_suspended_media_checkpoint();
             let lifecycle_result = app_state
-                .resolve_same_item_candidate_switch_for_suspend(&mut self.playlist_runtime)
+                .resolve_same_item_switch_for_suspend(&mut self.playlist_runtime)
                 .and_then(|()| {
                     app_state.cancel_suspended_media_resume_for_suspend(&mut self.playlist_runtime)
                 })

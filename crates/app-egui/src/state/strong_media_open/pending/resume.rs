@@ -74,7 +74,7 @@ impl AppState {
                     ),
                 ));
             };
-            if let Err(error) = playlist_runtime.complete_same_item_candidate_switch(
+            if let Err(error) = playlist_runtime.complete_same_item_media_switch(
                 *expected_active,
                 media_instance_id,
                 binding,

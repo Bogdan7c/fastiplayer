@@ -870,6 +870,45 @@
       "expands_decoder_scope": false
     },
     {
+      "id": "ism-base-video-h264",
+      "families": [
+        "h264"
+      ],
+      "expands_decoder_scope": false
+    },
+    {
+      "id": "ism-base-audio-aac",
+      "families": [
+        "aac"
+      ],
+      "expands_decoder_scope": false
+    },
+    {
+      "id": "ism-provisional-other-existing-video",
+      "families": [
+        "vp8",
+        "vp9",
+        "av1",
+        "h265"
+      ],
+      "expands_decoder_scope": false
+    },
+    {
+      "id": "ism-provisional-other-existing-audio",
+      "families": [
+        "adpcm",
+        "alac",
+        "flac",
+        "mp1",
+        "mp2",
+        "mp3",
+        "pcm",
+        "vorbis",
+        "opus"
+      ],
+      "expands_decoder_scope": false
+    },
+    {
       "id": "proven-native-audio",
       "families": [
         "aac",
@@ -1047,13 +1086,13 @@
       "fixture_id": "target-dash-live"
     },
     {
-      "id": "ism-mss-fmp4",
+      "id": "ism-mss-base-h264-aac-fmp4",
       "status": "Target",
       "transport": "ism",
       "container_profile": "fmp4",
       "codec_profile_refs": [
-        "major-web-video",
-        "proven-native-audio"
+        "ism-base-video-h264",
+        "ism-base-audio-aac"
       ],
       "future_sessions": [
         "S28A",
@@ -1153,6 +1192,33 @@
       "id": "rare-codec-families",
       "status": "ProfileExcludedProvisional",
       "reason": "codec_expansion_requires_separate_profile_extension_evidence"
+    },
+    {
+      "id": "ism-mss-base-other-existing-video-codecs",
+      "status": "ProfileExcludedProvisional",
+      "transport": "ism",
+      "container_profile": "fmp4",
+      "codec_profile_refs": [
+        "ism-provisional-other-existing-video"
+      ],
+      "reason": "each_additional_ism_video_codec_family_requires_exact_fixture_and_separate_profile_extension"
+    },
+    {
+      "id": "ism-mss-base-other-existing-audio-codecs",
+      "status": "ProfileExcludedProvisional",
+      "transport": "ism",
+      "container_profile": "fmp4",
+      "codec_profile_refs": [
+        "ism-provisional-other-existing-audio"
+      ],
+      "reason": "each_additional_ism_audio_codec_family_requires_exact_fixture_and_separate_profile_extension"
+    },
+    {
+      "id": "ism-mss-live-dvr",
+      "status": "ProfileExcludedProvisional",
+      "transport": "ism",
+      "container_profile": "fmp4",
+      "reason": "no_serializable_ism_live_or_dvr_fixture_and_no_approved_s00_target_row"
     }
   ],
   "corpus": {

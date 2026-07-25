@@ -18,7 +18,8 @@ pub use adapter::BlockingOrderedSegmentAdapter;
 pub use config::{AdaptiveRetryPolicy, AdaptiveRetryPolicyError, AdaptiveTransportLimits};
 pub use fetch::{
     AdaptiveFetchedResource, AdaptiveHttpContext, AdaptiveResourceFetchRequest,
-    AdaptiveResourcePurpose, AdaptiveResourceQueryApplication, AdaptiveTransportError,
+    AdaptiveResourcePurpose, AdaptiveResourceQueryApplication, AdaptiveResourceSecretForwarding,
+    AdaptiveTransportError,
 };
 pub use manifest::{
     AdaptiveManifestFetcher, ManifestBaseUri, ManifestFetchRequest, ManifestPoll, ManifestResource,
