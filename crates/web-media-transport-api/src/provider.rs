@@ -1,11 +1,9 @@
 //! Concrete provider boundary и typed operational outcomes.
 
-use source_core::{HttpRequestTarget, HttpScheme};
-
 use crate::TransportProviderId;
 use crate::{
     MediaPresentation, RedirectHopCount, TransportInput, TransportOpenRequest,
-    TransportRefreshRequest,
+    TransportRefreshRequest, TransportRequestTarget, TransportScheme,
 };
 
 /// Способность provider-а обновлять expiring request material.
@@ -22,8 +20,8 @@ pub enum RefreshSupport {
 pub struct ProviderDescriptor {
     /// Canonical provider identity.
     provider_id: TransportProviderId,
-    /// Exact admitted HTTP schemes.
-    schemes: Box<[HttpScheme]>,
+    /// Exact admitted transport schemes.
+    schemes: Box<[TransportScheme]>,
     /// Refresh capability.
     refresh: RefreshSupport,
 }
@@ -32,7 +30,7 @@ impl ProviderDescriptor {
     /// Проверяет non-empty duplicate-free capability snapshot.
     pub fn new(
         provider_id: TransportProviderId,
-        schemes: Vec<HttpScheme>,
+        schemes: Vec<TransportScheme>,
         refresh: RefreshSupport,
     ) -> Result<Self, ProviderDescriptorError> {
         if schemes.is_empty() {
@@ -59,13 +57,19 @@ impl ProviderDescriptor {
 
     /// Проверяет exact scheme capability.
     #[must_use]
-    pub fn supports_scheme(&self, scheme: HttpScheme) -> bool {
+    pub fn supports_scheme(&self, scheme: TransportScheme) -> bool {
         self.schemes.contains(&scheme)
+    }
+
+    /// Проверяет capability относительно checked request target-а.
+    #[must_use]
+    pub fn supports_target(&self, target: &TransportRequestTarget) -> bool {
+        self.supports_scheme(target.scheme())
     }
 
     /// Возвращает immutable scheme snapshot.
     #[must_use]
-    pub fn schemes(&self) -> &[HttpScheme] {
+    pub fn schemes(&self) -> &[TransportScheme] {
         &self.schemes
     }
 
@@ -80,10 +84,10 @@ impl ProviderDescriptor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ProviderDescriptorError {
     /// Provider без scheme capability никогда не может быть выбран.
-    #[error("transport provider не объявил HTTP schemes")]
+    #[error("transport provider не объявил transport schemes")]
     MissingSchemes,
     /// Scheme rows должны быть unique.
-    #[error("transport provider повторно объявил HTTP scheme")]
+    #[error("transport provider повторно объявил transport scheme")]
     DuplicateScheme,
 }
 
@@ -161,7 +165,7 @@ pub enum RefreshFailure {
 /// Provider-owned успешный output до registry wrapping-а.
 pub struct ProviderOpenOutput {
     /// Final checked target после redirect chain.
-    final_target: HttpRequestTarget,
+    final_target: TransportRequestTarget,
     /// Фактическое число redirect hops.
     redirect_hops: RedirectHopCount,
     /// Provider-confirmed timeline nature.
@@ -174,13 +178,13 @@ impl ProviderOpenOutput {
     /// Создаёт provider output без возможности подменить caller identity/generation.
     #[must_use]
     pub fn new(
-        final_target: HttpRequestTarget,
+        final_target: impl Into<TransportRequestTarget>,
         redirect_hops: RedirectHopCount,
         presentation: MediaPresentation,
         input: TransportInput,
     ) -> Self {
         Self {
-            final_target,
+            final_target: final_target.into(),
             redirect_hops,
             presentation,
             input,
@@ -191,7 +195,7 @@ impl ProviderOpenOutput {
     pub(crate) fn into_parts(
         self,
     ) -> (
-        HttpRequestTarget,
+        TransportRequestTarget,
         RedirectHopCount,
         MediaPresentation,
         TransportInput,

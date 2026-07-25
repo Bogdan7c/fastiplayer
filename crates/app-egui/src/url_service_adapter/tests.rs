@@ -123,6 +123,26 @@ fn extended_s00_schemes_require_exact_implemented_provider_capability() {
             "ftps://media.example.test/video.webm",
             service_ytdlp::YtDlpInputScheme::Ftps,
         ),
+    ] {
+        let StartupUrlClassification::Supported(locator) = classify_startup_url(raw_locator) else {
+            panic!("production registry должен включать S37 FTP provider");
+        };
+        assert_eq!(persistence_identity(&locator), raw_locator);
+
+        let implemented_capabilities =
+            [ImplementedYtDlpInputProviderCapability::exact(input_scheme)];
+        let active_registry = StartupUrlServiceRegistry {
+            implemented_yt_dlp_input_providers: &implemented_capabilities,
+        };
+        let StartupUrlClassification::Supported(active_locator) =
+            active_registry.classify(raw_locator)
+        else {
+            panic!("exact Implemented capability должна включать только свою scheme");
+        };
+        assert_eq!(persistence_identity(&active_locator), raw_locator);
+    }
+
+    for (raw_locator, input_scheme) in [
         (
             "rtmp://media.example.test/live",
             service_ytdlp::YtDlpInputScheme::Rtmp,
@@ -134,7 +154,7 @@ fn extended_s00_schemes_require_exact_implemented_provider_capability() {
     ] {
         let StartupUrlClassification::Unsupported { reason } = classify_startup_url(raw_locator)
         else {
-            panic!("production registry не должен включать Planned provider");
+            panic!("production registry не должен включать Planned RTMP provider");
         };
         assert_eq!(
             reason,
@@ -237,21 +257,20 @@ fn active_extended_locator_redacts_credentials_and_requires_acknowledgement() {
         implemented_yt_dlp_input_providers: &implemented_capabilities,
     };
     let raw_locator = "ftp://user:password@media.example.test/private/video.webm?token=secret";
-    let StartupUrlClassification::Unsupported { reason } = classify_startup_url(raw_locator) else {
-        panic!("production registry должен отклонить FTP без provider-а");
+    let StartupUrlClassification::Supported(production_locator) = classify_startup_url(raw_locator)
+    else {
+        panic!("S37 production registry должен принять FTP");
     };
-    let safe_error = reason.safe_error();
-    for secret in ["user", "password", "private", "token", "secret"] {
-        assert!(!safe_error.contains(secret));
-    }
-
     let StartupUrlClassification::Supported(locator) = active_registry.classify(raw_locator) else {
         panic!("active FTP capability должна принять exact locator");
     };
 
+    assert_eq!(persistence_identity(&production_locator), raw_locator);
     assert_eq!(persistence_identity(&locator), raw_locator);
     assert!(locator.requires_sensitive_persistence_acknowledgement());
     for secret in ["user", "password", "private", "token", "secret"] {
+        assert!(!format!("{production_locator:?}").contains(secret));
+        assert!(!production_locator.safe_label().contains(secret));
         assert!(!format!("{locator:?}").contains(secret));
         assert!(!locator.safe_label().contains(secret));
     }

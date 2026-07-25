@@ -63,7 +63,10 @@ impl FakeProvider {
     fn new(provider_id: TransportProviderId, observation: Arc<Mutex<FakeObservation>>) -> Self {
         let descriptor = ProviderDescriptor::new(
             provider_id,
-            vec![HttpScheme::Http, HttpScheme::Https],
+            vec![
+                TransportScheme::Http(HttpScheme::Http),
+                TransportScheme::Http(HttpScheme::Https),
+            ],
             RefreshSupport::Supported,
         )
         .expect("valid fake provider descriptor");

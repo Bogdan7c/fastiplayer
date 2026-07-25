@@ -1,5 +1,7 @@
 # Tech Stack
 
+- Progressive FTP(S) uses `suppaftp` 10 (`rustls-ring`) inside `source-core` for passive `TYPE I`/`SIZE`/`REST`+`RETR`; thin provider crate `web-media-ftp` (`progressive-ftp`) has only `source-core` + `web-media-transport-api` (+ `thiserror`). `ftps` is explicit TLS only. S21T targets are `TransportRequestTarget::{Http,Ftp}`. See `mem:media-services/progressive-ftp-s37-2026-07-25`.
+
 - `web-media-smooth` is the guarded concrete Smooth static-VOD preparation, selected fragment-source and neutral demux/seek orchestration owner. It reuses S31 transport, sealed S36D/F2/F1 contracts, C3 values and `demux-api`, but has no service/app/player/concrete-HTTP or concrete-Symphonia dependency. App injects the existing S28A/F3A registry, and `ProgressiveDemuxer` owns blocking readiness plus transactional receipts. See `mem:media-services/smooth-manifest-catalog-s36p2-2026-07-25`, `mem:media-services/smooth-fragment-sources-s36p3-2026-07-25` and `mem:media-services/smooth-vod-runtime-s36p4-p6-2026-07-25`.
 
 - `smooth-streaming-fmp4` is a pure first-party adapter with exactly `smooth-streaming-manifest-core`, `symphonia-format-isomp4`, and `thiserror` normal dependencies. It maps validated Smooth H.264/AAC-LC tracks into generic init/media reconstruction and returns audio overhang only as pending exact PCM clipping; transport/demux/player remain downstream. See `mem:media-services/smooth-streaming-fmp4-mapper-s36f2-2026-07-25`.

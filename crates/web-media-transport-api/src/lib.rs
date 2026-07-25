@@ -14,6 +14,7 @@ mod registry;
 mod request;
 mod resource;
 mod secret;
+mod target;
 
 pub use identity::{
     MediaComponentIdentity, MediaComponentIdentityError, MediaComponentRole, SourceGeneration,
@@ -45,6 +46,7 @@ pub use secret::{
     SecretQueryOverrideError, SecretRequestContext, SecretRequestContextBuilder,
     SecretRequestPurpose, SecretRequestScope,
 };
+pub use target::{TransportRequestTarget, TransportScheme};
 
 #[cfg(test)]
 mod tests;

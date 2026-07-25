@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use source_core::{
     CancellationToken, HttpBoundedByteRange, HttpBoundedFetchHop, HttpBoundedFetchKind,
     HttpBoundedFetchRequest, HttpHeader, HttpRangeResponseMetadata, HttpRequestTarget,
-    HttpSourceSession, ScopedHttpCookieJar, ScopedHttpCookieJarError, SourceError,
-    SourceRuntimeConfig,
+    HttpRequestTargetError, HttpSourceSession, ScopedHttpCookieJar, ScopedHttpCookieJarError,
+    SourceError, SourceRuntimeConfig,
 };
 use web_media_transport_api::{
     MediaPresentation, RedirectHopCount, RedirectPolicyError, SecretRequestContext,
@@ -40,13 +40,19 @@ impl AdaptiveHttpContext {
         limits: AdaptiveTransportLimits,
         retry: AdaptiveRetryPolicy,
     ) -> Result<Self, AdaptiveTransportError> {
+        let http_target = request
+            .target()
+            .as_http()
+            .ok_or(AdaptiveTransportError::Target(
+                HttpRequestTargetError::UnsupportedScheme,
+            ))?;
         let initial_material = request
             .secrets()
-            .material_for(request.target(), SecretRequestPurpose::Manifest)
+            .material_for(http_target, SecretRequestPurpose::Manifest)
             .ok_or(AdaptiveTransportError::SecretScopeRejected)?;
         let cookie_jar = ScopedHttpCookieJar::new(
             request.secrets().scope().request_scope_proof(),
-            request.target(),
+            http_target,
             initial_material.cookies_for_request(),
         )
         .map_err(map_cookie_jar_error)?;

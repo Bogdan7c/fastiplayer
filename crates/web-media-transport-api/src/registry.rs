@@ -55,10 +55,7 @@ impl TransportRegistry {
                 provider_id: request.provider().clone(),
             }
         })?;
-        if !provider
-            .descriptor()
-            .supports_scheme(request.target().scheme())
-        {
+        if !provider.descriptor().supports_target(request.target()) {
             return Err(TransportOpenError::Unsupported(
                 UnsupportedTransportReason::Scheme,
             ));
@@ -99,7 +96,7 @@ impl TransportRegistry {
         }
         if !provider
             .descriptor()
-            .supports_scheme(request.replacement().target().scheme())
+            .supports_target(request.replacement().target())
         {
             return Err(TransportRefreshError::Unsupported(
                 UnsupportedTransportReason::Scheme,
@@ -138,11 +135,21 @@ impl TransportRegistry {
                 ));
             }
         } else {
+            let Some(initial_http) = request.target().as_http() else {
+                return Err(TransportOpenError::ProviderContract(
+                    ProviderContractViolation::FinalTargetChangedWithoutRedirect,
+                ));
+            };
+            let Some(final_http) = final_target.as_http() else {
+                return Err(TransportOpenError::ProviderContract(
+                    ProviderContractViolation::FinalTargetChangedWithoutRedirect,
+                ));
+            };
             request
                 .redirects()
                 .authorize_redirect(
-                    request.target(),
-                    &final_target,
+                    initial_http,
+                    final_http,
                     RedirectHopCount::new(redirect_hops.value() - 1),
                 )
                 .map_err(TransportOpenError::Redirect)?;

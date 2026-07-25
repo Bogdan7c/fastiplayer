@@ -286,7 +286,6 @@ struct ImplementedYtDlpInputProviderCapability {
     input_scheme: service_ytdlp::YtDlpInputScheme,
 }
 
-#[cfg(test)]
 impl ImplementedYtDlpInputProviderCapability {
     /// Создаёт registration row для одного exact scheme без alias expansion.
     const fn exact(input_scheme: service_ytdlp::YtDlpInputScheme) -> Self {
@@ -359,8 +358,11 @@ impl StartupUrlServiceRegistry<'_> {
     }
 }
 
-/// S37/S39 ещё не зарегистрировали production provider capabilities.
-const PRODUCTION_YT_DLP_INPUT_PROVIDERS: &[ImplementedYtDlpInputProviderCapability] = &[];
+/// S37 зарегистрировал exact FTP(S); RTMP остаётся dormant до S39.
+const PRODUCTION_YT_DLP_INPUT_PROVIDERS: &[ImplementedYtDlpInputProviderCapability] = &[
+    ImplementedYtDlpInputProviderCapability::exact(service_ytdlp::YtDlpInputScheme::Ftp),
+    ImplementedYtDlpInputProviderCapability::exact(service_ytdlp::YtDlpInputScheme::Ftps),
+];
 
 /// Единственный production registry используется CLI, toolbar, import и reopen.
 const PRODUCTION_STARTUP_URL_SERVICE_REGISTRY: StartupUrlServiceRegistry<'static> =

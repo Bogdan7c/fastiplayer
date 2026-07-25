@@ -222,6 +222,15 @@ pub enum SourceError {
         /// Почему source не seekable.
         reason: NotSeekableReason,
     },
+
+    /// FTP control/data операция завершилась typed failure без raw URL/credentials.
+    #[error("FTP source `{operation}` не удался: {kind:?}")]
+    FtpTransport {
+        /// Стабильная операция: connect/login/type/size/rest/retr/read.
+        operation: &'static str,
+        /// Secret-safe категория без server payload.
+        kind: crate::FtpTransportFailureKind,
+    },
 }
 
 impl SourceError {
@@ -245,7 +254,8 @@ impl SourceError {
             | Self::HttpRequestPolicyRejected { .. }
             | Self::HttpRepresentationChanged { .. }
             | Self::InvalidContentRange { .. }
-            | Self::NotSeekable { .. } => false,
+            | Self::NotSeekable { .. }
+            | Self::FtpTransport { .. } => false,
         }
     }
 }

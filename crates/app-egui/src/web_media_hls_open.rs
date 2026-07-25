@@ -181,7 +181,11 @@ pub(crate) fn project_hls_runtime_material(
     let material = candidate
         .hls_request_material()
         .context("Не удалось получить validated yt-dlp HLS material")?;
-    let selected_target = transport_request.target().clone();
+    let selected_target = transport_request
+        .target()
+        .as_http()
+        .context("HLS transport request должен содержать HTTP target")?
+        .clone();
     let manifest = match material.manifest().kind() {
         YtDlpHlsManifestInputKind::FetchSelectedUrl => HlsManifestInput::Fetch {
             selected_url: selected_target,

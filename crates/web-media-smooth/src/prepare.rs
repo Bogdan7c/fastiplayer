@@ -23,7 +23,14 @@ pub fn prepare_smooth_vod(
     request: SmoothPrepareRequest<'_>,
 ) -> Result<SmoothPreparedCatalog, SmoothPrepareError> {
     validate_transport_profile(&request)?;
-    let initial_target = request.transport.target().clone();
+    let initial_target = request
+        .transport
+        .target()
+        .as_http()
+        .ok_or(SmoothPrepareError::Fetch(AdaptiveTransportError::Target(
+            source_core::HttpRequestTargetError::UnsupportedScheme,
+        )))?
+        .clone();
     let parent_semantic = request.transport.component().semantic().clone();
     let parent_identity = ExactSelectionIdentity::new(
         request.transport.component().exact().clone(),

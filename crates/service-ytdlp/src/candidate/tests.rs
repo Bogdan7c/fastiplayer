@@ -7,7 +7,7 @@ use web_media_core::{
 };
 use web_media_transport_api::{
     MediaComponentRole, MediaPresentation, RedirectHopCount, SecretRequestPurpose,
-    SourceGeneration, TransportProviderId,
+    SourceGeneration, TransportOpenRequest, TransportProviderId,
 };
 
 use super::model::{
@@ -19,6 +19,14 @@ use super::normalize::normalize_candidate_document;
 use super::raw::YtDlpCandidateDocument;
 use super::request_material::YtDlpRequestMaterialViolation;
 use crate::{YtDlpServiceError, parse_yt_dlp_media_locator};
+
+/// Возвращает HTTP target из transport projection для HTTP-only assertions.
+fn http_transport_target(request: &TransportOpenRequest) -> &HttpRequestTarget {
+    request
+        .target()
+        .as_http()
+        .expect("yt-dlp transport projection must be HTTP(S)")
+}
 
 /// Парсит synthetic JSON тем же DTO boundary, что production process output.
 fn snapshot(payload: Value, generation: u64) -> super::YtDlpCandidateSnapshot {
@@ -99,6 +107,124 @@ fn rejected_inventory(
         .rejected()
         .expect("candidate должен быть rejected")
         .reason()
+}
+
+/// S37: progressive FTP material доказывает single-URL subset и отвергает HTTP auth.
+#[test]
+fn progressive_ftp_request_material_rejects_http_authorization_and_adaptive_extras() {
+    let mut protected = progressive_ftp_format("protected-ftp", "webm", "webm", "vp9", "opus");
+    protected["http_headers"] = json!({"Authorization": "Bearer ftp-secret"});
+    let protected_snapshot = snapshot(json!({"formats": [protected]}), 15);
+    let candidate = accepted_inventory(&protected_snapshot, 0);
+    let context = super::YtDlpTransportRequestContext::new(
+        TransportProviderId::new("progressive-ftp").expect("provider ID"),
+        SourceGeneration::new(1),
+        CancellationToken::new(),
+    );
+    let error = candidate
+        .ftp_transport_components(&context)
+        .expect_err("HTTP auth не должен проходить progressive FTP boundary");
+    assert!(matches!(
+        error,
+        super::YtDlpTransportRequestError::FtpRequestMaterial(
+            YtDlpRequestMaterialViolation::HttpOnlyMaterialForFtp
+        )
+    ));
+    assert!(!format!("{error:?} {error}").contains("ftp-secret"));
+
+    let mut fragmented = progressive_ftp_format("fragmented-ftp", "webm", "webm", "vp9", "opus");
+    fragmented["fragments"] = json!([{"url": "ftp://media.invalid/part1"}]);
+    let fragmented_snapshot = snapshot(json!({"formats": [fragmented]}), 16);
+    let candidate = accepted_inventory(&fragmented_snapshot, 0);
+    let error = candidate
+        .ftp_transport_components(&context)
+        .expect_err("fragmented FTP row не должен проходить progressive subset");
+    assert!(matches!(
+        error,
+        super::YtDlpTransportRequestError::FtpRequestMaterial(
+            YtDlpRequestMaterialViolation::NonProgressiveMaterial
+        )
+    ));
+}
+
+/// S37: FTP transport projection строит empty-secret request и redacts diagnostics.
+#[test]
+fn ftp_transport_components_project_empty_secret_progressive_request() {
+    let mut ftp_format = progressive_ftp_format("muxed-ftp-webm", "webm", "webm", "vp9", "opus");
+    ftp_format["url"] = json!("ftp://ftp-user:ftp-secret@media.invalid/private/video.webm");
+    let snapshot = snapshot(json!({"formats": [ftp_format]}), 17);
+    let candidate = accepted_inventory(&snapshot, 0);
+    let context = super::YtDlpTransportRequestContext::new(
+        TransportProviderId::new("progressive-ftp").expect("provider ID"),
+        SourceGeneration::new(1),
+        CancellationToken::new(),
+    );
+    let components = candidate
+        .ftp_transport_components(&context)
+        .expect("public FTP component должен стать neutral request");
+    assert_eq!(components.len(), 1);
+    let request = components
+        .into_iter()
+        .next()
+        .expect("single component")
+        .into_request();
+    assert!(request.secrets().is_empty());
+    assert!(request.target().as_ftp().is_some());
+    let diagnostic = format!("{snapshot:?} {request:?}");
+    assert!(!diagnostic.contains("ftp-secret"));
+    assert!(!diagnostic.contains("ftp-user"));
+}
+
+/// S37: progressive HTTP transport отвергает FTP primary target.
+#[test]
+fn progressive_http_transport_rejects_ftp_primary_target() {
+    let snapshot = snapshot(
+        json!({
+            "formats": [progressive_ftp_format(
+                "ftp-not-http",
+                "webm",
+                "webm",
+                "vp9",
+                "opus"
+            )]
+        }),
+        18,
+    );
+    let candidate = accepted_inventory(&snapshot, 0);
+    let context = super::YtDlpTransportRequestContext::new(
+        TransportProviderId::new("progressive-http").expect("provider ID"),
+        SourceGeneration::new(1),
+        CancellationToken::new(),
+    );
+    let error = candidate
+        .transport_components(&context)
+        .expect_err("FTP target не должен проходить progressive HTTP boundary");
+    assert!(matches!(
+        error,
+        super::YtDlpTransportRequestError::RequestMaterial(
+            YtDlpRequestMaterialViolation::NonHttpProgressiveMaterial
+        )
+    ));
+}
+
+/// Создаёт базовый progressive FTP format без secrets.
+fn progressive_ftp_format(
+    format_id: &str,
+    extension: &str,
+    container: &str,
+    video_codec: &str,
+    audio_codec: &str,
+) -> Value {
+    json!({
+        "format_id": format_id,
+        "url": format!("ftp://media.invalid/{format_id}.webm"),
+        "protocol": "ftp",
+        "ext": extension,
+        "container": container,
+        "vcodec": video_codec,
+        "acodec": audio_codec,
+        "dynamic_range": "SDR"
+    })
 }
 
 /// Создаёт базовый progressive format без secrets.
@@ -276,6 +402,55 @@ fn selected_compound_uses_exact_components_without_cartesian_inventory() {
     );
 }
 
+/// Mixed progressive Separate маршрутизирует каждый physical resource своим provider-ом.
+#[test]
+fn mixed_http_ftp_compound_projects_component_wise_transport_requests() {
+    let snapshot = snapshot(
+        json!({
+            "format_id": "ftp-video+http-audio",
+            "requested_formats": [
+                progressive_format("http-audio", "opus", "ogg", "none", "opus"),
+                progressive_ftp_format("ftp-video", "webm", "webm", "vp9", "none")
+            ]
+        }),
+        19,
+    );
+    let selected = snapshot
+        .selected()
+        .and_then(YtDlpCandidateEntry::accepted)
+        .expect("mixed progressive candidate");
+    let http_provider = TransportProviderId::new("progressive-http").expect("HTTP provider ID");
+    let ftp_provider = TransportProviderId::new("progressive-ftp").expect("FTP provider ID");
+    let context = super::YtDlpProgressiveTransportRequestContext::new(
+        http_provider.clone(),
+        ftp_provider.clone(),
+        SourceGeneration::new(1),
+        CancellationToken::new(),
+    );
+
+    let components = selected
+        .progressive_transport_components(&context)
+        .expect("component-wise projection");
+    assert_eq!(components.len(), 2);
+    for component in components {
+        let role = component.role();
+        let request = component.into_request();
+        match role {
+            MediaComponentRole::Video => {
+                assert_eq!(request.provider(), &ftp_provider);
+                assert!(request.target().as_ftp().is_some());
+            }
+            MediaComponentRole::Audio => {
+                assert_eq!(request.provider(), &http_provider);
+                assert!(request.target().as_http().is_some());
+            }
+            MediaComponentRole::Muxed | MediaComponentRole::Subtitle => {
+                panic!("Separate candidate содержит недопустимую component role")
+            }
+        }
+    }
+}
+
 /// Обычный selected result не заменяется single-row `requested_formats` wrapper-ом.
 #[test]
 fn ordinary_selected_result_remains_one_root_component() {
@@ -444,7 +619,7 @@ fn hls_transport_projection_accepts_hls_fields_without_progressive_profile_rejec
         .hls_transport_request(&context)
         .expect("HLS projection must not apply progressive exclusions");
     assert_eq!(
-        request.target().origin().scheme(),
+        http_transport_target(&request).origin().scheme(),
         source_core::HttpScheme::Https
     );
     let diagnostic = format!("{snapshot:?} {request:?}");
@@ -502,7 +677,7 @@ fn dash_transport_projection_preserves_serialized_roles_and_scoped_request_conte
         ]
     );
     assert_eq!(
-        request.target().expose_secret_for_request(),
+        http_transport_target(&request).expose_secret_for_request(),
         "https://media.invalid/private/init.webm"
     );
     let media_target = HttpRequestTarget::parse_exact("https://media.invalid/private/one.webm")
@@ -888,7 +1063,10 @@ fn transport_maps_authorized_material_with_origin_path_and_secure_scope() {
         .into_request();
     let material = request
         .secrets()
-        .material_for(request.target(), SecretRequestPurpose::PrimaryResource)
+        .material_for(
+            http_transport_target(&request),
+            SecretRequestPurpose::PrimaryResource,
+        )
         .expect("initial target находится в собственном scope");
     assert_eq!(material.headers_for_request().len(), 1);
     assert_eq!(material.headers_for_request()[0].name, "Authorization");
@@ -962,7 +1140,10 @@ fn refresh_reextraction_replaces_serialized_authorization_state() {
             .into_request();
         request
             .secrets()
-            .material_for(request.target(), SecretRequestPurpose::PrimaryResource)
+            .material_for(
+                http_transport_target(&request),
+                SecretRequestPurpose::PrimaryResource,
+            )
             .and_then(|material| material.cookies_for_request().map(ToOwned::to_owned))
             .expect("serialized cookie exists")
     };
@@ -1036,14 +1217,17 @@ fn checked_in_ism_target_projects_one_scoped_vod_manifest_request() {
         candidate.descriptor().semantic_identity()
     );
     assert_eq!(
-        request.target().expose_secret_for_request(),
+        http_transport_target(&request).expose_secret_for_request(),
         "https://manifest.invalid/channel.ism/Manifest"
     );
     assert_eq!(request.http_range_request_limit(), None);
 
     let initial_material = request
         .secrets()
-        .material_for(request.target(), SecretRequestPurpose::PrimaryResource)
+        .material_for(
+            http_transport_target(&request),
+            SecretRequestPurpose::PrimaryResource,
+        )
         .expect("initial manifest target должен находиться в собственном scope");
     assert_eq!(initial_material.headers_for_request().len(), 1);
     assert_eq!(
@@ -1078,7 +1262,11 @@ fn checked_in_ism_target_projects_one_scoped_vod_manifest_request() {
     );
     let redirect_authorization = request
         .redirects()
-        .authorize_redirect(request.target(), &cross_origin, RedirectHopCount::none())
+        .authorize_redirect(
+            http_transport_target(&request),
+            &cross_origin,
+            RedirectHopCount::none(),
+        )
         .expect("cross-origin CDN redirect разрешён без secrets");
     assert!(!redirect_authorization.permits_secret_scope_check());
 

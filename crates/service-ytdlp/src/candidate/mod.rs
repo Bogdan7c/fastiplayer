@@ -30,8 +30,8 @@ pub use request_material::{
     YtDlpSmoothManifestRequestMaterialViolation, YtDlpSmoothUnsupportedRequestMaterial,
 };
 pub use transport::{
-    YtDlpDashTransportComponent, YtDlpTransportComponent, YtDlpTransportRequestContext,
-    YtDlpTransportRequestError,
+    YtDlpDashTransportComponent, YtDlpProgressiveTransportRequestContext, YtDlpTransportComponent,
+    YtDlpTransportRequestContext, YtDlpTransportRequestError,
 };
 
 pub(crate) use normalize::normalize_candidate_document;

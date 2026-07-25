@@ -30,15 +30,16 @@ use rustiplayer_config::{
 };
 use service_ytdlp::{
     YtDlpCandidateSelection, YtDlpCandidateSnapshot, YtDlpLiveIntent, YtDlpMediaLocator,
-    YtDlpNormalizedCandidate, YtDlpTransportRequestContext,
+    YtDlpNormalizedCandidate, YtDlpProgressiveTransportRequestContext,
 };
 use source_core::{CancellationToken, SourceRuntimeConfig};
 use symphonia_demux::DemuxerOptions;
 use web_media_core::{
-    ContainerFamily, ExactSelectionIdentity, ExtractionGeneration, HttpScheme, SelectionRequest,
-    SourceIdentity, TransportFamily,
+    ContainerFamily, ExactSelectionIdentity, ExtractionGeneration, FtpScheme, HttpScheme,
+    SelectionRequest, SourceIdentity, TransportFamily,
 };
 use web_media_dash::DashEndpointRefreshPort;
+use web_media_ftp::WebMediaFtpProvider;
 use web_media_hls::HlsEndpointRefreshPort;
 use web_media_http::WebMediaHttpProvider;
 use web_media_playback_plan::{
@@ -306,8 +307,10 @@ struct WebOpenRuntime {
     transport_capabilities: TransportCapabilitySnapshot,
     /// Factory capabilities для pure planner-а.
     demux_capabilities: DemuxCapabilitySnapshot,
-    /// Exact provider ID нужен service-owned neutral request adapter-у.
+    /// Exact HTTP provider ID нужен service-owned neutral request adapter-у.
     provider_id: web_media_transport_api::TransportProviderId,
+    /// Exact FTP provider ID для progressive FTP candidates.
+    ftp_provider_id: web_media_transport_api::TransportProviderId,
     /// Validated source policy нужна bounded sniff deadline.
     source_config: SourceRuntimeConfig,
     /// Caller config нужен для named adaptive RAM budgets.
@@ -325,10 +328,16 @@ impl WebOpenRuntime {
         let provider = WebMediaHttpProvider::new(source_config.clone(), prefetch_config)
             .context("Не удалось создать progressive HTTP provider")?;
         let provider_id = provider.descriptor().provider_id().clone();
+        let ftp_provider = WebMediaFtpProvider::new(source_config.clone())
+            .context("Не удалось создать progressive FTP provider")?;
+        let ftp_provider_id = ftp_provider.descriptor().provider_id().clone();
         let mut transport_registry = TransportRegistry::new();
         transport_registry
             .register(Box::new(provider))
             .context("Не удалось зарегистрировать progressive HTTP provider")?;
+        transport_registry
+            .register(Box::new(ftp_provider))
+            .context("Не удалось зарегистрировать progressive FTP provider")?;
 
         let demuxer_options = DemuxerOptions::from_max_consecutive_corrupted_packets(
             demux_config.max_consecutive_corrupted_packets,
@@ -354,9 +363,10 @@ impl WebOpenRuntime {
             transport_registry,
             demux_registry: Arc::new(demux_composition.registry),
             hls_demux_registry: Arc::new(hls_demux_composition.registry),
-            transport_capabilities: progressive_http_capabilities()?,
+            transport_capabilities: progressive_transport_capabilities()?,
             demux_capabilities,
             provider_id,
+            ftp_provider_id,
             source_config,
             network_config: network_config.clone(),
             prefetch_config,
@@ -447,14 +457,15 @@ impl WebOpenRuntime {
         ) {
             bail!("live yt-dlp candidate не имеет совместимого HLS transport profile");
         }
-        let request_context = YtDlpTransportRequestContext::new(
+        let request_context = YtDlpProgressiveTransportRequestContext::new(
             self.provider_id.clone(),
+            self.ftp_provider_id.clone(),
             SourceGeneration::new(INITIAL_TRANSPORT_GENERATION),
             cancellation.clone(),
         );
         let components = candidate
-            .transport_components(&request_context)
-            .context("YtDlp request material нельзя выразить через S22 transport")?;
+            .progressive_transport_components(&request_context)
+            .context("YtDlp request material нельзя выразить через progressive transport")?;
         let mut opened_components = Vec::with_capacity(components.len());
         for component in components {
             ensure_not_cancelled(is_cancelled)?;
@@ -463,7 +474,7 @@ impl WebOpenRuntime {
             let opened_transport = self
                 .transport_registry
                 .open(component.into_request())
-                .context("Progressive HTTP provider не открыл YtDlp component")?;
+                .context("Progressive provider не открыл YtDlp component")?;
             let transport_seekability = opened_transport.seekability();
             let demux_input = match opened_transport.into_input() {
                 TransportInput::Seekable(source) => DemuxInput::byte_source(source),
@@ -670,8 +681,8 @@ fn selection_policy(
     .map_err(Into::into)
 }
 
-/// Объявляет только реальные output shapes зарегистрированного S22 provider-а.
-fn progressive_http_capabilities() -> Result<TransportCapabilitySnapshot> {
+/// Объявляет только реальные output shapes зарегистрированных progressive provider-ов.
+fn progressive_transport_capabilities() -> Result<TransportCapabilitySnapshot> {
     let outputs = DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes)
         .with(DemuxInputCapability::StreamingBytes);
     let http = TransportCapabilityRegistration::new(
@@ -680,6 +691,14 @@ fn progressive_http_capabilities() -> Result<TransportCapabilitySnapshot> {
     )?;
     let https = TransportCapabilityRegistration::new(
         TransportFamily::ProgressiveHttp(HttpScheme::Https),
+        outputs,
+    )?;
+    let ftp = TransportCapabilityRegistration::new(
+        TransportFamily::ProgressiveFtp(FtpScheme::Ftp),
+        outputs,
+    )?;
+    let ftps = TransportCapabilityRegistration::new(
+        TransportFamily::ProgressiveFtp(FtpScheme::Ftps),
         outputs,
     )?;
     let hls = TransportCapabilityRegistration::new(
@@ -696,7 +715,7 @@ fn progressive_http_capabilities() -> Result<TransportCapabilitySnapshot> {
         DemuxInputCapabilities::only(DemuxInputCapability::OrderedSegments),
     )?;
     Ok(TransportCapabilitySnapshot::new(vec![
-        http, https, hls, dash, smooth,
+        http, https, ftp, ftps, hls, dash, smooth,
     ]))
 }
 
@@ -990,7 +1009,7 @@ mod tests {
     #[test]
     fn transport_capability_snapshot_advertises_dash_ordered_and_range_inputs() {
         let capabilities =
-            progressive_http_capabilities().expect("transport capability snapshot builds");
+            progressive_transport_capabilities().expect("transport capability snapshot builds");
         let dash_inputs = capabilities.output_inputs_for(TransportFamily::Dash);
 
         assert_eq!(
@@ -1007,6 +1026,18 @@ mod tests {
             capabilities.output_inputs_for(TransportFamily::SmoothStreaming),
             DemuxInputCapabilities::only(DemuxInputCapability::OrderedSegments),
             "S36 Smooth runtime должен рекламировать только реально используемый ordered input"
+        );
+        let progressive_outputs = DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes)
+            .with(DemuxInputCapability::StreamingBytes);
+        assert_eq!(
+            capabilities.output_inputs_for(TransportFamily::ProgressiveFtp(FtpScheme::Ftp)),
+            progressive_outputs,
+            "S37 FTP runtime должен рекламировать seekable и streaming byte inputs"
+        );
+        assert_eq!(
+            capabilities.output_inputs_for(TransportFamily::ProgressiveFtp(FtpScheme::Ftps)),
+            progressive_outputs,
+            "S37 FTPS runtime должен рекламировать seekable и streaming byte inputs"
         );
     }
 }

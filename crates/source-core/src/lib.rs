@@ -1,8 +1,9 @@
 //! Нейтральный byte-source слой rustiplayer.
 //!
-//! Crate владеет только чтением bytes из локальных файлов и HTTP Range
-//! источников, metadata источника и RAM range cache. Здесь намеренно нет знаний
-//! о media services, extractor-ах, контейнерах, demuxer-ах, decoder-ах или UI.
+//! Crate владеет только чтением bytes из локальных файлов, HTTP Range источников,
+//! progressive FTP(S) источников, metadata источника и RAM range cache. Здесь
+//! намеренно нет знаний о media services, extractor-ах, контейнерах, demuxer-ах,
+//! decoder-ах или UI.
 
 #![forbid(unsafe_code)]
 
@@ -10,6 +11,9 @@ mod cache;
 mod cancellation;
 mod config;
 mod error;
+mod ftp_locator;
+mod ftp_policy;
+mod ftp_session;
 mod http;
 mod http_bounded;
 mod http_cookie;
@@ -25,6 +29,12 @@ pub use cache::{
 pub use cancellation::CancellationToken;
 pub use config::SourceRuntimeConfig;
 pub use error::{HttpRepresentationChange, HttpRequestPolicyFailure, SourceError, SourceResult};
+pub use ftp_locator::SecretFtpUrl;
+pub use ftp_policy::{FtpEndpoint, FtpRequestTarget, FtpRequestTargetError, FtpScheme};
+pub use ftp_session::{
+    FtpOpenOutcome, FtpPreparedOpen, FtpRestCapability, FtpSeekableSource, FtpSourceOpenError,
+    FtpSourceSession, FtpStreamingSource, FtpTransportFailureKind,
+};
 pub use http::{HttpHeader, HttpRangeSource, HttpRangeSourceConfig};
 pub use http_bounded::{
     HttpBoundedByteRange, HttpBoundedFetchHop, HttpBoundedFetchKind, HttpBoundedFetchRequest,

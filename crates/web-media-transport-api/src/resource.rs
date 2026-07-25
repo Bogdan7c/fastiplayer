@@ -2,9 +2,9 @@
 
 use std::fmt;
 
-use source_core::{ByteSource, HttpRequestTarget, StreamingByteSource};
+use source_core::{ByteSource, StreamingByteSource};
 
-use crate::{MediaPresentation, OpenedComponentIdentity, SourceGeneration};
+use crate::{MediaPresentation, OpenedComponentIdentity, SourceGeneration, TransportRequestTarget};
 
 /// Typed byte seekability результата.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,7 +89,7 @@ pub struct OpenedTransport {
     /// Provider-confirmed VOD/live nature.
     presentation: MediaPresentation,
     /// Final validated target после redirect chain.
-    final_target: HttpRequestTarget,
+    final_target: TransportRequestTarget,
     /// Neutral byte input.
     input: TransportInput,
 }
@@ -99,7 +99,7 @@ impl OpenedTransport {
     pub(crate) fn new(
         identity: OpenedComponentIdentity,
         presentation: MediaPresentation,
-        final_target: HttpRequestTarget,
+        final_target: TransportRequestTarget,
         input: TransportInput,
     ) -> Self {
         Self {
@@ -124,7 +124,7 @@ impl OpenedTransport {
 
     /// Возвращает final redacted target contract.
     #[must_use]
-    pub const fn final_target(&self) -> &HttpRequestTarget {
+    pub const fn final_target(&self) -> &TransportRequestTarget {
         &self.final_target
     }
 

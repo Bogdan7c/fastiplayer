@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use serde_json::{Map, Value};
+use source_core::{FtpRequestTarget, HttpRequestTarget};
 use web_media_transport_api::HttpRangeRequestLimit;
 use zeroize::Zeroizing;
 
@@ -220,6 +221,15 @@ pub enum YtDlpRequestMaterialViolation {
     /// Progressive S22 provider не владеет segment/manifest/RTMP material.
     #[error("request material does not belong to progressive HTTP")]
     NonProgressiveMaterial,
+    /// Progressive HTTP subset не содержит HTTP(S) primary target.
+    #[error("progressive request target is not HTTP(S)")]
+    NonHttpProgressiveMaterial,
+    /// Progressive FTP subset не содержит FTP(S) primary target.
+    #[error("progressive request target is not FTP(S)")]
+    NonFtpProgressiveMaterial,
+    /// Progressive FTP не принимает HTTP authorization/range material.
+    #[error("request material contains HTTP-only fields incompatible with progressive FTP")]
+    HttpOnlyMaterialForFtp,
     /// Progressive resource не содержит primary URL.
     #[error("progressive request has no primary URL")]
     MissingPrimaryUrl,
@@ -241,6 +251,22 @@ impl SecretText {
     /// Передаёт exact secret только transport adapter-у после owner-side checks.
     pub(super) fn expose_secret_for_transport(&self) -> &str {
         &self.0
+    }
+}
+
+/// Заимствованный progressive FTP subset с primary target без HTTP auth surface.
+pub(super) struct YtDlpProgressiveFtpRequestMaterial<'a> {
+    /// Проверенный S19 material owner, который не раскрывается за пределы adapter-а.
+    #[allow(dead_code)]
+    material: &'a YtDlpRequestMaterialV1,
+    /// Primary FTP target, наличие и scheme которого доказал constructor.
+    target: &'a SecretText,
+}
+
+impl YtDlpProgressiveFtpRequestMaterial<'_> {
+    /// Раскрывает primary target только transport request constructor-у.
+    pub(super) fn target(&self) -> &str {
+        self.target.expose_secret_for_transport()
     }
 }
 
@@ -333,25 +359,41 @@ impl YtDlpRequestMaterial {
     ) -> Result<YtDlpProgressiveHttpRequestMaterial<'_>, YtDlpRequestMaterialViolation> {
         let Self::V1(material) = self;
         let authorization = self.http_authorization_material()?;
-        if !material.fragments.is_empty()
-            || material.fragment_base_url.is_some()
-            || material.hls_media_playlist_data.is_some()
-            || material.extra_param_to_segment_url.is_some()
-            || material.extra_param_to_key_url.is_some()
-            || material.hls_aes.is_some()
-            || material.rtmp.is_some()
-        {
-            return Err(YtDlpRequestMaterialViolation::NonProgressiveMaterial);
-        }
+        ensure_progressive_single_url_subset(material)?;
         let target = material
             .url
             .as_ref()
             .ok_or(YtDlpRequestMaterialViolation::MissingPrimaryUrl)?;
+        if HttpRequestTarget::parse_exact(target.expose_secret_for_transport()).is_err() {
+            return Err(YtDlpRequestMaterialViolation::NonHttpProgressiveMaterial);
+        }
         Ok(YtDlpProgressiveHttpRequestMaterial {
             material,
             target,
             serialized_cookies: authorization.serialized_cookies,
         })
+    }
+
+    /// Доказывает progressive FTP subset без HTTP authorization/range material.
+    pub(super) fn progressive_ftp_request_material(
+        &self,
+    ) -> Result<YtDlpProgressiveFtpRequestMaterial<'_>, YtDlpRequestMaterialViolation> {
+        let Self::V1(material) = self;
+        ensure_progressive_single_url_subset(material)?;
+        if !material.http_headers.is_empty()
+            || material.cookies.is_some()
+            || material.http_range_request_limit.is_some()
+        {
+            return Err(YtDlpRequestMaterialViolation::HttpOnlyMaterialForFtp);
+        }
+        let target = material
+            .url
+            .as_ref()
+            .ok_or(YtDlpRequestMaterialViolation::MissingPrimaryUrl)?;
+        if FtpRequestTarget::parse_exact(target.expose_secret_for_transport()).is_err() {
+            return Err(YtDlpRequestMaterialViolation::NonFtpProgressiveMaterial);
+        }
+        Ok(YtDlpProgressiveFtpRequestMaterial { material, target })
     }
 
     /// Доказывает exact pinned native-HLS request-material subset.
@@ -470,6 +512,23 @@ pub(super) fn normalize_request_material(
     };
 
     Ok(YtDlpRequestMaterial::V1(material))
+}
+
+/// Доказывает single-URL progressive subset без adaptive/RTMP extras.
+fn ensure_progressive_single_url_subset(
+    material: &YtDlpRequestMaterialV1,
+) -> Result<(), YtDlpRequestMaterialViolation> {
+    if !material.fragments.is_empty()
+        || material.fragment_base_url.is_some()
+        || material.hls_media_playlist_data.is_some()
+        || material.extra_param_to_segment_url.is_some()
+        || material.extra_param_to_key_url.is_some()
+        || material.hls_aes.is_some()
+        || material.rtmp.is_some()
+    {
+        return Err(YtDlpRequestMaterialViolation::NonProgressiveMaterial);
+    }
+    Ok(())
 }
 
 /// Fail-closed классифицирует поля, которые S00 не умеет воспроизвести.

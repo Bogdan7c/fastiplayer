@@ -47,6 +47,7 @@ web-media-dash.workspace = true
 web-media-hls.workspace = true
 web-media-smooth.workspace = true
 web-media-http.workspace = true
+web-media-ftp.workspace = true
 web-media-playback-plan.workspace = true
 web-media-transport-api.workspace = true
 playlist-core.workspace = true

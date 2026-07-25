@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use media_prefetch::{PrefetchConfig, PrefetchingByteSource};
 use source_core::{
-    HttpHeader, HttpRequestBody, HttpScheme, HttpSingleHopRequest, HttpSourceHop,
-    HttpSourceSession, ScopedHttpCookieJar, ScopedHttpCookieJarError, SourceError,
+    HttpHeader, HttpRequestBody, HttpRequestTarget, HttpScheme, HttpSingleHopRequest,
+    HttpSourceHop, HttpSourceSession, ScopedHttpCookieJar, ScopedHttpCookieJarError, SourceError,
     SourceRuntimeConfig,
 };
 use web_media_transport_api::{
@@ -20,7 +20,7 @@ use web_media_transport_api::{
     ProviderOpenError, ProviderOpenOutput, ProviderRefreshError, RefreshSupport,
     SecretRequestContext, SecretRequestPurpose, TransportFailure, TransportInput,
     TransportOpenRequest, TransportProvider, TransportProviderId, TransportProviderIdError,
-    TransportRefreshRequest, UnsupportedTransportReason,
+    TransportRefreshRequest, TransportScheme, UnsupportedTransportReason,
 };
 
 use crate::range_redirect::{RedirectChainState, ScopedRangeRedirectHandler};
@@ -102,7 +102,10 @@ impl WebMediaHttpProvider {
             .map_err(WebMediaHttpProviderBuildError::InvalidProviderId)?;
         let descriptor = ProviderDescriptor::new(
             provider_id,
-            vec![HttpScheme::Http, HttpScheme::Https],
+            vec![
+                TransportScheme::Http(HttpScheme::Http),
+                TransportScheme::Http(HttpScheme::Https),
+            ],
             RefreshSupport::Supported,
         )
         .map_err(WebMediaHttpProviderBuildError::InvalidDescriptor)?;
@@ -121,7 +124,7 @@ impl WebMediaHttpProvider {
         let cookie_jar = scoped_cookie_jar_for_request(request)?;
         let session = HttpSourceSession::new_with_cookie_jar(&self.source_config, cookie_jar)
             .map_err(|source| map_source_open_error(&source, SecretDelivery::NotSent))?;
-        let mut current_target = request.target().clone();
+        let mut current_target = http_request_target(request)?.clone();
         let mut redirect_state = RedirectChainState::initial();
 
         loop {
@@ -262,19 +265,32 @@ struct RequestMaterial {
     secret_delivery: SecretDelivery,
 }
 
+/// Возвращает HTTP-only target либо typed scheme rejection для non-HTTP request-ов.
+fn http_request_target(
+    request: &TransportOpenRequest,
+) -> Result<&HttpRequestTarget, ProviderOpenError> {
+    request
+        .target()
+        .as_http()
+        .ok_or(ProviderOpenError::Unsupported(
+            UnsupportedTransportReason::Scheme,
+        ))
+}
+
 /// Создаёт отдельный jar каждого component open/refresh generation-а.
 fn scoped_cookie_jar_for_request(
     request: &TransportOpenRequest,
 ) -> Result<Arc<ScopedHttpCookieJar>, ProviderOpenError> {
+    let http_target = http_request_target(request)?;
     let initial_material = request
         .secrets()
-        .material_for(request.target(), SecretRequestPurpose::PrimaryResource)
+        .material_for(http_target, SecretRequestPurpose::PrimaryResource)
         .ok_or(ProviderOpenError::Authentication(
             AuthenticationFailure::SecretScopeRejected,
         ))?;
     let cookie_jar = ScopedHttpCookieJar::new(
         request.secrets().scope().request_scope_proof(),
-        request.target(),
+        http_target,
         initial_material.cookies_for_request(),
     )
     .map_err(|error| match error {
@@ -291,7 +307,7 @@ fn scoped_cookie_jar_for_request(
 /// Извлекает секреты только через intent-named S21T scope boundary.
 fn request_material_for_target(
     secrets: &SecretRequestContext,
-    target: &source_core::HttpRequestTarget,
+    target: &HttpRequestTarget,
     secret_forwarding: SecretForwarding,
     request_body_forwarding: RequestBodyForwarding,
 ) -> Result<RequestMaterial, ProviderOpenError> {
@@ -383,6 +399,9 @@ fn map_source_open_error(
         }
         SourceError::HttpRangeRedirectRejected { .. } => {
             ProviderOpenError::Transport(TransportFailure::RedirectRejected)
+        }
+        SourceError::FtpTransport { .. } => {
+            ProviderOpenError::Transport(TransportFailure::NetworkUnavailable)
         }
     }
 }

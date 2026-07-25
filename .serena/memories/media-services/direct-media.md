@@ -22,7 +22,7 @@
 
 - `service-direct-media` policy не расширялась: только HTTP(S) с explicit supported media extension. FTP(S)/RTMP никогда не передаются direct opener-у.
 - App-owned единый URL registry сохраняет register order direct-media → yt-dlp. Успешная direct classification фиксирует `MediaOpenSourceRequest::Direct`; последующая open failure не возвращается в registry и не вызывает yt-dlp retry.
-- Extended yt-dlp input schemes gated отдельно registered `Implemented` provider capability; production S15A list пуст до S37/S39. Это не transport feature `service-direct-media`.
+- Extended yt-dlp input schemes gated отдельно registered `Implemented` provider capability; production S15A list содержит exact `Ftp`/`Ftps` после S37, RTMP пуст до S39. Это не transport feature `service-direct-media`.
 
 
 ## S22 progressive HTTP migration (2026-07-22)

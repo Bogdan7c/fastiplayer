@@ -162,6 +162,18 @@ pub struct SecretRequestContext {
 }
 
 impl SecretRequestContext {
+    /// Пустой context для non-HTTP transport-ов (FTP).
+    ///
+    /// `material_for` всегда вернёт `None`, потому что placeholder scope не
+    /// совпадает ни с одним real HTTP target; `is_empty()` == true.
+    #[must_use]
+    pub fn empty() -> Self {
+        let placeholder = HttpRequestTarget::parse_exact("https://invalid.invalid/")
+            .expect("static placeholder HTTP target");
+        let path = HttpPathScope::from_target_path(&placeholder);
+        Self::builder(SecretRequestScope::from_target(&placeholder, path)).build()
+    }
+
     /// Начинает named builder, чтобы секретные поля не передавались позиционно.
     #[must_use]
     pub fn builder(scope: SecretRequestScope) -> SecretRequestContextBuilder {

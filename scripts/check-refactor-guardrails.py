@@ -100,6 +100,7 @@ REQUIRED_ROLE_CRATES = frozenset(
         "web-media-dash",
         "web-media-hls",
         "web-media-http",
+        "web-media-ftp",
         "web-media-smooth",
         "web-media-playback-plan",
         "web-media-transport-api",
@@ -204,6 +205,12 @@ WEB_MEDIA_HTTP_ALLOWED_DEPENDENCIES = frozenset(
     {"media-prefetch", "source-core", "web-media-transport-api"}
 )
 
+# Concrete FTP provider переиспользует source-core FTP session и neutral transport
+# API; HTTP client/prefetch/demux/service/player dependencies запрещены.
+WEB_MEDIA_FTP_ALLOWED_DEPENDENCIES = frozenset(
+    {"source-core", "thiserror", "web-media-transport-api"}
+)
+
 # Shared adaptive owner использует только neutral HTTP/policy/demux boundaries.
 # Concrete HLS/DASH parser, reqwest, service, player, UI и cache edges запрещены.
 WEB_MEDIA_ADAPTIVE_ALLOWED_DEPENDENCIES = frozenset(
@@ -288,6 +295,7 @@ SERVICE_YTDLP_FORBIDDEN_DEPENDENCIES = frozenset(
         "service-direct-media",
         "symphonia-demux",
         "web-media-http",
+        "web-media-ftp",
     }
 )
 
@@ -1204,6 +1212,14 @@ def find_dependency_violations(
             frozenset({"web-media-http"}),
             WEB_MEDIA_HTTP_ALLOWED_DEPENDENCIES,
             "web-media-http переиспользует только neutral transport API, source-core и media-prefetch",
+        )
+    )
+    violations.extend(
+        find_disallowed_dependencies(
+            dependency_map,
+            frozenset({"web-media-ftp"}),
+            WEB_MEDIA_FTP_ALLOWED_DEPENDENCIES,
+            "web-media-ftp переиспользует только neutral transport API и source-core",
         )
     )
     violations.extend(

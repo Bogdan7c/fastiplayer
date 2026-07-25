@@ -3,11 +3,12 @@
 use std::fmt;
 use std::num::NonZeroU64;
 
-use source_core::{CancellationToken, HttpRequestTarget};
+use source_core::CancellationToken;
 
 use crate::{
-    MediaComponentIdentity, RedirectPolicy, SecretRequestContext, SourceGeneration,
-    TransportProviderId,
+    MediaComponentIdentity, RedirectHopLimit, RedirectOriginPolicy, RedirectPolicy,
+    SecretRequestContext, SecureRedirectPolicy, SourceGeneration, TransportProviderId,
+    TransportRequestTarget,
 };
 
 /// Media timeline nature, независимая от byte seekability.
@@ -106,14 +107,14 @@ pub struct TransportOpenRequest {
     /// Exact/semantic/role identity.
     component: MediaComponentIdentity,
     /// Exact secret target + validated policy attributes.
-    target: HttpRequestTarget,
+    target: TransportRequestTarget,
     /// Expected timeline nature.
     presentation: MediaPresentation,
     /// Runtime generation, назначенная composition owner-ом.
     source_generation: SourceGeneration,
-    /// Ephemeral scoped request material.
+    /// Ephemeral scoped request material (HTTP-only; для FTP обязан быть empty).
     secrets: SecretRequestContext,
-    /// Bounded redirect policy.
+    /// Bounded redirect policy (FTP использует none).
     redirects: RedirectPolicy,
     /// Optional source-specific верхняя граница одного HTTP Range-запроса.
     http_range_request_limit: Option<HttpRangeRequestLimit>,
@@ -122,20 +123,30 @@ pub struct TransportOpenRequest {
 }
 
 impl TransportOpenRequest {
-    /// Создаёт request и доказывает, что non-empty secret context покрывает initial target.
+    /// Создаёт request и доказывает, что non-empty secret context покрывает initial HTTP target.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         provider: TransportProviderId,
         component: MediaComponentIdentity,
-        target: HttpRequestTarget,
+        target: impl Into<TransportRequestTarget>,
         presentation: MediaPresentation,
         source_generation: SourceGeneration,
         secrets: SecretRequestContext,
         redirects: RedirectPolicy,
         cancellation: CancellationToken,
     ) -> Result<Self, TransportOpenRequestError> {
-        if !secrets.is_empty() && !secrets.scope().allows(&target) {
-            return Err(TransportOpenRequestError::InitialTargetOutsideSecretScope);
+        let target = target.into();
+        match &target {
+            TransportRequestTarget::Http(http_target) => {
+                if !secrets.is_empty() && !secrets.scope().allows(http_target) {
+                    return Err(TransportOpenRequestError::InitialTargetOutsideSecretScope);
+                }
+            }
+            TransportRequestTarget::Ftp(_) => {
+                if !secrets.is_empty() {
+                    return Err(TransportOpenRequestError::HttpSecretsNotAllowedForFtp);
+                }
+            }
         }
         Ok(Self {
             provider,
@@ -148,6 +159,31 @@ impl TransportOpenRequest {
             http_range_request_limit: None,
             cancellation,
         })
+    }
+
+    /// Создаёт FTP progressive request без HTTP secrets/redirects surface.
+    pub fn for_ftp(
+        provider: TransportProviderId,
+        component: MediaComponentIdentity,
+        target: source_core::FtpRequestTarget,
+        presentation: MediaPresentation,
+        source_generation: SourceGeneration,
+        cancellation: CancellationToken,
+    ) -> Result<Self, TransportOpenRequestError> {
+        Self::new(
+            provider,
+            component,
+            TransportRequestTarget::from_ftp(target),
+            presentation,
+            source_generation,
+            SecretRequestContext::empty(),
+            RedirectPolicy::new(
+                RedirectHopLimit::none(),
+                RedirectOriginPolicy::SameOriginOnly,
+                SecureRedirectPolicy::DenyDowngrade,
+            ),
+            cancellation,
+        )
     }
 
     /// Добавляет проверенную source-specific HTTP Range policy.
@@ -172,9 +208,9 @@ impl TransportOpenRequest {
         &self.component
     }
 
-    /// Возвращает checked target.
+    /// Возвращает checked transport target.
     #[must_use]
-    pub const fn target(&self) -> &HttpRequestTarget {
+    pub const fn target(&self) -> &TransportRequestTarget {
         &self.target
     }
 
@@ -246,9 +282,12 @@ impl fmt::Debug for TransportOpenRequest {
 /// Ошибка построения open request-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum TransportOpenRequestError {
-    /// Non-empty context не покрывает initial request target.
+    /// Non-empty context не покрывает initial HTTP request target.
     #[error("initial target находится вне secret request scope")]
     InitialTargetOutsideSecretScope,
+    /// FTP request не принимает HTTP headers/cookies/body/query material.
+    #[error("FTP transport request не допускает HTTP secret material")]
+    HttpSecretsNotAllowedForFtp,
 }
 
 /// Owned refresh request: старый runtime fence + новое exact request material.

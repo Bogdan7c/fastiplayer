@@ -1,8 +1,8 @@
 //! Provider-neutral mapping S19 request material-а в S21T open requests.
 
 use source_core::{
-    CancellationToken, HttpHeader, HttpHeaderValidationError, HttpPathScope, HttpRequestTarget,
-    ValidatedHttpHeaders,
+    CancellationToken, FtpRequestTarget, HttpHeader, HttpHeaderValidationError, HttpPathScope,
+    HttpRequestTarget, ValidatedHttpHeaders,
 };
 use thiserror::Error;
 use url::Url;
@@ -50,6 +50,35 @@ impl YtDlpTransportRequestContext {
             provider,
             source_generation,
             cancellation,
+        }
+    }
+}
+
+/// Provider set для component-wise progressive HTTP/FTP composition.
+#[derive(Clone)]
+pub struct YtDlpProgressiveTransportRequestContext {
+    /// HTTP provider context того же attempt/generation.
+    http: YtDlpTransportRequestContext,
+    /// FTP provider context того же attempt/generation.
+    ftp: YtDlpTransportRequestContext,
+}
+
+impl YtDlpProgressiveTransportRequestContext {
+    /// Собирает оба provider context-а с общими lifecycle fences.
+    #[must_use]
+    pub fn new(
+        http_provider: TransportProviderId,
+        ftp_provider: TransportProviderId,
+        source_generation: SourceGeneration,
+        cancellation: CancellationToken,
+    ) -> Self {
+        Self {
+            http: YtDlpTransportRequestContext::new(
+                http_provider,
+                source_generation,
+                cancellation.clone(),
+            ),
+            ftp: YtDlpTransportRequestContext::new(ftp_provider, source_generation, cancellation),
         }
     }
 }
@@ -137,6 +166,9 @@ pub enum YtDlpTransportRequestError {
     /// Request material не принадлежит реализованному progressive/public subset-у.
     #[error("YtDlp request material нельзя открыть progressive HTTP transport-ом")]
     RequestMaterial(#[source] YtDlpRequestMaterialViolation),
+    /// Request material не принадлежит progressive FTP subset-у.
+    #[error("YtDlp request material нельзя открыть progressive FTP transport-ом")]
+    FtpRequestMaterial(#[source] YtDlpRequestMaterialViolation),
     /// Request material не является single-resource HLS profile.
     #[error("YtDlp request material нельзя выразить как HLS open request")]
     HlsRequestMaterial(#[source] YtDlpHlsRequestMaterialViolation),
@@ -158,6 +190,9 @@ pub enum YtDlpTransportRequestError {
     /// Extractor вернул syntactically invalid либо non-HTTP target.
     #[error("YtDlp component содержит недопустимый HTTP target")]
     Target(#[source] source_core::HttpRequestTargetError),
+    /// Extractor вернул syntactically invalid либо non-FTP target.
+    #[error("YtDlp component содержит недопустимый FTP target")]
+    FtpTarget(#[source] source_core::FtpRequestTargetError),
     /// Smooth manifest target нарушил neutral HTTP target contract после material proof.
     #[error("YtDlp Smooth manifest содержит недопустимый HTTP target")]
     SmoothTarget(#[source] source_core::HttpRequestTargetError),
@@ -176,6 +211,9 @@ pub enum YtDlpTransportRequestError {
     /// Descriptor layout не совпал с service-owned component roles.
     #[error("YtDlp component roles не совпадают с descriptor layout")]
     LayoutMismatch,
+    /// Progressive adapter не принимает manifest/segment transport family.
+    #[error("YtDlp component использует non-progressive transport family")]
+    NonProgressiveTransportFamily,
     /// Initial HLS profile принимает один selected manifest resource.
     #[error("YtDlp HLS candidate должен содержать ровно один manifest component")]
     HlsComponentCount,
@@ -375,67 +413,172 @@ impl YtDlpNormalizedCandidate {
         .map_err(YtDlpTransportRequestError::Request)
     }
 
-    /// Строит один request для single candidate либо два для exact compound merge.
+    /// Строит HTTP request-ы для single candidate либо exact compound merge.
     pub fn transport_components(
         &self,
         context: &YtDlpTransportRequestContext,
     ) -> Result<Vec<YtDlpTransportComponent>, YtDlpTransportRequestError> {
-        let mut components = Vec::with_capacity(self.component_requests.len());
-        for component in &self.component_requests {
-            let role = media_component_role(component.role);
-            let container = component_container(self.descriptor().layout(), component.role)
-                .ok_or(YtDlpTransportRequestError::LayoutMismatch)?;
-            let request_material = component
-                .material
-                .progressive_http_request_material()
-                .map_err(YtDlpTransportRequestError::RequestMaterial)?;
-            let target = HttpRequestTarget::parse_exact(request_material.target())
-                .map_err(YtDlpTransportRequestError::Target)?;
-            let identity = MediaComponentIdentity::new(
-                self.descriptor().identity().clone(),
-                self.descriptor().semantic_identity().clone(),
-                role,
-            )
-            .map_err(YtDlpTransportRequestError::Identity)?;
-            let path_scope = HttpPathScope::from_target_path(&target);
-            let secret_scope = SecretRequestScope::from_target(&target, path_scope);
-            let serialized_headers = request_material
-                .headers()
-                .map(|(name, value)| HttpHeader::new(name, value))
-                .collect::<Vec<_>>();
-            let serialized_headers = ValidatedHttpHeaders::new(serialized_headers)
-                .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
-            let mut secret_builder =
-                SecretRequestContext::builder(secret_scope).with_headers(serialized_headers);
-            if let Some(serialized_cookies) = request_material.serialized_cookies() {
-                secret_builder = secret_builder
-                    .with_serialized_cookies(serialized_cookies)
-                    .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
-            }
-            let secrets = secret_builder.build();
-            let redirect_limit = RedirectHopLimit::new(PUBLIC_MEDIA_REDIRECT_HOPS)
-                .map_err(YtDlpTransportRequestError::RedirectLimit)?;
-            let mut request = TransportOpenRequest::new(
-                context.provider.clone(),
-                identity,
-                target,
-                MediaPresentation::Vod,
-                context.source_generation,
-                secrets,
-                RedirectPolicy::cross_origin_without_secrets(redirect_limit),
-                context.cancellation.clone(),
-            )
-            .map_err(YtDlpTransportRequestError::Request)?;
-            if let Some(http_range_request_limit) = request_material.http_range_request_limit() {
-                request = request.with_http_range_request_limit(http_range_request_limit);
-            }
-            components.push(YtDlpTransportComponent {
-                role,
-                container,
-                request,
-            });
+        self.component_requests
+            .iter()
+            .map(|component| build_http_transport_component(self, component, context))
+            .collect()
+    }
+
+    /// Строит FTP request-ы для single candidate либо exact compound merge.
+    pub fn ftp_transport_components(
+        &self,
+        context: &YtDlpTransportRequestContext,
+    ) -> Result<Vec<YtDlpTransportComponent>, YtDlpTransportRequestError> {
+        self.component_requests
+            .iter()
+            .map(|component| build_ftp_transport_component(self, component, context))
+            .collect()
+    }
+
+    /// Строит каждый progressive component через provider его exact transport family.
+    pub fn progressive_transport_components(
+        &self,
+        context: &YtDlpProgressiveTransportRequestContext,
+    ) -> Result<Vec<YtDlpTransportComponent>, YtDlpTransportRequestError> {
+        self.component_requests
+            .iter()
+            .map(|component| {
+                let family = component_transport_family(self.descriptor().layout(), component.role)
+                    .ok_or(YtDlpTransportRequestError::LayoutMismatch)?;
+                match family {
+                    TransportFamily::ProgressiveHttp(_) => {
+                        build_http_transport_component(self, component, &context.http)
+                    }
+                    TransportFamily::ProgressiveFtp(_) => {
+                        build_ftp_transport_component(self, component, &context.ftp)
+                    }
+                    _ => Err(YtDlpTransportRequestError::NonProgressiveTransportFamily),
+                }
+            })
+            .collect()
+    }
+}
+
+/// Строит один HTTP component, сохраняя scoped auth и redirect policy.
+fn build_http_transport_component(
+    candidate: &YtDlpNormalizedCandidate,
+    component: &YtDlpCandidateComponentRequest,
+    context: &YtDlpTransportRequestContext,
+) -> Result<YtDlpTransportComponent, YtDlpTransportRequestError> {
+    let role = media_component_role(component.role);
+    let container = component_container(candidate.descriptor().layout(), component.role)
+        .ok_or(YtDlpTransportRequestError::LayoutMismatch)?;
+    let request_material = component
+        .material
+        .progressive_http_request_material()
+        .map_err(YtDlpTransportRequestError::RequestMaterial)?;
+    let target = HttpRequestTarget::parse_exact(request_material.target())
+        .map_err(YtDlpTransportRequestError::Target)?;
+    let identity = component_identity(candidate, role)?;
+    let path_scope = HttpPathScope::from_target_path(&target);
+    let secret_scope = SecretRequestScope::from_target(&target, path_scope);
+    let serialized_headers = request_material
+        .headers()
+        .map(|(name, value)| HttpHeader::new(name, value))
+        .collect::<Vec<_>>();
+    let serialized_headers = ValidatedHttpHeaders::new(serialized_headers)
+        .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
+    let mut secret_builder =
+        SecretRequestContext::builder(secret_scope).with_headers(serialized_headers);
+    if let Some(serialized_cookies) = request_material.serialized_cookies() {
+        secret_builder = secret_builder
+            .with_serialized_cookies(serialized_cookies)
+            .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
+    }
+    let redirect_limit = RedirectHopLimit::new(PUBLIC_MEDIA_REDIRECT_HOPS)
+        .map_err(YtDlpTransportRequestError::RedirectLimit)?;
+    let mut request = TransportOpenRequest::new(
+        context.provider.clone(),
+        identity,
+        target,
+        MediaPresentation::Vod,
+        context.source_generation,
+        secret_builder.build(),
+        RedirectPolicy::cross_origin_without_secrets(redirect_limit),
+        context.cancellation.clone(),
+    )
+    .map_err(YtDlpTransportRequestError::Request)?;
+    if let Some(http_range_request_limit) = request_material.http_range_request_limit() {
+        request = request.with_http_range_request_limit(http_range_request_limit);
+    }
+    Ok(YtDlpTransportComponent {
+        role,
+        container,
+        request,
+    })
+}
+
+/// Строит один FTP component без HTTP-only material.
+fn build_ftp_transport_component(
+    candidate: &YtDlpNormalizedCandidate,
+    component: &YtDlpCandidateComponentRequest,
+    context: &YtDlpTransportRequestContext,
+) -> Result<YtDlpTransportComponent, YtDlpTransportRequestError> {
+    let role = media_component_role(component.role);
+    let container = component_container(candidate.descriptor().layout(), component.role)
+        .ok_or(YtDlpTransportRequestError::LayoutMismatch)?;
+    let request_material = component
+        .material
+        .progressive_ftp_request_material()
+        .map_err(YtDlpTransportRequestError::FtpRequestMaterial)?;
+    let target = FtpRequestTarget::parse_exact(request_material.target())
+        .map_err(YtDlpTransportRequestError::FtpTarget)?;
+    let request = TransportOpenRequest::for_ftp(
+        context.provider.clone(),
+        component_identity(candidate, role)?,
+        target,
+        MediaPresentation::Vod,
+        context.source_generation,
+        context.cancellation.clone(),
+    )
+    .map_err(YtDlpTransportRequestError::Request)?;
+    Ok(YtDlpTransportComponent {
+        role,
+        container,
+        request,
+    })
+}
+
+/// Собирает identity одного physical resource без provider-specific knowledge.
+fn component_identity(
+    candidate: &YtDlpNormalizedCandidate,
+    role: MediaComponentRole,
+) -> Result<MediaComponentIdentity, YtDlpTransportRequestError> {
+    MediaComponentIdentity::new(
+        candidate.descriptor().identity().clone(),
+        candidate.descriptor().semantic_identity().clone(),
+        role,
+    )
+    .map_err(YtDlpTransportRequestError::Identity)
+}
+
+/// Возвращает exact transport family physical component-а layout-а.
+fn component_transport_family(
+    layout: &StreamLayout,
+    role: YtDlpCandidateComponentRole,
+) -> Option<TransportFamily> {
+    match (layout, role) {
+        (StreamLayout::Muxed(component), YtDlpCandidateComponentRole::Muxed) => {
+            Some(component.transport().family())
         }
-        Ok(components)
+        (StreamLayout::VideoOnly(component), YtDlpCandidateComponentRole::Video) => {
+            Some(component.transport().family())
+        }
+        (StreamLayout::AudioOnly(component), YtDlpCandidateComponentRole::Audio) => {
+            Some(component.transport().family())
+        }
+        (StreamLayout::Separate { video, .. }, YtDlpCandidateComponentRole::Video) => {
+            Some(video.transport().family())
+        }
+        (StreamLayout::Separate { audio, .. }, YtDlpCandidateComponentRole::Audio) => {
+            Some(audio.transport().family())
+        }
+        _ => None,
     }
 }
 

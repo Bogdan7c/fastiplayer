@@ -7,10 +7,17 @@ license.workspace = true
 
 [dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "cookies", "rustls-tls"] }
+# Sync FTP(S) client; rustls-ring совпадает со стеком reqwest rustls-tls.
+suppaftp = { version = "10", default-features = false, features = ["rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
 rustiplayer-config = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
+percent-encoding.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+rcgen = "0.13"
+rustls-pki-types = "1"

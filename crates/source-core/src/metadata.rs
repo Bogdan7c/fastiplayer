@@ -48,6 +48,9 @@ pub enum NotSeekableReason {
         status: u16,
     },
 
+    /// FTP server не подтвердил byte-accurate `REST` после `TYPE I`.
+    FtpRestUnsupported,
+
     /// Source пока не может доказать seekability.
     Unknown,
 }
@@ -58,6 +61,7 @@ impl std::fmt::Display for NotSeekableReason {
             Self::HttpRangeStatus { status } => {
                 write!(formatter, "HTTP Range probe вернул status {status}")
             }
+            Self::FtpRestUnsupported => formatter.write_str("FTP REST не подтверждён после TYPE I"),
             Self::Unknown => formatter.write_str("seekability unknown"),
         }
     }

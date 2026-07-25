@@ -1095,11 +1095,10 @@ fn source_seekability_to_demux_seekability(seekability: SourceSeekability) -> De
     match seekability {
         SourceSeekability::Seekable => DemuxSeekability::Seekable,
         SourceSeekability::NotSeekable { reason } => match reason {
-            source_core::NotSeekableReason::HttpRangeStatus { .. } => {
-                DemuxSeekability::NotSeekable {
-                    reason: TimelineNotSeekableReason::SourceNotSeekable,
-                }
-            }
+            source_core::NotSeekableReason::HttpRangeStatus { .. }
+            | source_core::NotSeekableReason::FtpRestUnsupported => DemuxSeekability::NotSeekable {
+                reason: TimelineNotSeekableReason::SourceNotSeekable,
+            },
             source_core::NotSeekableReason::Unknown => DemuxSeekability::NotSeekable {
                 reason: TimelineNotSeekableReason::UnknownTimeline,
             },

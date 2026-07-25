@@ -58,7 +58,7 @@ Focused tests: `crates/service-ytdlp/src/locator.rs`, service descriptor/process
 ## S15A locator/admission override (2026-07-20)
 
 - Более раннее утверждение этой memory о HTTP(S)-only `YtDlpMediaLocator` заменено: pure parser теперь принимает exact S00 vocabulary `http`/`https`/`ftp`/`ftps`/`rtmp`/`rtmpe` и хранит typed `YtDlpInputScheme`; иные variants не alias-normalized.
-- Composition availability остаётся отдельной app boundary: HTTP(S) admitted по прежнему direct-first/fallback contract, а FTP(S)/RTMP требуют exact registered `ImplementedYtDlpInputProviderCapability`. Production extended registration пуст до готовности S37/S39 provider fixtures.
+- Composition availability остаётся отдельной app boundary: HTTP(S) admitted по прежнему direct-first/fallback contract, а FTP(S)/RTMP требуют exact registered `ImplementedYtDlpInputProviderCapability`. Production регистрирует exact `Ftp`/`Ftps` (S37); RTMP остаётся пустым до S39. FTP auth = URL userinfo внутри `FtpRequestTarget`, Debug/errors redacted; HTTP secrets не смешиваются с FTP open (`TransportOpenRequest::for_ftp`).
 - Более ранний no-prompt persistence policy для generic yt-dlp URL заменён roadmap-wide aggregated policy: любой exact locator с non-empty query либо userinfo требует sensitive durable-locator acknowledgement и для persistence, и для export. Raw identity по-прежнему раскрывается только intent-named open/persistence accessors.
 - `Debug`/`Display`/safe errors для active и unavailable extended schemes не содержат userinfo/path/query/fragment. Pending confirmation хранит opaque yt-dlp metadata continuation, а UI видит только bounded safe label/reasons.
 
