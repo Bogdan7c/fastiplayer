@@ -1,3 +1,8 @@
+## S41 cross-provider integration (2026-07-25)
+
+- Separate S41 runtime-coverage manifest resolves every canonical S00 target without mutating S00 `Target` semantics: 12 exact rows are `Implemented`; aggregate `rtmp-family-flv` remains S39 `ProfileExcluded`; conditional ISM/HDS live and special-provider expansions are no-op/excluded.
+- App normal/startup/settings paths now share one named provider-neutral demux-seek/window/live attachment boundary before the unchanged strong install protocol. Full paths, tests and limitations: `mem:media-services/cross-provider-integration-s41-2026-07-25`.
+
 ## S40 serializable special-provider gate (2026-07-25)
 
 - Canonical S00 profile содержит zero public-serializable special-provider target rows: все current targets принадлежат S22–S39, а special private/live identities остаются exclusions. Поэтому S40 — no-op без provider/API/dependency changes и без `S40P-*` cards.

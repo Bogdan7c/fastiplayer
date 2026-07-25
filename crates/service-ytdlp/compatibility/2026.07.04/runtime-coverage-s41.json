@@ -1,0 +1,263 @@
+{
+  "schema_version": 1,
+  "profile_id": "yt-dlp-2026.07.04-serializable-v1",
+  "session": "S41",
+  "common_integration_path": {
+    "candidate": {
+      "path": "crates/app-egui/src/web_media_open.rs",
+      "symbol": "prepare_yt_dlp_web_media"
+    },
+    "transport_and_demux": {
+      "path": "crates/app-egui/src/web_media_open.rs",
+      "symbol": "fn open_candidate"
+    },
+    "prepared_media": {
+      "path": "crates/app-egui/src/media_open/preparation.rs",
+      "symbol": "prepare_yt_dlp_player_media"
+    },
+    "strong_install": {
+      "path": "crates/app-egui/src/state/strong_media_open.rs",
+      "symbol": "install_prepared_media_strong"
+    }
+  },
+  "rows": [
+    {
+      "id": "progressive-http-iso-bmff",
+      "status": "Implemented",
+      "owner_sessions": ["S22", "S28A"],
+      "provider_family": "progressive-http",
+      "evidence": [
+        {
+          "path": "crates/web-media-http/tests/progressive_containers.rs",
+          "symbol": "classic_iso_bmff_local_and_range_preserve_timing_seek_and_codec_private"
+        }
+      ]
+    },
+    {
+      "id": "progressive-http-matroska-webm",
+      "status": "Implemented",
+      "owner_sessions": ["S22", "S28B"],
+      "provider_family": "progressive-http",
+      "evidence": [
+        {
+          "path": "crates/web-media-http/tests/progressive_containers.rs",
+          "symbol": "progressive_webm_range_reads_muxed_packet_timeline"
+        }
+      ]
+    },
+    {
+      "id": "progressive-http-proven-audio",
+      "status": "Implemented",
+      "owner_sessions": ["S22", "S28C"],
+      "provider_family": "progressive-http",
+      "evidence": [
+        {
+          "path": "crates/web-media-http/tests/progressive_audio_containers.rs",
+          "symbol": "range_audio_containers_preserve_codec_packet_and_seek_contract"
+        }
+      ]
+    },
+    {
+      "id": "hls-vod-ts",
+      "status": "Implemented",
+      "owner_sessions": ["S29", "S31", "S32"],
+      "provider_family": "hls",
+      "evidence": [
+        {
+          "path": "crates/web-media-hls/tests/runtime.rs",
+          "symbol": "muxed_ts_is_deferred_and_inline_manifest_causes_zero_manifest_fetch"
+        }
+      ]
+    },
+    {
+      "id": "hls-vod-fmp4",
+      "status": "Implemented",
+      "owner_sessions": ["S28A", "S31", "S32"],
+      "provider_family": "hls",
+      "evidence": [
+        {
+          "path": "crates/web-media-hls/tests/runtime.rs",
+          "symbol": "muxed_fmp4_map_opens_through_injected_symphonia_factory"
+        }
+      ]
+    },
+    {
+      "id": "hls-live-dvr",
+      "status": "Implemented",
+      "owner_sessions": ["S31L", "S33"],
+      "provider_family": "hls",
+      "evidence": [
+        {
+          "path": "crates/web-media-hls/tests/live_runtime.rs",
+          "symbol": "sliding_refresh_evicts_old_rap_and_early_seek_is_typed_expired"
+        }
+      ]
+    },
+    {
+      "id": "dash-vod-fmp4",
+      "status": "Implemented",
+      "owner_sessions": ["S28A", "S31", "S34"],
+      "provider_family": "dash",
+      "evidence": [
+        {
+          "path": "crates/web-media-dash/src/tests.rs",
+          "symbol": "serialized_muxed_fmp4_is_ready_before_publish_and_seek_reopens_fragment"
+        }
+      ]
+    },
+    {
+      "id": "dash-vod-webm",
+      "status": "Implemented",
+      "owner_sessions": ["S28B", "S31", "S34"],
+      "provider_family": "dash",
+      "evidence": [
+        {
+          "path": "crates/web-media-dash/src/tests.rs",
+          "symbol": "serialized_audio_webm_reaches_actual_ordered_runtime_readiness"
+        }
+      ]
+    },
+    {
+      "id": "dash-live-dvr",
+      "status": "Implemented",
+      "owner_sessions": ["S31L", "S35"],
+      "provider_family": "dash",
+      "evidence": [
+        {
+          "path": "crates/web-media-dash/tests/dynamic_runtime.rs",
+          "symbol": "synchronized_clock_spd_tsb_and_av_intersection_define_manifest_cap"
+        }
+      ]
+    },
+    {
+      "id": "ism-mss-base-h264-aac-fmp4",
+      "status": "Implemented",
+      "owner_sessions": ["S28A", "S31", "S36"],
+      "provider_family": "smooth-streaming-vod",
+      "evidence": [
+        {
+          "path": "crates/web-media-smooth/src/demux/tests.rs",
+          "symbol": "canonical_sources_publish_stable_av_tracks_and_manifest_duration"
+        }
+      ]
+    },
+    {
+      "id": "ftp-ftps-progressive",
+      "status": "Implemented",
+      "owner_sessions": ["S37"],
+      "provider_family": "progressive-ftp",
+      "evidence": [
+        {
+          "path": "crates/web-media-ftp/src/tests.rs",
+          "symbol": "rest_capable_server_opens_seekable_input"
+        }
+      ]
+    },
+    {
+      "id": "hds-f4m-f4f",
+      "status": "Implemented",
+      "owner_sessions": ["S30", "S31", "S38"],
+      "provider_family": "hds-vod",
+      "evidence": [
+        {
+          "path": "crates/web-media-hds/src/runtime.rs",
+          "symbol": "vod_presentation_window_preserves_absolute_origin"
+        }
+      ]
+    },
+    {
+      "id": "rtmp-family-flv",
+      "status": "ProfileExcluded",
+      "owner_sessions": ["S30", "S39"],
+      "provider_family": "identity-only-no-wire-provider",
+      "evidence": [
+        {
+          "path": "crates/service-ytdlp/tests/compatibility_profile_s39.rs",
+          "symbol": "exact_rtmp_variants_remain_excluded_without_wire_fixtures"
+        }
+      ]
+    }
+  ],
+  "cross_cutting_evidence": [
+    {
+      "requirement": "BestPlayable/Exact/global preferred height/runtime override",
+      "path": "crates/app-egui/src/web_media_stream_model/tests.rs",
+      "symbol": "preference_distinguishes_global_default_and_item_override"
+    },
+    {
+      "requirement": "separate A/V",
+      "path": "crates/web-media-http/tests/progressive_containers.rs",
+      "symbol": "separate_progressive_mp4_and_m4a_compose_through_neutral_av_demuxer"
+    },
+    {
+      "requirement": "refresh semantic identity",
+      "path": "crates/service-ytdlp/src/candidate/tests.rs",
+      "symbol": "exact_selection_stales_locally_and_semantically_rematches_after_reextraction"
+    },
+    {
+      "requirement": "group part navigation",
+      "path": "crates/app-egui/src/playlist_runtime/controller/manual_navigation/tests.rs",
+      "symbol": "compound_part_navigation_publishes_exact_current_only_after_matching_installed"
+    },
+    {
+      "requirement": "CUE window",
+      "path": "crates/app-egui/src/playlist_runtime/transport_execution.rs",
+      "symbol": "planned_cue_item_maps_durable_span_to_neutral_open_intent"
+    },
+    {
+      "requirement": "Playing/Paused switch and live DVR restore",
+      "path": "crates/player-core/src/session/tests/live_same_item_restore.rs",
+      "symbol": "retained_dvr_position_uses_existing_seek_lifecycle_for_playing_and_paused"
+    },
+    {
+      "requirement": "local/direct regression",
+      "path": "crates/app-egui/src/media_open/coordinator.rs",
+      "symbol": "local_and_direct_descriptors_follow_the_same_prepared_phase"
+    },
+    {
+      "requirement": "auth",
+      "path": "crates/web-media-http/src/tests.rs",
+      "symbol": "cross_origin_redirect_never_forwards_authorization_header"
+    },
+    {
+      "requirement": "pre/post barrier",
+      "path": "crates/app-egui/src/media_open/coordinator.rs",
+      "symbol": "authorization_ack_without_installed_terminal_is_fatal"
+    },
+    {
+      "requirement": "restore",
+      "path": "crates/app-egui/src/playlist_runtime/suspend_resume/tests.rs",
+      "symbol": "playing_intent_is_restored_only_as_post_seek_attempt_intent"
+    },
+    {
+      "requirement": "settings",
+      "path": "crates/app-egui/src/frame_prepare/settings_runtime_adapter.rs",
+      "symbol": "only_global_preferred_height_requests_yt_dlp_reselection"
+    },
+    {
+      "requirement": "shutdown",
+      "path": "crates/app-egui/src/media_open/executor.rs",
+      "symbol": "timeout_retains_worker_handle_and_later_reaps_it"
+    }
+  ],
+  "conditional_expansions": [
+    {
+      "owner_session": "S36",
+      "status": "ProfileExcluded",
+      "scope": "ISM live/DVR",
+      "evidence_path": "crates/service-ytdlp/tests/compatibility_profile_s36a.rs"
+    },
+    {
+      "owner_session": "S38",
+      "status": "NoApprovedRow",
+      "scope": "HDS live/DVR",
+      "evidence_path": "crates/service-ytdlp/compatibility/2026.07.04/profile.json"
+    },
+    {
+      "owner_session": "S40",
+      "status": "NoApprovedRow",
+      "scope": "approved special providers",
+      "evidence_path": "crates/service-ytdlp/tests/compatibility_profile_s40.rs"
+    }
+  ]
+}

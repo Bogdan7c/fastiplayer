@@ -136,9 +136,11 @@ pub(super) fn prepare_source(
             let prepared_media = prepare_yt_dlp_player_media(
                 safe_label.as_str(),
                 prepared.demuxer,
-                prepared.timeline_port,
-                prepared.demux_seek_port,
-                prepared.playback_window,
+                YtDlpPreparedMediaAttachments {
+                    timeline_port: prepared.timeline_port,
+                    demux_seek_port: prepared.demux_seek_port,
+                    playback_window: prepared.playback_window,
+                },
             )
             .map_err(|error| {
                 tracing::warn!(
@@ -178,21 +180,41 @@ fn classify_yt_dlp_preparation_failure(error: &anyhow::Error) -> MediaPreparatio
     }
 }
 
-/// Устанавливает live port до возврата candidate-а к общему commit barrier.
-fn prepare_yt_dlp_player_media(
+/// Именованный набор provider-neutral дополнений к уже открытому demuxer-у.
+pub(crate) struct YtDlpPreparedMediaAttachments {
+    /// Dynamic live/DVR timeline; static VOD оставляет поле пустым.
+    pub(crate) timeline_port: Option<media_core::DynamicMediaTimelinePort>,
+
+    /// Worker-receipted seek boundary для segmented static provider-а.
+    pub(crate) demux_seek_port: Option<Arc<dyn player_core::PreparedDemuxSeekPort>>,
+
+    /// Абсолютное source window для provider-а с ненулевым presentation origin.
+    pub(crate) playback_window: Option<player_core::MediaPlaybackWindow>,
+}
+
+/// Собирает единый `PreparedMedia` до общего strong-install commit barrier-а.
+pub(crate) fn prepare_yt_dlp_player_media(
     safe_label: &str,
     demuxer: Box<dyn media_core::Demuxer + Send>,
-    timeline_port: Option<media_core::DynamicMediaTimelinePort>,
-    demux_seek_port: Option<Arc<dyn player_core::PreparedDemuxSeekPort>>,
-    playback_window: Option<player_core::MediaPlaybackWindow>,
+    attachments: YtDlpPreparedMediaAttachments,
 ) -> Result<PreparedMedia, player_core::PreparedMediaTimelineModeError> {
+    // Разбираем именованный boundary один раз, чтобы все ingress-ы сохраняли один порядок.
+    let YtDlpPreparedMediaAttachments {
+        timeline_port,
+        demux_seek_port,
+        playback_window,
+    } = attachments;
+    // Базовый `PreparedMedia` получает уже открытый provider-neutral demuxer.
     let mut prepared = PreparedMedia::from_external_label(safe_label, demuxer);
+    // Receipted seek прикрепляется до playback window и live-mode validation.
     if let Some(port) = demux_seek_port {
         prepared = prepared.with_worker_receipted_demux_seek(port);
     }
+    // Static presentation window остаётся fallible pre-barrier подготовкой.
     if let Some(window) = playback_window {
         prepared = prepared.with_playback_window(window)?;
     }
+    // Dynamic timeline устанавливается последней и fail-closed отвергает static-window конфликт.
     match timeline_port {
         Some(port) => prepared.with_dynamic_timeline(port),
         None => Ok(prepared),
@@ -231,6 +253,7 @@ fn merge_yt_dlp_playlist_metadata(
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU64;
+    use std::sync::Arc;
     use std::time::Duration;
 
     use media_core::{
@@ -240,16 +263,17 @@ mod tests {
     use player_core::PreparedMediaTimelineMode;
 
     use super::{
-        classify_yt_dlp_preparation_failure, merge_yt_dlp_playlist_metadata,
-        prepare_yt_dlp_player_media, service_duration_for_timeline,
+        YtDlpPreparedMediaAttachments, classify_yt_dlp_preparation_failure,
+        merge_yt_dlp_playlist_metadata, prepare_yt_dlp_player_media, service_duration_for_timeline,
     };
     use crate::media_open::MediaPreparationFailureKind;
     use crate::web_media_open::ComponentVariantFinalizationError;
 
+    /// Fake demuxer моделирует provider readiness без привязки к VOD/live режиму.
     #[derive(Default)]
-    struct LiveFakeDemuxer;
+    struct UnavailableFakeDemuxer;
 
-    impl Demuxer for LiveFakeDemuxer {
+    impl Demuxer for UnavailableFakeDemuxer {
         fn tracks(&self) -> &[media_core::TrackInfo] {
             &[]
         }
@@ -266,6 +290,27 @@ mod tests {
 
         fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
             panic!("fake live demux seek is outside preparation test")
+        }
+    }
+
+    /// Fake port нужен только для проверки ownership внутри общего S41 boundary.
+    struct FakePreparedDemuxSeekPort;
+
+    impl player_core::PreparedDemuxSeekPort for FakePreparedDemuxSeekPort {
+        /// Integration helper не выполняет реальный seek во время preparation.
+        fn enqueue_seek(
+            &self,
+            _request_id: player_core::PreparedDemuxSeekRequestId,
+            _request: media_core::DemuxSeekRequest,
+        ) -> Result<(), player_core::PreparedDemuxSeekEnqueueError> {
+            // Вызов означал бы, что preparation незаконно исполняет post-install lifecycle.
+            panic!("prepare boundary не должен выполнять demux seek")
+        }
+
+        /// До player install fake receipt отсутствует.
+        fn poll_seek_receipt(&self) -> Option<player_core::PreparedDemuxSeekReceipt> {
+            // `None` сохраняет nonblocking semantics production port-а.
+            None
         }
     }
 
@@ -349,10 +394,12 @@ mod tests {
         );
         let prepared = prepare_yt_dlp_player_media(
             "live",
-            Box::new(LiveFakeDemuxer),
-            Some(timeline_port),
-            None,
-            None,
+            Box::new(UnavailableFakeDemuxer),
+            YtDlpPreparedMediaAttachments {
+                timeline_port: Some(timeline_port),
+                demux_seek_port: None,
+                playback_window: None,
+            },
         )
         .expect("live timeline attaches before barrier");
         assert_eq!(prepared.duration(), None);
@@ -360,5 +407,72 @@ mod tests {
             prepared.timeline_mode(),
             PreparedMediaTimelineMode::Live { .. }
         ));
+    }
+
+    /// Static providers получают seek/window attachments через тот же intent-boundary.
+    #[test]
+    fn static_seek_and_playback_window_share_one_pre_barrier_prepared_media_path() {
+        // Fake port остаётся снаружи, чтобы проверить передачу ownership без вызова I/O.
+        let seek_port = Arc::new(FakePreparedDemuxSeekPort);
+        // Trait-object clone имитирует concrete DASH/Smooth/HDS port.
+        let erased_seek_port: Arc<dyn player_core::PreparedDemuxSeekPort> = seek_port.clone();
+        // Ненулевой absolute origin моделирует HDS presentation window.
+        let playback_window = player_core::MediaPlaybackWindow::new(
+            Duration::from_secs(5).into(),
+            Some(Duration::from_secs(12).into()),
+        )
+        .expect("static test window валидно");
+        // Общий helper прикрепляет все static intents до strong-install barrier-а.
+        let prepared = prepare_yt_dlp_player_media(
+            "static segmented",
+            Box::new(UnavailableFakeDemuxer),
+            YtDlpPreparedMediaAttachments {
+                timeline_port: None,
+                demux_seek_port: Some(erased_seek_port),
+                playback_window: Some(playback_window),
+            },
+        )
+        .expect("static attachments совместимы");
+        // Static source не должен случайно получить live timeline mode.
+        assert!(matches!(
+            prepared.timeline_mode(),
+            PreparedMediaTimelineMode::Static { .. }
+        ));
+        // Window проходит в player без provider-specific timestamp rewriting.
+        assert_eq!(prepared.playback_window(), Some(playback_window));
+        // Один Arc остаётся у test owner-а, второй — внутри PreparedMedia.
+        assert_eq!(Arc::strong_count(&seek_port), 2);
+    }
+
+    /// Static playback window и dynamic live mode остаются взаимно исключающимися.
+    #[test]
+    fn live_timeline_and_static_window_conflict_fails_before_strong_install_barrier() {
+        // Dynamic port моделирует единственные Implemented live rows HLS/DASH.
+        let (timeline_port, _publisher) =
+            media_core::dynamic_media_timeline(DynamicMediaTimelineInitial {
+                port_generation: DynamicMediaTimelinePortGeneration::new(
+                    NonZeroU64::new(2).expect("non-zero test generation"),
+                ),
+                source_epoch: DynamicMediaTimelineEpoch::new(0),
+                state: DynamicMediaTimelineState::without_dvr(Duration::from_secs(30).into()),
+            });
+        // Static window моделирует VOD-only HDS semantics.
+        let playback_window = player_core::MediaPlaybackWindow::new(
+            Duration::from_secs(5).into(),
+            Some(Duration::from_secs(12).into()),
+        )
+        .expect("static test window валидно");
+        // Конфликт обязан terminal-resolve как recoverable preparation error.
+        let result = prepare_yt_dlp_player_media(
+            "invalid mixed timeline",
+            Box::new(UnavailableFakeDemuxer),
+            YtDlpPreparedMediaAttachments {
+                timeline_port: Some(timeline_port),
+                demux_seek_port: None,
+                playback_window: Some(playback_window),
+            },
+        );
+        // Никакой mixed provider state не достигает Ready/authorize phase.
+        assert!(result.is_err());
     }
 }

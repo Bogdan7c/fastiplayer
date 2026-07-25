@@ -41,6 +41,8 @@ pub(crate) use executor::MAX_NON_CANCELLABLE_STALE_PREPARATIONS;
 #[allow(unused_imports)]
 // Prepared envelope is intentionally introduced before callsite migration.
 pub(crate) use local::{LocalFingerprintValidation, PreparedLocalOpenResult, prepare_local_open};
+// Все app ingress-ы собирают provider-neutral `PreparedMedia` через один boundary.
+pub(crate) use preparation::{YtDlpPreparedMediaAttachments, prepare_yt_dlp_player_media};
 #[allow(
     unused_imports,
     reason = "cache snapshot is consumed through descriptor intent method"

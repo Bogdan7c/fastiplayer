@@ -1,3 +1,8 @@
+## S41 cross-provider integration (2026-07-25)
+
+- 12 exact S00 runtime rows now have checked-in `Implemented` coverage; aggregate RTMP stays explicit S39 `ProfileExcluded`, while S36L/S38L/S40P expansions remain no-op/excluded rather than fake providers.
+- Normal open, startup and settings rebuild now converge through one app-owned named `PreparedMedia` attachment boundary before the unchanged strong Ready -> authorize -> Installed protocol. Full manifest, ownership and verification: `mem:media-services/cross-provider-integration-s41-2026-07-25`.
+
 ## S40 serializable special-provider gate (2026-07-25)
 
 - S40 завершён как доказанный no-op: S00 не содержит отдельной `PublicSerializable` special-provider target row, поэтому `S40P-*` cards и дополнительные S41 dependencies не созданы.

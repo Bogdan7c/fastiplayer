@@ -206,39 +206,25 @@ impl FrameSettingsRuntimeAdapter<'_> {
                         || false,
                     ) {
                         Ok(prepared) => {
-                            let mut prepared_media = PreparedMedia::from_external_label(
-                                source_locator.safe_label(),
-                                prepared.demuxer,
-                            );
-                            if let Some(port) = prepared.demux_seek_port {
-                                prepared_media =
-                                    prepared_media.with_worker_receipted_demux_seek(port);
-                            }
-                            if let Some(window) = prepared.playback_window {
-                                prepared_media = match prepared_media.with_playback_window(window) {
+                            let prepared_media =
+                                match crate::media_open::prepare_yt_dlp_player_media(
+                                    source_locator.safe_label(),
+                                    prepared.demuxer,
+                                    crate::media_open::YtDlpPreparedMediaAttachments {
+                                        timeline_port: prepared.timeline_port,
+                                        demux_seek_port: prepared.demux_seek_port,
+                                        playback_window: prepared.playback_window,
+                                    },
+                                ) {
                                     Ok(prepared_media) => prepared_media,
                                     Err(error) => {
                                         return AppRouteApplyResult::Failed {
                                             message: format!(
-                                                "YtDlp playback window rebuild failed: {error}"
+                                                "YtDlp PreparedMedia rebuild failed: {error}"
                                             ),
                                         };
                                     }
                                 };
-                            }
-                            if let Some(timeline_port) = prepared.timeline_port {
-                                prepared_media =
-                                    match prepared_media.with_dynamic_timeline(timeline_port) {
-                                        Ok(prepared_media) => prepared_media,
-                                        Err(error) => {
-                                            return AppRouteApplyResult::Failed {
-                                                message: format!(
-                                                    "HLS live timeline rebuild failed: {error}"
-                                                ),
-                                            };
-                                        }
-                                    };
-                            }
                             let safe_label =
                                 crate::media_open::SafeMediaLabel::from_service_safe_label(
                                     source_locator.safe_label(),

@@ -9,7 +9,10 @@ use std::sync::Arc;
 use player_core::PlaybackIntent;
 
 use crate::local_file_open::LocalFileOpenResult;
-use crate::media_open::{ActiveMediaSource, PreparedLocalOpenResult, SafeMediaLabel};
+use crate::media_open::{
+    ActiveMediaSource, PreparedLocalOpenResult, SafeMediaLabel, YtDlpPreparedMediaAttachments,
+    prepare_yt_dlp_player_media,
+};
 use crate::playlist_runtime::StartupRestoreTarget;
 use crate::state::PreparedSingleMediaOpen;
 use crate::url_service_adapter::{StartupUrlClassification, classify_playlist_url};
@@ -548,31 +551,21 @@ impl StartupMediaController {
                     candidate_selection: Box::new(prepared.candidate_selection),
                     stream_configuration: Box::new(prepared.stream_configuration),
                 };
-                let mut prepared_media = player_core::PreparedMedia::from_external_label(
+                let prepared_media = match prepare_yt_dlp_player_media(
                     source_locator.safe_label(),
                     prepared.demuxer,
-                );
-                if let Some(port) = prepared.demux_seek_port {
-                    prepared_media = prepared_media.with_worker_receipted_demux_seek(port);
-                }
-                if let Some(window) = prepared.playback_window {
-                    prepared_media = match prepared_media.with_playback_window(window) {
-                        Ok(prepared_media) => prepared_media,
-                        Err(error) => {
-                            self.handle_install_failure(error.to_string(), is_cli, app_state);
-                            return true;
-                        }
-                    };
-                }
-                if let Some(timeline_port) = prepared.timeline_port {
-                    prepared_media = match prepared_media.with_dynamic_timeline(timeline_port) {
-                        Ok(prepared_media) => prepared_media,
-                        Err(error) => {
-                            self.handle_install_failure(error.to_string(), is_cli, app_state);
-                            return true;
-                        }
-                    };
-                }
+                    YtDlpPreparedMediaAttachments {
+                        timeline_port: prepared.timeline_port,
+                        demux_seek_port: prepared.demux_seek_port,
+                        playback_window: prepared.playback_window,
+                    },
+                ) {
+                    Ok(prepared_media) => prepared_media,
+                    Err(error) => {
+                        self.handle_install_failure(error.to_string(), is_cli, app_state);
+                        return true;
+                    }
+                };
                 let input = self.prepared_url_input(
                     prepared_media,
                     source.clone(),

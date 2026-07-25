@@ -297,6 +297,35 @@ wire protocol; hidden FFmpeg fallback запрещён.
 проверяет, что aggregate identity-only row не повышается до exact Target и что
 каждый названный variant остаётся в exclusion namespace.
 
+## S41 cross-provider runtime coverage
+
+S00 `target_rows.status = "Target"` остаётся immutable compatibility inventory и
+не используется как обещание runtime support. S41 добавляет отдельный
+machine-readable `runtime-coverage-s41.json`: он one-to-one покрывает все 13
+Target rows, сохраняет их exact owner sessions и отделяет двенадцать
+`Implemented` rows от aggregate identity-only `rtmp-family-flv`.
+
+Все `Implemented` rows проходят один app-owned путь:
+`prepare_yt_dlp_web_media` выбирает candidate и открывает concrete
+transport/demux, `prepare_yt_dlp_player_media` прикрепляет provider-neutral
+receipted seek/playback window/live timeline, а
+`install_prepared_media_strong` сохраняет общий Ready → authorize → Installed
+barrier. Startup, normal media-open и settings rebuild используют один
+`PreparedMedia` assembly boundary; отдельного provider-specific install
+алгоритма нет.
+
+Manifest ссылается на existing hermetic provider и cross-cutting focused tests:
+BestPlayable/Exact/height override, separate A/V, semantic refresh, group/CUE,
+Playing/Paused, local/direct, VOD/live/DVR, auth, barrier,
+restore/settings/shutdown. Focused test
+`cross_provider_integration_s41.rs` проверяет exact profile coverage, отсутствие
+`Planned`, существование каждого evidence symbol и общий production path.
+
+RTMP playback не заявлен: S39 exclusion остаётся authoritative. ISM и HDS
+остаются только VOD, потому что S36L/S38L rows не утверждены. S40 special
+providers не получают fake rows или provider tests; их no-op/exclusion evidence
+остаётся отдельным conditional handoff.
+
 ## Explicit exclusions and provisional gaps
 
 Жёстко исключены:

@@ -1,3 +1,7 @@
+## S41 convergence update (2026-07-25)
+
+Normal coordinator preparation, startup orchestration and settings rebuild now attach provider-neutral receipted seek/playback window/dynamic timeline through the single named `media_open::prepare_yt_dlp_player_media` boundary. Coordinator phases, Ready/authorize/Installed barrier and post-installed ownership remain unchanged. Full S41 evidence: `mem:media-services/cross-provider-integration-s41-2026-07-25`.
+
 # Session 10C: reusable media-open coordinator и single-open envelope (2026-07-14)
 
 ## Итог и scope
