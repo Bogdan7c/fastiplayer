@@ -1466,6 +1466,27 @@ fn active_worker_uses_media_plan_as_wakeup_timeout() {
     assert!(runtime.plan_next_worker_wakeup().is_some());
 }
 
+/// Уже просроченный plan исполняется сразу и не входит в blocking wait.
+#[test]
+fn overdue_worker_wakeup_runs_tick_without_blocking_wait() {
+    // Нулевой coarse interval создаёт гарантированно просроченный playback deadline.
+    let mut runtime = runtime_for_tests(Instant::now());
+    // Production planner обязан сохранить immediate-work семантику нулевой задержки.
+    runtime.config.coarse_wakeup_interval = Duration::ZERO;
+    // Playing intent включает media scheduling без отдельного test-only seam-а.
+    runtime.handle_worker_command(WorkerCommand::Player(PlayerCommand::Play));
+    // Предыдущее время позволяет доказать реальный tick, а не только возврат `false`.
+    let previous_tick_at = runtime.last_tick_at;
+
+    // Exact zero-timeout branch не блокируется на channel/select boundary.
+    let shutdown_requested = runtime.wait_for_worker_wakeup();
+
+    // Immediate playback work не является shutdown.
+    assert!(!shutdown_requested);
+    // Worker исполнил overdue tick синхронно до возврата.
+    assert!(runtime.last_tick_at > previous_tick_at);
+}
+
 #[test]
 fn command_batch_yields_to_overdue_tick_during_command_storm() {
     let (mut runtime, command_tx) = runtime_for_tests_with_command_sender(Instant::now());

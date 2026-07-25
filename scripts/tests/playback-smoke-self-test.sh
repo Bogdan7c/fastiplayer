@@ -28,6 +28,21 @@ require_output() {
     fi
 }
 
+# Negative assertion защищает policy от запрещённого status/marker-а.
+require_absent() {
+    local output="$1"
+    local forbidden_text="$2"
+    if [[ "${output}" == *"${forbidden_text}"* ]]; then
+        printf 'FAIL: обнаружена запрещённая строка `%s`\n' "${forbidden_text}" >&2
+        exit 1
+    fi
+}
+
+# Source-level ratchet запрещает снова считать kill-after/SIGKILL штатным timeout-ом.
+playback_smoke_source="$(<"${PLAYBACK_SMOKE}")"
+require_output "${playback_smoke_source}" "0 | 124)"
+require_absent "${playback_smoke_source}" "0 | 124 | 137)"
+
 # Пустой invocation является NOT RUN, а не ложным acceptance pass.
 missing_selection_output="$(${PLAYBACK_SMOKE} 2>&1)"
 require_output "${missing_selection_output}" "NOT RUN: missing selection"

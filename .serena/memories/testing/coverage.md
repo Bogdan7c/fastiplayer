@@ -1,5 +1,14 @@
 # Coverage baseline and ratchet (Session 07B, 2026-07-10)
 
+## S42 current override (2026-07-25)
+
+- Этот раздел supersedes все более старые утверждения ниже, что coverage `NOT READY`, baseline/exceptions не обновлены или `scripts/coverage.sh check` неизбежно падает. Исторические Session 28/playlist записи сохранены только как причина текущей policy.
+- Final conservative per-crate baseline envelope on Rust 1.96.0 / cargo-llvm-cov 0.8.7 contains the exact inventory of 47 blocking and 11 informational crates. Workspace floor: lines 135834/181804, functions 13197/17245, regions 169757/228313. Blocking group floor: lines 83276/99646, functions 8338/10114, regions 103632/125867.
+- Latest final clean gate artifact was higher: workspace lines 135842/181804, functions 13200/17245, regions 169766/228313; blocking group lines 83284/99646, functions 8341/10114, regions 103641/125867. Scheduler-dependent lifecycle tests can swap a few execution counters between neighboring async paths, so baseline aggregates are sums of per-crate minima actually observed across clean runs, not invented global thresholds.
+- Owner-approved one-time S42 rebaseline still contains exactly 28 exact `scope/metric` exceptions with previous/allowed counters, concrete reason/follow-up and `review_by = 2026-10-25`; no new exception was added for scheduler stabilization. Future regression cannot reuse a row because counters must match exactly.
+- `validate-baseline` runs before LLVM and checks policy/baseline inventory plus full exception lifecycle: versioned exact schema, counter bounds, nonempty reason/follow-up, non-expired review date and unique `(scope, metric)`. `check-baseline-update` separately binds actual previous→proposed decreases to exact exceptions. Raw LCOV execution counters with the top `u64` bit set are rejected as corruption before baseline/report publication.
+- Final `scripts/coverage.sh check` passed inside `scripts/final-acceptance.sh`; manual URL/hardware acceptance is independent and remains `NOT RUN`.
+
 - Standard tool is exact `cargo-llvm-cov 0.8.7` plus primary-toolchain `llvm-tools-preview`. Policy/classification lives in `coverage/policy.json`; compact versioned counters live in `coverage/baseline.json`; bounded exceptions live in `coverage/exceptions.json`.
 - Local/CI entrypoint is `scripts/coverage.sh check`. It always runs `cargo llvm-cov clean --workspace`, then the hermetic `--workspace --all-features --locked --no-fail-fast` suite once, and emits summary JSON, LCOV and HTML report-only artifacts.
 - Blocking ratchet compares exact integer fractions (covered/total), never rounded percentages, for lines/functions/regions at three levels: first-party workspace, aggregate pure contract/business group, and every pure crate. Any decrease fails.

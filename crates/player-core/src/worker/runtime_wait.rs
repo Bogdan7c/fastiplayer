@@ -205,7 +205,7 @@ impl PlayerWorkerRuntime {
     }
 
     /// Ждёт ближайший command/render/shutdown wakeup вместо fixed idle polling.
-    fn wait_for_worker_wakeup(&mut self) -> bool {
+    pub(super) fn wait_for_worker_wakeup(&mut self) -> bool {
         match self.plan_next_worker_wakeup_with_decoder_activity() {
             Some(wait_plan) if wait_plan.timeout().is_zero() => {
                 self.handle_worker_timeout(wait_plan.deadline());

@@ -16,3 +16,8 @@ url.workspace = true
 web-media-adaptive.workspace = true
 web-media-core.workspace = true
 web-media-transport-api.workspace = true
+
+[dev-dependencies]
+# Concrete F4F factory и app-equivalent network config нужны только hermetic runtime evidence.
+flv-demux.workspace = true
+rustiplayer-config.workspace = true

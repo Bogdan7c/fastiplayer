@@ -489,30 +489,40 @@ pub fn prepare_dash_live(
         endpoint_refresh_lock: Mutex::new(()),
         refresh_request: refresh_request.clone(),
     });
-    let mut current = open_plan(
+    // Open не наследует snapshot guard: source синхронно возвращается в
+    // `current_transport()` и повторно берёт тот же mutex.
+    let initial_plan = {
         shared
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("DASH live snapshot mutex poisoned"))?
             .snapshot
             .plan
-            .clone(),
+            .clone()
+    };
+    let mut current = open_plan(
+        initial_plan,
         (*request.http).clone(),
         request.generation,
         request.policy,
         Arc::clone(&request.demux_registry),
         Some(Arc::clone(&shared) as Arc<dyn DashLiveTransportProvider>),
     )?;
+    // Initial resource open мог принять fresh endpoint snapshot, поэтому edge
+    // читается после open, но guard освобождается до re-entrant seek replacement.
+    let initial_live_edge = {
+        shared
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("DASH live snapshot mutex poisoned"))?
+            .snapshot
+            .availability
+            .live_edge
+            .as_duration()
+    };
     current
         .seek_with_request(DemuxSeekRequest {
-            timestamp: shared
-                .state
-                .lock()
-                .map_err(|_| anyhow::anyhow!("DASH live snapshot mutex poisoned"))?
-                .snapshot
-                .availability
-                .live_edge
-                .as_duration(),
+            timestamp: initial_live_edge,
             mode: media_core::DemuxSeekMode::DecodePointBefore,
         })
         .context("DASH live initial edge seek failed")?;

@@ -668,18 +668,33 @@ fn saturating_deadline(now: Duration, delay: Duration) -> Duration {
 /// Shutdown admission восстанавливает ownership command после `Full`.
 fn send_shutdown_until_deadline(
     command_sender: &SyncSender<WorkerCommand>,
-    mut shutdown_command: WorkerCommand,
+    shutdown_command: WorkerCommand,
     deadline: Instant,
+) -> Result<(), ()> {
+    send_shutdown_with_admission_policy(
+        command_sender,
+        shutdown_command,
+        || Instant::now() >= deadline,
+        || thread::sleep(SHUTDOWN_ADMISSION_YIELD),
+    )
+}
+
+/// Policy seam позволяет детерминированно доказать retry без изменения production scheduler.
+fn send_shutdown_with_admission_policy(
+    command_sender: &SyncSender<WorkerCommand>,
+    mut shutdown_command: WorkerCommand,
+    mut deadline_reached: impl FnMut() -> bool,
+    mut wait_for_capacity: impl FnMut(),
 ) -> Result<(), ()> {
     loop {
         match command_sender.try_send(shutdown_command) {
             Ok(()) => return Ok(()),
             Err(TrySendError::Full(returned_command)) => {
                 shutdown_command = returned_command;
-                if Instant::now() >= deadline {
+                if deadline_reached() {
                     return Err(());
                 }
-                thread::sleep(SHUTDOWN_ADMISSION_YIELD);
+                wait_for_capacity();
             }
             Err(TrySendError::Disconnected(_)) => return Err(()),
         }

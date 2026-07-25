@@ -12,6 +12,7 @@ use media_core::{
 };
 use source_core::CancellationToken;
 
+use super::worker::{ProgressiveSeekCommand, ProgressiveSharedState, wait_for_seek_command};
 use super::{
     ProgressiveAsyncSeekEnqueueError, ProgressiveAsyncSeekHandle, ProgressiveAsyncSeekLimits,
     ProgressiveAsyncSeekOutcome, ProgressiveAsyncSeekReceipt, ProgressiveDemuxBufferLimits,
@@ -24,6 +25,18 @@ use super::{
 struct BlockingChannelDemuxer {
     /// Test owner публикует готовые exact demux events.
     receiver: Receiver<DemuxReadEvent>,
+}
+
+/// Gated seekable fake делает каждый inner read двухфазным и наблюдаемым.
+struct GatedSeekableEventDemuxer {
+    /// Rendezvous сообщает номер read до ожидания управляемого event-а.
+    read_started: SyncSender<usize>,
+    /// Test owner освобождает ровно один уже начатый read.
+    event_receiver: Receiver<DemuxReadEvent>,
+    /// Следующий монотонный номер read начинается с единицы.
+    next_read_sequence: usize,
+    /// Seek result сохраняет exact requested position.
+    position: Duration,
 }
 
 impl Demuxer for BlockingChannelDemuxer {
@@ -54,6 +67,56 @@ impl Demuxer for BlockingChannelDemuxer {
     /// Non-seekable fake не должен получать seek.
     fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
         Err(anyhow::anyhow!("test streaming demuxer is not seekable"))
+    }
+}
+
+impl Demuxer for GatedSeekableEventDemuxer {
+    /// Focused synchronization test не моделирует track discovery.
+    fn tracks(&self) -> &[TrackInfo] {
+        &[]
+    }
+
+    /// Конечная duration делает seek contract явным.
+    fn duration(&self) -> Option<Duration> {
+        Some(Duration::from_secs(10))
+    }
+
+    /// Deferred constructor обязан принять fake как seekable inner.
+    fn seekability(&self) -> DemuxSeekability {
+        DemuxSeekability::Seekable
+    }
+
+    /// Сначала публикует rendezvous, затем ждёт exact test-owned event.
+    fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+        // Текущий sequence сохраняется до инкремента.
+        let read_sequence = self.next_read_sequence;
+        // Следующий read получает новую identity.
+        self.next_read_sequence += 1;
+        // Zero-capacity channel доказывает, что test увидел начатый inner read.
+        self.read_started
+            .send(read_sequence)
+            .map_err(|_| anyhow::anyhow!("test read observer disconnected"))?;
+        // Второй rendezvous не даёт worker-у завершить read раньше test action.
+        self.event_receiver
+            .recv()
+            .map_err(|_| anyhow::anyhow!("test event sender disconnected"))
+    }
+
+    /// Legacy seek делегирует typed request boundary.
+    fn seek(&mut self, timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+        self.seek_with_request(DemuxSeekRequest::accurate(timestamp))
+    }
+
+    /// Exact seek result совпадает с controller preview.
+    fn seek_with_request(&mut self, request: DemuxSeekRequest) -> anyhow::Result<DemuxSeekResult> {
+        // Fake сохраняет authoritative worker position.
+        self.position = request.timestamp;
+        // Result не вносит скрытый clamp либо decode-point offset.
+        Ok(DemuxSeekResult {
+            requested_position: MediaTime::from_duration(request.timestamp),
+            actual_position: MediaTime::from_duration(self.position),
+            actual_track_timestamp: None,
+        })
     }
 }
 
@@ -438,6 +501,84 @@ fn blocking_demuxer() -> (SyncSender<DemuxReadEvent>, Box<dyn Demuxer + Send>) {
     (sender, Box::new(BlockingChannelDemuxer { receiver }))
 }
 
+/// Создаёт zero-capacity read/event rendezvous и seekable fake.
+fn gated_seekable_demuxer() -> (
+    Receiver<usize>,
+    SyncSender<DemuxReadEvent>,
+    Box<dyn Demuxer + Send>,
+) {
+    // Read-start rendezvous не буферизует ненаблюдаемый worker progress.
+    let (read_started_sender, read_started_receiver) = sync_channel(0);
+    // Event rendezvous освобождает только уже наблюдаемый inner read.
+    let (event_sender, event_receiver) = sync_channel(0);
+    // Fake целиком передаётся deferred worker-у.
+    let inner = Box::new(GatedSeekableEventDemuxer {
+        read_started: read_started_sender,
+        event_receiver,
+        next_read_sequence: 1,
+        position: Duration::ZERO,
+    });
+    // Test owner сохраняет обе control endpoints.
+    (read_started_receiver, event_sender, inner)
+}
+
+/// Создаёт exact preview controller без clamp или скрытого offset.
+fn exact_seek_controller() -> ProgressiveSeekController {
+    ProgressiveSeekController::new(|request| {
+        // Preview совпадает с fake worker result byte-for-byte по времени.
+        Ok(DemuxSeekResult {
+            requested_position: MediaTime::from_duration(request.timestamp),
+            actual_position: MediaTime::from_duration(request.timestamp),
+            actual_track_timestamp: None,
+        })
+    })
+}
+
+/// Ждёт конкретный gated read и возвращает точную timeout diagnostics.
+fn wait_for_gated_read(read_started: &Receiver<usize>, expected_sequence: usize) {
+    // Bounded receive не превращает regression в зависший test process.
+    let actual_sequence = read_started
+        .recv_timeout(Duration::from_secs(1))
+        .expect("seekable worker обязан начать ожидаемый inner read");
+    // Sequence защищает test orchestration от пропущенного либо лишнего read-а.
+    assert_eq!(actual_sequence, expected_sequence);
+}
+
+/// Не выпускает test, пока worker terminal state не опубликован.
+fn wait_until_worker_stopped(progressive: &ProgressiveDemuxer) {
+    // Общий deadline ограничивает lifecycle failure одной секундой.
+    let stop_deadline = Instant::now() + Duration::from_secs(1);
+    // Queue guard читает тот же authoritative state, который пишет worker.
+    let mut queue = progressive.shared.lock_queue();
+    // Spurious Condvar wake не считается terminal completion.
+    while !queue.worker_stopped {
+        // Истёкший deadline даёт точный lifecycle failure.
+        assert!(
+            Instant::now() < stop_deadline,
+            "progressive worker не опубликовал worker_stopped до deadline"
+        );
+        // Оставшийся budget не продлевается после spurious wake.
+        let remaining = stop_deadline.saturating_duration_since(Instant::now());
+        // Worker вызывает notify_all после mark_worker_stopped.
+        let wait_result = progressive
+            .shared
+            .capacity_available
+            .wait_timeout(queue, remaining);
+        // Poison не скрывает terminal state при test failure.
+        let (next_queue, timeout_result) = match wait_result {
+            Ok(result) => result,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        // Следующая итерация повторно проверяет authoritative flag.
+        queue = next_queue;
+        // Timeout допустим только если terminal flag установлен одновременно.
+        assert!(
+            !timeout_result.timed_out() || queue.worker_stopped,
+            "progressive worker не завершился внутри lifecycle timeout"
+        );
+    }
+}
+
 /// Poll helper не скрывает production scheduling: он нужен только test thread-у.
 fn poll_until_event(progressive: &mut ProgressiveDemuxer) -> anyhow::Result<DemuxReadEvent> {
     let deadline = Instant::now() + Duration::from_secs(1);
@@ -643,6 +784,173 @@ fn drop_cancels_worker_waiting_on_full_backpressure_queue() {
         thread::sleep(Duration::from_millis(1));
     }
     assert!(shared.lock_queue().worker_stopped);
+}
+
+/// Уже опубликованная отмена не позволяет EOF worker-у войти в timed wait.
+#[test]
+fn eof_wait_observes_preexisting_cancellation_without_blocking() {
+    // Shared state использует production queue/Condvar boundary без фонового thread-а.
+    let shared = ProgressiveSharedState::new(limits(1, 1));
+    // Отмена устанавливается до wait, точно моделируя lost-wakeup guard.
+    let cancellation = CancellationToken::new();
+    // Production token выражает lifecycle intent без прямой мутации queue state.
+    cancellation.cancel();
+
+    // Guard обязан вернуть управление синхронно, не входя в timed wait.
+    wait_for_seek_command(&shared, &cancellation);
+
+    // Wait не меняет lifecycle state, которым владеет caller.
+    assert!(cancellation.is_cancelled());
+}
+
+/// Уже опубликованный seek command не теряется внутри EOF wait boundary.
+#[test]
+fn eof_wait_observes_preexisting_seek_without_blocking() {
+    // Shared state использует production queue/Condvar boundary без фонового thread-а.
+    let shared = ProgressiveSharedState::new(limits(1, 1));
+    // Exact request остаётся владельцем целевой позиции.
+    let request = DemuxSeekRequest::accurate(Duration::from_secs(1));
+    // Preview фиксирует уже подтверждённый player-owner anchor.
+    let preview = DemuxSeekResult {
+        requested_position: MediaTime::from_duration(request.timestamp),
+        actual_position: MediaTime::from_duration(request.timestamp),
+        actual_track_timestamp: None,
+    };
+    // Command публикуется до wait, точно моделируя lost-wakeup guard.
+    shared.lock_queue().pending_seek = Some(ProgressiveSeekCommand::Previewed {
+        generation: 1,
+        request,
+        preview,
+    });
+    // Неотменённый token заставляет проверку дойти именно до pending seek.
+    let cancellation = CancellationToken::new();
+
+    // Guard обязан вернуть управление синхронно, не входя в timed wait.
+    wait_for_seek_command(&shared, &cancellation);
+
+    // Wait не забирает command: его применяет только worker owner.
+    assert!(shared.lock_queue().pending_seek.is_some());
+}
+
+/// Seekable TUA выполняет реальный timeout, затем cancellation завершает worker.
+#[test]
+fn seekable_tua_wait_observes_cancellation_and_stops_before_return() {
+    // Zero-capacity channels делают каждый inner read наблюдаемым.
+    let (read_started, event_sender, inner) = gated_seekable_demuxer();
+    // Test owner сохраняет cancellation handle до terminal assertion.
+    let cancellation = CancellationToken::new();
+    // Deferred constructor запускает production seekable worker boundary.
+    let mut progressive = ProgressiveDemuxer::new_deferred_seekable(
+        move || Ok(inner),
+        exact_seek_controller(),
+        cancellation.clone(),
+        limits(2, 1024),
+        retry_hint(),
+    )
+    .expect("seekable worker starts");
+
+    // Initial track publication освобождает worker до первого controlled read.
+    assert!(matches!(
+        poll_until_event(&mut progressive).expect("initial tracks"),
+        DemuxReadEvent::TracksChanged(_)
+    ));
+    // Первый read уже принадлежит worker-у и ждёт test event.
+    wait_for_gated_read(&read_started, 1);
+    // 50 ms гарантированно больше production cancellation poll quantum 25 ms.
+    let completed_retry_hint = DemuxRetryHint::new(Duration::from_millis(50))
+        .expect("controlled retry hint обязан быть валиден");
+    // Первая TUA проходит normal retry timeout без queue publication.
+    event_sender
+        .send(DemuxReadEvent::TemporarilyUnavailable(completed_retry_hint))
+        .expect("worker ждёт первый controlled event");
+    // Второй read доказывает, что wait_for_inner_retry завершил timeout path.
+    wait_for_gated_read(&read_started, 2);
+
+    // Длинный retry не может естественно истечь раньше cancellation.
+    let cancelled_retry_hint = DemuxRetryHint::new(DemuxRetryHint::MAX_RETRY_AFTER)
+        .expect("maximum retry hint обязан быть валиден");
+    // Worker получает вторую TUA, оставаясь внутри уже начатого read path.
+    event_sender
+        .send(DemuxReadEvent::TemporarilyUnavailable(cancelled_retry_hint))
+        .expect("worker ждёт второй controlled event");
+    // Cancellation прерывает retry wait, а не публикует fake EOF/error.
+    cancellation.cancel();
+    // Test не возвращается раньше mark_worker_stopped.
+    wait_until_worker_stopped(&progressive);
+    // Ни одна inner TUA не должна попасть в bounded message queue.
+    assert!(progressive.shared.lock_queue().messages.is_empty());
+}
+
+/// Gated old-generation event даёт Stale, а cancelled event даёт Stopped.
+#[test]
+fn seekable_stale_and_stopped_push_outcomes_are_synchronized() {
+    // Один fake управляет старым, актуальным и cancelled reads.
+    let (read_started, event_sender, inner) = gated_seekable_demuxer();
+    // Cancellation handle нужен для exact Stopped push outcome.
+    let cancellation = CancellationToken::new();
+    // Worker использует production deferred seekable orchestration.
+    let mut progressive = ProgressiveDemuxer::new_deferred_seekable(
+        move || Ok(inner),
+        exact_seek_controller(),
+        cancellation.clone(),
+        limits(2, 1024),
+        retry_hint(),
+    )
+    .expect("seekable worker starts");
+
+    // Initial tracks удаляются до generation race.
+    assert!(matches!(
+        poll_until_event(&mut progressive).expect("initial tracks"),
+        DemuxReadEvent::TracksChanged(_)
+    ));
+    // Generation zero read блокируется до публикации нового seek intent.
+    wait_for_gated_read(&read_started, 1);
+    // Новый player intent немедленно меняет visible queue generation.
+    let requested_position = Duration::from_secs(2);
+    progressive
+        .seek_with_request(DemuxSeekRequest::accurate(requested_position))
+        .expect("new generation seek accepted");
+    // Старый EOF возвращается только после generation change.
+    event_sender
+        .send(DemuxReadEvent::EndOfStream)
+        .expect("worker ждёт stale controlled event");
+    // Второй read возможен только после Stale drop и применения pending seek.
+    wait_for_gated_read(&read_started, 2);
+    // Stale event не должен занимать current-generation queue.
+    assert!(progressive.shared.lock_queue().messages.is_empty());
+
+    // Актуальный packet доказывает, что Stale outcome не остановил worker.
+    event_sender
+        .send(DemuxReadEvent::Packet(Packet::new_unbounded(
+            TrackId::new(1),
+            TrackKind::Audio,
+            requested_position,
+            None,
+            true,
+            Bytes::from_static(&[0x7a]),
+        )))
+        .expect("worker ждёт current-generation packet");
+    // Player owner получает только packet актуальной generation.
+    let DemuxReadEvent::Packet(packet) =
+        poll_until_event(&mut progressive).expect("current-generation packet")
+    else {
+        panic!("current-generation packet expected");
+    };
+    // Exact timestamp подтверждает применение authoritative seek.
+    assert_eq!(packet.pts, requested_position);
+
+    // Третий read блокирует worker внутри parser boundary.
+    wait_for_gated_read(&read_started, 3);
+    // Cancellation устанавливается до возврата controlled event-а.
+    cancellation.cancel();
+    // Event после cancellation обязан получить Stopped, а не Published.
+    event_sender
+        .send(DemuxReadEvent::EndOfStream)
+        .expect("worker ждёт cancelled controlled event");
+    // Test ждёт exact mark_worker_stopped notification.
+    wait_until_worker_stopped(&progressive);
+    // Cancelled event не должен остаться скрытым terminal message-ом.
+    assert!(progressive.shared.lock_queue().messages.is_empty());
 }
 
 #[test]

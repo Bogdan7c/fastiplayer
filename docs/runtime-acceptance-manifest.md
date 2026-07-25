@@ -15,26 +15,42 @@
 |---|---|---|---|
 | hermetic CI | `scripts/runtime-acceptance.sh --suite hermetic-ci` | All-features workspace tests без owner-local media | Cargo/toolchain и зависимости CI |
 | runtime software | `scripts/runtime-acceptance.sh --suite runtime-software --vp9 <FILE> --h264 <FILE>` | FFmpeg runtime probe, software H.264 playback, VP9 stress | Явные files, FFmpeg `libavcodec >= 62`, `libavutil >= 60` |
-| VA-API hardware | `scripts/runtime-acceptance.sh --suite vaapi-hardware --vp9 <FILE> --av1 <FILE>` | VP9 VA-API DMA-BUF playback и typed AV1 hardware rejection | Явные files, readable render node, успешный `vainfo` |
-| playback matrix | `scripts/runtime-acceptance.sh --suite playback-matrix --vp9 <FILE> --av1 <FILE> --h264 <FILE>` | Полная hardware/software playback matrix | Все перечисленные software/hardware prerequisites |
+| optional VA-API regression smoke | `scripts/runtime-acceptance.sh --suite vaapi-hardware --vp9 <FILE> --av1 <FILE>` | Проверяет существующие VP9 VA-API DMA-BUF и typed AV1 rejection paths только на явно выбранном host/fixtures; не является общим S42 hardware acceptance | Явные files, readable render node, успешный `vainfo` |
+| combined runtime regression set | `scripts/runtime-acceptance.sh --suite playback-matrix --vp9 <FILE> --av1 <FILE> --h264 <FILE>` | Запускает перечисленные software и VA-API scenarios; результат относится только к данному host/fixtures и не доказывает полную hardware matrix | Все перечисленные software/hardware prerequisites |
 
 Отдельные команды, не смешанные с current playback config:
 
 - `scripts/playback-smoke.sh --mode probe-only` — focused fake/unit probes и ignored real FFmpeg runtime probe.
 - `scripts/playback-smoke.sh --mode legacy-migration` — явно выбранный legacy config migration smoke.
 - `scripts/tests/playback-smoke-self-test.sh` — parser, dry-run и полный current-schema config generate/parse без GUI.
+- `scripts/progressive-web-smoke.sh` — S42 manual opt-in только для явно
+  переданных URL/fixtures; неполная matrix остаётся `NOT RUN`.
+- `scripts/final-acceptance.sh` — полный automated S42 gate
+  (`scripts/ci-checks.sh all` + `scripts/coverage.sh check`), без manual media.
 
 ## Инвентарь runtime/fixture/hardware тестов
 
-По состоянию на Сессию 17 first-party inventory содержит:
+По состоянию на S42 audit first-party inventory содержит:
 
 - один ignored FFmpeg runtime probe: `video-ffmpeg/tests/ffmpeg_runtime_probe.rs`; запускается только через `probe-only`/software/full suite и требует установленный FFmpeg runtime;
 - семнадцать ignored local-media demux regressions в `symphonia-demux/tests/`: шесть H.264, три H.265, один VP9, шесть audio и один generic inspection;
 - один ignored direct HTTP Range regression в `service-direct-media`;
-- четыре ignored `yt-dlp`/network regressions в `service-ytdlp`: explicit
-  non-YouTube URL smoke, Range, fallback и live source;
-- hardware playback assertions не являются `cargo test`: ими владеют `hardware-only` и `full` modes `playback-smoke.sh`, потому что им нужны GUI/runtime, VA-API/WGPU и выбранные пользователем assets.
+- ignored `yt-dlp`/network regressions в `service-ytdlp` отсутствуют: provider,
+  auth, Range/refresh и live contracts проверяются hermetic fake/local-server
+  suites, а real URL UX принадлежит только S42 manual runner-у;
+- VP9 VA-API playback и typed AV1 rejection runtime checks не являются
+  `cargo test`: ими владеют `hardware-only` и `full` modes
+  `playback-smoke.sh`; они требуют выбранных пользователем assets и конкретного
+  GUI/VA-API/WGPU host и не являются checked-in S42 hardware acceptance.
 
 Все fixture regressions запускаются по одному через `scripts/media-regression.sh --scenario <NAME> --path <FILE>`. Полный список требований доступен через `scripts/media-regression.sh --list-scenarios`; отсутствие selection уже печатает `NOT RUN`, а выбранный отсутствующий path завершает runner ошибкой.
 
 Обычный `cargo test --workspace --all-features --locked` оставляет перечисленные runtime tests ignored. Сам по себе зелёный hermetic CI поэтому не является runtime-software, VA-API или playback acceptance.
+
+Единственное owner-approved hardware-capability исключение, которое фиксирует
+S42, — exact `VAProfileH264Baseline` → H.264 Baseline 8-bit YUV420/NV12,
+capability intersection only. Более широкое hardware acceptance не заявлено;
+current hardware manual rerun имеет статус `NOT RUN`: у владельца сейчас нет
+совместимого VA-API device для opt-in rerun. Web-media manual status и полный
+safe-case список описаны в
+[web-media-s42-final-acceptance.md](web-media-s42-final-acceptance.md).

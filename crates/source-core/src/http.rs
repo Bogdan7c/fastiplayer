@@ -791,6 +791,9 @@ fn build_http_fingerprint(
 mod range_redirect_tests;
 
 #[cfg(test)]
+mod error_mapping_tests;
+
+#[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::io::{BufRead, BufReader, Write};

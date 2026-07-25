@@ -17,6 +17,25 @@ CI сравнивает дроби точно, без округления пр�
 метрики запрещено. Произвольного global threshold нет: текущий измеренный
 baseline и есть нижняя граница.
 
+Фактический S42 baseline от 2026-07-25:
+
+- workspace: `135834/181804` lines, `13197/17245` functions,
+  `169757/228313` regions;
+- blocking group: `83276/99646` lines, `8338/10114` functions,
+  `103632/125867` regions.
+
+Это conservative per-crate envelope из реально наблюдавшихся clean runs:
+scheduler-dependent worker tests могут менять, какой из соседних async paths
+успевает получить execution counter. Каждая crate floor взята из фактического
+clean result, а workspace/blocking aggregate равен сумме этих floors. Никаких
+новых exception rows для стабилизации не добавлено: остаются ровно 28
+owner-approved S42 записей.
+
+Последний clean gate artifact был выше baseline: workspace
+`135842/181804` lines, `13200/17245` functions, `169766/228313` regions;
+blocking group `83284/99646` lines, `8341/10114` functions,
+`103641/125867` regions.
+
 Hardware, FFI и UI-shell crate-ы перечислены в `informational_crates`. Их
 результаты видны в `current-summary.json`, LCOV и HTML, но отдельная crate-метрика
 пока не блокирует merge: hosted runner не доказывает реальную работу GPU,
@@ -53,6 +72,13 @@ Raw profile data остаются в `target/llvm-cov-target`. Summary JSON, LCO
 создаются в `target/coverage/`; Git их игнорирует, а CI загружает report вместе
 с `*.profraw`/`*.profdata` как artifact `coverage-report`.
 
+Перед публикацией HTML, записью baseline и blocking ratchet raw LCOV проходит
+отдельную fail-closed проверку `DA`/`FNDA`/`BRDA` execution counters. Значение с
+установленным старшим битом `u64` запрещено: оно указывает на underflow/corruption
+LLVM counter-expression, например если test process завершился раньше detached
+worker-а. Такой profile отклоняется как повреждённый и не может искусственно
+повысить baseline.
+
 Обычный `scripts/ci-checks.sh tests` запускается отдельно и не наследует
 instrumented flags: `cargo-llvm-cov` задаёт их только дочерним процессам своего
 вызова, а coverage runner начинает с собственного clean target.
@@ -73,6 +99,17 @@ exception обязана содержать:
 PR job сравнивает proposed baseline с baseline целевой ветки и блокирует любое
 необъяснённое снижение. Exact counters не позволяют повторно использовать старое
 или слишком широкое исключение.
+
+S42 содержит одноразовый owner-approved rebaseline: ровно 28 exact
+`scope/metric` записей для изменившегося blocking inventory и названных
+crate-ов. У каждой записи зафиксированы прежние и допустимые counters, причина,
+bounded follow-up и единая дата пересмотра `2026-10-25`. Это не новый общий
+порог и не разрешение на дальнейшее снижение.
+
+Lifecycle exception-ов проверяется при каждом обычном
+`scripts/coverage.sh check` и `scripts/coverage.sh baseline`, а не только при
+PR-сравнении двух baseline. Просроченная, дублированная или schema-invalid
+запись блокирует coverage gate даже без нового уменьшения.
 
 Новый или изменённый boundary должен получить focused test. Исключение coverage
 не заменяет такой тест и не оправдывает бессодержательные assertions ради

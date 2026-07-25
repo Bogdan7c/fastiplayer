@@ -4,8 +4,8 @@ use capability_core::{
     SupportedVideoOutput, SystemCapabilities,
 };
 use codec_core::{
-    BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, DecodeBackendId, H264Profile,
-    MatrixCoefficients, SupportedVideoDecodeFormat, TransferFunction, VideoCodec,
+    Av1Profile, BitDepth, ChromaSubsampling, ColorPrimaries, ColorRange, DecodeBackendId,
+    H264Profile, MatrixCoefficients, SupportedVideoDecodeFormat, TransferFunction, VideoCodec,
     VideoColorMetadata, VideoDecodeRequirement, VideoProfile, Vp9Profile,
 };
 use demux_api::{DemuxInputCapabilities, DemuxInputCapability};
@@ -13,7 +13,7 @@ use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 use web_media_core::{
     AudioComponentDescriptor, AudioTrackDescriptor, Bitrate, CandidateDescriptor,
     CandidateFormatIdentity, CandidateIdentity, ChannelCount, ContainerFamily, ContainerIdentity,
-    DynamicRange, ExactSelectionIdentity, ExtractionGeneration, HttpScheme,
+    DynamicRange, ExactSelectionIdentity, ExtractionGeneration, FtpScheme, HttpScheme,
     MuxedComponentDescriptor, NormalizedCodec, NormalizedTransport, PreferredHeightPolicy,
     RawCodecIdentity, RawContainerIdentity, RawTransportIdentity, SampleRate, SelectionRequest,
     SemanticIdentity, SourceIdentity, StreamLayout, TransportFamily, VideoComponentDescriptor,
@@ -86,9 +86,14 @@ pub(super) fn video_track(
 
 /// Строит доказанный Opus audio descriptor.
 pub(super) fn audio_track() -> AudioTrackDescriptor {
+    audio_track_for("opus")
+}
+
+/// Строит audio descriptor для явно названной proven codec family.
+pub(super) fn audio_track_for(codec_raw: &str) -> AudioTrackDescriptor {
     AudioTrackDescriptor::new(
         NormalizedCodec::parse(
-            RawCodecIdentity::new("opus").expect("test audio codec identity валидна"),
+            RawCodecIdentity::new(codec_raw).expect("test audio codec identity валидна"),
         ),
         Some(SampleRate::new(48_000).expect("test sample rate валиден")),
         Some(ChannelCount::new(2).expect("test channel count валиден")),
@@ -100,9 +105,10 @@ pub(super) fn audio_track() -> AudioTrackDescriptor {
 /// Строит full SDR requirement для existing capability-core.
 pub(super) fn sdr_requirement(codec: VideoCodec, height: u32) -> VideoDecodeRequirement {
     let profile = match codec {
+        VideoCodec::Av1 => VideoProfile::Av1(Av1Profile::Main),
         VideoCodec::Vp9 => VideoProfile::Vp9(Vp9Profile::Profile0),
         VideoCodec::H264 => VideoProfile::H264(H264Profile::High),
-        _ => panic!("focused tests используют только VP9/H.264"),
+        _ => panic!("focused tests используют только AV1/VP9/H.264"),
     };
 
     VideoDecodeRequirement::new(codec)
@@ -184,6 +190,86 @@ pub(super) fn audio_only_candidate(format_id: &str, semantic_key: &str) -> Plann
         CandidateQualityScore::new(10),
     )
     .expect("test audio-only candidate проходит admission")
+}
+
+/// Named параметры не дают S42 matrix перепутать transport, container и codec.
+pub(super) struct AudioCandidateSpec<'a> {
+    /// Exact S42 row identity.
+    pub(super) format_id: &'a str,
+    /// Refresh-stable semantic identity.
+    pub(super) semantic_key: &'a str,
+    /// Raw transport identity из approved profile.
+    pub(super) transport_raw: &'a str,
+    /// Raw container identity из approved profile.
+    pub(super) container_raw: &'a str,
+    /// Raw audio codec identity.
+    pub(super) codec_raw: &'a str,
+    /// Read-only audio decoder capability family.
+    pub(super) codec_family: AudioDecodeCodecFamily,
+}
+
+/// Строит audio-only candidate для exact S42 transport/container row.
+pub(super) fn audio_only_candidate_for(spec: AudioCandidateSpec<'_>) -> PlanningCandidate {
+    let component = AudioComponentDescriptor::new(
+        transport(spec.transport_raw),
+        container(spec.container_raw),
+        audio_track_for(spec.codec_raw),
+    );
+    PlanningCandidate::new(
+        candidate_descriptor(
+            spec.format_id,
+            spec.semantic_key,
+            StreamLayout::AudioOnly(component),
+        ),
+        CandidateRuntimeRequirements::AudioOnly {
+            audio: spec.codec_family,
+        },
+        CandidateQualityScore::new(10),
+    )
+    .expect("S42 audio-only candidate проходит admission")
+}
+
+/// Named параметры удерживают muxed S42 fixture shape самодокументируемым.
+pub(super) struct MuxedCandidateSpec<'a> {
+    /// Exact S42 row identity.
+    pub(super) format_id: &'a str,
+    /// Refresh-stable semantic identity.
+    pub(super) semantic_key: &'a str,
+    /// Raw transport identity из approved profile.
+    pub(super) transport_raw: &'a str,
+    /// Raw container identity из approved profile.
+    pub(super) container_raw: &'a str,
+    /// Raw video codec identity.
+    pub(super) video_codec_raw: &'a str,
+    /// Neutral video decoder capability family.
+    pub(super) video_codec: VideoCodec,
+    /// Raw audio codec identity.
+    pub(super) audio_codec_raw: &'a str,
+    /// Read-only audio decoder capability family.
+    pub(super) audio_codec_family: AudioDecodeCodecFamily,
+}
+
+/// Строит muxed candidate для одного exact S42 provider/container сочетания.
+pub(super) fn muxed_candidate_for(spec: MuxedCandidateSpec<'_>) -> PlanningCandidate {
+    let component = MuxedComponentDescriptor::new(
+        transport(spec.transport_raw),
+        container(spec.container_raw),
+        video_track(spec.video_codec_raw, 1080, DynamicRange::Sdr),
+        audio_track_for(spec.audio_codec_raw),
+    );
+    PlanningCandidate::new(
+        candidate_descriptor(
+            spec.format_id,
+            spec.semantic_key,
+            StreamLayout::Muxed(component),
+        ),
+        CandidateRuntimeRequirements::Muxed {
+            video: sdr_requirement(spec.video_codec, 1080),
+            audio: spec.audio_codec_family,
+        },
+        CandidateQualityScore::new(10),
+    )
+    .expect("S42 muxed candidate проходит admission")
 }
 
 /// Строит muxed planning candidate.
@@ -286,6 +372,7 @@ pub(super) fn empty_video_capabilities() -> SystemCapabilities {
 /// Строит decode format, совпадающий с focused candidate requirement.
 pub(super) fn supported_video_format(codec: VideoCodec, hdr: bool) -> SupportedVideoDecodeFormat {
     let profile = match (codec, hdr) {
+        (VideoCodec::Av1, false) => VideoProfile::Av1(Av1Profile::Main),
         (VideoCodec::Vp9, false) => VideoProfile::Vp9(Vp9Profile::Profile0),
         (VideoCodec::Vp9, true) => VideoProfile::Vp9(Vp9Profile::Profile2),
         (VideoCodec::H264, false) => VideoProfile::H264(H264Profile::High),
@@ -320,6 +407,65 @@ pub(super) fn full_resource_capabilities() -> (TransportCapabilitySnapshot, Demu
             .expect("WebM demux registration валидна"),
         DemuxCapabilityRegistration::new(ContainerFamily::Matroska, transport_outputs)
             .expect("Matroska demux registration валидна"),
+    ]);
+    (transport, demux)
+}
+
+/// Строит production-shaped positive resource matrix для всех Implemented S42 rows.
+pub(super) fn s42_resource_capabilities() -> (TransportCapabilitySnapshot, DemuxCapabilitySnapshot)
+{
+    let progressive = DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes)
+        .with(DemuxInputCapability::StreamingBytes);
+    let ordered = DemuxInputCapabilities::only(DemuxInputCapability::OrderedSegments);
+    let ordered_and_seekable = ordered.with(DemuxInputCapability::SeekableBytes);
+    let all_input_shapes = progressive.with(DemuxInputCapability::OrderedSegments);
+
+    let transport = TransportCapabilitySnapshot::new(vec![
+        TransportCapabilityRegistration::new(
+            TransportFamily::ProgressiveHttp(HttpScheme::Http),
+            progressive,
+        )
+        .expect("HTTP capability валидна"),
+        TransportCapabilityRegistration::new(
+            TransportFamily::ProgressiveHttp(HttpScheme::Https),
+            progressive,
+        )
+        .expect("HTTPS capability валидна"),
+        TransportCapabilityRegistration::new(
+            TransportFamily::ProgressiveFtp(FtpScheme::Ftp),
+            progressive,
+        )
+        .expect("FTP capability валидна"),
+        TransportCapabilityRegistration::new(
+            TransportFamily::ProgressiveFtp(FtpScheme::Ftps),
+            progressive,
+        )
+        .expect("FTPS capability валидна"),
+        TransportCapabilityRegistration::new(TransportFamily::Hls, ordered)
+            .expect("HLS capability валидна"),
+        TransportCapabilityRegistration::new(TransportFamily::Dash, ordered_and_seekable)
+            .expect("DASH capability валидна"),
+        TransportCapabilityRegistration::new(TransportFamily::SmoothStreaming, ordered)
+            .expect("Smooth capability валидна"),
+        TransportCapabilityRegistration::new(TransportFamily::Hds, ordered)
+            .expect("HDS capability валидна"),
+    ]);
+    let demux = DemuxCapabilitySnapshot::new(vec![
+        DemuxCapabilityRegistration::new(ContainerFamily::IsoBmff, progressive)
+            .expect("ISO BMFF demux capability валидна"),
+        DemuxCapabilityRegistration::new(ContainerFamily::FragmentedIsoBmff, ordered_and_seekable)
+            .expect("fMP4 demux capability валидна"),
+        DemuxCapabilityRegistration::new(ContainerFamily::WebM, all_input_shapes)
+            .expect("WebM demux capability валидна"),
+        DemuxCapabilityRegistration::new(ContainerFamily::Ogg, progressive)
+            .expect("Ogg demux capability валидна"),
+        DemuxCapabilityRegistration::new(
+            ContainerFamily::MpegTs,
+            ordered.with(DemuxInputCapability::StreamingBytes),
+        )
+        .expect("MPEG-TS demux capability валидна"),
+        DemuxCapabilityRegistration::new(ContainerFamily::F4f, ordered)
+            .expect("F4F demux capability валидна"),
     ]);
     (transport, demux)
 }

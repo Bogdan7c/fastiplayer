@@ -546,11 +546,12 @@ run_playback_scenario() {
     local playback_status=$?
     set -e
 
-    # Долгий playback штатно завершается timeout-ом; early clean exit тоже допустим.
+    # Долгий playback штатно завершается graceful timeout-ом; clean exit тоже допустим.
     case "${playback_status}" in
-        0 | 124 | 137)
+        0 | 124)
             ;;
         *)
+            # Status 137 означает failed graceful shutdown и последующий SIGKILL.
             fail_with_log_tail "playback scenario '${scenario_name}' завершился с кодом ${playback_status}" "${log_path}"
             ;;
     esac
@@ -700,7 +701,7 @@ run_release_build() {
         cargo build --release -p app-egui --locked
 }
 
-# Функция запускает full hardware+software сценарии.
+# Функция запускает combined host-specific hardware+software regression set.
 run_full_scenarios() {
     # Auto + VP9 Profile 0 должен выбрать VA-API DMA-BUF WGPU.
     run_positive_playback_scenario \
@@ -763,7 +764,7 @@ run_software_only_scenarios() {
         "true"
 }
 
-# Функция запускает только сценарии, принадлежащие VA-API hardware acceptance.
+# Функция запускает только host-specific VA-API regression scenarios.
 run_hardware_only_scenarios() {
     # VP9 Profile 0 подтверждает основной VA-API DMA-BUF playback path.
     run_positive_playback_scenario \

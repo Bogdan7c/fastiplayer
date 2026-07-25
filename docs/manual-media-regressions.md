@@ -13,20 +13,26 @@ selected file. The runner neither searches `test-assets/` nor assumes any filena
 the selected path, detected container, public track codecs, scenario, and a `PASSED`, `FAILED`,
 or `NOT RUN: missing selection` outcome.
 
-Progressive yt-dlp/app UX is checked separately through the S27 runner:
+Web-media/app UX is checked separately through the S42 manual runner:
 
 ```bash
 scripts/progressive-web-smoke.sh \
-  --url 'https://explicit-user-selected.example/media' \
+  --case progressive-http-matroska-webm \
+  --url 'https://explicit-user-selected.example/media.webm' \
   --report /tmp/rustiplayer-progressive-web-report.md
 ```
 
-Every media input must be an explicit repeated `--url` argument. The runner does not search
-fixtures, infer URLs, choose browser profiles, or replace `XDG_CONFIG_HOME`, so normal
-user-owned system yt-dlp configuration remains available. Raw runtime logs live only in a
-temporary directory; the saved report replaces explicit/derived HTTP(S) endpoints and whole
-Cookie/Authorization/Set-Cookie lines. A successful launch is reported as
-`MANUAL REVIEW REQUIRED`, never as an automatic UX pass.
+Every media input must be an explicit `--case` + `--url`/`--fixture` pair to count toward S42.
+The backward-compatible bare `--url` mode is still available, but maps to `legacy-url-N` and
+cannot complete the matrix. The runner does not search fixtures, infer URLs, choose browser
+profiles, or replace `XDG_CONFIG_HOME`, so normal user-owned system yt-dlp configuration
+remains available.
 
-See [S27 evidence and checklist](progressive-web-s27.md) for the hermetic matrix and the manual
-actions that still require a person.
+Real acceptance requires exact system `yt-dlp 2026.07.04`. Raw runtime logs live only in a
+temporary directory; the saved report replaces explicit/derived HTTP(S)/FTP(S) endpoints and
+whole secret-bearing lines. A successful launch is reported as `MANUAL REVIEW REQUIRED`, never
+as an automatic UX pass. A partial safe-case selection keeps the S42 matrix `NOT RUN`.
+
+See [S42 final acceptance](web-media-s42-final-acceptance.md) for the complete 29-case allowlist,
+privacy/provenance contract and manual checklist. [S27 evidence](progressive-web-s27.md) remains
+the historical ownership and hardening basis.

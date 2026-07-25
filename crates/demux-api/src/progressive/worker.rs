@@ -455,7 +455,10 @@ fn publish_async_seek_receipt(
 }
 
 /// EOF worker ждёт command/cancellation без busy loop-а и без ложного terminal stop.
-fn wait_for_seek_command(shared: &ProgressiveSharedState, cancellation: &CancellationToken) {
+pub(super) fn wait_for_seek_command(
+    shared: &ProgressiveSharedState,
+    cancellation: &CancellationToken,
+) {
     let queue = shared.lock_queue();
     let has_pending_receipt = queue
         .async_seek

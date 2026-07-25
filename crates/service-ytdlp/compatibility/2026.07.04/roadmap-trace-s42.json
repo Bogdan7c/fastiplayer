@@ -1,0 +1,996 @@
+{
+  "schema_version": 1,
+  "profile_id": "yt-dlp-2026.07.04-serializable-v1",
+  "scope": "S42RoadmapGoalCodeTestsTrace",
+  "status": "HermeticTraceCompleteManualAcceptanceNotImplied",
+  "requirements": [
+    {
+      "id": "s14-01-playlist-state-v1-v2",
+      "goal": "playlist-state v1→v2",
+      "evidence_ids": ["playlist-state-v1-migration", "playlist-state-v2-roundtrip"]
+    },
+    {
+      "id": "s14-02-compound-storage-navigation-ui-mpris",
+      "goal": "first-class compound storage, named reads/counts, allocators, mutators, navigation, shuffle, Undo, UI and MPRIS",
+      "evidence_ids": [
+        "compound-read-counts",
+        "compound-top-level-retained-counts",
+        "compound-visible-counts",
+        "compound-allocator-watermarks",
+        "compound-structural-mutators",
+        "compound-bulk-remove",
+        "compound-sort",
+        "compound-discovery-anchor",
+        "compound-shuffle-navigation",
+        "compound-undo",
+        "compound-ui-mpris"
+      ]
+    },
+    {
+      "id": "s14-03-playlist-formats",
+      "goal": "M3U/M3U8/XSPF/CUE",
+      "evidence_ids": ["m3u-import", "m3u8-export", "xspf-roundtrip", "cue-roundtrip"]
+    },
+    {
+      "id": "s14-04-hls-playlist-classification",
+      "goal": "HLS is classified before generic playlist rows",
+      "evidence_ids": ["hls-classification-master", "hls-classification-local"]
+    },
+    {
+      "id": "s14-05-non-utf-import-export",
+      "goal": "non-UTF document import and non-representable export are rejected without lossy replacement",
+      "evidence_ids": ["playlist-invalid-utf8", "playlist-non-utf-export"]
+    },
+    {
+      "id": "s14-06-nested-cycles-budgets",
+      "goal": "nested local cycles and aggregate budgets",
+      "evidence_ids": ["playlist-nested-cycle", "playlist-nested-budgets"]
+    },
+    {
+      "id": "s14-07-import-confirmations",
+      "goal": "append, replace, startup, partial and sensitive confirmations",
+      "evidence_ids": [
+        "import-append-explicit",
+        "import-sensitive-replacement",
+        "import-partial-cancel",
+        "import-startup-replace"
+      ]
+    },
+    {
+      "id": "s14-08-export-durability",
+      "goal": "full/selected export and atomic durability",
+      "evidence_ids": [
+        "m3u8-export",
+        "playlist-export-selected",
+        "playlist-export-runtime",
+        "atomic-file-durability"
+      ]
+    },
+    {
+      "id": "s14-09-toolbar-artwork-accessibility-layout",
+      "goal": "toolbar artwork, accessibility and layout",
+      "evidence_ids": ["toolbar-layout", "toolbar-accessibility", "toolbar-artwork"]
+    },
+    {
+      "id": "s14-10-topology-shapes",
+      "goal": "video, playlist, multi_video and URL delegation topology",
+      "evidence_ids": ["topology-shapes", "topology-delegation"]
+    },
+    {
+      "id": "s14-11-topology-identity-cases",
+      "goal": "unavailable, duplicate and missing topology identity",
+      "evidence_ids": ["topology-unavailable-missing", "topology-duplicates"]
+    },
+    {
+      "id": "s14-12-profile-schema-raw-unknown",
+      "goal": "profile schema, raw identity and unknown future identity",
+      "evidence_ids": ["profile-exact-schema", "profile-unknown-identity"]
+    },
+    {
+      "id": "s14-13-request-material-shapes",
+      "goal": "request-material schema, inline HLS and serialized DASH fragments",
+      "evidence_ids": ["request-inline-hls", "request-serialized-dash"]
+    },
+    {
+      "id": "s14-14-layout-shapes",
+      "goal": "muxed, separate, video-only and audio-only layouts",
+      "evidence_ids": ["provider-layout-matrix", "demux-composite-av"]
+    },
+    {
+      "id": "s14-15-height-preference-runtime-override",
+      "goal": "global height preference and runtime override",
+      "evidence_ids": ["height-preference", "height-runtime-override"]
+    },
+    {
+      "id": "s14-16-http-range-non-range-refresh",
+      "goal": "HTTP Range, non-Range and refresh",
+      "evidence_ids": ["http-range", "http-non-range", "http-refresh"]
+    },
+    {
+      "id": "s14-17-demux-registry-composite-av",
+      "goal": "typed demux registry and neutral composite A/V",
+      "evidence_ids": ["demux-registry", "demux-composite-av"]
+    },
+    {
+      "id": "s14-18-temporary-readiness-retry-fencing",
+      "goal": "TemporarilyUnavailable, retry and generation fencing without fake EOF or busy-spin",
+      "evidence_ids": ["temporary-readiness", "temporary-retry", "temporary-retry-fence"]
+    },
+    {
+      "id": "s14-19-current-container-regression",
+      "goal": "current ISO-BMFF, WebM and audio-container paths do not regress",
+      "evidence_ids": ["container-iso-bmff", "container-webm", "container-audio"]
+    },
+    {
+      "id": "s14-20-mpeg-ts-flv",
+      "goal": "first-party MPEG-TS and FLV demux",
+      "evidence_ids": ["mpeg-ts-runtime", "flv-runtime"]
+    },
+    {
+      "id": "s14-21-progressive-hls-dash",
+      "goal": "mandatory progressive, HLS and DASH runtime paths",
+      "evidence_ids": [
+        "progressive-runtime",
+        "container-iso-bmff",
+        "container-audio",
+        "hls-runtime",
+        "dash-runtime"
+      ]
+    },
+    {
+      "id": "s14-22-approved-extended-provider-status",
+      "goal": "Implemented ISM/FTP/HDS have positive runtime proof; RTMP remains ProfileExcluded; special providers remain NoApprovedRow",
+      "evidence_ids": [
+        "smooth-runtime",
+        "ftp-runtime",
+        "hds-runtime",
+        "rtmp-profile-excluded",
+        "special-provider-no-approved-row"
+      ]
+    },
+    {
+      "id": "s14-23-approved-extended-absence-evidence",
+      "goal": "absent approved extended rows have checked-in no-op/ProfileExcluded evidence instead of fake provider tests",
+      "evidence_ids": ["ism-live-no-row", "hds-live-no-row", "special-provider-no-approved-row"]
+    },
+    {
+      "id": "s14-24-dynamic-live-dvr",
+      "goal": "dynamic live/DVR range, expiry, starvation and terminal end",
+      "evidence_ids": [
+        "live-range-expiry",
+        "live-terminal-end",
+        "dash-live-timeline",
+        "dash-live-runtime",
+        "temporary-retry"
+      ]
+    },
+    {
+      "id": "s14-25-auth-scope-non-leakage",
+      "goal": "auth scope and non-leakage",
+      "evidence_ids": ["auth-cross-origin", "auth-redaction"]
+    },
+    {
+      "id": "s14-26-locator-transient-persistence",
+      "goal": "exact acknowledged locator persistence is distinct from transient-secret persistence",
+      "evidence_ids": ["playlist-state-v2-roundtrip", "transient-secret-unrepresentable"]
+    },
+    {
+      "id": "s14-27-cue-playback-window",
+      "goal": "CUE durable span maps to the neutral playback window",
+      "evidence_ids": ["cue-open-intent", "playback-window-boundary"]
+    },
+    {
+      "id": "s14-28-exact-restore-receipt",
+      "goal": "exact authoritative restore/seek receipt",
+      "evidence_ids": ["restore-receipt", "restore-receipt-stale"]
+    },
+    {
+      "id": "s14-29-candidate-switch-barrier",
+      "goal": "candidate switch and strong Ready→authorize→Installed barrier",
+      "evidence_ids": ["candidate-switch-rollback", "install-barrier"]
+    },
+    {
+      "id": "s14-30-secrets-cancel-stale-shutdown",
+      "goal": "secret-safe errors, cancellation, stale generation and bounded shutdown",
+      "evidence_ids": [
+        "auth-redaction",
+        "source-cancellation",
+        "stale-generation",
+        "bounded-shutdown",
+        "hls-refresh-cancel-worker"
+      ]
+    },
+    {
+      "id": "s14-31-ffmpeg-boundary",
+      "goal": "FFmpeg remains a software decode-only boundary",
+      "evidence_ids": [
+        "ffmpeg-software-capability",
+        "ffmpeg-software-format",
+        "guardrail-duplicate-parser-cache-encoder"
+      ]
+    },
+    {
+      "id": "audit-01-goal-code-tests-traceability",
+      "goal": "S42 goal→code/tests traceability is checked in and executable",
+      "evidence_ids": ["profile-final-trace", "profile-evidence-catalog"]
+    },
+    {
+      "id": "audit-02-no-implemented-gap",
+      "goal": "profile manifest has no Implemented gap",
+      "evidence_ids": ["profile-final-trace"]
+    },
+    {
+      "id": "audit-03-no-planned-row",
+      "goal": "profile manifests have no unresolved Planned row",
+      "evidence_ids": ["profile-no-planned"]
+    },
+    {
+      "id": "audit-04-explicit-release-exclusions",
+      "goal": "RTSP/RTP/MMS, private live and DRM remain explicit exclusions",
+      "evidence_ids": ["profile-release-exclusions", "drm-hls-exclusion", "drm-dash-exclusion"]
+    },
+    {
+      "id": "audit-05-full-hermetic-suites",
+      "goal": "full hermetic suite owner remains wired into final acceptance",
+      "evidence_ids": [
+        "release-runner-owner",
+        "coverage-runner-composition",
+        "release-runner-final-composition",
+        "ci-tests-function"
+      ]
+    },
+    {
+      "id": "audit-06-clippy-rustdoc-fmt",
+      "goal": "strict Clippy, rustdoc and fmt remain release gates",
+      "evidence_ids": ["release-runner-locked-commands", "ci-clippy-function", "ci-docs-function", "ci-format-function"]
+    },
+    {
+      "id": "audit-07-rust-toolchains",
+      "goal": "Rust 1.96.0 and MSRV 1.92.0 remain exact locked toolchains",
+      "evidence_ids": ["release-runner-toolchains", "toolchain-policy"]
+    },
+    {
+      "id": "audit-08-dependency-coverage-inventory",
+      "goal": "cargo-deny, cargo-machete and fail-closed coverage inventory remain release gates",
+      "evidence_ids": [
+        "release-runner-locked-commands",
+        "machete-inventory",
+        "coverage-inventory",
+        "coverage-runner-composition",
+        "coverage-lcov-underflow-validator",
+        "coverage-lcov-validation-wiring",
+        "ci-dependencies-function",
+        "coverage-suite-function"
+      ]
+    },
+    {
+      "id": "audit-09-guardrails-module-sizes",
+      "goal": "S42 ownership guardrails and module-size ratchet remain executable",
+      "evidence_ids": ["guardrail-owner-pass", "guardrail-module-growth"]
+    },
+    {
+      "id": "audit-10-secret-cancel-stale-shutdown",
+      "goal": "secret handling, cancellation, stale-generation fencing and bounded shutdown remain mandatory release audits",
+      "evidence_ids": [
+        "auth-redaction",
+        "source-cancellation",
+        "stale-generation",
+        "bounded-shutdown",
+        "hls-refresh-cancel-worker"
+      ]
+    },
+    {
+      "id": "audit-11-hardware-capability-exception",
+      "goal": "hardware capability is unchanged except exact owner-approved H.264 Baseline mapping",
+      "evidence_ids": ["hardware-baseline-profile", "hardware-constrained-no-alias"]
+    },
+    {
+      "id": "audit-12-ffmpeg-decode-only",
+      "goal": "FFmpeg remains decode-only and cannot admit encoder/output or hardware-decoder ownership",
+      "evidence_ids": [
+        "ffmpeg-software-capability",
+        "ffmpeg-software-format",
+        "guardrail-duplicate-parser-cache-encoder"
+      ]
+    },
+    {
+      "id": "audit-13-parser-ownership",
+      "goal": "no duplicate TS/FLV/generic fMP4 parser; exact bounded F4F ISO-envelope adapter is the only approved exception",
+      "evidence_ids": [
+        "guardrail-duplicate-parser-cache-encoder",
+        "guardrail-f4f-exact-adapter",
+        "guardrail-f4f-relocation"
+      ]
+    },
+    {
+      "id": "audit-14-http-cache-prefetch-webm-ownership",
+      "goal": "no duplicate HTTP/cache/prefetch implementation or legacy WebM opener",
+      "evidence_ids": ["guardrail-owner-pass", "guardrail-legacy-webm"]
+    },
+    {
+      "id": "audit-15-xml-advisory-graph",
+      "goal": "XML advisory graph is checked through the exact cargo-deny advisories gate",
+      "evidence_ids": ["release-runner-locked-commands", "ci-dependencies-function"]
+    },
+    {
+      "id": "audit-16-manual-opt-in-not-automated",
+      "goal": "manual URL/fixture and hardware acceptance remains explicit opt-in and is never synthesized as an automated PASS",
+      "evidence_ids": ["release-runner-manual-not-run"]
+    }
+  ],
+  "evidence_catalog": {
+    "playlist-state-v1-migration": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "playlist-state", "target": "lib",
+      "path": "crates/playlist-state/src/v2_tests.rs",
+      "symbol": "v1_fixture_migrates_to_single_entries_and_v2_writer"
+    },
+    "playlist-state-v2-roundtrip": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "playlist-state", "target": "lib",
+      "path": "crates/playlist-state/src/v2_tests.rs",
+      "symbol": "v2_roundtrip_preserves_top_level_order_current_shuffle_allocators_and_payloads"
+    },
+    "compound-read-counts": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "playlist-core", "target": "lib",
+      "path": "crates/playlist-core/src/queue/read/tests.rs",
+      "symbol": "derived_compound_iterator_keeps_exact_len_when_both_ends_are_consumed"
+    },
+    "compound-top-level-retained-counts": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "playlist-core", "target": "lib",
+      "path": "crates/playlist-core/src/queue/entries/tests.rs",
+      "symbol": "mixed_top_level_order_flattens_parts_with_stable_ids_and_ordinals"
+    },
+    "compound-visible-counts": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "app-egui", "target": "lib",
+      "path": "crates/app-egui/src/playlist_runtime/compound_view/tests.rs",
+      "symbol": "collapsed_and_expanded_rows_keep_top_level_count_separate_for_one_and_many_parts"
+    },
+    "compound-allocator-watermarks": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "playlist-core", "target": "lib",
+      "path": "crates/playlist-core/src/queue/entries/tests.rs",
+      "symbol": "item_and_group_high_watermarks_survive_clear_and_both_replacement_paths"
+    },
+    "compound-structural-mutators": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "playlist-core", "target": "lib",
+      "path": "crates/playlist-core/src/queue/group_structural_tests.rs",
+      "symbol": "move_and_multi_move_keep_compound_parts_ordered_and_reject_part_targets"
+    },
+    "compound-bulk-remove": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "playlist-core", "target": "lib",
+      "path": "crates/playlist-core/src/queue/group_structural_tests.rs",
+      "symbol": "bulk_remove_and_remove_others_accept_only_whole_top_level_entries"
+    },
+    "compound-sort": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "playlist-core", "target": "lib",
+      "path": "crates/playlist-core/src/queue/group_structural_tests.rs",
+      "symbol": "direct_and_prepared_sort_use_group_summary_and_preserve_current_part"
+    },
+    "compound-discovery-anchor": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "playlist-core", "target": "lib",
+      "path": "crates/playlist-core/src/queue/group_structural_tests.rs",
+      "symbol": "discovery_anchor_accepts_group_and_rejects_part_or_stale_identity_atomically"
+    },
+    "compound-shuffle-navigation": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "playlist-core", "target": "lib",
+      "path": "crates/playlist-core/src/queue/group_traversal_tests.rs",
+      "symbol": "shuffle_cycle_reenters_compound_at_first_part_and_preserves_internal_order"
+    },
+    "compound-undo": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "app-egui", "target": "lib",
+      "path": "crates/app-egui/src/playlist_runtime/controller/removal/tests.rs",
+      "symbol": "bulk_selected_removal_is_one_commit_and_undo_restores_full_selection"
+    },
+    "compound-ui-mpris": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "app-egui", "target": "lib",
+      "path": "crates/app-egui/src/playlist_runtime/external_projection/tests.rs",
+      "symbol": "first_middle_and_last_part_publish_exact_title_and_position_context"
+    },
+    "m3u-import": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "playlist-io", "target": "generic_m3u",
+      "path": "crates/playlist-io/tests/generic_m3u.rs",
+      "symbol": "lf_crlf_comments_optional_header_and_extinf_association_are_supported"
+    },
+    "m3u8-export": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "playlist-io", "target": "export_core",
+      "path": "crates/playlist-io/tests/export_core.rs",
+      "symbol": "full_m3u8_preserves_canonical_order_duplicates_and_warns_about_group_flattening"
+    },
+    "xspf-roundtrip": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "playlist-io", "target": "export_core",
+      "path": "crates/playlist-io/tests/export_core.rs",
+      "symbol": "xspf_roundtrip_preserves_flattened_identity_and_compound_extension"
+    },
+    "cue-roundtrip": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "playlist-io", "target": "cue_export",
+      "path": "crates/playlist-io/tests/cue_export.rs",
+      "symbol": "cue_serializer_roundtrips_exact_frames_metadata_and_file_type"
+    },
+    "hls-classification-master": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "playlist-io", "target": "hls_classification",
+      "path": "crates/playlist-io/tests/hls_classification.rs",
+      "symbol": "master_hls_returns_adaptive_reference_and_never_segment_rows"
+    },
+    "hls-classification-local": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Negative",
+      "package": "playlist-io", "target": "hls_classification",
+      "path": "crates/playlist-io/tests/hls_classification.rs",
+      "symbol": "valid_local_hls_returns_typed_unsupported_outcome"
+    },
+    "playlist-invalid-utf8": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Negative",
+      "package": "playlist-io", "target": "budgets",
+      "path": "crates/playlist-io/tests/budgets.rs",
+      "symbol": "invalid_utf8_is_fatal_without_lossy_replacement"
+    },
+    "playlist-non-utf-export": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Negative",
+      "package": "playlist-io", "target": "export_core",
+      "path": "crates/playlist-io/tests/export_core.rs",
+      "symbol": "non_utf_local_path_is_typed_ineligible_and_error_is_secret_safe"
+    },
+    "playlist-nested-cycle": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Negative",
+      "package": "playlist-io", "target": "nested_local_expansion",
+      "path": "crates/playlist-io/tests/nested_local_expansion.rs",
+      "symbol": "two_document_cycle_is_cut_without_losing_prior_document_boundaries"
+    },
+    "playlist-nested-budgets": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "playlist-io", "target": "nested_local_expansion",
+      "path": "crates/playlist-io/tests/nested_local_expansion.rs",
+      "symbol": "aggregate_budgets_keep_lossless_truncation_and_diagnostic_summaries"
+    },
+    "import-append-explicit": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "app-egui", "target": "lib",
+      "path": "crates/app-egui/src/playlist_runtime/import_transaction/tests.rs",
+      "symbol": "append_commits_singles_and_groups_only_after_explicit_continue"
+    },
+    "import-sensitive-replacement": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "app-egui", "target": "lib",
+      "path": "crates/app-egui/src/playlist_runtime/import_transaction/tests.rs",
+      "symbol": "composed_sensitive_and_replacement_reasons_use_one_ordered_slot"
+    },
+    "import-partial-cancel": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Negative",
+      "package": "app-egui", "target": "lib",
+      "path": "crates/app-egui/src/playlist_runtime/import_transaction/tests.rs",
+      "symbol": "partial_preview_is_bounded_and_cancelled_confirmation_is_mutation_free"
+    },
+    "import-startup-replace": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "app-egui", "target": "lib",
+      "path": "crates/app-egui/src/playlist_runtime/import_transaction/tests.rs",
+      "symbol": "startup_replace_bypasses_prompt_and_keeps_special_detached_disposition_off"
+    },
+    "playlist-export-selected": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "playlist-io", "target": "export_core",
+      "path": "crates/playlist-io/tests/export_core.rs",
+      "symbol": "selected_scope_uses_canonical_order_and_includes_every_compound_part"
+    },
+    "playlist-export-runtime": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "app-egui", "target": "lib",
+      "path": "crates/app-egui/src/playlist_runtime/export_io/tests.rs",
+      "symbol": "public_export_is_durable_without_queue_or_revision_mutation"
+    },
+    "atomic-file-durability": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Negative",
+      "package": "atomic-file-store", "target": "lib",
+      "path": "crates/atomic-file-store/src/tests.rs",
+      "symbol": "every_pre_rename_failure_keeps_target_and_cleans_exact_temp"
+    },
+    "toolbar-layout": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "app-egui", "target": "lib",
+      "path": "crates/app-egui/src/ui/playlist/toolbar/icon_bar.rs",
+      "symbol": "layout_aligns_left_group_to_titlebar_axes_and_keeps_clear_at_right_edge"
+    },
+    "toolbar-accessibility": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "app-egui", "target": "lib",
+      "path": "crates/app-egui/src/ui/playlist/toolbar/icon_bar.rs",
+      "symbol": "icon_only_controls_keep_explicit_russian_accessibility_names"
+    },
+    "toolbar-artwork": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "ui-artwork-egui", "target": "lib",
+      "path": "crates/ui-artwork-egui/src/playlist_toolbar.rs",
+      "symbol": "import_and_export_are_a_paired_but_directionally_distinct_glyph"
+    },
+    "topology-shapes": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "service-ytdlp", "target": "lib",
+      "path": "crates/service-ytdlp/src/topology/parser/tests.rs",
+      "symbol": "pinned_s00_topology_fixtures_are_all_supported"
+    },
+    "topology-delegation": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "service-ytdlp", "target": "lib",
+      "path": "crates/service-ytdlp/src/topology/parser/tests.rs",
+      "symbol": "url_and_url_transparent_use_distinct_merge_policies"
+    },
+    "topology-unavailable-missing": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Negative",
+      "package": "service-ytdlp", "target": "lib",
+      "path": "crates/service-ytdlp/src/topology/parser/tests.rs",
+      "symbol": "playlist_retains_unavailable_and_missing_identity_entries"
+    },
+    "topology-duplicates": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "app-egui", "target": "lib",
+      "path": "crates/app-egui/src/url_topology_drafts/tests.rs",
+      "symbol": "duplicate_extractor_ids_remain_distinct_ordered_singles"
+    },
+    "profile-exact-schema": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "service-ytdlp", "target": "compatibility_profile",
+      "path": "crates/service-ytdlp/tests/compatibility_profile.rs",
+      "symbol": "manifest_has_exact_source_and_no_schema_conflicts"
+    },
+    "profile-unknown-identity": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "service-ytdlp", "target": "compatibility_profile",
+      "path": "crates/service-ytdlp/tests/compatibility_profile.rs",
+      "symbol": "corpus_preserves_unknown_identity_without_leaking_request_secrets"
+    },
+    "request-inline-hls": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "service-ytdlp", "target": "lib",
+      "path": "crates/service-ytdlp/src/candidate/tests.rs",
+      "symbol": "hls_request_material_preserves_approved_shape_in_safe_summary"
+    },
+    "request-serialized-dash": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "service-ytdlp", "target": "lib",
+      "path": "crates/service-ytdlp/src/candidate/tests.rs",
+      "symbol": "dash_transport_projection_preserves_serialized_roles_and_scoped_request_context"
+    },
+    "provider-layout-matrix": {
+      "kind": "ExecutableTest", "role": "provider", "polarity": "Positive",
+      "package": "web-media-http", "target": "lib",
+      "path": "crates/web-media-http/src/tests.rs",
+      "symbol": "muxed_separate_video_only_and_audio_only_share_one_provider_contract"
+    },
+    "height-preference": {
+      "kind": "ExecutableTest", "role": "quality", "polarity": "Positive",
+      "package": "web-media-playback-plan", "target": "lib",
+      "path": "crates/web-media-playback-plan/src/tests.rs",
+      "symbol": "preferred_height_uses_exact_lower_and_higher_buckets"
+    },
+    "height-runtime-override": {
+      "kind": "ExecutableTest", "role": "quality", "polarity": "Positive",
+      "package": "app-egui", "target": "lib",
+      "path": "crates/app-egui/src/web_media_stream_model/tests.rs",
+      "symbol": "detached_installed_switch_publishes_runtime_override_for_fresh_generation"
+    },
+    "http-range": {
+      "kind": "ExecutableTest", "role": "provider", "polarity": "Positive",
+      "package": "web-media-http", "target": "lib",
+      "path": "crates/web-media-http/src/tests.rs",
+      "symbol": "range_source_uses_existing_prefetch_path"
+    },
+    "http-non-range": {
+      "kind": "ExecutableTest", "role": "provider", "polarity": "Positive",
+      "package": "web-media-http", "target": "lib",
+      "path": "crates/web-media-http/src/tests.rs",
+      "symbol": "non_range_reuses_probe_response_without_duplicate_request"
+    },
+    "http-refresh": {
+      "kind": "ExecutableTest", "role": "provider", "polarity": "Positive",
+      "package": "web-media-http", "target": "lib",
+      "path": "crates/web-media-http/src/tests.rs",
+      "symbol": "cancellation_and_stale_refresh_reject_before_network_mutation"
+    },
+    "demux-registry": {
+      "kind": "ExecutableTest", "role": "demux", "polarity": "Positive",
+      "package": "demux-api", "target": "lib",
+      "path": "crates/demux-api/src/registry/tests.rs",
+      "symbol": "registry_validates_the_exact_container_and_input_pair"
+    },
+    "demux-composite-av": {
+      "kind": "ExecutableTest", "role": "demux", "polarity": "Positive",
+      "package": "demux-api", "target": "lib",
+      "path": "crates/demux-api/src/composite/tests.rs",
+      "symbol": "separate_h264_aac_components_interleave_with_collision_safe_ids"
+    },
+    "temporary-readiness": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "player-core", "target": "lib",
+      "path": "crates/player-core/src/session/tick/tests.rs",
+      "symbol": "temporary_demux_readiness_stops_current_pass_without_eof_or_error_mapping"
+    },
+    "temporary-retry": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "player-core", "target": "lib",
+      "path": "crates/player-core/src/session/tick/tests.rs",
+      "symbol": "installed_demux_retry_avoids_busy_spin_and_recovers_buffering_on_packet"
+    },
+    "temporary-retry-fence": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Negative",
+      "package": "player-core", "target": "lib",
+      "path": "crates/player-core/src/session/tick/tests.rs",
+      "symbol": "installed_demux_retry_deadline_is_stale_after_seek_replace_and_shutdown"
+    },
+    "container-iso-bmff": {
+      "kind": "ExecutableTest", "role": "runtime_fixture", "polarity": "Positive",
+      "package": "web-media-http", "target": "progressive_containers",
+      "path": "crates/web-media-http/tests/progressive_containers.rs",
+      "symbol": "classic_iso_bmff_local_and_range_preserve_timing_seek_and_codec_private"
+    },
+    "container-webm": {
+      "kind": "ExecutableTest", "role": "runtime_fixture", "polarity": "Positive",
+      "package": "web-media-http", "target": "progressive_containers",
+      "path": "crates/web-media-http/tests/progressive_containers.rs",
+      "symbol": "progressive_webm_range_reads_muxed_packet_timeline"
+    },
+    "container-audio": {
+      "kind": "ExecutableTest", "role": "runtime_fixture", "polarity": "Positive",
+      "package": "web-media-http", "target": "progressive_audio_containers",
+      "path": "crates/web-media-http/tests/progressive_audio_containers.rs",
+      "symbol": "range_audio_containers_preserve_codec_packet_and_seek_contract"
+    },
+    "mpeg-ts-runtime": {
+      "kind": "ExecutableTest", "role": "demux", "polarity": "Positive",
+      "package": "mpeg-ts-demux", "target": "lib",
+      "path": "crates/mpeg-ts-demux/src/tests.rs",
+      "symbol": "muxed_h264_aac_survives_arbitrary_read_chunks"
+    },
+    "flv-runtime": {
+      "kind": "ExecutableTest", "role": "demux", "polarity": "Positive",
+      "package": "flv-demux", "target": "lib",
+      "path": "crates/flv-demux/src/tests.rs",
+      "symbol": "progressive_flv_emits_h264_and_aac_packets_with_signed_cts"
+    },
+    "progressive-runtime": {
+      "kind": "ExecutableTest", "role": "provider", "polarity": "Positive",
+      "package": "web-media-http", "target": "progressive_containers",
+      "path": "crates/web-media-http/tests/progressive_containers.rs",
+      "symbol": "progressive_webm_range_reads_muxed_packet_timeline"
+    },
+    "hls-runtime": {
+      "kind": "ExecutableTest", "role": "provider", "polarity": "Positive",
+      "package": "web-media-hls", "target": "runtime",
+      "path": "crates/web-media-hls/tests/runtime.rs",
+      "symbol": "muxed_ts_is_deferred_and_inline_manifest_causes_zero_manifest_fetch"
+    },
+    "dash-runtime": {
+      "kind": "ExecutableTest", "role": "provider", "polarity": "Positive",
+      "package": "web-media-dash", "target": "lib",
+      "path": "crates/web-media-dash/src/tests.rs",
+      "symbol": "serialized_muxed_fmp4_is_ready_before_publish_and_seek_reopens_fragment"
+    },
+    "smooth-runtime": {
+      "kind": "ExecutableTest", "role": "provider", "polarity": "Positive",
+      "package": "web-media-smooth", "target": "lib",
+      "path": "crates/web-media-smooth/src/demux/tests.rs",
+      "symbol": "canonical_sources_publish_stable_av_tracks_and_manifest_duration"
+    },
+    "ftp-runtime": {
+      "kind": "ExecutableTest", "role": "provider", "polarity": "Positive",
+      "package": "web-media-ftp", "target": "lib",
+      "path": "crates/web-media-ftp/src/tests.rs",
+      "symbol": "rest_capable_server_opens_seekable_input"
+    },
+    "hds-runtime": {
+      "kind": "ExecutableTest", "role": "provider", "polarity": "Positive",
+      "package": "web-media-hds", "target": "vod_runtime",
+      "path": "crates/web-media-hds/tests/vod_runtime.rs",
+      "symbol": "prepares_local_f4m_bootstrap_and_f4f_until_tracks_and_packet"
+    },
+    "rtmp-profile-excluded": {
+      "kind": "ExecutableTest", "role": "exclusion", "polarity": "Negative",
+      "package": "service-ytdlp", "target": "compatibility_profile_s39",
+      "path": "crates/service-ytdlp/tests/compatibility_profile_s39.rs",
+      "symbol": "exact_rtmp_variants_remain_excluded_without_wire_fixtures"
+    },
+    "special-provider-no-approved-row": {
+      "kind": "ExecutableTest", "role": "exclusion", "polarity": "Negative",
+      "package": "service-ytdlp", "target": "compatibility_profile_s40",
+      "path": "crates/service-ytdlp/tests/compatibility_profile_s40.rs",
+      "symbol": "special_provider_gate_has_no_approved_rows_or_cards"
+    },
+    "ism-live-no-row": {
+      "kind": "ExecutableTest", "role": "exclusion", "polarity": "Negative",
+      "package": "service-ytdlp", "target": "compatibility_profile_s36a",
+      "path": "crates/service-ytdlp/tests/compatibility_profile_s36a.rs",
+      "symbol": "manifest_splits_ism_base_profile_without_live_promotion"
+    },
+    "hds-live-no-row": {
+      "kind": "ExecutableTest", "role": "exclusion", "polarity": "Negative",
+      "package": "app-egui", "target": "lib",
+      "path": "crates/app-egui/src/web_media_open/hds.rs",
+      "symbol": "rejects_every_hds_live_intent_before_vod_preparation"
+    },
+    "live-range-expiry": {
+      "kind": "ExecutableTest", "role": "provider", "polarity": "Negative",
+      "package": "web-media-hls", "target": "live_runtime",
+      "path": "crates/web-media-hls/tests/live_runtime.rs",
+      "symbol": "sliding_refresh_evicts_old_rap_and_early_seek_is_typed_expired"
+    },
+    "live-terminal-end": {
+      "kind": "ExecutableTest", "role": "provider", "polarity": "Positive",
+      "package": "web-media-hls", "target": "live_runtime",
+      "path": "crates/web-media-hls/tests/live_runtime.rs",
+      "symbol": "endlist_refresh_drains_retained_segments_then_returns_eos_with_unknown_duration"
+    },
+    "dash-live-timeline": {
+      "kind": "ExecutableTest", "role": "provider", "polarity": "Positive",
+      "package": "web-media-dash", "target": "dynamic_runtime",
+      "path": "crates/web-media-dash/tests/dynamic_runtime.rs",
+      "symbol": "multi_period_live_keeps_global_continuity_with_new_raw_pto_per_period"
+    },
+    "dash-live-runtime": {
+      "kind": "ExecutableTest", "role": "provider", "polarity": "Positive",
+      "package": "web-media-dash", "target": "live_runtime",
+      "path": "crates/web-media-dash/tests/live_runtime.rs",
+      "symbol": "prepares_local_dynamic_mpd_until_audio_packet_and_cooperative_shutdown"
+    },
+    "auth-cross-origin": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Negative",
+      "package": "web-media-http", "target": "lib",
+      "path": "crates/web-media-http/src/tests.rs",
+      "symbol": "cross_origin_redirect_never_forwards_authorization_header"
+    },
+    "auth-redaction": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Negative",
+      "package": "web-media-http", "target": "lib",
+      "path": "crates/web-media-http/src/tests.rs",
+      "symbol": "auth_errors_and_debug_output_redact_header_value_and_url_payload"
+    },
+    "transient-secret-unrepresentable": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Negative",
+      "package": "playlist-state", "target": "lib",
+      "path": "crates/playlist-state/src/v2_tests.rs",
+      "symbol": "transient_request_material_is_structurally_unrepresentable_in_v2_dto"
+    },
+    "cue-open-intent": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "app-egui", "target": "lib",
+      "path": "crates/app-egui/src/playlist_runtime/transport_execution.rs",
+      "symbol": "planned_cue_item_maps_durable_span_to_neutral_open_intent"
+    },
+    "playback-window-boundary": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Negative",
+      "package": "player-core", "target": "lib",
+      "path": "crates/player-core/src/session/tests/playback_window.rs",
+      "symbol": "out_of_source_window_fails_before_replacing_active_media"
+    },
+    "restore-receipt": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "player-core", "target": "lib",
+      "path": "crates/player-core/src/session/tests/prepared_demux_seek.rs",
+      "symbol": "authoritative_receipt_starts_existing_commit_without_premature_position_publication"
+    },
+    "restore-receipt-stale": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Negative",
+      "package": "player-core", "target": "lib",
+      "path": "crates/player-core/src/session/tests/prepared_demux_seek.rs",
+      "symbol": "generation_change_and_media_reset_drop_late_receipts"
+    },
+    "candidate-switch-rollback": {
+      "kind": "ExecutableTest", "role": "quality", "polarity": "Negative",
+      "package": "app-egui", "target": "lib",
+      "path": "crates/app-egui/src/web_media_stream_model/tests.rs",
+      "symbol": "candidate_switch_selector_is_single_flight_and_pre_barrier_failure_restores_it"
+    },
+    "install-barrier": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Negative",
+      "package": "player-core", "target": "lib",
+      "path": "crates/player-core/src/session/tests/staged_media_install.rs",
+      "symbol": "resource_and_configuration_failures_are_pre_ready_and_preserve_old_playing"
+    },
+    "source-cancellation": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Negative",
+      "package": "app-egui", "target": "lib",
+      "path": "crates/app-egui/src/media_open/executor.rs",
+      "symbol": "cancellation_reaches_source_transport_token"
+    },
+    "stale-generation": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Negative",
+      "package": "web-media-adaptive", "target": "lib",
+      "path": "crates/web-media-adaptive/src/tests/range_source.rs",
+      "symbol": "range_source_rejects_stale_generation_and_cancel_before_network"
+    },
+    "bounded-shutdown": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "app-egui", "target": "lib",
+      "path": "crates/app-egui/src/media_open/executor.rs",
+      "symbol": "timeout_retains_worker_handle_and_later_reaps_it"
+    },
+    "hls-refresh-cancel-worker": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Negative",
+      "package": "web-media-hls", "target": "live_runtime",
+      "path": "crates/web-media-hls/tests/live_runtime.rs",
+      "symbol": "manifest_refresh_cancellation_is_typed_secret_safe_and_worker_bounded"
+    },
+    "ffmpeg-software-format": {
+      "kind": "ExecutableTest", "role": "decoder", "polarity": "Negative",
+      "package": "video-ffmpeg", "target": "lib",
+      "path": "crates/video-ffmpeg/src/ffi/pixel_format.rs",
+      "symbol": "ffmpeg_pix_fmt_rejects_hardware_rgb_and_unsupported_yuv_formats"
+    },
+    "ffmpeg-software-capability": {
+      "kind": "ExecutableTest", "role": "decoder", "polarity": "Positive",
+      "package": "video-ffmpeg", "target": "lib",
+      "path": "crates/video-ffmpeg/src/capability_provider.rs",
+      "symbol": "probe_success_registers_raw_software_outputs"
+    },
+    "profile-final-trace": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "service-ytdlp", "target": "final_acceptance_s42",
+      "path": "crates/service-ytdlp/tests/final_acceptance_s42/profile_traceability.rs",
+      "symbol": "implemented_rows_have_complete_typed_role_evidence"
+    },
+    "profile-evidence-catalog": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Positive",
+      "package": "service-ytdlp", "target": "final_acceptance_s42",
+      "path": "crates/service-ytdlp/tests/final_acceptance_s42/evidence_catalog.rs",
+      "symbol": "evidence_catalog_has_no_stale_path_symbol_or_dead_reference"
+    },
+    "profile-no-planned": {
+      "kind": "ExecutableTest", "role": "cross_cutting", "polarity": "Negative",
+      "package": "service-ytdlp", "target": "final_acceptance_s42",
+      "path": "crates/service-ytdlp/tests/final_acceptance_s42/status_inventory.rs",
+      "symbol": "canonical_profile_s41_and_s42_have_no_unresolved_planned_status"
+    },
+    "profile-release-exclusions": {
+      "kind": "ExecutableTest", "role": "exclusion", "polarity": "Negative",
+      "package": "service-ytdlp", "target": "final_acceptance_s42",
+      "path": "crates/service-ytdlp/tests/final_acceptance_s42/release_scope.rs",
+      "symbol": "release_exclusion_families_match_canonical_profile"
+    },
+    "drm-hls-exclusion": {
+      "kind": "ExecutableTest", "role": "exclusion", "polarity": "Negative",
+      "package": "hls-playlist-core", "target": "parser",
+      "path": "crates/hls-playlist-core/tests/parser.rs",
+      "symbol": "profile_rejects_non_vod_unsupported_crypto_and_ll_hls"
+    },
+    "drm-dash-exclusion": {
+      "kind": "ExecutableTest", "role": "exclusion", "polarity": "Negative",
+      "package": "dash-mpd-core", "target": "static_profile",
+      "path": "crates/dash-mpd-core/tests/static_profile.rs",
+      "symbol": "exact_namespace_dynamic_drm_base_cardinality_and_media_mismatch_fail_closed"
+    },
+    "release-runner-owner": {
+      "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42ReleaseRunnerTests",
+      "path": "scripts/tests/test_s42_release_runner.py",
+      "symbol": "test_ci_all_runs_exact_owner_sequence"
+    },
+    "coverage-runner-composition": {
+      "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42ReleaseRunnerTests",
+      "path": "scripts/tests/test_s42_release_runner.py",
+      "symbol": "test_coverage_check_composes_preflight_shared_suite_and_ratchet"
+    },
+    "release-runner-final-composition": {
+      "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42ReleaseRunnerTests",
+      "path": "scripts/tests/test_s42_release_runner.py",
+      "symbol": "test_final_acceptance_reuses_owners_and_keeps_manual_not_run"
+    },
+    "release-runner-locked-commands": {
+      "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42ReleaseRunnerTests",
+      "path": "scripts/tests/test_s42_release_runner.py",
+      "symbol": "test_supported_cargo_resolution_commands_are_locked"
+    },
+    "release-runner-toolchains": {
+      "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42ReleaseRunnerTests",
+      "path": "scripts/tests/test_s42_release_runner.py",
+      "symbol": "test_ci_runner_pins_primary_and_msrv_releases"
+    },
+    "release-runner-manual-not-run": {
+      "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42ReleaseRunnerTests",
+      "path": "scripts/tests/test_s42_release_runner.py",
+      "symbol": "test_final_acceptance_reuses_owners_and_keeps_manual_not_run"
+    },
+    "toolchain-policy": {
+      "kind": "PythonUnittest", "role": "cross_cutting", "target": "ToolchainPolicyTests",
+      "path": "scripts/tests/test_check_toolchain_policy.py",
+      "symbol": "test_root_msrv_must_match_exact_owner_decision"
+    },
+    "machete-inventory": {
+      "kind": "PythonUnittest", "role": "cross_cutting", "target": "DependencyAuditInventoryTests",
+      "path": "scripts/tests/test_dependency_audit_inventory.py",
+      "symbol": "test_cargo_machete_inventory_matches_workspace_members"
+    },
+    "coverage-inventory": {
+      "kind": "PythonUnittest", "role": "cross_cutting", "target": "CoveragePolicyInventoryTests",
+      "path": "scripts/tests/test_coverage_metrics.py",
+      "symbol": "test_checked_in_baseline_matches_exact_policy_inventory"
+    },
+    "coverage-lcov-underflow-validator": {
+      "kind": "PythonUnittest", "role": "cross_cutting", "target": "CoverageRatchetTests",
+      "path": "scripts/tests/test_coverage_metrics.py",
+      "symbol": "test_lcov_top_bit_execution_counter_is_rejected"
+    },
+    "coverage-lcov-validation-wiring": {
+      "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42ReleaseRunnerTests",
+      "path": "scripts/tests/test_s42_release_runner.py",
+      "symbol": "test_coverage_suite_rejects_counter_underflow_before_publication"
+    },
+    "guardrail-owner-pass": {
+      "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42SourceGuardrailTests",
+      "path": "scripts/tests/test_check_s42_guardrails.py",
+      "symbol": "test_exact_parser_cache_and_prefetch_owners_pass"
+    },
+    "guardrail-module-growth": {
+      "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42ModuleSizeGuardrailTests",
+      "path": "scripts/tests/test_check_s42_guardrails.py",
+      "symbol": "test_growth_and_new_oversized_module_fail"
+    },
+    "guardrail-duplicate-parser-cache-encoder": {
+      "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42SourceGuardrailTests",
+      "path": "scripts/tests/test_check_s42_guardrails.py",
+      "symbol": "test_duplicate_parsers_cache_and_ffmpeg_encoder_fail"
+    },
+    "guardrail-f4f-exact-adapter": {
+      "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42SourceGuardrailTests",
+      "path": "scripts/tests/test_check_s42_guardrails.py",
+      "symbol": "test_exact_f4f_iso_envelope_adapter_passes"
+    },
+    "guardrail-f4f-relocation": {
+      "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42SourceGuardrailTests",
+      "path": "scripts/tests/test_check_s42_guardrails.py",
+      "symbol": "test_f4f_iso_envelope_adapter_relocation_fails"
+    },
+    "guardrail-legacy-webm": {
+      "kind": "PythonUnittest", "role": "cross_cutting", "target": "S42SourceGuardrailTests",
+      "path": "scripts/tests/test_check_s42_guardrails.py",
+      "symbol": "test_legacy_webm_opener_in_script_fails"
+    },
+    "hardware-baseline-profile": {
+      "kind": "ExecutableTest", "role": "hardware_exception", "polarity": "Positive",
+      "package": "video-vaapi", "target": "lib",
+      "path": "crates/video-vaapi/src/probe.rs",
+      "symbol": "h264_baseline_va_profile_maps_to_exact_8bit_yuv420_slot"
+    },
+    "hardware-constrained-no-alias": {
+      "kind": "ExecutableTest", "role": "hardware_exception", "polarity": "Negative",
+      "package": "video-vaapi", "target": "lib",
+      "path": "crates/video-vaapi/src/probe.rs",
+      "symbol": "constrained_baseline_va_profile_does_not_advertise_ordinary_baseline"
+    },
+    "ci-tests-function": {
+      "kind": "ScriptFunction", "role": "cross_cutting", "target": "ci-checks",
+      "path": "scripts/ci-checks.sh", "symbol": "run_tests"
+    },
+    "ci-clippy-function": {
+      "kind": "ScriptFunction", "role": "cross_cutting", "target": "ci-checks",
+      "path": "scripts/ci-checks.sh", "symbol": "run_clippy"
+    },
+    "ci-docs-function": {
+      "kind": "ScriptFunction", "role": "cross_cutting", "target": "ci-checks",
+      "path": "scripts/ci-checks.sh", "symbol": "run_docs"
+    },
+    "ci-format-function": {
+      "kind": "ScriptFunction", "role": "cross_cutting", "target": "ci-checks",
+      "path": "scripts/ci-checks.sh", "symbol": "run_format_guardrails"
+    },
+    "ci-dependencies-function": {
+      "kind": "ScriptFunction", "role": "cross_cutting", "target": "ci-checks",
+      "path": "scripts/ci-checks.sh", "symbol": "run_dependencies"
+    },
+    "coverage-suite-function": {
+      "kind": "ScriptFunction", "role": "cross_cutting", "target": "coverage",
+      "path": "scripts/coverage.sh", "symbol": "run_clean_coverage_suite"
+    }
+  }
+}

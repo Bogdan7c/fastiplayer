@@ -9,7 +9,7 @@ use crate::locator::YtDlpLocatorParseError;
 /// не должны превращаться в один непрозрачный `anyhow::Error`.
 #[derive(Debug, Error)]
 pub enum YtDlpServiceError {
-    /// Locator не является допустимым absolute HTTP(S) URL.
+    /// Locator не является допустимым absolute network URL утверждённой схемы.
     #[error(transparent)]
     InvalidLocator(#[from] YtDlpLocatorParseError),
 
@@ -48,7 +48,7 @@ pub enum YtDlpServiceError {
         source: anyhow::Error,
     },
 
-    /// URL описывает коллекцию, которую v1 не раскрывает в playback queue.
+    /// Single-item metadata resolver получил collection вместо одного media item.
     #[error("URL описывает коллекцию, а не один media item")]
     CollectionUrl,
 }

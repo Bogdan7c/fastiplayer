@@ -27,8 +27,8 @@ Usage: scripts/runtime-acceptance.sh --suite SUITE [ASSET OPTIONS] [--dry-run]
 Suites:
   hermetic-ci       scripts/ci-checks.sh tests; no local fixtures/runtime/hardware.
   runtime-software  FFmpeg runtime probe + software playback; requires --vp9 and --h264.
-  vaapi-hardware    VA-API playback/rejection; requires --vp9, --av1 and working vainfo/render node.
-  playback-matrix   Full hardware/software matrix; requires --vp9, --av1, --h264 and runtime/hardware.
+  vaapi-hardware    Host-specific VA-API regression smoke; requires --vp9, --av1 and working vainfo/render node.
+  playback-matrix   Combined host-specific regression set; requires --vp9, --av1, --h264 and runtime/hardware.
 
 Outcome contract:
   PASS      Command really ran and all assertions passed (exit 0).
@@ -135,12 +135,12 @@ run_acceptance_command() {
     printf 'PASS: %s acceptance\n' "${suite_name}" >&2
 }
 
-# Делает ignored runtime surface видимой рядом с зелёным hermetic result.
-report_hermetic_runtime_skips() {
-    printf 'SKIP: FFmpeg installed-runtime probe требует runtime-software suite; runtime acceptance not satisfied\n' >&2
-    printf 'SKIP: 17 local-media demux regressions требуют explicit scenario/path; fixture acceptance not satisfied\n' >&2
-    printf 'SKIP: progressive web regressions требуют scripts/progressive-web-smoke.sh с explicit --url/--report; network acceptance not satisfied\n' >&2
-    printf 'SKIP: VA-API/WGPU playback требует vaapi-hardware или playback-matrix suite; hardware acceptance not satisfied\n' >&2
+# Делает невыбранные runtime surfaces видимыми, не выдавая их за selected-suite SKIP.
+report_hermetic_runtime_not_run() {
+    printf 'NOT RUN: FFmpeg installed-runtime probe требует runtime-software suite; runtime acceptance not satisfied\n' >&2
+    printf 'NOT RUN: 18 local-media regressions (17 symphonia-demux + 1 direct HTTP Range) требуют explicit scripts/media-regression.sh --scenario/--path; fixture acceptance not satisfied\n' >&2
+    printf 'NOT RUN: S42 web-media manual acceptance требует scripts/progressive-web-smoke.sh с полной explicit --case + --url/--fixture matrix и --report; manual acceptance not satisfied\n' >&2
+    printf 'NOT RUN: VA-API/WGPU playback требует vaapi-hardware или playback-matrix suite; hardware acceptance not satisfied\n' >&2
 }
 
 # Маршрутизирует manifest suite к одной точной команде и её prerequisites.
@@ -148,7 +148,7 @@ run_selected_suite() {
     case "${acceptance_suite}" in
         hermetic-ci)
             # Cargo помечает runtime tests ignored; причины должны быть видны в том же отчёте.
-            report_hermetic_runtime_skips
+            report_hermetic_runtime_not_run
             run_acceptance_command "hermetic-ci" "${REPO_ROOT}/scripts/ci-checks.sh" tests
             ;;
         runtime-software)

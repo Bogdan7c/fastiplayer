@@ -291,10 +291,14 @@ mod tests {
             let first = mailbox.take_progress();
             producer.join().unwrap();
             let second = mailbox.take_progress();
-            assert!(
-                first.is_some_and(|progress| progress.processed == 1)
-                    || second.is_some_and(|progress| progress.processed == 1)
-            );
+            // Обе race-развязки сводятся к одному deterministic aggregation path,
+            // чтобы short-circuit не делал coverage самой проверки scheduler-dependent.
+            let newest_processed = first
+                .into_iter()
+                .chain(second)
+                .map(|progress| progress.processed)
+                .max();
+            assert_eq!(newest_processed, Some(1));
             assert!(wake.count.load(Ordering::Acquire) <= 2);
         }
     }

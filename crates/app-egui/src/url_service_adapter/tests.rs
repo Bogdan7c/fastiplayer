@@ -113,7 +113,7 @@ fn registry_prioritizes_direct_media_and_freezes_chosen_adapter_without_open_fal
 }
 
 #[test]
-fn extended_s00_schemes_require_exact_implemented_provider_capability() {
+fn extended_s00_schemes_follow_implemented_or_excluded_profile_disposition() {
     for (raw_locator, input_scheme) in [
         (
             "ftp://media.example.test/video.webm",
@@ -128,6 +128,19 @@ fn extended_s00_schemes_require_exact_implemented_provider_capability() {
             panic!("production registry должен включать S37 FTP provider");
         };
         assert_eq!(persistence_identity(&locator), raw_locator);
+
+        let missing_registry = StartupUrlServiceRegistry {
+            implemented_yt_dlp_input_providers: &[],
+        };
+        let StartupUrlClassification::Unsupported { reason } =
+            missing_registry.classify(raw_locator)
+        else {
+            panic!("без exact capability Implemented provider должен быть unavailable");
+        };
+        assert_eq!(
+            reason,
+            StartupUrlUnsupportedReason::ImplementedProviderUnavailable { input_scheme }
+        );
 
         let implemented_capabilities =
             [ImplementedYtDlpInputProviderCapability::exact(input_scheme)];
@@ -158,7 +171,7 @@ fn extended_s00_schemes_require_exact_implemented_provider_capability() {
         };
         assert_eq!(
             reason,
-            StartupUrlUnsupportedReason::ImplementedProviderUnavailable { input_scheme }
+            StartupUrlUnsupportedReason::ProfileExcludedInputScheme { input_scheme }
         );
 
         let implemented_capabilities =
@@ -166,24 +179,22 @@ fn extended_s00_schemes_require_exact_implemented_provider_capability() {
         let active_registry = StartupUrlServiceRegistry {
             implemented_yt_dlp_input_providers: &implemented_capabilities,
         };
-        let StartupUrlClassification::Supported(locator) = active_registry.classify(raw_locator)
+        let StartupUrlClassification::Unsupported {
+            reason: active_reason,
+        } = active_registry.classify(raw_locator)
         else {
-            panic!("exact Implemented capability должна включать только свою scheme");
+            panic!("registration capability не должна обходить profile exclusion");
         };
-        assert_eq!(persistence_identity(&locator), raw_locator);
+        assert_eq!(
+            active_reason,
+            StartupUrlUnsupportedReason::ProfileExcludedInputScheme { input_scheme }
+        );
+        assert!(active_reason.safe_error().contains("исключён"));
     }
 }
 
 #[test]
-fn provider_capability_does_not_normalize_unapproved_rtmp_aliases() {
-    let implemented_capabilities = [
-        ImplementedYtDlpInputProviderCapability::exact(service_ytdlp::YtDlpInputScheme::Rtmp),
-        ImplementedYtDlpInputProviderCapability::exact(service_ytdlp::YtDlpInputScheme::Rtmpe),
-    ];
-    let active_registry = StartupUrlServiceRegistry {
-        implemented_yt_dlp_input_providers: &implemented_capabilities,
-    };
-
+fn profile_exclusion_does_not_normalize_unapproved_rtmp_aliases() {
     for (raw_locator, expected_reason) in [
         (
             "rtmps://media.example.test/live",
@@ -202,10 +213,9 @@ fn provider_capability_does_not_normalize_unapproved_rtmp_aliases() {
             StartupUrlUnsupportedReason::InvalidSyntax,
         ),
     ] {
-        let StartupUrlClassification::Unsupported { reason } =
-            active_registry.classify(raw_locator)
+        let StartupUrlClassification::Unsupported { reason } = classify_startup_url(raw_locator)
         else {
-            panic!("неутверждённый alias не должен наследовать RTMP capability");
+            panic!("неутверждённый alias не должен наследовать RTMP profile identity");
         };
         assert_eq!(reason, expected_reason);
     }
@@ -223,7 +233,7 @@ fn provider_capability_does_not_normalize_unapproved_rtmp_aliases() {
     };
     assert_eq!(
         reason,
-        StartupUrlUnsupportedReason::ImplementedProviderUnavailable {
+        StartupUrlUnsupportedReason::ProfileExcludedInputScheme {
             input_scheme: service_ytdlp::YtDlpInputScheme::Rtmpe,
         }
     );

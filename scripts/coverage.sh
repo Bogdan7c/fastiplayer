@@ -14,6 +14,8 @@ readonly SCRIPT_DIRECTORY="${script_directory}"
 readonly REPO_ROOT="${repo_root}"
 # Exact version синхронизирован с coverage/policy.json и CI install step.
 readonly CARGO_LLVM_COV_VERSION="0.8.7"
+# Coverage instrumentation фиксируется тем же primary Rust, что и release gate.
+readonly PRIMARY_RUST_TOOLCHAIN="1.96.0"
 # Raw/profdata/HTML живут только в ignored target и CI artifacts.
 readonly ARTIFACT_DIRECTORY="${REPO_ROOT}/target/coverage"
 # Summary-only JSON является входом compact aggregator-а.
@@ -34,10 +36,23 @@ EOF
 
 # Функция проверяет exact release cargo-llvm-cov до дорогой пересборки.
 require_coverage_tool() {
+    # Полная строка rustc нужна для понятной toolchain diagnostics.
+    local actual_rustc_version
+    actual_rustc_version="$(rustc +"${PRIMARY_RUST_TOOLCHAIN}" --version)"
+    # Удаляем имя binary, сохраняя release и необязательную commit metadata.
+    local release_and_build="${actual_rustc_version#rustc }"
+    # Первый token после имени rustc является exact semver release.
+    local actual_rust_release="${release_and_build%% *}"
+    # Неправильный compiler делает coverage counters несопоставимыми.
+    if [[ "${actual_rust_release}" != "${PRIMARY_RUST_TOOLCHAIN}" ]]; then
+        printf 'Ошибка: coverage требует Rust %s, получено `%s`.\n' \
+            "${PRIMARY_RUST_TOOLCHAIN}" "${actual_rustc_version}" >&2
+        exit 1
+    fi
     # Реальная строка version сохраняется для понятной ошибки.
     local actual_version
     # Отсутствующий subcommand тоже становится явным failure.
-    actual_version="$(cargo llvm-cov --version)"
+    actual_version="$(cargo +"${PRIMARY_RUST_TOOLCHAIN}" llvm-cov --version)"
     # Полное совпадение защищает baseline от изменений LLVM wrapper semantics.
     if [[ "${actual_version}" != "cargo-llvm-cov ${CARGO_LLVM_COV_VERSION}" ]]; then
         # Команда установки одновременно документирует local remediation.
@@ -51,17 +66,21 @@ require_coverage_tool() {
 # Функция запускает тесты один раз и строит все CI artifacts report-only.
 run_clean_coverage_suite() {
     # Старые instrumented artifacts удаляются перед baseline согласно документации tool-а.
-    cargo llvm-cov clean --workspace
+    cargo +"${PRIMARY_RUST_TOOLCHAIN}" llvm-cov clean --workspace
     # Artifact root создаётся до первого --output-path.
     mkdir -p "${ARTIFACT_DIRECTORY}"
     # Hermetic suite совпадает с CI tests boundary: workspace, all features, locked, no fail-fast.
-    cargo llvm-cov --workspace --all-features --locked --no-fail-fast --no-report
+    cargo +"${PRIMARY_RUST_TOOLCHAIN}" llvm-cov --workspace --all-features --locked --no-fail-fast --no-report
     # Summary JSON нужен compact aggregation и остаётся CI artifact.
-    cargo llvm-cov report --json --summary-only --output-path "${LLVM_SUMMARY_PATH}"
+    cargo +"${PRIMARY_RUST_TOOLCHAIN}" llvm-cov report --json --summary-only --output-path "${LLVM_SUMMARY_PATH}"
     # LCOV удобен внешним viewers и сохраняет line-level uncovered paths.
-    cargo llvm-cov report --lcov --output-path "${ARTIFACT_DIRECTORY}/workspace.lcov"
+    cargo +"${PRIMARY_RUST_TOOLCHAIN}" llvm-cov report --lcov --output-path "${ARTIFACT_DIRECTORY}/workspace.lcov"
+    # Detached worker не может оставить u64::MAX counter-expression underflow:
+    # такой artifact запрещён до HTML, baseline и blocking ratchet.
+    python3 "${SCRIPT_DIRECTORY}/coverage_metrics.py" validate-lcov \
+        --input "${ARTIFACT_DIRECTORY}/workspace.lcov"
     # HTML делает owners/error paths доступными без локального LLVM tooling.
-    cargo llvm-cov report --html --output-dir "${ARTIFACT_DIRECTORY}"
+    cargo +"${PRIMARY_RUST_TOOLCHAIN}" llvm-cov report --html --output-dir "${ARTIFACT_DIRECTORY}"
 }
 
 # Главная функция валидирует аргумент и выполняет только выбранный workflow.
@@ -77,6 +96,11 @@ main() {
     cd "${REPO_ROOT}"
     # Exact tool проверяется до clean и компиляции.
     require_coverage_tool
+    # Check обязан fail-fast обнаружить policy/baseline inventory gap до дорогой suite.
+    if [[ "$1" == "check" ]]; then
+        # Отдельная pure validation не доверяет старому compact artifact.
+        python3 "${SCRIPT_DIRECTORY}/coverage_metrics.py" validate-baseline
+    fi
     # Все публичные режимы сначала получают один и тот же clean report.
     case "$1" in
         check|baseline|report)
@@ -113,6 +137,8 @@ main() {
         python3 "${SCRIPT_DIRECTORY}/coverage_metrics.py" generate \
             --input "${LLVM_SUMMARY_PATH}" \
             --output "${REPO_ROOT}/coverage/baseline.json"
+        # Только что измеренный документ обязан полностью совпасть с policy inventory.
+        python3 "${SCRIPT_DIRECTORY}/coverage_metrics.py" validate-baseline
         # Напоминание не позволяет принять снижение без update-check в CI.
         printf 'Baseline обновлён; снижение требует точной записи coverage/exceptions.json.\n'
         # Запись завершена успешно.

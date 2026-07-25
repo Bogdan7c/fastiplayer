@@ -19,7 +19,15 @@ from pathlib import Path
 from typing import Any
 
 
-METADATA_COMMAND = ("cargo", "metadata", "--no-deps", "--format-version", "1")
+METADATA_COMMAND = (
+    "cargo",
+    "+1.96.0",
+    "metadata",
+    "--locked",
+    "--no-deps",
+    "--format-version",
+    "1",
+)
 
 CONTRACT_CRATES = frozenset(
     {

@@ -1,3 +1,14 @@
+## S42 scoped final acceptance (2026-07-25)
+
+- `crates/service-ytdlp/compatibility/2026.07.04/final-acceptance-s42.json` owns scoped `ProfileTraceabilityComplete`: all 12 canonical `Implemented` rows bind exact provider/demux/decoder/runtime-fixture/capability evidence, aggregate RTMP and extended absences remain typed exclusions/no-op, recursive S00/S41/S42 `Planned` inventory is empty, and `traceability_gaps` is empty.
+- `crates/service-ytdlp/compatibility/2026.07.04/roadmap-trace-s42.json` separately owns the complete machine-readable §14/release trace: exactly 31 hermetic rows plus 15 mandatory audits and one manual-non-automation audit, backed by 117 checked-in Rust/Python/shell evidence entries. `final_acceptance_s42::roadmap_trace` exact-ratchets IDs, schemas, paths, symbols, Cargo/Python/shell targets and dead references.
+- Cross-cutting executable evidence is exact and source-validated for auth/secret non-leakage, acknowledged locator vs structurally unrepresentable transient request material, cancellation/stale generation, bounded shutdown, and real player-owned pre-barrier import/open/switch preservation. The validator is `cargo +1.96.0 test -p service-ytdlp --test final_acceptance_s42 --locked`.
+- `scripts/final-acceptance.sh` completed `S42 automated acceptance: PASS` on primary Rust 1.96.0 with locked MSRV 1.92. Manual 29-case URL/fixture acceptance remains `NOT RUN`; real VA-API rerun is also `NOT RUN` because the owner has no compatible device. The only accepted hardware delta remains exact `VAProfileH264Baseline` → H.264 Baseline 8-bit YUV420/NV12, capability intersection only.
+- App admission now rejects exact RTMP/RTMPE before provider lookup as `StartupUrlUnsupportedReason::ProfileExcludedInputScheme`; injected capabilities cannot bypass the profile. Pure locator parsing still preserves their exact typed identity. RTMP wire, RTSP/RTP/MMS, private-live state and DRM remain excluded.
+- S42 public DASH-live evidence exposed two shared-state self-deadlocks in `prepare_dash_live`; initial plan and post-open authoritative live edge are now copied under separate short guards before re-entrant source open/seek. The second read must remain after open because synchronous endpoint recovery may replace the snapshot. See `mem:media-services/dash-live-s35-2026-07-24`.
+- Coverage inventory is fail-closed at 47 blocking and 11 informational crates with cargo-llvm-cov 0.8.7. Conservative measured baseline: workspace lines 135834/181804, functions 13197/17245, regions 169757/228313; blocking group lines 83276/99646, functions 8338/10114, regions 103632/125867. Exactly 28 owner-approved S42 exception rows remain; no row was added for scheduler stabilization.
+- Cargo-deny leaves only two explicitly nonblocking unmaintained advisories with no safe upgrade: RUSTSEC-2026-0150 (`audiopus_sys`) and RUSTSEC-2026-0192 (`ttf-parser`). XML advisory graph is clean.
+
 ## S41 cross-provider integration (2026-07-25)
 
 - 12 exact S00 runtime rows now have checked-in `Implemented` coverage; aggregate RTMP stays explicit S39 `ProfileExcluded`, while S36L/S38L/S40P expansions remain no-op/excluded rather than fake providers.
@@ -11,7 +22,7 @@
 ## S39 exact RTMP family gate (2026-07-25)
 
 - S39 завершён как доказанный no-op: aggregate `rtmp-family-flv` остаётся только identity-only S00 inventory, а exact `rtmp`/`rtmpe` не имеют deterministic wire/crypto fixtures и остаются provisional exclusions. `rtmp_ffmpeg` — жёсткий non-wire exclusion; TLS/tunnel variants не alias-нормализуются.
-- Production provider/dependency/S15A/S21T/S31L changes отсутствуют; current RTMP/RTMPE admission остаётся typed unavailable. Full evidence: `mem:media-services/rtmp-family-s39-2026-07-25`.
+- Production RTMP provider/dependency/S15A/S21T/S31L changes отсутствуют; current app admission rejects exact RTMP/RTMPE before capability lookup as typed `ProfileExcludedInputScheme`. Full evidence: `mem:media-services/rtmp-family-s39-2026-07-25`.
 
 ## S36 Smooth Streaming static VOD (2026-07-25)
 

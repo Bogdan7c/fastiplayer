@@ -26,6 +26,9 @@ mod window_title;
 
 use egui::Painter;
 
+pub use compound_playlist_row::{
+    CompoundPlaylistPartPosition, CompoundPlaylistRowKind, CompoundPlaylistRowStyle,
+};
 pub use fullscreen_button::{FullscreenGlyph, FullscreenStyle};
 pub use media_kind_icon::MediaKindGlyph;
 pub use playback_button::{ButtonVisualState, PlaybackGlyph, PlaybackStyle};
@@ -942,6 +945,3 @@ mod tests {
         }
     }
 }
-pub use compound_playlist_row::{
-    CompoundPlaylistPartPosition, CompoundPlaylistRowKind, CompoundPlaylistRowStyle,
-};

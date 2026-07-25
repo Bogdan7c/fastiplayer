@@ -660,6 +660,8 @@ fn ready_to_commit_preserves_old_playing_until_atomic_authorization_switch() {
     assert_eq!(session.playback_state(), PlaybackState::Playing);
     assert_eq!(session.pipeline.render_generation(), old_render_generation);
     assert!(receipt.try_take_ready_to_commit().is_some());
+    // Ready candidate больше не владеет preflight deadline и не должен будить worker.
+    assert_eq!(session.staged_preflight_wakeup_delay(Instant::now()), None);
     assert!(receipt.try_take_completion().is_none());
     assert_eq!(decoder.configured_streams().len(), 1);
     assert!(matches!(

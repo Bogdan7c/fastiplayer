@@ -395,6 +395,8 @@ mod tests {
     use super::*;
 
     static SCRIPT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+    // `exec` оставляет один процесс-владелец pipe-ов, а `sleep` не отбирает CPU у coverage-runner.
+    const SLOW_CHILD_SCRIPT: &str = "#!/bin/sh\nexec sleep 60\n";
 
     #[test]
     fn exact_argv_emits_lazy_lines_and_final_root() {
@@ -430,7 +432,7 @@ printf '%s\n' \
 
     #[test]
     fn timeout_and_cancellation_kill_and_wait_child() {
-        let timeout_script = create_script("#!/bin/sh\nwhile :; do :; done\n");
+        let timeout_script = create_script(SLOW_CHILD_SCRIPT);
         let timeout_error = run_topology_process(
             timeout_script.to_str().expect("UTF-8 test path"),
             "https://input.invalid/root",
@@ -439,10 +441,13 @@ printf '%s\n' \
             &|| false,
         )
         .expect_err("slow child должен получить timeout");
-        assert!(matches!(timeout_error, YtDlpTopologyError::Timeout));
+        assert!(
+            matches!(timeout_error, YtDlpTopologyError::Timeout),
+            "ожидался Timeout, получено: {timeout_error:?}"
+        );
         remove_script(timeout_script);
 
-        let cancel_script = create_script("#!/bin/sh\nwhile :; do :; done\n");
+        let cancel_script = create_script(SLOW_CHILD_SCRIPT);
         let cancellation_checks = AtomicU64::new(0);
         let cancellation_error = run_topology_process(
             cancel_script.to_str().expect("UTF-8 test path"),
@@ -452,10 +457,10 @@ printf '%s\n' \
             &|| cancellation_checks.fetch_add(1, Ordering::Relaxed) > 1,
         )
         .expect_err("cancelled child должен быть остановлен");
-        assert!(matches!(
-            cancellation_error,
-            YtDlpTopologyError::Cancellation
-        ));
+        assert!(
+            matches!(cancellation_error, YtDlpTopologyError::Cancellation),
+            "ожидался Cancellation, получено: {cancellation_error:?}"
+        );
         remove_script(cancel_script);
     }
 

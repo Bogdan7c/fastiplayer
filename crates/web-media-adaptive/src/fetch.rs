@@ -151,7 +151,7 @@ impl AdaptiveHttpContext {
                     });
                 }
                 Err(error) if error.is_retryable() && attempt < self.retry.maximum_attempts() => {
-                    wait_for_retry(self, self.retry.backoff_after(attempt))?;
+                    wait_for_retry(self.cancellation(), self.retry.backoff_after(attempt))?;
                     attempt = std::num::NonZeroU8::new(attempt.get().saturating_add(1))
                         .unwrap_or(attempt);
                 }
@@ -656,12 +656,12 @@ fn request_material(
 }
 
 fn wait_for_retry(
-    context: &AdaptiveHttpContext,
+    cancellation: &CancellationToken,
     delay: Duration,
 ) -> Result<(), AdaptiveTransportError> {
     let deadline = Instant::now() + delay;
     loop {
-        if context.cancellation.is_cancelled() {
+        if cancellation.is_cancelled() {
             return Err(AdaptiveTransportError::Cancelled);
         }
         let now = Instant::now();
@@ -671,3 +671,6 @@ fn wait_for_retry(
         thread::sleep((deadline - now).min(Duration::from_millis(10)));
     }
 }
+
+#[cfg(test)]
+mod retry_contract_tests;

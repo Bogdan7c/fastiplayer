@@ -1,0 +1,1540 @@
+{
+  "schema_version": 1,
+  "profile_id": "yt-dlp-2026.07.04-serializable-v1",
+  "session": "S42",
+  "decision": {
+    "scope": "ProfileTraceability",
+    "status": "ProfileTraceabilityComplete",
+    "does_not_accept": [
+      "full final acceptance",
+      "manual opt-in acceptance",
+      "hardware manual rerun"
+    ]
+  },
+  "row_role_schema": [
+    "provider",
+    "demux",
+    "decoder",
+    "runtime_fixture",
+    "capability"
+  ],
+  "row_role_semantics": {
+    "provider": "production provider entry or explicit profile exclusion",
+    "demux": "production demux boundary used by the provider path",
+    "decoder": "shared executable decoder registry evidence; it does not claim that every codec family is present in every runtime fixture",
+    "runtime_fixture": "focused hermetic runtime behavior associated with the row; it does not alone prove the provider boundary, demux boundary, or end-to-end decode of every codec family named by the profile row",
+    "capability": "shared executable fail-closed capability-intersection evidence; negative-only evidence remains incomplete until a positive per-row matrix test is checked in"
+  },
+  "evidence_catalog": {
+    "provider-progressive-http": {
+      "kind": "ProductionBoundary",
+      "role": "provider",
+      "path": "crates/web-media-http/src/lib.rs",
+      "symbol": "impl TransportProvider for WebMediaHttpProvider"
+    },
+    "provider-hls-vod": {
+      "kind": "ProductionBoundary",
+      "role": "provider",
+      "path": "crates/web-media-hls/src/open.rs",
+      "symbol": "pub fn prepare_hls_vod"
+    },
+    "provider-hls-live": {
+      "kind": "ProductionBoundary",
+      "role": "provider",
+      "path": "crates/web-media-hls/src/live/open.rs",
+      "symbol": "pub fn prepare_hls_live"
+    },
+    "provider-dash-vod": {
+      "kind": "ProductionBoundary",
+      "role": "provider",
+      "path": "crates/web-media-dash/src/open.rs",
+      "symbol": "pub fn prepare_dash_vod"
+    },
+    "provider-dash-live": {
+      "kind": "ProductionBoundary",
+      "role": "provider",
+      "path": "crates/web-media-dash/src/live/runtime.rs",
+      "symbol": "pub fn prepare_dash_live"
+    },
+    "provider-dash-live-runtime": {
+      "kind": "ExecutableTest",
+      "role": "provider",
+      "polarity": "Positive",
+      "package": "web-media-dash",
+      "target": "live_runtime",
+      "path": "crates/web-media-dash/tests/live_runtime.rs",
+      "symbol": "prepares_local_dynamic_mpd_until_audio_packet_and_cooperative_shutdown"
+    },
+    "demux-dash-live-runtime": {
+      "kind": "ExecutableTest",
+      "role": "demux",
+      "polarity": "Positive",
+      "package": "web-media-dash",
+      "target": "live_runtime",
+      "path": "crates/web-media-dash/tests/live_runtime.rs",
+      "symbol": "prepares_local_dynamic_mpd_until_audio_packet_and_cooperative_shutdown"
+    },
+    "fixture-dash-live-runtime": {
+      "kind": "ExecutableTest",
+      "role": "runtime_fixture",
+      "polarity": "Positive",
+      "package": "web-media-dash",
+      "target": "live_runtime",
+      "path": "crates/web-media-dash/tests/live_runtime.rs",
+      "symbol": "prepares_local_dynamic_mpd_until_audio_packet_and_cooperative_shutdown"
+    },
+    "provider-smooth-vod": {
+      "kind": "ProductionBoundary",
+      "role": "provider",
+      "path": "crates/web-media-smooth/src/prepare.rs",
+      "symbol": "pub fn prepare_smooth_vod"
+    },
+    "provider-progressive-ftp": {
+      "kind": "ProductionBoundary",
+      "role": "provider",
+      "path": "crates/web-media-ftp/src/lib.rs",
+      "symbol": "impl TransportProvider for WebMediaFtpProvider"
+    },
+    "provider-hds-vod": {
+      "kind": "ProductionBoundary",
+      "role": "provider",
+      "path": "crates/web-media-hds/src/runtime.rs",
+      "symbol": "pub fn prepare_hds_vod"
+    },
+    "demux-symphonia": {
+      "kind": "ProductionBoundary",
+      "role": "demux",
+      "path": "crates/symphonia-demux/src/symphonia_demuxer.rs",
+      "symbol": "pub struct SymphoniaDemuxer"
+    },
+    "demux-mpeg-ts": {
+      "kind": "ProductionBoundary",
+      "role": "demux",
+      "path": "crates/mpeg-ts-demux/src/demuxer.rs",
+      "symbol": "pub struct MpegTsDemuxer"
+    },
+    "demux-hls-component": {
+      "kind": "ProductionBoundary",
+      "role": "demux",
+      "path": "crates/web-media-hls/src/epoch_demux.rs",
+      "symbol": "struct HlsComponentDemuxer"
+    },
+    "demux-hls-live": {
+      "kind": "ProductionBoundary",
+      "role": "demux",
+      "path": "crates/web-media-hls/src/live/demux.rs",
+      "symbol": "struct HlsLiveComponentDemuxer"
+    },
+    "demux-dash-component": {
+      "kind": "ProductionBoundary",
+      "role": "demux",
+      "path": "crates/web-media-dash/src/component.rs",
+      "symbol": "struct DashComponentDemuxer"
+    },
+    "demux-dash-live": {
+      "kind": "ProductionBoundary",
+      "role": "demux",
+      "path": "crates/web-media-dash/src/live/runtime.rs",
+      "symbol": "struct DashLiveDemuxer"
+    },
+    "demux-smooth-transactional": {
+      "kind": "ProductionBoundary",
+      "role": "demux",
+      "path": "crates/web-media-smooth/src/demux/runtime.rs",
+      "symbol": "struct SmoothTransactionalVodDemuxer"
+    },
+    "demux-hds-transactional": {
+      "kind": "ProductionBoundary",
+      "role": "demux",
+      "path": "crates/web-media-hds/src/runtime.rs",
+      "symbol": "struct HdsTransactionalDemuxer"
+    },
+    "demux-flv-f4f": {
+      "kind": "ProductionBoundary",
+      "role": "demux",
+      "path": "crates/flv-demux/src/demuxer.rs",
+      "symbol": "pub struct FlvDemuxer"
+    },
+    "provider-progressive-http-focused": {
+      "kind": "ExecutableTest",
+      "role": "provider",
+      "polarity": "Positive",
+      "package": "web-media-http",
+      "target": "lib",
+      "path": "crates/web-media-http/src/tests.rs",
+      "symbol": "muxed_separate_video_only_and_audio_only_share_one_provider_contract"
+    },
+    "provider-hls-vod-focused": {
+      "kind": "ExecutableTest",
+      "role": "provider",
+      "polarity": "Positive",
+      "package": "web-media-hls",
+      "target": "runtime",
+      "path": "crates/web-media-hls/tests/runtime.rs",
+      "symbol": "muxed_ts_is_deferred_and_inline_manifest_causes_zero_manifest_fetch"
+    },
+    "provider-hls-live-focused": {
+      "kind": "ExecutableTest",
+      "role": "provider",
+      "polarity": "Positive",
+      "package": "web-media-hls",
+      "target": "live_runtime",
+      "path": "crates/web-media-hls/tests/live_runtime.rs",
+      "symbol": "sliding_refresh_evicts_old_rap_and_early_seek_is_typed_expired"
+    },
+    "provider-dash-vod-focused": {
+      "kind": "ExecutableTest",
+      "role": "provider",
+      "polarity": "Positive",
+      "package": "web-media-dash",
+      "target": "lib",
+      "path": "crates/web-media-dash/src/tests.rs",
+      "symbol": "serialized_muxed_fmp4_is_ready_before_publish_and_seek_reopens_fragment"
+    },
+    "provider-smooth-vod-focused": {
+      "kind": "ExecutableTest",
+      "role": "provider",
+      "polarity": "Positive",
+      "package": "web-media-smooth",
+      "target": "lib",
+      "path": "crates/web-media-smooth/src/prepare.rs",
+      "symbol": "accepts_differing_component_clocks_with_exact_root_alignment"
+    },
+    "provider-progressive-ftp-focused": {
+      "kind": "ExecutableTest",
+      "role": "provider",
+      "polarity": "Positive",
+      "package": "web-media-ftp",
+      "target": "lib",
+      "path": "crates/web-media-ftp/src/tests.rs",
+      "symbol": "rest_capable_server_opens_seekable_input"
+    },
+    "provider-hds-vod-focused": {
+      "kind": "ExecutableTest",
+      "role": "provider",
+      "polarity": "Positive",
+      "package": "web-media-hds",
+      "target": "vod_runtime",
+      "path": "crates/web-media-hds/tests/vod_runtime.rs",
+      "symbol": "prepares_local_f4m_bootstrap_and_f4f_until_tracks_and_packet"
+    },
+    "demux-symphonia-focused": {
+      "kind": "ExecutableTest",
+      "role": "demux",
+      "polarity": "Positive",
+      "package": "web-media-http",
+      "target": "progressive_containers",
+      "path": "crates/web-media-http/tests/progressive_containers.rs",
+      "symbol": "progressive_webm_range_reads_muxed_packet_timeline"
+    },
+    "demux-mpeg-ts-focused": {
+      "kind": "ExecutableTest",
+      "role": "demux",
+      "polarity": "Positive",
+      "package": "web-media-hls",
+      "target": "runtime",
+      "path": "crates/web-media-hls/tests/runtime.rs",
+      "symbol": "muxed_ts_is_deferred_and_inline_manifest_causes_zero_manifest_fetch"
+    },
+    "demux-hls-component-focused": {
+      "kind": "ExecutableTest",
+      "role": "demux",
+      "polarity": "Positive",
+      "package": "web-media-hls",
+      "target": "runtime",
+      "path": "crates/web-media-hls/tests/runtime.rs",
+      "symbol": "muxed_fmp4_map_opens_through_injected_symphonia_factory"
+    },
+    "demux-hls-live-focused": {
+      "kind": "ExecutableTest",
+      "role": "demux",
+      "polarity": "Positive",
+      "package": "web-media-hls",
+      "target": "live_runtime",
+      "path": "crates/web-media-hls/tests/live_runtime.rs",
+      "symbol": "sliding_refresh_evicts_old_rap_and_early_seek_is_typed_expired"
+    },
+    "demux-dash-component-focused": {
+      "kind": "ExecutableTest",
+      "role": "demux",
+      "polarity": "Positive",
+      "package": "web-media-dash",
+      "target": "lib",
+      "path": "crates/web-media-dash/src/tests.rs",
+      "symbol": "serialized_muxed_fmp4_is_ready_before_publish_and_seek_reopens_fragment"
+    },
+    "demux-smooth-focused": {
+      "kind": "ExecutableTest",
+      "role": "demux",
+      "polarity": "Positive",
+      "package": "web-media-smooth",
+      "target": "lib",
+      "path": "crates/web-media-smooth/src/demux/tests.rs",
+      "symbol": "canonical_sources_publish_stable_av_tracks_and_manifest_duration"
+    },
+    "demux-hds-focused": {
+      "kind": "ExecutableTest",
+      "role": "demux",
+      "polarity": "Positive",
+      "package": "web-media-hds",
+      "target": "vod_runtime",
+      "path": "crates/web-media-hds/tests/vod_runtime.rs",
+      "symbol": "prepares_local_f4m_bootstrap_and_f4f_until_tracks_and_packet"
+    },
+    "decoder-video-vaapi-matrix": {
+      "kind": "ExecutableTest",
+      "role": "decoder",
+      "polarity": "Positive",
+      "package": "video-vaapi",
+      "target": "lib",
+      "path": "crates/video-vaapi/src/codec_adapter.rs",
+      "symbol": "implemented_format_matrix_contains_vp9_h264_and_h265_main_main10"
+    },
+    "decoder-video-ffmpeg-matrix": {
+      "kind": "ExecutableTest",
+      "role": "decoder",
+      "polarity": "Positive",
+      "package": "video-ffmpeg",
+      "target": "lib",
+      "path": "crates/video-ffmpeg/src/capability_provider.rs",
+      "symbol": "probe_success_registers_raw_software_outputs"
+    },
+    "decoder-audio-matrix": {
+      "kind": "ExecutableTest",
+      "role": "decoder",
+      "polarity": "Positive",
+      "package": "audio",
+      "target": "lib",
+      "path": "crates/audio/src/decoder/capability.rs",
+      "symbol": "production_snapshot_matches_current_proven_codec_registry"
+    },
+    "capability-fail-closed-intersection": {
+      "kind": "ExecutableTest",
+      "role": "capability",
+      "polarity": "Negative",
+      "package": "web-media-playback-plan",
+      "target": "lib",
+      "path": "crates/web-media-playback-plan/src/tests.rs",
+      "symbol": "absent_transport_demux_video_and_audio_are_exact_typed_rejections"
+    },
+    "capability-approved-s42-positive-matrix": {
+      "kind": "ExecutableTest",
+      "role": "capability",
+      "polarity": "Positive",
+      "package": "web-media-playback-plan",
+      "target": "lib",
+      "path": "crates/web-media-playback-plan/src/tests/s42_profile.rs",
+      "symbol": "approved_s42_rows_have_positive_production_shaped_plans"
+    },
+    "fixture-progressive-iso-bmff": {
+      "kind": "ExecutableTest",
+      "role": "runtime_fixture",
+      "polarity": "Positive",
+      "package": "web-media-http",
+      "target": "progressive_containers",
+      "path": "crates/web-media-http/tests/progressive_containers.rs",
+      "symbol": "classic_iso_bmff_local_and_range_preserve_timing_seek_and_codec_private"
+    },
+    "fixture-progressive-webm": {
+      "kind": "ExecutableTest",
+      "role": "runtime_fixture",
+      "polarity": "Positive",
+      "package": "web-media-http",
+      "target": "progressive_containers",
+      "path": "crates/web-media-http/tests/progressive_containers.rs",
+      "symbol": "progressive_webm_range_reads_muxed_packet_timeline"
+    },
+    "fixture-progressive-audio": {
+      "kind": "ExecutableTest",
+      "role": "runtime_fixture",
+      "polarity": "Positive",
+      "package": "web-media-http",
+      "target": "progressive_audio_containers",
+      "path": "crates/web-media-http/tests/progressive_audio_containers.rs",
+      "symbol": "range_audio_containers_preserve_codec_packet_and_seek_contract"
+    },
+    "fixture-hls-vod-ts": {
+      "kind": "ExecutableTest",
+      "role": "runtime_fixture",
+      "polarity": "Positive",
+      "package": "web-media-hls",
+      "target": "runtime",
+      "path": "crates/web-media-hls/tests/runtime.rs",
+      "symbol": "muxed_ts_is_deferred_and_inline_manifest_causes_zero_manifest_fetch"
+    },
+    "fixture-hls-vod-fmp4": {
+      "kind": "ExecutableTest",
+      "role": "runtime_fixture",
+      "polarity": "Positive",
+      "package": "web-media-hls",
+      "target": "runtime",
+      "path": "crates/web-media-hls/tests/runtime.rs",
+      "symbol": "muxed_fmp4_map_opens_through_injected_symphonia_factory"
+    },
+    "fixture-hls-live": {
+      "kind": "ExecutableTest",
+      "role": "runtime_fixture",
+      "polarity": "Positive",
+      "package": "web-media-hls",
+      "target": "live_runtime",
+      "path": "crates/web-media-hls/tests/live_runtime.rs",
+      "symbol": "sliding_refresh_evicts_old_rap_and_early_seek_is_typed_expired"
+    },
+    "fixture-dash-vod-fmp4": {
+      "kind": "ExecutableTest",
+      "role": "runtime_fixture",
+      "polarity": "Positive",
+      "package": "web-media-dash",
+      "target": "lib",
+      "path": "crates/web-media-dash/src/tests.rs",
+      "symbol": "serialized_muxed_fmp4_is_ready_before_publish_and_seek_reopens_fragment"
+    },
+    "fixture-dash-vod-webm": {
+      "kind": "ExecutableTest",
+      "role": "runtime_fixture",
+      "polarity": "Positive",
+      "package": "web-media-dash",
+      "target": "lib",
+      "path": "crates/web-media-dash/src/tests.rs",
+      "symbol": "serialized_audio_webm_reaches_actual_ordered_runtime_readiness"
+    },
+    "fixture-dash-live": {
+      "kind": "ExecutableTest",
+      "role": "runtime_fixture",
+      "polarity": "Positive",
+      "package": "web-media-dash",
+      "target": "dynamic_runtime",
+      "path": "crates/web-media-dash/tests/dynamic_runtime.rs",
+      "symbol": "multi_period_live_keeps_global_continuity_with_new_raw_pto_per_period"
+    },
+    "fixture-smooth-vod": {
+      "kind": "ExecutableTest",
+      "role": "runtime_fixture",
+      "polarity": "Positive",
+      "package": "web-media-smooth",
+      "target": "lib",
+      "path": "crates/web-media-smooth/src/demux/tests.rs",
+      "symbol": "canonical_sources_publish_stable_av_tracks_and_manifest_duration"
+    },
+    "fixture-ftp": {
+      "kind": "ExecutableTest",
+      "role": "runtime_fixture",
+      "polarity": "Positive",
+      "package": "web-media-ftp",
+      "target": "lib",
+      "path": "crates/web-media-ftp/src/tests.rs",
+      "symbol": "rest_capable_server_opens_seekable_input"
+    },
+    "fixture-ftps": {
+      "kind": "ExecutableTest",
+      "role": "runtime_fixture",
+      "polarity": "Positive",
+      "package": "source-core",
+      "target": "lib",
+      "path": "crates/source-core/src/ftp_session_tests.rs",
+      "symbol": "explicit_tls_fixture_roundtrip"
+    },
+    "fixture-hds-vod": {
+      "kind": "ExecutableTest",
+      "role": "runtime_fixture",
+      "polarity": "Positive",
+      "package": "web-media-hds",
+      "target": "vod_runtime",
+      "path": "crates/web-media-hds/tests/vod_runtime.rs",
+      "symbol": "prepares_local_f4m_bootstrap_and_f4f_until_tracks_and_packet"
+    },
+    "fixture-rtmp-exclusion": {
+      "kind": "ExecutableTest",
+      "role": "runtime_fixture",
+      "polarity": "Negative",
+      "package": "service-ytdlp",
+      "target": "compatibility_profile_s39",
+      "path": "crates/service-ytdlp/tests/compatibility_profile_s39.rs",
+      "symbol": "exact_rtmp_variants_remain_excluded_without_wire_fixtures"
+    },
+    "provider-rtmp-exclusion": {
+      "kind": "ExecutableTest",
+      "role": "provider",
+      "polarity": "Negative",
+      "package": "service-ytdlp",
+      "target": "compatibility_profile_s39",
+      "path": "crates/service-ytdlp/tests/compatibility_profile_s39.rs",
+      "symbol": "exact_rtmp_variants_remain_excluded_without_wire_fixtures"
+    },
+    "quality-best-playable": {
+      "kind": "ExecutableTest",
+      "role": "quality",
+      "polarity": "Positive",
+      "package": "web-media-playback-plan",
+      "target": "lib",
+      "path": "crates/web-media-playback-plan/src/tests.rs",
+      "symbol": "one_incompatible_candidate_does_not_block_another"
+    },
+    "quality-exact": {
+      "kind": "ExecutableTest",
+      "role": "quality",
+      "polarity": "Negative",
+      "package": "web-media-playback-plan",
+      "target": "lib",
+      "path": "crates/web-media-playback-plan/src/tests.rs",
+      "symbol": "exact_rejects_stale_generation_and_changed_semantic_identity"
+    },
+    "quality-exact-positive": {
+      "kind": "ExecutableTest",
+      "role": "quality",
+      "polarity": "Positive",
+      "package": "app-egui",
+      "target": "lib",
+      "path": "crates/app-egui/src/web_media_open/component_variants_tests.rs",
+      "symbol": "semantic_installed_rematches_fresh_exact_generation_not_provider_default"
+    },
+    "quality-preferred-height": {
+      "kind": "ExecutableTest",
+      "role": "quality",
+      "polarity": "Positive",
+      "package": "web-media-playback-plan",
+      "target": "lib",
+      "path": "crates/web-media-playback-plan/src/tests.rs",
+      "symbol": "preferred_height_uses_exact_lower_and_higher_buckets"
+    },
+    "quality-runtime-override": {
+      "kind": "ExecutableTest",
+      "role": "quality",
+      "polarity": "Positive",
+      "package": "app-egui",
+      "target": "lib",
+      "path": "crates/app-egui/src/web_media_stream_model/tests.rs",
+      "symbol": "detached_installed_switch_publishes_runtime_override_for_fresh_generation"
+    },
+    "quality-switch-rollback": {
+      "kind": "ExecutableTest",
+      "role": "quality",
+      "polarity": "Negative",
+      "package": "app-egui",
+      "target": "lib",
+      "path": "crates/app-egui/src/web_media_stream_model/tests.rs",
+      "symbol": "candidate_switch_selector_is_single_flight_and_pre_barrier_failure_restores_it"
+    },
+    "exclusion-rtsp-rtp-mms": {
+      "kind": "ExecutableTest",
+      "role": "exclusion",
+      "polarity": "Negative",
+      "package": "app-egui",
+      "target": "lib",
+      "path": "crates/app-egui/src/url_service_adapter/tests.rs",
+      "symbol": "excluded_and_unknown_schemes_are_typed_rejected"
+    },
+    "exclusion-private-live": {
+      "kind": "ExecutableTest",
+      "role": "exclusion",
+      "polarity": "Negative",
+      "package": "service-ytdlp",
+      "target": "compatibility_profile_s40",
+      "path": "crates/service-ytdlp/tests/compatibility_profile_s40.rs",
+      "symbol": "private_live_fixture_remains_secret_safe_and_non_reconstructible"
+    },
+    "exclusion-private-live-production": {
+      "kind": "ProductionBoundary",
+      "role": "exclusion",
+      "path": "crates/service-ytdlp/src/candidate/descriptor.rs",
+      "symbol": "fn normalize_transport"
+    },
+    "exclusion-drm": {
+      "kind": "ExecutableTest",
+      "role": "exclusion",
+      "polarity": "Negative",
+      "package": "service-ytdlp",
+      "target": "lib",
+      "path": "crates/service-ytdlp/src/candidate/tests.rs",
+      "symbol": "unknown_and_profile_excluded_candidates_remain_visible"
+    },
+    "exclusion-drm-hls-sample-aes": {
+      "kind": "ExecutableTest",
+      "role": "exclusion",
+      "polarity": "Negative",
+      "package": "hls-playlist-core",
+      "target": "parser",
+      "path": "crates/hls-playlist-core/tests/parser.rs",
+      "symbol": "profile_rejects_non_vod_unsupported_crypto_and_ll_hls"
+    },
+    "exclusion-drm-dash-content-protection": {
+      "kind": "ExecutableTest",
+      "role": "exclusion",
+      "polarity": "Negative",
+      "package": "dash-mpd-core",
+      "target": "static_profile",
+      "path": "crates/dash-mpd-core/tests/static_profile.rs",
+      "symbol": "exact_namespace_dynamic_drm_base_cardinality_and_media_mismatch_fail_closed"
+    },
+    "exclusion-drm-smooth-protection": {
+      "kind": "ExecutableTest",
+      "role": "exclusion",
+      "polarity": "Negative",
+      "package": "smooth-streaming-manifest-core",
+      "target": "vod_profile",
+      "path": "crates/smooth-streaming-manifest-core/tests/vod_profile.rs",
+      "symbol": "private_namespaces_unknown_vocabulary_and_drm_are_distinct"
+    },
+    "exclusion-drm-hds-additional-header": {
+      "kind": "ExecutableTest",
+      "role": "exclusion",
+      "polarity": "Negative",
+      "package": "hds-manifest-core",
+      "target": "lib",
+      "path": "crates/hds-manifest-core/src/parser.rs",
+      "symbol": "rejects_live_only_features_and_missing_media"
+    },
+    "conditional-ism-live": {
+      "kind": "ExecutableTest",
+      "role": "exclusion",
+      "polarity": "Negative",
+      "package": "service-ytdlp",
+      "target": "compatibility_profile_s36a",
+      "path": "crates/service-ytdlp/tests/compatibility_profile_s36a.rs",
+      "symbol": "manifest_splits_ism_base_profile_without_live_promotion"
+    },
+    "conditional-hds-live": {
+      "kind": "ExecutableTest",
+      "role": "exclusion",
+      "polarity": "Negative",
+      "package": "app-egui",
+      "target": "lib",
+      "path": "crates/app-egui/src/web_media_open/hds.rs",
+      "symbol": "rejects_every_hds_live_intent_before_vod_preparation"
+    },
+    "conditional-special-providers": {
+      "kind": "ExecutableTest",
+      "role": "exclusion",
+      "polarity": "Negative",
+      "package": "service-ytdlp",
+      "target": "compatibility_profile_s40",
+      "path": "crates/service-ytdlp/tests/compatibility_profile_s40.rs",
+      "symbol": "special_provider_gate_has_no_approved_rows_or_cards"
+    },
+    "cross-secret-auth-redirect": {
+      "kind": "ExecutableTest",
+      "role": "cross_cutting",
+      "polarity": "Negative",
+      "package": "web-media-http",
+      "target": "lib",
+      "path": "crates/web-media-http/src/tests.rs",
+      "symbol": "cross_origin_redirect_never_forwards_authorization_header"
+    },
+    "cross-secret-auth-redaction": {
+      "kind": "ExecutableTest",
+      "role": "cross_cutting",
+      "polarity": "Negative",
+      "package": "web-media-http",
+      "target": "lib",
+      "path": "crates/web-media-http/src/tests.rs",
+      "symbol": "auth_errors_and_debug_output_redact_header_value_and_url_payload"
+    },
+    "cross-secret-range-redirect": {
+      "kind": "ExecutableTest",
+      "role": "cross_cutting",
+      "polarity": "Negative",
+      "package": "web-media-http",
+      "target": "lib",
+      "path": "crates/web-media-http/src/range_redirect_tests.rs",
+      "symbol": "cross_origin_range_redirect_prefetches_without_forwarding_secrets"
+    },
+    "cross-acknowledged-locator-roundtrip": {
+      "kind": "ExecutableTest",
+      "role": "cross_cutting",
+      "polarity": "Positive",
+      "package": "playlist-state",
+      "target": "lib",
+      "path": "crates/playlist-state/src/v2_tests.rs",
+      "symbol": "v2_roundtrip_preserves_top_level_order_current_shuffle_allocators_and_payloads"
+    },
+    "cross-transient-request-material-unrepresentable": {
+      "kind": "ExecutableTest",
+      "role": "cross_cutting",
+      "polarity": "Negative",
+      "package": "playlist-state",
+      "target": "lib",
+      "path": "crates/playlist-state/src/v2_tests.rs",
+      "symbol": "transient_request_material_is_structurally_unrepresentable_in_v2_dto"
+    },
+    "cross-cancellation-source-token": {
+      "kind": "ExecutableTest",
+      "role": "cross_cutting",
+      "polarity": "Negative",
+      "package": "app-egui",
+      "target": "lib",
+      "path": "crates/app-egui/src/media_open/executor.rs",
+      "symbol": "cancellation_reaches_source_transport_token"
+    },
+    "cross-stale-generation-no-network": {
+      "kind": "ExecutableTest",
+      "role": "cross_cutting",
+      "polarity": "Negative",
+      "package": "web-media-adaptive",
+      "target": "lib",
+      "path": "crates/web-media-adaptive/src/tests/range_source.rs",
+      "symbol": "range_source_rejects_stale_generation_and_cancel_before_network"
+    },
+    "cross-bounded-shutdown-reap": {
+      "kind": "ExecutableTest",
+      "role": "cross_cutting",
+      "polarity": "Negative",
+      "package": "app-egui",
+      "target": "lib",
+      "path": "crates/app-egui/src/media_open/executor.rs",
+      "symbol": "timeout_retains_worker_handle_and_later_reaps_it"
+    },
+    "cross-pre-barrier-import-active-preserved": {
+      "kind": "ExecutableTest",
+      "role": "cross_cutting",
+      "polarity": "Negative",
+      "package": "app-egui",
+      "target": "lib",
+      "path": "crates/app-egui/src/playlist_runtime/import_transaction/tests.rs",
+      "symbol": "partial_preview_is_bounded_and_cancelled_confirmation_is_mutation_free"
+    },
+    "cross-pre-barrier-import-stale-failure": {
+      "kind": "ExecutableTest",
+      "role": "cross_cutting",
+      "polarity": "Negative",
+      "package": "app-egui",
+      "target": "lib",
+      "path": "crates/app-egui/src/playlist_runtime/import_transaction/tests.rs",
+      "symbol": "structural_stale_failure_preserves_import_ids_and_queue"
+    },
+    "cross-pre-barrier-open-pipeline-preserved": {
+      "kind": "ExecutableTest",
+      "role": "cross_cutting",
+      "polarity": "Negative",
+      "package": "player-core",
+      "target": "lib",
+      "path": "crates/player-core/src/session/tests/staged_media_install.rs",
+      "symbol": "resource_and_configuration_failures_are_pre_ready_and_preserve_old_playing"
+    },
+    "cross-pre-barrier-switch-player-preserved": {
+      "kind": "ExecutableTest",
+      "role": "cross_cutting",
+      "polarity": "Negative",
+      "package": "player-core",
+      "target": "lib",
+      "path": "crates/player-core/src/session/tests/live_same_item_restore.rs",
+      "symbol": "cancelled_pre_barrier_candidate_releases_only_new_generation_once"
+    },
+    "cross-pre-barrier-switch-selector-restored": {
+      "kind": "ExecutableTest",
+      "role": "cross_cutting",
+      "polarity": "Negative",
+      "package": "app-egui",
+      "target": "lib",
+      "path": "crates/app-egui/src/web_media_stream_model/tests.rs",
+      "symbol": "candidate_switch_selector_is_single_flight_and_pre_barrier_failure_restores_it"
+    },
+    "hardware-baseline-planning": {
+      "kind": "ExecutableTest",
+      "role": "hardware_exception",
+      "polarity": "Positive",
+      "package": "service-ytdlp",
+      "target": "lib",
+      "path": "crates/service-ytdlp/src/candidate/planning_tests.rs",
+      "symbol": "h264_baseline_indications_keep_full_planning_inventory_and_exact_requirements"
+    },
+    "hardware-baseline-software": {
+      "kind": "ExecutableTest",
+      "role": "hardware_exception",
+      "polarity": "Positive",
+      "package": "video-ffmpeg",
+      "target": "lib",
+      "path": "crates/video-ffmpeg/src/capability_provider.rs",
+      "symbol": "probe_success_registers_exact_h264_baseline_software_output"
+    },
+    "hardware-baseline-vaapi-probe": {
+      "kind": "ExecutableTest",
+      "role": "hardware_exception",
+      "polarity": "Positive",
+      "package": "video-vaapi",
+      "target": "lib",
+      "path": "crates/video-vaapi/src/probe.rs",
+      "symbol": "h264_baseline_va_profile_maps_to_exact_8bit_yuv420_slot"
+    },
+    "hardware-baseline-vaapi-no-alias": {
+      "kind": "ExecutableTest",
+      "role": "hardware_exception",
+      "polarity": "Negative",
+      "package": "video-vaapi",
+      "target": "lib",
+      "path": "crates/video-vaapi/src/probe.rs",
+      "symbol": "constrained_baseline_va_profile_does_not_advertise_ordinary_baseline"
+    },
+    "hardware-baseline-vaapi-adapter": {
+      "kind": "ExecutableTest",
+      "role": "hardware_exception",
+      "polarity": "Positive",
+      "package": "video-vaapi",
+      "target": "lib",
+      "path": "crates/video-vaapi/src/codec_adapter.rs",
+      "symbol": "factory_accepts_each_implemented_h264_profile"
+    },
+    "hardware-baseline-owner-approval": {
+      "kind": "CheckedInDecision",
+      "role": "owner_approval",
+      "path": "user/web_media_url_playback_implementation_plan.md",
+      "symbol": "owner-approved S27 mapping exact `VAProfileH264Baseline` → H.264 Baseline 8-bit YUV420"
+    },
+    "hardware-vaapi-profile-dispatch": {
+      "kind": "ProductionBoundary",
+      "role": "hardware_exception",
+      "path": "crates/video-vaapi/src/probe.rs",
+      "symbol": "fn formats_for_va_profile"
+    }
+  },
+  "cross_cutting_evidence": {
+    "secret_and_auth_non_leakage": {
+      "evidence_ids": [
+        "cross-secret-auth-redirect",
+        "cross-secret-auth-redaction",
+        "cross-secret-range-redirect"
+      ]
+    },
+    "acknowledged_locator_and_transient_secret_persistence": {
+      "evidence_ids": [
+        "cross-acknowledged-locator-roundtrip",
+        "cross-transient-request-material-unrepresentable"
+      ]
+    },
+    "cancellation_and_stale_generation": {
+      "evidence_ids": [
+        "cross-cancellation-source-token",
+        "cross-stale-generation-no-network"
+      ]
+    },
+    "bounded_shutdown": {
+      "evidence_ids": ["cross-bounded-shutdown-reap"]
+    },
+    "failed_pre_barrier_preservation": {
+      "evidence_ids": [
+        "cross-pre-barrier-import-active-preserved",
+        "cross-pre-barrier-import-stale-failure",
+        "cross-pre-barrier-open-pipeline-preserved",
+        "cross-pre-barrier-switch-player-preserved",
+        "cross-pre-barrier-switch-selector-restored"
+      ]
+    }
+  },
+  "rows": [
+    {
+      "id": "progressive-http-iso-bmff",
+      "status": "Implemented",
+      "transport": "http_or_https",
+      "container_profile": "iso_bmff_mp4_m4a",
+      "codec_profile_refs": ["major-web-video", "proven-native-audio"],
+      "fixture_id": "target-progressive-http-iso-bmff",
+      "roles": {
+        "provider": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "provider-progressive-http",
+            "provider-progressive-http-focused"
+          ]
+        },
+        "demux": {
+          "disposition": "Evidence",
+          "evidence_ids": ["demux-symphonia", "demux-symphonia-focused"]
+        },
+        "decoder": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "decoder-video-vaapi-matrix",
+            "decoder-video-ffmpeg-matrix",
+            "decoder-audio-matrix"
+          ]
+        },
+        "runtime_fixture": {
+          "disposition": "Evidence",
+          "evidence_ids": ["fixture-progressive-iso-bmff"]
+        },
+        "capability": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "capability-approved-s42-positive-matrix",
+            "capability-fail-closed-intersection"
+          ]
+        }
+      }
+    },
+    {
+      "id": "progressive-http-matroska-webm",
+      "status": "Implemented",
+      "transport": "http_or_https",
+      "container_profile": "matroska_webm",
+      "codec_profile_refs": ["webm-video", "webm-audio"],
+      "fixture_id": "target-progressive-http-webm",
+      "roles": {
+        "provider": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "provider-progressive-http",
+            "provider-progressive-http-focused"
+          ]
+        },
+        "demux": {
+          "disposition": "Evidence",
+          "evidence_ids": ["demux-symphonia", "demux-symphonia-focused"]
+        },
+        "decoder": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "decoder-video-vaapi-matrix",
+            "decoder-video-ffmpeg-matrix",
+            "decoder-audio-matrix"
+          ]
+        },
+        "runtime_fixture": {
+          "disposition": "Evidence",
+          "evidence_ids": ["fixture-progressive-webm"]
+        },
+        "capability": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "capability-approved-s42-positive-matrix",
+            "capability-fail-closed-intersection"
+          ]
+        }
+      }
+    },
+    {
+      "id": "progressive-http-proven-audio",
+      "status": "Implemented",
+      "transport": "http_or_https",
+      "container_profile": "ogg_flac_wav_aiff_caf_mpeg_audio",
+      "codec_profile_refs": ["proven-native-audio"],
+      "fixture_id": "target-progressive-http-audio",
+      "roles": {
+        "provider": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "provider-progressive-http",
+            "provider-progressive-http-focused"
+          ]
+        },
+        "demux": {
+          "disposition": "Evidence",
+          "evidence_ids": ["demux-symphonia", "demux-symphonia-focused"]
+        },
+        "decoder": {
+          "disposition": "Evidence",
+          "evidence_ids": ["decoder-audio-matrix"]
+        },
+        "runtime_fixture": {
+          "disposition": "Evidence",
+          "evidence_ids": ["fixture-progressive-audio"]
+        },
+        "capability": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "capability-approved-s42-positive-matrix",
+            "capability-fail-closed-intersection"
+          ]
+        }
+      }
+    },
+    {
+      "id": "hls-vod-ts",
+      "status": "Implemented",
+      "transport": "hls",
+      "container_profile": "mpeg_ts",
+      "codec_profile_refs": ["major-web-video", "proven-native-audio"],
+      "fixture_id": "target-hls-ts",
+      "roles": {
+        "provider": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "provider-hls-vod",
+            "provider-hls-vod-focused"
+          ]
+        },
+        "demux": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "demux-hls-component",
+            "demux-mpeg-ts",
+            "demux-hls-component-focused",
+            "demux-mpeg-ts-focused"
+          ]
+        },
+        "decoder": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "decoder-video-vaapi-matrix",
+            "decoder-video-ffmpeg-matrix",
+            "decoder-audio-matrix"
+          ]
+        },
+        "runtime_fixture": {
+          "disposition": "Evidence",
+          "evidence_ids": ["fixture-hls-vod-ts"]
+        },
+        "capability": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "capability-approved-s42-positive-matrix",
+            "capability-fail-closed-intersection"
+          ]
+        }
+      }
+    },
+    {
+      "id": "hls-vod-fmp4",
+      "status": "Implemented",
+      "transport": "hls",
+      "container_profile": "fmp4_cmaf",
+      "codec_profile_refs": ["major-web-video", "proven-native-audio"],
+      "fixture_id": "target-hls-fmp4",
+      "roles": {
+        "provider": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "provider-hls-vod",
+            "provider-hls-vod-focused"
+          ]
+        },
+        "demux": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "demux-hls-component",
+            "demux-symphonia",
+            "demux-hls-component-focused"
+          ]
+        },
+        "decoder": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "decoder-video-vaapi-matrix",
+            "decoder-video-ffmpeg-matrix",
+            "decoder-audio-matrix"
+          ]
+        },
+        "runtime_fixture": {
+          "disposition": "Evidence",
+          "evidence_ids": ["fixture-hls-vod-fmp4"]
+        },
+        "capability": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "capability-approved-s42-positive-matrix",
+            "capability-fail-closed-intersection"
+          ]
+        }
+      }
+    },
+    {
+      "id": "hls-live-dvr",
+      "status": "Implemented",
+      "transport": "hls",
+      "container_profile": "mpeg_ts_or_fmp4_cmaf",
+      "codec_profile_refs": ["major-web-video", "proven-native-audio"],
+      "fixture_id": "target-hls-live",
+      "roles": {
+        "provider": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "provider-hls-live",
+            "provider-hls-live-focused"
+          ]
+        },
+        "demux": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "demux-hls-live",
+            "demux-mpeg-ts",
+            "demux-symphonia",
+            "demux-hls-live-focused"
+          ]
+        },
+        "decoder": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "decoder-video-vaapi-matrix",
+            "decoder-video-ffmpeg-matrix",
+            "decoder-audio-matrix"
+          ]
+        },
+        "runtime_fixture": {
+          "disposition": "Evidence",
+          "evidence_ids": ["fixture-hls-live"]
+        },
+        "capability": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "capability-approved-s42-positive-matrix",
+            "capability-fail-closed-intersection"
+          ]
+        }
+      }
+    },
+    {
+      "id": "dash-vod-fmp4",
+      "status": "Implemented",
+      "transport": "dash",
+      "container_profile": "fmp4_cmaf",
+      "codec_profile_refs": ["major-web-video", "proven-native-audio"],
+      "fixture_id": "target-dash-fmp4",
+      "roles": {
+        "provider": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "provider-dash-vod",
+            "provider-dash-vod-focused"
+          ]
+        },
+        "demux": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "demux-dash-component",
+            "demux-symphonia",
+            "demux-dash-component-focused"
+          ]
+        },
+        "decoder": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "decoder-video-vaapi-matrix",
+            "decoder-video-ffmpeg-matrix",
+            "decoder-audio-matrix"
+          ]
+        },
+        "runtime_fixture": {
+          "disposition": "Evidence",
+          "evidence_ids": ["fixture-dash-vod-fmp4"]
+        },
+        "capability": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "capability-approved-s42-positive-matrix",
+            "capability-fail-closed-intersection"
+          ]
+        }
+      }
+    },
+    {
+      "id": "dash-vod-webm",
+      "status": "Implemented",
+      "transport": "dash",
+      "container_profile": "webm",
+      "codec_profile_refs": ["webm-video", "webm-audio"],
+      "fixture_id": "target-dash-webm",
+      "roles": {
+        "provider": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "provider-dash-vod",
+            "provider-dash-vod-focused"
+          ]
+        },
+        "demux": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "demux-dash-component",
+            "demux-symphonia",
+            "demux-dash-component-focused"
+          ]
+        },
+        "decoder": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "decoder-video-vaapi-matrix",
+            "decoder-video-ffmpeg-matrix",
+            "decoder-audio-matrix"
+          ]
+        },
+        "runtime_fixture": {
+          "disposition": "Evidence",
+          "evidence_ids": ["fixture-dash-vod-webm"]
+        },
+        "capability": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "capability-approved-s42-positive-matrix",
+            "capability-fail-closed-intersection"
+          ]
+        }
+      }
+    },
+    {
+      "id": "dash-live-dvr",
+      "status": "Implemented",
+      "transport": "dash",
+      "container_profile": "fmp4_cmaf_or_webm",
+      "codec_profile_refs": ["major-web-video", "proven-native-audio"],
+      "fixture_id": "target-dash-live",
+      "roles": {
+        "provider": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "provider-dash-live",
+            "provider-dash-live-runtime"
+          ]
+        },
+        "demux": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "demux-dash-live",
+            "demux-symphonia",
+            "demux-dash-live-runtime"
+          ]
+        },
+        "decoder": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "decoder-video-vaapi-matrix",
+            "decoder-video-ffmpeg-matrix",
+            "decoder-audio-matrix"
+          ]
+        },
+        "runtime_fixture": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "fixture-dash-live",
+            "fixture-dash-live-runtime"
+          ]
+        },
+        "capability": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "capability-approved-s42-positive-matrix",
+            "capability-fail-closed-intersection"
+          ]
+        }
+      }
+    },
+    {
+      "id": "ism-mss-base-h264-aac-fmp4",
+      "status": "Implemented",
+      "transport": "ism",
+      "container_profile": "fmp4",
+      "codec_profile_refs": ["ism-base-video-h264", "ism-base-audio-aac"],
+      "fixture_id": "target-ism-fmp4",
+      "roles": {
+        "provider": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "provider-smooth-vod",
+            "provider-smooth-vod-focused"
+          ]
+        },
+        "demux": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "demux-smooth-transactional",
+            "demux-symphonia",
+            "demux-smooth-focused"
+          ]
+        },
+        "decoder": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "decoder-video-vaapi-matrix",
+            "decoder-video-ffmpeg-matrix",
+            "decoder-audio-matrix"
+          ]
+        },
+        "runtime_fixture": {
+          "disposition": "Evidence",
+          "evidence_ids": ["fixture-smooth-vod"]
+        },
+        "capability": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "capability-approved-s42-positive-matrix",
+            "capability-fail-closed-intersection"
+          ]
+        }
+      }
+    },
+    {
+      "id": "ftp-ftps-progressive",
+      "status": "Implemented",
+      "transport": "ftp_or_ftps",
+      "container_profile": "existing_proven_progressive_containers",
+      "codec_profile_refs": ["major-web-video", "proven-native-audio"],
+      "fixture_id": "target-ftps-progressive",
+      "roles": {
+        "provider": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "provider-progressive-ftp",
+            "provider-progressive-ftp-focused"
+          ]
+        },
+        "demux": {
+          "disposition": "Evidence",
+          "evidence_ids": ["demux-symphonia", "demux-symphonia-focused"]
+        },
+        "decoder": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "decoder-video-vaapi-matrix",
+            "decoder-video-ffmpeg-matrix",
+            "decoder-audio-matrix"
+          ]
+        },
+        "runtime_fixture": {
+          "disposition": "Evidence",
+          "evidence_ids": ["fixture-ftp", "fixture-ftps"]
+        },
+        "capability": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "capability-approved-s42-positive-matrix",
+            "capability-fail-closed-intersection"
+          ]
+        }
+      }
+    },
+    {
+      "id": "hds-f4m-f4f",
+      "status": "Implemented",
+      "transport": "hds_f4m",
+      "container_profile": "f4f_flv",
+      "codec_profile_refs": ["major-web-video", "proven-native-audio"],
+      "fixture_id": "target-hds-f4f",
+      "roles": {
+        "provider": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "provider-hds-vod",
+            "provider-hds-vod-focused"
+          ]
+        },
+        "demux": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "demux-hds-transactional",
+            "demux-flv-f4f",
+            "demux-hds-focused"
+          ]
+        },
+        "decoder": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "decoder-video-vaapi-matrix",
+            "decoder-video-ffmpeg-matrix",
+            "decoder-audio-matrix"
+          ]
+        },
+        "runtime_fixture": {
+          "disposition": "Evidence",
+          "evidence_ids": ["fixture-hds-vod"]
+        },
+        "capability": {
+          "disposition": "Evidence",
+          "evidence_ids": [
+            "capability-approved-s42-positive-matrix",
+            "capability-fail-closed-intersection"
+          ]
+        }
+      }
+    },
+    {
+      "id": "rtmp-family-flv",
+      "status": "ProfileExcluded",
+      "transport": "rtmp_rtmpe_or_rtmp_ffmpeg_identity_only",
+      "container_profile": "flv",
+      "codec_profile_refs": ["major-web-video", "proven-native-audio"],
+      "fixture_id": "target-rtmp-flv",
+      "exact_profile_exclusion_ids": [
+        "rtmp-plain-wire",
+        "rtmpe-encrypted-wire",
+        "rtmp-ffmpeg-pseudo-protocol",
+        "rtmps-tls-wire",
+        "rtmpt-http-tunnel-wire",
+        "rtmpte-encrypted-http-tunnel-wire"
+      ],
+      "roles": {
+        "provider": {
+          "disposition": "ProfileExcluded",
+          "evidence_ids": ["provider-rtmp-exclusion"]
+        },
+        "demux": {
+          "disposition": "NotApplicable",
+          "evidence_ids": []
+        },
+        "decoder": {
+          "disposition": "NotApplicable",
+          "evidence_ids": []
+        },
+        "runtime_fixture": {
+          "disposition": "ProfileExcluded",
+          "evidence_ids": ["fixture-rtmp-exclusion"]
+        },
+        "capability": {
+          "disposition": "NotApplicable",
+          "evidence_ids": []
+        }
+      }
+    }
+  ],
+  "explicit_exclusions": [
+    {
+      "id": "rtsp-rtp-mms",
+      "status": "ProfileExcluded",
+      "exact_schemes": ["rtsp", "rtp", "mms"],
+      "evidence_ids": ["exclusion-rtsp-rtp-mms"]
+    },
+    {
+      "id": "private-live-downloaders",
+      "status": "ProfileExcluded",
+      "production_rejection": "KnownExcludedTransport::PrivateLiveState",
+      "evidence_ids": [
+        "exclusion-private-live-production",
+        "exclusion-private-live"
+      ]
+    },
+    {
+      "id": "drm",
+      "status": "ProfileExcluded",
+      "trigger_field": "has_drm",
+      "evidence_ids": [
+        "exclusion-drm",
+        "exclusion-drm-hls-sample-aes",
+        "exclusion-drm-dash-content-protection",
+        "exclusion-drm-smooth-protection",
+        "exclusion-drm-hds-additional-header"
+      ]
+    }
+  ],
+  "approved_extended_absences": [
+    {
+      "id": "ism-mss-live-dvr",
+      "status": "ProfileExcluded",
+      "canonical_profile_row_id": "ism-mss-live-dvr",
+      "canonical_profile_status": "ProfileExcludedProvisional",
+      "conditional_card_prefix": "S36L-",
+      "generated_card_count": 0,
+      "evidence_ids": ["conditional-ism-live"]
+    },
+    {
+      "id": "hds-live-dvr",
+      "status": "NoApprovedRow",
+      "canonical_profile_row_id": null,
+      "canonical_profile_status": "Absent",
+      "conditional_card_prefix": "S38L-",
+      "generated_card_count": 0,
+      "rejected_live_intents": [
+        "Live",
+        "Upcoming",
+        "PostLive",
+        "Incompatible"
+      ],
+      "evidence_ids": ["conditional-hds-live"]
+    },
+    {
+      "id": "approved-special-providers",
+      "status": "NoApprovedRow",
+      "canonical_profile_row_id": null,
+      "canonical_profile_status": "Absent",
+      "conditional_card_prefix": "S40P-",
+      "generated_card_count": 0,
+      "excluded_protocols": [
+        "bunnycdn",
+        "soopvod",
+        "niconico_live",
+        "fc2_live",
+        "websocket_frag"
+      ],
+      "evidence_ids": ["conditional-special-providers"]
+    }
+  ],
+  "quality_selection_evidence": [
+    {
+      "id": "best-playable",
+      "evidence_ids": ["quality-best-playable"]
+    },
+    {
+      "id": "exact",
+      "evidence_ids": ["quality-exact-positive", "quality-exact"]
+    },
+    {
+      "id": "preferred-height",
+      "evidence_ids": ["quality-preferred-height"]
+    },
+    {
+      "id": "runtime-override",
+      "evidence_ids": [
+        "quality-runtime-override",
+        "quality-switch-rollback"
+      ]
+    }
+  ],
+  "traceability_gaps": [],
+  "hardware_capability_exception": {
+    "id": "s27-vaapi-h264-baseline",
+    "decision": "OwnerApprovedException",
+    "scope": "exact VAProfileH264Baseline, H.264 Baseline 8-bit YUV420/NV12, capability intersection only",
+    "software_fallback_retained": true,
+    "evidence_ids": [
+      "hardware-baseline-planning",
+      "hardware-baseline-software",
+      "hardware-baseline-vaapi-probe",
+      "hardware-baseline-vaapi-no-alias",
+      "hardware-baseline-vaapi-adapter",
+      "hardware-vaapi-profile-dispatch"
+    ],
+    "approval_evidence_ids": ["hardware-baseline-owner-approval"],
+    "vaapi_profile_arm_sets": {
+      "baseline": [
+        "VAProfileVP9Profile0",
+        "VAProfileVP9Profile1",
+        "VAProfileVP9Profile2",
+        "VAProfileVP9Profile3",
+        "VAProfileAV1Profile0",
+        "VAProfileAV1Profile1",
+        "VAProfileH264ConstrainedBaseline",
+        "VAProfileH264Main",
+        "VAProfileH264High",
+        "VAProfileHEVCMain",
+        "VAProfileHEVCMain10",
+        "VAProfileHEVCMain12",
+        "VAProfileHEVCMain422_10",
+        "VAProfileHEVCMain422_12",
+        "VAProfileHEVCMain444",
+        "VAProfileHEVCMain444_10",
+        "VAProfileHEVCMain444_12",
+        "VAProfileHEVCSccMain",
+        "VAProfileHEVCSccMain10",
+        "VAProfileHEVCSccMain444",
+        "VAProfileHEVCSccMain444_10",
+        "VAProfileVP8Version0_3"
+      ],
+      "current": [
+        "VAProfileVP9Profile0",
+        "VAProfileVP9Profile1",
+        "VAProfileVP9Profile2",
+        "VAProfileVP9Profile3",
+        "VAProfileAV1Profile0",
+        "VAProfileAV1Profile1",
+        "VAProfileH264Baseline",
+        "VAProfileH264ConstrainedBaseline",
+        "VAProfileH264Main",
+        "VAProfileH264High",
+        "VAProfileHEVCMain",
+        "VAProfileHEVCMain10",
+        "VAProfileHEVCMain12",
+        "VAProfileHEVCMain422_10",
+        "VAProfileHEVCMain422_12",
+        "VAProfileHEVCMain444",
+        "VAProfileHEVCMain444_10",
+        "VAProfileHEVCMain444_12",
+        "VAProfileHEVCSccMain",
+        "VAProfileHEVCSccMain10",
+        "VAProfileHEVCSccMain444",
+        "VAProfileHEVCSccMain444_10",
+        "VAProfileVP8Version0_3"
+      ],
+      "approved_added_delta": ["VAProfileH264Baseline"],
+      "approved_removed_delta": []
+    },
+    "hardware_manual_rerun": {
+      "status": "NotRun",
+      "reason": "project owner currently has no compatible VA-API device available for an opt-in rerun"
+    }
+  }
+}

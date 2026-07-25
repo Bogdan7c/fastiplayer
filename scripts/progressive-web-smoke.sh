@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Opt-in manual runner progressive web playback; CI и обычные tests его не запускают.
+# S42 opt-in manual web-media runner; CI и обычные tests его не запускают.
 
 # Строгий режим не позволяет потерять ошибку build, runtime или redaction шага.
 set -Eeuo pipefail
@@ -14,33 +14,44 @@ readonly USAGE_EXIT_CODE=2
 readonly DEFAULT_DURATION_SECONDS=120
 # Default log level сохраняет lifecycle evidence без включения verbose extractor output.
 readonly DEFAULT_PROGRESSIVE_WEB_RUST_LOG="info"
-
 # Каталог скрипта вычисляется независимо от текущего рабочего каталога.
 script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 # Корень repository находится на один уровень выше scripts/.
 repo_root="$(cd -- "${script_directory}/.." >/dev/null 2>&1 && pwd)"
 # readonly защищает вычисленный repository root от случайной перезаписи.
 readonly REPO_ROOT="${repo_root}"
+# S42 library path строится только от canonical script directory.
+readonly S42_MANUAL_LIBRARY="${script_directory}/lib/progressive-web-smoke-s42.sh"
+# Missing/unreadable owner module блокирует runner до любого media input.
+if [[ ! -f "${S42_MANUAL_LIBRARY}" || ! -r "${S42_MANUAL_LIBRARY}" ]]; then
+    printf 'Ошибка: S42 manual owner module недоступен\n' >&2
+    exit "${FAILURE_EXIT_CODE}"
+fi
+# shellcheck source=lib/progressive-web-smoke-s42.sh
+source "${S42_MANUAL_LIBRARY}"
 # Default binary соответствует package app-egui и release build output.
 readonly DEFAULT_RUSTIPLAYER_BINARY="${REPO_ROOT}/target/release/rustiplayer"
 # Отдельный env override не позволяет обычному RUST_LOG незаметно изменить report surface.
 readonly PROGRESSIVE_WEB_RUST_LOG="${RUSTIPLAYER_PROGRESSIVE_WEB_RUST_LOG:-${DEFAULT_PROGRESSIVE_WEB_RUST_LOG}}"
 
-# URLs появляются только из повторяемого explicit --url пользователя.
-declare -a explicit_urls=()
+# Pending case связывает следующий explicit --url/--fixture с безопасной ролью.
+pending_case_id=""
 # Duration начинается с документированного безопасного default-а.
 duration_seconds="${DEFAULT_DURATION_SECONDS}"
 # Report path обязателен для реального запуска и не выбирается автоматически.
 report_path=""
 # Explicit binary полезен для self-test и уже собранного локального app binary.
 selected_binary=""
+# Binary origin запрещает приписывать explicit prebuilt текущему workspace.
+selected_binary_origin=""
+# Exact executable digest является authoritative runtime identity в report.
+selected_binary_sha256=""
 # Dry-run проверяет parser и показывает redacted план без network/GUI/build side effects.
 dry_run="false"
 # Флаг отличает пустой invocation от частично заполненного invalid selection.
 received_any_argument="false"
 # Raw logs живут только в process-owned temporary directory.
 runtime_directory=""
-
 # Cleanup удаляет raw URL/log material даже после runtime failure.
 cleanup_runtime_directory() {
     # Пустой path означает, что runner ещё не создавал temporary directory.
@@ -66,33 +77,45 @@ print_error() {
 
 # Пустой selection является явным NOT RUN, а не ложным acceptance pass.
 print_not_run_missing_selection() {
-    # Сообщение намеренно не перечисляет какие-либо guessed/default URL.
-    printf 'NOT RUN: missing explicit --url/--report selection; acceptance not satisfied\n' >&2
+    # Сообщение намеренно не перечисляет какие-либо guessed/default URL или fixtures.
+    printf 'NOT RUN: missing explicit --url/--fixture/--report selection; acceptance not satisfied\n' >&2
 }
 
-# Справка описывает только explicit URL workflow и privacy contract.
+# Справка описывает explicit S42 case workflow и backward-compatible URL-only режим.
 print_help() {
-    # Heredoc делает manual checklist вызова читаемым.
+    # Heredoc делает длинный safe case contract читаемым без shell reconstruction.
     cat <<'EOF'
-Usage: scripts/progressive-web-smoke.sh --url URL [--url URL ...] --report FILE [OPTIONS]
+Usage:
+  scripts/progressive-web-smoke.sh --case CASE_ID --url URL --report FILE [OPTIONS]
+  scripts/progressive-web-smoke.sh --case CASE_ID --fixture FILE --report FILE [OPTIONS]
+  scripts/progressive-web-smoke.sh --url URL [--url URL ...] --report FILE [OPTIONS]
 
-Runs the release Rustiplayer binary for only the explicit HTTP(S) URLs supplied by
-the user. The runner never discovers URLs, fixtures, browser profiles, or cookies.
-It preserves the normal system yt-dlp configuration lookup and saves only a
-redacted report; raw runtime logs are deleted on exit.
+Runs the release Rustiplayer binary only for explicit HTTP/HTTPS/FTP/FTPS URLs or
+local fixtures supplied by the user. Named CASE_ID values are safe report labels;
+raw URL/fixture identities are never retained. The real run requires exact system
+yt-dlp 2026.07.04, preserves its normal config/plugin/cookie lookup, and records
+workspace clean/dirty state, exact Rustiplayer/yt-dlp executable hashes and only
+redacted runtime logs.
 
 Options:
-  --url URL          Explicit user-selected HTTP(S) URL; may be repeated.
+  --case CASE_ID     Safe S42 role for the next --url or --fixture.
+  --url URL          Explicit approved network URL. Without --case, maps to a
+                     backward-compatible legacy-url-N case and cannot complete S42.
+  --fixture FILE     Explicit local fixture for a fixture-only named case.
   --report FILE      New report file; an existing path is never overwritten.
-  --duration SECONDS Timebox for each URL. Default: 120.
+  --duration SECONDS Timebox for each case. Default: 120.
   --binary FILE      Use an existing executable instead of building release app.
   --dry-run          Validate selection and print a redacted plan only.
   --help             Show this help.
 
-Outcome contract:
-  NOT RUN                Missing selection or dry-run; never an acceptance pass.
-  MANUAL REVIEW REQUIRED Runtime launched and redacted evidence was written.
-  FAIL                   Build, runtime, parser, or report creation failed.
+Status contract:
+  Matrix NOT RUN                One or more of the 29 required case IDs is missing.
+  Matrix MANUAL REVIEW REQUIRED All 29 case IDs were selected; human checks remain.
+  Runner MANUAL REVIEW REQUIRED Selected real runs completed; human checks remain.
+  Runner FAIL                   Version, build, runtime, parser, or report lifecycle failed.
+  Terminal NOT RUN              Missing selection or dry-run; no report was created.
+
+Required safe CASE_ID values are documented in docs/web-media-s42-final-acceptance.md.
 EOF
 }
 
@@ -107,23 +130,7 @@ validate_duration_seconds() {
     fi
 }
 
-# URL validation допускает только progressive HTTP(S) input этой session card.
-validate_explicit_url() {
-    # Exact URL передаётся первым аргументом и никогда не печатается функцией.
-    local candidate_url="$1"
-    # Control characters могли бы подделать строки report-а или shell diagnostics.
-    if [[ "${candidate_url}" == *$'\n'* || "${candidate_url}" == *$'\r'* || "${candidate_url}" == *$'\t'* ]]; then
-        print_error "--url не должен содержать управляющие символы"
-        exit "${USAGE_EXIT_CODE}"
-    fi
-    # Runner не принимает path, search term, file URL или future provider schemes.
-    if [[ ! "${candidate_url}" =~ ^https?://[^/[:space:]]+(/[^[:space:]]*)?$ ]]; then
-        print_error "--url должен быть explicit absolute HTTP(S) URL"
-        exit "${USAGE_EXIT_CODE}"
-    fi
-}
-
-# Parser сохраняет exact URL bytes в массиве и не выполняет normalization.
+# Parser сохраняет exact URL/fixture bytes и связывает их только с safe case ID.
 parse_arguments() {
     # Цикл обрабатывает argv слева направо без eval/getopt/string reconstruction.
     while (($# > 0)); do
@@ -139,6 +146,23 @@ parse_arguments() {
                 dry_run="true"
                 shift
                 ;;
+            --case)
+                # Option без safe ID является bounded parser failure.
+                if (($# < 2)); then
+                    print_error "--case требует значение"
+                    exit "${USAGE_EXIT_CODE}"
+                fi
+                # Новый case нельзя начать до input предыдущего.
+                if [[ -n "${pending_case_id}" ]]; then
+                    print_error "предыдущий --case не получил --url или --fixture"
+                    exit "${USAGE_EXIT_CODE}"
+                fi
+                # Allowlist проверяется до сохранения pending state.
+                validate_case_id "$2"
+                # Следующий explicit input получает эту safe role.
+                pending_case_id="$2"
+                shift 2
+                ;;
             --url)
                 # Option без значения получает bounded parser error.
                 if (($# < 2)); then
@@ -147,8 +171,39 @@ parse_arguments() {
                 fi
                 # Проверка выполняется до сохранения selection.
                 validate_explicit_url "$2"
-                # Bash array сохраняет каждый explicit URL отдельным argv.
-                explicit_urls+=("$2")
+                # Named case сохраняет strict role; legacy call получает safe generated ID.
+                if [[ -n "${pending_case_id}" ]]; then
+                    # URL kind и scheme обязаны соответствовать exact case.
+                    validate_case_input "${pending_case_id}" "url" "$2"
+                    # Scenario сохраняется только после полной validation.
+                    add_scenario "${pending_case_id}" "url" "$2"
+                    # Pending role consumed ровно один раз.
+                    pending_case_id=""
+                else
+                    # Backward-compatible URL не может притвориться completed S42 row.
+                    add_scenario "legacy-url-$(( ${#scenario_case_ids[@]} + 1 ))" "url" "$2"
+                fi
+                shift 2
+                ;;
+            --fixture)
+                # Fixture без path является bounded parser failure.
+                if (($# < 2)); then
+                    print_error "--fixture требует путь"
+                    exit "${USAGE_EXIT_CODE}"
+                fi
+                # Fixture всегда требует explicit named role.
+                if [[ -z "${pending_case_id}" ]]; then
+                    print_error "--fixture требует предшествующий --case"
+                    exit "${USAGE_EXIT_CODE}"
+                fi
+                # Safe path validation не читает filesystem в dry-run.
+                validate_explicit_fixture "$2"
+                # Named role отделяет playlist/import fixture от URL case.
+                validate_case_input "${pending_case_id}" "fixture" "$2"
+                # Scenario сохраняет raw path только в process memory.
+                add_scenario "${pending_case_id}" "fixture" "$2"
+                # Pending role consumed ровно один раз.
+                pending_case_id=""
                 shift 2
                 ;;
             --report)
@@ -194,18 +249,23 @@ parse_arguments() {
                 shift 2
                 ;;
             *)
-                # Positional URL тоже запрещён: user intent обязан быть явным --url.
-                print_error "неизвестный аргумент; URL передаётся только через --url"
+                # Positional input запрещён: user intent обязан быть explicit option.
+                print_error "неизвестный аргумент; input передаётся только через --url/--fixture"
                 exit "${USAGE_EXIT_CODE}"
                 ;;
         esac
     done
+    # Dangling case не является explicit input selection.
+    if [[ -n "${pending_case_id}" ]]; then
+        print_error "--case требует следующий --url или --fixture"
+        exit "${USAGE_EXIT_CODE}"
+    fi
 }
 
 # Selection validation запрещает auto-discovery и accidental report overwrite.
 validate_selection() {
-    # Без URL и report пустой invocation остаётся успешным NOT RUN.
-    if ((${#explicit_urls[@]} == 0)) && [[ -z "${report_path}" ]]; then
+    # Без scenarios и report пустой invocation остаётся успешным NOT RUN.
+    if ((${#scenario_case_ids[@]} == 0)) && [[ -z "${report_path}" ]]; then
         print_not_run_missing_selection
         # Частично переданные options не считаются безопасным пустым invocation.
         if [[ "${received_any_argument}" == "true" ]]; then
@@ -213,8 +273,8 @@ validate_selection() {
         fi
         exit "${SUCCESS_EXIT_CODE}"
     fi
-    # Реальный или dry-run workflow всегда требует хотя бы один exact URL.
-    if ((${#explicit_urls[@]} == 0)); then
+    # Реальный или dry-run workflow всегда требует хотя бы один exact input.
+    if ((${#scenario_case_ids[@]} == 0)); then
         print_not_run_missing_selection
         exit "${USAGE_EXIT_CODE}"
     fi
@@ -258,6 +318,24 @@ require_command() {
     fi
 }
 
+# Вычисляет exact digest уже выбранного Rustiplayer executable.
+record_selected_binary_provenance() {
+    # SHA utility возвращает digest и path; path в report не сохраняется.
+    local sha256_output
+    # Нечитаемый либо изменившийся executable блокирует неполный provenance.
+    if ! sha256_output="$(sha256sum -- "${selected_binary}")"; then
+        print_error "не удалось вычислить SHA-256 Rustiplayer binary"
+        exit "${FAILURE_EXIT_CODE}"
+    fi
+    # Первый whitespace-delimited field является exact digest.
+    selected_binary_sha256="${sha256_output%% *}"
+    # Malformed output нельзя выдавать за executable identity.
+    if [[ ! "${selected_binary_sha256}" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        print_error "SHA-256 Rustiplayer binary имеет некорректный формат"
+        exit "${FAILURE_EXIT_CODE}"
+    fi
+}
+
 # Выбирает explicit executable либо строит canonical release binary.
 prepare_binary() {
     # Explicit binary не запускает Cargo build и удобен для локального повторного прогона.
@@ -273,17 +351,23 @@ prepare_binary() {
         binary_directory="$(cd -- "$(dirname -- "${selected_binary}")" && pwd -P)"
         # Exact executable сохраняется без отражения в report.
         selected_binary="${binary_directory}/$(basename -- "${selected_binary}")"
-        return
+        # External origin запрещает связывать prebuilt bytes с workspace HEAD.
+        selected_binary_origin="explicit-external-prebuilt"
+    else
+        # Default workflow компилирует ровно production app package на pinned primary Rust.
+        cargo +1.96.0 build --release -p app-egui --locked
+        # Build обязан создать canonical executable до network/GUI запуска.
+        if [[ ! -x "${DEFAULT_RUSTIPLAYER_BINARY}" ]]; then
+            print_error "release build не создал executable rustiplayer"
+            exit "${FAILURE_EXIT_CODE}"
+        fi
+        # Последующие scenarios используют один и тот же проверенный binary.
+        selected_binary="${DEFAULT_RUSTIPLAYER_BINARY}"
+        # Origin честно указывает на текущий worktree, а clean/dirty хранится отдельно.
+        selected_binary_origin="runner-built-from-current-worktree"
     fi
-    # Default workflow компилирует ровно production app package на pinned primary Rust.
-    cargo +1.96.0 build --release -p app-egui --locked
-    # Build обязан создать canonical executable до network/GUI запуска.
-    if [[ ! -x "${DEFAULT_RUSTIPLAYER_BINARY}" ]]; then
-        print_error "release build не создал executable rustiplayer"
-        exit "${FAILURE_EXIT_CODE}"
-    fi
-    # Последующие scenarios используют один и тот же проверенный binary.
-    selected_binary="${DEFAULT_RUSTIPLAYER_BINARY}"
+    # Любой origin получает один exact digest до создания report/runtime artifacts.
+    record_selected_binary_provenance
 }
 
 # Raw runtime directory создаётся только после успешного build/preflight.
@@ -292,75 +376,23 @@ create_runtime_directory() {
     runtime_directory="$(mktemp -d -t rustiplayer-progressive-web.XXXXXX)"
 }
 
-# Redactor удаляет explicit URL, любые HTTP(S) endpoints и строки с transport/extractor material.
-redact_runtime_log() {
-    # Raw log path принадлежит temporary directory runner-а.
-    local raw_log_path="$1"
-    # Exact explicit URL нужен literal replacement до heuristic endpoint scan-а.
-    local exact_url="$2"
-    # AWK пишет только sanitized stdout; raw input file никогда не append-ится в report напрямую.
-    awk -v exact_url="${exact_url}" '
-        function replace_exact(text, secret, position) {
-            if (secret == "") {
-                return text
-            }
-            while ((position = index(text, secret)) > 0) {
-                text = substr(text, 1, position - 1) "<redacted-url>" substr(text, position + length(secret))
-            }
-            return text
-        }
-        {
-            lower_line = tolower($0)
-            if (lower_line ~ /authorization|cookie|set-cookie|header|request[_ -]?data|requested[_ -]?formats|extractor|payload/) {
-                print "<redacted-secret-line>"
-                next
-            }
-            sanitized_line = replace_exact($0, exact_url)
-            gsub(/https?:\/\/[^[:space:]<>"]+/, "<redacted-url>", sanitized_line)
-            print sanitized_line
-        }
-    ' "${raw_log_path}"
-}
-
-# Header report-а содержит только bounded policy metadata и пустой manual checklist.
-write_report_header() {
-    # Owner-only permissions применяются до первого write.
-    umask 077
-    # Новый file создаётся только после explicit non-existing target validation.
-    {
-        printf '# S27 progressive/web manual report\n\n'
-        printf 'Outcome: MANUAL REVIEW REQUIRED\n'
-        printf 'Explicit URL count: %s\n' "${#explicit_urls[@]}"
-        printf 'Per-URL timebox seconds: %s\n' "${duration_seconds}"
-        printf 'System yt-dlp config lookup: preserved\n'
-        printf 'Raw URLs/headers/cookies/extractor payloads: not retained\n\n'
-        printf '## Manual checklist\n\n'
-        printf -- '- [ ] candidate normalization/profile exclusions are visible and typed\n'
-        printf -- '- [ ] audio capabilities select a playable audio path or typed rejection\n'
-        printf -- '- [ ] config v7 preferred height affects BestPlayable selection\n'
-        printf -- '- [ ] both supplied Range/non-Range cases behave as expected\n'
-        printf -- '- [ ] queue Ready/authorize/Enqueued/Installed barrier preserves old playback on pre-barrier failure\n'
-        printf -- '- [ ] URL sidebar is secret-safe and has no second URL input\n'
-        printf -- '- [ ] candidate switch works while Playing and Paused\n'
-        printf -- '- [ ] CUE/group part switch preserves Item/lineage/window semantics\n'
-        printf -- '- [ ] system yt-dlp auth works without app credential persistence\n'
-        printf -- '- [ ] restore/settings/shutdown keep exact lifecycle semantics\n'
-        printf -- '- [ ] acknowledged exact locator persists separately from transient secrets\n'
-        printf -- '- [ ] cancellation/stale completion cannot publish a newer active source\n\n'
-        printf '## Sanitized runtime evidence\n'
-    } >"${report_path}"
-}
-
-# Один scenario запускает app с exact argv URL и сразу sanitizes его raw log.
-run_explicit_url() {
+# Один scenario запускает app с exact argv input и сразу sanitizes raw log.
+run_explicit_scenario() {
     # Stable ordinal не раскрывает host/path/query пользователя.
     local scenario_index="$1"
-    # Exact URL передаётся только app process и redactor-у.
-    local explicit_url="$2"
+    # Safe case ID допускается в terminal/report.
+    local scenario_case_id="$2"
+    # Non-secret input kind допускается в report.
+    local scenario_input_kind="$3"
+    # Exact URL/fixture передаётся только app process и redactor-у.
+    local explicit_input="$4"
     # Raw log filename содержит только ordinal.
     local raw_log_path="${runtime_directory}/scenario-${scenario_index}.raw.log"
-    # Runner stderr сообщает прогресс без URL или safe-host guessing.
-    printf 'Running explicit URL scenario %s/%s\n' "${scenario_index}" "${#explicit_urls[@]}" >&2
+    # Runner stderr сообщает safe role без URL/fixture identity.
+    printf 'Running safe case %s (%s/%s)\n' \
+        "${scenario_case_id}" \
+        "${scenario_index}" \
+        "${#scenario_case_ids[@]}" >&2
     # Timeout status обрабатывается явно, поэтому set -e временно отключается.
     set +e
     # XDG_CONFIG_HOME намеренно не подменяется: system/user yt-dlp auth должен быть доступен.
@@ -372,7 +404,7 @@ run_explicit_url() {
         --kill-after=5s \
         "${duration_seconds}s" \
         "${selected_binary}" \
-        "${explicit_url}" \
+        "${explicit_input}" \
         >"${raw_log_path}" 2>&1
     # Exit status сохраняется до возврата strict mode.
     local runtime_status=$?
@@ -380,33 +412,40 @@ run_explicit_url() {
     set -e
     # Report section не содержит input identity.
     {
-        printf '\n### Explicit URL scenario %s\n\n' "${scenario_index}"
+        printf '\n### Safe case `%s`\n\n' "${scenario_case_id}"
+        printf 'Input kind: %s (raw identity not retained)\n\n' "${scenario_input_kind}"
         printf 'Runtime exit status: %s\n\n' "${runtime_status}"
         printf '```text\n'
-        redact_runtime_log "${raw_log_path}" "${explicit_url}"
+        redact_runtime_log "${raw_log_path}" "${explicit_input}" "${scenario_input_kind}"
         printf '```\n'
     } >>"${report_path}"
-    # Normal close и timebox termination являются допустимым manual-runner transport outcome.
+    # Normal close и graceful INT timebox являются допустимым manual-runner outcome.
     case "${runtime_status}" in
-        0 | 124 | 137)
+        0 | 124)
             return
             ;;
         *)
-            print_error "progressive web runtime завершился неожиданным status; см. redacted report"
+            # Status 137 означает SIGKILL/kill-after и потому не является bounded shutdown PASS.
+            print_error "web-media runtime завершился неожиданным status; см. redacted report"
             return "${FAILURE_EXIT_CODE}"
             ;;
     esac
 }
 
-# Dry-run никогда не показывает shell-quoted URL и не создаёт report.
+# Dry-run никогда не показывает shell-quoted input и не создаёт report.
 run_dry_plan() {
     # Count достаточно, чтобы проверить selected matrix без раскрытия identities.
-    printf 'progressive web dry-run: explicit URL count=%s; duration=%ss\n' "${#explicit_urls[@]}" "${duration_seconds}" >&2
-    # Каждый scenario получает только redacted placeholder.
-    local scenario_index
-    # Sequence строится по array indices без чтения URL value.
-    for scenario_index in "${!explicit_urls[@]}"; do
-        printf 'scenario %s: <redacted-explicit-url>\n' "$((scenario_index + 1))" >&2
+    printf 'S42 web-media dry-run: selected case count=%s; missing required=%s; duration=%ss\n' \
+        "${#scenario_case_ids[@]}" \
+        "${#missing_s42_case_ids[@]}" \
+        "${duration_seconds}" >&2
+    # Каждый scenario показывает только safe label/kind и redacted placeholder.
+    local scenario_offset
+    # Sequence строится по parallel array indices без чтения raw value.
+    for scenario_offset in "${!scenario_case_ids[@]}"; do
+        printf 'case %s (%s): <redacted-explicit-input>\n' \
+            "${scenario_case_ids[scenario_offset]}" \
+            "${scenario_input_kinds[scenario_offset]}" >&2
     done
     # Dry-run не является manual acceptance evidence.
     printf 'NOT RUN: dry-run only; acceptance not satisfied\n' >&2
@@ -418,6 +457,8 @@ main() {
     parse_arguments "$@"
     # Selection validation гарантирует отсутствие default/discovered URL.
     validate_selection
+    # Missing matrix rows вычисляются до dry-run/report без raw identities.
+    collect_missing_s42_case_ids
     # Report path проверяется и в dry-run, но file создаётся только в real mode.
     validate_report_target
     # Dry-run завершается до tool checks, build, temp files и report write.
@@ -425,34 +466,53 @@ main() {
         run_dry_plan
         exit "${SUCCESS_EXIT_CODE}"
     fi
-    # Runtime работает от repository root, но пользовательский config environment сохраняется.
-    cd "${REPO_ROOT}"
     # Набор tools минимален и не включает downloader/browser automation.
     require_command "awk"
+    require_command "git"
     require_command "mktemp"
+    require_command "realpath"
+    require_command "sha256sum"
     require_command "timeout"
+    require_command "yt-dlp"
+    # Fixture нормализуется относительно caller cwd до перехода в repository root.
+    validate_real_fixture_inputs
+    # Runtime работает от repository root, но пользовательский config environment сохраняется.
+    cd "${REPO_ROOT}"
     # Cargo нужен только при отсутствии explicit prebuilt binary.
     if [[ -z "${selected_binary}" ]]; then
         require_command "cargo"
     fi
+    # Pinned version/hash/source provenance проверяется до build/report creation.
+    verify_ytdlp_provenance
     # Один binary готовится до report/runtime creation.
     prepare_binary
     # Raw storage создаётся после всех deterministic preflights.
     create_runtime_directory
     # Report header фиксирует manual-only verdict до первого scenario.
     write_report_header
-    # Aggregate status позволяет sanitized report получить evidence всех selected URLs.
+    # Aggregate status позволяет sanitized report получить evidence всех selected cases.
     local aggregate_status="${SUCCESS_EXIT_CODE}"
     # Bash array iteration сохраняет exact user order.
     local scenario_offset
-    # Каждый URL запускается независимо, но ни один raw log не переживает process exit.
-    for scenario_offset in "${!explicit_urls[@]}"; do
-        if ! run_explicit_url "$((scenario_offset + 1))" "${explicit_urls[scenario_offset]}"; then
+    # Каждый case запускается независимо, но ни один raw log не переживает process exit.
+    for scenario_offset in "${!scenario_case_ids[@]}"; do
+        if ! run_explicit_scenario \
+            "$((scenario_offset + 1))" \
+            "${scenario_case_ids[scenario_offset]}" \
+            "${scenario_input_kinds[scenario_offset]}" \
+            "${scenario_inputs[scenario_offset]}"; then
             aggregate_status="${FAILURE_EXIT_CODE}"
         fi
     done
-    # Final message называет artifact path, но не URL identities.
-    printf 'MANUAL REVIEW REQUIRED: redacted report written to %s\n' "${report_path}" >&2
+    # Authoritative footer отличает manual review от runtime FAIL.
+    write_final_report_outcome "${aggregate_status}"
+    # Успешный transport run всё равно требует human review.
+    if [[ "${aggregate_status}" == "${SUCCESS_EXIT_CODE}" ]]; then
+        printf 'MANUAL REVIEW REQUIRED: redacted report written to %s\n' "${report_path}" >&2
+    else
+        # Failed runtime получает честный FAIL и сохраняет только sanitized evidence.
+        printf 'FAIL: runtime error; redacted report written to %s\n' "${report_path}" >&2
+    fi
     # Runtime failure остаётся failure даже при успешно sanitized report.
     exit "${aggregate_status}"
 }

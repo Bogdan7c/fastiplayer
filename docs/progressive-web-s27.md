@@ -1,5 +1,9 @@
 # S27 — Progressive/web UX hardening gate
 
+Этот документ фиксирует historical S27 ownership и hardening evidence. Текущий
+manual CLI, exact `yt-dlp` provenance и complete compatibility acceptance
+принадлежат [S42 final acceptance](web-media-s42-final-acceptance.md).
+
 ## Verdict boundary
 
 S27 не добавляет новый playback path. Gate доказывает уже реализованную цепочку
@@ -61,35 +65,51 @@ scripts/ci-checks.sh format-guardrails
 
 ## Manual runner
 
-Runner принимает только URL, которые пользователь явно передал через `--url`. URL можно
-повторить для public/authenticated и Range/non-Range cases:
+Runner по-прежнему принимает только input, который явно передал пользователь,
+но S42 связывает каждый зачётный input с safe named role:
 
 ```bash
 scripts/progressive-web-smoke.sh \
-  --url 'https://first-explicit-user-url.example/media' \
-  --url 'https://second-explicit-user-url.example/watch' \
+  --case progressive-http-iso-bmff \
+  --url 'https://explicit-user-selected.example/media.mp4' \
   --duration 120 \
-  --report /tmp/rustiplayer-progressive-web-s27.md
+  --report /tmp/rustiplayer-progressive-web-s42.md
 ```
 
-Без `--binary` runner сначала собирает release `app-egui`. С уже собранным binary можно
-передать `--binary target/release/rustiplayer`. `--dry-run` проверяет selection, но не создаёт
-report и не считается acceptance.
+Без `--binary` runner сначала собирает release `app-egui`. С уже собранным
+binary можно передать `--binary target/release/rustiplayer`. `--dry-run`
+проверяет selection, но не создаёт report и не считается acceptance. Старый
+повторяемый `--url` синтаксис сохранён как `legacy-url-N`, однако не закрывает
+S42 matrix row.
 
-Runner намеренно не меняет `XDG_CONFIG_HOME`, не выбирает browser/cookie profile и не добавляет
-auth options: system/user yt-dlp config продолжает загружаться по обычному upstream contract.
-Официальная документация yt-dlp подтверждает, что config options эквивалентны CLI options, а
-`--ignore-config` отключает дальнейшую загрузку; Rustiplayer manual runner этот флаг не добавляет:
-[yt-dlp configuration](https://github.com/yt-dlp/yt-dlp/blob/master/README.md#configuration).
+Report всегда фиксирует SHA-256 реально запущенного Rustiplayer binary, его
+origin и `clean`/`dirty` состояние workspace. Для runner-built binary source
+association относится к текущему worktree; dirty worktree не выдаётся за
+воспроизводимый HEAD. Explicit `--binary` считается external prebuilt, и report
+прямо говорит, что workspace HEAD не доказывает его исходники.
+
+Runner намеренно не меняет `XDG_CONFIG_HOME`, не выбирает browser/cookie
+profile и не добавляет auth options: system/user yt-dlp config продолжает
+загружаться по обычному upstream contract. Отдельный preflight probe использует
+`--ignore-config --no-plugin-dirs --version` и принимает только exact
+`2026.07.04`; production app run эти flags не наследует.
 
 Raw stdout/stderr каждого запуска сначала попадает в process-owned temporary directory. Перед
 записью report runner:
 
-- заменяет exact explicit URL;
-- заменяет любые другие HTTP(S) endpoints из runtime log;
-- заменяет целиком строки с Cookie, Authorization или Set-Cookie;
+- заменяет exact explicit URL/fixture;
+- нормализует real fixture относительно caller cwd и удаляет canonical path,
+  basename, file-URI и percent-encoded absolute-path aliases;
+- заменяет любые другие HTTP(S)/FTP(S) endpoints из runtime log;
+- заменяет целиком secret-bearing строки, включая headers, cookies, request
+  data, extractor payload, token/signature/password/bearer material;
 - удаляет raw temporary directory при выходе;
+- создаёт report exclusive и не перезаписывает artifact, появившийся после
+  preflight;
 - никогда не объявляет UX `PASS`: итог остаётся `MANUAL REVIEW REQUIRED` до заполнения checklist.
+
+Полный required allowlist и outcome contract не дублируются здесь: см.
+[S42 final acceptance](web-media-s42-final-acceptance.md).
 
 ## Что человек должен проверить
 

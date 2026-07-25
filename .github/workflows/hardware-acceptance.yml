@@ -1,5 +1,5 @@
 # Workflow не входит в required checks и запускается только человеком.
-name: Hardware acceptance
+name: Host-specific playback regression
 
 # Ручной запуск требует осознанно выбрать реальные media fixtures.
 on:
@@ -10,7 +10,7 @@ on:
       vp9_path:
         # Подсказка фиксирует ожидаемый профиль и нагрузку.
         description: Absolute path to a VP9 Profile 0 4K60 fixture
-        # Full hardware matrix без VP9 недостоверна.
+        # Combined host-specific regression set без VP9 неполон.
         required: true
         # Строковый тип сохраняет путь без скрытой интерпретации.
         type: string
@@ -18,7 +18,7 @@ on:
       av1_path:
         # Подсказка фиксирует назначение файла.
         description: Absolute path to an AV1 4K60 fixture
-        # Full matrix без AV1 недостоверна.
+        # Combined host-specific regression set без AV1 неполон.
         required: true
         # Строковый тип сохраняет путь без скрытой интерпретации.
         type: string
@@ -26,7 +26,7 @@ on:
       h264_path:
         # Подсказка фиксирует container/codec ожидание.
         description: Absolute path to an H.264 MP4 4K60 fixture
-        # Full matrix без H.264 недостоверна.
+        # Combined host-specific regression set без H.264 неполон.
         required: true
         # Строковый тип сохраняет путь без скрытой интерпретации.
         type: string
@@ -39,15 +39,15 @@ permissions:
 jobs:
   # Job существует отдельно и никогда не должен становиться required check.
   playback-smoke:
-    # Видимое имя подчёркивает реальный hardware acceptance.
+    # Видимое имя подчёркивает opt-in host-specific runtime scope.
     name: Real playback smoke (manual, non-blocking)
     # Labels требуют подготовленный Linux host с GPU/VA-API/audio/display.
     runs-on: [self-hosted, linux, x64, rustiplayer-hardware]
     steps:
       # Checkout major закреплён, как и в blocking workflow.
       - uses: actions/checkout@v4
-      # Существующий repo runner владеет всей runtime acceptance логикой.
-      - name: Run real hardware and runtime matrix
+      # Существующий repo runner владеет host-specific regression orchestration.
+      - name: Run host-specific VP9/AV1/H.264 regression set
         # Inputs передаются через env, чтобы shell не исполнял содержимое пути как код.
         env:
           # Имя переменной явно связывает input с VP9 аргументом runner-а.

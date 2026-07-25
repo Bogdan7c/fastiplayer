@@ -1,5 +1,11 @@
 # Playlist core
 
+## S42 acceptance facts (2026-07-25)
+
+- S42 does not change playlist-core storage or public/internal API. `scripts/final-acceptance.sh` completed automated `PASS` and reused the existing first-class compound/top-level/read-count/allocator/mutator/navigation/shuffle/Undo contracts plus the full hermetic workspace suite. Manual M3U8/XSPF/CUE and compound UI acceptance remains explicit opt-in and is currently `NOT RUN`.
+- Durable identity and transient request material stay deliberately distinct. `playlist-state::v2_roundtrip_preserves_top_level_order_current_shuffle_allocators_and_payloads` proves the exact user-acknowledged locator survives v2 persistence, including any credential-like bytes inside that locator; `transient_request_material_is_structurally_unrepresentable_in_v2_dto` proves headers, cookies and resolved/signed request targets cannot enter the DTO. Do not simplify this to “no credentials are persisted.”
+- Real pre-barrier import evidence is app-owned: bounded/cancelled preview and stale structural failure preserve queue/current/active playback without consuming IDs. Player/open/switch preservation remains outside playlist-core and is separately traced through player-core/app tests.
+
 Session 05 completed PASS on 2026-07-14. This memory complements `mem:core` and the handoff in `user/playlist_queue_implementation_plan.md`.
 
 ## Ownership and dependency boundary

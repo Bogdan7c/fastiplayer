@@ -57,12 +57,7 @@ pub(super) fn prepare_hds_candidate(
     live_intent: YtDlpLiveIntent,
     preferred_height: PreferredHeightPolicy,
 ) -> Result<PreparedHdsCandidate> {
-    if !matches!(
-        live_intent,
-        YtDlpLiveIntent::Unspecified | YtDlpLiveIntent::NotLive
-    ) {
-        bail!("HDS live/DVR не входит в approved S38 base/VOD profile");
-    }
+    ensure_hds_vod_intent(live_intent)?;
     let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
     let context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation);
     let transport_request = candidate
@@ -89,6 +84,18 @@ pub(super) fn prepare_hds_candidate(
         seek_port,
         playback_window,
     })
+}
+
+/// Останавливает HDS live/DVR до materialization request-а и любого network I/O.
+fn ensure_hds_vod_intent(live_intent: YtDlpLiveIntent) -> Result<()> {
+    if matches!(
+        live_intent,
+        YtDlpLiveIntent::Unspecified | YtDlpLiveIntent::NotLive
+    ) {
+        return Ok(());
+    }
+
+    bail!("HDS live/DVR не входит в approved S38 base/VOD profile");
 }
 
 /// Переводит neutral HDS clock boundary в существующий player-owned window.
@@ -224,8 +231,34 @@ fn map_enqueue_error(error: ProgressiveAsyncSeekEnqueueError) -> PreparedDemuxSe
 
 #[cfg(test)]
 mod tests {
-    use super::hds_playback_window;
+    use super::{ensure_hds_vod_intent, hds_playback_window};
+    use service_ytdlp::YtDlpLiveIntent;
     use std::time::Duration;
+
+    /// Закрепляет S38 no-op: live states не доходят до HDS request preparation.
+    #[test]
+    fn rejects_every_hds_live_intent_before_vod_preparation() {
+        for unsupported_intent in [
+            YtDlpLiveIntent::Live,
+            YtDlpLiveIntent::Upcoming,
+            YtDlpLiveIntent::PostLive,
+            YtDlpLiveIntent::Incompatible,
+        ] {
+            let error = ensure_hds_vod_intent(unsupported_intent)
+                .expect_err("HDS live intent must stay outside the approved S38 VOD profile");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("HDS live/DVR не входит в approved S38 base/VOD profile")
+            );
+        }
+
+        ensure_hds_vod_intent(YtDlpLiveIntent::Unspecified)
+            .expect("missing live metadata keeps the bounded VOD-only admission path");
+        ensure_hds_vod_intent(YtDlpLiveIntent::NotLive)
+            .expect("explicit VOD intent remains supported");
+    }
 
     /// App сохраняет absolute origin; zero-based projection остаётся player-owned.
     #[test]

@@ -19,6 +19,8 @@ use crate::{
 
 #[path = "tests/audio_containers.rs"]
 mod audio_containers;
+#[path = "tests/s42_profile.rs"]
+mod s42_profile;
 #[path = "tests/support.rs"]
 mod support;
 

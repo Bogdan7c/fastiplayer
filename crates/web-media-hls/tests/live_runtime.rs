@@ -452,6 +452,62 @@ fn drop_does_not_wait_for_blocked_endpoint_refresh_and_cancels_it() {
 }
 
 #[test]
+fn manifest_refresh_cancellation_is_typed_secret_safe_and_worker_bounded() {
+    // Origin нужен только для успешного initial open до явной отмены reload-а.
+    let first = muxed_ts(90_000);
+    let server = TestServer::start(move |_, request| {
+        if request.request_line.starts_with("GET /initial.m3u8 ") {
+            return response("200 OK", &[], initial_playlist().as_bytes());
+        }
+        if request.request_line.starts_with("GET /a.ts ") {
+            return response("200 OK", &[], &first);
+        }
+        response("404 Not Found", &[], b"")
+    });
+    // Test owner сохраняет token, чтобы отменить transport без drop demuxer-а.
+    let cancellation = CancellationToken::new();
+    // Endpoint recovery не должен участвовать в обычной cooperative cancellation.
+    let endpoint_calls = Arc::new(AtomicUsize::new(0));
+    let port = Arc::new(FailingRefreshPort {
+        calls: Arc::clone(&endpoint_calls),
+        failure: HlsEndpointRefreshError::AttemptsExhausted,
+    });
+    let opened = prepare_hls_live(live_request(
+        server.target("/initial.m3u8"),
+        cancellation.clone(),
+        port.clone(),
+    ))
+    .expect("prepare live manifest refresh cancellation");
+    let (mut demuxer, _timeline_port, _) = opened.into_parts();
+
+    // Demuxer остаётся жив: control shutdown не маскирует manifest reload cancellation.
+    cancellation.cancel();
+    // Worker-owned request держит единственный дополнительный strong Arc endpoint-port-а.
+    let worker_deadline = Instant::now() + TEST_TIMEOUT;
+    while Arc::strong_count(&port) != 1 && Instant::now() < worker_deadline {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    // Единственный test-owned Arc доказывает полный выход detached refresh worker-а.
+    assert_eq!(
+        Arc::strong_count(&port),
+        1,
+        "cancelled HLS manifest refresh worker must release its request"
+    );
+
+    // После worker barrier fatal читается без scheduler race и без inner I/O.
+    let error = demuxer
+        .next_event()
+        .expect_err("cancelled HLS manifest refresh must become terminal");
+    // Exact public text одновременно закрепляет typed смысл и отсутствие locator/secrets.
+    assert_eq!(error.to_string(), "live refresh cancelled");
+    assert_eq!(
+        endpoint_calls.load(Ordering::SeqCst),
+        0,
+        "cooperative manifest cancellation must not trigger endpoint recovery"
+    );
+}
+
+#[test]
 fn endlist_refresh_drains_retained_segments_then_returns_eos_with_unknown_duration() {
     let manifest_requests = Arc::new(AtomicUsize::new(0));
     let handler_manifest_requests = Arc::clone(&manifest_requests);

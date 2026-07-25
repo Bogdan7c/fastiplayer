@@ -1,4 +1,425 @@
 {
   "schema_version": 1,
-  "exceptions": []
+  "exceptions": [
+    {
+      "scope": "blocking-group",
+      "metric": "lines",
+      "previous": {
+        "covered": 36977,
+        "total": 43992
+      },
+      "allowed": {
+        "covered": 83276,
+        "total": 99646
+      },
+      "reason": "S42 заменяет baseline от 2026-07-17: прежний агрегат измерял 21 из 47 текущих blocking crate-ов, а S21–S41 добавили 26 владельцев и изменили знаменатель line coverage.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить hermetic line tests для трёх blocking crate-ов с наибольшим числом непокрытых строк и удалить aggregate exception."
+    },
+    {
+      "scope": "blocking-group",
+      "metric": "functions",
+      "previous": {
+        "covered": 3732,
+        "total": 4356
+      },
+      "allowed": {
+        "covered": 8338,
+        "total": 10114
+      },
+      "reason": "S42 заменяет baseline от 2026-07-17: прежний агрегат измерял 21 из 47 текущих blocking crate-ов, а S21–S41 добавили 26 владельцев и изменили знаменатель function coverage.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить focused tests для непокрытых функций трёх крупнейших blocking crate-ов и удалить aggregate exception."
+    },
+    {
+      "scope": "blocking-group",
+      "metric": "regions",
+      "previous": {
+        "covered": 45651,
+        "total": 54358
+      },
+      "allowed": {
+        "covered": 103632,
+        "total": 125867
+      },
+      "reason": "S42 заменяет baseline от 2026-07-17: прежний агрегат измерял 21 из 47 текущих blocking crate-ов, а S21–S41 добавили 26 владельцев и изменили знаменатель region coverage.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить branch-matrix tests для трёх blocking crate-ов с наибольшим числом непокрытых regions и удалить aggregate exception."
+    },
+    {
+      "scope": "crate:codec-core",
+      "metric": "lines",
+      "previous": {
+        "covered": 4162,
+        "total": 5240
+      },
+      "allowed": {
+        "covered": 4041,
+        "total": 5214
+      },
+      "reason": "После прежнего baseline в codec-core появились VP8/VP configuration и расширенные H.264 requirements; свежий S42 прогон измеряет расширенный codec contract.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить line tests для ошибочных и граничных путей VP configuration/H.264 requirements и удалить codec-core exception."
+    },
+    {
+      "scope": "crate:codec-core",
+      "metric": "functions",
+      "previous": {
+        "covered": 389,
+        "total": 434
+      },
+      "allowed": {
+        "covered": 387,
+        "total": 436
+      },
+      "reason": "После прежнего baseline в codec-core появились VP8/VP configuration и расширенные H.264 requirements; свежий S42 прогон измеряет расширенный codec contract.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить focused tests для всех оставшихся непокрытых VP/H.264 validators и удалить codec-core exception."
+    },
+    {
+      "scope": "crate:codec-core",
+      "metric": "regions",
+      "previous": {
+        "covered": 5327,
+        "total": 6599
+      },
+      "allowed": {
+        "covered": 5058,
+        "total": 6404
+      },
+      "reason": "После прежнего baseline в codec-core появились VP8/VP configuration и расширенные H.264 requirements; свежий S42 прогон измеряет расширенный codec contract.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить branch matrix для malformed/unsupported VP configuration и H.264 capability intersections и удалить codec-core exception."
+    },
+    {
+      "scope": "crate:config",
+      "metric": "lines",
+      "previous": {
+        "covered": 2390,
+        "total": 2624
+      },
+      "allowed": {
+        "covered": 1539,
+        "total": 1783
+      },
+      "reason": "После прежнего baseline config v7 schema/store boundary была декомпозирована и часть application routing перенесена владельцам UI/service; S42 фиксирует свежую измеренную поверхность оставшегося config owner-а.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить line tests для непокрытых config v7 defaults, validation и migration paths и удалить config exception."
+    },
+    {
+      "scope": "crate:config",
+      "metric": "functions",
+      "previous": {
+        "covered": 186,
+        "total": 228
+      },
+      "allowed": {
+        "covered": 138,
+        "total": 182
+      },
+      "reason": "После прежнего baseline config v7 schema/store boundary была декомпозирована и часть application routing перенесена владельцам UI/service; S42 фиксирует свежую измеренную поверхность оставшегося config owner-а.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить focused tests для всех непокрытых config v7 constructors/validators/migrations и удалить config exception."
+    },
+    {
+      "scope": "crate:config",
+      "metric": "regions",
+      "previous": {
+        "covered": 3048,
+        "total": 3315
+      },
+      "allowed": {
+        "covered": 1578,
+        "total": 1863
+      },
+      "reason": "После прежнего baseline config v7 schema/store boundary была декомпозирована и часть application routing перенесена владельцам UI/service; S42 фиксирует свежую измеренную поверхность оставшегося config owner-а.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить branch tests для absent/invalid/default config v7 и atomic migration failures и удалить config exception."
+    },
+    {
+      "scope": "crate:player-core",
+      "metric": "lines",
+      "previous": {
+        "covered": 12553,
+        "total": 15157
+      },
+      "allowed": {
+        "covered": 16774,
+        "total": 20263
+      },
+      "reason": "S21–S35S добавили player-core event-first demux retry, staged candidate rollback, exact restore, playback windows и dynamic live/DVR lifecycle; line denominator вырос вместе с boundary.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить tests для оставшихся line gaps в staged install, dynamic timeline и retry/shutdown lifecycle и удалить player-core exception."
+    },
+    {
+      "scope": "crate:player-core",
+      "metric": "functions",
+      "previous": {
+        "covered": 1280,
+        "total": 1474
+      },
+      "allowed": {
+        "covered": 1632,
+        "total": 1902
+      },
+      "reason": "S21–S35S добавили player-core event-first demux retry, staged candidate rollback, exact restore, playback windows и dynamic live/DVR lifecycle; function denominator вырос вместе с boundary.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить focused tests для оставшихся непокрытых lifecycle/retry/restore intent methods и удалить player-core exception."
+    },
+    {
+      "scope": "crate:render-core",
+      "metric": "lines",
+      "previous": {
+        "covered": 1476,
+        "total": 1635
+      },
+      "allowed": {
+        "covered": 775,
+        "total": 932
+      },
+      "reason": "После прежнего baseline render-core прошёл module split и перераспределение render/capability ownership; S42 принимает только свежую exact line-меру текущей декомпозированной поверхности.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить line tests для непокрытых neutral render contracts и повторно измерить render-core без исключения."
+    },
+    {
+      "scope": "crate:render-core",
+      "metric": "functions",
+      "previous": {
+        "covered": 147,
+        "total": 170
+      },
+      "allowed": {
+        "covered": 106,
+        "total": 129
+      },
+      "reason": "После прежнего baseline render-core прошёл module split и перераспределение render/capability ownership; S42 принимает только свежую exact function-меру текущей декомпозированной поверхности.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить focused tests для непокрытых neutral render functions и повторно измерить render-core без исключения."
+    },
+    {
+      "scope": "crate:render-core",
+      "metric": "regions",
+      "previous": {
+        "covered": 1810,
+        "total": 1998
+      },
+      "allowed": {
+        "covered": 867,
+        "total": 1042
+      },
+      "reason": "После прежнего baseline render-core прошёл module split и перераспределение render/capability ownership; S42 принимает только свежую exact region-меру текущей декомпозированной поверхности.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить branch tests для neutral render absent/error/capability paths и повторно измерить render-core без исключения."
+    },
+    {
+      "scope": "crate:rustiplayer-settings",
+      "metric": "lines",
+      "previous": {
+        "covered": 890,
+        "total": 1026
+      },
+      "allowed": {
+        "covered": 1287,
+        "total": 1524
+      },
+      "reason": "S20Q добавил в rustiplayer-settings application contract и routing для quality/profile settings; новый decision surface увеличил line denominator.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить line tests для application-contract и routing fallback/error paths и удалить rustiplayer-settings exception."
+    },
+    {
+      "scope": "crate:rustiplayer-settings",
+      "metric": "functions",
+      "previous": {
+        "covered": 77,
+        "total": 88
+      },
+      "allowed": {
+        "covered": 95,
+        "total": 115
+      },
+      "reason": "S20Q добавил в rustiplayer-settings application contract и routing для quality/profile settings; новый decision surface увеличил function denominator.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить focused tests для непокрытых settings routing functions и удалить rustiplayer-settings exception."
+    },
+    {
+      "scope": "crate:rustiplayer-settings",
+      "metric": "regions",
+      "previous": {
+        "covered": 1204,
+        "total": 1387
+      },
+      "allowed": {
+        "covered": 1664,
+        "total": 1951
+      },
+      "reason": "S20Q добавил в rustiplayer-settings application contract и routing для quality/profile settings; новый decision surface увеличил region denominator.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить branch matrix для settings routing/default/override decisions и удалить rustiplayer-settings exception."
+    },
+    {
+      "scope": "crate:service-direct-media",
+      "metric": "lines",
+      "previous": {
+        "covered": 370,
+        "total": 489
+      },
+      "allowed": {
+        "covered": 554,
+        "total": 762
+      },
+      "reason": "S22/S31 перевели service-direct-media на общий neutral transport и добавили HTTP/request-material boundary; новый transport owner увеличил line denominator без дублирования HTTP stack.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить line tests для transport cancellation, redirect и request-material error paths и удалить service-direct-media exception."
+    },
+    {
+      "scope": "crate:service-direct-media",
+      "metric": "functions",
+      "previous": {
+        "covered": 42,
+        "total": 59
+      },
+      "allowed": {
+        "covered": 61,
+        "total": 96
+      },
+      "reason": "S22/S31 перевели service-direct-media на общий neutral transport и добавили HTTP/request-material boundary; новый transport owner увеличил function denominator без дублирования HTTP stack.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить focused tests для непокрытых neutral transport intent methods и удалить service-direct-media exception."
+    },
+    {
+      "scope": "crate:source-core",
+      "metric": "lines",
+      "previous": {
+        "covered": 1011,
+        "total": 1163
+      },
+      "allowed": {
+        "covered": 2623,
+        "total": 3121
+      },
+      "reason": "S21T/S22/S31/S37 расширили source-core общими HTTP range/redirect/cookie/policy/session и FTP session/data-channel boundaries; line denominator вырос вместе с shared transport owner.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить line tests для HTTP cookie/redirect limits и FTP cancellation/data-channel failures и удалить source-core exception."
+    },
+    {
+      "scope": "crate:source-core",
+      "metric": "functions",
+      "previous": {
+        "covered": 114,
+        "total": 144
+      },
+      "allowed": {
+        "covered": 300,
+        "total": 389
+      },
+      "reason": "S21T/S22/S31/S37 расширили source-core общими HTTP range/redirect/cookie/policy/session и FTP session/data-channel boundaries; function denominator вырос вместе с shared transport owner.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить focused tests для непокрытых HTTP/FTP policy и session functions и удалить source-core exception."
+    },
+    {
+      "scope": "crate:source-core",
+      "metric": "regions",
+      "previous": {
+        "covered": 1642,
+        "total": 1818
+      },
+      "allowed": {
+        "covered": 3914,
+        "total": 4632
+      },
+      "reason": "S21T/S22/S31/S37 расширили source-core общими HTTP range/redirect/cookie/policy/session и FTP session/data-channel boundaries; region denominator вырос вместе с shared transport owner.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить branch matrix для HTTP auth/range/redirect и FTP passive/active/cancel outcomes и удалить source-core exception."
+    },
+    {
+      "scope": "crate:video-backend-api",
+      "metric": "lines",
+      "previous": {
+        "covered": 340,
+        "total": 405
+      },
+      "allowed": {
+        "covered": 595,
+        "total": 717
+      },
+      "reason": "После прежнего baseline video-backend-api получил новые capability/output и adapter-boundary контракты; S42 фиксирует выросшую текущую line-поверхность только точными counters.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить line tests для непокрытых backend capability/absence/error contracts и повторно измерить video-backend-api без исключения."
+    },
+    {
+      "scope": "crate:video-backend-api",
+      "metric": "functions",
+      "previous": {
+        "covered": 33,
+        "total": 46
+      },
+      "allowed": {
+        "covered": 62,
+        "total": 88
+      },
+      "reason": "После прежнего baseline video-backend-api получил новые capability/output и adapter-boundary контракты; S42 фиксирует выросшую текущую function-поверхность только точными counters.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить focused tests для непокрытых backend API intent methods и повторно измерить video-backend-api без исключения."
+    },
+    {
+      "scope": "crate:video-backend-api",
+      "metric": "regions",
+      "previous": {
+        "covered": 312,
+        "total": 364
+      },
+      "allowed": {
+        "covered": 535,
+        "total": 649
+      },
+      "reason": "После прежнего baseline video-backend-api получил новые capability/output и adapter-boundary контракты; S42 фиксирует выросшую текущую region-поверхность только точными counters.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить branch tests backend absent/unsupported/error/capability outcomes и повторно измерить video-backend-api без исключения."
+    },
+    {
+      "scope": "crate:video-core",
+      "metric": "lines",
+      "previous": {
+        "covered": 1491,
+        "total": 1697
+      },
+      "allowed": {
+        "covered": 849,
+        "total": 1033
+      },
+      "reason": "После прежнего baseline video-core contract был разделён, а decoder/backend/render responsibilities перенесены точным владельцам; S42 фиксирует свежую exact line-меру оставшейся neutral video поверхности.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить line tests для непокрытых neutral video contract paths и повторно измерить video-core без исключения."
+    },
+    {
+      "scope": "crate:video-core",
+      "metric": "functions",
+      "previous": {
+        "covered": 132,
+        "total": 170
+      },
+      "allowed": {
+        "covered": 88,
+        "total": 114
+      },
+      "reason": "После прежнего baseline video-core contract был разделён, а decoder/backend/render responsibilities перенесены точным владельцам; S42 фиксирует свежую exact function-меру оставшейся neutral video поверхности.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить focused tests для непокрытых neutral video functions и повторно измерить video-core без исключения."
+    },
+    {
+      "scope": "crate:video-core",
+      "metric": "regions",
+      "previous": {
+        "covered": 1457,
+        "total": 1721
+      },
+      "allowed": {
+        "covered": 833,
+        "total": 1077
+      },
+      "reason": "После прежнего baseline video-core contract был разделён, а decoder/backend/render responsibilities перенесены точным владельцам; S42 фиксирует свежую exact region-меру оставшейся neutral video поверхности.",
+      "review_by": "2026-10-25",
+      "follow_up": "До 2026-10-25 добавить branch tests neutral video absent/backpressure/error/accounting outcomes и повторно измерить video-core без исключения."
+    }
+  ]
 }

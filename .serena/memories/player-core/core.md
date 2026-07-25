@@ -1,3 +1,10 @@
+## S42 acceptance facts (2026-07-25)
+
+- S42 does not change player-core API or ownership. `scripts/final-acceptance.sh` completed automated `PASS`; manual playback matrix and real VA-API rerun remain `NOT RUN`.
+- Exact cross-cutting traceability requires real player-owned lifecycle tests, not UI string state: `resource_and_configuration_failures_are_pre_ready_and_preserve_old_playing` proves failed open remains before Ready and preserves old playback; `cancelled_pre_barrier_candidate_releases_only_new_generation_once` proves same-item/quality candidate cancellation preserves the old media instance/state/live publisher and releases only the candidate generation.
+- Post-barrier honesty remains unchanged: Ready → authorize → Installed is the mutation barrier, and missing Installed after authorization is terminal rather than recoverable rollback. Neutral cancellation, stale-generation fencing, `TemporarilyUnavailable` retry and bounded shutdown contracts continue through the existing session/worker/demux boundaries.
+- Coverage stabilization added deterministic lifecycle characterization and test-fixture behavior only; it did not move player state, scheduler semantics or public/internal boundaries. The S42 DASH-live deadlock fix remains provider-owned in `web-media-dash`: shared snapshot guards are dropped before re-entrant demux open/seek, while player-core still receives only existing neutral `Demuxer`, timeline and receipted-seek contracts.
+
 ## S34 worker-receipted prepared-demux seek (2026-07-24)
 
 `PreparedMedia` may install a provider-neutral `PreparedDemuxSeekPort`; session owns exact request/media-instance/seek-generation/requested-target fences and only an exact successful receipt enters the existing final seek commit. Polling is nonblocking, demux reads pause while pending, stale/error/cancel/supersede receipts never publish position, and legacy media stays synchronous. DASH-specific ownership remains outside player-core; details: `mem:media-services/dash-vod-s34-2026-07-24`.

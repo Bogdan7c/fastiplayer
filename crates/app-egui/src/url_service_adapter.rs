@@ -312,7 +312,13 @@ impl StartupUrlServiceRegistry<'_> {
                     last_rejection = Some(reason);
                 }
                 ServiceClassifierResult::Supported(locator) => {
-                    if let Some(input_scheme) =
+                    if let Some(input_scheme) = profile_excluded_input_scheme(&locator) {
+                        recognized_url = true;
+                        last_rejection =
+                            Some(StartupUrlUnsupportedReason::ProfileExcludedInputScheme {
+                                input_scheme,
+                            });
+                    } else if let Some(input_scheme) =
                         self.missing_implemented_provider_for_locator(&locator)
                     {
                         recognized_url = true;
@@ -358,10 +364,17 @@ impl StartupUrlServiceRegistry<'_> {
     }
 }
 
-/// S37 зарегистрировал exact FTP(S); RTMP остаётся dormant до S39.
+/// S37 зарегистрировал exact FTP(S); исключённые schemes сюда не добавляются.
 const PRODUCTION_YT_DLP_INPUT_PROVIDERS: &[ImplementedYtDlpInputProviderCapability] = &[
     ImplementedYtDlpInputProviderCapability::exact(service_ytdlp::YtDlpInputScheme::Ftp),
     ImplementedYtDlpInputProviderCapability::exact(service_ytdlp::YtDlpInputScheme::Ftps),
+];
+
+/// Exact top-level schemes, которые parser сохраняет как typed identity, но
+/// утверждённый serializable profile намеренно не допускает к wire playback.
+const PROFILE_EXCLUDED_YT_DLP_INPUT_SCHEMES: &[service_ytdlp::YtDlpInputScheme] = &[
+    service_ytdlp::YtDlpInputScheme::Rtmp,
+    service_ytdlp::YtDlpInputScheme::Rtmpe,
 ];
 
 /// Единственный production registry используется CLI, toolbar, import и reopen.
@@ -369,6 +382,18 @@ const PRODUCTION_STARTUP_URL_SERVICE_REGISTRY: StartupUrlServiceRegistry<'static
     StartupUrlServiceRegistry {
         implemented_yt_dlp_input_providers: PRODUCTION_YT_DLP_INPUT_PROVIDERS,
     };
+
+/// Возвращает exact scheme только для намеренного profile exclusion.
+///
+/// Проверка живёт в composition root: pure locator parser отвечает за typed
+/// identity, а app registry — за фактический release disposition.
+fn profile_excluded_input_scheme(
+    locator: &StartupUrlLocator,
+) -> Option<service_ytdlp::YtDlpInputScheme> {
+    locator
+        .yt_dlp_input_scheme()
+        .filter(|input_scheme| PROFILE_EXCLUDED_YT_DLP_INPUT_SCHEMES.contains(input_scheme))
+}
 
 /// Единственное место регистрации URL services; общий traversal не знает их семантику.
 const STARTUP_URL_SERVICE_CLASSIFIERS: &[StartupUrlServiceClassifier] = &[
@@ -406,6 +431,12 @@ pub(crate) enum StartupUrlUnsupportedReason {
         input_scheme: service_ytdlp::YtDlpInputScheme,
     },
 
+    /// Scheme распознана как typed identity, но исключена текущим profile.
+    ProfileExcludedInputScheme {
+        /// Exact scheme без raw locator и credential material.
+        input_scheme: service_ytdlp::YtDlpInputScheme,
+    },
+
     /// Ни один service не заявил URL после успешного URL recognition.
     NoRegisteredService,
 }
@@ -420,6 +451,10 @@ impl StartupUrlUnsupportedReason {
             }
             Self::ImplementedProviderUnavailable { input_scheme } => format!(
                 "NetworkError: provider для `{}` ещё не реализован",
+                input_scheme.as_str()
+            ),
+            Self::ProfileExcludedInputScheme { input_scheme } => format!(
+                "NetworkError: `{}` исключён утверждённым compatibility profile",
                 input_scheme.as_str()
             ),
             Self::NoRegisteredService => {

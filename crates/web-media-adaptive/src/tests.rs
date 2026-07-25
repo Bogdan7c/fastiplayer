@@ -67,6 +67,10 @@ impl LocalServer {
             while !worker_stop.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        // Drop будит nonblocking listener пустым соединением; это не HTTP request.
+                        if worker_stop.load(Ordering::Acquire) {
+                            break;
+                        }
                         let request = read_request(&mut stream);
                         let request_index = {
                             let mut observed = worker_requests.lock().expect("requests mutex");

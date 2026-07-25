@@ -378,6 +378,118 @@ fn full_command_queue_returns_latest_snapshot_to_caller() {
 }
 
 #[test]
+fn full_shutdown_admission_retries_without_losing_command_ownership() {
+    // Capacity one делает первый admission безусловно заполненным.
+    let (command_sender, command_receiver) = std::sync::mpsc::sync_channel::<WorkerCommand>(1);
+    // Existing control command занимает единственный slot до controlled retry wait.
+    assert!(
+        command_sender.try_send(WorkerCommand::RetryNow).is_ok(),
+        "test precondition заполняет command queue"
+    );
+    // Acknowledgement channel нужен только для полного production-shaped shutdown command.
+    let (acknowledgement_sender, _acknowledgement_receiver) = std::sync::mpsc::sync_channel(1);
+    // Exact shutdown command должен сохранить ownership после первого Full.
+    let shutdown_command = WorkerCommand::Shutdown {
+        newest_committed: None,
+        acknowledgement_sender,
+    };
+    // Счётчик доказывает ровно один controlled capacity wait.
+    let mut capacity_wait_count = 0;
+
+    // Injected policy исключает wall-clock и scheduler race из focused branch test-а.
+    let admission = send_shutdown_with_admission_policy(
+        &command_sender,
+        shutdown_command,
+        || false,
+        || {
+            // Первый Full возвращает shutdown command owner-у до вызова wait policy.
+            capacity_wait_count += 1;
+            // Controlled drain освобождает slot только после доказанного Full.
+            assert!(matches!(
+                command_receiver.try_recv(),
+                Ok(WorkerCommand::RetryNow)
+            ));
+        },
+    );
+
+    // Второй admission обязан успешно положить тот же shutdown intent в queue.
+    assert!(admission.is_ok());
+    // Отсутствие лишнего retry подтверждает bounded loop без busy-spin.
+    assert_eq!(capacity_wait_count, 1);
+    // Полученный variant доказывает, что Full не потерял и не заменил command.
+    assert!(matches!(
+        command_receiver.try_recv(),
+        Ok(WorkerCommand::Shutdown { .. })
+    ));
+}
+
+#[test]
+fn full_shutdown_admission_stops_at_deadline_without_waiting() {
+    // Capacity one снова делает первый admission безусловно заполненным.
+    let (command_sender, command_receiver) = std::sync::mpsc::sync_channel::<WorkerCommand>(1);
+    // Existing command обязан остаться в queue после deadline failure.
+    assert!(
+        command_sender.try_send(WorkerCommand::RetryNow).is_ok(),
+        "test precondition заполняет command queue"
+    );
+    // Acknowledgement sender сохраняет production shape проверяемого command-а.
+    let (acknowledgement_sender, _acknowledgement_receiver) = std::sync::mpsc::sync_channel(1);
+    // Shutdown intent намеренно не может быть admitted до already-reached deadline.
+    let shutdown_command = WorkerCommand::Shutdown {
+        newest_committed: None,
+        acknowledgement_sender,
+    };
+    // Wait policy не должна вызываться после положительной deadline проверки.
+    let mut capacity_wait_count = 0;
+
+    // Injected reached deadline делает failure branch независимой от wall clock.
+    let admission = send_shutdown_with_admission_policy(
+        &command_sender,
+        shutdown_command,
+        || true,
+        || {
+            // Любой вызов означал бы лишнее ожидание после исчерпанного deadline.
+            capacity_wait_count += 1;
+        },
+    );
+
+    // Full при исчерпанном deadline обязан вернуть typed internal failure.
+    assert!(admission.is_err());
+    // Scheduler не должен ждать capacity после подтверждённого deadline.
+    assert_eq!(capacity_wait_count, 0);
+    // Failed shutdown admission не потребляет уже queued control command.
+    assert!(matches!(
+        command_receiver.try_recv(),
+        Ok(WorkerCommand::RetryNow)
+    ));
+}
+
+#[test]
+fn disconnected_shutdown_admission_returns_without_policy_callbacks() {
+    // Dropped receiver делает первый admission безусловно Disconnected.
+    let (command_sender, command_receiver) = std::sync::mpsc::sync_channel::<WorkerCommand>(1);
+    drop(command_receiver);
+    // Acknowledgement receiver остаётся жив, чтобы failure принадлежал command queue.
+    let (acknowledgement_sender, _acknowledgement_receiver) = std::sync::mpsc::sync_channel(1);
+    // Production-shaped shutdown intent должен вернуться как internal admission failure.
+    let shutdown_command = WorkerCommand::Shutdown {
+        newest_committed: None,
+        acknowledgement_sender,
+    };
+
+    // Disconnected arm не consult-ит deadline и не ждёт capacity.
+    let admission = send_shutdown_with_admission_policy(
+        &command_sender,
+        shutdown_command,
+        || panic!("disconnected admission не должен проверять deadline"),
+        || panic!("disconnected admission не должен ждать capacity"),
+    );
+
+    // Typed internal failure завершает admission без scheduler или wall-clock.
+    assert!(admission.is_err());
+}
+
+#[test]
 fn wake_is_coalesced_until_drain_and_terminal_report_is_exactly_once() {
     // Mailbox policy проверяется напрямую: worker thread не должен добавлять scheduler race в assert.
     let failure = NotReplacedFailure {

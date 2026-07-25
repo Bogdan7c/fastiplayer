@@ -1,8 +1,10 @@
 # yt-dlp 2026.07.04 compatibility inventory
 
 Статус: S00 inventory завершён как checked-in доказательная граница. S15
-включил bounded topology extraction; candidate/playback runtime продолжает
-использовать прежний single-item profile.
+включил bounded topology extraction, S41 зафиксировал двенадцать exact
+`Implemented` runtime rows и один `ProfileExcluded` RTMP aggregate. S42 не
+расширяет профиль: автоматический gate и manual opt-in проверяют именно эту
+закрытую serializable boundary.
 
 Machine-readable источник истины — `profile.json`. Этот отчёт объясняет решения,
 но не заменяет manifest и focused checks.
@@ -325,6 +327,56 @@ RTMP playback не заявлен: S39 exclusion остаётся authoritative.
 остаются только VOD, потому что S36L/S38L rows не утверждены. S40 special
 providers не получают fake rows или provider tests; их no-op/exclusion evidence
 остаётся отдельным conditional handoff.
+
+## S42 final acceptance boundary
+
+Machine-readable scoped profile evidence S42 хранится в
+`final-acceptance-s42.json`: он трассирует exact S00/S41 rows к checked-in
+code/test evidence, не меняя S00 `Target` identities и statuses. Полная
+goal→code/tests карта 31 hermetic пунктов §14 и обязательных release audits
+хранится отдельно в `roadmap-trace-s42.json`. Оба артефакта проверяет Cargo
+target `final_acceptance_s42`; ни один из них не является доказательством
+фактически пройденного real-URL corpus. Runtime truth по-прежнему принадлежит
+`runtime-coverage-s41.json`.
+В S41 manifest отсутствуют `Implemented` gaps и `Planned` rows: двенадцать
+реализованных строк имеют provider/demux/runtime evidence, а
+`rtmp-family-flv` остаётся typed `ProfileExcluded`.
+
+Manual runner `scripts/progressive-web-smoke.sh` принимает только явно
+переданные пользователем HTTP/HTTPS/FTP/FTPS URL или local fixtures и требует
+safe named case ID для зачёта S42 matrix. Реальный запуск fail-closed проверяет
+exact system `yt-dlp 2026.07.04`, записывает workspace HEAD с `clean`/`dirty`
+classification, Rustiplayer binary origin/SHA-256 и yt-dlp executable SHA-256.
+Runner-built binary связывается с current worktree; explicit external prebuilt
+не приписывается workspace HEAD. Raw URL, fixture path, headers, cookies или
+extractor payload не сохраняются. Даже полный набор cases получает статус
+`MANUAL REVIEW REQUIRED`, а не автоматический `PASS`; SIGKILL/status 137
+остаётся runtime `FAIL`.
+
+Текущий checked-in S42 manual status — `NOT RUN`: пользовательский полный
+URL/fixture corpus и hardware runtime в repository не сохранены и не
+подставляются автоматически.
+
+Hardware-capability evidence содержит ровно одно принятое владельцем исключение
+S27: exact `VAProfileH264Baseline` → H.264 Baseline 8-bit YUV420/NV12,
+capability intersection only. Hermetic gate фиксирует этот узкий mapping и
+запрещает дальнейшее расширение, но current hardware manual rerun остаётся
+`NOT RUN`: у владельца сейчас нет совместимого VA-API device.
+
+Узкие absence rows не подменяются фиктивными provider tests:
+
+- ISM live/DVR — `ProfileExcluded`, потому что approved profile содержит только
+  static H.264/AAC VOD;
+- HDS live/DVR — `NoApprovedRow`, потому что approved profile содержит только
+  HDS VOD;
+- special private/live providers — `NoApprovedRow`, потому что S40 не нашёл
+  public-serializable target row;
+- RTMP wire family — `ProfileExcluded`, потому что S39 доказал только identity.
+
+Пользовательский system config, cookie jars и plugins остаются trusted external
+code. Rustiplayer-owned argv не добавляет download/write/exec/postprocessor или
+mark-watched behavior, однако side effects user config/plugins находятся вне
+app guarantee.
 
 ## Explicit exclusions and provisional gaps
 
