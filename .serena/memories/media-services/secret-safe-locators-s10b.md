@@ -1,3 +1,8 @@
+## S39 RTMP no-op secret boundary (2026-07-25)
+
+- S00 RTMP public fields remain bounded private `service-ytdlp` request material with no public transport projection. Identity-only fixtures do not authorize transport use of `page_url`, `tc_url`, app/play path or connection arguments.
+- Because no exact wire variant is approved, app admission remains typed unavailable, no raw RTMP material reaches S21T/player/logging, and no FFmpeg subprocess fallback receives it. Full decision: `mem:media-services/rtmp-family-s39-2026-07-25`.
+
 ## S34 DASH request-context boundary (2026-07-24)
 
 - Static DASH MPD/serialized inputs keep fresh headers/cookies/segment query only in S21T contexts. Segmented credentials are scoped to the authoritative MPD/fragment directory plus exact origin/secure proof; separate serialized video/audio keep independent contexts. Cross-origin redirects strip secrets monotonically, and raw MPD/fragment/auth values remain absent from Debug/errors/player state. Full contract: `mem:media-services/dash-vod-s34-2026-07-24`.

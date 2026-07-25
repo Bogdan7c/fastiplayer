@@ -154,7 +154,7 @@ fn extended_s00_schemes_require_exact_implemented_provider_capability() {
     ] {
         let StartupUrlClassification::Unsupported { reason } = classify_startup_url(raw_locator)
         else {
-            panic!("production registry не должен включать Planned RTMP provider");
+            panic!("production registry не должен включать исключённый S39 RTMP provider");
         };
         assert_eq!(
             reason,

@@ -250,6 +250,29 @@ Approved ISM live/DVR Target row в S00 отсутствует. `ism-mss-live-dv
 `ProfileExcludedProvisional`; S36A не создаёт `S36L-*` dependency/card.
 Будущее promotion live/DVR также требует отдельной card и exact live fixture.
 
+## S39 exact RTMP variant gate
+
+Агрегированная Target row `rtmp-family-flv` остаётся только inventory evidence:
+её transport намеренно называется
+`rtmp_rtmpe_or_rtmp_ffmpeg_identity_only`. Synthetic format и request-material
+fixtures доказывают, что pinned yt-dlp сериализует identity, FLV codec hints и
+public RTMP-поля. Они не содержат локального RTMP server-а, handshake/chunk/
+message/play exchange или зашифрованного RTMPE payload-а и поэтому не являются
+wire approval ни для одного exact variant.
+
+S39 не добавляет provider, dependency, S31L binding или S15A capability.
+`rtmp` и `rtmpe` остаются `ProfileExcludedProvisional`: promotion требует
+отдельной exact Target row и deterministic local wire fixture, а для `rtmpe`
+ещё и настоящего crypto handshake/encrypted payload evidence. `rtmp_ffmpeg`
+остаётся жёстким `ProfileExcluded`, потому что это downloader identity, а не
+wire protocol; hidden FFmpeg fallback запрещён.
+
+`rtmps`, `rtmpt` и `rtmpte` также записаны отдельными provisional exclusions.
+Они не являются aliases обычного `rtmp`: будущая promotion каждого variant
+требует собственной S00 row и TLS/tunnel/crypto fixture. Focused S39 test
+проверяет, что aggregate identity-only row не повышается до exact Target и что
+каждый названный variant остаётся в exclusion namespace.
+
 ## Explicit exclusions and provisional gaps
 
 Жёстко исключены:

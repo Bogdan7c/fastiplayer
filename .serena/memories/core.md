@@ -1,3 +1,8 @@
+## S39 exact RTMP family gate (2026-07-25)
+
+- S39 завершён как доказанный no-op: aggregate `rtmp-family-flv` остаётся только identity-only S00 inventory, а exact `rtmp`/`rtmpe` не имеют deterministic wire/crypto fixtures и остаются provisional exclusions. `rtmp_ffmpeg` — жёсткий non-wire exclusion; TLS/tunnel variants не alias-нормализуются.
+- Production provider/dependency/S15A/S21T/S31L changes отсутствуют; current RTMP/RTMPE admission остаётся typed unavailable. Full evidence: `mem:media-services/rtmp-family-s39-2026-07-25`.
+
 ## S36 Smooth Streaming static VOD (2026-07-25)
 
 - Production web-media open now supports the single approved S00 ISM/MSS row: strict muxed fMP4 H.264 + AAC-LC static VOD with bounded S04X manifest parsing, quality catalog, URL templates/timeline repeats, F1/F2 reconstruction, exact audio presentation windows, stable A/V composition and transactional receipted seek.

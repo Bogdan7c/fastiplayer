@@ -1,3 +1,8 @@
+## S39 exact RTMP family gate (2026-07-25)
+
+- Aggregate S00 `rtmp-family-flv` proves only serialized identity/material inventory, not an exact wire variant. Plain RTMP lacks a deterministic handshake/chunk/message/play fixture; RTMPE additionally lacks required crypto/encrypted payload evidence.
+- Exact variants remain explicit exclusions, `rtmp_ffmpeg` never becomes a wire protocol/FFmpeg fallback, and no provider/dependency/S15A/S21T/S31L registration was added. Full handoff: `mem:media-services/rtmp-family-s39-2026-07-25`.
+
 ## S38 HDS/F4M/F4F VOD (2026-07-25)
 
 - Approved S00 row `hds-f4m-f4f` exists; no approved HDS live/DVR row exists, so S38 remains VOD-only and creates no S38L/S31L/S35S card.

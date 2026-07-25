@@ -1219,6 +1219,48 @@
       "transport": "ism",
       "container_profile": "fmp4",
       "reason": "no_serializable_ism_live_or_dvr_fixture_and_no_approved_s00_target_row"
+    },
+    {
+      "id": "rtmp-plain-wire",
+      "status": "ProfileExcludedProvisional",
+      "transport": "rtmp",
+      "container_profile": "flv",
+      "reason": "identity_only_metadata_is_not_a_deterministic_handshake_chunk_message_play_wire_fixture"
+    },
+    {
+      "id": "rtmpe-encrypted-wire",
+      "status": "ProfileExcludedProvisional",
+      "transport": "rtmpe",
+      "container_profile": "flv",
+      "reason": "no_deterministic_rtmpe_crypto_handshake_and_encrypted_payload_fixture"
+    },
+    {
+      "id": "rtmp-ffmpeg-pseudo-protocol",
+      "status": "ProfileExcluded",
+      "transport": "rtmp_ffmpeg",
+      "container_profile": "flv",
+      "reason": "extractor_downloader_identity_is_not_a_wire_protocol_and_has_no_hidden_ffmpeg_fallback"
+    },
+    {
+      "id": "rtmps-tls-wire",
+      "status": "ProfileExcludedProvisional",
+      "transport": "rtmps",
+      "container_profile": "flv",
+      "reason": "no_exact_s00_row_and_no_deterministic_tls_wire_fixture"
+    },
+    {
+      "id": "rtmpt-http-tunnel-wire",
+      "status": "ProfileExcludedProvisional",
+      "transport": "rtmpt",
+      "container_profile": "flv",
+      "reason": "no_exact_s00_row_and_no_deterministic_http_tunnel_wire_fixture"
+    },
+    {
+      "id": "rtmpte-encrypted-http-tunnel-wire",
+      "status": "ProfileExcludedProvisional",
+      "transport": "rtmpte",
+      "container_profile": "flv",
+      "reason": "no_exact_s00_row_and_no_deterministic_encrypted_http_tunnel_wire_fixture"
     }
   ],
   "corpus": {
