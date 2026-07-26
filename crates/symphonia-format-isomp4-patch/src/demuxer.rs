@@ -344,6 +344,146 @@ pub struct TimeSpan {
     pub duration: Option<Duration>,
 }
 
+/// Direct `sidx` entry нужен только для пропуска линейного fragmented-MP4 scan-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SidxSeekPoint {
+    start_timestamp: u64,
+    end_timestamp: u64,
+    byte_offset: u64,
+    end_byte_offset: u64,
+    starts_with_proven_sap: bool,
+}
+
+/// Проверенный direct-media index для одного track/reference ID.
+#[derive(Debug)]
+struct SidxSeekIndex {
+    timescale: NonZero<u32>,
+    points: Vec<SidxSeekPoint>,
+}
+
+impl SidxSeekIndex {
+    fn from_atom(sidx: &SidxAtom) -> Option<Self> {
+        let mut timestamp = sidx.earliest_pts;
+        let mut byte_offset = sidx.first_offset;
+        let mut points = Vec::with_capacity(sidx.references.len());
+
+        for reference in &sidx.references {
+            if !matches!(
+                reference.reference_type,
+                crate::atoms::sidx::ReferenceType::Media
+            )
+                || reference.reference_size == 0
+                || reference.subsegment_duration == 0
+            {
+                return None;
+            }
+
+            let end_timestamp = timestamp.checked_add(u64::from(reference.subsegment_duration))?;
+            let next_byte_offset = byte_offset.checked_add(u64::from(reference.reference_size))?;
+            points.push(SidxSeekPoint {
+                start_timestamp: timestamp,
+                end_timestamp,
+                byte_offset,
+                end_byte_offset: next_byte_offset,
+                starts_with_proven_sap: reference.starts_with_sap
+                    && matches!(reference.sap_type, 1 | 2)
+                    && reference.sap_delta_time < reference.subsegment_duration,
+            });
+            timestamp = end_timestamp;
+            byte_offset = next_byte_offset;
+        }
+
+        (!points.is_empty()).then_some(Self {
+            timescale: sidx.timescale,
+            points,
+        })
+    }
+
+    fn append_if_ordered(&mut self, other: Self) {
+        let Some(last) = self.points.last() else {
+            *self = other;
+            return;
+        };
+        let Some(first_other) = other.points.first() else {
+            return;
+        };
+        if self.timescale == other.timescale
+            && first_other.start_timestamp >= last.end_timestamp
+            && first_other.byte_offset >= last.end_byte_offset
+        {
+            self.points.extend(other.points);
+        }
+    }
+
+    fn fits_source_length(&self, source_length: u64) -> bool {
+        self.points
+            .last()
+            .is_some_and(|point| point.end_byte_offset <= source_length)
+    }
+
+    #[cfg(test)]
+    fn byte_offset_for_timestamp(&self, timestamp: u64) -> Option<u64> {
+        self.seek_point_for_timestamp(timestamp)
+            .map(|point| point.byte_offset)
+    }
+
+    fn seek_point_for_timestamp(&self, timestamp: u64) -> Option<SidxSeekPoint> {
+        let first_point = self.points.first()?;
+        if timestamp < first_point.start_timestamp {
+            return first_point.starts_with_proven_sap.then_some(*first_point);
+        }
+
+        let point_index = self
+            .points
+            .iter()
+            .position(|point| timestamp < point.end_timestamp)
+            .or_else(|| {
+                self.points
+                    .last()
+                    .filter(|point| timestamp == point.end_timestamp)
+                    .map(|_| self.points.len() - 1)
+            })
+            ?;
+
+        // Внутри authored subsegment-а и ровно на его границе собственный SAP является точным
+        // container anchor; если его нет, откатываемся к ближайшему предыдущему SAP.
+        let current_point = self.points[point_index];
+        let search_end = if timestamp >= current_point.start_timestamp
+            && current_point.starts_with_proven_sap
+        {
+            point_index + 1
+        } else {
+            point_index
+        };
+        let sap_index = self.points[..search_end]
+            .iter()
+            .rposition(|point| point.starts_with_proven_sap)
+            .or_else(|| {
+                (point_index == 0 && first_point.starts_with_proven_sap).then_some(0)
+            })?;
+        Some(self.points[sap_index])
+    }
+}
+
+fn record_sidx_seek_index(
+    indexes: &mut HashMap<u32, SidxSeekIndex>,
+    sidx: &SidxAtom,
+    source_length: Option<u64>,
+) {
+    let Some(seek_index) = SidxSeekIndex::from_atom(sidx) else {
+        return;
+    };
+    if source_length.is_some_and(|length| !seek_index.fits_source_length(length)) {
+        return;
+    }
+
+    if let Some(existing) = indexes.get_mut(&sidx.reference_id) {
+        existing.append_if_ordered(seek_index);
+    } else {
+        indexes.insert(sidx.reference_id, seek_index);
+    }
+}
+
 impl Default for TimeSpan {
     fn default() -> Self {
         Self {
@@ -376,6 +516,12 @@ pub struct IsoMp4Reader<'s> {
     track_states: Vec<TrackState>,
     /// Optional, movie extends atom used for fragmented streams.
     moov: Arc<MoovAtom>,
+    /// Direct segment indexes, адресованные referenced track ID.
+    sidx_seek_indexes: HashMap<u32, SidxSeekIndex>,
+    /// `sidx` SAP разрешает первый sample indexed scan-а; packet verification остаётся отдельной.
+    indexed_seek_sap_track_id: Option<u32>,
+    /// Физическая длина ограничивает startup и поздние `sidx` offsets одинаково.
+    source_length: Option<u64>,
 }
 
 impl<'s> IsoMp4Reader<'s> {
@@ -406,6 +552,7 @@ impl<'s> IsoMp4Reader<'s> {
         // Maps each track id to its cumulative duration (TimeSpan) as parsed from the segment
         // index.
         let mut sidx_timespans: HashMap<u32, TimeSpan> = HashMap::new();
+        let mut sidx_seek_indexes: HashMap<u32, SidxSeekIndex> = HashMap::new();
 
         while let Some(header) = it.next_header()? {
             // Top-level atoms.
@@ -418,6 +565,8 @@ impl<'s> IsoMp4Reader<'s> {
                 }
                 AtomType::SegmentIndex => {
                     let sidx = it.read_atom::<SidxAtom>()?;
+
+                    record_sidx_seek_index(&mut sidx_seek_indexes, &sidx, total_len);
 
                     // Calculate the total duration, per track, from the segment index atoms.
                     let sidx_timespan = sidx_timespans
@@ -603,7 +752,61 @@ impl<'s> IsoMp4Reader<'s> {
             track_states,
             segs,
             moov,
+            sidx_seek_indexes,
+            indexed_seek_sap_track_id: None,
+            source_length: total_len,
         })
+    }
+
+    fn indexed_seek_track_id(&self, requested_track_id: u32) -> u32 {
+        if self.tracks.iter().any(|track| {
+            track.id == requested_track_id
+                && matches!(track.codec_params.as_ref(), Some(CodecParameters::Video(_)))
+                && self.sidx_seek_indexes.contains_key(&track.id)
+        }) {
+            return requested_track_id;
+        }
+
+        self.tracks
+            .iter()
+            .find(|track| {
+                matches!(track.codec_params.as_ref(), Some(CodecParameters::Video(_)))
+                    && self.sidx_seek_indexes.contains_key(&track.id)
+            })
+            .map_or(requested_track_id, |track| track.id)
+    }
+
+    /// Использует authored direct `sidx` offsets до обычного per-sample seek scan-а.
+    fn prepare_indexed_fragment_seek(&mut self, track_id: u32, time: Time) -> Result<()> {
+        self.indexed_seek_sap_track_id = None;
+        if !self.moov.is_fragmented() {
+            return Ok(());
+        }
+        let track_id = self.indexed_seek_track_id(track_id);
+        let Some(seek_point) = self.sidx_seek_indexes.get(&track_id).and_then(|index| {
+            let timestamp = TimeBase::from_recip(index.timescale).calc_timestamp(time)?;
+            if timestamp.is_negative() {
+                return None;
+            }
+            index.seek_point_for_timestamp(timestamp.get() as u64)
+        })
+        else {
+            return Ok(());
+        };
+
+        self.iter.seek_top_level(seek_point.byte_offset)?;
+        self.segs.truncate(1);
+        for track in &mut self.track_states {
+            track.cur_seg = 0;
+            track.next_sample = 0;
+            track.next_sample_pos = 0;
+        }
+        self.indexed_seek_sap_track_id = Some(track_id);
+        debug!(
+            "seeking fragmented MP4 through sidx: track_id={track_id}, byte_offset={}",
+            seek_point.byte_offset
+        );
+        Ok(())
     }
 
     /// Idempotently gets information regarding the next sample of the media stream. This function
@@ -808,6 +1011,14 @@ impl<'s> IsoMp4Reader<'s> {
                         return decode_error("isomp4: moof atom present without mvex atom");
                     }
                 }
+                AtomType::SegmentIndex => {
+                    let sidx = self.iter.read_atom::<SidxAtom>()?;
+                    record_sidx_seek_index(
+                        &mut self.sidx_seek_indexes,
+                        &sidx,
+                        self.source_length,
+                    );
+                }
                 _ => {
                     trace!("skipping atom: {:?}.", header.atom_type());
                 }
@@ -862,6 +1073,20 @@ impl<'s> IsoMp4Reader<'s> {
                         seg_idx,
                         sample_num,
                     });
+                } else if best_seek_location.is_none()
+                    && seg_idx > 0
+                    && self.indexed_seek_sap_track_id
+                        == Some(self.track_states[track_num].track_id)
+                {
+                    let mut sample_range = seg.track_sample_range(track_num);
+                    if let Some(sample_num) = sample_range.next() {
+                        // `sidx` доказывает SAP только для начала выбранного subsegment-а.
+                        // Позднейшие segments всё равно обязаны доказать RAP обычными flags.
+                        best_seek_location = Some(SeekLocation {
+                            seg_idx,
+                            sample_num,
+                        });
+                    }
                 }
 
                 // Mark the segment as examined.
@@ -894,6 +1119,9 @@ impl<'s> IsoMp4Reader<'s> {
         track.cur_seg = seek_loc.seg_idx;
         track.next_sample = seek_loc.sample_num;
         track.next_sample_pos = data_desc.base_pos + data_desc.offset.unwrap();
+        if self.indexed_seek_sap_track_id == Some(track.track_id) {
+            self.indexed_seek_sap_track_id = None;
+        }
 
         debug!(
             "seeked track_num={} (track_id={}) to packet_ts={} (delta={})",
@@ -1137,6 +1365,8 @@ impl FormatReader for IsoMp4Reader<'_> {
                         .calc_time(ts)
                         .ok_or(Error::SeekError(SeekErrorKind::Unseekable))?;
 
+                    self.prepare_indexed_fragment_seek(track_id, time)?;
+
                     // Seek all tracks excluding the primary track to the desired time.
                     for t in 0..self.track_states.len() {
                         if t != track_num {
@@ -1161,6 +1391,8 @@ impl FormatReader for IsoMp4Reader<'_> {
                         .ok_or(Error::SeekError(SeekErrorKind::InvalidTrack))?,
                     None => 0,
                 };
+
+                self.prepare_indexed_fragment_seek(self.tracks[track_num].id, time)?;
 
                 // Seek all tracks excluding the selected track and discard the result.
                 for t in 0..self.track_states.len() {
@@ -1316,6 +1548,102 @@ mod tests {
         let mut track = Track::new(1);
         track.with_codec_params(CodecParameters::Audio(params));
         track
+    }
+
+    fn direct_sidx() -> SidxAtom {
+        SidxAtom {
+            reference_id: 7,
+            timescale: NonZero::new(1_000).expect("test timescale is non-zero"),
+            earliest_pts: 5_000,
+            first_offset: 100,
+            references: vec![
+                crate::atoms::sidx::SidxReference {
+                    reference_type: crate::atoms::sidx::ReferenceType::Media,
+                    reference_size: 50,
+                    subsegment_duration: 10_000,
+                    starts_with_sap: true,
+                    sap_type: 1,
+                    sap_delta_time: 0,
+                },
+                crate::atoms::sidx::SidxReference {
+                    reference_type: crate::atoms::sidx::ReferenceType::Media,
+                    reference_size: 60,
+                    subsegment_duration: 20_000,
+                    starts_with_sap: false,
+                    sap_type: 0,
+                    sap_delta_time: 0,
+                },
+                crate::atoms::sidx::SidxReference {
+                    reference_type: crate::atoms::sidx::ReferenceType::Media,
+                    reference_size: 70,
+                    subsegment_duration: 30_000,
+                    starts_with_sap: true,
+                    sap_type: 1,
+                    sap_delta_time: 0,
+                },
+                crate::atoms::sidx::SidxReference {
+                    reference_type: crate::atoms::sidx::ReferenceType::Media,
+                    reference_size: 80,
+                    subsegment_duration: 40_000,
+                    starts_with_sap: false,
+                    sap_type: 0,
+                    sap_delta_time: 0,
+                },
+            ],
+            total_duration: 100_000,
+        }
+    }
+
+    #[test]
+    fn direct_sidx_seek_uses_authored_subsegment_boundaries() {
+        let index = SidxSeekIndex::from_atom(&direct_sidx()).expect("direct index is usable");
+
+        assert_eq!(index.byte_offset_for_timestamp(0), Some(100));
+        assert_eq!(index.byte_offset_for_timestamp(14_999), Some(100));
+        assert_eq!(index.byte_offset_for_timestamp(15_000), Some(100));
+        assert_eq!(index.byte_offset_for_timestamp(34_999), Some(100));
+        assert_eq!(index.byte_offset_for_timestamp(35_000), Some(210));
+        assert_eq!(index.byte_offset_for_timestamp(35_001), Some(210));
+        assert_eq!(index.byte_offset_for_timestamp(65_000), Some(210));
+        assert_eq!(index.byte_offset_for_timestamp(65_001), Some(210));
+        assert_eq!(index.byte_offset_for_timestamp(105_000), Some(210));
+        assert_eq!(index.byte_offset_for_timestamp(105_001), None);
+    }
+
+    #[test]
+    fn indirect_or_malformed_sidx_is_not_used_for_byte_seek() {
+        let mut indirect = direct_sidx();
+        indirect.references[1].reference_type = crate::atoms::sidx::ReferenceType::Segment;
+        assert!(SidxSeekIndex::from_atom(&indirect).is_none());
+
+        let mut empty_reference = direct_sidx();
+        empty_reference.references[0].reference_size = 0;
+        assert!(SidxSeekIndex::from_atom(&empty_reference).is_none());
+
+        let mut offset_overflow = direct_sidx();
+        offset_overflow.first_offset = u64::MAX;
+        assert!(SidxSeekIndex::from_atom(&offset_overflow).is_none());
+
+        let mut unproven_first_sap = direct_sidx();
+        unproven_first_sap.references[0].sap_type = 3;
+        let index = SidxSeekIndex::from_atom(&unproven_first_sap).expect("index shape is valid");
+        assert_eq!(index.byte_offset_for_timestamp(0), None);
+    }
+
+    #[test]
+    fn ordered_sidx_atoms_extend_the_same_track_index() {
+        let mut index = SidxSeekIndex::from_atom(&direct_sidx()).expect("first index is valid");
+        let mut continuation = direct_sidx();
+        continuation.earliest_pts = 105_000;
+        continuation.first_offset = 360;
+        let continuation =
+            SidxSeekIndex::from_atom(&continuation).expect("continuation index is valid");
+
+        index.append_if_ordered(continuation);
+
+        assert_eq!(index.byte_offset_for_timestamp(106_000), Some(360));
+        assert!(index.fits_source_length(620));
+        assert!(!index.fits_source_length(619));
     }
 
     #[test]

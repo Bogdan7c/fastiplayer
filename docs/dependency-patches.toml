@@ -50,11 +50,11 @@ package = "symphonia-format-isomp4"
 version = "0.6.0"
 upstream_repository = "https://github.com/pdeljanov/Symphonia"
 upstream_revision = "crates.io:sha256:2d179a01305b3505940135a9f0180d6ef4b487912748fe97554756f120fbd05e"
-reason = "MP4/fMP4 decode timing, composition offsets, sync-sample seeks, structural truncation, duration authority, bounded Smooth/PIFF init+inspection+canonical media reconstruction, orientation, HDR/color tags и QuickTime/iOS PCM packet coalescing."
-owned_diff_areas = ["src/atoms/mod.rs", "src/atoms/ctts.rs", "src/atoms/moof.rs", "src/atoms/stss.rs", "src/atoms/tfdt.rs", "src/atoms/tkhd.rs", "src/atoms/traf.rs", "src/atoms/stsd.rs", "src/atoms/trun.rs", "src/demuxer.rs", "src/stream.rs", "src/fragment_reconstruction", "fixtures/smooth-piff"]
+reason = "MP4/fMP4 decode timing, composition offsets, sync-sample и direct sidx/SAP indexed seeks, structural truncation, duration authority, bounded Smooth/PIFF init+inspection+canonical media reconstruction, orientation, HDR/color tags и QuickTime/iOS PCM packet coalescing."
+owned_diff_areas = ["src/atoms/mod.rs", "src/atoms/ctts.rs", "src/atoms/moof.rs", "src/atoms/sidx.rs", "src/atoms/stss.rs", "src/atoms/tfdt.rs", "src/atoms/tkhd.rs", "src/atoms/traf.rs", "src/atoms/stsd.rs", "src/atoms/trun.rs", "src/demuxer.rs", "src/stream.rs", "src/fragment_reconstruction", "fixtures/smooth-piff"]
 dependent_crates = ["symphonia-demux", "audio", "smooth-streaming-fmp4", "web-media-smooth"]
 focused_automated_tests = ["cargo test --manifest-path crates/symphonia-format-isomp4-patch/Cargo.toml --locked", "cargo test -p symphonia-demux -p audio -p smooth-streaming-fmp4 -p web-media-smooth --locked"]
-manual_media_matrix = ["H.264 MP4 B-frame PTS/DTS и signed ctts", "H.264/H.265 MP4 stss seek", "seekable fMP4 tfdt gap/sync seek", "Smooth/PIFF video/audio init+inspection+canonical media reconstruction", "вертикальный MOV", "MP4 HDR colr/mdcv/clli", "QuickTime/iOS LPCM seek/playback"]
+manual_media_matrix = ["H.264 MP4 B-frame PTS/DTS и signed ctts", "H.264/H.265 MP4 stss seek", "seekable fMP4 tfdt gap/sync seek", "seekable fMP4 direct sidx/SAP middle seek без linear moof scan", "Smooth/PIFF video/audio init+inspection+canonical media reconstruction", "вертикальный MOV", "MP4 HDR colr/mdcv/clli", "QuickTime/iOS LPCM seek/playback"]
 removal_gate = "Удалять только после upstream-эквивалента всех container contracts и прохождения hermetic suite плюс явных local-path scenarios из manual media matrix."
 
 # Запись связывает AAC fork с точным опубликованным архивом Symphonia 0.6.0.

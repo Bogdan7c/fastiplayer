@@ -143,6 +143,39 @@ fn h264_startup_decode_point_accepts_first_keyframe() -> Result<()> {
 }
 
 #[test]
+#[ignore = "manual fragmented MP4 regression; use RUSTIPLAYER_MEDIA_PATH"]
+fn h264_fragmented_mp4_middle_seek_uses_indexed_anchor() -> Result<()> {
+    let path = selected_media_path()?;
+    let mut demuxer = open_h264_media(&path, "h264-fragmented-mp4-middle-seek")?;
+    let video_track =
+        first_h264_video_track(&demuxer).context("selected file has no H.264 video track")?;
+    let duration = demuxer
+        .duration()
+        .context("selected file has no duration")?;
+    let target = duration / 2;
+
+    let seek_result = demuxer.seek_with_request(DemuxSeekRequest::decode_point_before(target))?;
+    let first_packet = collect_video_packets(&mut demuxer, video_track.id, 1)?
+        .into_iter()
+        .next()
+        .context("selected H.264 stream has no packet after indexed middle seek")?;
+
+    ensure!(
+        seek_result.actual_position.as_duration() <= target,
+        "indexed middle seek landed after target"
+    );
+    ensure!(
+        first_packet.pts <= target,
+        "indexed middle seek first packet landed after target"
+    );
+    ensure!(
+        first_packet.keyframe == PacketKeyframe::Keyframe,
+        "indexed middle seek did not start on a proven H.264 keyframe"
+    );
+    Ok(())
+}
+
+#[test]
 #[ignore = "manual media regression; use scripts/media-regression.sh"]
 fn h264_matroska_cue_seek_uses_near_decode_anchor() -> Result<()> {
     let path = selected_media_path()?;

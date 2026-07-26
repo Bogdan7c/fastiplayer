@@ -17,19 +17,17 @@ pub enum ReferenceType {
     Media,
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct SidxReference {
     pub reference_type: ReferenceType,
     pub reference_size: u32,
     pub subsegment_duration: u32,
-    // pub starts_with_sap: bool,
-    // pub sap_type: u8,
-    // pub sap_delta_time: u32,
+    pub starts_with_sap: bool,
+    pub sap_type: u8,
+    pub sap_delta_time: u32,
 }
 
 /// Segment index atom.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct SidxAtom {
     pub reference_id: u32,
@@ -51,7 +49,7 @@ impl Atom for SidxAtom {
         // The anchor point for segment offsets is the first byte after this atom.
         let anchor = header
             .size()
-            .map(|atom_len| header.pos() + atom_len.get())
+            .and_then(|atom_len| header.pos().checked_add(atom_len.get()))
             .ok_or(Error::DecodeError(
                 "isomp4 (sidx): expected atom size to be known",
             ))?;
@@ -59,9 +57,16 @@ impl Atom for SidxAtom {
         let (earliest_pts, first_offset) = match version {
             0 => (
                 u64::from(it.read_u32()?),
-                anchor + u64::from(it.read_u32()?),
+                anchor
+                    .checked_add(u64::from(it.read_u32()?))
+                    .ok_or(Error::DecodeError("isomp4 (sidx): first offset overflow"))?,
             ),
-            1 => (it.read_u64()?, anchor + it.read_u64()?),
+            1 => (
+                it.read_u64()?,
+                anchor
+                    .checked_add(it.read_u64()?)
+                    .ok_or(Error::DecodeError("isomp4 (sidx): first offset overflow"))?,
+            ),
             _ => return decode_error("isomp4 (sidx): invalid version"),
         };
 
@@ -86,13 +91,15 @@ impl Atom for SidxAtom {
 
             let reference_size = reference & !0x8000_0000;
 
-            // Ignore SAP
-            let _ = it.read_u32()?;
+            let sap = it.read_u32()?;
 
             references.push(SidxReference {
                 reference_type,
                 reference_size,
                 subsegment_duration,
+                starts_with_sap: (sap & 0x8000_0000) != 0,
+                sap_type: ((sap >> 28) & 0x7) as u8,
+                sap_delta_time: sap & 0x0fff_ffff,
             });
         }
 

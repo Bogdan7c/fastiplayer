@@ -852,6 +852,17 @@ impl<R: ReadAtom> AtomIterator<R> {
         }
     }
 
+    /// Переставляет iterator на границу top-level atom-а из проверенного индекса.
+    pub(crate) fn seek_top_level(&mut self, pos: u64) -> Result<()>
+    where
+        R: MediaSource,
+    {
+        self.seek_reader(pos)?;
+        self.stack.clear();
+        self.pending = None;
+        Ok(())
+    }
+
     /// Seek the inner reader to the desired position.
     ///
     /// This seek function first attempts to seek within the cache, before attempting to seek

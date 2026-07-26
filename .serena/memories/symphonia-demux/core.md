@@ -66,3 +66,9 @@
 - `ResetRequired`, metadata, packet и EOF теперь всегда наблюдаются как exact ordered `DemuxReadEvent`; тест `next_event_exposes_reset_lifecycle_before_following_packet` заменил старую packet-only compatibility семантику.
 - Concrete finite Symphonia seek verification не производит temporary readiness; невозможное появление этого event-а fail-closed через typed `DemuxError::UnexpectedTemporaryReadinessDuringSeekVerification`, без panic/busy loop.
 - `DualStreamDemuxer` получает bounded readiness/interleave semantics от `demux_api::CompositeAvDemuxer`; public track IDs и seek behavior не изменились. Full 132-test lib regression PASS на Rust 1.96.
+
+## Fragmented MP4 `sidx` seek (2026-07-26)
+
+- Локальный `symphonia-format-isomp4` теперь использует direct-media `sidx` как codec/format-ID-neutral byte seek index для fragmented MP4 вместо линейного scan всех `moof` до цели. Индекс сохраняет SAP type/delta, принимает только bounded direct references и SAP type 1/2, ограничивает offsets физической длиной source-а, объединяет ordered startup/late indexes и fail-closed не использует indirect/malformed rows.
+- На muxed media requested indexed video имеет приоритет; audio-first seek использует доступный indexed video anchor. SAP authority живёт до seek соответствующего track-а, обычный non-fragmented MP4 не входит в indexed path. `sidx` разрешает начало container scan-а, а существующая `SymphoniaDemuxer::DecodePointBefore` verification по packet bytes остаётся финальной проверкой video keyframe.
+- Hermetic owners: `symphonia-format-isomp4` tests `sidx_parser_preserves_direct_sap_evidence`, `direct_sidx_seek_uses_authored_subsegment_boundaries`, `indirect_or_malformed_sidx_is_not_used_for_byte_seek`, `ordered_sidx_atoms_extend_the_same_track_index`; manual real-file regression: `symphonia-demux/tests/h264_fixtures.rs::h264_fragmented_mp4_middle_seek_uses_indexed_anchor`. Реальный YouTube fMP4 middle seek прошёл без линейной задержки.
