@@ -1,6 +1,6 @@
 use hls_playlist_core::{
     HlsKeyMethod, HlsParseErrorKind, HlsParseRequest, HlsParserLimits, HlsPlaylist,
-    HlsProfileError, MediaContainerIntent, is_hls_candidate, parse_hls_playlist,
+    HlsProfileError, HlsVideoRange, MediaContainerIntent, is_hls_candidate, parse_hls_playlist,
     validate_initial_profile, validate_live_profile, validate_live_refresh_profile,
     validate_vod_profile,
 };
@@ -11,6 +11,59 @@ fn parse(text: &str) -> Result<HlsPlaylist, hls_playlist_core::HlsParseError> {
         Some("https://media.example.invalid/path/master.m3u8?secret=yes"),
         HlsParserLimits::default(),
     ))
+}
+
+#[test]
+fn master_keeps_exact_frame_rate_and_standard_video_range() {
+    let playlist = parse(
+        "#EXTM3U\n\
+         #EXT-X-STREAM-INF:BANDWIDTH=1000,FRAME-RATE=29.970,VIDEO-RANGE=HLG\n\
+         video.m3u8\n",
+    )
+    .expect("valid standardized variant metadata");
+    let HlsPlaylist::Master(master) = playlist else {
+        panic!("expected master");
+    };
+    let variant = master.variants.first().expect("one variant");
+    let frame_rate = variant.frame_rate.expect("frame rate evidence");
+    assert_eq!(frame_rate.numerator(), 2_997);
+    assert_eq!(frame_rate.denominator(), 100);
+    assert_eq!(variant.video_range, Some(HlsVideoRange::Hlg));
+
+    for (value, expected) in [
+        ("SDR", HlsVideoRange::Sdr),
+        ("HLG", HlsVideoRange::Hlg),
+        ("PQ", HlsVideoRange::Pq),
+    ] {
+        let playlist = parse(&format!(
+            "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,VIDEO-RANGE={value}\nchild.m3u8\n"
+        ))
+        .expect("known VIDEO-RANGE value");
+        let HlsPlaylist::Master(master) = playlist else {
+            panic!("expected master");
+        };
+        assert_eq!(master.variants[0].video_range, Some(expected));
+    }
+}
+
+#[test]
+fn malformed_known_variant_metadata_is_document_fatal() {
+    for attribute in [
+        "FRAME-RATE=29.9700",
+        "FRAME-RATE=29.",
+        "FRAME-RATE=1.2.3",
+        "VIDEO-RANGE=HDR",
+        "VIDEO-RANGE=hlg",
+    ] {
+        let error = parse(&format!(
+            "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,{attribute}\nchild.m3u8\n"
+        ))
+        .expect_err("malformed known attribute must reject the document");
+        assert!(matches!(
+            error.kind(),
+            HlsParseErrorKind::InvalidTagSyntax { .. }
+        ));
+    }
 }
 
 #[test]

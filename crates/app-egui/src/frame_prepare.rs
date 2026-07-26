@@ -53,6 +53,8 @@ mod submit;
 mod telemetry_mapping;
 #[path = "frame_prepare/ui_prepare.rs"]
 mod ui_prepare;
+#[path = "frame_prepare/web_media_runtime.rs"]
+mod web_media_runtime;
 use input_snapshot::{AppFrameInputTimings, prepare_frame_input};
 use sequence::{FrameSequenceContract, FrameSequenceObserver, FrameSequenceStage};
 use settings_runtime_adapter::FrameSettingsRuntimeAdapter;
@@ -1147,10 +1149,8 @@ pub(crate) fn render_frame(
     playlist_runtime.publish_desktop_snapshot(frame_context.player_snapshot());
 
     let stage_started_at = Instant::now();
-    if let Some(binding) = app_state.playlist_runtime_binding() {
-        let playlist_view_model = playlist_runtime.playlist_view_model();
-        let _model_was_applied = app_state.update_playlist_view_model(binding, playlist_view_model);
-    }
+    // Playlist projection и catalog snapshot фиксируются до построения UI model.
+    web_media_runtime::sync_before_ui(app_state, playlist_runtime);
     let playlist_import_preview = playlist_runtime.pending_playlist_import_preview();
     let playlist_confirmation = playlist_runtime.pending_playlist_confirmation();
     let playlist_interaction = playlist_runtime.playlist_interaction_model();
@@ -1282,7 +1282,7 @@ pub(crate) fn render_frame(
         playlist_runtime,
         renderer,
     );
-    app_state.poll_same_item_switch(playlist_runtime);
+    web_media_runtime::advance_after_actions(app_state, playlist_runtime, renderer);
     app_state.poll_playlist_transport(playlist_runtime, renderer);
 
     let settings_preview_tick = match settings_runtime.apply_due_preview(renderer, Instant::now()) {

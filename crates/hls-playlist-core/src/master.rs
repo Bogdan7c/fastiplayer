@@ -4,8 +4,8 @@ use std::num::NonZeroU64;
 use url::Url;
 
 use crate::{
-    ClosedCaptionsReference, ExactReference, HlsLineNumber, HlsParseError, HlsParseErrorKind,
-    MediaRendition, MediaRenditionType, VariantStream,
+    ClosedCaptionsReference, ExactReference, HlsFrameRate, HlsLineNumber, HlsParseError,
+    HlsParseErrorKind, HlsVideoRange, MediaRendition, MediaRenditionType, VariantStream,
     attribute::Attributes,
     parser::{parse_u64, validate_reference},
 };
@@ -16,6 +16,8 @@ pub(crate) struct VariantFields {
     average_bandwidth: Option<u64>,
     codecs: Option<Box<str>>,
     resolution: Option<(u32, u32)>,
+    frame_rate: Option<HlsFrameRate>,
+    video_range: Option<HlsVideoRange>,
     audio_group: Option<Box<str>>,
     video_group: Option<Box<str>>,
     subtitle_group: Option<Box<str>>,
@@ -32,6 +34,8 @@ impl VariantFields {
             average_bandwidth: self.average_bandwidth,
             codecs: self.codecs,
             resolution: self.resolution,
+            frame_rate: self.frame_rate,
+            video_range: self.video_range,
             audio_group: self.audio_group,
             video_group: self.video_group,
             subtitle_group: self.subtitle_group,
@@ -72,12 +76,75 @@ pub(crate) fn parse_variant(
             .raw("RESOLUTION")
             .map(|value| parse_resolution(value, line))
             .transpose()?,
+        frame_rate: attributes
+            .raw("FRAME-RATE")
+            .map(|value| parse_frame_rate(value, line))
+            .transpose()?,
+        video_range: attributes
+            .raw("VIDEO-RANGE")
+            .map(|value| parse_video_range(value, line))
+            .transpose()?,
         audio_group: optional_quoted(attributes, "AUDIO", line)?.map(Into::into),
         video_group: optional_quoted(attributes, "VIDEO", line)?.map(Into::into),
         subtitle_group: optional_quoted(attributes, "SUBTITLES", line)?.map(Into::into),
         closed_captions,
         requires_output_protection,
     })
+}
+
+/// HLS задаёт FRAME-RATE как decimal value, округлённое до трёх знаков после точки.
+fn parse_frame_rate(value: &str, line: HlsLineNumber) -> Result<HlsFrameRate, HlsParseError> {
+    let (whole, fractional) = match value.split_once('.') {
+        Some((whole, fractional)) => {
+            if whole.is_empty()
+                || fractional.is_empty()
+                || fractional.len() > 3
+                || fractional.contains('.')
+            {
+                return Err(syntax(line));
+            }
+            (whole, Some(fractional))
+        }
+        None => (value, None),
+    };
+    if whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || fractional.is_some_and(|digits| !digits.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return Err(syntax(line));
+    }
+
+    let denominator = fractional.map_or(1_u64, |digits| 10_u64.pow(digits.len() as u32));
+    let whole = whole.parse::<u64>().map_err(|_| syntax(line))?;
+    let fractional = fractional
+        .map(|digits| digits.parse::<u64>().map_err(|_| syntax(line)))
+        .transpose()?
+        .unwrap_or(0);
+    let numerator = whole
+        .checked_mul(denominator)
+        .and_then(|scaled| scaled.checked_add(fractional))
+        .ok_or_else(|| syntax(line))?;
+    let divisor = greatest_common_divisor(numerator, denominator);
+    let reduced_denominator = NonZeroU64::new(denominator / divisor).ok_or_else(|| syntax(line))?;
+    Ok(HlsFrameRate::new(numerator / divisor, reduced_denominator))
+}
+
+fn greatest_common_divisor(mut left: u64, mut right: u64) -> u64 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left.max(1)
+}
+
+fn parse_video_range(value: &str, line: HlsLineNumber) -> Result<HlsVideoRange, HlsParseError> {
+    match value {
+        "SDR" => Ok(HlsVideoRange::Sdr),
+        "HLG" => Ok(HlsVideoRange::Hlg),
+        "PQ" => Ok(HlsVideoRange::Pq),
+        _ => Err(syntax(line)),
+    }
 }
 
 /// Разбирает и проверяет RFC MUST-инварианты одного `EXT-X-MEDIA`.

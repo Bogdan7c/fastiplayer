@@ -4,6 +4,7 @@
 //! transient request material остаются здесь, а наружу выдаются нейтральные
 //! [`web_media_core`] descriptors и secret-safe service values.
 
+mod composition;
 mod descriptor;
 mod model;
 mod normalize;
@@ -12,6 +13,7 @@ mod raw;
 mod request_material;
 mod transport;
 
+pub use composition::{YtDlpComposedSelection, YtDlpCompositionError, YtDlpCompositionMatchKind};
 pub use model::{
     YtDlpCandidateComponentRequestSummary, YtDlpCandidateComponentRole, YtDlpCandidateEntry,
     YtDlpCandidateMatch, YtDlpCandidateMatchKind, YtDlpCandidateNormalizationRejection,

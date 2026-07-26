@@ -1,4 +1,5 @@
 //! Bounded process-lifetime mechanism подготовки и strong player install.
+mod player_staging;
 
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -21,10 +22,11 @@ use super::player_port::{ControlReceiptPort, InstallReceiptPort, MediaOpenPlayer
 use super::{
     AuthorizationDispatchResolution, CancellationDispatchOutcome, MediaOpenClientKey,
     MediaOpenCommandError, MediaOpenCompletionDriveError, MediaOpenInstallIntent,
-    MediaOpenInvariantViolation, MediaOpenPhase, MediaOpenRequestId, MediaOpenSnapshot,
-    MediaOpenSourceRequest, MediaOpenStartError, MediaOpenStartMode, MediaOpenStartOutcome,
-    MediaOpenTerminalOutcome, MediaPreparationFailureKind, PreparedMediaDescriptor,
-    PreparedMediaOpen, SafeMediaLabel,
+    MediaOpenInvariantViolation, MediaOpenPhase, MediaOpenPositionPreparation, MediaOpenRequestId,
+    MediaOpenSnapshot, MediaOpenSourceRequest, MediaOpenStartError, MediaOpenStartMode,
+    MediaOpenStartOutcome, MediaOpenTerminalOutcome, MediaPreparationFailureKind,
+    PreparedMediaDescriptor, PreparedMediaOpen, SafeMediaLabel,
+    SameLineagePositionPreparationPhase,
 };
 
 enum PendingControl {
@@ -65,6 +67,7 @@ struct CurrentRequest {
     authorization_resolution: Option<AuthorizationDispatchResolution>,
     terminal: Option<MediaOpenTerminalOutcome>,
     safe_label: SafeMediaLabel,
+    same_lineage_position: SameLineagePositionPreparationPhase,
 }
 
 /// Policy-neutral coordinator; controller identities и queue token здесь отсутствуют.
@@ -144,6 +147,7 @@ impl MediaOpenCoordinator {
             authorization_resolution: None,
             terminal: None,
             safe_label,
+            same_lineage_position: SameLineagePositionPreparationPhase::NotRequired,
         });
         Ok(MediaOpenStartOutcome::Accepted { request_id })
     }
@@ -192,6 +196,7 @@ impl MediaOpenCoordinator {
             authorization_resolution: None,
             terminal: None,
             safe_label,
+            same_lineage_position: SameLineagePositionPreparationPhase::NotRequired,
         });
         Ok(MediaOpenStartOutcome::Accepted { request_id })
     }
@@ -221,55 +226,6 @@ impl MediaOpenCoordinator {
         self.start(client_key, source_request, MediaOpenStartMode::RequireIdle)
     }
 
-    /// Передаёт prepared media exact player transaction-у; caller поставляет app resource port.
-    pub(crate) fn stage_at_player(
-        &mut self,
-        request_id: MediaOpenRequestId,
-        intent: MediaOpenInstallIntent,
-        video_resource_port: MediaInstallVideoResourcePort,
-    ) -> Result<MediaInstallRequestId, MediaOpenCommandError> {
-        self.matching_current(request_id)?;
-        let player_port = self
-            .player_port
-            .as_ref()
-            .ok_or(MediaOpenCommandError::MissingPlayerBinding)?
-            .clone();
-        let current = self.matching_current_mut(request_id)?;
-        if current.phase != MediaOpenPhase::Prepared {
-            return Err(MediaOpenCommandError::InvalidPhase {
-                actual: current.phase,
-            });
-        }
-        let prepared_open = current
-            .prepared_open
-            .take()
-            .expect("Prepared phase must own prepared media");
-        let player_request_id = MediaInstallRequestId::new_unique();
-        let descriptor = prepared_open.descriptor;
-        match player_port.stage(
-            player_request_id,
-            prepared_open.prepared_media,
-            intent,
-            video_resource_port,
-        ) {
-            Ok(receipt) => {
-                current.phase = MediaOpenPhase::PlayerStaging;
-                current.descriptor = Some(descriptor);
-                current.player_request_id = Some(player_request_id);
-                current.install_receipt = Some(receipt);
-                Ok(player_request_id)
-            }
-            Err(rejection) => {
-                current.phase = MediaOpenPhase::Failed;
-                current.terminal = Some(MediaOpenTerminalOutcome::PlayerRejected {
-                    request_id,
-                    rejection,
-                });
-                Err(MediaOpenCommandError::PlayerDispatch(rejection))
-            }
-        }
-    }
-
     /// Explicit matching authorization dispatch без промежуточного buffer-а.
     pub(crate) fn authorize_ready(
         &mut self,
@@ -290,12 +246,17 @@ impl MediaOpenCoordinator {
         let player_request_id = current
             .player_request_id
             .expect("Ready request must have player request id");
+        if current.same_lineage_position == SameLineagePositionPreparationPhase::ReadyToCommit {
+            return Err(MediaOpenCommandError::InvalidPhase {
+                actual: current.phase,
+            });
+        }
         current.phase = MediaOpenPhase::AuthorizationDispatchPending;
         match player_port.authorize(player_request_id) {
             Ok(receipt) => {
+                current.pending_control = Some(PendingControl::Authorization(receipt));
                 let resolution = AuthorizationDispatchResolution::EnqueuedAtPlayerOwner;
                 current.authorization_resolution = Some(resolution);
-                current.pending_control = Some(PendingControl::Authorization(receipt));
                 current.phase = MediaOpenPhase::EnqueuedAtPlayerOwner;
                 Ok(resolution)
             }
@@ -307,6 +268,21 @@ impl MediaOpenCoordinator {
                 Err(MediaOpenCommandError::PlayerDispatch(rejection))
             }
         }
+    }
+
+    pub(crate) fn stage_same_lineage_at_player(
+        &mut self,
+        request_id: MediaOpenRequestId,
+        intent: MediaOpenInstallIntent,
+        video_resource_port: MediaInstallVideoResourcePort,
+        expected_old_media_instance_id: player_core::MediaInstanceId,
+    ) -> Result<MediaInstallRequestId, MediaOpenCommandError> {
+        self.stage_at_player_with_position(
+            request_id,
+            intent,
+            video_resource_port,
+            player_staging::same_lineage_position(expected_old_media_instance_id),
+        )
     }
 
     pub(crate) fn cancel_request(
@@ -338,6 +314,14 @@ impl MediaOpenCoordinator {
     ) -> Result<CancellationDispatchOutcome, MediaOpenCommandError> {
         let current = self.matching_current(request_id)?;
         if current.phase == MediaOpenPhase::EnqueuedAtPlayerOwner {
+            return Ok(CancellationDispatchOutcome::CommitMustFinish);
+        }
+        if current.phase == MediaOpenPhase::AuthorizationDispatchPending
+            && matches!(
+                current.pending_control,
+                Some(PendingControl::Authorization(_))
+            )
+        {
             return Ok(CancellationDispatchOutcome::CommitMustFinish);
         }
         if current.phase == MediaOpenPhase::AuthorizationDispatchPending
@@ -488,6 +472,7 @@ impl MediaOpenCoordinator {
                     .map(|prepared| prepared.descriptor.clone())
             }),
             authorization_resolution: current.authorization_resolution,
+            same_lineage_position: current.same_lineage_position,
         })
     }
 
@@ -582,36 +567,6 @@ impl MediaOpenCoordinator {
         true
     }
 
-    fn drain_player_staging(&mut self) -> bool {
-        let Some(current) = self.current.as_mut() else {
-            return false;
-        };
-        if current.phase != MediaOpenPhase::PlayerStaging {
-            return false;
-        }
-        let receipt = current
-            .install_receipt
-            .as_ref()
-            .expect("PlayerStaging must own install receipt");
-        if let Some(completion) = receipt.take_completion() {
-            current.phase = MediaOpenPhase::Failed;
-            current.terminal = Some(MediaOpenTerminalOutcome::PlayerFailed {
-                request_id: current.request_id,
-                completion,
-            });
-            return true;
-        }
-        let Some(MediaInstallPhase::ReadyToCommit { request_id }) = receipt.take_ready() else {
-            return false;
-        };
-        if Some(request_id) != current.player_request_id {
-            self.publish_fatal(MediaOpenInvariantViolation::MismatchedPlayerRequest);
-            return true;
-        }
-        current.phase = MediaOpenPhase::ReadyToCommit;
-        true
-    }
-
     fn drain_control(&mut self) -> bool {
         let Some(current) = self.current.as_mut() else {
             return false;
@@ -669,6 +624,9 @@ impl MediaOpenCoordinator {
                 PendingControl::Authorization(_),
                 MediaInstallControlOutcome::AuthorizationAccepted,
             ) => {
+                current.authorization_resolution =
+                    Some(AuthorizationDispatchResolution::EnqueuedAtPlayerOwner);
+                current.phase = MediaOpenPhase::EnqueuedAtPlayerOwner;
                 let completion = current
                     .install_receipt
                     .as_ref()
@@ -695,6 +653,32 @@ impl MediaOpenCoordinator {
                             .clone()
                             .expect("staged request must retain descriptor"),
                     ),
+                    completion,
+                });
+            }
+            (
+                PendingControl::Authorization(_),
+                MediaInstallControlOutcome::AuthorizationRejectedBeforeCommit,
+            ) => {
+                let completion = current
+                    .install_receipt
+                    .as_ref()
+                    .and_then(|receipt| receipt.take_completion());
+                let Some(completion @ MediaInstallCompletion::Failed { request_id, .. }) =
+                    completion
+                else {
+                    self.publish_fatal(
+                        MediaOpenInvariantViolation::MissingTerminalAfterPlayerControl,
+                    );
+                    return true;
+                };
+                if Some(request_id) != current.player_request_id {
+                    self.publish_fatal(MediaOpenInvariantViolation::MismatchedPlayerRequest);
+                    return true;
+                }
+                current.phase = MediaOpenPhase::Failed;
+                current.terminal = Some(MediaOpenTerminalOutcome::PlayerFailed {
+                    request_id: current.request_id,
                     completion,
                 });
             }
@@ -847,6 +831,8 @@ mod tests {
         SafeMediaLabel,
     };
 
+    mod same_lineage_tests;
+
     #[derive(Default)]
     struct FakeDemuxer;
 
@@ -959,6 +945,7 @@ mod tests {
         control_states: VecDeque<Arc<Mutex<FakeControlState>>>,
         authorize_rejection: Option<PlayerDispatchRejection>,
         authorize_calls: usize,
+        prepare_position_calls: usize,
         cancel_calls: Vec<MediaInstallCancellationCause>,
         staged_request_id: Option<MediaInstallRequestId>,
         intent_updates: Vec<PlaybackIntentUpdate>,
@@ -975,12 +962,24 @@ mod tests {
             _prepared_media: player_core::PreparedMedia,
             _intent: MediaOpenInstallIntent,
             _video_resource_port: MediaInstallVideoResourcePort,
+            _position_preparation: MediaOpenPositionPreparation,
         ) -> Result<Box<dyn InstallReceiptPort>, PlayerDispatchRejection> {
             let mut state = self.state.lock().expect("fake player state");
             state.staged_request_id = Some(request_id);
             Ok(Box::new(FakeInstallReceipt {
                 slots: Arc::clone(&state.install_slots),
             }))
+        }
+
+        fn prepare_position(
+            &self,
+            _request_id: MediaInstallRequestId,
+        ) -> Result<(), PlayerDispatchRejection> {
+            self.state
+                .lock()
+                .expect("fake player state")
+                .prepare_position_calls += 1;
+            Ok(())
         }
 
         fn authorize(
@@ -1083,6 +1082,7 @@ mod tests {
             control_states: control_states.into(),
             authorize_rejection,
             authorize_calls: 0,
+            prepare_position_calls: 0,
             cancel_calls: Vec::new(),
             staged_request_id: None,
             intent_updates: Vec::new(),

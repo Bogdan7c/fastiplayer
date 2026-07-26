@@ -30,38 +30,27 @@ pub(super) enum PositionRestoreOutcomeRoute {
 /// App выбирает только intent; fresh DVR membership остаётся player-owned.
 pub(super) fn same_lineage_position_restore(
     timeline_mode: media_core::TimelineMode,
-    previous_absolute_position: std::time::Duration,
+    _previous_absolute_position: std::time::Duration,
 ) -> (
     player_core::InstalledPositionRestore,
     PositionRestoreTimeline,
 ) {
-    match timeline_mode {
-        media_core::TimelineMode::Live => (
-            player_core::InstalledPositionRestore::RestoreLiveSameItemPosition {
-                previous_absolute_position,
-            },
-            PositionRestoreTimeline::LiveSameItem,
-        ),
-        media_core::TimelineMode::Static
-            if previous_absolute_position > std::time::Duration::ZERO =>
-        {
-            (
-                player_core::InstalledPositionRestore::SeekTo(previous_absolute_position),
-                PositionRestoreTimeline::Static,
-            )
-        }
-        media_core::TimelineMode::Static => (
-            player_core::InstalledPositionRestore::KeepStart,
-            PositionRestoreTimeline::Static,
-        ),
-    }
+    let timeline = match timeline_mode {
+        media_core::TimelineMode::Live => PositionRestoreTimeline::LiveSameItem,
+        media_core::TimelineMode::Static => PositionRestoreTimeline::Static,
+    };
+    (
+        player_core::InstalledPositionRestore::AdoptPreparedSameLineagePosition,
+        timeline,
+    )
 }
 
 /// Проверяет exact instance/timeline и не превращает live outcome в persistent checkpoint.
 pub(super) fn route_position_restore_outcome(
     outcome: player_core::InstalledMediaStateRestoreOutcome,
     expected_media_instance_id: player_core::MediaInstanceId,
-    requested_position: std::time::Duration,
+    _requested_position: std::time::Duration,
+    applied_position: std::time::Duration,
     timeline: PositionRestoreTimeline,
 ) -> PositionRestoreOutcomeRoute {
     match outcome {
@@ -70,9 +59,7 @@ pub(super) fn route_position_restore_outcome(
         {
             let checkpoint_position = match timeline {
                 PositionRestoreTimeline::Static => {
-                    crate::playlist_runtime::InstalledCheckpointPosition::Seekable(
-                        requested_position,
-                    )
+                    crate::playlist_runtime::InstalledCheckpointPosition::Seekable(applied_position)
                 }
                 PositionRestoreTimeline::LiveSameItem => {
                     crate::playlist_runtime::InstalledCheckpointPosition::Live
@@ -129,9 +116,7 @@ mod tests {
                 previous_absolute_position,
             ),
             (
-                player_core::InstalledPositionRestore::RestoreLiveSameItemPosition {
-                    previous_absolute_position,
-                },
+                player_core::InstalledPositionRestore::AdoptPreparedSameLineagePosition,
                 PositionRestoreTimeline::LiveSameItem,
             )
         );
@@ -141,9 +126,7 @@ mod tests {
                 std::time::Duration::ZERO,
             ),
             (
-                player_core::InstalledPositionRestore::RestoreLiveSameItemPosition {
-                    previous_absolute_position: std::time::Duration::ZERO,
-                },
+                player_core::InstalledPositionRestore::AdoptPreparedSameLineagePosition,
                 PositionRestoreTimeline::LiveSameItem,
             )
         );
@@ -173,6 +156,7 @@ mod tests {
                     outcome,
                     media_instance_id,
                     requested_position,
+                    requested_position,
                     PositionRestoreTimeline::LiveSameItem,
                 ),
                 PositionRestoreOutcomeRoute::Resume {
@@ -192,6 +176,7 @@ mod tests {
             route_position_restore_outcome(
                 stale_outcome,
                 media_instance_id,
+                requested_position,
                 requested_position,
                 PositionRestoreTimeline::LiveSameItem,
             ),

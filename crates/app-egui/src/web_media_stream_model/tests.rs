@@ -14,6 +14,7 @@ pub(super) fn candidate(height: Option<u32>, audio_only: bool) -> WebMediaCandid
         audio_bitrate: Some(128_000),
         video_codec: (!audio_only).then_some(CodecFamily::Vp9),
         audio_codec: Some(CodecFamily::Opus),
+        dynamic_range: (!audio_only).then_some(web_media_core::DynamicRange::Sdr),
         containers: WebMediaContainerSummary {
             video: (!audio_only).then_some(ContainerFamily::WebM),
             audio: Some(ContainerFamily::WebM),

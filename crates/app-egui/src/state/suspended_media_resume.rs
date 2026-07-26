@@ -283,23 +283,33 @@ impl AppState {
             ActiveMediaSource::YtDlpUrl {
                 source_locator,
                 candidate_selection,
+                composed_selection,
                 stream_configuration,
+                ..
             } => {
                 let capabilities = self
                     .system_capabilities_snapshot
                     .clone()
                     .ok_or(ResumeCheckpointError::PreparationFailed)?;
+                let selection_intent = match composed_selection {
+                    Some(composed) => crate::web_media_open::YtDlpCandidateOpenIntent::composed(
+                        composed.clone(),
+                        candidate_selection.clone(),
+                        stream_configuration.preference(),
+                    ),
+                    None => crate::web_media_open::YtDlpCandidateOpenIntent::exact_preserving_installed_stream_configuration(
+                            candidate_selection.clone(),
+                            stream_configuration,
+                        ),
+                };
                 MediaOpenSourceRequest::YtDlp {
                     locator: source_locator.clone(),
-                    selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent::exact_preserving_installed_stream_configuration(
-                        candidate_selection.clone(),
-                        stream_configuration,
-                    ),
+                    selection_intent,
                     network_config: config.network,
                     yt_dlp_config: config.yt_dlp,
                     demux_config: config.player.demux,
                     preferred_video_codec_order: config.player.preferred_video_codec_order,
-                    system_capabilities: capabilities,
+                    system_capabilities: Box::new(capabilities),
                     audio_capabilities: self.audio_decode_capability_snapshot(),
                 }
             }

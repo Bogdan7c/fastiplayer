@@ -1,7 +1,8 @@
 //! Queue-neutral contract установки media.
 //!
 //! Порядок strong protocol фиксирован типами: transport acceptance → ordinary fallible
-//! preparation → `ReadyToCommit` → matching `AuthorizeInstallCommit` → один infallible owner
+//! preparation → optional same-lineage position preparation → `ReadyToCommit` →
+//! matching `AuthorizeInstallCommit` → один infallible owner
 //! turn, который заменяет active ownership и публикует `Installed` в request-owned slot.
 //! D52 playback intent линеаризуется отдельным latest-only control state относительно commit;
 //! protocol остаётся queue-neutral и не владеет playlist lineage.
@@ -10,6 +11,7 @@ mod exact_media_transport;
 mod installed_media_release;
 mod installed_state_restore;
 mod playback_intent;
+mod position_preparation;
 pub(crate) mod timeline_seek;
 
 pub use exact_media_transport::{
@@ -35,11 +37,14 @@ pub use playback_intent::{
     PlaybackIntent, PlaybackIntentRevision, PlaybackIntentUpdate, PlaybackIntentUpdateOutcome,
     PlaybackIntentUpdateReceipt,
 };
+use position_preparation::MediaInstallProtocolState;
+pub use position_preparation::{MediaInstallPositionPreparation, PrepareMediaInstallPosition};
 pub use timeline_seek::{
     ExactTimelineSeekOutcome, ExactTimelineSeekReceipt, ExactTimelineSeekReceiptError,
     ExactTimelineSeekRequest, TimelineSeekKind, TimelineSeekRequestId,
 };
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -197,6 +202,9 @@ pub enum MediaInstallFailureStage {
     /// Playback window не прошло source validation либо demux pre-seek до Ready.
     PlaybackWindowPreparation,
 
+    /// Same-lineage candidate не подтвердил strict position до authorization.
+    PositionPreparation,
+
     /// App resource owner не выдал matching detached backend/materializer pair.
     CandidateVideoResourceAcquisition,
 
@@ -215,7 +223,7 @@ pub enum MediaInstallFailureStage {
 
 impl MediaInstallFailureStage {
     /// Полный ordered inventory legacy и strong candidate stages после Session 00C1.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::LegacyResetSeekFloor,
         Self::LegacyResetDecoderFlush,
         Self::LegacyResetDecoderStream,
@@ -224,6 +232,7 @@ impl MediaInstallFailureStage {
         Self::VideoStreamConfiguration,
         Self::VideoPreflightTimeout,
         Self::PlaybackWindowPreparation,
+        Self::PositionPreparation,
         Self::CandidateVideoResourceAcquisition,
         Self::CandidateVideoBackendMatching,
         Self::CandidateVideoBackendConfiguration,
@@ -272,6 +281,11 @@ impl MediaInstallFailure {
 /// Non-terminal phase, опубликованная после всех ordinary fallible candidate stages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaInstallPhase {
+    /// Ordinary preparation завершена; same-lineage owner должен запустить position gate.
+    ReadyForPositionPreparation {
+        /// Request identity, которой принадлежит detached candidate.
+        request_id: MediaInstallRequestId,
+    },
     /// Candidate готов, но active ownership ещё не менялся и требуется matching authorization.
     ReadyToCommit {
         /// Request identity, которой принадлежит candidate и будущий terminal slot.
@@ -415,6 +429,9 @@ pub enum MediaInstallControlOutcome {
     /// Cancellation выиграла и terminal record уже записан.
     CancellationAccepted,
 
+    /// Final same-lineage owner validation rejected candidate before ownership switch.
+    AuthorizationRejectedBeforeCommit,
+
     /// Control адресован не тому request-у.
     StaleRequest,
 
@@ -430,7 +447,7 @@ pub enum MediaInstallControlOutcome {
 /// Методы не возвращают channel/backpressure error: production реализация использует
 /// preallocated mutex slots, поэтому terminal publication после authorization infallible.
 pub trait MediaInstallPhaseCompletionPort: Send + Sync + fmt::Debug {
-    /// Публикует единственную non-terminal ready phase.
+    /// Публикует следующую non-terminal phase.
     fn publish_ready_to_commit(&self, phase: MediaInstallPhase);
 
     /// Публикует ровно один lossless terminal record.
@@ -440,8 +457,8 @@ pub trait MediaInstallPhaseCompletionPort: Send + Sync + fmt::Debug {
 /// Внутреннее содержимое request-owned phase/completion slots.
 #[derive(Debug, Default)]
 struct MediaInstallSignalSlots {
-    /// Ready phase хранится отдельно от terminal и забирается независимо.
-    ready_to_commit: Option<MediaInstallPhase>,
+    /// Same-lineage публикует две ordered фазы; ordinary request по-прежнему одну.
+    ready_phases: VecDeque<MediaInstallPhase>,
 
     /// Terminal record не конкурирует с bounded shared event channel.
     terminal: Option<MediaInstallCompletion>,
@@ -464,14 +481,14 @@ impl MediaInstallPhaseCompletionPort for RequestOwnedMediaInstallPort {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         debug_assert!(
-            slots.ready_to_commit.is_none(),
-            "ready phase published twice"
+            slots.ready_phases.len() < 2,
+            "too many ready phases published"
         );
         debug_assert!(
             slots.terminal.is_none(),
             "ready phase published after terminal"
         );
-        slots.ready_to_commit = Some(phase);
+        slots.ready_phases.push_back(phase);
         drop(slots);
         match self.signal_tx.try_send(()) {
             Ok(()) | Err(TrySendError::Full(())) | Err(TrySendError::Disconnected(())) => {}
@@ -570,8 +587,8 @@ impl MediaInstallReceipt {
         self.slots
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .ready_to_commit
-            .take()
+            .ready_phases
+            .pop_front()
     }
 
     /// Неблокирующе забирает terminal completion exactly once.
@@ -639,7 +656,7 @@ impl MediaInstallReceipt {
                     .slots
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                slots.terminal.is_some() || slots.ready_to_commit.is_some()
+                slots.terminal.is_some() || !slots.ready_phases.is_empty()
             };
             if has_signal {
                 return Ok(());
@@ -649,19 +666,6 @@ impl MediaInstallReceipt {
                 .map_err(|_| MediaInstallReceiptWaitError::MissingOwnerOutcome)?;
         }
     }
-}
-
-/// Внутренняя request-owned phase state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MediaInstallProtocolState {
-    /// Worker dequeued command, но ordinary preparation ещё не завершена.
-    Accepted,
-
-    /// Все ordinary fallible stages завершены; matching authorization допустима.
-    ReadyToCommit,
-
-    /// Terminal record опубликован, дальнейшие controls являются duplicate/stale.
-    Terminal,
 }
 
 /// Маленькая owner state machine install barrier-а.
@@ -696,7 +700,10 @@ impl MediaInstallProtocol {
 
     /// Публикует non-terminal ready phase после успешной ordinary preparation.
     pub(crate) fn mark_ready_to_commit(&mut self) {
-        debug_assert_eq!(self.state, MediaInstallProtocolState::Accepted);
+        debug_assert!(matches!(
+            self.state,
+            MediaInstallProtocolState::Accepted | MediaInstallProtocolState::PositionPreparing
+        ));
         self.port
             .publish_ready_to_commit(MediaInstallPhase::ReadyToCommit {
                 request_id: self.request_id,
@@ -711,7 +718,7 @@ impl MediaInstallProtocol {
 
     /// Публикует ordinary failure только до accepted authorization.
     pub(crate) fn complete_failed(&mut self, failure: MediaInstallFailure) {
-        debug_assert_eq!(self.state, MediaInstallProtocolState::Accepted);
+        debug_assert_ne!(self.state, MediaInstallProtocolState::Terminal);
         self.port.publish_terminal(MediaInstallCompletion::Failed {
             request_id: self.request_id,
             failure,

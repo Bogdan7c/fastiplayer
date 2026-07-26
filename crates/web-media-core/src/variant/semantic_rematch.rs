@@ -1,6 +1,6 @@
 //! Semantic-only request и fresh-catalog rematch.
 
-use super::catalog_impl::validate_semantic_scope;
+use super::catalog_impl::{validate_coupled_semantic_scope, validate_semantic_scope};
 use super::*;
 
 /// Semantic-only rematch request для strong-reopen boundary.
@@ -27,6 +27,11 @@ pub enum ComponentVariantSemanticSelectionRequest {
         /// Refresh-stable audio identity.
         audio: ComponentVariantSemanticIdentity,
     },
+    /// Rematch-ит complete coupled/muxed presentation.
+    Coupled {
+        /// Refresh-stable presentation identity.
+        presentation: CoupledVariantSemanticIdentity,
+    },
 }
 
 impl ComponentVariantCatalog {
@@ -39,6 +44,50 @@ impl ComponentVariantCatalog {
         request: ComponentVariantSemanticSelectionRequest,
     ) -> Result<ComponentVariantSelection, ComponentVariantError> {
         match (self, request) {
+            (
+                Self::Topology { compatibility, .. },
+                ComponentVariantSemanticSelectionRequest::VideoAndAudio { video, audio },
+            ) => {
+                let video = self.find_video_semantic(&video)?;
+                let audio = self.find_audio_semantic(&audio)?;
+                if !compatibility.allows(video.exact_identity(), audio.exact_identity()) {
+                    return Err(ComponentVariantError::IncompatibleComponentPair);
+                }
+                Ok(ComponentVariantSelection::VideoAndAudio {
+                    video: Box::new(video.clone()),
+                    audio: Box::new(audio.clone()),
+                })
+            }
+            (
+                Self::Topology { video_only, .. },
+                ComponentVariantSemanticSelectionRequest::VideoOnly { video },
+            ) => {
+                let video = self.find_video_semantic(&video)?;
+                if !video_only.contains(video.exact_identity()) {
+                    return Err(ComponentVariantError::IncompatibleComponentPair);
+                }
+                Ok(ComponentVariantSelection::VideoOnly {
+                    video: Box::new(video.clone()),
+                })
+            }
+            (
+                Self::Topology { audio_only, .. },
+                ComponentVariantSemanticSelectionRequest::AudioOnly { audio },
+            ) => {
+                let audio = self.find_audio_semantic(&audio)?;
+                if !audio_only.contains(audio.exact_identity()) {
+                    return Err(ComponentVariantError::IncompatibleComponentPair);
+                }
+                Ok(ComponentVariantSelection::AudioOnly {
+                    audio: Box::new(audio.clone()),
+                })
+            }
+            (
+                Self::Topology { .. },
+                ComponentVariantSemanticSelectionRequest::Coupled { presentation },
+            ) => Ok(ComponentVariantSelection::Coupled {
+                presentation: Box::new(self.find_coupled_semantic(&presentation)?.clone()),
+            }),
             (
                 Self::VideoAndAudio { .. },
                 ComponentVariantSemanticSelectionRequest::VideoAndAudio { video, audio },
@@ -89,6 +138,17 @@ impl ComponentVariantCatalog {
                 component: ComponentKind::Audio,
             })
     }
+
+    fn find_coupled_semantic(
+        &self,
+        requested: &CoupledVariantSemanticIdentity,
+    ) -> Result<&CoupledComponentVariant, ComponentVariantError> {
+        validate_coupled_semantic_scope(self.identity(), requested)?;
+        self.coupled_presentations()
+            .iter()
+            .find(|variant| variant.semantic_identity() == requested)
+            .ok_or(ComponentVariantError::MissingCoupledPresentation)
+    }
 }
 
 impl ComponentVariantSelection {
@@ -109,6 +169,9 @@ impl ComponentVariantSelection {
             },
             Self::AudioOnly { audio } => ComponentVariantSemanticSelectionRequest::AudioOnly {
                 audio: audio.semantic_identity().clone(),
+            },
+            Self::Coupled { presentation } => ComponentVariantSemanticSelectionRequest::Coupled {
+                presentation: presentation.semantic_identity().clone(),
             },
         }
     }

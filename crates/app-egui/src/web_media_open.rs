@@ -4,10 +4,14 @@
 //! request material, pure planner — выбором playable candidate, а этот модуль
 //! только соединяет concrete runtime registries до существующего commit barrier.
 
-mod component_variants;
+pub(crate) mod catalog;
+pub(crate) mod catalog_capabilities;
+pub(crate) mod component_variants;
 #[cfg(test)]
 mod component_variants_tests;
 mod hds;
+/// Fresh extraction/rematch и process-local generation allocators.
+mod preparation;
 mod smooth;
 
 use std::num::{NonZeroU64, NonZeroUsize};
@@ -67,8 +71,6 @@ const KIB_BYTES: u64 = 1024;
 const MIB_BYTES: u64 = KIB_BYTES * 1024;
 /// Runtime generation первого transport open-а внутри одного preparation attempt-а.
 const INITIAL_TRANSPORT_GENERATION: u64 = 1;
-/// Extraction generation первого immutable candidate snapshot-а.
-const INITIAL_EXTRACTION_GENERATION: u64 = 1;
 /// Separate A/V не должен опережать companion более чем на этот интервал.
 const COMPOSITE_MAX_TIMESTAMP_LEAD: Duration = Duration::from_millis(500);
 /// Один retained packet на component bounded независимо от transport sniff/bootstrap chunk.
@@ -88,6 +90,8 @@ pub(crate) enum YtDlpCandidateOpenIntent {
     BestPlayable,
     /// Restore/rebuild обязан сохранить semantic candidate identity.
     Exact(Box<YtDlpExactCandidateOpenIntent>),
+    /// Service-owned video-only + audio-only composition из одного fresh snapshot-а.
+    Composed(Box<component_variants::YtDlpComposedCandidateOpenIntent>),
 }
 
 /// Результат pre-barrier подготовки, который ещё не меняет player/queue state.
@@ -98,8 +102,12 @@ pub(crate) struct PreparedYtDlpWebMedia {
     pub(crate) playlist_metadata: service_ytdlp::YtDlpPlaylistMetadata,
     /// Exact установленный выбор для active source и последующего rematch-а.
     pub(crate) candidate_selection: YtDlpCandidateSelection,
+    /// Service-owned composed intent, если installed runtime собран из inventory components.
+    pub(crate) composed_selection: Option<Box<service_ytdlp::YtDlpComposedSelection>>,
     /// Secret-safe inventory, публикуемый только вместе с exact Installed source.
     pub(crate) stream_configuration: crate::web_media_stream_model::WebMediaStreamConfiguration,
+    /// Background sibling discovery attachment публикуется только после Installed.
+    pub(crate) catalog_attachment: crate::web_media_catalog::WebMediaCatalogAttachment,
     /// Neutral S31L port присутствует только у proven HLS live runtime.
     pub(crate) timeline_port: Option<DynamicMediaTimelinePort>,
     /// Worker-receipted demux seek port присутствует у static DASH/Smooth/HDS VOD.
@@ -144,6 +152,8 @@ struct WebCandidateOpenContext {
     component_selection_intent: YtDlpComponentSelectionOpenIntent,
     /// App-owned quality preference для provider default selection.
     preferred_height: web_media_core::PreferredHeightPolicy,
+    /// Exact parent и caller-owned catalog generation одного discovery pass-а.
+    catalog_identity: web_media_core::ComponentVariantCatalogIdentity,
     /// Общая cancellation generation transport/demux runtime-а.
     cancellation: CancellationToken,
 }
@@ -171,9 +181,10 @@ pub(crate) fn prepare_yt_dlp_web_media(
             )
         }
         YtDlpCandidateOpenIntent::Exact(exact) => exact.preference,
+        YtDlpCandidateOpenIntent::Composed(composed) => composed.preference,
     };
-    let (candidate_snapshot, selection_request) =
-        resolve_candidate_snapshot(locator, yt_dlp_config, intent, &is_cancelled)
+    let (candidate_snapshot, resolved_intent) =
+        preparation::resolve_candidate_snapshot(locator, yt_dlp_config, intent, &is_cancelled)
             .context("Не удалось подготовить exact YtDlp candidate snapshot")?;
     let planning_snapshot = candidate_snapshot
         .planning_snapshot()
@@ -199,28 +210,49 @@ pub(crate) fn prepare_yt_dlp_web_media(
                 .selected()
                 .is_some_and(|entry| entry.rejected().is_some()),
         );
-    let outcome = plan_playback(
-        &planning_snapshot,
-        capabilities,
-        &selection_request,
-        &policy,
-    )
-    .map_err(|error| {
-        let safe_summary = error.safe_summary();
-        anyhow::Error::new(error).context(format!(
-            "YtDlp planner не нашёл playable candidate (planning_candidates={planning_candidate_count}, normalization_rejections={normalization_rejection_count}, {safe_summary})"
-        ))
-    })?;
-    let selected_candidate = candidate_snapshot
-        .accepted_candidates()
-        .find(|candidate| candidate.descriptor().identity() == outcome.selected().exact_identity())
-        .ok_or_else(|| anyhow!("planner выбрал отсутствующий YtDlp candidate"))?;
-    let candidate_selection = candidate_snapshot
-        .selection_for(selected_candidate)
-        .context("Не удалось сохранить exact YtDlp candidate selection")?;
+    let (selected_candidate, candidate_selection, composed_selection) = match resolved_intent {
+        preparation::ResolvedCandidateIntent::Planner(selection_request) => {
+            let outcome = plan_playback(
+                &planning_snapshot,
+                capabilities,
+                &selection_request,
+                &policy,
+            )
+            .map_err(|error| {
+                let safe_summary = error.safe_summary();
+                anyhow::Error::new(error).context(format!(
+                    "YtDlp planner не нашёл playable candidate (planning_candidates={planning_candidate_count}, normalization_rejections={normalization_rejection_count}, {safe_summary})"
+                ))
+            })?;
+            let selected = candidate_snapshot
+                .accepted_candidates()
+                .find(|candidate| {
+                    candidate.descriptor().identity() == outcome.selected().exact_identity()
+                })
+                .ok_or_else(|| anyhow!("planner выбрал отсутствующий YtDlp candidate"))?;
+            (
+                selected.clone(),
+                candidate_snapshot.selection_for(selected)?,
+                None,
+            )
+        }
+        preparation::ResolvedCandidateIntent::Composed {
+            candidate,
+            selection,
+            parent_preference,
+        } => (*candidate, *parent_preference, Some(selection)),
+    };
+    let catalog_identity = web_media_core::ComponentVariantCatalogIdentity::new(
+        ExactSelectionIdentity::new(
+            candidate_selection.exact_identity().clone(),
+            candidate_selection.semantic_identity().clone(),
+        )
+        .context("YtDlp catalog parent identities нарушают source lineage")?,
+        preparation::next_component_variant_catalog_generation()?,
+    );
     let hls_endpoint_refresh: Option<Arc<dyn HlsEndpointRefreshPort>> =
         (candidate_snapshot.live_intent() == YtDlpLiveIntent::Live
-            && crate::web_media_hls_open::candidate_is_hls(selected_candidate))
+            && crate::web_media_hls_open::candidate_is_hls(&selected_candidate))
         .then(|| {
             Arc::new(
                 crate::web_media_hls_refresh::AppHlsEndpointRefreshPort::new(
@@ -236,7 +268,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
         });
     let dash_endpoint_refresh: Option<Arc<dyn DashEndpointRefreshPort>> =
         (candidate_snapshot.live_intent() == YtDlpLiveIntent::Live
-            && crate::web_media_dash_open::candidate_is_dash(selected_candidate))
+            && crate::web_media_dash_open::candidate_is_dash(&selected_candidate))
         .then(|| {
             Arc::new(
                 crate::web_media_dash_refresh::AppDashEndpointRefreshPort::new(
@@ -266,20 +298,26 @@ pub(crate) fn prepare_yt_dlp_web_media(
         .context("Не удалось построить secret-safe URL sidebar stream model")?;
     let playlist_metadata = candidate_snapshot.playlist_metadata().clone();
     ensure_not_cancelled(&is_cancelled)?;
+    let mut catalog_capability_probe = catalog_capabilities::AppCatalogCapabilityProbe::new(
+        system_capabilities.clone(),
+        audio_capabilities,
+    );
     let opened_candidate = runtime
         .open_candidate(
-            selected_candidate,
+            &selected_candidate,
             WebCandidateOpenContext {
                 live_intent: candidate_snapshot.live_intent(),
                 endpoint_refresh_ports,
-                timeline_port_generation: next_dynamic_timeline_port_generation()?,
+                timeline_port_generation: preparation::next_dynamic_timeline_port_generation()?,
                 component_selection_intent: component_selection_intent.clone(),
                 preferred_height: crate::web_media_quality::preferred_height_policy(
                     yt_dlp_config.preferred_video_height,
                 ),
-                cancellation,
+                catalog_identity: catalog_identity.clone(),
+                cancellation: cancellation.clone(),
             },
             &is_cancelled,
+            &mut catalog_capability_probe,
         )
         .context("Не удалось открыть выбранный YtDlp candidate")?;
     let stream_configuration =
@@ -287,16 +325,37 @@ pub(crate) fn prepare_yt_dlp_web_media(
     ensure_not_cancelled(&is_cancelled)?;
     let stream_configuration = finalize_component_variant_configuration(
         stream_configuration,
-        component_selection_intent,
+        component_selection_intent.clone(),
         opened_candidate.component_variants,
     )
     .context("Не удалось финализировать fresh component variant configuration")?;
     ensure_not_cancelled(&is_cancelled)?;
+    let catalog_live_intent = candidate_snapshot.live_intent();
+    let catalog_attachment = catalog::catalog_attachment(catalog::CatalogAttachmentRequest {
+        candidate_snapshot,
+        planning_snapshot,
+        active_selection: candidate_selection.clone(),
+        active_composed: composed_selection.clone(),
+        active_component: component_selection_intent,
+        network_config: network_config.clone(),
+        demux_config: *demux_config,
+        system_capabilities: system_capabilities.clone(),
+        audio_capabilities,
+        policy,
+        preferred_height: crate::web_media_quality::preferred_height_policy(
+            yt_dlp_config.preferred_video_height,
+        ),
+        live_intent: catalog_live_intent,
+        locator: locator.clone(),
+        yt_dlp_config: yt_dlp_config.clone(),
+    })?;
     Ok(PreparedYtDlpWebMedia {
         demuxer: opened_candidate.demuxer,
         playlist_metadata,
         candidate_selection,
+        composed_selection,
         stream_configuration,
+        catalog_attachment,
         timeline_port: opened_candidate.timeline_port,
         demux_seek_port: opened_candidate.demux_seek_port,
         playback_window: opened_candidate.playback_window,
@@ -387,6 +446,7 @@ impl WebOpenRuntime {
         candidate: &YtDlpNormalizedCandidate,
         context: WebCandidateOpenContext,
         is_cancelled: &impl Fn() -> bool,
+        catalog_capability_probe: &mut catalog_capabilities::AppCatalogCapabilityProbe,
     ) -> Result<OpenedWebCandidate> {
         let WebCandidateOpenContext {
             live_intent,
@@ -394,6 +454,7 @@ impl WebOpenRuntime {
             timeline_port_generation,
             component_selection_intent,
             preferred_height,
+            catalog_identity,
             cancellation,
         } = context;
         if smooth::candidate_is_smooth(candidate) {
@@ -408,6 +469,8 @@ impl WebOpenRuntime {
                 live_intent,
                 component_selection_intent,
                 preferred_height,
+                catalog_identity,
+                catalog_capability_probe,
             )?;
             return Ok(OpenedWebCandidate {
                 demuxer: prepared.demuxer,
@@ -429,6 +492,9 @@ impl WebOpenRuntime {
                 cancellation,
                 live_intent,
                 preferred_height,
+                component_selection_intent,
+                catalog_identity,
+                catalog_capability_probe,
             )?;
             return Ok(OpenedWebCandidate {
                 demuxer: prepared.demuxer,
@@ -436,7 +502,7 @@ impl WebOpenRuntime {
                 timeline_port: None,
                 demux_seek_port: Some(prepared.seek_port),
                 playback_window: Some(prepared.playback_window),
-                component_variants: PreparedComponentVariantCatalog::Unavailable,
+                component_variants: prepared.component_variants,
             });
         }
         if crate::web_media_hls_open::candidate_is_hls(candidate) {
@@ -451,14 +517,17 @@ impl WebOpenRuntime {
                 live_intent,
                 endpoint_refresh_ports.hls,
                 timeline_port_generation,
+                component_selection_intent,
+                catalog_identity,
+                catalog_capability_probe,
             )?;
             return Ok(OpenedWebCandidate {
                 demuxer: prepared.demuxer,
                 subtitles: prepared.subtitles,
                 timeline_port: prepared.timeline_port,
-                demux_seek_port: None,
+                demux_seek_port: Some(prepared.seek_port),
                 playback_window: None,
-                component_variants: PreparedComponentVariantCatalog::Unavailable,
+                component_variants: prepared.component_variants,
             });
         }
         if crate::web_media_dash_open::candidate_is_dash(candidate) {
@@ -473,6 +542,9 @@ impl WebOpenRuntime {
                 live_intent,
                 endpoint_refresh_ports.dash,
                 timeline_port_generation,
+                component_selection_intent,
+                catalog_identity,
+                catalog_capability_probe,
             )?;
             return Ok(OpenedWebCandidate {
                 demuxer: prepared.demuxer,
@@ -480,7 +552,7 @@ impl WebOpenRuntime {
                 timeline_port: prepared.timeline_port,
                 demux_seek_port: Some(prepared.seek_port),
                 playback_window: None,
-                component_variants: PreparedComponentVariantCatalog::Unavailable,
+                component_variants: prepared.component_variants,
             });
         }
         if !matches!(
@@ -581,57 +653,6 @@ struct OpenedCandidateComponent {
     demuxer: Box<dyn Demuxer + Send>,
 }
 
-/// Разрешает fresh snapshot либо re-extract + semantic rematch для exact restore.
-fn resolve_candidate_snapshot(
-    locator: &YtDlpMediaLocator,
-    yt_dlp_config: &YtDlpConfig,
-    intent: YtDlpCandidateOpenIntent,
-    is_cancelled: &dyn Fn() -> bool,
-) -> Result<(YtDlpCandidateSnapshot, SelectionRequest)> {
-    match intent {
-        YtDlpCandidateOpenIntent::BestPlayable => {
-            let source = next_source_identity()?;
-            let generation = ExtractionGeneration::new(INITIAL_EXTRACTION_GENERATION);
-            let snapshot =
-                service_ytdlp::resolve_yt_dlp_candidate_snapshot_with_config_and_cancellation(
-                    locator,
-                    source,
-                    generation,
-                    yt_dlp_config,
-                    is_cancelled,
-                )?;
-            Ok((snapshot, SelectionRequest::BestPlayable))
-        }
-        YtDlpCandidateOpenIntent::Exact(exact) => {
-            let previous = exact.selection;
-            let source = previous.exact_identity().source();
-            let generation_value = previous
-                .exact_identity()
-                .generation()
-                .value()
-                .checked_add(1)
-                .ok_or_else(|| anyhow!("YtDlp extraction generation space исчерпан"))?;
-            let snapshot =
-                service_ytdlp::resolve_yt_dlp_candidate_snapshot_with_config_and_cancellation(
-                    locator,
-                    source,
-                    ExtractionGeneration::new(generation_value),
-                    yt_dlp_config,
-                    is_cancelled,
-                )?;
-            let matched = snapshot
-                .rematch_exact(&previous)
-                .context("Fresh YtDlp snapshot не содержит semantic match exact selection")?;
-            let exact = ExactSelectionIdentity::new(
-                matched.candidate().descriptor().identity().clone(),
-                matched.candidate().descriptor().semantic_identity().clone(),
-            )
-            .context("Rematched YtDlp identities нарушают source lineage")?;
-            Ok((snapshot, SelectionRequest::Exact(exact)))
-        }
-    }
-}
-
 /// Выдаёт новую non-zero process-local source lineage без URL/queue representation coupling.
 fn next_source_identity() -> Result<SourceIdentity> {
     let source_value = NEXT_YT_DLP_SOURCE_IDENTITY
@@ -640,41 +661,6 @@ fn next_source_identity() -> Result<SourceIdentity> {
         })
         .map_err(|_| anyhow!("YtDlp source identity space исчерпан"))?;
     Ok(SourceIdentity::new(source_value))
-}
-
-/// Выдаёт non-zero generation отдельному dynamic timeline port-у.
-fn next_dynamic_timeline_port_generation() -> Result<DynamicMediaTimelinePortGeneration> {
-    let generation_value = NEXT_DYNAMIC_TIMELINE_PORT_GENERATION
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-            current.checked_add(1)
-        })
-        .map_err(|_| anyhow!("dynamic timeline port generation space исчерпан"))?;
-    let generation_value = NonZeroU64::new(generation_value)
-        .ok_or_else(|| anyhow!("dynamic timeline port generation не может быть нулевым"))?;
-    Ok(DynamicMediaTimelinePortGeneration::new(generation_value))
-}
-
-/// Выдаёт отдельную app-owned generation свежему component catalog-у.
-fn next_component_variant_catalog_generation()
--> Result<web_media_core::ComponentVariantCatalogGeneration> {
-    allocate_component_variant_catalog_generation(&NEXT_COMPONENT_VARIANT_CATALOG_GENERATION)
-}
-
-/// Выдаёт generation из переданного authority-owned allocator-а.
-fn allocate_component_variant_catalog_generation(
-    allocator: &AtomicU64,
-) -> Result<web_media_core::ComponentVariantCatalogGeneration> {
-    let generation_value = allocator
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-            current.checked_add(1)
-        })
-        .map_err(|_| anyhow!("component variant catalog generation space исчерпан"))?;
-    if generation_value == 0 {
-        bail!("component variant catalog generation не может быть нулевой");
-    }
-    Ok(web_media_core::ComponentVariantCatalogGeneration::new(
-        generation_value,
-    ))
 }
 
 /// Строит pure selection policy из committed user config.
@@ -1035,13 +1021,13 @@ mod tests {
         let allocator = AtomicU64::new(41);
 
         assert_eq!(
-            allocate_component_variant_catalog_generation(&allocator)
+            preparation::allocate_component_variant_catalog_generation(&allocator)
                 .expect("first catalog generation")
                 .value(),
             41
         );
         assert_eq!(
-            allocate_component_variant_catalog_generation(&allocator)
+            preparation::allocate_component_variant_catalog_generation(&allocator)
                 .expect("second catalog generation")
                 .value(),
             42
@@ -1049,7 +1035,7 @@ mod tests {
 
         allocator.store(u64::MAX, Ordering::Relaxed);
         assert!(
-            allocate_component_variant_catalog_generation(&allocator).is_err(),
+            preparation::allocate_component_variant_catalog_generation(&allocator).is_err(),
             "исчерпанный allocator не должен оборачивать catalog generation"
         );
     }

@@ -10,6 +10,7 @@ use super::open::{
     validate_live_media,
 };
 use super::{HlsLiveTimelineCoordinator, HlsLiveTransportSnapshot};
+use crate::catalog::{HlsCatalogMatchMode, HlsCatalogReopenSelection};
 use crate::open::HlsVodOpenError;
 use crate::plan::build_segment_scoped_component_plan;
 use crate::source::HlsRefreshableResourceKind;
@@ -113,13 +114,21 @@ impl HlsLiveRefreshOwner {
         coordinator: Arc<HlsLiveTimelineCoordinator>,
         fatal: Arc<Mutex<Option<HlsLiveRuntimeFailure>>>,
         control: Arc<HlsLiveRefreshControl>,
+        catalog_selection: Option<HlsCatalogReopenSelection>,
     ) -> Result<Self, HlsLiveOpenError> {
         let worker_control = Arc::clone(&control);
         let cancellation = request.common.http.cancellation().clone();
         thread::Builder::new()
             .name("hls-live-refresh".to_owned())
             .spawn(move || {
-                run_refresh_loop(request, initial, coordinator, worker_control, &fatal);
+                run_refresh_loop(
+                    request,
+                    initial,
+                    coordinator,
+                    worker_control,
+                    &fatal,
+                    catalog_selection,
+                );
             })
             .map_err(HlsLiveOpenError::RefreshWorkerSpawn)?;
         Ok(Self {
@@ -157,6 +166,7 @@ fn run_refresh_loop(
     coordinator: Arc<HlsLiveTimelineCoordinator>,
     control: Arc<HlsLiveRefreshControl>,
     fatal: &Mutex<Option<HlsLiveRuntimeFailure>>,
+    catalog_selection: Option<HlsCatalogReopenSelection>,
 ) {
     let Some(mut schedules) = HlsLiveReloadSchedules::initial(Instant::now(), &current) else {
         set_fatal(fatal, HlsLiveRuntimeFailure::Synchronization);
@@ -173,9 +183,13 @@ fn run_refresh_loop(
                 if signal.generation != request.common.generation {
                     continue;
                 }
-                let Some(next) =
-                    replace_expired_endpoint(&mut request, &coordinator, fatal, signal.reason)
-                else {
+                let Some(next) = replace_expired_endpoint(
+                    &mut request,
+                    &coordinator,
+                    fatal,
+                    signal.reason,
+                    catalog_selection.as_ref(),
+                ) else {
                     return;
                 };
                 current = next;
@@ -211,9 +225,13 @@ fn run_refresh_loop(
                             set_fatal(fatal, HlsLiveRuntimeFailure::ManifestRefresh);
                             return;
                         };
-                        let Some(next) =
-                            replace_expired_endpoint(&mut request, &coordinator, fatal, reason)
-                        else {
+                        let Some(next) = replace_expired_endpoint(
+                            &mut request,
+                            &coordinator,
+                            fatal,
+                            reason,
+                            catalog_selection.as_ref(),
+                        ) else {
                             return;
                         };
                         current = next;
@@ -375,6 +393,7 @@ fn replace_expired_endpoint(
     coordinator: &HlsLiveTimelineCoordinator,
     fatal: &Mutex<Option<HlsLiveRuntimeFailure>>,
     reason: HlsEndpointRefreshReason,
+    catalog_selection: Option<&HlsCatalogReopenSelection>,
 ) -> Option<SelectedLiveResources> {
     let reply = match request.endpoint_refresh.refresh(HlsEndpointRefreshRequest {
         previous_generation: request.common.generation,
@@ -396,7 +415,12 @@ fn replace_expired_endpoint(
         demux_registry: Arc::clone(&request.common.demux_registry),
         policy: request.common.policy,
     };
-    let next = match load_selected_live(&replacement_common, true) {
+    let next = match load_selected_live(
+        &replacement_common,
+        true,
+        catalog_selection,
+        HlsCatalogMatchMode::Semantic,
+    ) {
         Ok(next) => next,
         Err(_) => {
             set_fatal(
@@ -553,6 +577,7 @@ fn refresh_selected_media(
             main_plan,
             main_reload_target: current.main_reload_target.clone(),
             main_container: current.main_container,
+            main_track_layout: current.main_track_layout,
             audio_media,
             audio_plan,
             audio_reload_target: current.audio_reload_target.clone(),

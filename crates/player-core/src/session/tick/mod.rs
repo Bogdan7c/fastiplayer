@@ -41,8 +41,9 @@ impl PlayerSession {
         let mut tick_result = PlayerTickResult::default();
 
         self.service_pending_staged_preflight(tick_context.now);
-        self.service_prepared_demux_seek_receipts();
         self.update_position_for_tick(tick_context.now);
+        self.service_staged_position_preparation();
+        self.service_prepared_demux_seek_receipts();
 
         let seek_fast_preroll_tick_handled =
             run_seek_fast_preroll_catch_up(self, tick_context, &mut tick_result);

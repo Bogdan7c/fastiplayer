@@ -1,0 +1,21 @@
+# Slice C: player-owned staged position gate (2026-07-26)
+
+## Ownership and protocol
+- `PlayerSession` is the sole owner of same-lineage preauthorization position preparation because it owns both the authoritative old instance/position and detached candidate. App never reads DVR/provider internals or seeks the candidate directly.
+- Ordinary staged opens retain `ReadyToCommit -> Authorize -> Installed`. Same-lineage opens add `ReadyForPositionPreparation`; app dispatches exact `PrepareMediaInstallPosition`, player publishes true `ReadyToCommit` only after strict position preparation.
+- Exact `MediaInstallRequestId` and expected old `MediaInstanceId` fence the gate. Old playback remains active while a worker receipt is pending. Final old instance/position/timeline validation runs again immediately before authorization; failure is terminal `PositionPreparation` before active ownership changes.
+- Static targets are never clamped: shorter candidate, nonseekable nonzero target, backward old movement, incompatible timeline mutation, or failed/cancelled/superseded/stale/mismatched receipt rejects the candidate. Monotonic forward old movement is accepted when the prepared demux anchor can decode forward.
+- Live/DVR uses the latest staged provider snapshot: retained absolute target prepares a demux anchor; expired/no-DVR target produces typed `AdjustedToLiveEdge`. Final preauthorization validation requires both the target and actual prepared demux anchor to remain inside the fresh DVR range. A timeline publish crossing authorization is revalidated against the installed snapshot, and later anchor expiry applies only to the exact adopted staged seek generation, never ordinary seek/scrub. Live position never becomes a durable checkpoint.
+
+## Seek and commit invariants
+- `PreparedDemuxSeekRuntime` belongs to the candidate before commit. Worker receipt polling is nonblocking and participates in the existing staged wake deadline.
+- The used seek request allocator and provider-neutral port transfer intact into installed runtime; request IDs are not reset.
+- Successful staged `DemuxSeekResult` transfers through the atomic commit. Post-install adoption starts only the existing decoder landing, never a second demux seek. `InstalledPositionRestore::AdoptPreparedSameLineagePosition` settles only after matching final seek commit; seek success/failure/expiry that occurs before app adoption is retained as the request-owned staged outcome, so a later restore cannot wait on an already-terminal generation. Post-commit decoder failure is fatal on the installed instance and remains typed and visible.
+- Cancel/supersede/shutdown drops only candidate generation. Authorization send/prepare-send rejection remains pre-barrier and app losslessly cancels the staged request. Once authorization is owner-accepted, coordinator publishes `EnqueuedAtPlayerOwner` and cancellation returns `CommitMustFinish`.
+
+## Code and verification anchors
+- Player state machine: `crates/player-core/src/session/staged_media_install/position.rs`; transfer/adoption: sibling `commit.rs`, `prepared_demux_seek.rs`, `seek_start.rs`, and `installed_media_restore.rs`.
+- App subphase: `crates/app-egui/src/media_open/{types,coordinator,player_port}.rs`; same-lineage orchestration: `state/strong_media_open/pending*.rs`.
+- Focused player coverage is in `session/tests/staged_media_install.rs` and `session/tests/live_same_item_restore.rs`; coordinator ordering coverage is in `media_open/coordinator.rs` tests.
+
+Related current boundaries: `mem:player-core/core`, `mem:app-egui/media-open-coordinator-s10c`, `mem:player-core/installed-position-restore-receipt-2026-07-19`, `mem:app-egui/live-same-item-candidate-switch-s35s-2026-07-24`.

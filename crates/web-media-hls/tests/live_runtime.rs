@@ -3,7 +3,7 @@
 #[allow(dead_code)]
 mod support;
 
-use std::num::NonZeroU64;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -12,6 +12,10 @@ use aes::Aes128;
 use cbc::Encryptor;
 use cbc::cipher::block_padding::Pkcs7;
 use cbc::cipher::{BlockModeEncrypt, KeyIvInit};
+use demux_api::{
+    ProgressiveAsyncSeekLimits, ProgressiveAsyncSeekOutcome, ProgressiveSeekFence,
+    ProgressiveSeekRequestId,
+};
 use media_core::{
     DemuxReadEvent, Demuxer, DynamicMediaTimelineEpoch, DynamicMediaTimelinePortGeneration,
 };
@@ -25,7 +29,7 @@ use web_media_hls::{
     HlsEndpointRefreshError, HlsEndpointRefreshPort, HlsEndpointRefreshReply,
     HlsEndpointRefreshRequest, HlsLiveOpenRequest, HlsMainTrackLayoutIntent, HlsManifestInput,
     HlsRequestOverrides, HlsRequiredContainer, HlsVariantSelectionIntent, HlsVodOpenRequest,
-    prepare_hls_live,
+    prepare_hls_live, prepare_hls_live_receipted,
 };
 use web_media_transport_api::SourceGeneration;
 
@@ -598,12 +602,16 @@ fn sliding_refresh_evicts_old_rap_and_early_seek_is_typed_expired() {
         calls: Arc::clone(&endpoint_calls),
         failure: HlsEndpointRefreshError::AttemptsExhausted,
     });
-    let opened = prepare_hls_live(live_request(
-        server.target("/initial.m3u8"),
-        CancellationToken::new(),
-        port,
-    ))
+    let opened = prepare_hls_live_receipted(
+        live_request(
+            server.target("/initial.m3u8"),
+            CancellationToken::new(),
+            port,
+        ),
+        ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(2).expect("seek receipt bound")),
+    )
     .expect("prepare sliding live");
+    let seek_handle = opened.async_seek_handle().expect("live seek handle");
     let (mut demuxer, timeline_port, _) = opened.into_parts();
     let deadline = Instant::now() + TEST_TIMEOUT;
     while timeline_port
@@ -619,10 +627,25 @@ fn sliding_refresh_evicts_old_rap_and_early_seek_is_typed_expired() {
     }
     assert!(manifest_requests.load(Ordering::SeqCst) >= 2);
 
-    let seek_error = demuxer
-        .seek(Duration::ZERO)
-        .expect_err("evicted early RAP cannot be clamped into the new window");
-    assert!(seek_error.to_string().contains("decode anchor"));
+    let fence = ProgressiveSeekFence {
+        runtime_generation: seek_handle.runtime_generation(),
+        request_id: ProgressiveSeekRequestId::new(1),
+    };
+    seek_handle
+        .enqueue(
+            fence,
+            media_core::DemuxSeekRequest::accurate(Duration::ZERO),
+        )
+        .expect("enqueue expired live seek");
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    let receipt = loop {
+        if let Some(receipt) = seek_handle.poll_receipt() {
+            break receipt;
+        }
+        assert!(Instant::now() < deadline, "live seek receipt timed out");
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    assert_eq!(receipt.outcome, ProgressiveAsyncSeekOutcome::Failed);
     let observed = timeline_port.observe();
     assert!(
         observed

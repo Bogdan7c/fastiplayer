@@ -23,7 +23,8 @@ pub use dynamic::{
 };
 // Публичная модель является контрактом будущего S34B runtime.
 pub use model::{
-    DASH_MPD_NAMESPACE, DashAdaptationSet, DashAddressing, DashBaseUrl, DashContainer,
+    DASH_MPD_NAMESPACE, DashAdaptationSet, DashAddressing, DashAudioChannelConfiguration,
+    DashBaseUrl, DashColorMetadata, DashContainer, DashFrameRate, DashHdrTransfer,
     DashInitialization, DashMediaKind, DashMpd, DashPeriod, DashRepresentation, DashSegmentBase,
     DashSegmentList, DashSegmentListEntry, DashSegmentTemplate, DashTimelineEntry,
     DashUrlReference, IndexRange,

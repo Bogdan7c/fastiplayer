@@ -4,6 +4,7 @@
 mod discontinuity;
 mod support;
 
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -12,7 +13,10 @@ use aes::Aes128;
 use cbc::Encryptor;
 use cbc::cipher::block_padding::Pkcs7;
 use cbc::cipher::{BlockModeEncrypt, KeyIvInit};
-use demux_api::{DemuxOpenError, DemuxProbeRejection};
+use demux_api::{
+    DemuxOpenError, DemuxProbeRejection, ProgressiveAsyncSeekLimits, ProgressiveAsyncSeekOutcome,
+    ProgressiveSeekFence, ProgressiveSeekRequestId,
+};
 use media_core::{DemuxReadEvent, DemuxSeekRequest, Demuxer, TrackKind};
 use source_core::CancellationToken;
 use support::{
@@ -23,7 +27,7 @@ use web_media_hls::{
     ExtractorAesOverride, HlsAudioLayoutIntent, HlsAudioRenditionEvidence,
     HlsComponentContainerIntent, HlsContainerEvidence, HlsMainTrackLayoutIntent, HlsManifestInput,
     HlsRequestOverrides, HlsRequiredContainer, HlsVariantSelectionIntent, HlsVodOpenError,
-    HlsVodOpenRequest, SecretInlineMediaPlaylist, prepare_hls_vod,
+    HlsVodOpenRequest, SecretInlineMediaPlaylist, prepare_hls_vod, prepare_hls_vod_receipted,
 };
 use web_media_transport_api::SourceGeneration;
 
@@ -868,33 +872,69 @@ fn vod_seek_uses_proven_raps_across_discontinuity_and_fences_rapid_supersede() {
                     #EXT-X-DISCONTINUITY\n\
                     #EXTINF:1,\nsecond.ts\n\
                     #EXT-X-ENDLIST\n";
-    let opened = prepare_hls_vod(inline_request(
-        &server,
-        playlist,
-        HlsRequiredContainer::TransportStream,
-    ))
+    let opened = prepare_hls_vod_receipted(
+        inline_request(&server, playlist, HlsRequiredContainer::TransportStream),
+        ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(4).expect("seek receipt bound")),
+    )
     .expect("prepare seekable discontinuous VOD");
+    let seek_handle = opened.async_seek_handle().expect("receipted seek handle");
     let mut demuxer = opened.into_demuxer();
     assert_muxed_tracks(next_ready_event(&mut *demuxer).expect("initial tracks"));
-    let events = collect_until_eos(&mut *demuxer).expect("index complete VOD");
-    assert!(events.iter().any(|event| {
-        matches!(event, DemuxReadEvent::Packet(packet) if packet.pts == Duration::from_secs(1))
-    }));
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    loop {
+        let event = next_ready_event(&mut *demuxer).expect("build VOD seek index");
+        if matches!(event, DemuxReadEvent::Packet(packet) if packet.pts == Duration::from_secs(1)) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "second epoch was not indexed");
+    }
 
-    let forward = demuxer
-        .seek_with_request(DemuxSeekRequest::decode_point_before(
-            Duration::from_millis(1_500),
-        ))
-        .expect("forward seek preview");
+    let forward_fence = ProgressiveSeekFence {
+        runtime_generation: seek_handle.runtime_generation(),
+        request_id: ProgressiveSeekRequestId::new(1),
+    };
+    seek_handle
+        .enqueue(
+            forward_fence,
+            DemuxSeekRequest::decode_point_before(Duration::from_millis(1_500)),
+        )
+        .expect("enqueue forward worker seek");
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    let forward_receipt = loop {
+        if let Some(receipt) = seek_handle.poll_receipt() {
+            break receipt;
+        }
+        assert!(Instant::now() < deadline, "forward seek receipt timed out");
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    let ProgressiveAsyncSeekOutcome::Succeeded(forward) = forward_receipt.outcome else {
+        panic!("forward seek must succeed: {forward_receipt:?}");
+    };
     assert_eq!(
         forward.actual_position.as_duration(),
         Duration::from_secs(1)
     );
-    let backward = demuxer
-        .seek_with_request(DemuxSeekRequest::decode_point_before(
-            Duration::from_millis(500),
-        ))
-        .expect("rapid backward supersede");
+    let backward_fence = ProgressiveSeekFence {
+        runtime_generation: seek_handle.runtime_generation(),
+        request_id: ProgressiveSeekRequestId::new(2),
+    };
+    seek_handle
+        .enqueue(
+            backward_fence,
+            DemuxSeekRequest::decode_point_before(Duration::from_millis(500)),
+        )
+        .expect("enqueue backward worker seek");
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    let backward_receipt = loop {
+        if let Some(receipt) = seek_handle.poll_receipt() {
+            break receipt;
+        }
+        assert!(Instant::now() < deadline, "backward seek receipt timed out");
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    let ProgressiveAsyncSeekOutcome::Succeeded(backward) = backward_receipt.outcome else {
+        panic!("backward seek must succeed: {backward_receipt:?}");
+    };
     assert_eq!(backward.actual_position.as_duration(), Duration::ZERO);
 
     let deadline = Instant::now() + TEST_TIMEOUT;

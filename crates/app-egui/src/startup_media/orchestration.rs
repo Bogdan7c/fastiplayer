@@ -549,7 +549,9 @@ impl StartupMediaController {
                 let source = ActiveMediaSource::YtDlpUrl {
                     source_locator: source_locator.clone(),
                     candidate_selection: Box::new(prepared.candidate_selection),
+                    composed_selection: prepared.composed_selection,
                     stream_configuration: Box::new(prepared.stream_configuration),
+                    catalog_attachment: prepared.catalog_attachment,
                 };
                 let prepared_media = match prepare_yt_dlp_player_media(
                     source_locator.safe_label(),

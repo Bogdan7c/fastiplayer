@@ -2,6 +2,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
+use demux_api::{
+    ProgressiveAsyncSeekHandle, ProgressiveAsyncSeekLimits, ProgressiveDemuxStartupError,
+    ProgressiveDemuxer, ProgressiveRuntimeGeneration,
+};
 use hls_playlist_core::{
     HlsParseError, HlsParseRequest, HlsPlaylist, HlsProfileError, MediaContainerIntent,
     MediaPlaylist, parse_hls_playlist, validate_initial_profile, validate_live_profile,
@@ -22,6 +26,7 @@ use super::{
     HlsLiveComponentFactory, HlsLiveComponentKind, HlsLiveComponentSnapshot, HlsLiveRefreshError,
     HlsLiveTimelineCoordinator, TransactionalHlsLiveAvDemuxer,
 };
+use crate::catalog::{HlsCatalogMatchMode, HlsCatalogReopenError, HlsCatalogReopenSelection};
 use crate::open::{
     HlsVodOpenError, required_audio_container, required_main_container, select_master,
     validate_key_fetch_bound,
@@ -35,11 +40,17 @@ use crate::{
 /// Неустановленный live runtime и neutral S31L port.
 pub struct HlsLiveOpenResult {
     demuxer: Box<dyn Demuxer + Send>,
+    async_seek_handle: Option<ProgressiveAsyncSeekHandle>,
     timeline_port: DynamicMediaTimelinePort,
     subtitles: Box<[HlsSubtitleRenditionDescriptor]>,
 }
 
 impl HlsLiveOpenResult {
+    /// Возвращает worker receipt boundary для receipted live preparation.
+    pub fn async_seek_handle(&self) -> Option<ProgressiveAsyncSeekHandle> {
+        self.async_seek_handle.clone()
+    }
+
     pub fn into_demuxer(self) -> Box<dyn Demuxer + Send> {
         self.demuxer
     }
@@ -91,6 +102,8 @@ pub enum HlsLiveOpenError {
     RefreshContinuity,
     #[error("HLS live refresh worker не запущен: {0}")]
     RefreshWorkerSpawn(#[source] std::io::Error),
+    #[error("HLS live receipted demux worker не запущен: {0}")]
+    ProgressiveStartup(#[from] ProgressiveDemuxStartupError),
     #[error("HLS live runtime failed: {0}")]
     Runtime(#[source] anyhow::Error),
 }
@@ -105,8 +118,20 @@ impl From<HlsLiveRefreshError> for HlsLiveOpenError {
 pub fn prepare_hls_live(
     request: HlsLiveOpenRequest,
 ) -> Result<HlsLiveOpenResult, HlsLiveOpenError> {
+    prepare_hls_live_with_catalog(request, None)
+}
+
+fn prepare_hls_live_with_catalog(
+    request: HlsLiveOpenRequest,
+    catalog_selection: Option<HlsCatalogReopenSelection>,
+) -> Result<HlsLiveOpenResult, HlsLiveOpenError> {
     validate_key_fetch_bound(&request.common)?;
-    let initial = load_selected_live(&request.common, false)?;
+    let initial = load_selected_live(
+        &request.common,
+        false,
+        catalog_selection.as_ref(),
+        HlsCatalogMatchMode::Exact,
+    )?;
     let shared_edge = initial.main_plan.duration.max(
         initial
             .audio_plan
@@ -133,7 +158,7 @@ pub fn prepare_hls_live(
         })
         .transpose()?;
     let main_has_video = !matches!(
-        request.common.selection.main_track_layout,
+        initial.main_track_layout,
         crate::HlsMainTrackLayoutIntent::AudioOnly
     );
     let (coordinator, timeline_port) = HlsLiveTimelineCoordinator::new(
@@ -194,6 +219,7 @@ pub fn prepare_hls_live(
         Arc::clone(&coordinator),
         Arc::clone(&fatal),
         refresh_control,
+        catalog_selection,
     )?;
     Ok(HlsLiveOpenResult {
         demuxer: Box::new(HlsLiveDemuxRuntime {
@@ -201,6 +227,61 @@ pub fn prepare_hls_live(
             _refresh_owner: refresh_owner,
             fatal,
         }),
+        async_seek_handle: None,
+        timeline_port,
+        subtitles,
+    })
+}
+
+/// Оборачивает HLS live/DVR seek существующей worker-receipted demux boundary.
+///
+/// Network-backed replacement retained segment-а не выполняется на player owner-е.
+/// Публикацией timeline по-прежнему владеет live coordinator.
+pub fn prepare_hls_live_receipted(
+    request: HlsLiveOpenRequest,
+    asynchronous_seek_limits: ProgressiveAsyncSeekLimits,
+) -> Result<HlsLiveOpenResult, HlsLiveOpenError> {
+    prepare_hls_live_receipted_with_catalog(request, asynchronous_seek_limits, None)
+}
+
+/// Открывает exact proven catalog selection и сохраняет его при endpoint replacement.
+pub fn prepare_hls_catalog_live_receipted(
+    mut request: HlsLiveOpenRequest,
+    selection: HlsCatalogReopenSelection,
+    asynchronous_seek_limits: ProgressiveAsyncSeekLimits,
+) -> Result<HlsLiveOpenResult, HlsLiveOpenError> {
+    request.common.selection = selection.runtime_intent();
+    prepare_hls_live_receipted_with_catalog(request, asynchronous_seek_limits, Some(selection))
+}
+
+fn prepare_hls_live_receipted_with_catalog(
+    request: HlsLiveOpenRequest,
+    asynchronous_seek_limits: ProgressiveAsyncSeekLimits,
+    catalog_selection: Option<HlsCatalogReopenSelection>,
+) -> Result<HlsLiveOpenResult, HlsLiveOpenError> {
+    let cancellation = request.common.http.cancellation().clone();
+    let runtime_generation = ProgressiveRuntimeGeneration::new(request.common.generation.value());
+    let progressive_limits = request.common.policy.progressive_limits;
+    let retry_hint = request.common.policy.retry_hint;
+    let opened = prepare_hls_live_with_catalog(request, catalog_selection)?;
+    let HlsLiveOpenResult {
+        demuxer,
+        timeline_port,
+        subtitles,
+        ..
+    } = opened;
+    let progressive = ProgressiveDemuxer::new_receipted_seekable(
+        demuxer,
+        cancellation,
+        progressive_limits,
+        retry_hint,
+        runtime_generation,
+        asynchronous_seek_limits,
+    )?;
+    let async_seek_handle = progressive.async_seek_handle();
+    Ok(HlsLiveOpenResult {
+        demuxer: Box::new(progressive),
+        async_seek_handle,
         timeline_port,
         subtitles,
     })
@@ -212,6 +293,7 @@ pub(super) struct SelectedLiveResources {
     pub(super) main_plan: HlsComponentPlan,
     pub(super) main_reload_target: HttpRequestTarget,
     pub(super) main_container: HlsRequiredContainer,
+    pub(super) main_track_layout: crate::HlsMainTrackLayoutIntent,
     pub(super) audio_media: Option<MediaPlaylist>,
     pub(super) audio_plan: Option<HlsComponentPlan>,
     pub(super) audio_reload_target: Option<HttpRequestTarget>,
@@ -222,6 +304,8 @@ pub(super) struct SelectedLiveResources {
 pub(super) fn load_selected_live(
     request: &HlsVodOpenRequest,
     refresh_profile: bool,
+    catalog_selection: Option<&HlsCatalogReopenSelection>,
+    catalog_match_mode: HlsCatalogMatchMode,
 ) -> Result<SelectedLiveResources, HlsLiveOpenError> {
     let HlsManifestInput::Fetch { selected_url } = &request.manifest else {
         return Err(HlsLiveOpenError::InlineManifestCannotRefresh);
@@ -231,6 +315,12 @@ pub(super) fn load_selected_live(
     validate_initial_profile(&top)?;
     match top {
         HlsPlaylist::Media(media) => {
+            if catalog_selection.is_some() {
+                return Err(HlsVodOpenError::CatalogReopen(
+                    HlsCatalogReopenError::MissingPrivateRow,
+                )
+                .into());
+            }
             if matches!(
                 request.selection.audio,
                 HlsAudioLayoutIntent::Separate(_) | HlsAudioLayoutIntent::ManifestResolved(_)
@@ -255,6 +345,7 @@ pub(super) fn load_selected_live(
                 main_plan: plan,
                 main_reload_target: selected_url.clone(),
                 main_container,
+                main_track_layout: request.selection.main_track_layout,
                 audio_media: None,
                 audio_plan: None,
                 audio_reload_target: None,
@@ -263,11 +354,47 @@ pub(super) fn load_selected_live(
             })
         }
         HlsPlaylist::Master(master) => {
-            let selected = select_master(&master, &request.selection)?;
-            let main_container = required_main_container(request)?;
+            let (
+                main_reference,
+                main_container,
+                main_track_layout,
+                audio_reference,
+                proven_audio_container,
+                subtitles,
+            ) = if let Some(selection) = catalog_selection {
+                let selected = selection
+                    .resolve_master(&master, catalog_match_mode)
+                    .map_err(HlsVodOpenError::from)?;
+                let (audio_reference, audio_container) =
+                    selected.audio.map_or((None, None), |audio| {
+                        (Some(audio.reference), Some(audio.container))
+                    });
+                (
+                    selected.main_reference,
+                    selected.main_container,
+                    selected.main_shape,
+                    audio_reference,
+                    audio_container,
+                    selected.subtitles,
+                )
+            } else {
+                let selected = select_master(&master, &request.selection)?;
+                let audio_reference = selected
+                    .audio
+                    .map(|rendition| rendition.uri.ok_or(HlsVodOpenError::MissingAudioRendition))
+                    .transpose()?;
+                (
+                    selected.variant.uri,
+                    required_main_container(request)?,
+                    request.selection.main_track_layout,
+                    audio_reference,
+                    None,
+                    selected.subtitles,
+                )
+            };
             let main_reload_target = top_resource
                 .final_target()
-                .resolve_reference(selected.variant.uri.expose_for_resolution())?;
+                .resolve_reference(main_reference.expose_for_resolution())?;
             let main_resource = fetch_manifest(
                 &request.http,
                 request.generation,
@@ -284,11 +411,7 @@ pub(super) fn load_selected_live(
                 &request.overrides,
             )?;
             let (audio_media, audio_plan, audio_reload_target, audio_container) =
-                if let Some(rendition) = selected.audio {
-                    let reference = rendition
-                        .uri
-                        .as_ref()
-                        .ok_or(HlsVodOpenError::MissingAudioRendition)?;
+                if let Some(reference) = audio_reference {
                     let target = top_resource
                         .final_target()
                         .resolve_reference(reference.expose_for_resolution())?;
@@ -297,8 +420,10 @@ pub(super) fn load_selected_live(
                     let HlsPlaylist::Media(media) = parse_playlist(&resource, request)? else {
                         return Err(HlsVodOpenError::NestedMasterPlaylist.into());
                     };
-                    let container =
-                        required_audio_container(&media, resource.final_target(), request)?;
+                    let container = match proven_audio_container {
+                        Some(container) => container,
+                        None => required_audio_container(&media, resource.final_target(), request)?,
+                    };
                     validate_live_media(&media, container, refresh_profile)?;
                     let plan = build_segment_scoped_component_plan(
                         &media,
@@ -315,11 +440,12 @@ pub(super) fn load_selected_live(
                 main_plan,
                 main_reload_target,
                 main_container,
+                main_track_layout,
                 audio_media,
                 audio_plan,
                 audio_reload_target,
                 audio_container,
-                subtitles: selected.subtitles,
+                subtitles,
             })
         }
     }

@@ -7,8 +7,8 @@ use bounded_xml_reader::{BoundedXmlReader, XmlBudgets, XmlElement, XmlEvent};
 use thiserror::Error;
 
 use crate::model::{
-    F4M_NAMESPACES, F4mBootstrapSource, F4mManifest, F4mManifestLimits, F4mStreamType,
-    bootstrap_info, media_entry,
+    F4M_NAMESPACES, F4mBootstrapSource, F4mManifest, F4mManifestLimits, F4mMediaEntryRejection,
+    F4mStreamType, bootstrap_info, media_entry,
 };
 
 /// Typed parser failure без quick-xml leakage.
@@ -63,8 +63,10 @@ struct ParserState {
     duration: Option<Duration>,
     base_url: Option<String>,
     media: Vec<crate::model::F4mMediaEntry>,
+    rejected_media: Vec<F4mMediaEntryRejection>,
+    media_entry_count: usize,
     bootstrap_info: Vec<crate::model::F4mBootstrapInfo>,
-    active_media: Option<ActiveMedia>,
+    active_media: Option<Result<ActiveMedia, F4mMediaEntryRejection>>,
     active_bootstrap: Option<ActiveBootstrap>,
     text_buffer: String,
 }
@@ -80,6 +82,8 @@ impl ParserState {
             duration: None,
             base_url: None,
             media: Vec::new(),
+            rejected_media: Vec::new(),
+            media_entry_count: 0,
             bootstrap_info: Vec::new(),
             active_media: None,
             active_bootstrap: None,
@@ -140,7 +144,11 @@ impl ParserState {
                 if self.active_media.is_some() {
                     return Err(F4mManifestError::InvalidValue { field: "media" });
                 }
-                self.active_media = Some(ActiveMedia::from_element(&element, self.limits)?);
+                if self.media_entry_count >= self.limits.maximum_media_entries().get() {
+                    return Err(F4mManifestError::CountExceeded { kind: "media" });
+                }
+                self.media_entry_count += 1;
+                self.active_media = Some(ActiveMedia::from_element(&element, self.limits));
             }
             "bootstrapInfo" => {
                 if self.active_bootstrap.is_some() {
@@ -205,11 +213,11 @@ impl ParserState {
                     .active_media
                     .take()
                     .ok_or(F4mManifestError::InvalidValue { field: "media" })?
-                    .finish()?;
-                if self.media.len() >= self.limits.maximum_media_entries().get() {
-                    return Err(F4mManifestError::CountExceeded { kind: "media" });
+                    .and_then(ActiveMedia::finish);
+                match media {
+                    Ok(media) => self.media.push(media),
+                    Err(rejection) => self.rejected_media.push(rejection),
                 }
-                self.media.push(media);
             }
             "bootstrapInfo" => {
                 let bootstrap = self
@@ -233,7 +241,10 @@ impl ParserState {
 
     /// Проверяет document-level invariants после fused EOF.
     fn finish(self) -> Result<F4mManifest, F4mManifestError> {
-        if !self.root_seen || !self.stack.is_empty() || self.media.is_empty() {
+        if !self.root_seen
+            || !self.stack.is_empty()
+            || (self.media.is_empty() && self.rejected_media.is_empty())
+        {
             return Err(F4mManifestError::MissingMedia);
         }
         Ok(F4mManifest::new(
@@ -241,6 +252,7 @@ impl ParserState {
             self.duration,
             self.base_url,
             self.media,
+            self.rejected_media,
             self.bootstrap_info,
         ))
     }
@@ -261,26 +273,28 @@ impl ActiveMedia {
     fn from_element(
         element: &XmlElement,
         limits: F4mManifestLimits,
-    ) -> Result<Self, F4mManifestError> {
+    ) -> Result<Self, F4mMediaEntryRejection> {
         Ok(Self {
-            url: attribute_string(element, "url", limits)?,
-            href: attribute_string(element, "href", limits)?,
-            bitrate: attribute_u64(element, "bitrate")?,
-            width: attribute_u32(element, "width")?,
-            height: attribute_u32(element, "height")?,
-            bootstrap_info_id: attribute_string(element, "bootstrapInfoId", limits)?,
+            url: media_attribute_string(element, "url", limits)?,
+            href: media_attribute_string(element, "href", limits)?,
+            bitrate: media_attribute_u64(
+                element,
+                "bitrate",
+                F4mMediaEntryRejection::InvalidBitrate,
+            )?,
+            width: media_attribute_u32(element, "width", F4mMediaEntryRejection::InvalidWidth)?,
+            height: media_attribute_u32(element, "height", F4mMediaEntryRejection::InvalidHeight)?,
+            bootstrap_info_id: media_attribute_string(element, "bootstrapInfoId", limits)?,
         })
     }
 
     /// Доказывает, что row является либо hierarchy edge, либо media locator.
-    fn finish(self) -> Result<crate::model::F4mMediaEntry, F4mManifestError> {
+    fn finish(self) -> Result<crate::model::F4mMediaEntry, F4mMediaEntryRejection> {
         if self.url.is_none() == self.href.is_none()
             || self.url.as_deref().is_some_and(str::is_empty)
             || self.href.as_deref().is_some_and(str::is_empty)
         {
-            return Err(F4mManifestError::InvalidValue {
-                field: "media url/href",
-            });
+            return Err(F4mMediaEntryRejection::InvalidLocatorShape);
         }
         Ok(media_entry(
             self.url,
@@ -291,6 +305,33 @@ impl ActiveMedia {
             self.bootstrap_info_id,
         ))
     }
+}
+
+/// Считывает bounded media attribute и не превращает локальную ошибку row в document failure.
+fn media_attribute_string(
+    element: &XmlElement,
+    name: &str,
+    limits: F4mManifestLimits,
+) -> Result<Option<String>, F4mMediaEntryRejection> {
+    attribute_string(element, name, limits).map_err(|_| F4mMediaEntryRejection::StringTooLong)
+}
+
+/// Разбирает media `u64`, сохраняя named безопасную причину отбрасывания.
+fn media_attribute_u64(
+    element: &XmlElement,
+    name: &'static str,
+    rejection: F4mMediaEntryRejection,
+) -> Result<Option<u64>, F4mMediaEntryRejection> {
+    attribute_u64(element, name).map_err(|_| rejection)
+}
+
+/// Разбирает media `u32`, сохраняя named безопасную причину отбрасывания.
+fn media_attribute_u32(
+    element: &XmlElement,
+    name: &'static str,
+    rejection: F4mMediaEntryRejection,
+) -> Result<Option<u32>, F4mMediaEntryRejection> {
+    attribute_u32(element, name).map_err(|_| rejection)
 }
 
 /// Возвращает true для F4M schema elements, а не arbitrary extension nodes.
@@ -558,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_foreign_namespace_and_empty_media_locator() {
+    fn rejects_foreign_namespace_and_isolates_empty_media_locator() {
         let foreign =
             br#"<manifest xmlns="http://ns.adobe.com/f4m/1.0" xmlns:x="urn:foreign"><x:media url="stream"/></manifest>"#;
         let empty = br#"<manifest xmlns="http://ns.adobe.com/f4m/1.0"><media url=""/></manifest>"#;
@@ -569,11 +610,26 @@ mod tests {
                 "foreign namespace element"
             ))
         );
+        let parsed = parse_f4m_manifest(empty, budgets(), limits())
+            .expect("malformed sibling row remains document-local evidence");
+        assert!(parsed.media().is_empty());
         assert_eq!(
-            parse_f4m_manifest(empty, budgets(), limits()),
-            Err(F4mManifestError::InvalidValue {
-                field: "media url/href"
-            })
+            parsed.rejected_media(),
+            &[F4mMediaEntryRejection::InvalidLocatorShape]
+        );
+    }
+
+    #[test]
+    fn malformed_media_sibling_does_not_hide_valid_row() {
+        let input = br#"<manifest xmlns="http://ns.adobe.com/f4m/1.0"><media url="broken" width="wide"/><media url="valid" width="1280" height="720"/></manifest>"#;
+
+        let parsed = parse_f4m_manifest(input, budgets(), limits()).expect("document parses");
+
+        assert_eq!(parsed.media().len(), 1);
+        assert_eq!(parsed.media()[0].url(), Some("valid"));
+        assert_eq!(
+            parsed.rejected_media(),
+            &[F4mMediaEntryRejection::InvalidWidth]
         );
     }
 }

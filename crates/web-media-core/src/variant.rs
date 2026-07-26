@@ -1,4 +1,4 @@
-//! Нейтральный каталог независимых video/audio component variants.
+//! Нейтральный bounded catalog component variants и complete presentations.
 //!
 //! Модуль хранит только immutable value-контракты. Provider, network runtime,
 //! player, UI и алгоритм переоткрытия остаются за пределами этого crate.
@@ -422,6 +422,21 @@ impl ComponentVariantCatalogLimit {
 /// Входная shape catalog до проверки и превращения collections в immutable slices.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComponentVariantCatalogEntries {
+    /// Полная additive topology с independent/constrained/coupled/single-component rows.
+    Topology {
+        /// Reusable video component pool; membership не означает standalone playability.
+        video: Vec<VideoComponentVariant>,
+        /// Reusable audio component pool; membership не означает standalone playability.
+        audio: Vec<AudioComponentVariant>,
+        /// Доказанная composed A/V relation.
+        compatibility: ComponentVariantCompatibilityEntries,
+        /// Complete coupled/muxed A/V presentations.
+        coupled: Vec<CoupledComponentVariant>,
+        /// Video pool rows, которые playable без audio.
+        video_only: Vec<ComponentVariantExactIdentity>,
+        /// Audio pool rows, которые playable без video.
+        audio_only: Vec<ComponentVariantExactIdentity>,
+    },
     /// Независимые video и audio axes.
     VideoAndAudio {
         /// Video variants без Cartesian multiplication.
@@ -444,6 +459,24 @@ pub enum ComponentVariantCatalogEntries {
 /// Полностью проверенный immutable component catalog.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComponentVariantCatalog {
+    /// Проверенная additive topology.
+    #[non_exhaustive]
+    Topology {
+        /// Catalog scope.
+        identity: ComponentVariantCatalogIdentity,
+        /// Immutable video pool.
+        video: Box<[VideoComponentVariant]>,
+        /// Immutable audio pool.
+        audio: Box<[AudioComponentVariant]>,
+        /// Immutable compatibility relation.
+        compatibility: ComponentVariantCompatibility,
+        /// Complete coupled/muxed rows.
+        coupled: Box<[CoupledComponentVariant]>,
+        /// Exact standalone-video references.
+        video_only: Box<[ComponentVariantExactIdentity]>,
+        /// Exact standalone-audio references.
+        audio_only: Box<[ComponentVariantExactIdentity]>,
+    },
     /// Независимые required video и audio axes.
     ///
     /// Variant нельзя собрать вне crate в обход `ComponentVariantCatalog::new`.
@@ -498,6 +531,11 @@ pub enum ComponentVariantSelectionRequest {
         /// Exact audio identity.
         audio: ComponentVariantExactIdentity,
     },
+    /// Ровно одна complete coupled/muxed presentation.
+    Coupled {
+        /// Exact coupled identity.
+        presentation: CoupledVariantExactIdentity,
+    },
 }
 
 /// Проверенная immutable selection, содержащая ровно required axes.
@@ -529,6 +567,12 @@ pub enum ComponentVariantSelection {
         /// Exact selected audio row.
         audio: Box<AudioComponentVariant>,
     },
+    /// Выбранная complete coupled/muxed presentation.
+    #[non_exhaustive]
+    Coupled {
+        /// Exact selected presentation.
+        presentation: Box<CoupledComponentVariant>,
+    },
 }
 
 impl ComponentVariantSelection {
@@ -550,127 +594,27 @@ impl ComponentVariantSelection {
             Self::AudioOnly { audio } => ComponentVariantSelectionRequest::AudioOnly {
                 audio: audio.exact_identity().clone(),
             },
+            Self::Coupled { presentation } => ComponentVariantSelectionRequest::Coupled {
+                presentation: presentation.exact_identity().clone(),
+            },
         }
     }
 }
 
-/// Ошибки catalog admission, lookup и immutable replacement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ComponentVariantError {
-    /// Variant или request принадлежит другому source lineage.
-    SourceMismatch,
-    /// Variant или request принадлежит другому active parent candidate.
-    CrossParent,
-    /// Exact identity относится к другой component catalog generation.
-    StaleCatalogGeneration {
-        /// Generation текущего catalog.
-        expected: ComponentVariantCatalogGeneration,
-        /// Generation request/variant.
-        provided: ComponentVariantCatalogGeneration,
-    },
-    /// Identity помещена не в свою axis.
-    WrongAxis {
-        /// Axis, которую требует операция.
-        expected: ComponentKind,
-        /// Axis из identity.
-        provided: ComponentKind,
-    },
-    /// Exact identity отсутствует в текущем catalog.
-    MissingVariant {
-        /// Axis, в которой выполнялся lookup.
-        component: ComponentKind,
-    },
-    /// Refresh-stable identity отсутствует в свежем catalog.
-    MissingSemanticVariant {
-        /// Axis, в которой выполнялся semantic lookup.
-        component: ComponentKind,
-    },
-    /// Catalog содержит повторяющуюся snapshot-local identity.
-    DuplicateExactIdentity {
-        /// Axis duplicate identity.
-        component: ComponentKind,
-    },
-    /// Две rows имеют одну refresh-stable identity, поэтому rematch неоднозначен.
-    AmbiguousSemanticIdentity {
-        /// Axis ambiguous identity.
-        component: ComponentKind,
-    },
-    /// Суммарная cardinality `V + A` превышает explicit caller budget.
-    CatalogLimitExceeded {
-        /// Фактическое число rows.
-        provided_entries: usize,
-        /// Caller-owned checked limit.
-        maximum_entries: usize,
-    },
-    /// Required axis пуста или отсутствует в layout.
-    MissingRequiredAxis {
-        /// Required axis.
-        component: ComponentKind,
-    },
-    /// Request/selection shape не совпадает с catalog layout.
-    LayoutMismatch,
-}
+#[path = "variant/topology.rs"]
+mod topology;
 
-impl fmt::Display for ComponentVariantError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::SourceMismatch => {
-                formatter.write_str("component variant принадлежит другому source")
-            }
-            Self::CrossParent => {
-                formatter.write_str("component variant принадлежит другому parent candidate")
-            }
-            Self::StaleCatalogGeneration { expected, provided } => write!(
-                formatter,
-                "component catalog generation устарела: ожидалась {}, получена {}",
-                expected.value(),
-                provided.value()
-            ),
-            Self::WrongAxis { expected, provided } => write!(
-                formatter,
-                "component variant axis не совпадает: ожидалась {expected:?}, получена {provided:?}"
-            ),
-            Self::MissingVariant { component } => {
-                write!(
-                    formatter,
-                    "exact {component:?} variant отсутствует в catalog"
-                )
-            }
-            Self::MissingSemanticVariant { component } => write!(
-                formatter,
-                "semantic {component:?} variant отсутствует в catalog"
-            ),
-            Self::DuplicateExactIdentity { component } => {
-                write!(
-                    formatter,
-                    "catalog содержит duplicate exact {component:?} identity"
-                )
-            }
-            Self::AmbiguousSemanticIdentity { component } => write!(
-                formatter,
-                "catalog содержит ambiguous semantic {component:?} identity"
-            ),
-            Self::CatalogLimitExceeded {
-                provided_entries,
-                maximum_entries,
-            } => write!(
-                formatter,
-                "catalog содержит {provided_entries} rows при лимите {maximum_entries}"
-            ),
-            Self::MissingRequiredAxis { component } => {
-                write!(
-                    formatter,
-                    "required {component:?} axis пуста или отсутствует"
-                )
-            }
-            Self::LayoutMismatch => {
-                formatter.write_str("component selection shape не совпадает с catalog layout")
-            }
-        }
-    }
-}
+pub use topology::{
+    ComponentVariantCompatibility, ComponentVariantCompatibilityEdge,
+    ComponentVariantCompatibilityEntries, ComponentVariantEdgeLimit,
+    ComponentVariantEdgeLimitError, CoupledComponentVariant, CoupledVariantExactIdentity,
+    CoupledVariantSemanticIdentity, MAX_COMPONENT_VARIANT_COMPATIBILITY_EDGES,
+};
 
-impl std::error::Error for ComponentVariantError {}
+#[path = "variant/error.rs"]
+mod error;
+
+pub use error::ComponentVariantError;
 
 #[path = "variant/catalog_impl.rs"]
 mod catalog_impl;

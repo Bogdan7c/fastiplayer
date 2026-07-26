@@ -25,7 +25,7 @@ use crate::demux::{
 use crate::source::tests::{FixtureOrigin, fragment_policy, prepare, selection};
 
 /// Production-shaped injected factory поверх existing S28A registrations.
-struct TestSymphoniaFactory;
+pub(crate) struct TestSymphoniaFactory;
 
 impl SmoothIsoBmffDemuxFactory for TestSymphoniaFactory {
     /// Открывает ordinary ordered video через registry content proof.
@@ -119,7 +119,7 @@ impl SmoothIsoBmffDemuxFactory for ThreadProbeFactory {
 }
 
 /// Собирает explicit bounded P4 policy.
-fn demux_policy() -> SmoothVodDemuxPolicy {
+pub(crate) fn demux_policy() -> SmoothVodDemuxPolicy {
     SmoothVodDemuxPolicy::new(
         DemuxSniffBudget::new(
             NonZeroUsize::new(256 * 1_024).expect("sniff bytes"),

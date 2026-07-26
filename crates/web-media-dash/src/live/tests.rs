@@ -10,8 +10,12 @@ use source_core::HttpRequestTarget;
 
 use super::{
     DashLiveClockError, DashLiveProfileExclusion, DashLiveRefreshError, DashLiveRefreshOutcome,
-    DashSynchronizedClock, DashWallClock, build_dash_live_snapshot, map_dynamic_plan_error,
+    DashLiveSelection, DashSynchronizedClock, DashWallClock, build_dash_live_snapshot,
+    build_dash_live_snapshot_with_selection, map_dynamic_plan_error, refresh_dash_live_snapshot,
     replace_dash_live_endpoint_snapshot,
+};
+use crate::catalog::{
+    DashLogicalRepresentationLane, DashLogicalRepresentationSelection, lane_contract,
 };
 use crate::{DashPlanError, DashPresentationSelection, DashRepresentationEvidence};
 
@@ -199,4 +203,106 @@ fn stale_or_incompatible_endpoint_snapshot_never_mutates_authoritative_snapshot(
     ));
     assert_eq!(current.mpd.publish_time, original_publish);
     assert_eq!(current.availability, original_availability);
+}
+
+#[test]
+fn logical_live_selection_survives_sibling_reorder_and_representation_id_rotation() {
+    let document = |publish_time: &str, representations: &str| {
+        format!(
+            r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic"
+              availabilityStartTime="2026-07-24T10:00:00Z"
+              publishTime="{publish_time}" minimumUpdatePeriod="PT2S"
+              timeShiftBufferDepth="PT30S" suggestedPresentationDelay="PT6S">
+              <UTCTiming schemeIdUri="urn:mpeg:dash:utc:direct:2014"
+                value="2026-07-24T10:01:00Z"/>
+              <Period id="p0" start="PT0S" duration="PT120S">
+                <AdaptationSet id="v" mimeType="video/mp4" codecs="avc1.4d401f">
+                  <SegmentTemplate timescale="1" initialization="init.mp4"
+                    media="v-$Time$.m4s">
+                    <SegmentTimeline><S t="0" d="2" r="59"/></SegmentTimeline>
+                  </SegmentTemplate>
+                  {representations}
+                </AdaptationSet>
+              </Period>
+            </MPD>"#
+        )
+    };
+    let parse = |document: &str| {
+        parse_dynamic_dash_mpd(DashMpdParseRequest {
+            document_bytes: document.as_bytes(),
+            xml_budgets: XmlBudgets::builder()
+                .maximum_document_bytes(32 * 1024)
+                .maximum_depth(32)
+                .maximum_tokens(512)
+                .maximum_attributes_per_element(32)
+                .maximum_attribute_count(256)
+                .maximum_attribute_bytes(16 * 1024)
+                .maximum_namespace_declarations_per_element(8)
+                .maximum_namespace_declaration_count(16)
+                .maximum_namespace_bytes(2 * 1024)
+                .maximum_text_bytes(16 * 1024)
+                .build()
+                .expect("test XML budgets"),
+            limits: DashMpdLimits {
+                maximum_periods: 2,
+                maximum_adaptation_sets_per_period: 2,
+                maximum_representations_per_adaptation_set: 4,
+                maximum_segments_per_list: 8,
+                maximum_timeline_entries: 8,
+                maximum_schema_string_bytes: 2 * 1024,
+            },
+        })
+        .expect("strict logical live fixture")
+    };
+    let current_mpd = parse(&document(
+        "2026-07-24T10:01:00Z",
+        r#"<Representation id="selected-old" bandwidth="1000000" width="1280" height="720"/>
+           <Representation id="sibling" bandwidth="2000000" width="1920" height="1080"/>"#,
+    ));
+    let contract =
+        lane_contract(&current_mpd.presentation.periods[0].adaptation_sets[0].representations[0])
+            .expect("selected contract");
+    let logical = DashLogicalRepresentationSelection::Single(DashLogicalRepresentationLane {
+        semantic_key: "selected".to_owned(),
+        locations: vec![(0, 0)].into_boxed_slice(),
+        contract,
+    });
+    let local: Arc<dyn DashWallClock> = Arc::new(FixedClock {
+        now: current_mpd.direct_utc_time,
+    });
+    let clock = DashSynchronizedClock::from_direct_utc(
+        local,
+        current_mpd.direct_utc_time,
+        current_mpd.direct_utc_time,
+        current_mpd.direct_utc_time,
+    )
+    .expect("zero-offset logical clock");
+    let target =
+        HttpRequestTarget::parse_exact("https://media.invalid/live.mpd").expect("test target");
+    let mut current = build_dash_live_snapshot_with_selection(
+        current_mpd,
+        &target,
+        &DashLiveSelection::Logical(Box::new(logical.clone())),
+        NonZeroUsize::new(128).expect("non-zero"),
+        &clock,
+    )
+    .expect("current logical snapshot");
+    let next_mpd = parse(&document(
+        "2026-07-24T10:01:02Z",
+        r#"<Representation id="sibling-new" bandwidth="2000000" width="1920" height="1080"/>
+           <Representation id="selected-new" bandwidth="1000000" width="1280" height="720"/>"#,
+    ));
+    let next = build_dash_live_snapshot_with_selection(
+        next_mpd,
+        &target,
+        &DashLiveSelection::Logical(Box::new(logical)),
+        NonZeroUsize::new(128).expect("non-zero"),
+        &clock,
+    )
+    .expect("reordered logical snapshot");
+
+    assert_eq!(
+        refresh_dash_live_snapshot(&mut current, next).expect("logical continuity"),
+        DashLiveRefreshOutcome::Replaced
+    );
 }

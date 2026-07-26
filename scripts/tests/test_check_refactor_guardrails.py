@@ -325,6 +325,50 @@ class DependencyGraphPolicyTests(unittest.TestCase):
                     )
                 )
 
+    def test_hls_and_dash_allow_only_neutral_catalog_dependency(self) -> None:
+        """Provider catalog edge идёт в neutral core, но не в service/app owners."""
+
+        for owner in ("web-media-hls", "web-media-dash"):
+            with self.subTest(owner=owner, dependency="web-media-core"):
+                packages = {
+                    owner: package_with_dependencies(
+                        owner,
+                        (("web-media-core", None),),
+                    )
+                }
+                violations = GUARDRAIL.find_dependency_violations(
+                    GUARDRAIL.direct_normal_dependencies(packages),
+                    GUARDRAIL.direct_all_manifest_dependencies(packages),
+                    frozenset(),
+                )
+                self.assertFalse(
+                    any(
+                        violation.owner == owner
+                        and violation.dependency == "web-media-core"
+                        for violation in violations
+                    )
+                )
+
+            with self.subTest(owner=owner, dependency="service-ytdlp"):
+                packages = {
+                    owner: package_with_dependencies(
+                        owner,
+                        (("service-ytdlp", None),),
+                    )
+                }
+                violations = GUARDRAIL.find_dependency_violations(
+                    GUARDRAIL.direct_normal_dependencies(packages),
+                    GUARDRAIL.direct_all_manifest_dependencies(packages),
+                    frozenset(),
+                )
+                self.assertTrue(
+                    any(
+                        violation.owner == owner
+                        and violation.dependency == "service-ytdlp"
+                        for violation in violations
+                    )
+                )
+
     def test_forbidden_direction_allows_forward_edge_and_rejects_reverse_edge(self) -> None:
         """Neutral backend API direction разрешена, backend -> player-core запрещена."""
 

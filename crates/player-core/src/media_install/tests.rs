@@ -49,6 +49,7 @@ fn fallible_stage_inventory_and_future_atomic_commit_point_are_explicit() {
             MediaInstallFailureStage::VideoStreamConfiguration,
             MediaInstallFailureStage::VideoPreflightTimeout,
             MediaInstallFailureStage::PlaybackWindowPreparation,
+            MediaInstallFailureStage::PositionPreparation,
             MediaInstallFailureStage::CandidateVideoResourceAcquisition,
             MediaInstallFailureStage::CandidateVideoBackendMatching,
             MediaInstallFailureStage::CandidateVideoBackendConfiguration,

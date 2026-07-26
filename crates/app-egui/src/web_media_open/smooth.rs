@@ -27,16 +27,15 @@ use web_media_core::{
 };
 use web_media_smooth::{
     AggregateInitializationByteLimit, FragmentInitializationLimits, FragmentInspectionLimits,
-    FragmentWriteLimits, SmoothAudioDemuxOpenRequest, SmoothFragmentSourcePolicy,
-    SmoothIsoBmffDemuxFactory, SmoothManifestLimits, SmoothPreparationPolicy, SmoothPrepareRequest,
-    SmoothVideoDemuxOpenRequest, SmoothVodDemuxPolicy, prepare_smooth_vod,
+    FragmentWriteLimits, SmoothAudioDemuxOpenRequest, SmoothCatalogDiscoveryPolicy,
+    SmoothCatalogDiscoveryRequest, SmoothFragmentSourcePolicy, SmoothIsoBmffDemuxFactory,
+    SmoothManifestLimits, SmoothPreparationPolicy, SmoothPrepareRequest,
+    SmoothVideoDemuxOpenRequest, SmoothVodDemuxPolicy, discover_smooth_vod_catalog,
+    prepare_smooth_vod,
 };
 use web_media_transport_api::TransportProviderId;
 
-use super::{
-    PreparedComponentVariantCatalog, YtDlpComponentSelectionOpenIntent,
-    next_component_variant_catalog_generation,
-};
+use super::{PreparedComponentVariantCatalog, YtDlpComponentSelectionOpenIntent};
 
 /// Готовый до player commit-а Smooth VOD candidate.
 pub(super) struct PreparedSmoothCandidate {
@@ -163,6 +162,8 @@ pub(super) fn prepare_smooth_candidate(
     live_intent: YtDlpLiveIntent,
     component_selection_intent: YtDlpComponentSelectionOpenIntent,
     preferred_height: PreferredHeightPolicy,
+    catalog_identity: web_media_core::ComponentVariantCatalogIdentity,
+    capability_probe: &crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
 ) -> Result<PreparedSmoothCandidate> {
     if !matches!(
         live_intent,
@@ -182,32 +183,45 @@ pub(super) fn prepare_smooth_candidate(
     let transport = candidate
         .smooth_manifest_transport_request(&request_context)
         .context("YtDlp ISM material нельзя выразить как Smooth manifest request")?;
-    let prepared = prepare_smooth_vod(SmoothPrepareRequest::new(
+    let preparation = SmoothPrepareRequest::new(
         transport,
         source_config,
-        next_component_variant_catalog_generation()?,
+        catalog_identity.generation(),
         preferred_height,
         preparation_policy(adaptive_limits)?,
-    ))
-    .context("Smooth VOD manifest/catalog preparation failed")?;
-
-    let catalog = prepared.catalog().clone();
-    let selected = match component_selection_intent {
-        YtDlpComponentSelectionOpenIntent::ProviderDefault => {
-            prepared.provider_default_selection().clone()
-        }
-        YtDlpComponentSelectionOpenIntent::Semantic(request) => prepared
-            .catalog()
-            .rematch_semantic(request)
-            .context("Fresh Smooth catalog не подтвердил semantic component selection")?,
-    };
-    let selected_sources = prepared
-        .into_selected_fragment_sources(selected.clone(), fragment_source_policy(adaptive_limits)?)
-        .context("Smooth selected component sources не построены")?;
+    );
     let factory = Arc::new(AppSmoothIsoBmffDemuxFactory::new(demux_registry)?);
-    let opened = selected_sources
-        .into_progressive_demuxer(factory, demux_policy()?)
-        .context("Smooth VOD demux runtime не запущен")?;
+    let (opened, catalog, selected) = match component_selection_intent {
+        YtDlpComponentSelectionOpenIntent::ProviderDefault => {
+            let prepared = prepare_smooth_vod(preparation)
+                .context("Smooth fast default preparation failed")?;
+            let catalog = prepared.catalog().clone();
+            let selected = prepared.provider_default_selection().clone();
+            let opened = prepared
+                .into_selected_fragment_sources(
+                    selected.clone(),
+                    fragment_source_policy(adaptive_limits)?,
+                )?
+                .into_progressive_demuxer(factory, demux_policy()?)?;
+            (opened, catalog, selected)
+        }
+        YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
+            let discovered = discover_smooth_vod_catalog(SmoothCatalogDiscoveryRequest::new(
+                preparation,
+                factory,
+                capability_probe,
+                discovery_policy(adaptive_limits)?,
+            ))?;
+            let catalog = discovered.catalog().clone();
+            let selected = catalog.rematch_semantic(semantic.clone())?;
+            let opened = discovered.open_semantic(
+                semantic,
+                fragment_source_policy(adaptive_limits)?,
+                demux_policy()?,
+            )?;
+            (opened, catalog, selected)
+        }
+    };
     let seek_port: Arc<dyn PreparedDemuxSeekPort> = Arc::new(SmoothPreparedDemuxSeekPort {
         handle: opened.async_seek_handle(),
     });
@@ -220,6 +234,59 @@ pub(super) fn prepare_smooth_candidate(
             provider_selection: selected,
         },
     })
+}
+
+/// Provider-owned sibling discovery, выполняемый только catalog worker-ом.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn discover_smooth_candidate_catalog(
+    candidate: &YtDlpNormalizedCandidate,
+    provider_id: TransportProviderId,
+    source_config: &SourceRuntimeConfig,
+    network_config: &NetworkConfig,
+    demux_registry: Arc<DemuxRegistry>,
+    cancellation: CancellationToken,
+    preferred_height: PreferredHeightPolicy,
+    catalog_identity: web_media_core::ComponentVariantCatalogIdentity,
+    capability_probe: &crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
+) -> Result<crate::web_media_open::catalog::DiscoveredProviderCatalog> {
+    let adaptive_limits =
+        crate::web_media_adaptive_config::adaptive_transport_limits(network_config)?;
+    let context = YtDlpTransportRequestContext::new(
+        provider_id,
+        crate::web_media_adaptive_config::initial_adaptive_source_generation(),
+        cancellation,
+    );
+    let transport = candidate.smooth_manifest_transport_request(&context)?;
+    let factory = Arc::new(AppSmoothIsoBmffDemuxFactory::new(demux_registry)?);
+    let discovered = discover_smooth_vod_catalog(SmoothCatalogDiscoveryRequest::new(
+        SmoothPrepareRequest::new(
+            transport,
+            source_config,
+            catalog_identity.generation(),
+            preferred_height,
+            preparation_policy(adaptive_limits)?,
+        ),
+        factory,
+        capability_probe,
+        discovery_policy(adaptive_limits)?,
+    ))?;
+    Ok(crate::web_media_open::catalog::DiscoveredProviderCatalog {
+        catalog: Arc::new(discovered.catalog().clone()),
+        provider_selection: discovered.provider_default_selection().clone(),
+        rejected_siblings: discovered.sibling_rejections().len(),
+    })
+}
+
+fn discovery_policy(limits: AdaptiveTransportLimits) -> Result<SmoothCatalogDiscoveryPolicy> {
+    Ok(SmoothCatalogDiscoveryPolicy::new(
+        fragment_source_policy(limits)?,
+        DemuxSniffBudget::new(
+            NonZeroUsize::new(64 * 1_024).expect("Smooth discovery sniff bytes"),
+            NonZeroUsize::new(8).expect("Smooth discovery sniff segments"),
+            Duration::from_secs(2),
+        )?,
+        NonZeroUsize::new(4_096).expect("Smooth discovery event limit"),
+    ))
 }
 
 /// Все manifest/init/catalog budgets принадлежат app composition policy.
@@ -243,6 +310,8 @@ fn preparation_policy(limits: AdaptiveTransportLimits) -> Result<SmoothPreparati
             NonZeroUsize::new(256 * 1_024).expect("Smooth aggregate initialization bytes"),
         ),
         ComponentVariantCatalogLimit::new(64).context("Smooth catalog limit invalid")?,
+        web_media_core::ComponentVariantEdgeLimit::new(4_096)
+            .context("Smooth compatibility edge limit invalid")?,
     ))
 }
 

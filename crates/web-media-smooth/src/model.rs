@@ -3,7 +3,8 @@
 use std::fmt;
 use std::sync::Arc;
 
-use smooth_streaming_fmp4::{SmoothInitializationSegment, SmoothTrackSelection};
+use bytes::Bytes;
+use smooth_streaming_fmp4::{SmoothTrackIdentity, SmoothTrackSelection};
 use smooth_streaming_manifest_core::{SmoothManifest, SmoothTime};
 use source_core::HttpRequestTarget;
 use web_media_adaptive::{AdaptiveHttpContext, AdaptiveResourceSecretForwarding};
@@ -71,7 +72,7 @@ impl SmoothAlignedSpan {
     }
 }
 
-/// Полностью подготовленный neutral catalog и provider default.
+/// Provider-default либо fully discovered neutral catalog с private runtime seed.
 pub struct SmoothPreparedCatalog {
     pub(crate) catalog: ComponentVariantCatalog,
     pub(crate) provider_default_selection: ComponentVariantSelection,
@@ -130,10 +131,12 @@ pub(crate) struct SmoothRuntimeSeed {
     pub(crate) audio_rows: Box<[SmoothRuntimeRow]>,
 }
 
-/// Runtime row хранит owned init и selector, но не self-borrowing mapped track.
+/// Runtime row хранит shared init и selector, но не self-borrowing mapped track.
 #[allow(dead_code)]
+#[derive(Clone)]
 pub(crate) struct SmoothRuntimeRow {
     pub(crate) exact_identity: ComponentVariantExactIdentity,
     pub(crate) selection: SmoothTrackSelection,
-    pub(crate) initialization: SmoothInitializationSegment,
+    pub(crate) initialization_identity: SmoothTrackIdentity,
+    pub(crate) initialization_bytes: Bytes,
 }

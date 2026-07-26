@@ -1,6 +1,6 @@
 use media_core::{MediaDuration, MediaTime};
 
-use crate::MediaPlaybackWindow;
+use crate::{InstalledLiveEdgeAdjustmentReason, MediaPlaybackWindow};
 
 use super::*;
 
@@ -22,6 +22,9 @@ impl PlayerSession {
             media_instance_id,
             started_video_backend,
             defer_video_backend_to_compatibility_adapter,
+            request_id,
+            position,
+            demux_seek_runtime,
         } = prepared_commit;
 
         let playback_window = prepared_media.playback_window();
@@ -75,7 +78,12 @@ impl PlayerSession {
             .install_opened_media(demuxer, file_path, source_label, tracks);
         self.pipeline.update_media_source_info(source_info);
         self.reset_session_state_for_staged_media_commit();
-        self.prepared_demux_seek.install(demux_seek_mode);
+        debug_assert!(matches!(
+            demux_seek_mode,
+            crate::PreparedDemuxSeekMode::Synchronous
+        ));
+        self.prepared_demux_seek
+            .install_detached(demux_seek_runtime);
         self.reset_playback_window_end_observation();
 
         if let Some(audio_plan) = audio_plan {
@@ -132,6 +140,12 @@ impl PlayerSession {
                 .reset_audio_clock_sample(playback_window_start, Instant::now());
         }
         self.clear_error();
+        self.install_staged_position_after_commit(
+            request_id,
+            media_instance_id,
+            position,
+            accepted_intent.intent,
+        );
         self.push_player_event(PlayerEvent::MediaOpenRequested(media_open_request));
         self.push_player_event(PlayerEvent::MediaOpened(media_summary));
 
@@ -218,6 +232,7 @@ impl PlayerSession {
         self.media_lifecycle.clear_pending_autoplay();
         self.seek_runtime.clear_active_commit();
         self.prepared_demux_seek.reset();
+        self.installed_staged_position = None;
         self.prepared_seek_landing.clear_promoted_seek_ownership();
         self.seek_runtime.clear_trace();
         self.seek_runtime.clear_simple_scrub();
@@ -233,5 +248,99 @@ impl PlayerSession {
         self.last_audio_starvation_warn_at = None;
         self.last_seen_audio_underrun_callbacks = 0;
         self.last_tick_observed_at = None;
+    }
+
+    fn install_staged_position_after_commit(
+        &mut self,
+        request_id: MediaInstallRequestId,
+        media_instance_id: MediaInstanceId,
+        position: Option<StagedPositionCommit>,
+        accepted_intent: PlaybackIntent,
+    ) {
+        let Some(position) = position else {
+            return;
+        };
+        let outcome = match position {
+            StagedPositionCommit::KeepStart => position::InstalledStagedPositionOutcome::Completed,
+            StagedPositionCommit::AdjustedToLiveEdge {
+                requested_position,
+                live_edge: prepared_live_edge,
+            } => {
+                let live_edge = self
+                    .snapshot
+                    .timeline
+                    .live_edge
+                    .map(media_core::MediaTime::as_duration)
+                    .unwrap_or(prepared_live_edge);
+                let requested = MediaTime::from_duration(requested_position);
+                let reason = match self.snapshot.timeline.seekable_range {
+                    Some(available_range) if available_range.contains(requested) => {
+                        InstalledLiveEdgeAdjustmentReason::PreparedAnchorUnavailableAfterTimelineAdvance {
+                            available_range,
+                        }
+                    }
+                    Some(available_range) => {
+                        InstalledLiveEdgeAdjustmentReason::PreviousPositionOutsideDvr {
+                            available_range,
+                        }
+                    }
+                    None => InstalledLiveEdgeAdjustmentReason::DvrWindowUnavailable,
+                };
+                self.current_source_position = live_edge;
+                self.snapshot
+                    .set_timeline_position(MediaTime::from_duration(live_edge));
+                self.pipeline.set_media_clock_base(live_edge);
+                position::InstalledStagedPositionOutcome::AdjustedToLiveEdge {
+                    requested_position,
+                    live_edge,
+                    reason,
+                }
+            }
+            StagedPositionCommit::Seek {
+                target_position,
+                result,
+            } => {
+                let resume_intent = match accepted_intent {
+                    PlaybackIntent::StartPlaying => crate::PlaybackResumeIntent::Play,
+                    PlaybackIntent::StartPaused => crate::PlaybackResumeIntent::Pause,
+                };
+                // Timeline publish может пересечь final pre-authorization validation. Initial
+                // install уже наблюдал такой revision до появления active seek, поэтому здесь
+                // повторно проверяем установленный snapshot и не теряем событие expiry.
+                let fresh_live_range = (self.snapshot.timeline.mode
+                    == media_core::TimelineMode::Live)
+                    .then_some(self.snapshot.timeline.seekable_range)
+                    .flatten();
+                let fresh_live_position_is_valid = fresh_live_range.is_none_or(|range| {
+                    range.contains(target_position) && range.contains(result.actual_position)
+                });
+                let adopted = if self.snapshot.timeline.mode == media_core::TimelineMode::Live
+                    && (!self.snapshot.timeline.seekable || !fresh_live_position_is_valid)
+                {
+                    Err(crate::PlayerError::new(
+                        crate::PlayerErrorKind::SeekTargetExpired,
+                        "prepared live seek expired during media installation",
+                    ))
+                } else {
+                    self.start_adopted_staged_seek(target_position, resume_intent, result)
+                };
+                match adopted {
+                    Ok(seek_generation) => {
+                        position::InstalledStagedPositionOutcome::AwaitingSeekCommit {
+                            seek_generation,
+                        }
+                    }
+                    Err(error) => {
+                        self.mark_fatal_error(error.clone());
+                        position::InstalledStagedPositionOutcome::Failed(error)
+                    }
+                }
+            }
+        };
+        self.installed_staged_position = Some(InstalledStagedPosition {
+            request_id,
+            media_instance_id,
+            outcome,
+        });
     }
 }

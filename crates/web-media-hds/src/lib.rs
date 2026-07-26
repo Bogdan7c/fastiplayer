@@ -5,12 +5,15 @@
 
 #![forbid(unsafe_code)]
 
+mod catalog;
 mod policy;
 mod resolve;
 mod runtime;
 
-pub use policy::HdsVodOpenPolicy;
-pub use resolve::{
-    HdsRenditionCatalog, HdsRenditionId, HdsRenditionSelection, HdsRenditionSummary,
+pub use catalog::{
+    HdsCatalogDiscoveryRequest, HdsRenditionCapabilityProbe, HdsRenditionCapabilityRejection,
+    HdsRenditionCatalog, discover_hds_renditions, prepare_discovered_hds_vod,
 };
+pub use policy::HdsVodOpenPolicy;
+pub use resolve::{HdsRenditionRejection, HdsRenditionRejectionReason, HdsRenditionSelection};
 pub use runtime::{HdsVodOpenRequest, HdsVodOpenResult, HdsVodPresentationWindow, prepare_hds_vod};

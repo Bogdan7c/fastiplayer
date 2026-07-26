@@ -6,7 +6,7 @@ use bounded_xml_reader::XmlBudgets;
 use smooth_streaming_manifest_core::SmoothManifestLimits;
 use symphonia_format_isomp4::FragmentInitializationLimits;
 use web_media_adaptive::{AdaptiveRetryPolicy, AdaptiveTransportLimits};
-use web_media_core::ComponentVariantCatalogLimit;
+use web_media_core::{ComponentVariantCatalogLimit, ComponentVariantEdgeLimit};
 
 /// Общий предел bytes всех построенных initialization segments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,10 +39,11 @@ pub struct SmoothPreparationPolicy {
     pub(crate) initialization_limits: FragmentInitializationLimits,
     pub(crate) aggregate_initialization_limit: AggregateInitializationByteLimit,
     pub(crate) catalog_limit: ComponentVariantCatalogLimit,
+    pub(crate) compatibility_edge_limit: ComponentVariantEdgeLimit,
 }
 
 impl SmoothPreparationPolicy {
-    /// Собирает policy из семи независимо именованных budget groups.
+    /// Собирает policy из восьми независимо именованных budget groups.
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
@@ -53,6 +54,7 @@ impl SmoothPreparationPolicy {
         initialization_limits: FragmentInitializationLimits,
         aggregate_initialization_limit: AggregateInitializationByteLimit,
         catalog_limit: ComponentVariantCatalogLimit,
+        compatibility_edge_limit: ComponentVariantEdgeLimit,
     ) -> Self {
         Self {
             adaptive_limits,
@@ -62,6 +64,7 @@ impl SmoothPreparationPolicy {
             initialization_limits,
             aggregate_initialization_limit,
             catalog_limit,
+            compatibility_edge_limit,
         }
     }
 }

@@ -26,6 +26,11 @@ use timestamp::{globalize_packet_timestamp, globalize_seek_result, timestamp_map
 #[error("DASH fragment sequence завершилась до decode-safe anchor")]
 struct DashDecodeAnchorUnavailableError;
 
+/// Initial demux topology не соответствует advertised Representation kind.
+#[derive(Debug, thiserror::Error)]
+#[error("DASH component track topology does not match its plan")]
+pub(crate) struct DashComponentTrackShapeError;
+
 /// Cloneable recipe для transactional offside replacement.
 #[derive(Clone)]
 pub(crate) struct DashComponentFactory {
@@ -319,7 +324,7 @@ impl DashComponentDemuxer {
             DashMediaKind::Muxed => video_tracks == 1 && audio_tracks == 1,
         };
         if !valid {
-            anyhow::bail!("DASH required component track topology не совпала с plan");
+            return Err(DashComponentTrackShapeError.into());
         }
         Ok(())
     }

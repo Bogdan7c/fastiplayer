@@ -11,8 +11,8 @@ use std::sync::Arc;
 use player_core::{PlaybackState, PlayerSnapshot};
 use service_ytdlp::{YtDlpCandidateSelection, YtDlpCandidateSnapshot};
 use web_media_core::{
-    CandidateDescriptor, CodecFamily, CodecKind, ContainerFamily, ExactSelectionIdentity,
-    StreamLayout, StreamLayoutKind,
+    CandidateDescriptor, CodecFamily, CodecKind, ContainerFamily, DynamicRange,
+    ExactSelectionIdentity, StreamLayout, StreamLayoutKind,
 };
 use web_media_playback_plan::{
     PlanningCandidateSnapshot, PlaybackCapabilitySnapshot, PlaybackSelectionPolicy, plan_playback,
@@ -44,7 +44,7 @@ pub(crate) struct WebMediaStreamGeneration {
 impl WebMediaStreamGeneration {
     /// Строит generation fence из установленного exact selection token-а.
     #[must_use]
-    fn from_selection(selection: &YtDlpCandidateSelection) -> Self {
+    pub(crate) fn from_selection(selection: &YtDlpCandidateSelection) -> Self {
         let identity = selection.exact_identity();
         Self {
             source: identity.source().value(),
@@ -105,6 +105,7 @@ pub(crate) struct WebMediaCandidatePresentation {
     pub(crate) audio_bitrate: Option<u64>,
     pub(crate) video_codec: Option<CodecFamily>,
     pub(crate) audio_codec: Option<CodecFamily>,
+    pub(crate) dynamic_range: Option<DynamicRange>,
     pub(crate) containers: WebMediaContainerSummary,
 }
 
@@ -155,6 +156,7 @@ impl WebMediaCandidatePresentation {
                 .and_then(|track| track.bitrate().map(|rate| rate.bits_per_second())),
             video_codec: video.and_then(|track| known_codec(track.codec().kind())),
             audio_codec: audio.and_then(|track| known_codec(track.codec().kind())),
+            dynamic_range: video.map(|track| track.dynamic_range()),
             containers: WebMediaContainerSummary {
                 video: video_container,
                 audio: audio_container,
@@ -162,8 +164,7 @@ impl WebMediaCandidatePresentation {
         })
     }
 
-    /// Resolution отсутствует у честного audio-only candidate-а.
-    #[must_use]
+    #[cfg(test)]
     pub(crate) fn has_video(&self) -> bool {
         self.height.is_some() || self.video_codec.is_some()
     }
@@ -249,13 +250,11 @@ impl WebMediaStreamConfiguration {
             if is_active {
                 active_candidate = Some(presentation.clone());
             }
-            if !candidates.contains(&presentation) {
-                let selection = candidate_snapshot
-                    .selection_for(candidate)
-                    .map_err(|_| WebMediaStreamModelBuildError::CandidateSelectionFailed)?;
-                candidates.push(presentation);
-                candidate_selections.push(selection);
-            }
+            let selection = candidate_snapshot
+                .selection_for(candidate)
+                .map_err(|_| WebMediaStreamModelBuildError::CandidateSelectionFailed)?;
+            candidates.push(presentation);
+            candidate_selections.push(selection);
         }
 
         let active_candidate =
@@ -312,6 +311,7 @@ impl WebMediaStreamConfiguration {
     }
 
     /// Возвращает exact+semantic token только после generation/index validation.
+    #[cfg(test)]
     pub(crate) fn candidate_selection_for_switch(
         &self,
         generation: WebMediaStreamGeneration,
@@ -403,6 +403,8 @@ pub(crate) enum UrlSidebarModel {
         item_scope: UrlSidebarItemScope,
         status: UrlSidebarPlaybackStatus,
         safe_error: Option<UrlSidebarSafeError>,
+        catalog: crate::web_media_catalog::WebMediaCatalogState,
+        fallback_notice: bool,
     },
 }
 
@@ -523,6 +525,7 @@ impl UrlSidebarController {
     }
 
     /// Exact Installed публикует runtime-only item/source preference новой generation.
+    #[cfg(test)]
     pub(crate) fn record_candidate_switch_installed(
         &mut self,
         installed_generation: WebMediaStreamGeneration,
@@ -546,11 +549,13 @@ impl UrlSidebarController {
 
     /// Строит read-only model; stale pending/error generation никогда не показывается.
     #[must_use]
-    pub(crate) fn model(
+    pub(crate) fn model_with_catalog(
         &self,
         active_source: Option<&ActiveMediaSource>,
         player_snapshot: &PlayerSnapshot,
         playlist_model: Option<&PlaylistViewModel>,
+        catalog: crate::web_media_catalog::WebMediaCatalogState,
+        fallback_notice: bool,
     ) -> UrlSidebarModel {
         let source = match active_source.map(ActiveMediaSource::physical_source) {
             None | Some(ActiveMediaSource::LocalFile(_)) => UrlSidebarSourceProjection::Inactive,
@@ -571,14 +576,22 @@ impl UrlSidebarController {
                 unreachable!("physical_source removes playback-window wrappers")
             }
         };
-        self.model_from_source(source, player_snapshot, item_binding(playlist_model))
+        self.model_from_source_with_catalog(
+            source,
+            player_snapshot,
+            item_binding(playlist_model),
+            catalog,
+            fallback_notice,
+        )
     }
 
-    fn model_from_source(
+    fn model_from_source_with_catalog(
         &self,
         source: UrlSidebarSourceProjection<'_>,
         player_snapshot: &PlayerSnapshot,
         item_binding: UrlSidebarItemBinding,
+        catalog: crate::web_media_catalog::WebMediaCatalogState,
+        fallback_notice: bool,
     ) -> UrlSidebarModel {
         match source {
             UrlSidebarSourceProjection::Inactive => UrlSidebarModel::Inactive,
@@ -631,9 +644,43 @@ impl UrlSidebarController {
                             (player_snapshot.playback_state == PlaybackState::Failed)
                                 .then_some(UrlSidebarSafeError::SourceUnavailable)
                         }),
+                    catalog,
+                    fallback_notice,
                 }
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn model(
+        &self,
+        active_source: Option<&ActiveMediaSource>,
+        player_snapshot: &PlayerSnapshot,
+        playlist_model: Option<&PlaylistViewModel>,
+    ) -> UrlSidebarModel {
+        self.model_with_catalog(
+            active_source,
+            player_snapshot,
+            playlist_model,
+            crate::web_media_catalog::WebMediaCatalogState::Inactive,
+            false,
+        )
+    }
+
+    #[cfg(test)]
+    fn model_from_source(
+        &self,
+        source: UrlSidebarSourceProjection<'_>,
+        player_snapshot: &PlayerSnapshot,
+        item_binding: UrlSidebarItemBinding,
+    ) -> UrlSidebarModel {
+        self.model_from_source_with_catalog(
+            source,
+            player_snapshot,
+            item_binding,
+            crate::web_media_catalog::WebMediaCatalogState::Inactive,
+            false,
+        )
     }
 }
 

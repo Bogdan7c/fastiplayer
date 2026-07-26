@@ -51,6 +51,20 @@ impl Default for PreparedDemuxSeekRuntime {
 }
 
 impl PreparedDemuxSeekRuntime {
+    /// Создаёт detached runtime, который затем целиком переносится в installed session.
+    pub(super) fn detached(mode: PreparedDemuxSeekMode) -> Self {
+        Self {
+            mode,
+            next_request_id: 1,
+            pending: None,
+        }
+    }
+
+    /// Устанавливает уже использованный detached runtime без сброса allocator-а/port-а.
+    pub(super) fn install_detached(&mut self, detached: Self) {
+        *self = detached;
+    }
+
     /// Устанавливает mode exact нового media и сбрасывает старые fences.
     pub(super) fn install(&mut self, mode: PreparedDemuxSeekMode) {
         self.mode = mode;
@@ -111,6 +125,36 @@ impl PreparedDemuxSeekRuntime {
             resume_intent,
         });
         Ok(true)
+    }
+
+    /// Передаёт detached candidate seek worker-у до создания installed generation.
+    pub(super) fn enqueue_detached(
+        &mut self,
+        request: DemuxSeekRequest,
+    ) -> Result<Option<PreparedDemuxSeekRequestId>, PlayerError> {
+        let PreparedDemuxSeekMode::WorkerReceipted { port } = &self.mode else {
+            return Ok(None);
+        };
+        let request_id = PreparedDemuxSeekRequestId::new(self.next_request_id);
+        let next_request_id = self.next_request_id.checked_add(1).ok_or_else(|| {
+            PlayerError::new(
+                PlayerErrorKind::SeekUnavailable,
+                "demux seek request identity space exhausted",
+            )
+        })?;
+        port.enqueue_seek(request_id, request).map_err(|error| {
+            PlayerError::new(
+                PlayerErrorKind::SeekUnavailable,
+                format!("Не удалось передать staged seek demux worker-у: {error}"),
+            )
+        })?;
+        self.next_request_id = next_request_id;
+        Ok(Some(request_id))
+    }
+
+    #[cfg(test)]
+    pub(super) const fn next_request_id_for_tests(&self) -> u64 {
+        self.next_request_id
     }
 
     /// Забирает все готовые receipts; session применит только exact latest.

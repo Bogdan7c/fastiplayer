@@ -61,6 +61,46 @@ impl fmt::Debug for HlsDuration {
     }
 }
 
+/// Точная рациональная максимальная частота из `EXT-X-STREAM-INF:FRAME-RATE`.
+///
+/// Playlist использует decimal-синтаксис, поэтому parser хранит сокращённую
+/// дробь и не добавляет binary floating-point rounding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HlsFrameRate {
+    numerator: u64,
+    denominator: NonZeroU64,
+}
+
+impl HlsFrameRate {
+    pub(crate) fn new(numerator: u64, denominator: NonZeroU64) -> Self {
+        Self {
+            numerator,
+            denominator,
+        }
+    }
+
+    /// Возвращает сокращённый numerator.
+    pub const fn numerator(self) -> u64 {
+        self.numerator
+    }
+
+    /// Возвращает сокращённый положительный denominator.
+    pub const fn denominator(self) -> u64 {
+        self.denominator.get()
+    }
+}
+
+/// Стандартизованное evidence `EXT-X-STREAM-INF:VIDEO-RANGE`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HlsVideoRange {
+    /// Standard dynamic range.
+    Sdr,
+    /// Hybrid Log-Gamma HDR.
+    Hlg,
+    /// Perceptual Quantizer HDR.
+    Pq,
+}
+
 /// Декларация byte range; пропущенный offset остаётся явным для resolution в S32B.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ByteRange {
@@ -168,6 +208,8 @@ pub struct VariantStream {
     pub average_bandwidth: Option<u64>,
     pub codecs: Option<Box<str>>,
     pub resolution: Option<(u32, u32)>,
+    pub frame_rate: Option<HlsFrameRate>,
+    pub video_range: Option<HlsVideoRange>,
     pub audio_group: Option<Box<str>>,
     pub video_group: Option<Box<str>>,
     pub subtitle_group: Option<Box<str>>,

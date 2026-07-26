@@ -4,10 +4,10 @@ use player_core::{
     AuthorizeInstallCommit, CancelMediaInstall, MediaInstallCancellationCause,
     MediaInstallCompletion, MediaInstallControlOutcome, MediaInstallPhase, MediaInstallRequestId,
     MediaInstallVideoResourcePort, PlaybackIntentUpdate, PlaybackIntentUpdateReceipt,
-    PlayerCommandSender, PlayerWorkerSendError,
+    PlayerCommandSender, PlayerWorkerSendError, PrepareMediaInstallPosition,
 };
 
-use super::{MediaOpenInstallIntent, PlayerDispatchRejection};
+use super::{MediaOpenInstallIntent, MediaOpenPositionPreparation, PlayerDispatchRejection};
 
 pub(super) trait InstallReceiptPort: Send {
     fn take_ready(&self) -> Option<MediaInstallPhase>;
@@ -56,7 +56,12 @@ pub(super) trait MediaOpenPlayerPort: Send + Sync {
         prepared_media: player_core::PreparedMedia,
         intent: MediaOpenInstallIntent,
         video_resource_port: MediaInstallVideoResourcePort,
+        position_preparation: MediaOpenPositionPreparation,
     ) -> Result<Box<dyn InstallReceiptPort>, PlayerDispatchRejection>;
+    fn prepare_position(
+        &self,
+        request_id: MediaInstallRequestId,
+    ) -> Result<(), PlayerDispatchRejection>;
     fn authorize(
         &self,
         request_id: MediaInstallRequestId,
@@ -86,16 +91,38 @@ impl MediaOpenPlayerPort for PlayerCommandSender {
         prepared_media: player_core::PreparedMedia,
         intent: MediaOpenInstallIntent,
         video_resource_port: MediaInstallVideoResourcePort,
+        position_preparation: MediaOpenPositionPreparation,
     ) -> Result<Box<dyn InstallReceiptPort>, PlayerDispatchRejection> {
-        self.stage_prepared_media_install(
-            request_id,
-            prepared_media,
-            intent.intent,
-            intent.revision,
-            video_resource_port,
-        )
-        .map(|receipt| Box::new(receipt) as Box<dyn InstallReceiptPort>)
-        .map_err(map_player_send_error)
+        let receipt = match position_preparation {
+            MediaOpenPositionPreparation::NotRequired => self.stage_prepared_media_install(
+                request_id,
+                prepared_media,
+                intent.intent,
+                intent.revision,
+                video_resource_port,
+            ),
+            MediaOpenPositionPreparation::SameLineage {
+                expected_old_media_instance_id,
+            } => self.stage_same_lineage_prepared_media_install(
+                request_id,
+                prepared_media,
+                intent.intent,
+                intent.revision,
+                video_resource_port,
+                expected_old_media_instance_id,
+            ),
+        };
+        receipt
+            .map(|receipt| Box::new(receipt) as Box<dyn InstallReceiptPort>)
+            .map_err(map_player_send_error)
+    }
+
+    fn prepare_position(
+        &self,
+        request_id: MediaInstallRequestId,
+    ) -> Result<(), PlayerDispatchRejection> {
+        self.prepare_media_install_position(PrepareMediaInstallPosition { request_id })
+            .map_err(map_player_send_error)
     }
 
     fn authorize(

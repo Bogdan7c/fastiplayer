@@ -14,10 +14,10 @@ mod structure;
 pub use error::{HlsParseError, HlsParseErrorKind, HlsProfileError};
 pub use limits::{HlsParserLimits, HlsParserLimitsError};
 pub use model::{
-    ByteRange, ClosedCaptionsReference, ExactReference, HlsDuration, HlsKeyDeclaration,
-    HlsKeyFormat, HlsKeyMethod, HlsLineNumber, HlsPlaylist, HlsPlaylistType, InitializationMap,
-    MasterPlaylist, MediaContainerIntent, MediaPlaylist, MediaRendition, MediaRenditionType,
-    MediaSegment, VariantStream,
+    ByteRange, ClosedCaptionsReference, ExactReference, HlsDuration, HlsFrameRate,
+    HlsKeyDeclaration, HlsKeyFormat, HlsKeyMethod, HlsLineNumber, HlsPlaylist, HlsPlaylistType,
+    HlsVideoRange, InitializationMap, MasterPlaylist, MediaContainerIntent, MediaPlaylist,
+    MediaRendition, MediaRenditionType, MediaSegment, VariantStream,
 };
 pub use parser::{HlsParseRequest, is_hls_candidate, parse_hls_playlist};
 pub use profile::{

@@ -13,15 +13,51 @@ use web_media_adaptive::{
 use web_media_core::{ComponentVariantCatalogIdentity, ExactSelectionIdentity};
 use web_media_transport_api::{MediaComponentRole, MediaPresentation};
 
-use crate::catalog::{SmoothCatalogBuildRequest, build_catalog};
+#[cfg(test)]
+use crate::catalog::build_catalog;
+use crate::catalog::{SmoothCatalogBuildRequest, build_provider_default_catalog};
 use crate::error::{SmoothPrepareError, SmoothProfileError, SmoothTransportProfileError};
 use crate::model::{SmoothAlignedSpan, SmoothPreparedCatalog, SmoothRuntimeSeed};
 use crate::request::SmoothPrepareRequest;
 
-/// Готовит Smooth VOD: один full-body Manifest fetch и ни одного media fetch.
+/// Private manifest/resource owner, shared by fast default и sibling discovery.
+pub(crate) struct SmoothManifestPreparation {
+    pub(crate) http: AdaptiveHttpContext,
+    pub(crate) effective_manifest_target: source_core::HttpRequestTarget,
+    pub(crate) fragment_secret_forwarding: web_media_adaptive::AdaptiveResourceSecretForwarding,
+    pub(crate) manifest: Arc<SmoothManifest>,
+    pub(crate) catalog_identity: ComponentVariantCatalogIdentity,
+    pub(crate) parent_semantic: web_media_core::SemanticIdentity,
+    pub(crate) video_stream_ordinal: usize,
+    pub(crate) audio_stream_ordinal: usize,
+    pub(crate) aligned_span: SmoothAlignedSpan,
+    pub(crate) preferred_height: web_media_core::PreferredHeightPolicy,
+    pub(crate) policy: crate::SmoothPreparationPolicy,
+}
+
+/// Готовит быстрый provider-default seed: один Manifest fetch и ровно два init-а.
 pub fn prepare_smooth_vod(
     request: SmoothPrepareRequest<'_>,
 ) -> Result<SmoothPreparedCatalog, SmoothPrepareError> {
+    let prepared = prepare_manifest(request)?;
+    let cancellation = prepared.http.cancellation().clone();
+    let catalog_build = build_provider_default_catalog(SmoothCatalogBuildRequest {
+        manifest: &prepared.manifest,
+        catalog_identity: prepared.catalog_identity.clone(),
+        parent_semantic: &prepared.parent_semantic,
+        video_stream_ordinal: prepared.video_stream_ordinal,
+        audio_stream_ordinal: prepared.audio_stream_ordinal,
+        preferred_height: prepared.preferred_height,
+        policy: &prepared.policy,
+        cancellation: &|| cancellation.is_cancelled(),
+    })?;
+    Ok(into_prepared_catalog(prepared, catalog_build))
+}
+
+/// Выполняет общий bounded Manifest fetch/parse, не materializing quality rows.
+pub(crate) fn prepare_manifest(
+    request: SmoothPrepareRequest<'_>,
+) -> Result<SmoothManifestPreparation, SmoothPrepareError> {
     validate_transport_profile(&request)?;
     let initial_target = request
         .transport
@@ -90,32 +126,59 @@ pub fn prepare_smooth_vod(
     let (video_stream_ordinal, audio_stream_ordinal, aligned_span) =
         validate_manifest_profile(&manifest)?;
     let manifest = Arc::new(manifest);
-    let cancellation = http.cancellation().clone();
-    let catalog_build = build_catalog(SmoothCatalogBuildRequest {
-        manifest: &manifest,
+    Ok(SmoothManifestPreparation {
+        http,
+        effective_manifest_target,
+        fragment_secret_forwarding,
+        manifest,
         catalog_identity,
-        parent_semantic: &parent_semantic,
+        parent_semantic,
         video_stream_ordinal,
         audio_stream_ordinal,
+        aligned_span,
         preferred_height: request.preferred_height,
-        policy: &request.policy,
-        cancellation: &|| cancellation.is_cancelled(),
-    })?;
+        policy: request.policy,
+    })
+}
 
-    Ok(SmoothPreparedCatalog {
+pub(crate) fn into_prepared_catalog(
+    prepared: SmoothManifestPreparation,
+    catalog_build: crate::catalog::SmoothCatalogBuild,
+) -> SmoothPreparedCatalog {
+    SmoothPreparedCatalog {
         catalog: catalog_build.catalog,
         provider_default_selection: catalog_build.provider_selection,
-        source_generation: http.source_generation(),
-        aligned_span,
+        source_generation: prepared.http.source_generation(),
+        aligned_span: prepared.aligned_span,
         runtime_seed: SmoothRuntimeSeed {
-            http,
-            effective_manifest_target,
-            fragment_secret_forwarding,
-            manifest,
+            http: prepared.http,
+            effective_manifest_target: prepared.effective_manifest_target,
+            fragment_secret_forwarding: prepared.fragment_secret_forwarding,
+            manifest: prepared.manifest,
             video_rows: catalog_build.video_rows,
             audio_rows: catalog_build.audio_rows,
         },
-    })
+    }
+}
+
+/// Existing fragment/runtime tests deliberately exercise arbitrary non-default rows.
+#[cfg(test)]
+pub(crate) fn prepare_smooth_vod_all_for_test(
+    request: SmoothPrepareRequest<'_>,
+) -> Result<SmoothPreparedCatalog, SmoothPrepareError> {
+    let prepared = prepare_manifest(request)?;
+    let cancellation = prepared.http.cancellation().clone();
+    let catalog_build = build_catalog(SmoothCatalogBuildRequest {
+        manifest: &prepared.manifest,
+        catalog_identity: prepared.catalog_identity.clone(),
+        parent_semantic: &prepared.parent_semantic,
+        video_stream_ordinal: prepared.video_stream_ordinal,
+        audio_stream_ordinal: prepared.audio_stream_ordinal,
+        preferred_height: prepared.preferred_height,
+        policy: &prepared.policy,
+        cancellation: &|| cancellation.is_cancelled(),
+    })?;
+    Ok(into_prepared_catalog(prepared, catalog_build))
 }
 
 /// Проверяет neutral S36P1 intent до создания HTTP session.

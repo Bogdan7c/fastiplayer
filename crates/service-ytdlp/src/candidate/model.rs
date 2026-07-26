@@ -1,9 +1,10 @@
 use std::fmt;
 
 use web_media_core::{
-    CandidateDescriptor, CandidateIdentity, ExtractionGeneration, SemanticIdentity, SourceIdentity,
-    StaticCompatibilityRejection,
+    CandidateDescriptor, CandidateIdentity, CodecFamily, CodecKind, ExtractionGeneration,
+    SemanticIdentity, SourceIdentity, StaticCompatibilityRejection, StreamLayout,
 };
+use web_media_playback_plan::AudioFallbackRank;
 
 use crate::metadata::YtDlpPlaylistMetadata;
 
@@ -149,6 +150,16 @@ pub struct YtDlpNormalizedCandidate {
     descriptor: CandidateDescriptor,
     /// Один request resource для single result, два — только для compound merge.
     pub(super) component_requests: Box<[YtDlpCandidateComponentRequest]>,
+    /// Standard selection hints, quantized before leaving raw DTO boundary.
+    selection_hints: YtDlpSelectionHints,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct YtDlpSelectionHints {
+    pub(super) preference: Option<i64>,
+    pub(super) language_preference: Option<i64>,
+    pub(super) quality: Option<i64>,
+    pub(super) source_preference: Option<i64>,
 }
 
 impl YtDlpNormalizedCandidate {
@@ -174,10 +185,56 @@ impl YtDlpNormalizedCandidate {
             })
     }
 
+    pub(super) fn component_request(
+        &self,
+        role: YtDlpCandidateComponentRole,
+    ) -> Option<&YtDlpCandidateComponentRequest> {
+        self.component_requests
+            .iter()
+            .find(|component| component.role == role)
+    }
+
+    pub(super) fn component_request_material(
+        &self,
+        role: YtDlpCandidateComponentRole,
+    ) -> Option<YtDlpRequestMaterial> {
+        self.component_request(role)
+            .map(|component| component.material.clone())
+    }
+
+    pub(super) const fn selection_hints(&self) -> YtDlpSelectionHints {
+        self.selection_hints
+    }
+
+    /// Возвращает planner-owned stable rank для candidate-а с audio track.
+    pub fn audio_fallback_rank(&self) -> Option<AudioFallbackRank> {
+        let audio = match self.descriptor.layout() {
+            StreamLayout::Muxed(component) => component.audio(),
+            StreamLayout::Separate { audio, .. } | StreamLayout::AudioOnly(audio) => audio.audio(),
+            StreamLayout::VideoOnly(_) => return None,
+        };
+        Some(AudioFallbackRank::new(
+            self.selection_hints.preference,
+            self.selection_hints.language_preference,
+            self.selection_hints.quality,
+            audio.channels().map(web_media_core::ChannelCount::get),
+            audio_codec_rank(match audio.codec().kind() {
+                CodecKind::Known(family) => Some(family),
+                CodecKind::Absent | CodecKind::Unknown => None,
+            }),
+            audio
+                .bitrate()
+                .map(web_media_core::Bitrate::bits_per_second),
+            audio.sample_rate().map(web_media_core::SampleRate::hertz),
+            self.selection_hints.source_preference,
+        ))
+    }
+
     /// Собирает accepted candidate после всех owner-side checks.
     pub(super) fn new(
         descriptor: CandidateDescriptor,
         component_requests: Vec<(YtDlpCandidateComponentRole, YtDlpRequestMaterial)>,
+        selection_hints: YtDlpSelectionHints,
     ) -> Self {
         debug_assert!(matches!(component_requests.len(), 1 | 2));
         Self {
@@ -186,7 +243,28 @@ impl YtDlpNormalizedCandidate {
                 .into_iter()
                 .map(|(role, material)| YtDlpCandidateComponentRequest { role, material })
                 .collect(),
+            selection_hints,
         }
+    }
+}
+
+fn audio_codec_rank(codec: Option<CodecFamily>) -> i16 {
+    match codec {
+        Some(CodecFamily::Flac | CodecFamily::Alac | CodecFamily::Pcm) => 80,
+        Some(CodecFamily::Opus) => 70,
+        Some(CodecFamily::Vorbis) => 60,
+        Some(CodecFamily::Aac | CodecFamily::IsoBmffAudio) => 50,
+        Some(CodecFamily::Mp3) => 40,
+        Some(CodecFamily::Mp2) => 35,
+        Some(CodecFamily::Mp1 | CodecFamily::Adpcm) => 30,
+        Some(
+            CodecFamily::Vp8
+            | CodecFamily::Vp9
+            | CodecFamily::Av1
+            | CodecFamily::H264
+            | CodecFamily::H265,
+        )
+        | None => 0,
     }
 }
 
@@ -395,6 +473,14 @@ impl YtDlpCandidateSnapshot {
                     .filter_map(YtDlpCandidateEntry::accepted),
             )
     }
+
+    pub(super) fn accepted_inventory_candidates(
+        &self,
+    ) -> impl Iterator<Item = &YtDlpNormalizedCandidate> {
+        self.inventory
+            .iter()
+            .filter_map(YtDlpCandidateEntry::accepted)
+    }
 }
 
 /// Process-local exact selection хранит ID, generation и semantic attributes.
@@ -419,6 +505,14 @@ pub enum YtDlpCandidateSelectionError {
 }
 
 impl YtDlpCandidateSelection {
+    pub(super) fn from_descriptor(descriptor: CandidateDescriptor) -> Self {
+        Self { descriptor }
+    }
+
+    pub(super) const fn descriptor(&self) -> &CandidateDescriptor {
+        &self.descriptor
+    }
+
     /// Возвращает snapshot-local identity.
     pub const fn exact_identity(&self) -> &CandidateIdentity {
         self.descriptor.identity()

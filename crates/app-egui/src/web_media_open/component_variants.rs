@@ -40,6 +40,13 @@ pub(crate) struct YtDlpExactCandidateOpenIntent {
     pub(super) component_selection: YtDlpComponentSelectionOpenIntent,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct YtDlpComposedCandidateOpenIntent {
+    pub(super) selection: Box<service_ytdlp::YtDlpComposedSelection>,
+    pub(super) parent_preference: Box<YtDlpCandidateSelection>,
+    pub(super) preference: WebMediaSelectionPreference,
+}
+
 impl YtDlpCandidateOpenIntent {
     /// Открывает exact parent, но сбрасывает independent components к fresh provider default.
     #[must_use]
@@ -85,11 +92,25 @@ impl YtDlpCandidateOpenIntent {
         }))
     }
 
+    #[must_use]
+    pub(crate) fn composed(
+        selection: Box<service_ytdlp::YtDlpComposedSelection>,
+        parent_preference: Box<YtDlpCandidateSelection>,
+        preference: WebMediaSelectionPreference,
+    ) -> Self {
+        Self::Composed(Box::new(YtDlpComposedCandidateOpenIntent {
+            selection,
+            parent_preference,
+            preference,
+        }))
+    }
+
     /// Возвращает component intent до consuming parent snapshot resolution.
     pub(super) fn component_selection_intent(&self) -> YtDlpComponentSelectionOpenIntent {
         match self {
             Self::BestPlayable => YtDlpComponentSelectionOpenIntent::ProviderDefault,
             Self::Exact(exact) => exact.component_selection.clone(),
+            Self::Composed(_) => YtDlpComponentSelectionOpenIntent::ProviderDefault,
         }
     }
 }
@@ -100,7 +121,7 @@ impl YtDlpCandidateOpenIntent {
     dead_code,
     reason = "Текущие providers честно Unavailable; Installed — production seam следующего provider-а"
 )]
-pub(super) enum PreparedComponentVariantCatalog {
+pub(crate) enum PreparedComponentVariantCatalog {
     /// Текущий concrete provider не умеет independent component selection.
     Unavailable,
     /// Provider вернул свежий catalog и свой exact default selection того же generation.

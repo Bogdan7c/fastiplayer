@@ -67,6 +67,14 @@ pub(crate) struct YtDlpSerializedFormat {
     pub(crate) audio_channels: Option<u16>,
     /// Optional audio language.
     pub(crate) language: Option<String>,
+    /// Extractor-owned primary preference.
+    pub(crate) preference: Option<f64>,
+    /// Extractor-owned quality rank.
+    pub(crate) quality: Option<f64>,
+    /// Extractor-owned source preference.
+    pub(crate) source_preference: Option<f64>,
+    /// Extractor-owned language preference.
+    pub(crate) language_preference: Option<f64>,
     /// Typed dynamic-range hint.
     pub(crate) dynamic_range: Option<String>,
     /// Format-level DRM marker.

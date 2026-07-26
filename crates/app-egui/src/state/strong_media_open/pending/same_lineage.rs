@@ -39,9 +39,6 @@ impl AppState {
         else {
             return Ok(());
         };
-        if restore.is_some() {
-            return Ok(());
-        }
         let current_active = playlist_runtime.playlist_view_snapshot().active_media();
         let snapshot = self.refresh_player_snapshot();
         if current_active != Some(*expected_active)
@@ -51,6 +48,17 @@ impl AppState {
         }
         let (fresh_intent, fresh_restore) = same_lineage_controls_from_snapshot(snapshot);
         pending.intent = fresh_intent;
+        let next_revision = pending
+            .intent_revision
+            .get()
+            .checked_add(1)
+            .and_then(std::num::NonZeroU64::new)
+            .map(player_core::PlaybackIntentRevision::from_non_zero)
+            .ok_or(StrongMediaOpenError::PendingPhaseStateLost)?;
+        playlist_runtime
+            .update_media_open_playback_intent(pending.request_id, next_revision, fresh_intent)
+            .map_err(StrongMediaOpenError::Command)?;
+        pending.intent_revision = next_revision;
         *restore = Some(fresh_restore);
         Ok(())
     }

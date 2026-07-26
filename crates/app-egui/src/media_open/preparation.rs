@@ -159,7 +159,9 @@ pub(super) fn prepare_source(
                     source: ActiveMediaSource::YtDlpUrl {
                         source_locator: locator,
                         candidate_selection: Box::new(prepared.candidate_selection),
+                        composed_selection: prepared.composed_selection,
                         stream_configuration: Box::new(prepared.stream_configuration),
+                        catalog_attachment: prepared.catalog_attachment,
                     },
                     safe_label,
                 },

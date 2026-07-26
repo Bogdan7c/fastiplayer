@@ -5,12 +5,15 @@ use render_wgpu_shell::Renderer;
 
 use crate::media_open::{MediaOpenRequestId, MediaOpenSourceRequest};
 use crate::playlist_runtime::{ActiveMediaIdentity, PlaylistRuntime};
+#[cfg(test)]
+use crate::web_media_stream_model::WebMediaSelectionPreference;
+#[cfg(test)]
 use crate::web_media_stream_model::component_variants::{
     ComponentVariantActionError, ComponentVariantActionResolution,
 };
 use crate::web_media_stream_model::{
     UrlSidebarAction, UrlSidebarPendingSelection, UrlSidebarSafeError, UrlSidebarTransitionError,
-    WebMediaSelectionPreference, WebMediaStreamGeneration,
+    WebMediaStreamGeneration,
 };
 
 use super::{ActiveMediaSource, AppState, StrongMediaOpenError, StrongMediaOpenPoll};
@@ -28,19 +31,31 @@ pub(super) struct PendingSameItemSwitch {
 /// Post-Installed semantics общего strong reopen без positional bool.
 enum SameItemSwitchKind {
     /// Candidate completion публикует runtime-only item height override.
+    #[cfg(test)]
     Candidate {
         parent_generation: WebMediaStreamGeneration,
         candidate: crate::web_media_stream_model::WebMediaCandidatePresentation,
         preferred_height: Option<u32>,
     },
     /// Component completion сохраняет существующий preference/override без изменений.
+    #[cfg(test)]
     Component(crate::web_media_stream_model::component_variants::ComponentVariantSelectionAction),
+    Picker {
+        parent_generation: WebMediaStreamGeneration,
+        action: crate::web_media_catalog::WebMediaFacetAction,
+        target: crate::web_media_catalog::WebMediaSelectionTarget,
+    },
+    AutomaticPicker {
+        parent_generation: WebMediaStreamGeneration,
+        target: crate::web_media_catalog::WebMediaSelectionTarget,
+    },
 }
 
 impl SameItemSwitchKind {
     /// Строит единственную safe pending projection из authoritative switch kind.
     fn pending_selection(&self) -> UrlSidebarPendingSelection {
         match self {
+            #[cfg(test)]
             Self::Candidate {
                 parent_generation,
                 candidate,
@@ -49,17 +64,39 @@ impl SameItemSwitchKind {
                 parent_generation: *parent_generation,
                 candidate: candidate.clone(),
             },
+            #[cfg(test)]
             Self::Component(action) => UrlSidebarPendingSelection::Component(*action),
+            Self::Picker {
+                parent_generation,
+                action,
+                ..
+            } => UrlSidebarPendingSelection::StreamFacet {
+                parent_generation: *parent_generation,
+                action: *action,
+            },
+            Self::AutomaticPicker {
+                parent_generation, ..
+            } => UrlSidebarPendingSelection::AutomaticStreamRestore {
+                parent_generation: *parent_generation,
+            },
         }
     }
 
     /// Возвращает generation родительской installed stream configuration.
     const fn parent_generation(&self) -> WebMediaStreamGeneration {
         match self {
+            #[cfg(test)]
             Self::Candidate {
                 parent_generation, ..
             } => *parent_generation,
+            #[cfg(test)]
             Self::Component(action) => action.parent_generation(),
+            Self::Picker {
+                parent_generation, ..
+            }
+            | Self::AutomaticPicker {
+                parent_generation, ..
+            } => *parent_generation,
         }
     }
 }
@@ -84,6 +121,7 @@ pub(crate) enum SameItemSwitchError {
     Stale,
     /// Component action не прошёл generation/axis/index validation владельца catalog-а.
     #[error(transparent)]
+    #[cfg(test)]
     ComponentAction(#[from] ComponentVariantActionError),
     /// Active source не является переключаемым YtDlp source.
     #[error("active source не поддерживает same-item media switch")]
@@ -130,25 +168,15 @@ impl AppState {
         playlist_runtime: &mut PlaylistRuntime,
         renderer: &Renderer,
     ) -> Result<UrlSidebarActionApplyOutcome, SameItemSwitchError> {
-        if self.same_item_switch.is_some() {
-            return Err(SameItemSwitchError::Busy);
-        }
-        match self.runtime_reconfigure_boundary_activity() {
-            Ok(None) => {}
-            Ok(Some(_)) => return Err(SameItemSwitchError::Busy),
-            Err(error) => return Err(SameItemSwitchError::RuntimePreflight(error)),
-        }
-        let active_source = self
-            .active_media_source
-            .clone()
-            .ok_or(SameItemSwitchError::UnsupportedSource)?;
+        let active_source = self.preflight_same_item_switch()?;
         let (source_locator, selection_intent, kind) = match active_source.physical_source() {
             ActiveMediaSource::YtDlpUrl {
                 source_locator,
                 stream_configuration,
                 ..
             } => match action {
-                UrlSidebarAction::SelectCandidate {
+                #[cfg(test)]
+                UrlSidebarAction::Candidate {
                     generation,
                     candidate_index,
                 } => {
@@ -177,7 +205,8 @@ impl AppState {
                         },
                     )
                 }
-                UrlSidebarAction::SelectComponentVariant(component_action) => {
+                #[cfg(test)]
+                UrlSidebarAction::ComponentVariant(component_action) => {
                     let semantic_selection = match stream_configuration
                         .resolve_component_variant_action(component_action)?
                     {
@@ -199,6 +228,36 @@ impl AppState {
                             SameItemSwitchKind::Component(component_action),
                         )
                 }
+                UrlSidebarAction::StreamFacet {
+                    parent_generation,
+                    action,
+                } => {
+                    let crate::web_media_catalog::WebMediaCatalogState::Ready(catalog) =
+                        &self.web_media_catalog_state
+                    else {
+                        return Err(SameItemSwitchError::Stale);
+                    };
+                    if catalog.parent_generation() != parent_generation {
+                        return Err(SameItemSwitchError::Stale);
+                    }
+                    let target = catalog
+                        .resolve_facet_action(action)
+                        .cloned()
+                        .ok_or(SameItemSwitchError::Stale)?;
+                    if target == catalog.active_choice().target {
+                        return Ok(UrlSidebarActionApplyOutcome::NoChange);
+                    }
+                    let selection_intent = picker_selection_intent(&target, stream_configuration)?;
+                    (
+                        source_locator.clone(),
+                        selection_intent,
+                        SameItemSwitchKind::Picker {
+                            parent_generation,
+                            action,
+                            target,
+                        },
+                    )
+                }
             },
             ActiveMediaSource::LocalFile(_)
             | ActiveMediaSource::DirectMediaUrl(_)
@@ -206,6 +265,86 @@ impl AppState {
                 return Err(SameItemSwitchError::UnsupportedSource);
             }
         };
+        self.start_resolved_same_item_switch(
+            active_source,
+            source_locator,
+            selection_intent,
+            kind,
+            playlist_runtime,
+            renderer,
+        )
+    }
+
+    pub(super) fn start_automatic_web_media_switch(
+        &mut self,
+        pending: super::web_media_catalog::PendingAutomaticWebMediaSwitch,
+        playlist_runtime: &mut PlaylistRuntime,
+        renderer: &Renderer,
+    ) -> Result<UrlSidebarActionApplyOutcome, SameItemSwitchError> {
+        let active_source = self.preflight_same_item_switch()?;
+        let ActiveMediaSource::YtDlpUrl {
+            source_locator,
+            stream_configuration,
+            ..
+        } = active_source.physical_source()
+        else {
+            return Err(SameItemSwitchError::UnsupportedSource);
+        };
+        if stream_configuration.generation() != pending.parent_generation {
+            return Err(SameItemSwitchError::Stale);
+        }
+        let crate::web_media_catalog::WebMediaCatalogState::Ready(catalog) =
+            &self.web_media_catalog_state
+        else {
+            return Err(SameItemSwitchError::Stale);
+        };
+        if catalog.generation() != pending.catalog_generation
+            || catalog.parent_generation() != pending.parent_generation
+            || !catalog.contains_target(&pending.target)
+        {
+            return Err(SameItemSwitchError::Stale);
+        }
+        if pending.target == catalog.active_choice().target {
+            return Ok(UrlSidebarActionApplyOutcome::NoChange);
+        }
+        let selection_intent = picker_selection_intent(&pending.target, stream_configuration)?;
+        let source_locator = source_locator.clone();
+        self.start_resolved_same_item_switch(
+            active_source,
+            source_locator,
+            selection_intent,
+            SameItemSwitchKind::AutomaticPicker {
+                parent_generation: pending.parent_generation,
+                target: pending.target,
+            },
+            playlist_runtime,
+            renderer,
+        )
+    }
+
+    fn preflight_same_item_switch(&mut self) -> Result<ActiveMediaSource, SameItemSwitchError> {
+        if self.same_item_switch.is_some() {
+            return Err(SameItemSwitchError::Busy);
+        }
+        match self.runtime_reconfigure_boundary_activity() {
+            Ok(None) => {}
+            Ok(Some(_)) => return Err(SameItemSwitchError::Busy),
+            Err(error) => return Err(SameItemSwitchError::RuntimePreflight(error)),
+        }
+        self.active_media_source
+            .clone()
+            .ok_or(SameItemSwitchError::UnsupportedSource)
+    }
+
+    fn start_resolved_same_item_switch(
+        &mut self,
+        active_source: ActiveMediaSource,
+        source_locator: service_ytdlp::YtDlpMediaLocator,
+        selection_intent: crate::web_media_open::YtDlpCandidateOpenIntent,
+        kind: SameItemSwitchKind,
+        playlist_runtime: &mut PlaylistRuntime,
+        renderer: &Renderer,
+    ) -> Result<UrlSidebarActionApplyOutcome, SameItemSwitchError> {
         let expected_active = playlist_runtime
             .playlist_view_snapshot()
             .active_media()
@@ -232,10 +371,11 @@ impl AppState {
             yt_dlp_config: config.yt_dlp,
             demux_config: config.player.demux,
             preferred_video_codec_order: config.player.preferred_video_codec_order,
-            system_capabilities: capabilities,
+            system_capabilities: Box::new(capabilities),
             audio_capabilities: self.audio_decode_capability_snapshot(),
         };
         let source_request = active_source.wrap_reopen_request(physical_request);
+        let parent_generation = kind.parent_generation();
         let pending_selection = kind.pending_selection();
         self.url_sidebar_controller
             .record_switch_started(pending_selection.clone())
@@ -251,7 +391,7 @@ impl AppState {
             Err(error) => {
                 let _cleared = self.url_sidebar_controller.record_switch_failed(
                     &pending_selection,
-                    action.parent_generation(),
+                    parent_generation,
                     safe_error_for_start_failure(&error),
                 );
                 return Err(SameItemSwitchError::Strong(error));
@@ -328,6 +468,7 @@ impl AppState {
                     self.mark_pending_worker_redraw();
                     return;
                 }
+                #[cfg(test)]
                 if matches!(pending.kind, SameItemSwitchKind::Component(_))
                     && !matches!(
                         installed_configuration.component_variant_projection(),
@@ -348,6 +489,7 @@ impl AppState {
                     return;
                 }
                 match pending.kind {
+                    #[cfg(test)]
                     SameItemSwitchKind::Candidate {
                         preferred_height, ..
                     } => {
@@ -358,9 +500,20 @@ impl AppState {
                                 preferred_height,
                             );
                     }
+                    #[cfg(test)]
                     SameItemSwitchKind::Component(_) => {
                         self.url_sidebar_controller
                             .record_component_switch_installed();
+                    }
+                    SameItemSwitchKind::Picker { target, .. }
+                    | SameItemSwitchKind::AutomaticPicker { target, .. } => {
+                        self.url_sidebar_controller
+                            .record_component_switch_installed();
+                        if let Some(item_id) = pending.expected_active.item_id() {
+                            playlist_runtime
+                                .remember_web_media_preference(item_id, target.remembered());
+                        }
+                        self.web_media_fallback_notice = false;
                     }
                 }
             }
@@ -455,6 +608,39 @@ impl ActiveMediaSource {
     }
 }
 
+fn picker_selection_intent(
+    target: &crate::web_media_catalog::WebMediaSelectionTarget,
+    stream_configuration: &crate::web_media_stream_model::WebMediaStreamConfiguration,
+) -> Result<crate::web_media_open::YtDlpCandidateOpenIntent, SameItemSwitchError> {
+    match target {
+        #[cfg(test)]
+        crate::web_media_catalog::WebMediaSelectionTarget::Fixture(_) => {
+            Err(SameItemSwitchError::Stale)
+        }
+        crate::web_media_catalog::WebMediaSelectionTarget::Parent { selection } => Ok(
+            crate::web_media_open::YtDlpCandidateOpenIntent::exact_parent_provider_default(
+                selection.clone(),
+                stream_configuration.preference(),
+            ),
+        ),
+        crate::web_media_catalog::WebMediaSelectionTarget::Provider { parent, selection } => Ok(
+            crate::web_media_open::YtDlpCandidateOpenIntent::exact_with_component_semantic_selection(
+                parent.clone(),
+                stream_configuration,
+                selection.clone(),
+            ),
+        ),
+        crate::web_media_catalog::WebMediaSelectionTarget::Composed {
+            selection,
+            parent_preference,
+        } => Ok(crate::web_media_open::YtDlpCandidateOpenIntent::composed(
+            selection.clone(),
+            parent_preference.clone(),
+            stream_configuration.preference(),
+        )),
+    }
+}
+
 /// Start rejection сохраняет bounded UI vocabulary.
 fn safe_error_for_start_failure(error: &StrongMediaOpenError) -> UrlSidebarSafeError {
     match error {
@@ -470,9 +656,11 @@ fn safe_error_for_start_failure(error: &StrongMediaOpenError) -> UrlSidebarSafeE
 fn safe_error_for_switch_error(error: &SameItemSwitchError) -> UrlSidebarSafeError {
     match error {
         SameItemSwitchError::Busy => UrlSidebarSafeError::SameItemSwitchBusy,
-        SameItemSwitchError::Stale
-        | SameItemSwitchError::MissingActiveIdentity
-        | SameItemSwitchError::ComponentAction(_) => UrlSidebarSafeError::SameItemSwitchStale,
+        SameItemSwitchError::Stale | SameItemSwitchError::MissingActiveIdentity => {
+            UrlSidebarSafeError::SameItemSwitchStale
+        }
+        #[cfg(test)]
+        SameItemSwitchError::ComponentAction(_) => UrlSidebarSafeError::SameItemSwitchStale,
         SameItemSwitchError::Strong(error) => safe_error_for_start_failure(error),
         SameItemSwitchError::UnsupportedSource
         | SameItemSwitchError::MissingBinding

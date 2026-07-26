@@ -189,7 +189,7 @@ impl StartupUrlServiceAdapter for YtDlpStartupAdapter {
             yt_dlp_config: app_config.yt_dlp.clone(),
             demux_config: app_config.player.demux,
             preferred_video_codec_order: app_config.player.preferred_video_codec_order.clone(),
-            system_capabilities: system_capabilities.clone(),
+            system_capabilities: Box::new(system_capabilities.clone()),
             audio_capabilities,
         })
     }

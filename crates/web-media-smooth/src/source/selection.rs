@@ -1,4 +1,4 @@
-//! Consume P2 seed, canonical C3 selection и безопасный split двух sources.
+//! Consume provider seed, canonical C3 selection и безопасный split двух sources.
 
 use std::sync::Arc;
 
@@ -252,7 +252,7 @@ fn build_track_proof(
     if proof.media_kind != expected_kind {
         return Err(SmoothFragmentSourceBuildError::RuntimeTrackKindMismatch);
     }
-    if proof.identity != row.initialization.identity() {
+    if proof.identity != row.initialization_identity {
         return Err(SmoothFragmentSourceBuildError::InitializationIdentityMismatch);
     }
     Ok(proof)
@@ -267,9 +267,7 @@ impl SmoothSelectedTrackSeed {
             media_kind: proof.media_kind,
             timescale_ticks_per_second: proof.timescale_ticks_per_second,
             reconstructed_track_id: proof.reconstructed_track_id,
-            initialization_bytes: Bytes::from(
-                row.initialization.into_initialization_segment_bytes(),
-            ),
+            initialization_bytes: row.initialization_bytes,
             fragment_count: proof.fragment_count,
         }
     }
@@ -311,6 +309,60 @@ impl SmoothSelectedSourceFactory {
     pub(crate) const fn audio_selection(&self) -> SmoothTrackSelection {
         self.audio.selection
     }
+}
+
+/// Строит независимый first-fragment video proof source, не consuming retained row.
+pub(crate) fn build_video_probe_source(
+    seed: &SmoothRuntimeSeed,
+    row: &SmoothRuntimeRow,
+    policy: SmoothFragmentSourcePolicy,
+) -> Result<SmoothVideoFragmentSource, SmoothFragmentSourceBuildError> {
+    let cancellation = seed.http.cancellation().clone();
+    let proof = build_track_proof(&seed.manifest, row, SmoothTrackMediaKind::Video, &|| {
+        cancellation.is_cancelled()
+    })?;
+    let track = SmoothSelectedTrackSeed::new(row.clone(), proof);
+    Ok(SmoothVideoFragmentSource {
+        cursor: build_probe_cursor(seed, &track, policy),
+    })
+}
+
+/// Строит независимый first-fragment audio proof source, не consuming retained row.
+pub(crate) fn build_audio_probe_source(
+    seed: &SmoothRuntimeSeed,
+    row: &SmoothRuntimeRow,
+    policy: SmoothFragmentSourcePolicy,
+) -> Result<SmoothAudioFragmentSource, SmoothFragmentSourceBuildError> {
+    let cancellation = seed.http.cancellation().clone();
+    let proof = build_track_proof(&seed.manifest, row, SmoothTrackMediaKind::Audio, &|| {
+        cancellation.is_cancelled()
+    })?;
+    let track = SmoothSelectedTrackSeed::new(row.clone(), proof);
+    Ok(SmoothAudioFragmentSource {
+        cursor: build_probe_cursor(seed, &track, policy),
+    })
+}
+
+fn build_probe_cursor(
+    seed: &SmoothRuntimeSeed,
+    track: &SmoothSelectedTrackSeed,
+    policy: SmoothFragmentSourcePolicy,
+) -> SmoothFragmentCursor {
+    SmoothFragmentCursor::new(SmoothFragmentCursorRequest {
+        http: seed.http.clone(),
+        effective_manifest_target: seed.effective_manifest_target.clone(),
+        fragment_secret_forwarding: seed.fragment_secret_forwarding,
+        manifest: Arc::clone(&seed.manifest),
+        selection: track.selection,
+        expected_identity: track.expected_identity,
+        media_kind: track.media_kind,
+        timescale_ticks_per_second: track.timescale_ticks_per_second,
+        reconstructed_track_id: track.reconstructed_track_id,
+        initialization_bytes: track.initialization_bytes.clone(),
+        fragment_count: track.fragment_count,
+        first_fragment_index: 0,
+        policy,
+    })
 }
 
 /// Строит один cursor из cloneable selected seed без I/O.

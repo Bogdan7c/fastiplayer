@@ -6,7 +6,7 @@ mod policy;
 mod runtime;
 mod seek;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use error::{SmoothVodDemuxBuildError, SmoothVodSeekError};
 pub use factory::{

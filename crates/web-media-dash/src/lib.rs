@@ -7,7 +7,9 @@
 
 #![forbid(unsafe_code)]
 
+mod catalog;
 mod component;
+mod discovery;
 // Dynamic timing/refresh policy не раздувает finite S34 modules.
 mod live;
 mod open;
@@ -19,6 +21,23 @@ mod source;
 mod tests;
 mod transactional_av;
 
+pub use catalog::{
+    DashLogicalRepresentationLane, DashLogicalRepresentationSelection,
+    DashRepresentationLaneCatalog, DashRepresentationLaneCatalogBuildError,
+    DashRepresentationLaneCatalogBuildRequest, DashRepresentationLaneProbe,
+    DashRepresentationLaneProbeError, DashRepresentationLaneProbeId, DashRepresentationLaneProof,
+    DashRepresentationLaneProofPort, DashRepresentationLaneRejection,
+    DashRepresentationLaneRejectionReason, DashRepresentationLaneSelectionError,
+    DashRepresentationLaneTimelineMode, build_dash_representation_lane_catalog,
+};
+pub use discovery::{
+    DashDiscoveredLiveCatalog, DashDiscoveredLiveOpenError, DashDiscoveredVodCatalog,
+    DashDiscoveredVodOpenError, DashLiveCatalogDiscoveryError, DashLiveCatalogDiscoveryRequest,
+    DashRepresentationCapabilityProbe, DashRepresentationCapabilityRejection,
+    DashVodCatalogDiscoveryError, DashVodCatalogDiscoveryRequest, discover_dash_live_catalog,
+    discover_dash_vod_catalog, prepare_discovered_dash_live, prepare_discovered_dash_live_semantic,
+    prepare_discovered_dash_vod, prepare_discovered_dash_vod_semantic,
+};
 pub use live::{
     DashEndpointRefreshError, DashEndpointRefreshPort, DashEndpointRefreshReply,
     DashEndpointRefreshRequest, DashLiveAvailability, DashLiveClockError, DashLiveOpenError,

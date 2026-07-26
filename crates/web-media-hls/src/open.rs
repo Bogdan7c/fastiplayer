@@ -3,7 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use demux_api::{
-    DemuxHints, DemuxInput, DemuxOpenError, ProgressiveDemuxStartupError, ProgressiveDemuxer,
+    DemuxHints, DemuxInput, DemuxOpenError, ProgressiveAsyncSeekHandle, ProgressiveAsyncSeekLimits,
+    ProgressiveDemuxStartupError, ProgressiveDemuxer, ProgressiveRuntimeGeneration,
     ProgressiveSeekController,
 };
 use hls_playlist_core::{
@@ -18,6 +19,7 @@ use web_media_adaptive::{
     AdaptiveTransportError,
 };
 
+use crate::catalog::{HlsCatalogMatchMode, HlsCatalogReopenError, HlsCatalogReopenSelection};
 use crate::epoch_demux::HlsComponentFactory;
 use crate::plan::{HlsComponentPlan, HlsPlanError, build_component_plan};
 use crate::seek::SharedHlsSeekIndex;
@@ -37,6 +39,11 @@ pub struct HlsVodOpenResult {
 }
 
 impl HlsVodOpenResult {
+    /// Возвращает generation-fenced worker seek handle для receipted preparation.
+    pub fn async_seek_handle(&self) -> Option<ProgressiveAsyncSeekHandle> {
+        self.demuxer.async_seek_handle()
+    }
+
     /// Передаёт единственный nonblocking demux runtime app-owned staged-open owner-у.
     ///
     /// App coordinator обязан дождаться initial `TracksChanged` и завершить capability preflight до player
@@ -115,6 +122,8 @@ pub enum HlsVodOpenError {
     KeyFetchBoundExceedsAdaptiveLimit,
     #[error("HLS seek index должен вмещать как минимум initial video и audio anchors")]
     SeekIndexBoundTooSmall,
+    #[error("HLS catalog reopen rejected: {0}")]
+    CatalogReopen(#[from] HlsCatalogReopenError),
 }
 
 /// Actual demux tracks нарушили explicit selected topology.
@@ -134,6 +143,35 @@ pub(crate) struct HlsTrackShapeError {
 /// Caller вызывает функцию на media-open worker-е; app-owned staged preparation дожидается
 /// initial tracks/capability preflight и только затем проходит существующий player commit barrier.
 pub fn prepare_hls_vod(request: HlsVodOpenRequest) -> Result<HlsVodOpenResult, HlsVodOpenError> {
+    prepare_hls_vod_with_seek_boundary(request, None, None)
+}
+
+/// Готовит HLS VOD с worker-executed generation-fenced seek receipt boundary.
+///
+/// Это provider-половина staged preauthorization seek. Caller сохраняет handle
+/// до type erasure demuxer-а и позже прикрепляет его к neutral player seek port.
+pub fn prepare_hls_vod_receipted(
+    request: HlsVodOpenRequest,
+    asynchronous_seek_limits: ProgressiveAsyncSeekLimits,
+) -> Result<HlsVodOpenResult, HlsVodOpenError> {
+    prepare_hls_vod_with_seek_boundary(request, Some(asynchronous_seek_limits), None)
+}
+
+/// Открывает exact proven catalog selection с worker-receipted seek boundary.
+pub fn prepare_hls_catalog_vod_receipted(
+    mut request: HlsVodOpenRequest,
+    selection: HlsCatalogReopenSelection,
+    asynchronous_seek_limits: ProgressiveAsyncSeekLimits,
+) -> Result<HlsVodOpenResult, HlsVodOpenError> {
+    request.selection = selection.runtime_intent();
+    prepare_hls_vod_with_seek_boundary(request, Some(asynchronous_seek_limits), Some(selection))
+}
+
+fn prepare_hls_vod_with_seek_boundary(
+    request: HlsVodOpenRequest,
+    asynchronous_seek_limits: Option<ProgressiveAsyncSeekLimits>,
+    catalog_selection: Option<HlsCatalogReopenSelection>,
+) -> Result<HlsVodOpenResult, HlsVodOpenError> {
     if request.generation != request.http.source_generation() {
         return Err(HlsVodOpenError::Transport(
             AdaptiveTransportError::StaleGeneration {
@@ -153,6 +191,9 @@ pub fn prepare_hls_vod(request: HlsVodOpenRequest) -> Result<HlsVodOpenResult, H
 
     let selected = match top_playlist {
         HlsPlaylist::Media(media) => {
+            if catalog_selection.is_some() {
+                return Err(HlsCatalogReopenError::MissingPrivateRow.into());
+            }
             if matches!(&request.selection.audio, HlsAudioLayoutIntent::Separate(_)) {
                 return Err(HlsVodOpenError::SeparateAudioRequiresMaster);
             }
@@ -171,12 +212,18 @@ pub fn prepare_hls_vod(request: HlsVodOpenRequest) -> Result<HlsVodOpenResult, H
                 )?,
                 audio: None,
                 subtitles: Vec::new(),
+                main_track_layout: request.selection.main_track_layout,
             }
         }
         HlsPlaylist::Master(_) if was_inline => {
             return Err(HlsVodOpenError::InlineManifestWasMaster);
         }
-        HlsPlaylist::Master(master) => select_and_load_master(master, &top_base, &request)?,
+        HlsPlaylist::Master(master) => match catalog_selection.as_ref() {
+            Some(selection) => {
+                select_and_load_catalog_master(master, &top_base, &request, selection)?
+            }
+            None => select_and_load_master(master, &top_base, &request)?,
+        },
     };
 
     let duration = selected
@@ -193,7 +240,7 @@ pub fn prepare_hls_vod(request: HlsVodOpenRequest) -> Result<HlsVodOpenResult, H
     let registry = request.demux_registry;
     let main_plan = selected.main;
     let audio_plan = selected.audio;
-    let main_track_layout = request.selection.main_track_layout;
+    let main_track_layout = selected.main_track_layout;
     let main_seek_index = SharedHlsSeekIndex::new(policy.maximum_seek_index_entries.get());
     let audio_seek_index = audio_plan
         .as_ref()
@@ -209,55 +256,66 @@ pub fn prepare_hls_vod(request: HlsVodOpenRequest) -> Result<HlsVodOpenResult, H
         }
         Ok(main_result)
     });
-    let progressive = ProgressiveDemuxer::new_deferred_seekable(
-        move || {
-            let main_factory = HlsComponentFactory::new(
-                main_plan,
-                main_http,
-                generation,
-                policy,
-                Arc::clone(&registry),
-                main_seek_index,
-            );
-            let main = main_factory.open()?;
-            let Some(audio_plan) = audio_plan else {
-                validate_track_shape(main.tracks(), main_track_layout, "main")?;
-                return Ok(Box::new(main) as Box<dyn Demuxer + Send>);
-            };
-            let audio_factory = HlsComponentFactory::new(
-                audio_plan,
-                audio_http,
-                generation,
-                policy,
-                registry,
-                audio_seek_index
-                    .ok_or_else(|| anyhow::anyhow!("HLS audio seek index отсутствует"))?,
-            );
-            let audio = audio_factory.open()?;
-            validate_track_shape(
-                main.tracks(),
-                HlsMainTrackLayoutIntent::VideoOnly,
-                "alternate-video main",
-            )?;
-            validate_track_shape(
-                audio.tracks(),
-                HlsMainTrackLayoutIntent::AudioOnly,
-                "alternate-audio",
-            )?;
-            let composite = TransactionalHlsAvDemuxer::new(
-                main_factory,
-                audio_factory,
-                main,
-                audio,
-                policy.composite_lead_policy,
-            )?;
-            Ok(Box::new(composite) as Box<dyn Demuxer + Send>)
-        },
-        seek_controller,
-        cancellation,
-        policy.progressive_limits,
-        policy.retry_hint,
-    )?;
+    let open_inner = move || {
+        let main_factory = HlsComponentFactory::new(
+            main_plan,
+            main_http,
+            generation,
+            policy,
+            Arc::clone(&registry),
+            main_seek_index,
+        );
+        let main = main_factory.open()?;
+        let Some(audio_plan) = audio_plan else {
+            validate_track_shape(main.tracks(), main_track_layout, "main")?;
+            return Ok(Box::new(main) as Box<dyn Demuxer + Send>);
+        };
+        let audio_factory = HlsComponentFactory::new(
+            audio_plan,
+            audio_http,
+            generation,
+            policy,
+            registry,
+            audio_seek_index.ok_or_else(|| anyhow::anyhow!("HLS audio seek index отсутствует"))?,
+        );
+        let audio = audio_factory.open()?;
+        validate_track_shape(
+            main.tracks(),
+            HlsMainTrackLayoutIntent::VideoOnly,
+            "alternate-video main",
+        )?;
+        validate_track_shape(
+            audio.tracks(),
+            HlsMainTrackLayoutIntent::AudioOnly,
+            "alternate-audio",
+        )?;
+        let composite = TransactionalHlsAvDemuxer::new(
+            main_factory,
+            audio_factory,
+            main,
+            audio,
+            policy.composite_lead_policy,
+        )?;
+        Ok(Box::new(composite) as Box<dyn Demuxer + Send>)
+    };
+    let progressive = match asynchronous_seek_limits {
+        Some(asynchronous_seek_limits) => ProgressiveDemuxer::new_deferred_receipted_seekable(
+            open_inner,
+            seek_controller,
+            cancellation,
+            policy.progressive_limits,
+            policy.retry_hint,
+            ProgressiveRuntimeGeneration::new(generation.value()),
+            asynchronous_seek_limits,
+        )?,
+        None => ProgressiveDemuxer::new_deferred_seekable(
+            open_inner,
+            seek_controller,
+            cancellation,
+            policy.progressive_limits,
+            policy.retry_hint,
+        )?,
+    };
 
     Ok(HlsVodOpenResult {
         demuxer: progressive,
@@ -283,7 +341,7 @@ pub(crate) fn validate_key_fetch_bound(request: &HlsVodOpenRequest) -> Result<()
     Ok(())
 }
 
-fn load_top_playlist(
+pub(crate) fn load_top_playlist(
     request: &HlsVodOpenRequest,
 ) -> Result<(HlsPlaylist, HttpRequestTarget, bool), HlsVodOpenError> {
     match &request.manifest {
@@ -303,7 +361,7 @@ fn load_top_playlist(
     }
 }
 
-fn fetch_manifest(
+pub(crate) fn fetch_manifest(
     target: HttpRequestTarget,
     request: &HlsVodOpenRequest,
 ) -> Result<web_media_adaptive::AdaptiveFetchedResource, HlsVodOpenError> {
@@ -320,7 +378,7 @@ fn fetch_manifest(
         ))?)
 }
 
-fn parse_playlist(
+pub(crate) fn parse_playlist(
     bytes: &[u8],
     base: &HttpRequestTarget,
     request: &HlsVodOpenRequest,
@@ -391,6 +449,49 @@ fn select_and_load_master(
         main,
         audio,
         subtitles: selected.subtitles,
+        main_track_layout: request.selection.main_track_layout,
+    })
+}
+
+fn select_and_load_catalog_master(
+    master: MasterPlaylist,
+    base: &HttpRequestTarget,
+    request: &HlsVodOpenRequest,
+    selection: &HlsCatalogReopenSelection,
+) -> Result<SelectedPlans, HlsVodOpenError> {
+    let selected = selection.resolve_master(&master, HlsCatalogMatchMode::Exact)?;
+    let main_target = base.resolve_reference(selected.main_reference.expose_for_resolution())?;
+    let main_resource = fetch_manifest(main_target, request)?;
+    let main_playlist =
+        parse_playlist(main_resource.bytes(), main_resource.final_target(), request)?;
+    let HlsPlaylist::Media(main_media) = main_playlist else {
+        return Err(HlsVodOpenError::NestedMasterPlaylist);
+    };
+    let main = validate_and_plan_media(
+        main_media,
+        selected.main_container,
+        main_resource.final_target(),
+        request,
+    )?;
+
+    let audio = selected
+        .audio
+        .map(|audio| {
+            let target = base.resolve_reference(audio.reference.expose_for_resolution())?;
+            let resource = fetch_manifest(target, request)?;
+            let playlist = parse_playlist(resource.bytes(), resource.final_target(), request)?;
+            let HlsPlaylist::Media(media) = playlist else {
+                return Err(HlsVodOpenError::NestedMasterPlaylist);
+            };
+            validate_and_plan_media(media, audio.container, resource.final_target(), request)
+        })
+        .transpose()?;
+
+    Ok(SelectedPlans {
+        main,
+        audio,
+        subtitles: selected.subtitles,
+        main_track_layout: selected.main_shape,
     })
 }
 
@@ -505,6 +606,7 @@ struct SelectedPlans {
     main: HlsComponentPlan,
     audio: Option<HlsComponentPlan>,
     subtitles: Vec<HlsSubtitleRenditionDescriptor>,
+    main_track_layout: HlsMainTrackLayoutIntent,
 }
 
 #[derive(Debug)]

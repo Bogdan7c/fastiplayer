@@ -244,7 +244,27 @@ impl PlayerSession {
         let active_seek_expired = self
             .seek_runtime
             .active_commit()
-            .is_some_and(|seek_commit| !available_range.contains(seek_commit.target_position));
+            .is_some_and(|seek_commit| {
+                let staged_anchor_expired = self.installed_staged_position.as_ref().is_some_and(
+                    |installed| {
+                        self.snapshot.media_instance_id == Some(installed.media_instance_id)
+                            && matches!(
+                                installed.outcome,
+                                super::staged_media_install::InstalledStagedPositionOutcome::AwaitingSeekCommit {
+                                    seek_generation,
+                                } if seek_generation == seek_commit.generation
+                            )
+                            && !available_range.contains(seek_commit.actual_position)
+                    },
+                ) || self.pending_installed_position_restore.as_ref().is_some_and(|pending| {
+                    pending.requires_live_anchor_retention
+                        && self.snapshot.media_instance_id == Some(pending.media_instance_id)
+                        && pending.seek_generation == seek_commit.generation
+                        && !available_range.contains(seek_commit.actual_position)
+                });
+                !available_range.contains(seek_commit.target_position)
+                    || staged_anchor_expired
+            });
         let public_target_expired = self
             .snapshot
             .timeline

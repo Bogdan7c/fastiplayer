@@ -1,13 +1,119 @@
 use bounded_xml_reader::{XmlBudgetKind, XmlBudgets};
 use dash_mpd_core::{
-    DashAddressing, DashContainer, DashMediaKind, DashMpdErrorKind, DashMpdLimits,
-    DashMpdParseRequest, DashTemplateContext, DashTemplateError, DashTimelineEntry,
-    DashUrlReference, expand_timeline, parse_dash_mpd,
+    DashAddressing, DashAudioChannelConfiguration, DashContainer, DashFrameRate, DashHdrTransfer,
+    DashMediaKind, DashMpdErrorKind, DashMpdLimits, DashMpdParseRequest, DashTemplateContext,
+    DashTemplateError, DashTimelineEntry, DashUrlReference, expand_timeline, parse_dash_mpd,
 };
 
 /// Test-only XML budgets; production defaults намеренно отсутствуют.
 fn xml_budgets() -> XmlBudgets {
     constrained_xml_budgets(32, 32, 32 * 1024)
+}
+
+#[test]
+fn standardized_representation_metadata_is_exact_inherited_and_optional() {
+    let mpd = parse(
+        r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT2S">
+          <Period duration="PT2S">
+            <AdaptationSet mimeType="video/mp4" codecs="avc1.4d401f" width="1920" height="1080"
+                frameRate="30000/1001">
+              <SupplementalProperty schemeIdUri="urn:mpeg:mpegB:cicp:ColourPrimaries" value="9"/>
+              <SupplementalProperty schemeIdUri="urn:mpeg:mpegB:cicp:TransferCharacteristics" value="16"/>
+              <SupplementalProperty schemeIdUri="urn:mpeg:mpegB:cicp:MatrixCoefficients" value="9"/>
+              <Representation id="hdr" bandwidth="4000000"/>
+              <Representation id="override" bandwidth="2000000" width="1280" height="720"
+                  frameRate="24">
+                <SupplementalProperty schemeIdUri="urn:mpeg:mpegB:cicp:TransferCharacteristics" value="1"/>
+              </Representation>
+            </AdaptationSet>
+            <AdaptationSet mimeType="audio/mp4" codecs="mp4a.40.2" lang="en-US"
+                audioSamplingRate="48000">
+              <AudioChannelConfiguration
+                  schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011"
+                  value="6"/>
+              <Representation id="audio" bandwidth="128000"/>
+            </AdaptationSet>
+          </Period>
+        </MPD>"#,
+    )
+    .expect("standardized metadata profile");
+
+    let video = &mpd.periods[0].adaptation_sets[0].representations;
+    assert_eq!(
+        video[0].frame_rate,
+        Some(DashFrameRate {
+            numerator: 30_000,
+            denominator: 1_001,
+        })
+    );
+    assert_eq!(video[0].color.colour_primaries, Some(9));
+    assert_eq!(
+        (video[0].width, video[0].height),
+        (Some(1_920), Some(1_080))
+    );
+    assert_eq!(video[0].color.matrix_coefficients, Some(9));
+    assert_eq!(video[0].color.hdr_transfer(), Some(DashHdrTransfer::Pq));
+    assert_eq!(
+        video[1].frame_rate,
+        Some(DashFrameRate {
+            numerator: 24,
+            denominator: 1,
+        })
+    );
+    assert_eq!(video[1].color.transfer_characteristics, Some(1));
+    assert_eq!(video[1].color.hdr_transfer(), None);
+
+    let audio = &mpd.periods[0].adaptation_sets[1].representations[0];
+    assert_eq!(audio.audio_sampling_rate, Some(48_000));
+    assert_eq!(audio.language.as_deref(), Some("en-US"));
+    assert_eq!(
+        audio.audio_channel_configuration,
+        Some(DashAudioChannelConfiguration::Mpeg23003_3(6))
+    );
+    assert_eq!(audio.frame_rate, None);
+    assert_eq!(audio.color, Default::default());
+}
+
+#[test]
+fn absent_metadata_stays_absent_and_invalid_or_unknown_essential_metadata_fails_closed() {
+    let absent = parse(
+        r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT1S">
+          <Period duration="PT1S"><AdaptationSet mimeType="video/webm" codecs="vp9">
+            <Representation id="plain"/>
+          </AdaptationSet></Period>
+        </MPD>"#,
+    )
+    .expect("metadata absence is supported");
+    let representation = &absent.periods[0].adaptation_sets[0].representations[0];
+    assert_eq!(representation.frame_rate, None);
+    assert_eq!(representation.audio_sampling_rate, None);
+    assert_eq!(representation.audio_channel_configuration, None);
+    assert_eq!(representation.language, None);
+    assert_eq!(representation.color, Default::default());
+
+    let cases = [
+        r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT1S">
+          <Period duration="PT1S"><AdaptationSet mimeType="video/webm" codecs="vp9">
+            <Representation id="bad" frameRate="30000/0"/>
+          </AdaptationSet></Period>
+        </MPD>"#,
+        r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT1S">
+          <Period duration="PT1S"><AdaptationSet mimeType="video/webm" codecs="vp9">
+            <EssentialProperty schemeIdUri="urn:example:required" value="1"/>
+            <Representation id="bad"/>
+          </AdaptationSet></Period>
+        </MPD>"#,
+    ];
+    assert_eq!(
+        parse(cases[0]).expect_err("zero denominator").kind(),
+        DashMpdErrorKind::InvalidAttribute
+    );
+    assert_eq!(
+        parse(cases[1])
+            .expect_err("unknown essential descriptor")
+            .kind(),
+        DashMpdErrorKind::UnsupportedConstruct
+    );
 }
 
 /// Позволяет focused fixtures исчерпать один конкретный XML budget.

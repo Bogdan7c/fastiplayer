@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 /// Именованные limits одного executor instance.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -300,6 +301,18 @@ impl BoundedExecutor {
 
     /// Завершает lifecycle и сообщает число panic-нувших worker threads.
     pub fn shutdown_and_join(&self) -> ShutdownReport {
+        self.shutdown_and_join_impl(None)
+    }
+
+    /// Завершает lifecycle, но не ждёт cooperative worker дольше caller deadline.
+    ///
+    /// Незавершённые к deadline threads detach-ятся: process owner получает typed
+    /// отчёт и сам решает, требуется ли terminal process exit.
+    pub fn shutdown_and_join_until(&self, deadline: Instant) -> ShutdownReport {
+        self.shutdown_and_join_impl(Some(deadline))
+    }
+
+    fn shutdown_and_join_impl(&self, deadline: Option<Instant>) -> ShutdownReport {
         self.shutdown();
         let mut workers = self
             .workers
@@ -309,12 +322,31 @@ impl BoundedExecutor {
         let current_thread_id = thread::current().id();
         let mut joined_workers = 0usize;
         let mut detached_current_workers = 0usize;
+        let mut detached_deadline_workers = 0usize;
         let mut panicked_workers = 0usize;
         for worker in workers.drain(..) {
             if worker.thread().id() == current_thread_id {
                 detached_current_workers += 1;
                 drop(worker);
                 continue;
+            }
+            if let Some(deadline) = deadline {
+                while !worker.is_finished() {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        break;
+                    }
+                    thread::sleep(
+                        deadline
+                            .saturating_duration_since(now)
+                            .min(Duration::from_millis(1)),
+                    );
+                }
+                if !worker.is_finished() {
+                    detached_deadline_workers += 1;
+                    drop(worker);
+                    continue;
+                }
             }
             joined_workers += 1;
             if worker.join().is_err() {
@@ -325,6 +357,7 @@ impl BoundedExecutor {
             worker_count,
             joined_workers,
             detached_current_workers,
+            detached_deadline_workers,
             panicked_workers,
         }
     }
@@ -344,6 +377,8 @@ pub struct ShutdownReport {
     pub joined_workers: usize,
     /// Текущий worker нельзя join-ить из него самого; handle безопасно detach-ится.
     pub detached_current_workers: usize,
+    /// Workers, которые не завершили cooperative cancellation к caller deadline.
+    pub detached_deadline_workers: usize,
     pub panicked_workers: usize,
 }
 
@@ -451,6 +486,27 @@ mod tests {
             executor.try_submit(|_| ()),
             Err(SubmitError::ShuttingDown)
         ));
+    }
+
+    #[test]
+    fn deadline_shutdown_detaches_non_cooperative_worker() {
+        let executor = BoundedExecutor::start(config(1, 1)).unwrap();
+        let (started_sender, started_receiver) = std::sync::mpsc::sync_channel(1);
+        let _active = executor
+            .try_submit(move |_| {
+                started_sender.send(()).unwrap();
+                thread::sleep(Duration::from_millis(100));
+            })
+            .unwrap();
+        started_receiver.recv().unwrap();
+
+        let report = executor.shutdown_and_join_until(Instant::now() + Duration::from_millis(5));
+
+        assert_eq!(report.worker_count, 1);
+        assert_eq!(report.joined_workers, 0);
+        assert_eq!(report.detached_current_workers, 0);
+        assert_eq!(report.detached_deadline_workers, 1);
+        assert_eq!(report.panicked_workers, 0);
     }
 
     #[test]

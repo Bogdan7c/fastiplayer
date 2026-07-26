@@ -5,7 +5,67 @@ use std::fmt;
 use smooth_streaming_fmp4::{SmoothInitializationError, SmoothTrackMappingError};
 use smooth_streaming_manifest_core::SmoothManifestError;
 use web_media_adaptive::AdaptiveTransportError;
-use web_media_core::{ComponentVariantError, ComponentVariantKeyError};
+use web_media_core::{ComponentKind, ComponentVariantError, ComponentVariantKeyError};
+
+/// Безопасная причина изоляции одной sibling quality без manifest/runtime payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum SmoothSiblingRejectionReason {
+    /// Quality нельзя отобразить в sealed Smooth fMP4 contract.
+    #[error("Smooth sibling track mapping is unsupported")]
+    TrackMapping,
+    /// Initialization segment quality не прошёл bounded construction.
+    #[error("Smooth sibling initialization is unsupported")]
+    Initialization,
+    /// Manifest metadata/identity quality нельзя выразить в neutral catalog.
+    #[error("Smooth sibling metadata is unsupported")]
+    UnsupportedMetadata,
+    /// Две qualities имеют неразличимую refresh-stable identity.
+    #[error("Smooth sibling semantic identity is ambiguous")]
+    AmbiguousSemanticIdentity,
+    /// Первый fragment не прошёл bounded planning/fetch/reconstruction.
+    #[error("Smooth sibling transport or content is unavailable")]
+    TransportOrContentUnavailable,
+    /// Injected ISO-BMFF demuxer не открыл bounded content proof.
+    #[error("Smooth sibling demux proof failed")]
+    DemuxFailed,
+    /// Demuxer не доказал ровно один track ожидаемой component axis.
+    #[error("Smooth sibling track shape is unsupported")]
+    UnsupportedTrackShape,
+    /// Фактический track противоречит manifest descriptor.
+    #[error("Smooth sibling manifest evidence conflicts with media")]
+    ManifestEvidenceConflict,
+    /// Immutable decoder/renderer capability snapshot отклонил track.
+    #[error("Smooth sibling capability is unavailable")]
+    CapabilityUnavailable,
+}
+
+/// Одна bounded diagnostic row без quality index, URL или codec-private bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmoothSiblingRejection {
+    component: ComponentKind,
+    reason: SmoothSiblingRejectionReason,
+}
+
+impl SmoothSiblingRejection {
+    pub(crate) const fn new(
+        component: ComponentKind,
+        reason: SmoothSiblingRejectionReason,
+    ) -> Self {
+        Self { component, reason }
+    }
+
+    /// Возвращает component axis отброшенной quality.
+    #[must_use]
+    pub const fn component(self) -> ComponentKind {
+        self.component
+    }
+
+    /// Возвращает safe typed причину без provider payload.
+    #[must_use]
+    pub const fn reason(self) -> SmoothSiblingRejectionReason {
+        self.reason
+    }
+}
 
 /// Точная причина несовместимости neutral transport intent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

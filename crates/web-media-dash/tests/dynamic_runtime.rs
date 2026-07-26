@@ -311,21 +311,34 @@ fn equal_older_newer_publish_order_and_continuity_are_atomic() {
     );
     assert_eq!(current.mpd.publish_time, original_publish);
 
-    let incompatible = snapshot(
-        &fixture(
-            "2026-07-24T10:01:02Z",
-            "0",
-            r#"<Representation id="backup"/>"#,
-        ),
-        Arc::clone(&clock),
+    let reordered_sibling = fixture(
+        "2026-07-24T10:01:02Z",
+        "0",
+        r#"<Representation id="backup"/>"#,
+    )
+    .replace(
+        r#"<Representation id="video"/><Representation id="backup"/>"#,
+        r#"<Representation id="backup"/><Representation id="video"/>"#,
     );
+    let reordered_sibling = snapshot(&reordered_sibling, Arc::clone(&clock));
+    assert_eq!(
+        refresh_dash_live_snapshot(&mut current, reordered_sibling)
+            .expect("non-selected sibling reorder"),
+        DashLiveRefreshOutcome::Replaced
+    );
+
+    let incompatible_document = fixture("2026-07-24T10:01:04Z", "0", "").replace(
+        r#"<Representation id="video"/>"#,
+        r#"<Representation id="video" width="1920" height="1080"/>"#,
+    );
+    let incompatible = snapshot(&incompatible_document, Arc::clone(&clock));
     assert!(matches!(
         refresh_dash_live_snapshot(&mut current, incompatible),
         Err(DashLiveRefreshError::Continuity)
     ));
-    assert_eq!(current.mpd.publish_time, original_publish);
+    assert!(current.mpd.publish_time > original_publish);
 
-    let newer = snapshot(&fixture("2026-07-24T10:01:02Z", "0", ""), clock);
+    let newer = snapshot(&fixture("2026-07-24T10:01:04Z", "0", ""), clock);
     assert_eq!(
         refresh_dash_live_snapshot(&mut current, newer).expect("newer commit"),
         DashLiveRefreshOutcome::Replaced

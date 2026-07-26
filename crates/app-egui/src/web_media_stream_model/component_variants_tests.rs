@@ -173,7 +173,8 @@ fn selection(
     audio_index: usize,
 ) -> ComponentVariantSelection {
     let request = match catalog {
-        ComponentVariantCatalog::VideoAndAudio { video, audio, .. } => {
+        ComponentVariantCatalog::Topology { video, audio, .. }
+        | ComponentVariantCatalog::VideoAndAudio { video, audio, .. } => {
             ComponentVariantSelectionRequest::VideoAndAudio {
                 video: video[video_index].exact_identity().clone(),
                 audio: audio[audio_index].exact_identity().clone(),

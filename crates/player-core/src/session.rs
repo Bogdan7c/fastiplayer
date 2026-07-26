@@ -20,7 +20,7 @@ use crate::audio_boundary::{
 };
 #[cfg(test)]
 use crate::decoder_boundary::PresentFrameResourceProviderHandle;
-use crate::media_install::PlaybackIntentControl;
+use crate::media_install::{PendingInstalledPositionRestore, PlaybackIntentControl};
 use crate::playback_window::PlaybackWindowEndState;
 use crate::seek_state::{PlaybackResumeIntent, SeekRuntimeState};
 use crate::{
@@ -78,7 +78,7 @@ use self::media_lifecycle::MediaLifecycleState;
 use self::prepared_demux_seek::PreparedDemuxSeekRuntime;
 use self::prepared_seek::PreparedSeekLandingRuntime;
 pub(crate) use self::render_leases::{LeasedPresentFrame, PresentFrameIdentity};
-use self::staged_media_install::StagedMediaInstallRegistry;
+use self::staged_media_install::{InstalledStagedPosition, StagedMediaInstallRegistry};
 pub use self::tick::{
     PlayerPipelinePause, PlayerTickConfig, PlayerTickContext, PlayerTickPacket, PlayerTickResult,
     PlayerVideoDropReason, PlayerVideoFrameDrop,
@@ -182,9 +182,8 @@ pub struct PlayerSession {
         Option<crate::media_install::timeline_seek::PendingExactTimelineSeek>,
 
     /// Request-owned completion position restore-а до exact seek commit-а.
-    pending_installed_position_restore:
-        Option<crate::media_install::PendingInstalledPositionRestore>,
-
+    pending_installed_position_restore: Option<PendingInstalledPositionRestore>,
+    installed_staged_position: Option<InstalledStagedPosition>,
     /// S17B bridge: neutral prepared working set плюс seek-owned promoted lease.
     prepared_seek_landing: PreparedSeekLandingRuntime,
 
@@ -1379,6 +1378,7 @@ impl Default for PlayerSession {
             prepared_demux_seek: PreparedDemuxSeekRuntime::default(),
             pending_exact_timeline_seek: None,
             pending_installed_position_restore: None,
+            installed_staged_position: None,
             prepared_seek_landing: PreparedSeekLandingRuntime,
             pending_video_backend_reselection: None,
             last_audio_starvation_warn_at: None,

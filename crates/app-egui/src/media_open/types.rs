@@ -97,8 +97,12 @@ pub(crate) enum ActiveMediaSource {
         source_locator: service_ytdlp::YtDlpMediaLocator,
         /// Exact selection для fresh semantic rematch при controlled reopen.
         candidate_selection: Box<service_ytdlp::YtDlpCandidateSelection>,
+        /// Optional service-owned composed A/V semantic intent.
+        composed_selection: Option<Box<service_ytdlp::YtDlpComposedSelection>>,
         /// UI-safe installed inventory без URL, headers/cookies и candidate IDs.
         stream_configuration: Box<crate::web_media_stream_model::WebMediaStreamConfiguration>,
+        /// Runtime-only provider discovery; Debug и persistence его не раскрывают.
+        catalog_attachment: crate::web_media_catalog::WebMediaCatalogAttachment,
     },
     /// Exact functional direct locator с service-owned redacted formatting.
     DirectMediaUrl(service_direct_media::DirectMediaUrl),
@@ -197,6 +201,7 @@ impl fmt::Debug for ActiveMediaSource {
                 .debug_struct("YtDlpUrl")
                 .field("source_locator", source_locator)
                 .field("candidate_selection", &"<exact-candidate>")
+                .field("catalog_attachment", &"<provider-private>")
                 .finish(),
             Self::DirectMediaUrl(locator) => formatter
                 .debug_tuple("DirectMediaUrl")
@@ -433,7 +438,7 @@ pub(crate) enum MediaOpenSourceRequest {
         yt_dlp_config: rustiplayer_config::YtDlpConfig,
         demux_config: rustiplayer_config::PlayerDemuxConfig,
         preferred_video_codec_order: Vec<rustiplayer_config::VideoCodec>,
-        system_capabilities: capability_core::SystemCapabilities,
+        system_capabilities: Box<capability_core::SystemCapabilities>,
         audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
     },
     PlaybackWindow {
@@ -483,6 +488,16 @@ pub(crate) enum MediaOpenPhase {
     EnqueuedAtPlayerOwner,
     Installed,
     Failed,
+}
+
+/// Same-lineage subphase не меняет ordinary coordinator protocol consumers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SameLineagePositionPreparationPhase {
+    NotRequired,
+    WaitingForPlayerReady,
+    ReadyForPositionPreparation,
+    PreparationDispatched,
+    ReadyToCommit,
 }
 
 /// Authoritative resolution гонки cancel/dispatch до player enqueue barrier-а.
@@ -571,6 +586,7 @@ pub(crate) enum MediaOpenInvariantViolation {
     UnexpectedAuthorizationOutcome,
     MissingInstalledAfterPlayerEnqueue,
     MismatchedPlayerRequest,
+    UnexpectedPlayerInstallPhase,
 }
 
 /// Exactly-once terminal coordinator result.
@@ -613,6 +629,7 @@ pub(crate) struct MediaOpenSnapshot {
     pub(crate) phase: MediaOpenPhase,
     pub(crate) descriptor: Option<PreparedMediaDescriptor>,
     pub(crate) authorization_resolution: Option<AuthorizationDispatchResolution>,
+    pub(crate) same_lineage_position: SameLineagePositionPreparationPhase,
 }
 
 /// Exact typed initial intent без coordinator-owned autoplay policy.
@@ -620,6 +637,15 @@ pub(crate) struct MediaOpenSnapshot {
 pub(crate) struct MediaOpenInstallIntent {
     pub(crate) intent: PlaybackIntent,
     pub(crate) revision: PlaybackIntentRevision,
+}
+
+/// Staging policy передаёт player-у exact old instance, не timeline position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MediaOpenPositionPreparation {
+    NotRequired,
+    SameLineage {
+        expected_old_media_instance_id: player_core::MediaInstanceId,
+    },
 }
 
 #[cfg(test)]

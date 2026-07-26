@@ -181,10 +181,18 @@ impl FrameSettingsRuntimeAdapter<'_> {
                 ActiveMediaSource::YtDlpUrl {
                     source_locator,
                     candidate_selection,
+                    composed_selection,
                     stream_configuration,
+                    ..
                 } => {
                     let selection_intent = if config.reselect_yt_dlp_stream {
                         crate::web_media_open::YtDlpCandidateOpenIntent::BestPlayable
+                    } else if let Some(composed) = composed_selection {
+                        crate::web_media_open::YtDlpCandidateOpenIntent::composed(
+                            composed,
+                            candidate_selection,
+                            stream_configuration.preference(),
+                        )
                     } else {
                         crate::web_media_open::YtDlpCandidateOpenIntent::exact_preserving_installed_stream_configuration(
                             candidate_selection,
@@ -234,7 +242,9 @@ impl FrameSettingsRuntimeAdapter<'_> {
                                 ActiveMediaSource::YtDlpUrl {
                                     source_locator,
                                     candidate_selection: Box::new(prepared.candidate_selection),
+                                    composed_selection: prepared.composed_selection,
                                     stream_configuration: Box::new(prepared.stream_configuration),
+                                    catalog_attachment: prepared.catalog_attachment,
                                 },
                                 safe_label,
                             ))

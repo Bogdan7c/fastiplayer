@@ -44,7 +44,7 @@ use web_media_transport_api::{
 
 use crate::{
     AggregateInitializationByteLimit, SmoothFragmentSourceBuildError, SmoothFragmentSourcePolicy,
-    SmoothPreparationPolicy, SmoothPrepareRequest, prepare_smooth_vod,
+    SmoothPreparationPolicy, SmoothPrepareRequest,
 };
 
 /// Полный canonical manifest используется напрямую из единственного checked-in corpus.
@@ -70,7 +70,8 @@ const AUDIO_SECOND: &[u8] = include_bytes!(
     "../../../symphonia-format-isomp4-patch/fixtures/smooth-piff/audio-64008-39680000.bin"
 );
 /// Canonical high-video first request target.
-const VIDEO_HIGH_FIRST_PATH: &str = "/media/QualityLevels(1501000)/Fragments(video_eng=0)";
+pub(crate) const VIDEO_HIGH_FIRST_PATH: &str =
+    "/media/QualityLevels(1501000)/Fragments(video_eng=0)";
 /// Canonical audio second request target.
 const AUDIO_SECOND_PATH: &str = "/media/QualityLevels(64008)/Fragments(audio_eng=39680000)";
 
@@ -97,7 +98,7 @@ impl FixtureOrigin {
     }
 
     /// Запускает тот же origin с одним explicit fragment override.
-    fn start_with_fragment(request_target: &'static str, body: Vec<u8>) -> Self {
+    pub(crate) fn start_with_fragment(request_target: &'static str, body: Vec<u8>) -> Self {
         Self::start_with_override(Some(FixtureResponseOverride {
             request_target,
             body,
@@ -157,7 +158,7 @@ impl FixtureOrigin {
     }
 
     /// Возвращает manifest target.
-    fn target(&self) -> &HttpRequestTarget {
+    pub(crate) fn target(&self) -> &HttpRequestTarget {
         &self.target
     }
 
@@ -259,7 +260,7 @@ fn write_response(stream: &mut TcpStream, response: (u16, &[u8])) {
 }
 
 /// Собирает transport request без секретов и скрытых redirect semantics.
-fn transport_request(target: &HttpRequestTarget) -> TransportOpenRequest {
+pub(crate) fn transport_request(target: &HttpRequestTarget) -> TransportOpenRequest {
     transport_request_with_security(
         target,
         RedirectPolicy::same_origin(RedirectHopLimit::new(2).expect("redirect budget")),
@@ -326,7 +327,7 @@ fn serve_redirect_once(listener: TcpListener, location: String) -> thread::JoinH
 }
 
 /// Caller-owned preparation budgets, достаточные для полного canonical manifest.
-fn preparation_policy() -> SmoothPreparationPolicy {
+pub(crate) fn preparation_policy() -> SmoothPreparationPolicy {
     preparation_policy_with_segment_limit(128 * 1_024)
 }
 
@@ -383,6 +384,7 @@ fn preparation_policy_with_segment_limit(maximum_segment_bytes: usize) -> Smooth
             NonZeroUsize::new(256 * 1_024).expect("aggregate init bytes"),
         ),
         ComponentVariantCatalogLimit::new(64).expect("catalog budget"),
+        web_media_core::ComponentVariantEdgeLimit::new(1_024).expect("compatibility edge budget"),
     )
 }
 
@@ -429,7 +431,7 @@ fn prepare_with_generation(
 ) -> crate::SmoothPreparedCatalog {
     let source_config =
         SourceRuntimeConfig::from_network_config(&NetworkConfig::default()).expect("source config");
-    prepare_smooth_vod(SmoothPrepareRequest::new(
+    crate::prepare::prepare_smooth_vod_all_for_test(SmoothPrepareRequest::new(
         transport_request(origin.target()),
         &source_config,
         ComponentVariantCatalogGeneration::new(catalog_generation),

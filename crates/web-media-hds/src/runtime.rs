@@ -1,5 +1,6 @@
 //! Worker-owned HDS source construction and transactional VOD seek.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,12 +21,13 @@ use web_media_adaptive::{
     AdaptiveSegmentCompletion, AdaptiveSegmentDescriptor, AdaptiveSegmentSnapshot,
     BlockingOrderedSegmentAdapter, ComponentClockMetadata,
 };
+use web_media_core::ComponentVariantCatalog;
 use web_media_transport_api::{MediaPresentation, TransportOpenRequest};
 
 use crate::policy::HdsVodOpenPolicy;
 use crate::resolve::{
-    HdsRenditionCatalog, HdsRenditionSelection, ResolvedHdsRendition, fragment_target,
-    resolve_presentation, select_rendition, units_to_duration,
+    HdsRenditionSelection, ResolvedHdsRendition, fragment_target, resolve_presentation,
+    select_rendition, units_to_duration,
 };
 
 /// Owned HDS open request из app composition root-а.
@@ -65,14 +67,14 @@ impl HdsVodPresentationWindow {
     }
 }
 
-/// Prepared HDS runtime с safe rendition catalog и receipted seek control.
+/// Prepared HDS runtime с optional discovered catalog и receipted seek control.
 pub struct HdsVodOpenResult {
     /// Player-facing nonblocking demuxer.
     demuxer: ProgressiveDemuxer,
     /// Worker-receipted seek handle.
     seek_handle: ProgressiveAsyncSeekHandle,
-    /// Safe catalog для будущего UI stream picker-а.
-    catalog: HdsRenditionCatalog,
+    /// Neutral catalog присутствует только у exact discovered-open path.
+    catalog: Option<ComponentVariantCatalog>,
     /// Absolute source window, которое app переводит в player-owned boundary.
     presentation_window: HdsVodPresentationWindow,
 }
@@ -84,10 +86,10 @@ impl HdsVodOpenResult {
         self.seek_handle.clone()
     }
 
-    /// Возвращает safe rendition catalog без URL/authorization fields.
+    /// Возвращает neutral discovered catalog без URL/authorization fields.
     #[must_use]
-    pub fn catalog(&self) -> &HdsRenditionCatalog {
-        &self.catalog
+    pub fn catalog(&self) -> Option<&ComponentVariantCatalog> {
+        self.catalog.as_ref()
     }
 
     /// Возвращает absolute HDS presentation window без player dependency.
@@ -122,13 +124,19 @@ pub fn prepare_hds_vod(request: HdsVodOpenRequest) -> Result<HdsVodOpenResult> {
     )
     .context("HDS adaptive HTTP context creation failed")?;
     let resolved = resolve_presentation(root_target, &http, request.policy)?;
-    let (selected, catalog) = select_rendition(resolved, request.selection)?;
-    let plan = Arc::new(HdsDemuxPlan::new(
-        selected,
-        http,
-        request.demux_registry,
-        request.policy,
-    )?);
+    let selected = select_rendition(resolved, request.selection)?;
+    prepare_selected_hds_vod(selected, http, request.demux_registry, request.policy, None)
+}
+
+/// Поднимает unchanged receipted runtime для уже доказанной provider row.
+pub(crate) fn prepare_selected_hds_vod(
+    selected: ResolvedHdsRendition,
+    http: AdaptiveHttpContext,
+    demux_registry: Arc<DemuxRegistry>,
+    policy: HdsVodOpenPolicy,
+    catalog: Option<ComponentVariantCatalog>,
+) -> Result<HdsVodOpenResult> {
+    let plan = Arc::new(HdsDemuxPlan::new(selected, http, demux_registry, policy)?);
     let preview_plan = Arc::clone(&plan);
     let seek_controller = ProgressiveSeekController::new(move |request| {
         let index = preview_plan.fragment_index_for(request.timestamp);
@@ -163,7 +171,7 @@ pub fn prepare_hds_vod(request: HdsVodOpenRequest) -> Result<HdsVodOpenResult> {
 }
 
 /// Immutable ingredients shared by initial open and every transactional seek.
-struct HdsDemuxPlan {
+pub(crate) struct HdsDemuxPlan {
     http: AdaptiveHttpContext,
     descriptors: Arc<[AdaptiveSegmentDescriptor]>,
     fragments: Arc<[HdsFragment]>,
@@ -178,7 +186,7 @@ struct HdsDemuxPlan {
 
 impl HdsDemuxPlan {
     /// Builds all fragment URL descriptors before player commit.
-    fn new(
+    pub(crate) fn new(
         rendition: ResolvedHdsRendition,
         http: AdaptiveHttpContext,
         registry: Arc<DemuxRegistry>,
@@ -234,7 +242,7 @@ impl HdsDemuxPlan {
 }
 
 /// Opens F4F input and wraps it in a seekable transactional container owner.
-fn open_transactional_demuxer(
+pub(crate) fn open_transactional_demuxer(
     plan: Arc<HdsDemuxPlan>,
     start_index: usize,
 ) -> Result<Box<dyn Demuxer + Send>> {
@@ -278,20 +286,56 @@ struct HdsTransactionalDemuxer {
     current: Box<dyn Demuxer + Send>,
     plan: Arc<HdsDemuxPlan>,
     public_tracks: Vec<TrackInfo>,
+    pending_events: VecDeque<DemuxReadEvent>,
 }
 
 impl HdsTransactionalDemuxer {
     /// Records stable S30 tracks before publishing the seekable wrapper.
-    fn new(current: Box<dyn Demuxer + Send>, plan: Arc<HdsDemuxPlan>) -> Result<Self> {
-        if current.tracks().is_empty() {
-            bail!("S30 F4F demux did not discover tracks during bounded open");
+    fn new(mut current: Box<dyn Demuxer + Send>, plan: Arc<HdsDemuxPlan>) -> Result<Self> {
+        let mut public_tracks = current.tracks().to_vec();
+        let mut pending_events = VecDeque::new();
+        for _ in 0..plan.policy.demux_buffer_limits.max_pending_events() {
+            if has_exact_av_shape(&public_tracks) {
+                break;
+            }
+            match current.next_event()? {
+                DemuxReadEvent::TracksChanged(update) => {
+                    public_tracks = update.tracks.clone();
+                    if has_exact_av_shape(&public_tracks) {
+                        pending_events.push_back(DemuxReadEvent::TracksChanged(update));
+                    }
+                }
+                DemuxReadEvent::EndOfStream => {
+                    bail!("S30 F4F demux ended before discovering exact HDS A/V tracks");
+                }
+                event => pending_events.push_back(event),
+            }
+        }
+        if !has_exact_av_shape(&public_tracks) {
+            bail!("S30 F4F demux did not discover exact HDS A/V tracks within the event budget");
         }
         Ok(Self {
-            public_tracks: current.tracks().to_vec(),
+            public_tracks,
             current,
             plan,
+            pending_events,
         })
     }
+}
+
+/// HDS base profile публикует только complete coupled row: один video и один audio.
+fn has_exact_av_shape(tracks: &[TrackInfo]) -> bool {
+    tracks.len() == 2
+        && tracks
+            .iter()
+            .filter(|track| track.kind == media_core::TrackKind::Video)
+            .count()
+            == 1
+        && tracks
+            .iter()
+            .filter(|track| track.kind == media_core::TrackKind::Audio)
+            .count()
+            == 1
 }
 
 impl Demuxer for HdsTransactionalDemuxer {
@@ -317,7 +361,16 @@ impl Demuxer for HdsTransactionalDemuxer {
 
     /// Delegates packet/readiness events to the current F4F demuxer.
     fn next_event(&mut self) -> Result<DemuxReadEvent> {
-        self.current.next_event()
+        let event = match self.pending_events.pop_front() {
+            Some(event) => event,
+            None => self.current.next_event()?,
+        };
+        if let DemuxReadEvent::TracksChanged(update) = &event
+            && update.tracks != self.public_tracks
+        {
+            bail!("HDS F4F track layout changed after exact A/V publication");
+        }
+        Ok(event)
     }
 
     /// Legacy seek uses the same exact-fragment replacement contract.

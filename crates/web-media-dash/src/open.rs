@@ -1,14 +1,16 @@
 //! Blocking staged DASH VOD preparation без app/player mutation.
 
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
-use dash_mpd_core::{DashMpdError, DashMpdParseRequest, parse_dash_mpd};
+use dash_mpd_core::{DashMpd, DashMpdError, DashMpdParseRequest, parse_dash_mpd};
 use demux_api::{
-    ProgressiveAsyncSeekHandle, ProgressiveDemuxStartupError, ProgressiveDemuxer,
+    DemuxRegistry, ProgressiveAsyncSeekHandle, ProgressiveDemuxStartupError, ProgressiveDemuxer,
     ProgressiveRuntimeGeneration,
 };
 use media_core::Demuxer;
+use source_core::HttpRequestTarget;
 use thiserror::Error;
 use web_media_adaptive::{
     AdaptiveHttpContext, AdaptiveResourceFetchRequest, AdaptiveResourcePurpose,
@@ -19,7 +21,9 @@ use crate::component::DashComponentFactory;
 use crate::plan::{
     DashPlanError, DashPresentationPlan, build_manifest_plan, build_serialized_plan,
 };
-use crate::request::{DashVodHttpContext, DashVodInput, DashVodOpenRequest};
+use crate::request::{
+    DashManifestInput, DashVodHttpContext, DashVodInput, DashVodOpenPolicy, DashVodOpenRequest,
+};
 use crate::transactional_av::TransactionalDashAvDemuxer;
 
 /// Неустановленный ready DASH runtime.
@@ -112,22 +116,10 @@ pub fn prepare_dash_vod(
     } = request;
     let (plan, contexts) = match (input, http) {
         (DashVodInput::Manifest(manifest), DashVodHttpContext::Manifest(http)) => {
-            ensure_context_ready(&http, generation)?;
-            let fetched = http.fetch_resource_blocking(AdaptiveResourceFetchRequest::full(
-                generation,
-                manifest.target,
-                policy.maximum_manifest_bytes,
-                AdaptiveResourcePurpose::Manifest,
-                AdaptiveResourceQueryApplication::ApplyScopedReplacement,
-            ))?;
-            let mpd = parse_dash_mpd(DashMpdParseRequest {
-                document_bytes: fetched.bytes(),
-                xml_budgets: manifest.xml_budgets,
-                limits: manifest.mpd_limits,
-            })?;
+            let (mpd, manifest_base) = fetch_dash_manifest(&http, generation, manifest, policy)?;
             let plan = build_manifest_plan(
                 &mpd,
-                fetched.final_target(),
+                &manifest_base,
                 &selection,
                 policy.maximum_planned_segments,
             )?;
@@ -164,6 +156,55 @@ pub fn prepare_dash_vod(
         }
         _ => return Err(DashVodOpenError::ContextLayout),
     };
+    prepare_planned_dash_vod(plan, contexts, generation, demux_registry, policy)
+}
+
+pub(crate) fn fetch_dash_manifest(
+    http: &AdaptiveHttpContext,
+    generation: web_media_transport_api::SourceGeneration,
+    manifest: DashManifestInput,
+    policy: DashVodOpenPolicy,
+) -> Result<(DashMpd, HttpRequestTarget), DashVodOpenError> {
+    ensure_context_ready(http, generation)?;
+    let fetched = http.fetch_resource_blocking(AdaptiveResourceFetchRequest::full(
+        generation,
+        manifest.target,
+        policy.maximum_manifest_bytes,
+        AdaptiveResourcePurpose::Manifest,
+        AdaptiveResourceQueryApplication::ApplyScopedReplacement,
+    ))?;
+    let mpd = parse_dash_mpd(DashMpdParseRequest {
+        document_bytes: fetched.bytes(),
+        xml_budgets: manifest.xml_budgets,
+        limits: manifest.mpd_limits,
+    })?;
+    Ok((mpd, fetched.final_target().clone()))
+}
+
+pub(crate) fn prepare_planned_manifest_vod(
+    plan: DashPresentationPlan,
+    http: AdaptiveHttpContext,
+    generation: web_media_transport_api::SourceGeneration,
+    demux_registry: Arc<DemuxRegistry>,
+    policy: DashVodOpenPolicy,
+) -> Result<DashVodOpenResult, DashVodOpenError> {
+    let contexts = match &plan {
+        DashPresentationPlan::Single(_) => PlannedHttpContexts::Single(Box::new(http)),
+        DashPresentationPlan::Separate { .. } => PlannedHttpContexts::Separate {
+            video: Box::new(http.clone()),
+            audio: Box::new(http),
+        },
+    };
+    prepare_planned_dash_vod(plan, contexts, generation, demux_registry, policy)
+}
+
+fn prepare_planned_dash_vod(
+    plan: DashPresentationPlan,
+    contexts: PlannedHttpContexts,
+    generation: web_media_transport_api::SourceGeneration,
+    demux_registry: Arc<DemuxRegistry>,
+    policy: DashVodOpenPolicy,
+) -> Result<DashVodOpenResult, DashVodOpenError> {
     let (inner, duration, cancellation): (
         Box<dyn Demuxer + Send>,
         Duration,

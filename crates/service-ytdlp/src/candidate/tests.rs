@@ -314,6 +314,119 @@ fn progressive_inventory_maps_muxed_video_only_and_audio_only_rows() {
     );
 }
 
+#[test]
+fn inventory_video_and_audio_compose_and_semantically_rematch_without_format_id_or_url_leakage() {
+    let old = snapshot(
+        json!({
+            "formats": [
+                progressive_format("old-video", "webm", "webm", "vp9", "none"),
+                progressive_format("old-audio", "webm", "webm", "none", "opus")
+            ]
+        }),
+        1,
+    );
+    let old_video = accepted_inventory(&old, 0);
+    let old_audio = accepted_inventory(&old, 1);
+    let selection = old
+        .compose_inventory_av(
+            &old.selection_for(old_video).unwrap(),
+            &old.selection_for(old_audio).unwrap(),
+        )
+        .expect("fresh inventory components должны compose-иться");
+    assert_eq!(
+        selection.descriptor().layout().kind(),
+        StreamLayoutKind::Separate
+    );
+    let debug = format!("{selection:?}");
+    assert!(!debug.contains("old-video"));
+    assert!(!debug.contains("old-audio"));
+    assert!(!debug.contains("media.invalid"));
+
+    let fresh = snapshot(
+        json!({
+            "formats": [
+                progressive_format("fresh-audio", "webm", "webm", "none", "opus"),
+                progressive_format("fresh-video", "webm", "webm", "vp9", "none")
+            ]
+        }),
+        2,
+    );
+    let (kind, candidate) = fresh
+        .rematch_composed(&selection)
+        .expect("обе semantic components должны независимо rematch-иться");
+    assert_eq!(kind, super::YtDlpCompositionMatchKind::SemanticRematch);
+    assert_eq!(
+        candidate.descriptor().layout().kind(),
+        StreamLayoutKind::Separate
+    );
+    assert_eq!(candidate.component_count(), 2);
+    let roles = candidate
+        .component_request_summaries()
+        .map(|summary| summary.role)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        roles,
+        vec![
+            YtDlpCandidateComponentRole::Video,
+            YtDlpCandidateComponentRole::Audio
+        ]
+    );
+}
+
+#[test]
+fn composed_rematch_reports_missing_component_without_default_fallback() {
+    let old = snapshot(
+        json!({
+            "formats": [
+                progressive_format("video", "webm", "webm", "vp9", "none"),
+                progressive_format("audio", "webm", "webm", "none", "opus")
+            ]
+        }),
+        1,
+    );
+    let selection = old
+        .compose_inventory_av(
+            &old.selection_for(accepted_inventory(&old, 0)).unwrap(),
+            &old.selection_for(accepted_inventory(&old, 1)).unwrap(),
+        )
+        .unwrap();
+    let fresh = snapshot(
+        json!({
+            "formats": [progressive_format(
+                "fresh-video",
+                "webm",
+                "webm",
+                "vp9",
+                "none"
+            )]
+        }),
+        2,
+    );
+    assert_eq!(
+        fresh.rematch_composed(&selection),
+        Err(super::YtDlpCompositionError::MissingAudioComponent)
+    );
+}
+
+#[test]
+fn audio_fallback_rank_uses_standard_hints_and_not_inventory_order() {
+    let mut lower = progressive_format("lower", "webm", "webm", "none", "opus");
+    lower["preference"] = json!(1);
+    lower["language_preference"] = json!(5);
+    lower["quality"] = json!(2);
+    lower["abr"] = json!(64);
+    lower["audio_channels"] = json!(2);
+    lower["asr"] = json!(48_000);
+    let mut higher = lower.clone();
+    higher["format_id"] = json!("higher");
+    higher["url"] = json!("https://media.invalid/higher");
+    higher["abr"] = json!(192);
+    let snapshot = snapshot(json!({"formats": [higher, lower]}), 1);
+    let first = accepted_inventory(&snapshot, 0);
+    let second = accepted_inventory(&snapshot, 1);
+    assert!(first.audio_fallback_rank().unwrap() > second.audio_fallback_rank().unwrap());
+}
+
 /// Disabled adapter отказывает до process spawn и не смешивает config с mapper-ом.
 #[test]
 fn disabled_candidate_snapshot_resolver_fails_before_process_spawn() {

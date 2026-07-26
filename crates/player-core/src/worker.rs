@@ -43,19 +43,20 @@ use crate::{
     InstalledMediaRelease, InstalledMediaReleaseOutcome, InstalledMediaReleaseReceipt,
     InstalledMediaStateRestore, InstalledMediaStateRestoreOutcome,
     InstalledMediaStateRestoreReceipt, LatencyCounterSnapshot, MediaInstallCancellationCause,
-    MediaInstallControl, MediaInstallPhaseCompletionPort, MediaInstallReceipt,
-    MediaInstallRequestId, MediaInstallVideoResourcePort, MediaOpenRequest, MediaSource,
-    PlaybackIntent, PlaybackIntentRevision, PlaybackIntentUpdate, PlaybackIntentUpdateReceipt,
-    PlayerCommand, PlayerCommandOutcome, PlayerError, PlayerErrorKind, PlayerResult,
-    PlayerRuntimeAcceptedChange, PlayerRuntimeApplyError, PlayerRuntimeApplyGroup,
+    MediaInstallControl, MediaInstallPhaseCompletionPort, MediaInstallPositionPreparation,
+    MediaInstallReceipt, MediaInstallRequestId, MediaInstallVideoResourcePort, MediaInstanceId,
+    MediaOpenRequest, MediaSource, PlaybackIntent, PlaybackIntentRevision, PlaybackIntentUpdate,
+    PlaybackIntentUpdateReceipt, PlayerCommand, PlayerCommandOutcome, PlayerError, PlayerErrorKind,
+    PlayerResult, PlayerRuntimeAcceptedChange, PlayerRuntimeApplyError, PlayerRuntimeApplyGroup,
     PlayerRuntimeApplyGroupReport, PlayerRuntimeApplyReport, PlayerRuntimeApplyResult,
     PlayerRuntimeAudioOutputRecreateUpdate, PlayerRuntimeBoundaryActivity,
     PlayerRuntimeDecoderThreadConfigUpdate, PlayerRuntimeDefaultVolumeUpdate,
     PlayerRuntimeFrameServerPolicyUpdate, PlayerRuntimeSettingsUpdate,
     PlayerRuntimeTickConfigUpdate, PlayerRuntimeVideoBackendUpdate, PlayerSession, PlayerSnapshot,
     PlayerTickConfig, PlayerTickContext, PlayerTickResult, PlayerVideoBackendInstallIntent,
-    PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan, PreparedMedia,
-    SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend, scheduler_timing_diagnostics,
+    PlayerVideoDecoderThreadConfig, PlayerWorkerWakeupPlan, PrepareMediaInstallPosition,
+    PreparedMedia, SchedulerTimingDiagnosticsSnapshot, StartedVideoBackend,
+    scheduler_timing_diagnostics,
 };
 
 mod handle;
@@ -571,6 +572,9 @@ enum WorkerCommand {
 
     /// Применяет authorization/cancel к единственному staged request-у.
     MediaInstallControl(MediaInstallControlCommand),
+
+    /// Запускает strict same-lineage position gate без authorization.
+    PrepareMediaInstallPosition(PrepareMediaInstallPosition),
 
     /// Применяет position/track restore только к exact installed request/instance.
     RestoreInstalledMediaState {

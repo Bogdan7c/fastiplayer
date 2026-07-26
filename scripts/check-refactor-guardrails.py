@@ -233,8 +233,8 @@ WEB_MEDIA_ADAPTIVE_ALLOWED_DEPENDENCIES = frozenset(
     }
 )
 
-# HLS runtime владеет concrete manifest policy и переиспользует только neutral
-# adaptive/source/demux contracts. Concrete container owners допустимы лишь в dev fixtures.
+# HLS runtime владеет concrete manifest policy и публикует provider-neutral
+# catalog через web-media-core. Concrete container owners допустимы лишь в dev fixtures.
 WEB_MEDIA_HLS_ALLOWED_DEPENDENCIES = frozenset(
     {
         "aes",
@@ -247,13 +247,14 @@ WEB_MEDIA_HLS_ALLOWED_DEPENDENCIES = frozenset(
         "source-core",
         "thiserror",
         "web-media-adaptive",
+        "web-media-core",
         "web-media-transport-api",
         "zeroize",
     }
 )
 
-# DASH VOD runtime владеет manifest/serialized planning и использует только
-# pure MPD schema плюс neutral adaptive/source/demux contracts.
+# DASH runtime владеет manifest/serialized planning и публикует provider-neutral
+# catalog через web-media-core, не перенося parser/runtime state в app.
 WEB_MEDIA_DASH_ALLOWED_DEPENDENCIES = frozenset(
     {
         "anyhow",
@@ -265,6 +266,7 @@ WEB_MEDIA_DASH_ALLOWED_DEPENDENCIES = frozenset(
         "source-core",
         "thiserror",
         "web-media-adaptive",
+        "web-media-core",
         "web-media-transport-api",
     }
 )

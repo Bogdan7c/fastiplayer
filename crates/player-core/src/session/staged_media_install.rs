@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use audio_core::AudioDecoderConfig;
 use codec_core::VideoDecodeRequirement;
-use media_core::TrackId;
+use media_core::{DynamicMediaTimelineSnapshot, TimelineMode, TrackId};
 use video_backend_api::{
     DetachedVideoBackendCandidateCancellationCause, DetachedVideoBackendCandidateStatus,
     DetachedVideoBackendConfigurationError, DetachedVideoBackendPortError,
@@ -18,10 +18,10 @@ use crate::pipeline::VideoTextureReleaseEffect;
 use crate::{
     CancelMediaInstall, MediaInstallCancellationCause, MediaInstallControl,
     MediaInstallControlOutcome, MediaInstallFailure, MediaInstallFailureStage,
-    MediaInstallPhaseCompletionPort, MediaInstallRequestId, MediaInstallVideoResourcePort,
-    MediaInstanceId, MediaOpenRequest, MediaSummary, PlaybackIntent, PlaybackIntentRevision,
-    PlaybackState, PlayerError, PlayerErrorKind, PlayerEvent, PreparedMedia, StartedVideoBackend,
-    TrackSelectionSnapshot,
+    MediaInstallPhaseCompletionPort, MediaInstallPositionPreparation, MediaInstallRequestId,
+    MediaInstallVideoResourcePort, MediaInstanceId, MediaOpenRequest, MediaSummary, PlaybackIntent,
+    PlaybackIntentRevision, PlaybackState, PlayerError, PlayerErrorKind, PlayerEvent,
+    PreparedMedia, StartedVideoBackend, TrackSelectionSnapshot,
 };
 
 use super::PlayerSession;
@@ -31,6 +31,11 @@ use super::staged_video_preflight::{
 };
 
 mod commit;
+mod position;
+/// Installed result пересекает commit boundary, внутренний staged state остаётся private.
+/// Re-export сохраняет существующий session-local путь без public API.
+pub(super) use position::{InstalledStagedPosition, InstalledStagedPositionOutcome};
+use position::{StagedPositionCommit, StagedPositionPreparation};
 
 /// Единственный request, удерживаемый player owner-ом между preparation и terminal.
 struct StagedMediaInstall {
@@ -48,6 +53,9 @@ struct StagedMediaInstall {
 
     /// Strong app port либо `None` только у временного compatibility facade.
     video_resource_port: Option<MediaInstallVideoResourcePort>,
+
+    /// Same-lineage strict gate либо explicit ordinary bypass.
+    position_preparation: StagedPositionPreparation,
 }
 
 /// Typed generation request-owned staged preflight-а.
@@ -162,18 +170,50 @@ pub(crate) struct PreparedStagedMedia {
 
     /// Instance identity выделяется до `ReadyToCommit`.
     media_instance_id: MediaInstanceId,
+
+    /// Candidate-owned port и monotonic allocator переносятся в installed runtime целиком.
+    demux_seek_runtime: super::prepared_demux_seek::PreparedDemuxSeekRuntime,
+}
+
+/// Same-lineage switch не может менять static/live смысл timeline.
+fn ensure_matching_timeline_mode(
+    old_mode: TimelineMode,
+    prepared: &PreparedStagedMedia,
+) -> Result<(), MediaInstallFailure> {
+    let candidate_mode = match prepared.prepared_media.timeline_mode() {
+        crate::PreparedMediaTimelineMode::Static { .. } => TimelineMode::Static,
+        crate::PreparedMediaTimelineMode::Live { .. } => TimelineMode::Live,
+    };
+    if old_mode != candidate_mode {
+        return Err(position::position_failure(
+            "same-lineage candidate changed timeline mode",
+        ));
+    }
+    Ok(())
+}
+
+fn live_edge_commit(
+    position: Duration,
+    snapshot: DynamicMediaTimelineSnapshot,
+) -> StagedPositionCommit {
+    StagedPositionCommit::AdjustedToLiveEdge {
+        requested_position: position,
+        live_edge: snapshot.state.live_edge().as_duration(),
+    }
 }
 
 impl PreparedStagedMedia {
     /// Возвращает immutable stream config для detached decoder preflight-а.
-    pub(crate) fn video_plan(&self) -> Option<&StagedVideoTrackPlan> {
+    fn video_plan(&self) -> Option<&StagedVideoTrackPlan> {
         self.video_plan.as_ref()
     }
 
     /// Собирает единственный infallible commit payload после configured backend preflight-а.
-    pub(crate) fn into_commit(
+    fn into_commit(
         self,
         started_video_backend: Option<StartedVideoBackend>,
+        request_id: MediaInstallRequestId,
+        position: Option<StagedPositionCommit>,
     ) -> PreparedStagedMediaCommit {
         let defer_video_backend_to_compatibility_adapter =
             self.video_plan.is_some() && started_video_backend.is_none();
@@ -184,6 +224,9 @@ impl PreparedStagedMedia {
             media_instance_id: self.media_instance_id,
             started_video_backend,
             defer_video_backend_to_compatibility_adapter,
+            request_id,
+            position,
+            demux_seek_runtime: self.demux_seek_runtime,
         }
     }
 }
@@ -207,6 +250,15 @@ pub(crate) struct PreparedStagedMediaCommit {
 
     /// Только compatibility facade откладывает concrete backend до app adapter-а Session 10D.
     defer_video_backend_to_compatibility_adapter: bool,
+
+    /// Install request нужен post-Installed adoption receipt correlation.
+    request_id: MediaInstallRequestId,
+
+    /// Prepared same-lineage result; ordinary installs не создают его.
+    position: Option<StagedPositionCommit>,
+
+    /// Exact candidate runtime уже содержит использованный request allocator.
+    demux_seek_runtime: super::prepared_demux_seek::PreparedDemuxSeekRuntime,
 }
 
 /// Deferred release-действия прежних video frames.
@@ -292,6 +344,35 @@ impl PlayerSession {
             initial_intent_revision,
             install_port,
             Some(video_resource_port),
+            MediaInstallPositionPreparation::NotRequired,
+        );
+    }
+
+    /// Принимает strong same-lineage request с обязательным player-owned position gate.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Linear staged ownership payload stays explicit at the session boundary."
+    )]
+    pub(crate) fn stage_same_lineage_prepared_media_install(
+        &mut self,
+        request_id: MediaInstallRequestId,
+        prepared_media: PreparedMedia,
+        initial_intent: PlaybackIntent,
+        initial_intent_revision: PlaybackIntentRevision,
+        install_port: Arc<dyn MediaInstallPhaseCompletionPort>,
+        video_resource_port: MediaInstallVideoResourcePort,
+        expected_old_media_instance_id: MediaInstanceId,
+    ) {
+        self.stage_prepared_media_install_with_resource_mode(
+            request_id,
+            prepared_media,
+            initial_intent,
+            initial_intent_revision,
+            install_port,
+            Some(video_resource_port),
+            MediaInstallPositionPreparation::SameLineage {
+                expected_old_media_instance_id,
+            },
         );
     }
 
@@ -315,10 +396,15 @@ impl PlayerSession {
             initial_intent_revision,
             install_port,
             None,
+            MediaInstallPositionPreparation::NotRequired,
         );
     }
 
     /// Общий preparation path для strong и временного compatibility resource mode.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Linear staged ownership payload stays explicit until it enters the owner slot."
+    )]
     fn stage_prepared_media_install_with_resource_mode(
         &mut self,
         request_id: MediaInstallRequestId,
@@ -327,6 +413,7 @@ impl PlayerSession {
         initial_intent_revision: PlaybackIntentRevision,
         install_port: Arc<dyn MediaInstallPhaseCompletionPort>,
         video_resource_port: Option<MediaInstallVideoResourcePort>,
+        position_preparation: MediaInstallPositionPreparation,
     ) {
         self.cancel_active_staged_media_install(MediaInstallCancellationCause::Superseded);
         self.playback_intent_control.register_staged_request(
@@ -401,6 +488,7 @@ impl PlayerSession {
             }),
             started_video_backend: None,
             video_resource_port,
+            position_preparation: StagedPositionPreparation::new(position_preparation),
         });
         self.service_pending_staged_preflight(started_at);
     }
@@ -495,11 +583,16 @@ impl PlayerSession {
             );
             return;
         }
+        let mut prepared_media_envelope = pending.prepared_media;
+        let demux_seek_runtime = super::prepared_demux_seek::PreparedDemuxSeekRuntime::detached(
+            prepared_media_envelope.take_demux_seek_mode(),
+        );
         let prepared_media = PreparedStagedMedia {
-            prepared_media: pending.prepared_media,
+            prepared_media: prepared_media_envelope,
             audio_plan: pending.audio_plan,
             video_plan,
             media_instance_id: MediaInstanceId::new_unique(),
+            demux_seek_runtime,
         };
         let started_video_backend = match staged_install.video_resource_port.as_mut() {
             Some(video_resource_port) => match prepare_detached_video_backend(
@@ -516,7 +609,13 @@ impl PlayerSession {
             None => None,
         };
 
-        staged_install.protocol.mark_ready_to_commit();
+        if staged_install.position_preparation.is_required() {
+            staged_install
+                .protocol
+                .mark_ready_for_position_preparation();
+        } else {
+            staged_install.protocol.mark_ready_to_commit();
+        }
         staged_install.preparation = StagedMediaPreparation::Ready(Some(prepared_media));
         staged_install.started_video_backend = started_video_backend;
         self.staged_media_install.active = Some(staged_install);
@@ -537,122 +636,23 @@ impl PlayerSession {
     /// Возвращает ближайший retry/timeout deadline active staged continuation-а.
     #[must_use]
     pub(crate) fn staged_preflight_wakeup_delay(&self, now: Instant) -> Option<Duration> {
-        let staged_install = self.staged_media_install.active.as_ref()?;
-        let StagedMediaPreparation::Pending(pending) = &staged_install.preparation else {
-            return None;
-        };
-        let retry_deadline = pending.retry_deadline.unwrap_or(now);
-        let nearest_deadline = retry_deadline.min(pending.timeout_deadline);
-        Some(nearest_deadline.saturating_duration_since(now))
-    }
-
-    /// Применяет exact authorization/cancel в ordered owner stream.
-    ///
-    /// D52 update и commit сериализуются общим playback-intent mutex. Update, принятый до
-    /// входа owner-а в commit closure, попадает в commit; update после выхода видит только
-    /// exact just-installed request/instance mapping.
-    pub(crate) fn apply_staged_media_install_control(
-        &mut self,
-        control: MediaInstallControl,
-    ) -> MediaInstallControlOutcome {
-        let control_request_id = media_install_control_request_id(control);
-        let Some(mut staged_install) = self.staged_media_install.active.take() else {
-            return if self.staged_media_install.last_terminal_request_id == Some(control_request_id)
-            {
-                MediaInstallControlOutcome::AlreadyTerminal
-            } else {
-                MediaInstallControlOutcome::StaleRequest
-            };
-        };
-
-        if staged_install.request_id != control_request_id {
-            self.staged_media_install.active = Some(staged_install);
-            return MediaInstallControlOutcome::StaleRequest;
-        }
-
-        if matches!(control, MediaInstallControl::Authorize(_))
-            && !staged_install.protocol.is_ready_to_commit()
-        {
-            self.staged_media_install.active = Some(staged_install);
-            return MediaInstallControlOutcome::NotReady;
-        }
-
-        let (outcome, cancellation_cause) = match control {
-            MediaInstallControl::Authorize(authorization) => {
-                let StagedMediaPreparation::Ready(prepared_media) = &mut staged_install.preparation
-                else {
-                    self.staged_media_install.active = Some(staged_install);
-                    return MediaInstallControlOutcome::NotReady;
+        let preflight_delay = self
+            .staged_media_install
+            .active
+            .as_ref()
+            .and_then(|staged| {
+                let StagedMediaPreparation::Pending(pending) = &staged.preparation else {
+                    return None;
                 };
-                let Some(prepared_media) = prepared_media.take() else {
-                    self.staged_media_install.last_terminal_request_id =
-                        Some(staged_install.request_id);
-                    return MediaInstallControlOutcome::AlreadyTerminal;
-                };
-                let prepared_commit =
-                    prepared_media.into_commit(staged_install.started_video_backend.take());
-                let media_instance_id = prepared_commit.media_instance_id;
-                let playback_intent_control = Arc::clone(&self.playback_intent_control);
-                let outcome = staged_install.protocol.apply_control(
-                    MediaInstallControl::Authorize(authorization),
-                    || {
-                        let applied_intent = playback_intent_control.commit_staged_request(
-                            staged_install.request_id,
-                            media_instance_id,
-                            |accepted_intent| {
-                                self.commit_staged_media(prepared_commit, accepted_intent);
-                            },
-                        );
-                        (media_instance_id, applied_intent)
-                    },
-                );
-                (outcome, None)
-            }
-            MediaInstallControl::Cancel(cancellation) => {
-                let outcome = staged_install
-                    .protocol
-                    .apply_control(MediaInstallControl::Cancel(cancellation), || {
-                        unreachable!("cancel control не вызывает media commit closure")
-                    });
-                self.playback_intent_control
-                    .forget_staged_request(staged_install.request_id);
-                (outcome, Some(cancellation.cause))
-            }
-        };
-
-        match outcome {
-            MediaInstallControlOutcome::AuthorizationAccepted => {
-                self.staged_media_install.last_terminal_request_id =
-                    Some(staged_install.request_id);
-            }
-            MediaInstallControlOutcome::CancellationAccepted => {
-                if let Some(cause) = cancellation_cause
-                    && let Some(video_resource_port) = staged_install.video_resource_port.as_mut()
-                    && let Err(error) = video_resource_port.publish_candidate_status(
-                        DetachedVideoBackendCandidateStatus::Cancelled {
-                            request_id: staged_install.request_id,
-                            cause: detached_cancellation_cause(cause),
-                        },
-                    )
-                {
-                    tracing::warn!(
-                        request_id = staged_install.request_id.get(),
-                        %error,
-                        "player terminal опубликован, но app candidate cancellation status не доставлен"
-                    );
-                }
-                self.staged_media_install.last_terminal_request_id =
-                    Some(staged_install.request_id);
-            }
-            MediaInstallControlOutcome::StaleRequest | MediaInstallControlOutcome::NotReady => {
-                self.staged_media_install.active = Some(staged_install);
-            }
-            MediaInstallControlOutcome::AlreadyTerminal => {
-                self.staged_media_install.last_terminal_request_id =
-                    Some(staged_install.request_id);
-            }
+                let retry_deadline = pending.retry_deadline.unwrap_or(now);
+                let nearest_deadline = retry_deadline.min(pending.timeout_deadline);
+                Some(nearest_deadline.saturating_duration_since(now))
+            });
+        match (preflight_delay, self.staged_position_wakeup_delay()) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (Some(delay), None) | (None, Some(delay)) => Some(delay),
+            (None, None) => None,
         }
-        outcome
     }
 
     /// Lifecycle cancellation гарантирует terminal record до teardown session resources.

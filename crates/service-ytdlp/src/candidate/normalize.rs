@@ -14,7 +14,7 @@ use super::descriptor::normalize_format_parts;
 use super::model::{
     YtDlpCandidateComponentRole, YtDlpCandidateEntry, YtDlpCandidateNormalizationRejection,
     YtDlpCandidateOrigin, YtDlpCandidateSnapshot, YtDlpLiveIntent, YtDlpNormalizedCandidate,
-    YtDlpRejectedCandidate, YtDlpSelectedCandidateShape,
+    YtDlpRejectedCandidate, YtDlpSelectedCandidateShape, YtDlpSelectionHints,
 };
 use super::raw::{YtDlpCandidateDocument, YtDlpSerializedFormat};
 use super::request_material::YtDlpRequestMaterial;
@@ -161,9 +161,15 @@ fn normalize_single_candidate(
     identity: CandidateIdentity,
     origin: YtDlpCandidateOrigin,
 ) -> YtDlpCandidateEntry {
+    let selection_hints = selection_hints(&format);
     match normalize_format_parts(&format).and_then(|parts| {
         let role = single_component_role(&parts.layout)?;
-        build_candidate(identity.clone(), parts.layout, vec![(role, parts.request)])
+        build_candidate(
+            identity.clone(),
+            parts.layout,
+            vec![(role, parts.request)],
+            selection_hints,
+        )
     }) {
         Ok(candidate) => YtDlpCandidateEntry::accepted_entry(candidate),
         Err(reason) => rejected(origin, Some(identity), reason),
@@ -242,7 +248,12 @@ fn normalize_compound_candidate(
         (YtDlpCandidateComponentRole::Video, video_request),
         (YtDlpCandidateComponentRole::Audio, audio_request),
     ];
-    match build_candidate(identity.clone(), layout, request_material) {
+    match build_candidate(
+        identity.clone(),
+        layout,
+        request_material,
+        YtDlpSelectionHints::default(),
+    ) {
         Ok(candidate) => YtDlpCandidateEntry::accepted_entry(candidate),
         Err(reason) => rejected(origin, Some(identity), reason),
     }
@@ -263,6 +274,7 @@ fn build_candidate(
     identity: CandidateIdentity,
     layout: StreamLayout,
     request_material: Vec<(YtDlpCandidateComponentRole, YtDlpRequestMaterial)>,
+    selection_hints: YtDlpSelectionHints,
 ) -> Result<YtDlpNormalizedCandidate, YtDlpCandidateNormalizationRejection> {
     let mut semantic_hasher = StableSemanticHasher::new();
     layout.hash(&mut semantic_hasher);
@@ -271,7 +283,33 @@ fn build_candidate(
         .map_err(|_| YtDlpCandidateNormalizationRejection::InvalidStreamLayout)?;
     let descriptor = CandidateDescriptor::new(identity, semantic_identity, layout, Vec::new())
         .map_err(|_| YtDlpCandidateNormalizationRejection::InvalidStreamLayout)?;
-    Ok(YtDlpNormalizedCandidate::new(descriptor, request_material))
+    Ok(YtDlpNormalizedCandidate::new(
+        descriptor,
+        request_material,
+        selection_hints,
+    ))
+}
+
+fn selection_hints(format: &YtDlpSerializedFormat) -> YtDlpSelectionHints {
+    YtDlpSelectionHints {
+        preference: quantized_rank(format.preference),
+        language_preference: quantized_rank(format.language_preference),
+        quality: quantized_rank(format.quality),
+        source_preference: quantized_rank(format.source_preference),
+    }
+}
+
+fn quantized_rank(value: Option<f64>) -> Option<i64> {
+    value.filter(|value| value.is_finite()).map(|value| {
+        let scaled = value * 1_000.0;
+        if scaled >= i64::MAX as f64 {
+            i64::MAX
+        } else if scaled <= i64::MIN as f64 {
+            i64::MIN
+        } else {
+            scaled.round() as i64
+        }
+    })
 }
 
 /// Выражает роль single resource через enum, а не positional convention.

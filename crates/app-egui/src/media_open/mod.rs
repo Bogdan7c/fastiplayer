@@ -50,9 +50,10 @@ pub(crate) use preparation::{YtDlpPreparedMediaAttachments, prepare_yt_dlp_playe
 pub(crate) use types::{
     ActiveMediaSource, AuthorizationDispatchResolution, CancellationDispatchOutcome,
     MediaOpenClientKey, MediaOpenCommandError, MediaOpenCompletionDriveError,
-    MediaOpenInstallIntent, MediaOpenInvariantViolation, MediaOpenPhase, MediaOpenRequestId,
-    MediaOpenSnapshot, MediaOpenSourceRequest, MediaOpenStartError, MediaOpenStartMode,
-    MediaOpenStartOutcome, MediaOpenTerminalOutcome, MediaPreparationFailureKind,
-    PlayerDispatchRejection, PreparedMediaDescriptor, PreparedMediaOpen,
-    PreparedPlaylistCacheUpdate, SafeMediaLabel,
+    MediaOpenInstallIntent, MediaOpenInvariantViolation, MediaOpenPhase,
+    MediaOpenPositionPreparation, MediaOpenRequestId, MediaOpenSnapshot, MediaOpenSourceRequest,
+    MediaOpenStartError, MediaOpenStartMode, MediaOpenStartOutcome, MediaOpenTerminalOutcome,
+    MediaPreparationFailureKind, PlayerDispatchRejection, PreparedMediaDescriptor,
+    PreparedMediaOpen, PreparedPlaylistCacheUpdate, SafeMediaLabel,
+    SameLineagePositionPreparationPhase,
 };

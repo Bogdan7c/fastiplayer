@@ -8,6 +8,18 @@ use playlist_core::PlaylistItemId;
 
 use crate::media_open::MediaOpenRequestId;
 use crate::playlist_runtime::PlaylistBindingGeneration;
+#[cfg(test)]
+use crate::playlist_runtime::{PlaylistLifecycleGeneration, PlaylistRuntimeBinding};
+
+#[cfg(test)]
+impl PlaylistRuntimeBinding {
+    pub(crate) const fn for_test(lifecycle_generation: u64, binding_generation: u64) -> Self {
+        Self {
+            lifecycle_generation: PlaylistLifecycleGeneration(lifecycle_generation),
+            binding_generation: PlaylistBindingGeneration(binding_generation),
+        }
+    }
+}
 
 /// Runtime badge не удерживает неограниченный service/backend text.
 const MAX_RUNTIME_ERROR_SUMMARY_CHARS: usize = 240;

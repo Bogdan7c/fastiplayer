@@ -491,6 +491,11 @@ fn selection_request(selection: &ComponentVariantSelection) -> ComponentVariantS
                 audio: audio.exact_identity().clone(),
             }
         }
+        ComponentVariantSelection::Coupled { presentation, .. } => {
+            ComponentVariantSelectionRequest::Coupled {
+                presentation: presentation.exact_identity().clone(),
+            }
+        }
     }
 }
 
@@ -502,7 +507,8 @@ fn build_presentation(
     let catalog_generation = catalog.identity().generation();
     match (catalog, selection) {
         (
-            ComponentVariantCatalog::VideoAndAudio { video, audio, .. },
+            ComponentVariantCatalog::Topology { video, audio, .. }
+            | ComponentVariantCatalog::VideoAndAudio { video, audio, .. },
             ComponentVariantSelection::VideoAndAudio {
                 video: active_video,
                 audio: active_audio,

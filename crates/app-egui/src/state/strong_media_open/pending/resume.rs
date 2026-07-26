@@ -233,6 +233,7 @@ impl AppState {
             outcome,
             media_instance_id,
             requested_position,
+            self.refresh_player_snapshot().current_position,
             timeline,
         ) {
             PositionRestoreOutcomeRoute::Resume {

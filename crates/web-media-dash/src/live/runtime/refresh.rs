@@ -13,22 +13,23 @@ use web_media_adaptive::{
 
 use super::{
     DashEndpointRefreshReply, DashLiveOpenError, DashLiveOpenRequest, DashLiveRuntimeFailure,
-    DashLiveShared, DashSynchronizedClock,
+    DashLiveSelection, DashLiveShared, DashSynchronizedClock,
 };
 use crate::live::{
-    DashLiveRefreshOutcome, DashLiveSnapshot, build_dash_live_snapshot, refresh_dash_live_snapshot,
-    replace_dash_live_endpoint_snapshot,
+    DashLiveRefreshOutcome, DashLiveSnapshot, build_dash_live_snapshot_with_selection,
+    refresh_dash_live_snapshot, replace_dash_live_endpoint_snapshot,
 };
 
 /// Refresh worker никогда не join-ится на player owner; cancellation обрывает loop.
 pub(super) fn spawn_refresh_worker(
     request: DashLiveOpenRequest,
+    selection: DashLiveSelection,
     shared: Arc<DashLiveShared>,
     fatal: Arc<Mutex<Option<DashLiveRuntimeFailure>>>,
 ) -> std::result::Result<(), DashLiveOpenError> {
     thread::Builder::new()
         .name("dash-live-refresh".to_owned())
-        .spawn(move || run_refresh_loop(request, shared, &fatal))
+        .spawn(move || run_refresh_loop(request, selection, shared, &fatal))
         .map(|_| ())
         .map_err(DashLiveOpenError::RefreshWorkerSpawn)
 }
@@ -36,6 +37,7 @@ pub(super) fn spawn_refresh_worker(
 /// Последовательно refresh-ит MPD; commit находится под одним snapshot mutex.
 fn run_refresh_loop(
     request: DashLiveOpenRequest,
+    selection: DashLiveSelection,
     shared: Arc<DashLiveShared>,
     fatal: &Mutex<Option<DashLiveRuntimeFailure>>,
 ) {
@@ -58,7 +60,7 @@ fn run_refresh_loop(
             return;
         }
         let fetch_started = Instant::now();
-        match refresh_once(&request, &shared, fetch_started) {
+        match refresh_once(&request, &selection, &shared, fetch_started) {
             Ok(_) => {
                 retry_not_before = next_retry_deadline(&shared, fetch_started);
             }
@@ -108,6 +110,7 @@ struct StagedSnapshot {
 /// Endpoint reply fetch/parse/build/continuity-валидируется до единого runtime commit-а.
 pub(super) fn stage_and_commit_endpoint(
     request: &DashLiveOpenRequest,
+    selection: &DashLiveSelection,
     shared: &DashLiveShared,
     failed_generation: web_media_transport_api::SourceGeneration,
     reply: DashEndpointRefreshReply,
@@ -118,6 +121,7 @@ pub(super) fn stage_and_commit_endpoint(
     let fetch_started = Instant::now();
     let staged = fetch_snapshot(
         request,
+        selection,
         &reply.http,
         reply.generation,
         &reply.manifest,
@@ -154,6 +158,7 @@ pub(super) fn stage_and_commit_endpoint(
 /// Fetch/parse/build/validate нового snapshot-а до mutation.
 fn refresh_once(
     request: &DashLiveOpenRequest,
+    selection: &DashLiveSelection,
     shared: &DashLiveShared,
     fetch_started: Instant,
 ) -> std::result::Result<DashLiveRefreshOutcome, RefreshAttemptError> {
@@ -162,7 +167,14 @@ fn refresh_once(
         .lock()
         .map(|state| (state.http.clone(), state.generation, state.manifest.clone()))
         .map_err(|_| RefreshAttemptError::Fatal)?;
-    let staged = fetch_snapshot(request, &http, generation, &manifest, fetch_started)?;
+    let staged = fetch_snapshot(
+        request,
+        selection,
+        &http,
+        generation,
+        &manifest,
+        fetch_started,
+    )?;
     let mut state = shared
         .state
         .lock()
@@ -192,6 +204,7 @@ fn refresh_once(
 /// Выполняет network observation и pure snapshot build без shared-state mutation.
 fn fetch_snapshot(
     request: &DashLiveOpenRequest,
+    selection: &DashLiveSelection,
     http: &web_media_adaptive::AdaptiveHttpContext,
     generation: web_media_transport_api::SourceGeneration,
     manifest: &crate::request::DashManifestInput,
@@ -221,10 +234,10 @@ fn fetch_snapshot(
         mpd.direct_utc_time,
     )
     .map_err(|_| RefreshAttemptError::Fatal)?;
-    let snapshot = build_dash_live_snapshot(
+    let snapshot = build_dash_live_snapshot_with_selection(
         mpd,
         fetched.final_target(),
-        &request.selection,
+        selection,
         request.policy.maximum_planned_segments,
         &clock,
     )

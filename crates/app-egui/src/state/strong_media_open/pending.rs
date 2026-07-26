@@ -477,6 +477,48 @@ impl AppState {
                 MediaOpenCommandError::StaleRequest,
             )));
         }
+        match snapshot.same_lineage_position {
+            crate::media_open::SameLineagePositionPreparationPhase::ReadyForPositionPreparation => {
+                if let Err(error) =
+                    self.capture_same_lineage_restore_before_barrier(playlist_runtime, pending)
+                {
+                    pending.pre_barrier_failure = Some(error);
+                    return match playlist_runtime.cancel_media_open_lossless(
+                        pending.request_id,
+                        MediaInstallCancellationCause::StructuralInvalidation,
+                    ) {
+                        Ok(_) => StrongMediaOpenPoll::Pending,
+                        Err(error) => StrongMediaOpenPoll::completed(Err(
+                            StrongMediaOpenError::Command(error),
+                        )),
+                    };
+                }
+                return match playlist_runtime
+                    .prepare_same_lineage_media_open_position(pending.request_id)
+                {
+                    Ok(()) => StrongMediaOpenPoll::Pending,
+                    Err(error) => {
+                        pending.pre_barrier_failure =
+                            Some(StrongMediaOpenError::PlaylistGate(error));
+                        match playlist_runtime.cancel_media_open_lossless(
+                            pending.request_id,
+                            MediaInstallCancellationCause::StructuralInvalidation,
+                        ) {
+                            Ok(_) => StrongMediaOpenPoll::Pending,
+                            Err(error) => StrongMediaOpenPoll::completed(Err(
+                                StrongMediaOpenError::Command(error),
+                            )),
+                        }
+                    }
+                };
+            }
+            crate::media_open::SameLineagePositionPreparationPhase::WaitingForPlayerReady
+            | crate::media_open::SameLineagePositionPreparationPhase::PreparationDispatched => {
+                return StrongMediaOpenPoll::Pending;
+            }
+            crate::media_open::SameLineagePositionPreparationPhase::NotRequired
+            | crate::media_open::SameLineagePositionPreparationPhase::ReadyToCommit => {}
+        }
         match snapshot.phase {
             MediaOpenPhase::Accepted
             | MediaOpenPhase::Preparing
@@ -506,6 +548,28 @@ impl AppState {
                         Err(error) => StrongMediaOpenPoll::completed(Err(
                             StrongMediaOpenError::Command(error),
                         )),
+                    };
+                }
+                if matches!(
+                    pending.lineage_commit,
+                    PendingStrongLineageCommit::SameLineage { .. }
+                ) {
+                    return match playlist_runtime
+                        .authorize_ready_same_lineage_media_open(pending.request_id)
+                    {
+                        Ok(()) => StrongMediaOpenPoll::Pending,
+                        Err(error) => {
+                            *deferred_rejection = Some(error);
+                            match playlist_runtime.cancel_media_open_lossless(
+                                pending.request_id,
+                                MediaInstallCancellationCause::StructuralInvalidation,
+                            ) {
+                                Ok(_) => StrongMediaOpenPoll::Pending,
+                                Err(error) => StrongMediaOpenPoll::completed(Err(
+                                    StrongMediaOpenError::Command(error),
+                                )),
+                            }
+                        }
                     };
                 }
                 let authorization = if playlist_runtime.playlist_install_matches(pending.request_id)
@@ -580,14 +644,29 @@ impl AppState {
             return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::MissingTerminal));
         };
         pending.source = Some(descriptor.active_source());
-        let player_request_id = match playlist_runtime.stage_media_open_at_player(
-            pending.request_id,
-            MediaOpenInstallIntent {
-                intent: pending.intent,
-                revision: pending.intent_revision,
-            },
-            staging.video_resource_port,
-        ) {
+        let install_intent = MediaOpenInstallIntent {
+            intent: pending.intent,
+            revision: pending.intent_revision,
+        };
+        let stage_result = match (&pending.lineage_commit, &staging.admission) {
+            (
+                PendingStrongLineageCommit::SameLineage {
+                    expected_active, ..
+                },
+                PendingStrongMediaAdmission::SameLineage,
+            ) => playlist_runtime.stage_same_lineage_media_open_at_player(
+                pending.request_id,
+                install_intent,
+                staging.video_resource_port,
+                expected_active.media_instance_id(),
+            ),
+            _ => playlist_runtime.stage_media_open_at_player(
+                pending.request_id,
+                install_intent,
+                staging.video_resource_port,
+            ),
+        };
+        let player_request_id = match stage_result {
             Ok(player_request_id) => player_request_id,
             Err(error) => {
                 *deferred_rejection = Some(error);

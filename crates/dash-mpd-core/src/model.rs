@@ -51,7 +51,7 @@ impl DashBaseUrl {
 }
 
 /// Доказанный container family для существующего S28 demux.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DashContainer {
     /// Fragmented ISO BMFF/CMAF.
     IsoBmff,
@@ -60,7 +60,7 @@ pub enum DashContainer {
 }
 
 /// Доказанный component layout одной Representation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DashMediaKind {
     /// Только video component.
     Video,
@@ -68,6 +68,59 @@ pub enum DashMediaKind {
     Audio,
     /// Muxed audio + video.
     Muxed,
+}
+
+/// Exact positive `FrameRateType` value из MPD без floating-point округления.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DashFrameRate {
+    /// Числитель frames/time.
+    pub numerator: u32,
+    /// Знаменатель; для целого lexical value равен единице.
+    pub denominator: u32,
+}
+
+/// Стандартизованная схема `AudioChannelConfiguration`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DashAudioChannelConfiguration {
+    /// ISO/IEC 23091-3 ChannelConfiguration code point.
+    MpegCicp(u16),
+    /// ISO/IEC 23003-3 channelConfigurationIndex.
+    Mpeg23003_3(u16),
+    /// Descriptor использует неизвестную текущему profile схему.
+    Unsupported,
+}
+
+/// Exact standardized CICP color evidence; каждое отсутствующее поле остаётся `None`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DashColorMetadata {
+    /// ISO/IEC 23091-2 colour_primaries code point.
+    pub colour_primaries: Option<u8>,
+    /// ISO/IEC 23091-2 transfer_characteristics code point.
+    pub transfer_characteristics: Option<u8>,
+    /// ISO/IEC 23091-2 matrix_coefficients code point.
+    pub matrix_coefficients: Option<u8>,
+    /// Exact VideoFullRangeFlag.
+    pub video_full_range: Option<bool>,
+}
+
+/// Стандартизованная HDR transfer function, доказанная CICP metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DashHdrTransfer {
+    /// SMPTE ST 2084 perceptual quantizer, CICP transfer characteristic 16.
+    Pq,
+    /// ARIB STD-B67 hybrid log-gamma, CICP transfer characteristic 18.
+    Hlg,
+}
+
+impl DashColorMetadata {
+    /// Возвращает HDR только для двух стандартизованных HDR transfer code points.
+    pub const fn hdr_transfer(self) -> Option<DashHdrTransfer> {
+        match self.transfer_characteristics {
+            Some(16) => Some(DashHdrTransfer::Pq),
+            Some(18) => Some(DashHdrTransfer::Hlg),
+            _ => None,
+        }
+    }
 }
 
 /// Inclusive byte range.
@@ -202,6 +255,16 @@ pub struct DashRepresentation {
     pub width: Option<u32>,
     /// Optional exact coded height.
     pub height: Option<u32>,
+    /// Optional exact inherited frame rate.
+    pub frame_rate: Option<DashFrameRate>,
+    /// Optional exact inherited audio sampling rate.
+    pub audio_sampling_rate: Option<u32>,
+    /// Optional inherited standardized channel configuration.
+    pub audio_channel_configuration: Option<DashAudioChannelConfiguration>,
+    /// Optional inherited BCP 47 language metadata.
+    pub language: Option<String>,
+    /// Exact inherited standardized color metadata.
+    pub color: DashColorMetadata,
     /// Доказанный container.
     pub container: DashContainer,
     /// Доказанный component kind.

@@ -12,6 +12,7 @@ use source_core::{HttpBoundedByteRange, HttpRequestTarget};
 use thiserror::Error;
 use web_media_adaptive::AdaptiveResourceQueryApplication;
 
+use crate::catalog::{DashLogicalRepresentationSelection, DashRepresentationLaneTimelineMode};
 use crate::request::{
     DashSerializedComponent, DashSerializedFragmentKind, DashSerializedPresentation,
 };
@@ -280,6 +281,159 @@ fn build_manifest_component(
     }
     Ok(DashComponentPlan {
         media_kind: evidence.media_kind,
+        periods,
+        duration: Duration::from_millis(mpd.media_presentation_duration_milliseconds),
+    })
+}
+
+/// Доказывает совместимость exact logical lanes тем же Period planner-ом, что runtime open.
+pub(crate) fn prove_manifest_lane_alignment(
+    mpd: &DashMpd,
+    manifest_base: &HttpRequestTarget,
+    video_locations: &[(usize, usize)],
+    audio_locations: &[(usize, usize)],
+    maximum_segments: NonZeroUsize,
+    mode: DashRepresentationLaneTimelineMode,
+) -> Result<(), DashPlanError> {
+    let intent = lane_timeline_intent(mode);
+    let video = build_manifest_component_from_locations(
+        mpd,
+        manifest_base,
+        video_locations,
+        maximum_segments,
+        intent,
+        DashMediaKind::Video,
+    )?;
+    let audio = build_manifest_component_from_locations(
+        mpd,
+        manifest_base,
+        audio_locations,
+        maximum_segments,
+        intent,
+        DashMediaKind::Audio,
+    )?;
+    validate_period_alignment(&video, &audio)
+}
+
+/// Доказывает, что одна logical lane сама образует openable timeline во всех Periods.
+pub(crate) fn prove_manifest_lane(
+    mpd: &DashMpd,
+    manifest_base: &HttpRequestTarget,
+    locations: &[(usize, usize)],
+    maximum_segments: NonZeroUsize,
+    mode: DashRepresentationLaneTimelineMode,
+    media_kind: DashMediaKind,
+) -> Result<(), DashPlanError> {
+    build_manifest_component_from_locations(
+        mpd,
+        manifest_base,
+        locations,
+        maximum_segments,
+        lane_timeline_intent(mode),
+        media_kind,
+    )?;
+    Ok(())
+}
+
+/// Строит runtime plan из provider-owned exact lane mapping без lossy evidence rematch-а.
+pub(crate) fn build_manifest_plan_from_logical_selection(
+    mpd: &DashMpd,
+    manifest_base: &HttpRequestTarget,
+    selection: &DashLogicalRepresentationSelection,
+    maximum_segments: NonZeroUsize,
+    mode: DashRepresentationLaneTimelineMode,
+) -> Result<DashPresentationPlan, DashPlanError> {
+    let intent = lane_timeline_intent(mode);
+    match selection {
+        DashLogicalRepresentationSelection::Single(lane) => {
+            let component = build_manifest_component_from_locations(
+                mpd,
+                manifest_base,
+                &lane.locations,
+                maximum_segments,
+                intent,
+                lane.contract.kind,
+            )?;
+            Ok(DashPresentationPlan::Single(component))
+        }
+        DashLogicalRepresentationSelection::Separate { video, audio } => {
+            if video.contract.kind != DashMediaKind::Video
+                || audio.contract.kind != DashMediaKind::Audio
+            {
+                return Err(DashRepresentationSelectionError::Absent.into());
+            }
+            let video = build_manifest_component_from_locations(
+                mpd,
+                manifest_base,
+                &video.locations,
+                maximum_segments,
+                intent,
+                DashMediaKind::Video,
+            )?;
+            let audio = build_manifest_component_from_locations(
+                mpd,
+                manifest_base,
+                &audio.locations,
+                maximum_segments,
+                intent,
+                DashMediaKind::Audio,
+            )?;
+            validate_period_alignment(&video, &audio)?;
+            Ok(DashPresentationPlan::Separate { video, audio })
+        }
+    }
+}
+
+const fn lane_timeline_intent(
+    mode: DashRepresentationLaneTimelineMode,
+) -> DashTimelinePlanningIntent {
+    match mode {
+        DashRepresentationLaneTimelineMode::Static => {
+            DashTimelinePlanningIntent::StaticCompletePeriod
+        }
+        DashRepresentationLaneTimelineMode::Dynamic => DashTimelinePlanningIntent::DynamicSnapshot,
+    }
+}
+
+/// Exact snapshot-local locations не зависят от lossy caller evidence.
+fn build_manifest_component_from_locations(
+    mpd: &DashMpd,
+    manifest_base: &HttpRequestTarget,
+    locations: &[(usize, usize)],
+    maximum_segments: NonZeroUsize,
+    intent: DashTimelinePlanningIntent,
+    media_kind: DashMediaKind,
+) -> Result<DashComponentPlan, DashPlanError> {
+    if locations.len() != mpd.periods.len() {
+        return Err(DashRepresentationSelectionError::Absent.into());
+    }
+    let mpd_base = resolve_optional_base(manifest_base, mpd.base_url.as_ref())?;
+    let mut periods = Vec::with_capacity(mpd.periods.len());
+    for (period, &(adaptation_index, representation_index)) in mpd.periods.iter().zip(locations) {
+        let adaptation = period
+            .adaptation_sets
+            .get(adaptation_index)
+            .ok_or(DashRepresentationSelectionError::Absent)?;
+        let representation = adaptation
+            .representations
+            .get(representation_index)
+            .ok_or(DashRepresentationSelectionError::Absent)?;
+        if representation.media_kind != media_kind {
+            return Err(DashRepresentationSelectionError::Absent.into());
+        }
+        periods.push(build_manifest_period(
+            period,
+            SelectedDashRepresentation {
+                adaptation,
+                representation,
+            },
+            &mpd_base,
+            maximum_segments,
+            intent,
+        )?);
+    }
+    Ok(DashComponentPlan {
+        media_kind,
         periods,
         duration: Duration::from_millis(mpd.media_presentation_duration_milliseconds),
     })

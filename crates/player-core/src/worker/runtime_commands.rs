@@ -88,15 +88,34 @@ impl PlayerWorkerRuntime {
                     initial_intent_revision,
                     install_port,
                     video_resource_port,
+                    position_preparation,
                 } = *command;
-                self.session.stage_registered_prepared_media_install(
-                    request_id,
-                    prepared_media,
-                    initial_intent,
-                    initial_intent_revision,
-                    install_port,
-                    video_resource_port,
-                );
+                match position_preparation {
+                    MediaInstallPositionPreparation::NotRequired => {
+                        self.session.stage_registered_prepared_media_install(
+                            request_id,
+                            prepared_media,
+                            initial_intent,
+                            initial_intent_revision,
+                            install_port,
+                            video_resource_port,
+                        );
+                    }
+                    MediaInstallPositionPreparation::SameLineage {
+                        expected_old_media_instance_id,
+                    } => self.session.stage_same_lineage_prepared_media_install(
+                        request_id,
+                        prepared_media,
+                        initial_intent,
+                        initial_intent_revision,
+                        install_port,
+                        video_resource_port,
+                        expected_old_media_instance_id,
+                    ),
+                }
+            }
+            WorkerCommand::PrepareMediaInstallPosition(request) => {
+                self.session.prepare_staged_media_position(request);
             }
             WorkerCommand::MediaInstallControl(MediaInstallControlCommand {
                 control,

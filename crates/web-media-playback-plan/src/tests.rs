@@ -14,7 +14,7 @@ use crate::{
     DemuxCapabilityRejection, DemuxCapabilitySnapshot, HdrSelectionPolicy, PlanningCandidate,
     PlanningCandidateBuildError, PlaybackCapabilitySnapshot, PlaybackComponent,
     PlaybackPlanningError, TransportCapabilityRegistration, TransportCapabilitySnapshot,
-    plan_playback,
+    plan_playback, rank_playable_opaque_alternatives,
 };
 
 #[path = "tests/audio_containers.rs"]
@@ -187,6 +187,59 @@ fn best_playable_prefers_complete_av_over_preferred_video_only_codec() {
     .expect("playable A/V candidate должен победить silent video");
 
     assert_eq!(outcome.selected().layout(), StreamLayoutKind::Separate);
+}
+
+#[test]
+fn grouped_opaque_ranking_is_stable_when_source_order_reverses() {
+    let (transport, demux) = full_resource_capabilities();
+    let video = video_capabilities(vec![supported_video_format(VideoCodec::Vp9, false)]);
+    let capabilities = PlaybackCapabilitySnapshot::new(
+        &transport,
+        &demux,
+        &video,
+        AudioDecodeCapabilitySnapshot::empty(),
+    );
+    let policy = selection_policy(
+        HdrSelectionPolicy::SdrOnly,
+        PreferredHeightPolicy::NoPreference,
+        vec![VideoCodec::Vp9],
+        vec![ContainerFamily::WebM],
+    );
+    let candidate = |format_id: &str, semantic_key: &str, quality_score| {
+        video_only_candidate(VideoCandidateSpec {
+            format_id,
+            semantic_key,
+            transport_raw: "https",
+            container_raw: "webm",
+            codec_raw: "vp09.00.41.08",
+            height: 1080,
+            dynamic_range: DynamicRange::Sdr,
+            requirement: sdr_requirement(VideoCodec::Vp9, 1080),
+            quality_score,
+        })
+    };
+    let better = candidate("better", "better", 100);
+    let worse = candidate("worse", "worse", 10);
+    let better_selection = ExactSelectionIdentity::new(
+        better.descriptor().identity().clone(),
+        better.descriptor().semantic_identity().clone(),
+    )
+    .unwrap();
+    let worse_selection = ExactSelectionIdentity::new(
+        worse.descriptor().identity().clone(),
+        worse.descriptor().semantic_identity().clone(),
+    )
+    .unwrap();
+
+    for snapshot in [
+        candidate_snapshot(vec![worse.clone(), better.clone()]),
+        candidate_snapshot(vec![better, worse]),
+    ] {
+        let ranking = rank_playable_opaque_alternatives(&snapshot, capabilities, &policy)
+            .expect("оба opaque alternatives playable");
+        assert_eq!(ranking.rank_of(&better_selection), Some(0));
+        assert_eq!(ranking.rank_of(&worse_selection), Some(1));
+    }
 }
 
 /// Preferred height выбирает exact, затем closest lower, затем closest higher.

@@ -192,7 +192,7 @@ fn retained_transport_body_limit_rejects_before_reconstruction_and_latches() {
     let origin = FixtureOrigin::start();
     let source_config =
         SourceRuntimeConfig::from_network_config(&NetworkConfig::default()).expect("source config");
-    let prepared = prepare_smooth_vod(SmoothPrepareRequest::new(
+    let prepared = crate::prepare::prepare_smooth_vod_all_for_test(SmoothPrepareRequest::new(
         transport_request(origin.target()),
         &source_config,
         ComponentVariantCatalogGeneration::new(44),
@@ -297,7 +297,7 @@ fn fragment_paths_use_effective_manifest_base_and_cross_origin_secret_stays_stri
     );
     let source_config =
         SourceRuntimeConfig::from_network_config(&NetworkConfig::default()).expect("source config");
-    let prepared = prepare_smooth_vod(SmoothPrepareRequest::new(
+    let prepared = crate::prepare::prepare_smooth_vod_all_for_test(SmoothPrepareRequest::new(
         transport_request_with_security(
             &initial_target,
             RedirectPolicy::cross_origin_without_secrets(
@@ -363,7 +363,7 @@ fn same_scope_manifest_and_fragment_keep_required_scoped_secrets() {
     let origin = FixtureOrigin::start();
     let source_config =
         SourceRuntimeConfig::from_network_config(&NetworkConfig::default()).expect("source config");
-    let prepared = prepare_smooth_vod(SmoothPrepareRequest::new(
+    let prepared = crate::prepare::prepare_smooth_vod_all_for_test(SmoothPrepareRequest::new(
         transport_request_with_security(
             origin.target(),
             RedirectPolicy::same_origin(RedirectHopLimit::new(2).expect("redirect budget")),

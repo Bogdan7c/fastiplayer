@@ -1,3 +1,7 @@
+## Slice C staged same-lineage position gate (2026-07-26)
+
+Same-lineage staged install now inserts a player-owned strict position phase before authorization, transfers any used receipted-seek runtime/allocator through commit, and adopts the prepared demux result into existing decoder landing without a second seek. Ordinary staged-open semantics remain unchanged. Current ownership, failure, live/DVR and receipt invariants: `mem:player-core/staged-position-gate-slice-c-2026-07-26`.
+
 ## S42 acceptance facts (2026-07-25)
 
 - S42 does not change player-core API or ownership. `scripts/final-acceptance.sh` completed automated `PASS`; manual playback matrix and real VA-API rerun remain `NOT RUN`.

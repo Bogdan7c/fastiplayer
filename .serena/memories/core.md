@@ -81,6 +81,10 @@
 
 # Core
 
+## Slice G unified web-media picker (2026-07-26)
+
+- Process-lifetime bounded catalog discovery, dependent mode/codec/resolution/FPS/HDR UI, session-only per-item semantic preferences, exact-Installed automatic restore/fallback, and planner-owned source-order-independent opaque grouping are active. HLS/DASH neutral catalog dependencies are guardrail-approved; full ownership, fencing, lifecycle and verification are in `mem:app-egui/web-media-picker-slice-g-2026-07-26`.
+
 ## S28G existing-demux hardening gate (2026-07-22)
 
 - S28A/B/C сведены в один reuse foundation без новой runtime feature logic и без изменения demux API/seek/event semantics. Exact Matroska `DocType`, fMP4 identity, полный fixture inventory, blocking coverage classification и parser-ownership guardrails закреплены hermetic evidence.

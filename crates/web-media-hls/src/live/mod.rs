@@ -12,7 +12,10 @@ mod timeline;
 
 pub(crate) use av::TransactionalHlsLiveAvDemuxer;
 pub(crate) use demux::{HlsLiveComponentDemuxer, HlsLiveComponentFactory};
-pub use open::{HlsLiveOpenError, HlsLiveOpenResult, prepare_hls_live};
+pub use open::{
+    HlsLiveOpenError, HlsLiveOpenResult, prepare_hls_catalog_live_receipted, prepare_hls_live,
+    prepare_hls_live_receipted,
+};
 #[allow(unused_imports)]
 pub(crate) use snapshot::{
     HlsLiveComponentKind, HlsLiveComponentSnapshot, HlsLiveRefreshError, HlsLiveSegmentIdentity,

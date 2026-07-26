@@ -1,17 +1,18 @@
 //! Строгая подготовка Smooth Streaming VOD поверх нейтральных transport-контрактов.
 //!
-//! Подготовка выполняет ровно один manifest fetch, валидирует sealed S36D profile,
-//! отображает каждое объявленное качество через S36F2/F1 и публикует нейтральный
-//! C3 `VideoAndAudio` catalog. После exact C3 selection crate строит ленивые
-//! finite video/audio fragment sources с bounded reconstruction и exact audio
-//! presentation windows, injected stable A/V demux и transactional receipted
-//! VOD seek. Concrete ISO backend, app composition и player lifecycle остаются
-//! у downstream owners.
+//! Fast preparation выполняет один manifest fetch и materializes только
+//! provider-default A/V seed. Отдельный bounded discovery доказывает siblings
+//! через transport/content/demux/track/capability evidence и атомарно публикует
+//! additive C3 `AllPairs` catalog с private exact/semantic reopen mapping.
+//! Selected runtime по-прежнему строит lazy fragment sources, injected stable
+//! A/V demux и transactional receipted VOD seek. Concrete ISO backend, app
+//! composition и player lifecycle остаются у downstream owners.
 
 #![forbid(unsafe_code)]
 
 mod catalog;
 mod demux;
+mod discovery;
 mod error;
 mod model;
 mod policy;
@@ -26,8 +27,14 @@ pub use demux::{
     SmoothVideoDemuxOpenParts, SmoothVideoDemuxOpenRequest, SmoothVodDemuxBuildError,
     SmoothVodDemuxPolicy, SmoothVodOpenResult, SmoothVodSeekError,
 };
+pub use discovery::{
+    SmoothCatalogDiscoveryError, SmoothCatalogDiscoveryPolicy, SmoothCatalogDiscoveryRequest,
+    SmoothCatalogReopenError, SmoothComponentCapabilityProbe, SmoothComponentCapabilityRejection,
+    SmoothDiscoveredCatalog, discover_smooth_vod_catalog,
+};
 pub use error::{
-    SmoothPrepareError, SmoothProfileError, SmoothSemanticKeyError, SmoothTransportProfileError,
+    SmoothPrepareError, SmoothProfileError, SmoothSemanticKeyError, SmoothSiblingRejection,
+    SmoothSiblingRejectionReason, SmoothTransportProfileError,
 };
 pub use model::{SmoothAlignedSpan, SmoothPreparedCatalog};
 pub use policy::{AggregateInitializationByteLimit, SmoothPreparationPolicy};

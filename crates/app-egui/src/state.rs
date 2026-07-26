@@ -75,6 +75,7 @@ mod telemetry_panel;
 mod timeline_inline_status;
 mod ui_runtime;
 mod video_backend;
+mod web_media_catalog;
 
 #[cfg(test)]
 mod tests;
@@ -330,6 +331,9 @@ pub struct AppState {
 
     /// Ephemeral pending/error state URL content; Installed source остаётся authoritative.
     url_sidebar_controller: crate::web_media_stream_model::UrlSidebarController,
+    web_media_catalog_state: crate::web_media_catalog::WebMediaCatalogState,
+    pending_automatic_web_media_switch: Option<web_media_catalog::PendingAutomaticWebMediaSwitch>,
+    web_media_fallback_notice: bool,
 
     /// Единственный владелец live geometry общей панели для всех sidebar sections.
     sidebar_host_state: SidebarHostState,
@@ -453,6 +457,9 @@ impl AppState {
             telemetry_panel_cache: TelemetryPanelCache::default(),
             sidebar_controller: SidebarController::default(),
             url_sidebar_controller: crate::web_media_stream_model::UrlSidebarController::default(),
+            web_media_catalog_state: crate::web_media_catalog::WebMediaCatalogState::Inactive,
+            pending_automatic_web_media_switch: None,
+            web_media_fallback_notice: false,
             sidebar_host_state,
             sidebar_slide_last_tick: None,
         };

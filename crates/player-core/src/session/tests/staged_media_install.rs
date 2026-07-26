@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -5,7 +6,10 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata, VideoProfile, Vp9Profile};
-use media_core::{DemuxReadEvent, Packet, TrackKind, VideoTrackMetadata};
+use media_core::{
+    DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, MediaTime, Packet,
+    TimelineNotSeekableReason, TrackKind, VideoTrackMetadata,
+};
 use video_backend_api::{
     DetachedVideoBackend, DetachedVideoBackendCandidateCancellationCause,
     DetachedVideoBackendCandidateStatus, DetachedVideoBackendPortError, DetachedVideoBackendReply,
@@ -21,11 +25,16 @@ use super::test_support::{
     test_decode_backend_id,
 };
 use crate::{
-    AuthorizeInstallCommit, CancelMediaInstall, DecodeThreadError, MediaInstallCancellationCause,
+    AuthorizeInstallCommit, CancelMediaInstall, DecodeThreadError, InstalledMediaStateRestore,
+    InstalledMediaStateRestoreOutcome, InstalledPositionRestore, InstalledSubtitleRestore,
+    InstalledTrackRestore, InstalledVolumeRestore, MediaInstallCancellationCause,
     MediaInstallCompletion, MediaInstallControl, MediaInstallControlOutcome,
-    MediaInstallFailureStage, MediaInstallReceipt, MediaInstallRequestId, MediaInstanceId,
-    PlaybackIntent, PlaybackIntentRevision, PlaybackState, PlayerCommand, PlayerError,
-    PlayerErrorKind, PlayerTickConfig, PreparedMedia, StartedVideoBackend, WorkerWakeupReason,
+    MediaInstallFailureStage, MediaInstallPhase, MediaInstallReceipt, MediaInstallRequestId,
+    MediaInstanceId, PlaybackIntent, PlaybackIntentRevision, PlaybackState, PlayerCommand,
+    PlayerError, PlayerErrorKind, PlayerTickConfig, PrepareMediaInstallPosition,
+    PreparedDemuxSeekEnqueueError, PreparedDemuxSeekOutcome, PreparedDemuxSeekPort,
+    PreparedDemuxSeekReceipt, PreparedDemuxSeekRequestId, PreparedMedia, StartedVideoBackend,
+    WorkerWakeupReason,
 };
 
 /// Shared observable state fake resource port-а после передачи его player owner-у.
@@ -179,6 +188,45 @@ impl DetachedVideoBackendResourcePort for FakeResourcePort {
     }
 }
 
+#[derive(Default)]
+struct FakeStagedSeekPort {
+    commands: Mutex<Vec<(PreparedDemuxSeekRequestId, DemuxSeekRequest)>>,
+    receipts: Mutex<VecDeque<PreparedDemuxSeekReceipt>>,
+}
+
+impl FakeStagedSeekPort {
+    fn complete(&self, request_id: PreparedDemuxSeekRequestId, outcome: PreparedDemuxSeekOutcome) {
+        self.receipts
+            .lock()
+            .expect("staged receipt lock")
+            .push_back(PreparedDemuxSeekReceipt {
+                request_id,
+                outcome,
+            });
+    }
+}
+
+impl PreparedDemuxSeekPort for FakeStagedSeekPort {
+    fn enqueue_seek(
+        &self,
+        request_id: PreparedDemuxSeekRequestId,
+        request: DemuxSeekRequest,
+    ) -> Result<(), PreparedDemuxSeekEnqueueError> {
+        self.commands
+            .lock()
+            .expect("staged command lock")
+            .push((request_id, request));
+        Ok(())
+    }
+
+    fn poll_seek_receipt(&self) -> Option<PreparedDemuxSeekReceipt> {
+        self.receipts
+            .lock()
+            .expect("staged receipt lock")
+            .pop_front()
+    }
+}
+
 /// Создаёт already-opened candidate media с выбранными track kinds.
 fn prepared_media(track_kinds: &[TrackKind]) -> PreparedMedia {
     let tracks = track_kinds
@@ -278,6 +326,412 @@ fn install_old_media(
     session.snapshot.media_instance_id = Some(old_instance_id);
     session.set_playback_state(playback_state);
     old_instance_id
+}
+
+fn set_old_position(session: &mut PlayerSession, position: Duration) {
+    session.current_source_position = position;
+    session
+        .snapshot
+        .set_timeline_position(MediaTime::from_duration(position));
+    session.pipeline.set_media_clock_base(position);
+}
+
+fn stage_audio_same_lineage(
+    session: &mut PlayerSession,
+    old_instance_id: MediaInstanceId,
+    request_id: MediaInstallRequestId,
+    prepared_media: PreparedMedia,
+) -> MediaInstallReceipt {
+    let (resource_port, _) =
+        FakeResourcePort::unavailable(DetachedVideoBackendResourceError::Unavailable {
+            reason: "audio candidate does not request video resources".to_owned(),
+        });
+    let (receipt, install_port) = MediaInstallReceipt::new(request_id);
+    session.stage_same_lineage_prepared_media_install(
+        request_id,
+        prepared_media,
+        PlaybackIntent::StartPlaying,
+        PlaybackIntentRevision::INITIAL,
+        install_port,
+        Box::new(resource_port),
+        old_instance_id,
+    );
+    receipt
+}
+
+fn audio_position_candidate(
+    duration: Duration,
+    seekability: DemuxSeekability,
+) -> (PreparedMedia, Arc<Mutex<Vec<Duration>>>) {
+    let seek_log = Arc::new(Mutex::new(Vec::new()));
+    let demuxer = FakeDemuxer::new(
+        vec![fake_track(1, TrackKind::Audio)],
+        Some(duration),
+        Arc::clone(&seek_log),
+    )
+    .with_seekability(seekability);
+    (
+        PreparedMedia::from_external_label("position-candidate", Box::new(demuxer)),
+        seek_log,
+    )
+}
+
+struct FailingPositionSeekDemuxer {
+    tracks: Vec<media_core::TrackInfo>,
+    duration: Duration,
+}
+
+impl media_core::Demuxer for FailingPositionSeekDemuxer {
+    fn tracks(&self) -> &[media_core::TrackInfo] {
+        &self.tracks
+    }
+
+    fn duration(&self) -> Option<Duration> {
+        Some(self.duration)
+    }
+
+    fn seekability(&self) -> DemuxSeekability {
+        DemuxSeekability::Seekable
+    }
+
+    fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+        Ok(media_core::finite_packet_read_event(None))
+    }
+
+    fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+        Err(anyhow::anyhow!("scripted staged seek failure"))
+    }
+}
+
+#[test]
+fn same_lineage_worker_position_gate_preserves_old_playback_and_adopts_seek_once() {
+    let mut session = PlayerSession::new();
+    let old_instance_id = install_old_media(&mut session, PlaybackState::Playing);
+    set_old_position(&mut session, Duration::from_secs(10));
+    let (candidate, _seek_log) =
+        audio_position_candidate(Duration::from_secs(40), DemuxSeekability::Seekable);
+    let port = Arc::new(FakeStagedSeekPort::default());
+    let candidate = candidate.with_worker_receipted_demux_seek(port.clone());
+    let request_id = MediaInstallRequestId::from_non_zero(NonZeroU64::new(1_301).unwrap());
+    let receipt = stage_audio_same_lineage(&mut session, old_instance_id, request_id, candidate);
+
+    assert_eq!(
+        receipt.try_take_ready_to_commit(),
+        Some(MediaInstallPhase::ReadyForPositionPreparation { request_id })
+    );
+    session.prepare_staged_media_position(PrepareMediaInstallPosition { request_id });
+    let commands = port.commands.lock().expect("staged command lock").clone();
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].1.timestamp, Duration::from_secs(10));
+    assert_eq!(session.snapshot().media_instance_id, Some(old_instance_id));
+    assert_eq!(session.playback_state(), PlaybackState::Playing);
+
+    set_old_position(&mut session, Duration::from_secs(12));
+    port.complete(
+        commands[0].0,
+        PreparedDemuxSeekOutcome::Succeeded(DemuxSeekResult {
+            requested_position: MediaTime::from_secs(10),
+            actual_position: MediaTime::from_secs(8),
+            actual_track_timestamp: None,
+        }),
+    );
+    session.service_staged_position_preparation();
+    assert_eq!(
+        receipt.try_take_ready_to_commit(),
+        Some(MediaInstallPhase::ReadyToCommit { request_id })
+    );
+    assert_eq!(
+        session.apply_staged_media_install_control(MediaInstallControl::Authorize(
+            AuthorizeInstallCommit { request_id },
+        )),
+        MediaInstallControlOutcome::AuthorizationAccepted
+    );
+    let new_instance_id = session.snapshot().media_instance_id.unwrap();
+    assert_ne!(new_instance_id, old_instance_id);
+    assert_eq!(session.prepared_demux_seek.next_request_id_for_tests(), 2);
+    let seek_commit = session
+        .seek_runtime
+        .active_commit()
+        .expect("adopted result starts decoder landing");
+    assert_eq!(seek_commit.target_position, MediaTime::from_secs(12));
+    assert_eq!(port.commands.lock().expect("staged command lock").len(), 1);
+
+    let (outcome_tx, outcome_rx) = crossbeam_channel::bounded(1);
+    session.begin_installed_media_state_restore(
+        InstalledMediaStateRestore {
+            request_id,
+            media_instance_id: new_instance_id,
+            video_track: InstalledTrackRestore::KeepDefault,
+            audio_track: InstalledTrackRestore::KeepDefault,
+            subtitle_track: InstalledSubtitleRestore::KeepDefault,
+            volume: InstalledVolumeRestore::KeepCurrent,
+            position: InstalledPositionRestore::AdoptPreparedSameLineagePosition,
+        },
+        outcome_tx,
+    );
+    assert!(outcome_rx.try_recv().is_err());
+    session.complete_seek_commit(seek_commit);
+    assert_eq!(
+        outcome_rx.recv().expect("landing completion"),
+        InstalledMediaStateRestoreOutcome::Applied {
+            media_instance_id: new_instance_id,
+        }
+    );
+    assert_eq!(port.commands.lock().expect("staged command lock").len(), 1);
+}
+
+#[test]
+fn strict_static_position_rejects_short_nonseekable_and_backward_candidates() {
+    for (request_value, candidate_duration, seekability) in [
+        (1_311, Duration::from_secs(5), DemuxSeekability::Seekable),
+        (
+            1_312,
+            Duration::from_secs(40),
+            DemuxSeekability::NotSeekable {
+                reason: TimelineNotSeekableReason::SourceNotSeekable,
+            },
+        ),
+    ] {
+        let mut session = PlayerSession::new();
+        let old_instance_id = install_old_media(&mut session, PlaybackState::Playing);
+        set_old_position(&mut session, Duration::from_secs(10));
+        let (candidate, seek_log) = audio_position_candidate(candidate_duration, seekability);
+        let request_id = MediaInstallRequestId::from_non_zero(
+            NonZeroU64::new(request_value).expect("test request id"),
+        );
+        let receipt =
+            stage_audio_same_lineage(&mut session, old_instance_id, request_id, candidate);
+        assert!(matches!(
+            receipt.try_take_ready_to_commit(),
+            Some(MediaInstallPhase::ReadyForPositionPreparation { .. })
+        ));
+        session.prepare_staged_media_position(PrepareMediaInstallPosition { request_id });
+        assert!(matches!(
+            receipt.try_take_completion(),
+            Some(MediaInstallCompletion::Failed {
+                failure: crate::MediaInstallFailure {
+                    stage: MediaInstallFailureStage::PositionPreparation,
+                    ..
+                },
+                ..
+            })
+        ));
+        assert_eq!(session.snapshot().media_instance_id, Some(old_instance_id));
+        assert_eq!(session.playback_state(), PlaybackState::Playing);
+        assert!(seek_log.lock().expect("seek log").is_empty());
+    }
+
+    let mut session = PlayerSession::new();
+    let old_instance_id = install_old_media(&mut session, PlaybackState::Playing);
+    set_old_position(&mut session, Duration::from_secs(10));
+    let (candidate, _) =
+        audio_position_candidate(Duration::from_secs(40), DemuxSeekability::Seekable);
+    let port = Arc::new(FakeStagedSeekPort::default());
+    let candidate = candidate.with_worker_receipted_demux_seek(port.clone());
+    let request_id = MediaInstallRequestId::from_non_zero(NonZeroU64::new(1_313).unwrap());
+    let receipt = stage_audio_same_lineage(&mut session, old_instance_id, request_id, candidate);
+    let _ = receipt.try_take_ready_to_commit();
+    session.prepare_staged_media_position(PrepareMediaInstallPosition { request_id });
+    let request = port.commands.lock().expect("commands")[0];
+    set_old_position(&mut session, Duration::from_secs(9));
+    port.complete(
+        request.0,
+        PreparedDemuxSeekOutcome::Succeeded(DemuxSeekResult {
+            requested_position: MediaTime::from_secs(10),
+            actual_position: MediaTime::from_secs(8),
+            actual_track_timestamp: None,
+        }),
+    );
+    session.service_staged_position_preparation();
+    assert!(matches!(
+        receipt.try_take_completion(),
+        Some(MediaInstallCompletion::Failed { .. })
+    ));
+    assert_eq!(session.snapshot().media_instance_id, Some(old_instance_id));
+}
+
+#[test]
+fn synchronous_position_seek_error_preserves_old_instance_before_authorization() {
+    let mut session = PlayerSession::new();
+    let old_instance_id = install_old_media(&mut session, PlaybackState::Playing);
+    set_old_position(&mut session, Duration::from_secs(10));
+    let candidate = PreparedMedia::from_external_label(
+        "failing-position-candidate",
+        Box::new(FailingPositionSeekDemuxer {
+            tracks: vec![fake_track(1, TrackKind::Audio)],
+            duration: Duration::from_secs(40),
+        }),
+    );
+    let request_id = MediaInstallRequestId::from_non_zero(NonZeroU64::new(1_314).unwrap());
+    let receipt = stage_audio_same_lineage(&mut session, old_instance_id, request_id, candidate);
+    let _ = receipt.try_take_ready_to_commit();
+
+    session.prepare_staged_media_position(PrepareMediaInstallPosition { request_id });
+
+    assert!(matches!(
+        receipt.try_take_completion(),
+        Some(MediaInstallCompletion::Failed {
+            failure: crate::MediaInstallFailure {
+                stage: MediaInstallFailureStage::PositionPreparation,
+                ..
+            },
+            ..
+        })
+    ));
+    assert_eq!(session.snapshot().media_instance_id, Some(old_instance_id));
+    assert_eq!(session.playback_state(), PlaybackState::Playing);
+    assert!(!session.has_staged_media_install());
+}
+
+#[test]
+fn non_authoritative_worker_position_receipts_cannot_authorize() {
+    for (request_value, outcome) in [
+        (1_315, PreparedDemuxSeekOutcome::Failed),
+        (1_316, PreparedDemuxSeekOutcome::Cancelled),
+        (1_317, PreparedDemuxSeekOutcome::Superseded),
+        (1_318, PreparedDemuxSeekOutcome::Stale),
+    ] {
+        let mut session = PlayerSession::new();
+        let old_instance_id = install_old_media(&mut session, PlaybackState::Playing);
+        set_old_position(&mut session, Duration::from_secs(10));
+        let (candidate, _) =
+            audio_position_candidate(Duration::from_secs(40), DemuxSeekability::Seekable);
+        let port = Arc::new(FakeStagedSeekPort::default());
+        let candidate = candidate.with_worker_receipted_demux_seek(port.clone());
+        let request_id = MediaInstallRequestId::from_non_zero(
+            NonZeroU64::new(request_value).expect("test request id"),
+        );
+        let receipt =
+            stage_audio_same_lineage(&mut session, old_instance_id, request_id, candidate);
+        let _ = receipt.try_take_ready_to_commit();
+        session.prepare_staged_media_position(PrepareMediaInstallPosition { request_id });
+        let seek_request_id = port.commands.lock().expect("commands")[0].0;
+        port.complete(seek_request_id, outcome);
+
+        session.service_staged_position_preparation();
+
+        assert!(matches!(
+            receipt.try_take_completion(),
+            Some(MediaInstallCompletion::Failed {
+                failure: crate::MediaInstallFailure {
+                    stage: MediaInstallFailureStage::PositionPreparation,
+                    ..
+                },
+                ..
+            })
+        ));
+        assert!(receipt.try_take_ready_to_commit().is_none());
+        assert_eq!(session.snapshot().media_instance_id, Some(old_instance_id));
+        assert_eq!(session.playback_state(), PlaybackState::Playing);
+        assert_eq!(
+            session.apply_staged_media_install_control(MediaInstallControl::Authorize(
+                AuthorizeInstallCommit { request_id },
+            )),
+            MediaInstallControlOutcome::AlreadyTerminal
+        );
+    }
+}
+
+#[test]
+fn zero_target_accepts_nonseekable_candidate_without_demux_seek() {
+    let mut session = PlayerSession::new();
+    let old_instance_id = install_old_media(&mut session, PlaybackState::Paused);
+    let (candidate, seek_log) = audio_position_candidate(
+        Duration::from_secs(40),
+        DemuxSeekability::NotSeekable {
+            reason: TimelineNotSeekableReason::SourceNotSeekable,
+        },
+    );
+    let request_id = MediaInstallRequestId::from_non_zero(NonZeroU64::new(1_321).unwrap());
+    let receipt = stage_audio_same_lineage(&mut session, old_instance_id, request_id, candidate);
+    let _ = receipt.try_take_ready_to_commit();
+    session.prepare_staged_media_position(PrepareMediaInstallPosition { request_id });
+    assert_eq!(
+        receipt.try_take_ready_to_commit(),
+        Some(MediaInstallPhase::ReadyToCommit { request_id })
+    );
+    assert!(seek_log.lock().expect("seek log").is_empty());
+}
+
+#[test]
+fn final_old_instance_validation_rejects_before_destructive_authorization() {
+    let mut session = PlayerSession::new();
+    let old_instance_id = install_old_media(&mut session, PlaybackState::Paused);
+    set_old_position(&mut session, Duration::from_secs(6));
+    let (candidate, _) =
+        audio_position_candidate(Duration::from_secs(40), DemuxSeekability::Seekable);
+    let request_id = MediaInstallRequestId::from_non_zero(NonZeroU64::new(1_331).unwrap());
+    let receipt = stage_audio_same_lineage(&mut session, old_instance_id, request_id, candidate);
+    let _ = receipt.try_take_ready_to_commit();
+    session.prepare_staged_media_position(PrepareMediaInstallPosition { request_id });
+    assert!(matches!(
+        receipt.try_take_ready_to_commit(),
+        Some(MediaInstallPhase::ReadyToCommit { .. })
+    ));
+    let replacement_instance_id = MediaInstanceId::from_non_zero(NonZeroU64::new(1_332).unwrap());
+    session.snapshot.media_instance_id = Some(replacement_instance_id);
+
+    assert_eq!(
+        session.apply_staged_media_install_control(MediaInstallControl::Authorize(
+            AuthorizeInstallCommit { request_id },
+        )),
+        MediaInstallControlOutcome::AuthorizationRejectedBeforeCommit
+    );
+    assert_eq!(
+        session.snapshot().media_instance_id,
+        Some(replacement_instance_id)
+    );
+    assert!(matches!(
+        receipt.try_take_completion(),
+        Some(MediaInstallCompletion::Failed {
+            failure: crate::MediaInstallFailure {
+                stage: MediaInstallFailureStage::PositionPreparation,
+                ..
+            },
+            ..
+        })
+    ));
+}
+
+#[test]
+fn playback_window_position_uses_public_target_and_absolute_demux_anchor() {
+    let mut session = PlayerSession::new();
+    let old_instance_id = install_old_media(&mut session, PlaybackState::Paused);
+    set_old_position(&mut session, Duration::from_secs(10));
+    let (candidate, seek_log) =
+        audio_position_candidate(Duration::from_secs(200), DemuxSeekability::Seekable);
+    let window =
+        crate::MediaPlaybackWindow::new(MediaTime::from_secs(100), Some(MediaTime::from_secs(150)))
+            .expect("valid HDS-like presentation window");
+    let candidate = candidate
+        .with_playback_window(window)
+        .expect("static candidate accepts window");
+    let request_id = MediaInstallRequestId::from_non_zero(NonZeroU64::new(1_341).unwrap());
+    let receipt = stage_audio_same_lineage(&mut session, old_instance_id, request_id, candidate);
+    let _ = receipt.try_take_ready_to_commit();
+    session.prepare_staged_media_position(PrepareMediaInstallPosition { request_id });
+    assert_eq!(
+        receipt.try_take_ready_to_commit(),
+        Some(MediaInstallPhase::ReadyToCommit { request_id })
+    );
+    assert_eq!(
+        seek_log.lock().expect("seek log").as_slice(),
+        &[Duration::from_secs(100), Duration::from_secs(110)]
+    );
+    assert_eq!(
+        session.apply_staged_media_install_control(MediaInstallControl::Authorize(
+            AuthorizeInstallCommit { request_id },
+        )),
+        MediaInstallControlOutcome::AuthorizationAccepted
+    );
+    assert_eq!(
+        session
+            .seek_runtime
+            .active_commit()
+            .expect("window target adopted")
+            .target_position,
+        MediaTime::from_secs(110)
+    );
 }
 
 /// Strong install обязан уточнить VP9 HDR по packet header до backend request-а

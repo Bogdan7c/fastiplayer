@@ -26,14 +26,17 @@ use source_core::{
 use symphonia_demux::{DemuxerOptions, SymphoniaDemuxFactory};
 use web_media_adaptive::{AdaptiveHttpContext, AdaptiveRetryPolicy, AdaptiveTransportLimits};
 use web_media_core::{
-    CandidateFormatIdentity, CandidateIdentity, ExtractionGeneration, SemanticIdentity,
-    SourceIdentity,
+    CandidateFormatIdentity, CandidateIdentity, ComponentVariantCatalogGeneration,
+    ComponentVariantCatalogIdentity, ComponentVariantCatalogLimit, ComponentVariantEdgeLimit,
+    ExactSelectionIdentity, ExtractionGeneration, SemanticIdentity, SourceIdentity,
 };
 use web_media_dash::{
     DashEndpointRefreshError, DashEndpointRefreshPort, DashEndpointRefreshReply,
-    DashEndpointRefreshRequest, DashLiveOpenRequest, DashLiveOpenResult, DashManifestInput,
-    DashPresentationSelection, DashRepresentationEvidence, DashVodOpenPolicy, DashWallClock,
-    prepare_dash_live,
+    DashEndpointRefreshRequest, DashLiveCatalogDiscoveryRequest, DashLiveOpenRequest,
+    DashLiveOpenResult, DashManifestInput, DashPresentationSelection,
+    DashRepresentationCapabilityProbe, DashRepresentationCapabilityRejection,
+    DashRepresentationEvidence, DashVodOpenPolicy, DashWallClock, discover_dash_live_catalog,
+    prepare_dash_live, prepare_discovered_dash_live,
 };
 use web_media_transport_api::{
     MediaComponentIdentity, MediaComponentRole, MediaPresentation, RedirectHopLimit,
@@ -43,6 +46,32 @@ use web_media_transport_api::{
 
 /// Общий deadline ограничивает только ожидание worker-а в test thread-е.
 const TEST_TIMEOUT: Duration = Duration::from_secs(3);
+
+struct AcceptAudioCapabilities;
+
+impl DashRepresentationCapabilityProbe for AcceptAudioCapabilities {
+    fn check_video(
+        &self,
+        _video: &media_core::TrackInfo,
+    ) -> Result<(), DashRepresentationCapabilityRejection> {
+        Ok(())
+    }
+
+    fn check_audio(
+        &self,
+        _audio: &media_core::TrackInfo,
+    ) -> Result<(), DashRepresentationCapabilityRejection> {
+        Ok(())
+    }
+
+    fn check_muxed(
+        &self,
+        _video: &media_core::TrackInfo,
+        _audio: &media_core::TrackInfo,
+    ) -> Result<(), DashRepresentationCapabilityRejection> {
+        Ok(())
+    }
+}
 
 /// Выполняет public open в worker-е, чтобы self-deadlock давал bounded test failure.
 fn prepare_dash_live_with_deadline(
@@ -452,6 +481,77 @@ fn prepares_local_dynamic_mpd_until_audio_packet_and_cooperative_shutdown() {
     );
 }
 
+#[test]
+fn discovered_live_audio_opens_exact_lane_through_logical_refresh_selector() {
+    let manifest = dynamic_audio_manifest(DynamicAudioManifestFixture {
+        publish_time_seconds: 1,
+        minimum_update_period: "PT60S",
+        period_duration: "PT0.2S",
+        segment_repeat: 0,
+    });
+    let server = HermeticDashServer::start_with_refresh(
+        HashMap::from([
+            ("/live.mpd", manifest.clone()),
+            (
+                "/init.webm",
+                decode_base64(include_str!("fixtures/audio-webm-init.base64")),
+            ),
+            (
+                "/0.webm",
+                decode_base64(include_str!("fixtures/audio-webm-one.base64")),
+            ),
+        ]),
+        RefreshManifestResponse {
+            path: "/live.mpd",
+            body: manifest,
+        },
+    );
+    let manifest_target = server.target("/live.mpd");
+    let generation = SourceGeneration::new(7);
+    let cancellation = CancellationToken::new();
+    let endpoint_refresh = Arc::new(RejectingEndpointRefresh::new());
+    let open = DashLiveOpenRequest {
+        http: Box::new(adaptive_context(
+            &manifest_target,
+            cancellation.clone(),
+            generation,
+        )),
+        generation,
+        manifest: manifest_input(manifest_target),
+        selection: audio_selection(),
+        demux_registry: demux_registry(),
+        policy: open_policy(),
+        wall_clock: Arc::new(FixedWallClock {
+            now: DashUtcTimestamp::from_unix_nanoseconds(2_000_000_000),
+        }),
+        timeline_port_generation: DynamicMediaTimelinePortGeneration::new(
+            NonZeroU64::new(7).expect("DASH timeline port generation"),
+        ),
+        initial_source_epoch: DynamicMediaTimelineEpoch::new(0),
+        endpoint_refresh: endpoint_refresh.clone(),
+    };
+    let discovered = discover_dash_live_catalog(DashLiveCatalogDiscoveryRequest {
+        open,
+        catalog_identity: live_catalog_identity(7),
+        catalog_limit: ComponentVariantCatalogLimit::new(4).expect("catalog limit"),
+        compatibility_edge_limit: ComponentVariantEdgeLimit::new(4).expect("edge limit"),
+        capability_probe: &AcceptAudioCapabilities,
+    })
+    .expect("live catalog discovery");
+    assert_eq!(discovered.catalog().stored_variant_count(), 1);
+    let exact = discovered.provider_default().clone();
+    let opened = prepare_discovered_dash_live(discovered, exact).expect("logical live open");
+    let (mut demuxer, seek_handle, timeline_port) = opened.into_parts();
+    assert_eq!(next_packet(&mut demuxer).kind, TrackKind::Audio);
+
+    cancellation.cancel();
+    drop(demuxer);
+    drop(seek_handle);
+    drop(timeline_port);
+    wait_for_refresh_shutdown(&endpoint_refresh);
+    wait_for_request_quiescence(&server);
+}
+
 /// Poll-ит neutral readiness contract с bounded ожиданием только в test thread-е.
 fn next_packet(demuxer: &mut dyn Demuxer) -> media_core::Packet {
     next_packet_at_or_after(demuxer, Duration::ZERO)
@@ -564,6 +664,22 @@ fn adaptive_context(
         .expect("DASH retry policy"),
     )
     .expect("adaptive DASH context")
+}
+
+fn live_catalog_identity(generation: u64) -> ComponentVariantCatalogIdentity {
+    let source = SourceIdentity::new(42);
+    let exact = CandidateIdentity::new(
+        source,
+        ExtractionGeneration::new(generation),
+        CandidateFormatIdentity::new("dash-live-runtime-test")
+            .expect("DASH candidate format identity"),
+    );
+    let semantic = SemanticIdentity::new(source, "dash-live-runtime-test")
+        .expect("DASH candidate semantic identity");
+    ComponentVariantCatalogIdentity::new(
+        ExactSelectionIdentity::new(exact, semantic).expect("same source identity"),
+        ComponentVariantCatalogGeneration::new(generation),
+    )
 }
 
 /// Exact selected audio/WebM Representation evidence.

@@ -1,0 +1,500 @@
+//! Provider-owned HDS rendition discovery и neutral coupled catalog mapping.
+
+use std::collections::HashMap;
+use std::fmt;
+use std::sync::Arc;
+
+use anyhow::{Context, Result, bail};
+use demux_api::DemuxRegistry;
+use media_core::{Demuxer, TrackInfo, TrackKind};
+use source_core::SourceRuntimeConfig;
+use web_media_adaptive::AdaptiveHttpContext;
+use web_media_core::{
+    AudioTrackDescriptor, ChannelCount, ComponentVariantCatalog, ComponentVariantCatalogEntries,
+    ComponentVariantCatalogIdentity, ComponentVariantCatalogLimit,
+    ComponentVariantCompatibilityEntries, ComponentVariantExactKey, ComponentVariantSelection,
+    ComponentVariantSelectionRequest, ComponentVariantSemanticKey, CoupledComponentVariant,
+    CoupledVariantExactIdentity, CoupledVariantSemanticIdentity, DynamicRange, NormalizedCodec,
+    PreferredHeightPolicy, RawCodecIdentity, SampleRate, VideoHeight, VideoTrackDescriptor,
+    VideoWidth,
+};
+use web_media_transport_api::{MediaPresentation, TransportOpenRequest};
+
+use crate::policy::HdsVodOpenPolicy;
+use crate::resolve::{
+    HdsRenditionRejection, HdsRenditionRejectionReason, ResolvedHdsRendition, resolve_presentation,
+};
+use crate::runtime::{
+    HdsDemuxPlan, HdsVodOpenResult, open_transactional_demuxer, prepare_selected_hds_vod,
+};
+
+/// Synchronous provider discovery request; app может выполнить его на bounded background worker-е.
+pub struct HdsCatalogDiscoveryRequest<'capabilities> {
+    /// Secret-scoped root manifest request.
+    pub transport_request: TransportOpenRequest,
+    /// Cloneable source-core network configuration.
+    pub source_config: SourceRuntimeConfig,
+    /// Existing injected demux registry с F4F factory.
+    pub demux_registry: Arc<DemuxRegistry>,
+    /// Existing caller-owned HDS bounds.
+    pub policy: HdsVodOpenPolicy,
+    /// Parent exact identity + caller-owned catalog generation fence.
+    pub catalog_identity: ComponentVariantCatalogIdentity,
+    /// Injected immutable capability intersection over exact probed tracks.
+    pub capability_probe: &'capabilities dyn HdsRenditionCapabilityProbe,
+    /// Provider-default ranking policy.
+    pub preferred_height: PreferredHeightPolicy,
+}
+
+/// Safe capability rejection: diagnostics не получают backend или track payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HdsRenditionCapabilityRejection;
+
+/// Existing-composition adapter для immutable video/audio capability snapshots.
+///
+/// Provider передаёт только уже boundedly probed exact tracks; реализация не
+/// должна создавать decoder или менять runtime state.
+pub trait HdsRenditionCapabilityProbe: Send + Sync {
+    /// Подтверждает, что coupled HDS video+audio shape playable целиком.
+    fn check_coupled_av(
+        &self,
+        video: &TrackInfo,
+        audio: &TrackInfo,
+    ) -> std::result::Result<(), HdsRenditionCapabilityRejection>;
+}
+
+/// Discovered catalog с neutral public rows и private exact runtime mapping.
+pub struct HdsRenditionCatalog {
+    catalog: ComponentVariantCatalog,
+    provider_default: ComponentVariantSelection,
+    rejections: Box<[HdsRenditionRejection]>,
+    rows: Box<[DiscoveredHdsRendition]>,
+    http: AdaptiveHttpContext,
+    demux_registry: Arc<DemuxRegistry>,
+    policy: HdsVodOpenPolicy,
+}
+
+impl fmt::Debug for HdsRenditionCatalog {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HdsRenditionCatalog")
+            .field("catalog_identity", self.catalog.identity())
+            .field("published_rows", &self.rows.len())
+            .field("rejected_rows", &self.rejections.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl HdsRenditionCatalog {
+    /// Возвращает provider-neutral coupled catalog без runtime locator state.
+    #[must_use]
+    pub const fn catalog(&self) -> &ComponentVariantCatalog {
+        &self.catalog
+    }
+
+    /// Возвращает exact provider default уже внутри текущего catalog generation.
+    #[must_use]
+    pub const fn provider_default(&self) -> &ComponentVariantSelection {
+        &self.provider_default
+    }
+
+    /// Возвращает bounded safe diagnostics для скрытых siblings.
+    #[must_use]
+    pub fn rejections(&self) -> &[HdsRenditionRejection] {
+        &self.rejections
+    }
+}
+
+/// Private exact mapping одной доказанной coupled row.
+struct DiscoveredHdsRendition {
+    exact_identity: CoupledVariantExactIdentity,
+    rendition: ResolvedHdsRendition,
+}
+
+/// Пробует каждый advertised rendition и публикует catalog только после complete pass-а.
+pub fn discover_hds_renditions(
+    request: HdsCatalogDiscoveryRequest<'_>,
+) -> Result<HdsRenditionCatalog> {
+    if request.transport_request.presentation() != MediaPresentation::Vod {
+        bail!("HDS catalog discovery accepts only VOD transport presentation");
+    }
+    let root_target = request
+        .transport_request
+        .target()
+        .as_http()
+        .cloned()
+        .context("HDS catalog root target is not HTTP")?;
+    let http = AdaptiveHttpContext::new(
+        request.transport_request,
+        &request.source_config,
+        request.policy.adaptive_limits,
+        request.policy.adaptive_retry,
+    )
+    .context("HDS catalog HTTP context creation failed")?;
+    let resolved = resolve_presentation(root_target, &http, request.policy)?;
+    let mut rejections = resolved.rejections;
+    let mut admitted = Vec::new();
+
+    for rendition in resolved.renditions {
+        if http.cancellation().is_cancelled() {
+            bail!("HDS catalog discovery was cancelled");
+        }
+        match probe_rendition(
+            &rendition,
+            &http,
+            &request.demux_registry,
+            request.policy,
+            request.capability_probe,
+        ) {
+            Ok(probe) => {
+                let semantic_key = coupled_semantic_key(&rendition, &probe);
+                admitted.push(PendingDiscoveredHdsRendition {
+                    semantic_key,
+                    rendition,
+                    video: probe.video,
+                    audio: probe.audio,
+                });
+            }
+            Err(reason) => {
+                if http.cancellation().is_cancelled() {
+                    bail!("HDS catalog discovery was cancelled");
+                }
+                rejections.push(HdsRenditionRejection::new(reason));
+            }
+        }
+    }
+
+    let mut semantic_counts = HashMap::new();
+    for row in &admitted {
+        *semantic_counts
+            .entry(row.semantic_key.clone())
+            .or_insert(0_usize) += 1;
+    }
+    admitted.retain(|row| {
+        if semantic_counts.get(&row.semantic_key).copied() == Some(1) {
+            true
+        } else {
+            rejections.push(HdsRenditionRejection::new(
+                HdsRenditionRejectionReason::AmbiguousSemanticIdentity,
+            ));
+            false
+        }
+    });
+    if admitted.is_empty() {
+        bail!("HDS catalog contains no probed playable rendition");
+    }
+
+    admitted.sort_by(|left, right| compare_admitted(left, right, request.preferred_height));
+    let mut coupled = Vec::with_capacity(admitted.len());
+    let mut runtime_rows = Vec::with_capacity(admitted.len());
+    for row in admitted {
+        let exact_key = ComponentVariantExactKey::new(row.semantic_key.clone())
+            .context("HDS exact coupled key is invalid")?;
+        let semantic_key = ComponentVariantSemanticKey::new(row.semantic_key.clone())
+            .context("HDS semantic coupled key is invalid")?;
+        let exact_identity =
+            CoupledVariantExactIdentity::new(request.catalog_identity.clone(), exact_key);
+        let semantic_identity = CoupledVariantSemanticIdentity::new(
+            request.catalog_identity.parent().semantic().clone(),
+            semantic_key,
+        );
+        coupled.push(CoupledComponentVariant::new(
+            exact_identity.clone(),
+            semantic_identity,
+            row.video,
+            row.audio,
+        ));
+        runtime_rows.push(DiscoveredHdsRendition {
+            exact_identity,
+            rendition: row.rendition,
+        });
+    }
+
+    let catalog_limit = ComponentVariantCatalogLimit::new(request.policy.maximum_renditions)
+        .context("HDS catalog limit is outside neutral bounds")?;
+    let catalog = ComponentVariantCatalog::new(
+        request.catalog_identity,
+        catalog_limit,
+        ComponentVariantCatalogEntries::Topology {
+            video: Vec::new(),
+            audio: Vec::new(),
+            compatibility: ComponentVariantCompatibilityEntries::Unavailable,
+            coupled,
+            video_only: Vec::new(),
+            audio_only: Vec::new(),
+        },
+    )
+    .context("HDS coupled catalog validation failed")?;
+    let default_exact = runtime_rows
+        .first()
+        .context("HDS provider default disappeared after catalog validation")?
+        .exact_identity
+        .clone();
+    let provider_default = catalog
+        .select_exact(ComponentVariantSelectionRequest::Coupled {
+            presentation: default_exact,
+        })
+        .context("HDS provider default selection failed")?;
+
+    Ok(HdsRenditionCatalog {
+        catalog,
+        provider_default,
+        rejections: rejections.into_boxed_slice(),
+        rows: runtime_rows.into_boxed_slice(),
+        http,
+        demux_registry: request.demux_registry,
+        policy: request.policy,
+    })
+}
+
+/// Открывает ровно одну exact row из fresh discovered catalog.
+pub fn prepare_discovered_hds_vod(
+    discovered: HdsRenditionCatalog,
+    exact_identity: CoupledVariantExactIdentity,
+) -> Result<HdsVodOpenResult> {
+    discovered
+        .catalog
+        .select_exact(ComponentVariantSelectionRequest::Coupled {
+            presentation: exact_identity.clone(),
+        })
+        .context("HDS exact discovered selection is invalid")?;
+    let selected_index = discovered
+        .rows
+        .iter()
+        .position(|row| row.exact_identity == exact_identity)
+        .context("HDS exact discovered row has no private runtime mapping")?;
+
+    let HdsRenditionCatalog {
+        catalog,
+        rows,
+        http,
+        demux_registry,
+        policy,
+        ..
+    } = discovered;
+    let mut rows = rows.into_vec();
+    let selected = rows.swap_remove(selected_index).rendition;
+    prepare_selected_hds_vod(selected, http, demux_registry, policy, Some(catalog))
+}
+
+struct PendingDiscoveredHdsRendition {
+    semantic_key: String,
+    rendition: ResolvedHdsRendition,
+    video: VideoTrackDescriptor,
+    audio: AudioTrackDescriptor,
+}
+
+struct HdsRenditionProbe {
+    video: VideoTrackDescriptor,
+    audio: AudioTrackDescriptor,
+    track_semantic_evidence: String,
+}
+
+fn probe_rendition(
+    rendition: &ResolvedHdsRendition,
+    http: &AdaptiveHttpContext,
+    registry: &Arc<DemuxRegistry>,
+    policy: HdsVodOpenPolicy,
+    capability_probe: &dyn HdsRenditionCapabilityProbe,
+) -> Result<HdsRenditionProbe, HdsRenditionRejectionReason> {
+    let plan = Arc::new(
+        HdsDemuxPlan::new(
+            rendition.clone(),
+            http.clone(),
+            Arc::clone(registry),
+            policy,
+        )
+        .map_err(|_| HdsRenditionRejectionReason::F4fProbeFailed)?,
+    );
+    let demuxer = open_transactional_demuxer(plan, 0)
+        .map_err(|_| HdsRenditionRejectionReason::F4fProbeFailed)?;
+    let (video_track, audio_track) = exact_av_tracks(demuxer.as_ref())?;
+    validate_profile_codecs(video_track, audio_track)?;
+    capability_probe
+        .check_coupled_av(video_track, audio_track)
+        .map_err(|_| HdsRenditionRejectionReason::CapabilityUnavailable)?;
+    let video = video_evidence(rendition, video_track)?;
+    let audio = audio_evidence(audio_track)?;
+    Ok(HdsRenditionProbe {
+        video,
+        audio,
+        track_semantic_evidence: track_semantic_evidence(video_track, audio_track),
+    })
+}
+
+fn exact_av_tracks(
+    demuxer: &dyn Demuxer,
+) -> Result<(&TrackInfo, &TrackInfo), HdsRenditionRejectionReason> {
+    if demuxer.tracks().len() != 2 {
+        return Err(HdsRenditionRejectionReason::UnsupportedTrackShape);
+    }
+    let video = demuxer
+        .tracks()
+        .iter()
+        .find(|track| track.kind == TrackKind::Video)
+        .ok_or(HdsRenditionRejectionReason::UnsupportedTrackShape)?;
+    let audio = demuxer
+        .tracks()
+        .iter()
+        .find(|track| track.kind == TrackKind::Audio)
+        .ok_or(HdsRenditionRejectionReason::UnsupportedTrackShape)?;
+    Ok((video, audio))
+}
+
+fn validate_profile_codecs(
+    video: &TrackInfo,
+    audio: &TrackInfo,
+) -> Result<(), HdsRenditionRejectionReason> {
+    if video.codec_id != "V_MPEG4/ISO/AVC" || audio.codec_id != "A_AAC" {
+        return Err(HdsRenditionRejectionReason::UnsupportedCodec);
+    }
+    Ok(())
+}
+
+fn video_evidence(
+    rendition: &ResolvedHdsRendition,
+    track: &TrackInfo,
+) -> Result<VideoTrackDescriptor, HdsRenditionRejectionReason> {
+    let probed_width = track.video.as_ref().and_then(|video| video.coded_width);
+    let probed_height = track.video.as_ref().and_then(|video| video.coded_height);
+    if rendition
+        .summary
+        .width
+        .zip(probed_width)
+        .is_some_and(|(advertised, probed)| advertised != probed)
+        || rendition
+            .summary
+            .height
+            .zip(probed_height)
+            .is_some_and(|(advertised, probed)| advertised != probed)
+    {
+        return Err(HdsRenditionRejectionReason::UnsupportedTrackShape);
+    }
+
+    let width = probed_width
+        .or(rendition.summary.width)
+        .map(VideoWidth::new)
+        .transpose()
+        .map_err(|_| HdsRenditionRejectionReason::UnsupportedCodec)?;
+    let height = probed_height
+        .or(rendition.summary.height)
+        .map(VideoHeight::new)
+        .transpose()
+        .map_err(|_| HdsRenditionRejectionReason::UnsupportedCodec)?;
+    Ok(VideoTrackDescriptor::new(
+        normalized_codec("h264")?,
+        width,
+        height,
+        None,
+        None,
+        DynamicRange::Unknown,
+    ))
+}
+
+fn audio_evidence(track: &TrackInfo) -> Result<AudioTrackDescriptor, HdsRenditionRejectionReason> {
+    let sample_rate = track
+        .sample_rate
+        .map(SampleRate::new)
+        .transpose()
+        .map_err(|_| HdsRenditionRejectionReason::UnsupportedCodec)?;
+    let channels = track
+        .channels
+        .map(|channels| {
+            u16::try_from(channels)
+                .map_err(|_| HdsRenditionRejectionReason::UnsupportedCodec)
+                .and_then(|channels| {
+                    ChannelCount::new(channels)
+                        .map_err(|_| HdsRenditionRejectionReason::UnsupportedCodec)
+                })
+        })
+        .transpose()?;
+    Ok(AudioTrackDescriptor::new(
+        normalized_codec("aac")?,
+        sample_rate,
+        channels,
+        None,
+        None,
+    ))
+}
+
+fn normalized_codec(value: &'static str) -> Result<NormalizedCodec, HdsRenditionRejectionReason> {
+    RawCodecIdentity::new(value)
+        .map(NormalizedCodec::parse)
+        .map_err(|_| HdsRenditionRejectionReason::UnsupportedCodec)
+}
+
+fn coupled_semantic_key(rendition: &ResolvedHdsRendition, probe: &HdsRenditionProbe) -> String {
+    format!(
+        "hds-v1-c|{}|{}|sr{}|ch{}",
+        rendition.id.as_key(),
+        probe.track_semantic_evidence,
+        probe.audio.sample_rate().map_or(0, SampleRate::hertz),
+        probe.audio.channels().map_or(0, ChannelCount::get),
+    )
+}
+
+fn track_semantic_evidence(video: &TrackInfo, _audio: &TrackInfo) -> String {
+    let metadata = video.video.as_ref();
+    format!(
+        "vp{:?}|bd{:?}|cs{:?}",
+        metadata.and_then(|video| video.profile),
+        metadata.and_then(|video| video.bit_depth),
+        metadata.and_then(|video| video.chroma),
+    )
+}
+
+fn compare_admitted(
+    left: &PendingDiscoveredHdsRendition,
+    right: &PendingDiscoveredHdsRendition,
+    preference: PreferredHeightPolicy,
+) -> std::cmp::Ordering {
+    preference
+        .compare(
+            left.rendition.summary.height.and_then(valid_video_height),
+            right.rendition.summary.height.and_then(valid_video_height),
+        )
+        .then_with(|| {
+            right
+                .rendition
+                .summary
+                .bitrate
+                .cmp(&left.rendition.summary.bitrate)
+        })
+        .then_with(|| {
+            right
+                .rendition
+                .summary
+                .height
+                .cmp(&left.rendition.summary.height)
+        })
+        .then_with(|| {
+            right
+                .rendition
+                .summary
+                .width
+                .cmp(&left.rendition.summary.width)
+        })
+        .then_with(|| left.semantic_key.cmp(&right.semantic_key))
+}
+
+fn valid_video_height(height: u32) -> Option<VideoHeight> {
+    VideoHeight::new(height).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalized_codec;
+    use web_media_core::CodecKind;
+
+    #[test]
+    fn hds_profile_codecs_map_to_known_neutral_families() {
+        assert!(matches!(
+            normalized_codec("h264").unwrap().kind(),
+            CodecKind::Known(_)
+        ));
+        assert!(matches!(
+            normalized_codec("aac").unwrap().kind(),
+            CodecKind::Known(_)
+        ));
+    }
+}

@@ -9,7 +9,10 @@ use player_core::{MediaInstallRequestId, MediaInstanceId, PlaybackState, PlayerS
 
 use super::controller::{ControllerInstallPhase, PlaylistControllerInvariantViolation};
 use super::identity::ActiveMediaIdentity;
-use super::{PlaylistBindingGeneration, PlaylistRuntime, PlaylistRuntimeBinding};
+use super::{
+    PlaylistBindingGeneration, PlaylistLoadGateState, PlaylistMediaOpenGateError, PlaylistRuntime,
+    PlaylistRuntimeBinding,
+};
 use crate::media_open::{ActiveMediaSource, MediaOpenRequestId};
 use crate::media_open::{MediaOpenPhase, MediaOpenTerminalOutcome};
 
@@ -107,6 +110,51 @@ impl SuspendedMediaState {
 }
 
 impl PlaylistRuntime {
+    /// Same-lineage staging передаёт player-у exact old instance без app-side position.
+    pub(crate) fn stage_same_lineage_media_open_at_player(
+        &mut self,
+        request_id: crate::media_open::MediaOpenRequestId,
+        intent: crate::media_open::MediaOpenInstallIntent,
+        video_resource_port: player_core::MediaInstallVideoResourcePort,
+        expected_old_media_instance_id: player_core::MediaInstanceId,
+    ) -> Result<player_core::MediaInstallRequestId, PlaylistMediaOpenGateError> {
+        if !matches!(self.load_gate, PlaylistLoadGateState::Open(_)) {
+            return Err(PlaylistMediaOpenGateError::LoadDecisionPending);
+        }
+        self.media_open
+            .stage_same_lineage_at_player(
+                request_id,
+                intent,
+                video_resource_port,
+                expected_old_media_instance_id,
+            )
+            .map_err(PlaylistMediaOpenGateError::Coordinator)
+    }
+
+    pub(crate) fn prepare_same_lineage_media_open_position(
+        &mut self,
+        request_id: crate::media_open::MediaOpenRequestId,
+    ) -> Result<(), PlaylistMediaOpenGateError> {
+        if !matches!(self.load_gate, PlaylistLoadGateState::Open(_)) {
+            return Err(PlaylistMediaOpenGateError::LoadDecisionPending);
+        }
+        self.media_open
+            .prepare_same_lineage_position(request_id)
+            .map_err(PlaylistMediaOpenGateError::Coordinator)
+    }
+
+    pub(crate) fn authorize_ready_same_lineage_media_open(
+        &mut self,
+        request_id: crate::media_open::MediaOpenRequestId,
+    ) -> Result<(), PlaylistMediaOpenGateError> {
+        if !matches!(self.load_gate, PlaylistLoadGateState::Open(_)) {
+            return Err(PlaylistMediaOpenGateError::LoadDecisionPending);
+        }
+        self.media_open
+            .authorize_ready_same_lineage(request_id)
+            .map_err(PlaylistMediaOpenGateError::Coordinator)
+    }
+
     /// Terminal-resolve-ит pending install до того, как shell снимет новый player snapshot.
     pub(crate) fn resolve_pending_media_for_suspend(
         &mut self,

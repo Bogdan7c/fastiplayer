@@ -122,6 +122,24 @@ pub struct F4mMediaEntry {
     bootstrap_info_id: Option<String>,
 }
 
+/// Безопасная причина, по которой одна `<media>` row не вошла в parsed inventory.
+///
+/// Значение намеренно не содержит attribute text: URL и query остаются внутри
+/// provider-а, а caller получает достаточно evidence для bounded diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum F4mMediaEntryRejection {
+    /// `url`/`href` отсутствует, пуст или задан одновременно.
+    InvalidLocatorShape,
+    /// Bitrate не является допустимым `u64`.
+    InvalidBitrate,
+    /// Width не является допустимым `u32`.
+    InvalidWidth,
+    /// Height не является допустимым `u32`.
+    InvalidHeight,
+    /// Один bounded string attribute превысил caller-owned limit.
+    StringTooLong,
+}
+
 impl F4mMediaEntry {
     /// Возвращает concrete media URL.
     #[must_use]
@@ -171,6 +189,8 @@ pub struct F4mManifest {
     base_url: Option<String>,
     /// Direct media rows или hierarchy edges.
     media: Box<[F4mMediaEntry]>,
+    /// Malformed sibling rows, изолированные без раскрытия attribute values.
+    rejected_media: Box<[F4mMediaEntryRejection]>,
     /// Manifest-level bootstrap definitions.
     bootstrap_info: Box<[F4mBootstrapInfo]>,
 }
@@ -200,6 +220,12 @@ impl F4mManifest {
         &self.media
     }
 
+    /// Возвращает безопасные причины изоляции malformed sibling rows.
+    #[must_use]
+    pub fn rejected_media(&self) -> &[F4mMediaEntryRejection] {
+        &self.rejected_media
+    }
+
     /// Возвращает bootstrap definitions.
     #[must_use]
     pub fn bootstrap_info(&self) -> &[F4mBootstrapInfo] {
@@ -212,6 +238,7 @@ impl F4mManifest {
         duration: Option<Duration>,
         base_url: Option<String>,
         media: Vec<F4mMediaEntry>,
+        rejected_media: Vec<F4mMediaEntryRejection>,
         bootstrap_info: Vec<F4mBootstrapInfo>,
     ) -> Self {
         Self {
@@ -219,6 +246,7 @@ impl F4mManifest {
             duration,
             base_url,
             media: media.into_boxed_slice(),
+            rejected_media: rejected_media.into_boxed_slice(),
             bootstrap_info: bootstrap_info.into_boxed_slice(),
         }
     }

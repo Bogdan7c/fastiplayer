@@ -5,8 +5,8 @@ use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded};
 
 use crate::{
     MediaInstallControl, MediaInstallControlOutcome, MediaInstallPhaseCompletionPort,
-    MediaInstallRequestId, MediaInstallVideoResourcePort, PlaybackIntent, PlaybackIntentRevision,
-    PreparedMedia,
+    MediaInstallPositionPreparation, MediaInstallRequestId, MediaInstallVideoResourcePort,
+    PlaybackIntent, PlaybackIntentRevision, PreparedMedia,
 };
 
 /// Полный transport payload strong staged install command-а.
@@ -28,6 +28,9 @@ pub(super) struct StagePreparedMediaInstallCommand {
 
     /// Port к exact app-owned detached backend/materializer half-у.
     pub(super) video_resource_port: MediaInstallVideoResourcePort,
+
+    /// Ordinary либо strict same-lineage position policy.
+    pub(super) position_preparation: MediaInstallPositionPreparation,
 }
 
 /// Ordered control payload с отдельным lossless owner outcome.

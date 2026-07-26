@@ -238,11 +238,11 @@ impl AppState {
         let mut window_chrome_actions = Vec::new();
         let mut playlist_confirmation_action = None;
         let playlist_view_model = self.playlist_view_model();
-        let url_sidebar_model = self.url_sidebar_controller.model(
-            self.active_media_source.as_ref(),
-            player_snapshot,
-            playlist_view_model.as_ref(),
-        );
+        // Sidebar получает один согласованный active/catalog snapshot текущего frame-а.
+        // Visual widget не пересчитывает catalog и не отделяет fallback notice
+        // от source projection, с которым он был опубликован.
+        let url_sidebar_model =
+            self.url_sidebar_model(player_snapshot, playlist_view_model.as_ref());
         let playlist_runtime_binding = self.playlist_runtime_binding();
         let mut playlist_ui_state = std::mem::take(&mut self.playlist_ui_state);
         let mut playlist_ui_output = crate::ui::playlist::PlaylistUiOutput::default();

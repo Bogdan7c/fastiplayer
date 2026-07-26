@@ -1,3 +1,7 @@
+## Slice C same-lineage protocol update (2026-07-26)
+
+Coordinator now keeps ordinary phases unchanged but exposes a separate same-lineage position subphase: player readiness -> explicit prepare dispatch -> true `ReadyToCommit`. Same-lineage `EnqueuedAtPlayerOwner` is published only after owner `AuthorizationAccepted`; prepare/authorization dispatch rejection remains pre-barrier and is losslessly cancelled. Player owns old-position/DVR decisions and prepared seek adoption. Full current contract: `mem:player-core/staged-position-gate-slice-c-2026-07-26`.
+
 ## S41 convergence update (2026-07-25)
 
 Normal coordinator preparation, startup orchestration and settings rebuild now attach provider-neutral receipted seek/playback window/dynamic timeline through the single named `media_open::prepare_yt_dlp_player_media` boundary. Coordinator phases, Ready/authorize/Installed barrier and post-installed ownership remain unchanged. Full S41 evidence: `mem:media-services/cross-provider-integration-s41-2026-07-25`.

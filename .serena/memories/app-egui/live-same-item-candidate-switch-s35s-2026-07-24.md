@@ -1,5 +1,9 @@
 # S35S — neutral live same-item candidate switch (2026-07-24)
 
+## Slice C superseding update (2026-07-26)
+
+Live same-lineage restore now prepares position before authorization inside `PlayerSession`; app no longer forwards position for a new post-install seek. The staged candidate either carries a retained-DVR demux result into decoder landing or a typed safe-edge adjustment, then app adopts it with `InstalledPositionRestore::AdoptPreparedSameLineagePosition`. Current contract: `mem:player-core/staged-position-gate-slice-c-2026-07-26`.
+
 ## Ownership and transaction
 
 - S35S extends the proven S25 same-lineage strong-open transaction; it does not add a provider-specific HLS/DASH switch path.

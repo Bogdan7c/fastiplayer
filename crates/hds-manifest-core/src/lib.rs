@@ -15,6 +15,6 @@ pub use bootstrap::{
 };
 pub use model::{
     F4mBootstrapInfo, F4mBootstrapSource, F4mManifest, F4mManifestLimits, F4mMediaEntry,
-    F4mStreamType,
+    F4mMediaEntryRejection, F4mStreamType,
 };
 pub use parser::{F4mManifestError, parse_f4m_manifest};

@@ -44,6 +44,8 @@ pub enum InstalledPositionRestore {
         /// Абсолютная позиция старого live instance-а перед commit barrier-ом.
         previous_absolute_position: Duration,
     },
+    /// Усыновляет preauthorization same-lineage result без второго demux seek-а.
+    AdoptPreparedSameLineagePosition,
 }
 
 /// Причина, по которой live same-item restore принял свежий safe live edge.
@@ -54,6 +56,10 @@ pub enum InstalledLiveEdgeAdjustmentReason {
     /// Старая абсолютная позиция уже не входит в свежий DVR range нового port-а.
     PreviousPositionOutsideDvr {
         /// Fresh provider-owned range, использованный для exact membership check-а.
+        available_range: media_core::TimelineRange,
+    },
+    /// Timeline продвинулся между final staged observation и install; нового demux anchor нет.
+    PreparedAnchorUnavailableAfterTimelineAdvance {
         available_range: media_core::TimelineRange,
     },
 }
@@ -94,6 +100,8 @@ pub(crate) struct PendingInstalledPositionRestore {
     pub media_instance_id: MediaInstanceId,
     /// Seek generation запрещает принять commit от заменившей операции.
     pub seek_generation: u64,
+    /// Adopted staged seek сохраняет exact prepared demux anchor внутри fresh live DVR.
+    pub requires_live_anchor_retention: bool,
     /// Request-owned канал authoritative restore outcome-а.
     pub outcome_tx: Sender<InstalledMediaStateRestoreOutcome>,
 }

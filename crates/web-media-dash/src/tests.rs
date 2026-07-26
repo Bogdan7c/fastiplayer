@@ -26,8 +26,9 @@ use web_media_adaptive::{
     AdaptiveTransportError, AdaptiveTransportLimits,
 };
 use web_media_core::{
-    CandidateFormatIdentity, CandidateIdentity, ExtractionGeneration, SemanticIdentity,
-    SourceIdentity,
+    CandidateFormatIdentity, CandidateIdentity, ComponentVariantCatalogGeneration,
+    ComponentVariantCatalogIdentity, ComponentVariantCatalogLimit, ComponentVariantEdgeLimit,
+    ExactSelectionIdentity, ExtractionGeneration, SemanticIdentity, SourceIdentity,
 };
 use web_media_transport_api::{
     MediaComponentIdentity, MediaComponentRole, MediaPresentation, RedirectHopLimit,
@@ -40,12 +41,40 @@ use crate::plan::{
     build_serialized_plan,
 };
 use crate::{
-    DashManifestInput, DashPresentationSelection, DashRepresentationEvidence,
+    DashManifestInput, DashPresentationSelection, DashRepresentationCapabilityProbe,
+    DashRepresentationCapabilityRejection, DashRepresentationEvidence,
     DashRepresentationSelectionError, DashResourceReference, DashSerializedComponent,
     DashSerializedFragment, DashSerializedFragmentKind, DashSerializedPresentation,
-    DashVideoDimensions, DashVodHttpContext, DashVodInput, DashVodOpenError, DashVodOpenPolicy,
-    DashVodOpenRequest, prepare_dash_vod,
+    DashVideoDimensions, DashVodCatalogDiscoveryRequest, DashVodHttpContext, DashVodInput,
+    DashVodOpenError, DashVodOpenPolicy, DashVodOpenRequest, discover_dash_vod_catalog,
+    prepare_dash_vod, prepare_discovered_dash_vod, prepare_discovered_dash_vod_semantic,
 };
+
+struct AcceptAllDashCapabilities;
+
+impl DashRepresentationCapabilityProbe for AcceptAllDashCapabilities {
+    fn check_video(
+        &self,
+        _video: &media_core::TrackInfo,
+    ) -> Result<(), DashRepresentationCapabilityRejection> {
+        Ok(())
+    }
+
+    fn check_audio(
+        &self,
+        _audio: &media_core::TrackInfo,
+    ) -> Result<(), DashRepresentationCapabilityRejection> {
+        Ok(())
+    }
+
+    fn check_muxed(
+        &self,
+        _video: &media_core::TrackInfo,
+        _audio: &media_core::TrackInfo,
+    ) -> Result<(), DashRepresentationCapabilityRejection> {
+        Ok(())
+    }
+}
 
 fn parse(document: &str) -> dash_mpd_core::DashMpd {
     parse_dash_mpd(DashMpdParseRequest {
@@ -399,6 +428,48 @@ fn manifest_input(target: HttpRequestTarget) -> DashManifestInput {
             maximum_timeline_entries: 64,
             maximum_schema_string_bytes: 4 * 1024,
         },
+    }
+}
+
+fn catalog_identity(generation: u64) -> ComponentVariantCatalogIdentity {
+    let source = SourceIdentity::new(91);
+    let exact = CandidateIdentity::new(
+        source,
+        ExtractionGeneration::new(1),
+        CandidateFormatIdentity::new("dash-runtime-test").expect("format identity"),
+    );
+    let semantic = SemanticIdentity::new(source, "dash-runtime-test").expect("semantic identity");
+    ComponentVariantCatalogIdentity::new(
+        ExactSelectionIdentity::new(exact, semantic).expect("same source identity"),
+        ComponentVariantCatalogGeneration::new(generation),
+    )
+}
+
+fn discovered_vod_request(
+    server: &FixtureServer,
+    generation: SourceGeneration,
+    catalog_generation: u64,
+) -> DashVodCatalogDiscoveryRequest<'static> {
+    let manifest_target = server.target("/manifest.mpd");
+    DashVodCatalogDiscoveryRequest {
+        open: DashVodOpenRequest {
+            http: DashVodHttpContext::Manifest(Box::new(adaptive_context(
+                &manifest_target,
+                CancellationToken::new(),
+                generation,
+            ))),
+            generation,
+            input: DashVodInput::Manifest(manifest_input(manifest_target)),
+            selection: DashPresentationSelection::Single {
+                main: evidence(DashMediaKind::Muxed, DashContainer::IsoBmff, Some("muxed")),
+            },
+            demux_registry: demux_registry(),
+            policy: open_policy(),
+        },
+        catalog_identity: catalog_identity(catalog_generation),
+        catalog_limit: ComponentVariantCatalogLimit::new(8).expect("catalog limit"),
+        compatibility_edge_limit: ComponentVariantEdgeLimit::new(8).expect("edge limit"),
+        capability_probe: &AcceptAllDashCapabilities,
     }
 }
 
@@ -1038,6 +1109,57 @@ fn manifest_multi_period_transition_keeps_tracks_and_timeline_stable() {
         saw_second_period_packet,
         "second Period packet must use global timeline"
     );
+}
+
+#[test]
+fn discovered_multi_period_vod_opens_exact_and_semantic_selection() {
+    let (initialization, first, second) = muxed_fmp4();
+    let manifest = r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+        mediaPresentationDuration="PT2S">
+      <Period id="p0" duration="PT1S">
+        <AdaptationSet contentType="application" mimeType="application/mp4"
+          codecs="avc1.4d401f,mp4a.40.2">
+          <Representation id="muxed">
+            <SegmentList timescale="1" duration="1">
+              <Initialization sourceURL="init.mp4"/>
+              <SegmentURL media="one.m4s"/>
+            </SegmentList>
+          </Representation>
+        </AdaptationSet>
+      </Period>
+      <Period id="p1" duration="PT1S">
+        <AdaptationSet contentType="application" mimeType="application/mp4"
+          codecs="avc1.4d401f,mp4a.40.2">
+          <Representation id="muxed">
+            <SegmentList timescale="1" duration="1">
+              <Initialization sourceURL="init.mp4"/>
+              <SegmentURL media="two.m4s"/>
+            </SegmentList>
+          </Representation>
+        </AdaptationSet>
+      </Period>
+    </MPD>"#
+        .to_owned();
+    let server = FixtureServer::start_with_manifest(manifest, initialization, first, second);
+
+    let exact_catalog =
+        discover_dash_vod_catalog(discovered_vod_request(&server, SourceGeneration::new(1), 1))
+            .expect("exact discovery");
+    assert_eq!(exact_catalog.catalog().stored_variant_count(), 1);
+    let exact = exact_catalog.provider_default().clone();
+    let exact_open =
+        prepare_discovered_dash_vod(exact_catalog, exact).expect("exact discovered open");
+    assert_eq!(exact_open.duration(), Duration::from_secs(2));
+
+    let semantic_catalog =
+        discover_dash_vod_catalog(discovered_vod_request(&server, SourceGeneration::new(2), 2))
+            .expect("semantic discovery");
+    let semantic = semantic_catalog
+        .provider_default()
+        .semantic_rematch_request();
+    let semantic_open = prepare_discovered_dash_vod_semantic(semantic_catalog, semantic)
+        .expect("semantic discovered open");
+    assert_eq!(semantic_open.duration(), Duration::from_secs(2));
 }
 
 #[test]

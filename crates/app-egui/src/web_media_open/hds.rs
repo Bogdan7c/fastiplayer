@@ -22,7 +22,10 @@ use service_ytdlp::{YtDlpLiveIntent, YtDlpNormalizedCandidate, YtDlpTransportReq
 use source_core::{CancellationToken, SourceRuntimeConfig};
 use web_media_adaptive::{AdaptiveRetryPolicy, AdaptiveTransportLimits};
 use web_media_core::{PreferredHeightPolicy, StreamLayout, TransportFamily};
-use web_media_hds::{HdsRenditionSelection, HdsVodOpenPolicy, HdsVodOpenRequest, prepare_hds_vod};
+use web_media_hds::{
+    HdsCatalogDiscoveryRequest, HdsRenditionSelection, HdsVodOpenPolicy, HdsVodOpenRequest,
+    discover_hds_renditions, prepare_discovered_hds_vod, prepare_hds_vod,
+};
 use web_media_transport_api::TransportProviderId;
 
 /// Prepared HDS candidate перед player commit barrier-ом.
@@ -33,6 +36,8 @@ pub(super) struct PreparedHdsCandidate {
     pub(super) seek_port: Arc<dyn PreparedDemuxSeekPort>,
     /// Absolute source window, которое player проецирует в public zero-based timeline.
     pub(super) playback_window: MediaPlaybackWindow,
+    pub(super) component_variants:
+        crate::web_media_open::component_variants::PreparedComponentVariantCatalog,
 }
 
 /// Проверяет только exact muxed HDS profile из normalized descriptor-а.
@@ -56,6 +61,10 @@ pub(super) fn prepare_hds_candidate(
     cancellation: CancellationToken,
     live_intent: YtDlpLiveIntent,
     preferred_height: PreferredHeightPolicy,
+    component_selection_intent:
+        crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent,
+    catalog_identity: web_media_core::ComponentVariantCatalogIdentity,
+    capability_probe: &crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
 ) -> Result<PreparedHdsCandidate> {
     ensure_hds_vod_intent(live_intent)?;
     let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
@@ -66,14 +75,45 @@ pub(super) fn prepare_hds_candidate(
     let adaptive_limits =
         crate::web_media_adaptive_config::adaptive_transport_limits(network_config)
             .context("Не удалось собрать HDS adaptive transport limits")?;
-    let opened = prepare_hds_vod(HdsVodOpenRequest {
-        transport_request,
-        source_config: source_config.clone(),
-        demux_registry,
-        policy: hds_policy(adaptive_limits)?,
-        selection: HdsRenditionSelection::BestByPreference(preferred_height),
-    })
-    .context("HDS F4M/F4F VOD preparation failed")?;
+    let policy = hds_policy(adaptive_limits)?;
+    let (opened, component_variants) = match component_selection_intent {
+        crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (
+            prepare_hds_vod(HdsVodOpenRequest {
+                transport_request,
+                source_config: source_config.clone(),
+                demux_registry,
+                policy,
+                selection: HdsRenditionSelection::BestByPreference(preferred_height),
+            })
+            .context("HDS F4M/F4F VOD preparation failed")?,
+            crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Unavailable,
+        ),
+        crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
+            let discovered = discover_hds_renditions(HdsCatalogDiscoveryRequest {
+                transport_request,
+                source_config: source_config.clone(),
+                demux_registry,
+                policy,
+                catalog_identity,
+                capability_probe,
+                preferred_height,
+            })?;
+            let catalog = Arc::new(discovered.catalog().clone());
+            let selected = catalog.rematch_semantic(semantic)?;
+            let web_media_core::ComponentVariantSelectionRequest::Coupled { presentation } =
+                selected.exact_selection_request()
+            else {
+                bail!("HDS catalog selection must remain coupled A/V");
+            };
+            (
+                prepare_discovered_hds_vod(discovered, presentation)?,
+                crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Installed {
+                    catalog,
+                    provider_selection: selected,
+                },
+            )
+        }
+    };
     let hds_window = opened.presentation_window();
     let playback_window = hds_playback_window(hds_window.start(), hds_window.end_exclusive())?;
     let seek_port: Arc<dyn PreparedDemuxSeekPort> = Arc::new(HdsPreparedDemuxSeekPort {
@@ -83,6 +123,40 @@ pub(super) fn prepare_hds_candidate(
         demuxer: opened.into_demuxer(),
         seek_port,
         playback_window,
+        component_variants,
+    })
+}
+
+/// Выполняет provider-owned HDS rendition discovery на catalog worker-е.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn discover_hds_candidate_catalog(
+    candidate: &YtDlpNormalizedCandidate,
+    provider_id: TransportProviderId,
+    source_config: &SourceRuntimeConfig,
+    network_config: &NetworkConfig,
+    demux_registry: Arc<DemuxRegistry>,
+    cancellation: CancellationToken,
+    preferred_height: PreferredHeightPolicy,
+    catalog_identity: web_media_core::ComponentVariantCatalogIdentity,
+    capability_probe: &crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
+) -> Result<crate::web_media_open::catalog::DiscoveredProviderCatalog> {
+    let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
+    let context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation);
+    let transport_request = candidate.hds_transport_request(&context)?;
+    let limits = crate::web_media_adaptive_config::adaptive_transport_limits(network_config)?;
+    let discovered = discover_hds_renditions(HdsCatalogDiscoveryRequest {
+        transport_request,
+        source_config: source_config.clone(),
+        demux_registry,
+        policy: hds_policy(limits)?,
+        catalog_identity,
+        capability_probe,
+        preferred_height,
+    })?;
+    Ok(crate::web_media_open::catalog::DiscoveredProviderCatalog {
+        catalog: Arc::new(discovered.catalog().clone()),
+        provider_selection: discovered.provider_default().clone(),
+        rejected_siblings: discovered.rejections().len(),
     })
 }
 

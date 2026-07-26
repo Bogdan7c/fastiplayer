@@ -112,7 +112,7 @@ pub(crate) fn select_representation<'period>(
 }
 
 /// Проверяет только exact retained evidence; отсутствующие dimensions не угадываются.
-fn representation_matches(
+pub(crate) fn representation_matches(
     representation: &DashRepresentation,
     evidence: &DashRepresentationEvidence,
 ) -> bool {

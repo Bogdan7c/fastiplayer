@@ -45,10 +45,13 @@ pub use selection::{
 pub use variant::{
     AudioComponentVariant, ComponentKind, ComponentVariantCatalog, ComponentVariantCatalogEntries,
     ComponentVariantCatalogGeneration, ComponentVariantCatalogIdentity,
-    ComponentVariantCatalogLimit, ComponentVariantCatalogLimitError, ComponentVariantError,
+    ComponentVariantCatalogLimit, ComponentVariantCatalogLimitError, ComponentVariantCompatibility,
+    ComponentVariantCompatibilityEdge, ComponentVariantCompatibilityEntries,
+    ComponentVariantEdgeLimit, ComponentVariantEdgeLimitError, ComponentVariantError,
     ComponentVariantExactIdentity, ComponentVariantExactKey, ComponentVariantKeyError,
     ComponentVariantSelection, ComponentVariantSelectionRequest, ComponentVariantSemanticIdentity,
-    ComponentVariantSemanticKey, ComponentVariantSemanticSelectionRequest,
-    MAX_COMPONENT_VARIANT_CATALOG_ENTRIES, MAX_COMPONENT_VARIANT_KEY_UTF8_BYTES,
-    VideoComponentVariant,
+    ComponentVariantSemanticKey, ComponentVariantSemanticSelectionRequest, CoupledComponentVariant,
+    CoupledVariantExactIdentity, CoupledVariantSemanticIdentity,
+    MAX_COMPONENT_VARIANT_CATALOG_ENTRIES, MAX_COMPONENT_VARIANT_COMPATIBILITY_EDGES,
+    MAX_COMPONENT_VARIANT_KEY_UTF8_BYTES, VideoComponentVariant,
 };

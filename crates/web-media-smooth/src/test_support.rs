@@ -11,8 +11,8 @@ use symphonia_format_isomp4::FragmentInitializationLimits;
 use web_media_adaptive::{AdaptiveRetryPolicy, AdaptiveTransportLimits};
 use web_media_core::{
     CandidateFormatIdentity, CandidateIdentity, ComponentVariantCatalogGeneration,
-    ComponentVariantCatalogIdentity, ComponentVariantCatalogLimit, ExactSelectionIdentity,
-    ExtractionGeneration, SemanticIdentity, SourceIdentity,
+    ComponentVariantCatalogIdentity, ComponentVariantCatalogLimit, ComponentVariantEdgeLimit,
+    ExactSelectionIdentity, ExtractionGeneration, SemanticIdentity, SourceIdentity,
 };
 
 use crate::{AggregateInitializationByteLimit, SmoothPreparationPolicy};
@@ -58,6 +58,7 @@ pub(crate) fn policy(aggregate_bytes: usize) -> SmoothPreparationPolicy {
             NonZeroUsize::new(aggregate_bytes).expect("aggregate budget"),
         ),
         ComponentVariantCatalogLimit::new(64).expect("catalog budget"),
+        ComponentVariantEdgeLimit::new(1_024).expect("compatibility edge budget"),
     )
 }
 

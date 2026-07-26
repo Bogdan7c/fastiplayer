@@ -75,6 +75,24 @@ fn plan_best_playable(
     capabilities: PlaybackCapabilitySnapshot<'_>,
     policy: &PlaybackSelectionPolicy,
 ) -> Result<PlaybackPlanningOutcome, PlaybackPlanningError> {
+    let (ranked, rejected_candidates) = rank_playable_candidates(snapshot, capabilities, policy)?;
+    let selected = ranked
+        .into_iter()
+        .next()
+        .ok_or(PlaybackPlanningError::EmptyCandidates)?;
+
+    Ok(PlaybackPlanningOutcome {
+        selected,
+        rejected_candidates,
+    })
+}
+
+/// Один policy pass для best selection и grouped opaque ranking.
+pub(crate) fn rank_playable_candidates(
+    snapshot: &PlanningCandidateSnapshot,
+    capabilities: PlaybackCapabilitySnapshot<'_>,
+    policy: &PlaybackSelectionPolicy,
+) -> Result<(Vec<PlaybackPlan>, Box<[CandidateRejection]>), PlaybackPlanningError> {
     if snapshot.candidates().is_empty() {
         return Err(PlaybackPlanningError::EmptyCandidates);
     }
@@ -97,16 +115,13 @@ fn plan_best_playable(
     }
 
     playable.sort_by(|left, right| compare_playable(left, right, policy));
-    let selected = playable
-        .into_iter()
-        .next()
-        .ok_or(PlaybackPlanningError::EmptyCandidates)?
-        .into_plan();
-
-    Ok(PlaybackPlanningOutcome {
-        selected,
-        rejected_candidates: rejected.into_boxed_slice(),
-    })
+    Ok((
+        playable
+            .into_iter()
+            .map(CandidateEvaluation::into_plan)
+            .collect(),
+        rejected.into_boxed_slice(),
+    ))
 }
 
 /// Полностью оценивает transport/demux/decode/policy layers одного candidate-а.

@@ -96,6 +96,47 @@ impl PlayerCommandSender {
         initial_intent_revision: PlaybackIntentRevision,
         video_resource_port: MediaInstallVideoResourcePort,
     ) -> Result<MediaInstallReceipt, PlayerWorkerSendError> {
+        self.stage_prepared_media_install_with_position(
+            request_id,
+            prepared_media,
+            initial_intent,
+            initial_intent_revision,
+            video_resource_port,
+            MediaInstallPositionPreparation::NotRequired,
+        )
+    }
+
+    /// Stage-ит same-lineage candidate с exact old-instance position gate.
+    pub fn stage_same_lineage_prepared_media_install(
+        &self,
+        request_id: MediaInstallRequestId,
+        prepared_media: PreparedMedia,
+        initial_intent: PlaybackIntent,
+        initial_intent_revision: PlaybackIntentRevision,
+        video_resource_port: MediaInstallVideoResourcePort,
+        expected_old_media_instance_id: MediaInstanceId,
+    ) -> Result<MediaInstallReceipt, PlayerWorkerSendError> {
+        self.stage_prepared_media_install_with_position(
+            request_id,
+            prepared_media,
+            initial_intent,
+            initial_intent_revision,
+            video_resource_port,
+            MediaInstallPositionPreparation::SameLineage {
+                expected_old_media_instance_id,
+            },
+        )
+    }
+
+    fn stage_prepared_media_install_with_position(
+        &self,
+        request_id: MediaInstallRequestId,
+        prepared_media: PreparedMedia,
+        initial_intent: PlaybackIntent,
+        initial_intent_revision: PlaybackIntentRevision,
+        video_resource_port: MediaInstallVideoResourcePort,
+        position_preparation: MediaInstallPositionPreparation,
+    ) -> Result<MediaInstallReceipt, PlayerWorkerSendError> {
         let (receipt, install_port) = MediaInstallReceipt::new(request_id);
         let registration = self.playback_intent_control.begin_staged_registration(
             request_id,
@@ -112,6 +153,7 @@ impl PlayerCommandSender {
                 initial_intent_revision,
                 install_port,
                 video_resource_port,
+                position_preparation,
             }),
         ));
         if let Err(error) = send_result {
@@ -120,6 +162,14 @@ impl PlayerCommandSender {
             return Err(error);
         }
         Ok(receipt)
+    }
+
+    /// Запускает player-owned same-lineage position preparation после app validation.
+    pub fn prepare_media_install_position(
+        &self,
+        request: PrepareMediaInstallPosition,
+    ) -> Result<(), PlayerWorkerSendError> {
+        self.try_send_worker_command(WorkerCommand::PrepareMediaInstallPosition(request))
     }
 
     /// Доставляет exact authorization и возвращает receipt фактического owner outcome.

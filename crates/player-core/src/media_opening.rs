@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use media_core::{
-    DemuxReadEvent, DemuxSeekability, Demuxer, DynamicMediaTimelinePort, MediaMetadata, MediaTime,
-    TrackInfo, TrackKind,
+    DemuxReadEvent, DemuxSeekability, Demuxer, DynamicMediaTimelinePort, MediaDuration,
+    MediaMetadata, MediaTime, TrackInfo, TrackKind,
 };
 
 use self::prefetched_demuxer::PrefetchedDemuxer;
@@ -313,6 +313,46 @@ impl PreparedMedia {
         // они принадлежат старой demux position и не должны попасть в новый pipeline.
         self.prefetch_state = None;
         Ok(())
+    }
+
+    /// Передаёт seek execution mode staged owner-у, сохраняя ordinary default в envelope-е.
+    pub(crate) fn take_demux_seek_mode(&mut self) -> PreparedDemuxSeekMode {
+        std::mem::take(&mut self.demux_seek_mode)
+    }
+
+    /// Возвращает strict public duration candidate-а без clamp policy.
+    pub(crate) fn public_duration(&self) -> Option<MediaDuration> {
+        self.playback_window().map_or_else(
+            || self.duration.map(MediaDuration::from_duration),
+            |window| window.relative_duration(self.duration),
+        )
+    }
+
+    /// Переводит public same-lineage target в exact source timestamp candidate-а.
+    pub(crate) fn absolute_position_for_relative(&self, position: MediaTime) -> MediaTime {
+        self.playback_window().map_or(position, |window| {
+            window.absolute_position(position, self.duration)
+        })
+    }
+
+    /// Выполняет synchronous detached seek и отбрасывает pre-seek prefetched events.
+    pub(crate) fn seek_detached(
+        &mut self,
+        request: media_core::DemuxSeekRequest,
+    ) -> anyhow::Result<media_core::DemuxSeekResult> {
+        let result = self.demuxer.seek_with_request(request)?;
+        self.prefetch_state = None;
+        Ok(result)
+    }
+
+    /// Читает latest neutral live snapshot, не устанавливая port в active session.
+    pub(crate) fn staged_live_timeline_snapshot(
+        &self,
+    ) -> Option<media_core::DynamicMediaTimelineSnapshot> {
+        match &self.timeline_mode {
+            PreparedMediaTimelineMode::Static { .. } => None,
+            PreparedMediaTimelineMode::Live { port } => Some(port.observe().snapshot),
+        }
     }
 
     /// Разбирает prepared media на slots, которые `PlaybackPipeline` устанавливает как владелец.

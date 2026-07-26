@@ -1,6 +1,7 @@
 //! HDS F4M fetch, hierarchy flattening, bootstrap resolution и quality policy.
 
 use std::collections::HashSet;
+use std::fmt;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -18,29 +19,34 @@ use web_media_core::{PreferredHeightPolicy, VideoHeight};
 
 use crate::HdsVodOpenPolicy;
 
-/// Process-local identity одного flattened HDS rendition catalog.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct HdsRenditionId(u32);
+/// Refresh-stable provider identity rendition без locator/order/index material.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct HdsRenditionId(String);
 
 impl HdsRenditionId {
-    /// Создаёт catalog-local identity для будущего UI exact selection.
-    #[must_use]
-    pub const fn new(value: u32) -> Self {
-        Self(value)
+    /// Создаёт identity только из canonical provider evidence.
+    fn from_key(key: String) -> Self {
+        Self(key)
     }
 
-    /// Возвращает numeric identity без URL/secret leakage.
-    #[must_use]
-    pub const fn value(self) -> u32 {
-        self.0
+    /// Возвращает canonical key только provider-owned catalog mapper-у.
+    pub(crate) fn as_key(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for HdsRenditionId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HdsRenditionId")
+            .field("utf8_bytes", &self.0.len())
+            .finish_non_exhaustive()
     }
 }
 
 /// Safe UI summary одной rendition без locator и authorization material.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HdsRenditionSummary {
-    /// Catalog-local selection identity.
-    pub id: HdsRenditionId,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HdsRenditionSummary {
     /// Optional bitrate.
     pub bitrate: Option<u64>,
     /// Optional width.
@@ -49,32 +55,56 @@ pub struct HdsRenditionSummary {
     pub height: Option<u32>,
 }
 
-/// Immutable safe catalog, который позже можно передать UI stream picker-у.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HdsRenditionCatalog {
-    /// Bounded summaries в manifest order.
-    rows: Box<[HdsRenditionSummary]>,
+/// Безопасная provider-owned причина изоляции одной sibling rendition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HdsRenditionRejectionReason {
+    /// Parser отклонил только конкретную `<media>` row.
+    MalformedManifestRow,
+    /// Media/bootstrap locator конкретной row нельзя безопасно разрешить.
+    InvalidLocator,
+    /// Bootstrap отсутствует, недоступен или malformed.
+    InvalidBootstrap,
+    /// VOD duration нельзя доказать.
+    MissingDuration,
+    /// Две rows имеют один semantic contract и неразличимы без locator/order.
+    AmbiguousSemanticIdentity,
+    /// F4F bytes/container не прошли bounded demux probe.
+    F4fProbeFailed,
+    /// Demuxer опубликовал shape, отличный от ровно одного video + одного audio.
+    UnsupportedTrackShape,
+    /// Codec не входит в HDS profile или его descriptor нельзя выразить.
+    UnsupportedCodec,
+    /// Immutable decoder/renderer capability snapshot отклонил row.
+    CapabilityUnavailable,
 }
 
-impl HdsRenditionCatalog {
-    /// Возвращает safe rows без URL/secret state.
+/// Одна bounded diagnostic row без locator, query или parser payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HdsRenditionRejection {
+    reason: HdsRenditionRejectionReason,
+}
+
+impl HdsRenditionRejection {
+    pub(crate) const fn new(reason: HdsRenditionRejectionReason) -> Self {
+        Self { reason }
+    }
+
+    /// Возвращает безопасную typed причину.
     #[must_use]
-    pub fn rows(&self) -> &[HdsRenditionSummary] {
-        &self.rows
+    pub const fn reason(self) -> HdsRenditionRejectionReason {
+        self.reason
     }
 }
 
 /// Selection intent provider-а: automatic quality сейчас и exact UI choice позже.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HdsRenditionSelection {
     /// Выбирает rendition по глобальной neutral height policy и bitrate fallback.
     BestByPreference(PreferredHeightPolicy),
-    /// Выбирает уже известную rendition из того же catalog snapshot-а.
-    Exact(HdsRenditionId),
 }
 
 /// Internal resolved rendition с retained HTTP/bootstrap state.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ResolvedHdsRendition {
     /// Safe catalog identity.
     pub(crate) id: HdsRenditionId,
@@ -92,8 +122,8 @@ pub(crate) struct ResolvedHdsRendition {
 pub(crate) struct ResolvedHdsPresentation {
     /// Flattened rendition rows.
     pub(crate) renditions: Vec<ResolvedHdsRendition>,
-    /// Safe catalog projection for future UI.
-    pub(crate) catalog: HdsRenditionCatalog,
+    /// Safe bounded sibling diagnostics.
+    pub(crate) rejections: Vec<HdsRenditionRejection>,
 }
 
 /// Metadata inherited from a set-level hierarchy edge.
@@ -125,97 +155,138 @@ pub(crate) fn resolve_presentation(
     }];
     let mut visited = HashSet::new();
     let mut renditions = Vec::new();
+    let mut rejections = Vec::new();
+    let mut advertised_renditions = 0_usize;
 
     while let Some(node) = pending.pop() {
         if node.depth > policy.maximum_hierarchy_depth {
             bail!("HDS F4M hierarchy exceeds the configured depth");
         }
-        if visited.insert(node.target.expose_secret_for_request().to_owned()) {
-            let fetched = fetch_manifest(http, node.target)?;
-            let final_target = fetched.final_target().clone();
-            let manifest =
-                parse_f4m_manifest(fetched.bytes(), policy.xml_budgets, policy.manifest_limits)
-                    .with_context(|| "HDS F4M manifest parsing failed")?;
-            if manifest.stream_type() == F4mStreamType::Live {
-                bail!("HDS live manifest is outside approved S38 base/VOD profile");
-            }
-            let base_target = resolve_base_target(&final_target, manifest.base_url())?;
-            let manifest_metadata = InheritedMetadata {
-                bitrate: node.inherited.bitrate,
-                width: node.inherited.width,
-                height: node.inherited.height,
-                duration: manifest.duration().or(node.inherited.duration),
-            };
-            for media in manifest.media() {
-                if let Some(href) = media.href() {
-                    let child_target = base_target
-                        .resolve_reference(href)
-                        .map_err(|_| anyhow!("HDS child manifest target is invalid"))?;
-                    pending.push(PendingManifest {
-                        target: child_target,
-                        inherited: merge_metadata(manifest_metadata, media),
-                        depth: node.depth.saturating_add(1),
-                    });
-                    continue;
-                }
-                let media_url = media
-                    .url()
-                    .ok_or_else(|| anyhow!("HDS media row has no URL or hierarchy href"))?;
-                let media_target = base_target
-                    .resolve_reference(media_url)
-                    .map_err(|_| anyhow!("HDS media target is invalid"))?;
-                let bootstrap = select_bootstrap(&manifest, media)?;
-                let bootstrap_bytes = fetch_bootstrap(http, &base_target, bootstrap, policy)?;
-                let timeline =
-                    parse_bootstrap(&bootstrap_bytes, media_url, policy.bootstrap_limits)
-                        .with_context(|| "HDS bootstrap timeline parsing failed")?;
-                if timeline.live() {
-                    bail!("HDS bootstrap is live; S38 base card accepts VOD only");
-                }
-                let duration = manifest_metadata
-                    .duration
-                    .or_else(|| duration_from_timeline(&timeline))
-                    .ok_or_else(|| anyhow!("HDS VOD has no usable duration"))?;
-                let id = HdsRenditionId::new(
-                    u32::try_from(renditions.len())
-                        .map_err(|_| anyhow!("HDS rendition identity exhausted"))?,
-                );
-                let summary = HdsRenditionSummary {
-                    id,
-                    bitrate: media.bitrate().or(manifest_metadata.bitrate),
-                    width: media.width().or(manifest_metadata.width),
-                    height: media.height().or(manifest_metadata.height),
-                };
-                renditions.push(ResolvedHdsRendition {
-                    id,
-                    media_target,
-                    timeline,
-                    duration,
-                    summary,
-                });
-                if renditions.len() > policy.maximum_renditions {
-                    bail!("HDS rendition count exceeds the configured limit");
-                }
-            }
+        let document_identity = node.target.expose_secret_for_request().to_owned();
+        if visited.contains(&document_identity) {
+            continue;
         }
-        if visited.len() > policy.maximum_manifest_documents {
+        if visited.len() >= policy.maximum_manifest_documents {
             bail!("HDS manifest hierarchy exceeds the configured document limit");
+        }
+        visited.insert(document_identity);
+
+        // Fetch/XML/schema/DRM/live document failures are presentation-fatal by contract.
+        let fetched = fetch_manifest(http, node.target)?;
+        let final_target = fetched.final_target().clone();
+        let manifest =
+            parse_f4m_manifest(fetched.bytes(), policy.xml_budgets, policy.manifest_limits)
+                .with_context(|| "HDS F4M manifest parsing failed")?;
+        if manifest.stream_type() == F4mStreamType::Live {
+            bail!("HDS live manifest is outside approved S38 base/VOD profile");
+        }
+        rejections.extend(manifest.rejected_media().iter().map(|_| {
+            HdsRenditionRejection::new(HdsRenditionRejectionReason::MalformedManifestRow)
+        }));
+
+        let base_target = resolve_base_target(&final_target, manifest.base_url())?;
+        let manifest_metadata = InheritedMetadata {
+            bitrate: node.inherited.bitrate,
+            width: node.inherited.width,
+            height: node.inherited.height,
+            duration: manifest.duration().or(node.inherited.duration),
+        };
+        for media in manifest.media() {
+            if let Some(href) = media.href() {
+                let Ok(child_target) = base_target.resolve_reference(href) else {
+                    rejections.push(HdsRenditionRejection::new(
+                        HdsRenditionRejectionReason::InvalidLocator,
+                    ));
+                    continue;
+                };
+                pending.push(PendingManifest {
+                    target: child_target,
+                    inherited: merge_metadata(manifest_metadata, media),
+                    depth: node.depth.saturating_add(1),
+                });
+                continue;
+            }
+
+            advertised_renditions = advertised_renditions
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("HDS rendition count overflow"))?;
+            if advertised_renditions > policy.maximum_renditions {
+                bail!("HDS rendition count exceeds the configured limit");
+            }
+            let Some(media_url) = media.url() else {
+                rejections.push(HdsRenditionRejection::new(
+                    HdsRenditionRejectionReason::InvalidLocator,
+                ));
+                continue;
+            };
+            let Ok(media_target) = base_target.resolve_reference(media_url) else {
+                rejections.push(HdsRenditionRejection::new(
+                    HdsRenditionRejectionReason::InvalidLocator,
+                ));
+                continue;
+            };
+            let Ok(bootstrap) = select_bootstrap(&manifest, media) else {
+                rejections.push(HdsRenditionRejection::new(
+                    HdsRenditionRejectionReason::InvalidBootstrap,
+                ));
+                continue;
+            };
+            let Ok(bootstrap_bytes) = fetch_bootstrap(http, &base_target, bootstrap, policy) else {
+                if http.cancellation().is_cancelled() {
+                    bail!("HDS rendition discovery was cancelled");
+                }
+                rejections.push(HdsRenditionRejection::new(
+                    HdsRenditionRejectionReason::InvalidBootstrap,
+                ));
+                continue;
+            };
+            let Ok(timeline) =
+                parse_bootstrap(&bootstrap_bytes, media_url, policy.bootstrap_limits)
+            else {
+                rejections.push(HdsRenditionRejection::new(
+                    HdsRenditionRejectionReason::InvalidBootstrap,
+                ));
+                continue;
+            };
+            if timeline.live() {
+                bail!("HDS bootstrap is live; S38 base card accepts VOD only");
+            }
+            let Some(duration) = manifest_metadata
+                .duration
+                .or_else(|| duration_from_timeline(&timeline))
+            else {
+                rejections.push(HdsRenditionRejection::new(
+                    HdsRenditionRejectionReason::MissingDuration,
+                ));
+                continue;
+            };
+            let summary_without_id = (
+                media.bitrate().or(manifest_metadata.bitrate),
+                media.width().or(manifest_metadata.width),
+                media.height().or(manifest_metadata.height),
+            );
+            let id = canonical_rendition_id(summary_without_id, duration, &timeline)?;
+            let summary = HdsRenditionSummary {
+                bitrate: summary_without_id.0,
+                width: summary_without_id.1,
+                height: summary_without_id.2,
+            };
+            renditions.push(ResolvedHdsRendition {
+                id,
+                media_target,
+                timeline,
+                duration,
+                summary,
+            });
         }
     }
 
     if renditions.is_empty() {
         bail!("HDS hierarchy contains no stream-level media rendition");
     }
-    let catalog = HdsRenditionCatalog {
-        rows: renditions
-            .iter()
-            .map(|row| row.summary)
-            .collect::<Vec<_>>()
-            .into_boxed_slice(),
-    };
     Ok(ResolvedHdsPresentation {
         renditions,
-        catalog,
+        rejections,
     })
 }
 
@@ -223,24 +294,30 @@ pub(crate) fn resolve_presentation(
 pub(crate) fn select_rendition(
     presentation: ResolvedHdsPresentation,
     selection: HdsRenditionSelection,
-) -> Result<(ResolvedHdsRendition, HdsRenditionCatalog)> {
+) -> Result<ResolvedHdsRendition> {
     let selected_index = match selection {
-        HdsRenditionSelection::Exact(id) => presentation
-            .renditions
-            .iter()
-            .position(|row| row.id == id)
-            .ok_or_else(|| anyhow!("HDS exact rendition is absent from this catalog snapshot"))?,
-        HdsRenditionSelection::BestByPreference(preference) => presentation
-            .renditions
-            .iter()
-            .enumerate()
-            .min_by(|(_, left), (_, right)| compare_renditions(left, right, preference))
-            .map(|(index, _)| index)
-            .ok_or_else(|| anyhow!("HDS rendition catalog is empty"))?,
+        HdsRenditionSelection::BestByPreference(preference) => {
+            let (index, best) = presentation
+                .renditions
+                .iter()
+                .enumerate()
+                .min_by(|(_, left), (_, right)| compare_renditions(left, right, preference))
+                .ok_or_else(|| anyhow!("HDS rendition catalog is empty"))?;
+            if presentation
+                .renditions
+                .iter()
+                .enumerate()
+                .any(|(other_index, other)| {
+                    other_index != index && compare_renditions(best, other, preference).is_eq()
+                })
+            {
+                bail!("HDS automatic rendition rank is ambiguous without locator/order tie-break");
+            }
+            index
+        }
     };
     let mut renditions = presentation.renditions;
-    let selected = renditions.swap_remove(selected_index);
-    Ok((selected, presentation.catalog))
+    Ok(renditions.swap_remove(selected_index))
 }
 
 /// Compares rendition quality without silently exposing URL identity.
@@ -256,7 +333,35 @@ fn compare_renditions(
         )
         .then_with(|| right.summary.bitrate.cmp(&left.summary.bitrate))
         .then_with(|| right.summary.height.cmp(&left.summary.height))
+        .then_with(|| right.summary.width.cmp(&left.summary.width))
         .then_with(|| left.id.cmp(&right.id))
+}
+
+/// Строит versioned stable key без locator, query, hierarchy order и absolute origin.
+fn canonical_rendition_id(
+    summary: (Option<u64>, Option<u32>, Option<u32>),
+    duration: Duration,
+    timeline: &HdsBootstrapTimeline,
+) -> Result<HdsRenditionId> {
+    let fragment_count = timeline.fragments().len();
+    Ok(HdsRenditionId::from_key(format!(
+        "hds-v1-r-b{}-w{}-h{}-d{}.{:09}-t{}-n{}",
+        optional_u64(summary.0),
+        optional_u32(summary.1),
+        optional_u32(summary.2),
+        duration.as_secs(),
+        duration.subsec_nanos(),
+        timeline.timescale(),
+        fragment_count,
+    )))
+}
+
+fn optional_u64(value: Option<u64>) -> String {
+    value.map_or_else(|| "x".to_owned(), |value| value.to_string())
+}
+
+fn optional_u32(value: Option<u32>) -> String {
+    optional_u64(value.map(u64::from))
 }
 
 /// Builds checked neutral VideoHeight for global policy ranking.
@@ -392,9 +497,8 @@ pub(crate) fn fragment_target(
 #[cfg(test)]
 mod tests {
     use super::{
-        HdsRenditionCatalog, HdsRenditionId, HdsRenditionSelection, HdsRenditionSummary,
-        ResolvedHdsPresentation, ResolvedHdsRendition, duration_from_timeline, fragment_target,
-        select_rendition,
+        HdsRenditionId, HdsRenditionSelection, HdsRenditionSummary, ResolvedHdsPresentation,
+        ResolvedHdsRendition, duration_from_timeline, fragment_target, select_rendition,
     };
     use hds_manifest_core::{HdsBootstrapTimeline, HdsFragment};
     use source_core::HttpRequestTarget;
@@ -407,60 +511,38 @@ mod tests {
         let preferred = resolved_rendition(1, Some(1_080), Some(5_000_000));
         let presentation = ResolvedHdsPresentation {
             renditions: vec![low, preferred],
-            catalog: HdsRenditionCatalog {
-                rows: vec![
-                    HdsRenditionSummary {
-                        id: HdsRenditionId::new(0),
-                        bitrate: Some(8_000_000),
-                        width: None,
-                        height: Some(720),
-                    },
-                    HdsRenditionSummary {
-                        id: HdsRenditionId::new(1),
-                        bitrate: Some(5_000_000),
-                        width: None,
-                        height: Some(1_080),
-                    },
-                ]
-                .into_boxed_slice(),
-            },
+            rejections: Vec::new(),
         };
         let preference = PreferredHeightPolicy::Prefer(
             PreferredVideoHeight::new(1_080).expect("valid preferred height"),
         );
 
-        let (selected, _) = select_rendition(
+        let selected = select_rendition(
             presentation,
             HdsRenditionSelection::BestByPreference(preference),
         )
         .expect("automatic HDS selection");
 
-        assert_eq!(selected.id, HdsRenditionId::new(1));
+        assert_eq!(selected.id, rendition_id(1));
     }
 
-    /// Проверяет exact selection contract для будущего UI picker-а.
     #[test]
-    fn exact_selection_rejects_identity_from_another_snapshot() {
+    fn equal_semantic_rows_are_not_resolved_by_source_order() {
         let presentation = ResolvedHdsPresentation {
-            renditions: vec![resolved_rendition(3, Some(720), Some(1_000_000))],
-            catalog: HdsRenditionCatalog {
-                rows: vec![HdsRenditionSummary {
-                    id: HdsRenditionId::new(3),
-                    bitrate: Some(1_000_000),
-                    width: None,
-                    height: Some(720),
-                }]
-                .into_boxed_slice(),
-            },
+            renditions: vec![
+                resolved_rendition(7, Some(720), Some(1_000_000)),
+                resolved_rendition(7, Some(720), Some(1_000_000)),
+            ],
+            rejections: Vec::new(),
         };
 
         let error = select_rendition(
             presentation,
-            HdsRenditionSelection::Exact(HdsRenditionId::new(99)),
+            HdsRenditionSelection::BestByPreference(PreferredHeightPolicy::NoPreference),
         )
-        .expect_err("stale exact identity must fail closed");
+        .expect_err("equal semantic rows must remain ambiguous");
 
-        assert!(error.to_string().contains("absent"));
+        assert!(error.to_string().contains("ambiguous"));
     }
 
     /// Проверяет Adobe Seg/Frag suffix и сохранение scoped query parameters.
@@ -502,18 +584,22 @@ mod tests {
         bitrate: Option<u64>,
     ) -> ResolvedHdsRendition {
         let timeline = HdsBootstrapTimeline::from_parts(false, 1_000, vec![]);
+        let id = rendition_id(id);
         ResolvedHdsRendition {
-            id: HdsRenditionId::new(id),
+            id,
             media_target: HttpRequestTarget::parse_exact("https://media.example/video")
                 .expect("valid media target"),
             timeline,
             duration: std::time::Duration::from_secs(1),
             summary: HdsRenditionSummary {
-                id: HdsRenditionId::new(id),
                 bitrate,
                 width: None,
                 height,
             },
         }
+    }
+
+    fn rendition_id(id: u32) -> HdsRenditionId {
+        HdsRenditionId::from_key(format!("hds-test-{id}"))
     }
 }

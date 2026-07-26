@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::num::{NonZeroU8, NonZeroUsize};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -24,10 +24,15 @@ use source_core::{
 };
 use web_media_adaptive::{AdaptiveRetryPolicy, AdaptiveTransportLimits};
 use web_media_core::{
-    CandidateFormatIdentity, CandidateIdentity, ExtractionGeneration, PreferredHeightPolicy,
-    SemanticIdentity, SourceIdentity,
+    CandidateFormatIdentity, CandidateIdentity, ComponentVariantCatalogGeneration,
+    ComponentVariantCatalogIdentity, ComponentVariantSelection, ExactSelectionIdentity,
+    ExtractionGeneration, PreferredHeightPolicy, SemanticIdentity, SourceIdentity,
 };
-use web_media_hds::{HdsRenditionSelection, HdsVodOpenPolicy, HdsVodOpenRequest, prepare_hds_vod};
+use web_media_hds::{
+    HdsCatalogDiscoveryRequest, HdsRenditionCapabilityProbe, HdsRenditionCapabilityRejection,
+    HdsRenditionRejectionReason, HdsRenditionSelection, HdsVodOpenPolicy, HdsVodOpenRequest,
+    discover_hds_renditions, prepare_discovered_hds_vod, prepare_hds_vod,
+};
 use web_media_transport_api::{
     MediaComponentIdentity, MediaComponentRole, MediaPresentation, RedirectHopLimit,
     RedirectPolicy, SecretRequestContext, SecretRequestScope, SourceGeneration,
@@ -180,8 +185,7 @@ fn prepares_local_f4m_bootstrap_and_f4f_until_tracks_and_packet() {
     })
     .expect("production HDS VOD preparation succeeds");
 
-    assert_eq!(opened.catalog().rows().len(), 1);
-    assert_eq!(opened.catalog().rows()[0].height, Some(720));
+    assert!(opened.catalog().is_none());
     assert_eq!(opened.presentation_window().start(), Duration::ZERO);
     assert_eq!(
         opened.presentation_window().end_exclusive(),
@@ -280,6 +284,161 @@ fn prepares_local_f4m_bootstrap_and_f4f_until_tracks_and_packet() {
     drop(demuxer);
 }
 
+/// Reorder/URL rotation сохраняет semantic row, malformed sibling изолируется,
+/// а rematched exact identity открывает только fresh private runtime mapping.
+#[test]
+fn discovers_refresh_stable_coupled_row_and_opens_fresh_exact_selection() {
+    let first_server = HermeticHttpServer::start(HashMap::from([
+        ("/first.f4m", discovery_manifest("old", false)),
+        ("/media/bootstrap.bin", vod_bootstrap()),
+        ("/media/oldSeg1-Frag1", f4f_fragment(0)),
+        ("/media/oldSeg1-Frag2", f4f_fragment(1_000)),
+    ]));
+    let first_target = first_server.target("/first.f4m");
+    let capabilities = FixtureHdsCapabilities::default();
+    let first = discover_hds_renditions(HdsCatalogDiscoveryRequest {
+        transport_request: transport_request(&first_target, CancellationToken::new()),
+        source_config: source_config(),
+        demux_registry: f4f_registry(),
+        policy: open_policy(),
+        catalog_identity: catalog_identity(1),
+        capability_probe: &capabilities,
+        preferred_height: PreferredHeightPolicy::NoPreference,
+    })
+    .expect("first HDS catalog discovery succeeds");
+    assert_eq!(first.catalog().coupled_presentations().len(), 1);
+    assert_eq!(first.rejections().len(), 1);
+    assert_eq!(
+        first.rejections()[0].reason(),
+        HdsRenditionRejectionReason::F4fProbeFailed
+    );
+    let ComponentVariantSelection::Coupled {
+        presentation: old_presentation,
+        ..
+    } = first.provider_default()
+    else {
+        panic!("HDS provider default must be coupled");
+    };
+    let stale_exact = old_presentation.exact_identity().clone();
+    let semantic_request = first.provider_default().semantic_rematch_request();
+
+    let fresh_server = HermeticHttpServer::start(HashMap::from([
+        ("/fresh.f4m", discovery_manifest("rotated", true)),
+        ("/media/bootstrap.bin", vod_bootstrap()),
+        ("/media/rotatedSeg1-Frag1", f4f_fragment(0)),
+        ("/media/rotatedSeg1-Frag2", f4f_fragment(1_000)),
+    ]));
+    let fresh_target = fresh_server.target("/fresh.f4m");
+    let fresh = discover_hds_renditions(HdsCatalogDiscoveryRequest {
+        transport_request: transport_request(&fresh_target, CancellationToken::new()),
+        source_config: source_config(),
+        demux_registry: f4f_registry(),
+        policy: open_policy(),
+        catalog_identity: catalog_identity(2),
+        capability_probe: &capabilities,
+        preferred_height: PreferredHeightPolicy::NoPreference,
+    })
+    .expect("fresh HDS catalog discovery succeeds");
+    assert!(
+        fresh
+            .catalog()
+            .select_exact(web_media_core::ComponentVariantSelectionRequest::Coupled {
+                presentation: stale_exact,
+            })
+            .is_err(),
+        "old exact identity must not cross the fresh catalog generation"
+    );
+    let rematched = fresh
+        .catalog()
+        .rematch_semantic(semantic_request)
+        .expect("semantic HDS row survives reorder and URL rotation");
+    let ComponentVariantSelection::Coupled { presentation, .. } = rematched else {
+        panic!("HDS rendition must remain one coupled A/V presentation");
+    };
+    let opened = prepare_discovered_hds_vod(fresh, presentation.exact_identity().clone())
+        .expect("fresh exact HDS row opens");
+    assert_eq!(
+        opened
+            .catalog()
+            .expect("discovered open retains neutral catalog")
+            .coupled_presentations()
+            .len(),
+        1
+    );
+    assert_eq!(opened.presentation_window().start(), Duration::ZERO);
+    let mut demuxer = opened.into_demuxer();
+    let _ = next_ready_event(demuxer.as_mut());
+    assert!(
+        fresh_server
+            .requested_paths()
+            .iter()
+            .any(|path| path == "/media/rotatedSeg1-Frag1")
+    );
+    assert!(
+        !fresh_server
+            .requested_paths()
+            .iter()
+            .any(|path| path == "/media/oldSeg1-Frag1")
+    );
+    assert_eq!(capabilities.checked_rows.load(Ordering::Acquire), 2);
+}
+
+#[test]
+fn capability_rejection_prevents_truthless_catalog_publication() {
+    let server = HermeticHttpServer::start(HashMap::from([
+        ("/manifest.f4m", vod_manifest()),
+        ("/media/bootstrap.bin", vod_bootstrap()),
+        ("/media/videoSeg1-Frag1", f4f_fragment(0)),
+        ("/media/videoSeg1-Frag2", f4f_fragment(1_000)),
+    ]));
+    let target = server.target("/manifest.f4m");
+
+    let error = discover_hds_renditions(HdsCatalogDiscoveryRequest {
+        transport_request: transport_request(&target, CancellationToken::new()),
+        source_config: source_config(),
+        demux_registry: f4f_registry(),
+        policy: open_policy(),
+        catalog_identity: catalog_identity(1),
+        capability_probe: &RejectingHdsCapabilities,
+        preferred_height: PreferredHeightPolicy::NoPreference,
+    })
+    .expect_err("capability-rejected row must not be published");
+
+    assert!(error.to_string().contains("no probed playable rendition"));
+}
+
+/// Fixture adapter подтверждает, что discovery дошёл до immutable capability boundary.
+#[derive(Default)]
+struct FixtureHdsCapabilities {
+    checked_rows: AtomicUsize,
+}
+
+impl HdsRenditionCapabilityProbe for FixtureHdsCapabilities {
+    fn check_coupled_av(
+        &self,
+        video: &media_core::TrackInfo,
+        audio: &media_core::TrackInfo,
+    ) -> Result<(), HdsRenditionCapabilityRejection> {
+        if video.codec_id != "V_MPEG4/ISO/AVC" || audio.codec_id != "A_AAC" {
+            return Err(HdsRenditionCapabilityRejection);
+        }
+        self.checked_rows.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+}
+
+struct RejectingHdsCapabilities;
+
+impl HdsRenditionCapabilityProbe for RejectingHdsCapabilities {
+    fn check_coupled_av(
+        &self,
+        _video: &media_core::TrackInfo,
+        _audio: &media_core::TrackInfo,
+    ) -> Result<(), HdsRenditionCapabilityRejection> {
+        Err(HdsRenditionCapabilityRejection)
+    }
+}
+
 /// Ждёт authoritative terminal receipt только в bounded test thread-е.
 fn wait_for_seek_receipt(handle: &ProgressiveAsyncSeekHandle) -> ProgressiveAsyncSeekReceipt {
     let deadline = Instant::now() + TEST_TIMEOUT;
@@ -350,6 +509,20 @@ fn transport_request(
         cancellation,
     )
     .expect("HDS transport request")
+}
+
+/// Строит parent exact+semantic scope и отдельный catalog generation fence.
+fn catalog_identity(generation: u64) -> ComponentVariantCatalogIdentity {
+    let source = SourceIdentity::new(38);
+    let exact = CandidateIdentity::new(
+        source,
+        ExtractionGeneration::new(1),
+        CandidateFormatIdentity::new("hds-catalog-test").expect("candidate format identity"),
+    );
+    let semantic =
+        SemanticIdentity::new(source, "hds-catalog-test").expect("candidate semantic identity");
+    let parent = ExactSelectionIdentity::new(exact, semantic).expect("parent selection identity");
+    ComponentVariantCatalogIdentity::new(parent, ComponentVariantCatalogGeneration::new(generation))
 }
 
 /// Нормализует обычный app network config в source-core boundary.
@@ -432,6 +605,24 @@ fn non_zero(value: usize) -> NonZeroUsize {
 /// F4M с URL bootstrap-ом заставляет runtime выполнить оба HTTP fetch-а.
 fn vod_manifest() -> Vec<u8> {
     br#"<manifest xmlns="http://ns.adobe.com/f4m/1.0"><streamType>recorded</streamType><duration>2</duration><baseURL>media/</baseURL><media url="video" bitrate="1200" width="1280" height="720" bootstrapInfoId="boot"/><bootstrapInfo id="boot" url="bootstrap.bin"/></manifest>"#.to_vec()
+}
+
+/// Два refresh snapshot-а различаются только row order и valid media locator-ом.
+fn discovery_manifest(valid_media: &str, valid_first: bool) -> Vec<u8> {
+    let valid = format!(
+        r#"<media url="{valid_media}" bitrate="1200" width="1280" height="720" bootstrapInfoId="boot"/>"#
+    );
+    let broken =
+        r#"<media url="broken" bitrate="600" width="640" height="360" bootstrapInfoId="boot"/>"#;
+    let rows = if valid_first {
+        format!("{valid}{broken}")
+    } else {
+        format!("{broken}{valid}")
+    };
+    format!(
+        r#"<manifest xmlns="http://ns.adobe.com/f4m/1.0"><streamType>recorded</streamType><duration>2</duration><baseURL>media/</baseURL>{rows}<bootstrapInfo id="boot" url="bootstrap.bin"/></manifest>"#
+    )
+    .into_bytes()
 }
 
 /// Строит VOD `abst/asrt/afrt` с двумя fragments и terminal marker-ом.

@@ -1,4 +1,10 @@
-use std::path::PathBuf;
+//! Process-lifetime startup media jobs и typed CLI routing.
+//!
+//! Root хранит job envelopes, а child modules владеют orchestration и shutdown.
+//! Подготовленный source остаётся uncommitted до общего strong-install barrier-а.
+//! Cancellation проходит в resolver и transport одной startup generation.
+
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -29,9 +35,11 @@ mod orchestration;
 mod pending_install;
 mod playlist;
 mod shutdown;
+mod yt_dlp;
 
 pub(crate) use orchestration::StartupMediaPhase;
 use orchestration::{StartupMediaOrchestration, StartupMediaTarget};
+pub(crate) use yt_dlp::PreparedYtDlpStartupMedia;
 
 /// Интервал polling-а фоновой подготовки startup media, когда playback ещё не активен.
 pub(crate) const STARTUP_MEDIA_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -47,27 +55,6 @@ pub(crate) enum InitialMedia {
 
     /// URL, уже классифицированный одним service-owned adapter-ом.
     Url(StartupUrlLocator),
-}
-
-/// Подготовленный YtDlp playback source и exact identity выбранного candidate-а.
-pub(crate) struct PreparedYtDlpStartupMedia {
-    /// Уже открытый neutral S22 demuxer для текущего playback open.
-    pub(crate) demuxer: Box<dyn media_core::Demuxer + Send>,
-
-    /// Exact+semantic token, по которому restore выполняет fresh extraction/rematch.
-    pub(crate) candidate_selection: service_ytdlp::YtDlpCandidateSelection,
-
-    /// UI-safe inventory того же extraction snapshot-а.
-    pub(crate) stream_configuration: crate::web_media_stream_model::WebMediaStreamConfiguration,
-
-    /// S31L publication boundary для HLS live; VOD оставляет поле пустым.
-    pub(crate) timeline_port: Option<media_core::DynamicMediaTimelinePort>,
-
-    /// Worker-receipted static DASH/Smooth/HDS seek boundary.
-    pub(crate) demux_seek_port: Option<Arc<dyn player_core::PreparedDemuxSeekPort>>,
-
-    /// Optional absolute source window для zero-based HDS presentation.
-    pub(crate) playback_window: Option<player_core::MediaPlaybackWindow>,
 }
 
 /// Результат фоновой подготовки CLI YtDlp URL.
@@ -642,7 +629,9 @@ pub(crate) fn resolve_yt_dlp_startup_media(
     Ok(PreparedYtDlpStartupMedia {
         demuxer: prepared.demuxer,
         candidate_selection: prepared.candidate_selection,
+        composed_selection: prepared.composed_selection,
         stream_configuration: prepared.stream_configuration,
+        catalog_attachment: prepared.catalog_attachment,
         timeline_port: prepared.timeline_port,
         demux_seek_port: prepared.demux_seek_port,
         playback_window: prepared.playback_window,
@@ -670,6 +659,17 @@ pub(crate) const fn runtime_video_codec(codec: ConfigVideoCodec) -> RuntimeVideo
     }
 }
 
+/// Распознаёт только утверждённые local playlist extensions без lossy path conversion.
+fn is_recognized_startup_playlist_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| {
+            ["m3u", "m3u8", "xspf", "cue"]
+                .iter()
+                .any(|recognized| extension.eq_ignore_ascii_case(recognized))
+        })
+}
+
 /// Классифицирует уже разобранный typed media intent после получения process lease.
 ///
 /// Только валидный UTF-8 может быть URL. Native non-UTF-8 значение без lossy
@@ -685,7 +685,7 @@ pub(crate) fn resolve_initial_media_argument(
         Ok(argument) => argument,
         Err(native_argument) => {
             let native_path = PathBuf::from(native_argument);
-            if playlist::is_recognized_startup_playlist_path(&native_path) {
+            if is_recognized_startup_playlist_path(&native_path) {
                 return (Some(InitialMedia::Playlist(native_path)), None);
             }
             return (Some(InitialMedia::File(native_path)), None);
@@ -708,7 +708,7 @@ pub(crate) fn resolve_initial_media_argument(
 
     // Всё остальное считаем локальным путём, как работало раньше.
     let local_path = PathBuf::from(utf8_argument);
-    if playlist::is_recognized_startup_playlist_path(&local_path) {
+    if is_recognized_startup_playlist_path(&local_path) {
         return (Some(InitialMedia::Playlist(local_path)), None);
     }
     (Some(InitialMedia::File(local_path)), None)

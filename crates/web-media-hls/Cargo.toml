@@ -17,6 +17,7 @@ media-core.workspace = true
 source-core.workspace = true
 thiserror.workspace = true
 web-media-adaptive.workspace = true
+web-media-core.workspace = true
 web-media-transport-api.workspace = true
 zeroize.workspace = true
 
@@ -25,4 +26,3 @@ zeroize.workspace = true
 mpeg-ts-demux.workspace = true
 rustiplayer-config.workspace = true
 symphonia-demux.workspace = true
-web-media-core.workspace = true

@@ -37,6 +37,75 @@ use super::scrub_orchestration::{
 /// патологически дорогим, поэтому он идёт обычным cold-маршрутом (аналог капа
 /// forward extension из hover Сессии 3).
 impl PlayerSession {
+    /// Усыновляет уже выполненный detached demux seek и запускает только decoder landing.
+    pub(super) fn start_adopted_staged_seek(
+        &mut self,
+        target_position: MediaTime,
+        resume_intent: PlaybackResumeIntent,
+        result: media_core::DemuxSeekResult,
+    ) -> Result<u64, PlayerError> {
+        if !self.snapshot.timeline.seekable || !self.pipeline.has_demuxer() {
+            return Err(PlayerError::new(
+                PlayerErrorKind::SeekUnavailable,
+                "installed staged candidate lost seekable pipeline",
+            ));
+        }
+        self.clear_active_seek_decoder_output_floor("adopt staged seek")?;
+        self.pause_audio_output_for_seek();
+        self.reset_video_decoder_for_seek()?;
+        self.set_playback_state(PlaybackState::Seeking);
+        let generation = self.pipeline.begin_seek_generation();
+        let has_video = self.pipeline.has_selected_video_track();
+        self.pipeline.clear_pending_packets_for_seek();
+        self.pipeline.reset_decoder_state_for_seek(has_video);
+        if has_video {
+            self.record_video_decoder_bootstrap_started();
+        }
+        self.seek_runtime.clear_eof_fallback_video_position();
+        self.clear_seek_preroll_fallback_frame();
+        self.clear_queued_video_frames();
+        self.pipeline
+            .reset_clocks_for_seek(target_position.as_duration());
+        self.set_timeline_target_from_source(target_position);
+        self.snapshot.timeline.seeking = true;
+        self.snapshot.timeline.stale_frame = self.pipeline.has_present_video_frame();
+        if let Some(Err(error)) = self.pipeline.reset_audio_decoder() {
+            self.record_recoverable_error(PlayerError::new(
+                PlayerErrorKind::RuntimeError,
+                format!("Audio decoder reset failed during adopted staged seek: {error}"),
+            ));
+        }
+        if let Some(clear_result) = self.pipeline.clear_audio_output_for_seek(generation) {
+            match clear_result {
+                Ok(ack_generation) => self.pipeline.mark_audio_buffer_clear_ack(ack_generation),
+                Err(error) => self.record_recoverable_error(PlayerError::new(
+                    PlayerErrorKind::AudioDeviceUnavailable,
+                    format!("Audio buffer clear failed during adopted staged seek: {error}"),
+                )),
+            }
+        } else {
+            self.pipeline.mark_audio_buffer_clear_ack(generation);
+            self.pipeline.reset_audio_clock();
+        }
+        self.accept_demux_seek_result(
+            generation,
+            SeekMode::Accurate,
+            target_position,
+            resume_intent,
+            result,
+        );
+        self.seek_runtime
+            .active_commit()
+            .filter(|commit| commit.generation == generation)
+            .map(|_| generation)
+            .ok_or_else(|| {
+                PlayerError::new(
+                    PlayerErrorKind::SeekUnavailable,
+                    "adopted staged seek did not enter decoder landing",
+                )
+            })
+    }
+
     pub(super) fn seek(&mut self, request: SeekRequest) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
         self.fail_pending_seek_receipts(PlayerError::new(

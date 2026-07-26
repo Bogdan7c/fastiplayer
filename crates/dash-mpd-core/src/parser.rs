@@ -2,12 +2,15 @@ use bounded_xml_reader::{BoundedXmlReader, XmlBudgets, XmlElement, XmlEvent, Xml
 
 use crate::error::{DashMpdError, DashMpdErrorKind};
 use crate::model::{
-    DASH_MPD_NAMESPACE, DashAdaptationSet, DashAddressing, DashBaseUrl, DashContainer,
-    DashInitialization, DashMediaKind, DashMpd, DashPeriod, DashRepresentation, DashSegmentBase,
-    DashSegmentList, DashSegmentListEntry, DashSegmentTemplate, DashTimelineEntry,
-    DashUrlReference, IndexRange,
+    DASH_MPD_NAMESPACE, DashAdaptationSet, DashAddressing, DashAudioChannelConfiguration,
+    DashBaseUrl, DashColorMetadata, DashContainer, DashFrameRate, DashInitialization,
+    DashMediaKind, DashMpd, DashPeriod, DashRepresentation, DashSegmentBase, DashSegmentList,
+    DashSegmentListEntry, DashSegmentTemplate, DashTimelineEntry, DashUrlReference, IndexRange,
 };
 use crate::template::DashTemplateString;
+
+mod metadata;
+use metadata::*;
 
 /// Narrow static profile allowlist, доказанный checked-in S34 matrix.
 pub(super) const SUPPORTED_DASH_PROFILES: &[&str] = &[
@@ -249,12 +252,17 @@ fn parse_adaptation_set(
             "contentType",
             "codecs",
             "lang",
+            "width",
+            "height",
+            "frameRate",
+            "audioSamplingRate",
             "segmentAlignment",
             "startWithSAP",
         ],
     )?;
     let id = bounded_optional_attribute(&element, "id", limits)?;
     let hints = media_hints(&element, limits)?;
+    let mut metadata = representation_metadata(&element, limits)?;
     let mut base_url = None;
     let mut inherited_addressing = None;
     let mut representations = Vec::new();
@@ -293,6 +301,39 @@ fn parse_adaptation_set(
                     DashAddressing::Base(parse_empty_segment_base(child)?),
                 )?;
             }
+            Some(XmlEvent::StartElement(child))
+                if is_name(child.name(), "AudioChannelConfiguration") =>
+            {
+                let configuration = parse_audio_channel_configuration(&child, limits)?;
+                consume_descriptor_body(cursor, "AudioChannelConfiguration")?;
+                set_optional_metadata(&mut metadata.audio_channel_configuration, configuration)?;
+            }
+            Some(XmlEvent::EmptyElement(child))
+                if is_name(child.name(), "AudioChannelConfiguration") =>
+            {
+                let configuration = parse_audio_channel_configuration(&child, limits)?;
+                set_optional_metadata(&mut metadata.audio_channel_configuration, configuration)?;
+            }
+            Some(XmlEvent::StartElement(child))
+                if is_name(child.name(), "EssentialProperty")
+                    || is_name(child.name(), "SupplementalProperty") =>
+            {
+                let essential = is_name(child.name(), "EssentialProperty");
+                let name = if essential {
+                    "EssentialProperty"
+                } else {
+                    "SupplementalProperty"
+                };
+                apply_color_descriptor(&child, limits, essential, &mut metadata.color)?;
+                consume_descriptor_body(cursor, name)?;
+            }
+            Some(XmlEvent::EmptyElement(child))
+                if is_name(child.name(), "EssentialProperty")
+                    || is_name(child.name(), "SupplementalProperty") =>
+            {
+                let essential = is_name(child.name(), "EssentialProperty");
+                apply_color_descriptor(&child, limits, essential, &mut metadata.color)?;
+            }
             Some(XmlEvent::StartElement(child)) if is_name(child.name(), "Representation") => {
                 if representations.len() >= limits.maximum_representations_per_adaptation_set {
                     return Err(DashMpdError::new(DashMpdErrorKind::LimitExceeded));
@@ -302,6 +343,7 @@ fn parse_adaptation_set(
                     child,
                     limits,
                     &hints,
+                    &metadata,
                     inherited_addressing.clone(),
                 )?);
             }
@@ -313,6 +355,7 @@ fn parse_adaptation_set(
                     child,
                     limits,
                     &hints,
+                    &metadata,
                     inherited_addressing.clone(),
                 )?);
             }
@@ -345,6 +388,7 @@ fn parse_representation(
     element: XmlElement,
     limits: DashMpdLimits,
     inherited_hints: &MediaHints,
+    inherited_metadata: &RepresentationMetadata,
     inherited_addressing: Option<DashAddressing>,
 ) -> Result<DashRepresentation, DashMpdError> {
     validate_attributes(
@@ -357,16 +401,16 @@ fn parse_representation(
             "codecs",
             "width",
             "height",
+            "frameRate",
             "audioSamplingRate",
             "startWithSAP",
         ],
     )?;
     let id = required_bounded_attribute(&element, "id", limits)?;
     let bandwidth = optional_u64_attribute(&element, "bandwidth")?;
-    let width = optional_positive_u32_attribute(&element, "width")?;
-    let height = optional_positive_u32_attribute(&element, "height")?;
     let own_hints = media_hints(&element, limits)?;
     let effective_hints = merge_hints(inherited_hints, own_hints);
+    let mut own_metadata = representation_metadata(&element, limits)?;
     let mut base_url = None;
     let mut own_addressing = None;
     loop {
@@ -404,6 +448,45 @@ fn parse_representation(
                     DashAddressing::Base(parse_empty_segment_base(child)?),
                 )?;
             }
+            Some(XmlEvent::StartElement(child))
+                if is_name(child.name(), "AudioChannelConfiguration") =>
+            {
+                let configuration = parse_audio_channel_configuration(&child, limits)?;
+                consume_descriptor_body(cursor, "AudioChannelConfiguration")?;
+                set_optional_metadata(
+                    &mut own_metadata.audio_channel_configuration,
+                    configuration,
+                )?;
+            }
+            Some(XmlEvent::EmptyElement(child))
+                if is_name(child.name(), "AudioChannelConfiguration") =>
+            {
+                let configuration = parse_audio_channel_configuration(&child, limits)?;
+                set_optional_metadata(
+                    &mut own_metadata.audio_channel_configuration,
+                    configuration,
+                )?;
+            }
+            Some(XmlEvent::StartElement(child))
+                if is_name(child.name(), "EssentialProperty")
+                    || is_name(child.name(), "SupplementalProperty") =>
+            {
+                let essential = is_name(child.name(), "EssentialProperty");
+                let name = if essential {
+                    "EssentialProperty"
+                } else {
+                    "SupplementalProperty"
+                };
+                apply_color_descriptor(&child, limits, essential, &mut own_metadata.color)?;
+                consume_descriptor_body(cursor, name)?;
+            }
+            Some(XmlEvent::EmptyElement(child))
+                if is_name(child.name(), "EssentialProperty")
+                    || is_name(child.name(), "SupplementalProperty") =>
+            {
+                let essential = is_name(child.name(), "EssentialProperty");
+                apply_color_descriptor(&child, limits, essential, &mut own_metadata.color)?;
+            }
             Some(XmlEvent::StartElement(child)) if is_name(child.name(), "ContentProtection") => {
                 return Err(DashMpdError::new(DashMpdErrorKind::ContentProtection));
             }
@@ -415,11 +498,17 @@ fn parse_representation(
         }
     }
     let (container, media_kind, codecs) = classify_media(&effective_hints)?;
+    let metadata = merge_representation_metadata(inherited_metadata, own_metadata);
     Ok(DashRepresentation {
         id,
         bandwidth,
-        width,
-        height,
+        width: metadata.width,
+        height: metadata.height,
+        frame_rate: metadata.frame_rate,
+        audio_sampling_rate: metadata.audio_sampling_rate,
+        audio_channel_configuration: metadata.audio_channel_configuration,
+        language: metadata.language,
+        color: metadata.color,
         container,
         media_kind,
         codecs,
@@ -435,6 +524,7 @@ fn parse_empty_representation(
     element: XmlElement,
     limits: DashMpdLimits,
     inherited_hints: &MediaHints,
+    inherited_metadata: &RepresentationMetadata,
     inherited_addressing: Option<DashAddressing>,
 ) -> Result<DashRepresentation, DashMpdError> {
     validate_attributes(
@@ -447,21 +537,29 @@ fn parse_empty_representation(
             "codecs",
             "width",
             "height",
+            "frameRate",
             "audioSamplingRate",
             "startWithSAP",
         ],
     )?;
     let id = required_bounded_attribute(&element, "id", limits)?;
     let bandwidth = optional_u64_attribute(&element, "bandwidth")?;
-    let width = optional_positive_u32_attribute(&element, "width")?;
-    let height = optional_positive_u32_attribute(&element, "height")?;
     let effective_hints = merge_hints(inherited_hints, media_hints(&element, limits)?);
+    let metadata = merge_representation_metadata(
+        inherited_metadata,
+        representation_metadata(&element, limits)?,
+    );
     let (container, media_kind, codecs) = classify_media(&effective_hints)?;
     Ok(DashRepresentation {
         id,
         bandwidth,
-        width,
-        height,
+        width: metadata.width,
+        height: metadata.height,
+        frame_rate: metadata.frame_rate,
+        audio_sampling_rate: metadata.audio_sampling_rate,
+        audio_channel_configuration: metadata.audio_channel_configuration,
+        language: metadata.language,
+        color: metadata.color,
         container,
         media_kind,
         codecs,

@@ -5,7 +5,7 @@ use std::fmt;
 use smooth_streaming_fmp4::SmoothTrackMappingError;
 use web_media_core::{ComponentKind, ComponentVariantError};
 
-/// Ошибка consume/canonicalization приватного P2 runtime seed.
+/// Ошибка consume/canonicalization приватного provider runtime seed.
 #[derive(thiserror::Error)]
 pub enum SmoothFragmentSourceBuildError {
     /// Retained или caller-owned preparation token уже отменён.

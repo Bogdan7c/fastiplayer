@@ -24,10 +24,43 @@ enum InstalledPositionRestoreStart {
         reason: crate::InstalledLiveEdgeAdjustmentReason,
     },
     /// Seek принят, а authoritative outcome должен дождаться exact generation commit-а.
-    AwaitingSeekCommit { seek_generation: u64 },
+    AwaitingSeekCommit {
+        seek_generation: u64,
+        requires_live_anchor_retention: bool,
+    },
 }
 
 impl PlayerSession {
+    /// Сохраняет terminal success, если app ещё не забрал staged adoption outcome.
+    pub(super) fn complete_unclaimed_staged_position(&mut self, seek_generation: u64) {
+        let Some(installed) = self.installed_staged_position.as_mut() else {
+            return;
+        };
+        if matches!(
+            installed.outcome,
+            super::staged_media_install::InstalledStagedPositionOutcome::AwaitingSeekCommit {
+                seek_generation: expected,
+            } if expected == seek_generation
+        ) {
+            installed.outcome =
+                super::staged_media_install::InstalledStagedPositionOutcome::Completed;
+        }
+    }
+
+    /// Сохраняет terminal failure, если app ещё не забрал staged adoption outcome.
+    pub(super) fn fail_unclaimed_staged_position(&mut self, error: PlayerError) {
+        let Some(installed) = self.installed_staged_position.as_mut() else {
+            return;
+        };
+        if matches!(
+            installed.outcome,
+            super::staged_media_install::InstalledStagedPositionOutcome::AwaitingSeekCommit { .. }
+        ) {
+            installed.outcome =
+                super::staged_media_install::InstalledStagedPositionOutcome::Failed(error);
+        }
+    }
+
     /// Освобождает current media только при exact request+instance совпадении.
     pub(crate) fn release_installed_media(
         &mut self,
@@ -88,11 +121,15 @@ impl PlayerSession {
                     },
                 );
             }
-            Ok(InstalledPositionRestoreStart::AwaitingSeekCommit { seek_generation }) => {
+            Ok(InstalledPositionRestoreStart::AwaitingSeekCommit {
+                seek_generation,
+                requires_live_anchor_retention,
+            }) => {
                 self.pending_installed_position_restore = Some(PendingInstalledPositionRestore {
                     request_id: restore.request_id,
                     media_instance_id,
                     seek_generation,
+                    requires_live_anchor_retention,
                     outcome_tx,
                 });
             }
@@ -133,7 +170,11 @@ impl PlayerSession {
         self.restore_audio_track(restore.audio_track)?;
         self.restore_subtitle_track(restore.subtitle_track)?;
         self.restore_volume(restore.volume)?;
-        self.start_media_position_restore(restore.media_instance_id, restore.position)
+        self.start_media_position_restore(
+            restore.request_id,
+            restore.media_instance_id,
+            restore.position,
+        )
     }
 
     /// Применяет volume только после exact request/instance validation выше.
@@ -200,6 +241,7 @@ impl PlayerSession {
 
     fn start_media_position_restore(
         &mut self,
+        request_id: crate::MediaInstallRequestId,
         media_instance_id: crate::MediaInstanceId,
         restore: InstalledPositionRestore,
     ) -> Result<InstalledPositionRestoreStart, InstalledMediaStateRestoreOutcome> {
@@ -227,6 +269,48 @@ impl PlayerSession {
                     });
                 }
             },
+            InstalledPositionRestore::AdoptPreparedSameLineagePosition => {
+                let Some(installed) = self.installed_staged_position.take() else {
+                    return Err(InstalledMediaStateRestoreOutcome::Failed {
+                        stage: InstalledMediaRestoreFailureStage::Position,
+                        error: PlayerError::new(
+                            PlayerErrorKind::SeekUnavailable,
+                            "installed same-lineage position result is missing",
+                        ),
+                    });
+                };
+                if installed.request_id != request_id
+                    || installed.media_instance_id != media_instance_id
+                {
+                    return Err(InstalledMediaStateRestoreOutcome::StaleInstance);
+                }
+                return match installed.outcome {
+                    super::staged_media_install::InstalledStagedPositionOutcome::Completed => {
+                        Ok(InstalledPositionRestoreStart::CompletedWithoutSeek)
+                    }
+                    super::staged_media_install::InstalledStagedPositionOutcome::AwaitingSeekCommit {
+                        seek_generation,
+                    } => Ok(InstalledPositionRestoreStart::AwaitingSeekCommit {
+                        seek_generation,
+                        requires_live_anchor_retention: true,
+                    }),
+                    super::staged_media_install::InstalledStagedPositionOutcome::AdjustedToLiveEdge {
+                        requested_position,
+                        live_edge,
+                        reason,
+                    } => Ok(InstalledPositionRestoreStart::AdjustedToLiveEdge {
+                        requested_position,
+                        live_edge,
+                        reason,
+                    }),
+                    super::staged_media_install::InstalledStagedPositionOutcome::Failed(error) => {
+                        Err(InstalledMediaStateRestoreOutcome::Failed {
+                            stage: InstalledMediaRestoreFailureStage::Position,
+                            error,
+                        })
+                    }
+                };
+            }
         };
         if !self.snapshot.timeline.seekable
             && self.snapshot.timeline.not_seekable_reason
@@ -266,6 +350,7 @@ impl PlayerSession {
 
         Ok(InstalledPositionRestoreStart::AwaitingSeekCommit {
             seek_generation: self.pipeline.seek_generation(),
+            requires_live_anchor_retention: false,
         })
     }
 

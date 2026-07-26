@@ -3,22 +3,9 @@
 //! Extension выбирает только trusted import route. Authoritative content validation,
 //! capacity policy, preview и ID allocation остаются у существующих playlist owners.
 
-use std::path::Path;
-
 use super::StartupMediaController;
 use super::orchestration::{StartupMediaPhase, StartupMediaTarget, StartupPendingInstall};
 use crate::playlist_runtime::{PlaylistImportIntent, StartupPlaylistImportTerminal};
-
-/// Распознаёт только утверждённые local playlist extensions без lossy path conversion.
-pub(super) fn is_recognized_startup_playlist_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(std::ffi::OsStr::to_str)
-        .is_some_and(|extension| {
-            ["m3u", "m3u8", "xspf", "cue"]
-                .iter()
-                .any(|recognized| extension.eq_ignore_ascii_case(recognized))
-        })
-}
 
 impl StartupMediaController {
     /// Продвигает trusted playlist flow и возвращает `Some`, пока он владеет startup turn.
@@ -121,7 +108,7 @@ impl StartupMediaController {
 mod tests {
     use std::path::Path;
 
-    use super::is_recognized_startup_playlist_path;
+    use crate::startup_media::is_recognized_startup_playlist_path;
 
     #[test]
     fn recognizes_all_startup_playlist_extensions_case_insensitively() {

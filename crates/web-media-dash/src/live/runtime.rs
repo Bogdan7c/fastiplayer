@@ -19,9 +19,10 @@ use web_media_adaptive::{
 use web_media_transport_api::SourceGeneration;
 
 use super::{
-    DashLiveAvailability, DashLiveRefreshError, DashLiveSnapshot, DashSynchronizedClock,
-    DashWallClock, build_dash_live_snapshot,
+    DashLiveAvailability, DashLiveRefreshError, DashLiveSelection, DashLiveSnapshot,
+    DashSynchronizedClock, DashWallClock, build_dash_live_snapshot_with_selection,
 };
+use crate::catalog::DashLogicalRepresentationSelection;
 use crate::component::DashComponentFactory;
 use crate::plan::{
     DashComponentPlan, DashPeriodInputPlan, DashPlannedResource, DashPresentationPlan,
@@ -176,6 +177,7 @@ struct DashLiveShared {
     endpoint_refresh: Arc<dyn DashEndpointRefreshPort>,
     endpoint_refresh_lock: Mutex<()>,
     refresh_request: DashLiveOpenRequest,
+    refresh_selection: DashLiveSelection,
 }
 
 struct DashLiveSharedState {
@@ -215,8 +217,14 @@ impl DashLiveShared {
                 DashEndpointRefreshError::Cancelled => AdaptiveTransportError::Cancelled,
                 _ => AdaptiveTransportError::WorkerStopped,
             })?;
-        refresh::stage_and_commit_endpoint(&self.refresh_request, self, failed_generation, reply)
-            .map_err(|_| AdaptiveTransportError::WorkerStopped)
+        refresh::stage_and_commit_endpoint(
+            &self.refresh_request,
+            &self.refresh_selection,
+            self,
+            failed_generation,
+            reply,
+        )
+        .map_err(|_| AdaptiveTransportError::WorkerStopped)
     }
 }
 
@@ -428,6 +436,21 @@ impl Demuxer for DashLiveDemuxer {
 pub fn prepare_dash_live(
     request: DashLiveOpenRequest,
 ) -> std::result::Result<DashLiveOpenResult, DashLiveOpenError> {
+    let selection = DashLiveSelection::Evidence(request.selection.clone());
+    prepare_dash_live_with_selection(request, selection)
+}
+
+pub(crate) fn prepare_dash_live_logical(
+    request: DashLiveOpenRequest,
+    selection: DashLogicalRepresentationSelection,
+) -> std::result::Result<DashLiveOpenResult, DashLiveOpenError> {
+    prepare_dash_live_with_selection(request, DashLiveSelection::Logical(Box::new(selection)))
+}
+
+fn prepare_dash_live_with_selection(
+    request: DashLiveOpenRequest,
+    selection: DashLiveSelection,
+) -> std::result::Result<DashLiveOpenResult, DashLiveOpenError> {
     let fetch_started = Instant::now();
     let local_before_fetch = request.wall_clock.now_utc();
     let fetched = request
@@ -452,10 +475,10 @@ pub fn prepare_dash_live(
         mpd.direct_utc_time,
     )
     .map_err(DashLiveRefreshError::Clock)?;
-    let snapshot = build_dash_live_snapshot(
+    let snapshot = build_dash_live_snapshot_with_selection(
         mpd,
         fetched.final_target(),
-        &request.selection,
+        &selection,
         request.policy.maximum_planned_segments,
         &clock,
     )?;
@@ -464,8 +487,8 @@ pub fn prepare_dash_live(
         snapshot.mpd.minimum_update_period_milliseconds,
     )
     .ok_or_else(|| anyhow::anyhow!("DASH initial refresh deadline overflow"))?;
-    let has_video = selection_has_video(&request.selection);
-    let has_audio = selection_has_audio(&request.selection);
+    let has_video = selection_has_video(&selection);
+    let has_audio = selection_has_audio(&selection);
     let (coordinator, timeline_port) = DashLiveTimelineCoordinator::new(
         snapshot.availability.clone(),
         has_video,
@@ -488,6 +511,7 @@ pub fn prepare_dash_live(
         endpoint_refresh: Arc::clone(&request.endpoint_refresh),
         endpoint_refresh_lock: Mutex::new(()),
         refresh_request: refresh_request.clone(),
+        refresh_selection: selection.clone(),
     });
     // Open не наследует snapshot guard: source синхронно возвращается в
     // `current_transport()` и повторно берёт тот же mutex.
@@ -546,7 +570,7 @@ pub fn prepare_dash_live(
         ProgressiveRuntimeGeneration::new(request.generation.value()),
         request.policy.asynchronous_seek_limits,
     )?;
-    refresh::spawn_refresh_worker(refresh_request, refresh_shared, refresh_fatal)?;
+    refresh::spawn_refresh_worker(refresh_request, selection, refresh_shared, refresh_fatal)?;
     Ok(DashLiveOpenResult {
         demuxer,
         timeline_port,
@@ -645,21 +669,35 @@ fn remap_component_resource(
     matches.next().is_none().then_some(replacement)
 }
 
-fn selection_has_video(selection: &DashPresentationSelection) -> bool {
+fn selection_has_video(selection: &DashLiveSelection) -> bool {
     match selection {
-        DashPresentationSelection::Single { main } => {
-            main.media_kind == dash_mpd_core::DashMediaKind::Video
+        DashLiveSelection::Evidence(DashPresentationSelection::Single { main }) => {
+            matches!(main.media_kind, DashMediaKind::Video | DashMediaKind::Muxed)
         }
-        DashPresentationSelection::Separate { .. } => true,
+        DashLiveSelection::Evidence(DashPresentationSelection::Separate { .. }) => true,
+        DashLiveSelection::Logical(selection) => match selection.as_ref() {
+            DashLogicalRepresentationSelection::Single(lane) => matches!(
+                lane.contract.kind,
+                DashMediaKind::Video | DashMediaKind::Muxed
+            ),
+            DashLogicalRepresentationSelection::Separate { .. } => true,
+        },
     }
 }
 
-fn selection_has_audio(selection: &DashPresentationSelection) -> bool {
+fn selection_has_audio(selection: &DashLiveSelection) -> bool {
     match selection {
-        DashPresentationSelection::Single { main } => {
-            main.media_kind == dash_mpd_core::DashMediaKind::Audio
+        DashLiveSelection::Evidence(DashPresentationSelection::Single { main }) => {
+            matches!(main.media_kind, DashMediaKind::Audio | DashMediaKind::Muxed)
         }
-        DashPresentationSelection::Separate { .. } => true,
+        DashLiveSelection::Evidence(DashPresentationSelection::Separate { .. }) => true,
+        DashLiveSelection::Logical(selection) => match selection.as_ref() {
+            DashLogicalRepresentationSelection::Single(lane) => matches!(
+                lane.contract.kind,
+                DashMediaKind::Audio | DashMediaKind::Muxed
+            ),
+            DashLogicalRepresentationSelection::Separate { .. } => true,
+        },
     }
 }
 

@@ -111,6 +111,31 @@ pub(super) fn generous_limit() -> ComponentVariantCatalogLimit {
     ComponentVariantCatalogLimit::new(32).expect("test limit должен быть valid")
 }
 
+pub(super) fn generous_edge_limit() -> ComponentVariantEdgeLimit {
+    ComponentVariantEdgeLimit::new(64).expect("test edge limit должен быть valid")
+}
+
+pub(super) fn coupled_variant(
+    catalog: &ComponentVariantCatalogIdentity,
+    exact_key: &str,
+    semantic_key: &str,
+    height: Option<u32>,
+) -> CoupledComponentVariant {
+    CoupledComponentVariant::new(
+        CoupledVariantExactIdentity::new(
+            catalog.clone(),
+            ComponentVariantExactKey::new(exact_key).expect("test exact key должен быть valid"),
+        ),
+        CoupledVariantSemanticIdentity::new(
+            catalog.parent().semantic().clone(),
+            ComponentVariantSemanticKey::new(semantic_key)
+                .expect("test semantic key должен быть valid"),
+        ),
+        video_track(height),
+        audio_track(2),
+    )
+}
+
 pub(super) fn video_and_audio_catalog() -> ComponentVariantCatalog {
     let identity = catalog_identity(parent(1, "parent", "parent-semantic"), 3);
     ComponentVariantCatalog::new(

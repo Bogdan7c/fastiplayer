@@ -601,3 +601,169 @@ fn preferred_height_uses_existing_rank_and_preserves_first_on_equality() {
         None
     );
 }
+
+#[test]
+fn topology_supports_all_pairs_coupled_and_single_component_rows_without_cartesian_storage() {
+    let identity = catalog_identity(parent(11, "parent", "semantic"), 4);
+    let videos = vec![
+        video_variant(&identity, "v-720", "sv-720", Some(720)),
+        video_variant(&identity, "v-1080", "sv-1080", Some(1080)),
+    ];
+    let audios = vec![
+        audio_variant(&identity, "a-one", "sa-one", 1),
+        audio_variant(&identity, "a-two", "sa-two", 2),
+    ];
+    let video_only = videos[0].exact_identity().clone();
+    let audio_only = audios[1].exact_identity().clone();
+    let coupled = coupled_variant(&identity, "muxed", "smuxed", Some(480));
+    let coupled_exact = coupled.exact_identity().clone();
+    let catalog = ComponentVariantCatalog::new(
+        identity,
+        generous_limit(),
+        ComponentVariantCatalogEntries::Topology {
+            video: videos,
+            audio: audios,
+            compatibility: ComponentVariantCompatibilityEntries::AllPairs {
+                edge_limit: generous_edge_limit(),
+            },
+            coupled: vec![coupled],
+            video_only: vec![video_only.clone()],
+            audio_only: vec![audio_only.clone()],
+        },
+    )
+    .expect("mixed topology должна быть valid");
+
+    assert_eq!(catalog.stored_variant_count(), 5);
+    assert_eq!(catalog.compatibility().unwrap().logical_edge_count(), 4);
+    assert!(catalog.is_video_only_selectable(&video_only));
+    assert!(catalog.is_audio_only_selectable(&audio_only));
+    assert!(matches!(
+        catalog
+            .select_exact(ComponentVariantSelectionRequest::Coupled {
+                presentation: coupled_exact,
+            })
+            .unwrap(),
+        ComponentVariantSelection::Coupled { .. }
+    ));
+}
+
+#[test]
+fn sparse_topology_rejects_dangling_duplicate_and_incompatible_pairs_without_mutation() {
+    let identity = catalog_identity(parent(12, "parent", "semantic"), 5);
+    let videos = vec![
+        video_variant(&identity, "v-one", "sv-one", Some(720)),
+        video_variant(&identity, "v-two", "sv-two", Some(1080)),
+    ];
+    let audios = vec![
+        audio_variant(&identity, "a-one", "sa-one", 1),
+        audio_variant(&identity, "a-two", "sa-two", 2),
+    ];
+    let allowed = ComponentVariantCompatibilityEdge::new(
+        videos[0].exact_identity().clone(),
+        audios[0].exact_identity().clone(),
+    );
+    let catalog = ComponentVariantCatalog::new(
+        identity.clone(),
+        generous_limit(),
+        ComponentVariantCatalogEntries::Topology {
+            video: videos.clone(),
+            audio: audios.clone(),
+            compatibility: ComponentVariantCompatibilityEntries::Sparse {
+                edge_limit: generous_edge_limit(),
+                edges: vec![allowed.clone()],
+            },
+            coupled: vec![],
+            video_only: vec![],
+            audio_only: vec![],
+        },
+    )
+    .unwrap();
+    let selected = catalog
+        .select_exact(ComponentVariantSelectionRequest::VideoAndAudio {
+            video: videos[0].exact_identity().clone(),
+            audio: audios[0].exact_identity().clone(),
+        })
+        .unwrap();
+    let before = selected.clone();
+    assert_eq!(
+        selected.replace_video(&catalog, videos[1].exact_identity()),
+        Err(ComponentVariantError::IncompatibleComponentPair)
+    );
+    assert_eq!(selected, before);
+    assert_eq!(
+        catalog.select_exact(ComponentVariantSelectionRequest::VideoAndAudio {
+            video: videos[1].exact_identity().clone(),
+            audio: audios[1].exact_identity().clone(),
+        }),
+        Err(ComponentVariantError::IncompatibleComponentPair)
+    );
+
+    let missing_video = ComponentVariantExactIdentity::new(
+        identity.clone(),
+        ComponentKind::Video,
+        ComponentVariantExactKey::new("missing").unwrap(),
+    );
+    let entries = |edges| ComponentVariantCatalogEntries::Topology {
+        video: videos.clone(),
+        audio: audios.clone(),
+        compatibility: ComponentVariantCompatibilityEntries::Sparse {
+            edge_limit: generous_edge_limit(),
+            edges,
+        },
+        coupled: vec![],
+        video_only: vec![],
+        audio_only: vec![],
+    };
+    assert_eq!(
+        ComponentVariantCatalog::new(
+            identity.clone(),
+            generous_limit(),
+            entries(vec![ComponentVariantCompatibilityEdge::new(
+                missing_video,
+                audios[0].exact_identity().clone(),
+            )]),
+        ),
+        Err(ComponentVariantError::DanglingVariantReference {
+            component: ComponentKind::Video,
+        })
+    );
+    assert_eq!(
+        ComponentVariantCatalog::new(
+            identity,
+            generous_limit(),
+            entries(vec![allowed.clone(), allowed]),
+        ),
+        Err(ComponentVariantError::DuplicateCompatibilityEdge)
+    );
+}
+
+#[test]
+fn all_pairs_logical_cardinality_obeys_edge_budget() {
+    let identity = catalog_identity(parent(13, "parent", "semantic"), 6);
+    assert_eq!(
+        ComponentVariantCatalog::new(
+            identity.clone(),
+            generous_limit(),
+            ComponentVariantCatalogEntries::Topology {
+                video: vec![
+                    video_variant(&identity, "v-one", "sv-one", Some(720)),
+                    video_variant(&identity, "v-two", "sv-two", Some(1080)),
+                ],
+                audio: vec![
+                    audio_variant(&identity, "a-one", "sa-one", 1),
+                    audio_variant(&identity, "a-two", "sa-two", 2),
+                ],
+                compatibility: ComponentVariantCompatibilityEntries::AllPairs {
+                    edge_limit: ComponentVariantEdgeLimit::new(3).unwrap(),
+                },
+                coupled: vec![],
+                video_only: vec![],
+                audio_only: vec![],
+            },
+        ),
+        Err(ComponentVariantError::CompatibilityEdgeLimitExceeded {
+            provided_edges: 4,
+            maximum_edges: 3,
+        })
+    );
+}

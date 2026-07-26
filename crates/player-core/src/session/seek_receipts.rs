@@ -13,12 +13,14 @@ impl PlayerSession {
         position: MediaTime,
         seek_generation: u64,
     ) {
+        self.complete_unclaimed_staged_position(seek_generation);
         self.finish_exact_timeline_seek(position);
         self.finish_installed_position_restore(seek_generation);
     }
 
     /// Передаёт одну typed terminal failure всем receipts текущей seek transaction.
     pub(super) fn fail_pending_seek_receipts(&mut self, error: PlayerError) {
+        self.fail_unclaimed_staged_position(error.clone());
         self.fail_pending_exact_timeline_seek(error.clone());
         self.fail_pending_installed_position_restore(error);
     }

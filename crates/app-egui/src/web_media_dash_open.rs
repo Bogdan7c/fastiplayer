@@ -1,5 +1,8 @@
 //! App-owned composition static DASH VOD runtime-а.
 
+mod catalog;
+pub(crate) use catalog::discover_dash_candidate_catalog;
+
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,11 +40,14 @@ use web_media_core::{
     VideoTrackDescriptor,
 };
 use web_media_dash::{
-    DashEndpointRefreshPort, DashLiveOpenRequest, DashManifestInput, DashPresentationSelection,
-    DashRepresentationEvidence, DashResourceReference, DashSerializedComponent,
-    DashSerializedFragment, DashSerializedFragmentKind, DashSerializedPresentation,
-    DashVideoDimensions, DashVodHttpContext, DashVodInput, DashVodOpenPolicy, DashVodOpenRequest,
-    DashWallClock, prepare_dash_live, prepare_dash_vod,
+    DashEndpointRefreshPort, DashLiveCatalogDiscoveryRequest, DashLiveOpenRequest,
+    DashManifestInput, DashPresentationSelection, DashRepresentationEvidence,
+    DashResourceReference, DashSerializedComponent, DashSerializedFragment,
+    DashSerializedFragmentKind, DashSerializedPresentation, DashVideoDimensions,
+    DashVodCatalogDiscoveryRequest, DashVodHttpContext, DashVodInput, DashVodOpenPolicy,
+    DashVodOpenRequest, DashWallClock, discover_dash_live_catalog, discover_dash_vod_catalog,
+    prepare_dash_live, prepare_dash_vod, prepare_discovered_dash_live_semantic,
+    prepare_discovered_dash_vod_semantic,
 };
 use web_media_transport_api::{MediaComponentRole, TransportProviderId};
 
@@ -53,6 +59,8 @@ pub(crate) struct PreparedDashCandidate {
     pub(crate) seek_port: Arc<dyn PreparedDemuxSeekPort>,
     /// Dynamic S31L port; static VOD сохраняет `None`.
     pub(crate) timeline_port: Option<DynamicMediaTimelinePort>,
+    pub(crate) component_variants:
+        crate::web_media_open::component_variants::PreparedComponentVariantCatalog,
 }
 
 /// Production local wall clock; direct UTCTiming offset применяется provider-ом.
@@ -152,6 +160,10 @@ pub(crate) fn prepare_dash_candidate(
     live_intent: YtDlpLiveIntent,
     endpoint_refresh: Option<Arc<dyn DashEndpointRefreshPort>>,
     timeline_port_generation: DynamicMediaTimelinePortGeneration,
+    component_selection_intent:
+        crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent,
+    catalog_identity: web_media_core::ComponentVariantCatalogIdentity,
+    capability_probe: &crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
 ) -> Result<PreparedDashCandidate> {
     let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
     let request_context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation);
@@ -174,7 +186,7 @@ pub(crate) fn prepare_dash_candidate(
         };
         let endpoint_refresh = endpoint_refresh
             .ok_or_else(|| anyhow!("DASH live candidate потерял app endpoint refresh port"))?;
-        let opened = prepare_dash_live(DashLiveOpenRequest {
+        let request = DashLiveOpenRequest {
             http,
             generation,
             manifest,
@@ -185,8 +197,31 @@ pub(crate) fn prepare_dash_candidate(
             timeline_port_generation,
             initial_source_epoch: DynamicMediaTimelineEpoch::new(0),
             endpoint_refresh,
-        })
-        .context("DASH live preflight завершился ошибкой")?;
+        };
+        let (opened, component_variants) = match component_selection_intent {
+            crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (
+                prepare_dash_live(request).context("DASH live preflight завершился ошибкой")?,
+                crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Unavailable,
+            ),
+            crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
+                let discovered = discover_dash_live_catalog(DashLiveCatalogDiscoveryRequest {
+                    open: request,
+                    catalog_identity,
+                    catalog_limit: web_media_core::ComponentVariantCatalogLimit::new(256)?,
+                    compatibility_edge_limit: web_media_core::ComponentVariantEdgeLimit::new(4_096)?,
+                    capability_probe,
+                })?;
+                let catalog = Arc::new(discovered.catalog().clone());
+                let selected = catalog.rematch_semantic(semantic.clone())?;
+                (
+                    prepare_discovered_dash_live_semantic(discovered, semantic)?,
+                    crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Installed {
+                        catalog,
+                        provider_selection: selected,
+                    },
+                )
+            }
+        };
         let (demuxer, seek_handle, timeline_port) = opened.into_parts();
         let seek_port: Arc<dyn PreparedDemuxSeekPort> = Arc::new(DashPreparedDemuxSeekPort {
             handle: seek_handle
@@ -196,18 +231,42 @@ pub(crate) fn prepare_dash_candidate(
             demuxer: Box::new(demuxer),
             seek_port,
             timeline_port: Some(timeline_port),
+            component_variants,
         });
     }
     ensure_static_dash_intent(live_intent)?;
-    let opened = prepare_dash_vod(DashVodOpenRequest {
+    let request = DashVodOpenRequest {
         http,
         generation,
         input,
         selection,
         demux_registry,
         policy: dash_policy(limits)?,
-    })
-    .context("DASH VOD preflight завершился ошибкой")?;
+    };
+    let (opened, component_variants) = match component_selection_intent {
+        crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (
+            prepare_dash_vod(request).context("DASH VOD preflight завершился ошибкой")?,
+            crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Unavailable,
+        ),
+        crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
+            let discovered = discover_dash_vod_catalog(DashVodCatalogDiscoveryRequest {
+                open: request,
+                catalog_identity,
+                catalog_limit: web_media_core::ComponentVariantCatalogLimit::new(256)?,
+                compatibility_edge_limit: web_media_core::ComponentVariantEdgeLimit::new(4_096)?,
+                capability_probe,
+            })?;
+            let catalog = Arc::new(discovered.catalog().clone());
+            let selected = catalog.rematch_semantic(semantic.clone())?;
+            (
+                prepare_discovered_dash_vod_semantic(discovered, semantic)?,
+                crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Installed {
+                    catalog,
+                    provider_selection: selected,
+                },
+            )
+        }
+    };
     let seek_port: Arc<dyn PreparedDemuxSeekPort> = Arc::new(DashPreparedDemuxSeekPort {
         handle: opened.async_seek_handle(),
     });
@@ -215,6 +274,7 @@ pub(crate) fn prepare_dash_candidate(
         demuxer: Box::new(opened.into_demuxer()),
         seek_port,
         timeline_port: None,
+        component_variants,
     })
 }
 
