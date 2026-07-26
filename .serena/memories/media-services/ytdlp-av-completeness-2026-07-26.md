@@ -1,0 +1,7 @@
+# yt-dlp A/V completeness regression (2026-07-26)
+
+- Реальный YouTube `BestPlayable` мог выбрать `VideoOnly` 4K VP9 раньше единственного `Separate` A/V candidate, потому что codec preference сравнивался до layout completeness. Симптом: видео идёт, `audio_ms=0`, второй demuxer и CPAL output не создаются.
+- `web-media-playback-plan::compare_playable` теперь ранжирует `Muxed | Separate` раньше `VideoOnly | AudioOnly`, затем применяет прежние HDR/codec/height/container/quality tie-breaks. Это относится только к `BestPlayable`; exact selection не сортируется. Single-component media остаётся playable, когда A/V candidate отсутствует.
+- Progressive yt-dlp composition в `app-egui::web_media_open` использует отдельный bounded 4 MiB limit для одного retained packet на component. Его нельзя снова связывать с 64 KiB HTTP sniff/prefetch initial chunk: реальные YouTube keyframes превышают 64 KiB (воспроизведено 115173 bytes). One-packet-per-component и timestamp lead 500 ms сохранены; HLS/DASH/Smooth уже используют тот же 4 MiB класс bound.
+- Focused tests: `web-media-playback-plan::tests::best_playable_prefers_complete_av_over_preferred_video_only_codec` и `app-egui::web_media_open::tests::progressive_composite_packet_limit_is_independent_from_sniff_chunk`.
+- Real runtime verification with yt-dlp 2026.07.04 opened two one-track demuxers, created Opus fallback decoder and 48 kHz stereo CPAL output; former silent VideoOnly selection and 65536-byte fatal were absent.

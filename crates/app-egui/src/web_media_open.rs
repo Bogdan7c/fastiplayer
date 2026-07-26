@@ -71,6 +71,8 @@ const INITIAL_TRANSPORT_GENERATION: u64 = 1;
 const INITIAL_EXTRACTION_GENERATION: u64 = 1;
 /// Separate A/V не должен опережать companion более чем на этот интервал.
 const COMPOSITE_MAX_TIMESTAMP_LEAD: Duration = Duration::from_millis(500);
+/// Один retained packet на component bounded независимо от transport sniff/bootstrap chunk.
+const COMPOSITE_MAX_PENDING_PACKET_BYTES: usize = 4 * 1024 * 1024;
 
 /// Process-local source identity allocator не связывает neutral core с queue ID representation.
 static NEXT_YT_DLP_SOURCE_IDENTITY: AtomicU64 = AtomicU64::new(1);
@@ -521,15 +523,13 @@ impl WebOpenRuntime {
             validate_component_tracks(role, demuxer.as_ref())?;
             opened_components.push(OpenedCandidateComponent { role, demuxer });
         }
-        compose_candidate_components(opened_components, self.prefetch_config).map(|demuxer| {
-            OpenedWebCandidate {
-                demuxer,
-                subtitles: Arc::from([]),
-                timeline_port: None,
-                demux_seek_port: None,
-                playback_window: None,
-                component_variants: PreparedComponentVariantCatalog::Unavailable,
-            }
+        compose_candidate_components(opened_components).map(|demuxer| OpenedWebCandidate {
+            demuxer,
+            subtitles: Arc::from([]),
+            timeline_port: None,
+            demux_seek_port: None,
+            playback_window: None,
+            component_variants: PreparedComponentVariantCatalog::Unavailable,
         })
     }
 
@@ -833,7 +833,6 @@ fn validate_component_tracks(role: MediaComponentRole, demuxer: &dyn Demuxer) ->
 /// Композирует single layout либо ровно одну separate video/audio пару.
 fn compose_candidate_components(
     mut components: Vec<OpenedCandidateComponent>,
-    prefetch_config: media_prefetch::PrefetchConfig,
 ) -> Result<Box<dyn Demuxer + Send>> {
     if components.len() == 1 {
         return Ok(components.remove(0).demuxer);
@@ -855,15 +854,7 @@ fn compose_candidate_components(
         .ok_or_else(|| anyhow!("Separate video demuxer не содержит video track"))?;
     let audio_track = selected_track(audio.as_ref(), TrackKind::Audio)
         .ok_or_else(|| anyhow!("Separate audio demuxer не содержит audio track"))?;
-    let bootstrap_bytes = usize::try_from(prefetch_config.initial_chunk_bytes())
-        .ok()
-        .and_then(NonZeroUsize::new)
-        .ok_or_else(|| anyhow!("prefetch initial chunk нельзя использовать для A/V lead policy"))?;
-    let lead_policy = CompositeComponentLeadPolicy::single_pending_packet(
-        COMPOSITE_MAX_TIMESTAMP_LEAD,
-        bootstrap_bytes,
-    )
-    .context("Prefetch initial chunk нарушает composite A/V safety bounds")?;
+    let lead_policy = progressive_composite_lead_policy()?;
     let composite = CompositeAvDemuxer::new(
         video,
         audio,
@@ -872,6 +863,16 @@ fn compose_candidate_components(
     )
     .context("Не удалось скомпоновать separate YtDlp A/V demuxers")?;
     Ok(Box::new(composite))
+}
+
+/// Держит encoded-packet bound независимым от transport sniff/bootstrap настройки.
+fn progressive_composite_lead_policy() -> Result<CompositeComponentLeadPolicy> {
+    CompositeComponentLeadPolicy::single_pending_packet(
+        COMPOSITE_MAX_TIMESTAMP_LEAD,
+        NonZeroUsize::new(COMPOSITE_MAX_PENDING_PACKET_BYTES)
+            .expect("composite pending packet limit ненулевой"),
+    )
+    .context("Progressive composite A/V safety bounds invalid")
 }
 
 /// Возвращает первый track нужного kind-а как explicit composition selection.
@@ -894,6 +895,19 @@ fn ensure_not_cancelled(is_cancelled: &impl Fn() -> bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// HTTP sniff chunk не должен становиться случайным лимитом encoded video packet-а.
+    #[test]
+    fn progressive_composite_packet_limit_is_independent_from_sniff_chunk() {
+        let lead_policy =
+            progressive_composite_lead_policy().expect("progressive composite policy валидна");
+
+        assert_eq!(
+            lead_policy.bootstrap_byte_limit(),
+            COMPOSITE_MAX_PENDING_PACKET_BYTES
+        );
+        assert!(lead_policy.bootstrap_byte_limit() > 64 * 1024);
+    }
     use demux_api::{
         DemuxContainerRegistration, DemuxFactoryDescriptor, DemuxFactoryId, DemuxFixtureId,
     };

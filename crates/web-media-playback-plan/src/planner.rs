@@ -303,8 +303,9 @@ fn compare_playable(
     right: &CandidateEvaluation<'_>,
     policy: &PlaybackSelectionPolicy,
 ) -> Ordering {
-    hdr_rank(left.candidate, policy)
-        .cmp(&hdr_rank(right.candidate, policy))
+    av_completeness_rank(left.candidate)
+        .cmp(&av_completeness_rank(right.candidate))
+        .then_with(|| hdr_rank(left.candidate, policy).cmp(&hdr_rank(right.candidate, policy)))
         .then_with(|| {
             policy
                 .video_codec_rank(left.candidate.video_codec())
@@ -329,6 +330,15 @@ fn compare_playable(
         })
         .then_with(|| semantic_identity(left.candidate).cmp(semantic_identity(right.candidate)))
         .then_with(|| exact_identity(left.candidate).cmp(exact_identity(right.candidate)))
+}
+
+/// Полноценный A/V важнее предпочтений video codec/quality: silent fallback допустим
+/// только когда playable A/V-кандидата действительно нет.
+fn av_completeness_rank(candidate: &PlanningCandidate) -> u8 {
+    match candidate.descriptor().layout().kind() {
+        StreamLayoutKind::Muxed | StreamLayoutKind::Separate => 0,
+        StreamLayoutKind::VideoOnly | StreamLayoutKind::AudioOnly => 1,
+    }
 }
 
 /// Возвращает HDR bucket rank; policy-invalid candidates сюда уже не доходят.

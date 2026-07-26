@@ -326,3 +326,8 @@ Progressive direct HTTP is now a complete neutral path: `source-core::HttpSource
 ## S27 progressive/web hardening gate (2026-07-22)
 - Hermetic milestone evidence, architectural guardrails and secret-safe opt-in manual runner are documented in `mem:media-services/progressive-web-hardening-s27-2026-07-22`.
 - Production Rust/API/dependencies did not change; actual network/GUI acceptance remains explicit-user-URL-only and `MANUAL REVIEW REQUIRED`.
+
+
+## YouTube A/V completeness fix (2026-07-26)
+
+- `BestPlayable` ranks complete `Muxed`/`Separate` A/V before single-component candidates, and progressive yt-dlp composite packet retention uses an independent bounded 4 MiB limit rather than the 64 KiB HTTP bootstrap chunk. This fixes silent `VideoOnly` selection and the subsequent real-keyframe composite fatal. Exact selection and single-component-only media remain supported. Full evidence: `mem:media-services/ytdlp-av-completeness-2026-07-26`.

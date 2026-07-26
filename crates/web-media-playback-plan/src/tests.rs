@@ -144,6 +144,51 @@ fn all_four_layout_shapes_are_playable_without_runtime_construction() {
     }
 }
 
+/// BestPlayable не должен выбирать silent video из-за более высокого codec priority.
+#[test]
+fn best_playable_prefers_complete_av_over_preferred_video_only_codec() {
+    let (transport, demux) = full_resource_capabilities();
+    let video = video_capabilities(vec![
+        supported_video_format(VideoCodec::H264, false),
+        supported_video_format(VideoCodec::Vp9, false),
+    ]);
+    let capabilities = PlaybackCapabilitySnapshot::new(
+        &transport,
+        &demux,
+        &video,
+        AudioDecodeCapabilitySnapshot::empty().with_available_family(AudioDecodeCodecFamily::Opus),
+    );
+    let policy = selection_policy(
+        HdrSelectionPolicy::SdrOnly,
+        PreferredHeightPolicy::NoPreference,
+        vec![VideoCodec::H264, VideoCodec::Vp9],
+        vec![ContainerFamily::WebM],
+    );
+    let preferred_silent_video = video_only_candidate(VideoCandidateSpec {
+        format_id: "preferred-silent-video",
+        semantic_key: "preferred-silent-video",
+        transport_raw: "https",
+        container_raw: "webm",
+        codec_raw: "avc1.640028",
+        height: 2160,
+        dynamic_range: DynamicRange::Sdr,
+        requirement: sdr_requirement(VideoCodec::H264, 2160),
+        quality_score: 1_000,
+    });
+    let complete_av = separate_candidate("complete-av", "complete-av");
+    let snapshot = candidate_snapshot(vec![preferred_silent_video, complete_av]);
+
+    let outcome = plan_playback(
+        &snapshot,
+        capabilities,
+        &SelectionRequest::BestPlayable,
+        &policy,
+    )
+    .expect("playable A/V candidate должен победить silent video");
+
+    assert_eq!(outcome.selected().layout(), StreamLayoutKind::Separate);
+}
+
 /// Preferred height выбирает exact, затем closest lower, затем closest higher.
 #[test]
 fn preferred_height_uses_exact_lower_and_higher_buckets() {
