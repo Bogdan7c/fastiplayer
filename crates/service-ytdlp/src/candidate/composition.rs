@@ -94,6 +94,11 @@ impl YtDlpComposedSelection {
     pub const fn audio_semantic_identity(&self) -> &SemanticIdentity {
         self.audio.semantic_identity()
     }
+
+    /// Возвращает video parent selection для согласованной app-owned picker projection.
+    pub const fn video_parent_selection(&self) -> &YtDlpCandidateSelection {
+        &self.video
+    }
 }
 
 impl YtDlpCandidateSnapshot {
@@ -112,21 +117,29 @@ impl YtDlpCandidateSnapshot {
     pub fn rematch_composed(
         &self,
         selection: &YtDlpComposedSelection,
-    ) -> Result<(YtDlpCompositionMatchKind, YtDlpNormalizedCandidate), YtDlpCompositionError> {
+    ) -> Result<
+        (
+            YtDlpCompositionMatchKind,
+            YtDlpComposedSelection,
+            YtDlpNormalizedCandidate,
+        ),
+        YtDlpCompositionError,
+    > {
         if selection.descriptor.identity().source() != self.source() {
             return Err(YtDlpCompositionError::ForeignSource);
         }
         let exact = selection.descriptor.identity().generation() == self.generation();
         let video = self.resolve_atomic_component(&selection.video, ComponentRole::Video)?;
         let audio = self.resolve_atomic_component(&selection.audio, ComponentRole::Audio)?;
-        let selection = build_selection(video, audio)?;
-        let candidate = build_candidate(video, audio, selection.descriptor.clone())?;
+        let fresh_selection = build_selection(video, audio)?;
+        let candidate = build_candidate(video, audio, fresh_selection.descriptor.clone())?;
         Ok((
             if exact {
                 YtDlpCompositionMatchKind::Exact
             } else {
                 YtDlpCompositionMatchKind::SemanticRematch
             },
+            fresh_selection,
             candidate,
         ))
     }

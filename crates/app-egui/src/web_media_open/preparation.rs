@@ -103,6 +103,11 @@ pub(super) fn resolve_candidate_snapshot(
             ))
         }
         YtDlpCandidateOpenIntent::Composed(composed) => {
+            if composed.parent_preference.as_ref() != composed.selection.video_parent_selection() {
+                return Err(anyhow!(
+                    "Composed YtDlp intent содержит несогласованный video parent selection"
+                ));
+            }
             let source = composed.selection.descriptor().identity().source();
             let generation_value = composed
                 .selection
@@ -120,15 +125,16 @@ pub(super) fn resolve_candidate_snapshot(
                     yt_dlp_config,
                     is_cancelled,
                 )?;
-            let (_, candidate) = snapshot
+            let (_, selection, candidate) = snapshot
                 .rematch_composed(&composed.selection)
                 .context("Fresh YtDlp snapshot не содержит composed semantic match")?;
+            let parent_preference = Box::new(selection.video_parent_selection().clone());
             Ok((
                 snapshot,
                 ResolvedCandidateIntent::Composed {
                     candidate: Box::new(candidate),
-                    selection: composed.selection,
-                    parent_preference: composed.parent_preference,
+                    selection: Box::new(selection),
+                    parent_preference,
                 },
             ))
         }

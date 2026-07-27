@@ -351,10 +351,22 @@ fn inventory_video_and_audio_compose_and_semantically_rematch_without_format_id_
         }),
         2,
     );
-    let (kind, candidate) = fresh
+    let (kind, fresh_selection, candidate) = fresh
         .rematch_composed(&selection)
         .expect("обе semantic components должны независимо rematch-иться");
     assert_eq!(kind, super::YtDlpCompositionMatchKind::SemanticRematch);
+    assert_eq!(
+        fresh_selection.descriptor().identity().generation(),
+        fresh.generation()
+    );
+    assert_eq!(
+        fresh_selection
+            .video_parent_selection()
+            .exact_identity()
+            .generation(),
+        fresh.generation()
+    );
+    assert_eq!(fresh_selection.descriptor(), candidate.descriptor());
     assert_eq!(
         candidate.descriptor().layout().kind(),
         StreamLayoutKind::Separate
