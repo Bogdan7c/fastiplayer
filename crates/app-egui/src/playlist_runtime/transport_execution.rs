@@ -3,12 +3,14 @@
 //! Эти методы не открывают media и не отправляют player commands: они сохраняют queue/controller
 //! ownership, выдают locator по exact plan и принимают correlated D08/D39 request обратно.
 
+use std::sync::Arc;
+
 use player_core::MediaInstallRequestId;
 use playlist_core::PlaylistLocator;
 
 use super::controller::{
-    AutomaticLifecycleOutcome, ControllerStableIntentDispatch, PlannedPlaylistInstall,
-    PlaylistInstallRequest,
+    AutomaticLifecycleOutcome, AutomaticTargetFailureOutcome, ControllerStableIntentDispatch,
+    PlannedPlaylistInstall, PlaylistInstallRequest,
 };
 use super::controller::{ManualNavigationCancelOutcome, ManualNavigationFailureOutcome};
 use super::discovery::PlaylistDiscoveryNavigationStatus;
@@ -154,19 +156,32 @@ impl PlaylistRuntime {
         Ok(Some((request_id, receipt)))
     }
 
-    /// Preparation/player failure сохраняет controller-owned retry cursor.
+    /// Preparation/player failure маршрутизируется владельцу exact navigation plan-а.
     pub(crate) fn report_playlist_navigation_failure(
         &mut self,
         request_id: MediaOpenRequestId,
         item_id: playlist_core::PlaylistItemId,
-    ) {
+    ) -> Option<PlannedPlaylistInstall> {
+        let mut automatic_continuation = None;
         if let Some(controller) = self.controller.as_mut() {
-            let outcome = controller.report_manual_navigation_target_failure(request_id);
-            if matches!(outcome, ManualNavigationFailureOutcome::NotManualNavigation) {
-                controller.report_unstaged_manual_navigation_target_failure(item_id);
+            match controller.report_automatic_target_failure(
+                request_id,
+                Arc::from("Не удалось подготовить следующий элемент очереди"),
+            ) {
+                AutomaticTargetFailureOutcome::OpenItem { install } => {
+                    automatic_continuation = Some(install);
+                }
+                AutomaticTargetFailureOutcome::Stopped { .. } => {}
+                AutomaticTargetFailureOutcome::StaleRequest { .. } => {
+                    let outcome = controller.report_manual_navigation_target_failure(request_id);
+                    if matches!(outcome, ManualNavigationFailureOutcome::NotManualNavigation) {
+                        controller.report_unstaged_manual_navigation_target_failure(item_id);
+                    }
+                }
             }
             self.discovery.synchronize_navigation_interest(controller);
         }
+        automatic_continuation
     }
 
     /// Синхронная source-boundary ошибка возникает ещё до появления media-open request ID.
@@ -257,10 +272,11 @@ fn playlist_install_request(
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU32;
+    use std::num::{NonZeroU32, NonZeroU64};
     use std::path::PathBuf;
 
     use media_core::MediaTime;
+    use player_core::{MediaInstanceId, PlaybackState};
     use playlist_core::{
         CachedPlaylistMetadata, DurableReopenLocator, LocalLocator, PlaylistImportAvailability,
         PlaylistImportProvenance, PlaylistImportSourceKind, PlaylistItemDraft, PlaylistMediaKind,
@@ -269,7 +285,17 @@ mod tests {
 
     use super::*;
     use crate::app_wake::{AppWakeOwner, AppWakePort};
-    use crate::playlist_runtime::controller::{ControllerPlayItemOutcome, PlaylistController};
+    use crate::media_open::AuthorizationDispatchResolution;
+    use crate::playlist_runtime::PlaylistBindingGeneration;
+    use crate::playlist_runtime::controller::{
+        AutomaticDeferredAvailability, AutomaticLifecycleOutcome, ControllerAppendOutcome,
+        ControllerPlayItemOutcome, EndedSnapshotKind, InstallReadyOutcome, PlaylistController,
+        PlaylistErrorBehavior,
+    };
+
+    fn non_zero(value: u64) -> NonZeroU64 {
+        NonZeroU64::new(value).expect("test identity is non-zero")
+    }
 
     #[test]
     fn planned_cue_item_maps_durable_span_to_neutral_open_intent() {
@@ -326,5 +352,102 @@ mod tests {
         assert_eq!(window.start(), MediaTime::from_secs(60));
         assert_eq!(window.end_exclusive(), Some(MediaTime::from_secs(120)));
         assert_eq!(install.item_id, item_id);
+    }
+
+    #[test]
+    fn automatic_install_failure_returns_fixed_plan_continuation_instead_of_manual_fallback() {
+        let mut controller = PlaylistController::new();
+        let item_ids = match controller
+            .append(
+                (0..3)
+                    .map(|index| {
+                        let label = format!("transition-{index}.webm");
+                        PlaylistItemDraft::local(
+                            LocalLocator::Native(PathBuf::from(&label)),
+                            None,
+                            CachedPlaylistMetadata::new(label, PlaylistMediaKind::Video),
+                        )
+                    })
+                    .collect(),
+            )
+            .expect("append transition fixture")
+        {
+            ControllerAppendOutcome::Added { item_ids, .. } => item_ids,
+            ControllerAppendOutcome::NoItemsProvided => panic!("transition fixture is non-empty"),
+        };
+
+        let ControllerPlayItemOutcome::StartInstall { install, .. } =
+            controller.play_item(item_ids[0], TransportActionOrigin::Ui)
+        else {
+            panic!("first item starts strong install");
+        };
+        let first_request_id = MediaOpenRequestId::from_non_zero(non_zero(401));
+        let first_player_request_id = MediaInstallRequestId::from_non_zero(non_zero(501));
+        controller
+            .accept_install_request(playlist_install_request(
+                first_request_id,
+                first_player_request_id,
+                install,
+            ))
+            .expect("first install admission");
+        assert!(matches!(
+            controller.on_ready_to_commit(first_request_id),
+            InstallReadyOutcome::RequestAuthorization { .. }
+        ));
+        controller
+            .begin_authorization_dispatch(first_request_id)
+            .expect("first authorization dispatch");
+        controller
+            .resolve_authorization_dispatch(
+                first_request_id,
+                AuthorizationDispatchResolution::EnqueuedAtPlayerOwner,
+            )
+            .expect("first enqueue barrier");
+        controller
+            .on_installed(
+                first_request_id,
+                first_player_request_id,
+                MediaInstanceId::from_non_zero(non_zero(601)),
+                PlaylistBindingGeneration(701),
+            )
+            .expect("first exact Installed");
+
+        controller.set_error_behavior(PlaylistErrorBehavior::Skip);
+        let active = controller.active_media().expect("first item is active");
+        let AutomaticLifecycleOutcome::OpenItem { install } = controller
+            .observe_automatic_snapshot(
+                active.player_binding_generation(),
+                Some(active.media_instance_id()),
+                PlaybackState::Ended,
+                EndedSnapshotKind::Clean,
+                AutomaticDeferredAvailability::Unavailable,
+            )
+        else {
+            panic!("clean EOF starts automatic transition");
+        };
+        assert_eq!(install.item_id, item_ids[1]);
+
+        let failed_request_id = MediaOpenRequestId::from_non_zero(non_zero(402));
+        let failed_player_request_id = MediaInstallRequestId::from_non_zero(non_zero(502));
+        let mut runtime =
+            PlaylistRuntime::new(AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime));
+        runtime.controller.install(controller);
+        runtime
+            .accept_planned_playlist_install(failed_request_id, failed_player_request_id, install)
+            .expect("automatic target admission");
+
+        let continuation = runtime
+            .report_playlist_navigation_failure(failed_request_id, item_ids[1])
+            .expect("skip policy continues the fixed automatic plan");
+        assert_eq!(continuation.item_id, item_ids[2]);
+        assert!(
+            !runtime
+                .controller
+                .as_ref()
+                .expect("controller remains installed")
+                .view_snapshot()
+                .awaiting_user_after_navigation_failure(),
+            "automatic failure must not enter the manual D55 cursor"
+        );
     }
 }

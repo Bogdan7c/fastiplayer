@@ -753,6 +753,29 @@ fn live_settings_rebuild_passes_active_stream_requirement() {
         );
 }
 
+#[test]
+fn playlist_transport_routes_only_pre_barrier_failure_through_navigation_owner() {
+    let transport_source = include_str!("playlist_transport.rs");
+    let failed_branch = source_section_between(
+        transport_source,
+        "StrongMediaOpenPoll::Failed(error) => {",
+        "/// Неблокирующе отправляет latest Clear reset",
+    );
+
+    assert!(
+        failed_branch.contains(".is_proven_pre_barrier_failure()"),
+        "automatic continuation разрешён только для доказанного pre-barrier failure"
+    );
+    assert!(
+        failed_branch.contains("report_playlist_navigation_failure("),
+        "terminal playlist failure должен вернуться controller-owned navigation owner-у"
+    );
+    assert!(
+        failed_branch.contains("if let Some(install) = automatic_continuation"),
+        "controller-owned automatic continuation должен запускать следующий strong install"
+    );
+}
+
 /// Проверяет, что AppFrameContext отдаёт уже зафиксированный snapshot по ссылке.
 #[test]
 fn app_frame_context_returns_fixed_player_snapshot_reference() {

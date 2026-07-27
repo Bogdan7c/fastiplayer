@@ -4,8 +4,9 @@ use std::sync::{Arc, Mutex};
 
 use video_backend_api::{
     PresentFrameResourceDescriptorLookup, PresentFrameResourceProvider,
-    PresentFrameResourceProviderHandle, PresentFrameResourceProviderLookup, StartedVideoBackend,
-    VideoBackendDecoderThreadHandle,
+    PresentFrameResourceProviderHandle, PresentFrameResourceProviderLookup,
+    SharedVideoBackendDecoderThreadHandle, StartedVideoBackend, VideoBackendLifetimeGuard,
+    share_video_backend_decoder_thread,
 };
 use video_core::{
     DecodeSendError, DecodeThreadError, DecodedFrame, DecoderResourceSnapshot,
@@ -31,11 +32,13 @@ pub fn wrap_video_backend_for_wgpu_submission(
     let backend_id = started_backend.backend_id().to_owned();
     let decoder_thread = started_backend.into_decoder_thread();
     let inner_provider = decoder_thread.resource_provider();
+    let (decoder_thread, backend_lifetime) = share_video_backend_decoder_thread(decoder_thread);
     let submission_queue = WgpuSubmissionQueueBinding::new(queue);
     let renderer_provider =
         PresentFrameResourceProviderHandle::new(WgpuSubmittedResourceProvider {
             inner_provider,
             submission_queue: submission_queue.clone(),
+            backend_lifetime,
         });
     let wrapped_thread = WgpuReleaseVideoDecoderThreadHandle {
         inner: decoder_thread,
@@ -83,6 +86,9 @@ struct PendingSubmittedRelease {
 
     /// Opaque resource handle release boundary-а.
     handle: video_core::FrameResourceHandle,
+
+    /// Renderer-neutral backend owner живёт до фактического resource release-а.
+    _backend_lifetime: VideoBackendLifetimeGuard,
 
     /// Callback и device-lost recovery соревнуются через exactly-once CAS.
     released: AtomicBool,
@@ -152,11 +158,13 @@ impl WgpuSubmissionQueueBinding {
         &self,
         inner_provider: PresentFrameResourceProviderHandle,
         handle: video_core::FrameResourceHandle,
+        backend_lifetime: VideoBackendLifetimeGuard,
     ) {
         let release_id = self.inner.next_release_id.fetch_add(1, Ordering::Relaxed);
         let pending_release = Arc::new(PendingSubmittedRelease {
             inner_provider,
             handle,
+            _backend_lifetime: backend_lifetime,
             released: AtomicBool::new(false),
         });
 
@@ -245,6 +253,9 @@ struct WgpuSubmittedResourceProvider {
 
     /// Renderer-owned queue binding, переключаемый только controlled recreation-ом.
     submission_queue: WgpuSubmissionQueueBinding,
+
+    /// Neutral backend owner для callbacks, переживающих playback decoder handle.
+    backend_lifetime: VideoBackendLifetimeGuard,
 }
 
 impl PresentFrameResourceProvider for WgpuSubmittedResourceProvider {
@@ -280,15 +291,18 @@ impl PresentFrameResourceProvider for WgpuSubmittedResourceProvider {
         // Контракт submitted release: player-core уже передал frame в render submission,
         // поэтому decoder resource можно вернуть inner provider-у только после того,
         // как WGPU подтвердит завершение ранее отправленной работы очереди.
-        self.submission_queue
-            .schedule_release(self.inner_provider.clone(), handle);
+        self.submission_queue.schedule_release(
+            self.inner_provider.clone(),
+            handle,
+            self.backend_lifetime.clone(),
+        );
     }
 }
 
 /// Decoder-thread wrapper, который заменяет provider на renderer-aware wrapper.
 struct WgpuReleaseVideoDecoderThreadHandle {
     /// Concrete decoder thread остаётся владельцем decode/flush/unsubmitted release.
-    inner: Box<VideoBackendDecoderThreadHandle>,
+    inner: SharedVideoBackendDecoderThreadHandle,
 
     /// Provider, который player-core сохранит в render leases.
     renderer_provider: PresentFrameResourceProviderHandle,
@@ -410,15 +424,85 @@ mod tests {
         }
     }
 
+    struct LifetimeFakeDecoderThread {
+        provider: PresentFrameResourceProviderHandle,
+        drop_count: Arc<AtomicUsize>,
+    }
+
+    impl Drop for LifetimeFakeDecoderThread {
+        fn drop(&mut self) {
+            self.drop_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    impl VideoDecoderThreadHandle for LifetimeFakeDecoderThread {
+        type ResourceProvider = PresentFrameResourceProviderHandle;
+
+        fn backend_name(&self) -> &'static str {
+            "lifetime fake decoder"
+        }
+
+        fn send_packet(&self, _packet: video_core::DecodePacket) -> Result<(), DecodeSendError> {
+            Err(DecodeSendError::Fatal(DecodeThreadError::new(
+                "lifetime fake does not decode",
+            )))
+        }
+
+        fn release_frame(&self, handle: video_core::FrameResourceHandle) {
+            self.provider.release_frame(handle);
+        }
+
+        fn try_recv_frame(&self) -> Option<DecodedFrame> {
+            None
+        }
+
+        fn try_recv_diagnostic_event(&self) -> Option<VideoDecoderDiagnosticEvent> {
+            None
+        }
+
+        fn try_recv_error(&self) -> Option<DecodeThreadError> {
+            None
+        }
+
+        fn flush(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn resource_provider(&self) -> Self::ResourceProvider {
+            self.provider.clone()
+        }
+
+        fn decoder_resource_snapshot(&self) -> Option<DecoderResourceSnapshot> {
+            None
+        }
+
+        fn packet_queue_depth(&self) -> usize {
+            0
+        }
+
+        fn drain_completed_packet_count(&self) -> usize {
+            0
+        }
+    }
+
     #[test]
     fn submitted_release_guard_prevents_callback_and_device_lost_double_release() {
         let release_count = Arc::new(AtomicUsize::new(0));
         let provider = PresentFrameResourceProviderHandle::new(CountingResourceProvider {
             release_count: release_count.clone(),
         });
+        let decoder_drop_count = Arc::new(AtomicUsize::new(0));
+        let decoder_thread: Box<video_backend_api::VideoBackendDecoderThreadHandle> =
+            Box::new(LifetimeFakeDecoderThread {
+                provider: provider.clone(),
+                drop_count: decoder_drop_count.clone(),
+            });
+        let (shared_decoder, backend_lifetime) = share_video_backend_decoder_thread(decoder_thread);
+        drop(shared_decoder);
         let pending_release = PendingSubmittedRelease {
             inner_provider: provider,
             handle: video_core::FrameResourceHandle(41),
+            _backend_lifetime: backend_lifetime,
             released: AtomicBool::new(false),
         };
 
@@ -426,5 +510,8 @@ mod tests {
         pending_release.release_once();
 
         assert_eq!(release_count.load(Ordering::Relaxed), 1);
+        assert_eq!(decoder_drop_count.load(Ordering::Relaxed), 0);
+        drop(pending_release);
+        assert_eq!(decoder_drop_count.load(Ordering::Relaxed), 1);
     }
 }

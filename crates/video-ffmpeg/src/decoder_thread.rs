@@ -254,6 +254,7 @@ impl FfmpegVideoDecoderThread {
                     resource_provider: worker_resource_provider,
                     release_notify_rx,
                     pending_packet: None,
+                    pending_eof_drain_generation: None,
                     packet_ack_tx,
                     error_tx,
                     software_decode_thread_budget: worker_software_decode_thread_budget,
@@ -642,6 +643,9 @@ struct FfmpegDecoderWorker {
     /// once a slot frees instead of overflowing the resource table.
     pending_packet: Option<DecodePacket>,
 
+    /// EOF generation, чей FFmpeg tail ждёт освобождения host-upload slots.
+    pending_eof_drain_generation: Option<u64>,
+
     /// Packet completion acknowledgements for player in-flight accounting.
     packet_ack_tx: Sender<usize>,
 
@@ -686,6 +690,13 @@ impl FfmpegDecoderWorker {
                 continue;
             }
 
+            if let Some(generation) = self.pending_eof_drain_generation {
+                self.drive_end_of_stream_drain(generation);
+                if self.resource_provider.free_slots() == 0 {
+                    continue;
+                }
+            }
+
             crossbeam_channel::select! {
                 recv(control_rx) -> control_message => {
                     match control_message {
@@ -714,11 +725,13 @@ impl FfmpegDecoderWorker {
             FfmpegDecoderControl::Configure { config, reply_tx } => {
                 // Любой отложенный packet принадлежит прошлой конфигурации.
                 self.pending_packet = None;
+                self.pending_eof_drain_generation = None;
                 let result = self.configure_stream(config);
                 let _ = reply_tx.try_send(result);
             }
             FfmpegDecoderControl::Clear { reply_tx } => {
                 self.pending_packet = None;
+                self.pending_eof_drain_generation = None;
                 let result = self.clear_stream();
                 let _ = reply_tx.try_send(result);
             }
@@ -726,6 +739,7 @@ impl FfmpegDecoderWorker {
                 // Seek flush сбрасывает очередь packet-ов; pending packet тоже
                 // относится к до-seek потоку и должен быть отброшен.
                 self.pending_packet = None;
+                self.pending_eof_drain_generation = None;
                 self.drop_queued_packets_after_seek_flush(packet_rx);
                 let result = self
                     .flush_for_seek()
@@ -811,6 +825,28 @@ impl FfmpegDecoderWorker {
     }
 
     fn begin_end_of_stream_drain(&mut self, generation: u64) -> VideoDecoderEndOfStreamDrainResult {
+        let current_state = self
+            .active_decoder
+            .as_ref()
+            .map(|decoder| decoder.decode_loop.end_of_stream_drain_state());
+        if matches!(
+            current_state,
+            Some(VideoDecoderEndOfStreamDrainState::Draining {
+                generation: active_generation,
+            } | VideoDecoderEndOfStreamDrainState::Drained {
+                generation: active_generation,
+            }) if active_generation == generation
+        ) {
+            return VideoDecoderEndOfStreamDrainResult::Unchanged(
+                current_state.expect("matched state is present"),
+            );
+        }
+
+        self.drive_end_of_stream_drain(generation)
+    }
+
+    /// Делает один bounded receive-pass; run-loop повторит его после release notification.
+    fn drive_end_of_stream_drain(&mut self, generation: u64) -> VideoDecoderEndOfStreamDrainResult {
         let drain_result = {
             let Some(active_decoder) = self.active_decoder.as_mut() else {
                 let drained = VideoDecoderEndOfStreamDrainState::Drained { generation };
@@ -823,18 +859,9 @@ impl FfmpegDecoderWorker {
                         decode_thread_error_from_ffmpeg(error),
                     );
                 }
+                self.pending_eof_drain_generation = None;
                 return VideoDecoderEndOfStreamDrainResult::Started(drained);
             };
-
-            let current_state = active_decoder.decode_loop.end_of_stream_drain_state();
-            if matches!(
-                current_state,
-                VideoDecoderEndOfStreamDrainState::Draining { generation: active_generation }
-                    | VideoDecoderEndOfStreamDrainState::Drained { generation: active_generation }
-                    if active_generation == generation
-            ) {
-                return VideoDecoderEndOfStreamDrainResult::Unchanged(current_state);
-            }
 
             let receive_budget = self.resource_provider.free_slots();
             let config = active_decoder.config.clone();
@@ -856,8 +883,14 @@ impl FfmpegDecoderWorker {
                         },
                         &self.activity_notifier,
                     );
+                    self.pending_eof_drain_generation = None;
                     VideoDecoderEndOfStreamDrainResult::Fatal(thread_error)
                 } else {
+                    self.pending_eof_drain_generation = matches!(
+                        progress_report.state,
+                        VideoDecoderEndOfStreamDrainState::Draining { .. }
+                    )
+                    .then_some(generation);
                     VideoDecoderEndOfStreamDrainResult::Started(progress_report.state)
                 }
             }
@@ -871,6 +904,7 @@ impl FfmpegDecoderWorker {
                     },
                     &self.activity_notifier,
                 );
+                self.pending_eof_drain_generation = None;
                 VideoDecoderEndOfStreamDrainResult::Fatal(thread_error)
             }
         }

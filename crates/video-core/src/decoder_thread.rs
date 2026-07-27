@@ -21,7 +21,7 @@ pub use protocol::{
     VideoStreamDecodeConfig, VideoStreamPacketization,
 };
 
-pub trait VideoDecoderThreadHandle: Send {
+pub trait VideoDecoderThreadHandle: Send + Sync {
     /// Renderer/resource provider, который decoder отдаёт владельцу presentation path.
     type ResourceProvider: Clone + Send + Sync + 'static;
 

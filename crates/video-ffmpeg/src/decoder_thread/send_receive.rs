@@ -198,6 +198,9 @@ pub(super) struct SendReceiveDecodeLoop<A: SendReceiveCodecApi> {
     /// Shared EOF/DPB drain state.
     eof_drain_state: Arc<Mutex<VideoDecoderEndOfStreamDrainState>>,
 
+    /// Generation, для которого FFmpeg уже принял единственный NULL EOF packet.
+    eof_sent_generation: Option<u64>,
+
     /// Activity notifier for frame/packet/drain progress.
     activity_notifier: VideoDecoderActivityNotifier,
 
@@ -218,6 +221,7 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
             current_generation: None,
             current_context_color: None,
             eof_drain_state,
+            eof_sent_generation: None,
             activity_notifier,
             completed_packet_count: 0,
         }
@@ -308,6 +312,7 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
         self.pts_resolver = FramePtsResolver::default();
         self.current_generation = None;
         self.current_context_color = None;
+        self.eof_sent_generation = None;
         set_eof_drain_state(
             &self.eof_drain_state,
             VideoDecoderEndOfStreamDrainState::Idle,
@@ -322,6 +327,10 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
         generation: u64,
         receive_budget: usize,
     ) -> Result<EofDrainProgressReport, FfmpegDecoderThreadError> {
+        if self.eof_sent_generation == Some(generation) {
+            return self.continue_end_of_stream_drain(generation, receive_budget);
+        }
+
         let mut eagain_without_progress_count = 0usize;
         let mut frames = Vec::new();
 
@@ -343,6 +352,7 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
 
             match self.codec_api.send_end_of_stream() {
                 Ok(()) => {
+                    self.eof_sent_generation = Some(generation);
                     set_eof_drain_state(
                         &self.eof_drain_state,
                         VideoDecoderEndOfStreamDrainState::Draining { generation },
@@ -366,6 +376,12 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
                             VideoDecoderEndOfStreamDrainState::Draining { generation }
                         }
                     };
+
+                    set_eof_drain_state(
+                        &self.eof_drain_state,
+                        state.clone(),
+                        &self.activity_notifier,
+                    )?;
 
                     return Ok(EofDrainProgressReport { state, frames });
                 }
@@ -393,6 +409,7 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
                     }
                 }
                 Err(DecodeApiError::EndOfFile) => {
+                    self.eof_sent_generation = Some(generation);
                     let drained = VideoDecoderEndOfStreamDrainState::Drained { generation };
                     set_eof_drain_state(
                         &self.eof_drain_state,
@@ -407,6 +424,37 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
                 Err(DecodeApiError::Fatal(error)) => return Err(error),
             }
         }
+    }
+
+    /// Продолжает receive-side EOF drain после освобождения bounded pool slots.
+    fn continue_end_of_stream_drain(
+        &mut self,
+        generation: u64,
+        receive_budget: usize,
+    ) -> Result<EofDrainProgressReport, FfmpegDecoderThreadError> {
+        let drain_report = self.receive_until_blocked(
+            generation,
+            None,
+            self.current_context_color.clone(),
+            receive_budget,
+        )?;
+        let state = match drain_report.stop_reason {
+            ReceiveStopReason::EndOfFile => {
+                VideoDecoderEndOfStreamDrainState::Drained { generation }
+            }
+            ReceiveStopReason::NeedMoreInput | ReceiveStopReason::ResourceBudgetReached => {
+                VideoDecoderEndOfStreamDrainState::Draining { generation }
+            }
+        };
+        set_eof_drain_state(
+            &self.eof_drain_state,
+            state.clone(),
+            &self.activity_notifier,
+        )?;
+        Ok(EofDrainProgressReport {
+            state,
+            frames: drain_report.frames,
+        })
     }
 
     pub(super) fn end_of_stream_drain_state(&self) -> VideoDecoderEndOfStreamDrainState {

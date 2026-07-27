@@ -37,3 +37,8 @@ Source doc: `user/ffmpeg_backend_design.md` and `user/ffmpeg_sw_implementation_s
 - `FfmpegDecoderThreadError` больше не содержит future-only `DecodeNotImplemented`: production decoder path полностью реализован, variant не имел constructors/references и не являлся serialized/wire contract. Поддерживаемые состояния остаются typed (`FeatureDisabled`, `ThreadSpawn`, `DecoderNotConfigured`, `ProtocolViolation`, `Ffi`); новый runtime caller ради сохранения dormant variant не добавлялся.
 
 - S27 YouTube Baseline proof (2026-07-22): `FfmpegSoftwareCapabilityProvider` advertises exact ordinary Baseline 8-bit 4:2:0 host-planar output and `codec_adapter` accepts it without profile aliasing. With VA-API deliberately unavailable through test-only environment, the debug app selected `ffmpeg-software` + `ffmpeg-host-upload-wgpu` for the explicit YouTube URL, opened the H.264/AAC seekable media and started audio; strict affected Clippy and the full affected test suite passed.
+
+## Bounded EOF continuation (2026-07-27)
+- FFmpeg EOF NULL packet отправляется ровно один раз на generation. Если DPB tail превышает свободный HostPlanar pool budget, `FfmpegDecoderWorker` сохраняет pending EOF generation и самостоятельно продолжает только receive-side drain после `release_notify_rx`; player не обязан повторно вызывать begin-drain.
+- Configure/Clear/seek Flush сбрасывают pending EOF continuation вместе с old-generation pending packet. Shared state остаётся `Draining` до terminal libavcodec EOF, затем публикуется `Drained`; receive/publish fatal очищает continuation и публикует typed `Fatal`.
+- Focused regression `eof_drain_with_budget_reports_draining_when_capped` доказывает multi-budget tail, single EOF send и final `Drained`.

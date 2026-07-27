@@ -313,9 +313,24 @@ impl AppState {
                         queued.supersedes,
                     );
                 } else {
-                    playlist_runtime
-                        .report_playlist_navigation_failure(failed_request_id, active_item_id);
+                    let automatic_continuation = error
+                        .is_proven_pre_barrier_failure()
+                        .then(|| {
+                            playlist_runtime.report_playlist_navigation_failure(
+                                failed_request_id,
+                                active_item_id,
+                            )
+                        })
+                        .flatten();
                     warn!(error = %error, "Playlist navigation install завершился ошибкой");
+                    if let Some(install) = automatic_continuation {
+                        self.begin_planned_playlist_install(
+                            playlist_runtime,
+                            renderer,
+                            install,
+                            None,
+                        );
+                    }
                 }
             }
         }

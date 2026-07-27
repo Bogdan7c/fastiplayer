@@ -171,6 +171,32 @@ fn eof_drain_with_budget_reports_draining_when_capped() {
         report.state,
         VideoDecoderEndOfStreamDrainState::Draining { generation: 9 }
     ));
+
+    let continuation = decode_loop
+        .begin_end_of_stream_drain(9, 1)
+        .expect("released pool slot should continue receive-side EOF drain");
+
+    assert_eq!(decode_loop.codec_api.end_of_stream_send_count, 1);
+    assert_eq!(continuation.frames.len(), 1);
+    assert_eq!(
+        continuation.state,
+        VideoDecoderEndOfStreamDrainState::Draining { generation: 9 }
+    );
+
+    let completion = decode_loop
+        .begin_end_of_stream_drain(9, 1)
+        .expect("next released slot should observe terminal FFmpeg EOF");
+
+    assert_eq!(decode_loop.codec_api.end_of_stream_send_count, 1);
+    assert!(completion.frames.is_empty());
+    assert_eq!(
+        completion.state,
+        VideoDecoderEndOfStreamDrainState::Drained { generation: 9 }
+    );
+    assert_eq!(
+        decode_loop.end_of_stream_drain_state(),
+        VideoDecoderEndOfStreamDrainState::Drained { generation: 9 }
+    );
 }
 
 #[test]

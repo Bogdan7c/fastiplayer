@@ -366,7 +366,7 @@ fn decoder_thread_for_control_tests(
         frame_rx,
         packet_ack_rx,
         error_rx,
-        diagnostic_rx,
+        diagnostic_rx: Mutex::new(diagnostic_rx),
         activity_subscription,
         resource_pool: Arc::new(Mutex::new(crate::resource_pool::FrameResourcePool::new())),
         thread_state,

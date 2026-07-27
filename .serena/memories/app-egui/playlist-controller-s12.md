@@ -48,3 +48,7 @@ Session 12 completed PASS on 2026-07-15. This memory extends `mem:app-egui/playl
 - Исторические D58/stop-after-current пункты выше больше не описывают production behavior. One-shot latch, toggle outcomes, deferred intent, clean-Ended/tombstone branches и special install cancellation cause удалены целиком по решению пользователя.
 - D42/D50/D53-D57 holds, D26 deferred automatic continuation/cancel, RepeatOne/RepeatQueue/StopAtEnd, manual navigation, explicit Neutral Stop и exact install barrier остаются без изменения и покрыты full workspace tests.
 - Актуальный removal contract: `mem:app-egui/stop-after-current-removed-2026-07-18`.
+
+## Automatic target preparation failure continuation (2026-07-27)
+- Strong-install terminal failure routes through `report_automatic_target_failure` before manual D55 fallback. Matching automatic request preserves the domain-owned fixed traversal plan, applies Stop/Skip policy and may return the next `PlannedPlaylistInstall`; only `StaleRequest` is eligible for manual-navigation handling.
+- Continuation starts only for `StrongMediaOpenError::is_proven_pre_barrier_failure()`. Ambiguous/post-barrier failures never advance the queue because old-vs-new installed ownership is no longer safely inferable. Focused coverage proves failed automatic target skips to the next fixed-plan item without arming the manual awaiting-user cursor.

@@ -23,6 +23,31 @@ pub use detached_backend::{
 pub type VideoBackendDecoderThreadHandle =
     dyn video_core::VideoDecoderThreadHandle<ResourceProvider = PresentFrameResourceProviderHandle>;
 
+/// Shared renderer-neutral owner decoder thread-а.
+pub type SharedVideoBackendDecoderThreadHandle = Arc<VideoBackendDecoderThreadHandle>;
+
+/// Opaque keepalive, который renderer удерживает до завершения submitted resource release.
+#[derive(Clone)]
+pub struct VideoBackendLifetimeGuard {
+    /// Concrete backend остаётся скрыт за neutral decoder boundary.
+    _decoder_thread: SharedVideoBackendDecoderThreadHandle,
+}
+
+/// Делит decoder owner между playback handle и renderer completion callbacks.
+#[must_use]
+pub fn share_video_backend_decoder_thread(
+    decoder_thread: Box<VideoBackendDecoderThreadHandle>,
+) -> (
+    SharedVideoBackendDecoderThreadHandle,
+    VideoBackendLifetimeGuard,
+) {
+    let decoder_thread: SharedVideoBackendDecoderThreadHandle = Arc::from(decoder_thread);
+    let lifetime_guard = VideoBackendLifetimeGuard {
+        _decoder_thread: decoder_thread.clone(),
+    };
+    (decoder_thread, lifetime_guard)
+}
+
 /// Запущенный video backend, подготовленный composition layer-ом для playback pipeline.
 pub struct StartedVideoBackend {
     /// Canonical backend id из capability report-а, например `vaapi` или `ffmpeg-sw`.
@@ -725,6 +750,21 @@ mod tests {
         let decoder_thread = started_backend.into_decoder_thread();
 
         assert_eq!(decoder_thread.backend_name(), "startup fake decoder");
+    }
+
+    #[test]
+    fn renderer_lifetime_guard_keeps_shared_decoder_owner_alive() {
+        let decoder_thread: Box<VideoBackendDecoderThreadHandle> =
+            Box::new(StartupFakeDecoderThread);
+        let (shared_decoder, lifetime_guard) = share_video_backend_decoder_thread(decoder_thread);
+
+        assert_eq!(Arc::strong_count(&lifetime_guard._decoder_thread), 2);
+        drop(shared_decoder);
+        assert_eq!(Arc::strong_count(&lifetime_guard._decoder_thread), 1);
+        assert_eq!(
+            lifetime_guard._decoder_thread.backend_name(),
+            "startup fake decoder"
+        );
     }
 
     /// Проверяет success path factory без concrete backend dependency.

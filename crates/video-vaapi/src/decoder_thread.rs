@@ -578,7 +578,7 @@ pub struct VideoDecodeThread {
     frame_rx: Receiver<DecodedFrame>,
     packet_ack_rx: Receiver<DecodePacketAck>,
     error_rx: Receiver<DecodeThreadError>,
-    diagnostic_rx: DecoderDiagnosticReceiver,
+    diagnostic_rx: Mutex<DecoderDiagnosticReceiver>,
     activity_subscription: VideoDecoderActivitySubscription,
     resource_pool: Arc<Mutex<crate::resource_pool::FrameResourcePool>>,
     thread_state: DecoderThreadState,
@@ -688,7 +688,7 @@ impl VideoDecodeThread {
             frame_rx,
             packet_ack_rx,
             error_rx,
-            diagnostic_rx,
+            diagnostic_rx: Mutex::new(diagnostic_rx),
             activity_subscription,
             resource_pool,
             thread_state,
@@ -1085,7 +1085,13 @@ impl VideoDecodeThread {
 
     /// Забирает backend diagnostics event без блокировки.
     pub fn try_recv_diagnostic_event(&self) -> Option<VideoDecoderDiagnosticEvent> {
-        self.diagnostic_rx.try_recv().ok()
+        match self.diagnostic_rx.lock() {
+            Ok(receiver) => receiver.try_recv().ok(),
+            Err(poisoned) => {
+                tracing::error!("VA-API diagnostic receiver mutex poisoned");
+                poisoned.into_inner().try_recv().ok()
+            }
+        }
     }
 
     /// Возвращает нейтральный snapshot decoder activity для player-side wait boundary.

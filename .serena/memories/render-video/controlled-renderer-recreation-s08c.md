@@ -15,3 +15,8 @@
 ## S25 integration note (2026-07-22)
 - Controlled same-item candidate switching reuses the existing player-selected candidate ownership and renderer-generation commit path; it adds no second renderer/backend authority. Same/cross-class swaps retain exactly-once candidate release, and audio-only installs explicitly finish the present-frame freeze after generation change.
 - See `mem:app-egui/same-item-candidate-switch-s25-2026-07-22`.
+
+## Submitted-release backend lifetime (2026-07-27)
+- Each WGPU pending submitted release retains a renderer-neutral `VideoBackendLifetimeGuard` until callback cleanup or proven-device-lost force release. Replacing/dropping the playback decoder handle therefore cannot destroy a VA-API/FFmpeg backend before its delayed provider release reaches the decoder thread.
+- `video-backend-api` owns the shared decoder/opaque guard boundary; `render-wgpu-video` owns callback registration and exactly-once CAS release. No WGPU type enters backend API and no concrete decoder type enters the renderer. Focused tests prove decoder owner survives playback-handle drop and is destroyed after the final pending guard drops.
+- AMD Radeon 780M release-runtime acceptance (2026-07-27) exercised HostPlanar CPU upload and repeated VA-API NV12 DMA-BUF installs in one process, then clean shutdown. `Failed to send zero-copy release to decoder thread`/disconnect were absent; all sampled `decoder_release_control_send_fail_count` and `import_failures` stayed zero. One independent pre-barrier yt-dlp candidate `PreparationFailed` preserved active DMA-BUF playback and is not a backend-lifetime failure.
