@@ -83,7 +83,7 @@
 
 ## Slice G unified web-media picker (2026-07-26)
 
-- Process-lifetime bounded catalog discovery, dependent mode/codec/resolution/FPS/HDR UI, session-only per-item semantic preferences, exact-Installed automatic restore/fallback, and planner-owned source-order-independent opaque grouping are active. HLS/DASH neutral catalog dependencies are guardrail-approved; full ownership, fencing, lifecycle and verification are in `mem:app-egui/web-media-picker-slice-g-2026-07-26`.
+- The web-media picker publishes a complete planner-playable yt-dlp declared catalog synchronously after exact Installed: no sibling candidate open, top-N limit, catalog worker or provider-manifest enrichment. Dependent mode/codec/resolution/FPS/HDR UI, session-only per-item semantic preferences, exact-Installed automatic restore/fallback and planner-owned source-order-independent opaque grouping remain active; selected-candidate HLS/DASH/HDS/Smooth component axes stay separate. Full ownership, fencing and verification are in `mem:app-egui/web-media-picker-slice-g-2026-07-26`.
 
 ## S28G existing-demux hardening gate (2026-07-22)
 

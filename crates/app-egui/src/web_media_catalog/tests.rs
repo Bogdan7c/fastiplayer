@@ -3,13 +3,13 @@ use web_media_core::{
     VideoTrackDescriptor, VideoWidth,
 };
 
-use super::model::{WebMediaFacet, WebMediaVerifiedCatalog};
+use super::model::{WebMediaCatalog, WebMediaFacet};
 use super::*;
 
 #[test]
 fn dependent_facets_keep_one_item_and_automatic_missing_metadata_visible() {
     let target = WebMediaSelectionTarget::Fixture(1);
-    let catalog = WebMediaVerifiedCatalog::new(
+    let catalog = WebMediaCatalog::new(
         7,
         crate::web_media_stream_model::WebMediaStreamGeneration::for_test(1, 1),
         vec![WebMediaCatalogChoice {
@@ -24,16 +24,13 @@ fn dependent_facets_keep_one_item_and_automatic_missing_metadata_visible() {
             )),
             rank: web_media_playback_plan::OpaqueAlternativeRank::parent(0),
             target: target.clone(),
-        }],
+        }]
+        .into(),
         &target,
-        2,
-        3,
     )
     .unwrap();
 
     let projection = catalog.picker_projection();
-    assert_eq!(projection.rejected_siblings, 2);
-    assert_eq!(projection.unprobed_siblings, 3);
     assert!(
         projection
             .selectors
@@ -70,13 +67,11 @@ fn upper_facet_change_preserves_reachable_lower_facets() {
         })
         .collect::<Vec<_>>();
     let active = choices[0].target.clone();
-    let catalog = WebMediaVerifiedCatalog::new(
+    let catalog = WebMediaCatalog::new(
         9,
         crate::web_media_stream_model::WebMediaStreamGeneration::for_test(1, 1),
-        choices,
+        choices.into(),
         &active,
-        0,
-        0,
     )
     .unwrap();
     let codec = catalog
@@ -118,13 +113,11 @@ fn lower_facet_action_never_escapes_selected_upper_prefix() {
         choice(2, vp9, 1080, 30, DynamicRange::Sdr),
     ];
     let active = choices[0].target.clone();
-    let catalog = WebMediaVerifiedCatalog::new(
+    let catalog = WebMediaCatalog::new(
         11,
         crate::web_media_stream_model::WebMediaStreamGeneration::for_test(1, 1),
-        choices,
+        choices.into(),
         &active,
-        0,
-        0,
     )
     .unwrap();
     let projection = catalog.picker_projection();
@@ -189,13 +182,11 @@ fn identical_visible_alternatives_use_planner_rank_not_catalog_order() {
         vec![active.clone(), preferred.clone(), fallback.clone()],
         vec![fallback.clone(), preferred.clone(), active.clone()],
     ] {
-        let catalog = WebMediaVerifiedCatalog::new(
+        let catalog = WebMediaCatalog::new(
             12,
             crate::web_media_stream_model::WebMediaStreamGeneration::for_test(1, 1),
-            choices,
+            choices.into(),
             &active.target,
-            0,
-            0,
         )
         .unwrap();
         let projection = catalog.picker_projection();

@@ -113,7 +113,7 @@ impl AppState {
             }
             None => {
                 self.pending_automatic_web_media_switch = None;
-                // Provider default уже прошёл exact Installed; он является допустимым
+                // Уже установленный yt-dlp choice прошёл exact Installed и является допустимым
                 // fallback commit point без второй бессмысленной same-item транзакции.
                 playlist_runtime.remember_web_media_preference(
                     item_id,

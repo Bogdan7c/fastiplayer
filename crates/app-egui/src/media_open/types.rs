@@ -101,7 +101,7 @@ pub(crate) enum ActiveMediaSource {
         composed_selection: Option<Box<service_ytdlp::YtDlpComposedSelection>>,
         /// UI-safe installed inventory без URL, headers/cookies и candidate IDs.
         stream_configuration: Box<crate::web_media_stream_model::WebMediaStreamConfiguration>,
-        /// Runtime-only provider discovery; Debug и persistence его не раскрывают.
+        /// Runtime-only declared catalog; Debug и persistence не раскрывают opaque identities.
         catalog_attachment: crate::web_media_catalog::WebMediaCatalogAttachment,
     },
     /// Exact functional direct locator с service-owned redacted formatting.

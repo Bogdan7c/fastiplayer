@@ -236,47 +236,6 @@ pub(super) fn prepare_smooth_candidate(
     })
 }
 
-/// Provider-owned sibling discovery, выполняемый только catalog worker-ом.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn discover_smooth_candidate_catalog(
-    candidate: &YtDlpNormalizedCandidate,
-    provider_id: TransportProviderId,
-    source_config: &SourceRuntimeConfig,
-    network_config: &NetworkConfig,
-    demux_registry: Arc<DemuxRegistry>,
-    cancellation: CancellationToken,
-    preferred_height: PreferredHeightPolicy,
-    catalog_identity: web_media_core::ComponentVariantCatalogIdentity,
-    capability_probe: &crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
-) -> Result<crate::web_media_open::catalog::DiscoveredProviderCatalog> {
-    let adaptive_limits =
-        crate::web_media_adaptive_config::adaptive_transport_limits(network_config)?;
-    let context = YtDlpTransportRequestContext::new(
-        provider_id,
-        crate::web_media_adaptive_config::initial_adaptive_source_generation(),
-        cancellation,
-    );
-    let transport = candidate.smooth_manifest_transport_request(&context)?;
-    let factory = Arc::new(AppSmoothIsoBmffDemuxFactory::new(demux_registry)?);
-    let discovered = discover_smooth_vod_catalog(SmoothCatalogDiscoveryRequest::new(
-        SmoothPrepareRequest::new(
-            transport,
-            source_config,
-            catalog_identity.generation(),
-            preferred_height,
-            preparation_policy(adaptive_limits)?,
-        ),
-        factory,
-        capability_probe,
-        discovery_policy(adaptive_limits)?,
-    ))?;
-    Ok(crate::web_media_open::catalog::DiscoveredProviderCatalog {
-        catalog: Arc::new(discovered.catalog().clone()),
-        provider_selection: discovered.provider_default_selection().clone(),
-        rejected_siblings: discovered.sibling_rejections().len(),
-    })
-}
-
 fn discovery_policy(limits: AdaptiveTransportLimits) -> Result<SmoothCatalogDiscoveryPolicy> {
     Ok(SmoothCatalogDiscoveryPolicy::new(
         fragment_source_policy(limits)?,

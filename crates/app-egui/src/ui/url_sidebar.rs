@@ -133,14 +133,14 @@ fn show_stream_picker(
     pending: bool,
 ) -> Option<UrlSidebarAction> {
     match catalog {
-        WebMediaCatalogState::Inactive | WebMediaCatalogState::Loading { .. } => {
-            ui.label(RichText::new("Проверяем варианты...").strong());
+        WebMediaCatalogState::Inactive => {
+            ui.label(RichText::new("Варианты недоступны.").strong());
             None
         }
         WebMediaCatalogState::Failed { .. } => {
             ui.colored_label(
                 ui.visuals().error_fg_color,
-                "Не удалось проверить доступные варианты.",
+                "Не удалось подготовить доступные варианты.",
             );
             None
         }
@@ -181,18 +181,6 @@ fn show_stream_picker(
             });
             if pending {
                 ui.weak("Переключаем поток...");
-            }
-            if projection.rejected_siblings > 0 {
-                ui.weak(format!(
-                    "Скрыто неподдерживаемых вариантов: {}",
-                    projection.rejected_siblings
-                ));
-            }
-            if projection.unprobed_siblings > 0 {
-                ui.weak(format!(
-                    "Не проверено вариантов из-за лимита: {}",
-                    projection.unprobed_siblings
-                ));
             }
             action
         }

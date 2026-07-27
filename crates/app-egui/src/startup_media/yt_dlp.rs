@@ -12,7 +12,7 @@ pub(crate) struct PreparedYtDlpStartupMedia {
     /// UI-safe inventory того же extraction snapshot-а.
     pub(crate) stream_configuration: crate::web_media_stream_model::WebMediaStreamConfiguration,
 
-    /// Runtime-only background catalog discovery attachment.
+    /// Runtime-only declared yt-dlp catalog attachment.
     pub(crate) catalog_attachment: crate::web_media_catalog::WebMediaCatalogAttachment,
 
     /// S31L publication boundary для HLS live; VOD оставляет поле пустым.

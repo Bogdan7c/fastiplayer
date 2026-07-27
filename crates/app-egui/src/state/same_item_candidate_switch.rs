@@ -623,13 +623,6 @@ fn picker_selection_intent(
                 stream_configuration.preference(),
             ),
         ),
-        crate::web_media_catalog::WebMediaSelectionTarget::Provider { parent, selection } => Ok(
-            crate::web_media_open::YtDlpCandidateOpenIntent::exact_with_component_semantic_selection(
-                parent.clone(),
-                stream_configuration,
-                selection.clone(),
-            ),
-        ),
         crate::web_media_catalog::WebMediaSelectionTarget::Composed {
             selection,
             parent_preference,

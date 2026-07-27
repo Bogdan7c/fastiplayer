@@ -127,39 +127,6 @@ pub(super) fn prepare_hds_candidate(
     })
 }
 
-/// Выполняет provider-owned HDS rendition discovery на catalog worker-е.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn discover_hds_candidate_catalog(
-    candidate: &YtDlpNormalizedCandidate,
-    provider_id: TransportProviderId,
-    source_config: &SourceRuntimeConfig,
-    network_config: &NetworkConfig,
-    demux_registry: Arc<DemuxRegistry>,
-    cancellation: CancellationToken,
-    preferred_height: PreferredHeightPolicy,
-    catalog_identity: web_media_core::ComponentVariantCatalogIdentity,
-    capability_probe: &crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
-) -> Result<crate::web_media_open::catalog::DiscoveredProviderCatalog> {
-    let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
-    let context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation);
-    let transport_request = candidate.hds_transport_request(&context)?;
-    let limits = crate::web_media_adaptive_config::adaptive_transport_limits(network_config)?;
-    let discovered = discover_hds_renditions(HdsCatalogDiscoveryRequest {
-        transport_request,
-        source_config: source_config.clone(),
-        demux_registry,
-        policy: hds_policy(limits)?,
-        catalog_identity,
-        capability_probe,
-        preferred_height,
-    })?;
-    Ok(crate::web_media_open::catalog::DiscoveredProviderCatalog {
-        catalog: Arc::new(discovered.catalog().clone()),
-        provider_selection: discovered.provider_default().clone(),
-        rejected_siblings: discovered.rejections().len(),
-    })
-}
-
 /// Останавливает HDS live/DVR до materialization request-а и любого network I/O.
 fn ensure_hds_vod_intent(live_intent: YtDlpLiveIntent) -> Result<()> {
     if matches!(

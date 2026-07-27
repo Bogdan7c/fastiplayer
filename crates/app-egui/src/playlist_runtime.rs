@@ -333,7 +333,6 @@ pub(crate) struct PlaylistShutdownReport {
     pub(crate) url_import: ProcessOwnerShutdownOutcome,
     pub(crate) export_io: ProcessOwnerShutdownOutcome,
     pub(crate) media_open: ProcessOwnerShutdownOutcome,
-    pub(crate) web_media_catalog: ProcessOwnerShutdownOutcome,
     pub(crate) startup: startup::PlaylistStartupShutdownOutcome,
     pub(crate) persistence: persistence::PlaylistPersistenceShutdownOutcome,
     pub(crate) resume_persistence: playlist_state::ResumeWorkerShutdownOutcome,
@@ -473,7 +472,7 @@ pub(crate) struct PlaylistRuntime {
     discovery: discovery::PlaylistDiscoveryCoordinator,
     /// Process-lifetime reusable preparation/install mechanism Session 10C.
     media_open: MediaOpenCoordinator,
-    /// Verified sibling discovery и session-only semantic preference живут process lifetime.
+    /// Declared yt-dlp catalog и session-only semantic preference живут process lifetime.
     web_media_catalog: web_media_catalog::PlaylistWebMediaCatalogOwner,
     /// Runtime-only active source/checkpoint переживают renderer-bound `AppState` recreation.
     suspended_media: suspend_resume::SuspendedMediaState,
@@ -522,8 +521,7 @@ impl PlaylistRuntime {
         let export_io = export_io::PlaylistExportIoOwner::new(wake_port.clone());
         let desktop_transport = desktop_transport::DesktopTransportOwner::new(wake_port.clone());
         let media_open = MediaOpenCoordinator::new(wake_port.clone());
-        let web_media_catalog =
-            web_media_catalog::PlaylistWebMediaCatalogOwner::new(wake_port.clone());
+        let web_media_catalog = web_media_catalog::PlaylistWebMediaCatalogOwner::new();
         let startup = startup::PlaylistStartupOwner::new(wake_port.clone());
         let discovery = discovery::PlaylistDiscoveryCoordinator::new(wake_port.clone());
         let (publisher, owner_receiver) = owner_mailbox(wake_port);
@@ -680,14 +678,12 @@ impl PlaylistRuntime {
     pub(crate) fn drain_owner_mailbox(&mut self) -> bool {
         let owner_changed = self.owner_receiver.drain().has_payload();
         let media_open_changed = self.media_open.drain();
-        let web_media_catalog_changed = self.web_media_catalog.drain();
         let dialog_changed = self.drain_playlist_file_dialog();
         let import_changed = self.drain_playlist_import_job();
         let url_import_changed = self.drain_playlist_url_import_job();
         let export_changed = self.drain_playlist_export_job();
         owner_changed
             || media_open_changed
-            || web_media_catalog_changed
             || dialog_changed
             || import_changed
             || url_import_changed
@@ -757,7 +753,6 @@ impl PlaylistRuntime {
         self.export_io.cancel_active();
         let export_io = self.export_io.shutdown_until(deadline);
         let media_open = self.media_open.shutdown_until(deadline);
-        let web_media_catalog = self.web_media_catalog.shutdown_until(deadline.expires_at());
         let startup = self.startup.shutdown_until(deadline);
         let persistence = self
             .persistence
@@ -769,7 +764,6 @@ impl PlaylistRuntime {
             url_import,
             export_io,
             media_open,
-            web_media_catalog,
             startup,
             persistence,
             resume_persistence,
@@ -834,19 +828,16 @@ impl PlaylistShutdownReport {
                     pending_threads: 1..,
                     ..
                 }
-        ) || web_media_catalog::requires_process_exit(self.web_media_catalog)
-            || matches!(
-                self.startup,
-                startup::PlaylistStartupShutdownOutcome::TimedOut
-            )
-            || matches!(
-                self.persistence,
-                persistence::PlaylistPersistenceShutdownOutcome::TimedOut { .. }
-            )
-            || matches!(
-                self.resume_persistence,
-                playlist_state::ResumeWorkerShutdownOutcome::TimedOut
-            )
+        ) || matches!(
+            self.startup,
+            startup::PlaylistStartupShutdownOutcome::TimedOut
+        ) || matches!(
+            self.persistence,
+            persistence::PlaylistPersistenceShutdownOutcome::TimedOut { .. }
+        ) || matches!(
+            self.resume_persistence,
+            playlist_state::ResumeWorkerShutdownOutcome::TimedOut
+        )
     }
 
     fn has_terminal_failure(self) -> bool {
@@ -870,7 +861,6 @@ impl PlaylistShutdownReport {
             self.media_open,
             ProcessOwnerShutdownOutcome::ThreadPanicked { .. }
         );
-        let catalog_failed = web_media_catalog::has_terminal_failure(self.web_media_catalog);
         let startup_failed = shutdown_report::startup_failed(self.startup);
         let persistence_failed = match self.persistence {
             persistence::PlaylistPersistenceShutdownOutcome::WriterUnavailable { .. }
@@ -897,7 +887,6 @@ impl PlaylistShutdownReport {
             || url_import_failed
             || export_failed
             || media_failed
-            || catalog_failed
             || startup_failed
             || persistence_failed
             || resume_persistence_failed
@@ -1170,7 +1159,6 @@ mod tests {
         let ports = runtime.owner_ports();
         let report = PlaylistShutdownReport {
             media_open: ProcessOwnerShutdownOutcome::TimedOut { pending_threads: 1 },
-            web_media_catalog: ProcessOwnerShutdownOutcome::Completed,
             ui_interaction: ProcessOwnerShutdownOutcome::Completed,
             import_io: ProcessOwnerShutdownOutcome::Completed,
             url_import: ProcessOwnerShutdownOutcome::Completed,

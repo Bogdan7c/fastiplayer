@@ -1,8 +1,5 @@
 //! App-owned composition static DASH VOD runtime-а.
 
-mod catalog;
-pub(crate) use catalog::discover_dash_candidate_catalog;
-
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::sync::Arc;
 use std::time::Duration;

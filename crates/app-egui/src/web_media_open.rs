@@ -106,7 +106,7 @@ pub(crate) struct PreparedYtDlpWebMedia {
     pub(crate) composed_selection: Option<Box<service_ytdlp::YtDlpComposedSelection>>,
     /// Secret-safe inventory, публикуемый только вместе с exact Installed source.
     pub(crate) stream_configuration: crate::web_media_stream_model::WebMediaStreamConfiguration,
-    /// Background sibling discovery attachment публикуется только после Installed.
+    /// Полный declared yt-dlp catalog публикуется только после Installed.
     pub(crate) catalog_attachment: crate::web_media_catalog::WebMediaCatalogAttachment,
     /// Neutral S31L port присутствует только у proven HLS live runtime.
     pub(crate) timeline_port: Option<DynamicMediaTimelinePort>,
@@ -330,24 +330,13 @@ pub(crate) fn prepare_yt_dlp_web_media(
     )
     .context("Не удалось финализировать fresh component variant configuration")?;
     ensure_not_cancelled(&is_cancelled)?;
-    let catalog_live_intent = candidate_snapshot.live_intent();
     let catalog_attachment = catalog::catalog_attachment(catalog::CatalogAttachmentRequest {
-        candidate_snapshot,
-        planning_snapshot,
-        active_selection: candidate_selection.clone(),
-        active_composed: composed_selection.clone(),
-        active_component: component_selection_intent,
-        network_config: network_config.clone(),
-        demux_config: *demux_config,
-        system_capabilities: system_capabilities.clone(),
-        audio_capabilities,
-        policy,
-        preferred_height: crate::web_media_quality::preferred_height_policy(
-            yt_dlp_config.preferred_video_height,
-        ),
-        live_intent: catalog_live_intent,
-        locator: locator.clone(),
-        yt_dlp_config: yt_dlp_config.clone(),
+        candidate_snapshot: &candidate_snapshot,
+        planning_snapshot: &planning_snapshot,
+        capabilities,
+        policy: &policy,
+        active_selection: &candidate_selection,
+        active_composed: composed_selection.as_deref(),
     })?;
     Ok(PreparedYtDlpWebMedia {
         demuxer: opened_candidate.demuxer,

@@ -1,14 +1,12 @@
-//! Process-lifetime orchestration verified web-media catalogs.
+//! Process-lifetime orchestration declared web-media catalogs.
 
+mod attachment;
 mod coordinator;
-mod discovery;
 mod model;
 
+pub(crate) use attachment::WebMediaCatalogAttachment;
 pub(crate) use coordinator::{
     WebMediaCatalogCoordinator, WebMediaCatalogCorrelation, WebMediaCatalogScope,
-};
-pub(crate) use discovery::{
-    DiscoveredWebMediaCatalog, WebMediaCatalogAttachment, WebMediaCatalogDiscovery,
 };
 pub(crate) use model::{
     WebMediaCatalogChoice, WebMediaCatalogState, WebMediaFacetAction, WebMediaFacetOption,

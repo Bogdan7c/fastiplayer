@@ -295,66 +295,6 @@ pub(crate) fn prepare_hls_candidate(
     })
 }
 
-/// Выполняет provider-owned sibling proof без изменения active playback.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn discover_hls_candidate_catalog(
-    candidate: &YtDlpNormalizedCandidate,
-    provider_id: TransportProviderId,
-    source_config: &SourceRuntimeConfig,
-    network_config: &NetworkConfig,
-    demux_registry: Arc<DemuxRegistry>,
-    cancellation: CancellationToken,
-    live_intent: service_ytdlp::YtDlpLiveIntent,
-    catalog_identity: web_media_core::ComponentVariantCatalogIdentity,
-    capability_probe: &mut crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
-) -> Result<Option<crate::web_media_open::catalog::DiscoveredProviderCatalog>> {
-    let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
-    let projected = project_hls_runtime_material(
-        candidate,
-        provider_id,
-        generation,
-        source_config,
-        network_config,
-        cancellation,
-    )?;
-    let (selection, containers) = selection_and_containers(candidate.descriptor().layout())?;
-    let open = HlsVodOpenRequest {
-        http: projected.http,
-        generation,
-        manifest: projected.manifest,
-        selection,
-        overrides: projected.overrides,
-        containers,
-        demux_registry,
-        policy: hls_policy(crate::web_media_adaptive_config::adaptive_transport_limits(
-            network_config,
-        )?)?,
-    };
-    let presentation = if live_intent == service_ytdlp::YtDlpLiveIntent::Live {
-        HlsCatalogPresentation::Live
-    } else {
-        HlsCatalogPresentation::Vod
-    };
-    match discover_hls_catalog(
-        HlsCatalogDiscoveryRequest {
-            open: &open,
-            catalog_identity,
-            presentation,
-            policy: hls_catalog_policy()?,
-        },
-        capability_probe,
-    )? {
-        HlsCatalogDiscoveryOutcome::Unavailable => Ok(None),
-        HlsCatalogDiscoveryOutcome::Installed(snapshot) => Ok(Some(
-            crate::web_media_open::catalog::DiscoveredProviderCatalog {
-                catalog: Arc::new(snapshot.catalog().clone()),
-                provider_selection: snapshot.provider_default_selection().clone(),
-                rejected_siblings: snapshot.sibling_rejections().len(),
-            },
-        )),
-    }
-}
-
 fn hls_async_seek_limits() -> ProgressiveAsyncSeekLimits {
     ProgressiveAsyncSeekLimits::new(NonZeroUsize::new(16).expect("HLS outstanding seek receipts"))
 }
