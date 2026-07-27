@@ -847,6 +847,26 @@ fn hls_transport_projection_accepts_hls_fields_without_progressive_profile_rejec
         http_transport_target(&request).origin().scheme(),
         source_core::HttpScheme::Https
     );
+    let sibling_segment =
+        HttpRequestTarget::parse_exact("https://media.invalid/private/segment1.ts")
+            .expect("same-directory sibling");
+    let cross_origin =
+        HttpRequestTarget::parse_exact("https://cdn.invalid/private/segment1.ts")
+            .expect("cross-origin CDN sibling");
+    assert!(
+        request
+            .secrets()
+            .material_for(&sibling_segment, SecretRequestPurpose::MediaSegment)
+            .is_some(),
+        "playlist directory scope must forward secrets to same-origin siblings"
+    );
+    assert!(
+        request
+            .secrets()
+            .material_for(&cross_origin, SecretRequestPurpose::MediaSegment)
+            .is_none(),
+        "cross-origin CDN must stay outside secret scope"
+    );
     let diagnostic = format!("{snapshot:?} {request:?}");
     for secret in ["hls-secret", "hls-cookie", "segment_token", "key_token"] {
         assert!(!diagnostic.contains(secret));

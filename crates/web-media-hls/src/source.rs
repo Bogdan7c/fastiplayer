@@ -163,7 +163,8 @@ impl HlsEpochSegmentSource {
                 purpose,
                 AdaptiveResourceQueryApplication::MergeScopedAddition,
             ),
-        };
+        }
+        .with_secret_forwarding(self.http.resource_secret_forwarding_for(&resource.target));
         self.http
             .fetch_resource_blocking(request)
             .inspect_err(|error| {
@@ -217,13 +218,16 @@ impl HlsEpochSegmentSource {
     ) -> Result<SecretAes128Key, HlsSegmentSourceError> {
         let fetched = self
             .http
-            .fetch_resource_blocking(AdaptiveResourceFetchRequest::full(
-                self.generation,
-                target.clone(),
-                self.maximum_key_resource_bytes,
-                AdaptiveResourcePurpose::EncryptionKey,
-                query_application,
-            ))
+            .fetch_resource_blocking(
+                AdaptiveResourceFetchRequest::full(
+                    self.generation,
+                    target.clone(),
+                    self.maximum_key_resource_bytes,
+                    AdaptiveResourcePurpose::EncryptionKey,
+                    query_application,
+                )
+                .with_secret_forwarding(self.http.resource_secret_forwarding_for(target)),
+            )
             .inspect_err(|error| {
                 self.observe_refreshable_expiry(error, HlsRefreshableResourceKind::EncryptionKey);
             })?;

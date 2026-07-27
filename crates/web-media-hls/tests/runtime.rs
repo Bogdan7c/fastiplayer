@@ -854,6 +854,31 @@ fn stale_cancel_and_missing_container_fail_without_publication_or_network() {
 }
 
 #[test]
+fn main_content_probe_opens_muxed_ts_and_missing_still_rejects() {
+    let segment = Arc::new(muxed_ts(90_000));
+    let server_segment = Arc::clone(&segment);
+    let server = TestServer::start(move |_, request| {
+        if request.request_line.contains("/segment.ts") {
+            response("200 OK", &[], &server_segment)
+        } else {
+            response("404 Not Found", &[], b"")
+        }
+    });
+    let playlist = "#EXTM3U\n\
+                    #EXT-X-TARGETDURATION:1\n\
+                    #EXTINF:1,\n\
+                    segment.ts\n\
+                    #EXT-X-ENDLIST\n";
+    let mut probed = inline_request(&server, playlist, HlsRequiredContainer::TransportStream);
+    probed.containers.main = HlsContainerEvidence::ContentProbe;
+    let opened = prepare_hls_vod(probed).expect("main ContentProbe must open muxed TS");
+    let mut demuxer = opened.into_demuxer();
+    assert_muxed_tracks(next_ready_event(&mut *demuxer).expect("probed TS tracks"));
+    // Probe + playback fetch at least one segment.
+    assert!(!server.requests().is_empty());
+}
+
+#[test]
 fn vod_seek_uses_proven_raps_across_discontinuity_and_fences_rapid_supersede() {
     let first = Arc::new(muxed_ts(0));
     let second = Arc::new(muxed_ts(0));

@@ -238,3 +238,53 @@ fn explicit_suppress_fetches_out_of_scope_and_retries_without_any_secret_materia
     assert!(!diagnostics.contains("suppress-query"));
     assert!(!diagnostics.contains("/segment"));
 }
+
+#[test]
+fn derived_forwarding_intent_fetches_out_of_scope_cdn_without_secrets() {
+    let scoped_server = LocalServer::start(|_, _| response("200 OK", &[], b"manifest"));
+    let foreign_server = LocalServer::start(|_, _| response("200 OK", &[], b"segment"));
+    let scoped_target = scoped_server.target("/manifest.m3u8");
+    let context = context(
+        &scoped_target,
+        CancellationToken::new(),
+        same_origin_redirects(),
+        Some("Bearer cdn-secret"),
+        Some("token=cdn-secret"),
+    );
+    let foreign_target = foreign_server.target("/segment1.ts");
+
+    let rejected = context
+        .fetch_resource_blocking(AdaptiveResourceFetchRequest::full(
+            SourceGeneration::new(1),
+            foreign_target.clone(),
+            NonZeroUsize::new(64).expect("resource bound"),
+            AdaptiveResourcePurpose::MediaSegment,
+            AdaptiveResourceQueryApplication::MergeScopedAddition,
+        ))
+        .expect_err("default ForwardScoped must reject out-of-scope CDN");
+    assert!(matches!(
+        rejected,
+        AdaptiveTransportError::SecretScopeRejected
+    ));
+    assert_eq!(foreign_server.request_count(), 0);
+
+    // Тот же intent, что теперь выставляет HLS через resource_secret_forwarding_for.
+    let fetched = context
+        .fetch_resource_blocking(
+            AdaptiveResourceFetchRequest::full(
+                SourceGeneration::new(1),
+                foreign_target.clone(),
+                NonZeroUsize::new(64).expect("resource bound"),
+                AdaptiveResourcePurpose::MediaSegment,
+                AdaptiveResourceQueryApplication::MergeScopedAddition,
+            )
+            .with_secret_forwarding(context.resource_secret_forwarding_for(&foreign_target)),
+        )
+        .expect("derived Suppress must fetch CDN without secrets");
+
+    assert_eq!(fetched.bytes(), b"segment");
+    let requests = foreign_server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(!requests[0].headers.contains("cdn-secret"));
+    assert!(!requests[0].request_line.contains("cdn-secret"));
+}

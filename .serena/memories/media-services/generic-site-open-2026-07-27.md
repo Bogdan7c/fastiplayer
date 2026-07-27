@@ -28,4 +28,17 @@
   6. Topology после успешного primary parse вызывает ту же recovery boundary для Video/MultiVideo root и повторно парсит recovered Value с теми же budgets; принимает recovered Video. Неуспех recovery fail-open оставляет primary trailer topology.
 - Прямые YouTube URL recovery не запускают. Домены каталогов не allowlist-ятся. `--use-extractors -youtube` по-прежнему отвергнут: Generic не продолжает полезный iframe fallback.
 
+## Deferred HLS ContentProbe + TracksChanged (пусто в источниках, 2026-07-27)
+
+- App ставит `main: ContentProbe` для `HlsMuxedCodecDeferred`; раньше `required_main_container` отвергал Probe как Missing → preparation fail → catalog Inactive («Варианты недоступны» / Info «Медиафайл не открыт»).
+- Фикс: shared `probe_component_container` + `required_main_container(media, base, request)` (Exact|ContentProbe); call sites после media playlist (VOD media/master + live).
+- После open ProgressiveDemuxer стартует с пустыми tracks; `prove_deferred` ждёт initial `TracksChanged` на media-open worker (`wait_for_initial_tracks_changed`) до capability prove.
+
+## HLS CDN + non-empty headers (чёрный экран, 2026-07-27)
+
+- Ashdi-like: playlist origin ≠ segment CDN subdomain; yt-dlp часто кладёт `Referer` → secrets непустые.
+- Баг: HLS fetch/default `ForwardScoped` + file-path secret scope (`index.m3u8`) → `SecretScopeRejected` на сегментах. YouTube часто без `http_headers` → `secrets.is_empty()` обходил.
+- Фикс: `service-ytdlp` HLS path scope = directory плейлиста (`resource_directory_path_scope`, как HDS); `web-media-hls` media/key/manifest — `with_secret_forwarding(http.resource_secret_forwarding_for(&target))` (CDN → `Suppress`); `AdaptiveOrderedSegmentSource` тот же intent.
+- Не расширять secret scope на чужие registrable domains — только Suppress + same-origin directory.
+
 Related: `mem:media-services/ytdlp-candidate-normalization-s19-2026-07-21`, `mem:media-services/web-playback-planner-s21c-2026-07-21`, `mem:media-services/hls-vod-s32c-2026-07-23`, `mem:app-egui/web-media-picker-slice-g-2026-07-26`, `mem:media-services/ytdlp-system-auth-s26-2026-07-22`.

@@ -327,7 +327,8 @@ pub(super) fn load_selected_live(
             ) {
                 return Err(HlsVodOpenError::SeparateAudioRequiresMaster.into());
             }
-            let main_container = required_main_container(request)?;
+            let main_container =
+                required_main_container(&media, top_resource.final_target(), request)?;
             validate_live_media(&media, main_container, refresh_profile)?;
             let plan = build_segment_scoped_component_plan(
                 &media,
@@ -356,7 +357,7 @@ pub(super) fn load_selected_live(
         HlsPlaylist::Master(master) => {
             let (
                 main_reference,
-                main_container,
+                proven_main_container,
                 main_track_layout,
                 audio_reference,
                 proven_audio_container,
@@ -371,7 +372,7 @@ pub(super) fn load_selected_live(
                     });
                 (
                     selected.main_reference,
-                    selected.main_container,
+                    Some(selected.main_container),
                     selected.main_shape,
                     audio_reference,
                     audio_container,
@@ -385,7 +386,7 @@ pub(super) fn load_selected_live(
                     .transpose()?;
                 (
                     selected.variant.uri,
-                    required_main_container(request)?,
+                    None,
                     request.selection.main_track_layout,
                     audio_reference,
                     None,
@@ -402,6 +403,12 @@ pub(super) fn load_selected_live(
             )?;
             let HlsPlaylist::Media(main_media) = parse_playlist(&main_resource, request)? else {
                 return Err(HlsVodOpenError::NestedMasterPlaylist.into());
+            };
+            let main_container = match proven_main_container {
+                Some(container) => container,
+                None => {
+                    required_main_container(&main_media, main_resource.final_target(), request)?
+                }
             };
             validate_live_media(&main_media, main_container, refresh_profile)?;
             let main_plan = build_segment_scoped_component_plan(
@@ -473,13 +480,16 @@ pub(super) fn fetch_manifest(
     generation: web_media_transport_api::SourceGeneration,
     target: HttpRequestTarget,
 ) -> Result<AdaptiveFetchedResource, AdaptiveTransportError> {
-    http.fetch_resource_blocking(AdaptiveResourceFetchRequest::full(
-        generation,
-        target,
-        http.maximum_resource_bytes(AdaptiveResourcePurpose::Manifest),
-        AdaptiveResourcePurpose::Manifest,
-        AdaptiveResourceQueryApplication::BypassScopedQuery,
-    ))
+    http.fetch_resource_blocking(
+        AdaptiveResourceFetchRequest::full(
+            generation,
+            target.clone(),
+            http.maximum_resource_bytes(AdaptiveResourcePurpose::Manifest),
+            AdaptiveResourcePurpose::Manifest,
+            AdaptiveResourceQueryApplication::BypassScopedQuery,
+        )
+        .with_secret_forwarding(http.resource_secret_forwarding_for(&target)),
+    )
 }
 
 pub(super) fn parse_playlist(

@@ -2,7 +2,7 @@
 
 use std::num::{NonZeroU8, NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use demux_api::{
@@ -13,7 +13,7 @@ use demux_api::{
 };
 use hls_playlist_core::HlsParserLimits;
 use media_core::{
-    DemuxRetryHint, Demuxer, DynamicMediaTimelineEpoch, DynamicMediaTimelinePort,
+    DemuxReadEvent, DemuxRetryHint, Demuxer, DynamicMediaTimelineEpoch, DynamicMediaTimelinePort,
     DynamicMediaTimelinePortGeneration, TrackKind,
 };
 use player_core::{
@@ -218,8 +218,8 @@ pub(crate) fn prepare_hls_candidate(
         let seek_handle = opened
             .async_seek_handle()
             .ok_or_else(|| anyhow!("HLS live runtime потерял receipted seek handle"))?;
-        let (demuxer, timeline_port, _) = opened.into_parts();
-        prove_deferred_hls_codec_evidence(candidate, demuxer.as_ref(), capability_probe)
+        let (mut demuxer, timeline_port, _) = opened.into_parts();
+        prove_deferred_hls_codec_evidence(candidate, demuxer.as_mut(), capability_probe)
             .context("HLS deferred candidate не прошёл post-open codec proof")?;
         return Ok(PreparedHlsCandidate {
             demuxer,
@@ -290,8 +290,8 @@ pub(crate) fn prepare_hls_candidate(
     let seek_handle = opened
         .async_seek_handle()
         .ok_or_else(|| anyhow!("HLS VOD runtime потерял receipted seek handle"))?;
-    let demuxer = opened.into_demuxer();
-    prove_deferred_hls_codec_evidence(candidate, demuxer.as_ref(), capability_probe)
+    let mut demuxer = opened.into_demuxer();
+    prove_deferred_hls_codec_evidence(candidate, demuxer.as_mut(), capability_probe)
         .context("HLS deferred candidate не прошёл post-open codec proof")?;
     Ok(PreparedHlsCandidate {
         demuxer,
@@ -498,12 +498,14 @@ fn selection_and_containers(
 /// Fail-closed codec proof для deferred HLS после manifest/demux open.
 fn prove_deferred_hls_codec_evidence(
     candidate: &YtDlpNormalizedCandidate,
-    demuxer: &dyn Demuxer,
+    demuxer: &mut dyn Demuxer,
     capability_probe: &mut crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
 ) -> Result<()> {
     let StreamLayout::HlsMuxedCodecDeferred(_) = candidate.descriptor().layout() else {
         return Ok(());
     };
+    // ProgressiveDemuxer публикует tracks только через initial TracksChanged.
+    wait_for_initial_tracks_changed(demuxer)?;
     let tracks = demuxer.tracks();
     let video = tracks
         .iter()
@@ -520,6 +522,36 @@ fn prove_deferred_hls_codec_evidence(
         .prove_audio(audio)
         .map_err(|_| anyhow!("deferred HLS audio codec не поддерживается"))?;
     Ok(())
+}
+
+/// Media-open worker ждёт first TracksChanged до capability prove / Installed.
+fn wait_for_initial_tracks_changed(demuxer: &mut dyn Demuxer) -> Result<()> {
+    const INITIAL_TRACKS_DEADLINE: Duration = Duration::from_secs(30);
+    let deadline = Instant::now() + INITIAL_TRACKS_DEADLINE;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(anyhow!(
+                "deferred HLS не опубликовал TracksChanged до open deadline"
+            ));
+        }
+        match demuxer.next_event().context("deferred HLS demuxer next_event")? {
+            DemuxReadEvent::TracksChanged(_) => return Ok(()),
+            DemuxReadEvent::TemporarilyUnavailable(hint) => {
+                std::thread::sleep(hint.retry_after().min(Duration::from_millis(50)));
+            }
+            DemuxReadEvent::EndOfStream => {
+                return Err(anyhow!(
+                    "deferred HLS достиг EOS до initial TracksChanged"
+                ));
+            }
+            DemuxReadEvent::Packet(_) | DemuxReadEvent::MediaMetadataChanged(_) => {
+                // Packet без TracksChanged нарушает ProgressiveDemuxer contract; всё равно fail-closed.
+                return Err(anyhow!(
+                    "deferred HLS опубликовал media event до initial TracksChanged"
+                ));
+            }
+        }
+    }
 }
 
 /// Проецирует только extractor evidence, которое можно точно сопоставить с AUDIO rendition.
@@ -583,4 +615,99 @@ fn hls_catalog_policy() -> Result<HlsCatalogBuildPolicy> {
 /// Planner HLS transport output не делает TS playable для progressive HTTP rows.
 pub(crate) fn hls_transport_input() -> DemuxInputCapability {
     DemuxInputCapability::OrderedSegments
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+    use std::time::Duration;
+
+    use media_core::{
+        DemuxReadEvent, DemuxRetryHint, DemuxSeekResult, DemuxSeekability, DemuxTrackListUpdate,
+        Demuxer, TimelineNotSeekableReason, TrackId, TrackInfo, TrackKind,
+    };
+
+    use super::wait_for_initial_tracks_changed;
+
+    struct ScriptedDemuxer {
+        events: VecDeque<DemuxReadEvent>,
+        tracks: Vec<TrackInfo>,
+    }
+
+    impl Demuxer for ScriptedDemuxer {
+        fn tracks(&self) -> &[TrackInfo] {
+            &self.tracks
+        }
+
+        fn duration(&self) -> Option<Duration> {
+            None
+        }
+
+        fn seekability(&self) -> DemuxSeekability {
+            DemuxSeekability::NotSeekable {
+                reason: TimelineNotSeekableReason::UnknownTimeline,
+            }
+        }
+
+        fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
+            Ok(self
+                .events
+                .pop_front()
+                .unwrap_or(DemuxReadEvent::EndOfStream))
+        }
+
+        fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
+            panic!("scripted demuxer is not seekable")
+        }
+    }
+
+    fn track(id: u32, kind: TrackKind) -> TrackInfo {
+        TrackInfo {
+            id: TrackId::new(id),
+            kind,
+            codec_id: "test".into(),
+            codec_private: None,
+            time_base: None,
+            duration: None,
+            sample_rate: None,
+            channels: None,
+            video: None,
+        }
+    }
+
+    #[test]
+    fn wait_for_initial_tracks_skips_temporary_unavailability() {
+        let published = vec![
+            track(1, TrackKind::Video),
+            track(2, TrackKind::Audio),
+        ];
+        let mut demuxer = ScriptedDemuxer {
+            events: VecDeque::from([
+                DemuxReadEvent::TemporarilyUnavailable(
+                    DemuxRetryHint::new(Duration::from_millis(1)).expect("retry hint"),
+                ),
+                DemuxReadEvent::TemporarilyUnavailable(
+                    DemuxRetryHint::new(Duration::from_millis(1)).expect("retry hint"),
+                ),
+                DemuxReadEvent::TracksChanged(DemuxTrackListUpdate::new(
+                    published.clone(),
+                    None,
+                )),
+            ]),
+            tracks: published,
+        };
+
+        wait_for_initial_tracks_changed(&mut demuxer).expect("TracksChanged after unavailable");
+        assert_eq!(demuxer.tracks().len(), 2);
+    }
+
+    #[test]
+    fn wait_for_initial_tracks_rejects_eos_before_tracks() {
+        let mut demuxer = ScriptedDemuxer {
+            events: VecDeque::from([DemuxReadEvent::EndOfStream]),
+            tracks: Vec::new(),
+        };
+        let error = wait_for_initial_tracks_changed(&mut demuxer).expect_err("EOS before tracks");
+        assert!(error.to_string().contains("EOS"));
+    }
 }

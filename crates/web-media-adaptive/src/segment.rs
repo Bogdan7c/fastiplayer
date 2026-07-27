@@ -324,7 +324,9 @@ impl AdaptiveOrderedSegmentSource {
                 purpose: FetchPurpose::MediaSegment,
                 query_application:
                     crate::fetch::AdaptiveResourceQueryApplication::ApplyScopedReplacement,
-                secret_forwarding: crate::AdaptiveResourceSecretForwarding::ForwardScoped,
+                secret_forwarding: self
+                    .context
+                    .resource_secret_forwarding_for(&active.descriptor.target),
             };
             match self.executor.try_submit(job) {
                 Ok(submitted) => active.submitted = submitted,

@@ -102,6 +102,10 @@ pub enum HlsVodOpenError {
     MissingMainContainerEvidence,
     #[error("HLS main component имеет ambiguous container evidence")]
     AmbiguousMainContainerEvidence,
+    #[error("HLS main content probe доказал container вне TS/fMP4 profile")]
+    UnsupportedMainContainer,
+    #[error("HLS main content probe не смог открыть bounded media bytes: {0}")]
+    MainContainerProbeOpen(#[source] DemuxOpenError),
     #[error("HLS alternate audio не имеет required container evidence")]
     MissingAudioContainerEvidence,
     #[error("HLS alternate audio имеет ambiguous container evidence")]
@@ -203,10 +207,11 @@ fn prepare_hls_vod_with_seek_boundary(
             ) {
                 return Err(HlsVodOpenError::UnexpectedAudioContainerEvidence);
             }
+            let main_container = required_main_container(&media, &top_base, &request)?;
             SelectedPlans {
                 main: validate_and_plan_media(
                     media,
-                    required_main_container(&request)?,
+                    main_container,
                     &top_base,
                     &request,
                 )?,
@@ -367,15 +372,18 @@ pub(crate) fn fetch_manifest(
 ) -> Result<web_media_adaptive::AdaptiveFetchedResource, HlsVodOpenError> {
     Ok(request
         .http
-        .fetch_resource_blocking(AdaptiveResourceFetchRequest::full(
-            request.generation,
-            target,
-            request
-                .http
-                .maximum_resource_bytes(AdaptiveResourcePurpose::Manifest),
-            AdaptiveResourcePurpose::Manifest,
-            AdaptiveResourceQueryApplication::BypassScopedQuery,
-        ))?)
+        .fetch_resource_blocking(
+            AdaptiveResourceFetchRequest::full(
+                request.generation,
+                target.clone(),
+                request
+                    .http
+                    .maximum_resource_bytes(AdaptiveResourcePurpose::Manifest),
+                AdaptiveResourcePurpose::Manifest,
+                AdaptiveResourceQueryApplication::BypassScopedQuery,
+            )
+            .with_secret_forwarding(request.http.resource_secret_forwarding_for(&target)),
+        )?)
 }
 
 pub(crate) fn parse_playlist(
@@ -396,7 +404,6 @@ fn select_and_load_master(
     request: &HlsVodOpenRequest,
 ) -> Result<SelectedPlans, HlsVodOpenError> {
     let selected = select_master(&master, &request.selection)?;
-    let main_container = required_main_container(request)?;
     let variant_target = base.resolve_reference(selected.variant.uri.expose_for_resolution())?;
     let variant_resource = fetch_manifest(variant_target, request)?;
     let variant_playlist = parse_playlist(
@@ -407,6 +414,8 @@ fn select_and_load_master(
     let HlsPlaylist::Media(variant_media) = variant_playlist else {
         return Err(HlsVodOpenError::NestedMasterPlaylist);
     };
+    let main_container =
+        required_main_container(&variant_media, variant_resource.final_target(), request)?;
     let main = validate_and_plan_media(
         variant_media,
         main_container,
@@ -523,13 +532,14 @@ fn validate_and_plan_media(
 }
 
 pub(crate) fn required_main_container(
+    media: &MediaPlaylist,
+    base: &HttpRequestTarget,
     request: &HlsVodOpenRequest,
 ) -> Result<HlsRequiredContainer, HlsVodOpenError> {
     match request.containers.main {
         HlsContainerEvidence::Exact(container) => Ok(container),
-        HlsContainerEvidence::Missing | HlsContainerEvidence::ContentProbe => {
-            Err(HlsVodOpenError::MissingMainContainerEvidence)
-        }
+        HlsContainerEvidence::ContentProbe => probe_main_container(media, base, request),
+        HlsContainerEvidence::Missing => Err(HlsVodOpenError::MissingMainContainerEvidence),
         HlsContainerEvidence::Ambiguous => Err(HlsVodOpenError::AmbiguousMainContainerEvidence),
     }
 }
@@ -551,11 +561,35 @@ pub(crate) fn required_audio_container(
     }
 }
 
+/// Доказывает main container реальными bounded bytes и не использует URI/MAP hints.
+fn probe_main_container(
+    media: &MediaPlaylist,
+    base: &HttpRequestTarget,
+    request: &HlsVodOpenRequest,
+) -> Result<HlsRequiredContainer, HlsVodOpenError> {
+    probe_component_container(media, base, request, ContainerProbeRole::Main)
+}
+
 /// Доказывает alternate-audio container реальными bounded bytes и не использует URI/MAP hints.
 fn probe_audio_container(
     media: &MediaPlaylist,
     base: &HttpRequestTarget,
     request: &HlsVodOpenRequest,
+) -> Result<HlsRequiredContainer, HlsVodOpenError> {
+    probe_component_container(media, base, request, ContainerProbeRole::AlternateAudio)
+}
+
+#[derive(Clone, Copy)]
+enum ContainerProbeRole {
+    Main,
+    AlternateAudio,
+}
+
+fn probe_component_container(
+    media: &MediaPlaylist,
+    base: &HttpRequestTarget,
+    request: &HlsVodOpenRequest,
+    role: ContainerProbeRole,
 ) -> Result<HlsRequiredContainer, HlsVodOpenError> {
     let provisional = build_component_plan(
         media,
@@ -588,17 +622,29 @@ fn probe_audio_container(
             request.policy.demux_sniff_budget,
             cancellation,
         )
-        .map_err(HlsVodOpenError::AudioContainerProbeOpen)?;
+        .map_err(|error| match role {
+            ContainerProbeRole::Main => HlsVodOpenError::MainContainerProbeOpen(error),
+            ContainerProbeRole::AlternateAudio => HlsVodOpenError::AudioContainerProbeOpen(error),
+        })?;
     let transport_stream = HlsRequiredContainer::TransportStream
         .demux_container_id()
-        .map_err(|_| HlsVodOpenError::UnsupportedAudioContainer)?;
+        .map_err(|_| match role {
+            ContainerProbeRole::Main => HlsVodOpenError::UnsupportedMainContainer,
+            ContainerProbeRole::AlternateAudio => HlsVodOpenError::UnsupportedAudioContainer,
+        })?;
     let fragmented_mp4 = HlsRequiredContainer::FragmentedMp4
         .demux_container_id()
-        .map_err(|_| HlsVodOpenError::UnsupportedAudioContainer)?;
+        .map_err(|_| match role {
+            ContainerProbeRole::Main => HlsVodOpenError::UnsupportedMainContainer,
+            ContainerProbeRole::AlternateAudio => HlsVodOpenError::UnsupportedAudioContainer,
+        })?;
     match opened.container() {
         container if container == &transport_stream => Ok(HlsRequiredContainer::TransportStream),
         container if container == &fragmented_mp4 => Ok(HlsRequiredContainer::FragmentedMp4),
-        _ => Err(HlsVodOpenError::UnsupportedAudioContainer),
+        _ => Err(match role {
+            ContainerProbeRole::Main => HlsVodOpenError::UnsupportedMainContainer,
+            ContainerProbeRole::AlternateAudio => HlsVodOpenError::UnsupportedAudioContainer,
+        }),
     }
 }
 

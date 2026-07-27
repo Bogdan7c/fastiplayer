@@ -948,6 +948,47 @@ fn cross_origin_segment_redirect_strips_header_and_query_secret() {
     assert!(!final_requests[0].request_line.contains("very-secret"));
 }
 
+#[test]
+fn out_of_scope_cdn_segment_uses_suppress_and_omits_secrets() {
+    let scoped_server = LocalServer::start(|_, _| response("200 OK", &[], b"unused"));
+    let foreign_server = LocalServer::start(|_, _| response("200 OK", &[], b"cdn-segment"));
+    let scoped_target = scoped_server.target("/playlist.m3u8");
+    let foreign_target = foreign_server.target("/segment1.ts");
+    let mut source = AdaptiveOrderedSegmentSource::new(context(
+        &scoped_target,
+        CancellationToken::new(),
+        RedirectPolicy::cross_origin_without_secrets(
+            RedirectHopLimit::new(4).expect("redirect limit"),
+        ),
+        Some("Bearer segment-secret"),
+        Some("token=segment-secret"),
+    ))
+    .expect("segment source");
+    source
+        .install_snapshot(snapshot(
+            1,
+            AdaptiveSegmentDescriptor::full(
+                OrderedSegmentSequence::new(1),
+                OrderedSegmentKind::Media,
+                OrderedSegmentDiscontinuity::Continuous,
+                foreign_target,
+            ),
+            AdaptivePresentation::Vod { duration: None },
+            clock(1_000, 0),
+            AdaptiveSegmentCompletion::EndAfterSnapshot,
+        ))
+        .expect("snapshot");
+
+    let SegmentPoll::Segment(segment) = poll_segment(&mut source) else {
+        panic!("CDN segment expected via Suppress");
+    };
+    assert_eq!(segment.bytes.as_ref(), b"cdn-segment");
+    let requests = foreign_server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(!requests[0].headers.contains("segment-secret"));
+    assert!(!requests[0].request_line.contains("segment-secret"));
+}
+
 struct EndDemuxer;
 
 impl Demuxer for EndDemuxer {

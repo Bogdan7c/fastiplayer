@@ -205,6 +205,9 @@ pub enum YtDlpTransportRequestError {
     /// HDS child/media resources cannot receive a safe path scope.
     #[error("YtDlp HDS manifest target cannot create a resource path scope")]
     HdsTargetResolution,
+    /// HLS media/key siblings cannot receive a safe playlist-directory path scope.
+    #[error("YtDlp HLS playlist target cannot create a resource path scope")]
+    HlsTargetResolution,
     /// Candidate exact/semantic identities нарушили source lineage.
     #[error("YtDlp component identity нарушает source lineage")]
     Identity(#[source] MediaComponentIdentityError),
@@ -366,7 +369,9 @@ impl YtDlpNormalizedCandidate {
             role,
         )
         .map_err(YtDlpTransportRequestError::Identity)?;
-        let path_scope = HttpPathScope::from_target_path(&target);
+        // Sibling media/key URLs живут в каталоге плейлиста, не в path самого index.m3u8.
+        let path_scope = resource_directory_path_scope(&target)
+            .ok_or(YtDlpTransportRequestError::HlsTargetResolution)?;
         let secret_scope = SecretRequestScope::from_target(&target, path_scope);
         let serialized_headers = authorization_material
             .headers()
@@ -732,8 +737,12 @@ fn smooth_manifest_secret_context(
 fn hds_resource_path_scope(
     target: &HttpRequestTarget,
 ) -> Result<HttpPathScope, YtDlpTransportRequestError> {
-    let parsed = Url::parse(target.expose_secret_for_request())
-        .map_err(|_| YtDlpTransportRequestError::HdsTargetResolution)?;
+    resource_directory_path_scope(target).ok_or(YtDlpTransportRequestError::HdsTargetResolution)
+}
+
+/// Каталог playlist/manifest URL для secret forwarding на sibling media resources.
+fn resource_directory_path_scope(target: &HttpRequestTarget) -> Option<HttpPathScope> {
+    let parsed = Url::parse(target.expose_secret_for_request()).ok()?;
     let path = parsed.path();
     let directory = if path.ends_with('/') {
         path.to_owned()
@@ -741,7 +750,7 @@ fn hds_resource_path_scope(
         path.rsplit_once('/')
             .map_or_else(|| "/".to_owned(), |(parent, _)| format!("{parent}/"))
     };
-    HttpPathScope::new(directory).map_err(|_| YtDlpTransportRequestError::HdsTargetResolution)
+    HttpPathScope::new(directory).ok()
 }
 
 /// Выбирает request-scope anchor без fallback между authoritative inputs.
