@@ -13,7 +13,7 @@ use web_media_transport_api::{
 use super::model::{
     YtDlpCandidateComponentRole, YtDlpCandidateEntry, YtDlpCandidateMatchKind,
     YtDlpCandidateNormalizationRejection, YtDlpCandidateRematchError, YtDlpCandidateSelectionError,
-    YtDlpLiveIntent, YtDlpNormalizedCandidate,
+    YtDlpLiveIntent, YtDlpNormalizedCandidate, YtDlpVideoColorEvidence,
 };
 use super::normalize::normalize_candidate_document;
 use super::raw::YtDlpCandidateDocument;
@@ -316,10 +316,12 @@ fn progressive_inventory_maps_muxed_video_only_and_audio_only_rows() {
 
 #[test]
 fn inventory_video_and_audio_compose_and_semantically_rematch_without_format_id_or_url_leakage() {
+    let mut old_video = progressive_format("old-video", "webm", "webm", "vp9.2", "none");
+    old_video["dynamic_range"] = json!("HDR10");
     let old = snapshot(
         json!({
             "formats": [
-                progressive_format("old-video", "webm", "webm", "vp9", "none"),
+                old_video,
                 progressive_format("old-audio", "webm", "webm", "none", "opus")
             ]
         }),
@@ -342,11 +344,13 @@ fn inventory_video_and_audio_compose_and_semantically_rematch_without_format_id_
     assert!(!debug.contains("old-audio"));
     assert!(!debug.contains("media.invalid"));
 
+    let mut fresh_video = progressive_format("fresh-video", "webm", "webm", "vp9.2", "none");
+    fresh_video["dynamic_range"] = json!("HDR10");
     let fresh = snapshot(
         json!({
             "formats": [
                 progressive_format("fresh-audio", "webm", "webm", "none", "opus"),
-                progressive_format("fresh-video", "webm", "webm", "vp9", "none")
+                fresh_video
             ]
         }),
         2,
@@ -372,6 +376,10 @@ fn inventory_video_and_audio_compose_and_semantically_rematch_without_format_id_
         StreamLayoutKind::Separate
     );
     assert_eq!(candidate.component_count(), 2);
+    assert_eq!(
+        candidate.video_color_evidence(),
+        Some(YtDlpVideoColorEvidence::Bt2020PqLimited)
+    );
     let roles = candidate
         .component_request_summaries()
         .map(|summary| summary.role)

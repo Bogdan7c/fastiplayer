@@ -15,6 +15,7 @@ use super::model::{
     YtDlpCandidateComponentRole, YtDlpCandidateEntry, YtDlpCandidateNormalizationRejection,
     YtDlpCandidateOrigin, YtDlpCandidateSnapshot, YtDlpLiveIntent, YtDlpNormalizedCandidate,
     YtDlpRejectedCandidate, YtDlpSelectedCandidateShape, YtDlpSelectionHints,
+    YtDlpVideoColorEvidence,
 };
 use super::raw::{YtDlpCandidateDocument, YtDlpSerializedFormat};
 use super::request_material::YtDlpRequestMaterial;
@@ -167,6 +168,7 @@ fn normalize_single_candidate(
         build_candidate(
             identity.clone(),
             parts.layout,
+            parts.video_color_evidence,
             vec![(role, parts.request)],
             selection_hints,
         )
@@ -214,11 +216,13 @@ fn normalize_compound_candidate(
     let mut audio = None;
     let mut video_request_material = None;
     let mut audio_request_material = None;
+    let mut video_color_evidence = None;
     for component in normalized_components.drain(..) {
         match component.layout {
             StreamLayout::VideoOnly(video_component) if video.is_none() => {
                 video = Some(video_component);
                 video_request_material = Some(component.request);
+                video_color_evidence = component.video_color_evidence;
             }
             StreamLayout::AudioOnly(audio_component) if audio.is_none() => {
                 audio = Some(audio_component);
@@ -251,6 +255,7 @@ fn normalize_compound_candidate(
     match build_candidate(
         identity.clone(),
         layout,
+        video_color_evidence,
         request_material,
         YtDlpSelectionHints::default(),
     ) {
@@ -273,18 +278,21 @@ fn candidate_identity(
 fn build_candidate(
     identity: CandidateIdentity,
     layout: StreamLayout,
+    video_color_evidence: Option<YtDlpVideoColorEvidence>,
     request_material: Vec<(YtDlpCandidateComponentRole, YtDlpRequestMaterial)>,
     selection_hints: YtDlpSelectionHints,
 ) -> Result<YtDlpNormalizedCandidate, YtDlpCandidateNormalizationRejection> {
     let mut semantic_hasher = StableSemanticHasher::new();
     layout.hash(&mut semantic_hasher);
-    let semantic_key = format!("yt-dlp-s19-v1-{:016x}", semantic_hasher.finish());
+    video_color_evidence.hash(&mut semantic_hasher);
+    let semantic_key = format!("yt-dlp-s19-v2-{:016x}", semantic_hasher.finish());
     let semantic_identity = SemanticIdentity::new(identity.source(), semantic_key)
         .map_err(|_| YtDlpCandidateNormalizationRejection::InvalidStreamLayout)?;
     let descriptor = CandidateDescriptor::new(identity, semantic_identity, layout, Vec::new())
         .map_err(|_| YtDlpCandidateNormalizationRejection::InvalidStreamLayout)?;
     Ok(YtDlpNormalizedCandidate::new(
         descriptor,
+        video_color_evidence,
         request_material,
         selection_hints,
     ))

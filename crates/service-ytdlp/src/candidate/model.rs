@@ -148,10 +148,19 @@ impl YtDlpRejectedCandidate {
 pub struct YtDlpNormalizedCandidate {
     /// Service-neutral descriptor.
     descriptor: CandidateDescriptor,
+    /// Provider evidence, которое дополняет coarse neutral HDR bucket только в planner-е.
+    video_color_evidence: Option<YtDlpVideoColorEvidence>,
     /// Один request resource для single result, два — только для compound merge.
     pub(super) component_requests: Box<[YtDlpCandidateComponentRequest]>,
     /// Standard selection hints, quantized before leaving raw DTO boundary.
     selection_hints: YtDlpSelectionHints,
+}
+
+/// Exact yt-dlp color label, достаточный для strict HDR capability contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum YtDlpVideoColorEvidence {
+    Bt2020PqLimited,
+    Bt2020HlgLimited,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -206,6 +215,10 @@ impl YtDlpNormalizedCandidate {
         self.selection_hints
     }
 
+    pub(super) const fn video_color_evidence(&self) -> Option<YtDlpVideoColorEvidence> {
+        self.video_color_evidence
+    }
+
     /// Возвращает planner-owned stable rank для candidate-а с audio track.
     pub fn audio_fallback_rank(&self) -> Option<AudioFallbackRank> {
         let audio = match self.descriptor.layout() {
@@ -233,12 +246,14 @@ impl YtDlpNormalizedCandidate {
     /// Собирает accepted candidate после всех owner-side checks.
     pub(super) fn new(
         descriptor: CandidateDescriptor,
+        video_color_evidence: Option<YtDlpVideoColorEvidence>,
         component_requests: Vec<(YtDlpCandidateComponentRole, YtDlpRequestMaterial)>,
         selection_hints: YtDlpSelectionHints,
     ) -> Self {
         debug_assert!(matches!(component_requests.len(), 1 | 2));
         Self {
             descriptor,
+            video_color_evidence,
             component_requests: component_requests
                 .into_iter()
                 .map(|(role, material)| YtDlpCandidateComponentRequest { role, material })

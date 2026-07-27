@@ -9,7 +9,7 @@ use web_media_core::{
     TransportFamily, VideoComponentDescriptor, VideoHeight, VideoTrackDescriptor, VideoWidth,
 };
 
-use super::model::YtDlpCandidateNormalizationRejection;
+use super::model::{YtDlpCandidateNormalizationRejection, YtDlpVideoColorEvidence};
 use super::raw::YtDlpSerializedFormat;
 use super::request_material::{YtDlpRequestMaterial, normalize_request_material};
 
@@ -22,6 +22,8 @@ const KILOBITS_TO_BITS: f64 = 1_000.0;
 pub(super) struct NormalizedFormatParts {
     /// Нейтральный static layout.
     pub(super) layout: StreamLayout,
+    /// Exact provider evidence остаётся вне neutral descriptor-а.
+    pub(super) video_color_evidence: Option<YtDlpVideoColorEvidence>,
     /// Service-owned transient material.
     pub(super) request: YtDlpRequestMaterial,
 }
@@ -49,10 +51,19 @@ pub(super) fn normalize_format_parts(
     let video_codec = normalize_codec(format.vcodec.as_deref(), CodecMediaKind::Video)?;
     let audio_codec = normalize_codec(format.acodec.as_deref(), CodecMediaKind::Audio)?;
     let layout = normalize_layout(format, transport, container, video_codec, audio_codec)?;
+    let video_color_evidence = if matches!(&layout, StreamLayout::AudioOnly(_)) {
+        None
+    } else {
+        normalize_video_color_evidence(format.dynamic_range.as_deref())
+    };
     let request = normalize_request_material(format)
         .map_err(YtDlpCandidateNormalizationRejection::RequestMaterial)?;
 
-    Ok(NormalizedFormatParts { layout, request })
+    Ok(NormalizedFormatParts {
+        layout,
+        video_color_evidence,
+        request,
+    })
 }
 
 /// Парсит raw transport и сохраняет unknown/profile exclusions typed.
@@ -368,6 +379,17 @@ fn normalize_dynamic_range(raw_dynamic_range: Option<&str>) -> DynamicRange {
         "SDR" => DynamicRange::Sdr,
         "HDR" | "HDR10" | "HDR10+" | "HLG" | "PQ" => DynamicRange::Hdr,
         _ => DynamicRange::Unknown,
+    }
+}
+
+/// Сохраняет только labels с однозначным transfer; общий `HDR` остаётся без evidence.
+fn normalize_video_color_evidence(
+    raw_dynamic_range: Option<&str>,
+) -> Option<YtDlpVideoColorEvidence> {
+    match raw_dynamic_range?.trim().to_ascii_uppercase().as_str() {
+        "HDR10" | "HDR10+" => Some(YtDlpVideoColorEvidence::Bt2020PqLimited),
+        "HLG" => Some(YtDlpVideoColorEvidence::Bt2020HlgLimited),
+        _ => None,
     }
 }
 

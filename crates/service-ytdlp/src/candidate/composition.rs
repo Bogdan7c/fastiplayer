@@ -237,6 +237,7 @@ fn build_candidate(
         .ok_or(YtDlpCompositionError::MissingComponentRequest)?;
     Ok(YtDlpNormalizedCandidate::new(
         descriptor,
+        video.video_color_evidence(),
         vec![
             (YtDlpCandidateComponentRole::Video, video_request),
             (YtDlpCandidateComponentRole::Audio, audio_request),

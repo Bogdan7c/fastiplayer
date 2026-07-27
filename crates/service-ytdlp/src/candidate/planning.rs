@@ -2,9 +2,10 @@
 
 use audio_core::AudioDecodeCodecFamily;
 use codec_core::{
-    Av1Profile, BitDepth, ChromaSubsampling, H264ProfileIndication, H265Profile, VideoCodec,
-    VideoColorMetadata, VideoDecodeRequirement, VideoProfile, Vp8Profile, Vp9Profile,
-    h264_profile_from_indication,
+    Av1Profile, BitDepth, ChromaSubsampling, ColorMetadataConfidence, ColorMetadataOrigin,
+    ColorPrimaries, ColorRange, H264ProfileIndication, H265Profile, MatrixCoefficients,
+    TransferFunction, VideoCodec, VideoColorMetadata, VideoDecodeRequirement, VideoProfile,
+    Vp8Profile, Vp9Profile, h264_profile_from_indication,
 };
 use thiserror::Error;
 use web_media_core::{CodecFamily, CodecKind, DynamicRange, StreamLayout, VideoTrackDescriptor};
@@ -13,7 +14,7 @@ use web_media_playback_plan::{
     PlanningCandidateBuildError, PlanningCandidateSnapshot, PlanningSnapshotBuildError,
 };
 
-use super::model::{YtDlpCandidateSnapshot, YtDlpNormalizedCandidate};
+use super::model::{YtDlpCandidateSnapshot, YtDlpNormalizedCandidate, YtDlpVideoColorEvidence};
 
 /// Ошибка adapter-а до network/player side effects.
 #[derive(Debug, Error)]
@@ -55,7 +56,10 @@ impl YtDlpCandidateSnapshot {
 fn planning_candidate(
     candidate: &YtDlpNormalizedCandidate,
 ) -> Result<PlanningCandidate, YtDlpPlanningSnapshotError> {
-    let runtime = runtime_requirements(candidate.descriptor().layout())?;
+    let runtime = runtime_requirements(
+        candidate.descriptor().layout(),
+        candidate.video_color_evidence(),
+    )?;
     PlanningCandidate::new(
         candidate.descriptor().clone(),
         runtime,
@@ -67,18 +71,19 @@ fn planning_candidate(
 /// Сохраняет exact layout shape и не создаёт несуществующие companion streams.
 fn runtime_requirements(
     layout: &StreamLayout,
+    video_color_evidence: Option<YtDlpVideoColorEvidence>,
 ) -> Result<CandidateRuntimeRequirements, YtDlpPlanningSnapshotError> {
     match layout {
         StreamLayout::Muxed(component) => Ok(CandidateRuntimeRequirements::Muxed {
-            video: video_requirement(component.video())?,
+            video: video_requirement(component.video(), video_color_evidence)?,
             audio: audio_requirement(component.audio().codec())?,
         }),
         StreamLayout::Separate { video, audio } => Ok(CandidateRuntimeRequirements::Separate {
-            video: video_requirement(video.video())?,
+            video: video_requirement(video.video(), video_color_evidence)?,
             audio: audio_requirement(audio.audio().codec())?,
         }),
         StreamLayout::VideoOnly(component) => Ok(CandidateRuntimeRequirements::VideoOnly {
-            video: video_requirement(component.video())?,
+            video: video_requirement(component.video(), video_color_evidence)?,
         }),
         StreamLayout::AudioOnly(component) => Ok(CandidateRuntimeRequirements::AudioOnly {
             audio: audio_requirement(component.audio().codec())?,
@@ -89,6 +94,7 @@ fn runtime_requirements(
 /// Строит conservative capability query из S19 normalized codec tag-а.
 fn video_requirement(
     track: &VideoTrackDescriptor,
+    video_color_evidence: Option<YtDlpVideoColorEvidence>,
 ) -> Result<VideoDecodeRequirement, YtDlpPlanningSnapshotError> {
     let CodecKind::Known(codec_family) = track.codec().kind() else {
         return Err(YtDlpPlanningSnapshotError::RuntimeRequirement);
@@ -110,10 +116,34 @@ fn video_requirement(
         requirement = requirement.with_frame_rate(fps);
     }
     requirement = apply_codec_profile(requirement, track)?;
-    if track.dynamic_range() == DynamicRange::Sdr {
-        requirement = requirement.with_color(VideoColorMetadata::sdr_bt709_limited());
+    match track.dynamic_range() {
+        DynamicRange::Sdr => {
+            requirement = requirement.with_color(VideoColorMetadata::sdr_bt709_limited());
+        }
+        DynamicRange::Hdr => match video_color_evidence {
+            Some(evidence) => requirement = requirement.with_color(hdr_color(evidence)),
+            None => requirement.hdr = true,
+        },
+        DynamicRange::Unknown => {}
     }
     Ok(requirement)
+}
+
+/// Переводит exact extractor evidence в strict capability metadata без provider I/O.
+fn hdr_color(evidence: YtDlpVideoColorEvidence) -> VideoColorMetadata {
+    let transfer = match evidence {
+        YtDlpVideoColorEvidence::Bt2020PqLimited => TransferFunction::Pq,
+        YtDlpVideoColorEvidence::Bt2020HlgLimited => TransferFunction::Hlg,
+    };
+    VideoColorMetadata {
+        range: ColorRange::Limited,
+        matrix: MatrixCoefficients::Bt2020,
+        primaries: ColorPrimaries::Bt2020,
+        transfer,
+        hdr_metadata: None,
+        origin: ColorMetadataOrigin::Manifest,
+        confidence: ColorMetadataConfidence::Hint,
+    }
 }
 
 /// Извлекает только доказанные profile/bit-depth/chroma поля из codec identity.
@@ -132,6 +162,14 @@ fn apply_codec_profile(
             .with_profile(VideoProfile::Vp9(Vp9Profile::Profile0))
             .with_bit_depth(BitDepth::Eight)
             .with_chroma(ChromaSubsampling::Yuv420)),
+        // yt-dlp публикует YouTube HDR Profile 2 в сокращённой форме без RFC codec fields.
+        // Явный HDR доказывает 10-bit для этого extractor shape; без него fail-closed сохраняется.
+        VideoCodec::Vp9 if raw_codec == "vp9.2" && track.dynamic_range() == DynamicRange::Hdr => {
+            Ok(requirement
+                .with_profile(VideoProfile::Vp9(Vp9Profile::Profile2))
+                .with_bit_depth(BitDepth::Ten)
+                .with_chroma(ChromaSubsampling::Yuv420))
+        }
         VideoCodec::Vp9 => {
             let profile = match decimal_part(&parts, 1)? {
                 0 => Vp9Profile::Profile0,
