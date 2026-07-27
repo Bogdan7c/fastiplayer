@@ -1518,6 +1518,28 @@ mod tests {
         assert_eq!(accepted_len, Some(5));
     }
 
+    #[test]
+    fn h264_pending_access_unit_is_retained_only_for_same_packet_retry() {
+        for retry_error in [
+            VaapiAdapterDecodeError::CheckEvents,
+            VaapiAdapterDecodeError::NotEnoughOutputBuffers(2),
+        ] {
+            let mut pending = Some(H264PendingAccessUnit::new(vec![1, 2, 3], 3));
+            h264::settle_pending_access_unit_after_submit_error(&mut pending, &retry_error);
+            assert!(pending.is_some());
+        }
+
+        for terminal_error in [
+            VaapiAdapterDecodeError::ParseFrameError("bad frame".to_string()),
+            VaapiAdapterDecodeError::Decoder("missing reference".to_string()),
+            VaapiAdapterDecodeError::Backend("submit failed".to_string()),
+        ] {
+            let mut pending = Some(H264PendingAccessUnit::new(vec![1, 2, 3], 3));
+            h264::settle_pending_access_unit_after_submit_error(&mut pending, &terminal_error);
+            assert!(pending.is_none());
+        }
+    }
+
     /// Проверяет production capability matrix adapter-а без hardware probe.
     #[test]
     fn implemented_format_matrix_contains_vp9_h264_and_h265_main_main10() {

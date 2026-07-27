@@ -331,6 +331,7 @@ impl AppState {
             lineage_commit: PendingStrongLineageCommit::SameLineage {
                 expected_active,
                 restore: None,
+                video_swap_checkpoint: None,
                 rebound_after_installed: false,
             },
             pre_barrier_failure: None,

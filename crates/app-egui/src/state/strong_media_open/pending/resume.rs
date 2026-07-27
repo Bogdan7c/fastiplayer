@@ -40,12 +40,20 @@ impl AppState {
         let Some(source) = pending.source.clone() else {
             return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::MissingTerminal));
         };
-        if matches!(
-            pending.lineage_commit,
-            PendingStrongLineageCommit::SameLineage { .. }
-        ) {
-            self.begin_backend_swap_video_freeze();
-        }
+        let video_swap_checkpoint = if let PendingStrongLineageCommit::SameLineage {
+            video_swap_checkpoint,
+            ..
+        } = &mut pending.lineage_commit
+        {
+            let Some(video_swap_checkpoint) = video_swap_checkpoint.take() else {
+                return StrongMediaOpenPoll::completed(Err(
+                    StrongMediaOpenError::PendingPhaseStateLost,
+                ));
+            };
+            Some(video_swap_checkpoint)
+        } else {
+            None
+        };
         let installed = match self.finish_media_open_terminal(candidate_owner, source, terminal) {
             Ok(installed) => installed,
             Err(error) => return StrongMediaOpenPoll::completed(Err(error)),
@@ -56,6 +64,9 @@ impl AppState {
         else {
             return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::MissingTerminal));
         };
+        if let Some(video_swap_checkpoint) = video_swap_checkpoint {
+            self.begin_backend_swap_video_freeze(*video_swap_checkpoint);
+        }
         let snapshot = self.refresh_player_snapshot();
         if snapshot.media_instance_id != Some(media_instance_id) {
             return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::MissingTerminal));

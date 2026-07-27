@@ -16,11 +16,12 @@ pub(crate) trait WebMediaCatalogDiscovery: Send + Sync {
     ) -> anyhow::Result<DiscoveredWebMediaCatalog>;
 }
 
-/// Полный unpublished результат одного background pass-а.
+/// Атомарный unpublished результат одного bounded background pass-а.
 pub(crate) struct DiscoveredWebMediaCatalog {
     pub(crate) choices: Vec<WebMediaCatalogChoice>,
     pub(crate) active: WebMediaSelectionTarget,
     pub(crate) rejected_siblings: usize,
+    pub(crate) unprobed_siblings: usize,
 }
 
 /// Runtime-only attachment Installed source-а. Equality сравнивает только opaque instance.

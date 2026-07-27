@@ -1027,7 +1027,10 @@ pub fn clear_to_black(target: &wgpu::TextureView, encoder: &mut wgpu::CommandEnc
 mod tests {
     use std::time::Duration;
 
-    use codec_core::VideoColorMetadata;
+    use codec_core::{
+        ColorMetadataConfidence, ColorMetadataOrigin, ColorPrimaries, ColorRange, HdrMetadata,
+        MatrixCoefficients, TransferFunction, VideoColorMetadata,
+    };
     use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
     use super::*;
@@ -1066,6 +1069,35 @@ mod tests {
                 .expect("HostPlanar YUV frame dispatches");
 
             assert_eq!(dispatch, RendererDispatch::HostYuvPlanar);
+        }
+    }
+
+    #[test]
+    fn renderable_metadata_tracks_sdr_hdr_across_hardware_and_software_paths() {
+        let mut hardware_hdr = decoded_p010_test_frame();
+        hardware_hdr.color = hdr_bt2020_pq_color_for_transition_test();
+        let mut software_hdr = decoded_host_planar10_test_frame();
+        software_hdr.color = hdr_bt2020_pq_color_for_transition_test();
+        let cases = [
+            (
+                decoded_nv12_test_frame(),
+                VideoFramePixelLayout::Nv12,
+                false,
+            ),
+            (hardware_hdr, VideoFramePixelLayout::P010, true),
+            (
+                decoded_host_planar8_test_frame(),
+                VideoFramePixelLayout::Yuv420Planar8,
+                false,
+            ),
+            (software_hdr, VideoFramePixelLayout::Yuv420Planar10Le, true),
+        ];
+
+        for (decoded_frame, pixel_layout, expected_hdr) in cases {
+            let metadata = renderable_metadata_from_decoded(&decoded_frame, pixel_layout);
+
+            assert_eq!(metadata.color, decoded_frame.color);
+            assert_eq!(metadata.color.requires_hdr_processing(), expected_hdr);
         }
     }
 
@@ -1511,6 +1543,25 @@ mod tests {
         DecodedFrame {
             frame_contract: VideoFrameContract::host_yuv420_planar10le(),
             ..decoded_p010_test_frame()
+        }
+    }
+
+    fn hdr_bt2020_pq_color_for_transition_test() -> VideoColorMetadata {
+        VideoColorMetadata {
+            range: ColorRange::Limited,
+            matrix: MatrixCoefficients::Bt2020,
+            primaries: ColorPrimaries::Bt2020,
+            transfer: TransferFunction::Pq,
+            hdr_metadata: Some(HdrMetadata {
+                color_primaries: ColorPrimaries::Bt2020,
+                transfer_function: TransferFunction::Pq,
+                max_luminance_nits: Some(1_000.0),
+                min_luminance_nits: Some(0.01),
+                max_content_light_level_nits: Some(1_000),
+                max_frame_average_light_level_nits: Some(400),
+            }),
+            origin: ColorMetadataOrigin::Bitstream,
+            confidence: ColorMetadataConfidence::Confirmed,
         }
     }
 

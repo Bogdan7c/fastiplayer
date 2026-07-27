@@ -6,9 +6,6 @@
 
 use std::time::{Duration, Instant};
 
-use codec_core::VideoCodec;
-use media_core::PacketKeyframe;
-
 use super::{
     PlayerTickConfig,
     demux_admission::{
@@ -22,11 +19,12 @@ use super::{
         video_decoder_decode_ahead_limits, video_decoder_texture_limits,
         video_present_queue_target,
     },
-    video_decoder_io::can_send_video_packet_to_decoder,
+    video_decoder_io::{
+        can_send_video_packet_to_decoder, pending_video_packet_requires_decoder_send_capacity,
+    },
 };
 use crate::{
-    PendingVideoPacket, PlaybackState, WorkerFrameTimingSnapshot, WorkerWakeupDiagnosticsSnapshot,
-    WorkerWakeupReason,
+    PlaybackState, WorkerFrameTimingSnapshot, WorkerWakeupDiagnosticsSnapshot, WorkerWakeupReason,
     pipeline::{VideoDecoderActivityStatus, VideoDecoderSendBackpressure},
     session::PlayerSession,
     session::audio_runtime::sanitize_audio_high_water_mark,
@@ -410,7 +408,11 @@ pub(super) fn pending_video_work_available(
         return false;
     };
 
-    if accurate_seek_pending_video_waits_for_decoder_readiness(session, tick_config, packet) {
+    if !pending_video_packet_requires_decoder_send_capacity(session, packet) {
+        return true;
+    }
+
+    if accurate_seek_pending_video_waits_for_decoder_readiness(session, tick_config) {
         return false;
     }
 
@@ -449,52 +451,9 @@ pub(super) fn pending_video_work_available(
 fn accurate_seek_pending_video_waits_for_decoder_readiness(
     session: &PlayerSession,
     tick_config: &PlayerTickConfig,
-    packet: &PendingVideoPacket,
 ) -> bool {
-    if !pending_video_packet_requires_decoder_send_capacity(session, packet) {
-        return false;
-    }
-
     seek_fast_preroll_active(session, tick_config)
         && decoder_send_queue_reached_tick_capacity(session, tick_config)
-}
-
-/// Проверяет read-only случаи, где tick может списать packet без decoder send capacity.
-fn pending_video_packet_requires_decoder_send_capacity(
-    session: &PlayerSession,
-    packet: &PendingVideoPacket,
-) -> bool {
-    if !session
-        .pipeline
-        .packet_generation_is_current(packet.generation)
-    {
-        return false;
-    }
-
-    if !session
-        .pipeline
-        .video_packet_belongs_to_selected_track(packet.track_id)
-    {
-        return false;
-    }
-
-    if !session.pipeline.video_decoder_needs_keyframe() {
-        return true;
-    }
-
-    match packet.keyframe {
-        PacketKeyframe::Keyframe => true,
-        PacketKeyframe::NotKeyframe => false,
-        PacketKeyframe::Unknown => !active_video_codec_requires_proven_decode_start(session),
-    }
-}
-
-/// Повторяет read-only часть bootstrap policy: H.264/H.265 ждут доказанный decode start.
-fn active_video_codec_requires_proven_decode_start(session: &PlayerSession) -> bool {
-    session
-        .pipeline
-        .active_video_requirement()
-        .is_some_and(|requirement| matches!(requirement.codec, VideoCodec::H264 | VideoCodec::H265))
 }
 
 /// Сравнивает neutral decoder queue depth с tick capacity без доступа к backend storage.

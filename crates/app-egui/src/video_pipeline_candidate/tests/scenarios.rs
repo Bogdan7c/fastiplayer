@@ -140,6 +140,66 @@ fn vaapi_and_ffmpeg_fake_paths_keep_decoder_materializer_pairing_exact() {
 }
 
 #[test]
+fn every_software_hardware_transition_commits_one_exact_pipeline_pair() {
+    let old_backends = [
+        VideoBackendKind::HardwareZeroCopy,
+        VideoBackendKind::FfmpegSoftware,
+    ];
+
+    for (old_index, old_backend) in old_backends.into_iter().enumerate() {
+        for (new_index, new_hardware) in [true, false].into_iter().enumerate() {
+            let (plan, expected_backend, expected_materializer) = if new_hardware {
+                (
+                    vaapi_plan(),
+                    VideoBackendKind::HardwareZeroCopy,
+                    CandidateVideoMaterializerKind::DmaBufZeroCopy,
+                )
+            } else {
+                (
+                    ffmpeg_plan(),
+                    VideoBackendKind::FfmpegSoftware,
+                    CandidateVideoMaterializerKind::HostPlanarUpload,
+                )
+            };
+            let old_materializer_drops = Arc::new(AtomicUsize::new(0));
+            let old_binding_drops = Arc::new(AtomicUsize::new(0));
+            let mut active = ActiveVideoPipelinePointers::new(
+                old_backend,
+                DropProbe::new(10, old_materializer_drops.clone()),
+                DropProbe::new(20, old_binding_drops.clone()),
+            );
+            let mut slot = StagedVideoPipelineCandidateSlot::new();
+            let mut driver = FakeCandidateDriver::successful();
+            let candidate_request_id = request_id((old_index * 2 + new_index + 20) as u64);
+            let generation = renderer_generation(4);
+
+            let reply = slot.prepare_and_stage(candidate_request_id, generation, plan, &mut driver);
+            let descriptor = slot
+                .candidate_descriptor()
+                .expect("candidate descriptor must stay staged until Installed");
+            assert_eq!(descriptor.backend_kind(), expected_backend);
+            assert_eq!(descriptor.materializer_kind(), expected_materializer);
+
+            let mut port =
+                FakeCandidatePort::connected(available_backend(reply, candidate_request_id));
+            let status = port.configure(candidate_request_id);
+            slot.record_player_status(status, generation, &mut port)
+                .expect("matching configured status must be accepted");
+            slot.prepare_post_installed_commit(candidate_request_id, generation)
+                .expect("matching Installed must prepare pointer commit")
+                .commit(&mut active);
+
+            assert_eq!(active.backend_kind(), expected_backend);
+            assert_eq!(active.materializer().id, 200);
+            assert_eq!(active.submission_binding().id, 300);
+            assert_eq!(old_materializer_drops.load(Ordering::SeqCst), 1);
+            assert_eq!(old_binding_drops.load(Ordering::SeqCst), 1);
+            drop(port);
+        }
+    }
+}
+
+#[test]
 fn candidate_success_does_not_change_active_pointers_until_infallible_commit() {
     // Old active pointers имеют отдельные IDs и release counters.
     let old_materializer_drops = Arc::new(AtomicUsize::new(0));

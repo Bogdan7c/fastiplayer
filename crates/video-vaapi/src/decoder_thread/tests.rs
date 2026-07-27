@@ -677,6 +677,58 @@ fn accepted_none_decode_outcome_acks_packet_without_publish() {
     );
 }
 
+/// Проверяет, что consumed packet с recoverable decode error не течёт в player accounting.
+#[test]
+fn recoverable_decode_error_acks_consumed_packet() {
+    let (frame_tx, frame_rx) = bounded(1);
+    let (packet_ack_tx, packet_ack_rx) = bounded(1);
+    let (error_tx, error_rx) = bounded(1);
+    let (diagnostic_tx, diagnostic_rx) =
+        std::sync::mpsc::sync_channel(DECODER_DIAGNOSTIC_CHANNEL_CAPACITY);
+    let (activity_notifier, activity_subscription) = VideoDecoderActivityNotifier::new();
+    let observed_epoch = activity_subscription.current_epoch();
+    let mut pending_publish = None;
+    let mut publish_pressure = FramePublishPressureCounters::default();
+    let mut latest_color_metadata = None;
+    let queued_packet = QueuedDecodePacket {
+        packet: DecodePacket {
+            track_id: media_core::TrackId::new(1),
+            pts: Duration::from_millis(1_119_600),
+            dts: None,
+            track_dts: None,
+            generation: 19,
+            encoded_bytes: Bytes::from_static(b"missing-reference"),
+            keyframe: false,
+            resolved_color: None,
+        },
+        enqueued_at: Instant::now(),
+    };
+
+    let result = handle_decode_packet_outcome(
+        Err(anyhow::anyhow!("No ShortTerm reference found")),
+        queued_packet,
+        Duration::from_millis(1),
+        DecodeQueuedPacketContext {
+            frame_tx: &frame_tx,
+            packet_ack_tx: &packet_ack_tx,
+            error_tx: &error_tx,
+            pending_publish: &mut pending_publish,
+            publish_pressure: &mut publish_pressure,
+            diagnostic_tx: &diagnostic_tx,
+            activity_notifier: &activity_notifier,
+            latest_color_metadata: &mut latest_color_metadata,
+        },
+    );
+
+    assert!(matches!(result, DecodeQueuedPacketResult::Continue));
+    assert!(packet_ack_rx.try_recv().is_ok());
+    assert_activity_received_after(&activity_subscription, observed_epoch);
+    assert!(matches!(frame_rx.try_recv(), Err(TryRecvError::Empty)));
+    assert!(matches!(error_rx.try_recv(), Err(TryRecvError::Empty)));
+    assert!(diagnostic_rx.try_recv().is_err());
+    assert!(pending_publish.is_none());
+}
+
 /// Проверяет, что dropped activity receiver не превращается в fatal decode error.
 #[test]
 fn disconnected_activity_receiver_does_not_create_fatal_decode_error() {

@@ -151,6 +151,7 @@ impl WebMediaCatalogCoordinator {
                             discovered.choices,
                             &discovered.active,
                             discovered.rejected_siblings,
+                            discovered.unprobed_siblings,
                         )
                         .map(Arc::new)
                         .map(WebMediaCatalogState::Ready)
@@ -305,6 +306,7 @@ mod tests {
                 }],
                 active: target,
                 rejected_siblings: 0,
+                unprobed_siblings: 0,
             })
         }
     }

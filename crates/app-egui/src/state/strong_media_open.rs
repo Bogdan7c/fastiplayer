@@ -635,6 +635,30 @@ mod startup_poll_tests {
         assert!(!pending_install_source.contains("wait_for_outcome("));
     }
 
+    /// Visual checkpoint принадлежит pending-транзакции и не переснимается после Installed.
+    #[test]
+    fn same_lineage_visual_checkpoint_crosses_install_barrier_in_order() {
+        let pending_source = include_str!("strong_media_open/pending.rs");
+        let resume_source = include_str!("strong_media_open/pending/resume.rs");
+
+        let last_capture = pending_source
+            .rfind("capture_same_lineage_restore_before_barrier(")
+            .expect("same-lineage path must capture the pre-barrier checkpoint");
+        let authorization = pending_source
+            .find("authorize_ready_same_lineage_media_open(")
+            .expect("same-lineage path must cross the explicit authorization barrier");
+        assert!(last_capture < authorization);
+
+        assert!(!resume_source.contains("capture_backend_swap_video_checkpoint("));
+        let terminal_finish = resume_source
+            .find("finish_media_open_terminal(candidate_owner, source, terminal)")
+            .expect("Installed terminal must finish before visual activation");
+        let freeze_activation = resume_source
+            .find("begin_backend_swap_video_freeze(")
+            .expect("successful same-lineage install must activate its checkpoint");
+        assert!(terminal_finish < freeze_activation);
+    }
+
     /// Cancel-win разрешает fallback, а missing/fatal terminal остаётся sticky fatal.
     #[test]
     fn fallback_classification_accepts_only_proven_pre_barrier_terminal() {

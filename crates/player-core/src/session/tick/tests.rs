@@ -1446,6 +1446,70 @@ fn software_host_backpressure_does_not_schedule_immediate_video_work() {
 }
 
 #[test]
+fn h264_bootstrap_drop_bypasses_decoder_backpressure_and_keeps_immediate_work() {
+    let tick_config = PlayerTickConfig::default();
+    let decoder_thread = RecordingVideoDecoderThread::new();
+    let mut session = PlayerSession::new();
+
+    decoder_thread.set_host_upload_resource_status(
+        video_core::HostUploadResourceSnapshotStatus::Available(
+            video_core::HostUploadResourceSnapshot {
+                host_frames_ready: tick_config.decoder_ready_queue_frames,
+                host_frames_in_flight: 0,
+                upload_slots_capacity: 2,
+                upload_slots_free: 2,
+                upload_failures: 0,
+            },
+        ),
+    );
+    session
+        .pipeline
+        .set_video_decoder_thread(decoder_thread.clone());
+    session.pipeline.select_video_track(
+        TrackId::new(1),
+        VideoDecodeRequirement::new(VideoCodec::H264),
+    );
+    session.set_playback_state(PlaybackState::Seeking);
+    enqueue_selected_video_packet(
+        &mut session,
+        Duration::from_millis(120),
+        Bytes::from_static(b"h264-inter-frame-before-idr"),
+        PacketKeyframe::NotKeyframe,
+    );
+
+    assert!(pending_video_work_available(&session, &tick_config));
+    let wakeup = session.worker_wakeup_plan(
+        Instant::now(),
+        &tick_config,
+        Duration::from_millis(2),
+        Duration::from_millis(250),
+    );
+    assert_eq!(wakeup.reason, WorkerWakeupReason::SeekOrPreroll);
+    assert_eq!(wakeup.delay, Some(Duration::ZERO));
+
+    let mut tick_result = PlayerTickResult::default();
+    let sent_packets = send_pending_video_packets_to_decoder(
+        &mut session,
+        &mut tick_result,
+        decoder_io_limits_for_tests(0, 1),
+        None,
+    );
+
+    assert_eq!(sent_packets, 0);
+    assert!(session.pipeline.pending_video_packet_is_empty());
+    assert!(decoder_thread.sent_packets().is_empty());
+    assert!(tick_result.pipeline_pauses.is_empty());
+    assert_eq!(
+        tick_result.dropped_video_frames,
+        vec![PlayerVideoFrameDrop {
+            pts: Duration::from_millis(120),
+            reason: PlayerVideoDropReason::SeekPreroll,
+        }]
+    );
+    assert!(session.pipeline.video_decoder_needs_keyframe());
+}
+
+#[test]
 fn scheduler_late_drop_requires_next_frame_to_be_ready() {
     let mut queue = VecDeque::new();
     queue.push_back(decoded_frame(Duration::from_millis(0), 1));

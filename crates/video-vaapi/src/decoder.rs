@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use anyhow::Result;
-use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata, VideoDisplayOrientation};
+use codec_core::{
+    BitDepth, ChromaSubsampling, VideoCodec, VideoColorMetadata, VideoDisplayOrientation,
+};
 use cros_codecs::decoder::DecodedDmaBufExportLayout;
 use cros_codecs::libva::{
     VA_RT_FORMAT_YUV420, VA_RT_FORMAT_YUV420_10, VA_RT_FORMAT_YUV420_12, VA_RT_FORMAT_YUV422,
@@ -37,6 +39,7 @@ use crate::shared_hardware_owner::{
 
 mod config;
 mod event_drain;
+mod h264_recovery;
 mod preroll;
 mod suppressed_reclaim;
 
@@ -51,6 +54,7 @@ use config::{
     default_max_suppressed_reclaim_frames,
 };
 use event_drain::*;
+use h264_recovery::H264DecodeRecovery;
 use preroll::*;
 use suppressed_reclaim::*;
 /// Итог обработки packet-а для decoder thread-а.
@@ -380,6 +384,9 @@ pub struct VaapiVideoDecoder {
 
     /// Последний pre-floor VA handle для EOF fallback promotion.
     preroll_fallback_candidate: Option<PrerollFallbackCandidate<VaapiDecodedFrameHandle>>,
+
+    /// Не даёт подавать inter-frames в пустой после configure/flush/recovery H.264 DPB.
+    h264_decode_recovery: H264DecodeRecovery,
 }
 
 impl VaapiVideoDecoder {
@@ -499,6 +506,7 @@ impl VaapiVideoDecoder {
             display_orientation: VideoDisplayOrientation::Identity,
             preroll_output_floor: PrerollOutputFloorState::default(),
             preroll_fallback_candidate: None,
+            h264_decode_recovery: H264DecodeRecovery::default(),
         })
     }
 
@@ -636,6 +644,8 @@ impl VaapiVideoDecoder {
             VaapiCodecAdapterFactory::create_adapter_for_config(self.display.clone(), config)?;
         self.backend_name = adapter.backend_name();
         self.adapter = adapter;
+        self.h264_decode_recovery
+            .reset_for_stream(self.adapter.codec() == VideoCodec::H264);
         self.zero_copy_success_logged = false;
         self.p010_boundary_verified_logged = false;
 
@@ -1103,21 +1113,44 @@ impl VaapiVideoDecoder {
             return Ok(VaapiDecodePacketOutcome::OutputBackpressured);
         }
 
+        let is_keyframe = packet.keyframe.is_known_keyframe();
+        if self.h264_decode_recovery.should_drop(is_keyframe) {
+            trace!(
+                pts_ms = packet.pts.as_millis(),
+                "Dropping H.264 inter-frame while decoder recovery waits for keyframe"
+            );
+            return Ok(VaapiDecodePacketOutcome::Accepted(None));
+        }
+
         // Шаг 1-2: submit packet и drain pending events.
         // При `CheckEvents` тот же packet отправляется повторно после drain,
         // потому что нижний decoder ещё не обязан был consume-ить bitstream.
-        let loop_report = run_decode_with_event_retry(
+        let loop_report = match run_decode_with_event_retry(
             self,
             timestamp_us,
             &packet.data,
-            packet.keyframe.is_known_keyframe(),
+            is_keyframe,
             generation,
-        )?;
+        ) {
+            Ok(report) => report,
+            Err(error) => {
+                if !is_fatal_decoder_error(&error) && self.adapter.codec() == VideoCodec::H264 {
+                    self.recover_h264_after_decode_error(&error)?;
+                }
+                return Err(error);
+            }
+        };
         if loop_report.output_backpressured {
             return Ok(VaapiDecodePacketOutcome::OutputBackpressured);
         }
         if loop_report.skipped_packet {
             return Ok(VaapiDecodePacketOutcome::Accepted(None));
+        }
+        if self.h264_decode_recovery.note_packet_accepted(is_keyframe) {
+            debug!(
+                pts_ms = packet.pts.as_millis(),
+                "H.264 decoder recovery accepted a new keyframe"
+            );
         }
 
         // Шаг 3: Возвращаем самый старый готовый кадр (FIFO).
@@ -1178,6 +1211,34 @@ impl VaapiVideoDecoder {
         self.promote_preroll_fallback_candidate_if_needed(generation)?;
         Ok(())
     }
+
+    /// Очищает повреждённый H.264 DPB и переводит backend в ожидание keyframe.
+    fn recover_h264_after_decode_error(&mut self, decode_error: &anyhow::Error) -> Result<()> {
+        if let Err(flush_error) = self.flush_decoder_owned_state("h264_decode_recovery") {
+            return Err(VaapiSurfaceLifecycleError::new(format!(
+                "H.264 decoder recovery flush failed after {decode_error:#}: {flush_error:#}"
+            ))
+            .into());
+        }
+        self.h264_decode_recovery.begin();
+        warn!(
+            error = %decode_error,
+            "H.264 decoder flushed after recoverable decode error; waiting for keyframe"
+        );
+        Ok(())
+    }
+
+    /// Общий codec/resource flush без изменения владельца recovery policy.
+    fn flush_decoder_owned_state(&mut self, reason: &'static str) -> Result<()> {
+        self.force_drain_preroll_candidate_and_suppressed_surfaces(reason)?;
+        self.adapter
+            .flush()
+            .map_err(|error| anyhow::anyhow!("Flush error: {error}"))?;
+        self.drain_decoder_events(DecoderEventDrainPolicy::Discard { reason })?;
+        self.force_drain_suppressed_surfaces(reason)?;
+        self.release_decoder_owned_ready_frames(reason)?;
+        Ok(())
+    }
 }
 
 impl DecoderRetryDriver for VaapiVideoDecoder {
@@ -1225,13 +1286,9 @@ impl VideoDecoder for VaapiVideoDecoder {
     ///
     /// После flush decoder требует keyframe перед возобновлением декодирования.
     fn flush(&mut self) -> Result<()> {
-        self.force_drain_preroll_candidate_and_suppressed_surfaces("flush_before_adapter")?;
-        self.adapter
-            .flush()
-            .map_err(|error| anyhow::anyhow!("Flush error: {error}"))?;
-        self.drain_decoder_events(DecoderEventDrainPolicy::Discard { reason: "flush" })?;
-        self.force_drain_suppressed_surfaces("flush_after_discard")?;
-        self.release_decoder_owned_ready_frames("flush")?;
+        self.flush_decoder_owned_state("flush")?;
+        self.h264_decode_recovery
+            .reset_for_stream(self.adapter.codec() == VideoCodec::H264);
         Ok(())
     }
 

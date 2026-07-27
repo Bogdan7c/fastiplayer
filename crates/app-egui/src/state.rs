@@ -86,7 +86,8 @@ pub(crate) use media_jobs::ActiveMediaSource;
 pub use present_frame_cache::PresentFrameAcquisition;
 pub use present_frame_cache::RenderablePresentFrame;
 pub(crate) use video_backend::{
-    BackendSwapVideoPhase, VideoPipelineRebuildError, VideoPipelineRebuildRequest,
+    BackendSwapVideoCheckpoint, BackendSwapVideoPhase, VideoPipelineRebuildError,
+    VideoPipelineRebuildRequest,
 };
 
 use main_visual_override::MainVisualOverrideState;

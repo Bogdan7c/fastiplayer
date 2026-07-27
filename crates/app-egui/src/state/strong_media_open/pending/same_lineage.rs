@@ -12,6 +12,8 @@ pub(super) enum PendingStrongLineageCommit {
     SameLineage {
         expected_active: crate::playlist_runtime::ActiveMediaIdentity,
         restore: Option<SameLineageRestoreSnapshot>,
+        /// Visual checkpoint снимается в последнем pre-barrier состоянии старого media.
+        video_swap_checkpoint: Option<Box<crate::state::BackendSwapVideoCheckpoint>>,
         rebound_after_installed: bool,
     },
 }
@@ -34,6 +36,7 @@ impl AppState {
         let PendingStrongLineageCommit::SameLineage {
             expected_active,
             restore,
+            video_swap_checkpoint,
             ..
         } = &mut pending.lineage_commit
         else {
@@ -46,6 +49,7 @@ impl AppState {
         {
             return Err(StrongMediaOpenError::SameLineageStale);
         }
+        let visual_checkpoint = self.capture_backend_swap_video_checkpoint();
         let (fresh_intent, fresh_restore) = same_lineage_controls_from_snapshot(snapshot);
         pending.intent = fresh_intent;
         let next_revision = pending
@@ -60,6 +64,7 @@ impl AppState {
             .map_err(StrongMediaOpenError::Command)?;
         pending.intent_revision = next_revision;
         *restore = Some(fresh_restore);
+        *video_swap_checkpoint = Some(Box::new(visual_checkpoint));
         Ok(())
     }
 }

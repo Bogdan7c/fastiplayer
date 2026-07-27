@@ -23,6 +23,9 @@ use super::catalog_capabilities::AppCatalogCapabilityProbe;
 use super::component_variants::YtDlpComponentSelectionOpenIntent;
 use super::{AdaptiveEndpointRefreshPorts, WebCandidateOpenContext, WebOpenRuntime};
 
+/// Installed choice плюс семь planner-ranked siblings ограничивают сетевую проверку каталога.
+const MAX_PARENT_CATALOG_CHOICES: usize = 8;
+
 pub(crate) struct DiscoveredProviderCatalog {
     pub(crate) catalog: Arc<ComponentVariantCatalog>,
     pub(crate) provider_selection: ComponentVariantSelection,
@@ -92,6 +95,10 @@ impl WebMediaCatalogDiscovery for CatalogDiscoveryJob {
                 selection: Box::new(self.request.active_selection.clone()),
             },
         };
+        let BoundedParentChoices {
+            choices,
+            unprobed_siblings,
+        } = limit_parent_choices(choices, &active, MAX_PARENT_CATALOG_CHOICES)?;
         let mut rejected_siblings = 0usize;
         let mut capability_probe = AppCatalogCapabilityProbe::new(
             self.request.system_capabilities.clone(),
@@ -101,6 +108,11 @@ impl WebMediaCatalogDiscovery for CatalogDiscoveryJob {
         for choice in choices {
             if cancellation.is_cancelled() {
                 anyhow::bail!("web-media catalog discovery cancelled");
+            }
+            if choice.target == active {
+                // Exact Installed source уже доказал этот choice сильнее повторного sibling probe-а.
+                proven_choices.push(choice);
+                continue;
             }
             let candidate = match &choice.target {
                 #[cfg(test)]
@@ -278,8 +290,55 @@ impl WebMediaCatalogDiscovery for CatalogDiscoveryJob {
             choices,
             active,
             rejected_siblings,
+            unprobed_siblings,
         })
     }
+}
+
+struct BoundedParentChoices {
+    choices: Vec<WebMediaCatalogChoice>,
+    unprobed_siblings: usize,
+}
+
+fn limit_parent_choices(
+    mut choices: Vec<WebMediaCatalogChoice>,
+    active: &WebMediaSelectionTarget,
+    max_choices: usize,
+) -> Result<BoundedParentChoices> {
+    if max_choices == 0 {
+        anyhow::bail!("parent catalog choice budget должен быть положительным");
+    }
+
+    choices.sort_by_key(|choice| (choice.rank, choice.mode));
+    if choices.windows(2).any(|pair| {
+        pair[0].rank == pair[1].rank
+            && pair[0].mode == pair[1].mode
+            && pair[0].target != pair[1].target
+    }) {
+        anyhow::bail!("parent catalog ranking неоднозначен без source-order tie-breaker");
+    }
+
+    let Some(active_index) = choices.iter().position(|choice| &choice.target == active) else {
+        anyhow::bail!("active Installed choice отсутствует в playable parent catalog");
+    };
+    if choices.len() <= max_choices {
+        return Ok(BoundedParentChoices {
+            choices,
+            unprobed_siblings: 0,
+        });
+    }
+
+    let unprobed_siblings = choices.len().saturating_sub(max_choices);
+    let active_choice = choices.remove(active_index);
+    let mut bounded = Vec::with_capacity(max_choices);
+    bounded.push(active_choice);
+    bounded.extend(choices.into_iter().take(max_choices - 1));
+    bounded.sort_by_key(|choice| (choice.rank, choice.mode));
+
+    Ok(BoundedParentChoices {
+        choices: bounded,
+        unprobed_siblings,
+    })
 }
 
 impl CatalogDiscoveryJob {

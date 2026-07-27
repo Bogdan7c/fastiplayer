@@ -760,6 +760,8 @@ pub(super) fn handle_decode_packet_outcome(
                 );
                 return DecodeQueuedPacketResult::Stop;
             }
+            let _ = decode_context.packet_ack_tx.try_send(());
+            notify_decoder_activity(decode_context.activity_notifier);
             tracing::warn!(error = %error, "Decoder thread: decode error");
             DecodeQueuedPacketResult::Continue
         }

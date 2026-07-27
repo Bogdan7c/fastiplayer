@@ -18,6 +18,7 @@ impl PlaybackPipeline {
             .as_ref()
             .map_or("No video backend", |decoder| decoder.backend_name());
         self.video_decoder_thread = decoder_thread;
+        self.require_video_decoder_keyframe();
         self.reset_video_decode_in_flight();
     }
 
@@ -48,6 +49,7 @@ impl PlaybackPipeline {
         self.cancel_video_backlog_recovery_scan_for_decoder_replacement();
         self.video_backend = decoder_thread.backend_name();
         let previous_decoder = self.video_decoder_thread.replace(decoder_thread);
+        self.require_video_decoder_keyframe();
         self.reset_video_decode_in_flight();
         previous_decoder
     }

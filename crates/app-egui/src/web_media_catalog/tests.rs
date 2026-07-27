@@ -26,11 +26,14 @@ fn dependent_facets_keep_one_item_and_automatic_missing_metadata_visible() {
             target: target.clone(),
         }],
         &target,
-        0,
+        2,
+        3,
     )
     .unwrap();
 
     let projection = catalog.picker_projection();
+    assert_eq!(projection.rejected_siblings, 2);
+    assert_eq!(projection.unprobed_siblings, 3);
     assert!(
         projection
             .selectors
@@ -72,6 +75,7 @@ fn upper_facet_change_preserves_reachable_lower_facets() {
         crate::web_media_stream_model::WebMediaStreamGeneration::for_test(1, 1),
         choices,
         &active,
+        0,
         0,
     )
     .unwrap();
@@ -119,6 +123,7 @@ fn lower_facet_action_never_escapes_selected_upper_prefix() {
         crate::web_media_stream_model::WebMediaStreamGeneration::for_test(1, 1),
         choices,
         &active,
+        0,
         0,
     )
     .unwrap();
@@ -189,6 +194,7 @@ fn identical_visible_alternatives_use_planner_rank_not_catalog_order() {
             crate::web_media_stream_model::WebMediaStreamGeneration::for_test(1, 1),
             choices,
             &active.target,
+            0,
             0,
         )
         .unwrap();

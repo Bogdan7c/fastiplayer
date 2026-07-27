@@ -30,9 +30,9 @@ use super::{
 };
 use crate::session::video_requirement_error::player_error_from_requirement_rejection;
 use crate::{
-    DecodeSendError, DecodeThreadError, PipelinePauseReason, PlaybackPipeline, PlayerDecodePacket,
-    PlayerError, PlayerErrorKind, pipeline::VideoDecoderSendBackpressure, session::PlayerSession,
-    session::capability_selection::ActiveVideoRequirementRefinement,
+    DecodeSendError, DecodeThreadError, PendingVideoPacket, PipelinePauseReason, PlaybackPipeline,
+    PlayerDecodePacket, PlayerError, PlayerErrorKind, pipeline::VideoDecoderSendBackpressure,
+    session::PlayerSession, session::capability_selection::ActiveVideoRequirementRefinement,
 };
 
 /// Typed лимит texture/surface pressure для decoder admission.
@@ -487,33 +487,12 @@ pub(super) fn send_pending_video_packets_to_decoder(
     limits: VideoDecoderIoLimits,
     catch_up_deadline: Option<Instant>,
 ) -> usize {
-    if let Some(reason) =
-        decoder_send_backpressure_pause_reason(session, limits.host_upload_ready_queue_capacity)
-    {
-        session.note_decoder_backpressure_for_seek_preroll_diagnostics();
-        record_pipeline_pause(session, tick_result, reason);
-        return 0;
-    }
-
     let mut sent_packets = 0usize;
     let mut seek_preroll_packets_sent = 0usize;
     let present_admission_budget = video_packet_send_present_admission_budget(session, limits);
 
     while sent_packets < limits.max_packets_to_send {
         if catch_up_deadline_reached(catch_up_deadline) {
-            break;
-        }
-
-        if present_admission_budget == 0 {
-            session.note_decoder_backpressure_for_seek_preroll_diagnostics();
-            record_pipeline_pause(
-                session,
-                tick_result,
-                PipelinePauseReason::WaitingForPresentQueue,
-            );
-            break;
-        }
-        if sent_packets >= present_admission_budget {
             break;
         }
 
@@ -544,8 +523,47 @@ pub(super) fn send_pending_video_packets_to_decoder(
             continue;
         }
 
+        if !pending_video_packet_requires_decoder_send_capacity(session, packet) {
+            let accepted =
+                accept_video_packet_for_decoder_bootstrap(session, packet_keyframe, packet_pts);
+            if accepted {
+                continue;
+            }
+            session.pipeline.pop_pending_video_packet_front();
+            record_video_drop(
+                session,
+                tick_result,
+                packet_pts,
+                PlayerVideoDropReason::SeekPreroll,
+            );
+            continue;
+        }
+
+        if let Some(reason) =
+            decoder_send_backpressure_pause_reason(session, limits.host_upload_ready_queue_capacity)
+        {
+            session.note_decoder_backpressure_for_seek_preroll_diagnostics();
+            record_pipeline_pause(session, tick_result, reason);
+            break;
+        }
+
+        if present_admission_budget == 0 {
+            session.note_decoder_backpressure_for_seek_preroll_diagnostics();
+            record_pipeline_pause(
+                session,
+                tick_result,
+                PipelinePauseReason::WaitingForPresentQueue,
+            );
+            break;
+        }
+        if sent_packets >= present_admission_budget {
+            break;
+        }
+
         let decoder_was_waiting_for_keyframe = session.pipeline.video_decoder_needs_keyframe();
-        if !accept_video_packet_for_decoder_bootstrap(session, packet_keyframe, packet_pts) {
+        let accepted =
+            accept_video_packet_for_decoder_bootstrap(session, packet_keyframe, packet_pts);
+        if !accepted {
             session.pipeline.pop_pending_video_packet_front();
             record_video_drop(
                 session,
@@ -677,6 +695,36 @@ pub(super) fn send_pending_video_packets_to_decoder(
     }
 
     sent_packets
+}
+
+/// Проверяет, нужен ли front packet-у decoder capacity, или tick может списать его локально.
+pub(super) fn pending_video_packet_requires_decoder_send_capacity(
+    session: &PlayerSession,
+    packet: &PendingVideoPacket,
+) -> bool {
+    if !session
+        .pipeline
+        .packet_generation_is_current(packet.generation)
+    {
+        return false;
+    }
+
+    if !session
+        .pipeline
+        .video_packet_belongs_to_selected_track(packet.track_id)
+    {
+        return false;
+    }
+
+    if !session.pipeline.video_decoder_needs_keyframe() {
+        return true;
+    }
+
+    match packet.keyframe {
+        PacketKeyframe::Keyframe => true,
+        PacketKeyframe::NotKeyframe => false,
+        PacketKeyframe::Unknown => !active_video_codec_requires_proven_decode_start(session),
+    }
 }
 
 /// Пропускает inter-frames, пока decoder после flush ждёт новый keyframe.

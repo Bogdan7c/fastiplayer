@@ -63,6 +63,24 @@ pub(crate) enum BackendSwapVideoPhase<'frame> {
     HoldFrozenFrame(Option<&'frame RenderablePresentFrame>),
 }
 
+/// Pre-barrier snapshot визуального состояния старого video pipeline-а.
+///
+/// Checkpoint хранит весь renderable frame, поэтому texture path и SDR/HDR metadata
+/// переходят границу вместе и не смешиваются с новым materializer-ом.
+pub(crate) struct BackendSwapVideoCheckpoint {
+    from_generation: u64,
+    frozen_frame: Option<CachedRenderablePresentFrame>,
+}
+
+/// Новый visual frame совместим с committed pipeline только после смены generation.
+fn backend_swap_new_frame_ready(
+    from_generation: u64,
+    current_generation: u64,
+    current_video_frame_present: bool,
+) -> bool {
+    current_generation != from_generation && current_video_frame_present
+}
+
 impl AppState {
     /// Инициализирует video pipeline и сохраняет WGPU materializer в shell layer-е.
     pub fn init_video_pipeline(
@@ -192,6 +210,9 @@ impl AppState {
         };
 
         let previous_backend_kind = self.current_video_backend_kind;
+        let backend_swap_checkpoint = previous_backend_kind
+            .filter(|previous| *previous != plan_backend_kind)
+            .map(|_| self.capture_backend_swap_video_checkpoint());
 
         self.player_worker
             .set_video_backend(
@@ -209,8 +230,8 @@ impl AppState {
 
         // Живая смена backend-а: сохраняем последний кадр до первого кадра нового
         // generation, а worker-owned install boundary сохраняет position/playback intent.
-        if previous_backend_kind.is_some_and(|previous| previous != plan_backend_kind) {
-            self.begin_backend_swap_video_freeze();
+        if let Some(checkpoint) = backend_swap_checkpoint {
+            self.begin_backend_swap_video_freeze(checkpoint);
         }
         self.current_video_backend_kind = Some(plan_backend_kind);
         info!(plan = plan_label, "Selected video pipeline");
@@ -495,15 +516,24 @@ impl AppState {
             .map_or(Ok(0), WgpuSubmissionQueueBinding::release_after_device_lost)
     }
 
-    /// Начинает заморозку последнего кадра на время живой смены backend-а.
+    /// Снимает visual checkpoint до player install barrier-а.
     ///
-    /// Фиксирует render generation момента свапа и копию последнего материализованного
-    /// кадра старого backend-а (его texture views остаются валидны через Arc даже после
-    /// дропа старого materializer-а), чтобы держать его на экране, пока worker не
-    /// переключится и не выдаст первый кадр нового backend-а.
-    pub(super) fn begin_backend_swap_video_freeze(&mut self) {
-        self.backend_swap_from_generation = Some(self.last_player_snapshot.render_generation);
-        self.backend_swap_frozen_frame = self.cached_renderable_present_frame.clone();
+    /// После barrier-а snapshot уже может содержать новую generation, поэтому старую
+    /// identity нельзя вычислять в post-Installed callback-е.
+    pub(super) fn capture_backend_swap_video_checkpoint(&self) -> BackendSwapVideoCheckpoint {
+        BackendSwapVideoCheckpoint {
+            from_generation: self.last_player_snapshot.render_generation,
+            frozen_frame: self.cached_renderable_present_frame.clone(),
+        }
+    }
+
+    /// Активирует заранее снятый checkpoint после смены backend/materializer pointers.
+    pub(super) fn begin_backend_swap_video_freeze(
+        &mut self,
+        checkpoint: BackendSwapVideoCheckpoint,
+    ) {
+        self.backend_swap_from_generation = Some(checkpoint.from_generation);
+        self.backend_swap_frozen_frame = checkpoint.frozen_frame;
     }
 
     /// Завершает заморозку: новый backend выдал кадр или источник сменился.
@@ -528,8 +558,11 @@ impl AppState {
         };
 
         let worker_switched = player_snapshot.render_generation != from_generation;
-        let new_backend_frame_ready =
-            worker_switched && player_snapshot.current_video_frame.is_some();
+        let new_backend_frame_ready = backend_swap_new_frame_ready(
+            from_generation,
+            player_snapshot.render_generation,
+            player_snapshot.current_video_frame.is_some(),
+        );
         let switched_to_audio_only = worker_switched
             && !player_snapshot
                 .tracks
@@ -564,5 +597,19 @@ impl AppState {
         }
 
         self.mark_pending_worker_redraw();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::backend_swap_new_frame_ready;
+
+    #[test]
+    fn pre_barrier_generation_releases_freeze_on_first_installed_frame() {
+        assert!(backend_swap_new_frame_ready(6, 7, true));
+        assert!(!backend_swap_new_frame_ready(6, 7, false));
+
+        // Захват уже post-Installed generation воспроизводит бесконечный black freeze.
+        assert!(!backend_swap_new_frame_ready(7, 7, true));
     }
 }

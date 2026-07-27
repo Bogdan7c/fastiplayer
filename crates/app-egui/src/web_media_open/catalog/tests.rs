@@ -10,8 +10,17 @@ use web_media_core::{
     VideoWidth,
 };
 
-use super::visit_provider_selections;
-use crate::web_media_catalog::WebMediaMode;
+use super::{limit_parent_choices, visit_provider_selections};
+use crate::web_media_catalog::{WebMediaCatalogChoice, WebMediaMode, WebMediaSelectionTarget};
+
+fn fixture_choice(target: u64, rank: usize, mode: WebMediaMode) -> WebMediaCatalogChoice {
+    WebMediaCatalogChoice {
+        mode,
+        video: None,
+        rank: web_media_playback_plan::OpaqueAlternativeRank::parent(rank),
+        target: WebMediaSelectionTarget::Fixture(target),
+    }
+}
 
 fn catalog_identity() -> ComponentVariantCatalogIdentity {
     let source = SourceIdentity::new(91);
@@ -159,4 +168,64 @@ fn provider_projection_keeps_standalone_single_component_catalogs() {
             ComponentVariantSelection::AudioOnly { .. }
         )]
     ));
+}
+
+#[test]
+fn parent_probe_budget_keeps_active_and_best_ranked_siblings() {
+    let active = WebMediaSelectionTarget::Fixture(99);
+    let choices = vec![
+        fixture_choice(4, 4, WebMediaMode::VideoOnly),
+        fixture_choice(99, 99, WebMediaMode::VideoAndAudio),
+        fixture_choice(2, 2, WebMediaMode::AudioOnly),
+        fixture_choice(1, 1, WebMediaMode::VideoAndAudio),
+        fixture_choice(3, 3, WebMediaMode::VideoOnly),
+    ];
+
+    let bounded = limit_parent_choices(choices, &active, 3).unwrap();
+
+    assert_eq!(bounded.unprobed_siblings, 2);
+    assert_eq!(
+        bounded
+            .choices
+            .iter()
+            .map(|choice| choice.target.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            WebMediaSelectionTarget::Fixture(1),
+            WebMediaSelectionTarget::Fixture(2),
+            active,
+        ]
+    );
+}
+
+#[test]
+fn parent_probe_budget_is_source_order_independent() {
+    let active = WebMediaSelectionTarget::Fixture(4);
+    let forward = vec![
+        fixture_choice(1, 1, WebMediaMode::VideoAndAudio),
+        fixture_choice(2, 2, WebMediaMode::VideoOnly),
+        fixture_choice(3, 3, WebMediaMode::AudioOnly),
+        fixture_choice(4, 4, WebMediaMode::VideoAndAudio),
+    ];
+    let mut reversed = forward.clone();
+    reversed.reverse();
+
+    let forward = limit_parent_choices(forward, &active, 3).unwrap();
+    let reversed = limit_parent_choices(reversed, &active, 3).unwrap();
+
+    assert_eq!(forward.choices, reversed.choices);
+    assert_eq!(forward.unprobed_siblings, reversed.unprobed_siblings);
+}
+
+#[test]
+fn parent_probe_budget_rejects_missing_active_choice() {
+    let error = limit_parent_choices(
+        vec![fixture_choice(1, 1, WebMediaMode::VideoAndAudio)],
+        &WebMediaSelectionTarget::Fixture(2),
+        1,
+    )
+    .err()
+    .expect("missing active choice должен fail closed");
+
+    assert!(error.to_string().contains("active Installed choice"));
 }

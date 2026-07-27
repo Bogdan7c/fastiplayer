@@ -54,6 +54,7 @@ pub(crate) struct WebMediaPickerProjection {
     pub(crate) generation: u64,
     pub(crate) selectors: Arc<[WebMediaPickerSelector]>,
     pub(crate) rejected_siblings: usize,
+    pub(crate) unprobed_siblings: usize,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -170,6 +171,7 @@ pub(crate) struct WebMediaVerifiedCatalog {
     choices: Arc<[WebMediaCatalogChoice]>,
     active_index: usize,
     rejected_siblings: usize,
+    unprobed_siblings: usize,
 }
 
 impl fmt::Debug for WebMediaVerifiedCatalog {
@@ -181,6 +183,7 @@ impl fmt::Debug for WebMediaVerifiedCatalog {
             .field("choice_count", &self.choices.len())
             .field("active_index", &self.active_index)
             .field("rejected_siblings", &self.rejected_siblings)
+            .field("unprobed_siblings", &self.unprobed_siblings)
             .finish()
     }
 }
@@ -192,6 +195,7 @@ impl WebMediaVerifiedCatalog {
         choices: Vec<WebMediaCatalogChoice>,
         active: &WebMediaSelectionTarget,
         rejected_siblings: usize,
+        unprobed_siblings: usize,
     ) -> Option<Self> {
         let active_index = choices.iter().position(|choice| &choice.target == active)?;
         Some(Self {
@@ -200,6 +204,7 @@ impl WebMediaVerifiedCatalog {
             choices: choices.into(),
             active_index,
             rejected_siblings,
+            unprobed_siblings,
         })
     }
 
@@ -252,6 +257,7 @@ impl WebMediaVerifiedCatalog {
             generation: self.generation,
             selectors: selectors.into(),
             rejected_siblings: self.rejected_siblings,
+            unprobed_siblings: self.unprobed_siblings,
         }
     }
 

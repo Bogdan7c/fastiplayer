@@ -188,6 +188,12 @@ fn show_stream_picker(
                     projection.rejected_siblings
                 ));
             }
+            if projection.unprobed_siblings > 0 {
+                ui.weak(format!(
+                    "Не проверено вариантов из-за лимита: {}",
+                    projection.unprobed_siblings
+                ));
+            }
             action
         }
     }

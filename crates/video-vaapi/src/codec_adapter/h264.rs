@@ -298,7 +298,13 @@ impl VaapiCodecAdapter for H264VaapiCodecAdapter {
                 Ok(source_packet_len)
             }
             Ok(None) => unreachable!("H.264 feed loop always completes or returns an error"),
-            Err(error) => Err(error),
+            Err(error) => {
+                settle_pending_access_unit_after_submit_error(
+                    &mut self.pending_access_unit,
+                    &error,
+                );
+                Err(error)
+            }
         }
     }
 
@@ -329,5 +335,19 @@ impl VaapiCodecAdapter for H264VaapiCodecAdapter {
     /// Возвращает stream info без раскрытия cros type-а наружу module-а.
     fn stream_info(&self) -> Option<VaapiAdapterStreamInfo> {
         self.inner.stream_info().map(VaapiAdapterStreamInfo::from)
+    }
+}
+
+/// Сохраняет partially consumed AU только когда cros-codecs явно требует retry тех же bytes.
+pub(super) fn settle_pending_access_unit_after_submit_error(
+    pending_access_unit: &mut Option<H264PendingAccessUnit>,
+    error: &VaapiAdapterDecodeError,
+) {
+    let same_access_unit_retry = matches!(
+        error,
+        VaapiAdapterDecodeError::CheckEvents | VaapiAdapterDecodeError::NotEnoughOutputBuffers(_)
+    );
+    if !same_access_unit_retry {
+        *pending_access_unit = None;
     }
 }

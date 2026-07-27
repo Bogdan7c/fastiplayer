@@ -94,6 +94,7 @@ fn decoder_replacement_cancels_video_backlog_recovery_scan_without_clearing_pack
         PacketKeyframe::Keyframe,
     ));
     pipeline.mark_video_decoder_bootstrapped();
+    assert!(!pipeline.video_decoder_needs_keyframe());
     assert_eq!(
         pipeline.begin_video_backlog_recovery_scan(
             crate::pipeline::VideoBacklogRecoveryScanLimits::for_tests()
@@ -115,6 +116,7 @@ fn decoder_replacement_cancels_video_backlog_recovery_scan_without_clearing_pack
 
     pipeline.set_video_decoder_thread(SharedFakeVideoDecoderThread::new());
 
+    assert!(pipeline.video_decoder_needs_keyframe());
     assert!(!pipeline.video_backlog_recovery_scan_allows_demux());
     assert_eq!(pipeline.video_backlog_recovery_staged_packet_len(), 0);
     assert_eq!(
@@ -122,6 +124,18 @@ fn decoder_replacement_cancels_video_backlog_recovery_scan_without_clearing_pack
         pending_packets_before_replacement,
         "decoder replacement не владеет очисткой compressed backlog"
     );
+}
+
+#[test]
+fn staged_decoder_install_requires_fresh_decode_start() {
+    let mut pipeline = PlaybackPipeline::default();
+    pipeline.mark_video_decoder_bootstrapped();
+    assert!(!pipeline.video_decoder_needs_keyframe());
+
+    pipeline.install_staged_video_decoder(Some(Box::new(SharedFakeVideoDecoderThread::new())));
+
+    assert!(pipeline.video_decoder_needs_keyframe());
+    assert_eq!(pipeline.video_decode_in_flight_packets(), 0);
 }
 
 #[test]
