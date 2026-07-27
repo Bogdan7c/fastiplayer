@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::embed_recovery::GENERIC_IMPERSONATE_EXTRACTOR_ARGS;
+
 use super::limits::{YtDlpTopologyBudgets, YtDlpTopologyError};
 
 /// Poll interval сохраняет responsive cancellation без busy-spin.
@@ -18,7 +20,7 @@ const PIPE_READ_CHUNK_BYTES: usize = 8 * 1024;
 /// `--dump-json` печатает lazy entries, а `--dump-single-json` — final root.
 ///
 /// Порядок safety-critical и закреплён exact-argv focused test-ом.
-const TOPOLOGY_ARGUMENTS_BEFORE_URL: [&str; 7] = [
+const TOPOLOGY_ARGUMENTS_BEFORE_URL: [&str; 9] = [
     "--quiet",
     "--no-warnings",
     "--simulate",
@@ -26,6 +28,8 @@ const TOPOLOGY_ARGUMENTS_BEFORE_URL: [&str; 7] = [
     "--dump-single-json",
     "--flat-playlist",
     "--lazy-playlist",
+    GENERIC_IMPERSONATE_EXTRACTOR_ARGS[0],
+    GENERIC_IMPERSONATE_EXTRACTOR_ARGS[1],
 ];
 
 /// Успешный bounded process result.
@@ -409,7 +413,9 @@ test "$4" = "--dump-json" || exit 94
 test "$5" = "--dump-single-json" || exit 95
 test "$6" = "--flat-playlist" || exit 96
 test "$7" = "--lazy-playlist" || exit 97
-test "$8" = "https://input.invalid/root?token=secret" || exit 98
+test "$8" = "--extractor-args" || exit 98
+test "$9" = "generic:impersonate" || exit 99
+test "${10}" = "https://input.invalid/root?token=secret" || exit 100
 printf '%s\n' \
   '{"_type":"url","url":"https://delegate.invalid/1"}' \
   '{"_type":"playlist","id":"root","title":"Root","entries":[{"_type":"url","url":"https://delegate.invalid/1"}]}'

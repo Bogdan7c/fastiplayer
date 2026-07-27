@@ -14,7 +14,7 @@ use demux_api::{
 use hls_playlist_core::HlsParserLimits;
 use media_core::{
     DemuxRetryHint, Demuxer, DynamicMediaTimelineEpoch, DynamicMediaTimelinePort,
-    DynamicMediaTimelinePortGeneration,
+    DynamicMediaTimelinePortGeneration, TrackKind,
 };
 use player_core::{
     PreparedDemuxSeekEnqueueError, PreparedDemuxSeekOutcome, PreparedDemuxSeekPort,
@@ -29,11 +29,12 @@ use web_media_adaptive::{AdaptiveHttpContext, AdaptiveRetryPolicy, AdaptiveTrans
 use web_media_core::{ContainerFamily, StreamLayout, TransportFamily};
 use web_media_hls::{
     ExtractorAesOverride, HlsAudioLayoutIntent, HlsAudioRenditionEvidence, HlsCatalogBuildPolicy,
-    HlsCatalogDiscoveryOutcome, HlsCatalogDiscoveryRequest, HlsCatalogPresentation,
-    HlsComponentContainerIntent, HlsContainerEvidence, HlsEndpointRefreshPort, HlsLiveOpenRequest,
-    HlsMainTrackLayoutIntent, HlsManifestInput, HlsRequestOverrides, HlsRequiredContainer,
-    HlsVariantSelectionIntent, HlsVodOpenPolicy, HlsVodOpenRequest, SecretInlineMediaPlaylist,
-    discover_hls_catalog, prepare_hls_catalog_live_receipted, prepare_hls_catalog_vod_receipted,
+    HlsCatalogCapabilityProofPort, HlsCatalogDiscoveryOutcome, HlsCatalogDiscoveryRequest,
+    HlsCatalogPresentation, HlsComponentContainerIntent, HlsContainerEvidence,
+    HlsEndpointRefreshPort, HlsLiveOpenRequest, HlsMainTrackLayoutIntent, HlsManifestInput,
+    HlsRequestOverrides, HlsRequiredContainer, HlsVariantSelectionIntent, HlsVodOpenPolicy,
+    HlsVodOpenRequest, SecretInlineMediaPlaylist, discover_hls_catalog,
+    prepare_hls_catalog_live_receipted, prepare_hls_catalog_vod_receipted,
     prepare_hls_live_receipted, prepare_hls_vod_receipted,
 };
 use web_media_transport_api::{SourceGeneration, TransportProviderId};
@@ -107,6 +108,9 @@ enum HlsCandidateTopologyError {
 pub(crate) fn candidate_is_hls(candidate: &YtDlpNormalizedCandidate) -> bool {
     match candidate.descriptor().layout() {
         StreamLayout::Muxed(component) => component.transport().family() == TransportFamily::Hls,
+        StreamLayout::HlsMuxedCodecDeferred(component) => {
+            component.transport().family() == TransportFamily::Hls
+        }
         StreamLayout::VideoOnly(component) => {
             component.transport().family() == TransportFamily::Hls
         }
@@ -215,6 +219,8 @@ pub(crate) fn prepare_hls_candidate(
             .async_seek_handle()
             .ok_or_else(|| anyhow!("HLS live runtime потерял receipted seek handle"))?;
         let (demuxer, timeline_port, _) = opened.into_parts();
+        prove_deferred_hls_codec_evidence(candidate, demuxer.as_ref(), capability_probe)
+            .context("HLS deferred candidate не прошёл post-open codec proof")?;
         return Ok(PreparedHlsCandidate {
             demuxer,
             seek_port: Arc::new(HlsPreparedDemuxSeekPort {
@@ -284,8 +290,11 @@ pub(crate) fn prepare_hls_candidate(
     let seek_handle = opened
         .async_seek_handle()
         .ok_or_else(|| anyhow!("HLS VOD runtime потерял receipted seek handle"))?;
+    let demuxer = opened.into_demuxer();
+    prove_deferred_hls_codec_evidence(candidate, demuxer.as_ref(), capability_probe)
+        .context("HLS deferred candidate не прошёл post-open codec proof")?;
     Ok(PreparedHlsCandidate {
-        demuxer: opened.into_demuxer(),
+        demuxer,
         seek_port: Arc::new(HlsPreparedDemuxSeekPort {
             handle: seek_handle,
         }),
@@ -396,6 +405,13 @@ fn selection_and_containers(
             HlsAudioLayoutIntent::ManifestResolved(audio_rendition_evidence(component.audio())),
             HlsMainTrackLayoutIntent::MuxedAv,
         ),
+        StreamLayout::HlsMuxedCodecDeferred(component) => (
+            None,
+            None,
+            component.container(),
+            HlsAudioLayoutIntent::Muxed,
+            HlsMainTrackLayoutIntent::MuxedAv,
+        ),
         StreamLayout::VideoOnly(component) => (
             Some(component.video()),
             None,
@@ -414,24 +430,34 @@ fn selection_and_containers(
             return Err(HlsCandidateTopologyError::IndependentManifestResources.into());
         }
     };
-    let resolution = video
-        .map(|track| -> Result<(NonZeroU32, NonZeroU32)> {
-            let width = NonZeroU32::new(
-                track
-                    .width_pixels()
-                    .ok_or_else(|| anyhow!("HLS video width evidence отсутствует"))?,
-            )
-            .ok_or_else(|| anyhow!("HLS video width равен нулю"))?;
-            let height = NonZeroU32::new(
-                track
-                    .height()
-                    .ok_or_else(|| anyhow!("HLS video height evidence отсутствует"))?
-                    .pixels(),
-            )
-            .ok_or_else(|| anyhow!("HLS video height равен нулю"))?;
-            Ok((width, height))
-        })
-        .transpose()?;
+    let resolution = match layout {
+        StreamLayout::HlsMuxedCodecDeferred(component) => {
+            let height = NonZeroU32::new(component.height().pixels())
+                .ok_or_else(|| anyhow!("HLS deferred video height равен нулю"))?;
+            let width = component
+                .width()
+                .and_then(|width| NonZeroU32::new(width.pixels()));
+            Some((width.unwrap_or(height), height))
+        }
+        _ => video
+            .map(|track| -> Result<(NonZeroU32, NonZeroU32)> {
+                let width = NonZeroU32::new(
+                    track
+                        .width_pixels()
+                        .ok_or_else(|| anyhow!("HLS video width evidence отсутствует"))?,
+                )
+                .ok_or_else(|| anyhow!("HLS video width равен нулю"))?;
+                let height = NonZeroU32::new(
+                    track
+                        .height()
+                        .ok_or_else(|| anyhow!("HLS video height evidence отсутствует"))?
+                        .pixels(),
+                )
+                .ok_or_else(|| anyhow!("HLS video height равен нулю"))?;
+                Ok((width, height))
+            })
+            .transpose()?,
+    };
     let codecs = match (video, audio_track) {
         (Some(video), Some(audio)) => Some(
             format!(
@@ -453,16 +479,47 @@ fn selection_and_containers(
             main_track_layout,
         },
         HlsComponentContainerIntent {
-            main: HlsContainerEvidence::Exact(required_container(
-                container
-                    .consistent_family()
-                    .map_err(|conflict| anyhow!("HLS container hints conflict: {conflict:?}"))?
-                    .ok_or_else(|| anyhow!("HLS container evidence отсутствует"))?,
-            )?),
+            main: if matches!(layout, StreamLayout::HlsMuxedCodecDeferred(_)) {
+                HlsContainerEvidence::ContentProbe
+            } else {
+                HlsContainerEvidence::Exact(required_container(
+                    container
+                        .consistent_family()
+                        .map_err(|conflict| anyhow!("HLS container hints conflict: {conflict:?}"))?
+                        .ok_or_else(|| anyhow!("HLS container evidence отсутствует"))?,
+                )?)
+            },
             alternate_audio: matches!(layout, StreamLayout::Muxed(_))
                 .then_some(HlsContainerEvidence::ContentProbe),
         },
     ))
+}
+
+/// Fail-closed codec proof для deferred HLS после manifest/demux open.
+fn prove_deferred_hls_codec_evidence(
+    candidate: &YtDlpNormalizedCandidate,
+    demuxer: &dyn Demuxer,
+    capability_probe: &mut crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
+) -> Result<()> {
+    let StreamLayout::HlsMuxedCodecDeferred(_) = candidate.descriptor().layout() else {
+        return Ok(());
+    };
+    let tracks = demuxer.tracks();
+    let video = tracks
+        .iter()
+        .find(|track| track.kind == TrackKind::Video)
+        .ok_or_else(|| anyhow!("deferred HLS demuxer не содержит video track"))?;
+    let audio = tracks
+        .iter()
+        .find(|track| track.kind == TrackKind::Audio)
+        .ok_or_else(|| anyhow!("deferred HLS demuxer не содержит audio track"))?;
+    capability_probe
+        .prove_video(video)
+        .map_err(|_| anyhow!("deferred HLS video codec не поддерживается"))?;
+    capability_probe
+        .prove_audio(audio)
+        .map_err(|_| anyhow!("deferred HLS audio codec не поддерживается"))?;
+    Ok(())
 }
 
 /// Проецирует только extractor evidence, которое можно точно сопоставить с AUDIO rendition.

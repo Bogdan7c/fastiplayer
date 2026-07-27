@@ -46,6 +46,63 @@ fn dependent_facets_keep_one_item_and_automatic_missing_metadata_visible() {
 }
 
 #[test]
+fn deferred_hls_like_absent_codec_keeps_resolution_switch_and_automatic_codec() {
+    let absent = NormalizedCodec::parse(RawCodecIdentity::new("none").unwrap());
+    let choices = [720_u32, 1080]
+        .into_iter()
+        .enumerate()
+        .map(|(index, height)| WebMediaCatalogChoice {
+            mode: WebMediaMode::VideoAndAudio,
+            video: Some(VideoTrackDescriptor::new(
+                absent.clone(),
+                Some(VideoWidth::new(if height == 720 { 1280 } else { 1920 }).unwrap()),
+                Some(VideoHeight::new(height).unwrap()),
+                None,
+                None,
+                DynamicRange::Unknown,
+            )),
+            rank: web_media_playback_plan::OpaqueAlternativeRank::parent(index),
+            target: WebMediaSelectionTarget::Fixture(u64::from(height)),
+        })
+        .collect::<Vec<_>>();
+    let active = choices[0].target.clone();
+    let catalog = WebMediaCatalog::new(
+        11,
+        crate::web_media_stream_model::WebMediaStreamGeneration::for_test(1, 1),
+        choices.into(),
+        &active,
+    )
+    .unwrap();
+    let projection = catalog.picker_projection();
+    let codec = projection
+        .selectors
+        .iter()
+        .find(|selector| selector.facet == WebMediaFacet::Codec)
+        .expect("codec selector");
+    assert_eq!(codec.options.as_ref(), [WebMediaFacetOption::Automatic]);
+    let resolution = projection
+        .selectors
+        .iter()
+        .find(|selector| selector.facet == WebMediaFacet::Resolution)
+        .expect("resolution selector");
+    assert_eq!(resolution.options.len(), 2);
+    let switch = catalog
+        .resolve_facet_action(WebMediaFacetAction {
+            generation: 11,
+            facet: WebMediaFacet::Resolution,
+            option_index: resolution
+                .options
+                .iter()
+                .position(|option| {
+                    matches!(option, WebMediaFacetOption::Resolution { height: 1080, .. })
+                })
+                .expect("1080 option"),
+        })
+        .expect("resolution switch");
+    assert_eq!(*switch, WebMediaSelectionTarget::Fixture(1080));
+}
+
+#[test]
 fn upper_facet_change_preserves_reachable_lower_facets() {
     let h264 = NormalizedCodec::parse(RawCodecIdentity::new("avc1.640028").unwrap());
     let vp9 = NormalizedCodec::parse(RawCodecIdentity::new("vp09.00.10.08").unwrap());

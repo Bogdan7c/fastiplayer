@@ -1267,6 +1267,7 @@ fn video_dynamic_range(candidate: &YtDlpNormalizedCandidate) -> DynamicRange {
         StreamLayout::Separate { video, .. } | StreamLayout::VideoOnly(video) => {
             video.video().dynamic_range()
         }
+        StreamLayout::HlsMuxedCodecDeferred(component) => component.dynamic_range(),
         StreamLayout::AudioOnly(_) => panic!("audio-only candidate не имеет dynamic range"),
     }
 }
@@ -1677,6 +1678,82 @@ fn smooth_transport_rejects_non_fmp4_non_h264_and_non_aac_profiles() {
     assert!(matches!(
         accepted_inventory(&wrong_audio, 0).smooth_manifest_transport_request(&context),
         Err(super::YtDlpTransportRequestError::SmoothAudioCodec)
+    ));
+}
+
+/// S23 запрещает вернуть второй service-owned WebM/HTTP/demux playback stack.
+#[test]
+fn hls_null_codecs_with_height_becomes_deferred_layout() {
+    let snapshot = snapshot(
+        json!({
+            "formats": [{
+                "format_id": "hls-deferred",
+                "url": "https://media.invalid/master.m3u8",
+                "protocol": "m3u8_native",
+                "ext": "mp4",
+                "height": 720,
+                "vcodec": null,
+                "acodec": null,
+            }]
+        }),
+        1,
+    );
+    assert_eq!(
+        accepted_inventory(&snapshot, 0)
+            .descriptor()
+            .layout()
+            .kind(),
+        StreamLayoutKind::HlsMuxedCodecDeferred
+    );
+}
+
+/// Progressive rows с отсутствующими codec fields остаются Missing rejection.
+#[test]
+fn progressive_null_codecs_rejects_missing_video_codec() {
+    let snapshot = snapshot(
+        json!({
+            "formats": [{
+                "format_id": "progressive-null-codecs",
+                "url": "https://media.invalid/file.mp4",
+                "protocol": "https",
+                "ext": "mp4",
+                "container": "mp4",
+                "height": 720,
+                "vcodec": null,
+                "acodec": null,
+            }]
+        }),
+        1,
+    );
+    assert!(matches!(
+        rejected_inventory(&snapshot, 0),
+        YtDlpCandidateNormalizationRejection::Static(
+            StaticCompatibilityRejection::InvalidMetadata { .. }
+        )
+    ));
+}
+
+/// HLS без height не принимает deferred layout при null codecs.
+#[test]
+fn hls_null_codecs_without_height_rejects_missing_codec() {
+    let snapshot = snapshot(
+        json!({
+            "formats": [{
+                "format_id": "hls-no-height",
+                "url": "https://media.invalid/master.m3u8",
+                "protocol": "m3u8_native",
+                "ext": "mp4",
+                "vcodec": null,
+                "acodec": null,
+            }]
+        }),
+        1,
+    );
+    assert!(matches!(
+        rejected_inventory(&snapshot, 0),
+        YtDlpCandidateNormalizationRejection::Static(
+            StaticCompatibilityRejection::InvalidMetadata { .. }
+        )
     ));
 }
 

@@ -44,9 +44,10 @@ pub(super) struct PreparedHdsCandidate {
 pub(super) fn candidate_is_hds(candidate: &YtDlpNormalizedCandidate) -> bool {
     match candidate.descriptor().layout() {
         StreamLayout::Muxed(component) => component.transport().family() == TransportFamily::Hds,
-        StreamLayout::VideoOnly(_) | StreamLayout::AudioOnly(_) | StreamLayout::Separate { .. } => {
-            false
-        }
+        StreamLayout::VideoOnly(_)
+        | StreamLayout::AudioOnly(_)
+        | StreamLayout::Separate { .. }
+        | StreamLayout::HlsMuxedCodecDeferred(_) => false,
     }
 }
 

@@ -115,6 +115,10 @@ impl PlaybackSelectionPolicy {
                 primary: rank(video.container),
                 secondary: rank(audio.container),
             },
+            PlanningResourceLayout::HlsMuxedCodecDeferred { .. } => ContainerPreferenceRank {
+                primary: self.preferred_containers.len(),
+                secondary: 0,
+            },
         }
     }
 }

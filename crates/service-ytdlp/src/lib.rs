@@ -7,6 +7,7 @@
 
 mod candidate;
 mod dto;
+mod embed_recovery;
 mod error;
 mod locator;
 mod metadata;

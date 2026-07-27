@@ -95,7 +95,7 @@ fn parent_choices(
             })?;
         choices.push(WebMediaCatalogChoice {
             mode,
-            video: video.cloned(),
+            video,
             rank: OpaqueAlternativeRank::parent(parent_rank),
             target: WebMediaSelectionTarget::Parent {
                 selection: Box::new(selection),
@@ -160,11 +160,30 @@ fn parent_choices(
 
 fn layout_facets(
     layout: &StreamLayout,
-) -> (WebMediaMode, Option<&web_media_core::VideoTrackDescriptor>) {
+) -> (WebMediaMode, Option<web_media_core::VideoTrackDescriptor>) {
     match layout {
-        StreamLayout::Muxed(component) => (WebMediaMode::VideoAndAudio, Some(component.video())),
-        StreamLayout::Separate { video, .. } => (WebMediaMode::VideoAndAudio, Some(video.video())),
-        StreamLayout::VideoOnly(video) => (WebMediaMode::VideoOnly, Some(video.video())),
+        StreamLayout::Muxed(component) => {
+            (WebMediaMode::VideoAndAudio, Some(component.video().clone()))
+        }
+        // Absent codec — только picker projection: height/fps/HDR остаются, codec = «Авто».
+        StreamLayout::HlsMuxedCodecDeferred(component) => (
+            WebMediaMode::VideoAndAudio,
+            Some(web_media_core::VideoTrackDescriptor::new(
+                web_media_core::NormalizedCodec::parse(
+                    web_media_core::RawCodecIdentity::new("none")
+                        .expect("literal none codec identity"),
+                ),
+                component.width(),
+                Some(component.height()),
+                component.frame_rate(),
+                component.bitrate(),
+                component.dynamic_range(),
+            )),
+        ),
+        StreamLayout::Separate { video, .. } => {
+            (WebMediaMode::VideoAndAudio, Some(video.video().clone()))
+        }
+        StreamLayout::VideoOnly(video) => (WebMediaMode::VideoOnly, Some(video.video().clone())),
         StreamLayout::AudioOnly(_) => (WebMediaMode::AudioOnly, None),
     }
 }

@@ -1,5 +1,6 @@
 use crate::{
-    AudioTrackDescriptor, ContainerIdentity, NormalizedTransport, VideoHeight, VideoTrackDescriptor,
+    AudioTrackDescriptor, Bitrate, ContainerIdentity, DynamicRange, FrameRate, NormalizedTransport,
+    TransportFamily, VideoHeight, VideoTrackDescriptor, VideoWidth,
 };
 
 /// Компонент, содержащий только video track.
@@ -134,11 +135,93 @@ impl MuxedComponentDescriptor {
     }
 }
 
+/// Muxed HLS ladder step без declared CODECS; proof после manifest/TracksChanged.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HlsMuxedCodecDeferredDescriptor {
+    transport: NormalizedTransport,
+    container: ContainerIdentity,
+    height: VideoHeight,
+    width: Option<VideoWidth>,
+    frame_rate: Option<FrameRate>,
+    bitrate: Option<Bitrate>,
+    dynamic_range: DynamicRange,
+}
+
+/// Ошибка построения deferred HLS descriptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HlsMuxedCodecDeferredBuildError {
+    /// Transport family не HLS.
+    TransportNotHls,
+}
+
+impl HlsMuxedCodecDeferredDescriptor {
+    /// Создаёт deferred muxed HLS step; transport обязан быть HLS.
+    pub fn new(
+        transport: NormalizedTransport,
+        container: ContainerIdentity,
+        height: VideoHeight,
+        width: Option<VideoWidth>,
+        frame_rate: Option<FrameRate>,
+        bitrate: Option<Bitrate>,
+        dynamic_range: DynamicRange,
+    ) -> Result<Self, HlsMuxedCodecDeferredBuildError> {
+        if transport.family() != TransportFamily::Hls {
+            return Err(HlsMuxedCodecDeferredBuildError::TransportNotHls);
+        }
+        Ok(Self {
+            transport,
+            container,
+            height,
+            width,
+            frame_rate,
+            bitrate,
+            dynamic_range,
+        })
+    }
+
+    /// Возвращает transport.
+    pub const fn transport(&self) -> &NormalizedTransport {
+        &self.transport
+    }
+
+    /// Возвращает container hints.
+    pub const fn container(&self) -> &ContainerIdentity {
+        &self.container
+    }
+
+    /// Возвращает обязательную video height evidence.
+    pub const fn height(&self) -> VideoHeight {
+        self.height
+    }
+
+    /// Возвращает optional width evidence.
+    pub const fn width(&self) -> Option<VideoWidth> {
+        self.width
+    }
+
+    /// Возвращает optional frame rate evidence.
+    pub const fn frame_rate(&self) -> Option<FrameRate> {
+        self.frame_rate
+    }
+
+    /// Возвращает optional bitrate evidence.
+    pub const fn bitrate(&self) -> Option<Bitrate> {
+        self.bitrate
+    }
+
+    /// Возвращает conservative dynamic-range hint.
+    pub const fn dynamic_range(&self) -> DynamicRange {
+        self.dynamic_range
+    }
+}
+
 /// Shape stream resources без provider/open semantics.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StreamLayout {
     /// Один resource содержит video и audio.
     Muxed(MuxedComponentDescriptor),
+    /// Muxed HLS без declared CODECS; codec proof отложен до manifest open.
+    HlsMuxedCodecDeferred(HlsMuxedCodecDeferredDescriptor),
     /// Video и audio находятся в разных resources.
     Separate {
         /// Video-only component.
@@ -157,6 +240,7 @@ impl StreamLayout {
     pub const fn kind(&self) -> StreamLayoutKind {
         match self {
             Self::Muxed(_) => StreamLayoutKind::Muxed,
+            Self::HlsMuxedCodecDeferred(_) => StreamLayoutKind::HlsMuxedCodecDeferred,
             Self::Separate { .. } => StreamLayoutKind::Separate,
             Self::VideoOnly(_) => StreamLayoutKind::VideoOnly,
             Self::AudioOnly(_) => StreamLayoutKind::AudioOnly,
@@ -167,6 +251,7 @@ impl StreamLayout {
     pub const fn video_height(&self) -> Option<VideoHeight> {
         match self {
             Self::Muxed(component) => component.video().height(),
+            Self::HlsMuxedCodecDeferred(component) => Some(component.height()),
             Self::Separate { video, .. } | Self::VideoOnly(video) => video.video().height(),
             Self::AudioOnly(_) => None,
         }
@@ -178,6 +263,8 @@ impl StreamLayout {
 pub enum StreamLayoutKind {
     /// Muxed A/V.
     Muxed,
+    /// Muxed HLS без declared CODECS.
+    HlsMuxedCodecDeferred,
     /// Separate A/V.
     Separate,
     /// Video-only.

@@ -13,11 +13,12 @@ use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 use web_media_core::{
     AudioComponentDescriptor, AudioTrackDescriptor, Bitrate, CandidateDescriptor,
     CandidateFormatIdentity, CandidateIdentity, ChannelCount, ContainerFamily, ContainerIdentity,
-    DynamicRange, ExactSelectionIdentity, ExtractionGeneration, FtpScheme, HttpScheme,
-    MuxedComponentDescriptor, NormalizedCodec, NormalizedTransport, PreferredHeightPolicy,
-    RawCodecIdentity, RawContainerIdentity, RawTransportIdentity, SampleRate, SelectionRequest,
-    SemanticIdentity, SourceIdentity, StreamLayout, TransportFamily, VideoComponentDescriptor,
-    VideoHeight, VideoTrackDescriptor, VideoWidth,
+    DynamicRange, ExactSelectionIdentity, ExtractionGeneration, FtpScheme,
+    HlsMuxedCodecDeferredDescriptor, HttpScheme, MuxedComponentDescriptor, NormalizedCodec,
+    NormalizedTransport, PreferredHeightPolicy, RawCodecIdentity, RawContainerIdentity,
+    RawTransportIdentity, SampleRate, SelectionRequest, SemanticIdentity, SourceIdentity,
+    StreamLayout, TransportFamily, VideoComponentDescriptor, VideoHeight, VideoTrackDescriptor,
+    VideoWidth,
 };
 
 use crate::{
@@ -289,6 +290,35 @@ pub(super) fn muxed_candidate(format_id: &str, semantic_key: &str) -> PlanningCa
         CandidateQualityScore::new(10),
     )
     .expect("test muxed candidate проходит admission")
+}
+
+/// Строит deferred HLS muxed candidate без static codec evidence.
+pub(super) fn hls_deferred_candidate(
+    format_id: &str,
+    semantic_key: &str,
+    height: u32,
+    quality_score: i64,
+) -> PlanningCandidate {
+    let component = HlsMuxedCodecDeferredDescriptor::new(
+        transport("m3u8_native"),
+        container("mp4"),
+        VideoHeight::new(height).expect("test deferred height валидна"),
+        None,
+        None,
+        None,
+        DynamicRange::Sdr,
+    )
+    .expect("test deferred HLS descriptor валиден");
+    PlanningCandidate::new(
+        candidate_descriptor(
+            format_id,
+            semantic_key,
+            StreamLayout::HlsMuxedCodecDeferred(component),
+        ),
+        CandidateRuntimeRequirements::HlsMuxedCodecDeferred,
+        CandidateQualityScore::new(quality_score),
+    )
+    .expect("test deferred HLS candidate проходит admission")
 }
 
 /// Строит separate A/V planning candidate.

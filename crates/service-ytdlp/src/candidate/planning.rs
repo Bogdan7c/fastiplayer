@@ -8,7 +8,9 @@ use codec_core::{
     Vp8Profile, Vp9Profile, h264_profile_from_indication,
 };
 use thiserror::Error;
-use web_media_core::{CodecFamily, CodecKind, DynamicRange, StreamLayout, VideoTrackDescriptor};
+use web_media_core::{
+    CodecFamily, CodecKind, DynamicRange, StreamLayout, VideoTrackDescriptor, VideoWidth,
+};
 use web_media_playback_plan::{
     CandidateQualityScore, CandidateRuntimeRequirements, PlanningCandidate,
     PlanningCandidateBuildError, PlanningCandidateSnapshot, PlanningSnapshotBuildError,
@@ -78,6 +80,9 @@ fn runtime_requirements(
             video: video_requirement(component.video(), video_color_evidence)?,
             audio: audio_requirement(component.audio().codec())?,
         }),
+        StreamLayout::HlsMuxedCodecDeferred(_) => {
+            Ok(CandidateRuntimeRequirements::HlsMuxedCodecDeferred)
+        }
         StreamLayout::Separate { video, audio } => Ok(CandidateRuntimeRequirements::Separate {
             video: video_requirement(video.video(), video_color_evidence)?,
             audio: audio_requirement(audio.audio().codec())?,
@@ -263,14 +268,36 @@ fn audio_requirement(
     }
 }
 
-/// Сохраняет прежний service ordering: resolution, FPS и bitrate.
 fn quality_score(layout: &StreamLayout) -> i64 {
+    match layout {
+        StreamLayout::HlsMuxedCodecDeferred(component) => {
+            let height = i64::from(component.height().pixels());
+            let width = i64::from(component.width().map_or(0, VideoWidth::pixels));
+            let fps = component.frame_rate().map_or(0, |frame_rate| {
+                (f64::from(frame_rate.numerator()) * 1_000.0 / f64::from(frame_rate.denominator()))
+                    as i64
+            });
+            let bitrate = component
+                .bitrate()
+                .map_or(0, |bitrate| (bitrate.bits_per_second() / 1_000) as i64);
+            height
+                .saturating_mul(1_000_000)
+                .saturating_add(width.saturating_mul(1_000))
+                .saturating_add(fps)
+                .saturating_add(bitrate)
+        }
+        _ => quality_score_from_video_track(layout),
+    }
+}
+
+/// Сохраняет прежний service ordering для layout-ов с video track descriptor.
+fn quality_score_from_video_track(layout: &StreamLayout) -> i64 {
     let video = match layout {
         StreamLayout::Muxed(component) => Some(component.video()),
         StreamLayout::Separate { video, .. } | StreamLayout::VideoOnly(video) => {
             Some(video.video())
         }
-        StreamLayout::AudioOnly(_) => None,
+        StreamLayout::AudioOnly(_) | StreamLayout::HlsMuxedCodecDeferred(_) => None,
     };
     let Some(video) = video else {
         return 0;

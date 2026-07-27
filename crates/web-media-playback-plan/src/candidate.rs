@@ -4,9 +4,9 @@ use audio_core::AudioDecodeCodecFamily;
 use codec_core::{VideoCodec, VideoDecodeRequirement};
 use web_media_core::{
     AudioTrackDescriptor, CandidateDescriptor, CandidateIdentity, CodecFamily, CodecKind,
-    ContainerFamily, DynamicRange, ExtractionGeneration, MuxedComponentDescriptor,
-    SemanticIdentity, SourceIdentity, StreamLayout, StreamLayoutKind, TransportFamily,
-    VideoTrackDescriptor,
+    ContainerFamily, DynamicRange, ExtractionGeneration, HlsMuxedCodecDeferredDescriptor,
+    MuxedComponentDescriptor, SemanticIdentity, SourceIdentity, StreamLayout, StreamLayoutKind,
+    TransportFamily, VideoTrackDescriptor,
 };
 
 /// Stable service-provided quality score; большее значение предпочтительнее.
@@ -54,6 +54,8 @@ pub enum CandidateRuntimeRequirements {
         /// S20 audio codec family query.
         audio: AudioDecodeCodecFamily,
     },
+    /// Muxed HLS без static codec evidence; decode proof отложен до manifest open.
+    HlsMuxedCodecDeferred,
 }
 
 impl CandidateRuntimeRequirements {
@@ -65,6 +67,7 @@ impl CandidateRuntimeRequirements {
             Self::Separate { .. } => StreamLayoutKind::Separate,
             Self::VideoOnly { .. } => StreamLayoutKind::VideoOnly,
             Self::AudioOnly { .. } => StreamLayoutKind::AudioOnly,
+            Self::HlsMuxedCodecDeferred => StreamLayoutKind::HlsMuxedCodecDeferred,
         }
     }
 }
@@ -94,6 +97,11 @@ pub(crate) enum PlanningResourceLayout {
     VideoOnly(PlanningResource),
     /// Один audio-only resource.
     AudioOnly(PlanningResource),
+    /// Muxed HLS без pinned container; требует TS/fMP4 demux intersection.
+    HlsMuxedCodecDeferred {
+        /// Transport family одного HLS resource.
+        transport: TransportFamily,
+    },
 }
 
 /// Один statically-compatible candidate и его provider-neutral runtime requirements.
@@ -388,11 +396,40 @@ fn validate_candidate_contract(
                 None,
             ))
         }
+        (
+            StreamLayout::HlsMuxedCodecDeferred(component),
+            CandidateRuntimeRequirements::HlsMuxedCodecDeferred,
+        ) => validate_hls_muxed_codec_deferred(component),
         _ => Err(PlanningCandidateBuildError::LayoutMismatch {
             descriptor: layout.kind(),
             runtime: runtime.layout_kind(),
         }),
     }
+}
+
+/// Проверяет deferred HLS muxed layout без static codec correspondence.
+fn validate_hls_muxed_codec_deferred(
+    component: &HlsMuxedCodecDeferredDescriptor,
+) -> Result<
+    (
+        PlanningResourceLayout,
+        Option<VideoCodec>,
+        Option<DynamicRange>,
+    ),
+    PlanningCandidateBuildError,
+> {
+    let transport = component.transport().family();
+    if transport != TransportFamily::Hls {
+        return Err(PlanningCandidateBuildError::StaticTransportRejected {
+            component: PlanningComponent::Muxed,
+            family: transport,
+        });
+    }
+    Ok((
+        PlanningResourceLayout::HlsMuxedCodecDeferred { transport },
+        None,
+        Some(component.dynamic_range()),
+    ))
 }
 
 /// Проверяет один muxed resource.

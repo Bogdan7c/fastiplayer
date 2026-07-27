@@ -225,6 +225,7 @@ fn approved_s42_rows_have_positive_production_shaped_plans() {
         // Каждый current S42 fixture имеет один transport; separate path проверяет согласованность.
         let transport_raw = match candidate.descriptor().layout() {
             StreamLayout::Muxed(component) => component.transport().raw().as_str(),
+            StreamLayout::HlsMuxedCodecDeferred(component) => component.transport().raw().as_str(),
             StreamLayout::Separate { video, audio } => {
                 assert_eq!(
                     video.transport().raw(),

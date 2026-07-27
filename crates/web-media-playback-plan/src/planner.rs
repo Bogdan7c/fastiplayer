@@ -167,6 +167,9 @@ fn check_resources(
         PlanningResourceLayout::AudioOnly(resource) => {
             check_resource(PlaybackComponent::Audio, resource, capabilities, rejections);
         }
+        PlanningResourceLayout::HlsMuxedCodecDeferred { transport } => {
+            check_hls_muxed_codec_deferred(transport, capabilities, rejections);
+        }
     }
 }
 
@@ -212,6 +215,42 @@ fn check_resource(
     }
 }
 
+/// Deferred HLS требует HLS transport и хотя бы один TS/fMP4 demux path.
+fn check_hls_muxed_codec_deferred(
+    transport: TransportFamily,
+    capabilities: PlaybackCapabilitySnapshot<'_>,
+    rejections: &mut Vec<CandidateRejectionReason>,
+) {
+    let transport_outputs = capabilities.transport().output_inputs_for(transport);
+    if transport_outputs.is_empty() {
+        rejections.push(CandidateRejectionReason::Capability(
+            CandidateCapabilityRejection::Transport(TransportCapabilityRejection {
+                component: PlaybackComponent::Muxed,
+                family: transport,
+            }),
+        ));
+        return;
+    }
+
+    let candidate_containers = [
+        ContainerFamily::MpegTs,
+        ContainerFamily::IsoBmff,
+        ContainerFamily::FragmentedIsoBmff,
+    ];
+    let intersects = candidate_containers.iter().any(|container| {
+        let demux_inputs = capabilities.demux().input_capabilities_for(*container);
+        !demux_inputs.is_empty() && transport_outputs.intersects(demux_inputs)
+    });
+    if !intersects {
+        rejections.push(CandidateRejectionReason::Capability(
+            CandidateCapabilityRejection::Demux(DemuxCapabilityRejection::ContainerUnavailable {
+                component: PlaybackComponent::Muxed,
+                container: ContainerFamily::MpegTs,
+            }),
+        ));
+    }
+}
+
 /// Проверяет video/audio snapshots без factory/decoder construction.
 fn check_decode_requirements(
     runtime: &CandidateRuntimeRequirements,
@@ -236,6 +275,7 @@ fn check_decode_requirements(
             check_audio(PlaybackComponent::Audio, *audio, capabilities, rejections);
             None
         }
+        CandidateRuntimeRequirements::HlsMuxedCodecDeferred => None,
     }
 }
 
@@ -351,7 +391,9 @@ fn compare_playable(
 /// только когда playable A/V-кандидата действительно нет.
 fn av_completeness_rank(candidate: &PlanningCandidate) -> u8 {
     match candidate.descriptor().layout().kind() {
-        StreamLayoutKind::Muxed | StreamLayoutKind::Separate => 0,
+        StreamLayoutKind::Muxed
+        | StreamLayoutKind::Separate
+        | StreamLayoutKind::HlsMuxedCodecDeferred => 0,
         StreamLayoutKind::VideoOnly | StreamLayoutKind::AudioOnly => 1,
     }
 }

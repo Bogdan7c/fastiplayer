@@ -506,7 +506,9 @@ fn invocation_profiles_keep_hermetic_and_manual_guarantees_separate() {
             "--no-warnings",
             "--simulate",
             "--dump-single-json",
-            "--no-playlist"
+            "--no-playlist",
+            "--extractor-args",
+            "generic:impersonate"
         ]
     );
     // Hermetic mode не читает system config.
@@ -540,6 +542,8 @@ fn invocation_profiles_keep_hermetic_and_manual_guarantees_separate() {
             "--simulate",
             "--dump-single-json",
             "--no-playlist",
+            "--extractor-args",
+            "generic:impersonate",
             "--format"
         ]
     );
@@ -560,7 +564,9 @@ fn invocation_profiles_keep_hermetic_and_manual_guarantees_separate() {
             "--dump-json",
             "--dump-single-json",
             "--flat-playlist",
-            "--lazy-playlist"
+            "--lazy-playlist",
+            "--extractor-args",
+            "generic:impersonate"
         ]
     );
     // Lazy mode запрещает считать n_entries authoritative.
@@ -643,6 +649,8 @@ fn invocation_profiles_keep_hermetic_and_manual_guarantees_separate() {
             "--simulate",
             "--dump-single-json",
             "--no-playlist",
+            "--extractor-args",
+            "generic:impersonate",
             "--format"
         ]
     );
@@ -671,7 +679,9 @@ fn invocation_profiles_keep_hermetic_and_manual_guarantees_separate() {
             "--dump-json",
             "--dump-single-json",
             "--flat-playlist",
-            "--lazy-playlist"
+            "--lazy-playlist",
+            "--extractor-args",
+            "generic:impersonate"
         ]
     );
     // Production topology продолжает читать system config/plugins.

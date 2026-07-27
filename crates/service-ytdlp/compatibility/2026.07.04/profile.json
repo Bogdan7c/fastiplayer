@@ -39,7 +39,9 @@
         "--no-warnings",
         "--simulate",
         "--dump-single-json",
-        "--no-playlist"
+        "--no-playlist",
+        "--extractor-args",
+        "generic:impersonate"
       ],
       "url_placeholder": "<exact-approved-http-https-ftp-or-ftps-locator>",
       "loads_system_config": false,
@@ -56,6 +58,8 @@
         "--simulate",
         "--dump-single-json",
         "--no-playlist",
+        "--extractor-args",
+        "generic:impersonate",
         "--format"
       ],
       "selector_placeholder": "<rustiplayer-owned-selector>",
@@ -75,7 +79,9 @@
         "--dump-json",
         "--dump-single-json",
         "--flat-playlist",
-        "--lazy-playlist"
+        "--lazy-playlist",
+        "--extractor-args",
+        "generic:impersonate"
       ],
       "url_placeholder": "<exact-approved-http-https-ftp-or-ftps-locator>",
       "loads_system_config": false,
@@ -91,7 +97,9 @@
         "--no-warnings",
         "--simulate",
         "--dump-single-json",
-        "--no-playlist"
+        "--no-playlist",
+        "--extractor-args",
+        "generic:impersonate"
       ],
       "url_placeholder": "<exact-approved-http-https-ftp-or-ftps-locator>",
       "loads_system_config": true,
@@ -111,6 +119,8 @@
         "--simulate",
         "--dump-single-json",
         "--no-playlist",
+        "--extractor-args",
+        "generic:impersonate",
         "--format"
       ],
       "selector_placeholder": "<rustiplayer-owned-selector>",
@@ -133,7 +143,9 @@
         "--dump-json",
         "--dump-single-json",
         "--flat-playlist",
-        "--lazy-playlist"
+        "--lazy-playlist",
+        "--extractor-args",
+        "generic:impersonate"
       ],
       "url_placeholder": "<exact-approved-http-https-ftp-or-ftps-locator>",
       "loads_system_config": true,

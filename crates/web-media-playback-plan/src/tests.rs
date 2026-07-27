@@ -677,6 +677,119 @@ fn transport_demux_input_shape_mismatch_is_not_reported_as_absence() {
     )));
 }
 
+/// Deferred HLS playable при HLS transport и TS/fMP4 demux intersection.
+#[test]
+fn hls_deferred_is_playable_with_hls_transport_and_ts_or_fmp4_demux() {
+    let candidate = hls_deferred_candidate("hls-deferred", "hls-deferred", 720, 720_000_000);
+    let request = exact_request(&candidate);
+    let snapshot = candidate_snapshot(vec![candidate]);
+    let (transport, demux) = s42_resource_capabilities();
+    let video = empty_video_capabilities();
+    let capabilities = PlaybackCapabilitySnapshot::new(
+        &transport,
+        &demux,
+        &video,
+        AudioDecodeCapabilitySnapshot::empty(),
+    );
+    let policy = selection_policy(
+        HdrSelectionPolicy::SdrOnly,
+        PreferredHeightPolicy::NoPreference,
+        Vec::new(),
+        vec![ContainerFamily::MpegTs, ContainerFamily::FragmentedIsoBmff],
+    );
+
+    let outcome = plan_playback(&snapshot, capabilities, &request, &policy)
+        .expect("deferred HLS candidate playable");
+    assert_eq!(
+        outcome.selected().layout(),
+        StreamLayoutKind::HlsMuxedCodecDeferred
+    );
+}
+
+/// Deferred HLS отклоняется без HLS transport capability.
+#[test]
+fn hls_deferred_rejects_without_hls_transport() {
+    let candidate = hls_deferred_candidate("hls-deferred", "hls-deferred", 720, 1);
+    let request = exact_request(&candidate);
+    let snapshot = candidate_snapshot(vec![candidate]);
+    let transport = TransportCapabilitySnapshot::new(vec![
+        TransportCapabilityRegistration::new(
+            TransportFamily::ProgressiveHttp(HttpScheme::Https),
+            DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes),
+        )
+        .expect("progressive transport registration валидна"),
+    ]);
+    let demux = DemuxCapabilitySnapshot::new(vec![
+        DemuxCapabilityRegistration::new(
+            ContainerFamily::MpegTs,
+            DemuxInputCapabilities::only(DemuxInputCapability::OrderedSegments),
+        )
+        .expect("TS demux registration валидна"),
+    ]);
+    let video = empty_video_capabilities();
+    let capabilities = PlaybackCapabilitySnapshot::new(
+        &transport,
+        &demux,
+        &video,
+        AudioDecodeCapabilitySnapshot::empty(),
+    );
+    let policy = selection_policy(
+        HdrSelectionPolicy::SdrOnly,
+        PreferredHeightPolicy::NoPreference,
+        Vec::new(),
+        vec![ContainerFamily::MpegTs],
+    );
+
+    let PlaybackPlanningError::ExactCandidateNotPlayable(rejection) =
+        plan_playback(&snapshot, capabilities, &request, &policy)
+            .expect_err("deferred HLS без transport capability отклонён")
+    else {
+        panic!("ожидался exact transport rejection");
+    };
+    assert!(rejection.reasons().iter().any(|reason| matches!(
+        reason,
+        CandidateRejectionReason::Capability(CandidateCapabilityRejection::Transport(_))
+    )));
+}
+
+/// BestPlayable ранжирует deferred HLS по height через quality_score.
+#[test]
+fn best_playable_ranks_deferred_hls_by_height() {
+    let low = hls_deferred_candidate("hls-480", "hls-480", 480, 480_000_000);
+    let high = hls_deferred_candidate("hls-1080", "hls-1080", 1080, 1_080_000_000);
+    let snapshot = candidate_snapshot(vec![low, high]);
+    let (transport, demux) = s42_resource_capabilities();
+    let video = empty_video_capabilities();
+    let capabilities = PlaybackCapabilitySnapshot::new(
+        &transport,
+        &demux,
+        &video,
+        AudioDecodeCapabilitySnapshot::empty(),
+    );
+    let policy = selection_policy(
+        HdrSelectionPolicy::SdrOnly,
+        PreferredHeightPolicy::NoPreference,
+        Vec::new(),
+        vec![ContainerFamily::MpegTs, ContainerFamily::FragmentedIsoBmff],
+    );
+
+    let outcome = plan_playback(
+        &snapshot,
+        capabilities,
+        &SelectionRequest::BestPlayable,
+        &policy,
+    )
+    .expect("deferred HLS candidates playable");
+    assert_eq!(
+        outcome.selected().layout(),
+        StreamLayoutKind::HlsMuxedCodecDeferred
+    );
+    assert_eq!(
+        outcome.selected().exact_identity().format().as_str(),
+        "hls-1080"
+    );
+}
+
 /// Unknown dynamic range остаётся explicit policy rejection после capability checks.
 #[test]
 fn unknown_dynamic_range_is_not_guessed_as_sdr() {

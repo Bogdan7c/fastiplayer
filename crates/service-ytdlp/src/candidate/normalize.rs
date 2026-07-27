@@ -326,6 +326,7 @@ fn single_component_role(
 ) -> Result<YtDlpCandidateComponentRole, YtDlpCandidateNormalizationRejection> {
     match layout {
         StreamLayout::Muxed(_) => Ok(YtDlpCandidateComponentRole::Muxed),
+        StreamLayout::HlsMuxedCodecDeferred(_) => Ok(YtDlpCandidateComponentRole::Muxed),
         StreamLayout::VideoOnly(_) => Ok(YtDlpCandidateComponentRole::Video),
         StreamLayout::AudioOnly(_) => Ok(YtDlpCandidateComponentRole::Audio),
         StreamLayout::Separate { .. } => {

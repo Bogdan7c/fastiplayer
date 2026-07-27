@@ -142,6 +142,7 @@ pub(crate) fn candidate_is_dash(candidate: &YtDlpNormalizedCandidate) -> bool {
             video.transport().family() == TransportFamily::Dash
                 && audio.transport().family() == TransportFamily::Dash
         }
+        StreamLayout::HlsMuxedCodecDeferred(_) => false,
     }
 }
 
@@ -557,6 +558,9 @@ fn presentation_selection(layout: &StreamLayout) -> Result<DashPresentationSelec
                 audio.audio(),
             )?,
         }),
+        StreamLayout::HlsMuxedCodecDeferred(_) => {
+            Err(anyhow!("DASH open не поддерживает deferred HLS layout"))
+        }
     }
 }
 

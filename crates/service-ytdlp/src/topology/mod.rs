@@ -10,6 +10,7 @@ mod process;
 mod reopen;
 
 use rustiplayer_config::YtDlpConfig;
+use serde_json::{Value, json};
 
 pub use limits::{
     DEFAULT_TOPOLOGY_DEPTH, DEFAULT_TOPOLOGY_ENTRY_COUNT, DEFAULT_TOPOLOGY_JSON_DEPTH,
@@ -32,7 +33,8 @@ pub use reopen::{
 };
 
 use crate::YtDlpMediaLocator;
-use crate::process::YtDlpProcessConfig;
+use crate::error::YtDlpServiceError;
+use crate::process::{YtDlpProcessConfig, recover_playable_document_after_platform_hijack};
 use parser::{parse_topology_root, validate_lazy_json_lines};
 use process::{TopologyProcessOutput, run_topology_process};
 
@@ -69,7 +71,64 @@ pub fn extract_yt_dlp_topology_with_budgets(
         budgets,
         &is_cancelled,
     )?;
-    topology_from_process_output(process_output, budgets)
+    let primary_topology = topology_from_process_output(process_output, budgets)?;
+    recover_topology_after_platform_hijack(primary_topology, budgets, |primary_document| {
+        recover_playable_document_after_platform_hijack(
+            locator.expose_secret_for_open(),
+            primary_document,
+            &process_config,
+            &is_cancelled,
+        )
+    })
+}
+
+fn recover_topology_after_platform_hijack(
+    primary_topology: YtDlpTopology,
+    budgets: YtDlpTopologyBudgets,
+    recover: impl FnOnce(&Value) -> Result<Option<Value>, YtDlpServiceError>,
+) -> Result<YtDlpTopology, YtDlpTopologyError> {
+    let Some(primary_document) = topology_platform_identity_document(&primary_topology) else {
+        return Ok(primary_topology);
+    };
+    let recovered_document = match recover(&primary_document) {
+        Ok(Some(document)) => document,
+        Err(YtDlpServiceError::Cancellation) => {
+            return Err(YtDlpTopologyError::Cancellation);
+        }
+        // Recovery остаётся fail-open: неудача дополнительной попытки не
+        // превращает уже валидную primary topology в отказ playlist Add URL.
+        Ok(None) | Err(_) => return Ok(primary_topology),
+    };
+    let Ok(recovered_json) = serde_json::to_vec(&recovered_document) else {
+        return Ok(primary_topology);
+    };
+    if recovered_json.len() > budgets.json_line_bytes {
+        return Ok(primary_topology);
+    }
+    match parse_topology_root(&recovered_json, budgets) {
+        Ok(recovered @ YtDlpTopology::Video(_)) => Ok(recovered),
+        Ok(_) | Err(_) => Ok(primary_topology),
+    }
+}
+
+fn topology_platform_identity_document(topology: &YtDlpTopology) -> Option<Value> {
+    let video = match topology {
+        YtDlpTopology::Video(video) => video,
+        YtDlpTopology::MultiVideo(multi_video) => multi_video.root_video(),
+        YtDlpTopology::Playlist(_) | YtDlpTopology::Delegation(_) => return None,
+    };
+    let identity = video.identity();
+    let extractor_key = identity.extractor_key()?;
+    let (locator_field, locator) = if let Some(locator) = identity.webpage_locator() {
+        ("webpage_url", locator)
+    } else {
+        ("original_url", identity.original_locator()?)
+    };
+
+    Some(json!({
+        "extractor_key": extractor_key,
+        (locator_field): locator.expose_secret_for_open(),
+    }))
 }
 
 fn topology_from_process_output(
@@ -162,5 +221,54 @@ mod tests {
                 reason: YtDlpTopologyInvalidResponseReason::MalformedJson
             }
         ));
+    }
+
+    #[test]
+    fn video_topology_invokes_shared_hijack_recovery_path() {
+        let primary = parse_topology_root(
+            serde_json::to_vec(&json!({
+                "id": "trailer",
+                "extractor_key": "Youtube",
+                "webpage_url": "https://www.youtube.com/watch?v=trailer",
+                "title": "Trailer",
+                "url": "https://media.invalid/trailer"
+            }))
+            .unwrap()
+            .as_slice(),
+            YtDlpTopologyBudgets::default(),
+        )
+        .expect("primary trailer topology");
+        let mut invoked = false;
+
+        let recovered = recover_topology_after_platform_hijack(
+            primary,
+            YtDlpTopologyBudgets::default(),
+            |primary_document| {
+                invoked = true;
+                assert_eq!(
+                    primary_document
+                        .get("extractor_key")
+                        .and_then(Value::as_str),
+                    Some("Youtube")
+                );
+                Ok(Some(json!({
+                    "id": "film",
+                    "extractor_key": "Generic",
+                    "webpage_url": "https://player.example/vod/42",
+                    "title": "Catalog film",
+                    "url": "https://media.invalid/film"
+                })))
+            },
+        )
+        .expect("recovered topology");
+
+        assert!(invoked);
+        assert_eq!(recovered.kind(), YtDlpTopologyKind::Video);
+        assert_eq!(
+            recovered
+                .as_video()
+                .and_then(|video| video.metadata().title()),
+            Some("Catalog film")
+        );
     }
 }

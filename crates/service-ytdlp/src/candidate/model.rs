@@ -224,7 +224,7 @@ impl YtDlpNormalizedCandidate {
         let audio = match self.descriptor.layout() {
             StreamLayout::Muxed(component) => component.audio(),
             StreamLayout::Separate { audio, .. } | StreamLayout::AudioOnly(audio) => audio.audio(),
-            StreamLayout::VideoOnly(_) => return None,
+            StreamLayout::VideoOnly(_) | StreamLayout::HlsMuxedCodecDeferred(_) => return None,
         };
         Some(AudioFallbackRank::new(
             self.selection_hints.preference,

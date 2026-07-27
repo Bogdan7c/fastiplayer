@@ -114,21 +114,46 @@ impl WebMediaCandidatePresentation {
     fn from_descriptor(
         descriptor: &CandidateDescriptor,
     ) -> Result<Self, WebMediaStreamModelBuildError> {
-        let (video, audio, video_container, audio_container) = match descriptor.layout() {
+        let (
+            video,
+            audio,
+            deferred_height,
+            deferred_width,
+            deferred_frame_rate,
+            deferred_bitrate,
+            deferred_dynamic_range,
+            video_container,
+            audio_container,
+        ) = match descriptor.layout() {
             StreamLayout::Muxed(component) => (
                 Some(component.video()),
                 Some(component.audio()),
+                None,
+                None,
+                None,
+                None,
+                None,
                 Some(consistent_container(component.container())?),
                 Some(consistent_container(component.container())?),
             ),
             StreamLayout::Separate { video, audio } => (
                 Some(video.video()),
                 Some(audio.audio()),
+                None,
+                None,
+                None,
+                None,
+                None,
                 Some(consistent_container(video.container())?),
                 Some(consistent_container(audio.container())?),
             ),
             StreamLayout::VideoOnly(component) => (
                 Some(component.video()),
+                None,
+                None,
+                None,
+                None,
+                None,
                 None,
                 Some(consistent_container(component.container())?),
                 None,
@@ -137,26 +162,53 @@ impl WebMediaCandidatePresentation {
                 None,
                 Some(component.audio()),
                 None,
+                None,
+                None,
+                None,
+                None,
+                None,
                 Some(consistent_container(component.container())?),
+            ),
+            StreamLayout::HlsMuxedCodecDeferred(component) => (
+                None,
+                None,
+                Some(component.height().pixels()),
+                component.width().map(web_media_core::VideoWidth::pixels),
+                component
+                    .frame_rate()
+                    .map(|rate| (rate.numerator(), rate.denominator())),
+                component.bitrate().map(|rate| rate.bits_per_second()),
+                Some(component.dynamic_range()),
+                Some(consistent_container(component.container())?),
+                None,
             ),
         };
 
         Ok(Self {
             layout: descriptor.layout().kind(),
-            width: video.and_then(|track| track.width_pixels()),
-            height: video.and_then(|track| track.height().map(|height| height.pixels())),
-            frame_rate: video.and_then(|track| {
-                track
-                    .frame_rate()
-                    .map(|rate| (rate.numerator(), rate.denominator()))
-            }),
+            width: video
+                .and_then(|track| track.width_pixels())
+                .or(deferred_width),
+            height: video
+                .and_then(|track| track.height().map(|height| height.pixels()))
+                .or(deferred_height),
+            frame_rate: video
+                .and_then(|track| {
+                    track
+                        .frame_rate()
+                        .map(|rate| (rate.numerator(), rate.denominator()))
+                })
+                .or(deferred_frame_rate),
             video_bitrate: video
-                .and_then(|track| track.bitrate().map(|rate| rate.bits_per_second())),
+                .and_then(|track| track.bitrate().map(|rate| rate.bits_per_second()))
+                .or(deferred_bitrate),
             audio_bitrate: audio
                 .and_then(|track| track.bitrate().map(|rate| rate.bits_per_second())),
             video_codec: video.and_then(|track| known_codec(track.codec().kind())),
             audio_codec: audio.and_then(|track| known_codec(track.codec().kind())),
-            dynamic_range: video.map(|track| track.dynamic_range()),
+            dynamic_range: video
+                .map(|track| track.dynamic_range())
+                .or(deferred_dynamic_range),
             containers: WebMediaContainerSummary {
                 video: video_container,
                 audio: audio_container,

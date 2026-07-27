@@ -2,11 +2,12 @@
 
 use web_media_core::{
     AudioComponentDescriptor, AudioTrackDescriptor, Bitrate, ChannelCount, CodecFamily, CodecKind,
-    CodecMediaKind, ContainerFamily, ContainerIdentity, DynamicRange, FrameRate, LanguageTag,
-    MuxedComponentDescriptor, NormalizedCodec, NormalizedTransport, ProfileExclusionReason,
-    RawCodecIdentity, RawContainerIdentity, RawExtensionIdentity, RawTransportIdentity, SampleRate,
-    StaticCompatibilityRejection, StaticDescriptorField, StaticMetadataViolation, StreamLayout,
-    TransportFamily, VideoComponentDescriptor, VideoHeight, VideoTrackDescriptor, VideoWidth,
+    CodecMediaKind, ContainerFamily, ContainerIdentity, DynamicRange, FrameRate,
+    HlsMuxedCodecDeferredDescriptor, LanguageTag, MuxedComponentDescriptor, NormalizedCodec,
+    NormalizedTransport, ProfileExclusionReason, RawCodecIdentity, RawContainerIdentity,
+    RawExtensionIdentity, RawTransportIdentity, SampleRate, StaticCompatibilityRejection,
+    StaticDescriptorField, StaticMetadataViolation, StreamLayout, TransportFamily,
+    VideoComponentDescriptor, VideoHeight, VideoTrackDescriptor, VideoWidth,
 };
 
 use super::model::{YtDlpCandidateNormalizationRejection, YtDlpVideoColorEvidence};
@@ -48,9 +49,20 @@ pub(super) fn normalize_format_parts(
 
     let transport = normalize_transport(format)?;
     let container = normalize_container(format, transport.family())?;
-    let video_codec = normalize_codec(format.vcodec.as_deref(), CodecMediaKind::Video)?;
-    let audio_codec = normalize_codec(format.acodec.as_deref(), CodecMediaKind::Audio)?;
-    let layout = normalize_layout(format, transport, container, video_codec, audio_codec)?;
+    let layout = if format.vcodec.is_none() && format.acodec.is_none() {
+        if transport.family() == TransportFamily::Hls {
+            normalize_hls_muxed_codec_deferred(format, transport, container)?
+        } else {
+            return Err(invalid_metadata(
+                StaticDescriptorField::VideoCodec,
+                StaticMetadataViolation::Missing,
+            ));
+        }
+    } else {
+        let video_codec = normalize_codec(format.vcodec.as_deref(), CodecMediaKind::Video)?;
+        let audio_codec = normalize_codec(format.acodec.as_deref(), CodecMediaKind::Audio)?;
+        normalize_layout(format, transport, container, video_codec, audio_codec)?
+    };
     let video_color_evidence = if matches!(&layout, StreamLayout::AudioOnly(_)) {
         None
     } else {
@@ -246,6 +258,49 @@ fn normalize_layout(
         }
         _ => Err(YtDlpCandidateNormalizationRejection::InvalidStreamLayout),
     }
+}
+
+/// Строит deferred muxed HLS layout, когда yt-dlp не публикует vcodec/acodec fields.
+fn normalize_hls_muxed_codec_deferred(
+    format: &YtDlpSerializedFormat,
+    transport: NormalizedTransport,
+    container: ContainerIdentity,
+) -> Result<StreamLayout, YtDlpCandidateNormalizationRejection> {
+    let height = format
+        .height
+        .map(VideoHeight::new)
+        .transpose()
+        .map_err(|_| invalid_video_dimensions())?;
+    let Some(height) = height else {
+        return Err(invalid_metadata(
+            StaticDescriptorField::VideoCodec,
+            StaticMetadataViolation::Missing,
+        ));
+    };
+    let width = format
+        .width
+        .map(VideoWidth::new)
+        .transpose()
+        .map_err(|_| invalid_video_dimensions())?;
+    let frame_rate = format.fps.map(normalize_frame_rate).transpose()?;
+    let bitrate = normalize_bitrate(format.vbr.or(format.tbr))?;
+    let dynamic_range = normalize_dynamic_range(format.dynamic_range.as_deref());
+    let component = HlsMuxedCodecDeferredDescriptor::new(
+        transport,
+        container,
+        height,
+        width,
+        frame_rate,
+        bitrate,
+        dynamic_range,
+    )
+    .map_err(|_| {
+        invalid_metadata(
+            StaticDescriptorField::Transport,
+            StaticMetadataViolation::OutOfBounds,
+        )
+    })?;
+    Ok(StreamLayout::HlsMuxedCodecDeferred(component))
 }
 
 /// Строит bounded video descriptor и conservative HDR hint.

@@ -635,6 +635,9 @@ fn component_transport_family(
         (StreamLayout::Muxed(component), YtDlpCandidateComponentRole::Muxed) => {
             Some(component.transport().family())
         }
+        (StreamLayout::HlsMuxedCodecDeferred(component), YtDlpCandidateComponentRole::Muxed) => {
+            Some(component.transport().family())
+        }
         (StreamLayout::VideoOnly(component), YtDlpCandidateComponentRole::Video) => {
             Some(component.transport().family())
         }
@@ -830,6 +833,9 @@ fn component_container(
 ) -> Option<ContainerFamily> {
     match (layout, role) {
         (StreamLayout::Muxed(component), YtDlpCandidateComponentRole::Muxed) => {
+            component.container().consistent_family().ok().flatten()
+        }
+        (StreamLayout::HlsMuxedCodecDeferred(component), YtDlpCandidateComponentRole::Muxed) => {
             component.container().consistent_family().ok().flatten()
         }
         (StreamLayout::Separate { video, .. }, YtDlpCandidateComponentRole::Video)

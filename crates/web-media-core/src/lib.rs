@@ -28,8 +28,8 @@ pub use identity::{
     SemanticIdentity, SourceIdentity,
 };
 pub use layout::{
-    AudioComponentDescriptor, MuxedComponentDescriptor, StreamLayout, StreamLayoutKind,
-    VideoComponentDescriptor,
+    AudioComponentDescriptor, HlsMuxedCodecDeferredBuildError, HlsMuxedCodecDeferredDescriptor,
+    MuxedComponentDescriptor, StreamLayout, StreamLayoutKind, VideoComponentDescriptor,
 };
 pub use normalized::{
     CodecFamily, CodecKind, CodecMediaKind, ContainerFamily, ContainerHintConflict,

@@ -344,21 +344,22 @@ fn facet_value(
 ) -> Option<WebMediaFacetOption> {
     match facet {
         WebMediaFacet::Mode => Some(WebMediaFacetOption::Mode(choice.mode)),
-        WebMediaFacet::Codec => {
-            choice
-                .video
-                .as_ref()
-                .and_then(|video| match video.codec().kind() {
-                    web_media_core::CodecKind::Known(codec) => {
-                        Some(WebMediaFacetOption::Codec(codec))
-                    }
-                    web_media_core::CodecKind::Absent | web_media_core::CodecKind::Unknown => None,
-                })
-        }
+        WebMediaFacet::Codec => choice
+            .video
+            .as_ref()
+            .map(|video| match video.codec().kind() {
+                web_media_core::CodecKind::Known(codec) => WebMediaFacetOption::Codec(codec),
+                // Deferred HLS и прочие absent/unknown не прячут selector — показывают «Авто».
+                web_media_core::CodecKind::Absent | web_media_core::CodecKind::Unknown => {
+                    WebMediaFacetOption::Automatic
+                }
+            }),
         WebMediaFacet::Resolution => choice.video.as_ref().and_then(|video| {
+            let height = video.height()?.pixels();
+            // Width может отсутствовать у deferred ladder; height остаётся discriminator.
             Some(WebMediaFacetOption::Resolution {
-                width: video.width_pixels()?,
-                height: video.height()?.pixels(),
+                width: video.width_pixels().unwrap_or(0),
+                height,
             })
         }),
         WebMediaFacet::FrameRate => choice.video.as_ref().map(|video| {
