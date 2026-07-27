@@ -1,0 +1,29 @@
+description: Read-only Serena context for ChatGPT Pro through Secure MCP Tunnel.
+prompt: |
+  You have read-only semantic access to the rustiplayer project through Serena.
+  Inspect and explain the code, but never claim that you changed files, memories,
+  configuration, or external state. Ask the user to use the local coding agent
+  when implementation is required.
+excluded_tools:
+  - activate_project
+  - create_text_file
+  - delete_memory
+  - edit_memory
+  - execute_shell_command
+  - insert_after_symbol
+  - insert_before_symbol
+  - onboarding
+  - rename_memory
+  - rename_symbol
+  - replace_content
+  - replace_symbol_body
+  - safe_delete_symbol
+  - write_memory
+included_optional_tools: []
+tool_description_overrides:
+  find_symbol: |
+    Retrieves symbols matching `name_path_pattern` in a file.
+    Use `depth > 0` to include children.
+  search_for_pattern: |
+    Searches project files with a regular expression and optional path filters.
+single_project: true
