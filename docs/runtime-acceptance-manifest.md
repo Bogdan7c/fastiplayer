@@ -25,6 +25,11 @@
 - `scripts/tests/playback-smoke-self-test.sh` — parser, dry-run и полный current-schema config generate/parse без GUI.
 - `scripts/progressive-web-smoke.sh` — S42 manual opt-in только для явно
   переданных URL/fixtures; неполная matrix остаётся `NOT RUN`.
+- [`web-media-playlist-acceptance.md`](web-media-playlist-acceptance.md) —
+  отдельный ручной прогон одной смешанной XSPF-очереди по двенадцати крупным
+  transport rows плюс полный сценарий вкладки настроек потока URL. Он удобен
+  для последовательного поиска runtime-дефектов, но не заменяет 29-case S42
+  topology/privacy checklist и сам по себе не является automated suite.
 - `scripts/final-acceptance.sh` — полный automated S42 gate
   (`scripts/ci-checks.sh all` + `scripts/coverage.sh check`), без manual media.
 

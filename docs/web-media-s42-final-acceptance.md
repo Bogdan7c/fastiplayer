@@ -93,6 +93,14 @@ live/DVR и approved special providers — `NoApprovedRow`. Их отсутст�
 
 ## Manual runner contract
 
+Для последовательной проверки реального playback, seek, переходов между
+transport owners и вкладки настроек потока URL существует дополнительная
+[`web-media-playlist-acceptance.xspf`](web-media-playlist-acceptance.xspf) с
+пошаговой
+[`инструкцией`](web-media-playlist-acceptance.md). Этот удобный ручной прогон
+не заменяет safe-case runner ниже: он не закрывает topology/auth/privacy rows
+полной 29-case S42 matrix и не публикует автоматический `PASS`.
+
 Runner:
 
 ```bash

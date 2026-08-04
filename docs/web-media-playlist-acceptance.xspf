@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<playlist version="1" xmlns="http://xspf.org/ns/0/">
+  <title>rustiplayer — ручная web-media acceptance-очередь</title>
+  <annotation>Один публичный ресурс на крупную заявленную capability-группу; порядок намеренно чередует transport и media layout.</annotation>
+  <trackList>
+    <track>
+      <location>https://www.youtube.com/watch?v=LXb3EKWsInQ</location>
+      <title>00 URL settings — adaptive HDR, codec, resolution и FPS</title>
+    </track>
+    <track>
+      <location>https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8</location>
+      <title>01 HLS VOD — MPEG-TS, muxed H.264 + AAC</title>
+    </track>
+    <track>
+      <location>https://storage.googleapis.com/shaka-demo-assets/angel-one/dash.mpd</location>
+      <title>02 DASH VOD — fMP4/WebM, separate A/V</title>
+    </track>
+    <track>
+      <location>https://upload.wikimedia.org/wikipedia/commons/c/c8/Example.ogg</location>
+      <title>03 Progressive HTTP — audio-only Ogg</title>
+    </track>
+    <track>
+      <location>https://vs-dash-ww-rd-live.akamaized.net/pl/testcard2020/avc-mobile.m3u8</location>
+      <title>04 HLS live — live edge, варианты и DVR</title>
+    </track>
+    <track>
+      <location>https://upload.wikimedia.org/wikipedia/commons/e/e7/Big_buck_bunny_720p_5mb.webm</location>
+      <title>05 Progressive HTTP — WebM VP9 + Opus</title>
+    </track>
+    <track>
+      <location>https://livesim.dashif.org/livesim/testpic_2s/Manifest.mpd</location>
+      <title>06 DASH live — dynamic MPD и sliding DVR</title>
+    </track>
+    <track>
+      <location>https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/Manifest</location>
+      <title>07 Smooth Streaming VOD — H.264 + AAC fMP4</title>
+    </track>
+    <track>
+      <location>https://archive.org/details/BigBuckBunny_328</location>
+      <title>08 Progressive HTTP — ISO-BMFF MP4</title>
+    </track>
+    <track>
+      <location>https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.f4m</location>
+      <title>09 HDS VOD — F4M/F4F FLV-family</title>
+    </track>
+    <track>
+      <location>ftp://ftp.gnu.org/video/Stephen_Fry-Happy_Birthday_GNU-100kbit_vorbis.ogg</location>
+      <title>10 FTP progressive — audio-only Ogg/Vorbis</title>
+    </track>
+    <track>
+      <location>https://storage.googleapis.com/shaka-demo-assets/angel-one-hls/hls.m3u8</location>
+      <title>11 HLS VOD — fMP4/CMAF и alternate audio</title>
+    </track>
+    <track>
+      <location>https://storage.googleapis.com/shaka-demo-assets/sintel-webm-only/dash.mpd</location>
+      <title>12 DASH VOD — WebM VP9 + Opus fragments</title>
+    </track>
+  </trackList>
+</playlist>
