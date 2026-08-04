@@ -130,11 +130,11 @@ pub(super) struct TopologyIdentityView<'identity> {
     pub(super) original_locator: Option<&'identity YtDlpMediaLocator>,
 }
 
-/// Borrowed metadata view переносит только поля, существующие в neutral playlist cache.
+/// Borrowed compact summary переносит только поля neutral playlist cache.
 #[derive(Clone, Copy)]
-pub(super) struct TopologyMetadataView<'metadata> {
+pub(super) struct TopologySummaryView<'summary> {
     /// Bounded title.
-    pub(super) title: Option<&'metadata str>,
+    pub(super) title: Option<&'summary str>,
     /// Finite non-negative duration.
     pub(super) duration: Option<std::time::Duration>,
 }
@@ -144,24 +144,24 @@ pub(super) enum TopologyNodeDescription<'node> {
     /// Самостоятельный playable video.
     Video {
         identity: TopologyIdentityView<'node>,
-        metadata: TopologyMetadataView<'node>,
+        metadata: TopologySummaryView<'node>,
     },
     /// Collection, чьи children flatten-ятся в текущий output scope.
     Collection,
     /// First-class compound root с ordered child parts.
     MultiVideo {
         identity: TopologyIdentityView<'node>,
-        metadata: TopologyMetadataView<'node>,
+        metadata: TopologySummaryView<'node>,
     },
     /// Leaf delegation; mapper не выполняет второй resolve.
     Delegation {
         target: &'node YtDlpMediaLocator,
-        metadata: TopologyMetadataView<'node>,
+        metadata: TopologySummaryView<'node>,
     },
     /// Retained unavailable child.
     Unavailable {
         identity: TopologyIdentityView<'node>,
-        metadata: TopologyMetadataView<'node>,
+        metadata: TopologySummaryView<'node>,
     },
 }
 

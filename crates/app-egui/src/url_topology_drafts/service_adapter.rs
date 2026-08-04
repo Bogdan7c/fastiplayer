@@ -1,11 +1,11 @@
 //! Zero-allocation adapter от public service-ytdlp topology к intent mapping contract.
 
 use service_ytdlp::{
-    YtDlpTopology, YtDlpTopologyEntry, YtDlpTopologyIdentity, YtDlpTopologyMetadata,
+    YtDlpTopology, YtDlpTopologyEntry, YtDlpTopologyIdentity, YtDlpTopologySummary,
 };
 
 use super::{
-    TopologyIdentityView, TopologyMappingNode, TopologyMetadataView, TopologyNodeDescription,
+    TopologyIdentityView, TopologyMappingNode, TopologyNodeDescription, TopologySummaryView,
 };
 
 impl<'identity> From<&'identity YtDlpTopologyIdentity> for TopologyIdentityView<'identity> {
@@ -19,11 +19,11 @@ impl<'identity> From<&'identity YtDlpTopologyIdentity> for TopologyIdentityView<
     }
 }
 
-impl<'metadata> From<&'metadata YtDlpTopologyMetadata> for TopologyMetadataView<'metadata> {
-    fn from(metadata: &'metadata YtDlpTopologyMetadata) -> Self {
+impl<'summary> From<&'summary YtDlpTopologySummary> for TopologySummaryView<'summary> {
+    fn from(summary: &'summary YtDlpTopologySummary) -> Self {
         Self {
-            title: metadata.title(),
-            duration: metadata.duration(),
+            title: summary.title(),
+            duration: summary.duration(),
         }
     }
 }
@@ -42,42 +42,42 @@ impl TopologyMappingNode for ServiceTopologyNode<'_> {
         match self {
             Self::Root(YtDlpTopology::Video(video)) => TopologyNodeDescription::Video {
                 identity: video.identity().into(),
-                metadata: video.metadata().into(),
+                metadata: video.summary().into(),
             },
             Self::Root(YtDlpTopology::Playlist(_)) => TopologyNodeDescription::Collection,
             Self::Root(YtDlpTopology::MultiVideo(multi_video)) => {
                 TopologyNodeDescription::MultiVideo {
                     identity: multi_video.root_video().identity().into(),
-                    metadata: multi_video.root_video().metadata().into(),
+                    metadata: multi_video.root_video().summary().into(),
                 }
             }
             Self::Root(YtDlpTopology::Delegation(delegation)) => {
                 TopologyNodeDescription::Delegation {
                     target: delegation.target(),
-                    metadata: delegation.wrapper_metadata().into(),
+                    metadata: delegation.wrapper_summary().into(),
                 }
             }
             Self::Entry(YtDlpTopologyEntry::Video(video)) => TopologyNodeDescription::Video {
                 identity: video.identity().into(),
-                metadata: video.metadata().into(),
+                metadata: video.summary().into(),
             },
             Self::Entry(YtDlpTopologyEntry::Playlist(_)) => TopologyNodeDescription::Collection,
             Self::Entry(YtDlpTopologyEntry::MultiVideo(multi_video)) => {
                 TopologyNodeDescription::MultiVideo {
                     identity: multi_video.root_video().identity().into(),
-                    metadata: multi_video.root_video().metadata().into(),
+                    metadata: multi_video.root_video().summary().into(),
                 }
             }
             Self::Entry(YtDlpTopologyEntry::Delegation(delegation)) => {
                 TopologyNodeDescription::Delegation {
                     target: delegation.target(),
-                    metadata: delegation.wrapper_metadata().into(),
+                    metadata: delegation.wrapper_summary().into(),
                 }
             }
             Self::Entry(YtDlpTopologyEntry::Unavailable(unavailable)) => {
                 TopologyNodeDescription::Unavailable {
                     identity: unavailable.identity().into(),
-                    metadata: unavailable.metadata().into(),
+                    metadata: unavailable.summary().into(),
                 }
             }
         }

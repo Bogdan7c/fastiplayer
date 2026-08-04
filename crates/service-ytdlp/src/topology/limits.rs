@@ -25,8 +25,8 @@ pub const DEFAULT_TOPOLOGY_JSON_DEPTH: usize = 64;
 /// S00 bound для extractor-controlled identity strings.
 pub const TOPOLOGY_IDENTITY_MAX_UTF8_BYTES: usize = 256;
 
-/// Service-owned bound для одного display metadata поля.
-pub const TOPOLOGY_METADATA_MAX_UTF8_BYTES: usize = 4 * 1024;
+/// Service-owned bound для одного compact summary text поля.
+pub const TOPOLOGY_SUMMARY_TEXT_MAX_UTF8_BYTES: usize = 4 * 1024;
 
 /// Service-owned bound для одного exact delegated locator.
 pub const TOPOLOGY_LOCATOR_MAX_UTF8_BYTES: usize = 16 * 1024;
@@ -133,9 +133,7 @@ pub enum YtDlpTopologyInvalidResponseReason {
     MissingVideoSourceDescription,
     /// `entries` отсутствует либо не array.
     MissingEntries,
-    /// Numeric metadata не finite/non-negative.
-    InvalidNumericMetadata,
-    /// Bounded identity/metadata field превышает лимит.
+    /// Bounded structural identity/locator field превышает лимит.
     FieldBudgetExceeded,
     /// Active-stack identity повторилась.
     DelegationCycle,

@@ -15,9 +15,9 @@ use service_ytdlp::{
 };
 
 use super::{
-    TopologyDraftMappingBudgets, TopologyIdentityView, TopologyMappingNode, TopologyMetadataView,
-    TopologyNodeDescription, YtDlpTopologyDraftIssue, YtDlpTopologyDraftIssueKind,
-    YtDlpTopologyDraftPreview,
+    TopologyDraftMappingBudgets, TopologyIdentityView, TopologyMappingNode,
+    TopologyNodeDescription, TopologySummaryView, YtDlpTopologyDraftIssue,
+    YtDlpTopologyDraftIssueKind, YtDlpTopologyDraftPreview,
 };
 
 /// Fallback, когда unavailable child не имеет даже display title.
@@ -112,7 +112,7 @@ impl TopologyDraftMapper {
         node: &Node,
         is_root: bool,
         identity: TopologyIdentityView<'_>,
-        metadata: TopologyMetadataView<'_>,
+        metadata: TopologySummaryView<'_>,
     ) {
         let remaining_items = self
             .budgets
@@ -200,7 +200,7 @@ impl TopologyDraftMapper {
     fn push_top_level_single(
         &mut self,
         reopen_intent: ReopenIntent<'_>,
-        metadata: TopologyMetadataView<'_>,
+        metadata: TopologySummaryView<'_>,
         availability: PlaylistImportAvailability,
     ) {
         if self.retained_item_count >= self.budgets.retained_items {
@@ -222,7 +222,7 @@ impl TopologyDraftMapper {
         &mut self,
         collector: &mut CompoundPartCollector,
         reopen_intent: ReopenIntent<'_>,
-        metadata: TopologyMetadataView<'_>,
+        metadata: TopologySummaryView<'_>,
         availability: PlaylistImportAvailability,
     ) {
         if collector.parts.len() >= collector.part_limit {
@@ -240,7 +240,7 @@ impl TopologyDraftMapper {
     fn build_single(
         &self,
         reopen_intent: ReopenIntent<'_>,
-        metadata: TopologyMetadataView<'_>,
+        metadata: TopologySummaryView<'_>,
         availability: PlaylistImportAvailability,
     ) -> Result<PlaylistSingleImportDraft, YtDlpTopologyDraftIssueKind> {
         let reopen_locator = self.build_reopen_locator(reopen_intent)?;
@@ -379,7 +379,7 @@ pub(super) fn map_topology_node<Node: TopologyMappingNode>(
 
 /// Строит neutral cached metadata без service/runtime полей.
 fn cached_metadata(
-    metadata: TopologyMetadataView<'_>,
+    metadata: TopologySummaryView<'_>,
     fallback_label: &'static str,
 ) -> CachedPlaylistMetadata {
     let title = metadata.title.map(str::to_owned);

@@ -14,9 +14,9 @@ mod service_adapter;
 
 use mapper::map_topology_node;
 use model::{
-    TopologyDraftMappingBudgets, TopologyIdentityView, TopologyMappingNode, TopologyMetadataView,
-    TopologyNodeDescription, YtDlpTopologyDraftIssue, YtDlpTopologyDraftIssueKind,
-    YtDlpTopologyDraftMappingError, YtDlpTopologyDraftPreview,
+    TopologyDraftMappingBudgets, TopologyIdentityView, TopologyMappingNode,
+    TopologyNodeDescription, TopologySummaryView, YtDlpTopologyDraftIssue,
+    YtDlpTopologyDraftIssueKind, YtDlpTopologyDraftMappingError, YtDlpTopologyDraftPreview,
 };
 use service_adapter::ServiceTopologyNode;
 

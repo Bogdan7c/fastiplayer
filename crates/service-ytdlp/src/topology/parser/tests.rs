@@ -1,7 +1,10 @@
 //! Focused parser fixtures для S00/S15 topology contract.
 
+use std::time::Duration;
+
 use serde_json::{Value, json};
 
+use super::model::YtDlpTopologySummaryFieldValue;
 use super::parser::*;
 use super::*;
 
@@ -23,8 +26,80 @@ fn missing_type_is_video_and_ephemeral_format_url_is_not_retained() {
 
     let video = topology.as_video().expect("ожидался video");
     assert_eq!(video.identity().extractor_id(), Some("video-id"));
-    assert_eq!(video.metadata().title(), Some("Video title"));
+    assert_eq!(video.summary().title(), Some("Video title"));
     assert!(!format!("{topology:?}").contains("secret"));
+}
+
+#[test]
+fn rich_description_does_not_participate_in_playable_topology_summary() {
+    // Двухбайтовый символ делает fixture длиннее production summary budget без огромного файла.
+    let rich_description = "я".repeat((TOPOLOGY_SUMMARY_TEXT_MAX_UTF8_BYTES / 2) + 512);
+    assert!(rich_description.len() > TOPOLOGY_SUMMARY_TEXT_MAX_UTF8_BYTES);
+    let payload = json!({
+        "id": "long-description-video",
+        "title": "Playable title",
+        "description": rich_description,
+        "duration": 42.5,
+        "formats": [{
+            "format_id": "video",
+            "url": "https://media.invalid/video"
+        }]
+    });
+
+    // Проверяем пользовательскую функцию: playable root обязан пережить rich editorial metadata.
+    let topology = parse_topology_root(
+        serde_json::to_string(&payload).unwrap().as_bytes(),
+        YtDlpTopologyBudgets::default(),
+    )
+    .expect("rich description не должна блокировать topology");
+    let video = topology.as_video().expect("ожидался playable video root");
+
+    assert_eq!(video.summary().title(), Some("Playable title"));
+    assert_eq!(
+        video.summary().title_state(),
+        YtDlpTopologySummaryFieldState::Available
+    );
+    assert_eq!(
+        video.summary().duration(),
+        Some(Duration::from_millis(42_500))
+    );
+}
+
+#[test]
+fn malformed_optional_summary_fields_are_typed_and_non_fatal() {
+    // Title превышает compact-card budget, но locator/identity/stream остаются корректными.
+    let oversized_title = "я".repeat((TOPOLOGY_SUMMARY_TEXT_MAX_UTF8_BYTES / 2) + 1);
+    let payload = json!({
+        "id": "invalid-summary-video",
+        "title": oversized_title,
+        "duration": -1,
+        "url": "https://media.invalid/video"
+    });
+
+    let topology = parse_topology_root(
+        serde_json::to_string(&payload).unwrap().as_bytes(),
+        YtDlpTopologyBudgets::default(),
+    )
+    .expect("необязательные summary fields не должны блокировать topology");
+    let summary = topology
+        .as_video()
+        .expect("ожидался playable video root")
+        .summary();
+
+    assert_eq!(summary.title(), None);
+    assert_eq!(
+        summary.title_state(),
+        YtDlpTopologySummaryFieldState::Unavailable(
+            YtDlpTopologySummaryUnavailableReason::FieldBudgetExceeded,
+        )
+    );
+    assert_eq!(summary.duration(), None);
+    assert_eq!(
+        summary.duration_state(),
+        YtDlpTopologySummaryFieldState::Unavailable(
+            YtDlpTopologySummaryUnavailableReason::InvalidNumericValue,
+        )
+    );
 }
 
 #[test]
@@ -128,7 +203,10 @@ fn url_and_url_transparent_use_distinct_merge_policies() {
         "url": "https://delegate.invalid/transparent?secret=two",
         "title": "Transparent title"
     });
-    let resolved = YtDlpTopologyMetadata::new(Some("Resolved title".to_owned()), None, None);
+    let resolved = YtDlpTopologySummary::new(
+        YtDlpTopologySummaryFieldValue::Available("Resolved title".to_owned()),
+        YtDlpTopologySummaryFieldValue::Missing,
+    );
 
     let plain = parse_topology_root(
         serde_json::to_string(&plain_payload).unwrap().as_bytes(),
@@ -148,15 +226,46 @@ fn url_and_url_transparent_use_distinct_merge_policies() {
         .as_delegation()
         .expect("ожидалась transparent delegation");
     assert_eq!(
-        plain.merge_resolved_metadata(&resolved).title(),
+        plain.merge_resolved_summary(&resolved).title(),
         Some("Resolved title")
     );
     assert_eq!(
-        transparent.merge_resolved_metadata(&resolved).title(),
+        transparent.merge_resolved_summary(&resolved).title(),
         Some("Transparent title")
     );
     assert!(!format!("{plain:?}").contains("secret"));
     assert!(!format!("{transparent:?}").contains("secret"));
+}
+
+#[test]
+fn transparent_wrapper_preserves_resolved_summary_failure_when_it_has_no_fallback() {
+    let wrapper_payload = json!({
+        "_type": "url_transparent",
+        "url": "https://delegate.invalid/transparent"
+    });
+    let wrapper = parse_topology_root(
+        serde_json::to_string(&wrapper_payload).unwrap().as_bytes(),
+        YtDlpTopologyBudgets::default(),
+    )
+    .expect("transparent wrapper должен пройти")
+    .as_delegation()
+    .expect("ожидалась delegation")
+    .clone();
+    let resolved = YtDlpTopologySummary::new(
+        YtDlpTopologySummaryFieldValue::Unavailable(
+            YtDlpTopologySummaryUnavailableReason::FieldBudgetExceeded,
+        ),
+        YtDlpTopologySummaryFieldValue::Missing,
+    );
+
+    let merged = wrapper.merge_resolved_summary(&resolved);
+
+    assert_eq!(
+        merged.title_state(),
+        YtDlpTopologySummaryFieldState::Unavailable(
+            YtDlpTopologySummaryUnavailableReason::FieldBudgetExceeded,
+        )
+    );
 }
 
 #[test]

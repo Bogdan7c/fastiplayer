@@ -19,7 +19,7 @@ pub enum YtDlpTopology {
 }
 
 impl YtDlpTopology {
-    /// Возвращает стабильный result kind без раскрытия metadata.
+    /// Возвращает стабильный result kind без раскрытия summary.
     #[must_use]
     pub const fn kind(&self) -> YtDlpTopologyKind {
         match self {
@@ -94,7 +94,7 @@ pub enum YtDlpTopologyKind {
 #[derive(Clone, PartialEq, Eq)]
 pub struct YtDlpTopologyVideo {
     identity: YtDlpTopologyIdentity,
-    metadata: YtDlpTopologyMetadata,
+    summary: YtDlpTopologySummary,
 }
 
 impl YtDlpTopologyVideo {
@@ -104,14 +104,14 @@ impl YtDlpTopologyVideo {
         &self.identity
     }
 
-    /// Возвращает bounded display metadata.
+    /// Возвращает compact display summary.
     #[must_use]
-    pub const fn metadata(&self) -> &YtDlpTopologyMetadata {
-        &self.metadata
+    pub const fn summary(&self) -> &YtDlpTopologySummary {
+        &self.summary
     }
 
-    pub(crate) fn new(identity: YtDlpTopologyIdentity, metadata: YtDlpTopologyMetadata) -> Self {
-        Self { identity, metadata }
+    pub(crate) fn new(identity: YtDlpTopologyIdentity, summary: YtDlpTopologySummary) -> Self {
+        Self { identity, summary }
     }
 }
 
@@ -120,7 +120,7 @@ impl fmt::Debug for YtDlpTopologyVideo {
         formatter
             .debug_struct("YtDlpTopologyVideo")
             .field("has_identity", &!self.identity.is_missing())
-            .field("has_title", &self.metadata.title.is_some())
+            .field("title_state", &self.summary.title.state())
             .finish()
     }
 }
@@ -129,7 +129,7 @@ impl fmt::Debug for YtDlpTopologyVideo {
 #[derive(Clone, PartialEq, Eq)]
 pub struct YtDlpTopologyCollection {
     identity: YtDlpTopologyIdentity,
-    metadata: YtDlpTopologyMetadata,
+    summary: YtDlpTopologySummary,
     entries: Vec<YtDlpTopologyEntry>,
 }
 
@@ -140,10 +140,10 @@ impl YtDlpTopologyCollection {
         &self.identity
     }
 
-    /// Возвращает root summary metadata.
+    /// Возвращает compact root summary.
     #[must_use]
-    pub const fn metadata(&self) -> &YtDlpTopologyMetadata {
-        &self.metadata
+    pub const fn summary(&self) -> &YtDlpTopologySummary {
+        &self.summary
     }
 
     /// Итерирует source-order entries без обещания другого storage API.
@@ -159,12 +159,12 @@ impl YtDlpTopologyCollection {
 
     pub(crate) fn new(
         identity: YtDlpTopologyIdentity,
-        metadata: YtDlpTopologyMetadata,
+        summary: YtDlpTopologySummary,
         entries: Vec<YtDlpTopologyEntry>,
     ) -> Self {
         Self {
             identity,
-            metadata,
+            summary,
             entries,
         }
     }
@@ -239,7 +239,7 @@ pub enum YtDlpTopologyEntry {
 }
 
 impl YtDlpTopologyEntry {
-    /// Возвращает entry kind без раскрытия metadata.
+    /// Возвращает entry kind без раскрытия summary.
     #[must_use]
     pub const fn kind(&self) -> YtDlpTopologyEntryKind {
         match self {
@@ -345,53 +345,121 @@ impl fmt::Debug for YtDlpTopologyIdentity {
     }
 }
 
-/// Bounded metadata, не содержащая transport/request material.
-#[derive(Clone, PartialEq, Eq)]
-pub struct YtDlpTopologyMetadata {
-    title: Option<String>,
-    description: Option<String>,
-    duration: Option<Duration>,
+/// Причина, по которой необязательное поле compact summary нельзя использовать.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum YtDlpTopologySummaryUnavailableReason {
+    /// Extractor вернул значение неожиданного JSON-типа.
+    UnexpectedType,
+    /// Extractor вернул пустую строку, непригодную для compact UI.
+    EmptyValue,
+    /// Строка превышает service-owned memory budget.
+    FieldBudgetExceeded,
+    /// Числовое значение не является конечным неотрицательным временем.
+    InvalidNumericValue,
 }
 
-impl YtDlpTopologyMetadata {
-    /// Возвращает bounded title.
-    #[must_use]
-    pub fn title(&self) -> Option<&str> {
-        self.title.as_deref()
-    }
+/// Внутреннее состояние одного optional summary field без потери причины отсутствия.
+#[derive(Clone, PartialEq, Eq)]
+pub(super) enum YtDlpTopologySummaryFieldValue<Value> {
+    /// Extractor не предоставил поле.
+    Missing,
+    /// Extractor предоставил пригодное bounded значение.
+    Available(Value),
+    /// Extractor предоставил поле, но оно непригодно для compact summary.
+    Unavailable(YtDlpTopologySummaryUnavailableReason),
+}
 
-    /// Возвращает bounded description.
-    #[must_use]
-    pub fn description(&self) -> Option<&str> {
-        self.description.as_deref()
-    }
-
-    /// Возвращает finite non-negative duration hint.
-    #[must_use]
-    pub const fn duration(&self) -> Option<Duration> {
-        self.duration
-    }
-
-    pub(crate) fn new(
-        title: Option<String>,
-        description: Option<String>,
-        duration: Option<Duration>,
-    ) -> Self {
-        Self {
-            title,
-            description,
-            duration,
+impl<Value: Clone> YtDlpTopologySummaryFieldValue<Value> {
+    /// Wrapper переопределяет resolved result только пригодным значением.
+    fn prefer_available_from(&self, fallback: &Self) -> Self {
+        match self {
+            Self::Available(_) => self.clone(),
+            Self::Missing => fallback.clone(),
+            Self::Unavailable(_) => match fallback {
+                Self::Available(_) => fallback.clone(),
+                Self::Missing | Self::Unavailable(_) => self.clone(),
+            },
         }
     }
 }
 
-impl fmt::Debug for YtDlpTopologyMetadata {
+/// Публичное состояние optional summary field без раскрытия внутреннего storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum YtDlpTopologySummaryFieldState {
+    /// Extractor не предоставил поле.
+    Missing,
+    /// Поле доступно через соответствующий intent getter.
+    Available,
+    /// Поле отброшено с сохранением безопасной причины.
+    Unavailable(YtDlpTopologySummaryUnavailableReason),
+}
+
+impl<Value> YtDlpTopologySummaryFieldValue<Value> {
+    /// Проецирует внутреннее значение в стабильный public status.
+    const fn state(&self) -> YtDlpTopologySummaryFieldState {
+        match self {
+            Self::Missing => YtDlpTopologySummaryFieldState::Missing,
+            Self::Available(_) => YtDlpTopologySummaryFieldState::Available,
+            Self::Unavailable(reason) => YtDlpTopologySummaryFieldState::Unavailable(*reason),
+        }
+    }
+}
+
+/// Компактная карточка topology node без rich metadata и transport material.
+#[derive(Clone, PartialEq, Eq)]
+pub struct YtDlpTopologySummary {
+    title: YtDlpTopologySummaryFieldValue<String>,
+    duration: YtDlpTopologySummaryFieldValue<Duration>,
+}
+
+impl YtDlpTopologySummary {
+    /// Возвращает bounded title, если поле пригодно для compact UI.
+    #[must_use]
+    pub fn title(&self) -> Option<&str> {
+        match &self.title {
+            YtDlpTopologySummaryFieldValue::Available(title) => Some(title.as_str()),
+            YtDlpTopologySummaryFieldValue::Missing
+            | YtDlpTopologySummaryFieldValue::Unavailable(_) => None,
+        }
+    }
+
+    /// Возвращает точное состояние title без слияния missing и rejected.
+    #[must_use]
+    pub const fn title_state(&self) -> YtDlpTopologySummaryFieldState {
+        self.title.state()
+    }
+
+    /// Возвращает finite non-negative duration hint, если он пригоден.
+    #[must_use]
+    pub const fn duration(&self) -> Option<Duration> {
+        match self.duration {
+            YtDlpTopologySummaryFieldValue::Available(duration) => Some(duration),
+            YtDlpTopologySummaryFieldValue::Missing
+            | YtDlpTopologySummaryFieldValue::Unavailable(_) => None,
+        }
+    }
+
+    /// Возвращает точное состояние duration без слияния missing и rejected.
+    #[must_use]
+    pub const fn duration_state(&self) -> YtDlpTopologySummaryFieldState {
+        self.duration.state()
+    }
+
+    /// Создаёт summary только из полей, которыми владеет topology boundary.
+    pub(super) fn new(
+        title: YtDlpTopologySummaryFieldValue<String>,
+        duration: YtDlpTopologySummaryFieldValue<Duration>,
+    ) -> Self {
+        Self { title, duration }
+    }
+}
+
+impl fmt::Debug for YtDlpTopologySummary {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("YtDlpTopologyMetadata")
-            .field("has_title", &self.title.is_some())
-            .field("has_description", &self.description.is_some())
-            .field("duration", &self.duration)
+            .debug_struct("YtDlpTopologySummary")
+            .field("title_state", &self.title.state())
+            .field("duration_state", &self.duration.state())
             .finish()
     }
 }
@@ -400,8 +468,8 @@ impl fmt::Debug for YtDlpTopologyMetadata {
 #[derive(Clone, PartialEq, Eq)]
 pub struct YtDlpTopologyDelegation {
     target: YtDlpMediaLocator,
-    wrapper_metadata: YtDlpTopologyMetadata,
-    merge_policy: YtDlpDelegationMetadataPolicy,
+    wrapper_summary: YtDlpTopologySummary,
+    merge_policy: YtDlpDelegationSummaryPolicy,
 }
 
 impl YtDlpTopologyDelegation {
@@ -411,52 +479,45 @@ impl YtDlpTopologyDelegation {
         &self.target
     }
 
-    /// Возвращает wrapper metadata до merge.
+    /// Возвращает wrapper summary до merge.
     #[must_use]
-    pub const fn wrapper_metadata(&self) -> &YtDlpTopologyMetadata {
-        &self.wrapper_metadata
+    pub const fn wrapper_summary(&self) -> &YtDlpTopologySummary {
+        &self.wrapper_summary
     }
 
     /// Возвращает upstream-defined merge policy.
     #[must_use]
-    pub const fn merge_policy(&self) -> YtDlpDelegationMetadataPolicy {
+    pub const fn merge_policy(&self) -> YtDlpDelegationSummaryPolicy {
         self.merge_policy
     }
 
-    /// Применяет upstream distinction к уже разрешённой metadata.
+    /// Применяет upstream distinction к уже разрешённому summary.
     #[must_use]
-    pub fn merge_resolved_metadata(
+    pub fn merge_resolved_summary(
         &self,
-        resolved_metadata: &YtDlpTopologyMetadata,
-    ) -> YtDlpTopologyMetadata {
+        resolved_summary: &YtDlpTopologySummary,
+    ) -> YtDlpTopologySummary {
         match self.merge_policy {
-            YtDlpDelegationMetadataPolicy::ResolvedResultOnly => resolved_metadata.clone(),
-            YtDlpDelegationMetadataPolicy::TransparentWrapperPriority => {
-                YtDlpTopologyMetadata::new(
-                    self.wrapper_metadata
-                        .title
-                        .clone()
-                        .or_else(|| resolved_metadata.title.clone()),
-                    self.wrapper_metadata
-                        .description
-                        .clone()
-                        .or_else(|| resolved_metadata.description.clone()),
-                    self.wrapper_metadata
-                        .duration
-                        .or(resolved_metadata.duration),
-                )
-            }
+            YtDlpDelegationSummaryPolicy::ResolvedResultOnly => resolved_summary.clone(),
+            YtDlpDelegationSummaryPolicy::TransparentWrapperPriority => YtDlpTopologySummary::new(
+                self.wrapper_summary
+                    .title
+                    .prefer_available_from(&resolved_summary.title),
+                self.wrapper_summary
+                    .duration
+                    .prefer_available_from(&resolved_summary.duration),
+            ),
         }
     }
 
     pub(crate) fn new(
         target: YtDlpMediaLocator,
-        wrapper_metadata: YtDlpTopologyMetadata,
-        merge_policy: YtDlpDelegationMetadataPolicy,
+        wrapper_summary: YtDlpTopologySummary,
+        merge_policy: YtDlpDelegationSummaryPolicy,
     ) -> Self {
         Self {
             target,
-            wrapper_metadata,
+            wrapper_summary,
             merge_policy,
         }
     }
@@ -468,17 +529,17 @@ impl fmt::Debug for YtDlpTopologyDelegation {
             .debug_struct("YtDlpTopologyDelegation")
             .field("target", &self.target)
             .field("merge_policy", &self.merge_policy)
-            .field("wrapper_metadata", &self.wrapper_metadata)
+            .field("wrapper_summary", &self.wrapper_summary)
             .finish()
     }
 }
 
 /// Metadata merge semantics для двух official delegation result types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum YtDlpDelegationMetadataPolicy {
-    /// Обычный `url`: wrapper metadata не переопределяет resolved result.
+pub enum YtDlpDelegationSummaryPolicy {
+    /// Обычный `url`: wrapper summary не переопределяет resolved result.
     ResolvedResultOnly,
-    /// `url_transparent`: non-null wrapper metadata имеет приоритет.
+    /// `url_transparent`: пригодный wrapper summary имеет приоритет.
     TransparentWrapperPriority,
 }
 
@@ -486,7 +547,7 @@ pub enum YtDlpDelegationMetadataPolicy {
 #[derive(Clone, PartialEq, Eq)]
 pub struct YtDlpUnavailableTopologyEntry {
     identity: YtDlpTopologyIdentity,
-    metadata: YtDlpTopologyMetadata,
+    summary: YtDlpTopologySummary,
     reason: YtDlpUnavailableTopologyReason,
 }
 
@@ -497,10 +558,10 @@ impl YtDlpUnavailableTopologyEntry {
         &self.identity
     }
 
-    /// Возвращает доступную display metadata.
+    /// Возвращает доступный compact display summary.
     #[must_use]
-    pub const fn metadata(&self) -> &YtDlpTopologyMetadata {
-        &self.metadata
+    pub const fn summary(&self) -> &YtDlpTopologySummary {
+        &self.summary
     }
 
     /// Возвращает typed причину retention.
@@ -511,12 +572,12 @@ impl YtDlpUnavailableTopologyEntry {
 
     pub(crate) fn new(
         identity: YtDlpTopologyIdentity,
-        metadata: YtDlpTopologyMetadata,
+        summary: YtDlpTopologySummary,
         reason: YtDlpUnavailableTopologyReason,
     ) -> Self {
         Self {
             identity,
-            metadata,
+            summary,
             reason,
         }
     }

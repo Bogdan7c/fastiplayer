@@ -7,13 +7,14 @@ use serde_json::{Map, Value};
 
 use super::limits::{
     TOPOLOGY_IDENTITY_MAX_UTF8_BYTES, TOPOLOGY_LOCATOR_MAX_UTF8_BYTES,
-    TOPOLOGY_METADATA_MAX_UTF8_BYTES, YtDlpTopologyBudgets, YtDlpTopologyError,
+    TOPOLOGY_SUMMARY_TEXT_MAX_UTF8_BYTES, YtDlpTopologyBudgets, YtDlpTopologyError,
     YtDlpTopologyInvalidResponseReason,
 };
 use super::model::{
-    YtDlpDelegationMetadataPolicy, YtDlpTopology, YtDlpTopologyCollection, YtDlpTopologyDelegation,
-    YtDlpTopologyEntry, YtDlpTopologyIdentity, YtDlpTopologyMetadata, YtDlpTopologyMultiVideo,
-    YtDlpTopologyVideo, YtDlpUnavailableTopologyEntry, YtDlpUnavailableTopologyReason,
+    YtDlpDelegationSummaryPolicy, YtDlpTopology, YtDlpTopologyCollection, YtDlpTopologyDelegation,
+    YtDlpTopologyEntry, YtDlpTopologyIdentity, YtDlpTopologyMultiVideo, YtDlpTopologySummary,
+    YtDlpTopologySummaryFieldValue, YtDlpTopologySummaryUnavailableReason, YtDlpTopologyVideo,
+    YtDlpUnavailableTopologyEntry, YtDlpUnavailableTopologyReason,
 };
 use crate::parse_yt_dlp_media_locator;
 
@@ -76,12 +77,12 @@ impl TopologyParser {
                 .with_active_identity(object, 1, |parser| parser.parse_multi_video(object, 1))
                 .map(YtDlpTopology::MultiVideo),
             ResultType::Url => self
-                .parse_delegation(object, YtDlpDelegationMetadataPolicy::ResolvedResultOnly)
+                .parse_delegation(object, YtDlpDelegationSummaryPolicy::ResolvedResultOnly)
                 .map(YtDlpTopology::Delegation),
             ResultType::UrlTransparent => self
                 .parse_delegation(
                     object,
-                    YtDlpDelegationMetadataPolicy::TransparentWrapperPriority,
+                    YtDlpDelegationSummaryPolicy::TransparentWrapperPriority,
                 )
                 .map(YtDlpTopology::Delegation),
         }
@@ -103,7 +104,7 @@ impl TopologyParser {
             return Ok(YtDlpTopologyEntry::Unavailable(
                 YtDlpUnavailableTopologyEntry::new(
                     missing_identity(),
-                    empty_metadata(),
+                    empty_summary(),
                     YtDlpUnavailableTopologyReason::NullEntry,
                 ),
             ));
@@ -114,7 +115,7 @@ impl TopologyParser {
             return Ok(YtDlpTopologyEntry::Unavailable(
                 YtDlpUnavailableTopologyEntry::new(
                     parse_identity(object)?,
-                    parse_metadata(object)?,
+                    parse_summary(object),
                     YtDlpUnavailableTopologyReason::RestrictedAvailability,
                 ),
             ));
@@ -127,7 +128,7 @@ impl TopologyParser {
                     return Ok(YtDlpTopologyEntry::Unavailable(
                         YtDlpUnavailableTopologyEntry::new(
                             parse_identity(object)?,
-                            parse_metadata(object)?,
+                            parse_summary(object),
                             YtDlpUnavailableTopologyReason::MissingIdentity,
                         ),
                     ));
@@ -145,10 +146,10 @@ impl TopologyParser {
                 })
                 .map(YtDlpTopologyEntry::MultiVideo),
             ResultType::Url => self
-                .parse_delegation_entry(object, YtDlpDelegationMetadataPolicy::ResolvedResultOnly),
+                .parse_delegation_entry(object, YtDlpDelegationSummaryPolicy::ResolvedResultOnly),
             ResultType::UrlTransparent => self.parse_delegation_entry(
                 object,
-                YtDlpDelegationMetadataPolicy::TransparentWrapperPriority,
+                YtDlpDelegationSummaryPolicy::TransparentWrapperPriority,
             ),
         }
     }
@@ -158,10 +159,8 @@ impl TopologyParser {
         object: &Map<String, Value>,
     ) -> Result<YtDlpTopologyVideo, YtDlpTopologyError> {
         let identity = parse_identity(object)?;
-        let metadata = parse_metadata(object)?;
-        if identity.extractor_id().is_none_or(str::is_empty)
-            || metadata.title().is_none_or(str::is_empty)
-        {
+        let summary = parse_summary(object);
+        if identity.extractor_id().is_none_or(str::is_empty) {
             return Err(YtDlpTopologyError::invalid(
                 YtDlpTopologyInvalidResponseReason::MissingRequiredField,
             ));
@@ -172,7 +171,7 @@ impl TopologyParser {
             ));
         }
 
-        Ok(YtDlpTopologyVideo::new(identity, metadata))
+        Ok(YtDlpTopologyVideo::new(identity, summary))
     }
 
     fn parse_collection(
@@ -183,7 +182,7 @@ impl TopologyParser {
         let entries = self.parse_entries(object, depth)?;
         Ok(YtDlpTopologyCollection::new(
             parse_identity(object)?,
-            parse_metadata(object)?,
+            parse_summary(object),
             entries,
         ))
     }
@@ -223,7 +222,7 @@ impl TopologyParser {
     fn parse_delegation_entry(
         &self,
         object: &Map<String, Value>,
-        merge_policy: YtDlpDelegationMetadataPolicy,
+        merge_policy: YtDlpDelegationSummaryPolicy,
     ) -> Result<YtDlpTopologyEntry, YtDlpTopologyError> {
         match object.get("url").and_then(Value::as_str) {
             Some(_) => self
@@ -237,7 +236,7 @@ impl TopologyParser {
                     YtDlpUnavailableTopologyReason::MissingDelegationTarget
                 };
                 Ok(YtDlpTopologyEntry::Unavailable(
-                    YtDlpUnavailableTopologyEntry::new(identity, parse_metadata(object)?, reason),
+                    YtDlpUnavailableTopologyEntry::new(identity, parse_summary(object), reason),
                 ))
             }
         }
@@ -246,7 +245,7 @@ impl TopologyParser {
     fn parse_delegation(
         &self,
         object: &Map<String, Value>,
-        merge_policy: YtDlpDelegationMetadataPolicy,
+        merge_policy: YtDlpDelegationSummaryPolicy,
     ) -> Result<YtDlpTopologyDelegation, YtDlpTopologyError> {
         let target_text = required_string(object, "url")?;
         if target_text.len() > TOPOLOGY_LOCATOR_MAX_UTF8_BYTES {
@@ -259,7 +258,7 @@ impl TopologyParser {
 
         Ok(YtDlpTopologyDelegation::new(
             target,
-            parse_metadata(object)?,
+            parse_summary(object),
             merge_policy,
         ))
     }
@@ -336,34 +335,73 @@ fn parse_identity(
     ))
 }
 
-fn parse_metadata(
+fn parse_summary(object: &Map<String, Value>) -> YtDlpTopologySummary {
+    // Topology переносит только компактный label; rich description принадлежит будущему details API.
+    let title = parse_optional_summary_text(object, "title", TOPOLOGY_SUMMARY_TEXT_MAX_UTF8_BYTES);
+    // Duration остаётся hint-ом и не имеет права ломать structurally playable node.
+    let duration = parse_optional_summary_duration(object);
+
+    YtDlpTopologySummary::new(title, duration)
+}
+
+/// Парсит optional compact text без молчаливой обрезки и без fatal topology failure.
+fn parse_optional_summary_text(
     object: &Map<String, Value>,
-) -> Result<YtDlpTopologyMetadata, YtDlpTopologyError> {
-    let title = optional_bounded_string(object, "title", TOPOLOGY_METADATA_MAX_UTF8_BYTES)?;
-    let description =
-        optional_bounded_string(object, "description", TOPOLOGY_METADATA_MAX_UTF8_BYTES)?;
-    let duration = match object.get("duration") {
-        None | Some(Value::Null) => None,
-        Some(value) => {
-            let seconds = value.as_f64().ok_or_else(|| {
-                YtDlpTopologyError::invalid(
-                    YtDlpTopologyInvalidResponseReason::InvalidNumericMetadata,
-                )
-            })?;
-            if !seconds.is_finite() || seconds.is_sign_negative() {
-                return Err(YtDlpTopologyError::invalid(
-                    YtDlpTopologyInvalidResponseReason::InvalidNumericMetadata,
-                ));
-            }
-            Some(Duration::try_from_secs_f64(seconds).map_err(|_| {
-                YtDlpTopologyError::invalid(
-                    YtDlpTopologyInvalidResponseReason::InvalidNumericMetadata,
-                )
-            })?)
-        }
+    field: &str,
+    max_utf8_bytes: usize,
+) -> YtDlpTopologySummaryFieldValue<String> {
+    let Some(value) = object.get(field) else {
+        return YtDlpTopologySummaryFieldValue::Missing;
+    };
+    if value.is_null() {
+        return YtDlpTopologySummaryFieldValue::Missing;
+    }
+    let Some(text) = value.as_str() else {
+        return YtDlpTopologySummaryFieldValue::Unavailable(
+            YtDlpTopologySummaryUnavailableReason::UnexpectedType,
+        );
+    };
+    if text.is_empty() {
+        return YtDlpTopologySummaryFieldValue::Unavailable(
+            YtDlpTopologySummaryUnavailableReason::EmptyValue,
+        );
+    }
+    if text.len() > max_utf8_bytes {
+        return YtDlpTopologySummaryFieldValue::Unavailable(
+            YtDlpTopologySummaryUnavailableReason::FieldBudgetExceeded,
+        );
+    }
+
+    YtDlpTopologySummaryFieldValue::Available(text.to_owned())
+}
+
+/// Парсит optional duration hint, сохраняя malformed distinction внутри summary.
+fn parse_optional_summary_duration(
+    object: &Map<String, Value>,
+) -> YtDlpTopologySummaryFieldValue<Duration> {
+    let Some(value) = object.get("duration") else {
+        return YtDlpTopologySummaryFieldValue::Missing;
+    };
+    if value.is_null() {
+        return YtDlpTopologySummaryFieldValue::Missing;
+    }
+    let Some(seconds) = value.as_f64() else {
+        return YtDlpTopologySummaryFieldValue::Unavailable(
+            YtDlpTopologySummaryUnavailableReason::UnexpectedType,
+        );
+    };
+    if !seconds.is_finite() || seconds.is_sign_negative() {
+        return YtDlpTopologySummaryFieldValue::Unavailable(
+            YtDlpTopologySummaryUnavailableReason::InvalidNumericValue,
+        );
+    }
+    let Ok(duration) = Duration::try_from_secs_f64(seconds) else {
+        return YtDlpTopologySummaryFieldValue::Unavailable(
+            YtDlpTopologySummaryUnavailableReason::InvalidNumericValue,
+        );
     };
 
-    Ok(YtDlpTopologyMetadata::new(title, description, duration))
+    YtDlpTopologySummaryFieldValue::Available(duration)
 }
 
 fn optional_bounded_string(
@@ -474,8 +512,11 @@ fn missing_identity() -> YtDlpTopologyIdentity {
     YtDlpTopologyIdentity::new(None, None, None, None)
 }
 
-fn empty_metadata() -> YtDlpTopologyMetadata {
-    YtDlpTopologyMetadata::new(None, None, None)
+fn empty_summary() -> YtDlpTopologySummary {
+    YtDlpTopologySummary::new(
+        YtDlpTopologySummaryFieldValue::Missing,
+        YtDlpTopologySummaryFieldValue::Missing,
+    )
 }
 
 pub(super) fn validate_json_depth(

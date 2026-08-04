@@ -10,4 +10,8 @@
 - Focused verification: service-ytdlp 55 passed + 4 manual ignored, compatibility 3 passed; strict crate Clippy; Rust 1.96 workspace check; MSRV 1.92 workspace check; strict rustdoc; rustfmt; refactor guardrails; diff check; Serena diagnostics.
 - S16 добавил service-owned `topology::reopen`: public redacted `YtDlpDurableReopenPayload`, stable material enum, owner/version/8 KiB bounds и classifiers для topology identity/delegation target. Priority и v1 grammar принадлежат `service-ytdlp`, app их не кодирует. App `url_topology_drafts` zero-allocation adapter использует intent getters, а generic mapper возвращает ordered ID-less Single/Compound drafts + bounded safe issues без queue/allocator/commit authority. Exact root остаётся exact durable URL; повторного URL parser/resolve и transport endpoint persistence нет. Full contract: `mem:app-egui/ytdlp-topology-drafts-s16-2026-07-20`.
 
-Related: `mem:core`, `mem:media-services/core`, `mem:media-services/secret-safe-locators-s10b`.
+## Update 2026-08-04
+
+Старый `YtDlpTopologyMetadata`/`metadata()` contract и требование обязательного title заменены compact non-fatal summary boundary. Description больше не входит в topology. Актуальный контракт и rationale: `mem:media-services/ytdlp-topology-summary-2026-08-04`.
+
+Related: `mem:core`, `mem:media-services/core`, `mem:media-services/secret-safe-locators-s10b`, `mem:media-services/ytdlp-topology-summary-2026-08-04`.

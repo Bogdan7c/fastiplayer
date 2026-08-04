@@ -19,4 +19,8 @@
 - `cargo clippy -p app-egui --all-targets --all-features -- -D warnings -A clippy::large-enum-variant`: PASS. Без точечного allowance strict Clippy останавливается только на двух pre-existing unrelated `large_enum_variant` в `state/strong_media_open{,/pending}.rs`; S16 их не менял.
 - `cargo fmt --all --check`, `git diff --check`, `scripts/check-refactor-guardrails.py`, Serena diagnostics: PASS.
 
-Related: `mem:playlist/core`, `mem:media-services/ytdlp-topology-s15-2026-07-20`, `mem:media-services/secret-safe-locators-s10b`, `mem:app-egui/ytdlp-playlist-metadata-2026-07-17`.
+## Update 2026-08-04
+
+Service adapter теперь принимает `YtDlpTopologySummary` через `TopologySummaryView`; summary по-прежнему переносит только title/duration, а description явно запрещён production mapping source guard. Актуальная граница rich details/subtitles: `mem:media-services/ytdlp-topology-summary-2026-08-04`.
+
+Related: `mem:playlist/core`, `mem:media-services/ytdlp-topology-s15-2026-07-20`, `mem:media-services/secret-safe-locators-s10b`, `mem:app-egui/ytdlp-playlist-metadata-2026-07-17`, `mem:media-services/ytdlp-topology-summary-2026-08-04`.

@@ -16,14 +16,15 @@ pub use limits::{
     DEFAULT_TOPOLOGY_DEPTH, DEFAULT_TOPOLOGY_ENTRY_COUNT, DEFAULT_TOPOLOGY_JSON_DEPTH,
     DEFAULT_TOPOLOGY_JSON_LINE_BYTES, DEFAULT_TOPOLOGY_STDERR_BYTES, DEFAULT_TOPOLOGY_STDOUT_BYTES,
     TOPOLOGY_IDENTITY_MAX_UTF8_BYTES, TOPOLOGY_LOCATOR_MAX_UTF8_BYTES,
-    TOPOLOGY_METADATA_MAX_UTF8_BYTES, YtDlpTopologyBudgetField, YtDlpTopologyBudgets,
+    TOPOLOGY_SUMMARY_TEXT_MAX_UTF8_BYTES, YtDlpTopologyBudgetField, YtDlpTopologyBudgets,
     YtDlpTopologyError, YtDlpTopologyInvalidResponseReason,
 };
 pub use model::{
-    YtDlpDelegationMetadataPolicy, YtDlpTopology, YtDlpTopologyCollection, YtDlpTopologyDelegation,
+    YtDlpDelegationSummaryPolicy, YtDlpTopology, YtDlpTopologyCollection, YtDlpTopologyDelegation,
     YtDlpTopologyEntry, YtDlpTopologyEntryKind, YtDlpTopologyIdentity, YtDlpTopologyKind,
-    YtDlpTopologyMetadata, YtDlpTopologyMultiVideo, YtDlpTopologyVideo,
-    YtDlpUnavailableTopologyEntry, YtDlpUnavailableTopologyReason,
+    YtDlpTopologyMultiVideo, YtDlpTopologySummary, YtDlpTopologySummaryFieldState,
+    YtDlpTopologySummaryUnavailableReason, YtDlpTopologyVideo, YtDlpUnavailableTopologyEntry,
+    YtDlpUnavailableTopologyReason,
 };
 pub use reopen::{
     YT_DLP_DURABLE_REOPEN_PAYLOAD_MAX_BYTES, YT_DLP_DURABLE_REOPEN_PAYLOAD_VERSION,
@@ -267,7 +268,7 @@ mod tests {
         assert_eq!(
             recovered
                 .as_video()
-                .and_then(|video| video.metadata().title()),
+                .and_then(|video| video.summary().title()),
             Some("Catalog film")
         );
     }

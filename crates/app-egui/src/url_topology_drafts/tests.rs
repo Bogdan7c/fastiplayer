@@ -8,8 +8,8 @@ use service_ytdlp::{
 };
 
 use super::{
-    TopologyDraftMappingBudgets, TopologyIdentityView, TopologyMappingNode, TopologyMetadataView,
-    TopologyNodeDescription, YtDlpTopologyDraftIssueKind, map_topology_node,
+    TopologyDraftMappingBudgets, TopologyIdentityView, TopologyMappingNode,
+    TopologyNodeDescription, TopologySummaryView, YtDlpTopologyDraftIssueKind, map_topology_node,
 };
 
 /// Owned identity fixture, из которого generic mapper получает только borrowed view.
@@ -74,8 +74,8 @@ impl FakeMetadata {
     }
 
     /// Возвращает production-shaped borrowed view.
-    fn view(&self) -> TopologyMetadataView<'_> {
-        TopologyMetadataView {
+    fn view(&self) -> TopologySummaryView<'_> {
+        TopologySummaryView {
             title: self.title.as_deref(),
             duration: self.duration,
         }
@@ -521,6 +521,7 @@ fn production_mapping_source_has_no_second_url_parser_queue_authority_or_ephemer
         "Headers",
         "Cookies",
         "AuthorizationOrSession",
+        "description",
     ] {
         assert!(
             !production_source.contains(forbidden_fragment),
