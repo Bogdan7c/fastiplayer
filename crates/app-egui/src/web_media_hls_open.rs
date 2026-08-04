@@ -482,12 +482,12 @@ fn selection_and_containers(
             main: if matches!(layout, StreamLayout::HlsMuxedCodecDeferred(_)) {
                 HlsContainerEvidence::ContentProbe
             } else {
-                HlsContainerEvidence::Exact(required_container(
+                hls_main_container_evidence(
                     container
                         .consistent_family()
                         .map_err(|conflict| anyhow!("HLS container hints conflict: {conflict:?}"))?
                         .ok_or_else(|| anyhow!("HLS container evidence отсутствует"))?,
-                )?)
+                )?
             },
             alternate_audio: matches!(layout, StreamLayout::Muxed(_))
                 .then_some(HlsContainerEvidence::ContentProbe),
@@ -534,15 +534,16 @@ fn wait_for_initial_tracks_changed(demuxer: &mut dyn Demuxer) -> Result<()> {
                 "deferred HLS не опубликовал TracksChanged до open deadline"
             ));
         }
-        match demuxer.next_event().context("deferred HLS demuxer next_event")? {
+        match demuxer
+            .next_event()
+            .context("deferred HLS demuxer next_event")?
+        {
             DemuxReadEvent::TracksChanged(_) => return Ok(()),
             DemuxReadEvent::TemporarilyUnavailable(hint) => {
                 std::thread::sleep(hint.retry_after().min(Duration::from_millis(50)));
             }
             DemuxReadEvent::EndOfStream => {
-                return Err(anyhow!(
-                    "deferred HLS достиг EOS до initial TracksChanged"
-                ));
+                return Err(anyhow!("deferred HLS достиг EOS до initial TracksChanged"));
             }
             DemuxReadEvent::Packet(_) | DemuxReadEvent::MediaMetadataChanged(_) => {
                 // Packet без TracksChanged нарушает ProgressiveDemuxer contract; всё равно fail-closed.
@@ -567,12 +568,19 @@ fn audio_rendition_evidence(
     }
 }
 
-fn required_container(container: ContainerFamily) -> Result<HlsRequiredContainer> {
+/// Переводит extractor container hint в честное evidence о реальных HLS segments.
+fn hls_main_container_evidence(container: ContainerFamily) -> Result<HlsContainerEvidence> {
     match container {
-        ContainerFamily::MpegTs => Ok(HlsRequiredContainer::TransportStream),
-        ContainerFamily::IsoBmff | ContainerFamily::FragmentedIsoBmff => {
-            Ok(HlsRequiredContainer::FragmentedMp4)
-        }
+        // Exact MPEG-TS identity однозначно задаёт segment container без дополнительного probe.
+        ContainerFamily::MpegTs => Ok(HlsContainerEvidence::Exact(
+            HlsRequiredContainer::TransportStream,
+        )),
+        // Generic MP4 у yt-dlp описывает output format и не доказывает наличие EXT-X-MAP/fMP4.
+        ContainerFamily::IsoBmff => Ok(HlsContainerEvidence::ContentProbe),
+        // Явный fragmented ISO-BMFF identity остаётся достаточным exact evidence.
+        ContainerFamily::FragmentedIsoBmff => Ok(HlsContainerEvidence::Exact(
+            HlsRequiredContainer::FragmentedMp4,
+        )),
         other => Err(anyhow!(
             "HLS container {other:?} не входит в TS/fMP4 profile"
         )),
@@ -627,7 +635,10 @@ mod tests {
         Demuxer, TimelineNotSeekableReason, TrackId, TrackInfo, TrackKind,
     };
 
-    use super::wait_for_initial_tracks_changed;
+    use super::{
+        ContainerFamily, HlsContainerEvidence, hls_main_container_evidence,
+        wait_for_initial_tracks_changed,
+    };
 
     struct ScriptedDemuxer {
         events: VecDeque<DemuxReadEvent>,
@@ -677,10 +688,7 @@ mod tests {
 
     #[test]
     fn wait_for_initial_tracks_skips_temporary_unavailability() {
-        let published = vec![
-            track(1, TrackKind::Video),
-            track(2, TrackKind::Audio),
-        ];
+        let published = vec![track(1, TrackKind::Video), track(2, TrackKind::Audio)];
         let mut demuxer = ScriptedDemuxer {
             events: VecDeque::from([
                 DemuxReadEvent::TemporarilyUnavailable(
@@ -689,10 +697,7 @@ mod tests {
                 DemuxReadEvent::TemporarilyUnavailable(
                     DemuxRetryHint::new(Duration::from_millis(1)).expect("retry hint"),
                 ),
-                DemuxReadEvent::TracksChanged(DemuxTrackListUpdate::new(
-                    published.clone(),
-                    None,
-                )),
+                DemuxReadEvent::TracksChanged(DemuxTrackListUpdate::new(published.clone(), None)),
             ]),
             tracks: published,
         };
@@ -709,5 +714,14 @@ mod tests {
         };
         let error = wait_for_initial_tracks_changed(&mut demuxer).expect_err("EOS before tracks");
         assert!(error.to_string().contains("EOS"));
+    }
+
+    /// Generic MP4 output hint не должен подменять content proof реального HLS segment container.
+    #[test]
+    fn generic_iso_bmff_hls_hint_requires_segment_content_probe() {
+        let evidence = hls_main_container_evidence(ContainerFamily::IsoBmff)
+            .expect("generic ISO-BMFF входит в поддержанный HLS profile");
+
+        assert!(matches!(evidence, HlsContainerEvidence::ContentProbe));
     }
 }

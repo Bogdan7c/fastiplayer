@@ -16,7 +16,7 @@ use crate::event::VideoBackendSelectionRequest;
 use crate::{PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, SeekRequest, TrackId};
 
 use super::video_packet_framing::{h264_packetization_from_track, h265_packetization_from_track};
-use super::{PendingVideoBackendReselection, PlayerSession};
+use super::{BackendReselectionResumeStrategy, PendingVideoBackendReselection, PlayerSession};
 
 /// Принятый video stream после capability validation.
 struct AcceptedVideoSelection {
@@ -164,6 +164,20 @@ impl PlayerSession {
             ));
         };
 
+        // Late-discovered video (например HLS/TS после audio-first install) может
+        // появиться уже после того, как media commit штатно снял decoder предыдущего
+        // media. Capability report доказывает лишь, что backend можно запустить; он
+        // не превращает отсутствующий decoder в активный. Поэтому сначала просим
+        // composition layer установить совместимый backend и не выбираем track в
+        // pipeline, который физически не способен принять decoded frames.
+        if !self.pipeline.has_active_video_decoder()
+            && self
+                .video_backend_reselection_candidate(&requirement)
+                .is_some()
+        {
+            return Ok(VideoTrackSelectionOutcome::BackendReselectionRequired { requirement });
+        }
+
         match self.validate_video_decode_requirement(&requirement) {
             Ok(matched_output) => Ok(VideoTrackSelectionOutcome::Accepted(
                 AcceptedVideoSelection {
@@ -202,15 +216,28 @@ impl PlayerSession {
         }
     }
 
-    /// Возвращает playable output другого backend-а, если активный backend не тянет стрим.
+    /// Возвращает playable output для reselection, если активного decoder-а нет либо
+    /// установленный backend не тянет стрим.
     ///
-    /// `None` означает «активный backend сам справляется» либо «ни один backend не может»;
+    /// `None` означает «активный decoder сам справляется» либо «ни один backend не может»;
     /// в обоих случаях reselection не нужен (первый — уже играем, второй — настоящая ошибка).
     fn video_backend_reselection_candidate(
         &self,
         requirement: &VideoDecodeRequirement,
     ) -> Option<&SupportedVideoOutput> {
         let capabilities = self.capabilities.as_ref()?;
+        let compatible_output = capabilities
+            .playable_video_outputs
+            .iter()
+            .find(|output| output.satisfies(requirement));
+
+        // Отсутствующий decoder — самостоятельная lifecycle-причина для rebuild-а.
+        // Разрешаем вернуть output того же backend id: shell может помнить класс
+        // прежнего backend-а, хотя player уже завершил и снял его decoder thread.
+        if !self.pipeline.has_active_video_decoder() {
+            return compatible_output;
+        }
+
         let active_backend_id = self.active_video_backend_id.as_deref()?;
 
         let active_backend_serves = capabilities.playable_video_outputs.iter().any(|output| {
@@ -231,14 +258,21 @@ impl PlayerSession {
         requirement: VideoDecodeRequirement,
         track_id: TrackId,
     ) {
+        let resume_strategy = if self.pipeline.has_active_video_decoder() {
+            BackendReselectionResumeStrategy::ReseekCurrentPosition
+        } else {
+            BackendReselectionResumeStrategy::ContinueForwardToKeyframe
+        };
         info!(
             track_id = %track_id,
             requirement = %requirement.describe(),
+            ?resume_strategy,
             "Активный video backend не тянет стрим; запрошен бесшовный backend reselection"
         );
         self.pending_video_backend_reselection = Some(PendingVideoBackendReselection {
             requirement: requirement.clone(),
             track_id,
+            resume_strategy,
         });
         self.note_active_video_stream_requirement(requirement, false);
     }
@@ -287,7 +321,15 @@ impl PlayerSession {
         };
         self.activate_video_track(&track, selection)?;
         self.note_active_video_stream_requirement(requirement, true);
-        self.reseek_to_current_position_after_backend_swap()
+        match pending.resume_strategy {
+            // При late track discovery текущий demux уже читает начало stream-а, а
+            // индекс может ещё не содержать RAP anchor. Fresh decoder сам сохраняет
+            // bootstrap-инвариант и отбросит всё до ближайшего доказанного keyframe.
+            BackendReselectionResumeStrategy::ContinueForwardToKeyframe => Ok(()),
+            BackendReselectionResumeStrategy::ReseekCurrentPosition => {
+                self.reseek_to_current_position_after_backend_swap()
+            }
+        }
     }
 
     fn reseek_to_current_position_after_backend_swap(&mut self) -> PlayerResult<()> {

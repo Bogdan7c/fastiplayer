@@ -26,6 +26,10 @@ pub(crate) struct TransportPacket {
     pub(crate) continuity_counter: u8,
     /// Adaptation-field discontinuity indicator.
     pub(crate) discontinuity: bool,
+    /// Ordered transport явно начал новый media timeline на этом packet-е.
+    pub(crate) starts_new_timeline: bool,
+    /// Первый packet нового ordered media segment-а без обязательной смены timeline.
+    pub(crate) starts_new_segment: bool,
     /// PCR base in 90 kHz units, если adaptation field его содержит.
     pub(crate) pcr_base: Option<u64>,
     /// Payload bytes после header/adaptation field.
@@ -51,6 +55,7 @@ pub(crate) struct TransportPacketReader {
     stream_position: u64,
     source_seekable: bool,
     discontinuity_offsets: VecDeque<u64>,
+    segment_start_offsets: VecDeque<u64>,
     cancellation: CancellationToken,
     options: MpegTsDemuxOptions,
 }
@@ -83,6 +88,7 @@ impl TransportPacketReader {
             stream_position,
             source_seekable,
             discontinuity_offsets: VecDeque::new(),
+            segment_start_offsets: VecDeque::new(),
             cancellation,
             options,
         }
@@ -133,6 +139,7 @@ impl TransportPacketReader {
         self.buffered_bytes.clear();
         self.stream_position = offset;
         self.discontinuity_offsets.clear();
+        self.segment_start_offsets.clear();
         if starts_new_timeline {
             self.discontinuity_offsets.push_back(offset);
         }
@@ -165,6 +172,7 @@ impl TransportPacketReader {
             &raw_packet,
             packet_offset,
             self.take_discontinuity(packet_offset),
+            self.take_segment_start(packet_offset),
         )
     }
 
@@ -175,6 +183,19 @@ impl TransportPacketReader {
             .is_some_and(|offset| *offset <= packet_offset)
         {
             self.discontinuity_offsets.pop_front();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn take_segment_start(&mut self, packet_offset: u64) -> bool {
+        if self
+            .segment_start_offsets
+            .front()
+            .is_some_and(|offset| *offset <= packet_offset)
+        {
+            self.segment_start_offsets.pop_front();
             true
         } else {
             false
@@ -264,10 +285,11 @@ impl TransportPacketReader {
                     else {
                         return Ok(());
                     };
+                    let marker_offset = self
+                        .stream_position
+                        .saturating_add(self.buffered_bytes.len() as u64);
+                    self.segment_start_offsets.push_back(marker_offset);
                     if segment.discontinuity == OrderedSegmentDiscontinuity::StartsNewTimeline {
-                        let marker_offset = self
-                            .stream_position
-                            .saturating_add(self.buffered_bytes.len() as u64);
                         self.discontinuity_offsets.push_back(marker_offset);
                     }
                     let count = segment.bytes.len();
@@ -287,6 +309,7 @@ fn parse_transport_packet(
     bytes: &[u8],
     byte_offset: u64,
     external_discontinuity: bool,
+    starts_new_segment: bool,
 ) -> Result<Option<TransportPacket>, MpegTsDemuxError> {
     if bytes.first() != Some(&0x47) {
         return Err(MpegTsDemuxError::Malformed {
@@ -346,6 +369,8 @@ fn parse_transport_packet(
         scrambling,
         continuity_counter,
         discontinuity,
+        starts_new_timeline: external_discontinuity,
+        starts_new_segment,
         pcr_base,
         payload,
         byte_offset,

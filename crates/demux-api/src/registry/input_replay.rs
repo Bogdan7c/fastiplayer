@@ -109,7 +109,7 @@ fn read_bounded_reader(
     Ok(sniffed_bytes)
 }
 
-/// Читает не больше segment и byte bounds, сохраняя exact replay boundaries.
+/// Копирует не больше byte bound в probe sample и сохраняет exact replay boundaries.
 fn read_bounded_segments(
     source: &mut dyn OrderedSegmentSource,
     budget: DemuxSniffBudget,
@@ -129,14 +129,7 @@ fn read_bounded_segments(
         else {
             break;
         };
-        if segment.bytes.len() > budget.max_bytes() {
-            return Err(DemuxOpenError::ProbeRejected(
-                DemuxProbeRejection::SegmentExceedsByteBudget {
-                    segment_bytes: segment.bytes.len(),
-                    max_bytes: budget.max_bytes(),
-                },
-            ));
-        }
+        // Source уже materialized immutable segment под своим resource bound; probe копирует только prefix.
         let remaining_bytes = budget.max_bytes() - sniffed_bytes.len();
         let sample_len = segment.bytes.len().min(remaining_bytes);
         sniffed_bytes.extend_from_slice(&segment.bytes[..sample_len]);

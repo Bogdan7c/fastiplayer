@@ -209,12 +209,7 @@ fn prepare_hls_vod_with_seek_boundary(
             }
             let main_container = required_main_container(&media, &top_base, &request)?;
             SelectedPlans {
-                main: validate_and_plan_media(
-                    media,
-                    main_container,
-                    &top_base,
-                    &request,
-                )?,
+                main: validate_and_plan_media(media, main_container, &top_base, &request)?,
                 audio: None,
                 subtitles: Vec::new(),
                 main_track_layout: request.selection.main_track_layout,
@@ -370,20 +365,18 @@ pub(crate) fn fetch_manifest(
     target: HttpRequestTarget,
     request: &HlsVodOpenRequest,
 ) -> Result<web_media_adaptive::AdaptiveFetchedResource, HlsVodOpenError> {
-    Ok(request
-        .http
-        .fetch_resource_blocking(
-            AdaptiveResourceFetchRequest::full(
-                request.generation,
-                target.clone(),
-                request
-                    .http
-                    .maximum_resource_bytes(AdaptiveResourcePurpose::Manifest),
-                AdaptiveResourcePurpose::Manifest,
-                AdaptiveResourceQueryApplication::BypassScopedQuery,
-            )
-            .with_secret_forwarding(request.http.resource_secret_forwarding_for(&target)),
-        )?)
+    Ok(request.http.fetch_resource_blocking(
+        AdaptiveResourceFetchRequest::full(
+            request.generation,
+            target.clone(),
+            request
+                .http
+                .maximum_resource_bytes(AdaptiveResourcePurpose::Manifest),
+            AdaptiveResourcePurpose::Manifest,
+            AdaptiveResourceQueryApplication::BypassScopedQuery,
+        )
+        .with_secret_forwarding(request.http.resource_secret_forwarding_for(&target)),
+    )?)
 }
 
 pub(crate) fn parse_playlist(

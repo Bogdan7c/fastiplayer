@@ -81,6 +81,21 @@ fn backend_swap_new_frame_ready(
     current_generation != from_generation && current_video_frame_present
 }
 
+/// Проверяет, что уже установленный video pipeline действительно обслуживает запрос.
+///
+/// Совпадения класса backend-а недостаточно: при compatibility media install player
+/// сначала снимает старый decoder, а затем просит shell установить decoder того же
+/// класса уже под новый stream. Источник истины о фактической готовности decoder-а —
+/// `VideoBackendSelectionRequest`, а не сохранённый shell-ом enum backend-а.
+fn active_video_pipeline_satisfies_reselection(
+    current_backend_kind: Option<VideoBackendKind>,
+    selected_plan: VideoPipelinePlan,
+    request: &VideoBackendSelectionRequest,
+) -> bool {
+    current_backend_kind == Some(selected_plan.backend_kind())
+        && request.decodable_by_active_backend
+}
+
 impl AppState {
     /// Инициализирует video pipeline и сохраняет WGPU materializer в shell layer-е.
     pub fn init_video_pipeline(
@@ -282,8 +297,14 @@ impl AppState {
             Some(&request.requirement),
         ) {
             Ok(plan) => {
-                // Нужный backend уже активен — player декодирует как есть, свап не требуется.
-                if self.current_video_backend_kind == Some(plan.backend_kind()) {
+                // Сохраняем текущий pipeline только когда совпадает его класс И player
+                // подтверждает наличие совместимого активного decoder-а. После media
+                // install класс может не измениться, хотя старый decoder уже снят.
+                if active_video_pipeline_satisfies_reselection(
+                    self.current_video_backend_kind,
+                    plan,
+                    request,
+                ) {
                     return;
                 }
                 if let Err(error) =
@@ -602,7 +623,13 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
-    use super::backend_swap_new_frame_ready;
+    use codec_core::{VideoCodec, VideoDecodeRequirement};
+    use player_core::VideoBackendSelectionRequest;
+
+    use super::{
+        PlayerVideoDecoderThreadConfig, VideoBackendKind, VideoPipelinePlan,
+        active_video_pipeline_satisfies_reselection, backend_swap_new_frame_ready,
+    };
 
     #[test]
     fn pre_barrier_generation_releases_freeze_on_first_installed_frame() {
@@ -611,5 +638,43 @@ mod tests {
 
         // Захват уже post-Installed generation воспроизводит бесконечный black freeze.
         assert!(!backend_swap_new_frame_ready(7, 7, true));
+    }
+
+    /// Воспроизводит lifecycle второго HLS/TS media: shell всё ещё помнит VA-API,
+    /// но player уже снял decoder предыдущего media и ждёт новый decoder того же класса.
+    #[test]
+    fn same_backend_kind_without_active_decoder_requires_pipeline_rebuild() {
+        let selected_plan = VideoPipelinePlan::VaapiDmaBufWgpu {
+            decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
+        };
+        let request_without_active_decoder = VideoBackendSelectionRequest {
+            requirement: VideoDecodeRequirement::new(VideoCodec::H264),
+            decodable_by_active_backend: false,
+        };
+
+        assert!(!active_video_pipeline_satisfies_reselection(
+            Some(VideoBackendKind::HardwareZeroCopy),
+            selected_plan,
+            &request_without_active_decoder,
+        ));
+    }
+
+    /// Не допускает лишний rebuild, когда backend совпадает и player подтверждает,
+    /// что его активный decoder уже обслуживает текущий stream.
+    #[test]
+    fn same_backend_kind_with_compatible_active_decoder_is_reused() {
+        let selected_plan = VideoPipelinePlan::VaapiDmaBufWgpu {
+            decoder_thread_config: PlayerVideoDecoderThreadConfig::default(),
+        };
+        let request_with_active_decoder = VideoBackendSelectionRequest {
+            requirement: VideoDecodeRequirement::new(VideoCodec::H264),
+            decodable_by_active_backend: true,
+        };
+
+        assert!(active_video_pipeline_satisfies_reselection(
+            Some(VideoBackendKind::HardwareZeroCopy),
+            selected_plan,
+            &request_with_active_decoder,
+        ));
     }
 }

@@ -16,7 +16,7 @@ pub enum DemuxSniffBudgetError {
 /// Явные верхние границы probe I/O и удерживаемой replay-памяти.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DemuxSniffBudget {
-    /// Максимум bytes, доступных всем factory для content detection.
+    /// Максимум скопированных prefix bytes, доступных всем factory для content detection.
     max_bytes: NonZeroUsize,
     /// Максимум segment-ов, которые registry может снять и replay-нуть.
     max_segments: NonZeroUsize,
@@ -41,7 +41,7 @@ impl DemuxSniffBudget {
         })
     }
 
-    /// Максимум bytes, который registry может прочитать и удержать для replay.
+    /// Максимум скопированных bytes, который registry передаёт factory для content probe.
     #[must_use]
     pub const fn max_bytes(self) -> usize {
         self.max_bytes.get()
@@ -170,16 +170,6 @@ pub enum DemuxProbeRejection {
     InputFailure {
         /// Secret-safe bounded source reason.
         reason: String,
-    },
-    /// Один segment сам по себе нарушает bounded replay policy.
-    #[error(
-        "ordered segment размером {segment_bytes} bytes превышает sniff budget {max_bytes} bytes"
-    )]
-    SegmentExceedsByteBudget {
-        /// Exact размер полученного immutable segment-а.
-        segment_bytes: usize,
-        /// Configured maximum replay bytes.
-        max_bytes: usize,
     },
     /// Factory распознал family, но header structurally malformed.
     #[error("malformed container header: {reason}")]

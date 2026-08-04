@@ -219,6 +219,21 @@ struct PendingVideoBackendReselection {
 
     /// Track id, который нужно активировать после смены backend-а.
     track_id: TrackId,
+
+    /// Способ продолжения demux после установки decoder-а.
+    resume_strategy: BackendReselectionResumeStrategy,
+}
+
+/// Продолжение playback после установки backend-а под отложенный video track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackendReselectionResumeStrategy {
+    /// Decoder отсутствовал до появления track-а: продолжаем текущий demux и ждём
+    /// ближайший keyframe, потому что rewind может быть ещё не доказан seek index-ом.
+    ContinueForwardToKeyframe,
+
+    /// Старый decoder обслуживал playback: возвращаем demux к текущей позиции,
+    /// чтобы новый backend не создавал видимый скачок вперёд.
+    ReseekCurrentPosition,
 }
 
 impl PlayerSession {

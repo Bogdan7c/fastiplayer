@@ -210,7 +210,7 @@ fn muxed_ts_is_deferred_and_inline_manifest_causes_zero_manifest_fetch() {
 }
 
 #[test]
-fn muxed_fmp4_map_opens_through_injected_symphonia_factory() {
+fn muxed_fmp4_content_probe_reaches_initial_tracks_changed() {
     let (initialization, first_media, _) = muxed_fmp4();
     let initialization = Arc::new(initialization);
     let first_media = Arc::new(first_media);
@@ -231,16 +231,18 @@ fn muxed_fmp4_map_opens_through_injected_symphonia_factory() {
             response("404 Not Found", &[], b"")
         }
     });
-    let opened = prepare_hls_vod(request(
+    // Generic ISO-BMFF metadata приходит сюда как ContentProbe, поэтому runtime доказывает fMP4 сам.
+    let mut request = request(
         &server,
         "/media.m3u8",
         muxed_selection(),
         HlsRequiredContainer::FragmentedMp4,
         None,
-    ))
-    .expect("prepare muxed fMP4");
+    );
+    request.containers.main = HlsContainerEvidence::ContentProbe;
+    let opened = prepare_hls_vod(request).expect("content-probed muxed fMP4 must prepare");
     let mut demuxer = opened.into_demuxer();
-    assert_muxed_tracks(next_ready_event(&mut *demuxer).expect("fMP4 tracks"));
+    assert_muxed_tracks(next_ready_event(&mut *demuxer).expect("content-probed fMP4 tracks"));
 }
 
 #[test]
@@ -855,7 +857,17 @@ fn stale_cancel_and_missing_container_fail_without_publication_or_network() {
 
 #[test]
 fn main_content_probe_opens_muxed_ts_and_missing_still_rejects() {
-    let segment = Arc::new(muxed_ts(90_000));
+    let mut segment = muxed_ts(90_000);
+    // Реальные HLS media resources существенно больше sniff prefix; valid null packets сохраняют TS framing.
+    let mut null_packet = [0xff; 188];
+    null_packet[0] = 0x47;
+    null_packet[1] = 0x1f;
+    null_packet[2] = 0xff;
+    null_packet[3] = 0x10;
+    while segment.len() <= 70 * 1024 {
+        segment.extend_from_slice(&null_packet);
+    }
+    let segment = Arc::new(segment);
     let server_segment = Arc::clone(&segment);
     let server = TestServer::start(move |_, request| {
         if request.request_line.contains("/segment.ts") {

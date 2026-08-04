@@ -47,6 +47,14 @@ struct AudioAccumulator {
     byte_offset: u64,
 }
 
+/// Decoder-critical audio evidence, доказанный elementary frame header-ом.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AudioTrackEvidence {
+    codec_id: &'static str,
+    sample_rate: Option<u32>,
+    channels: Option<u32>,
+}
+
 /// First-party MPEG-TS runtime owner.
 pub struct MpegTsDemuxer {
     reader: TransportPacketReader,
@@ -64,7 +72,7 @@ pub struct MpegTsDemuxer {
     pcr_timestamp: TimestampUnwrapper,
     audio_by_pid: HashMap<u16, AudioAccumulator>,
     video_assembler: VideoAccessUnitAssembler,
-    audio_codec_by_pid: HashMap<u16, &'static str>,
+    audio_evidence_by_pid: HashMap<u16, AudioTrackEvidence>,
     config_evidence_by_pid: HashMap<u16, Vec<u8>>,
     tracks: Vec<TrackInfo>,
     pending_events: VecDeque<DemuxReadEvent>,
@@ -109,7 +117,7 @@ impl MpegTsDemuxer {
             pcr_timestamp: TimestampUnwrapper::default(),
             audio_by_pid: HashMap::new(),
             video_assembler: VideoAccessUnitAssembler::new(options.video_access_unit_bytes.get()),
-            audio_codec_by_pid: HashMap::new(),
+            audio_evidence_by_pid: HashMap::new(),
             config_evidence_by_pid: HashMap::new(),
             tracks: Vec::new(),
             pending_events: VecDeque::new(),
@@ -126,14 +134,12 @@ impl MpegTsDemuxer {
             };
             demuxer.process_transport_packet(packet, false)?;
             if demuxer.initial_topology_ready() {
-                demuxer.pending_events.clear();
                 demuxer.build_bounded_initial_index()?;
                 return Ok(demuxer);
             }
         }
         demuxer.finish_pes_at_eof_with_lifecycle(false)?;
         if demuxer.initial_topology_ready() {
-            demuxer.pending_events.clear();
             demuxer.build_bounded_initial_index()?;
             return Ok(demuxer);
         }
@@ -145,8 +151,8 @@ impl MpegTsDemuxer {
             return false;
         };
         program.streams.iter().all(|stream| {
-            !matches!(stream.kind, StreamKind::MpegAudio)
-                || self.audio_codec_by_pid.contains_key(&stream.pid)
+            !matches!(stream.kind, StreamKind::AacAdts | StreamKind::MpegAudio)
+                || self.audio_evidence_by_pid.contains_key(&stream.pid)
         }) && !self.tracks.is_empty()
     }
 
@@ -155,6 +161,9 @@ impl MpegTsDemuxer {
         packet: TransportPacket,
         publish_lifecycle: bool,
     ) -> Result<(), MpegTsDemuxError> {
+        if packet.starts_new_segment {
+            self.reset_ordered_segment_state();
+        }
         let relevant_pid = packet.pid == 0
             || self
                 .pat_programs
@@ -177,7 +186,12 @@ impl MpegTsDemuxer {
         }
         if packet.discontinuity {
             self.reset_pid(packet.pid);
-            if publish_lifecycle && self.stream_by_pid.contains_key(&packet.pid) {
+            // MPEG-TS `discontinuity_indicator` сообщает о разрыве transport continuity и
+            // timestamps, но сам по себе не меняет состав или конфигурацию треков. HLS
+            // сегменты часто ставят этот флаг на первый audio/video packet, поэтому
+            // публикация `TracksChanged` здесь пересоздавала pipeline на каждом сегменте.
+            // Lifecycle-событие принадлежит явной границе новой timeline от контейнера.
+            if packet.starts_new_timeline && self.stream_by_pid.contains_key(&packet.pid) {
                 self.publish_tracks_changed();
             }
         }
@@ -285,6 +299,9 @@ impl MpegTsDemuxer {
 
     fn apply_program(&mut self, selected: Option<ProgramMap>) {
         self.reset_elementary_state();
+        // Audio evidence принадлежит конкретной PMT topology: новый PID или stream type
+        // обязан заново доказать codec/sample-rate/channels своим elementary header-ом.
+        self.audio_evidence_by_pid.clear();
         self.selected_program = selected;
         self.stream_by_pid.clear();
         if let Some(program) = &self.selected_program {
@@ -302,7 +319,21 @@ impl MpegTsDemuxer {
         self.audio_by_pid.clear();
         self.video_assembler.reset_all();
         self.continuity_by_pid.clear();
+        // Уже опубликованное track evidence переживает seek/index rewind той же topology.
+        // Иначе короткий seekable TS после initial index терял AAC track до первого нового frame-а.
         self.config_evidence_by_pid.clear();
+    }
+
+    /// Новый ordered segment может начать continuity counters заново без смены media timeline.
+    fn reset_ordered_segment_state(&mut self) {
+        self.continuity_by_pid.clear();
+        self.pat_assembler.reset();
+        for assembler in self.pmt_assemblers.values_mut() {
+            assembler.reset();
+        }
+        self.pes_by_pid.clear();
+        self.audio_by_pid.clear();
+        self.video_assembler.reset_all();
     }
 
     fn reset_pid(&mut self, pid: u16) {
@@ -455,17 +486,14 @@ impl MpegTsDemuxer {
         let Some(codec_id) = frame.audio_codec_id else {
             return false;
         };
-        let changed = self.audio_codec_by_pid.insert(pid, codec_id) != Some(codec_id);
+        let evidence = AudioTrackEvidence {
+            codec_id,
+            sample_rate: frame.sample_rate,
+            channels: frame.channels,
+        };
+        let changed = self.audio_evidence_by_pid.insert(pid, evidence) != Some(evidence);
         if changed {
             self.rebuild_tracks();
-        }
-        if let Some(track) = self
-            .tracks
-            .iter_mut()
-            .find(|track| track.id.get() == u32::from(pid))
-        {
-            track.sample_rate = frame.sample_rate;
-            track.channels = frame.channels;
         }
         changed
     }
@@ -519,11 +547,13 @@ impl MpegTsDemuxer {
     }
 
     fn track_from_stream(&self, stream: ElementaryStream) -> Option<TrackInfo> {
+        let audio_evidence = self.audio_evidence_by_pid.get(&stream.pid);
         let (kind, codec_id) = match stream.kind {
             StreamKind::H264 => (TrackKind::Video, "V_MPEG4/ISO/AVC"),
             StreamKind::H265 => (TrackKind::Video, "V_MPEGH/ISO/HEVC"),
-            StreamKind::AacAdts => (TrackKind::Audio, "A_AAC"),
-            StreamKind::MpegAudio => (TrackKind::Audio, *self.audio_codec_by_pid.get(&stream.pid)?),
+            StreamKind::AacAdts | StreamKind::MpegAudio => {
+                (TrackKind::Audio, audio_evidence?.codec_id)
+            }
         };
         Some(TrackInfo {
             id: TrackId::new(u32::from(stream.pid)),
@@ -532,8 +562,8 @@ impl MpegTsDemuxer {
             codec_private: None,
             time_base: Some(mpeg_clock()),
             duration: self.duration,
-            sample_rate: None,
-            channels: None,
+            sample_rate: audio_evidence.and_then(|evidence| evidence.sample_rate),
+            channels: audio_evidence.and_then(|evidence| evidence.channels),
             video: matches!(stream.kind, StreamKind::H264 | StreamKind::H265).then(|| {
                 let mut metadata = VideoTrackMetadata::empty();
                 metadata.packet_framing = VideoPacketFraming::AnnexB;

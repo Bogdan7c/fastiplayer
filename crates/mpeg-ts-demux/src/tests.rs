@@ -325,6 +325,47 @@ fn audio_only_adts_is_playable_without_video() {
     .expect("audio-only TS");
     assert_eq!(demuxer.tracks().len(), 1);
     assert_eq!(demuxer.tracks()[0].kind, TrackKind::Audio);
+    assert_eq!(demuxer.tracks()[0].sample_rate, Some(44_100));
+    assert_eq!(demuxer.tracks()[0].channels, Some(2));
+}
+
+#[test]
+fn ordered_segment_continuity_restart_keeps_tracks_stable_and_emits_media_packets() {
+    let first_segment = independent_muxed_h264_aac_segment_fixture(0);
+    let second_segment = independent_muxed_h264_aac_segment_fixture(90_000);
+    let segments = VecDeque::from([
+        OrderedSegment {
+            sequence: OrderedSegmentSequence::new(0),
+            kind: OrderedSegmentKind::Media,
+            discontinuity: OrderedSegmentDiscontinuity::Continuous,
+            bytes: Bytes::from(first_segment),
+        },
+        OrderedSegment {
+            sequence: OrderedSegmentSequence::new(1),
+            kind: OrderedSegmentKind::Media,
+            discontinuity: OrderedSegmentDiscontinuity::Continuous,
+            bytes: Bytes::from(second_segment),
+        },
+    ]);
+    let mut demuxer = open(
+        DemuxInput::ordered_segments(Box::new(SegmentSource { segments })),
+        DemuxHints::none(),
+    )
+    .expect("independent HLS-style TS segments");
+
+    let events = drain(&mut *demuxer).expect("drain second independent segment");
+
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, DemuxReadEvent::TracksChanged(_)))
+    );
+    assert!(events.iter().any(
+        |event| matches!(event, DemuxReadEvent::Packet(packet) if packet.kind == TrackKind::Video)
+    ));
+    assert!(events.iter().any(
+        |event| matches!(event, DemuxReadEvent::Packet(packet) if packet.kind == TrackKind::Audio)
+    ));
 }
 
 #[test]
@@ -451,7 +492,7 @@ fn explicit_ordered_segment_discontinuity_precedes_next_packet() {
 }
 
 #[test]
-fn in_band_discontinuity_precedes_dependent_packet() {
+fn in_band_discontinuity_resets_transport_state_without_changing_tracks() {
     let h264_access_unit = [0x00, 0x00, 0x01, 0x65, 0x88];
     let bytes = TsFixtureBuilder::new()
         .pat(&[(1, PMT_PID)], 0)
@@ -465,15 +506,16 @@ fn in_band_discontinuity_precedes_dependent_packet() {
     )
     .expect("in-band discontinuity fixture");
     let events = drain(&mut *demuxer).expect("drain in-band discontinuity");
-    let tracks_changed = events
-        .iter()
-        .position(|event| matches!(event, DemuxReadEvent::TracksChanged(_)))
-        .expect("lifecycle event");
-    let packet = events
-        .iter()
-        .position(|event| matches!(event, DemuxReadEvent::Packet(_)))
-        .expect("dependent packet");
-    assert!(tracks_changed < packet);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, DemuxReadEvent::TracksChanged(_)))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, DemuxReadEvent::Packet(_)))
+    );
 }
 
 #[test]
@@ -1203,6 +1245,27 @@ fn muxed_h264_aac_fixture(pts: u64) -> Vec<u8> {
     TsFixtureBuilder::new()
         .pat(&[(1, PMT_PID)], 0)
         .pmt(PMT_PID, 1, &[(0x1b, VIDEO_PID), (0x0f, AUDIO_PID)], 0)
+        .pes(
+            VIDEO_PID,
+            pts,
+            Some(pts.saturating_sub(3_000)),
+            &h264_access_unit,
+        )
+        .pes(AUDIO_PID, pts, None, &adts_frame(&[0x11, 0x22]))
+        .finish()
+}
+
+/// Моделирует независимый HLS MPEG-TS segment с transport discontinuity на обоих ES PID.
+fn independent_muxed_h264_aac_segment_fixture(pts: u64) -> Vec<u8> {
+    let h264_access_unit = [
+        0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0x00, 0x00, 0x01, 0x68, 0xce, 0x00, 0x00, 0x01,
+        0x65, 0x88,
+    ];
+    TsFixtureBuilder::new()
+        .pat(&[(1, PMT_PID)], 0)
+        .pmt(PMT_PID, 1, &[(0x1b, VIDEO_PID), (0x0f, AUDIO_PID)], 0)
+        .discontinuity(VIDEO_PID)
+        .discontinuity(AUDIO_PID)
         .pes(
             VIDEO_PID,
             pts,

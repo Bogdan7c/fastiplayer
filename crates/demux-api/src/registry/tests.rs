@@ -576,6 +576,34 @@ fn ordered_segment_input_replays_consumed_segments() {
     assert_eq!(&*opened_bytes.lock().expect("opened bytes"), b"TESTmedia");
 }
 
+/// Segment resource может быть больше sniff prefix, но factory обязана получить его целиком после probe.
+#[test]
+fn ordered_segment_larger_than_sniff_prefix_is_replayed_without_truncation() {
+    let opened_bytes = Arc::new(Mutex::new(Vec::new()));
+    let registry = registry_with_recording_factory(Arc::clone(&opened_bytes));
+    let oversized_segment = Bytes::from_static(b"TEST-segment-larger-than-eight-byte-sniff-budget");
+    let segments = VecDeque::from([OrderedSegment {
+        sequence: OrderedSegmentSequence::new(0),
+        kind: OrderedSegmentKind::Media,
+        discontinuity: OrderedSegmentDiscontinuity::Continuous,
+        bytes: oversized_segment.clone(),
+    }]);
+
+    registry
+        .open(
+            DemuxInput::ordered_segments(Box::new(MemorySegmentSource { segments })),
+            DemuxHints::none(),
+            sniff_budget(),
+            CancellationToken::never_cancelled(),
+        )
+        .expect("oversized segmented resource must open from bounded prefix");
+
+    assert_eq!(
+        &*opened_bytes.lock().expect("opened bytes"),
+        oversized_segment.as_ref()
+    );
+}
+
 /// Truncation, cancellation и no-match сохраняют разные terminal outcomes.
 #[test]
 fn truncated_cancelled_and_no_match_are_distinct() {

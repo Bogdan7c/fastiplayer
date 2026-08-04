@@ -1274,6 +1274,50 @@ mod tests {
         assert!(VaapiCodecAdapterFactory::stream_config_rejection(&config).is_none());
     }
 
+    /// Проверяет production MPEG-TS/HLS contract: Annex-B несёт SPS/PPS in-band и не требует avcC.
+    #[test]
+    fn factory_and_adapter_accept_h264_annex_b_with_in_band_parameter_sets() {
+        let mut config = h264_decode_config(H264Profile::High);
+        config.codec_private = None;
+        config.packetization = Some(VideoStreamPacketization::H264(H264Packetization::AnnexB));
+
+        assert!(VaapiCodecAdapterFactory::stream_config_rejection(&config).is_none());
+
+        let stream_config = H264VaapiStreamConfig::from_decode_config(&config)
+            .expect("Annex-B H.264 config должен принимать in-band parameter sets");
+        let mut preparer = H264AccessUnitPreparer::new(stream_config);
+        let source_access_unit = annex_b_access_unit(&[&[0x67, 0x64], &[0x68], &[0x65, 0x88]]);
+        let pending_access_unit = preparer
+            .prepare_pending_access_unit(
+                &source_access_unit,
+                VaapiPacketDecodeHints {
+                    inject_parameter_sets: true,
+                },
+            )
+            .expect("Annex-B AU должен дойти до VA-API feeder boundary");
+
+        assert_eq!(pending_access_unit.annex_b_bytes, source_access_unit);
+        assert_eq!(
+            pending_access_unit.source_packet_len,
+            source_access_unit.len()
+        );
+    }
+
+    /// Не ослабляет MP4/AVCC contract: length-prefixed packet невозможно разобрать без avcC.
+    #[test]
+    fn factory_rejects_length_prefixed_h264_without_avcc_codec_private() {
+        let mut config = h264_decode_config(H264Profile::High);
+        config.codec_private = None;
+
+        assert!(matches!(
+            VaapiCodecAdapterFactory::stream_config_rejection(&config),
+            Some(VideoStreamConfigRejection::InvalidCodecPrivate {
+                codec: VideoCodec::H264,
+                ..
+            })
+        ));
+    }
+
     /// Проверяет весь явно поддержанный H.264 profile whitelist на общей NV12 границе.
     #[test]
     fn factory_accepts_each_implemented_h264_profile() {

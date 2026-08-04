@@ -12,4 +12,6 @@
 - Verification: `xmllint --noout docs/web-media-playlist-acceptance.xspf`; exact track count 13; `cargo test -p playlist-io --test xspf_v1 --locked` (14 PASS); `cargo test -p app-egui --no-default-features --locked cli_route_classifies_each_supported_playlist_format_before_local_media_open` (1 PASS); `git diff --check`.
 - Production Rust API, architecture boundaries, player/render logic and commands did not change; this update adds only manual acceptance artifacts/workflow.
 
-Связанные memories: `mem:testing/playback-smoke`, `mem:testing/media-fixtures`, `mem:app-egui/sidebar-controller`, `mem:app-egui/web-media-picker-slice-g-2026-07-26`, `mem:media-services/ytdlp-topology-summary-2026-08-04`.
+Follow-up: runtime-поломка HLS TS VOD и production fix описаны в `mem:testing/hls-ts-vod-runtime-fix-2026-08-04`; исходное утверждение выше об отсутствии production-изменений относится только к созданию acceptance artifacts до этого follow-up.
+
+Связанные memories: `mem:testing/playback-smoke`, `mem:testing/media-fixtures`, `mem:testing/hls-ts-vod-runtime-fix-2026-08-04`, `mem:app-egui/sidebar-controller`, `mem:app-egui/web-media-picker-slice-g-2026-07-26`, `mem:media-services/ytdlp-topology-summary-2026-08-04`.

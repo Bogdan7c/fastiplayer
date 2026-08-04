@@ -28,36 +28,47 @@ impl H264VaapiStreamConfig {
         let codec_private = config
             .codec_private
             .as_deref()
-            .filter(|bytes| !bytes.is_empty())
-            .ok_or_else(|| VideoStreamConfigRejection::InvalidCodecPrivate {
+            .filter(|bytes| !bytes.is_empty());
+        let decoder_config = codec_private
+            .map(parse_avc_decoder_configuration_record)
+            .transpose()
+            .map_err(|error| VideoStreamConfigRejection::InvalidCodecPrivate {
                 codec: VideoCodec::H264,
-                reason: "H.264 VA-API adapter requires avcC codec_private with SPS/PPS".to_string(),
+                reason: error.to_string(),
             })?;
 
-        let decoder_config =
-            parse_avc_decoder_configuration_record(codec_private).map_err(|error| {
+        if let H264Packetization::AvccLengthPrefixed { nal_length_size } = packetization {
+            let decoder_config = decoder_config.as_ref().ok_or_else(|| {
                 VideoStreamConfigRejection::InvalidCodecPrivate {
                     codec: VideoCodec::H264,
-                    reason: error.to_string(),
+                    reason: "length-prefixed H.264 requires avcC codec_private with SPS/PPS"
+                        .to_string(),
                 }
             })?;
-
-        if let H264Packetization::AvccLengthPrefixed { nal_length_size } = packetization
-            && decoder_config.nal_length_size != nal_length_size
-        {
-            return Err(VideoStreamConfigRejection::InvalidCodecPrivate {
-                codec: VideoCodec::H264,
-                reason: format!(
-                    "H.264 packetization length size {nal_length_size:?} does not match avcC {:?}",
-                    decoder_config.nal_length_size
-                ),
-            });
+            if decoder_config.nal_length_size != nal_length_size {
+                return Err(VideoStreamConfigRejection::InvalidCodecPrivate {
+                    codec: VideoCodec::H264,
+                    reason: format!(
+                        "H.264 packetization length size {nal_length_size:?} does not match avcC {:?}",
+                        decoder_config.nal_length_size
+                    ),
+                });
+            }
         }
+
+        let sequence_parameter_sets = decoder_config
+            .as_ref()
+            .map(|config| config.sequence_parameter_sets().to_vec())
+            .unwrap_or_default();
+        let picture_parameter_sets = decoder_config
+            .as_ref()
+            .map(|config| config.picture_parameter_sets().to_vec())
+            .unwrap_or_default();
 
         Ok(Self {
             packetization,
-            sequence_parameter_sets: decoder_config.sequence_parameter_sets().to_vec(),
-            picture_parameter_sets: decoder_config.picture_parameter_sets().to_vec(),
+            sequence_parameter_sets,
+            picture_parameter_sets,
         })
     }
 

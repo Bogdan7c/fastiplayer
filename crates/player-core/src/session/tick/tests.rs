@@ -3189,6 +3189,36 @@ fn absent_decoder_send_is_noop_and_drain_drops_pending_packets() {
 }
 
 #[test]
+fn pending_backend_reselection_retains_starting_keyframe_until_decoder_install() {
+    let mut session = PlayerSession::new();
+    let mut tick_result = PlayerTickResult::default();
+    let video_track_id = TrackId::new(1);
+    let video_requirement = VideoDecodeRequirement::new(VideoCodec::H264);
+
+    session
+        .pipeline
+        .select_video_track(video_track_id, video_requirement.clone());
+    session.request_video_backend_reselection(video_requirement, video_track_id);
+    enqueue_selected_video_packet(
+        &mut session,
+        Duration::from_millis(120),
+        Bytes::from_static(b"starting-keyframe-awaiting-backend"),
+        true,
+    );
+
+    let drained_frames = drain_decoded_video_frames(
+        &mut session,
+        &mut tick_result,
+        decoder_io_limits_for_tests(1, 0),
+        None,
+    );
+
+    assert_eq!(drained_frames, 0);
+    assert_eq!(session.pipeline.pending_video_packet_len(), 1);
+    assert!(tick_result.dropped_video_frames.is_empty());
+}
+
+#[test]
 fn pending_video_packet_preserves_dts_through_decode_boundary() {
     let mut session = PlayerSession::new();
     let decoder_thread = RecordingVideoDecoderThread::new();

@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use media_core::{DemuxReadEvent, DemuxSeekMode, TrackInfo};
 
-use super::{AudioAccumulator, MpegTsDemuxer, StreamTimestamps};
+use super::{AudioAccumulator, AudioTrackEvidence, MpegTsDemuxer, StreamTimestamps};
 use crate::MpegTsDemuxError;
 use crate::pes::PesAssembler;
 use crate::psi::{ProgramMap, ProgramMapEntry, PsiSectionAssembler, StreamKind};
@@ -33,7 +33,7 @@ struct DemuxStateSnapshot {
     pcr_timestamp: TimestampUnwrapper,
     audio_by_pid: HashMap<u16, AudioAccumulator>,
     video_assembler: VideoAccessUnitAssembler,
-    audio_codec_by_pid: HashMap<u16, &'static str>,
+    audio_evidence_by_pid: HashMap<u16, AudioTrackEvidence>,
     config_evidence_by_pid: HashMap<u16, Vec<u8>>,
     tracks: Vec<TrackInfo>,
     pending_events: VecDeque<DemuxReadEvent>,
@@ -58,7 +58,7 @@ pub(super) struct IndexContinuationState {
     pcr_timestamp: TimestampUnwrapper,
     audio_by_pid: HashMap<u16, AudioAccumulator>,
     video_assembler: VideoAccessUnitAssembler,
-    audio_codec_by_pid: HashMap<u16, &'static str>,
+    audio_evidence_by_pid: HashMap<u16, AudioTrackEvidence>,
     config_evidence_by_pid: HashMap<u16, Vec<u8>>,
 }
 
@@ -138,7 +138,7 @@ impl MpegTsDemuxer {
             pcr_timestamp: self.pcr_timestamp.clone(),
             audio_by_pid: self.audio_by_pid.clone(),
             video_assembler: self.video_assembler.clone(),
-            audio_codec_by_pid: self.audio_codec_by_pid.clone(),
+            audio_evidence_by_pid: self.audio_evidence_by_pid.clone(),
             config_evidence_by_pid: self.config_evidence_by_pid.clone(),
             tracks: self.tracks.clone(),
             pending_events: std::mem::take(&mut self.pending_events),
@@ -162,7 +162,7 @@ impl MpegTsDemuxer {
         self.pcr_timestamp = snapshot.pcr_timestamp;
         self.audio_by_pid = snapshot.audio_by_pid;
         self.video_assembler = snapshot.video_assembler;
-        self.audio_codec_by_pid = snapshot.audio_codec_by_pid;
+        self.audio_evidence_by_pid = snapshot.audio_evidence_by_pid;
         self.config_evidence_by_pid = snapshot.config_evidence_by_pid;
         self.tracks = snapshot.tracks;
         self.pending_events = snapshot.pending_events;
@@ -186,7 +186,7 @@ impl MpegTsDemuxer {
             pcr_timestamp: self.pcr_timestamp.clone(),
             audio_by_pid: self.audio_by_pid.clone(),
             video_assembler: self.video_assembler.clone(),
-            audio_codec_by_pid: self.audio_codec_by_pid.clone(),
+            audio_evidence_by_pid: self.audio_evidence_by_pid.clone(),
             config_evidence_by_pid: self.config_evidence_by_pid.clone(),
         }
     }
@@ -205,7 +205,7 @@ impl MpegTsDemuxer {
         self.pcr_timestamp = continuation.pcr_timestamp;
         self.audio_by_pid = continuation.audio_by_pid;
         self.video_assembler = continuation.video_assembler;
-        self.audio_codec_by_pid = continuation.audio_codec_by_pid;
+        self.audio_evidence_by_pid = continuation.audio_evidence_by_pid;
         self.config_evidence_by_pid = continuation.config_evidence_by_pid;
     }
 

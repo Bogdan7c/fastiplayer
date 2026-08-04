@@ -850,9 +850,8 @@ fn hls_transport_projection_accepts_hls_fields_without_progressive_profile_rejec
     let sibling_segment =
         HttpRequestTarget::parse_exact("https://media.invalid/private/segment1.ts")
             .expect("same-directory sibling");
-    let cross_origin =
-        HttpRequestTarget::parse_exact("https://cdn.invalid/private/segment1.ts")
-            .expect("cross-origin CDN sibling");
+    let cross_origin = HttpRequestTarget::parse_exact("https://cdn.invalid/private/segment1.ts")
+        .expect("cross-origin CDN sibling");
     assert!(
         request
             .secrets()

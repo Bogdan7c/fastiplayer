@@ -595,10 +595,9 @@ fn choose_probe_rejection(
         DemuxProbeRejection::Cancelled => 6,
         DemuxProbeRejection::Malformed { .. } => 5,
         DemuxProbeRejection::Truncated { .. } => 4,
-        DemuxProbeRejection::SegmentExceedsByteBudget { .. } => 3,
-        DemuxProbeRejection::DeadlineExceeded { .. } => 2,
-        DemuxProbeRejection::InputFailure { .. } => 1,
-        DemuxProbeRejection::UnsupportedInput { .. } => 0,
+        DemuxProbeRejection::DeadlineExceeded { .. } => 3,
+        DemuxProbeRejection::InputFailure { .. } => 2,
+        DemuxProbeRejection::UnsupportedInput { .. } => 1,
     };
     match current {
         Some(current) if priority(&current) >= priority(&candidate) => Some(current),

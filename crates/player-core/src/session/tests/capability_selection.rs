@@ -114,6 +114,7 @@ fn requested_video_track_selection_sets_matching_requirement() {
 fn requested_video_track_selection_replaces_stale_requirement() {
     let mut session = PlayerSession::new();
     session.set_system_capabilities(capabilities_with_vp9_profile0());
+    install_active_test_video_backend(&mut session);
     let video_track_id = TrackId::new(11);
     let stale_track_id = TrackId::new(99);
     let stale_requirement = VideoDecodeRequirement::new(VideoCodec::Vp9)
@@ -147,6 +148,11 @@ fn requested_video_track_selection_replaces_stale_requirement() {
 fn requested_video_track_selection_rejects_unsupported_requirement_before_mutation() {
     let mut session = PlayerSession::new();
     session.set_system_capabilities(capabilities_with_vp9_profile0());
+    // Этот focused validation-тест оставляет backend id нейтральным, но даёт
+    // selection boundary реальный decoder, чтобы проверить global typed rejection.
+    session
+        .pipeline
+        .set_video_decoder_thread(SharedFakeVideoDecoderThread::new());
     let supported_track_id = TrackId::new(1);
     let unsupported_track_id = TrackId::new(2);
     let tracks = vec![
@@ -571,6 +577,7 @@ fn refinement_reconfigures_decoder_when_output_contract_changes() {
 fn deferred_bitstream_selection_preserves_selected_track() {
     let mut session = PlayerSession::new();
     session.set_system_capabilities(capabilities_with_phase10_vp9_profile2_hdr());
+    install_active_test_video_backend(&mut session);
     let mut video_track = fake_track(7, TrackKind::Video);
     let mut container_metadata = VideoTrackMetadata::empty();
     container_metadata.coded_width = Some(3840);
@@ -627,6 +634,16 @@ fn install_tracks_for_capability_selection(session: &mut PlayerSession, tracks: 
     session
         .pipeline
         .install_opened_media(Box::new(demuxer), None, None, tracks);
+}
+
+/// Устанавливает реальный decoder boundary для тестов обычного track selection.
+/// Capability report сам по себе больше не изображает существующий decoder thread.
+fn install_active_test_video_backend(session: &mut PlayerSession) {
+    let backend_id = test_decode_backend_id();
+    session.set_video_backend(crate::StartedVideoBackend::from_decoder_thread(
+        backend_id.as_str(),
+        SharedFakeVideoDecoderThread::new(),
+    ));
 }
 
 fn capabilities_with_hardware_and_ffmpeg_outputs() -> capability_core::SystemCapabilities {
@@ -916,6 +933,117 @@ fn active_hardware_backend_requests_reselection_when_only_software_can_decode() 
                 if !request.decodable_by_active_backend
         )),
         "shell должен получить запрос на подбор backend-а с decodable_by_active_backend=false"
+    );
+}
+
+/// Воспроизводит late track discovery у HLS/TS: media уже установлен без video
+/// decoder-а, затем demuxer публикует playable video track. Player обязан отложить
+/// packets до backend install, а не объявлять отсутствующий decoder совместимым.
+#[test]
+fn late_video_track_without_decoder_requests_backend_before_selection() {
+    let mut session = PlayerSession::new();
+    session.set_system_capabilities(capabilities_vaapi_h264_only_and_ffmpeg_h264_vp9());
+    let _ = session.take_events();
+    let late_tracks = vec![vp9_full_track(1)];
+    install_tracks_for_capability_selection(&mut session, late_tracks.clone());
+    session.set_playback_state(PlaybackState::Playing);
+
+    session
+        .select_default_video_track(&late_tracks, "late HLS update содержит VP9 video track")
+        .expect("playable late video track должен запросить backend reselection");
+
+    assert!(session.has_pending_video_backend_reselection());
+    assert_eq!(
+        session.snapshot().selected_tracks.video_track,
+        None,
+        "video track нельзя активировать до появления decoder thread"
+    );
+    assert!(session.take_events().iter().any(|event| matches!(
+        event,
+        PlayerEvent::VideoBackendSelectionRequested(request)
+            if !request.decodable_by_active_backend
+    )));
+
+    session.set_video_backend(crate::StartedVideoBackend::from_decoder_thread(
+        "ffmpeg-sw",
+        SharedFakeVideoDecoderThread::new(),
+    ));
+
+    assert_eq!(
+        session.snapshot().selected_tracks.video_track,
+        Some(TrackId::new(1)),
+        "late video track должен активироваться после установки decoder-а"
+    );
+    assert_eq!(
+        session.playback_state(),
+        PlaybackState::Playing,
+        "forward keyframe bootstrap не должен превращать Playing в Paused"
+    );
+    assert!(
+        !session
+            .take_events()
+            .iter()
+            .any(|event| matches!(event, PlayerEvent::SeekRequested(_))),
+        "late-track bootstrap не должен требовать ещё не доказанный seek anchor"
+    );
+}
+
+/// Закрепляет полный runtime route исходной HLS/TS регрессии: late H.264 Annex-B
+/// track ждёт backend, сохраняет стартовый IDR, проходит decoder boundary и
+/// действительно становится кадром, выбранным presentation scheduler-ом.
+#[test]
+fn late_hls_h264_track_reaches_presentation_after_backend_install() {
+    let mut session = PlayerSession::new();
+    session.set_system_capabilities(capabilities_vaapi_h264_only_and_ffmpeg_h264_vp9());
+    let video_track_id = TrackId::new(1);
+    let mut late_h264_track = h264_track_with_avcc(video_track_id.get());
+    late_h264_track.codec_private = None;
+    let late_h264_metadata = late_h264_track
+        .video
+        .as_mut()
+        .expect("H.264 test track должен иметь video metadata");
+    late_h264_metadata.profile = Some(VideoProfile::H264(H264Profile::Main));
+    late_h264_metadata.packet_framing = media_core::VideoPacketFraming::AnnexB;
+    let late_tracks = vec![late_h264_track];
+    install_tracks_for_capability_selection(&mut session, late_tracks.clone());
+    session.set_playback_state(PlaybackState::Playing);
+
+    session
+        .select_default_video_track(&late_tracks, "late HLS update содержит H.264 Annex-B track")
+        .expect("late H.264 track должен запросить совместимый backend");
+    session
+        .pipeline
+        .enqueue_pending_video_packet(PendingVideoPacket::new(
+            video_track_id,
+            Duration::ZERO,
+            session.pipeline.seek_generation(),
+            Bytes::from_static(&[0, 0, 0, 1, 0x65, 0x88]),
+            PacketKeyframe::Keyframe,
+        ));
+
+    let decoder = SharedFakeVideoDecoderThread::new();
+    decoder.decode_next_packet_as_frame(Duration::ZERO, 501);
+    session.set_video_backend(crate::StartedVideoBackend::from_decoder_thread(
+        DecodeBackendId::vaapi().as_str(),
+        decoder.clone(),
+    ));
+    assert_eq!(session.playback_state(), PlaybackState::Playing);
+
+    let first_tick = session.tick(PlayerTickContext::new(Instant::now()));
+    let second_tick = session.tick(PlayerTickContext::new(Instant::now()));
+
+    assert_eq!(decoder.sent_packets().len(), 1);
+    assert_eq!(
+        first_tick.video_frames_presented + second_tick.video_frames_presented,
+        1,
+        "сохранённый HLS keyframe должен дойти до presentation, а не только до decoder send"
+    );
+    assert_eq!(
+        session
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.pts),
+        Some(Duration::ZERO)
     );
 }
 

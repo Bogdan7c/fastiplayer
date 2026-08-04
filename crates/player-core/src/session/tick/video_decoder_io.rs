@@ -314,6 +314,13 @@ pub(super) fn drain_decoded_video_frames(
     }
 
     if !session.pipeline.can_receive_decoded_video_frames() {
+        // Pending backend reselection — управляемая lifecycle-пауза, а не decoder
+        // starvation. Сохраняем bounded pending packets (включая стартовый keyframe),
+        // чтобы только что установленный decoder начал decode без ожидания следующего GOP.
+        if session.has_pending_video_backend_reselection() {
+            return 0;
+        }
+
         if !session.pipeline.pending_video_packet_is_empty() {
             tracing::warn!(
                 count = session.pipeline.pending_video_packet_len(),
