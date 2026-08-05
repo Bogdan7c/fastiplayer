@@ -219,6 +219,7 @@ pub(crate) fn prepare_hls_candidate(
             .async_seek_handle()
             .ok_or_else(|| anyhow!("HLS live runtime потерял receipted seek handle"))?;
         let (mut demuxer, timeline_port, _) = opened.into_parts();
+        wait_for_deferred_hls_codec_tracks(candidate, demuxer.as_mut())?;
         prove_deferred_hls_codec_evidence(candidate, demuxer.as_mut(), capability_probe)
             .context("HLS deferred candidate не прошёл post-open codec proof")?;
         return Ok(PreparedHlsCandidate {
@@ -291,6 +292,10 @@ pub(crate) fn prepare_hls_candidate(
         .async_seek_handle()
         .ok_or_else(|| anyhow!("HLS VOD runtime потерял receipted seek handle"))?;
     let mut demuxer = opened.into_demuxer();
+    // Static HLS обязан опубликовать tracks и duration до PreparedMedia/Installed:
+    // startup restore начинается сразу после Installed и не ждёт поздний TracksChanged.
+    wait_for_initial_hls_tracks(demuxer.as_mut())
+        .context("HLS VOD не достиг install-ready track/timeline состояния")?;
     prove_deferred_hls_codec_evidence(candidate, demuxer.as_mut(), capability_probe)
         .context("HLS deferred candidate не прошёл post-open codec proof")?;
     Ok(PreparedHlsCandidate {
@@ -495,7 +500,18 @@ fn selection_and_containers(
     ))
 }
 
-/// Fail-closed codec proof для deferred HLS после manifest/demux open.
+/// Для deferred codec layout ожидает authoritative track snapshot до codec proof.
+fn wait_for_deferred_hls_codec_tracks(
+    candidate: &YtDlpNormalizedCandidate,
+    demuxer: &mut dyn Demuxer,
+) -> Result<()> {
+    let StreamLayout::HlsMuxedCodecDeferred(_) = candidate.descriptor().layout() else {
+        return Ok(());
+    };
+    wait_for_initial_hls_tracks(demuxer)
+}
+
+/// Fail-closed codec proof для уже опубликованных deferred HLS tracks.
 fn prove_deferred_hls_codec_evidence(
     candidate: &YtDlpNormalizedCandidate,
     demuxer: &mut dyn Demuxer,
@@ -504,8 +520,6 @@ fn prove_deferred_hls_codec_evidence(
     let StreamLayout::HlsMuxedCodecDeferred(_) = candidate.descriptor().layout() else {
         return Ok(());
     };
-    // ProgressiveDemuxer публикует tracks только через initial TracksChanged.
-    wait_for_initial_tracks_changed(demuxer)?;
     let tracks = demuxer.tracks();
     let video = tracks
         .iter()
@@ -524,31 +538,31 @@ fn prove_deferred_hls_codec_evidence(
     Ok(())
 }
 
-/// Media-open worker ждёт first TracksChanged до capability prove / Installed.
-fn wait_for_initial_tracks_changed(demuxer: &mut dyn Demuxer) -> Result<()> {
+/// Media-open worker ждёт first TracksChanged до capability prove / static Installed.
+fn wait_for_initial_hls_tracks(demuxer: &mut dyn Demuxer) -> Result<()> {
     const INITIAL_TRACKS_DEADLINE: Duration = Duration::from_secs(30);
     let deadline = Instant::now() + INITIAL_TRACKS_DEADLINE;
     loop {
         if Instant::now() >= deadline {
             return Err(anyhow!(
-                "deferred HLS не опубликовал TracksChanged до open deadline"
+                "HLS runtime не опубликовал TracksChanged до open deadline"
             ));
         }
         match demuxer
             .next_event()
-            .context("deferred HLS demuxer next_event")?
+            .context("HLS runtime demuxer next_event")?
         {
             DemuxReadEvent::TracksChanged(_) => return Ok(()),
             DemuxReadEvent::TemporarilyUnavailable(hint) => {
                 std::thread::sleep(hint.retry_after().min(Duration::from_millis(50)));
             }
             DemuxReadEvent::EndOfStream => {
-                return Err(anyhow!("deferred HLS достиг EOS до initial TracksChanged"));
+                return Err(anyhow!("HLS runtime достиг EOS до initial TracksChanged"));
             }
             DemuxReadEvent::Packet(_) | DemuxReadEvent::MediaMetadataChanged(_) => {
                 // Packet без TracksChanged нарушает ProgressiveDemuxer contract; всё равно fail-closed.
                 return Err(anyhow!(
-                    "deferred HLS опубликовал media event до initial TracksChanged"
+                    "HLS runtime опубликовал media event до initial TracksChanged"
                 ));
             }
         }
@@ -632,43 +646,56 @@ mod tests {
 
     use media_core::{
         DemuxReadEvent, DemuxRetryHint, DemuxSeekResult, DemuxSeekability, DemuxTrackListUpdate,
-        Demuxer, TimelineNotSeekableReason, TrackId, TrackInfo, TrackKind,
+        Demuxer, TrackId, TrackInfo, TrackKind,
     };
 
     use super::{
         ContainerFamily, HlsContainerEvidence, hls_main_container_evidence,
-        wait_for_initial_tracks_changed,
+        wait_for_initial_hls_tracks,
     };
 
+    /// Минимальный event-ordered demuxer моделирует deferred HLS publication.
     struct ScriptedDemuxer {
+        /// Worker events становятся видимыми owner-у строго по одному.
         events: VecDeque<DemuxReadEvent>,
+        /// До TracksChanged список пуст, после него содержит authoritative tracks.
         tracks: Vec<TrackInfo>,
+        /// До TracksChanged duration неизвестна, после него становится authoritative.
+        duration: Option<Duration>,
     }
 
     impl Demuxer for ScriptedDemuxer {
+        /// Возвращает только уже опубликованный track snapshot.
         fn tracks(&self) -> &[TrackInfo] {
             &self.tracks
         }
 
+        /// Возвращает только уже опубликованную длительность.
         fn duration(&self) -> Option<Duration> {
-            None
+            self.duration
         }
 
+        /// HLS VOD seek boundary существует ещё до публикации track metadata.
         fn seekability(&self) -> DemuxSeekability {
-            DemuxSeekability::NotSeekable {
-                reason: TimelineNotSeekableReason::UnknownTimeline,
-            }
+            DemuxSeekability::Seekable
         }
 
+        /// Применяет lifecycle snapshot одновременно с возвратом TracksChanged.
         fn next_event(&mut self) -> anyhow::Result<DemuxReadEvent> {
-            Ok(self
+            let event = self
                 .events
                 .pop_front()
-                .unwrap_or(DemuxReadEvent::EndOfStream))
+                .unwrap_or(DemuxReadEvent::EndOfStream);
+            if let DemuxReadEvent::TracksChanged(update) = &event {
+                self.tracks.clone_from(&update.tracks);
+                self.duration = update.duration;
+            }
+            Ok(event)
         }
 
+        /// Этот fake не выполняет seek: тест проверяет install-ready boundary.
         fn seek(&mut self, _timestamp: Duration) -> anyhow::Result<DemuxSeekResult> {
-            panic!("scripted demuxer is not seekable")
+            panic!("scripted demuxer seek не должен вызываться в readiness test")
         }
     }
 
@@ -699,10 +726,11 @@ mod tests {
                 ),
                 DemuxReadEvent::TracksChanged(DemuxTrackListUpdate::new(published.clone(), None)),
             ]),
-            tracks: published,
+            tracks: Vec::new(),
+            duration: None,
         };
 
-        wait_for_initial_tracks_changed(&mut demuxer).expect("TracksChanged after unavailable");
+        wait_for_initial_hls_tracks(&mut demuxer).expect("TracksChanged after unavailable");
         assert_eq!(demuxer.tracks().len(), 2);
     }
 
@@ -711,9 +739,41 @@ mod tests {
         let mut demuxer = ScriptedDemuxer {
             events: VecDeque::from([DemuxReadEvent::EndOfStream]),
             tracks: Vec::new(),
+            duration: None,
         };
-        let error = wait_for_initial_tracks_changed(&mut demuxer).expect_err("EOS before tracks");
+        let error = wait_for_initial_hls_tracks(&mut demuxer).expect_err("EOS before tracks");
         assert!(error.to_string().contains("EOS"));
+    }
+
+    /// Regression: restart restore идёт сразу после Installed и не ждёт player tick.
+    #[test]
+    fn hls_vod_is_seekable_with_duration_at_prepared_media_boundary() {
+        // Acceptance row 01 имеет конечную десятиминутную timeline и declared codecs.
+        let published_duration = Duration::from_secs(634);
+        // До worker event-а metadata намеренно ещё не видна app owner-у.
+        let mut demuxer = ScriptedDemuxer {
+            events: VecDeque::from([DemuxReadEvent::TracksChanged(DemuxTrackListUpdate::new(
+                vec![track(1, TrackKind::Video), track(2, TrackKind::Audio)],
+                Some(published_duration),
+            ))]),
+            tracks: Vec::new(),
+            duration: None,
+        };
+
+        // Production HLS VOD preparation обязана пересечь readiness до PreparedMedia.
+        wait_for_initial_hls_tracks(&mut demuxer).expect("HLS VOD install readiness");
+        // PreparedMedia снимает immutable snapshot, который немедленно увидит player install.
+        let prepared = player_core::PreparedMedia::from_external_label(
+            "HLS VOD acceptance",
+            Box::new(demuxer),
+        );
+
+        // Restore получает tracks без ожидания дополнительного player tick.
+        assert_eq!(prepared.tracks().len(), 2);
+        // Известная duration создаёт static seekable timeline при atomic install.
+        assert_eq!(prepared.duration(), Some(published_duration));
+        // Demux seekability snapshot не деградирует во время metadata publication.
+        assert_eq!(prepared.seekability(), DemuxSeekability::Seekable);
     }
 
     /// Generic MP4 output hint не должен подменять content proof реального HLS segment container.

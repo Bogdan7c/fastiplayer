@@ -15,6 +15,15 @@
 - Пока backend reselection pending и decoder отсутствует, bounded pending video packets не считаются decoder starvation и не выбрасываются; стартовый keyframe должен пережить install.
 - Follow-up 2026-08-05: `send_pending_video_packets_to_decoder` также обязан сохранить packet, принадлежащий `pending_video_backend_reselection`, даже если track ещё не стал selected. Между worker request и shell backend install проходит отдельный tick; прежняя проверка «не selected track» удаляла первый IDR и вынуждала ждать следующий GOP около 4.4 секунды. Чужие track packets по-прежнему удаляются.
 
+## Restart resume readiness follow-up (2026-08-05)
+
+- Для static HLS VOD `app-egui::web_media_hls_open` теперь всегда ждёт первый authoritative `TracksChanged` на media-open worker-е до сборки `PreparedMedia` и `Installed`, даже когда yt-dlp заранее объявил H.264/AAC и codec proof не deferred.
+- Корневая гонка: declared-codec HLS раньше обходил ожидание; `PreparedMedia` снимал `duration=None`, atomic player install публиковал `UnknownTimeline`/non-seekable, а startup немедленно отправлял сохранённую ненулевую позицию до позднего player tick с `TracksChanged`.
+- HLS VOD readiness owner остаётся app composition boundary; startup/session не ждут provider events и player API не менялся. Live HLS сохраняет прежний режим: ожидание tracks до Installed обязательно только для deferred codec proof, а dynamic timeline/persistent checkpoint rules не затронуты.
+- Regression `web_media_hls_open::tests::hls_vod_is_seekable_with_duration_at_prepared_media_boundary` доказывает, что finite HLS до player install уже публикует tracks, duration и seekable snapshot.
+- Follow-up generation race: compatibility backend replacement сразу после `Installed` раньше безусловно запускал `reseek(current_position)` и supersede-ил request-owned startup restore generation. Теперь `player-core::capability_selection` сохраняет уже идущий seek/scrub generation: для принятого demux commit новый decoder повторно получает output floor, для ожидаемого worker receipt floor применяется после receipt; отдельный recovery reseek остаётся только вне active positioning lifecycle.
+- Functional regression `session::tests::installed_media_restore::backend_replacement_preserves_in_flight_position_restore_generation` сначала воспроизводил generation 1 → 2 и теперь доказывает matching terminal `Applied` после backend swap.
+
 ## Проверка
 
 - Functional player-core test `late_hls_h264_track_reaches_presentation_after_backend_install` проходит полный synthetic route: late Annex-B track -> backend request -> отдельный worker tick до backend install -> retained IDR -> decoder send -> decoded frame -> presentation scheduler. Тест также доказывает, что packet чужого track-а не удерживается.

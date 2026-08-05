@@ -8,7 +8,7 @@ use codec_core::{
     video_requirement_needs_packet_refinement,
 };
 use media_core::{TrackInfo, TrackKind};
-use tracing::info;
+use tracing::{debug, info};
 use video_core::{VideoStreamConfigRejection, VideoStreamConfigResult, VideoStreamDecodeConfig};
 use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 
@@ -325,9 +325,11 @@ impl PlayerSession {
             // При late track discovery текущий demux уже читает начало stream-а, а
             // индекс может ещё не содержать RAP anchor. Fresh decoder сам сохраняет
             // bootstrap-инвариант и отбросит всё до ближайшего доказанного keyframe.
-            BackendReselectionResumeStrategy::ContinueForwardToKeyframe => Ok(()),
+            BackendReselectionResumeStrategy::ContinueForwardToKeyframe => {
+                self.refresh_in_flight_seek_decoder_after_backend_swap()
+            }
             BackendReselectionResumeStrategy::ReseekCurrentPosition => {
-                self.reseek_to_current_position_after_backend_swap()
+                self.restore_video_position_after_backend_swap()
             }
         }
     }
@@ -349,6 +351,31 @@ impl PlayerSession {
 
         let current_position = self.current_source_position;
         self.seek(SeekRequest::accurate(current_position))
+    }
+
+    /// Восстанавливает decoder gates уже принятого seek commit-а после замены backend-а.
+    fn refresh_in_flight_seek_decoder_after_backend_swap(&mut self) -> PlayerResult<()> {
+        let Some(seek_commit) = self.seek_runtime.active_commit() else {
+            // Worker-receipted demux seek применит output floor после будущего receipt.
+            return Ok(());
+        };
+        // Старый floor очищен transactional backend swap-ом; новый decoder получает его заново.
+        self.apply_decoder_output_floor_for_seek(seek_commit)
+    }
+
+    /// Сохраняет чужой in-flight seek либо начинает отдельный backend recovery seek.
+    fn restore_video_position_after_backend_swap(&mut self) -> PlayerResult<()> {
+        let positioning_in_flight =
+            self.snapshot.timeline.seeking || self.snapshot.timeline.scrubbing;
+        self.refresh_in_flight_seek_decoder_after_backend_swap()?;
+        if positioning_in_flight {
+            debug!(
+                seek_generation = self.pipeline.seek_generation(),
+                "Video backend replacement продолжает существующий seek generation"
+            );
+            return Ok(());
+        }
+        self.reseek_to_current_position_after_backend_swap()
     }
 
     /// Отклоняет отложенный video-трек, когда shell не может предоставить совместимый backend.
@@ -425,9 +452,9 @@ impl PlayerSession {
     /// не поддерживает (`UnsupportedFrameContract`). Поэтому requirement активного
     /// стрима заново валидируется по playable outputs нового active backend-а, и из
     /// matched output берётся актуальный контракт (или fallback для непробленного
-    /// requirement). После установки нового decoder-а поток перечитывается с keyframe
-    /// до текущей позиции — новый decoder стартует с пустого DPB и обязан получить
-    /// KEY_FRAME, иначе видео ждёт следующего keyframe (многосекундная чёрная пауза).
+    /// requirement). Вне активного seek новый decoder перечитывает поток с keyframe до
+    /// текущей позиции. Во время уже идущего seek backend swap сохраняет его generation
+    /// и только восстанавливает decoder gates: supersede сломал бы request-owned receipt.
     pub(super) fn configure_active_video_decoder_stream(&mut self) -> PlayerResult<()> {
         let Some(track_id) = self.pipeline.selected_video_track_id() else {
             return Ok(());
@@ -456,7 +483,7 @@ impl PlayerSession {
         self.configure_decoder_stream_for_track(&track, &requirement, frame_contract)?;
         self.pipeline
             .set_active_video_selection(requirement, frame_contract);
-        self.reseek_to_current_position_after_backend_swap()?;
+        self.restore_video_position_after_backend_swap()?;
         Ok(())
     }
 

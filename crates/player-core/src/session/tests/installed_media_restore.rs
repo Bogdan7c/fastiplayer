@@ -84,6 +84,99 @@ fn position_restore_applies_only_after_generic_seek_commit() {
     assert_eq!(session.playback_state(), PlaybackState::Paused);
 }
 
+/// Backend replacement внутри restore не должен запускать конкурирующий seek generation.
+#[test]
+fn backend_replacement_preserves_in_flight_position_restore_generation() {
+    // Video track заставляет restore ждать полноценный decoder landing, как HLS VOD.
+    let video_track = fake_track(1, TrackKind::Video);
+    // Exact Installed correlation совпадает с production startup restore boundary.
+    let (mut session, request_id, media_instance_id) =
+        correlated_installed_session(vec![video_track]);
+    // Первый decoder моделирует backend, выбранный во время staged media install.
+    session
+        .pipeline
+        .set_video_decoder_thread(SharedFakeVideoDecoderThread::new());
+    // Ненулевая сохранённая позиция запускает request-owned seek transaction.
+    let outcome_rx = begin_position_restore(&mut session, request_id, media_instance_id);
+    // Demux anchor уже принят, но presentation commit ещё ожидает decoder landing.
+    let restore_seek_commit = session
+        .seek_runtime
+        .active_commit()
+        .expect("position restore должен ждать final seek commit");
+
+    // App shell может заменить compatibility backend сразу после Installed.
+    session.set_video_backend(crate::StartedVideoBackend::from_decoder_thread(
+        "replacement-backend",
+        SharedFakeVideoDecoderThread::new(),
+    ));
+
+    // Backend swap обязан продолжить исходный restore, а не создать второй seek.
+    assert_eq!(
+        session.pipeline.seek_generation(),
+        restore_seek_commit.generation
+    );
+    // Финальный landing того же generation закрывает request receipt как Applied.
+    let active_seek_commit = session
+        .seek_runtime
+        .active_commit()
+        .expect("backend replacement должен сохранить active seek commit");
+    session.complete_seek_commit(active_seek_commit);
+
+    // Startup сможет перейти к StartPaused только после authoritative matching commit.
+    assert_eq!(
+        outcome_rx
+            .recv()
+            .expect("matching seek commit должен закрыть position restore"),
+        InstalledMediaStateRestoreOutcome::Applied { media_instance_id }
+    );
+}
+
+/// `TracksChanged` переносит decoder generation, но не меняет владельца startup restore.
+#[test]
+fn track_list_rebase_preserves_in_flight_position_restore_receipt() {
+    // Video track воспроизводит HLS VOD route, где seek ждёт decoded frame landing.
+    let initial_video_track = fake_track(1, TrackKind::Video);
+    // Exact Installed correlation совпадает с production startup restore boundary.
+    let (mut session, request_id, media_instance_id) =
+        correlated_installed_session(vec![initial_video_track]);
+    // Decoder оставляет seek active до явного presentation commit-а в конце теста.
+    session
+        .pipeline
+        .set_video_decoder_thread(SharedFakeVideoDecoderThread::new());
+    // Сохранённая позиция создаёт request-owned restore receipt на первой generation.
+    let outcome_rx = begin_position_restore(&mut session, request_id, media_instance_id);
+    let generation_before_track_update = session
+        .seek_runtime
+        .active_commit()
+        .expect("position restore должен ждать video landing")
+        .generation;
+
+    // HLS demux может подтвердить track list повторно уже после принятого seek anchor-а.
+    session.handle_demux_track_list_update(media_core::DemuxTrackListUpdate::new(
+        vec![fake_track(1, TrackKind::Video)],
+        Some(Duration::from_secs(30)),
+    ));
+
+    // Decoder reset открывает новую generation внутри той же seek-транзакции.
+    let rebased_seek_commit = session
+        .seek_runtime
+        .active_commit()
+        .expect("TracksChanged должен сохранить active position restore seek");
+    assert_ne!(
+        rebased_seek_commit.generation,
+        generation_before_track_update
+    );
+    // Authoritative landing новой decoder generation завершает исходный startup request.
+    session.complete_seek_commit(rebased_seek_commit);
+
+    assert_eq!(
+        outcome_rx
+            .recv()
+            .expect("rebased seek commit должен закрыть position restore"),
+        InstalledMediaStateRestoreOutcome::Applied { media_instance_id }
+    );
+}
+
 #[test]
 fn cancelled_video_seek_never_publishes_false_restore_applied() {
     let video_track = fake_track(1, TrackKind::Video);
