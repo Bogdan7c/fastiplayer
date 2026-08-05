@@ -526,6 +526,11 @@ pub(super) fn send_pending_video_packets_to_decoder(
             .pipeline
             .video_packet_belongs_to_selected_track(packet_track_id)
         {
+            // Capability layer уже принял late video-трек, но shell устанавливает backend
+            // асинхронно. Сохраняем startup IDR до следующего tick-а с готовым backend-ом.
+            if session.video_packet_waits_for_pending_backend(packet_track_id) {
+                break;
+            }
             session.pipeline.pop_pending_video_packet_front();
             continue;
         }

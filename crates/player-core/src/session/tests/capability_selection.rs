@@ -1014,6 +1014,15 @@ fn late_hls_h264_track_reaches_presentation_after_backend_install() {
     session
         .pipeline
         .enqueue_pending_video_packet(PendingVideoPacket::new(
+            TrackId::new(99),
+            Duration::ZERO,
+            session.pipeline.seek_generation(),
+            Bytes::from_static(&[0, 0, 0, 1, 0x65, 0x77]),
+            PacketKeyframe::Keyframe,
+        ));
+    session
+        .pipeline
+        .enqueue_pending_video_packet(PendingVideoPacket::new(
             video_track_id,
             Duration::ZERO,
             session.pipeline.seek_generation(),
@@ -1021,13 +1030,22 @@ fn late_hls_h264_track_reaches_presentation_after_backend_install() {
             PacketKeyframe::Keyframe,
         ));
 
+    // В реальном app shell устанавливает backend только после отдельного worker tick-а.
+    // Startup IDR должен пережить этот round-trip, иначе видео начнётся со следующего GOP.
+    let waiting_for_shell_tick = session.tick(PlayerTickContext::new(Instant::now()));
+    assert_eq!(waiting_for_shell_tick.video_frames_presented, 0);
+    assert_eq!(
+        session.pipeline.pending_video_packet_len(),
+        1,
+        "чужой packet должен быть удалён, а startup HLS keyframe — дождаться backend-а"
+    );
+
     let decoder = SharedFakeVideoDecoderThread::new();
     decoder.decode_next_packet_as_frame(Duration::ZERO, 501);
     session.set_video_backend(crate::StartedVideoBackend::from_decoder_thread(
         DecodeBackendId::vaapi().as_str(),
         decoder.clone(),
     ));
-    assert_eq!(session.playback_state(), PlaybackState::Playing);
 
     let first_tick = session.tick(PlayerTickContext::new(Instant::now()));
     let second_tick = session.tick(PlayerTickContext::new(Instant::now()));

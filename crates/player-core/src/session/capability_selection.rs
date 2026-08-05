@@ -332,6 +332,16 @@ impl PlayerSession {
         }
     }
 
+    /// Проверяет, ждёт ли packet установки backend-а для уже принятого late video-трека.
+    ///
+    /// До завершения асинхронного round-trip через shell трек ещё не активирован в pipeline,
+    /// поэтому decoder I/O не должен считать его packets посторонними и выбрасывать startup IDR.
+    pub(super) fn video_packet_waits_for_pending_backend(&self, track_id: TrackId) -> bool {
+        self.pending_video_backend_reselection
+            .as_ref()
+            .is_some_and(|pending| pending.track_id == track_id)
+    }
+
     fn reseek_to_current_position_after_backend_swap(&mut self) -> PlayerResult<()> {
         if !self.pipeline.has_demuxer() {
             return Ok(());
