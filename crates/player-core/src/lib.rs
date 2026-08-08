@@ -101,10 +101,10 @@ pub use media_install::{
     MediaInstallCompletion, MediaInstallControl, MediaInstallControlOutcome, MediaInstallFailure,
     MediaInstallFailureStage, MediaInstallPhase, MediaInstallPhaseCompletionPort,
     MediaInstallPositionPreparation, MediaInstallReceipt, MediaInstallReceiptSignal,
-    MediaInstallReceiptWaitError, MediaInstallRequestId, MediaInstallVideoResourcePort,
-    MediaInstanceId, PlaybackIntent, PlaybackIntentRevision, PlaybackIntentUpdate,
-    PlaybackIntentUpdateOutcome, PlaybackIntentUpdateReceipt, PrepareMediaInstallPosition,
-    TimelineSeekKind, TimelineSeekRequestId,
+    MediaInstallReceiptWaitError, MediaInstallRequestId, MediaInstallVideoBackendConstraint,
+    MediaInstallVideoResourcePort, MediaInstanceId, PlaybackIntent, PlaybackIntentRevision,
+    PlaybackIntentUpdate, PlaybackIntentUpdateOutcome, PlaybackIntentUpdateReceipt,
+    PrepareMediaInstallPosition, TimelineSeekKind, TimelineSeekRequestId,
 };
 pub use media_opening::{
     MediaSourceInfo, MediaSourceKind, PreparedMedia, PreparedMediaSource,

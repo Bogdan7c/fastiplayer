@@ -250,11 +250,11 @@ pub enum YtDlpTransportRequestError {
     /// Approved Smooth row обязан содержать AAC audio.
     #[error("YtDlp Smooth candidate использует неподдерживаемый audio codec")]
     SmoothAudioCodec,
-    /// S38 HDS base profile accepts one muxed component.
-    #[error("YtDlp HDS candidate должен содержать ровно один muxed component")]
+    /// S38 HDS base profile accepts one provider-probed manifest component.
+    #[error("YtDlp HDS candidate должен содержать ровно один content-probed component")]
     HdsComponentShape,
-    /// HDS component role must be muxed.
-    #[error("YtDlp HDS component должен иметь muxed role")]
+    /// HDS component role must preserve the provider-probed resource contract.
+    #[error("YtDlp HDS component должен иметь content-probed role")]
     HdsComponentRole,
     /// Descriptor transport must be HDS.
     #[error("YtDlp HDS candidate использует другую transport family")]
@@ -419,7 +419,7 @@ impl YtDlpNormalizedCandidate {
         let identity = MediaComponentIdentity::new(
             self.descriptor().identity().clone(),
             self.descriptor().semantic_identity().clone(),
-            MediaComponentRole::Muxed,
+            media_component_role(component.role),
         )
         .map_err(YtDlpTransportRequestError::Identity)?;
         let path_scope = hds_resource_path_scope(&target)?;
@@ -643,6 +643,9 @@ fn component_transport_family(
         (StreamLayout::HlsMuxedCodecDeferred(component), YtDlpCandidateComponentRole::Muxed) => {
             Some(component.transport().family())
         }
+        (StreamLayout::ContentProbed(component), YtDlpCandidateComponentRole::ContentProbed) => {
+            Some(component.transport().family())
+        }
         (StreamLayout::VideoOnly(component), YtDlpCandidateComponentRole::Video) => {
             Some(component.transport().family())
         }
@@ -695,16 +698,19 @@ fn hds_manifest_component(
     let [component] = candidate.component_requests.as_ref() else {
         return Err(YtDlpTransportRequestError::HdsComponentShape);
     };
-    let StreamLayout::Muxed(muxed) = candidate.descriptor().layout() else {
-        return Err(YtDlpTransportRequestError::HdsComponentShape);
+    let (transport, probe_container) = match candidate.descriptor().layout() {
+        StreamLayout::ContentProbed(probed) => {
+            (probed.transport().family(), probed.probe_container())
+        }
+        _ => return Err(YtDlpTransportRequestError::HdsComponentShape),
     };
-    if component.role != YtDlpCandidateComponentRole::Muxed {
+    if component.role != YtDlpCandidateComponentRole::ContentProbed {
         return Err(YtDlpTransportRequestError::HdsComponentRole);
     }
-    if muxed.transport().family() != TransportFamily::Hds {
+    if transport != TransportFamily::Hds {
         return Err(YtDlpTransportRequestError::HdsTransport);
     }
-    if muxed.container().consistent_family().ok() != Some(Some(ContainerFamily::F4f)) {
+    if probe_container != ContainerFamily::F4f {
         return Err(YtDlpTransportRequestError::HdsContainer);
     }
     Ok(component)
@@ -830,6 +836,7 @@ fn dash_resource_path_scope(
 const fn media_component_role(role: YtDlpCandidateComponentRole) -> MediaComponentRole {
     match role {
         YtDlpCandidateComponentRole::Muxed => MediaComponentRole::Muxed,
+        YtDlpCandidateComponentRole::ContentProbed => MediaComponentRole::ContentProbed,
         YtDlpCandidateComponentRole::Video => MediaComponentRole::Video,
         YtDlpCandidateComponentRole::Audio => MediaComponentRole::Audio,
     }
@@ -846,6 +853,9 @@ fn component_container(
         }
         (StreamLayout::HlsMuxedCodecDeferred(component), YtDlpCandidateComponentRole::Muxed) => {
             component.container().consistent_family().ok().flatten()
+        }
+        (StreamLayout::ContentProbed(component), YtDlpCandidateComponentRole::ContentProbed) => {
+            Some(component.probe_container())
         }
         (StreamLayout::Separate { video, .. }, YtDlpCandidateComponentRole::Video)
         | (StreamLayout::VideoOnly(video), YtDlpCandidateComponentRole::Video) => {

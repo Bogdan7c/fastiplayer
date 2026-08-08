@@ -16,9 +16,10 @@ use crate::{
     InstalledMediaReleaseOutcome, InstalledMediaStateRestore, InstalledMediaStateRestoreOutcome,
     InstalledPositionRestore, InstalledSubtitleRestore, InstalledTrackRestore,
     MediaInstallCancellationCause, MediaInstallCompletion, MediaInstallControlOutcome,
-    MediaInstallReceiptSignal, MediaInstallRequestId, MediaInstanceId, PlaybackIntent,
-    PlaybackIntentRevision, PlaybackIntentUpdate, PlaybackIntentUpdateOutcome, PlaybackState,
-    PlayerCommand, PlayerWorker, PlayerWorkerConfig, PlayerWorkerSendError, PreparedMedia,
+    MediaInstallReceiptSignal, MediaInstallRequestId, MediaInstallVideoResourcePort,
+    MediaInstanceId, PlaybackIntent, PlaybackIntentRevision, PlaybackIntentUpdate,
+    PlaybackIntentUpdateOutcome, PlaybackState, PlayerCommand, PlayerWorker, PlayerWorkerConfig,
+    PlayerWorkerSendError, PreparedMedia,
 };
 
 /// Empty prepared demuxer для no-audio/no-video worker transaction.
@@ -156,7 +157,7 @@ fn public_worker_api_separates_enqueue_ready_authorization_and_installed() {
             prepared_media,
             PlaybackIntent::StartPaused,
             PlaybackIntentRevision::INITIAL,
-            Box::new(NoVideoResourcePort),
+            MediaInstallVideoResourcePort::any_playable(NoVideoResourcePort),
         )
         .expect("staged command должна войти в пустую worker queue");
 
@@ -200,7 +201,7 @@ fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_install
             PreparedMedia::from_external_label("restore candidate", Box::new(EmptyDemuxer)),
             PlaybackIntent::StartPaused,
             PlaybackIntentRevision::INITIAL,
-            Box::new(NoVideoResourcePort),
+            MediaInstallVideoResourcePort::any_playable(NoVideoResourcePort),
         )
         .expect("stage command должна быть принята");
     wait_until(|| receipt.try_take_ready_to_commit());
@@ -358,7 +359,7 @@ fn exact_restore_rejects_precommit_and_stale_instance_then_applies_after_install
             PreparedMedia::from_external_label("newer candidate", Box::new(EmptyDemuxer)),
             PlaybackIntent::StartPaused,
             PlaybackIntentRevision::INITIAL,
-            Box::new(NoVideoResourcePort),
+            MediaInstallVideoResourcePort::any_playable(NoVideoResourcePort),
         )
         .expect("newer stage command должна быть принята");
     assert!(matches!(
@@ -424,7 +425,7 @@ fn exact_restore_reports_typed_position_unavailable_for_non_seekable_source() {
             PreparedMedia::from_external_label("live candidate", Box::new(UnseekableDemuxer)),
             PlaybackIntent::StartPaused,
             PlaybackIntentRevision::INITIAL,
-            Box::new(NoVideoResourcePort),
+            MediaInstallVideoResourcePort::any_playable(NoVideoResourcePort),
         )
         .expect("stage command должна быть принята");
     wait_until(|| receipt.try_take_ready_to_commit());
@@ -502,7 +503,7 @@ fn intent_update_before_ready_ignores_full_ordinary_queue() {
             PreparedMedia::from_external_label("pre-ready intent", Box::new(EmptyDemuxer)),
             PlaybackIntent::StartPlaying,
             intent_revision(1),
-            Box::new(NoVideoResourcePort),
+            MediaInstallVideoResourcePort::any_playable(NoVideoResourcePort),
         )
         .expect("stage command должна занять первый ordinary queue slot");
 
@@ -552,7 +553,7 @@ fn staged_pause_updates_old_current_and_cancel_preserves_latest_state() {
             PreparedMedia::from_external_label("candidate", Box::new(EmptyDemuxer)),
             PlaybackIntent::StartPlaying,
             intent_revision(1),
-            Box::new(NoVideoResourcePort),
+            MediaInstallVideoResourcePort::any_playable(NoVideoResourcePort),
         )
         .expect("candidate stage должен быть принят");
     wait_until(|| candidate_receipt.try_take_ready_to_commit());
@@ -614,7 +615,7 @@ fn highest_intent_commits_without_wrong_state_and_post_barrier_update_is_exact()
             ),
             PlaybackIntent::StartPlaying,
             intent_revision(1),
-            Box::new(NoVideoResourcePort),
+            MediaInstallVideoResourcePort::any_playable(NoVideoResourcePort),
         )
         .expect("first staged request должен быть принят");
     wait_until(|| first_receipt.try_take_ready_to_commit());
@@ -697,7 +698,7 @@ fn highest_intent_commits_without_wrong_state_and_post_barrier_update_is_exact()
             ),
             PlaybackIntent::StartPaused,
             intent_revision(1),
-            Box::new(NoVideoResourcePort),
+            MediaInstallVideoResourcePort::any_playable(NoVideoResourcePort),
         )
         .expect("second staged request должен быть принят");
     wait_until(|| second_receipt.try_take_ready_to_commit());

@@ -303,6 +303,17 @@ impl SystemCapabilities {
             .find(|output| output.satisfies(requirement))
     }
 
+    /// Ищет playable output конкретного backend-а, который закрывает stream requirement.
+    #[must_use]
+    pub fn find_playable_video_output_for_backend(
+        &self,
+        backend_id: &DecodeBackendId,
+        requirement: &VideoDecodeRequirement,
+    ) -> Option<&SupportedVideoOutput> {
+        self.supported_video_outputs()
+            .find(|output| &output.backend == backend_id && output.satisfies(requirement))
+    }
+
     /// Возвращает codec-level format выбранного playable output-а.
     #[must_use]
     pub fn find_supported_video_format(
@@ -1051,6 +1062,62 @@ mod tests {
                 max_frame_average_light_level_nits: Some(180),
             }),
         )
+    }
+
+    #[test]
+    fn exact_backend_lookup_returns_matching_playable_output() {
+        let capabilities = capabilities_with_vp9_profile0();
+        let requirement = vp9_requirement(
+            Vp9Profile::Profile0,
+            BitDepth::Eight,
+            ChromaSubsampling::Yuv420,
+        );
+        let vaapi_backend_id = DecodeBackendId::vaapi();
+
+        let selected_output = capabilities
+            .find_playable_video_output_for_backend(&vaapi_backend_id, &requirement)
+            .expect("exact playable VA-API output должен быть найден");
+
+        assert_eq!(selected_output.backend, vaapi_backend_id);
+        assert!(selected_output.satisfies(&requirement));
+    }
+
+    #[test]
+    fn exact_backend_lookup_rejects_output_owned_by_another_backend() {
+        let capabilities = capabilities_with_vp9_profile0();
+        let requirement = vp9_requirement(
+            Vp9Profile::Profile0,
+            BitDepth::Eight,
+            ChromaSubsampling::Yuv420,
+        );
+        let software_backend_id = DecodeBackendId::new("ffmpeg")
+            .expect("canonical software backend id должен быть валиден");
+
+        assert!(
+            capabilities
+                .find_playable_video_output_for_backend(&software_backend_id, &requirement)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn exact_backend_lookup_rejects_requirement_mismatch() {
+        let capabilities = capabilities_with_vp9_profile0();
+        let unsupported_requirement = vp9_requirement(
+            Vp9Profile::Profile2,
+            BitDepth::Ten,
+            ChromaSubsampling::Yuv420,
+        );
+        let vaapi_backend_id = DecodeBackendId::vaapi();
+
+        assert!(
+            capabilities
+                .find_playable_video_output_for_backend(
+                    &vaapi_backend_id,
+                    &unsupported_requirement,
+                )
+                .is_none()
+        );
     }
 
     #[test]

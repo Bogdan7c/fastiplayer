@@ -77,6 +77,8 @@ pub enum TransportProviderIdError {
 pub enum MediaComponentRole {
     /// Один resource содержит audio и video.
     Muxed,
+    /// Resource с track topology, которую обязан подтвердить downstream content probe.
+    ContentProbed,
     /// Resource содержит только video.
     Video,
     /// Resource содержит только audio.

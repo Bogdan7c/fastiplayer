@@ -41,12 +41,14 @@ use video_core::{
     DecodeBackpressureReason, DecodeSendError, DecodedFrame, FrameResourceHandle,
     HostUploadResourceSnapshotStatus, VideoDecoderActivitySnapshot,
     VideoDecoderActivitySubscription, VideoDecoderControlBackpressureReason,
-    VideoDecoderControlChannelPressureSnapshot, VideoDecoderEndOfStreamDrainResult,
-    VideoDecoderThreadHandle, VideoFrameDiagnostics, VideoStreamConfigResult,
-    VideoStreamDecodeConfig,
+    VideoDecoderControlChannelPressureSnapshot, VideoDecoderThreadHandle, VideoFrameDiagnostics,
+    VideoStreamConfigResult, VideoStreamDecodeConfig,
 };
 #[cfg(any(test, feature = "ffmpeg"))]
-use video_core::{DecodePacket, VideoDecoderActivityNotifier, VideoDecoderEndOfStreamDrainState};
+use video_core::{
+    DecodePacket, VideoDecoderActivityNotifier, VideoDecoderEndOfStreamDrainResult,
+    VideoDecoderEndOfStreamDrainState,
+};
 #[cfg(all(test, feature = "ffmpeg"))]
 use video_core::{FrameResourceDescriptor, HostPlanarFrameDescriptor};
 #[cfg(all(test, feature = "ffmpeg"))]
@@ -656,6 +658,26 @@ struct FfmpegDecoderWorker {
     software_decode_thread_budget: SoftwareDecodeThreadBudget,
 }
 
+/// Проверяет, обязан ли decoder owner немедленно сделать следующий EOF turn.
+///
+/// `Draining` означает незавершённый receive-side lifecycle. После container EOF
+/// packet/control сообщений больше может не быть, поэтому переход к обычному
+/// blocking select потерял бы уже coalesced release edge и оставил бы decoder в
+/// `Draining` навсегда.
+#[cfg(any(feature = "ffmpeg", test))]
+fn eof_drain_result_requires_owner_reentry(
+    drain_result: &VideoDecoderEndOfStreamDrainResult,
+) -> bool {
+    matches!(
+        drain_result,
+        VideoDecoderEndOfStreamDrainResult::Started(
+            VideoDecoderEndOfStreamDrainState::Draining { .. }
+        ) | VideoDecoderEndOfStreamDrainResult::Unchanged(
+            VideoDecoderEndOfStreamDrainState::Draining { .. }
+        )
+    )
+}
+
 #[cfg(feature = "ffmpeg")]
 impl FfmpegDecoderWorker {
     fn run(
@@ -691,8 +713,13 @@ impl FfmpegDecoderWorker {
             }
 
             if let Some(generation) = self.pending_eof_drain_generation {
-                self.drive_end_of_stream_drain(generation);
-                if self.resource_provider.free_slots() == 0 {
+                let drain_result = self.drive_end_of_stream_drain(generation);
+                if eof_drain_result_requires_owner_reentry(&drain_result) {
+                    // Не засыпаем в select только на packet/control: после EOF
+                    // их больше не будет. Верхняя pool-проверка сама дождётся
+                    // release, если slots закончились; уже свободные slots
+                    // используются сразу, чтобы не потерять coalesced release
+                    // edge перед terminal AVERROR_EOF.
                     continue;
                 }
             }

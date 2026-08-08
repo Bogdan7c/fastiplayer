@@ -4,13 +4,14 @@ use web_media_core::{
     AudioComponentVariant, AudioTrackDescriptor, Bitrate, CandidateFormatIdentity,
     CandidateIdentity, ChannelCount, ComponentKind, ComponentVariantCatalog,
     ComponentVariantCatalogEntries, ComponentVariantCatalogGeneration,
-    ComponentVariantCatalogIdentity, ComponentVariantCatalogLimit, ComponentVariantError,
-    ComponentVariantExactIdentity, ComponentVariantExactKey, ComponentVariantSelection,
-    ComponentVariantSelectionRequest, ComponentVariantSemanticIdentity,
-    ComponentVariantSemanticKey, ComponentVariantSemanticSelectionRequest, DynamicRange,
-    ExactSelectionIdentity, ExtractionGeneration, FrameRate, LanguageTag, NormalizedCodec,
-    RawCodecIdentity, SampleRate, SemanticIdentity, SourceIdentity, VideoComponentVariant,
-    VideoHeight, VideoTrackDescriptor, VideoWidth,
+    ComponentVariantCatalogIdentity, ComponentVariantCatalogLimit,
+    ComponentVariantCompatibilityEntries, ComponentVariantError, ComponentVariantExactIdentity,
+    ComponentVariantExactKey, ComponentVariantSelection, ComponentVariantSelectionRequest,
+    ComponentVariantSemanticIdentity, ComponentVariantSemanticKey,
+    ComponentVariantSemanticSelectionRequest, CoupledComponentVariant, CoupledVariantExactIdentity,
+    CoupledVariantSemanticIdentity, DynamicRange, ExactSelectionIdentity, ExtractionGeneration,
+    FrameRate, LanguageTag, NormalizedCodec, RawCodecIdentity, SampleRate, SemanticIdentity,
+    SourceIdentity, VideoComponentVariant, VideoHeight, VideoTrackDescriptor, VideoWidth,
 };
 
 use super::component_variants::*;
@@ -21,6 +22,7 @@ enum FixtureLayout {
     VideoAndAudio,
     VideoOnly,
     AudioOnly,
+    Coupled,
 }
 
 fn parent(
@@ -121,6 +123,35 @@ fn audio_variant(
     )
 }
 
+fn coupled_variant(
+    identity: &ComponentVariantCatalogIdentity,
+    exact_key: &str,
+    semantic_key: &str,
+    height: u32,
+    audio_bitrate: u64,
+) -> CoupledComponentVariant {
+    let video = video_variant(identity, "coupled-video", "coupled-video-semantic", height);
+    let audio = audio_variant(
+        identity,
+        "coupled-audio",
+        "coupled-audio-semantic",
+        audio_bitrate,
+    );
+    CoupledComponentVariant::new(
+        CoupledVariantExactIdentity::new(
+            identity.clone(),
+            ComponentVariantExactKey::new(exact_key).expect("fixture coupled exact key валиден"),
+        ),
+        CoupledVariantSemanticIdentity::new(
+            identity.parent().semantic().clone(),
+            ComponentVariantSemanticKey::new(semantic_key)
+                .expect("fixture coupled semantic key валиден"),
+        ),
+        video.track().clone(),
+        audio.track().clone(),
+    )
+}
+
 fn catalog(
     identity: ComponentVariantCatalogIdentity,
     layout: FixtureLayout,
@@ -158,6 +189,29 @@ fn catalog(
                 audio_variant(&identity, "audio-b", "audio-semantic-b", 256_000),
             ],
         },
+        FixtureLayout::Coupled => ComponentVariantCatalogEntries::Topology {
+            video: Vec::new(),
+            audio: Vec::new(),
+            compatibility: ComponentVariantCompatibilityEntries::Unavailable,
+            coupled: vec![
+                coupled_variant(
+                    &identity,
+                    "https://secret.example/coupled-720?token=four",
+                    "coupled-semantic-720",
+                    720,
+                    128_000,
+                ),
+                coupled_variant(
+                    &identity,
+                    "coupled-1080-secret",
+                    "coupled-semantic-1080",
+                    1080,
+                    256_000,
+                ),
+            ],
+            video_only: Vec::new(),
+            audio_only: Vec::new(),
+        },
     };
     ComponentVariantCatalog::new(
         identity,
@@ -173,6 +227,11 @@ fn selection(
     audio_index: usize,
 ) -> ComponentVariantSelection {
     let request = match catalog {
+        ComponentVariantCatalog::Topology { coupled, .. } if !coupled.is_empty() => {
+            ComponentVariantSelectionRequest::Coupled {
+                presentation: coupled[video_index].exact_identity().clone(),
+            }
+        }
         ComponentVariantCatalog::Topology { video, audio, .. }
         | ComponentVariantCatalog::VideoAndAudio { video, audio, .. } => {
             ComponentVariantSelectionRequest::VideoAndAudio {
@@ -229,6 +288,21 @@ fn default_and_muxed_without_provider_catalog_remain_honestly_unavailable() {
     assert_eq!(
         configuration.component_selection_reopen_intent(),
         crate::web_media_open::YtDlpComponentSelectionOpenIntent::ProviderDefault
+    );
+}
+
+#[test]
+fn language_display_projection_keeps_locale_labels_and_drops_secret_shaped_metadata() {
+    assert_eq!(safe_language_tag("uk").as_deref(), Some("uk"));
+    assert_eq!(safe_language_tag("en-US").as_deref(), Some("en-US"));
+    assert_eq!(
+        safe_language_tag("zh-Hant-TW").as_deref(),
+        Some("zh-Hant-TW")
+    );
+    assert_eq!(safe_language_tag("BearerSecretToken"), None);
+    assert_eq!(
+        safe_language_tag("https://secret.example/audio?token=language"),
+        None
     );
 }
 
@@ -332,11 +406,11 @@ fn action_validation_order_covers_stale_parent_catalog_axis_and_index() {
         .expect("fixture catalog должен установиться");
     let generation = configured.generation();
 
-    let action = |parent_generation, catalog_generation, component, variant_index| {
+    let action = |parent_generation, catalog_generation, axis, variant_index| {
         ComponentVariantSelectionAction {
             parent_generation,
             catalog_generation,
-            component,
+            axis,
             variant_index,
         }
     };
@@ -347,7 +421,7 @@ fn action_validation_order_covers_stale_parent_catalog_axis_and_index() {
                 extraction: generation.extraction - 1,
             },
             ComponentVariantCatalogGeneration::new(4),
-            ComponentKind::Audio,
+            WebMediaComponentVariantAxisKind::Audio,
             99,
         )),
         Err(ComponentVariantActionError::StaleParentGeneration { .. })
@@ -356,7 +430,7 @@ fn action_validation_order_covers_stale_parent_catalog_axis_and_index() {
         configured.resolve_component_variant_action(action(
             generation,
             ComponentVariantCatalogGeneration::new(4),
-            ComponentKind::Audio,
+            WebMediaComponentVariantAxisKind::Audio,
             99,
         )),
         Err(ComponentVariantActionError::StaleCatalogGeneration { .. })
@@ -365,18 +439,18 @@ fn action_validation_order_covers_stale_parent_catalog_axis_and_index() {
         configured.resolve_component_variant_action(action(
             generation,
             catalog_generation,
-            ComponentKind::Audio,
+            WebMediaComponentVariantAxisKind::Audio,
             99,
         )),
         Err(ComponentVariantActionError::WrongAxis {
-            component: ComponentKind::Audio,
+            axis: WebMediaComponentVariantAxisKind::Audio,
         })
     );
     assert!(matches!(
         configured.resolve_component_variant_action(action(
             generation,
             catalog_generation,
-            ComponentKind::Video,
+            WebMediaComponentVariantAxisKind::Video,
             99,
         )),
         Err(ComponentVariantActionError::VariantIndexOutOfRange { .. })
@@ -397,16 +471,16 @@ fn active_index_is_no_change_and_replacements_preserve_other_axis() {
     let generation = configured.generation();
     let preference_before = configured.preference();
 
-    let resolve = |component, variant_index| {
+    let resolve = |axis, variant_index| {
         configured.resolve_component_variant_action(ComponentVariantSelectionAction {
             parent_generation: generation,
             catalog_generation,
-            component,
+            axis,
             variant_index,
         })
     };
     assert_eq!(
-        resolve(ComponentKind::Video, 0),
+        resolve(WebMediaComponentVariantAxisKind::Video, 0),
         Ok(ComponentVariantActionResolution::NoChange)
     );
 
@@ -415,7 +489,7 @@ fn active_index_is_no_change_and_replacements_preserve_other_axis() {
             video: replaced_video,
             audio: retained_audio,
         },
-    ) = resolve(ComponentKind::Video, 1).expect("video replacement валиден")
+    ) = resolve(WebMediaComponentVariantAxisKind::Video, 1).expect("video replacement валиден")
     else {
         panic!("ожидался semantic V+A reopen");
     };
@@ -437,7 +511,7 @@ fn active_index_is_no_change_and_replacements_preserve_other_axis() {
             video: retained_video,
             audio: replaced_audio,
         },
-    ) = resolve(ComponentKind::Audio, 1).expect("audio replacement валиден")
+    ) = resolve(WebMediaComponentVariantAxisKind::Audio, 1).expect("audio replacement валиден")
     else {
         panic!("ожидался semantic V+A reopen");
     };
@@ -457,11 +531,68 @@ fn active_index_is_no_change_and_replacements_preserve_other_axis() {
 }
 
 #[test]
+fn coupled_axis_is_atomic_and_reopens_only_the_selected_semantic_row() {
+    let active_parent = parent(5, 11, "active-coupled");
+    let catalog_generation = ComponentVariantCatalogGeneration::new(8);
+    let variants = Arc::new(catalog(
+        ComponentVariantCatalogIdentity::new(active_parent.clone(), catalog_generation),
+        FixtureLayout::Coupled,
+    ));
+    let configured = configuration_for(active_parent)
+        .with_component_variants(Arc::clone(&variants), selection(&variants, 0, 0))
+        .expect("coupled catalog должен установиться без fake split");
+    let generation = configured.generation();
+    let WebMediaComponentVariantProjection::Installed(
+        WebMediaInstalledComponentVariantPresentation::Coupled { coupled, .. },
+    ) = configured.component_variant_projection()
+    else {
+        panic!("ожидалась единая coupled A/V axis");
+    };
+    assert_eq!(coupled.active_index, 0);
+    assert_eq!(coupled.variants.len(), 2);
+    assert_eq!(coupled.variants[0].video.height, Some(720));
+    assert_eq!(coupled.variants[0].audio.bitrate, Some(128_000));
+
+    let resolve = |axis, variant_index| {
+        configured.resolve_component_variant_action(ComponentVariantSelectionAction {
+            parent_generation: generation,
+            catalog_generation,
+            axis,
+            variant_index,
+        })
+    };
+    assert_eq!(
+        resolve(WebMediaComponentVariantAxisKind::Video, 1),
+        Err(ComponentVariantActionError::WrongAxis {
+            axis: WebMediaComponentVariantAxisKind::Video,
+        })
+    );
+    assert_eq!(
+        resolve(WebMediaComponentVariantAxisKind::Coupled, 0),
+        Ok(ComponentVariantActionResolution::NoChange)
+    );
+    let ComponentVariantActionResolution::SemanticReopen(
+        ComponentVariantSemanticSelectionRequest::Coupled { presentation },
+    ) = resolve(WebMediaComponentVariantAxisKind::Coupled, 1)
+        .expect("coupled replacement должен дать semantic reopen")
+    else {
+        panic!("ожидался semantic coupled reopen");
+    };
+    assert_eq!(
+        presentation,
+        variants.coupled_presentations()[1]
+            .semantic_identity()
+            .clone()
+    );
+}
+
+#[test]
 fn presentation_shapes_are_additive_and_secret_safe() {
     for layout in [
         FixtureLayout::VideoAndAudio,
         FixtureLayout::VideoOnly,
         FixtureLayout::AudioOnly,
+        FixtureLayout::Coupled,
     ] {
         let active_parent = parent(4, 10, "https://secret.example/parent?token=three");
         let variants = Arc::new(catalog(catalog_identity(active_parent.clone(), 7), layout));
@@ -496,6 +627,14 @@ fn presentation_shapes_are_additive_and_secret_safe() {
                 ),
                 FixtureLayout::AudioOnly,
             ) => {}
+            (
+                WebMediaComponentVariantProjection::Installed(
+                    WebMediaInstalledComponentVariantPresentation::Coupled { coupled, .. },
+                ),
+                FixtureLayout::Coupled,
+            ) => {
+                assert_eq!(coupled.variants.len(), 2);
+            }
             _ => panic!("projection должна сохранять catalog shape"),
         }
 
@@ -505,7 +644,6 @@ fn presentation_shapes_are_additive_and_secret_safe() {
             "token=",
             "video-720?token",
             "audio-a?token",
-            "language",
             "semantic-720",
             "codec.secret",
             "codec-parameters",

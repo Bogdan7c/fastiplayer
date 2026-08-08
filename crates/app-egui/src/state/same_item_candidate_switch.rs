@@ -1,5 +1,7 @@
 //! S25/S36 controlled same-item candidate/component switch orchestration.
 
+mod lifecycle_bridge;
+
 use player_core::MediaInstallCancellationCause;
 use render_wgpu_shell::Renderer;
 
@@ -7,16 +9,18 @@ use crate::media_open::{MediaOpenRequestId, MediaOpenSourceRequest};
 use crate::playlist_runtime::{ActiveMediaIdentity, PlaylistRuntime};
 #[cfg(test)]
 use crate::web_media_stream_model::WebMediaSelectionPreference;
-#[cfg(test)]
 use crate::web_media_stream_model::component_variants::{
     ComponentVariantActionError, ComponentVariantActionResolution,
 };
 use crate::web_media_stream_model::{
-    UrlSidebarAction, UrlSidebarPendingSelection, UrlSidebarSafeError, UrlSidebarTransitionError,
-    WebMediaStreamGeneration,
+    UrlSidebarAction, UrlSidebarPendingSelection, UrlSidebarSafeError, WebMediaStreamGeneration,
 };
 
 use super::{ActiveMediaSource, AppState, StrongMediaOpenError, StrongMediaOpenPoll};
+use lifecycle_bridge::{
+    ProductionSameItemSwitchPollContext, ProductionSameItemSwitchStartContext,
+    SameItemSwitchAppPath, SameItemSwitchAppStart,
+};
 
 /// Renderer-bound correlation поверх policy-neutral media-open request-а.
 pub(super) struct PendingSameItemSwitch {
@@ -38,7 +42,6 @@ enum SameItemSwitchKind {
         preferred_height: Option<u32>,
     },
     /// Component completion сохраняет существующий preference/override без изменений.
-    #[cfg(test)]
     Component(crate::web_media_stream_model::component_variants::ComponentVariantSelectionAction),
     Picker {
         parent_generation: WebMediaStreamGeneration,
@@ -64,7 +67,6 @@ impl SameItemSwitchKind {
                 parent_generation: *parent_generation,
                 candidate: candidate.clone(),
             },
-            #[cfg(test)]
             Self::Component(action) => UrlSidebarPendingSelection::Component(*action),
             Self::Picker {
                 parent_generation,
@@ -89,7 +91,6 @@ impl SameItemSwitchKind {
             Self::Candidate {
                 parent_generation, ..
             } => *parent_generation,
-            #[cfg(test)]
             Self::Component(action) => action.parent_generation(),
             Self::Picker {
                 parent_generation, ..
@@ -121,7 +122,6 @@ pub(crate) enum SameItemSwitchError {
     Stale,
     /// Component action не прошёл generation/axis/index validation владельца catalog-а.
     #[error(transparent)]
-    #[cfg(test)]
     ComponentAction(#[from] ComponentVariantActionError),
     /// Active source не является переключаемым YtDlp source.
     #[error("active source не поддерживает same-item media switch")]
@@ -205,7 +205,6 @@ impl AppState {
                         },
                     )
                 }
-                #[cfg(test)]
                 UrlSidebarAction::ComponentVariant(component_action) => {
                     let semantic_selection = match stream_configuration
                         .resolve_component_variant_action(component_action)?
@@ -375,167 +374,36 @@ impl AppState {
             audio_capabilities: self.audio_decode_capability_snapshot(),
         };
         let source_request = active_source.wrap_reopen_request(physical_request);
-        let parent_generation = kind.parent_generation();
-        let pending_selection = kind.pending_selection();
-        self.url_sidebar_controller
-            .record_switch_started(pending_selection.clone())
-            .map_err(|UrlSidebarTransitionError::Busy| SameItemSwitchError::Busy)?;
-        let request_id = match self.begin_same_lineage_source_media_strong(
-            playlist_runtime,
-            renderer,
+        let start = SameItemSwitchAppStart {
             source_request,
             expected_active,
-            super::playback_intent_from_snapshot(&playback_snapshot),
-        ) {
-            Ok(request_id) => request_id,
-            Err(error) => {
-                let _cleared = self.url_sidebar_controller.record_switch_failed(
-                    &pending_selection,
-                    parent_generation,
-                    safe_error_for_start_failure(&error),
-                );
-                return Err(SameItemSwitchError::Strong(error));
-            }
-        };
-        self.same_item_switch = Some(PendingSameItemSwitch {
-            request_id,
-            expected_active,
+            playback_intent: super::playback_intent_from_snapshot(&playback_snapshot),
             kind,
-        });
-        self.mark_pending_worker_redraw();
-        Ok(UrlSidebarActionApplyOutcome::Started)
+        };
+        let mut app_path = SameItemSwitchAppPath::take(&mut self.same_item_switch);
+        let result = {
+            let mut lifecycle =
+                ProductionSameItemSwitchStartContext::new(self, playlist_runtime, renderer);
+            app_path.start(start, &mut lifecycle)
+        };
+        app_path.restore(&mut self.same_item_switch);
+        if result.is_ok() {
+            self.mark_pending_worker_redraw();
+        }
+        result
     }
 
     /// Продвигает shared strong envelope и публикует selectors только после exact Installed.
     pub(crate) fn poll_same_item_switch(&mut self, playlist_runtime: &mut PlaylistRuntime) {
-        let Some(pending) = self.same_item_switch.take() else {
-            return;
-        };
-        let previous_generation = pending.kind.parent_generation();
-        let pending_selection = pending.kind.pending_selection();
-        let matching_strong_request = self
-            .pending_strong_media_open
-            .as_ref()
-            .is_some_and(|strong_pending| strong_pending.request_id() == pending.request_id);
-        if !matching_strong_request {
-            let _cleared = self.url_sidebar_controller.record_switch_terminal_failed(
-                &pending_selection,
-                previous_generation,
-                UrlSidebarSafeError::SameItemSwitchStale,
-            );
-            tracing::error!(
-                request_id = ?pending.request_id,
-                "Same-item media switch потерял matching strong request"
-            );
-            self.mark_pending_worker_redraw();
+        if self.same_item_switch.is_none() {
             return;
         }
-        match self.poll_prepared_media_strong(playlist_runtime) {
-            StrongMediaOpenPoll::Pending => {
-                self.same_item_switch = Some(pending);
-            }
-            StrongMediaOpenPoll::Installed(installed) => {
-                let installed_configuration = installed
-                    .source
-                    .physical_source()
-                    .yt_dlp_stream_configuration();
-                let Some(installed_configuration) = installed_configuration else {
-                    let _restored = self.url_sidebar_controller.record_switch_terminal_failed(
-                        &pending_selection,
-                        previous_generation,
-                        UrlSidebarSafeError::SameItemSwitchStale,
-                    );
-                    tracing::error!(
-                        request_id = ?pending.request_id,
-                        invariant = "installed_source_not_yt_dlp",
-                        "Same-item media switch получил Installed source без YtDlp configuration"
-                    );
-                    self.mark_pending_worker_redraw();
-                    return;
-                };
-                let installed_generation = installed_configuration.generation();
-                if !installed_generation.has_same_source_lineage(previous_generation) {
-                    let _restored = self.url_sidebar_controller.record_switch_terminal_failed(
-                        &pending_selection,
-                        installed_generation,
-                        UrlSidebarSafeError::SameItemSwitchStale,
-                    );
-                    tracing::error!(
-                        request_id = ?pending.request_id,
-                        invariant = "installed_source_lineage_mismatch",
-                        "Same-item media switch получил Installed source другой lineage"
-                    );
-                    self.mark_pending_worker_redraw();
-                    return;
-                }
-                #[cfg(test)]
-                if matches!(pending.kind, SameItemSwitchKind::Component(_))
-                    && !matches!(
-                        installed_configuration.component_variant_projection(),
-                        crate::web_media_stream_model::component_variants::WebMediaComponentVariantProjection::Installed(_)
-                    )
-                {
-                    let _restored = self.url_sidebar_controller.record_switch_terminal_failed(
-                        &pending_selection,
-                        installed_generation,
-                        UrlSidebarSafeError::SameItemSwitchStale,
-                    );
-                    tracing::error!(
-                        request_id = ?pending.request_id,
-                        invariant = "component_catalog_not_installed",
-                        "Component switch завершился без fresh Installed component catalog"
-                    );
-                    self.mark_pending_worker_redraw();
-                    return;
-                }
-                match pending.kind {
-                    #[cfg(test)]
-                    SameItemSwitchKind::Candidate {
-                        preferred_height, ..
-                    } => {
-                        self.url_sidebar_controller
-                            .record_candidate_switch_installed(
-                                installed_generation,
-                                pending.expected_active.item_id(),
-                                preferred_height,
-                            );
-                    }
-                    #[cfg(test)]
-                    SameItemSwitchKind::Component(_) => {
-                        self.url_sidebar_controller
-                            .record_component_switch_installed();
-                    }
-                    SameItemSwitchKind::Picker { target, .. }
-                    | SameItemSwitchKind::AutomaticPicker { target, .. } => {
-                        self.url_sidebar_controller
-                            .record_component_switch_installed();
-                        if let Some(item_id) = pending.expected_active.item_id() {
-                            playlist_runtime
-                                .remember_web_media_preference(item_id, target.remembered());
-                        }
-                        self.web_media_fallback_notice = false;
-                    }
-                }
-            }
-            StrongMediaOpenPoll::Failed(error) => {
-                let safe_error = safe_error_for_terminal_failure(&error);
-                let visible_generation = self
-                    .active_media_source
-                    .as_ref()
-                    .and_then(ActiveMediaSource::yt_dlp_stream_generation)
-                    .unwrap_or(previous_generation);
-                let _restored = self.url_sidebar_controller.record_switch_terminal_failed(
-                    &pending_selection,
-                    visible_generation,
-                    safe_error,
-                );
-                tracing::warn!(
-                    request_id = ?pending.request_id,
-                    error = %error,
-                    "Same-item media switch завершился ошибкой"
-                );
-            }
+        let mut app_path = SameItemSwitchAppPath::take(&mut self.same_item_switch);
+        {
+            let mut context = ProductionSameItemSwitchPollContext::new(self, playlist_runtime);
+            let _outcome = app_path.poll(&mut context);
         }
+        app_path.restore(&mut self.same_item_switch);
         self.mark_pending_worker_redraw();
     }
 
@@ -652,7 +520,6 @@ fn safe_error_for_switch_error(error: &SameItemSwitchError) -> UrlSidebarSafeErr
         SameItemSwitchError::Stale | SameItemSwitchError::MissingActiveIdentity => {
             UrlSidebarSafeError::SameItemSwitchStale
         }
-        #[cfg(test)]
         SameItemSwitchError::ComponentAction(_) => UrlSidebarSafeError::SameItemSwitchStale,
         SameItemSwitchError::Strong(error) => safe_error_for_start_failure(error),
         SameItemSwitchError::UnsupportedSource

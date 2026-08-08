@@ -12,6 +12,7 @@ mod error;
 mod locator;
 mod metadata;
 mod process;
+mod process_tree;
 mod topology;
 
 pub use candidate::{
@@ -25,10 +26,10 @@ pub use candidate::{
     YtDlpDashTransportComponent, YtDlpHdsManifestRequestMaterial,
     YtDlpHdsManifestRequestMaterialViolation, YtDlpHlsAesOverride, YtDlpHlsManifestInput,
     YtDlpHlsManifestInputKind, YtDlpHlsRequestMaterial, YtDlpHlsRequestMaterialViolation,
-    YtDlpLiveIntent, YtDlpNormalizedCandidate, YtDlpPlanningSnapshotError,
-    YtDlpProgressiveTransportRequestContext, YtDlpRejectedCandidate, YtDlpRequestMaterial,
-    YtDlpRequestMaterialSummary, YtDlpRequestMaterialV1, YtDlpRequestMaterialViolation,
-    YtDlpSelectedCandidateShape, YtDlpSmoothManifestRequestMaterial,
+    YtDlpLiveIntent, YtDlpNormalizedCandidate, YtDlpPlanningSnapshotAlignmentError,
+    YtDlpPlanningSnapshotError, YtDlpProgressiveTransportRequestContext, YtDlpRejectedCandidate,
+    YtDlpRequestMaterial, YtDlpRequestMaterialSummary, YtDlpRequestMaterialV1,
+    YtDlpRequestMaterialViolation, YtDlpSelectedCandidateShape, YtDlpSmoothManifestRequestMaterial,
     YtDlpSmoothManifestRequestMaterialViolation, YtDlpSmoothUnsupportedRequestMaterial,
     YtDlpTransportComponent, YtDlpTransportRequestContext, YtDlpTransportRequestError,
     resolve_yt_dlp_candidate_snapshot_with_config,

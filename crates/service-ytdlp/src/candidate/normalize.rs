@@ -327,6 +327,7 @@ fn single_component_role(
     match layout {
         StreamLayout::Muxed(_) => Ok(YtDlpCandidateComponentRole::Muxed),
         StreamLayout::HlsMuxedCodecDeferred(_) => Ok(YtDlpCandidateComponentRole::Muxed),
+        StreamLayout::ContentProbed(_) => Ok(YtDlpCandidateComponentRole::ContentProbed),
         StreamLayout::VideoOnly(_) => Ok(YtDlpCandidateComponentRole::Video),
         StreamLayout::AudioOnly(_) => Ok(YtDlpCandidateComponentRole::Audio),
         StreamLayout::Separate { .. } => {

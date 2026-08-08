@@ -13,7 +13,9 @@ use web_media_adaptive::{
 use web_media_transport_api::SourceGeneration;
 use zeroize::Zeroizing;
 
-use crate::plan::{HlsEpochPlan, PlannedEncryption, PlannedKeySource, PlannedResource};
+use crate::plan::{
+    HlsEpochPlan, HlsSegmentRestartCoordinate, PlannedEncryption, PlannedKeySource, PlannedResource,
+};
 use crate::{HlsEndpointRefreshReason, SecretAes128Key, decrypt_aes128_cbc_pkcs7};
 
 /// Resource class без locator-а или key bytes для live expiry policy.
@@ -38,9 +40,67 @@ pub(crate) struct HlsEpochSegmentSource {
     generation: SourceGeneration,
     resources: std::vec::IntoIter<PlannedResource>,
     next_sequence: u64,
+    next_byte_position: u64,
     maximum_key_resource_bytes: NonZeroUsize,
     cached_key: SharedHlsKeyCache,
     expiry_observer: Option<Arc<dyn HlsResourceExpiryObserver>>,
+    media_spans: SharedHlsMediaSpanIndex,
+}
+
+/// Exact plaintext range одного media resource-а в virtual ordered input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HlsMediaResourceSpan {
+    start: u64,
+    end: u64,
+    restart_segment: HlsSegmentRestartCoordinate,
+}
+
+/// Shared HLS-private provenance между lazy source и component demuxer-ом.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SharedHlsMediaSpanIndex {
+    spans: Arc<Mutex<Vec<HlsMediaResourceSpan>>>,
+}
+
+impl SharedHlsMediaSpanIndex {
+    /// Регистрирует exact plaintext interval уже fetched/decrypted media resource-а.
+    fn observe_media_resource(
+        &self,
+        start: u64,
+        end: u64,
+        restart_segment: HlsSegmentRestartCoordinate,
+    ) -> Result<(), HlsSegmentSourceError> {
+        if start == end {
+            return Ok(());
+        }
+        self.spans
+            .lock()
+            .map_err(|_| HlsSegmentSourceError::MediaSpanIndexPoisoned)?
+            .push(HlsMediaResourceSpan {
+                start,
+                end,
+                restart_segment,
+            });
+        Ok(())
+    }
+
+    /// Разрешает packet source-position только по concrete registered plaintext span-у.
+    pub(crate) fn restart_segment_for_byte_position(
+        &self,
+        byte_position: u64,
+    ) -> Result<Option<HlsSegmentRestartCoordinate>, HlsSegmentSourceError> {
+        let spans = self
+            .spans
+            .lock()
+            .map_err(|_| HlsSegmentSourceError::MediaSpanIndexPoisoned)?;
+        let insertion_index = spans.partition_point(|span| span.start <= byte_position);
+        let Some(candidate_index) = insertion_index.checked_sub(1) else {
+            return Ok(None);
+        };
+        Ok(spans
+            .get(candidate_index)
+            .filter(|span| byte_position < span.end)
+            .map(|span| span.restart_segment))
+    }
 }
 
 /// Current epoch-local key; identity не содержит URL/key bytes.
@@ -84,6 +144,25 @@ impl HlsEpochSegmentSource {
         )
     }
 
+    /// Создаёт static VOD source с exact packet-to-media provenance observer-ом.
+    pub(crate) fn new_with_media_span_index(
+        http: AdaptiveHttpContext,
+        generation: SourceGeneration,
+        epoch: HlsEpochPlan,
+        maximum_key_resource_bytes: NonZeroUsize,
+        media_spans: SharedHlsMediaSpanIndex,
+    ) -> Self {
+        Self::new_with_all_observers(
+            http,
+            generation,
+            epoch,
+            maximum_key_resource_bytes,
+            SharedHlsKeyCache::default(),
+            None,
+            media_spans,
+        )
+    }
+
     pub(crate) fn new_with_key_cache(
         http: AdaptiveHttpContext,
         generation: SourceGeneration,
@@ -109,14 +188,37 @@ impl HlsEpochSegmentSource {
         cached_key: SharedHlsKeyCache,
         expiry_observer: Option<Arc<dyn HlsResourceExpiryObserver>>,
     ) -> Self {
+        Self::new_with_all_observers(
+            http,
+            generation,
+            epoch,
+            maximum_key_resource_bytes,
+            cached_key,
+            expiry_observer,
+            SharedHlsMediaSpanIndex::default(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_all_observers(
+        http: AdaptiveHttpContext,
+        generation: SourceGeneration,
+        epoch: HlsEpochPlan,
+        maximum_key_resource_bytes: NonZeroUsize,
+        cached_key: SharedHlsKeyCache,
+        expiry_observer: Option<Arc<dyn HlsResourceExpiryObserver>>,
+        media_spans: SharedHlsMediaSpanIndex,
+    ) -> Self {
         Self {
             http,
             generation,
             resources: epoch.resources.into_iter(),
             next_sequence: 0,
+            next_byte_position: 0,
             maximum_key_resource_bytes,
             cached_key,
             expiry_observer,
+            media_spans,
         }
     }
 
@@ -269,6 +371,18 @@ impl OrderedSegmentSource for HlsEpochSegmentSource {
                 .map_err(map_runtime_source_error)?,
             None => Bytes::from(fetched),
         };
+        let resource_start = self.next_byte_position;
+        let resource_end = resource_start
+            .checked_add(u64::try_from(bytes.len()).map_err(|_| {
+                map_runtime_source_error(HlsSegmentSourceError::BytePositionOverflow)
+            })?)
+            .ok_or_else(|| map_runtime_source_error(HlsSegmentSourceError::BytePositionOverflow))?;
+        if let Some(restart_segment) = resource.restart_segment {
+            self.media_spans
+                .observe_media_resource(resource_start, resource_end, restart_segment)
+                .map_err(map_runtime_source_error)?;
+        }
+        self.next_byte_position = resource_end;
         let sequence = OrderedSegmentSequence::new(self.next_sequence);
         self.next_sequence = self.next_sequence.saturating_add(1);
         Ok(Some(OrderedSegment {
@@ -290,6 +404,10 @@ pub(crate) enum HlsSegmentSourceError {
     Decrypt(#[from] crate::Aes128CbcDecryptError),
     #[error("key cache poisoned")]
     KeyCachePoisoned,
+    #[error("media span index poisoned")]
+    MediaSpanIndexPoisoned,
+    #[error("ordered input byte position overflow")]
+    BytePositionOverflow,
 }
 
 fn map_runtime_source_error(error: impl Into<HlsSegmentSourceError>) -> OrderedSegmentReadError {
@@ -310,5 +428,55 @@ fn map_runtime_source_error(error: impl Into<HlsSegmentSourceError>) -> OrderedS
         HlsSegmentSourceError::KeyCachePoisoned => OrderedSegmentReadError::Failed {
             reason: "hls-key-cache-poisoned".to_owned(),
         },
+        HlsSegmentSourceError::MediaSpanIndexPoisoned => OrderedSegmentReadError::Failed {
+            reason: "hls-media-span-index-poisoned".to_owned(),
+        },
+        HlsSegmentSourceError::BytePositionOverflow => OrderedSegmentReadError::Failed {
+            reason: "hls-byte-position-overflow".to_owned(),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SharedHlsMediaSpanIndex;
+    use crate::plan::HlsSegmentRestartCoordinate;
+
+    #[test]
+    fn media_span_lookup_uses_half_open_exact_boundaries() {
+        let spans = SharedHlsMediaSpanIndex::default();
+        let first = HlsSegmentRestartCoordinate { segment_index: 0 };
+        let second = HlsSegmentRestartCoordinate { segment_index: 1 };
+        spans
+            .observe_media_resource(4, 10, first)
+            .expect("record first media span");
+        spans
+            .observe_media_resource(10, 20, second)
+            .expect("record second media span");
+
+        assert_eq!(
+            spans
+                .restart_segment_for_byte_position(9)
+                .expect("lookup first span"),
+            Some(first)
+        );
+        assert_eq!(
+            spans
+                .restart_segment_for_byte_position(10)
+                .expect("lookup second span"),
+            Some(second)
+        );
+        assert_eq!(
+            spans
+                .restart_segment_for_byte_position(20)
+                .expect("lookup exclusive end"),
+            None
+        );
+        assert_eq!(
+            spans
+                .restart_segment_for_byte_position(3)
+                .expect("lookup initialization bytes"),
+            None
+        );
     }
 }

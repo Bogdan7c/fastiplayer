@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use media_core::{DemuxSeekResult, MediaTime, TimelineMode};
-use video_backend_api::DetachedVideoBackendCandidateStatus;
+use video_backend_api::{DetachedVideoBackendCandidateStatus, DetachedVideoBackendResourcePort};
 
 use crate::seek_state::demux_seek_request_for_transaction;
 use crate::{

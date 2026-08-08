@@ -200,6 +200,60 @@ fn eof_drain_with_budget_reports_draining_when_capped() {
 }
 
 #[test]
+fn release_driven_eof_continuation_preserves_last_coalesced_release_edge() {
+    // Первый bounded pass заполняет единственный свободный host-frame slot.
+    // После presentation несколько освобождений могут слиться в один pulse;
+    // worker всё равно обязан продолжить EOF owner loop, а не ждать packet-а.
+    let mut decode_loop = fake_loop(
+        [FakeSendResult::Accepted],
+        [
+            FakeReceiveResult::Frame(frame_timestamps(1, NO_TIMESTAMP, 1)),
+            FakeReceiveResult::Frame(frame_timestamps(2, NO_TIMESTAMP, 1)),
+            FakeReceiveResult::EndOfFile,
+        ],
+    );
+
+    let first_pass = decode_loop
+        .begin_end_of_stream_drain(17, 1)
+        .expect("первый bounded EOF pass должен отдать первый tail frame");
+    let first_result = VideoDecoderEndOfStreamDrainResult::Started(first_pass.state.clone());
+    assert!(
+        eof_drain_result_requires_owner_reentry(&first_result),
+        "Draining обязан вернуть owner loop к release-driven continuation"
+    );
+
+    // Один coalesced release edge открыл сразу два slots: один для последнего
+    // tail frame, второй — чтобы тем же owner turn увидеть terminal EOF.
+    let completion = decode_loop
+        .begin_end_of_stream_drain(17, 2)
+        .expect("последний release edge должен довести decoder до terminal EOF");
+    let completion_result = VideoDecoderEndOfStreamDrainResult::Started(completion.state.clone());
+
+    assert_eq!(completion.frames.len(), 1);
+    assert_eq!(
+        completion.state,
+        VideoDecoderEndOfStreamDrainState::Drained { generation: 17 }
+    );
+    assert!(!eof_drain_result_requires_owner_reentry(&completion_result));
+    assert_eq!(decode_loop.codec_api.end_of_stream_send_count, 1);
+}
+
+#[test]
+fn accepted_ffmpeg_eof_rejects_receive_eagain_instead_of_spinning() {
+    let mut decode_loop = fake_loop([FakeSendResult::Accepted], [FakeReceiveResult::Again]);
+
+    let error = decode_loop
+        .begin_end_of_stream_drain(23, 1)
+        .expect_err("accepted FFmpeg EOF не допускает receive-side EAGAIN");
+
+    assert!(matches!(
+        error,
+        FfmpegDecoderThreadError::ProtocolViolation { reason }
+            if reason.contains("accepted EOF")
+    ));
+}
+
+#[test]
 fn receive_loop_uses_packet_color_when_frame_metadata_is_missing() {
     let expected_context_color = VideoColorMetadata::container(
         ColorRange::Full,

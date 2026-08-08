@@ -21,8 +21,8 @@ use crate::{
     InstalledMediaStateRestoreOutcome, InstalledPositionRestore, InstalledSubtitleRestore,
     InstalledTrackRestore, InstalledVolumeRestore, MediaInstallCompletion, MediaInstallControl,
     MediaInstallControlOutcome, MediaInstallPhase, MediaInstallReceipt, MediaInstallRequestId,
-    MediaInstanceId, PlaybackIntent, PlaybackIntentRevision, PlaybackState,
-    PrepareMediaInstallPosition, PreparedMedia,
+    MediaInstallVideoResourcePort, MediaInstanceId, PlaybackIntent, PlaybackIntentRevision,
+    PlaybackState, PrepareMediaInstallPosition, PreparedMedia,
 };
 use video_backend_api::{
     DetachedVideoBackendCandidateCancellationCause, DetachedVideoBackendCandidateStatus,
@@ -209,7 +209,7 @@ fn stage_live_same_lineage(
         PlaybackIntent::StartPaused,
         PlaybackIntentRevision::INITIAL,
         install_port,
-        Box::new(UnusedLiveResourcePort),
+        MediaInstallVideoResourcePort::any_playable(UnusedLiveResourcePort),
         old_instance_id,
     );
     receipt

@@ -61,11 +61,16 @@ impl AppState {
             prepared.safe_label,
             target_draft,
         );
+        let backend_constraint =
+            crate::video_backend_constraint::media_install_video_backend_constraint(
+                self.video_backend_preference(),
+            );
         if let Err(error) = self.install_prepared_media_strong(
             playlist_runtime,
             renderer,
             prepared_input,
             player_core::PlaybackIntent::StartPaused,
+            backend_constraint,
         ) {
             let safe_label = crate::playlist_runtime::safe_local_open_label(&path);
             warn!(error = %error, source = %safe_label, "Не удалось отправить подготовленный файл в worker");

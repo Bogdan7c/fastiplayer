@@ -13,6 +13,7 @@ mod installed_state_restore;
 mod playback_intent;
 mod position_preparation;
 pub(crate) mod timeline_seek;
+mod video_resource;
 
 pub use exact_media_transport::{
     ExactMediaTransportAction, ExactMediaTransportFailureStage, ExactMediaTransportOutcome,
@@ -43,6 +44,7 @@ pub use timeline_seek::{
     ExactTimelineSeekOutcome, ExactTimelineSeekReceipt, ExactTimelineSeekReceiptError,
     ExactTimelineSeekRequest, TimelineSeekKind, TimelineSeekRequestId,
 };
+pub use video_resource::{MediaInstallVideoBackendConstraint, MediaInstallVideoResourcePort};
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -240,15 +242,6 @@ impl MediaInstallFailureStage {
         Self::LegacyMediaOpenedTransition,
     ];
 }
-
-/// Player-side port к заранее staged app half video candidate-а.
-///
-/// `Send` требуется только потому, что owner перемещается в player worker thread;
-/// concrete renderer/materializer pointers через этот trait в player не проходят.
-pub type MediaInstallVideoResourcePort = Box<
-    dyn video_backend_api::DetachedVideoBackendResourcePort<RequestId = MediaInstallRequestId>
-        + Send,
->;
 
 /// Единственная будущая atomic commit point strong media transaction.
 ///

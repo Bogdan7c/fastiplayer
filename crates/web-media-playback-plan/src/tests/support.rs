@@ -13,12 +13,12 @@ use video_frame_contract::{DmaBufImageLayout, VideoFrameContract};
 use web_media_core::{
     AudioComponentDescriptor, AudioTrackDescriptor, Bitrate, CandidateDescriptor,
     CandidateFormatIdentity, CandidateIdentity, ChannelCount, ContainerFamily, ContainerIdentity,
-    DynamicRange, ExactSelectionIdentity, ExtractionGeneration, FtpScheme,
-    HlsMuxedCodecDeferredDescriptor, HttpScheme, MuxedComponentDescriptor, NormalizedCodec,
-    NormalizedTransport, PreferredHeightPolicy, RawCodecIdentity, RawContainerIdentity,
-    RawTransportIdentity, SampleRate, SelectionRequest, SemanticIdentity, SourceIdentity,
-    StreamLayout, TransportFamily, VideoComponentDescriptor, VideoHeight, VideoTrackDescriptor,
-    VideoWidth,
+    ContentProbedDescriptor, ContentProbedTrackEvidence, ContentProbedVideoHints, DynamicRange,
+    ExactSelectionIdentity, ExtractionGeneration, FtpScheme, HlsMuxedCodecDeferredDescriptor,
+    HttpScheme, MuxedComponentDescriptor, NormalizedCodec, NormalizedTransport,
+    PreferredHeightPolicy, RawCodecIdentity, RawContainerIdentity, RawTransportIdentity,
+    SampleRate, SelectionRequest, SemanticIdentity, SourceIdentity, StreamLayout, TransportFamily,
+    VideoComponentDescriptor, VideoHeight, VideoTrackDescriptor, VideoWidth,
 };
 
 use crate::{
@@ -319,6 +319,90 @@ pub(super) fn hls_deferred_candidate(
         CandidateQualityScore::new(quality_score),
     )
     .expect("test deferred HLS candidate проходит admission")
+}
+
+/// Строит progressive Ogg candidate с authoritative runtime content proof.
+pub(super) fn content_probed_ogg_candidate(
+    format_id: &str,
+    semantic_key: &str,
+) -> PlanningCandidate {
+    content_probed_ogg_candidate_with_hints(format_id, semantic_key, None, DynamicRange::Unknown, 1)
+}
+
+/// Строит content-probed Ogg с soft video hints для ranking/policy tests.
+pub(super) fn content_probed_ogg_candidate_with_hints(
+    format_id: &str,
+    semantic_key: &str,
+    height: Option<u32>,
+    dynamic_range: DynamicRange,
+    quality_score: i64,
+) -> PlanningCandidate {
+    let component = ContentProbedDescriptor::new(
+        transport("https"),
+        container("ogg"),
+        ContainerFamily::Ogg,
+        ContentProbedTrackEvidence::Unknown,
+        ContentProbedTrackEvidence::Unknown,
+        ContentProbedVideoHints::new(
+            None,
+            height.map(|pixels| VideoHeight::new(pixels).unwrap()),
+            None,
+            None,
+            dynamic_range,
+        ),
+    )
+    .expect("test content-probed descriptor валиден");
+    PlanningCandidate::new(
+        candidate_descriptor(
+            format_id,
+            semantic_key,
+            StreamLayout::ContentProbed(component),
+        ),
+        CandidateRuntimeRequirements::ContentProbed {
+            video: None,
+            audio: None,
+        },
+        CandidateQualityScore::new(quality_score),
+    )
+    .expect("test content-probed candidate проходит admission")
+}
+
+/// Строит HDS/F4F candidate с обеими объявленными A/V дорожками.
+pub(super) fn content_probed_hds_declared_av_candidate(
+    format_id: &str,
+    semantic_key: &str,
+    quality_score: i64,
+) -> PlanningCandidate {
+    let video = video_track("avc1.640028", 720, DynamicRange::Sdr);
+    let audio = audio_track_for("mp4a.40.2");
+    let component = ContentProbedDescriptor::new(
+        transport("f4m"),
+        container("f4f"),
+        ContainerFamily::F4f,
+        ContentProbedTrackEvidence::Declared(video),
+        ContentProbedTrackEvidence::Declared(audio),
+        ContentProbedVideoHints::new(
+            Some(VideoWidth::new(1920).expect("test width валидна")),
+            Some(VideoHeight::new(720).expect("test height валидна")),
+            None,
+            None,
+            DynamicRange::Sdr,
+        ),
+    )
+    .expect("test HDS content-probed descriptor валиден");
+    PlanningCandidate::new(
+        candidate_descriptor(
+            format_id,
+            semantic_key,
+            StreamLayout::ContentProbed(component),
+        ),
+        CandidateRuntimeRequirements::ContentProbed {
+            video: Some(sdr_requirement(VideoCodec::H264, 720)),
+            audio: Some(AudioDecodeCodecFamily::Aac),
+        },
+        CandidateQualityScore::new(quality_score),
+    )
+    .expect("test declared-A/V HDS candidate проходит admission")
 }
 
 /// Строит separate A/V planning candidate.

@@ -7,7 +7,8 @@ use media_core::{DynamicMediaTimelineSnapshot, TimelineMode, TrackId};
 use video_backend_api::{
     DetachedVideoBackendCandidateCancellationCause, DetachedVideoBackendCandidateStatus,
     DetachedVideoBackendConfigurationError, DetachedVideoBackendPortError,
-    DetachedVideoBackendRequest, DetachedVideoBackendResourceError, DetachedVideoBackendSelection,
+    DetachedVideoBackendRequest, DetachedVideoBackendResourceError,
+    DetachedVideoBackendResourcePort, DetachedVideoBackendSelection,
 };
 use video_core::VideoStreamDecodeConfig;
 use video_frame_contract::VideoFrameContract;
@@ -19,9 +20,10 @@ use crate::{
     CancelMediaInstall, MediaInstallCancellationCause, MediaInstallControl,
     MediaInstallControlOutcome, MediaInstallFailure, MediaInstallFailureStage,
     MediaInstallPhaseCompletionPort, MediaInstallPositionPreparation, MediaInstallRequestId,
-    MediaInstallVideoResourcePort, MediaInstanceId, MediaOpenRequest, MediaSummary, PlaybackIntent,
-    PlaybackIntentRevision, PlaybackState, PlayerError, PlayerErrorKind, PlayerEvent,
-    PreparedMedia, StartedVideoBackend, TrackSelectionSnapshot,
+    MediaInstallVideoBackendConstraint, MediaInstallVideoResourcePort, MediaInstanceId,
+    MediaOpenRequest, MediaSummary, PlaybackIntent, PlaybackIntentRevision, PlaybackState,
+    PlayerError, PlayerErrorKind, PlayerEvent, PreparedMedia, StartedVideoBackend,
+    TrackSelectionSnapshot,
 };
 
 use super::PlayerSession;
@@ -547,9 +549,14 @@ impl PlayerSession {
         }
 
         pending.retry_deadline = None;
+        let backend_constraint = staged_install.video_resource_port.as_ref().map_or(
+            MediaInstallVideoBackendConstraint::AnyPlayable,
+            |video_resource_port| video_resource_port.backend_constraint().clone(),
+        );
         let video_plan = match self.resume_staged_video_track_plan(
             &mut pending.prepared_media,
             pending.video_planning_mode,
+            &backend_constraint,
             &mut pending.video_planner,
         ) {
             Ok(StagedVideoPlanningOutcome::Ready(video_plan)) => video_plan,
@@ -598,7 +605,7 @@ impl PlayerSession {
             Some(video_resource_port) => match prepare_detached_video_backend(
                 staged_install.request_id,
                 &prepared_media,
-                video_resource_port.as_mut(),
+                video_resource_port,
             ) {
                 Ok(started_video_backend) => started_video_backend,
                 Err(failure) => {
@@ -682,11 +689,7 @@ impl PlayerSession {
 fn prepare_detached_video_backend(
     request_id: MediaInstallRequestId,
     prepared_media: &PreparedStagedMedia,
-    video_resource_port: &mut (
-             dyn video_backend_api::DetachedVideoBackendResourcePort<
-        RequestId = MediaInstallRequestId,
-    > + Send
-         ),
+    video_resource_port: &mut MediaInstallVideoResourcePort,
 ) -> Result<Option<StartedVideoBackend>, MediaInstallFailure> {
     let Some(video_plan) = prepared_media.video_plan() else {
         return Ok(None);
@@ -724,7 +727,9 @@ fn prepare_detached_video_backend(
             ),
         ));
     }
-    let detached_backend = detached_backend_result.map_err(media_install_resource_failure)?;
+    let detached_backend = detached_backend_result.map_err(|error| {
+        media_install_resource_failure(video_resource_port.backend_constraint(), error)
+    })?;
 
     if detached_backend.backend_id() != expected_backend_id {
         publish_candidate_cancelled_for_matching_failure(
@@ -793,14 +798,23 @@ fn publish_candidate_cancelled_for_matching_failure(
         .map_err(|error| media_install_status_failure(error, None))
 }
 
-/// Сохраняет resource exhaustion/startup/backpressure distinction в stage/message.
-fn media_install_resource_failure(error: DetachedVideoBackendResourceError) -> MediaInstallFailure {
+/// Сохраняет resource exhaustion/startup/backpressure distinction в stage/message
+/// и не маскирует request-scoped exact-backend policy под аппаратную ошибку.
+fn media_install_resource_failure(
+    backend_constraint: &MediaInstallVideoBackendConstraint,
+    error: DetachedVideoBackendResourceError,
+) -> MediaInstallFailure {
+    let error_kind = match backend_constraint {
+        MediaInstallVideoBackendConstraint::AnyPlayable => {
+            PlayerErrorKind::HardwareDecoderUnavailable
+        }
+        MediaInstallVideoBackendConstraint::RequireBackend(_) => {
+            PlayerErrorKind::RequiredVideoBackendUnavailable
+        }
+    };
     MediaInstallFailure::new(
         MediaInstallFailureStage::CandidateVideoResourceAcquisition,
-        PlayerError::new(
-            PlayerErrorKind::HardwareDecoderUnavailable,
-            error.to_string(),
-        ),
+        PlayerError::new(error_kind, error.to_string()),
     )
 }
 

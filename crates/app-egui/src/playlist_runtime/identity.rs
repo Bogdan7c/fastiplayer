@@ -70,6 +70,21 @@ impl ActiveMediaIdentity {
         }
     }
 
+    /// Создаёт deterministic identity для app-level same-item lifecycle fixtures.
+    #[cfg(test)]
+    pub(crate) fn for_same_item_switch_test(
+        item_id: PlaylistItemId,
+        media_instance_id: MediaInstanceId,
+    ) -> Self {
+        let lineage_identity = NonZeroU64::new(7_001).expect("fixture lineage is non-zero");
+        Self::installed(
+            Some(item_id),
+            ActiveMediaLineageId::from_non_zero(lineage_identity),
+            media_instance_id,
+            PlaylistBindingGeneration(1),
+        )
+    }
+
     pub(crate) const fn item_id(self) -> Option<PlaylistItemId> {
         self.item_id
     }

@@ -29,7 +29,7 @@ fn same_lineage_position_phase_precedes_true_ready_and_owner_accepted_enqueue() 
                 intent: player_core::PlaybackIntent::StartPlaying,
                 revision: player_core::PlaybackIntentRevision::INITIAL,
             },
-            Box::new(UnusedVideoResourcePort),
+            MediaInstallVideoResourcePort::any_playable(UnusedVideoResourcePort),
             expected_old_media_instance_id,
         )
         .expect("same-lineage stage");

@@ -1,7 +1,7 @@
 //! App-owned boundary независимого выбора video/audio component variants.
 //!
 //! Exact identities остаются внутри модели. Sidebar получает только enum/numeric
-//! projection, а будущий controlled reopen — только semantic-only request.
+//! projection и bounded language tag, а controlled reopen — semantic-only request.
 
 #![allow(
     dead_code,
@@ -13,13 +13,20 @@ use std::sync::Arc;
 
 use service_ytdlp::YtDlpCandidateSelection;
 use web_media_core::{
-    AudioComponentVariant, CodecFamily, CodecKind, ComponentKind, ComponentVariantCatalog,
+    AudioComponentVariant, CodecFamily, CodecKind, ComponentVariantCatalog,
     ComponentVariantCatalogGeneration, ComponentVariantError, ComponentVariantSelection,
     ComponentVariantSelectionRequest, ComponentVariantSemanticSelectionRequest, DynamicRange,
     ExactSelectionIdentity, VideoComponentVariant,
 };
 
 use super::{WebMediaStreamConfiguration, WebMediaStreamGeneration, known_codec};
+
+mod coupled;
+
+use coupled::coupled_axis;
+pub(crate) use coupled::{
+    WebMediaCoupledComponentVariantAxis, WebMediaCoupledComponentVariantPresentation,
+};
 
 /// Exact parent token всегда установлен production constructor-ом.
 #[derive(Clone, PartialEq, Eq)]
@@ -96,6 +103,22 @@ pub(crate) enum WebMediaInstalledComponentVariantPresentation {
         catalog_generation: ComponentVariantCatalogGeneration,
         audio: WebMediaAudioComponentVariantAxis,
     },
+    /// Одна неделимая A/V axis: выбор строки заменяет video и audio только вместе.
+    Coupled {
+        catalog_generation: ComponentVariantCatalogGeneration,
+        coupled: WebMediaCoupledComponentVariantAxis,
+    },
+}
+
+/// Safe axis kind не смешивает independent component и связанную A/V rendition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum WebMediaComponentVariantAxisKind {
+    /// Независимая video axis.
+    Video,
+    /// Независимая audio axis.
+    Audio,
+    /// Неделимая A/V rendition axis.
+    Coupled,
 }
 
 /// Safe video axis с explicit active row.
@@ -123,9 +146,11 @@ pub(crate) struct WebMediaVideoComponentVariantPresentation {
     pub(crate) dynamic_range: DynamicRange,
 }
 
-/// Только безопасные numeric/enum metadata audio row.
+/// Только безопасные numeric/enum metadata и bounded language tag audio row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WebMediaAudioComponentVariantPresentation {
+    /// Display-only language label; raw provider metadata остаётся только в catalog owner-е.
+    pub(crate) language_label: Option<Arc<str>>,
     pub(crate) bitrate: Option<u64>,
     pub(crate) sample_rate_hz: Option<u32>,
     pub(crate) channels: Option<u16>,
@@ -137,7 +162,7 @@ pub(crate) struct WebMediaAudioComponentVariantPresentation {
 pub(crate) struct ComponentVariantSelectionAction {
     pub(crate) parent_generation: WebMediaStreamGeneration,
     pub(crate) catalog_generation: ComponentVariantCatalogGeneration,
-    pub(crate) component: ComponentKind,
+    pub(crate) axis: WebMediaComponentVariantAxisKind,
     pub(crate) variant_index: usize,
 }
 
@@ -154,10 +179,10 @@ impl ComponentVariantSelectionAction {
         self.catalog_generation
     }
 
-    /// Возвращает выбранную независимую component axis.
+    /// Возвращает выбранную independent либо coupled axis.
     #[must_use]
-    pub(crate) const fn component(self) -> ComponentKind {
-        self.component
+    pub(crate) const fn axis(self) -> WebMediaComponentVariantAxisKind {
+        self.axis
     }
 
     /// Возвращает safe row index внутри выбранной axis.
@@ -184,7 +209,9 @@ pub(crate) enum ComponentVariantInstallationError {
     /// Selection не удалось канонизировать через exact rows catalog-а.
     InvalidSelection(ComponentVariantError),
     /// Canonical selection не нашлась в safe presentation того же catalog-а.
-    ActiveVariantMissing { component: ComponentKind },
+    ActiveVariantMissing {
+        axis: WebMediaComponentVariantAxisKind,
+    },
 }
 
 impl fmt::Display for ComponentVariantInstallationError {
@@ -199,11 +226,8 @@ impl fmt::Display for ComponentVariantInstallationError {
                     "component selection не прошёл canonical lookup: {error}"
                 )
             }
-            Self::ActiveVariantMissing { component } => {
-                write!(
-                    formatter,
-                    "active {component:?} variant отсутствует в catalog"
-                )
+            Self::ActiveVariantMissing { axis } => {
+                write!(formatter, "active {axis:?} variant отсутствует в catalog")
             }
         }
     }
@@ -231,10 +255,10 @@ pub(crate) enum ComponentVariantActionError {
         provided: ComponentVariantCatalogGeneration,
     },
     WrongAxis {
-        component: ComponentKind,
+        axis: WebMediaComponentVariantAxisKind,
     },
     VariantIndexOutOfRange {
-        component: ComponentKind,
+        axis: WebMediaComponentVariantAxisKind,
         provided: usize,
         variant_count: usize,
     },
@@ -251,16 +275,16 @@ impl fmt::Display for ComponentVariantActionError {
             Self::StaleCatalogGeneration { .. } => {
                 formatter.write_str("action относится к прошлому component catalog")
             }
-            Self::WrongAxis { component } => {
-                write!(formatter, "catalog не содержит axis {component:?}")
+            Self::WrongAxis { axis } => {
+                write!(formatter, "catalog не содержит axis {axis:?}")
             }
             Self::VariantIndexOutOfRange {
-                component,
+                axis,
                 provided,
                 variant_count,
             } => write!(
                 formatter,
-                "индекс {provided} вне {component:?} axis из {variant_count} rows"
+                "индекс {provided} вне {axis:?} axis из {variant_count} rows"
             ),
             Self::ReplacementFailed(error) => {
                 write!(
@@ -403,10 +427,10 @@ impl WebMediaComponentVariantConfiguration {
             });
         }
 
-        let (variant_count, active_index) = installed.axis_state(action.component)?;
+        let (variant_count, active_index) = installed.axis_state(action.axis)?;
         if action.variant_index >= variant_count {
             return Err(ComponentVariantActionError::VariantIndexOutOfRange {
-                component: action.component,
+                axis: action.axis,
                 provided: action.variant_index,
                 variant_count,
             });
@@ -415,7 +439,7 @@ impl WebMediaComponentVariantConfiguration {
             return Ok(ComponentVariantActionResolution::NoChange);
         }
 
-        let replacement = installed.replace(action.component, action.variant_index)?;
+        let replacement = installed.replace(action.axis, action.variant_index)?;
         Ok(ComponentVariantActionResolution::SemanticReopen(
             replacement.semantic_rematch_request(),
         ))
@@ -426,31 +450,35 @@ impl InstalledWebMediaComponentVariants {
     /// Возвращает cardinality и active index требуемой axis.
     fn axis_state(
         &self,
-        component: ComponentKind,
+        axis: WebMediaComponentVariantAxisKind,
     ) -> Result<(usize, usize), ComponentVariantActionError> {
-        match (&self.presentation, component) {
+        match (&self.presentation, axis) {
             (
                 WebMediaInstalledComponentVariantPresentation::VideoAndAudio { video, .. }
                 | WebMediaInstalledComponentVariantPresentation::VideoOnly { video, .. },
-                ComponentKind::Video,
+                WebMediaComponentVariantAxisKind::Video,
             ) => Ok((video.variants.len(), video.active_index)),
             (
                 WebMediaInstalledComponentVariantPresentation::VideoAndAudio { audio, .. }
                 | WebMediaInstalledComponentVariantPresentation::AudioOnly { audio, .. },
-                ComponentKind::Audio,
+                WebMediaComponentVariantAxisKind::Audio,
             ) => Ok((audio.variants.len(), audio.active_index)),
-            (_, component) => Err(ComponentVariantActionError::WrongAxis { component }),
+            (
+                WebMediaInstalledComponentVariantPresentation::Coupled { coupled, .. },
+                WebMediaComponentVariantAxisKind::Coupled,
+            ) => Ok((coupled.variants.len(), coupled.active_index)),
+            (_, axis) => Err(ComponentVariantActionError::WrongAxis { axis }),
         }
     }
 
     /// Делает immutable replacement; другая axis остаётся byte-for-byte прежней.
     fn replace(
         &self,
-        component: ComponentKind,
+        axis: WebMediaComponentVariantAxisKind,
         variant_index: usize,
     ) -> Result<ComponentVariantSelection, ComponentVariantActionError> {
-        match component {
-            ComponentKind::Video => {
+        match axis {
+            WebMediaComponentVariantAxisKind::Video => {
                 let variants = self
                     .catalog
                     .required_video_variants()
@@ -459,13 +487,27 @@ impl InstalledWebMediaComponentVariants {
                     .replace_video(&self.catalog, variants[variant_index].exact_identity())
                     .map_err(ComponentVariantActionError::ReplacementFailed)
             }
-            ComponentKind::Audio => {
+            WebMediaComponentVariantAxisKind::Audio => {
                 let variants = self
                     .catalog
                     .required_audio_variants()
                     .map_err(ComponentVariantActionError::ReplacementFailed)?;
                 self.selection
                     .replace_audio(&self.catalog, variants[variant_index].exact_identity())
+                    .map_err(ComponentVariantActionError::ReplacementFailed)
+            }
+            WebMediaComponentVariantAxisKind::Coupled => {
+                let presentation = self
+                    .catalog
+                    .coupled_presentations()
+                    .get(variant_index)
+                    .ok_or(ComponentVariantActionError::ReplacementFailed(
+                        ComponentVariantError::LayoutMismatch,
+                    ))?;
+                self.catalog
+                    .select_exact(ComponentVariantSelectionRequest::Coupled {
+                        presentation: presentation.exact_identity().clone(),
+                    })
                     .map_err(ComponentVariantActionError::ReplacementFailed)
             }
         }
@@ -506,6 +548,13 @@ fn build_presentation(
 ) -> Result<WebMediaInstalledComponentVariantPresentation, ComponentVariantInstallationError> {
     let catalog_generation = catalog.identity().generation();
     match (catalog, selection) {
+        (
+            ComponentVariantCatalog::Topology { coupled, .. },
+            ComponentVariantSelection::Coupled { presentation, .. },
+        ) => Ok(WebMediaInstalledComponentVariantPresentation::Coupled {
+            catalog_generation,
+            coupled: coupled_axis(coupled, presentation.exact_identity())?,
+        }),
         (
             ComponentVariantCatalog::Topology { video, audio, .. }
             | ComponentVariantCatalog::VideoAndAudio { video, audio, .. },
@@ -555,7 +604,7 @@ fn video_axis(
         .iter()
         .position(|variant| variant.exact_identity() == active_identity)
         .ok_or(ComponentVariantInstallationError::ActiveVariantMissing {
-            component: ComponentKind::Video,
+            axis: WebMediaComponentVariantAxisKind::Video,
         })?;
     let variants = variants
         .iter()
@@ -576,7 +625,7 @@ fn audio_axis(
         .iter()
         .position(|variant| variant.exact_identity() == active_identity)
         .ok_or(ComponentVariantInstallationError::ActiveVariantMissing {
-            component: ComponentKind::Audio,
+            axis: WebMediaComponentVariantAxisKind::Audio,
         })?;
     let variants = variants
         .iter()
@@ -592,7 +641,13 @@ fn audio_axis(
 fn video_presentation(
     variant: &VideoComponentVariant,
 ) -> WebMediaVideoComponentVariantPresentation {
-    let track = variant.track();
+    video_track_presentation(variant.track())
+}
+
+/// Проецирует neutral video descriptor без component identity.
+pub(super) fn video_track_presentation(
+    track: &web_media_core::VideoTrackDescriptor,
+) -> WebMediaVideoComponentVariantPresentation {
     WebMediaVideoComponentVariantPresentation {
         width: track.width_pixels(),
         height: track.height().map(|height| height.pixels()),
@@ -608,13 +663,40 @@ fn video_presentation(
 fn audio_presentation(
     variant: &AudioComponentVariant,
 ) -> WebMediaAudioComponentVariantPresentation {
-    let track = variant.track();
+    audio_track_presentation(variant.track())
+}
+
+/// Проецирует neutral audio descriptor без component identity.
+pub(super) fn audio_track_presentation(
+    track: &web_media_core::AudioTrackDescriptor,
+) -> WebMediaAudioComponentVariantPresentation {
     WebMediaAudioComponentVariantPresentation {
+        language_label: track
+            .language()
+            .and_then(|language| safe_language_tag(language.as_str())),
         bitrate: track.bitrate().map(|bitrate| bitrate.bits_per_second()),
         sample_rate_hz: track.sample_rate().map(|rate| rate.hertz()),
         channels: track.channels().map(|channels| channels.get()),
         codec: safe_codec_family(track.codec().kind()),
     }
+}
+
+/// Публикует только консервативный locale label и отбрасывает secret-shaped provider text.
+pub(super) fn safe_language_tag(language: &str) -> Option<Arc<str>> {
+    const MAX_SAFE_LANGUAGE_LABEL_BYTES: usize = 35;
+    let mut subtags = language.split('-');
+    let primary = subtags.next()?;
+    let primary_is_language =
+        (2..=3).contains(&primary.len()) && primary.bytes().all(|byte| byte.is_ascii_alphabetic());
+    let remaining_subtags_are_locale_parts = subtags.all(|subtag| {
+        !subtag.is_empty()
+            && subtag.len() <= 8
+            && subtag.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    });
+    (language.len() <= MAX_SAFE_LANGUAGE_LABEL_BYTES
+        && primary_is_language
+        && remaining_subtags_are_locale_parts)
+        .then(|| Arc::from(language))
 }
 
 /// Явно отбрасывает raw codec identity и parameter tokens на UI boundary.

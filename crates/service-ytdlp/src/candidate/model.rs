@@ -8,6 +8,7 @@ use web_media_playback_plan::AudioFallbackRank;
 
 use crate::metadata::YtDlpPlaylistMetadata;
 
+use super::rematch::{content_probe_rematch_compatible, semantic_layout_rematch_compatible};
 use super::request_material::{
     YtDlpRequestMaterial, YtDlpRequestMaterialSummary, YtDlpRequestMaterialViolation,
 };
@@ -36,6 +37,8 @@ pub enum YtDlpLiveIntent {
 pub enum YtDlpCandidateComponentRole {
     /// Один resource содержит video и audio.
     Muxed,
+    /// Один resource, чья точная track topology определяется content probe-ом.
+    ContentProbed,
     /// Video-only resource.
     Video,
     /// Audio-only resource.
@@ -224,7 +227,12 @@ impl YtDlpNormalizedCandidate {
         let audio = match self.descriptor.layout() {
             StreamLayout::Muxed(component) => component.audio(),
             StreamLayout::Separate { audio, .. } | StreamLayout::AudioOnly(audio) => audio.audio(),
-            StreamLayout::VideoOnly(_) | StreamLayout::HlsMuxedCodecDeferred(_) => return None,
+            StreamLayout::ContentProbed(component) if component.video().is_absent() => {
+                component.audio().declared()?
+            }
+            StreamLayout::VideoOnly(_)
+            | StreamLayout::HlsMuxedCodecDeferred(_)
+            | StreamLayout::ContentProbed(_) => return None,
         };
         Some(AudioFallbackRank::new(
             self.selection_hints.preference,
@@ -390,7 +398,7 @@ impl YtDlpCandidateSnapshot {
         self.selected.as_ref()
     }
 
-    /// Создаёт process-local selection token из accepted inventory candidate-а.
+    /// Создаёт process-local selection token из canonical accepted candidate-а.
     pub fn selection_for(
         &self,
         candidate: &YtDlpNormalizedCandidate,
@@ -401,15 +409,14 @@ impl YtDlpCandidateSnapshot {
         if candidate.descriptor().identity().generation() != self.generation {
             return Err(YtDlpCandidateSelectionError::ForeignGeneration);
         }
-        let belongs_to_snapshot = self
-            .accepted_candidates()
-            .any(|snapshot_candidate| snapshot_candidate.descriptor() == candidate.descriptor());
-        if !belongs_to_snapshot {
+        let canonical_candidate = self.accepted_candidates().find(|snapshot_candidate| {
+            snapshot_candidate.descriptor() == candidate.descriptor()
+                && snapshot_candidate.video_color_evidence == candidate.video_color_evidence
+        });
+        let Some(canonical_candidate) = canonical_candidate else {
             return Err(YtDlpCandidateSelectionError::CandidateNotInInventory);
-        }
-        Ok(YtDlpCandidateSelection {
-            descriptor: candidate.descriptor.clone(),
-        })
+        };
+        Ok(YtDlpCandidateSelection::from_candidate(canonical_candidate))
     }
 
     /// Сопоставляет Exact selection с текущим либо повторно извлечённым snapshot-ом.
@@ -432,6 +439,7 @@ impl YtDlpCandidateSnapshot {
             };
             if candidate.descriptor().semantic_identity() != selected_semantic
                 || candidate.descriptor().layout() != selection.descriptor.layout()
+                || candidate.video_color_evidence != selection.video_color_evidence
             {
                 return Err(YtDlpCandidateRematchError::ExactAttributesChanged);
             }
@@ -443,12 +451,30 @@ impl YtDlpCandidateSnapshot {
 
         let mut semantic_matches = self.accepted_candidates().filter(|candidate| {
             candidate.descriptor().semantic_identity() == selected_semantic
-                && candidate.descriptor().layout() == selection.descriptor.layout()
+                && candidate.video_color_evidence == selection.video_color_evidence
+                && semantic_layout_rematch_compatible(&selection.descriptor, candidate.descriptor())
         });
-        let Some(candidate) = semantic_matches.next() else {
+        if let Some(candidate) = semantic_matches.next() {
+            if semantic_matches.next().is_some() {
+                return Err(YtDlpCandidateRematchError::AmbiguousSemanticIdentity);
+            }
+            return Ok(YtDlpCandidateMatch {
+                kind: YtDlpCandidateMatchKind::SemanticRematch,
+                candidate,
+            });
+        }
+
+        let mut content_probe_matches = self.accepted_candidates().filter(|candidate| {
+            content_probe_rematch_compatible(
+                &selection.descriptor,
+                selection.video_color_evidence,
+                candidate,
+            )
+        });
+        let Some(candidate) = content_probe_matches.next() else {
             return Err(YtDlpCandidateRematchError::StaleExactIdentity);
         };
-        if semantic_matches.next().is_some() {
+        if content_probe_matches.next().is_some() {
             return Err(YtDlpCandidateRematchError::AmbiguousSemanticIdentity);
         }
         Ok(YtDlpCandidateMatch {
@@ -476,17 +502,34 @@ impl YtDlpCandidateSnapshot {
         }
     }
 
-    /// Итерирует selected result перед inventory, сохраняя richer request material при duplicate ID.
+    /// Итерирует канонические accepted candidates: один exact ID — один candidate.
+    ///
+    /// Корневой selected result намеренно выигрывает у одноимённой строки
+    /// `formats[]`: yt-dlp обычно повторяет выбранный формат в inventory, но
+    /// именно selected result может содержать более полный request material.
+    /// Rejected selected origin тоже shadow-ит свой exact ID и не позволяет
+    /// обойти fail-closed отказ через более бедную inventory-копию.
+    /// Остальные duplicate ID уже превращены normalization boundary в visible
+    /// rejection rows, поэтому accepted inventory сам по себе unique-by-exact.
     pub fn accepted_candidates(&self) -> impl Iterator<Item = &YtDlpNormalizedCandidate> {
-        self.selected
-            .as_ref()
-            .and_then(YtDlpCandidateEntry::accepted)
-            .into_iter()
-            .chain(
-                self.inventory
-                    .iter()
-                    .filter_map(YtDlpCandidateEntry::accepted),
-            )
+        let selected_entry = self.selected.as_ref();
+        let selected_candidate = selected_entry.and_then(YtDlpCandidateEntry::accepted);
+        let selected_identity = selected_entry.and_then(|entry| {
+            entry
+                .accepted()
+                .map(|candidate| candidate.descriptor().identity())
+                .or_else(|| entry.rejected().and_then(YtDlpRejectedCandidate::identity))
+        });
+
+        selected_candidate.into_iter().chain(
+            self.inventory
+                .iter()
+                .filter_map(YtDlpCandidateEntry::accepted)
+                .filter(move |candidate| {
+                    selected_identity
+                        .is_none_or(|identity| identity != candidate.descriptor().identity())
+                }),
+        )
     }
 
     pub(super) fn accepted_inventory_candidates(
@@ -496,6 +539,24 @@ impl YtDlpCandidateSnapshot {
             .iter()
             .filter_map(YtDlpCandidateEntry::accepted)
     }
+
+    /// Проверяет эквивалентное accepted `formats[]` membership canonical candidate-а.
+    ///
+    /// Composition требует реальную inventory строку, но request material берёт
+    /// из canonical selected-first view. Поэтому selected-only row не становится
+    /// component-ом, rejected/conflicting selected shadow не обходится, а обычный
+    /// selected+inventory duplicate сохраняет более полный selected material.
+    pub(super) fn has_equivalent_accepted_inventory_membership(
+        &self,
+        canonical_candidate: &YtDlpNormalizedCandidate,
+    ) -> bool {
+        self.accepted_inventory_candidates()
+            .any(|inventory_candidate| {
+                inventory_candidate.descriptor() == canonical_candidate.descriptor()
+                    && inventory_candidate.video_color_evidence()
+                        == canonical_candidate.video_color_evidence()
+            })
+    }
 }
 
 /// Process-local exact selection хранит ID, generation и semantic attributes.
@@ -503,6 +564,8 @@ impl YtDlpCandidateSnapshot {
 pub struct YtDlpCandidateSelection {
     /// Полный neutral descriptor нужен для validated semantic rematch.
     descriptor: CandidateDescriptor,
+    /// Color evidence остаётся exact constraint при content-probe metadata drift.
+    video_color_evidence: Option<YtDlpVideoColorEvidence>,
 }
 
 /// Typed отказ создания selection token-а из foreign/non-inventory candidate-а.
@@ -520,12 +583,20 @@ pub enum YtDlpCandidateSelectionError {
 }
 
 impl YtDlpCandidateSelection {
-    pub(super) fn from_descriptor(descriptor: CandidateDescriptor) -> Self {
-        Self { descriptor }
+    pub(super) fn from_candidate(candidate: &YtDlpNormalizedCandidate) -> Self {
+        Self {
+            descriptor: candidate.descriptor.clone(),
+            video_color_evidence: candidate.video_color_evidence,
+        }
     }
 
     pub(super) const fn descriptor(&self) -> &CandidateDescriptor {
         &self.descriptor
+    }
+
+    /// Возвращает exact provider color evidence, входящее в selection contract.
+    pub(super) const fn video_color_evidence(&self) -> Option<YtDlpVideoColorEvidence> {
+        self.video_color_evidence
     }
 
     /// Возвращает snapshot-local identity.
@@ -533,7 +604,10 @@ impl YtDlpCandidateSelection {
         self.descriptor.identity()
     }
 
-    /// Возвращает refresh-stable semantic identity.
+    /// Возвращает primary refresh-stable semantic identity.
+    ///
+    /// Совместимый `ContentProbed` metadata drift остаётся service-owned частью
+    /// [`YtDlpCandidateSnapshot::rematch_exact`] и не ослабляет этот identity.
     pub const fn semantic_identity(&self) -> &SemanticIdentity {
         self.descriptor.semantic_identity()
     }

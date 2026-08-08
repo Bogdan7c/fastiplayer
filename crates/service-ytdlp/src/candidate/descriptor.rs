@@ -2,7 +2,8 @@
 
 use web_media_core::{
     AudioComponentDescriptor, AudioTrackDescriptor, Bitrate, ChannelCount, CodecFamily, CodecKind,
-    CodecMediaKind, ContainerFamily, ContainerIdentity, DynamicRange, FrameRate,
+    CodecMediaKind, ContainerFamily, ContainerIdentity, ContentProbedDescriptor,
+    ContentProbedTrackEvidence, ContentProbedVideoHints, DynamicRange, FrameRate,
     HlsMuxedCodecDeferredDescriptor, LanguageTag, MuxedComponentDescriptor, NormalizedCodec,
     NormalizedTransport, ProfileExclusionReason, RawCodecIdentity, RawContainerIdentity,
     RawExtensionIdentity, RawTransportIdentity, SampleRate, StaticCompatibilityRejection,
@@ -49,12 +50,26 @@ pub(super) fn normalize_format_parts(
 
     let transport = normalize_transport(format)?;
     let container = normalize_container(format, transport.family())?;
-    let layout = if format.vcodec.is_none() && format.acodec.is_none() {
-        if transport.family() == TransportFamily::Hls {
+    let video_codec_missing = format.vcodec.is_none();
+    let audio_codec_missing = format.acodec.is_none();
+    let layout = if transport.family() == TransportFamily::Hds {
+        // HDS всегда открывает provider-owned F4M hierarchy и F4F fragments.
+        // Поэтому extractor codec hints являются evidence, а не основанием
+        // подменять runtime resource обычным progressive FLV descriptor-ом.
+        normalize_content_probed(format, transport, container)?
+    } else if video_codec_missing || audio_codec_missing {
+        if video_codec_missing && audio_codec_missing && transport.family() == TransportFamily::Hls
+        {
             normalize_hls_muxed_codec_deferred(format, transport, container)?
+        } else if content_probe_transport_is_supported(transport.family()) {
+            normalize_content_probed(format, transport, container)?
         } else {
             return Err(invalid_metadata(
-                StaticDescriptorField::VideoCodec,
+                if video_codec_missing {
+                    StaticDescriptorField::VideoCodec
+                } else {
+                    StaticDescriptorField::AudioCodec
+                },
                 StaticMetadataViolation::Missing,
             ));
         }
@@ -63,7 +78,9 @@ pub(super) fn normalize_format_parts(
         let audio_codec = normalize_codec(format.acodec.as_deref(), CodecMediaKind::Audio)?;
         normalize_layout(format, transport, container, video_codec, audio_codec)?
     };
-    let video_color_evidence = if matches!(&layout, StreamLayout::AudioOnly(_)) {
+    let video_color_evidence = if matches!(&layout, StreamLayout::AudioOnly(_))
+        || matches!(&layout, StreamLayout::ContentProbed(component) if component.video().is_absent())
+    {
         None
     } else {
         normalize_video_color_evidence(format.dynamic_range.as_deref())
@@ -76,6 +93,114 @@ pub(super) fn normalize_format_parts(
         video_color_evidence,
         request,
     })
+}
+
+/// Ограничивает deferred track proof теми transport owner-ами, которые его реализуют.
+const fn content_probe_transport_is_supported(transport: TransportFamily) -> bool {
+    matches!(
+        transport,
+        TransportFamily::ProgressiveHttp(_) | TransportFamily::ProgressiveFtp(_)
+    )
+}
+
+/// Строит single-resource layout, когда extractor оставил часть track metadata неизвестной.
+fn normalize_content_probed(
+    format: &YtDlpSerializedFormat,
+    transport: NormalizedTransport,
+    container: ContainerIdentity,
+) -> Result<StreamLayout, YtDlpCandidateNormalizationRejection> {
+    let video = match format.vcodec.as_deref() {
+        None => ContentProbedTrackEvidence::Unknown,
+        Some(raw_codec) => {
+            let codec = normalize_codec(Some(raw_codec), CodecMediaKind::Video)?;
+            match codec.kind() {
+                CodecKind::Absent => ContentProbedTrackEvidence::Absent,
+                CodecKind::Known(_) => {
+                    ContentProbedTrackEvidence::Declared(normalize_video_track(format, codec)?)
+                }
+                CodecKind::Unknown => {
+                    unreachable!("normalize_codec уже отклонил unknown video codec")
+                }
+            }
+        }
+    };
+    let audio = match format.acodec.as_deref() {
+        None => ContentProbedTrackEvidence::Unknown,
+        Some(raw_codec) => {
+            let codec = normalize_codec(Some(raw_codec), CodecMediaKind::Audio)?;
+            match codec.kind() {
+                CodecKind::Absent => ContentProbedTrackEvidence::Absent,
+                CodecKind::Known(_) => {
+                    ContentProbedTrackEvidence::Declared(normalize_audio_track(format, codec)?)
+                }
+                CodecKind::Unknown => {
+                    unreachable!("normalize_codec уже отклонил unknown audio codec")
+                }
+            }
+        }
+    };
+    let width = format
+        .width
+        .map(VideoWidth::new)
+        .transpose()
+        .map_err(|_| invalid_video_dimensions())?;
+    let height = format
+        .height
+        .map(VideoHeight::new)
+        .transpose()
+        .map_err(|_| invalid_video_dimensions())?;
+    let frame_rate = format.fps.map(normalize_frame_rate).transpose()?;
+    let bitrate = normalize_bitrate(format.vbr.or(format.tbr))?;
+    let dynamic_range = normalize_dynamic_range(format.dynamic_range.as_deref());
+    let probe_container = content_probe_container_family(transport.family(), &container)?;
+    let descriptor = ContentProbedDescriptor::new(
+        transport,
+        container,
+        probe_container,
+        video,
+        audio,
+        ContentProbedVideoHints::new(width, height, frame_rate, bitrate, dynamic_range),
+    )
+    .map_err(|_| YtDlpCandidateNormalizationRejection::InvalidStreamLayout)?;
+    Ok(StreamLayout::ContentProbed(descriptor))
+}
+
+/// Выбирает фактический demux contract без угадывания по transport family.
+fn content_probe_container_family(
+    transport: TransportFamily,
+    container: &ContainerIdentity,
+) -> Result<ContainerFamily, YtDlpCandidateNormalizationRejection> {
+    if transport == TransportFamily::Hds {
+        let extractor_hints = [container.extension_family(), container.container_family()];
+        let has_f4f_compatible_hint = extractor_hints
+            .iter()
+            .any(|family| matches!(family, Some(ContainerFamily::Flv | ContainerFamily::F4f)));
+        let all_hints_are_f4f_compatible = extractor_hints.iter().all(|family| {
+            matches!(
+                family,
+                None | Some(ContainerFamily::Flv | ContainerFamily::F4f)
+            )
+        });
+        if has_f4f_compatible_hint && all_hints_are_f4f_compatible {
+            return Ok(ContainerFamily::F4f);
+        }
+        return Err(invalid_metadata(
+            StaticDescriptorField::Container,
+            StaticMetadataViolation::ContradictoryHints,
+        ));
+    }
+
+    container
+        .consistent_family()
+        .map_err(|conflict| {
+            static_rejection(StaticCompatibilityRejection::ContainerHintsConflict { conflict })
+        })?
+        .ok_or_else(|| {
+            invalid_metadata(
+                StaticDescriptorField::Container,
+                StaticMetadataViolation::Insufficient,
+            )
+        })
 }
 
 /// Парсит raw transport и сохраняет unknown/profile exclusions typed.

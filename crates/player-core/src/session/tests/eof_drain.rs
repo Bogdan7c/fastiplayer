@@ -1,6 +1,36 @@
 use super::test_support::*;
 use super::*;
 
+/// Декодирует каждый encoded tail packet в настоящий bounded stereo PCM block.
+struct EofTailPcmDecoder;
+
+impl audio_core::AudioDecoder for EofTailPcmDecoder {
+    /// Возвращает 10 ms stereo PCM при 48 kHz, чтобы тест прошёл через output write.
+    fn decode(&mut self, _packet: &audio_core::EncodedAudioPacket<'_>) -> anyhow::Result<Vec<f32>> {
+        Ok(vec![0.0; 480 * 2])
+    }
+
+    /// Stateless test decoder не хранит межпакетный codec state.
+    fn reset(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Фиксирует частоту production-shaped Opus/AAC tail-а.
+    fn sample_rate(&self) -> u32 {
+        48_000
+    }
+
+    /// Возвращает stereo channel count для frame accounting.
+    fn channels(&self) -> u32 {
+        2
+    }
+
+    /// Связывает PCM с явным stereo layout, а не только с числом каналов.
+    fn channel_layout(&self) -> Option<audio_core::AudioChannelLayout> {
+        Some(audio_core::AudioChannelLayout::stereo())
+    }
+}
+
 #[test]
 fn eof_during_seek_schedules_bounded_progress_instead_of_idle_sleep() {
     let mut session = PlayerSession::new();
@@ -415,6 +445,142 @@ fn video_eof_drain_decodes_pending_video_tail_before_ending() {
     assert_eq!(session.playback_state(), PlaybackState::Seeking);
     assert!(session.snapshot().timeline.seeking);
     assert!(!session.snapshot().timeline.scrubbing);
+}
+
+#[test]
+fn seek_near_eof_with_video_and_audio_tail_reaches_auto_next_terminal_state() {
+    let target_position = Duration::from_secs(28);
+    let actual_seek_position = Duration::from_secs(27);
+    let landing_frame_position = Duration::from_millis(28_040);
+    let video_track = fake_track(1, TrackKind::Video);
+    let audio_track = fake_track(2, TrackKind::Audio);
+    let packets = vec![
+        fake_video_packet_with_keyframe(
+            video_track.id,
+            actual_seek_position,
+            PacketKeyframe::Keyframe,
+        ),
+        fake_audio_packet(
+            audio_track.id,
+            Duration::from_millis(28_000),
+            Duration::from_millis(20),
+        ),
+        fake_video_packet_with_keyframe(
+            video_track.id,
+            landing_frame_position,
+            PacketKeyframe::NotKeyframe,
+        ),
+        fake_audio_packet(
+            audio_track.id,
+            Duration::from_millis(29_000),
+            Duration::from_millis(20),
+        ),
+    ];
+    let demuxer = scripted_seek_demuxer(
+        vec![video_track.clone(), audio_track.clone()],
+        target_position,
+        actual_seek_position,
+        packets,
+    );
+    let mut harness = SeekRegressionHarness::new(vec![video_track, audio_track], demuxer);
+    let audio_output = install_ready_audio_runtime(&mut harness.session, 60.0, None);
+    harness
+        .session
+        .pipeline
+        .install_audio_decoder(Box::new(EofTailPcmDecoder));
+    harness
+        .decoder
+        .decode_next_packet_as_frame(actual_seek_position, 801);
+    harness
+        .decoder
+        .decode_next_packet_as_frame(landing_frame_position, 802);
+
+    harness
+        .session
+        .dispatch_command(PlayerCommand::Play)
+        .unwrap();
+    harness.start_final_seek(MediaTime::from_duration(target_position));
+    let seek_generation = harness.session.pipeline.seek_generation();
+    harness
+        .decoder
+        .push_eof_drain_result(video_core::VideoDecoderEndOfStreamDrainResult::Started(
+            video_core::VideoDecoderEndOfStreamDrainState::Draining {
+                generation: seek_generation,
+            },
+        ));
+
+    let tick_started_at = Instant::now();
+    for tick_index in 0..8 {
+        let tick_now = tick_started_at + Duration::from_millis(tick_index * 5);
+        let _tick_result = harness.session.tick(PlayerTickContext::with_config(
+            tick_now,
+            seek_admission_tick_config(2, 4),
+        ));
+        if harness.session.seek_commit().is_none() && harness.session.is_eof_draining() {
+            break;
+        }
+    }
+
+    assert!(harness.session.seek_commit().is_none());
+    assert_eq!(harness.session.playback_state(), PlaybackState::Draining);
+    assert_eq!(
+        harness
+            .session
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.pts),
+        Some(landing_frame_position),
+        "near-EOF seek должен реально представить target-or-after video frame"
+    );
+    assert!(
+        !audio_output.written_samples().is_empty(),
+        "post-seek audio tail должен пройти decode и output write"
+    );
+    assert!(harness.session.pipeline.pending_audio_packet_is_empty());
+    assert!(harness.session.pipeline.pending_video_packet_is_empty());
+    assert_eq!(harness.session.pipeline.video_decode_in_flight_packets(), 0);
+    assert_eq!(
+        harness
+            .session
+            .pipeline
+            .video_decoder_end_of_stream_drain_state(),
+        video_core::VideoDecoderEndOfStreamDrainState::Draining {
+            generation: seek_generation,
+        }
+    );
+
+    // Реальный FFmpeg worker публикует этот переход после последнего
+    // release-driven receive pass; audio output к этому моменту тоже опустел.
+    harness
+        .decoder
+        .set_eof_drain_state(video_core::VideoDecoderEndOfStreamDrainState::Drained {
+            generation: seek_generation,
+        });
+    audio_output.set_buffer_level_ms(0.0);
+    let _terminal_tick = harness.session.tick(PlayerTickContext::with_config(
+        tick_started_at + Duration::from_millis(50),
+        seek_admission_tick_config(2, 4),
+    ));
+
+    assert_eq!(harness.session.playback_state(), PlaybackState::Ended);
+    assert_eq!(
+        harness.session.snapshot().current_position,
+        Duration::from_secs(30)
+    );
+    let events = harness.session.take_events();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        PlayerEvent::SeekCommitted(commit)
+            if commit.target_position == target_position
+                && commit.resume_intent == PlaybackResumeIntent::Play
+    )));
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            PlayerEvent::PlaybackStateChanged(PlaybackState::Ended)
+        )),
+        "Ended snapshot/event — точный terminal edge, который допускает playlist auto-next"
+    );
 }
 
 #[test]

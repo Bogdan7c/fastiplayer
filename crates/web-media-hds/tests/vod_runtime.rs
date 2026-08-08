@@ -29,8 +29,8 @@ use web_media_core::{
     ExtractionGeneration, PreferredHeightPolicy, SemanticIdentity, SourceIdentity,
 };
 use web_media_hds::{
-    HdsCatalogDiscoveryRequest, HdsRenditionCapabilityProbe, HdsRenditionCapabilityRejection,
-    HdsRenditionRejectionReason, HdsRenditionSelection, HdsVodOpenPolicy, HdsVodOpenRequest,
+    HdsCatalogDiscoveryRequest, HdsNoPlayableRendition, HdsRenditionCapabilityProbe,
+    HdsRenditionCapabilityRejection, HdsRenditionSelection, HdsVodOpenPolicy, HdsVodOpenRequest,
     discover_hds_renditions, prepare_discovered_hds_vod, prepare_hds_vod,
 };
 use web_media_transport_api::{
@@ -284,7 +284,7 @@ fn prepares_local_f4m_bootstrap_and_f4f_until_tracks_and_packet() {
     drop(demuxer);
 }
 
-/// Reorder/URL rotation сохраняет semantic row, malformed sibling изолируется,
+/// Reorder/URL rotation сохраняет semantic row, unavailable sibling изолируется,
 /// а rematched exact identity открывает только fresh private runtime mapping.
 #[test]
 fn discovers_refresh_stable_coupled_row_and_opens_fresh_exact_selection() {
@@ -307,10 +307,9 @@ fn discovers_refresh_stable_coupled_row_and_opens_fresh_exact_selection() {
     })
     .expect("first HDS catalog discovery succeeds");
     assert_eq!(first.catalog().coupled_presentations().len(), 1);
-    assert_eq!(first.rejections().len(), 1);
-    assert_eq!(
-        first.rejections()[0].reason(),
-        HdsRenditionRejectionReason::F4fProbeFailed
+    assert!(
+        first.rejections().is_empty(),
+        "infrastructure failure must not be published as content rejection"
     );
     let ComponentVariantSelection::Coupled {
         presentation: old_presentation,
@@ -404,7 +403,10 @@ fn capability_rejection_prevents_truthless_catalog_publication() {
     })
     .expect_err("capability-rejected row must not be published");
 
-    assert!(error.to_string().contains("no probed playable rendition"));
+    assert!(
+        error.downcast_ref::<HdsNoPlayableRendition>().is_some(),
+        "all content/capability rejections must preserve typed parent fallback"
+    );
 }
 
 /// Fixture adapter подтверждает, что discovery дошёл до immutable capability boundary.

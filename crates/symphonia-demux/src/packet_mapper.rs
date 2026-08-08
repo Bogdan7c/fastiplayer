@@ -36,9 +36,19 @@ pub(crate) enum PacketConvertError {
 }
 
 /// Конвертирует Symphonia packet в neutral media-core packet.
+#[cfg(test)]
 pub(crate) fn convert_packet(
     packet: SymphoniaPacket,
     track_map: &HashMap<u32, TrackEntry>,
+) -> Result<MediaPacket, PacketConvertError> {
+    convert_packet_with_source_offset(packet, track_map, None)
+}
+
+/// Конвертирует packet и, когда concrete container это доказал, сохраняет точное начало payload-а.
+pub(crate) fn convert_packet_with_source_offset(
+    packet: SymphoniaPacket,
+    track_map: &HashMap<u32, TrackEntry>,
+    source_offset: Option<u64>,
 ) -> Result<MediaPacket, PacketConvertError> {
     let packet_track_id = packet.track_id;
     let track_entry = track_map
@@ -80,6 +90,10 @@ pub(crate) fn convert_packet(
 
     if let Some(track_duration) = track_duration {
         media_packet = media_packet.with_track_duration(track_duration);
+    }
+
+    if let Some(source_offset) = source_offset {
+        media_packet = media_packet.with_byte_offset(source_offset);
     }
 
     Ok(media_packet)
@@ -181,7 +195,7 @@ mod tests {
     use symphonia::core::packet::{Packet as SymphoniaPacket, PacketBuilder};
     use symphonia::core::units::{Duration as SymphoniaDuration, TimeBase, Timestamp};
 
-    use super::{PacketConvertError, convert_packet};
+    use super::{PacketConvertError, convert_packet, convert_packet_with_source_offset};
     use crate::track_mapper::{TrackEntry, TrackEntryKind, UnsupportedTrackKind};
 
     fn track_entry(kind: TrackKind, codec_id: &str) -> TrackEntry {
@@ -423,6 +437,19 @@ mod tests {
         );
         assert_eq!(&packet.data[..], b"opus");
         assert_eq!(packet.keyframe, PacketKeyframe::NotKeyframe);
+        assert_eq!(packet.byte_offset, None);
+    }
+
+    #[test]
+    fn converts_exact_container_source_offset_without_guessing_for_other_packets() {
+        let track_map = HashMap::from([(7, track_entry(TrackKind::Audio, "A_OPUS"))]);
+
+        let packet =
+            convert_packet_with_source_offset(packet(7, 48_000, b"opus"), &track_map, Some(12_345))
+                .expect("source-positioned packet должен конвертироваться");
+
+        assert_eq!(packet.byte_offset, Some(12_345));
+        assert_eq!(&packet.data[..], b"opus");
     }
 
     #[test]

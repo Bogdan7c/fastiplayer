@@ -50,6 +50,20 @@ pub(super) fn catalog_attachment(
     WebMediaCatalogAttachment::new(parent, choices, active)
 }
 
+/// Возвращает число projected parent choices для cross-module regression tests.
+#[cfg(test)]
+pub(super) fn projected_parent_choice_count(
+    request: CatalogAttachmentRequest<'_>,
+) -> Result<usize> {
+    parent_choices(
+        request.candidate_snapshot,
+        request.planning_snapshot,
+        request.capabilities,
+        request.policy,
+    )
+    .map(|choices| choices.len())
+}
+
 fn complete_parent_choices(
     mut choices: Vec<WebMediaCatalogChoice>,
     active: &WebMediaSelectionTarget,
@@ -74,6 +88,9 @@ fn parent_choices(
     capabilities: PlaybackCapabilitySnapshot<'_>,
     policy: &PlaybackSelectionPolicy,
 ) -> Result<Vec<WebMediaCatalogChoice>> {
+    snapshot
+        .validate_planning_snapshot_alignment(planning)
+        .context("Catalog service/planner snapshots не соответствуют друг другу")?;
     let ranking =
         web_media_playback_plan::rank_playable_opaque_alternatives(planning, capabilities, policy)?;
     let rejected = ranking
@@ -103,33 +120,30 @@ fn parent_choices(
         });
     }
     let current_audio = None;
-    let playable_audio = snapshot
+    let mut playable_audio = snapshot
         .accepted_candidates()
         .filter(|candidate| {
             matches!(candidate.descriptor().layout(), StreamLayout::AudioOnly(_))
                 && !rejected.contains(candidate.descriptor().identity())
         })
         .collect::<Vec<_>>();
+    playable_audio.sort_by(|left, right| {
+        web_media_playback_plan::compare_audio_fallback(
+            current_audio,
+            left.descriptor().semantic_identity(),
+            left.audio_fallback_rank()
+                .expect("audio-only candidate has audio rank"),
+            right.descriptor().semantic_identity(),
+            right
+                .audio_fallback_rank()
+                .expect("audio-only candidate has audio rank"),
+        )
+    });
     for video in snapshot.accepted_candidates().filter(|candidate| {
         matches!(candidate.descriptor().layout(), StreamLayout::VideoOnly(_))
             && !rejected.contains(candidate.descriptor().identity())
     }) {
-        let Some(audio) = playable_audio.iter().copied().min_by(|left, right| {
-            web_media_playback_plan::compare_audio_fallback(
-                current_audio,
-                left.descriptor().semantic_identity(),
-                left.audio_fallback_rank()
-                    .expect("audio-only candidate has audio rank"),
-                right.descriptor().semantic_identity(),
-                right
-                    .audio_fallback_rank()
-                    .expect("audio-only candidate has audio rank"),
-            )
-        }) else {
-            continue;
-        };
         let video_selection = snapshot.selection_for(video)?;
-        let audio_selection = snapshot.selection_for(audio)?;
         let parent_rank = ranking
             .rank_of_candidate(
                 video_selection.exact_identity(),
@@ -138,7 +152,19 @@ fn parent_choices(
             .ok_or_else(|| {
                 anyhow::anyhow!("composed video отсутствует в opaque planner ranking")
             })?;
-        let composed = snapshot.compose_inventory_av(&video_selection, &audio_selection)?;
+        let mut composed = None;
+        for audio in &playable_audio {
+            let audio_selection = snapshot.selection_for(audio)?;
+            if let Some(selection) =
+                compose_catalog_inventory_av(snapshot, &video_selection, &audio_selection)?
+            {
+                composed = Some(selection);
+                break;
+            }
+        }
+        let Some(composed) = composed else {
+            continue;
+        };
         let StreamLayout::Separate {
             video: component, ..
         } = composed.descriptor().layout()
@@ -156,6 +182,19 @@ fn parent_choices(
         });
     }
     Ok(choices)
+}
+
+/// Отделяет optional non-inventory alternative от настоящего composition error-а.
+fn compose_catalog_inventory_av(
+    snapshot: &YtDlpCandidateSnapshot,
+    video: &YtDlpCandidateSelection,
+    audio: &YtDlpCandidateSelection,
+) -> Result<Option<YtDlpComposedSelection>> {
+    match snapshot.compose_inventory_av(video, audio) {
+        Ok(composed) => Ok(Some(composed)),
+        Err(service_ytdlp::YtDlpCompositionError::ForeignGenerationOrInventory) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn layout_facets(
@@ -180,6 +219,18 @@ fn layout_facets(
                 component.dynamic_range(),
             )),
         ),
+        StreamLayout::ContentProbed(component) => {
+            let mode = match (component.video(), component.audio()) {
+                (web_media_core::ContentProbedTrackEvidence::Absent, _) => WebMediaMode::AudioOnly,
+                (_, web_media_core::ContentProbedTrackEvidence::Absent) => WebMediaMode::VideoOnly,
+                (
+                    web_media_core::ContentProbedTrackEvidence::Declared(_),
+                    web_media_core::ContentProbedTrackEvidence::Declared(_),
+                ) => WebMediaMode::VideoAndAudio,
+                _ => WebMediaMode::Automatic,
+            };
+            (mode, component.video().declared().cloned())
+        }
         StreamLayout::Separate { video, .. } => {
             (WebMediaMode::VideoAndAudio, Some(video.video().clone()))
         }

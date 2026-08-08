@@ -362,6 +362,10 @@ impl PlayerSession {
     }
 
     /// Сообщает, какая операция сейчас эксклюзивно владеет pipeline reconfigure boundary.
+    ///
+    /// Staged media install остаётся lifecycle-owner-ом и до `ReadyToCommit`, и после него:
+    /// settings rebuild не должен обогнать его atomic authorization и затем быть затёрт
+    /// заранее подготовленным backend candidate-ом.
     #[must_use]
     pub(crate) fn runtime_reconfigure_boundary_activity(
         &self,
@@ -375,6 +379,7 @@ impl PlayerSession {
             return Some(PlayerRuntimeBoundaryActivity::Seek);
         }
         if matches!(self.playback_state(), PlaybackState::Opening)
+            || self.has_staged_media_install()
             || self.has_pending_video_backend_reselection()
         {
             return Some(PlayerRuntimeBoundaryActivity::PipelineLifecycle);

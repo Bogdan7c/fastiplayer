@@ -20,13 +20,14 @@ pub(crate) mod metadata;
 
 use crate::byte_source::ByteSourceMediaSource;
 use crate::error::DemuxError;
+use crate::isomp4_source_offset::{PacketSourceOffsetObserver, open_reader_with_source_offsets};
 use crate::matroska_metadata::{
     MATROSKA_CUES_SCAN_LIMIT_BYTES, MatroskaCueIndex, MatroskaVideoTrack,
     extract_cue_index_from_cues_bytes, extract_cue_index_from_file, extract_video_tracks_from_file,
     scan_cue_read_plan_from_bytes, scan_video_tracks_from_bytes,
 };
 use crate::options::DemuxerOptions;
-use crate::packet_mapper::{PacketConvertError, convert_packet};
+use crate::packet_mapper::{PacketConvertError, convert_packet_with_source_offset};
 use crate::seek_mapper::{
     preferred_seek_track_id, seeked_to_timeline_result, symphonia_seek_error_to_demux_error,
     symphonia_seek_mode, symphonia_seek_target,
@@ -85,6 +86,8 @@ const IN_RANGE_OUT_OF_RANGE_SEEK_MAX_REFINEMENT_RETRIES: usize = 10;
 /// Demuxer на базе Symphonia для media containers, которые поддерживает workspace dependency.
 pub struct SymphoniaDemuxer {
     format: Option<FormatReaderBox<'static>>,
+    /// Присутствует только у concrete ISO-BMFF reader-а из доказанного registry route-а.
+    packet_source_offset_observer: Option<PacketSourceOffsetObserver>,
     probe_hint: Hint,
     source_label: String,
     tracks: Vec<TrackInfo>,
@@ -106,6 +109,22 @@ struct SymphoniaTrackState {
     track_map: HashMap<u32, TrackEntry>,
     track_duration: Option<Duration>,
     media_info_duration: Option<Duration>,
+}
+
+/// Именованный context открытия отделяет reader ownership от source/probe state demuxer-а.
+struct FormatReaderProbeContext {
+    /// Hint нужен только для controlled reprobe того же container-а.
+    probe_hint: Hint,
+    /// Безопасный source label используется только в diagnostics.
+    source_label: String,
+    /// Matroska-only metadata остаётся пустой для concrete ISO-BMFF route-а.
+    matroska_video_tracks_by_track: HashMap<TrackId, MatroskaVideoTrack>,
+    /// Matroska cue fallback не смешивается с ISO-BMFF source-position boundary.
+    matroska_cue_index: MatroskaCueIndex,
+    /// Seekability принадлежит source stack-у, а не выбранному reader adapter-у.
+    seekability: DemuxSeekability,
+    /// Observer присутствует только у concrete ISO-BMFF reader-а.
+    packet_source_offset_observer: Option<PacketSourceOffsetObserver>,
 }
 
 impl SymphoniaDemuxer {
@@ -130,11 +149,14 @@ impl SymphoniaDemuxer {
 
         Self::from_format_reader_with_probe_context(
             format,
-            hint,
-            &path.display().to_string(),
-            video_tracks_by_track,
-            matroska_cue_index,
-            DemuxSeekability::Seekable,
+            FormatReaderProbeContext {
+                probe_hint: hint,
+                source_label: path.display().to_string(),
+                matroska_video_tracks_by_track: video_tracks_by_track,
+                matroska_cue_index,
+                seekability: DemuxSeekability::Seekable,
+                packet_source_offset_observer: None,
+            },
             options,
         )
     }
@@ -185,10 +207,37 @@ impl SymphoniaDemuxer {
 
         Self::from_format_reader_with_probe_context(
             format,
-            hint,
+            FormatReaderProbeContext {
+                probe_hint: hint,
+                source_label: label.to_owned(),
+                matroska_video_tracks_by_track: video_tracks_by_track,
+                matroska_cue_index: MatroskaCueIndex::default(),
+                seekability: DemuxSeekability::NotSeekable {
+                    reason: TimelineNotSeekableReason::SourceNotSeekable,
+                },
+                packet_source_offset_observer: None,
+            },
+            options,
+        )
+    }
+
+    /// Открывает уже доказанный registry-ем ISO-BMFF stream через concrete source-offset reader.
+    pub(crate) fn from_proven_iso_bmff_stream_with_options<R>(
+        reader: R,
+        extension_hint: &str,
+        label: &str,
+        options: DemuxerOptions,
+    ) -> Result<Self, DemuxError>
+    where
+        R: Read + Send + Sync + 'static,
+    {
+        let media_source = ReadOnlySource::new(reader);
+        let media_source_stream =
+            MediaSourceStream::new(Box::new(media_source), Default::default());
+        Self::from_proven_iso_bmff_media_source_stream(
+            media_source_stream,
+            symphonia_api::hint_from_extension(extension_hint),
             label,
-            video_tracks_by_track,
-            MatroskaCueIndex::default(),
             DemuxSeekability::NotSeekable {
                 reason: TimelineNotSeekableReason::SourceNotSeekable,
             },
@@ -249,11 +298,62 @@ impl SymphoniaDemuxer {
 
         Self::from_format_reader_with_probe_context(
             format,
-            hint,
+            FormatReaderProbeContext {
+                probe_hint: hint,
+                source_label: label.to_owned(),
+                matroska_video_tracks_by_track: video_tracks_by_track,
+                matroska_cue_index,
+                seekability: demux_seekability,
+                packet_source_offset_observer: None,
+            },
+            options,
+        )
+    }
+
+    /// Открывает уже доказанный registry-ем ISO-BMFF byte source с сохранением seekability.
+    pub(crate) fn from_proven_iso_bmff_byte_source_with_options<S>(
+        source: S,
+        extension_hint: &str,
+        label: &str,
+        options: DemuxerOptions,
+    ) -> Result<Self, DemuxError>
+    where
+        S: ByteSource + 'static,
+    {
+        let demux_seekability = source_seekability_to_demux_seekability(source.seekability());
+        let media_source = ByteSourceMediaSource::new(Box::new(source));
+        let media_source_stream =
+            MediaSourceStream::new(Box::new(media_source), Default::default());
+        Self::from_proven_iso_bmff_media_source_stream(
+            media_source_stream,
+            symphonia_api::hint_from_extension(extension_hint),
             label,
-            video_tracks_by_track,
-            matroska_cue_index,
             demux_seekability,
+            options,
+        )
+    }
+
+    /// Собирает neutral demuxer вокруг concrete ISO-BMFF reader-а и его per-read observer-а.
+    fn from_proven_iso_bmff_media_source_stream(
+        media_source_stream: MediaSourceStream<'static>,
+        probe_hint: Hint,
+        label: &str,
+        seekability: DemuxSeekability,
+        options: DemuxerOptions,
+    ) -> Result<Self, DemuxError> {
+        let (format, packet_source_offset_observer) =
+            open_reader_with_source_offsets(media_source_stream)
+                .map_err(|error| DemuxError::UnsupportedFormat(error.to_string()))?;
+        Self::from_format_reader_with_probe_context(
+            format,
+            FormatReaderProbeContext {
+                probe_hint,
+                source_label: label.to_owned(),
+                matroska_video_tracks_by_track: HashMap::new(),
+                matroska_cue_index: MatroskaCueIndex::default(),
+                seekability,
+                packet_source_offset_observer: Some(packet_source_offset_observer),
+            },
             options,
         )
     }
@@ -269,11 +369,14 @@ impl SymphoniaDemuxer {
     ) -> Result<Self, DemuxError> {
         Self::from_format_reader_with_probe_context(
             format,
-            Hint::default(),
-            label,
-            video_tracks_by_track,
-            MatroskaCueIndex::default(),
-            seekability,
+            FormatReaderProbeContext {
+                probe_hint: Hint::default(),
+                source_label: label.to_owned(),
+                matroska_video_tracks_by_track: video_tracks_by_track,
+                matroska_cue_index: MatroskaCueIndex::default(),
+                seekability,
+                packet_source_offset_observer: None,
+            },
             options,
         )
     }
@@ -281,18 +384,23 @@ impl SymphoniaDemuxer {
     /// Собирает metadata и track map, сохраняя context для будущего controlled reprobe.
     fn from_format_reader_with_probe_context(
         mut format: FormatReaderBox<'static>,
-        probe_hint: Hint,
-        label: &str,
-        video_tracks_by_track: HashMap<TrackId, MatroskaVideoTrack>,
-        matroska_cue_index: MatroskaCueIndex,
-        seekability: DemuxSeekability,
+        probe_context: FormatReaderProbeContext,
         options: DemuxerOptions,
     ) -> Result<Self, DemuxError> {
+        let FormatReaderProbeContext {
+            probe_hint,
+            source_label,
+            matroska_video_tracks_by_track,
+            matroska_cue_index,
+            seekability,
+            packet_source_offset_observer,
+        } = probe_context;
         let symphonia_metadata = summarize_symphonia_format_metadata(&mut format);
-        let track_state = track_state_from_format_reader(&mut format, &video_tracks_by_track);
+        let track_state =
+            track_state_from_format_reader(&mut format, &matroska_video_tracks_by_track);
 
         info!(
-            source = %label,
+            source = %source_label,
             tracks = track_state.tracks.len(),
             duration = ?track_state.duration,
             track_duration = ?track_state.track_duration,
@@ -307,12 +415,13 @@ impl SymphoniaDemuxer {
         metadata::consume_media_metadata(&mut format, &mut media_metadata);
         Ok(Self {
             format: Some(format),
+            packet_source_offset_observer,
             probe_hint,
-            source_label: label.to_owned(),
+            source_label,
             tracks: track_state.tracks,
             duration: track_state.duration,
             track_map: track_state.track_map,
-            matroska_video_tracks_by_track: video_tracks_by_track,
+            matroska_video_tracks_by_track,
             matroska_cue_index,
             seekability,
             options,
@@ -390,8 +499,16 @@ impl SymphoniaDemuxer {
 
         media_source_stream.seek(SeekFrom::Start(0))?;
 
-        let mut rebuilt_format =
-            symphonia_api::probe_format_reader(&self.probe_hint, media_source_stream)?;
+        let (mut rebuilt_format, rebuilt_packet_source_offset_observer) =
+            if self.packet_source_offset_observer.is_some() {
+                let (format, observer) = open_reader_with_source_offsets(media_source_stream)?;
+                (format, Some(observer))
+            } else {
+                (
+                    symphonia_api::probe_format_reader(&self.probe_hint, media_source_stream)?,
+                    None,
+                )
+            };
         let symphonia_metadata = summarize_symphonia_format_metadata(&mut rebuilt_format);
         let track_state = track_state_from_format_reader(
             &mut rebuilt_format,
@@ -420,6 +537,7 @@ impl SymphoniaDemuxer {
         );
 
         self.format = Some(rebuilt_format);
+        self.packet_source_offset_observer = rebuilt_packet_source_offset_observer;
         self.track_map = track_state.track_map;
         self.end_of_stream_reached = false;
 
@@ -460,9 +578,17 @@ impl SymphoniaDemuxer {
     fn read_next_event_from_format(&mut self) -> Result<DemuxReadEvent> {
         loop {
             let next_packet_result = self.format_mut("next_packet")?.next_packet();
+            let packet_source_offset = self
+                .packet_source_offset_observer
+                .as_ref()
+                .and_then(PacketSourceOffsetObserver::take);
 
             match next_packet_result {
-                Ok(Some(packet)) => match convert_packet(packet, &self.track_map) {
+                Ok(Some(packet)) => match convert_packet_with_source_offset(
+                    packet,
+                    &self.track_map,
+                    packet_source_offset,
+                ) {
                     Ok(our_packet) => {
                         self.record_successful_packet();
                         let metadata_changed = {

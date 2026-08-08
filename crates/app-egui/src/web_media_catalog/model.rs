@@ -8,6 +8,8 @@ use crate::web_media_stream_model::WebMediaStreamGeneration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum WebMediaMode {
+    /// Track topology будет подтверждена после content probe.
+    Automatic,
     VideoAndAudio,
     VideoOnly,
     AudioOnly,
@@ -37,6 +39,18 @@ pub(crate) struct WebMediaFacetAction {
     pub(crate) generation: u64,
     pub(crate) facet: WebMediaFacet,
     pub(crate) option_index: usize,
+}
+
+#[cfg(test)]
+impl WebMediaFacetAction {
+    /// Создаёт readable Resolution action для cross-module functional fixtures.
+    pub(crate) const fn resolution_for_test(generation: u64, option_index: usize) -> Self {
+        Self {
+            generation,
+            facet: WebMediaFacet::Resolution,
+            option_index,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -391,9 +405,10 @@ fn compare_facet_options(
 
 fn facet_option_rank(option: &WebMediaFacetOption) -> u8 {
     match option {
-        WebMediaFacetOption::Mode(WebMediaMode::VideoAndAudio) => 0,
-        WebMediaFacetOption::Mode(WebMediaMode::VideoOnly) => 1,
-        WebMediaFacetOption::Mode(WebMediaMode::AudioOnly) => 2,
+        WebMediaFacetOption::Mode(WebMediaMode::Automatic) => 0,
+        WebMediaFacetOption::Mode(WebMediaMode::VideoAndAudio) => 1,
+        WebMediaFacetOption::Mode(WebMediaMode::VideoOnly) => 2,
+        WebMediaFacetOption::Mode(WebMediaMode::AudioOnly) => 3,
         WebMediaFacetOption::Codec(CodecFamily::H264) => 10,
         WebMediaFacetOption::Codec(CodecFamily::H265) => 11,
         WebMediaFacetOption::Codec(CodecFamily::Vp8) => 12,

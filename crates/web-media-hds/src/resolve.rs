@@ -68,8 +68,6 @@ pub enum HdsRenditionRejectionReason {
     MissingDuration,
     /// Две rows имеют один semantic contract и неразличимы без locator/order.
     AmbiguousSemanticIdentity,
-    /// F4F bytes/container не прошли bounded demux probe.
-    F4fProbeFailed,
     /// Demuxer опубликовал shape, отличный от ровно одного video + одного audio.
     UnsupportedTrackShape,
     /// Codec не входит в HDS profile или его descriptor нельзя выразить.
@@ -124,6 +122,20 @@ pub(crate) struct ResolvedHdsPresentation {
     pub(crate) renditions: Vec<ResolvedHdsRendition>,
     /// Safe bounded sibling diagnostics.
     pub(crate) rejections: Vec<HdsRenditionRejection>,
+    /// Первая infrastructure failure внешнего bootstrap-а.
+    ///
+    /// Ошибка сохраняется только для итогового решения: если хотя бы одна
+    /// sibling rendition пригодна, недоступная sibling изолируется; если ни
+    /// одной пригодной row не осталось, ошибка обязана остаться fatal.
+    pub(crate) first_unavailable: Option<anyhow::Error>,
+}
+
+/// Internal outcome загрузки одного rendition-scoped bootstrap-а.
+enum HdsBootstrapLoadFailure {
+    /// Locator/inline payload нарушает content contract и допускает sibling fallback.
+    Rejected(HdsRenditionRejectionReason),
+    /// Сеть/transport не доказали, что rendition непригодна.
+    Unavailable(anyhow::Error),
 }
 
 /// Metadata inherited from a set-level hierarchy edge.
@@ -156,6 +168,7 @@ pub(crate) fn resolve_presentation(
     let mut visited = HashSet::new();
     let mut renditions = Vec::new();
     let mut rejections = Vec::new();
+    let mut first_unavailable = None;
     let mut advertised_renditions = 0_usize;
 
     while let Some(node) = pending.pop() {
@@ -231,14 +244,19 @@ pub(crate) fn resolve_presentation(
                 ));
                 continue;
             };
-            let Ok(bootstrap_bytes) = fetch_bootstrap(http, &base_target, bootstrap, policy) else {
-                if http.cancellation().is_cancelled() {
-                    bail!("HDS rendition discovery was cancelled");
+            let bootstrap_bytes = match fetch_bootstrap(http, &base_target, bootstrap, policy) {
+                Ok(bytes) => bytes,
+                Err(HdsBootstrapLoadFailure::Rejected(reason)) => {
+                    rejections.push(HdsRenditionRejection::new(reason));
+                    continue;
                 }
-                rejections.push(HdsRenditionRejection::new(
-                    HdsRenditionRejectionReason::InvalidBootstrap,
-                ));
-                continue;
+                Err(HdsBootstrapLoadFailure::Unavailable(error)) => {
+                    if http.cancellation().is_cancelled() {
+                        return Err(error.context("HDS rendition discovery was cancelled"));
+                    }
+                    first_unavailable.get_or_insert(error);
+                    continue;
+                }
             };
             let Ok(timeline) =
                 parse_bootstrap(&bootstrap_bytes, media_url, policy.bootstrap_limits)
@@ -282,11 +300,19 @@ pub(crate) fn resolve_presentation(
     }
 
     if renditions.is_empty() {
-        bail!("HDS hierarchy contains no stream-level media rendition");
+        if let Some(error) = first_unavailable.take() {
+            return Err(error.context(
+                "HDS hierarchy has no usable rendition because external bootstrap is unavailable",
+            ));
+        }
+        if advertised_renditions == 0 && rejections.is_empty() {
+            bail!("HDS hierarchy contains no stream-level media rendition");
+        }
     }
     Ok(ResolvedHdsPresentation {
         renditions,
         rejections,
+        first_unavailable,
     })
 }
 
@@ -425,13 +451,20 @@ fn fetch_bootstrap(
     base_target: &HttpRequestTarget,
     bootstrap: &F4mBootstrapInfo,
     policy: HdsVodOpenPolicy,
-) -> Result<Vec<u8>> {
+) -> std::result::Result<Vec<u8>, HdsBootstrapLoadFailure> {
     match bootstrap.source() {
-        F4mBootstrapSource::Inline(bytes) => Ok(bytes.to_vec()),
+        F4mBootstrapSource::Inline(bytes) => {
+            if bytes.len() > policy.bootstrap_limits.maximum_bytes.get() {
+                return Err(HdsBootstrapLoadFailure::Rejected(
+                    HdsRenditionRejectionReason::InvalidBootstrap,
+                ));
+            }
+            Ok(bytes.to_vec())
+        }
         F4mBootstrapSource::Url(url) => {
-            let target = base_target
-                .resolve_reference(url)
-                .map_err(|_| anyhow!("HDS bootstrap URL is invalid"))?;
+            let target = base_target.resolve_reference(url).map_err(|_| {
+                HdsBootstrapLoadFailure::Rejected(HdsRenditionRejectionReason::InvalidLocator)
+            })?;
             let request = AdaptiveResourceFetchRequest::full(
                 http.source_generation(),
                 target.clone(),
@@ -440,11 +473,15 @@ fn fetch_bootstrap(
                 AdaptiveResourceQueryApplication::ApplyScopedReplacement,
             )
             .with_secret_forwarding(http.resource_secret_forwarding_for(&target));
-            let fetched = http
-                .fetch_resource_blocking(request)
-                .map_err(|error| anyhow!("HDS bootstrap fetch failed: {error}"))?;
+            let fetched = http.fetch_resource_blocking(request).map_err(|error| {
+                HdsBootstrapLoadFailure::Unavailable(
+                    anyhow::Error::new(error).context("HDS external bootstrap fetch failed"),
+                )
+            })?;
             if fetched.bytes().len() > policy.bootstrap_limits.maximum_bytes.get() {
-                bail!("HDS bootstrap exceeds the configured binary bound");
+                return Err(HdsBootstrapLoadFailure::Rejected(
+                    HdsRenditionRejectionReason::InvalidBootstrap,
+                ));
             }
             Ok(fetched.into_bytes())
         }
@@ -512,6 +549,7 @@ mod tests {
         let presentation = ResolvedHdsPresentation {
             renditions: vec![low, preferred],
             rejections: Vec::new(),
+            first_unavailable: None,
         };
         let preference = PreferredHeightPolicy::Prefer(
             PreferredVideoHeight::new(1_080).expect("valid preferred height"),
@@ -534,6 +572,7 @@ mod tests {
                 resolved_rendition(7, Some(720), Some(1_000_000)),
             ],
             rejections: Vec::new(),
+            first_unavailable: None,
         };
 
         let error = select_rendition(

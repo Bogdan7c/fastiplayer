@@ -2,7 +2,7 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::num::{NonZeroU8, NonZeroUsize};
+use std::num::{NonZeroU8, NonZeroU32, NonZeroUsize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -19,6 +19,14 @@ use source_core::{
     CancellationToken, HttpPathScope, HttpRequestTarget, SourceRuntimeConfig, ValidatedHttpHeaders,
 };
 use symphonia_demux::{DemuxerOptions, SymphoniaDemuxFactory};
+use symphonia_format_isomp4::{
+    FragmentAacAudioSpecificConfig, FragmentAacChannelCount, FragmentAacLcConfiguration,
+    FragmentAacSampleRate, FragmentBaseDecodeTime, FragmentInitializationCodec,
+    FragmentInitializationLimits, FragmentInitializationRequest, FragmentInspectionLimits,
+    FragmentMediaKind, FragmentReconstructionRequest, FragmentSampleDefaults, FragmentTimescale,
+    FragmentTrackId, FragmentTrackReconstructionIntent, FragmentWriteLimits,
+    build_fragmented_initialization_segment, reconstruct_media_fragment,
+};
 use web_media_adaptive::{AdaptiveHttpContext, AdaptiveRetryPolicy, AdaptiveTransportLimits};
 use web_media_core::{
     CandidateFormatIdentity, CandidateIdentity, ExtractionGeneration, SemanticIdentity,
@@ -299,6 +307,99 @@ pub fn muxed_ts(pts: u64) -> Vec<u8> {
         )
         .pes(AUDIO_PID, pts, None, &adts_frame(&[0x11, 0x22]))
         .finish()
+}
+
+/// Строит один самостоятельный TS segment с одним RAP и packet-ом audio evidence на секунду.
+pub fn long_muxed_ts_segment(start_pts_90khz: u64, duration_seconds: u64) -> Vec<u8> {
+    let h264_access_unit = [
+        0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e, 0x00, 0x01, 0x00, 0x00, 0x01, 0x68, 0xce, 0x00,
+        0x00, 0x01, 0x65, 0x80,
+    ];
+    let mut builder = TsFixtureBuilder::new()
+        .pat(&[(1, PMT_PID)])
+        .pmt(PMT_PID, 1, &[(0x1b, VIDEO_PID), (0x0f, AUDIO_PID)])
+        .pes(
+            VIDEO_PID,
+            start_pts_90khz,
+            Some(start_pts_90khz.saturating_sub(3_000)),
+            &h264_access_unit,
+        );
+    for second in 0..duration_seconds {
+        builder = builder.pes(
+            AUDIO_PID,
+            start_pts_90khz.saturating_add(second.saturating_mul(90_000)),
+            None,
+            &adts_frame(&[0x11, 0x22]),
+        );
+    }
+    builder.finish()
+}
+
+/// Строит canonical audio fMP4 MAP и contiguous 4-second fragments с exact `tfdt`.
+pub fn long_audio_fmp4_segments(segment_count: usize) -> (Vec<u8>, Vec<Vec<u8>>) {
+    const SEGMENT_DURATION_UNITS: u64 = 40_000_000;
+    const AUDIO_FRAGMENT: &[u8] = include_bytes!(
+        "../../../symphonia-format-isomp4-patch/fixtures/smooth-piff/audio-64008-0.bin"
+    );
+    let sample_rate = FragmentAacSampleRate::try_new(48_000).expect("valid AAC sample rate");
+    let channels = FragmentAacChannelCount::try_new(2).expect("valid stereo channel count");
+    let audio_specific_config =
+        FragmentAacAudioSpecificConfig::try_new(&[0x11, 0x90]).expect("valid AAC-LC ASC");
+    let codec = FragmentAacLcConfiguration::try_new(sample_rate, channels, audio_specific_config)
+        .expect("valid AAC-LC configuration");
+    let initialization_limits = FragmentInitializationLimits::builder()
+        .maximum_output_bytes(16 * 1_024)
+        .maximum_codec_configuration_bytes(1_024)
+        .build()
+        .expect("valid fMP4 initialization limits");
+    let cancellation = || false;
+    let track_id = FragmentTrackId::new(NonZeroU32::MIN);
+    let timescale = FragmentTimescale::new(NonZeroU32::new(10_000_000).expect("valid timescale"));
+    let initialization =
+        build_fragmented_initialization_segment(FragmentInitializationRequest::new(
+            track_id,
+            timescale,
+            FragmentInitializationCodec::AacLowComplexity(codec),
+            &initialization_limits,
+            &cancellation,
+        ))
+        .expect("build canonical AAC initialization")
+        .into_bytes();
+    let inspection_limits = FragmentInspectionLimits::builder()
+        .max_input_bytes(256 * 1_024)
+        .max_box_count(64)
+        .max_box_depth(4)
+        .max_traf_count(1)
+        .max_trun_count(8)
+        .max_samples(512)
+        .max_sample_table_bytes(64 * 1_024)
+        .max_box_payload_bytes(256 * 1_024)
+        .build()
+        .expect("valid fMP4 inspection limits");
+    let write_limits = FragmentWriteLimits::try_new(512 * 1_024).expect("valid write limit");
+    let media = (0..segment_count)
+        .map(|segment_index| {
+            let base_decode_time = u64::try_from(segment_index)
+                .expect("test segment index fits u64")
+                .saturating_mul(SEGMENT_DURATION_UNITS);
+            let track = FragmentTrackReconstructionIntent::new(
+                track_id,
+                FragmentBaseDecodeTime::new(base_decode_time),
+                FragmentMediaKind::AudioWithoutRandomAccessRequirement,
+                FragmentSampleDefaults::absent(),
+            );
+            reconstruct_media_fragment(FragmentReconstructionRequest::new(
+                AUDIO_FRAGMENT,
+                track,
+                &inspection_limits,
+                write_limits,
+                &cancellation,
+            ))
+            .expect("reconstruct canonical AAC fragment")
+            .into_bytes()
+        })
+        .collect();
+    (initialization, media)
 }
 
 pub fn video_ts(pts: u64) -> Vec<u8> {

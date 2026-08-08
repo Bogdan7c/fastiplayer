@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -17,6 +17,10 @@ use crate::embed_recovery::{
     should_attempt_platform_embed_recovery, write_pages_arguments,
 };
 use crate::error::YtDlpServiceError;
+use crate::process_tree::{
+    OwnedPipe, OwnedPipeDrainError, OwnedPipeReader, OwnedProcess, OwnedProcessCleanupFailure,
+    OwnedProcessRootState, OwnedProcessSpawnError, spawn_owned_pipe_reader, spawn_owned_process,
+};
 
 /// Имя production binary, через который service получает direct stream metadata.
 const YT_DLP_EXECUTABLE: &str = "yt-dlp";
@@ -404,27 +408,50 @@ fn create_executable_test_script(
     directory: &Path,
     script: &str,
 ) -> Result<PathBuf, YtDlpServiceError> {
+    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
 
     let path = directory.join("fake-yt-dlp");
-    fs::write(&path, script).map_err(YtDlpServiceError::process)?;
-    let mut permissions = fs::metadata(&path)
+    let mut executable_file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(YtDlpServiceError::process)?;
+    executable_file
+        .write_all(script.as_bytes())
+        .map_err(YtDlpServiceError::process)?;
+    let mut permissions = executable_file
+        .metadata()
         .map_err(YtDlpServiceError::process)?
         .permissions();
     permissions.set_mode(0o700);
-    fs::set_permissions(&path, permissions).map_err(YtDlpServiceError::process)?;
+    executable_file
+        .set_permissions(permissions)
+        .map_err(YtDlpServiceError::process)?;
+    drop(executable_file);
     Ok(path)
 }
 
 #[cfg(test)]
 fn test_directory(label: &str) -> PathBuf {
-    let sequence = RECOVERY_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "rustiplayer-ytdlp-test-{label}-{}-{sequence}",
-        std::process::id()
-    ));
-    fs::create_dir(&path).expect("test directory should be unique");
-    path
+    for _ in 0..16 {
+        let sequence = RECOVERY_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "rustiplayer-ytdlp-test-{label}-{}-{timestamp}-{sequence}",
+            std::process::id()
+        ));
+        match fs::create_dir(&path) {
+            Ok(()) => return path,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => panic!("test directory creation failed: {error}"),
+        }
+    }
+
+    panic!("test directory collision budget exhausted")
 }
 
 #[cfg(test)]
@@ -474,6 +501,7 @@ fn run_process_with_timeout_and_cancellation(
     if is_cancelled() {
         return Err(YtDlpServiceError::Cancellation);
     }
+    let operation_started_at = Instant::now();
 
     let mut command = Command::new(executable);
     command
@@ -483,105 +511,248 @@ fn run_process_with_timeout_and_cancellation(
     if let Some(directory) = current_directory {
         command.current_dir(directory);
     }
-    let mut child = command.spawn().map_err(YtDlpServiceError::process)?;
+    let mut process =
+        match spawn_owned_process(&mut command, operation_started_at, timeout, is_cancelled) {
+            Ok(process) => process,
+            Err(OwnedProcessSpawnError::Cancellation) => {
+                return Err(YtDlpServiceError::Cancellation);
+            }
+            Err(OwnedProcessSpawnError::Process(error)) => {
+                return Err(YtDlpServiceError::process(error));
+            }
+        };
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| YtDlpServiceError::process(anyhow::anyhow!("stdout pipe недоступен")))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| YtDlpServiceError::process(anyhow::anyhow!("stderr pipe недоступен")))?;
-    let stdout_reader = spawn_pipe_reader("stdout", stdout)?;
-    let stderr_reader = spawn_pipe_reader("stderr", stderr)?;
+    let stdout = match process.take_stdout() {
+        Some(stdout) => stdout,
+        None => {
+            let primary = YtDlpServiceError::process(anyhow::anyhow!("stdout pipe недоступен"));
+            return Err(finish_process_after_error(&mut process, primary));
+        }
+    };
+    let stderr = match process.take_stderr() {
+        Some(stderr) => stderr,
+        None => {
+            let primary = YtDlpServiceError::process(anyhow::anyhow!("stderr pipe недоступен"));
+            return Err(finish_process_after_error(&mut process, primary));
+        }
+    };
+    let stdout_reader = match spawn_pipe_reader("stdout", stdout) {
+        Ok(reader) => reader,
+        Err(primary) => return Err(finish_process_after_error(&mut process, primary)),
+    };
+    let stderr_reader = match spawn_pipe_reader("stderr", stderr) {
+        Ok(reader) => reader,
+        Err(primary) => {
+            if let Err(cleanup) = process.finish() {
+                return Err(combine_process_failures(primary, cleanup.into()));
+            }
+            return match stdout_reader.abort() {
+                Ok(()) => Err(primary),
+                Err(cleanup) => Err(combine_process_failures(
+                    primary,
+                    anyhow::Error::new(cleanup),
+                )),
+            };
+        }
+    };
 
-    let wait_outcome = wait_for_process_with_timeout(&mut child, timeout, is_cancelled)?;
-    let stdout = join_pipe_reader("stdout", stdout_reader)?;
-    let stderr = join_pipe_reader("stderr", stderr_reader)?;
+    let remaining_timeout = timeout.saturating_sub(operation_started_at.elapsed());
+    let wait_result = wait_for_process_with_timeout(&mut process, remaining_timeout, is_cancelled);
+    let wait_outcome = match wait_result {
+        Ok(outcome) => outcome,
+        Err(primary) => {
+            return match abort_pipe_readers(stdout_reader, stderr_reader) {
+                Ok(()) => Err(primary),
+                Err(cleanup) => Err(combine_process_failures(
+                    primary,
+                    anyhow::Error::new(cleanup),
+                )),
+            };
+        }
+    };
 
     match wait_outcome {
-        ProcessWaitOutcome::Exited(status) => Ok(ProcessOutput {
-            status,
-            stdout,
-            stderr,
-        }),
-        ProcessWaitOutcome::TimedOut => Err(YtDlpServiceError::Timeout),
-        ProcessWaitOutcome::Cancelled => Err(YtDlpServiceError::Cancellation),
+        ProcessWaitOutcome::Exited(status) => {
+            let pipe_output = drain_pipe_readers(
+                stdout_reader,
+                stderr_reader,
+                operation_started_at,
+                timeout,
+                is_cancelled,
+            )?;
+            let (stdout, stderr) = pipe_output;
+            Ok(ProcessOutput {
+                status,
+                stdout,
+                stderr,
+            })
+        }
+        ProcessWaitOutcome::TimedOut => match abort_pipe_readers(stdout_reader, stderr_reader) {
+            Ok(()) => Err(YtDlpServiceError::Timeout),
+            Err(cleanup) => Err(combine_process_failures(
+                YtDlpServiceError::Timeout,
+                anyhow::Error::new(cleanup),
+            )),
+        },
+        ProcessWaitOutcome::Cancelled => match abort_pipe_readers(stdout_reader, stderr_reader) {
+            Ok(()) => Err(YtDlpServiceError::Cancellation),
+            Err(cleanup) => Err(combine_process_failures(
+                YtDlpServiceError::Cancellation,
+                anyhow::Error::new(cleanup),
+            )),
+        },
     }
+}
+
+/// Завершает owner после primary failure, сохраняя обе ошибки при cleanup failure.
+fn finish_process_after_error(
+    process: &mut OwnedProcess,
+    primary: YtDlpServiceError,
+) -> YtDlpServiceError {
+    match process.finish() {
+        Ok(_) => primary,
+        Err(cleanup) => combine_process_failures(primary, cleanup.into()),
+    }
+}
+
+/// Упаковывает primary и дополнительную cleanup/join ошибку без потери причин.
+fn combine_process_failures(
+    primary: YtDlpServiceError,
+    cleanup: anyhow::Error,
+) -> YtDlpServiceError {
+    YtDlpServiceError::process(OwnedProcessCleanupFailure::new(
+        anyhow::Error::new(primary),
+        cleanup,
+    ))
 }
 
 /// Запускает thread, который вычитывает pipe до EOF и предотвращает заполнение OS buffer-а.
 fn spawn_pipe_reader<R>(
     pipe_name: &'static str,
-    mut pipe: R,
-) -> Result<thread::JoinHandle<io::Result<Vec<u8>>>, YtDlpServiceError>
+    pipe: R,
+) -> Result<OwnedPipeReader<Vec<u8>>, YtDlpServiceError>
 where
-    R: Read + Send + 'static,
+    R: OwnedPipe,
 {
-    thread::Builder::new()
-        .name(format!("yt-dlp-{pipe_name}"))
-        .spawn(move || {
-            let mut captured_bytes = Vec::new();
-            pipe.read_to_end(&mut captured_bytes)?;
-            Ok(captured_bytes)
-        })
-        .map_err(YtDlpServiceError::process)
+    let thread_name = match pipe_name {
+        "stdout" => "yt-dlp-stdout",
+        "stderr" => "yt-dlp-stderr",
+        _ => "yt-dlp-pipe",
+    };
+    spawn_owned_pipe_reader(thread_name, pipe, |reader| {
+        let mut captured_bytes = Vec::new();
+        reader.read_to_end(&mut captured_bytes)?;
+        Ok(captured_bytes)
+    })
+    .map_err(YtDlpServiceError::process)
 }
 
-/// Забирает bytes из pipe reader thread и превращает panic/thread IO в понятную ошибку.
-fn join_pipe_reader(
-    pipe_name: &'static str,
-    reader: thread::JoinHandle<io::Result<Vec<u8>>>,
-) -> Result<Vec<u8>, YtDlpServiceError> {
-    reader
-        .join()
-        .map_err(|_| {
-            YtDlpServiceError::process(anyhow::anyhow!(
-                "reader thread для {pipe_name} завершился panic"
-            ))
-        })?
-        .map_err(YtDlpServiceError::process)
+fn map_pipe_drain_error(error: OwnedPipeDrainError) -> YtDlpServiceError {
+    match error {
+        OwnedPipeDrainError::Cancellation => YtDlpServiceError::Cancellation,
+        OwnedPipeDrainError::OperationTimedOut => YtDlpServiceError::Timeout,
+        OwnedPipeDrainError::CancellationCleanup { source } => {
+            combine_process_failures(YtDlpServiceError::Cancellation, anyhow::Error::new(source))
+        }
+        OwnedPipeDrainError::OperationTimeoutCleanup { source } => {
+            combine_process_failures(YtDlpServiceError::Timeout, anyhow::Error::new(source))
+        }
+        other => YtDlpServiceError::process(other),
+    }
+}
+
+/// Bounded drain обоих pipe-reader-ов с одним operation deadline и grace budget.
+fn drain_pipe_readers(
+    stdout_reader: OwnedPipeReader<Vec<u8>>,
+    stderr_reader: OwnedPipeReader<Vec<u8>>,
+    operation_started_at: Instant,
+    operation_timeout: Duration,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<(Vec<u8>, Vec<u8>), YtDlpServiceError> {
+    let drain_started_at = Instant::now();
+    let stdout_result = stdout_reader
+        .drain(
+            operation_started_at,
+            operation_timeout,
+            drain_started_at,
+            is_cancelled,
+        )
+        .map_err(map_pipe_drain_error);
+    let stderr_result = stderr_reader
+        .drain(
+            operation_started_at,
+            operation_timeout,
+            drain_started_at,
+            is_cancelled,
+        )
+        .map_err(map_pipe_drain_error);
+
+    match (stdout_result, stderr_result) {
+        (Ok(stdout), Ok(stderr)) => Ok((stdout, stderr)),
+        (Err(primary), Ok(_)) | (Ok(_), Err(primary)) => Err(primary),
+        (Err(primary), Err(cleanup)) => Err(combine_process_failures(
+            primary,
+            anyhow::Error::new(cleanup),
+        )),
+    }
+}
+
+/// Bounded останавливает оба reader worker-а после non-success process outcome.
+fn abort_pipe_readers(
+    stdout_reader: OwnedPipeReader<Vec<u8>>,
+    stderr_reader: OwnedPipeReader<Vec<u8>>,
+) -> Result<(), YtDlpServiceError> {
+    let stdout_result = stdout_reader.abort().map_err(YtDlpServiceError::process);
+    let stderr_result = stderr_reader.abort().map_err(YtDlpServiceError::process);
+
+    match (stdout_result, stderr_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(primary), Ok(())) | (Ok(()), Err(primary)) => Err(primary),
+        (Err(primary), Err(cleanup)) => Err(combine_process_failures(
+            primary,
+            anyhow::Error::new(cleanup),
+        )),
+    }
 }
 
 /// Ждёт child process с bounded polling и убивает его при превышении timeout-а.
 fn wait_for_process_with_timeout(
-    child: &mut Child,
+    process: &mut OwnedProcess,
     timeout: Duration,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<ProcessWaitOutcome, YtDlpServiceError> {
     let start = Instant::now();
 
     loop {
-        if let Some(status) = child.try_wait().map_err(YtDlpServiceError::process)? {
-            return Ok(ProcessWaitOutcome::Exited(status));
+        match process.poll_root_exit() {
+            Ok(OwnedProcessRootState::Exited) => {
+                let status = process.finish().map_err(YtDlpServiceError::process)?;
+                return Ok(ProcessWaitOutcome::Exited(status));
+            }
+            Ok(OwnedProcessRootState::Running) => {}
+            Err(error) => {
+                let primary = YtDlpServiceError::process(error);
+                return Err(finish_process_after_error(process, primary));
+            }
         }
 
         if is_cancelled() {
-            terminate_process(child)?;
+            process.finish().map_err(|cleanup| {
+                combine_process_failures(YtDlpServiceError::Cancellation, cleanup.into())
+            })?;
             return Ok(ProcessWaitOutcome::Cancelled);
         }
 
         if start.elapsed() >= timeout {
-            terminate_process(child)?;
+            process.finish().map_err(|cleanup| {
+                combine_process_failures(YtDlpServiceError::Timeout, cleanup.into())
+            })?;
             return Ok(ProcessWaitOutcome::TimedOut);
         }
 
         let remaining_timeout = timeout.saturating_sub(start.elapsed());
         thread::sleep(remaining_timeout.min(PROCESS_POLL_INTERVAL));
     }
-}
-
-/// Останавливает зависший child process и reaps его, чтобы не оставлять zombie process.
-fn terminate_process(child: &mut Child) -> Result<(), YtDlpServiceError> {
-    match child.kill() {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::InvalidInput => {}
-        Err(error) => return Err(YtDlpServiceError::process(error)),
-    }
-
-    child.wait().map_err(YtDlpServiceError::process)?;
-    Ok(())
 }
 
 /// Преобразует ошибку metadata-only candidates command в читаемую ошибку.
@@ -601,6 +772,66 @@ fn ensure_yt_dlp_candidate_success(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    struct EscapedProcessGuard {
+        process_id_record: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl EscapedProcessGuard {
+        fn new(process_id_record: PathBuf) -> Self {
+            Self { process_id_record }
+        }
+
+        fn wait_for_process_id(&self) -> Option<libc::pid_t> {
+            let started_at = Instant::now();
+            loop {
+                if let Ok(process_id_text) = fs::read_to_string(&self.process_id_record)
+                    && let Ok(process_id) = process_id_text.trim().parse::<libc::pid_t>()
+                    && process_id > 0
+                {
+                    return Some(process_id);
+                }
+                if started_at.elapsed() >= Duration::from_secs(1) {
+                    return None;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for EscapedProcessGuard {
+        fn drop(&mut self) {
+            let Some(process_id) = self.wait_for_process_id() else {
+                eprintln!("escaped fixture не записал PID для cleanup");
+                return;
+            };
+            // SAFETY: положительный PID прочитан из app-owned fixture marker-а.
+            let kill_result = unsafe { libc::kill(process_id, libc::SIGKILL) };
+            if kill_result == -1 && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+                eprintln!("escaped fixture PID {process_id} не получил SIGKILL");
+                return;
+            }
+
+            let cleanup_started_at = Instant::now();
+            loop {
+                // SAFETY: signal 0 только проверяет существование известного fixture PID.
+                let probe_result = unsafe { libc::kill(process_id, 0) };
+                if probe_result == -1
+                    && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                {
+                    return;
+                }
+                if cleanup_started_at.elapsed() >= Duration::from_secs(2) {
+                    eprintln!("escaped fixture PID {process_id} не был reap-нут вовремя");
+                    return;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
 
     #[cfg(unix)]
     #[test]
@@ -669,7 +900,7 @@ fi
 for argument do
     if [ "$argument" = "--write-pages" ]; then
         pwd > "{}"
-        sleep 5
+        sleep 30
         exit 0
     fi
 done
@@ -681,9 +912,10 @@ printf '%s\n' '{{"extractor_key":"Youtube","webpage_url":"https://www.youtube.co
             .expect("fake yt-dlp executable");
         let process_config = YtDlpProcessConfig {
             executable: executable.to_string_lossy().into_owned(),
-            timeout: Duration::from_secs(2),
+            timeout: Duration::from_secs(10),
         };
 
+        let cancellation_started_at = Instant::now();
         let error = resolve_yt_dlp_candidate_document_with_cancellation::<Value>(
             "https://cinema.example/watch/42",
             &process_config,
@@ -691,7 +923,14 @@ printf '%s\n' '{{"extractor_key":"Youtube","webpage_url":"https://www.youtube.co
         )
         .expect_err("recovery cancellation must remain typed");
 
-        assert!(matches!(error, YtDlpServiceError::Cancellation));
+        assert!(
+            matches!(error, YtDlpServiceError::Cancellation),
+            "recovery cancellation returned {error:?}"
+        );
+        assert!(
+            cancellation_started_at.elapsed() < Duration::from_secs(2),
+            "owned process-group cancellation must not wait for the descendant sleep"
+        );
         let recovery_path =
             fs::read_to_string(recovery_path_record).expect("script records recovery cwd");
         assert!(
@@ -793,6 +1032,214 @@ printf '%s\n' '{{"extractor_key":"Youtube","webpage_url":"https://www.youtube.co
         assert!(output.status.success());
         assert_eq!(output.stdout, b"stdout-text");
         assert_eq!(output.stderr, b"stderr-text");
+    }
+
+    /// Нормальный root exit очищает lingering descendant до join унаследованных pipe-ов.
+    #[cfg(unix)]
+    #[test]
+    fn process_normal_root_exit_does_not_wait_for_lingering_descendant() {
+        let started_at = Instant::now();
+        let output = run_process_with_timeout(
+            "sh",
+            &["-c", "sleep 30 & printf root-exited"],
+            Duration::from_secs(2),
+        )
+        .expect("normal root exit must retain successful output");
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"root-exited");
+        assert!(
+            started_at.elapsed() < Duration::from_secs(1),
+            "lingering descendant must be killed before pipe-reader join"
+        );
+    }
+
+    /// Descendant вне owned PGID не превращается в success и не блокирует pipe drain.
+    #[cfg(unix)]
+    #[test]
+    fn process_escaped_process_group_pipe_holder_fails_bounded() {
+        let fixture_directory = TestDirectory::create("escaped-process-group");
+        let process_id_record = fixture_directory.path().join("escaped-pid");
+        let escaped_process_guard = EscapedProcessGuard::new(process_id_record.clone());
+        let shell_command = format!(
+            "setsid sh -c 'echo $$ > \"{}\"; exec sleep 30' & \
+             while [ ! -s \"{}\" ]; do sleep 0.01; done; \
+             printf root-exited",
+            process_id_record.display(),
+            process_id_record.display()
+        );
+
+        let started_at = Instant::now();
+        let process_result = run_process_with_timeout(
+            "sh",
+            &["-c", shell_command.as_str()],
+            Duration::from_secs(2),
+        );
+        assert!(
+            escaped_process_guard.wait_for_process_id().is_some(),
+            "escaped fixture must publish its PID before root exit"
+        );
+        let error = process_result.expect_err("escaped pipe holder must not look successful");
+
+        assert!(matches!(error, YtDlpServiceError::ProcessFailure { .. }));
+        assert!(
+            started_at.elapsed() < Duration::from_secs(2),
+            "escaped pipe holder must hit bounded drain instead of sleep duration"
+        );
+    }
+
+    /// Transient Unix `ETXTBSY` повторяется и всё равно доходит до выполнения executable.
+    #[cfg(unix)]
+    #[test]
+    fn process_spawn_retries_temporary_text_file_busy_and_executes() {
+        let fixture_directory = TestDirectory::create("spawn-text-file-busy");
+        let executable = create_executable_test_script(
+            fixture_directory.path(),
+            "#!/bin/sh\nprintf 'spawn-retry-ok'\n",
+        )
+        .expect("create retry executable");
+        let executable_writer = fs::OpenOptions::new()
+            .write(true)
+            .open(&executable)
+            .expect("hold executable open for writing");
+
+        let initial_error = Command::new(&executable)
+            .spawn()
+            .expect_err("writer-open executable must initially fail to spawn");
+        assert_eq!(initial_error.raw_os_error(), Some(libc::ETXTBSY));
+
+        let writer_release = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(35));
+            drop(executable_writer);
+        });
+        let process_result = run_process_with_timeout(
+            executable.to_str().expect("UTF-8 executable path"),
+            &[],
+            Duration::from_secs(1),
+        );
+        writer_release
+            .join()
+            .expect("writer release thread must not panic");
+
+        let output = process_result.expect("ETXTBSY retry must reach executable output");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"spawn-retry-ok");
+    }
+
+    /// Исчерпанный retry сохраняет исходный typed process failure и остаётся bounded.
+    #[cfg(unix)]
+    #[test]
+    fn process_spawn_text_file_busy_exhaustion_preserves_process_failure() {
+        let fixture_directory = TestDirectory::create("spawn-text-file-busy-exhausted");
+        let executable = create_executable_test_script(
+            fixture_directory.path(),
+            "#!/bin/sh\nprintf 'must-not-run'\n",
+        )
+        .expect("create exhausted-retry executable");
+        let _executable_writer = fs::OpenOptions::new()
+            .write(true)
+            .open(&executable)
+            .expect("hold executable open for all attempts");
+
+        let started_at = Instant::now();
+        let error = run_process_with_timeout(
+            executable.to_str().expect("UTF-8 executable path"),
+            &[],
+            Duration::from_secs(1),
+        )
+        .expect_err("exhausted ETXTBSY retry must fail");
+
+        let YtDlpServiceError::ProcessFailure { source } = error else {
+            panic!("exhausted ETXTBSY retry returned {error:?}");
+        };
+        assert_eq!(
+            source
+                .downcast_ref::<io::Error>()
+                .and_then(io::Error::raw_os_error),
+            Some(libc::ETXTBSY)
+        );
+        assert!(
+            started_at.elapsed() < Duration::from_millis(500),
+            "fixed spawn retry budget must not consume the one-second process timeout"
+        );
+    }
+
+    /// Cooperative cancellation проверяется между transient spawn-попытками.
+    #[cfg(unix)]
+    #[test]
+    fn process_spawn_text_file_busy_retry_preserves_cancellation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let fixture_directory = TestDirectory::create("spawn-text-file-busy-cancelled");
+        let executable = create_executable_test_script(
+            fixture_directory.path(),
+            "#!/bin/sh\nprintf 'must-not-run'\n",
+        )
+        .expect("create cancelled-retry executable");
+        let _executable_writer = fs::OpenOptions::new()
+            .write(true)
+            .open(&executable)
+            .expect("hold executable open until cancellation");
+        let cancellation_checks = AtomicUsize::new(0);
+
+        let error = run_process_with_timeout_and_cancellation(
+            executable.to_str().expect("UTF-8 executable path"),
+            &[],
+            None,
+            Duration::from_secs(1),
+            &|| cancellation_checks.fetch_add(1, Ordering::Relaxed) >= 2,
+        )
+        .expect_err("cancellation between ETXTBSY attempts must remain typed");
+
+        assert!(matches!(error, YtDlpServiceError::Cancellation));
+        assert!(cancellation_checks.load(Ordering::Relaxed) >= 3);
+    }
+
+    /// Исчерпанный общий timeout запрещает повторный spawn даже после освобождения writer-а.
+    #[cfg(unix)]
+    #[test]
+    fn process_spawn_text_file_busy_does_not_retry_after_deadline() {
+        use std::cell::{Cell, RefCell};
+
+        let fixture_directory = TestDirectory::create("spawn-text-file-busy-deadline");
+        let execution_marker = fixture_directory.path().join("executed");
+        let executable = create_executable_test_script(
+            fixture_directory.path(),
+            &format!(
+                "#!/bin/sh\nprintf executed > '{}'\n",
+                execution_marker.display()
+            ),
+        )
+        .expect("create deadline executable");
+        let executable_writer = RefCell::new(Some(
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&executable)
+                .expect("hold executable open for first attempt"),
+        ));
+        let cancellation_checks = Cell::new(0_usize);
+
+        let error = run_process_with_timeout_and_cancellation(
+            executable.to_str().expect("UTF-8 executable path"),
+            &[],
+            None,
+            Duration::from_millis(5),
+            &|| {
+                let next_check = cancellation_checks.get() + 1;
+                cancellation_checks.set(next_check);
+                if next_check == 3 {
+                    executable_writer.borrow_mut().take();
+                }
+                false
+            },
+        )
+        .expect_err("deadline must preserve the first ETXTBSY failure");
+
+        assert!(matches!(error, YtDlpServiceError::ProcessFailure { .. }));
+        assert!(
+            !execution_marker.exists(),
+            "executable must not run in a retry started after the deadline"
+        );
     }
 
     /// Проверяет, что зависший process ограничивается timeout-ом.

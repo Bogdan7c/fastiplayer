@@ -166,6 +166,31 @@ struct PacketSampleSpan {
     sample_count: u32,
 }
 
+/// Packet ISO-BMFF вместе с точной позицией первого sample в исходном byte stream-е.
+///
+/// Позиция относится к логическому input-у reader-а. Если несколько transport resources
+/// последовательно склеены одним `Read`, offset считается от начала этой виртуальной
+/// конкатенации, а не от начала отдельного resource-а.
+#[derive(Debug)]
+pub struct IsoMp4PacketWithSourceOffset {
+    /// Обычный Symphonia packet без изменения codec payload или timing semantics.
+    packet: Packet,
+    /// Позиция первого байта packet sample span-а в логическом input-е.
+    source_offset: u64,
+}
+
+impl IsoMp4PacketWithSourceOffset {
+    /// Возвращает точную позицию первого sample без передачи ownership packet-а.
+    pub const fn source_offset(&self) -> u64 {
+        self.source_offset
+    }
+
+    /// Передаёт обычный Symphonia packet следующему neutral adapter-у.
+    pub fn into_packet(self) -> Packet {
+        self.packet
+    }
+}
+
 fn pcm_packet_sample_limit(track: &Track, sample_duration: Duration) -> Option<u32> {
     let Some(CodecParameters::Audio(params)) = &track.codec_params else {
         return None;
@@ -371,8 +396,7 @@ impl SidxSeekIndex {
             if !matches!(
                 reference.reference_type,
                 crate::atoms::sidx::ReferenceType::Media
-            )
-                || reference.reference_size == 0
+            ) || reference.reference_size == 0
                 || reference.subsegment_duration == 0
             {
                 return None;
@@ -442,25 +466,21 @@ impl SidxSeekIndex {
                     .last()
                     .filter(|point| timestamp == point.end_timestamp)
                     .map(|_| self.points.len() - 1)
-            })
-            ?;
+            })?;
 
         // Внутри authored subsegment-а и ровно на его границе собственный SAP является точным
         // container anchor; если его нет, откатываемся к ближайшему предыдущему SAP.
         let current_point = self.points[point_index];
-        let search_end = if timestamp >= current_point.start_timestamp
-            && current_point.starts_with_proven_sap
-        {
-            point_index + 1
-        } else {
-            point_index
-        };
+        let search_end =
+            if timestamp >= current_point.start_timestamp && current_point.starts_with_proven_sap {
+                point_index + 1
+            } else {
+                point_index
+            };
         let sap_index = self.points[..search_end]
             .iter()
             .rposition(|point| point.starts_with_proven_sap)
-            .or_else(|| {
-                (point_index == 0 && first_point.starts_with_proven_sap).then_some(0)
-            })?;
+            .or_else(|| (point_index == 0 && first_point.starts_with_proven_sap).then_some(0))?;
         Some(self.points[sap_index])
     }
 }
@@ -525,6 +545,26 @@ pub struct IsoMp4Reader<'s> {
 }
 
 impl<'s> IsoMp4Reader<'s> {
+    /// Открывает ISO-BMFF reader с начала stream-а без общего Symphonia probe-а.
+    ///
+    /// Этот opt-in constructor нужен integration-ам, которым требуется concrete
+    /// [`Self::next_packet_with_source_offset`] boundary. Caller уже должен доказать ISO-BMFF
+    /// signature; обычный registry path продолжает использовать `ProbeableFormat`.
+    pub fn try_new_from_stream_start(
+        mut mss: MediaSourceStream<'s>,
+        opts: FormatOptions,
+    ) -> Result<Self> {
+        if mss.pos() != 0 {
+            return decode_error("isomp4: source-position reader must start at byte zero");
+        }
+
+        // `try_new` вызывается probe-ом сразу после четырёхбайтового marker-а и сам возвращается
+        // на эти четыре байта назад. Читаем ровно один quad, чтобы сохранить тот же проверенный
+        // parser entry point без второго варианта atom parsing-а.
+        mss.read_quad_bytes()?;
+        Self::try_new(mss, opts)
+    }
+
     pub fn try_new(mut mss: MediaSourceStream<'s>, opts: FormatOptions) -> Result<Self> {
         // To get to beginning of the atom.
         mss.seek_buffered_rel(-4);
@@ -758,6 +798,68 @@ impl<'s> IsoMp4Reader<'s> {
         })
     }
 
+    /// Читает следующий packet и атомарно возвращает начало его sample span-а.
+    ///
+    /// В отличие от текущей позиции `MediaSourceStream`, это значение не искажено read-ahead
+    /// buffering-ом: оно берётся из container sample tables / fragment run непосредственно перед
+    /// exact payload read.
+    pub fn next_packet_with_source_offset(
+        &mut self,
+    ) -> Result<Option<IsoMp4PacketWithSourceOffset>> {
+        self.read_next_packet_with_source_offset()
+    }
+
+    /// Единая реализация packet read-а для обычного `FormatReader` и opt-in source boundary.
+    fn read_next_packet_with_source_offset(
+        &mut self,
+    ) -> Result<Option<IsoMp4PacketWithSourceOffset>> {
+        // Get the index of the track with the next-nearest (minimum) timestamp.
+        let next_sample_info = loop {
+            // Using the current set of segments, try to get the next sample info.
+            if let Some(info) = self.next_sample_info()? {
+                break info;
+            } else {
+                // The inner reader of the atom iterator has been used/seeked around to read
+                // packets, so resync the reader and iterator by seeking to the end of the current
+                // pending atom. Under regular circumstances, no actual expensive seek operation is
+                // performed since the reader should be at the end of the last iterated atom if we
+                // are trying to read another.
+                match self.iter.seek_atom_end() {
+                    Ok(_) | Err(AtomError::NoPendingAtom) => (),
+                    Err(_) => return decode_error("sync lost"),
+                };
+
+                // No more segments. If the stream is unseekable, it may be the case that there are
+                // more segments coming. If the stream is seekable it might be fragmented and no
+                // segments are found in the moov atom. Iterate atoms until a new segment is found
+                // or the end-of-stream is reached
+                if !self.try_read_more_segments()? {
+                    return Ok(None);
+                }
+            }
+        };
+
+        // Получаем позицию, длину и duration уже для packet-а, а не обязательно одного sample.
+        let packet_span = self.consume_next_packet_span(&next_sample_info)?;
+
+        let data = self
+            .iter
+            .read_raw_boxed_slice_exact(packet_span.pos, packet_span.len)?;
+
+        let packet = PacketBuilder::new()
+            .track_id(next_sample_info.track_id)
+            .pts(next_sample_info.pts)
+            .dur(packet_span.dur)
+            .data(data)
+            .dts(next_sample_info.dts)
+            .build();
+
+        Ok(Some(IsoMp4PacketWithSourceOffset {
+            packet,
+            source_offset: packet_span.pos,
+        }))
+    }
+
     fn indexed_seek_track_id(&self, requested_track_id: u32) -> u32 {
         if self.tracks.iter().any(|track| {
             track.id == requested_track_id
@@ -789,8 +891,7 @@ impl<'s> IsoMp4Reader<'s> {
                 return None;
             }
             index.seek_point_for_timestamp(timestamp.get() as u64)
-        })
-        else {
+        }) else {
             return Ok(());
         };
 
@@ -1013,11 +1114,7 @@ impl<'s> IsoMp4Reader<'s> {
                 }
                 AtomType::SegmentIndex => {
                     let sidx = self.iter.read_atom::<SidxAtom>()?;
-                    record_sidx_seek_index(
-                        &mut self.sidx_seek_indexes,
-                        &sidx,
-                        self.source_length,
-                    );
+                    record_sidx_seek_index(&mut self.sidx_seek_indexes, &sidx, self.source_length);
                 }
                 _ => {
                     trace!("skipping atom: {:?}.", header.atom_type());
@@ -1075,8 +1172,7 @@ impl<'s> IsoMp4Reader<'s> {
                     });
                 } else if best_seek_location.is_none()
                     && seg_idx > 0
-                    && self.indexed_seek_sap_track_id
-                        == Some(self.track_states[track_num].track_id)
+                    && self.indexed_seek_sap_track_id == Some(self.track_states[track_num].track_id)
                 {
                     let mut sample_range = seg.track_sample_range(track_num);
                     if let Some(sample_num) = sample_range.next() {
@@ -1290,48 +1386,8 @@ impl FormatReader for IsoMp4Reader<'_> {
     }
 
     fn next_packet(&mut self) -> Result<Option<Packet>> {
-        // Get the index of the track with the next-nearest (minimum) timestamp.
-        let next_sample_info = loop {
-            // Using the current set of segments, try to get the next sample info.
-            if let Some(info) = self.next_sample_info()? {
-                break info;
-            } else {
-                // The inner reader of the atom iterator has been used/seeked around to read
-                // packets, so resync the reader and iterator by seeking to the end of the current
-                // pending atom. Under regular circumstances, no actual expensive seek operation is
-                // performed since the reader should be at the end of the last iterated atom if we
-                // are trying to read another.
-                match self.iter.seek_atom_end() {
-                    Ok(_) | Err(AtomError::NoPendingAtom) => (),
-                    Err(_) => return decode_error("sync lost"),
-                };
-
-                // No more segments. If the stream is unseekable, it may be the case that there are
-                // more segments coming. If the stream is seekable it might be fragmented and no
-                // segments are found in the moov atom. Iterate atoms until a new segment is found
-                // or the end-of-stream is reached
-                if !self.try_read_more_segments()? {
-                    return Ok(None);
-                }
-            }
-        };
-
-        // Получаем позицию, длину и duration уже для packet-а, а не обязательно одного sample.
-        let packet_span = self.consume_next_packet_span(&next_sample_info)?;
-
-        let data = self
-            .iter
-            .read_raw_boxed_slice_exact(packet_span.pos, packet_span.len)?;
-
-        Ok(Some(
-            PacketBuilder::new()
-                .track_id(next_sample_info.track_id)
-                .pts(next_sample_info.pts)
-                .dur(packet_span.dur)
-                .data(data)
-                .dts(next_sample_info.dts)
-                .build(),
-        ))
+        self.read_next_packet_with_source_offset()
+            .map(|packet| packet.map(IsoMp4PacketWithSourceOffset::into_packet))
     }
 
     fn metadata(&mut self) -> Metadata<'_> {

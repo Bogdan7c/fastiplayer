@@ -9,6 +9,10 @@ pub(crate) mod catalog_capabilities;
 pub(crate) mod component_variants;
 #[cfg(test)]
 mod component_variants_tests;
+mod content_probe;
+mod content_probe_fallback;
+#[cfg(test)]
+mod content_probe_tests;
 mod hds;
 /// Fresh extraction/rematch и process-local generation allocators.
 mod preparation;
@@ -41,7 +45,7 @@ use source_core::{CancellationToken, SourceRuntimeConfig};
 use symphonia_demux::DemuxerOptions;
 use web_media_core::{
     ContainerFamily, ExactSelectionIdentity, ExtractionGeneration, FtpScheme, HttpScheme,
-    SelectionRequest, SourceIdentity, TransportFamily,
+    SelectionRequest, SourceIdentity, StreamLayout, TransportFamily,
 };
 use web_media_dash::DashEndpointRefreshPort;
 use web_media_ftp::WebMediaFtpProvider;
@@ -189,6 +193,9 @@ pub(crate) fn prepare_yt_dlp_web_media(
     let planning_snapshot = candidate_snapshot
         .planning_snapshot()
         .context("Не удалось выразить YtDlp candidates через playback planner")?;
+    candidate_snapshot
+        .validate_planning_snapshot_alignment(&planning_snapshot)
+        .context("YtDlp service/planner candidate snapshots не соответствуют друг другу")?;
     let runtime = WebOpenRuntime::new(network_config, demux_config)
         .context("Не удалось собрать web-media runtime registries")?;
     let policy = selection_policy(yt_dlp_config, preferred_video_codec_order)
@@ -210,8 +217,54 @@ pub(crate) fn prepare_yt_dlp_web_media(
                 .selected()
                 .is_some_and(|entry| entry.rejected().is_some()),
         );
-    let (selected_candidate, candidate_selection, composed_selection) = match resolved_intent {
-        preparation::ResolvedCandidateIntent::Planner(selection_request) => {
+    let playlist_metadata = candidate_snapshot.playlist_metadata().clone();
+    ensure_not_cancelled(&is_cancelled)?;
+    let mut catalog_capability_probe = catalog_capabilities::AppCatalogCapabilityProbe::new(
+        system_capabilities.clone(),
+        audio_capabilities,
+    );
+    let mut attempt_context = content_probe_fallback::CandidateAttemptContext {
+        locator,
+        network_config,
+        yt_dlp_config,
+        candidate_snapshot: &candidate_snapshot,
+        runtime: &runtime,
+        component_selection_intent: &component_selection_intent,
+        preferred_height: crate::web_media_quality::preferred_height_policy(
+            yt_dlp_config.preferred_video_height,
+        ),
+        cancellation: &cancellation,
+        is_cancelled: &is_cancelled,
+        playback_policy: &policy,
+        catalog_capability_probe: &mut catalog_capability_probe,
+    };
+    let (candidate_selection, composed_selection, opened_candidate) = match resolved_intent {
+        preparation::ResolvedCandidateIntent::Planner(SelectionRequest::BestPlayable) => {
+            let ranked = content_probe_fallback::ranked_best_playable_candidates(
+                &candidate_snapshot,
+                &planning_snapshot,
+                capabilities,
+                &policy,
+            )
+            .with_context(|| {
+                format!(
+                    "YtDlp planner не нашёл playable candidate (planning_candidates={planning_candidate_count}, normalization_rejections={normalization_rejection_count})"
+                )
+            })?;
+            let (_, opened_attempt) =
+                content_probe_fallback::open_ranked_best(ranked, &is_cancelled, |candidate| {
+                    let selection = candidate_snapshot
+                        .selection_for(candidate)
+                        .context("Planner-ranked YtDlp candidate не имеет exact selection")?;
+                    attempt_context.open(candidate, selection)
+                })
+                .context("Не удалось открыть planner-ranked BestPlayable YtDlp candidate")?;
+            let (selection, opened) = opened_attempt.into_parts();
+            (selection, None, opened)
+        }
+        preparation::ResolvedCandidateIntent::Planner(
+            selection_request @ SelectionRequest::Exact(_),
+        ) => {
             let outcome = plan_playback(
                 &planning_snapshot,
                 capabilities,
@@ -221,70 +274,38 @@ pub(crate) fn prepare_yt_dlp_web_media(
             .map_err(|error| {
                 let safe_summary = error.safe_summary();
                 anyhow::Error::new(error).context(format!(
-                    "YtDlp planner не нашёл playable candidate (planning_candidates={planning_candidate_count}, normalization_rejections={normalization_rejection_count}, {safe_summary})"
+                    "YtDlp planner не нашёл exact playable candidate (planning_candidates={planning_candidate_count}, normalization_rejections={normalization_rejection_count}, {safe_summary})"
                 ))
             })?;
             let selected = candidate_snapshot
-                .accepted_candidates()
-                .find(|candidate| {
-                    candidate.descriptor().identity() == outcome.selected().exact_identity()
-                })
+                .canonical_candidate_for_planning_identity(
+                    outcome.selected().exact_identity(),
+                    outcome.selected().semantic_identity(),
+                )
                 .ok_or_else(|| anyhow!("planner выбрал отсутствующий YtDlp candidate"))?;
-            (
-                selected.clone(),
-                candidate_snapshot.selection_for(selected)?,
-                None,
-            )
+            let selection = candidate_snapshot
+                .selection_for(selected)
+                .context("Exact YtDlp candidate не имеет exact selection")?;
+            let opened_attempt = content_probe_fallback::open_single(selected, |candidate| {
+                attempt_context.open(candidate, selection)
+            })
+            .context("Не удалось открыть exact YtDlp candidate")?;
+            let (selection, opened) = opened_attempt.into_parts();
+            (selection, None, opened)
         }
         preparation::ResolvedCandidateIntent::Composed {
             candidate,
             selection,
             parent_preference,
-        } => (*candidate, *parent_preference, Some(selection)),
-    };
-    let catalog_identity = web_media_core::ComponentVariantCatalogIdentity::new(
-        ExactSelectionIdentity::new(
-            candidate_selection.exact_identity().clone(),
-            candidate_selection.semantic_identity().clone(),
-        )
-        .context("YtDlp catalog parent identities нарушают source lineage")?,
-        preparation::next_component_variant_catalog_generation()?,
-    );
-    let hls_endpoint_refresh: Option<Arc<dyn HlsEndpointRefreshPort>> =
-        (candidate_snapshot.live_intent() == YtDlpLiveIntent::Live
-            && crate::web_media_hls_open::candidate_is_hls(&selected_candidate))
-        .then(|| {
-            Arc::new(
-                crate::web_media_hls_refresh::AppHlsEndpointRefreshPort::new(
-                    locator.clone(),
-                    yt_dlp_config.clone(),
-                    network_config.clone(),
-                    runtime.source_config.clone(),
-                    runtime.provider_id.clone(),
-                    candidate_selection.clone(),
-                    cancellation.clone(),
-                ),
-            ) as Arc<dyn HlsEndpointRefreshPort>
-        });
-    let dash_endpoint_refresh: Option<Arc<dyn DashEndpointRefreshPort>> =
-        (candidate_snapshot.live_intent() == YtDlpLiveIntent::Live
-            && crate::web_media_dash_open::candidate_is_dash(&selected_candidate))
-        .then(|| {
-            Arc::new(
-                crate::web_media_dash_refresh::AppDashEndpointRefreshPort::new(
-                    locator.clone(),
-                    yt_dlp_config.clone(),
-                    network_config.clone(),
-                    runtime.source_config.clone(),
-                    runtime.provider_id.clone(),
-                    candidate_selection.clone(),
-                    cancellation.clone(),
-                ),
-            ) as Arc<dyn DashEndpointRefreshPort>
-        });
-    let endpoint_refresh_ports = AdaptiveEndpointRefreshPorts {
-        hls: hls_endpoint_refresh,
-        dash: dash_endpoint_refresh,
+        } => {
+            let opened_attempt =
+                content_probe_fallback::open_single(candidate.as_ref(), |candidate| {
+                    attempt_context.open(candidate, *parent_preference)
+                })
+                .context("Не удалось открыть composed YtDlp candidate")?;
+            let (candidate_selection, opened) = opened_attempt.into_parts();
+            (candidate_selection, Some(selection), opened)
+        }
     };
     let stream_configuration =
         crate::web_media_stream_model::WebMediaStreamConfiguration::from_yt_dlp_snapshot(
@@ -296,30 +317,6 @@ pub(crate) fn prepare_yt_dlp_web_media(
             selection_preference,
         )
         .context("Не удалось построить secret-safe URL sidebar stream model")?;
-    let playlist_metadata = candidate_snapshot.playlist_metadata().clone();
-    ensure_not_cancelled(&is_cancelled)?;
-    let mut catalog_capability_probe = catalog_capabilities::AppCatalogCapabilityProbe::new(
-        system_capabilities.clone(),
-        audio_capabilities,
-    );
-    let opened_candidate = runtime
-        .open_candidate(
-            &selected_candidate,
-            WebCandidateOpenContext {
-                live_intent: candidate_snapshot.live_intent(),
-                endpoint_refresh_ports,
-                timeline_port_generation: preparation::next_dynamic_timeline_port_generation()?,
-                component_selection_intent: component_selection_intent.clone(),
-                preferred_height: crate::web_media_quality::preferred_height_policy(
-                    yt_dlp_config.preferred_video_height,
-                ),
-                catalog_identity: catalog_identity.clone(),
-                cancellation: cancellation.clone(),
-            },
-            &is_cancelled,
-            &mut catalog_capability_probe,
-        )
-        .context("Не удалось открыть выбранный YtDlp candidate")?;
     let stream_configuration =
         stream_configuration.with_hls_subtitle_renditions(opened_candidate.subtitles);
     ensure_not_cancelled(&is_cancelled)?;
@@ -436,7 +433,8 @@ impl WebOpenRuntime {
         context: WebCandidateOpenContext,
         is_cancelled: &impl Fn() -> bool,
         catalog_capability_probe: &mut catalog_capabilities::AppCatalogCapabilityProbe,
-    ) -> Result<OpenedWebCandidate> {
+        playback_policy: &PlaybackSelectionPolicy,
+    ) -> std::result::Result<OpenedWebCandidate, content_probe_fallback::CandidateOpenError> {
         let WebCandidateOpenContext {
             live_intent,
             endpoint_refresh_ports,
@@ -472,6 +470,16 @@ impl WebOpenRuntime {
         }
         if hds::candidate_is_hds(candidate) {
             ensure_not_cancelled(is_cancelled)?;
+            let StreamLayout::ContentProbed(content_probe_descriptor) =
+                candidate.descriptor().layout()
+            else {
+                return Err(anyhow!("HDS candidate потерял ContentProbed descriptor").into());
+            };
+            let hds_capability_probe = content_probe::ContentProbedHdsCapabilityProbe::new(
+                catalog_capability_probe,
+                content_probe_descriptor,
+                playback_policy,
+            );
             let prepared = hds::prepare_hds_candidate(
                 candidate,
                 self.provider_id.clone(),
@@ -483,8 +491,18 @@ impl WebOpenRuntime {
                 preferred_height,
                 component_selection_intent,
                 catalog_identity,
-                catalog_capability_probe,
-            )?;
+                &hds_capability_probe,
+            )
+            .map_err(|error| {
+                if error
+                    .downcast_ref::<web_media_hds::HdsNoPlayableRendition>()
+                    .is_some()
+                {
+                    content_probe::ContentProbeRejection::NoPlayableAdaptiveVariant.into()
+                } else {
+                    content_probe_fallback::CandidateOpenError::from(error)
+                }
+            })?;
             return Ok(OpenedWebCandidate {
                 demuxer: prepared.demuxer,
                 subtitles: Arc::from([]),
@@ -548,7 +566,10 @@ impl WebOpenRuntime {
             live_intent,
             YtDlpLiveIntent::Unspecified | YtDlpLiveIntent::NotLive
         ) {
-            bail!("live yt-dlp candidate не имеет совместимого HLS transport profile");
+            return Err(anyhow!(
+                "live yt-dlp candidate не имеет совместимого HLS transport profile"
+            )
+            .into());
         }
         let request_context = YtDlpProgressiveTransportRequestContext::new(
             self.provider_id.clone(),
@@ -581,10 +602,20 @@ impl WebOpenRuntime {
                 container,
                 cancellation.clone(),
             )?;
+            if let StreamLayout::ContentProbed(descriptor) = candidate.descriptor().layout() {
+                let proof = content_probe::prove_content_probed_tracks(
+                    catalog_capability_probe,
+                    descriptor,
+                    demuxer.tracks(),
+                    playback_policy,
+                )?;
+                debug_assert!(proof.video().is_some() || proof.audio().is_some());
+            }
             validate_component_tracks(role, demuxer.as_ref())?;
             opened_components.push(OpenedCandidateComponent { role, demuxer });
         }
-        compose_candidate_components(opened_components).map(|demuxer| OpenedWebCandidate {
+        let demuxer = compose_candidate_components(opened_components)?;
+        Ok(OpenedWebCandidate {
             demuxer,
             subtitles: Arc::from([]),
             timeline_port: None,
@@ -795,6 +826,7 @@ fn validate_component_tracks(role: MediaComponentRole, demuxer: &dyn Demuxer) ->
     let has_audio = selected_track(demuxer, TrackKind::Audio).is_some();
     let shape_matches = match role {
         MediaComponentRole::Muxed => has_video && has_audio,
+        MediaComponentRole::ContentProbed => has_video || has_audio,
         MediaComponentRole::Video => has_video,
         MediaComponentRole::Audio => has_audio,
         MediaComponentRole::Subtitle => false,

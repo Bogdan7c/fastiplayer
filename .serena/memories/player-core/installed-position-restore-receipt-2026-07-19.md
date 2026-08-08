@@ -21,3 +21,8 @@
 ## S13 playback-window уточнение (2026-07-20)
 - `InstalledPositionRestore::SeekTo` всегда принимает публичную relative позицию активного window.
 - Pending receipt не завершается на demux seek: relative target переводится в absolute source time, а `Applied` публикуется только после matching seek commit, как и для media без window.
+
+## `TracksChanged` rebase внутри той же seek-транзакции (2026-08-05)
+- `DemuxReadEvent::TracksChanged` намеренно открывает новую decoder/packet generation, не создавая новую пользовательскую seek-транзакцию. `PlayerSession::rebase_pending_seek_receipts` атомарно переносит exact old→new generation как у уже принятого `PendingInstalledPositionRestore`, так и у ещё не забранного app-ом `InstalledStagedPositionOutcome::AwaitingSeekCommit`.
+- Перенос выполняется только при exact совпадении сохранённой generation со старой active generation. Строгий mismatch fence в `finish_installed_position_restore` сохранён: commit независимого или superseding seek не может дать false `Applied`.
+- Functional coverage: `session::tests::installed_media_restore::track_list_rebase_preserves_in_flight_position_restore_receipt` и `session::tests::staged_media_install::position_rebase::staged_track_rebase_before_adoption_reaches_presented_frame_without_second_demux_seek`. Второй тест проходит staged authorization → настоящий `TracksChanged` tick → adoption → packet/decoder/scheduler → presented frame → `Applied` и доказывает отсутствие второго demux seek.

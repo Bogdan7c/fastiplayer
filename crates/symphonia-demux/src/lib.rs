@@ -3,6 +3,7 @@ pub mod demuxer;
 pub mod dual_stream_demuxer;
 pub mod error;
 mod factory;
+mod isomp4_source_offset;
 mod local_probe;
 mod matroska_metadata;
 mod options;

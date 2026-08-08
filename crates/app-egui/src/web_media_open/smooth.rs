@@ -147,7 +147,8 @@ pub(super) fn candidate_is_smooth(candidate: &YtDlpNormalizedCandidate) -> bool 
         StreamLayout::VideoOnly(_)
         | StreamLayout::AudioOnly(_)
         | StreamLayout::Separate { .. }
-        | StreamLayout::HlsMuxedCodecDeferred(_) => false,
+        | StreamLayout::HlsMuxedCodecDeferred(_)
+        | StreamLayout::ContentProbed(_) => false,
     }
 }
 

@@ -30,6 +30,10 @@ pub enum PlayerErrorKind {
     /// Hardware decoder недоступен или не прошёл probe.
     HardwareDecoderUnavailable,
 
+    /// Backend, обязательный для request-scoped policy, не может предоставить playable video path:
+    /// у него нет compatible output либо недоступен его resource/startup.
+    RequiredVideoBackendUnavailable,
+
     /// Ошибка чтения контейнера или packets.
     DemuxError,
 

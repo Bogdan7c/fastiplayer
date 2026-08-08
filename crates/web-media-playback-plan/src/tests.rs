@@ -189,6 +189,111 @@ fn best_playable_prefers_complete_av_over_preferred_video_only_codec() {
     assert_eq!(outcome.selected().layout(), StreamLayoutKind::Separate);
 }
 
+/// Declared A/V content probe остаётся полноценным A/V независимо от более выгодных single-track tie-breakers.
+#[test]
+fn best_playable_prefers_declared_av_content_probe_over_video_only_and_audio_only() {
+    let (transport, demux) = s42_resource_capabilities();
+    let video = video_capabilities(vec![
+        supported_video_format(VideoCodec::Vp9, false),
+        supported_video_format(VideoCodec::H264, false),
+    ]);
+    let capabilities = PlaybackCapabilitySnapshot::new(
+        &transport,
+        &demux,
+        &video,
+        AudioDecodeCapabilitySnapshot::empty()
+            .with_available_family(AudioDecodeCodecFamily::Opus)
+            .with_available_family(AudioDecodeCodecFamily::Aac),
+    );
+    let policy = selection_policy(
+        HdrSelectionPolicy::SdrOnly,
+        PreferredHeightPolicy::NoPreference,
+        vec![VideoCodec::Vp9, VideoCodec::H264],
+        vec![ContainerFamily::WebM, ContainerFamily::F4f],
+    );
+    let declared_av = content_probed_hds_declared_av_candidate("declared-av", "declared-av", 1);
+    let preferred_video_only = video_only_candidate(VideoCandidateSpec {
+        format_id: "preferred-video-only",
+        semantic_key: "preferred-video-only",
+        transport_raw: "https",
+        container_raw: "webm",
+        codec_raw: "vp09.00.41.08",
+        height: 2_160,
+        dynamic_range: DynamicRange::Sdr,
+        requirement: sdr_requirement(VideoCodec::Vp9, 2_160),
+        quality_score: 10_000,
+    });
+    let preferred_audio_only = audio_only_candidate("preferred-audio-only", "preferred-audio-only");
+    let snapshot = candidate_snapshot(vec![
+        preferred_video_only,
+        preferred_audio_only,
+        declared_av,
+    ]);
+
+    let outcome = plan_playback(
+        &snapshot,
+        capabilities,
+        &SelectionRequest::BestPlayable,
+        &policy,
+    )
+    .expect("declared A/V content-probed candidate должен победить single-track alternatives");
+
+    assert_eq!(outcome.selected().semantic_identity().key(), "declared-av");
+    assert_eq!(outcome.selected().layout(), StreamLayoutKind::ContentProbed);
+}
+
+/// Unknown content metadata не получает выдуманную A/V полноту и уступает preferred single-track row.
+#[test]
+fn best_playable_does_not_promote_unknown_content_probe_to_complete_av() {
+    let (transport, demux) = s42_resource_capabilities();
+    let video = video_capabilities(vec![supported_video_format(VideoCodec::Vp9, false)]);
+    let capabilities = PlaybackCapabilitySnapshot::new(
+        &transport,
+        &demux,
+        &video,
+        AudioDecodeCapabilitySnapshot::empty(),
+    );
+    let policy = selection_policy(
+        HdrSelectionPolicy::SdrOnly,
+        PreferredHeightPolicy::NoPreference,
+        vec![VideoCodec::Vp9],
+        vec![ContainerFamily::WebM, ContainerFamily::Ogg],
+    );
+    let unknown_content = content_probed_ogg_candidate_with_hints(
+        "unknown-content",
+        "unknown-content",
+        None,
+        DynamicRange::Unknown,
+        1,
+    );
+    let preferred_video_only = video_only_candidate(VideoCandidateSpec {
+        format_id: "preferred-video-only",
+        semantic_key: "preferred-video-only",
+        transport_raw: "https",
+        container_raw: "webm",
+        codec_raw: "vp09.00.41.08",
+        height: 1_080,
+        dynamic_range: DynamicRange::Sdr,
+        requirement: sdr_requirement(VideoCodec::Vp9, 1_080),
+        quality_score: 10_000,
+    });
+    let snapshot = candidate_snapshot(vec![unknown_content, preferred_video_only]);
+
+    let outcome = plan_playback(
+        &snapshot,
+        capabilities,
+        &SelectionRequest::BestPlayable,
+        &policy,
+    )
+    .expect("unknown content probe и video-only candidate должны оставаться playable");
+
+    assert_eq!(
+        outcome.selected().semantic_identity().key(),
+        "preferred-video-only"
+    );
+    assert_eq!(outcome.selected().layout(), StreamLayoutKind::VideoOnly);
+}
+
 #[test]
 fn grouped_opaque_ranking_is_stable_when_source_order_reverses() {
     let (transport, demux) = full_resource_capabilities();
@@ -235,10 +340,19 @@ fn grouped_opaque_ranking_is_stable_when_source_order_reverses() {
         candidate_snapshot(vec![worse.clone(), better.clone()]),
         candidate_snapshot(vec![better, worse]),
     ] {
+        assert_eq!(snapshot.candidates().len(), 2);
         let ranking = rank_playable_opaque_alternatives(&snapshot, capabilities, &policy)
             .expect("оба opaque alternatives playable");
         assert_eq!(ranking.rank_of(&better_selection), Some(0));
         assert_eq!(ranking.rank_of(&worse_selection), Some(1));
+        let ranked_identities = ranking.ranked_candidate_identities().collect::<Vec<_>>();
+        assert_eq!(
+            ranked_identities,
+            [
+                (better_selection.exact(), better_selection.semantic()),
+                (worse_selection.exact(), worse_selection.semantic())
+            ]
+        );
     }
 }
 
@@ -704,6 +818,156 @@ fn hls_deferred_is_playable_with_hls_transport_and_ts_or_fmp4_demux() {
         outcome.selected().layout(),
         StreamLayoutKind::HlsMuxedCodecDeferred
     );
+}
+
+/// Content-probed Ogg проверяет transport/demux сейчас, а неизвестные codecs — после open.
+#[test]
+fn content_probed_ogg_is_playable_without_invented_decode_requirements() {
+    let candidate = content_probed_ogg_candidate("ogg-probed", "ogg-probed");
+    let request = exact_request(&candidate);
+    let snapshot = candidate_snapshot(vec![candidate]);
+    let transport = TransportCapabilitySnapshot::new(vec![
+        TransportCapabilityRegistration::new(
+            TransportFamily::ProgressiveHttp(HttpScheme::Https),
+            DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes),
+        )
+        .expect("HTTP transport registration валидна"),
+    ]);
+    let demux = DemuxCapabilitySnapshot::new(vec![
+        DemuxCapabilityRegistration::new(
+            ContainerFamily::Ogg,
+            DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes),
+        )
+        .expect("Ogg demux registration валидна"),
+    ]);
+    let video = empty_video_capabilities();
+    let capabilities = PlaybackCapabilitySnapshot::new(
+        &transport,
+        &demux,
+        &video,
+        AudioDecodeCapabilitySnapshot::empty(),
+    );
+    let policy = selection_policy(
+        HdrSelectionPolicy::SdrOnly,
+        PreferredHeightPolicy::NoPreference,
+        Vec::new(),
+        vec![ContainerFamily::Ogg],
+    );
+
+    let outcome = plan_playback(&snapshot, capabilities, &request, &policy)
+        .expect("content-probed Ogg должен пройти static planner layers");
+    assert_eq!(outcome.selected().layout(), StreamLayoutKind::ContentProbed);
+    assert_eq!(outcome.selected().matched_video_output(), None);
+}
+
+/// Soft content hints участвуют в ranking, но не становятся hard HDR capability evidence.
+#[test]
+fn content_probed_height_hint_ranks_without_bypassing_runtime_hdr_proof() {
+    let snapshot = candidate_snapshot(vec![
+        content_probed_ogg_candidate_with_hints(
+            "probed-480",
+            "probed-480",
+            Some(480),
+            DynamicRange::Hdr,
+            300,
+        ),
+        content_probed_ogg_candidate_with_hints(
+            "probed-720",
+            "probed-720",
+            Some(720),
+            DynamicRange::Hdr,
+            1,
+        ),
+        content_probed_ogg_candidate_with_hints(
+            "probed-1080",
+            "probed-1080",
+            Some(1_080),
+            DynamicRange::Hdr,
+            500,
+        ),
+    ]);
+    let transport = TransportCapabilitySnapshot::new(vec![
+        TransportCapabilityRegistration::new(
+            TransportFamily::ProgressiveHttp(HttpScheme::Https),
+            DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes),
+        )
+        .unwrap(),
+    ]);
+    let demux = DemuxCapabilitySnapshot::new(vec![
+        DemuxCapabilityRegistration::new(
+            ContainerFamily::Ogg,
+            DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes),
+        )
+        .unwrap(),
+    ]);
+    let video = empty_video_capabilities();
+    let capabilities = PlaybackCapabilitySnapshot::new(
+        &transport,
+        &demux,
+        &video,
+        AudioDecodeCapabilitySnapshot::empty(),
+    );
+    let policy = selection_policy(
+        HdrSelectionPolicy::SdrOnly,
+        PreferredHeightPolicy::Prefer(PreferredVideoHeight::new(720).unwrap()),
+        Vec::new(),
+        vec![ContainerFamily::Ogg],
+    );
+
+    let outcome = plan_playback(
+        &snapshot,
+        capabilities,
+        &SelectionRequest::BestPlayable,
+        &policy,
+    )
+    .expect("soft HDR hint не должен подменять runtime proof");
+
+    assert_eq!(outcome.selected().semantic_identity().key(), "probed-720");
+}
+
+/// Content probe не обходит отсутствие зарегистрированного demux container path-а.
+#[test]
+fn content_probed_ogg_rejects_missing_ogg_demux() {
+    let candidate = content_probed_ogg_candidate("ogg-probed", "ogg-probed");
+    let request = exact_request(&candidate);
+    let snapshot = candidate_snapshot(vec![candidate]);
+    let transport = TransportCapabilitySnapshot::new(vec![
+        TransportCapabilityRegistration::new(
+            TransportFamily::ProgressiveHttp(HttpScheme::Https),
+            DemuxInputCapabilities::only(DemuxInputCapability::SeekableBytes),
+        )
+        .expect("HTTP transport registration валидна"),
+    ]);
+    let demux = DemuxCapabilitySnapshot::default();
+    let video = empty_video_capabilities();
+    let capabilities = PlaybackCapabilitySnapshot::new(
+        &transport,
+        &demux,
+        &video,
+        AudioDecodeCapabilitySnapshot::empty(),
+    );
+    let policy = selection_policy(
+        HdrSelectionPolicy::SdrOnly,
+        PreferredHeightPolicy::NoPreference,
+        Vec::new(),
+        vec![ContainerFamily::Ogg],
+    );
+
+    let PlaybackPlanningError::ExactCandidateNotPlayable(rejection) =
+        plan_playback(&snapshot, capabilities, &request, &policy)
+            .expect_err("без Ogg demux content-probed candidate должен быть отклонён")
+    else {
+        panic!("ожидался exact content-probed rejection");
+    };
+    assert!(rejection.reasons().iter().any(|reason| matches!(
+        reason,
+        CandidateRejectionReason::Capability(CandidateCapabilityRejection::Demux(
+            DemuxCapabilityRejection::ContainerUnavailable {
+                component: PlaybackComponent::ContentProbed,
+                container: ContainerFamily::Ogg,
+            }
+        ))
+    )));
 }
 
 /// Deferred HLS отклоняется без HLS transport capability.

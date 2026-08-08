@@ -13,7 +13,6 @@ use crate::web_media_stream_model::{
     WebMediaSelectionPreference, WebMediaStreamGeneration,
 };
 
-#[cfg(test)]
 mod component_variants;
 #[cfg(test)]
 mod component_variants_tests;
@@ -121,9 +120,12 @@ fn show_yt_dlp(
         ui.weak("Запомнённый вариант недоступен; установлен лучший доступный поток.");
     }
 
-    let _legacy_projection = (candidates, active_candidate, component_variants);
+    let _legacy_candidate_projection = (candidates, active_candidate);
     ui.add_space(12.0);
-    show_stream_picker(ui, generation, catalog, pending_selection.is_some())
+    let unified_action = show_stream_picker(ui, generation, catalog, pending_selection.is_some());
+    let component_action =
+        component_variants::show(ui, generation, component_variants, pending_selection);
+    choose_single_sidebar_action(unified_action, component_action)
 }
 
 fn show_stream_picker(
@@ -189,6 +191,7 @@ fn show_stream_picker(
 
 fn facet_option_label(option: &WebMediaFacetOption) -> String {
     match option {
+        WebMediaFacetOption::Mode(WebMediaMode::Automatic) => "Определяется потоком".to_owned(),
         WebMediaFacetOption::Mode(WebMediaMode::VideoAndAudio) => "Видео + аудио".to_owned(),
         WebMediaFacetOption::Mode(WebMediaMode::VideoOnly) => "Только видео".to_owned(),
         WebMediaFacetOption::Mode(WebMediaMode::AudioOnly) => "Только аудио".to_owned(),
@@ -218,15 +221,14 @@ fn frame_rate_label(rate: web_media_core::FrameRate) -> String {
     label
 }
 
-/// Один frame публикует не более одного intent; candidate сохраняет прежний приоритет.
-#[cfg(test)]
+/// Один frame публикует не более одного intent; unified selector имеет приоритет.
 fn choose_single_sidebar_action(
-    candidate_action: Option<UrlSidebarAction>,
+    unified_action: Option<UrlSidebarAction>,
     component_action: Option<
         crate::web_media_stream_model::component_variants::ComponentVariantSelectionAction,
     >,
 ) -> Option<UrlSidebarAction> {
-    candidate_action.or(component_action.map(UrlSidebarAction::ComponentVariant))
+    unified_action.or(component_action.map(UrlSidebarAction::ComponentVariant))
 }
 
 fn status_grid(ui: &mut Ui, status: UrlSidebarPlaybackStatus) {
@@ -328,6 +330,54 @@ fn codec_label(codec: CodecFamily) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use web_media_core::{CodecFamily, ContainerFamily, DynamicRange, StreamLayoutKind};
+
+    use crate::web_media_stream_model::component_variants::{
+        WebMediaComponentVariantProjection, WebMediaInstalledComponentVariantPresentation,
+        WebMediaVideoComponentVariantAxis, WebMediaVideoComponentVariantPresentation,
+    };
+    use crate::web_media_stream_model::{
+        UrlSidebarItemScope, UrlSidebarModel, UrlSidebarPlaybackStatus,
+        WebMediaCandidatePresentation, WebMediaContainerSummary, WebMediaSelectionPreference,
+        WebMediaStreamGeneration,
+    };
+
+    fn candidate_presentation() -> WebMediaCandidatePresentation {
+        WebMediaCandidatePresentation {
+            layout: StreamLayoutKind::Muxed,
+            width: Some(1920),
+            height: Some(1080),
+            frame_rate: Some((30, 1)),
+            video_bitrate: Some(4_000_000),
+            audio_bitrate: Some(128_000),
+            video_codec: Some(CodecFamily::H264),
+            audio_codec: Some(CodecFamily::Aac),
+            dynamic_range: Some(DynamicRange::Sdr),
+            containers: WebMediaContainerSummary {
+                video: Some(ContainerFamily::MpegTs),
+                audio: Some(ContainerFamily::MpegTs),
+            },
+        }
+    }
+
+    fn visible_labels(model: &UrlSidebarModel) -> Vec<String> {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            let _action = super::show(ui, model);
+        });
+        output
+            .platform_output
+            .accesskit_update
+            .expect("AccessKit tree update")
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| node.label().or_else(|| node.value()).map(ToOwned::to_owned))
+            .collect()
+    }
+
     #[test]
     fn url_content_does_not_create_second_sidebar_panel() {
         let source = include_str!("url_sidebar.rs");
@@ -336,9 +386,54 @@ mod tests {
     }
 
     #[test]
-    fn candidate_action_wins_if_candidate_and_component_click_in_same_frame() {
+    fn production_url_model_renders_component_axis_after_unified_catalog() {
+        let generation = WebMediaStreamGeneration::for_test(4, 9);
+        let active_candidate = candidate_presentation();
+        let model = UrlSidebarModel::YtDlp {
+            generation,
+            source_label: Arc::from("acceptance source"),
+            candidates: Arc::from([active_candidate.clone()]),
+            active_candidate,
+            pending_selection: None,
+            component_variants: Box::new(WebMediaComponentVariantProjection::Installed(
+                WebMediaInstalledComponentVariantPresentation::VideoOnly {
+                    catalog_generation: web_media_core::ComponentVariantCatalogGeneration::new(3),
+                    video: WebMediaVideoComponentVariantAxis {
+                        active_index: 0,
+                        variants: Arc::from([WebMediaVideoComponentVariantPresentation {
+                            width: Some(1920),
+                            height: Some(1080),
+                            frame_rate: Some((30, 1)),
+                            bitrate: Some(4_000_000),
+                            codec: Some(CodecFamily::H264),
+                            dynamic_range: DynamicRange::Sdr,
+                        }]),
+                    },
+                },
+            )),
+            preference: WebMediaSelectionPreference::GlobalBestPlayable,
+            item_scope: UrlSidebarItemScope::SingleItem,
+            status: UrlSidebarPlaybackStatus {
+                is_live: false,
+                seekable: true,
+                buffering: false,
+                refresh_on_reopen: false,
+            },
+            safe_error: None,
+            catalog: crate::web_media_catalog::WebMediaCatalogState::Inactive,
+            fallback_notice: false,
+        };
+
+        let labels = visible_labels(&model);
+        assert!(labels.iter().any(|label| label == "Видео"));
+        assert!(labels.iter().any(|label| label.contains("1920×1080")));
+        assert!(labels.iter().any(|label| label == "Активный"));
+    }
+
+    #[test]
+    fn primary_action_wins_if_both_routes_click_in_same_frame() {
         let generation = crate::web_media_stream_model::WebMediaStreamGeneration::for_test(3, 5);
-        let candidate_action = crate::web_media_stream_model::UrlSidebarAction::Candidate {
+        let primary_action = crate::web_media_stream_model::UrlSidebarAction::Candidate {
             generation,
             candidate_index: 2,
         };
@@ -346,13 +441,13 @@ mod tests {
             crate::web_media_stream_model::component_variants::ComponentVariantSelectionAction {
                 parent_generation: generation,
                 catalog_generation: web_media_core::ComponentVariantCatalogGeneration::new(8),
-                component: web_media_core::ComponentKind::Audio,
+                axis: crate::web_media_stream_model::component_variants::WebMediaComponentVariantAxisKind::Audio,
                 variant_index: 1,
             };
 
         assert_eq!(
-            super::choose_single_sidebar_action(Some(candidate_action), Some(component_action),),
-            Some(candidate_action)
+            super::choose_single_sidebar_action(Some(primary_action), Some(component_action),),
+            Some(primary_action)
         );
     }
 }

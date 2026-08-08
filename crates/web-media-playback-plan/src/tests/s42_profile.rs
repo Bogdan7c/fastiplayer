@@ -226,6 +226,7 @@ fn approved_s42_rows_have_positive_production_shaped_plans() {
         let transport_raw = match candidate.descriptor().layout() {
             StreamLayout::Muxed(component) => component.transport().raw().as_str(),
             StreamLayout::HlsMuxedCodecDeferred(component) => component.transport().raw().as_str(),
+            StreamLayout::ContentProbed(component) => component.transport().raw().as_str(),
             StreamLayout::Separate { video, audio } => {
                 assert_eq!(
                     video.transport().raw(),

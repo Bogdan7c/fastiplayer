@@ -155,18 +155,26 @@ impl YtDlpCandidateSnapshot {
         let expected_layout = role.layout_matches();
         if selection.exact_identity().generation() == self.generation() {
             let candidate = self
-                .accepted_inventory_candidates()
-                .find(|candidate| candidate.descriptor() == selection.descriptor())
+                .accepted_candidates()
+                .find(|candidate| {
+                    candidate.descriptor() == selection.descriptor()
+                        && candidate.video_color_evidence() == selection.video_color_evidence()
+                })
                 .ok_or(YtDlpCompositionError::ForeignGenerationOrInventory)?;
+            if !self.has_equivalent_accepted_inventory_membership(candidate) {
+                return Err(YtDlpCompositionError::ForeignGenerationOrInventory);
+            }
             if !expected_layout(candidate.descriptor().layout()) {
                 return Err(role.wrong_shape_error());
             }
             return Ok(candidate);
         }
 
-        let mut matches = self.accepted_inventory_candidates().filter(|candidate| {
+        let mut matches = self.accepted_candidates().filter(|candidate| {
             expected_layout(candidate.descriptor().layout())
                 && candidate.descriptor().semantic_identity() == selection.semantic_identity()
+                && candidate.video_color_evidence() == selection.video_color_evidence()
+                && self.has_equivalent_accepted_inventory_membership(candidate)
         });
         let candidate = matches.next().ok_or(role.missing_error())?;
         if matches.next().is_some() {
@@ -219,8 +227,8 @@ fn build_selection(
     let descriptor = composed_descriptor(video, audio)?;
     Ok(YtDlpComposedSelection {
         descriptor,
-        video: YtDlpCandidateSelection::from_descriptor(video.descriptor().clone()),
-        audio: YtDlpCandidateSelection::from_descriptor(audio.descriptor().clone()),
+        video: YtDlpCandidateSelection::from_candidate(video),
+        audio: YtDlpCandidateSelection::from_candidate(audio),
     })
 }
 

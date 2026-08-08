@@ -753,6 +753,40 @@ fn live_settings_rebuild_passes_active_stream_requirement() {
         );
 }
 
+/// App-owned media lifecycle обязан закрывать settings boundary ещё до player staging.
+///
+/// Полный `AppState` требует real window/audio worker и не имеет headless constructor-а;
+/// поэтому app-layer guard фиксируется на production boundary source, а worker-side
+/// Pending/Ready поведение отдельно проходит functional session tests.
+#[test]
+fn app_runtime_reconfigure_boundary_checks_pre_player_media_lifecycle_first() {
+    let state_source = include_str!("../state.rs");
+    let boundary_section = source_section_between(
+        state_source,
+        "pub(crate) fn runtime_reconfigure_boundary_activity(",
+        "pub(crate) fn current_decoder_thread_config(",
+    );
+
+    let strong_open_check = boundary_section
+        .find("self.has_pending_prepared_media_strong()")
+        .expect("settings boundary должен проверять app-owned strong media open");
+    let suspended_resume_check = boundary_section
+        .find("self.has_pending_suspended_media_resume()")
+        .expect("settings boundary должен проверять app-owned suspended resume");
+    let worker_query = boundary_section
+        .find("self.player_worker.runtime_reconfigure_boundary_activity()")
+        .expect("после app-owned gate boundary должен спросить worker owner-а");
+
+    assert!(
+        strong_open_check < worker_query && suspended_resume_check < worker_query,
+        "pre-player app owners должны закрывать boundary до worker query"
+    );
+    assert!(
+        boundary_section.contains("PlayerRuntimeBoundaryActivity::PipelineLifecycle"),
+        "app-owned media lifecycle должен возвращать typed PipelineLifecycle activity"
+    );
+}
+
 #[test]
 fn playlist_transport_routes_only_pre_barrier_failure_through_navigation_owner() {
     let transport_source = include_str!("playlist_transport.rs");

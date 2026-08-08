@@ -36,6 +36,14 @@ pub(crate) struct PlannedResource {
     pub target: HttpRequestTarget,
     pub byte_range: Option<HttpBoundedByteRange>,
     pub encryption: Option<PlannedEncryption>,
+    /// Stable coordinate media segment-а внутри parser lifecycle epoch.
+    pub restart_segment: Option<HlsSegmentRestartCoordinate>,
+}
+
+/// Stable HLS-private coordinate, по которой seek строит suffix immutable epoch plan-а.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HlsSegmentRestartCoordinate {
+    pub segment_index: usize,
 }
 
 /// Один parser/decoder-facing lifecycle epoch.
@@ -43,6 +51,26 @@ pub(crate) struct PlannedResource {
 pub(crate) struct HlsEpochPlan {
     pub resources: Vec<PlannedResource>,
     pub timeline_start: Duration,
+}
+
+impl HlsEpochPlan {
+    /// Строит exact suffix plan: effective MAP плюс выбранный media segment и весь остаток epoch-а.
+    pub(crate) fn restart_tail(&self, coordinate: HlsSegmentRestartCoordinate) -> Option<Self> {
+        let media_resource_index = self.resources.iter().position(|resource| {
+            resource.restart_segment == Some(coordinate)
+                && resource.kind == OrderedSegmentKind::Media
+        })?;
+        let mut resources = self.resources[..media_resource_index]
+            .iter()
+            .filter(|resource| resource.kind == OrderedSegmentKind::Initialization)
+            .cloned()
+            .collect::<Vec<_>>();
+        resources.extend(self.resources[media_resource_index..].iter().cloned());
+        Some(Self {
+            resources,
+            timeline_start: self.timeline_start,
+        })
+    }
 }
 
 /// Полный finite component plan без fetched media bytes.
@@ -89,6 +117,8 @@ pub enum HlsPlanError {
     DurationOverflow,
     #[error("HLS duration имеет invalid validated representation")]
     InvalidDuration,
+    #[error("HLS restart segment index переполняется")]
+    RestartSegmentIndexOverflow,
     #[error("HLS resource target invalid: {0}")]
     Target(#[from] source_core::HttpRequestTargetError),
     #[error("HLS exact HTTP range invalid")]
@@ -150,6 +180,7 @@ fn build_component_plan_with_epoch_strategy(
     let mut current_map_resource: Option<PlannedResource> = None;
     let mut timeline_start = Duration::ZERO;
     let mut current_epoch_duration = Duration::ZERO;
+    let mut current_restart_segment_index = 0_usize;
 
     for segment in &media.segments {
         let map_changed = segment.initialization_map != current_map;
@@ -164,6 +195,7 @@ fn build_component_plan_with_epoch_strategy(
                 .checked_add(current_epoch_duration)
                 .ok_or(HlsPlanError::DurationOverflow)?;
             current_epoch_duration = Duration::ZERO;
+            current_restart_segment_index = 0;
         }
 
         if let Some(initialization_map) = segment
@@ -192,7 +224,13 @@ fn build_component_plan_with_epoch_strategy(
             base,
             overrides,
             &mut range_cursor,
+            HlsSegmentRestartCoordinate {
+                segment_index: current_restart_segment_index,
+            },
         )?);
+        current_restart_segment_index = current_restart_segment_index
+            .checked_add(1)
+            .ok_or(HlsPlanError::RestartSegmentIndexOverflow)?;
         current_epoch_duration = current_epoch_duration
             .checked_add(parse_hls_duration(&segment.duration)?)
             .ok_or(HlsPlanError::DurationOverflow)?;
@@ -243,6 +281,7 @@ fn plan_initialization_map(
         target,
         byte_range,
         encryption,
+        restart_segment: None,
     })
 }
 
@@ -252,6 +291,7 @@ fn plan_media_segment(
     base: &HttpRequestTarget,
     overrides: &HlsRequestOverrides,
     range_cursor: &mut RangeCursor,
+    restart_segment: HlsSegmentRestartCoordinate,
 ) -> Result<PlannedResource, HlsPlanError> {
     let target = resource_target(base, segment.uri.expose_for_resolution())?;
     let byte_range = range_cursor.resolve(&target, segment.byte_range.as_ref())?;
@@ -282,6 +322,7 @@ fn plan_media_segment(
         target,
         byte_range,
         encryption,
+        restart_segment: Some(restart_segment),
     })
 }
 

@@ -142,7 +142,7 @@ pub(crate) fn candidate_is_dash(candidate: &YtDlpNormalizedCandidate) -> bool {
             video.transport().family() == TransportFamily::Dash
                 && audio.transport().family() == TransportFamily::Dash
         }
-        StreamLayout::HlsMuxedCodecDeferred(_) => false,
+        StreamLayout::HlsMuxedCodecDeferred(_) | StreamLayout::ContentProbed(_) => false,
     }
 }
 
@@ -561,6 +561,9 @@ fn presentation_selection(layout: &StreamLayout) -> Result<DashPresentationSelec
         StreamLayout::HlsMuxedCodecDeferred(_) => {
             Err(anyhow!("DASH open не поддерживает deferred HLS layout"))
         }
+        StreamLayout::ContentProbed(_) => Err(anyhow!(
+            "DASH open пока не поддерживает content-probed layout"
+        )),
     }
 }
 
@@ -640,6 +643,9 @@ fn dash_media_kind(role: MediaComponentRole) -> Result<DashMediaKind> {
         MediaComponentRole::Video => Ok(DashMediaKind::Video),
         MediaComponentRole::Audio => Ok(DashMediaKind::Audio),
         MediaComponentRole::Subtitle => bail!("DASH subtitles playback не входит в S34"),
+        MediaComponentRole::ContentProbed => {
+            bail!("DASH content-probed component требует отдельного representation proof")
+        }
     }
 }
 

@@ -1,16 +1,17 @@
-//! Safe renderer независимых video/audio component axes.
+//! Safe renderer независимых video/audio и неделимой coupled A/V axes.
 //!
 //! Модуль создаёт только generation-fenced row action. Exact identities,
 //! semantic metadata и controlled reopen lifecycle остаются за model/state boundary.
 
 use egui::{Button, Response, RichText, Ui};
-use web_media_core::{ComponentKind, ComponentVariantCatalogGeneration, DynamicRange};
+use web_media_core::{ComponentVariantCatalogGeneration, DynamicRange};
 
 use crate::web_media_stream_model::component_variants::{
     ComponentVariantSelectionAction, WebMediaAudioComponentVariantAxis,
-    WebMediaAudioComponentVariantPresentation, WebMediaComponentVariantProjection,
-    WebMediaInstalledComponentVariantPresentation, WebMediaVideoComponentVariantAxis,
-    WebMediaVideoComponentVariantPresentation,
+    WebMediaAudioComponentVariantPresentation, WebMediaComponentVariantAxisKind,
+    WebMediaComponentVariantProjection, WebMediaCoupledComponentVariantAxis,
+    WebMediaCoupledComponentVariantPresentation, WebMediaInstalledComponentVariantPresentation,
+    WebMediaVideoComponentVariantAxis, WebMediaVideoComponentVariantPresentation,
 };
 use crate::web_media_stream_model::{UrlSidebarPendingSelection, WebMediaStreamGeneration};
 
@@ -18,6 +19,7 @@ use super::codec_label;
 
 pub(super) const VIDEO_HEADING: &str = "Видео";
 pub(super) const AUDIO_HEADING: &str = "Аудио";
+pub(super) const COUPLED_HEADING: &str = "Видео и аудио";
 pub(super) const UNAVAILABLE_TEXT: &str = "Раздельный выбор недоступен для этого формата";
 pub(super) const VIDEO_AXIS_MISSING_TEXT: &str = "В этом формате нет отдельной видеодорожки";
 pub(super) const AUDIO_AXIS_MISSING_TEXT: &str = "В этом формате нет отдельной аудиодорожки";
@@ -99,6 +101,16 @@ fn show_installed(
                 pending_selection,
             )
         }
+        WebMediaInstalledComponentVariantPresentation::Coupled {
+            catalog_generation,
+            coupled,
+        } => show_coupled_axis(
+            ui,
+            parent_generation,
+            *catalog_generation,
+            coupled,
+            pending_selection,
+        ),
     }
 }
 
@@ -127,7 +139,7 @@ fn show_video_axis(
         let row_action = ComponentVariantSelectionAction {
             parent_generation,
             catalog_generation,
-            component: ComponentKind::Video,
+            axis: WebMediaComponentVariantAxisKind::Video,
             variant_index,
         };
         let clicked = show_variant_row(
@@ -158,7 +170,7 @@ fn show_audio_axis(
         let row_action = ComponentVariantSelectionAction {
             parent_generation,
             catalog_generation,
-            component: ComponentKind::Audio,
+            axis: WebMediaComponentVariantAxisKind::Audio,
             variant_index,
         };
         let clicked = show_variant_row(
@@ -166,6 +178,38 @@ fn show_audio_axis(
             row_action,
             variant_index == axis.active_index,
             audio_label(variant),
+            pending_selection,
+        );
+        if action.is_none() && clicked {
+            action = Some(row_action);
+        }
+    }
+    ui.add_space(6.0);
+    action
+}
+
+/// Рисует provider-owned A/V rendition как одну axis без ложного split-а.
+fn show_coupled_axis(
+    ui: &mut Ui,
+    parent_generation: WebMediaStreamGeneration,
+    catalog_generation: ComponentVariantCatalogGeneration,
+    axis: &WebMediaCoupledComponentVariantAxis,
+    pending_selection: Option<&UrlSidebarPendingSelection>,
+) -> Option<ComponentVariantSelectionAction> {
+    ui.label(RichText::new(COUPLED_HEADING).strong());
+    let mut action = None;
+    for (variant_index, variant) in axis.variants.iter().enumerate() {
+        let row_action = ComponentVariantSelectionAction {
+            parent_generation,
+            catalog_generation,
+            axis: WebMediaComponentVariantAxisKind::Coupled,
+            variant_index,
+        };
+        let clicked = show_variant_row(
+            ui,
+            row_action,
+            variant_index == axis.active_index,
+            coupled_label(variant),
             pending_selection,
         );
         if action.is_none() && clicked {
@@ -214,7 +258,7 @@ pub(super) fn variant_button(
         .push_id(
             (
                 row_action.catalog_generation().value(),
-                row_action.component(),
+                row_action.axis(),
                 row_action.variant_index(),
             ),
             |ui| {
@@ -260,6 +304,9 @@ fn video_label(variant: &WebMediaVideoComponentVariantPresentation) -> String {
 
 fn audio_label(variant: &WebMediaAudioComponentVariantPresentation) -> String {
     let mut parts = Vec::new();
+    if let Some(language_label) = &variant.language_label {
+        parts.push(language_label.to_string());
+    }
     if let Some(bitrate) = variant.bitrate {
         parts.push(format!("{} кбит/с", bitrate / 1_000));
     }
@@ -273,6 +320,15 @@ fn audio_label(variant: &WebMediaAudioComponentVariantPresentation) -> String {
         parts.push(codec_label(codec).to_owned());
     }
     fallback_label(parts, "Параметры аудио не указаны")
+}
+
+/// Объединяет safe metadata одной coupled row, не создавая независимый выбор осей.
+fn coupled_label(variant: &WebMediaCoupledComponentVariantPresentation) -> String {
+    format!(
+        "{} • {}",
+        video_label(&variant.video),
+        audio_label(&variant.audio)
+    )
 }
 
 fn fallback_label(parts: Vec<String>, fallback: &str) -> String {

@@ -103,7 +103,7 @@ impl MpegTsDemuxer {
             match self.reader.next_packet()? {
                 Some(packet) => self.process_transport_packet(packet, false)?,
                 None => {
-                    self.finish_pes_at_eof_with_lifecycle(false)?;
+                    self.finish_pending_elementary_streams(false)?;
                     reached_end = true;
                     break;
                 }
@@ -254,7 +254,7 @@ impl MpegTsDemuxer {
             let mut reached_end = false;
             for _ in 0..self.options.seek_scan_packets.get() {
                 let Some(packet) = self.reader.next_packet()? else {
-                    self.finish_pes_at_eof_with_lifecycle(false)?;
+                    self.finish_pending_elementary_streams(false)?;
                     reached_end = true;
                     break;
                 };

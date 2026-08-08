@@ -366,6 +366,73 @@ fn ordered_segment_continuity_restart_keeps_tracks_stable_and_emits_media_packet
     assert!(events.iter().any(
         |event| matches!(event, DemuxReadEvent::Packet(packet) if packet.kind == TrackKind::Audio)
     ));
+    let video_positions = events
+        .iter()
+        .filter_map(|event| match event {
+            DemuxReadEvent::Packet(packet) if packet.kind == TrackKind::Video => Some(packet.pts),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        video_positions,
+        [Duration::ZERO, Duration::from_secs(1)],
+        "ordered boundary обязан flush-нуть video RAP каждого segment-а"
+    );
+}
+
+#[test]
+fn ordered_segment_boundary_rejects_incomplete_pes_before_packet_publication() {
+    let mut oversized_access_unit = vec![0x00, 0x00, 0x01, 0x65, 0x80];
+    oversized_access_unit.extend(std::iter::repeat_n(0x55, 400));
+    let complete_transport = TsFixtureBuilder::new()
+        .pat(&[(1, PMT_PID)], 0)
+        .pmt(PMT_PID, 1, &[(0x1b, VIDEO_PID)], 0)
+        .pes(VIDEO_PID, 0, None, &oversized_access_unit)
+        .finish();
+    let boundary = 188 * 3;
+    let segments = VecDeque::from([
+        OrderedSegment {
+            sequence: OrderedSegmentSequence::new(0),
+            kind: OrderedSegmentKind::Media,
+            discontinuity: OrderedSegmentDiscontinuity::Continuous,
+            bytes: Bytes::copy_from_slice(&complete_transport[..boundary]),
+        },
+        OrderedSegment {
+            sequence: OrderedSegmentSequence::new(1),
+            kind: OrderedSegmentKind::Media,
+            discontinuity: OrderedSegmentDiscontinuity::StartsNewTimeline,
+            bytes: Bytes::copy_from_slice(&complete_transport[boundary..]),
+        },
+    ]);
+    let mut demuxer = open(
+        DemuxInput::ordered_segments(Box::new(SegmentSource { segments })),
+        DemuxHints::none(),
+    )
+    .expect("ordered TS topology до truncated PES валидна");
+    let mut published_video_packet = false;
+    let failure = loop {
+        match demuxer.next_event() {
+            Ok(DemuxReadEvent::Packet(packet)) => {
+                published_video_packet |= packet.kind == TrackKind::Video;
+            }
+            Ok(
+                DemuxReadEvent::TracksChanged(_)
+                | DemuxReadEvent::MediaMetadataChanged(_)
+                | DemuxReadEvent::TemporarilyUnavailable(_),
+            ) => {}
+            Ok(DemuxReadEvent::EndOfStream) => {
+                panic!("incomplete PES не должен превратиться в clean EOF")
+            }
+            Err(error) => break error,
+        }
+    };
+
+    assert!(!published_video_packet);
+    assert!(matches!(
+        failure.downcast_ref::<MpegTsDemuxError>(),
+        Some(MpegTsDemuxError::Malformed { reason })
+            if reason.contains("PES packet_length больше собранных bytes")
+    ));
 }
 
 #[test]

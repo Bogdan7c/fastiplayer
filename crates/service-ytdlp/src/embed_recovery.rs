@@ -117,12 +117,11 @@ pub(crate) fn discover_page_title(html: &str) -> Option<String> {
         let after_name = title_start + "<title".len();
         if let Some(open_end) = lowercase[after_name..].find('>') {
             let content_start = after_name + open_end + 1;
-            if let Some(close_start) = lowercase[content_start..].find("</title>") {
-                if let Some(title) =
+            if let Some(close_start) = lowercase[content_start..].find("</title>")
+                && let Some(title) =
                     normalize_page_title(&html[content_start..content_start + close_start])
-                {
-                    return Some(title);
-                }
+            {
+                return Some(title);
             }
         }
     }
@@ -147,12 +146,11 @@ pub(crate) fn discover_page_title(html: &str) -> Option<String> {
             attribute_value(attributes, attribute)
                 .is_some_and(|value| value.eq_ignore_ascii_case("og:title"))
         });
-        if is_open_graph_title {
-            if let Some(title) =
+        if is_open_graph_title
+            && let Some(title) =
                 attribute_value(attributes, "content").and_then(normalize_page_title)
-            {
-                return Some(title);
-            }
+        {
+            return Some(title);
         }
     }
 

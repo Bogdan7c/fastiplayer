@@ -10,7 +10,10 @@ use codec_core::{
 };
 use media_core::{DemuxReadEvent, DemuxRetryHint, TrackInfo, TrackKind};
 
-use crate::{PlayerError, PlayerErrorKind, PlayerResult, PreparedMedia, TrackId};
+use crate::{
+    MediaInstallVideoBackendConstraint, PlayerError, PlayerErrorKind, PlayerResult, PreparedMedia,
+    TrackId,
+};
 
 use super::PlayerSession;
 use super::capability_selection::{
@@ -259,6 +262,35 @@ impl StagedVideoPacketProbeReader {
     }
 }
 
+/// Выбирает playable output внутри immutable app-owned constraint-а media install request-а.
+fn select_staged_video_output(
+    capabilities: &capability_core::SystemCapabilities,
+    requirement: &VideoDecodeRequirement,
+    backend_constraint: &MediaInstallVideoBackendConstraint,
+) -> PlayerResult<capability_core::SupportedVideoOutput> {
+    let default_output = capabilities
+        .check_video_requirement(requirement)
+        .map_err(player_error_from_unsupported_requirement)?;
+    let required_backend_id = match backend_constraint {
+        MediaInstallVideoBackendConstraint::AnyPlayable => return Ok(default_output.clone()),
+        MediaInstallVideoBackendConstraint::RequireBackend(required_backend_id) => {
+            required_backend_id
+        }
+    };
+
+    capabilities
+        .find_playable_video_output_for_backend(required_backend_id, requirement)
+        .cloned()
+        .ok_or_else(|| {
+            PlayerError::new(
+                PlayerErrorKind::RequiredVideoBackendUnavailable,
+                format!(
+                    "Backend `{required_backend_id}` не имеет playable output для candidate video stream"
+                ),
+            )
+        })
+}
+
 impl PlayerSession {
     /// Строит default video plan candidate-а, не читая active backend state.
     ///
@@ -268,6 +300,7 @@ impl PlayerSession {
         &self,
         prepared_media: &mut PreparedMedia,
         planning_mode: StagedVideoPlanningMode,
+        backend_constraint: &MediaInstallVideoBackendConstraint,
         planner: &mut StagedVideoPlanner,
     ) -> PlayerResult<StagedVideoPlanningOutcome> {
         if planner.video_tracks.is_empty() {
@@ -316,23 +349,25 @@ impl PlayerSession {
             };
 
             let playable_output = match self.capabilities.as_ref() {
-                Some(capabilities) => match capabilities.check_video_requirement(&requirement) {
-                    Ok(output) => Some(output.clone()),
-                    Err(_)
-                        if planning_mode
-                            == StagedVideoPlanningMode::CompatibilityDeferredAllowed
-                            && self.can_defer_packet_refinement(&requirement) =>
+                Some(capabilities) => {
+                    match select_staged_video_output(capabilities, &requirement, backend_constraint)
                     {
-                        None
+                        Ok(output) => Some(output),
+                        Err(_)
+                            if planning_mode
+                                == StagedVideoPlanningMode::CompatibilityDeferredAllowed
+                                && self.can_defer_packet_refinement(&requirement) =>
+                        {
+                            None
+                        }
+                        Err(error) => {
+                            planner.last_rejection = Some(error);
+                            planner.next_track_index = planner.next_track_index.saturating_add(1);
+                            planner.active_last_uncertainty = None;
+                            continue;
+                        }
                     }
-                    Err(error) => {
-                        planner.last_rejection =
-                            Some(player_error_from_unsupported_requirement(error));
-                        planner.next_track_index = planner.next_track_index.saturating_add(1);
-                        planner.active_last_uncertainty = None;
-                        continue;
-                    }
-                },
+                }
                 None if planning_mode == StagedVideoPlanningMode::CompatibilityDeferredAllowed => {
                     None
                 }

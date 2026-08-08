@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use codec_core::VideoCodec;
-use web_media_core::{ContainerFamily, PreferredHeightPolicy};
+use web_media_core::{ContainerFamily, DynamicRange, PreferredHeightPolicy};
 
 use crate::candidate::PlanningResourceLayout;
 
@@ -12,6 +12,20 @@ pub enum HdrSelectionPolicy {
     SdrOnly,
     /// Playable HDR bucket сильнее SDR fallback bucket-а.
     PreferHdrWhenAvailable,
+}
+
+/// Typed hard rejection уже разрешённого runtime video evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvedVideoPolicyRejection {
+    /// Runtime опубликовал color metadata, но её dynamic-range смысл не разрешён.
+    UnknownDynamicRange,
+    /// `SdrOnly` запрещает доказанный HDR stream.
+    HdrExcluded,
+    /// Actual codec отсутствует в configured admissible codec order.
+    VideoCodecExcluded {
+        /// Actual codec, который не допускает policy.
+        codec: VideoCodec,
+    },
 }
 
 /// Полная pure selection policy после capability intersection.
@@ -92,6 +106,41 @@ impl PlaybackSelectionPolicy {
         }
     }
 
+    /// Проверяет hard policy для video evidence, доказанного после content probe.
+    ///
+    /// `None` означает отсутствие color evidence и не подменяется
+    /// `DynamicRange::Unknown`. `PreferHdrWhenAvailable` задаёт только ordering:
+    /// он не превращает SDR в rejection, когда HDR уже недоступен в текущей
+    /// runtime попытке.
+    pub fn check_resolved_video(
+        &self,
+        codec: VideoCodec,
+        dynamic_range: Option<DynamicRange>,
+    ) -> Result<(), ResolvedVideoPolicyRejection> {
+        match self.hdr {
+            HdrSelectionPolicy::SdrOnly => match dynamic_range {
+                Some(DynamicRange::Unknown) => {
+                    return Err(ResolvedVideoPolicyRejection::UnknownDynamicRange);
+                }
+                Some(DynamicRange::Hdr) => {
+                    return Err(ResolvedVideoPolicyRejection::HdrExcluded);
+                }
+                Some(DynamicRange::Sdr) | None => {}
+            },
+            HdrSelectionPolicy::PreferHdrWhenAvailable => match dynamic_range {
+                Some(DynamicRange::Unknown) => {
+                    return Err(ResolvedVideoPolicyRejection::UnknownDynamicRange);
+                }
+                Some(DynamicRange::Sdr | DynamicRange::Hdr) | None => {}
+            },
+        }
+
+        if self.video_codec_rank(Some(codec)).is_none() {
+            return Err(ResolvedVideoPolicyRejection::VideoCodecExcluded { codec });
+        }
+        Ok(())
+    }
+
     /// Строит deterministic container rank для одной layout shape.
     pub(crate) fn container_rank(
         &self,
@@ -107,7 +156,8 @@ impl PlaybackSelectionPolicy {
         match resources {
             PlanningResourceLayout::Muxed(resource)
             | PlanningResourceLayout::VideoOnly(resource)
-            | PlanningResourceLayout::AudioOnly(resource) => ContainerPreferenceRank {
+            | PlanningResourceLayout::AudioOnly(resource)
+            | PlanningResourceLayout::ContentProbed(resource) => ContainerPreferenceRank {
                 primary: rank(resource.container),
                 secondary: 0,
             },
@@ -163,6 +213,22 @@ impl std::fmt::Display for SelectionPolicyBuildError {
 
 impl std::error::Error for SelectionPolicyBuildError {}
 
+impl std::fmt::Display for ResolvedVideoPolicyRejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownDynamicRange => {
+                formatter.write_str("runtime video dynamic range не разрешён")
+            }
+            Self::HdrExcluded => formatter.write_str("runtime HDR video исключён policy"),
+            Self::VideoCodecExcluded { codec } => {
+                write!(formatter, "runtime video codec {codec:?} исключён policy")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ResolvedVideoPolicyRejection {}
+
 /// Ищет duplicate без изменения caller order.
 fn contains_duplicate<Value>(values: &[Value]) -> bool
 where
@@ -170,4 +236,50 @@ where
 {
     let mut unique = HashSet::with_capacity(values.len());
     values.iter().copied().any(|value| !unique.insert(value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Создаёт минимальную policy с одним явно разрешённым video codec.
+    fn policy(hdr: HdrSelectionPolicy, codec: VideoCodec) -> PlaybackSelectionPolicy {
+        PlaybackSelectionPolicy::new(
+            hdr,
+            vec![codec],
+            PreferredHeightPolicy::NoPreference,
+            vec![ContainerFamily::IsoBmff],
+        )
+        .expect("focused runtime policy должна быть валидна")
+    }
+
+    #[test]
+    fn missing_color_evidence_does_not_invent_unknown_dynamic_range() {
+        policy(HdrSelectionPolicy::SdrOnly, VideoCodec::H264)
+            .check_resolved_video(VideoCodec::H264, None)
+            .expect("отсутствующая color metadata не должна запрещать otherwise playable video");
+    }
+
+    #[test]
+    fn sdr_only_rejects_proven_hdr_and_prefer_hdr_keeps_sdr_playable() {
+        assert_eq!(
+            policy(HdrSelectionPolicy::SdrOnly, VideoCodec::H264)
+                .check_resolved_video(VideoCodec::H264, Some(DynamicRange::Hdr)),
+            Err(ResolvedVideoPolicyRejection::HdrExcluded)
+        );
+        policy(HdrSelectionPolicy::PreferHdrWhenAvailable, VideoCodec::H264)
+            .check_resolved_video(VideoCodec::H264, Some(DynamicRange::Sdr))
+            .expect("HDR preference is ordering, а не hard SDR rejection");
+    }
+
+    #[test]
+    fn runtime_codec_outside_configured_order_is_hard_rejection() {
+        assert_eq!(
+            policy(HdrSelectionPolicy::PreferHdrWhenAvailable, VideoCodec::H264)
+                .check_resolved_video(VideoCodec::Vp9, Some(DynamicRange::Sdr)),
+            Err(ResolvedVideoPolicyRejection::VideoCodecExcluded {
+                codec: VideoCodec::Vp9,
+            })
+        );
+    }
 }

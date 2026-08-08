@@ -1,13 +1,17 @@
 //! Bounded child-process owner для line-delimited topology extraction.
 
 use std::io::{self, Read};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::embed_recovery::GENERIC_IMPERSONATE_EXTRACTOR_ARGS;
+use crate::process_tree::{
+    OwnedPipeDrainError, OwnedPipeReader, OwnedProcess, OwnedProcessCleanupFailure,
+    OwnedProcessRootState, OwnedProcessSpawnError, spawn_owned_pipe_reader, spawn_owned_process,
+};
 
 use super::limits::{YtDlpTopologyBudgets, YtDlpTopologyError};
 
@@ -66,6 +70,7 @@ pub(crate) fn run_topology_process(
     if is_cancelled() {
         return Err(YtDlpTopologyError::Cancellation);
     }
+    let operation_started_at = Instant::now();
 
     let mut command = Command::new(executable);
     command
@@ -73,74 +78,151 @@ pub(crate) fn run_topology_process(
         .arg(exact_locator)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(YtDlpTopologyError::process)?;
-    let stdout = match take_child_stdout(&mut child) {
-        Ok(stdout) => stdout,
-        Err(error) => {
-            let _ = terminate_and_wait(&mut child);
-            return Err(error);
+    let mut process =
+        match spawn_owned_process(&mut command, operation_started_at, timeout, is_cancelled) {
+            Ok(process) => process,
+            Err(OwnedProcessSpawnError::Cancellation) => {
+                return Err(YtDlpTopologyError::Cancellation);
+            }
+            Err(OwnedProcessSpawnError::Process(error)) => {
+                return Err(YtDlpTopologyError::process(error));
+            }
+        };
+    let stdout = match process.take_stdout() {
+        Some(stdout) => stdout,
+        None => {
+            let primary = YtDlpTopologyError::process(anyhow::anyhow!("stdout pipe недоступен"));
+            return Err(finish_topology_process_after_error(&mut process, primary));
         }
     };
-    let stderr = match take_child_stderr(&mut child) {
-        Ok(stderr) => stderr,
-        Err(error) => {
-            let _ = terminate_and_wait(&mut child);
-            return Err(error);
+    let stderr = match process.take_stderr() {
+        Some(stderr) => stderr,
+        None => {
+            let primary = YtDlpTopologyError::process(anyhow::anyhow!("stderr pipe недоступен"));
+            return Err(finish_topology_process_after_error(&mut process, primary));
         }
     };
     let budget_signal = Arc::new(AtomicU8::new(BudgetSignal::None as u8));
 
     let stdout_reader = match spawn_stdout_reader(stdout, budgets, Arc::clone(&budget_signal)) {
         Ok(reader) => reader,
-        Err(error) => {
-            terminate_and_wait(&mut child)?;
-            return Err(error);
-        }
+        Err(primary) => return Err(finish_topology_process_after_error(&mut process, primary)),
     };
     let stderr_reader = match spawn_stderr_reader(stderr, budgets, Arc::clone(&budget_signal)) {
         Ok(reader) => reader,
-        Err(error) => {
-            terminate_and_wait(&mut child)?;
-            let _ = join_stdout_reader(stdout_reader);
-            return Err(error);
+        Err(primary) => {
+            if let Err(cleanup) = process.finish() {
+                return Err(combine_topology_process_failures(primary, cleanup.into()));
+            }
+            return match stdout_reader.abort() {
+                Ok(()) => Err(primary),
+                Err(cleanup) => Err(combine_topology_process_failures(
+                    primary,
+                    anyhow::Error::new(cleanup),
+                )),
+            };
         }
     };
 
-    let wait_outcome = wait_for_child(&mut child, timeout, is_cancelled, budget_signal.as_ref())?;
-    let stdout_result = join_stdout_reader(stdout_reader)?;
-    let stderr_bytes = join_stderr_reader(stderr_reader)?;
+    let remaining_timeout = timeout.saturating_sub(operation_started_at.elapsed());
+    let wait_result = wait_for_child(
+        &mut process,
+        remaining_timeout,
+        is_cancelled,
+        budget_signal.as_ref(),
+    );
+    let wait_outcome = match wait_result {
+        Ok(outcome) => outcome,
+        Err(primary) => {
+            return match abort_topology_readers(stdout_reader, stderr_reader) {
+                Ok(()) => Err(primary),
+                Err(cleanup) => Err(combine_topology_process_failures(
+                    primary,
+                    anyhow::Error::new(cleanup),
+                )),
+            };
+        }
+    };
 
     match wait_outcome {
         ProcessWaitOutcome::Exited(status) => {
             if let Some(error) = BudgetSignal::load(budget_signal.as_ref()).into_error() {
-                return Err(error);
+                return match abort_topology_readers(stdout_reader, stderr_reader) {
+                    Ok(()) => Err(error),
+                    Err(cleanup) => Err(combine_topology_process_failures(
+                        error,
+                        anyhow::Error::new(cleanup),
+                    )),
+                };
             }
+            let (stdout_result, stderr_bytes) = drain_topology_readers(
+                stdout_reader,
+                stderr_reader,
+                operation_started_at,
+                timeout,
+                is_cancelled,
+            )?;
             Ok(TopologyProcessOutput {
                 status,
                 stdout_lines: stdout_result.lines,
                 stderr_bytes,
             })
         }
-        ProcessWaitOutcome::TimedOut => Err(YtDlpTopologyError::Timeout),
-        ProcessWaitOutcome::Cancelled => Err(YtDlpTopologyError::Cancellation),
-        ProcessWaitOutcome::BudgetExceeded(signal) => Err(signal
-            .into_error()
-            .unwrap_or(YtDlpTopologyError::StdoutBudgetExceeded)),
+        ProcessWaitOutcome::TimedOut => finish_topology_outcome_after_abort(
+            YtDlpTopologyError::Timeout,
+            stdout_reader,
+            stderr_reader,
+        ),
+        ProcessWaitOutcome::Cancelled => finish_topology_outcome_after_abort(
+            YtDlpTopologyError::Cancellation,
+            stdout_reader,
+            stderr_reader,
+        ),
+        ProcessWaitOutcome::BudgetExceeded(signal) => finish_topology_outcome_after_abort(
+            signal
+                .into_error()
+                .unwrap_or(YtDlpTopologyError::StdoutBudgetExceeded),
+            stdout_reader,
+            stderr_reader,
+        ),
     }
 }
 
-fn take_child_stdout(child: &mut Child) -> Result<std::process::ChildStdout, YtDlpTopologyError> {
-    child
-        .stdout
-        .take()
-        .ok_or_else(|| YtDlpTopologyError::process(anyhow::anyhow!("stdout pipe недоступен")))
+/// Завершает owner после primary failure, сохраняя cleanup failure в одной причине.
+fn finish_topology_process_after_error(
+    process: &mut OwnedProcess,
+    primary: YtDlpTopologyError,
+) -> YtDlpTopologyError {
+    match process.finish() {
+        Ok(_) => primary,
+        Err(cleanup) => combine_topology_process_failures(primary, cleanup.into()),
+    }
 }
 
-fn take_child_stderr(child: &mut Child) -> Result<std::process::ChildStderr, YtDlpTopologyError> {
-    child
-        .stderr
-        .take()
-        .ok_or_else(|| YtDlpTopologyError::process(anyhow::anyhow!("stderr pipe недоступен")))
+/// Упаковывает primary и дополнительную cleanup/join ошибку без потери причин.
+fn combine_topology_process_failures(
+    primary: YtDlpTopologyError,
+    cleanup: anyhow::Error,
+) -> YtDlpTopologyError {
+    YtDlpTopologyError::process(OwnedProcessCleanupFailure::new(
+        anyhow::Error::new(primary),
+        cleanup,
+    ))
+}
+
+/// Сохраняет typed wait outcome, если оба pipe worker-а bounded остановлены.
+fn finish_topology_outcome_after_abort(
+    primary: YtDlpTopologyError,
+    stdout_reader: OwnedPipeReader<StdoutReadResult>,
+    stderr_reader: OwnedPipeReader<usize>,
+) -> Result<TopologyProcessOutput, YtDlpTopologyError> {
+    match abort_topology_readers(stdout_reader, stderr_reader) {
+        Ok(()) => Err(primary),
+        Err(cleanup) => Err(combine_topology_process_failures(
+            primary,
+            anyhow::Error::new(cleanup),
+        )),
+    }
 }
 
 #[derive(Debug)]
@@ -152,29 +234,32 @@ fn spawn_stdout_reader(
     stdout: std::process::ChildStdout,
     budgets: YtDlpTopologyBudgets,
     budget_signal: Arc<AtomicU8>,
-) -> Result<thread::JoinHandle<io::Result<StdoutReadResult>>, YtDlpTopologyError> {
-    thread::Builder::new()
-        .name("yt-dlp-topology-stdout".to_owned())
-        .spawn(move || read_stdout(stdout, budgets, budget_signal.as_ref()))
-        .map_err(YtDlpTopologyError::process)
+) -> Result<OwnedPipeReader<StdoutReadResult>, YtDlpTopologyError> {
+    spawn_owned_pipe_reader("yt-dlp-topology-stdout", stdout, move |reader| {
+        read_stdout(reader, budgets, budget_signal.as_ref())
+    })
+    .map_err(YtDlpTopologyError::process)
 }
 
 fn spawn_stderr_reader(
     stderr: std::process::ChildStderr,
     budgets: YtDlpTopologyBudgets,
     budget_signal: Arc<AtomicU8>,
-) -> Result<thread::JoinHandle<io::Result<usize>>, YtDlpTopologyError> {
-    thread::Builder::new()
-        .name("yt-dlp-topology-stderr".to_owned())
-        .spawn(move || count_stderr(stderr, budgets.stderr_bytes, budget_signal.as_ref()))
-        .map_err(YtDlpTopologyError::process)
+) -> Result<OwnedPipeReader<usize>, YtDlpTopologyError> {
+    spawn_owned_pipe_reader("yt-dlp-topology-stderr", stderr, move |reader| {
+        count_stderr(reader, budgets.stderr_bytes, budget_signal.as_ref())
+    })
+    .map_err(YtDlpTopologyError::process)
 }
 
-fn read_stdout(
-    mut stdout: std::process::ChildStdout,
+fn read_stdout<R>(
+    stdout: &mut R,
     budgets: YtDlpTopologyBudgets,
     budget_signal: &AtomicU8,
-) -> io::Result<StdoutReadResult> {
+) -> io::Result<StdoutReadResult>
+where
+    R: Read + ?Sized,
+{
     let mut read_buffer = [0_u8; PIPE_READ_CHUNK_BYTES];
     let mut current_line = Vec::new();
     let mut completed_lines = Vec::new();
@@ -252,11 +337,14 @@ fn finish_stdout_line(
     *current_line_overflowed = false;
 }
 
-fn count_stderr(
-    mut stderr: std::process::ChildStderr,
+fn count_stderr<R>(
+    stderr: &mut R,
     stderr_budget: usize,
     budget_signal: &AtomicU8,
-) -> io::Result<usize> {
+) -> io::Result<usize>
+where
+    R: Read + ?Sized,
+{
     let mut read_buffer = [0_u8; PIPE_READ_CHUNK_BYTES];
     let mut observed_bytes = 0usize;
     loop {
@@ -273,72 +361,124 @@ fn count_stderr(
     Ok(observed_bytes.min(stderr_budget))
 }
 
-fn join_stdout_reader(
-    reader: thread::JoinHandle<io::Result<StdoutReadResult>>,
-) -> Result<StdoutReadResult, YtDlpTopologyError> {
-    reader
-        .join()
-        .map_err(|_| {
-            YtDlpTopologyError::process(anyhow::anyhow!("stdout reader thread завершился panic"))
-        })?
-        .map_err(YtDlpTopologyError::process)
+fn map_topology_pipe_drain_error(error: OwnedPipeDrainError) -> YtDlpTopologyError {
+    match error {
+        OwnedPipeDrainError::Cancellation => YtDlpTopologyError::Cancellation,
+        OwnedPipeDrainError::OperationTimedOut => YtDlpTopologyError::Timeout,
+        OwnedPipeDrainError::CancellationCleanup { source } => combine_topology_process_failures(
+            YtDlpTopologyError::Cancellation,
+            anyhow::Error::new(source),
+        ),
+        OwnedPipeDrainError::OperationTimeoutCleanup { source } => {
+            combine_topology_process_failures(
+                YtDlpTopologyError::Timeout,
+                anyhow::Error::new(source),
+            )
+        }
+        other => YtDlpTopologyError::process(other),
+    }
 }
 
-fn join_stderr_reader(
-    reader: thread::JoinHandle<io::Result<usize>>,
-) -> Result<usize, YtDlpTopologyError> {
-    reader
-        .join()
-        .map_err(|_| {
-            YtDlpTopologyError::process(anyhow::anyhow!("stderr reader thread завершился panic"))
-        })?
-        .map_err(YtDlpTopologyError::process)
+/// Bounded drain обоих topology readers после нормального root exit.
+fn drain_topology_readers(
+    stdout_reader: OwnedPipeReader<StdoutReadResult>,
+    stderr_reader: OwnedPipeReader<usize>,
+    operation_started_at: Instant,
+    operation_timeout: Duration,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<(StdoutReadResult, usize), YtDlpTopologyError> {
+    let drain_started_at = Instant::now();
+    let stdout_result = stdout_reader
+        .drain(
+            operation_started_at,
+            operation_timeout,
+            drain_started_at,
+            is_cancelled,
+        )
+        .map_err(map_topology_pipe_drain_error);
+    let stderr_result = stderr_reader
+        .drain(
+            operation_started_at,
+            operation_timeout,
+            drain_started_at,
+            is_cancelled,
+        )
+        .map_err(map_topology_pipe_drain_error);
+
+    match (stdout_result, stderr_result) {
+        (Ok(stdout), Ok(stderr)) => Ok((stdout, stderr)),
+        (Err(primary), Ok(_)) | (Ok(_), Err(primary)) => Err(primary),
+        (Err(primary), Err(cleanup)) => Err(combine_topology_process_failures(
+            primary,
+            anyhow::Error::new(cleanup),
+        )),
+    }
+}
+
+/// Bounded останавливает оба topology reader worker-а после non-success outcome.
+fn abort_topology_readers(
+    stdout_reader: OwnedPipeReader<StdoutReadResult>,
+    stderr_reader: OwnedPipeReader<usize>,
+) -> Result<(), YtDlpTopologyError> {
+    let stdout_result = stdout_reader.abort().map_err(YtDlpTopologyError::process);
+    let stderr_result = stderr_reader.abort().map_err(YtDlpTopologyError::process);
+
+    match (stdout_result, stderr_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(primary), Ok(())) | (Ok(()), Err(primary)) => Err(primary),
+        (Err(primary), Err(cleanup)) => Err(combine_topology_process_failures(
+            primary,
+            anyhow::Error::new(cleanup),
+        )),
+    }
 }
 
 fn wait_for_child(
-    child: &mut Child,
+    process: &mut OwnedProcess,
     timeout: Duration,
     is_cancelled: &dyn Fn() -> bool,
     budget_signal: &AtomicU8,
 ) -> Result<ProcessWaitOutcome, YtDlpTopologyError> {
     let started_at = Instant::now();
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(ProcessWaitOutcome::Exited(status)),
-            Ok(None) => {}
+        match process.poll_root_exit() {
+            Ok(OwnedProcessRootState::Exited) => {
+                let status = process.finish().map_err(YtDlpTopologyError::process)?;
+                return Ok(ProcessWaitOutcome::Exited(status));
+            }
+            Ok(OwnedProcessRootState::Running) => {}
             Err(error) => {
-                let _ = terminate_and_wait(child);
-                return Err(YtDlpTopologyError::process(error));
+                let primary = YtDlpTopologyError::process(error);
+                return Err(finish_topology_process_after_error(process, primary));
             }
         }
 
         let active_budget_signal = BudgetSignal::load(budget_signal);
         if active_budget_signal != BudgetSignal::None {
-            terminate_and_wait(child)?;
+            let primary = active_budget_signal
+                .into_error()
+                .unwrap_or(YtDlpTopologyError::StdoutBudgetExceeded);
+            process
+                .finish()
+                .map_err(|cleanup| combine_topology_process_failures(primary, cleanup.into()))?;
             return Ok(ProcessWaitOutcome::BudgetExceeded(active_budget_signal));
         }
         if is_cancelled() {
-            terminate_and_wait(child)?;
+            process.finish().map_err(|cleanup| {
+                combine_topology_process_failures(YtDlpTopologyError::Cancellation, cleanup.into())
+            })?;
             return Ok(ProcessWaitOutcome::Cancelled);
         }
         if started_at.elapsed() >= timeout {
-            terminate_and_wait(child)?;
+            process.finish().map_err(|cleanup| {
+                combine_topology_process_failures(YtDlpTopologyError::Timeout, cleanup.into())
+            })?;
             return Ok(ProcessWaitOutcome::TimedOut);
         }
 
         let remaining_timeout = timeout.saturating_sub(started_at.elapsed());
         thread::sleep(remaining_timeout.min(PROCESS_POLL_INTERVAL));
     }
-}
-
-fn terminate_and_wait(child: &mut Child) -> Result<(), YtDlpTopologyError> {
-    match child.kill() {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::InvalidInput => {}
-        Err(error) => return Err(YtDlpTopologyError::process(error)),
-    }
-    child.wait().map_err(YtDlpTopologyError::process)?;
-    Ok(())
 }
 
 enum ProcessWaitOutcome {

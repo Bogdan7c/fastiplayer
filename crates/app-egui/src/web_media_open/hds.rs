@@ -21,12 +21,15 @@ use rustiplayer_config::NetworkConfig;
 use service_ytdlp::{YtDlpLiveIntent, YtDlpNormalizedCandidate, YtDlpTransportRequestContext};
 use source_core::{CancellationToken, SourceRuntimeConfig};
 use web_media_adaptive::{AdaptiveRetryPolicy, AdaptiveTransportLimits};
-use web_media_core::{PreferredHeightPolicy, StreamLayout, TransportFamily};
+use web_media_core::{ContainerFamily, PreferredHeightPolicy, StreamLayout, TransportFamily};
 use web_media_hds::{
-    HdsCatalogDiscoveryRequest, HdsRenditionSelection, HdsVodOpenPolicy, HdsVodOpenRequest,
-    discover_hds_renditions, prepare_discovered_hds_vod, prepare_hds_vod,
+    HdsCatalogDiscoveryRequest, HdsRenditionCapabilityProbe, HdsVodOpenPolicy,
+    discover_hds_renditions, prepare_discovered_hds_vod,
 };
 use web_media_transport_api::TransportProviderId;
+
+#[cfg(test)]
+mod provider_default_tests;
 
 /// Prepared HDS candidate перед player commit barrier-ом.
 pub(super) struct PreparedHdsCandidate {
@@ -40,11 +43,15 @@ pub(super) struct PreparedHdsCandidate {
         crate::web_media_open::component_variants::PreparedComponentVariantCatalog,
 }
 
-/// Проверяет только exact muxed HDS profile из normalized descriptor-а.
+/// Проверяет единый provider-probed HDS/F4F contract из normalized descriptor-а.
 pub(super) fn candidate_is_hds(candidate: &YtDlpNormalizedCandidate) -> bool {
     match candidate.descriptor().layout() {
-        StreamLayout::Muxed(component) => component.transport().family() == TransportFamily::Hds,
-        StreamLayout::VideoOnly(_)
+        StreamLayout::ContentProbed(component) => {
+            component.transport().family() == TransportFamily::Hds
+                && component.probe_container() == ContainerFamily::F4f
+        }
+        StreamLayout::Muxed(_)
+        | StreamLayout::VideoOnly(_)
         | StreamLayout::AudioOnly(_)
         | StreamLayout::Separate { .. }
         | StreamLayout::HlsMuxedCodecDeferred(_) => false,
@@ -65,9 +72,12 @@ pub(super) fn prepare_hds_candidate(
     component_selection_intent:
         crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent,
     catalog_identity: web_media_core::ComponentVariantCatalogIdentity,
-    capability_probe: &crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
+    capability_probe: &dyn HdsRenditionCapabilityProbe,
 ) -> Result<PreparedHdsCandidate> {
     ensure_hds_vod_intent(live_intent)?;
+    let StreamLayout::ContentProbed(_) = candidate.descriptor().layout() else {
+        bail!("HDS candidate должен сохранять provider-owned content-probed F4F contract");
+    };
     let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
     let context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation);
     let transport_request = candidate
@@ -77,51 +87,43 @@ pub(super) fn prepare_hds_candidate(
         crate::web_media_adaptive_config::adaptive_transport_limits(network_config)
             .context("Не удалось собрать HDS adaptive transport limits")?;
     let policy = hds_policy(adaptive_limits)?;
-    let (opened, component_variants) = match component_selection_intent {
-        crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => (
-            prepare_hds_vod(HdsVodOpenRequest {
-                transport_request,
-                source_config: source_config.clone(),
-                demux_registry,
-                policy,
-                selection: HdsRenditionSelection::BestByPreference(preferred_height),
-            })
-            .context("HDS F4M/F4F VOD preparation failed")?,
-            crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Unavailable,
-        ),
-        crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(semantic) => {
-            let discovered = discover_hds_renditions(HdsCatalogDiscoveryRequest {
-                transport_request,
-                source_config: source_config.clone(),
-                demux_registry,
-                policy,
-                catalog_identity,
-                capability_probe,
-                preferred_height,
-            })?;
-            let catalog = Arc::new(discovered.catalog().clone());
-            let selected = catalog.rematch_semantic(semantic)?;
-            let web_media_core::ComponentVariantSelectionRequest::Coupled { presentation } =
-                selected.exact_selection_request()
-            else {
-                bail!("HDS catalog selection must remain coupled A/V");
-            };
-            (
-                prepare_discovered_hds_vod(discovered, presentation)?,
-                crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Installed {
-                    catalog,
-                    provider_selection: selected,
-                },
-            )
+    let discovered = discover_hds_renditions(HdsCatalogDiscoveryRequest {
+        transport_request,
+        source_config: source_config.clone(),
+        demux_registry,
+        policy,
+        catalog_identity,
+        capability_probe,
+        preferred_height,
+    })?;
+    let catalog = Arc::new(discovered.catalog().clone());
+    let provider_selection = match component_selection_intent {
+        crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => {
+            discovered.provider_default().clone()
         }
+        crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::Semantic(
+            semantic,
+        ) => catalog.rematch_semantic(semantic)?,
     };
+    let web_media_core::ComponentVariantSelectionRequest::Coupled { presentation } =
+        provider_selection.exact_selection_request()
+    else {
+        bail!("HDS catalog selection must remain coupled A/V");
+    };
+    let opened = prepare_discovered_hds_vod(discovered, presentation)?;
+    let component_variants =
+        crate::web_media_open::component_variants::PreparedComponentVariantCatalog::Installed {
+            catalog,
+            provider_selection,
+        };
     let hds_window = opened.presentation_window();
     let playback_window = hds_playback_window(hds_window.start(), hds_window.end_exclusive())?;
     let seek_port: Arc<dyn PreparedDemuxSeekPort> = Arc::new(HdsPreparedDemuxSeekPort {
         handle: opened.async_seek_handle(),
     });
+    let demuxer = opened.into_demuxer();
     Ok(PreparedHdsCandidate {
-        demuxer: opened.into_demuxer(),
+        demuxer,
         seek_port,
         playback_window,
         component_variants,

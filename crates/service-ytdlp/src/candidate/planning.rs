@@ -1,5 +1,7 @@
 //! Provider-specific mapping S19 snapshot-а в neutral S21C planning vocabulary.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use audio_core::AudioDecodeCodecFamily;
 use codec_core::{
     Av1Profile, BitDepth, ChromaSubsampling, ColorMetadataConfidence, ColorMetadataOrigin,
@@ -9,7 +11,8 @@ use codec_core::{
 };
 use thiserror::Error;
 use web_media_core::{
-    CodecFamily, CodecKind, DynamicRange, StreamLayout, VideoTrackDescriptor, VideoWidth,
+    CodecFamily, CodecKind, DynamicRange, StreamLayout, VideoHeight, VideoTrackDescriptor,
+    VideoWidth,
 };
 use web_media_playback_plan::{
     CandidateQualityScore, CandidateRuntimeRequirements, PlanningCandidate,
@@ -32,25 +35,101 @@ pub enum YtDlpPlanningSnapshotError {
     Snapshot(#[source] PlanningSnapshotBuildError),
 }
 
+/// Ошибка correspondence между service snapshot и переданным planner snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum YtDlpPlanningSnapshotAlignmentError {
+    /// Planner snapshot принадлежит другой source lineage.
+    #[error("planner snapshot принадлежит другой source lineage")]
+    SourceMismatch,
+    /// Planner snapshot принадлежит другой extraction generation.
+    #[error("planner snapshot принадлежит другой extraction generation")]
+    GenerationMismatch,
+    /// Полный exact+semantic candidate set не совпадает с canonical service view.
+    #[error("planner snapshot не соответствует canonical service candidate set")]
+    CandidateIdentityMismatch,
+    /// Planner row сохранил identity, но изменил service-owned projection.
+    #[error("planner snapshot изменил canonical service candidate projection")]
+    CandidateProjectionMismatch,
+    /// Canonical service candidate неожиданно перестал проецироваться в planner vocabulary.
+    #[error("canonical service candidate не удалось спроецировать в planner snapshot")]
+    ServiceProjectionFailed,
+}
+
 impl YtDlpCandidateSnapshot {
-    /// Строит immutable planner input из полного accepted S19 inventory.
+    /// Строит immutable planner input из canonical accepted snapshot view.
     pub fn planning_snapshot(
         &self,
     ) -> Result<PlanningCandidateSnapshot, YtDlpPlanningSnapshotError> {
-        let mut planning_candidates = Vec::new();
-        for candidate in self.accepted_candidates() {
-            if planning_candidates
-                .iter()
-                .any(|existing: &PlanningCandidate| {
-                    existing.descriptor().identity() == candidate.descriptor().identity()
-                })
-            {
-                continue;
-            }
-            planning_candidates.push(planning_candidate(candidate)?);
-        }
+        let planning_candidates = self
+            .accepted_candidates()
+            .map(planning_candidate)
+            .collect::<Result<Vec<_>, _>>()?;
         PlanningCandidateSnapshot::new(self.source(), self.generation(), planning_candidates)
             .map_err(YtDlpPlanningSnapshotError::Snapshot)
+    }
+
+    /// Проверяет полный order-independent service-owned projection до app-side use.
+    pub fn validate_planning_snapshot_alignment(
+        &self,
+        planning_snapshot: &PlanningCandidateSnapshot,
+    ) -> Result<(), YtDlpPlanningSnapshotAlignmentError> {
+        if planning_snapshot.source() != self.source() {
+            return Err(YtDlpPlanningSnapshotAlignmentError::SourceMismatch);
+        }
+        if planning_snapshot.generation() != self.generation() {
+            return Err(YtDlpPlanningSnapshotAlignmentError::GenerationMismatch);
+        }
+
+        let service_projection = self
+            .planning_snapshot()
+            .map_err(|_| YtDlpPlanningSnapshotAlignmentError::ServiceProjectionFailed)?;
+        let service_candidates = service_projection
+            .candidates()
+            .iter()
+            .map(|candidate| (candidate.descriptor().identity().clone(), candidate))
+            .collect::<BTreeMap<_, _>>();
+        let planning_candidates = planning_snapshot
+            .candidates()
+            .iter()
+            .map(|candidate| (candidate.descriptor().identity().clone(), candidate))
+            .collect::<BTreeMap<_, _>>();
+        let service_identities = service_candidates
+            .iter()
+            .map(|(exact, candidate)| {
+                (
+                    exact.clone(),
+                    candidate.descriptor().semantic_identity().clone(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let planning_identities = planning_candidates
+            .iter()
+            .map(|(exact, candidate)| {
+                (
+                    exact.clone(),
+                    candidate.descriptor().semantic_identity().clone(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        if service_identities != planning_identities {
+            return Err(YtDlpPlanningSnapshotAlignmentError::CandidateIdentityMismatch);
+        }
+        if service_candidates != planning_candidates {
+            return Err(YtDlpPlanningSnapshotAlignmentError::CandidateProjectionMismatch);
+        }
+        Ok(())
+    }
+
+    /// Находит canonical service candidate для exact planner identity pair.
+    pub fn canonical_candidate_for_planning_identity(
+        &self,
+        exact_identity: &web_media_core::CandidateIdentity,
+        semantic_identity: &web_media_core::SemanticIdentity,
+    ) -> Option<&YtDlpNormalizedCandidate> {
+        self.accepted_candidates().find(|candidate| {
+            candidate.descriptor().identity() == exact_identity
+                && candidate.descriptor().semantic_identity() == semantic_identity
+        })
     }
 }
 
@@ -83,6 +162,18 @@ fn runtime_requirements(
         StreamLayout::HlsMuxedCodecDeferred(_) => {
             Ok(CandidateRuntimeRequirements::HlsMuxedCodecDeferred)
         }
+        StreamLayout::ContentProbed(component) => Ok(CandidateRuntimeRequirements::ContentProbed {
+            video: component
+                .video()
+                .declared()
+                .map(|video| video_requirement(video, video_color_evidence))
+                .transpose()?,
+            audio: component
+                .audio()
+                .declared()
+                .map(|audio| audio_requirement(audio.codec()))
+                .transpose()?,
+        }),
         StreamLayout::Separate { video, audio } => Ok(CandidateRuntimeRequirements::Separate {
             video: video_requirement(video.video(), video_color_evidence)?,
             audio: audio_requirement(audio.audio().codec())?,
@@ -286,6 +377,20 @@ fn quality_score(layout: &StreamLayout) -> i64 {
                 .saturating_add(fps)
                 .saturating_add(bitrate)
         }
+        StreamLayout::ContentProbed(component) => {
+            let hints = component.video_hints();
+            let height = i64::from(hints.height().map_or(0, VideoHeight::pixels));
+            let width = i64::from(hints.width().map_or(0, VideoWidth::pixels));
+            let fps = hints.frame_rate().map_or(0, |frame_rate| {
+                (f64::from(frame_rate.numerator()) * 1_000.0 / f64::from(frame_rate.denominator()))
+                    as i64
+            });
+            let bitrate = hints
+                .bitrate()
+                .and_then(|bitrate| i64::try_from(bitrate.bits_per_second()).ok())
+                .unwrap_or(0);
+            height * 1_000_000_000 + width * 1_000_000 + fps * 1_000 + bitrate
+        }
         _ => quality_score_from_video_track(layout),
     }
 }
@@ -297,6 +402,7 @@ fn quality_score_from_video_track(layout: &StreamLayout) -> i64 {
         StreamLayout::Separate { video, .. } | StreamLayout::VideoOnly(video) => {
             Some(video.video())
         }
+        StreamLayout::ContentProbed(component) => component.video().declared(),
         StreamLayout::AudioOnly(_) | StreamLayout::HlsMuxedCodecDeferred(_) => None,
     };
     let Some(video) = video else {

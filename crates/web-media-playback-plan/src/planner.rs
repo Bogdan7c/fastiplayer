@@ -170,6 +170,14 @@ fn check_resources(
         PlanningResourceLayout::HlsMuxedCodecDeferred { transport } => {
             check_hls_muxed_codec_deferred(transport, capabilities, rejections);
         }
+        PlanningResourceLayout::ContentProbed(resource) => {
+            check_resource(
+                PlaybackComponent::ContentProbed,
+                resource,
+                capabilities,
+                rejections,
+            );
+        }
     }
 }
 
@@ -276,6 +284,25 @@ fn check_decode_requirements(
             None
         }
         CandidateRuntimeRequirements::HlsMuxedCodecDeferred => None,
+        CandidateRuntimeRequirements::ContentProbed { video, audio } => {
+            let output = video.as_ref().and_then(|requirement| {
+                check_video(
+                    PlaybackComponent::ContentProbed,
+                    requirement,
+                    capabilities,
+                    rejections,
+                )
+            });
+            if let Some(audio) = audio {
+                check_audio(
+                    PlaybackComponent::ContentProbed,
+                    *audio,
+                    capabilities,
+                    rejections,
+                );
+            }
+            output
+        }
     }
 }
 
@@ -368,8 +395,8 @@ fn compare_playable(
         })
         .then_with(|| {
             policy.preferred_height().compare(
-                left.candidate.descriptor().layout().video_height(),
-                right.candidate.descriptor().layout().video_height(),
+                left.candidate.descriptor().layout().video_height_hint(),
+                right.candidate.descriptor().layout().video_height_hint(),
             )
         })
         .then_with(|| {
@@ -390,11 +417,17 @@ fn compare_playable(
 /// Полноценный A/V важнее предпочтений video codec/quality: silent fallback допустим
 /// только когда playable A/V-кандидата действительно нет.
 fn av_completeness_rank(candidate: &PlanningCandidate) -> u8 {
-    match candidate.descriptor().layout().kind() {
-        StreamLayoutKind::Muxed
-        | StreamLayoutKind::Separate
-        | StreamLayoutKind::HlsMuxedCodecDeferred => 0,
-        StreamLayoutKind::VideoOnly | StreamLayoutKind::AudioOnly => 1,
+    match candidate.runtime_requirements() {
+        CandidateRuntimeRequirements::Muxed { .. }
+        | CandidateRuntimeRequirements::Separate { .. }
+        | CandidateRuntimeRequirements::HlsMuxedCodecDeferred
+        | CandidateRuntimeRequirements::ContentProbed {
+            video: Some(_),
+            audio: Some(_),
+        } => 0,
+        CandidateRuntimeRequirements::VideoOnly { .. }
+        | CandidateRuntimeRequirements::AudioOnly { .. }
+        | CandidateRuntimeRequirements::ContentProbed { .. } => 1,
     }
 }
 
@@ -612,6 +645,8 @@ pub enum CandidatePolicyRejection {
 pub enum PlaybackComponent {
     /// Один muxed resource.
     Muxed,
+    /// Single resource, чья track topology подтверждается после demux open.
+    ContentProbed,
     /// Video-only resource.
     Video,
     /// Audio-only resource.

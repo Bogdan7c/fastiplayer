@@ -18,4 +18,9 @@
 - App subphase: `crates/app-egui/src/media_open/{types,coordinator,player_port}.rs`; same-lineage orchestration: `state/strong_media_open/pending*.rs`.
 - Focused player coverage is in `session/tests/staged_media_install.rs` and `session/tests/live_same_item_restore.rs`; coordinator ordering coverage is in `media_open/coordinator.rs` tests.
 
+## Post-commit `TracksChanged` rebase (2026-08-05)
+- Между atomic staged commit и app adoption demux может опубликовать `TracksChanged`. Это остаётся той же adopted seek-транзакцией, хотя decoder/packet generation меняется.
+- Player-owned receipt boundary переносит exact old→new generation и для unclaimed `InstalledStagedPositionOutcome::AwaitingSeekCommit`, и для уже созданного `PendingInstalledPositionRestore`. Только matching old generation может быть перепривязана; independent seek сохраняет прежние typed fail/supersede semantics.
+- Vertical regression `session::tests::staged_media_install::position_rebase::staged_track_rebase_before_adoption_reaches_presented_frame_without_second_demux_seek` доказывает полный путь до реально представленного кадра и отсутствие повторного worker/installed demux seek.
+
 Related current boundaries: `mem:player-core/core`, `mem:app-egui/media-open-coordinator-s10c`, `mem:player-core/installed-position-restore-receipt-2026-07-19`, `mem:app-egui/live-same-item-candidate-switch-s35s-2026-07-24`.

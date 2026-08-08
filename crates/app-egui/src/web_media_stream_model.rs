@@ -182,6 +182,35 @@ impl WebMediaCandidatePresentation {
                 Some(consistent_container(component.container())?),
                 None,
             ),
+            StreamLayout::ContentProbed(component) => {
+                let hints = component.video_hints();
+                let video_available = !component.video().is_absent();
+                let audio_available = !component.audio().is_absent();
+                let container = consistent_container(component.container())?;
+                (
+                    component.video().declared(),
+                    component.audio().declared(),
+                    video_available
+                        .then(|| hints.height().map(web_media_core::VideoHeight::pixels))
+                        .flatten(),
+                    video_available
+                        .then(|| hints.width().map(web_media_core::VideoWidth::pixels))
+                        .flatten(),
+                    video_available
+                        .then(|| {
+                            hints
+                                .frame_rate()
+                                .map(|rate| (rate.numerator(), rate.denominator()))
+                        })
+                        .flatten(),
+                    video_available
+                        .then(|| hints.bitrate().map(|rate| rate.bits_per_second()))
+                        .flatten(),
+                    video_available.then(|| hints.dynamic_range()),
+                    video_available.then_some(container),
+                    audio_available.then_some(container),
+                )
+            }
         };
 
         Ok(Self {
@@ -263,6 +292,9 @@ impl WebMediaStreamConfiguration {
         active_selection: &YtDlpCandidateSelection,
         preference: WebMediaSelectionPreference,
     ) -> Result<Self, WebMediaStreamModelBuildError> {
+        candidate_snapshot
+            .validate_planning_snapshot_alignment(planning_snapshot)
+            .map_err(|_| WebMediaStreamModelBuildError::CandidateSnapshotAlignmentFailed)?;
         let active_identity = active_selection.exact_identity();
         let active_parent = ExactSelectionIdentity::new(
             active_identity.clone(),
@@ -290,7 +322,10 @@ impl WebMediaStreamConfiguration {
         for candidate in candidate_snapshot.accepted_candidates() {
             let descriptor = candidate.descriptor();
             let playable = !rejected_identities.contains(descriptor.identity());
-            let is_active = descriptor.identity() == active_identity;
+            let selection = candidate_snapshot
+                .selection_for(candidate)
+                .map_err(|_| WebMediaStreamModelBuildError::CandidateSelectionFailed)?;
+            let is_active = &selection == active_selection;
             if !playable {
                 if is_active {
                     return Err(WebMediaStreamModelBuildError::ActiveCandidateNotPlayable);
@@ -302,9 +337,6 @@ impl WebMediaStreamConfiguration {
             if is_active {
                 active_candidate = Some(presentation.clone());
             }
-            let selection = candidate_snapshot
-                .selection_for(candidate)
-                .map_err(|_| WebMediaStreamModelBuildError::CandidateSelectionFailed)?;
             candidates.push(presentation);
             candidate_selections.push(selection);
         }
@@ -379,6 +411,7 @@ impl WebMediaStreamConfiguration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WebMediaStreamModelBuildError {
     AvailabilityPlanningFailed,
+    CandidateSnapshotAlignmentFailed,
     InvalidCandidateContainer,
     CandidateSelectionFailed,
     InvalidActiveCandidateIdentity,
@@ -391,6 +424,9 @@ impl fmt::Display for WebMediaStreamModelBuildError {
         let message = match self {
             Self::AvailabilityPlanningFailed => {
                 "не удалось построить inventory playable candidates"
+            }
+            Self::CandidateSnapshotAlignmentFailed => {
+                "service и planner candidate snapshots не соответствуют друг другу"
             }
             Self::InvalidCandidateContainer => {
                 "playable candidate не имеет безопасного container summary"

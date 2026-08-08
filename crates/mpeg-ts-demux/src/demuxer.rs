@@ -138,7 +138,7 @@ impl MpegTsDemuxer {
                 return Ok(demuxer);
             }
         }
-        demuxer.finish_pes_at_eof_with_lifecycle(false)?;
+        demuxer.finish_pending_elementary_streams(false)?;
         if demuxer.initial_topology_ready() {
             demuxer.build_bounded_initial_index()?;
             return Ok(demuxer);
@@ -162,6 +162,10 @@ impl MpegTsDemuxer {
         publish_lifecycle: bool,
     ) -> Result<(), MpegTsDemuxError> {
         if packet.starts_new_segment {
+            // Ordered resource boundary завершает предыдущий самостоятельный TS segment.
+            // Pending PES/AU нужно опубликовать до transport reset: иначе первый video RAP
+            // каждого segment-а молча терялся при continuity-counter restart-е.
+            self.finish_pending_elementary_streams(publish_lifecycle)?;
             self.reset_ordered_segment_state();
         }
         let relevant_pid = packet.pid == 0
@@ -581,7 +585,8 @@ impl MpegTsDemuxer {
             )));
     }
 
-    fn finish_pes_at_eof_with_lifecycle(
+    /// Завершает pending PES/AU на доказанной границе ordered resource или всего input-а.
+    fn finish_pending_elementary_streams(
         &mut self,
         publish_lifecycle: bool,
     ) -> Result<(), MpegTsDemuxError> {
@@ -648,7 +653,7 @@ impl Demuxer for MpegTsDemuxer {
             match self.reader.next_packet()? {
                 Some(packet) => self.process_transport_packet(packet, true)?,
                 None => {
-                    self.finish_pes_at_eof_with_lifecycle(true)?;
+                    self.finish_pending_elementary_streams(true)?;
                     self.reached_end = true;
                 }
             }

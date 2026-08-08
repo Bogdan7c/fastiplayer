@@ -416,6 +416,9 @@ impl AppState {
                 let (candidate, video_resource_port) = player_selected_video_candidate_boundary(
                     self.renderer_generation,
                     self.player_worker.decoder_thread_config(),
+                    crate::video_backend_constraint::media_install_video_backend_constraint(
+                        self.video_backend_preference(),
+                    ),
                     driver,
                 );
                 let revision = PlaybackIntentRevision::from_non_zero(

@@ -10,8 +10,8 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use player_core::{
-    MediaInstallCancellationCause, MediaInstallCompletion, MediaInstallRequestId, PlaybackIntent,
-    PlaybackIntentRevision, PreparedMedia,
+    MediaInstallCancellationCause, MediaInstallCompletion, MediaInstallRequestId,
+    MediaInstallVideoBackendConstraint, PlaybackIntent, PlaybackIntentRevision, PreparedMedia,
 };
 use render_wgpu_shell::Renderer;
 use render_wgpu_video::WgpuFrameTextureViewMaterializer;
@@ -271,6 +271,7 @@ impl AppState {
         renderer: &Renderer,
         prepared_input: PreparedSingleMediaOpen,
         intent: PlaybackIntent,
+        video_backend_constraint: MediaInstallVideoBackendConstraint,
     ) -> Result<InstalledSingleMediaOpen, StrongMediaOpenError> {
         self.cancel_suspended_media_resume_for_explicit_open(playlist_runtime)
             .map_err(StrongMediaOpenError::LineageRegistration)?;
@@ -302,6 +303,7 @@ impl AppState {
         let (candidate_owner, video_resource_port) = player_selected_video_candidate_boundary(
             self.renderer_generation,
             self.player_worker.decoder_thread_config(),
+            video_backend_constraint,
             driver,
         );
         let initial_revision = PlaybackIntentRevision::from_non_zero(

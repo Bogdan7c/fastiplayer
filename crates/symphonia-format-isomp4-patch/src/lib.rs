@@ -21,7 +21,7 @@ mod fp;
 mod fragment_reconstruction;
 mod stream;
 
-pub use demuxer::IsoMp4Reader;
+pub use demuxer::{IsoMp4PacketWithSourceOffset, IsoMp4Reader};
 pub use fragment_reconstruction::{
     FragmentAacAudioSpecificConfig, FragmentAacChannelCount, FragmentAacLcConfiguration,
     FragmentAacSampleRate, FragmentArithmeticOperation, FragmentBaseDecodeTime, FragmentBoxKind,

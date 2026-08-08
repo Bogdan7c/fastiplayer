@@ -69,6 +69,7 @@ mod preview;
 mod route_apply;
 mod sidebar_resize;
 mod status_text;
+mod target_policy;
 #[cfg(test)]
 mod tests;
 mod transaction;
@@ -92,6 +93,7 @@ use status_text::{
     group_reports, status_from_apply_report, status_from_cancel, status_from_preview_reports,
     status_from_reset,
 };
+pub(crate) use target_policy::SettingsRouteTargetPolicy;
 
 /// Единый owner runtime settings state для `app-egui`.
 pub(crate) struct SettingsRuntime {

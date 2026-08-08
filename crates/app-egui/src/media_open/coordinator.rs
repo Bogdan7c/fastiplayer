@@ -1117,7 +1117,7 @@ mod tests {
                     intent: player_core::PlaybackIntent::StartPaused,
                     revision: player_core::PlaybackIntentRevision::INITIAL,
                 },
-                Box::new(UnusedVideoResourcePort),
+                MediaInstallVideoResourcePort::any_playable(UnusedVideoResourcePort),
             )
             .expect("stage accepted");
         player_state
@@ -1206,7 +1206,7 @@ mod tests {
                     intent: player_core::PlaybackIntent::StartPaused,
                     revision: player_core::PlaybackIntentRevision::INITIAL,
                 },
-                Box::new(UnusedVideoResourcePort),
+                MediaInstallVideoResourcePort::any_playable(UnusedVideoResourcePort),
             )
             .expect("stage accepted");
 
@@ -1369,7 +1369,7 @@ mod tests {
                     intent: player_core::PlaybackIntent::StartPlaying,
                     revision: player_core::PlaybackIntentRevision::INITIAL,
                 },
-                Box::new(UnusedVideoResourcePort),
+                MediaInstallVideoResourcePort::any_playable(UnusedVideoResourcePort),
             )
             .expect("stage accepted");
         player_state
@@ -1559,7 +1559,7 @@ mod tests {
                     intent: player_core::PlaybackIntent::StartPaused,
                     revision: player_core::PlaybackIntentRevision::INITIAL,
                 },
-                Box::new(UnusedVideoResourcePort),
+                MediaInstallVideoResourcePort::any_playable(UnusedVideoResourcePort),
             )
             .expect("stage accepted");
 
@@ -1603,7 +1603,7 @@ mod tests {
                     intent: player_core::PlaybackIntent::StartPaused,
                     revision: player_core::PlaybackIntentRevision::INITIAL,
                 },
-                Box::new(UnusedVideoResourcePort),
+                MediaInstallVideoResourcePort::any_playable(UnusedVideoResourcePort),
             )
             .expect("stage accepted");
 
@@ -1651,7 +1651,7 @@ mod tests {
                     intent: player_core::PlaybackIntent::StartPaused,
                     revision: player_core::PlaybackIntentRevision::INITIAL,
                 },
-                Box::new(UnusedVideoResourcePort),
+                MediaInstallVideoResourcePort::any_playable(UnusedVideoResourcePort),
             )
             .expect("stage accepted");
         assert_eq!(
@@ -1708,7 +1708,7 @@ mod tests {
                     intent: player_core::PlaybackIntent::StartPaused,
                     revision: player_core::PlaybackIntentRevision::INITIAL,
                 },
-                Box::new(UnusedVideoResourcePort),
+                MediaInstallVideoResourcePort::any_playable(UnusedVideoResourcePort),
             )
             .expect("stage accepted");
         missing
@@ -1754,7 +1754,7 @@ mod tests {
                     intent: player_core::PlaybackIntent::StartPaused,
                     revision: player_core::PlaybackIntentRevision::INITIAL,
                 },
-                Box::new(UnusedVideoResourcePort),
+                MediaInstallVideoResourcePort::any_playable(UnusedVideoResourcePort),
             )
             .expect("stage accepted");
         player_state

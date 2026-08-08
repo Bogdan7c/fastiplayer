@@ -1194,6 +1194,15 @@ impl SharedFakeVideoDecoderThread {
             .expect("fake decoder EOF drain request log lock")
             .clone()
     }
+
+    /// Публикует асинхронный decoder-owned EOF state, как реальный worker после
+    /// release-driven receive continuation.
+    pub(super) fn set_eof_drain_state(&self, state: video_core::VideoDecoderEndOfStreamDrainState) {
+        *self
+            .eof_drain_state
+            .lock()
+            .expect("fake decoder EOF drain state lock") = state;
+    }
 }
 
 impl video_core::VideoDecoderThreadHandle for SharedFakeVideoDecoderThread {

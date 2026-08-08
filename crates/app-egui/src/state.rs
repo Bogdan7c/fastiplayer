@@ -548,13 +548,23 @@ impl AppState {
         self.player_worker.apply_runtime_settings(update)
     }
 
-    /// Read-only preflight settings lifecycle boundary через worker owner.
+    /// Read-only preflight settings lifecycle boundary через app и worker owners.
+    ///
+    /// App-owned strong open/resume появляются раньше player command-а, поэтому проверяются
+    /// здесь до worker query. Worker повторно валидирует собственный staged owner и закрывает
+    /// очередь между этим preflight и фактическим settings rebuild.
     pub(crate) fn runtime_reconfigure_boundary_activity(
         &self,
     ) -> Result<
         Option<player_core::PlayerRuntimeBoundaryActivity>,
         player_core::PlayerRuntimeApplyError,
     > {
+        if self.has_pending_prepared_media_strong() || self.has_pending_suspended_media_resume() {
+            return Ok(Some(
+                player_core::PlayerRuntimeBoundaryActivity::PipelineLifecycle,
+            ));
+        }
+
         self.player_worker.runtime_reconfigure_boundary_activity()
     }
 

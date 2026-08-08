@@ -25,7 +25,7 @@ use crate::resolve::{
     HdsRenditionRejection, HdsRenditionRejectionReason, ResolvedHdsRendition, resolve_presentation,
 };
 use crate::runtime::{
-    HdsDemuxPlan, HdsVodOpenResult, open_transactional_demuxer, prepare_selected_hds_vod,
+    HdsDemuxPlan, HdsVodOpenResult, open_transactional_demuxer, prepare_probed_hds_vod,
 };
 
 /// Synchronous provider discovery request; app может выполнить его на bounded background worker-е.
@@ -50,6 +50,23 @@ pub struct HdsCatalogDiscoveryRequest<'capabilities> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HdsRenditionCapabilityRejection;
 
+/// Typed итог полного discovery pass-а, в котором ни одна rendition не прошла
+/// provider content/capability proof.
+///
+/// Marker намеренно не содержит locator, codec payload или backend details:
+/// app может безопасно отличить retryable parent-content rejection от
+/// network/parser/cancellation ошибок, не раскрывая secret-scoped request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HdsNoPlayableRendition;
+
+impl fmt::Display for HdsNoPlayableRendition {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("HDS catalog contains no probed playable rendition")
+    }
+}
+
+impl std::error::Error for HdsNoPlayableRendition {}
+
 /// Existing-composition adapter для immutable video/audio capability snapshots.
 ///
 /// Provider передаёт только уже boundedly probed exact tracks; реализация не
@@ -69,9 +86,6 @@ pub struct HdsRenditionCatalog {
     provider_default: ComponentVariantSelection,
     rejections: Box<[HdsRenditionRejection]>,
     rows: Box<[DiscoveredHdsRendition]>,
-    http: AdaptiveHttpContext,
-    demux_registry: Arc<DemuxRegistry>,
-    policy: HdsVodOpenPolicy,
 }
 
 impl fmt::Debug for HdsRenditionCatalog {
@@ -108,7 +122,8 @@ impl HdsRenditionCatalog {
 /// Private exact mapping одной доказанной coupled row.
 struct DiscoveredHdsRendition {
     exact_identity: CoupledVariantExactIdentity,
-    rendition: ResolvedHdsRendition,
+    plan: Arc<HdsDemuxPlan>,
+    demuxer: Box<dyn Demuxer + Send>,
 }
 
 /// Пробует каждый advertised rendition и публикует catalog только после complete pass-а.
@@ -132,6 +147,7 @@ pub fn discover_hds_renditions(
     )
     .context("HDS catalog HTTP context creation failed")?;
     let resolved = resolve_presentation(root_target, &http, request.policy)?;
+    let mut first_unavailable = resolved.first_unavailable;
     let mut rejections = resolved.rejections;
     let mut admitted = Vec::new();
 
@@ -153,13 +169,21 @@ pub fn discover_hds_renditions(
                     rendition,
                     video: probe.video,
                     audio: probe.audio,
+                    plan: probe.plan,
+                    demuxer: probe.demuxer,
                 });
             }
-            Err(reason) => {
+            Err(HdsRenditionProbeFailure::Rejected(reason)) => {
                 if http.cancellation().is_cancelled() {
                     bail!("HDS catalog discovery was cancelled");
                 }
                 rejections.push(HdsRenditionRejection::new(reason));
+            }
+            Err(HdsRenditionProbeFailure::Unavailable(error)) => {
+                if http.cancellation().is_cancelled() {
+                    return Err(error.context("HDS catalog discovery was cancelled"));
+                }
+                first_unavailable.get_or_insert(error);
             }
         }
     }
@@ -181,7 +205,12 @@ pub fn discover_hds_renditions(
         }
     });
     if admitted.is_empty() {
-        bail!("HDS catalog contains no probed playable rendition");
+        if let Some(error) = first_unavailable {
+            return Err(error.context(
+                "HDS catalog has no admitted rendition because provider infrastructure is unavailable",
+            ));
+        }
+        return Err(HdsNoPlayableRendition.into());
     }
 
     admitted.sort_by(|left, right| compare_admitted(left, right, request.preferred_height));
@@ -206,7 +235,8 @@ pub fn discover_hds_renditions(
         ));
         runtime_rows.push(DiscoveredHdsRendition {
             exact_identity,
-            rendition: row.rendition,
+            plan: row.plan,
+            demuxer: row.demuxer,
         });
     }
 
@@ -241,9 +271,6 @@ pub fn discover_hds_renditions(
         provider_default,
         rejections: rejections.into_boxed_slice(),
         rows: runtime_rows.into_boxed_slice(),
-        http,
-        demux_registry: request.demux_registry,
-        policy: request.policy,
     })
 }
 
@@ -264,17 +291,10 @@ pub fn prepare_discovered_hds_vod(
         .position(|row| row.exact_identity == exact_identity)
         .context("HDS exact discovered row has no private runtime mapping")?;
 
-    let HdsRenditionCatalog {
-        catalog,
-        rows,
-        http,
-        demux_registry,
-        policy,
-        ..
-    } = discovered;
+    let HdsRenditionCatalog { catalog, rows, .. } = discovered;
     let mut rows = rows.into_vec();
-    let selected = rows.swap_remove(selected_index).rendition;
-    prepare_selected_hds_vod(selected, http, demux_registry, policy, Some(catalog))
+    let selected = rows.swap_remove(selected_index);
+    prepare_probed_hds_vod(selected.plan, selected.demuxer, catalog)
 }
 
 struct PendingDiscoveredHdsRendition {
@@ -282,12 +302,25 @@ struct PendingDiscoveredHdsRendition {
     rendition: ResolvedHdsRendition,
     video: VideoTrackDescriptor,
     audio: AudioTrackDescriptor,
+    plan: Arc<HdsDemuxPlan>,
+    demuxer: Box<dyn Demuxer + Send>,
 }
 
 struct HdsRenditionProbe {
     video: VideoTrackDescriptor,
     audio: AudioTrackDescriptor,
     track_semantic_evidence: String,
+    plan: Arc<HdsDemuxPlan>,
+    demuxer: Box<dyn Demuxer + Send>,
+}
+
+/// Один bounded probe либо доказал content rejection, либо не смог вынести
+/// вердикт из-за infrastructure failure.
+enum HdsRenditionProbeFailure {
+    /// Container/track/profile/capability несовместимы и разрешают fallback.
+    Rejected(HdsRenditionRejectionReason),
+    /// Transport/demux open не доказали несовместимость содержимого.
+    Unavailable(anyhow::Error),
 }
 
 fn probe_rendition(
@@ -296,7 +329,7 @@ fn probe_rendition(
     registry: &Arc<DemuxRegistry>,
     policy: HdsVodOpenPolicy,
     capability_probe: &dyn HdsRenditionCapabilityProbe,
-) -> Result<HdsRenditionProbe, HdsRenditionRejectionReason> {
+) -> std::result::Result<HdsRenditionProbe, HdsRenditionProbeFailure> {
     let plan = Arc::new(
         HdsDemuxPlan::new(
             rendition.clone(),
@@ -304,21 +337,29 @@ fn probe_rendition(
             Arc::clone(registry),
             policy,
         )
-        .map_err(|_| HdsRenditionRejectionReason::F4fProbeFailed)?,
+        .map_err(HdsRenditionProbeFailure::Unavailable)?,
     );
-    let demuxer = open_transactional_demuxer(plan, 0)
-        .map_err(|_| HdsRenditionRejectionReason::F4fProbeFailed)?;
-    let (video_track, audio_track) = exact_av_tracks(demuxer.as_ref())?;
-    validate_profile_codecs(video_track, audio_track)?;
+    let demuxer = open_transactional_demuxer(Arc::clone(&plan), 0)
+        .map_err(HdsRenditionProbeFailure::Unavailable)?;
+    let (video_track, audio_track) =
+        exact_av_tracks(demuxer.as_ref()).map_err(HdsRenditionProbeFailure::Rejected)?;
+    validate_profile_codecs(video_track, audio_track)
+        .map_err(HdsRenditionProbeFailure::Rejected)?;
     capability_probe
         .check_coupled_av(video_track, audio_track)
-        .map_err(|_| HdsRenditionRejectionReason::CapabilityUnavailable)?;
-    let video = video_evidence(rendition, video_track)?;
-    let audio = audio_evidence(audio_track)?;
+        .map_err(|_| {
+            HdsRenditionProbeFailure::Rejected(HdsRenditionRejectionReason::CapabilityUnavailable)
+        })?;
+    let video =
+        video_evidence(rendition, video_track).map_err(HdsRenditionProbeFailure::Rejected)?;
+    let audio = audio_evidence(audio_track).map_err(HdsRenditionProbeFailure::Rejected)?;
+    let track_semantic_evidence = track_semantic_evidence(video_track, audio_track);
     Ok(HdsRenditionProbe {
         video,
         audio,
-        track_semantic_evidence: track_semantic_evidence(video_track, audio_track),
+        track_semantic_evidence,
+        plan,
+        demuxer,
     })
 }
 

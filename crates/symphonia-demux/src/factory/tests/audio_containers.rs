@@ -127,6 +127,11 @@ fn assert_fixture_contract(fixture: &AudioContainerFixture, demuxer: &mut dyn De
     assert_eq!(packet.track_id, audio_track_id);
     assert_eq!(packet.kind, TrackKind::Audio);
     assert_eq!(packet.data.as_ref(), fixture.first_packet.as_slice());
+    assert_eq!(
+        packet.byte_offset, None,
+        "{} generic Symphonia reader не должен выдумывать source offset",
+        fixture.extension
+    );
     assert_eq!(packet.track_pts.expect("packet PTS").units.get(), 0);
     assert_eq!(packet.track_dts.expect("packet DTS").units.get(), 0);
     assert_eq!(

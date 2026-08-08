@@ -32,3 +32,14 @@
 - Main dependent proof: `cargo +1.96.0 test --locked -p demux-api -p symphonia-demux -p web-media-http -p codec-core -p audio`.
 - Ordered/fMP4 integrations: `crates/symphonia-demux/src/factory/tests/{ordered_segments,fragmented_isomp4}.rs`.
 - Patch inventory `docs/dependency-patches.toml` owns atoms/mod, moof, tfdt, traf, trun, demuxer and stream changes; run `scripts/ci-checks.sh dependency-patches`.
+
+
+## Дополнение 2026-08-05 — optional exact packet provenance
+
+- `media_core::Packet::byte_offset: Option<u64>` остаётся нейтральной optional boundary. `Some` означает точное начало packet/sample в координатах логического input конкретного backend-а; это не standalone seek/RAP/init guarantee. Backend-и без доказанного offset продолжают публиковать `None`.
+- Локальный `symphonia-format-isomp4` patch возвращает `PacketSampleSpan.pos` атомарно с packet через opt-in `IsoMp4PacketWithSourceOffset`. Позиция берётся из sample table/fragment run до payload read и потому не зависит от `MediaSourceStream` read-ahead.
+- Только registry route с content-proven `iso-bmff` выбирает concrete adapter. ByteSource, ByteStream и OrderedSegments получают exact offsets; остальные Symphonia container families остаются на generic probe reader и не получают выдуманный provenance.
+- Приватный adapter сохраняет `FormatReader` track/metadata/seek contract и передаёт offset ровно следующей neutral packet conversion. EOF/error/seek очищают observer; controlled reprobe сохраняет concrete ISO route.
+- Для ordered fMP4 offset относится к виртуальной конкатенации `Init -> Media*`; HLS отдельно сопоставляет его с plaintext half-open media spans.
+- Tests закрепляют exact ordered/local fMP4 offsets и generic absence для всех current non-ISO audio families на seekable и streaming factory paths.
+- Проверка 2026-08-05: direct patch `90/90`, `cargo test -p symphonia-demux` `174/174`, all-target Clippy `-D warnings` — PASS.

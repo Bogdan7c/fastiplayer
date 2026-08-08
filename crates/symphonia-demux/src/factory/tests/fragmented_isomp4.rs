@@ -278,12 +278,25 @@ fn clean_eof_and_truncated_fragment_structures_are_distinct() {
 #[test]
 fn local_full_fixture_still_reaches_clean_eof() {
     let fixture = decode_base64_fixture();
+    let expected_packet_offsets = box_type_positions(&fixture, b"mdat")
+        .into_iter()
+        .map(|box_type_position| {
+            u64::try_from(box_type_position + 4).expect("fixture offset помещается в u64")
+        })
+        .collect::<Vec<_>>();
     let (_fixture_guard, mut demuxer) = open_local(&fixture);
     let mut packet_count = 0;
 
     for _ in 0..16 {
         match demuxer.next_event().expect("read complete fMP4") {
-            DemuxReadEvent::Packet(_) => packet_count += 1,
+            DemuxReadEvent::Packet(packet) => {
+                assert_eq!(
+                    packet.byte_offset,
+                    Some(expected_packet_offsets[packet_count]),
+                    "seekable factory path обязан сохранить exact sample offset"
+                );
+                packet_count += 1;
+            }
             DemuxReadEvent::EndOfStream => {
                 assert_eq!(packet_count, 3);
                 return;

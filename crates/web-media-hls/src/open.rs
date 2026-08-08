@@ -248,11 +248,11 @@ fn prepare_hls_vod_with_seek_boundary(
     let preview_main_index = main_seek_index.clone();
     let preview_audio_index = audio_seek_index.clone();
     let seek_controller = ProgressiveSeekController::new(move |request| {
-        let main_result = preview_main_index.lock().preview(request)?;
+        let main_result = preview_main_index.lock().preview_and_pin(request)?;
         if let Some(audio_index) = &preview_audio_index {
             audio_index
                 .lock()
-                .preview(media_core::DemuxSeekRequest::accurate(request.timestamp))?;
+                .preview_and_pin(media_core::DemuxSeekRequest::accurate(request.timestamp))?;
         }
         Ok(main_result)
     });

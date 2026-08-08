@@ -322,6 +322,7 @@ pub(super) fn request_with_serialized_cookies(
         ExtractionGeneration::new(11),
         CandidateFormatIdentity::new(match role {
             MediaComponentRole::Muxed => "muxed",
+            MediaComponentRole::ContentProbed => "content-probed",
             MediaComponentRole::Video => "video",
             MediaComponentRole::Audio => "audio",
             MediaComponentRole::Subtitle => "subtitle",
@@ -332,6 +333,7 @@ pub(super) fn request_with_serialized_cookies(
         source,
         match role {
             MediaComponentRole::Muxed => "muxed",
+            MediaComponentRole::ContentProbed => "content-probed",
             MediaComponentRole::Video => "video",
             MediaComponentRole::Audio => "audio",
             MediaComponentRole::Subtitle => "subtitle",

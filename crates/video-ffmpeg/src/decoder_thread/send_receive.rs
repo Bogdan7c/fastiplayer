@@ -371,9 +371,14 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
                         ReceiveStopReason::EndOfFile => {
                             VideoDecoderEndOfStreamDrainState::Drained { generation }
                         }
-                        ReceiveStopReason::NeedMoreInput
-                        | ReceiveStopReason::ResourceBudgetReached => {
+                        ReceiveStopReason::ResourceBudgetReached => {
                             VideoDecoderEndOfStreamDrainState::Draining { generation }
+                        }
+                        ReceiveStopReason::NeedMoreInput => {
+                            return Err(FfmpegDecoderThreadError::ProtocolViolation {
+                                reason: "avcodec_receive_frame returned EAGAIN after avcodec_send_packet(NULL) accepted EOF"
+                                    .to_owned(),
+                            });
                         }
                     };
 
@@ -442,8 +447,15 @@ impl<A: SendReceiveCodecApi> SendReceiveDecodeLoop<A> {
             ReceiveStopReason::EndOfFile => {
                 VideoDecoderEndOfStreamDrainState::Drained { generation }
             }
-            ReceiveStopReason::NeedMoreInput | ReceiveStopReason::ResourceBudgetReached => {
+            ReceiveStopReason::ResourceBudgetReached => {
                 VideoDecoderEndOfStreamDrainState::Draining { generation }
+            }
+            ReceiveStopReason::NeedMoreInput => {
+                return Err(FfmpegDecoderThreadError::ProtocolViolation {
+                    reason:
+                        "avcodec_receive_frame returned EAGAIN while FFmpeg EOF drain was active"
+                            .to_owned(),
+                });
             }
         };
         set_eof_drain_state(

@@ -4,9 +4,10 @@ use audio_core::AudioDecodeCodecFamily;
 use codec_core::{VideoCodec, VideoDecodeRequirement};
 use web_media_core::{
     AudioTrackDescriptor, CandidateDescriptor, CandidateIdentity, CodecFamily, CodecKind,
-    ContainerFamily, DynamicRange, ExtractionGeneration, HlsMuxedCodecDeferredDescriptor,
-    MuxedComponentDescriptor, SemanticIdentity, SourceIdentity, StreamLayout, StreamLayoutKind,
-    TransportFamily, VideoTrackDescriptor,
+    ContainerFamily, ContentProbedDescriptor, ContentProbedTrackEvidence, DynamicRange,
+    ExtractionGeneration, HlsMuxedCodecDeferredDescriptor, MuxedComponentDescriptor,
+    SemanticIdentity, SourceIdentity, StreamLayout, StreamLayoutKind, TransportFamily,
+    VideoTrackDescriptor,
 };
 
 /// Stable service-provided quality score; большее значение предпочтительнее.
@@ -56,6 +57,13 @@ pub enum CandidateRuntimeRequirements {
     },
     /// Muxed HLS без static codec evidence; decode proof отложен до manifest open.
     HlsMuxedCodecDeferred,
+    /// Single resource с частично известными requirements; остальные доказывает content probe.
+    ContentProbed {
+        /// Declared video requirement, если extractor действительно объявил video codec.
+        video: Option<VideoDecodeRequirement>,
+        /// Declared audio requirement, если extractor действительно объявил audio codec.
+        audio: Option<AudioDecodeCodecFamily>,
+    },
 }
 
 impl CandidateRuntimeRequirements {
@@ -68,6 +76,7 @@ impl CandidateRuntimeRequirements {
             Self::VideoOnly { .. } => StreamLayoutKind::VideoOnly,
             Self::AudioOnly { .. } => StreamLayoutKind::AudioOnly,
             Self::HlsMuxedCodecDeferred => StreamLayoutKind::HlsMuxedCodecDeferred,
+            Self::ContentProbed { .. } => StreamLayoutKind::ContentProbed,
         }
     }
 }
@@ -102,6 +111,8 @@ pub(crate) enum PlanningResourceLayout {
         /// Transport family одного HLS resource.
         transport: TransportFamily,
     },
+    /// Single content-probed resource с provider-resolved demux container family.
+    ContentProbed(PlanningResource),
 }
 
 /// Один statically-compatible candidate и его provider-neutral runtime requirements.
@@ -243,6 +254,11 @@ pub enum PlanningCandidateBuildError {
         descriptor: StreamLayoutKind,
         /// Shape runtime requirements.
         runtime: StreamLayoutKind,
+    },
+    /// Declared/unknown/absent track evidence не совпало с optional runtime requirement.
+    ContentProbedRequirementMismatch {
+        /// Дорожка, для которой потеряна correspondence.
+        component: PlanningComponent,
     },
     /// Component содержит unknown либо profile-excluded transport family.
     StaticTransportRejected {
@@ -400,11 +416,70 @@ fn validate_candidate_contract(
             StreamLayout::HlsMuxedCodecDeferred(component),
             CandidateRuntimeRequirements::HlsMuxedCodecDeferred,
         ) => validate_hls_muxed_codec_deferred(component),
+        (
+            StreamLayout::ContentProbed(component),
+            CandidateRuntimeRequirements::ContentProbed { video, audio },
+        ) => validate_content_probed(component, video.as_ref(), *audio),
         _ => Err(PlanningCandidateBuildError::LayoutMismatch {
             descriptor: layout.kind(),
             runtime: runtime.layout_kind(),
         }),
     }
+}
+
+/// Проверяет declared часть content-probed layout-а, не подменяя unknown evidence.
+fn validate_content_probed(
+    component: &ContentProbedDescriptor,
+    video_requirement: Option<&VideoDecodeRequirement>,
+    audio_requirement: Option<AudioDecodeCodecFamily>,
+) -> Result<
+    (
+        PlanningResourceLayout,
+        Option<VideoCodec>,
+        Option<DynamicRange>,
+    ),
+    PlanningCandidateBuildError,
+> {
+    match (component.video(), video_requirement) {
+        (ContentProbedTrackEvidence::Declared(video), Some(requirement)) => {
+            validate_video(video, requirement)?;
+        }
+        (ContentProbedTrackEvidence::Unknown | ContentProbedTrackEvidence::Absent, None) => {}
+        _ => {
+            return Err(
+                PlanningCandidateBuildError::ContentProbedRequirementMismatch {
+                    component: PlanningComponent::Video,
+                },
+            );
+        }
+    }
+    match (component.audio(), audio_requirement) {
+        (ContentProbedTrackEvidence::Declared(audio), Some(requirement)) => {
+            validate_audio(audio, requirement)?;
+        }
+        (ContentProbedTrackEvidence::Unknown | ContentProbedTrackEvidence::Absent, None) => {}
+        _ => {
+            return Err(
+                PlanningCandidateBuildError::ContentProbedRequirementMismatch {
+                    component: PlanningComponent::Audio,
+                },
+            );
+        }
+    }
+    let resource = validate_resource_family(
+        PlanningComponent::Muxed,
+        component.transport().family(),
+        component.probe_container(),
+    )?;
+    let dynamic_range = match component.video() {
+        ContentProbedTrackEvidence::Declared(video) => Some(video.dynamic_range()),
+        ContentProbedTrackEvidence::Unknown | ContentProbedTrackEvidence::Absent => None,
+    };
+    Ok((
+        PlanningResourceLayout::ContentProbed(resource),
+        video_requirement.map(|requirement| requirement.codec),
+        dynamic_range,
+    ))
 }
 
 /// Проверяет deferred HLS muxed layout без static codec correspondence.
@@ -449,6 +524,19 @@ fn validate_resource(
     transport: TransportFamily,
     container: &web_media_core::ContainerIdentity,
 ) -> Result<PlanningResource, PlanningCandidateBuildError> {
+    let container = container
+        .consistent_family()
+        .map_err(|_| PlanningCandidateBuildError::UnresolvedContainer { component })?
+        .ok_or(PlanningCandidateBuildError::UnresolvedContainer { component })?;
+    validate_resource_family(component, transport, container)
+}
+
+/// Проверяет уже разрешённую provider-owned container family.
+fn validate_resource_family(
+    component: PlanningComponent,
+    transport: TransportFamily,
+    container: ContainerFamily,
+) -> Result<PlanningResource, PlanningCandidateBuildError> {
     if matches!(
         transport,
         TransportFamily::KnownExcluded(_) | TransportFamily::Unknown
@@ -458,11 +546,6 @@ fn validate_resource(
             family: transport,
         });
     }
-
-    let container = container
-        .consistent_family()
-        .map_err(|_| PlanningCandidateBuildError::UnresolvedContainer { component })?
-        .ok_or(PlanningCandidateBuildError::UnresolvedContainer { component })?;
     if matches!(
         container,
         ContainerFamily::MpegProgramStream

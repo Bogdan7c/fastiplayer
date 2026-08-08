@@ -42,3 +42,9 @@ Strong media install раньше разрешал отложить неполн
 - `DemuxReadEvent::TemporarilyUnavailable` возвращает `Pending(DemuxRetryHint)`, не добавляется в `PreparedMedia` replay queue и не расходует packet/event/byte probe budgets. Следующий worker tick после deadline продолжает тот же planner, не начинает probe заново.
 - `MediaInstallFailureStage::VideoPreflightTimeout` terminal-resolve-ит wall-clock expiry. Supersede/cancel/shutdown сохраняют прежние typed causes и exactly-once completion; detached backend до успешного preflight не запрашивается.
 - Early authorization остаётся `MediaInstallControlOutcome::NotReady`; Ready→Authorize→Installed commit barrier и exact response ordering не изменены.
+
+## Exact backend constraint lookup boundary (2026-08-05)
+
+- `capability-core::SystemCapabilities::find_playable_video_output_for_backend` владеет поиском playable output по exact `DecodeBackendId` и `VideoDecodeRequirement`; player-core не читает внутренний `playable_video_outputs` для этого решения.
+- Staged preflight сначала вызывает полный `check_video_requirement` и сохраняет прежний порядок HDR/frame/render validation, а только затем применяет request-scoped exact-backend constraint.
+- Focused capability tests закрепляют exact-backend hit, miss на другом backend-е и miss при несовместимом requirement; вертикальные software-policy tests player-core подтверждают выбор FFmpeg и отсутствие hardware request.

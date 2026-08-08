@@ -13,7 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use player_core::{
-    MediaInstallRequestId, MediaInstallVideoResourcePort, PlayerVideoDecoderThreadConfig,
+    MediaInstallRequestId, MediaInstallVideoBackendConstraint, MediaInstallVideoResourcePort,
+    PlayerVideoDecoderThreadConfig,
 };
 use video_backend_api::{
     DetachedVideoBackendCandidateCancellationCause, DetachedVideoBackendCandidateStatus,
@@ -115,6 +116,7 @@ impl<Materializer, SubmissionBinding>
 pub(crate) fn player_selected_video_candidate_boundary<Driver>(
     renderer_generation: RendererGeneration,
     decoder_thread_config: PlayerVideoDecoderThreadConfig,
+    backend_constraint: MediaInstallVideoBackendConstraint,
     driver: Driver,
 ) -> (
     AppVideoPipelineCandidateOwner<Driver::Materializer, Driver::SubmissionBinding>,
@@ -135,7 +137,10 @@ where
         decoder_thread_config,
         driver,
     };
-    (owner, Box::new(port))
+    (
+        owner,
+        MediaInstallVideoResourcePort::new(backend_constraint, port),
+    )
 }
 
 /// Player-side adapter concrete app resource owner-а.

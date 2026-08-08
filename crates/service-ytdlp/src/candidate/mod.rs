@@ -10,6 +10,7 @@ mod model;
 mod normalize;
 mod planning;
 mod raw;
+mod rematch;
 mod request_material;
 mod transport;
 
@@ -21,7 +22,7 @@ pub use model::{
     YtDlpCandidateSelectionError, YtDlpCandidateSnapshot, YtDlpLiveIntent,
     YtDlpNormalizedCandidate, YtDlpRejectedCandidate, YtDlpSelectedCandidateShape,
 };
-pub use planning::YtDlpPlanningSnapshotError;
+pub use planning::{YtDlpPlanningSnapshotAlignmentError, YtDlpPlanningSnapshotError};
 pub use request_material::{
     YT_DLP_REQUEST_MATERIAL_SCHEMA_VERSION, YtDlpDashFragment, YtDlpDashFragmentLocatorKind,
     YtDlpDashFragmentRole, YtDlpDashInput, YtDlpDashInputKind, YtDlpDashRequestContext,
@@ -84,6 +85,9 @@ pub fn resolve_yt_dlp_candidate_snapshot_with_config_and_cancellation(
 
 #[cfg(test)]
 mod planning_tests;
+
+#[cfg(test)]
+mod rematch_tests;
 
 #[cfg(test)]
 mod tests;

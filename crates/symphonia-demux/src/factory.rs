@@ -132,6 +132,7 @@ impl DemuxFactory for SymphoniaDemuxFactory {
             return Err(DemuxFactoryOpenError::Cancelled);
         }
         let extension_hint = self.extension_hint(&request).to_owned();
+        let uses_exact_iso_bmff_reader = request.selected_probe.container.as_str() == "iso-bmff";
         let ordered_input_supported = self
             .container_registration(request.selected_probe.container.as_str())
             .is_some_and(|registration| {
@@ -141,20 +142,42 @@ impl DemuxFactory for SymphoniaDemuxFactory {
             });
         let cancellation = request.cancellation;
         let demuxer_result: Result<Box<dyn Demuxer + Send>, DemuxError> = match request.input {
-            DemuxInput::ByteSource(source) => SymphoniaDemuxer::from_byte_source_with_options(
-                source,
-                &extension_hint,
-                REGISTRY_SOURCE_LABEL,
-                self.demuxer_options,
-            )
-            .map(|demuxer| Box::new(demuxer) as Box<dyn Demuxer + Send>),
-            DemuxInput::ByteStream(reader) => SymphoniaDemuxer::from_stream_with_options(
-                reader,
-                &extension_hint,
-                REGISTRY_SOURCE_LABEL,
-                self.demuxer_options,
-            )
-            .map(|demuxer| Box::new(demuxer) as Box<dyn Demuxer + Send>),
+            DemuxInput::ByteSource(source) => {
+                let demuxer_result = if uses_exact_iso_bmff_reader {
+                    SymphoniaDemuxer::from_proven_iso_bmff_byte_source_with_options(
+                        source,
+                        &extension_hint,
+                        REGISTRY_SOURCE_LABEL,
+                        self.demuxer_options,
+                    )
+                } else {
+                    SymphoniaDemuxer::from_byte_source_with_options(
+                        source,
+                        &extension_hint,
+                        REGISTRY_SOURCE_LABEL,
+                        self.demuxer_options,
+                    )
+                };
+                demuxer_result.map(|demuxer| Box::new(demuxer) as Box<dyn Demuxer + Send>)
+            }
+            DemuxInput::ByteStream(reader) => {
+                let demuxer_result = if uses_exact_iso_bmff_reader {
+                    SymphoniaDemuxer::from_proven_iso_bmff_stream_with_options(
+                        reader,
+                        &extension_hint,
+                        REGISTRY_SOURCE_LABEL,
+                        self.demuxer_options,
+                    )
+                } else {
+                    SymphoniaDemuxer::from_stream_with_options(
+                        reader,
+                        &extension_hint,
+                        REGISTRY_SOURCE_LABEL,
+                        self.demuxer_options,
+                    )
+                };
+                demuxer_result.map(|demuxer| Box::new(demuxer) as Box<dyn Demuxer + Send>)
+            }
             DemuxInput::OrderedSegments(source) => {
                 if !ordered_input_supported {
                     return Err(DemuxFactoryOpenError::UnsupportedInput {
@@ -163,15 +186,25 @@ impl DemuxFactory for SymphoniaDemuxFactory {
                 }
                 let (reader, failure_observer) =
                     OrderedSegmentReader::new_observed(source, cancellation.clone());
-                SymphoniaDemuxer::from_stream_with_options(
-                    reader,
-                    &extension_hint,
-                    REGISTRY_SOURCE_LABEL,
-                    self.demuxer_options,
-                )
-                .map_err(|error| preserve_ordered_stream_error(error, &failure_observer))
-                .map(OrderedSegmentDemuxer::new)
-                .map(|demuxer| Box::new(demuxer) as Box<dyn Demuxer + Send>)
+                let demuxer_result = if uses_exact_iso_bmff_reader {
+                    SymphoniaDemuxer::from_proven_iso_bmff_stream_with_options(
+                        reader,
+                        &extension_hint,
+                        REGISTRY_SOURCE_LABEL,
+                        self.demuxer_options,
+                    )
+                } else {
+                    SymphoniaDemuxer::from_stream_with_options(
+                        reader,
+                        &extension_hint,
+                        REGISTRY_SOURCE_LABEL,
+                        self.demuxer_options,
+                    )
+                };
+                demuxer_result
+                    .map_err(|error| preserve_ordered_stream_error(error, &failure_observer))
+                    .map(OrderedSegmentDemuxer::new)
+                    .map(|demuxer| Box::new(demuxer) as Box<dyn Demuxer + Send>)
             }
         };
 

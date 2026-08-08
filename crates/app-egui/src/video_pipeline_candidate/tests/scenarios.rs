@@ -9,6 +9,9 @@ fn production_port_uses_exact_player_selection_and_rejects_mismatched_pair() {
     let (owner, mut port) = player_selected_video_candidate_boundary(
         generation,
         PlayerVideoDecoderThreadConfig::default(),
+        player_core::MediaInstallVideoBackendConstraint::RequireBackend(
+            video_ffmpeg::ffmpeg_software_backend_id(),
+        ),
         FakeCandidateDriver::successful(),
     );
 
@@ -39,6 +42,9 @@ fn production_port_uses_exact_player_selection_and_rejects_mismatched_pair() {
     let (mismatched_owner, mut mismatched_port) = player_selected_video_candidate_boundary(
         generation,
         PlayerVideoDecoderThreadConfig::default(),
+        player_core::MediaInstallVideoBackendConstraint::RequireBackend(
+            video_ffmpeg::ffmpeg_software_backend_id(),
+        ),
         FakeCandidateDriver::successful(),
     );
     let mismatched_reply = mismatched_port
@@ -46,7 +52,9 @@ fn production_port_uses_exact_player_selection_and_rejects_mismatched_pair() {
             mismatched_request_id,
             DetachedVideoBackendSelection::selected(
                 "vaapi",
-                VideoFrameContract::host_yuv420_planar8(),
+                VideoFrameContract::dma_buf_nv12(
+                    video_frame_contract::DmaBufImageLayout::ComposedLayers,
+                ),
             ),
         ))
         .expect("typed selection rejection is a resource reply, not disconnect");
@@ -63,6 +71,7 @@ fn production_port_preserves_candidate_preparation_failure() {
     let (owner, mut port) = player_selected_video_candidate_boundary(
         renderer_generation(2),
         PlayerVideoDecoderThreadConfig::default(),
+        player_core::MediaInstallVideoBackendConstraint::AnyPlayable,
         FakeCandidateDriver::failing(CandidateVideoPipelinePreparationError::at_stage(
             CandidateVideoPipelinePreparationStage::BackendStartup,
             "candidate backend startup failed",

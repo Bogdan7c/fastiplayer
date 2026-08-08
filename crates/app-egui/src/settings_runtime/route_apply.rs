@@ -53,6 +53,7 @@ pub(crate) trait SettingsRuntimeReconfigureHost {
     fn apply_player_runtime_settings(
         &mut self,
         update: &PlayerCommittedSettingsUpdate,
+        target_policy: SettingsRouteTargetPolicy,
     ) -> PlayerRuntimeApplyResult;
 
     /// Применяет media/source policy и при необходимости запускает controlled rebuild.
@@ -60,6 +61,7 @@ pub(crate) trait SettingsRuntimeReconfigureHost {
         &mut self,
         update: &MediaServiceRuntimeSettingsUpdate,
         affected_settings: &[SettingId],
+        target_policy: SettingsRouteTargetPolicy,
     ) -> AppRouteApplyResult;
 }
 
@@ -78,6 +80,7 @@ impl SettingsRuntimeReconfigureHost for NoopSettingsRuntimeReconfigureHost {
     fn apply_player_runtime_settings(
         &mut self,
         update: &PlayerCommittedSettingsUpdate,
+        _target_policy: SettingsRouteTargetPolicy,
     ) -> PlayerRuntimeApplyResult {
         let mut report = if update.player_core.is_empty() {
             PlayerRuntimeApplyReport::empty()
@@ -107,6 +110,7 @@ impl SettingsRuntimeReconfigureHost for NoopSettingsRuntimeReconfigureHost {
         &mut self,
         _update: &MediaServiceRuntimeSettingsUpdate,
         _affected_settings: &[SettingId],
+        _target_policy: SettingsRouteTargetPolicy,
     ) -> AppRouteApplyResult {
         AppRouteApplyResult::Applied
     }
@@ -163,18 +167,20 @@ where
     fn apply_player_runtime_settings(
         &mut self,
         update: &PlayerCommittedSettingsUpdate,
+        target_policy: SettingsRouteTargetPolicy,
     ) -> PlayerRuntimeApplyResult {
         let mut host = NoopSettingsRuntimeReconfigureHost;
-        host.apply_player_runtime_settings(update)
+        host.apply_player_runtime_settings(update, target_policy)
     }
 
     fn apply_media_service_runtime_settings(
         &mut self,
         update: &MediaServiceRuntimeSettingsUpdate,
         affected_settings: &[SettingId],
+        target_policy: SettingsRouteTargetPolicy,
     ) -> AppRouteApplyResult {
         let mut host = NoopSettingsRuntimeReconfigureHost;
-        host.apply_media_service_runtime_settings(update, affected_settings)
+        host.apply_media_service_runtime_settings(update, affected_settings, target_policy)
     }
 }
 
@@ -316,7 +322,11 @@ impl AppRuntimeRouteApplier for SettingsRuntimeRouteAppliers {
         }
 
         let mut reconfigure_host = NoopSettingsRuntimeReconfigureHost;
-        self.apply_committed_route_with_reconfigure_host(route, &mut reconfigure_host)
+        self.apply_committed_route_with_reconfigure_host(
+            route,
+            SettingsRouteTargetPolicy::ExternalOwnersUnavailable,
+            &mut reconfigure_host,
+        )
     }
 
     fn rollback_committed_route(
@@ -334,6 +344,7 @@ impl SettingsRuntimeRouteAppliers {
     pub(super) fn apply_committed_route_with_render_adapter<A>(
         &mut self,
         route: RuntimeCommittedRoute,
+        target_policy: SettingsRouteTargetPolicy,
         runtime_adapter: &mut A,
     ) -> SettingsResult<AppRouteApplyReport>
     where
@@ -353,7 +364,11 @@ impl SettingsRuntimeRouteAppliers {
                 let result = runtime_adapter.rollback_playlist_runtime_settings();
                 Ok(Self::route_report(route, result, ApplyMechanism::InPlace))
             }
-            _ => self.apply_committed_route_with_reconfigure_host(route, runtime_adapter),
+            _ => self.apply_committed_route_with_reconfigure_host(
+                route,
+                target_policy,
+                runtime_adapter,
+            ),
         }
     }
 
@@ -361,6 +376,7 @@ impl SettingsRuntimeRouteAppliers {
     pub(super) fn rollback_committed_route_with_render_adapter<A>(
         &mut self,
         route: RuntimeCommittedRoute,
+        target_policy: SettingsRouteTargetPolicy,
         runtime_adapter: &mut A,
     ) -> SettingsResult<AppRouteApplyReport>
     where
@@ -378,7 +394,11 @@ impl SettingsRuntimeRouteAppliers {
                     ApplyMechanism::PreviewPromoted,
                 ))
             }
-            _ => self.apply_committed_route_with_reconfigure_host(route, runtime_adapter),
+            _ => self.apply_committed_route_with_reconfigure_host(
+                route,
+                target_policy,
+                runtime_adapter,
+            ),
         }
     }
 
@@ -386,6 +406,7 @@ impl SettingsRuntimeRouteAppliers {
     fn apply_committed_route_with_reconfigure_host(
         &mut self,
         route: RuntimeCommittedRoute,
+        target_policy: SettingsRouteTargetPolicy,
         reconfigure_host: &mut dyn SettingsRuntimeReconfigureHost,
     ) -> SettingsResult<AppRouteApplyReport> {
         match route.update.clone() {
@@ -402,7 +423,7 @@ impl SettingsRuntimeRouteAppliers {
                 ))
             }
             RuntimeCommittedUpdate::Player(update) => {
-                Ok(self.apply_player_route(route, &update, reconfigure_host))
+                Ok(self.apply_player_route(route, &update, target_policy, reconfigure_host))
             }
             RuntimeCommittedUpdate::MediaService(update) => {
                 let policy_only = route
@@ -412,6 +433,7 @@ impl SettingsRuntimeRouteAppliers {
                 let result = self.apply_media_service_update(
                     &update,
                     &route.affected_settings,
+                    target_policy,
                     reconfigure_host,
                 );
                 Ok(Self::route_report(
@@ -425,7 +447,8 @@ impl SettingsRuntimeRouteAppliers {
                 ))
             }
             RuntimeCommittedUpdate::FrameServer(update) => {
-                let result = self.apply_frame_server_update(&update, reconfigure_host);
+                let result =
+                    self.apply_frame_server_update(&update, target_policy, reconfigure_host);
                 Ok(Self::route_report(
                     route,
                     result,
@@ -456,6 +479,7 @@ impl SettingsRuntimeRouteAppliers {
     fn apply_frame_server_update(
         &mut self,
         update: &FrameServerRuntimeSettingsUpdate,
+        target_policy: SettingsRouteTargetPolicy,
         reconfigure_host: &mut dyn SettingsRuntimeReconfigureHost,
     ) -> AppRouteApplyResult {
         if self.frame_server == update.frame_server {
@@ -470,12 +494,13 @@ impl SettingsRuntimeRouteAppliers {
             media_pipeline: None,
         };
 
-        let player_result = match reconfigure_host.apply_player_runtime_settings(&player_update) {
-            Ok(report) => player_runtime_report_result(&report),
-            Err(error) => AppRouteApplyResult::Failed {
-                message: player_runtime_error_message(error),
-            },
-        };
+        let player_result =
+            match reconfigure_host.apply_player_runtime_settings(&player_update, target_policy) {
+                Ok(report) => player_runtime_report_result(&report),
+                Err(error) => AppRouteApplyResult::Failed {
+                    message: player_runtime_error_message(error),
+                },
+            };
         if !player_result.is_success() {
             return player_result;
         }
@@ -507,6 +532,7 @@ impl SettingsRuntimeRouteAppliers {
         &mut self,
         route: RuntimeCommittedRoute,
         update: &PlayerCommittedSettingsUpdate,
+        target_policy: SettingsRouteTargetPolicy,
         reconfigure_host: &mut dyn SettingsRuntimeReconfigureHost,
     ) -> AppRouteApplyReport {
         let previous_audio_output_device_id = self.player.audio_output_device_id.clone();
@@ -517,7 +543,7 @@ impl SettingsRuntimeRouteAppliers {
         let mut audio_output_device_result = self.apply_player_audio_output_device(update);
 
         let player_core_result = if audio_output_device_result.is_success() {
-            self.apply_player_core_update(update, reconfigure_host)
+            self.apply_player_core_update(update, target_policy, reconfigure_host)
         } else {
             AppRouteApplyResult::Failed {
                 message: "player owner apply was not started because audio device policy failed"
@@ -588,6 +614,7 @@ impl SettingsRuntimeRouteAppliers {
     fn apply_player_core_update(
         &mut self,
         update: &PlayerCommittedSettingsUpdate,
+        target_policy: SettingsRouteTargetPolicy,
         reconfigure_host: &mut dyn SettingsRuntimeReconfigureHost,
     ) -> AppRouteApplyResult {
         if update.player_core.is_empty()
@@ -597,7 +624,7 @@ impl SettingsRuntimeRouteAppliers {
             return AppRouteApplyResult::Noop;
         };
 
-        match reconfigure_host.apply_player_runtime_settings(update) {
+        match reconfigure_host.apply_player_runtime_settings(update, target_policy) {
             Ok(report) => player_runtime_report_result(&report),
             Err(error) => AppRouteApplyResult::Failed {
                 message: player_runtime_error_message(error),
@@ -645,6 +672,7 @@ impl SettingsRuntimeRouteAppliers {
         &mut self,
         update: &MediaServiceRuntimeSettingsUpdate,
         affected_settings: &[SettingId],
+        target_policy: SettingsRouteTargetPolicy,
         reconfigure_host: &mut dyn SettingsRuntimeReconfigureHost,
     ) -> AppRouteApplyResult {
         let next_snapshot = MediaServiceRuntimeSnapshot::from_update(update);
@@ -652,8 +680,11 @@ impl SettingsRuntimeRouteAppliers {
             return AppRouteApplyResult::Noop;
         }
 
-        let result =
-            reconfigure_host.apply_media_service_runtime_settings(update, affected_settings);
+        let result = reconfigure_host.apply_media_service_runtime_settings(
+            update,
+            affected_settings,
+            target_policy,
+        );
         if !result.is_success() {
             return result;
         }

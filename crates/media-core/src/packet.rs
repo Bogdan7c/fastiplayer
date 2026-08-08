@@ -83,7 +83,10 @@ pub struct Packet {
     /// Исходная duration в track time base до нормализации в media timeline.
     pub track_duration: Option<TrackDuration>,
 
-    /// Безопасная container/source byte-позиция для повторного demux seek-а.
+    /// Exact optional logical-input position, где начинается encoded packet/sample.
+    ///
+    /// Coordinate space задаёт backend; значение само по себе не доказывает RAP,
+    /// initialization context или допустимую standalone seek boundary.
     pub byte_offset: Option<u64>,
 
     /// Явная keyframe-классификация для video packets.
@@ -265,7 +268,10 @@ impl Packet {
         self
     }
 
-    /// Создаёт копию packet-а с безопасной byte-позицией контейнера.
+    /// Добавляет доказанную backend-ом logical-input позицию packet/sample origin.
+    ///
+    /// Метод не превращает origin в самостоятельную seek boundary: required init,
+    /// decoder context и random-access evidence остаются ответственностью владельца container-а.
     #[must_use]
     pub const fn with_byte_offset(mut self, byte_offset: u64) -> Self {
         self.byte_offset = Some(byte_offset);

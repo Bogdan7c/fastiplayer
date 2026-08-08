@@ -1,17 +1,19 @@
 use std::sync::Arc;
 
 use egui::{Event, Modifiers, PointerButton, RawInput};
-use web_media_core::{CodecFamily, ComponentKind, ComponentVariantCatalogGeneration, DynamicRange};
+use web_media_core::{CodecFamily, ComponentVariantCatalogGeneration, DynamicRange};
 
 use super::component_variants::{
-    AUDIO_AXIS_MISSING_TEXT, AUDIO_HEADING, UNAVAILABLE_TEXT, VIDEO_HEADING, variant_button,
+    AUDIO_AXIS_MISSING_TEXT, AUDIO_HEADING, COUPLED_HEADING, UNAVAILABLE_TEXT, VIDEO_HEADING,
+    variant_button,
 };
 use super::*;
 use crate::web_media_stream_model::component_variants::{
     ComponentVariantSelectionAction, WebMediaAudioComponentVariantAxis,
-    WebMediaAudioComponentVariantPresentation, WebMediaComponentVariantProjection,
-    WebMediaInstalledComponentVariantPresentation, WebMediaVideoComponentVariantAxis,
-    WebMediaVideoComponentVariantPresentation,
+    WebMediaAudioComponentVariantPresentation, WebMediaComponentVariantAxisKind,
+    WebMediaComponentVariantProjection, WebMediaCoupledComponentVariantAxis,
+    WebMediaCoupledComponentVariantPresentation, WebMediaInstalledComponentVariantPresentation,
+    WebMediaVideoComponentVariantAxis, WebMediaVideoComponentVariantPresentation,
 };
 use crate::web_media_stream_model::{UrlSidebarPendingSelection, WebMediaStreamGeneration};
 
@@ -23,7 +25,7 @@ fn unrelated_pending_selection() -> UrlSidebarPendingSelection {
     UrlSidebarPendingSelection::Component(ComponentVariantSelectionAction {
         parent_generation: parent_generation(),
         catalog_generation: ComponentVariantCatalogGeneration::new(99),
-        component: ComponentKind::Audio,
+        axis: WebMediaComponentVariantAxisKind::Audio,
         variant_index: 8,
     })
 }
@@ -153,7 +155,7 @@ fn installed_missing_axis_is_honest_and_all_buttons_are_disabled() {
                 ComponentVariantSelectionAction {
                     parent_generation: parent_generation(),
                     catalog_generation: ComponentVariantCatalogGeneration::new(4),
-                    component: ComponentKind::Video,
+                    axis: WebMediaComponentVariantAxisKind::Video,
                     variant_index,
                 },
                 false,
@@ -174,6 +176,7 @@ fn audio_only_installed_projection_reports_missing_video_axis() {
             audio: WebMediaAudioComponentVariantAxis {
                 active_index: 0,
                 variants: Arc::from([WebMediaAudioComponentVariantPresentation {
+                    language_label: Some(Arc::from("uk")),
                     bitrate: Some(128_000),
                     sample_rate_hz: Some(48_000),
                     channels: Some(2),
@@ -191,6 +194,7 @@ fn audio_only_installed_projection_reports_missing_video_axis() {
             .any(|label| label == component_variants::VIDEO_AXIS_MISSING_TEXT)
     );
     assert!(labels.iter().any(|label| label == "Активный"));
+    assert!(labels.iter().any(|label| label.contains("uk")));
 }
 
 #[test]
@@ -199,10 +203,11 @@ fn component_button_ids_are_stable_and_axis_or_index_distinguishes_them() {
     let render_ids = |context: &egui::Context| {
         let mut ids = Vec::new();
         let _full_output = context.run_ui(egui::RawInput::default(), |ui| {
-            for (component, variant_index) in [
-                (ComponentKind::Video, 0),
-                (ComponentKind::Video, 1),
-                (ComponentKind::Audio, 0),
+            for (axis, variant_index) in [
+                (WebMediaComponentVariantAxisKind::Video, 0),
+                (WebMediaComponentVariantAxisKind::Video, 1),
+                (WebMediaComponentVariantAxisKind::Audio, 0),
+                (WebMediaComponentVariantAxisKind::Coupled, 0),
             ] {
                 ids.push(
                     variant_button(
@@ -210,7 +215,7 @@ fn component_button_ids_are_stable_and_axis_or_index_distinguishes_them() {
                         ComponentVariantSelectionAction {
                             parent_generation: parent_generation(),
                             catalog_generation: ComponentVariantCatalogGeneration::new(9),
-                            component,
+                            axis,
                             variant_index,
                         },
                         false,
@@ -228,6 +233,7 @@ fn component_button_ids_are_stable_and_axis_or_index_distinguishes_them() {
     assert_eq!(first, second);
     assert_ne!(first[0], first[1]);
     assert_ne!(first[0], first[2]);
+    assert_ne!(first[0], first[3]);
 }
 
 #[test]
@@ -235,7 +241,7 @@ fn installed_non_active_row_emits_exact_safe_action_and_active_row_is_disabled()
     let row_action = ComponentVariantSelectionAction {
         parent_generation: parent_generation(),
         catalog_generation: ComponentVariantCatalogGeneration::new(12),
-        component: ComponentKind::Video,
+        axis: WebMediaComponentVariantAxisKind::Video,
         variant_index: 1,
     };
     let context = egui::Context::default();
@@ -304,7 +310,7 @@ fn common_pending_disables_component_rows_and_marks_only_exact_component_row() {
     let pending_action = ComponentVariantSelectionAction {
         parent_generation: parent_generation(),
         catalog_generation: ComponentVariantCatalogGeneration::new(13),
-        component: ComponentKind::Video,
+        axis: WebMediaComponentVariantAxisKind::Video,
         variant_index: 1,
     };
     let pending_selection = UrlSidebarPendingSelection::Component(pending_action);
@@ -322,6 +328,61 @@ fn common_pending_disables_component_rows_and_marks_only_exact_component_row() {
         button_frame(&context, RawInput::default(), pending_action, false, true);
     assert!(!enabled);
     assert_eq!(action, None);
+}
+
+#[test]
+fn coupled_projection_renders_one_atomic_av_axis_with_safe_metadata() {
+    let projection = WebMediaComponentVariantProjection::Installed(
+        WebMediaInstalledComponentVariantPresentation::Coupled {
+            catalog_generation: ComponentVariantCatalogGeneration::new(14),
+            coupled: WebMediaCoupledComponentVariantAxis {
+                active_index: 0,
+                variants: Arc::from([
+                    WebMediaCoupledComponentVariantPresentation {
+                        video: WebMediaVideoComponentVariantPresentation {
+                            width: Some(1280),
+                            height: Some(720),
+                            frame_rate: None,
+                            bitrate: Some(3_000_000),
+                            codec: Some(CodecFamily::H264),
+                            dynamic_range: DynamicRange::Sdr,
+                        },
+                        audio: WebMediaAudioComponentVariantPresentation {
+                            language_label: None,
+                            bitrate: Some(128_000),
+                            sample_rate_hz: Some(48_000),
+                            channels: Some(2),
+                            codec: Some(CodecFamily::Aac),
+                        },
+                    },
+                    WebMediaCoupledComponentVariantPresentation {
+                        video: WebMediaVideoComponentVariantPresentation {
+                            width: Some(1920),
+                            height: Some(1080),
+                            frame_rate: None,
+                            bitrate: Some(6_000_000),
+                            codec: Some(CodecFamily::H264),
+                            dynamic_range: DynamicRange::Sdr,
+                        },
+                        audio: WebMediaAudioComponentVariantPresentation {
+                            language_label: None,
+                            bitrate: Some(256_000),
+                            sample_rate_hz: Some(48_000),
+                            channels: Some(2),
+                            codec: Some(CodecFamily::Aac),
+                        },
+                    },
+                ]),
+            },
+        },
+    );
+
+    let labels = accessible_labels(&projection, false);
+    assert!(labels.iter().any(|label| label == COUPLED_HEADING));
+    assert!(labels.iter().any(|label| label.contains("1280×720")));
+    assert!(labels.iter().any(|label| label.contains("128 кбит/с")));
+    assert!(labels.iter().all(|label| label != VIDEO_HEADING));
+    assert!(labels.iter().all(|label| label != AUDIO_HEADING));
 }
 
 #[test]

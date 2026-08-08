@@ -78,11 +78,16 @@ where
             request.requested,
             request.route_updates,
         )?;
+        let target_policy = SettingsRouteTargetPolicy::from_config(request.requested);
         let mut reports = Vec::with_capacity(routes.len());
         for route in routes {
             let report = self
                 .route_appliers
-                .apply_committed_route_with_render_adapter(route, self.runtime_adapter)?;
+                .apply_committed_route_with_render_adapter(
+                    route,
+                    target_policy,
+                    self.runtime_adapter,
+                )?;
             let full_success = report.result.is_success();
             if full_success || report.result.needs_compensation() {
                 self.applied_route_count += 1;
@@ -104,6 +109,7 @@ where
             request.previous_committed,
             request.route_updates,
         )?;
+        let target_policy = SettingsRouteTargetPolicy::from_config(request.previous_committed);
         let mut reports = Vec::with_capacity(self.applied_route_count);
         for route in rollback_routes
             .into_iter()
@@ -112,7 +118,11 @@ where
         {
             reports.push(
                 self.route_appliers
-                    .rollback_committed_route_with_render_adapter(route, self.runtime_adapter)?
+                    .rollback_committed_route_with_render_adapter(
+                        route,
+                        target_policy,
+                        self.runtime_adapter,
+                    )?
                     .into_rollback_report(),
             );
         }

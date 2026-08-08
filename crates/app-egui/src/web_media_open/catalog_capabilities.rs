@@ -25,7 +25,7 @@ impl AppCatalogCapabilityProbe {
         Self { video, audio }
     }
 
-    fn video_descriptor(&self, track: &TrackInfo) -> Option<VideoTrackDescriptor> {
+    pub(super) fn video_descriptor(&self, track: &TrackInfo) -> Option<VideoTrackDescriptor> {
         let codec = VideoCodec::from_container_codec_id(&track.codec_id)?;
         let mut source = VideoMetadataSource::container(codec);
         if let Some(video) = &track.video {
@@ -64,7 +64,7 @@ impl AppCatalogCapabilityProbe {
         ))
     }
 
-    fn audio_descriptor(&self, track: &TrackInfo) -> Option<AudioTrackDescriptor> {
+    pub(super) fn audio_descriptor(&self, track: &TrackInfo) -> Option<AudioTrackDescriptor> {
         let normalized =
             NormalizedCodec::parse(RawCodecIdentity::new(track.codec_id.clone()).ok()?);
         let family = audio_family(normalized.kind())?;

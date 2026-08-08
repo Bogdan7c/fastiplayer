@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use codec_core::{BitDepth, ChromaSubsampling, VideoColorMetadata, VideoProfile, Vp9Profile};
+use codec_core::{
+    BitDepth, ChromaSubsampling, DecodeBackendId, VideoColorMetadata, VideoProfile, Vp9Profile,
+};
 use media_core::{
     DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, MediaTime, Packet,
     TimelineNotSeekableReason, TrackKind, VideoTrackMetadata,
@@ -30,18 +32,24 @@ use crate::{
     InstalledTrackRestore, InstalledVolumeRestore, MediaInstallCancellationCause,
     MediaInstallCompletion, MediaInstallControl, MediaInstallControlOutcome,
     MediaInstallFailureStage, MediaInstallPhase, MediaInstallReceipt, MediaInstallRequestId,
-    MediaInstanceId, PlaybackIntent, PlaybackIntentRevision, PlaybackState, PlayerCommand,
-    PlayerError, PlayerErrorKind, PlayerTickConfig, PrepareMediaInstallPosition,
-    PreparedDemuxSeekEnqueueError, PreparedDemuxSeekOutcome, PreparedDemuxSeekPort,
-    PreparedDemuxSeekReceipt, PreparedDemuxSeekRequestId, PreparedMedia, StartedVideoBackend,
-    WorkerWakeupReason,
+    MediaInstallVideoResourcePort, MediaInstanceId, PlaybackIntent, PlaybackIntentRevision,
+    PlaybackState, PlayerCommand, PlayerError, PlayerErrorKind, PlayerTickConfig,
+    PrepareMediaInstallPosition, PreparedDemuxSeekEnqueueError, PreparedDemuxSeekOutcome,
+    PreparedDemuxSeekPort, PreparedDemuxSeekReceipt, PreparedDemuxSeekRequestId, PreparedMedia,
+    StartedVideoBackend, WorkerWakeupReason,
 };
+
+mod position_rebase;
+mod software_policy;
 
 /// Shared observable state fake resource port-а после передачи его player owner-у.
 #[derive(Default)]
 struct FakeResourcePortState {
     /// Сколько exact backend requests сделал player candidate.
     request_count: usize,
+
+    /// Exact selections доказывают backend ID и frame contract до resource materialization.
+    requested_selections: Vec<video_backend_api::DetachedVideoBackendSelection>,
 
     /// Все player statuses в порядке публикации.
     statuses: Vec<DetachedVideoBackendCandidateStatus<MediaInstallRequestId>>,
@@ -80,14 +88,42 @@ fn pending_vp9_prepared_media(label: &str) -> PreparedMedia {
     PreparedMedia::from_external_label(label, Box::new(demuxer))
 }
 
+/// Проверяет реальный settings backend-install boundary, а не только read-only activity snapshot.
+fn assert_settings_backend_reconfigure_is_pipeline_lifecycle_busy(session: &mut PlayerSession) {
+    let replacement_backend = StartedVideoBackend::from_decoder_thread(
+        test_decode_backend_id().as_str(),
+        SharedFakeVideoDecoderThread::new(),
+    );
+    let result = session.install_video_backend_with_intent(
+        replacement_backend,
+        crate::PlayerVideoBackendInstallIntent::SettingsReconfigure,
+    );
+
+    assert_eq!(
+        result,
+        Err(crate::PlayerRuntimeApplyError::RuntimeBusy(
+            crate::PlayerRuntimeBoundaryActivity::PipelineLifecycle,
+        )),
+        "settings backend replacement не должен обгонять staged media install"
+    );
+}
+
 impl FakeResourcePort {
     /// Создаёт successful exact backend resource reply.
     fn available(
         decoder: SharedFakeVideoDecoderThread,
     ) -> (Self, Arc<Mutex<FakeResourcePortState>>) {
+        Self::available_for_backend(decoder, test_decode_backend_id())
+    }
+
+    /// Создаёт successful resource reply с exact canonical backend ID.
+    fn available_for_backend(
+        decoder: SharedFakeVideoDecoderThread,
+        backend_id: DecodeBackendId,
+    ) -> (Self, Arc<Mutex<FakeResourcePortState>>) {
         let state = Arc::new(Mutex::new(FakeResourcePortState::default()));
         let started_backend =
-            StartedVideoBackend::from_decoder_thread(test_decode_backend_id().as_str(), decoder);
+            StartedVideoBackend::from_decoder_thread(backend_id.as_str(), decoder);
         (
             Self {
                 detached_backend: Some(DetachedVideoBackend::from_started(started_backend)),
@@ -138,10 +174,11 @@ impl DetachedVideoBackendResourcePort for FakeResourcePort {
         &mut self,
         request: DetachedVideoBackendRequest<Self::RequestId>,
     ) -> Result<DetachedVideoBackendReply<Self::RequestId>, DetachedVideoBackendPortError> {
-        self.state
-            .lock()
-            .expect("fake resource state lock")
-            .request_count += 1;
+        {
+            let mut state = self.state.lock().expect("fake resource state lock");
+            state.request_count += 1;
+            state.requested_selections.push(request.selection().clone());
+        }
         let request_id = self
             .reply_request_id
             .unwrap_or_else(|| *request.request_id());
@@ -353,7 +390,7 @@ fn stage_audio_same_lineage(
         PlaybackIntent::StartPlaying,
         PlaybackIntentRevision::INITIAL,
         install_port,
-        Box::new(resource_port),
+        MediaInstallVideoResourcePort::any_playable(resource_port),
         old_instance_id,
     );
     receipt
@@ -785,7 +822,7 @@ fn vp9_hdr_packet_preflight_selects_p010_and_replays_interleaved_audio() {
         PlaybackIntent::StartPaused,
         PlaybackIntentRevision::INITIAL,
         install_port,
-        Box::new(resource_port),
+        MediaInstallVideoResourcePort::any_playable(resource_port),
     );
 
     assert!(receipt.try_take_ready_to_commit().is_some());
@@ -887,10 +924,16 @@ fn staged_video_preflight_resumes_without_replaying_temporary_readiness() {
         PlaybackIntent::StartPaused,
         PlaybackIntentRevision::INITIAL,
         install_port,
-        Box::new(resource_port),
+        MediaInstallVideoResourcePort::any_playable(resource_port),
     );
 
     assert!(receipt.try_take_ready_to_commit().is_none());
+    assert_eq!(
+        session.runtime_reconfigure_boundary_activity(),
+        Some(crate::PlayerRuntimeBoundaryActivity::PipelineLifecycle),
+        "pending preflight должен удерживать settings lifecycle boundary"
+    );
+    assert_settings_backend_reconfigure_is_pipeline_lifecycle_busy(&mut session);
     assert_eq!(event_read_count.load(Ordering::Relaxed), 1);
     assert_eq!(session.snapshot().media_instance_id, Some(old_instance_id));
     assert_eq!(
@@ -983,7 +1026,7 @@ fn staged_video_preflight_timeout_is_typed_and_exactly_once() {
         PlaybackIntent::StartPaused,
         PlaybackIntentRevision::INITIAL,
         install_port,
-        Box::new(resource_port),
+        MediaInstallVideoResourcePort::any_playable(resource_port),
     );
     session.service_pending_staged_preflight(Instant::now() + Duration::from_millis(15));
 
@@ -1028,7 +1071,7 @@ fn pending_staged_preflight_terminal_resolves_each_request_exactly_once() {
             PlaybackIntent::StartPaused,
             PlaybackIntentRevision::INITIAL,
             install_port,
-            Box::new(resource_port),
+            MediaInstallVideoResourcePort::any_playable(resource_port),
         );
         assert!(receipt.try_take_ready_to_commit().is_none());
         receipts.push(receipt);
@@ -1106,10 +1149,16 @@ fn ready_to_commit_preserves_old_playing_until_atomic_authorization_switch() {
         PlaybackIntent::StartPlaying,
         PlaybackIntentRevision::INITIAL,
         install_port,
-        Box::new(resource_port),
+        MediaInstallVideoResourcePort::any_playable(resource_port),
     );
 
     assert!(session.has_staged_media_install());
+    assert_eq!(
+        session.runtime_reconfigure_boundary_activity(),
+        Some(crate::PlayerRuntimeBoundaryActivity::PipelineLifecycle),
+        "ReadyToCommit candidate должен удерживать boundary до terminal control"
+    );
+    assert_settings_backend_reconfigure_is_pipeline_lifecycle_busy(&mut session);
     assert_eq!(session.snapshot().media_instance_id, Some(old_instance_id));
     assert_eq!(session.playback_state(), PlaybackState::Playing);
     assert_eq!(session.pipeline.render_generation(), old_render_generation);
@@ -1163,6 +1212,11 @@ fn ready_to_commit_preserves_old_playing_until_atomic_authorization_switch() {
         Some(crate::TrackId::new(2))
     );
     assert!(!session.has_staged_media_install());
+    assert_eq!(
+        session.runtime_reconfigure_boundary_activity(),
+        None,
+        "Installed terminal должен освободить settings lifecycle boundary"
+    );
 }
 
 #[test]
@@ -1182,7 +1236,7 @@ fn cancel_while_ready_preserves_old_paused_and_duplicate_control_is_typed() {
         PlaybackIntent::StartPaused,
         PlaybackIntentRevision::INITIAL,
         install_port,
-        Box::new(resource_port),
+        MediaInstallVideoResourcePort::any_playable(resource_port),
     );
     assert!(receipt.try_take_ready_to_commit().is_some());
 
@@ -1249,14 +1303,35 @@ fn resource_and_configuration_failures_are_pre_ready_and_preserve_old_playing() 
         PlaybackIntent::StartPlaying,
         PlaybackIntentRevision::INITIAL,
         install_port,
-        Box::new(resource_port),
+        MediaInstallVideoResourcePort::any_playable(resource_port),
     );
     assert!(resource_receipt.try_take_ready_to_commit().is_none());
-    assert!(matches!(
-        resource_receipt.try_take_completion(),
-        Some(MediaInstallCompletion::Failed { failure, .. })
-            if failure.stage == MediaInstallFailureStage::CandidateVideoResourceAcquisition
-    ));
+    let resource_completion = resource_receipt
+        .try_take_completion()
+        .expect("resource failure должен terminal-завершить install");
+    let MediaInstallCompletion::Failed {
+        failure: resource_failure,
+        ..
+    } = resource_completion
+    else {
+        panic!("resource failure должен вернуть typed Failed terminal");
+    };
+    assert_eq!(
+        resource_failure.stage,
+        MediaInstallFailureStage::CandidateVideoResourceAcquisition
+    );
+    assert_eq!(
+        resource_failure.error.kind,
+        PlayerErrorKind::HardwareDecoderUnavailable,
+        "legacy AnyPlayable resource failure должен сохранить hardware diagnostic"
+    );
+    assert_eq!(
+        resource_failure.error.message,
+        format!(
+            "candidate backend {} startup failed: candidate decoder startup failed",
+            test_decode_backend_id().as_str()
+        )
+    );
     assert_eq!(
         resource_failure_session.snapshot().media_instance_id,
         Some(old_instance_id)
@@ -1284,7 +1359,7 @@ fn resource_and_configuration_failures_are_pre_ready_and_preserve_old_playing() 
         PlaybackIntent::StartPlaying,
         PlaybackIntentRevision::INITIAL,
         install_port,
-        Box::new(resource_port),
+        MediaInstallVideoResourcePort::any_playable(resource_port),
     );
     assert!(configure_receipt.try_take_ready_to_commit().is_none());
     assert!(matches!(
@@ -1331,7 +1406,9 @@ fn reply_matching_failure_never_crosses_ready_barrier() {
         PlaybackIntent::StartPaused,
         PlaybackIntentRevision::INITIAL,
         install_port,
-        Box::new(resource_port.with_reply_request_id(wrong_request_id)),
+        MediaInstallVideoResourcePort::any_playable(
+            resource_port.with_reply_request_id(wrong_request_id),
+        ),
     );
     assert!(receipt.try_take_ready_to_commit().is_none());
     assert!(matches!(
@@ -1374,7 +1451,7 @@ fn status_publication_failure_never_crosses_ready_barrier() {
         PlaybackIntent::StartPlaying,
         PlaybackIntentRevision::INITIAL,
         install_port,
-        Box::new(resource_port.with_status_disconnect()),
+        MediaInstallVideoResourcePort::any_playable(resource_port.with_status_disconnect()),
     );
     assert!(receipt.try_take_ready_to_commit().is_none());
     assert!(matches!(
@@ -1408,7 +1485,7 @@ fn pure_track_reselection_failure_never_requests_candidate_resources() {
         PlaybackIntent::StartPaused,
         PlaybackIntentRevision::INITIAL,
         install_port,
-        Box::new(resource_port),
+        MediaInstallVideoResourcePort::any_playable(resource_port),
     );
     assert!(receipt.try_take_ready_to_commit().is_none());
     assert!(matches!(
@@ -1455,7 +1532,7 @@ fn incomplete_av1_never_requests_unprobed_backend_resource() {
         PlaybackIntent::StartPaused,
         PlaybackIntentRevision::INITIAL,
         install_port,
-        Box::new(resource_port),
+        MediaInstallVideoResourcePort::any_playable(resource_port),
     );
 
     assert!(receipt.try_take_ready_to_commit().is_none());
@@ -1494,7 +1571,7 @@ fn media_without_audio_or_video_never_requests_backend_and_commits_paused() {
         PlaybackIntent::StartPaused,
         PlaybackIntentRevision::INITIAL,
         install_port,
-        Box::new(resource_port),
+        MediaInstallVideoResourcePort::any_playable(resource_port),
     );
     assert!(receipt.try_take_ready_to_commit().is_some());
     assert_eq!(
@@ -1543,7 +1620,7 @@ fn supersede_and_shutdown_cancel_only_the_exact_pre_barrier_candidate() {
         PlaybackIntent::StartPlaying,
         PlaybackIntentRevision::INITIAL,
         first_install_port,
-        Box::new(first_port),
+        MediaInstallVideoResourcePort::any_playable(first_port),
     );
     assert!(first_receipt.try_take_ready_to_commit().is_some());
 
@@ -1556,7 +1633,7 @@ fn supersede_and_shutdown_cancel_only_the_exact_pre_barrier_candidate() {
         PlaybackIntent::StartPaused,
         PlaybackIntentRevision::INITIAL,
         second_install_port,
-        Box::new(second_port),
+        MediaInstallVideoResourcePort::any_playable(second_port),
     );
 
     assert!(matches!(
@@ -1645,7 +1722,7 @@ fn atomic_switch_defers_leased_old_frame_to_old_decoder_and_never_uses_new_decod
         PlaybackIntent::StartPlaying,
         PlaybackIntentRevision::INITIAL,
         install_port,
-        Box::new(resource_port),
+        MediaInstallVideoResourcePort::any_playable(resource_port),
     );
     assert!(receipt.try_take_ready_to_commit().is_some());
 
@@ -1681,7 +1758,7 @@ fn post_commit_runtime_error_stays_on_new_instance_without_hidden_rollback() {
         PlaybackIntent::StartPaused,
         PlaybackIntentRevision::INITIAL,
         install_port,
-        Box::new(resource_port),
+        MediaInstallVideoResourcePort::any_playable(resource_port),
     );
     assert!(receipt.try_take_ready_to_commit().is_some());
     assert_eq!(

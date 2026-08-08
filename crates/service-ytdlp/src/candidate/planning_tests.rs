@@ -1,10 +1,13 @@
+use audio_core::AudioDecodeCodecFamily;
 use codec_core::{
     BitDepth, ChromaSubsampling, ColorMetadataConfidence, ColorMetadataOrigin, ColorPrimaries,
-    ColorRange, H264Profile, MatrixCoefficients, TransferFunction, VideoDecodeRequirement,
-    VideoProfile, Vp9Profile,
+    ColorRange, H264Profile, MatrixCoefficients, TransferFunction, VideoCodec,
+    VideoDecodeRequirement, VideoProfile, Vp9Profile,
 };
 use serde_json::{Value, json};
-use web_media_core::{ExtractionGeneration, SourceIdentity, StreamLayout};
+use web_media_core::{
+    ContainerFamily, ContentProbedTrackEvidence, ExtractionGeneration, SourceIdentity, StreamLayout,
+};
 use web_media_playback_plan::{CandidateRuntimeRequirements, PlanningCandidate};
 
 use super::raw::YtDlpCandidateDocument;
@@ -52,6 +55,62 @@ fn video_requirement(candidate: &PlanningCandidate) -> &VideoDecodeRequirement {
         | CandidateRuntimeRequirements::Separate { video, .. }
         | CandidateRuntimeRequirements::VideoOnly { video } => video,
         unexpected => panic!("ожидался video runtime requirement, получен {unexpected:?}"),
+    }
+}
+
+/// Полные codec hints HDS остаются requirements поверх provider-owned F4F probe.
+#[test]
+fn hds_declared_h264_aac_with_flv_hint_keeps_content_probed_requirements() {
+    let document: YtDlpCandidateDocument = serde_json::from_value(json!({
+        "formats": [{
+            "format_id": "hds-declared",
+            "url": "https://media.invalid/root.f4m",
+            "manifest_url": "https://media.invalid/root.f4m",
+            "protocol": "f4m",
+            "ext": "flv",
+            "vcodec": "avc1.4d401f",
+            "acodec": "mp4a.40.2",
+            "dynamic_range": "SDR"
+        }]
+    }))
+    .expect("synthetic HDS document должен десериализоваться");
+    let snapshot = super::normalize_candidate_document(
+        document,
+        SourceIdentity::new(70),
+        ExtractionGeneration::new(10),
+    );
+    let planning_snapshot = snapshot
+        .planning_snapshot()
+        .expect("declared HDS codecs должны пройти planning admission");
+    let [candidate] = planning_snapshot.candidates() else {
+        panic!("ожидался один HDS planning candidate");
+    };
+
+    let StreamLayout::ContentProbed(component) = candidate.descriptor().layout() else {
+        panic!("HDS resource должен оставаться content-probed");
+    };
+    assert_eq!(component.probe_container(), ContainerFamily::F4f);
+    assert!(matches!(
+        component.video(),
+        ContentProbedTrackEvidence::Declared(video)
+            if video.codec().kind()
+                == web_media_core::CodecKind::Known(web_media_core::CodecFamily::H264)
+    ));
+    assert!(matches!(
+        component.audio(),
+        ContentProbedTrackEvidence::Declared(audio)
+            if audio.codec().kind()
+                == web_media_core::CodecKind::Known(web_media_core::CodecFamily::Aac)
+    ));
+    match candidate.runtime_requirements() {
+        CandidateRuntimeRequirements::ContentProbed {
+            video: Some(video),
+            audio: Some(audio),
+        } => {
+            assert_eq!(video.codec, VideoCodec::H264);
+            assert_eq!(*audio, AudioDecodeCodecFamily::Aac);
+        }
+        unexpected => panic!("ожидались declared HDS requirements, получены {unexpected:?}"),
     }
 }
 

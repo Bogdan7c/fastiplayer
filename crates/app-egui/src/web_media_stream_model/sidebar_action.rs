@@ -6,7 +6,6 @@
 #[cfg(test)]
 use super::WebMediaCandidatePresentation;
 use super::WebMediaStreamGeneration;
-#[cfg(test)]
 use super::component_variants::ComponentVariantSelectionAction;
 use crate::web_media_catalog::WebMediaFacetAction;
 
@@ -20,7 +19,6 @@ pub(crate) enum UrlSidebarAction {
         candidate_index: usize,
     },
     /// Выбирает независимый component variant через generation-fenced safe row action.
-    #[cfg(test)]
     ComponentVariant(ComponentVariantSelectionAction),
     /// Unified picker action содержит только generation, facet и safe option index.
     StreamFacet {
@@ -35,7 +33,6 @@ impl UrlSidebarAction {
         match self {
             #[cfg(test)]
             Self::Candidate { generation, .. } => generation,
-            #[cfg(test)]
             Self::ComponentVariant(action) => action.parent_generation(),
             Self::StreamFacet {
                 parent_generation, ..
@@ -54,7 +51,6 @@ pub(crate) enum UrlSidebarPendingSelection {
         candidate: WebMediaCandidatePresentation,
     },
     /// Component projection хранит только generation fences, axis и row index.
-    #[cfg(test)]
     Component(ComponentVariantSelectionAction),
     StreamFacet {
         parent_generation: WebMediaStreamGeneration,
@@ -75,7 +71,6 @@ impl UrlSidebarPendingSelection {
             Self::Candidate {
                 parent_generation, ..
             } => *parent_generation,
-            #[cfg(test)]
             Self::Component(action) => action.parent_generation(),
             Self::StreamFacet {
                 parent_generation, ..

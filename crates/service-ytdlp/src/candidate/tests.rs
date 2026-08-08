@@ -2,8 +2,13 @@ use rustiplayer_config::YtDlpConfig;
 use serde_json::{Value, json};
 use source_core::{CancellationToken, HttpRequestTarget};
 use web_media_core::{
-    DynamicRange, ExtractionGeneration, ProfileExclusionReason, SourceIdentity,
-    StaticCompatibilityRejection, StreamLayout, StreamLayoutKind,
+    ContainerFamily, ContentProbedTrackEvidence, DynamicRange, ExtractionGeneration,
+    ProfileExclusionReason, SourceIdentity, StaticCompatibilityRejection, StaticDescriptorField,
+    StaticMetadataViolation, StreamLayout, StreamLayoutKind,
+};
+use web_media_playback_plan::{
+    CandidateQualityScore, CandidateRuntimeRequirements, PlanningCandidate,
+    PlanningCandidateSnapshot,
 };
 use web_media_transport_api::{
     MediaComponentRole, MediaPresentation, RedirectHopCount, SecretRequestPurpose,
@@ -173,6 +178,48 @@ fn ftp_transport_components_project_empty_secret_progressive_request() {
     let diagnostic = format!("{snapshot:?} {request:?}");
     assert!(!diagnostic.contains("ftp-secret"));
     assert!(!diagnostic.contains("ftp-user"));
+}
+
+/// FTP Ogg сохраняет различие explicit отсутствующего video и неизвестного audio codec.
+#[test]
+fn ftp_ogg_partial_codec_metadata_uses_content_probe_without_fake_codec() {
+    let snapshot = snapshot(
+        json!({
+            "formats": [{
+                "format_id": "ftp-ogg-probed",
+                "url": "ftp://media.invalid/song.ogg",
+                "protocol": "ftp",
+                "ext": "ogg",
+                "vcodec": "none",
+                "acodec": null
+            }]
+        }),
+        18,
+    );
+    let candidate = accepted_inventory(&snapshot, 0);
+    let StreamLayout::ContentProbed(descriptor) = candidate.descriptor().layout() else {
+        panic!("partial FTP codec metadata должна строить content-probed layout");
+    };
+    assert!(matches!(
+        descriptor.video(),
+        ContentProbedTrackEvidence::Absent
+    ));
+    assert!(matches!(
+        descriptor.audio(),
+        ContentProbedTrackEvidence::Unknown
+    ));
+    let context = super::YtDlpTransportRequestContext::new(
+        TransportProviderId::new("progressive-ftp").unwrap(),
+        SourceGeneration::new(1),
+        CancellationToken::new(),
+    );
+    let [component] = candidate
+        .ftp_transport_components(&context)
+        .expect("content-probed FTP Ogg должен проецироваться")
+        .try_into()
+        .expect("single FTP candidate содержит один component");
+    assert_eq!(component.role(), MediaComponentRole::ContentProbed);
+    assert_eq!(component.container(), ContainerFamily::Ogg);
 }
 
 /// S37: progressive HTTP transport отвергает FTP primary target.
@@ -393,6 +440,77 @@ fn inventory_video_and_audio_compose_and_semantically_rematch_without_format_id_
     );
 }
 
+/// Duplicate selected component использует canonical request material, сохраняя inventory gate.
+#[test]
+fn selected_inventory_duplicate_composes_with_selected_request_material() {
+    let inventory_video = progressive_format("selected-video", "webm", "webm", "vp9", "none");
+    let inventory_audio = progressive_format("inventory-audio", "webm", "webm", "none", "opus");
+    let mut selected_result = inventory_video.clone();
+    selected_result["http_headers"] = json!({"Referer": "https://page.invalid/selected"});
+    selected_result["formats"] = json!([inventory_video, inventory_audio]);
+    let snapshot = snapshot(selected_result, 28);
+    let inventory_video = accepted_inventory(&snapshot, 0);
+    let inventory_audio = accepted_inventory(&snapshot, 1);
+
+    let composed = snapshot
+        .compose_inventory_av(
+            &snapshot.selection_for(inventory_video).unwrap(),
+            &snapshot.selection_for(inventory_audio).unwrap(),
+        )
+        .expect("equivalent selected+inventory video должен быть composable");
+    let (kind, _, candidate) = snapshot
+        .rematch_composed(&composed)
+        .expect("same-generation composition должна восстановить candidate");
+    assert_eq!(kind, super::YtDlpCompositionMatchKind::Exact);
+    let request_summaries = candidate.component_request_summaries().collect::<Vec<_>>();
+    assert_eq!(
+        request_summaries[0].role,
+        YtDlpCandidateComponentRole::Video
+    );
+    assert_eq!(
+        request_summaries[0].material.header_count, 1,
+        "video component обязан сохранить richer selected request material"
+    );
+}
+
+/// Rejected selected shadow нельзя обойти semantic rematch-ем через inventory twin.
+#[test]
+fn composed_rematch_rejects_inventory_twin_shadowed_by_rejected_selected() {
+    let old = snapshot(
+        json!({
+            "formats": [
+                progressive_format("old-video", "webm", "webm", "vp9", "none"),
+                progressive_format("old-audio", "webm", "webm", "none", "opus")
+            ]
+        }),
+        29,
+    );
+    let old_composed = old
+        .compose_inventory_av(
+            &old.selection_for(accepted_inventory(&old, 0)).unwrap(),
+            &old.selection_for(accepted_inventory(&old, 1)).unwrap(),
+        )
+        .expect("old inventory pair должна compose-иться");
+
+    let fresh_video = progressive_format("fresh-video", "webm", "webm", "vp9", "none");
+    let fresh_audio = progressive_format("fresh-audio", "webm", "webm", "none", "opus");
+    let mut rejected_selected = fresh_video.clone();
+    rejected_selected["request_data"] = json!("provider-private-request-body");
+    rejected_selected["formats"] = json!([fresh_video, fresh_audio]);
+    let fresh = snapshot(rejected_selected, 30);
+
+    assert!(
+        fresh
+            .selected()
+            .and_then(YtDlpCandidateEntry::rejected)
+            .is_some()
+    );
+    assert_eq!(
+        fresh.rematch_composed(&old_composed).unwrap_err(),
+        super::YtDlpCompositionError::MissingVideoComponent
+    );
+}
+
 #[test]
 fn composed_rematch_reports_missing_component_without_default_fallback() {
     let old = snapshot(
@@ -577,7 +695,9 @@ fn mixed_http_ftp_compound_projects_component_wise_transport_requests() {
                 assert_eq!(request.provider(), &http_provider);
                 assert!(request.target().as_http().is_some());
             }
-            MediaComponentRole::Muxed | MediaComponentRole::Subtitle => {
+            MediaComponentRole::Muxed
+            | MediaComponentRole::ContentProbed
+            | MediaComponentRole::Subtitle => {
                 panic!("Separate candidate содержит недопустимую component role")
             }
         }
@@ -753,7 +873,10 @@ fn hds_transport_projection_preserves_manifest_scope_and_lifecycle() {
     assert_eq!(request.provider(), &provider);
     assert_eq!(request.presentation(), MediaPresentation::Vod);
     assert_eq!(request.source_generation(), SourceGeneration::new(13));
-    assert_eq!(request.component().role(), MediaComponentRole::Muxed);
+    assert_eq!(
+        request.component().role(),
+        MediaComponentRole::ContentProbed
+    );
     assert_eq!(
         http_transport_target(&request).expose_secret_for_request(),
         "https://manifest.invalid/hds/stream.f4m?token=manifest-secret"
@@ -807,6 +930,84 @@ fn hds_transport_projection_preserves_manifest_scope_and_lifecycle() {
 
     cancellation.cancel();
     assert!(request.cancellation().is_cancelled());
+}
+
+/// yt-dlp HDS output hint `flv` не подменяет provider-owned F4F demux contract.
+#[test]
+fn hds_null_codecs_and_flv_output_hint_use_content_probed_f4f_contract() {
+    let snapshot = snapshot(
+        json!({
+            "formats": [{
+                "format_id": "hds-probed",
+                "url": "https://manifest.invalid/hds/stream.f4m",
+                "manifest_url": "https://manifest.invalid/hds/stream.f4m",
+                "protocol": "f4m",
+                "ext": "flv",
+                "vcodec": null,
+                "acodec": null
+            }]
+        }),
+        10,
+    );
+    let candidate = accepted_inventory(&snapshot, 0);
+    let StreamLayout::ContentProbed(descriptor) = candidate.descriptor().layout() else {
+        panic!("HDS null codecs должны сохранить content-probed descriptor");
+    };
+    assert_eq!(descriptor.probe_container(), ContainerFamily::F4f);
+    let context = super::YtDlpTransportRequestContext::new(
+        TransportProviderId::new("hds-manifest-http").unwrap(),
+        SourceGeneration::new(1),
+        CancellationToken::new(),
+    );
+    let request = candidate
+        .hds_transport_request(&context)
+        .expect("content-probed HDS candidate должен открыть F4M hierarchy");
+    assert_eq!(
+        request.component().role(),
+        MediaComponentRole::ContentProbed
+    );
+}
+
+/// HDS transport не имеет права превращать произвольный container hint в F4F.
+#[test]
+fn hds_rejects_non_flv_non_f4f_container_hints_before_provider_open() {
+    let snapshot = snapshot(
+        json!({
+            "formats": [
+                {
+                    "format_id": "hds-ogg",
+                    "url": "https://manifest.invalid/hds/stream.f4m",
+                    "manifest_url": "https://manifest.invalid/hds/stream.f4m",
+                    "protocol": "f4m",
+                    "ext": "ogg",
+                    "vcodec": null,
+                    "acodec": null
+                },
+                {
+                    "format_id": "hds-mp4",
+                    "url": "https://manifest.invalid/hds/stream.f4m",
+                    "manifest_url": "https://manifest.invalid/hds/stream.f4m",
+                    "protocol": "f4m",
+                    "ext": "mp4",
+                    "vcodec": "avc1.4d401f",
+                    "acodec": "mp4a.40.2"
+                }
+            ]
+        }),
+        11,
+    );
+
+    for ordinal in 0..2 {
+        assert!(matches!(
+            rejected_inventory(&snapshot, ordinal),
+            YtDlpCandidateNormalizationRejection::Static(
+                StaticCompatibilityRejection::InvalidMetadata {
+                    field: StaticDescriptorField::Container,
+                    violation: StaticMetadataViolation::ContradictoryHints,
+                }
+            )
+        ));
+    }
 }
 
 #[test]
@@ -1122,6 +1323,282 @@ fn duplicate_format_identity_is_a_visible_rejection() {
     );
 }
 
+/// Реальная форма `selected + formats[]` имеет одного канонического candidate-а.
+#[test]
+fn selected_inventory_duplicate_is_canonical_but_inventory_membership_remains_valid() {
+    let inventory_duplicate =
+        progressive_format("selected-duplicate", "webm", "webm", "vp9", "opus");
+    let mut selected_result = inventory_duplicate.clone();
+    selected_result["http_headers"] = json!({"Referer": "https://page.invalid/selected"});
+    selected_result["formats"] = json!([inventory_duplicate]);
+    let snapshot = snapshot(selected_result, 20);
+
+    let selected_candidate = snapshot
+        .selected()
+        .and_then(YtDlpCandidateEntry::accepted)
+        .expect("selected result должен быть accepted");
+    let inventory_candidate = accepted_inventory(&snapshot, 0);
+    let canonical = snapshot.accepted_candidates().collect::<Vec<_>>();
+
+    assert_eq!(canonical.len(), 1);
+    assert!(std::ptr::eq(canonical[0], selected_candidate));
+    let selected_token = snapshot
+        .selection_for(selected_candidate)
+        .expect("canonical selected token должен строиться");
+    let inventory_token = snapshot
+        .selection_for(inventory_candidate)
+        .expect("эквивалентный shadowed inventory token должен canonicalize-иться");
+    assert_eq!(inventory_token, selected_token);
+    assert_eq!(
+        snapshot
+            .planning_snapshot()
+            .expect("canonical snapshot должен планироваться")
+            .candidates()
+            .len(),
+        1
+    );
+}
+
+/// Shadowed duplicate обязан совпадать с canonical selection по color evidence.
+#[test]
+fn shadowed_inventory_color_drift_is_not_a_selectable_canonical_candidate() {
+    let mut inventory_duplicate =
+        progressive_format("color-drift", "webm", "webm", "vp09.02.10.10", "none");
+    inventory_duplicate["dynamic_range"] = json!("HLG");
+    let mut selected_result = inventory_duplicate.clone();
+    selected_result["dynamic_range"] = json!("HDR10");
+    selected_result["formats"] = json!([
+        inventory_duplicate,
+        progressive_format("audio", "opus", "ogg", "none", "opus")
+    ]);
+    let snapshot = snapshot(selected_result, 23);
+    let selected_candidate = snapshot
+        .selected()
+        .and_then(YtDlpCandidateEntry::accepted)
+        .expect("selected HDR video accepted");
+    let inventory_candidate = accepted_inventory(&snapshot, 0);
+
+    assert_ne!(
+        selected_candidate.descriptor(),
+        inventory_candidate.descriptor()
+    );
+    assert_ne!(
+        selected_candidate.video_color_evidence(),
+        inventory_candidate.video_color_evidence()
+    );
+
+    assert_eq!(
+        snapshot
+            .selection_for(inventory_candidate)
+            .expect_err("shadowed color drift не должен выдавать non-canonical token"),
+        YtDlpCandidateSelectionError::CandidateNotInInventory
+    );
+
+    let selected_video = snapshot
+        .selection_for(selected_candidate)
+        .expect("canonical selected video token");
+    let audio = snapshot
+        .selection_for(accepted_inventory(&snapshot, 1))
+        .expect("canonical inventory audio token");
+    assert!(matches!(
+        snapshot.compose_inventory_av(&selected_video, &audio),
+        Err(super::YtDlpCompositionError::ForeignGenerationOrInventory)
+    ));
+}
+
+/// Rejected selected origin shadow-ит более бедную accepted inventory строку.
+#[test]
+fn rejected_selected_identity_cannot_fall_open_to_inventory_twin() {
+    let inventory_twin = progressive_format("rejected-selected", "webm", "webm", "vp9", "opus");
+    let mut selected_result = inventory_twin.clone();
+    selected_result["request_data"] = json!("provider-private-request-body");
+    selected_result["formats"] = json!([inventory_twin]);
+    let snapshot = snapshot(selected_result, 24);
+
+    assert!(
+        snapshot
+            .selected()
+            .and_then(YtDlpCandidateEntry::rejected)
+            .is_some()
+    );
+    assert!(snapshot.inventory()[0].accepted().is_some());
+    assert_eq!(snapshot.accepted_candidates().count(), 0);
+    assert_eq!(
+        snapshot
+            .planning_snapshot()
+            .expect("shadowed rejection должен дать пустой, но валидный planner snapshot")
+            .candidates()
+            .len(),
+        0
+    );
+}
+
+/// Shared alignment boundary отвергает missing и unexpected planner rows.
+#[test]
+fn planning_snapshot_alignment_requires_the_full_canonical_identity_set() {
+    let first = progressive_format("aligned-first", "webm", "webm", "vp9", "opus");
+    let second = progressive_format("aligned-second", "webm", "webm", "vp9", "opus");
+    let full_service = snapshot(json!({"formats": [first.clone(), second]}), 25);
+    let partial_service = snapshot(json!({"formats": [first]}), 25);
+    let full_planning = full_service
+        .planning_snapshot()
+        .expect("full planning snapshot");
+    let partial_planning = partial_service
+        .planning_snapshot()
+        .expect("partial planning snapshot");
+
+    assert_eq!(
+        full_service.validate_planning_snapshot_alignment(&full_planning),
+        Ok(())
+    );
+    assert_eq!(
+        full_service.validate_planning_snapshot_alignment(&partial_planning),
+        Err(super::YtDlpPlanningSnapshotAlignmentError::CandidateIdentityMismatch)
+    );
+    assert_eq!(
+        partial_service.validate_planning_snapshot_alignment(&full_planning),
+        Err(super::YtDlpPlanningSnapshotAlignmentError::CandidateIdentityMismatch)
+    );
+    let reversed_planning = PlanningCandidateSnapshot::new(
+        full_planning.source(),
+        full_planning.generation(),
+        full_planning.candidates().iter().rev().cloned().collect(),
+    )
+    .expect("reordered planning snapshot");
+    assert_eq!(
+        full_service.validate_planning_snapshot_alignment(&reversed_planning),
+        Ok(())
+    );
+
+    let first_planning_candidate = &full_planning.candidates()[0];
+    assert!(
+        full_service
+            .canonical_candidate_for_planning_identity(
+                first_planning_candidate.descriptor().identity(),
+                first_planning_candidate.descriptor().semantic_identity(),
+            )
+            .is_some()
+    );
+}
+
+/// Identity не разрешает caller-у подменить service-owned quality ranking.
+#[test]
+fn planning_snapshot_alignment_rejects_altered_quality_with_same_identity() {
+    let service = snapshot(
+        json!({
+            "formats": [progressive_format(
+                "altered-quality",
+                "webm",
+                "webm",
+                "vp9",
+                "opus"
+            )]
+        }),
+        26,
+    );
+    let canonical = service
+        .planning_snapshot()
+        .expect("canonical planning snapshot");
+    let original = &canonical.candidates()[0];
+    let altered_candidate = PlanningCandidate::new(
+        original.descriptor().clone(),
+        original.runtime_requirements().clone(),
+        CandidateQualityScore::new(original.quality_score().value() + 1),
+    )
+    .expect("altered quality remains a structurally valid planner row");
+    let altered = PlanningCandidateSnapshot::new(
+        canonical.source(),
+        canonical.generation(),
+        vec![altered_candidate],
+    )
+    .expect("same-identity altered quality snapshot");
+
+    assert_eq!(
+        service.validate_planning_snapshot_alignment(&altered),
+        Err(super::YtDlpPlanningSnapshotAlignmentError::CandidateProjectionMismatch)
+    );
+}
+
+/// Identity не разрешает caller-у подменить service-owned decode requirements.
+#[test]
+fn planning_snapshot_alignment_rejects_altered_runtime_with_same_identity() {
+    let service = snapshot(
+        json!({
+            "formats": [progressive_format(
+                "altered-runtime",
+                "webm",
+                "webm",
+                "vp9",
+                "opus"
+            )]
+        }),
+        27,
+    );
+    let canonical = service
+        .planning_snapshot()
+        .expect("canonical planning snapshot");
+    let original = &canonical.candidates()[0];
+    let mut altered_runtime = original.runtime_requirements().clone();
+    let CandidateRuntimeRequirements::Muxed { video, .. } = &mut altered_runtime else {
+        panic!("fixture должна строить muxed runtime requirements");
+    };
+    video.fps = Some(240.0);
+    let altered_candidate = PlanningCandidate::new(
+        original.descriptor().clone(),
+        altered_runtime,
+        original.quality_score(),
+    )
+    .expect("altered FPS remains a structurally valid planner row");
+    let altered = PlanningCandidateSnapshot::new(
+        canonical.source(),
+        canonical.generation(),
+        vec![altered_candidate],
+    )
+    .expect("same-identity altered runtime snapshot");
+
+    assert_eq!(
+        service.validate_planning_snapshot_alignment(&altered),
+        Err(super::YtDlpPlanningSnapshotAlignmentError::CandidateProjectionMismatch)
+    );
+}
+
+/// Duplicate selected/inventory не создаёт ложную ambiguity при fresh rematch.
+#[test]
+fn fresh_rematch_treats_selected_inventory_duplicate_as_one_candidate() {
+    let original = snapshot(
+        json!({
+            "formats": [progressive_format(
+                "old-format",
+                "webm",
+                "webm",
+                "vp9",
+                "opus"
+            )]
+        }),
+        21,
+    );
+    let original_selection = original
+        .selection_for(accepted_inventory(&original, 0))
+        .expect("original candidate принадлежит snapshot-у");
+
+    let fresh_inventory = progressive_format("fresh-format", "webm", "webm", "vp9", "opus");
+    let mut fresh_selected = fresh_inventory.clone();
+    fresh_selected["formats"] = json!([fresh_inventory]);
+    let fresh = snapshot(fresh_selected, 22);
+
+    let matched = fresh
+        .rematch_exact(&original_selection)
+        .expect("одна физическая alternative должна semantic-rematch-иться");
+    assert_eq!(matched.kind(), YtDlpCandidateMatchKind::SemanticRematch);
+    assert!(std::ptr::eq(
+        matched.candidate(),
+        fresh
+            .selected()
+            .and_then(YtDlpCandidateEntry::accepted)
+            .expect("fresh selected candidate accepted")
+    ));
+}
+
 /// HDR policy читает только typed field и не угадывает range по codec/label.
 #[test]
 fn hdr_hint_policy_preserves_sdr_hdr_and_unknown_buckets() {
@@ -1287,6 +1764,12 @@ fn video_dynamic_range(candidate: &YtDlpNormalizedCandidate) -> DynamicRange {
             video.video().dynamic_range()
         }
         StreamLayout::HlsMuxedCodecDeferred(component) => component.dynamic_range(),
+        StreamLayout::ContentProbed(component) if !component.video().is_absent() => {
+            component.video_hints().dynamic_range()
+        }
+        StreamLayout::ContentProbed(_) => {
+            panic!("audio-only content-probed candidate не имеет dynamic range")
+        }
         StreamLayout::AudioOnly(_) => panic!("audio-only candidate не имеет dynamic range"),
     }
 }
@@ -1700,6 +2183,27 @@ fn smooth_transport_rejects_non_fmp4_non_h264_and_non_aac_profiles() {
     ));
 }
 
+/// Реальные yt-dlp Smooth fourcc/ext aliases сохраняют H.264/AAC fMP4 contract.
+#[test]
+fn smooth_transport_accepts_avc1_aacl_and_ismv_aliases() {
+    let mut format = target_ism_format();
+    format["vcodec"] = json!("AVC1");
+    format["acodec"] = json!("AACL");
+    format["ext"] = json!("ismv");
+    format["container"] = json!("m4a_dash");
+    let snapshot = snapshot(json!({"formats": [format]}), 1);
+    let candidate = accepted_inventory(&snapshot, 0);
+    let context = super::YtDlpTransportRequestContext::new(
+        TransportProviderId::new("smooth-manifest-http").expect("provider ID"),
+        SourceGeneration::new(1),
+        CancellationToken::new(),
+    );
+
+    candidate
+        .smooth_manifest_transport_request(&context)
+        .expect("реальные Smooth aliases должны сохранить FMP4 H.264/AAC request");
+}
+
 /// S23 запрещает вернуть второй service-owned WebM/HTTP/demux playback stack.
 #[test]
 fn hls_null_codecs_with_height_becomes_deferred_layout() {
@@ -1726,30 +2230,49 @@ fn hls_null_codecs_with_height_becomes_deferred_layout() {
     );
 }
 
-/// Progressive rows с отсутствующими codec fields остаются Missing rejection.
+/// Null codec metadata остаётся unknown evidence и допускает authoritative demux content probe.
 #[test]
-fn progressive_null_codecs_rejects_missing_video_codec() {
+fn progressive_ogg_null_codecs_builds_content_probed_candidate() {
     let snapshot = snapshot(
         json!({
             "formats": [{
-                "format_id": "progressive-null-codecs",
-                "url": "https://media.invalid/file.mp4",
+                "format_id": "progressive-ogg-null-codecs",
+                "url": "https://media.invalid/file.ogg",
                 "protocol": "https",
-                "ext": "mp4",
-                "container": "mp4",
-                "height": 720,
+                "ext": "ogg",
                 "vcodec": null,
                 "acodec": null,
             }]
         }),
         1,
     );
+    let candidate = accepted_inventory(&snapshot, 0);
+    let StreamLayout::ContentProbed(descriptor) = candidate.descriptor().layout() else {
+        panic!("null codec metadata должна строить content-probed layout");
+    };
+    assert_eq!(descriptor.probe_container(), ContainerFamily::Ogg);
     assert!(matches!(
-        rejected_inventory(&snapshot, 0),
-        YtDlpCandidateNormalizationRejection::Static(
-            StaticCompatibilityRejection::InvalidMetadata { .. }
-        )
+        descriptor.video(),
+        ContentProbedTrackEvidence::Unknown
     ));
+    assert!(matches!(
+        descriptor.audio(),
+        ContentProbedTrackEvidence::Unknown
+    ));
+
+    let context = super::YtDlpProgressiveTransportRequestContext::new(
+        TransportProviderId::new("progressive-http").unwrap(),
+        TransportProviderId::new("progressive-ftp").unwrap(),
+        SourceGeneration::new(1),
+        CancellationToken::new(),
+    );
+    let [component] = candidate
+        .progressive_transport_components(&context)
+        .expect("content-probed Ogg должен проецироваться в progressive transport")
+        .try_into()
+        .expect("single candidate содержит один physical resource");
+    assert_eq!(component.role(), MediaComponentRole::ContentProbed);
+    assert_eq!(component.container(), ContainerFamily::Ogg);
 }
 
 /// HLS без height не принимает deferred layout при null codecs.

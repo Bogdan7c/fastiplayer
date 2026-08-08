@@ -121,6 +121,7 @@ pub(crate) fn candidate_is_hls(candidate: &YtDlpNormalizedCandidate) -> bool {
             video.transport().family() == TransportFamily::Hls
                 && audio.transport().family() == TransportFamily::Hls
         }
+        StreamLayout::ContentProbed(_) => false,
     }
 }
 
@@ -433,6 +434,11 @@ fn selection_and_containers(
         ),
         StreamLayout::Separate { .. } => {
             return Err(HlsCandidateTopologyError::IndependentManifestResources.into());
+        }
+        StreamLayout::ContentProbed(_) => {
+            return Err(anyhow!(
+                "HLS open не поддерживает generic content-probed layout"
+            ));
         }
     };
     let resolution = match layout {

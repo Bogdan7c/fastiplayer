@@ -46,6 +46,7 @@ struct ActiveMediaReconfigureConfig {
     yt_dlp: rustiplayer_config::YtDlpConfig,
     demux: rustiplayer_config::PlayerDemuxConfig,
     preferred_video_codec_order: Vec<rustiplayer_config::VideoCodec>,
+    video_backend_preference: rustiplayer_config::VideoBackendPreference,
     reselect_yt_dlp_stream: bool,
     rebuild_remote_source: bool,
     rebuild_local_source: bool,
@@ -261,11 +262,16 @@ impl FrameSettingsRuntimeAdapter<'_> {
             Ok(prepared_input) => prepared_input.with_playback_window(playback_window),
             Err(message) => return AppRouteApplyResult::Failed { message },
         };
+        let backend_constraint =
+            crate::video_backend_constraint::media_install_video_backend_constraint(
+                config.video_backend_preference,
+            );
         let installed = match self.app_state.install_prepared_media_strong(
             self.playlist_runtime,
             self.renderer,
             prepared_input,
             desired_intent,
+            backend_constraint,
         ) {
             Ok(installed) => installed,
             Err(error) => {
@@ -424,7 +430,13 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
     fn apply_player_runtime_settings(
         &mut self,
         update: &PlayerCommittedSettingsUpdate,
+        target_policy: SettingsRouteTargetPolicy,
     ) -> PlayerRuntimeApplyResult {
+        let Some(target_backend_preference) = target_policy.video_backend_preference() else {
+            return Err(PlayerRuntimeApplyError::Fatal(
+                "player settings route не получил exact destination backend policy".to_owned(),
+            ));
+        };
         let mut report = PlayerRuntimeApplyReport::empty();
         let player_update = &update.player_core;
         let mut remaining_player_update = player_update.clone();
@@ -499,6 +511,7 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
                 yt_dlp: app_config.yt_dlp,
                 demux: app_config.player.demux,
                 preferred_video_codec_order: app_config.player.preferred_video_codec_order,
+                video_backend_preference: target_backend_preference,
                 reselect_yt_dlp_stream,
                 rebuild_remote_source: true,
                 rebuild_local_source: true,
@@ -580,6 +593,7 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
         &mut self,
         update: &MediaServiceRuntimeSettingsUpdate,
         affected_settings: &[SettingId],
+        target_policy: SettingsRouteTargetPolicy,
     ) -> AppRouteApplyResult {
         let preferred_height_changed = requires_yt_dlp_stream_reselection(affected_settings);
         let network_source_changed = requires_remote_source_rebuild(affected_settings);
@@ -590,6 +604,12 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
         {
             return self.app_state.apply_media_service_runtime_settings(update);
         }
+        let Some(target_backend_preference) = target_policy.video_backend_preference() else {
+            return AppRouteApplyResult::Failed {
+                message: "media settings route не получил exact destination backend policy"
+                    .to_owned(),
+            };
+        };
 
         let mut app_config = self.app_state.committed_app_config();
         app_config.network = update.network.clone();
@@ -599,6 +619,7 @@ impl SettingsRuntimeReconfigureHost for FrameSettingsRuntimeAdapter<'_> {
             yt_dlp: app_config.yt_dlp,
             demux: app_config.player.demux,
             preferred_video_codec_order: app_config.player.preferred_video_codec_order,
+            video_backend_preference: target_backend_preference,
             reselect_yt_dlp_stream: preferred_height_changed,
             rebuild_remote_source: network_source_changed,
             rebuild_local_source: false,

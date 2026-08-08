@@ -1,5 +1,10 @@
-use super::complete_parent_choices;
+use super::{complete_parent_choices, layout_facets};
 use crate::web_media_catalog::{WebMediaCatalogChoice, WebMediaMode, WebMediaSelectionTarget};
+use web_media_core::{
+    ContainerFamily, ContainerIdentity, ContentProbedDescriptor, ContentProbedTrackEvidence,
+    ContentProbedVideoHints, DynamicRange, NormalizedTransport, RawContainerIdentity,
+    RawTransportIdentity, StreamLayout, VideoHeight,
+};
 
 fn fixture_choice(target: u64, rank: usize, mode: WebMediaMode) -> WebMediaCatalogChoice {
     WebMediaCatalogChoice {
@@ -74,4 +79,28 @@ fn declared_catalog_projection_has_no_candidate_or_provider_io() {
             "declared catalog projection не должна содержать `{forbidden}`"
         );
     }
+}
+
+#[test]
+fn unknown_content_probe_uses_automatic_mode_without_fake_video_descriptor() {
+    let descriptor = ContentProbedDescriptor::new(
+        NormalizedTransport::parse(RawTransportIdentity::new("https").unwrap()),
+        ContainerIdentity::parse(None, Some(RawContainerIdentity::new("ogg").unwrap())),
+        ContainerFamily::Ogg,
+        ContentProbedTrackEvidence::Unknown,
+        ContentProbedTrackEvidence::Unknown,
+        ContentProbedVideoHints::new(
+            None,
+            Some(VideoHeight::new(720).unwrap()),
+            None,
+            None,
+            DynamicRange::Unknown,
+        ),
+    )
+    .unwrap();
+
+    let (mode, video) = layout_facets(&StreamLayout::ContentProbed(descriptor));
+
+    assert_eq!(mode, WebMediaMode::Automatic);
+    assert_eq!(video, None);
 }

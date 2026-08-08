@@ -137,6 +137,25 @@ pub(crate) fn prepare_selected_hds_vod(
     catalog: Option<ComponentVariantCatalog>,
 ) -> Result<HdsVodOpenResult> {
     let plan = Arc::new(HdsDemuxPlan::new(selected, http, demux_registry, policy)?);
+    prepare_hds_vod_runtime(plan, None, catalog)
+}
+
+/// Передаёт уже content/capability-probed demuxer в receipted runtime без
+/// повторного initial network fetch-а.
+pub(crate) fn prepare_probed_hds_vod(
+    plan: Arc<HdsDemuxPlan>,
+    initial_demuxer: Box<dyn Demuxer + Send>,
+    catalog: ComponentVariantCatalog,
+) -> Result<HdsVodOpenResult> {
+    prepare_hds_vod_runtime(plan, Some(initial_demuxer), Some(catalog))
+}
+
+/// Поднимает единый worker/seek lifecycle из lazy либо уже открытого initial demuxer-а.
+fn prepare_hds_vod_runtime(
+    plan: Arc<HdsDemuxPlan>,
+    initial_demuxer: Option<Box<dyn Demuxer + Send>>,
+    catalog: Option<ComponentVariantCatalog>,
+) -> Result<HdsVodOpenResult> {
     let preview_plan = Arc::clone(&plan);
     let seek_controller = ProgressiveSeekController::new(move |request| {
         let index = preview_plan.fragment_index_for(request.timestamp);
@@ -149,7 +168,10 @@ pub(crate) fn prepare_selected_hds_vod(
     });
     let open_plan = Arc::clone(&plan);
     let demuxer = ProgressiveDemuxer::new_deferred_receipted_seekable(
-        move || open_transactional_demuxer(open_plan, 0),
+        move || match initial_demuxer {
+            Some(demuxer) => Ok(demuxer),
+            None => open_transactional_demuxer(open_plan, 0),
+        },
         seek_controller,
         plan.http.cancellation().clone(),
         plan.policy.demux_buffer_limits,

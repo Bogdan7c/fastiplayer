@@ -552,7 +552,9 @@ fn validate_raw_identity(
 fn parse_container_family(raw: &str) -> ContainerFamily {
     match raw.to_ascii_lowercase().as_str() {
         "mp4" | "m4a" | "m4v" | "mov" | "isom" | "f4v" => ContainerFamily::IsoBmff,
-        "fmp4" | "cmaf" | "m4a_dash" | "mp4_dash" => ContainerFamily::FragmentedIsoBmff,
+        "fmp4" | "cmaf" | "m4a_dash" | "mp4_dash" | "isma" | "ismv" => {
+            ContainerFamily::FragmentedIsoBmff
+        }
         "mkv" | "matroska" => ContainerFamily::Matroska,
         "webm" | "webm_dash" => ContainerFamily::WebM,
         "ogg" | "oga" | "ogv" => ContainerFamily::Ogg,
@@ -575,22 +577,23 @@ fn parse_container_family(raw: &str) -> ContainerFamily {
 fn parse_codec_kind(family_token: &str, parameters: &[String]) -> CodecKind {
     let known = match family_token {
         "none" => return CodecKind::Absent,
-        "vp8" | "vp08" => CodecFamily::Vp8,
-        "vp9" | "vp09" => CodecFamily::Vp9,
-        "av1" | "av01" => CodecFamily::Av1,
-        "h264" | "avc1" | "avc3" => CodecFamily::H264,
-        "h265" | "hevc" | "hev1" | "hvc1" => CodecFamily::H265,
-        "opus" => CodecFamily::Opus,
-        "vorbis" => CodecFamily::Vorbis,
-        "aac" => CodecFamily::Aac,
+        "vp8" | "vp08" | "v_vp8" => CodecFamily::Vp8,
+        "vp9" | "vp09" | "v_vp9" => CodecFamily::Vp9,
+        "av1" | "av01" | "v_av1" => CodecFamily::Av1,
+        "h264" | "avc1" | "avc3" | "v_mpeg4/iso/avc" => CodecFamily::H264,
+        "h265" | "hevc" | "hev1" | "hvc1" | "v_mpegh/iso/hevc" => CodecFamily::H265,
+        "opus" | "a_opus" => CodecFamily::Opus,
+        "vorbis" | "a_vorbis" => CodecFamily::Vorbis,
+        "aac" | "a_aac" | "aacl" => CodecFamily::Aac,
+        token if token.starts_with("a_aac/") => CodecFamily::Aac,
         "mp4a" => mp4a_codec_family(parameters),
-        token if token.starts_with("adpcm") => CodecFamily::Adpcm,
-        "alac" => CodecFamily::Alac,
-        "flac" => CodecFamily::Flac,
-        "mp1" => CodecFamily::Mp1,
-        "mp2" => CodecFamily::Mp2,
-        "mp3" => CodecFamily::Mp3,
-        token if token.starts_with("pcm") => CodecFamily::Pcm,
+        token if token.starts_with("adpcm") || token.starts_with("a_adpcm") => CodecFamily::Adpcm,
+        "alac" | "a_alac" => CodecFamily::Alac,
+        "flac" | "a_flac" => CodecFamily::Flac,
+        "mp1" | "a_mp1" => CodecFamily::Mp1,
+        "mp2" | "a_mp2" => CodecFamily::Mp2,
+        "mp3" | "a_mp3" => CodecFamily::Mp3,
+        token if token.starts_with("pcm") || token.starts_with("a_pcm") => CodecFamily::Pcm,
         _ => return CodecKind::Unknown,
     };
 
@@ -702,6 +705,30 @@ mod tests {
         assert_eq!(future.parameters().collect::<Vec<_>>(), vec!["Profile-X"]);
     }
 
+    /// Runtime container ids нормализуются тем же owner-ом, что extractor codec names.
+    #[test]
+    fn container_codec_ids_map_to_public_codec_families_without_raw_loss() {
+        let cases = [
+            ("V_VP9", CodecFamily::Vp9),
+            ("V_MPEG4/ISO/AVC", CodecFamily::H264),
+            ("A_OPUS", CodecFamily::Opus),
+            ("A_VORBIS", CodecFamily::Vorbis),
+            ("A_AAC", CodecFamily::Aac),
+            ("A_AAC/MPEG4/LC", CodecFamily::Aac),
+            ("AACL", CodecFamily::Aac),
+            ("A_FLAC", CodecFamily::Flac),
+            ("A_PCM_S16LE", CodecFamily::Pcm),
+        ];
+
+        for (raw_codec, expected_family) in cases {
+            let codec = NormalizedCodec::parse(
+                RawCodecIdentity::new(raw_codec).expect("container codec identity валидна"),
+            );
+            assert_eq!(codec.kind(), CodecKind::Known(expected_family));
+            assert_eq!(codec.raw().as_str(), raw_codec);
+        }
+    }
+
     /// Конфликт известных ext/container hints не разрешается угадыванием.
     #[test]
     fn container_hint_conflict_is_typed() {
@@ -754,5 +781,20 @@ mod tests {
         assert_eq!(f4v.consistent_family(), Ok(Some(ContainerFamily::IsoBmff)));
         assert_eq!(f4f.extension_family(), Some(ContainerFamily::F4f));
         assert_eq!(f4f.consistent_family(), Ok(Some(ContainerFamily::F4f)));
+    }
+
+    /// yt-dlp Smooth Streaming extensions обозначают fragmented ISO-BMFF tracks.
+    #[test]
+    fn isma_and_ismv_route_to_fragmented_iso_bmff() {
+        for extension in ["isma", "ismv"] {
+            let identity = ContainerIdentity::parse(
+                Some(RawExtensionIdentity::new(extension).expect("ext валиден")),
+                None,
+            );
+            assert_eq!(
+                identity.consistent_family(),
+                Ok(Some(ContainerFamily::FragmentedIsoBmff))
+            );
+        }
     }
 }

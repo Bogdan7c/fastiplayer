@@ -17,11 +17,15 @@ use demux_api::{
     DemuxOpenError, DemuxProbeRejection, ProgressiveAsyncSeekLimits, ProgressiveAsyncSeekOutcome,
     ProgressiveSeekFence, ProgressiveSeekRequestId,
 };
-use media_core::{DemuxReadEvent, DemuxSeekRequest, Demuxer, TrackKind};
+use media_core::{
+    DemuxReadEvent, DemuxSeekRequest, Demuxer, Packet, PacketKeyframe, TrackId, TrackInfo,
+    TrackKind,
+};
 use source_core::CancellationToken;
 use support::{
-    TestQueries, TestServer, adaptive_context, audio_fmp4, demux_registry, muxed_fmp4, muxed_ts,
-    open_policy, range_response, response, ts_map_and_media, video_ts,
+    TestQueries, TestServer, adaptive_context, audio_fmp4, demux_registry,
+    long_audio_fmp4_segments, long_muxed_ts_segment, muxed_fmp4, muxed_ts, open_policy,
+    range_response, response, ts_map_and_media, video_ts,
 };
 use web_media_hls::{
     ExtractorAesOverride, HlsAudioLayoutIntent, HlsAudioRenditionEvidence,
@@ -143,6 +147,60 @@ fn assert_muxed_tracks(event: DemuxReadEvent) {
     );
 }
 
+fn track_signature(tracks: &[TrackInfo]) -> Vec<(TrackId, TrackKind)> {
+    tracks.iter().map(|track| (track.id, track.kind)).collect()
+}
+
+fn initial_track_signature(event: DemuxReadEvent) -> Vec<(TrackId, TrackKind)> {
+    let DemuxReadEvent::TracksChanged(update) = event else {
+        panic!("initial TracksChanged expected");
+    };
+    track_signature(&update.tracks)
+}
+
+fn next_landing_packet(
+    demuxer: &mut dyn Demuxer,
+    stable_tracks: &[(TrackId, TrackKind)],
+) -> Packet {
+    loop {
+        match next_ready_event(demuxer).expect("post-seek HLS event") {
+            DemuxReadEvent::TracksChanged(update) => {
+                assert_eq!(track_signature(&update.tracks), stable_tracks);
+            }
+            DemuxReadEvent::Packet(packet) => return packet,
+            DemuxReadEvent::MediaMetadataChanged(_) => {}
+            DemuxReadEvent::EndOfStream => panic!("HLS seek reached EOF before landing packet"),
+            DemuxReadEvent::TemporarilyUnavailable(_) => {
+                unreachable!("next_ready_event filters temporary readiness")
+            }
+        }
+    }
+}
+
+fn request_lines_since(server: &TestServer, first_request_index: usize) -> Vec<String> {
+    server.requests()[first_request_index..]
+        .iter()
+        .map(|request| request.request_line.clone())
+        .collect()
+}
+
+fn assert_bounded_restart_requests(
+    requests: &[String],
+    required_path: &str,
+    forbidden_paths: &[&str],
+) {
+    assert!(
+        requests.iter().any(|line| line.contains(required_path)),
+        "restart did not fetch required tail {required_path}: {requests:?}"
+    );
+    for forbidden_path in forbidden_paths {
+        assert!(
+            requests.iter().all(|line| !line.contains(forbidden_path)),
+            "restart unexpectedly refetched {forbidden_path}: {requests:?}"
+        );
+    }
+}
+
 fn collect_until_eos(demuxer: &mut dyn Demuxer) -> Result<Vec<DemuxReadEvent>, anyhow::Error> {
     let mut events = Vec::new();
     for _ in 0..256 {
@@ -210,7 +268,7 @@ fn muxed_ts_is_deferred_and_inline_manifest_causes_zero_manifest_fetch() {
 }
 
 #[test]
-fn muxed_fmp4_content_probe_reaches_initial_tracks_changed() {
+fn muxed_fmp4_map_opens_through_injected_symphonia_factory() {
     let (initialization, first_media, _) = muxed_fmp4();
     let initialization = Arc::new(initialization);
     let first_media = Arc::new(first_media);
@@ -984,4 +1042,238 @@ fn vod_seek_uses_proven_raps_across_discontinuity_and_fences_rapid_supersede() {
         }
         assert!(Instant::now() < deadline, "rapid seek did not land");
     }
+}
+
+#[test]
+fn long_grouped_ts_seek_restarts_from_exact_media_tail_with_tiny_index() {
+    const SEGMENT_SECONDS: u64 = 30;
+    let segments = Arc::new(
+        (0_u64..4)
+            .map(|segment_index| {
+                long_muxed_ts_segment(
+                    segment_index
+                        .saturating_mul(SEGMENT_SECONDS)
+                        .saturating_mul(90_000),
+                    SEGMENT_SECONDS,
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+    let server_segments = Arc::clone(&segments);
+    let server = TestServer::start(move |_, request| {
+        server_segments
+            .iter()
+            .enumerate()
+            .find_map(|(segment_index, segment)| {
+                request
+                    .request_line
+                    .contains(&format!("/segment-{segment_index}.ts"))
+                    .then(|| response("200 OK", &[], segment))
+            })
+            .unwrap_or_else(|| response("404 Not Found", &[], b""))
+    });
+    let playlist = "#EXTM3U\n\
+                    #EXT-X-TARGETDURATION:30\n\
+                    #EXTINF:30,\nsegment-0.ts\n\
+                    #EXTINF:30,\nsegment-1.ts\n\
+                    #EXTINF:30,\nsegment-2.ts\n\
+                    #EXTINF:30,\nsegment-3.ts\n\
+                    #EXT-X-ENDLIST\n";
+    let mut request = inline_request(&server, playlist, HlsRequiredContainer::TransportStream);
+    request.policy.maximum_seek_index_entries =
+        NonZeroUsize::new(8).expect("four TS segments need two anchors each");
+    let opened = prepare_hls_vod(request).expect("prepare long grouped TS VOD");
+    let mut demuxer = opened.into_demuxer();
+    let stable_tracks = initial_track_signature(
+        next_ready_event(&mut *demuxer).expect("initial grouped TS tracks"),
+    );
+    assert_eq!(
+        stable_tracks
+            .iter()
+            .filter(|(_, kind)| *kind == TrackKind::Video)
+            .count(),
+        1
+    );
+    assert_eq!(
+        stable_tracks
+            .iter()
+            .filter(|(_, kind)| *kind == TrackKind::Audio)
+            .count(),
+        1
+    );
+    loop {
+        match next_ready_event(&mut *demuxer).expect("index long grouped TS") {
+            DemuxReadEvent::Packet(packet)
+                if packet.kind == TrackKind::Audio && packet.pts >= Duration::from_secs(90) =>
+            {
+                break;
+            }
+            DemuxReadEvent::Packet(_) | DemuxReadEvent::MediaMetadataChanged(_) => {}
+            DemuxReadEvent::TracksChanged(update) => panic!(
+                "normal grouped TS boundary changed topology: {:?}",
+                track_signature(&update.tracks)
+            ),
+            DemuxReadEvent::EndOfStream => panic!("grouped TS ended before segment-3 evidence"),
+            DemuxReadEvent::TemporarilyUnavailable(_) => unreachable!(),
+        }
+    }
+
+    let forward_request_index = server.requests().len();
+    let forward = demuxer
+        .seek_with_request(DemuxSeekRequest::decode_point_before(Duration::from_secs(
+            95,
+        )))
+        .expect("decode-safe forward grouped TS seek");
+    assert_eq!(
+        forward.actual_position.as_duration(),
+        Duration::from_secs(90)
+    );
+    let forward_packet = next_landing_packet(&mut *demuxer, &stable_tracks);
+    assert_eq!(forward_packet.kind, TrackKind::Video);
+    assert_eq!(forward_packet.keyframe, PacketKeyframe::Keyframe);
+    assert_eq!(forward_packet.pts, Duration::from_secs(90));
+    let forward_audio_packet = next_landing_packet(&mut *demuxer, &stable_tracks);
+    assert_eq!(forward_audio_packet.kind, TrackKind::Audio);
+    assert_eq!(forward_audio_packet.pts, Duration::from_secs(90));
+    assert_bounded_restart_requests(
+        &request_lines_since(&server, forward_request_index),
+        "/segment-3.ts",
+        &["/segment-0.ts", "/segment-1.ts", "/segment-2.ts"],
+    );
+
+    let backward_request_index = server.requests().len();
+    let backward = demuxer
+        .seek_with_request(DemuxSeekRequest::decode_point_before(Duration::from_secs(
+            35,
+        )))
+        .expect("decode-safe backward grouped TS seek");
+    assert_eq!(
+        backward.actual_position.as_duration(),
+        Duration::from_secs(30)
+    );
+    let backward_packet = next_landing_packet(&mut *demuxer, &stable_tracks);
+    assert_eq!(backward_packet.kind, TrackKind::Video);
+    assert_eq!(backward_packet.keyframe, PacketKeyframe::Keyframe);
+    assert_eq!(backward_packet.pts, Duration::from_secs(30));
+    let backward_audio_packet = next_landing_packet(&mut *demuxer, &stable_tracks);
+    assert_eq!(backward_audio_packet.kind, TrackKind::Audio);
+    assert_eq!(backward_audio_packet.pts, Duration::from_secs(30));
+    assert_bounded_restart_requests(
+        &request_lines_since(&server, backward_request_index),
+        "/segment-1.ts",
+        &["/segment-0.ts"],
+    );
+}
+
+#[test]
+fn long_grouped_encrypted_fmp4_seek_preserves_map_and_exact_media_tail() {
+    let (initialization, clear_segments) = long_audio_fmp4_segments(4);
+    let key = [0x2a; 16];
+    let iv = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f,
+    ];
+    let encrypted_initialization = Arc::new(encrypt_pkcs7(&initialization, key, iv));
+    let encrypted_segments = Arc::new(
+        clear_segments
+            .iter()
+            .map(|segment| encrypt_pkcs7(segment, key, iv))
+            .collect::<Vec<_>>(),
+    );
+    let server_initialization = Arc::clone(&encrypted_initialization);
+    let server_segments = Arc::clone(&encrypted_segments);
+    let server = TestServer::start(move |_, request| {
+        if request.request_line.contains("/key.bin") {
+            return response("200 OK", &[], &key);
+        }
+        if request.request_line.contains("/init.mp4") {
+            return response("200 OK", &[], &server_initialization);
+        }
+        server_segments
+            .iter()
+            .enumerate()
+            .find_map(|(segment_index, segment)| {
+                request
+                    .request_line
+                    .contains(&format!("/segment-{segment_index}.m4s"))
+                    .then(|| response("200 OK", &[], segment))
+            })
+            .unwrap_or_else(|| response("404 Not Found", &[], b""))
+    });
+    let playlist = "#EXTM3U\n\
+                    #EXT-X-TARGETDURATION:4\n\
+                    #EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\",IV=0x000102030405060708090a0b0c0d0e0f\n\
+                    #EXT-X-MAP:URI=\"init.mp4\"\n\
+                    #EXTINF:4,\nsegment-0.m4s\n\
+                    #EXTINF:4,\nsegment-1.m4s\n\
+                    #EXTINF:4,\nsegment-2.m4s\n\
+                    #EXTINF:4,\nsegment-3.m4s\n\
+                    #EXT-X-ENDLIST\n";
+    let mut request = inline_request(&server, playlist, HlsRequiredContainer::FragmentedMp4);
+    request.selection.main_track_layout = HlsMainTrackLayoutIntent::AudioOnly;
+    request.policy.maximum_seek_index_entries =
+        NonZeroUsize::new(4).expect("one audio anchor per fMP4 segment");
+    let opened = prepare_hls_vod(request).expect("prepare encrypted grouped fMP4 VOD");
+    let mut demuxer = opened.into_demuxer();
+    let stable_tracks = initial_track_signature(
+        next_ready_event(&mut *demuxer).expect("initial grouped fMP4 tracks"),
+    );
+    assert_eq!(stable_tracks.len(), 1);
+    assert_eq!(stable_tracks[0].1, TrackKind::Audio);
+    loop {
+        match next_ready_event(&mut *demuxer).expect("index grouped fMP4") {
+            DemuxReadEvent::Packet(packet) if packet.pts >= Duration::from_secs(12) => break,
+            DemuxReadEvent::Packet(_) | DemuxReadEvent::MediaMetadataChanged(_) => {}
+            DemuxReadEvent::TracksChanged(update) => panic!(
+                "normal grouped fMP4 boundary changed topology: {:?}",
+                track_signature(&update.tracks)
+            ),
+            DemuxReadEvent::EndOfStream => panic!("grouped fMP4 ended before segment-3 evidence"),
+            DemuxReadEvent::TemporarilyUnavailable(_) => unreachable!(),
+        }
+    }
+
+    let forward_request_index = server.requests().len();
+    let forward = demuxer
+        .seek_with_request(DemuxSeekRequest::accurate(Duration::from_secs(14)))
+        .expect("preview forward grouped fMP4 seek");
+    assert_eq!(
+        forward.actual_position.as_duration(),
+        Duration::from_secs(12)
+    );
+    let forward_packet = next_landing_packet(&mut *demuxer, &stable_tracks);
+    assert_eq!(forward_packet.kind, TrackKind::Audio);
+    assert_eq!(forward_packet.pts, Duration::from_secs(12));
+    let forward_requests = request_lines_since(&server, forward_request_index);
+    assert_bounded_restart_requests(
+        &forward_requests,
+        "/segment-3.m4s",
+        &["/segment-0.m4s", "/segment-1.m4s", "/segment-2.m4s"],
+    );
+    assert!(
+        forward_requests
+            .iter()
+            .any(|line| line.contains("/init.mp4")),
+        "fMP4 restart did not restore effective MAP: {forward_requests:?}"
+    );
+
+    let backward_request_index = server.requests().len();
+    let backward = demuxer
+        .seek_with_request(DemuxSeekRequest::accurate(Duration::from_secs(6)))
+        .expect("preview backward grouped fMP4 seek");
+    assert_eq!(
+        backward.actual_position.as_duration(),
+        Duration::from_secs(4)
+    );
+    let backward_packet = next_landing_packet(&mut *demuxer, &stable_tracks);
+    assert_eq!(backward_packet.kind, TrackKind::Audio);
+    assert_eq!(backward_packet.pts, Duration::from_secs(4));
+    let backward_requests = request_lines_since(&server, backward_request_index);
+    assert_bounded_restart_requests(&backward_requests, "/segment-1.m4s", &["/segment-0.m4s"]);
+    assert!(
+        backward_requests
+            .iter()
+            .any(|line| line.contains("/init.mp4")),
+        "backward fMP4 restart did not restore effective MAP: {backward_requests:?}"
+    );
 }

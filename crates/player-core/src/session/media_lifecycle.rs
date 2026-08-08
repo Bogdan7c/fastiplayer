@@ -190,8 +190,12 @@ impl PlayerSession {
         &mut self,
         generation: u64,
     ) -> Option<SeekCommitState> {
-        self.seek_runtime
-            .rebase_active_commit_to_generation(generation)
+        let previous_commit = self.seek_runtime.active_commit()?;
+        let rebased_commit = self
+            .seek_runtime
+            .rebase_active_commit_to_generation(generation)?;
+        self.rebase_pending_seek_receipts(previous_commit, rebased_commit);
+        Some(rebased_commit)
     }
 
     /// Возвращает volatile timeline-флаги, которые `set_snapshot_duration` пересоздаёт.

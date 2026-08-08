@@ -18,6 +18,15 @@ pub struct PlayableOpaqueAlternativeRanking {
 }
 
 impl PlayableOpaqueAlternativeRanking {
+    /// Итерирует все playable identities в planner-owned best-first порядке.
+    pub fn ranked_candidate_identities(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&CandidateIdentity, &SemanticIdentity)> {
+        self.ranked
+            .iter()
+            .map(|plan| (plan.exact_identity(), plan.semantic_identity()))
+    }
+
     /// Возвращает source-order-independent rank exact+semantic selection-а.
     pub fn rank_of(&self, selection: &ExactSelectionIdentity) -> Option<usize> {
         self.rank_of_candidate(selection.exact(), selection.semantic())

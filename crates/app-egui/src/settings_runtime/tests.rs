@@ -15,7 +15,7 @@ use render_core::{
     RenderLiveApplyPhase, RenderLiveApplyReport, RenderLiveSettingId, RenderLiveSettings,
     RenderLiveSettingsAdapter, RenderLiveSettingsError, RenderLiveSettingsUpdate,
 };
-use rustiplayer_config::{AppConfig, LoadedConfig};
+use rustiplayer_config::{AppConfig, LoadedConfig, VideoBackendPreference};
 use rustiplayer_settings::{
     AppRouteApplyResult, AppRuntimeRoute, AppRuntimeRouteApplier, AppRuntimeRouteGroup,
     AppRuntimeRouteGroupUpdate, FrameServerRuntimeSettingsUpdate,
@@ -32,8 +32,9 @@ use settings_core::{
 };
 
 use super::{
-    CommittedConfigSnapshot, SettingsRuntime, SettingsRuntimePreflightFailure,
-    SettingsRuntimeReconfigureHost, SettingsRuntimeRouteAppliers, current_option_value,
+    CommittedConfigSnapshot, SettingsRouteTargetPolicy, SettingsRuntime,
+    SettingsRuntimePreflightFailure, SettingsRuntimeReconfigureHost, SettingsRuntimeRouteAppliers,
+    current_option_value,
 };
 use crate::render_settings::{
     color_pipeline_settings_from_config, hdr_to_sdr_settings_from_config,
@@ -302,7 +303,9 @@ impl RenderLiveSettingsAdapter for RecordingRenderAdapter {
 struct RecordingRuntimeAdapter {
     render: RecordingRenderAdapter,
     player_updates: Vec<PlayerRuntimeSettingsUpdate>,
+    player_target_backend_preferences: Vec<VideoBackendPreference>,
     media_updates: usize,
+    media_target_backend_preferences: Vec<VideoBackendPreference>,
     fail_player: bool,
     fail_media: bool,
     renderer_recreation_result: AppRouteApplyResult,
@@ -321,7 +324,9 @@ impl RecordingRuntimeAdapter {
         Ok(Self {
             render: RecordingRenderAdapter::from_config(config)?,
             player_updates: Vec::new(),
+            player_target_backend_preferences: Vec::new(),
             media_updates: 0,
+            media_target_backend_preferences: Vec::new(),
             fail_player: false,
             fail_media: false,
             renderer_recreation_result: AppRouteApplyResult::Applied,
@@ -398,7 +403,16 @@ impl SettingsRuntimeReconfigureHost for RecordingRuntimeAdapter {
     fn apply_player_runtime_settings(
         &mut self,
         update: &PlayerCommittedSettingsUpdate,
+        target_policy: SettingsRouteTargetPolicy,
     ) -> PlayerRuntimeApplyResult {
+        let target_backend_preference =
+            target_policy.video_backend_preference().ok_or_else(|| {
+                player_core::PlayerRuntimeApplyError::Fatal(
+                    "recording player owner requires exact target policy".to_owned(),
+                )
+            })?;
+        self.player_target_backend_preferences
+            .push(target_backend_preference);
         self.player_updates.push(update.player_core.clone());
         if self.fail_player {
             return Err(player_core::PlayerRuntimeApplyError::Backpressure);
@@ -412,7 +426,15 @@ impl SettingsRuntimeReconfigureHost for RecordingRuntimeAdapter {
         &mut self,
         _update: &MediaServiceRuntimeSettingsUpdate,
         _affected_settings: &[SettingId],
+        target_policy: SettingsRouteTargetPolicy,
     ) -> AppRouteApplyResult {
+        let Some(target_backend_preference) = target_policy.video_backend_preference() else {
+            return AppRouteApplyResult::Failed {
+                message: "recording media owner requires exact target policy".to_owned(),
+            };
+        };
+        self.media_target_backend_preferences
+            .push(target_backend_preference);
         self.media_updates += 1;
         if self.fail_media {
             return AppRouteApplyResult::Failed {
@@ -679,7 +701,11 @@ fn player_decoder_route_uses_live_pipeline_rebuild() {
     };
 
     let report = appliers
-        .apply_committed_route_with_render_adapter(route, &mut runtime_adapter)
+        .apply_committed_route_with_render_adapter(
+            route,
+            SettingsRouteTargetPolicy::from_config(&config),
+            &mut runtime_adapter,
+        )
         .expect("decoder route должен построить report");
 
     assert_eq!(runtime_adapter.player_updates.len(), 1);
@@ -727,10 +753,18 @@ fn render_recreation_commits_snapshot_only_after_owner_success() {
         RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
 
     let first_report = appliers
-        .apply_committed_route_with_render_adapter(route.clone(), &mut runtime_adapter)
+        .apply_committed_route_with_render_adapter(
+            route.clone(),
+            SettingsRouteTargetPolicy::from_config(&config),
+            &mut runtime_adapter,
+        )
         .expect("renderer route должен примениться");
     let second_report = appliers
-        .apply_committed_route_with_render_adapter(route, &mut runtime_adapter)
+        .apply_committed_route_with_render_adapter(
+            route,
+            SettingsRouteTargetPolicy::from_config(&config),
+            &mut runtime_adapter,
+        )
         .expect("повторный renderer route должен быть noop");
 
     assert_eq!(first_report.result, AppRouteApplyResult::Applied);
@@ -762,11 +796,19 @@ fn render_recreation_failure_keeps_old_snapshot_for_same_draft_retry() {
     };
 
     let failed_report = appliers
-        .apply_committed_route_with_render_adapter(route.clone(), &mut runtime_adapter)
+        .apply_committed_route_with_render_adapter(
+            route.clone(),
+            SettingsRouteTargetPolicy::from_config(&config),
+            &mut runtime_adapter,
+        )
         .expect("renderer failure должен остаться typed report-ом");
     runtime_adapter.renderer_recreation_result = AppRouteApplyResult::Applied;
     let retry_report = appliers
-        .apply_committed_route_with_render_adapter(route, &mut runtime_adapter)
+        .apply_committed_route_with_render_adapter(
+            route,
+            SettingsRouteTargetPolicy::from_config(&config),
+            &mut runtime_adapter,
+        )
         .expect("тот же renderer draft должен повторно примениться");
 
     assert!(matches!(
@@ -803,7 +845,11 @@ fn media_service_route_uses_live_app_owner() {
     };
 
     let report = appliers
-        .apply_committed_route_with_render_adapter(route, &mut runtime_adapter)
+        .apply_committed_route_with_render_adapter(
+            route,
+            SettingsRouteTargetPolicy::from_config(&config),
+            &mut runtime_adapter,
+        )
         .expect("media route должен построить report");
 
     assert_eq!(runtime_adapter.media_updates, 1);
@@ -838,7 +884,11 @@ fn media_service_route_keeps_snapshot_when_owner_rebuild_fails() {
     };
 
     let report = appliers
-        .apply_committed_route_with_render_adapter(route, &mut runtime_adapter)
+        .apply_committed_route_with_render_adapter(
+            route,
+            SettingsRouteTargetPolicy::from_config(&config),
+            &mut runtime_adapter,
+        )
         .expect("media route должен построить failure report");
 
     assert_eq!(runtime_adapter.media_updates, 1);
@@ -883,7 +933,11 @@ fn frame_server_route_applies_player_policy_and_commits_snapshot() {
     };
 
     let report = appliers
-        .apply_committed_route_with_render_adapter(route, &mut runtime_adapter)
+        .apply_committed_route_with_render_adapter(
+            route,
+            SettingsRouteTargetPolicy::from_config(&config),
+            &mut runtime_adapter,
+        )
         .expect("frame_server route должен построить report");
 
     assert_eq!(runtime_adapter.player_updates.len(), 1);
@@ -930,7 +984,11 @@ fn frame_server_route_keeps_snapshot_when_player_policy_apply_fails() {
     };
 
     let report = appliers
-        .apply_committed_route_with_render_adapter(route, &mut runtime_adapter)
+        .apply_committed_route_with_render_adapter(
+            route,
+            SettingsRouteTargetPolicy::from_config(&config),
+            &mut runtime_adapter,
+        )
         .expect("frame_server route должен построить failure report");
 
     assert_eq!(runtime_adapter.player_updates.len(), 1);
@@ -2092,6 +2150,67 @@ fn transaction_persistence_failure_rolls_runtime_back() {
     assert_eq!(adapter.finalize_calls, 0);
     assert!(adapter.snapshot_synced_after_finalize.is_empty());
     assert_eq!(runtime.committed_config().network, config.network);
+    fs::remove_dir_all(&path).expect("test target directory должна удалиться");
+}
+
+/// Combined backend + URL quality transaction передаёт каждому route exact destination,
+/// а compensating rollback использует previous policy ещё до обратного Player route-а.
+#[test]
+fn combined_backend_and_quality_persist_failure_threads_exact_route_targets() {
+    let mut config = custom_config_for_test();
+    config.video.preferred_backend = VideoBackendPreference::Hardware;
+    let path = temp_config_path("combined-backend-quality-target-policy");
+    remove_file_if_exists(&path);
+    fs::create_dir_all(&path).expect("target directory создаёт deterministic rename failure");
+    let mut runtime = SettingsRuntime::from_loaded_config(loaded_config_for_test_at(
+        config.clone(),
+        path.clone(),
+    ))
+    .expect("settings runtime должен построиться");
+    let mut adapter =
+        RecordingRuntimeAdapter::from_config(&config).expect("adapter должен стартовать");
+
+    run_runtime_actions(
+        &mut runtime,
+        vec![
+            SettingsUiAction::Open,
+            SettingsUiAction::SetValue {
+                setting_id: SettingId::from("video.preferred_backend"),
+                value: SettingValue::Select("software".into()),
+            },
+            SettingsUiAction::SetValue {
+                setting_id: SettingId::from("yt_dlp.preferred_video_height"),
+                value: SettingValue::Select("1080".into()),
+            },
+            SettingsUiAction::Apply,
+        ],
+        &mut adapter,
+    );
+
+    let report = runtime
+        .latest_apply_report()
+        .expect("persistence failure report должен сохраниться");
+    assert_eq!(report.final_state, ApplyFinalState::PersistFailed);
+    assert_eq!(report.rollback.len(), 2);
+    assert_eq!(
+        adapter.player_target_backend_preferences,
+        vec![
+            VideoBackendPreference::Software,
+            VideoBackendPreference::Hardware,
+        ]
+    );
+    assert_eq!(
+        adapter.media_target_backend_preferences,
+        vec![
+            VideoBackendPreference::Software,
+            VideoBackendPreference::Hardware,
+        ]
+    );
+    assert_eq!(
+        runtime.committed_config().video.preferred_backend,
+        VideoBackendPreference::Hardware
+    );
+    assert!(adapter.committed_snapshots.is_empty());
     fs::remove_dir_all(&path).expect("test target directory должна удалиться");
 }
 

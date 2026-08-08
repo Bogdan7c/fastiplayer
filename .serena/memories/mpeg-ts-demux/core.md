@@ -13,3 +13,12 @@
 - Neutral framing migration: `VideoPacketFraming::{Unspecified, AnnexB, LengthPrefixedFromCodecConfiguration}` принадлежит `media-core`; player-core переводит evidence в codec-core packetization. Symphonia маркирует avcC/hvcC rows length-prefixed; container guessing и fake hvcC запрещены.
 - Hermetic generated fixture suite покрывает muxed/audio-only, H.264/H.265, AAC/MPEG audio, arbitrary chunks, CRC/version/multi-program, gaps/duplicates/TEI/scrambling/resync, PTS/DTS/PCR rollover, AU/PES splits, config lifecycle, ordered/in-band discontinuity, bounded/cancelled seek/index and local prepare/rebuild. No checked-in real media fixture.
 - Проверки S29: 35 mpeg-ts tests; media-core 36; demux-api 27; player-core 571; symphonia-demux 163; focused app local tests; strict Clippy; Rust 1.96/1.92 workspace checks; fmt/diff/refactor guardrails. Dependency report keeps pre-existing unmaintained advisories for audiopus_sys/ttf-parser; S29 adds no external runtime dependency.
+
+
+## Ordered-segment PES/AU flush invariant (2026-08-05)
+
+- На каждом новом ordered TS resource предыдущий segment сначала проходит тот же strict PES/AU finalization, что clean EOF, и только затем очищается transport-local continuity/PAT/PMT/PES state. Это не даёт continuity restart-у молча уничтожить последний video RAP segment-а.
+- Finalization остаётся fail-closed: incomplete declared PES возвращает typed `MpegTsDemuxError::Malformed` до публикации video packet-а; повреждение не превращается в clean EOF. Explicit discontinuity не склеивает соседние epochs: предыдущий flush завершается до reset/lifecycle следующей timeline.
+- Focused owner proof требует оба RAP (0s и 1s) от двух independent ordered segments со стабильными tracks и отдельно проверяет rejection truncated PES без packet publication.
+- HLS grouped VOD использует этот owner boundary для decode-safe tail restart; HLS не пытается самостоятельно собирать PES/AU.
+- Проверка 2026-08-05: `cargo test -p mpeg-ts-demux` — 37/37; affected all-target Clippy `-D warnings` и Serena diagnostics — PASS.

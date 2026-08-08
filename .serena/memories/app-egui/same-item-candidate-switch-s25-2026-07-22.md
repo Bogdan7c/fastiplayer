@@ -40,4 +40,11 @@
 - Exact Installed → same-lineage rebind → restore/intent ordering, CommitMustFinish, selector cancellation and playlist/traversal/shuffle/lineage invariants are unchanged.
 - Full contract: `mem:app-egui/live-same-item-candidate-switch-s35s-2026-07-24`.
 
+## Production action/lifecycle bridge (2026-08-08)
+
+- `SameItemSwitchAppPath` в `state/same_item_candidate_switch/lifecycle_bridge.rs` является единственным production orchestration path между resolved URL sidebar action и существующими strong lifecycle methods. `AppState::apply_url_sidebar_action`/start и `poll_same_item_switch` делегируют ему; это не параллельный reducer и не test-copy.
+- Для borrow-safety bridge временно извлекает только `PendingSameItemSwitch`. URL controller остаётся внутри `AppState`, потому что strong `Installed` вызывает `record_installed_media_source` и обязан обновить этот controller до terminal selector effects. Panic rollback не является обещанием boundary; штатные terminal paths возвращают pending/controller в согласованное состояние.
+- Functional tests используют настоящий `MediaOpenSourceRequest::YtDlp` и тот же production start/poll path через injected lifecycle port: Playing и Paused сохраняют position/intent и коммитят preference только после `Installed`; pre-barrier failure сохраняет playback/preferences и восстанавливает selector. Resolution/catalog component tests отдельно покрывают преобразование UI action в resolved request.
+- Проверено: bridge 3/3, полный `app-egui` 934/934, strict all-targets Clippy, workspace `hermetic-ci` PASS, release build, rustfmt, refactor guardrails и diff check.
+
 - Related memories: `mem:playlist/core`, `mem:app-egui/media-open-coordinator-s10c`, `mem:render-video/live-backend-swap-present-frame-freeze`, `mem:app-egui/live-same-item-candidate-switch-s35s-2026-07-24`.

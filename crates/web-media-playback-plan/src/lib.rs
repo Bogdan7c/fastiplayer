@@ -35,7 +35,8 @@ pub use planner::{
     TransportCapabilityRejection, plan_playback,
 };
 pub use policy::{
-    ContainerPreferenceRank, HdrSelectionPolicy, PlaybackSelectionPolicy, SelectionPolicyBuildError,
+    ContainerPreferenceRank, HdrSelectionPolicy, PlaybackSelectionPolicy,
+    ResolvedVideoPolicyRejection, SelectionPolicyBuildError,
 };
 
 #[cfg(test)]

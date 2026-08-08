@@ -1,3 +1,10 @@
+## Exact ISO-BMFF packet source offsets (2026-08-05)
+
+- Для входов, уже доказанных factory как `iso-bmff`, private concrete adapter вокруг локального patch-а публикует в нейтральный `media_core::Packet.byte_offset` точный `PacketSampleSpan.pos`: начало первого sample пакета в логическом input. Для `OrderedSegments` это кумулятивная позиция в виртуальной конкатенации init + media; позиция buffered reader, PTS/DTS и container timestamp для provenance не угадываются.
+- Exact route применяется ко всем production factory-вариантам ISO-BMFF: seekable `ByteSource`, progressive `ByteStream` и finite `OrderedSegments`. Generic Symphonia formats и raw public constructors `SymphoniaDemuxer` сохраняют `byte_offset = None`.
+- Observer очищается перед каждым read, seek, EOF и error, затем публикуется только после успешного packet; concrete reprobe сохраняет ISO-mode и новый observer. Tracks, metadata, chapters, attachments и seek делегируются без смены семантики.
+- Focused proof: packet mapper `Some`/`None`, exact offsets для двух ordered fMP4 fragments и трёх seekable fMP4 fragments, а также `None` для всех generic audio factory fixtures в local/stream paths. HLS/playlist mapping остаётся владельцем provider-а: cumulative packet offset сам по себе не является restart boundary.
+
 ## S36F3A provenance-aware windowed ISO adapter (2026-07-25)
 
 - `PresentationWindowOrderedIsoMp4Demuxer` is a separate not-seekable adapter that opens each media fragment through the existing ISO factory as shared `init + exactly one media`, validates a stable single-track snapshot and assigns the declared packet window before publication. It never infers fragment provenance from PTS or buffered reader state; existing finite ordered adapters are unchanged.

@@ -4,6 +4,12 @@
 - These replacements are not feature toggles. Removing any `[replace]` or doing a large upstream bump changes the playback risk profile and requires an explicit architecture/maintenance decision plus a media regression matrix. Do not mix patch removal/upstream sync with feature work.
 - Cargo override semantics checked via Context7/Cargo Book on 2026-06-20: root-level overrides affect dependency resolution transitively. Several local patch crates are not normal workspace members; practical validation usually goes through dependent workspace crates such as `video-vaapi`, `symphonia-demux`, `audio`, and the whole workspace.
 
+## Exact ISO-BMFF packet source provenance extension (2026-08-05)
+
+- Локальный `symphonia-format-isomp4` теперь имеет отдельный opt-in boundary: `IsoMp4Reader::try_new_from_stream_start` и `next_packet_with_source_offset` возвращают обычный Symphonia packet вместе с точным `PacketSampleSpan.pos` первого sample. Existing `FormatReader::next_packet` по-прежнему возвращает только upstream packet, поэтому generic consumers не получают новое поведение неявно.
+- Единственный текущий consumer exact provenance — concrete ISO-BMFF route в production `symphonia-demux` factory; он переносит позицию в нейтральный `media_core::Packet.byte_offset`. Для virtual concatenated ordered input offset считается от начала всей логической последовательности.
+- Removal gate расширен: patch можно убрать только после появления upstream-equivalent exact packet source-position API и прохождения local/stream/ordered exact-offset regressions без восстановления provenance из PTS или buffered reader state.
+
 ## S36P2 Smooth provider preparation dependent (2026-07-25)
 
 - `web-media-smooth` directly consumes the local ISO patch initialization-limit/API boundary and is now listed in the machine-readable dependent/focused integration matrix. Its P2 catalog advertises only qualities whose init was already built successfully. Full contract: `mem:media-services/smooth-manifest-catalog-s36p2-2026-07-25`.

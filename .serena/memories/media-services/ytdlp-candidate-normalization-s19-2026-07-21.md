@@ -1,3 +1,22 @@
+# Canonical selected/inventory projection и planner alignment (2026-08-05)
+
+- `YtDlpCandidateSnapshot::accepted_candidates()` является canonical selected-first view: accepted top-level selected shadow-ит одноимённую `formats[]` строку и сохраняет richer request material; rejected selected с валидным exact ID тоже shadow-ит inventory twin, поэтому отказ нельзя обойти через более бедную копию. Остальные inventory duplicate IDs остаются visible typed rejections.
+- `planning_snapshot()` строится только из canonical view. Публичный `validate_planning_snapshot_alignment()` fail-closed проверяет source, generation, полный exact+semantic set и order-independent exact→full `PlanningCandidate` projection, включая descriptor, runtime requirements, quality score и validated planner resource evidence. App вызывает эту границу до BestPlayable, Exact, sidebar и catalog projection.
+- Planner ranking публикует best-first exact+semantic identities; app сопоставляет их с canonical service candidates без source-order/rank-index эвристик. Exact lookup также требует exact+semantic pair.
+- A/V composition остаётся разрешена только candidate-ам с эквивалентным accepted `formats[]` membership, но использует canonical request material. Поэтому selected-only не composable, rejected/conflicting selected shadow не rematch-ится через inventory, а идентичный accepted selected+inventory duplicate использует richer selected material.
+- Focused regressions находятся в `crates/service-ytdlp/src/candidate/tests.rs`, `crates/web-media-playback-plan/src/tests.rs` и isolated real-shape child tests `crates/app-egui/src/web_media_open/content_probe_fallback.rs`.
+
+# Content-probed fresh rematch hardening (2026-08-05)
+
+- Same-generation Exact остаётся строгим по exact ID, full layout и color evidence. Обычный fresh semantic rematch сохраняет прежнюю format-ID-independent семантику для concrete layouts, но weak equal `ContentProbed` layout больше не может rematch-ить другой format ID.
+- Если codec metadata дрейфует `null/Unknown ↔ declared/none`, service-owned fallback допускает `ContentProbed ↔ ContentProbed|Muxed|VideoOnly|AudioOnly` только для того же exact `CandidateFormatIdentity`, exact source, fresh generation, одного physical component, exact transport/container/probe family и совместимых track evidence/hints. `Unknown` является runtime-reproof wildcard; conflicting `Declared`, visual hints и color evidence остаются hard constraints.
+- Fresh candidate публикует собственный актуальный component role; старый `ContentProbed` role не переносится в concrete request и наоборот. Другой format ID, одинаковый weak unknown layout, declared codec conflict и color drift fail closed как `StaleExactIdentity`; ambiguity policy не менялась.
+- Public API shape не менялся. Private `YtDlpCandidateSelection` сохраняет color evidence, а compatibility rules вынесены в `candidate/rematch.rs`. Focused tests: `candidate::rematch_tests::{fresh_content_probe_rematch_accepts_unknown_to_declared_codec_refinement,fresh_content_probe_rematch_accepts_declared_to_unknown_codec_drift,content_probe_rematch_rejects_different_physical_format_identity}`.
+
+# HDS content-probed refinement (2026-08-05)
+
+- `TransportFamily::Hds` больше не выбирает `Muxed/Flv` по полноте codec metadata: все accepted HDS single-resource rows получают `ContentProbed/F4f`, сохраняя declared H.264/AAC requirements. Только exact Flv/F4f-compatible extractor container hints разрешают refinement; другие known/unknown families fail closed до provider open. Details: `mem:media-services/hds-s38-2026-07-25`.
+
 # S36P1 extension (2026-07-25)
 
 Exact normalized ISM muxed H.264/AAC/fMP4 candidates now expose a service-owned typed VOD manifest projection into neutral S21T `TransportOpenRequest`; yt-dlp DTO/material does not cross into the future Smooth provider. Unsupported serialized fragment/query/HLS/DASH/RTMP/range state rejects visibly. Full contract: `mem:media-services/smooth-request-projection-s36p1-2026-07-25`.
