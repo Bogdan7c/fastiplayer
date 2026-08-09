@@ -6,8 +6,8 @@ use web_media_transport_api::{
 };
 
 use super::{
-    SecretText, YtDlpRequestFragment, YtDlpRequestMaterial, YtDlpRequestMaterialV1,
-    YtDlpRequestMaterialViolation,
+    SecretText, YtDlpCookieMaterialRef, YtDlpRequestFragment, YtDlpRequestMaterial,
+    YtDlpRequestMaterialV1, YtDlpRequestMaterialViolation,
 };
 
 /// Fixed comparison origin; эта строка никогда не используется для запроса.
@@ -187,11 +187,11 @@ impl fmt::Debug for YtDlpDashFragment<'_> {
 pub struct YtDlpDashRequestContext<'material> {
     /// Validated request material.
     material: &'material YtDlpRequestMaterialV1,
-    /// Единственная effective Cookie serialization.
-    serialized_cookies: Option<&'material SecretText>,
+    /// Единственная effective Cookie форма.
+    cookies: Option<YtDlpCookieMaterialRef<'material>>,
 }
 
-impl YtDlpDashRequestContext<'_> {
+impl<'material> YtDlpDashRequestContext<'material> {
     /// Итерирует headers кроме Cookie, которому выделена отдельная boundary.
     pub fn headers(&self) -> impl Iterator<Item = (&str, &str)> {
         self.material
@@ -201,10 +201,15 @@ impl YtDlpDashRequestContext<'_> {
             .map(|(name, value)| (name.as_str(), value.expose_secret_for_transport()))
     }
 
-    /// Возвращает effective Cookie serialization.
+    /// Возвращает effective Cookie intent без flattening scope attributes.
+    pub(crate) const fn cookies(&self) -> Option<YtDlpCookieMaterialRef<'material>> {
+        self.cookies
+    }
+
+    /// Возвращает legacy request-header форму для focused compatibility tests.
     pub fn serialized_cookies(&self) -> Option<&str> {
-        self.serialized_cookies
-            .map(SecretText::expose_secret_for_transport)
+        self.cookies
+            .and_then(YtDlpCookieMaterialRef::request_header)
     }
 }
 
@@ -213,7 +218,7 @@ impl fmt::Debug for YtDlpDashRequestContext<'_> {
         formatter
             .debug_struct("YtDlpDashRequestContext")
             .field("header_count", &self.headers().count())
-            .field("has_cookies", &self.serialized_cookies.is_some())
+            .field("has_cookies", &self.cookies.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -273,7 +278,7 @@ impl YtDlpDashRequestMaterial<'_> {
         same_manifest
             && self.request_context.material.http_headers
                 == other.request_context.material.http_headers
-            && self.request_context.serialized_cookies == other.request_context.serialized_cookies
+            && self.request_context.cookies == other.request_context.cookies
             && self.segment_query == other.segment_query
     }
 }
@@ -373,7 +378,7 @@ pub(super) fn dash_request_material(
         input,
         request_context: YtDlpDashRequestContext {
             material,
-            serialized_cookies: authorization.serialized_cookies,
+            cookies: authorization.cookies(),
         },
         segment_query: material.extra_param_to_segment_url.as_ref(),
     })
@@ -498,7 +503,9 @@ mod tests {
             hls_media_playlist_data: None,
             http_headers,
             http_range_request_limit: None,
-            cookies: Some(secret("session=top-secret")),
+            cookies: Some(super::super::YtDlpCookieMaterial::RequestHeader(secret(
+                "session=top-secret",
+            ))),
             extra_param_to_segment_url: Some(secret("token=top-secret")),
             extra_param_to_key_url: None,
             hls_aes: None,

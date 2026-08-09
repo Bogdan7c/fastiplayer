@@ -8,6 +8,55 @@ use crate::buffer::PrefetchBufferState;
 /// Частота, с которой foreground wait проверяет внешний cancellation token.
 const FOREGROUND_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+/// Единственный активный fetch вместе с диапазоном, который он должен материализовать.
+///
+/// Range хранится рядом с cancellation token-ом, чтобы foreground seek не мог
+/// принять решение по одному из этих состояний, не увидев второе под тем же mutex-ом.
+#[derive(Debug, Clone)]
+pub(crate) struct ActivePrefetchFetch {
+    /// Token отмены только этого blocking чтения inner source-а.
+    cancellation: CancellationToken,
+
+    /// Absolute offset первого запрошенного byte-а.
+    start_offset: u64,
+
+    /// Exclusive верхняя граница запрошенного диапазона.
+    end_offset_exclusive: u64,
+}
+
+impl ActivePrefetchFetch {
+    /// Создаёт active fetch из exact worker request-а без риска arithmetic overflow.
+    #[must_use]
+    pub(crate) fn new(start_offset: u64, requested_len: usize) -> Self {
+        let requested_len = u64::try_from(requested_len)
+            .expect("prefetch requested length должен помещаться в u64");
+        Self {
+            cancellation: CancellationToken::new(),
+            start_offset,
+            end_offset_exclusive: start_offset.saturating_add(requested_len),
+        }
+    }
+
+    /// Возвращает worker-у клон token-а для единственного inner read-а.
+    #[must_use]
+    pub(crate) fn cancellation(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
+
+    /// Проверяет, может ли ещё не отменённый fetch удовлетворить forward seek.
+    #[must_use]
+    pub(crate) fn can_materialize(&self, offset: u64) -> bool {
+        !self.cancellation.is_cancelled()
+            && offset >= self.start_offset
+            && offset < self.end_offset_exclusive
+    }
+
+    /// Отменяет только текущий blocking fetch, не затрагивая lifecycle worker-а.
+    pub(crate) fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+}
+
 /// Снимок counters, полезный для проверки и runtime diagnostics.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PrefetchDiagnostics {
@@ -36,8 +85,8 @@ pub(crate) struct PrefetchSharedState {
     /// Запрос foreground-а переставить worker на новый absolute offset.
     pub seek_request: Option<u64>,
 
-    /// Token выбранного fetch-а; `None` означает, что foreground сейчас нечего отменять.
-    pub fetch_cancellation: Option<CancellationToken>,
+    /// Выбранный fetch; `None` означает, что foreground сейчас нечего coalesce/cancel-ить.
+    pub active_fetch: Option<ActivePrefetchFetch>,
 
     /// Последняя fatal ошибка worker-а, которую foreground должен увидеть как `read` error.
     pub fatal_error: Option<SourceError>,
@@ -47,6 +96,31 @@ pub(crate) struct PrefetchSharedState {
 
     /// Накопленные counters prefetch-слоя.
     pub diagnostics: PrefetchDiagnostics,
+}
+
+impl PrefetchSharedState {
+    /// Переносит logical cursor в ещё не опубликованную часть active fetch-а.
+    ///
+    /// Возвращаемое значение описывает exact intent: `true` означает, что seek
+    /// уже будет удовлетворён текущим request-ом и reset/cancel не требуется.
+    pub(crate) fn stage_forward_seek_into_active_fetch(&mut self, offset: u64) -> bool {
+        let active_fetch_will_materialize_offset = self
+            .active_fetch
+            .as_ref()
+            .is_some_and(|active_fetch| active_fetch.can_materialize(offset));
+        if !active_fetch_will_materialize_offset {
+            return false;
+        }
+
+        let buffered_end = self.buffer.buffered_end();
+        self.buffer.stage_cursor_ahead(offset);
+        tracing::debug!(
+            offset,
+            buffered_end,
+            "media prefetch foreground seek присоединился к active fetch"
+        );
+        true
+    }
 }
 
 /// Mutex + Condvar boundary для foreground source и background worker.
@@ -67,7 +141,7 @@ impl PrefetchShared {
             state: Mutex::new(PrefetchSharedState {
                 buffer,
                 seek_request: None,
-                fetch_cancellation: None,
+                active_fetch: None,
                 fatal_error: None,
                 shutdown: false,
                 diagnostics: PrefetchDiagnostics::default(),

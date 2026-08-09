@@ -54,6 +54,7 @@ impl AdaptiveHttpContext {
             request.secrets().scope().request_scope_proof(),
             http_target,
             initial_material.cookies_for_request(),
+            initial_material.cookie_seeds_for_request(),
         )
         .map_err(map_cookie_jar_error)?;
         let session = HttpSourceSession::new_with_cookie_jar(source_config, Arc::new(cookie_jar))?;

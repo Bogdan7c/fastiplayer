@@ -91,5 +91,7 @@ render-wgpu-shell.workspace = true
 render-wgpu-video.workspace = true
 
 [dev-dependencies]
+base64 = "0.22"
 codec-core.workspace = true
+flate2 = "1"
 tempfile = "3"

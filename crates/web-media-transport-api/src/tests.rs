@@ -3,8 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use source_core::{
-    CancellationToken, HttpHeader, HttpPathScope, HttpRequestTarget, HttpScheme, SourceError,
-    SourceResult, StreamingByteSource, ValidatedHttpHeaders,
+    CancellationToken, HttpCookieSeed, HttpHeader, HttpPathScope, HttpRequestTarget, HttpScheme,
+    SourceError, SourceResult, StreamingByteSource, ValidatedHttpHeaders,
 };
 use web_media_core::{
     CandidateFormatIdentity, CandidateIdentity, ExtractionGeneration, SemanticIdentity,
@@ -258,6 +258,15 @@ fn secret_context_enforces_origin_path_secure_and_purpose_scope() {
         "Bearer header-secret",
     )])
     .expect("valid auth header");
+    let cookie_seed = HttpCookieSeed::builder("scoped", "seed-secret")
+        .expect("valid scoped cookie pair")
+        .for_domain("media.example.test")
+        .expect("valid scoped cookie domain")
+        .with_path("/private/video")
+        .expect("valid scoped cookie path")
+        .secure_only()
+        .build()
+        .expect("complete scoped cookie seed");
     let context = SecretRequestContext::builder(SecretRequestScope::from_target(
         &initial,
         HttpPathScope::new("/private/video").expect("valid path scope"),
@@ -265,6 +274,7 @@ fn secret_context_enforces_origin_path_secure_and_purpose_scope() {
     .with_headers(headers)
     .with_serialized_cookies("session=cookie-secret")
     .expect("valid serialized cookies")
+    .with_scoped_cookie_seeds([cookie_seed])
     .with_request_data(b"request-data-secret".to_vec())
     .with_segment_query_override(
         SecretQueryOverride::new("segment_token=segment-secret").expect("valid segment query"),
@@ -284,6 +294,11 @@ fn secret_context_enforces_origin_path_secure_and_purpose_scope() {
     assert_eq!(
         segment_material.cookies_for_request(),
         Some(b"session=cookie-secret".as_slice())
+    );
+    assert_eq!(
+        segment_material.cookie_seeds_for_request().len(),
+        1,
+        "готовый Cookie header и scoped seeds обязаны оставаться разными intents"
     );
     assert!(segment_material.request_data_for_request().is_none());
     assert_eq!(
@@ -468,6 +483,15 @@ fn debug_and_errors_do_not_expose_request_secrets() {
     )
     .with_serialized_cookies("session=cookie-secret")
     .expect("valid cookies")
+    .with_scoped_cookie_seeds([HttpCookieSeed::builder("scoped", "seed-secret")
+        .expect("valid scoped cookie pair")
+        .for_domain("media.example.test")
+        .expect("valid scoped cookie domain")
+        .with_path("/private")
+        .expect("valid scoped cookie path")
+        .secure_only()
+        .build()
+        .expect("complete scoped cookie seed")])
     .with_request_data(b"body-secret".to_vec())
     .with_segment_query_override(
         SecretQueryOverride::new("signature=query-secret").expect("valid query override"),
@@ -491,6 +515,7 @@ fn debug_and_errors_do_not_expose_request_secrets() {
         "url-secret",
         "header-secret",
         "cookie-secret",
+        "seed-secret",
         "body-secret",
         "query-secret",
         "format-secret",
@@ -508,6 +533,7 @@ fn debug_and_errors_do_not_expose_request_secrets() {
         "url-secret",
         "header-secret",
         "cookie-secret",
+        "seed-secret",
         "body-secret",
         "query-secret",
         "format-secret",

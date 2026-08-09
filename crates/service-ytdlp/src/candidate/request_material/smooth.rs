@@ -5,7 +5,8 @@ use std::fmt;
 use url::Url;
 
 use super::{
-    SecretText, YtDlpRequestMaterial, YtDlpRequestMaterialV1, YtDlpRequestMaterialViolation,
+    SecretText, YtDlpCookieMaterialRef, YtDlpRequestMaterial, YtDlpRequestMaterialV1,
+    YtDlpRequestMaterialViolation,
 };
 
 /// Категория serialized material, которую ISM manifest projection обязана отклонить.
@@ -69,11 +70,11 @@ pub struct YtDlpSmoothManifestRequestMaterial<'material> {
     target: &'material SecretText,
     /// Owner material нужен только для validated non-Cookie headers.
     material: &'material YtDlpRequestMaterialV1,
-    /// Единственная effective Cookie serialization после S26 conflict checks.
-    serialized_cookies: Option<&'material str>,
+    /// Единственная effective Cookie форма после S26 conflict checks.
+    cookies: Option<YtDlpCookieMaterialRef<'material>>,
 }
 
-impl YtDlpSmoothManifestRequestMaterial<'_> {
+impl<'material> YtDlpSmoothManifestRequestMaterial<'material> {
     /// Раскрывает authoritative manifest target только concrete fetch projection-у.
     #[must_use]
     pub fn manifest_target_for_fetch(&self) -> &str {
@@ -89,9 +90,9 @@ impl YtDlpSmoothManifestRequestMaterial<'_> {
             .map(|(name, value)| (name.as_str(), value.expose_secret_for_transport()))
     }
 
-    /// Возвращает единственную доказанную serialized Cookie форму.
-    pub(crate) const fn serialized_cookies(&self) -> Option<&str> {
-        self.serialized_cookies
+    /// Возвращает единственную доказанную Cookie форму.
+    pub(crate) const fn cookies(&self) -> Option<YtDlpCookieMaterialRef<'material>> {
+        self.cookies
     }
 }
 
@@ -100,7 +101,7 @@ impl fmt::Debug for YtDlpSmoothManifestRequestMaterial<'_> {
         formatter
             .debug_struct("YtDlpSmoothManifestRequestMaterial")
             .field("header_count", &self.headers().count())
-            .field("has_serialized_cookies", &self.serialized_cookies.is_some())
+            .field("has_cookies", &self.cookies.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -120,9 +121,7 @@ pub(super) fn smooth_manifest_request_material(
     Ok(YtDlpSmoothManifestRequestMaterial {
         target,
         material,
-        serialized_cookies: authorization
-            .serialized_cookies
-            .map(SecretText::expose_secret_for_transport),
+        cookies: authorization.cookies(),
     })
 }
 
@@ -387,7 +386,9 @@ mod tests {
         material
             .http_headers
             .insert("Cookie".to_owned(), secret("header=secret"));
-        material.cookies = Some(secret("field=secret"));
+        material.cookies = Some(super::super::YtDlpCookieMaterial::RequestHeader(secret(
+            "field=secret",
+        )));
 
         assert!(matches!(
             YtDlpRequestMaterial::V1(material.clone()).smooth_manifest_request_material(),
@@ -405,7 +406,9 @@ mod tests {
         material
             .http_headers
             .insert("Authorization".to_owned(), secret("Bearer header-secret"));
-        material.cookies = Some(secret("session=cookie-secret"));
+        material.cookies = Some(super::super::YtDlpCookieMaterial::RequestHeader(secret(
+            "session=cookie-secret",
+        )));
         let projected = secret_request
             .smooth_manifest_request_material()
             .expect("secret material должно быть допустимо");

@@ -3,7 +3,8 @@
 use source_core::HttpRequestTarget;
 
 use super::{
-    SecretText, YtDlpRequestMaterial, YtDlpRequestMaterialV1, YtDlpRequestMaterialViolation,
+    SecretText, YtDlpCookieMaterialRef, YtDlpRequestMaterial, YtDlpRequestMaterialV1,
+    YtDlpRequestMaterialViolation,
 };
 
 /// Borrowed validated HDS root-manifest material.
@@ -12,8 +13,8 @@ pub struct YtDlpHdsManifestRequestMaterial<'candidate> {
     pub(super) target: &'candidate SecretText,
     /// Parent material remains the single owner of headers/cookies.
     pub(super) material: &'candidate YtDlpRequestMaterialV1,
-    /// Effective cookie serialization after conflict validation.
-    pub(super) serialized_cookies: Option<&'candidate SecretText>,
+    /// Effective cookie intent after conflict validation.
+    pub(super) cookies: Option<YtDlpCookieMaterialRef<'candidate>>,
 }
 
 impl<'candidate> YtDlpHdsManifestRequestMaterial<'candidate> {
@@ -30,10 +31,15 @@ impl<'candidate> YtDlpHdsManifestRequestMaterial<'candidate> {
             .map(|(name, value)| (name.as_str(), value.expose_secret_for_transport()))
     }
 
-    /// Returns effective scoped cookie serialization.
+    /// Returns effective cookie intent without flattening scope attributes.
+    pub(crate) const fn cookies(&self) -> Option<YtDlpCookieMaterialRef<'candidate>> {
+        self.cookies
+    }
+
+    /// Returns legacy request-header form for focused compatibility tests.
     pub fn serialized_cookies(&self) -> Option<&str> {
-        self.serialized_cookies
-            .map(SecretText::expose_secret_for_transport)
+        self.cookies
+            .and_then(YtDlpCookieMaterialRef::request_header)
     }
 }
 
@@ -44,7 +50,7 @@ impl std::fmt::Debug for YtDlpHdsManifestRequestMaterial<'_> {
             .debug_struct("YtDlpHdsManifestRequestMaterial")
             .field("has_manifest_target", &true)
             .field("header_count", &self.material.http_headers.len())
-            .field("has_cookies", &self.serialized_cookies.is_some())
+            .field("has_cookies", &self.cookies.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -98,7 +104,7 @@ pub(super) fn hds_manifest_request_material(
     Ok(YtDlpHdsManifestRequestMaterial {
         target,
         material,
-        serialized_cookies: authorization.serialized_cookies,
+        cookies: authorization.cookies(),
     })
 }
 
@@ -144,7 +150,9 @@ mod tests {
         material
             .http_headers
             .insert("User-Agent".to_owned(), secret("fixture-agent"));
-        material.cookies = Some(secret("session=fixture"));
+        material.cookies = Some(super::super::YtDlpCookieMaterial::RequestHeader(secret(
+            "session=fixture",
+        )));
 
         let hds = request
             .hds_manifest_request_material()

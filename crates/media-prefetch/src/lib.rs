@@ -7,6 +7,7 @@
 
 pub mod buffer;
 mod config;
+mod seek;
 mod shared;
 mod source;
 mod worker;

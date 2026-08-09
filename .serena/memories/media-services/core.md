@@ -1,3 +1,10 @@
+## YtDlp scoped cookies + Ogg active-prefetch correction (2026-08-09)
+
+- Pinned yt-dlp scoped cookie records now remain distinct from ready request Cookie headers through service normalization, neutral transport and per-source RFC cookie jar projection.
+- Seekable forward seek inside an already active prefetch range coalesces without cancel/refetch; out-of-range and NotSeekable semantics remain unchanged. Generic Symphonia eager probe restores concrete source failures instead of masking them as unsupported format, then disables observation for runtime.
+- Real Wikimedia Ogg/Vorbis reaches production decoder, CPAL AudioOutput and started stream; vertical request-bounded regression reaches PCM with exactly the initial probe plus two contiguous ranges.
+- Full ownership, invariants and test locations: `mem:media-services/ytdlp-scoped-cookies-prefetch-ogg-2026-08-09`.
+
 ## Generic site open (2026-07-27)
 
 - Site-agnostic CF impersonate + cross-host platform-embed recovery + HLS codec-deferred planning: `mem:media-services/generic-site-open-2026-07-27`.

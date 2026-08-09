@@ -3,8 +3,8 @@
 use std::fmt;
 
 use source_core::{
-    HttpHeader, HttpHeaderValidationError, HttpPathScope, HttpRequestScope, HttpRequestTarget,
-    HttpScopeSecurity, ValidatedHttpHeaders,
+    HttpCookieSeed, HttpHeader, HttpHeaderValidationError, HttpPathScope, HttpRequestScope,
+    HttpRequestTarget, HttpScopeSecurity, ValidatedHttpHeaders,
 };
 
 /// Требование к transport security при forwarding secrets.
@@ -151,8 +151,10 @@ pub struct SecretRequestContext {
     scope: SecretRequestScope,
     /// Проверенные serialized headers.
     headers: ValidatedHttpHeaders,
-    /// Serialized Cookie header value.
-    cookies: Option<SecretPayload>,
+    /// Уже готовый serialized request Cookie header value.
+    cookie_header: Option<SecretPayload>,
+    /// Response-style cookies с отдельными Domain/Path/Secure/expiry scopes.
+    cookie_seeds: Box<[HttpCookieSeed]>,
     /// Serialized request body только initial component request-а.
     request_data: Option<SecretPayload>,
     /// Query addition только media segment URL.
@@ -180,7 +182,8 @@ impl SecretRequestContext {
         SecretRequestContextBuilder {
             scope,
             headers: ValidatedHttpHeaders::new(Vec::new()).expect("empty HTTP header set is valid"),
-            cookies: None,
+            cookie_header: None,
+            cookie_seeds: Box::new([]),
             request_data: None,
             segment_query: None,
             key_query: None,
@@ -191,7 +194,8 @@ impl SecretRequestContext {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.headers.is_empty()
-            && self.cookies.is_none()
+            && self.cookie_header.is_none()
+            && self.cookie_seeds.is_empty()
             && self.request_data.is_none()
             && self.segment_query.is_none()
             && self.key_query.is_none()
@@ -217,7 +221,8 @@ impl SecretRequestContext {
         };
         Some(ScopedSecretRequestMaterial {
             headers: &self.headers,
-            cookies: self.cookies.as_ref(),
+            cookie_header: self.cookie_header.as_ref(),
+            cookie_seeds: &self.cookie_seeds,
             request_data,
             query_override,
         })
@@ -237,7 +242,8 @@ impl fmt::Debug for SecretRequestContext {
             .debug_struct("SecretRequestContext")
             .field("scope", &self.scope)
             .field("header_count", &self.headers.len())
-            .field("has_cookies", &self.cookies.is_some())
+            .field("has_cookie_header", &self.cookie_header.is_some())
+            .field("cookie_seed_count", &self.cookie_seeds.len())
             .field("has_request_data", &self.request_data.is_some())
             .field("has_segment_query", &self.segment_query.is_some())
             .field("has_key_query", &self.key_query.is_some())
@@ -251,8 +257,10 @@ pub struct SecretRequestContextBuilder {
     scope: SecretRequestScope,
     /// Validated headers.
     headers: ValidatedHttpHeaders,
-    /// Serialized cookies.
-    cookies: Option<SecretPayload>,
+    /// Уже готовый serialized request Cookie header.
+    cookie_header: Option<SecretPayload>,
+    /// Typed response-style cookie seeds.
+    cookie_seeds: Box<[HttpCookieSeed]>,
     /// Serialized request body.
     request_data: Option<SecretPayload>,
     /// Segment query addition.
@@ -276,8 +284,21 @@ impl SecretRequestContextBuilder {
     ) -> Result<Self, HttpHeaderValidationError> {
         let cookies = cookies.into();
         ValidatedHttpHeaders::new(vec![HttpHeader::new("Cookie", cookies.clone())])?;
-        self.cookies = Some(SecretPayload::new(cookies.into_bytes()));
+        self.cookie_header = Some(SecretPayload::new(cookies.into_bytes()));
         Ok(self)
+    }
+
+    /// Устанавливает уже проверенные scoped cookie seeds без flattening scope attributes.
+    #[must_use]
+    pub fn with_scoped_cookie_seeds(
+        mut self,
+        cookie_seeds: impl IntoIterator<Item = HttpCookieSeed>,
+    ) -> Self {
+        self.cookie_seeds = cookie_seeds
+            .into_iter()
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        self
     }
 
     /// Устанавливает opaque serialized request body.
@@ -307,7 +328,8 @@ impl SecretRequestContextBuilder {
         SecretRequestContext {
             scope: self.scope,
             headers: self.headers,
-            cookies: self.cookies,
+            cookie_header: self.cookie_header,
+            cookie_seeds: self.cookie_seeds,
             request_data: self.request_data,
             segment_query: self.segment_query,
             key_query: self.key_query,
@@ -319,8 +341,10 @@ impl SecretRequestContextBuilder {
 pub struct ScopedSecretRequestMaterial<'a> {
     /// Validated headers.
     headers: &'a ValidatedHttpHeaders,
-    /// Optional serialized cookies.
-    cookies: Option<&'a SecretPayload>,
+    /// Optional serialized request Cookie header.
+    cookie_header: Option<&'a SecretPayload>,
+    /// Scoped response-style cookie seeds.
+    cookie_seeds: &'a [HttpCookieSeed],
     /// Initial-resource-only request body.
     request_data: Option<&'a SecretPayload>,
     /// Purpose-selected segment/key query addition.
@@ -337,7 +361,13 @@ impl ScopedSecretRequestMaterial<'_> {
     /// Раскрывает serialized Cookie value concrete request builder-у.
     #[must_use]
     pub fn cookies_for_request(&self) -> Option<&[u8]> {
-        self.cookies.map(SecretPayload::expose_for_request)
+        self.cookie_header.map(SecretPayload::expose_for_request)
+    }
+
+    /// Раскрывает scoped cookie seeds только concrete per-source jar-у.
+    #[must_use]
+    pub const fn cookie_seeds_for_request(&self) -> &[HttpCookieSeed] {
+        self.cookie_seeds
     }
 
     /// Раскрывает request body только primary-resource request-у.
@@ -359,7 +389,8 @@ impl fmt::Debug for ScopedSecretRequestMaterial<'_> {
         formatter
             .debug_struct("ScopedSecretRequestMaterial")
             .field("header_count", &self.headers.len())
-            .field("has_cookies", &self.cookies.is_some())
+            .field("has_cookie_header", &self.cookie_header.is_some())
+            .field("cookie_seed_count", &self.cookie_seeds.len())
             .field("has_request_data", &self.request_data.is_some())
             .field("has_query_override", &self.query_override.is_some())
             .finish()

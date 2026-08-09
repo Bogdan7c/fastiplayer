@@ -148,6 +148,7 @@ dependencies = [
  "atomic-file-store",
  "audio",
  "audio-signalsmith",
+ "base64",
  "bounded-work-executor",
  "bounded-xml-reader",
  "capability-core",
@@ -157,6 +158,7 @@ dependencies = [
  "desktop-integration",
  "egui",
  "egui-winit",
+ "flate2",
  "flv-demux",
  "frame-server-core",
  "hds-manifest-core",
@@ -4603,6 +4605,7 @@ dependencies = [
 name = "source-core"
 version = "0.1.0"
 dependencies = [
+ "cookie",
  "percent-encoding",
  "rcgen",
  "reqwest",

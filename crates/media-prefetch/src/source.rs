@@ -9,6 +9,7 @@ use source_core::{
 
 use crate::buffer::PrefetchBufferState;
 use crate::config::PrefetchConfig;
+use crate::seek::apply_prefetch_seek;
 use crate::shared::{PrefetchDiagnostics, PrefetchShared};
 use crate::worker::PrefetchWorker;
 
@@ -175,50 +176,12 @@ impl ByteSource for PrefetchingByteSource {
     }
 
     fn seek(&mut self, offset: u64) -> SourceResult<()> {
-        let mut state = self.shared.lock_state();
-        let buffered_end = state.buffer.buffered_end();
-        let offset_is_buffered = state.buffer.contains(offset) || offset == buffered_end;
-
-        if offset_is_buffered {
-            state.buffer.set_cursor_within(offset);
-            self.logical_position = offset;
-            tracing::debug!(
-                offset,
-                buffered_end,
-                "media prefetch foreground seek остался внутри RAM window"
-            );
-            self.shared.notify_all();
-            return Ok(());
-        }
-
-        if let Seekability::NotSeekable { reason } = &self.seekability {
-            if offset != self.logical_position {
-                return Err(SourceError::NotSeekable {
-                    reason: reason.clone(),
-                });
-            }
-
-            return Ok(());
-        }
-
-        state.buffer.reset_to(offset);
-        state.seek_request = Some(offset);
-        state.fatal_error = None;
-        // Отмена под тем же mutex-ом, что и `seek_request`, делает порядок видимым worker-у:
-        // когда `inner.read` вернёт Cancelled, новый offset уже лежит в shared state.
-        if let Some(fetch_cancellation) = &state.fetch_cancellation {
-            fetch_cancellation.cancel();
-        }
-        state.diagnostics.refetches = state.diagnostics.refetches.saturating_add(1);
-        self.logical_position = offset;
-        tracing::debug!(
+        apply_prefetch_seek(
+            self.shared.as_ref(),
+            &self.seekability,
+            &mut self.logical_position,
             offset,
-            previous_buffered_end = buffered_end,
-            refetches = state.diagnostics.refetches,
-            "media prefetch foreground seek запросил новое RAM window"
-        );
-        self.shared.notify_all();
-        Ok(())
+        )
     }
 
     fn position(&self) -> u64 {
@@ -249,8 +212,8 @@ impl Drop for PrefetchingByteSource {
             state.shutdown = true;
             // Worker больше не передаёт shutdown-token в `inner.read`, поэтому Drop обязан
             // отдельно отменить token текущего fetch-а перед join-ом.
-            if let Some(fetch_cancellation) = &state.fetch_cancellation {
-                fetch_cancellation.cancel();
+            if let Some(active_fetch) = &state.active_fetch {
+                active_fetch.cancel();
             }
         }
 
@@ -283,6 +246,9 @@ mod tests {
     use source_core::{NotSeekableReason, SourceFingerprint};
 
     use super::*;
+
+    #[path = "active_fetch.rs"]
+    mod active_fetch;
 
     /// Частота проверки test cancellation во время искусственно медленного fake read-а.
     const FAKE_READ_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(5);

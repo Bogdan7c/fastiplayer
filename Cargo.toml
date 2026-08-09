@@ -169,6 +169,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 time = { version = "0.3.53", default-features = false, features = ["parsing"] }
 symphonia = { version = "0.6", features = ["all-formats", "all-codecs", "all-meta"] }
 bytes = "1.0"
+cookie = "0.18"
 crossbeam-channel = "0.5"
 ringbuf = "0.4"
 rand = "0.10.2"

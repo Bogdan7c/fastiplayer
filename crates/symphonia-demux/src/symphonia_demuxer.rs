@@ -289,12 +289,15 @@ impl SymphoniaDemuxer {
         } else {
             MatroskaCueIndex::default()
         };
-        let media_source = ByteSourceMediaSource::new(Box::new(source));
+        let (media_source, failure_observer) =
+            ByteSourceMediaSource::new_observed(Box::new(source));
         let media_source_stream =
             MediaSourceStream::new(Box::new(media_source), Default::default());
 
         let hint = symphonia_api::hint_from_extension(extension_hint);
-        let format = symphonia_api::probe_format_reader(&hint, media_source_stream)?;
+        let format = symphonia_api::probe_format_reader(&hint, media_source_stream)
+            .map_err(|error| failure_observer.take_demux_error().unwrap_or(error))?;
+        failure_observer.finish_probe_success();
 
         Self::from_format_reader_with_probe_context(
             format,

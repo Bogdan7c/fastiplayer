@@ -14,7 +14,7 @@ use reqwest::{
 };
 use url::Url;
 
-use crate::{HttpRequestScope, HttpRequestTarget};
+use crate::{HttpCookieSeed, HttpRequestScope, HttpRequestTarget};
 
 /// Per-source in-memory cookie jar, который не может отправить cookie вне scope.
 pub struct ScopedHttpCookieJar {
@@ -29,11 +29,12 @@ pub struct ScopedHttpCookieJar {
 }
 
 impl ScopedHttpCookieJar {
-    /// Создаёт пустой jar и импортирует optional serialized `Cookie` header.
+    /// Создаёт jar из разных wire-intent форм, не смешивая их semantics.
     pub fn new(
         scope: HttpRequestScope,
         initial_target: &HttpRequestTarget,
         serialized_cookies: Option<&[u8]>,
+        cookie_seeds: &[HttpCookieSeed],
     ) -> Result<Self, ScopedHttpCookieJarError> {
         if !scope.allows(initial_target) {
             return Err(ScopedHttpCookieJarError::InitialTargetOutsideScope);
@@ -43,11 +44,12 @@ impl ScopedHttpCookieJar {
             .map(validate_serialized_cookie_header)
             .transpose()?
             .flatten();
+        let jar = seeded_cookie_jar(initial_target, cookie_seeds)?;
         Ok(Self {
             scope,
             initial_cookies,
             overridden_cookie_names: Mutex::new(BTreeSet::new()),
-            jar: Jar::default(),
+            jar,
         })
     }
 
@@ -56,6 +58,25 @@ impl ScopedHttpCookieJar {
         HttpRequestTarget::parse_exact(request_url.as_str())
             .is_ok_and(|target| self.scope.allows(&target))
     }
+}
+
+/// Импортирует каждый scoped seed отдельно и доказывает его применимость target-у.
+fn seeded_cookie_jar(
+    initial_target: &HttpRequestTarget,
+    cookie_seeds: &[HttpCookieSeed],
+) -> Result<Jar, ScopedHttpCookieJarError> {
+    let initial_url = Url::parse(initial_target.expose_secret_for_request())
+        .expect("HttpRequestTarget уже доказал абсолютный HTTP(S) URL");
+    let jar = Jar::default();
+    for cookie_seed in cookie_seeds {
+        let validation_jar = Jar::default();
+        validation_jar.add_cookie_str(cookie_seed.expose_set_cookie_for_jar(), &initial_url);
+        if validation_jar.cookies(&initial_url).is_none() {
+            return Err(ScopedHttpCookieJarError::InvalidSerializedCookies);
+        }
+        jar.add_cookie_str(cookie_seed.expose_set_cookie_for_jar(), &initial_url);
+    }
+    Ok(jar)
 }
 
 impl CookieStore for ScopedHttpCookieJar {
@@ -217,7 +238,7 @@ mod tests {
     use url::Url;
 
     use super::ScopedHttpCookieJar;
-    use crate::{HttpPathScope, HttpRequestScope, HttpRequestTarget};
+    use crate::{HttpCookieSeed, HttpPathScope, HttpRequestScope, HttpRequestTarget};
 
     /// Строит jar с exact `/media` path subtree для focused policy tests.
     fn scoped_jar() -> ScopedHttpCookieJar {
@@ -228,6 +249,7 @@ mod tests {
             HttpRequestScope::from_target(&target, path),
             &target,
             Some(b"session=initial-secret"),
+            &[],
         )
         .expect("test cookie jar must be valid")
     }
@@ -276,6 +298,7 @@ mod tests {
             HttpRequestScope::from_target(&target, path),
             &target,
             Some(b"session=first; session=second; stable=third"),
+            &[],
         )
         .expect("duplicate effective cookies remain serializable");
         let target_url = Url::parse("https://media.example.test/media/video.mp4")
@@ -299,6 +322,102 @@ mod tests {
         assert!(!refreshed.contains("session=second"));
         assert!(refreshed.contains("session=refreshed"));
         assert!(refreshed.contains("stable=third"));
+    }
+
+    /// Scoped seed отправляет только pair и сохраняет собственный Path/Secure scope.
+    #[test]
+    fn scoped_seed_uses_rfc_domain_path_and_secure_matching() {
+        let target =
+            HttpRequestTarget::parse_exact("https://media.example.test/media/private/video.ogg")
+                .expect("test target must remain valid");
+        let outer_path = HttpPathScope::new("/media").expect("test path must remain valid");
+        let seed = HttpCookieSeed::builder("session", "scoped-secret")
+            .expect("valid cookie pair")
+            .for_domain("media.example.test")
+            .expect("valid cookie domain")
+            .with_path("/media/private")
+            .expect("valid cookie path")
+            .secure_only()
+            .expires_at_unix_seconds(1_900_000_000)
+            .expect("valid future expiration")
+            .build()
+            .expect("complete cookie seed");
+        let jar = ScopedHttpCookieJar::new(
+            HttpRequestScope::from_target(&target, outer_path),
+            &target,
+            None,
+            &[seed],
+        )
+        .expect("scoped seed must apply to its initial target");
+
+        let allowed = Url::parse("https://media.example.test/media/private/chunk").unwrap();
+        let sibling = Url::parse("https://media.example.test/media/public/chunk").unwrap();
+        let downgrade = Url::parse("http://media.example.test/media/private/chunk").unwrap();
+        let serialized = jar
+            .cookies(&allowed)
+            .expect("matching target receives scoped cookie")
+            .to_str()
+            .expect("Cookie header remains ASCII")
+            .to_owned();
+
+        assert_eq!(serialized, "session=scoped-secret");
+        assert!(jar.cookies(&sibling).is_none());
+        assert!(jar.cookies(&downgrade).is_none());
+    }
+
+    /// Seed с domain, не применимым к initial target, не игнорируется молча.
+    #[test]
+    fn scoped_seed_rejects_mismatched_initial_domain() {
+        let target = HttpRequestTarget::parse_exact("https://media.example.test/media/video.ogg")
+            .expect("test target must remain valid");
+        let path = HttpPathScope::new("/media").expect("test path must remain valid");
+        let seed = HttpCookieSeed::builder("session", "wrong-domain-secret")
+            .expect("valid cookie pair")
+            .for_domain("cdn.example.test")
+            .expect("valid but mismatched cookie domain")
+            .build()
+            .expect("complete cookie seed");
+
+        let error = ScopedHttpCookieJar::new(
+            HttpRequestScope::from_target(&target, path),
+            &target,
+            None,
+            &[seed],
+        )
+        .expect_err("mismatched seed must fail before any request");
+        assert_eq!(
+            error,
+            super::ScopedHttpCookieJarError::InvalidSerializedCookies
+        );
+    }
+
+    /// Pinned Python `SimpleCookie` quoting не теряется при seed → jar → request переходе.
+    #[test]
+    fn scoped_seed_preserves_yt_dlp_quoted_cookie_value() {
+        let target = HttpRequestTarget::parse_exact("https://media.example.test/media/video.ogg")
+            .expect("test target must remain valid");
+        let path = HttpPathScope::new("/media").expect("test path must remain valid");
+        let seed = HttpCookieSeed::builder("escaped", r#""a\073b""#)
+            .expect("Python SimpleCookie wire value must remain valid")
+            .for_domain("media.example.test")
+            .expect("valid cookie domain")
+            .build()
+            .expect("complete quoted cookie seed");
+        let jar = ScopedHttpCookieJar::new(
+            HttpRequestScope::from_target(&target, path),
+            &target,
+            None,
+            &[seed],
+        )
+        .expect("quoted seed must apply to its initial target");
+        let serialized = jar
+            .cookies(&Url::parse(target.expose_secret_for_request()).unwrap())
+            .expect("matching target receives quoted cookie")
+            .to_str()
+            .expect("Cookie header remains ASCII")
+            .to_owned();
+
+        assert_eq!(serialized, r#"escaped="a\073b""#);
     }
 
     #[test]

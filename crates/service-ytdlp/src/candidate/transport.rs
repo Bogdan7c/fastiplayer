@@ -1,27 +1,33 @@
 //! Provider-neutral mapping S19 request material-а в S21T open requests.
 
+mod http_secret;
+
 use source_core::{
-    CancellationToken, FtpRequestTarget, HttpHeader, HttpHeaderValidationError, HttpPathScope,
-    HttpRequestTarget, ValidatedHttpHeaders,
+    CancellationToken, FtpRequestTarget, HttpHeaderValidationError, HttpPathScope,
+    HttpRequestTarget,
 };
 use thiserror::Error;
-use url::Url;
 use web_media_core::{CodecFamily, CodecKind, ContainerFamily, StreamLayout, TransportFamily};
 use web_media_transport_api::{
     MediaComponentIdentity, MediaComponentIdentityError, MediaComponentRole, MediaPresentation,
     RedirectHopLimit, RedirectHopLimitError, RedirectPolicy, SecretQueryOverrideError,
-    SecretRequestContext, SecretRequestScope, SourceGeneration, TransportOpenRequest,
-    TransportOpenRequestError, TransportProviderId,
+    SecretRequestScope, SourceGeneration, TransportOpenRequest, TransportOpenRequestError,
+    TransportProviderId,
+};
+
+use self::http_secret::{
+    dash_resource_path_scope, dash_transport_anchor, hds_resource_path_scope,
+    http_secret_context_builder, resource_directory_path_scope, smooth_manifest_secret_context,
 };
 
 use super::model::{
     YtDlpCandidateComponentRequest, YtDlpCandidateComponentRole, YtDlpNormalizedCandidate,
 };
 use super::request_material::{
-    YtDlpDashFragmentLocatorKind, YtDlpDashInputKind, YtDlpDashRequestMaterial,
-    YtDlpDashRequestMaterialViolation, YtDlpHdsManifestRequestMaterialViolation,
-    YtDlpHlsRequestMaterial, YtDlpHlsRequestMaterialViolation, YtDlpRequestMaterialViolation,
-    YtDlpSmoothManifestRequestMaterial, YtDlpSmoothManifestRequestMaterialViolation,
+    YtDlpDashRequestMaterial, YtDlpDashRequestMaterialViolation,
+    YtDlpHdsManifestRequestMaterialViolation, YtDlpHlsRequestMaterial,
+    YtDlpHlsRequestMaterialViolation, YtDlpRequestMaterialViolation,
+    YtDlpSmoothManifestRequestMaterialViolation,
 };
 
 /// Bounded redirect budget public CDN resource-а.
@@ -290,20 +296,11 @@ impl YtDlpNormalizedCandidate {
             .map_err(YtDlpTransportRequestError::Identity)?;
             let path_scope = dash_resource_path_scope(&material, &target)?;
             let secret_scope = SecretRequestScope::from_target(&target, path_scope);
-            let serialized_headers = material
-                .request_context()
-                .headers()
-                .map(|(name, value)| HttpHeader::new(name, value))
-                .collect::<Vec<_>>();
-            let serialized_headers = ValidatedHttpHeaders::new(serialized_headers)
-                .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
-            let mut secret_builder =
-                SecretRequestContext::builder(secret_scope).with_headers(serialized_headers);
-            if let Some(serialized_cookies) = material.request_context().serialized_cookies() {
-                secret_builder = secret_builder
-                    .with_serialized_cookies(serialized_cookies)
-                    .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
-            }
+            let mut secret_builder = http_secret_context_builder(
+                secret_scope,
+                material.request_context().headers(),
+                material.request_context().cookies(),
+            )?;
             secret_builder = material
                 .project_scoped_query(secret_builder)
                 .map_err(YtDlpTransportRequestError::DashQueryProjection)?;
@@ -373,19 +370,11 @@ impl YtDlpNormalizedCandidate {
         let path_scope = resource_directory_path_scope(&target)
             .ok_or(YtDlpTransportRequestError::HlsTargetResolution)?;
         let secret_scope = SecretRequestScope::from_target(&target, path_scope);
-        let serialized_headers = authorization_material
-            .headers()
-            .map(|(name, value)| HttpHeader::new(name, value))
-            .collect::<Vec<_>>();
-        let serialized_headers = ValidatedHttpHeaders::new(serialized_headers)
-            .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
-        let mut secret_builder =
-            SecretRequestContext::builder(secret_scope).with_headers(serialized_headers);
-        if let Some(serialized_cookies) = authorization_material.serialized_cookies() {
-            secret_builder = secret_builder
-                .with_serialized_cookies(serialized_cookies)
-                .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
-        }
+        let mut secret_builder = http_secret_context_builder(
+            secret_scope,
+            authorization_material.headers(),
+            authorization_material.cookies(),
+        )?;
         secret_builder = hls_material
             .project_scoped_queries(secret_builder)
             .map_err(YtDlpTransportRequestError::HlsQueryProjection)?;
@@ -424,19 +413,8 @@ impl YtDlpNormalizedCandidate {
         .map_err(YtDlpTransportRequestError::Identity)?;
         let path_scope = hds_resource_path_scope(&target)?;
         let secret_scope = SecretRequestScope::from_target(&target, path_scope);
-        let serialized_headers = material
-            .headers()
-            .map(|(name, value)| HttpHeader::new(name, value))
-            .collect::<Vec<_>>();
-        let serialized_headers = ValidatedHttpHeaders::new(serialized_headers)
-            .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
-        let mut secret_builder =
-            SecretRequestContext::builder(secret_scope).with_headers(serialized_headers);
-        if let Some(serialized_cookies) = material.serialized_cookies() {
-            secret_builder = secret_builder
-                .with_serialized_cookies(serialized_cookies)
-                .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
-        }
+        let secret_builder =
+            http_secret_context_builder(secret_scope, material.headers(), material.cookies())?;
         let redirect_limit = RedirectHopLimit::new(PUBLIC_MEDIA_REDIRECT_HOPS)
             .map_err(YtDlpTransportRequestError::RedirectLimit)?;
         TransportOpenRequest::new(
@@ -551,19 +529,11 @@ fn build_http_transport_component(
     let identity = component_identity(candidate, role)?;
     let path_scope = HttpPathScope::from_target_path(&target);
     let secret_scope = SecretRequestScope::from_target(&target, path_scope);
-    let serialized_headers = request_material
-        .headers()
-        .map(|(name, value)| HttpHeader::new(name, value))
-        .collect::<Vec<_>>();
-    let serialized_headers = ValidatedHttpHeaders::new(serialized_headers)
-        .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
-    let mut secret_builder =
-        SecretRequestContext::builder(secret_scope).with_headers(serialized_headers);
-    if let Some(serialized_cookies) = request_material.serialized_cookies() {
-        secret_builder = secret_builder
-            .with_serialized_cookies(serialized_cookies)
-            .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
-    }
+    let secret_builder = http_secret_context_builder(
+        secret_scope,
+        request_material.headers(),
+        request_material.cookies(),
+    )?;
     let redirect_limit = RedirectHopLimit::new(PUBLIC_MEDIA_REDIRECT_HOPS)
         .map_err(YtDlpTransportRequestError::RedirectLimit)?;
     let mut request = TransportOpenRequest::new(
@@ -714,122 +684,6 @@ fn hds_manifest_component(
         return Err(YtDlpTransportRequestError::HdsContainer);
     }
     Ok(component)
-}
-
-/// Собирает S26-compatible ephemeral headers/cookies для одного manifest source-а.
-fn smooth_manifest_secret_context(
-    material: &YtDlpSmoothManifestRequestMaterial<'_>,
-    target: &HttpRequestTarget,
-) -> Result<SecretRequestContext, YtDlpTransportRequestError> {
-    let path_scope = HttpPathScope::from_target_path(target);
-    let secret_scope = SecretRequestScope::from_target(target, path_scope);
-    let serialized_headers = material
-        .headers()
-        .map(|(name, value)| HttpHeader::new(name, value))
-        .collect::<Vec<_>>();
-    let serialized_headers = ValidatedHttpHeaders::new(serialized_headers)
-        .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
-    let mut secret_builder =
-        SecretRequestContext::builder(secret_scope).with_headers(serialized_headers);
-    if let Some(serialized_cookies) = material.serialized_cookies() {
-        secret_builder = secret_builder
-            .with_serialized_cookies(serialized_cookies)
-            .map_err(YtDlpTransportRequestError::AuthorizationSerialization)?;
-    }
-    Ok(secret_builder.build())
-}
-
-/// HDS hierarchy and fragment URLs share the manifest directory secret scope.
-fn hds_resource_path_scope(
-    target: &HttpRequestTarget,
-) -> Result<HttpPathScope, YtDlpTransportRequestError> {
-    resource_directory_path_scope(target).ok_or(YtDlpTransportRequestError::HdsTargetResolution)
-}
-
-/// Каталог playlist/manifest URL для secret forwarding на sibling media resources.
-fn resource_directory_path_scope(target: &HttpRequestTarget) -> Option<HttpPathScope> {
-    let parsed = Url::parse(target.expose_secret_for_request()).ok()?;
-    let path = parsed.path();
-    let directory = if path.ends_with('/') {
-        path.to_owned()
-    } else {
-        path.rsplit_once('/')
-            .map_or_else(|| "/".to_owned(), |(parent, _)| format!("{parent}/"))
-    };
-    HttpPathScope::new(directory).ok()
-}
-
-/// Выбирает request-scope anchor без fallback между authoritative inputs.
-fn dash_transport_anchor(
-    material: &YtDlpDashRequestMaterial<'_>,
-) -> Result<String, YtDlpTransportRequestError> {
-    match material.input().kind() {
-        YtDlpDashInputKind::Manifest => material
-            .input()
-            .manifest_url_for_fetch()
-            .map(ToOwned::to_owned)
-            .ok_or(YtDlpTransportRequestError::DashTargetResolution),
-        YtDlpDashInputKind::SerializedFragments => {
-            let fragment = material
-                .input()
-                .fragments()
-                .next()
-                .ok_or(YtDlpTransportRequestError::DashTargetResolution)?;
-            match fragment.locator_kind() {
-                YtDlpDashFragmentLocatorKind::AbsoluteUrl => {
-                    Ok(fragment.locator_for_transport().to_owned())
-                }
-                YtDlpDashFragmentLocatorKind::RelativePath => {
-                    let base = fragment
-                        .base_url_for_relative_resolution()
-                        .ok_or(YtDlpTransportRequestError::DashTargetResolution)?;
-                    let parsed_base = Url::parse(base)
-                        .map_err(|_| YtDlpTransportRequestError::DashTargetResolution)?;
-                    parsed_base
-                        .join(fragment.locator_for_transport())
-                        .map(|resolved| resolved.into())
-                        .map_err(|_| YtDlpTransportRequestError::DashTargetResolution)
-                }
-            }
-        }
-    }
-}
-
-/// Ограничивает DASH credentials директорией authoritative MPD/fragment base-а.
-///
-/// Exact-file scope progressive source-а недостаточен segmented transport-у:
-/// sibling init/media resources должны получить тот же fresh request context.
-/// Origin и HTTPS downgrade по-прежнему проверяет shared S21T boundary.
-fn dash_resource_path_scope(
-    material: &YtDlpDashRequestMaterial<'_>,
-    anchor: &HttpRequestTarget,
-) -> Result<HttpPathScope, YtDlpTransportRequestError> {
-    let scope_locator = if material.input().kind() == YtDlpDashInputKind::SerializedFragments {
-        material
-            .input()
-            .fragments()
-            .next()
-            .and_then(|fragment| {
-                fragment
-                    .base_url_for_relative_resolution()
-                    .map(ToOwned::to_owned)
-            })
-            .unwrap_or_else(|| anchor.expose_secret_for_request().to_owned())
-    } else {
-        anchor.expose_secret_for_request().to_owned()
-    };
-    let parsed_scope =
-        Url::parse(&scope_locator).map_err(|_| YtDlpTransportRequestError::DashTargetResolution)?;
-    let scope_path = parsed_scope.path();
-    let directory_path = if scope_path.ends_with('/') {
-        scope_path.to_owned()
-    } else {
-        let parent = scope_path
-            .rsplit_once('/')
-            .map_or("/", |(parent, _)| parent);
-        format!("{parent}/")
-    };
-    HttpPathScope::new(directory_path).map_err(|_| YtDlpTransportRequestError::DashTargetResolution)
 }
 
 /// Маппит service role в transport vocabulary без ordinal semantics.

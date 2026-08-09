@@ -17,6 +17,7 @@ mod ftp_session;
 mod http;
 mod http_bounded;
 mod http_cookie;
+mod http_cookie_seed;
 mod http_locator;
 mod http_policy;
 mod http_session;
@@ -41,6 +42,7 @@ pub use http_bounded::{
     HttpBoundedResponse, HttpRangeResponseMetadata,
 };
 pub use http_cookie::{ScopedHttpCookieJar, ScopedHttpCookieJarError};
+pub use http_cookie_seed::{HttpCookieSeed, HttpCookieSeedBuilder, HttpCookieSeedError};
 pub use http_locator::SecretHttpUrl;
 pub use http_policy::{
     HttpHeaderValidationError, HttpOrigin, HttpPathScope, HttpPathScopeError, HttpRequestScope,

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use source_core::{ByteSource, CancellationToken, Seekability, SourceError, SourceResult};
 
 use crate::config::PrefetchConfig;
-use crate::shared::PrefetchShared;
+use crate::shared::{ActivePrefetchFetch, PrefetchShared};
 
 /// Worker владеет единственным inner source и последовательно наполняет RAM-window.
 pub(crate) struct PrefetchWorker {
@@ -76,7 +76,7 @@ impl PrefetchWorker {
             }
 
             if self.cancellation.is_cancelled() {
-                self.clear_fetch_cancellation();
+                self.clear_active_fetch();
                 return;
             }
 
@@ -130,12 +130,16 @@ impl PrefetchWorker {
             }
 
             if state.fatal_error.is_none() && state.buffer.needs_fetch() {
-                let fetch_cancellation = CancellationToken::new();
-                debug_assert!(
-                    state.fetch_cancellation.is_none(),
-                    "fetch token должен очищаться после каждого завершённого fetch-а"
+                let active_fetch = ActivePrefetchFetch::new(
+                    state.buffer.next_fetch_offset(),
+                    self.current_chunk_len,
                 );
-                state.fetch_cancellation = Some(fetch_cancellation.clone());
+                let fetch_cancellation = active_fetch.cancellation();
+                debug_assert!(
+                    state.active_fetch.is_none(),
+                    "active fetch должен очищаться после каждого завершённого чтения"
+                );
+                state.active_fetch = Some(active_fetch);
                 return FetchDecision::Fetch {
                     offset: state.buffer.next_fetch_offset(),
                     cancellation: fetch_cancellation,
@@ -159,7 +163,7 @@ impl PrefetchWorker {
         };
 
         let mut state = self.shared.lock_state();
-        state.fetch_cancellation = None;
+        state.active_fetch = None;
         if !state.shutdown && !self.cancellation.is_cancelled() && state.seek_request.is_none() {
             state.fatal_error = Some(error);
             self.shared.notify_all();
@@ -172,7 +176,7 @@ impl PrefetchWorker {
     fn publish_read_result(&self, read_result: SourceResult<usize>, chunk_buffer: &[u8]) {
         let mut state = self.shared.lock_state();
         let seek_request_pending = state.seek_request.is_some();
-        state.fetch_cancellation = None;
+        state.active_fetch = None;
 
         if seek_request_pending {
             state.diagnostics.cancelled_fetches =
@@ -247,10 +251,10 @@ impl PrefetchWorker {
         }
     }
 
-    /// Очищает token fetch-а, если worker остановили между выбором offset-а и чтением source-а.
-    fn clear_fetch_cancellation(&self) {
+    /// Очищает active fetch, если worker остановили между выбором offset-а и чтением source-а.
+    fn clear_active_fetch(&self) {
         let mut state = self.shared.lock_state();
-        state.fetch_cancellation = None;
+        state.active_fetch = None;
     }
 }
 

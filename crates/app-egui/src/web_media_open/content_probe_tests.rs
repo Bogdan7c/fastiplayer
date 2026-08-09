@@ -37,6 +37,10 @@ use super::{YtDlpCandidateOpenIntent, prepare_yt_dlp_web_media};
 #[path = "../../../symphonia-demux/src/factory/tests/audio_fixtures.rs"]
 mod audio_fixtures;
 
+/// Отдельный модуль держит Vorbis fixture/vertical regression вне уже крупного test owner-а.
+#[path = "content_probe_tests/vorbis.rs"]
+mod vorbis;
+
 /// Маркер отличает изолированный child от owner test process-а без global env mutation.
 const CHILD_PROCESS_MARKER_ENV: &str = "RUSTIPLAYER_CONTENT_PROBE_CHILD";
 /// Fake extractor получает document только через своё дочернее окружение.
@@ -44,6 +48,11 @@ const YT_DLP_DOCUMENT_ENV: &str = "RUSTIPLAYER_CONTENT_PROBE_YTDLP_JSON";
 /// Exact libtest path не запускает соседние тесты внутри subprocess-а.
 const CHILD_TEST_NAME: &str =
     "web_media_open::content_probe_tests::http_ogg_opus_null_codecs_reach_production_pcm";
+/// Exact child path проверяет pinned scoped-cookie representation от yt-dlp до PCM.
+const SCOPED_COOKIE_CHILD_TEST_NAME: &str =
+    "web_media_open::content_probe_tests::yt_dlp_scoped_cookie_ogg_reaches_production_pcm";
+/// Fixture pair одновременно задаёт fake yt-dlp output и ожидание protected origin-а.
+const SCOPED_COOKIE_PAIR: &str = "session=content-probed-secret";
 /// Exact child path вертикально проверяет retry после typed content rejection.
 const FALLBACK_CHILD_TEST_NAME: &str =
     "web_media_open::content_probe_tests::best_playable_content_rejection_opens_second_real_ogg";
@@ -57,6 +66,20 @@ const DEMUX_EVENT_DEADLINE: Duration = Duration::from_secs(2);
 enum FixtureOriginResponse {
     /// Настоящий seekable Ogg resource обслуживает production Range transport.
     Ogg(Vec<u8>),
+    /// Ogg bytes выдаются только после exact request Cookie pair.
+    CookieProtectedOgg {
+        /// Настоящий seekable Ogg resource.
+        ogg_bytes: Vec<u8>,
+        /// Pair проверяется как отдельный элемент request Cookie header-а.
+        expected_cookie_pair: &'static str,
+    },
+    /// Origin разрешает только минимальный request budget короткого seekable resource-а.
+    RequestLimitedOgg {
+        /// Настоящий Ogg/Vorbis resource с padding-ом за container EOS.
+        ogg_bytes: Vec<u8>,
+        /// Число запросов, после которого fixture возвращает deterministic `429`.
+        maximum_successful_requests: usize,
+    },
     /// HTTP failure доказывает terminal ветку до demux/content proof-а.
     HttpFailure,
 }
@@ -77,6 +100,14 @@ impl RangeFixtureOrigin {
     /// Запускает hermetic HTTP origin только на loopback interface.
     fn spawn(ogg_bytes: Vec<u8>) -> Self {
         Self::spawn_with_response(FixtureOriginResponse::Ogg(ogg_bytes))
+    }
+
+    /// Запускает origin, который без заданной cookie pair не раскрывает Ogg bytes.
+    fn spawn_requiring_cookie(ogg_bytes: Vec<u8>, expected_cookie_pair: &'static str) -> Self {
+        Self::spawn_with_response(FixtureOriginResponse::CookieProtectedOgg {
+            ogg_bytes,
+            expected_cookie_pair,
+        })
     }
 
     /// Запускает origin, который всегда возвращает terminal HTTP status.
@@ -132,6 +163,11 @@ impl RangeFixtureOrigin {
         format!("http://{}/content-probed.ogg", self.address)
     }
 
+    /// Возвращает host для scoped-cookie fixture без чтения owner state снаружи.
+    fn cookie_domain(&self) -> String {
+        self.address.ip().to_string()
+    }
+
     /// Возвращает число полноценных requests без учёта wake-up соединения в `Drop`.
     fn request_count(&self) -> usize {
         self.request_count.load(Ordering::SeqCst)
@@ -166,15 +202,43 @@ fn respond_to_fixture_request(
     if request_length == 0 {
         return;
     }
-    request_count.fetch_add(1, Ordering::SeqCst);
+    let request_number = request_count.fetch_add(1, Ordering::SeqCst) + 1;
 
     let request = String::from_utf8_lossy(&request_bytes[..request_length]);
     match response {
         FixtureOriginResponse::Ogg(ogg_bytes) => {
             respond_to_range_request(stream, &request, ogg_bytes);
         }
+        FixtureOriginResponse::CookieProtectedOgg {
+            ogg_bytes,
+            expected_cookie_pair,
+        } if request_contains_cookie_pair(&request, expected_cookie_pair) => {
+            respond_to_range_request(stream, &request, ogg_bytes);
+        }
+        FixtureOriginResponse::CookieProtectedOgg { .. } => respond_to_http_failure(stream),
+        FixtureOriginResponse::RequestLimitedOgg {
+            ogg_bytes,
+            maximum_successful_requests,
+        } if request_number <= *maximum_successful_requests => {
+            respond_to_range_request(stream, &request, ogg_bytes);
+        }
+        FixtureOriginResponse::RequestLimitedOgg { .. } => respond_to_rate_limit(stream),
         FixtureOriginResponse::HttpFailure => respond_to_http_failure(stream),
     }
+}
+
+/// Ищет exact pair внутри request `Cookie` без зависимости от casing имени header-а.
+fn request_contains_cookie_pair(request: &str, expected_cookie_pair: &str) -> bool {
+    request.lines().any(|header_line| {
+        let Some((header_name, header_value)) = header_line.split_once(':') else {
+            return false;
+        };
+        header_name.eq_ignore_ascii_case("cookie")
+            && header_value
+                .split(';')
+                .map(str::trim)
+                .any(|cookie_pair| cookie_pair == expected_cookie_pair)
+    })
 }
 
 /// Возвращает exact requested byte interval настоящего Ogg resource-а.
@@ -210,6 +274,15 @@ fn respond_to_http_failure(stream: &mut TcpStream) {
         .expect("write ContentProbed HTTP failure");
 }
 
+/// Возвращает deterministic rate-limit вместо принятия лишнего Range request-а.
+fn respond_to_rate_limit(stream: &mut TcpStream) {
+    stream
+        .write_all(
+            b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .expect("write ContentProbed rate limit");
+}
+
 /// Разбирает только single bounded bytes range, который создаёт production provider.
 fn parse_range_header(header_line: &str) -> Option<(usize, usize)> {
     let (header_name, header_value) = header_line.split_once(':')?;
@@ -230,6 +303,17 @@ fn http_ogg_opus_null_codecs_reach_production_pcm() {
     }
 
     assert_owner_subprocess_succeeds();
+}
+
+/// Pinned yt-dlp scoped cookies доходят до origin как request pair, затем Ogg доходит до PCM.
+#[test]
+fn yt_dlp_scoped_cookie_ogg_reaches_production_pcm() {
+    if env::var_os(CHILD_PROCESS_MARKER_ENV).is_some() {
+        assert_child_content_probed_playback();
+        return;
+    }
+
+    assert_owner_scoped_cookie_playback();
 }
 
 /// Typed codec mismatch обязан открыть следующий planner-ranked real resource.
@@ -269,6 +353,27 @@ fn assert_owner_subprocess_succeeds() {
     let child_output =
         run_content_probe_child(fake_tools.path(), CHILD_TEST_NAME, extractor_document);
     assert_child_succeeded("single ContentProbed playback", &child_output);
+}
+
+/// Owner хранит protected origin, пока child проходит весь production playback path.
+fn assert_owner_scoped_cookie_playback() {
+    let origin =
+        RangeFixtureOrigin::spawn_requiring_cookie(ogg_opus_fixture().bytes, SCOPED_COOKIE_PAIR);
+    let fake_tools = TempDir::new().expect("create scoped-cookie fake-tools directory");
+    install_fake_yt_dlp(fake_tools.path());
+    let extractor_document =
+        yt_dlp_scoped_cookie_document(&origin.media_url(), &origin.cookie_domain());
+    let child_output = run_content_probe_child(
+        fake_tools.path(),
+        SCOPED_COOKIE_CHILD_TEST_NAME,
+        extractor_document,
+    );
+
+    assert_child_succeeded("scoped-cookie ContentProbed playback", &child_output);
+    assert!(
+        origin.request_count() > 0,
+        "protected origin должен получить production HTTP Range request"
+    );
 }
 
 /// Owner доказывает оба network attempts вокруг typed content rejection.
@@ -383,6 +488,13 @@ fn path_with_fake_tools_first(fake_tools_directory: &Path) -> OsString {
 fn yt_dlp_document(media_url: &str) -> String {
     format!(
         r#"{{"id":"content-probed-proof","title":"ContentProbed proof","formats":[{{"format_id":"content-probed-ogg","url":"{media_url}","protocol":"http","ext":"ogg","container":"ogg","vcodec":null,"acodec":null}}]}}"#
+    )
+}
+
+/// Формирует exact pinned yt-dlp cookie shape: pair и response-style scope attributes.
+fn yt_dlp_scoped_cookie_document(media_url: &str, cookie_domain: &str) -> String {
+    format!(
+        r#"{{"id":"content-probed-proof","title":"ContentProbed proof","formats":[{{"format_id":"content-probed-ogg","url":"{media_url}","protocol":"http","ext":"ogg","container":"ogg","vcodec":null,"acodec":null,"cookies":"{SCOPED_COOKIE_PAIR}; Domain={cookie_domain}; Path=/; Expires=1900000000"}}]}}"#
     )
 }
 

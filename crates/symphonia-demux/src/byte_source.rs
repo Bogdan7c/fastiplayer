@@ -1,8 +1,69 @@
 use std::io::{self, Read, Seek, SeekFrom};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use source_core::{ByteSource, CancellationToken, Seekability, SourceError};
 use symphonia::core::io::MediaSource;
+
+use crate::DemuxError;
+
+/// First-failure observer сохраняет concrete source error, которую Symphonia probe
+/// может проглотить и заменить misleading `no suitable format reader found`.
+#[derive(Clone, Default)]
+pub(crate) struct ByteSourceFailureObserver {
+    /// Состояние одной eager-probe фазы разделяется с adapter-ом.
+    state: Arc<Mutex<ByteSourceFailureObservationState>>,
+}
+
+/// Observer обязан отключиться после probe и не менять runtime error semantics.
+#[derive(Default)]
+struct ByteSourceFailureObservationState {
+    /// Ошибка хранится как `io::Error`, чтобы сохранить original `SourceError` в source chain.
+    first_failure: Option<io::Error>,
+
+    /// После завершения probe adapter возвращает обычную typed source chain.
+    probe_finished: bool,
+}
+
+impl ByteSourceFailureObserver {
+    /// Публикует только первую ошибку и возвращает отдельную копию для Symphonia.
+    fn observe(&self, error: SourceError) -> io::Error {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.probe_finished {
+            return source_error_to_io_error(error);
+        }
+
+        let error_kind = source_error_io_kind(&error);
+        let error_message = error.to_string();
+        let stored_error = source_error_to_io_error(error);
+        if state.first_failure.is_none() {
+            state.first_failure = Some(stored_error);
+        }
+        io::Error::new(error_kind, error_message)
+    }
+
+    /// Забирает concrete source failure после неудачного eager probe-а.
+    pub(crate) fn take_demux_error(&self) -> Option<DemuxError> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.probe_finished = true;
+        state.first_failure.take().map(DemuxError::Io)
+    }
+
+    /// Завершает успешный probe и восстанавливает обычное runtime error mapping.
+    pub(crate) fn finish_probe_success(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.probe_finished = true;
+        state.first_failure = None;
+    }
+}
 
 /// Symphonia-compatible wrapper поверх нейтрального `source-core::ByteSource`.
 ///
@@ -21,11 +82,29 @@ pub(crate) struct ByteSourceMediaSource {
 
     /// Token отмены будущих blocking reads.
     cancellation: CancellationToken,
+
+    /// Observer есть только у generic eager-probe path-а, который реально маскирует I/O.
+    failure_observer: Option<ByteSourceFailureObserver>,
 }
 
 impl ByteSourceMediaSource {
     /// Создаёт Symphonia source из уже настроенного byte source-а.
     pub(crate) fn new(source: Box<dyn ByteSource>) -> Self {
+        Self::with_failure_observer(source, None)
+    }
+
+    /// Создаёт adapter и handle для восстановления source error после eager probe-а.
+    pub(crate) fn new_observed(source: Box<dyn ByteSource>) -> (Self, ByteSourceFailureObserver) {
+        let failure_observer = ByteSourceFailureObserver::default();
+        let media_source = Self::with_failure_observer(source, Some(failure_observer.clone()));
+        (media_source, failure_observer)
+    }
+
+    /// Собирает adapter с caller-owned observer handle без дублирования snapshots.
+    fn with_failure_observer(
+        source: Box<dyn ByteSource>,
+        failure_observer: Option<ByteSourceFailureObserver>,
+    ) -> Self {
         let seekability = source.seekability();
         let content_length = source.content_length();
 
@@ -34,6 +113,15 @@ impl ByteSourceMediaSource {
             seekability,
             content_length,
             cancellation: CancellationToken::never_cancelled(),
+            failure_observer,
+        }
+    }
+
+    /// Сохраняет старый typed I/O chain вне generic probe observer path-а.
+    fn map_source_error(&self, error: SourceError) -> io::Error {
+        match &self.failure_observer {
+            Some(failure_observer) => failure_observer.observe(error),
+            None => source_error_to_io_error(error),
         }
     }
 }
@@ -47,7 +135,7 @@ impl Read for ByteSourceMediaSource {
 
         source
             .read(output, &self.cancellation)
-            .map_err(source_error_to_io_error)
+            .map_err(|error| self.map_source_error(error))
     }
 }
 
@@ -63,7 +151,7 @@ impl Seek for ByteSourceMediaSource {
 
         source
             .seek(target_position)
-            .map_err(source_error_to_io_error)?;
+            .map_err(|error| self.map_source_error(error))?;
 
         Ok(target_position)
     }
@@ -109,12 +197,17 @@ fn resolve_seek_position(
 
 /// Сохраняет source-layer ошибку внутри обычной `io::Error` для Symphonia.
 fn source_error_to_io_error(error: SourceError) -> io::Error {
+    io::Error::new(source_error_io_kind(&error), error)
+}
+
+/// Сохраняет прежнюю mapping semantics отдельно от ownership конкретной ошибки.
+fn source_error_io_kind(error: &SourceError) -> io::ErrorKind {
     match error {
-        SourceError::Cancelled => io::Error::new(io::ErrorKind::Interrupted, error),
+        SourceError::Cancelled => io::ErrorKind::Interrupted,
         SourceError::NotSeekable { .. } | SourceError::HttpRangeUnsupported { .. } => {
-            io::Error::new(io::ErrorKind::Unsupported, error)
+            io::ErrorKind::Unsupported
         }
-        other_error => io::Error::other(other_error),
+        _ => io::ErrorKind::Other,
     }
 }
 
@@ -123,11 +216,11 @@ mod tests {
     use std::io::{Read, Seek, SeekFrom};
 
     use source_core::{
-        ByteSource, CancellationToken, Seekability, SourceFingerprint, SourceResult,
+        ByteSource, CancellationToken, Seekability, SourceError, SourceFingerprint, SourceResult,
         SourceValidators,
     };
 
-    use super::ByteSourceMediaSource;
+    use super::{ByteSourceFailureObserver, ByteSourceMediaSource};
 
     struct MemoryByteSource {
         bytes: Vec<u8>,
@@ -229,5 +322,29 @@ mod tests {
             symphonia::core::io::MediaSource::byte_len(&media_source),
             Some(6)
         );
+    }
+
+    /// Успешный probe отключает observer и не обедняет runtime source error chain.
+    #[test]
+    fn failure_observer_preserves_typed_runtime_error_after_probe() {
+        let observer = ByteSourceFailureObserver::default();
+        observer.finish_probe_success();
+
+        let runtime_error = observer.observe(SourceError::UnexpectedEof {
+            offset: 4,
+            expected_bytes: 8,
+            actual_bytes: 2,
+        });
+
+        assert!(matches!(
+            runtime_error
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<SourceError>()),
+            Some(SourceError::UnexpectedEof {
+                offset: 4,
+                expected_bytes: 8,
+                actual_bytes: 2,
+            })
+        ));
     }
 }

@@ -8,11 +8,14 @@ use zeroize::Zeroizing;
 
 use super::raw::YtDlpSerializedFormat;
 
+mod cookies;
 mod dash;
 mod hds;
 mod hls;
 mod smooth;
 
+pub(super) use cookies::YtDlpCookieMaterialRef;
+use cookies::{YtDlpCookieMaterial, normalize_yt_dlp_cookies};
 pub use dash::{
     YtDlpDashFragment, YtDlpDashFragmentLocatorKind, YtDlpDashFragmentRole, YtDlpDashInput,
     YtDlpDashInputKind, YtDlpDashRequestContext, YtDlpDashRequestMaterial,
@@ -103,8 +106,8 @@ pub struct YtDlpRequestMaterialV1 {
     http_headers: BTreeMap<String, SecretText>,
     /// Нейтральный source-specific предел одного HTTP Range-запроса.
     http_range_request_limit: Option<HttpRangeRequestLimit>,
-    /// Scoped cookies.
-    cookies: Option<SecretText>,
+    /// Request-header либо scoped response-style cookies без смешения semantics.
+    cookies: Option<YtDlpCookieMaterial>,
     /// Segment query material.
     extra_param_to_segment_url: Option<SecretText>,
     /// Key query material.
@@ -278,17 +281,17 @@ pub(super) struct YtDlpProgressiveHttpRequestMaterial<'a> {
     material: &'a YtDlpRequestMaterialV1,
     /// Primary target, наличие которого доказал constructor.
     target: &'a SecretText,
-    /// Единственная effective Cookie serialization после conflict checks.
-    serialized_cookies: Option<&'a SecretText>,
+    /// Единственная effective Cookie форма после conflict checks.
+    cookies: Option<YtDlpCookieMaterialRef<'a>>,
 }
 
 /// Общая HTTP authorization projection без progressive/HLS profile guessing.
 pub(super) struct YtDlpHttpAuthorizationMaterial<'a> {
     material: &'a YtDlpRequestMaterialV1,
-    serialized_cookies: Option<&'a SecretText>,
+    cookies: Option<YtDlpCookieMaterialRef<'a>>,
 }
 
-impl YtDlpHttpAuthorizationMaterial<'_> {
+impl<'material> YtDlpHttpAuthorizationMaterial<'material> {
     pub(super) fn headers(&self) -> impl Iterator<Item = (&str, &str)> {
         self.material
             .http_headers
@@ -296,13 +299,13 @@ impl YtDlpHttpAuthorizationMaterial<'_> {
             .map(|(name, value)| (name.as_str(), value.expose_secret_for_transport()))
     }
 
-    pub(super) fn serialized_cookies(&self) -> Option<&str> {
-        self.serialized_cookies
-            .map(SecretText::expose_secret_for_transport)
+    /// Возвращает request-header либо scoped-seed форму без flattening.
+    pub(super) const fn cookies(&self) -> Option<YtDlpCookieMaterialRef<'material>> {
+        self.cookies
     }
 }
 
-impl YtDlpProgressiveHttpRequestMaterial<'_> {
+impl<'material> YtDlpProgressiveHttpRequestMaterial<'material> {
     /// Раскрывает primary target только transport request constructor-у.
     pub(super) fn target(&self) -> &str {
         self.target.expose_secret_for_transport()
@@ -317,10 +320,9 @@ impl YtDlpProgressiveHttpRequestMaterial<'_> {
             .map(|(name, value)| (name.as_str(), value.expose_secret_for_transport()))
     }
 
-    /// Возвращает единственную доказанную serialized Cookie форму.
-    pub(super) fn serialized_cookies(&self) -> Option<&str> {
-        self.serialized_cookies
-            .map(SecretText::expose_secret_for_transport)
+    /// Возвращает единственную доказанную Cookie форму.
+    pub(super) const fn cookies(&self) -> Option<YtDlpCookieMaterialRef<'material>> {
+        self.cookies
     }
 
     /// Возвращает проверенный source-specific предел одного HTTP Range-запроса.
@@ -341,18 +343,25 @@ impl YtDlpRequestMaterial {
             .filter(|(name, _value)| name.eq_ignore_ascii_case("cookie"))
             .map(|(_name, value)| value);
         let cookie_header = cookie_headers.next();
-        if cookie_headers.next().is_some()
-            || matches!(
-                (cookie_header, material.cookies.as_ref()),
-                (Some(header), Some(field)) if header != field
-            )
-        {
+        if cookie_headers.next().is_some() {
             return Err(YtDlpRequestMaterialViolation::ConflictingCookieMaterial);
         }
-        Ok(YtDlpHttpAuthorizationMaterial {
-            material,
-            serialized_cookies: material.cookies.as_ref().or(cookie_header),
-        })
+        let cookies = match (cookie_header, material.cookies.as_ref()) {
+            (None, None) => None,
+            (Some(header), None) => Some(YtDlpCookieMaterialRef::RequestHeader(
+                header.expose_secret_for_transport(),
+            )),
+            (None, Some(field)) => Some(field.as_ref()),
+            (Some(header), Some(YtDlpCookieMaterial::RequestHeader(field))) if header == field => {
+                Some(YtDlpCookieMaterialRef::RequestHeader(
+                    header.expose_secret_for_transport(),
+                ))
+            }
+            (Some(_), Some(_)) => {
+                return Err(YtDlpRequestMaterialViolation::ConflictingCookieMaterial);
+            }
+        };
+        Ok(YtDlpHttpAuthorizationMaterial { material, cookies })
     }
 
     /// Доказывает progressive HTTP subset и возвращает effective serialized auth.
@@ -372,7 +381,7 @@ impl YtDlpRequestMaterial {
         Ok(YtDlpProgressiveHttpRequestMaterial {
             material,
             target,
-            serialized_cookies: authorization.serialized_cookies,
+            cookies: authorization.cookies,
         })
     }
 
@@ -507,7 +516,7 @@ pub(super) fn normalize_request_material(
         http_range_request_limit: normalize_http_range_request_limit(
             format.downloader_options.as_ref(),
         )?,
-        cookies: normalize_cookies(format.cookies.as_ref())?,
+        cookies: normalize_yt_dlp_cookies(format.cookies.as_ref())?,
         extra_param_to_segment_url: optional_secret(
             format.extra_param_to_segment_url.clone(),
             MAX_REQUEST_SECRET_UTF8_BYTES,
@@ -680,21 +689,6 @@ fn normalize_headers(
             ))
         })
         .collect()
-}
-
-/// Нормализует serialized scoped cookie string.
-fn normalize_cookies(
-    raw_cookies: Option<&Value>,
-) -> Result<Option<SecretText>, YtDlpRequestMaterialViolation> {
-    let Some(raw_cookies) = raw_cookies else {
-        return Ok(None);
-    };
-    let Some(cookies) = raw_cookies.as_str() else {
-        return Err(YtDlpRequestMaterialViolation::InvalidCookies);
-    };
-    SecretText::bounded(cookies.to_owned(), MAX_REQUEST_SECRET_UTF8_BYTES)
-        .map(Some)
-        .map_err(|_| YtDlpRequestMaterialViolation::InvalidCookies)
 }
 
 /// Проверяет ограниченный serialized HLS AES object.

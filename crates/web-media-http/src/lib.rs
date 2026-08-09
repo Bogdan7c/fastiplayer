@@ -292,6 +292,7 @@ fn scoped_cookie_jar_for_request(
         request.secrets().scope().request_scope_proof(),
         http_target,
         initial_material.cookies_for_request(),
+        initial_material.cookie_seeds_for_request(),
     )
     .map_err(|error| match error {
         ScopedHttpCookieJarError::InitialTargetOutsideScope => {
@@ -345,7 +346,8 @@ fn request_material_for_target(
         (RequestBodyForwarding::Preserve | RequestBodyForwarding::Drop, None)
         | (RequestBodyForwarding::Drop, Some(_)) => HttpRequestBody::Absent,
     };
-    let has_scoped_cookies = material.cookies_for_request().is_some();
+    let has_scoped_cookies =
+        material.cookies_for_request().is_some() || !material.cookie_seeds_for_request().is_empty();
     let secret_delivery = if headers.is_empty() && !request_body.is_present() && !has_scoped_cookies
     {
         SecretDelivery::NotSent

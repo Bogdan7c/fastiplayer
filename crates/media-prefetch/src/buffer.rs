@@ -101,10 +101,11 @@ impl PrefetchBufferState {
         self.eof_offset = Some(self.buffered_end());
     }
 
-    /// Проверяет, стоит ли cursor ровно на известном EOF offset.
+    /// Проверяет, стоит ли cursor на известном EOF либо за ним после legal seek-а.
     #[must_use]
     pub fn is_eof_at_cursor(&self) -> bool {
-        self.eof_offset == Some(self.read_cursor)
+        self.eof_offset
+            .is_some_and(|eof_offset| self.read_cursor >= eof_offset)
     }
 
     /// Копирует bytes из cursor-а в `output`, продвигает cursor и удаляет устаревшие head chunks.
@@ -151,6 +152,19 @@ impl PrefetchBufferState {
 
         self.read_cursor = offset;
         self.evict_before_lookback();
+    }
+
+    /// Ставит logical cursor впереди готового буфера, пока active fetch несёт этот offset.
+    ///
+    /// Проверку диапазона active fetch-а выполняет `PrefetchingByteSource`, потому
+    /// buffer намеренно не знает о worker token/lifecycle. До append-а чтение будет
+    /// ждать на condvar; после append-а обычный `available_from_cursor` увидит bytes.
+    pub fn stage_cursor_ahead(&mut self, offset: u64) {
+        assert!(
+            offset > self.buffered_end(),
+            "staged cursor должен находиться строго впереди готового буфера"
+        );
+        self.read_cursor = offset;
     }
 
     /// Полностью сбрасывает буфер и начинает новый contiguous range с указанного offset.
@@ -379,5 +393,30 @@ mod tests {
         assert!(buffer.needs_fetch());
         assert!(!buffer.is_eof_at_cursor());
         assert!(!buffer.contains(41));
+    }
+
+    #[test]
+    fn staged_forward_cursor_reads_bytes_after_active_chunk_arrives() {
+        let mut buffer = PrefetchBufferState::new(0, 32, 16);
+        buffer.append_chunk((0_u8..8).collect());
+
+        buffer.stage_cursor_ahead(12);
+        assert_eq!(buffer.available_from_cursor(), 0);
+
+        buffer.append_chunk((8_u8..24).collect());
+        let mut output = [0_u8; 4];
+        assert_eq!(buffer.copy_to(&mut output), output.len());
+        assert_eq!(output, [12, 13, 14, 15]);
+    }
+
+    #[test]
+    fn staged_cursor_beyond_short_read_observes_upstream_eof() {
+        let mut buffer = PrefetchBufferState::new(0, 32, 16);
+        buffer.append_chunk((0_u8..8).collect());
+        buffer.stage_cursor_ahead(12);
+
+        buffer.mark_eof_at_fetch_offset();
+
+        assert!(buffer.is_eof_at_cursor());
     }
 }

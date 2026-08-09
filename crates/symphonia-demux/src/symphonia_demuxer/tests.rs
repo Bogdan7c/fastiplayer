@@ -49,6 +49,8 @@ use crate::error::DemuxError;
 use crate::matroska_metadata::{MatroskaCueIndex, MatroskaVideoTrack};
 use crate::options::DemuxerOptions;
 
+mod byte_source_failure;
+
 const FAKE_METADATA_INFO: MetadataInfo = MetadataInfo {
     metadata: METADATA_ID_NULL,
     short_name: "fake",
