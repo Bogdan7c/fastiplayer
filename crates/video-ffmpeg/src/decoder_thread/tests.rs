@@ -664,6 +664,27 @@ fn h264_avcc_config_passes_codec_private_as_extradata() {
 
 #[cfg(feature = "ffmpeg")]
 #[test]
+fn h264_avc3_config_passes_minimal_codec_private_as_extradata() {
+    let avc3_configuration = Bytes::from_static(&[0x01, 0x4d, 0x40, 0x1f, 0xff, 0xe0, 0x00]);
+    let config = extradata_test_stream_config(
+        codec_core::VideoCodec::H264,
+        Some(avc3_configuration.clone()),
+        Some(VideoStreamPacketization::H264(
+            H264Packetization::AvccLengthPrefixedWithInBandParameterSets {
+                nal_length_size: codec_core::H264NalLengthSize::FOUR,
+            },
+        )),
+    );
+
+    let extradata = extradata_for_stream_config(&config)
+        .expect("avc3 config должен быть валиден")
+        .expect("length-prefixed avc3 должен передать decoder configuration");
+
+    assert_eq!(extradata.as_slice(), avc3_configuration.as_ref());
+}
+
+#[cfg(feature = "ffmpeg")]
+#[test]
 fn h265_hvcc_config_passes_codec_private_as_extradata() {
     let hvcc = Bytes::from_static(&[0x01, 0x01, 0x60, 0x00, 0x00, 0x00]);
     let config = extradata_test_stream_config(

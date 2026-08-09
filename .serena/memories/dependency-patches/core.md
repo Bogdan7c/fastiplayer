@@ -57,3 +57,8 @@
 - This closes RUSTSEC-2026-0194/0195 without a broad window-stack migration or cargo-deny exception. `cargo tree -i quick-xml --workspace --all-features` must contain only quick-xml 0.41 consumers; `cargo deny check advisories` must remain clean.
 - Removal gate: replace the local crate only when an upstream released `wayland-scanner` selected by the current window stack depends on a non-vulnerable quick-xml line and the direct patch tests plus full workspace/Wayland smoke pass. Do not retain the patch after that release is adopted.
 - Machine-readable provenance, SHA-256, direct tests and manual matrix live in `docs/dependency-patches.toml`; detailed dependency/source/license/MSRV audit is `docs/dependency-audit-s04x-2026-07-20.md`.
+
+
+## ISO-BMFF `avc3` extension (2026-08-10)
+
+- Local ISO patch теперь различает `avc1` и `avc3` и публикует in-band parameter-set metadata для neutral demux boundary. Removal gate требует upstream-equivalent этого различия. Полный contract и проверки: `mem:media-services/hls-live-avc3-2026-08-10`.

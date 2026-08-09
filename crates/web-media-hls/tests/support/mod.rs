@@ -447,6 +447,24 @@ pub fn muxed_fmp4() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     )
 }
 
+/// Возвращает тот же валидный fragmented MP4, но с точным H.264 `avc3` sample entry.
+pub fn muxed_avc3_fmp4() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let (mut initialization, first_media, second_media) = muxed_fmp4();
+    let avc1_offsets = initialization
+        .windows(4)
+        .enumerate()
+        .filter_map(|(offset, atom_type)| (atom_type == b"avc1").then_some(offset))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        avc1_offsets.len(),
+        1,
+        "сгенерированный fixture должен содержать ровно один H.264 sample entry"
+    );
+    let sample_entry_offset = avc1_offsets[0];
+    initialization[sample_entry_offset..sample_entry_offset + 4].copy_from_slice(b"avc3");
+    (initialization, first_media, second_media)
+}
+
 pub fn audio_fmp4() -> (Vec<u8>, Vec<u8>) {
     let (initialization, first, _) = split_fmp4(
         decode_base64(include_str!("../fixtures/audio-fmp4.base64")),

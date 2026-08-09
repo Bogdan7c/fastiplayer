@@ -70,6 +70,11 @@ pub enum VideoPacketFraming {
     AnnexB,
     /// NAL units имеют length prefix, размер которого задаёт codec configuration record.
     LengthPrefixedFromCodecConfiguration,
+    /// NAL units имеют length prefix из codec configuration, а SPS/PPS приходят в packets.
+    ///
+    /// Такой контракт нужен, например, ISO BMFF sample entry `avc3`: его `avcC` может
+    /// не хранить parameter sets, потому что они повторяются внутри media samples.
+    LengthPrefixedWithInBandParameterSets,
 }
 
 /// Информация о media-треке, которую demuxer отдаёт до чтения packets.

@@ -220,7 +220,10 @@ pub(crate) fn prepare_hls_candidate(
             .async_seek_handle()
             .ok_or_else(|| anyhow!("HLS live runtime потерял receipted seek handle"))?;
         let (mut demuxer, timeline_port, _) = opened.into_parts();
-        wait_for_deferred_hls_codec_tracks(candidate, demuxer.as_mut())?;
+        // Любой live HLS должен доказать хотя бы один реальный track до Installed.
+        // Иначе неизвестный fMP4 sample entry превращается в бесконечное пустое playback state.
+        wait_for_initial_hls_tracks(demuxer.as_mut())
+            .context("HLS live не достиг install-ready track состояния")?;
         prove_deferred_hls_codec_evidence(candidate, demuxer.as_mut(), capability_probe)
             .context("HLS deferred candidate не прошёл post-open codec proof")?;
         return Ok(PreparedHlsCandidate {
@@ -506,17 +509,6 @@ fn selection_and_containers(
     ))
 }
 
-/// Для deferred codec layout ожидает authoritative track snapshot до codec proof.
-fn wait_for_deferred_hls_codec_tracks(
-    candidate: &YtDlpNormalizedCandidate,
-    demuxer: &mut dyn Demuxer,
-) -> Result<()> {
-    let StreamLayout::HlsMuxedCodecDeferred(_) = candidate.descriptor().layout() else {
-        return Ok(());
-    };
-    wait_for_initial_hls_tracks(demuxer)
-}
-
 /// Fail-closed codec proof для уже опубликованных deferred HLS tracks.
 fn prove_deferred_hls_codec_evidence(
     candidate: &YtDlpNormalizedCandidate,
@@ -544,31 +536,44 @@ fn prove_deferred_hls_codec_evidence(
     Ok(())
 }
 
-/// Media-open worker ждёт first TracksChanged до capability prove / static Installed.
+/// Media-open worker ждёт непустой authoritative track snapshot до capability prove / Installed.
 fn wait_for_initial_hls_tracks(demuxer: &mut dyn Demuxer) -> Result<()> {
     const INITIAL_TRACKS_DEADLINE: Duration = Duration::from_secs(30);
     let deadline = Instant::now() + INITIAL_TRACKS_DEADLINE;
     loop {
+        // HLS component может применить initial TracksChanged во время bootstrap и передать
+        // app-level demuxer уже с готовым snapshot-ом. Состояние важнее наличия replay event-а.
+        if !demuxer.tracks().is_empty() {
+            return Ok(());
+        }
         if Instant::now() >= deadline {
             return Err(anyhow!(
-                "HLS runtime не опубликовал TracksChanged до open deadline"
+                "HLS runtime не опубликовал непустой track snapshot до open deadline"
             ));
         }
         match demuxer
             .next_event()
             .context("HLS runtime demuxer next_event")?
         {
-            DemuxReadEvent::TracksChanged(_) => return Ok(()),
+            // Demuxer применяет lifecycle event к своему snapshot-у; следующая итерация
+            // проверит именно owner state и не установит пустую topology.
+            DemuxReadEvent::TracksChanged(_) => {}
+            DemuxReadEvent::MediaMetadataChanged(_) => {
+                // Metadata revision законно может предшествовать track topology.
+                // Demuxer уже сохранил snapshot в `media_metadata()`, поэтому install его не теряет.
+            }
             DemuxReadEvent::TemporarilyUnavailable(hint) => {
                 std::thread::sleep(hint.retry_after().min(Duration::from_millis(50)));
             }
             DemuxReadEvent::EndOfStream => {
-                return Err(anyhow!("HLS runtime достиг EOS до initial TracksChanged"));
-            }
-            DemuxReadEvent::Packet(_) | DemuxReadEvent::MediaMetadataChanged(_) => {
-                // Packet без TracksChanged нарушает ProgressiveDemuxer contract; всё равно fail-closed.
                 return Err(anyhow!(
-                    "HLS runtime опубликовал media event до initial TracksChanged"
+                    "HLS runtime достиг EOS до непустого initial track snapshot"
+                ));
+            }
+            DemuxReadEvent::Packet(_) => {
+                // Packet при пустой topology нарушает ProgressiveDemuxer contract.
+                return Err(anyhow!(
+                    "HLS runtime опубликовал packet до непустого initial track snapshot"
                 ));
             }
         }
@@ -652,7 +657,7 @@ mod tests {
 
     use media_core::{
         DemuxReadEvent, DemuxRetryHint, DemuxSeekResult, DemuxSeekability, DemuxTrackListUpdate,
-        Demuxer, TrackId, TrackInfo, TrackKind,
+        Demuxer, MediaMetadata, Packet, TrackId, TrackInfo, TrackKind,
     };
 
     use super::{
@@ -720,10 +725,11 @@ mod tests {
     }
 
     #[test]
-    fn wait_for_initial_tracks_skips_temporary_unavailability() {
+    fn wait_for_initial_tracks_skips_metadata_and_temporary_unavailability() {
         let published = vec![track(1, TrackKind::Video), track(2, TrackKind::Audio)];
         let mut demuxer = ScriptedDemuxer {
             events: VecDeque::from([
+                DemuxReadEvent::MediaMetadataChanged(MediaMetadata::default()),
                 DemuxReadEvent::TemporarilyUnavailable(
                     DemuxRetryHint::new(Duration::from_millis(1)).expect("retry hint"),
                 ),
@@ -738,6 +744,51 @@ mod tests {
 
         wait_for_initial_hls_tracks(&mut demuxer).expect("TracksChanged after unavailable");
         assert_eq!(demuxer.tracks().len(), 2);
+    }
+
+    #[test]
+    fn wait_for_initial_tracks_accepts_bootstrapped_snapshot_without_consuming_packet() {
+        let published = vec![track(1, TrackKind::Video)];
+        let mut demuxer = ScriptedDemuxer {
+            events: VecDeque::from([DemuxReadEvent::Packet(Packet::new_unbounded(
+                TrackId::new(1),
+                TrackKind::Video,
+                Duration::ZERO,
+                None,
+                true,
+                Default::default(),
+            ))]),
+            tracks: published,
+            duration: None,
+        };
+
+        wait_for_initial_hls_tracks(&mut demuxer)
+            .expect("готовый bootstrap snapshot уже является install-ready");
+
+        assert_eq!(demuxer.events.len(), 1);
+        assert_eq!(demuxer.tracks().len(), 1);
+    }
+
+    #[test]
+    fn wait_for_initial_tracks_rejects_packet_before_topology() {
+        let mut demuxer = ScriptedDemuxer {
+            events: VecDeque::from([DemuxReadEvent::Packet(Packet::new_unbounded(
+                TrackId::new(1),
+                TrackKind::Video,
+                Duration::ZERO,
+                None,
+                true,
+                Default::default(),
+            ))]),
+            tracks: Vec::new(),
+            duration: None,
+        };
+
+        let error = wait_for_initial_hls_tracks(&mut demuxer)
+            .expect_err("packet before track topology должен быть отвергнут");
+
+        assert!(error.to_string().contains("packet"));
+        assert!(demuxer.tracks().is_empty());
     }
 
     #[test]

@@ -223,6 +223,104 @@ fn h264_stream_config_uses_track_codec_private_and_metadata() {
     }
 }
 
+/// Закрепляет полный `avc3` route: track config, in-band SPS/PPS packet, decoder и presentation.
+#[test]
+fn hls_avc3_sample_with_in_band_parameter_sets_reaches_presentation() {
+    let mut session = PlayerSession::new();
+    session.set_system_capabilities(capabilities_vaapi_h264_only_and_ffmpeg_h264_vp9());
+    let decoder = SharedFakeVideoDecoderThread::new();
+    decoder.decode_next_packet_as_frame(Duration::ZERO, 701);
+    session.set_video_backend(crate::StartedVideoBackend::from_decoder_thread(
+        DecodeBackendId::vaapi().as_str(),
+        decoder.clone(),
+    ));
+
+    let video_track_id = TrackId::new(71);
+    let tracks = vec![h264_avc3_track(video_track_id.get())];
+    install_tracks_for_capability_selection(&mut session, tracks.clone());
+    session.set_playback_state(PlaybackState::Playing);
+    session
+        .select_default_video_track(&tracks, "HLS avc3 track должен выбрать video backend")
+        .expect("поддерживаемый avc3 track должен сконфигурировать decoder");
+
+    let source_access_unit = h264_avc3_access_unit_with_in_band_parameter_sets();
+    session
+        .pipeline
+        .enqueue_pending_video_packet(PendingVideoPacket::new(
+            video_track_id,
+            Duration::ZERO,
+            session.pipeline.seek_generation(),
+            source_access_unit.clone(),
+            PacketKeyframe::Keyframe,
+        ));
+
+    let first_tick = session.tick(PlayerTickContext::new(Instant::now()));
+    let second_tick = session.tick(PlayerTickContext::new(Instant::now()));
+
+    let configured_stream = decoder
+        .stream_config()
+        .expect("avc3 track должен передать stream config в decoder boundary");
+    assert_eq!(
+        configured_stream.codec_private,
+        Some(h264_avc3_codec_private())
+    );
+    assert!(matches!(
+        configured_stream.packetization,
+        Some(video_core::VideoStreamPacketization::H264(
+            codec_core::H264Packetization::AvccLengthPrefixedWithInBandParameterSets {
+                nal_length_size: codec_core::H264NalLengthSize::FOUR,
+            }
+        ))
+    ));
+    let sent_packets = decoder.sent_packets();
+    assert_eq!(sent_packets.len(), 1);
+    assert_eq!(sent_packets[0].encoded_bytes, source_access_unit);
+    assert_eq!(
+        first_tick.video_frames_presented + second_tick.video_frames_presented,
+        1,
+        "avc3 packet должен стать предъявленным кадром, а не застрять после track mapping"
+    );
+    assert_eq!(
+        session
+            .pipeline
+            .present_video_frame()
+            .map(|frame| frame.pts),
+        Some(Duration::ZERO)
+    );
+}
+
+#[test]
+fn hls_avc3_track_rejects_missing_and_malformed_configuration_before_decode() {
+    for (codec_private, expected_reason) in [
+        (None, "не содержит avc3 avcC"),
+        (
+            Some(Bytes::from_static(&[0x01, 0x4d])),
+            "не является поддержанным avc3 avcC",
+        ),
+    ] {
+        let mut session = PlayerSession::new();
+        let video_track_id = TrackId::new(72);
+        let mut avc3_track = h264_avc3_track(video_track_id.get());
+        avc3_track.codec_private = codec_private;
+        install_tracks_for_capability_selection(&mut session, vec![avc3_track]);
+        session
+            .pipeline
+            .set_video_decoder_thread(SharedFakeVideoDecoderThread::new());
+
+        let error = session
+            .dispatch_command(PlayerCommand::SelectVideoTrack(video_track_id))
+            .expect_err("avc3 без валидного avcC должен быть отвергнут до decoder configure");
+
+        assert_eq!(error.kind, PlayerErrorKind::UnsupportedVideoCodec);
+        assert!(
+            error.message.contains(expected_reason),
+            "unexpected error: {}",
+            error.message
+        );
+        assert_eq!(session.pipeline.selected_video_track_id(), None);
+    }
+}
+
 #[test]
 fn h264_stream_config_accepts_zeroed_avcc_reserved_bits() {
     let mut session = PlayerSession::new();
@@ -763,9 +861,36 @@ fn h264_track_with_avcc(track_id: u32) -> TrackInfo {
     track
 }
 
+/// Собирает neutral track для `avc3`, у которого parameter sets находятся в media samples.
+fn h264_avc3_track(track_id: u32) -> TrackInfo {
+    let mut track = h264_track_with_avcc(track_id);
+    track.codec_private = Some(h264_avc3_codec_private());
+    let video_metadata = track
+        .video
+        .as_mut()
+        .expect("H.264 test track должен иметь video metadata");
+    video_metadata.profile = Some(VideoProfile::H264(H264Profile::Main));
+    video_metadata.packet_framing =
+        media_core::VideoPacketFraming::LengthPrefixedWithInBandParameterSets;
+    track
+}
+
 fn h264_avcc_codec_private() -> Bytes {
     Bytes::from_static(&[
         1, 0x42, 0xe0, 0x1f, 0xff, 0xe1, 0x00, 0x04, 0x67, 0x42, 0xe0, 0x1f, 0x01, 0x00, 0x01, 0x68,
+    ])
+}
+
+/// Точный минимальный `avcC` acceptance live-потока: length size есть, SPS/PPS отсутствуют.
+fn h264_avc3_codec_private() -> Bytes {
+    Bytes::from_static(&[0x01, 0x4d, 0x40, 0x1f, 0xff, 0xe0, 0x00])
+}
+
+/// Собирает length-prefixed sample, где SPS/PPS/IDR действительно приходят in-band.
+fn h264_avc3_access_unit_with_in_band_parameter_sets() -> Bytes {
+    Bytes::from_static(&[
+        0x00, 0x00, 0x00, 0x04, 0x67, 0x4d, 0x40, 0x1f, 0x00, 0x00, 0x00, 0x01, 0x68, 0x00, 0x00,
+        0x00, 0x02, 0x65, 0x88,
     ])
 }
 

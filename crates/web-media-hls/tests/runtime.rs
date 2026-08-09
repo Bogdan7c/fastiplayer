@@ -19,13 +19,13 @@ use demux_api::{
 };
 use media_core::{
     DemuxReadEvent, DemuxSeekRequest, Demuxer, Packet, PacketKeyframe, TrackId, TrackInfo,
-    TrackKind,
+    TrackKind, VideoPacketFraming,
 };
 use source_core::CancellationToken;
 use support::{
     TestQueries, TestServer, adaptive_context, audio_fmp4, demux_registry,
-    long_audio_fmp4_segments, long_muxed_ts_segment, muxed_fmp4, muxed_ts, open_policy,
-    range_response, response, ts_map_and_media, video_ts,
+    long_audio_fmp4_segments, long_muxed_ts_segment, muxed_avc3_fmp4, muxed_fmp4, muxed_ts,
+    open_policy, range_response, response, ts_map_and_media, video_ts,
 };
 use web_media_hls::{
     ExtractorAesOverride, HlsAudioLayoutIntent, HlsAudioRenditionEvidence,
@@ -301,6 +301,77 @@ fn muxed_fmp4_map_opens_through_injected_symphonia_factory() {
     let opened = prepare_hls_vod(request).expect("content-probed muxed fMP4 must prepare");
     let mut demuxer = opened.into_demuxer();
     assert_muxed_tracks(next_ready_event(&mut *demuxer).expect("content-probed fMP4 tracks"));
+}
+
+#[test]
+fn avc3_fmp4_map_preserves_framing_and_emits_video_packet() {
+    let (initialization, first_media, _) = muxed_avc3_fmp4();
+    let initialization = Arc::new(initialization);
+    let first_media = Arc::new(first_media);
+    let server = TestServer::start(move |_, request| {
+        if request.request_line.contains("/media.m3u8") {
+            response(
+                "200 OK",
+                &[],
+                b"#EXTM3U\n#EXT-X-TARGETDURATION:1\n\
+                  #EXT-X-MAP:URI=\"init.mp4\"\n\
+                  #EXTINF:1,\nsegment.m4s\n#EXT-X-ENDLIST\n",
+            )
+        } else if request.request_line.contains("/init.mp4") {
+            response("200 OK", &[], &initialization)
+        } else if request.request_line.contains("/segment.m4s") {
+            response("200 OK", &[], &first_media)
+        } else {
+            response("404 Not Found", &[], b"")
+        }
+    });
+    let opened = prepare_hls_vod(request(
+        &server,
+        "/media.m3u8",
+        muxed_selection(),
+        HlsRequiredContainer::FragmentedMp4,
+        None,
+    ))
+    .expect("avc3 fMP4 должен пройти HLS prepare");
+    let mut demuxer = opened.into_demuxer();
+
+    let DemuxReadEvent::TracksChanged(initial_tracks) =
+        next_ready_event(&mut *demuxer).expect("avc3 initial tracks")
+    else {
+        panic!("avc3 HLS должен сначала опубликовать TracksChanged");
+    };
+    let video_track = initial_tracks
+        .tracks
+        .iter()
+        .find(|track| track.kind == TrackKind::Video)
+        .expect("avc3 fixture должен содержать video track");
+    assert_eq!(
+        video_track
+            .video
+            .as_ref()
+            .expect("H.264 track должен содержать video metadata")
+            .packet_framing,
+        VideoPacketFraming::LengthPrefixedWithInBandParameterSets
+    );
+    let video_track_id = video_track.id;
+
+    loop {
+        match next_ready_event(&mut *demuxer).expect("avc3 media event") {
+            DemuxReadEvent::Packet(packet) if packet.track_id == video_track_id => {
+                assert!(!packet.data.is_empty());
+                break;
+            }
+            DemuxReadEvent::Packet(_)
+            | DemuxReadEvent::TracksChanged(_)
+            | DemuxReadEvent::MediaMetadataChanged(_) => {}
+            DemuxReadEvent::EndOfStream => {
+                panic!("avc3 HLS закончился до первого video packet-а");
+            }
+            DemuxReadEvent::TemporarilyUnavailable(_) => {
+                unreachable!("next_ready_event фильтрует temporary readiness");
+            }
+        }
+    }
 }
 
 #[test]

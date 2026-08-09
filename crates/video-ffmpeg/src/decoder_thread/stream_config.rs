@@ -43,6 +43,7 @@ pub(super) fn extradata_for_stream_config(
         config.packetization,
         Some(VideoStreamPacketization::H264(
             H264Packetization::AvccLengthPrefixed { .. }
+                | H264Packetization::AvccLengthPrefixedWithInBandParameterSets { .. }
         )) | Some(VideoStreamPacketization::H265(
             H265Packetization::HvccLengthPrefixed { .. }
         ))

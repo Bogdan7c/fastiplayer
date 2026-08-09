@@ -5,11 +5,12 @@ use crate::{
 };
 
 use super::{
-    AVC_LENGTH_SIZE_MINUS_ONE_MASK, AVC_SPS_COUNT_MASK, H264ByteStreamError, H264NalLengthSize,
-    H264Packetization, H264ParameterSetInjection, H264SpsError, h264_access_unit_to_annex_b,
-    h264_access_unit_to_annex_b_into, h264_nal_units,
+    AVC_LENGTH_SIZE_MINUS_ONE_MASK, AVC_SPS_COUNT_MASK, AvcDecoderConfigurationRecordError,
+    H264ByteStreamError, H264NalLengthSize, H264Packetization, H264ParameterSetInjection,
+    H264SpsError, h264_access_unit_to_annex_b, h264_access_unit_to_annex_b_into, h264_nal_units,
     h264_sps_metadata_from_avc_decoder_configuration_record,
-    parse_avc_decoder_configuration_record, parse_h264_sps_metadata, probe_h264_packet_keyframe,
+    parse_avc_decoder_configuration_record, parse_avc3_decoder_configuration_record,
+    parse_h264_sps_metadata, probe_h264_packet_keyframe,
 };
 
 fn constrained_baseline_sps() -> Vec<u8> {
@@ -85,6 +86,11 @@ fn avcc(
     record_bytes
 }
 
+/// Возвращает точный минимальный `avc3` configuration record из acceptance live-потока.
+fn avc3_without_out_of_band_parameter_sets() -> Vec<u8> {
+    vec![0x01, 0x4d, 0x40, 0x1f, 0xff, 0xe0, 0x00]
+}
+
 fn annex_b_access_unit(nal_units: &[Vec<u8>]) -> Vec<u8> {
     let mut access_unit = Vec::new();
     for nal_unit in nal_units {
@@ -148,6 +154,31 @@ fn avcc_parser_accepts_zeroed_reserved_bits_from_noncanonical_muxers() {
     assert_eq!(
         record.picture_parameter_sets(),
         std::slice::from_ref(&picture_parameter_set)
+    );
+}
+
+#[test]
+fn avc3_parser_accepts_parameter_sets_only_inside_media_samples() {
+    let record_bytes = avc3_without_out_of_band_parameter_sets();
+
+    let strict_avc1_error = parse_avc_decoder_configuration_record(&record_bytes)
+        .expect_err("avc1 не должен принимать avcC без SPS/PPS");
+    assert_eq!(
+        strict_avc1_error,
+        AvcDecoderConfigurationRecordError::MissingSequenceParameterSet
+    );
+
+    let avc3_record = parse_avc3_decoder_configuration_record(&record_bytes)
+        .expect("avc3 разрешает передавать SPS/PPS внутри media samples");
+
+    assert_eq!(avc3_record.nal_length_size, H264NalLengthSize::FOUR);
+    assert!(avc3_record.sequence_parameter_sets().is_empty());
+    assert!(avc3_record.picture_parameter_sets().is_empty());
+    assert_eq!(
+        H264Packetization::from_avc3_decoder_configuration_record(&avc3_record),
+        H264Packetization::AvccLengthPrefixedWithInBandParameterSets {
+            nal_length_size: H264NalLengthSize::FOUR,
+        }
     );
 }
 
@@ -347,6 +378,33 @@ fn h264_requirement_probe_uses_avcc_sps_and_rejects_unsupported_variants() {
         rejected_probe,
         VideoRequirementProbe::Rejected(VideoRequirementRejection::UnsupportedProfile { .. })
     ));
+}
+
+#[test]
+fn avc3_requirement_probe_reads_sps_from_length_prefixed_media_sample() {
+    let sequence_parameter_set = high_sps();
+    let picture_parameter_set = pps();
+    let access_unit = avcc_access_unit(
+        H264NalLengthSize::FOUR,
+        &[sequence_parameter_set, picture_parameter_set, idr_slice()],
+    );
+    let record_bytes = avc3_without_out_of_band_parameter_sets();
+
+    let probe = probe_video_packet_requirement_with_codec_private(
+        VideoCodec::H264,
+        &access_unit,
+        Some(&record_bytes),
+    );
+
+    let VideoRequirementProbe::Candidate(candidate) = probe else {
+        panic!("avc3 sample с in-band SPS должен доказать decode requirement");
+    };
+    assert_eq!(
+        candidate.requirement.profile,
+        Some(crate::VideoProfile::H264(H264Profile::High))
+    );
+    assert_eq!(candidate.requirement.width, Some(1_920));
+    assert_eq!(candidate.requirement.height, Some(1_088));
 }
 
 #[test]

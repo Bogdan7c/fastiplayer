@@ -9,8 +9,8 @@ use codec_core::{
     SupportedVideoDecodeFormat, VideoCodec, VideoProfile, Vp9Profile,
     h264_access_unit_to_annex_b_into, h265_access_unit_to_annex_b_into,
     h265_decode_requirement_from_hevc_decoder_configuration_record, h265_nal_units,
-    parse_avc_decoder_configuration_record, parse_hevc_decoder_configuration_record,
-    video_frame_pixel_layout_from_decode_requirement,
+    parse_avc_decoder_configuration_record, parse_avc3_decoder_configuration_record,
+    parse_hevc_decoder_configuration_record, video_frame_pixel_layout_from_decode_requirement,
 };
 use cros_codecs::DecodedFormat;
 use cros_codecs::backend::vaapi::decoder::VaapiBackend;
@@ -1297,6 +1297,49 @@ mod tests {
             .expect("Annex-B AU должен дойти до VA-API feeder boundary");
 
         assert_eq!(pending_access_unit.annex_b_bytes, source_access_unit);
+        assert_eq!(
+            pending_access_unit.source_packet_len,
+            source_access_unit.len()
+        );
+    }
+
+    /// Проверяет `avc3`: пустой avcC задаёт длину prefix-а, а SPS/PPS проходят из sample-а.
+    #[test]
+    fn factory_and_adapter_accept_avc3_with_in_band_parameter_sets() {
+        let mut config = h264_decode_config(H264Profile::Main);
+        config.codec_private = Some(Bytes::from_static(&[
+            0x01, 0x4d, 0x40, 0x1f, 0xff, 0xe0, 0x00,
+        ]));
+        config.packetization = Some(VideoStreamPacketization::H264(
+            H264Packetization::AvccLengthPrefixedWithInBandParameterSets {
+                nal_length_size: H264NalLengthSize::FOUR,
+            },
+        ));
+
+        assert!(VaapiCodecAdapterFactory::stream_config_rejection(&config).is_none());
+
+        let stream_config = H264VaapiStreamConfig::from_decode_config(&config)
+            .expect("avc3 config без out-of-band SPS/PPS должен быть валиден");
+
+        let sequence_parameter_set = [0x67, 0x4d, 0x40, 0x1f];
+        let picture_parameter_set = [0x68];
+        let idr_slice = [0x65, 0x88];
+        let source_access_unit =
+            avcc_access_unit(&[&sequence_parameter_set, &picture_parameter_set, &idr_slice]);
+        let mut preparer = H264AccessUnitPreparer::new(stream_config);
+        let pending_access_unit = preparer
+            .prepare_pending_access_unit(
+                &source_access_unit,
+                VaapiPacketDecodeHints {
+                    inject_parameter_sets: true,
+                },
+            )
+            .expect("avc3 sample должен дойти до VA-API Annex-B feeder boundary");
+
+        assert_eq!(
+            pending_access_unit.annex_b_bytes,
+            annex_b_access_unit(&[&sequence_parameter_set, &picture_parameter_set, &idr_slice,])
+        );
         assert_eq!(
             pending_access_unit.source_packet_len,
             source_access_unit.len()

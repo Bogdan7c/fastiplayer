@@ -134,6 +134,7 @@ pub(crate) fn map_tracks(
         video_tracks_by_track,
         &HashMap::new(),
         &HashMap::new(),
+        &HashMap::new(),
     )
 }
 
@@ -143,6 +144,7 @@ pub(crate) fn map_tracks_with_video_metadata(
     video_tracks_by_track: &mut HashMap<TrackId, MatroskaVideoTrack>,
     display_orientations_by_track: &HashMap<TrackId, VideoDisplayOrientation>,
     color_metadata_by_track: &HashMap<TrackId, VideoColorMetadata>,
+    packet_framings_by_track: &HashMap<TrackId, VideoPacketFraming>,
 ) -> TrackMapping {
     let mut tracks = Vec::new();
     let mut track_map = HashMap::new();
@@ -163,6 +165,9 @@ pub(crate) fn map_tracks_with_video_metadata(
         let color_metadata = color_metadata_by_track
             .get(&TrackId::new(track.id))
             .cloned();
+        let packet_framing = packet_framings_by_track
+            .get(&TrackId::new(track.id))
+            .copied();
         let video_metadata_source = video_metadata_source(track, matroska_video_track.as_ref());
         let track_entry = build_track_entry(track, matroska_video_track.as_ref());
         if let Some(track_info) = build_track_info(
@@ -171,6 +176,7 @@ pub(crate) fn map_tracks_with_video_metadata(
             matroska_video_track,
             display_orientation,
             color_metadata,
+            packet_framing,
         ) {
             log_supported_track_metadata(track, &track_entry, &track_info, video_metadata_source);
             tracks.push(track_info);
@@ -337,6 +343,7 @@ fn build_track_info(
     matroska_video_track: Option<MatroskaVideoTrack>,
     display_orientation: VideoDisplayOrientation,
     color_metadata: Option<VideoColorMetadata>,
+    container_packet_framing: Option<VideoPacketFraming>,
 ) -> Option<TrackInfo> {
     let kind = track_entry.supported_kind()?;
     let duration = track_entry
@@ -360,7 +367,15 @@ fn build_track_info(
             )
         })
         .flatten();
-    if codec_private
+    // Container-specific `avc3` evidence имеет право уточнять framing только у H.264 video.
+    // Даже одноимённый raw metadata tag в другом codec/container не должен менять контракт.
+    let exact_container_packet_framing = container_packet_framing
+        .filter(|_| kind == TrackKind::Video && track_entry.codec_id == "V_MPEG4/ISO/AVC");
+    if let Some(container_packet_framing) = exact_container_packet_framing {
+        video
+            .get_or_insert_with(VideoTrackMetadata::empty)
+            .packet_framing = container_packet_framing;
+    } else if codec_private
         .as_ref()
         .is_some_and(|bytes| !bytes.is_empty())
         && matches!(
@@ -1319,6 +1334,7 @@ mod tests {
             &mut metadata_by_track,
             &display_orientations_by_track,
             &HashMap::new(),
+            &HashMap::new(),
         );
         let video_metadata = mapping.tracks[0]
             .video
@@ -1328,6 +1344,64 @@ mod tests {
         assert_eq!(
             video_metadata.orientation,
             VideoDisplayOrientation::Rotate270Clockwise
+        );
+    }
+
+    #[test]
+    fn avc3_metadata_preserves_in_band_parameter_set_framing() {
+        let mut video_params = VideoCodecParameters::default();
+        video_params
+            .for_codec(symphonia::core::codecs::video::well_known::CODEC_ID_H264)
+            .add_extra_data(VideoExtraData {
+                data: vec![0x01, 0x4d, 0x40, 0x1f, 0xff, 0xe0, 0x00].into_boxed_slice(),
+                ..Default::default()
+            });
+        let mut track = Track::new(7);
+        track.with_codec_params(CodecParameters::Video(video_params));
+        let packet_framings_by_track = HashMap::from([(
+            TrackId::new(7),
+            VideoPacketFraming::LengthPrefixedWithInBandParameterSets,
+        )]);
+
+        let mapping = map_tracks_with_video_metadata(
+            &[track],
+            &mut HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &packet_framings_by_track,
+        );
+
+        assert_eq!(mapping.tracks[0].codec_id, "V_MPEG4/ISO/AVC");
+        assert_eq!(
+            mapping.tracks[0]
+                .video
+                .as_ref()
+                .expect("H.264 track должен иметь video metadata")
+                .packet_framing,
+            VideoPacketFraming::LengthPrefixedWithInBandParameterSets
+        );
+    }
+
+    #[test]
+    fn avc3_metadata_cannot_relabel_non_h264_video_framing() {
+        let track_id = TrackId::new(8);
+        let packet_framings_by_track = HashMap::from([(
+            track_id,
+            VideoPacketFraming::LengthPrefixedWithInBandParameterSets,
+        )]);
+
+        let mapping = map_tracks_with_video_metadata(
+            &[vp9_video_track(track_id.get())],
+            &mut HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &packet_framings_by_track,
+        );
+
+        assert_eq!(mapping.tracks[0].codec_id, "V_VP9");
+        assert!(
+            mapping.tracks[0].video.is_none(),
+            "чужой avc3 tag не должен даже создавать video metadata для VP9"
         );
     }
 
@@ -1385,6 +1459,7 @@ mod tests {
             &mut matroska_metadata_by_track,
             &display_orientations_by_track,
             &color_metadata_by_track,
+            &HashMap::new(),
         );
         let video_metadata = mapping.tracks[0]
             .video
@@ -1444,6 +1519,7 @@ mod tests {
             &mut metadata_by_track,
             &HashMap::new(),
             &color_metadata_by_track,
+            &HashMap::new(),
         );
         let video_metadata = mapping.tracks[0]
             .video

@@ -1,6 +1,6 @@
 # Ручная web-media playlist acceptance (2026-08-04)
 
-- Добавлены `docs/web-media-playlist-acceptance.xspf` и `docs/web-media-playlist-acceptance.md`.
+- Добавлены `user/web-media-playlist-acceptance.xspf` и `user/web-media-playlist-acceptance.md`.
 - XSPF содержит 13 top-level public resources: отдельный rich YouTube URL-settings case плюс двенадцать крупных compatibility rows (progressive ISO-BMFF, progressive WebM, progressive audio, HLS TS VOD, HLS fMP4 VOD, HLS live/DVR candidate, DASH fMP4 VOD, DASH WebM VOD, DASH live/DVR, Smooth VOD, HDS VOD, FTP progressive).
 - Порядок намеренно чередует transport owners и media layouts, чтобы ручной прогон проверял queue transitions, seek, EOF и stale-resource cleanup, а не только isolated open.
 - Инструкция делает обязательной полную проверку единственной вкладки URL: secret-safe projection, status, dependent mode/codec/resolution/FPS/HDR selectors, Playing/Paused same-item switch, pending disable, active no-op, fallback/error и HLS/DASH variants.
@@ -15,3 +15,5 @@
 Follow-up: runtime-поломка HLS TS VOD и production fix описаны в `mem:testing/hls-ts-vod-runtime-fix-2026-08-04`; исходное утверждение выше об отсутствии production-изменений относится только к созданию acceptance artifacts до этого follow-up.
 
 Связанные memories: `mem:testing/playback-smoke`, `mem:testing/media-fixtures`, `mem:testing/hls-ts-vod-runtime-fix-2026-08-04`, `mem:app-egui/sidebar-controller`, `mem:app-egui/web-media-picker-slice-g-2026-07-26`, `mem:media-services/ytdlp-topology-summary-2026-08-04`.
+
+Follow-up 2026-08-10: BBC/Akamai row сейчас имеет 6 `avc3` video variants, ~898.560 s sliding DVR и `mp4a.40.5` HE-AAC audio вне текущего AAC-LC profile. Production fix и real render proof: `mem:media-services/hls-live-avc3-2026-08-10`.

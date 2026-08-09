@@ -6,7 +6,7 @@ use codec_core::{
 };
 use media_core::{
     DiscNumber, MediaMetadata, MediaTagMetadata, TrackId, TrackNumber, TvEpisodeNumber,
-    TvSeasonNumber,
+    TvSeasonNumber, VideoPacketFraming,
 };
 use symphonia::core::meta::{RawValue, StandardTag};
 use tracing::debug;
@@ -15,6 +15,8 @@ use crate::symphonia_api::FormatReaderBox;
 
 pub(super) const RUSTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG: &str =
     "rustiplayer.display_orientation.clockwise_degrees";
+pub(super) const RUSTIPLAYER_H264_PARAMETER_SETS_IN_BAND_TAG: &str =
+    "rustiplayer.video.h264.parameter_sets_in_band";
 pub(super) const RUSTIPLAYER_VIDEO_COLOR_FULL_RANGE_TAG: &str =
     "rustiplayer.video.color.full_range";
 pub(super) const RUSTIPLAYER_VIDEO_COLOR_MATRIX_COEFFICIENTS_H273_TAG: &str =
@@ -163,6 +165,47 @@ pub(super) fn display_orientations_from_metadata(
     }
 
     orientations_by_track
+}
+
+/// Достаёт exact `avc3` framing, опубликованный локальным ISO BMFF patch-ем.
+pub(super) fn video_packet_framings_from_metadata(
+    format: &mut FormatReaderBox<'static>,
+) -> HashMap<TrackId, VideoPacketFraming> {
+    let mut packet_framings_by_track = HashMap::new();
+    let metadata = format.metadata();
+    let Some(revision) = metadata.current() else {
+        return packet_framings_by_track;
+    };
+
+    for per_track_metadata in &revision.per_track {
+        let Some(track_id) = track_id_from_metadata(
+            per_track_metadata.track_id,
+            "H.264 parameter-set placement metadata",
+        ) else {
+            continue;
+        };
+        for tag in &per_track_metadata.metadata.tags {
+            if tag.raw.key != RUSTIPLAYER_H264_PARAMETER_SETS_IN_BAND_TAG {
+                continue;
+            }
+            match bool_from_raw_value(&tag.raw.value) {
+                Some(true) => {
+                    packet_framings_by_track.insert(
+                        track_id,
+                        VideoPacketFraming::LengthPrefixedWithInBandParameterSets,
+                    );
+                }
+                Some(false) => {}
+                None => debug!(
+                    track_id = per_track_metadata.track_id,
+                    value = %tag.raw.value,
+                    "H.264 parameter-set placement metadata has unsupported value type"
+                ),
+            }
+        }
+    }
+
+    packet_framings_by_track
 }
 
 /// Нормализует raw Symphonia metadata value в signed clockwise degrees.

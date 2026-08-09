@@ -55,6 +55,8 @@ const ISOMP4_METADATA_INFO: MetadataInfo = MetadataInfo {
 
 const RUSTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG: &str =
     "rustiplayer.display_orientation.clockwise_degrees";
+const RUSTIPLAYER_H264_PARAMETER_SETS_IN_BAND_TAG: &str =
+    "rustiplayer.video.h264.parameter_sets_in_band";
 const RUSTIPLAYER_VIDEO_COLOR_FULL_RANGE_TAG: &str = "rustiplayer.video.color.full_range";
 const RUSTIPLAYER_VIDEO_COLOR_MATRIX_COEFFICIENTS_H273_TAG: &str =
     "rustiplayer.video.color.matrix_coefficients_h273";
@@ -1249,6 +1251,8 @@ fn append_track_rustiplayer_metadata(metadata: &mut MetadataLog, traks: &[TrakAt
 
         has_track_metadata |=
             append_track_display_orientation_tags(&mut track_metadata_builder, trak);
+        has_track_metadata |=
+            append_track_h264_parameter_set_tags(&mut track_metadata_builder, trak);
         has_track_metadata |= append_track_video_color_tags(&mut track_metadata_builder, trak);
 
         if has_track_metadata {
@@ -1278,6 +1282,26 @@ fn append_track_display_orientation_tags(
     track_metadata_builder.add_tag(Tag::new_from_parts(
         RUSTIPLAYER_DISPLAY_ORIENTATION_CLOCKWISE_DEGREES_TAG,
         u64::from(clockwise_degrees),
+        None,
+    ));
+    true
+}
+
+/// Публикует точную `avc3` семантику, которую generic Symphonia codec id не сохраняет.
+fn append_track_h264_parameter_set_tags(
+    track_metadata_builder: &mut PerTrackMetadataBuilder,
+    trak: &TrakAtom,
+) -> bool {
+    let Some(visual_sample_entry) = trak.mdia.minf.stbl.stsd.visual_sample_entry() else {
+        return false;
+    };
+    if !visual_sample_entry.parameter_sets_may_be_in_band {
+        return false;
+    }
+
+    track_metadata_builder.add_tag(Tag::new_from_parts(
+        RUSTIPLAYER_H264_PARAMETER_SETS_IN_BAND_TAG,
+        true,
         None,
     ));
     true

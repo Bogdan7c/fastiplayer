@@ -42,7 +42,7 @@ use crate::track_mapper::{
 
 use self::metadata::{
     display_orientations_from_metadata, summarize_symphonia_format_metadata,
-    video_color_metadata_from_metadata,
+    video_color_metadata_from_metadata, video_packet_framings_from_metadata,
 };
 
 use self::decode_point_before::{
@@ -676,11 +676,13 @@ fn track_state_from_format_reader(
     let mut video_tracks_for_mapping = video_tracks_by_track.clone();
     let display_orientations_by_track = display_orientations_from_metadata(format);
     let color_metadata_by_track = video_color_metadata_from_metadata(format);
+    let packet_framings_by_track = video_packet_framings_from_metadata(format);
     let track_mapping = map_tracks_with_video_metadata(
         format.tracks(),
         &mut video_tracks_for_mapping,
         &display_orientations_by_track,
         &color_metadata_by_track,
+        &packet_framings_by_track,
     );
     let media_info_duration = media_info_duration(format.media_info());
     let duration = track_mapping.duration.or(media_info_duration);

@@ -1,6 +1,6 @@
 use codec_core::{
     H264Packetization, H265Packetization, parse_avc_decoder_configuration_record,
-    parse_hevc_decoder_configuration_record,
+    parse_avc3_decoder_configuration_record, parse_hevc_decoder_configuration_record,
 };
 use media_core::{TrackInfo, VideoPacketFraming};
 use video_core::VideoStreamPacketization;
@@ -22,7 +22,32 @@ pub(super) fn h264_packetization_from_track(
         | VideoPacketFraming::LengthPrefixedFromCodecConfiguration => {
             h264_length_prefixed_packetization(track)
         }
+        VideoPacketFraming::LengthPrefixedWithInBandParameterSets => {
+            h264_in_band_parameter_set_packetization(track)
+        }
     }
+}
+
+/// Разрешает `avc3`: length-prefix остаётся в `avcC`, а SPS/PPS приходят в packets.
+fn h264_in_band_parameter_set_packetization(
+    track: &TrackInfo,
+) -> PlayerResult<Option<VideoStreamPacketization>> {
+    let Some(codec_private) = track
+        .codec_private
+        .as_ref()
+        .filter(|bytes| !bytes.is_empty())
+    else {
+        return Err(missing_codec_configuration_error(
+            track,
+            "H.264",
+            "avc3 avcC",
+        ));
+    };
+    let record = parse_avc3_decoder_configuration_record(codec_private)
+        .map_err(|error| invalid_codec_configuration_error(track, "H.264", "avc3 avcC", error))?;
+    Ok(Some(VideoStreamPacketization::H264(
+        H264Packetization::from_avc3_decoder_configuration_record(&record),
+    )))
 }
 
 /// Разрешает neutral H.265 framing evidence без container guessing-а.

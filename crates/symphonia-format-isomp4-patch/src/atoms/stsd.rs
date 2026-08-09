@@ -86,6 +86,7 @@ impl Atom for StsdAtom {
             }
             AtomType::VisualSampleEntryAv1
             | AtomType::VisualSampleEntryAvc1
+            | AtomType::VisualSampleEntryAvc3
             | AtomType::VisualSampleEntryDvh1
             | AtomType::VisualSampleEntryDvhe
             | AtomType::VisualSampleEntryHev1
@@ -599,6 +600,8 @@ pub struct VisualSampleEntry {
     pub profile: Option<CodecProfile>,
     pub level: Option<u32>,
     pub extra_data: Vec<VideoExtraData>,
+    /// `avc3` разрешает обновлять SPS/PPS внутри media samples.
+    pub parameter_sets_may_be_in_band: bool,
     pub colour_information: Option<ColourInformationAtom>,
     pub mastering_display_colour_volume: Option<MasteringDisplayColourVolumeAtom>,
     pub content_light_level: Option<ContentLightLevelAtom>,
@@ -626,7 +629,7 @@ impl VisualSampleEntry {
 }
 
 impl Atom for VisualSampleEntry {
-    fn read<R: ReadAtom>(it: &mut AtomIterator<R>, _header: &AtomHeader) -> Result<Self> {
+    fn read<R: ReadAtom>(it: &mut AtomIterator<R>, header: &AtomHeader) -> Result<Self> {
         // SampleEntry portion
 
         // Reserved. All 0.
@@ -645,6 +648,7 @@ impl Atom for VisualSampleEntry {
             height: it.read_u16()?,
             horiz_res: f64::from(FpU16::parse_raw(it.read_u32()?)),
             vert_res: f64::from(FpU16::parse_raw(it.read_u32()?)),
+            parameter_sets_may_be_in_band: header.atom_type() == AtomType::VisualSampleEntryAvc3,
             ..Default::default()
         };
 
@@ -901,11 +905,12 @@ mod tests {
     use std::io::Cursor;
 
     use symphonia_core::codecs::audio::well_known::CODEC_ID_PCM_S16LE;
+    use symphonia_core::codecs::video::well_known::CODEC_ID_H264;
     use symphonia_core::io::MediaSourceStream;
 
     use super::{
         Atom, AtomIterator, AudioSampleEntry, ColourInformationAtom, ContentLightLevelAtom,
-        MasteringDisplayColourVolumeAtom, VisualSampleEntry,
+        MasteringDisplayColourVolumeAtom, StsdAtom, VisualSampleEntry,
     };
 
     fn read_atom_from_payload<A: Atom>(atom_type: [u8; 4], payload: Vec<u8>) -> A {
@@ -934,6 +939,26 @@ mod tests {
         bytes.extend_from_slice(&atom_type);
         bytes.extend_from_slice(&payload);
         bytes
+    }
+
+    /// Собирает VisualSampleEntry payload, чтобы тесты проверяли routing sample entry atom-а.
+    fn visual_sample_entry_payload(width: u16, height: u16, child_atoms: &[u8]) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0; 6]);
+        push_u16(&mut payload, 1);
+        payload.extend_from_slice(&[0; 16]);
+        push_u16(&mut payload, width);
+        push_u16(&mut payload, height);
+        push_u32(&mut payload, 0x0048_0000);
+        push_u32(&mut payload, 0x0048_0000);
+        push_u32(&mut payload, 0);
+        push_u16(&mut payload, 1);
+        payload.push(0);
+        payload.extend_from_slice(&[0; 31]);
+        push_u16(&mut payload, 24);
+        push_u16(&mut payload, 0xffff);
+        payload.extend_from_slice(child_atoms);
+        payload
     }
 
     fn push_u16(bytes: &mut Vec<u8>, value: u16) {
@@ -1070,6 +1095,36 @@ mod tests {
         assert!(sample_entry.colour_information.is_some());
         assert!(sample_entry.mastering_display_colour_volume.is_some());
         assert!(sample_entry.content_light_level.is_some());
+    }
+
+    #[test]
+    fn stsd_recognizes_avc3_without_weakening_avc1_parameter_set_contract() {
+        let minimal_avc3_configuration = vec![0x01, 0x4d, 0x40, 0x1f, 0xff, 0xe0, 0x00];
+        let avcc_atom = atom_bytes(*b"avcC", minimal_avc3_configuration.clone());
+
+        for (sample_entry_type, parameter_sets_may_be_in_band) in
+            [(*b"avc1", false), (*b"avc3", true)]
+        {
+            let sample_entry_payload = visual_sample_entry_payload(768, 432, &avcc_atom);
+            let mut stsd_payload = vec![0; 4];
+            push_u32(&mut stsd_payload, 1);
+            stsd_payload.extend_from_slice(&atom_bytes(sample_entry_type, sample_entry_payload));
+
+            let stsd = read_atom_from_payload::<StsdAtom>(*b"stsd", stsd_payload);
+            let visual_sample_entry = stsd
+                .visual_sample_entry()
+                .expect("avc1/avc3 должны распознаваться как video sample entries");
+
+            assert_eq!(visual_sample_entry.codec_id, CODEC_ID_H264);
+            assert_eq!(
+                visual_sample_entry.extra_data[0].data.as_ref(),
+                minimal_avc3_configuration.as_slice()
+            );
+            assert_eq!(
+                visual_sample_entry.parameter_sets_may_be_in_band,
+                parameter_sets_may_be_in_band
+            );
+        }
     }
 
     #[test]

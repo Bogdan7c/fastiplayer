@@ -19,7 +19,8 @@
 
 - Для static HLS VOD `app-egui::web_media_hls_open` теперь всегда ждёт первый authoritative `TracksChanged` на media-open worker-е до сборки `PreparedMedia` и `Installed`, даже когда yt-dlp заранее объявил H.264/AAC и codec proof не deferred.
 - Корневая гонка: declared-codec HLS раньше обходил ожидание; `PreparedMedia` снимал `duration=None`, atomic player install публиковал `UnknownTimeline`/non-seekable, а startup немедленно отправлял сохранённую ненулевую позицию до позднего player tick с `TracksChanged`.
-- HLS VOD readiness owner остаётся app composition boundary; startup/session не ждут provider events и player API не менялся. Live HLS сохраняет прежний режим: ожидание tracks до Installed обязательно только для deferred codec proof, а dynamic timeline/persistent checkpoint rules не затронуты.
+- HLS VOD readiness owner остаётся app composition boundary; startup/session не ждут provider events и player API не менялся.
+- Follow-up 2026-08-10: любой live HLS тоже обязан иметь непустой authoritative `demuxer.tracks()` snapshot до Installed, а не только deferred codec layout. Уже применённый bootstrap snapshot достаточен и не требует replay `TracksChanged`; dynamic timeline/persistent checkpoint rules не затронуты. Полный contract: `mem:media-services/hls-live-avc3-2026-08-10`.
 - Regression `web_media_hls_open::tests::hls_vod_is_seekable_with_duration_at_prepared_media_boundary` доказывает, что finite HLS до player install уже публикует tracks, duration и seekable snapshot.
 - Follow-up generation race: compatibility backend replacement сразу после `Installed` раньше безусловно запускал `reseek(current_position)` и supersede-ил request-owned startup restore generation. Теперь `player-core::capability_selection` сохраняет уже идущий seek/scrub generation: для принятого demux commit новый decoder повторно получает output floor, для ожидаемого worker receipt floor применяется после receipt; отдельный recovery reseek остаётся только вне active positioning lifecycle.
 - Functional regression `session::tests::installed_media_restore::backend_replacement_preserves_in_flight_position_restore_generation` сначала воспроизводил generation 1 → 2 и теперь доказывает matching terminal `Applied` после backend swap.
@@ -37,4 +38,4 @@
 
 Runtime overlay может продолжать показывать startup label `Backend: VA-API VP9`, хотя codec adapter уже сконфигурирован как H.264. Это stale display-name/telemetry label, не фактический codec route; playback evidence выше получено из H.264 Annex-B decode и меняющихся кадров.
 
-Связанные memories: `mem:testing/web-media-playlist-acceptance-2026-08-04`, `mem:video-vaapi/h264-known-issues`, `mem:demux/mpeg-ts`, `mem:player/stream-config-boundary`.
+Связанные memories: `mem:testing/web-media-playlist-acceptance-2026-08-04`, `mem:video-vaapi/h264-known-issues`, `mem:mpeg-ts-demux/core`, `mem:video-core/decoder-stream-boundary`.

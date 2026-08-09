@@ -77,6 +77,12 @@ pub enum H264Packetization {
         /// Размер big-endian length field перед каждым NAL unit.
         nal_length_size: H264NalLengthSize,
     },
+
+    /// ISO BMFF/AVCC length-prefixed packetization с parameter sets внутри samples.
+    AvccLengthPrefixedWithInBandParameterSets {
+        /// Размер big-endian length field перед каждым NAL unit.
+        nal_length_size: H264NalLengthSize,
+    },
 }
 
 impl H264Packetization {
@@ -86,6 +92,16 @@ impl H264Packetization {
         record: &AvcDecoderConfigurationRecord,
     ) -> Self {
         Self::AvccLengthPrefixed {
+            nal_length_size: record.nal_length_size,
+        }
+    }
+
+    /// Строит packetization для `avc3`, где SPS/PPS могут находиться только в samples.
+    #[must_use]
+    pub const fn from_avc3_decoder_configuration_record(
+        record: &AvcDecoderConfigurationRecord,
+    ) -> Self {
+        Self::AvccLengthPrefixedWithInBandParameterSets {
             nal_length_size: record.nal_length_size,
         }
     }
@@ -646,9 +662,39 @@ impl fmt::Display for H264BitReaderError {
 
 impl std::error::Error for H264BitReaderError {}
 
-/// Парсит `avcC`/AVCDecoderConfigurationRecord и извлекает SPS/PPS.
+/// Определяет, обязан ли configuration record сам нести parameter sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AvcParameterSetContract {
+    /// `avc1`: SPS/PPS обязаны находиться в `avcC`.
+    ConfigurationRequired,
+    /// `avc3`: SPS/PPS могут находиться только внутри media samples.
+    InBandAllowed,
+}
+
+/// Парсит строгий `avc1` `avcC`/AVCDecoderConfigurationRecord и извлекает SPS/PPS.
 pub fn parse_avc_decoder_configuration_record(
     record_bytes: &[u8],
+) -> Result<AvcDecoderConfigurationRecord, AvcDecoderConfigurationRecordError> {
+    parse_avc_decoder_configuration_record_with_contract(
+        record_bytes,
+        AvcParameterSetContract::ConfigurationRequired,
+    )
+}
+
+/// Парсит `avc3` `avcC`, где SPS/PPS разрешено передавать внутри media samples.
+pub fn parse_avc3_decoder_configuration_record(
+    record_bytes: &[u8],
+) -> Result<AvcDecoderConfigurationRecord, AvcDecoderConfigurationRecordError> {
+    parse_avc_decoder_configuration_record_with_contract(
+        record_bytes,
+        AvcParameterSetContract::InBandAllowed,
+    )
+}
+
+/// Реализует общую структурную проверку `avcC` с явным контрактом parameter sets.
+fn parse_avc_decoder_configuration_record_with_contract(
+    record_bytes: &[u8],
+    parameter_set_contract: AvcParameterSetContract,
 ) -> Result<AvcDecoderConfigurationRecord, AvcDecoderConfigurationRecordError> {
     if record_bytes.len() < 6 {
         return Err(AvcDecoderConfigurationRecordError::TooShort {
@@ -692,7 +738,7 @@ pub fn parse_avc_decoder_configuration_record(
 
     let sps_count_byte = record_bytes[5];
     let sps_count = usize::from(sps_count_byte & AVC_SPS_COUNT_MASK);
-    if sps_count == 0 {
+    if sps_count == 0 && parameter_set_contract == AvcParameterSetContract::ConfigurationRequired {
         return Err(AvcDecoderConfigurationRecordError::MissingSequenceParameterSet);
     }
 
@@ -709,7 +755,7 @@ pub fn parse_avc_decoder_configuration_record(
     };
     cursor += 1;
     let pps_count = usize::from(pps_count_byte);
-    if pps_count == 0 {
+    if pps_count == 0 && parameter_set_contract == AvcParameterSetContract::ConfigurationRequired {
         return Err(AvcDecoderConfigurationRecordError::MissingPictureParameterSet);
     }
 
@@ -735,10 +781,15 @@ pub fn infer_h264_packetization(
     codec_private: Option<&[u8]>,
     packet_bytes: &[u8],
 ) -> Result<H264Packetization, H264ByteStreamError> {
-    if let Some(codec_private) = codec_private.filter(|bytes| !bytes.is_empty())
-        && let Ok(record) = parse_avc_decoder_configuration_record(codec_private)
-    {
-        return Ok(record.packetization());
+    if let Some(codec_private) = codec_private.filter(|bytes| !bytes.is_empty()) {
+        if let Ok(record) = parse_avc_decoder_configuration_record(codec_private) {
+            return Ok(record.packetization());
+        }
+        if let Ok(record) = parse_avc3_decoder_configuration_record(codec_private) {
+            return Ok(H264Packetization::from_avc3_decoder_configuration_record(
+                &record,
+            ));
+        }
     }
 
     if contains_annex_b_start_code(packet_bytes) {
@@ -755,7 +806,8 @@ pub fn h264_nal_units<'a>(
 ) -> Result<Vec<H264NalUnit<'a>>, H264ByteStreamError> {
     match packetization {
         H264Packetization::AnnexB => annex_b_nal_units(packet_bytes),
-        H264Packetization::AvccLengthPrefixed { nal_length_size } => {
+        H264Packetization::AvccLengthPrefixed { nal_length_size }
+        | H264Packetization::AvccLengthPrefixedWithInBandParameterSets { nal_length_size } => {
             avcc_nal_units(packet_bytes, nal_length_size)
         }
     }
@@ -963,7 +1015,8 @@ fn append_access_unit_nals_to_annex_b(
 ) -> Result<(), H264ByteStreamError> {
     match packetization {
         H264Packetization::AnnexB => append_annex_b_nal_units_to_annex_b(packet_bytes, output),
-        H264Packetization::AvccLengthPrefixed { nal_length_size } => {
+        H264Packetization::AvccLengthPrefixed { nal_length_size }
+        | H264Packetization::AvccLengthPrefixedWithInBandParameterSets { nal_length_size } => {
             append_avcc_nal_units_to_annex_b(packet_bytes, nal_length_size, output)
         }
     }

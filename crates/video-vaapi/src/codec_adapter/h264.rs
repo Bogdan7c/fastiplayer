@@ -30,19 +30,28 @@ impl H264VaapiStreamConfig {
             .as_deref()
             .filter(|bytes| !bytes.is_empty());
         let decoder_config = codec_private
-            .map(parse_avc_decoder_configuration_record)
+            .map(|codec_private| match packetization {
+                H264Packetization::AvccLengthPrefixedWithInBandParameterSets { .. } => {
+                    parse_avc3_decoder_configuration_record(codec_private)
+                }
+                H264Packetization::AnnexB | H264Packetization::AvccLengthPrefixed { .. } => {
+                    parse_avc_decoder_configuration_record(codec_private)
+                }
+            })
             .transpose()
             .map_err(|error| VideoStreamConfigRejection::InvalidCodecPrivate {
                 codec: VideoCodec::H264,
                 reason: error.to_string(),
             })?;
 
-        if let H264Packetization::AvccLengthPrefixed { nal_length_size } = packetization {
+        if let H264Packetization::AvccLengthPrefixed { nal_length_size }
+        | H264Packetization::AvccLengthPrefixedWithInBandParameterSets { nal_length_size } =
+            packetization
+        {
             let decoder_config = decoder_config.as_ref().ok_or_else(|| {
                 VideoStreamConfigRejection::InvalidCodecPrivate {
                     codec: VideoCodec::H264,
-                    reason: "length-prefixed H.264 requires avcC codec_private with SPS/PPS"
-                        .to_string(),
+                    reason: "length-prefixed H.264 requires avcC codec_private".to_string(),
                 }
             })?;
             if decoder_config.nal_length_size != nal_length_size {
