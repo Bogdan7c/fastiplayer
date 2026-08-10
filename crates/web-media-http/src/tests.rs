@@ -17,7 +17,7 @@ use web_media_core::{
 use web_media_transport_api::{
     HttpRangeRequestLimit, MediaComponentIdentity, MediaComponentRole, MediaPresentation,
     RedirectHopLimit, RedirectPolicy, SecretRequestContext, SecretRequestScope, SourceGeneration,
-    TransportInput, TransportOpenError, TransportOpenRequest, TransportProvider,
+    TransportFailure, TransportInput, TransportOpenError, TransportOpenRequest, TransportProvider,
     TransportRefreshError, TransportRefreshRequest, TransportRefreshRequestError,
     TransportRegistry,
 };
@@ -35,6 +35,8 @@ enum TestServerBehavior {
     RangeWithSetCookie { serialized_cookie: String },
     /// Любой request требует authentication.
     Unauthorized,
+    /// Любой request отклоняется public access policy без auth challenge.
+    Forbidden,
     /// `/start` перенаправляет на caller-provided target, остальные path получают body.
     Redirect { target: String },
     /// Redirect пытается расширить cookie на другой origin.
@@ -164,6 +166,11 @@ fn handle_connection(
             stream
                 .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
                 .expect("write unauthorized response");
+        }
+        TestServerBehavior::Forbidden => {
+            stream
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .expect("write forbidden response");
         }
         TestServerBehavior::Redirect { target } if request.starts_with("GET /start ") => {
             let response =
@@ -446,6 +453,19 @@ fn range_source_uses_existing_prefetch_path() {
 
     assert_eq!(&output[..read], body.as_slice());
     assert!(server.request_count() >= 2);
+    let requests = server.captured_requests();
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.contains("user-agent: rustiplayer/")),
+        "initial probe и каждый Range read обязаны нести общую HTTP client identity"
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.contains("https://github.com/Bogdan7c/rustiplayer")),
+        "HTTP client identity должна оставлять server-у стабильный contact URL"
+    );
 }
 
 #[test]
@@ -731,6 +751,28 @@ fn auth_errors_and_debug_output_redact_header_value_and_url_payload() {
     assert!(!request_debug.contains("never-print-query"));
     assert!(!error_debug.contains(secret));
     assert!(!error_debug.contains("never-print-query"));
+}
+
+/// Public `403` не должен выдаваться за отсутствующие credentials.
+#[test]
+fn forbidden_without_auth_challenge_is_typed_access_denied() {
+    let server = TestServer::spawn(Vec::new(), TestServerBehavior::Forbidden);
+    let (registry, provider) = registry();
+    let error = registry
+        .open(request(
+            provider,
+            &server.url("/public-but-policy-blocked.webm"),
+            MediaComponentRole::Muxed,
+            1,
+            None,
+            CancellationToken::new(),
+        ))
+        .expect_err("public policy rejection must remain an open error");
+
+    assert_eq!(
+        error,
+        TransportOpenError::Transport(TransportFailure::AccessDenied)
+    );
 }
 
 #[test]

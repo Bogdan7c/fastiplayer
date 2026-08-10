@@ -172,7 +172,7 @@ pub enum DirectMediaUrlUnsupportedReason {
 #[derive(Debug, Error)]
 pub enum DirectMediaOpenError {
     /// URL parser не смог разобрать CLI аргумент как absolute URL.
-    #[error("некорректный direct media URL: {source}")]
+    #[error("некорректный direct media URL")]
     InvalidUrl {
         /// Ошибка `url` crate.
         #[source]
@@ -187,7 +187,7 @@ pub enum DirectMediaOpenError {
     },
 
     /// Network config не может быть применён к source layer.
-    #[error("network config нельзя использовать для direct media source: {source}")]
+    #[error("network config нельзя использовать для direct media source")]
     SourceConfig {
         /// Исходная source-core ошибка validation-а.
         #[source]
@@ -208,7 +208,7 @@ pub enum DirectMediaOpenError {
     },
 
     /// Prefetch config отклонил нормализованные значения.
-    #[error("network prefetch config нельзя использовать для direct media: {source}")]
+    #[error("network prefetch config нельзя использовать для direct media")]
     PrefetchConfig {
         /// Ошибка validation-а `media-prefetch`.
         #[source]
@@ -216,7 +216,7 @@ pub enum DirectMediaOpenError {
     },
 
     /// Background prefetch worker не удалось создать до передачи source demuxer-у.
-    #[error("не удалось запустить prefetch для {locator}: {source}")]
+    #[error("не удалось запустить prefetch для {locator}")]
     PrefetchStartup {
         /// Redacted typed locator сохраняет service-level контекст открытия.
         locator: DirectMediaUrl,
@@ -234,7 +234,7 @@ pub enum DirectMediaOpenError {
     },
 
     /// HTTP Range source не открылся или упал на probe/read boundary.
-    #[error("HTTP Range source error для {locator}: {source}")]
+    #[error("HTTP Range source error для {locator}")]
     Source {
         /// Redacted typed locator.
         locator: DirectMediaUrl,
@@ -255,7 +255,7 @@ pub enum DirectMediaOpenError {
     },
 
     /// Symphonia не смогла открыть container по явному extension hint.
-    #[error("demux/probe error для {locator} как .{extension_hint}: {source}")]
+    #[error("demux/probe error для {locator} как .{extension_hint}")]
     Demux {
         /// Redacted typed locator.
         locator: DirectMediaUrl,
@@ -269,7 +269,7 @@ pub enum DirectMediaOpenError {
     },
 
     /// Static HTTP provider registration нарушила compile-time contract.
-    #[error("HTTP transport provider нельзя собрать для {locator}: {source}")]
+    #[error("HTTP transport provider нельзя собрать для {locator}")]
     HttpProvider {
         /// Redacted direct-media locator.
         locator: DirectMediaUrl,
@@ -279,7 +279,7 @@ pub enum DirectMediaOpenError {
     },
 
     /// Neutral transport registry отклонил provider registration.
-    #[error("HTTP transport registry отклонил provider для {locator}: {source}")]
+    #[error("HTTP transport registry отклонил provider для {locator}")]
     TransportRegistry {
         /// Redacted direct-media locator.
         locator: DirectMediaUrl,
@@ -289,7 +289,7 @@ pub enum DirectMediaOpenError {
     },
 
     /// Neutral transport open завершился typed operational error-ом.
-    #[error("HTTP transport не открыл direct media {locator}: {source}")]
+    #[error("HTTP transport не открыл direct media {locator}")]
     TransportOpen {
         /// Redacted direct-media locator.
         locator: DirectMediaUrl,
@@ -308,7 +308,7 @@ pub enum DirectMediaOpenError {
     },
 
     /// Symphonia factory descriptor не прошёл neutral identity validation.
-    #[error("demux factory registration нельзя собрать для {locator}: {source}")]
+    #[error("demux factory registration нельзя собрать для {locator}")]
     DemuxIdentity {
         /// Redacted direct-media locator.
         locator: DirectMediaUrl,
@@ -318,7 +318,7 @@ pub enum DirectMediaOpenError {
     },
 
     /// Neutral demux registry отклонил factory registration.
-    #[error("demux registry отклонил factory для {locator}: {source}")]
+    #[error("demux registry отклонил factory для {locator}")]
     DemuxRegistry {
         /// Redacted direct-media locator.
         locator: DirectMediaUrl,
@@ -328,7 +328,7 @@ pub enum DirectMediaOpenError {
     },
 
     /// Neutral registry не смог probe/open container.
-    #[error("demux registry не открыл {locator}: {source}")]
+    #[error("demux registry не открыл {locator}")]
     DemuxOpen {
         /// Redacted direct-media locator.
         locator: DirectMediaUrl,
@@ -338,7 +338,7 @@ pub enum DirectMediaOpenError {
     },
 
     /// Non-Range demux worker не запустился до публикации prepared media.
-    #[error("progressive demux worker не запустился для {locator}: {source}")]
+    #[error("progressive demux worker не запустился для {locator}")]
     ProgressiveDemuxStartup {
         /// Redacted direct-media locator.
         locator: DirectMediaUrl,
@@ -530,6 +530,7 @@ fn demuxer_options_from_config(
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error as _;
     use std::fs;
     use std::io::{Read, Write};
     use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -884,6 +885,32 @@ mod tests {
         assert!(!formatted.contains("password"));
         assert!(!formatted.contains("secret"));
         assert!(matches!(error, DirectMediaOpenError::InvalidUrl { .. }));
+    }
+
+    /// Alternate anyhow report должен печатать каждый typed source layer ровно один раз.
+    #[test]
+    fn direct_media_error_report_does_not_duplicate_source_layers() {
+        let locator = parse_direct_media_url("https://example.invalid/video.webm")
+            .expect("test locator should satisfy direct-media classification");
+        let direct_error = DirectMediaOpenError::TransportOpen {
+            locator,
+            source: web_media_transport_api::TransportOpenError::Transport(
+                web_media_transport_api::TransportFailure::AccessDenied,
+            ),
+        };
+        let source = direct_error
+            .source()
+            .expect("transport-open variant must preserve typed source");
+        let diagnostic = format!("Не удалось открыть direct media URL: {direct_error}: {source}");
+
+        assert_eq!(diagnostic.matches("HTTP transport не открыл").count(), 1);
+        assert_eq!(diagnostic.matches("transport open failed").count(), 1);
+        assert_eq!(
+            diagnostic
+                .matches("transport remote endpoint отказал в доступе")
+                .count(),
+            1
+        );
     }
 
     #[test]

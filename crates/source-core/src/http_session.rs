@@ -14,6 +14,7 @@ use reqwest::header::{HeaderValue, LOCATION, RANGE};
 use reqwest::redirect::Policy;
 
 use crate::http::{build_header_map, map_reqwest_error};
+use crate::http_client::blocking_http_client_builder;
 use crate::{
     CancellationToken, HttpHeader, HttpRangeSource, HttpRequestTarget, ScopedHttpCookieJar,
     SecretHttpUrl, SourceError, SourceResult, SourceRuntimeConfig, StreamingByteSource,
@@ -311,10 +312,8 @@ impl HttpSourceSession {
         source_config: &SourceRuntimeConfig,
         cookie_jar: Option<Arc<ScopedHttpCookieJar>>,
     ) -> SourceResult<Self> {
-        let mut client_builder = Client::builder()
-            .connect_timeout(source_config.connect_timeout())
-            .timeout(source_config.read_timeout())
-            .redirect(Policy::none());
+        let mut client_builder =
+            blocking_http_client_builder(source_config).redirect(Policy::none());
         if let Some(cookie_jar) = cookie_jar {
             client_builder = client_builder.cookie_provider(cookie_jar);
         }

@@ -6,12 +6,14 @@
 //! - `AudioDecoder` остаётся codec-neutral boundary для player-core.
 //! - `SymphoniaAudioDecoder` владеет Symphonia decoder registry object-ом.
 //! - `OpusFallbackDecoder` остаётся приватным adapter-ом, потому что Symphonia 0.6
-//!   распознаёт Opus codec id, но не предоставляет Opus audio decoder backend.
+//!   распознаёт Opus codec id, но не предоставляет Opus audio decoder backend;
+//!   adapter читает exact `OpusHead`, поддерживает multistream и не пропускает
+//!   codec-specific Vorbis channel order через neutral audio boundary.
 //! - `SwfAdpcmDecoder` до Symphonia принимает только exact `A_ADPCM_SWF` и
 //!   декодирует каждый packet независимо по нормативным 4096-sample блокам.
 //! - Все decoder-ы возвращают interleaved `Vec<f32>`, как ожидает CPAL output path.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use symphonia::core::codecs::audio::{AudioDecoder as SymphoniaDecoder, AudioDecoderOptions};
 use symphonia::core::errors::Error as SymphoniaError;
 use tracing::{info, warn};
@@ -23,11 +25,9 @@ pub use audio_core::{
     EncodedAudioPacket,
 };
 
-/// Максимальное количество samples на packet для Opus fallback (120ms @ 48kHz stereo).
-const MAX_OPUS_SAMPLES_PER_PACKET: usize = 48000 * 2 * 120 / 1000;
-
 mod capability;
 mod conversion;
+mod opus;
 mod swf_adpcm;
 
 pub use swf_adpcm::SwfAdpcmDecodeError;
@@ -42,6 +42,7 @@ use conversion::{
 use symphonia::core::codecs::audio::well_known as symphonia_audio_codec;
 
 use capability::production_audio_decode_capability_snapshot;
+use opus::OpusFallbackDecoder;
 use swf_adpcm::{SWF_ADPCM_CODEC_ID, SwfAdpcmDecoder};
 
 /// Production decoder factory, которая скрывает Symphonia registry и Opus fallback.
@@ -252,126 +253,6 @@ impl AudioDecoder for SymphoniaAudioDecoder {
     }
 }
 
-/// Приватный Opus fallback adapter поверх `opus` crate.
-struct OpusFallbackDecoder {
-    /// Track ID, для которого создан fallback decoder.
-    track_id: u32,
-
-    /// Opus decoder из `opus` crate.
-    decoder: opus::Decoder,
-
-    /// Sample rate decoded audio.
-    sample_rate: u32,
-
-    /// Количество каналов decoded audio.
-    channels: u32,
-
-    /// Neutral mono/stereo layout fallback decoder-а.
-    channel_layout: AudioChannelLayout,
-
-    /// Reusable buffer для i16 samples из opus decoder.
-    i16_buffer: Vec<i16>,
-}
-
-impl OpusFallbackDecoder {
-    /// Создаёт Opus fallback decoder для mono/stereo Opus tracks.
-    fn new(config: &AudioDecoderConfig) -> Result<Self> {
-        let sample_rate = required_audio_config_value(config.sample_rate(), "sample_rate", config)?;
-        let channels = required_audio_config_value(config.channels(), "channels", config)?;
-
-        let opus_channels = match channels {
-            1 => opus::Channels::Mono,
-            2 => opus::Channels::Stereo,
-            channel_count => {
-                anyhow::bail!(
-                    "Opus поддерживает только mono/stereo, получено: {}",
-                    channel_count
-                );
-            }
-        };
-
-        let decoder = opus::Decoder::new(sample_rate, opus_channels).context(
-            "Не удалось создать Opus fallback decoder. Убедитесь что libopus установлен",
-        )?;
-
-        Ok(Self {
-            track_id: config.track_id(),
-            decoder,
-            sample_rate,
-            channels,
-            channel_layout: AudioChannelLayout::from_channel_count(channels).map_err(|error| {
-                AudioDecoderError::InvalidConfig {
-                    codec_id: config.codec_id().to_string(),
-                    reason: error.to_string(),
-                }
-            })?,
-            i16_buffer: vec![0i16; MAX_OPUS_SAMPLES_PER_PACKET],
-        })
-    }
-
-    /// Проверяет, что packet относится к track-у fallback decoder-а.
-    fn ensure_packet_track_matches(&self, packet: &EncodedAudioPacket<'_>) -> Result<()> {
-        if packet.track_id() == self.track_id {
-            return Ok(());
-        }
-
-        anyhow::bail!(
-            "Audio packet track mismatch: decoder track {}, packet track {}",
-            self.track_id,
-            packet.track_id()
-        );
-    }
-}
-
-impl AudioDecoder for OpusFallbackDecoder {
-    /// Декодирует Opus packet в interleaved PCM f32.
-    fn decode(&mut self, packet: &EncodedAudioPacket<'_>) -> Result<Vec<f32>> {
-        self.ensure_packet_track_matches(packet)?;
-
-        match self
-            .decoder
-            .decode(packet.data(), &mut self.i16_buffer, false)
-        {
-            Ok(sample_count) => {
-                let total_samples = sample_count * self.channels as usize;
-                let f32_samples = self.i16_buffer[..total_samples]
-                    .iter()
-                    .map(|&sample| sample as f32 / 32768.0)
-                    .collect();
-
-                Ok(f32_samples)
-            }
-            Err(error) if error.code() == opus::ErrorCode::InvalidPacket => {
-                warn!("Corrupted Opus packet skipped by fallback decoder");
-                Ok(Vec::new())
-            }
-            Err(error) => Err(anyhow::anyhow!("Opus fallback decode error: {error}")),
-        }
-    }
-
-    /// Сбрасывает Opus state после seek.
-    fn reset(&mut self) -> Result<()> {
-        self.decoder
-            .reset_state()
-            .map_err(|error| anyhow::anyhow!("Opus fallback reset error: {error}"))
-    }
-
-    /// Возвращает sample rate fallback decoder-а.
-    fn sample_rate(&self) -> u32 {
-        self.sample_rate
-    }
-
-    /// Возвращает channel count fallback decoder-а.
-    fn channels(&self) -> u32 {
-        self.channels
-    }
-
-    /// Возвращает однозначный mono/stereo layout fallback decoder-а.
-    fn channel_layout(&self) -> Option<AudioChannelLayout> {
-        Some(self.channel_layout)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
@@ -535,15 +416,20 @@ mod tests {
     }
 
     #[test]
-    fn factory_keeps_opus_channel_validation_message() {
+    fn factory_requires_exact_mapping_for_multichannel_opus_without_codec_private() {
         let error = match create_audio_decoder(opus_config(6)) {
-            Ok(_) => panic!("invalid Opus channel count should be rejected by fallback"),
+            Ok(_) => panic!("multichannel Opus without mapping must be rejected"),
             Err(error) => error,
         };
 
         assert_eq!(
-            error.to_string(),
-            "Opus поддерживает только mono/stereo, получено: 6"
+            error
+                .downcast_ref::<AudioDecoderError>()
+                .expect("missing mapping must keep typed config error"),
+            &AudioDecoderError::InvalidConfig {
+                codec_id: "A_OPUS".to_string(),
+                reason: "multichannel Opus с 6 каналами требует валидный OpusHead с channel mapping table".to_string(),
+            }
         );
     }
 

@@ -31,3 +31,9 @@
 - Open adapter now uses `web-media-http` only through S21T `TransportRegistry`, then neutral `DemuxRegistry` with `SymphoniaDemuxFactory`; see `mem:media-services/progressive-http-s22-2026-07-22`.
 - Range responses retain existing seekable + media-prefetch behavior. Non-Range `200` responses become forward-only progressive demux instead of `NonSeekable` rejection.
 - MP4/MOV, MKV and WebM supply both extension and real container hints. Adapter constructs all registries/demuxers before returning `DirectMediaOpenResult`, so failures remain before player mutation.
+
+
+## Error-chain presentation invariant (2026-08-10)
+
+- `DirectMediaOpenError` сохраняет typed `#[source]` links, но outer `Display` печатает только контекст своего слоя и не интерполирует source повторно. Alternate anyhow report `{:#}` должен показывать каждую причину ровно один раз.
+- При добавлении нового direct-media error adapter-а нельзя одновременно включать underlying message в `#[error(...)]` и отдавать тот же объект через `Error::source()`. Focused regression test: `direct_media_error_report_does_not_duplicate_source_layers`.

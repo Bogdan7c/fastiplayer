@@ -51,3 +51,11 @@
 - `source-core::HttpRangeSource` owns physical Range mechanics, parses each `Location`, counts each physical request and checks cancellation before every hop. Every logical read and retry starts from immutable stable base target/headers/body; redirected material is local to that chain.
 - `web-media-http::ScopedRangeRedirectHandler` owns only redirect policy, ephemeral secret context and sticky per-read forwarding state. Cross-origin transitions monotonically strip headers/cookies/body; `301/302/303` monotonically switch to GET. `source-core` independently prevents a later `307/308` from resurrecting an already dropped body.
 - Focused proof covers stable-base restart across repeated reads, `POST -> 302 -> 307` body non-resurrection, per-physical-request diagnostics and a real prefetch cross-origin redirect that reaches final `206` without Authorization/initial Cookie/Set-Cookie leakage.
+
+
+## HTTP client identity и error taxonomy hardening (2026-08-10)
+
+- `source-core/src/http_client.rs` — единый owner common blocking Reqwest builder-а для `HttpRangeSource` и `HttpSourceSession`, включая initial probe, последующие Range reads и adaptive helper paths. Builder задаёт connect/read timeout и публичный descriptive User-Agent `rustiplayer/<version> (https://github.com/Bogdan7c/rustiplayer)`.
+- User-Agent — публичная идентичность клиента, а не credential: он не хранится в `SecretRequestContext`, не участвует в credential forwarding и может быть осознанно переопределён explicit request header. Wikimedia-подобные endpoints отклоняют пустой UA; hermetic tests теперь проверяют общий UA на probe и Range requests.
+- HTTP 401 и proxy 407 остаются `ProviderError::Authentication`; обычный 403 без authentication challenge отображается в новый typed `TransportFailure::AccessDenied`. Запрещено превращать 403 в выдуманный `CredentialsMissing`.
+- Acceptance row 05 `Big_buck_bunny_720p_5mb.webm` проверен end-to-end: seekable Range open, WebM demux, VP9 render, six-channel Opus decode/mix и drain до конца.

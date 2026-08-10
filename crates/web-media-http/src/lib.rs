@@ -370,13 +370,16 @@ fn map_source_open_error(
     match source {
         SourceError::Cancelled => ProviderOpenError::Cancelled,
         SourceError::HttpTimeout { .. } => ProviderOpenError::Transport(TransportFailure::Timeout),
-        SourceError::HttpStatus { status, .. } if matches!(status.as_u16(), 401 | 403 | 407) => {
+        SourceError::HttpStatus { status, .. } if matches!(status.as_u16(), 401 | 407) => {
             let failure = match secret_delivery {
                 SecretDelivery::Stripped => AuthenticationFailure::SecretScopeRejected,
                 SecretDelivery::Sent => AuthenticationFailure::CredentialsRejected,
                 SecretDelivery::NotSent => AuthenticationFailure::CredentialsMissing,
             };
             ProviderOpenError::Authentication(failure)
+        }
+        SourceError::HttpStatus { status, .. } if status.as_u16() == 403 => {
+            ProviderOpenError::Transport(TransportFailure::AccessDenied)
         }
         SourceError::InvalidHttpRedirect { .. }
         | SourceError::HttpBodyTooLarge { .. }

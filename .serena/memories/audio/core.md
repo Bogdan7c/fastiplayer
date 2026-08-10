@@ -71,3 +71,14 @@
 - Семейство ADPCM считается доступным только вместе: существующий Symphonia scope плюс exact SWF fallback. Neutral capability/media contracts не расширялись.
 - Focused tests находятся в `crates/audio/src/decoder/swf_adpcm.rs`; factory/capability contract tests — рядом с соответствующими владельцами.
 - Связанный codec foundation: `mem:codec-core/vp-flv-foundation-s30`.
+
+
+## Opus multistream fallback и neutral channel order (2026-08-10)
+
+- Symphonia 0.6 распознаёт Opus, но production decode по-прежнему проходит через project-owned crate-private adapter `audio::decoder::opus`. Runtime decoder выбирает single-stream `opus::Decoder` либо `opus::MSDecoder` только после структурной проверки полного `OpusHead`.
+- `OpusHead` является authoritative metadata для channel count, mapping family/table и output gain. Family 0 поддерживает mono/stereo; family 1 поддерживает 1–8 каналов через multistream. Multichannel без полного header отклоняется typed error-ом, без угадывания mapping. Family 255/reserved намеренно не принимаются: у neutral boundary нет надёжной speaker semantics для arbitrary/discrete mapping.
+- Family-1 Vorbis lane order переставляется при создании decoder-а в canonical `AudioChannelLayout`, прежде чем PCM пересечёт audio boundary. Для 5.1 canonical порядок: FL, FR, FC, LFE, RL, RR. `ChannelMixer` и output никогда не должны знать codec-specific lane order.
+- Decode buffer рассчитывается как максимум 120 ms * channel count, PCM остаётся interleaved f32. Обязательный Opus output gain применяется до возврата `DecodedAudioFrame`.
+- Playback clock Opus всегда 48 kHz. Поле input sample rate из `OpusHead` — только metadata и может быть нулём; `symphonia-demux::track_mapper` публикует 48 kHz даже при исходном metadata rate 44.1 kHz.
+- Functional proof: реальный пакет, созданный libopus `MSEncoder`, проходит public `create_audio_decoder` -> multistream decode -> production `ChannelMixer` 5.1→stereo; отдельные parser tests закрепляют exact Wikimedia row-05 header/mapping. Реальный WebM fixture проверяется `symphonia-demux/tests/audio_fixture_decode_seek.rs`.
+- Source `pre_skip`/seek preroll не спрятаны в decoder `reset()`: существующий lifecycle не различает initial start и post-seek discontinuity. Будущая sample-exact работа должна передать trim/discontinuity intent на demux/player boundary, а не менять ownership внутри codec adapter-а.

@@ -659,11 +659,12 @@ fn audio_properties_from_codec_params(track: &Track) -> (Option<u32>, Option<u32
         .as_ref()
         .map(|channels| channels.count() as u32);
 
-    if (sample_rate.is_none() || channels.is_none())
-        && let Some(codec_private) = audio_params.extra_data.as_deref()
+    if let Some(codec_private) = audio_params.extra_data.as_deref()
         && let Some((opus_sample_rate, opus_channels)) = parse_opus_head(codec_private)
     {
-        sample_rate = sample_rate.or(Some(opus_sample_rate));
+        // Symphonia/container могут повторить original input rate из OpusHead.
+        // Для decoder/output boundary Opus всегда публикует выбранную playback rate 48 kHz.
+        sample_rate = Some(opus_sample_rate);
         channels = channels.or(Some(opus_channels));
     }
 
@@ -869,18 +870,21 @@ fn unknown_codec_id_for_kind(kind: TrackEntryKind) -> &'static str {
     }
 }
 
-/// Парсит OpusHead из codec private data.
+/// Стандартная decoded playback rate для Opus независимо от original input rate metadata.
+const OPUS_PLAYBACK_SAMPLE_RATE: u32 = 48_000;
+
+/// Парсит минимальные playback properties из OpusHead codec private data.
 ///
 /// OpusHead структура (RFC 7845):
 /// 0-7:  "OpusHead" magic
 /// 8:    version
 /// 9:    channel count
 /// 10-11: pre-skip
-/// 12-15: input sample rate (LE u32)
+/// 12-15: original input sample rate metadata (не playback rate)
 /// 16-17: output gain
 /// 18:   channel mapping family
 ///
-/// Возвращает (sample_rate, channels) если OpusHead валиден.
+/// Возвращает (48 kHz playback rate, channels), если OpusHead валиден.
 fn parse_opus_head(codec_private_bytes: &[u8]) -> Option<(u32, u32)> {
     if codec_private_bytes.len() < 19 {
         return None;
@@ -890,28 +894,23 @@ fn parse_opus_head(codec_private_bytes: &[u8]) -> Option<(u32, u32)> {
         return None;
     }
 
+    // Версии 0..=15 сохраняют совместимую major version 0; 16+ требуют нового parser-а.
+    if codec_private_bytes[8] & 0xf0 != 0 {
+        return None;
+    }
+
     let channel_count = codec_private_bytes[9] as u32;
     if channel_count == 0 || channel_count > 255 {
         return None;
     }
 
-    let sample_rate = u32::from_le_bytes([
-        codec_private_bytes[12],
-        codec_private_bytes[13],
-        codec_private_bytes[14],
-        codec_private_bytes[15],
-    ]);
-    if sample_rate == 0 {
-        return None;
-    }
-
     tracing::debug!(
-        sample_rate,
+        sample_rate = OPUS_PLAYBACK_SAMPLE_RATE,
         channels = channel_count,
         "OpusHead распарсен из codec private data"
     );
 
-    Some((sample_rate, channel_count))
+    Some((OPUS_PLAYBACK_SAMPLE_RATE, channel_count))
 }
 
 #[cfg(test)]
@@ -937,8 +936,8 @@ mod tests {
 
     use super::{
         TrackEntryKind, UnsupportedTrackKind, build_track_entry, h264_profile_from_symphonia,
-        map_tracks, map_tracks_with_video_metadata, take_matroska_video_track_for_mapping,
-        tracks_may_need_matroska_video_metadata,
+        map_tracks, map_tracks_with_video_metadata, parse_opus_head,
+        take_matroska_video_track_for_mapping, tracks_may_need_matroska_video_metadata,
     };
     use crate::matroska_metadata::MatroskaVideoTrack;
 
@@ -951,10 +950,12 @@ mod tests {
     fn audio_track_with_opus_head(track_id: u32) -> Track {
         let mut opus_head = [0_u8; 19];
         opus_head[0..8].copy_from_slice(b"OpusHead");
+        opus_head[8] = 1;
         opus_head[9] = 2;
-        opus_head[12..16].copy_from_slice(&48_000_u32.to_le_bytes());
+        opus_head[12..16].copy_from_slice(&44_100_u32.to_le_bytes());
 
         let mut audio_params = AudioCodecParameters::new();
+        audio_params.with_sample_rate(44_100);
         audio_params.with_extra_data(opus_head.to_vec().into_boxed_slice());
 
         let mut track = Track::new(track_id);
@@ -1228,7 +1229,7 @@ mod tests {
     }
 
     #[test]
-    fn opus_head_fills_missing_audio_properties() {
+    fn opus_head_original_input_rate_does_not_override_playback_rate() {
         let track = audio_track_with_opus_head(2);
 
         let entry = build_track_entry(&track, None);
@@ -1236,6 +1237,16 @@ mod tests {
         assert_eq!(entry.supported_kind(), Some(TrackKind::Audio));
         assert_eq!(entry.sample_rate, Some(48_000));
         assert_eq!(entry.channels, Some(2));
+    }
+
+    #[test]
+    fn opus_head_accepts_unspecified_original_input_rate() {
+        let mut opus_head = [0_u8; 19];
+        opus_head[0..8].copy_from_slice(b"OpusHead");
+        opus_head[8] = 1;
+        opus_head[9] = 1;
+
+        assert_eq!(parse_opus_head(&opus_head), Some((48_000, 1)));
     }
 
     #[test]

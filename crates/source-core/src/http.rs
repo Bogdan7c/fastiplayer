@@ -7,6 +7,7 @@ use reqwest::header::{
     CONTENT_LENGTH, CONTENT_RANGE, ETAG, HeaderMap, HeaderName, HeaderValue, LAST_MODIFIED, RANGE,
 };
 
+use crate::http_client::blocking_http_client_builder;
 use crate::http_session::parse_redirect_hop;
 use crate::{
     ByteSource, CancellationToken, HttpRangeRedirectBodyForwarding, HttpRangeRedirectHandler,
@@ -135,9 +136,7 @@ impl fmt::Debug for HttpRangeSource {
 impl HttpRangeSource {
     /// Открывает HTTP Range source и выполняет seekability probe.
     pub fn open(config: HttpRangeSourceConfig) -> SourceResult<Self> {
-        let client = Client::builder()
-            .connect_timeout(config.source_config.connect_timeout())
-            .timeout(config.source_config.read_timeout())
+        let client = blocking_http_client_builder(&config.source_config)
             .build()
             .map_err(|source| SourceError::HttpClientBuild { source })?;
         let headers = build_header_map(&config.headers)?;

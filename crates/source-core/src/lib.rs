@@ -16,6 +16,7 @@ mod ftp_policy;
 mod ftp_session;
 mod http;
 mod http_bounded;
+mod http_client;
 mod http_cookie;
 mod http_cookie_seed;
 mod http_locator;

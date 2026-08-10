@@ -131,6 +131,9 @@ pub enum TransportFailure {
     /// Network временно/постоянно недоступна.
     #[error("transport network недоступна")]
     NetworkUnavailable,
+    /// Remote endpoint отказал в доступе без доказанного authentication challenge.
+    #[error("transport remote endpoint отказал в доступе")]
+    AccessDenied,
     /// Operation превысила bounded deadline.
     #[error("transport operation превысила deadline")]
     Timeout,
