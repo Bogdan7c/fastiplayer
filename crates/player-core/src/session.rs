@@ -51,6 +51,7 @@ mod prepared_seek;
 mod render_leases;
 mod scrub_driver;
 mod scrub_orchestration;
+mod seek_admission;
 mod seek_commit_gates;
 mod seek_completion;
 mod seek_diagnostics;
@@ -421,6 +422,7 @@ impl PlayerSession {
             actual_position: MediaTime::from_duration(target_position),
             started_at: Instant::now(),
             resume_intent: PlaybackResumeIntent::Pause,
+            target_retention: crate::seek_state::SeekTargetRetention::ExactPublicRange,
         }));
         self.mark_decoder_output_floor_applied_for_tests(generation, target_position);
 
@@ -925,6 +927,15 @@ impl PlayerSession {
 
         if self.should_replay_from_eof_on_play() {
             return self.restart_playback_after_eof();
+        }
+
+        if let Some(resume_target) = self.expired_live_resume_target() {
+            info!(
+                expired_position_ms = self.current_source_position.as_millis(),
+                resume_target_ms = resume_target.as_duration().as_millis(),
+                "Paused live position expired; Play starts a recovery seek"
+            );
+            return self.seek_expired_live_position_resuming_playback(resume_target);
         }
 
         self.set_playback_state(PlaybackState::Playing);

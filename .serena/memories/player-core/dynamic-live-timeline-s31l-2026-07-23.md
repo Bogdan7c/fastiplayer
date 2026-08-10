@@ -42,3 +42,11 @@
 - Full handoff: `mem:app-egui/live-same-item-candidate-switch-s35s-2026-07-24`.
 
 Related: `mem:player-core/core`, `mem:player-core/scrub-commit-policy-s09`, `mem:playlist/resume-position-sidecar-2026-07-19`, `mem:app-egui/wake-runtime-s10a`, `mem:app-egui/playlist-desktop-transport-s18b`, `mem:app-egui/live-same-item-candidate-switch-s35s-2026-07-24`.
+
+## Follow-up — live resume retention across worker receipt (2026-08-10)
+
+- Seek admission now carries a typed `SeekTargetRetention` through enqueue, worker preparation, receipt and active commit. `ExactPublicRange` preserves the strict packet-proven rule for ordinary user/scrub seeks; `LiveAvailability` is reserved for automatic Play recovery after the paused position expires.
+- The live source owns two deliberately different ranges: the authoritative manifest availability/DVR range and the narrower packet-proven public seekable range. A recovery target admitted against availability must not be reclassified as an ordinary public seek merely because packet evidence advances during the asynchronous worker round-trip.
+- `PreparedDemuxSeekIntent` groups request id, target, retention, mode and actual position so the policy cannot be lost in positional arguments. `SeekCommitState` retains that policy until the commit finishes or fails.
+- True expiry is still fail-closed. If the authoritative availability range drops a pending recovery target before the worker receipt, the request is superseded, the started seek lifecycle is closed and state returns to Paused; a late receipt is ignored. If expiry occurs during an active commit, the existing typed `SeekTargetExpired` cleanup remains authoritative.
+- Focused functional coverage lives in `player-core/src/session/tests/dynamic_timeline.rs`: survival across packet-proof movement both before and after receipt, authoritative expiry during commit, and authoritative expiry before receipt with stale-success rejection.

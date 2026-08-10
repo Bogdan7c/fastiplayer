@@ -76,16 +76,12 @@ fn endpoint_snapshot(availability_start_time: &str, publish_time: &str) -> super
         },
     })
     .expect("strict endpoint fixture");
-    let local: Arc<dyn DashWallClock> = Arc::new(FixedClock {
-        now: mpd.direct_utc_time,
-    });
-    let clock = DashSynchronizedClock::from_direct_utc(
-        local,
-        mpd.direct_utc_time,
-        mpd.direct_utc_time,
-        mpd.direct_utc_time,
-    )
-    .expect("zero-offset endpoint clock");
+    let direct_utc = mpd
+        .direct_utc_time()
+        .expect("endpoint fixture использует direct UTC");
+    let local: Arc<dyn DashWallClock> = Arc::new(FixedClock { now: direct_utc });
+    let clock = DashSynchronizedClock::from_direct_utc(local, direct_utc, direct_utc, direct_utc)
+        .expect("zero-offset endpoint clock");
     build_dash_live_snapshot(
         mpd,
         &HttpRequestTarget::parse_exact("https://media.invalid/live.mpd").expect("test target"),
@@ -267,16 +263,12 @@ fn logical_live_selection_survives_sibling_reorder_and_representation_id_rotatio
         locations: vec![(0, 0)].into_boxed_slice(),
         contract,
     });
-    let local: Arc<dyn DashWallClock> = Arc::new(FixedClock {
-        now: current_mpd.direct_utc_time,
-    });
-    let clock = DashSynchronizedClock::from_direct_utc(
-        local,
-        current_mpd.direct_utc_time,
-        current_mpd.direct_utc_time,
-        current_mpd.direct_utc_time,
-    )
-    .expect("zero-offset logical clock");
+    let direct_utc = current_mpd
+        .direct_utc_time()
+        .expect("logical fixture использует direct UTC");
+    let local: Arc<dyn DashWallClock> = Arc::new(FixedClock { now: direct_utc });
+    let clock = DashSynchronizedClock::from_direct_utc(local, direct_utc, direct_utc, direct_utc)
+        .expect("zero-offset logical clock");
     let target =
         HttpRequestTarget::parse_exact("https://media.invalid/live.mpd").expect("test target");
     let mut current = build_dash_live_snapshot_with_selection(

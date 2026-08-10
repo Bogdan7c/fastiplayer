@@ -170,13 +170,22 @@ pub(super) fn prepare_source(
     }
 }
 
-/// Сохраняет точную typed причину component finalization через anyhow context chain.
+/// Сохраняет typed component/DASH причину через anyhow context chain.
 fn classify_yt_dlp_preparation_failure(error: &anyhow::Error) -> MediaPreparationFailureKind {
     if error
         .downcast_ref::<crate::web_media_open::ComponentVariantFinalizationError>()
         .is_some()
     {
         MediaPreparationFailureKind::ComponentCatalogUnavailable
+    } else if let Some(dash_error) = error.downcast_ref::<dash_mpd_core::DashDynamicMpdError>() {
+        match dash_error {
+            dash_mpd_core::DashDynamicMpdError::ProfileExcluded(_) => {
+                MediaPreparationFailureKind::DashLiveProfileExcluded
+            }
+            dash_mpd_core::DashDynamicMpdError::Schema(_) => {
+                MediaPreparationFailureKind::DashLiveSchemaRejected
+            }
+        }
     } else {
         MediaPreparationFailureKind::YtDlpOpen
     }
@@ -368,6 +377,52 @@ mod tests {
                 MediaPreparationFailureKind::ComponentCatalogUnavailable
             );
         }
+    }
+
+    #[test]
+    fn typed_dash_profile_and_schema_failures_survive_anyhow_context() {
+        let profile_error =
+            anyhow::Error::new(dash_mpd_core::DashDynamicMpdError::ProfileExcluded(
+                dash_mpd_core::DashDynamicProfileExclusion::UnsupportedDeclaredProfile,
+            ))
+            .context("наружный DASH live preparation context");
+        assert_eq!(
+            classify_yt_dlp_preparation_failure(&profile_error),
+            MediaPreparationFailureKind::DashLiveProfileExcluded
+        );
+
+        let schema_error =
+            dash_mpd_core::parse_dynamic_dash_mpd(dash_mpd_core::DashMpdParseRequest {
+                document_bytes: b"<NotMpd/>",
+                xml_budgets: bounded_xml_reader::XmlBudgets::builder()
+                    .maximum_document_bytes(1_024)
+                    .maximum_depth(8)
+                    .maximum_tokens(32)
+                    .maximum_attributes_per_element(8)
+                    .maximum_attribute_count(16)
+                    .maximum_attribute_bytes(512)
+                    .maximum_namespace_declarations_per_element(4)
+                    .maximum_namespace_declaration_count(8)
+                    .maximum_namespace_bytes(256)
+                    .maximum_text_bytes(512)
+                    .build()
+                    .expect("test XML budgets"),
+                limits: dash_mpd_core::DashMpdLimits {
+                    maximum_periods: 1,
+                    maximum_adaptation_sets_per_period: 1,
+                    maximum_representations_per_adaptation_set: 1,
+                    maximum_segments_per_list: 1,
+                    maximum_timeline_entries: 1,
+                    maximum_schema_string_bytes: 256,
+                },
+            })
+            .expect_err("invalid root должен дать schema error");
+        let schema_error =
+            anyhow::Error::new(schema_error).context("наружный DASH live preparation context");
+        assert_eq!(
+            classify_yt_dlp_preparation_failure(&schema_error),
+            MediaPreparationFailureKind::DashLiveSchemaRejected
+        );
     }
 
     #[test]

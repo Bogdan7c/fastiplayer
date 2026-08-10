@@ -62,6 +62,70 @@ impl TransactionalDashAvDemuxer {
             lead_policy,
         })
     }
+
+    /// Готовит обе component напрямую у seek target-а без bootstrap старого DVR head-а.
+    pub(crate) fn prepare_at(
+        video_factory: DashComponentFactory,
+        audio_factory: DashComponentFactory,
+        stable_public_tracks: &[TrackInfo],
+        request: DemuxSeekRequest,
+        lead_policy: CompositeComponentLeadPolicy,
+    ) -> Result<(Self, DemuxSeekResult)> {
+        let video_public_tracks = exact_component_tracks(
+            stable_public_tracks,
+            TrackKind::Video,
+            "stable public video",
+        )?;
+        let audio_public_tracks = exact_component_tracks(
+            stable_public_tracks,
+            TrackKind::Audio,
+            "stable public audio",
+        )?;
+        let public_track_ids = CompositeAvPublicTrackIds::new(
+            exactly_one_track(
+                &video_public_tracks,
+                TrackKind::Video,
+                "stable public video",
+            )?,
+            exactly_one_track(
+                &audio_public_tracks,
+                TrackKind::Audio,
+                "stable public audio",
+            )?,
+        );
+        let (video, mut video_result) =
+            video_factory.prepare_seek_replacement(request, &video_public_tracks)?;
+        let (audio, _audio_result) = audio_factory.prepare_seek_replacement(
+            DemuxSeekRequest::accurate(request.timestamp),
+            &audio_public_tracks,
+        )?;
+        let selection = CompositeAvTrackSelection::new(
+            exactly_one_track(video.tracks(), TrackKind::Video, "prepared video")?,
+            exactly_one_track(audio.tracks(), TrackKind::Audio, "prepared audio")?,
+        );
+        let current = CompositeAvDemuxer::new_with_public_track_ids(
+            Box::new(video),
+            Box::new(audio),
+            selection,
+            public_track_ids,
+            lead_policy,
+        )?;
+        if let Some(timestamp) = &mut video_result.actual_track_timestamp {
+            timestamp.track_id = public_track_ids.video_track_id();
+        }
+        Ok((
+            Self {
+                current,
+                video_factory,
+                audio_factory,
+                video_public_tracks,
+                audio_public_tracks,
+                public_track_ids,
+                lead_policy,
+            },
+            video_result,
+        ))
+    }
 }
 
 impl Demuxer for TransactionalDashAvDemuxer {
@@ -160,4 +224,19 @@ fn exactly_one_track(tracks: &[TrackInfo], kind: TrackKind, label: &str) -> Resu
             "DASH {label} component требует ровно один {kind:?} track"
         )),
     }
+}
+
+/// Копирует stable topology одной component и одновременно проверяет её cardinality.
+fn exact_component_tracks(
+    tracks: &[TrackInfo],
+    kind: TrackKind,
+    label: &str,
+) -> Result<Vec<TrackInfo>> {
+    let component_tracks = tracks
+        .iter()
+        .filter(|track| track.kind == kind)
+        .cloned()
+        .collect::<Vec<_>>();
+    exactly_one_track(&component_tracks, kind, label)?;
+    Ok(component_tracks)
 }

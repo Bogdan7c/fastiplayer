@@ -12,12 +12,13 @@ use std::time::{Duration, Instant};
 use bounded_xml_reader::XmlBudgets;
 use dash_mpd_core::{DashContainer, DashMediaKind, DashMpdLimits, DashUtcTimestamp};
 use demux_api::{
-    CompositeComponentLeadPolicy, DemuxRegistry, DemuxSniffBudget, ProgressiveAsyncSeekLimits,
-    ProgressiveDemuxBufferLimits,
+    CompositeComponentLeadPolicy, DemuxRegistry, DemuxSniffBudget, ProgressiveAsyncSeekHandle,
+    ProgressiveAsyncSeekLimits, ProgressiveAsyncSeekOutcome, ProgressiveDemuxBufferLimits,
+    ProgressiveSeekFence, ProgressiveSeekRequestId,
 };
 use media_core::{
-    DemuxReadEvent, DemuxRetryHint, Demuxer, DynamicMediaTimelineEpoch,
-    DynamicMediaTimelinePortGeneration, TrackKind,
+    DemuxReadEvent, DemuxRetryHint, DemuxSeekMode, DemuxSeekRequest, Demuxer,
+    DynamicMediaTimelineEpoch, DynamicMediaTimelinePortGeneration, TrackKind,
 };
 use rustiplayer_config::NetworkConfig;
 use source_core::{
@@ -356,18 +357,17 @@ fn prepares_local_dynamic_mpd_until_audio_packet_and_cooperative_shutdown() {
     let initial_manifest = dynamic_audio_manifest(DynamicAudioManifestFixture {
         publish_time_seconds: 1,
         minimum_update_period: "PT0.25S",
-        period_duration: "PT0.4S",
         segment_repeat: 0,
     });
     let refreshed_manifest = dynamic_audio_manifest(DynamicAudioManifestFixture {
         publish_time_seconds: 2,
         minimum_update_period: "PT60S",
-        period_duration: "PT0.4S",
         segment_repeat: 1,
     });
     let server = HermeticDashServer::start_with_refresh(
         HashMap::from([
             ("/live.mpd", initial_manifest),
+            ("/clock", b"1970-01-01T00:00:02Z\n".to_vec()),
             (
                 "/init.webm",
                 decode_base64(include_str!("fixtures/audio-webm-init.base64")),
@@ -415,10 +415,7 @@ fn prepares_local_dynamic_mpd_until_audio_packet_and_cooperative_shutdown() {
     );
 
     let (mut demuxer, seek_handle, timeline_port) = opened.into_parts();
-    assert!(
-        seek_handle.is_some(),
-        "DASH live runtime must publish a receipted seek handle"
-    );
+    let seek_handle = seek_handle.expect("DASH live runtime must publish a receipted seek handle");
     assert_eq!(
         timeline_port.port_generation().get().get(),
         1,
@@ -444,14 +441,48 @@ fn prepares_local_dynamic_mpd_until_audio_packet_and_cooperative_shutdown() {
 
     server.enable_refreshed_manifest();
     server.wait_for_refreshed_manifest_response();
-    let refreshed_packet = next_packet_at_or_after(&mut demuxer, Duration::from_millis(200));
-    assert_eq!(refreshed_packet.kind, TrackKind::Audio);
+    wait_for_live_edge_at_least(&timeline_port, Duration::from_millis(400));
+    let expired_head_requests_before_recovery = server
+        .requested_paths()
+        .iter()
+        .filter(|path| path.as_str() == "/0.webm")
+        .count();
+    let recovery_target = timeline_port
+        .observe()
+        .snapshot
+        .state
+        .availability_range()
+        .expect("refreshed manifest publishes availability")
+        .end;
+    let recovery_receipt = seek_live_and_wait_for_receipt(
+        &seek_handle,
+        DemuxSeekRequest {
+            timestamp: recovery_target.as_duration(),
+            mode: DemuxSeekMode::DecodePointBefore,
+        },
+    );
+    assert_eq!(recovery_receipt.requested_position, recovery_target);
+    let refreshed_read = observe_until_packet_at_or_after(&mut demuxer, Duration::from_millis(200));
+    assert_eq!(refreshed_read.packet.kind, TrackKind::Audio);
+    assert_eq!(
+        refreshed_read.track_list_updates, 0,
+        "accepted refresh with the same track contract must not reset decoders"
+    );
     assert!(
         server
             .requested_paths()
             .iter()
             .any(|path| path == "/200.webm"),
         "accepted newer MPD must replace the exhausted initial live plan"
+    );
+    assert_eq!(
+        server
+            .requested_paths()
+            .iter()
+            .filter(|path| path.as_str() == "/0.webm")
+            .count(),
+        expired_head_requests_before_recovery,
+        "live recovery must open directly at target instead of probing the oldest DVR fragment"
     );
 
     let requested_paths = server.requested_paths();
@@ -481,17 +512,51 @@ fn prepares_local_dynamic_mpd_until_audio_packet_and_cooperative_shutdown() {
     );
 }
 
+/// Выполняет live seek через тот же receipted worker boundary, который использует player.
+fn seek_live_and_wait_for_receipt(
+    seek_handle: &ProgressiveAsyncSeekHandle,
+    request: DemuxSeekRequest,
+) -> media_core::DemuxSeekResult {
+    let fence = ProgressiveSeekFence {
+        runtime_generation: seek_handle.runtime_generation(),
+        request_id: ProgressiveSeekRequestId::new(1),
+    };
+    seek_handle
+        .enqueue(fence, request)
+        .expect("live recovery seek command accepted");
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    loop {
+        if let Some(receipt) = seek_handle.poll_receipt() {
+            assert_eq!(receipt.fence, fence, "live seek receipt keeps exact fence");
+            let ProgressiveAsyncSeekOutcome::Succeeded(result) = receipt.outcome else {
+                panic!("live recovery seek failed: {:?}", receipt.outcome);
+            };
+            return result;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "live recovery seek receipt timed out"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
 #[test]
-fn discovered_live_audio_opens_exact_lane_through_logical_refresh_selector() {
-    let manifest = dynamic_audio_manifest(DynamicAudioManifestFixture {
+fn discovered_live_audio_continues_through_accepted_refresh() {
+    let initial_manifest = dynamic_audio_manifest(DynamicAudioManifestFixture {
         publish_time_seconds: 1,
-        minimum_update_period: "PT60S",
-        period_duration: "PT0.2S",
+        minimum_update_period: "PT0.25S",
         segment_repeat: 0,
+    });
+    let refreshed_manifest = dynamic_audio_manifest(DynamicAudioManifestFixture {
+        publish_time_seconds: 2,
+        minimum_update_period: "PT60S",
+        segment_repeat: 1,
     });
     let server = HermeticDashServer::start_with_refresh(
         HashMap::from([
-            ("/live.mpd", manifest.clone()),
+            ("/live.mpd", initial_manifest),
+            ("/clock", b"1970-01-01T00:00:02Z\n".to_vec()),
             (
                 "/init.webm",
                 decode_base64(include_str!("fixtures/audio-webm-init.base64")),
@@ -500,10 +565,14 @@ fn discovered_live_audio_opens_exact_lane_through_logical_refresh_selector() {
                 "/0.webm",
                 decode_base64(include_str!("fixtures/audio-webm-one.base64")),
             ),
+            (
+                "/200.webm",
+                decode_base64(include_str!("fixtures/audio-webm-two.base64")),
+            ),
         ]),
         RefreshManifestResponse {
             path: "/live.mpd",
-            body: manifest,
+            body: refreshed_manifest,
         },
     );
     let manifest_target = server.target("/live.mpd");
@@ -542,7 +611,27 @@ fn discovered_live_audio_opens_exact_lane_through_logical_refresh_selector() {
     let exact = discovered.provider_default().clone();
     let opened = prepare_discovered_dash_live(discovered, exact).expect("logical live open");
     let (mut demuxer, seek_handle, timeline_port) = opened.into_parts();
-    assert_eq!(next_packet(&mut demuxer).kind, TrackKind::Audio);
+
+    // Имитируем долгую pause до первого player read: authoritative MPD уже
+    // сдвинулся, а initial demux всё ещё держит старый immutable plan.
+    server.enable_refreshed_manifest();
+    server.wait_for_refreshed_manifest_response();
+    wait_for_live_edge_at_least(&timeline_port, Duration::from_millis(400));
+    // Уже загруженный old packet допустимо дочитать из RAM; следующий suffix
+    // обязан прийти из accepted snapshot-а без fatal transport path.
+    let refreshed_read = observe_until_packet_at_or_after(&mut demuxer, Duration::from_millis(200));
+    assert_eq!(refreshed_read.packet.kind, TrackKind::Audio);
+    assert_eq!(
+        refreshed_read.track_list_updates, 0,
+        "paused open already exposes tracks() and must not emit refresh duplicates"
+    );
+    assert!(
+        server
+            .requested_paths()
+            .iter()
+            .any(|path| path == "/200.webm"),
+        "replacement demux must open the fresh suffix segment before publishing a packet"
+    );
 
     cancellation.cancel();
     drop(demuxer);
@@ -552,6 +641,135 @@ fn discovered_live_audio_opens_exact_lane_through_logical_refresh_selector() {
     wait_for_request_quiescence(&server);
 }
 
+/// EOF refresh продолжает packet stream, а не повторяет preroll consumed fragment-а.
+#[test]
+fn eof_refresh_continuation_never_replays_consumed_fragment() {
+    let initial_manifest = dynamic_audio_manifest(DynamicAudioManifestFixture {
+        publish_time_seconds: 1,
+        minimum_update_period: "PT0.25S",
+        segment_repeat: 0,
+    });
+    let refreshed_manifest = dynamic_audio_manifest(DynamicAudioManifestFixture {
+        publish_time_seconds: 2,
+        minimum_update_period: "PT60S",
+        segment_repeat: 1,
+    });
+    let server = HermeticDashServer::start_with_refresh(
+        HashMap::from([
+            ("/live.mpd", initial_manifest),
+            ("/clock", b"1970-01-01T00:00:02Z\n".to_vec()),
+            (
+                "/init.webm",
+                decode_base64(include_str!("fixtures/audio-webm-init.base64")),
+            ),
+            (
+                "/0.webm",
+                decode_base64(include_str!("fixtures/audio-webm-one.base64")),
+            ),
+            (
+                "/200.webm",
+                decode_base64(include_str!("fixtures/audio-webm-two.base64")),
+            ),
+        ]),
+        RefreshManifestResponse {
+            path: "/live.mpd",
+            body: refreshed_manifest,
+        },
+    );
+    let manifest_target = server.target("/live.mpd");
+    let generation = SourceGeneration::new(11);
+    let cancellation = CancellationToken::new();
+    let endpoint_refresh = Arc::new(RejectingEndpointRefresh::new());
+    let opened = prepare_dash_live_with_deadline(
+        DashLiveOpenRequest {
+            http: Box::new(adaptive_context(
+                &manifest_target,
+                cancellation.clone(),
+                generation,
+            )),
+            generation,
+            manifest: manifest_input(manifest_target),
+            selection: audio_selection(),
+            demux_registry: demux_registry(),
+            policy: open_policy(),
+            wall_clock: Arc::new(FixedWallClock {
+                now: DashUtcTimestamp::from_unix_nanoseconds(2_000_000_000),
+            }),
+            timeline_port_generation: DynamicMediaTimelinePortGeneration::new(
+                NonZeroU64::new(11).expect("DASH continuation timeline port generation"),
+            ),
+            initial_source_epoch: DynamicMediaTimelineEpoch::new(0),
+            endpoint_refresh: endpoint_refresh.clone(),
+        },
+        &cancellation,
+    );
+    let (mut demuxer, seek_handle, timeline_port) = opened.into_parts();
+
+    // Fixture first fragment заканчивается packet-ом около 154 ms; дочитываем его
+    // до EOF, пока authoritative revision всё ещё не содержит suffix segment.
+    let initial_tail = observe_until_packet_at_or_after(&mut demuxer, Duration::from_millis(150));
+    let last_consumed_pts = initial_tail.packet.pts;
+    assert_eq!(initial_tail.track_list_updates, 0);
+    let first_fragment_requests_before_refresh = server
+        .requested_paths()
+        .iter()
+        .filter(|path| path.as_str() == "/0.webm")
+        .count();
+
+    server.enable_refreshed_manifest();
+    server.wait_for_refreshed_manifest_response();
+    wait_for_live_edge_at_least(&timeline_port, Duration::from_millis(400));
+    let first_suffix_read = observe_until_packet_at_or_after(&mut demuxer, Duration::ZERO);
+
+    assert!(
+        first_suffix_read.packet.pts > last_consumed_pts,
+        "EOF continuation must not replay an already consumed packet timeline"
+    );
+    assert_eq!(
+        first_suffix_read.track_list_updates, 0,
+        "same live component contract must not reset downstream decoders"
+    );
+    let requested_paths = server.requested_paths();
+    assert_eq!(
+        requested_paths
+            .iter()
+            .filter(|path| path.as_str() == "/0.webm")
+            .count(),
+        first_fragment_requests_before_refresh,
+        "continuation must not fetch the consumed fragment again"
+    );
+    assert!(
+        requested_paths.iter().any(|path| path == "/200.webm"),
+        "continuation must fetch the first fresh suffix fragment"
+    );
+
+    cancellation.cancel();
+    drop(demuxer);
+    drop(seek_handle);
+    drop(timeline_port);
+    wait_for_refresh_shutdown(&endpoint_refresh);
+    wait_for_request_quiescence(&server);
+}
+
+/// Ждёт observable timeline commit вместо scheduler-dependent sleep-а.
+fn wait_for_live_edge_at_least(
+    timeline_port: &media_core::DynamicMediaTimelinePort,
+    minimum_live_edge: Duration,
+) {
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    loop {
+        let observed = timeline_port.observe();
+        if observed.snapshot.state.live_edge().as_duration() >= minimum_live_edge {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "DASH live timeline did not publish the accepted refresh"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
 /// Poll-ит neutral readiness contract с bounded ожиданием только в test thread-е.
 fn next_packet(demuxer: &mut dyn Demuxer) -> media_core::Packet {
     next_packet_at_or_after(demuxer, Duration::ZERO)
@@ -559,7 +777,22 @@ fn next_packet(demuxer: &mut dyn Demuxer) -> media_core::Packet {
 
 /// Дожидается packet-а из exact presentation suffix после accepted refresh.
 fn next_packet_at_or_after(demuxer: &mut dyn Demuxer, minimum_pts: Duration) -> media_core::Packet {
+    observe_until_packet_at_or_after(demuxer, minimum_pts).packet
+}
+
+/// Packet read вместе с числом реально опубликованных track-контрактов.
+struct PacketReadObservation {
+    packet: media_core::Packet,
+    track_list_updates: usize,
+}
+
+/// Дожидается packet-а и считает только публичные TracksChanged события.
+fn observe_until_packet_at_or_after(
+    demuxer: &mut dyn Demuxer,
+    minimum_pts: Duration,
+) -> PacketReadObservation {
     let deadline = Instant::now() + TEST_TIMEOUT;
+    let mut track_list_updates = 0;
     loop {
         assert!(
             Instant::now() < deadline,
@@ -567,9 +800,15 @@ fn next_packet_at_or_after(demuxer: &mut dyn Demuxer, minimum_pts: Duration) -> 
         );
         let call_started = Instant::now();
         match demuxer.next_event().expect("DASH live demux event") {
-            DemuxReadEvent::Packet(packet) if packet.pts >= minimum_pts => return packet,
+            DemuxReadEvent::Packet(packet) if packet.pts >= minimum_pts => {
+                return PacketReadObservation {
+                    packet,
+                    track_list_updates,
+                };
+            }
             DemuxReadEvent::Packet(_) => {}
-            DemuxReadEvent::TracksChanged(_) | DemuxReadEvent::MediaMetadataChanged(_) => {}
+            DemuxReadEvent::TracksChanged(_) => track_list_updates += 1,
+            DemuxReadEvent::MediaMetadataChanged(_) => {}
             DemuxReadEvent::TemporarilyUnavailable(_) => {
                 assert!(
                     call_started.elapsed() < Duration::from_millis(50),
@@ -772,8 +1011,6 @@ struct DynamicAudioManifestFixture {
     publish_time_seconds: u8,
     /// Initial revision быстро poll-ится, refreshed revision получает far deadline.
     minimum_update_period: &'static str,
-    /// Immutable Period bound заранее вмещает initial и refreshed suffix timeline.
-    period_duration: &'static str,
     /// Ноль даёт initial segment, единица добавляет refreshed suffix segment.
     segment_repeat: u8,
 }
@@ -782,13 +1019,14 @@ struct DynamicAudioManifestFixture {
 fn dynamic_audio_manifest(fixture: DynamicAudioManifestFixture) -> Vec<u8> {
     format!(
         r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic"
+      profiles="urn:mpeg:dash:profile:isoff-live:2011,http://dashif.org/guidelines/dash-if-simple"
       availabilityStartTime="1970-01-01T00:00:00Z"
       publishTime="1970-01-01T00:00:{publish_time_seconds:02}Z"
       minimumUpdatePeriod="{minimum_update_period}" suggestedPresentationDelay="PT0.05S">
-      <UTCTiming schemeIdUri="urn:mpeg:dash:utc:direct:2014"
-        value="1970-01-01T00:00:02Z"/>
-      <Period id="p0" start="PT0S" duration="{period_duration}">
-        <AdaptationSet id="audio-set" contentType="audio"
+      <ProgramInformation><Title>Hermetic DASH live fixture</Title></ProgramInformation>
+      <UTCTiming schemeIdUri="urn:mpeg:dash:utc:http-xsdate:2014" value="clock"/>
+      <Period id="p0" start="PT0S">
+        <AdaptationSet contentType="audio"
           mimeType="audio/webm" codecs="opus">
           <Representation id="audio">
             <SegmentTemplate timescale="1000" initialization="init.webm"
@@ -801,7 +1039,6 @@ fn dynamic_audio_manifest(fixture: DynamicAudioManifestFixture) -> Vec<u8> {
     </MPD>"#,
         publish_time_seconds = fixture.publish_time_seconds,
         minimum_update_period = fixture.minimum_update_period,
-        period_duration = fixture.period_duration,
         segment_repeat = fixture.segment_repeat,
     )
     .into_bytes()

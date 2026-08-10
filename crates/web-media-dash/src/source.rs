@@ -260,7 +260,8 @@ fn map_runtime_source_error(error: AdaptiveTransportError) -> OrderedSegmentRead
         | AdaptiveTransportError::ExplicitCookieHeader
         | AdaptiveTransportError::WorkerStopped
         | AdaptiveTransportError::StaleGeneration { .. }
-        | AdaptiveTransportError::ResourceBoundExceeded { .. } => OrderedSegmentReadError::Failed {
+        | AdaptiveTransportError::ResourceBoundExceeded { .. }
+        | AdaptiveTransportError::InvalidResourcePolicy { .. } => OrderedSegmentReadError::Failed {
             reason: "dash-resource-fetch".to_owned(),
         },
     }

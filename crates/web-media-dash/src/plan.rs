@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use dash_mpd_core::{
     DashAddressing, DashBaseUrl, DashContainer, DashInitialization, DashMediaKind, DashMpd,
-    DashPeriod, DashRepresentation, DashSegmentBase, DashSegmentList, DashSegmentTemplate,
-    DashTemplateContext, DashTemplateError, IndexRange,
+    DashPeriod, DashPresentationDuration, DashRepresentation, DashSegmentBase, DashSegmentList,
+    DashSegmentTemplate, DashTemplateContext, DashTemplateError, IndexRange,
 };
 use source_core::{HttpBoundedByteRange, HttpRequestTarget};
 use thiserror::Error;
@@ -21,8 +21,14 @@ use crate::selection::{
     select_representation,
 };
 
+mod continuation;
+mod lifecycle;
 mod timeline;
-use timeline::{DashTimelinePlanningIntent, plan_template_timeline, units_to_duration};
+pub(crate) use continuation::{DashComponentContinuationPoint, DashPresentationContinuationPoint};
+use lifecycle::{component_snapshot_duration, validate_period_alignment};
+use timeline::{
+    DashPeriodTimelineBound, DashTimelinePlanningIntent, plan_template_timeline, units_to_duration,
+};
 
 /// Один ordered init/media resource и его explicit presentation interval.
 #[derive(Clone, PartialEq, Eq)]
@@ -58,6 +64,15 @@ pub(crate) enum DashPeriodInputPlan {
     },
 }
 
+/// Declared Period lifecycle остаётся отдельным от operational live snapshot horizon.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DashPeriodLifecycle {
+    /// Завершённый Period имеет exact neutral duration.
+    Finite(Duration),
+    /// Последний dynamic Period продолжается после текущего snapshot-а.
+    OpenEnded,
+}
+
 /// Один component Period с global timeline placement.
 #[derive(Clone)]
 pub(crate) struct DashComponentPeriodPlan {
@@ -65,7 +80,9 @@ pub(crate) struct DashComponentPeriodPlan {
     pub container: DashContainer,
     /// Global Period start.
     pub timeline_start: Duration,
-    /// Exact finite Period duration.
+    /// Declared lifecycle не смешивается с границей текущего live snapshot-а.
+    pub declared_lifecycle: DashPeriodLifecycle,
+    /// Operational finite horizon текущего plan-а.
     pub duration: Duration,
     /// Правило перевода container timestamps в global presentation timeline.
     pub timestamp_mapping: DashTimestampMapping,
@@ -161,6 +178,12 @@ pub enum DashPlanError {
     /// Static presentation не покрывает Period точно и непрерывно.
     #[error("static DASH SegmentTemplate does not cover the complete Period")]
     IncompleteStaticPeriod,
+    /// Open Period требует explicit SegmentTimeline snapshot-а.
+    #[error("open DASH Period requires an explicit SegmentTimeline snapshot")]
+    OpenEndedPeriodRequiresExplicitTimeline,
+    /// Последний `r=-1` open Period-а не имеет доказанной конечной границы.
+    #[error("open DASH SegmentTimeline repeat has no finite boundary")]
+    OpenEndedTimelineRepeat,
     /// Checked duration/timestamp arithmetic overflow.
     #[error("DASH timeline arithmetic overflow")]
     TimelineOverflow,
@@ -281,8 +304,8 @@ fn build_manifest_component(
     }
     Ok(DashComponentPlan {
         media_kind: evidence.media_kind,
+        duration: component_snapshot_duration(mpd.media_presentation_duration, &periods)?,
         periods,
-        duration: Duration::from_millis(mpd.media_presentation_duration_milliseconds),
     })
 }
 
@@ -434,8 +457,8 @@ fn build_manifest_component_from_locations(
     }
     Ok(DashComponentPlan {
         media_kind,
+        duration: component_snapshot_duration(mpd.media_presentation_duration, &periods)?,
         periods,
-        duration: Duration::from_millis(mpd.media_presentation_duration_milliseconds),
     })
 }
 
@@ -452,14 +475,23 @@ fn build_manifest_period(
         resolve_optional_base(&period_base, selected.adaptation.base_url.as_ref())?;
     let representation_base =
         resolve_optional_base(&adaptation_base, selected.representation.base_url.as_ref())?;
-    let duration = Duration::from_millis(period.duration_milliseconds);
-    let (input, timestamp_mapping) = match &selected.representation.addressing {
+    let period_bound = match period.duration {
+        DashPresentationDuration::FiniteMilliseconds(duration_milliseconds) => {
+            DashPeriodTimelineBound::Finite(Duration::from_millis(duration_milliseconds))
+        }
+        DashPresentationDuration::OpenEnded => DashPeriodTimelineBound::OpenEnded,
+    };
+    let declared_lifecycle = match period_bound {
+        DashPeriodTimelineBound::Finite(duration) => DashPeriodLifecycle::Finite(duration),
+        DashPeriodTimelineBound::OpenEnded => DashPeriodLifecycle::OpenEnded,
+    };
+    let (input, timestamp_mapping, snapshot_duration) = match &selected.representation.addressing {
         DashAddressing::Template(template) => {
-            let (resources, media_time_origin) = plan_template(
+            let (resources, media_time_origin, snapshot_duration) = plan_template(
                 selected.representation,
                 template,
                 &representation_base,
-                duration,
+                period_bound,
                 maximum_segments,
                 intent,
             )?;
@@ -469,16 +501,22 @@ fn build_manifest_period(
                     query_application: AdaptiveResourceQueryApplication::ApplyScopedReplacement,
                 },
                 DashTimestampMapping::MediaTimeOrigin(media_time_origin),
+                snapshot_duration,
             )
         }
-        DashAddressing::List(list) => (
-            DashPeriodInputPlan::Ordered {
-                resources: plan_list(list, &representation_base, duration, maximum_segments)?,
-                query_application: AdaptiveResourceQueryApplication::ApplyScopedReplacement,
-            },
-            DashTimestampMapping::NormalizeAtFirstPacket,
-        ),
+        DashAddressing::List(list) => {
+            let duration = finite_period_duration(period_bound)?;
+            (
+                DashPeriodInputPlan::Ordered {
+                    resources: plan_list(list, &representation_base, duration, maximum_segments)?,
+                    query_application: AdaptiveResourceQueryApplication::ApplyScopedReplacement,
+                },
+                DashTimestampMapping::NormalizeAtFirstPacket,
+                duration,
+            )
+        }
         DashAddressing::Base(segment_base) => {
+            let duration = finite_period_duration(period_bound)?;
             validate_segment_base(segment_base)?;
             (
                 DashPeriodInputPlan::Range {
@@ -486,20 +524,26 @@ fn build_manifest_period(
                     query_application: AdaptiveResourceQueryApplication::ApplyScopedReplacement,
                 },
                 DashTimestampMapping::MediaTimeOrigin(Duration::ZERO),
+                duration,
             )
         }
-        DashAddressing::SingleResource => (
-            DashPeriodInputPlan::Range {
-                target: representation_base,
-                query_application: AdaptiveResourceQueryApplication::ApplyScopedReplacement,
-            },
-            DashTimestampMapping::MediaTimeOrigin(Duration::ZERO),
-        ),
+        DashAddressing::SingleResource => {
+            let duration = finite_period_duration(period_bound)?;
+            (
+                DashPeriodInputPlan::Range {
+                    target: representation_base,
+                    query_application: AdaptiveResourceQueryApplication::ApplyScopedReplacement,
+                },
+                DashTimestampMapping::MediaTimeOrigin(Duration::ZERO),
+                duration,
+            )
+        }
     };
     Ok(DashComponentPeriodPlan {
         container: selected.representation.container,
         timeline_start: Duration::from_millis(period.start_milliseconds),
-        duration,
+        declared_lifecycle,
+        duration: snapshot_duration,
         timestamp_mapping,
         input,
     })
@@ -510,11 +554,12 @@ fn plan_template(
     representation: &DashRepresentation,
     template: &DashSegmentTemplate,
     base: &HttpRequestTarget,
-    period_duration: Duration,
+    period_bound: DashPeriodTimelineBound,
     maximum_segments: NonZeroUsize,
     intent: DashTimelinePlanningIntent,
-) -> Result<(Vec<DashPlannedResource>, Duration), DashPlanError> {
-    let timeline = plan_template_timeline(template, period_duration, maximum_segments, intent)?;
+) -> Result<(Vec<DashPlannedResource>, Duration, Duration), DashPlanError> {
+    let timeline = plan_template_timeline(template, period_bound, maximum_segments, intent)?;
+    let snapshot_duration = timeline.snapshot_duration;
     let points = timeline.segments;
     let first_point = points
         .first()
@@ -547,10 +592,22 @@ fn plan_template(
             target: resolve_reference(base, &reference)?,
             byte_range: None,
             timeline_start: Some(point.presentation_start),
-            duration: Some(units_to_duration(point.duration, template.timescale)?),
+            duration: Some(point.duration),
         });
     }
-    Ok((resources, timeline.media_time_origin))
+    Ok((resources, timeline.media_time_origin, snapshot_duration))
+}
+
+/// Addressing без explicit SegmentTimeline остаётся finite-only.
+fn finite_period_duration(
+    period_bound: DashPeriodTimelineBound,
+) -> Result<Duration, DashPlanError> {
+    match period_bound {
+        DashPeriodTimelineBound::Finite(duration) => Ok(duration),
+        DashPeriodTimelineBound::OpenEnded => {
+            Err(DashPlanError::OpenEndedPeriodRequiresExplicitTimeline)
+        }
+    }
 }
 
 /// Строит explicit SegmentList resources.
@@ -578,6 +635,15 @@ fn plan_list(
         let start_units = index
             .checked_mul(segment_duration)
             .ok_or(DashPlanError::TimelineOverflow)?;
+        let end_units = start_units
+            .checked_add(segment_duration)
+            .ok_or(DashPlanError::TimelineOverflow)?;
+        let timeline_start = units_to_duration(start_units, list.timescale)?;
+        let timeline_end = units_to_duration(end_units, list.timescale)?;
+        let duration = timeline_end
+            .checked_sub(timeline_start)
+            .filter(|duration| !duration.is_zero())
+            .ok_or(DashPlanError::TimelineOverflow)?;
         resources.push(DashPlannedResource {
             kind: DashSerializedFragmentKind::Media,
             target: resolve_reference(base, segment.media.as_str())?,
@@ -585,8 +651,8 @@ fn plan_list(
                 .media_range
                 .map(index_range_to_bounded)
                 .transpose()?,
-            timeline_start: Some(units_to_duration(start_units, list.timescale)?),
-            duration: Some(units_to_duration(segment_duration, list.timescale)?),
+            timeline_start: Some(timeline_start),
+            duration: Some(duration),
         });
     }
     let planned_duration = units_to_duration(
@@ -703,6 +769,7 @@ fn build_serialized_component(
         periods: vec![DashComponentPeriodPlan {
             container: component.container,
             timeline_start: Duration::ZERO,
+            declared_lifecycle: DashPeriodLifecycle::Finite(timeline_start),
             duration: timeline_start,
             timestamp_mapping: DashTimestampMapping::NormalizeAtFirstPacket,
             input: DashPeriodInputPlan::Ordered {
@@ -712,26 +779,6 @@ fn build_serialized_component(
         }],
         duration: timeline_start,
     })
-}
-
-/// Проверяет exact Period boundaries pair-а.
-fn validate_period_alignment(
-    video: &DashComponentPlan,
-    audio: &DashComponentPlan,
-) -> Result<(), DashPlanError> {
-    if video.periods.len() != audio.periods.len()
-        || video.duration != audio.duration
-        || video
-            .periods
-            .iter()
-            .zip(&audio.periods)
-            .any(|(video, audio)| {
-                video.timeline_start != audio.timeline_start || video.duration != audio.duration
-            })
-    {
-        return Err(DashPlanError::ComponentAlignmentMismatch);
-    }
-    Ok(())
 }
 
 /// Проверяет count/start/duration каждого serialized media fragment-а.

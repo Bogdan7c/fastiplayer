@@ -12,8 +12,8 @@ use web_media_adaptive::{
 };
 
 use super::{
-    DashEndpointRefreshReply, DashLiveOpenError, DashLiveOpenRequest, DashLiveRuntimeFailure,
-    DashLiveSelection, DashLiveShared, DashSynchronizedClock,
+    DashClockFetchObservation, DashEndpointRefreshReply, DashLiveOpenError, DashLiveOpenRequest,
+    DashLiveRuntimeFailure, DashLiveSelection, DashLiveShared, resolve_dash_live_clock,
 };
 use crate::live::{
     DashLiveRefreshOutcome, DashLiveSnapshot, build_dash_live_snapshot_with_selection,
@@ -142,9 +142,13 @@ pub(super) fn stage_and_commit_endpoint(
         return Err(());
     }
     let next_revision = state.revision.checked_add(1).ok_or(())?;
+    let session_availability = shared
+        .session_timeline
+        .availability_to_session(&accepted_snapshot.availability)
+        .map_err(|_| ())?;
     shared
         .coordinator
-        .replace_availability(accepted_snapshot.availability.clone())
+        .replace_availability(session_availability)
         .map_err(|_| ())?;
     state.snapshot = accepted_snapshot;
     state.http = *reply.http;
@@ -190,9 +194,13 @@ fn refresh_once(
             .revision
             .checked_add(1)
             .ok_or(RefreshAttemptError::Fatal)?;
+        let session_availability = shared
+            .session_timeline
+            .availability_to_session(&accepted_snapshot.availability)
+            .map_err(|_| RefreshAttemptError::Fatal)?;
         shared
             .coordinator
-            .replace_availability(accepted_snapshot.availability.clone())
+            .replace_availability(session_availability)
             .map_err(|_| RefreshAttemptError::Fatal)?;
         state.snapshot = accepted_snapshot;
         state.revision = next_revision;
@@ -227,13 +235,24 @@ fn fetch_snapshot(
         limits: manifest.mpd_limits,
     })
     .map_err(|_| RefreshAttemptError::Fatal)?;
-    let clock = DashSynchronizedClock::from_direct_utc(
+    let clock = resolve_dash_live_clock(
+        &mpd.utc_timing,
+        fetched.final_target(),
+        http,
+        generation,
         Arc::clone(&request.wall_clock),
-        local_before_fetch,
-        local_after_fetch,
-        mpd.direct_utc_time,
+        DashClockFetchObservation {
+            local_before_fetch,
+            local_after_fetch,
+        },
     )
-    .map_err(|_| RefreshAttemptError::Fatal)?;
+    .map_err(|error| {
+        if error.is_cancelled() {
+            RefreshAttemptError::Cancelled
+        } else {
+            RefreshAttemptError::Fatal
+        }
+    })?;
     let snapshot = build_dash_live_snapshot_with_selection(
         mpd,
         fetched.final_target(),

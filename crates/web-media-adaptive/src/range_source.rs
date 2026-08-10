@@ -268,5 +268,10 @@ fn map_adaptive_read_error(error: AdaptiveTransportError) -> SourceError {
                 reason: HttpRequestPolicyFailure::ResourceBoundExceeded,
             }
         }
+        AdaptiveTransportError::InvalidResourcePolicy { .. } => {
+            SourceError::HttpRequestPolicyRejected {
+                reason: HttpRequestPolicyFailure::ResourcePolicyRejected,
+            }
+        }
     }
 }

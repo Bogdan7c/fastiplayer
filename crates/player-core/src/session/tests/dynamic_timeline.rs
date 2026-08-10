@@ -1,18 +1,75 @@
+use std::collections::VecDeque;
 use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crossbeam_channel::bounded;
 use media_core::{
-    DynamicMediaTimelineEpoch, DynamicMediaTimelineInitial, DynamicMediaTimelinePortGeneration,
-    DynamicMediaTimelineState, MediaTime, TimelineMode, TimelineNotSeekableReason, TimelineRange,
+    DemuxSeekMode, DemuxSeekRequest, DemuxSeekResult, DynamicMediaTimelineEpoch,
+    DynamicMediaTimelineInitial, DynamicMediaTimelinePortGeneration, DynamicMediaTimelineState,
+    MediaTime, TimelineMode, TimelineNotSeekableReason, TimelineRange, TrackKind,
     dynamic_media_timeline,
 };
 
-use super::test_support::FakeDemuxer;
+use super::test_support::{FakeDemuxer, fake_track};
+use crate::seek_state::{PlaybackResumeIntent, SeekTargetRetention};
 use crate::{
-    ExactTimelineSeekOutcome, ExactTimelineSeekRequest, PlayerErrorKind, PlayerSession,
-    PreparedMedia, PreparedMediaTimelineModeError, TimelineSeekKind, TimelineSeekRequestId,
+    ExactTimelineSeekOutcome, ExactTimelineSeekRequest, PlaybackState, PlayerCommand,
+    PlayerErrorKind, PlayerSession, PreparedDemuxSeekEnqueueError, PreparedDemuxSeekMode,
+    PreparedDemuxSeekOutcome, PreparedDemuxSeekPort, PreparedDemuxSeekReceipt,
+    PreparedDemuxSeekRequestId, PreparedMedia, PreparedMediaTimelineModeError, TimelineSeekKind,
+    TimelineSeekRequestId,
 };
+
+/// Nonblocking fake доказывает, что live recovery использует prepared worker boundary.
+#[derive(Default)]
+struct RecoveryPreparedSeekPort {
+    /// Exact команды, принятые boundary.
+    commands: Mutex<Vec<(PreparedDemuxSeekRequestId, DemuxSeekRequest)>>,
+    /// Terminal receipts, которыми управляет test owner.
+    receipts: Mutex<VecDeque<PreparedDemuxSeekReceipt>>,
+}
+
+impl RecoveryPreparedSeekPort {
+    /// Возвращает immutable snapshot принятых команд.
+    fn commands(&self) -> Vec<(PreparedDemuxSeekRequestId, DemuxSeekRequest)> {
+        self.commands.lock().expect("recovery command lock").clone()
+    }
+
+    /// Публикует authoritative terminal receipt.
+    fn complete(&self, request_id: PreparedDemuxSeekRequestId, outcome: PreparedDemuxSeekOutcome) {
+        self.receipts
+            .lock()
+            .expect("recovery receipt lock")
+            .push_back(PreparedDemuxSeekReceipt {
+                request_id,
+                outcome,
+            });
+    }
+}
+
+impl PreparedDemuxSeekPort for RecoveryPreparedSeekPort {
+    /// Enqueue остаётся nonblocking и сохраняет exact request identity.
+    fn enqueue_seek(
+        &self,
+        request_id: PreparedDemuxSeekRequestId,
+        request: DemuxSeekRequest,
+    ) -> Result<(), PreparedDemuxSeekEnqueueError> {
+        self.commands
+            .lock()
+            .expect("recovery command lock")
+            .push((request_id, request));
+        Ok(())
+    }
+
+    /// Player забирает каждый terminal receipt ровно один раз.
+    fn poll_seek_receipt(&self) -> Option<PreparedDemuxSeekReceipt> {
+        self.receipts
+            .lock()
+            .expect("recovery receipt lock")
+            .pop_front()
+    }
+}
 
 fn generation(value: u64) -> DynamicMediaTimelinePortGeneration {
     DynamicMediaTimelinePortGeneration::new(
@@ -89,6 +146,242 @@ fn sliding_non_zero_dvr_updates_public_range_without_moving_playback_position() 
         snapshot.current_position,
         MediaTime::from_secs(60).as_duration()
     );
+}
+
+/// Play після довгої pause оформляє window expiry як seek, а не timestamp gap.
+#[test]
+fn play_seeks_to_fresh_live_edge_when_paused_position_expired() {
+    let (port, publisher) = dynamic_media_timeline(DynamicMediaTimelineInitial {
+        port_generation: generation(9),
+        source_epoch: DynamicMediaTimelineEpoch::new(1),
+        state: dvr_state(20, 60),
+    });
+    let seek_log = Arc::new(Mutex::new(Vec::new()));
+    let demuxer = FakeDemuxer::new(
+        vec![fake_track(1, TrackKind::Video)],
+        None,
+        Arc::clone(&seek_log),
+    );
+    let prepared_media = PreparedMedia::from_external_label("fake-live", Box::new(demuxer))
+        .with_dynamic_timeline(port)
+        .expect("duration-less fake accepts live timeline");
+    let mut session = PlayerSession::new();
+    session.load_prepared_media_with_autoplay(prepared_media, false);
+    let prepared_seek_port = Arc::new(RecoveryPreparedSeekPort::default());
+    let erased_port: Arc<dyn PreparedDemuxSeekPort> = prepared_seek_port.clone();
+    session
+        .prepared_demux_seek
+        .install(PreparedDemuxSeekMode::WorkerReceipted { port: erased_port });
+
+    let fresh_availability =
+        TimelineRange::new(MediaTime::from_secs(70), MediaTime::from_secs(110))
+            .expect("fresh availability");
+    publisher
+        .publish(
+            DynamicMediaTimelineEpoch::new(2),
+            DynamicMediaTimelineState::with_available_dvr(
+                MediaTime::from_secs(110),
+                fresh_availability,
+            )
+            .expect("unproven fresh availability"),
+        )
+        .expect("expired-window publication");
+    assert!(session.refresh_dynamic_timeline());
+    assert_eq!(
+        session.snapshot().current_position,
+        MediaTime::from_secs(60).as_duration(),
+        "paused refresh alone must not create repeated sliding seeks"
+    );
+
+    session
+        .dispatch_command(PlayerCommand::Play)
+        .expect("Play recovery command");
+
+    assert!(
+        seek_log.lock().expect("seek log mutex").is_empty(),
+        "video live recovery must not call synchronous demux seek"
+    );
+    let commands = prepared_seek_port.commands();
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].1.timestamp, Duration::from_secs(110));
+    assert_eq!(commands[0].1.mode, DemuxSeekMode::DecodePointBefore);
+    assert_eq!(session.playback_state(), PlaybackState::Seeking);
+
+    let receipt_wait_availability =
+        TimelineRange::new(MediaTime::from_secs(70), MediaTime::from_secs(112))
+            .expect("receipt-wait availability");
+    let receipt_wait_packet_proof =
+        TimelineRange::new(MediaTime::from_secs(111), MediaTime::from_secs(112))
+            .expect("receipt-wait packet proof");
+    publisher
+        .publish(
+            DynamicMediaTimelineEpoch::new(3),
+            DynamicMediaTimelineState::with_available_and_seekable_dvr(
+                MediaTime::from_secs(112),
+                receipt_wait_availability,
+                receipt_wait_packet_proof,
+            )
+            .expect("receipt-wait timeline"),
+        )
+        .expect("receipt-wait publication");
+    assert!(session.refresh_dynamic_timeline());
+    assert!(
+        session.prepared_demux_seek.receipt_pending(),
+        "packet proof must not expire a live-availability target before worker receipt"
+    );
+    assert_eq!(session.playback_state(), PlaybackState::Seeking);
+    assert!(session.snapshot().last_error.is_none());
+
+    prepared_seek_port.complete(
+        commands[0].0,
+        PreparedDemuxSeekOutcome::Succeeded(DemuxSeekResult {
+            requested_position: MediaTime::from_secs(110),
+            actual_position: MediaTime::from_secs(108),
+            actual_track_timestamp: None,
+        }),
+    );
+    session.service_prepared_demux_seek_receipts();
+    let seek_commit = session
+        .seek_runtime
+        .active_commit()
+        .expect("recovery seek commit");
+    assert_eq!(seek_commit.target_position, MediaTime::from_secs(110));
+    assert_eq!(seek_commit.resume_intent, PlaybackResumeIntent::Play);
+    assert_eq!(
+        seek_commit.target_retention,
+        SeekTargetRetention::LiveAvailability
+    );
+
+    let commit_availability =
+        TimelineRange::new(MediaTime::from_secs(70), MediaTime::from_secs(113))
+            .expect("commit availability");
+    let commit_packet_proof =
+        TimelineRange::new(MediaTime::from_secs(112), MediaTime::from_secs(113))
+            .expect("commit packet proof");
+    publisher
+        .publish(
+            DynamicMediaTimelineEpoch::new(4),
+            DynamicMediaTimelineState::with_available_and_seekable_dvr(
+                MediaTime::from_secs(113),
+                commit_availability,
+                commit_packet_proof,
+            )
+            .expect("active-commit timeline"),
+        )
+        .expect("active-commit publication");
+    assert!(session.refresh_dynamic_timeline());
+    assert!(
+        session.seek_runtime.active_commit().is_some(),
+        "packet proof must not expire a live-availability target after worker receipt"
+    );
+    assert!(session.snapshot().last_error.is_none());
+
+    let expired_availability =
+        TimelineRange::new(MediaTime::from_secs(111), MediaTime::from_secs(120))
+            .expect("expired recovery availability");
+    let expired_packet_proof =
+        TimelineRange::new(MediaTime::from_secs(119), MediaTime::from_secs(120))
+            .expect("expired recovery packet proof");
+    publisher
+        .publish(
+            DynamicMediaTimelineEpoch::new(5),
+            DynamicMediaTimelineState::with_available_and_seekable_dvr(
+                MediaTime::from_secs(120),
+                expired_availability,
+                expired_packet_proof,
+            )
+            .expect("expired recovery timeline"),
+        )
+        .expect("expired recovery publication");
+    assert!(session.refresh_dynamic_timeline());
+    assert!(session.seek_runtime.active_commit().is_none());
+    assert_eq!(
+        session
+            .snapshot()
+            .last_error
+            .as_ref()
+            .map(|error| &error.kind),
+        Some(&PlayerErrorKind::SeekTargetExpired),
+        "live recovery must still expire when authoritative availability drops its target"
+    );
+}
+
+/// Availability expiry до worker receipt-а терминально закрывает начатый recovery seek.
+#[test]
+fn live_recovery_expiry_before_worker_receipt_returns_to_paused() {
+    let (prepared_media, publisher) = live_media(10, dvr_state(20, 60));
+    let mut session = PlayerSession::new();
+    session.load_prepared_media_with_autoplay(prepared_media, false);
+    let prepared_seek_port = Arc::new(RecoveryPreparedSeekPort::default());
+    let erased_port: Arc<dyn PreparedDemuxSeekPort> = prepared_seek_port.clone();
+    session
+        .prepared_demux_seek
+        .install(PreparedDemuxSeekMode::WorkerReceipted { port: erased_port });
+
+    let recovery_availability =
+        TimelineRange::new(MediaTime::from_secs(70), MediaTime::from_secs(110))
+            .expect("recovery availability");
+    publisher
+        .publish(
+            DynamicMediaTimelineEpoch::new(2),
+            DynamicMediaTimelineState::with_available_dvr(
+                MediaTime::from_secs(110),
+                recovery_availability,
+            )
+            .expect("recovery timeline"),
+        )
+        .expect("recovery publication");
+    assert!(session.refresh_dynamic_timeline());
+    session
+        .dispatch_command(PlayerCommand::Play)
+        .expect("Play recovery command");
+    let command = prepared_seek_port
+        .commands()
+        .into_iter()
+        .next()
+        .expect("pending recovery command");
+    assert!(session.prepared_demux_seek.receipt_pending());
+
+    let expired_availability =
+        TimelineRange::new(MediaTime::from_secs(111), MediaTime::from_secs(120))
+            .expect("expired availability");
+    publisher
+        .publish(
+            DynamicMediaTimelineEpoch::new(3),
+            DynamicMediaTimelineState::with_available_dvr(
+                MediaTime::from_secs(120),
+                expired_availability,
+            )
+            .expect("expired timeline"),
+        )
+        .expect("expired publication");
+    assert!(session.refresh_dynamic_timeline());
+
+    assert!(!session.prepared_demux_seek.receipt_pending());
+    assert!(session.seek_runtime.active_commit().is_none());
+    assert_eq!(session.playback_state(), PlaybackState::Paused);
+    assert!(!session.snapshot().timeline.seeking);
+    assert_eq!(session.snapshot().timeline.target_position, None);
+    assert_eq!(
+        session
+            .snapshot()
+            .last_error
+            .as_ref()
+            .map(|error| &error.kind),
+        Some(&PlayerErrorKind::SeekTargetExpired)
+    );
+
+    prepared_seek_port.complete(
+        command.0,
+        PreparedDemuxSeekOutcome::Succeeded(DemuxSeekResult {
+            requested_position: MediaTime::from_secs(110),
+            actual_position: MediaTime::from_secs(108),
+            actual_track_timestamp: None,
+        }),
+    );
+    session.service_prepared_demux_seek_receipts();
+    assert!(session.seek_runtime.active_commit().is_none());
+    assert_eq!(session.playback_state(), PlaybackState::Paused);
 }
 
 #[test]

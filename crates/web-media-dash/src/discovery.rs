@@ -33,8 +33,9 @@ use crate::catalog::{
 };
 use crate::component::{DashComponentFactory, DashComponentTrackShapeError};
 use crate::live::{
-    DashLiveOpenError, DashLiveOpenRequest, DashLiveOpenResult, DashLiveRefreshError,
-    DashSynchronizedClock, build_dash_live_snapshot, prepare_dash_live_logical,
+    DashClockFetchObservation, DashLiveOpenError, DashLiveOpenRequest, DashLiveOpenResult,
+    DashLiveRefreshError, build_dash_live_snapshot, prepare_dash_live_logical,
+    resolve_dash_live_clock,
 };
 use crate::open::{
     DashVodOpenError, DashVodOpenResult, fetch_dash_manifest, prepare_planned_manifest_vod,
@@ -320,11 +321,16 @@ pub fn discover_dash_live_catalog(
     })
     .map_err(DashLiveOpenError::from)?;
     let manifest_base = fetched.final_target().clone();
-    let clock = DashSynchronizedClock::from_direct_utc(
+    let clock = resolve_dash_live_clock(
+        &mpd.utc_timing,
+        &manifest_base,
+        &open.http,
+        open.generation,
         Arc::clone(&open.wall_clock),
-        local_before_fetch,
-        local_after_fetch,
-        mpd.direct_utc_time,
+        DashClockFetchObservation {
+            local_before_fetch,
+            local_after_fetch,
+        },
     )
     .map_err(DashLiveRefreshError::Clock)
     .map_err(DashLiveOpenError::from)?;

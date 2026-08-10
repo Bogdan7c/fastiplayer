@@ -1,7 +1,8 @@
 use bounded_xml_reader::XmlBudgets;
 use dash_mpd_core::{
     DashAddressing, DashDynamicMpd, DashDynamicMpdError, DashDynamicProfileExclusion,
-    DashMpdLimits, DashMpdParseRequest, parse_dynamic_dash_mpd,
+    DashMpdLimits, DashMpdParseRequest, DashPresentationDuration, DashUtcTiming,
+    parse_dynamic_dash_mpd,
 };
 
 /// Test-only hardened XML budget.
@@ -95,6 +96,62 @@ fn timing_depth_ato_and_atc_true_are_parsed_without_float_rounding() {
         Some(1_000_000_007)
     );
     assert_eq!(template.availability_time_complete, Some(true));
+}
+
+#[test]
+fn dash_if_simple_http_xsdate_open_period_shape_is_preserved() {
+    let document = r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="urn:mpeg:dash:schema:mpd:2011 DASH-MPD.xsd" type="dynamic"
+        profiles="urn:mpeg:dash:profile:isoff-live:2011,http://dashif.org/guidelines/dash-if-simple"
+        availabilityStartTime="1970-01-01T00:00:00Z"
+        publishTime="2026-08-10T10:00:00Z" minimumUpdatePeriod="PT2S"
+        timeShiftBufferDepth="PT60S" suggestedPresentationDelay="PT6S">
+      <ProgramInformation moreInformationURL="https://example.invalid/info">
+        <Title>Bounded informational metadata</Title>
+      </ProgramInformation>
+      <Period id="P0" start="PT0S">
+        <AdaptationSet contentType="video" mimeType="video/mp4" codecs="avc1.4d401f"
+            par="16:9" minWidth="640" maxWidth="640" minHeight="360" maxHeight="360"
+            maxFrameRate="60/2" segmentAlignment="true" startWithSAP="1">
+          <Role schemeIdUri="urn:mpeg:dash:role:2011" value="main"></Role>
+          <SegmentTemplate timescale="1" initialization="init-$RepresentationID$.mp4"
+              media="$RepresentationID$-$Time$.m4s">
+            <SegmentTimeline><S t="1786355990" d="2" r="4"></S></SegmentTimeline>
+          </SegmentTemplate>
+          <Representation id="video" bandwidth="1000000" width="640" height="360"
+              sar="1:1" frameRate="60/2"></Representation>
+        </AdaptationSet>
+      </Period>
+      <UTCTiming schemeIdUri="urn:mpeg:dash:utc:http-xsdate:2014" value="clock"></UTCTiming>
+    </MPD>"#;
+
+    let mpd = parse(document).expect("livesim2-style strict dynamic snapshot");
+    assert_eq!(
+        mpd.presentation.media_presentation_duration,
+        DashPresentationDuration::OpenEnded
+    );
+    assert_eq!(
+        mpd.presentation.periods[0].duration,
+        DashPresentationDuration::OpenEnded
+    );
+    assert_eq!(mpd.presentation.periods[0].adaptation_sets[0].id, None);
+    let DashUtcTiming::HttpXsDate(resource) = &mpd.utc_timing else {
+        panic!("ожидался pure HTTP XSDATE descriptor");
+    };
+    assert_eq!(resource.reference(), "clock");
+    assert_eq!(mpd.direct_utc_time(), None);
+
+    let unsupported_profile = document.replace(
+        "http://dashif.org/guidelines/dash-if-simple",
+        "urn:example:unsupported-profile",
+    );
+    assert!(matches!(
+        parse(&unsupported_profile),
+        Err(DashDynamicMpdError::ProfileExcluded(
+            DashDynamicProfileExclusion::UnsupportedDeclaredProfile
+        ))
+    ));
 }
 
 #[test]

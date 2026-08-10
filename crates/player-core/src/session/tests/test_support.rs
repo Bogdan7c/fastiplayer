@@ -23,6 +23,7 @@ pub(super) fn audio_gate_seek_commit(resume_intent: PlaybackResumeIntent) -> See
         actual_position: MediaTime::from_secs(8),
         started_at: Instant::now(),
         resume_intent,
+        target_retention: crate::seek_state::SeekTargetRetention::ExactPublicRange,
     }
 }
 

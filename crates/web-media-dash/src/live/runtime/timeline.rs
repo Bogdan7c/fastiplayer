@@ -41,13 +41,18 @@ impl DashLiveTimelineCoordinator {
         has_audio: bool,
         port_generation: DynamicMediaTimelinePortGeneration,
         source_epoch: DynamicMediaTimelineEpoch,
-    ) -> (Arc<Self>, DynamicMediaTimelinePort) {
+    ) -> Result<(Arc<Self>, DynamicMediaTimelinePort)> {
+        let initial_timeline = DynamicMediaTimelineState::with_available_dvr(
+            availability.live_edge,
+            availability.manifest_range,
+        )
+        .context("DASH initial availability violated neutral timeline contract")?;
         let (port, publisher) = dynamic_media_timeline(DynamicMediaTimelineInitial {
             port_generation,
             source_epoch,
-            state: DynamicMediaTimelineState::without_dvr(availability.live_edge),
+            state: initial_timeline,
         });
-        (
+        Ok((
             Arc::new(Self {
                 state: Mutex::new(DashLiveTimelineState {
                     availability,
@@ -60,7 +65,7 @@ impl DashLiveTimelineCoordinator {
                 }),
             }),
             port,
-        )
+        ))
     }
 
     /// Обновляет manifest cap и отбрасывает expired evidence.
@@ -160,10 +165,18 @@ fn publish_timeline(state: &mut DashLiveTimelineState) -> Result<()> {
     };
     let timeline = match proven {
         Some(range) if range.start < range.end && range.end <= state.availability.live_edge => {
-            DynamicMediaTimelineState::with_dvr(state.availability.live_edge, range)
-                .context("DASH proven DVR violated S31L")?
+            DynamicMediaTimelineState::with_available_and_seekable_dvr(
+                state.availability.live_edge,
+                state.availability.manifest_range,
+                range,
+            )
+            .context("DASH proven DVR violated S31L")?
         }
-        _ => DynamicMediaTimelineState::without_dvr(state.availability.live_edge),
+        _ => DynamicMediaTimelineState::with_available_dvr(
+            state.availability.live_edge,
+            state.availability.manifest_range,
+        )
+        .context("DASH availability violated S31L")?,
     };
     state
         .publisher
@@ -228,6 +241,15 @@ mod tests {
             true,
             generation,
             DynamicMediaTimelineEpoch::new(0),
+        )
+        .expect("valid initial availability");
+
+        assert_eq!(
+            port.observe().snapshot.state.availability_range(),
+            Some(media_core::TimelineRange {
+                start: MediaTime::ZERO,
+                end: MediaTime::from_duration(Duration::from_secs(10)),
+            })
         );
 
         coordinator
@@ -259,6 +281,13 @@ mod tests {
             })
             .expect("sliding availability is accepted");
         assert_eq!(port.observe().snapshot.state.seekable_range(), None);
+        assert_eq!(
+            port.observe().snapshot.state.availability_range(),
+            Some(media_core::TimelineRange {
+                start: MediaTime::from_duration(Duration::from_secs(3)),
+                end: MediaTime::from_duration(Duration::from_secs(10)),
+            })
+        );
 
         coordinator
             .observe_packet(&packet(TrackKind::Video, 8, 1, true))

@@ -89,7 +89,9 @@ impl AdaptiveHttpContext {
         purpose: AdaptiveResourcePurpose,
     ) -> std::num::NonZeroUsize {
         match purpose {
-            AdaptiveResourcePurpose::Manifest => self.limits.maximum_manifest_bytes,
+            AdaptiveResourcePurpose::Manifest | AdaptiveResourcePurpose::ClockSynchronization => {
+                self.limits.maximum_manifest_bytes
+            }
             AdaptiveResourcePurpose::MediaSegment
             | AdaptiveResourcePurpose::Initialization
             | AdaptiveResourcePurpose::EncryptionKey => self.limits.maximum_segment_bytes,
@@ -215,6 +217,12 @@ pub enum AdaptiveTransportError {
         /// Resource class без locator или secret material.
         purpose: AdaptiveResourcePurpose,
     },
+    /// Purpose-specific security policy была ослаблена caller-ом.
+    #[error("adaptive resource request violates configured {purpose:?} policy")]
+    InvalidResourcePolicy {
+        /// Resource class без locator или secret material.
+        purpose: AdaptiveResourcePurpose,
+    },
 }
 
 impl AdaptiveTransportError {
@@ -233,6 +241,8 @@ impl AdaptiveTransportError {
 pub enum AdaptiveResourcePurpose {
     /// Master или media manifest.
     Manifest,
+    /// Внешний UTC clock, который никогда не наследует media-source secrets.
+    ClockSynchronization,
     /// Media segment/fragment.
     MediaSegment,
     /// Initialization resource, например ISO BMFF init section.
@@ -315,6 +325,24 @@ impl AdaptiveResourceFetchRequest {
         }
     }
 
+    /// Создаёт bounded clock request с fail-closed secret/query policy.
+    #[must_use]
+    pub const fn clock_synchronization(
+        generation: SourceGeneration,
+        target: HttpRequestTarget,
+        maximum_body_bytes: std::num::NonZeroUsize,
+    ) -> Self {
+        Self {
+            generation,
+            target,
+            byte_range: None,
+            maximum_body_bytes,
+            purpose: AdaptiveResourcePurpose::ClockSynchronization,
+            query_application: AdaptiveResourceQueryApplication::BypassScopedQuery,
+            secret_forwarding: AdaptiveResourceSecretForwarding::Suppress,
+        }
+    }
+
     /// Заменяет default `ForwardScoped` на caller-proven typed intent.
     #[must_use]
     pub const fn with_secret_forwarding(
@@ -330,7 +358,9 @@ impl AdaptiveResourceFetchRequest {
         limits: AdaptiveTransportLimits,
     ) -> Result<(), AdaptiveTransportError> {
         let maximum_allowed = match self.purpose {
-            AdaptiveResourcePurpose::Manifest => limits.maximum_manifest_bytes,
+            AdaptiveResourcePurpose::Manifest | AdaptiveResourcePurpose::ClockSynchronization => {
+                limits.maximum_manifest_bytes
+            }
             AdaptiveResourcePurpose::MediaSegment
             | AdaptiveResourcePurpose::Initialization
             | AdaptiveResourcePurpose::EncryptionKey => limits.maximum_segment_bytes,
@@ -342,6 +372,15 @@ impl AdaptiveResourceFetchRequest {
         let maximum_allowed = u64::try_from(maximum_allowed.get()).unwrap_or(u64::MAX);
         if requested_bytes > maximum_allowed {
             return Err(AdaptiveTransportError::ResourceBoundExceeded {
+                purpose: self.purpose,
+            });
+        }
+        if self.purpose == AdaptiveResourcePurpose::ClockSynchronization
+            && (self.byte_range.is_some()
+                || self.query_application != AdaptiveResourceQueryApplication::BypassScopedQuery
+                || self.secret_forwarding != AdaptiveResourceSecretForwarding::Suppress)
+        {
+            return Err(AdaptiveTransportError::InvalidResourcePolicy {
                 purpose: self.purpose,
             });
         }
@@ -411,7 +450,8 @@ impl AdaptiveTransportError {
             | Self::ExplicitCookieHeader
             | Self::WorkerStopped
             | Self::StaleGeneration { .. }
-            | Self::ResourceBoundExceeded { .. } => false,
+            | Self::ResourceBoundExceeded { .. }
+            | Self::InvalidResourcePolicy { .. } => false,
         }
     }
 }
@@ -430,6 +470,7 @@ fn map_cookie_jar_error(error: ScopedHttpCookieJarError) -> AdaptiveTransportErr
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FetchPurpose {
     Manifest,
+    ClockSynchronization,
     MediaSegment,
     Initialization,
     EncryptionKey,
@@ -439,6 +480,7 @@ impl From<AdaptiveResourcePurpose> for FetchPurpose {
     fn from(purpose: AdaptiveResourcePurpose) -> Self {
         match purpose {
             AdaptiveResourcePurpose::Manifest => Self::Manifest,
+            AdaptiveResourcePurpose::ClockSynchronization => Self::ClockSynchronization,
             AdaptiveResourcePurpose::MediaSegment => Self::MediaSegment,
             AdaptiveResourcePurpose::Initialization => Self::Initialization,
             AdaptiveResourcePurpose::EncryptionKey => Self::EncryptionKey,
@@ -449,7 +491,7 @@ impl From<AdaptiveResourcePurpose> for FetchPurpose {
 impl FetchPurpose {
     const fn secret_purpose(self) -> SecretRequestPurpose {
         match self {
-            Self::Manifest => SecretRequestPurpose::Manifest,
+            Self::Manifest | Self::ClockSynchronization => SecretRequestPurpose::Manifest,
             Self::MediaSegment | Self::Initialization => SecretRequestPurpose::MediaSegment,
             Self::EncryptionKey => SecretRequestPurpose::EncryptionKey,
         }
@@ -457,7 +499,7 @@ impl FetchPurpose {
 
     const fn fetch_kind(self) -> HttpBoundedFetchKind {
         match self {
-            Self::Manifest => HttpBoundedFetchKind::Metadata,
+            Self::Manifest | Self::ClockSynchronization => HttpBoundedFetchKind::Metadata,
             Self::MediaSegment | Self::Initialization => HttpBoundedFetchKind::Media,
             Self::EncryptionKey => HttpBoundedFetchKind::Metadata,
         }

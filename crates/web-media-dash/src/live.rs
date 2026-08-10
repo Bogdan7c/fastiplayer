@@ -23,6 +23,7 @@ use dash_mpd_core::{
 use media_core::{MediaTime, TimelineRange};
 use source_core::HttpRequestTarget;
 use thiserror::Error;
+use web_media_adaptive::AdaptiveTransportError;
 
 use crate::DashPlanError;
 use crate::catalog::{
@@ -38,8 +39,10 @@ use crate::selection::{
     select_representation,
 };
 
-// Blocking demux/refresh lifecycle живёт отдельно от pure timing math.
+// Blocking clock/demux/refresh lifecycle живёт отдельно от pure timing math.
+mod clock;
 mod runtime;
+pub(crate) use clock::{DashClockFetchObservation, resolve_dash_live_clock};
 pub(crate) use runtime::prepare_dash_live_logical;
 pub use runtime::{
     DashEndpointRefreshError, DashEndpointRefreshPort, DashEndpointRefreshReply,
@@ -54,7 +57,7 @@ pub trait DashWallClock: Send + Sync {
 }
 
 /// Clock synchronization failure без UTC payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[derive(Debug, Error)]
 pub enum DashLiveClockError {
     /// Signed offset либо synchronized timestamp вышел за диапазон.
     #[error("DASH synchronized clock arithmetic overflow")]
@@ -65,6 +68,22 @@ pub enum DashLiveClockError {
     /// Synchronized now предшествует availability start.
     #[error("DASH synchronized clock precedes availability start")]
     BeforeAvailabilityStart,
+    /// External clock URI reference нельзя безопасно разрешить.
+    #[error("DASH UTC clock target resolution failed")]
+    Target,
+    /// Bounded HTTP XSDATE response не содержит допустимый timestamp.
+    #[error("DASH UTC clock response is invalid")]
+    InvalidResponse,
+    /// Общий adaptive transport не смог получить external clock.
+    #[error("DASH UTC clock transport failed")]
+    Transport(#[from] AdaptiveTransportError),
+}
+
+impl DashLiveClockError {
+    /// Refresh owner отличает cooperative cancellation от fatal clock failure.
+    pub(crate) fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Transport(AdaptiveTransportError::Cancelled))
+    }
 }
 
 /// Clock с direct-UTC offset/evidence текущего MPD response-а.
@@ -198,6 +217,8 @@ pub enum DashLiveProfileExclusion {
     TimelineOverlap,
     /// Segment reference пересекает Period boundary и требует decode-only clipping.
     SegmentCrossesPeriodBoundary,
+    /// Последний `r=-1` open Period-а не имеет finite next-start/Period end.
+    OpenEndedTimelineRepeat,
 }
 
 /// Refresh outcome явно различает equal/stale/newer.
@@ -368,6 +389,9 @@ fn map_dynamic_plan_error(error: DashPlanError) -> DashLiveRefreshError {
         DashPlanError::SegmentCrossesPeriodBoundary => DashLiveRefreshError::ProfileExcluded(
             DashLiveProfileExclusion::SegmentCrossesPeriodBoundary,
         ),
+        DashPlanError::OpenEndedTimelineRepeat => {
+            DashLiveRefreshError::ProfileExcluded(DashLiveProfileExclusion::OpenEndedTimelineRepeat)
+        }
         other => DashLiveRefreshError::Plan(other),
     }
 }
@@ -625,7 +649,7 @@ fn validate_continuity(
             continue;
         };
         if current_period.start_milliseconds != next_period.start_milliseconds
-            || current_period.duration_milliseconds != next_period.duration_milliseconds
+            || current_period.duration != next_period.duration
             || !period_selected_contract_is_stable(
                 current_period,
                 next_period,

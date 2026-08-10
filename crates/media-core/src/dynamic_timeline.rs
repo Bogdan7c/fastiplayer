@@ -70,12 +70,15 @@ impl DynamicMediaTimelineRevision {
     }
 }
 
-/// Доказанное live-состояние без provider-specific vocabulary.
+/// Live-состояние без provider-specific vocabulary.
 ///
-/// Поля закрыты намеренно: непустой DVR range нельзя собрать в обход validator-а.
+/// Manifest availability и packet-proven seekability разделены намеренно:
+/// первая определяет expiry старой позиции, вторая — допустимые user seek-и.
+/// Поля закрыты: диапазоны нельзя собрать в обход validator-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DynamicMediaTimelineState {
     live_edge: MediaTime,
+    availability_range: Option<TimelineRange>,
     seekable_range: Option<TimelineRange>,
 }
 
@@ -85,6 +88,7 @@ impl DynamicMediaTimelineState {
     pub const fn without_dvr(live_edge: MediaTime) -> Self {
         Self {
             live_edge,
+            availability_range: None,
             seekable_range: None,
         }
     }
@@ -105,6 +109,47 @@ impl DynamicMediaTimelineState {
         }
         Ok(Self {
             live_edge,
+            availability_range: Some(seekable_range),
+            seekable_range: Some(seekable_range),
+        })
+    }
+
+    /// Создаёт DVR availability без ещё не полученного packet evidence.
+    pub fn with_available_dvr(
+        live_edge: MediaTime,
+        availability_range: TimelineRange,
+    ) -> Result<Self, DynamicMediaTimelineValidationError> {
+        validate_availability_range(live_edge, availability_range)?;
+        Ok(Self {
+            live_edge,
+            availability_range: Some(availability_range),
+            seekable_range: None,
+        })
+    }
+
+    /// Создаёт state с authoritative availability и его доказанным поддиапазоном.
+    pub fn with_available_and_seekable_dvr(
+        live_edge: MediaTime,
+        availability_range: TimelineRange,
+        seekable_range: TimelineRange,
+    ) -> Result<Self, DynamicMediaTimelineValidationError> {
+        validate_availability_range(live_edge, availability_range)?;
+        if seekable_range.start >= seekable_range.end {
+            return Err(DynamicMediaTimelineValidationError::EmptyDvrRange { seekable_range });
+        }
+        if seekable_range.start < availability_range.start
+            || seekable_range.end > availability_range.end
+        {
+            return Err(
+                DynamicMediaTimelineValidationError::SeekableRangeOutsideAvailability {
+                    availability_range,
+                    seekable_range,
+                },
+            );
+        }
+        Ok(Self {
+            live_edge,
+            availability_range: Some(availability_range),
             seekable_range: Some(seekable_range),
         })
     }
@@ -115,11 +160,38 @@ impl DynamicMediaTimelineState {
         self.live_edge
     }
 
+    /// Возвращает authoritative server availability window, если оно известно.
+    #[must_use]
+    pub const fn availability_range(self) -> Option<TimelineRange> {
+        self.availability_range
+    }
+
     /// Возвращает authoritative DVR range, если он сейчас существует.
     #[must_use]
     pub const fn seekable_range(self) -> Option<TimelineRange> {
         self.seekable_range
     }
+}
+
+/// Проверяет manifest/server availability независимо от packet evidence.
+fn validate_availability_range(
+    live_edge: MediaTime,
+    availability_range: TimelineRange,
+) -> Result<(), DynamicMediaTimelineValidationError> {
+    if availability_range.start >= availability_range.end {
+        return Err(
+            DynamicMediaTimelineValidationError::EmptyAvailabilityRange { availability_range },
+        );
+    }
+    if live_edge < availability_range.end {
+        return Err(
+            DynamicMediaTimelineValidationError::LiveEdgeBeforeAvailabilityEnd {
+                live_edge,
+                availability_range,
+            },
+        );
+    }
+    Ok(())
 }
 
 /// Initial producer state для создания связанной пары port/publisher.
@@ -164,6 +236,20 @@ impl DynamicMediaTimelineObservation {
 /// Ошибка построения логически невозможного timeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum DynamicMediaTimelineValidationError {
+    /// Availability window должен иметь положительную длину.
+    #[error("dynamic availability range must be non-empty: {availability_range:?}")]
+    EmptyAvailabilityRange {
+        /// Некорректный authoritative диапазон.
+        availability_range: TimelineRange,
+    },
+    /// Live edge не может быть раньше availability end.
+    #[error("dynamic live edge {live_edge:?} is before availability end in {availability_range:?}")]
+    LiveEdgeBeforeAvailabilityEnd {
+        /// Некорректный live edge.
+        live_edge: MediaTime,
+        /// Availability, которому edge противоречит.
+        availability_range: TimelineRange,
+    },
     /// DVR range должен иметь положительную длину.
     #[error("dynamic DVR range must be non-empty: {seekable_range:?}")]
     EmptyDvrRange {
@@ -176,6 +262,16 @@ pub enum DynamicMediaTimelineValidationError {
         /// Некорректный live edge.
         live_edge: MediaTime,
         /// Диапазон, которому edge противоречит.
+        seekable_range: TimelineRange,
+    },
+    /// Packet-proven seekability не может выходить за server availability.
+    #[error(
+        "dynamic seekable range {seekable_range:?} is outside availability {availability_range:?}"
+    )]
+    SeekableRangeOutsideAvailability {
+        /// Authoritative доступное окно.
+        availability_range: TimelineRange,
+        /// Некорректный доказанный поддиапазон.
         seekable_range: TimelineRange,
     },
 }
@@ -378,6 +474,7 @@ mod tests {
     #[test]
     fn no_dvr_and_non_zero_dvr_states_are_explicit() {
         let (port, publisher) = no_dvr_pair();
+        assert_eq!(port.observe().snapshot.state.availability_range(), None);
         assert_eq!(port.observe().snapshot.state.seekable_range(), None);
 
         let dvr_range = TimelineRange::new(MediaTime::from_secs(20), MediaTime::from_secs(60))
@@ -394,6 +491,37 @@ mod tests {
             port.observe().snapshot.state.seekable_range(),
             Some(dvr_range)
         );
+        assert_eq!(
+            port.observe().snapshot.state.availability_range(),
+            Some(dvr_range)
+        );
+    }
+
+    #[test]
+    fn availability_and_packet_proof_are_distinct_and_nested() {
+        let availability = TimelineRange::new(MediaTime::from_secs(20), MediaTime::from_secs(60))
+            .expect("ordered availability");
+        let proven = TimelineRange::new(MediaTime::from_secs(30), MediaTime::from_secs(50))
+            .expect("ordered proof");
+        let state = DynamicMediaTimelineState::with_available_and_seekable_dvr(
+            MediaTime::from_secs(60),
+            availability,
+            proven,
+        )
+        .expect("nested proof");
+        assert_eq!(state.availability_range(), Some(availability));
+        assert_eq!(state.seekable_range(), Some(proven));
+
+        let outside = TimelineRange::new(MediaTime::from_secs(10), MediaTime::from_secs(50))
+            .expect("ordered outside proof");
+        assert!(matches!(
+            DynamicMediaTimelineState::with_available_and_seekable_dvr(
+                MediaTime::from_secs(60),
+                availability,
+                outside,
+            ),
+            Err(DynamicMediaTimelineValidationError::SeekableRangeOutsideAvailability { .. })
+        ));
     }
 
     #[test]

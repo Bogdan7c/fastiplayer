@@ -17,3 +17,11 @@ Follow-up: runtime-поломка HLS TS VOD и production fix описаны в
 Связанные memories: `mem:testing/playback-smoke`, `mem:testing/media-fixtures`, `mem:testing/hls-ts-vod-runtime-fix-2026-08-04`, `mem:app-egui/sidebar-controller`, `mem:app-egui/web-media-picker-slice-g-2026-07-26`, `mem:media-services/ytdlp-topology-summary-2026-08-04`.
 
 Follow-up 2026-08-10: BBC/Akamai row сейчас имеет 6 `avc3` video variants, ~898.560 s sliding DVR и `mp4a.40.5` HE-AAC audio вне текущего AAC-LC profile. Production fix и real render proof: `mem:media-services/hls-live-avc3-2026-08-10`.
+
+## DASH live/DVR row 06 production regression pass (2026-08-10)
+
+- Row 06 uses `https://livesim.dashif.org/livesim/segtimeline_1/utc_httpxsdate/spd_6/tsbd_60/testpic_2s/Manifest.mpd` and now passes dynamic MPD admission, playback, repeated ordered refresh, DVR seek and expired-pause Play recovery.
+- Real GUI proof used VA-API H.264 plus AAC: playback reached about 75 s, remained paused for more than 72 s (past the 60 s DVR depth), recovered to a fresh live target, and then continued for more than 80 s through multiple MPD/EOF continuation cycles.
+- Final telemetry during that run: Playing, about 59 FPS, 0 visible frame drops, 0 surface drops, 0 audio underruns, healthy frame pacing and advancing MPRIS position. Repeated-frame accounting accumulated while paused and preroll seek-discard accounting is expected; neither is a decoded/presented frame-drop regression.
+- Automated regression coverage includes parser/planner/runtime suites, a hermetic render-reaching live runtime test, no-old-DVR-head-refetch assertion, player retention-before/after-worker-receipt tests and true-authoritative-expiry cleanup. Focused DASH/adaptive tests, media/player tests, strict touched-package Clippy, workspace all-target check, diff check and refactor guardrails pass.
+- Architecture handoff: `mem:media-services/dash-live-s35-2026-07-24` and `mem:player-core/dynamic-live-timeline-s31l-2026-07-23`.

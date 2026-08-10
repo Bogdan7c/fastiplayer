@@ -18,16 +18,17 @@ mod template;
 pub use error::{DashMpdError, DashMpdErrorKind};
 // Dynamic DTO и typed exclusions являются чистым checked-in S35 contract.
 pub use dynamic::{
-    DASH_DIRECT_UTC_SCHEME, DashDynamicMpd, DashDynamicMpdError, DashDynamicProfileExclusion,
-    DashUtcTimestamp, parse_dynamic_dash_mpd,
+    DASH_DIRECT_UTC_SCHEME, DASH_HTTP_XSDATE_UTC_SCHEME, DashDynamicMpd, DashDynamicMpdError,
+    DashDynamicProfileExclusion, DashUtcTimestamp, DashUtcTimestampParseError, DashUtcTiming,
+    DashUtcTimingResource, parse_dynamic_dash_mpd,
 };
 // Публичная модель является контрактом будущего S34B runtime.
 pub use model::{
     DASH_MPD_NAMESPACE, DashAdaptationSet, DashAddressing, DashAudioChannelConfiguration,
     DashBaseUrl, DashColorMetadata, DashContainer, DashFrameRate, DashHdrTransfer,
-    DashInitialization, DashMediaKind, DashMpd, DashPeriod, DashRepresentation, DashSegmentBase,
-    DashSegmentList, DashSegmentListEntry, DashSegmentTemplate, DashTimelineEntry,
-    DashUrlReference, IndexRange,
+    DashInitialization, DashMediaKind, DashMpd, DashPeriod, DashPresentationDuration,
+    DashRepresentation, DashSegmentBase, DashSegmentList, DashSegmentListEntry,
+    DashSegmentTemplate, DashTimelineEntry, DashUrlReference, IndexRange,
 };
 // Parser request требует explicit XML и schema budgets.
 pub use parser::{DashMpdLimits, DashMpdParseRequest, parse_dash_mpd};

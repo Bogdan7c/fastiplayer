@@ -567,6 +567,10 @@ pub(crate) enum MediaPreparationFailureKind {
     LocalSourceChanged,
     DirectOpen,
     YtDlpOpen,
+    /// Dynamic DASH валиден, но использует намеренно исключённый timing/profile contract.
+    DashLiveProfileExcluded,
+    /// Dynamic DASH нарушает поддерживаемую schema/model форму.
+    DashLiveSchemaRejected,
     /// Fresh component catalog отсутствует либо не прошёл typed rematch/install.
     ComponentCatalogUnavailable,
     Cancelled,

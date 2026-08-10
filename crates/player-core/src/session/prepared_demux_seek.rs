@@ -2,12 +2,30 @@
 
 use media_core::{DemuxSeekRequest, DemuxSeekResult, MediaTime};
 
+use crate::seek_state::SeekTargetRetention;
 use crate::{
     MediaInstanceId, PlaybackResumeIntent, PlayerError, PlayerErrorKind, PreparedDemuxSeekMode,
     PreparedDemuxSeekOutcome, PreparedDemuxSeekReceipt, PreparedDemuxSeekRequestId, SeekMode,
 };
 
 use super::PlayerSession;
+
+/// Player-owned semantic intent, который должен пережить worker round-trip без потерь.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PreparedDemuxSeekIntent {
+    /// Installed instance fence на момент enqueue.
+    pub(super) media_instance_id: Option<MediaInstanceId>,
+    /// Уже начатая pipeline seek generation.
+    pub(super) generation: u64,
+    /// Public relative target transaction-а.
+    pub(super) target_position: MediaTime,
+    /// User intent точности/скорости.
+    pub(super) seek_mode: SeekMode,
+    /// Stable play/pause intent после final commit.
+    pub(super) resume_intent: PlaybackResumeIntent,
+    /// Range owner, который имеет право инвалидировать target во время refresh-а.
+    pub(super) target_retention: SeekTargetRetention,
+}
 
 /// Correlation state request-а, который ещё не вернул authoritative demux anchor.
 #[derive(Debug, Clone, Copy)]
@@ -26,6 +44,8 @@ pub(super) struct PendingPreparedDemuxSeek {
     seek_mode: SeekMode,
     /// Stable play/pause intent после final commit.
     resume_intent: PlaybackResumeIntent,
+    /// Range owner, который сохраняется через asynchronous worker receipt.
+    target_retention: SeekTargetRetention,
 }
 
 /// Runtime port, request allocator и единственный current pending intent.
@@ -82,6 +102,12 @@ impl PreparedDemuxSeekRuntime {
         self.pending.is_some()
     }
 
+    /// Возвращает semantic target latest worker request-а без раскрытия port state.
+    pub(super) fn pending_timeline_target(&self) -> Option<(MediaTime, SeekTargetRetention)> {
+        self.pending
+            .map(|pending| (pending.target_position, pending.target_retention))
+    }
+
     /// Старый intent больше не может войти в commit после нового timeline command-а.
     pub(super) fn supersede_pending(&mut self) {
         self.pending = None;
@@ -91,11 +117,7 @@ impl PreparedDemuxSeekRuntime {
     pub(super) fn enqueue(
         &mut self,
         request: DemuxSeekRequest,
-        media_instance_id: Option<MediaInstanceId>,
-        generation: u64,
-        target_position: MediaTime,
-        seek_mode: SeekMode,
-        resume_intent: PlaybackResumeIntent,
+        intent: PreparedDemuxSeekIntent,
     ) -> Result<bool, PlayerError> {
         let PreparedDemuxSeekMode::WorkerReceipted { port } = &self.mode else {
             return Ok(false);
@@ -117,12 +139,13 @@ impl PreparedDemuxSeekRuntime {
         self.next_request_id = next_request_id;
         self.pending = Some(PendingPreparedDemuxSeek {
             request_id,
-            media_instance_id,
-            generation,
-            target_position,
+            media_instance_id: intent.media_instance_id,
+            generation: intent.generation,
+            target_position: intent.target_position,
             requested_demux_position,
-            seek_mode,
-            resume_intent,
+            seek_mode: intent.seek_mode,
+            resume_intent: intent.resume_intent,
+            target_retention: intent.target_retention,
         });
         Ok(true)
     }
@@ -240,6 +263,7 @@ impl PlayerSession {
             pending.seek_mode,
             pending.target_position,
             pending.resume_intent,
+            pending.target_retention,
             result,
         );
     }

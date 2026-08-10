@@ -15,7 +15,7 @@ pub(super) struct RepresentationMetadata {
 }
 
 /// Читает точный MPD `FrameRateType`: positive integer либо positive rational.
-fn optional_frame_rate_attribute(
+pub(super) fn optional_frame_rate_attribute(
     element: &XmlElement,
     name: &str,
 ) -> Result<Option<DashFrameRate>, DashMpdError> {

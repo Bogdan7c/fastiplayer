@@ -43,6 +43,15 @@ impl PlaybackResumeIntent {
     }
 }
 
+/// Timeline range, который обязан удерживать target до завершения seek commit-а.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SeekTargetRetention {
+    /// Пользовательская exact цель должна оставаться в packet-proven public range.
+    ExactPublicRange,
+    /// Recovery к live edge остаётся валидным в authoritative manifest availability.
+    LiveAvailability,
+}
+
 /// Runtime state одного commit seek-а внутри playback pipeline.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SeekCommitState {
@@ -63,6 +72,9 @@ pub(crate) struct SeekCommitState {
 
     /// Playback-состояние, которое нужно применить после прохождения gates.
     pub resume_intent: PlaybackResumeIntent,
+
+    /// Range owner, который имеет право инвалидировать target во время refresh-а.
+    pub target_retention: SeekTargetRetention,
 }
 
 /// Public seek, который уже вошёл в S17A SeekLanding route, но ещё не получил

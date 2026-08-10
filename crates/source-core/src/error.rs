@@ -22,6 +22,8 @@ pub enum HttpRequestPolicyFailure {
     StaleGeneration,
     /// Request превышает caller-owned resource bound.
     ResourceBoundExceeded,
+    /// Typed resource purpose использован с несовместимой request policy.
+    ResourcePolicyRejected,
     /// Generic headers содержали запрещённый explicit Cookie.
     ExplicitCookieHeader,
 }

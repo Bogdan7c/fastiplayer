@@ -4,8 +4,9 @@ use crate::error::{DashMpdError, DashMpdErrorKind};
 use crate::model::{
     DASH_MPD_NAMESPACE, DashAdaptationSet, DashAddressing, DashAudioChannelConfiguration,
     DashBaseUrl, DashColorMetadata, DashContainer, DashFrameRate, DashInitialization,
-    DashMediaKind, DashMpd, DashPeriod, DashRepresentation, DashSegmentBase, DashSegmentList,
-    DashSegmentListEntry, DashSegmentTemplate, DashTimelineEntry, DashUrlReference, IndexRange,
+    DashMediaKind, DashMpd, DashPeriod, DashPresentationDuration, DashRepresentation,
+    DashSegmentBase, DashSegmentList, DashSegmentListEntry, DashSegmentTemplate, DashTimelineEntry,
+    DashUrlReference, IndexRange,
 };
 use crate::template::DashTemplateString;
 
@@ -19,6 +20,7 @@ pub(super) const SUPPORTED_DASH_PROFILES: &[&str] = &[
     "urn:mpeg:dash:profile:isoff-live:2011",
     "urn:mpeg:dash:profile:isoff-main:2011",
     "urn:mpeg:dash:profile:webm-on-demand:2012",
+    "http://dashif.org/guidelines/dash-if-simple",
 ];
 
 /// Schema/model caps, которые caller выбирает независимо от XML budgets.
@@ -168,7 +170,7 @@ pub fn parse_dash_mpd(request: DashMpdParseRequest<'_>) -> Result<DashMpd, DashM
     }
     let (periods, total_duration) = finalize_periods(periods, presentation_duration)?;
     Ok(DashMpd {
-        media_presentation_duration_milliseconds: total_duration,
+        media_presentation_duration: DashPresentationDuration::FiniteMilliseconds(total_duration),
         base_url,
         periods,
     })
@@ -258,8 +260,15 @@ fn parse_adaptation_set(
             "audioSamplingRate",
             "segmentAlignment",
             "startWithSAP",
+            "par",
+            "minWidth",
+            "maxWidth",
+            "minHeight",
+            "maxHeight",
+            "maxFrameRate",
         ],
     )?;
+    let declared_picture_aspect_ratio = validate_adaptation_constraints(&element, limits)?;
     let id = bounded_optional_attribute(&element, "id", limits)?;
     let hints = media_hints(&element, limits)?;
     let mut metadata = representation_metadata(&element, limits)?;
@@ -268,6 +277,13 @@ fn parse_adaptation_set(
     let mut representations = Vec::new();
     loop {
         match cursor.next_event()? {
+            Some(XmlEvent::StartElement(child)) if is_name(child.name(), "Role") => {
+                validate_main_role(&child, limits)?;
+                consume_descriptor_body(cursor, "Role")?;
+            }
+            Some(XmlEvent::EmptyElement(child)) if is_name(child.name(), "Role") => {
+                validate_main_role(&child, limits)?;
+            }
             Some(XmlEvent::StartElement(child)) if is_name(child.name(), "BaseURL") => {
                 set_single_base_url(&mut base_url, parse_base_url(cursor, child, limits)?)?;
             }
@@ -375,6 +391,7 @@ fn parse_adaptation_set(
     if representations.is_empty() {
         return Err(DashMpdError::new(DashMpdErrorKind::MalformedSchema));
     }
+    validate_representation_picture_aspect_ratio(declared_picture_aspect_ratio, &representations)?;
     Ok(DashAdaptationSet {
         id,
         base_url,
@@ -404,8 +421,10 @@ fn parse_representation(
             "frameRate",
             "audioSamplingRate",
             "startWithSAP",
+            "sar",
         ],
     )?;
+    validate_square_sample_aspect_ratio(&element, limits)?;
     let id = required_bounded_attribute(&element, "id", limits)?;
     let bandwidth = optional_u64_attribute(&element, "bandwidth")?;
     let own_hints = media_hints(&element, limits)?;
@@ -540,8 +559,10 @@ fn parse_empty_representation(
             "frameRate",
             "audioSamplingRate",
             "startWithSAP",
+            "sar",
         ],
     )?;
+    validate_square_sample_aspect_ratio(&element, limits)?;
     let id = required_bounded_attribute(&element, "id", limits)?;
     let bandwidth = optional_u64_attribute(&element, "bandwidth")?;
     let effective_hints = merge_hints(inherited_hints, media_hints(&element, limits)?);
@@ -566,6 +587,79 @@ fn parse_empty_representation(
         base_url: None,
         addressing: inherited_addressing.unwrap_or(DashAddressing::SingleResource),
     })
+}
+
+/// Проверяет известные non-playback constraints и возвращает optional picture ratio.
+fn validate_adaptation_constraints(
+    element: &XmlElement,
+    limits: DashMpdLimits,
+) -> Result<Option<(u32, u32)>, DashMpdError> {
+    let minimum_width = optional_positive_u32_attribute(element, "minWidth")?;
+    let maximum_width = optional_positive_u32_attribute(element, "maxWidth")?;
+    let minimum_height = optional_positive_u32_attribute(element, "minHeight")?;
+    let maximum_height = optional_positive_u32_attribute(element, "maxHeight")?;
+    if minimum_width
+        .zip(maximum_width)
+        .is_some_and(|(minimum, maximum)| minimum > maximum)
+        || minimum_height
+            .zip(maximum_height)
+            .is_some_and(|(minimum, maximum)| minimum > maximum)
+    {
+        return Err(DashMpdError::new(DashMpdErrorKind::InvalidAttribute));
+    }
+    optional_frame_rate_attribute(element, "maxFrameRate")?;
+    optional_positive_ratio_attribute(element, "par", ':', limits)
+}
+
+/// Для пока не моделируемого SAR допускает только square pixels без silent distortion.
+fn validate_square_sample_aspect_ratio(
+    element: &XmlElement,
+    limits: DashMpdLimits,
+) -> Result<(), DashMpdError> {
+    if optional_positive_ratio_attribute(element, "sar", ':', limits)?
+        .is_some_and(|sample_aspect_ratio| sample_aspect_ratio != (1, 1))
+    {
+        return Err(DashMpdError::new(
+            DashMpdErrorKind::UnsupportedMediaEvidence,
+        ));
+    }
+    Ok(())
+}
+
+/// Square-pixel Representation dimensions обязаны совпадать с AdaptationSet `par`.
+fn validate_representation_picture_aspect_ratio(
+    picture_aspect_ratio: Option<(u32, u32)>,
+    representations: &[DashRepresentation],
+) -> Result<(), DashMpdError> {
+    let Some((picture_width, picture_height)) = picture_aspect_ratio else {
+        return Ok(());
+    };
+    for representation in representations {
+        let (Some(width), Some(height)) = (representation.width, representation.height) else {
+            return Err(DashMpdError::new(
+                DashMpdErrorKind::UnsupportedMediaEvidence,
+            ));
+        };
+        if u64::from(width) * u64::from(picture_height)
+            != u64::from(height) * u64::from(picture_width)
+        {
+            return Err(DashMpdError::new(
+                DashMpdErrorKind::UnsupportedMediaEvidence,
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// DASH role пока не участвует в selection; безопасно принимается только exact `main`.
+fn validate_main_role(element: &XmlElement, limits: DashMpdLimits) -> Result<(), DashMpdError> {
+    validate_attributes(element, &["schemeIdUri", "value"])?;
+    let scheme = bounded_optional_attribute(element, "schemeIdUri", limits)?;
+    let value = bounded_optional_attribute(element, "value", limits)?;
+    if scheme.as_deref() != Some("urn:mpeg:dash:role:2011") || value.as_deref() != Some("main") {
+        return Err(DashMpdError::new(DashMpdErrorKind::UnsupportedConstruct));
+    }
+    Ok(())
 }
 
 /// Вычисляет exact contiguous Period timeline.
@@ -597,7 +691,7 @@ pub(super) fn finalize_periods(
         periods.push(DashPeriod {
             id: period.id.clone(),
             start_milliseconds: start,
-            duration_milliseconds: duration,
+            duration: DashPresentationDuration::FiniteMilliseconds(duration),
             base_url: period.base_url.clone(),
             adaptation_sets: period.adaptation_sets.clone(),
         });
@@ -790,6 +884,33 @@ fn optional_positive_u32_attribute(
                 .ok()
                 .filter(|dimension| *dimension > 0)
                 .ok_or_else(|| DashMpdError::new(DashMpdErrorKind::InvalidAttribute))
+        })
+        .transpose()
+}
+
+/// Читает bounded positive ratio с exact caller-owned separator-ом.
+fn optional_positive_ratio_attribute(
+    element: &XmlElement,
+    name: &str,
+    separator: char,
+    limits: DashMpdLimits,
+) -> Result<Option<(u32, u32)>, DashMpdError> {
+    bounded_optional_attribute(element, name, limits)?
+        .map(|value| {
+            let (numerator, denominator) = value
+                .split_once(separator)
+                .ok_or_else(|| DashMpdError::new(DashMpdErrorKind::InvalidAttribute))?;
+            let numerator = numerator
+                .parse::<u32>()
+                .ok()
+                .filter(|part| *part > 0)
+                .ok_or_else(|| DashMpdError::new(DashMpdErrorKind::InvalidAttribute))?;
+            let denominator = denominator
+                .parse::<u32>()
+                .ok()
+                .filter(|part| *part > 0)
+                .ok_or_else(|| DashMpdError::new(DashMpdErrorKind::InvalidAttribute))?;
+            Ok((numerator, denominator))
         })
         .transpose()
 }

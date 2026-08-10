@@ -240,6 +240,51 @@ fn explicit_suppress_fetches_out_of_scope_and_retries_without_any_secret_materia
 }
 
 #[test]
+fn clock_request_is_manifest_bounded_and_cannot_inherit_source_secrets() {
+    let server = LocalServer::start(|_, _| response("200 OK", &[], b"2026-08-10T10:00:00Z\n"));
+    let manifest_target = server.target("/manifest.mpd");
+    let context = context(
+        &manifest_target,
+        CancellationToken::new(),
+        same_origin_redirects(),
+        Some("Bearer clock-must-not-see-this"),
+        Some("source_secret=must-not-leak"),
+    );
+    let clock_bound = context.maximum_resource_bytes(AdaptiveResourcePurpose::ClockSynchronization);
+    assert_eq!(
+        clock_bound,
+        context.maximum_resource_bytes(AdaptiveResourcePurpose::Manifest)
+    );
+
+    context
+        .fetch_resource_blocking(AdaptiveResourceFetchRequest::clock_synchronization(
+            SourceGeneration::new(1),
+            server.target("/clock?public=1"),
+            clock_bound,
+        ))
+        .expect("same-origin clock fetch без source secrets");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].request_line.contains("public=1"));
+    assert!(!requests[0].request_line.contains("source_secret"));
+    assert!(!requests[0].headers.contains("clock-must-not-see-this"));
+
+    let weakened = AdaptiveResourceFetchRequest::clock_synchronization(
+        SourceGeneration::new(1),
+        server.target("/clock"),
+        clock_bound,
+    )
+    .with_secret_forwarding(AdaptiveResourceSecretForwarding::ForwardScoped);
+    assert!(matches!(
+        context.fetch_resource_blocking(weakened),
+        Err(AdaptiveTransportError::InvalidResourcePolicy {
+            purpose: AdaptiveResourcePurpose::ClockSynchronization
+        })
+    ));
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
 fn derived_forwarding_intent_fetches_out_of_scope_cdn_without_secrets() {
     let scoped_server = LocalServer::start(|_, _| response("200 OK", &[], b"manifest"));
     let foreign_server = LocalServer::start(|_, _| response("200 OK", &[], b"segment"));

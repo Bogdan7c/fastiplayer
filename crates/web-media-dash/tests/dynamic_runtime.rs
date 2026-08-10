@@ -107,6 +107,12 @@ fn parse(document: &str) -> dash_mpd_core::DashDynamicMpd {
     .expect("dynamic fixture")
 }
 
+/// Извлекает direct UTC только из fixtures, которые явно объявляют этот scheme.
+fn direct_utc(mpd: &dash_mpd_core::DashDynamicMpd) -> DashUtcTimestamp {
+    mpd.direct_utc_time()
+        .expect("test fixture использует direct UTC")
+}
+
 /// Exact selected component evidence.
 fn selection() -> DashPresentationSelection {
     DashPresentationSelection::Separate {
@@ -132,13 +138,9 @@ fn selection() -> DashPresentationSelection {
 /// Строит snapshot с clock, synchronized напрямую с UTCTiming.
 fn snapshot(document: &str, clock: Arc<FakeClock>) -> web_media_dash::DashLiveSnapshot {
     let mpd = parse(document);
-    let synchronized = DashSynchronizedClock::from_direct_utc(
-        clock,
-        mpd.direct_utc_time,
-        mpd.direct_utc_time,
-        mpd.direct_utc_time,
-    )
-    .expect("zero clock offset");
+    let direct = direct_utc(&mpd);
+    let synchronized = DashSynchronizedClock::from_direct_utc(clock, direct, direct, direct)
+        .expect("zero clock offset");
     build_dash_live_snapshot(
         mpd,
         &HttpRequestTarget::parse_exact("https://media.invalid/live/manifest.mpd")
@@ -152,7 +154,7 @@ fn snapshot(document: &str, clock: Arc<FakeClock>) -> web_media_dash::DashLiveSn
 
 #[test]
 fn synchronized_clock_spd_tsb_and_av_intersection_define_manifest_cap() {
-    let direct = parse(&fixture("2026-07-24T10:01:00Z", "0", "")).direct_utc_time;
+    let direct = direct_utc(&parse(&fixture("2026-07-24T10:01:00Z", "0", "")));
     let clock = Arc::new(FakeClock::new(DashUtcTimestamp::from_unix_nanoseconds(
         direct.unix_nanoseconds() + 40_000_000_000,
     )));
@@ -221,7 +223,7 @@ fn different_audio_video_pto_values_map_to_the_same_presentation_availability() 
         r#"<SegmentTimeline><S t="200" d="2" r="59"/></SegmentTimeline>"#,
         1,
     );
-    let direct = parse(&document).direct_utc_time;
+    let direct = direct_utc(&parse(&document));
     let clock = Arc::new(FakeClock::new(DashUtcTimestamp::from_unix_nanoseconds(
         direct.unix_nanoseconds() + 40_000_000_000,
     )));
@@ -263,7 +265,7 @@ fn multi_period_live_keeps_global_continuity_with_new_raw_pto_per_period() {
           </Period>
         </MPD>"#,
         );
-    let direct = parse(&document).direct_utc_time;
+    let direct = direct_utc(&parse(&document));
     let clock = Arc::new(FakeClock::new(DashUtcTimestamp::from_unix_nanoseconds(
         direct.unix_nanoseconds() + 40_000_000_000,
     )));
@@ -281,7 +283,7 @@ fn multi_period_live_keeps_global_continuity_with_new_raw_pto_per_period() {
 
 #[test]
 fn equal_older_newer_publish_order_and_continuity_are_atomic() {
-    let direct = parse(&fixture("2026-07-24T10:01:00Z", "0", "")).direct_utc_time;
+    let direct = direct_utc(&parse(&fixture("2026-07-24T10:01:00Z", "0", "")));
     let clock = Arc::new(FakeClock::new(DashUtcTimestamp::from_unix_nanoseconds(
         direct.unix_nanoseconds() + 40_000_000_000,
     )));

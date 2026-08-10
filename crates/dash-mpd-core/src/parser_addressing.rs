@@ -99,32 +99,18 @@ fn parse_segment_timeline(
     let mut entries = Vec::new();
     loop {
         match cursor.next_event()? {
+            Some(XmlEvent::StartElement(child)) if is_name(child.name(), "S") => {
+                if entries.len() >= limits.maximum_timeline_entries {
+                    return Err(DashMpdError::new(DashMpdErrorKind::LimitExceeded));
+                }
+                entries.push(parse_timeline_entry(&child)?);
+                consume_descriptor_body(cursor, "S")?;
+            }
             Some(XmlEvent::EmptyElement(child)) if is_name(child.name(), "S") => {
                 if entries.len() >= limits.maximum_timeline_entries {
                     return Err(DashMpdError::new(DashMpdErrorKind::LimitExceeded));
                 }
-                validate_attributes(&child, &["t", "d", "r"])?;
-                let duration = optional_u64_attribute(&child, "d")?
-                    .filter(|duration| *duration > 0)
-                    .ok_or_else(|| DashMpdError::new(DashMpdErrorKind::InvalidAddressing))?;
-                let repeat = optional_attribute(&child, "r")?
-                    .map(|value| {
-                        value
-                            .parse::<i64>()
-                            .map_err(|_| DashMpdError::new(DashMpdErrorKind::InvalidAddressing))
-                    })
-                    .transpose()?
-                    .unwrap_or(0);
-                if repeat < -1 {
-                    return Err(DashMpdError::new(
-                        DashMpdErrorKind::InvalidAddressing,
-                    ));
-                }
-                entries.push(DashTimelineEntry {
-                    start_time: optional_u64_attribute(&child, "t")?,
-                    duration,
-                    repeat,
-                });
+                entries.push(parse_timeline_entry(&child)?);
             }
             Some(XmlEvent::EndElement(name)) if is_name(&name, "SegmentTimeline") => break,
             Some(XmlEvent::Text(text)) if text.content().trim().is_empty() => {}
@@ -137,6 +123,32 @@ fn parse_segment_timeline(
         return Err(DashMpdError::new(DashMpdErrorKind::InvalidAddressing));
     }
     Ok(entries.into_boxed_slice())
+}
+
+/// Разбирает один атрибутивный `S`; paired/empty XML формы имеют одну семантику.
+fn parse_timeline_entry(element: &XmlElement) -> Result<DashTimelineEntry, DashMpdError> {
+    validate_attributes(element, &["t", "d", "r"])?;
+    let duration = optional_u64_attribute(element, "d")?
+        .filter(|duration| *duration > 0)
+        .ok_or_else(|| DashMpdError::new(DashMpdErrorKind::InvalidAddressing))?;
+    let repeat = optional_attribute(element, "r")?
+        .map(|value| {
+            value
+                .parse::<i64>()
+                .map_err(|_| DashMpdError::new(DashMpdErrorKind::InvalidAddressing))
+        })
+        .transpose()?
+        .unwrap_or(0);
+    if repeat < -1 {
+        return Err(DashMpdError::new(
+            DashMpdErrorKind::InvalidAddressing,
+        ));
+    }
+    Ok(DashTimelineEntry {
+        start_time: optional_u64_attribute(element, "t")?,
+        duration,
+        repeat,
+    })
 }
 
 /// Разбирает finite explicit SegmentList.

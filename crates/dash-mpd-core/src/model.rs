@@ -288,26 +288,52 @@ pub struct DashAdaptationSet {
     pub representations: Box<[DashRepresentation]>,
 }
 
-/// Один конечный static Period.
+/// Явно различает конечную presentation-длительность и открытый live tail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DashPresentationDuration {
+    /// Конечная длительность в миллисекундах.
+    FiniteMilliseconds(u64),
+    /// Последний dynamic Period продолжается за пределами текущего MPD snapshot-а.
+    OpenEnded,
+}
+
+impl DashPresentationDuration {
+    /// Возвращает конечную длительность только для bounded presentation-а.
+    #[must_use]
+    pub const fn finite_milliseconds(self) -> Option<u64> {
+        match self {
+            Self::FiniteMilliseconds(milliseconds) => Some(milliseconds),
+            Self::OpenEnded => None,
+        }
+    }
+
+    /// Проверяет, что live tail не имеет объявленной конечной границы.
+    #[must_use]
+    pub const fn is_open_ended(self) -> bool {
+        matches!(self, Self::OpenEnded)
+    }
+}
+
+/// Один static либо dynamic Period с явной lifecycle-семантикой конца.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DashPeriod {
     /// Optional schema identifier.
     pub id: Option<String>,
     /// Absolute start относительно presentation.
     pub start_milliseconds: u64,
-    /// Finite duration.
-    pub duration_milliseconds: u64,
+    /// Конечная длительность либо открытый dynamic tail.
+    pub duration: DashPresentationDuration,
     /// BaseURL текущего уровня.
     pub base_url: Option<DashBaseUrl>,
     /// Ordered adaptation sets.
     pub adaptation_sets: Box<[DashAdaptationSet]>,
 }
 
-/// Полностью проверенный static MPD.
+/// Полностью проверенный static либо dynamic MPD presentation graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DashMpd {
-    /// Finite presentation duration.
-    pub media_presentation_duration_milliseconds: u64,
+    /// Конечная длительность либо открытый dynamic presentation tail.
+    pub media_presentation_duration: DashPresentationDuration,
     /// Root BaseURL.
     pub base_url: Option<DashBaseUrl>,
     /// Ordered contiguous periods.

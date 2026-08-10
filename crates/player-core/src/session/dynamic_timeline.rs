@@ -5,8 +5,10 @@ use frame_server_core::CancelScrubReason;
 use media_core::{
     DynamicMediaTimelinePort, DynamicMediaTimelinePortGeneration, DynamicMediaTimelineRevision,
     DynamicMediaTimelineSnapshot, MediaTime, TimelineMode, TimelineNotSeekableReason,
+    TimelineRange,
 };
 
+use crate::seek_state::SeekTargetRetention;
 use crate::{MediaInstanceId, PreparedMediaTimelineMode};
 
 use super::PlayerSession;
@@ -24,6 +26,7 @@ struct DynamicTimelineBinding {
     media_instance_id: MediaInstanceId,
     port: DynamicMediaTimelinePort,
     observed_revision: DynamicMediaTimelineRevision,
+    availability_range: Option<media_core::TimelineRange>,
     activity_disconnected: bool,
 }
 
@@ -71,6 +74,7 @@ impl PlayerSession {
                     media_instance_id,
                     port,
                     observed_revision: initial.revision,
+                    availability_range: initial.state.availability_range(),
                     activity_disconnected: false,
                 });
                 self.apply_dynamic_timeline_snapshot(initial, true);
@@ -94,6 +98,30 @@ impl PlayerSession {
         }
         self.apply_dynamic_timeline_snapshot(latest, false);
         true
+    }
+
+    /// Возвращает safe live edge, если pause-position уже выпала из DVR window.
+    ///
+    /// Сам refresh намеренно не двигает paused playback: иначе sliding window
+    /// запускало бы seek на каждом MPD update. Решение применяется один раз на
+    /// явном Play и проходит через обычный seek lifecycle с flush/generation.
+    pub(super) fn expired_live_resume_target(&self) -> Option<MediaTime> {
+        if self.snapshot.timeline.mode != TimelineMode::Live {
+            return None;
+        }
+        let binding = self.dynamic_timeline.binding.as_ref()?;
+        if self.snapshot.media_instance_id != Some(binding.media_instance_id) {
+            return None;
+        }
+        let availability_range = binding.availability_range?;
+        let current_position = MediaTime::from_duration(self.current_source_position);
+        if availability_range.contains(current_position) {
+            return None;
+        }
+        self.snapshot
+            .timeline
+            .live_edge
+            .map(|live_edge| availability_range.clamp(live_edge))
     }
 
     /// Готовит observe→arm часть worker wait protocol.
@@ -159,8 +187,9 @@ impl PlayerSession {
         {
             return;
         }
+        let availability_range = dynamic_snapshot.state.availability_range();
         binding.observed_revision = dynamic_snapshot.revision;
-
+        binding.availability_range = availability_range;
         let live_edge = dynamic_snapshot.state.live_edge();
         let seekable_range = dynamic_snapshot.state.seekable_range();
         self.snapshot.timeline.mode = TimelineMode::Live;
@@ -181,11 +210,7 @@ impl PlayerSession {
             self.pipeline.set_media_clock_base(live_edge.as_duration());
         }
 
-        if let Some(range) = seekable_range {
-            self.expire_dynamic_seek_target_outside(range);
-        } else {
-            self.expire_all_dynamic_seek_targets();
-        }
+        self.expire_dynamic_seek_targets_outside_retention(seekable_range, availability_range);
     }
 
     /// Перечитывает latest snapshot exact installed live port-а и решает restore.
@@ -240,46 +265,74 @@ impl PlayerSession {
         })
     }
 
-    fn expire_dynamic_seek_target_outside(&mut self, available_range: media_core::TimelineRange) {
-        let active_seek_expired = self
-            .seek_runtime
-            .active_commit()
-            .is_some_and(|seek_commit| {
-                let staged_anchor_expired = self.installed_staged_position.as_ref().is_some_and(
-                    |installed| {
-                        self.snapshot.media_instance_id == Some(installed.media_instance_id)
-                            && matches!(
-                                installed.outcome,
-                                super::staged_media_install::InstalledStagedPositionOutcome::AwaitingSeekCommit {
-                                    seek_generation,
-                                } if seek_generation == seek_commit.generation
-                            )
-                            && !available_range.contains(seek_commit.actual_position)
-                    },
-                ) || self.pending_installed_position_restore.as_ref().is_some_and(|pending| {
-                    pending.requires_live_anchor_retention
-                        && self.snapshot.media_instance_id == Some(pending.media_instance_id)
-                        && pending.seek_generation == seek_commit.generation
-                        && !available_range.contains(seek_commit.actual_position)
-                });
-                !available_range.contains(seek_commit.target_position)
-                    || staged_anchor_expired
+    /// Проверяет target по диапазону, который соответствует исходному seek intent-у.
+    fn expire_dynamic_seek_targets_outside_retention(
+        &mut self,
+        public_seekable_range: Option<TimelineRange>,
+        availability_range: Option<TimelineRange>,
+    ) {
+        if let Some(seek_commit) = self.seek_runtime.active_commit() {
+            let retained_range = seek_target_retention_range(
+                seek_commit.target_retention,
+                public_seekable_range,
+                availability_range,
+            );
+            let target_expired =
+                !retained_range.is_some_and(|range| range.contains(seek_commit.target_position));
+            let staged_anchor_expired = self.installed_staged_position.as_ref().is_some_and(
+                |installed| {
+                    self.snapshot.media_instance_id == Some(installed.media_instance_id)
+                        && matches!(
+                            installed.outcome,
+                            super::staged_media_install::InstalledStagedPositionOutcome::AwaitingSeekCommit {
+                                seek_generation,
+                            } if seek_generation == seek_commit.generation
+                        )
+                        && !public_seekable_range
+                            .is_some_and(|range| range.contains(seek_commit.actual_position))
+                },
+            ) || self.pending_installed_position_restore.as_ref().is_some_and(|pending| {
+                pending.requires_live_anchor_retention
+                    && self.snapshot.media_instance_id == Some(pending.media_instance_id)
+                    && pending.seek_generation == seek_commit.generation
+                    && !public_seekable_range
+                        .is_some_and(|range| range.contains(seek_commit.actual_position))
             });
+
+            if target_expired || staged_anchor_expired {
+                let diagnostic_range = if target_expired {
+                    retained_range
+                } else {
+                    public_seekable_range
+                };
+                self.expire_dynamic_seek_or_scrub(diagnostic_range);
+            }
+            return;
+        }
+
+        if let Some((target_position, target_retention)) =
+            self.prepared_demux_seek.pending_timeline_target()
+        {
+            let retained_range = seek_target_retention_range(
+                target_retention,
+                public_seekable_range,
+                availability_range,
+            );
+            if !retained_range.is_some_and(|range| range.contains(target_position)) {
+                self.expire_dynamic_seek_or_scrub(retained_range);
+            }
+            return;
+        }
+
         let public_target_expired = self
             .snapshot
             .timeline
             .target_position
-            .is_some_and(|target| !available_range.contains(target));
-        if active_seek_expired || public_target_expired {
-            self.expire_dynamic_seek_or_scrub(Some(available_range));
-        }
-    }
-
-    fn expire_all_dynamic_seek_targets(&mut self) {
-        if self.seek_runtime.active_commit().is_some()
-            || self.snapshot.timeline.target_position.is_some()
-        {
-            self.expire_dynamic_seek_or_scrub(None);
+            .is_some_and(|target| {
+                !public_seekable_range.is_some_and(|range| range.contains(target))
+            });
+        if public_target_expired {
+            self.expire_dynamic_seek_or_scrub(public_seekable_range);
         }
     }
 
@@ -289,13 +342,32 @@ impl PlayerSession {
             return;
         }
 
+        let prepared_seek_pending = self.prepared_demux_seek.receipt_pending();
         self.expire_pending_exact_timeline_seek(available_range);
-        self.cancel_active_scrub_for_external_command(CancelScrubReason::StaleContext);
+        self.prepared_demux_seek.supersede_pending();
         let error = crate::PlayerError::new(
             crate::PlayerErrorKind::SeekTargetExpired,
-            format!("Live scrub target expired outside latest DVR range {available_range:?}"),
+            format!("Live seek/scrub target expired outside latest DVR range {available_range:?}"),
         );
         self.fail_pending_seek_receipts(error.clone());
+        if prepared_seek_pending {
+            self.fail_started_demux_seek(error);
+            return;
+        }
+
+        self.cancel_active_scrub_for_external_command(CancelScrubReason::StaleContext);
         self.record_recoverable_error(error);
+    }
+}
+
+/// Выбирает owner-range, который имеет право инвалидировать конкретный seek target.
+fn seek_target_retention_range(
+    target_retention: SeekTargetRetention,
+    public_seekable_range: Option<TimelineRange>,
+    availability_range: Option<TimelineRange>,
+) -> Option<TimelineRange> {
+    match target_retention {
+        SeekTargetRetention::ExactPublicRange => public_seekable_range,
+        SeekTargetRetention::LiveAvailability => availability_range,
     }
 }

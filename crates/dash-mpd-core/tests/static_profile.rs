@@ -1,8 +1,9 @@
 use bounded_xml_reader::{XmlBudgetKind, XmlBudgets};
 use dash_mpd_core::{
     DashAddressing, DashAudioChannelConfiguration, DashContainer, DashFrameRate, DashHdrTransfer,
-    DashMediaKind, DashMpdErrorKind, DashMpdLimits, DashMpdParseRequest, DashTemplateContext,
-    DashTemplateError, DashTimelineEntry, DashUrlReference, expand_timeline, parse_dash_mpd,
+    DashMediaKind, DashMpdErrorKind, DashMpdLimits, DashMpdParseRequest, DashPresentationDuration,
+    DashTemplateContext, DashTemplateError, DashTimelineEntry, DashUrlReference, expand_timeline,
+    parse_dash_mpd,
 };
 
 /// Test-only XML budgets; production defaults намеренно отсутствуют.
@@ -183,7 +184,10 @@ fn segment_template_timeline_and_base_url_inheritance_shape_are_preserved() {
     )
     .expect("поддерживаемый static template MPD");
 
-    assert_eq!(mpd.media_presentation_duration_milliseconds, 6_000);
+    assert_eq!(
+        mpd.media_presentation_duration,
+        DashPresentationDuration::FiniteMilliseconds(6_000)
+    );
     assert_eq!(
         mpd.base_url
             .as_ref()
@@ -194,7 +198,10 @@ fn segment_template_timeline_and_base_url_inheritance_shape_are_preserved() {
     );
     let period = &mpd.periods[0];
     assert_eq!(period.start_milliseconds, 0);
-    assert_eq!(period.duration_milliseconds, 6_000);
+    assert_eq!(
+        period.duration,
+        DashPresentationDuration::FiniteMilliseconds(6_000)
+    );
     let representation = &period.adaptation_sets[0].representations[0];
     assert_eq!(representation.container, DashContainer::IsoBmff);
     assert_eq!(representation.media_kind, DashMediaKind::Video);

@@ -4,18 +4,19 @@ use frame_server_core::{
     CancelScrubReason, FinishScrubPolicy, LiveScrubDiagnostics, ScrubExactnessPolicy,
     ScrubGeneration, ScrubTarget, ScrubTargetUpdate, ScrubTrackSelection,
 };
-use media_core::{MediaDemuxError, MediaTime, TimelineNotSeekableReason, TimelinePreviewState};
+use media_core::{MediaDemuxError, MediaTime, TimelinePreviewState};
 use tracing::{debug, warn};
 
 use crate::seek_state::{
     PlaybackResumeIntent, SeekCommitState, SeekDemuxRequestError, SeekLandingRoute,
-    demux_seek_request_for_transaction,
+    SeekTargetRetention, demux_seek_request_for_transaction,
 };
 use crate::{
     PlaybackState, PlayerError, PlayerErrorKind, PlayerEvent, PlayerResult, SeekMode, SeekRequest,
 };
 
 use super::PlayerSession;
+use super::prepared_demux_seek::PreparedDemuxSeekIntent;
 use super::prepared_seek::{
     SEEK_LANDING_BACKEND_REVISION_UNTRACKED, SEEK_LANDING_FIRST_SCRUB_GENERATION,
     SEEK_LANDING_SOURCE_REVISION_UNTRACKED, seek_landing_generation_token,
@@ -27,6 +28,7 @@ use super::scrub_orchestration::{
     LIVE_SCRUB_FORWARD_EXTENSION_MAX, ReusedDecoderScrubLandingRequest,
     initial_scrub_generation_before_target,
 };
+use super::seek_admission::SeekTimelineAdmission;
 
 /// Максимальный шаг вперёд, при котором live scrub продолжает текущий decode-проход
 /// вместо нового cold seek на keyframe-before.
@@ -92,6 +94,7 @@ impl PlayerSession {
             SeekMode::Accurate,
             target_position,
             resume_intent,
+            SeekTargetRetention::ExactPublicRange,
             result,
         );
         self.seek_runtime
@@ -108,20 +111,59 @@ impl PlayerSession {
 
     pub(super) fn seek(&mut self, request: SeekRequest) -> PlayerResult<()> {
         self.ensure_not_shutdown()?;
+        let resume_intent = self
+            .seek_runtime
+            .active_seek_landing_resume_intent()
+            .unwrap_or_else(|| PlaybackResumeIntent::from_playback_state(self.playback_state()));
+        self.start_seek_with_resume_intent(request, resume_intent)
+    }
+
+    /// Запускает recovery протухшей live-позиции с Play intent после landing.
+    pub(super) fn seek_expired_live_position_resuming_playback(
+        &mut self,
+        target_position: MediaTime,
+    ) -> PlayerResult<()> {
+        self.ensure_not_shutdown()?;
+        self.prepare_seek_landing_for_timeline_command();
+        let request = SeekRequest::absolute(target_position);
+        self.push_player_event(PlayerEvent::SeekRequested(request));
+        self.seek_runtime.clear_simple_scrub();
+        self.snapshot.timeline.scrubbing = false;
+
+        // Recovery не является пользовательским preview scrub-ом: ему нужен
+        // canonical seek transaction, который умеет передать запрос в
+        // worker-receipted demux boundary. Video scrub driver выполняет
+        // синхронный `Demuxer::seek` и поэтому не подходит forward-only HTTP
+        // runtime-ам, хотя остаётся правильным путём для user-visible preview.
+        self.start_seek_transaction(
+            target_position,
+            request.mode,
+            PlaybackResumeIntent::Play,
+            SeekTimelineAdmission::ExpiredLiveAvailability,
+        )
+    }
+
+    /// Общая command/recovery граница перед единым one-shot seek lifecycle.
+    fn start_seek_with_resume_intent(
+        &mut self,
+        request: SeekRequest,
+        resume_intent: PlaybackResumeIntent,
+    ) -> PlayerResult<()> {
+        self.prepare_seek_landing_for_timeline_command();
+        self.start_one_shot_seek_landing_from_request(request, resume_intent)
+    }
+
+    /// Инвалидирует старые command receipts до запуска нового landing-а.
+    fn prepare_seek_landing_for_timeline_command(&mut self) {
         self.fail_pending_seek_receipts(PlayerError::new(
             PlayerErrorKind::SeekUnavailable,
             "seek superseded by another timeline command",
         ));
         self.prepared_demux_seek.supersede_pending();
         let replacing_active_seek_landing = self.seek_runtime.seek_landing_active();
-        let resume_intent = self
-            .seek_runtime
-            .active_seek_landing_resume_intent()
-            .unwrap_or_else(|| PlaybackResumeIntent::from_playback_state(self.playback_state()));
         if !replacing_active_seek_landing {
             self.cancel_active_scrub_for_external_command(CancelScrubReason::UserCancelled);
         }
-        self.start_one_shot_seek_landing_from_request(request, resume_intent)
     }
 
     /// Единая S17A точка входа для user-visible seek producers.
@@ -134,6 +176,22 @@ impl PlayerSession {
         resume_intent: PlaybackResumeIntent,
     ) -> PlayerResult<()> {
         let target_position = self.resolve_seek_target(request)?;
+        self.start_one_shot_seek_landing(
+            request,
+            target_position,
+            resume_intent,
+            SeekTimelineAdmission::PublicSeekableRange,
+        )
+    }
+
+    /// Запускает общий audio/video landing для уже проверенной media-позиции.
+    fn start_one_shot_seek_landing(
+        &mut self,
+        request: SeekRequest,
+        target_position: MediaTime,
+        resume_intent: PlaybackResumeIntent,
+        timeline_admission: SeekTimelineAdmission,
+    ) -> PlayerResult<()> {
         self.push_player_event(PlayerEvent::SeekRequested(request));
         self.seek_runtime.clear_simple_scrub();
         self.snapshot.timeline.scrubbing = false;
@@ -152,6 +210,7 @@ impl PlayerSession {
                 target_position,
                 request.mode,
                 resume_intent,
+                timeline_admission,
             );
         }
 
@@ -159,6 +218,7 @@ impl PlayerSession {
             target_position,
             seek_mode: request.mode,
             resume_intent,
+            timeline_admission,
             route: SeekLandingRoute::OneShot,
             live_scrub_diagnostics: None,
             config: self.frame_server_config,
@@ -176,8 +236,14 @@ impl PlayerSession {
         target_position: MediaTime,
         seek_mode: SeekMode,
         resume_intent: PlaybackResumeIntent,
+        timeline_admission: SeekTimelineAdmission,
     ) -> PlayerResult<()> {
-        self.start_seek_transaction(target_position, seek_mode, resume_intent)
+        self.start_seek_transaction(
+            target_position,
+            seek_mode,
+            resume_intent,
+            timeline_admission,
+        )
     }
 
     /// Запускает S17A SeekLanding через `frame-server-core` scrub driver поверх
@@ -190,21 +256,14 @@ impl PlayerSession {
             target_position,
             seek_mode,
             resume_intent,
+            timeline_admission,
             route,
             live_scrub_diagnostics,
             config,
             finish_policy,
         } = request;
-        if !self.snapshot.timeline.seekable {
-            let reason = self
-                .snapshot
-                .timeline
-                .not_seekable_reason
-                .unwrap_or(TimelineNotSeekableReason::UnknownTimeline);
-            let error = PlayerError::new(
-                PlayerErrorKind::SeekUnavailable,
-                format!("Seek невозможен: timeline не seekable ({reason:?})"),
-            );
+        if let Some(error) = self.seek_timeline_admission_error(target_position, timeline_admission)
+        {
             self.record_recoverable_error(error);
             return Ok(());
         }
@@ -214,6 +273,7 @@ impl PlayerSession {
                 target_position,
                 seek_mode,
                 resume_intent,
+                timeline_admission,
             );
         };
 
@@ -459,21 +519,15 @@ impl PlayerSession {
         target_position: MediaTime,
         seek_mode: SeekMode,
         resume_intent: PlaybackResumeIntent,
+        timeline_admission: SeekTimelineAdmission,
     ) -> PlayerResult<()> {
         self.reset_playback_window_end_observation();
-        if !self.snapshot.timeline.seekable {
-            let reason = self
-                .snapshot
-                .timeline
-                .not_seekable_reason
-                .unwrap_or(TimelineNotSeekableReason::UnknownTimeline);
-            let error = PlayerError::new(
-                PlayerErrorKind::SeekUnavailable,
-                format!("Seek невозможен: timeline не seekable ({reason:?})"),
-            );
+        if let Some(error) = self.seek_timeline_admission_error(target_position, timeline_admission)
+        {
             self.record_recoverable_error(error);
             return Ok(());
         }
+        let target_retention = timeline_admission.target_retention();
 
         if !self.pipeline.has_demuxer() {
             let error = PlayerError::new(
@@ -553,11 +607,14 @@ impl PlayerSession {
 
         match self.prepared_demux_seek.enqueue(
             demux_seek_request,
-            self.snapshot.media_instance_id,
-            generation,
-            target_position,
-            seek_mode,
-            resume_intent,
+            PreparedDemuxSeekIntent {
+                media_instance_id: self.snapshot.media_instance_id,
+                generation,
+                target_position,
+                seek_mode,
+                resume_intent,
+                target_retention,
+            },
         ) {
             Ok(true) => {
                 debug!(
@@ -600,6 +657,7 @@ impl PlayerSession {
                     seek_mode,
                     target_position,
                     resume_intent,
+                    target_retention,
                     result,
                 );
                 Ok(())
@@ -619,6 +677,7 @@ impl PlayerSession {
         seek_mode: SeekMode,
         target_position: MediaTime,
         resume_intent: PlaybackResumeIntent,
+        target_retention: SeekTargetRetention,
         result: media_core::DemuxSeekResult,
     ) {
         debug!(
@@ -640,6 +699,7 @@ impl PlayerSession {
             actual_position: result.actual_position,
             started_at: Instant::now(),
             resume_intent,
+            target_retention,
         };
         self.reanchor_clocks_after_seek_accept(seek_commit);
         self.seek_runtime.set_active_commit(seek_commit);

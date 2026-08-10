@@ -356,6 +356,7 @@ fn start_accurate_seek_for_decoder_io(
         actual_position: media_core::MediaTime::from_duration(target_position),
         started_at: Instant::now(),
         resume_intent: PlaybackResumeIntent::Pause,
+        target_retention: crate::seek_state::SeekTargetRetention::ExactPublicRange,
     }));
     session.mark_decoder_output_floor_applied_for_tests(generation, target_position);
     generation

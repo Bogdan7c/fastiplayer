@@ -18,6 +18,7 @@ use crate::{
 };
 
 use super::PlayerSession;
+use super::seek_admission::SeekTimelineAdmission;
 
 /// Максимальный шаг вперёд, при котором live scrub продолжает текущий decode-проход
 /// вместо нового cold seek на keyframe-before.
@@ -37,6 +38,8 @@ pub(super) struct ReusedDecoderScrubLandingRequest {
     pub(super) seek_mode: SeekMode,
     /// Намерение восстановить playback после завершения seek.
     pub(super) resume_intent: PlaybackResumeIntent,
+    /// Typed источник допуска к seek lifecycle.
+    pub(super) timeline_admission: SeekTimelineAdmission,
     /// Маршрут отличает one-shot seek от live scrub preview.
     pub(super) route: SeekLandingRoute,
     /// Диагностика конкретного live scrub запроса, если маршрут её поддерживает.
@@ -147,6 +150,7 @@ impl PlayerSession {
             target_position,
             seek_mode: request.mode,
             resume_intent,
+            timeline_admission: SeekTimelineAdmission::PublicSeekableRange,
             route: SeekLandingRoute::live_scrub_preview(live_scrub_diagnostics),
             live_scrub_diagnostics,
             config: self.frame_server_config,

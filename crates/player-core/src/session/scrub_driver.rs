@@ -16,7 +16,7 @@ use media_core::{DemuxSeekRequest, MediaDemuxError, MediaTime, TrackTimestamp};
 
 use super::PlayerSession;
 use crate::seek_state::{
-    SeekCommitState, SeekLandingExecution, SeekLandingGenerationStartError,
+    SeekCommitState, SeekLandingExecution, SeekLandingGenerationStartError, SeekTargetRetention,
     demux_seek_request_for_transaction,
 };
 use crate::{PlayerError, SeekMode};
@@ -422,6 +422,7 @@ impl ScrubTransactionLifecycle for PlayerSession {
                 actual_position,
                 started_at: std::time::Instant::now(),
                 resume_intent: seek_landing.resume_intent(),
+                target_retention: SeekTargetRetention::ExactPublicRange,
             };
 
             self.seek_runtime.begin_trace(seek_commit.generation);

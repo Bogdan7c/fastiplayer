@@ -24,6 +24,15 @@ pub(super) enum DashTimelinePlanningIntent {
     DynamicSnapshot,
 }
 
+/// Declared Period lifecycle не смешивается с operational snapshot horizon.
+#[derive(Clone, Copy)]
+pub(super) enum DashPeriodTimelineBound {
+    /// Static либо завершённый Period имеет exact верхнюю границу.
+    Finite(Duration),
+    /// Последний dynamic Period продолжается за пределами текущего MPD snapshot-а.
+    OpenEnded,
+}
+
 /// Один reference одновременно хранит raw URL time и presentation placement.
 pub(super) struct PlannedTemplateSegment {
     /// `$Number$` template value.
@@ -32,8 +41,8 @@ pub(super) struct PlannedTemplateSegment {
     pub raw_start_time: u64,
     /// Start относительно Period после единственного вычитания PTO.
     pub presentation_start: Duration,
-    /// Exact duration в representation timescale.
-    pub duration: u64,
+    /// Duration между двумя одинаково quantized absolute boundaries.
+    pub duration: Duration,
 }
 
 /// Полный результат timeline planning для URL и packet timestamp mapping.
@@ -42,28 +51,43 @@ pub(super) struct PlannedTemplateTimeline {
     pub segments: Vec<PlannedTemplateSegment>,
     /// PTO как exact neutral duration для component demuxer-а.
     pub media_time_origin: Duration,
+    /// Конец последнего объявленного segment-а относительно Period start.
+    pub snapshot_duration: Duration,
 }
 
 /// Строит checked timeline без floating-point и approximate clipping.
 pub(super) fn plan_template_timeline(
     template: &DashSegmentTemplate,
-    period_duration: Duration,
+    period_bound: DashPeriodTimelineBound,
     maximum_segments: NonZeroUsize,
     intent: DashTimelinePlanningIntent,
 ) -> Result<PlannedTemplateTimeline, DashPlanError> {
-    let period_duration_units = duration_to_units(period_duration, template.timescale)?;
     let period_start_raw = template.presentation_time_offset;
-    let period_end_raw = period_start_raw
-        .checked_add(period_duration_units)
-        .ok_or(DashPlanError::TimelineOverflow)?;
+    let period_duration_units = match period_bound {
+        DashPeriodTimelineBound::Finite(period_duration) => {
+            Some(duration_to_units(period_duration, template.timescale)?)
+        }
+        DashPeriodTimelineBound::OpenEnded => None,
+    };
+    let period_end_raw = period_duration_units
+        .map(|duration_units| {
+            period_start_raw
+                .checked_add(duration_units)
+                .ok_or(DashPlanError::TimelineOverflow)
+        })
+        .transpose()?;
     let raw_segments = match template.duration {
-        Some(segment_duration) => plan_uniform_segments(
-            template.start_number,
-            period_start_raw,
-            period_duration_units,
-            segment_duration,
-            maximum_segments,
-        )?,
+        Some(segment_duration) => {
+            let finite_duration_units = period_duration_units
+                .ok_or(DashPlanError::OpenEndedPeriodRequiresExplicitTimeline)?;
+            plan_uniform_segments(
+                template.start_number,
+                period_start_raw,
+                finite_duration_units,
+                segment_duration,
+                maximum_segments,
+            )?
+        }
         None => expand_explicit_timeline(
             &template.timeline,
             template.start_number,
@@ -73,6 +97,13 @@ pub(super) fn plan_template_timeline(
     };
     validate_raw_contiguity(&raw_segments)?;
     validate_period_bounds(&raw_segments, period_start_raw, period_end_raw, intent)?;
+    let snapshot_end_raw = raw_segments
+        .last()
+        .and_then(|segment| segment.raw_start_time.checked_add(segment.duration))
+        .ok_or(DashPlanError::TimelineOverflow)?;
+    let snapshot_duration_units = snapshot_end_raw
+        .checked_sub(period_start_raw)
+        .ok_or(DashPlanError::SegmentCrossesPeriodBoundary)?;
 
     let segments = raw_segments
         .into_iter()
@@ -81,20 +112,28 @@ pub(super) fn plan_template_timeline(
                 .raw_start_time
                 .checked_sub(period_start_raw)
                 .ok_or(DashPlanError::SegmentCrossesPeriodBoundary)?;
+            let presentation_end_units = presentation_start_units
+                .checked_add(segment.duration)
+                .ok_or(DashPlanError::TimelineOverflow)?;
+            let presentation_start =
+                units_to_duration(presentation_start_units, template.timescale)?;
+            let presentation_end = units_to_duration(presentation_end_units, template.timescale)?;
+            let duration = presentation_end
+                .checked_sub(presentation_start)
+                .filter(|duration| !duration.is_zero())
+                .ok_or(DashPlanError::TimelineOverflow)?;
             Ok(PlannedTemplateSegment {
                 number: segment.number,
                 raw_start_time: segment.raw_start_time,
-                presentation_start: units_to_duration(
-                    presentation_start_units,
-                    template.timescale,
-                )?,
-                duration: segment.duration,
+                presentation_start,
+                duration,
             })
         })
         .collect::<Result<Vec<_>, DashPlanError>>()?;
     Ok(PlannedTemplateTimeline {
         segments,
         media_time_origin: units_to_duration(period_start_raw, template.timescale)?,
+        snapshot_duration: units_to_duration(snapshot_duration_units, template.timescale)?,
     })
 }
 
@@ -135,11 +174,11 @@ fn plan_uniform_segments(
         .collect()
 }
 
-/// Раскрывает SegmentTimeline; `r=-1` использует raw PTO + Period duration.
+/// Раскрывает SegmentTimeline; `r=-1` требует следующую `S@t` либо finite Period end.
 fn expand_explicit_timeline(
     entries: &[DashTimelineEntry],
     start_number: u64,
-    period_end_raw: u64,
+    period_end_raw: Option<u64>,
     maximum_segments: NonZeroUsize,
 ) -> Result<Vec<RawTemplateSegment>, DashPlanError> {
     let mut segments = Vec::new();
@@ -198,7 +237,7 @@ fn segment_count_for_entry(
     entry_index: usize,
     entry: &DashTimelineEntry,
     entry_start_raw: u64,
-    period_end_raw: u64,
+    period_end_raw: Option<u64>,
 ) -> Result<u64, DashPlanError> {
     if entry.repeat >= 0 {
         return u64::try_from(entry.repeat)
@@ -214,7 +253,8 @@ fn segment_count_for_entry(
     let boundary_raw = entries
         .get(entry_index + 1)
         .and_then(|next| next.start_time)
-        .unwrap_or(period_end_raw);
+        .or(period_end_raw)
+        .ok_or(DashPlanError::OpenEndedTimelineRepeat)?;
     let span = boundary_raw
         .checked_sub(entry_start_raw)
         .ok_or(DashPlanError::TimelineOverlap)?;
@@ -247,7 +287,7 @@ fn validate_raw_contiguity(segments: &[RawTemplateSegment]) -> Result<(), DashPl
 fn validate_period_bounds(
     segments: &[RawTemplateSegment],
     period_start_raw: u64,
-    period_end_raw: u64,
+    period_end_raw: Option<u64>,
     intent: DashTimelinePlanningIntent,
 ) -> Result<(), DashPlanError> {
     let first_start = segments
@@ -258,13 +298,17 @@ fn validate_period_bounds(
         .last()
         .and_then(|segment| segment.raw_start_time.checked_add(segment.duration))
         .ok_or(DashPlanError::TimelineOverflow)?;
-    if first_start < period_start_raw || last_end > period_end_raw {
+    if first_start < period_start_raw
+        || period_end_raw.is_some_and(|period_end| last_end > period_end)
+    {
         return Err(DashPlanError::SegmentCrossesPeriodBoundary);
     }
-    if matches!(intent, DashTimelinePlanningIntent::StaticCompletePeriod)
-        && (first_start != period_start_raw || last_end != period_end_raw)
-    {
-        return Err(DashPlanError::IncompleteStaticPeriod);
+    if matches!(intent, DashTimelinePlanningIntent::StaticCompletePeriod) {
+        let period_end_raw =
+            period_end_raw.ok_or(DashPlanError::OpenEndedPeriodRequiresExplicitTimeline)?;
+        if first_start != period_start_raw || last_end != period_end_raw {
+            return Err(DashPlanError::IncompleteStaticPeriod);
+        }
     }
     Ok(())
 }
@@ -288,16 +332,21 @@ pub(super) fn duration_to_units(duration: Duration, timescale: u64) -> Result<u6
     u64::try_from(scaled / 1_000_000_000).map_err(|_| DashPlanError::TimelineOverflow)
 }
 
-/// Переводит raw/presentation units в exact neutral `Duration`.
+/// Квантует absolute tick boundary в ближайшую наносекунду, ties округляя вверх.
+///
+/// Segment duration нельзя квантувать отдельно: caller обязан вычесть две
+/// boundary, полученные этим же правилом, чтобы не накопить drift/gap.
 pub(super) fn units_to_duration(units: u64, timescale: u64) -> Result<Duration, DashPlanError> {
     let nanoseconds = u128::from(units)
         .checked_mul(1_000_000_000)
         .ok_or(DashPlanError::TimelineOverflow)?;
-    if nanoseconds % u128::from(timescale) != 0 {
-        return Err(DashPlanError::NonIntegralPeriodTimescale);
-    }
-    let nanoseconds = u64::try_from(nanoseconds / u128::from(timescale))
-        .map_err(|_| DashPlanError::TimelineOverflow)?;
+    let rounding_offset = u128::from(timescale / 2);
+    let rounded_nanoseconds = nanoseconds
+        .checked_add(rounding_offset)
+        .ok_or(DashPlanError::TimelineOverflow)?
+        / u128::from(timescale);
+    let nanoseconds =
+        u64::try_from(rounded_nanoseconds).map_err(|_| DashPlanError::TimelineOverflow)?;
     Ok(Duration::from_nanos(nanoseconds))
 }
 
@@ -305,7 +354,9 @@ pub(super) fn units_to_duration(units: u64, timescale: u64) -> Result<Duration, 
 mod tests {
     use dash_mpd_core::{DashSegmentTemplate, DashTemplateString, DashTimelineEntry};
 
-    use super::{DashPlanError, DashTimelinePlanningIntent, plan_template_timeline};
+    use super::{
+        DashPeriodTimelineBound, DashPlanError, DashTimelinePlanningIntent, plan_template_timeline,
+    };
 
     /// Собирает explicit template без XML/parser шума.
     fn template(
@@ -337,7 +388,7 @@ mod tests {
                     repeat: 1,
                 }],
             ),
-            std::time::Duration::from_secs(10),
+            DashPeriodTimelineBound::Finite(std::time::Duration::from_secs(10)),
             std::num::NonZeroUsize::new(8).expect("non-zero"),
             DashTimelinePlanningIntent::StaticCompletePeriod,
         )
@@ -370,7 +421,7 @@ mod tests {
                     repeat: -1,
                 }],
             ),
-            std::time::Duration::from_secs(6),
+            DashPeriodTimelineBound::Finite(std::time::Duration::from_secs(6)),
             std::num::NonZeroUsize::new(8).expect("non-zero"),
             DashTimelinePlanningIntent::StaticCompletePeriod,
         )
@@ -397,7 +448,7 @@ mod tests {
                     repeat: 1,
                 }],
             ),
-            std::time::Duration::from_secs(10),
+            DashPeriodTimelineBound::Finite(std::time::Duration::from_secs(10)),
             std::num::NonZeroUsize::new(8).expect("non-zero"),
             DashTimelinePlanningIntent::DynamicSnapshot,
         )
@@ -428,7 +479,7 @@ mod tests {
                     },
                 ],
             ),
-            std::time::Duration::from_secs(5),
+            DashPeriodTimelineBound::Finite(std::time::Duration::from_secs(5)),
             std::num::NonZeroUsize::new(8).expect("non-zero"),
             DashTimelinePlanningIntent::DynamicSnapshot,
         );
@@ -448,7 +499,7 @@ mod tests {
                     },
                 ],
             ),
-            std::time::Duration::from_secs(5),
+            DashPeriodTimelineBound::Finite(std::time::Duration::from_secs(5)),
             std::num::NonZeroUsize::new(8).expect("non-zero"),
             DashTimelinePlanningIntent::DynamicSnapshot,
         );
@@ -468,7 +519,7 @@ mod tests {
                     repeat: 0,
                 }],
             ),
-            std::time::Duration::from_secs(10),
+            DashPeriodTimelineBound::Finite(std::time::Duration::from_secs(10)),
             std::num::NonZeroUsize::new(8).expect("non-zero"),
             DashTimelinePlanningIntent::DynamicSnapshot,
         );
@@ -481,7 +532,7 @@ mod tests {
                     repeat: 0,
                 }],
             ),
-            std::time::Duration::from_secs(10),
+            DashPeriodTimelineBound::Finite(std::time::Duration::from_secs(10)),
             std::num::NonZeroUsize::new(8).expect("non-zero"),
             DashTimelinePlanningIntent::DynamicSnapshot,
         );
@@ -493,6 +544,97 @@ mod tests {
         assert!(matches!(
             after_end,
             Err(DashPlanError::SegmentCrossesPeriodBoundary)
+        ));
+    }
+
+    #[test]
+    fn open_period_uses_explicit_snapshot_end_without_inventing_declared_duration() {
+        let planned = plan_template_timeline(
+            &template(
+                0,
+                vec![DashTimelineEntry {
+                    start_time: Some(10),
+                    duration: 2,
+                    repeat: 2,
+                }],
+            ),
+            DashPeriodTimelineBound::OpenEnded,
+            std::num::NonZeroUsize::new(8).expect("non-zero"),
+            DashTimelinePlanningIntent::DynamicSnapshot,
+        )
+        .expect("bounded explicit snapshot должен планироваться для open Period");
+
+        assert_eq!(planned.segments.len(), 3);
+        assert_eq!(
+            planned.snapshot_duration,
+            std::time::Duration::from_secs(16)
+        );
+    }
+
+    #[test]
+    fn sample_clock_boundaries_quantize_without_segment_drift_or_gap() {
+        let mut audio_template = template(
+            0,
+            vec![
+                DashTimelineEntry {
+                    start_time: Some(0),
+                    duration: 96_256,
+                    repeat: 2,
+                },
+                DashTimelineEntry {
+                    start_time: None,
+                    duration: 95_232,
+                    repeat: 0,
+                },
+            ],
+        );
+        audio_template.timescale = 48_000;
+        let planned = plan_template_timeline(
+            &audio_template,
+            DashPeriodTimelineBound::OpenEnded,
+            std::num::NonZeroUsize::new(8).expect("non-zero"),
+            DashTimelinePlanningIntent::DynamicSnapshot,
+        )
+        .expect("AAC sample-clock timeline должен детерминированно quantize-иться");
+
+        for adjacent_segments in planned.segments.windows(2) {
+            assert_eq!(
+                adjacent_segments[0]
+                    .presentation_start
+                    .checked_add(adjacent_segments[0].duration)
+                    .expect("test timeline end"),
+                adjacent_segments[1].presentation_start
+            );
+        }
+        let last_segment = planned.segments.last().expect("non-empty timeline");
+        assert_eq!(
+            last_segment
+                .presentation_start
+                .checked_add(last_segment.duration)
+                .expect("test timeline end"),
+            planned.snapshot_duration
+        );
+    }
+
+    #[test]
+    fn unbounded_repeat_in_open_period_is_a_typed_exclusion() {
+        let result = plan_template_timeline(
+            &template(
+                0,
+                vec![DashTimelineEntry {
+                    start_time: Some(10),
+                    duration: 2,
+                    repeat: -1,
+                }],
+            ),
+            DashPeriodTimelineBound::OpenEnded,
+            std::num::NonZeroUsize::new(8).expect("non-zero"),
+            DashTimelinePlanningIntent::DynamicSnapshot,
+        );
+
+        assert!(matches!(
+            result,
+            Err(DashPlanError::OpenEndedTimelineRepeat)
         ));
     }
 }

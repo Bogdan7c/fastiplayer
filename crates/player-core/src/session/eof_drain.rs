@@ -8,6 +8,7 @@ use crate::seek_state::PlaybackResumeIntent;
 use crate::{PlaybackState, PlayerError, PlayerErrorKind, PlayerResult};
 
 use super::PlayerSession;
+use super::seek_admission::SeekTimelineAdmission;
 
 /// Runtime EOF-drain состояния, которым владеет только `PlayerSession`.
 #[derive(Debug, Default, Clone, Copy)]
@@ -347,6 +348,7 @@ impl PlayerSession {
             source_start,
             crate::SeekMode::Accurate,
             PlaybackResumeIntent::Play,
+            SeekTimelineAdmission::PublicSeekableRange,
         )
     }
 

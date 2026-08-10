@@ -16,7 +16,9 @@ use media_core::{
 use web_media_adaptive::{AdaptiveHttpContext, AdaptiveRangeByteSource, AdaptiveRangeSourceConfig};
 use web_media_transport_api::SourceGeneration;
 
-use crate::plan::{DashComponentPeriodPlan, DashComponentPlan, DashPeriodInputPlan};
+use crate::plan::{
+    DashComponentContinuationPoint, DashComponentPeriodPlan, DashComponentPlan, DashPeriodInputPlan,
+};
 use crate::request::{DashSerializedFragmentKind, DashVodOpenPolicy};
 use crate::source::{DashLiveTransportProvider, DashOrderedSegmentSource};
 use timestamp::{globalize_packet_timestamp, globalize_seek_result, timestamp_mapping_for_open};
@@ -96,6 +98,31 @@ impl DashComponentFactory {
             Arc::clone(&self.registry),
             self.live_transport.clone(),
         )
+    }
+
+    /// Открывает первый fragment fresh snapshot-а после полностью consumed old plan-а.
+    ///
+    /// Это не seek: decoder сохраняет reference state, поэтому здесь запрещены
+    /// decode-point scan, preroll replay и искусственный TracksChanged.
+    pub(crate) fn open_continuation_after(
+        &self,
+        point: DashComponentContinuationPoint,
+    ) -> Result<Option<DashComponentDemuxer>> {
+        let Some((period_index, media_index)) = self.plan.first_media_after(point)? else {
+            return Ok(None);
+        };
+        let replacement = DashComponentDemuxer::open_from_period(
+            self.plan.clone(),
+            self.http.clone(),
+            self.generation,
+            self.policy,
+            Arc::clone(&self.registry),
+            self.live_transport.clone(),
+            period_index,
+            media_index,
+        )?;
+        replacement.validate_required_track_shape()?;
+        Ok(Some(replacement))
     }
 
     pub(crate) fn prepare_seek_replacement(
