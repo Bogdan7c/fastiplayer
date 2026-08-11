@@ -118,12 +118,16 @@ impl PrefetchWorker {
             }
 
             if let Some(offset) = state.seek_request.take() {
-                tracing::debug!(
-                    offset,
-                    "media prefetch worker сбрасывает окно после foreground seek"
-                );
+                let previous_buffered_end = state.buffer.buffered_end();
                 state.buffer.reset_to(offset);
                 state.fatal_error = None;
+                state.diagnostics.refetches = state.diagnostics.refetches.saturating_add(1);
+                tracing::debug!(
+                    offset,
+                    previous_buffered_end,
+                    refetches = state.diagnostics.refetches,
+                    "media prefetch worker применяет новое окно после foreground seek"
+                );
                 // Seek начинает новую серию чтения с маленького Range, чтобы foreground
                 // получил первый байт с нового offset-а без ожидания полного большого chunk-а.
                 self.current_chunk_len = initial_chunk_len;
@@ -163,8 +167,16 @@ impl PrefetchWorker {
         };
 
         let mut state = self.shared.lock_state();
+        let active_fetch_was_cancelled = state
+            .active_fetch
+            .as_ref()
+            .is_some_and(ActivePrefetchFetch::is_cancelled);
         state.active_fetch = None;
-        if !state.shutdown && !self.cancellation.is_cancelled() && state.seek_request.is_none() {
+        if !state.shutdown
+            && !self.cancellation.is_cancelled()
+            && state.seek_request.is_none()
+            && !active_fetch_was_cancelled
+        {
             state.fatal_error = Some(error);
             self.shared.notify_all();
         }
@@ -176,15 +188,27 @@ impl PrefetchWorker {
     fn publish_read_result(&self, read_result: SourceResult<usize>, chunk_buffer: &[u8]) {
         let mut state = self.shared.lock_state();
         let seek_request_pending = state.seek_request.is_some();
+        let active_fetch_was_cancelled = state
+            .active_fetch
+            .as_ref()
+            .is_some_and(ActivePrefetchFetch::is_cancelled);
         state.active_fetch = None;
 
-        if seek_request_pending {
+        if state.shutdown || self.cancellation.is_cancelled() {
+            return;
+        }
+
+        // Pending seek может быть superseded возвратом в сохранённое окно ещё до
+        // завершения inner read-а. Token остаётся точным доказательством того,
+        // что результат active fetch-а уже нельзя публиковать.
+        if seek_request_pending || active_fetch_was_cancelled {
             state.diagnostics.cancelled_fetches =
                 state.diagnostics.cancelled_fetches.saturating_add(1);
             match read_result {
                 Err(SourceError::Cancelled) => {
                     tracing::debug!(
                         cancelled_fetches = state.diagnostics.cancelled_fetches,
+                        seek_request_pending,
                         "media prefetch worker отбросил отменённый fetch после foreground seek"
                     );
                 }
@@ -192,6 +216,7 @@ impl PrefetchWorker {
                     tracing::debug!(
                         bytes_read,
                         cancelled_fetches = state.diagnostics.cancelled_fetches,
+                        seek_request_pending,
                         "media prefetch worker отбросил устаревший chunk после foreground seek"
                     );
                 }
@@ -199,14 +224,12 @@ impl PrefetchWorker {
                     tracing::debug!(
                         error = %error,
                         cancelled_fetches = state.diagnostics.cancelled_fetches,
+                        seek_request_pending,
                         "media prefetch worker отбросил ошибку устаревшего fetch-а после foreground seek"
                     );
                 }
             }
-            return;
-        }
-
-        if state.shutdown || self.cancellation.is_cancelled() {
+            self.shared.notify_all();
             return;
         }
 

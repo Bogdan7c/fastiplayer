@@ -158,14 +158,14 @@ impl ByteSource for PrefetchingByteSource {
                 return Err(error);
             }
 
-            if state.buffer.available_from_cursor() > 0 {
+            if state.seek_request.is_none() && state.buffer.available_from_cursor() > 0 {
                 let bytes_copied = state.buffer.copy_to(output);
                 self.logical_position = self.logical_position.saturating_add(bytes_copied as u64);
                 self.shared.notify_all();
                 return Ok(bytes_copied);
             }
 
-            if state.buffer.is_eof_at_cursor() {
+            if state.seek_request.is_none() && state.buffer.is_eof_at_cursor() {
                 return Ok(0);
             }
 

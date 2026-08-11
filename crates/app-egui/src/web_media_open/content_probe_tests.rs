@@ -56,9 +56,9 @@ const SCOPED_COOKIE_PAIR: &str = "session=content-probed-secret";
 /// Exact child path вертикально проверяет retry после typed content rejection.
 const FALLBACK_CHILD_TEST_NAME: &str =
     "web_media_open::content_probe_tests::best_playable_content_rejection_opens_second_real_ogg";
-/// Exact child path вертикально проверяет terminal transport failure.
-const FATAL_CHILD_TEST_NAME: &str =
-    "web_media_open::content_probe_tests::fatal_http_open_does_not_try_second_candidate";
+/// Exact child path вертикально проверяет bounded fallback после недоступного candidate-а.
+const NETWORK_FALLBACK_CHILD_TEST_NAME: &str =
+    "web_media_open::content_probe_tests::network_unavailable_http_open_uses_second_real_candidate";
 /// Bounded ожидание progressive readiness защищает тест от вечного зависания.
 const DEMUX_EVENT_DEADLINE: Duration = Duration::from_secs(2);
 
@@ -80,8 +80,8 @@ enum FixtureOriginResponse {
         /// Число запросов, после которого fixture возвращает deterministic `429`.
         maximum_successful_requests: usize,
     },
-    /// HTTP failure доказывает terminal ветку до demux/content proof-а.
-    HttpFailure,
+    /// `404` отображается provider-ом в typed `NetworkUnavailable` до content proof-а.
+    NotFound,
 }
 
 /// Loopback origin владеет exact Ogg bytes и обслуживает bounded Range requests.
@@ -110,9 +110,9 @@ impl RangeFixtureOrigin {
         })
     }
 
-    /// Запускает origin, который всегда возвращает terminal HTTP status.
-    fn spawn_http_failure() -> Self {
-        Self::spawn_with_response(FixtureOriginResponse::HttpFailure)
+    /// Запускает origin, который всегда возвращает typed network-unavailable status.
+    fn spawn_not_found() -> Self {
+        Self::spawn_with_response(FixtureOriginResponse::NotFound)
     }
 
     /// Создаёт общий bounded worker для media и failure fixtures.
@@ -215,7 +215,7 @@ fn respond_to_fixture_request(
         } if request_contains_cookie_pair(&request, expected_cookie_pair) => {
             respond_to_range_request(stream, &request, ogg_bytes);
         }
-        FixtureOriginResponse::CookieProtectedOgg { .. } => respond_to_http_failure(stream),
+        FixtureOriginResponse::CookieProtectedOgg { .. } => respond_to_not_found(stream),
         FixtureOriginResponse::RequestLimitedOgg {
             ogg_bytes,
             maximum_successful_requests,
@@ -223,7 +223,7 @@ fn respond_to_fixture_request(
             respond_to_range_request(stream, &request, ogg_bytes);
         }
         FixtureOriginResponse::RequestLimitedOgg { .. } => respond_to_rate_limit(stream),
-        FixtureOriginResponse::HttpFailure => respond_to_http_failure(stream),
+        FixtureOriginResponse::NotFound => respond_to_not_found(stream),
     }
 }
 
@@ -267,11 +267,11 @@ fn respond_to_range_request(stream: &mut TcpStream, request: &str, ogg_bytes: &[
         .expect("write ContentProbed Range body");
 }
 
-/// Возвращает bounded terminal status без redirect/body ambiguity.
-fn respond_to_http_failure(stream: &mut TcpStream) {
+/// Возвращает bounded `404`, который HTTP provider типизирует как network unavailable.
+fn respond_to_not_found(stream: &mut TcpStream) {
     stream
         .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-        .expect("write ContentProbed HTTP failure");
+        .expect("write ContentProbed not-found response");
 }
 
 /// Возвращает deterministic rate-limit вместо принятия лишнего Range request-а.
@@ -327,15 +327,15 @@ fn best_playable_content_rejection_opens_second_real_ogg() {
     assert_owner_content_probe_fallback();
 }
 
-/// HTTP open failure остаётся terminal и не маскируется соседним candidate-ом.
+/// Один network-unavailable HTTP candidate переходит к следующему real resource-у.
 #[test]
-fn fatal_http_open_does_not_try_second_candidate() {
+fn network_unavailable_http_open_uses_second_real_candidate() {
     if env::var_os(CHILD_PROCESS_MARKER_ENV).is_some() {
-        assert_child_fatal_http_open();
+        assert_child_network_fallback();
         return;
     }
 
-    assert_owner_fatal_http_open();
+    assert_owner_network_fallback();
 }
 
 /// Owner держит origin и fake executable живыми, пока isolated child выполняет production path.
@@ -401,25 +401,29 @@ fn assert_owner_content_probe_fallback() {
     );
 }
 
-/// Owner доказывает, что terminal HTTP failure не касается соседнего resource-а.
-fn assert_owner_fatal_http_open() {
-    let failed_origin = RangeFixtureOrigin::spawn_http_failure();
+/// Owner доказывает оба real HTTP attempts и успешный bounded alternate.
+fn assert_owner_network_fallback() {
+    let unavailable_origin = RangeFixtureOrigin::spawn_not_found();
     let playable_origin = RangeFixtureOrigin::spawn(ogg_opus_fixture().bytes);
-    let fake_tools = TempDir::new().expect("create fatal-open fake-tools directory");
+    let fake_tools = TempDir::new().expect("create network-fallback fake-tools directory");
     install_fake_yt_dlp(fake_tools.path());
-    let extractor_document =
-        fatal_open_document(&failed_origin.media_url(), &playable_origin.media_url());
-    let child_output =
-        run_content_probe_child(fake_tools.path(), FATAL_CHILD_TEST_NAME, extractor_document);
-    assert_child_succeeded("terminal ContentProbed open", &child_output);
+    let extractor_document = network_fallback_document(
+        &unavailable_origin.media_url(),
+        &playable_origin.media_url(),
+    );
+    let child_output = run_content_probe_child(
+        fake_tools.path(),
+        NETWORK_FALLBACK_CHILD_TEST_NAME,
+        extractor_document,
+    );
+    assert_child_succeeded("network-unavailable ContentProbed fallback", &child_output);
     assert!(
-        failed_origin.request_count() > 0,
+        unavailable_origin.request_count() > 0,
         "первый ranked candidate должен выполнить real HTTP attempt"
     );
-    assert_eq!(
-        playable_origin.request_count(),
-        0,
-        "fatal HTTP failure не должен запускать соседний candidate"
+    assert!(
+        playable_origin.request_count() > 0,
+        "typed NetworkUnavailable должен открыть один соседний candidate"
     );
 }
 
@@ -505,10 +509,10 @@ fn content_probe_fallback_document(rejected_url: &str, playable_url: &str) -> St
     )
 }
 
-/// Оба rows statically playable; только первый real HTTP open является terminal.
-fn fatal_open_document(failed_url: &str, unrequested_url: &str) -> String {
+/// Оба rows statically playable; первый `404`, второй содержит настоящий Ogg/Opus.
+fn network_fallback_document(unavailable_url: &str, playable_url: &str) -> String {
     format!(
-        r#"{{"id":"content-probed-fatal","title":"ContentProbed fatal","formats":[{{"format_id":"fatal-first","url":"{failed_url}","protocol":"http","ext":"ogg","container":"ogg","vcodec":null,"acodec":null,"preference":0,"language_preference":0,"quality":0,"audio_channels":1,"asr":48000,"tbr":192}},{{"format_id":"must-not-open","url":"{unrequested_url}","protocol":"http","ext":"ogg","container":"ogg","vcodec":null,"acodec":null,"preference":0,"language_preference":0,"quality":0,"audio_channels":1,"asr":48000,"tbr":64}}]}}"#
+        r#"{{"id":"content-probed-network-fallback","title":"ContentProbed network fallback","formats":[{{"format_id":"network-unavailable-first","url":"{unavailable_url}","protocol":"http","ext":"ogg","container":"ogg","vcodec":null,"acodec":null,"preference":0,"language_preference":0,"quality":0,"audio_channels":1,"asr":48000,"tbr":192}},{{"format_id":"network-fallback-playable","url":"{playable_url}","protocol":"http","ext":"ogg","container":"ogg","vcodec":null,"acodec":null,"preference":0,"language_preference":0,"quality":0,"audio_channels":1,"asr":48000,"tbr":64}}]}}"#
     )
 }
 
@@ -553,21 +557,18 @@ fn assert_child_content_probe_fallback() {
     assert_prepared_opus_reaches_pcm(&mut prepared, &audio_decoder_factory, "fallback-playable");
 }
 
-/// Child доказывает, что HTTP failure не пересекает typed content-proof boundary.
-fn assert_child_fatal_http_open() {
+/// Child проходит production HTTP/demux/decode path второго candidate-а до PCM.
+fn assert_child_network_fallback() {
     let audio_decoder_factory = ProductionAudioDecoderFactory::default();
-    let open_error = match prepare_content_probed_test_media(
-        "content-probed-fatal",
+    let mut prepared = prepare_content_probed_test_media(
+        "content-probed-network-fallback",
         audio_decoder_factory.audio_decode_capability_snapshot(),
-    ) {
-        Ok(_) => panic!("terminal HTTP failure не должен открывать соседний candidate"),
-        Err(error) => error,
-    };
-    assert!(
-        open_error
-            .downcast_ref::<super::content_probe::ContentProbeRejection>()
-            .is_none(),
-        "transport failure не должен превращаться в retryable ContentProbeRejection"
+    )
+    .expect("typed NetworkUnavailable должен открыть второй Ogg candidate");
+    assert_prepared_opus_reaches_pcm(
+        &mut prepared,
+        &audio_decoder_factory,
+        "network-fallback-playable",
     );
 }
 

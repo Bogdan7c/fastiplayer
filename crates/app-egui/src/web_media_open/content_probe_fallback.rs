@@ -1,8 +1,9 @@
 //! Bounded retry orchestration для planner-ranked ContentProbe failures.
 //!
-//! Retry разрешён только BestPlayable intent-у и только после typed runtime
-//! content rejection. Network, cancellation, parser и provider failures
-//! завершают open немедленно и не маскируются соседним candidate-ом.
+//! Retry разрешён только BestPlayable intent-у после typed runtime content
+//! rejection либо одного typed `NetworkUnavailable` candidate-а.
+//! Timeout, authentication, cancellation, parser и остальные provider failures
+//! завершают open немедленно и не умножают wall-clock latency.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -20,6 +21,7 @@ use web_media_playback_plan::{
     PlanningCandidateSnapshot, PlaybackCapabilitySnapshot, PlaybackSelectionPolicy,
     rank_playable_opaque_alternatives,
 };
+use web_media_transport_api::{TransportFailure, TransportOpenError};
 
 use super::content_probe::ContentProbeRejection;
 use super::{
@@ -27,6 +29,12 @@ use super::{
     catalog_capabilities::AppCatalogCapabilityProbe,
     component_variants::YtDlpComponentSelectionOpenIntent, preparation,
 };
+
+/// BestPlayable может обойти ровно один недоступный physical candidate.
+///
+/// Это не transport retry: следующая попытка использует другую planner identity.
+/// Лимит не позволяет большим inventories последовательно умножать network latency.
+const MAX_NETWORK_UNAVAILABLE_FALLBACKS: usize = 1;
 
 /// Named зависимости открытия одного concrete candidate-а.
 ///
@@ -143,6 +151,8 @@ where
 pub(super) enum CandidateOpenError {
     /// Candidate physical resource открылся, но actual tracks не прошли proof.
     ContentProbe(ContentProbeRejection),
+    /// Concrete candidate не открылся без timeout-а; BestPlayable может попробовать один alternate.
+    NetworkUnavailable(anyhow::Error),
     /// Любая ошибка вне content-proof contract-а остаётся terminal.
     Fatal(anyhow::Error),
 }
@@ -152,14 +162,23 @@ impl CandidateOpenError {
     pub(super) fn into_anyhow(self) -> anyhow::Error {
         match self {
             Self::ContentProbe(rejection) => anyhow::Error::new(rejection),
-            Self::Fatal(error) => error,
+            Self::NetworkUnavailable(error) | Self::Fatal(error) => error,
         }
     }
 }
 
 impl From<anyhow::Error> for CandidateOpenError {
     fn from(error: anyhow::Error) -> Self {
-        Self::Fatal(error)
+        if matches!(
+            error.downcast_ref::<TransportOpenError>(),
+            Some(TransportOpenError::Transport(
+                TransportFailure::NetworkUnavailable
+            ))
+        ) {
+            Self::NetworkUnavailable(error)
+        } else {
+            Self::Fatal(error)
+        }
     }
 }
 
@@ -226,7 +245,8 @@ pub(super) fn open_ranked_best<'candidate, Candidate, Opened>(
     mut open: impl FnMut(&'candidate Candidate) -> std::result::Result<Opened, CandidateOpenError>,
 ) -> Result<(&'candidate Candidate, Opened)> {
     let mut rejection_count = 0_usize;
-    let mut last_rejection = None;
+    let mut network_unavailable_count = 0_usize;
+    let mut last_retryable_error = None;
     for candidate in candidates {
         if is_cancelled() {
             bail!("YtDlp candidate fallback отменён до следующей попытки");
@@ -235,18 +255,36 @@ pub(super) fn open_ranked_best<'candidate, Candidate, Opened>(
             Ok(opened) => return Ok((candidate, opened)),
             Err(CandidateOpenError::ContentProbe(rejection)) => {
                 rejection_count = rejection_count.saturating_add(1);
-                last_rejection = Some(rejection);
+                last_retryable_error = Some(CandidateOpenError::ContentProbe(rejection));
+            }
+            Err(CandidateOpenError::NetworkUnavailable(error)) => {
+                network_unavailable_count = network_unavailable_count.saturating_add(1);
+                if network_unavailable_count > MAX_NETWORK_UNAVAILABLE_FALLBACKS {
+                    return Err(error.context(format!(
+                        "BestPlayable network fallback исчерпан (content_rejections={rejection_count}, unavailable_candidates={network_unavailable_count})"
+                    )));
+                }
+                last_retryable_error = Some(CandidateOpenError::NetworkUnavailable(error));
             }
             Err(CandidateOpenError::Fatal(error)) => return Err(error),
         }
     }
 
-    let Some(last_rejection) = last_rejection else {
-        bail!("Planner ranking не предоставил candidate для открытия");
-    };
-    Err(anyhow::Error::new(last_rejection).context(format!(
-        "Все planner-ranked BestPlayable candidates отклонены runtime content proof (rejections={rejection_count})"
-    )))
+    let exhausted_context = format!(
+        "Planner-ranked BestPlayable candidates исчерпаны (content_rejections={rejection_count}, unavailable_candidates={network_unavailable_count})"
+    );
+    match last_retryable_error {
+        Some(CandidateOpenError::ContentProbe(rejection)) => {
+            Err(anyhow::Error::new(rejection).context(exhausted_context))
+        }
+        Some(CandidateOpenError::NetworkUnavailable(error)) => {
+            Err(error.context(exhausted_context))
+        }
+        // Fatal не сохраняется для fallback-а, но match остаётся total при
+        // дальнейшем расширении CandidateOpenError.
+        Some(CandidateOpenError::Fatal(error)) => Err(error),
+        None => bail!("Planner ranking не предоставил candidate для открытия"),
+    }
 }
 
 /// Выполняет ровно одну Exact/Composed попытку без скрытого fallback-а.
@@ -314,6 +352,89 @@ mod tests {
         assert_eq!(*selected, 20);
         assert_eq!(opened, "opened");
         assert_eq!(attempts, [10, 20]);
+    }
+
+    #[test]
+    fn best_playable_uses_one_alternate_after_network_unavailable() {
+        let candidates = [10_u8, 20_u8];
+        let mut attempts = Vec::new();
+        let (selected, opened) = open_ranked_best(&candidates, &|| false, |candidate| {
+            attempts.push(*candidate);
+            if *candidate == 10 {
+                Err(CandidateOpenError::from(
+                    anyhow::Error::new(TransportOpenError::Transport(
+                        TransportFailure::NetworkUnavailable,
+                    ))
+                    .context("provider добавил безопасный пользовательский контекст"),
+                ))
+            } else {
+                Ok("opened")
+            }
+        })
+        .expect("второй planner-ranked candidate должен открыть тот же BestPlayable intent");
+
+        assert_eq!(*selected, 20);
+        assert_eq!(opened, "opened");
+        assert_eq!(attempts, [10, 20]);
+    }
+
+    #[test]
+    fn best_playable_network_fallback_is_bounded_to_one_alternate() {
+        let candidates = [10_u8, 20_u8, 30_u8];
+        let mut attempts = Vec::new();
+        let error = open_ranked_best(&candidates, &|| false, |candidate| {
+            attempts.push(*candidate);
+            Err::<(), _>(CandidateOpenError::from(anyhow::Error::new(
+                TransportOpenError::Transport(TransportFailure::NetworkUnavailable),
+            )))
+        })
+        .expect_err("две недоступные identities должны исчерпать bounded fallback");
+
+        assert_eq!(attempts, [10, 20]);
+        assert!(error.to_string().contains("network fallback исчерпан"));
+    }
+
+    #[test]
+    fn best_playable_timeout_remains_terminal_without_alternate_attempt() {
+        let candidates = [10_u8, 20_u8];
+        let mut attempts = 0_usize;
+        let error = open_ranked_best(&candidates, &|| false, |_| {
+            attempts = attempts.saturating_add(1);
+            Err::<(), _>(CandidateOpenError::from(anyhow::Error::new(
+                TransportOpenError::Transport(TransportFailure::Timeout),
+            )))
+        })
+        .expect_err("timeout не должен умножаться на размер candidate inventory");
+
+        assert_eq!(attempts, 1);
+        assert!(matches!(
+            error.downcast_ref::<TransportOpenError>(),
+            Some(TransportOpenError::Transport(TransportFailure::Timeout))
+        ));
+    }
+
+    #[test]
+    fn best_playable_exhaustion_preserves_most_recent_retryable_error() {
+        let candidates = [10_u8, 20_u8];
+        let error = open_ranked_best(&candidates, &|| false, |candidate| {
+            if *candidate == 10 {
+                Err::<(), _>(ContentProbeRejection::UnsupportedVideo.into())
+            } else {
+                Err::<(), _>(CandidateOpenError::from(anyhow::Error::new(
+                    TransportOpenError::Transport(TransportFailure::NetworkUnavailable),
+                )))
+            }
+        })
+        .expect_err("exhaustion должен сохранить последнюю фактическую причину");
+
+        assert!(matches!(
+            error.downcast_ref::<TransportOpenError>(),
+            Some(TransportOpenError::Transport(
+                TransportFailure::NetworkUnavailable
+            ))
+        ));
+        assert!(error.to_string().contains("content_rejections=1"));
+        assert!(error.to_string().contains("unavailable_candidates=1"));
     }
 
     #[test]

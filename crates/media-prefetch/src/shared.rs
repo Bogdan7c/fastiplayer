@@ -51,6 +51,12 @@ impl ActivePrefetchFetch {
             && offset < self.end_offset_exclusive
     }
 
+    /// Сообщает publish boundary, что fetch отменён foreground seek-ом.
+    #[must_use]
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancellation.is_cancelled()
+    }
+
     /// Отменяет только текущий blocking fetch, не затрагивая lifecycle worker-а.
     pub(crate) fn cancel(&self) {
         self.cancellation.cancel();
