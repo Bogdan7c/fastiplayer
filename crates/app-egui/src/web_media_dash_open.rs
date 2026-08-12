@@ -646,6 +646,9 @@ fn dash_media_kind(role: MediaComponentRole) -> Result<DashMediaKind> {
         MediaComponentRole::ContentProbed => {
             bail!("DASH content-probed component требует отдельного representation proof")
         }
+        MediaComponentRole::PresentationManifest => {
+            bail!("DASH Representation component не может быть presentation manifest-ом")
+        }
     }
 }
 

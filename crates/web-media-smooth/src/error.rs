@@ -73,9 +73,12 @@ pub enum SmoothTransportProfileError {
     /// Этот finite preparation boundary не владеет live refresh.
     #[error("Smooth preparation поддерживает только VOD presentation")]
     NonVodPresentation,
-    /// Parent request обязан описывать compound muxed manifest component.
-    #[error("Smooth preparation требует Muxed component role")]
-    NonMuxedComponent,
+    /// Parent request обязан описывать presentation-level manifest resource.
+    #[error("Smooth preparation требует PresentationManifest component role")]
+    NonPresentationManifestComponent,
+    /// Exact и semantic identities presentation manifest-а принадлежат разным source lineages.
+    #[error("Smooth presentation manifest identity нарушает source lineage")]
+    InvalidComponentIdentity,
     /// Manifest fetch всегда full-body и не принимает media range policy.
     #[error("Smooth manifest request не должен содержать HTTP range limit")]
     UnexpectedRangeLimit,

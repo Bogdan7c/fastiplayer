@@ -47,5 +47,6 @@ pub use media::{
     reconstruct_media_fragment,
 };
 pub use model::{
-    FragmentBaseDecodeTime, FragmentCodedCoverage, FragmentSampleDefaults, FragmentTrackId,
+    FragmentBaseDecodeTime, FragmentCodedCoverage, FragmentCompositionOffsetSemantics,
+    FragmentSampleDefaults, FragmentTrackId,
 };

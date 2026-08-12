@@ -1,14 +1,17 @@
 //! Bounded sibling proof, atomic AllPairs publication и provider-owned reopen.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use demux_api::{
-    DemuxSniffBudget, OrderedSegmentKind, OrderedSegmentSource, PresentationWindowOrderedSegment,
+    DemuxSniffBudget, OrderedSegment, OrderedSegmentKind, OrderedSegmentReadError,
+    OrderedSegmentSource, PresentationWindowOrderedSegment,
     PresentationWindowOrderedSegmentReadOutcome, PresentationWindowOrderedSegmentSource,
 };
 use media_core::{DemuxReadEvent, Demuxer, TrackInfo, TrackKind};
+use source_core::CancellationToken;
 use web_media_core::{
     ComponentKind, ComponentVariantCatalog, ComponentVariantError, ComponentVariantSelection,
     ComponentVariantSelectionRequest, ComponentVariantSemanticSelectionRequest,
@@ -23,8 +26,8 @@ use crate::error::{SmoothPrepareError, SmoothSiblingRejection, SmoothSiblingReje
 use crate::model::{SmoothPreparedCatalog, SmoothRuntimeSeed};
 use crate::prepare::{SmoothManifestPreparation, into_prepared_catalog, prepare_manifest};
 use crate::source::{
-    SmoothFragmentSourceBuildError, SmoothFragmentSourcePolicy, build_audio_probe_source,
-    build_video_probe_source,
+    SmoothAudioFragmentSource, SmoothFragmentSourceBuildError, SmoothFragmentSourcePolicy,
+    SmoothVideoFragmentSource, build_audio_probe_source, build_video_probe_source,
 };
 use crate::{
     SmoothAudioDemuxOpenRequest, SmoothPrepareRequest, SmoothVideoDemuxOpenRequest,
@@ -365,9 +368,9 @@ fn prove_video_row(
     capabilities: &dyn SmoothComponentCapabilityProbe,
     policy: &SmoothCatalogDiscoveryPolicy,
 ) -> Result<(), SmoothSiblingRejectionReason> {
-    prove_video_content(row, seed, policy)?;
     let source = build_video_probe_source(seed, &row.runtime, policy.fragment_source.clone())
         .map_err(source_rejection)?;
+    let source = prove_video_content(source, seed.http.cancellation())?;
     let mut demuxer = factory
         .open_video(SmoothVideoDemuxOpenRequest::new(
             Box::new(source),
@@ -398,9 +401,9 @@ fn prove_audio_row(
     capabilities: &dyn SmoothComponentCapabilityProbe,
     policy: &SmoothCatalogDiscoveryPolicy,
 ) -> Result<(), SmoothSiblingRejectionReason> {
-    prove_audio_content(row, seed, policy)?;
     let source = build_audio_probe_source(seed, &row.runtime, policy.fragment_source.clone())
         .map_err(source_rejection)?;
+    let source = prove_audio_content(source, seed.http.cancellation())?;
     let mut demuxer = factory
         .open_audio(SmoothAudioDemuxOpenRequest::new(
             Box::new(source),
@@ -433,59 +436,103 @@ fn source_rejection(error: SmoothFragmentSourceBuildError) -> SmoothSiblingRejec
     }
 }
 
-/// Отдельный source pass отличает transport/reconstruction от injected demux failure.
+/// Возвращает уже прочитанные proof-сегменты demuxer-у без второго HTTP fetch-а.
+struct ReplayingVideoProbeSource {
+    source: SmoothVideoFragmentSource,
+    replay: VecDeque<OrderedSegment>,
+}
+
+impl OrderedSegmentSource for ReplayingVideoProbeSource {
+    fn next_segment(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<OrderedSegment>, OrderedSegmentReadError> {
+        if cancellation.is_cancelled() {
+            return Err(OrderedSegmentReadError::Cancelled);
+        }
+        match self.replay.pop_front() {
+            Some(segment) => Ok(Some(segment)),
+            None => self.source.next_segment(cancellation),
+        }
+    }
+}
+
+/// Audio proof сохраняет presentation-window intent вместе с уже полученными bytes.
+struct ReplayingAudioProbeSource {
+    source: SmoothAudioFragmentSource,
+    replay: VecDeque<PresentationWindowOrderedSegment>,
+}
+
+impl PresentationWindowOrderedSegmentSource for ReplayingAudioProbeSource {
+    fn next_segment(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<PresentationWindowOrderedSegmentReadOutcome, OrderedSegmentReadError> {
+        if cancellation.is_cancelled() {
+            return Err(OrderedSegmentReadError::Cancelled);
+        }
+        match self.replay.pop_front() {
+            Some(segment) => Ok(PresentationWindowOrderedSegmentReadOutcome::Segment(
+                segment,
+            )),
+            None => self.source.next_segment(cancellation),
+        }
+    }
+}
+
+/// Первый pass отличает transport/reconstruction от injected demux failure и затем replay-ится.
 fn prove_video_content(
-    row: &PendingVideoRow,
-    seed: &SmoothRuntimeSeed,
-    policy: &SmoothCatalogDiscoveryPolicy,
-) -> Result<(), SmoothSiblingRejectionReason> {
-    let mut source = build_video_probe_source(seed, &row.runtime, policy.fragment_source.clone())
-        .map_err(source_rejection)?;
-    let cancellation = seed.http.cancellation().clone();
+    mut source: SmoothVideoFragmentSource,
+    cancellation: &CancellationToken,
+) -> Result<ReplayingVideoProbeSource, SmoothSiblingRejectionReason> {
     let initialization = source
-        .next_segment(&cancellation)
+        .next_segment(cancellation)
         .map_err(|_| SmoothSiblingRejectionReason::TransportOrContentUnavailable)?;
     let media = source
-        .next_segment(&cancellation)
+        .next_segment(cancellation)
         .map_err(|_| SmoothSiblingRejectionReason::TransportOrContentUnavailable)?;
-    if !matches!(
-        initialization,
-        Some(segment) if segment.kind == OrderedSegmentKind::Initialization
-    ) || !matches!(media, Some(segment) if segment.kind == OrderedSegmentKind::Media)
+    let (Some(initialization), Some(media)) = (initialization, media) else {
+        return Err(SmoothSiblingRejectionReason::TransportOrContentUnavailable);
+    };
+    if initialization.kind != OrderedSegmentKind::Initialization
+        || media.kind != OrderedSegmentKind::Media
     {
         return Err(SmoothSiblingRejectionReason::TransportOrContentUnavailable);
     }
-    Ok(())
+    Ok(ReplayingVideoProbeSource {
+        source,
+        replay: VecDeque::from([initialization, media]),
+    })
 }
 
 fn prove_audio_content(
-    row: &PendingAudioRow,
-    seed: &SmoothRuntimeSeed,
-    policy: &SmoothCatalogDiscoveryPolicy,
-) -> Result<(), SmoothSiblingRejectionReason> {
-    let mut source = build_audio_probe_source(seed, &row.runtime, policy.fragment_source.clone())
-        .map_err(source_rejection)?;
-    let cancellation = seed.http.cancellation().clone();
+    mut source: SmoothAudioFragmentSource,
+    cancellation: &CancellationToken,
+) -> Result<ReplayingAudioProbeSource, SmoothSiblingRejectionReason> {
     let initialization = source
-        .next_segment(&cancellation)
+        .next_segment(cancellation)
         .map_err(|_| SmoothSiblingRejectionReason::TransportOrContentUnavailable)?;
     let media = source
-        .next_segment(&cancellation)
+        .next_segment(cancellation)
         .map_err(|_| SmoothSiblingRejectionReason::TransportOrContentUnavailable)?;
+    let PresentationWindowOrderedSegmentReadOutcome::Segment(initialization) = initialization
+    else {
+        return Err(SmoothSiblingRejectionReason::TransportOrContentUnavailable);
+    };
+    let PresentationWindowOrderedSegmentReadOutcome::Segment(media) = media else {
+        return Err(SmoothSiblingRejectionReason::TransportOrContentUnavailable);
+    };
     if !matches!(
-        initialization,
-        PresentationWindowOrderedSegmentReadOutcome::Segment(
-            PresentationWindowOrderedSegment::Initialization { .. }
-        )
-    ) || !matches!(
-        media,
-        PresentationWindowOrderedSegmentReadOutcome::Segment(
-            PresentationWindowOrderedSegment::Media { .. }
-        )
-    ) {
+        &initialization,
+        PresentationWindowOrderedSegment::Initialization { .. }
+    ) || !matches!(&media, PresentationWindowOrderedSegment::Media { .. })
+    {
         return Err(SmoothSiblingRejectionReason::TransportOrContentUnavailable);
     }
-    Ok(())
+    Ok(ReplayingAudioProbeSource {
+        source,
+        replay: VecDeque::from([initialization, media]),
+    })
 }
 
 fn exact_track(

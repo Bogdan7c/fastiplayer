@@ -6,8 +6,9 @@ use super::error::{
     FragmentArithmeticOperation, FragmentBoxKind, FragmentInspectionError, FragmentTimingEvidence,
 };
 use super::model::{
-    FragmentCodedCoverage, FragmentInspectionRequest, FragmentRapRequirement,
-    FragmentSampleDefaults, NormalizedFragmentPlan, NormalizedFragmentSample, verified_sample,
+    FragmentCodedCoverage, FragmentCompositionOffsetSemantics, FragmentInspectionRequest,
+    FragmentRapRequirement, FragmentSampleDefaults, NormalizedFragmentPlan,
+    NormalizedFragmentSample, verified_sample,
 };
 use super::parse::ParsedMediaFragment;
 use super::support::check_cancelled;
@@ -93,7 +94,10 @@ pub(super) fn normalize_samples<'input>(
                     sample_index: global_sample_index,
                 },
             )?;
-            let composition_offset = trun.sample_composition_offset(sample_index_in_run);
+            let composition_offset = normalized_composition_offset(
+                trun.sample_composition_offset(sample_index_in_run),
+                request.composition_offset_semantics(),
+            );
             let pts = checked_presentation_time(next_dts, composition_offset)?;
             let flags = resolved_flags(trun, sample_index_in_run, defaults.flags);
             let sample_end = next_payload_offset.checked_add(u64::from(size)).ok_or(
@@ -154,6 +158,21 @@ pub(super) fn normalize_samples<'input>(
         parsed.mdat_payload_range,
         samples,
     ))
+}
+
+/// Применяет только явно выбранную контейнерную семантику к уже проверенным 32 битам.
+fn normalized_composition_offset(
+    parsed_offset: i64,
+    semantics: FragmentCompositionOffsetSemantics,
+) -> i64 {
+    match semantics {
+        FragmentCompositionOffsetSemantics::IsoBmffVersioned => parsed_offset,
+        FragmentCompositionOffsetSemantics::PiffSigned32Bit => {
+            // PIFF сохраняет signed `i32` как тот же big-endian bit pattern даже при `trun` v0.
+            let raw_bits = parsed_offset as u32;
+            i64::from(i32::from_be_bytes(raw_bits.to_be_bytes()))
+        }
+    }
 }
 
 /// Resolved defaults сохраняют precedence `tfhd` перед caller-provided `trex`.

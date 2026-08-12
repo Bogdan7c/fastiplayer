@@ -210,6 +210,39 @@ fn canonical_sources_publish_stable_av_tracks_and_manifest_duration() {
     assert_eq!(update.tracks.len(), 2);
     assert_eq!(update.tracks[0].kind, TrackKind::Video);
     assert_eq!(update.tracks[1].kind, TrackKind::Audio);
+
+    let public_video_track_id = update.tracks[0].id;
+    let public_audio_track_id = update.tracks[1].id;
+    let mut second_video_fragment_observed = false;
+    let mut second_audio_fragment_observed = false;
+    let mut video_packet_count = 0_usize;
+    let mut audio_packet_count = 0_usize;
+    while !second_video_fragment_observed || !second_audio_fragment_observed {
+        assert!(
+            Instant::now() < deadline,
+            "Smooth A/V packet interleave did not cross the first fragment boundary"
+        );
+        let event = demuxer.next_event().unwrap_or_else(|error| {
+            panic!(
+                "Smooth progressive packet event failed after {video_packet_count} video and {audio_packet_count} audio packets: {error:#}"
+            )
+        });
+        match event {
+            DemuxReadEvent::Packet(packet) if packet.track_id == public_video_track_id => {
+                video_packet_count += 1;
+                second_video_fragment_observed |= packet.pts >= Duration::from_secs(4);
+            }
+            DemuxReadEvent::Packet(packet) if packet.track_id == public_audio_track_id => {
+                audio_packet_count += 1;
+                second_audio_fragment_observed |= packet.pts >= Duration::from_secs(4);
+            }
+            DemuxReadEvent::Packet(_) | DemuxReadEvent::MediaMetadataChanged(_) => {}
+            DemuxReadEvent::TemporarilyUnavailable(hint) => {
+                thread::sleep(hint.retry_after());
+            }
+            other => panic!("unexpected event before second A/V fragments: {other:?}"),
+        }
+    }
 }
 
 #[test]

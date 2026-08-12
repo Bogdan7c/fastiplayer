@@ -390,6 +390,7 @@ pub fn long_audio_fmp4_segments(segment_count: usize) -> (Vec<u8>, Vec<Vec<u8>>)
             );
             reconstruct_media_fragment(FragmentReconstructionRequest::new(
                 AUDIO_FRAGMENT,
+                symphonia_format_isomp4::FragmentCompositionOffsetSemantics::IsoBmffVersioned,
                 track,
                 &inspection_limits,
                 write_limits,

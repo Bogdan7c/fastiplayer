@@ -4,7 +4,8 @@ use std::fmt;
 
 use super::super::limits::FragmentInspectionLimits;
 use super::super::model::{
-    FragmentBaseDecodeTime, FragmentCodedCoverage, FragmentSampleDefaults, FragmentTrackId,
+    FragmentBaseDecodeTime, FragmentCodedCoverage, FragmentCompositionOffsetSemantics,
+    FragmentSampleDefaults, FragmentTrackId,
 };
 use super::error::FragmentWriteLimitBuildError;
 
@@ -91,6 +92,7 @@ impl FragmentWriteLimits {
 /// Полный borrowed request с независимыми inspection/write budgets.
 pub struct FragmentReconstructionRequest<'input, 'policy> {
     input: &'input [u8],
+    composition_offset_semantics: FragmentCompositionOffsetSemantics,
     track: FragmentTrackReconstructionIntent,
     inspection_limits: &'policy FragmentInspectionLimits,
     write_limits: FragmentWriteLimits,
@@ -101,6 +103,7 @@ impl<'input, 'policy> FragmentReconstructionRequest<'input, 'policy> {
     /// Создаёт opt-in request без runtime/provider policy.
     pub const fn new(
         input: &'input [u8],
+        composition_offset_semantics: FragmentCompositionOffsetSemantics,
         track: FragmentTrackReconstructionIntent,
         inspection_limits: &'policy FragmentInspectionLimits,
         write_limits: FragmentWriteLimits,
@@ -108,6 +111,7 @@ impl<'input, 'policy> FragmentReconstructionRequest<'input, 'policy> {
     ) -> Self {
         Self {
             input,
+            composition_offset_semantics,
             track,
             inspection_limits,
             write_limits,
@@ -118,6 +122,11 @@ impl<'input, 'policy> FragmentReconstructionRequest<'input, 'policy> {
     /// Возвращает недоверенный raw input только внутреннему inspector-у.
     pub(super) const fn input(&self) -> &'input [u8] {
         self.input
+    }
+
+    /// Возвращает контейнерную семантику composition offsets без provider-эвристик.
+    pub const fn composition_offset_semantics(&self) -> FragmentCompositionOffsetSemantics {
+        self.composition_offset_semantics
     }
 
     /// Возвращает authoritative track intent.

@@ -1,13 +1,14 @@
 //! Provider-neutral mapping S19 request material-а в S21T open requests.
 
 mod http_secret;
+mod smooth;
 
 use source_core::{
     CancellationToken, FtpRequestTarget, HttpHeaderValidationError, HttpPathScope,
     HttpRequestTarget,
 };
 use thiserror::Error;
-use web_media_core::{CodecFamily, CodecKind, ContainerFamily, StreamLayout, TransportFamily};
+use web_media_core::{ContainerFamily, StreamLayout, TransportFamily};
 use web_media_transport_api::{
     MediaComponentIdentity, MediaComponentIdentityError, MediaComponentRole, MediaPresentation,
     RedirectHopLimit, RedirectHopLimitError, RedirectPolicy, SecretQueryOverrideError,
@@ -17,7 +18,7 @@ use web_media_transport_api::{
 
 use self::http_secret::{
     dash_resource_path_scope, dash_transport_anchor, hds_resource_path_scope,
-    http_secret_context_builder, resource_directory_path_scope, smooth_manifest_secret_context,
+    http_secret_context_builder, resource_directory_path_scope,
 };
 
 use super::model::{
@@ -205,6 +206,9 @@ pub enum YtDlpTransportRequestError {
     /// Smooth manifest target нарушил neutral HTTP target contract после material proof.
     #[error("YtDlp Smooth manifest содержит недопустимый HTTP target")]
     SmoothTarget(#[source] source_core::HttpRequestTargetError),
+    /// Smooth child resources cannot receive a safe presentation-directory path scope.
+    #[error("YtDlp Smooth manifest target cannot create a presentation resource path scope")]
+    SmoothTargetResolution,
     /// HDS manifest target нарушил neutral HTTP target contract.
     #[error("YtDlp HDS manifest содержит недопустимый HTTP target")]
     HdsTarget(#[source] source_core::HttpRequestTargetError),
@@ -235,15 +239,21 @@ pub enum YtDlpTransportRequestError {
     /// Initial HLS profile принимает один selected manifest resource.
     #[error("YtDlp HLS candidate должен содержать ровно один manifest component")]
     HlsComponentCount,
-    /// Smooth VOD candidate обязан содержать ровно один request component.
-    #[error("YtDlp Smooth candidate должен содержать ровно один manifest component")]
+    /// Smooth VOD candidate обязан содержать один muxed либо exact video+audio request shape.
+    #[error("YtDlp Smooth candidate имеет неподдерживаемое число request components")]
     SmoothComponentCount,
-    /// Единственный Smooth component обязан иметь semantic role `Muxed`.
-    #[error("YtDlp Smooth component должен иметь muxed role")]
+    /// Smooth request roles обязаны совпадать с muxed либо separate descriptor layout.
+    #[error("YtDlp Smooth component roles не совпадают с descriptor layout")]
     SmoothComponentRole,
-    /// Smooth VOD projection принимает только muxed descriptor layout.
-    #[error("YtDlp Smooth candidate должен иметь muxed layout")]
+    /// Smooth VOD projection принимает muxed либо separate video+audio descriptor layout.
+    #[error("YtDlp Smooth candidate должен иметь muxed либо separate A/V layout")]
     SmoothLayout,
+    /// Separate Smooth components должны ссылаться на один byte-exact presentation Manifest.
+    #[error("YtDlp Smooth A/V components ссылаются на разные presentation manifests")]
+    SmoothPresentationTargetMismatch,
+    /// Separate Smooth components должны иметь один effective HTTP authorization context.
+    #[error("YtDlp Smooth A/V components имеют разные presentation request contexts")]
+    SmoothPresentationRequestContextMismatch,
     /// Descriptor transport обязан быть exact Smooth Streaming.
     #[error("YtDlp Smooth candidate использует другую transport family")]
     SmoothTransport,
@@ -430,41 +440,6 @@ impl YtDlpNormalizedCandidate {
         .map_err(YtDlpTransportRequestError::Request)
     }
 
-    /// Строит один secret-scoped VOD request для exact muxed H.264+AAC ISM manifest-а.
-    pub fn smooth_manifest_transport_request(
-        &self,
-        context: &YtDlpTransportRequestContext,
-    ) -> Result<TransportOpenRequest, YtDlpTransportRequestError> {
-        let component = smooth_manifest_component(self)?;
-        let material = component
-            .material
-            .smooth_manifest_request_material()
-            .map_err(YtDlpTransportRequestError::SmoothRequestMaterial)?;
-        let target = HttpRequestTarget::parse_exact(material.manifest_target_for_fetch())
-            .map_err(YtDlpTransportRequestError::SmoothTarget)?;
-        let identity = MediaComponentIdentity::new(
-            self.descriptor().identity().clone(),
-            self.descriptor().semantic_identity().clone(),
-            MediaComponentRole::Muxed,
-        )
-        .map_err(YtDlpTransportRequestError::Identity)?;
-        let secrets = smooth_manifest_secret_context(&material, &target)?;
-        let redirect_limit = RedirectHopLimit::new(PUBLIC_MEDIA_REDIRECT_HOPS)
-            .map_err(YtDlpTransportRequestError::RedirectLimit)?;
-
-        TransportOpenRequest::new(
-            context.provider.clone(),
-            identity,
-            target,
-            MediaPresentation::Vod,
-            context.source_generation,
-            secrets,
-            RedirectPolicy::cross_origin_without_secrets(redirect_limit),
-            context.cancellation.clone(),
-        )
-        .map_err(YtDlpTransportRequestError::Request)
-    }
-
     /// Строит HTTP request-ы для single candidate либо exact compound merge.
     pub fn transport_components(
         &self,
@@ -630,35 +605,6 @@ fn component_transport_family(
         }
         _ => None,
     }
-}
-
-/// Доказывает exact candidate-level Smooth Streaming profile до material projection.
-fn smooth_manifest_component(
-    candidate: &YtDlpNormalizedCandidate,
-) -> Result<&YtDlpCandidateComponentRequest, YtDlpTransportRequestError> {
-    let [component] = candidate.component_requests.as_ref() else {
-        return Err(YtDlpTransportRequestError::SmoothComponentCount);
-    };
-    let StreamLayout::Muxed(muxed) = candidate.descriptor().layout() else {
-        return Err(YtDlpTransportRequestError::SmoothLayout);
-    };
-    if component.role != YtDlpCandidateComponentRole::Muxed {
-        return Err(YtDlpTransportRequestError::SmoothComponentRole);
-    }
-    if muxed.transport().family() != TransportFamily::SmoothStreaming {
-        return Err(YtDlpTransportRequestError::SmoothTransport);
-    }
-    if muxed.container().consistent_family().ok() != Some(Some(ContainerFamily::FragmentedIsoBmff))
-    {
-        return Err(YtDlpTransportRequestError::SmoothContainer);
-    }
-    if muxed.video().codec().kind() != CodecKind::Known(CodecFamily::H264) {
-        return Err(YtDlpTransportRequestError::SmoothVideoCodec);
-    }
-    if muxed.audio().codec().kind() != CodecKind::Known(CodecFamily::Aac) {
-        return Err(YtDlpTransportRequestError::SmoothAudioCodec);
-    }
-    Ok(component)
 }
 
 /// Доказывает exact single-component HDS F4M/F4F VOD profile.

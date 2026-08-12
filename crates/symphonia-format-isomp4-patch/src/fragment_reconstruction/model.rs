@@ -39,6 +39,19 @@ impl FragmentBaseDecodeTime {
     }
 }
 
+/// Семантика битового поля `sample_composition_time_offset` во входном fragment-е.
+///
+/// ISO BMFF связывает signedness с версией `trun`, тогда как legacy PIFF/Smooth
+/// хранит signed 32-bit offsets в `trun` version 0. Политика задаётся вызывающим
+/// boundary явно, поэтому общий MP4 parser не получает Smooth-specific эвристику.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FragmentCompositionOffsetSemantics {
+    /// Стандартная ISO BMFF семантика: version 0 — `u32`, version 1 — `i32`.
+    IsoBmffVersioned,
+    /// Legacy PIFF/Smooth семантика: 32 бита всегда интерпретируются как `i32`.
+    PiffSigned32Bit,
+}
+
 /// Явная RAP policy без позиционного `bool`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FragmentRapRequirement {
@@ -155,6 +168,7 @@ impl FragmentTrackExpectation {
 /// Полный запрос F1A с borrowed input и injected cancellation.
 pub(crate) struct FragmentInspectionRequest<'input, 'config> {
     input: &'input [u8],
+    composition_offset_semantics: FragmentCompositionOffsetSemantics,
     expectation: FragmentTrackExpectation,
     limits: &'config FragmentInspectionLimits,
     cancellation: &'config dyn Fn() -> bool,
@@ -164,12 +178,14 @@ impl<'input, 'config> FragmentInspectionRequest<'input, 'config> {
     /// Создаёт запрос без hidden defaults и без positional flags.
     pub(crate) const fn new(
         input: &'input [u8],
+        composition_offset_semantics: FragmentCompositionOffsetSemantics,
         expectation: FragmentTrackExpectation,
         limits: &'config FragmentInspectionLimits,
         cancellation: &'config dyn Fn() -> bool,
     ) -> Self {
         Self {
             input,
+            composition_offset_semantics,
             expectation,
             limits,
             cancellation,
@@ -179,6 +195,13 @@ impl<'input, 'config> FragmentInspectionRequest<'input, 'config> {
     /// Возвращает raw fragment только для bounded parsing.
     pub(crate) const fn input(&self) -> &'input [u8] {
         self.input
+    }
+
+    /// Возвращает явно выбранную caller-ом семантику composition offsets.
+    pub(crate) const fn composition_offset_semantics(
+        &self,
+    ) -> FragmentCompositionOffsetSemantics {
+        self.composition_offset_semantics
     }
 
     /// Возвращает authoritative expectation.

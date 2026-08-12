@@ -478,6 +478,95 @@ fn audio_emits_exact_bounded_windows_and_preserves_f2_pending_bytes() {
 }
 
 #[test]
+fn audio_subsample_underrun_crosses_fragment_boundary_with_bounded_window() {
+    // Canonical second fragment заканчивается на tick позже окна; минус два моделирует live underrun в tick.
+    let mut subsample_underrun = AUDIO_SECOND.to_vec();
+    adjust_last_trun_duration(&mut subsample_underrun, -2);
+    let origin = FixtureOrigin::start_with_fragment(AUDIO_SECOND_PATH, subsample_underrun.clone());
+    let prepared = prepare(&origin);
+    let selected = selection(&prepared, 401_000);
+    let mut audio = prepared
+        .into_selected_fragment_sources(selected, fragment_policy())
+        .expect("selected sources")
+        .into_source_parts()
+        .audio;
+    let cancellation = CancellationToken::new();
+
+    assert!(matches!(
+        audio
+            .next_segment(&cancellation)
+            .expect("audio initialization"),
+        PresentationWindowOrderedSegmentReadOutcome::Segment(
+            PresentationWindowOrderedSegment::Initialization { .. }
+        )
+    ));
+    assert!(matches!(
+        audio
+            .next_segment(&cancellation)
+            .expect("first audio fragment"),
+        PresentationWindowOrderedSegmentReadOutcome::Segment(
+            PresentationWindowOrderedSegment::Media { .. }
+        )
+    ));
+    let second = audio
+        .next_segment(&cancellation)
+        .expect("subsample underrun must remain playable");
+    let expected_second = direct_f2_audio_bytes(1, &subsample_underrun);
+    assert_audio_window(second, 2, &expected_second, 39_680_000, 79_573_333);
+    assert_eq!(
+        origin.request_targets(),
+        [
+            "/media/tears-of-steel.ismc",
+            "/media/QualityLevels(64008)/Fragments(audio_eng=0)",
+            "/media/QualityLevels(64008)/Fragments(audio_eng=39680000)",
+        ]
+    );
+}
+
+#[test]
+fn audio_full_frame_underrun_still_fails_and_latches() {
+    // 209 ticks при 48 kHz и timescale 10 MHz уже выходят за один PCM frame.
+    let mut full_frame_underrun = AUDIO_SECOND.to_vec();
+    adjust_last_trun_duration(&mut full_frame_underrun, -210);
+    let origin = FixtureOrigin::start_with_fragment(AUDIO_SECOND_PATH, full_frame_underrun);
+    let prepared = prepare(&origin);
+    let selected = selection(&prepared, 401_000);
+    let mut audio = prepared
+        .into_selected_fragment_sources(selected, fragment_policy())
+        .expect("selected sources")
+        .into_source_parts()
+        .audio;
+    let cancellation = CancellationToken::new();
+
+    assert!(matches!(
+        audio
+            .next_segment(&cancellation)
+            .expect("audio initialization"),
+        PresentationWindowOrderedSegmentReadOutcome::Segment(
+            PresentationWindowOrderedSegment::Initialization { .. }
+        )
+    ));
+    assert!(matches!(
+        audio
+            .next_segment(&cancellation)
+            .expect("first audio fragment"),
+        PresentationWindowOrderedSegmentReadOutcome::Segment(
+            PresentationWindowOrderedSegment::Media { .. }
+        )
+    ));
+    let first_error = audio
+        .next_segment(&cancellation)
+        .expect_err("full-frame audio underrun must fail reconstruction");
+    let requests_after_failure = origin.request_count();
+    let second_error = audio
+        .next_segment(&cancellation)
+        .expect_err("reconstruction failure must latch");
+    assert_eq!(origin.request_count(), requests_after_failure);
+    assert_eq!(format!("{first_error:?}"), format!("{second_error:?}"));
+    assert!(format!("{first_error:?}").contains("smooth fragment reconstruction failed"));
+}
+
+#[test]
 fn corpus_derived_exact_audio_emits_unbounded_window() {
     let mut exact_second = AUDIO_SECOND.to_vec();
     adjust_last_trun_duration(&mut exact_second, -1);
@@ -597,7 +686,7 @@ fn direct_f2_audio_bytes(fragment_index: usize, input: &[u8]) -> Vec<u8> {
         &not_cancelled,
     ))
     .expect("direct F2 reconstruction");
-    let SmoothReconstructedFragment::PendingExactAudioClipping(pending) = reconstructed else {
+    let SmoothReconstructedFragment::PendingAudioPresentationWindow(pending) = reconstructed else {
         panic!("canonical audio must retain exact pending proof");
     };
     pending.into_unchanged_media_segment_bytes()

@@ -13,7 +13,7 @@
 
 ## ManifestWindow versus coded coverage
 - `SmoothManifestWindow` and `FragmentCodedCoverage` remain separate values in the same stream clock. Classification compares raw `u64` ticks only: start mismatch first, then exact equal ends, coded overhang or coded underrun. There is no float, rescale, nanosecond conversion, epsilon, tolerance or retiming.
-- Admission policy is strict: exact video/audio is `Admitted`; start mismatch and underrun reject; video overhang rejects; audio overhang returns `PendingExactAudioClipping` with unchanged reconstructed bytes, exact manifest window, coded coverage, excess ticks, timescale, sample rate/channels and sealed identity.
+- Admission policy is strict: exact video/audio is `Admitted`; start mismatch rejects; video overhang rejects. Audio overhang returns a pending bounded presentation window with `ClipOverhang`; a positive underrun returns a pending bounded presentation window with `SubsampleUnderrun` only when it is strictly below one decoded PCM frame (`missing_ticks * sample_rate < timescale`). A one-frame-or-larger underrun remains incompatible. Bytes, exact manifest window, coded coverage, clock/sample-rate evidence and sealed identity remain unchanged.
 - F2 intentionally accepts no capability bool/token/trait. Pending audio is not playable/admitted. A later decoder/player owner must prove and execute exact PCM presentation-window clipping before admission, including the one-tick case.
 - Internal media state is enum-shaped `Video | Audio(format)`; no optional audio format or panic-backed cross-field invariant remains.
 

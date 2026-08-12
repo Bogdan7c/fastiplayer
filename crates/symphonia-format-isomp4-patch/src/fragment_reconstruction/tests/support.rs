@@ -7,8 +7,9 @@ use super::super::error::FragmentInspectionError;
 use super::super::inspect::inspect_media_fragment;
 use super::super::limits::FragmentInspectionLimits;
 use super::super::model::{
-    FragmentBaseDecodeTime, FragmentInspectionRequest, FragmentRapRequirement,
-    FragmentSampleDefaults, FragmentTrackExpectation, FragmentTrackId, NormalizedFragmentPlan,
+    FragmentBaseDecodeTime, FragmentCompositionOffsetSemantics, FragmentInspectionRequest,
+    FragmentRapRequirement, FragmentSampleDefaults, FragmentTrackExpectation, FragmentTrackId,
+    NormalizedFragmentPlan,
 };
 
 /// Exact Unified Streaming video rendition, первый fragment.
@@ -98,7 +99,30 @@ pub(super) fn inspect_with<'input>(
     limits: &FragmentInspectionLimits,
     cancellation: &dyn Fn() -> bool,
 ) -> Result<NormalizedFragmentPlan<'input>, FragmentInspectionError> {
-    let request = FragmentInspectionRequest::new(input, expectation, limits, cancellation);
+    inspect_with_semantics(
+        input,
+        FragmentCompositionOffsetSemantics::PiffSigned32Bit,
+        expectation,
+        limits,
+        cancellation,
+    )
+}
+
+/// Выполняет inspection с явно выбранной контейнерной семантикой.
+pub(super) fn inspect_with_semantics<'input>(
+    input: &'input [u8],
+    composition_offset_semantics: FragmentCompositionOffsetSemantics,
+    expectation: FragmentTrackExpectation,
+    limits: &FragmentInspectionLimits,
+    cancellation: &dyn Fn() -> bool,
+) -> Result<NormalizedFragmentPlan<'input>, FragmentInspectionError> {
+    let request = FragmentInspectionRequest::new(
+        input,
+        composition_offset_semantics,
+        expectation,
+        limits,
+        cancellation,
+    );
     inspect_media_fragment(&request)
 }
 

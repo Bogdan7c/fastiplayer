@@ -291,6 +291,10 @@ fn apply_codec_profile(
                 .with_bit_depth(bit_depth(decimal_part(&parts, 3)?)?)
                 .with_chroma(ChromaSubsampling::Yuv420))
         }
+        // Bare extractor aliases (`AVC1`, `h264`, `V_MPEG4/ISO/AVC`) доказывают
+        // только codec family. Profile/depth/chroma обязан дополнить container
+        // preflight по codec-private/bitstream evidence до выбора decoder-а.
+        VideoCodec::H264 if parts.len() == 1 => Ok(requirement),
         VideoCodec::H264 => h264_profile(requirement, &parts),
         VideoCodec::H265 if raw_codec.starts_with("hev1.1") || raw_codec.starts_with("hvc1.1") => {
             Ok(requirement

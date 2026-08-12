@@ -144,9 +144,12 @@ pub(super) fn candidate_is_smooth(candidate: &YtDlpNormalizedCandidate) -> bool 
         StreamLayout::Muxed(component) => {
             component.transport().family() == TransportFamily::SmoothStreaming
         }
+        StreamLayout::Separate { video, audio } => {
+            video.transport().family() == TransportFamily::SmoothStreaming
+                && audio.transport().family() == TransportFamily::SmoothStreaming
+        }
         StreamLayout::VideoOnly(_)
         | StreamLayout::AudioOnly(_)
-        | StreamLayout::Separate { .. }
         | StreamLayout::HlsMuxedCodecDeferred(_)
         | StreamLayout::ContentProbed(_) => false,
     }

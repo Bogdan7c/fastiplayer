@@ -41,12 +41,13 @@ pub(super) fn http_secret_context_builder<'header>(
     }
 }
 
-/// Собирает final Smooth manifest context с source-owned path scope.
+/// Собирает final Smooth presentation context для Manifest и sibling fragments.
 pub(super) fn smooth_manifest_secret_context(
     material: &YtDlpSmoothManifestRequestMaterial<'_>,
     target: &HttpRequestTarget,
 ) -> Result<SecretRequestContext, YtDlpTransportRequestError> {
-    let path_scope = HttpPathScope::from_target_path(target);
+    let path_scope = resource_directory_path_scope(target)
+        .ok_or(YtDlpTransportRequestError::SmoothTargetResolution)?;
     let secret_scope = SecretRequestScope::from_target(target, path_scope);
     http_secret_context_builder(secret_scope, material.headers(), material.cookies())
         .map(SecretRequestContextBuilder::build)

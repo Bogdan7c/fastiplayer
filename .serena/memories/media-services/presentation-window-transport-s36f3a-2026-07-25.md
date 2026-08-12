@@ -22,4 +22,4 @@
 
 ## Verification and completed downstream use
 - Accepted F3A checks include media-core 53 tests, demux-api 40 tests, symphonia-demux 171 plus 9 focused adapter tests, player-core 599 tests, strict Clippy, impacted HLS/DASH/FLV/MPEG-TS/VA-API checks, full workspace check, guardrails, fmt, diff and Serena diagnostics.
-- F3B exact PCM clipping is complete (`mem:player-core/exact-pcm-presentation-window-s36f3b-2026-07-25`), and P4–P6 now use the F3A adapter in the production Smooth runtime (`mem:media-services/smooth-vod-runtime-s36p4-p6-2026-07-25`).
+- F3B exact PCM clipping is complete (`mem:player-core/exact-pcm-presentation-window-s36f3b-2026-07-25`), and P4–P6 use the F3A adapter in the production Smooth runtime (`mem:media-services/smooth-vod-runtime-s36p4-p6-2026-07-25`). Since 2026-08-12, Smooth also uses the exact bounded window for a strictly sub-sample coded underrun that cannot be represented in integer PCM frames; this does not add silence or tolerance, and a one-frame-or-larger underrun remains fatal.

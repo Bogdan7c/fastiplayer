@@ -309,6 +309,40 @@ fn target_ism_format() -> Value {
         .clone()
 }
 
+/// Моделирует exact selected-result shape реального Unified Streaming URL в yt-dlp 2026.07.04.
+fn real_selected_ism_payload() -> Value {
+    let manifest = "https://manifest.invalid/channel.ism/Manifest";
+    let mut video = target_ism_format();
+    video["format_id"] = json!("video_eng-2200");
+    video["vcodec"] = json!("AVC1");
+    video["acodec"] = json!("none");
+    video["ext"] = json!("ismv");
+    video["fragments"] = json!([{
+        "url": "https://manifest.invalid/channel.ism/QualityLevels(2200000)/Fragments(video_eng=0)",
+        "duration": 4.0
+    }]);
+
+    let mut audio = target_ism_format();
+    audio["format_id"] = json!("audio_eng-128");
+    audio["vcodec"] = json!("none");
+    audio["acodec"] = json!("AACL");
+    audio["ext"] = json!("isma");
+    audio["fragments"] = json!([{
+        "url": "https://manifest.invalid/channel.ism/QualityLevels(128002)/Fragments(audio_eng=0)",
+        "duration": 3.968
+    }]);
+
+    json!({
+        "format_id": "video_eng-2200+audio_eng-128",
+        "protocol": "ism+ism",
+        "ext": "mp4",
+        "vcodec": "AVC1",
+        "acodec": "AACL",
+        "requested_formats": [video, audio],
+        "webpage_url": manifest
+    })
+}
+
 /// MP4/WebM/M4A и audio-only rows сохраняют исходную shape без pairing-а.
 #[test]
 fn progressive_inventory_maps_muxed_video_only_and_audio_only_rows() {
@@ -697,7 +731,8 @@ fn mixed_http_ftp_compound_projects_component_wise_transport_requests() {
             }
             MediaComponentRole::Muxed
             | MediaComponentRole::ContentProbed
-            | MediaComponentRole::Subtitle => {
+            | MediaComponentRole::Subtitle
+            | MediaComponentRole::PresentationManifest => {
                 panic!("Separate candidate содержит недопустимую component role")
             }
         }
@@ -2023,7 +2058,10 @@ fn checked_in_ism_target_projects_one_scoped_vod_manifest_request() {
     assert_eq!(request.provider(), &provider);
     assert_eq!(request.presentation(), MediaPresentation::Vod);
     assert_eq!(request.source_generation(), SourceGeneration::new(11));
-    assert_eq!(request.component().role(), MediaComponentRole::Muxed);
+    assert_eq!(
+        request.component().role(),
+        MediaComponentRole::PresentationManifest
+    );
     assert_eq!(
         request.component().exact(),
         candidate.descriptor().identity()
@@ -2059,9 +2097,10 @@ fn checked_in_ism_target_projects_one_scoped_vod_manifest_request() {
         Some(b"session=smooth-cookie-secret".as_slice())
     );
 
-    let same_path_child =
-        HttpRequestTarget::parse_exact("https://manifest.invalid/channel.ism/Manifest/chunk")
-            .expect("same-path target");
+    let same_path_child = HttpRequestTarget::parse_exact(
+        "https://manifest.invalid/channel.ism/QualityLevels(2200000)/Fragments(video=0)",
+    )
+    .expect("same-presentation target");
     let cross_origin = HttpRequestTarget::parse_exact("https://cdn.invalid/channel.ism/Manifest")
         .expect("cross-origin target");
     assert!(
@@ -2096,7 +2135,7 @@ fn checked_in_ism_target_projects_one_scoped_vod_manifest_request() {
 
 /// ISM projection не угадывает transport/layout/component shape.
 #[test]
-fn smooth_transport_rejects_non_ism_non_muxed_and_multi_component_candidates() {
+fn smooth_transport_rejects_non_ism_and_non_av_layout_candidates() {
     let context = super::YtDlpTransportRequestContext::new(
         TransportProviderId::new("smooth-manifest-http").expect("provider ID"),
         SourceGeneration::new(1),
@@ -2144,7 +2183,7 @@ fn smooth_transport_rejects_non_ism_non_muxed_and_multi_component_candidates() {
         .expect("exact compound candidate accepted");
     assert!(matches!(
         compound.smooth_manifest_transport_request(&context),
-        Err(super::YtDlpTransportRequestError::SmoothComponentCount)
+        Err(super::YtDlpTransportRequestError::SmoothTransport)
     ));
 }
 
@@ -2202,6 +2241,91 @@ fn smooth_transport_accepts_avc1_aacl_and_ismv_aliases() {
     candidate
         .smooth_manifest_transport_request(&context)
         .expect("реальные Smooth aliases должны сохранить FMP4 H.264/AAC request");
+}
+
+/// Реальный selected `ism+ism` shape проходит planner и становится одним presentation request-ом.
+#[test]
+fn real_selected_ism_separate_components_reach_presentation_manifest_boundary() {
+    let snapshot = snapshot(real_selected_ism_payload(), 12);
+    let candidate = snapshot
+        .selected()
+        .and_then(YtDlpCandidateEntry::accepted)
+        .expect("реальный selected Smooth candidate должен нормализоваться");
+    let planning = snapshot
+        .planning_snapshot()
+        .expect("bare AVC1 должен оставить профиль container preflight-у");
+    let [planned] = planning.candidates() else {
+        panic!("реальный Smooth selected result должен дать один planning candidate");
+    };
+    match planned.runtime_requirements() {
+        CandidateRuntimeRequirements::Separate { video, audio } => {
+            assert_eq!(video.codec, codec_core::VideoCodec::H264);
+            assert_eq!(video.profile, None);
+            assert_eq!(video.bit_depth, None);
+            assert_eq!(video.chroma, None);
+            assert_eq!(*audio, audio_core::AudioDecodeCodecFamily::Aac);
+        }
+        unexpected => panic!("ожидался separate Smooth runtime, получен {unexpected:?}"),
+    }
+
+    let context = super::YtDlpTransportRequestContext::new(
+        TransportProviderId::new("smooth-manifest-http").expect("provider ID"),
+        SourceGeneration::new(1),
+        CancellationToken::new(),
+    );
+    let request = candidate
+        .smooth_manifest_transport_request(&context)
+        .expect("video+audio fragments того же Manifest должны проецироваться");
+
+    assert_eq!(
+        request.component().role(),
+        MediaComponentRole::PresentationManifest
+    );
+    assert_eq!(request.presentation(), MediaPresentation::Vod);
+    assert_eq!(
+        http_transport_target(&request).expose_secret_for_request(),
+        "https://manifest.invalid/channel.ism/Manifest"
+    );
+}
+
+#[test]
+fn separate_smooth_components_reject_different_target_and_authorization_context() {
+    let context = super::YtDlpTransportRequestContext::new(
+        TransportProviderId::new("smooth-manifest-http").expect("provider ID"),
+        SourceGeneration::new(1),
+        CancellationToken::new(),
+    );
+
+    let mut different_target = real_selected_ism_payload();
+    different_target["requested_formats"][1]["url"] =
+        json!("https://manifest.invalid/other.ism/Manifest");
+    different_target["requested_formats"][1]["manifest_url"] =
+        json!("https://manifest.invalid/other.ism/Manifest");
+    different_target["requested_formats"][1]["fragments"] = json!([]);
+    let different_target = snapshot(different_target, 13);
+    let different_target = different_target
+        .selected()
+        .and_then(YtDlpCandidateEntry::accepted)
+        .expect("different-target candidate всё ещё имеет честный separate descriptor");
+    assert!(matches!(
+        different_target.smooth_manifest_transport_request(&context),
+        Err(super::YtDlpTransportRequestError::SmoothPresentationTargetMismatch)
+    ));
+
+    let mut different_headers = real_selected_ism_payload();
+    different_headers["requested_formats"][0]["http_headers"] =
+        json!({"Authorization": "Bearer video-secret"});
+    different_headers["requested_formats"][1]["http_headers"] =
+        json!({"Authorization": "Bearer audio-secret"});
+    let different_headers = snapshot(different_headers, 14);
+    let different_headers = different_headers
+        .selected()
+        .and_then(YtDlpCandidateEntry::accepted)
+        .expect("different-context candidate должен дойти до request projection");
+    assert!(matches!(
+        different_headers.smooth_manifest_transport_request(&context),
+        Err(super::YtDlpTransportRequestError::SmoothPresentationRequestContextMismatch)
+    ));
 }
 
 /// S23 запрещает вернуть второй service-owned WebM/HTTP/demux playback stack.

@@ -14,7 +14,7 @@
 
 ## App composition and C3
 
-- `app-egui::web_media_open::smooth` is a separate child module, not new logic in the already-large central file. It recognizes only a muxed `TransportFamily::SmoothStreaming` candidate, rejects live/DVR intent, prepares the manifest/catalog, resolves provider-default or semantic component selection against that fresh catalog, and only then builds sources/demux.
+- `app-egui::web_media_open::smooth` is a separate child module, not new logic in the already-large central file. It recognizes legacy muxed Smooth or separate A/V only when both component transport families are Smooth, rejects live/DVR intent, prepares the presentation manifest/catalog, resolves provider-default or semantic component selection against that fresh catalog, and only then builds sources/demux. `service-ytdlp::candidate::transport::smooth` owns the separate-resource corroboration and one-request projection.
 - Component catalog generations are app-owned and process-monotonic; they are not derived from extraction/source generations. The normal stream-model finalization revalidates the same fresh catalog before publication, so reopen/settings never silently fall back to another quality.
 - The app registers Smooth planner capability only as `OrderedSegments`, injects its existing web `DemuxRegistry` into both axes, and owns all XML/manifest/init/reconstruction/readiness/interleave/receipt budgets. HLS, DASH and progressive branches keep their previous capabilities and ownership.
 - S00 has one approved exact static VOD row: muxed ISM/MSS fMP4 with H.264 + AAC-LC. Live/DVR remains `ProfileExcludedProvisional`; therefore no `S36L-*` card or dependency was created. Unknown/private/DRM/other codec or layout constructs remain typed incompatible.

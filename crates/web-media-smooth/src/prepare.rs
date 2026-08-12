@@ -73,7 +73,7 @@ pub(crate) fn prepare_manifest(
         parent_semantic.clone(),
     )
     .map_err(|_| {
-        SmoothPrepareError::TransportProfile(SmoothTransportProfileError::NonMuxedComponent)
+        SmoothPrepareError::TransportProfile(SmoothTransportProfileError::InvalidComponentIdentity)
     })?;
     let catalog_identity =
         ComponentVariantCatalogIdentity::new(parent_identity, request.catalog_generation);
@@ -188,8 +188,8 @@ fn validate_transport_profile(
     if request.transport.presentation() != MediaPresentation::Vod {
         return Err(SmoothTransportProfileError::NonVodPresentation.into());
     }
-    if request.transport.component().role() != MediaComponentRole::Muxed {
-        return Err(SmoothTransportProfileError::NonMuxedComponent.into());
+    if request.transport.component().role() != MediaComponentRole::PresentationManifest {
+        return Err(SmoothTransportProfileError::NonPresentationManifestComponent.into());
     }
     if request.transport.http_range_request_limit().is_some() {
         return Err(SmoothTransportProfileError::UnexpectedRangeLimit.into());
@@ -342,8 +342,9 @@ mod tests {
             CandidateFormatIdentity::new("smooth-local").expect("format identity"),
         );
         let semantic = SemanticIdentity::new(source, "smooth-local").expect("semantic identity");
-        let component = MediaComponentIdentity::new(exact, semantic, MediaComponentRole::Muxed)
-            .expect("component");
+        let component =
+            MediaComponentIdentity::new(exact, semantic, MediaComponentRole::PresentationManifest)
+                .expect("component");
         let scope = SecretRequestScope::from_target(
             target,
             HttpPathScope::new("/").expect("root path scope"),

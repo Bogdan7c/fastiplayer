@@ -7,7 +7,7 @@
 ## Exact admitted material
 - Allowed serialized material is only `url`, `manifest_url`, validated HTTP headers and serialized cookies. At least one target is required; `manifest_url` is authoritative; when both exist they must be byte-exact equal. A failed authoritative request never falls back to the other field.
 - Target must be absolute hierarchical HTTP(S). Serialized fragments, fragment base URL, DASH periods, inline HLS, segment/key query overrides, HLS AES, RTMP and HTTP range request limit are distinct typed incompatibilities rather than silently ignored state. Existing competing Cookie serialization remains its exact typed S26 failure.
-- Candidate must have exactly one muxed request component and exact normalized SmoothStreaming + fragmented ISO-BMFF + H.264 + AAC shape. Request is VOD with muxed identity; live/DVR is not admitted.
+- Candidate may be the legacy single muxed shape or the real yt-dlp separate video+audio shape, but every descriptor component must be exact SmoothStreaming + fragmented ISO-BMFF and codecs must be H.264 + AAC. Separate resources must independently prove the same byte-exact presentation Manifest target and equal effective authorization context; otherwise projection fails typed. Both shapes project exactly one VOD `PresentationManifest` identity; live/DVR is not admitted.
 
 ## Secrets and lifecycle
 - The projection preserves exact/semantic identity, source generation and cancellation. It builds the existing path-scoped `SecretRequestContext`, ephemeral serialized cookies and validated headers; cross-origin redirects receive no secrets.

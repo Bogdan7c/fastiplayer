@@ -17,8 +17,9 @@ use super::super::super::initialization::{
 use super::super::super::inspect::inspect_media_fragment;
 use super::super::super::limits::FragmentInspectionLimits;
 use super::super::super::model::{
-    FragmentBaseDecodeTime, FragmentInspectionRequest, FragmentRapRequirement,
-    FragmentSampleDefaults, FragmentTrackExpectation, FragmentTrackId, NormalizedFragmentPlan,
+    FragmentBaseDecodeTime, FragmentCompositionOffsetSemantics, FragmentInspectionRequest,
+    FragmentRapRequirement, FragmentSampleDefaults, FragmentTrackExpectation, FragmentTrackId,
+    NormalizedFragmentPlan,
 };
 use super::super::{
     FragmentMediaKind, FragmentReconstructionRequest, FragmentTrackReconstructionIntent,
@@ -91,6 +92,45 @@ pub(super) fn reconstruct_with<'policy>(
     output_limits: FragmentWriteLimits,
     cancellation: &'policy dyn Fn() -> bool,
 ) -> Result<ReconstructedMediaSegment, super::super::FragmentReconstructionError> {
+    reconstruct_with_semantics(
+        input,
+        FragmentCompositionOffsetSemantics::PiffSigned32Bit,
+        base_decode_time,
+        media_kind,
+        inspection_limits,
+        output_limits,
+        cancellation,
+    )
+}
+
+/// Собирает standard ISO BMFF request для synthetic dialect tests.
+pub(super) fn reconstruct_iso_bmff(
+    input: &[u8],
+    base_decode_time: u64,
+    media_kind: FragmentMediaKind,
+) -> Result<ReconstructedMediaSegment, super::super::FragmentReconstructionError> {
+    let inspection_limits = inspection_limits();
+    reconstruct_with_semantics(
+        input,
+        FragmentCompositionOffsetSemantics::IsoBmffVersioned,
+        base_decode_time,
+        media_kind,
+        &inspection_limits,
+        write_limits(),
+        &never_cancel,
+    )
+}
+
+/// Собирает request с явной семантикой входного container-а.
+fn reconstruct_with_semantics<'policy>(
+    input: &[u8],
+    composition_offset_semantics: FragmentCompositionOffsetSemantics,
+    base_decode_time: u64,
+    media_kind: FragmentMediaKind,
+    inspection_limits: &'policy FragmentInspectionLimits,
+    output_limits: FragmentWriteLimits,
+    cancellation: &'policy dyn Fn() -> bool,
+) -> Result<ReconstructedMediaSegment, super::super::FragmentReconstructionError> {
     let track = FragmentTrackReconstructionIntent::new(
         track_id(),
         FragmentBaseDecodeTime::new(base_decode_time),
@@ -99,6 +139,7 @@ pub(super) fn reconstruct_with<'policy>(
     );
     reconstruct_media_fragment(FragmentReconstructionRequest::new(
         input,
+        composition_offset_semantics,
         track,
         inspection_limits,
         output_limits,
@@ -125,6 +166,43 @@ pub(super) fn inspect_with_policy<'input>(
     limits: &FragmentInspectionLimits,
     cancellation: &dyn Fn() -> bool,
 ) -> Result<NormalizedFragmentPlan<'input>, super::super::super::error::FragmentInspectionError> {
+    inspect_with_semantics(
+        input,
+        FragmentCompositionOffsetSemantics::PiffSigned32Bit,
+        base_decode_time,
+        media_kind,
+        limits,
+        cancellation,
+    )
+}
+
+/// Инспектирует synthetic standard ISO BMFF fragment.
+pub(super) fn inspect_iso_bmff<'input>(
+    input: &'input [u8],
+    base_decode_time: u64,
+    media_kind: FragmentMediaKind,
+    limits: &FragmentInspectionLimits,
+) -> NormalizedFragmentPlan<'input> {
+    inspect_with_semantics(
+        input,
+        FragmentCompositionOffsetSemantics::IsoBmffVersioned,
+        base_decode_time,
+        media_kind,
+        limits,
+        &never_cancel,
+    )
+    .expect("synthetic ISO BMFF fragment должен пройти inspection")
+}
+
+/// Выполняет inspection с явной семантикой входного container-а.
+fn inspect_with_semantics<'input>(
+    input: &'input [u8],
+    composition_offset_semantics: FragmentCompositionOffsetSemantics,
+    base_decode_time: u64,
+    media_kind: FragmentMediaKind,
+    limits: &FragmentInspectionLimits,
+    cancellation: &dyn Fn() -> bool,
+) -> Result<NormalizedFragmentPlan<'input>, super::super::super::error::FragmentInspectionError> {
     let rap_requirement = match media_kind {
         FragmentMediaKind::VideoWithRequiredProvenRandomAccess => {
             FragmentRapRequirement::RequireProvenVideoRandomAccess
@@ -141,6 +219,7 @@ pub(super) fn inspect_with_policy<'input>(
     );
     inspect_media_fragment(&FragmentInspectionRequest::new(
         input,
+        composition_offset_semantics,
         expectation,
         limits,
         cancellation,

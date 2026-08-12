@@ -38,6 +38,9 @@ pub(super) fn render_row_content(
     // Только подтверждённая active identity получает skin-owned контрастный цвет.
     if row.is_active() {
         title_text = title_text.color(row_style.active_title_color);
+    } else if row.runtime_error().is_some() && !row.is_pending() {
+        // Terminal ошибка выбранного ресурса должна быть видна без наведения на маленький badge.
+        title_text = title_text.color(ui.visuals().error_fg_color);
     }
     ui.add_sized(
         [title_width, ROW_HEIGHT],

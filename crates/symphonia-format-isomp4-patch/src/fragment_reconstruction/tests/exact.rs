@@ -1,9 +1,9 @@
 //! Exact captured video/audio plans и timing/flags accounting.
 
-use super::super::model::FragmentSampleDefaults;
+use super::super::model::{FragmentCompositionOffsetSemantics, FragmentSampleDefaults};
 use super::support::{
     AUDIO_FIRST, AUDIO_SECOND, MANIFEST, VIDEO_HIGH_FIRST, VIDEO_HIGH_SECOND, VIDEO_LOW_FIRST,
-    audio_expectation, inspect, video_expectation,
+    audio_expectation, inspect, inspect_with_semantics, limits, video_expectation,
 };
 
 #[test]
@@ -43,7 +43,7 @@ fn exact_video_renditions_build_canonical_first_fragment_plans() {
 }
 
 #[test]
-fn exact_second_video_fragment_preserves_unsigned_composition_offsets() {
+fn exact_piff_video_fragment_restores_signed_composition_offsets() {
     let plan = inspect(
         VIDEO_HIGH_SECOND,
         video_expectation(40_000_000, FragmentSampleDefaults::absent()),
@@ -55,16 +55,33 @@ fn exact_second_video_fragment_preserves_unsigned_composition_offsets() {
     assert!(
         plan.samples()
             .iter()
-            .any(|sample| sample.composition_offset() > 0)
+            .any(|sample| sample.composition_offset() < 0)
     );
     for sample in plan.samples() {
-        assert!(sample.composition_offset() >= 0);
         assert_eq!(
-            sample.pts(),
-            sample.dts() + sample.composition_offset() as u64
+            i128::from(sample.pts()),
+            i128::from(sample.dts()) + i128::from(sample.composition_offset())
         );
     }
     assert_payload_accounting(&plan);
+}
+
+#[test]
+fn standard_iso_bmff_version_zero_remains_unsigned() {
+    let plan = inspect_with_semantics(
+        VIDEO_HIGH_SECOND,
+        FragmentCompositionOffsetSemantics::IsoBmffVersioned,
+        video_expectation(40_000_000, FragmentSampleDefaults::absent()),
+        &limits(),
+        &|| false,
+    )
+    .expect("standard ISO BMFF v0 offsets остаются unsigned");
+
+    assert!(
+        plan.samples()
+            .iter()
+            .any(|sample| sample.composition_offset() > i64::from(i32::MAX))
+    );
 }
 
 #[test]

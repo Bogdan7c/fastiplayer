@@ -12,8 +12,9 @@ use super::super::plan::{
 use super::super::write::write_media_fragment;
 use super::super::{FragmentMediaKind, FragmentWriteLimits};
 use super::support::{
-    SyntheticRun, VIDEO_HIGH_FIRST, atom, insert_traf_child, inspect, inspection_limits,
-    never_cancel, reconstruct, reconstruct_with, synthetic_fragment, write_limits,
+    SyntheticRun, VIDEO_HIGH_FIRST, atom, insert_traf_child, inspect, inspect_iso_bmff,
+    inspection_limits, never_cancel, reconstruct, reconstruct_iso_bmff, reconstruct_with,
+    synthetic_fragment, write_limits,
 };
 use crate::{
     FragmentDrmEvidence, FragmentInspectionError, FragmentPrivateExtension,
@@ -195,7 +196,7 @@ fn missing_video_flags_and_mixed_unrepresentable_cto_fail_in_writer() {
             include_flags: false,
         }],
     );
-    let audio_plan = inspect(
+    let audio_plan = inspect_iso_bmff(
         &without_flags,
         0,
         FragmentMediaKind::AudioWithoutRandomAccessRequirement,
@@ -226,7 +227,7 @@ fn missing_video_flags_and_mixed_unrepresentable_cto_fail_in_writer() {
             },
         ],
     );
-    let mixed_plan = inspect(
+    let mixed_plan = inspect_iso_bmff(
         &mixed,
         1,
         FragmentMediaKind::AudioWithoutRandomAccessRequirement,
@@ -261,7 +262,7 @@ fn cto_and_tfdt_versions_follow_exact_representability() {
                 include_flags: false,
             }],
         );
-        let output = reconstruct(
+        let output = reconstruct_iso_bmff(
             &source,
             base_decode_time,
             FragmentMediaKind::AudioWithoutRandomAccessRequirement,

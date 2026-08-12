@@ -12,8 +12,8 @@ use super::{
 /// Категория serialized material, которую ISM manifest projection обязана отклонить.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum YtDlpSmoothUnsupportedRequestMaterial {
-    /// Concrete fragments принадлежат fragment transport-у, а не manifest fetch.
-    #[error("serialized fragments")]
+    /// Fragments нельзя доказать как избыточное описание того же Smooth presentation manifest-а.
+    #[error("incompatible serialized Smooth fragments")]
     SerializedFragments,
     /// Relative fragment base не имеет смысла для единственного manifest request-а.
     #[error("fragment base URL")]
@@ -106,7 +106,7 @@ impl fmt::Debug for YtDlpSmoothManifestRequestMaterial<'_> {
     }
 }
 
-/// Доказывает exact serialized subset, которым владеет будущий ISM manifest provider.
+/// Доказывает exact serialized subset, которым владеет ISM presentation-manifest provider.
 pub(super) fn smooth_manifest_request_material(
     request: &YtDlpRequestMaterial,
 ) -> Result<YtDlpSmoothManifestRequestMaterial<'_>, YtDlpSmoothManifestRequestMaterialViolation> {
@@ -114,9 +114,10 @@ pub(super) fn smooth_manifest_request_material(
     let authorization = request
         .http_authorization_material()
         .map_err(YtDlpSmoothManifestRequestMaterialViolation::Authorization)?;
-    reject_unsupported_material(material)?;
     let target = authoritative_manifest_target(material)?;
-    validate_absolute_http_target(target)?;
+    let parsed_target = validate_absolute_http_target(target)?;
+    reject_unsupported_material(material)?;
+    validate_redundant_smooth_fragments(material, &parsed_target)?;
 
     Ok(YtDlpSmoothManifestRequestMaterial {
         target,
@@ -144,9 +145,7 @@ fn authoritative_manifest_target(
 fn reject_unsupported_material(
     material: &YtDlpRequestMaterialV1,
 ) -> Result<(), YtDlpSmoothManifestRequestMaterialViolation> {
-    let unsupported = if !material.fragments.is_empty() {
-        Some(YtDlpSmoothUnsupportedRequestMaterial::SerializedFragments)
-    } else if material.fragment_base_url.is_some() {
+    let unsupported = if material.fragment_base_url.is_some() {
         Some(YtDlpSmoothUnsupportedRequestMaterial::FragmentBaseUrl)
     } else if material.is_dash_periods {
         Some(YtDlpSmoothUnsupportedRequestMaterial::DashPeriods)
@@ -177,7 +176,7 @@ fn reject_unsupported_material(
 /// Проверяет absolute hierarchical HTTP(S) target без reserialization identity.
 fn validate_absolute_http_target(
     target: &SecretText,
-) -> Result<(), YtDlpSmoothManifestRequestMaterialViolation> {
+) -> Result<Url, YtDlpSmoothManifestRequestMaterialViolation> {
     let parsed = Url::parse(target.expose_secret_for_transport())
         .map_err(|_| YtDlpSmoothManifestRequestMaterialViolation::MalformedTarget)?;
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -185,6 +184,71 @@ fn validate_absolute_http_target(
     }
     if parsed.cannot_be_a_base() || parsed.host_str().is_none() {
         return Err(YtDlpSmoothManifestRequestMaterialViolation::MalformedTarget);
+    }
+    Ok(parsed)
+}
+
+/// Разрешает игнорировать extractor fragments только когда Manifest остаётся
+/// единственным authoritative input, а каждый URL является его обычным Smooth child resource-ом.
+fn validate_redundant_smooth_fragments(
+    material: &YtDlpRequestMaterialV1,
+    manifest_target: &Url,
+) -> Result<(), YtDlpSmoothManifestRequestMaterialViolation> {
+    if material.fragments.is_empty() {
+        return Ok(());
+    }
+    let incompatible = || {
+        YtDlpSmoothManifestRequestMaterialViolation::Unsupported(
+            YtDlpSmoothUnsupportedRequestMaterial::SerializedFragments,
+        )
+    };
+    if manifest_target.query().is_some() || manifest_target.fragment().is_some() {
+        return Err(incompatible());
+    }
+    let manifest_path = manifest_target.path();
+    let (presentation_path, manifest_name) =
+        manifest_path.rsplit_once('/').ok_or_else(incompatible)?;
+    if !manifest_name.eq_ignore_ascii_case("manifest") {
+        return Err(incompatible());
+    }
+    let presentation_prefix = format!("{presentation_path}/");
+
+    for fragment in &material.fragments {
+        let Some(fragment_target) = fragment.url.as_ref() else {
+            return Err(incompatible());
+        };
+        if fragment.path.is_some()
+            || fragment
+                .duration_seconds
+                .is_some_and(|duration| !duration.is_finite() || duration <= 0.0)
+            || fragment
+                .byte_length
+                .is_some_and(|byte_length| byte_length == 0)
+        {
+            return Err(incompatible());
+        }
+        let parsed_fragment = Url::parse(fragment_target.expose_secret_for_transport())
+            .map_err(|_| incompatible())?;
+        if parsed_fragment.origin() != manifest_target.origin()
+            || parsed_fragment.query().is_some()
+            || parsed_fragment.fragment().is_some()
+        {
+            return Err(incompatible());
+        }
+        let Some(relative_path) = parsed_fragment.path().strip_prefix(&presentation_prefix) else {
+            return Err(incompatible());
+        };
+        let mut path_components = relative_path.split('/');
+        let quality_level = path_components.next().ok_or_else(incompatible)?;
+        let fragment_locator = path_components.next().ok_or_else(incompatible)?;
+        if path_components.next().is_some()
+            || !quality_level.starts_with("QualityLevels(")
+            || !quality_level.ends_with(')')
+            || !fragment_locator.starts_with("Fragments(")
+            || !fragment_locator.ends_with(')')
+        {
+            return Err(incompatible());
+        }
     }
     Ok(())
 }
@@ -270,6 +334,43 @@ mod tests {
                 .expect("manifest-only target должен быть допустим")
                 .manifest_target_for_fetch(),
             exact
+        );
+    }
+
+    #[test]
+    fn manifest_derived_video_and_audio_fragments_are_redundant_but_foreign_urls_fail_closed() {
+        let manifest = "https://media.invalid/channel.ism/Manifest";
+        let mut video = request(Some(manifest), Some(manifest));
+        v1_mut(&mut video).fragments = vec![YtDlpRequestFragment {
+            url: Some(secret(
+                "https://media.invalid/channel.ism/QualityLevels(2200000)/Fragments(video_eng=0)",
+            )),
+            path: None,
+            duration_seconds: Some(4.0),
+            byte_length: None,
+        }]
+        .into_boxed_slice();
+
+        video
+            .smooth_manifest_request_material()
+            .expect("same-presentation Smooth fragments должны быть избыточным evidence");
+
+        let mut foreign = video.clone();
+        v1_mut(&mut foreign).fragments[0].url = Some(secret(
+            "https://cdn.invalid/channel.ism/QualityLevels(2200000)/Fragments(video_eng=0)",
+        ));
+        assert_unsupported(
+            &foreign,
+            YtDlpSmoothUnsupportedRequestMaterial::SerializedFragments,
+        );
+
+        let mut signed_fragment = video;
+        v1_mut(&mut signed_fragment).fragments[0].url = Some(secret(
+            "https://media.invalid/channel.ism/QualityLevels(2200000)/Fragments(video_eng=0)?token=required",
+        ));
+        assert_unsupported(
+            &signed_fragment,
+            YtDlpSmoothUnsupportedRequestMaterial::SerializedFragments,
         );
     }
 

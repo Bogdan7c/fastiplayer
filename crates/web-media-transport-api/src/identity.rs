@@ -85,6 +85,8 @@ pub enum MediaComponentRole {
     Audio,
     /// Resource содержит subtitle/caption payload.
     Subtitle,
+    /// Resource является presentation-level manifest-ом и сам не содержит media tracks.
+    PresentationManifest,
 }
 
 /// Exact snapshot identity + refresh-stable semantic identity component-а.

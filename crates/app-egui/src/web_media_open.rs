@@ -829,7 +829,7 @@ fn validate_component_tracks(role: MediaComponentRole, demuxer: &dyn Demuxer) ->
         MediaComponentRole::ContentProbed => has_video || has_audio,
         MediaComponentRole::Video => has_video,
         MediaComponentRole::Audio => has_audio,
-        MediaComponentRole::Subtitle => false,
+        MediaComponentRole::Subtitle | MediaComponentRole::PresentationManifest => false,
     };
     if !shape_matches {
         bail!("Opened YtDlp component tracks не совпадают с selected descriptor role");

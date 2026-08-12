@@ -281,8 +281,9 @@ fn transport_request_with_security(
         CandidateFormatIdentity::new("smooth-p3b").expect("format identity"),
     );
     let semantic = SemanticIdentity::new(source, "smooth-p3b").expect("semantic identity");
-    let component = MediaComponentIdentity::new(exact, semantic, MediaComponentRole::Muxed)
-        .expect("muxed component");
+    let component =
+        MediaComponentIdentity::new(exact, semantic, MediaComponentRole::PresentationManifest)
+            .expect("presentation manifest component");
     let scope =
         SecretRequestScope::from_target(target, HttpPathScope::new("/").expect("root path scope"));
     let mut secrets = SecretRequestContext::builder(scope);

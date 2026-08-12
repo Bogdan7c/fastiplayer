@@ -27,6 +27,7 @@ pub use planning::{
     SmoothManifestWindow, plan_smooth_fragment,
 };
 pub use reconstruction::{
-    SmoothAdmittedFragment, SmoothFragmentReconstructionRequest, SmoothPendingExactAudioClipping,
+    SmoothAdmittedFragment, SmoothAudioPresentationWindowAdjustment,
+    SmoothFragmentReconstructionRequest, SmoothPendingAudioPresentationWindow,
     SmoothReconstructedFragment, SmoothTimingRelation, reconstruct_smooth_fragment,
 };

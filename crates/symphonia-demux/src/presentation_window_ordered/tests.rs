@@ -244,6 +244,7 @@ fn canonical_audio_fragment() -> Bytes {
     let cancellation = || false;
     let request = FragmentReconstructionRequest::new(
         AUDIO_FRAGMENT,
+        symphonia_format_isomp4::FragmentCompositionOffsetSemantics::IsoBmffVersioned,
         track_intent,
         &inspection_limits,
         write_limits,

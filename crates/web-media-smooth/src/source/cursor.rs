@@ -317,7 +317,7 @@ impl SmoothFragmentCursor {
             }
             (
                 SmoothTrackMediaKind::Video,
-                SmoothReconstructedFragment::PendingExactAudioClipping(_),
+                SmoothReconstructedFragment::PendingAudioPresentationWindow(_),
             ) => Err(self.latch(SmoothCursorFailureKind::MappingInvariant)),
             (SmoothTrackMediaKind::Audio, SmoothReconstructedFragment::Admitted(fragment)) => {
                 Ok(SmoothCursorMedia::Audio {
@@ -327,7 +327,7 @@ impl SmoothFragmentCursor {
             }
             (
                 SmoothTrackMediaKind::Audio,
-                SmoothReconstructedFragment::PendingExactAudioClipping(pending),
+                SmoothReconstructedFragment::PendingAudioPresentationWindow(pending),
             ) => {
                 let presentation_window = build_presentation_window(
                     pending.manifest_window(),

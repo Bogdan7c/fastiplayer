@@ -333,6 +333,7 @@ pub(super) fn request_with_serialized_cookies(
             MediaComponentRole::Video => "video",
             MediaComponentRole::Audio => "audio",
             MediaComponentRole::Subtitle => "subtitle",
+            MediaComponentRole::PresentationManifest => "presentation-manifest",
         })
         .expect("format identity"),
     );
@@ -344,6 +345,7 @@ pub(super) fn request_with_serialized_cookies(
             MediaComponentRole::Video => "video",
             MediaComponentRole::Audio => "audio",
             MediaComponentRole::Subtitle => "subtitle",
+            MediaComponentRole::PresentationManifest => "presentation-manifest",
         },
     )
     .expect("semantic identity");

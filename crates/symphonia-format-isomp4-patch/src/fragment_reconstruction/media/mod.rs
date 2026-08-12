@@ -48,6 +48,7 @@ pub fn reconstruct_media_fragment(
     );
     let inspection_request = FragmentInspectionRequest::new(
         request.input(),
+        request.composition_offset_semantics(),
         expectation,
         request.inspection_limits(),
         request.cancellation(),

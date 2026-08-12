@@ -25,8 +25,9 @@ pub use demuxer::{IsoMp4PacketWithSourceOffset, IsoMp4Reader};
 pub use fragment_reconstruction::{
     FragmentAacAudioSpecificConfig, FragmentAacChannelCount, FragmentAacLcConfiguration,
     FragmentAacSampleRate, FragmentArithmeticOperation, FragmentBaseDecodeTime, FragmentBoxKind,
-    FragmentBoxType, FragmentCodecConfigurationIssue, FragmentCodecKind, FragmentCodedCoverage,
-    FragmentDrmEvidence, FragmentH264Configuration, FragmentH264PictureParameterSet,
+    FragmentBoxType, FragmentCodecConfigurationIssue, FragmentCodecKind,
+    FragmentCompositionOffsetSemantics, FragmentCodedCoverage, FragmentDrmEvidence,
+    FragmentH264Configuration, FragmentH264PictureParameterSet,
     FragmentH264SequenceParameterSet, FragmentInitializationCodec, FragmentInitializationError,
     FragmentInitializationField, FragmentInitializationLimitBuildError,
     FragmentInitializationLimitKind, FragmentInitializationLimits,

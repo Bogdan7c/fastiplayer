@@ -385,7 +385,7 @@ pub(in crate::ui::playlist) const fn navigation_message(
     match navigation {
         PlaylistNavigationView::Idle => None,
         PlaylistNavigationView::AwaitingUserAfterFailure { .. } => Some((
-            "Переход не выполнен. Автоматический переход остановлен; Next, Previous или повтор продолжат сохранённый курсор",
+            "Не удалось открыть выбранный элемент. Предыдущее воспроизведение продолжает работать. Автоматический переход остановлен; Next, Previous или повтор продолжат сохранённый курсор",
             StatusTone::Error,
         )),
         PlaylistNavigationView::Fatal { .. } => {

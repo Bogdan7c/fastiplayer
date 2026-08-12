@@ -2,12 +2,12 @@
 
 use bounded_xml_reader::XmlBudgets;
 use smooth_streaming_fmp4::{
-    SmoothFragmentIndex, SmoothFragmentPlanRequest, SmoothFragmentReconstructionError,
-    SmoothFragmentReconstructionRequest, SmoothInitializationError, SmoothInitializationRequest,
-    SmoothReconstructedFragment, SmoothStreamOrdinal, SmoothTrackMappingError,
-    SmoothTrackMappingRequest, SmoothTrackMediaKind, SmoothTrackSelection,
-    build_smooth_initialization_segment, map_smooth_track, plan_smooth_fragment,
-    reconstruct_smooth_fragment,
+    SmoothAudioPresentationWindowAdjustment, SmoothFragmentIndex, SmoothFragmentPlanRequest,
+    SmoothFragmentReconstructionError, SmoothFragmentReconstructionRequest,
+    SmoothInitializationError, SmoothInitializationRequest, SmoothReconstructedFragment,
+    SmoothStreamOrdinal, SmoothTrackMappingError, SmoothTrackMappingRequest, SmoothTrackMediaKind,
+    SmoothTrackSelection, build_smooth_initialization_segment, map_smooth_track,
+    plan_smooth_fragment, reconstruct_smooth_fragment,
 };
 use smooth_streaming_manifest_core::{
     SmoothCodecConfigurationOrigin, SmoothManifest, SmoothManifestLimits,
@@ -522,10 +522,10 @@ fn canonical_fragments_follow_exact_admission_matrix() {
             &not_cancelled,
         ))
         .expect("повторный audio reconstruction должен пройти");
-        let SmoothReconstructedFragment::PendingExactAudioClipping(first) = first else {
+        let SmoothReconstructedFragment::PendingAudioPresentationWindow(first) = first else {
             panic!("audio overhang обязан требовать exact clipping");
         };
-        let SmoothReconstructedFragment::PendingExactAudioClipping(second) = second else {
+        let SmoothReconstructedFragment::PendingAudioPresentationWindow(second) = second else {
             panic!("audio overhang обязан детерминированно оставаться pending");
         };
         assert_eq!(
@@ -542,7 +542,12 @@ fn canonical_fragments_follow_exact_admission_matrix() {
             ),
             expected_window
         );
-        assert_eq!(first.excess_ticks().get(), expected_excess);
+        assert_eq!(
+            first.adjustment(),
+            SmoothAudioPresentationWindowAdjustment::ClipOverhang(
+                core::num::NonZeroU64::new(expected_excess).unwrap()
+            )
+        );
         assert_eq!(first.timescale_ticks_per_second(), 10_000_000);
         assert_eq!(first.sample_rate_hz(), 48_000);
         assert_eq!(first.channel_count(), 2);
@@ -557,6 +562,66 @@ fn canonical_fragments_follow_exact_admission_matrix() {
             second.unchanged_media_segment_bytes()
         );
     }
+}
+
+/// Subsample audio underrun сохраняет bytes и bounded window, но полная потеря frame fail-closed.
+#[test]
+fn audio_subsample_underrun_requires_bounded_window_but_larger_gap_fails() {
+    let manifest = parse_manifest(MANIFEST);
+    let not_cancelled = || false;
+    let inspection = inspection_limits();
+    let track = map_smooth_track(SmoothTrackMappingRequest::new(
+        &manifest,
+        selection_for(&manifest, SmoothStreamKind::Audio, 64_008),
+        &not_cancelled,
+    ))
+    .unwrap();
+    let plan = plan_smooth_fragment(SmoothFragmentPlanRequest::new(
+        &track,
+        SmoothFragmentIndex::new(1),
+        &not_cancelled,
+    ))
+    .unwrap();
+
+    // Canonical second fragment имеет overhang в один tick; минус два даёт underrun в один tick.
+    let mut subsample_underrun = AUDIO_SECOND.to_vec();
+    adjust_last_trun_duration(&mut subsample_underrun, -2);
+    let reconstructed = reconstruct_smooth_fragment(SmoothFragmentReconstructionRequest::new(
+        &subsample_underrun,
+        &plan,
+        &inspection,
+        write_limits(),
+        &not_cancelled,
+    ))
+    .expect("subsample audio underrun должен сохранить exact presentation proof");
+    let SmoothReconstructedFragment::PendingAudioPresentationWindow(pending) = reconstructed else {
+        panic!("subsample audio underrun обязан требовать bounded presentation window");
+    };
+    assert_eq!(
+        pending.adjustment(),
+        SmoothAudioPresentationWindowAdjustment::SubsampleUnderrun(
+            core::num::NonZeroU64::new(1).unwrap()
+        )
+    );
+    assert_eq!(pending.coded_coverage().end_exclusive(), 79_573_332);
+    assert_eq!(pending.manifest_window().end_exclusive(), 79_573_333);
+
+    // 209 ticks при 48 kHz и timescale 10 MHz уже не помещаются внутри одного PCM frame.
+    let mut full_frame_underrun = AUDIO_SECOND.to_vec();
+    adjust_last_trun_duration(&mut full_frame_underrun, -210);
+    let error = reconstruct_smooth_fragment(SmoothFragmentReconstructionRequest::new(
+        &full_frame_underrun,
+        &plan,
+        &inspection,
+        write_limits(),
+        &not_cancelled,
+    ))
+    .expect_err("audio underrun размером не меньше PCM frame должен быть отвергнут");
+    assert!(matches!(
+        error,
+        SmoothFragmentReconstructionError::Underrun { missing_ticks }
+            if missing_ticks.get() == 209
+    ));
 }
 
 /// Находит первый box данного type в media fixture.

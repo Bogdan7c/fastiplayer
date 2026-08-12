@@ -1,0 +1,14 @@
+# Smooth VOD playback hardening (2026-08-12)
+
+## Root causes and boundaries
+- The acceptance row arrives from yt-dlp as separate video/audio resources that both point at one ISM presentation Manifest. `service-ytdlp::candidate::transport::smooth` owns proof of that shape, requires exact Smooth/fMP4/H.264+AAC evidence, byte-equal Manifest targets and equal effective secret contexts, then projects exactly one `MediaComponentRole::PresentationManifest` VOD request. Foreign or signed fragment material still fails closed. Secrets are scoped to the presentation directory so child `QualityLevels(...)/Fragments(...)` requests receive only same-scope authorization.
+- Smooth discovery reuses the first probed selected sources instead of fetching the same initial fragments twice. `web-media-smooth` accepts only the presentation-manifest role and keeps navigation/open failure terminal and visible without replacing the previously installed playback.
+- Smooth/PIFF H.264 uses signed 32-bit composition offsets even in a version-0 `trun`. The local ISO patch therefore has explicit `FragmentCompositionOffsetSemantics::{IsoBmffVersioned,PiffSigned32Bit}`. Smooth passes PIFF; HLS and generic ISO callers pass the standard policy. PIFF sign restoration is isolated before canonical writing; negative offsets become canonical version-1 trun values, while ordinary version-0 MP4 remains unsigned.
+- Audio coded windows can differ from the Manifest by less than one decoded frame because clocks are integer domains. `SmoothAudioPresentationWindowAdjustment::{ClipOverhang,SubsampleUnderrun}` admits the underrun only when `missing_ticks * sample_rate < timescale`; one frame or more is still fatal. The exact Manifest window is transported to decoded-PCM clipping, without invented silence, retiming or byte mutation.
+
+## Verification/invariants
+- Runtime Smooth functional proof requires both audio and video packets with PTS >= 4 seconds, crossing the first fragment boundary and reaching the demux/render path.
+- Canonical tests prove PIFF signed restoration and the opposite standard-v0-unsigned behavior, audio cross-fragment continuation, larger-gap rejection, stable A/V tracks and request-context corroboration.
+- Manual release GUI acceptance on 2026-08-12 imported `user/web-media-playlist-acceptance.xspf` and played positions 1–8 forward, reverse and random (`3,7,2,8,1,6,4,5`). Position 8 advanced from PTS 00:11 to 00:46 with increasing video/audio packet counters and changing rendered frames; positions 9+ were never selected.
+
+Related: `mem:media-services/smooth-request-projection-s36p1-2026-07-25`, `mem:media-services/smooth-streaming-fmp4-s36f1b-2026-07-25`, `mem:media-services/smooth-fragment-sources-s36p3-2026-07-25`, `mem:media-services/smooth-vod-runtime-s36p4-p6-2026-07-25`.
