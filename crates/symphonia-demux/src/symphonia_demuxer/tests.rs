@@ -1336,6 +1336,73 @@ fn decode_point_before_seek_accepts_startup_keyframe_after_zero() {
 }
 
 #[test]
+fn decode_point_before_seek_accepts_startup_keyframe_after_near_zero_restore() {
+    let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
+        .with_seek_packet_scripts(vec![vec![Ok(small_vp9_keyframe_packet(1, 33))]]);
+    let mut demuxer = SymphoniaDemuxer::from_format_reader(
+        Box::new(reader),
+        "startup-keyframe-after-near-zero-restore",
+        HashMap::new(),
+        DemuxSeekability::Seekable,
+        DemuxerOptions::default(),
+    )
+    .expect("fake demuxer должен открыться");
+    let restored_position = Duration::from_nanos(10_417);
+
+    let seek_result = demuxer
+        .seek_with_request(DemuxSeekRequest::decode_point_before(restored_position))
+        .expect("микросекундный restore drift должен остаться стартом media");
+    let packet_event = demuxer
+        .next_event()
+        .expect("принятый startup packet должен дойти до playback pipeline");
+    let DemuxReadEvent::Packet(packet) = packet_event else {
+        panic!("verification должна сохранить startup packet, получено {packet_event:?}");
+    };
+
+    assert_eq!(
+        seek_result.actual_position,
+        media_core::MediaTime::from_millis(33)
+    );
+    assert_eq!(packet.kind, TrackKind::Video);
+    assert_eq!(packet.pts, Duration::from_millis(33));
+    assert_eq!(packet.keyframe, PacketKeyframe::Keyframe);
+}
+
+#[test]
+fn decode_point_before_seek_does_not_treat_regular_early_seek_as_startup_drift() {
+    let scripts = (0..=DECODE_POINT_BEFORE_MAX_RETRIES)
+        .map(|_| vec![Ok(small_vp9_keyframe_packet(1, 33))])
+        .collect::<Vec<_>>();
+    let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
+        .with_seek_packet_scripts(scripts);
+    let mut demuxer = SymphoniaDemuxer::from_format_reader(
+        Box::new(reader),
+        "regular-early-seek-is-not-startup-drift",
+        HashMap::new(),
+        DemuxSeekability::Seekable,
+        DemuxerOptions::default(),
+    )
+    .expect("fake demuxer должен открыться");
+
+    let error = demuxer
+        .seek_with_request(DemuxSeekRequest::decode_point_before(
+            Duration::from_millis(2),
+        ))
+        .expect_err("обычный seek не должен принимать keyframe после target");
+    let demux_error = error
+        .downcast_ref::<DemuxError>()
+        .expect("verification failure должен быть typed DemuxError");
+
+    assert!(matches!(
+        demux_error,
+        DemuxError::DecodePointBeforeVerificationFailed {
+            reason: "first_video_after_target",
+            ..
+        }
+    ));
+}
+
+#[test]
 fn decode_point_before_seek_rejects_startup_keyframe_beyond_lead_window() {
     let reader = FakeFormatReader::new(vec![vp9_video_track(1)], Vec::new())
         .with_seek_packet_scripts(vec![vec![Ok(small_vp9_keyframe_packet(1, 500))]]);

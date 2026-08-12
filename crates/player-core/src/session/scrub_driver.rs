@@ -19,7 +19,7 @@ use crate::seek_state::{
     SeekCommitState, SeekLandingExecution, SeekLandingGenerationStartError, SeekTargetRetention,
     demux_seek_request_for_transaction,
 };
-use crate::{PlayerError, SeekMode};
+use crate::{PlayerError, PlayerErrorKind, SeekMode};
 
 const AUDIO_RESUME_TIMEOUT_MAX: Duration = Duration::from_millis(500);
 const AUDIO_RESUME_TIMEOUT_MARGIN: Duration = Duration::from_millis(25);
@@ -388,7 +388,14 @@ impl ScrubTransactionLifecycle for PlayerSession {
             ));
         };
 
-        let seek_result = seek_result.map_err(scrub_lifecycle_error_from_demux_seek_error)?;
+        let seek_result = match seek_result {
+            Ok(seek_result) => seek_result,
+            Err(error) => {
+                let lifecycle_error = scrub_lifecycle_error_from_demux_seek_error(&error);
+                self.record_recoverable_error(player_error_from_scrub_demux_seek_error(error));
+                return Err(lifecycle_error);
+            }
+        };
         self.seek_runtime
             .record_seek_landing_demux_accept(context.generation(), seek_result.actual_position);
 
@@ -697,7 +704,7 @@ fn scrub_error_from_seek_landing_generation_start(
     }
 }
 
-fn scrub_lifecycle_error_from_demux_seek_error(error: anyhow::Error) -> ScrubLifecycleError {
+fn scrub_lifecycle_error_from_demux_seek_error(error: &anyhow::Error) -> ScrubLifecycleError {
     if error.chain().any(|cause| {
         cause
             .downcast_ref::<MediaDemuxError>()
@@ -721,6 +728,25 @@ fn scrub_lifecycle_error_from_demux_seek_error(error: anyhow::Error) -> ScrubLif
     }
 
     ScrubLifecycleError::Fatal(ScrubFatalReason::BackendContractViolated)
+}
+
+/// Сохраняет backend context demux seek-а до преобразования в нейтральный lifecycle outcome.
+///
+/// `frame-server-core` намеренно знает только стабильную категорию ошибки, но snapshot и
+/// request receipt должны получить исходную причину: иначе terminal container failure
+/// маскируется общей фразой о том, что scrub route не стартовал.
+fn player_error_from_scrub_demux_seek_error(error: anyhow::Error) -> PlayerError {
+    let kind = if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<MediaDemuxError>()
+            .is_some_and(MediaDemuxError::is_seek_unavailable)
+    }) {
+        PlayerErrorKind::SeekUnavailable
+    } else {
+        PlayerErrorKind::DemuxError
+    };
+
+    PlayerError::new(kind, format!("SeekLanding demux seek failed: {error}"))
 }
 
 #[must_use]

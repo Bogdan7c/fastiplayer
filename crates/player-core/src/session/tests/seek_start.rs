@@ -434,6 +434,45 @@ fn seek_successful_decoder_flush_calls_demux_seek_and_advances_generation() {
 }
 
 #[test]
+fn reused_decoder_seek_preserves_terminal_demux_failure_in_player_snapshot() {
+    let tracks = vec![fake_track(1, TrackKind::Video)];
+    let seek_log = Arc::new(Mutex::new(Vec::new()));
+    let seek_request_log = Arc::new(Mutex::new(Vec::new()));
+    let demuxer = FakeDemuxer::new(tracks.clone(), Some(Duration::from_secs(30)), seek_log)
+        .with_seek_request_log(seek_request_log)
+        .with_seek_error("synthetic DecodePointBefore verification detail");
+    let mut harness = SeekRegressionHarness::new(tracks, demuxer);
+
+    harness
+        .session
+        .dispatch_command(PlayerCommand::Seek(SeekRequest::absolute(
+            MediaTime::from_secs(7),
+        )))
+        .expect("player command boundary должен принять seek request");
+
+    let error = harness
+        .session
+        .snapshot()
+        .last_error
+        .as_ref()
+        .expect("terminal demux failure должен попасть в snapshot");
+    assert_eq!(error.kind, PlayerErrorKind::DemuxError);
+    assert!(
+        error
+            .message
+            .contains("synthetic DecodePointBefore verification detail"),
+        "player boundary не должен затирать конкретную demux-причину: {error:?}"
+    );
+    assert!(!error.message.contains("не смог стартовать reused-decoder"));
+    assert!(harness.session.seek_commit().is_none());
+    assert!(!harness.session.snapshot().timeline.scrubbing);
+    assert_eq!(
+        harness.session.snapshot().playback_state,
+        PlaybackState::Paused
+    );
+}
+
+#[test]
 fn seek_flush_failure_does_not_call_demux_seek_or_advance_generation() {
     let mut session = PlayerSession::new();
     let seek_log = install_fake_media(&mut session, vec![fake_track(1, TrackKind::Video)]);

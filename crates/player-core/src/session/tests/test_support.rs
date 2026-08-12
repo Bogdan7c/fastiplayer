@@ -37,6 +37,7 @@ pub(super) struct FakeDemuxer {
     pub(super) seek_request_log: Option<Arc<Mutex<Vec<DemuxSeekRequest>>>>,
     pub(super) event_read_count: Option<Arc<AtomicUsize>>,
     pub(super) seek_results: VecDeque<DemuxSeekResult>,
+    pub(super) seek_errors: VecDeque<String>,
     pub(super) seekability: DemuxSeekability,
 }
 
@@ -56,6 +57,7 @@ impl FakeDemuxer {
             seek_request_log: None,
             event_read_count: None,
             seek_results: VecDeque::new(),
+            seek_errors: VecDeque::new(),
             seekability: DemuxSeekability::Seekable,
         }
     }
@@ -84,6 +86,12 @@ impl FakeDemuxer {
     /// Добавляет scripted seek result, чтобы тест мог отделить requested target от actual demux point.
     pub(super) fn with_seek_result(mut self, seek_result: DemuxSeekResult) -> Self {
         self.seek_results.push_back(seek_result);
+        self
+    }
+
+    /// Добавляет terminal seek failure с текстом, который обязан пережить player boundary.
+    pub(super) fn with_seek_error(mut self, message: impl Into<String>) -> Self {
+        self.seek_errors.push_back(message.into());
         self
     }
 
@@ -135,6 +143,10 @@ impl Demuxer for FakeDemuxer {
             .lock()
             .expect("seek log mutex should not be poisoned")
             .push(timestamp);
+
+        if let Some(message) = self.seek_errors.pop_front() {
+            return Err(anyhow::anyhow!(message));
+        }
 
         Ok(self.seek_results.pop_front().unwrap_or(DemuxSeekResult {
             requested_position: MediaTime::from_duration(timestamp),

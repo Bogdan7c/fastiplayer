@@ -2,7 +2,9 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
+use std::thread;
 
 use anyhow::{Context, Result, bail};
 use demux_api::DemuxRegistry;
@@ -151,17 +153,18 @@ pub fn discover_hds_renditions(
     let mut rejections = resolved.rejections;
     let mut admitted = Vec::new();
 
-    for rendition in resolved.renditions {
+    let probe_results = probe_renditions_bounded(
+        resolved.renditions,
+        &http,
+        &request.demux_registry,
+        request.policy,
+        request.capability_probe,
+    )?;
+    for (rendition, probe_result) in probe_results {
         if http.cancellation().is_cancelled() {
             bail!("HDS catalog discovery was cancelled");
         }
-        match probe_rendition(
-            &rendition,
-            &http,
-            &request.demux_registry,
-            request.policy,
-            request.capability_probe,
-        ) {
+        match probe_result {
             Ok(probe) => {
                 let semantic_key = coupled_semantic_key(&rendition, &probe);
                 admitted.push(PendingDiscoveredHdsRendition {
@@ -321,6 +324,118 @@ enum HdsRenditionProbeFailure {
     Rejected(HdsRenditionRejectionReason),
     /// Transport/demux open не доказали несовместимость содержимого.
     Unavailable(anyhow::Error),
+}
+
+type HdsRenditionProbeResult = std::result::Result<HdsRenditionProbe, HdsRenditionProbeFailure>;
+
+/// Выполняет complete pass с caller-owned concurrency bound и возвращает
+/// результаты в manifest order, независимо от фактического порядка завершения.
+fn probe_renditions_bounded(
+    renditions: Vec<ResolvedHdsRendition>,
+    http: &AdaptiveHttpContext,
+    registry: &Arc<DemuxRegistry>,
+    policy: HdsVodOpenPolicy,
+    capability_probe: &dyn HdsRenditionCapabilityProbe,
+) -> Result<Vec<(ResolvedHdsRendition, HdsRenditionProbeResult)>> {
+    if renditions.len() <= 1 || policy.maximum_parallel_rendition_probes.get() == 1 {
+        return Ok(renditions
+            .into_iter()
+            .map(|rendition| {
+                let probe_result =
+                    probe_rendition(&rendition, http, registry, policy, capability_probe);
+                (rendition, probe_result)
+            })
+            .collect());
+    }
+
+    let worker_count = policy
+        .maximum_parallel_rendition_probes
+        .get()
+        .min(renditions.len());
+    let next_rendition_index = AtomicUsize::new(0);
+    let (result_sender, result_receiver) = mpsc::sync_channel(renditions.len());
+    thread::scope(|scope| -> Result<()> {
+        let mut workers = Vec::with_capacity(worker_count);
+        let mut first_worker_error = None;
+        for worker_index in 0..worker_count {
+            let worker_sender = result_sender.clone();
+            let worker_renditions = &renditions;
+            let worker_next_index = &next_rendition_index;
+            let worker_name = format!("hds-rendition-probe-{worker_index}");
+            match thread::Builder::new().name(worker_name).spawn_scoped(
+                scope,
+                move || -> Result<()> {
+                    loop {
+                        let rendition_index = worker_next_index.fetch_add(1, Ordering::Relaxed);
+                        let Some(rendition) = worker_renditions.get(rendition_index) else {
+                            break;
+                        };
+                        let probe_result = if http.cancellation().is_cancelled() {
+                            Err(HdsRenditionProbeFailure::Unavailable(anyhow::anyhow!(
+                                "HDS catalog discovery was cancelled"
+                            )))
+                        } else {
+                            probe_rendition(rendition, http, registry, policy, capability_probe)
+                        };
+                        worker_sender
+                            .send((rendition_index, probe_result))
+                            .map_err(|_| {
+                                anyhow::anyhow!("HDS rendition probe result receiver closed")
+                            })?;
+                    }
+                    Ok(())
+                },
+            ) {
+                Ok(worker) => workers.push(worker),
+                Err(error) => {
+                    first_worker_error = Some(
+                        anyhow::Error::new(error)
+                            .context("failed to spawn bounded HDS rendition probe worker"),
+                    );
+                    break;
+                }
+            }
+        }
+
+        for worker in workers {
+            let worker_result = match worker.join() {
+                Ok(result) => result,
+                Err(_) => Err(anyhow::anyhow!("HDS rendition probe worker panicked")),
+            };
+            if first_worker_error.is_none() {
+                first_worker_error = worker_result.err();
+            }
+        }
+        if let Some(error) = first_worker_error {
+            return Err(error);
+        }
+        Ok(())
+    })?;
+    drop(result_sender);
+
+    let mut indexed_results = Vec::with_capacity(renditions.len());
+    for _ in 0..renditions.len() {
+        indexed_results.push(
+            result_receiver
+                .recv()
+                .context("bounded HDS rendition probe result is missing")?,
+        );
+    }
+    indexed_results.sort_unstable_by_key(|(rendition_index, _)| *rendition_index);
+    for (expected_index, (actual_index, _)) in indexed_results.iter().enumerate() {
+        if *actual_index != expected_index {
+            bail!("bounded HDS rendition probe result order is incomplete");
+        }
+    }
+
+    Ok(renditions
+        .into_iter()
+        .zip(
+            indexed_results
+                .into_iter()
+                .map(|(_rendition_index, probe_result)| probe_result),
+        )
+        .collect())
 }
 
 fn probe_rendition(

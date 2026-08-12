@@ -37,6 +37,14 @@ pub(super) const DECODE_POINT_BEFORE_INITIAL_SEEK_MARGIN: Duration = Duration::f
 /// после нуля. Окно остаётся маленьким, чтобы не принимать настоящий late seek.
 const DECODE_POINT_BEFORE_STARTUP_LEAD_TOLERANCE: Duration = Duration::from_millis(250);
 
+/// Максимальный дрейф persisted/render position, который всё ещё означает начало media.
+///
+/// Позиция `0` после пересчёта через container time base или сохранения состояния может
+/// вернуться как несколько микросекунд. Это не должно превращать стартовый keyframe в
+/// нарушение `DecodePointBefore`, но миллисекундный предел не позволяет ослабить контракт
+/// для обычного пользовательского seek-а внутри первого GOP.
+const DECODE_POINT_BEFORE_NEAR_ZERO_TARGET_TOLERANCE: Duration = Duration::from_millis(1);
+
 /// Packet-level наблюдение первого selected video packet-а после backend seek-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct DecodePointBeforeVideoPacket {
@@ -400,12 +408,13 @@ fn decode_point_before_packet_issue(
     None
 }
 
-/// Проверяет единственное допустимое нарушение "packet <= target": старт media после zero seek.
+/// Проверяет единственное допустимое нарушение "packet <= target": старт media после
+/// zero/near-zero seek, пережившего округление persisted или container time base.
 fn decode_point_before_startup_lead_is_accepted(
     requested_timestamp: Duration,
     packet: DecodePointBeforeVideoPacket,
 ) -> bool {
-    requested_timestamp.is_zero()
+    requested_timestamp <= DECODE_POINT_BEFORE_NEAR_ZERO_TARGET_TOLERANCE
         && packet.keyframe != PacketKeyframe::NotKeyframe
         && packet.pts <= DECODE_POINT_BEFORE_STARTUP_LEAD_TOLERANCE
 }

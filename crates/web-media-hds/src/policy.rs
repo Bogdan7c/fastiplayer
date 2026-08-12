@@ -1,5 +1,7 @@
 //! Caller-owned S38 budgets. Здесь нет hidden network defaults.
 
+use std::num::NonZeroUsize;
+
 use bounded_xml_reader::XmlBudgets;
 use demux_api::{DemuxSniffBudget, ProgressiveAsyncSeekLimits, ProgressiveDemuxBufferLimits};
 use hds_manifest_core::{F4mManifestLimits, HdsBootstrapLimits};
@@ -33,4 +35,6 @@ pub struct HdsVodOpenPolicy {
     pub maximum_manifest_documents: usize,
     /// Максимум flattened rendition rows одного open-а.
     pub maximum_renditions: usize,
+    /// Максимум одновременно выполняемых content/capability probe-ов rendition-ов.
+    pub maximum_parallel_rendition_probes: NonZeroUsize,
 }

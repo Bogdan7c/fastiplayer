@@ -1,11 +1,9 @@
 //! Hermetic S38 acceptance evidence: local F4M/bootstrap/F4F проходят production runtime.
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::num::{NonZeroU8, NonZeroUsize};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -39,134 +37,20 @@ use web_media_transport_api::{
     TransportOpenRequest, TransportProviderId,
 };
 
+#[path = "support/http_server.rs"]
+mod http_server;
+
+use http_server::HermeticHttpServer;
+
 /// Общий deadline ограничивает только ожидание worker-а в test thread-е.
 const TEST_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// Минимальный локальный HTTP origin без внешней сети и скрытых fixture-файлов.
-struct HermeticHttpServer {
-    /// Адрес случайного loopback port-а.
-    address: SocketAddr,
-    /// Cooperative флаг завершения accept loop-а.
-    stop: Arc<AtomicBool>,
-    /// Запрошенные path-ы доказывают реальный transport traversal.
-    requested_paths: Arc<Mutex<Vec<String>>>,
-    /// Join handle не позволяет серверу пережить тест.
-    worker: Option<thread::JoinHandle<()>>,
-}
-
-impl HermeticHttpServer {
-    /// Запускает bounded origin с заранее известными immutable ответами.
-    fn start(routes: HashMap<&'static str, Vec<u8>>) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind HDS fixture server");
-        listener
-            .set_nonblocking(true)
-            .expect("set HDS fixture listener nonblocking");
-        let address = listener.local_addr().expect("read HDS fixture address");
-        let stop = Arc::new(AtomicBool::new(false));
-        let worker_stop = Arc::clone(&stop);
-        let requested_paths = Arc::new(Mutex::new(Vec::new()));
-        let worker_requested_paths = Arc::clone(&requested_paths);
-        let worker = thread::spawn(move || {
-            while !worker_stop.load(Ordering::Acquire) {
-                match listener.accept() {
-                    Ok((mut stream, _peer)) => {
-                        let request = read_http_request(&mut stream);
-                        let path = request
-                            .lines()
-                            .next()
-                            .and_then(|line| line.split_whitespace().nth(1))
-                            .unwrap_or_default()
-                            .split('?')
-                            .next()
-                            .unwrap_or_default()
-                            .to_owned();
-                        worker_requested_paths
-                            .lock()
-                            .expect("lock HDS requested paths")
-                            .push(path.clone());
-                        let response = routes.get(path.as_str()).map_or_else(
-                            || http_response("404 Not Found", b"missing fixture route"),
-                            |body| http_response("200 OK", body),
-                        );
-                        stream
-                            .write_all(&response)
-                            .expect("write HDS fixture response");
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(1));
-                    }
-                    Err(error) => panic!("HDS fixture accept failed: {error}"),
-                }
-            }
-        });
-        Self {
-            address,
-            stop,
-            requested_paths,
-            worker: Some(worker),
-        }
-    }
-
-    /// Возвращает exact HTTP target внутри собственного loopback origin-а.
-    fn target(&self, path: &str) -> HttpRequestTarget {
-        HttpRequestTarget::parse_exact(format!("http://{}{path}", self.address))
-            .expect("valid HDS fixture target")
-    }
-
-    /// Возвращает snapshot уже обслуженных path-ов без request headers/secrets.
-    fn requested_paths(&self) -> Vec<String> {
-        self.requested_paths
-            .lock()
-            .expect("lock HDS requested paths")
-            .clone()
-    }
-}
-
-impl Drop for HermeticHttpServer {
-    /// Завершает accept loop и обязательно присоединяет fixture thread.
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        if let Some(worker) = self.worker.take() {
-            worker.join().expect("join HDS fixture server");
-        }
-    }
-}
-
-/// Читает только HTTP headers; test origin не принимает request body.
-fn read_http_request(stream: &mut TcpStream) -> String {
-    stream
-        .set_read_timeout(Some(TEST_TIMEOUT))
-        .expect("set HDS fixture read timeout");
-    let mut request = Vec::new();
-    let mut chunk = [0_u8; 1_024];
-    loop {
-        let read = stream.read(&mut chunk).expect("read HDS fixture request");
-        if read == 0 {
-            break;
-        }
-        request.extend_from_slice(&chunk[..read]);
-        if request.windows(4).any(|window| window == b"\r\n\r\n") {
-            break;
-        }
-    }
-    String::from_utf8(request).expect("HDS fixture request is UTF-8 HTTP")
-}
-
-/// Формирует закрывающий соединение HTTP/1.1 response с exact body length.
-fn http_response(status: &str, body: &[u8]) -> Vec<u8> {
-    let headers = format!(
-        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    let mut response = headers.into_bytes();
-    response.extend_from_slice(body);
-    response
-}
 
 /// Доказывает полный positive path вместо отдельного parser-only smoke.
 #[test]
 fn prepares_local_f4m_bootstrap_and_f4f_until_tracks_and_packet() {
-    let first_fragment = f4f_fragment(0);
+    // Первый fragment намеренно содержит только video config: one-segment sniff
+    // обязан открыть F4F, а transactional demuxer — дочитать второй до exact A/V.
+    let first_fragment = f4f_video_configuration_fragment(0);
     let second_fragment = f4f_fragment(1_000);
     let server = HermeticHttpServer::start(HashMap::from([
         ("/manifest.f4m", vod_manifest()),
@@ -278,6 +162,14 @@ fn prepares_local_f4m_bootstrap_and_f4f_until_tracks_and_packet() {
         requested_paths
             .iter()
             .any(|path| path == "/media/videoSeg1-Frag2")
+    );
+    assert_eq!(
+        requested_paths
+            .iter()
+            .filter(|path| path.as_str() == "/media/videoSeg1-Frag1")
+            .count(),
+        1,
+        "one-segment sniff must replay the first fragment instead of fetching it twice"
     );
 
     cancellation.cancel();
@@ -406,6 +298,105 @@ fn capability_rejection_prevents_truthless_catalog_publication() {
     assert!(
         error.downcast_ref::<HdsNoPlayableRendition>().is_some(),
         "all content/capability rejections must preserve typed parent fallback"
+    );
+}
+
+/// Доказывает user-visible startup contract на полном production path-е:
+/// медленные sibling fragments пробуются с caller-owned bound, complete catalog
+/// сохраняется, а выбранный rendition доходит до настоящего demux packet-а.
+#[test]
+fn bounds_parallel_slow_rendition_probes_and_opens_selected_packet() {
+    const MEDIA_RESPONSE_DELAY: Duration = Duration::from_millis(400);
+    const SEQUENTIAL_LOWER_BOUND: Duration = Duration::from_millis(1_600);
+    let first_fragment = f4f_fragment(0);
+    let second_fragment = f4f_fragment(1_000);
+    let server = HermeticHttpServer::start_with_media_delay(
+        HashMap::from([
+            ("/manifest.f4m", parallel_discovery_manifest()),
+            ("/media/bootstrap.bin", vod_bootstrap()),
+            ("/media/lowSeg1-Frag1", first_fragment.clone()),
+            ("/media/lowSeg1-Frag2", second_fragment.clone()),
+            ("/media/mediumSeg1-Frag1", first_fragment.clone()),
+            ("/media/mediumSeg1-Frag2", second_fragment.clone()),
+            ("/media/highSeg1-Frag1", first_fragment.clone()),
+            ("/media/highSeg1-Frag2", second_fragment.clone()),
+            ("/media/maximumSeg1-Frag1", first_fragment),
+            ("/media/maximumSeg1-Frag2", second_fragment),
+        ]),
+        MEDIA_RESPONSE_DELAY,
+    );
+    let target = server.target("/manifest.f4m");
+    let capabilities = FixtureHdsCapabilities::default();
+    let discovery_started_at = Instant::now();
+    let discovered = discover_hds_renditions(HdsCatalogDiscoveryRequest {
+        transport_request: transport_request(&target, CancellationToken::new()),
+        source_config: source_config(),
+        demux_registry: f4f_registry(),
+        policy: open_policy(),
+        catalog_identity: catalog_identity(1),
+        capability_probe: &capabilities,
+        preferred_height: PreferredHeightPolicy::NoPreference,
+    })
+    .expect("bounded parallel HDS discovery succeeds");
+    let discovery_elapsed = discovery_started_at.elapsed();
+
+    assert_eq!(
+        discovered.catalog().coupled_presentations().len(),
+        4,
+        "parallel scheduling must not turn complete catalog discovery into an early exit"
+    );
+    assert_eq!(capabilities.checked_rows.load(Ordering::Acquire), 4);
+    assert_eq!(
+        server.maximum_concurrent_media_requests(),
+        2,
+        "fixture must observe the caller-owned two-probe concurrency bound"
+    );
+    assert_eq!(
+        server
+            .requested_paths()
+            .iter()
+            .filter(|path| path.as_str() == "/media/bootstrap.bin")
+            .count(),
+        1,
+        "shared external bootstrap must be fetched once per manifest snapshot"
+    );
+    assert!(
+        discovery_elapsed < SEQUENTIAL_LOWER_BOUND,
+        "four first-fragment probes must overlap instead of taking the sequential lower bound: {discovery_elapsed:?}"
+    );
+    assert!(
+        server
+            .requested_paths()
+            .iter()
+            .all(|path| !path.ends_with("Seg1-Frag2")),
+        "catalog proof must not eagerly download a second fragment from every rendition"
+    );
+
+    let ComponentVariantSelection::Coupled { presentation, .. } =
+        discovered.provider_default().clone()
+    else {
+        panic!("HDS provider default must remain coupled");
+    };
+    let opened = prepare_discovered_hds_vod(discovered, presentation.exact_identity().clone())
+        .expect("selected rendition reuses its content-probed demuxer");
+    let mut demuxer = opened.into_demuxer();
+    let mut packet_seen = false;
+    for _ in 0..16 {
+        match next_ready_event(demuxer.as_mut()) {
+            DemuxReadEvent::Packet(_) => {
+                packet_seen = true;
+                break;
+            }
+            DemuxReadEvent::TracksChanged(_) | DemuxReadEvent::MediaMetadataChanged(_) => {}
+            DemuxReadEvent::EndOfStream => break,
+            DemuxReadEvent::TemporarilyUnavailable(_) => {
+                unreachable!("next_ready_event filters readiness events")
+            }
+        }
+    }
+    assert!(
+        packet_seen,
+        "selected slow HDS rendition must reach a demux packet"
     );
 }
 
@@ -585,7 +576,7 @@ fn open_policy() -> HdsVodOpenPolicy {
         .expect("HDS retry policy"),
         demux_sniff_budget: DemuxSniffBudget::new(
             non_zero(64 * 1_024),
-            non_zero(2),
+            non_zero(1),
             Duration::from_secs(1),
         )
         .expect("HDS F4F sniff budget"),
@@ -596,6 +587,7 @@ fn open_policy() -> HdsVodOpenPolicy {
         maximum_hierarchy_depth: 2,
         maximum_manifest_documents: 4,
         maximum_renditions: 4,
+        maximum_parallel_rendition_probes: non_zero(2),
     }
 }
 
@@ -625,6 +617,11 @@ fn discovery_manifest(valid_media: &str, valid_first: bool) -> Vec<u8> {
         r#"<manifest xmlns="http://ns.adobe.com/f4m/1.0"><streamType>recorded</streamType><duration>2</duration><baseURL>media/</baseURL>{rows}<bootstrapInfo id="boot" url="bootstrap.bin"/></manifest>"#
     )
     .into_bytes()
+}
+
+/// Четыре валидных rows заставляют discovery доказать полный bounded parallel pass.
+fn parallel_discovery_manifest() -> Vec<u8> {
+    br#"<manifest xmlns="http://ns.adobe.com/f4m/1.0"><streamType>recorded</streamType><duration>2</duration><baseURL>media/</baseURL><media url="low" bitrate="400" width="640" height="360" bootstrapInfoId="boot"/><media url="medium" bitrate="800" width="960" height="540" bootstrapInfoId="boot"/><media url="high" bitrate="1200" width="1280" height="720" bootstrapInfoId="boot"/><media url="maximum" bitrate="2000" width="1920" height="1080" bootstrapInfoId="boot"/><bootstrapInfo id="boot" url="bootstrap.bin"/></manifest>"#.to_vec()
 }
 
 /// Строит VOD `abst/asrt/afrt` с двумя fragments и terminal marker-ом.
@@ -698,6 +695,14 @@ fn f4f_fragment(timestamp: u32) -> Vec<u8> {
     let mut fragment = f4f_afra();
     fragment.extend_from_slice(&f4f_moof());
     fragment.extend_from_slice(&iso_box(b"mdat", &flv_tags));
+    fragment
+}
+
+/// Строит первый F4F fragment только с video configuration для on-demand A/V discovery.
+fn f4f_video_configuration_fragment(timestamp: u32) -> Vec<u8> {
+    let mut fragment = f4f_afra();
+    fragment.extend_from_slice(&f4f_moof());
+    fragment.extend_from_slice(&iso_box(b"mdat", &flv_tag(9, timestamp, &avc_sequence())));
     fragment
 }
 

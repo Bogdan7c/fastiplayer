@@ -138,6 +138,57 @@ enum HdsBootstrapLoadFailure {
     Unavailable(anyhow::Error),
 }
 
+/// Manifest-scoped cache только успешно загруженных bootstrap payload-ов.
+///
+/// Один `bootstrapInfo` обычно обслуживает несколько quality rows. Хранение
+/// кэша рядом с владельцем manifest snapshot-а исключает сетевой N+1, но не
+/// превращает transient failure в долговечный отрицательный результат.
+struct ManifestBootstrapCache<'manifest> {
+    /// Semantic bootstrap row и её проверенные bounded bytes.
+    successful_entries: Vec<(&'manifest F4mBootstrapInfo, Vec<u8>)>,
+}
+
+impl<'manifest> ManifestBootstrapCache<'manifest> {
+    /// Создаёт пустой cache для одного immutable manifest snapshot-а.
+    const fn new() -> Self {
+        Self {
+            successful_entries: Vec::new(),
+        }
+    }
+
+    /// Возвращает bootstrap bytes, переиспользуя только предыдущий успех.
+    fn load(
+        &mut self,
+        http: &AdaptiveHttpContext,
+        base_target: &HttpRequestTarget,
+        bootstrap: &'manifest F4mBootstrapInfo,
+        policy: HdsVodOpenPolicy,
+    ) -> std::result::Result<Vec<u8>, HdsBootstrapLoadFailure> {
+        if let Some((_, bytes)) = self
+            .successful_entries
+            .iter()
+            .find(|(cached_bootstrap, _)| *cached_bootstrap == bootstrap)
+        {
+            // Раньше повторный внешний fetch замечал cancellation. Cache hit
+            // обязан сохранить эту семантику, а не продолжать hierarchy pass.
+            if matches!(bootstrap.source(), F4mBootstrapSource::Url(_))
+                && http.cancellation().is_cancelled()
+            {
+                return Err(HdsBootstrapLoadFailure::Unavailable(anyhow!(
+                    "HDS external bootstrap fetch was cancelled"
+                )));
+            }
+            return Ok(bytes.clone());
+        }
+
+        // Ошибку намеренно не кэшируем: sibling row сохраняет прежнее право
+        // повторить transient request и восстановиться в том же discovery pass.
+        let bytes = fetch_bootstrap(http, base_target, bootstrap, policy)?;
+        self.successful_entries.push((bootstrap, bytes.clone()));
+        Ok(bytes)
+    }
+}
+
 /// Metadata inherited from a set-level hierarchy edge.
 #[derive(Clone, Copy, Default)]
 struct InheritedMetadata {
@@ -204,6 +255,7 @@ pub(crate) fn resolve_presentation(
             height: node.inherited.height,
             duration: manifest.duration().or(node.inherited.duration),
         };
+        let mut bootstrap_cache = ManifestBootstrapCache::new();
         for media in manifest.media() {
             if let Some(href) = media.href() {
                 let Ok(child_target) = base_target.resolve_reference(href) else {
@@ -244,7 +296,8 @@ pub(crate) fn resolve_presentation(
                 ));
                 continue;
             };
-            let bootstrap_bytes = match fetch_bootstrap(http, &base_target, bootstrap, policy) {
+            let bootstrap_bytes = match bootstrap_cache.load(http, &base_target, bootstrap, policy)
+            {
                 Ok(bytes) => bytes,
                 Err(HdsBootstrapLoadFailure::Rejected(reason)) => {
                     rejections.push(HdsRenditionRejection::new(reason));

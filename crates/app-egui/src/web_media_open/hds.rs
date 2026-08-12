@@ -2,7 +2,7 @@
 
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use bounded_xml_reader::XmlBudgets;
@@ -87,6 +87,7 @@ pub(super) fn prepare_hds_candidate(
         crate::web_media_adaptive_config::adaptive_transport_limits(network_config)
             .context("Не удалось собрать HDS adaptive transport limits")?;
     let policy = hds_policy(adaptive_limits, source_config.read_timeout())?;
+    let discovery_started_at = Instant::now();
     let discovered = discover_hds_renditions(HdsCatalogDiscoveryRequest {
         transport_request,
         source_config: source_config.clone(),
@@ -96,6 +97,12 @@ pub(super) fn prepare_hds_candidate(
         capability_probe,
         preferred_height,
     })?;
+    tracing::info!(
+        elapsed_seconds = discovery_started_at.elapsed().as_secs_f64(),
+        admitted_renditions = discovered.catalog().coupled_presentations().len(),
+        rejected_renditions = discovered.rejections().len(),
+        "HDS rendition catalog discovery завершён"
+    );
     let catalog = Arc::new(discovered.catalog().clone());
     let provider_selection = match component_selection_intent {
         crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent::ProviderDefault => {
@@ -226,7 +233,9 @@ fn hds_policy(
         .context("HDS adaptive retry policy invalid")?,
         demux_sniff_budget: DemuxSniffBudget::new(
             NonZeroUsize::new(256 * 1024).expect("HDS sniff bytes"),
-            NonZeroUsize::new(2).expect("HDS sniff segments"),
+            // F4F envelope определяется по первому media fragment; если A/V config лежит
+            // дальше, transactional demuxer запросит следующий fragment ровно по нужде.
+            NonZeroUsize::new(1).expect("HDS sniff segments"),
             source_read_timeout,
         )
         .context("HDS demux sniff budget invalid")?,
@@ -242,6 +251,9 @@ fn hds_policy(
         maximum_hierarchy_depth: 8,
         maximum_manifest_documents: 32,
         maximum_renditions: 64,
+        // Шесть probe-ов покрывают типичный полный F4M ladder одним bounded network wave-ом.
+        maximum_parallel_rendition_probes: NonZeroUsize::new(6)
+            .expect("HDS parallel rendition probes"),
     })
 }
 
@@ -326,6 +338,22 @@ mod tests {
         );
     }
 
+    /// Catalog discovery не должен превращать rendition ladder обратно в serial N+1.
+    #[test]
+    fn hds_catalog_policy_bounds_parallel_rendition_probes() {
+        let network_config = NetworkConfig::default();
+        let source_config = SourceRuntimeConfig::from_network_config(&network_config)
+            .expect("valid source runtime config");
+        let adaptive_limits =
+            crate::web_media_adaptive_config::adaptive_transport_limits(&network_config)
+                .expect("valid adaptive limits");
+
+        let policy =
+            hds_policy(adaptive_limits, source_config.read_timeout()).expect("valid HDS policy");
+
+        assert_eq!(policy.maximum_parallel_rendition_probes.get(), 6);
+    }
+
     /// Медленный, но допустимый first-fragment read не должен проигрывать hidden 2s deadline.
     #[test]
     fn hds_sniff_deadline_follows_configured_source_read_timeout() {
@@ -345,6 +373,11 @@ mod tests {
         assert_eq!(
             policy.demux_sniff_budget.max_duration(),
             Duration::from_millis(9_250)
+        );
+        assert_eq!(
+            policy.demux_sniff_budget.max_segments(),
+            1,
+            "HDS sniff must not eagerly download a second network fragment"
         );
     }
 }

@@ -22,3 +22,8 @@
 ## S31L dynamic live/DVR уточнение (2026-07-23)
 - При sliding live window player повторно проверяет и active `SeekCommitState.target_position`, и public latest scrub target. Выпавший active route завершается typed `SeekTargetExpired`, даже если более новая pointer target ещё находится внутри DVR range.
 - `CommitVisiblePreview` дополнительно проверяет timing показанного кадра против последнего DVR range. Выпавший preview получает `VisibleScrubPreviewUnavailableReason::OutsideLatestLiveRange` и сохраняет старую policy: exact fallback к валидной latest pointer target, без seek к просроченному кадру.
+
+## Reused-decoder demux failure provenance (2026-08-13)
+- `PlayerSession` остаётся владельцем пользовательской seek-диагностики: при terminal ошибке реального `demux.seek_with_request()` scrub lifecycle сначала классифицирует нейтральный `ScrubLifecycleError`, затем записывает исходный backend detail в `PlayerSnapshot.last_error` до cleanup route.
+- `MediaDemuxError::is_seek_unavailable()` сохраняет `PlayerErrorKind::SeekUnavailable` для отсутствующего/неподдерживаемого seek; прочие terminal demux failures получают `PlayerErrorKind::DemuxError`. Конкретная причина больше не затирается общей фразой `SeekLanding не смог стартовать reused-decoder scrub route`.
+- Regression `session/tests/seek_start.rs::reused_decoder_seek_preserves_terminal_demux_failure_in_player_snapshot` проходит через настоящий reused-decoder SeekLanding route и проверяет сохранение detail, очистку commit/scrubbing и возврат в `Paused`.
