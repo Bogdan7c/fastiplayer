@@ -664,7 +664,8 @@ fn fragment_run_table() -> Vec<u8> {
     payload.push(0);
     payload.extend_from_slice(&2_u32.to_be_bytes());
     append_fragment_run(&mut payload, 1, 0, 1_000, None);
-    append_fragment_run(&mut payload, 3, 0, 0, Some(0));
+    // Unified Streaming использует нулевой ID для terminal END_OF_PRESENTATION.
+    append_fragment_run(&mut payload, 0, 0, 0, Some(0));
     iso_box(b"afrt", &payload)
 }
 
@@ -684,7 +685,10 @@ fn append_fragment_run(
     }
 }
 
-/// Собирает полный F4F fragment с required `afra/abst/moof/mdat` topology.
+/// Собирает доставляемый HDS media fragment с `afra/moof/mdat` topology.
+///
+/// Bootstrap тестовый сервер отдаёт отдельно через `/media/bootstrap.bin`, поэтому его
+/// повторение здесь скрывало бы реальную границу между provider и FLV demux adapter.
 fn f4f_fragment(timestamp: u32) -> Vec<u8> {
     let mut flv_tags = flv_tag(9, timestamp, &avc_sequence());
     flv_tags.extend_from_slice(&flv_tag(8, timestamp, &aac_sequence()));
@@ -692,7 +696,6 @@ fn f4f_fragment(timestamp: u32) -> Vec<u8> {
     flv_tags.extend_from_slice(&flv_tag(8, timestamp + 40, &aac_frame(&[0x11, 0x22])));
 
     let mut fragment = f4f_afra();
-    fragment.extend_from_slice(&vod_bootstrap());
     fragment.extend_from_slice(&f4f_moof());
     fragment.extend_from_slice(&iso_box(b"mdat", &flv_tags));
     fragment

@@ -86,7 +86,7 @@ pub(super) fn prepare_hds_candidate(
     let adaptive_limits =
         crate::web_media_adaptive_config::adaptive_transport_limits(network_config)
             .context("Не удалось собрать HDS adaptive transport limits")?;
-    let policy = hds_policy(adaptive_limits)?;
+    let policy = hds_policy(adaptive_limits, source_config.read_timeout())?;
     let discovered = discover_hds_renditions(HdsCatalogDiscoveryRequest {
         transport_request,
         source_config: source_config.clone(),
@@ -195,7 +195,14 @@ impl PreparedDemuxSeekPort for HdsPreparedDemuxSeekPort {
 }
 
 /// Ставит все S38 budgets в одном app-owned policy object.
-fn hds_policy(adaptive_limits: AdaptiveTransportLimits) -> Result<HdsVodOpenPolicy> {
+///
+/// Sniff читает первый fragment через тот же HTTP source, поэтому его wall-clock
+/// deadline обязан следовать пользовательскому source timeout, а не отдельной
+/// локальной константе, которая может истечь во время корректного network read.
+fn hds_policy(
+    adaptive_limits: AdaptiveTransportLimits,
+    source_read_timeout: Duration,
+) -> Result<HdsVodOpenPolicy> {
     Ok(HdsVodOpenPolicy {
         xml_budgets: hds_xml_budgets()?,
         manifest_limits: F4mManifestLimits::new(
@@ -220,7 +227,7 @@ fn hds_policy(adaptive_limits: AdaptiveTransportLimits) -> Result<HdsVodOpenPoli
         demux_sniff_budget: DemuxSniffBudget::new(
             NonZeroUsize::new(256 * 1024).expect("HDS sniff bytes"),
             NonZeroUsize::new(2).expect("HDS sniff segments"),
-            Duration::from_secs(2),
+            source_read_timeout,
         )
         .context("HDS demux sniff budget invalid")?,
         demux_buffer_limits: ProgressiveDemuxBufferLimits::new(
@@ -275,8 +282,10 @@ fn map_enqueue_error(error: ProgressiveAsyncSeekEnqueueError) -> PreparedDemuxSe
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_hds_vod_intent, hds_playback_window};
+    use super::{ensure_hds_vod_intent, hds_playback_window, hds_policy};
+    use rustiplayer_config::NetworkConfig;
     use service_ytdlp::YtDlpLiveIntent;
+    use source_core::SourceRuntimeConfig;
     use std::time::Duration;
 
     /// Закрепляет S38 no-op: live states не доходят до HDS request preparation.
@@ -314,6 +323,28 @@ mod tests {
         assert_eq!(
             window.end_exclusive().map(|end| end.as_duration()),
             Some(Duration::from_secs(7))
+        );
+    }
+
+    /// Медленный, но допустимый first-fragment read не должен проигрывать hidden 2s deadline.
+    #[test]
+    fn hds_sniff_deadline_follows_configured_source_read_timeout() {
+        let network_config = NetworkConfig {
+            read_timeout_ms: 9_250,
+            ..NetworkConfig::default()
+        };
+        let source_config = SourceRuntimeConfig::from_network_config(&network_config)
+            .expect("valid source runtime config");
+        let adaptive_limits =
+            crate::web_media_adaptive_config::adaptive_transport_limits(&network_config)
+                .expect("valid adaptive limits");
+
+        let policy =
+            hds_policy(adaptive_limits, source_config.read_timeout()).expect("valid HDS policy");
+
+        assert_eq!(
+            policy.demux_sniff_budget.max_duration(),
+            Duration::from_millis(9_250)
         );
     }
 }

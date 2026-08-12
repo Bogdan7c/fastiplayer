@@ -380,12 +380,9 @@ fn parse_afrt(
         if discontinuity.is_some_and(|indicator| indicator > 3) {
             return Err(HdsBootstrapError::Unsupported);
         }
-        if runs
-            .last()
-            .is_some_and(|run: &HdsFragmentRun| run.first_fragment >= first_fragment)
-        {
-            return Err(HdsBootstrapError::Malformed);
-        }
+        // Порядок media-runs проверяется после чтения всей таблицы. Zero-duration
+        // `END_OF_PRESENTATION` — управляющая запись, и её идентификатор по формату
+        // не обязан продолжать последовательность реальных media fragment-ов.
         runs.push(HdsFragmentRun {
             first_fragment,
             first_timestamp,
@@ -501,7 +498,7 @@ fn expand_fragments(
     let end_exclusive = last_fragment
         .checked_add(1)
         .ok_or(HdsBootstrapError::Malformed)?;
-    validate_fragment_runs(&fragment_table.runs, end_exclusive)?;
+    validate_fragment_runs(&fragment_table.runs, first_fragment, end_exclusive)?;
     let mut fragments = Vec::new();
     for (index, run) in fragment_table.runs.iter().enumerate() {
         if run.duration == 0 {
@@ -509,7 +506,12 @@ fn expand_fragments(
         }
         let run_end = fragment_table
             .runs
-            .get(index + 1)
+            .get(index + 1..)
+            .and_then(|remaining_runs| {
+                remaining_runs
+                    .iter()
+                    .find(|next_run| next_run.duration != 0)
+            })
             .map_or(end_exclusive, |next| next.first_fragment);
         if run_end <= run.first_fragment || run_end > end_exclusive {
             return Err(HdsBootstrapError::Malformed);
@@ -543,21 +545,32 @@ fn expand_fragments(
 /// Проверяет strict VOD subset: только optional terminal end marker без gaps.
 fn validate_fragment_runs(
     runs: &[HdsFragmentRun],
+    first_fragment: u32,
     end_exclusive: u32,
 ) -> Result<(), HdsBootstrapError> {
     for (index, run) in runs.iter().enumerate() {
         if run.duration == 0 {
+            let marker_is_outside_media_range =
+                run.first_fragment < first_fragment || run.first_fragment >= end_exclusive;
             let is_terminal_end = index + 1 == runs.len()
                 && run.discontinuity == Some(0)
-                && run.first_fragment == end_exclusive;
+                && marker_is_outside_media_range;
             if !is_terminal_end {
                 return Err(HdsBootstrapError::Unsupported);
             }
             continue;
         }
+        let next_media_run = runs.get(index + 1..).and_then(|remaining_runs| {
+            remaining_runs
+                .iter()
+                .find(|next_run| next_run.duration != 0)
+        });
         if run.discontinuity.is_some()
-            || runs.get(index + 1).is_some_and(|next| {
-                next.duration != 0 && next.first_timestamp <= run.first_timestamp
+            || run.first_fragment < first_fragment
+            || run.first_fragment >= end_exclusive
+            || next_media_run.is_some_and(|next_run| {
+                next_run.first_fragment <= run.first_fragment
+                    || next_run.first_timestamp <= run.first_timestamp
             })
         {
             return Err(HdsBootstrapError::Malformed);
@@ -775,6 +788,38 @@ mod tests {
         assert_eq!(timeline.fragments().len(), 2);
         assert_eq!(timeline.fragments()[1].fragment(), 2);
         assert_eq!(timeline.fragments()[1].timestamp(), 1_000);
+    }
+
+    /// Реальный packager может кодировать `END_OF_PRESENTATION` нулевым fragment ID.
+    #[test]
+    fn zero_id_terminal_marker_does_not_truncate_last_media_run() {
+        let mut afrt_payload = vec![0, 0, 0, 0];
+        afrt_payload.extend_from_slice(&1_000_u32.to_be_bytes());
+        afrt_payload.push(0);
+        afrt_payload.extend_from_slice(&3_u32.to_be_bytes());
+        append_fragment_run(&mut afrt_payload, 1, 0, 1_000, None);
+        append_fragment_run(&mut afrt_payload, 2, 1_000, 500, None);
+        append_fragment_run(&mut afrt_payload, 0, 0, 0, Some(0));
+        let bootstrap = abst_box_with(asrt_box(2), iso_box(b"afrt", &afrt_payload), 1_000, 0);
+
+        let timeline = parse_bootstrap(&bootstrap, "video", limits())
+            .expect("zero-id terminal marker is outside the media namespace");
+
+        assert_eq!(timeline.fragments().len(), 2);
+        assert_eq!(timeline.fragments()[1].fragment(), 2);
+        assert_eq!(timeline.fragments()[1].timestamp(), 1_000);
+        assert_eq!(timeline.fragments()[1].duration(), 500);
+    }
+
+    /// End marker не может маскироваться под fragment из advertised media range.
+    #[test]
+    fn rejects_terminal_marker_inside_advertised_media_range() {
+        let bootstrap = abst_box_with(asrt_box(2), afrt_box(1, 2, 0, 1_000, true), 1_000, 0);
+
+        assert_eq!(
+            parse_bootstrap(&bootstrap, "video", limits()),
+            Err(HdsBootstrapError::Unsupported)
+        );
     }
 
     /// Недоверенный table count отклоняется до `Vec::with_capacity`.

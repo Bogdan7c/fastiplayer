@@ -25,3 +25,11 @@ Follow-up 2026-08-10: BBC/Akamai row сейчас имеет 6 `avc3` video vari
 - Final telemetry during that run: Playing, about 59 FPS, 0 visible frame drops, 0 surface drops, 0 audio underruns, healthy frame pacing and advancing MPRIS position. Repeated-frame accounting accumulated while paused and preroll seek-discard accounting is expected; neither is a decoded/presented frame-drop regression.
 - Automated regression coverage includes parser/planner/runtime suites, a hermetic render-reaching live runtime test, no-old-DVR-head-refetch assertion, player retention-before/after-worker-receipt tests and true-authoritative-expiry cleanup. Focused DASH/adaptive tests, media/player tests, strict touched-package Clippy, workspace all-target check, diff check and refactor guardrails pass.
 - Architecture handoff: `mem:media-services/dash-live-s35-2026-07-24` and `mem:player-core/dynamic-live-timeline-s31l-2026-07-23`.
+
+
+## HDS VOD row 09 production regression pass (2026-08-12)
+
+- Row 09 uses `https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.f4m` and now opens as the 12:14 HDS presentation and reaches real H.264/AAC playback/render.
+- Three independent false-negative assumptions were fixed: delivered F4F media fragments contain `afra/moof/mdat` and normally omit the separately-owned `abst`; terminal zero-duration `afrt` END_OF_PRESENTATION may use fragment ID 0 outside media ordering; app HDS sniff deadline follows configured source read timeout instead of hidden 2 s.
+- Real KWin proof on the production release binary reached Tears of Steel frames, 3312 packets, 879 decoded video frames and 799 `video_frames_presented`, with the 12:14 duration and advancing timeline. One separate existing telemetry issue remains: the overlay retained stale `VA-API VP9` text while the actual HDS content watermark and packet/config evidence were `avc1`/H.264.
+- Regression fixtures now mirror the real provider/bootstrap boundary. Focused HDS/FLV/bootstrap/app tests, strict Clippy, refactor guardrails, diff-check and the full workspace test gate pass.

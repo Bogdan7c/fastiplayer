@@ -19,7 +19,11 @@ struct IsoBox<'a> {
     payload_offset: usize,
 }
 
-/// Валидирует bounded ISO envelope и доказанную Adobe F4F topology.
+/// Валидирует bounded ISO envelope доставленного HDS media fragment.
+///
+/// Bootstrap (`abst`) принадлежит HDS provider и обычно приходит отдельно от media
+/// fragment. Старые/spec-complete источники могут повторять его внутри fragment — такой
+/// вариант остаётся допустимым, но inline bootstrap обязательно проходит полную проверку.
 pub(crate) fn parse_f4f_segment(
     sequence: u64,
     kind: OrderedSegmentKind,
@@ -42,10 +46,12 @@ pub(crate) fn parse_f4f_segment(
 
     let mut box_budget = options.fragment_boxes.get();
     let boxes = parse_boxes(sequence, &bytes, &mut box_budget)?;
-    if boxes.len() != 4 || boxes[0].box_type != *b"afra" {
+    if !matches!(boxes.len(), 3 | 4)
+        || boxes.first().map(|parsed_box| parsed_box.box_type) != Some(*b"afra")
+    {
         return Err(malformed(
             sequence,
-            "F4F fragment требует afra первым и ровно четыре обязательных box-а",
+            "F4F fragment требует afra первым, обязательные moof/mdat и не более одного optional abst",
         ));
     }
     let find_unique = |box_type: [u8; 4]| {
@@ -60,15 +66,27 @@ pub(crate) fn parse_f4f_segment(
     let abst = find_unique(*b"abst");
     let moof = find_unique(*b"moof");
     let mdat = find_unique(*b"mdat");
-    let (Some(afra), Some(abst), Some(moof), Some(mdat)) = (afra, abst, moof, mdat) else {
+    let (Some(afra), Some(moof), Some(mdat)) = (afra, moof, mdat) else {
         return Err(malformed(
             sequence,
-            "F4F fragment требует ровно по одному afra, abst, moof и mdat",
+            "F4F fragment требует ровно по одному afra, moof и mdat",
         ));
     };
 
+    // Любой четвёртый box обязан быть единственным `abst`: так unknown и duplicate
+    // top-level boxes не маскируются под поддерживаемую HDS topology.
+    let expected_box_count = 3 + usize::from(abst.is_some());
+    if boxes.len() != expected_box_count {
+        return Err(malformed(
+            sequence,
+            "F4F fragment допускает только один optional abst поверх afra/moof/mdat",
+        ));
+    }
+
     validate_afra(sequence, afra.payload, options)?;
-    validate_abst(sequence, abst.payload, options, &mut box_budget)?;
+    if let Some(abst) = abst {
+        validate_abst(sequence, abst.payload, options, &mut box_budget)?;
+    }
     validate_moof(sequence, moof.payload, options, &mut box_budget)?;
     if mdat.payload.is_empty() {
         return Err(malformed(sequence, "пустой mdat не содержит FLV tags"));
