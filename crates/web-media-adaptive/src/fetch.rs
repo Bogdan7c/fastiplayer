@@ -1,8 +1,9 @@
 //! Shared S21T-authorized HTTP execution для manifest и segment owner-ов.
 
 use std::fmt;
-use std::sync::Arc;
+use std::num::NonZeroUsize;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -539,12 +540,28 @@ pub(crate) struct FetchExecutor {
 
 impl FetchExecutor {
     pub fn start(context: AdaptiveHttpContext) -> Result<Self, AdaptiveTransportError> {
-        let (command_sender, command_receiver) = mpsc::sync_channel(1);
-        let (outcome_sender, outcome_receiver) = mpsc::sync_channel(1);
-        thread::Builder::new()
-            .name("adaptive-http-fetch".to_owned())
-            .spawn(move || run_fetch_worker(context, command_receiver, outcome_sender))
-            .map_err(|_| AdaptiveTransportError::WorkerStopped)?;
+        Self::start_with_worker_count(context, NonZeroUsize::MIN)
+    }
+
+    /// Создаёт bounded pool поверх одного immutable HTTP context-а.
+    pub fn start_with_worker_count(
+        context: AdaptiveHttpContext,
+        worker_count: NonZeroUsize,
+    ) -> Result<Self, AdaptiveTransportError> {
+        let (command_sender, command_receiver) = mpsc::sync_channel(worker_count.get());
+        let (outcome_sender, outcome_receiver) = mpsc::sync_channel(worker_count.get());
+        let command_receiver = Arc::new(Mutex::new(command_receiver));
+        for worker_index in 0..worker_count.get() {
+            let worker_context = context.clone();
+            let worker_commands = Arc::clone(&command_receiver);
+            let worker_outcomes = outcome_sender.clone();
+            thread::Builder::new()
+                .name(format!("adaptive-http-fetch-{worker_index}"))
+                .spawn(move || {
+                    run_fetch_worker(worker_context, worker_commands, worker_outcomes);
+                })
+                .map_err(|_| AdaptiveTransportError::WorkerStopped)?;
+        }
         Ok(Self {
             command_sender: Some(command_sender),
             outcome_receiver,
@@ -579,10 +596,19 @@ impl Drop for FetchExecutor {
 
 fn run_fetch_worker(
     context: AdaptiveHttpContext,
-    command_receiver: Receiver<FetchJob>,
+    command_receiver: Arc<Mutex<Receiver<FetchJob>>>,
     outcome_sender: SyncSender<FetchOutcome>,
 ) {
-    while let Ok(job) = command_receiver.recv() {
+    loop {
+        let job = {
+            let Ok(receiver) = command_receiver.lock() else {
+                return;
+            };
+            let Ok(job) = receiver.recv() else {
+                return;
+            };
+            job
+        };
         let id = job.id;
         let generation = job.generation;
         let result = fetch_with_redirects(&context, job);

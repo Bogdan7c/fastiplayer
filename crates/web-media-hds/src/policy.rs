@@ -37,4 +37,8 @@ pub struct HdsVodOpenPolicy {
     pub maximum_renditions: usize,
     /// Максимум одновременно выполняемых content/capability probe-ов rendition-ов.
     pub maximum_parallel_rendition_probes: NonZeroUsize,
+    /// Максимум готовых selected F4F fragments поверх текущего demux fragment-а.
+    pub maximum_buffered_fragments: NonZeroUsize,
+    /// Максимум параллельных selected F4F HTTP fetch-ов с in-order delivery.
+    pub maximum_concurrent_fragment_fetches: NonZeroUsize,
 }

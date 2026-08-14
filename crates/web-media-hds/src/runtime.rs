@@ -15,11 +15,11 @@ use media_core::{
     DemuxReadEvent, DemuxSeekRequest, DemuxSeekResult, DemuxSeekability, Demuxer, MediaMetadata,
     TrackInfo,
 };
-use source_core::SourceRuntimeConfig;
+use source_core::{CancellationToken, SourceRuntimeConfig};
 use web_media_adaptive::{
     AdaptiveHttpContext, AdaptiveOrderedSegmentSource, AdaptivePresentation,
     AdaptiveSegmentCompletion, AdaptiveSegmentDescriptor, AdaptiveSegmentSnapshot,
-    BlockingOrderedSegmentAdapter, ComponentClockMetadata,
+    BlockingOrderedSegmentAdapter, BlockingOrderedSegmentReadAheadHandle, ComponentClockMetadata,
 };
 use web_media_core::ComponentVariantCatalog;
 use web_media_transport_api::{MediaPresentation, TransportOpenRequest};
@@ -268,11 +268,88 @@ pub(crate) fn open_transactional_demuxer(
     plan: Arc<HdsDemuxPlan>,
     start_index: usize,
 ) -> Result<Box<dyn Demuxer + Send>> {
+    let opened = open_selected_transactional_demuxer(plan, start_index)?;
+    Ok(opened.into_demuxer())
+}
+
+/// Открывает capability probe без скачивания следующего fragment-а каждой
+/// rendition до того, как caller выберет единственную runtime row.
+pub(crate) fn open_probed_transactional_demuxer(
+    plan: Arc<HdsDemuxPlan>,
+    start_index: usize,
+) -> Result<HdsProbedDemuxer> {
+    open_transactional_demuxer_with_read_ahead(
+        plan,
+        start_index,
+        HdsReadAheadStart::SuspendedForCatalogProbe,
+    )
+}
+
+/// Selected runtime запускает первый fragment и successor одной network wave-ой,
+/// затем подтверждает готовность продолжения до публикации demuxer-а.
+fn open_selected_transactional_demuxer(
+    plan: Arc<HdsDemuxPlan>,
+    start_index: usize,
+) -> Result<HdsProbedDemuxer> {
+    let opened = open_transactional_demuxer_with_read_ahead(
+        plan,
+        start_index,
+        HdsReadAheadStart::ActivatedForSelectedRuntime,
+    )?;
+    opened.activate_read_ahead()?;
+    Ok(opened)
+}
+
+/// Intent enum не даёт перепутать catalog probe и уже выбранный playback path.
+#[derive(Clone, Copy)]
+enum HdsReadAheadStart {
+    /// Discovery читает только первый fragment, нужный для capability proof-а.
+    SuspendedForCatalogProbe,
+    /// Direct open и seek перекрывают latency первого fragment-а и successor-а.
+    ActivatedForSelectedRuntime,
+}
+
+/// Probed demuxer сохраняет intent-only activation boundary рядом с runtime.
+pub(crate) struct HdsProbedDemuxer {
+    demuxer: Box<dyn Demuxer + Send>,
+    read_ahead: BlockingOrderedSegmentReadAheadHandle,
+    cancellation: CancellationToken,
+}
+
+impl HdsProbedDemuxer {
+    /// Даёт capability proof-у только read-only container contract.
+    pub(crate) fn demuxer(&self) -> &dyn Demuxer {
+        self.demuxer.as_ref()
+    }
+
+    /// После exact selection запускает successor fetch до player consumption.
+    pub(crate) fn activate_read_ahead(&self) -> Result<()> {
+        self.read_ahead
+            .activate_and_wait_for_ready_segment(&self.cancellation)
+            .context("HDS selected-fragment read-ahead activation failed")
+    }
+
+    /// Передаёт уже probed parser state в прежний receipted runtime.
+    pub(crate) fn into_demuxer(self) -> Box<dyn Demuxer + Send> {
+        self.demuxer
+    }
+}
+
+/// Общий open сохраняет один parser path, меняя только момент включения
+/// bounded successor fetch-а.
+fn open_transactional_demuxer_with_read_ahead(
+    plan: Arc<HdsDemuxPlan>,
+    start_index: usize,
+    read_ahead_start: HdsReadAheadStart,
+) -> Result<HdsProbedDemuxer> {
     if start_index >= plan.descriptors.len() {
         bail!("HDS seek anchor is outside the fragment timeline");
     }
-    let mut source = AdaptiveOrderedSegmentSource::new(plan.http.clone())
-        .context("HDS ordered segment source creation failed")?;
+    let mut source = AdaptiveOrderedSegmentSource::new_with_read_ahead_concurrency(
+        plan.http.clone(),
+        plan.policy.maximum_concurrent_fragment_fetches,
+    )
+    .context("HDS ordered segment source creation failed")?;
     let snapshot = AdaptiveSegmentSnapshot::new(
         plan.http.source_generation(),
         AdaptivePresentation::Vod {
@@ -289,7 +366,20 @@ pub(crate) fn open_transactional_demuxer(
     source
         .install_snapshot(snapshot)
         .context("HDS adaptive segment snapshot installation failed")?;
-    let input = DemuxInput::ordered_segments(Box::new(BlockingOrderedSegmentAdapter::new(source)));
+    let activatable_source = BlockingOrderedSegmentAdapter::new_activatable(
+        source,
+        plan.policy.maximum_buffered_fragments,
+    );
+    let read_ahead = activatable_source.read_ahead_handle();
+    if matches!(
+        read_ahead_start,
+        HdsReadAheadStart::ActivatedForSelectedRuntime
+    ) {
+        read_ahead
+            .activate()
+            .context("HDS selected fragment wave activation failed")?;
+    }
+    let input = DemuxInput::ordered_segments(Box::new(activatable_source.into_adapter()));
     let inner = plan
         .registry
         .open_required_container(
@@ -300,20 +390,31 @@ pub(crate) fn open_transactional_demuxer(
             plan.f4f_container.clone(),
         )
         .context("S30 F4F demux open failed")?;
-    Ok(Box::new(HdsTransactionalDemuxer::new(inner, plan)?))
+    let cancellation = plan.http.cancellation().clone();
+    let transactional = HdsTransactionalDemuxer::new(inner, plan, read_ahead.clone())?;
+    Ok(HdsProbedDemuxer {
+        demuxer: Box::new(transactional),
+        read_ahead,
+        cancellation,
+    })
 }
 
 /// Owns the seek invariant: every replacement begins at a complete F4F fragment.
 struct HdsTransactionalDemuxer {
     current: Box<dyn Demuxer + Send>,
     plan: Arc<HdsDemuxPlan>,
+    read_ahead: BlockingOrderedSegmentReadAheadHandle,
     public_tracks: Vec<TrackInfo>,
     pending_events: VecDeque<DemuxReadEvent>,
 }
 
 impl HdsTransactionalDemuxer {
     /// Records stable S30 tracks before publishing the seekable wrapper.
-    fn new(mut current: Box<dyn Demuxer + Send>, plan: Arc<HdsDemuxPlan>) -> Result<Self> {
+    fn new(
+        mut current: Box<dyn Demuxer + Send>,
+        plan: Arc<HdsDemuxPlan>,
+        read_ahead: BlockingOrderedSegmentReadAheadHandle,
+    ) -> Result<Self> {
         let mut public_tracks = current.tracks().to_vec();
         let mut pending_events = VecDeque::new();
         for _ in 0..plan.policy.demux_buffer_limits.max_pending_events() {
@@ -340,6 +441,7 @@ impl HdsTransactionalDemuxer {
             public_tracks,
             current,
             plan,
+            read_ahead,
             pending_events,
         })
     }
@@ -403,11 +505,29 @@ impl Demuxer for HdsTransactionalDemuxer {
     /// Opens replacement offside, validates stable tracks, then swaps once.
     fn seek_with_request(&mut self, request: DemuxSeekRequest) -> Result<DemuxSeekResult> {
         let target_index = self.plan.fragment_index_for(request.timestamp);
-        let replacement = open_transactional_demuxer(Arc::clone(&self.plan), target_index)?;
+        self.read_ahead
+            .suspend()
+            .context("HDS current fragment read-ahead suspension failed")?;
+        let replacement_opened =
+            match open_selected_transactional_demuxer(Arc::clone(&self.plan), target_index) {
+                Ok(replacement) => replacement,
+                Err(error) => {
+                    self.read_ahead
+                        .activate()
+                        .context("HDS current fragment read-ahead rollback failed")?;
+                    return Err(error);
+                }
+            };
+        let replacement_read_ahead = replacement_opened.read_ahead.clone();
+        let replacement = replacement_opened.into_demuxer();
         if replacement.tracks() != self.public_tracks {
+            self.read_ahead
+                .activate()
+                .context("HDS current fragment read-ahead rollback failed")?;
             bail!("HDS replacement changed the public F4F track layout");
         }
         self.current = replacement;
+        self.read_ahead = replacement_read_ahead;
         Ok(DemuxSeekResult {
             requested_position: request.timestamp.into(),
             actual_position: self.plan.fragment_position(target_index).into(),

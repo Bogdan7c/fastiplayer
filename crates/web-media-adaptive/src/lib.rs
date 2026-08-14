@@ -14,7 +14,10 @@ mod range_source;
 mod segment;
 mod timeline;
 
-pub use adapter::BlockingOrderedSegmentAdapter;
+pub use adapter::{
+    ActivatableBlockingOrderedSegmentAdapter, BlockingOrderedSegmentAdapter,
+    BlockingOrderedSegmentReadAheadHandle,
+};
 pub use config::{AdaptiveRetryPolicy, AdaptiveRetryPolicyError, AdaptiveTransportLimits};
 pub use fetch::{
     AdaptiveFetchedResource, AdaptiveHttpContext, AdaptiveResourceFetchRequest,

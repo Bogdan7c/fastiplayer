@@ -26,6 +26,12 @@
 - Deferred wrapper typed-отклоняет seekable inner вместо молчаливой потери seek contract. S31 не реализует VOD/DVR seek; это остаётся последующим transport/demux/player scope.
 - Drop/cancellation не join-ит blocking network worker на player-owner. Уже выполняющийся blocking socket read, как и existing S22 path, освобождается на configured timeout/read boundary; poll boundary видит cancellation немедленно.
 
+## Selected-only bounded segment read-ahead — 2026-08-14
+
+- `AdaptiveOrderedSegmentSource::new` сохраняет прежний single-fetch contract. Новый `new_with_read_ahead_concurrency` создаёт caller-bounded HTTP executor, но active fetch limit остаётся 1 до явного `enable_concurrent_read_ahead`; значит provider probe не получает скрытого prefetch. После enable несколько jobs могут завершаться не по порядку, однако `active + completed BTreeMap + pending` публикуют только минимальную outstanding sequence.
+- `BlockingOrderedSegmentAdapter::new_activatable` возвращает adapter и intent-only `BlockingOrderedSegmentReadAheadHandle`. До `activate` adapter demand-only; после activation отдельный cooperative pump заполняет только caller-owned `NonZeroUsize` FIFO. Handle поддерживает idempotent activate, suspend/resume и cancellation-aware wait for first ready successor. Default `new` и все consumers, которые не выбирают activatable path, не меняют поведение.
+- Success, terminal error, cancellation и EOF сохраняются distinct. Только успешно выданный segment обновляет `last_delivered_sequence`; failed fetch не является delivery receipt, поэтому новая manifest generation может повторить тот же sequence. Tests покрывают selected-only activation, bounded FIFO, suspend/resume, cancellation without network, successor failure after delivered content и recovery той же failed sequence в новой generation. HDS hermetic integration дополнительно доказывает concurrency high-water 2 и post-seek packet; HLS/DASH/Smooth suites остаются регрессией default path-а.
+
 ## Secret/redirect invariants
 
 - Automatic redirects выключены. Каждый hop проходит S21T `RedirectPolicy`; cross-origin forwarding монотонно лишается header/query secret material.

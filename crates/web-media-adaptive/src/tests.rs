@@ -34,6 +34,7 @@ use web_media_transport_api::{
 use super::*;
 
 mod blocking_resource_fetch;
+mod ordered_segment_read_ahead;
 mod range_source;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(3);

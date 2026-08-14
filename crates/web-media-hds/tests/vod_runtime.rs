@@ -310,18 +310,23 @@ fn bounds_parallel_slow_rendition_probes_and_opens_selected_packet() {
     const SEQUENTIAL_LOWER_BOUND: Duration = Duration::from_millis(1_600);
     let first_fragment = f4f_fragment(0);
     let second_fragment = f4f_fragment(1_000);
+    let third_fragment = f4f_fragment(2_000);
     let server = HermeticHttpServer::start_with_media_delay(
         HashMap::from([
             ("/manifest.f4m", parallel_discovery_manifest()),
-            ("/media/bootstrap.bin", vod_bootstrap()),
+            ("/media/bootstrap.bin", parallel_vod_bootstrap()),
             ("/media/lowSeg1-Frag1", first_fragment.clone()),
             ("/media/lowSeg1-Frag2", second_fragment.clone()),
+            ("/media/lowSeg1-Frag3", third_fragment.clone()),
             ("/media/mediumSeg1-Frag1", first_fragment.clone()),
             ("/media/mediumSeg1-Frag2", second_fragment.clone()),
+            ("/media/mediumSeg1-Frag3", third_fragment.clone()),
             ("/media/highSeg1-Frag1", first_fragment.clone()),
             ("/media/highSeg1-Frag2", second_fragment.clone()),
+            ("/media/highSeg1-Frag3", third_fragment.clone()),
             ("/media/maximumSeg1-Frag1", first_fragment),
             ("/media/maximumSeg1-Frag2", second_fragment),
+            ("/media/maximumSeg1-Frag3", third_fragment),
         ]),
         MEDIA_RESPONSE_DELAY,
     );
@@ -368,9 +373,10 @@ fn bounds_parallel_slow_rendition_probes_and_opens_selected_packet() {
         server
             .requested_paths()
             .iter()
-            .all(|path| !path.ends_with("Seg1-Frag2")),
-        "catalog proof must not eagerly download a second fragment from every rendition"
+            .all(|path| !path.ends_with("Seg1-Frag2") && !path.ends_with("Seg1-Frag3")),
+        "catalog proof must not eagerly download successor fragments from every rendition"
     );
+    server.reset_maximum_concurrent_media_requests();
 
     let ComponentVariantSelection::Coupled { presentation, .. } =
         discovered.provider_default().clone()
@@ -379,7 +385,33 @@ fn bounds_parallel_slow_rendition_probes_and_opens_selected_packet() {
     };
     let opened = prepare_discovered_hds_vod(discovered, presentation.exact_identity().clone())
         .expect("selected rendition reuses its content-probed demuxer");
+    let seek_handle = opened.async_seek_handle();
     let mut demuxer = opened.into_demuxer();
+    wait_for_requested_path(&server, "/media/maximumSeg1-Frag2");
+    wait_for_requested_path(&server, "/media/maximumSeg1-Frag3");
+    assert_eq!(
+        server.maximum_concurrent_media_requests(),
+        2,
+        "selected runtime должен перекрыть latency двух successor fetch-ов"
+    );
+    assert_eq!(
+        server
+            .requested_paths()
+            .iter()
+            .filter(|path| path.as_str() == "/media/maximumSeg1-Frag2")
+            .count(),
+        1,
+        "selected runtime должен начать ровно один successor fetch до packet consumption"
+    );
+    assert_eq!(
+        server
+            .requested_paths()
+            .iter()
+            .filter(|path| path.as_str() == "/media/maximumSeg1-Frag3")
+            .count(),
+        1,
+        "selected runtime должен запросить второй FIFO successor ровно один раз"
+    );
     let mut packet_seen = false;
     for _ in 0..16 {
         match next_ready_event(demuxer.as_mut()) {
@@ -398,6 +430,89 @@ fn bounds_parallel_slow_rendition_probes_and_opens_selected_packet() {
         packet_seen,
         "selected slow HDS rendition must reach a demux packet"
     );
+
+    server.reset_maximum_concurrent_media_requests();
+    let seek_fence = ProgressiveSeekFence {
+        runtime_generation: seek_handle.runtime_generation(),
+        request_id: ProgressiveSeekRequestId::new(1),
+    };
+    seek_handle
+        .enqueue(
+            seek_fence,
+            DemuxSeekRequest::accurate(Duration::from_millis(1_500)),
+        )
+        .expect("selected seek request is accepted");
+    let seek_receipt = wait_for_seek_receipt(&seek_handle);
+    assert_eq!(seek_receipt.fence, seek_fence);
+    let ProgressiveAsyncSeekOutcome::Succeeded(seek_result) = seek_receipt.outcome else {
+        panic!(
+            "selected HDS seek must succeed, got {:?}",
+            seek_receipt.outcome
+        );
+    };
+    assert_eq!(
+        seek_result.actual_position.as_duration(),
+        Duration::from_secs(1),
+        "seek должен подтвердить preceding fragment anchor"
+    );
+    assert_eq!(
+        server.maximum_concurrent_media_requests(),
+        2,
+        "seek replacement должен одновременно готовить anchor и successor"
+    );
+    assert_eq!(
+        server
+            .requested_paths()
+            .iter()
+            .filter(|path| path.as_str() == "/media/maximumSeg1-Frag2")
+            .count(),
+        2,
+        "seek должен повторно запросить anchor ровно один раз"
+    );
+    assert_eq!(
+        server
+            .requested_paths()
+            .iter()
+            .filter(|path| path.as_str() == "/media/maximumSeg1-Frag3")
+            .count(),
+        2,
+        "seek должен повторно запросить successor ровно один раз"
+    );
+
+    let mut post_seek_packet_seen = false;
+    for _ in 0..16 {
+        match next_ready_event(demuxer.as_mut()) {
+            DemuxReadEvent::Packet(_) => {
+                post_seek_packet_seen = true;
+                break;
+            }
+            DemuxReadEvent::TracksChanged(_) | DemuxReadEvent::MediaMetadataChanged(_) => {}
+            DemuxReadEvent::EndOfStream => break,
+            DemuxReadEvent::TemporarilyUnavailable(_) => {
+                unreachable!("next_ready_event filters readiness events")
+            }
+        }
+    }
+    assert!(
+        post_seek_packet_seen,
+        "concurrent seek replacement must continue through a real demux packet"
+    );
+}
+
+/// Ждёт network request от уже выбранного runtime-а без consumer demux poll-а.
+fn wait_for_requested_path(server: &HermeticHttpServer, expected_path: &str) {
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    while !server
+        .requested_paths()
+        .iter()
+        .any(|path| path == expected_path)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for selected HDS read-ahead request {expected_path}"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
 }
 
 /// Fixture adapter подтверждает, что discovery дошёл до immutable capability boundary.
@@ -588,6 +703,8 @@ fn open_policy() -> HdsVodOpenPolicy {
         maximum_manifest_documents: 4,
         maximum_renditions: 4,
         maximum_parallel_rendition_probes: non_zero(2),
+        maximum_buffered_fragments: non_zero(2),
+        maximum_concurrent_fragment_fetches: non_zero(2),
     }
 }
 
@@ -621,12 +738,22 @@ fn discovery_manifest(valid_media: &str, valid_first: bool) -> Vec<u8> {
 
 /// Четыре валидных rows заставляют discovery доказать полный bounded parallel pass.
 fn parallel_discovery_manifest() -> Vec<u8> {
-    br#"<manifest xmlns="http://ns.adobe.com/f4m/1.0"><streamType>recorded</streamType><duration>2</duration><baseURL>media/</baseURL><media url="low" bitrate="400" width="640" height="360" bootstrapInfoId="boot"/><media url="medium" bitrate="800" width="960" height="540" bootstrapInfoId="boot"/><media url="high" bitrate="1200" width="1280" height="720" bootstrapInfoId="boot"/><media url="maximum" bitrate="2000" width="1920" height="1080" bootstrapInfoId="boot"/><bootstrapInfo id="boot" url="bootstrap.bin"/></manifest>"#.to_vec()
+    br#"<manifest xmlns="http://ns.adobe.com/f4m/1.0"><streamType>recorded</streamType><duration>3</duration><baseURL>media/</baseURL><media url="low" bitrate="400" width="640" height="360" bootstrapInfoId="boot"/><media url="medium" bitrate="800" width="960" height="540" bootstrapInfoId="boot"/><media url="high" bitrate="1200" width="1280" height="720" bootstrapInfoId="boot"/><media url="maximum" bitrate="2000" width="1920" height="1080" bootstrapInfoId="boot"/><bootstrapInfo id="boot" url="bootstrap.bin"/></manifest>"#.to_vec()
 }
 
 /// Строит VOD `abst/asrt/afrt` с двумя fragments и terminal marker-ом.
 fn vod_bootstrap() -> Vec<u8> {
-    let segment_table = segment_run_table(2);
+    vod_bootstrap_with_fragment_count(2)
+}
+
+/// Три fragments дают selected runtime два одновременно готовящихся successor-а.
+fn parallel_vod_bootstrap() -> Vec<u8> {
+    vod_bootstrap_with_fragment_count(3)
+}
+
+/// Общий wire builder сохраняет один parser-owned bootstrap формат.
+fn vod_bootstrap_with_fragment_count(fragment_count: u32) -> Vec<u8> {
+    let segment_table = segment_run_table(fragment_count);
     let fragment_table = fragment_run_table();
     let mut payload = vec![0, 0, 0, 0];
     payload.extend_from_slice(&1_u32.to_be_bytes());

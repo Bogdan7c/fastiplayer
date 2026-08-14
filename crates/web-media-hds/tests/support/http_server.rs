@@ -121,6 +121,12 @@ impl HermeticHttpServer {
         self.maximum_concurrent_media_requests
             .load(Ordering::Acquire)
     }
+
+    /// Начинает отдельное measurement window после catalog discovery.
+    pub(crate) fn reset_maximum_concurrent_media_requests(&self) {
+        self.maximum_concurrent_media_requests
+            .store(0, Ordering::Release);
+    }
 }
 
 impl Drop for HermeticHttpServer {

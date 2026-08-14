@@ -27,7 +27,8 @@ use crate::resolve::{
     HdsRenditionRejection, HdsRenditionRejectionReason, ResolvedHdsRendition, resolve_presentation,
 };
 use crate::runtime::{
-    HdsDemuxPlan, HdsVodOpenResult, open_transactional_demuxer, prepare_probed_hds_vod,
+    HdsDemuxPlan, HdsProbedDemuxer, HdsVodOpenResult, open_probed_transactional_demuxer,
+    prepare_probed_hds_vod,
 };
 
 /// Synchronous provider discovery request; app может выполнить его на bounded background worker-е.
@@ -125,7 +126,7 @@ impl HdsRenditionCatalog {
 struct DiscoveredHdsRendition {
     exact_identity: CoupledVariantExactIdentity,
     plan: Arc<HdsDemuxPlan>,
-    demuxer: Box<dyn Demuxer + Send>,
+    runtime: HdsProbedDemuxer,
 }
 
 /// Пробует каждый advertised rendition и публикует catalog только после complete pass-а.
@@ -173,7 +174,7 @@ pub fn discover_hds_renditions(
                     video: probe.video,
                     audio: probe.audio,
                     plan: probe.plan,
-                    demuxer: probe.demuxer,
+                    runtime: probe.runtime,
                 });
             }
             Err(HdsRenditionProbeFailure::Rejected(reason)) => {
@@ -239,7 +240,7 @@ pub fn discover_hds_renditions(
         runtime_rows.push(DiscoveredHdsRendition {
             exact_identity,
             plan: row.plan,
-            demuxer: row.demuxer,
+            runtime: row.runtime,
         });
     }
 
@@ -297,7 +298,8 @@ pub fn prepare_discovered_hds_vod(
     let HdsRenditionCatalog { catalog, rows, .. } = discovered;
     let mut rows = rows.into_vec();
     let selected = rows.swap_remove(selected_index);
-    prepare_probed_hds_vod(selected.plan, selected.demuxer, catalog)
+    selected.runtime.activate_read_ahead()?;
+    prepare_probed_hds_vod(selected.plan, selected.runtime.into_demuxer(), catalog)
 }
 
 struct PendingDiscoveredHdsRendition {
@@ -306,7 +308,7 @@ struct PendingDiscoveredHdsRendition {
     video: VideoTrackDescriptor,
     audio: AudioTrackDescriptor,
     plan: Arc<HdsDemuxPlan>,
-    demuxer: Box<dyn Demuxer + Send>,
+    runtime: HdsProbedDemuxer,
 }
 
 struct HdsRenditionProbe {
@@ -314,7 +316,7 @@ struct HdsRenditionProbe {
     audio: AudioTrackDescriptor,
     track_semantic_evidence: String,
     plan: Arc<HdsDemuxPlan>,
-    demuxer: Box<dyn Demuxer + Send>,
+    runtime: HdsProbedDemuxer,
 }
 
 /// Один bounded probe либо доказал content rejection, либо не смог вынести
@@ -454,10 +456,10 @@ fn probe_rendition(
         )
         .map_err(HdsRenditionProbeFailure::Unavailable)?,
     );
-    let demuxer = open_transactional_demuxer(Arc::clone(&plan), 0)
+    let runtime = open_probed_transactional_demuxer(Arc::clone(&plan), 0)
         .map_err(HdsRenditionProbeFailure::Unavailable)?;
     let (video_track, audio_track) =
-        exact_av_tracks(demuxer.as_ref()).map_err(HdsRenditionProbeFailure::Rejected)?;
+        exact_av_tracks(runtime.demuxer()).map_err(HdsRenditionProbeFailure::Rejected)?;
     validate_profile_codecs(video_track, audio_track)
         .map_err(HdsRenditionProbeFailure::Rejected)?;
     capability_probe
@@ -474,7 +476,7 @@ fn probe_rendition(
         audio,
         track_semantic_evidence,
         plan,
-        demuxer,
+        runtime,
     })
 }
 

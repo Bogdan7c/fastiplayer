@@ -1,6 +1,6 @@
 //! Explicit nonblocking ordered segment delivery.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::time::{Duration, Instant};
 
@@ -182,6 +182,12 @@ struct ActiveSegment {
     submitted: bool,
 }
 
+/// Завершённый fetch ждёт всех более ранних sequence перед публикацией.
+struct CompletedSegment {
+    descriptor: AdaptiveSegmentDescriptor,
+    outcome: Result<Bytes, AdaptiveTransportError>,
+}
+
 /// Owner bounded descriptors, retry state и ordered nonblocking delivery.
 pub struct AdaptiveOrderedSegmentSource {
     context: AdaptiveHttpContext,
@@ -191,7 +197,10 @@ pub struct AdaptiveOrderedSegmentSource {
     presentation: Option<AdaptivePresentation>,
     component_clock: Option<ComponentClockMetadata>,
     pending: VecDeque<AdaptiveSegmentDescriptor>,
-    active: Option<ActiveSegment>,
+    active: Vec<ActiveSegment>,
+    completed: BTreeMap<u64, CompletedSegment>,
+    maximum_fetch_concurrency: NonZeroUsize,
+    active_fetch_limit: NonZeroUsize,
     last_delivered_sequence: Option<OrderedSegmentSequence>,
     terminal_after_pending: bool,
     next_job_id: u64,
@@ -200,7 +209,17 @@ pub struct AdaptiveOrderedSegmentSource {
 impl AdaptiveOrderedSegmentSource {
     /// Создаёт пустой source; initial readiness явно temporary-unavailable.
     pub fn new(context: AdaptiveHttpContext) -> Result<Self, AdaptiveTransportError> {
-        let executor = FetchExecutor::start(context.clone())?;
+        Self::new_with_read_ahead_concurrency(context, NonZeroUsize::MIN)
+    }
+
+    /// Создаёт source с dormant bounded worker pool; до явного enable active
+    /// fetch limit остаётся равен одному и catalog probe не читает successors.
+    pub fn new_with_read_ahead_concurrency(
+        context: AdaptiveHttpContext,
+        maximum_fetch_concurrency: NonZeroUsize,
+    ) -> Result<Self, AdaptiveTransportError> {
+        let executor =
+            FetchExecutor::start_with_worker_count(context.clone(), maximum_fetch_concurrency)?;
         Ok(Self {
             current_generation: context.initial_generation,
             context,
@@ -209,11 +228,20 @@ impl AdaptiveOrderedSegmentSource {
             presentation: None,
             component_clock: None,
             pending: VecDeque::new(),
-            active: None,
+            active: Vec::with_capacity(maximum_fetch_concurrency.get()),
+            completed: BTreeMap::new(),
+            maximum_fetch_concurrency,
+            active_fetch_limit: NonZeroUsize::MIN,
             last_delivered_sequence: None,
             terminal_after_pending: false,
             next_job_id: 1,
         })
+    }
+
+    /// После exact provider selection разрешает использовать весь заранее
+    /// bounded worker pool; порядок delivery остаётся sequence-строгим.
+    pub fn enable_concurrent_read_ahead(&mut self) {
+        self.active_fetch_limit = self.maximum_fetch_concurrency;
     }
 
     /// Atomically публикует initial/newer manifest generation.
@@ -247,7 +275,8 @@ impl AdaptiveOrderedSegmentSource {
         self.presentation = Some(snapshot.presentation);
         self.component_clock = Some(snapshot.component_clock);
         self.pending = snapshot.segments.into();
-        self.active = None;
+        self.active.clear();
+        self.completed.clear();
         self.terminal_after_pending =
             snapshot.completion == AdaptiveSegmentCompletion::EndAfterSnapshot;
         Ok(())
@@ -270,21 +299,24 @@ impl AdaptiveOrderedSegmentSource {
         if self.context.cancellation.is_cancelled() {
             return SegmentPoll::Cancelled;
         }
-        match self.executor.try_receive() {
-            Ok(Some(outcome)) => {
-                if let Some(result) = self.accept_outcome(outcome, now) {
-                    return result;
-                }
+        loop {
+            match self.executor.try_receive() {
+                Ok(Some(outcome)) => self.accept_outcome(outcome, now),
+                Ok(None) => break,
+                Err(error) => return SegmentPoll::Failed(error),
             }
-            Ok(None) => {}
-            Err(error) => return SegmentPoll::Failed(error),
         }
 
-        if self.active.is_none()
-            && let Some(descriptor) = self.pending.pop_front()
-        {
+        if let Some(result) = self.take_next_completed() {
+            return result;
+        }
+
+        while self.active.len() < self.active_fetch_limit.get() {
+            let Some(descriptor) = self.pending.pop_front() else {
+                break;
+            };
             let job_id = self.allocate_job_id();
-            self.active = Some(ActiveSegment {
+            self.active.push(ActiveSegment {
                 descriptor,
                 attempt: NonZeroU8::MIN,
                 retry_not_before: now,
@@ -293,7 +325,45 @@ impl AdaptiveOrderedSegmentSource {
             });
         }
 
-        let Some(active) = &mut self.active else {
+        let mut shortest_retry_wait = None;
+        for active in &mut self.active {
+            if now < active.retry_not_before {
+                let retry_wait = active.retry_not_before.duration_since(now);
+                shortest_retry_wait = Some(
+                    shortest_retry_wait
+                        .map_or(retry_wait, |current: Duration| current.min(retry_wait)),
+                );
+                continue;
+            }
+            if !active.submitted {
+                let byte_range = active
+                    .descriptor
+                    .byte_range
+                    .map(SegmentByteRange::into_source_range);
+                let maximum_body_bytes = byte_range
+                    .map(HttpBoundedByteRange::length)
+                    .unwrap_or(self.context.limits.maximum_segment_bytes);
+                let job = FetchJob {
+                    id: active.job_id,
+                    generation: self.current_generation,
+                    target: active.descriptor.target.clone(),
+                    byte_range,
+                    maximum_body_bytes,
+                    purpose: FetchPurpose::MediaSegment,
+                    query_application:
+                        crate::fetch::AdaptiveResourceQueryApplication::ApplyScopedReplacement,
+                    secret_forwarding: self
+                        .context
+                        .resource_secret_forwarding_for(&active.descriptor.target),
+                };
+                match self.executor.try_submit(job) {
+                    Ok(submitted) => active.submitted = submitted,
+                    Err(error) => return SegmentPoll::Failed(error),
+                }
+            }
+        }
+
+        if self.active.is_empty() && self.pending.is_empty() && self.completed.is_empty() {
             return if self.terminal_after_pending {
                 SegmentPoll::EndOfStream
             } else {
@@ -301,80 +371,104 @@ impl AdaptiveOrderedSegmentSource {
                     retry_after: Duration::from_millis(1),
                 }
             };
-        };
-        if now < active.retry_not_before {
-            return SegmentPoll::TemporarilyUnavailable {
-                retry_after: active.retry_not_before.duration_since(now),
-            };
-        }
-        if !active.submitted {
-            let byte_range = active
-                .descriptor
-                .byte_range
-                .map(SegmentByteRange::into_source_range);
-            let maximum_body_bytes = byte_range
-                .map(HttpBoundedByteRange::length)
-                .unwrap_or(self.context.limits.maximum_segment_bytes);
-            let job = FetchJob {
-                id: active.job_id,
-                generation: self.current_generation,
-                target: active.descriptor.target.clone(),
-                byte_range,
-                maximum_body_bytes,
-                purpose: FetchPurpose::MediaSegment,
-                query_application:
-                    crate::fetch::AdaptiveResourceQueryApplication::ApplyScopedReplacement,
-                secret_forwarding: self
-                    .context
-                    .resource_secret_forwarding_for(&active.descriptor.target),
-            };
-            match self.executor.try_submit(job) {
-                Ok(submitted) => active.submitted = submitted,
-                Err(error) => return SegmentPoll::Failed(error),
-            }
         }
         SegmentPoll::TemporarilyUnavailable {
-            retry_after: Duration::from_millis(1),
+            retry_after: shortest_retry_wait.unwrap_or(Duration::from_millis(1)),
         }
     }
 
-    fn accept_outcome(&mut self, outcome: FetchOutcome, now: Instant) -> Option<SegmentPoll> {
-        let active = self.active.as_mut()?;
-        if outcome.id != active.job_id || outcome.generation != self.current_generation {
-            return None;
+    /// Принимает completion любого worker-а, но не публикует его раньше
+    /// незавершённых меньших sequence.
+    fn accept_outcome(&mut self, outcome: FetchOutcome, now: Instant) {
+        if outcome.generation != self.current_generation {
+            return;
         }
+        let Some(active_index) = self
+            .active
+            .iter()
+            .position(|active| active.job_id == outcome.id)
+        else {
+            return;
+        };
         match outcome.result {
             Ok(success) => {
-                let active = self.active.take().expect("active segment");
-                self.last_delivered_sequence = Some(active.descriptor.sequence);
-                Some(SegmentPoll::Segment(OrderedSegment {
-                    sequence: active.descriptor.sequence,
-                    kind: active.descriptor.kind,
-                    discontinuity: active.descriptor.discontinuity,
-                    bytes: Bytes::from(success.bytes),
-                }))
+                let active = self.active.swap_remove(active_index);
+                self.completed.insert(
+                    active.descriptor.sequence.get(),
+                    CompletedSegment {
+                        descriptor: active.descriptor,
+                        outcome: Ok(Bytes::from(success.bytes)),
+                    },
+                );
             }
             Err(AdaptiveTransportError::Cancelled) => {
-                self.active = None;
-                Some(SegmentPoll::Cancelled)
+                let active = self.active.swap_remove(active_index);
+                self.completed.insert(
+                    active.descriptor.sequence.get(),
+                    CompletedSegment {
+                        descriptor: active.descriptor,
+                        outcome: Err(AdaptiveTransportError::Cancelled),
+                    },
+                );
             }
             Err(error)
                 if error.is_retryable()
-                    && active.attempt.get() < self.context.retry.maximum_attempts().get() =>
+                    && self.active[active_index].attempt.get()
+                        < self.context.retry.maximum_attempts().get() =>
             {
+                let active = &mut self.active[active_index];
                 let delay = self.context.retry.backoff_after(active.attempt);
                 active.attempt = NonZeroU8::new(active.attempt.get() + 1).expect("bounded attempt");
                 active.retry_not_before = now + delay;
                 active.job_id = self.next_job_id;
                 self.next_job_id = self.next_job_id.wrapping_add(1).max(1);
                 active.submitted = false;
-                Some(SegmentPoll::TemporarilyUnavailable { retry_after: delay })
             }
             Err(error) => {
-                self.active = None;
-                Some(SegmentPoll::Failed(error))
+                let active = self.active.swap_remove(active_index);
+                self.completed.insert(
+                    active.descriptor.sequence.get(),
+                    CompletedSegment {
+                        descriptor: active.descriptor,
+                        outcome: Err(error),
+                    },
+                );
             }
         }
+    }
+
+    /// Возвращает только минимальную outstanding sequence, если она завершена.
+    fn take_next_completed(&mut self) -> Option<SegmentPoll> {
+        let next_sequence = self.next_outstanding_sequence()?;
+        let completed = self.completed.remove(&next_sequence)?;
+        Some(match completed.outcome {
+            Ok(bytes) => {
+                self.last_delivered_sequence = Some(completed.descriptor.sequence);
+                SegmentPoll::Segment(OrderedSegment {
+                    sequence: completed.descriptor.sequence,
+                    kind: completed.descriptor.kind,
+                    discontinuity: completed.descriptor.discontinuity,
+                    bytes,
+                })
+            }
+            Err(AdaptiveTransportError::Cancelled) => SegmentPoll::Cancelled,
+            Err(error) => SegmentPoll::Failed(error),
+        })
+    }
+
+    /// Вычисляет минимальную sequence во всех трёх owner-owned стадиях.
+    fn next_outstanding_sequence(&self) -> Option<u64> {
+        self.pending
+            .front()
+            .map(|descriptor| descriptor.sequence.get())
+            .into_iter()
+            .chain(
+                self.active
+                    .iter()
+                    .map(|active| active.descriptor.sequence.get()),
+            )
+            .chain(self.completed.keys().copied())
+            .min()
     }
 
     fn allocate_job_id(&mut self) -> u64 {

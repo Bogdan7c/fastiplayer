@@ -254,6 +254,13 @@ fn hds_policy(
         // Шесть probe-ов покрывают типичный полный F4M ladder одним bounded network wave-ом.
         maximum_parallel_rendition_probes: NonZeroUsize::new(6)
             .expect("HDS parallel rendition probes"),
+        // Два готовых successor-а разрывают зависимость HTTP chain от заполненности
+        // demux packet queue и покрывают jitter вокруг одной fragment duration.
+        maximum_buffered_fragments: NonZeroUsize::new(2).expect("HDS buffered successor fragments"),
+        // Два connection-а перекрывают per-request CDN latency; ordered source
+        // всё равно публикует fragments только в manifest sequence.
+        maximum_concurrent_fragment_fetches: NonZeroUsize::new(2)
+            .expect("HDS concurrent fragment fetches"),
     })
 }
 
@@ -352,6 +359,8 @@ mod tests {
             hds_policy(adaptive_limits, source_config.read_timeout()).expect("valid HDS policy");
 
         assert_eq!(policy.maximum_parallel_rendition_probes.get(), 6);
+        assert_eq!(policy.maximum_buffered_fragments.get(), 2);
+        assert_eq!(policy.maximum_concurrent_fragment_fetches.get(), 2);
     }
 
     /// Медленный, но допустимый first-fragment read не должен проигрывать hidden 2s deadline.
