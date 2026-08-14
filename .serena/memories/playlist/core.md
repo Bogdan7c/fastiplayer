@@ -212,3 +212,10 @@ Session 05 completed PASS on 2026-07-14. This memory complements `mem:core` and 
 ## S25 same-item candidate switch (2026-07-22)
 - S25 is an app/runtime rebind, not a queue mutation. Exact Installed calls `PlaylistController::rebind_active_media_same_lineage`; Item ID, current, structural/traversal revisions and shuffle history/upcoming/cursor remain unchanged. Detached active media stays detached and does not invent queue current.
 - The switch must not create a D08 reservation and must not call `register_external_strong_install`, because that would create a new lineage. Full contract: `mem:app-egui/same-item-candidate-switch-s25-2026-07-22`.
+
+
+## Runtime-only failed anchor до первого Installed (2026-08-14)
+
+- `PlaylistQueue::begin_failed_manual_navigation(item_id)` строит opaque `ManualNavigationPreview` в `AwaitingUserAfterFailure` для concrete pre-barrier failure, даже когда persisted `traversal_current=None`. Boundary валидирует committed Item ID и возвращает typed `TargetNotCommitted`; queue/current/revisions/reservation и factual shuffle history не мутируются.
+- `Next`/`Previous` продолжают тот же preview относительно failed target, `prepare_manual_navigation` реализует exact Retry, и только успешный correlated commit меняет current. При shuffle exact owning Entry ID расходуется только speculative preview-ом; failed item никогда не становится factual history visit.
+- Реализация вынесена в `queue/navigation/failed_anchor.rs`, чтобы `navigation.rs` сохранил hardening gate 800 строк. Focused coverage: `queue/navigation/tests.rs` (Retry/Next/Previous/no current/stale target) и `queue/shuffle/tests.rs` (failed target не входит в factual history).

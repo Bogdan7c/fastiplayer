@@ -310,6 +310,65 @@ fn fast_preview_advances_from_latest_target_and_backtracks_to_origin() {
 }
 
 #[test]
+fn failed_anchor_before_first_install_supports_retry_next_previous_without_committing_current() {
+    let (mut queue, ids) = queue_with_items(3);
+    let revision_before = queue.revision_snapshot();
+
+    let failed_middle = queue
+        .begin_failed_manual_navigation(ids[1])
+        .expect("committed middle row can become a runtime-only failed anchor");
+    assert_eq!(
+        failed_middle.state(),
+        ManualNavigationPreviewState::AwaitingUserAfterFailure(
+            crate::FailedManualNavigationTarget { item_id: ids[1] }
+        )
+    );
+    assert!(queue.traversal_current().is_none());
+
+    let retry_token = queue
+        .prepare_manual_navigation(failed_middle)
+        .expect("retry reserves the exact failed row without committing it");
+    assert_eq!(retry_token.target_item_id(), ids[1]);
+    let failed_middle = queue.fail_manual_navigation(retry_token);
+    assert!(queue.traversal_current().is_none());
+
+    let next_preview = expect_manual_open(
+        queue
+            .continue_manual_navigation(
+                failed_middle,
+                ManualNavigationIntent::next(RepeatMode::StopAtEnd),
+            )
+            .expect("Next continues after the failed row"),
+        ids[2],
+    );
+    assert_eq!(next_preview.state(), ManualNavigationPreviewState::Ready);
+    queue.discard_manual_navigation(next_preview);
+
+    let failed_middle = queue
+        .begin_failed_manual_navigation(ids[1])
+        .expect("fresh failed anchor supports the opposite direction");
+    let previous_preview = expect_manual_open(
+        queue
+            .continue_manual_navigation(
+                failed_middle,
+                ManualNavigationIntent::previous(RepeatMode::StopAtEnd),
+            )
+            .expect("Previous continues before the failed row"),
+        ids[0],
+    );
+    queue.discard_manual_navigation(previous_preview);
+
+    assert!(queue.traversal_current().is_none());
+    assert_eq!(queue.revision_snapshot(), revision_before);
+
+    queue.clear();
+    assert_eq!(
+        queue.begin_failed_manual_navigation(ids[1]).unwrap_err(),
+        crate::ManualNavigationPreviewError::TargetNotCommitted { item_id: ids[1] }
+    );
+}
+
+#[test]
 fn discard_and_failure_preserve_committed_queue_without_domain_mutation() {
     let (mut queue, ids) = queue_with_items(3);
     set_current(&mut queue, ids[0]);

@@ -1,4 +1,4 @@
-//! Bounded owner единственного blocking source-preparation worker-а.
+//! Bounded owner blocking source-preparation worker-ов.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,8 +14,11 @@ use crate::process_shutdown::{
 
 use super::{MediaOpenStartError, MediaPreparationFailureKind, PreparedMediaOpen};
 
-/// Один running blocking preparation + один latest pending request — жёсткий D38 budget.
+/// Один stale blocking preparation рядом с актуальным request — жёсткий D38 budget.
 pub(crate) const MAX_NON_CANCELLABLE_STALE_PREPARATIONS: usize = 1;
+
+/// Один слот принадлежит актуальному request-у, остальные — bounded stale work.
+const PREPARATION_WORKER_COUNT: usize = MAX_NON_CANCELLABLE_STALE_PREPARATIONS + 1;
 
 pub(super) type PreparationResult = Result<PreparedMediaOpen, MediaPreparationFailureKind>;
 type PreparationTask = Box<dyn FnOnce(&PreparationCancellation) -> PreparationResult + Send>;
@@ -158,13 +161,13 @@ struct PreparationExecutorShared {
     state_lost: AtomicBool,
 }
 
-/// Один process worker и capacity-one latest pending slot.
+/// Bounded worker pool и capacity-one latest pending slot.
 pub(super) struct PreparationExecutor {
-    /// Worker захватывает только shared state, поэтому owner не образует Arc-cycle.
+    /// Workers захватывают только shared state, поэтому owner не образует Arc-cycle.
     shared: Arc<PreparationExecutorShared>,
 
-    /// Exact join authority единственного worker-а остаётся у process owner-а.
-    worker_handle: Mutex<Option<thread::JoinHandle<()>>>,
+    /// Exact join authority всех bounded worker-ов остаётся у process owner-а.
+    worker_handles: Mutex<Vec<thread::JoinHandle<()>>>,
 
     /// Повторный terminal call возвращает отдельный `AlreadyCompleted`.
     terminal_shutdown_completed: AtomicBool,
@@ -183,7 +186,7 @@ impl PreparationExecutor {
                 wake_port,
                 state_lost: AtomicBool::new(false),
             }),
-            worker_handle: Mutex::new(None),
+            worker_handles: Mutex::new(Vec::new()),
             terminal_shutdown_completed: AtomicBool::new(false),
         })
     }
@@ -200,16 +203,28 @@ impl PreparationExecutor {
             return Err(MediaOpenStartError::ShuttingDown);
         }
         if !state.worker_started {
-            let worker_shared = Arc::clone(&self.shared);
-            let worker_handle = thread::Builder::new()
-                .name("media-open-worker".to_owned())
-                .spawn(move || Self::run(worker_shared))
-                .map_err(|_| MediaOpenStartError::WorkerStartup)?;
-            match self.worker_handle.lock() {
-                Ok(mut handle_slot) => *handle_slot = Some(worker_handle),
-                Err(poisoned_handle_slot) => {
+            let mut spawned_workers = Vec::with_capacity(PREPARATION_WORKER_COUNT);
+            for worker_index in 0..PREPARATION_WORKER_COUNT {
+                let worker_shared = Arc::clone(&self.shared);
+                let worker_handle = match thread::Builder::new()
+                    .name(format!("media-open-worker-{worker_index}"))
+                    .spawn(move || Self::run(worker_shared))
+                {
+                    Ok(worker_handle) => worker_handle,
+                    Err(_) => {
+                        state.shutting_down = true;
+                        self.shared.ready.notify_all();
+                        self.retain_spawned_worker_handles(spawned_workers);
+                        return Err(MediaOpenStartError::WorkerStartup);
+                    }
+                };
+                spawned_workers.push(worker_handle);
+            }
+            match self.worker_handles.lock() {
+                Ok(mut worker_handles) => worker_handles.extend(spawned_workers),
+                Err(poisoned_worker_handles) => {
                     self.shared.state_lost.store(true, Ordering::Release);
-                    *poisoned_handle_slot.into_inner() = Some(worker_handle);
+                    poisoned_worker_handles.into_inner().extend(spawned_workers);
                     state.shutting_down = true;
                     self.shared.ready.notify_all();
                     return Err(MediaOpenStartError::ExecutorInvariant);
@@ -248,29 +263,56 @@ impl PreparationExecutor {
         }
         self.shutdown();
 
-        let mut handle_slot = match self.worker_handle.lock() {
-            Ok(handle_slot) => handle_slot,
-            Err(poisoned_handle_slot) => {
+        let mut worker_handles = match self.worker_handles.lock() {
+            Ok(worker_handles) => worker_handles,
+            Err(poisoned_worker_handles) => {
                 self.shared.state_lost.store(true, Ordering::Release);
-                poisoned_handle_slot.into_inner()
+                poisoned_worker_handles.into_inner()
             }
         };
-        match join_thread_until(&mut handle_slot, deadline) {
-            FinishedThreadJoin::AlreadyJoined | FinishedThreadJoin::Joined => {
-                self.terminal_shutdown_completed
-                    .store(true, Ordering::Release);
-                ProcessOwnerShutdownOutcome::Completed
+        let mut pending_workers = Vec::new();
+        let mut panicked_threads = 0_usize;
+        for worker_handle in std::mem::take(&mut *worker_handles) {
+            let mut worker_slot = Some(worker_handle);
+            match join_thread_until(&mut worker_slot, deadline) {
+                FinishedThreadJoin::AlreadyJoined | FinishedThreadJoin::Joined => {}
+                FinishedThreadJoin::StillRunning => pending_workers
+                    .push(worker_slot.expect("still-running worker сохраняет exact join handle")),
+                FinishedThreadJoin::Panicked => panicked_threads += 1,
             }
-            FinishedThreadJoin::StillRunning => {
-                ProcessOwnerShutdownOutcome::TimedOut { pending_threads: 1 }
-            }
-            FinishedThreadJoin::Panicked => {
-                self.terminal_shutdown_completed
-                    .store(true, Ordering::Release);
+        }
+        *worker_handles = pending_workers;
+        let pending_threads = worker_handles.len();
+        if pending_threads > 0 {
+            if panicked_threads > 0 {
                 ProcessOwnerShutdownOutcome::ThreadPanicked {
-                    panicked_threads: 1,
+                    panicked_threads,
+                    pending_threads,
+                }
+            } else {
+                ProcessOwnerShutdownOutcome::TimedOut { pending_threads }
+            }
+        } else {
+            self.terminal_shutdown_completed
+                .store(true, Ordering::Release);
+            if panicked_threads > 0 {
+                ProcessOwnerShutdownOutcome::ThreadPanicked {
+                    panicked_threads,
                     pending_threads: 0,
                 }
+            } else {
+                ProcessOwnerShutdownOutcome::Completed
+            }
+        }
+    }
+
+    /// Spawn failure не теряет join authority уже созданных worker-ов.
+    fn retain_spawned_worker_handles(&self, spawned_workers: Vec<thread::JoinHandle<()>>) {
+        match self.worker_handles.lock() {
+            Ok(mut worker_handles) => worker_handles.extend(spawned_workers),
+            Err(poisoned_worker_handles) => {
+                self.shared.state_lost.store(true, Ordering::Release);
+                poisoned_worker_handles.into_inner().extend(spawned_workers);
             }
         }
     }
@@ -318,17 +360,16 @@ impl PreparationExecutor {
 impl Drop for PreparationExecutor {
     fn drop(&mut self) {
         self.shutdown();
-        let handle_slot = match self.worker_handle.get_mut() {
-            Ok(handle_slot) => handle_slot,
-            Err(poisoned_handle_slot) => poisoned_handle_slot.into_inner(),
-        };
-        let Some(worker_handle) = handle_slot.take() else {
-            return;
+        let worker_handles = match self.worker_handles.get_mut() {
+            Ok(worker_handles) => worker_handles,
+            Err(poisoned_worker_handles) => poisoned_worker_handles.into_inner(),
         };
 
         // Fail-safe Drop не является bounded process path. В production terminal
-        // coordinator обязан заранее вызвать `shutdown_until` и убрать handle.
-        let _worker_result = worker_handle.join();
+        // coordinator обязан заранее вызвать `shutdown_until` и убрать handles.
+        for worker_handle in worker_handles.drain(..) {
+            let _worker_result = worker_handle.join();
+        }
     }
 }
 
@@ -403,10 +444,11 @@ mod shutdown_tests {
         );
         assert!(
             executor
-                .worker_handle
+                .worker_handles
                 .lock()
-                .expect("worker handle mutex")
-                .is_some()
+                .expect("worker handles mutex")
+                .iter()
+                .any(|worker_handle| !worker_handle.is_finished())
         );
 
         release.store(true, Ordering::Release);
@@ -419,8 +461,11 @@ mod shutdown_tests {
     #[test]
     fn worker_thread_panic_is_typed() {
         let executor = disconnected_executor();
-        *executor.worker_handle.lock().expect("worker handle mutex") =
-            Some(std::thread::spawn(|| panic!("expected executor panic")));
+        executor
+            .worker_handles
+            .lock()
+            .expect("worker handles mutex")
+            .push(std::thread::spawn(|| panic!("expected executor panic")));
 
         assert_eq!(
             executor.shutdown_until(ShutdownDeadline::after(Duration::from_secs(1))),

@@ -47,6 +47,7 @@ pub(crate) struct ManualNavigationInvalidation {
 pub(crate) enum ManualNavigationFailureOutcome {
     AwaitingUserAfterFailure { item_id: PlaylistItemId },
     StaleRequest { request_id: MediaOpenRequestId },
+    TargetNotCommitted { item_id: PlaylistItemId },
     NotManualNavigation,
 }
 
@@ -99,7 +100,8 @@ pub(super) enum CursorStepOutcome {
 }
 
 struct CursorContext {
-    origin: TransportActionOrigin,
+    /// До первой явной команды failed-anchor не приписывает себе фиктивный UI/MPRIS origin.
+    origin: Option<TransportActionOrigin>,
     active_origin: Option<ActiveMediaIdentity>,
     origin_state: ManualNavigationOriginState,
     request_id: Option<MediaOpenRequestId>,
@@ -131,7 +133,29 @@ impl ManualNavigationCursor {
         self.preview = Some(CursorPreview {
             preview,
             context: CursorContext {
-                origin,
+                origin: Some(origin),
+                active_origin,
+                origin_state: ManualNavigationOriginState::Active,
+                request_id: None,
+            },
+        });
+        self.prepared_context = None;
+    }
+
+    /// Принимает failed preview до первого `Installed`, не выдумывая origin команды.
+    pub(super) fn begin_unbound_failure(
+        &mut self,
+        preview: ManualNavigationPreview,
+        active_origin: Option<ActiveMediaIdentity>,
+    ) {
+        debug_assert!(matches!(
+            preview.state(),
+            ManualNavigationPreviewState::AwaitingUserAfterFailure(_)
+        ));
+        self.preview = Some(CursorPreview {
+            preview,
+            context: CursorContext {
+                origin: None,
                 active_origin,
                 origin_state: ManualNavigationOriginState::Active,
                 request_id: None,
@@ -191,8 +215,24 @@ impl ManualNavigationCursor {
     pub(super) fn origin(&self) -> Option<TransportActionOrigin> {
         self.preview
             .as_ref()
-            .map(|cursor| cursor.context.origin)
-            .or_else(|| self.prepared_context.as_ref().map(|context| context.origin))
+            .and_then(|cursor| cursor.context.origin)
+            .or_else(|| {
+                self.prepared_context
+                    .as_ref()
+                    .and_then(|context| context.origin)
+            })
+    }
+
+    /// Первая реальная transport-команда привязывает unbound failed-anchor к origin.
+    pub(super) fn bind_origin_if_unset(&mut self, origin: TransportActionOrigin) {
+        let context = self
+            .preview
+            .as_mut()
+            .map(|cursor| &mut cursor.context)
+            .or(self.prepared_context.as_mut());
+        if let Some(context) = context {
+            context.origin.get_or_insert(origin);
+        }
     }
 
     /// UI читает только accessibility-факт D56, не outcome policy/correlation поля.
@@ -208,10 +248,12 @@ impl ManualNavigationCursor {
         queue: &PlaylistQueue,
         direction: ManualNavigationDirection,
         repeat_mode: playlist_core::RepeatMode,
+        requested_origin: TransportActionOrigin,
     ) -> CursorStepOutcome {
-        let Some(cursor) = self.preview.take() else {
+        let Some(mut cursor) = self.preview.take() else {
             return CursorStepOutcome::NoItem(ManualNavigationNoItem::EmptyQueue);
         };
+        cursor.context.origin.get_or_insert(requested_origin);
         let intent = match direction {
             ManualNavigationDirection::Next => ManualNavigationIntent::next(repeat_mode),
             ManualNavigationDirection::Previous => ManualNavigationIntent::previous(repeat_mode),
@@ -403,11 +445,27 @@ impl PlaylistController {
         &mut self,
         item_id: PlaylistItemId,
     ) -> ManualNavigationFailureOutcome {
-        if self.install_state.is_some()
-            || self.manual_navigation_cursor.latest_target_item_id() != Some(item_id)
-            || !self.manual_navigation_cursor.mark_prepared_target_failed()
-        {
+        if self.install_state.is_some() {
             return ManualNavigationFailureOutcome::NotManualNavigation;
+        }
+        if self.manual_navigation_cursor.latest_target_item_id() == Some(item_id) {
+            if !self.manual_navigation_cursor.mark_prepared_target_failed() {
+                return ManualNavigationFailureOutcome::NotManualNavigation;
+            }
+        } else if self.manual_navigation_cursor.has_state() {
+            return ManualNavigationFailureOutcome::NotManualNavigation;
+        } else {
+            let preview = match self.queue.begin_failed_manual_navigation(item_id) {
+                Ok(preview) => preview,
+                Err(ManualNavigationPreviewError::TargetNotCommitted { item_id }) => {
+                    return ManualNavigationFailureOutcome::TargetNotCommitted { item_id };
+                }
+                Err(ManualNavigationPreviewError::QueueChanged { .. }) => {
+                    unreachable!("fresh failed anchor captures the current queue revision")
+                }
+            };
+            self.manual_navigation_cursor
+                .begin_unbound_failure(preview, self.active_media);
         }
         self.publish_view(false);
         ManualNavigationFailureOutcome::AwaitingUserAfterFailure { item_id }
@@ -430,6 +488,8 @@ impl PlaylistController {
             .manual_navigation_cursor
             .latest_target_item_id()
             .expect("failed preview retains target");
+        self.manual_navigation_cursor
+            .bind_origin_if_unset(TransportActionOrigin::Ui);
         let origin = self
             .manual_navigation_cursor
             .origin()

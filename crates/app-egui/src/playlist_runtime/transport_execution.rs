@@ -274,6 +274,7 @@ fn playlist_install_request(
 mod tests {
     use std::num::{NonZeroU32, NonZeroU64};
     use std::path::PathBuf;
+    use std::time::Duration;
 
     use media_core::MediaTime;
     use player_core::{MediaInstanceId, PlaybackState};
@@ -289,9 +290,11 @@ mod tests {
     use crate::playlist_runtime::PlaylistBindingGeneration;
     use crate::playlist_runtime::controller::{
         AutomaticDeferredAvailability, AutomaticLifecycleOutcome, ControllerAppendOutcome,
-        ControllerPlayItemOutcome, EndedSnapshotKind, InstallReadyOutcome, PlaylistController,
-        PlaylistErrorBehavior,
+        ControllerManualNavigationOutcome, ControllerPlayItemOutcome,
+        DiscoveryManualWaitAvailability, EndedSnapshotKind, InstallReadyOutcome,
+        PlaylistController, PlaylistErrorBehavior, PreviousRestartThreshold,
     };
+    use crate::playlist_runtime::identity::PendingTargetOrigin;
 
     fn non_zero(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("test identity is non-zero")
@@ -352,6 +355,72 @@ mod tests {
         assert_eq!(window.start(), MediaTime::from_secs(60));
         assert_eq!(window.end_exclusive(), Some(MediaTime::from_secs(120)));
         assert_eq!(install.item_id, item_id);
+    }
+
+    #[test]
+    fn first_pre_barrier_failure_routes_to_failed_anchor_and_next_opens_second_item() {
+        let mut controller = PlaylistController::new();
+        let item_ids = match controller
+            .append(
+                (0..3)
+                    .map(|index| {
+                        let label = format!("failed-first-{index}.webm");
+                        PlaylistItemDraft::local(
+                            LocalLocator::Native(PathBuf::from(&label)),
+                            None,
+                            CachedPlaylistMetadata::new(label, PlaylistMediaKind::Video),
+                        )
+                    })
+                    .collect(),
+            )
+            .expect("append first-failure fixture")
+        {
+            ControllerAppendOutcome::Added { item_ids, .. } => item_ids,
+            ControllerAppendOutcome::NoItemsProvided => panic!("fixture is non-empty"),
+        };
+        let mut runtime =
+            PlaylistRuntime::new(AppWakePort::disconnected(AppWakeOwner::PlaylistRuntime));
+        runtime.controller.install(controller);
+
+        assert!(
+            runtime
+                .report_playlist_navigation_failure(
+                    MediaOpenRequestId::from_non_zero(non_zero(390)),
+                    item_ids[0],
+                )
+                .is_none(),
+            "explicit first-item failure must not start automatic skipping"
+        );
+        let controller = runtime
+            .controller
+            .as_mut()
+            .expect("controller remains installed");
+        assert!(
+            controller
+                .view_snapshot()
+                .awaiting_user_after_navigation_failure()
+        );
+        assert!(controller.queue.traversal_current().is_none());
+
+        let ControllerManualNavigationOutcome::StartInstall { install } = controller
+            .manual_navigation(
+                playlist_core::ManualNavigationDirection::Next,
+                TransportActionOrigin::Mpris,
+                Duration::ZERO,
+                PreviousRestartThreshold::from_milliseconds(0).expect("zero threshold"),
+                DiscoveryManualWaitAvailability::Exhausted,
+            )
+        else {
+            panic!("explicit Next must escape the failed first item")
+        };
+        assert_eq!(install.item_id, item_ids[1]);
+        assert_eq!(
+            install.pending_origin,
+            PendingTargetOrigin::ManualNavigation {
+                origin: TransportActionOrigin::Mpris
+            }
+        );
+        assert!(controller.queue.traversal_current().is_none());
     }
 
     #[test]

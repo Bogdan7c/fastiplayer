@@ -23,10 +23,12 @@ Normal coordinator preparation, startup orchestration and settings rebuild now a
 - D52 update forwarding сохраняет exact player request/revision/intent и не имеет uncorrelated fallback.
 
 ## Bounded work и wake
-- `executor.rs` владеет одним blocking preparation worker-ом и capacity-one latest pending slot; named budget `MAX_NON_CANCELLABLE_STALE_PREPARATIONS = 1`.
-- Supersede делает running blocking open cooperative-stale, заменяет только latest pending work и никогда не возвращает stale result commit authority.
+- `executor.rs` владеет bounded пулом из `MAX_NON_CANCELLABLE_STALE_PREPARATIONS + 1` persistent blocking worker-ов и capacity-one latest pending slot. При текущем named budget `MAX_NON_CANCELLABLE_STALE_PREPARATIONS = 1` один актуальный request может физически стартовать, даже если один superseded source open игнорирует cooperative cancellation.
+- Supersede делает running blocking open cooperative-stale, заменяет только latest pending work и никогда не возвращает stale result commit authority. Бюджет намеренно не допускает unbounded thread-per-request: более одного одновременно неотменяемого stale open исчерпывает механизм до освобождения worker-а.
+- Все worker `JoinHandle` остаются у process owner-а. Частичный spawn failure сохраняет уже созданные handles; bounded shutdown join-ит все workers к общему deadline, точно сообщает pending/panicked counts и не объявляет detached thread успехом.
 - OS thread spawn failure, executor/result/cancellation state loss и task panic не игнорируются: spawn возвращает typed start error, poison fail-closed, panic превращается в typed terminal.
 - Worker публикует request-owned result slot до `AppWakePort::request_wake`; payload не переносится через winit.
+- Regression test `caller_supersede_starts_latest_while_non_cancellable_stale_work_is_blocked` сначала доказывает, что stale task уже занимает worker и игнорирует cancellation, затем требует `Prepared` latest request до освобождения stale task. Manual KWin acceptance на imported yt-dlp queue также дошёл после быстрых `Next -> Next` до installed DASH и реальных rendered frames.
 
 ## D64/D75 prepared envelope
 - `PreparedLocalOpenResult` создаётся из одного `LocalFileSource` handle и одного `SymphoniaDemuxer::from_byte_source_with_options` open.

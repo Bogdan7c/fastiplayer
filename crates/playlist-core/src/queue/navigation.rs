@@ -1,5 +1,7 @@
 //! Чистые canonical navigation queries и transactional manual preview.
 
+mod failed_anchor;
+
 use std::fmt;
 
 use rand::Rng;
@@ -404,7 +406,6 @@ impl PlaylistQueue {
     }
 
     /// Начинает exact source-order navigation после interactive replacement.
-    ///
     /// Обычный persisted-idle `Previous` остаётся no-op. Этот отдельный intent
     /// существует только для replacement-detached disposition и выбирает
     /// последнюю playable part без скрытого sequential scan.

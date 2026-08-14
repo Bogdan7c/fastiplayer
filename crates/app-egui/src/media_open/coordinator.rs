@@ -1464,14 +1464,16 @@ mod tests {
     }
 
     #[test]
-    fn caller_coalesce_and_supersede_keep_only_latest_logical_request() {
+    fn caller_supersede_starts_latest_while_non_cancellable_stale_work_is_blocked() {
         let mut coordinator = coordinator();
         let (release_tx, release_rx) = mpsc::channel();
+        let (started_tx, started_rx) = mpsc::channel();
         let first = coordinator
             .start_fake(
                 client(1),
                 SafeMediaLabel::from_service_safe_label("first"),
                 move || {
+                    started_tx.send(()).expect("publish stale work start");
                     release_rx.recv().expect("release stale work");
                     Ok(fake_prepared())
                 },
@@ -1481,6 +1483,9 @@ mod tests {
             MediaOpenStartOutcome::Accepted { request_id } => request_id,
             MediaOpenStartOutcome::Coalesced { .. } => panic!("first request cannot coalesce"),
         };
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("stale work must occupy its worker before supersede");
         let coalesced = coordinator
             .start_with_task(
                 client(1),
@@ -1503,9 +1508,12 @@ mod tests {
                 || Ok(fake_prepared()),
             )
             .expect("supersede accepted");
-        let _stale_work_was_running = release_tx.send(()).is_ok();
+
+        // Первый fake намеренно не проверяет cancellation. Latest request обязан
+        // подготовиться на bounded соседнем worker-е до освобождения stale open.
         let latest_id = wait_until_prepared(&mut coordinator);
         assert_ne!(latest_id, first_id);
+        release_tx.send(()).expect("release stale work");
         assert_eq!(MAX_NON_CANCELLABLE_STALE_PREPARATIONS, 1);
     }
 

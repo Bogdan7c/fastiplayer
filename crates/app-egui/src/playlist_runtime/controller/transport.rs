@@ -424,7 +424,11 @@ impl PlaylistController {
         if let Some((phase, request_id)) = self.manual_navigation_install_phase() {
             match phase {
                 super::install::ControllerInstallPhase::AwaitingReady => {
-                    return self.continue_manual_cursor(direction, Some((request_id, false)));
+                    return self.continue_manual_cursor(
+                        direction,
+                        origin,
+                        Some((request_id, false)),
+                    );
                 }
                 super::install::ControllerInstallPhase::ReservedAwaitingAuthorization => {
                     if let Err(violation) =
@@ -434,7 +438,11 @@ impl PlaylistController {
                             TransportGuardOutcome::Fatal(violation),
                         );
                     }
-                    return self.continue_manual_cursor(direction, Some((request_id, true)));
+                    return self.continue_manual_cursor(
+                        direction,
+                        origin,
+                        Some((request_id, true)),
+                    );
                 }
                 super::install::ControllerInstallPhase::AuthorizationDispatchPending
                 | super::install::ControllerInstallPhase::AuthorizationInFlight => {}
@@ -454,7 +462,7 @@ impl PlaylistController {
             .latest_target_item_id()
             .is_some()
         {
-            return self.continue_manual_cursor(direction, None);
+            return self.continue_manual_cursor(direction, origin, None);
         }
 
         if self.replacement_detached_disposition.is_none()
@@ -509,18 +517,20 @@ impl PlaylistController {
     fn continue_manual_cursor(
         &mut self,
         direction: ManualNavigationDirection,
+        requested_origin: TransportActionOrigin,
         superseded: Option<(MediaOpenRequestId, bool)>,
     ) -> ControllerManualNavigationOutcome {
-        let origin = self
-            .manual_navigation_cursor
-            .origin()
-            .expect("manual install phase always has cursor context");
         match self.manual_navigation_cursor.continue_in_direction(
             &self.queue,
             direction,
             self.repeat_mode,
+            requested_origin,
         ) {
             CursorStepOutcome::OpenItem { item_id } => {
+                let origin = self
+                    .manual_navigation_cursor
+                    .origin()
+                    .expect("manual cursor binds the requested transport origin before opening");
                 let install = self.planned_manual_install(item_id, origin);
                 match superseded {
                     Some((expected_request_id, false)) => {

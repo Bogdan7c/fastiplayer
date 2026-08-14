@@ -248,6 +248,57 @@ fn failed_latest_target_retains_preview_for_retry_next_previous_and_discard() {
 }
 
 #[test]
+fn failed_anchor_before_first_install_never_enters_factual_shuffle_history() {
+    let (mut queue, ids) = queue_with_items(5);
+    let mut random = StdRng::seed_from_u64(25);
+    queue
+        .enable_shuffle_with_rng(&mut random)
+        .expect("enable idle shuffle");
+    let committed_base = queue
+        .shuffle_traversal_snapshot()
+        .expect("idle shuffle snapshot");
+    let failed_target = ids[2];
+
+    let failed_preview = queue
+        .begin_failed_manual_navigation(failed_target)
+        .expect("exact failed target is committed in the canonical queue");
+    assert_eq!(
+        queue.shuffle_traversal_snapshot(),
+        Some(committed_base.clone()),
+        "creating an anchor must not mutate factual shuffle state"
+    );
+
+    let retry_token = queue
+        .prepare_manual_navigation(failed_preview)
+        .expect("retry reserves the exact failed target");
+    assert_eq!(retry_token.target_item_id(), failed_target);
+    let failed_preview = queue.fail_manual_navigation(retry_token);
+    assert_eq!(
+        queue.shuffle_traversal_snapshot(),
+        Some(committed_base),
+        "failed retry must remain speculative"
+    );
+
+    let (next_target, next_preview) = open_preview(
+        queue
+            .continue_manual_navigation_with_rng(
+                failed_preview,
+                ManualNavigationIntent::next(RepeatMode::StopAtEnd),
+                &mut random,
+            )
+            .expect("Next continues beyond the failed anchor"),
+    );
+    assert_ne!(next_target, failed_target);
+    commit_preview(&mut queue, next_preview);
+
+    let committed = queue
+        .shuffle_traversal_snapshot()
+        .expect("committed successor snapshot");
+    assert_eq!(committed.history(), &[next_target]);
+    assert!(!committed.history().contains(&failed_target));
+}
+
+#[test]
 fn factual_history_supports_back_forward_branching_and_duplicate_visits() {
     let (mut queue, ids) = queue_with_items(4);
     queue.set_traversal_current(ids[0]).expect("set origin");

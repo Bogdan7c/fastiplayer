@@ -14,7 +14,7 @@ use crate::media_open::{
 };
 use crate::playlist_runtime::PlaylistBindingGeneration;
 use crate::playlist_runtime::identity::{
-    ActiveMediaIdentity, ActiveMediaLineageId, TransportActionOrigin,
+    ActiveMediaIdentity, ActiveMediaLineageId, PendingTargetOrigin, TransportActionOrigin,
 };
 
 fn non_zero(value: u64) -> NonZeroU64 {
@@ -400,6 +400,68 @@ fn concrete_preparation_failure_before_player_admission_enters_d55() {
         ManualNavigationRetryOutcome::StartInstall { install }
             if install.item_id == items[1]
     ));
+}
+
+#[test]
+fn first_unstaged_failure_keeps_queue_idle_and_user_can_retry_or_navigate_past_it() {
+    let mut controller = PlaylistController::new();
+    let items = append_items(&mut controller, 3);
+
+    assert_eq!(
+        controller.report_unstaged_manual_navigation_target_failure(items[0]),
+        ManualNavigationFailureOutcome::AwaitingUserAfterFailure { item_id: items[0] }
+    );
+    assert!(controller.queue.traversal_current().is_none());
+    assert!(
+        controller
+            .view_snapshot()
+            .awaiting_user_after_navigation_failure()
+    );
+
+    let ManualNavigationRetryOutcome::StartInstall { install: retry } =
+        controller.retry_failed_manual_navigation()
+    else {
+        panic!("Retry must reopen the exact first failed item")
+    };
+    assert_eq!(retry.item_id, items[0]);
+    assert_eq!(
+        retry.pending_origin,
+        PendingTargetOrigin::ManualNavigation {
+            origin: TransportActionOrigin::Ui
+        }
+    );
+    assert!(controller.queue.traversal_current().is_none());
+
+    let ControllerManualNavigationOutcome::StartInstall { install: next } =
+        navigation(&mut controller, ManualNavigationDirection::Next)
+    else {
+        panic!("Next after first-item failure must open the second item")
+    };
+    assert_eq!(next.item_id, items[1]);
+    assert!(controller.queue.traversal_current().is_none());
+
+    let ControllerManualNavigationOutcome::StartInstall { install: previous } =
+        navigation(&mut controller, ManualNavigationDirection::Previous)
+    else {
+        panic!("Previous must return to the exact failed first item")
+    };
+    assert_eq!(previous.item_id, items[0]);
+    assert!(controller.queue.traversal_current().is_none());
+
+    let mut stale_controller = PlaylistController::new();
+    let stale_items = append_items(&mut stale_controller, 1);
+    stale_controller.queue.clear();
+    assert_eq!(
+        stale_controller.report_unstaged_manual_navigation_target_failure(stale_items[0]),
+        ManualNavigationFailureOutcome::TargetNotCommitted {
+            item_id: stale_items[0]
+        }
+    );
+    assert!(
+        !stale_controller
+            .view_snapshot()
+            .awaiting_user_after_navigation_failure()
+    );
 }
 
 #[test]

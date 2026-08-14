@@ -31,3 +31,11 @@
 - D08/D39 install commit-guard не делает Shuffle/Repeat недоступными: `PlaylistController::request_queue_modes` принимает intent во время guarded install и сохраняет ровно одно desired value до commit/abort.
 - Поэтому `PlaylistTransportUiModel::queue_modes_enabled` теперь следует отдельному intent-method `PlaylistController::queue_mode_actions_available()`: false только при отсутствующем controller или fatal invariant, но true во всех кратких install-фазах. Structural Add/Sort/Clear gate остаётся отдельным typed boundary и не протекает в persistent transport.
 - Controller regression tests фиксируют TemporarilyBlocked structural availability вместе с доступными queue modes, возврат Available после Installed и обе недоступности после fatal mismatch.
+
+
+## First pre-barrier failure anchor (2026-08-14)
+
+- Если explicit/startup первый queue item падает до controller install admission и manual cursor ещё отсутствует, `report_unstaged_manual_navigation_target_failure(item_id)` теперь создаёт через playlist-core один runtime-only D55 failed-anchor. Item не становится committed current; автоматического skip без команды пользователя нет.
+- Cursor context хранит `Option<TransportActionOrigin>`: такой anchor изначально unbound, первая реальная `Next`/`Previous` привязывает Ui или MPRIS, а explicit Retry привязывает Ui и повторяет exact failed target. Existing manual/automatic failure routing сохраняет прежние owners; unrelated stale failure не заменяет живой cursor.
+- Unrelated живой cursor не заменяется; удалённый к моменту failure target возвращает отдельный `ManualNavigationFailureOutcome::TargetNotCommitted`, а не сливается с `NotManualNavigation`.
+- Functional tests проходят route `report_playlist_navigation_failure -> D55 -> MPRIS Next` и проверяют второй item при `traversal_current=None`; controller tests закрепляют Retry, Next, Previous и stale-target outcome без преждевременного commit.
