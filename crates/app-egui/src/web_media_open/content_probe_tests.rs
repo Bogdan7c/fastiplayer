@@ -41,6 +41,10 @@ mod audio_fixtures;
 #[path = "content_probe_tests/vorbis.rs"]
 mod vorbis;
 
+/// Отдельный модуль доказывает комбинацию FTP transport и Ogg/Vorbis playback.
+#[path = "content_probe_tests/ftp_vorbis.rs"]
+mod ftp_vorbis;
+
 /// Маркер отличает изолированный child от owner test process-а без global env mutation.
 const CHILD_PROCESS_MARKER_ENV: &str = "RUSTIPLAYER_CONTENT_PROBE_CHILD";
 /// Fake extractor получает document только через своё дочернее окружение.
@@ -522,8 +526,16 @@ fn prepare_content_probed_test_media(
     audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
 ) -> anyhow::Result<super::PreparedYtDlpWebMedia> {
     let page_url = format!("https://page.example.test/{page_id}");
-    let locator = service_ytdlp::parse_yt_dlp_media_locator(&page_url)
-        .expect("parse ContentProbed page locator");
+    prepare_content_probed_test_media_at_locator(&page_url, audio_capabilities)
+}
+
+/// Собирает production runtime для exact locator scheme, выбранной сценарием.
+fn prepare_content_probed_test_media_at_locator(
+    locator_text: &str,
+    audio_capabilities: audio::AudioDecodeCapabilitySnapshot,
+) -> anyhow::Result<super::PreparedYtDlpWebMedia> {
+    let locator = service_ytdlp::parse_yt_dlp_media_locator(locator_text)
+        .expect("parse ContentProbed media locator");
     prepare_yt_dlp_web_media(
         &locator,
         &NetworkConfig::default(),

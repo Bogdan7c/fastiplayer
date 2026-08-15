@@ -46,3 +46,14 @@
 - Percent-encoded Unicode path/credentials доходят decoded, а diagnostics остаются redacted.
 - Explicit FTPS и cleartext/FTPS mismatch покрыты тестами.
 - Strict clippy, workspace check, focused tests, app tests, rustdoc `-D warnings` и refactor guardrails проходят.
+
+
+## Follow-up 2026-08-15: FTP Ogg/Vorbis row 10 и yt-dlp impersonation
+
+- Root cause пользовательской ошибки `stderr скрыт, 219 bytes`: candidate/topology argv безусловно добавлял `--extractor-args generic:impersonate`; stock yt-dlp 2026.07.04 отвергал native FTP до извлечения, если curl-cffi impersonation backend отсутствовал.
+- `service-ytdlp` теперь выводит typed `GenericExtractorImpersonation` из `YtDlpInputScheme`: HTTP(S) сохраняет обязательный generic impersonation path, native FTP/FTPS не получает HTTP-only process policy. Embed recovery остаётся HTTP и явно требует impersonation.
+- Pinned yt-dlp добавляет к FTP format rows ambient browser headers (`User-Agent`, `Accept`, `Accept-Encoding`, `Accept-Language`, `Sec-Fetch-Mode`). FTP projection игнорирует только этот закрытый case-insensitive allowlist; cookies, range, Authorization и любые custom/unknown HTTP headers по-прежнему fail closed.
+- Для audio-only content-probed row (`vcodec: "none"`) video placeholders вроде `vbr: 0` больше не нормализуются как video hints. Если video declared/unknown, прежняя строгая валидация hints сохраняется.
+- Regression coverage: exact candidate/topology argv tests; descriptor test с реальными ambient headers и `vbr: 0`; hermetic vertical app test `content_probe_tests::ftp_vorbis::ftp_ogg_with_ambient_http_headers_reaches_production_pcm` через fake yt-dlp -> loopback passive FTP/RETR -> production FTP provider -> Symphonia Ogg -> production Vorbis decoder -> non-empty PCM.
+- Exact public acceptance source `ftp://ftp.gnu.org/video/Stephen_Fry-Happy_Birthday_GNU-100kbit_vorbis.ogg` отдельно прошёл тем же production child path до PCM (28.80 s).
+- Проверки: `service-ytdlp` 140 tests; `app-egui --no-default-features` 948 tests; оба clippy с `-D warnings`; workspace check; refactor guardrails; fmt; diff check; release build.

@@ -76,7 +76,7 @@ pub fn resolve_yt_dlp_candidate_snapshot_with_config_and_cancellation(
     }
     let process_config = YtDlpProcessConfig::from_yt_dlp_config(yt_dlp_config)?;
     let document = resolve_yt_dlp_candidate_document_with_cancellation(
-        locator.expose_secret_for_open(),
+        locator,
         &process_config,
         is_cancelled,
     )?;

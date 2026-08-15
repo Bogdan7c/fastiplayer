@@ -68,6 +68,9 @@ pub fn extract_yt_dlp_topology_with_budgets(
     let process_output = run_topology_process(
         process_config.executable_for_spawn(),
         locator.expose_secret_for_open(),
+        crate::embed_recovery::GenericExtractorImpersonation::for_input_scheme(
+            locator.input_scheme(),
+        ),
         process_config.extraction_timeout(),
         budgets,
         &is_cancelled,

@@ -139,6 +139,29 @@ fn normalize_content_probed(
             }
         }
     };
+    let video_hints = normalize_content_probed_video_hints(format, &video)?;
+    let probe_container = content_probe_container_family(transport.family(), &container)?;
+    let descriptor = ContentProbedDescriptor::new(
+        transport,
+        container,
+        probe_container,
+        video,
+        audio,
+        video_hints,
+    )
+    .map_err(|_| YtDlpCandidateNormalizationRejection::InvalidStreamLayout)?;
+    Ok(StreamLayout::ContentProbed(descriptor))
+}
+
+/// Не превращает yt-dlp placeholders audio-only row в выдуманные video hints.
+fn normalize_content_probed_video_hints(
+    format: &YtDlpSerializedFormat,
+    video: &ContentProbedTrackEvidence<VideoTrackDescriptor>,
+) -> Result<ContentProbedVideoHints, YtDlpCandidateNormalizationRejection> {
+    if matches!(video, ContentProbedTrackEvidence::Absent) {
+        return Ok(ContentProbedVideoHints::none());
+    }
+
     let width = format
         .width
         .map(VideoWidth::new)
@@ -152,17 +175,13 @@ fn normalize_content_probed(
     let frame_rate = format.fps.map(normalize_frame_rate).transpose()?;
     let bitrate = normalize_bitrate(format.vbr.or(format.tbr))?;
     let dynamic_range = normalize_dynamic_range(format.dynamic_range.as_deref());
-    let probe_container = content_probe_container_family(transport.family(), &container)?;
-    let descriptor = ContentProbedDescriptor::new(
-        transport,
-        container,
-        probe_container,
-        video,
-        audio,
-        ContentProbedVideoHints::new(width, height, frame_rate, bitrate, dynamic_range),
-    )
-    .map_err(|_| YtDlpCandidateNormalizationRejection::InvalidStreamLayout)?;
-    Ok(StreamLayout::ContentProbed(descriptor))
+    Ok(ContentProbedVideoHints::new(
+        width,
+        height,
+        frame_rate,
+        bitrate,
+        dynamic_range,
+    ))
 }
 
 /// Выбирает фактический demux contract без угадывания по transport family.

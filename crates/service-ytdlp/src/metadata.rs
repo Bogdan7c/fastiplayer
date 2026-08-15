@@ -56,7 +56,7 @@ pub fn resolve_yt_dlp_playlist_metadata_with_config(
 
     let process_config = YtDlpProcessConfig::from_yt_dlp_config(yt_dlp_config)?;
     let metadata = resolve_yt_dlp_candidate_metadata_with_cancellation(
-        locator.expose_secret_for_open(),
+        locator,
         &process_config,
         &is_cancelled,
     )?;

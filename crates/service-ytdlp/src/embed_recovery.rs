@@ -3,6 +3,8 @@
 use serde_json::Value;
 use url::Url;
 
+use crate::locator::YtDlpInputScheme;
+
 pub(crate) const GENERIC_IMPERSONATE_EXTRACTOR_ARGS: [&str; 2] =
     ["--extractor-args", "generic:impersonate"];
 
@@ -13,6 +15,26 @@ const CANDIDATE_ARGUMENTS_BEFORE_POLICY: [&str; 5] = [
     "--dump-single-json",
     "--no-playlist",
 ];
+
+/// Определяет, применима ли browser impersonation к физическому input transport-у.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GenericExtractorImpersonation {
+    /// Generic HTTP(S) page extraction сохраняет доказанный impersonation path.
+    RequiredForHttp,
+    /// Native non-HTTP transport не должен зависеть от HTTP impersonation backend-а.
+    NotApplicableForNativeTransport,
+}
+
+impl GenericExtractorImpersonation {
+    /// Выводит process policy только из уже проверенной typed locator scheme.
+    pub(crate) const fn for_input_scheme(input_scheme: YtDlpInputScheme) -> Self {
+        if input_scheme.is_http_fallback() {
+            Self::RequiredForHttp
+        } else {
+            Self::NotApplicableForNativeTransport
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PlatformFamily {
@@ -25,10 +47,15 @@ enum PlatformFamily {
     Facebook,
 }
 
-pub(crate) fn candidate_arguments(video_url: &str) -> Vec<&str> {
+pub(crate) fn candidate_arguments(
+    video_url: &str,
+    impersonation: GenericExtractorImpersonation,
+) -> Vec<&str> {
     let mut arguments = Vec::with_capacity(8);
     arguments.extend(CANDIDATE_ARGUMENTS_BEFORE_POLICY);
-    arguments.extend(GENERIC_IMPERSONATE_EXTRACTOR_ARGS);
+    if impersonation == GenericExtractorImpersonation::RequiredForHttp {
+        arguments.extend(GENERIC_IMPERSONATE_EXTRACTOR_ARGS);
+    }
     arguments.push(video_url);
     arguments
 }
@@ -367,9 +394,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn primary_arguments_always_enable_generic_impersonation() {
+    fn http_primary_arguments_enable_generic_impersonation() {
         assert_eq!(
-            candidate_arguments("https://input.invalid/watch"),
+            candidate_arguments(
+                "https://input.invalid/watch",
+                GenericExtractorImpersonation::RequiredForHttp,
+            ),
             [
                 "--quiet",
                 "--no-warnings",
@@ -379,6 +409,24 @@ mod tests {
                 "--extractor-args",
                 "generic:impersonate",
                 "https://input.invalid/watch",
+            ]
+        );
+    }
+
+    #[test]
+    fn ftp_primary_arguments_do_not_require_http_impersonation_backend() {
+        assert_eq!(
+            candidate_arguments(
+                "ftp://media.invalid/audio.ogg",
+                GenericExtractorImpersonation::NotApplicableForNativeTransport,
+            ),
+            [
+                "--quiet",
+                "--no-warnings",
+                "--simulate",
+                "--dump-single-json",
+                "--no-playlist",
+                "ftp://media.invalid/audio.ogg",
             ]
         );
     }

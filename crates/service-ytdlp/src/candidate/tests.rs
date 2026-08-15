@@ -180,7 +180,7 @@ fn ftp_transport_components_project_empty_secret_progressive_request() {
     assert!(!diagnostic.contains("ftp-user"));
 }
 
-/// FTP Ogg сохраняет различие explicit отсутствующего video и неизвестного audio codec.
+/// FTP Ogg принимает фоновые HTTP headers, которые pinned yt-dlp добавляет к любой format row.
 #[test]
 fn ftp_ogg_partial_codec_metadata_uses_content_probe_without_fake_codec() {
     let snapshot = snapshot(
@@ -191,7 +191,14 @@ fn ftp_ogg_partial_codec_metadata_uses_content_probe_without_fake_codec() {
                 "protocol": "ftp",
                 "ext": "ogg",
                 "vcodec": "none",
-                "acodec": null
+                "acodec": null,
+                "vbr": 0,
+                "http_headers": {
+                    "User-Agent": "Mozilla/5.0",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-us,en;q=0.5",
+                    "Sec-Fetch-Mode": "navigate"
+                }
             }]
         }),
         18,

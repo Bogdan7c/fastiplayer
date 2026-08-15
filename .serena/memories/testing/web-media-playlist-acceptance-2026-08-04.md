@@ -33,3 +33,11 @@ Follow-up 2026-08-10: BBC/Akamai row сейчас имеет 6 `avc3` video vari
 - Three independent false-negative assumptions were fixed: delivered F4F media fragments contain `afra/moof/mdat` and normally omit the separately-owned `abst`; terminal zero-duration `afrt` END_OF_PRESENTATION may use fragment ID 0 outside media ordering; app HDS sniff deadline follows configured source read timeout instead of hidden 2 s.
 - Real KWin proof on the production release binary reached Tears of Steel frames, 3312 packets, 879 decoded video frames and 799 `video_frames_presented`, with the 12:14 duration and advancing timeline. One separate existing telemetry issue remains: the overlay retained stale `VA-API VP9` text while the actual HDS content watermark and packet/config evidence were `avc1`/H.264.
 - Regression fixtures now mirror the real provider/bootstrap boundary. Focused HDS/FLV/bootstrap/app tests, strict Clippy, refactor guardrails, diff-check and the full workspace test gate pass.
+
+
+## Follow-up 2026-08-15: строка 10 — FTP Ogg/Vorbis
+
+- Источник `ftp://ftp.gnu.org/video/Stephen_Fry-Happy_Birthday_GNU-100kbit_vorbis.ogg` ранее останавливался до media open с ошибкой exact yt-dlp candidate snapshot (`stderr` 219 bytes).
+- Исправлены три независимых barrier-а: HTTP impersonation исключён для native FTP argv; ambient yt-dlp HTTP headers безопасно отбрасываются только на FTP boundary; audio-only `vbr: 0` не трактуется как video bitrate.
+- Exact public source проверен opt-in production child test-ом до фактического ненулевого PCM через FTP, Ogg demux и Vorbis decoder. Hermetic loopback-версия закрепляет это в обычном test suite без внешней сети.
+- Это подтверждает только строку 10; полный ручной прогон всех строк acceptance playlist этим follow-up не заявляется.

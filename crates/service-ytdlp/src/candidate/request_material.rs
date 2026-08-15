@@ -232,8 +232,8 @@ pub enum YtDlpRequestMaterialViolation {
     /// Progressive FTP subset не содержит FTP(S) primary target.
     #[error("progressive request target is not FTP(S)")]
     NonFtpProgressiveMaterial,
-    /// Progressive FTP не принимает HTTP authorization/range material.
-    #[error("request material contains HTTP-only fields incompatible with progressive FTP")]
+    /// Progressive FTP не принимает stateful или нестандартный HTTP material.
+    #[error("request material contains non-ambient HTTP fields incompatible with progressive FTP")]
     HttpOnlyMaterialForFtp,
     /// Progressive resource не содержит primary URL.
     #[error("progressive request has no primary URL")]
@@ -385,13 +385,16 @@ impl YtDlpRequestMaterial {
         })
     }
 
-    /// Доказывает progressive FTP subset без HTTP authorization/range material.
+    /// Доказывает progressive FTP subset без значимого HTTP authorization/range material.
     pub(super) fn progressive_ftp_request_material(
         &self,
     ) -> Result<YtDlpProgressiveFtpRequestMaterial<'_>, YtDlpRequestMaterialViolation> {
         let Self::V1(material) = self;
         ensure_progressive_single_url_subset(material)?;
-        if !material.http_headers.is_empty()
+        if material
+            .http_headers
+            .keys()
+            .any(|header_name| !is_ignorable_ftp_http_header(header_name))
             || material.cookies.is_some()
             || material.http_range_request_limit.is_some()
         {
@@ -435,6 +438,19 @@ impl YtDlpRequestMaterial {
     {
         smooth::smooth_manifest_request_material(self)
     }
+}
+
+/// Отличает безусловные browser-navigation hints yt-dlp от значимого HTTP state.
+fn is_ignorable_ftp_http_header(header_name: &str) -> bool {
+    [
+        "accept",
+        "accept-encoding",
+        "accept-language",
+        "sec-fetch-mode",
+        "user-agent",
+    ]
+    .iter()
+    .any(|ambient_name| header_name.eq_ignore_ascii_case(ambient_name))
 }
 
 impl fmt::Debug for SecretText {

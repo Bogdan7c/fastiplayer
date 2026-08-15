@@ -13,10 +13,11 @@ use url::Url;
 
 use crate::dto::YtDlpMetadata;
 use crate::embed_recovery::{
-    candidate_arguments, discover_non_platform_embed_urls, discover_page_title,
-    should_attempt_platform_embed_recovery, write_pages_arguments,
+    GenericExtractorImpersonation, candidate_arguments, discover_non_platform_embed_urls,
+    discover_page_title, should_attempt_platform_embed_recovery, write_pages_arguments,
 };
 use crate::error::YtDlpServiceError;
+use crate::locator::YtDlpMediaLocator;
 use crate::process_tree::{
     OwnedPipe, OwnedPipeDrainError, OwnedPipeReader, OwnedProcess, OwnedProcessCleanupFailure,
     OwnedProcessRootState, OwnedProcessSpawnError, spawn_owned_pipe_reader, spawn_owned_process,
@@ -186,20 +187,23 @@ enum ProcessWaitOutcome {
 
 /// Получает общий manifest JSON без playback selector-а и поддерживает отмену.
 pub(crate) fn resolve_yt_dlp_candidate_metadata_with_cancellation(
-    video_url: &str,
+    locator: &YtDlpMediaLocator,
     process_config: &YtDlpProcessConfig,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<YtDlpMetadata, YtDlpServiceError> {
-    resolve_yt_dlp_candidate_document_with_cancellation(video_url, process_config, is_cancelled)
+    resolve_yt_dlp_candidate_document_with_cancellation(locator, process_config, is_cancelled)
 }
 
 /// Единственный process path для typed candidate JSON consumers.
 pub(crate) fn resolve_yt_dlp_candidate_document_with_cancellation<T: DeserializeOwned>(
-    video_url: &str,
+    locator: &YtDlpMediaLocator,
     process_config: &YtDlpProcessConfig,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<T, YtDlpServiceError> {
-    let primary_document = run_dump_single_json(video_url, process_config, is_cancelled)?;
+    let video_url = locator.expose_secret_for_open();
+    let impersonation = GenericExtractorImpersonation::for_input_scheme(locator.input_scheme());
+    let primary_document =
+        run_dump_single_json(video_url, impersonation, process_config, is_cancelled)?;
     let document = match recover_playable_document_after_platform_hijack(
         video_url,
         &primary_document,
@@ -234,10 +238,11 @@ pub(crate) fn recover_playable_document_after_platform_hijack(
 
 fn run_dump_single_json(
     video_url: &str,
+    impersonation: GenericExtractorImpersonation,
     process_config: &YtDlpProcessConfig,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<Value, YtDlpServiceError> {
-    let command_arguments = candidate_arguments(video_url);
+    let command_arguments = candidate_arguments(video_url, impersonation);
     let command_output = run_process_with_timeout_and_cancellation(
         process_config.executable.as_str(),
         &command_arguments,
@@ -276,14 +281,18 @@ fn recover_non_platform_embed(
     let evidence =
         read_recovery_embed_candidates(recovery_directory.path(), input_url, is_cancelled)?;
     for embed_url in &evidence.candidates {
-        let mut recovered_document =
-            match run_dump_single_json(embed_url, process_config, is_cancelled) {
-                Ok(document) => document,
-                Err(YtDlpServiceError::Cancellation) => {
-                    return Err(YtDlpServiceError::Cancellation);
-                }
-                Err(_) => continue,
-            };
+        let mut recovered_document = match run_dump_single_json(
+            embed_url,
+            GenericExtractorImpersonation::RequiredForHttp,
+            process_config,
+            is_cancelled,
+        ) {
+            Ok(document) => document,
+            Err(YtDlpServiceError::Cancellation) => {
+                return Err(YtDlpServiceError::Cancellation);
+            }
+            Err(_) => continue,
+        };
         if should_attempt_platform_embed_recovery(input_url, &recovered_document) {
             continue;
         }
@@ -867,12 +876,13 @@ fi
             timeout: Duration::from_secs(2),
         };
 
-        let document: Value = resolve_yt_dlp_candidate_document_with_cancellation(
-            "https://cinema.example/watch/42",
-            &process_config,
-            &|| false,
-        )
-        .expect("recovery should select anonymous player");
+        let locator = crate::parse_yt_dlp_media_locator("https://cinema.example/watch/42")
+            .expect("parse recovery test locator");
+        let document: Value =
+            resolve_yt_dlp_candidate_document_with_cancellation(&locator, &process_config, &|| {
+                false
+            })
+            .expect("recovery should select anonymous player");
 
         assert_eq!(
             document.get("webpage_url").and_then(Value::as_str),
@@ -916,8 +926,10 @@ printf '%s\n' '{{"extractor_key":"Youtube","webpage_url":"https://www.youtube.co
         };
 
         let cancellation_started_at = Instant::now();
+        let locator = crate::parse_yt_dlp_media_locator("https://cinema.example/watch/42")
+            .expect("parse cancelled recovery test locator");
         let error = resolve_yt_dlp_candidate_document_with_cancellation::<Value>(
-            "https://cinema.example/watch/42",
+            &locator,
             &process_config,
             &|| recovery_path_record.exists(),
         )

@@ -71,7 +71,7 @@ esUwlHdl1/Ul1xL+DosDmdR0HQEA
 #[test]
 fn ogg_vorbis_forward_seek_reuses_active_fetch_and_reaches_pcm() {
     if env::var_os(CHILD_PROCESS_MARKER_ENV).is_some() {
-        assert_child_vorbis_reaches_pcm();
+        assert_child_vorbis_reaches_pcm("content-probed-vorbis");
         return;
     }
 
@@ -101,7 +101,7 @@ fn ogg_vorbis_forward_seek_reuses_active_fetch_and_reaches_pcm() {
 }
 
 /// Восстанавливает валидный большой Ogg без запуска FFmpeg во время теста.
-fn large_vorbis_fixture() -> Vec<u8> {
+pub(super) fn large_vorbis_fixture() -> Vec<u8> {
     let compact_base64 = OGG_VORBIS_GZIP_BASE64
         .chars()
         .filter(|character| !character.is_ascii_whitespace())
@@ -119,21 +119,56 @@ fn large_vorbis_fixture() -> Vec<u8> {
     ogg_bytes
 }
 
-/// Child проходит fake yt-dlp, HTTP, prefetch, Symphonia и production Vorbis decoder.
-fn assert_child_vorbis_reaches_pcm() {
+/// Child проходит fake yt-dlp, выбранный transport, Symphonia и production Vorbis decoder.
+pub(super) fn assert_child_vorbis_reaches_pcm(expected_format_id: &str) {
+    let page_url = format!("https://page.example.test/{expected_format_id}");
+    assert_vorbis_reaches_pcm_at_locator(
+        &page_url,
+        expected_format_id,
+        VorbisTrackExpectation::GeneratedMono8Khz,
+    );
+}
+
+/// Child сохраняет exact input scheme и требует PCM от production decoder-а.
+pub(super) fn assert_child_vorbis_reaches_pcm_at_locator(
+    locator_text: &str,
+    expected_format_id: &str,
+) {
+    assert_vorbis_reaches_pcm_at_locator(
+        locator_text,
+        expected_format_id,
+        VorbisTrackExpectation::AnyValidAudio,
+    );
+}
+
+/// Различает immutable generated fixture и mutable public runtime source.
+#[derive(Clone, Copy, Debug)]
+enum VorbisTrackExpectation {
+    /// Checked-in fixture обязан сохранять exact mono 8 kHz topology.
+    GeneratedMono8Khz,
+    /// Публичный source может менять sample rate/channels, но не терять audio validity.
+    AnyValidAudio,
+}
+
+/// Общий decoder-reaching assertion с явно выбранной строгостью track metadata.
+fn assert_vorbis_reaches_pcm_at_locator(
+    locator_text: &str,
+    expected_format_id: &str,
+    track_expectation: VorbisTrackExpectation,
+) {
     let audio_decoder_factory = ProductionAudioDecoderFactory::default();
-    let mut prepared = prepare_content_probed_test_media(
-        "content-probed-vorbis",
+    let mut prepared = prepare_content_probed_test_media_at_locator(
+        locator_text,
         audio_decoder_factory.audio_decode_capability_snapshot(),
     )
-    .expect("prepare request-bounded Ogg/Vorbis candidate");
+    .expect("prepare content-probed Ogg/Vorbis candidate");
     assert_eq!(
         prepared
             .candidate_selection
             .exact_identity()
             .format()
             .as_str(),
-        "content-probed-vorbis"
+        expected_format_id
     );
     assert_eq!(
         prepared.stream_configuration.active_candidate().layout,
@@ -148,8 +183,20 @@ fn assert_child_vorbis_reaches_pcm() {
         .cloned()
         .expect("production demuxer должен обнаружить Vorbis audio track");
     assert_eq!(audio_track.codec_id, "A_VORBIS");
-    assert_eq!(audio_track.sample_rate, Some(8_000));
-    assert_eq!(audio_track.channels, Some(1));
+    match track_expectation {
+        VorbisTrackExpectation::GeneratedMono8Khz => {
+            assert_eq!(audio_track.sample_rate, Some(8_000));
+            assert_eq!(audio_track.channels, Some(1));
+        }
+        VorbisTrackExpectation::AnyValidAudio => {
+            assert!(
+                audio_track
+                    .sample_rate
+                    .is_some_and(|sample_rate| sample_rate > 0)
+            );
+            assert!(audio_track.channels.is_some_and(|channels| channels > 0));
+        }
+    }
     let mut decoder = audio_decoder_factory
         .create_decoder(decoder_config_from_track(&audio_track))
         .expect("create production Vorbis decoder");

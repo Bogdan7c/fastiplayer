@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::embed_recovery::GENERIC_IMPERSONATE_EXTRACTOR_ARGS;
+use crate::embed_recovery::{GENERIC_IMPERSONATE_EXTRACTOR_ARGS, GenericExtractorImpersonation};
 use crate::process_tree::{
     OwnedPipeDrainError, OwnedPipeReader, OwnedProcess, OwnedProcessCleanupFailure,
     OwnedProcessRootState, OwnedProcessSpawnError, spawn_owned_pipe_reader, spawn_owned_process,
@@ -24,7 +24,7 @@ const PIPE_READ_CHUNK_BYTES: usize = 8 * 1024;
 /// `--dump-json` печатает lazy entries, а `--dump-single-json` — final root.
 ///
 /// Порядок safety-critical и закреплён exact-argv focused test-ом.
-const TOPOLOGY_ARGUMENTS_BEFORE_URL: [&str; 9] = [
+const TOPOLOGY_ARGUMENTS_BEFORE_POLICY: [&str; 7] = [
     "--quiet",
     "--no-warnings",
     "--simulate",
@@ -32,8 +32,6 @@ const TOPOLOGY_ARGUMENTS_BEFORE_URL: [&str; 9] = [
     "--dump-single-json",
     "--flat-playlist",
     "--lazy-playlist",
-    GENERIC_IMPERSONATE_EXTRACTOR_ARGS[0],
-    GENERIC_IMPERSONATE_EXTRACTOR_ARGS[1],
 ];
 
 /// Успешный bounded process result.
@@ -58,6 +56,7 @@ impl std::fmt::Debug for TopologyProcessOutput {
 pub(crate) fn run_topology_process(
     executable: &str,
     exact_locator: &str,
+    impersonation: GenericExtractorImpersonation,
     timeout: Duration,
     budgets: YtDlpTopologyBudgets,
     is_cancelled: &dyn Fn() -> bool,
@@ -73,8 +72,11 @@ pub(crate) fn run_topology_process(
     let operation_started_at = Instant::now();
 
     let mut command = Command::new(executable);
+    command.args(TOPOLOGY_ARGUMENTS_BEFORE_POLICY);
+    if impersonation == GenericExtractorImpersonation::RequiredForHttp {
+        command.args(GENERIC_IMPERSONATE_EXTRACTOR_ARGS);
+    }
     command
-        .args(TOPOLOGY_ARGUMENTS_BEFORE_URL)
         .arg(exact_locator)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -564,6 +566,7 @@ printf '%s\n' \
         let output = run_topology_process(
             script.to_str().expect("UTF-8 test path"),
             "https://input.invalid/root?token=secret",
+            GenericExtractorImpersonation::RequiredForHttp,
             Duration::from_secs(2),
             YtDlpTopologyBudgets::default(),
             &|| false,
@@ -577,11 +580,43 @@ printf '%s\n' \
     }
 
     #[test]
+    fn ftp_argv_omits_http_impersonation_policy() {
+        let script = create_script(
+            r#"#!/bin/sh
+test "$#" -eq 8 || exit 90
+test "$1" = "--quiet" || exit 91
+test "$2" = "--no-warnings" || exit 92
+test "$3" = "--simulate" || exit 93
+test "$4" = "--dump-json" || exit 94
+test "$5" = "--dump-single-json" || exit 95
+test "$6" = "--flat-playlist" || exit 96
+test "$7" = "--lazy-playlist" || exit 97
+test "$8" = "ftp://media.invalid/audio.ogg" || exit 98
+printf '%s\n' '{"_type":"video","id":"ftp-audio"}'
+"#,
+        );
+        let output = run_topology_process(
+            script.to_str().expect("UTF-8 test path"),
+            "ftp://media.invalid/audio.ogg",
+            GenericExtractorImpersonation::NotApplicableForNativeTransport,
+            Duration::from_secs(2),
+            YtDlpTopologyBudgets::default(),
+            &|| false,
+        )
+        .expect("FTP topology argv fake process должен завершиться");
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout_lines.len(), 1);
+        remove_script(script);
+    }
+
+    #[test]
     fn timeout_and_cancellation_kill_and_wait_child() {
         let timeout_script = create_script(SLOW_CHILD_SCRIPT);
         let timeout_error = run_topology_process(
             timeout_script.to_str().expect("UTF-8 test path"),
             "https://input.invalid/root",
+            GenericExtractorImpersonation::RequiredForHttp,
             Duration::from_millis(30),
             YtDlpTopologyBudgets::default(),
             &|| false,
@@ -598,6 +633,7 @@ printf '%s\n' \
         let cancellation_error = run_topology_process(
             cancel_script.to_str().expect("UTF-8 test path"),
             "https://input.invalid/root",
+            GenericExtractorImpersonation::RequiredForHttp,
             Duration::from_secs(2),
             YtDlpTopologyBudgets::default(),
             &|| cancellation_checks.fetch_add(1, Ordering::Relaxed) > 1,
@@ -617,6 +653,7 @@ printf '%s\n' \
         let output = run_topology_process(
             nonzero_script.to_str().expect("UTF-8 test path"),
             "https://input.invalid/root?token=secret",
+            GenericExtractorImpersonation::RequiredForHttp,
             Duration::from_secs(2),
             YtDlpTopologyBudgets::default(),
             &|| false,
@@ -632,6 +669,7 @@ printf '%s\n' \
         let budget_error = run_topology_process(
             huge_stdout_script.to_str().expect("UTF-8 test path"),
             "https://input.invalid/root",
+            GenericExtractorImpersonation::RequiredForHttp,
             Duration::from_secs(2),
             YtDlpTopologyBudgets {
                 stdout_bytes: 8,
