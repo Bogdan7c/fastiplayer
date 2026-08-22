@@ -1,5 +1,11 @@
 # GitHub Actions CI
 
+## Current dependency-gate status after AUD-002 (2026-08-23)
+
+- `scripts/ci-checks.sh dependencies` снова blocking-green после exact lock updates `event-listener 5.4.1 -> 5.4.2` и `webbrowser 1.2.1 -> 1.2.2`; RUSTSEC-2026-0221/0257 отсутствуют.
+- `audiopus_sys 0.2.2` / RUSTSEC-2026-0150 и `ttf-parser 0.25.1` / RUSTSEC-2026-0192 остаются только в намеренно nonblocking visibility report, safe upgrade отсутствует.
+- Licenses/sources/bans и cargo-machete pass; desktop feature paths, app/desktop tests, primary workspace check и MSRV 1.92 check подтверждены. Полный handoff: `mem:dependency-security/aud-002-2026-08-23`.
+
 ## Current dependency-gate status after S04X (2026-07-20)
 
 - S04X закрыл прежние RUSTSEC-2026-0194/0195 через documented exact-source `wayland-scanner` patch на `quick-xml 0.41`; актуальный `cargo deny check` проходит advisories/bans/licenses/sources. Старые разделы ниже про blocking quick-xml gate — исторический статус до S04X, а не текущий blocker. Полный patch/XML contract: `mem:xml/core` и `mem:dependency-patches/core`.

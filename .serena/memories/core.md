@@ -1,3 +1,9 @@
+## AUD-002 dependency/security gate closure (2026-08-23)
+
+- Blocking RUSTSEC-2026-0221 и RUSTSEC-2026-0257 устранены точечным lock update: `event-listener 5.4.2`, `webbrowser 1.2.2`; manifests и desktop feature boundaries не менялись.
+- Dependency gate, locked feature trees, desktop-integration 25/25, app-egui 950/950, primary workspace check и MSRV 1.92 workspace check прошли. Реальный system-browser launch остаётся manual smoke.
+- Полные dependency chains, lock scope, policy и команды: `mem:dependency-security/aud-002-2026-08-23`.
+
 ## AUD-001 post-Installed strong-open compensation (2026-08-23)
 
 - Generic stepwise и blocking strong-open больше не теряют cleanup obligation после exact `Installed`: restore/intent/app-registration failure запускает exact player release, ждёт matching `Applied`, затем owner-owned controller/source reconciliation и только после этого публикует исходную ошибку.
