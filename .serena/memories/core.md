@@ -1,3 +1,9 @@
+## AUD-001 post-Installed strong-open compensation (2026-08-23)
+
+- Generic stepwise и blocking strong-open больше не теряют cleanup obligation после exact `Installed`: restore/intent/app-registration failure запускает exact player release, ждёт matching `Applied`, затем owner-owned controller/source reconciliation и только после этого публикует исходную ошибку.
+- Same-lineage rebind перенесён за успешный playback-intent; cleanup failure остаётся typed fatal и не разрешает navigation recovery. Controller functional regression доказывает A -> failed Installed B -> release -> exact Installed C.
+- Полные boundaries, tests и AUD-013 limitation: `mem:app-egui/post-installed-strong-open-compensation-2026-08-23`.
+
 ## S42 scoped final acceptance (2026-07-25)
 
 - `crates/service-ytdlp/compatibility/2026.07.04/final-acceptance-s42.json` owns scoped `ProfileTraceabilityComplete`: all 12 canonical `Implemented` rows bind exact provider/demux/decoder/runtime-fixture/capability evidence, aggregate RTMP and extended absences remain typed exclusions/no-op, recursive S00/S41/S42 `Planned` inventory is empty, and `traceability_gaps` is empty.

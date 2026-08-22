@@ -54,49 +54,42 @@ impl AppState {
         } else {
             None
         };
-        let installed = match self.finish_media_open_terminal(candidate_owner, source, terminal) {
+        let installed = match Self::installed_media_from_terminal(source, terminal) {
             Ok(installed) => installed,
             Err(error) => return StrongMediaOpenPoll::completed(Err(error)),
         };
+        if let Err(error) =
+            self.commit_installed_video_candidate(&candidate_owner, installed.player_request_id)
+        {
+            return self.begin_post_installed_compensation(
+                playlist_runtime,
+                pending,
+                installed,
+                error,
+            );
+        }
         let MediaInstallCompletion::Installed {
             media_instance_id, ..
         } = installed.completion
         else {
-            return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::MissingTerminal));
+            return self.begin_post_installed_compensation(
+                playlist_runtime,
+                pending,
+                installed,
+                StrongMediaOpenError::MissingTerminal,
+            );
         };
         if let Some(video_swap_checkpoint) = video_swap_checkpoint {
             self.begin_backend_swap_video_freeze(*video_swap_checkpoint);
         }
         let snapshot = self.refresh_player_snapshot();
         if snapshot.media_instance_id != Some(media_instance_id) {
-            return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::MissingTerminal));
-        }
-        if let PendingStrongLineageCommit::SameLineage {
-            expected_active,
-            rebound_after_installed,
-            ..
-        } = &mut pending.lineage_commit
-            && !*rebound_after_installed
-        {
-            let Some(binding) = self.playlist_runtime_binding() else {
-                return StrongMediaOpenPoll::completed(Err(
-                    StrongMediaOpenError::LineageRegistration(
-                        crate::playlist_runtime::ResumeCheckpointError::StalePlayerBinding,
-                    ),
-                ));
-            };
-            if let Err(error) = playlist_runtime.complete_same_item_media_switch(
-                *expected_active,
-                media_instance_id,
-                binding,
-                installed.source.clone(),
-            ) {
-                return StrongMediaOpenPoll::completed(Err(
-                    StrongMediaOpenError::LineageRegistration(error),
-                ));
-            }
-            self.record_installed_media_source(installed.source.clone());
-            *rebound_after_installed = true;
+            return self.begin_post_installed_compensation(
+                playlist_runtime,
+                pending,
+                installed,
+                StrongMediaOpenError::MissingTerminal,
+            );
         }
         let is_live = snapshot.timeline.mode == media_core::TimelineMode::Live;
         let initial_checkpoint_position = if is_live {
@@ -108,12 +101,21 @@ impl AppState {
         } else {
             crate::playlist_runtime::InstalledCheckpointPosition::NonSeekable
         };
-        if let PendingStrongLineageCommit::SameLineage { restore, .. } = &pending.lineage_commit {
-            let Some(restore) = restore.as_ref() else {
-                return StrongMediaOpenPoll::completed(Err(
-                    StrongMediaOpenError::PendingPhaseStateLost,
-                ));
-            };
+        let same_lineage_restore = match &pending.lineage_commit {
+            PendingStrongLineageCommit::SameLineage { restore, .. } => {
+                let Some(restore) = restore.clone() else {
+                    return self.begin_post_installed_compensation(
+                        playlist_runtime,
+                        pending,
+                        installed,
+                        StrongMediaOpenError::PendingPhaseStateLost,
+                    );
+                };
+                Some(restore)
+            }
+            PendingStrongLineageCommit::NewLineageOrQueue => None,
+        };
+        if let Some(restore) = same_lineage_restore {
             let (position, timeline) =
                 same_lineage_position_restore(snapshot.timeline.mode, restore.position);
             let restore_request = player_core::InstalledMediaStateRestore {
@@ -151,13 +153,17 @@ impl AppState {
                     };
                     StrongMediaOpenPoll::Pending
                 }
-                Err(error) => StrongMediaOpenPoll::completed(Err(
+                Err(error) => self.begin_post_installed_compensation(
+                    playlist_runtime,
+                    pending,
+                    installed,
                     StrongMediaOpenError::PositionRestoreDispatch(player_dispatch_rejection(error)),
-                )),
+                ),
             };
         }
         match pending.startup_position {
             crate::playlist_runtime::StartupPosition::KeepStart => self.begin_playback_intent(
+                playlist_runtime,
                 pending,
                 installed,
                 media_instance_id,
@@ -166,6 +172,7 @@ impl AppState {
             ),
             crate::playlist_runtime::StartupPosition::Restore(_) if is_live => self
                 .begin_playback_intent(
+                    playlist_runtime,
                     pending,
                     installed,
                     media_instance_id,
@@ -179,6 +186,7 @@ impl AppState {
                         .is_some_and(|duration| requested_position > duration) =>
             {
                 self.begin_playback_intent(
+                    playlist_runtime,
                     pending,
                     installed,
                     media_instance_id,
@@ -212,11 +220,14 @@ impl AppState {
                         };
                         StrongMediaOpenPoll::Pending
                     }
-                    Err(error) => StrongMediaOpenPoll::completed(Err(
+                    Err(error) => self.begin_post_installed_compensation(
+                        playlist_runtime,
+                        pending,
+                        installed,
                         StrongMediaOpenError::PositionRestoreDispatch(player_dispatch_rejection(
                             error,
                         )),
-                    )),
+                    ),
                 }
             }
         }
@@ -224,47 +235,54 @@ impl AppState {
 
     pub(super) fn poll_strong_media_position_restore(
         &mut self,
+        playlist_runtime: &mut PlaylistRuntime,
         pending: &mut PendingStrongMediaOpen,
         installed: &mut InstalledSingleMediaOpen,
         media_instance_id: player_core::MediaInstanceId,
-        requested_position: std::time::Duration,
-        timeline: PositionRestoreTimeline,
-        receipt: &player_core::InstalledMediaStateRestoreReceipt,
+        restore: &PendingPositionRestore,
     ) -> StrongMediaOpenPoll {
-        let outcome = match receipt.try_take_outcome() {
+        let outcome = match restore.receipt.try_take_outcome() {
             Ok(Some(outcome)) => outcome,
             Ok(None) => return StrongMediaOpenPoll::Pending,
             Err(_) => {
-                return StrongMediaOpenPoll::completed(Err(
+                return self.begin_post_installed_compensation(
+                    playlist_runtime,
+                    pending,
+                    installed.clone(),
                     StrongMediaOpenError::PositionRestoreReceipt,
-                ));
+                );
             }
         };
         match route_position_restore_outcome(
             outcome,
             media_instance_id,
-            requested_position,
+            restore.requested_position,
             self.refresh_player_snapshot().current_position,
-            timeline,
+            restore.timeline,
         ) {
             PositionRestoreOutcomeRoute::Resume {
                 checkpoint_position,
                 warning,
             } => self.begin_playback_intent(
+                playlist_runtime,
                 pending,
                 installed.clone(),
                 media_instance_id,
                 checkpoint_position,
                 warning,
             ),
-            PositionRestoreOutcomeRoute::Fail(outcome) => {
-                StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::PositionRestore(outcome)))
-            }
+            PositionRestoreOutcomeRoute::Fail(outcome) => self.begin_post_installed_compensation(
+                playlist_runtime,
+                pending,
+                installed.clone(),
+                StrongMediaOpenError::PositionRestore(outcome),
+            ),
         }
     }
 
     fn begin_playback_intent(
         &mut self,
+        playlist_runtime: &mut PlaylistRuntime,
         pending: &mut PendingStrongMediaOpen,
         installed: InstalledSingleMediaOpen,
         media_instance_id: player_core::MediaInstanceId,
@@ -272,7 +290,12 @@ impl AppState {
         warning: Option<crate::playlist_runtime::ResumePositionWarning>,
     ) -> StrongMediaOpenPoll {
         let Some(next_revision) = pending.intent_revision.get().checked_add(1) else {
-            return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::MissingTerminal));
+            return self.begin_post_installed_compensation(
+                playlist_runtime,
+                pending,
+                installed,
+                StrongMediaOpenError::MissingTerminal,
+            );
         };
         let exact_revision = PlaybackIntentRevision::from_non_zero(
             NonZeroU64::new(next_revision).expect("checked increment remains non-zero"),
@@ -287,11 +310,14 @@ impl AppState {
                 }) {
                 Ok(receipt) => receipt,
                 Err(error) => {
-                    return StrongMediaOpenPoll::completed(Err(
+                    return self.begin_post_installed_compensation(
+                        playlist_runtime,
+                        pending,
+                        installed,
                         StrongMediaOpenError::PlaybackIntentDispatch(player_dispatch_rejection(
                             error,
                         )),
-                    ));
+                    );
                 }
             };
         pending.phase = PendingStrongMediaOpenPhase::PlaybackIntent {
@@ -310,7 +336,7 @@ impl AppState {
     pub(super) fn poll_strong_media_intent(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-        pending: &PendingStrongMediaOpen,
+        pending: &mut PendingStrongMediaOpen,
         installed: &mut InstalledSingleMediaOpen,
         resume_commit: InstalledResumeCommit,
         receipt: &player_core::PlaybackIntentUpdateReceipt,
@@ -323,24 +349,35 @@ impl AppState {
                 media_instance_id
             }
             outcome => {
-                return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::PlaybackIntent(
-                    outcome,
-                )));
+                return self.begin_post_installed_compensation(
+                    playlist_runtime,
+                    pending,
+                    installed.clone(),
+                    StrongMediaOpenError::PlaybackIntent(outcome),
+                );
             }
         };
         if resume_commit.media_instance_id != confirmed_instance {
-            return StrongMediaOpenPoll::completed(Err(StrongMediaOpenError::PlaybackIntent(
-                player_core::PlaybackIntentUpdateOutcome::StaleInstance,
-            )));
+            return self.begin_post_installed_compensation(
+                playlist_runtime,
+                pending,
+                installed.clone(),
+                StrongMediaOpenError::PlaybackIntent(
+                    player_core::PlaybackIntentUpdateOutcome::StaleInstance,
+                ),
+            );
         }
         let binding = match self.playlist_runtime_binding() {
             Some(binding) => binding,
             None => {
-                return StrongMediaOpenPoll::completed(Err(
+                return self.begin_post_installed_compensation(
+                    playlist_runtime,
+                    pending,
+                    installed.clone(),
                     StrongMediaOpenError::LineageRegistration(
                         crate::playlist_runtime::ResumeCheckpointError::StalePlayerBinding,
                     ),
-                ));
+                );
             }
         };
         let active_media_result = match &pending.lineage_commit {
@@ -354,28 +391,31 @@ impl AppState {
                     pending.intent,
                 ),
             PendingStrongLineageCommit::SameLineage {
-                rebound_after_installed,
-                ..
-            } if *rebound_after_installed => playlist_runtime
-                .playlist_view_snapshot()
-                .active_media()
-                .filter(|active| {
-                    active.media_instance_id() == resume_commit.media_instance_id
-                        && active.player_binding_generation() == binding.binding_generation()
-                })
-                .ok_or(crate::playlist_runtime::ResumeCheckpointError::StalePlayerInstance),
-            PendingStrongLineageCommit::SameLineage { .. } => {
-                Err(crate::playlist_runtime::ResumeCheckpointError::ControllerInvariant)
-            }
+                expected_active, ..
+            } => playlist_runtime.complete_same_item_media_switch(
+                *expected_active,
+                resume_commit.media_instance_id,
+                binding,
+                installed.source.clone(),
+            ),
         };
         let active_media = match active_media_result {
             Ok(active_media) => active_media,
             Err(error) => {
-                return StrongMediaOpenPoll::completed(Err(
+                return self.begin_post_installed_compensation(
+                    playlist_runtime,
+                    pending,
+                    installed.clone(),
                     StrongMediaOpenError::LineageRegistration(error),
-                ));
+                );
             }
         };
+        if matches!(
+            pending.lineage_commit,
+            PendingStrongLineageCommit::SameLineage { .. }
+        ) {
+            self.record_installed_media_source(installed.source.clone());
+        }
         playlist_runtime.record_installed_resume_checkpoint(
             binding.binding_generation(),
             resume_commit.media_instance_id,
@@ -427,7 +467,7 @@ fn subtitle_restore_from_selection(
     )
 }
 
-fn player_dispatch_rejection(
+pub(super) fn player_dispatch_rejection(
     error: player_core::PlayerWorkerSendError,
 ) -> crate::media_open::PlayerDispatchRejection {
     match error {

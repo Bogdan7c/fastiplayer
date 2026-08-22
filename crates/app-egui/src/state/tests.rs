@@ -797,8 +797,8 @@ fn playlist_transport_routes_only_pre_barrier_failure_through_navigation_owner()
     );
 
     assert!(
-        failed_branch.contains(".is_proven_pre_barrier_failure()"),
-        "automatic continuation разрешён только для доказанного pre-barrier failure"
+        failed_branch.contains(".allows_navigation_failure_recovery()"),
+        "automatic continuation разрешён только до barrier-а либо после exact compensation"
     );
     assert!(
         failed_branch.contains("report_playlist_navigation_failure("),

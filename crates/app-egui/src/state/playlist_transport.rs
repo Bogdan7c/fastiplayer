@@ -314,7 +314,7 @@ impl AppState {
                     );
                 } else {
                     let automatic_continuation = error
-                        .is_proven_pre_barrier_failure()
+                        .allows_navigation_failure_recovery()
                         .then(|| {
                             playlist_runtime.report_playlist_navigation_failure(
                                 failed_request_id,

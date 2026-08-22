@@ -3,6 +3,7 @@
 //! Модуль владеет orchestration, но не player/session данными: coordinator хранит
 //! request phases, player — atomic install, а `AppState` — renderer pointers.
 
+mod compensation;
 mod pending;
 pub(super) use pending::PendingStrongMediaOpen;
 
@@ -203,22 +204,48 @@ pub(crate) enum StrongMediaOpenError {
     PostInstalledVideo(PostInstalledVideoPipelineInvariantViolation),
     #[error("successful strong install could not be registered in app lineage owner: {0:?}")]
     LineageRegistration(crate::playlist_runtime::ResumeCheckpointError),
+    #[error("post-Installed failure was compensated after exact release: {failure}")]
+    PostInstalledCompensated {
+        request_id: MediaOpenRequestId,
+        failure: Box<StrongMediaOpenError>,
+    },
+    #[error("post-Installed compensation failed ({cleanup}); original failure: {failure}")]
+    PostInstalledCompensationFailed {
+        request_id: MediaOpenRequestId,
+        failure: Box<StrongMediaOpenError>,
+        cleanup: PostInstalledCompensationFailure,
+    },
+}
+
+/// Cleanup failure не маскируется исходной ошибкой post-Installed шага.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum PostInstalledCompensationFailure {
+    #[error("exact release dispatch failed: {0:?}")]
+    ReleaseDispatch(crate::media_open::PlayerDispatchRejection),
+    #[error("exact release receipt was lost")]
+    ReleaseReceipt,
+    #[error("exact release returned a non-applied outcome: {0:?}")]
+    ReleaseOutcome(player_core::InstalledMediaReleaseOutcome),
+    #[error("controller reconciliation failed: {0:?}")]
+    Controller(crate::playlist_runtime::ResumeCheckpointError),
 }
 
 impl StrongMediaOpenError {
     /// Terminal request correlation нужна D22 только для proven pre-barrier failure.
     pub(crate) const fn terminal_request_id(&self) -> Option<MediaOpenRequestId> {
-        let Self::Terminal(terminal) = self else {
-            return None;
-        };
-        Some(match terminal {
-            MediaOpenTerminalOutcome::Installed { request_id, .. }
-            | MediaOpenTerminalOutcome::Cancelled { request_id, .. }
-            | MediaOpenTerminalOutcome::PreparationFailed { request_id, .. }
-            | MediaOpenTerminalOutcome::PlayerRejected { request_id, .. }
-            | MediaOpenTerminalOutcome::PlayerFailed { request_id, .. }
-            | MediaOpenTerminalOutcome::FatalInvariant { request_id, .. } => *request_id,
-        })
+        match self {
+            Self::Terminal(terminal) => Some(match terminal {
+                MediaOpenTerminalOutcome::Installed { request_id, .. }
+                | MediaOpenTerminalOutcome::Cancelled { request_id, .. }
+                | MediaOpenTerminalOutcome::PreparationFailed { request_id, .. }
+                | MediaOpenTerminalOutcome::PlayerRejected { request_id, .. }
+                | MediaOpenTerminalOutcome::PlayerFailed { request_id, .. }
+                | MediaOpenTerminalOutcome::FatalInvariant { request_id, .. } => *request_id,
+            }),
+            Self::PostInstalledCompensated { request_id, .. }
+            | Self::PostInstalledCompensationFailed { request_id, .. } => Some(*request_id),
+            _ => None,
+        }
     }
 
     /// Показывает, что player ownership уже мог переключиться и settings обязан rollback-нуть route.
@@ -235,6 +262,8 @@ impl StrongMediaOpenError {
                 | Self::PositionRestore(_)
                 | Self::MissingActiveVideoPointers
                 | Self::PostInstalledVideo(_)
+                | Self::PostInstalledCompensated { .. }
+                | Self::PostInstalledCompensationFailed { .. }
         )
     }
 
@@ -249,6 +278,12 @@ impl StrongMediaOpenError {
                     | MediaOpenTerminalOutcome::PlayerFailed { .. }
             ) | Self::SameLineageStale
         )
+    }
+
+    /// Навигация может продолжиться только до barrier-а либо после подтверждённой компенсации.
+    pub(crate) const fn allows_navigation_failure_recovery(&self) -> bool {
+        self.is_proven_pre_barrier_failure()
+            || matches!(self, Self::PostInstalledCompensated { .. })
     }
 }
 
@@ -431,25 +466,41 @@ impl AppState {
                     let terminal = playlist_runtime
                         .take_media_open_terminal(request_id)?
                         .ok_or(StrongMediaOpenError::MissingTerminal)?;
-                    let installed =
-                        self.finish_media_open_terminal(candidate_owner, source, terminal)?;
+                    let installed = Self::installed_media_from_terminal(source, terminal)?;
+                    if let Err(failure) = self.commit_installed_video_candidate(
+                        &candidate_owner,
+                        installed.player_request_id,
+                    ) {
+                        return Err(self.compensate_post_installed_failure_blocking(
+                            playlist_runtime,
+                            request_id,
+                            &installed,
+                            failure,
+                        ));
+                    }
                     let MediaInstallCompletion::Installed {
                         media_instance_id, ..
                     } = installed.completion
                     else {
-                        return Err(StrongMediaOpenError::MissingTerminal);
+                        return Err(self.compensate_post_installed_failure_blocking(
+                            playlist_runtime,
+                            request_id,
+                            &installed,
+                            StrongMediaOpenError::MissingTerminal,
+                        ));
                     };
                     let exact_revision = PlaybackIntentRevision::from_non_zero(
                         NonZeroU64::new(2).expect("post-Installed revision is non-zero"),
                     );
-                    let intent_receipt = self
-                        .player_worker
-                        .update_playback_intent(player_core::PlaybackIntentUpdate {
+                    let intent_receipt = match self.player_worker.update_playback_intent(
+                        player_core::PlaybackIntentUpdate {
                             request_id: installed.player_request_id,
                             revision: exact_revision,
                             intent,
-                        })
-                        .map_err(|error| {
+                        },
+                    ) {
+                        Ok(receipt) => receipt,
+                        Err(error) => {
                             let rejection = match error {
                                 player_core::PlayerWorkerSendError::Full => {
                                     crate::media_open::PlayerDispatchRejection::Backpressure
@@ -458,34 +509,65 @@ impl AppState {
                                     crate::media_open::PlayerDispatchRejection::Disconnected
                                 }
                             };
-                            StrongMediaOpenError::PlaybackIntentDispatch(rejection)
-                        })?;
+                            return Err(self.compensate_post_installed_failure_blocking(
+                                playlist_runtime,
+                                request_id,
+                                &installed,
+                                StrongMediaOpenError::PlaybackIntentDispatch(rejection),
+                            ));
+                        }
+                    };
                     let confirmed_instance = match intent_receipt.wait_for_outcome() {
                         player_core::PlaybackIntentUpdateOutcome::AppliedToInstalled {
                             media_instance_id,
                         } => media_instance_id,
-                        outcome => return Err(StrongMediaOpenError::PlaybackIntent(outcome)),
+                        outcome => {
+                            return Err(self.compensate_post_installed_failure_blocking(
+                                playlist_runtime,
+                                request_id,
+                                &installed,
+                                StrongMediaOpenError::PlaybackIntent(outcome),
+                            ));
+                        }
                     };
                     if media_instance_id != confirmed_instance {
-                        return Err(StrongMediaOpenError::PlaybackIntent(
-                            player_core::PlaybackIntentUpdateOutcome::StaleInstance,
+                        return Err(self.compensate_post_installed_failure_blocking(
+                            playlist_runtime,
+                            request_id,
+                            &installed,
+                            StrongMediaOpenError::PlaybackIntent(
+                                player_core::PlaybackIntentUpdateOutcome::StaleInstance,
+                            ),
                         ));
                     }
-                    let binding = self.playlist_runtime_binding().ok_or(
-                        StrongMediaOpenError::LineageRegistration(
-                            crate::playlist_runtime::ResumeCheckpointError::StalePlayerBinding,
-                        ),
-                    )?;
-                    let active_media = playlist_runtime
-                        .register_successful_strong_install(
+                    let Some(binding) = self.playlist_runtime_binding() else {
+                        return Err(self.compensate_post_installed_failure_blocking(
+                            playlist_runtime,
                             request_id,
-                            installed.player_request_id,
-                            media_instance_id,
-                            binding,
-                            installed.source.clone(),
-                            intent,
-                        )
-                        .map_err(StrongMediaOpenError::LineageRegistration)?;
+                            &installed,
+                            StrongMediaOpenError::LineageRegistration(
+                                crate::playlist_runtime::ResumeCheckpointError::StalePlayerBinding,
+                            ),
+                        ));
+                    };
+                    let active_media = match playlist_runtime.register_successful_strong_install(
+                        request_id,
+                        installed.player_request_id,
+                        media_instance_id,
+                        binding,
+                        installed.source.clone(),
+                        intent,
+                    ) {
+                        Ok(active_media) => active_media,
+                        Err(error) => {
+                            return Err(self.compensate_post_installed_failure_blocking(
+                                playlist_runtime,
+                                request_id,
+                                &installed,
+                                StrongMediaOpenError::LineageRegistration(error),
+                            ));
+                        }
+                    };
                     let installed_snapshot = self.refresh_player_snapshot();
                     if installed_snapshot.media_instance_id == Some(media_instance_id) {
                         let checkpoint_position =
@@ -548,10 +630,8 @@ impl AppState {
         }
     }
 
-    /// Коммитит app half только для matching Installed и сохраняет exact IDs.
-    fn finish_media_open_terminal(
-        &mut self,
-        candidate_owner: ProductionCandidateOwner,
+    /// Извлекает exact Installed facts до любого fallible app-side commit-а.
+    fn installed_media_from_terminal(
         source: ActiveMediaSource,
         terminal: MediaOpenTerminalOutcome,
     ) -> Result<InstalledSingleMediaOpen, StrongMediaOpenError> {
@@ -564,8 +644,6 @@ impl AppState {
         else {
             return Err(StrongMediaOpenError::Terminal(terminal));
         };
-
-        self.commit_installed_video_candidate(&candidate_owner, player_request_id)?;
         Ok(InstalledSingleMediaOpen {
             player_request_id,
             completion,
@@ -653,12 +731,22 @@ mod startup_poll_tests {
 
         assert!(!resume_source.contains("capture_backend_swap_video_checkpoint("));
         let terminal_finish = resume_source
-            .find("finish_media_open_terminal(candidate_owner, source, terminal)")
-            .expect("Installed terminal must finish before visual activation");
+            .find("installed_media_from_terminal(source, terminal)")
+            .expect("Installed terminal facts must be captured before visual activation");
+        let video_commit = resume_source
+            .find("commit_installed_video_candidate(")
+            .expect("Installed video candidate must commit before visual activation");
         let freeze_activation = resume_source
             .find("begin_backend_swap_video_freeze(")
             .expect("successful same-lineage install must activate its checkpoint");
-        assert!(terminal_finish < freeze_activation);
+        assert!(terminal_finish < video_commit && video_commit < freeze_activation);
+        let intent_outcome = resume_source
+            .find("receipt.try_outcome()")
+            .expect("playback intent receipt remains the final fallible pre-commit barrier");
+        let same_lineage_rebind = resume_source
+            .find("complete_same_item_media_switch(")
+            .expect("same-lineage identity must rebind after successful intent");
+        assert!(intent_outcome < same_lineage_rebind);
     }
 
     /// Cancel-win разрешает fallback, а missing/fatal terminal остаётся sticky fatal.
@@ -682,5 +770,18 @@ mod startup_poll_tests {
         assert!(!fatal.is_proven_pre_barrier_failure());
         assert_eq!(fatal.terminal_request_id(), Some(request_id));
         assert!(!StrongMediaOpenError::MissingTerminal.is_proven_pre_barrier_failure());
+        let compensated = StrongMediaOpenError::PostInstalledCompensated {
+            request_id,
+            failure: Box::new(StrongMediaOpenError::PositionRestoreReceipt),
+        };
+        let cleanup_failed = StrongMediaOpenError::PostInstalledCompensationFailed {
+            request_id,
+            failure: Box::new(StrongMediaOpenError::PositionRestoreReceipt),
+            cleanup: PostInstalledCompensationFailure::ReleaseReceipt,
+        };
+        assert!(compensated.allows_navigation_failure_recovery());
+        assert_eq!(compensated.terminal_request_id(), Some(request_id));
+        assert!(!cleanup_failed.allows_navigation_failure_recovery());
+        assert!(cleanup_failed.may_have_crossed_install_barrier());
     }
 }

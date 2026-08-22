@@ -121,6 +121,7 @@ pub(crate) struct ControllerTerminalDrain {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ControllerTerminalResolution {
     Installed,
+    ReleasedAfterPostInstalledFailure,
     CancelWonBeforePlayerEnqueue {
         cause: player_core::MediaInstallCancellationCause,
     },

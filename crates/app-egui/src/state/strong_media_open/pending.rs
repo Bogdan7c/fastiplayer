@@ -2,7 +2,9 @@
 
 use super::*;
 
+mod compensation;
 mod live_same_item_restore;
+use compensation::PostInstalledCompensationPoll;
 mod resume;
 use resume::InstalledResumeCommit;
 mod same_lineage;
@@ -59,6 +61,11 @@ enum PendingStrongMediaOpenPhase {
         installed: InstalledSingleMediaOpen,
         resume_commit: InstalledResumeCommit,
         receipt: player_core::PlaybackIntentUpdateReceipt,
+    },
+    PostInstalledRelease {
+        installed: InstalledSingleMediaOpen,
+        failure: StrongMediaOpenError,
+        receipt: player_core::InstalledMediaReleaseReceipt,
     },
 }
 
@@ -341,7 +348,6 @@ impl AppState {
                 expected_active,
                 restore: None,
                 video_swap_checkpoint: None,
-                rebound_after_installed: false,
             },
             pre_barrier_failure: None,
             phase: PendingStrongMediaOpenPhase::Protocol {
@@ -395,7 +401,7 @@ impl AppState {
             } => {
                 let result = self.poll_strong_media_intent(
                     playlist_runtime,
-                    &pending,
+                    &mut pending,
                     &mut installed,
                     resume_commit,
                     &receipt,
@@ -417,12 +423,11 @@ impl AppState {
                 restore,
             } => {
                 let result = self.poll_strong_media_position_restore(
+                    playlist_runtime,
                     &mut pending,
                     &mut installed,
                     media_instance_id,
-                    restore.requested_position,
-                    restore.timeline,
-                    &restore.receipt,
+                    &restore,
                 );
                 if matches!(result, StrongMediaOpenPoll::Pending) {
                     pending.phase.retain_after_pending_poll(
@@ -434,6 +439,31 @@ impl AppState {
                     );
                 }
                 result
+            }
+            PendingStrongMediaOpenPhase::PostInstalledRelease {
+                installed,
+                failure,
+                receipt,
+            } => {
+                let result = self.poll_post_installed_compensation(
+                    playlist_runtime,
+                    &pending,
+                    &installed,
+                    &receipt,
+                    failure,
+                );
+                if let PostInstalledCompensationPoll::Pending { failure } = result {
+                    pending.phase.retain_after_pending_poll(
+                        PendingStrongMediaOpenPhase::PostInstalledRelease {
+                            installed,
+                            failure,
+                            receipt,
+                        },
+                    );
+                    StrongMediaOpenPoll::Pending
+                } else {
+                    result.into_strong_poll()
+                }
             }
         };
         match result {

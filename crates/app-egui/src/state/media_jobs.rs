@@ -117,6 +117,30 @@ impl AppState {
         self.mark_pending_worker_redraw();
     }
 
+    /// Exact release удаляет app-side source projection уже отсутствующего player media.
+    pub(crate) fn clear_released_installed_media_source(
+        &mut self,
+        released_media_instance_id: player_core::MediaInstanceId,
+    ) {
+        if classify_exact_media_reset_cleanup(
+            self.last_player_snapshot.media_instance_id,
+            released_media_instance_id,
+        ) == ExactMediaResetCleanup::SupersededByNewSnapshot
+        {
+            return;
+        }
+        self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
+        self.current_local_file = None;
+        self.active_media_source = None;
+        self.last_player_snapshot.media_instance_id = None;
+        self.last_player_snapshot.playback_state = PlaybackState::Stopped;
+        self.last_player_snapshot.source_label = None;
+        self.last_player_snapshot.media_title = None;
+        self.last_player_snapshot.current_video_frame = None;
+        self.last_player_snapshot.clear_timeline();
+        self.mark_pending_worker_redraw();
+    }
+
     /// Очищает app-owned media только если snapshot ещё не принадлежит новому instance.
     pub(super) fn record_cleared_media_after_exact_reset(
         &mut self,

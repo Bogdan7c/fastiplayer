@@ -14,7 +14,6 @@ pub(super) enum PendingStrongLineageCommit {
         restore: Option<SameLineageRestoreSnapshot>,
         /// Visual checkpoint снимается в последнем pre-barrier состоянии старого media.
         video_swap_checkpoint: Option<Box<crate::state::BackendSwapVideoCheckpoint>>,
-        rebound_after_installed: bool,
     },
 }
 

@@ -369,6 +369,34 @@ impl PlaylistRuntime {
         Ok(active_media)
     }
 
+    /// Согласует controller/source projections после exact release неуспешного Installed.
+    pub(crate) fn reconcile_released_post_installed_candidate(
+        &mut self,
+        request_id: MediaOpenRequestId,
+        player_request_id: MediaInstallRequestId,
+    ) -> Result<(), ResumeCheckpointError> {
+        let controller = self
+            .controller
+            .as_mut()
+            .ok_or(ResumeCheckpointError::ControllerInvariant)?;
+        let dirty_before = controller.dirty_revision();
+        controller
+            .reconcile_released_post_installed_candidate(request_id, player_request_id)
+            .map_err(|_| ResumeCheckpointError::ControllerInvariant)?;
+        self.publish_controller_mutation_if_dirty(dirty_before);
+        self.suspended_media.active_source = None;
+        self.suspended_media.checkpoint = None;
+        self.suspended_media.status = Some(ResumeCheckpointStatus::Empty);
+        Ok(())
+    }
+
+    /// Release dispatch/receipt failure переводит controller в явный fatal invariant.
+    pub(crate) fn report_post_installed_compensation_failure(&mut self) {
+        if let Some(controller) = self.controller.as_mut() {
+            controller.report_post_installed_compensation_failure();
+        }
+    }
+
     /// Explicit different Play/open supersede-ит failed/suspended checkpoint immediately.
     pub(crate) fn supersede_suspended_media_checkpoint(&mut self) {
         self.suspended_media.checkpoint = None;

@@ -2,6 +2,7 @@
 
 mod intents;
 mod manual;
+mod post_installed_compensation;
 mod token;
 
 pub(crate) use intents::{
@@ -104,6 +105,7 @@ pub(crate) enum PlaylistControllerInvariantViolation {
     DirtyRevisionExhaustedAfterPlayerCommit,
     LineageIdentityExhausted,
     DeferredModeApplicationFailed,
+    PostInstalledCandidateReleaseFailed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

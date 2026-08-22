@@ -730,6 +730,128 @@ fn policy_commands_are_opaque_and_worker_unavailable_is_typed() {
     );
 }
 
+/// A -> failed Installed B -> exact release -> C проходит тот же production controller path.
+#[test]
+fn released_post_installed_candidate_unblocks_next_exact_install() {
+    let mut controller = PlaylistController::new();
+    let item_ids = append_ids(&mut controller, 3);
+
+    reserve_existing(&mut controller, 801, 901, item_ids[0]);
+    controller
+        .begin_authorization_dispatch(request_id(801))
+        .expect("A authorization dispatch");
+    controller
+        .resolve_authorization_dispatch(
+            request_id(801),
+            AuthorizationDispatchResolution::EnqueuedAtPlayerOwner,
+        )
+        .expect("A enqueue winner");
+    controller
+        .on_installed(
+            request_id(801),
+            player_request_id(901),
+            media_instance_id(1001),
+            PlaylistBindingGeneration(1),
+        )
+        .expect("A installed");
+
+    reserve_existing(&mut controller, 802, 902, item_ids[1]);
+    controller
+        .begin_authorization_dispatch(request_id(802))
+        .expect("B authorization dispatch");
+    controller
+        .resolve_authorization_dispatch(
+            request_id(802),
+            AuthorizationDispatchResolution::EnqueuedAtPlayerOwner,
+        )
+        .expect("B enqueue winner");
+    assert!(controller.install_linearizing());
+
+    let release_drain = controller
+        .reconcile_released_post_installed_candidate(request_id(802), player_request_id(902))
+        .expect("exact B release reconciliation")
+        .expect("playlist reservation produces a terminal drain");
+    assert_eq!(
+        release_drain.resolution,
+        ControllerTerminalResolution::ReleasedAfterPostInstalledFailure
+    );
+    assert_eq!(controller.install_phase(), None);
+    assert!(!controller.install_linearizing());
+    assert_eq!(controller.active_media(), None);
+    assert_eq!(
+        controller
+            .queue()
+            .traversal_current()
+            .expect("A remains the committed queue cursor")
+            .item_id(),
+        item_ids[0]
+    );
+    assert!(matches!(
+        controller.media_open_command(
+            MediaOpenClientKey::from_non_zero(non_zero(77)),
+            ControllerMediaOpenDisposition::Start,
+        ),
+        Ok(ControllerMediaOpenCommand::Start { .. })
+    ));
+
+    reserve_existing(&mut controller, 803, 903, item_ids[2]);
+    controller
+        .begin_authorization_dispatch(request_id(803))
+        .expect("C authorization dispatch");
+    controller
+        .resolve_authorization_dispatch(
+            request_id(803),
+            AuthorizationDispatchResolution::EnqueuedAtPlayerOwner,
+        )
+        .expect("C enqueue winner");
+    let c_installed = controller
+        .on_installed(
+            request_id(803),
+            player_request_id(903),
+            media_instance_id(1003),
+            PlaylistBindingGeneration(1),
+        )
+        .expect("C reaches exact Installed commit");
+    assert_eq!(
+        c_installed
+            .active_media
+            .expect("C becomes active")
+            .item_id(),
+        Some(item_ids[2])
+    );
+}
+
+/// Неизвестный release outcome не выдаёт ложное recovery и блокирует новые opens fatal-ом.
+#[test]
+fn failed_post_installed_release_is_fatal_instead_of_unlocking_reservation() {
+    let mut controller = PlaylistController::new();
+    let item_id = append_ids(&mut controller, 1)[0];
+    reserve_existing(&mut controller, 804, 904, item_id);
+    controller
+        .begin_authorization_dispatch(request_id(804))
+        .expect("authorization dispatch");
+    controller
+        .resolve_authorization_dispatch(
+            request_id(804),
+            AuthorizationDispatchResolution::EnqueuedAtPlayerOwner,
+        )
+        .expect("enqueue winner");
+
+    controller.report_post_installed_compensation_failure();
+
+    assert_eq!(
+        controller.media_open_command(
+            MediaOpenClientKey::from_non_zero(non_zero(78)),
+            ControllerMediaOpenDisposition::Start,
+        ),
+        Err(ControllerMediaOpenCommandError::FatalInvariant)
+    );
+    assert_eq!(
+        controller.install_phase(),
+        Some(ControllerInstallPhase::AuthorizationInFlight)
+    );
+}
+
 #[test]
 fn coalesce_and_pre_ready_supersede_keep_exact_single_pending_request() {
     let mut controller = PlaylistController::new();
