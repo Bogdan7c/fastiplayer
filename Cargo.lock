@@ -3963,6 +3963,7 @@ dependencies = [
  "video-backend-api",
  "video-core",
  "video-frame-contract",
+ "video-present-core",
  "wgpu",
  "wgpu-types",
 ]

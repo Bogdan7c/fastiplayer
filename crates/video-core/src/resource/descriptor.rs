@@ -3,6 +3,8 @@ use std::sync::Arc;
 use std::{fmt, io};
 
 use anyhow::{Context, ensure};
+use video_frame_contract::DmaBufImageLayout;
+
 /// Opaque handle decoded frame resource-а.
 ///
 /// Handle не раскрывает backend storage: decoder/provider владеет таблицей
@@ -447,6 +449,38 @@ pub struct DmaBufFrameDescriptor {
 /// `auto`/`hardware` policy до попытки создать Vulkan image/memory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DmaBufDescriptorRejection {
+    /// Decoded frame объявил внутренне противоречивый frame contract.
+    InvalidFrameContract {
+        /// Исходная причина нарушения инвариантов neutral frame contract-а.
+        reason: String,
+    },
+    /// DMA-BUF descriptor проверяется против нулевого coded размера.
+    InvalidCodedSize {
+        /// Coded ширина decoded frame-а.
+        coded_width: u32,
+        /// Coded высота decoded frame-а.
+        coded_height: u32,
+    },
+    /// Decoded frame contract требует host upload, а provider вернул DMA-BUF.
+    FrameContractRequiresHostUpload,
+    /// Export layout descriptor-а не совпадает с layout, обещанным frame contract-ом.
+    ImageLayoutMismatch {
+        /// Layout, обещанный decoded frame contract-ом.
+        expected: DmaBufImageLayout,
+        /// Layout, фактически описанный provider descriptor-ом.
+        actual: DmaBufImageLayout,
+    },
+    /// Coded размеры descriptor-а не совпадают с размерами decoded frame-а.
+    CodedSizeMismatch {
+        /// Coded ширина decoded frame-а.
+        expected_width: u32,
+        /// Coded высота decoded frame-а.
+        expected_height: u32,
+        /// Ширина, объявленная DMA-BUF descriptor-ом.
+        actual_width: u32,
+        /// Высота, объявленная DMA-BUF descriptor-ом.
+        actual_height: u32,
+    },
     /// Provider вернул descriptor без экспортированных DMA-BUF objects.
     AbsentObjects,
     /// Provider вернул descriptor без DRM PRIME layers.
@@ -484,6 +518,33 @@ pub enum DmaBufDescriptorRejection {
 impl fmt::Display for DmaBufDescriptorRejection {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidFrameContract { reason } => write!(
+                formatter,
+                "decoded frame contract is invalid for DMA-BUF validation: {reason}"
+            ),
+            Self::InvalidCodedSize {
+                coded_width,
+                coded_height,
+            } => write!(
+                formatter,
+                "DMA-BUF validation requires positive coded size, got {coded_width}x{coded_height}"
+            ),
+            Self::FrameContractRequiresHostUpload => formatter.write_str(
+                "decoded frame contract requires host upload, but provider returned DMA-BUF",
+            ),
+            Self::ImageLayoutMismatch { expected, actual } => write!(
+                formatter,
+                "DMA-BUF image layout mismatch: expected {expected}, got {actual}"
+            ),
+            Self::CodedSizeMismatch {
+                expected_width,
+                expected_height,
+                actual_width,
+                actual_height,
+            } => write!(
+                formatter,
+                "DMA-BUF coded size mismatch: expected {expected_width}x{expected_height}, got {actual_width}x{actual_height}"
+            ),
             Self::AbsentObjects => formatter.write_str("DMA-BUF descriptor has no objects"),
             Self::AbsentLayers => formatter.write_str("DMA-BUF descriptor has no DRM PRIME layers"),
             Self::InvalidPlaneCount {

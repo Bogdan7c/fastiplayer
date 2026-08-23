@@ -1,5 +1,7 @@
-use anyhow::{Context, ensure};
-use video_frame_contract::DmaBufImageLayout;
+use anyhow::Context;
+use video_frame_contract::{
+    DmaBufImageLayout, HardwareFrameHandle, VideoFrameContract, VideoFrameTransferPath,
+};
 
 use super::descriptor::{
     DmaBufDescriptorRejection, DmaBufFrameDescriptor, DmaBufFrameExportLayout,
@@ -61,26 +63,102 @@ pub fn validate_dma_buf_descriptor_import_topology(
 
     Ok(())
 }
+
+/// Проверяет DMA-BUF descriptor против полного decoded frame contract-а до unsafe import-а.
+///
+/// Boundary намеренно renderer-neutral: provider descriptor сверяется с обещанными
+/// transfer path, image layout и coded dimensions без знания Vulkan/WGPU реализации.
+pub fn validate_dma_buf_descriptor_against_frame_contract(
+    contract: VideoFrameContract,
+    coded_width: u32,
+    coded_height: u32,
+    descriptor: &DmaBufFrameDescriptor,
+) -> Result<(), DmaBufDescriptorRejection> {
+    if let Err(error) = contract.validate() {
+        return Err(DmaBufDescriptorRejection::InvalidFrameContract {
+            reason: error.to_string(),
+        });
+    }
+    if coded_width == 0 || coded_height == 0 {
+        return Err(DmaBufDescriptorRejection::InvalidCodedSize {
+            coded_width,
+            coded_height,
+        });
+    }
+
+    let expected_layout = match contract.transfer_path {
+        VideoFrameTransferPath::HardwareZeroCopy {
+            handle: HardwareFrameHandle::DmaBuf { image_layout },
+        } => image_layout,
+        VideoFrameTransferPath::SoftwareHostUpload => {
+            return Err(DmaBufDescriptorRejection::FrameContractRequiresHostUpload);
+        }
+    };
+
+    validate_dma_buf_descriptor_against_expected_contract(
+        expected_layout,
+        coded_width,
+        coded_height,
+        descriptor,
+    )
+}
+
 pub(super) fn validate_dma_buf_descriptor_against_contract(
     expected_layout: DmaBufImageLayout,
     coded_width: u32,
     coded_height: u32,
     descriptor: &DmaBufFrameDescriptor,
 ) -> anyhow::Result<()> {
-    validate_dma_buf_descriptor_import_topology(descriptor)
-        .context("DMA-BUF descriptor import topology is unsupported")?;
+    match validate_dma_buf_descriptor_against_expected_contract(
+        expected_layout,
+        coded_width,
+        coded_height,
+        descriptor,
+    ) {
+        Ok(()) => Ok(()),
+        Err(rejection) if rejection_is_import_topology_error(&rejection) => {
+            Err(rejection).context("DMA-BUF descriptor import topology is unsupported")
+        }
+        Err(rejection) => Err(rejection.into()),
+    }
+}
+
+/// Общая typed проверка topology, export layout и coded dimensions.
+fn validate_dma_buf_descriptor_against_expected_contract(
+    expected_layout: DmaBufImageLayout,
+    coded_width: u32,
+    coded_height: u32,
+    descriptor: &DmaBufFrameDescriptor,
+) -> Result<(), DmaBufDescriptorRejection> {
+    validate_dma_buf_descriptor_import_topology(descriptor)?;
     let actual_layout = dma_buf_export_layout_to_image_layout(descriptor.export_layout);
-    ensure!(
-        actual_layout == expected_layout,
-        "DMA-BUF image layout mismatch: expected {expected_layout}, got {actual_layout}"
-    );
-    ensure!(
-        descriptor.width == coded_width && descriptor.height == coded_height,
-        "DMA-BUF coded size mismatch: expected {coded_width}x{coded_height}, got {}x{}",
-        descriptor.width,
-        descriptor.height
-    );
+    if actual_layout != expected_layout {
+        return Err(DmaBufDescriptorRejection::ImageLayoutMismatch {
+            expected: expected_layout,
+            actual: actual_layout,
+        });
+    }
+    if descriptor.width != coded_width || descriptor.height != coded_height {
+        return Err(DmaBufDescriptorRejection::CodedSizeMismatch {
+            expected_width: coded_width,
+            expected_height: coded_height,
+            actual_width: descriptor.width,
+            actual_height: descriptor.height,
+        });
+    }
     Ok(())
+}
+
+/// Отличает прежние topology errors, для которых публичный anyhow boundary сохраняет context.
+fn rejection_is_import_topology_error(rejection: &DmaBufDescriptorRejection) -> bool {
+    matches!(
+        rejection,
+        DmaBufDescriptorRejection::AbsentObjects
+            | DmaBufDescriptorRejection::AbsentLayers
+            | DmaBufDescriptorRejection::InvalidPlaneCount { .. }
+            | DmaBufDescriptorRejection::ObjectIndexOutOfBounds { .. }
+            | DmaBufDescriptorRejection::UnsupportedComposedMultiObject { .. }
+    )
 }
 
 const fn dma_buf_export_layout_to_image_layout(

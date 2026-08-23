@@ -11,7 +11,9 @@ pub use descriptor::{
     FrameResourceHandle, HostPlanarFrameDescriptor, HostPlanarFrameOwner, HostPlanarOwnedBuffer,
     HostPlanarVisiblePlaneBlock, HostPlaneDescriptor, HostPlaneRole,
 };
-pub use dma_buf_validation::validate_dma_buf_descriptor_import_topology;
+pub use dma_buf_validation::{
+    validate_dma_buf_descriptor_against_frame_contract, validate_dma_buf_descriptor_import_topology,
+};
 
 use dma_buf_validation::validate_dma_buf_descriptor_against_contract;
 use host_planar_validation::validate_host_planar_descriptor_against_contract;

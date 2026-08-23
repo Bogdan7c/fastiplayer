@@ -1,3 +1,9 @@
+## AUD-016 DMA-BUF frame contract до unsafe import (2026-08-23)
+
+- Independent production-boundary verification confirmed topology-valid wrong coded dimensions and `ComposedLayers`/`SeparateLayers` mismatch reached the DMA-BUF importer.
+- `video-core` now owns a typed full DMA-BUF/frame-contract validator; WGPU materializer rejects mismatches before cache/importer, while the existing `VideoFrameLease` remains the exactly-once release owner.
+- Functional fake-provider/recording-importer regressions prove mismatch importer calls 0, valid calls 1 and exactly-once release. Full boundary, tests and limitation: `mem:render-video/dma-buf-frame-contract-aud016-2026-08-23`.
+
 ## AUD-015 bounded FFmpeg worker shutdown/join (2026-08-23)
 
 - Independent production-worker verification confirmed full host pool + queued packet + dropped frontend/control + held resource never terminated: 250 ms and 8 s both timed out; disconnected control receiver caused immediate re-selection/busy-spin.

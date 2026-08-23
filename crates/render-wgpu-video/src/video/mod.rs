@@ -120,7 +120,7 @@ pub enum WgpuFrameMaterializationUnsupportedReason {
     /// HostPlanar layout пока не входит в минимальный upload subset.
     HostPlanarLayoutNotSupportedByUploadMaterializer,
 
-    /// DMA-BUF object/layer topology отклонена до Vulkan import-а.
+    /// DMA-BUF topology либо frame contract отклонены до Vulkan import-а.
     DmaBufDescriptorRejected(DmaBufDescriptorRejection),
 }
 
@@ -142,7 +142,7 @@ impl WgpuFrameMaterializationUnsupportedReason {
                 "host planar layout is not supported by upload materializer"
             }
             Self::DmaBufDescriptorRejected(_) => {
-                "DMA-BUF descriptor topology is unsupported by Vulkan importer"
+                "DMA-BUF descriptor is incompatible with the decoded frame contract"
             }
         }
     }
