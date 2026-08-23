@@ -3,6 +3,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use super::YtDlpHdrSelection;
+use crate::ConfigResult;
 
 /// Верхняя граница persisted preference, синхронизированная app boundary с `web-media-core`.
 pub const MAX_PREFERRED_VIDEO_HEIGHT: u32 = 16_384;
@@ -318,6 +319,22 @@ pub struct YtDlpConfig {
 
     /// Максимальное время подготовки direct stream metadata через `yt-dlp`.
     pub resolve_timeout_ms: u64,
+
+    /// Максимальный stdout одного single-item extraction до немедленного terminate/reap.
+    pub single_item_stdout_limit_bytes: u64,
+
+    /// Максимальный stderr одного single-item extraction без хранения payload.
+    pub single_item_stderr_limit_bytes: u64,
+
+    /// Максимальное число JSON values до построения metadata DOM.
+    pub single_item_json_node_limit: u64,
+}
+
+impl YtDlpConfig {
+    /// Проверяет runtime-значения YtDlp независимо от полного `AppConfig`.
+    pub fn validate(&self) -> ConfigResult<()> {
+        crate::validation::validate_yt_dlp_config(self)
+    }
 }
 
 impl Default for YtDlpConfig {
@@ -328,6 +345,9 @@ impl Default for YtDlpConfig {
             hdr_selection: YtDlpHdrSelection::SdrOnly,
             preferred_video_height: None,
             resolve_timeout_ms: 30_000,
+            single_item_stdout_limit_bytes: 64 * 1024 * 1024,
+            single_item_stderr_limit_bytes: 8 * 1024 * 1024,
+            single_item_json_node_limit: 1_000_000,
         }
     }
 }

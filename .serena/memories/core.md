@@ -1,3 +1,9 @@
+## AUD-007 bounded yt-dlp single-item output/DOM (2026-08-23)
+
+- Independent verification confirmed unbounded stdout/stderr and full JSON DOM caused proportional RSS growth up to ~1007.7 MiB for 500+500 MiB output.
+- New process-output owner enforces configurable stdout 64 MiB, stderr 8 MiB and JSON 1,000,000-value defaults chosen from real `yt-dlp 2026.08.19` profiling with ~81x/~84x reserve; typed overflow terminates/waits the owned process group.
+- Compact-node 8 MiB JSON dropped from ~267.5 MiB to ~11.6 MiB RSS before DOM; valid 32 MiB JSON still reaches an accepted candidate. Full boundaries, tests and headless-process RSS limitation: `mem:media-services/ytdlp-output-budgets-aud007-2026-08-23`.
+
 ## AUD-006 development-only system yt-dlp compatibility check (2026-08-23)
 
 - Production config/cookies/plugins и version-independent runtime behavior намеренно сохранены; version allowlist/preflight не добавлены.

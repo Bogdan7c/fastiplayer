@@ -82,6 +82,9 @@ const EXPECTED_SETTING_IDS: &[&str] = &[
     "yt_dlp.hdr_selection",
     "yt_dlp.preferred_video_height",
     "yt_dlp.resolve_timeout_ms",
+    "yt_dlp.single_item_stdout_limit_bytes",
+    "yt_dlp.single_item_stderr_limit_bytes",
+    "yt_dlp.single_item_json_node_limit",
     "ui.show_telemetry",
     "ui.language",
     "ui.skin",
@@ -537,6 +540,24 @@ fn metadata_ranges_match_validation_constants() {
         "yt_dlp.resolve_timeout_ms",
         1_u64,
         validation::MAX_YT_DLP_RESOLVE_TIMEOUT_MS,
+    );
+    assert_integer_range(
+        &registry,
+        "yt_dlp.single_item_stdout_limit_bytes",
+        1_u64,
+        validation::MAX_YT_DLP_SINGLE_ITEM_STDOUT_BYTES,
+    );
+    assert_integer_range(
+        &registry,
+        "yt_dlp.single_item_stderr_limit_bytes",
+        1_u64,
+        validation::MAX_YT_DLP_SINGLE_ITEM_STDERR_BYTES,
+    );
+    assert_integer_range(
+        &registry,
+        "yt_dlp.single_item_json_node_limit",
+        1_u64,
+        validation::MAX_YT_DLP_SINGLE_ITEM_JSON_NODES,
     );
     assert_text_len(
         &registry,

@@ -17,6 +17,66 @@ fn default_config_is_valid() {
         .expect("default config valid");
 }
 
+/// Additive output budgets schema v7 получают production defaults без обязательного rewrite.
+#[test]
+fn current_schema_without_yt_dlp_output_budgets_uses_safe_defaults() {
+    let temp_dir = tempfile::tempdir().expect("temp dir created");
+    let config_path = temp_dir.path().join("config.toml");
+    let current_text = "schema_version = 7\n\n[yt_dlp]\nresolve_timeout_ms = 30000\n";
+    fs::write(&config_path, current_text).expect("current config written");
+
+    let loaded = load_from_path(&config_path).expect("current config without additive keys loads");
+    let defaults = crate::YtDlpConfig::default();
+
+    assert_eq!(
+        loaded.config.yt_dlp.single_item_stdout_limit_bytes,
+        defaults.single_item_stdout_limit_bytes
+    );
+    assert_eq!(
+        loaded.config.yt_dlp.single_item_stderr_limit_bytes,
+        defaults.single_item_stderr_limit_bytes
+    );
+    assert_eq!(
+        loaded.config.yt_dlp.single_item_json_node_limit,
+        defaults.single_item_json_node_limit
+    );
+    assert!(!loaded.created);
+    assert_eq!(
+        fs::read_to_string(&config_path).expect("current file remains readable"),
+        current_text
+    );
+}
+
+/// Output budgets принимают обе границы и отвергают соседние значения.
+#[test]
+fn yt_dlp_output_budget_bounds_are_inclusive_and_reject_neighbors() {
+    fn assert_bounds(set_budget: impl Fn(&mut AppConfig, u64), maximum: u64) {
+        for accepted_value in [1, maximum] {
+            let mut config = AppConfig::default();
+            set_budget(&mut config, accepted_value);
+            config.validate().expect("inclusive budget bound accepted");
+        }
+        for rejected_value in [0, maximum + 1] {
+            let mut config = AppConfig::default();
+            set_budget(&mut config, rejected_value);
+            assert!(config.validate().is_err(), "out-of-range budget accepted");
+        }
+    }
+
+    assert_bounds(
+        |config, value| config.yt_dlp.single_item_stdout_limit_bytes = value,
+        validation::MAX_YT_DLP_SINGLE_ITEM_STDOUT_BYTES,
+    );
+    assert_bounds(
+        |config, value| config.yt_dlp.single_item_stderr_limit_bytes = value,
+        validation::MAX_YT_DLP_SINGLE_ITEM_STDERR_BYTES,
+    );
+    assert_bounds(
+        |config, value| config.yt_dlp.single_item_json_node_limit = value,
+        validation::MAX_YT_DLP_SINGLE_ITEM_JSON_NODES,
+    );
+}
+
 #[test]
 fn playlist_defaults_match_session_13_contract() {
     let playlist = AppConfig::default().playlist;

@@ -25,6 +25,27 @@ pub enum YtDlpServiceError {
     #[error("истекло время ожидания yt-dlp")]
     Timeout,
 
+    /// Stdout single-item process-а пересёк configured byte budget.
+    #[error("stdout yt-dlp превысил лимит {limit_bytes} bytes")]
+    StdoutLimitExceeded {
+        /// Точный configured предел без раскрытия output payload.
+        limit_bytes: u64,
+    },
+
+    /// Stderr single-item process-а пересёк configured byte budget.
+    #[error("stderr yt-dlp превысил лимит {limit_bytes} bytes")]
+    StderrLimitExceeded {
+        /// Точный configured предел без раскрытия diagnostic payload.
+        limit_bytes: u64,
+    },
+
+    /// Валидный JSON пересёк configured structural node budget до построения DOM.
+    #[error("JSON yt-dlp превысил structural лимит {limit_nodes} nodes")]
+    JsonNodeLimitExceeded {
+        /// Точный configured предел числа JSON values.
+        limit_nodes: u64,
+    },
+
     /// OS/process plumbing не позволил выполнить или корректно дождаться `yt-dlp`.
     #[error("не удалось выполнить системный yt-dlp")]
     ProcessFailure {

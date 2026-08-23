@@ -164,6 +164,12 @@ enabled = true
 hdr_selection = "sdr_only"
 # Timeout подготовки metadata через системный yt-dlp.
 resolve_timeout_ms = 30000
+# Максимальный stdout одного media item до немедленного завершения yt-dlp.
+single_item_stdout_limit_bytes = 67108864
+# Максимальный diagnostic stderr одного media item; payload не сохраняется.
+single_item_stderr_limit_bytes = 8388608
+# Максимальное число JSON values до построения metadata DOM.
+single_item_json_node_limit = 1000000
 
 [ui]
 show_telemetry = true

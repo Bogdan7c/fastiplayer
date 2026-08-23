@@ -12,6 +12,7 @@ mod error;
 mod locator;
 mod metadata;
 mod process;
+mod process_output;
 mod process_tree;
 mod topology;
 

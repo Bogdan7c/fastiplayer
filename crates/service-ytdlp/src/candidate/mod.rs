@@ -39,6 +39,8 @@ pub use transport::{
 };
 
 pub(crate) use normalize::normalize_candidate_document;
+#[cfg(test)]
+pub(crate) use raw::YtDlpCandidateDocument;
 
 use rustiplayer_config::YtDlpConfig;
 use web_media_core::{ExtractionGeneration, SourceIdentity};

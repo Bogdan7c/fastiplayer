@@ -16,6 +16,9 @@ enum YtDlpField {
     HdrSelection,
     PreferredVideoHeight,
     ResolveTimeout,
+    SingleItemStdoutLimit,
+    SingleItemStderrLimit,
+    SingleItemJsonNodeLimit,
 }
 
 /// Adapter между neutral settings value и typed YtDlp config.
@@ -82,6 +85,60 @@ impl SettingsSchema for YtDlpConfig {
             ),
             YtDlpField::ResolveTimeout,
         )?;
+        register_setting(
+            &mut registry,
+            descriptor(
+                "yt_dlp.single_item_stdout_limit_bytes",
+                "Лимит stdout YtDlp",
+                "Максимальный размер JSON stdout одного media item до немедленного завершения yt-dlp.",
+                SettingValueType::Integer,
+                SettingEditor::Numeric(NumericDescriptor::new(
+                    NumericRange::Integer {
+                        min: 1,
+                        max: crate::validation::MAX_YT_DLP_SINGLE_ITEM_STDOUT_BYTES as i64,
+                    },
+                    NumericStep::Integer(1024 * 1024),
+                    Some("bytes".into()),
+                )),
+            ),
+            YtDlpField::SingleItemStdoutLimit,
+        )?;
+        register_setting(
+            &mut registry,
+            descriptor(
+                "yt_dlp.single_item_stderr_limit_bytes",
+                "Лимит stderr YtDlp",
+                "Максимальный diagnostic stderr одного media item; содержимое stderr не сохраняется.",
+                SettingValueType::Integer,
+                SettingEditor::Numeric(NumericDescriptor::new(
+                    NumericRange::Integer {
+                        min: 1,
+                        max: crate::validation::MAX_YT_DLP_SINGLE_ITEM_STDERR_BYTES as i64,
+                    },
+                    NumericStep::Integer(1024 * 1024),
+                    Some("bytes".into()),
+                )),
+            ),
+            YtDlpField::SingleItemStderrLimit,
+        )?;
+        register_setting(
+            &mut registry,
+            descriptor(
+                "yt_dlp.single_item_json_node_limit",
+                "Лимит структуры JSON YtDlp",
+                "Максимальное число JSON values одного media item до построения metadata DOM.",
+                SettingValueType::Integer,
+                SettingEditor::Numeric(NumericDescriptor::new(
+                    NumericRange::Integer {
+                        min: 1,
+                        max: crate::validation::MAX_YT_DLP_SINGLE_ITEM_JSON_NODES as i64,
+                    },
+                    NumericStep::Integer(10_000),
+                    Some("nodes".into()),
+                )),
+            ),
+            YtDlpField::SingleItemJsonNodeLimit,
+        )?;
         Ok(registry)
     }
 }
@@ -126,6 +183,18 @@ impl YtDlpField {
                 i64::try_from(config.resolve_timeout_ms)
                     .expect("validated resolve timeout всегда помещается в i64"),
             ),
+            Self::SingleItemStdoutLimit => SettingValue::Integer(
+                i64::try_from(config.single_item_stdout_limit_bytes)
+                    .expect("validated stdout limit всегда помещается в i64"),
+            ),
+            Self::SingleItemStderrLimit => SettingValue::Integer(
+                i64::try_from(config.single_item_stderr_limit_bytes)
+                    .expect("validated stderr limit всегда помещается в i64"),
+            ),
+            Self::SingleItemJsonNodeLimit => SettingValue::Integer(
+                i64::try_from(config.single_item_json_node_limit)
+                    .expect("validated JSON node limit всегда помещается в i64"),
+            ),
         }
     }
 
@@ -137,7 +206,21 @@ impl YtDlpField {
             Self::PreferredVideoHeight => {
                 config.preferred_video_height = preferred_height_value(value)?;
             }
-            Self::ResolveTimeout => config.resolve_timeout_ms = u64_value(value)?,
+            Self::ResolveTimeout => {
+                config.resolve_timeout_ms = u64_value("yt_dlp.resolve_timeout_ms", value)?;
+            }
+            Self::SingleItemStdoutLimit => {
+                config.single_item_stdout_limit_bytes =
+                    u64_value("yt_dlp.single_item_stdout_limit_bytes", value)?;
+            }
+            Self::SingleItemStderrLimit => {
+                config.single_item_stderr_limit_bytes =
+                    u64_value("yt_dlp.single_item_stderr_limit_bytes", value)?;
+            }
+            Self::SingleItemJsonNodeLimit => {
+                config.single_item_json_node_limit =
+                    u64_value("yt_dlp.single_item_json_node_limit", value)?;
+            }
         }
         Ok(())
     }
@@ -151,6 +234,17 @@ impl YtDlpField {
                 config.preferred_video_height = default_config.preferred_video_height;
             }
             Self::ResolveTimeout => config.resolve_timeout_ms = default_config.resolve_timeout_ms,
+            Self::SingleItemStdoutLimit => {
+                config.single_item_stdout_limit_bytes =
+                    default_config.single_item_stdout_limit_bytes;
+            }
+            Self::SingleItemStderrLimit => {
+                config.single_item_stderr_limit_bytes =
+                    default_config.single_item_stderr_limit_bytes;
+            }
+            Self::SingleItemJsonNodeLimit => {
+                config.single_item_json_node_limit = default_config.single_item_json_node_limit;
+            }
         }
     }
 }
@@ -293,13 +387,13 @@ fn preferred_height_value(value: SettingValue) -> SettingsResult<Option<Preferre
 }
 
 /// Извлекает неотрицательное integer значение в `u64`.
-fn u64_value(value: SettingValue) -> SettingsResult<u64> {
+fn u64_value(setting_path: &'static str, value: SettingValue) -> SettingsResult<u64> {
     let SettingValue::Integer(number) = value else {
-        return Err(SettingsError::access_failed(
-            "yt_dlp.resolve_timeout_ms ожидает integer value",
-        ));
+        return Err(SettingsError::access_failed(format!(
+            "{setting_path} ожидает integer value"
+        )));
     };
     u64::try_from(number).map_err(|_| {
-        SettingsError::access_failed("yt_dlp.resolve_timeout_ms не может быть отрицательным")
+        SettingsError::access_failed(format!("{setting_path} не может быть отрицательным"))
     })
 }

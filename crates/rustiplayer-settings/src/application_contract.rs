@@ -446,15 +446,18 @@ pub fn setting_application_contract(setting_id: &SettingId) -> Option<SettingApp
             SettingApplyMechanism::MediaSourceRebuild,
             PIPELINE_TESTS,
         ),
-        "yt_dlp.enabled" | "yt_dlp.hdr_selection" | "yt_dlp.resolve_timeout_ms" => {
-            SettingApplicationContract::new(
-                setting_name,
-                AppRuntimeRoute::MediaService,
-                SettingStateOwner::MediaOpenPolicy,
-                SettingApplyMechanism::PolicyUpdateInPlace,
-                POLICY_TESTS,
-            )
-        }
+        "yt_dlp.enabled"
+        | "yt_dlp.hdr_selection"
+        | "yt_dlp.resolve_timeout_ms"
+        | "yt_dlp.single_item_stdout_limit_bytes"
+        | "yt_dlp.single_item_stderr_limit_bytes"
+        | "yt_dlp.single_item_json_node_limit" => SettingApplicationContract::new(
+            setting_name,
+            AppRuntimeRoute::MediaService,
+            SettingStateOwner::MediaOpenPolicy,
+            SettingApplyMechanism::PolicyUpdateInPlace,
+            POLICY_TESTS,
+        ),
         "yt_dlp.preferred_video_height" => SettingApplicationContract::new(
             setting_name,
             AppRuntimeRoute::MediaService,

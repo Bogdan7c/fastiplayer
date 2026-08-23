@@ -257,6 +257,21 @@ pub(super) fn document_current_schema_defaults(toml_text: &mut String) {
     );
     insert_default_config_comment(
         toml_text,
+        "single_item_stdout_limit_bytes = 67108864",
+        "# Максимальный stdout одного media item до немедленного завершения yt-dlp.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "single_item_stderr_limit_bytes = 8388608",
+        "# Максимальный diagnostic stderr одного media item; payload не сохраняется.",
+    );
+    insert_default_config_comment(
+        toml_text,
+        "single_item_json_node_limit = 1000000",
+        "# Максимальное число JSON values до построения metadata DOM.",
+    );
+    insert_default_config_comment(
+        toml_text,
         "skin = \"minimal\"",
         "# UI skin id; unknown id является config error.",
     );

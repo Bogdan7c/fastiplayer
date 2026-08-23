@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use crate::{
     AppConfig, CURRENT_SCHEMA_VERSION, ConfigError, ConfigResult, HdrToSdrConfig,
     HdrToSdrOperatorConfig, PlayerDemuxConfig, PlayerSeekConfig, RenderColorAdjustmentConfig,
-    VideoCodec, VideoSchedulerConfig,
+    VideoCodec, VideoSchedulerConfig, YtDlpConfig,
 };
 
 /// Минимальный decode-ahead: ноль ломает смысл backpressure окна.
@@ -77,6 +77,15 @@ pub(crate) const MAX_NETWORK_MEMORY_CACHE_MB: u64 = 4096;
 
 /// Верхний предел ожидания `yt-dlp`, чтобы зависший resolver не жил бесконечно.
 pub(crate) const MAX_YT_DLP_RESOLVE_TIMEOUT_MS: u64 = 300_000;
+
+/// Максимально настраиваемый stdout single-item extraction.
+pub(crate) const MAX_YT_DLP_SINGLE_ITEM_STDOUT_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Максимально настраиваемый stderr single-item extraction.
+pub(crate) const MAX_YT_DLP_SINGLE_ITEM_STDERR_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Максимально настраиваемое число JSON values одного single-item extraction.
+pub(crate) const MAX_YT_DLP_SINGLE_ITEM_JSON_NODES: u64 = 10_000_000;
 
 /// Верхний предел render latency, выше которого config почти наверняка ошибочен.
 pub(crate) const MAX_VULKAN_FRAME_LATENCY: u32 = 8;
@@ -196,7 +205,7 @@ pub(crate) fn validate_app_config(config: &AppConfig) -> ConfigResult<()> {
     validate_video_section(config)?;
     validate_audio_section(config)?;
     validate_network_section(config)?;
-    validate_yt_dlp_section(config)?;
+    validate_yt_dlp_config(&config.yt_dlp)?;
     validate_render_section(config)?;
     validate_ui_section(config)?;
     validate_frame_server_section(config)?;
@@ -560,12 +569,30 @@ fn validate_network_section(config: &AppConfig) -> ConfigResult<()> {
 }
 
 /// Проверяет YtDlp/service section.
-fn validate_yt_dlp_section(config: &AppConfig) -> ConfigResult<()> {
+pub(crate) fn validate_yt_dlp_config(config: &YtDlpConfig) -> ConfigResult<()> {
     validate_u64_range(
         "yt_dlp.resolve_timeout_ms",
-        config.yt_dlp.resolve_timeout_ms,
+        config.resolve_timeout_ms,
         1,
         MAX_YT_DLP_RESOLVE_TIMEOUT_MS,
+    )?;
+    validate_u64_range(
+        "yt_dlp.single_item_stdout_limit_bytes",
+        config.single_item_stdout_limit_bytes,
+        1,
+        MAX_YT_DLP_SINGLE_ITEM_STDOUT_BYTES,
+    )?;
+    validate_u64_range(
+        "yt_dlp.single_item_stderr_limit_bytes",
+        config.single_item_stderr_limit_bytes,
+        1,
+        MAX_YT_DLP_SINGLE_ITEM_STDERR_BYTES,
+    )?;
+    validate_u64_range(
+        "yt_dlp.single_item_json_node_limit",
+        config.single_item_json_node_limit,
+        1,
+        MAX_YT_DLP_SINGLE_ITEM_JSON_NODES,
     )?;
     Ok(())
 }

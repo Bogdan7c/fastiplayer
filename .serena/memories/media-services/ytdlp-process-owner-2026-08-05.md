@@ -24,4 +24,10 @@
 - Дополнительные functional regressions: WNOWAIT сохраняет waitability и exit code; normal root exit с same-PGID descendant быстро завершается; escaped-PGID pipe holder даёт bounded failure; explicit reader abort подтверждает завершение worker и закрытие FD.
 - Проверено: `process_tree::tests` 3/3, `process::tests` 19/19, полный `service-ytdlp` green, strict Clippy, workspace `hermetic-ci` PASS и release build PASS.
 
-Related: `mem:core`, `mem:media-services/core`, `mem:media-services/ytdlp-topology-s15-2026-07-20`.
+## AUD-007 output/DOM resource budgets (2026-08-23)
+
+- Candidate/recovery single-item pipe output теперь принадлежит `process_output.rs`: independent stdout/stderr `limit + 1`, first-writer-wins typed overflow, stderr count-only и allocation-free JSON node preflight до DOM.
+- Defaults после real-corpus profiling: stdout 64 MiB, stderr 8 MiB, JSON 1,000,000 values; direct `YtDlpConfig` caller проходит ту же upper-bound validation.
+- Overflow использует тот же `OwnedProcess::finish` lifecycle: terminate owned group, reap root, bounded join readers. Full evidence и known headless-process RSS limitation: `mem:media-services/ytdlp-output-budgets-aud007-2026-08-23`.
+
+Related: `mem:core`, `mem:media-services/core`, `mem:media-services/ytdlp-topology-s15-2026-07-20`, `mem:media-services/ytdlp-output-budgets-aud007-2026-08-23`.

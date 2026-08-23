@@ -18,9 +18,13 @@ use crate::embed_recovery::{
 };
 use crate::error::YtDlpServiceError;
 use crate::locator::YtDlpMediaLocator;
+use crate::process_output::{
+    ProcessOutputBudgetSignal, YtDlpProcessOutputBudgets, spawn_stderr_reader, spawn_stdout_reader,
+    validate_json_node_budget,
+};
 use crate::process_tree::{
-    OwnedPipe, OwnedPipeDrainError, OwnedPipeReader, OwnedProcess, OwnedProcessCleanupFailure,
-    OwnedProcessRootState, OwnedProcessSpawnError, spawn_owned_pipe_reader, spawn_owned_process,
+    OwnedPipeDrainError, OwnedPipeReader, OwnedProcess, OwnedProcessCleanupFailure,
+    OwnedProcessRootState, OwnedProcessSpawnError, spawn_owned_process,
 };
 
 /// Имя production binary, через который service получает direct stream metadata.
@@ -92,6 +96,9 @@ pub(crate) struct YtDlpProcessConfig {
 
     /// Верхняя граница ожидания metadata command.
     timeout: Duration,
+
+    /// Независимые byte/structure budgets single-item process path-а.
+    output_budgets: YtDlpProcessOutputBudgets,
 }
 
 impl YtDlpProcessConfig {
@@ -99,15 +106,12 @@ impl YtDlpProcessConfig {
     pub(crate) fn from_yt_dlp_config(
         yt_dlp_config: &YtDlpConfig,
     ) -> Result<Self, YtDlpServiceError> {
-        if yt_dlp_config.resolve_timeout_ms == 0 {
-            return Err(YtDlpServiceError::process(anyhow::anyhow!(
-                "yt_dlp.resolve_timeout_ms должен быть положительным"
-            )));
-        }
+        let output_budgets = YtDlpProcessOutputBudgets::from_config(yt_dlp_config)?;
 
         Ok(Self {
             executable: YT_DLP_EXECUTABLE.to_string(),
             timeout: Duration::from_millis(yt_dlp_config.resolve_timeout_ms),
+            output_budgets,
         })
     }
 
@@ -115,15 +119,13 @@ impl YtDlpProcessConfig {
     pub(crate) fn from_yt_dlp_config_for_topology(
         yt_dlp_config: &YtDlpConfig,
     ) -> Result<Self, crate::topology::YtDlpTopologyError> {
-        if yt_dlp_config.resolve_timeout_ms == 0 {
-            return Err(crate::topology::YtDlpTopologyError::process(
-                anyhow::anyhow!("yt_dlp.resolve_timeout_ms должен быть положительным"),
-            ));
-        }
+        let output_budgets = YtDlpProcessOutputBudgets::from_config(yt_dlp_config)
+            .map_err(crate::topology::YtDlpTopologyError::process)?;
 
         Ok(Self {
             executable: YT_DLP_EXECUTABLE.to_string(),
             timeout: Duration::from_millis(yt_dlp_config.resolve_timeout_ms),
+            output_budgets,
         })
     }
 
@@ -136,6 +138,11 @@ impl YtDlpProcessConfig {
     pub(crate) const fn extraction_timeout(&self) -> Duration {
         self.timeout
     }
+
+    /// Возвращает validated single-item output budget profile.
+    const fn output_budgets(&self) -> YtDlpProcessOutputBudgets {
+        self.output_budgets
+    }
 }
 
 /// Собранный stdout/stderr внешнего процесса.
@@ -146,8 +153,8 @@ struct ProcessOutput {
     /// Полный stdout процесса.
     stdout: Vec<u8>,
 
-    /// Полный stderr процесса.
-    stderr: Vec<u8>,
+    /// Число stderr bytes без сохранения diagnostic payload.
+    stderr_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -167,7 +174,7 @@ impl std::fmt::Debug for ProcessOutput {
             )
             .field(
                 "stderr",
-                &format_args!("<redacted:{} bytes>", self.stderr.len()),
+                &format_args!("<redacted:{} bytes>", self.stderr_bytes),
             )
             .finish()
     }
@@ -248,14 +255,13 @@ fn run_dump_single_json(
         &command_arguments,
         None,
         process_config.timeout,
+        process_config.output_budgets(),
         is_cancelled,
     )?;
 
-    ensure_yt_dlp_candidate_success(command_output.status, &command_output.stderr)?;
-
-    let stdout_text =
-        String::from_utf8(command_output.stdout).map_err(YtDlpServiceError::invalid_response)?;
-    serde_json::from_str(&stdout_text).map_err(YtDlpServiceError::invalid_response)
+    ensure_yt_dlp_candidate_success(command_output.status, command_output.stderr_bytes)?;
+    validate_json_node_budget(&command_output.stdout, process_config.output_budgets())?;
+    serde_json::from_slice(&command_output.stdout).map_err(YtDlpServiceError::invalid_response)
 }
 
 fn recover_non_platform_embed(
@@ -274,9 +280,10 @@ fn recover_non_platform_embed(
         &write_pages_arguments,
         Some(recovery_directory.path()),
         process_config.timeout,
+        process_config.output_budgets(),
         is_cancelled,
     )?;
-    ensure_yt_dlp_candidate_success(write_pages_output.status, &write_pages_output.stderr)?;
+    ensure_yt_dlp_candidate_success(write_pages_output.status, write_pages_output.stderr_bytes)?;
 
     let evidence =
         read_recovery_embed_candidates(recovery_directory.path(), input_url, is_cancelled)?;
@@ -491,7 +498,20 @@ fn run_process_with_timeout(
     arguments: &[&str],
     timeout: Duration,
 ) -> Result<ProcessOutput, YtDlpServiceError> {
-    run_process_with_timeout_and_cancellation(executable, arguments, None, timeout, &|| false)
+    let default_config = YtDlpConfig::default();
+    let output_budgets = YtDlpProcessOutputBudgets::new(
+        default_config.single_item_stdout_limit_bytes,
+        default_config.single_item_stderr_limit_bytes,
+        default_config.single_item_json_node_limit,
+    )?;
+    run_process_with_timeout_and_cancellation(
+        executable,
+        arguments,
+        None,
+        timeout,
+        output_budgets,
+        &|| false,
+    )
 }
 
 /// Запускает внешний процесс с timeout-ом и cooperative cancellation.
@@ -500,6 +520,7 @@ fn run_process_with_timeout_and_cancellation(
     arguments: &[&str],
     current_directory: Option<&Path>,
     timeout: Duration,
+    output_budgets: YtDlpProcessOutputBudgets,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<ProcessOutput, YtDlpServiceError> {
     if timeout.is_zero() {
@@ -545,11 +566,20 @@ fn run_process_with_timeout_and_cancellation(
             return Err(finish_process_after_error(&mut process, primary));
         }
     };
-    let stdout_reader = match spawn_pipe_reader("stdout", stdout) {
+    let output_budget_signal = ProcessOutputBudgetSignal::new();
+    let stdout_reader = match spawn_stdout_reader(
+        stdout,
+        output_budgets.stdout_bytes(),
+        output_budget_signal.clone(),
+    ) {
         Ok(reader) => reader,
         Err(primary) => return Err(finish_process_after_error(&mut process, primary)),
     };
-    let stderr_reader = match spawn_pipe_reader("stderr", stderr) {
+    let stderr_reader = match spawn_stderr_reader(
+        stderr,
+        output_budgets.stderr_bytes(),
+        output_budget_signal.clone(),
+    ) {
         Ok(reader) => reader,
         Err(primary) => {
             if let Err(cleanup) = process.finish() {
@@ -566,7 +596,13 @@ fn run_process_with_timeout_and_cancellation(
     };
 
     let remaining_timeout = timeout.saturating_sub(operation_started_at.elapsed());
-    let wait_result = wait_for_process_with_timeout(&mut process, remaining_timeout, is_cancelled);
+    let wait_result = wait_for_process_with_timeout(
+        &mut process,
+        remaining_timeout,
+        output_budgets,
+        &output_budget_signal,
+        is_cancelled,
+    );
     let wait_outcome = match wait_result {
         Ok(outcome) => outcome,
         Err(primary) => {
@@ -587,13 +623,15 @@ fn run_process_with_timeout_and_cancellation(
                 stderr_reader,
                 operation_started_at,
                 timeout,
+                output_budgets,
+                &output_budget_signal,
                 is_cancelled,
             )?;
-            let (stdout, stderr) = pipe_output;
+            let (stdout, stderr_bytes) = pipe_output;
             Ok(ProcessOutput {
                 status,
                 stdout,
-                stderr,
+                stderr_bytes,
             })
         }
         ProcessWaitOutcome::TimedOut => match abort_pipe_readers(stdout_reader, stderr_reader) {
@@ -635,27 +673,6 @@ fn combine_process_failures(
     ))
 }
 
-/// Запускает thread, который вычитывает pipe до EOF и предотвращает заполнение OS buffer-а.
-fn spawn_pipe_reader<R>(
-    pipe_name: &'static str,
-    pipe: R,
-) -> Result<OwnedPipeReader<Vec<u8>>, YtDlpServiceError>
-where
-    R: OwnedPipe,
-{
-    let thread_name = match pipe_name {
-        "stdout" => "yt-dlp-stdout",
-        "stderr" => "yt-dlp-stderr",
-        _ => "yt-dlp-pipe",
-    };
-    spawn_owned_pipe_reader(thread_name, pipe, |reader| {
-        let mut captured_bytes = Vec::new();
-        reader.read_to_end(&mut captured_bytes)?;
-        Ok(captured_bytes)
-    })
-    .map_err(YtDlpServiceError::process)
-}
-
 fn map_pipe_drain_error(error: OwnedPipeDrainError) -> YtDlpServiceError {
     match error {
         OwnedPipeDrainError::Cancellation => YtDlpServiceError::Cancellation,
@@ -673,11 +690,13 @@ fn map_pipe_drain_error(error: OwnedPipeDrainError) -> YtDlpServiceError {
 /// Bounded drain обоих pipe-reader-ов с одним operation deadline и grace budget.
 fn drain_pipe_readers(
     stdout_reader: OwnedPipeReader<Vec<u8>>,
-    stderr_reader: OwnedPipeReader<Vec<u8>>,
+    stderr_reader: OwnedPipeReader<usize>,
     operation_started_at: Instant,
     operation_timeout: Duration,
+    output_budgets: YtDlpProcessOutputBudgets,
+    output_budget_signal: &ProcessOutputBudgetSignal,
     is_cancelled: &dyn Fn() -> bool,
-) -> Result<(Vec<u8>, Vec<u8>), YtDlpServiceError> {
+) -> Result<(Vec<u8>, usize), YtDlpServiceError> {
     let drain_started_at = Instant::now();
     let stdout_result = stdout_reader
         .drain(
@@ -697,7 +716,13 @@ fn drain_pipe_readers(
         .map_err(map_pipe_drain_error);
 
     match (stdout_result, stderr_result) {
-        (Ok(stdout), Ok(stderr)) => Ok((stdout, stderr)),
+        (Ok(_), Ok(_)) if output_budget_signal.load().is_some() => {
+            let stream = output_budget_signal
+                .load()
+                .expect("guarded output budget signal");
+            Err(stream.into_error(output_budgets))
+        }
+        (Ok(stdout), Ok(stderr_bytes)) => Ok((stdout, stderr_bytes)),
         (Err(primary), Ok(_)) | (Ok(_), Err(primary)) => Err(primary),
         (Err(primary), Err(cleanup)) => Err(combine_process_failures(
             primary,
@@ -709,7 +734,7 @@ fn drain_pipe_readers(
 /// Bounded останавливает оба reader worker-а после non-success process outcome.
 fn abort_pipe_readers(
     stdout_reader: OwnedPipeReader<Vec<u8>>,
-    stderr_reader: OwnedPipeReader<Vec<u8>>,
+    stderr_reader: OwnedPipeReader<usize>,
 ) -> Result<(), YtDlpServiceError> {
     let stdout_result = stdout_reader.abort().map_err(YtDlpServiceError::process);
     let stderr_result = stderr_reader.abort().map_err(YtDlpServiceError::process);
@@ -728,11 +753,21 @@ fn abort_pipe_readers(
 fn wait_for_process_with_timeout(
     process: &mut OwnedProcess,
     timeout: Duration,
+    output_budgets: YtDlpProcessOutputBudgets,
+    output_budget_signal: &ProcessOutputBudgetSignal,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<ProcessWaitOutcome, YtDlpServiceError> {
     let start = Instant::now();
 
     loop {
+        if let Some(stream) = output_budget_signal.load() {
+            let primary = stream.into_error(output_budgets);
+            if let Err(cleanup) = process.finish() {
+                return Err(combine_process_failures(primary, cleanup.into()));
+            }
+            return Err(primary);
+        }
+
         match process.poll_root_exit() {
             Ok(OwnedProcessRootState::Exited) => {
                 let status = process.finish().map_err(YtDlpServiceError::process)?;
@@ -767,20 +802,68 @@ fn wait_for_process_with_timeout(
 /// Преобразует ошибку metadata-only candidates command в читаемую ошибку.
 fn ensure_yt_dlp_candidate_success(
     status: ExitStatus,
-    stderr_bytes: &[u8],
+    stderr_bytes: usize,
 ) -> Result<(), YtDlpServiceError> {
     if status.success() {
         return Ok(());
     }
 
     Err(YtDlpServiceError::ExtractorRejection {
-        stderr_bytes: stderr_bytes.len().min(MAX_REPORTED_STDERR_BYTES),
+        stderr_bytes: stderr_bytes.min(MAX_REPORTED_STDERR_BYTES),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Возвращает production defaults для focused process lifecycle tests.
+    fn test_output_budgets() -> YtDlpProcessOutputBudgets {
+        let config = YtDlpConfig::default();
+        YtDlpProcessOutputBudgets::new(
+            config.single_item_stdout_limit_bytes,
+            config.single_item_stderr_limit_bytes,
+            config.single_item_json_node_limit,
+        )
+        .expect("default output budgets валидны")
+    }
+
+    /// Создаёт маленький explicit budget для exact-boundary regressions.
+    fn explicit_output_budgets(
+        stdout_bytes: u64,
+        stderr_bytes: u64,
+        json_nodes: u64,
+    ) -> YtDlpProcessOutputBudgets {
+        YtDlpProcessOutputBudgets::new(stdout_bytes, stderr_bytes, json_nodes)
+            .expect("explicit test output budgets валидны")
+    }
+
+    /// Прямой caller service API не может обойти верхние resource limits AppConfig-а.
+    #[test]
+    fn process_config_rejects_unvalidated_resource_budget_above_config_maximum() {
+        let config = YtDlpConfig {
+            single_item_stdout_limit_bytes: u64::MAX,
+            ..YtDlpConfig::default()
+        };
+
+        let error = YtDlpProcessConfig::from_yt_dlp_config(&config)
+            .expect_err("direct YtDlpConfig caller не должен обходить validation");
+
+        assert!(matches!(error, YtDlpServiceError::ProcessFailure { .. }));
+    }
+
+    /// Проверяет, что fixture process уже не выполняется; zombie означает завершённый descendant.
+    #[cfg(unix)]
+    fn process_id_is_running(process_id: libc::pid_t) -> bool {
+        let process_stat_path = format!("/proc/{process_id}/stat");
+        let Ok(process_stat) = fs::read_to_string(process_stat_path) else {
+            return false;
+        };
+        let Some((_, state_and_fields)) = process_stat.rsplit_once(") ") else {
+            return true;
+        };
+        !matches!(state_and_fields.as_bytes().first(), Some(b'Z' | b'X'))
+    }
 
     #[cfg(unix)]
     struct EscapedProcessGuard {
@@ -874,6 +957,7 @@ fi
         let process_config = YtDlpProcessConfig {
             executable: executable.to_string_lossy().into_owned(),
             timeout: Duration::from_secs(2),
+            output_budgets: test_output_budgets(),
         };
 
         let locator = crate::parse_yt_dlp_media_locator("https://cinema.example/watch/42")
@@ -923,6 +1007,7 @@ printf '%s\n' '{{"extractor_key":"Youtube","webpage_url":"https://www.youtube.co
         let process_config = YtDlpProcessConfig {
             executable: executable.to_string_lossy().into_owned(),
             timeout: Duration::from_secs(10),
+            output_budgets: test_output_budgets(),
         };
 
         let cancellation_started_at = Instant::now();
@@ -1031,7 +1116,7 @@ printf '%s\n' '{{"extractor_key":"Youtube","webpage_url":"https://www.youtube.co
         );
     }
 
-    /// Проверяет, что stdout/stderr читаются до завершения процесса.
+    /// Проверяет, что stdout сохраняется, а stderr только считается до завершения процесса.
     #[test]
     fn process_output_collects_stdout_and_stderr() {
         let output = run_process_with_timeout(
@@ -1043,7 +1128,139 @@ printf '%s\n' '{{"extractor_key":"Youtube","webpage_url":"https://www.youtube.co
 
         assert!(output.status.success());
         assert_eq!(output.stdout, b"stdout-text");
-        assert_eq!(output.stderr, b"stderr-text");
+        assert_eq!(output.stderr_bytes, b"stderr-text".len());
+    }
+
+    /// Ровно разрешённое число stdout bytes остаётся успешным process result.
+    #[test]
+    fn process_stdout_exact_boundary_succeeds() {
+        let output = run_process_with_timeout_and_cancellation(
+            "sh",
+            &["-c", "printf 1234"],
+            None,
+            Duration::from_secs(1),
+            explicit_output_budgets(4, 16, 16),
+            &|| false,
+        )
+        .expect("stdout exact boundary должен быть допустим");
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"1234");
+    }
+
+    /// Первый byte сверх stdout budget немедленно завершает всю process group.
+    #[cfg(unix)]
+    #[test]
+    fn process_stdout_limit_plus_one_is_typed_and_stops_descendant() {
+        let fixture_directory = TestDirectory::create("stdout-overflow-descendant");
+        let descendant_pid_record = fixture_directory.path().join("descendant-pid");
+        let script = format!(
+            "#!/bin/sh\nsleep 30 &\ndescendant_pid=$!\nprintf '%s' \"$descendant_pid\" > '{}'\nprintf 12345\nwait\n",
+            descendant_pid_record.display()
+        );
+        let executable = create_executable_test_script(fixture_directory.path(), &script)
+            .expect("create stdout boundary fixture");
+        let started_at = Instant::now();
+
+        let error = run_process_with_timeout_and_cancellation(
+            executable.to_str().expect("UTF-8 executable path"),
+            &[],
+            None,
+            Duration::from_secs(5),
+            explicit_output_budgets(4, 16, 16),
+            &|| false,
+        )
+        .expect_err("stdout limit + 1 должен остановить process");
+
+        assert!(matches!(
+            error,
+            YtDlpServiceError::StdoutLimitExceeded { limit_bytes: 4 }
+        ));
+        assert!(started_at.elapsed() < Duration::from_secs(2));
+        let descendant_pid = fs::read_to_string(descendant_pid_record)
+            .expect("fixture должен записать descendant PID")
+            .trim()
+            .parse::<libc::pid_t>()
+            .expect("fixture descendant PID должен быть числом");
+        assert!(
+            !process_id_is_running(descendant_pid),
+            "stdout overflow должен остановить descendant той же process group"
+        );
+    }
+
+    /// Stderr exact boundary считается без сохранения payload.
+    #[test]
+    fn process_stderr_exact_boundary_succeeds_without_payload_capture() {
+        let output = run_process_with_timeout_and_cancellation(
+            "sh",
+            &["-c", "printf 1234 >&2"],
+            None,
+            Duration::from_secs(1),
+            explicit_output_budgets(16, 4, 16),
+            &|| false,
+        )
+        .expect("stderr exact boundary должен быть допустим");
+
+        assert!(output.status.success());
+        assert_eq!(output.stderr_bytes, 4);
+        assert!(format!("{output:?}").contains("<redacted:4 bytes>"));
+    }
+
+    /// Первый byte сверх stderr budget сохраняет отдельную typed identity.
+    #[test]
+    fn process_stderr_limit_plus_one_is_typed() {
+        let error = run_process_with_timeout_and_cancellation(
+            "sh",
+            &["-c", "printf 12345 >&2; sleep 30"],
+            None,
+            Duration::from_secs(5),
+            explicit_output_budgets(16, 4, 16),
+            &|| false,
+        )
+        .expect_err("stderr limit + 1 должен остановить process");
+
+        assert!(matches!(
+            error,
+            YtDlpServiceError::StderrLimitExceeded { limit_bytes: 4 }
+        ));
+    }
+
+    /// Большой допустимый JSON проходит process, DTO и normalization до рабочего candidate-а.
+    #[cfg(unix)]
+    #[test]
+    fn large_valid_single_item_reaches_normalized_candidate_snapshot() {
+        use crate::candidate::{YtDlpCandidateDocument, normalize_candidate_document};
+        use web_media_core::{ExtractionGeneration, SourceIdentity};
+
+        let fixture_directory = TestDirectory::create("large-valid-candidate");
+        let script = r#"#!/bin/sh
+printf '%s' '{"title":"Large valid profile","duration":1,"formats":[{"format_id":"18","url":"https://media.invalid/18","protocol":"https","ext":"mp4","container":"mp4","vcodec":"avc1.42001E","acodec":"mp4a.40.2","dynamic_range":"SDR"}],"unused_padding":"'
+head -c 1048576 /dev/zero | tr '\0' x
+printf '%s' '"}'
+"#;
+        let executable = create_executable_test_script(fixture_directory.path(), script)
+            .expect("create large candidate fixture");
+        let process_config = YtDlpProcessConfig {
+            executable: executable.to_string_lossy().into_owned(),
+            timeout: Duration::from_secs(5),
+            output_budgets: explicit_output_budgets(2 * 1024 * 1024, 1024, 128),
+        };
+        let locator = crate::parse_yt_dlp_media_locator("https://media.invalid/item")
+            .expect("valid candidate fixture locator");
+
+        let document: YtDlpCandidateDocument =
+            resolve_yt_dlp_candidate_document_with_cancellation(&locator, &process_config, &|| {
+                false
+            })
+            .expect("large valid JSON должен пройти process и DTO boundaries");
+        let snapshot = normalize_candidate_document(
+            document,
+            SourceIdentity::new(7007),
+            ExtractionGeneration::new(1),
+        );
+
+        assert_eq!(snapshot.inventory().len(), 1);
+        assert_eq!(snapshot.accepted_candidates().count(), 1);
     }
 
     /// Нормальный root exit очищает lingering descendant до join унаследованных pipe-ов.
@@ -1199,6 +1416,7 @@ printf '%s\n' '{{"extractor_key":"Youtube","webpage_url":"https://www.youtube.co
             &[],
             None,
             Duration::from_secs(1),
+            test_output_budgets(),
             &|| cancellation_checks.fetch_add(1, Ordering::Relaxed) >= 2,
         )
         .expect_err("cancellation between ETXTBSY attempts must remain typed");
@@ -1236,6 +1454,7 @@ printf '%s\n' '{{"extractor_key":"Youtube","webpage_url":"https://www.youtube.co
             &[],
             None,
             Duration::from_millis(5),
+            test_output_budgets(),
             &|| {
                 let next_check = cancellation_checks.get() + 1;
                 cancellation_checks.set(next_check);
@@ -1284,6 +1503,7 @@ printf '%s\n' '{{"extractor_key":"Youtube","webpage_url":"https://www.youtube.co
             &["-c", "sleep 5"],
             None,
             Duration::from_secs(5),
+            test_output_budgets(),
             &|| cancellation_checks.fetch_add(1, Ordering::Relaxed) > 0,
         )
         .expect_err("cancelled process must not complete successfully");
@@ -1308,7 +1528,7 @@ printf '%s\n' '{{"extractor_key":"Youtube","webpage_url":"https://www.youtube.co
         assert!(!output_debug.contains("password"));
         assert!(!output_debug.contains("secret"));
 
-        let error = ensure_yt_dlp_candidate_success(output.status, &output.stderr)
+        let error = ensure_yt_dlp_candidate_success(output.status, output.stderr_bytes)
             .expect_err("non-zero status должен стать typed extractor error");
         let formatted = format!("{error:?} {error}");
         assert!(!formatted.contains("password"));
