@@ -1,3 +1,9 @@
+## AUD-006 development-only system yt-dlp compatibility check (2026-08-23)
+
+- Production config/cookies/plugins и version-independent runtime behavior намеренно сохранены; version allowlist/preflight не добавлены.
+- `scripts/ytdlp-compatibility.sh` через временный hermetic shim и loopback fixture прогоняет фактический system executable через public candidate/topology production boundaries; `/usr/bin/yt-dlp 2026.08.19` — PASS.
+- Ignored real-system test, shell self-test, workflow и принятое ограничение описаны в `mem:media-services/ytdlp-system-compatibility-aud006-2026-08-23`.
+
 ## AUD-005 durable FFmpeg packet completion accounting (2026-08-23)
 
 - Real production MPEG-TS accurate-seek/EOF stress confirmed bounded ACK loss: capacity 1, accepted 16, delivered 1, false terminal in-flight 15 after actual decoder `Drained`; 5/5 repeats.

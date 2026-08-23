@@ -196,13 +196,18 @@ run_format_guardrails() {
         "${SCRIPT_DIRECTORY}/progressive-web-smoke.sh" \
         "${SCRIPT_DIRECTORY}/runtime-acceptance.sh" \
         "${SCRIPT_DIRECTORY}/tests/playback-smoke-self-test.sh" \
-        "${SCRIPT_DIRECTORY}/tests/progressive-web-smoke-self-test.sh"
+        "${SCRIPT_DIRECTORY}/tests/progressive-web-smoke-self-test.sh" \
+        "${SCRIPT_DIRECTORY}/ytdlp-compatibility.sh" \
+        "${SCRIPT_DIRECTORY}/tests/ytdlp-compatibility-self-test.sh"
     # Parser/config generation проверяются production config loader-ом без запуска GUI.
     run_step "playback smoke script self-tests" \
         "${SCRIPT_DIRECTORY}/tests/playback-smoke-self-test.sh"
     # Explicit-URL parser и report redaction проверяются без network, GUI или real secrets.
     run_step "progressive web smoke script self-tests" \
         "${SCRIPT_DIRECTORY}/tests/progressive-web-smoke-self-test.sh"
+    # System yt-dlp runner orchestration проверяется fake executable-ами без Python/network dependency.
+    run_step "yt-dlp compatibility script self-tests" \
+        "${SCRIPT_DIRECTORY}/tests/ytdlp-compatibility-self-test.sh"
     # Архитектурные guardrails проверяются до дорогой компиляции.
     run_step "refactor guardrails" "${SCRIPT_DIRECTORY}/check-refactor-guardrails.py"
     # S42 focused gate отдельно ratchet-ит parser/HTTP/FFmpeg/module-size boundaries.

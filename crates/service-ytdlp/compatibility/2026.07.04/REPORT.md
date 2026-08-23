@@ -80,11 +80,14 @@ Rustiplayer-owned argv не содержит и не запрашивает:
 является обещанием, что произвольный extractor не выполнит network requests,
 необходимые для extraction.
 
-## Manual opt-in trust boundary
+## Trusted system environment boundary
 
 Текущий production process owner запускает тот же extraction suffix без
-`--ignore-config` и `--no-plugin-dirs`. Этот режим сохранён в manifest отдельно
-как `manual_opt_in_inventory`, а не назван hermetic.
+`--ignore-config` и `--no-plugin-dirs`. Это осознанный product contract:
+Rustiplayer наследует trusted user config, cookies и plugins так же, как прямой
+запуск system `yt-dlp`. Исторические manifest keys сохраняют имя
+`manual_opt_in_*`, но не являются утверждением о runtime version gate либо
+герметичном production process.
 
 Произвольный trusted user config может добавить write/exec/postprocessor,
 mark-watched, authentication или другое поведение. Все plugins импортируются как
@@ -95,6 +98,32 @@ Python code без upstream safety checks и могут иметь side effects 
 источник, в который cookie jar также dump-ится. Поэтому user-owned cookie jar
 может быть обновлён самим system `yt-dlp`. Hermetic profile cookie file не
 загружает; manual opt-in обязан считать его user-owned mutable state.
+
+## Development system executable compatibility check
+
+Compatibility profile фиксирует наблюдавшийся upstream corpus, но production не
+сравнивает номер system `yt-dlp` с release `2026.07.04`. Совместимость текущего
+executable проверяется поведением:
+
+```text
+scripts/ytdlp-compatibility.sh
+```
+
+Runner выводит обнаруженную версию только для диагностики, поднимает bounded
+loopback HTTP fixture и запускает настоящий executable через публичные
+production API `resolve_yt_dlp_candidate_snapshot_with_config` и
+`extract_yt_dlp_topology_with_config`. PASS требует accepted playback candidate
+и single-video topology после настоящих process, JSON parsing и normalization
+boundaries. Временный PATH shim добавляет `--ignore-config --no-plugin-dirs`
+только development check-у: пользовательский config/plugin не может скрыть
+upstream incompatibility либо создать ложный failure. Внешняя сеть и реальный
+сайт не используются.
+
+Проверка является development-only и не добавляет runtime preflight в
+приложение. Production config/plugin behavior не меняется. Обычный hermetic
+workspace suite не зависит от наличия system `yt-dlp`, потому что real-system
+test помечен `#[ignore]`; shell outcome contract отдельно закреплён
+`scripts/tests/ytdlp-compatibility-self-test.sh`.
 
 ## Serialization boundary
 

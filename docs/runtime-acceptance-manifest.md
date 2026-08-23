@@ -21,6 +21,14 @@
 Отдельные команды, не смешанные с current playback config:
 
 - `scripts/playback-smoke.sh --mode probe-only` — focused fake/unit probes и ignored real FFmpeg runtime probe.
+- `scripts/ytdlp-compatibility.sh` — development-only проверка фактически
+  найденного в `PATH` system `yt-dlp`: локальный HTTP fixture проходит через
+  production candidate и topology API. Временный executable shim добавляет
+  `--ignore-config --no-plugin-dirs` только этой проверке, чтобы user environment
+  не маскировал upstream incompatibility. Номер версии выводится только как
+  диагностическое свидетельство и не является allowlist/gate.
+- `scripts/tests/ytdlp-compatibility-self-test.sh` — hermetic проверка CLI,
+  exit-status и exact Cargo orchestration предыдущего runner-а.
 - `scripts/playback-smoke.sh --mode legacy-migration` — явно выбранный legacy config migration smoke.
 - `scripts/tests/playback-smoke-self-test.sh` — parser, dry-run и полный current-schema config generate/parse без GUI.
 - `scripts/progressive-web-smoke.sh` — S42 manual opt-in только для явно
@@ -40,9 +48,13 @@
 - один ignored FFmpeg runtime probe: `video-ffmpeg/tests/ffmpeg_runtime_probe.rs`; запускается только через `probe-only`/software/full suite и требует установленный FFmpeg runtime;
 - семнадцать ignored local-media demux regressions в `symphonia-demux/tests/`: шесть H.264, три H.265, один VP9, шесть audio и один generic inspection;
 - один ignored direct HTTP Range regression в `service-direct-media`;
-- ignored `yt-dlp`/network regressions в `service-ytdlp` отсутствуют: provider,
-  auth, Range/refresh и live contracts проверяются hermetic fake/local-server
-  suites, а real URL UX принадлежит только S42 manual runner-у;
+- один ignored system-`yt-dlp` regression
+  `service-ytdlp/tests/system_ytdlp_compatibility.rs` запускается только через
+  `scripts/ytdlp-compatibility.sh`; он использует loopback fixture и доказывает
+  реальный candidate/topology process-parser-normalization path без внешнего URL;
+- provider, auth, Range/refresh и live contracts по-прежнему проверяются
+  hermetic fake/local-server suites, а real URL UX принадлежит только S42
+  manual runner-у;
 - VP9 VA-API playback и typed AV1 rejection runtime checks не являются
   `cargo test`: ими владеют `hardware-only` и `full` modes
   `playback-smoke.sh`; они требуют выбранных пользователем assets и конкретного

@@ -82,8 +82,8 @@ RTSP/RTP/MMS, RTMP wire playback, private live extractor state и DRM явно
 означают subtitle playback. Точная matrix:
 [web-media compatibility](docs/web-media-compatibility-matrix.md).
 
-Production extraction сохраняет обычный system/user `yt-dlp` config, plugins и
-cookies как manual opt-in trust boundary. Rustiplayer-owned arguments не
+Production extraction намеренно сохраняет обычный system/user `yt-dlp` config,
+plugins и cookies как trusted user environment boundary. Rustiplayer-owned arguments не
 добавляют download/write/exec/postprocessor/mark-watched options и приложение не
 сохраняет app-owned browser/cookie credentials. Exact locator, который
 пользователь явно подтвердил, остаётся durable reopen identity, поэтому
@@ -101,7 +101,7 @@ app guarantee.
 - native HDR output и CPU readback fallback не реализованы;
 - hardware/software codec availability зависит от GPU driver и FFmpeg build;
 - DRM playback не реализован;
-- generic web URL playback зависит от exact `yt-dlp 2026.07.04`, extractor-а,
+- generic web URL playback зависит от совместимого system `yt-dlp`, extractor-а,
   доступности сервера и совпадения результата с утверждённой compatibility matrix;
 - FFmpeg используется только как software decoder, не как hidden network,
   demux или RTMP fallback.
@@ -116,6 +116,7 @@ Runtime acceptance выполняется отдельно:
 
 ```bash
 scripts/final-acceptance.sh
+scripts/ytdlp-compatibility.sh
 scripts/playback-smoke.sh --mode probe-only
 scripts/media-regression.sh --list-scenarios
 scripts/progressive-web-smoke.sh --help
