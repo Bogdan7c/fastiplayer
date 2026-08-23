@@ -1,3 +1,9 @@
+## AUD-014 bounded seek settlement перед lifecycle checkpoint (2026-08-23)
+
+- Independently reproduced: pending accepted 90 s seek плюс immediate suspend restored stale 10 s snapshot.
+- App transport теперь ждёт exact seek receipts до общего 1 s deadline; Applied сохраняет settled target, timeout/missing owner сохраняет typed documented pre-seek position.
+- Suspend/restore и shutdown sidecar проходят production-boundary regressions; full boundary, tests и invariant: `mem:app-egui/timeline-seek-lifecycle-settlement-aud014-2026-08-23`.
+
 ## AUD-013 vertical seek acceptance до renderer submit (2026-08-23)
 
 - Independent read-only verification confirmed no real compressed asset reached production demux → decoder → materializer → WGPU video draw/submit/completion release before and after nonzero seek.

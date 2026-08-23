@@ -16,8 +16,8 @@ use playlist_state::{
 use super::controller::PlaylistController;
 use super::settings::PlaylistResumeIntervalPort;
 use super::{
-    PlaylistBindingGeneration, PlaylistLineagePersistence, PlaylistRuntime, PlaylistRuntimeBinding,
-    StartupPosition,
+    LifecycleTimelineCheckpointPosition, PlaylistBindingGeneration, PlaylistLineagePersistence,
+    PlaylistRuntime, PlaylistRuntimeBinding, StartupPosition,
 };
 use crate::process_shutdown::ShutdownDeadline;
 
@@ -326,6 +326,7 @@ impl PlaylistResumePersistenceOwner {
         controller: &PlaylistController,
         binding: PlaylistRuntimeBinding,
         snapshot: &PlayerSnapshot,
+        timeline_position: LifecycleTimelineCheckpointPosition,
         now: Instant,
     ) {
         self.report_latest_attempt();
@@ -336,17 +337,22 @@ impl PlaylistResumePersistenceOwner {
         ) else {
             return;
         };
-        if matches!(
-            snapshot.playback_state,
-            PlaybackState::Opening | PlaybackState::Seeking | PlaybackState::Scrubbing
-        ) {
+        let explicit_timeline_position = timeline_position.explicit_position();
+        if explicit_timeline_position.is_none()
+            && matches!(
+                snapshot.playback_state,
+                PlaybackState::Opening | PlaybackState::Seeking | PlaybackState::Scrubbing
+            )
+        {
             return;
         }
         let position = if snapshot.timeline.mode == media_core::TimelineMode::Live {
             InstalledCheckpointPosition::Live
         } else if snapshot.timeline.seekable {
             InstalledCheckpointPosition::Seekable(
-                if snapshot.playback_state == PlaybackState::Ended {
+                if let Some(settled_position) = explicit_timeline_position {
+                    settled_position
+                } else if snapshot.playback_state == PlaybackState::Ended {
                     Duration::ZERO
                 } else {
                     snapshot.current_position
@@ -654,10 +660,11 @@ impl PlaylistRuntime {
     }
 
     /// Terminal shell вызывает boundary до остановки player owner-а.
-    pub(crate) fn force_resume_checkpoint_before_shutdown(
+    pub(crate) fn force_resume_checkpoint_after_seek_settlement(
         &mut self,
         binding: PlaylistRuntimeBinding,
         snapshot: &PlayerSnapshot,
+        timeline_position: LifecycleTimelineCheckpointPosition,
     ) {
         if self.validate_binding(binding).is_err() {
             return;
@@ -665,8 +672,13 @@ impl PlaylistRuntime {
         let Some(controller) = self.controller.as_ref() else {
             return;
         };
-        self.resume_persistence
-            .force_snapshot(controller, binding, snapshot, Instant::now());
+        self.resume_persistence.force_snapshot(
+            controller,
+            binding,
+            snapshot,
+            timeline_position,
+            Instant::now(),
+        );
     }
 
     /// Активирует существующий `player.resume_last_position` без restart-а.

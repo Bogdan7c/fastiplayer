@@ -40,14 +40,14 @@ use crate::redraw_pacing::{
 use crate::renderer_recreation::RendererLifecycleCoordinator;
 use crate::settings_runtime::SettingsRuntime;
 use crate::startup_media::{InitialMedia, StartupMediaController};
-use crate::state::AppState;
+use crate::state::{AppState, LifecycleTimelineSeekSettlement};
 use crate::telemetry::Telemetry;
 use hotkeys::ShellHotkeyAction;
 use shutdown::{
     AppShellProcessLifecycle, AppShellShutdownReport, OwnerTerminalDisposition,
     PROCESS_TERMINAL_SHUTDOWN_BUDGET, TERMINAL_SHUTDOWN_TIMEOUT_EXIT_CODE,
-    TerminalEntryDisposition, player_disposition, process_owner_disposition,
-    terminal_entry_disposition,
+    TIMELINE_SEEK_LIFECYCLE_SETTLEMENT_BUDGET, TerminalEntryDisposition, player_disposition,
+    process_owner_disposition, terminal_entry_disposition,
 };
 
 /// Применяет redraw только когда drain действительно изменил видимый state.
@@ -61,6 +61,35 @@ fn request_redraw_for_visible_wake(window: Option<&Window>, visible_mutation: bo
 
 const fn should_request_redraw_for_wake(has_window: bool, visible_mutation: bool) -> bool {
     has_window && visible_mutation
+}
+
+/// Публикует typed lifecycle settlement без выдачи timeout-а за успешный seek commit.
+fn report_timeline_seek_lifecycle_settlement(settlement: LifecycleTimelineSeekSettlement) {
+    match settlement {
+        LifecycleTimelineSeekSettlement::NoPendingSeek => {}
+        LifecycleTimelineSeekSettlement::Settled {
+            checkpoint_position,
+        } => debug!(
+            ?checkpoint_position,
+            "Lifecycle дождался terminal outcomes всех pending timeline seek-ов"
+        ),
+        LifecycleTimelineSeekSettlement::DeadlineElapsed {
+            checkpoint_position,
+            abandoned_receipt_count,
+        } => tracing::warn!(
+            ?checkpoint_position,
+            abandoned_receipt_count,
+            "Lifecycle deadline отменил pending timeline seek; сохраняем pre-seek позицию"
+        ),
+        LifecycleTimelineSeekSettlement::MissingOwnerOutcome {
+            checkpoint_position,
+            abandoned_receipt_count,
+        } => tracing::error!(
+            ?checkpoint_position,
+            abandoned_receipt_count,
+            "Player owner потерял pending timeline seek outcome; сохраняем pre-seek позицию"
+        ),
+    }
 }
 
 /// Winit shell приложения.
@@ -350,6 +379,7 @@ impl AppShell {
     /// Освобождает runtime-ресурсы в порядке, безопасном для GPU/audio cleanup.
     fn suspend_runtime(&mut self) {
         self.flush_sidebar_resize_for_lifecycle_boundary();
+        let timeline_seek_deadline = Instant::now() + TIMELINE_SEEK_LIFECYCLE_SETTLEMENT_BUDGET;
         let mut transferred_local_file_open_job = None;
         if let Some(app_state) = &mut self.app_state {
             let binding = app_state.playlist_runtime_binding();
@@ -367,12 +397,23 @@ impl AppShell {
                         // released candidate больше не обязан совпадать со старым instance.
                         return Ok(());
                     }
+                    let pre_settlement_snapshot = app_state.refresh_player_snapshot();
+                    let settlement = app_state.settle_pending_timeline_seek_for_lifecycle(
+                        &mut self.playlist_runtime,
+                        timeline_seek_deadline,
+                        pre_settlement_snapshot.current_position,
+                    );
+                    report_timeline_seek_lifecycle_settlement(settlement);
                     let snapshot = app_state.refresh_player_snapshot();
                     let binding = binding.ok_or(
                         crate::playlist_runtime::ResumeCheckpointError::StalePlayerBinding,
                     )?;
                     self.playlist_runtime
-                        .capture_suspended_media_checkpoint(binding, &snapshot)
+                        .capture_suspended_media_checkpoint_after_seek_settlement(
+                            binding,
+                            &snapshot,
+                            settlement.checkpoint_position_policy(),
+                        )
                         .map(|_| ())
                 });
             if let Err(error) = lifecycle_result {
@@ -429,9 +470,23 @@ impl AppShell {
         if let Some(app_state) = self.app_state.as_mut()
             && let Some(binding) = app_state.playlist_runtime_binding()
         {
+            let pre_settlement_snapshot = app_state.refresh_player_snapshot();
+            let timeline_seek_deadline = (Instant::now()
+                + TIMELINE_SEEK_LIFECYCLE_SETTLEMENT_BUDGET)
+                .min(deadline.expires_at());
+            let settlement = app_state.settle_pending_timeline_seek_for_lifecycle(
+                &mut self.playlist_runtime,
+                timeline_seek_deadline,
+                pre_settlement_snapshot.current_position,
+            );
+            report_timeline_seek_lifecycle_settlement(settlement);
             let snapshot = app_state.refresh_player_snapshot();
             self.playlist_runtime
-                .force_resume_checkpoint_before_shutdown(binding, &snapshot);
+                .force_resume_checkpoint_after_seek_settlement(
+                    binding,
+                    &snapshot,
+                    settlement.checkpoint_position_policy(),
+                );
         }
 
         // Local job сначала извлекается из renderer owner-а, чтобы любой timeout

@@ -10,8 +10,8 @@ use player_core::{MediaInstallRequestId, MediaInstanceId, PlaybackState, PlayerS
 use super::controller::{ControllerInstallPhase, PlaylistControllerInvariantViolation};
 use super::identity::ActiveMediaIdentity;
 use super::{
-    PlaylistBindingGeneration, PlaylistLoadGateState, PlaylistMediaOpenGateError, PlaylistRuntime,
-    PlaylistRuntimeBinding,
+    LifecycleTimelineCheckpointPosition, PlaylistBindingGeneration, PlaylistLoadGateState,
+    PlaylistMediaOpenGateError, PlaylistRuntime, PlaylistRuntimeBinding,
 };
 use crate::media_open::{ActiveMediaSource, MediaOpenRequestId};
 use crate::media_open::{MediaOpenPhase, MediaOpenTerminalOutcome};
@@ -404,10 +404,39 @@ impl PlaylistRuntime {
     }
 
     /// Захватывает согласованный source/identity/snapshot до detach player binding-а.
+    #[cfg(test)]
     pub(crate) fn capture_suspended_media_checkpoint(
         &mut self,
         binding: PlaylistRuntimeBinding,
         snapshot: &PlayerSnapshot,
+    ) -> Result<SuspendCheckpointOutcome, ResumeCheckpointError> {
+        self.capture_suspended_media_checkpoint_with_timeline_position(
+            binding,
+            snapshot,
+            LifecycleTimelineCheckpointPosition::LatestSnapshot,
+        )
+    }
+
+    /// Захватывает checkpoint после typed settlement pending timeline seek-а.
+    pub(crate) fn capture_suspended_media_checkpoint_after_seek_settlement(
+        &mut self,
+        binding: PlaylistRuntimeBinding,
+        snapshot: &PlayerSnapshot,
+        timeline_position: LifecycleTimelineCheckpointPosition,
+    ) -> Result<SuspendCheckpointOutcome, ResumeCheckpointError> {
+        self.capture_suspended_media_checkpoint_with_timeline_position(
+            binding,
+            snapshot,
+            timeline_position,
+        )
+    }
+
+    /// Общая реализация сохраняет source/identity/intent независимо от источника позиции.
+    fn capture_suspended_media_checkpoint_with_timeline_position(
+        &mut self,
+        binding: PlaylistRuntimeBinding,
+        snapshot: &PlayerSnapshot,
+        timeline_position: LifecycleTimelineCheckpointPosition,
     ) -> Result<SuspendCheckpointOutcome, ResumeCheckpointError> {
         self.validate_binding(binding)
             .map_err(|_| ResumeCheckpointError::StalePlayerBinding)?;
@@ -454,6 +483,8 @@ impl PlaylistRuntime {
             SuspendedTimelineResumePosition::SeekTo(
                 snapshot.duration.unwrap_or(snapshot.current_position),
             )
+        } else if let Some(settled_position) = timeline_position.explicit_position() {
+            SuspendedTimelineResumePosition::SeekTo(settled_position)
         } else {
             SuspendedTimelineResumePosition::SeekTo(snapshot.current_position)
         };

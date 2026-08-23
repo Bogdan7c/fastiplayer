@@ -15,6 +15,12 @@ use crate::process_shutdown::ProcessOwnerShutdownOutcome;
 /// абсолютный deadline и делят этот бюджет последовательно.
 pub(super) const PROCESS_TERMINAL_SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
 
+/// Suspend ждёт уже принятый exact seek достаточно долго для обычного local commit-а.
+///
+/// Один общий абсолютный deadline ограничивает все pending receipts. После секунды
+/// lifecycle явно выбирает документированную pre-seek позицию и освобождает runtime.
+pub(super) const TIMELINE_SEEK_LIFECYCLE_SETTLEMENT_BUDGET: Duration = Duration::from_secs(1);
+
 /// Ненулевой код означает, что process обязан завершиться, не освобождая lease через `Drop`.
 pub(super) const TERMINAL_SHUTDOWN_TIMEOUT_EXIT_CODE: i32 = 70;
 

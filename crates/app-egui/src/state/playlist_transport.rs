@@ -3,10 +3,16 @@
 //! Traversal/plan остаются в `PlaylistRuntime`; здесь живут только app candidate resources,
 //! coordinator request correlation и player receipts, нужные renderer owner-у.
 
+mod lifecycle_settlement;
+
+pub(crate) use lifecycle_settlement::LifecycleTimelineSeekSettlement;
+#[cfg(test)]
+pub(crate) use lifecycle_settlement::settle_timeline_seek_receipts_until;
+
 use player_core::{
     ExactMediaTransportOutcome, ExactMediaTransportReceipt, ExactMediaTransportRequest,
-    ExactTimelineSeekOutcome, ExactTimelineSeekReceipt, ExactTimelineSeekRequest,
-    MediaInstallCancellationCause, TimelineSeekRequestId,
+    ExactTimelineSeekReceipt, ExactTimelineSeekRequest, MediaInstallCancellationCause,
+    TimelineSeekRequestId,
 };
 use render_wgpu_shell::Renderer;
 use tracing::{debug, warn};
@@ -54,7 +60,7 @@ pub(super) struct PlaylistTransportRuntimeState {
     active_item_id: Option<playlist_core::PlaylistItemId>,
     queued_install: Option<QueuedPlaylistInstall>,
     exact_receipts: Vec<PendingExactTransportReceipt>,
-    timeline_seek_receipts: Vec<ExactTimelineSeekReceipt>,
+    pub(super) timeline_seek_receipts: Vec<ExactTimelineSeekReceipt>,
     intent_receipts: Vec<player_core::PlaybackIntentUpdateReceipt>,
 }
 
@@ -577,88 +583,24 @@ impl AppState {
         playlist_runtime: &mut PlaylistRuntime,
     ) -> Vec<RelativeBeyondEndNavigation> {
         let mut relative_beyond_end_navigations = Vec::new();
-        let playlist_binding = self.playlist_runtime_binding();
-        let resume_seek_checkpoint_allowed =
-            self.last_player_snapshot.timeline.mode != media_core::TimelineMode::Live;
-        self.playlist_transport
-            .timeline_seek_receipts
-            .retain(|receipt| match receipt.try_take_outcome() {
-                Ok(None) => true,
-                Ok(Some(ExactTimelineSeekOutcome::Applied {
-                    request_id,
-                    media_instance_id,
-                    position,
-                })) => {
-                    let request_id = desktop_seek_request_id(request_id);
-                    playlist_runtime.publish_desktop_seeked(request_id, position);
-                    if resume_seek_checkpoint_allowed && let Some(binding) = playlist_binding {
-                        playlist_runtime.record_confirmed_resume_seek(
-                            binding,
-                            media_instance_id,
-                            position.as_duration(),
-                        );
-                    }
-                    false
-                }
-                Ok(Some(ExactTimelineSeekOutcome::BeyondEnd {
-                    request_id,
-                    media_instance_id,
-                })) => {
-                    playlist_runtime.record_desktop_seek_outcome(
-                        desktop_integration::DesktopTimelineSeekOutcome::BeyondEnd {
-                            request_id: desktop_seek_request_id(request_id),
-                        },
-                    );
-                    relative_beyond_end_navigations.push(RelativeBeyondEndNavigation {
-                        request_id,
-                        media_instance_id,
-                    });
-                    false
-                }
+        let receipts = std::mem::take(&mut self.playlist_transport.timeline_seek_receipts);
+        let mut pending_receipts = Vec::with_capacity(receipts.len());
+        for receipt in receipts {
+            match receipt.try_take_outcome() {
+                Ok(None) => pending_receipts.push(receipt),
                 Ok(Some(outcome)) => {
-                    let desktop_outcome = match outcome {
-                        ExactTimelineSeekOutcome::InvalidRange { request_id, .. } => {
-                            desktop_integration::DesktopTimelineSeekOutcome::InvalidRange {
-                                request_id: desktop_seek_request_id(request_id),
-                            }
-                        }
-                        ExactTimelineSeekOutcome::StaleInstance { request_id, .. } => {
-                            desktop_integration::DesktopTimelineSeekOutcome::StaleInstance {
-                                request_id: desktop_seek_request_id(request_id),
-                            }
-                        }
-                        ExactTimelineSeekOutcome::NotSeekable { request_id, .. } => {
-                            desktop_integration::DesktopTimelineSeekOutcome::NotSeekable {
-                                request_id: desktop_seek_request_id(request_id),
-                            }
-                        }
-                        ExactTimelineSeekOutcome::Expired { request_id, .. } => {
-                            desktop_integration::DesktopTimelineSeekOutcome::Expired {
-                                request_id: desktop_seek_request_id(request_id),
-                            }
-                        }
-                        ExactTimelineSeekOutcome::Failed { request_id, .. } => {
-                            desktop_integration::DesktopTimelineSeekOutcome::Failed {
-                                request_id: desktop_seek_request_id(request_id),
-                            }
-                        }
-                        ExactTimelineSeekOutcome::Applied { .. }
-                        | ExactTimelineSeekOutcome::BeyondEnd { .. } => {
-                            unreachable!("Applied and BeyondEnd are handled above")
-                        }
-                    };
-                    playlist_runtime.record_desktop_seek_outcome(desktop_outcome);
-                    debug!(
-                        ?desktop_outcome,
-                        "Exact timeline seek завершился без Seeked signal"
-                    );
-                    false
+                    if let Some(navigation) =
+                        self.record_exact_timeline_seek_outcome(playlist_runtime, outcome)
+                    {
+                        relative_beyond_end_navigations.push(navigation);
+                    }
                 }
                 Err(error) => {
                     warn!(error = %error, "Exact timeline seek потерял owner outcome");
-                    false
                 }
-            });
+            }
+        }
+        self.playlist_transport.timeline_seek_receipts = pending_receipts;
         relative_beyond_end_navigations
     }
 }

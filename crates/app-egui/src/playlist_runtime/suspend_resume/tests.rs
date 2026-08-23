@@ -16,6 +16,8 @@ use crate::playlist_runtime::controller::{
 };
 use crate::playlist_runtime::removal_undo::{RemovalUndoOutcome, RuntimeRemovalOutcome};
 
+mod aud014_pending_seek_lifecycle;
+
 struct NoopEmitter;
 
 impl WakeEmitter for NoopEmitter {

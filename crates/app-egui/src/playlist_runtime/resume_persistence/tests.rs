@@ -9,6 +9,8 @@ use playlist_state::{
 };
 
 use super::*;
+
+mod aud014_shutdown_checkpoint;
 use crate::playlist_runtime::controller::ControllerAppendOutcome;
 use crate::playlist_runtime::identity::{ActiveMediaIdentity, ActiveMediaLineageId};
 

@@ -63,6 +63,9 @@ mod media_jobs;
 pub(crate) use media_jobs::playback_intent_from_snapshot;
 mod playlist_attachment;
 mod playlist_transport;
+pub(crate) use playlist_transport::LifecycleTimelineSeekSettlement;
+#[cfg(test)]
+pub(crate) use playlist_transport::settle_timeline_seek_receipts_until;
 mod present_frame_cache;
 mod same_item_candidate_switch;
 mod sidebar_controller;
