@@ -82,9 +82,6 @@ impl HlsSeekIndex {
         }) {
             return;
         }
-        if self.anchors.len() == self.maximum_entries {
-            return;
-        }
         self.anchors.push(anchor);
         self.anchors.sort_by_key(|existing| {
             (
@@ -93,6 +90,150 @@ impl HlsSeekIndex {
                 existing.restart_segment.segment_index,
             )
         });
+        self.compact_to_budget();
+    }
+
+    /// Сжимает index до caller-owned budget, не позволяя поздней границе замереть.
+    ///
+    /// Video RAP и audio packet имеют разную seek-семантику, поэтому делят budget
+    /// независимо. При наличии обоих видов video получает нечётный остаток: без RAP
+    /// decode-safe seek невозможен, тогда как Accurate может использовать video fallback.
+    /// Неиспользованная доля одного вида остаётся доступной другому, чтобы редкий audio
+    /// packet не выбрасывал тысячи полезных video anchors (и наоборот).
+    fn compact_to_budget(&mut self) {
+        let video_count = self
+            .anchors
+            .iter()
+            .filter(|anchor| anchor.kind == HlsSeekAnchorKind::VideoRandomAccessPoint)
+            .count();
+        let audio_count = self
+            .anchors
+            .iter()
+            .filter(|anchor| anchor.kind == HlsSeekAnchorKind::AudioPacket)
+            .count();
+        let (video_budget, audio_budget) =
+            Self::kind_budgets(self.maximum_entries, video_count, audio_count);
+
+        self.compact_kind_to_budget(HlsSeekAnchorKind::VideoRandomAccessPoint, video_budget);
+        self.compact_kind_to_budget(HlsSeekAnchorKind::AudioPacket, audio_budget);
+        debug_assert!(self.anchors.len() <= self.maximum_entries);
+    }
+
+    /// Делит общий budget справедливо, но не резервирует пустые места заранее.
+    fn kind_budgets(
+        maximum_entries: usize,
+        video_count: usize,
+        audio_count: usize,
+    ) -> (usize, usize) {
+        if video_count == 0 {
+            return (0, audio_count.min(maximum_entries));
+        }
+        if audio_count == 0 {
+            return (video_count.min(maximum_entries), 0);
+        }
+
+        let fair_video_budget = maximum_entries / 2 + maximum_entries % 2;
+        let fair_audio_budget = maximum_entries / 2;
+        let mut video_budget = video_count.min(fair_video_budget);
+        let mut audio_budget = audio_count.min(fair_audio_budget);
+        let mut unassigned_budget = maximum_entries.saturating_sub(video_budget + audio_budget);
+
+        let additional_video_budget = unassigned_budget.min(video_count - video_budget);
+        video_budget += additional_video_budget;
+        unassigned_budget -= additional_video_budget;
+        audio_budget += unassigned_budget.min(audio_count - audio_budget);
+
+        (video_budget, audio_budget)
+    }
+
+    /// Оставляет временно равномерное покрытие одного вида anchor-а.
+    ///
+    /// При budget >= 2 первый и самый свежий anchors сохраняются обязательно.
+    /// Внутренние точки выбираются ближе всего к равномерным временным целям между
+    /// краями. При budget == 1 сохраняется свежая точка: это намеренно продолжает
+    /// позднее покрытие вместо прежней необратимой заморозки на старте media.
+    fn compact_kind_to_budget(&mut self, kind: HlsSeekAnchorKind, budget: usize) {
+        let kind_indices = self
+            .anchors
+            .iter()
+            .enumerate()
+            .filter_map(|(index, anchor)| (anchor.kind == kind).then_some(index))
+            .collect::<Vec<_>>();
+        if kind_indices.len() <= budget {
+            return;
+        }
+        if budget == 0 {
+            self.anchors.retain(|anchor| anchor.kind != kind);
+            return;
+        }
+
+        let retained_kind_offsets =
+            Self::evenly_spaced_kind_offsets(&self.anchors, &kind_indices, budget);
+        let mut next_retained_offset = 0;
+        let mut current_kind_offset = 0;
+        self.anchors.retain(|anchor| {
+            if anchor.kind != kind {
+                return true;
+            }
+            let retain_current = retained_kind_offsets.get(next_retained_offset).copied()
+                == Some(current_kind_offset);
+            current_kind_offset += 1;
+            if retain_current {
+                next_retained_offset += 1;
+            }
+            retain_current
+        });
+    }
+
+    /// Выбирает offsets ближайших anchors к равномерным целям за один линейный проход.
+    fn evenly_spaced_kind_offsets(
+        anchors: &[HlsSeekAnchor],
+        kind_indices: &[usize],
+        budget: usize,
+    ) -> Vec<usize> {
+        let last_offset = kind_indices.len() - 1;
+        if budget == 1 {
+            return vec![last_offset];
+        }
+
+        let first_position = anchors[kind_indices[0]].position.as_duration().as_nanos();
+        let last_position = anchors[kind_indices[last_offset]]
+            .position
+            .as_duration()
+            .as_nanos();
+        let position_span = last_position.saturating_sub(first_position);
+        let mut retained_offsets = Vec::with_capacity(budget);
+        retained_offsets.push(0);
+        let mut search_start = 1;
+
+        for slot in 1..budget - 1 {
+            let future_slot_count = budget - 1 - slot;
+            let search_end = last_offset - future_slot_count;
+            let target_position =
+                first_position + position_span.saturating_mul(slot as u128) / (budget - 1) as u128;
+            let mut best_offset = search_start;
+            let mut best_distance = u128::MAX;
+
+            for candidate_offset in search_start..=search_end {
+                let candidate_position = anchors[kind_indices[candidate_offset]]
+                    .position
+                    .as_duration()
+                    .as_nanos();
+                let candidate_distance = candidate_position.abs_diff(target_position);
+                if candidate_distance < best_distance {
+                    best_offset = candidate_offset;
+                    best_distance = candidate_distance;
+                } else if candidate_position > target_position {
+                    break;
+                }
+            }
+
+            retained_offsets.push(best_offset);
+            search_start = best_offset + 1;
+        }
+
+        retained_offsets.push(last_offset);
+        retained_offsets
     }
 
     /// Возвращает anchor <= target; manifest segment boundaries здесь не участвуют.
@@ -197,7 +338,7 @@ mod tests {
     use bytes::Bytes;
     use media_core::{DemuxSeekRequest, Packet, PacketKeyframe, TrackId, TrackKind};
 
-    use super::HlsSeekIndex;
+    use super::{HlsSeekAnchorKind, HlsSeekIndex};
     use crate::plan::HlsSegmentRestartCoordinate;
 
     fn audio_packet(pts: Duration) -> Packet {
@@ -209,6 +350,27 @@ mod tests {
             PacketKeyframe::Unknown,
             Bytes::from_static(b"aac"),
         )
+    }
+
+    /// Строит доказанный video RAP, пригодный для DecodePointBefore.
+    fn video_keyframe(pts: Duration) -> Packet {
+        Packet::new_with_keyframe_unbounded(
+            TrackId::new(2),
+            TrackKind::Video,
+            pts,
+            Some(pts),
+            PacketKeyframe::Keyframe,
+            Bytes::from_static(b"idr"),
+        )
+    }
+
+    /// Возвращает retained positions одного семантического вида в timeline order.
+    fn retained_positions(index: &HlsSeekIndex, kind: HlsSeekAnchorKind) -> Vec<Duration> {
+        index
+            .anchors
+            .iter()
+            .filter_map(|anchor| (anchor.kind == kind).then_some(anchor.position.as_duration()))
+            .collect()
     }
 
     #[test]
@@ -239,8 +401,129 @@ mod tests {
     }
 
     #[test]
+    fn bounded_compaction_keeps_early_and_late_coverage_for_audio_and_video() {
+        let mut index = HlsSeekIndex::new(4);
+        for segment_index in 0..6 {
+            let position = Duration::from_secs(segment_index as u64 * 30);
+            let restart_segment = HlsSegmentRestartCoordinate { segment_index };
+            index.observe_packet(
+                0,
+                restart_segment,
+                Duration::ZERO,
+                &video_keyframe(position),
+            );
+            index.observe_packet(0, restart_segment, Duration::ZERO, &audio_packet(position));
+        }
+
+        assert_eq!(index.anchors.len(), 4);
+        assert_eq!(
+            retained_positions(&index, HlsSeekAnchorKind::VideoRandomAccessPoint),
+            vec![Duration::ZERO, Duration::from_secs(150)]
+        );
+        assert_eq!(
+            retained_positions(&index, HlsSeekAnchorKind::AudioPacket),
+            vec![Duration::ZERO, Duration::from_secs(150)]
+        );
+        let late_video = index
+            .anchor_for(DemuxSeekRequest::decode_point_before(Duration::from_secs(
+                155,
+            )))
+            .expect("late decode-safe seek keeps the newest video RAP");
+        assert_eq!(late_video.position.as_duration(), Duration::from_secs(150));
+        let early_audio = index
+            .anchor_for(DemuxSeekRequest::accurate(Duration::from_secs(15)))
+            .expect("early accurate seek keeps the first audio boundary");
+        assert_eq!(early_audio.position.as_duration(), Duration::ZERO);
+    }
+
+    #[test]
+    fn intermediate_audio_anchors_remain_spread_across_observed_timeline() {
+        let mut index = HlsSeekIndex::new(4);
+        for segment_index in 0..8 {
+            index.observe_packet(
+                0,
+                HlsSegmentRestartCoordinate { segment_index },
+                Duration::ZERO,
+                &audio_packet(Duration::from_secs(segment_index as u64 * 10)),
+            );
+        }
+
+        let positions = retained_positions(&index, HlsSeekAnchorKind::AudioPacket);
+        assert_eq!(positions.len(), 4);
+        assert_eq!(positions.first(), Some(&Duration::ZERO));
+        assert_eq!(positions.last(), Some(&Duration::from_secs(70)));
+        assert!(
+            positions
+                .windows(2)
+                .all(|pair| pair[1].saturating_sub(pair[0]) <= Duration::from_secs(30)),
+            "compaction должен сохранять полезные промежуточные точки: {positions:?}"
+        );
+    }
+
+    #[test]
+    fn one_entry_budget_prefers_fresh_video_rap_over_audio() {
+        let mut index = HlsSeekIndex::new(1);
+        for segment_index in 0..2 {
+            let position = Duration::from_secs(segment_index as u64 * 30);
+            let restart_segment = HlsSegmentRestartCoordinate { segment_index };
+            index.observe_packet(0, restart_segment, Duration::ZERO, &audio_packet(position));
+            index.observe_packet(
+                0,
+                restart_segment,
+                Duration::ZERO,
+                &video_keyframe(position),
+            );
+        }
+
+        assert_eq!(index.anchors.len(), 1);
+        assert_eq!(
+            index.anchors[0].kind,
+            HlsSeekAnchorKind::VideoRandomAccessPoint
+        );
+        assert_eq!(
+            index.anchors[0].position.as_duration(),
+            Duration::from_secs(30)
+        );
+        let late_video = index
+            .anchor_for(DemuxSeekRequest::decode_point_before(Duration::from_secs(
+                35,
+            )))
+            .expect("minimal budget keeps a usable fresh video RAP");
+        assert_eq!(late_video.position.as_duration(), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn scarce_audio_anchor_does_not_leave_video_budget_unused() {
+        let mut index = HlsSeekIndex::new(6);
+        for segment_index in 0..6 {
+            index.observe_packet(
+                0,
+                HlsSegmentRestartCoordinate { segment_index },
+                Duration::ZERO,
+                &video_keyframe(Duration::from_secs(segment_index as u64 * 10)),
+            );
+        }
+        index.observe_packet(
+            0,
+            HlsSegmentRestartCoordinate { segment_index: 5 },
+            Duration::ZERO,
+            &audio_packet(Duration::from_secs(50)),
+        );
+
+        assert_eq!(index.anchors.len(), 6);
+        assert_eq!(
+            retained_positions(&index, HlsSeekAnchorKind::VideoRandomAccessPoint).len(),
+            5
+        );
+        assert_eq!(
+            retained_positions(&index, HlsSeekAnchorKind::AudioPacket),
+            vec![Duration::from_secs(50)]
+        );
+    }
+
+    #[test]
     fn worker_consumes_preview_pinned_anchor_even_after_index_growth() {
-        let mut index = HlsSeekIndex::new(8);
+        let mut index = HlsSeekIndex::new(2);
         for (segment_index, seconds) in [(0, 0), (1, 4)] {
             index.observe_packet(
                 0,

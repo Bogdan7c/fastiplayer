@@ -1,3 +1,9 @@
+## AUD-010 bounded whole-timeline HLS VOD seek index (2026-08-23)
+
+- Independent production-path verification confirmed the four-entry muxed A/V index froze at 30 s after six segments; seek 150 s refetched five segments instead of one.
+- `HlsSeekIndex` now owns fair video/audio whole-timeline compaction, preserves early/fresh coverage when budget permits, reuses unused kind capacity and keeps preview pins exact; live/DVR remains on its separate sliding evidence owner.
+- Runtime regression seeks 155 s with limit 4, selects RAP 150 s and fetches only segment 5; downstream player contracts reach decoder and presentation. Full boundaries and verification: `mem:media-services/hls-vod-seek-index-compaction-aud010-2026-08-23`.
+
 ## AUD-009 bounded VOD endpoint recovery (2026-08-23)
 
 - Independent read-only verification confirmed progressive, HLS VOD, DASH VOD, Smooth and HDS remained terminal after signed endpoint expiry; live HLS/DASH refresh did not cover these VOD lifecycles.
