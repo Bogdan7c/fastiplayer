@@ -18,7 +18,7 @@ use codec_core::{H264Packetization, H265Packetization, VideoDecodeRequirement};
 #[cfg(feature = "ffmpeg")]
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded};
 #[cfg(feature = "ffmpeg")]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 #[cfg(any(test, feature = "ffmpeg"))]
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -175,8 +175,8 @@ pub struct FfmpegVideoDecoderThread {
     /// Fatal decoder-thread errors reported to player-core.
     error_rx: Receiver<DecodeThreadError>,
 
-    /// Packet-completion pulses for player in-flight accounting.
-    packet_ack_rx: Receiver<usize>,
+    /// Durable packet completions for player in-flight accounting.
+    packet_completion_counter: Arc<FfmpegPacketCompletionCounter>,
 
     /// Activity subscription exposed through neutral video-core contract.
     activity_subscription: VideoDecoderActivitySubscription,
@@ -213,7 +213,9 @@ impl FfmpegVideoDecoderThread {
         // try_send не упёрся в full channel внутри одной drain-итерации.
         let (frame_tx, frame_rx) = bounded(thread_config.software_frame_pool_frames);
         let (error_tx, error_rx) = bounded(1);
-        let (packet_ack_tx, packet_ack_rx) = bounded(thread_config.packet_channel_frames);
+        // Completion accounting не использует bounded channel: его заполнение
+        // не должно ни терять ACK, ни блокировать единственный FFmpeg owner thread.
+        let packet_completion_counter = Arc::new(FfmpegPacketCompletionCounter::default());
         let (activity_notifier, activity_subscription) = VideoDecoderActivityNotifier::new();
         let eof_drain_state = Arc::new(Mutex::new(VideoDecoderEndOfStreamDrainState::Idle));
         let control_pressure = Arc::new(FfmpegControlPressureCounters::default());
@@ -240,6 +242,7 @@ impl FfmpegVideoDecoderThread {
         let worker_activity_notifier = activity_notifier.clone();
         let worker_eof_drain_state = eof_drain_state.clone();
         let worker_resource_provider = host_resource_provider.clone();
+        let worker_packet_completion_counter = packet_completion_counter.clone();
         let worker_software_decode_thread_budget = thread_config.software_decode_thread_budget;
 
         std::thread::Builder::new()
@@ -257,7 +260,7 @@ impl FfmpegVideoDecoderThread {
                     release_notify_rx,
                     pending_packet: None,
                     pending_eof_drain_generation: None,
-                    packet_ack_tx,
+                    packet_completion_counter: worker_packet_completion_counter,
                     error_tx,
                     software_decode_thread_budget: worker_software_decode_thread_budget,
                 };
@@ -273,7 +276,7 @@ impl FfmpegVideoDecoderThread {
             control_tx,
             frame_rx,
             error_rx,
-            packet_ack_rx,
+            packet_completion_counter,
             activity_subscription,
             resource_provider: PresentFrameResourceProviderHandle::new(
                 host_resource_provider.clone(),
@@ -538,13 +541,39 @@ impl VideoDecoderThreadHandle for FfmpegVideoDecoderThread {
     }
 
     fn drain_completed_packet_count(&self) -> usize {
-        let mut completed_packets = 0usize;
+        self.packet_completion_counter.drain()
+    }
+}
 
-        while let Ok(count) = self.packet_ack_rx.try_recv() {
-            completed_packets = completed_packets.saturating_add(count);
-        }
+/// Нетеряемый accumulator завершений packet work между FFmpeg worker и player.
+///
+/// Activity notifier остаётся только coalesced сигналом пробуждения. Истина для
+/// in-flight accounting живёт здесь и поэтому не зависит от размера channel-а.
+#[derive(Debug, Default)]
+#[cfg(feature = "ffmpeg")]
+struct FfmpegPacketCompletionCounter {
+    /// Число завершений, которые player ещё не забрал через boundary drain.
+    pending_count: AtomicUsize,
+}
 
-        completed_packets
+#[cfg(feature = "ffmpeg")]
+impl FfmpegPacketCompletionCounter {
+    /// Фиксирует exactly-once completion без блокировки decoder owner thread-а.
+    fn record_completion(&self) {
+        // Closure всегда возвращает Some, поэтому CAS повторяется до успешного
+        // saturating increment и не может завершиться веткой Err.
+        self.pending_count
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current_count| {
+                Some(current_count.saturating_add(1))
+            })
+            .expect("packet completion increment closure always returns Some");
+    }
+
+    /// Атомарно передаёт player-у все накопленные completions ровно один раз.
+    fn drain(&self) -> usize {
+        // Concurrent completion попадёт либо в текущий swap, либо в следующий
+        // drain; потерять increment при такой гонке невозможно.
+        self.pending_count.swap(0, Ordering::Relaxed)
     }
 }
 
@@ -648,8 +677,8 @@ struct FfmpegDecoderWorker {
     /// EOF generation, чей FFmpeg tail ждёт освобождения host-upload slots.
     pending_eof_drain_generation: Option<u64>,
 
-    /// Packet completion acknowledgements for player in-flight accounting.
-    packet_ack_tx: Sender<usize>,
+    /// Durable packet completions for player in-flight accounting.
+    packet_completion_counter: Arc<FfmpegPacketCompletionCounter>,
 
     /// Fatal errors surfaced through `try_recv_error`.
     error_tx: Sender<DecodeThreadError>,
@@ -964,7 +993,7 @@ impl FfmpegDecoderWorker {
                 }
 
                 if progress_report.packet_completed {
-                    let _ = self.packet_ack_tx.try_send(1);
+                    self.packet_completion_counter.record_completion();
                 }
                 let _ = self.activity_notifier.notify_activity();
             }

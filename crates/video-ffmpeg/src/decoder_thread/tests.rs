@@ -24,6 +24,29 @@ fn start_decoder_thread_reports_feature_disabled_without_ffmpeg() {
     assert_eq!(error, FfmpegDecoderThreadError::FeatureDisabled);
 }
 
+/// Durable accumulator сохраняет burst больше прежней bounded ACK capacity.
+#[test]
+#[cfg(feature = "ffmpeg")]
+fn packet_completion_counter_accumulates_and_drains_exactly_once() {
+    // Seek fast-preroll допускает до 512 packets; ещё один completion доказывает
+    // отсутствие скрытой зависимости от прежнего channel limit-а.
+    const COMPLETION_BURST: usize = 513;
+
+    // Test использует production accounting owner без codec/fixture side effects.
+    let completion_counter = FfmpegPacketCompletionCounter::default();
+
+    // Consumer намеренно не дренирует accumulator до завершения всего burst-а.
+    for _ in 0..COMPLETION_BURST {
+        completion_counter.record_completion();
+    }
+
+    // Первый drain обязан вернуть каждый completion из задержанного burst-а.
+    assert_eq!(completion_counter.drain(), COMPLETION_BURST);
+
+    // Второй drain закрепляет exactly-once transfer semantics.
+    assert_eq!(completion_counter.drain(), 0);
+}
+
 #[test]
 fn send_packet_retries_same_padded_packet_after_eagain() {
     let mut fake_api = ScriptedDecodeApi::default()

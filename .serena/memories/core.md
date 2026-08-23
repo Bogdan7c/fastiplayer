@@ -1,3 +1,9 @@
+## AUD-005 durable FFmpeg packet completion accounting (2026-08-23)
+
+- Real production MPEG-TS accurate-seek/EOF stress confirmed bounded ACK loss: capacity 1, accepted 16, delivered 1, false terminal in-flight 15 after actual decoder `Drained`; 5/5 repeats.
+- FFmpeg worker completion truth now lives in a durable atomic accumulator; activity remains only a coalesced wake hint. Post-fix real regression: accepted/completions 16/16, in-flight 0, repeat drain 0, EOF `Drained`; `video-ffmpeg` 87/87, `player-core` 643/643 and strict Clippy passed.
+- Full boundary, regression fixture/command and limitation: `mem:video-ffmpeg/durable-packet-completion-aud005-2026-08-23`.
+
 ## AUD-004 decoded-frame batch tail release fix (2026-08-23)
 
 - Fatal frame-contract mismatch в `player-core` теперь exactly-once освобождает текущий handle и весь уже извлечённый хвост decoder receive-batch через прежнюю release boundary; API/error/accounting semantics не менялись.
