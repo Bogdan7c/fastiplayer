@@ -1,3 +1,9 @@
+## AUD-018 truthful playback-smoke dry-run outcomes (2026-08-24)
+
+- Independent verification confirmed direct probe-only and legacy-migration dry-runs exited 0 and emitted production PASS without executing Cargo; runner markers are written to stderr.
+- Shared `report_acceptance_outcome()` now emits only `DRY-RUN: WOULD RUN ...; no checks were executed` for dry-run and preserves PASS only after successful real steps under `set -e`.
+- Public-CLI self-tests cover direct/full dry-run plus fake-Cargo success and exit-17 failure orchestration; real legacy migration passes 9/9. Full boundary, commands and headless probe limitation: `mem:testing/playback-smoke-aud018-2026-08-24`.
+
 ## AUD-017 bounded HTTP Retry-After (2026-08-24)
 
 - Independent production-boundary verification confirmed `429 Retry-After: 2` and standard HTTP-date were discarded and retried after local ~5.6 ms; malformed safely used the same fallback.

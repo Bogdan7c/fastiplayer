@@ -61,16 +61,91 @@ dry_run_output="$(${PLAYBACK_SMOKE} --mode full --dry-run --duration 1 \
     --vp9 "${temporary_directory}/vp9.mp4" \
     --av1 "${temporary_directory}/av1.mp4" \
     --h264 "${temporary_directory}/h264.mp4" 2>&1)"
-require_output "${dry_run_output}" "schema v7"
+require_output "${dry_run_output}" "schema v8"
 require_output "${dry_run_output}" 'yt_dlp.hdr_selection = "sdr_only"'
 require_output "${dry_run_output}" "cargo build --release -p app-egui"
+# Full dry-run переиспользует probe workflow, но обязан маркировать его только как план.
+require_output "${dry_run_output}" "DRY-RUN: WOULD RUN FFmpeg runtime probe acceptance; no checks were executed"
+require_absent "${dry_run_output}" "PASS: FFmpeg runtime probe acceptance"
+
+# Прямой probe-only dry-run должен завершиться успешно без запуска обеих Cargo-проверок.
+probe_dry_run_output="$(${PLAYBACK_SMOKE} --mode probe-only --dry-run 2>&1)"
+# Вывод команды доказывает, что пользователь видит конкретный план probe workflow.
+require_output "${probe_dry_run_output}" "cargo test -p video-ffmpeg --features ffmpeg probe::tests"
+# Outcome явно отделяет запланированный probe от реально выполненного acceptance.
+require_output "${probe_dry_run_output}" "DRY-RUN: WOULD RUN FFmpeg runtime probe acceptance; no checks were executed"
+# Главный regression invariant запрещает production PASS в direct dry-run режиме.
+require_absent "${probe_dry_run_output}" "PASS: FFmpeg runtime probe acceptance"
+
+# Прямой legacy-migration dry-run также должен завершиться успешно без запуска Cargo.
+legacy_dry_run_output="$(${PLAYBACK_SMOKE} --mode legacy-migration --dry-run 2>&1)"
+# Вывод команды сохраняет полезность dry-run как проверяемого плана запуска.
+require_output "${legacy_dry_run_output}" "cargo test -p rustiplayer-config --locked legacy_"
+# Outcome явно сообщает, что legacy migration только была бы запущена.
+require_output "${legacy_dry_run_output}" "DRY-RUN: WOULD RUN explicitly selected legacy config migration smoke; no checks were executed"
+# Главный regression invariant запрещает тот же PASS, который выдаёт реальный успешный smoke.
+require_absent "${legacy_dry_run_output}" "PASS: explicitly selected legacy config migration smoke"
+
+# Временный Cargo shim позволяет функционально проверить success/failure orchestration без тяжёлой сборки.
+cargo_shim_directory="${temporary_directory}/cargo-shim"
+# Отдельный каталог не вмешивается в настоящий Cargo, используемый ниже для config integration test.
+mkdir -p "${cargo_shim_directory}"
+# Shim записывает каждый реальный вызов и возвращает управляемый self-test-ом exit code.
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -Eeuo pipefail' \
+    'printf '\''%s\n'\'' "$*" >> "${RUSTIPLAYER_SMOKE_SELF_TEST_CARGO_LOG:?}"' \
+    'exit "${RUSTIPLAYER_SMOKE_SELF_TEST_CARGO_EXIT_CODE:-0}"' \
+    >"${cargo_shim_directory}/cargo"
+# Исполняемый бит делает shim полноценной process boundary заменой Cargo.
+chmod +x "${cargo_shim_directory}/cargo"
+# Один log принадлежит успешному probe-only workflow.
+successful_probe_cargo_log="${temporary_directory}/successful-probe-cargo.log"
+# Нулевой exit code shim-а позволяет обеим probe-командам реально завершиться успешно.
+successful_probe_output="$(PATH="${cargo_shim_directory}:${PATH}" \
+    RUSTIPLAYER_SMOKE_SELF_TEST_CARGO_LOG="${successful_probe_cargo_log}" \
+    RUSTIPLAYER_SMOKE_SELF_TEST_CARGO_EXIT_CODE=0 \
+    "${PLAYBACK_SMOKE}" --mode probe-only 2>&1)"
+# Production PASS допустим только после двух успешных process boundary вызовов.
+require_output "${successful_probe_output}" "PASS: FFmpeg runtime probe acceptance"
+# Ровно две строки доказывают выполнение unit/fake и installed-runtime probe steps.
+if [[ "$(wc -l <"${successful_probe_cargo_log}")" -ne 2 ]]; then
+    printf 'FAIL: успешный probe-only должен вызвать Cargo ровно два раза\n' >&2
+    exit 1
+fi
+
+# Отдельный log принадлежит намеренно падающему probe-only workflow.
+failing_probe_cargo_log="${temporary_directory}/failing-probe-cargo.log"
+# Errexit тестируемого runner-а должен сохранить ненулевой status первой упавшей команды.
+set +e
+# Управляемый exit 17 моделирует реальную ошибку Cargo без зависимости от host runtime.
+failing_probe_output="$(PATH="${cargo_shim_directory}:${PATH}" \
+    RUSTIPLAYER_SMOKE_SELF_TEST_CARGO_LOG="${failing_probe_cargo_log}" \
+    RUSTIPLAYER_SMOKE_SELF_TEST_CARGO_EXIT_CODE=17 \
+    "${PLAYBACK_SMOKE}" --mode probe-only 2>&1)"
+# Код процесса сохраняется до возврата self-test-а в fail-fast режим.
+failing_probe_status=$?
+# Остальные assertions снова должны завершать self-test немедленно.
+set -e
+# Runner не имеет права превращать ошибку Cargo в успешный exit code.
+if [[ "${failing_probe_status}" -ne 17 ]]; then
+    printf 'FAIL: ожидаемый probe failure exit code 17, получен %s\n' "${failing_probe_status}" >&2
+    exit 1
+fi
+# Упавшая реальная команда не должна публиковать acceptance PASS.
+require_absent "${failing_probe_output}" "PASS: FFmpeg runtime probe acceptance"
+# Только первый probe step должен быть запущен до fail-fast остановки workflow.
+if [[ "$(wc -l <"${failing_probe_cargo_log}")" -ne 1 ]]; then
+    printf 'FAIL: падающий probe-only должен остановиться после первого Cargo-вызова\n' >&2
+    exit 1
+fi
 
 # Config helper создаёт полный current-schema TOML без GUI.
 current_config_path="${temporary_directory}/current-config.toml"
 cargo run --quiet --locked -p rustiplayer-config --example smoke_config -- \
     generate-current "${current_config_path}" software
-# Ключи доказывают current schema v7, playback overrides и generic yt-dlp HDR default.
-grep -Fqx 'schema_version = 7' "${current_config_path}"
+# Ключи доказывают current schema v8, playback overrides и generic yt-dlp HDR default.
+grep -Fqx 'schema_version = 8' "${current_config_path}"
 grep -Fqx 'start_paused = false' "${current_config_path}"
 grep -Fqx 'preferred_backend = "software"' "${current_config_path}"
 grep -Fqx '[yt_dlp]' "${current_config_path}"
