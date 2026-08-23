@@ -328,6 +328,21 @@ pub struct YtDlpConfig {
 
     /// Максимальное число JSON values до построения metadata DOM.
     pub single_item_json_node_limit: u64,
+
+    /// Разрешает автоматический candidate-level reopen после expiry VOD endpoint-а.
+    pub vod_endpoint_recovery_enabled: bool,
+
+    /// Максимум последовательных recovery attempts до typed terminal failure.
+    pub vod_endpoint_recovery_max_consecutive_attempts: u64,
+
+    /// Начальная задержка exponential backoff перед повторной extraction.
+    pub vod_endpoint_recovery_initial_backoff_ms: u64,
+
+    /// Верхняя граница exponential backoff между recovery attempts.
+    pub vod_endpoint_recovery_max_backoff_ms: u64,
+
+    /// Stable playback interval, после которого consecutive budget сбрасывается.
+    pub vod_endpoint_recovery_stable_reset_ms: u64,
 }
 
 impl YtDlpConfig {
@@ -348,6 +363,11 @@ impl Default for YtDlpConfig {
             single_item_stdout_limit_bytes: 64 * 1024 * 1024,
             single_item_stderr_limit_bytes: 8 * 1024 * 1024,
             single_item_json_node_limit: 1_000_000,
+            vod_endpoint_recovery_enabled: true,
+            vod_endpoint_recovery_max_consecutive_attempts: 3,
+            vod_endpoint_recovery_initial_backoff_ms: 250,
+            vod_endpoint_recovery_max_backoff_ms: 2_000,
+            vod_endpoint_recovery_stable_reset_ms: 30_000,
         }
     }
 }

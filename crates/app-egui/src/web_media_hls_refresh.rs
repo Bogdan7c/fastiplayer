@@ -105,6 +105,7 @@ impl HlsEndpointRefreshPort for AppHlsEndpointRefreshPort {
             &self.source_config,
             &self.network_config,
             self.cancellation.clone(),
+            None,
         )
         .map_err(|_| HlsEndpointRefreshError::IncompatibleLiveCandidate)?;
         if matches!(&projected.manifest, HlsManifestInput::InlineMedia { .. }) {

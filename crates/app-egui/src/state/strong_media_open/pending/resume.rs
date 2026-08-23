@@ -414,7 +414,7 @@ impl AppState {
             pending.lineage_commit,
             PendingStrongLineageCommit::SameLineage { .. }
         ) {
-            self.record_installed_media_source(installed.source.clone());
+            self.record_installed_media(installed);
         }
         playlist_runtime.record_installed_resume_checkpoint(
             binding.binding_generation(),

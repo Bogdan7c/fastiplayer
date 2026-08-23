@@ -73,6 +73,7 @@ pub(super) fn prepare_hds_candidate(
         crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent,
     catalog_identity: web_media_core::ComponentVariantCatalogIdentity,
     capability_probe: &dyn HdsRenditionCapabilityProbe,
+    endpoint_expiry_observer: Option<Arc<dyn web_media_transport_api::EndpointExpiryObserver>>,
 ) -> Result<PreparedHdsCandidate> {
     ensure_hds_vod_intent(live_intent)?;
     let StreamLayout::ContentProbed(_) = candidate.descriptor().layout() else {
@@ -80,9 +81,12 @@ pub(super) fn prepare_hds_candidate(
     };
     let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
     let context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation);
-    let transport_request = candidate
+    let mut transport_request = candidate
         .hds_transport_request(&context)
         .context("YtDlp HDS request material нельзя выразить как F4M manifest request")?;
+    if let Some(observer) = endpoint_expiry_observer {
+        transport_request = transport_request.with_endpoint_expiry_observer(observer);
+    }
     let adaptive_limits =
         crate::web_media_adaptive_config::adaptive_transport_limits(network_config)
             .context("Не удалось собрать HDS adaptive transport limits")?;

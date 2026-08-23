@@ -103,6 +103,29 @@ impl AppState {
 
     /// Публикует app observable state только после exact player Installed.
     pub(crate) fn record_installed_media_source(&mut self, source: ActiveMediaSource) {
+        self.record_installed_media_observables(source);
+        self.clear_installed_vod_endpoint_recovery();
+    }
+
+    /// Публикует exact Installed вместе с runtime-only VOD recovery attachment-ом.
+    pub(crate) fn record_installed_media(&mut self, installed: &InstalledSingleMediaOpen) {
+        self.record_installed_media_observables(installed.source.clone());
+        self.bind_installed_vod_endpoint_recovery(installed);
+    }
+
+    /// Suspend/resume публикует source и exact runtime attachment после своего Installed receipt.
+    pub(crate) fn record_resumed_installed_media(
+        &mut self,
+        source: ActiveMediaSource,
+        media_instance_id: player_core::MediaInstanceId,
+        attachment: Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
+    ) {
+        self.record_installed_media_observables(source.clone());
+        self.bind_resumed_vod_endpoint_recovery(media_instance_id, source, attachment);
+    }
+
+    /// Общие UI projections не знают устройство source lifecycle attachment-а.
+    fn record_installed_media_observables(&mut self, source: ActiveMediaSource) {
         self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
         self.clear_startup_status();
         self.url_sidebar_controller.record_installed_source();
@@ -132,6 +155,7 @@ impl AppState {
         self.clear_cached_present_frame(CachedPresentFrameDiscardReason::MediaOpenBoundary);
         self.current_local_file = None;
         self.active_media_source = None;
+        self.clear_installed_vod_endpoint_recovery();
         self.last_player_snapshot.media_instance_id = None;
         self.last_player_snapshot.playback_state = PlaybackState::Stopped;
         self.last_player_snapshot.source_label = None;

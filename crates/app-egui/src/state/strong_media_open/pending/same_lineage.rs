@@ -11,10 +11,21 @@ pub(super) enum PendingStrongLineageCommit {
     /// S25 сохраняет exact app lineage и свежий playback restore snapshot.
     SameLineage {
         expected_active: crate::playlist_runtime::ActiveMediaIdentity,
+        /// Источник позиции отделён от остальных fresh controls: обычный switch берёт
+        /// последнюю committed позицию, а expiry recovery сохраняет late-seek target.
+        restore_position: SameLineageRestorePosition,
         restore: Option<SameLineageRestoreSnapshot>,
         /// Visual checkpoint снимается в последнем pre-barrier состоянии старого media.
         video_swap_checkpoint: Option<Box<crate::state::BackendSwapVideoCheckpoint>>,
     },
+}
+
+/// Политика позиции, которую same-lineage install обязан восстановить после barrier-а.
+pub(super) enum SameLineageRestorePosition {
+    /// Обычная смена candidate-а снимает текущую позицию прямо перед barrier-ом.
+    FreshCurrent,
+    /// Expiry recovery сохраняет intent незавершённого seek-а, а не старый present clock.
+    Exact(std::time::Duration),
 }
 
 /// Свежие controls снимаются у старого instance непосредственно перед barrier-ом.
@@ -34,6 +45,7 @@ impl AppState {
     ) -> Result<(), StrongMediaOpenError> {
         let PendingStrongLineageCommit::SameLineage {
             expected_active,
+            restore_position,
             restore,
             video_swap_checkpoint,
             ..
@@ -49,7 +61,10 @@ impl AppState {
             return Err(StrongMediaOpenError::SameLineageStale);
         }
         let visual_checkpoint = self.capture_backend_swap_video_checkpoint();
-        let (fresh_intent, fresh_restore) = same_lineage_controls_from_snapshot(snapshot);
+        let (fresh_intent, mut fresh_restore) = same_lineage_controls_from_snapshot(snapshot);
+        if let SameLineageRestorePosition::Exact(exact_position) = restore_position {
+            fresh_restore.position = *exact_position;
+        }
         pending.intent = fresh_intent;
         let next_revision = pending
             .intent_revision
@@ -112,5 +127,28 @@ mod tests {
         assert_eq!(paused_intent, player_core::PlaybackIntent::StartPaused);
         assert_eq!(paused_restore.position, std::time::Duration::from_secs(29));
         assert!((paused_restore.volume - 0.73).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn exact_recovery_position_overrides_only_position_not_fresh_controls() {
+        let mut snapshot = player_core::PlayerSnapshot::empty();
+        snapshot.playback_state = player_core::PlaybackState::Playing;
+        snapshot.current_position = std::time::Duration::from_secs(12);
+        snapshot.volume = 0.62;
+        snapshot.selected_tracks.audio_track = Some(media_core::TrackId::new(7));
+
+        let (intent, mut restore) = same_lineage_controls_from_snapshot(snapshot);
+        let policy = SameLineageRestorePosition::Exact(std::time::Duration::from_secs(91));
+        if let SameLineageRestorePosition::Exact(exact_position) = policy {
+            restore.position = exact_position;
+        }
+
+        assert_eq!(intent, player_core::PlaybackIntent::StartPlaying);
+        assert_eq!(restore.position, std::time::Duration::from_secs(91));
+        assert!((restore.volume - 0.62).abs() < f32::EPSILON);
+        assert_eq!(
+            restore.selected_tracks.audio_track,
+            Some(media_core::TrackId::new(7))
+        );
     }
 }

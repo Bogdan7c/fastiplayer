@@ -43,6 +43,7 @@ pub(crate) struct PreparedSingleMediaOpen {
     prepared_media: PreparedMedia,
     source: ActiveMediaSource,
     safe_label: SafeMediaLabel,
+    descriptor: Option<PreparedMediaDescriptor>,
     playlist_target: Option<PreparedPlaylistTarget>,
     startup_position: crate::playlist_runtime::StartupPosition,
 }
@@ -72,6 +73,7 @@ impl PreparedSingleMediaOpen {
             prepared_media,
             source,
             safe_label,
+            descriptor: None,
             playlist_target: None,
             startup_position: crate::playlist_runtime::StartupPosition::KeepStart,
         }
@@ -92,6 +94,7 @@ impl PreparedSingleMediaOpen {
             prepared_media,
             source,
             safe_label,
+            descriptor: None,
             playlist_target: Some(PreparedPlaylistTarget::QueueReplacement(Box::new(
                 target_draft,
             ))),
@@ -115,6 +118,7 @@ impl PreparedSingleMediaOpen {
             prepared_media,
             source,
             safe_label,
+            descriptor: None,
             playlist_target: Some(PreparedPlaylistTarget::RestoredCurrent(target)),
             startup_position,
         }
@@ -135,6 +139,13 @@ impl PreparedSingleMediaOpen {
         }
         self
     }
+
+    /// Сохраняет rich descriptor background-prepared source-а до exact Installed.
+    #[must_use]
+    pub(crate) fn with_descriptor(mut self, descriptor: PreparedMediaDescriptor) -> Self {
+        self.descriptor = Some(descriptor);
+        self
+    }
 }
 
 /// Exact successful result, достаточный для settings restore и observable commit-а.
@@ -145,6 +156,13 @@ pub(crate) struct InstalledSingleMediaOpen {
     pub(crate) source: ActiveMediaSource,
     descriptor: Box<PreparedMediaDescriptor>,
     pub(crate) position_warning: Option<crate::playlist_runtime::ResumePositionWarning>,
+}
+
+impl InstalledSingleMediaOpen {
+    /// Descriptor доступен app lifecycle owner-у только как immutable installed fact.
+    pub(crate) fn descriptor(&self) -> &PreparedMediaDescriptor {
+        self.descriptor.as_ref()
+    }
 }
 
 /// Результат одного неблокирующего шага renderer-bound strong install.
@@ -277,6 +295,15 @@ impl StrongMediaOpenError {
                     | MediaOpenTerminalOutcome::PlayerRejected { .. }
                     | MediaOpenTerminalOutcome::PlayerFailed { .. }
             ) | Self::SameLineageStale
+        )
+    }
+
+    /// VOD expiry может повторить только source preparation failure до install barrier-а.
+    /// Cancel/stale/player failures отражают внешний lifecycle и не должны воскрешать media.
+    pub(crate) const fn allows_vod_endpoint_recovery_retry(&self) -> bool {
+        matches!(
+            self,
+            Self::Terminal(MediaOpenTerminalOutcome::PreparationFailed { .. })
         )
     }
 

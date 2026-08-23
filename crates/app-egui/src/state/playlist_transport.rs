@@ -287,7 +287,7 @@ impl AppState {
         match self.poll_prepared_media_strong(playlist_runtime) {
             StrongMediaOpenPoll::Pending => {}
             StrongMediaOpenPoll::Installed(installed) => {
-                self.record_installed_media_source(installed.source);
+                self.record_installed_media(installed.as_ref());
                 self.playlist_transport.active_request_id = None;
                 self.playlist_transport.active_item_id = None;
                 if let Some(queued) = self.playlist_transport.queued_install.take() {

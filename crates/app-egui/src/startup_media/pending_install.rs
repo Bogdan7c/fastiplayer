@@ -51,7 +51,7 @@ impl StartupMediaController {
                 false
             }
             StrongMediaOpenPoll::Installed(installed) => {
-                app_state.record_installed_media_source(installed.source.clone());
+                app_state.record_installed_media(installed.as_ref());
                 if let Some(warning) = installed.position_warning {
                     let message = format!(
                         "Сохранённая позиция {}.{:03} с недоступна; media открыто на {}.{:03} с и оставлено на паузе",

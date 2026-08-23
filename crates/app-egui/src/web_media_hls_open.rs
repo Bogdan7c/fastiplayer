@@ -141,6 +141,7 @@ pub(crate) fn prepare_hls_candidate(
         crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent,
     catalog_identity: web_media_core::ComponentVariantCatalogIdentity,
     capability_probe: &mut crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
+    endpoint_expiry_observer: Option<Arc<dyn web_media_transport_api::EndpointExpiryObserver>>,
 ) -> Result<PreparedHlsCandidate> {
     let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
     let projected = project_hls_runtime_material(
@@ -150,6 +151,7 @@ pub(crate) fn prepare_hls_candidate(
         source_config,
         network_config,
         cancellation,
+        endpoint_expiry_observer,
     )?;
     let HlsProjectedRuntimeMaterial {
         http,
@@ -344,11 +346,15 @@ pub(crate) fn project_hls_runtime_material(
     source_config: &SourceRuntimeConfig,
     network_config: &NetworkConfig,
     cancellation: CancellationToken,
+    endpoint_expiry_observer: Option<Arc<dyn web_media_transport_api::EndpointExpiryObserver>>,
 ) -> Result<HlsProjectedRuntimeMaterial> {
     let context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation);
-    let transport_request = candidate
+    let mut transport_request = candidate
         .hls_transport_request(&context)
         .context("Не удалось спроецировать yt-dlp HLS transport material")?;
+    if let Some(observer) = endpoint_expiry_observer {
+        transport_request = transport_request.with_endpoint_expiry_observer(observer);
+    }
     let material = candidate
         .hls_request_material()
         .context("Не удалось получить validated yt-dlp HLS material")?;

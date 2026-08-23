@@ -121,6 +121,9 @@ where
                     ),
                 ) as Arc<dyn DashEndpointRefreshPort>
             });
+        let vod_endpoint_recovery = (self.candidate_snapshot.live_intent()
+            != service_ytdlp::YtDlpLiveIntent::Live)
+            .then(crate::web_media_vod_recovery::VodEndpointRecoveryAttachment::new);
         let opened_candidate = self.runtime.open_candidate(
             candidate,
             WebCandidateOpenContext {
@@ -134,6 +137,7 @@ where
                 preferred_height: self.preferred_height,
                 catalog_identity,
                 cancellation: self.cancellation.clone(),
+                vod_endpoint_recovery,
             },
             self.is_cancelled,
             self.catalog_capability_probe,

@@ -87,6 +87,15 @@ pub(crate) const MAX_YT_DLP_SINGLE_ITEM_STDERR_BYTES: u64 = 64 * 1024 * 1024;
 /// Максимально настраиваемое число JSON values одного single-item extraction.
 pub(crate) const MAX_YT_DLP_SINGLE_ITEM_JSON_NODES: u64 = 10_000_000;
 
+/// Recovery budget остаётся малым и не допускает бесконечный extraction loop.
+pub(crate) const MAX_YT_DLP_VOD_RECOVERY_ATTEMPTS: u64 = 10;
+
+/// Backoff не должен замораживать UI/runtime дольше одной минуты за attempt.
+pub(crate) const MAX_YT_DLP_VOD_RECOVERY_BACKOFF_MS: u64 = 60_000;
+
+/// Stable reset interval ограничен одним часом.
+pub(crate) const MAX_YT_DLP_VOD_RECOVERY_STABLE_RESET_MS: u64 = 3_600_000;
+
 /// Верхний предел render latency, выше которого config почти наверняка ошибочен.
 pub(crate) const MAX_VULKAN_FRAME_LATENCY: u32 = 8;
 
@@ -594,6 +603,37 @@ pub(crate) fn validate_yt_dlp_config(config: &YtDlpConfig) -> ConfigResult<()> {
         1,
         MAX_YT_DLP_SINGLE_ITEM_JSON_NODES,
     )?;
+    validate_u64_range(
+        "yt_dlp.vod_endpoint_recovery_max_consecutive_attempts",
+        config.vod_endpoint_recovery_max_consecutive_attempts,
+        1,
+        MAX_YT_DLP_VOD_RECOVERY_ATTEMPTS,
+    )?;
+    validate_u64_range(
+        "yt_dlp.vod_endpoint_recovery_initial_backoff_ms",
+        config.vod_endpoint_recovery_initial_backoff_ms,
+        1,
+        MAX_YT_DLP_VOD_RECOVERY_BACKOFF_MS,
+    )?;
+    validate_u64_range(
+        "yt_dlp.vod_endpoint_recovery_max_backoff_ms",
+        config.vod_endpoint_recovery_max_backoff_ms,
+        1,
+        MAX_YT_DLP_VOD_RECOVERY_BACKOFF_MS,
+    )?;
+    validate_u64_range(
+        "yt_dlp.vod_endpoint_recovery_stable_reset_ms",
+        config.vod_endpoint_recovery_stable_reset_ms,
+        1,
+        MAX_YT_DLP_VOD_RECOVERY_STABLE_RESET_MS,
+    )?;
+    if config.vod_endpoint_recovery_initial_backoff_ms > config.vod_endpoint_recovery_max_backoff_ms
+    {
+        return Err(invalid_value(
+            "yt_dlp.vod_endpoint_recovery_initial_backoff_ms",
+            "initial recovery backoff не может превышать maximum backoff".to_owned(),
+        ));
+    }
     Ok(())
 }
 

@@ -14,8 +14,9 @@ use source_core::{
     SourceError, SourceRuntimeConfig,
 };
 use web_media_transport_api::{
-    MediaPresentation, RedirectHopCount, RedirectPolicyError, SecretRequestContext,
-    SecretRequestPurpose, SourceGeneration, TransportOpenRequest,
+    EndpointExpiryObserver, EndpointExpiryReason, EndpointExpiryResourceKind, EndpointExpirySignal,
+    MediaComponentIdentity, MediaPresentation, RedirectHopCount, RedirectPolicyError,
+    SecretRequestContext, SecretRequestPurpose, SourceGeneration, TransportOpenRequest,
 };
 
 use crate::{AdaptiveRetryPolicy, AdaptiveTransportLimits};
@@ -28,6 +29,8 @@ pub struct AdaptiveHttpContext {
     pub(crate) redirects: web_media_transport_api::RedirectPolicy,
     pub(crate) cancellation: CancellationToken,
     pub(crate) initial_generation: SourceGeneration,
+    pub(crate) component: MediaComponentIdentity,
+    pub(crate) endpoint_expiry_observer: Option<Arc<dyn EndpointExpiryObserver>>,
     pub(crate) expected_presentation: MediaPresentation,
     pub(crate) limits: AdaptiveTransportLimits,
     pub(crate) retry: AdaptiveRetryPolicy,
@@ -65,6 +68,8 @@ impl AdaptiveHttpContext {
             redirects: request.redirects(),
             cancellation: request.cancellation().clone(),
             initial_generation: request.source_generation(),
+            component: request.component().clone(),
+            endpoint_expiry_observer: request.endpoint_expiry_observer().cloned(),
             expected_presentation: request.presentation(),
             limits,
             retry,
@@ -81,6 +86,30 @@ impl AdaptiveHttpContext {
     #[must_use]
     pub const fn source_generation(&self) -> SourceGeneration {
         self.initial_generation
+    }
+
+    /// Публикует expiry только для четырёх status codes и никогда не раскрывает target.
+    fn observe_endpoint_expiry(
+        &self,
+        source_generation: SourceGeneration,
+        purpose: FetchPurpose,
+        source_error: &SourceError,
+    ) {
+        let SourceError::HttpStatus { status, .. } = source_error else {
+            return;
+        };
+        let Some(reason) = EndpointExpiryReason::from_http_status(status.as_u16()) else {
+            return;
+        };
+        let Some(observer) = self.endpoint_expiry_observer.as_ref() else {
+            return;
+        };
+        observer.observe_endpoint_expiry(EndpointExpirySignal::new(
+            self.component.clone(),
+            source_generation,
+            purpose.expiry_resource_kind(),
+            reason,
+        ));
     }
 
     /// Возвращает configured body bound конкретного provider-neutral resource class.
@@ -490,6 +519,17 @@ impl From<AdaptiveResourcePurpose> for FetchPurpose {
 }
 
 impl FetchPurpose {
+    /// Переводит internal fetch purpose в общий lifecycle vocabulary.
+    const fn expiry_resource_kind(self) -> EndpointExpiryResourceKind {
+        match self {
+            Self::Manifest => EndpointExpiryResourceKind::Manifest,
+            Self::ClockSynchronization => EndpointExpiryResourceKind::ClockSynchronization,
+            Self::MediaSegment => EndpointExpiryResourceKind::MediaSegment,
+            Self::Initialization => EndpointExpiryResourceKind::Initialization,
+            Self::EncryptionKey => EndpointExpiryResourceKind::EncryptionKey,
+        }
+    }
+
     const fn secret_purpose(self) -> SecretRequestPurpose {
         match self {
             Self::Manifest | Self::ClockSynchronization => SecretRequestPurpose::Manifest,
@@ -661,10 +701,17 @@ fn fetch_with_redirects(
                 job.purpose.fetch_kind(),
             ),
         };
-        match context
+        let hop = match context
             .session
-            .fetch_bounded_single_hop(request, &context.cancellation)?
+            .fetch_bounded_single_hop(request, &context.cancellation)
         {
+            Ok(hop) => hop,
+            Err(source_error) => {
+                context.observe_endpoint_expiry(job.generation, job.purpose, &source_error);
+                return Err(AdaptiveTransportError::Source(source_error));
+            }
+        };
+        match hop {
             HttpBoundedFetchHop::Complete(response) => {
                 let range_metadata = response.range_metadata().cloned();
                 return Ok(FetchSuccess {

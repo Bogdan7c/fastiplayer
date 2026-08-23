@@ -37,6 +37,7 @@ const RESUME_MEDIA_CLIENT_KEY: MediaOpenClientKey = MediaOpenClientKey::from_non
 pub(super) struct SuspendedMediaResume {
     attempt: ResumeAttempt,
     request_id: MediaOpenRequestId,
+    vod_endpoint_recovery: Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
     phase: ResumePhase,
 }
 
@@ -60,6 +61,14 @@ enum ResumePhase {
         failure: ResumeCheckpointError,
         receipt: InstalledMediaReleaseReceipt,
     },
+}
+
+/// Exact intent completion facts передаются одним named context-ом.
+struct ResumeIntentCommitContext {
+    player_request_id: MediaInstallRequestId,
+    media_instance_id: MediaInstanceId,
+    warning: Option<ResumePositionWarning>,
+    vod_endpoint_recovery: Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
 }
 
 impl AppState {
@@ -259,6 +268,7 @@ impl AppState {
         self.suspended_media_resume = Some(SuspendedMediaResume {
             attempt,
             request_id,
+            vod_endpoint_recovery: None,
             phase: ResumePhase::Preparing,
         });
         true
@@ -358,9 +368,12 @@ impl AppState {
             } => self.drive_resume_intent(
                 playlist_runtime,
                 &resume.attempt,
-                *player_request_id,
-                *media_instance_id,
-                *warning,
+                ResumeIntentCommitContext {
+                    player_request_id: *player_request_id,
+                    media_instance_id: *media_instance_id,
+                    warning: *warning,
+                    vod_endpoint_recovery: resume.vod_endpoint_recovery.clone(),
+                },
                 receipt,
             ),
             ResumePhase::Releasing { failure, receipt } => match receipt.try_take_outcome() {
@@ -407,6 +420,10 @@ impl AppState {
         match snapshot.phase {
             MediaOpenPhase::Accepted | MediaOpenPhase::Preparing => ResumeDrive::Pending,
             MediaOpenPhase::Prepared => {
+                resume.vod_endpoint_recovery = snapshot
+                    .descriptor
+                    .as_ref()
+                    .and_then(crate::media_open::PreparedMediaDescriptor::vod_endpoint_recovery);
                 let driver = WgpuCandidateVideoPipelineResourceDriver::new(
                     renderer.instance(),
                     renderer.adapter(),
@@ -630,9 +647,7 @@ impl AppState {
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
         attempt: &ResumeAttempt,
-        player_request_id: MediaInstallRequestId,
-        media_instance_id: MediaInstanceId,
-        warning: Option<ResumePositionWarning>,
+        context: ResumeIntentCommitContext,
         receipt: &PlaybackIntentUpdateReceipt,
     ) -> ResumeDrive {
         let Some(outcome) = receipt.try_outcome() else {
@@ -642,37 +657,41 @@ impl AppState {
             outcome,
             PlaybackIntentUpdateOutcome::AppliedToInstalled {
                 media_instance_id: applied
-            } if applied == media_instance_id
+            } if applied == context.media_instance_id
         ) {
             return self.release_failed_resume_candidate(
                 playlist_runtime,
-                player_request_id,
-                media_instance_id,
+                context.player_request_id,
+                context.media_instance_id,
                 ResumeCheckpointError::IntentRestoreFailed,
             );
         }
         let Some(binding) = self.playlist_runtime_binding() else {
             return self.release_failed_resume_candidate(
                 playlist_runtime,
-                player_request_id,
-                media_instance_id,
+                context.player_request_id,
+                context.media_instance_id,
                 ResumeCheckpointError::StalePlayerBinding,
             );
         };
         match playlist_runtime.complete_suspended_media_resume(
             attempt.expected_active,
-            media_instance_id,
+            context.media_instance_id,
             binding.binding_generation(),
-            warning,
+            context.warning,
         ) {
             Ok(_) => {
-                self.record_installed_media_source(attempt.source.clone());
+                self.record_resumed_installed_media(
+                    attempt.source.clone(),
+                    context.media_instance_id,
+                    context.vod_endpoint_recovery,
+                );
                 ResumeDrive::Finished
             }
             Err(error) => self.release_failed_resume_candidate(
                 playlist_runtime,
-                player_request_id,
-                media_instance_id,
+                context.player_request_id,
+                context.media_instance_id,
                 error,
             ),
         }

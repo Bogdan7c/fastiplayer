@@ -2,13 +2,14 @@
 
 use std::fmt;
 use std::num::NonZeroU64;
+use std::sync::Arc;
 
 use source_core::CancellationToken;
 
 use crate::{
-    MediaComponentIdentity, RedirectHopLimit, RedirectOriginPolicy, RedirectPolicy,
-    SecretRequestContext, SecureRedirectPolicy, SourceGeneration, TransportProviderId,
-    TransportRequestTarget,
+    EndpointExpiryObserver, MediaComponentIdentity, RedirectHopLimit, RedirectOriginPolicy,
+    RedirectPolicy, SecretRequestContext, SecureRedirectPolicy, SourceGeneration,
+    TransportProviderId, TransportRequestTarget,
 };
 
 /// Media timeline nature, независимая от byte seekability.
@@ -118,6 +119,8 @@ pub struct TransportOpenRequest {
     redirects: RedirectPolicy,
     /// Optional source-specific верхняя граница одного HTTP Range-запроса.
     http_range_request_limit: Option<HttpRangeRequestLimit>,
+    /// Optional app-owned observer runtime expiry; provider не владеет recovery policy.
+    endpoint_expiry_observer: Option<Arc<dyn EndpointExpiryObserver>>,
     /// Shared cooperative cancellation.
     cancellation: CancellationToken,
 }
@@ -157,6 +160,7 @@ impl TransportOpenRequest {
             secrets,
             redirects,
             http_range_request_limit: None,
+            endpoint_expiry_observer: None,
             cancellation,
         })
     }
@@ -193,6 +197,16 @@ impl TransportOpenRequest {
         http_range_request_limit: HttpRangeRequestLimit,
     ) -> Self {
         self.http_range_request_limit = Some(http_range_request_limit);
+        self
+    }
+
+    /// Подключает app-owned typed expiry observer к этому physical component runtime.
+    #[must_use]
+    pub fn with_endpoint_expiry_observer(
+        mut self,
+        endpoint_expiry_observer: Arc<dyn EndpointExpiryObserver>,
+    ) -> Self {
+        self.endpoint_expiry_observer = Some(endpoint_expiry_observer);
         self
     }
 
@@ -244,6 +258,12 @@ impl TransportOpenRequest {
         self.http_range_request_limit
     }
 
+    /// Возвращает optional observer без передачи ownership provider-у.
+    #[must_use]
+    pub fn endpoint_expiry_observer(&self) -> Option<&Arc<dyn EndpointExpiryObserver>> {
+        self.endpoint_expiry_observer.as_ref()
+    }
+
     /// Возвращает shared cancellation token.
     #[must_use]
     pub const fn cancellation(&self) -> &CancellationToken {
@@ -274,6 +294,10 @@ impl fmt::Debug for TransportOpenRequest {
             .field("secrets", &self.secrets)
             .field("redirects", &self.redirects)
             .field("http_range_request_limit", &self.http_range_request_limit)
+            .field(
+                "endpoint_expiry_observer_attached",
+                &self.endpoint_expiry_observer.is_some(),
+            )
             .field("cancelled", &self.cancellation.is_cancelled())
             .finish()
     }

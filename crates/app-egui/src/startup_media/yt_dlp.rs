@@ -23,4 +23,8 @@ pub(crate) struct PreparedYtDlpStartupMedia {
 
     /// Optional absolute source window для zero-based HDS presentation.
     pub(crate) playback_window: Option<player_core::MediaPlaybackWindow>,
+
+    /// VOD-only transport gate должен пережить background startup preparation.
+    pub(crate) vod_endpoint_recovery:
+        Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
 }

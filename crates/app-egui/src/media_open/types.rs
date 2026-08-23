@@ -248,6 +248,8 @@ pub(crate) enum PreparedMediaDescriptor {
         metadata: MediaTagMetadata,
         source: ActiveMediaSource,
         safe_label: SafeMediaLabel,
+        /// Runtime-only candidate gate устанавливается в AppState только после exact Installed.
+        vod_endpoint_recovery: Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
     },
     /// Prepared-by-caller ingress сохраняет single-open ownership без повторного I/O.
     CallerPrepared {
@@ -364,17 +366,32 @@ impl PreparedMediaDescriptor {
                 metadata,
                 source,
                 safe_label,
+                vod_endpoint_recovery,
             } => Self::YtDlp {
                 tracks,
                 duration,
                 metadata,
                 source: source.with_playback_window(semantic_identity),
                 safe_label,
+                vod_endpoint_recovery,
             },
             Self::CallerPrepared { source, safe_label } => Self::CallerPrepared {
                 source: source.with_playback_window(semantic_identity),
                 safe_label,
             },
+        }
+    }
+
+    /// Возвращает runtime-only VOD recovery attachment только для fresh yt-dlp candidate-а.
+    pub(crate) fn vod_endpoint_recovery(
+        &self,
+    ) -> Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment> {
+        match self {
+            Self::YtDlp {
+                vod_endpoint_recovery,
+                ..
+            } => vod_endpoint_recovery.clone(),
+            Self::Local { .. } | Self::Direct { .. } | Self::CallerPrepared { .. } => None,
         }
     }
 }
@@ -414,6 +431,17 @@ impl PreparedMediaOpen {
         Self {
             prepared_media,
             descriptor: PreparedMediaDescriptor::CallerPrepared { source, safe_label },
+        }
+    }
+
+    /// Background owner может сохранить rich descriptor без повторного media I/O.
+    pub(crate) fn from_caller_prepared_with_descriptor(
+        prepared_media: player_core::PreparedMedia,
+        descriptor: PreparedMediaDescriptor,
+    ) -> Self {
+        Self {
+            prepared_media,
+            descriptor,
         }
     }
 }

@@ -162,6 +162,7 @@ pub(crate) fn prepare_dash_candidate(
         crate::web_media_open::component_variants::YtDlpComponentSelectionOpenIntent,
     catalog_identity: web_media_core::ComponentVariantCatalogIdentity,
     capability_probe: &crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
+    endpoint_expiry_observer: Option<Arc<dyn web_media_transport_api::EndpointExpiryObserver>>,
 ) -> Result<PreparedDashCandidate> {
     let generation = crate::web_media_adaptive_config::initial_adaptive_source_generation();
     let request_context = YtDlpTransportRequestContext::new(provider_id, generation, cancellation);
@@ -171,7 +172,14 @@ pub(crate) fn prepare_dash_candidate(
     let limits = crate::web_media_adaptive_config::adaptive_transport_limits(network_config)?;
     let projected_components = service_components
         .into_iter()
-        .map(|component| project_component(component, source_config, limits))
+        .map(|component| {
+            project_component(
+                component,
+                source_config,
+                limits,
+                endpoint_expiry_observer.clone(),
+            )
+        })
         .collect::<Result<Vec<_>>>()?;
     let selection = presentation_selection(candidate.descriptor().layout())?;
     let (http, input) = presentation_input(projected_components)?;
@@ -281,8 +289,12 @@ fn project_component<'candidate>(
     component: YtDlpDashTransportComponent<'candidate>,
     source_config: &SourceRuntimeConfig,
     limits: AdaptiveTransportLimits,
+    endpoint_expiry_observer: Option<Arc<dyn web_media_transport_api::EndpointExpiryObserver>>,
 ) -> Result<ProjectedDashComponent<'candidate>> {
-    let (role, container, material, request) = component.into_parts();
+    let (role, container, material, mut request) = component.into_parts();
+    if let Some(observer) = endpoint_expiry_observer {
+        request = request.with_endpoint_expiry_observer(observer);
+    }
     let http = AdaptiveHttpContext::new(
         request,
         source_config,
@@ -317,7 +329,7 @@ pub(crate) fn project_dash_live_runtime_material(
     let projected = candidate
         .dash_transport_components(&request_context)?
         .into_iter()
-        .map(|component| project_component(component, source_config, limits))
+        .map(|component| project_component(component, source_config, limits, None))
         .collect::<Result<Vec<_>>>()?;
     let (http, input) = presentation_input(projected)?;
     match (http, input) {

@@ -45,6 +45,7 @@ mod web_media_hls_subtitles;
 mod web_media_open;
 mod web_media_quality;
 mod web_media_stream_model;
+mod web_media_vod_recovery;
 
 use anyhow::{Context, Result};
 use tracing::info;

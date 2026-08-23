@@ -1,3 +1,9 @@
+## AUD-009 bounded VOD endpoint recovery (2026-08-23)
+
+- Independent read-only verification confirmed progressive, HLS VOD, DASH VOD, Smooth and HDS remained terminal after signed endpoint expiry; live HLS/DASH refresh did not cover these VOD lifecycles.
+- Provider-neutral typed expiry now reaches an armed candidate gate and app-owned exact Installed binding; old demux publication is held while whole-candidate semantic yt-dlp re-extraction uses same-lineage staged install and preserves late-seek target. Speculative probe failures are ignored until candidate finalization.
+- Config schema v8 owns bounded attempts/backoff/stable reset. Full boundaries, regressions and verification: `mem:media-services/vod-endpoint-recovery-aud009-2026-08-23`.
+
 ## AUD-008 row-local yt-dlp planning rejections (2026-08-23)
 
 - Independent production-path verification confirmed fail-fast planning discarded a valid H.264 row when a neighboring normalized bare HEVC row could not produce a runtime requirement.

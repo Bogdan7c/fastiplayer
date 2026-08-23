@@ -164,6 +164,7 @@ pub(super) fn prepare_source(
                         catalog_attachment: prepared.catalog_attachment,
                     },
                     safe_label,
+                    vod_endpoint_recovery: prepared.vod_endpoint_recovery,
                 },
             })
         }

@@ -19,4 +19,5 @@ pub(super) fn advance_after_actions(
     let _automatic_switch =
         app_state.apply_automatic_web_media_preference(playlist_runtime, renderer);
     app_state.poll_same_item_switch(playlist_runtime);
+    app_state.poll_vod_endpoint_recovery(playlist_runtime, renderer);
 }

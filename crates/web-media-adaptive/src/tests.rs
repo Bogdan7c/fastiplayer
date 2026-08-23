@@ -26,6 +26,7 @@ use web_media_core::{
     SourceIdentity,
 };
 use web_media_transport_api::{
+    EndpointExpiryObserver, EndpointExpiryReason, EndpointExpiryResourceKind, EndpointExpirySignal,
     MediaComponentIdentity, MediaComponentRole, MediaPresentation, RedirectHopLimit,
     RedirectPolicy, SecretQueryOverride, SecretRequestContext, SecretRequestScope,
     SourceGeneration, TransportOpenRequest, TransportProviderId,
@@ -200,6 +201,36 @@ fn context_with_queries(
     key_query: Option<&str>,
     presentation: MediaPresentation,
 ) -> AdaptiveHttpContext {
+    context_with_options(
+        target,
+        cancellation,
+        redirects,
+        TestContextOptions {
+            authorization,
+            segment_query,
+            key_query,
+            presentation,
+            endpoint_expiry_observer: None,
+        },
+    )
+}
+
+/// Named fixture options не превращают test boundary в набор positional `Option`-ов.
+struct TestContextOptions<'value> {
+    authorization: Option<&'value str>,
+    segment_query: Option<&'value str>,
+    key_query: Option<&'value str>,
+    presentation: MediaPresentation,
+    endpoint_expiry_observer: Option<Arc<dyn EndpointExpiryObserver>>,
+}
+
+/// Общий fixture builder прикрепляет optional production observer до создания HTTP context-а.
+fn context_with_options(
+    target: &HttpRequestTarget,
+    cancellation: CancellationToken,
+    redirects: RedirectPolicy,
+    options: TestContextOptions<'_>,
+) -> AdaptiveHttpContext {
     let source = SourceIdentity::new(71);
     let exact = CandidateIdentity::new(
         source,
@@ -211,30 +242,34 @@ fn context_with_queries(
         .expect("component identity");
     let scope =
         SecretRequestScope::from_target(target, HttpPathScope::new("/").expect("root scope"));
-    let headers = authorization
+    let headers = options
+        .authorization
         .map(|value| vec![HttpHeader::new("authorization", value)])
         .unwrap_or_default();
     let mut secrets = SecretRequestContext::builder(scope)
         .with_headers(ValidatedHttpHeaders::new(headers).expect("headers"));
-    if let Some(query) = segment_query {
+    if let Some(query) = options.segment_query {
         secrets = secrets
             .with_segment_query_override(SecretQueryOverride::new(query).expect("query override"));
     }
-    if let Some(query) = key_query {
+    if let Some(query) = options.key_query {
         secrets = secrets
             .with_key_query_override(SecretQueryOverride::new(query).expect("key query override"));
     }
-    let request = TransportOpenRequest::new(
+    let mut request = TransportOpenRequest::new(
         TransportProviderId::new("adaptive-test").expect("provider id"),
         component,
         target.clone(),
-        presentation,
+        options.presentation,
         SourceGeneration::new(1),
         secrets.build(),
         redirects,
         cancellation,
     )
     .expect("transport request");
+    if let Some(observer) = options.endpoint_expiry_observer {
+        request = request.with_endpoint_expiry_observer(observer);
+    }
     let source_config =
         SourceRuntimeConfig::from_network_config(&NetworkConfig::default()).expect("source config");
     AdaptiveHttpContext::new(
@@ -253,6 +288,27 @@ fn context_with_queries(
         .expect("retry policy"),
     )
     .expect("adaptive context")
+}
+
+/// Observer fixture проверяет полный transport -> logical signal boundary.
+#[derive(Default)]
+struct RecordingExpiryObserver {
+    signals: Mutex<Vec<EndpointExpirySignal>>,
+}
+
+impl EndpointExpiryObserver for RecordingExpiryObserver {
+    fn observe_endpoint_expiry(&self, signal: EndpointExpirySignal) {
+        self.signals
+            .lock()
+            .expect("expiry signal mutex")
+            .push(signal);
+    }
+}
+
+impl RecordingExpiryObserver {
+    fn recorded_signals(&self) -> Vec<EndpointExpirySignal> {
+        self.signals.lock().expect("expiry signal mutex").clone()
+    }
 }
 
 fn same_origin_redirects() -> RedirectPolicy {
@@ -521,6 +577,50 @@ fn exact_range_fetch_preserves_segment_boundary() {
         source.poll_next(Instant::now()),
         SegmentPoll::EndOfStream
     ));
+}
+
+#[test]
+fn adaptive_media_410_publishes_generation_fenced_expiry_signal() {
+    let server = LocalServer::start(|_, _| response("410 Gone", &[], &[]));
+    let target = server.target("/expired-segment.m4s");
+    let observer = Arc::new(RecordingExpiryObserver::default());
+    let context = context_with_options(
+        &target,
+        CancellationToken::new(),
+        same_origin_redirects(),
+        TestContextOptions {
+            authorization: None,
+            segment_query: None,
+            key_query: None,
+            presentation: MediaPresentation::Vod,
+            endpoint_expiry_observer: Some(observer.clone()),
+        },
+    );
+    let request = AdaptiveResourceFetchRequest::full(
+        SourceGeneration::new(1),
+        target,
+        NonZeroUsize::new(64).expect("body bound"),
+        AdaptiveResourcePurpose::MediaSegment,
+        AdaptiveResourceQueryApplication::BypassScopedQuery,
+    );
+
+    let error = context
+        .fetch_resource_blocking(request)
+        .expect_err("expired adaptive endpoint must preserve source error");
+
+    assert!(matches!(
+        error,
+        AdaptiveTransportError::Source(source_core::SourceError::HttpStatus { status, .. })
+            if status.as_u16() == 410
+    ));
+    let signals = observer.recorded_signals();
+    assert_eq!(signals.len(), 1);
+    assert_eq!(signals[0].source_generation(), SourceGeneration::new(1));
+    assert_eq!(
+        signals[0].resource_kind(),
+        EndpointExpiryResourceKind::MediaSegment
+    );
+    assert_eq!(signals[0].reason(), EndpointExpiryReason::ResourceExpired);
 }
 
 #[test]

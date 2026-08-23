@@ -11,16 +11,19 @@ use std::sync::Arc;
 
 use media_prefetch::{PrefetchConfig, PrefetchingByteSource};
 use source_core::{
-    HttpHeader, HttpRequestBody, HttpRequestTarget, HttpScheme, HttpSingleHopRequest,
-    HttpSourceHop, HttpSourceSession, ScopedHttpCookieJar, ScopedHttpCookieJarError, SourceError,
-    SourceRuntimeConfig,
+    ByteSource, CancellationToken, HttpHeader, HttpRequestBody, HttpRequestTarget, HttpScheme,
+    HttpSingleHopRequest, HttpSourceHop, HttpSourceSession, ScopedHttpCookieJar,
+    ScopedHttpCookieJarError, Seekability, SourceError, SourceFingerprint, SourceResult,
+    SourceRuntimeConfig, SourceValidators,
 };
 use web_media_transport_api::{
-    AuthenticationFailure, HttpRangeRequestLimit, ProviderDescriptor, ProviderDescriptorError,
-    ProviderOpenError, ProviderOpenOutput, ProviderRefreshError, RefreshSupport,
-    SecretRequestContext, SecretRequestPurpose, TransportFailure, TransportInput,
-    TransportOpenRequest, TransportProvider, TransportProviderId, TransportProviderIdError,
-    TransportRefreshRequest, TransportScheme, UnsupportedTransportReason,
+    AuthenticationFailure, EndpointExpiryObserver, EndpointExpiryReason,
+    EndpointExpiryResourceKind, EndpointExpirySignal, HttpRangeRequestLimit,
+    MediaComponentIdentity, ProviderDescriptor, ProviderDescriptorError, ProviderOpenError,
+    ProviderOpenOutput, ProviderRefreshError, RefreshSupport, SecretRequestContext,
+    SecretRequestPurpose, SourceGeneration, TransportFailure, TransportInput, TransportOpenRequest,
+    TransportProvider, TransportProviderId, TransportProviderIdError, TransportRefreshRequest,
+    TransportScheme, UnsupportedTransportReason,
 };
 
 use crate::range_redirect::{RedirectChainState, ScopedRangeRedirectHandler};
@@ -90,6 +93,93 @@ pub struct WebMediaHttpProvider {
     source_config: SourceRuntimeConfig,
     /// Existing seekable VOD prefetch policy.
     prefetch_config: PrefetchConfig,
+}
+
+/// Seekable progressive wrapper, который сохраняет ByteSource API и только сообщает expiry.
+struct EndpointExpiryObservingByteSource {
+    /// Реальный HTTP/prefetch source остаётся единственным владельцем byte cursor-а.
+    inner: Box<dyn ByteSource>,
+    /// Exact component identity приходит из app composition request-а.
+    component: MediaComponentIdentity,
+    /// Generation запрещает stale runtime-у инициировать новый logical reopen.
+    source_generation: SourceGeneration,
+    /// Observer не выполняет I/O и не знает concrete HTTP source.
+    observer: Arc<dyn EndpointExpiryObserver>,
+}
+
+impl EndpointExpiryObservingByteSource {
+    /// Оборачивает уже полностью открытый seekable source без второго network request-а.
+    fn new(
+        inner: Box<dyn ByteSource>,
+        component: MediaComponentIdentity,
+        source_generation: SourceGeneration,
+        observer: Arc<dyn EndpointExpiryObserver>,
+    ) -> Self {
+        Self {
+            inner,
+            component,
+            source_generation,
+            observer,
+        }
+    }
+
+    /// Публикует только четыре expiry status-а; остальные ошибки сохраняют старую семантику.
+    fn observe_error(&self, error: &SourceError) {
+        let SourceError::HttpStatus { status, .. } = error else {
+            return;
+        };
+        let Some(reason) = EndpointExpiryReason::from_http_status(status.as_u16()) else {
+            return;
+        };
+        self.observer
+            .observe_endpoint_expiry(EndpointExpirySignal::new(
+                self.component.clone(),
+                self.source_generation,
+                EndpointExpiryResourceKind::ProgressiveRange,
+                reason,
+            ));
+    }
+}
+
+impl ByteSource for EndpointExpiryObservingByteSource {
+    /// Делегирует чтение и сообщает expiry до возврата исходной typed ошибки.
+    fn read(&mut self, output: &mut [u8], cancellation: &CancellationToken) -> SourceResult<usize> {
+        let result = self.inner.read(output, cancellation);
+        if let Err(error) = &result {
+            self.observe_error(error);
+        }
+        result
+    }
+
+    /// Seek не выполняет скрытый reopen и сохраняет source-owned cursor semantics.
+    fn seek(&mut self, offset: u64) -> SourceResult<()> {
+        self.inner.seek(offset)
+    }
+
+    /// Возвращает authoritative cursor внутреннего source-а.
+    fn position(&self) -> u64 {
+        self.inner.position()
+    }
+
+    /// Возвращает исходную доказанную seekability.
+    fn seekability(&self) -> Seekability {
+        self.inner.seekability()
+    }
+
+    /// Не изменяет validators физического endpoint-а.
+    fn validators(&self) -> SourceValidators {
+        self.inner.validators()
+    }
+
+    /// Не изменяет физическую длину resource-а.
+    fn content_length(&self) -> Option<u64> {
+        self.inner.content_length()
+    }
+
+    /// Не подменяет fingerprint source generation или validators.
+    fn fingerprint(&self) -> SourceFingerprint {
+        self.inner.fingerprint()
+    }
 }
 
 impl WebMediaHttpProvider {
@@ -172,10 +262,18 @@ impl WebMediaHttpProvider {
                             .map_err(|_| {
                                 ProviderOpenError::Transport(TransportFailure::NetworkUnavailable)
                             })?;
-                    let input =
-                        TransportInput::seekable(Box::new(prefetch_source)).map_err(|_| {
-                            ProviderOpenError::Transport(TransportFailure::InvalidResponse)
-                        })?;
+                    let mut seekable_source: Box<dyn ByteSource> = Box::new(prefetch_source);
+                    if let Some(observer) = request.endpoint_expiry_observer().cloned() {
+                        seekable_source = Box::new(EndpointExpiryObservingByteSource::new(
+                            seekable_source,
+                            request.component().clone(),
+                            request.source_generation(),
+                            observer,
+                        ));
+                    }
+                    let input = TransportInput::seekable(seekable_source).map_err(|_| {
+                        ProviderOpenError::Transport(TransportFailure::InvalidResponse)
+                    })?;
                     return Ok(ProviderOpenOutput::new(
                         current_target,
                         redirect_state.completed_hops(),

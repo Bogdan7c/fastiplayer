@@ -7,14 +7,15 @@ use std::time::Duration;
 
 use rustiplayer_config::NetworkConfig;
 use source_core::{
-    CancellationToken, HttpHeader, HttpPathScope, HttpRequestTarget, SourceRuntimeConfig,
-    StreamingByteSource, ValidatedHttpHeaders,
+    CancellationToken, HttpHeader, HttpPathScope, HttpRequestTarget, SourceError,
+    SourceRuntimeConfig, StreamingByteSource, ValidatedHttpHeaders,
 };
 use web_media_core::{
     CandidateFormatIdentity, CandidateIdentity, ExtractionGeneration, SemanticIdentity,
     SourceIdentity,
 };
 use web_media_transport_api::{
+    EndpointExpiryObserver, EndpointExpiryReason, EndpointExpiryResourceKind, EndpointExpirySignal,
     HttpRangeRequestLimit, MediaComponentIdentity, MediaComponentRole, MediaPresentation,
     RedirectHopLimit, RedirectPolicy, SecretRequestContext, SecretRequestScope, SourceGeneration,
     TransportFailure, TransportInput, TransportOpenError, TransportOpenRequest, TransportProvider,
@@ -37,6 +38,8 @@ enum TestServerBehavior {
     Unauthorized,
     /// Любой request отклоняется public access policy без auth challenge.
     Forbidden,
+    /// Первые requests имитируют рабочий signed URL, затем endpoint истекает.
+    ExpireAfterRequests { successful_requests: usize },
     /// `/start` перенаправляет на caller-provided target, остальные path получают body.
     Redirect { target: String },
     /// Redirect пытается расширить cookie на другой origin.
@@ -150,7 +153,7 @@ fn handle_connection(
     requests: &Mutex<Vec<String>>,
 ) {
     let request = read_request(stream);
-    request_count.fetch_add(1, Ordering::SeqCst);
+    let request_number = request_count.fetch_add(1, Ordering::SeqCst) + 1;
     requests
         .lock()
         .expect("request capture mutex")
@@ -172,6 +175,14 @@ fn handle_connection(
                 .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
                 .expect("write forbidden response");
         }
+        TestServerBehavior::ExpireAfterRequests {
+            successful_requests,
+        } if request_number <= *successful_requests => respond_range(stream, body, &request),
+        TestServerBehavior::ExpireAfterRequests { .. } => {
+            stream
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .expect("write expired endpoint response");
+        }
         TestServerBehavior::Redirect { target } if request.starts_with("GET /start ") => {
             let response =
                 format!("HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\n\r\n");
@@ -192,6 +203,28 @@ fn handle_connection(
                 .expect("write redirect with Set-Cookie response");
         }
         TestServerBehavior::RedirectWithSetCookie { .. } => respond_full(stream, body),
+    }
+}
+
+/// Thread-safe observer фиксирует typed signals без transport implementation knowledge.
+#[derive(Default)]
+struct RecordingExpiryObserver {
+    signals: Mutex<Vec<EndpointExpirySignal>>,
+}
+
+impl EndpointExpiryObserver for RecordingExpiryObserver {
+    fn observe_endpoint_expiry(&self, signal: EndpointExpirySignal) {
+        self.signals
+            .lock()
+            .expect("expiry signal mutex")
+            .push(signal);
+    }
+}
+
+impl RecordingExpiryObserver {
+    /// Возвращает snapshot signals для assertions после late read failure.
+    fn recorded_signals(&self) -> Vec<EndpointExpirySignal> {
+        self.signals.lock().expect("expiry signal mutex").clone()
     }
 }
 
@@ -467,6 +500,57 @@ fn range_source_uses_existing_prefetch_path() {
             .iter()
             .all(|request| request.contains("https://github.com/Bogdan7c/rustiplayer")),
         "HTTP client identity должна оставлять server-у стабильный contact URL"
+    );
+}
+
+#[test]
+fn late_progressive_403_publishes_typed_expiry_without_hiding_original_error() {
+    let body = vec![0x5a_u8; 2 * 1024 * 1024];
+    let server = TestServer::spawn(
+        body,
+        TestServerBehavior::ExpireAfterRequests {
+            successful_requests: 2,
+        },
+    );
+    let (registry, provider) = registry();
+    let observer = Arc::new(RecordingExpiryObserver::default());
+    let request = request(
+        provider,
+        &server.url("/signed.mp4"),
+        MediaComponentRole::Muxed,
+        19,
+        None,
+        CancellationToken::new(),
+    )
+    .with_endpoint_expiry_observer(observer.clone());
+    let opened = registry.open(request).expect("initial signed URL probe");
+    let mut source = opened.into_input().into_seekable().expect("seekable input");
+    let mut initial_bytes = [0_u8; 32];
+    source
+        .read(&mut initial_bytes, &CancellationToken::new())
+        .expect("initial progressive read before TTL expiry");
+
+    source
+        .seek(1_500_000)
+        .expect("late seek updates byte cursor");
+    let error = source
+        .read(&mut initial_bytes, &CancellationToken::new())
+        .expect_err("late range must observe expired endpoint");
+
+    assert!(matches!(
+        error,
+        SourceError::HttpStatus { status, .. } if status.as_u16() == 403
+    ));
+    let signals = observer.recorded_signals();
+    assert_eq!(signals.len(), 1);
+    assert_eq!(signals[0].source_generation(), SourceGeneration::new(19));
+    assert_eq!(
+        signals[0].resource_kind(),
+        EndpointExpiryResourceKind::ProgressiveRange
+    );
+    assert_eq!(
+        signals[0].reason(),
+        EndpointExpiryReason::AuthorizationExpired
     );
 }
 

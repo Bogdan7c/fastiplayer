@@ -546,6 +546,11 @@ impl StartupMediaController {
                 prepared,
             } => {
                 let prepared = *prepared;
+                let tracks = prepared.demuxer.tracks().to_vec();
+                let duration = prepared.demuxer.duration();
+                let metadata = prepared.demuxer.media_metadata().unwrap_or_default().tags;
+                let safe_label =
+                    SafeMediaLabel::from_service_safe_label(source_locator.safe_label());
                 let source = ActiveMediaSource::YtDlpUrl {
                     source_locator: source_locator.clone(),
                     candidate_selection: Box::new(prepared.candidate_selection),
@@ -568,12 +573,16 @@ impl StartupMediaController {
                         return true;
                     }
                 };
-                let input = self.prepared_url_input(
-                    prepared_media,
-                    source.clone(),
-                    SafeMediaLabel::from_service_safe_label(source_locator.safe_label()),
-                    target,
-                );
+                let input = self
+                    .prepared_url_input(prepared_media, source.clone(), safe_label.clone(), target)
+                    .with_descriptor(crate::media_open::PreparedMediaDescriptor::YtDlp {
+                        tracks,
+                        duration,
+                        metadata,
+                        source: source.clone(),
+                        safe_label,
+                        vod_endpoint_recovery: prepared.vod_endpoint_recovery,
+                    });
                 app_state
                     .begin_prepared_media_strong(
                         playlist_runtime,

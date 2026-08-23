@@ -19,6 +19,11 @@ enum YtDlpField {
     SingleItemStdoutLimit,
     SingleItemStderrLimit,
     SingleItemJsonNodeLimit,
+    VodEndpointRecoveryEnabled,
+    VodEndpointRecoveryMaxAttempts,
+    VodEndpointRecoveryInitialBackoff,
+    VodEndpointRecoveryMaxBackoff,
+    VodEndpointRecoveryStableReset,
 }
 
 /// Adapter между neutral settings value и typed YtDlp config.
@@ -139,6 +144,89 @@ impl SettingsSchema for YtDlpConfig {
             ),
             YtDlpField::SingleItemJsonNodeLimit,
         )?;
+        register_setting(
+            &mut registry,
+            descriptor(
+                "yt_dlp.vod_endpoint_recovery_enabled",
+                "Автовосстановление VOD URL",
+                "Автоматически переизвлекать и атомарно переоткрывать yt-dlp VOD после истечения подписанного endpoint-а.",
+                SettingValueType::Bool,
+                SettingEditor::Toggle,
+            ),
+            YtDlpField::VodEndpointRecoveryEnabled,
+        )?;
+        register_setting(
+            &mut registry,
+            descriptor(
+                "yt_dlp.vod_endpoint_recovery_max_consecutive_attempts",
+                "Попытки восстановления VOD",
+                "Максимальное число последовательных переоткрытий до terminal failure.",
+                SettingValueType::Integer,
+                SettingEditor::Numeric(NumericDescriptor::new(
+                    NumericRange::Integer {
+                        min: 1,
+                        max: crate::validation::MAX_YT_DLP_VOD_RECOVERY_ATTEMPTS as i64,
+                    },
+                    NumericStep::Integer(1),
+                    Some("attempts".into()),
+                )),
+            ),
+            YtDlpField::VodEndpointRecoveryMaxAttempts,
+        )?;
+        register_setting(
+            &mut registry,
+            descriptor(
+                "yt_dlp.vod_endpoint_recovery_initial_backoff_ms",
+                "Начальная задержка восстановления VOD",
+                "Начальная задержка перед повторной yt-dlp extraction.",
+                SettingValueType::Integer,
+                SettingEditor::Numeric(NumericDescriptor::new(
+                    NumericRange::Integer {
+                        min: 1,
+                        max: crate::validation::MAX_YT_DLP_VOD_RECOVERY_BACKOFF_MS as i64,
+                    },
+                    NumericStep::Integer(50),
+                    Some("ms".into()),
+                )),
+            ),
+            YtDlpField::VodEndpointRecoveryInitialBackoff,
+        )?;
+        register_setting(
+            &mut registry,
+            descriptor(
+                "yt_dlp.vod_endpoint_recovery_max_backoff_ms",
+                "Максимальная задержка восстановления VOD",
+                "Верхняя граница exponential backoff между повторными extraction attempts.",
+                SettingValueType::Integer,
+                SettingEditor::Numeric(NumericDescriptor::new(
+                    NumericRange::Integer {
+                        min: 1,
+                        max: crate::validation::MAX_YT_DLP_VOD_RECOVERY_BACKOFF_MS as i64,
+                    },
+                    NumericStep::Integer(100),
+                    Some("ms".into()),
+                )),
+            ),
+            YtDlpField::VodEndpointRecoveryMaxBackoff,
+        )?;
+        register_setting(
+            &mut registry,
+            descriptor(
+                "yt_dlp.vod_endpoint_recovery_stable_reset_ms",
+                "Сброс бюджета восстановления VOD",
+                "Время стабильного playback, после которого последовательный recovery budget сбрасывается.",
+                SettingValueType::Integer,
+                SettingEditor::Numeric(NumericDescriptor::new(
+                    NumericRange::Integer {
+                        min: 1,
+                        max: crate::validation::MAX_YT_DLP_VOD_RECOVERY_STABLE_RESET_MS as i64,
+                    },
+                    NumericStep::Integer(1_000),
+                    Some("ms".into()),
+                )),
+            ),
+            YtDlpField::VodEndpointRecoveryStableReset,
+        )?;
         Ok(registry)
     }
 }
@@ -195,6 +283,25 @@ impl YtDlpField {
                 i64::try_from(config.single_item_json_node_limit)
                     .expect("validated JSON node limit всегда помещается в i64"),
             ),
+            Self::VodEndpointRecoveryEnabled => {
+                SettingValue::Bool(config.vod_endpoint_recovery_enabled)
+            }
+            Self::VodEndpointRecoveryMaxAttempts => SettingValue::Integer(
+                i64::try_from(config.vod_endpoint_recovery_max_consecutive_attempts)
+                    .expect("validated recovery attempt budget помещается в i64"),
+            ),
+            Self::VodEndpointRecoveryInitialBackoff => SettingValue::Integer(
+                i64::try_from(config.vod_endpoint_recovery_initial_backoff_ms)
+                    .expect("validated initial recovery backoff помещается в i64"),
+            ),
+            Self::VodEndpointRecoveryMaxBackoff => SettingValue::Integer(
+                i64::try_from(config.vod_endpoint_recovery_max_backoff_ms)
+                    .expect("validated maximum recovery backoff помещается в i64"),
+            ),
+            Self::VodEndpointRecoveryStableReset => SettingValue::Integer(
+                i64::try_from(config.vod_endpoint_recovery_stable_reset_ms)
+                    .expect("validated stable recovery reset помещается в i64"),
+            ),
         }
     }
 
@@ -221,6 +328,27 @@ impl YtDlpField {
                 config.single_item_json_node_limit =
                     u64_value("yt_dlp.single_item_json_node_limit", value)?;
             }
+            Self::VodEndpointRecoveryEnabled => {
+                config.vod_endpoint_recovery_enabled = bool_value(value)?;
+            }
+            Self::VodEndpointRecoveryMaxAttempts => {
+                config.vod_endpoint_recovery_max_consecutive_attempts = u64_value(
+                    "yt_dlp.vod_endpoint_recovery_max_consecutive_attempts",
+                    value,
+                )?;
+            }
+            Self::VodEndpointRecoveryInitialBackoff => {
+                config.vod_endpoint_recovery_initial_backoff_ms =
+                    u64_value("yt_dlp.vod_endpoint_recovery_initial_backoff_ms", value)?;
+            }
+            Self::VodEndpointRecoveryMaxBackoff => {
+                config.vod_endpoint_recovery_max_backoff_ms =
+                    u64_value("yt_dlp.vod_endpoint_recovery_max_backoff_ms", value)?;
+            }
+            Self::VodEndpointRecoveryStableReset => {
+                config.vod_endpoint_recovery_stable_reset_ms =
+                    u64_value("yt_dlp.vod_endpoint_recovery_stable_reset_ms", value)?;
+            }
         }
         Ok(())
     }
@@ -244,6 +372,25 @@ impl YtDlpField {
             }
             Self::SingleItemJsonNodeLimit => {
                 config.single_item_json_node_limit = default_config.single_item_json_node_limit;
+            }
+            Self::VodEndpointRecoveryEnabled => {
+                config.vod_endpoint_recovery_enabled = default_config.vod_endpoint_recovery_enabled;
+            }
+            Self::VodEndpointRecoveryMaxAttempts => {
+                config.vod_endpoint_recovery_max_consecutive_attempts =
+                    default_config.vod_endpoint_recovery_max_consecutive_attempts;
+            }
+            Self::VodEndpointRecoveryInitialBackoff => {
+                config.vod_endpoint_recovery_initial_backoff_ms =
+                    default_config.vod_endpoint_recovery_initial_backoff_ms;
+            }
+            Self::VodEndpointRecoveryMaxBackoff => {
+                config.vod_endpoint_recovery_max_backoff_ms =
+                    default_config.vod_endpoint_recovery_max_backoff_ms;
+            }
+            Self::VodEndpointRecoveryStableReset => {
+                config.vod_endpoint_recovery_stable_reset_ms =
+                    default_config.vod_endpoint_recovery_stable_reset_ms;
             }
         }
     }

@@ -215,6 +215,10 @@ impl FrameSettingsRuntimeAdapter<'_> {
                         || false,
                     ) {
                         Ok(prepared) => {
+                            let tracks = prepared.demuxer.tracks().to_vec();
+                            let duration = prepared.demuxer.duration();
+                            let metadata =
+                                prepared.demuxer.media_metadata().unwrap_or_default().tags;
                             let prepared_media =
                                 match crate::media_open::prepare_yt_dlp_player_media(
                                     source_locator.safe_label(),
@@ -238,16 +242,27 @@ impl FrameSettingsRuntimeAdapter<'_> {
                                 crate::media_open::SafeMediaLabel::from_service_safe_label(
                                     source_locator.safe_label(),
                                 );
+                            let source = ActiveMediaSource::YtDlpUrl {
+                                source_locator,
+                                candidate_selection: Box::new(prepared.candidate_selection),
+                                composed_selection: prepared.composed_selection,
+                                stream_configuration: Box::new(prepared.stream_configuration),
+                                catalog_attachment: prepared.catalog_attachment,
+                            };
                             Ok(crate::state::PreparedSingleMediaOpen::new(
                                 prepared_media,
-                                ActiveMediaSource::YtDlpUrl {
-                                    source_locator,
-                                    candidate_selection: Box::new(prepared.candidate_selection),
-                                    composed_selection: prepared.composed_selection,
-                                    stream_configuration: Box::new(prepared.stream_configuration),
-                                    catalog_attachment: prepared.catalog_attachment,
+                                source.clone(),
+                                safe_label.clone(),
+                            )
+                            .with_descriptor(
+                                crate::media_open::PreparedMediaDescriptor::YtDlp {
+                                    tracks,
+                                    duration,
+                                    metadata,
+                                    source,
+                                    safe_label,
+                                    vod_endpoint_recovery: prepared.vod_endpoint_recovery,
                                 },
-                                safe_label,
                             ))
                         }
                         Err(error) => Err(format!("YtDlp media rebuild failed: {error:#}")),
@@ -278,8 +293,7 @@ impl FrameSettingsRuntimeAdapter<'_> {
                 return media_reconfigure_install_failure(error);
             }
         };
-        self.app_state
-            .record_installed_media_source(installed.source.clone());
+        self.app_state.record_installed_media(&installed);
         if let Err(message) = self
             .app_state
             .restore_playback_after_media_reconfigure(&playback_snapshot, &installed)

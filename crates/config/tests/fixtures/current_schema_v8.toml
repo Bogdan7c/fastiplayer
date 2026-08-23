@@ -1,4 +1,4 @@
-schema_version = 7
+schema_version = 8
 
 [player]
 start_paused = true
@@ -170,6 +170,11 @@ single_item_stdout_limit_bytes = 67108864
 single_item_stderr_limit_bytes = 8388608
 # Максимальное число JSON values до построения metadata DOM.
 single_item_json_node_limit = 1000000
+vod_endpoint_recovery_enabled = true
+vod_endpoint_recovery_max_consecutive_attempts = 3
+vod_endpoint_recovery_initial_backoff_ms = 250
+vod_endpoint_recovery_max_backoff_ms = 2000
+vod_endpoint_recovery_stable_reset_ms = 30000
 
 [ui]
 show_telemetry = true

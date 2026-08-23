@@ -10,6 +10,7 @@
 mod identity;
 mod network;
 mod provider;
+mod recovery;
 mod registry;
 mod request;
 mod resource;
@@ -28,6 +29,9 @@ pub use provider::{
     AuthenticationFailure, ProviderDescriptor, ProviderDescriptorError, ProviderOpenError,
     ProviderOpenOutput, ProviderRefreshError, RefreshFailure, RefreshSupport, TransportFailure,
     TransportProvider, UnsupportedTransportReason,
+};
+pub use recovery::{
+    EndpointExpiryObserver, EndpointExpiryReason, EndpointExpiryResourceKind, EndpointExpirySignal,
 };
 pub use registry::{
     ProviderContractViolation, TransportOpenError, TransportRefreshError, TransportRegistry,

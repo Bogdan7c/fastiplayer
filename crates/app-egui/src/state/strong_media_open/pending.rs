@@ -8,7 +8,7 @@ use compensation::PostInstalledCompensationPoll;
 mod resume;
 use resume::InstalledResumeCommit;
 mod same_lineage;
-use same_lineage::PendingStrongLineageCommit;
+use same_lineage::{PendingStrongLineageCommit, SameLineageRestorePosition};
 
 /// Renderer-bound ownership незавершённой strong install транзакции.
 pub(crate) struct PendingStrongMediaOpen {
@@ -116,11 +116,17 @@ impl AppState {
         let source = prepared_input.source.clone();
         let playlist_target = prepared_input.playlist_target;
         let startup_position = prepared_input.startup_position;
-        let prepared_open = PreparedMediaOpen::from_caller_prepared(
-            prepared_input.prepared_media,
-            prepared_input.source,
-            prepared_input.safe_label.clone(),
-        );
+        let prepared_open = match prepared_input.descriptor {
+            Some(descriptor) => PreparedMediaOpen::from_caller_prepared_with_descriptor(
+                prepared_input.prepared_media,
+                descriptor,
+            ),
+            None => PreparedMediaOpen::from_caller_prepared(
+                prepared_input.prepared_media,
+                prepared_input.source,
+                prepared_input.safe_label.clone(),
+            ),
+        };
         let request_id = match playlist_runtime.start_prepared_media_open(
             SINGLE_MEDIA_CLIENT_KEY,
             prepared_open,
@@ -307,6 +313,46 @@ impl AppState {
         expected_active: crate::playlist_runtime::ActiveMediaIdentity,
         intent: PlaybackIntent,
     ) -> Result<MediaOpenRequestId, StrongMediaOpenError> {
+        self.begin_same_lineage_source_media_strong_with_position(
+            playlist_runtime,
+            renderer,
+            source_request,
+            expected_active,
+            intent,
+            SameLineageRestorePosition::FreshCurrent,
+        )
+    }
+
+    /// Запускает expiry recovery с exact late-seek target и fresh остальными controls.
+    pub(crate) fn begin_vod_endpoint_recovery_strong(
+        &mut self,
+        playlist_runtime: &mut PlaylistRuntime,
+        renderer: &Renderer,
+        source_request: MediaOpenSourceRequest,
+        expected_active: crate::playlist_runtime::ActiveMediaIdentity,
+        intent: PlaybackIntent,
+        restore_position: std::time::Duration,
+    ) -> Result<MediaOpenRequestId, StrongMediaOpenError> {
+        self.begin_same_lineage_source_media_strong_with_position(
+            playlist_runtime,
+            renderer,
+            source_request,
+            expected_active,
+            intent,
+            SameLineageRestorePosition::Exact(restore_position),
+        )
+    }
+
+    /// Общий owner создаёт same-lineage transaction; policy позиции остаётся typed.
+    fn begin_same_lineage_source_media_strong_with_position(
+        &mut self,
+        playlist_runtime: &mut PlaylistRuntime,
+        renderer: &Renderer,
+        source_request: MediaOpenSourceRequest,
+        expected_active: crate::playlist_runtime::ActiveMediaIdentity,
+        intent: PlaybackIntent,
+        restore_position: SameLineageRestorePosition,
+    ) -> Result<MediaOpenRequestId, StrongMediaOpenError> {
         if self.pending_strong_media_open.is_some() {
             return Err(StrongMediaOpenError::Start(MediaOpenStartError::Busy));
         }
@@ -346,6 +392,7 @@ impl AppState {
             startup_position: crate::playlist_runtime::StartupPosition::KeepStart,
             lineage_commit: PendingStrongLineageCommit::SameLineage {
                 expected_active,
+                restore_position,
                 restore: None,
                 video_swap_checkpoint: None,
             },

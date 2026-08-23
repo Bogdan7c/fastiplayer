@@ -169,6 +169,7 @@ pub(super) fn prepare_smooth_candidate(
     preferred_height: PreferredHeightPolicy,
     catalog_identity: web_media_core::ComponentVariantCatalogIdentity,
     capability_probe: &crate::web_media_open::catalog_capabilities::AppCatalogCapabilityProbe,
+    endpoint_expiry_observer: Option<Arc<dyn web_media_transport_api::EndpointExpiryObserver>>,
 ) -> Result<PreparedSmoothCandidate> {
     if !matches!(
         live_intent,
@@ -185,9 +186,12 @@ pub(super) fn prepare_smooth_candidate(
         crate::web_media_adaptive_config::initial_adaptive_source_generation(),
         cancellation,
     );
-    let transport = candidate
+    let mut transport = candidate
         .smooth_manifest_transport_request(&request_context)
         .context("YtDlp ISM material нельзя выразить как Smooth manifest request")?;
+    if let Some(observer) = endpoint_expiry_observer {
+        transport = transport.with_endpoint_expiry_observer(observer);
+    }
     let preparation = SmoothPrepareRequest::new(
         transport,
         source_config,

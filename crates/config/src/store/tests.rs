@@ -22,7 +22,7 @@ fn default_config_is_valid() {
 fn current_schema_without_yt_dlp_output_budgets_uses_safe_defaults() {
     let temp_dir = tempfile::tempdir().expect("temp dir created");
     let config_path = temp_dir.path().join("config.toml");
-    let current_text = "schema_version = 7\n\n[yt_dlp]\nresolve_timeout_ms = 30000\n";
+    let current_text = "schema_version = 8\n\n[yt_dlp]\nresolve_timeout_ms = 30000\n";
     fs::write(&config_path, current_text).expect("current config written");
 
     let loaded = load_from_path(&config_path).expect("current config without additive keys loads");
@@ -77,6 +77,46 @@ fn yt_dlp_output_budget_bounds_are_inclusive_and_reject_neighbors() {
     );
 }
 
+/// Bounded VOD recovery policy принимает edges и запрещает инвертированный backoff.
+#[test]
+fn yt_dlp_vod_recovery_policy_bounds_are_validated_as_one_contract() {
+    for accepted_attempts in [1, validation::MAX_YT_DLP_VOD_RECOVERY_ATTEMPTS] {
+        let mut config = AppConfig::default();
+        config.yt_dlp.vod_endpoint_recovery_max_consecutive_attempts = accepted_attempts;
+        config.validate().expect("inclusive attempt bound accepted");
+    }
+    for rejected_attempts in [0, validation::MAX_YT_DLP_VOD_RECOVERY_ATTEMPTS + 1] {
+        let mut config = AppConfig::default();
+        config.yt_dlp.vod_endpoint_recovery_max_consecutive_attempts = rejected_attempts;
+        assert!(
+            config.validate().is_err(),
+            "invalid attempt budget accepted"
+        );
+    }
+
+    let mut inverted_backoff = AppConfig::default();
+    inverted_backoff
+        .yt_dlp
+        .vod_endpoint_recovery_initial_backoff_ms = 2_001;
+    inverted_backoff.yt_dlp.vod_endpoint_recovery_max_backoff_ms = 2_000;
+    assert!(
+        inverted_backoff.validate().is_err(),
+        "initial backoff larger than cap must be rejected"
+    );
+
+    let mut maximum_edges = AppConfig::default();
+    maximum_edges
+        .yt_dlp
+        .vod_endpoint_recovery_initial_backoff_ms = validation::MAX_YT_DLP_VOD_RECOVERY_BACKOFF_MS;
+    maximum_edges.yt_dlp.vod_endpoint_recovery_max_backoff_ms =
+        validation::MAX_YT_DLP_VOD_RECOVERY_BACKOFF_MS;
+    maximum_edges.yt_dlp.vod_endpoint_recovery_stable_reset_ms =
+        validation::MAX_YT_DLP_VOD_RECOVERY_STABLE_RESET_MS;
+    maximum_edges
+        .validate()
+        .expect("inclusive recovery time bounds accepted");
+}
+
 #[test]
 fn playlist_defaults_match_session_13_contract() {
     let playlist = AppConfig::default().playlist;
@@ -111,7 +151,7 @@ fn legacy_v5_without_playlist_uses_defaults_without_startup_rewrite() {
         fs::read_to_string(&config_path).expect("legacy file remains readable"),
         legacy_text
     );
-    assert_eq!(CURRENT_SCHEMA_VERSION, 7);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 8);
 }
 
 #[test]
@@ -195,7 +235,7 @@ resolve_timeout_ms = 30000
         loaded.config.yt_dlp.hdr_selection,
         YtDlpHdrSelection::SdrOnly
     );
-    assert_eq!(loaded.config.schema_version, 7);
+    assert_eq!(loaded.config.schema_version, 8);
 }
 
 /// Все поддерживаемые legacy-схемы переименовывают `[youtube]` без потери значений.
@@ -222,7 +262,7 @@ resolve_timeout_ms = 4321
 
         let loaded = load_from_path(&config_path).expect("legacy yt-dlp config loads");
 
-        assert_eq!(loaded.config.schema_version, 7);
+        assert_eq!(loaded.config.schema_version, 8);
         assert_eq!(loaded.config.yt_dlp.preferred_video_height, None);
         assert!(!loaded.config.yt_dlp.enabled);
         assert_eq!(
@@ -240,9 +280,9 @@ resolve_timeout_ms = 4321
     }
 }
 
-/// Current v7 не принимает старую секцию и удалённый placeholder.
+/// Current v8 не принимает старую секцию и удалённый placeholder.
 #[test]
-fn schema_v7_strictly_rejects_legacy_youtube_section_and_placeholder() {
+fn schema_v8_strictly_rejects_legacy_youtube_section_and_placeholder() {
     for legacy_fragment in [
         "[youtube]\nenabled = true\n",
         "[yt_dlp]\nprefer_account_session = true\n",
@@ -251,7 +291,7 @@ fn schema_v7_strictly_rejects_legacy_youtube_section_and_placeholder() {
         let config_path = temp_dir.path().join("config.toml");
         fs::write(
             &config_path,
-            format!("schema_version = 7\n\n{legacy_fragment}"),
+            format!("schema_version = 8\n\n{legacy_fragment}"),
         )
         .expect("strict v7 fixture written");
 
@@ -276,7 +316,7 @@ fn yt_dlp_hdr_selection_stable_ids_roundtrip() {
             &config_path,
             format!(
                 r#"
-schema_version = 7
+schema_version = 8
 
 [yt_dlp]
 hdr_selection = "{stable_id}"
@@ -293,7 +333,7 @@ hdr_selection = "{stable_id}"
             .to_pretty_toml()
             .expect("HDR selection config serializes");
         assert!(generated.contains(&format!("hdr_selection = \"{stable_id}\"")));
-        assert!(generated.contains("schema_version = 7"));
+        assert!(generated.contains("schema_version = 8"));
     }
 }
 
@@ -314,7 +354,7 @@ resolve_timeout_ms = 30000
 
     let loaded = load_from_path(&config_path).expect("schema v6 config loads");
 
-    assert_eq!(loaded.config.schema_version, 7);
+    assert_eq!(loaded.config.schema_version, 8);
     assert_eq!(loaded.config.yt_dlp.preferred_video_height, None);
     assert!(!loaded.created);
     assert_eq!(
@@ -351,7 +391,7 @@ fn preferred_video_height_roundtrips_and_rejects_invalid_bounds() {
     for invalid_height in [0, MAX_PREFERRED_VIDEO_HEIGHT + 1] {
         fs::write(
             &config_path,
-            format!("schema_version = 7\n\n[yt_dlp]\npreferred_video_height = {invalid_height}\n"),
+            format!("schema_version = 8\n\n[yt_dlp]\npreferred_video_height = {invalid_height}\n"),
         )
         .expect("invalid preferred height fixture written");
         let error = load_from_path(&config_path).expect_err("invalid height rejected");
@@ -360,7 +400,7 @@ fn preferred_video_height_roundtrips_and_rejects_invalid_bounds() {
 
     fs::write(
         &config_path,
-        "schema_version = 7\n\n[yt_dlp]\nitem_video_height_override = 720\n",
+        "schema_version = 8\n\n[yt_dlp]\nitem_video_height_override = 720\n",
     )
     .expect("runtime-only override fixture written");
     let error = load_from_path(&config_path).expect_err("runtime-only override rejected in TOML");
@@ -430,13 +470,13 @@ fn render_hdr_to_sdr_defaults_are_valid_phase10_baseline() {
     assert_eq!(config.render.tone_mapping, ToneMappingMode::Disabled);
 }
 
-/// Проверяет defaults текущей schema version 7.
+/// Проверяет defaults текущей schema version 8.
 #[test]
-fn schema_version_7_defaults_include_seek_network_and_ui_skin() {
+fn schema_version_8_defaults_include_seek_network_and_ui_skin() {
     let config = AppConfig::default();
 
     assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 7);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 8);
     assert_eq!(config.player.seek.commit_timeout_ms, 10_000);
     assert_eq!(config.player.seek.resume_audio_min_buffer_ms, 50);
     assert_eq!(config.player.seek.resume_audio_gate_timeout_ms, 250);
@@ -473,6 +513,14 @@ fn schema_version_7_defaults_include_seek_network_and_ui_skin() {
     assert_eq!(config.network.read_timeout_ms, 15_000);
     assert_eq!(config.yt_dlp.resolve_timeout_ms, 30_000);
     assert_eq!(config.yt_dlp.preferred_video_height, None);
+    assert!(config.yt_dlp.vod_endpoint_recovery_enabled);
+    assert_eq!(
+        config.yt_dlp.vod_endpoint_recovery_max_consecutive_attempts,
+        3
+    );
+    assert_eq!(config.yt_dlp.vod_endpoint_recovery_initial_backoff_ms, 250);
+    assert_eq!(config.yt_dlp.vod_endpoint_recovery_max_backoff_ms, 2_000);
+    assert_eq!(config.yt_dlp.vod_endpoint_recovery_stable_reset_ms, 30_000);
     assert_eq!(config.ui.skin, "minimal");
     assert_eq!(config.ui.window.titlebar_height_px, 40);
     assert_eq!(config.ui.settings.live_preview_max_hz, 60);
@@ -581,7 +629,7 @@ fn missing_config_is_created_with_defaults() {
     assert!(loaded.config.render.color_adjustment.is_identity());
 
     let created_toml = fs::read_to_string(&loaded.path).expect("created config readable");
-    assert!(created_toml.contains("schema_version = 7"));
+    assert!(created_toml.contains("schema_version = 8"));
     assert!(created_toml.contains("[player.seek]"));
     assert!(created_toml.contains("# Настройки seek commit"));
     assert!(created_toml.contains("commit_timeout_ms = 10000"));

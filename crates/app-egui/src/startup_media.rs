@@ -635,6 +635,7 @@ pub(crate) fn resolve_yt_dlp_startup_media(
         timeline_port: prepared.timeline_port,
         demux_seek_port: prepared.demux_seek_port,
         playback_window: prepared.playback_window,
+        vod_endpoint_recovery: prepared.vod_endpoint_recovery,
     })
 }
 

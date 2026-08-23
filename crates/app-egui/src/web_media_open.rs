@@ -118,6 +118,9 @@ pub(crate) struct PreparedYtDlpWebMedia {
     pub(crate) demux_seek_port: Option<Arc<dyn player_core::PreparedDemuxSeekPort>>,
     /// Optional absolute source window для zero-based public presentation.
     pub(crate) playback_window: Option<player_core::MediaPlaybackWindow>,
+    /// Candidate-level VOD expiry gate; live runtime сохраняет собственного refresh owner-а.
+    pub(crate) vod_endpoint_recovery:
+        Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
 }
 
 /// Общий pre-barrier runtime result concrete transport branches.
@@ -134,6 +137,8 @@ struct OpenedWebCandidate {
     playback_window: Option<player_core::MediaPlaybackWindow>,
     /// Fresh provider result финализируется до authorization barrier.
     component_variants: PreparedComponentVariantCatalog,
+    /// Attachment создаётся отдельно для каждой physical candidate attempt.
+    vod_endpoint_recovery: Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
 }
 
 /// Source-specific live refresh ports, собранные одним app composition boundary.
@@ -160,6 +165,8 @@ struct WebCandidateOpenContext {
     catalog_identity: web_media_core::ComponentVariantCatalogIdentity,
     /// Общая cancellation generation transport/demux runtime-а.
     cancellation: CancellationToken,
+    /// VOD-only observer/gate не подменяет HLS/DASH live refresh ports.
+    vod_endpoint_recovery: Option<crate::web_media_vod_recovery::VodEndpointRecoveryAttachment>,
 }
 
 /// Открывает YtDlp locator одним S19 → S21C → S22 production path-ом.
@@ -340,16 +347,29 @@ pub(crate) fn prepare_yt_dlp_web_media(
         active_selection: &candidate_selection,
         active_composed: composed_selection.as_deref(),
     })?;
+    let vod_endpoint_recovery = opened_candidate.vod_endpoint_recovery;
+    if let Some(recovery) = vod_endpoint_recovery.as_ref() {
+        recovery.arm_after_candidate_finalization();
+    }
+    let demuxer = match vod_endpoint_recovery.as_ref() {
+        Some(recovery) => recovery.wrap_demuxer(opened_candidate.demuxer),
+        None => opened_candidate.demuxer,
+    };
+    let demux_seek_port = match vod_endpoint_recovery.as_ref() {
+        Some(recovery) => recovery.wrap_seek_port(opened_candidate.demux_seek_port),
+        None => opened_candidate.demux_seek_port,
+    };
     Ok(PreparedYtDlpWebMedia {
-        demuxer: opened_candidate.demuxer,
+        demuxer,
         playlist_metadata,
         candidate_selection,
         composed_selection,
         stream_configuration,
         catalog_attachment,
         timeline_port: opened_candidate.timeline_port,
-        demux_seek_port: opened_candidate.demux_seek_port,
+        demux_seek_port,
         playback_window: opened_candidate.playback_window,
+        vod_endpoint_recovery,
     })
 }
 
@@ -448,7 +468,11 @@ impl WebOpenRuntime {
             preferred_height,
             catalog_identity,
             cancellation,
+            vod_endpoint_recovery,
         } = context;
+        let endpoint_expiry_observer = vod_endpoint_recovery
+            .as_ref()
+            .map(crate::web_media_vod_recovery::VodEndpointRecoveryAttachment::observer);
         if smooth::candidate_is_smooth(candidate) {
             ensure_not_cancelled(is_cancelled)?;
             let prepared = smooth::prepare_smooth_candidate(
@@ -463,6 +487,7 @@ impl WebOpenRuntime {
                 preferred_height,
                 catalog_identity,
                 catalog_capability_probe,
+                endpoint_expiry_observer.clone(),
             )?;
             return Ok(OpenedWebCandidate {
                 demuxer: prepared.demuxer,
@@ -471,6 +496,7 @@ impl WebOpenRuntime {
                 demux_seek_port: Some(prepared.seek_port),
                 playback_window: None,
                 component_variants: prepared.component_variants,
+                vod_endpoint_recovery,
             });
         }
         if hds::candidate_is_hds(candidate) {
@@ -497,6 +523,7 @@ impl WebOpenRuntime {
                 component_selection_intent,
                 catalog_identity,
                 &hds_capability_probe,
+                endpoint_expiry_observer.clone(),
             )
             .map_err(|error| {
                 if error
@@ -515,6 +542,7 @@ impl WebOpenRuntime {
                 demux_seek_port: Some(prepared.seek_port),
                 playback_window: Some(prepared.playback_window),
                 component_variants: prepared.component_variants,
+                vod_endpoint_recovery,
             });
         }
         if crate::web_media_hls_open::candidate_is_hls(candidate) {
@@ -532,6 +560,7 @@ impl WebOpenRuntime {
                 component_selection_intent,
                 catalog_identity,
                 catalog_capability_probe,
+                endpoint_expiry_observer.clone(),
             )?;
             return Ok(OpenedWebCandidate {
                 demuxer: prepared.demuxer,
@@ -540,6 +569,7 @@ impl WebOpenRuntime {
                 demux_seek_port: Some(prepared.seek_port),
                 playback_window: None,
                 component_variants: prepared.component_variants,
+                vod_endpoint_recovery,
             });
         }
         if crate::web_media_dash_open::candidate_is_dash(candidate) {
@@ -557,6 +587,7 @@ impl WebOpenRuntime {
                 component_selection_intent,
                 catalog_identity,
                 catalog_capability_probe,
+                endpoint_expiry_observer.clone(),
             )?;
             return Ok(OpenedWebCandidate {
                 demuxer: prepared.demuxer,
@@ -565,6 +596,7 @@ impl WebOpenRuntime {
                 demux_seek_port: Some(prepared.seek_port),
                 playback_window: None,
                 component_variants: prepared.component_variants,
+                vod_endpoint_recovery,
             });
         }
         if !matches!(
@@ -590,9 +622,13 @@ impl WebOpenRuntime {
             ensure_not_cancelled(is_cancelled)?;
             let role = component.role();
             let container = component.container();
+            let mut transport_request = component.into_request();
+            if let Some(observer) = endpoint_expiry_observer.clone() {
+                transport_request = transport_request.with_endpoint_expiry_observer(observer);
+            }
             let opened_transport = self
                 .transport_registry
-                .open(component.into_request())
+                .open(transport_request)
                 .context("Progressive provider не открыл YtDlp component")?;
             let transport_seekability = opened_transport.seekability();
             let demux_input = match opened_transport.into_input() {
@@ -627,6 +663,7 @@ impl WebOpenRuntime {
             demux_seek_port: None,
             playback_window: None,
             component_variants: PreparedComponentVariantCatalog::Unavailable,
+            vod_endpoint_recovery,
         })
     }
 

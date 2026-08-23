@@ -75,6 +75,7 @@ mod telemetry_panel;
 mod timeline_inline_status;
 mod ui_runtime;
 mod video_backend;
+mod vod_endpoint_recovery;
 mod web_media_catalog;
 
 #[cfg(test)]
@@ -303,6 +304,8 @@ pub struct AppState {
 
     /// Последний восстановимый media source intent для runtime source rebuild.
     active_media_source: Option<ActiveMediaSource>,
+    /// App-owned exact binding и bounded attempt state для VOD signed-URL recovery.
+    vod_endpoint_recovery: vod_endpoint_recovery::VodEndpointRecoveryRuntimeState,
     /// Renderer-bound receipts/candidate одной resume attempt; checkpoint остаётся в runtime.
     suspended_media_resume: Option<suspended_media_resume::SuspendedMediaResume>,
 
@@ -448,6 +451,8 @@ impl AppState {
             pending_dma_buf_layout_rejection: None,
             current_local_file: None,
             active_media_source: None,
+            vod_endpoint_recovery: vod_endpoint_recovery::VodEndpointRecoveryRuntimeState::default(
+            ),
             suspended_media_resume: None,
             pending_strong_media_open: None,
             same_item_switch: None,
@@ -690,6 +695,7 @@ impl AppState {
             || self.last_player_snapshot.playback_state == PlaybackState::Opening
             || self.last_player_snapshot.playback_state == PlaybackState::Scrubbing
             || self.last_player_snapshot.timeline.scrubbing
+            || self.has_pending_vod_endpoint_recovery()
     }
 
     /// Забирает одноразовый follow-up redraw после асинхронной worker command.
