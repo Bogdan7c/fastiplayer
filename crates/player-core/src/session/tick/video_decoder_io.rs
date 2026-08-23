@@ -366,8 +366,11 @@ pub(super) fn drain_decoded_video_frames(
     drain_video_decoder_thread_diagnostics(session, tick_result);
 
     let drained_frame_count = decoded_frames.len();
+    // Сохраняем ownership ещё не обработанного хвоста batch в именованном iterator-е.
+    // При fatal mismatch это позволяет явно вернуть decoder-у каждый уже извлечённый handle.
+    let mut remaining_decoded_frames = decoded_frames.into_iter();
     let mut seek_preroll_frames_handled = 0usize;
-    for frame in decoded_frames {
+    while let Some(frame) = remaining_decoded_frames.next() {
         if !session
             .pipeline
             .packet_generation_is_current(frame.generation)
@@ -392,6 +395,11 @@ pub(super) fn drain_decoded_video_frames(
             && let Err(error) = frame.validate_against_expected_contract(expected_contract)
         {
             release_video_texture(session, frame.resource_handle);
+            // Эти кадры уже покинули decoder channel, поэтому обычный Drop не может
+            // выполнить manual resource release вместо владеющего decoder boundary.
+            for remaining_frame in remaining_decoded_frames {
+                release_video_texture(session, remaining_frame.resource_handle);
+            }
             session.mark_fatal_error(crate::PlayerError::new(
                 crate::PlayerErrorKind::RuntimeError,
                 format!("Decoded video frame contract mismatch: {error}"),

@@ -3853,6 +3853,98 @@ fn decoded_frame_contract_mismatch_is_reported_without_renderer_knowledge() {
     assert!(last_error.message.contains("contract mismatch"));
 }
 
+/// Прогоняет один receive-pass из трёх кадров и возвращает release-log старого decoder-а.
+///
+/// Замена decoder handle после drain имитирует backend swap: все принятые старым
+/// backend-ом handles к этому моменту обязаны получить ровно один explicit release.
+fn released_handles_after_contract_mismatch_batch(
+    mismatch_frame_index: usize,
+) -> Vec<video_core::FrameResourceHandle> {
+    assert!(
+        mismatch_frame_index < 3,
+        "mismatch index должен указывать на один из трёх test frames"
+    );
+
+    let mut session = PlayerSession::new();
+    let old_decoder_thread = RecordingVideoDecoderThread::new();
+    let mut tick_result = PlayerTickResult::default();
+    let accepted_handles = [
+        video_core::FrameResourceHandle(81),
+        video_core::FrameResourceHandle(82),
+        video_core::FrameResourceHandle(83),
+    ];
+
+    session
+        .pipeline
+        .set_video_decoder_thread(old_decoder_thread.clone());
+    session.pipeline.select_video_track(
+        TrackId::new(1),
+        VideoDecodeRequirement::new(VideoCodec::Vp9)
+            .with_bit_depth(codec_core::BitDepth::Eight)
+            .with_chroma(codec_core::ChromaSubsampling::Yuv420),
+    );
+
+    for (frame_index, resource_handle) in accepted_handles.iter().copied().enumerate() {
+        let frame_format = if frame_index == mismatch_frame_index {
+            video_core::DecodedPixelFormat::P010
+        } else {
+            video_core::DecodedPixelFormat::Nv12
+        };
+        old_decoder_thread.push_decoded_frame(decoded_frame_with_format(
+            Duration::from_millis(120 + frame_index as u64 * 40),
+            resource_handle.0,
+            frame_format,
+        ));
+    }
+
+    let drained_frames = drain_decoded_video_frames(
+        &mut session,
+        &mut tick_result,
+        decoder_io_limits_for_tests(accepted_handles.len(), 0),
+        None,
+    );
+    assert_eq!(
+        drained_frames,
+        accepted_handles.len(),
+        "один receive-pass обязан извлечь весь scripted batch до проверки контрактов"
+    );
+
+    session.clear_video_frames();
+    session
+        .pipeline
+        .set_video_decoder_thread(RecordingVideoDecoderThread::new());
+
+    let mut released_handles = old_decoder_thread.released_handles();
+    released_handles.sort_unstable_by_key(|resource_handle| resource_handle.0);
+    released_handles
+}
+
+#[test]
+fn first_contract_mismatch_releases_every_frame_extracted_in_the_batch_once() {
+    assert_eq!(
+        released_handles_after_contract_mismatch_batch(0),
+        vec![
+            video_core::FrameResourceHandle(81),
+            video_core::FrameResourceHandle(82),
+            video_core::FrameResourceHandle(83),
+        ],
+        "mismatch первого кадра не должен терять release двух оставшихся handles"
+    );
+}
+
+#[test]
+fn second_contract_mismatch_releases_every_frame_extracted_in_the_batch_once() {
+    assert_eq!(
+        released_handles_after_contract_mismatch_batch(1),
+        vec![
+            video_core::FrameResourceHandle(81),
+            video_core::FrameResourceHandle(82),
+            video_core::FrameResourceHandle(83),
+        ],
+        "mismatch второго кадра не должен терять release последнего handle"
+    );
+}
+
 #[test]
 fn unknown_keyframe_bootstrap_packet_is_sent_as_decoder_decode_start() {
     let mut session = PlayerSession::new();

@@ -1,3 +1,9 @@
+## AUD-004 decoded-frame batch tail release fix (2026-08-23)
+
+- Fatal frame-contract mismatch в `player-core` теперь exactly-once освобождает текущий handle и весь уже извлечённый хвост decoder receive-batch через прежнюю release boundary; API/error/accounting semantics не менялись.
+- Fake decoder regression с handles `81/82/83` закрепляет mismatch на первом и втором frame, затем decoder replacement и равенство accepted/released sets. `player-core` 643/643 и strict Clippy прошли.
+- Полный ownership invariant, test anchors и команды: `mem:player-core/decoded-frame-contract-mismatch-tail-release-aud004-2026-08-23`.
+
 ## AUD-003 PTS-only software FFmpeg time-base fix (2026-08-23)
 
 - Real generated MPEG-TS H.264 no-B-frame verification confirmed that player/decoder protocol dropped raw `track_pts` when `track_dts=None`, producing repeated materialized frame PTS at start and after seek.
