@@ -90,6 +90,20 @@ pub(crate) enum AutomaticTargetFailureOutcome {
     OpenItem { install: PlannedPlaylistInstall },
 }
 
+/// Ошибка exact plan-а до request сохраняет его manual/automatic происхождение.
+pub(crate) enum UnstagedPlannedTargetFailureOutcome {
+    RuntimeUnavailable,
+    Manual {
+        outcome: super::manual_navigation::ManualNavigationFailureOutcome,
+    },
+    Stopped {
+        cause: AutomaticStopCause,
+    },
+    OpenItem {
+        install: PlannedPlaylistInstall,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum EndedDisposition {
     Held,
@@ -345,12 +359,51 @@ impl PlaylistController {
         let Some((item_id, plan)) = request else {
             return AutomaticTargetFailureOutcome::StaleRequest { request_id };
         };
+        self.finish_automatic_target_failure(item_id, plan, safe_summary, Some(request_id))
+    }
+
+    /// Pre-staging failure потребляет исходный exact plan, пока request ID ещё не существует.
+    pub(crate) fn report_unstaged_planned_target_failure(
+        &mut self,
+        install: PlannedPlaylistInstall,
+        safe_summary: Arc<str>,
+    ) -> UnstagedPlannedTargetFailureOutcome {
+        let item_id = install.item_id;
+        match install.mutation {
+            PlaylistInstallMutation::AutomaticTraversal(plan) => {
+                match self.finish_automatic_target_failure(item_id, *plan, safe_summary, None) {
+                    AutomaticTargetFailureOutcome::Stopped { cause } => {
+                        UnstagedPlannedTargetFailureOutcome::Stopped { cause }
+                    }
+                    AutomaticTargetFailureOutcome::OpenItem { install } => {
+                        UnstagedPlannedTargetFailureOutcome::OpenItem { install }
+                    }
+                    AutomaticTargetFailureOutcome::StaleRequest { .. } => {
+                        unreachable!("unstaged automatic plan не ищется по request ID")
+                    }
+                }
+            }
+            PlaylistInstallMutation::Reserved(_) | PlaylistInstallMutation::ManualNavigation => {
+                let outcome = self.report_unstaged_manual_navigation_target_failure(item_id);
+                UnstagedPlannedTargetFailureOutcome::Manual { outcome }
+            }
+        }
+    }
+
+    /// Общий automatic failure tail сохраняет budget и opaque continuation plan.
+    fn finish_automatic_target_failure(
+        &mut self,
+        item_id: PlaylistItemId,
+        plan: AutomaticTraversalPlan,
+        safe_summary: Arc<str>,
+        request_id: Option<MediaOpenRequestId>,
+    ) -> AutomaticTargetFailureOutcome {
         self.upsert_runtime_error(
             item_id,
             PlaylistItemErrorPhase::Preparation,
             PlaylistItemErrorCategory::Unavailable,
             safe_summary,
-            Some(request_id),
+            request_id,
             None,
         );
         if self.error_behavior == PlaylistErrorBehavior::Stop {

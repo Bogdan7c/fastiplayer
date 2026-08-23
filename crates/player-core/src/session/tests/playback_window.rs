@@ -208,7 +208,10 @@ fn ordinary_seek_clamps_to_window_end_while_exact_set_position_rejects_beyond_en
     );
     assert_eq!(
         outcome_rx.recv().expect("strict range outcome"),
-        ExactTimelineSeekOutcome::InvalidRange { request_id }
+        ExactTimelineSeekOutcome::InvalidRange {
+            request_id,
+            media_instance_id,
+        }
     );
 }
 

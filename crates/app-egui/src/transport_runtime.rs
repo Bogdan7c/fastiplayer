@@ -535,7 +535,7 @@ fn player_seek_request_id(request_id: DesktopTimelineSeekRequestId) -> TimelineS
     )
 }
 
-fn apply_manual_navigation_outcome(
+pub(crate) fn apply_manual_navigation_outcome(
     app_state: &mut AppState,
     playlist_runtime: &mut PlaylistRuntime,
     renderer: &Renderer,

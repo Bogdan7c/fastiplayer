@@ -10,6 +10,12 @@ use resume::InstalledResumeCommit;
 mod same_lineage;
 use same_lineage::{PendingStrongLineageCommit, SameLineageRestorePosition};
 
+/// Ошибка до staging возвращает exact playlist plan его runtime-владельцу.
+pub(crate) struct UnstagedPlaylistMediaOpenError {
+    pub(crate) error: StrongMediaOpenError,
+    pub(crate) install: Box<crate::playlist_runtime::PlannedPlaylistInstall>,
+}
+
 /// Renderer-bound ownership незавершённой strong install транзакции.
 pub(crate) struct PendingStrongMediaOpen {
     request_id: MediaOpenRequestId,
@@ -247,22 +253,38 @@ impl AppState {
         source_request: MediaOpenSourceRequest,
         install: crate::playlist_runtime::PlannedPlaylistInstall,
         supersedes: Option<MediaOpenRequestId>,
-    ) -> Result<MediaOpenRequestId, StrongMediaOpenError> {
+    ) -> Result<MediaOpenRequestId, UnstagedPlaylistMediaOpenError> {
         if self.pending_strong_media_open.is_some() {
-            return Err(StrongMediaOpenError::Start(MediaOpenStartError::Busy));
+            return Err(UnstagedPlaylistMediaOpenError {
+                error: StrongMediaOpenError::Start(MediaOpenStartError::Busy),
+                install: Box::new(install),
+            });
         }
-        self.cancel_suspended_media_resume_for_explicit_open(playlist_runtime)
-            .map_err(StrongMediaOpenError::LineageRegistration)?;
+        if let Err(error) = self.cancel_suspended_media_resume_for_explicit_open(playlist_runtime) {
+            return Err(UnstagedPlaylistMediaOpenError {
+                error: StrongMediaOpenError::LineageRegistration(error),
+                install: Box::new(install),
+            });
+        }
         let intent = install.playback_intent;
         let intent_revision = install.intent_revision;
         let request_id = match playlist_runtime.start_media_open(
             SINGLE_MEDIA_CLIENT_KEY,
             source_request,
             MediaOpenStartMode::RequireIdle,
-        )? {
-            MediaOpenStartOutcome::Accepted { request_id } => request_id,
-            MediaOpenStartOutcome::Coalesced { .. } => {
-                return Err(StrongMediaOpenError::Start(MediaOpenStartError::Busy));
+        ) {
+            Ok(MediaOpenStartOutcome::Accepted { request_id }) => request_id,
+            Ok(MediaOpenStartOutcome::Coalesced { .. }) => {
+                return Err(UnstagedPlaylistMediaOpenError {
+                    error: StrongMediaOpenError::Start(MediaOpenStartError::Busy),
+                    install: Box::new(install),
+                });
+            }
+            Err(error) => {
+                return Err(UnstagedPlaylistMediaOpenError {
+                    error: StrongMediaOpenError::Start(error),
+                    install: Box::new(install),
+                });
             }
         };
         let driver = WgpuCandidateVideoPipelineResourceDriver::new(

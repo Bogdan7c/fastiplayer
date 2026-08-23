@@ -61,6 +61,9 @@ mod shutdown_report;
 mod suspend_resume;
 pub(crate) use suspend_resume::SuspendedTimelineResumePosition;
 mod transport_execution;
+pub(crate) use transport_execution::RelativeBeyondEndNavigationOutcome;
+#[cfg(test)]
+mod transport_execution_audit_regressions;
 mod transport_ui;
 mod ui_interaction;
 mod url_import;
@@ -133,7 +136,7 @@ pub(crate) use controller::{
     AutomaticLifecycleOutcome, ControllerInitialQueuePlaybackAction,
     ControllerManualNavigationOutcome, ControllerMoveItemsOutcome, ControllerPlayItemOutcome,
     ControllerStableIntentDispatch, LocalFileSelectionDisposition, PlannedPlaylistInstall,
-    StablePlaybackIntent,
+    StablePlaybackIntent, UnstagedPlannedTargetFailureOutcome,
 };
 pub(crate) use controller::{StartupPosition, StartupRestoreFailureOutcome, StartupRestoreTarget};
 pub(crate) use discovery::PlaylistDiscoveryNavigationAction;

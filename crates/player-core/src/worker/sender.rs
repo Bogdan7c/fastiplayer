@@ -49,6 +49,7 @@ impl PlayerCommandSender {
         })?;
         Ok(ExactTimelineSeekReceipt::new(
             request.request_id,
+            request.media_instance_id,
             outcome_rx,
         ))
     }

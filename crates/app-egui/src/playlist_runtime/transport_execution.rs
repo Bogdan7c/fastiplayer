@@ -5,12 +5,13 @@
 
 use std::sync::Arc;
 
-use player_core::MediaInstallRequestId;
+use player_core::{MediaInstallRequestId, MediaInstanceId};
 use playlist_core::PlaylistLocator;
 
 use super::controller::{
-    AutomaticLifecycleOutcome, AutomaticTargetFailureOutcome, ControllerStableIntentDispatch,
-    PlannedPlaylistInstall, PlaylistInstallRequest,
+    AutomaticLifecycleOutcome, AutomaticTargetFailureOutcome, ControllerManualNavigationOutcome,
+    ControllerStableIntentDispatch, PlannedPlaylistInstall, PlaylistInstallRequest,
+    UnstagedPlannedTargetFailureOutcome,
 };
 use super::controller::{ManualNavigationCancelOutcome, ManualNavigationFailureOutcome};
 use super::discovery::PlaylistDiscoveryNavigationStatus;
@@ -24,6 +25,18 @@ pub(crate) enum PlaylistTransportCancelOutcome {
     CancelledManual,
     CancelledAutomatic,
     NoPendingWait,
+}
+
+/// Relative BeyondEnd либо адресует тот же active media, либо остаётся typed stale no-op.
+pub(crate) enum RelativeBeyondEndNavigationOutcome {
+    Navigation {
+        outcome: ControllerManualNavigationOutcome,
+    },
+    StaleInstance {
+        outcome_media_instance_id: MediaInstanceId,
+        current_media_instance_id: Option<MediaInstanceId>,
+    },
+    Unavailable,
 }
 
 /// Exact queue-owned open intent без раскрытия item payload storage app renderer-у.
@@ -45,6 +58,33 @@ impl PlaylistMediaOpenIntent {
 }
 
 impl PlaylistRuntime {
+    /// Выполняет Next только относительно exact media instance, породившего BeyondEnd.
+    pub(crate) fn request_relative_beyond_end_navigation(
+        &mut self,
+        outcome_media_instance_id: MediaInstanceId,
+        current_position: std::time::Duration,
+    ) -> RelativeBeyondEndNavigationOutcome {
+        let current_media_instance_id = self
+            .controller
+            .as_ref()
+            .and_then(|controller| controller.active_media())
+            .map(|active| active.media_instance_id());
+        if current_media_instance_id != Some(outcome_media_instance_id) {
+            return RelativeBeyondEndNavigationOutcome::StaleInstance {
+                outcome_media_instance_id,
+                current_media_instance_id,
+            };
+        }
+        let Some(outcome) = self.request_playlist_navigation(
+            playlist_core::ManualNavigationDirection::Next,
+            TransportActionOrigin::Mpris,
+            current_position,
+        ) else {
+            return RelativeBeyondEndNavigationOutcome::Unavailable;
+        };
+        RelativeBeyondEndNavigationOutcome::Navigation { outcome }
+    }
+
     /// Commit-ит app-level Stopped только после exact player owner success.
     pub(crate) fn apply_neutral_stop_outcome(
         &mut self,
@@ -195,6 +235,22 @@ impl PlaylistRuntime {
         }
     }
 
+    /// Pre-staging failure маршрутизируется по origin/mutation самого exact plan-а.
+    pub(crate) fn report_unstaged_planned_playlist_navigation_failure(
+        &mut self,
+        install: PlannedPlaylistInstall,
+    ) -> UnstagedPlannedTargetFailureOutcome {
+        let Some(controller) = self.controller.as_mut() else {
+            return UnstagedPlannedTargetFailureOutcome::RuntimeUnavailable;
+        };
+        let outcome = controller.report_unstaged_planned_target_failure(
+            install,
+            Arc::from("Не удалось подготовить следующий элемент очереди"),
+        );
+        self.discovery.synchronize_navigation_interest(controller);
+        outcome
+    }
+
     /// D58-like explicit Cancel убирает только navigation interest, bulk scan продолжает жить.
     pub(crate) fn cancel_global_playlist_navigation_wait(
         &mut self,
@@ -254,7 +310,7 @@ impl PlaylistRuntime {
     }
 }
 
-fn playlist_install_request(
+pub(super) fn playlist_install_request(
     request_id: MediaOpenRequestId,
     player_request_id: MediaInstallRequestId,
     install: PlannedPlaylistInstall,

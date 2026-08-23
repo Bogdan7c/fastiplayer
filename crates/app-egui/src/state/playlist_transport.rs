@@ -6,7 +6,7 @@
 use player_core::{
     ExactMediaTransportOutcome, ExactMediaTransportReceipt, ExactMediaTransportRequest,
     ExactTimelineSeekOutcome, ExactTimelineSeekReceipt, ExactTimelineSeekRequest,
-    MediaInstallCancellationCause,
+    MediaInstallCancellationCause, TimelineSeekRequestId,
 };
 use render_wgpu_shell::Renderer;
 use tracing::{debug, warn};
@@ -15,6 +15,7 @@ use super::{AppState, StrongMediaOpenError, StrongMediaOpenPoll};
 use crate::media_open::{MediaOpenRequestId, MediaOpenSourceRequest};
 use crate::playlist_runtime::{
     ControllerStableIntentDispatch, PlannedPlaylistInstall, PlaylistRuntime,
+    RelativeBeyondEndNavigationOutcome, UnstagedPlannedTargetFailureOutcome,
 };
 use crate::url_service_adapter::{StartupUrlClassification, classify_playlist_url};
 
@@ -27,6 +28,13 @@ struct QueuedPlaylistInstall {
 struct PendingExactTransportReceipt {
     receipt: ExactMediaTransportReceipt,
     purpose: ExactTransportReceiptPurpose,
+}
+
+/// Relative BeyondEnd сохраняет request/media identity до queue navigation boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RelativeBeyondEndNavigation {
+    request_id: TimelineSeekRequestId,
+    media_instance_id: player_core::MediaInstanceId,
 }
 
 /// Один receipt driver обслуживает transport и полный Clear reset без смешения lifecycle.
@@ -96,9 +104,9 @@ impl AppState {
             None,
         ) {
             Ok(_) => Ok(()),
-            Err(error) => {
+            Err(unstaged) => {
                 playlist_runtime.report_unstaged_playlist_navigation_failure(item_id);
-                Err(StartupPlaylistInstallStartError::Strong(error))
+                Err(StartupPlaylistInstallStartError::Strong(unstaged.error))
             }
         }
     }
@@ -127,30 +135,50 @@ impl AppState {
             self.mark_pending_worker_redraw();
             return;
         }
-        let source_request = match self.playlist_source_request(playlist_runtime, &install) {
-            Ok(request) => request,
-            Err(error) => {
-                playlist_runtime.report_unstaged_playlist_navigation_failure(install.item_id);
-                warn!(error = %error, "Playlist transport target не прошёл source boundary");
-                return;
-            }
-        };
-        let item_id = install.item_id;
-        match self.begin_playlist_source_media_strong(
-            playlist_runtime,
-            renderer,
-            source_request,
-            install,
-            supersedes,
-        ) {
-            Ok(request_id) => {
-                self.playlist_transport.active_request_id = Some(request_id);
-                self.playlist_transport.active_item_id = Some(item_id);
-                self.mark_pending_worker_redraw();
-            }
-            Err(error) => {
-                playlist_runtime.report_unstaged_playlist_navigation_failure(item_id);
-                warn!(error = %error, "Не удалось начать playlist navigation install");
+        let mut next_install = install;
+        let mut next_supersedes = supersedes;
+        loop {
+            let source_request = match self.playlist_source_request(playlist_runtime, &next_install)
+            {
+                Ok(request) => request,
+                Err(error) => {
+                    let failure_outcome = playlist_runtime
+                        .report_unstaged_planned_playlist_navigation_failure(next_install);
+                    warn!(error = %error, "Playlist transport target не прошёл source boundary");
+                    let UnstagedPlannedTargetFailureOutcome::OpenItem { install } = failure_outcome
+                    else {
+                        return;
+                    };
+                    next_install = install;
+                    next_supersedes = None;
+                    continue;
+                }
+            };
+            let item_id = next_install.item_id;
+            match self.begin_playlist_source_media_strong(
+                playlist_runtime,
+                renderer,
+                source_request,
+                next_install,
+                next_supersedes,
+            ) {
+                Ok(request_id) => {
+                    self.playlist_transport.active_request_id = Some(request_id);
+                    self.playlist_transport.active_item_id = Some(item_id);
+                    self.mark_pending_worker_redraw();
+                    return;
+                }
+                Err(unstaged) => {
+                    let failure_outcome = playlist_runtime
+                        .report_unstaged_planned_playlist_navigation_failure(*unstaged.install);
+                    warn!(error = %unstaged.error, "Не удалось начать playlist navigation install");
+                    let UnstagedPlannedTargetFailureOutcome::OpenItem { install } = failure_outcome
+                    else {
+                        return;
+                    };
+                    next_install = install;
+                    next_supersedes = None;
+                }
             }
         }
     }
@@ -264,17 +292,60 @@ impl AppState {
     ) {
         self.drive_pending_playlist_media_reset(playlist_runtime);
         self.poll_exact_playlist_transport_receipts(playlist_runtime);
-        let route_relative_beyond_end = self.poll_exact_timeline_seek_receipts(playlist_runtime);
-        if route_relative_beyond_end {
-            let snapshot = self.last_player_snapshot.clone();
-            crate::transport_runtime::request_navigation(
-                self,
-                playlist_runtime,
-                renderer,
-                playlist_core::ManualNavigationDirection::Next,
-                &snapshot,
-                crate::playlist_runtime::TransportActionOrigin::Mpris,
-            );
+        let relative_beyond_end_navigations =
+            self.poll_exact_timeline_seek_receipts(playlist_runtime);
+        let snapshot = self.last_player_snapshot.clone();
+        let mut routed_media_instance_id = None;
+        for navigation in relative_beyond_end_navigations {
+            if let Some(routed_media_instance_id) = routed_media_instance_id {
+                if navigation.media_instance_id == routed_media_instance_id {
+                    debug!(
+                        request_id = navigation.request_id.get(),
+                        media_instance_id = ?navigation.media_instance_id,
+                        "Повторный matching BeyondEnd coalesced в один Next за poll"
+                    );
+                } else {
+                    debug!(
+                        request_id = navigation.request_id.get(),
+                        outcome_media_instance_id = ?navigation.media_instance_id,
+                        routed_media_instance_id = ?routed_media_instance_id,
+                        "Stale BeyondEnd после matching outcome не двигает очередь повторно"
+                    );
+                }
+                continue;
+            }
+            match playlist_runtime.request_relative_beyond_end_navigation(
+                navigation.media_instance_id,
+                snapshot.current_position,
+            ) {
+                RelativeBeyondEndNavigationOutcome::Navigation { outcome } => {
+                    routed_media_instance_id = Some(navigation.media_instance_id);
+                    crate::transport_runtime::apply_manual_navigation_outcome(
+                        self,
+                        playlist_runtime,
+                        renderer,
+                        outcome,
+                    );
+                }
+                RelativeBeyondEndNavigationOutcome::StaleInstance {
+                    outcome_media_instance_id,
+                    current_media_instance_id,
+                } => {
+                    debug!(
+                        request_id = navigation.request_id.get(),
+                        outcome_media_instance_id = ?outcome_media_instance_id,
+                        current_media_instance_id = ?current_media_instance_id,
+                        "Stale relative BeyondEnd не двигает очередь текущего media"
+                    );
+                }
+                RelativeBeyondEndNavigationOutcome::Unavailable => {
+                    debug!(
+                        request_id = navigation.request_id.get(),
+                        media_instance_id = ?navigation.media_instance_id,
+                        "Matching relative BeyondEnd не породил queue action"
+                    );
+                }
+            }
         }
         self.poll_playlist_intent_receipts();
         let Some(active_request_id) = self.playlist_transport.active_request_id else {
@@ -504,8 +575,8 @@ impl AppState {
     fn poll_exact_timeline_seek_receipts(
         &mut self,
         playlist_runtime: &mut PlaylistRuntime,
-    ) -> bool {
-        let mut route_relative_beyond_end = false;
+    ) -> Vec<RelativeBeyondEndNavigation> {
+        let mut relative_beyond_end_navigations = Vec::new();
         let playlist_binding = self.playlist_runtime_binding();
         let resume_seek_checkpoint_allowed =
             self.last_player_snapshot.timeline.mode != media_core::TimelineMode::Live;
@@ -529,28 +600,34 @@ impl AppState {
                     }
                     false
                 }
-                Ok(Some(ExactTimelineSeekOutcome::BeyondEnd { request_id })) => {
+                Ok(Some(ExactTimelineSeekOutcome::BeyondEnd {
+                    request_id,
+                    media_instance_id,
+                })) => {
                     playlist_runtime.record_desktop_seek_outcome(
                         desktop_integration::DesktopTimelineSeekOutcome::BeyondEnd {
                             request_id: desktop_seek_request_id(request_id),
                         },
                     );
-                    route_relative_beyond_end = true;
+                    relative_beyond_end_navigations.push(RelativeBeyondEndNavigation {
+                        request_id,
+                        media_instance_id,
+                    });
                     false
                 }
                 Ok(Some(outcome)) => {
                     let desktop_outcome = match outcome {
-                        ExactTimelineSeekOutcome::InvalidRange { request_id } => {
+                        ExactTimelineSeekOutcome::InvalidRange { request_id, .. } => {
                             desktop_integration::DesktopTimelineSeekOutcome::InvalidRange {
                                 request_id: desktop_seek_request_id(request_id),
                             }
                         }
-                        ExactTimelineSeekOutcome::StaleInstance { request_id } => {
+                        ExactTimelineSeekOutcome::StaleInstance { request_id, .. } => {
                             desktop_integration::DesktopTimelineSeekOutcome::StaleInstance {
                                 request_id: desktop_seek_request_id(request_id),
                             }
                         }
-                        ExactTimelineSeekOutcome::NotSeekable { request_id } => {
+                        ExactTimelineSeekOutcome::NotSeekable { request_id, .. } => {
                             desktop_integration::DesktopTimelineSeekOutcome::NotSeekable {
                                 request_id: desktop_seek_request_id(request_id),
                             }
@@ -582,7 +659,7 @@ impl AppState {
                     false
                 }
             });
-        route_relative_beyond_end
+        relative_beyond_end_navigations
     }
 }
 

@@ -1,3 +1,10 @@
+## AUD-011/AUD-012 queue continuation и exact seek identity (2026-08-23)
+
+- Независимая production-boundary проверка подтвердила оба P1: sync pre-request failure терял automatic plan и входил в manual D55, а delayed bare BeyondEnd(A) после Installed B создавал Next(C).
+- Unstaged failure теперь потребляет exact `PlannedPlaylistInstall`, общий automatic tail сохраняет opaque traversal/budget/loop guard, а app продолжает sync failures bounded loop-ом; удалённая B всё равно даёт stageable C.
+- Все `ExactTimelineSeekOutcome` и receipt несут `MediaInstanceId`; runtime-owned stale fence не позволяет A двигать active B, а receipt batch остаётся identity-bearing и coalesce-ит только повтор matching instance.
+- Full boundary, regressions, commands и GUI limitation: `mem:app-egui/queue-seek-identity-aud011-aud012-2026-08-23`.
+
 ## AUD-010 bounded whole-timeline HLS VOD seek index (2026-08-23)
 
 - Independent production-path verification confirmed the four-entry muxed A/V index froze at 30 s after six segments; seek 150 s refetched five segments instead of one.

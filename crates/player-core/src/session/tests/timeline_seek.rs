@@ -84,6 +84,34 @@ fn strict_beyond_end_distinguishes_set_position_and_relative_seek() {
 }
 
 #[test]
+fn delayed_beyond_end_keeps_origin_media_identity_after_replacement() {
+    // A принимает relative seek, который синхронно завершается BeyondEnd.
+    let media_a = instance(31);
+    let media_b = instance(32);
+    let mut session = exact_session(media_a);
+    let seek_request = request(
+        33,
+        media_a,
+        MediaTime::from_secs(11),
+        TimelineSeekKind::Relative,
+    );
+    let request_id = seek_request.request_id;
+    let (outcome_tx, outcome_rx) = bounded(1);
+    session.begin_exact_timeline_seek(seek_request, outcome_tx);
+
+    // До чтения receipt текущим становится B — outcome всё равно обязан помнить A.
+    session.snapshot.media_instance_id = Some(media_b);
+    assert_eq!(
+        outcome_rx.recv().expect("delayed BeyondEnd outcome"),
+        ExactTimelineSeekOutcome::BeyondEnd {
+            request_id,
+            media_instance_id: media_a,
+        }
+    );
+    assert_eq!(session.snapshot().media_instance_id, Some(media_b));
+}
+
+#[test]
 fn equal_end_is_accepted_and_applied_only_after_matching_commit() {
     let media_instance_id = instance(4);
     let mut session = exact_session(media_instance_id);

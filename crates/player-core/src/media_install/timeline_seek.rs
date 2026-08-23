@@ -49,23 +49,29 @@ pub enum ExactTimelineSeekOutcome {
     },
     InvalidRange {
         request_id: TimelineSeekRequestId,
+        media_instance_id: MediaInstanceId,
     },
     BeyondEnd {
         request_id: TimelineSeekRequestId,
+        media_instance_id: MediaInstanceId,
     },
     StaleInstance {
         request_id: TimelineSeekRequestId,
+        media_instance_id: MediaInstanceId,
     },
     NotSeekable {
         request_id: TimelineSeekRequestId,
+        media_instance_id: MediaInstanceId,
     },
     Expired {
         request_id: TimelineSeekRequestId,
+        media_instance_id: MediaInstanceId,
         requested_position: MediaTime,
         available_range: Option<TimelineRange>,
     },
     Failed {
         request_id: TimelineSeekRequestId,
+        media_instance_id: MediaInstanceId,
         error: PlayerError,
     },
 }
@@ -86,16 +92,19 @@ impl std::error::Error for ExactTimelineSeekReceiptError {}
 /// Request-owned receipt хранит ровно один terminal outcome.
 pub struct ExactTimelineSeekReceipt {
     request_id: TimelineSeekRequestId,
+    media_instance_id: MediaInstanceId,
     outcome_rx: Receiver<ExactTimelineSeekOutcome>,
 }
 
 impl ExactTimelineSeekReceipt {
     pub(crate) fn new(
         request_id: TimelineSeekRequestId,
+        media_instance_id: MediaInstanceId,
         outcome_rx: Receiver<ExactTimelineSeekOutcome>,
     ) -> Self {
         Self {
             request_id,
+            media_instance_id,
             outcome_rx,
         }
     }
@@ -103,6 +112,12 @@ impl ExactTimelineSeekReceipt {
     #[must_use]
     pub const fn request_id(&self) -> TimelineSeekRequestId {
         self.request_id
+    }
+
+    /// Exact media instance остаётся доступен даже до terminal owner outcome-а.
+    #[must_use]
+    pub const fn media_instance_id(&self) -> MediaInstanceId {
+        self.media_instance_id
     }
 
     pub fn try_take_outcome(

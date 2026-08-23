@@ -23,12 +23,14 @@ impl PlayerSession {
         if self.snapshot.media_instance_id != Some(request.media_instance_id) {
             let _ = outcome_tx.send(ExactTimelineSeekOutcome::StaleInstance {
                 request_id: request.request_id,
+                media_instance_id: request.media_instance_id,
             });
             return;
         }
         if !self.snapshot.timeline.seekable || !self.pipeline.has_demuxer() {
             let _ = outcome_tx.send(ExactTimelineSeekOutcome::NotSeekable {
                 request_id: request.request_id,
+                media_instance_id: request.media_instance_id,
             });
             return;
         }
@@ -41,6 +43,7 @@ impl PlayerSession {
         {
             let _ = outcome_tx.send(ExactTimelineSeekOutcome::Expired {
                 request_id: request.request_id,
+                media_instance_id: request.media_instance_id,
                 requested_position: request.target,
                 available_range: self.snapshot.timeline.seekable_range,
             });
@@ -55,9 +58,11 @@ impl PlayerSession {
             let outcome = match request.kind {
                 TimelineSeekKind::SetPosition => ExactTimelineSeekOutcome::InvalidRange {
                     request_id: request.request_id,
+                    media_instance_id: request.media_instance_id,
                 },
                 TimelineSeekKind::Relative => ExactTimelineSeekOutcome::BeyondEnd {
                     request_id: request.request_id,
+                    media_instance_id: request.media_instance_id,
                 },
             };
             let _ = outcome_tx.send(outcome);
@@ -66,6 +71,7 @@ impl PlayerSession {
         if let Err(error) = self.seek(SeekRequest::absolute(request.target)) {
             let _ = outcome_tx.send(ExactTimelineSeekOutcome::Failed {
                 request_id: request.request_id,
+                media_instance_id: request.media_instance_id,
                 error,
             });
             return;
@@ -73,6 +79,7 @@ impl PlayerSession {
         if !self.seek_runtime.seek_landing_active() && !self.snapshot.timeline.seeking {
             let _ = outcome_tx.send(ExactTimelineSeekOutcome::Failed {
                 request_id: request.request_id,
+                media_instance_id: request.media_instance_id,
                 error: PlayerError::new(
                     PlayerErrorKind::SeekUnavailable,
                     "exact timeline seek не был принят seek transaction",
@@ -100,6 +107,7 @@ impl PlayerSession {
         } else {
             ExactTimelineSeekOutcome::StaleInstance {
                 request_id: pending.request.request_id,
+                media_instance_id: pending.request.media_instance_id,
             }
         };
         let _ = pending.outcome_tx.send(outcome);
@@ -115,6 +123,7 @@ impl PlayerSession {
         };
         let _ = pending.outcome_tx.send(ExactTimelineSeekOutcome::Expired {
             request_id: pending.request.request_id,
+            media_instance_id: pending.request.media_instance_id,
             requested_position: pending.request.target,
             available_range,
         });
@@ -126,6 +135,7 @@ impl PlayerSession {
         };
         let _ = pending.outcome_tx.send(ExactTimelineSeekOutcome::Failed {
             request_id: pending.request.request_id,
+            media_instance_id: pending.request.media_instance_id,
             error,
         });
     }
@@ -148,6 +158,7 @@ impl PlayerSession {
             .outcome_tx
             .send(ExactTimelineSeekOutcome::StaleInstance {
                 request_id: pending.request.request_id,
+                media_instance_id: pending.request.media_instance_id,
             });
     }
 }
