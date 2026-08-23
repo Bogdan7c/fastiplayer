@@ -80,6 +80,7 @@ mod tests {
                 "https://user:password@example.test/video?token=secret",
             ),
             status: StatusCode::FORBIDDEN,
+            retry_after: crate::HttpRetryAfter::Unavailable,
         };
         let formatted = format!("{error:?} {error}");
 

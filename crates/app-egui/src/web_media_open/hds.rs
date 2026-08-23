@@ -233,6 +233,7 @@ fn hds_policy(
             NonZeroU8::new(3).expect("HDS retry attempts"),
             Duration::from_millis(100),
             Duration::from_secs(2),
+            crate::web_media_adaptive_config::maximum_adaptive_retry_after(),
         )
         .context("HDS adaptive retry policy invalid")?,
         demux_sniff_budget: DemuxSniffBudget::new(

@@ -37,6 +37,7 @@ use super::*;
 mod blocking_resource_fetch;
 mod ordered_segment_read_ahead;
 mod range_source;
+mod retry_after;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -283,6 +284,7 @@ fn context_with_options(
         AdaptiveRetryPolicy::new(
             NonZeroU8::new(3).expect("attempts"),
             Duration::from_millis(5),
+            Duration::from_millis(20),
             Duration::from_millis(20),
         )
         .expect("retry policy"),
@@ -789,17 +791,30 @@ fn cancellation_is_terminal_without_network_request() {
 
 #[test]
 fn cancellation_during_retry_backoff_prevents_follow_up_request() {
-    let server = LocalServer::start(|_, _| response("503 Service Unavailable", &[], b"retryable"));
+    let server = LocalServer::start(|_, _| {
+        response(
+            "503 Service Unavailable",
+            &[("Retry-After", "1".to_owned())],
+            b"retryable",
+        )
+    });
     let target = server.target("/cancel-backoff");
     let cancellation = CancellationToken::new();
-    let mut source = AdaptiveOrderedSegmentSource::new(context(
+    let mut adaptive_context = context(
         &target,
         cancellation.clone(),
         same_origin_redirects(),
         None,
         None,
-    ))
-    .expect("segment source");
+    );
+    adaptive_context.retry = AdaptiveRetryPolicy::new(
+        NonZeroU8::new(2).expect("attempt budget"),
+        Duration::from_millis(5),
+        Duration::from_millis(20),
+        Duration::from_secs(2),
+    )
+    .expect("retry policy");
+    let mut source = AdaptiveOrderedSegmentSource::new(adaptive_context).expect("segment source");
     source
         .install_snapshot(snapshot(
             1,
@@ -823,7 +838,7 @@ fn cancellation_during_retry_backoff_prevents_follow_up_request() {
     loop {
         match source.poll_next(Instant::now()) {
             SegmentPoll::TemporarilyUnavailable { retry_after }
-                if server.request_count() == 1 && retry_after >= Duration::from_millis(5) =>
+                if server.request_count() == 1 && retry_after >= Duration::from_millis(900) =>
             {
                 break;
             }

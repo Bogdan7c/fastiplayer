@@ -344,6 +344,7 @@ fn preparation_policy_with_segment_limit(maximum_segment_bytes: usize) -> Smooth
             NonZeroU8::new(1).expect("retry attempts"),
             Duration::from_millis(1),
             Duration::from_millis(2),
+            Duration::from_millis(2),
         )
         .expect("retry policy"),
         XmlBudgets::builder()

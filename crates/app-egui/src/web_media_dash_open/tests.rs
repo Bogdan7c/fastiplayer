@@ -110,6 +110,7 @@ fn adaptive_context(
             NonZeroU8::new(1).expect("attempt count"),
             Duration::from_millis(1),
             Duration::from_millis(1),
+            Duration::from_millis(1),
         )
         .expect("retry policy"),
     )

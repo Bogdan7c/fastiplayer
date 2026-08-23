@@ -3,7 +3,7 @@ use std::io;
 use reqwest::StatusCode;
 use thiserror::Error;
 
-use crate::{HttpRangeRedirectRejection, SecretHttpUrl};
+use crate::{HttpRangeRedirectRejection, HttpRetryAfter, SecretHttpUrl};
 
 use crate::NotSeekableReason;
 
@@ -139,6 +139,9 @@ pub enum SourceError {
 
         /// Полученный HTTP status.
         status: StatusCode,
+
+        /// Secret-safe server delay hint без исходного header payload-а.
+        retry_after: HttpRetryAfter,
     },
 
     /// HTTP body превысил caller-owned bounded resource limit.

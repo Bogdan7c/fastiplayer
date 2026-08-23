@@ -3,6 +3,8 @@
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::time::Duration;
 
+use source_core::HttpRetryAfter;
+
 /// Единые RAM/work bounds manifest и segment owner-а.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AdaptiveTransportLimits {
@@ -36,6 +38,7 @@ pub struct AdaptiveRetryPolicy {
     maximum_attempts: NonZeroU8,
     initial_backoff: Duration,
     maximum_backoff: Duration,
+    maximum_retry_after: Duration,
 }
 
 impl AdaptiveRetryPolicy {
@@ -44,6 +47,7 @@ impl AdaptiveRetryPolicy {
         maximum_attempts: NonZeroU8,
         initial_backoff: Duration,
         maximum_backoff: Duration,
+        maximum_retry_after: Duration,
     ) -> Result<Self, AdaptiveRetryPolicyError> {
         if initial_backoff.is_zero() {
             return Err(AdaptiveRetryPolicyError::ZeroInitialBackoff);
@@ -54,10 +58,17 @@ impl AdaptiveRetryPolicy {
         if maximum_backoff > Duration::from_secs(60) {
             return Err(AdaptiveRetryPolicyError::MaximumExceedsReadinessBound);
         }
+        if maximum_retry_after.is_zero() {
+            return Err(AdaptiveRetryPolicyError::ZeroMaximumRetryAfter);
+        }
+        if maximum_retry_after > Duration::from_secs(60) {
+            return Err(AdaptiveRetryPolicyError::RetryAfterExceedsReadinessBound);
+        }
         Ok(Self {
             maximum_attempts,
             initial_backoff,
             maximum_backoff,
+            maximum_retry_after,
         })
     }
 
@@ -75,6 +86,19 @@ impl AdaptiveRetryPolicy {
             .saturating_mul(1_u32 << shift)
             .min(self.maximum_backoff)
     }
+
+    /// Объединяет локальный backoff с server hint и сохраняет caller-owned upper bound.
+    pub(crate) fn retry_delay_after(
+        self,
+        failed_attempt: NonZeroU8,
+        retry_after: HttpRetryAfter,
+    ) -> Duration {
+        let server_delay = match retry_after {
+            HttpRetryAfter::Unavailable => Duration::ZERO,
+            HttpRetryAfter::Delay(delay) => delay.min(self.maximum_retry_after),
+        };
+        self.backoff_after(failed_attempt).max(server_delay)
+    }
 }
 
 /// Ошибка caller-owned retry policy.
@@ -89,4 +113,10 @@ pub enum AdaptiveRetryPolicyError {
     /// Readiness hint не может превышать neutral 60-second bound.
     #[error("maximum adaptive retry backoff превышает 60 seconds")]
     MaximumExceedsReadinessBound,
+    /// Нулевой server hint cap беззвучно отключил бы `Retry-After` contract.
+    #[error("maximum adaptive Retry-After должен быть ненулевым")]
+    ZeroMaximumRetryAfter,
+    /// Server-directed ожидание не может превышать neutral 60-second bound.
+    #[error("maximum adaptive Retry-After превышает 60 seconds")]
+    RetryAfterExceedsReadinessBound,
 }

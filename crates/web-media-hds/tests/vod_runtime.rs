@@ -687,6 +687,7 @@ fn open_policy() -> HdsVodOpenPolicy {
             NonZeroU8::new(2).expect("HDS retry attempts"),
             Duration::from_millis(2),
             Duration::from_millis(5),
+            Duration::from_millis(5),
         )
         .expect("HDS retry policy"),
         demux_sniff_budget: DemuxSniffBudget::new(

@@ -899,6 +899,7 @@ fn adaptive_context(
             NonZeroU8::new(2).expect("DASH retry attempts"),
             Duration::from_millis(2),
             Duration::from_millis(5),
+            Duration::from_millis(5),
         )
         .expect("DASH retry policy"),
     )

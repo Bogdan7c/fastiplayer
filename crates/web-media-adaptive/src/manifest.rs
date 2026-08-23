@@ -227,7 +227,10 @@ impl AdaptiveManifestFetcher {
                 if error.is_retryable()
                     && pending.attempt.get() < self.context.retry.maximum_attempts().get() =>
             {
-                let delay = self.context.retry.backoff_after(pending.attempt);
+                let delay = self
+                    .context
+                    .retry
+                    .retry_delay_after(pending.attempt, error.http_retry_after());
                 pending.attempt =
                     NonZeroU8::new(pending.attempt.get() + 1).expect("bounded attempt");
                 pending.retry_not_before = now + delay;

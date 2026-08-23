@@ -3,6 +3,7 @@
 use std::fmt;
 use std::io::Read;
 use std::num::NonZeroUsize;
+use std::time::SystemTime;
 
 use reqwest::StatusCode;
 use reqwest::header::{HeaderValue, RANGE};
@@ -10,6 +11,7 @@ use reqwest::header::{HeaderValue, RANGE};
 use crate::http::{
     ByteRange, build_header_map, map_reqwest_error, validate_content_range, validators_from_headers,
 };
+use crate::http_retry_after::retry_after_from_headers;
 use crate::http_session::parse_redirect_hop;
 use crate::{
     CancellationToken, HttpHeader, HttpRedirectHop, HttpRequestTarget, HttpSourceSession,
@@ -267,6 +269,7 @@ impl HttpSourceSession {
                     operation: request.kind.operation(),
                     url: secret_url,
                     status: response.status(),
+                    retry_after: retry_after_from_headers(response.headers(), SystemTime::now()),
                 });
             }
             Some(_) if response.status() == StatusCode::OK => {
@@ -281,6 +284,7 @@ impl HttpSourceSession {
                     operation: request.kind.operation(),
                     url: secret_url,
                     status: response.status(),
+                    retry_after: retry_after_from_headers(response.headers(), SystemTime::now()),
                 });
             }
             Some(byte_range) => {

@@ -1,3 +1,10 @@
+## AUD-017 bounded HTTP Retry-After (2026-08-24)
+
+- Independent production-boundary verification confirmed `429 Retry-After: 2` and standard HTTP-date were discarded and retried after local ~5.6 ms; malformed safely used the same fallback.
+- `source-core` now projects raw headers into secret-safe typed `HttpRetryAfter`; adaptive policy independently caps server hints, and blocking/manifest/segment retry paths preserve cancellation and bounded deadlines.
+- Post-fix harness: delta 2 → 2000.792 ms, HTTP-date → 2667.244 ms, malformed → 5.876 ms. `source-core` 60/60, adaptive 40/40, primary/MSRV checks and strict affected Clippy passed.
+- Full boundary, tests, commands and policy cap: `mem:media-services/http-retry-after-aud017-2026-08-24`.
+
 ## AUD-016 DMA-BUF frame contract до unsafe import (2026-08-23)
 
 - Independent production-boundary verification confirmed topology-valid wrong coded dimensions and `ComposedLayers`/`SeparateLayers` mismatch reached the DMA-BUF importer.

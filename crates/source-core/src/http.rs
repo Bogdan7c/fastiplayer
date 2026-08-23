@@ -330,6 +330,7 @@ impl HttpRangeSource {
                     operation: "range-read",
                     url: current_url,
                     status: response.status(),
+                    retry_after: crate::HttpRetryAfter::Unavailable,
                 });
             }
 
@@ -360,6 +361,7 @@ impl HttpRangeSource {
                 operation: "range-read",
                 url: current_url.clone(),
                 status: response.status(),
+                retry_after: crate::HttpRetryAfter::Unavailable,
             });
         };
         let next_material = redirect_handler
@@ -547,6 +549,7 @@ fn probe_seekability(
         operation: "range-probe",
         url: url.clone(),
         status: response.status(),
+        retry_after: crate::HttpRetryAfter::Unavailable,
     })
 }
 

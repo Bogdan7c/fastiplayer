@@ -381,6 +381,7 @@ impl HttpSourceSession {
                 operation: "progressive-open",
                 url: secret_url,
                 status,
+                retry_after: crate::HttpRetryAfter::Unavailable,
             }),
         }
     }

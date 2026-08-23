@@ -417,7 +417,10 @@ impl AdaptiveOrderedSegmentSource {
                         < self.context.retry.maximum_attempts().get() =>
             {
                 let active = &mut self.active[active_index];
-                let delay = self.context.retry.backoff_after(active.attempt);
+                let delay = self
+                    .context
+                    .retry
+                    .retry_delay_after(active.attempt, error.http_retry_after());
                 active.attempt = NonZeroU8::new(active.attempt.get() + 1).expect("bounded attempt");
                 active.retry_not_before = now + delay;
                 active.job_id = self.next_job_id;

@@ -265,6 +265,7 @@ fn preparation_policy(limits: AdaptiveTransportLimits) -> Result<SmoothPreparati
             NonZeroU8::new(3).expect("Smooth retry attempts"),
             Duration::from_millis(100),
             Duration::from_secs(2),
+            crate::web_media_adaptive_config::maximum_adaptive_retry_after(),
         )
         .context("Smooth retry policy invalid")?,
         smooth_xml_budgets()?,

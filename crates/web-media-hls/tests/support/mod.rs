@@ -244,6 +244,7 @@ pub fn adaptive_context(
             NonZeroU8::new(2).expect("retry attempts"),
             Duration::from_millis(5),
             Duration::from_millis(10),
+            Duration::from_millis(10),
         )
         .expect("retry policy"),
     )

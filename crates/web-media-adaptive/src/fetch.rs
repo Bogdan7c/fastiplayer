@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use source_core::{
     CancellationToken, HttpBoundedByteRange, HttpBoundedFetchHop, HttpBoundedFetchKind,
     HttpBoundedFetchRequest, HttpHeader, HttpRangeResponseMetadata, HttpRequestTarget,
-    HttpRequestTargetError, HttpSourceSession, ScopedHttpCookieJar, ScopedHttpCookieJarError,
-    SourceError, SourceRuntimeConfig,
+    HttpRequestTargetError, HttpRetryAfter, HttpSourceSession, ScopedHttpCookieJar,
+    ScopedHttpCookieJarError, SourceError, SourceRuntimeConfig,
 };
 use web_media_transport_api::{
     EndpointExpiryObserver, EndpointExpiryReason, EndpointExpiryResourceKind, EndpointExpirySignal,
@@ -184,7 +184,10 @@ impl AdaptiveHttpContext {
                     });
                 }
                 Err(error) if error.is_retryable() && attempt < self.retry.maximum_attempts() => {
-                    wait_for_retry(self.cancellation(), self.retry.backoff_after(attempt))?;
+                    let delay = self
+                        .retry
+                        .retry_delay_after(attempt, error.http_retry_after());
+                    wait_for_retry(self.cancellation(), delay)?;
                     attempt = std::num::NonZeroU8::new(attempt.get().saturating_add(1))
                         .unwrap_or(attempt);
                 }
@@ -482,6 +485,14 @@ impl AdaptiveTransportError {
             | Self::StaleGeneration { .. }
             | Self::ResourceBoundExceeded { .. }
             | Self::InvalidResourcePolicy { .. } => false,
+        }
+    }
+
+    /// Возвращает только проверенный server delay без raw response header-а.
+    pub(crate) fn http_retry_after(&self) -> HttpRetryAfter {
+        match self {
+            Self::Source(SourceError::HttpStatus { retry_after, .. }) => *retry_after,
+            _ => HttpRetryAfter::Unavailable,
         }
     }
 }

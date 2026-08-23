@@ -358,6 +358,7 @@ fn adaptive_context(
             std::num::NonZeroU8::new(2).expect("attempts"),
             Duration::from_millis(5),
             Duration::from_millis(10),
+            Duration::from_millis(10),
         )
         .expect("retry policy"),
     )

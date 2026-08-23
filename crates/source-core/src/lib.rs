@@ -21,6 +21,7 @@ mod http_cookie;
 mod http_cookie_seed;
 mod http_locator;
 mod http_policy;
+mod http_retry_after;
 mod http_session;
 mod local;
 mod metadata;
@@ -49,6 +50,7 @@ pub use http_policy::{
     HttpHeaderValidationError, HttpOrigin, HttpPathScope, HttpPathScopeError, HttpRequestScope,
     HttpRequestTarget, HttpRequestTargetError, HttpScheme, HttpScopeSecurity, ValidatedHttpHeaders,
 };
+pub use http_retry_after::HttpRetryAfter;
 pub use http_session::{
     HttpRangeRedirectBodyForwarding, HttpRangeRedirectHandler, HttpRangeRedirectHopCount,
     HttpRangeRedirectRejection, HttpRangeRedirectRequestMaterial, HttpRedirectHop,

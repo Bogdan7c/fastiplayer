@@ -45,6 +45,7 @@ pub(crate) fn policy(aggregate_bytes: usize) -> SmoothPreparationPolicy {
             NonZeroU8::new(1).expect("retry attempts"),
             Duration::from_millis(1),
             Duration::from_millis(2),
+            Duration::from_millis(2),
         )
         .expect("retry policy"),
         xml_budgets(),

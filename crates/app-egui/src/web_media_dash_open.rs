@@ -303,6 +303,7 @@ fn project_component<'candidate>(
             NonZeroU8::new(3).expect("non-zero DASH retry attempts"),
             Duration::from_millis(100),
             Duration::from_secs(2),
+            crate::web_media_adaptive_config::maximum_adaptive_retry_after(),
         )
         .context("DASH retry policy invalid")?,
     )
