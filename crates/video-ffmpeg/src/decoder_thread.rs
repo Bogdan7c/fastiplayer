@@ -16,7 +16,7 @@ use codec_core::VideoColorMetadata;
 #[cfg(all(test, feature = "ffmpeg"))]
 use codec_core::{H264Packetization, H265Packetization, VideoDecodeRequirement};
 #[cfg(feature = "ffmpeg")]
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, TrySendError, bounded};
 #[cfg(feature = "ffmpeg")]
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 #[cfg(any(test, feature = "ffmpeg"))]
@@ -61,6 +61,8 @@ use color_metadata::merge_frame_color_with_context_color;
 #[cfg(feature = "ffmpeg")]
 use host_resources::{FfmpegHostResourceProvider, invalid_avframe_resource};
 #[cfg(feature = "ffmpeg")]
+use lifecycle::FfmpegWorkerLifecycle;
+#[cfg(feature = "ffmpeg")]
 use send_receive::DecodedFrameRecord;
 #[cfg(feature = "ffmpeg")]
 use send_receive::RealFfmpegDecodeApi;
@@ -78,6 +80,8 @@ use stream_config::extradata_for_stream_config;
 mod color_metadata;
 #[cfg(feature = "ffmpeg")]
 mod host_resources;
+#[cfg(feature = "ffmpeg")]
+mod lifecycle;
 #[cfg(any(test, feature = "ffmpeg"))]
 mod send_receive;
 #[cfg(feature = "ffmpeg")]
@@ -195,6 +199,17 @@ pub struct FfmpegVideoDecoderThread {
 
     /// Diagnostics counters for failed bounded control sends.
     control_pressure: Arc<FfmpegControlPressureCounters>,
+
+    /// Владелец независимого shutdown signal и exactly-once worker join.
+    worker_lifecycle: FfmpegWorkerLifecycle,
+}
+
+#[cfg(feature = "ffmpeg")]
+impl Drop for FfmpegVideoDecoderThread {
+    fn drop(&mut self) {
+        // Явный вызов гарантирует shutdown/join до автоматического drop channels/resources.
+        self.worker_lifecycle.shutdown_and_join();
+    }
 }
 
 #[cfg(feature = "ffmpeg")]
@@ -205,6 +220,9 @@ impl FfmpegVideoDecoderThread {
         let thread_config = config.thread_config().normalized();
         let (packet_tx, packet_rx) = bounded(thread_config.packet_channel_frames);
         let (control_tx, control_rx) = bounded(thread_config.control_channel_frames);
+        // Shutdown не делит capacity с packet/control: teardown обязан пройти
+        // даже когда оба обычных protocol channel-а находятся под backpressure.
+        let (shutdown_tx, shutdown_rx) = bounded(1);
         // Decoded-frame channel сделан с запасом над ready-queue backpressure
         // порогом (decoder_ready_queue_frames): один send_packet при frame
         // threading может слить burst кадров (или весь EOF/DPB tail ~thread_count
@@ -245,7 +263,7 @@ impl FfmpegVideoDecoderThread {
         let worker_packet_completion_counter = packet_completion_counter.clone();
         let worker_software_decode_thread_budget = thread_config.software_decode_thread_budget;
 
-        std::thread::Builder::new()
+        let worker_thread = std::thread::Builder::new()
             .name("ffmpeg-video-decoder".to_owned())
             .spawn(move || {
                 // Worker и все raw FFmpeg owners создаются уже на owner thread.
@@ -265,7 +283,7 @@ impl FfmpegVideoDecoderThread {
                     software_decode_thread_budget: worker_software_decode_thread_budget,
                 };
 
-                worker.run(packet_rx, control_rx);
+                worker.run(packet_rx, control_rx, shutdown_rx);
             })
             .map_err(|error| FfmpegDecoderThreadError::ThreadSpawn {
                 reason: error.to_string(),
@@ -285,6 +303,7 @@ impl FfmpegVideoDecoderThread {
             eof_drain_state,
             thread_config,
             control_pressure,
+            worker_lifecycle: FfmpegWorkerLifecycle::new(shutdown_tx, worker_thread),
         })
     }
 
@@ -713,8 +732,16 @@ impl FfmpegDecoderWorker {
         mut self,
         packet_rx: Receiver<DecodePacket>,
         control_rx: Receiver<FfmpegDecoderControl>,
+        shutdown_rx: Receiver<()>,
     ) {
         loop {
+            // Проверяем shutdown до остальных ready operations: disconnected
+            // control receiver не должен даже теоретически вытеснять teardown.
+            match shutdown_rx.try_recv() {
+                Ok(()) | Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Empty) => {}
+            }
+
             // Host-upload pool — единственный hard-источник backpressure: пока в
             // нём нет свободных slots, мы не забираем новые packet-ы и не
             // дренируем кадры (они ждут внутри FFmpeg), иначе таблица
@@ -722,11 +749,13 @@ impl FfmpegDecoderWorker {
             // slot-а будит reception через release_notify_rx.
             if self.resource_provider.free_slots() == 0 {
                 crossbeam_channel::select! {
+                    recv(shutdown_rx) -> _ => break,
                     recv(control_rx) -> control_message => {
                         match control_message {
                             Ok(control) => self.handle_control(control, &packet_rx),
-                            Err(_) if packet_rx.is_empty() => break,
-                            Err(_) => {}
+                            // Единственный control sender принадлежит frontend;
+                            // disconnect поэтому является terminal lifecycle signal.
+                            Err(_) => break,
                         }
                     }
                     recv(self.release_notify_rx) -> _ => {}
@@ -754,11 +783,12 @@ impl FfmpegDecoderWorker {
             }
 
             crossbeam_channel::select! {
+                recv(shutdown_rx) -> _ => break,
                 recv(control_rx) -> control_message => {
                     match control_message {
                         Ok(control) => self.handle_control(control, &packet_rx),
-                        Err(_) if packet_rx.is_empty() => break,
-                        Err(_) => {}
+                        // Queued packets старого frontend-а не продлевают worker lifecycle.
+                        Err(_) => break,
                     }
                 }
                 recv(packet_rx) -> packet_message => {

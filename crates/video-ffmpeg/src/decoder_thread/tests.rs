@@ -47,6 +47,81 @@ fn packet_completion_counter_accumulates_and_drains_exactly_once() {
     assert_eq!(completion_counter.drain(), 0);
 }
 
+/// AUD-015: disconnected frontend обязан завершать worker независимо от pool backpressure.
+#[cfg(feature = "ffmpeg")]
+#[test]
+fn disconnected_frontend_terminates_worker_with_full_pool_and_queued_packet() {
+    // Один слот позволяет детерминированно перевести production pool в состояние full.
+    const HOST_POOL_CAPACITY: usize = 1;
+    // Два packet slot-а гарантируют queued tail, даже если worker успеет принять первый packet.
+    const PACKET_CHANNEL_CAPACITY: usize = 2;
+    // Lifecycle shutdown не должен зависеть от освобождения удерживаемого frame resource.
+    const TERMINATION_TIMEOUT: Duration = Duration::from_secs(1);
+
+    // Запускаем настоящий frontend вместе с его production worker и lifecycle owner-ом.
+    let thread_config = VideoDecoderThreadConfig {
+        // Test-specific capacity переводит настоящий host pool в контролируемое состояние full.
+        software_frame_pool_frames: HOST_POOL_CAPACITY,
+        // Capacity два сохраняет хотя бы один queued packet при любой допустимой гонке старта.
+        packet_channel_frames: PACKET_CHANNEL_CAPACITY,
+        // Остальные neutral limits не участвуют в проверяемом lifecycle invariant.
+        ..VideoDecoderThreadConfig::default()
+    };
+    let decoder = FfmpegVideoDecoderThread::spawn(FfmpegDecoderThreadConfig::from_thread_config(
+        thread_config,
+    ))
+    .expect("production FFmpeg frontend and worker should start");
+
+    // Clone удерживает provider для проверки pool и cleanup после frontend drop.
+    let resource_provider = decoder.host_resource_provider.clone();
+    // Реальный resource entry удерживает единственный pool slot до конца проверки.
+    let held_resource = resource_provider
+        .insert_frame(
+            1,
+            test_yuv420_frame(2, 2, 32),
+            host_planar_contract(VideoFramePixelLayout::Yuv420Planar8),
+        )
+        .expect("test AVFrame should fill the only host-pool slot");
+    // Защищаем предусловие: worker обязан войти именно в full-pool control branch.
+    assert_eq!(resource_provider.free_slots(), 0);
+
+    // Два production send_packet вызова оставляют минимум один packet за full-pool gate.
+    decoder
+        .send_packet(decode_packet_with_pts(1, 0, Duration::ZERO))
+        .expect("first packet should enter the production packet channel");
+    decoder
+        .send_packet(decode_packet_with_pts(1, 1, Duration::from_millis(1)))
+        .expect("second packet should remain queued behind full-pool backpressure");
+    // Проверяем exact defect precondition до lifecycle drop.
+    assert!(decoder.packet_queue_depth() >= 1);
+
+    // Hook наблюдает возврат настоящего Drop, внутри которого выполняется worker join.
+    let (terminated_tx, terminated_rx) = bounded(1);
+    // Отдельный thread позволяет ограничить ожидание синхронного production Drop.
+    let frontend_drop_thread = std::thread::Builder::new()
+        .name("aud-015-frontend-drop".to_owned())
+        .spawn(move || {
+            // Drop одновременно отключает frontend channels, сигналит shutdown и join-ит worker.
+            drop(decoder);
+            terminated_tx
+                .send(())
+                .expect("termination observer should remain connected");
+        })
+        .expect("AUD-015 frontend-drop observer thread should start");
+
+    // Независимый shutdown обязан завершить worker, не требуя release held_resource.
+    terminated_rx
+        .recv_timeout(TERMINATION_TIMEOUT)
+        .expect("worker did not terminate after frontend disconnect within bounded timeout");
+    // Join observer-а закрепляет, что production Drop сам дождался worker lifecycle.
+    frontend_drop_thread
+        .join()
+        .expect("bounded FFmpeg frontend drop should join cleanly");
+
+    // Lease намеренно освобождается только после доказанного worker termination.
+    resource_provider.release_frame(held_resource.handle);
+}
+
 #[test]
 fn send_packet_retries_same_padded_packet_after_eagain() {
     let mut fake_api = ScriptedDecodeApi::default()

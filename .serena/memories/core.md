@@ -1,3 +1,10 @@
+## AUD-015 bounded FFmpeg worker shutdown/join (2026-08-23)
+
+- Independent production-worker verification confirmed full host pool + queued packet + dropped frontend/control + held resource never terminated: 250 ms and 8 s both timed out; disconnected control receiver caused immediate re-selection/busy-spin.
+- `FfmpegVideoDecoderThread` now owns a separate shutdown signal and `JoinHandle` through `FfmpegWorkerLifecycle`; Drop signals independently of pool/packet pressure and joins exactly once, while control disconnect is terminal.
+- Production-frontend regression proves bounded `drop + join`; `video-ffmpeg` 88/88, no-feature 60/60, `player-core` 646/646 and strict Clippy passed.
+- Full boundary, regression and limitation: `mem:video-ffmpeg/bounded-worker-shutdown-aud015-2026-08-23`.
+
 ## AUD-014 bounded seek settlement перед lifecycle checkpoint (2026-08-23)
 
 - Independently reproduced: pending accepted 90 s seek плюс immediate suspend restored stale 10 s snapshot.
