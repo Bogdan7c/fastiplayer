@@ -5543,12 +5543,16 @@ dependencies = [
  "media-core",
  "mpeg-ts-demux",
  "pkg-config",
+ "pollster",
+ "render-core",
+ "render-wgpu-video",
  "source-core",
  "static_assertions",
  "thiserror 2.0.18",
  "video-backend-api",
  "video-core",
  "video-frame-contract",
+ "wgpu",
 ]
 
 [[package]]

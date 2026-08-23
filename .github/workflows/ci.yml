@@ -30,6 +30,36 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # AUD-013 требует не helper/unit PASS, а реальную compressed vertical до GPU completion.
+  vertical-seek-acceptance:
+    # Стабильное имя позволяет сделать сквозную media-приёмку required check-ом.
+    name: Vertical seek acceptance (FFmpeg + WGPU)
+    # Ubuntu фиксирует FFmpeg ABI и предоставляет Mesa lavapipe для headless Vulkan submit.
+    runs-on: ubuntu-24.04
+    steps:
+      # Checkout предоставляет production crates, runner и deterministic corpus recipe.
+      - uses: actions/checkout@v4
+      # FFmpeg создаёт/декодирует synthetic corpus, lavapipe исполняет настоящий WGPU submit.
+      - name: Install FFmpeg and headless Vulkan prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg libavcodec-dev libavutil-dev libvulkan1 mesa-vulkan-drivers pkg-config
+      # Corpus локальный, synthetic и воспроизводимый; сетевые media assets не используются.
+      - name: Generate deterministic H.264 MPEG-TS corpus
+        run: |
+          ffmpeg -hide_banner -loglevel error \
+            -f lavfi -i testsrc2=size=160x90:rate=5 \
+            -t 4 -c:v libx264 -preset ultrafast -profile:v baseline \
+            -bf 0 -g 5 -keyint_min 5 -sc_threshold 0 -pix_fmt yuv420p -an \
+            -muxpreload 0 -muxdelay 0 -mpegts_flags +resend_headers \
+            -f mpegts -y /tmp/rustiplayer-aud013-vertical-seek.ts
+      # Repo runner передаёт explicit path и запускает только exact ignored acceptance test.
+      - name: Run production vertical seek acceptance
+        env:
+          # Принудительно выбираем Vulkan; display server и swapchain тесту не нужны.
+          WGPU_BACKEND: vulkan
+        run: scripts/media-regression.sh --scenario h264-ts-seek-wgpu-ffmpeg --path /tmp/rustiplayer-aud013-vertical-seek.ts
+
   # Coverage является отдельным измеримым gate и не смешивает instrumented artifacts с tests job.
   coverage:
     # Стабильное имя используется будущей branch protection.

@@ -43,6 +43,7 @@ h264-avcc                      ISO BMFF H.264 with avcC SPS/PPS.
 h264-keyframes                 H.264 stream containing key and inter frames.
 h264-bframes-pts-dts           ISO BMFF H.264 B-frames with distinct PTS/DTS.
 h264-ts-pts-only-ffmpeg        MPEG-TS H.264 без B-frames, минимум три PES с PTS и без DTS.
+h264-ts-seek-wgpu-ffmpeg       MPEG-TS H.264 160x90/5fps: FFmpeg decode + WGPU submit до/после seek 2s.
 h264-signed-ctts               ISO BMFF H.264 signed-ctts regression near startup.
 h264-startup-decode-point      H.264 stream with a startup decode point near zero.
 h264-mkv-cue                   Matroska H.264 with usable nearby cues, at least 10 s.
@@ -135,6 +136,7 @@ scenario_test_command() {
         h264-keyframes) printf '%s\n' 'symphonia-demux|h264_fixtures|h264_packets_have_codec_aware_keyframe_states' ;;
         h264-bframes-pts-dts) printf '%s\n' 'symphonia-demux|h264_fixtures|h264_bframes_keep_presentation_pts_and_decode_dts' ;;
         h264-ts-pts-only-ffmpeg) printf '%s\n' 'video-ffmpeg|pts_only_mpeg_ts|pts_only_mpeg_ts_materializes_increasing_frames_after_start_and_seek' ;;
+        h264-ts-seek-wgpu-ffmpeg) printf '%s\n' 'video-ffmpeg|vertical_seek_wgpu|h264_mpeg_ts_reaches_wgpu_submit_and_release_before_and_after_seek' ;;
         h264-signed-ctts) printf '%s\n' 'symphonia-demux|h264_fixtures|h264_signed_ctts_offsets_do_not_wrap_pts' ;;
         h264-startup-decode-point) printf '%s\n' 'symphonia-demux|h264_fixtures|h264_startup_decode_point_accepts_first_keyframe' ;;
         h264-mkv-cue) printf '%s\n' 'symphonia-demux|h264_fixtures|h264_matroska_cue_seek_uses_near_decode_anchor' ;;
@@ -189,7 +191,7 @@ run_selected_test() {
 
 run_inspection() {
     # Symphonia inspector не владеет MPEG-TS path-ом; этот asset проверяет сам production TS demuxer.
-    if [[ "${scenario_name}" == "audio-wavpack-unsupported" || "${scenario_name}" == "h264-ts-pts-only-ffmpeg" ]]; then
+    if [[ "${scenario_name}" == "audio-wavpack-unsupported" || "${scenario_name}" == "h264-ts-pts-only-ffmpeg" || "${scenario_name}" == "h264-ts-seek-wgpu-ffmpeg" ]]; then
         return
     fi
 

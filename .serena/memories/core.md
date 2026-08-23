@@ -1,3 +1,9 @@
+## AUD-013 vertical seek acceptance до renderer submit (2026-08-23)
+
+- Independent read-only verification confirmed no real compressed asset reached production demux → decoder → materializer → WGPU video draw/submit/completion release before and after nonzero seek.
+- A blocking CI row now generates H.264/MPEG-TS locally and proves one FFmpeg software + HostPlanar WGPU vertical on the same demux/decoder: generation 1 / PTS 0, flush + seek 2 s, generation 2 / PTS 2 s, non-black readback and submitted release.
+- Remaining Smooth and VA-API rows stay explicit NOT COVERED/NOT RUN. Full boundary, command and limitations: `mem:testing/vertical-seek-acceptance-aud013-2026-08-23`.
+
 ## AUD-011/AUD-012 queue continuation и exact seek identity (2026-08-23)
 
 - Независимая production-boundary проверка подтвердила оба P1: sync pre-request failure терял automatic plan и входил в manual D55, а delayed bare BeyondEnd(A) после Installed B создавал Next(C).

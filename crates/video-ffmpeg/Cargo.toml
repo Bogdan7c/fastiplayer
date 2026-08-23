@@ -32,8 +32,12 @@ bytes.workspace = true
 demux-api.workspace = true
 media-core.workspace = true
 mpeg-ts-demux.workspace = true
+pollster.workspace = true
+render-core.workspace = true
+render-wgpu-video.workspace = true
 source-core.workspace = true
 static_assertions = "1.1"
+wgpu.workspace = true
 
 [build-dependencies]
 pkg-config = "0.3"
