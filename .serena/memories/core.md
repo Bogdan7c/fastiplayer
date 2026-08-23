@@ -1,3 +1,9 @@
+## AUD-008 row-local yt-dlp planning rejections (2026-08-23)
+
+- Independent production-path verification confirmed fail-fast planning discarded a valid H.264 row when a neighboring normalized bare HEVC row could not produce a runtime requirement.
+- Service-owned `YtDlpPlanningProjection` now separates a neutral plannable snapshot from exact typed per-row rejections; production app diagnostics count planning rejections, while source/generation/duplicate identity remain fatal snapshot invariants.
+- Functional regression and full verification: `mem:media-services/ytdlp-row-local-planning-rejections-aud008-2026-08-23`.
+
 ## AUD-007 bounded yt-dlp single-item output/DOM (2026-08-23)
 
 - Independent verification confirmed unbounded stdout/stderr and full JSON DOM caused proportional RSS growth up to ~1007.7 MiB for 500+500 MiB output.

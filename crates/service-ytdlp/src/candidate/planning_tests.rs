@@ -242,3 +242,78 @@ fn ambiguous_hdr_label_does_not_create_color_evidence() {
     assert!(requirement.requires_hdr_processing());
     assert!(requirement.color.is_none());
 }
+
+/// Bare HEVC получает собственный отказ и не уничтожает независимый H.264 candidate.
+#[test]
+fn unplannable_bare_hevc_row_keeps_independent_h264_candidate_available() {
+    // Fixture повторяет подтверждённый production extraction shape из AUD-008.
+    let document: YtDlpCandidateDocument = serde_json::from_value(json!({
+        "formats": [
+            progressive_muxed_format(
+                "h264-playable",
+                "mp4",
+                "mp4",
+                "avc1.640028",
+                "mp4a.40.2"
+            ),
+            progressive_muxed_format(
+                "hevc-unplannable",
+                "mp4",
+                "mp4",
+                "hevc",
+                "mp4a.40.2"
+            )
+        ]
+    }))
+    .expect("synthetic yt-dlp document должен десериализоваться");
+    // Production normalizer обязан признать обе rows до planning admission.
+    let snapshot = super::normalize_candidate_document(
+        document,
+        SourceIdentity::new(74),
+        ExtractionGeneration::new(14),
+    );
+    // Фиксируем, что тест не прошёл случайно из-за раннего normalization rejection.
+    let accepted_candidates = snapshot.accepted_candidates().collect::<Vec<_>>();
+    assert_eq!(accepted_candidates.len(), 2);
+    // Находим exact identity bare HEVC row через её production descriptor.
+    let bare_hevc_identity = accepted_candidates
+        .iter()
+        .find(|candidate| match candidate.descriptor().layout() {
+            StreamLayout::Muxed(component) => component.video().codec().raw().as_str() == "hevc",
+            _ => false,
+        })
+        .expect("bare HEVC row должна быть accepted normalizer-ом")
+        .descriptor()
+        .identity()
+        .clone();
+
+    // Новый production boundary возвращает и neutral snapshot, и row-local diagnostics.
+    let projection = snapshot
+        .planning_projection()
+        .expect("одна неподдерживаемая row не должна разрушать planning projection");
+    // Рабочий H.264 остаётся единственным downstream planning candidate-ом.
+    assert_eq!(projection.snapshot().candidates().len(), 1);
+    assert_eq!(
+        muxed_video_codec_tag(&projection.snapshot().candidates()[0]),
+        "avc1.640028"
+    );
+    // Bare HEVC сохраняет exact correspondence и точную typed rejection reason.
+    assert_eq!(projection.rejections().len(), 1);
+    assert_eq!(
+        projection.rejections()[0].exact_identity(),
+        &bare_hevc_identity
+    );
+    assert_eq!(
+        projection.rejections()[0].reason(),
+        super::YtDlpPlanningCandidateRejectionReason::RuntimeRequirement
+    );
+    // Alignment сверяет полный canonical plannable set, а не rejected соседнюю row.
+    snapshot
+        .validate_planning_snapshot_alignment(projection.snapshot())
+        .expect("service/planner alignment должна принять локализованный HEVC rejection");
+    // Совместимый старый API также не должен возвращаться к snapshot-wide fail-fast.
+    let compatible_snapshot = snapshot
+        .planning_snapshot()
+        .expect("совместимый API должен сохранить рабочий H.264 candidate");
+    assert_eq!(compatible_snapshot.candidates().len(), 1);
+}

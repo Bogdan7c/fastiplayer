@@ -22,7 +22,10 @@ pub use model::{
     YtDlpCandidateSelectionError, YtDlpCandidateSnapshot, YtDlpLiveIntent,
     YtDlpNormalizedCandidate, YtDlpRejectedCandidate, YtDlpSelectedCandidateShape,
 };
-pub use planning::{YtDlpPlanningSnapshotAlignmentError, YtDlpPlanningSnapshotError};
+pub use planning::{
+    YtDlpPlanningCandidateRejection, YtDlpPlanningCandidateRejectionReason,
+    YtDlpPlanningProjection, YtDlpPlanningSnapshotAlignmentError, YtDlpPlanningSnapshotError,
+};
 pub use request_material::{
     YT_DLP_REQUEST_MATERIAL_SCHEMA_VERSION, YtDlpDashFragment, YtDlpDashFragmentLocatorKind,
     YtDlpDashFragmentRole, YtDlpDashInput, YtDlpDashInputKind, YtDlpDashRequestContext,

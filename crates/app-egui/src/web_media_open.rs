@@ -190,9 +190,14 @@ pub(crate) fn prepare_yt_dlp_web_media(
     let (candidate_snapshot, resolved_intent) =
         preparation::resolve_candidate_snapshot(locator, yt_dlp_config, intent, &is_cancelled)
             .context("Не удалось подготовить exact YtDlp candidate snapshot")?;
-    let planning_snapshot = candidate_snapshot
-        .planning_snapshot()
+    // Service-owned projection локализует неподдерживаемые rows и сохраняет рабочие соседние rows.
+    let planning_projection = candidate_snapshot
+        .planning_projection()
         .context("Не удалось выразить YtDlp candidates через playback planner")?;
+    // Сохраняем безопасный счётчик row-local planning rejections для diagnostics.
+    let planning_rejection_count = planning_projection.rejections().len();
+    // Downstream neutral planner получает только statically-compatible candidate snapshot.
+    let planning_snapshot = planning_projection.into_snapshot();
     candidate_snapshot
         .validate_planning_snapshot_alignment(&planning_snapshot)
         .context("YtDlp service/planner candidate snapshots не соответствуют друг другу")?;
@@ -248,7 +253,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
             )
             .with_context(|| {
                 format!(
-                    "YtDlp planner не нашёл playable candidate (planning_candidates={planning_candidate_count}, normalization_rejections={normalization_rejection_count})"
+                    "YtDlp planner не нашёл playable candidate (planning_candidates={planning_candidate_count}, normalization_rejections={normalization_rejection_count}, planning_rejections={planning_rejection_count})"
                 )
             })?;
             let (_, opened_attempt) =
@@ -274,7 +279,7 @@ pub(crate) fn prepare_yt_dlp_web_media(
             .map_err(|error| {
                 let safe_summary = error.safe_summary();
                 anyhow::Error::new(error).context(format!(
-                    "YtDlp planner не нашёл exact playable candidate (planning_candidates={planning_candidate_count}, normalization_rejections={normalization_rejection_count}, {safe_summary})"
+                    "YtDlp planner не нашёл exact playable candidate (planning_candidates={planning_candidate_count}, normalization_rejections={normalization_rejection_count}, planning_rejections={planning_rejection_count}, {safe_summary})"
                 ))
             })?;
             let selected = candidate_snapshot

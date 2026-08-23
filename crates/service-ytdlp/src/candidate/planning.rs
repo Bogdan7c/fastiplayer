@@ -11,8 +11,8 @@ use codec_core::{
 };
 use thiserror::Error;
 use web_media_core::{
-    CodecFamily, CodecKind, DynamicRange, StreamLayout, VideoHeight, VideoTrackDescriptor,
-    VideoWidth,
+    CandidateIdentity, CodecFamily, CodecKind, DynamicRange, StreamLayout, VideoHeight,
+    VideoTrackDescriptor, VideoWidth,
 };
 use web_media_playback_plan::{
     CandidateQualityScore, CandidateRuntimeRequirements, PlanningCandidate,
@@ -21,18 +21,108 @@ use web_media_playback_plan::{
 
 use super::model::{YtDlpCandidateSnapshot, YtDlpNormalizedCandidate, YtDlpVideoColorEvidence};
 
-/// Ошибка adapter-а до network/player side effects.
+/// Ошибка snapshot-level adapter-а до network/player side effects.
+///
+/// Row-level variants сохранены для source compatibility старого public API.
+/// Новые вызовы получают их через [`YtDlpPlanningCandidateRejectionReason`],
+/// а [`YtDlpCandidateSnapshot::planning_snapshot`] возвращает только фатальную
+/// ошибку сборки итогового neutral snapshot-а.
 #[derive(Debug, Error)]
 pub enum YtDlpPlanningSnapshotError {
+    /// Legacy row-level ошибка: candidate не выразилась через runtime vocabulary.
+    #[error("accepted YtDlp candidate не имеет полного runtime requirement")]
+    RuntimeRequirement,
+    /// Legacy row-level ошибка: planner отверг descriptor/runtime pair.
+    #[error("YtDlp candidate нарушает planning contract")]
+    Candidate(#[source] PlanningCandidateBuildError),
+    /// Итоговый snapshot нарушает source/generation/identity contract.
+    #[error("YtDlp planning snapshot нарушает identity contract")]
+    Snapshot(#[source] PlanningSnapshotBuildError),
+}
+
+/// Причина, по которой одна canonical candidate row не вошла в planner snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum YtDlpPlanningCandidateRejectionReason {
     /// Accepted S19 candidate не удалось выразить через runtime vocabulary.
     #[error("accepted YtDlp candidate не имеет полного runtime requirement")]
     RuntimeRequirement,
     /// Neutral planner отверг несогласованный descriptor/runtime pair.
     #[error("YtDlp candidate нарушает planning contract")]
     Candidate(#[source] PlanningCandidateBuildError),
-    /// Итоговый snapshot нарушает source/generation/identity contract.
-    #[error("YtDlp planning snapshot нарушает identity contract")]
-    Snapshot(#[source] PlanningSnapshotBuildError),
+}
+
+/// Диагностическая запись одной row, локально отклонённой planning adapter-ом.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct YtDlpPlanningCandidateRejection {
+    /// Exact identity связывает отказ с исходной canonical candidate row.
+    exact_identity: CandidateIdentity,
+    /// Типизированная причина отказа без transport/player side effects.
+    reason: YtDlpPlanningCandidateRejectionReason,
+}
+
+impl YtDlpPlanningCandidateRejection {
+    /// Создаёт row-local отказ только внутри service-owned planning boundary.
+    fn new(
+        exact_identity: CandidateIdentity,
+        reason: YtDlpPlanningCandidateRejectionReason,
+    ) -> Self {
+        Self {
+            exact_identity,
+            reason,
+        }
+    }
+
+    /// Возвращает exact identity отклонённой canonical candidate row.
+    #[must_use]
+    pub fn exact_identity(&self) -> &CandidateIdentity {
+        &self.exact_identity
+    }
+
+    /// Возвращает типизированную row-local причину planning rejection.
+    #[must_use]
+    pub const fn reason(&self) -> YtDlpPlanningCandidateRejectionReason {
+        self.reason
+    }
+}
+
+/// Результат service-owned projection: планируемые rows и локальные отказы соседей.
+#[derive(Debug, Clone, PartialEq)]
+pub struct YtDlpPlanningProjection {
+    /// Neutral snapshot содержит только statically-compatible planning candidates.
+    snapshot: PlanningCandidateSnapshot,
+    /// Каждый отказ сохраняет identity и точную service-owned причину.
+    rejections: Box<[YtDlpPlanningCandidateRejection]>,
+}
+
+impl YtDlpPlanningProjection {
+    /// Создаёт полную projection после проверки neutral snapshot invariants.
+    fn new(
+        snapshot: PlanningCandidateSnapshot,
+        rejections: Vec<YtDlpPlanningCandidateRejection>,
+    ) -> Self {
+        Self {
+            snapshot,
+            rejections: rejections.into_boxed_slice(),
+        }
+    }
+
+    /// Возвращает neutral planner input без row-local отказов.
+    #[must_use]
+    pub const fn snapshot(&self) -> &PlanningCandidateSnapshot {
+        &self.snapshot
+    }
+
+    /// Возвращает все row-local planning rejections в canonical traversal order.
+    #[must_use]
+    pub fn rejections(&self) -> &[YtDlpPlanningCandidateRejection] {
+        &self.rejections
+    }
+
+    /// Передаёт neutral snapshot вызывающему коду без дополнительной сборки.
+    #[must_use]
+    pub fn into_snapshot(self) -> PlanningCandidateSnapshot {
+        self.snapshot
+    }
 }
 
 /// Ошибка correspondence между service snapshot и переданным planner snapshot.
@@ -56,16 +146,46 @@ pub enum YtDlpPlanningSnapshotAlignmentError {
 }
 
 impl YtDlpCandidateSnapshot {
-    /// Строит immutable planner input из canonical accepted snapshot view.
+    /// Строит immutable planner input, не позволяя одной row уничтожить соседей.
+    ///
+    /// Вызывающему коду, которому нужны typed row-local diagnostics, следует
+    /// использовать [`Self::planning_projection`].
     pub fn planning_snapshot(
         &self,
     ) -> Result<PlanningCandidateSnapshot, YtDlpPlanningSnapshotError> {
-        let planning_candidates = self
-            .accepted_candidates()
-            .map(planning_candidate)
-            .collect::<Result<Vec<_>, _>>()?;
-        PlanningCandidateSnapshot::new(self.source(), self.generation(), planning_candidates)
-            .map_err(YtDlpPlanningSnapshotError::Snapshot)
+        self.planning_projection()
+            .map(YtDlpPlanningProjection::into_snapshot)
+    }
+
+    /// Проецирует accepted rows в planner snapshot и отдельные row-local отказы.
+    pub fn planning_projection(
+        &self,
+    ) -> Result<YtDlpPlanningProjection, YtDlpPlanningSnapshotError> {
+        // Успешные rows сохраняют canonical traversal order для neutral planner-а.
+        let mut planning_candidates = Vec::new();
+        // Ошибочные rows получают собственную диагностику и не влияют на соседей.
+        let mut rejections = Vec::new();
+
+        // Каждая accepted row проходит один и тот же production planning adapter.
+        for candidate in self.accepted_candidates() {
+            // Row-local ошибка не является нарушением целостности всего snapshot-а.
+            match planning_candidate(candidate) {
+                // Планируемая row остаётся доступной downstream selection.
+                Ok(planning_candidate) => planning_candidates.push(planning_candidate),
+                // Непланируемая row сохраняет exact identity и точную причину.
+                Err(reason) => rejections.push(YtDlpPlanningCandidateRejection::new(
+                    candidate.descriptor().identity().clone(),
+                    reason,
+                )),
+            }
+        }
+
+        // Source/generation/duplicate identity остаются фатальными snapshot-инвариантами.
+        let snapshot =
+            PlanningCandidateSnapshot::new(self.source(), self.generation(), planning_candidates)
+                .map_err(YtDlpPlanningSnapshotError::Snapshot)?;
+        // Возвращаем обе части одной immutable planning projection.
+        Ok(YtDlpPlanningProjection::new(snapshot, rejections))
     }
 
     /// Проверяет полный order-independent service-owned projection до app-side use.
@@ -136,7 +256,7 @@ impl YtDlpCandidateSnapshot {
 /// Связывает descriptor, decode requirements и deterministic service quality.
 fn planning_candidate(
     candidate: &YtDlpNormalizedCandidate,
-) -> Result<PlanningCandidate, YtDlpPlanningSnapshotError> {
+) -> Result<PlanningCandidate, YtDlpPlanningCandidateRejectionReason> {
     let runtime = runtime_requirements(
         candidate.descriptor().layout(),
         candidate.video_color_evidence(),
@@ -146,14 +266,14 @@ fn planning_candidate(
         runtime,
         CandidateQualityScore::new(quality_score(candidate.descriptor().layout())),
     )
-    .map_err(YtDlpPlanningSnapshotError::Candidate)
+    .map_err(YtDlpPlanningCandidateRejectionReason::Candidate)
 }
 
 /// Сохраняет exact layout shape и не создаёт несуществующие companion streams.
 fn runtime_requirements(
     layout: &StreamLayout,
     video_color_evidence: Option<YtDlpVideoColorEvidence>,
-) -> Result<CandidateRuntimeRequirements, YtDlpPlanningSnapshotError> {
+) -> Result<CandidateRuntimeRequirements, YtDlpPlanningCandidateRejectionReason> {
     match layout {
         StreamLayout::Muxed(component) => Ok(CandidateRuntimeRequirements::Muxed {
             video: video_requirement(component.video(), video_color_evidence)?,
@@ -191,9 +311,9 @@ fn runtime_requirements(
 fn video_requirement(
     track: &VideoTrackDescriptor,
     video_color_evidence: Option<YtDlpVideoColorEvidence>,
-) -> Result<VideoDecodeRequirement, YtDlpPlanningSnapshotError> {
+) -> Result<VideoDecodeRequirement, YtDlpPlanningCandidateRejectionReason> {
     let CodecKind::Known(codec_family) = track.codec().kind() else {
-        return Err(YtDlpPlanningSnapshotError::RuntimeRequirement);
+        return Err(YtDlpPlanningCandidateRejectionReason::RuntimeRequirement);
     };
     let codec = match codec_family {
         CodecFamily::Vp8 => VideoCodec::Vp8,
@@ -201,7 +321,7 @@ fn video_requirement(
         CodecFamily::Av1 => VideoCodec::Av1,
         CodecFamily::H264 => VideoCodec::H264,
         CodecFamily::H265 => VideoCodec::H265,
-        _ => return Err(YtDlpPlanningSnapshotError::RuntimeRequirement),
+        _ => return Err(YtDlpPlanningCandidateRejectionReason::RuntimeRequirement),
     };
     let mut requirement = VideoDecodeRequirement::new(codec);
     if let (Some(width), Some(height)) = (track.width_pixels(), track.height()) {
@@ -246,7 +366,7 @@ fn hdr_color(evidence: YtDlpVideoColorEvidence) -> VideoColorMetadata {
 fn apply_codec_profile(
     requirement: VideoDecodeRequirement,
     track: &VideoTrackDescriptor,
-) -> Result<VideoDecodeRequirement, YtDlpPlanningSnapshotError> {
+) -> Result<VideoDecodeRequirement, YtDlpPlanningCandidateRejectionReason> {
     let raw_codec = track.codec().raw().as_str();
     let parts = raw_codec.split('.').collect::<Vec<_>>();
     match requirement.codec {
@@ -272,7 +392,7 @@ fn apply_codec_profile(
                 1 => Vp9Profile::Profile1,
                 2 => Vp9Profile::Profile2,
                 3 => Vp9Profile::Profile3,
-                _ => return Err(YtDlpPlanningSnapshotError::RuntimeRequirement),
+                _ => return Err(YtDlpPlanningCandidateRejectionReason::RuntimeRequirement),
             };
             Ok(requirement
                 .with_profile(VideoProfile::Vp9(profile))
@@ -284,7 +404,7 @@ fn apply_codec_profile(
                 0 => Av1Profile::Main,
                 1 => Av1Profile::High,
                 2 => Av1Profile::Professional,
-                _ => return Err(YtDlpPlanningSnapshotError::RuntimeRequirement),
+                _ => return Err(YtDlpPlanningCandidateRejectionReason::RuntimeRequirement),
             };
             Ok(requirement
                 .with_profile(VideoProfile::Av1(profile))
@@ -302,7 +422,7 @@ fn apply_codec_profile(
                 .with_bit_depth(BitDepth::Eight)
                 .with_chroma(ChromaSubsampling::Yuv420))
         }
-        VideoCodec::H265 => Err(YtDlpPlanningSnapshotError::RuntimeRequirement),
+        VideoCodec::H265 => Err(YtDlpPlanningCandidateRejectionReason::RuntimeRequirement),
     }
 }
 
@@ -310,18 +430,18 @@ fn apply_codec_profile(
 fn h264_profile(
     requirement: VideoDecodeRequirement,
     parts: &[&str],
-) -> Result<VideoDecodeRequirement, YtDlpPlanningSnapshotError> {
+) -> Result<VideoDecodeRequirement, YtDlpPlanningCandidateRejectionReason> {
     let avcoti = parts
         .get(1)
         .filter(|value| value.len() == 6)
-        .ok_or(YtDlpPlanningSnapshotError::RuntimeRequirement)?;
+        .ok_or(YtDlpPlanningCandidateRejectionReason::RuntimeRequirement)?;
     let profile_idc = u8::from_str_radix(&avcoti[0..2], 16)
-        .map_err(|_| YtDlpPlanningSnapshotError::RuntimeRequirement)?;
+        .map_err(|_| YtDlpPlanningCandidateRejectionReason::RuntimeRequirement)?;
     let constraint_flags = u8::from_str_radix(&avcoti[2..4], 16)
-        .map_err(|_| YtDlpPlanningSnapshotError::RuntimeRequirement)?;
+        .map_err(|_| YtDlpPlanningCandidateRejectionReason::RuntimeRequirement)?;
     let profile =
         h264_profile_from_indication(H264ProfileIndication::new(profile_idc, constraint_flags))
-            .map_err(|_| YtDlpPlanningSnapshotError::RuntimeRequirement)?;
+            .map_err(|_| YtDlpPlanningCandidateRejectionReason::RuntimeRequirement)?;
     Ok(requirement
         .with_profile(VideoProfile::H264(profile))
         .with_bit_depth(BitDepth::Eight)
@@ -329,24 +449,24 @@ fn h264_profile(
 }
 
 /// Преобразует exact decimal codec parameter без fallback-угадывания.
-fn decimal_part(parts: &[&str], index: usize) -> Result<u8, YtDlpPlanningSnapshotError> {
+fn decimal_part(parts: &[&str], index: usize) -> Result<u8, YtDlpPlanningCandidateRejectionReason> {
     parts
         .get(index)
         .and_then(|value| value.parse::<u8>().ok())
-        .ok_or(YtDlpPlanningSnapshotError::RuntimeRequirement)
+        .ok_or(YtDlpPlanningCandidateRejectionReason::RuntimeRequirement)
 }
 
 /// Ограничивает bit depth доказанным codec-core набором.
-fn bit_depth(bits: u8) -> Result<BitDepth, YtDlpPlanningSnapshotError> {
-    BitDepth::from_bits(bits).ok_or(YtDlpPlanningSnapshotError::RuntimeRequirement)
+fn bit_depth(bits: u8) -> Result<BitDepth, YtDlpPlanningCandidateRejectionReason> {
+    BitDepth::from_bits(bits).ok_or(YtDlpPlanningCandidateRejectionReason::RuntimeRequirement)
 }
 
 /// Маппит только exact S20 proven audio families.
 fn audio_requirement(
     codec: &web_media_core::NormalizedCodec,
-) -> Result<AudioDecodeCodecFamily, YtDlpPlanningSnapshotError> {
+) -> Result<AudioDecodeCodecFamily, YtDlpPlanningCandidateRejectionReason> {
     let CodecKind::Known(family) = codec.kind() else {
-        return Err(YtDlpPlanningSnapshotError::RuntimeRequirement);
+        return Err(YtDlpPlanningCandidateRejectionReason::RuntimeRequirement);
     };
     match family {
         CodecFamily::Aac => Ok(AudioDecodeCodecFamily::Aac),
@@ -359,7 +479,7 @@ fn audio_requirement(
         CodecFamily::Opus => Ok(AudioDecodeCodecFamily::Opus),
         CodecFamily::Pcm => Ok(AudioDecodeCodecFamily::Pcm),
         CodecFamily::Vorbis => Ok(AudioDecodeCodecFamily::Vorbis),
-        _ => Err(YtDlpPlanningSnapshotError::RuntimeRequirement),
+        _ => Err(YtDlpPlanningCandidateRejectionReason::RuntimeRequirement),
     }
 }
 
